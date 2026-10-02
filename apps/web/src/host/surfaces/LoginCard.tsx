@@ -110,7 +110,7 @@ export function LoginCard({ next, providers }: LoginCardProps): ReactNode {
             <Sprout className="h-5 w-5" strokeWidth={1.75} />
           </span>
           <h1 className="m-0 mb-2 text-h1 font-semibold tracking-title text-ink-default">moss</h1>
-          <p className="m-0 text-sm text-ink-muted">{TAGLINE}</p>
+          <p className="m-0 text-balance text-sm text-ink-muted">{TAGLINE}</p>
         </div>
 
         <form aria-label={action} method="post" noValidate onSubmit={submit} className="mt-8 flex flex-col gap-3">
