@@ -22,6 +22,8 @@ Read this with PRODUCT.md, your BUILDPLAN entry and the A§ it cites, before wri
 - `lexical`, every `@lexical/*` and `yjs` must each resolve to one version equal to its pnpm override. Overrides have no wildcard, so a new `@lexical/*` package needs its own override line. [L§4.2]
 - Repo lint rules: no raw colors in `packages/ui`; no `.first()`/`.last()`/`.nth()` on a `contenteditable` locator in `e2e`; no `HISTORIC_TAG` or `'historic'` in apps, packages or vendor (inline disables are ignored under `vendor/`).
 - `node scripts/ci/minutes.mjs` prints the month's billable minutes against the 3,000-minute budget (OA2).
+- The e2e job runs in the `mcr.microsoft.com/playwright` image whose tag equals `@playwright/test` in `e2e/package.json` (bump both together): `playwright install --with-deps webkit` once spent 19 min on a throttled apt mirror. Each engine boots the stack on the build job's bytes and runs `--project=selftest-<engine> --project=<engine>`.
+- Playwright never applies `--grep` to dependency projects, and a top-level project with no matching tests drops its dependencies. So the selftests always run before journeys, and a grep matching nothing fails with "No tests found".
 
 ## Build and Worker
 
@@ -82,6 +84,8 @@ Read this with PRODUCT.md, your BUILDPLAN entry and the A§ it cites, before wri
 - Headless Chrome cannot be hidden; `page.screenshot` brings the tab to the front; WebKit's `clipboard.readText` fails; `isVisible` ignores occlusion (use `elementFromPoint`); extra headers don't ride WebSocket upgrades. [L§4.20]
 - Pixel parity: inject the product fonts into Ladle, pad rather than resize, deselect first, and read the diff image. [L§4.19]
 - Agent results are null-guarded and schema-typed, with severities P0, P1, P2. [L§4.19]
+- Journeys import `test`, `expect` and `ui` from `e2e/lib/test.ts` only; its auto fixture checks the 9 invariants on every actor after every test. Declare intended exceptions on the actor (`expectHttp`, `expectReconnects`, `declareRemount`, `actors.solo(reason)`), never by loosening a detector. Typed strings must be distinctive (never a substring of other text in the field), since invariant 7 counts exact occurrences.
+- A new detector or invariant ships with a fault fixture in `e2e/selftest/fixtures/faults/` that only it flags.
 
 ## Environment
 

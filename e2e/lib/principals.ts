@@ -26,9 +26,16 @@ export interface SessionCookie {
  * email at @example.invalid.
  */
 export function principalProblems(principals: Pick<Principal, 'email' | 'id'>[], solo: string | null): string[] {
-  void principals;
-  void solo;
-  return [];
+  const problems = principals
+    .filter((p) => !p.email.toLowerCase().endsWith(EXAMPLE_DOMAIN))
+    .map((p) => `${p.email} is not a test principal (${EXAMPLE_DOMAIN})`);
+  if (solo !== null) {
+    if (!solo.trim()) problems.push('actors.solo() needs a reason');
+    return problems;
+  }
+  const distinct = new Set(principals.map((p) => p.id ?? `email:${p.email}`)).size;
+  if (distinct < 2) problems.push(`${distinct} distinct principal(s); a journey needs at least 2 (or actors.solo(reason))`);
+  return problems;
 }
 
 export function assertTestEmail(email: string): void {

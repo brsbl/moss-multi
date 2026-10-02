@@ -16,9 +16,8 @@ export const ALLOWLIST: AllowEntry[] = [];
 
 /** Entries whose expiry day has passed. */
 export function expiredEntries(list: AllowEntry[], now: Date = new Date()): AllowEntry[] {
-  void list;
-  void now;
-  return [];
+  const today = now.toISOString().slice(0, 10);
+  return list.filter((entry) => !/^\d{4}-\d{2}-\d{2}$/.test(entry.expires) || entry.expires < today);
 }
 
 /** True when a live entry scoped to `journey` matches `text`. */

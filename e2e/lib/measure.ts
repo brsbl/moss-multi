@@ -43,7 +43,6 @@ export class Measure {
 }
 
 /** The over-budget message for a latency, or null within budget. */
-export function budgetProblem(latency: Latency): string | null {
-  void latency;
-  return null;
+export function budgetProblem({ name, ms, budgetMs }: Latency): string | null {
+  return budgetMs !== null && ms > budgetMs ? `${name}: ${ms} ms is over its ${budgetMs} ms budget` : null;
 }

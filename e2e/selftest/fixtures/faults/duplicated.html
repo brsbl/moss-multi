@@ -1,14 +1,12 @@
 <!-- Invariant 7: an echo applies the typed text twice ('WORD' becomes 'WORDWORD'). -->
 <script>
-  let pending = '';
+  const body = document.querySelector('[data-body-binding]');
+  const initial = body.textContent.length;
   let timer = 0;
-  document.addEventListener('input', (event) => {
-    if (event.inputType !== 'insertText' || !event.target.matches('[data-body-binding]')) return;
-    pending += event.data ?? '';
+  body.addEventListener('input', () => {
     clearTimeout(timer);
     timer = setTimeout(() => {
-      event.target.querySelector('p').append(pending);
-      pending = '';
+      body.querySelector('p').append(body.textContent.slice(initial));
       document.documentElement.setAttribute('data-echoed', 'true');
     }, 200);
   });

@@ -9,10 +9,15 @@ export const IDLE_MS = 95_000;
 
 /** Problems with a claimed wake: the instance must change, and be constructed after the baseline, by the action. */
 export function inductionProblems(base: Instance, after: Instance, decisiveAt: number): string[] {
-  void base;
-  void after;
-  void decisiveAt;
-  return [];
+  const problems: string[] = [];
+  if (after.instanceId === base.instanceId) problems.push(`instance ${base.instanceId} still serves the doc`);
+  if (!(after.constructedAt > base.constructedAt)) {
+    problems.push(`instance constructed at ${after.constructedAt}, not after the baseline's ${base.constructedAt}`);
+  }
+  if (after.constructedAt > decisiveAt + 2_000) {
+    problems.push(`instance constructed ${after.constructedAt - decisiveAt} ms after the decisive action, so something else woke it`);
+  }
+  return problems;
 }
 
 export interface InduceOptions {

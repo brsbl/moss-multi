@@ -143,20 +143,34 @@ jobs:
           retention-days: 3
 
   # Every journey engine boots the real Worker stack on the build job's bytes, runs the selftests, then the
-  # journeys (e2e/journeys) that exist. T0.9b shards it by journey group.
+  # journeys (e2e/journeys) that exist. T0.9b shards it by journey group. The Playwright image carries both
+  # engines and their system libraries, so no job waits on apt mirrors.
   e2e:
     needs: [plan, build]
     if: needs.plan.outputs.e2e == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    container:
+      # Keep the tag equal to @playwright/test in e2e/package.json; the first step checks it.
+      image: mcr.microsoft.com/playwright:v1.61.1-noble
+      options: --ipc=host --init
     strategy:
       fail-fast: false
       matrix:
         browser: ${{ fromJSON(needs.plan.outputs.browsers) }}
     env:
       RUN_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.browser }}
+      PLAYWRIGHT_IMAGE: v1.61.1
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v6
+      - name: The Playwright image matches e2e/package.json
+        run: |
+          want="v$(node -p "require('./e2e/package.json').devDependencies['@playwright/test']")"
+          if [ "$want" != "$PLAYWRIGHT_IMAGE" ]; then echo "::error::container image is $PLAYWRIGHT_IMAGE, e2e/package.json pins $want"; exit 1; fi
+          command -v ps > /dev/null || (apt-get update -qq && apt-get install -y -qq --no-install-recommends procps > /dev/null)
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v6
         with:
@@ -167,21 +181,6 @@ jobs:
         with:
           name: web-dist
       - run: mkdir -p .local-stack/prebuilt && tar -xzf web-dist.tgz -C .local-stack/prebuilt
-      - id: pw
-        run: echo "version=$(node -p "require('./e2e/node_modules/@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
-      - id: pw-cache
-        uses: actions/cache@v6
-        with:
-          path: ~/.cache/ms-playwright
-          key: pw-${{ runner.os }}-${{ steps.pw.outputs.version }}-${{ matrix.browser }}
-      - name: Install ${{ matrix.browser }}
-        working-directory: e2e
-        run: |
-          if [ "${{ steps.pw-cache.outputs.cache-hit }}" = 'true' ]; then
-            pnpm exec playwright install-deps ${{ matrix.browser }}
-          else
-            pnpm exec playwright install --with-deps ${{ matrix.browser }}
-          fi
       - name: Boot the Worker stack on the built bytes
         run: >
           node scripts/stack.mjs start --run-id "$RUN_ID" --prebuilt .local-stack/prebuilt/dist --hooks

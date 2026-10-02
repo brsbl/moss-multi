@@ -89,6 +89,18 @@ export const bodyEditor = (actor: Actor, docId: string): Locator => pane(actor, 
  * `windowMs`; WebKit binds Backspace to history.back() unless the product consumes it.
  */
 export async function bareBackspaceNavigates(actor: Actor, windowMs = 1_500): Promise<{ navigated: boolean; from: string; to: string }> {
-  void windowMs;
-  return { navigated: false, from: actor.page.url(), to: actor.page.url() };
+  const page = actor.page;
+  const editable = await page.evaluate(() => {
+    (document.activeElement as HTMLElement | null)?.blur();
+    const active = document.activeElement as HTMLElement | null;
+    return !!active && active !== document.body && (active.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName));
+  });
+  if (editable) throw new Error(`${actor.label}: an editable still holds focus, so this is not a bare Backspace`);
+  const from = page.url();
+  await page.keyboard.press('Backspace');
+  const navigated = await page.waitForURL((url) => url.href !== from, { timeout: windowMs, waitUntil: 'commit' }).then(
+    () => true,
+    () => false,
+  );
+  return { navigated, from, to: page.url() };
 }

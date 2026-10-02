@@ -37,31 +37,67 @@ export const pathMatches = (url: string, path: string | RegExp): boolean => {
   return typeof path === 'string' ? pathname === path : path.test(pathname);
 };
 
+const LOAD_FAILURE = /Failed to load resource: the server responded with a status of (\d{3})/;
+
+const declares = (declared: DeclaredHttp[], status: number, url: string) =>
+  declared.some((d) => d.status === status && pathMatches(url, d.path));
+
 /** Invariant 1: page errors, console errors (unless allowlisted), 5xx, and 4xx unless declared. */
 export function errorProblems(
   census: { console: ConsoleEntry[]; pageErrors: PageError[]; http: HttpEntry[] },
   declared: DeclaredHttp[],
   journey: string,
 ): string[] {
-  void census;
-  void declared;
-  void journey;
-  void isAllowed;
-  return [];
+  const problems = census.pageErrors.map((e) => `page error: ${e.message}`);
+  for (const entry of census.console) {
+    if (entry.type !== 'error') continue;
+    // A declared 4xx also logs a load failure for that resource; it is the same, declared, event.
+    const load = LOAD_FAILURE.exec(entry.text);
+    const status = load ? Number(load[1]) : 0;
+    if (status && status < 500 && (entry.url ? declares(declared, status, entry.url) : declared.some((d) => d.status === status))) continue;
+    if (isAllowed(entry.text, journey)) continue;
+    problems.push(`console error: ${entry.text}${entry.url ? ` (${entry.url})` : ''}`);
+  }
+  for (const response of census.http) {
+    if (response.status < 500 && declares(declared, response.status, response.url)) continue;
+    problems.push(`HTTP ${response.status} ${response.method} ${response.url}${response.status < 500 ? ' (undeclared)' : ''}`);
+  }
+  return problems;
 }
 
 /** Invariant 2: every 200 document carries meta and client stamps equal to `/api/version`. */
 export function stampProblems(stamps: StampEntry[], version: Provenance | null): string[] {
-  void stamps;
-  void version;
-  return [];
+  const documents = stamps.filter((s) => /^https?:/.test(s.url) && (s.status === null || s.status === 200));
+  if (documents.length === 0) return [];
+  if (!version) return ['no /api/version to compare the build stamps with'];
+  const meta = `${version.commit}:${version.bundleHash}`;
+  const client = `${version.commit}:${version.clientHash}`;
+  return documents.flatMap((s) => [
+    ...(s.meta === meta ? [] : [`${s.url}: meta moss-build is ${s.meta ?? 'missing'}, /api/version says ${meta}`]),
+    ...(s.client === client ? [] : [`${s.url}: html data-client-build is ${s.client ?? 'missing'}, /api/version says ${client}`]),
+  ]);
 }
 
 /** Invariant 3: per doc and document, at most one open doc socket at a time and at most 1 + declared opens. */
 export function socketProblems(sockets: SocketEntry[], reconnects: Map<string, number>): string[] {
-  void sockets;
-  void reconnects;
-  return [];
+  const groups = new Map<string, SocketEntry[]>();
+  for (const socket of sockets) {
+    const key = `${socket.epoch}\u0000${socket.docId}`;
+    groups.set(key, [...(groups.get(key) ?? []), socket]);
+  }
+  const problems: string[] = [];
+  for (const group of groups.values()) {
+    const { docId } = group[0];
+    const allowed = 1 + (reconnects.get(docId) ?? 0) + (reconnects.get('*') ?? 0);
+    if (group.length > allowed) problems.push(`${docId}: ${group.length} socket opens in one document, ${allowed} allowed`);
+    const events = group.flatMap((s) => [[s.openedAt, 1], [s.closedAt ?? Number.POSITIVE_INFINITY, -1]] as const);
+    events.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    let open = 0;
+    let peak = 0;
+    for (const [, delta] of events) peak = Math.max(peak, (open += delta));
+    if (peak > 1) problems.push(`${docId}: ${peak} doc sockets open at once`);
+  }
+  return problems;
 }
 
 /** Invariants 5, 6 and 9: the cheap DOM checks `checkpoint()` also runs mid-test. */

@@ -34,7 +34,7 @@ export async function makeSeverable(context: BrowserContext): Promise<Sever> {
   });
   return {
     blackhole() {
-      // T0.9a red: the sever is not wired yet.
+      ctl.mode = 'blackhole';
     },
     reset(code = 1012) {
       ctl.mode = 'blackhole';
