@@ -4,7 +4,8 @@ import {
   isTwitterStatusUrl,
   normalizeEmbeddableWebUrl
 } from './web-embed-classify';
-import { isHttpsImageUrl } from './remote-image-url';
+// moss-multi seam: converter-split (A§12; S-conv §2.3)
+import { isHttpsImageUrl } from './https-image-url';
 import { isLocalVideoPath, isYouTubeUrl } from './video-url';
 
 export type ClassifiedMarkdownImage = {

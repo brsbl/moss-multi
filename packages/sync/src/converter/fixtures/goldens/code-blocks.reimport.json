@@ -1,0 +1,60 @@
+{
+  "root": {
+    "children": [
+      {
+        "type": "code-block",
+        "version": 1,
+        "code": "def greet(name):\n    return f\"hi {name}\"",
+        "language": "python"
+      },
+      {
+        "type": "code-block",
+        "version": 1,
+        "code": "const answer = 42;",
+        "language": "javascript",
+        "theme": "github-dark"
+      },
+      {
+        "type": "code-block",
+        "version": 1,
+        "code": "no language here",
+        "language": "plaintext"
+      },
+      {
+        "type": "code-block",
+        "version": 1,
+        "code": "language none",
+        "language": "plaintext"
+      },
+      {
+        "type": "code-block",
+        "version": 1,
+        "code": "",
+        "language": "plaintext"
+      },
+      {
+        "type": "code-block",
+        "version": 1,
+        "code": "```js\ninner fence",
+        "language": "markdown"
+      },
+      {
+        "type": "code-block",
+        "version": 1,
+        "code": "```moss-foo\nunknown moss fence stays code",
+        "language": "plaintext"
+      },
+      {
+        "type": "code-block",
+        "version": 1,
+        "code": "{ this is not json",
+        "language": "moss-chart"
+      }
+    ],
+    "direction": null,
+    "format": "",
+    "indent": 0,
+    "type": "root",
+    "version": 1
+  }
+}

@@ -1,0 +1,171 @@
+{
+  "base": "packages/desktop/src/renderer/editor",
+  "modules": [
+    {
+      "path": "commands.ts",
+      "take": [{ "from": "plugins/CommentPlugin.tsx", "symbols": ["CREATE_COMMENT_COMMAND", "OPEN_BLOCK_COMMENT_COMMAND"] }]
+    },
+    {
+      "path": "utils/https-image-url.ts",
+      "take": [{ "from": "utils/remote-image-url.ts", "range": ["IMAGE_EXTENSIONS", "extractAltFromUrl"] }]
+    },
+    {
+      "path": "markdown/text-style.ts",
+      "take": [{ "from": "MarkdownEditor.tsx", "range": ["EditorSelectionFontFamily", "MARKDOWN_EDITOR_HTML_IMPORT"], "except": ["Placeholder"] }]
+    },
+    {
+      "path": "markdown/transformers.ts",
+      "take": [
+        { "from": "MarkdownEditor.tsx", "range": ["UNDERLINE_TRANSFORMER", "MOSS_HTML_MULTILINE_TRANSFORMER"] },
+        { "from": "MarkdownEditor.tsx", "range": ["CHECK_LIST_WITH_OPTIONAL_TRAILING_SPACE", "MARKDOWN_EDITOR_NODES"] }
+      ]
+    },
+    {
+      "path": "markdown/normalize.ts",
+      "take": [
+        { "from": "MarkdownEditor.tsx", "range": ["PostImportNormalizeOptions", "$postImportNormalize"] },
+        { "from": "MarkdownEditor.tsx", "range": ["HTML_ENTITY_RE", "unescapeHtmlEntities"] }
+      ]
+    },
+    {
+      "path": "nodes/ChartNode.ts",
+      "views": ["ChartNode"],
+      "take": [
+        {
+          "from": "nodes/ChartNode.tsx",
+          "symbols": ["SerializedChartNode", "$convertChartElement", "ChartNode", "$createChartNode", "$isChartNode", "exportChartToMarkdown"]
+        }
+      ]
+    },
+    {
+      "path": "nodes/CodeBlockNode.ts",
+      "views": ["CodeBlockNode"],
+      "take": [
+        {
+          "from": "nodes/CodeBlockNode.tsx",
+          "symbols": [
+            "pendingAutoEditKeys",
+            "markCodeBlockForAutoEdit",
+            "consumeAutoEdit",
+            "SerializedCodeBlockNode",
+            "$convertCodeElement",
+            "CodeBlockNode",
+            "$createCodeBlockNode",
+            "$isCodeBlockNode"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "nodes/EmbedPillNode.ts",
+      "views": ["EmbedPillNode"],
+      "take": [
+        {
+          "from": "nodes/EmbedPillNode.tsx",
+          "symbols": [
+            "SerializedEmbedPillNode",
+            "decodePathSegment",
+            "MAX_EMBED_PILL_LABEL_LENGTH",
+            "truncateEmbedPillLabel",
+            "deriveEmbedPillLabel",
+            "escapeEmbedPillDisplayText",
+            "unescapeEmbedPillDisplayText",
+            "$convertEmbedPillElement",
+            "EmbedPillNode",
+            "$createEmbedPillNode",
+            "$isEmbedPillNode"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "nodes/HtmlBlockquoteNode.ts",
+      "views": ["HtmlBlockquoteNode"],
+      "take": [
+        {
+          "from": "nodes/HtmlBlockquoteNode.tsx",
+          "symbols": [
+            "HtmlBlockSource",
+            "SerializedHtmlBlockquoteNode",
+            "BR_TAG_RE",
+            "BLOCK_END_RE",
+            "normalizeExtractedText",
+            "extractHtmlBlockquoteText",
+            "BLOCK_TAGS",
+            "isComplexBlockquote",
+            "$convertHtmlBlockquoteElement",
+            "HtmlBlockquoteNode",
+            "$createHtmlBlockquoteNode",
+            "$isHtmlBlockquoteNode"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "nodes/ImageNode.ts",
+      "views": ["ImageNode"],
+      "take": [
+        {
+          "from": "nodes/ImageNode.tsx",
+          "symbols": ["SerializedImageNode", "OPEN_IMAGE_ALT_TEXT_EDITOR_COMMAND", "$convertImageElement", "ImageNode", "$createImageNode", "$isImageNode"]
+        }
+      ]
+    },
+    {
+      "path": "nodes/SketchNode.ts",
+      "views": ["SketchNode"],
+      "take": [
+        {
+          "from": "nodes/SketchNode.tsx",
+          "symbols": [
+            "PixelGrid",
+            "TextLabel",
+            "GRID_COLS",
+            "GRID_ROWS",
+            "LEGACY_COLS",
+            "LEGACY_ROWS",
+            "createEmptyGrid",
+            "gridToText",
+            "textToGrid",
+            "upscaleLegacyGrid",
+            "parseLabelsHeader",
+            "parseSketchBlock",
+            "buildSketchMarkdown",
+            "SerializedSketchNode",
+            "$convertSketchElement",
+            "SketchNode",
+            "$createSketchNode",
+            "$isSketchNode"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "nodes/VideoNode.ts",
+      "views": ["VideoNode"],
+      "take": [{ "from": "nodes/VideoNode.tsx", "symbols": ["SerializedVideoNode", "$convertVideoElement", "VideoNode", "$createVideoNode", "$isVideoNode"] }]
+    },
+    {
+      "path": "nodes/WebEmbedNode.ts",
+      "views": ["WebEmbedNode"],
+      "take": [
+        { "from": "nodes/WebEmbedNode.tsx", "symbols": ["SerializedWebEmbedNode", "$convertWebEmbedElement", "WebEmbedNode", "$createWebEmbedNode", "$isWebEmbedNode"] }
+      ]
+    }
+  ],
+  "rename": {
+    "nodes/ChartNode.tsx": "nodes/ChartNode.view.tsx",
+    "nodes/CodeBlockNode.tsx": "nodes/CodeBlockNode.view.tsx",
+    "nodes/EmbedPillNode.tsx": "nodes/EmbedPillNode.view.tsx",
+    "nodes/HtmlBlockquoteNode.tsx": "nodes/HtmlBlockquoteNode.view.tsx",
+    "nodes/ImageNode.tsx": "nodes/ImageNode.view.tsx",
+    "nodes/SketchNode.tsx": "nodes/SketchNode.view.tsx",
+    "nodes/VideoNode.tsx": "nodes/VideoNode.view.tsx",
+    "nodes/WebEmbedNode.tsx": "nodes/WebEmbedNode.view.tsx"
+  },
+  "reroute": ["utils/comment-import.ts", "utils/markdown-image.ts", "utils/web-embed-classify.ts"],
+  "rewrite": [{ "file": "utils/chartDefaults.ts", "from": "@moss/shared", "to": "@moss/shared/lib/colors" }],
+  "specifiers": { "@lexical/code": "@lexical/code-core" },
+  "imports": { "MarkdownEditor.tsx": ["./nodes/register-views"] },
+  "templates": ["nodes/node-views.ts", "nodes/register-views.tsx", "markdown/fixes.ts", "markdown/pipeline.ts"]
+}

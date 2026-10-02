@@ -1,0 +1,51 @@
+diff --git a/packages/desktop/src/renderer/editor/plugins/CommentPlugin.tsx b/packages/desktop/src/renderer/editor/plugins/CommentPlugin.tsx
+--- a/packages/desktop/src/renderer/editor/plugins/CommentPlugin.tsx
++++ b/packages/desktop/src/renderer/editor/plugins/CommentPlugin.tsx
+@@ -12,18 +12,7 @@ import { useEffect } from 'react';
+ import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
+ import { atom, useStore } from 'jotai';
+ import { atomFamily } from 'jotai-family';
+-import {
+-  $getNodeByKey,
+-  $getRoot,
+-  $getSelection,
+-  $isRangeSelection,
+-  $isElementNode,
+-  createCommand,
+-  COMMAND_PRIORITY_NORMAL,
+-  type LexicalCommand,
+-  type LexicalEditor,
+-  type LexicalNode
+-} from 'lexical';
++import { $getNodeByKey, $getRoot, $getSelection, $isRangeSelection, $isElementNode, COMMAND_PRIORITY_NORMAL, type LexicalEditor, type LexicalNode } from 'lexical';
+ import { $isCommentableDecorator } from '../utils/commentable-node';
+ import { $wrapSelectionInMarkNode, $isMarkNode, MarkNode } from '@lexical/mark';
+ import { TabGroupNode } from '../nodes/TabGroupNode';
+@@ -37,6 +26,9 @@ import {
+   type NoteComment
+ } from '@moss/shared/state/note-atoms';
+ import { isCommentVisibleForStatus } from '../utils/comment-thread-count';
++// moss-multi seam: converter-split (A§12; S-conv §2.3)
++import { CREATE_COMMENT_COMMAND } from '../commands';
++export { CREATE_COMMENT_COMMAND, OPEN_BLOCK_COMMENT_COMMAND } from '../commands';
+ 
+ // ---------------------------------------------------------------------------
+ // Draft Comment Persistence
+@@ -132,17 +124,6 @@ export interface CreateCommentPayload {
+   imageUrls?: string[];
+ }
+ 
+-/**
+- * Command to create a comment on the current selection.
+- * The plugin handles wrapping the selection with a MarkNode
+- * and updating the comments atom.
+- */
+-export const CREATE_COMMENT_COMMAND: LexicalCommand<CreateCommentPayload> =
+-  createCommand('CREATE_COMMENT_COMMAND');
+-
+-export const OPEN_BLOCK_COMMENT_COMMAND: LexicalCommand<{ nodeKey: string }> =
+-  createCommand('OPEN_BLOCK_COMMENT_COMMAND');
+-
+ interface CommentPluginProps {
+   /** Note ID for loading comments from atoms */
+   noteId: string;

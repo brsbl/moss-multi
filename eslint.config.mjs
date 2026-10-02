@@ -16,6 +16,7 @@ export default defineConfig([
     '.local-stack/**',
     '.oracle/**',
     'e2e/parity/oracle/moss/**',
+    '.cache/**',
     'test-results/**',
     'playwright-report/**',
     'scripts/ci/fixtures/**',

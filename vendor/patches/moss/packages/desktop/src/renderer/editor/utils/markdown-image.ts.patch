@@ -1,0 +1,13 @@
+diff --git a/packages/desktop/src/renderer/editor/utils/markdown-image.ts b/packages/desktop/src/renderer/editor/utils/markdown-image.ts
+--- a/packages/desktop/src/renderer/editor/utils/markdown-image.ts
++++ b/packages/desktop/src/renderer/editor/utils/markdown-image.ts
+@@ -3,7 +3,8 @@ import {
+   isTwitterStatusUrl,
+   normalizeEmbeddableWebUrl
+ } from './web-embed-classify';
+-import { isHttpsImageUrl } from './remote-image-url';
++// moss-multi seam: converter-split (A§12; S-conv §2.3)
++import { isHttpsImageUrl } from './https-image-url';
+ import { isLocalVideoPath, isYouTubeUrl } from './video-url';
+ 
+ export type ClassifiedMarkdownImage = {

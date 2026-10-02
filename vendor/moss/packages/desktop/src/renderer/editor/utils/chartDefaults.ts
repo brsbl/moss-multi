@@ -3,11 +3,12 @@
  * Chart configuration types and validation utilities for ChartNode
  */
 
+// moss-multi seam: converter-split (A§12; S-conv §2.3)
 import {
   CHART_PALETTE_VIBRANT,
   CHART_PALETTE_COOL,
   CHART_PALETTE_EARTHY
-} from '@moss/shared';
+} from '@moss/shared/lib/colors';
 import { parseChartConfigBlock } from '../../../common/chartConfigParser';
 
 export type ChartType = 'bar' | 'line' | 'stacked-bar' | 'area';

@@ -1,0 +1,744 @@
+{
+  "root": {
+    "children": [
+      {
+        "children": [
+          {
+            "detail": 0,
+            "format": 0,
+            "mode": "normal",
+            "style": "",
+            "text": "Heading with ",
+            "type": "text",
+            "version": 1
+          },
+          {
+            "type": "formula",
+            "version": 1,
+            "formula": "2+2",
+            "result": "4",
+            "formulaId": "277ac2d8-edf4-59c6-b439-bc0d0a686d74",
+            "name": null,
+            "stale": false
+          },
+          {
+            "detail": 0,
+            "format": 0,
+            "mode": "normal",
+            "style": "",
+            "text": " and ",
+            "type": "text",
+            "version": 1
+          },
+          {
+            "type": "file-link",
+            "version": 1,
+            "noteId": null,
+            "noteTitle": "Launch Plan",
+            "isResolved": false,
+            "headingText": null,
+            "resolutionState": "unresolved",
+            "displayText": null
+          },
+          {
+            "detail": 0,
+            "format": 0,
+            "mode": "normal",
+            "style": "",
+            "text": " and ",
+            "type": "text",
+            "version": 1
+          },
+          {
+            "type": "color-code",
+            "version": 1,
+            "value": "#ff8800"
+          }
+        ],
+        "direction": null,
+        "format": "",
+        "indent": 0,
+        "type": "heading",
+        "version": 1,
+        "tag": "h2"
+      },
+      {
+        "children": [
+          {
+            "children": [
+              {
+                "detail": 0,
+                "format": 0,
+                "mode": "normal",
+                "style": "",
+                "text": "item with ",
+                "type": "text",
+                "version": 1
+              },
+              {
+                "type": "formula",
+                "version": 1,
+                "formula": "3+3",
+                "result": "6",
+                "formulaId": "9f6e0f5e-79ab-56d8-a413-76cf19af8f2a",
+                "name": null,
+                "stale": false
+              },
+              {
+                "detail": 0,
+                "format": 0,
+                "mode": "normal",
+                "style": "",
+                "text": " and ",
+                "type": "text",
+                "version": 1
+              },
+              {
+                "type": "embed-pill",
+                "version": 1,
+                "url": "https://example.com/pill"
+              },
+              {
+                "detail": 0,
+                "format": 0,
+                "mode": "normal",
+                "style": "",
+                "text": " and ",
+                "type": "text",
+                "version": 1
+              },
+              {
+                "detail": 0,
+                "format": 8,
+                "mode": "normal",
+                "style": "",
+                "text": "under",
+                "type": "text",
+                "version": 1
+              }
+            ],
+            "direction": null,
+            "format": "",
+            "indent": 0,
+            "type": "listitem",
+            "version": 1,
+            "value": 1
+          }
+        ],
+        "direction": null,
+        "format": "",
+        "indent": 0,
+        "type": "list",
+        "version": 1,
+        "listType": "bullet",
+        "start": 1,
+        "tag": "ul"
+      },
+      {
+        "children": [
+          {
+            "children": [
+              {
+                "detail": 0,
+                "format": 0,
+                "mode": "normal",
+                "style": "",
+                "text": "task with ",
+                "type": "text",
+                "version": 1
+              },
+              {
+                "type": "file-link",
+                "version": 1,
+                "noteId": null,
+                "noteTitle": "Launch Plan",
+                "isResolved": false,
+                "headingText": "Risks",
+                "resolutionState": "unresolved",
+                "displayText": null
+              },
+              {
+                "detail": 0,
+                "format": 0,
+                "mode": "normal",
+                "style": "",
+                "text": " and ",
+                "type": "text",
+                "version": 1
+              },
+              {
+                "detail": 0,
+                "format": 0,
+                "mode": "normal",
+                "style": "background-color: var(--color-highlight-yellow); --obsidian-highlight: true",
+                "text": "mark",
+                "type": "text",
+                "version": 1
+              }
+            ],
+            "direction": null,
+            "format": "",
+            "indent": 0,
+            "type": "listitem",
+            "version": 1,
+            "checked": false,
+            "value": 1
+          }
+        ],
+        "direction": null,
+        "format": "",
+        "indent": 0,
+        "type": "list",
+        "version": 1,
+        "listType": "check",
+        "start": 1,
+        "tag": "ul"
+      },
+      {
+        "children": [
+          {
+            "detail": 0,
+            "format": 0,
+            "mode": "normal",
+            "style": "",
+            "text": "Quote with ",
+            "type": "text",
+            "version": 1
+          },
+          {
+            "type": "formula",
+            "version": 1,
+            "formula": "4+4",
+            "result": "8",
+            "formulaId": "ab42c920-8ef1-52fe-94c9-1db5a2a9f1b4",
+            "name": null,
+            "stale": false
+          },
+          {
+            "detail": 0,
+            "format": 0,
+            "mode": "normal",
+            "style": "",
+            "text": " and ",
+            "type": "text",
+            "version": 1
+          },
+          {
+            "detail": 0,
+            "format": 1,
+            "mode": "normal",
+            "style": "",
+            "text": "bold",
+            "type": "text",
+            "version": 1
+          },
+          {
+            "detail": 0,
+            "format": 0,
+            "mode": "normal",
+            "style": "",
+            "text": " ",
+            "type": "text",
+            "version": 1
+          },
+          {
+            "type": "file-link",
+            "version": 1,
+            "noteId": null,
+            "noteTitle": "Launch Plan",
+            "isResolved": false,
+            "headingText": null,
+            "resolutionState": "unresolved",
+            "displayText": null
+          },
+          {
+            "detail": 0,
+            "format": 0,
+            "mode": "normal",
+            "style": "",
+            "text": " and ",
+            "type": "text",
+            "version": 1
+          },
+          {
+            "type": "color-code",
+            "version": 1,
+            "value": "rgb(1, 2, 3)"
+          }
+        ],
+        "direction": null,
+        "format": "",
+        "indent": 0,
+        "type": "quote",
+        "version": 1
+      },
+      {
+        "children": [
+          {
+            "children": [
+              {
+                "children": [
+                  {
+                    "children": [
+                      {
+                        "detail": 0,
+                        "format": 0,
+                        "mode": "normal",
+                        "style": "",
+                        "text": "Formula",
+                        "type": "text",
+                        "version": 1
+                      }
+                    ],
+                    "direction": null,
+                    "format": "",
+                    "indent": 0,
+                    "type": "paragraph",
+                    "version": 1,
+                    "textFormat": 0,
+                    "textStyle": ""
+                  }
+                ],
+                "direction": null,
+                "format": "",
+                "indent": 0,
+                "type": "tablecell",
+                "version": 1,
+                "backgroundColor": null,
+                "colSpan": 1,
+                "headerState": 1,
+                "rowSpan": 1
+              },
+              {
+                "children": [
+                  {
+                    "children": [
+                      {
+                        "detail": 0,
+                        "format": 0,
+                        "mode": "normal",
+                        "style": "",
+                        "text": "Link",
+                        "type": "text",
+                        "version": 1
+                      }
+                    ],
+                    "direction": null,
+                    "format": "",
+                    "indent": 0,
+                    "type": "paragraph",
+                    "version": 1,
+                    "textFormat": 0,
+                    "textStyle": ""
+                  }
+                ],
+                "direction": null,
+                "format": "",
+                "indent": 0,
+                "type": "tablecell",
+                "version": 1,
+                "backgroundColor": null,
+                "colSpan": 1,
+                "headerState": 1,
+                "rowSpan": 1
+              },
+              {
+                "children": [
+                  {
+                    "children": [
+                      {
+                        "detail": 0,
+                        "format": 0,
+                        "mode": "normal",
+                        "style": "",
+                        "text": "Color",
+                        "type": "text",
+                        "version": 1
+                      }
+                    ],
+                    "direction": null,
+                    "format": "",
+                    "indent": 0,
+                    "type": "paragraph",
+                    "version": 1,
+                    "textFormat": 0,
+                    "textStyle": ""
+                  }
+                ],
+                "direction": null,
+                "format": "",
+                "indent": 0,
+                "type": "tablecell",
+                "version": 1,
+                "backgroundColor": null,
+                "colSpan": 1,
+                "headerState": 1,
+                "rowSpan": 1
+              }
+            ],
+            "direction": null,
+            "format": "",
+            "indent": 0,
+            "type": "tablerow",
+            "version": 1
+          },
+          {
+            "children": [
+              {
+                "children": [
+                  {
+                    "children": [
+                      {
+                        "type": "formula",
+                        "version": 1,
+                        "formula": "5+5",
+                        "result": "10",
+                        "formulaId": "a63bd921-3c0f-5fc3-9e00-cd86158fff2d",
+                        "name": null,
+                        "stale": false
+                      }
+                    ],
+                    "direction": null,
+                    "format": "",
+                    "indent": 0,
+                    "type": "paragraph",
+                    "version": 1,
+                    "textFormat": 0,
+                    "textStyle": ""
+                  }
+                ],
+                "direction": null,
+                "format": "",
+                "indent": 0,
+                "type": "tablecell",
+                "version": 1,
+                "backgroundColor": null,
+                "colSpan": 1,
+                "headerState": 0,
+                "rowSpan": 1
+              },
+              {
+                "children": [
+                  {
+                    "children": [
+                      {
+                        "type": "file-link",
+                        "version": 1,
+                        "noteId": null,
+                        "noteTitle": "Launch Plan",
+                        "isResolved": false,
+                        "headingText": null,
+                        "resolutionState": "unresolved",
+                        "displayText": null
+                      }
+                    ],
+                    "direction": null,
+                    "format": "",
+                    "indent": 0,
+                    "type": "paragraph",
+                    "version": 1,
+                    "textFormat": 0,
+                    "textStyle": ""
+                  }
+                ],
+                "direction": null,
+                "format": "",
+                "indent": 0,
+                "type": "tablecell",
+                "version": 1,
+                "backgroundColor": null,
+                "colSpan": 1,
+                "headerState": 0,
+                "rowSpan": 1
+              },
+              {
+                "children": [
+                  {
+                    "children": [
+                      {
+                        "type": "color-code",
+                        "version": 1,
+                        "value": "#00aa00"
+                      }
+                    ],
+                    "direction": null,
+                    "format": "",
+                    "indent": 0,
+                    "type": "paragraph",
+                    "version": 1,
+                    "textFormat": 0,
+                    "textStyle": ""
+                  }
+                ],
+                "direction": null,
+                "format": "",
+                "indent": 0,
+                "type": "tablecell",
+                "version": 1,
+                "backgroundColor": null,
+                "colSpan": 1,
+                "headerState": 0,
+                "rowSpan": 1
+              }
+            ],
+            "direction": null,
+            "format": "",
+            "indent": 0,
+            "type": "tablerow",
+            "version": 1
+          }
+        ],
+        "direction": null,
+        "format": "",
+        "indent": 0,
+        "type": "table",
+        "version": 1
+      },
+      {
+        "children": [
+          {
+            "children": [
+              {
+                "detail": 0,
+                "format": 0,
+                "mode": "normal",
+                "style": "",
+                "text": "Callout with ",
+                "type": "text",
+                "version": 1
+              },
+              {
+                "type": "formula",
+                "version": 1,
+                "formula": "6+6",
+                "result": "12",
+                "formulaId": "262e748f-75ed-51bd-8c4e-31ac7e3a0c8b",
+                "name": null,
+                "stale": false
+              },
+              {
+                "detail": 0,
+                "format": 0,
+                "mode": "normal",
+                "style": "",
+                "text": ", ",
+                "type": "text",
+                "version": 1
+              },
+              {
+                "type": "file-link",
+                "version": 1,
+                "noteId": null,
+                "noteTitle": "Launch Plan",
+                "isResolved": false,
+                "headingText": null,
+                "resolutionState": "unresolved",
+                "displayText": null
+              },
+              {
+                "detail": 0,
+                "format": 0,
+                "mode": "normal",
+                "style": "",
+                "text": ", ",
+                "type": "text",
+                "version": 1
+              },
+              {
+                "type": "color-code",
+                "version": 1,
+                "value": "#123456"
+              },
+              {
+                "detail": 0,
+                "format": 0,
+                "mode": "normal",
+                "style": "",
+                "text": " and a ",
+                "type": "text",
+                "version": 1
+              },
+              {
+                "children": [
+                  {
+                    "detail": 0,
+                    "format": 0,
+                    "mode": "normal",
+                    "style": "",
+                    "text": "link",
+                    "type": "text",
+                    "version": 1
+                  }
+                ],
+                "direction": null,
+                "format": "",
+                "indent": 0,
+                "type": "link",
+                "version": 1,
+                "rel": null,
+                "target": null,
+                "title": null,
+                "url": "https://example.com"
+              },
+              {
+                "detail": 0,
+                "format": 0,
+                "mode": "normal",
+                "style": "",
+                "text": ".",
+                "type": "text",
+                "version": 1
+              }
+            ],
+            "direction": null,
+            "format": "",
+            "indent": 0,
+            "type": "paragraph",
+            "version": 1,
+            "textFormat": 0,
+            "textStyle": ""
+          },
+          {
+            "children": [],
+            "direction": null,
+            "format": "",
+            "indent": 0,
+            "type": "paragraph",
+            "version": 1,
+            "textFormat": 0,
+            "textStyle": ""
+          },
+          {
+            "type": "image",
+            "version": 1,
+            "src": "assets/in-callout.png",
+            "altText": "Inside a callout"
+          }
+        ],
+        "direction": null,
+        "format": "",
+        "indent": 0,
+        "type": "callout",
+        "version": 1,
+        "calloutType": "info"
+      },
+      {
+        "children": [
+          {
+            "children": [
+              {
+                "children": [
+                  {
+                    "detail": 0,
+                    "format": 0,
+                    "mode": "normal",
+                    "style": "",
+                    "text": "Tab with ",
+                    "type": "text",
+                    "version": 1
+                  },
+                  {
+                    "type": "formula",
+                    "version": 1,
+                    "formula": "7+7",
+                    "result": "14",
+                    "formulaId": "91a69979-ef48-5073-90be-9abe2c94b1bd",
+                    "name": null,
+                    "stale": false
+                  },
+                  {
+                    "detail": 0,
+                    "format": 0,
+                    "mode": "normal",
+                    "style": "",
+                    "text": " and ",
+                    "type": "text",
+                    "version": 1
+                  },
+                  {
+                    "type": "file-link",
+                    "version": 1,
+                    "noteId": null,
+                    "noteTitle": "Launch Plan",
+                    "isResolved": false,
+                    "headingText": null,
+                    "resolutionState": "unresolved",
+                    "displayText": null
+                  },
+                  {
+                    "detail": 0,
+                    "format": 0,
+                    "mode": "normal",
+                    "style": "",
+                    "text": ".",
+                    "type": "text",
+                    "version": 1
+                  }
+                ],
+                "direction": null,
+                "format": "",
+                "indent": 0,
+                "type": "paragraph",
+                "version": 1,
+                "textFormat": 0,
+                "textStyle": ""
+              }
+            ],
+            "direction": null,
+            "format": "",
+            "indent": 0,
+            "type": "tab-panel",
+            "version": 1,
+            "label": "Inline"
+          },
+          {
+            "children": [
+              {
+                "type": "image",
+                "version": 1,
+                "src": "assets/in-tab.png",
+                "altText": "Inside a tab"
+              },
+              {
+                "type": "chart",
+                "version": 1,
+                "config": {
+                  "type": "bar",
+                  "data": [
+                    {
+                      "label": "A",
+                      "value": 2
+                    }
+                  ]
+                }
+              },
+              {
+                "type": "html-block",
+                "version": 1,
+                "rawHtml": "<p>html in a tab</p>",
+                "source": "fenced"
+              }
+            ],
+            "direction": null,
+            "format": "",
+            "indent": 0,
+            "type": "tab-panel",
+            "version": 1,
+            "label": "Blocks"
+          }
+        ],
+        "direction": null,
+        "format": "",
+        "indent": 0,
+        "type": "tab-group",
+        "version": 1,
+        "activeIndex": 0
+      }
+    ],
+    "direction": null,
+    "format": "",
+    "indent": 0,
+    "type": "root",
+    "version": 1
+  }
+}

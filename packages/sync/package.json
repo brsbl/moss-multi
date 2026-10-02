@@ -4,18 +4,25 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./converter": "./src/converter/index.ts"
   },
   "scripts": {
-    "typecheck": "tsc -p tsconfig.json"
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.converter.json"
   },
   "dependencies": {
+    "@lexical/headless": "0.48.0",
+    "@lexical/markdown": "0.48.0",
+    "@lexical/yjs": "0.48.0",
+    "lexical": "0.48.0",
     "partyserver": "0.5.8",
     "y-partyserver": "2.2.0",
     "yjs": "13.6.31"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "4.20260702.1",
-    "typescript": "5.9.3"
+    "@types/node": "24.13.3",
+    "typescript": "5.9.3",
+    "wrangler": "4.113.0"
   }
 }
