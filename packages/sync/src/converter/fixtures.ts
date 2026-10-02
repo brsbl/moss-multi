@@ -1,7 +1,9 @@
 // The family corpus (S-conv §5.4) shared by L1 (Node), L2 (workerd) and L3 (pristine parity). Vite inlines the
 // files, so the same list loads in workerd, which has no file system. onboarding-*.md are moss's own onboarding
 // notes at 762abb777 (packages/desktop/Moss/onboarding).
+import type { Transformer } from '@lexical/markdown';
 import type { NoteBodyImportOptions } from './index.ts';
+import scaleExclusions from './fixtures/scale.json';
 
 const markdown = import.meta.glob<string>('./fixtures/*.md', { query: '?raw', import: 'default', eager: true });
 const comments = import.meta.glob<Record<string, unknown>>('./fixtures/*.comments.json', { import: 'default', eager: true });
@@ -52,3 +54,18 @@ export const NOT_IDEMPOTENT: Record<string, string> = {
   'code-blocks': 'a fence inside a 4-backtick block exports inside a 3-backtick fence, which splits the block',
   entities: '&#160; imports as a no-break space between zero-width spaces, and both reach the export',
 };
+
+// The scale note (S-conv §5.4 Scale; SP2): every fixture without a comments sidecar, except scale.json's
+// exclusions, joined into one unit that repeats. scripts/measure-converter.mjs builds the same note.
+export const SCALE_EXCLUDED: Record<string, string> = scaleExclusions;
+export const SCALE_FIXTURES = FIXTURES.filter((f) => !f.options.comments && !(f.name in SCALE_EXCLUDED));
+export const SCALE_UNIT = SCALE_FIXTURES.map((f) => f.markdown).join('\n\n');
+export const scaleNote = (units: number): string => Array.from({ length: units }, () => SCALE_UNIT).join('\n\n');
+
+// One line per transformer, in list order, so a golden and moss's own list can pin the order (A§12).
+export function transformerSignature(transformer: Transformer): string {
+  const t = transformer as Transformer & Record<string, unknown>;
+  const source = (value: unknown) => (value instanceof RegExp ? value.source : '');
+  const dependencies = ((t.dependencies as { getType(): string }[] | undefined) ?? []).map((klass) => klass.getType());
+  return [t.type, t.tag ?? '', source(t.regExpStart ?? t.regExp), source(t.importRegExp), dependencies.join(',')].join(' ');
+}

@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // SP2 (ARCHITECTURE §22): bundles the converter into a Worker the way wrangler does (its own esbuild), runs it
-// under `wrangler dev --local`, and reports upload size, cold start, 2 MB import/export CPU, peak memory and
-// the Y.Doc state-to-markdown ratio over the family corpus. Prints a markdown table (and appends it to
-// $GITHUB_STEP_SUMMARY). Exits non-zero only when the converter fails to load or convert in workerd.
+// under `wrangler dev --local`, and reports upload size, cold start, import/export CPU of the scale note up to
+// 2 MB, memory growth and the Y.Doc state-to-markdown ratio over the family corpus. Prints a markdown table (and
+// appends it to $GITHUB_STEP_SUMMARY). Exits non-zero when the converter fails to load or convert in workerd,
+// including a note that imports to fewer blocks than its copies hold.
 import { spawn, spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -20,6 +21,9 @@ const WRANGLER = join(dirname(requireFromSync.resolve('wrangler/package.json')),
 const esbuild = createRequire(requireFromSync.resolve('wrangler'))('esbuild');
 const COLD_RUNS = 3;
 const CONVERSION_RUNS = 3;
+const SCALE_SIZES = [64 * 1024, 256 * 1024, 1024 * 1024, 2 * 1024 * 1024];
+// A Worker or Durable Object request's default CPU limit (`limits.cpu_ms` raises it).
+const CPU_LIMIT_MS = 30_000;
 
 const vendor = join(REPO, 'vendor/moss/packages');
 const ALIASES = [
@@ -191,31 +195,40 @@ async function timedRequest(server, path, init) {
 const median = (values) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)];
 const round = (value) => Math.round(value * 10) / 10;
 
+// The family corpus: every fixture without a comments sidecar, by name, as [name, markdown].
 function corpus() {
-  return readdirSync(FIXTURES)
-    .filter((file) => file.endsWith('.md') && !readdirSync(FIXTURES).includes(file.replace(/\.md$/, '.comments.json')))
-    .sort()
-    .map((file) => [file.replace(/\.md$/, ''), readFileSync(join(FIXTURES, file), 'utf8')]);
+  const files = readdirSync(FIXTURES);
+  return files
+    .filter((file) => file.endsWith('.md') && !files.includes(file.replace(/\.md$/, '.comments.json')))
+    .map((file) => [file.replace(/\.md$/, ''), readFileSync(join(FIXTURES, file), 'utf8')])
+    .sort(([a], [b]) => (a < b ? -1 : 1));
 }
 
-// The family corpus repeated to `bytes`.
-function corpusOfSize(fixtures, bytes) {
-  const joined = fixtures.map(([, text]) => text).join('\n\n');
-  let doc = '';
-  while (Buffer.byteLength(doc) < bytes) doc += `${joined}\n\n`;
-  return doc;
+// The scale note, as packages/sync/src/converter/fixtures.ts builds it: the corpus minus fixtures/scale.json's
+// exclusions, joined into one unit, repeated `units` times.
+function scaleUnit(fixtures) {
+  const excluded = JSON.parse(readFileSync(join(FIXTURES, 'scale.json'), 'utf8'));
+  return fixtures.filter(([name]) => !(name in excluded)).map(([, text]) => text).join('\n\n');
 }
+const scaleNote = (unit, units) => Array.from({ length: units }, () => unit).join('\n\n');
 
-// Import and export one document in a fresh worker, so a crash at one size leaves the others measurable.
-async function measureSize(markdown, port) {
+// Import and export one note in a fresh worker, so a crash at one size leaves the others measurable. The note
+// must import to `units` times the unit's top-level blocks: fewer means one copy swallowed others.
+async function measureSize(unit, units, runCount, port) {
   const server = await startWorker('converter', port);
   const runs = { import: [], export: [] };
+  const markdown = scaleNote(unit, units);
   try {
-    for (let run = 0; run < CONVERSION_RUNS; run += 1) {
-      runs.import.push(await timedRequest(server, '/import', { method: 'POST', body: markdown }));
+    const unitBlocks = JSON.parse((await timedRequest(server, '/import', { method: 'POST', body: unit })).body).blocks;
+    for (let run = 0; run < runCount; run += 1) {
+      const imported = await timedRequest(server, '/import', { method: 'POST', body: markdown });
+      const { blocks } = JSON.parse(imported.body);
+      if (blocks !== units * unitBlocks) throw new Error(`${blocks} top-level blocks, expected ${units} × ${unitBlocks}`);
+      runs.import.push({ ...imported, blocks });
       runs.export.push(await timedRequest(server, '/export'));
     }
     return {
+      blocks: runs.import[0].blocks,
       importCpuMs: round(median(runs.import.map((s) => s.cpuMs))),
       importWallMs: round(median(runs.import.map((s) => s.wallMs))),
       exportCpuMs: round(median(runs.export.map((s) => s.cpuMs))),
@@ -256,17 +269,21 @@ async function main() {
   }
 
   const fixtures = corpus();
+  const unit = scaleUnit(fixtures);
+  const unitBytes = Buffer.byteLength(unit);
+  const unitsFor = (bytes) => Math.ceil(bytes / unitBytes);
   const conversions = [];
-  for (const bytes of [64 * 1024, 512 * 1024, 1024 * 1024, 2 * 1024 * 1024]) {
-    const markdown = corpusOfSize(fixtures, bytes);
-    conversions.push({ bytes: Buffer.byteLength(markdown), ...(await measureSize(markdown, port)) });
+  for (const target of SCALE_SIZES) {
+    const units = unitsFor(target);
+    const runCount = target <= 256 * 1024 ? CONVERSION_RUNS : 1;
+    conversions.push({ bytes: Buffer.byteLength(scaleNote(unit, units)), units, runCount, ...(await measureSize(unit, units, runCount, port)) });
     port += 1;
   }
 
   const ratios = [];
   const server = await startWorker('converter', port);
   try {
-    for (const [name, text] of [...fixtures, ['512 KB corpus', corpusOfSize(fixtures, 512 * 1024)]]) {
+    for (const [name, text] of [...fixtures, ['scale note, 256 KB', scaleNote(unit, unitsFor(256 * 1024))]]) {
       const { body } = await timedRequest(server, '/state', { method: 'POST', body: text });
       const { markdownBytes, stateBytes } = JSON.parse(body);
       ratios.push({ name, markdownBytes, stateBytes, ratio: stateBytes / markdownBytes });
@@ -276,9 +293,11 @@ async function main() {
   }
 
   const coldOf = (name, key) => round(median(cold[name].map((sample) => sample[key])));
-  const families = ratios.filter((r) => !r.name.includes('corpus'));
+  const families = ratios.filter((r) => !r.name.startsWith('scale note'));
   const worst = families.reduce((a, b) => (b.ratio > a.ratio ? b : a));
   const kb = (bytes) => `${Math.round(bytes / 1024)} KB`;
+  const seconds = (ms) => `${round(ms / 1000)} s`;
+  const budget = (ms) => (ms > CPU_LIMIT_MS ? `, over the ${seconds(CPU_LIMIT_MS)} default CPU limit` : '');
   const lines = [
     '### Converter in workerd (SP2)',
     '',
@@ -290,8 +309,8 @@ async function main() {
     `| Warm request wall, median | ${coldOf('converter', 'warmMs')} ms |`,
     ...conversions.map((c) =>
       c.failed
-        ? `| ${kb(c.bytes)} import | FAILED: ${c.failed} |`
-        : `| ${kb(c.bytes)} import / export: workerd CPU, median of ${CONVERSION_RUNS} | ${c.importCpuMs} ms / ${c.exportCpuMs} ms (wall ${c.importWallMs} / ${c.exportWallMs} ms); peak RSS growth ${c.peakMb} MB |`,
+        ? `| ${kb(c.bytes)} scale note (${c.units} units) | FAILED: ${c.failed} |`
+        : `| ${kb(c.bytes)} scale note (${c.units} units, ${c.blocks} blocks) import / export: workerd CPU, ${c.runCount > 1 ? `median of ${c.runCount}` : 'one run'} | ${c.importCpuMs} ms / ${c.exportCpuMs} ms${budget(c.importCpuMs)} (wall ${c.importWallMs} / ${c.exportWallMs} ms); RSS growth during import ${c.peakMb} MB |`,
     ),
     `| State-to-markdown ratio r, worst family | ${worst.ratio.toFixed(2)} (${worst.name}) |`,
     '',
@@ -299,11 +318,16 @@ async function main() {
     '| --- | --- | --- | --- |',
     ...ratios.map((r) => `| ${r.name} | ${r.markdownBytes} | ${r.stateBytes} | ${r.ratio.toFixed(2)} |`),
     '',
-    'CPU (10 ms ticks) and RSS come from /proc for the workerd children of `wrangler dev --local` on this runner.',
+    `The scale note repeats one ${kb(unitBytes)} unit of the family corpus (packages/sync/src/converter/fixtures/scale.json lists what it leaves out). CPU (10 ms ticks) and RSS come from /proc for the workerd children of \`wrangler dev --local\`, which enforces no CPU limit; RSS growth stands in for isolate heap, which workerd does not report.`,
   ];
   const report = lines.join('\n');
   console.log(report);
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${report}\n`);
+  const failed = conversions.filter((c) => c.failed);
+  if (failed.length > 0) {
+    console.error(`measure-converter: ${failed.length} conversion(s) failed in workerd`);
+    process.exitCode = 1;
+  }
 }
 
 main().catch((error) => {

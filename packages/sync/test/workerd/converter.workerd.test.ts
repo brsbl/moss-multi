@@ -1,6 +1,7 @@
 // L2 (A§12; S-conv §5.1): the converter inside workerd gives the L1 results, and a 2 MB note converts.
+import { $getRoot, type LexicalEditor } from 'lexical';
 import { describe, expect, it } from 'vitest';
-import { FIXTURES, golden, stringify } from '../../src/converter/fixtures.ts';
+import { FIXTURES, golden, SCALE_UNIT, scaleNote, stringify } from '../../src/converter/fixtures.ts';
 
 declare const __MOSS_PRISTINE__: string;
 
@@ -37,13 +38,14 @@ describe('L2 converter in workerd @p:tech-1', () => {
     expect(exportMarkdown(editor)).toBe(golden(`${name}.export.md`));
   });
 
-  it('converts a 2 MB note', { timeout: 120_000 }, async () => {
+  // The SP2 step (scripts/measure-converter.mjs) converts and times the same note at 2 MB in workerd.
+  it('converts the mixed-family scale note with every block of every copy', { timeout: 120_000 }, async () => {
     const { exportMarkdown, importMarkdown } = await import('../../src/converter/index.ts');
-    const corpus = FIXTURES.filter((f) => !f.options.comments).map((f) => f.markdown).join('\n\n');
-    let note = '';
-    while (note.length < 2 * 1024 * 1024) note += `${corpus}\n\n`;
-    const exported = exportMarkdown(importMarkdown(note));
-    expect(exported.length).toBeGreaterThan(note.length / 2);
+    const blocks = (editor: LexicalEditor) => editor.getEditorState().read(() => $getRoot().getChildrenSize());
+    const unit = importMarkdown(SCALE_UNIT);
+    const editor = importMarkdown(scaleNote(8));
+    expect(blocks(editor)).toBe(8 * blocks(unit));
+    expect(blocks(importMarkdown(exportMarkdown(editor)))).toBe(8 * blocks(importMarkdown(exportMarkdown(unit))));
   });
 });
 

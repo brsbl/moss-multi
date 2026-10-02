@@ -5,8 +5,8 @@ import { createHeadlessEditor } from '@lexical/headless';
 import { $convertFromMarkdownString, $convertToMarkdownString, type Transformer } from '@lexical/markdown';
 import type { Klass, LexicalNode } from 'lexical';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { exportMarkdown, importMarkdown, type NoteBodyImportOptions } from '../../src/converter/index.ts';
-import { DEVIATING, FIXTURES, fixture, stringify } from '../../src/converter/fixtures.ts';
+import { exportMarkdown, importMarkdown, MARKDOWN_EDITOR_TRANSFORMERS, type NoteBodyImportOptions } from '../../src/converter/index.ts';
+import { DEVIATING, FIXTURES, fixture, stringify, transformerSignature } from '../../src/converter/fixtures.ts';
 
 declare const __MOSS_PRISTINE__: string;
 
@@ -63,6 +63,11 @@ function comparable(source: string, result: { tree: unknown; markdown: string })
 }
 
 describe('L3 parity with moss at the pin @p:tech-4', () => {
+  it('runs the same 45 transformers as moss, in the same order', () => {
+    expect(MARKDOWN_EDITOR_TRANSFORMERS).toHaveLength(45);
+    expect(MARKDOWN_EDITOR_TRANSFORMERS.map(transformerSignature)).toEqual(moss.MARKDOWN_EDITOR_TRANSFORMERS.map(transformerSignature));
+  });
+
   it.each(FIXTURES.filter((f) => !DEVIATING.has(f.name)).map((f) => [f.name, f] as const))('%s', (_name, { markdown, options }) => {
     const ours = comparable(markdown, oursRoundTrip(markdown, options));
     const pristine = comparable(markdown, pristineRoundTrip(markdown, options));

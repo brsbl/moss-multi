@@ -38,6 +38,17 @@ describe('runtime imports', () => {
     ].join('\n');
     expect(runtimeImports('x.ts', text).map((i) => i.spec)).toEqual(['./d', './e.css', './g']);
   });
+
+  it('keeps a class imported only to extend it, but not one only implemented', () => {
+    const text = [
+      "import { CodeNode } from '@lexical/code';",
+      "import { ChartView } from './nodes/ChartNode.view';",
+      "import { Shape } from './shape';",
+      'export class X extends CodeNode {}',
+      'export class Y extends ChartView<string> implements Shape {}',
+    ].join('\n');
+    expect(runtimeImports('x.ts', text).map((i) => i.spec)).toEqual(['@lexical/code', './nodes/ChartNode.view']);
+  });
 });
 
 describe('bundle boundary (A§4.4) @p:tech-4', () => {
@@ -50,6 +61,12 @@ describe('bundle boundary (A§4.4) @p:tech-4', () => {
 
   it('passes a closure of pure modules', () => {
     expect(checkBoundary({ repo: tree(base), entries }).violations).toEqual([]);
+  });
+
+  it('reports a missing entry instead of dropping it', () => {
+    const result = checkBoundary({ repo: tree(base), entries: [...entries, 'apps/web/src/server.ts'] });
+    expect(result.entries).toEqual(entries);
+    expect(result.missing).toEqual(['apps/web/src/server.ts']);
   });
 
   it.each([

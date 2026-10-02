@@ -1,6 +1,6 @@
 // SP2 measurement Worker (A§22): the converter alone in workerd, driven by scripts/measure-converter.mjs.
 import { createBinding, syncLexicalUpdateToYjs, type Provider } from '@lexical/yjs';
-import type { LexicalEditor } from 'lexical';
+import { $getRoot, type LexicalEditor } from 'lexical';
 import * as Y from 'yjs';
 import { $importNoteBody, createConverterEditor, exportMarkdown, importMarkdown } from '../src/converter/index.ts';
 
@@ -39,7 +39,8 @@ export default {
     if (pathname === '/import') {
       const markdown = await request.text();
       imported = importMarkdown(markdown);
-      return Response.json({ bytes: utf8(markdown) });
+      const blocks = imported.getEditorState().read(() => $getRoot().getChildrenSize());
+      return Response.json({ bytes: utf8(markdown), blocks });
     }
     if (pathname === '/export') {
       if (!imported) return new Response('import first', { status: 409 });
