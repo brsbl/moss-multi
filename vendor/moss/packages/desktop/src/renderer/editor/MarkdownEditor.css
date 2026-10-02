@@ -1,0 +1,1176 @@
+/* ported-from: packages/desktop/src/renderer/editor/MarkdownEditor.css @ 762abb777 */
+/* Nested list item - hides marker for list items that only contain nested lists */
+.moss-document-ink,
+.moss-checklist,
+.moss-checklist-item,
+.moss-table-cell,
+.moss-table-cell-header {
+  color: theme('colors.ink-default');
+}
+
+/* Slightly soften long-form document text in dark mode. The reading lane keeps
+   strong contrast while reducing the bright-on-dark bloom that can make letter
+   edges harder to resolve. UI chrome keeps the full ink-default value. */
+[data-theme='dark'] :is(
+  .moss-document-ink:not(.moss-checklist-item--checked),
+  .moss-checklist,
+  .moss-checklist-item:not(.moss-checklist-item--checked),
+  .moss-table-cell,
+  .moss-table-cell-header
+) {
+  color: rgb(var(--ink-default-rgb) / 0.94);
+}
+
+.moss-nested-listitem {
+  list-style-type: none;
+}
+
+.moss-nested-listitem::before,
+.moss-nested-listitem::after {
+  display: none !important;
+}
+
+/* When a checklist item becomes nested (contains only a nested list), hide its checkbox */
+.moss-checklist-item.moss-nested-listitem::before,
+.moss-checklist-item.moss-nested-listitem::after,
+.moss-checklist-item--checked.moss-nested-listitem::before,
+.moss-checklist-item--checked.moss-nested-listitem::after,
+.moss-checklist-item--unchecked.moss-nested-listitem::before,
+.moss-checklist-item--unchecked.moss-nested-listitem::after {
+  display: none !important;
+  content: none !important;
+}
+
+.moss-checklist {
+  @apply mb-2 list-none pl-2 text-body;
+}
+
+/* Nested checklists: reduce indent so sub-items sit closer */
+.moss-checklist-item > .moss-checklist {
+  @apply pl-0;
+}
+
+/* Match Lexical playground exactly */
+.moss-checklist-item {
+  position: relative;
+  margin-left: 0;
+  margin-right: 0.5em;
+  margin-bottom: 0.125em;
+  padding-left: 1.5em;
+  padding-right: 1.5em;
+  list-style-type: none;
+  outline: none;
+  display: block;
+  min-height: 1.5em;
+  @apply text-body;
+}
+
+.moss-checklist-item > * {
+  margin-left: 0.01em;
+}
+
+.moss-checklist-item::before {
+  content: '\200B';
+  width: 0.9em;
+  height: 0.9em;
+  /* Align checkbox with first line of text, not centered on total height */
+  /* With leading-normal (1.5) and text-base (16px), first line is ~24px */
+  /* Position at 0.3em to center 0.9em checkbox within first line */
+  top: 0.3em;
+  left: 0;
+  cursor: pointer;
+  display: block;
+  background-size: cover;
+  position: absolute;
+  border-radius: 2px;
+}
+
+.moss-checklist-item--unchecked::before {
+  border: 1px solid theme('colors.ink-faint');
+  background-color: theme('colors.surface-canvas');
+}
+
+.moss-checklist-item--checked {
+  @apply text-ink-muted line-through;
+  text-decoration-thickness: 1px;
+  text-decoration-skip-ink: auto;
+}
+
+.moss-strikethrough {
+  text-decoration-thickness: 1px;
+  text-decoration-skip-ink: auto;
+}
+
+[data-theme="dark"] .moss-checklist-item--checked,
+[data-theme="dark"] .moss-strikethrough {
+  text-decoration-color: color-mix(in srgb, currentColor 68%, transparent);
+}
+
+.moss-checklist-item--checked::before {
+  border: 1px solid theme('colors.accent-brand');
+  background-color: theme('colors.accent-brand');
+  background-repeat: no-repeat;
+}
+
+.moss-checklist-item--checked::after {
+  content: '';
+  cursor: pointer;
+  border-color: theme('colors.ink-inverse');
+  border-style: solid;
+  position: absolute;
+  display: block;
+  /* Center checkmark within the 0.9em checkbox box (starts at top: 0.3em) */
+  top: 0.475em;
+  width: 0.25em;
+  left: 0.325em;
+  height: 0.45em;
+  transform: rotate(45deg);
+  border-width: 0 0.125em 0.125em 0;
+}
+
+.moss-checklist-item:focus::before {
+  box-shadow: 0 0 0 2px theme('colors.accent-brand-hover');
+  border-radius: 2px;
+}
+
+/* Reading lane: keep prose slightly narrower than rich blocks/tables. */
+[data-moss-note-editor-root="true"] > :is(
+  p,
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6,
+  blockquote,
+  ul:not(.moss-checklist),
+  ol,
+  .moss-checklist,
+  hr
+) {
+  max-width: theme('maxWidth.canvas-prose');
+  margin-inline: auto;
+}
+
+/* Give block nodes a slightly wider centered lane than prose. */
+[data-moss-note-editor-root="true"] {
+  --moss-block-selection-color: theme('colors.accent-success');
+  --moss-block-gap-cursor-color: var(--moss-block-selection-color);
+  --moss-block-selection-stroke: theme('borderWidth.2');
+  --moss-divider-selection-ring-alpha: theme('opacity.30');
+}
+
+[data-theme="dark"] [data-moss-note-editor-root="true"] {
+  --moss-block-selection-color: theme('colors.accent-brand-pressed');
+  --moss-block-gap-cursor-color: var(--moss-block-selection-color);
+}
+
+[data-moss-note-editor-root="true"] [data-file-link-node-key],
+[data-moss-note-editor-root="true"] [data-formula-node-key],
+[data-moss-note-editor-root="true"] [data-color-node-key] {
+  margin-block: 2px;
+  vertical-align: baseline;
+}
+
+[data-formula-editing="true"] [data-formula-node-key],
+[data-formula-editing="true"][data-formula-node-key] {
+  outline: 1px dashed rgb(var(--accent-brand-rgb) / 0.4);
+  outline-offset: 1px;
+}
+
+.formula-edit-popover-anchor-line {
+  position: relative;
+  z-index: 1;
+  display: block;
+  border-radius: 9999px;
+  background-color: var(--border-strong);
+}
+
+.formula-edit-popover-anchor-line[data-side="top"],
+.formula-edit-popover-anchor-line[data-side="bottom"] {
+  width: 1px;
+  height: 8px;
+}
+
+.formula-edit-popover-anchor-line[data-side="top"] {
+  bottom: -8px;
+}
+
+.formula-edit-popover-anchor-line[data-side="bottom"] {
+  top: -8px;
+}
+
+.formula-edit-popover-anchor-line[data-side="left"],
+.formula-edit-popover-anchor-line[data-side="right"] {
+  width: 8px;
+  height: 1px;
+}
+
+.formula-edit-popover-anchor-line[data-side="left"] {
+  right: -8px;
+}
+
+.formula-edit-popover-anchor-line[data-side="right"] {
+  left: -8px;
+}
+
+[data-moss-note-editor-root="true"] > [data-block-decorator-key] {
+  width: 100%;
+  max-width: theme('maxWidth.canvas-blocks');
+  margin-inline: auto;
+}
+
+[data-moss-note-editor-root="true"] > [data-block-decorator-key] + [data-block-decorator-key] {
+  margin-top: 0;
+}
+
+.editor-block-selection-outline,
+.editor-block-selection-frame::after {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  border-radius: theme('borderRadius.lg');
+  box-shadow: inset 0 0 0 var(--moss-block-selection-stroke) var(--moss-block-selection-color);
+}
+
+.editor-block-selection-frame::after {
+  content: '';
+  opacity: 0;
+}
+
+.editor-block-selection-frame:focus-within::after,
+.editor-block-selection-frame.editor-block-wrapper-selected::after {
+  opacity: 1;
+}
+
+.editor-block-gap-cursor-line {
+  height: var(--moss-block-selection-stroke);
+  background: var(--moss-block-gap-cursor-color);
+}
+
+.editor-block-surface,
+.moss-table,
+.moss-tab-group {
+  overflow: hidden;
+  border-radius: theme('borderRadius.lg');
+  border: 1px solid theme('colors.border-subtle');
+}
+
+.editor-block-surface {
+  background: theme('colors.ink-inverse');
+}
+
+.moss-table,
+.moss-tab-group {
+  background: theme('colors.surface-canvas');
+}
+
+.editor-block-header,
+.moss-tab-bar {
+  --moss-tab-title-max: 36rem;
+  border-bottom: 1px solid theme('colors.border-subtle');
+  background: theme('colors.surface-linen');
+}
+
+/* Color picker (react-colorful) — fill the popover width and keep handles
+   inside the visible area. react-colorful's defaults are 200x200 with the
+   saturation/value square fixed at ~150px tall; we stretch to popover width
+   and let the square render proportionally taller so drag handles aren't
+   clipped by the popover's hidden overflow. */
+.moss-color-picker .react-colorful {
+  width: 100%;
+  height: auto;
+  gap: 6px;
+}
+
+.moss-color-picker .react-colorful__saturation {
+  width: 100%;
+  aspect-ratio: 5 / 3;
+  border-radius: 6px;
+  border-bottom: none;
+}
+
+.moss-color-picker .react-colorful__hue,
+.moss-color-picker .react-colorful__alpha {
+  width: 100%;
+  height: 10px;
+  border-radius: 6px;
+}
+
+.moss-color-picker .react-colorful__pointer {
+  width: 14px;
+  height: 14px;
+  border-width: 2px;
+}
+
+/* Typeahead dropdown — hide scrollbar, keep scroll functionality */
+.typeahead-scroll {
+  scrollbar-width: none;
+}
+.typeahead-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+.moss-html-preview-scroll {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.moss-html-preview-scroll::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+
+/* Table styles */
+.moss-table-scroll-shell {
+  @apply relative my-4;
+}
+
+.moss-table-scroll-viewport {
+  @apply w-full max-w-full overflow-x-auto focus-visible:outline-none;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.moss-table-scroll-viewport::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+
+.moss-table-scroll-viewport:focus-visible {
+  outline: theme('borderWidth.2') solid theme('colors.accent-brand-hover');
+  outline-offset: theme('borderWidth.2');
+}
+
+.moss-table-scroll-shell[data-table-overflow='true'][data-table-scroll-start='true'][data-table-scroll-end='false'] {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    theme('colors.surface-canvas') 0,
+    theme('colors.surface-canvas') calc(100% - theme('spacing.6')),
+    theme('colors.surface-transparent')
+  );
+  mask-image: linear-gradient(
+    to right,
+    theme('colors.surface-canvas') 0,
+    theme('colors.surface-canvas') calc(100% - theme('spacing.6')),
+    theme('colors.surface-transparent')
+  );
+}
+
+.moss-table-scroll-shell[data-table-overflow='true'][data-table-scroll-start='false'][data-table-scroll-end='false'] {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    theme('colors.surface-transparent'),
+    theme('colors.surface-canvas') theme('spacing.6'),
+    theme('colors.surface-canvas') calc(100% - theme('spacing.6')),
+    theme('colors.surface-transparent')
+  );
+  mask-image: linear-gradient(
+    to right,
+    theme('colors.surface-transparent'),
+    theme('colors.surface-canvas') theme('spacing.6'),
+    theme('colors.surface-canvas') calc(100% - theme('spacing.6')),
+    theme('colors.surface-transparent')
+  );
+}
+
+.moss-table-scroll-shell[data-table-overflow='true'][data-table-scroll-start='false'][data-table-scroll-end='true'] {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    theme('colors.surface-transparent'),
+    theme('colors.surface-canvas') theme('spacing.6'),
+    theme('colors.surface-canvas') 100%
+  );
+  mask-image: linear-gradient(
+    to right,
+    theme('colors.surface-transparent'),
+    theme('colors.surface-canvas') theme('spacing.6'),
+    theme('colors.surface-canvas') 100%
+  );
+}
+
+.moss-table-scroll-shell .moss-table {
+  margin-block: 0;
+}
+
+.moss-table {
+  @apply my-4 w-full table-fixed;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.moss-table-row {
+  /* Row borders handled by cells for border-separate mode */
+}
+
+.moss-table-cell {
+  @apply border-b border-r border-border-subtle px-2.5 py-2 text-left text-body;
+  vertical-align: top;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/* Remove right border from last cell in each row */
+.moss-table-row > .moss-table-cell:last-child,
+.moss-table-row > .moss-table-cell-header:last-child {
+  @apply border-r-0;
+}
+
+/* Remove bottom border from cells in the last row */
+.moss-table-row:last-child > .moss-table-cell,
+.moss-table-row:last-child > .moss-table-cell-header {
+  @apply border-b-0;
+}
+
+.moss-table-cell-header {
+  @apply border-b border-r border-border-subtle bg-surface-panel px-2.5 py-2 text-left text-body font-bold;
+  vertical-align: top;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.moss-table-cell [data-file-link-node-key],
+.moss-table-cell-header [data-file-link-node-key],
+.moss-table-cell [data-formula-node-key],
+.moss-table-cell-header [data-formula-node-key],
+.moss-table-cell [data-color-node-key],
+.moss-table-cell-header [data-color-node-key] {
+  max-width: 100%;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.moss-table-cell [data-file-link-node-key] > span,
+.moss-table-cell-header [data-file-link-node-key] > span,
+.moss-table-cell [data-formula-node-key] > span,
+.moss-table-cell-header [data-formula-node-key] > span,
+.moss-table-cell [data-color-node-key] > span,
+.moss-table-cell-header [data-color-node-key] > span {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+:is(.moss-table-cell, .moss-table-cell-header) span[style*="--formula-draft-chip"] {
+  max-width: 100%;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.moss-table-cell :is(a, code) {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.moss-table-cell-header :is(a, code) {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.moss-table-selection {
+  background-color: var(--selection-color, var(--selection-color-default));
+}
+
+/* Horizontal rule — generous vertical breathing room */
+[contenteditable] hr {
+  @apply my-6 border-t border-border-default;
+}
+
+[contenteditable] hr.moss-divider-selected {
+  border-color: var(--moss-block-gap-cursor-color);
+  border-radius: theme('borderRadius.full');
+  box-shadow: 0 0 0 var(--moss-block-selection-stroke) color-mix(in srgb, var(--moss-block-gap-cursor-color) var(--moss-divider-selection-ring-alpha), transparent);
+}
+
+/* Code block styles - container with header area like Image/Sketch nodes */
+.editor-code {
+  @apply relative my-6 block rounded-lg border border-border-default bg-surface-code font-mono text-code text-ink-default;
+  /* No scroll - code wraps or user expands manually */
+  overflow: visible;
+  /* Header area for language picker - padding creates space at top */
+  padding: 3.25rem 1rem 0.75rem 1rem;
+}
+
+/* Code block header bar - contains language picker */
+.editor-code::before {
+  content: '';
+  @apply absolute left-0 right-0 top-0 h-12 rounded-t-lg border-b border-border-subtle bg-surface-linen;
+  z-index: 1;
+}
+
+/* Toolbar container portaled into code block - must be above ::before */
+.editor-code > [data-code-toolbar] {
+  z-index: 10 !important;
+}
+
+/* Inline code that overlaps a comment/highlight drops every chip-shaping
+ * property so the annotation band paints as one continuous layer behind the
+ * monospace text. The code keeps its mono sizing while inheriting the
+ * annotation text color for contrast; display: contents removes the code box
+ * and Lexical's inner inline-code wrapper so no chip fill/shape can paint
+ * above the annotation. Handles both DOM nesting directions:
+ *   - annotation > code   (Lexical's default: MarkNode/highlight wraps code-formatted text)
+ *   - code > annotation   (defensive via :has() in case a future tree nests the other way)
+ * Block code (.editor-code, .moss-codeblock-code) is unaffected. */
+[data-theme="dark"] [data-moss-note-editor-root="true"] :is(.comment-mark, mark[data-color], span[style*="--color-highlight"]) code:not(.editor-code):not(.moss-codeblock-code),
+[data-theme="dark"] [data-moss-note-editor-root="true"] :is(.comment-mark, mark[data-color], span[style*="--color-highlight"]) code:not(.editor-code):not(.moss-codeblock-code) > span,
+[data-theme="dark"] [data-moss-note-editor-root="true"] code:not(.editor-code):not(.moss-codeblock-code):has(.comment-mark, mark[data-color], span[style*="--color-highlight"]) {
+  display: contents !important;
+  background: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  outline: none !important;
+  color: inherit !important;
+}
+
+[data-theme="dark"] [data-moss-note-editor-root="true"] :is(mark[data-color], span[style*="--color-highlight"]),
+[data-theme="dark"] .comment-mark {
+  border-radius: theme('borderRadius.sm');
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  padding-inline: 0.125rem;
+  /* <mark> UA stylesheet forces color: black; force inherit so dark-mode text
+     stays the surrounding paragraph ink (--ink-default). Light mode is
+     unaffected because the parent ink is dark either way. */
+  color: inherit;
+}
+
+/* Line numbers modifier */
+.moss-code-block--line-numbers {
+  @apply pl-12;
+  counter-reset: line;
+}
+
+.moss-code-block--line-numbers .editor-code-line::before {
+  @apply absolute left-0 w-8 pr-3 text-right text-ink-muted;
+  counter-increment: line;
+  content: counter(line);
+}
+
+/* Code block toolbar styles */
+.moss-code-toolbar {
+  @apply flex items-center gap-1;
+}
+
+.moss-code-toolbar-btn {
+  @apply flex h-6 w-6 items-center justify-center rounded border shadow-sm transition-colors;
+  border-color: var(--cb-border);
+  background: var(--cb-bg);
+  color: var(--cb-text);
+}
+
+.moss-code-toolbar-btn--active {
+  @apply text-accent-brand-pressed;
+  background-color: color-mix(in srgb, var(--accent-brand) 10%, transparent);
+}
+
+.moss-code-toolbar-language {
+  @apply w-auto gap-1 px-2 text-xs font-medium;
+}
+
+/* Prism.js syntax highlighting theme - Moss palette */
+.editor-code .token.comment,
+.editor-code .token.prolog,
+.editor-code .token.doctype,
+.editor-code .token.cdata {
+  @apply text-ink-muted italic;
+}
+
+.editor-code .token.punctuation {
+  @apply text-ink-default;
+}
+
+.editor-code .token.namespace {
+  opacity: 0.7;
+}
+
+.editor-code .token.property,
+.editor-code .token.tag,
+.editor-code .token.boolean,
+.editor-code .token.number,
+.editor-code .token.constant,
+.editor-code .token.symbol,
+.editor-code .token.deleted {
+  @apply text-accent-terracotta;
+}
+
+.editor-code .token.selector,
+.editor-code .token.attr-name,
+.editor-code .token.string,
+.editor-code .token.char,
+.editor-code .token.builtin,
+.editor-code .token.inserted {
+  @apply text-accent-brand-pressed;
+}
+
+.editor-code .token.operator,
+.editor-code .token.entity,
+.editor-code .token.url,
+.editor-code .language-css .token.string,
+.editor-code .style .token.string {
+  @apply text-ink-accent;
+}
+
+.editor-code .token.atrule,
+.editor-code .token.attr-value,
+.editor-code .token.keyword {
+  @apply font-medium text-accent-brand;
+}
+
+.editor-code .token.function,
+.editor-code .token.class-name {
+  @apply text-action-primary;
+}
+
+.editor-code .token.regex,
+.editor-code .token.important,
+.editor-code .token.variable {
+  @apply text-ink-accent;
+}
+
+.editor-code .token.important,
+.editor-code .token.bold {
+  @apply font-semibold;
+}
+
+/* Use attribute selector to avoid Tailwind's circular dependency detection */
+.editor-code .token[class~="italic"] {
+  font-style: italic;
+}
+
+/* CodeBlockNode styles - DecoratorNode with inline toolbar */
+.moss-codeblock {
+  /* Container styles handled by inline Tailwind */
+}
+
+.moss-codeblock .editor-block-surface {
+  border-color: var(--cb-border);
+  background: var(--cb-bg);
+}
+
+.moss-codeblock .editor-block-header {
+  border-bottom-color: var(--cb-border);
+}
+
+.moss-codeblock-textarea {
+  min-height: 6rem;
+  /* Tab size for consistent indentation */
+  tab-size: 2;
+}
+
+.moss-codeblock-pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+.moss-codeblock-code {
+  display: block;
+  counter-reset: line;
+}
+
+.moss-codeblock-line {
+  display: block;
+}
+
+.moss-codeblock-gutter {
+  width: 2.5em;
+  margin-right: 1em;
+  text-align: right;
+  color: theme('colors.ink-faint');
+}
+
+.moss-codeblock-linenum-edit {
+  @apply text-micro;
+  user-select: none;
+  /* Inherit the parent code body's absolute line-height (20px) so each
+     number row aligns with one code line regardless of font-size. */
+  line-height: inherit;
+}
+
+/* Syntax highlighting — driven by CSS custom properties set on .moss-codeblock */
+.moss-codeblock-code .token.comment,
+.moss-codeblock-code .token.prolog,
+.moss-codeblock-code .token.doctype,
+.moss-codeblock-code .token.cdata {
+  color: var(--cb-comment);
+  font-style: italic;
+}
+
+.moss-codeblock-code .token.punctuation {
+  color: var(--cb-punctuation);
+}
+
+.moss-codeblock-code .token.namespace {
+  opacity: 0.7;
+}
+
+.moss-codeblock-code .token.property,
+.moss-codeblock-code .token.tag,
+.moss-codeblock-code .token.boolean,
+.moss-codeblock-code .token.number,
+.moss-codeblock-code .token.constant,
+.moss-codeblock-code .token.symbol,
+.moss-codeblock-code .token.deleted {
+  color: var(--cb-property);
+}
+
+.moss-codeblock-code .token.selector,
+.moss-codeblock-code .token.attr-name,
+.moss-codeblock-code .token.string,
+.moss-codeblock-code .token.char,
+.moss-codeblock-code .token.builtin,
+.moss-codeblock-code .token.inserted {
+  color: var(--cb-string);
+}
+
+.moss-codeblock-code .token.operator,
+.moss-codeblock-code .token.entity,
+.moss-codeblock-code .token.url,
+.moss-codeblock-code .language-css .token.string,
+.moss-codeblock-code .style .token.string {
+  color: var(--cb-operator);
+}
+
+.moss-codeblock-code .token.atrule,
+.moss-codeblock-code .token.attr-value,
+.moss-codeblock-code .token.keyword {
+  color: var(--cb-keyword);
+  font-weight: 500;
+}
+
+.moss-codeblock-code .token.function,
+.moss-codeblock-code .token.class-name {
+  color: var(--cb-function);
+}
+
+.moss-codeblock-code .token.regex,
+.moss-codeblock-code .token.important,
+.moss-codeblock-code .token.variable {
+  color: var(--cb-variable);
+}
+
+.moss-codeblock-code .token.important,
+.moss-codeblock-code .token.bold {
+  font-weight: 600;
+}
+
+/* Collapsible heading styles */
+.heading-collapsed-content {
+  display: none !important;
+}
+
+/* Semi-collapsed: hide only checked checklist items */
+.heading-semi-collapsed-checked {
+  display: none !important;
+}
+
+/* "Completed" label via pseudo-element */
+.heading-semi-collapsed-list {
+  position: relative;
+  margin-top: -0.375rem !important;
+  margin-bottom: 0 !important;
+  padding-top: 0;
+  padding-bottom: 0 !important;
+}
+
+.heading-semi-collapsed-list::before {
+  content: '› Completed';
+  display: block;
+  margin-left: -0.25em;
+  padding-top: 0;
+  margin-bottom: 0.125em;
+  color: theme('colors.accent-brand');
+  @apply text-detail;
+  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+/* Smooth animation for chevron rotation is handled in the component */
+/* This class ensures the chevron gutter area has proper spacing */
+.collapsible-heading-chevron {
+  pointer-events: auto;
+}
+
+/* Context selection highlight - uses CSS custom property flag instead of inline background-color.
+   This ensures the styling is NOT serialized to markdown. */
+[style*="--context-selection"] {
+  background-color: theme('colors.surface-panel');
+  padding-block: 2px;
+  margin-block: -2px;
+}
+
+/* Temporary highlight while the link popover is open - persists when editor loses focus */
+[style*="--link-selection"] {
+  background-color: theme('colors.border-subtle');
+  padding-block: 2px;
+  margin-block: -2px;
+}
+
+/* Comment mark — default fallback */
+.comment-mark { @apply bg-surface-panel; outline: none; border: none; }
+
+/* Color variants (set by CommentPlugin mutation listener) */
+/* Only color slots 0 (user), 3 (agent), 4 (external) are assigned today. */
+.comment-mark[data-comment-color="0"] { background-color: var(--highlight-comment-user-light); }
+.comment-mark[data-comment-color="3"] { background-color: theme('colors.highlight-chalk-green-light'); }
+.comment-mark[data-comment-color="4"] { background-color: theme('colors.highlight-chalk-grey-light'); }
+
+/* Active popover state matches gutter hover: keep the overlay fill unchanged. */
+.comment-mark.comment-highlight-active { text-decoration: underline; text-underline-offset: 2px; }
+.comment-mark.comment-highlight-active[data-comment-color="0"] { text-decoration-color: var(--highlight-comment-user); }
+.comment-mark.comment-highlight-active[data-comment-color="3"] { text-decoration-color: theme('colors.highlight-chalk-green'); }
+.comment-mark.comment-highlight-active[data-comment-color="4"] { text-decoration-color: theme('colors.highlight-chalk-grey'); }
+
+/* Dark-mode gutter icon strokes use the darker chalk pair so the outline
+   reads distinctly against the lighter chip fill. Token-driven; no inline hex. */
+[data-theme="dark"] .comment-gutter-icon[data-comment-color="0"] {
+  color: var(--highlight-comment-user);
+  fill: var(--highlight-comment-user-light);
+}
+[data-theme="dark"] .comment-gutter-icon[data-comment-color="3"] { color: theme('colors.highlight-chalk-green'); }
+[data-theme="dark"] .comment-gutter-icon[data-comment-color="4"] { color: theme('colors.highlight-chalk-grey'); }
+
+[data-theme="dark"] .comment-gutter-icon[data-comment-color="3"] path {
+  stroke: color-mix(in srgb, theme('colors.highlight-chalk-green') 30%, theme('colors.ink-inverse'));
+}
+
+/* Dark-mode chip backgrounds are inherited from the light-mode rules above —
+   `theme('colors.highlight-chalk-*-light')` resolves to the dark CSS variable
+   automatically. Active/open state does not override that fill. */
+
+/* Editor highlight marks (mark[data-color]) flatten to a single highlight color
+   in both modes. Legacy multi-color highlight names (green/orange/blue/red/purple)
+   are kept as variable aliases in tailwind.css so existing notes still render,
+   but they all resolve to highlight-yellow. */
+[data-theme="dark"] [data-moss-note-editor-root="true"] :is(mark[data-color], span[style*="--color-highlight"]) {
+  background-color: theme('colors.highlight-yellow') !important;
+}
+
+/* Hover underline (gutter icon hover) — established chalk color per comment source. */
+.comment-mark.comment-underline-hover { text-decoration: underline; text-underline-offset: 2px; }
+.comment-mark.comment-underline-hover[data-comment-color="0"] { text-decoration-color: theme('colors.highlight-chalk-yellow'); }
+.comment-mark.comment-underline-hover[data-comment-color="3"] { text-decoration-color: theme('colors.highlight-chalk-green'); }
+.comment-mark.comment-underline-hover[data-comment-color="4"] { text-decoration-color: theme('colors.highlight-chalk-grey'); }
+.comment-mark.comment-underline-hover[data-comment-hover-color="0"] { text-decoration-color: theme('colors.highlight-chalk-yellow'); }
+.comment-mark.comment-underline-hover[data-comment-hover-color="3"] { text-decoration-color: theme('colors.highlight-chalk-green'); }
+.comment-mark.comment-underline-hover[data-comment-hover-color="4"] { text-decoration-color: theme('colors.highlight-chalk-grey'); }
+.comment-gutter-hover { background-color: theme('colors.surface-paper'); }
+.comment-mark.comment-mark-filter-hidden {
+  background-color: transparent !important;
+  text-decoration: none !important;
+}
+
+/* Dark mode: lift the underline toward ink-default so it reads on the chip.
+   Per-type hue is preserved by mixing the chalk-{color} stroke with ink at
+   50/50 — same family as the gutter icon stroke, just brighter. */
+[data-theme="dark"] .comment-mark.comment-highlight-active[data-comment-color="0"] {
+  text-decoration-color: color-mix(in srgb, var(--highlight-comment-user) 50%, theme('colors.ink-default'));
+}
+[data-theme="dark"] .comment-mark.comment-underline-hover[data-comment-color="0"],
+[data-theme="dark"] .comment-mark.comment-underline-hover[data-comment-hover-color="0"] {
+  text-decoration-color: color-mix(in srgb, theme('colors.highlight-chalk-yellow') 50%, theme('colors.ink-default'));
+}
+[data-theme="dark"] .comment-mark.comment-highlight-active[data-comment-color="3"],
+[data-theme="dark"] .comment-mark.comment-underline-hover[data-comment-color="3"],
+[data-theme="dark"] .comment-mark.comment-underline-hover[data-comment-hover-color="3"] {
+  text-decoration-color: color-mix(in srgb, theme('colors.highlight-chalk-green') 50%, theme('colors.ink-default'));
+}
+[data-theme="dark"] .comment-mark.comment-highlight-active[data-comment-color="4"],
+[data-theme="dark"] .comment-mark.comment-underline-hover[data-comment-color="4"],
+[data-theme="dark"] .comment-mark.comment-underline-hover[data-comment-hover-color="4"] {
+  text-decoration-color: color-mix(in srgb, theme('colors.highlight-chalk-grey') 50%, theme('colors.ink-default'));
+}
+
+/* Highlight decorator node when gutter icon is hovered — show gap cursors */
+.comment-decorator-hover .editor-block-gap-cursor-line {
+  opacity: 1 !important;
+  background-color: theme('colors.accent-brand') !important;
+}
+
+/* When a comment is active on a decorator node, show gap cursors in comment color */
+.comment-highlight-active .editor-block-gap-cursor-line {
+  opacity: 1 !important;
+  background-color: var(--comment-color, theme('colors.accent-brand')) !important;
+}
+
+html[data-moss-comment-ui-open="true"] [data-block-gap-cursor],
+html[data-moss-comment-ui-open="true"] .editor-block-gap-cursor,
+html[data-moss-comment-ui-open="true"] .editor-element-block-gap-cursor {
+  pointer-events: none;
+}
+
+html[data-moss-comment-ui-open="true"] .editor-block-gap-cursor-line {
+  opacity: 0 !important;
+}
+
+html[data-moss-comment-ui-open="true"] .comment-highlight-active .editor-block-gap-cursor-line {
+  opacity: 1 !important;
+  background-color: var(--comment-color, theme('colors.accent-brand')) !important;
+}
+
+/* Highlight the selected text range while the annotation input popover is open */
+::highlight(comment-selection) {
+  background-color: theme('colors.surface-note-hover');
+}
+
+/* Neutralize the global moss-green focus outline inside the comment popover.
+   Interactive controls carry their own subtle ink focus-visible rings; this
+   only keeps keyboard focus on the popover container and any control without an
+   explicit outline reset from glowing green — neutral ink instead. */
+.moss-comment-popover:focus,
+.moss-comment-popover:focus-visible,
+.moss-comment-popover :focus,
+.moss-comment-popover :focus-visible {
+  outline-color: rgb(var(--ink-default-rgb) / 0.25);
+}
+
+.moss-comment-popover [contenteditable="true"]:focus,
+.moss-comment-popover [contenteditable="true"]:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+/* Highlight the selected text range while the link input is open */
+::highlight(link-selection) {
+  background-color: theme('colors.surface-panel');
+}
+
+/* Indent first-level ordered/unordered lists so items sit inset from headings */
+[data-lexical-editor] > ul:not(.moss-checklist) {
+  padding-left: 1.5rem;
+}
+
+[data-lexical-editor] > ol {
+  padding-left: 1.25rem;
+}
+
+/* Add breathing room between sections */
+[data-lexical-editor] > ul + h1,
+[data-lexical-editor] > ul + h2,
+[data-lexical-editor] > ul + h3,
+[data-lexical-editor] > ul + h4,
+[data-lexical-editor] > ol + h1,
+[data-lexical-editor] > ol + h2,
+[data-lexical-editor] > ol + h3,
+[data-lexical-editor] > ol + h4 {
+  margin-top: 0.75rem;
+}
+
+[data-lexical-editor] > p + ul,
+[data-lexical-editor] > p + ol,
+[data-lexical-editor] > ul + p,
+[data-lexical-editor] > ol + p {
+  margin-top: 0.75rem;
+}
+
+/* Adjacent lists of different types: remove vertical gap so they appear seamless.
+   !important is needed to override Tailwind utility classes (mb-2 from theme) which
+   can win in cascade layer ordering. */
+[data-lexical-editor] > ul + ul,
+[data-lexical-editor] > ul + ol,
+[data-lexical-editor] > ol + ul,
+[data-lexical-editor] > ol + ol {
+  margin-top: 0 !important;
+}
+
+[data-lexical-editor] > ul:has(+ ul),
+[data-lexical-editor] > ul:has(+ ol),
+[data-lexical-editor] > ol:has(+ ul),
+[data-lexical-editor] > ol:has(+ ol) {
+  margin-bottom: 0 !important;
+}
+
+/* Nested lists inside list items should not add extra bottom margin.
+   Without this, Lexical's list nesting adds mb-2 to the inner <ul>/<ol>,
+   causing the content below the list to shift down on indent/outdent. */
+[data-lexical-editor] li > ul,
+[data-lexical-editor] li > ol {
+  margin-bottom: 0;
+}
+
+/* ==========================================================================
+   Agent loading skeleton
+   ========================================================================== */
+
+/* Content skeleton: white overlay for agent streaming.
+   Empty/hydration skeleton overrides below make it visible as grey bars. */
+
+.agent-skeleton-line {
+  background-color: var(--surface-raised-card);
+  height: 1.65rem;
+  border-radius: 0;
+  width: 100%;
+  flex-shrink: 0;
+  opacity: 0;
+  animation: loading-enter 20ms ease-out forwards,
+             loading-pulse 1.2s ease-in-out 20ms infinite;
+}
+
+/* Empty / hydration skeleton: visible light-grey rounded bars */
+.agent-skeleton-line--empty {
+  background-color: var(--ink-fn-rgba000008);
+  border-radius: 0.375rem;
+  animation: loading-enter-empty 80ms ease-out forwards,
+             loading-pulse-empty 1.2s ease-in-out 80ms infinite;
+}
+
+.agent-skeleton {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+  padding-top: 0.5rem;
+  pointer-events: none;
+}
+
+.agent-skeleton--content {
+  gap: 0;
+}
+
+.agent-skeleton--empty {
+  position: relative;
+  inset: auto;
+  gap: 0.5rem;
+  width: 100%;
+  max-width: theme('maxWidth.canvas-prose');
+  margin-left: auto;
+  margin-right: auto;
+  padding-top: 0.75rem;
+}
+
+@keyframes loading-enter {
+  from { opacity: 0; }
+  to   { opacity: 0.3; }
+}
+
+@keyframes loading-pulse {
+  0%, 100% { opacity: 0.3; }
+  50%      { opacity: 0.13; }
+}
+
+@keyframes loading-enter-empty {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes loading-pulse-empty {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.4; }
+}
+
+
+/* In-note search highlight styles (CSS Custom Highlights API).
+   Background only — text color is not overridden in either theme. */
+::highlight(search-matches) {
+  background-color: theme('colors.highlight-search');
+}
+
+::highlight(search-current) {
+  background-color: theme('colors.highlight-search-active');
+}
+
+/* ── Callout and Tab Group (ElementNode) ────────────────── */
+
+.moss-callout-shell {
+  margin: 1.5rem 0;
+  position: relative;
+  box-sizing: border-box;
+  border-radius: theme('borderRadius.lg');
+  padding: 0.125rem;
+}
+
+.moss-callout {
+  min-height: 4rem;
+}
+
+.moss-callout-header {
+  user-select: none;
+  min-height: 2.5rem;
+}
+
+.moss-callout-accent {
+  pointer-events: none;
+}
+
+.moss-callout > :not(.moss-callout-accent):not(.moss-callout-header) {
+  margin-left: theme('spacing.6');
+  margin-right: theme('spacing.4');
+}
+
+.moss-callout > .moss-callout-header + :not(.moss-callout-accent):not(.moss-callout-header) {
+  margin-top: theme('spacing.2');
+}
+
+.moss-callout > :last-child:not(.moss-callout-accent):not(.moss-callout-header) {
+  margin-bottom: theme('spacing.3');
+}
+
+.moss-tab-group-shell {
+  margin: 1.5rem 0;
+  min-height: 6rem;
+  position: relative;
+  box-sizing: border-box;
+  border-radius: theme('borderRadius.lg');
+  padding: 0.125rem;
+}
+
+.moss-tab-group {
+  min-height: 6rem;
+  width: 100%;
+}
+
+.moss-tab-bar {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.25rem;
+  padding: 0.25rem theme('spacing.canvas-surface-pad') 0;
+  border-radius: 0.5rem 0.5rem 0 0;
+  user-select: none;
+  /* Reserve height before React portal fills in tab buttons */
+  min-height: 2.25rem;
+  overflow-x: auto;
+}
+
+.moss-tab-bar input {
+  user-select: text;
+}
+
+/* TabPanelNode elements are direct children of .moss-tab-group */
+.moss-tab-group > [data-tab-panel] {
+  display: none;
+  padding:
+    theme('spacing.canvas-body-top')
+    theme('spacing.canvas-bar-inset')
+    theme('spacing.canvas-bar-inset');
+}
+
+.moss-tab-group > [data-tab-panel][data-active] {
+  display: block;
+}

@@ -38,10 +38,11 @@ patches/y-partyserver@2.2.0.patch                      # the only dependency pat
 vendor/
   moss/                       # mirror of moss@762abb777, same relative layout, so relative imports resolve unchanged
     PORTED.json               # per file: path, pin, upstreamSha256, mode verbatim|patched|substituted|extracted, patch
-    logos/moss-sprout-icon.png
+    logos/moss-sprout-icon.png  tsconfig.base.json (extended by shared's tsconfig)
     packages/shared/{src/**, tailwind.config.ts, tsconfig.json}
     packages/desktop/src/{renderer/**, common/**, types/electron-api.d.ts, renderer-env.d.ts}
-  lexical-react/              # LexicalCollaborationPlugin.tsx + useYjsCollaboration.tsx @ @lexical/react 0.48.0
+    .ladle/**  packages/desktop/stories/**   # unused by the app; `pristine` builds the Ladle oracle from them (§22 OA1)
+  lexical-react/              # LexicalCollaborationPlugin.tsx + shared/useYjsCollaboration.tsx @ @lexical/react 0.48.0
   patches/{moss,lexical-react}/<path>.patch
 apps/web/                     # TanStack Start app + Worker
   wrangler.jsonc  vite.config.ts  tailwind.config.ts  postcss.config.cjs  drizzle.config.ts  drizzle/*.sql
