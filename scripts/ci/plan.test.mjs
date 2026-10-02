@@ -4,7 +4,7 @@ import { ciOk, computePlan, isDocsOnlyPath, toOutputs, traceMilestoneFor } from 
 const SHA_A = 'a'.repeat(40);
 const SHA_B = 'b'.repeat(40);
 const BOTH = ['chromium', 'webkit'];
-const NOTHING = { checks: false, build: false, browsers: [] };
+const NOTHING = { checks: false, build: false, browsers: [], macos: false };
 
 function push(branch, changedFiles = ['scripts/ci/plan.mjs'], extra = {}) {
   return computePlan({
@@ -90,6 +90,12 @@ describe('pull_request', () => {
     expect(pr({ changedFiles: ['docs/METHOD.md'] })).toMatchObject(NOTHING);
   });
 
+  it('runs the @macos legs only at a milestone gate', () => {
+    expect(pr({ head: 'm1', base: 'main' }).macos).toBe(true);
+    expect(pr({ head: 'm1', base: 'main', draft: true }).macos).toBe(false);
+    expect(pr({ head: 't/T1.2', base: 'm1' }).macos).toBe(false);
+  });
+
   it('gates the exiting milestone on its ready m<k> → main PR', () => {
     expect(pr({ head: 'm1', base: 'main' }).traceMilestone).toBe(1);
     expect(pr({ head: 'm1', base: 'main', draft: true }).traceMilestone).toBe(0);
@@ -120,6 +126,12 @@ describe('workflow_dispatch', () => {
     expect(dispatch({})).toMatchObject({ checks: true, build: true, browsers: BOTH, grep: '', repeat: 1 });
   });
 
+  it('adds the macOS lane only to a journey dispatch that asks for it', () => {
+    expect(dispatch({}).macos).toBe(false);
+    expect(dispatch({ macos: 'true', browsers: 'webkit' })).toMatchObject({ build: true, browsers: ['webkit'], macos: true });
+    expect(dispatch({ lane: 'checks', macos: true }).macos).toBe(false);
+  });
+
   it('carries the branch trace gate', () => {
     expect(dispatch({ lane: 'checks' }, 't/T2.1').traceMilestone).toBe(1);
   });
@@ -131,6 +143,7 @@ describe('workflow_dispatch', () => {
     expect(() => dispatch({ browsers: 'firefox' })).toThrow(/browsers/);
     expect(() => dispatch({ lane: 'nightly' })).toThrow(/lane/);
     expect(() => dispatch({ grep: 'a\nb' })).toThrow(/grep/);
+    expect(() => dispatch({ macos: 'yes' })).toThrow(/macos/);
   });
 });
 
@@ -161,6 +174,7 @@ describe('toOutputs', () => {
     expect(lines).toContain('build=true');
     expect(lines).toContain('e2e=true');
     expect(lines).toContain('browsers=["webkit"]');
+    expect(lines).toContain('macos=false');
     expect(lines).toContain('grep=j01');
     expect(lines).toContain('repeat=1');
     expect(lines).toContain('trace_milestone=0');
@@ -180,6 +194,7 @@ describe('ciOk', () => {
       checks: { result: results.checks ?? 'skipped' },
       build: { result: results.build ?? 'skipped' },
       e2e: { result: results.e2e ?? 'skipped' },
+      macos: { result: results.macos ?? 'skipped' },
     };
   }
 
@@ -200,6 +215,12 @@ describe('ciOk', () => {
   it('fails when a planned job was skipped or cancelled', () => {
     expect(ciOk(needs(everything, { checks: 'success', build: 'failure', e2e: 'skipped' })).problems).toHaveLength(2);
     expect(ciOk(needs(everything, { checks: 'cancelled', build: 'success', e2e: 'success' })).ok).toBe(false);
+  });
+
+  it('requires the macOS lane when planned', () => {
+    const gate = { ...everything, macos: true };
+    expect(ciOk(needs(gate, { checks: 'success', build: 'success', e2e: 'success' })).problems).toEqual(['macos: skipped (planned to run)']);
+    expect(ciOk(needs(gate, { checks: 'success', build: 'success', e2e: 'success', macos: 'success' })).ok).toBe(true);
   });
 
   it('fails when the plan itself failed', () => {

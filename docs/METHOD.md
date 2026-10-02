@@ -16,13 +16,14 @@ Read this with PRODUCT.md, your BUILDPLAN entry and the A§ it cites, before wri
 
 - `scripts/ci/plan.mjs` picks the lanes; `ci-ok` is the one required status and fails when any planned job did not succeed.
 - A push to any branch runs checks and build. A docs-only change (`docs/**`, `*.md` except `BUILDPLAN.md` and `e2e/`) runs nothing. Draft PR: checks. Ready PR: checks, build, e2e in both engines (`vars.CI_DEGRADED=true` keeps Chromium only unless the PR has label `e2e-full`).
-- Dispatch inputs: `lane` (auto, checks, e2e, full; auto means e2e when `grep` is set, else full), `grep`, `browsers` (both, chromium, webkit), `repeat_each` (1-10).
+- Dispatch inputs: `lane` (auto, checks, e2e, full; auto means e2e when `grep` is set, else full), `grep`, `browsers` (both, chromium, webkit), `repeat_each` (1-10), `macos` (also run the `@macos` legs in macOS WebKit, billed at 10x; a ready `m<k>` → `main` PR always does).
 - A newer push cancels the branch's running push run. Let a red run you need as evidence finish before pushing the fix.
 - Tag every leg `@p:<id>` with the BUILDPLAN trace rows it proves. Branches of milestone k gate the rows due by M(k-1); the ready `m<k>` → `main` PR gates Mk. A tag naming no row always fails.
 - `lexical`, every `@lexical/*` and `yjs` must each resolve to one version equal to its pnpm override. Overrides have no wildcard, so a new `@lexical/*` package needs its own override line. [L§4.2]
 - Repo lint rules: no raw colors in `packages/ui`; no `.first()`/`.last()`/`.nth()` on a `contenteditable` locator in `e2e`; no `HISTORIC_TAG` or `'historic'` in apps, packages or vendor (inline disables are ignored under `vendor/`).
 - `node scripts/ci/minutes.mjs` prints the month's billable minutes against the 3,000-minute budget (OA2).
 - The e2e job runs in the `mcr.microsoft.com/playwright` image whose tag equals `@playwright/test` in `e2e/package.json` (bump both together): `playwright install --with-deps webkit` once spent 19 min on a throttled apt mirror. Each engine boots the stack on the build job's bytes and runs `--project=selftest-<engine> --project=<engine>`.
+- SP15 (T0.9a): Linux WebKit never navigates history on a bare Backspace (WebKit's Unix editing behavior), so the j02 Backspace leg cannot fail on the e2e engines. Tag such legs `@macos`; the `macos` job runs them in macOS WebKit.
 - Playwright never applies `--grep` to dependency projects, and a top-level project with no matching tests drops its dependencies. So the selftests always run before journeys, and a grep matching nothing fails with "No tests found".
 
 ## Build and Worker
