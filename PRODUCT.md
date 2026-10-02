@@ -1,0 +1,88 @@
+# moss-multi — product & behavior decisions
+
+Multiplayer moss: a collaborative web app that is indistinguishable from moss desktop on screen and in editor behavior, running on a cloud backend, built strictly as the working reference for migrating real moss to multiplayer — it never graduates into the production product (no branding, domain, or production launch of its own). Moss contributes 100% of the UI — port it, never reimplement it. For surfaces moss doesn't have (login, share dialog, history panel, notifications inbox, connection banner, presence), take glyphdown's UI designs as the reference but build them from moss's design system — extending the moss DS with any missing components/tokens first, then composing those primitives. Everything below is an owner decision; changing one requires the owner.
+
+## Collaboration
+
+- Two clients edit one note live in two windows — two people, or the same person in two windows; each client is a "user". Edits appear as they type, neither ever loses work, and the windows converge identically.
+- Everyone in a doc is visible without typing, in two ways: (1) a face pile in the note's top nav (Google Docs-style), and (2) live multiplayer text cursors/selections in the note, each in a rotating per-client color tied to that client's face-pile entry, with a name label that shows from the cursor while they type. Moss has no presence UI today, so this design is based on glyphdown plus the owner's notes, tracking movement within \~1s and clearing promptly on leave or drop. Colors are distinct between present peers and stable while you stay in the doc.
+- Cmd+Z undoes only your own edits; programmatic writes create no undo step.
+- A brief disconnection buffers your edits and resyncs them losslessly, behind a connection indicator that reflects the *real* socket state. Long-offline local-first is out of scope.
+- A note's title is shared state: a rename reaches the other person's title field, sidebar row, and breadcrumb within \~5s with no reload; concurrent renames merge; a title someone is mid-editing is never clobbered (the no-clobber rule all note content has — called out for titles because they also project into filename, sidebar, and breadcrumb).
+- An existing doc always reopens showing its content, even after long idle; a new note opens with an editable title and one empty paragraph.
+
+## Notes & workspace
+
+- Docs are files: filename-canonical naming, H1 is content, `[[wiki links]]` resolve by filename stem.
+- Every moss node family works as real styled nodes (tables, callouts, charts, sketch, HTML, tabs, images…). Electron-only surfaces get web-adapted equivalents (moss's "Open in New Window" → a browser tab, in-app browser/web embeds → sandboxed iframes, native print-to-PDF → browser print, desktop HTML-preview screenshots → live sandboxed iframes).
+- Moss content extensions stay in the markdown as content. What moss desktop keeps beside the file (comments sidecar, note metadata/layout sidecars, assets) lives in the shared doc or server storage here — comments/suggestions as CRDT data in the doc, note metadata in server records, assets in folder-scoped storage referenced by relative path — so every exported/pulled `.md` is clean.
+- Notes live in vaults with folders; folder create/rename/delete (including delete-to-trash of a subtree) works from the web UI. Vault creation and switching are web UI affordances too: port glyphdown's vault switcher with its inline "New vault" row (moss's closest current equivalent is switching which workspace location the app points to).
+- Deleting a note is trash: soft-deleted and restorable for 30 days (what moss currently does; the shipped notice is the contract). Hard deletion with storage reclamation is deferred — not needed for the reference. A fresh load of a deleted doc is a 404; a client holding it open when deletion lands sees every editable surface terminally disable in place — no zombie editing.
+- A title field never silently discards typed input (owner ruling, 2026-09-02, "we should not allow typing before a field binds — P0 eng practice"). An unbound title (a freshly created note whose title has not yet bound to the note it will title) is not a typeable target: keystrokes typed into it are never absorbed-and-dropped. This supersedes the earlier "a closed field absorbs the keys aimed at it" reading of the title-input gate (booked `b1ti1chk-b6acceb3`) for the UNBOUND case; the gate's identity protection (a keystroke lands in the note the field is titling or not at all) and its WebKit navigation-key capture (a bare Backspace must never navigate history) both still hold, and typing into a bound-but-not-yet-synced title still lands (TITLE-CREATE-CONCAT).
+- Full-text search and backlinks across everything you can access.
+- Media assets are exactly moss's set: images (png/jpg/jpeg/gif/webp/svg) and video (mp4/webm/mov) upload into folder-scoped storage, render in notes, and are shareable; YouTube embeds by URL. Moss has no audio, PDF-embed, or arbitrary-file attachments, so neither do we. HTML is content, not an asset — `moss-html` blocks live inside the markdown and render in a sandboxed iframe. Uploading requires editor role or above.
+
+## People & access
+
+- Sign up, sign in, sign out with email+password first-class; OAuth sign-in exists only in environments where that provider's credentials are actually configured — an unconfigured provider never renders a button; dev-auth affordances can never operate on a production origin. Sign-up on the public staging URL is open — no allowlist (this repo is ultimately a reference for the real moss migration). No OAuth provider is enabled for the reference (the self-gating machinery stays dormant), and invites are copy-link-only — the email path stays unconfigured behind its graceful-degradation contract. The no-sign-in dev playground survives as a dev-flag-only, loopback-gated substrate — never a public demo mode.
+- Share a vault, folder, or doc with a person or agent at a role (viewer < commenter < suggester < editor < owner — all five stay in the schema, but the share UI exposes only viewer/commenter/editor/owner until suggestions ship, when suggester surfaces), or via a revocable tokenized link; anonymous view via link, sign-in to comment or more. Demotion or revocation bites the live connection immediately.
+- An in-app bell/inbox notifies on @mention, share-invite, suggestion, and comment-reply.
+
+## Collaboration on meaning
+
+- Comments are moss's full experience — gutter, highlights, threads, replies, reactions (from glyphdown; not in moss desktop), @mentions, resolve — and typing after commenting never drops a keystroke.
+- Suggestions are tree-level tracked changes (live suggest mode or CLI `--suggest`); another person accepts or rejects; the server enforces suggester limits — a violating edit never lands and is never silently dropped.
+- Version history: auto-snapshots plus named versions; view read-only, diff against current, restore — restore is itself an edit and preserves comment/suggestion anchors.
+
+## Agents & sync
+
+- External CLI agents are first-class collaborators: pull/push/sync `.md` with an API key; pushes merge into the live doc preserving concurrent human work; agent edits are attributed with Bot-badged presence.
+- Local↔cloud sync v1 is the CLI mirror plus a local folder-watch daemon that auto-syncs a local notes folder.
+- In-app agent execution is out of scope (panel present, inert); any web affordance that cannot work is hidden as a documented deviation rather than left dead — the named set today: Share with Agent, the AI run action, Settings' Connected Folders and default-`.md`-editor controls, the ⌘N shortcut label, and the native-only affordances (reveal in Finder, open in default app, global quick-capture, auto-update, the in-embed ⌘K selection capture — impossible across a sandboxed-iframe boundary).
+
+## Behavior-defining technical decisions (only what the above requires)
+
+- The document of record is the Lexical tree in a Y.Doc via official `@lexical/yjs`; markdown is import/export only.
+- Title and frontmatter live IN the shared doc — never in a metadata sidecar with a second writer. This is a hard requirement: moss UI features that assume sidecar-held title/frontmatter adapt to the shared doc, not the other way around.
+- Comment and suggestion threads/anchors are first-class CRDT data in the shared doc; paint is derived; export stays clean.
+- ONE converter everywhere: server import/export uses the client's exact transformer set, so every path sees the same nodes the editor renders.
+- CLI push applies a structural tree merge — never rebuild the tree from markdown — so untouched blocks keep identity and anchors survive.
+- One Durable Object per doc with per-update persistence; restore-after-hibernation is a permanent gate.
+- A content write to a live collaborative doc is either applied through the merge or refused loudly — never silently discarded.
+- Limits: 2MB/doc, 50 connections/doc, 60 pushes/min/identity. Everything not decided here follows glyphdown's architecture as-is.
+- Viewports, in two tiers (owner-delegated ruling, 2026-08-13 — "resolve the phone sizes stuff yourself"). **Tier A, the stranger's path** — opening a share link, reading the doc it grants, the login card, and signing in to reach that same doc — must WORK at 390×844 as well as at 1440×1000, because a share link is a thing people are handed on a phone; each task touching those surfaces proves both widths. **Tier B, everything else** (owner/admin surfaces like the share dialog, settings, management menus, and the editor's own chrome) is designed at 1440×1000 — no phone-specific design work and no pinned phone oracles — but must never TRAP an affordance at a narrow width: nothing a person can open may put its controls outside the viewport with no way to reach them (hidden overflow, off-screen buttons). Reachable-and-operable is the Tier B bar; pixel fidelity is not. Pinned oracles stay 1440×1000; Tier A's phone proof is a capture pair, not a new oracle.
+
+## Restart rulings (2026-10-02)
+
+The owner asked for a from-scratch restart that carries forward every past learning ("restart this project from scratch taking all of the past learnings… work until done and everything verified and working e2e"). Everything above is carried over unchanged from brsbl/moss-collab@9104ceb. The rulings below settle the questions the history left open (docs/history/LEARNINGS.md §8). They were made by the coordinator under the owner's standing delegation ("stop asking me these questions", "build to spec"), and the owner can overturn any of them.
+
+1. **Moss pin: `762abb777`** (moss origin/main, 2026-09-14). It is 22 commits past the last approved pin 26df579d5, so it is the newest code at the smallest drift. Lexical follows moss exactly (^0.48). Every ported file carries a `ported-from: <path> @ 762abb777` header.
+2. **No field accepts focus before it binds.** Note creation keeps moss's "+ Note" flow. The server creates the doc first; the title and body render non-focusable (no caret, no input route) until the doc is bound and its first sync has landed; focus then moves to the title. Nothing typed is ever swallowed, because nothing can be typed before bind. Glyphdown's name-first flow is not adopted, because it would replace moss UI.
+3. **Title is the single source of the name.** `Y.Text('title')` in the doc is the only writer. The filename (`<slug>.md`, unique per folder) and the D1 title column are projections the Durable Object maintains, as moss desktop names files after titles. `[[wiki links]]` resolve against title and filename stem. The H1 inside the body is ordinary content.
+4. **Electron-only surfaces follow this PRODUCT doc.** Open in New Window opens a browser tab. Save as PDF uses browser print. The in-app browser and web embeds are sandboxed iframes. The other native-only affordances stay hidden through one registry.
+5. **Verification is proportional and independent.** Builders never grade their own work. Every milestone gets an independent checker (a fresh agent with its own driver) plus a naive-user critic. Auth, sharing, concurrency, persistence and data-loss changes also get a cross-vendor check through the Codex CLI. The 284-row rubric stays retired; the gate is this doc plus the cumulative e2e journey suite.
+6. **Tests run in remote CI.** GitHub Actions runs typecheck, unit tests and the Playwright journey suite against the real Worker stack, per the owner's global rule. Local work only launches the real dev stack for targeted interaction and screenshots, driven through bb Browser Automation.
+7. **No sign-in-free playground.** Accounts arrive in the first co-editing milestone, so every journey uses real per-run principals. The playground is not built.
+8. **Demo content lives in a test account**, built through the real UI by the e2e suite. The owner's own account is never used by tests.
+9. **Sync daemon follows glyphdown's sync model**: a server-side three-way merge, untracked files become new docs, and deletes do not propagate. The daemon is a folder watcher that runs the same sync loop.
+10. **Transient backend failures degrade in place** with a retrying state. A signed-in user is never bounced to the login page by a transient error.
+11. **Per-viewer layout data stays local** (table column widths, tab widths, collapsed headings), persisted in localStorage.
+12. **The binding starts from the official `@lexical/yjs` CollaborationPlugin** and is extended only where a requirement forces it.
+13. **Prior code is a reference, not a source tree.** brsbl/moss-collab and moss-collab-legacy are consulted for solved problems (patches, structural merge, schema, hardening). Code is written fresh against this doc.
+14. **Publish-to-web from the era-0 Shared Notes spec is out of scope.**
+15. **Deploy target:** staging only, on the owner's personal Cloudflare account, under new permanent names. Production stays undecided.
+
+## Undecided (owner rulings needed)
+
+1. What triggers production deployment?
+
+### Ruled during review (decisions folded into the sections above)
+
+- The invented non-moss surfaces (login, share dialog, history panel, notifications inbox, connection banner): what should they look like beyond "moss-styled"? → ruled: glyphdown's designs as reference, built from the moss design system (see the intro).
+- Sign-up policy on the public staging URL: allowlist or open? → ruled: open (see People & access).
+- Which OAuth providers ship, if any; do invites stay copy-link-only (no email sending)? → ruled: none enabled for the reference; invites stay copy-link-only (see People & access).
+- Does the no-sign-in playground substrate survive after auth ships (dev flag, demo mode, or removed)? → ruled: dev-flag-only (see People & access).
+- Which viewports must this reference support, and are UI tasks judged against phone widths? (raised 2026-08-13 when a checker refuted B1-T3 against a responsive gate that was in ITS instructions, not in this contract) → ruled by the coordinator under explicit owner delegation ("Also resolve the phone sizes stuff yourself", 2026-08-13): the two-tier rule in Behavior-defining technical decisions. Rationale: the stranger-with-a-link journey is phone-likely by construction and is B1's headline promise, while phone-designing every internal surface would tax every remaining UI task for a reference app nobody administers from a phone.
+- Vault creation: web UI affordance or API/CLI-only? → ruled: web UI — port glyphdown's vault switcher (see Notes & workspace).
+- Trash recovery window: "\~30 min recoverable" vs the shipped 30-day notice — which is the contract? → ruled: 30-day soft delete is the contract; hard deletion deferred (see Notes & workspace).
+- Is the end state strictly a migration reference, or does this graduate toward the real multiplayer moss (branding, domain, production)? → ruled: strictly a migration reference (see the intro).

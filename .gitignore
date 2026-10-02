@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.wrangler/
+.dev.vars
+.dev.vars.*
+.local-stack/
+*.log
+.DS_Store
+test-results/
+playwright-report/
+.tsbuildinfo
+*.tsbuildinfo
+.vite/
