@@ -1,0 +1,68 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+overrides:
+  lexical: 0.48.0
+  '@lexical/yjs': 0.48.0
+  yjs: 13.6.31
+
+importers:
+
+  .:
+    dependencies:
+      '@lexical/yjs':
+        specifier: 0.48.0
+        version: 0.48.0(yjs@13.6.31)
+      lexical:
+        specifier: 0.48.0
+        version: 0.48.0
+      some-editor-kit:
+        specifier: 2.0.0
+        version: 2.0.0
+
+packages:
+
+  '@lexical/yjs@0.48.0':
+    resolution: {integrity: sha512-fixture}
+    peerDependencies:
+      yjs: '>=13.5.22'
+
+  lexical@0.45.0:
+    resolution: {integrity: sha512-fixture}
+
+  lexical@0.48.0:
+    resolution: {integrity: sha512-fixture}
+
+  some-editor-kit@2.0.0:
+    resolution: {integrity: sha512-fixture}
+
+  yjs@13.6.27:
+    resolution: {integrity: sha512-fixture}
+    engines: {node: '>=16.0.0', npm: '>=8.0.0'}
+
+  yjs@13.6.31:
+    resolution: {integrity: sha512-fixture}
+    engines: {node: '>=16.0.0', npm: '>=8.0.0'}
+
+snapshots:
+
+  '@lexical/yjs@0.48.0(yjs@13.6.31)':
+    dependencies:
+      lexical: 0.48.0
+      yjs: 13.6.31
+
+  lexical@0.45.0: {}
+
+  lexical@0.48.0: {}
+
+  some-editor-kit@2.0.0:
+    dependencies:
+      lexical: 0.45.0
+      yjs: 13.6.27
+
+  yjs@13.6.27: {}
+
+  yjs@13.6.31: {}
