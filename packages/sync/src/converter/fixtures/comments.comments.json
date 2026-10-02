@@ -1,0 +1,7 @@
+{
+  "c1": { "text": "First thread", "createdAt": 1779916200, "updatedAt": 1779916200, "source": "user" },
+  "c2": { "text": "Second thread", "createdAt": 1779916260, "updatedAt": 1779916260, "source": "agent" },
+  "c3": { "text": "Heading and formula", "createdAt": 1779916320, "updatedAt": 1779916320, "source": "external" },
+  "c4": { "text": "Block comment on a chart", "createdAt": 1779916380, "updatedAt": 1779916380, "source": "agent" },
+  "c5": { "text": "A reply", "createdAt": 1779916440, "updatedAt": 1779916440, "source": "user", "parentId": "c1" }
+}

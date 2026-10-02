@@ -1,0 +1,69 @@
+{
+  "root": {
+    "children": [
+      {
+        "type": "web-embed",
+        "version": 1,
+        "url": "https://twitter.com/someone/status/1234567890"
+      },
+      {
+        "type": "video",
+        "version": 1,
+        "src": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        "altText": "YouTube video"
+      },
+      {
+        "type": "image",
+        "version": 1,
+        "src": "https://images.example.com/photo.png",
+        "altText": "photo"
+      },
+      {
+        "children": [
+          {
+            "type": "embed-pill",
+            "version": 1,
+            "url": "https://example.com/generic-page"
+          }
+        ],
+        "direction": null,
+        "format": "",
+        "indent": 0,
+        "type": "paragraph",
+        "version": 1,
+        "textFormat": 0,
+        "textStyle": ""
+      },
+      {
+        "children": [
+          {
+            "type": "embed-pill",
+            "version": 1,
+            "url": "https://example.com/with-trailing"
+          },
+          {
+            "detail": 0,
+            "format": 0,
+            "mode": "normal",
+            "style": "",
+            "text": " words after it",
+            "type": "text",
+            "version": 1
+          }
+        ],
+        "direction": null,
+        "format": "",
+        "indent": 0,
+        "type": "paragraph",
+        "version": 1,
+        "textFormat": 0,
+        "textStyle": ""
+      }
+    ],
+    "direction": null,
+    "format": "",
+    "indent": 0,
+    "type": "root",
+    "version": 1
+  }
+}

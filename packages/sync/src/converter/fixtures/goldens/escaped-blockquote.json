@@ -1,0 +1,43 @@
+{
+  "root": {
+    "children": [
+      {
+        "type": "html-block",
+        "version": 1,
+        "rawHtml": "<blockquote><p>An escaped one-line blockquote opens a block that runs to the next closing tag</p></blockquote>\n\n## A heading inside that range\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\n<blockquote>\n<p>A raw blockquote whose closing tag ends the range</p>\n</blockquote>",
+        "source": "blockquote"
+      },
+      {
+        "type": "html-block",
+        "version": 1,
+        "rawHtml": "<blockquote><p>With no closing tag after it, this line decodes alone</p></blockquote>",
+        "source": "blockquote"
+      },
+      {
+        "children": [
+          {
+            "detail": 0,
+            "format": 0,
+            "mode": "normal",
+            "style": "",
+            "text": "Text after.",
+            "type": "text",
+            "version": 1
+          }
+        ],
+        "direction": null,
+        "format": "",
+        "indent": 0,
+        "type": "paragraph",
+        "version": 1,
+        "textFormat": 0,
+        "textStyle": ""
+      }
+    ],
+    "direction": null,
+    "format": "",
+    "indent": 0,
+    "type": "root",
+    "version": 1
+  }
+}

@@ -1,0 +1,227 @@
+{
+  "root": {
+    "children": [
+      {
+        "type": "html-block",
+        "version": 1,
+        "rawHtml": "<blockquote><p>An escaped one-line blockquote opens a block that runs to the next closing tag</p></blockquote>",
+        "source": "blockquote"
+      },
+      {
+        "children": [
+          {
+            "detail": 0,
+            "format": 0,
+            "mode": "normal",
+            "style": "",
+            "text": "A heading inside that range",
+            "type": "text",
+            "version": 1
+          }
+        ],
+        "direction": null,
+        "format": "",
+        "indent": 0,
+        "type": "heading",
+        "version": 1,
+        "tag": "h2"
+      },
+      {
+        "children": [
+          {
+            "children": [
+              {
+                "children": [
+                  {
+                    "children": [
+                      {
+                        "detail": 0,
+                        "format": 0,
+                        "mode": "normal",
+                        "style": "",
+                        "text": "A",
+                        "type": "text",
+                        "version": 1
+                      }
+                    ],
+                    "direction": null,
+                    "format": "",
+                    "indent": 0,
+                    "type": "paragraph",
+                    "version": 1,
+                    "textFormat": 0,
+                    "textStyle": ""
+                  }
+                ],
+                "direction": null,
+                "format": "",
+                "indent": 0,
+                "type": "tablecell",
+                "version": 1,
+                "backgroundColor": null,
+                "colSpan": 1,
+                "headerState": 1,
+                "rowSpan": 1
+              },
+              {
+                "children": [
+                  {
+                    "children": [
+                      {
+                        "detail": 0,
+                        "format": 0,
+                        "mode": "normal",
+                        "style": "",
+                        "text": "B",
+                        "type": "text",
+                        "version": 1
+                      }
+                    ],
+                    "direction": null,
+                    "format": "",
+                    "indent": 0,
+                    "type": "paragraph",
+                    "version": 1,
+                    "textFormat": 0,
+                    "textStyle": ""
+                  }
+                ],
+                "direction": null,
+                "format": "",
+                "indent": 0,
+                "type": "tablecell",
+                "version": 1,
+                "backgroundColor": null,
+                "colSpan": 1,
+                "headerState": 1,
+                "rowSpan": 1
+              }
+            ],
+            "direction": null,
+            "format": "",
+            "indent": 0,
+            "type": "tablerow",
+            "version": 1
+          },
+          {
+            "children": [
+              {
+                "children": [
+                  {
+                    "children": [
+                      {
+                        "detail": 0,
+                        "format": 0,
+                        "mode": "normal",
+                        "style": "",
+                        "text": "1",
+                        "type": "text",
+                        "version": 1
+                      }
+                    ],
+                    "direction": null,
+                    "format": "",
+                    "indent": 0,
+                    "type": "paragraph",
+                    "version": 1,
+                    "textFormat": 0,
+                    "textStyle": ""
+                  }
+                ],
+                "direction": null,
+                "format": "",
+                "indent": 0,
+                "type": "tablecell",
+                "version": 1,
+                "backgroundColor": null,
+                "colSpan": 1,
+                "headerState": 0,
+                "rowSpan": 1
+              },
+              {
+                "children": [
+                  {
+                    "children": [
+                      {
+                        "detail": 0,
+                        "format": 0,
+                        "mode": "normal",
+                        "style": "",
+                        "text": "2",
+                        "type": "text",
+                        "version": 1
+                      }
+                    ],
+                    "direction": null,
+                    "format": "",
+                    "indent": 0,
+                    "type": "paragraph",
+                    "version": 1,
+                    "textFormat": 0,
+                    "textStyle": ""
+                  }
+                ],
+                "direction": null,
+                "format": "",
+                "indent": 0,
+                "type": "tablecell",
+                "version": 1,
+                "backgroundColor": null,
+                "colSpan": 1,
+                "headerState": 0,
+                "rowSpan": 1
+              }
+            ],
+            "direction": null,
+            "format": "",
+            "indent": 0,
+            "type": "tablerow",
+            "version": 1
+          }
+        ],
+        "direction": null,
+        "format": "",
+        "indent": 0,
+        "type": "table",
+        "version": 1
+      },
+      {
+        "type": "html-block",
+        "version": 1,
+        "rawHtml": "<blockquote>\n<p>A raw blockquote whose closing tag ends the range</p>\n</blockquote>",
+        "source": "blockquote"
+      },
+      {
+        "type": "html-block",
+        "version": 1,
+        "rawHtml": "<blockquote><p>With no closing tag after it, this line decodes alone</p></blockquote>",
+        "source": "blockquote"
+      },
+      {
+        "children": [
+          {
+            "detail": 0,
+            "format": 0,
+            "mode": "normal",
+            "style": "",
+            "text": "Text after.",
+            "type": "text",
+            "version": 1
+          }
+        ],
+        "direction": null,
+        "format": "",
+        "indent": 0,
+        "type": "paragraph",
+        "version": 1,
+        "textFormat": 0,
+        "textStyle": ""
+      }
+    ],
+    "direction": null,
+    "format": "",
+    "indent": 0,
+    "type": "root",
+    "version": 1
+  }
+}

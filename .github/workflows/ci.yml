@@ -74,7 +74,7 @@ jobs:
     needs: plan
     if: needs.plan.outputs.checks == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v6
@@ -94,8 +94,11 @@ jobs:
         env:
           TRACE_MILESTONE: ${{ needs.plan.outputs.trace_milestone }}
       - name: Vendor drift
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: node scripts/moss-vendor.mjs drift
+      - name: Bundle boundary
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: node scripts/ci/deps.mjs
       - name: Migrations match the schema
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         timeout-minutes: 3
@@ -112,9 +115,26 @@ jobs:
       - name: Lint
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: pnpm lint
+      # Unit tests, converter L1 (Node), L2 (workerd) and L3 (parity with moss at the pin).
       - name: Unit tests
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: pnpm test
+        env:
+          GOLDEN_OUT: ${{ runner.temp }}/converter-goldens
+      # SP2: the converter bundled as a Worker under wrangler dev; the table lands in the job summary.
+      - name: Converter in workerd (SP2)
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: node scripts/measure-converter.mjs
+        timeout-minutes: 10
+      # A missing converter golden is written here for review; it fails the run until committed.
+      - name: Upload missing converter goldens
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: converter-goldens
+          path: ${{ runner.temp }}/converter-goldens
+          if-no-files-found: ignore
+          retention-days: 3
 
   build:
     needs: plan

@@ -1,0 +1,76 @@
+diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/packages/desktop/src/renderer/editor/markdown/transformers.ts
+--- a/packages/desktop/src/renderer/editor/markdown/transformers.ts
++++ b/packages/desktop/src/renderer/editor/markdown/transformers.ts
+@@ -37,6 +37,8 @@ import { COLOR_TRANSFORMER_IMPORT_REGEXP, COLOR_TRANSFORMER_REGEXP, isAfterUnclo
+ import { $isInsideColorSuppressedRawContext } from '../utils/colorPickerTriggers';
+ import { $postImportNormalize, unescapeHtmlEntities } from './normalize';
+ import { HIGHLIGHT_COLOR_VARIABLES, HIGHLIGHT_YELLOW_VALUE, HIGHLIGHT_YELLOW_VAR, SERIF_FONT_FAMILY_MARKDOWN_STYLE_PATTERN, getSerifFontFamilyMarkdownStyleAttribute, highlightColorNameFromStyle, isSerifFontFamilyValue, markdownStyleAttributeHasSerifFontFamily, setTextNodeFontFamily, unescapeInlineMarkdownText, wrapSerifFontFamilyMarkdownSpan } from './text-style';
++// moss-multi seam: formula-ids, line-loss (A§12; S-conv B9, §1.2)
++import { $rejectLine, importFormulaId } from './fixes';
+ 
+ // Custom transformer to preserve underlines in markdown
+ const UNDERLINE_TRANSFORMER: TextMatchTransformer = {
+@@ -229,7 +231,8 @@ const FORMULA_TRANSFORMER: TextMatchTransformer = {
+       return;
+     }
+     const formulaNode = $createFormulaNode(parsed.expression, parsed.result, {
+-      ...(parsed.formulaId ? { formulaId: parsed.formulaId } : {}),
++      // moss-multi seam: formula-ids (A§12; S-conv B9)
++      ...(parsed.formulaId ? { formulaId: parsed.formulaId } : importFormulaId(payload)),
+       ...(parsed.name ? { name: parsed.name } : {}),
+       ...(parsed.stale ? { stale: true } : {})
+     });
+@@ -1770,7 +1773,7 @@ const TABLE_TRANSFORMER: ElementTransformer = {
+     return output.join('\n');
+   },
+   regExp: TABLE_ROW_REG_EXP,
+-  replace: (parentNode, _1, match) => {
++  replace: (parentNode, _1, match, isImport) => { // moss-multi seam: line-loss (A§12; S-conv §1.2)
+     // Handle divider row - marks previous row as header
+     if (isTableDividerRow(match[0])) {
+       const nextSibling = parentNode.getNextSibling();
+@@ -1780,12 +1783,12 @@ const TABLE_TRANSFORMER: ElementTransformer = {
+       if (!table) {
+         const previousText = getSingleParagraphTextChild(previousSibling);
+         if (!previousText || !isTableBodyRowCandidate(previousText.getTextContent())) {
+-          return;
++          return $rejectLine(_1, match, isImport); // moss-multi seam: line-loss (A§12; S-conv §1.2)
+         }
+ 
+         const headerCells = mapToTableCells(previousText.getTextContent());
+         if (headerCells == null) {
+-          return;
++          return $rejectLine(_1, match, isImport); // moss-multi seam: line-loss (A§12; S-conv §1.2)
+         }
+ 
+         table = $createTableNode();
+@@ -1823,14 +1826,14 @@ const TABLE_TRANSFORMER: ElementTransformer = {
+         isTableDividerRow(nextSiblingText.getTextContent());
+ 
+       if (!$isTableNode(previousSibling) && !nextIsDivider) {
+-        return;
++        return $rejectLine(_1, match, isImport); // moss-multi seam: line-loss (A§12; S-conv §1.2)
+       }
+     }
+ 
+     const mergedRowText = consumeBrokenTableLineContinuations(parentNode, match[0]);
+     const matchCells = mapToTableCells(mergedRowText);
+     if (matchCells == null) {
+-      return;
++      return $rejectLine(_1, match, isImport); // moss-multi seam: line-loss (A§12; S-conv §1.2)
+     }
+ 
+     const immediatePrevious = parentNode.getPreviousSibling();
+@@ -2207,10 +2210,10 @@ const IMAGE_TRANSFORMER: ElementTransformer = {
+   // Match whole candidate markdown image lines and parse with a balanced parser.
+   // Matching only `![` can truncate content before replace() runs.
+   regExp: /^!\[.*\]\(.*\)\s*$/,
+-  replace: (parentNode, _children, match) => {
++  replace: (parentNode, _children, match, isImport) => { // moss-multi seam: line-loss (A§12; S-conv §1.2)
+     const mediaNode = createMediaNodeFromMarkdownImage(match[0]);
+     if (!mediaNode) {
+-      return;
++      return $rejectLine(_children, match, isImport); // moss-multi seam: line-loss (A§12; S-conv §1.2)
+     }
+     parentNode.replace(mediaNode);
+   },

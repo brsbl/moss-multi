@@ -1,0 +1,45 @@
+element  ^!\[\[([^\]]+)\]\]\s*$  image
+element  ^(<blockquote\b[\s\S]*<\/blockquote>|&lt;blockquote\b[\s\S]*&lt;\/blockquote&gt;)\s*$  html-block
+element  ^!\[.*\]\(.*\)\s*$  image,video,web-embed
+element  ^\s*(https?:\/\/[^\s<>{}|\\^[\]`]+)([\s\S]*)$  embed-pill,image,video,web-embed
+element  ^$  sketch
+element  ^$  chart
+element  ^$  video
+element  ^$  web-embed
+element  ^$  callout
+element  ^$  code-block
+multiline-element  ^\s*(?:\|.*\|?|.*\s\|\s.*)\s*$  table,tablerow,tablecell
+element  (?:^\s*\|.*\|?\s*$|^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)+\|?\s*$)  table,tablerow,tablecell
+element  ^-{3,}\s*$  horizontalrule
+element  ^(\s*)(?:[-*+]\s)?\s?(\[(\s|x)?\])(?:\s|$)  list,listitem
+element  ^(#{1,6})\s  heading
+element  ^>\s  quote
+element  ^(\s*)[-*+]\s  list,listitem
+element  ^(\s*)(\d{1,})\.\s  list,listitem
+multiline-element  ^:::\s*tabs\s*$  tab-group
+multiline-element  ^ {0,3}(`{3,})moss-html(?:\s+.*)?$  html-block
+multiline-element  ^\s*(<blockquote\b[^>]*>|&lt;blockquote\b[\s\S]*&gt;)\s*$  html-block
+multiline-element  ^([ \t]*`{3,})([\w-]+)?[ \t]?  code
+text-match  (?!)$ (?!) mark
+text-match  \{\{([^{}\n]+)\}\}$ \{\{([^{}\n]+)\}\} formula
+text-match  ^!\[.*\]\(.*\)$ ^!\[.*\]\(.*\)$ image,video,web-embed
+text-match  (~~\*\*\*|\*\*\*~~|~~\*\*|\*\*~~|~~\*|\*~~|\*\*\*|\*\*|~~|\*)(?:(\?\[((?:\\.|[^\]\\])*)\]\(([^()\s]*(?:\([^()]*\)[^()\s]*)*)\))|(https?:\/\/[^\s<>{}|\\^[\]`*~]+))(~~\*\*\*|\*\*\*~~|~~\*\*|\*\*~~|~~\*|\*~~|\*\*\*|\*\*|~~|\*)$ (~~\*\*\*|\*\*\*~~|~~\*\*|\*\*~~|~~\*|\*~~|\*\*\*|\*\*|~~|\*)(?:(\?\[((?:\\.|[^\]\\])*)\]\(([^()\s]*(?:\([^()]*\)[^()\s]*)*)\))|(https?:\/\/[^\s<>{}|\\^[\]`*~]+))(~~\*\*\*|\*\*\*~~|~~\*\*|\*\*~~|~~\*|\*~~|\*\*\*|\*\*|~~|\*) embed-pill
+text-match  \?\[((?:\\.|[^\]\\])*)\]\(([^()\s]*(?:\([^()]*\)[^()\s]*)*)\)$ \?\[((?:\\.|[^\]\\])*)\]\(([^()\s]*(?:\([^()]*\)[^()\s]*)*)\) embed-pill
+text-match  \[((?:https?:\/\/[^\]\s]+))\]\(([^()\s]*(?:\([^()]*\)[^()\s]*)*)\)$ \[((?:https?:\/\/[^\]\s]+))\]\(([^()\s]*(?:\([^()]*\)[^()\s]*)*)\) embed-pill
+text-match  (?:\[([^[\]]+)\])(?:\(([^()\s]*(?:\([^()]*\)[^()\s]*)*)(?:\s"((?:[^"]*\\")*[^"]*)")?\))$ (?:\[([^[\]]+)\])(?:\(([^()\s]*(?:\([^()]*\)[^()\s]*)*)(?:\s"((?:[^"]*\\")*[^"]*)")?\)) link
+text-match  ((?:https?:\/\/[^\s<>{}|\\^[\]`]+|(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z][a-zA-Z0-9-]{1,23}(?::\d{1,5})?(?:[/?#][^\s<>{}|\\^[\]`]*)?))(\s)$ https?:\/\/[^\s<>{}|\\^[\]`]+ embed-pill
+text-match  \[\[((?:[^\]]|\](?!\]))+)\]\]$ \[\[((?:[^\]]|\](?!\]))+)\]\] file-link
+text-match  (#(?:[0-9a-fA-F]{6})\b|rgba?\(\s*\d+\s*,\s*\d+\s*,\s*\d+(?:\s*,\s*(?:0|1|0?\.\d+))?\s*\)|hsla?\(\s*\d+\s*,\s*\d+%\s*,\s*\d+%(?:\s*,\s*(?:0|1|0?\.\d+))?\s*\))$ (#(?:[0-9a-fA-F]{6})\b|rgba?\(\s*\d+\s*,\s*\d+\s*,\s*\d+(?:\s*,\s*(?:0|1|0?\.\d+))?\s*\)|hsla?\(\s*\d+\s*,\s*\d+%\s*,\s*\d+%(?:\s*,\s*(?:0|1|0?\.\d+))?\s*\)) color-code
+text-match  ==(?:<span style="([^"]*font-family\s*:[^"]*serif[^"]*)">([^<]+)<\/span>|([^=\n]+))==$ ==(?:<span style="([^"]*font-family\s*:[^"]*serif[^"]*)">([^<]+)<\/span>|([^=\n]+))== text
+text-format ***   
+text-format ___   
+text-format **   
+text-format __   
+text-format *   
+text-format _   
+text-format ~~   
+text-format `   
+text-match  (?:\[([^[\]]*(?:\[[^[\]]*\][^[\]]*)*)\])(?:\((?:([^()\s]+)(?:\s"((?:[^"]*\\")*[^"]*)"\s*)?)\))$ (?:\[(.+?)\])(?:\((?:([^()\s]+)(?:\s"((?:[^"]*\\")*[^"]*)"\s*)?)\)) link
+text-match  <mark data-color="(\w+)"(?:\s+style="([^"]*font-family\s*:[^"]*serif[^"]*)")?>([^<]+)<\/mark>$ <mark data-color="(\w+)"(?:\s+style="([^"]*font-family\s*:[^"]*serif[^"]*)")?>([^<]+)<\/mark> text
+text-match  <u(?:\s+style="([^"]*font-family\s*:[^"]*serif[^"]*)")?>([^<]+)<\/u>$ <u(?:\s+style="([^"]*font-family\s*:[^"]*serif[^"]*)")?>([^<]+)<\/u> text
+text-match  <span style="([^"]*font-family\s*:\s*[^"]*(?:Charter|Iowan Old Style|ui-serif|Georgia|Cambria|Times New Roman|Times|(?:^|[^-])serif)[^"]*)">([^<]+)<\/span>$ <span style="([^"]*font-family\s*:\s*[^"]*(?:Charter|Iowan Old Style|ui-serif|Georgia|Cambria|Times New Roman|Times|(?:^|[^-])serif)[^"]*)">([^<]+)<\/span> text

@@ -14,6 +14,7 @@ export default defineConfig([
     '.refs/**',
     '.claude/**',
     '.local-stack/**',
+    '.cache/**',
     'test-results/**',
     'playwright-report/**',
     'scripts/ci/fixtures/**',

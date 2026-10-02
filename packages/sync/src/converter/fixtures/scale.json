@@ -1,0 +1,3 @@
+{
+  "escaped-blockquote": "moss at the pin: an escaped one-line blockquote opens a block that runs to the next standalone </blockquote>, so each copy would swallow the next copy's blocks into one html-block"
+}
