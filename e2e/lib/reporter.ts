@@ -107,8 +107,8 @@ export default class MossReporter implements Reporter {
     }
     const engines = [...new Set(this.browsers.values())].join(', ') || 'no browser';
     const shard = group ? ` · group ${group}` : '';
-    // Journeys only: the selftests time fixture pages and prove a budget can fail.
-    const ran = this.rows.filter((r) => r.status !== 'skipped' && isJourneyProject(r.project));
+    // Journeys that ran on a live stack: the selftests time fixture pages and prove a budget can fail.
+    const ran = this.rows.filter((r) => r.status !== 'skipped' && !r.blocked && isJourneyProject(r.project));
     const durations = latencyRows(ran.map((r) => ({ project: r.project, name: r.title, ms: r.ms, budgetMs: r.timeoutMs || null })));
     const lines = [
       `### e2e: ${verdict}`,
