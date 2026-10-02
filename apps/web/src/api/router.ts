@@ -2,6 +2,7 @@
 import type { AuthEnv } from '../auth/auth.ts';
 import { resolvePrincipal } from '../auth/principal.ts';
 import { json } from '../worker/route.ts';
+import { workspace } from './workspace.ts';
 
 const NO_STORE = { 'cache-control': 'no-store' };
 
@@ -18,5 +19,6 @@ async function me(request: Request, env: AuthEnv): Promise<Response> {
 export async function handleApi(request: Request, env: AuthEnv): Promise<Response> {
   const { pathname } = new URL(request.url);
   if (pathname === '/api/me') return me(request, env);
+  if (pathname === '/api/workspace') return workspace(request, env);
   return json({ error: 'not-found' }, 404);
 }

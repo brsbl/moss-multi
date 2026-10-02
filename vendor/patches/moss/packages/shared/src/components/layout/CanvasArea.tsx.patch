@@ -1,0 +1,12 @@
+diff --git a/packages/shared/src/components/layout/CanvasArea.tsx b/packages/shared/src/components/layout/CanvasArea.tsx
+--- a/packages/shared/src/components/layout/CanvasArea.tsx
++++ b/packages/shared/src/components/layout/CanvasArea.tsx
+@@ -79,6 +79,8 @@ export function CanvasArea({
+           '@container/canvas'
+         )}
+         data-scrolling={isScrolling ? 'true' : 'false'}
++        // moss-multi seam: editor-canvas (A§19, the floating-chrome detector's target)
++        data-editor-canvas=""
+         onScroll={handleScroll}
+         style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+       >

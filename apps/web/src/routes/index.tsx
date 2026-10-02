@@ -1,10 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router';
+import { MossAppHost } from '../host/MossAppHost.tsx';
 
-// Placeholder until T0.5a mounts the moss shell here (A§4.2).
+// The moss shell on the active vault (A§4.2); T0.5b's bridge adds the last-viewed doc.
 export const Route = createFileRoute('/')({
-  component: Home,
+  component: MossAppHost,
 });
-
-function Home() {
-  return <main className="flex min-h-screen items-center justify-center font-sans text-sm">moss-multi</main>;
-}

@@ -14,6 +14,8 @@ export default defineConfig([
     '.refs/**',
     '.claude/**',
     '.local-stack/**',
+    '.oracle/**',
+    'e2e/parity/oracle/moss/**',
     '.cache/**',
     'test-results/**',
     'playwright-report/**',
