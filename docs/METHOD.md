@@ -24,6 +24,7 @@ Read this with PRODUCT.md, your BUILDPLAN entry and the A§ it cites, before wri
 - `node scripts/ci/minutes.mjs` prints the month's billable minutes against the 3,000-minute budget (OA2).
 - The e2e job runs in the `mcr.microsoft.com/playwright` image whose tag equals `@playwright/test` in `e2e/package.json` (bump both together): `playwright install --with-deps webkit` once spent 19 min on a throttled apt mirror. Each engine boots the stack on the build job's bytes and runs `--project=selftest-<engine> --project=<engine>`.
 - SP15 (T0.9a): Linux WebKit never navigates history on a bare Backspace (WebKit's Unix editing behavior), so the j02 Backspace leg cannot fail on the e2e engines. Tag such legs `@macos`; the `macos` job runs them in macOS WebKit.
+- Read e2e results remotely: `d=$(mktemp -d); gh run download <id> -n e2e-<engine>-<attempt> -D "$d"` holds `e2e/test-results/summary.md`, `results.json`, failure traces and screenshots, and the stack's `wrangler.log`; delete `$d` after.
 - Playwright never applies `--grep` to dependency projects, and a top-level project with no matching tests drops its dependencies. So the selftests always run before journeys, and a grep matching nothing fails with "No tests found".
 
 ## Build and Worker

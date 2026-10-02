@@ -1,5 +1,6 @@
 // The run summary (S-test §2.6): provenance, one row per test with latencies and invariant counts, slow tests,
-// and BLOCKED (infra) kept apart from FAILED. Written to $GITHUB_STEP_SUMMARY in CI, stdout otherwise.
+// and BLOCKED (infra) kept apart from FAILED. Written to test-results/summary.md (in the CI artifact, which gh
+// can download) and to $GITHUB_STEP_SUMMARY in CI.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { FullConfig, FullResult, Reporter, TestCase, TestResult } from '@playwright/test/reporter';
@@ -78,8 +79,9 @@ export default class MossReporter implements Reporter {
       ),
       '',
     ];
-    const text = lines.join('\n');
-    if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${text}\n`);
-    else process.stdout.write(`${text}\n`);
+    const text = `${lines.join('\n')}\n`;
+    mkdirSync(this.outputDir, { recursive: true });
+    writeFileSync(join(this.outputDir, 'summary.md'), text);
+    if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, text);
   }
 }
