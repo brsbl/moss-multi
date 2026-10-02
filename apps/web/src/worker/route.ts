@@ -1,5 +1,6 @@
 // The Worker's routing order (A§4.1). Pure: server.ts supplies the handlers, so the order is unit-tested in Node.
 import type { Build } from '../provenance.ts';
+import { HTML_FRAME_PATH, htmlFrameResponse } from './html-frame.ts';
 
 export const DOC_PARTY = 'doc-d-o';
 
@@ -80,5 +81,6 @@ export async function routeRequest(request: Request, deps: RouteDeps): Promise<R
   if (pathname === '/api/workspace/ws') return deps.handleWorkspaceSocket(request);
   if (under(pathname, '/api')) return deps.handleApi(request);
   if (under(pathname, '/parties')) return routePartyRequest(request, deps);
+  if (pathname === HTML_FRAME_PATH) return htmlFrameResponse(request);
   return deps.startFetch(request);
 }

@@ -49,6 +49,9 @@ import { formatRelativeTime } from './notesPanelUtils';
 import { FolderGroup } from './FolderGroup';
 import { SystemFolderSection } from './SystemFolderSection';
 import { foldersApi } from '../api/electron';
+// moss-multi seam: hide-registry (A§9); sidebar rows and slots (A§19, A§11)
+import { hidden } from '@moss-multi/host/affordances';
+import { FolderMenuItems, surfacedShared } from '@moss-multi/host/slots';
 
 const NOTES_FOLDER_NAME = 'Notes';
 const nowInSeconds = (): number => Math.floor(Date.now() / 1000);
@@ -170,10 +173,13 @@ function NoteContextMenuItems({
         <Link className="h-3.5 w-3.5 text-ink-muted" />
         <span>Copy Link</span>
       </ContextMenuItem>
+      {/* moss-multi seam: hide-registry (A§9) */}
+      {hidden('reveal-in-finder') ? null : (
       <ContextMenuItem onSelect={() => handleShowInFinder(noteId)}>
         <FolderOpen className="h-3.5 w-3.5 text-ink-muted" />
         <span>Open in Finder</span>
       </ContextMenuItem>
+      )}
       {externalFilePath ? (
         <>
           <ContextMenuSeparator />
@@ -182,7 +188,7 @@ function NoteContextMenuItems({
             <span>Close</span>
           </ContextMenuItem>
         </>
-      ) : onDeleteNote ? (
+      ) : onDeleteNote && !hidden('trash') /* moss-multi seam: hide-registry (A§9) */ ? (
         <>
           <ContextMenuSeparator />
           <ContextMenuItem onSelect={() => onDeleteNote(noteId)}>
@@ -240,7 +246,8 @@ const NoteListItemWithMenu = memo(function NoteListItemWithMenu({
 }: NoteListItemWithMenuProps) {
   const isActive = useIsActiveNote(note.id);
   const [isContextMenuOpen, setIsContextMenuOpen] = useState(false);
-  const draggable = options?.draggable ?? true;
+  // moss-multi seam: shared-rows (A§11: a surfaced shared row offers no move)
+  const draggable = (options?.draggable ?? true) && !surfacedShared(note.id);
   const showActiveState = options?.showActiveState ?? true;
   const isVisuallyActive = showActiveState && isActive;
   const cardRef = options?.isSelected
@@ -252,7 +259,13 @@ const NoteListItemWithMenu = memo(function NoteListItemWithMenu({
   return (
     <ContextMenu onOpenChange={setIsContextMenuOpen}>
       <ContextMenuTrigger asChild>
-        <div ref={cardRef}>
+        <div
+          ref={cardRef}
+          // moss-multi seam: sidebar-row (A§19)
+          data-sidebar-row=""
+          data-doc-id={note.id}
+          data-active={isVisuallyActive ? 'true' : 'false'}
+        >
           <NoteCard
             id={note.id}
             title={note.title}
@@ -337,7 +350,12 @@ const SearchResultNoteCard = memo(function SearchResultNoteCard({
   return (
     <ContextMenu onOpenChange={setIsContextMenuOpen}>
       <ContextMenuTrigger asChild>
-        <div>
+        <div
+          // moss-multi seam: sidebar-row (A§19)
+          data-sidebar-row=""
+          data-doc-id={result.id}
+          data-active={showActiveState && isActive ? 'true' : 'false'}
+        >
           <NoteCard
             id={result.id}
             title={result.title}
@@ -1307,15 +1325,22 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
           </div>
           </ContextMenuTrigger>
           <ContextMenuContent>
+            {/* moss-multi seam: folder-menu (A§2.2: the folder "Share..." item slot) */}
+            <FolderMenuItems folderPath={folder.path} />
+            {/* moss-multi seam: hide-registry (A§9) */}
+            {hidden('reveal-in-finder') ? null : (
             <ContextMenuItem onSelect={() => handleShowFolderInFinder(folder.path)}>
               <ExternalLink className="h-3.5 w-3.5 text-ink-muted" />
               <span>Open in Finder</span>
             </ContextMenuItem>
-            <ContextMenuSeparator />
+            )}
+            {hidden('reveal-in-finder') || hidden('trash') ? null : <ContextMenuSeparator />}
+            {hidden('trash') ? null : (
             <ContextMenuItem onSelect={() => handleTrashFolderClick(folder.path)}>
               <Trash2 className="h-3.5 w-3.5 text-accent-terracotta" />
               <span>Trash Folder</span>
             </ContextMenuItem>
+            )}
           </ContextMenuContent>
           </ContextMenu>
         );
@@ -1648,7 +1673,8 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
           onCollapse={onCollapse}
           showTitle={false}
           sortContent={sortDropdown}
-          topContent={!isCreatingFolder ? (
+          // moss-multi seam: hide-registry (A§9): with "Open..." and "New Folder" both withheld the menu goes too
+          topContent={!isCreatingFolder && !(hidden('open-directory') && hidden('new-folder')) ? (
             <DropdownMenu open={folderActionsOpen} onOpenChange={setFolderActionsOpen}>
               <TooltipProvider>
                 <Tooltip>
@@ -1667,14 +1693,18 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
                 </Tooltip>
               </TooltipProvider>
               <DropdownMenuContent align="start" side="bottom" sideOffset={6} className="min-w-0 w-max">
+                {hidden('open-directory') ? null : (
                 <DropdownMenuItem className="gap-2 text-xs" onSelect={() => handleOpenDirectory()}>
                   <FolderOpen className="h-3.5 w-3.5" aria-hidden />
                   Open...
                 </DropdownMenuItem>
+                )}
+                {hidden('new-folder') ? null : (
                 <DropdownMenuItem className="gap-2 text-xs" onSelect={() => handleStartCreateFolder()}>
                   <FolderPlus className="h-3.5 w-3.5" aria-hidden />
                   New Folder
                 </DropdownMenuItem>
+                )}
               </DropdownMenuContent>
             </DropdownMenu>
           ) : undefined}

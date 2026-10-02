@@ -17,7 +17,13 @@ export default defineConfig({
       { find: /^@moss\/shared\/(.*)$/, replacement: `${vendor}/shared/src/$1` },
       { find: /^@\/(.*)$/, replacement: `${vendor}/shared/src/$1` },
       { find: /^@moss-desktop\/(.*)$/, replacement: `${vendor}/desktop/src/$1` },
+      // moss-multi seams in vendored files call host hooks and slots (A§2.2).
+      { find: /^@moss-multi\/host\/(.*)$/, replacement: `${repoRoot}apps/web/src/host/$1` },
     ],
     dedupe: ['react', 'react-dom', 'jotai', 'jotai-family', 'lexical', 'yjs', 'prismjs'],
+  },
+  build: {
+    // Fonts stay files: the CSP's font-src is 'self' only (A§4.3).
+    assetsInlineLimit: (file) => (/\.(woff2?|ttf|otf)$/.test(file) ? false : undefined),
   },
 });

@@ -1,7 +1,7 @@
 import { $convertFromMarkdownString, $convertToMarkdownString } from '@lexical/markdown';
 import type { NoteLayoutMetadata } from '../../../common/noteTypes';
 import type { CommentMetadataMap } from '../utils/comment-markdown';
-import { withImportFormulaIds } from './fixes';
+import { $withDocumentImport, withImportFormulaIds } from './fixes';
 import { $postImportNormalize, escapeHtmlEntities, normalizeMarkdownForImport, unescapeHtmlEntities } from './normalize';
 import { MARKDOWN_EDITOR_TRANSFORMERS } from './transformers';
 
@@ -14,13 +14,16 @@ export interface NoteBodyImportOptions {
   layout?: NoteLayoutMetadata;
 }
 
-// Call inside editor.update(); replaces the root's children.
+// Call inside editor.update(); replaces the root's children and leaves no selection, so import stays linear in
+// blocks (fixes.ts).
 export function $importNoteBody(markdown: string, options: NoteBodyImportOptions = {}): void {
   const prepared = escapeHtmlEntities(normalizeMarkdownForImport(markdown));
-  withImportFormulaIds(prepared, () => {
-    $convertFromMarkdownString(prepared, MARKDOWN_EDITOR_TRANSFORMERS);
-    $postImportNormalize(options.comments, undefined, { layoutMetadata: options.layout });
-  });
+  $withDocumentImport(() =>
+    withImportFormulaIds(prepared, () => {
+      $convertFromMarkdownString(prepared, MARKDOWN_EDITOR_TRANSFORMERS);
+      $postImportNormalize(options.comments, undefined, { layoutMetadata: options.layout });
+    }),
+  );
 }
 
 // Call inside editor.read() or editor.update().

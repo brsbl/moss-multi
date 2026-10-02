@@ -1,0 +1,18 @@
+diff --git a/packages/shared/src/components/primitives/context-menu.tsx b/packages/shared/src/components/primitives/context-menu.tsx
+--- a/packages/shared/src/components/primitives/context-menu.tsx
++++ b/packages/shared/src/components/primitives/context-menu.tsx
+@@ -290,7 +290,13 @@ type ContextMenuPortalProps = Omit<
+ 
+ const ContextMenuPortal = React.forwardRef<HTMLDivElement, ContextMenuPortalProps>(
+   ({ forceMount, keepMounted, ...props }, ref) => (
+-    <BaseContextMenu.Portal ref={ref} keepMounted={keepMounted ?? forceMount} {...props} />
++    <BaseContextMenu.Portal
++      ref={ref}
++      keepMounted={keepMounted ?? forceMount}
++      // moss-multi seam: overlay-surface (A§19, the floating detector's allowlist)
++      data-overlay-surface=""
++      {...props}
++    />
+   )
+ );
+ ContextMenuPortal.displayName = 'ContextMenuPortal';

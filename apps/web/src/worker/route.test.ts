@@ -153,3 +153,19 @@ describe('routing order', () => {
     expect((await route('/__test/playground')).headers.get('x-handler')).toBe('start');
   });
 });
+
+describe('/frame/html (SP13)', () => {
+  it('serves the HTML-block frame under its own sandbox-only policy, without reaching Start', async () => {
+    const { deps, route } = harness();
+    const response = await route('/frame/html');
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toMatch(/^text\/html/);
+    expect(response.headers.get('content-security-policy')).toBe('sandbox allow-scripts');
+    expect(await response.text()).toContain('moss-html-frame-ready');
+    expect(deps.startFetch).not.toHaveBeenCalled();
+  });
+
+  it('gets 405 for POST', async () => {
+    expect((await harness().route('/frame/html', { method: 'POST', body: '<p>' })).status).toBe(405);
+  });
+});

@@ -19,6 +19,8 @@ import {
 import type { NoteSearchResult } from '../../common/noteTypes';
 import { formatRelativeTime } from './notesPanelUtils';
 import { notesApi } from '../api/electron';
+// moss-multi seam: hide-registry (A§9)
+import { hidden } from '@moss-multi/host/affordances';
 
 export type TrashedNotesPanelContentProps = {
   onSelectNote: (id: string) => void;
@@ -56,10 +58,13 @@ function TrashedNoteContextMenu({
           <RotateCcw className="h-3.5 w-3.5 text-ink-muted" />
           <span>Restore</span>
         </ContextMenuItem>
+        {/* moss-multi seam: hide-registry (A§9) */}
+        {hidden('reveal-in-finder') ? null : (
         <ContextMenuItem onSelect={() => onShowInFinder(noteId)}>
           <ExternalLink className="h-3.5 w-3.5 text-ink-muted" />
           <span>Open in Finder</span>
         </ContextMenuItem>
+        )}
       </ContextMenuContent>
     </ContextMenu>
   );

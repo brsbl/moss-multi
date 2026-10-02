@@ -7,6 +7,8 @@ import {
   TooltipProvider,
   TooltipTrigger
 } from '@moss/shared/components/ui/tooltip';
+// moss-multi seam: hide-registry (A§9)
+import { hidden } from '@moss-multi/host/affordances';
 
 export type NotesPanelMode = 'notes' | 'trash';
 
@@ -63,6 +65,8 @@ export function NotesPanelFooter({
             </TooltipTrigger>
             <TooltipContent side="top">Feedback</TooltipContent>
           </Tooltip>
+          {/* moss-multi seam: hide-registry (A§9) */}
+          {hidden('trash') ? null : (
           <Tooltip>
             <TooltipTrigger asChild>
               <button
@@ -79,6 +83,7 @@ export function NotesPanelFooter({
             </TooltipTrigger>
             <TooltipContent side="top">{isTrashMode ? 'Back to Notes' : 'Trash'}</TooltipContent>
           </Tooltip>
+          )}
         </div>
       </div>
     </TooltipProvider>

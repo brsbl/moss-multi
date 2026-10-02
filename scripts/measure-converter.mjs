@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // SP2 (ARCHITECTURE §22): bundles the converter into a Worker the way wrangler does (its own esbuild), runs it
 // under `wrangler dev --local`, and reports upload size, cold start, import/export CPU of the scale note up to
-// 2 MB, memory growth and the Y.Doc state-to-markdown ratio over the family corpus. Prints a markdown table (and
-// appends it to $GITHUB_STEP_SUMMARY). Exits non-zero when the converter fails to load or convert in workerd,
-// including a note that imports to fewer blocks than its copies hold.
+// 2 MB, the 2 MB import into a bound Y.Doc, memory growth and the Y.Doc state-to-markdown ratio over the family
+// corpus. Prints a markdown table (and appends it to $GITHUB_STEP_SUMMARY). Exits non-zero when the converter
+// fails to load or convert in workerd, including a note that imports to fewer blocks than its copies hold, and
+// when an import up to 2 MB takes more than IMPORT_BUDGET_MS of workerd CPU.
 import { spawn, spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -24,6 +25,8 @@ const CONVERSION_RUNS = 3;
 const SCALE_SIZES = [64 * 1024, 256 * 1024, 1024 * 1024, 2 * 1024 * 1024];
 // A Worker or Durable Object request's default CPU limit (`limits.cpu_ms` raises it).
 const CPU_LIMIT_MS = 30_000;
+// T0.6b: a whole-document import at PRODUCT's 2 MB/doc limit stays well inside CPU_LIMIT_MS.
+const IMPORT_BUDGET_MS = 5_000;
 
 const vendor = join(REPO, 'vendor/moss/packages');
 const ALIASES = [
@@ -213,20 +216,22 @@ function scaleUnit(fixtures) {
 const scaleNote = (unit, units) => Array.from({ length: units }, () => unit).join('\n\n');
 
 // Import and export one note in a fresh worker, so a crash at one size leaves the others measurable. The note
-// must import to `units` times the unit's top-level blocks: fewer means one copy swallowed others.
-async function measureSize(unit, units, runCount, port) {
+// must import to `units` times the unit's top-level blocks: fewer means one copy swallowed others. With `bound`,
+// the note is also imported into a Y.Doc through a headless binding, as the DocDO's serverWrite does.
+async function measureSize(unit, units, port, bound) {
   const server = await startWorker('converter', port);
   const runs = { import: [], export: [] };
   const markdown = scaleNote(unit, units);
   try {
     const unitBlocks = JSON.parse((await timedRequest(server, '/import', { method: 'POST', body: unit })).body).blocks;
-    for (let run = 0; run < runCount; run += 1) {
+    for (let run = 0; run < CONVERSION_RUNS; run += 1) {
       const imported = await timedRequest(server, '/import', { method: 'POST', body: markdown });
       const { blocks } = JSON.parse(imported.body);
       if (blocks !== units * unitBlocks) throw new Error(`${blocks} top-level blocks, expected ${units} × ${unitBlocks}`);
       runs.import.push({ ...imported, blocks });
       runs.export.push(await timedRequest(server, '/export'));
     }
+    const state = bound ? await timedRequest(server, '/state', { method: 'POST', body: markdown }) : null;
     return {
       blocks: runs.import[0].blocks,
       importCpuMs: round(median(runs.import.map((s) => s.cpuMs))),
@@ -234,6 +239,11 @@ async function measureSize(unit, units, runCount, port) {
       exportCpuMs: round(median(runs.export.map((s) => s.cpuMs))),
       exportWallMs: round(median(runs.export.map((s) => s.wallMs))),
       peakMb: round(Math.max(...runs.import.map((s) => s.peakRssKb - s.rssBeforeKb)) / 1024),
+      ...(state && {
+        boundCpuMs: round(state.cpuMs),
+        boundPeakMb: round((state.peakRssKb - state.rssBeforeKb) / 1024),
+        stateBytes: JSON.parse(state.body).stateBytes,
+      }),
     };
   } catch (error) {
     const log = server.logs.value.split('\n').filter(Boolean).slice(-6).join(' / ');
@@ -275,8 +285,8 @@ async function main() {
   const conversions = [];
   for (const target of SCALE_SIZES) {
     const units = unitsFor(target);
-    const runCount = target <= 256 * 1024 ? CONVERSION_RUNS : 1;
-    conversions.push({ bytes: Buffer.byteLength(scaleNote(unit, units)), units, runCount, ...(await measureSize(unit, units, runCount, port)) });
+    const bound = target === SCALE_SIZES.at(-1);
+    conversions.push({ bytes: Buffer.byteLength(scaleNote(unit, units)), units, ...(await measureSize(unit, units, port, bound)) });
     port += 1;
   }
 
@@ -297,7 +307,9 @@ async function main() {
   const worst = families.reduce((a, b) => (b.ratio > a.ratio ? b : a));
   const kb = (bytes) => `${Math.round(bytes / 1024)} KB`;
   const seconds = (ms) => `${round(ms / 1000)} s`;
-  const budget = (ms) => (ms > CPU_LIMIT_MS ? `, over the ${seconds(CPU_LIMIT_MS)} default CPU limit` : '');
+  const budget = (ms) =>
+    ms > CPU_LIMIT_MS ? `, over the ${seconds(CPU_LIMIT_MS)} default CPU limit` : ms > IMPORT_BUDGET_MS ? `, over the ${seconds(IMPORT_BUDGET_MS)} import budget` : '';
+  const mb = (bytes) => `${round(bytes / 1024 / 1024)} MB`;
   const lines = [
     '### Converter in workerd (SP2)',
     '',
@@ -310,8 +322,14 @@ async function main() {
     ...conversions.map((c) =>
       c.failed
         ? `| ${kb(c.bytes)} scale note (${c.units} units) | FAILED: ${c.failed} |`
-        : `| ${kb(c.bytes)} scale note (${c.units} units, ${c.blocks} blocks) import / export: workerd CPU, ${c.runCount > 1 ? `median of ${c.runCount}` : 'one run'} | ${c.importCpuMs} ms / ${c.exportCpuMs} ms${budget(c.importCpuMs)} (wall ${c.importWallMs} / ${c.exportWallMs} ms); RSS growth during import ${c.peakMb} MB |`,
+        : `| ${kb(c.bytes)} scale note (${c.units} units, ${c.blocks} blocks) import / export: workerd CPU, median of ${CONVERSION_RUNS} | ${c.importCpuMs} ms / ${c.exportCpuMs} ms${budget(c.importCpuMs)} (wall ${c.importWallMs} / ${c.exportWallMs} ms); RSS growth during import ${c.peakMb} MB |`,
     ),
+    ...conversions
+      .filter((c) => c.boundCpuMs !== undefined)
+      .map(
+        (c) =>
+          `| ${kb(c.bytes)} scale note imported into a bound Y.Doc (the DocDO's serverWrite path): workerd CPU, one run | ${c.boundCpuMs} ms; Y.Doc state ${mb(c.stateBytes)}; RSS growth ${c.boundPeakMb} MB |`,
+      ),
     `| State-to-markdown ratio r, worst family | ${worst.ratio.toFixed(2)} (${worst.name}) |`,
     '',
     '| Fixture | Markdown B | Y.Doc state B | Ratio |',
@@ -326,6 +344,12 @@ async function main() {
   const failed = conversions.filter((c) => c.failed);
   if (failed.length > 0) {
     console.error(`measure-converter: ${failed.length} conversion(s) failed in workerd`);
+    process.exitCode = 1;
+  }
+  const slow = conversions.filter((c) => !c.failed && c.importCpuMs > IMPORT_BUDGET_MS);
+  if (slow.length > 0) {
+    const sizes = slow.map((c) => `${kb(c.bytes)} in ${seconds(c.importCpuMs)}`).join(', ');
+    console.error(`measure-converter: import over the ${seconds(IMPORT_BUDGET_MS)} workerd CPU budget: ${sizes}`);
     process.exitCode = 1;
   }
 }

@@ -9,7 +9,7 @@ import { $createParagraphNode, $createTextNode, $getRoot, $getSelection, $isRang
 import { describe, expect, it } from 'vitest';
 import { withImportFormulaIds } from '@moss-desktop/renderer/editor/markdown/fixes';
 import { $postImportNormalize, escapeHtmlEntities, normalizeMarkdownForImport, unescapeHtmlEntities } from '@moss-desktop/renderer/editor/markdown/normalize';
-import { createConverterEditor, exportMarkdown, importMarkdown, MARKDOWN_EDITOR_TRANSFORMERS, type NoteBodyImportOptions } from './index.ts';
+import { $importNoteBody, createConverterEditor, exportMarkdown, importMarkdown, MARKDOWN_EDITOR_TRANSFORMERS, type NoteBodyImportOptions } from './index.ts';
 import { CANONICALIZED, DEVIATING, FIXTURES, fixture, golden, NOT_IDEMPOTENT, SCALE_FIXTURES, SCALE_UNIT, stringify, transformerSignature } from './fixtures.ts';
 
 function expectGolden(file: string, actual: string): void {
@@ -176,6 +176,42 @@ describe('scale @p:tech-1', () => {
     const exported = exportMarkdown(importMarkdown(markdown));
     expect(tables(exported)).toBe(50);
     expect(exportMarkdown(importMarkdown(exported))).toBe(exported);
+  });
+});
+
+// SP2 (T0.6b): while a RangeSelection exists, every remove() and insertAfter() pays getIndexWithinParent(), so an
+// import that creates one is quadratic in blocks (54 s of workerd CPU at 2 MB). The SP2 step times the 2 MB note.
+describe('whole-document import keeps no selection @p:tech-4', () => {
+  const selectionAfter = (update: () => void) => {
+    const editor = createConverterEditor();
+    editor.update(update, { discrete: true });
+    return editor.getEditorState().read(() => $getSelection());
+  };
+
+  it.each([
+    ['the tables fixture', fixture('tables').markdown],
+    ['a raw URL whose trimmed suffix moss puts the caret after', '(see https://example.com/page.).'],
+  ])('creates none for %s', (_name, markdown) => {
+    expect(selectionAfter(() => $importNoteBody(markdown))).toBeNull();
+  });
+
+  it('drops one the editor already held', () => {
+    const editor = createConverterEditor();
+    editor.update(
+      () => {
+        $getRoot().append($createParagraphNode().append($createTextNode('before'))).selectEnd();
+      },
+      { discrete: true },
+    );
+    editor.update(() => $importNoteBody('after'), { discrete: true });
+    expect(editor.getEditorState().read(() => $getSelection())).toBeNull();
+  });
+
+  // moss's paste (convertMarkdownPasteToNodes) and its typing shortcuts run the same transformers outside the pipeline.
+  // A complete GFM table takes the multiline transformer; the fixture's other tables reach TABLE_TRANSFORMER.
+  it("leaves moss's own conversion as it was: TABLE_TRANSFORMER still takes the caret", () => {
+    const { markdown } = fixture('tables');
+    expect(selectionAfter(() => $convertFromMarkdownString(markdown, MARKDOWN_EDITOR_TRANSFORMERS))).not.toBeNull();
   });
 });
 
