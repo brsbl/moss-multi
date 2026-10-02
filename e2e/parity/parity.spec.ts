@@ -23,8 +23,6 @@ let stack: Stack;
 let stories: Set<string>;
 let principals = 0;
 
-test.describe.configure({ mode: 'serial' });
-
 test.beforeAll(async () => {
   const dir = process.env.ORACLE_DIR;
   if (!dir) throw new InfraBlocked('ORACLE_DIR is unset; build it with e2e/parity/oracle/build.mjs');
@@ -87,7 +85,12 @@ async function maskRects(page: Page, selectors: string[]): Promise<Rect[]> {
   return rects.map((r: DOMRect) => ({ x: Math.floor((r.x - origin.x) * 2), y: Math.floor((r.y - origin.y) * 2), width: Math.ceil(r.width * 2), height: Math.ceil(r.height * 2) }));
 }
 
-async function captureOracle(browser: Browser, target: Target, theme: Theme): Promise<{ png: Buffer; listing: NoteListing[] }> {
+interface OracleCapture { png: Buffer; listing: NoteListing[]; openTitle: string | null }
+
+/** The open note's title field (moss's title is the first textbox in the shell). */
+const openTitle = (page: Page) => page.evaluate((crop) => document.querySelector(`${crop} [role="textbox"]`)?.textContent ?? null, CROP);
+
+async function captureOracle(browser: Browser, target: Target, theme: Theme): Promise<OracleCapture> {
   const page = await newPage(browser, theme);
   try {
     await page.goto(`${oracle.url}/?story=${target.story}&mode=preview`);
@@ -95,13 +98,14 @@ async function captureOracle(browser: Browser, target: Target, theme: Theme): Pr
     const listing = await page.evaluate(() =>
       (window as unknown as { electronAPI: { notes: { getAll: () => Promise<NoteListing[]> } } }).electronAPI.notes.getAll(),
     );
-    return { png: await capture(page), listing };
+    return { png: await capture(page), listing, openTitle: await openTitle(page) };
   } finally {
     await page.context().close();
   }
 }
 
-async function captureCandidate(browser: Browser, target: Target, theme: Theme, listing: NoteListing[]): Promise<{ png: Buffer; masks: Rect[] }> {
+async function captureCandidate(browser: Browser, target: Target, theme: Theme, oracleState: OracleCapture): Promise<{ png: Buffer; masks: Rect[] }> {
+  const { listing } = oracleState;
   const page = await newPage(browser, theme);
   try {
     principals += 1;
@@ -117,6 +121,13 @@ async function captureCandidate(browser: Browser, target: Target, theme: Theme, 
     }
     await page.goto(new URL(path, stack.baseUrl).href);
     await page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
+    if (target.seed === 'story-listing' && oracleState.openTitle && oracleState.openTitle !== listing[0].title) {
+      // The story hydrates its first note, then moss's startup opens the most recent one; do the same from the
+      // sidebar, so back history and the active row match.
+      await expect(page.locator('[role="textbox"]').nth(0)).toHaveText(listing[0].title);
+      await page.locator(CROP).getByText(oracleState.openTitle, { exact: true }).click();
+      await expect(page.locator('[role="textbox"]').nth(0)).toHaveText(oracleState.openTitle);
+    }
     await audit(page, theme, 'candidate');
     const masks = await maskRects(page, target.masks);
     return { png: await capture(page), masks };
@@ -135,7 +146,7 @@ for (const target of TARGETS) {
       if (noise.diffPixels > 0 || noise.sizeDelta.dw || noise.sizeDelta.dh) {
         throw new InfraBlocked(`two oracle captures of ${target.story} differ by ${noise.diffPixels} px`);
       }
-      const candidate = await captureCandidate(browser, target, theme, first.listing);
+      const candidate = await captureCandidate(browser, target, theme, first);
       const { metrics, diff, triptych } = compare(first.png, candidate.png, candidate.masks);
 
       const dir = join(OUT, `${target.id}-${theme}`);

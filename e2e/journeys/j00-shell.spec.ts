@@ -1,6 +1,6 @@
 // j00-shell (T0.5a): the real moss shell from the built Worker. Two principals boot it clean under the page CSP,
 // every navigation carries the served build, light and dark switch through moss's own Settings, the floating
-// detector bites on the live canvas, a data: iframe's script runs under the CSP (SP13), and test-hook and
+// detector bites on the live canvas, an HTML block frame's script runs under the CSP (SP13), and test-hook and
 // playground paths are the unknown-route 404 (R7).
 import { randomBytes } from 'node:crypto';
 import type { Page } from '@playwright/test';
@@ -148,33 +148,44 @@ test('the floating-chrome detector flags an overlay on the live canvas, then pas
   await actors.checkpoint('after-overlay');
 });
 
-test('SP13: a script inside an injected data: iframe runs under the page CSP', async ({ actors }) => {
+// SP13 settled no: a data: iframe inherits the page CSP, so its inline script is refused under the nonce policy.
+// HTML blocks therefore load apps/web's /frame/html (A§22's default), whose own policy is only the sandbox.
+const HTML_FRAME = { path: '/frame/html', ready: 'moss-html-frame-ready', content: 'moss-html-frame-content' };
+
+test('SP13: an HTML block frame injected into the page runs its script under the page CSP', async ({ actors }) => {
   const [ada, ben] = await twoShells(actors);
   const response = await ada.page.reload();
   await waitForShell(ada);
   const policy = response?.headers()['content-security-policy'] ?? '';
   expect(policy, 'the document carries a per-request nonce').toMatch(/script-src 'self' 'nonce-[A-Za-z0-9+/_-]{16,}={0,2}'/);
-  expect(policy, 'HTML blocks are data: iframes').toMatch(/frame-src [^;]*\bdata:/);
+  expect(policy, 'HTML block frames are same-origin documents').toMatch(/frame-src 'self'/);
+  const frame = await ada.page.request.get(HTML_FRAME.path);
+  expect(frame.headers()['content-security-policy'], 'the frame is an opaque-origin sandbox').toBe('sandbox allow-scripts');
 
   const ran = await ada.page.evaluate(
-    () =>
+    ({ path, ready, content }) =>
       new Promise<string>((resolve) => {
         const timer = setTimeout(() => resolve('timeout: the frame script never ran'), 5_000);
+        const iframe = document.createElement('iframe');
         window.addEventListener('message', (event) => {
-          if (typeof event.data === 'string' && event.data.startsWith('sp13:')) {
+          if (event.source !== iframe.contentWindow) return;
+          if (event.data?.type === ready) {
+            const html = '<p>block</p><script>parent.postMessage("sp13:" + (6 * 7), "*")</script>';
+            iframe.contentWindow?.postMessage({ type: content, html }, '*');
+          } else if (typeof event.data === 'string' && event.data.startsWith('sp13:')) {
             clearTimeout(timer);
             resolve(event.data);
           }
         });
-        const frame = document.createElement('iframe');
-        frame.id = 'sp13-frame';
-        frame.setAttribute('sandbox', 'allow-scripts');
-        Object.assign(frame.style, { position: 'absolute', left: '-9999px', width: '10px', height: '10px' });
-        frame.src = `data:text/html;charset=utf-8,${encodeURIComponent('<script>parent.postMessage("sp13:" + (6 * 7), "*")</script>')}`;
-        document.body.append(frame);
+        iframe.id = 'sp13-frame';
+        iframe.setAttribute('sandbox', 'allow-scripts');
+        Object.assign(iframe.style, { position: 'absolute', left: '-9999px', width: '10px', height: '10px' });
+        iframe.src = path;
+        document.body.append(iframe);
       }),
+    HTML_FRAME,
   );
-  expect(ran, 'the data: frame script ran').toBe('sp13:42');
+  expect(ran, 'the block script ran').toBe('sp13:42');
   await ada.page.evaluate(() => document.getElementById('sp13-frame')?.remove());
   for (const actor of [ada, ben]) await expectNoCspViolations(actor);
 });

@@ -310,7 +310,7 @@
     {"path":"packages/shared/src/components/brand/index.ts","pin":"762abb777","upstreamSha256":"36f6e8e9494c601f7f1ee8d19c350867fb1d489445d8b7e7fc1158a2d43dcbbc","mode":"verbatim"},
     {"path":"packages/shared/src/components/layout/ActionsPanelWrapper.tsx","pin":"762abb777","upstreamSha256":"39daedd8ab85e38549ebfa9387e43c2721ac7367f91842f7a9b7baa02adf2d6b","mode":"verbatim"},
     {"path":"packages/shared/src/components/layout/AppShell.tsx","pin":"762abb777","upstreamSha256":"0fac4be35fc99990176cabe7636bc23abe09ba0c6011d866a96f7e1d0037ab7c","mode":"verbatim"},
-    {"path":"packages/shared/src/components/layout/CanvasArea.tsx","pin":"762abb777","upstreamSha256":"c49ebf9281716509424b6a3ea7b84961c5aac6878f2d152cea0b593a98d7e186","mode":"verbatim"},
+    {"path":"packages/shared/src/components/layout/CanvasArea.tsx","pin":"762abb777","upstreamSha256":"c49ebf9281716509424b6a3ea7b84961c5aac6878f2d152cea0b593a98d7e186","mode":"patched","patch":"patches/moss/packages/shared/src/components/layout/CanvasArea.tsx.patch"},
     {"path":"packages/shared/src/components/layout/NotesListPanel.tsx","pin":"762abb777","upstreamSha256":"dcee51497526d13361b27aed609f5bad5b1aa657439c85f9be44b41e3963054a","mode":"verbatim"},
     {"path":"packages/shared/src/components/layout/index.ts","pin":"762abb777","upstreamSha256":"ea683cc087ecd373a523e065a4d145396b07262834f07d89d139227673e5b89d","mode":"verbatim"},
     {"path":"packages/shared/src/components/notes/NoteCard.tsx","pin":"762abb777","upstreamSha256":"186801195af53987e23686d83c9d10ea2b7803cea1d0dfe1d635ce577780f110","mode":"verbatim"},

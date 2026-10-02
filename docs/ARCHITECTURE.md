@@ -20,7 +20,7 @@ Browser tab
   moss App (vendored, client-only) ──window.electronAPI──► host/bridge  (REST · Y.Doc · browser APIs · localStorage)
   per editor pane: <LexicalCollaboration> + MossCollaborationPlugin ──1 WS /parties/doc-d-o/<docId>──► DocDO(docId)
   workspace channel (one per tab) ──────────────────────1 WS /api/workspace/ws──────────────► PrincipalDO(principalId)
-Worker (one script): /api/version → /__test → /api/auth → /api/workspace/ws → /api/* → /parties/doc-d-o → Start SSR
+Worker (one script): /api/version → /__test → /api/auth → /api/workspace/ws → /api/* → /parties/doc-d-o → /frame/html → Start SSR
   D1: accounts, vaults/folders/docs, grants, links, invites, notifications, assets, prefs
   R2: content-addressed asset blobs; version spill
   DocDO ─RPC─► SearchDO('global'), PrincipalDO(*)      DocDO ─D1─► docs.title / filename / updated_at projections
@@ -135,7 +135,8 @@ The Worker exports `createServerEntry({fetch})` and re-exports the DO classes. [
    - Never refuse before the upgrade: a refused handshake reaches the client as a transient 1006, and it would retry forever [L§4.6]. On a denial the Worker accepts the upgrade itself (`WebSocketPair`) and closes it, without waking the DocDO: 4401 with no credential; 4404 for a missing, inaccessible, forged-token or revoked-token doc (one code for all four, so nothing is disclosed); 4410 for a trashed doc the caller could otherwise open.
    - Strip every client `x-moss-*` and `x-partykit-*` header by prefix, then set the trusted `x-moss-principal|role|session|share` headers.
    - Clone the request without an init before setting headers, so `Upgrade` and `Sec-WebSocket-*` survive. Then call `routePartykitRequest`. [L§4.7 upgrade trap; S-gd §1.3]
-7. **Everything else** goes to TanStack Start SSR.
+7. **`/frame/html`** serves the HTML-block frame: a fixed document whose only policy is `sandbox allow-scripts`, which writes the block HTML its embedding page posts to it (SP13).
+8. **Everything else** goes to TanStack Start SSR.
 
 Errors are logged through `waitUntil` and rethrown. `/api` never answers with HTML.
 
@@ -162,7 +163,7 @@ Errors are logged through `waitUntil` and rethrown. `/api` never answers with HT
 
 **Mounting moss.** `MossAppHost` combines `ClientOnly`, a `ChunkReloadBoundary` (one hard reload when a dynamic import fails), and `lazy(boot)`. The bridge is installed before App's module evaluates. App keeps Jotai's default store (no Provider) and `React.StrictMode`, as moss does, and honors `?mossMode=pdf-export` as `R/main.tsx` does. [S-ren §1.1]
 
-**Content security policy:** `default-src 'self'`; `script-src 'self' 'nonce-<per request>'`; `style-src 'self' 'unsafe-inline'`; `connect-src 'self'` plus the same-origin `ws(s):` URL; `frame-src data: https:` (HTML blocks are `data:` iframes); `img-src 'self' data: https: blob:`; `media-src 'self' blob:`. Start's SSR injects per-request inline scripts and `ScriptOnce` rewrites the theme script, so a static hash would block hydration; the Worker mints the nonce, passes it as the router's `ssr.nonce`, and sets the header. Whether a `data:` iframe inherits this policy is SP13. [S-ren §5.1, §0.13; router-core `ssr-server.js`]
+**Content security policy:** `default-src 'self'`; `script-src 'self' 'nonce-<per request>'`; `style-src 'self' 'unsafe-inline'`; `connect-src 'self'` plus the same-origin `ws(s):` URL; `frame-src 'self' data: https:`; `img-src 'self' data: https: blob:`; `media-src 'self' blob:`. Start's SSR injects per-request inline scripts and `ScriptOnce` rewrites the theme script, so a static hash would block hydration; the Worker mints the nonce, passes it as the router's `ssr.nonce`, and sets the header. A `data:` iframe inherits this policy (SP13, settled at T0.5a in Chromium), so its inline scripts are refused; HTML blocks load `/frame/html` instead (§4.1), and T3.2 points moss's `IframeFrame` there. [S-ren §5.1, §0.13; router-core `ssr-server.js`]
 
 **Tailwind.** The content globs cover vendored renderer and shared code, `apps/web/src/**` and `packages/ui/**`. A CI test fails when any file that writes a `className` falls outside them. [L§4.1]
 
@@ -681,7 +682,7 @@ S-test is the detailed design of record, but where it disagrees with this file o
   - Real severs use `routeWebSocket` and SIGSTOP. Hibernation is induced and then proven by an instance-id change. [S-test §3; L§7.1 #11–13]
 - **Local work.** `scripts/stack.mjs` is the same launcher CI uses. It allows at most 2 stacks machine-wide, reaps orphans, refuses translated Node, and records host state (a bb dev stack or Nightly running, load) with each run so local deaths are classed as infrastructure. `scripts/qa.mjs` drives bb Browser Automation (local headless Chrome for Testing) with per-principal contexts and 2× PNGs. The checker's pass is a change's one browser QA pass. No tests ever run locally. [S-test §4; owner rule; L§5.1]
 - **Parity.**
-  - The Ladle oracle is built in CI from moss@pin, with the `main.tsx` Prism and font preamble added. The default story id is `desktop-app--default`. Capturing it on CI's ubuntu Chromium changes L§1.1's owner-gated capture baseline, so it is put to the owner at the M0 hand-off.
+  - The Ladle oracle is built in CI from moss@pin, with the `main.tsx` Prism and font preamble added. The shell stories are `app--default` and `app--empty-notes`; with no deploy key (OA1) it is built from `moss-vendor.mjs pristine` (§22). Capturing it on CI's ubuntu Chromium changes L§1.1's owner-gated capture baseline, so it is put to the owner at the M0 hand-off.
   - A target passes with a pixel diff of at most 0.05%, a largest blob of at most 16 px², and the diff image read.
   - Targets grow with each milestone to every moss surface a seam changes and a story covers: the shell (M0), the top bar with peers present and the new note (M1), the trash view (M2), Settings (M3), the comment gutter and popover (M4). Only the web chrome's own rects are masked, never the whole slot, so displaced moss chrome still fails.
   - Node families use computed-style parity against an oracle-only Ladle story that renders the family corpus in pristine moss's MarkdownEditor, built in CI. No moss desktop is launched. [S-test §5; L§4.19]
@@ -711,7 +712,7 @@ S-test is the detailed design of record, but where it disagrees with this file o
 | SP10 | Comment paint: the CSS Custom Highlight API in WebKit, and geometry for moss's gutter and popover. | T4.0 | A pointer-transparent overlay with stable per-comment elements. |
 | SP11 | Suggester vetting on a mirror for tree deltas, with structural ops (checkbox, table row, list indent) as suggestion parts. | T5.0 | Ask the owner with options before refusing any structural op in suggest mode. |
 | SP12 | Port the identity-preserving reconcile to 0.48: restore, then push. | T6.1 | Block-level landing with verify-or-refuse (409), never a silent rebuild. |
-| SP13 | Does a `data:` iframe inherit the page CSP in Chromium and WebKit, blocking moss-html scripts? | T0.5a | Serve HTML blocks from a dedicated route whose response carries `content-security-policy: sandbox allow-scripts`, still opaque-origin. |
+| SP13 | Does a `data:` iframe inherit the page CSP in Chromium and WebKit, blocking moss-html scripts? **Yes in Chromium (T0.5a), so the default applies: `/frame/html`.** | T0.5a | Serve HTML blocks from a dedicated route whose response carries `content-security-policy: sandbox allow-scripts`, still opaque-origin. |
 | SP14 | How does hibernation behave on real Cloudflare (about 10 s idle with hibernatable sockets, wakes re-sending step 1, per-wake state rebuild)? | T1.10 | Treat every staging difference from workerd as a product defect in the wake path; keep j04's staging legs in the canary. |
 | SP15 | Does Linux WebKit navigate history on a bare Backspace, so the j02 leg can fail on the CI engine? | T0.9a | Run that leg on a macOS runner at milestone gates. |
 | OA1 | **Owner action.** A read-only deploy key on brsbl/moss, so CI can build the Ladle oracle. | T0.5a | Build the oracle from vendored pristine files plus moss's stories and `.ladle` (moss-vendor `pristine`), with a non-frozen install recorded. |

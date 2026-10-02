@@ -7,6 +7,7 @@ import { refusalFor } from './auth/config.ts';
 import { handleAuthRoute } from './auth/route.ts';
 import { asAppEnv } from './env.ts';
 import { BUILD } from './provenance.ts';
+import { mintNonce, withCsp } from './worker/csp.ts';
 import { stubHandlers, testHooksAllowed } from './worker/handlers.ts';
 import { routeRequest } from './worker/route.ts';
 
@@ -36,7 +37,10 @@ export default createServerEntry({
         testHooksAllowed: (req) => testHooksAllowed(req, appEnv),
         routeParty: (req) => routePartykitRequest(req, env as never),
         refuseSocket,
-        startFetch: async (req) => startFetch(req),
+        startFetch: async (req) => {
+          const nonce = mintNonce();
+          return withCsp(await startFetch(req, { context: { nonce } }), nonce, req.url);
+        },
       });
     } catch (error) {
       const { pathname } = new URL(request.url);
