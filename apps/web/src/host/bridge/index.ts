@@ -176,15 +176,17 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
 
 export type Bridge = ReturnType<typeof createBridge>;
 
+function localStorageOrNull(): Storage | null {
+  try {
+    return window.localStorage;
+  } catch {
+    return null; // storage disabled: the theme still follows the in-memory atom
+  }
+}
+
 /** Installs the bridge on `window` before App's module evaluates (A§4.3). */
 export function installBridge(): Bridge {
-  let storage: Storage | null = null;
-  try {
-    storage = window.localStorage;
-  } catch {
-    storage = null;
-  }
-  const bridge = createBridge({ pathname: () => window.location.pathname, storage });
+  const bridge = createBridge({ pathname: () => window.location.pathname, storage: localStorageOrNull() });
   (window as unknown as { electronAPI: Bridge }).electronAPI = bridge;
   return bridge;
 }

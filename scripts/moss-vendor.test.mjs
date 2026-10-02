@@ -208,10 +208,16 @@ describe('repin', () => {
 });
 
 describe('the committed vendor tree @p:R1', () => {
-  it.each(ROOTS.map((root) => [root.name, root]))('%s matches its pin with no patched files', (_name, root) => {
+  // A hand edit is allowed only as a recorded patch whose added lines carry a seam marker (A§2.1).
+  it.each(ROOTS.map((root) => [root.name, root]))('%s matches its pin, and every hand patch is a marked seam', (_name, root) => {
     const result = checkDrift({ root });
     expect(result.problems).toEqual([]);
-    expect(result.patched).toBe(0);
+    const repo = join(dirname(new URL(import.meta.url).pathname), '..');
+    const manifest = JSON.parse(readFileSync(join(repo, root.dir, 'PORTED.json'), 'utf8'));
+    for (const entry of manifest.files.filter((file) => file.mode === 'patched' && !file.generated)) {
+      const patch = readFileSync(join(repo, dirname(root.dir), entry.patch), 'utf8');
+      expect(patch, entry.path).toMatch(/^\+.*moss-multi seam: \S+ \(/m);
+    }
   });
 
   it('pins moss at 762abb777 and @lexical/react at 0.48.0', () => {
