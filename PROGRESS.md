@@ -1,10 +1,10 @@
 # moss-multi progress
 
-**Overall: 0% done** (0 of 66 planned tasks verified)
+**Overall: 2% done** (1 of 66 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
-| M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 0 / 14 | in progress |
+| M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 1 / 14 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 0 / 11 | |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 0 / 9 | |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys | 0 / 8 | |
@@ -19,3 +19,4 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Log
 
 - 2026-10-02 — Restart begun. History distilled into docs/history/LEARNINGS.md; PRODUCT.md carried over with restart rulings; ARCHITECTURE.md and BUILDPLAN.md drafted, critiqued by three lenses and revised.
+- 2026-10-02 — T0.1 verified: the repo installs as a pnpm workspace, and every push runs CI (plan, checks, build, ci-ok) with lint, single-version, trace and unit checks; a checks-only lane can be dispatched and `minutes.mjs` prints the month's Actions use.
