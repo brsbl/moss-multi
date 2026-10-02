@@ -1,0 +1,22 @@
+diff --git a/packages/desktop/src/renderer/editor/slash-commands/registry.ts b/packages/desktop/src/renderer/editor/slash-commands/registry.ts
+--- a/packages/desktop/src/renderer/editor/slash-commands/registry.ts
++++ b/packages/desktop/src/renderer/editor/slash-commands/registry.ts
+@@ -65,6 +65,8 @@ import { OPEN_COLOR_PICKER_COMMAND } from '../plugins/colorPickerCommands';
+ import type { SlashCommand, SlashCommandCategory } from './types';
+ import { CATEGORY_ORDER } from './types';
+ import { runSlashCommandWhenAllowed } from './nested-content';
++// moss-multi seam: hide-registry (A§9)
++import { hidden } from '@moss-multi/host/affordances';
+ 
+ /**
+  * Find the ListItemNode containing the given node, if any
+@@ -621,7 +623,8 @@ export const DEFAULT_SLASH_COMMANDS: SlashCommand[] = [
+       });
+     }
+   }
+-];
++  // moss-multi seam: hide-registry (A§9)
++].filter((command) => !(command.id === 'emoji' && hidden('emoji-panel')) && !(command.id === 'media' && hidden('media-upload')));
+ 
+ /**
+  * Filter commands based on search query

@@ -254,6 +254,8 @@ const PopoverContent = React.forwardRef<HTMLDivElement, PopoverContentProps>(
       >
         <BasePopover.Popup
           ref={ref}
+          // moss-multi seam: overlay-surface (A§19, the floating detector's allowlist)
+          data-overlay-surface=""
           className={className}
           initialFocus={onOpenAutoFocus ? initialFocus : undefined}
           finalFocus={onCloseAutoFocus ? finalFocus : undefined}
@@ -276,7 +278,12 @@ const PopoverContent = React.forwardRef<HTMLDivElement, PopoverContentProps>(
 );
 PopoverContent.displayName = 'PopoverContent';
 
-const PopoverPortal = BasePopover.Portal;
+// moss-multi seam: overlay-surface (A§19, the floating detector's allowlist)
+const PopoverPortal = React.forwardRef<
+  HTMLDivElement,
+  React.ComponentPropsWithoutRef<typeof BasePopover.Portal>
+>((props, ref) => <BasePopover.Portal ref={ref} data-overlay-surface="" {...props} />);
+PopoverPortal.displayName = 'PopoverPortal';
 const PopoverClose = BasePopover.Close;
 const PopoverArrow = BasePopover.Arrow;
 const PopoverTitle = BasePopover.Title;

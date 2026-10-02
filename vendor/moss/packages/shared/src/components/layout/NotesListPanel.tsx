@@ -4,6 +4,8 @@ import { Search, X, PanelLeft, Plus } from 'lucide-react';
 import { KeyboardShortcut } from '@/components/ui/keyboard-shortcut';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
+// moss-multi seam: hide-registry (A§9)
+import { hidden } from '@moss-multi/host/affordances';
 
 export interface NotesListPanelProps {
   className?: string;
@@ -285,9 +287,12 @@ export const NotesListPanel = React.forwardRef<NotesListPanelHandle, NotesListPa
                       <Plus className="h-3.5 w-3.5" strokeWidth={1.5} aria-hidden />
                       Note
                     </span>
-                    <span className="min-w-0 shrink overflow-hidden">
-                      <KeyboardShortcut keys={['⌘', 'N']} variant="on-light" size="compact" />
-                    </span>
+                    {/* moss-multi seam: hide-registry (A§9) */}
+                    {hidden('create-note-shortcut-label') ? null : (
+                      <span className="min-w-0 shrink overflow-hidden">
+                        <KeyboardShortcut keys={['⌘', 'N']} variant="on-light" size="compact" />
+                      </span>
+                    )}
                   </button>
                 ) : null}
                 <div className="flex h-9 shrink-0 items-center gap-0.5 rounded-lg border border-surface-glass-border bg-surface-raised-control px-1 shadow-none">
