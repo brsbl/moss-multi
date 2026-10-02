@@ -208,9 +208,10 @@ describe('whole-document import keeps no selection @p:tech-4', () => {
   });
 
   // moss's paste (convertMarkdownPasteToNodes) and its typing shortcuts run the same transformers outside the pipeline.
-  it("leaves moss's own conversion as it was: a table still takes the caret", () => {
-    const table = '| a | b |\n| --- | --- |\n| 1 | 2 |';
-    expect(selectionAfter(() => $convertFromMarkdownString(table, MARKDOWN_EDITOR_TRANSFORMERS))).not.toBeNull();
+  // A complete GFM table takes the multiline transformer; the fixture's other tables reach TABLE_TRANSFORMER.
+  it("leaves moss's own conversion as it was: TABLE_TRANSFORMER still takes the caret", () => {
+    const { markdown } = fixture('tables');
+    expect(selectionAfter(() => $convertFromMarkdownString(markdown, MARKDOWN_EDITOR_TRANSFORMERS))).not.toBeNull();
   });
 });
 
