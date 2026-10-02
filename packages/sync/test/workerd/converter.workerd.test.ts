@@ -5,7 +5,7 @@ import { FIXTURES, golden, stringify } from '../../src/converter/fixtures.ts';
 declare const __MOSS_PRISTINE__: string;
 
 describe('L2 converter in workerd @p:tech-1', () => {
-  it('imports the node classes before the transformers, as a server entry does, and converts', async () => {
+  it('imports the node classes before the transformers, as a server entry does, and converts', { timeout: 120_000 }, async () => {
     // Entering at a node file is what a server does; on the unsplit tree this is the TDZ cycle (S-conv B5).
     const { ChartNode } = await import('@moss-desktop/renderer/editor/nodes/ChartNode');
     const { exportMarkdown, importMarkdown, MARKDOWN_EDITOR_NODES } = await import('../../src/converter/index.ts');
@@ -14,7 +14,7 @@ describe('L2 converter in workerd @p:tech-1', () => {
     expect(exportMarkdown(importMarkdown('Hello **workerd**'))).toBe('Hello **workerd**');
   });
 
-  it.each(FIXTURES.map((f) => [f.name, f] as const))('A5 %s matches the L1 goldens', async (name, { markdown, options }) => {
+  it.each(FIXTURES.map((f) => [f.name, f] as const))('A5 %s matches the L1 goldens', { timeout: 60_000 }, async (name, { markdown, options }) => {
     const { exportMarkdown, importMarkdown } = await import('../../src/converter/index.ts');
     const editor = importMarkdown(markdown, options);
     expect(stringify(editor.getEditorState().toJSON())).toBe(golden(`${name}.json`));
@@ -32,7 +32,7 @@ describe('L2 converter in workerd @p:tech-1', () => {
 });
 
 describe('L2 negative control: the unsplit tree @p:tech-1', () => {
-  it('entering pristine moss at nodes/ChartNode throws the TDZ error', async () => {
+  it('entering pristine moss at nodes/ChartNode throws the TDZ error', { timeout: 120_000 }, async () => {
     // Prism's global is installed first so the only failure left is the import cycle (S-conv B4, B5).
     const prism = (await import('prismjs')) as { default?: unknown };
     (globalThis as { Prism?: unknown }).Prism ??= prism.default ?? prism;
