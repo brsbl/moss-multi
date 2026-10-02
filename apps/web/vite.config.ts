@@ -17,6 +17,8 @@ export default defineConfig({
       { find: /^@moss\/shared\/(.*)$/, replacement: `${vendor}/shared/src/$1` },
       { find: /^@\/(.*)$/, replacement: `${vendor}/shared/src/$1` },
       { find: /^@moss-desktop\/(.*)$/, replacement: `${vendor}/desktop/src/$1` },
+      // moss-multi seams in vendored files call host hooks and slots (A§2.2).
+      { find: /^@moss-multi\/host\/(.*)$/, replacement: `${repoRoot}apps/web/src/host/$1` },
     ],
     dedupe: ['react', 'react-dom', 'jotai', 'jotai-family', 'lexical', 'yjs', 'prismjs'],
   },

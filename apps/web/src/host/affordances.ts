@@ -99,7 +99,7 @@ export const AFFORDANCES = [
     sites: ['shared/src/components/layout/NotesListPanel.tsx'],
     reason: 'Browsers keep ⌘N for a new window, so the chip advertises a shortcut the page never receives; "+ Note" stays.',
     cite: 'P:Agents; deviation 4',
-    probes: [{ surface: 'shell', selector: 'button[aria-label="Create new note"] kbd' }],
+    probes: [{ surface: 'shell', selector: 'button[aria-label="Create new note"] > span:has(kbd)' }],
   },
   // The same "cannot work on the web" rule.
   {
@@ -134,10 +134,13 @@ export const AFFORDANCES = [
   {
     id: 'new-folder',
     sites: [`${R}/panels/NotesListPanelContent.tsx`],
-    reason: 'The folders API lands in M2.',
+    reason: 'The folders API lands in M2. With "Open..." also withheld, the folder actions menu has no item, so its trigger goes too.',
     cite: 'T2.2',
     staged: 2,
-    probes: [{ surface: 'folder-actions', selector: MENU_ITEM, text: 'New Folder' }],
+    probes: [
+      { surface: 'folder-actions', selector: MENU_ITEM, text: 'New Folder' },
+      { surface: 'shell', selector: 'button[aria-label="Folder actions"]' },
+    ],
   },
   {
     id: 'trash',
