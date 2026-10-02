@@ -29,6 +29,22 @@ export default defineConfig({
         },
       },
       {
+        // The real DocDO class in Node (L§4.7): workerd's storage and hibernation socket API are faked in
+        // packages/sync/test/harness; partyserver is inlined so `cloudflare:workers` resolves to the stub.
+        extends: true,
+        resolve: {
+          alias: [{ find: /^cloudflare:workers$/, replacement: `${repo}packages/sync/test/harness/cloudflare-workers.ts` }, ...alias],
+        },
+        test: {
+          name: 'sync-harness',
+          environment: 'node',
+          include: ['packages/sync/test/harness/**/*.test.ts'],
+          setupFiles: ['packages/sync/test/harness/setup.ts'],
+          server: { deps: { inline: ['partyserver', 'y-partyserver'] } },
+          testTimeout: 60_000,
+        },
+      },
+      {
         // L2: the converter inside workerd (S-conv §5.1).
         extends: true,
         plugins: [cloudflareTest({ miniflare: { compatibilityDate: '2025-09-02', compatibilityFlags: ['nodejs_compat'] } })],

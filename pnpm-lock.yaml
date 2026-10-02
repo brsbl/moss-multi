@@ -254,15 +254,36 @@ importers:
 
   e2e:
     devDependencies:
+      '@lexical/headless':
+        specifier: 0.48.0
+        version: 0.48.0(typescript@5.9.3)
+      '@lexical/yjs':
+        specifier: 0.48.0
+        version: 0.48.0(typescript@5.9.3)(yjs@13.6.31)
       '@playwright/test':
         specifier: 1.61.1
         version: 1.61.1
       '@types/node':
         specifier: 24.13.3
         version: 24.13.3
+      '@types/ws':
+        specifier: 8.18.2
+        version: 8.18.2
+      lexical:
+        specifier: 0.48.0
+        version: 0.48.0(typescript@5.9.3)
       typescript:
         specifier: 5.9.3
         version: 5.9.3
+      ws:
+        specifier: 8.21.0
+        version: 8.21.0
+      y-partyserver:
+        specifier: 2.2.0
+        version: 2.2.0(@cloudflare/workers-types@4.20260702.1)(partyserver@0.5.8(@cloudflare/workers-types@4.20260702.1))(yjs@13.6.31)
+      yjs:
+        specifier: 13.6.31
+        version: 13.6.31
 
   packages/protocol: {}
 
@@ -277,15 +298,24 @@ importers:
       '@lexical/yjs':
         specifier: 0.48.0
         version: 0.48.0(typescript@5.9.3)(yjs@13.6.31)
+      '@moss-multi/protocol':
+        specifier: workspace:*
+        version: link:../protocol
       lexical:
         specifier: 0.48.0
         version: 0.48.0(typescript@5.9.3)
+      lib0:
+        specifier: 0.2.119
+        version: 0.2.119
       partyserver:
         specifier: 0.5.8
         version: 0.5.8(@cloudflare/workers-types@4.20260702.1)
       y-partyserver:
         specifier: 2.2.0
         version: 2.2.0(@cloudflare/workers-types@4.20260702.1)(partyserver@0.5.8(@cloudflare/workers-types@4.20260702.1))(yjs@13.6.31)
+      y-protocols:
+        specifier: 1.0.7
+        version: 1.0.7(yjs@13.6.31)
       yjs:
         specifier: 13.6.31
         version: 13.6.31
