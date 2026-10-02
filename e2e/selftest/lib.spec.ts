@@ -6,7 +6,7 @@ import { inductionProblems } from '../lib/hibernate.ts';
 import { classifyInfra, InfraBlocked, isInfraBlocked } from '../lib/infra.ts';
 import { budgetProblem, latencyRows, Measure, percentile } from '../lib/measure.ts';
 import { assertTestEmail, parseSetCookie, principalProblems } from '../lib/principals.ts';
-import { emptyShardProblem } from '../lib/reporter.ts';
+import MossReporter, { emptyShardProblem } from '../lib/reporter.ts';
 import { makeSeverable } from '../lib/sever.ts';
 import { typedProblems, type Typed } from '../lib/text.ts';
 import * as ui from '../lib/ui.ts';
@@ -146,6 +146,29 @@ test.describe('shard guard', () => {
     expect(emptyShardProblem('shell', 3)).toBeNull();
     expect(emptyShardProblem('all', 0)).toBeNull();
     expect(emptyShardProblem(undefined, 0)).toBeNull();
+  });
+  test('the reporter fails a group shard whose journey project plans no test, and passes one that plans some', async () => {
+    const env = { group: process.env.E2E_GROUP, summary: process.env.GITHUB_STEP_SUMMARY, state: process.env.STACK_STATE };
+    delete process.env.GITHUB_STEP_SUMMARY;
+    delete process.env.STACK_STATE;
+    process.env.E2E_GROUP = 'shell';
+    const outputDir = test.info().outputPath('reporter');
+    const project = (name: string, tests: number) => ({ project: () => ({ name }), allTests: () => Array.from({ length: tests }) });
+    const run = async (journeys: number) => {
+      const reporter = new MossReporter();
+      const suite = { suites: [project('selftest-chromium', 4), project('chromium', journeys)] };
+      reporter.onBegin({ projects: [{ outputDir }], rootDir: outputDir } as never, suite as never);
+      return reporter.onEnd({ status: 'passed' } as never);
+    };
+    try {
+      expect(await run(0)).toEqual({ status: 'failed' });
+      expect(await run(2)).toBeUndefined();
+    } finally {
+      for (const [key, value] of [['E2E_GROUP', env.group], ['GITHUB_STEP_SUMMARY', env.summary], ['STACK_STATE', env.state]] as const) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
   });
 });
 
