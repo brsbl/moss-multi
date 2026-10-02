@@ -311,6 +311,7 @@ jobs:
         with:
           name: ladle-oracle
           path: .oracle
+          include-hidden-files: true
           retention-days: 3
 
   # Shell parity (A§20): the build job's Worker against the oracle, in the same Chromium, 1440x1000 at 2x.
