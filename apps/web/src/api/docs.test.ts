@@ -2,7 +2,7 @@
 // owner-only probe (A§19).
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
-import { BASE, insertDoc, SECRET, signedUpUser, type TestUser } from '../test/principals.ts';
+import { BASE, insertDoc, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
 import { handleApi } from './router.ts';
 
 interface Created {
@@ -29,7 +29,7 @@ const DocDO = {
 };
 
 let d1: TestD1;
-let env: Parameters<typeof handleApi>[1];
+let env: AuthTestEnv & Parameters<typeof handleApi>[1];
 let ada: TestUser;
 let ben: TestUser;
 
