@@ -10,9 +10,10 @@ export const BROWSERS = ['chromium', 'webkit'];
 const LANES = ['auto', 'checks', 'e2e', 'full'];
 const BROWSER_INPUTS = { both: BROWSERS, chromium: ['chromium'], webkit: ['webkit'] };
 
-// BUILDPLAN.md feeds trace.mjs and e2e/ markdown may feed the suite, so neither is docs-only.
+// BUILDPLAN.md feeds trace.mjs, e2e/ markdown may feed the suite and vendor/ markdown is drift-checked,
+// so none of them is docs-only.
 export function isDocsOnlyPath(path) {
-  if (path === 'BUILDPLAN.md' || path.startsWith('e2e/')) return false;
+  if (path === 'BUILDPLAN.md' || path.startsWith('e2e/') || path.startsWith('vendor/')) return false;
   return path.startsWith('docs/') || path.endsWith('.md');
 }
 

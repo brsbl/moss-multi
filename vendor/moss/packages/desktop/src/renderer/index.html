@@ -1,0 +1,17 @@
+<!-- ported-from: packages/desktop/src/renderer/index.html @ 762abb777 -->
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: moss-asset: https:; font-src 'self'; connect-src 'self' moss-asset: https://api.anthropic.com wss://api.anthropic.com; frame-src 'self' data: moss-asset: https:; media-src 'self' moss-asset: blob: http://127.0.0.1:*;" />
+    <script>
+      !function(){var c='system';try{c=localStorage.getItem('moss_theme')||'system'}catch(e){}if(c!=='system'&&c!=='light'&&c!=='dark')c='system';var m=false;try{m=window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches}catch(e){}document.documentElement.dataset.theme=c==='system'?(m?'dark':'light'):c}();
+    </script>
+    <title>Moss Desktop</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./main.tsx"></script>
+  </body>
+</html>

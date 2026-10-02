@@ -1,0 +1,210 @@
+/* ported-from: packages/desktop/src/renderer/styles.css @ 762abb777 */
+@import '@moss/shared/themes/tokens.css';
+@import '../../../shared/src/tailwind.css';
+
+@layer base {
+  :root:not([data-theme='dark']) {
+    color-scheme: light;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    font-family:
+      'Inter Variable',
+      'Inter',
+      -apple-system,
+      BlinkMacSystemFont,
+      'Segoe UI',
+      sans-serif;
+    @apply bg-surface-panel text-ink-default;
+  }
+
+  [data-theme='dark'] [data-moss-app-shell='true'] {
+    border-color: transparent;
+  }
+
+  html {
+    scrollbar-width: thin;
+    scrollbar-color: theme('colors.border-subtle') transparent;
+  }
+
+  *::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    background-color: theme('colors.border-subtle');
+    border-radius: 9999px;
+  }
+
+  .canvas-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
+  }
+
+  .canvas-scroll[data-scrolling='true'] {
+    scrollbar-color: theme('colors.border-subtle') transparent;
+  }
+
+  .canvas-scroll::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  .canvas-scroll::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .canvas-scroll::-webkit-scrollbar-thumb {
+    background-color: transparent;
+    border-radius: 9999px;
+  }
+
+  .canvas-scroll[data-scrolling='true']::-webkit-scrollbar-thumb {
+    background-color: theme('colors.border-subtle');
+  }
+
+  .agent-dialog-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
+  }
+
+  .agent-dialog-scroll:hover {
+    scrollbar-color: theme('colors.border-default') transparent;
+  }
+
+  .agent-dialog-scroll::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  .agent-dialog-scroll::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .agent-dialog-scroll::-webkit-scrollbar-thumb {
+    background-color: transparent;
+    border-radius: 9999px;
+    transition: background-color 150ms ease;
+  }
+
+  .agent-dialog-scroll:hover::-webkit-scrollbar-thumb {
+    background-color: theme('colors.border-default');
+  }
+
+  .comment-thread-scroll {
+    overflow-anchor: none;
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
+  }
+
+  .comment-thread-scroll[data-scrolling='true'] {
+    scrollbar-color: rgb(var(--border-subtle-rgb) / 0.45) transparent;
+  }
+
+  .comment-thread-scroll::-webkit-scrollbar {
+    width: 4px;
+  }
+
+  .comment-thread-scroll::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .comment-thread-scroll::-webkit-scrollbar-thumb {
+    background-color: transparent;
+    border-radius: 9999px;
+    transition: background-color 150ms ease;
+  }
+
+  .comment-thread-scroll[data-scrolling='true']::-webkit-scrollbar-thumb {
+    background-color: rgb(var(--border-subtle-rgb) / 0.45);
+  }
+
+  .comment-edit-surface {
+    transition: background-color 150ms ease-out;
+  }
+
+  .comment-draft-surface {
+    background-color: var(--surface-comment-draft);
+  }
+
+  .comment-reply-region {
+    display: grid;
+    grid-template-rows: 1fr;
+  }
+
+  .comment-reply-region[data-editing='true'] {
+    grid-template-rows: 0fr;
+    pointer-events: none;
+  }
+
+  .comment-reply-region-inner {
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .comment-edit-surface {
+      transition: none;
+    }
+  }
+
+  /* Sidebar scroll - hide scrollbar entirely, scroll communicated by clipping + fade */
+  .sidebar-scroll {
+    scrollbar-width: none;
+  }
+
+  .sidebar-scroll::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+@layer utilities {
+  .app-region-drag {
+    -webkit-app-region: drag;
+    app-region: drag;
+  }
+
+  .app-region-no-drag {
+    -webkit-app-region: no-drag;
+    app-region: no-drag;
+  }
+
+  /* Subtle grid pattern for finder panels */
+  .bg-grid-subtle {
+    background-color: var(--surface-canvas);
+    background-image:
+      linear-gradient(to right, var(--border-subtle) 1px, transparent 1px),
+      linear-gradient(to bottom, var(--border-subtle) 1px, transparent 1px);
+    background-size: 16px 16px;
+  }
+
+  .moss-agent-sprout-mark {
+    display: none;
+    background-color: currentColor;
+    mask: url('../../../../logos/moss-sprout-icon.png') center / contain no-repeat;
+    -webkit-mask: url('../../../../logos/moss-sprout-icon.png') center / contain no-repeat;
+  }
+
+  [data-theme='dark'] .moss-agent-sprout-image {
+    display: none;
+  }
+
+  [data-theme='dark'] .moss-agent-sprout-mark {
+    display: inline-block;
+  }
+
+  [data-theme='dark'] .moss-agent-indicator {
+    color: var(--accent-brand-web);
+  }
+}
