@@ -38,8 +38,8 @@ import { COLOR_TRANSFORMER_IMPORT_REGEXP, COLOR_TRANSFORMER_REGEXP, isAfterUnclo
 import { $isInsideColorSuppressedRawContext } from '../utils/colorPickerTriggers';
 import { $postImportNormalize, unescapeHtmlEntities } from './normalize';
 import { HIGHLIGHT_COLOR_VARIABLES, HIGHLIGHT_YELLOW_VALUE, HIGHLIGHT_YELLOW_VAR, SERIF_FONT_FAMILY_MARKDOWN_STYLE_PATTERN, getSerifFontFamilyMarkdownStyleAttribute, highlightColorNameFromStyle, isSerifFontFamilyValue, markdownStyleAttributeHasSerifFontFamily, setTextNodeFontFamily, unescapeInlineMarkdownText, wrapSerifFontFamilyMarkdownSpan } from './text-style';
-// moss-multi seam: formula-ids, line-loss (A§12; S-conv B9, §1.2)
-import { $rejectLine, importFormulaId } from './fixes';
+// moss-multi seam: formula-ids, line-loss, import-selection (A§12; S-conv B9, §1.2; SP2)
+import { $rejectLine, $selectEndOutsideDocumentImport, importFormulaId } from './fixes';
 
 // Custom transformer to preserve underlines in markdown
 const UNDERLINE_TRANSFORMER: TextMatchTransformer = {
@@ -521,7 +521,7 @@ const RAW_WEB_EMBED_URL_TEXT_TRANSFORMER: TextMatchTransformer = {
     if (suffix) {
       const suffixNode = copyTextNodeFormat(textNode, $createTextNode(suffix));
       pill.insertAfter(suffixNode);
-      suffixNode.selectEnd();
+      $selectEndOutsideDocumentImport(suffixNode); // moss-multi seam: import-selection (A§12; SP2)
     }
   },
   trigger: ' ',
@@ -1918,7 +1918,7 @@ const TABLE_TRANSFORMER: ElementTransformer = {
       parentNode.replace(table);
     }
 
-    table.selectEnd();
+    $selectEndOutsideDocumentImport(table); // moss-multi seam: import-selection (A§12; SP2)
   },
   type: 'element'
 };

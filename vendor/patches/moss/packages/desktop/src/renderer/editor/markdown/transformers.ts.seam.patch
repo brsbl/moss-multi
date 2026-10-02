@@ -5,8 +5,8 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
  import { $isInsideColorSuppressedRawContext } from '../utils/colorPickerTriggers';
  import { $postImportNormalize, unescapeHtmlEntities } from './normalize';
  import { HIGHLIGHT_COLOR_VARIABLES, HIGHLIGHT_YELLOW_VALUE, HIGHLIGHT_YELLOW_VAR, SERIF_FONT_FAMILY_MARKDOWN_STYLE_PATTERN, getSerifFontFamilyMarkdownStyleAttribute, highlightColorNameFromStyle, isSerifFontFamilyValue, markdownStyleAttributeHasSerifFontFamily, setTextNodeFontFamily, unescapeInlineMarkdownText, wrapSerifFontFamilyMarkdownSpan } from './text-style';
-+// moss-multi seam: formula-ids, line-loss (A§12; S-conv B9, §1.2)
-+import { $rejectLine, importFormulaId } from './fixes';
++// moss-multi seam: formula-ids, line-loss, import-selection (A§12; S-conv B9, §1.2; SP2)
++import { $rejectLine, $selectEndOutsideDocumentImport, importFormulaId } from './fixes';
  
  // Custom transformer to preserve underlines in markdown
  const UNDERLINE_TRANSFORMER: TextMatchTransformer = {
@@ -20,6 +20,15 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
        ...(parsed.name ? { name: parsed.name } : {}),
        ...(parsed.stale ? { stale: true } : {})
      });
+@@ -517,7 +520,7 @@ const RAW_WEB_EMBED_URL_TEXT_TRANSFORMER: TextMatchTransformer = {
+     if (suffix) {
+       const suffixNode = copyTextNodeFormat(textNode, $createTextNode(suffix));
+       pill.insertAfter(suffixNode);
+-      suffixNode.selectEnd();
++      $selectEndOutsideDocumentImport(suffixNode); // moss-multi seam: import-selection (A§12; SP2)
+     }
+   },
+   trigger: ' ',
 @@ -1770,7 +1773,7 @@ const TABLE_TRANSFORMER: ElementTransformer = {
      return output.join('\n');
    },
@@ -61,6 +70,15 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
      }
  
      const immediatePrevious = parentNode.getPreviousSibling();
+@@ -1914,7 +1917,7 @@ const TABLE_TRANSFORMER: ElementTransformer = {
+       parentNode.replace(table);
+     }
+ 
+-    table.selectEnd();
++    $selectEndOutsideDocumentImport(table); // moss-multi seam: import-selection (A§12; SP2)
+   },
+   type: 'element'
+ };
 @@ -2207,10 +2210,10 @@ const IMAGE_TRANSFORMER: ElementTransformer = {
    // Match whole candidate markdown image lines and parse with a balanced parser.
    // Matching only `![` can truncate content before replace() runs.
