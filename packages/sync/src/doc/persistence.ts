@@ -66,11 +66,20 @@ export class DocStore {
     }
   }
 
-  append(update: Uint8Array): void {
+  /**
+   * Persists an update `doc` has applied: a log row, or a compaction when the log is due or the update alone would
+   * pass the 2 MB row cap (a large paste or server import).
+   */
+  record(update: Uint8Array, doc: Y.Doc): void {
+    if (update.byteLength > STATE_CHUNK_BYTES) {
+      this.compact(doc);
+      return;
+    }
     this.sql.exec('INSERT INTO yupdates (data) VALUES (?)', blob(update));
     this.rows += 1;
     this.bytes += update.byteLength;
     this.stateBytes += update.byteLength;
+    if (this.shouldCompact) this.compact(doc);
   }
 
   get pendingRows(): number {

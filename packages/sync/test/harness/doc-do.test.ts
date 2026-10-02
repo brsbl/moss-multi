@@ -1,8 +1,10 @@
 // The DocDO core in the Node harness (BUILDPLAN T0.7; A§5.1): replay, chunking, compaction identity, the seed,
 // admission, the write classifier with loud refusal, acks, limits and the RPC guard.
+import { $getRoot } from 'lexical';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as Y from 'yjs';
 import { base64ToBytes, CLOSE } from '@moss-multi/protocol/sync';
+import { exportMarkdown, importMarkdown } from '../../src/converter/index.ts';
 import { DocDO } from '../../src/doc-do.ts';
 import { Backing, bindLexical, blockTypes, connect, counts, openDoc, start, wake, type Opened, type TestClient } from './do-harness.ts';
 
@@ -54,6 +56,37 @@ describe('seed', () => {
     await client.hello();
     expect(lexical.blocks()).toEqual(['paragraph']);
     expect(lexical.text()).toBe('');
+  });
+});
+
+describe('server writes', () => {
+  const MARKDOWN = '## Plan\n\nA *first* paragraph with a [link](https://example.invalid).\n\n- one\n- two\n';
+
+  it('imports a created body through the one converter, once', async () => {
+    const opened = await start(openDoc());
+    await opened.dobj.create({ folderId: 'folder-1', ownerId: 'user-1', markdown: MARKDOWN });
+    const reference = importMarkdown(MARKDOWN);
+    expect(await opened.dobj.exportMarkdown()).toBe(exportMarkdown(reference));
+
+    const client = await connect(opened, { role: 'viewer' });
+    const lexical = bindLexical(client.doc);
+    await client.hello();
+    expect(lexical.blocks()).toEqual(reference.getEditorState().read(() => $getRoot().getChildren().map((node) => node.getType())));
+
+    const stored = counts(opened.backing);
+    await opened.dobj.create({ folderId: 'folder-1', ownerId: 'user-1', markdown: 'Something else' });
+    expect(counts(opened.backing), 'a repeated create writes nothing').toEqual(stored);
+    expect(await opened.dobj.exportMarkdown()).toBe(exportMarkdown(reference));
+  });
+
+  it('refuses an import past the state cap and keeps the seed', async () => {
+    class SmallDoc extends DocDO {
+      static override limits = { ...DocDO.limits, stateCapBytes: 4 * 1024 };
+    }
+    const opened = await start(openDoc(new Backing(), SmallDoc as never));
+    await expect(opened.dobj.create({ folderId: 'folder-1', ownerId: 'user-1', markdown: 'word '.repeat(4_000) })).rejects.toThrow('doc-cap');
+    expect(blockTypes(opened.dobj.document)).toEqual(['paragraph']);
+    expect((await opened.dobj.exportMarkdown()).trim()).toBe('');
   });
 });
 

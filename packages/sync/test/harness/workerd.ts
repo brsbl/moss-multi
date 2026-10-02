@@ -66,9 +66,9 @@ export function installWorkerdGlobals(): void {
   Object.assign(ws, { READY_STATE_CONNECTING: 0, READY_STATE_OPEN: 1, READY_STATE_CLOSING: 2, READY_STATE_CLOSED: 3 });
   const NativeResponse = globalThis.Response;
   class WorkerdResponse extends NativeResponse {
-    readonly webSocket: unknown;
+    readonly webSocket: WebSocket | null;
 
-    constructor(body?: BodyInit | null, init?: ResponseInit & { webSocket?: unknown }) {
+    constructor(body?: BodyInit | null, init?: ResponseInit) {
       const upgrade = init?.status === 101;
       super(body, upgrade ? { ...init, status: 200 } : init);
       this.webSocket = init?.webSocket ?? null;

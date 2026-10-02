@@ -1,12 +1,13 @@
-/// <reference path="./moss-modules.d.ts" />
 // The DocDO's headless side (A§5.1, A§12): moss's converter editor bound (V1) to a mirror Y.Doc, serverWrite for
-// every server-side content write, the seed, and markdown export.
+// every server-side content write, the seed, and markdown export. Typechecks reach the vendored converter modules
+// through src/moss-modules.d.ts.
 import { createBinding, syncLexicalUpdateToYjs, syncYjsChangesToLexical, type Provider } from '@lexical/yjs';
 import { $createParagraphNode, $getRoot, type LexicalEditor } from 'lexical';
 import * as Y from 'yjs';
-import { createConverterEditor, exportMarkdown } from './converter/index.ts';
+import { $importNoteBody, createConverterEditor, exportMarkdown } from './converter/index.ts';
 
 export const SERVER_SEED = 'server-seed';
+export const SERVER_IMPORT = 'server-import';
 const HYDRATE = Symbol('hydrate');
 
 const noop = () => {};
@@ -52,30 +53,38 @@ function mirrorOf(live: Y.Doc): Mirror {
   };
 }
 
-/**
- * The one server-side content writer (seed now; import, push, restore and accept later): run `mutate` inside a
- * headless update on a hydrated mirror, then apply the mirror's diff to the live doc under `origin`. Returns
- * whether the live doc changed.
- */
-export function serverWrite(live: Y.Doc, origin: unknown, mutate: () => void): boolean {
+/** What `mutate` changes, as an update against `live`'s state. */
+function mirrorDiff(live: Y.Doc, mutate: () => void): Uint8Array {
   const mirror = mirrorOf(live);
   try {
     const hydrated = Y.encodeStateVector(mirror.doc);
     mirror.editor.update(mutate, { discrete: true });
-    let changed = false;
-    const onUpdate = () => {
-      changed = true;
-    };
-    live.on('update', onUpdate);
-    try {
-      Y.applyUpdate(live, Y.encodeStateAsUpdate(mirror.doc, hydrated), origin);
-    } finally {
-      live.off('update', onUpdate);
-    }
-    return changed;
+    return Y.encodeStateAsUpdate(mirror.doc, hydrated);
   } finally {
     mirror.dispose();
   }
+}
+
+/**
+ * The one server-side content writer (seed and import now; push, restore and accept later): run `mutate` inside a
+ * headless update on a hydrated mirror, hand the mirror's diff to `admit` (which throws to refuse it), then apply
+ * the diff to the live doc under `origin`. The mirror is released before returning. Returns whether the live doc
+ * changed.
+ */
+export function serverWrite(live: Y.Doc, origin: unknown, mutate: () => void, admit: (diff: Uint8Array) => void = noop): boolean {
+  const diff = mirrorDiff(live, mutate);
+  admit(diff);
+  let changed = false;
+  const onUpdate = () => {
+    changed = true;
+  };
+  live.on('update', onUpdate);
+  try {
+    Y.applyUpdate(live, diff, origin);
+  } finally {
+    live.off('update', onUpdate);
+  }
+  return changed;
 }
 
 export const rootIsEmpty = (doc: Y.Doc): boolean => doc.get('root', Y.XmlText).length === 0;
@@ -87,6 +96,11 @@ export function seedEmptyParagraph(live: Y.Doc): boolean {
     const root = $getRoot();
     if (root.getChildrenSize() === 0) root.append($createParagraphNode());
   });
+}
+
+/** Replaces the body with `markdown` through the one converter (A§12), which imports with no selection (SP2). */
+export function importBody(live: Y.Doc, markdown: string, admit?: (diff: Uint8Array) => void): boolean {
+  return serverWrite(live, SERVER_IMPORT, () => $importNoteBody(markdown), admit);
 }
 
 /** The `.md` file (A§12): the raw frontmatter block, then the body through the one converter. */

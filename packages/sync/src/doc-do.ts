@@ -8,7 +8,7 @@ import { attachmentFrom, connectCode, parseFrame, revocationCode, stateBytesAfte
 import { attach, attachmentOf, awarenessTooLarge } from './doc/awareness.ts';
 import { AckCoalescer, DocStore, PERSISTENCE } from './doc/persistence.ts';
 import type { SyncEnv } from './env.ts';
-import { exportDocMarkdown, rootIsEmpty, SERVER_SEED, seedEmptyParagraph } from './server-doc.ts';
+import { exportDocMarkdown, importBody, rootIsEmpty, SERVER_SEED, seedEmptyParagraph } from './server-doc.ts';
 
 export interface DocLimits {
   stateCapBytes: number;
@@ -22,6 +22,16 @@ export interface CreateDocInput {
   ownerId: string;
   /** A file stem (import); "+ Note" sends none, and placeholder text is never authored. */
   title?: string;
+  /** A body to import through the one converter instead of the seed's empty paragraph. */
+  markdown?: string;
+}
+
+/** A server write that would pass the state cap (A§5.1 Limits). */
+export class DocCapError extends Error {
+  constructor() {
+    super('doc-cap');
+    this.name = 'DocCapError';
+  }
 }
 
 const isConnection = (origin: unknown): origin is Connection =>
@@ -118,15 +128,21 @@ export class DocDO extends YServer<SyncEnv> {
     this.#acks.cancel(connection.id);
   }
 
-  /** Seeds the doc if it is new; records its folder and owner. Idempotent. */
+  /**
+   * Records the doc's folder and owner and writes its starting content: the seed, or an imported body. Idempotent:
+   * a repeated create changes nothing. Throws DocCapError for a body past the state cap.
+   */
   async create(input: CreateDocInput): Promise<void> {
     const store = await this.#ready();
+    this.#seed(store);
+    if (store.meta('created') !== null) return;
+    if (input.markdown) importBody(this.document, input.markdown, (diff) => this.#admitServerWrite(store, diff));
+    const title = input.title?.trim();
+    // POST /api/docs wrote the D1 title, so this write needs no projection.
+    if (title) this.document.transact(() => this.document.getText('title').insert(0, title), SERVER_SEED);
     store.setMeta('folder', input.folderId);
     store.setMeta('owner', input.ownerId);
-    this.#seed(store);
-    const title = input.title?.trim();
-    const text = this.document.getText('title');
-    if (title && text.length === 0) this.document.transact(() => text.insert(0, title), SERVER_SEED);
+    store.setMeta('created', '1');
   }
 
   /** The doc as a `.md` file, memoized until the next update. */
@@ -161,9 +177,18 @@ export class DocDO extends YServer<SyncEnv> {
   #persist(store: DocStore, update: Uint8Array, origin: unknown): void {
     this.#exported = null;
     if (origin === PERSISTENCE) return;
-    store.append(update);
-    if (store.shouldCompact) store.compact(this.document);
+    store.record(update, this.document);
     if (isConnection(origin)) this.#acks.schedule(origin.id);
+  }
+
+  /** Simulated only near the cap, since the copy costs a full encode. */
+  #overCap(store: DocStore, update: Uint8Array): boolean {
+    const cap = this.#limits.stateCapBytes;
+    return store.stateBytes + update.byteLength > cap && stateBytesAfter(this.document, update) > cap;
+  }
+
+  #admitServerWrite(store: DocStore, diff: Uint8Array): void {
+    if (this.#overCap(store, diff)) throw new DocCapError();
   }
 
   /** True when the write was refused and the socket closed; a refusal is never silent. */
@@ -176,10 +201,7 @@ export class DocDO extends YServer<SyncEnv> {
       connection.close(CLOSE.writeRate, 'write rate');
       return true;
     }
-    const cap = this.#limits.stateCapBytes;
-    if (store.stateBytes + update.byteLength > cap && stateBytesAfter(this.document, update) > cap) {
-      return this.#refuse(connection, 'doc-cap', CLOSE.writeRefused);
-    }
+    if (this.#overCap(store, update)) return this.#refuse(connection, 'doc-cap', CLOSE.writeRefused);
     return false;
   }
 
