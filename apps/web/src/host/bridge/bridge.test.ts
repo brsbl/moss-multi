@@ -43,3 +43,32 @@ describe('the T0.5a bridge', () => {
     }
   });
 });
+
+describe('the T0.5b bridge', () => {
+  it('refuses a content write loudly and sends no request (P:Tech; A§9) @p:tech-7', async () => {
+    const { api, fetch } = bridge('/d/d1');
+    await expect(api.notes.update('d1', { content: '' })).rejects.toThrow(/content write.*refused/i);
+    await expect(api.notes.update('d1', { title: 'Plans', content: '# wiped' })).rejects.toThrow(/refused/i);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('creates a note with POST /api/docs and lists it in moss seconds', async () => {
+    const created = { doc: { id: 'd2', folderId: 'v1', title: '', filename: 'untitled.md', createdAt: 1_700_000_200_000, updatedAt: 1_700_000_200_000 } };
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) =>
+      String(input) === '/api/docs' && init?.method === 'POST' ? Response.json(created, { status: 201 }) : Response.json(LISTING),
+    );
+    const api = createBridge({ pathname: () => '/', fetch });
+    const note = await api.notes.create('Untitled', 'Notes');
+    expect(fetch).toHaveBeenCalledWith('/api/docs', expect.objectContaining({ method: 'POST', credentials: 'same-origin' }));
+    const body = JSON.parse(String(fetch.mock.calls.find(([url]) => String(url) === '/api/docs')?.[1]?.body));
+    expect(body, 'the placeholder "Untitled" is never authored as a title (A§5.1 seed)').toEqual({});
+    expect(note).toMatchObject({ id: 'd2', title: 'Untitled', createdAt: 1_700_000_200, updatedAt: 1_700_000_200, folderPath: 'Notes', content: '' });
+    expect(await api.notes.getById('d2'), 'the created note is readable before the next listing').toMatchObject({ id: 'd2', content: '' });
+  });
+
+  it('surfaces a failed create as an error, never a fake note', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json({ error: 'not-found' }, { status: 404 }));
+    const api = createBridge({ pathname: () => '/', fetch });
+    await expect(api.notes.create('Untitled')).rejects.toThrow(/POST \/api\/docs: 404/);
+  });
+});
