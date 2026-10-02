@@ -4,16 +4,19 @@
   "private": true,
   "type": "module",
   "exports": {
+    ".": "./src/index.ts",
     "./converter": "./src/converter/index.ts"
   },
   "scripts": {
-    "typecheck": "tsc -p tsconfig.converter.json"
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.converter.json"
   },
   "dependencies": {
     "@lexical/headless": "0.48.0",
     "@lexical/markdown": "0.48.0",
     "@lexical/yjs": "0.48.0",
     "lexical": "0.48.0",
+    "partyserver": "0.5.8",
+    "y-partyserver": "2.2.0",
     "yjs": "13.6.31"
   },
   "devDependencies": {

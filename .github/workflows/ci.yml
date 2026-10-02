@@ -94,6 +94,16 @@ jobs:
       - name: Bundle boundary
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: node scripts/ci/deps.mjs
+      - name: Migrations match the schema
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        timeout-minutes: 3
+        run: |
+          pnpm --filter web db:generate
+          if [ -n "$(git status --porcelain -- apps/web/drizzle)" ]; then
+            git status --porcelain -- apps/web/drizzle
+            echo "::error::apps/web/drizzle does not match schema.ts: run pnpm --filter web db:generate and commit the result."
+            exit 1
+          fi
       - name: Typecheck
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: pnpm -r --if-present typecheck
@@ -126,6 +136,11 @@ jobs:
     if: needs.plan.outputs.build == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      commit: ${{ steps.provenance.outputs.commit }}
+      bundleHash: ${{ steps.provenance.outputs.bundleHash }}
+    env:
+      SMOKE_RUN: ci-${{ github.run_id }}-${{ github.run_attempt }}-smoke
     steps:
       - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v6
@@ -135,6 +150,21 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
+        env:
+          MOSS_BUILD_ENV: ci
+          CLOUDFLARE_ENV: ''
+          MOSS_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      - id: provenance
+        run: node scripts/provenance.mjs read apps/web/dist >> "$GITHUB_OUTPUT"
+      # The built Worker boots under wrangler dev, /api/version is this commit, and / links CSS served 200 text/css.
+      - name: Smoke
+        run: node scripts/stack.mjs start --run-id "$SMOKE_RUN" --prebuilt apps/web/dist --expect-commit "$(git rev-parse HEAD)" --json
+      # Two principals sign up on the built Worker and /api/me resolves each one's session.
+      - name: Principals
+        run: node scripts/stack.mjs principals --run-id "$SMOKE_RUN" --count 2
+      - name: Stop the smoke stack
+        if: always()
+        run: node scripts/stack.mjs stop --run-id "$SMOKE_RUN" || true
 
   # Placeholder until T0.9b wires the stack and Playwright. It never passes a requested grep.
   e2e:

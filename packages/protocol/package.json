@@ -1,0 +1,9 @@
+{
+  "name": "@moss-multi/protocol",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./dom-contract": "./src/dom-contract.ts"
+  }
+}

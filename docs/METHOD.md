@@ -33,6 +33,9 @@ Read this with PRODUCT.md, your BUILDPLAN entry and the A§ it cites, before wri
 - `new Request(request, {headers})` drops the WebSocket upgrade headers; clone without init, then set headers. [L§4.7]
 - One launcher kills by process group; a "vite dev" pattern never matched "vite.js dev" and three rounds tested stale code. Check `/api/version` before any gate. [L§4.18]
 - `wrangler dev` needs `--inspector-port P+1000` (9229 collides across stacks); `vite preview` binds only `[::1]`. [L§5.3; L§4.18]
+- SP1 (T0.3): React 19.3.0, Start 1.168.32, Vite 8.1.5, plugin-react 6.0.2 and Tailwind 3.4.19 through PostCSS build and serve the Worker, so no React 19.2.8 fallback is needed; moss alias resolution is proven in T0.5a.
+- Local stack: `node scripts/stack.mjs start` builds the tree into `.local-stack/builds/<key>`, boots `wrangler dev` on those bytes and prints `http://127.0.0.1:<port>` (never `localhost`); `stop --run-id <id>` when done. Ready means `/api/version` equals the build, `/` carries `meta[name=moss-build]`, and every linked stylesheet and module script is 200 with its type. Starting a third stack fails; every start reaps orphans first. [L§5.3]
+- Provenance comes from `apps/web/vite-provenance.ts`: the Worker gets `__MOSS_BUILD__` in full, the client only `commit` and `clientHash`; `scripts/provenance.mjs read <dist>` prints it for `$GITHUB_OUTPUT` and fails unless there is exactly one record.
 
 ## Porting moss
 
@@ -74,7 +77,9 @@ Read this with PRODUCT.md, your BUILDPLAN entry and the A§ it cites, before wri
 - A DO replays its update log before serving sync; compacted state is chunked at 1.5 MB (rows cap at 2 MB). After a wake, an empty revocation cache means "unknown": hold frames until the authority answers. [L§4.7]
 - Soft delete never frees DO storage, and DO storage is bound to the Worker name: reuse persistent test docs and budget requests. [L§4.7]
 - Every drizzle `onDelete` must appear in the migration DDL. D1 enforces foreign keys (`PRAGMA defer_foreign_keys=ON` for cleanup). Moss expects seconds, not milliseconds. [L§4.8]
-- better-auth: a request with no `Origin` gets 403 (stamp a same-origin `Origin`); signing up an existing email returns 200 with a fabricated id; sign-out needs a JSON body `{}`; register a social provider only when its id and secret both exist. [L§4.9]
+- better-auth: a request with no `Origin` gets 403 (stamp a same-origin `Origin`); sign-out needs a JSON body `{}`; register a social provider only when its id and secret both exist. With our config (auto sign-in, no verification) signing up an existing email is a 422. [L§4.9]
+- better-auth 1.6.23 checks `Origin` only on requests carrying a cookie or fetch metadata, skips the check entirely under `NODE_ENV=test`, and rate-limits only under `NODE_ENV=production`. So `auth/route.ts` refuses an unsafe auth request without `Origin` (the device flow excepted) and `createAuth` sets the checks and limits explicitly. [T0.4]
+- Unit tests that touch D1 use a real local D1 through Miniflare (`apps/web/src/test/d1.ts`) with the committed `apps/web/drizzle/*.sql` applied. After editing `schema.ts`, run `pnpm --filter web db:generate`; checks fails on a stale `apps/web/drizzle`. [T0.4]
 - The share token rides `?share=` on the WebSocket and every read path; a link role is a ceiling. One roles module, one kick path. [L§4.10]
 
 ## Testing and browsers
