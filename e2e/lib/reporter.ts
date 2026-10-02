@@ -31,8 +31,9 @@ export function emptyShardProblem(group: string | undefined, planned: number): s
 }
 
 const seconds = (ms: number) => `${(ms / 1000).toFixed(1)} s`;
+const millis = (ms: number) => `${Math.round(ms)} ms`;
 
-function percentileTable(title: string, first: string, rows: LatencyRow[]): string[] {
+function percentileTable(title: string, first: string, rows: LatencyRow[], unit: (ms: number) => string): string[] {
   if (rows.length === 0) return [];
   return [
     `#### ${title}`,
@@ -40,7 +41,7 @@ function percentileTable(title: string, first: string, rows: LatencyRow[]): stri
     `| ${first} | Project | n | p50 | p95 | max | Budget | Headroom |`,
     '|---|---|---|---|---|---|---|---|',
     ...rows.map((r) =>
-      `| ${r.name.replace(/\|/g, '\\|')} | ${r.project} | ${r.n} | ${seconds(r.p50)} | ${seconds(r.p95)} | ${seconds(r.max)} | ${r.budgetMs === null ? '' : seconds(r.budgetMs)} | ${r.headroom === null ? '' : `${r.headroom}x`} |`,
+      `| ${r.name.replace(/\|/g, '\\|')} | ${r.project} | ${r.n} | ${unit(r.p50)} | ${unit(r.p95)} | ${unit(r.max)} | ${r.budgetMs === null ? '' : unit(r.budgetMs)} | ${r.headroom === null ? '' : `${r.headroom}x`} |`,
     ),
     '',
   ];
@@ -106,10 +107,9 @@ export default class MossReporter implements Reporter {
     }
     const engines = [...new Set(this.browsers.values())].join(', ') || 'no browser';
     const shard = group ? ` · group ${group}` : '';
-    const ran = this.rows.filter((r) => r.status !== 'skipped');
-    const durations = latencyRows(
-      ran.filter((r) => isJourneyProject(r.project)).map((r) => ({ project: r.project, name: r.title, ms: r.ms, budgetMs: r.timeoutMs || null })),
-    );
+    // Journeys only: the selftests time fixture pages and prove a budget can fail.
+    const ran = this.rows.filter((r) => r.status !== 'skipped' && isJourneyProject(r.project));
+    const durations = latencyRows(ran.map((r) => ({ project: r.project, name: r.title, ms: r.ms, budgetMs: r.timeoutMs || null })));
     const lines = [
       `### e2e: ${verdict}`,
       '',
@@ -121,9 +121,9 @@ export default class MossReporter implements Reporter {
         `| ${r.project} | ${r.title.replace(/\|/g, '\\|')} | ${r.blocked ? 'BLOCKED' : r.status} | ${seconds(r.ms)}${r.ms > SLOW_MS ? ' (slow)' : ''} | ${r.latencies.map((l) => `${l.name} ${l.ms} ms${l.budgetMs ? ` / ${l.budgetMs}` : ''}`).join('; ')} | ${r.findings ?? ''} |`,
       ),
       '',
-      ...percentileTable('Latency percentiles', 'Latency', latencyRows(ran.flatMap((r) => r.latencies))),
+      ...percentileTable('Latency percentiles', 'Latency', latencyRows(ran.flatMap((r) => r.latencies)), millis),
       // Durations matter once a test repeats (repeat_each > 1): they size shards against the 13-minute budget.
-      ...(durations.some((d) => d.n > 1) ? percentileTable('Journey durations (budget: the test timeout)', 'Test', durations) : []),
+      ...(durations.some((d) => d.n > 1) ? percentileTable('Journey durations (budget: the test timeout)', 'Test', durations, seconds) : []),
     ];
     const text = `${lines.join('\n')}\n`;
     mkdirSync(this.outputDir, { recursive: true });
