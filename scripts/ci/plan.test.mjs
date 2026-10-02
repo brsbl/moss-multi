@@ -140,6 +140,7 @@ describe('isDocsOnlyPath', () => {
     expect(isDocsOnlyPath('README.md')).toBe(true);
     expect(isDocsOnlyPath('BUILDPLAN.md')).toBe(false);
     expect(isDocsOnlyPath('e2e/README.md')).toBe(false);
+    expect(isDocsOnlyPath('vendor/moss/packages/shared/src/mocks/notes/files/checklist.md')).toBe(false);
     expect(isDocsOnlyPath('package.json')).toBe(false);
   });
 });
