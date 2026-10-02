@@ -11,6 +11,10 @@ export interface AppEnv {
   BETTER_AUTH_URL?: string;
   MOSS_TEST_HOOKS?: string;
   MOSS_TEST_HOOKS_SECRET?: string;
+  GITHUB_CLIENT_ID?: string;
+  GITHUB_CLIENT_SECRET?: string;
+  GOOGLE_CLIENT_ID?: string;
+  GOOGLE_CLIENT_SECRET?: string;
 }
 
 export const asAppEnv = (env: unknown): AppEnv => env as AppEnv;

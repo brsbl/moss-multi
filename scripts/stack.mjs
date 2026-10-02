@@ -504,10 +504,17 @@ async function principals(run, { count = 2, labels } = {}) {
     } catch {
       // keep id null
     }
+    // Minted means the stack resolves the new session to this principal.
+    const cookie = response.headers.getSetCookie().map((c) => c.split(';')[0]).join('; ');
+    const me = await fetch(`${run.state.baseUrl}/api/me`, { headers: { cookie }, signal: AbortSignal.timeout(10_000) });
+    const principal = me.ok ? (await me.json()).principal : null;
+    if (!id || principal?.id !== id || principal?.email !== email) {
+      fail(`/api/me for ${email}: ${me.status}, expected principal ${id}`);
+    }
     minted.push({ label, name, email, password, id });
   }
   writePrivate(path, [...existing.filter((p) => !names.includes(p.label)), ...minted]);
-  return minted.map(({ label, email }) => ({ label, email }));
+  return minted.map(({ label, email, id }) => ({ label, email, id }));
 }
 
 // ---------- CLI ----------
