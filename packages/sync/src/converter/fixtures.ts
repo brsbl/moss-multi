@@ -1,5 +1,6 @@
 // The family corpus (S-conv §5.4) shared by L1 (Node), L2 (workerd) and L3 (pristine parity). Vite inlines the
-// files, so the same list loads in workerd, which has no file system.
+// files, so the same list loads in workerd, which has no file system. onboarding-*.md are moss's own onboarding
+// notes at 762abb777 (packages/desktop/Moss/onboarding).
 import type { NoteBodyImportOptions } from './index.ts';
 
 const markdown = import.meta.glob<string>('./fixtures/*.md', { query: '?raw', import: 'default', eager: true });

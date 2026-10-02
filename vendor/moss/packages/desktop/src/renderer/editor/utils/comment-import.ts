@@ -22,7 +22,8 @@ import { $isCommentableDecorator, type CommentableNode } from './commentable-nod
 // Single shared fence-walking implementation (skips fenced-code-block interiors).
 // Imported lazily-used at call time, so the existing MarkdownEditor → comment-import
 // import cycle is harmless (the binding is resolved before normalize* runs).
-import { mapOutsideFencedCodeBlocksOnly } from '../MarkdownEditor';
+// moss-multi seam: converter-split (A§12; S-conv §2.3)
+import { mapOutsideFencedCodeBlocksOnly } from '../markdown/normalize';
 
 // ---------------------------------------------------------------------------
 // Hydration utility

@@ -1,34 +1,12 @@
-// The headless converter host (A§12), first cut on the unsplit tree: moss's transformers and pipeline steps
-// still live in MarkdownEditor.tsx, so the converter imports the editor module.
+// The headless converter host (A§12): moss's own node classes and transformers, without a DOM, for the DocDO and
+// the CLI path. Bindings that use it pass a no-op syncCursorPositionsFn and register no mutation listeners.
 import { createHeadlessEditor } from '@lexical/headless';
-import { $convertFromMarkdownString, $convertToMarkdownString } from '@lexical/markdown';
 import type { LexicalEditor, SerializedEditorState } from 'lexical';
-import {
-  $postImportNormalize,
-  escapeHtmlEntities,
-  MARKDOWN_EDITOR_NODES,
-  MARKDOWN_EDITOR_TRANSFORMERS,
-  normalizeMarkdownForImport,
-  unescapeHtmlEntities,
-} from '@moss-desktop/renderer/editor/MarkdownEditor';
-import type { NoteLayoutMetadata } from '@moss-desktop/common/noteTypes';
-import type { CommentMetadataMap } from '@moss-desktop/renderer/editor/utils/comment-markdown';
+import { $exportNoteBody, $importNoteBody, type NoteBodyImportOptions } from '@moss-desktop/renderer/editor/markdown/pipeline';
+import { MARKDOWN_EDITOR_NODES, MARKDOWN_EDITOR_TRANSFORMERS } from '@moss-desktop/renderer/editor/markdown/transformers';
 
-export { MARKDOWN_EDITOR_NODES, MARKDOWN_EDITOR_TRANSFORMERS };
-
-export interface NoteBodyImportOptions {
-  comments?: CommentMetadataMap;
-  layout?: NoteLayoutMetadata;
-}
-
-export function $importNoteBody(markdown: string, options: NoteBodyImportOptions = {}): void {
-  $convertFromMarkdownString(escapeHtmlEntities(normalizeMarkdownForImport(markdown)), MARKDOWN_EDITOR_TRANSFORMERS);
-  $postImportNormalize(options.comments, undefined, { layoutMetadata: options.layout });
-}
-
-export function $exportNoteBody(): string {
-  return unescapeHtmlEntities($convertToMarkdownString(MARKDOWN_EDITOR_TRANSFORMERS));
-}
+export { $exportNoteBody, $importNoteBody, MARKDOWN_EDITOR_NODES, MARKDOWN_EDITOR_TRANSFORMERS };
+export type { NoteBodyImportOptions };
 
 export function createConverterEditor(): LexicalEditor {
   return createHeadlessEditor({

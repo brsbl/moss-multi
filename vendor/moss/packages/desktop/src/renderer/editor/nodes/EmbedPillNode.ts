@@ -1,29 +1,9 @@
-// ported-from: packages/desktop/src/renderer/editor/nodes/EmbedPillNode.tsx @ 762abb777
-import { useCallback, useEffect, useRef, useState } from 'react';
-import type { JSX, MouseEvent as ReactMouseEvent } from 'react';
-import {
-  $applyNodeReplacement,
-  DecoratorNode,
-  IS_BOLD,
-  IS_ITALIC,
-  IS_STRIKETHROUGH,
-  type DOMConversionMap,
-  type DOMConversionOutput,
-  type DOMExportOutput,
-  type EditorConfig,
-  type LexicalNode,
-  type NodeKey,
-  type SerializedLexicalNode,
-  type Spread
-} from 'lexical';
-import { Check, Link } from 'lucide-react';
-
-import { InlinePill } from '../components';
-import { useCurrentNoteId } from '../CurrentNoteIdContext';
-import { initCommentIds, cloneCommentIds, exportCommentIds, importCommentIds } from '../utils/commentable-node';
+// ported-from: packages/desktop/src/renderer/editor/nodes/EmbedPillNode.tsx @ 762abb777 (extracted)
+import type { JSX } from 'react';
+import { $applyNodeReplacement, type DOMConversionMap, type DOMConversionOutput, type DOMExportOutput, DecoratorNode, type EditorConfig, type LexicalNode, type NodeKey, type SerializedLexicalNode, type Spread } from 'lexical';
+import { cloneCommentIds, exportCommentIds, importCommentIds, initCommentIds } from '../utils/commentable-node';
 import { isBrowserLoopbackHostname, isSafeWebBrowserUrl } from '../../../common/web-embed-url';
-import { toDisplaySrc } from '../utils/asset-url';
-import { useWebEmbedPreview } from './web-embed/useWebEmbedPreview';
+import { renderNodeView } from './node-views';
 
 /**
  * Compact webpage embed pill.
@@ -105,119 +85,6 @@ export const escapeEmbedPillDisplayText = (text: string): string =>
 /** Reverse of {@link escapeEmbedPillDisplayText}: unescape `\\` and `\]`. */
 export const unescapeEmbedPillDisplayText = (text: string): string =>
   text.replace(/\\([\\\]])/g, '$1');
-
-function EmbedPillCopyButton({
-  url,
-  nodeKey,
-  siteIconUrl
-}: {
-  url: string;
-  nodeKey: NodeKey;
-  siteIconUrl: string | null;
-}): JSX.Element {
-  const [copied, setCopied] = useState(false);
-  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(
-    () => () => {
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current);
-      }
-    },
-    []
-  );
-
-  const handleCopy = useCallback(
-    (event: ReactMouseEvent) => {
-      event.preventDefault();
-      event.stopPropagation();
-      if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
-        void navigator.clipboard.writeText(url).catch(() => undefined);
-      }
-      setCopied(true);
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current);
-      }
-      timeoutRef.current = setTimeout(() => setCopied(false), 2000);
-    },
-    [url]
-  );
-
-  const actionLabel = copied ? 'Link copied' : 'Copy link';
-
-  return (
-    <button
-      type="button"
-      data-embed-pill-copy-node-key={nodeKey}
-      onClick={handleCopy}
-      aria-label={actionLabel}
-      className="inline-flex h-4 w-4 items-center justify-center rounded text-ink-muted transition-colors hover:text-ink-default"
-    >
-      {copied ? (
-        <Check className="h-3 w-3" aria-hidden />
-      ) : siteIconUrl ? (
-        <img
-          src={siteIconUrl}
-          alt=""
-          className="h-3 w-3 rounded-[2px] object-contain"
-          loading="lazy"
-          decoding="async"
-          draggable={false}
-        />
-      ) : (
-        <Link className="h-3 w-3" aria-hidden />
-      )}
-    </button>
-  );
-}
-
-function EmbedPillComponent({
-  url,
-  displayText,
-  textFormat,
-  nodeKey
-}: {
-  url: string;
-  displayText: string;
-  textFormat: number;
-  nodeKey: NodeKey;
-}): JSX.Element {
-  const noteId = useCurrentNoteId();
-  const { result } = useWebEmbedPreview({
-    noteId,
-    url,
-    ensureOnMount: false
-  });
-  const metadata = result?.metadata as Record<string, unknown> | undefined;
-  const siteIconAssetPath =
-    typeof metadata?.siteIconAssetRelativePath === 'string'
-      ? metadata.siteIconAssetRelativePath.trim()
-      : '';
-  const siteIconUrl = siteIconAssetPath && noteId ? toDisplaySrc(siteIconAssetPath, noteId) : null;
-  const label = displayText.trim().length > 0 ? displayText : deriveEmbedPillLabel(url);
-  const formatStyle = {
-    ...(textFormat & IS_BOLD ? { fontWeight: 600 } : {}),
-    ...(textFormat & IS_ITALIC ? { fontStyle: 'italic' as const } : {}),
-    ...(textFormat & IS_STRIKETHROUGH ? { textDecorationLine: 'line-through' } : {})
-  };
-
-  return (
-    <InlinePill
-      variant="embed-pill"
-      size="compact"
-      iconElement={<EmbedPillCopyButton url={url} nodeKey={nodeKey} siteIconUrl={siteIconUrl} />}
-      nodeKey={nodeKey}
-      nodeKeyAttribute="data-embed-pill-node-key"
-      dataAttributes={{ 'data-block-decorator-key': nodeKey }}
-      contentAttributes={{ 'data-embed-pill-hover-node-key': nodeKey }}
-      role="button"
-      tabIndex={0}
-      style={Object.keys(formatStyle).length > 0 ? formatStyle : undefined}
-    >
-      {label}
-    </InlinePill>
-  );
-}
 
 function $convertEmbedPillElement(domNode: HTMLElement): DOMConversionOutput | null {
   const url = domNode.getAttribute('data-embed-pill-url');
@@ -335,14 +202,8 @@ export class EmbedPillNode extends DecoratorNode<JSX.Element> {
   }
 
   decorate(): JSX.Element {
-    return (
-      <EmbedPillComponent
-        url={this.__url}
-        displayText={this.__displayText}
-        textFormat={this.__textFormat}
-        nodeKey={this.getKey()}
-      />
-    );
+    // moss-multi seam: node-views (A§12)
+    return renderNodeView(this);
   }
 
   exportDOM(): DOMExportOutput {

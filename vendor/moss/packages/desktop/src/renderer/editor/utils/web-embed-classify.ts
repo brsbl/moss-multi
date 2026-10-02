@@ -18,7 +18,8 @@ import {
   isTwitterStatusUrl,
   normalizeWebBrowserUrl
 } from '../../../common/web-embed-url';
-import { isHttpsImageUrl } from './remote-image-url';
+// moss-multi seam: converter-split (A§12; S-conv §2.3)
+import { isHttpsImageUrl } from './https-image-url';
 import { isLocalVideoPath, isYouTubeUrl } from './video-url';
 
 // Re-export so every caller imports the taxonomy predicates from one classifier

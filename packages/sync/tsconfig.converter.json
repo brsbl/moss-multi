@@ -22,5 +22,5 @@
       "@moss-desktop/*": ["../../vendor/moss/packages/desktop/src/*"]
     }
   },
-  "include": ["src/converter/**/*.ts", "test/**/*.ts"]
+  "include": ["src/converter/**/*.ts", "test/**/*.ts", "measure/**/*.ts"]
 }
