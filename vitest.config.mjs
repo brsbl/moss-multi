@@ -15,6 +15,9 @@ const alias = [
   { find: /^@moss-desktop\/(.*)$/, replacement: `${vendor}/desktop/src/$1` },
 ];
 
+// In Node, partyserver's `cloudflare:workers` is a stub; partyserver must be inlined for the alias to reach it.
+const workersStub = [{ find: /^cloudflare:workers$/, replacement: `${repo}packages/sync/test/harness/cloudflare-workers.ts` }, ...alias];
+
 export default defineConfig({
   resolve: { alias },
   test: {
@@ -22,19 +25,19 @@ export default defineConfig({
     projects: [
       {
         extends: true,
+        resolve: { alias: workersStub },
         test: {
           name: 'unit',
           environment: 'node',
           include: ['scripts/**/*.test.mjs', 'apps/*/src/**/*.test.ts', 'packages/*/src/**/*.test.ts'],
+          server: { deps: { inline: ['partyserver'] } },
         },
       },
       {
         // The real DocDO class in Node (L§4.7): workerd's storage and hibernation socket API are faked in
-        // packages/sync/test/harness; partyserver is inlined so `cloudflare:workers` resolves to the stub.
+        // packages/sync/test/harness.
         extends: true,
-        resolve: {
-          alias: [{ find: /^cloudflare:workers$/, replacement: `${repo}packages/sync/test/harness/cloudflare-workers.ts` }, ...alias],
-        },
+        resolve: { alias: workersStub },
         test: {
           name: 'sync-harness',
           environment: 'node',

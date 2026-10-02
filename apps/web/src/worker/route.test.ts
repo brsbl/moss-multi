@@ -145,4 +145,11 @@ describe('routing order', () => {
     deps.testHooksAllowed = () => true;
     expect((await route('/__test/docs/d1/instance')).headers.get('x-handler')).toBe('test-hook');
   });
+
+  it('gives a path no hook serves the unknown-route 404, even through the gate', async () => {
+    const { deps, route } = harness();
+    deps.testHooksAllowed = () => true;
+    deps.handleTestHook = vi.fn(async () => null);
+    expect((await route('/__test/playground')).headers.get('x-handler')).toBe('start');
+  });
 });

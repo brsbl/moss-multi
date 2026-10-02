@@ -2,6 +2,7 @@
 import type { AuthEnv } from '../auth/auth.ts';
 import { resolvePrincipal } from '../auth/principal.ts';
 import { json } from '../worker/route.ts';
+import { handleDocs, type DocsEnv } from './docs.ts';
 
 const NO_STORE = { 'cache-control': 'no-store' };
 
@@ -15,8 +16,11 @@ async function me(request: Request, env: AuthEnv): Promise<Response> {
   return json({ principal: { type, id, name, email } }, 200, NO_STORE);
 }
 
-export async function handleApi(request: Request, env: AuthEnv): Promise<Response> {
+export type ApiEnv = DocsEnv;
+
+export async function handleApi(request: Request, env: ApiEnv): Promise<Response> {
   const { pathname } = new URL(request.url);
   if (pathname === '/api/me') return me(request, env);
+  if (pathname === '/api/docs' || pathname.startsWith('/api/docs/')) return handleDocs(request, env);
   return json({ error: 'not-found' }, 404);
 }

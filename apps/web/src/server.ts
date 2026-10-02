@@ -8,7 +8,9 @@ import { handleAuthRoute } from './auth/route.ts';
 import { asAppEnv } from './env.ts';
 import { BUILD } from './provenance.ts';
 import { stubHandlers, testHooksAllowed } from './worker/handlers.ts';
+import { authenticateParty } from './worker/party.ts';
 import { routeRequest } from './worker/route.ts';
+import { handleTestHook } from './worker/test-hooks.ts';
 
 export { DocDO, PrincipalDO, SearchDO } from '@moss-multi/sync';
 
@@ -34,6 +36,8 @@ export default createServerEntry({
         handleApi: (req) => handleApi(req, appEnv),
         build: BUILD,
         testHooksAllowed: (req) => testHooksAllowed(req, appEnv),
+        handleTestHook: (req) => handleTestHook(req, appEnv),
+        authenticateParty: (req, docId) => authenticateParty(req, docId, appEnv),
         routeParty: (req) => routePartykitRequest(req, env as never),
         refuseSocket,
         startFetch: async (req) => startFetch(req),
