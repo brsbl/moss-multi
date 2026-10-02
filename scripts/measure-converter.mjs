@@ -218,13 +218,13 @@ const scaleNote = (unit, units) => Array.from({ length: units }, () => unit).joi
 // Import and export one note in a fresh worker, so a crash at one size leaves the others measurable. The note
 // must import to `units` times the unit's top-level blocks: fewer means one copy swallowed others. With `bound`,
 // the note is also imported into a Y.Doc through a headless binding, as the DocDO's serverWrite does.
-async function measureSize(unit, units, runCount, port, bound) {
+async function measureSize(unit, units, port, bound) {
   const server = await startWorker('converter', port);
   const runs = { import: [], export: [] };
   const markdown = scaleNote(unit, units);
   try {
     const unitBlocks = JSON.parse((await timedRequest(server, '/import', { method: 'POST', body: unit })).body).blocks;
-    for (let run = 0; run < runCount; run += 1) {
+    for (let run = 0; run < CONVERSION_RUNS; run += 1) {
       const imported = await timedRequest(server, '/import', { method: 'POST', body: markdown });
       const { blocks } = JSON.parse(imported.body);
       if (blocks !== units * unitBlocks) throw new Error(`${blocks} top-level blocks, expected ${units} × ${unitBlocks}`);
@@ -285,9 +285,8 @@ async function main() {
   const conversions = [];
   for (const target of SCALE_SIZES) {
     const units = unitsFor(target);
-    const runCount = target <= 256 * 1024 ? CONVERSION_RUNS : 1;
     const bound = target === SCALE_SIZES.at(-1);
-    conversions.push({ bytes: Buffer.byteLength(scaleNote(unit, units)), units, runCount, ...(await measureSize(unit, units, runCount, port, bound)) });
+    conversions.push({ bytes: Buffer.byteLength(scaleNote(unit, units)), units, ...(await measureSize(unit, units, port, bound)) });
     port += 1;
   }
 
@@ -323,7 +322,7 @@ async function main() {
     ...conversions.map((c) =>
       c.failed
         ? `| ${kb(c.bytes)} scale note (${c.units} units) | FAILED: ${c.failed} |`
-        : `| ${kb(c.bytes)} scale note (${c.units} units, ${c.blocks} blocks) import / export: workerd CPU, ${c.runCount > 1 ? `median of ${c.runCount}` : 'one run'} | ${c.importCpuMs} ms / ${c.exportCpuMs} ms${budget(c.importCpuMs)} (wall ${c.importWallMs} / ${c.exportWallMs} ms); RSS growth during import ${c.peakMb} MB |`,
+        : `| ${kb(c.bytes)} scale note (${c.units} units, ${c.blocks} blocks) import / export: workerd CPU, median of ${CONVERSION_RUNS} | ${c.importCpuMs} ms / ${c.exportCpuMs} ms${budget(c.importCpuMs)} (wall ${c.importWallMs} / ${c.exportWallMs} ms); RSS growth during import ${c.peakMb} MB |`,
     ),
     ...conversions
       .filter((c) => c.boundCpuMs !== undefined)
