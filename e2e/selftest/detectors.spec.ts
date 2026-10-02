@@ -2,6 +2,7 @@
 // by that invariant alone; the clean fixture yields no findings.
 import type { Page } from '@playwright/test';
 import type { Actor } from '../lib/actors.ts';
+import { BODY_BINDING_ATTR } from '../lib/contract.ts';
 import * as ui from '../lib/ui.ts';
 import { expect, test } from './fixtures.ts';
 
@@ -31,9 +32,9 @@ const CASES: Case[] = [
   { fixture: 'editable-unbound', invariant: 9 },
 ];
 
-/** The same user path on every fixture: observe the editor, then type into the body. */
+/** The same user path on every fixture: observe the editor, then type into the body (the title may be unbound). */
 async function exercise(actor: Actor): Promise<void> {
-  await ui.waitLive(actor, DOC);
+  await expect(ui.body(actor, DOC)).toHaveAttribute(BODY_BINDING_ATTR, 'live');
   await actor.observeEditor(DOC);
   await ui.typeBody(actor, DOC, TYPED);
 }
