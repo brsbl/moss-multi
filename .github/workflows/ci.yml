@@ -89,17 +89,32 @@ jobs:
         env:
           TRACE_MILESTONE: ${{ needs.plan.outputs.trace_milestone }}
       - name: Vendor drift
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: node scripts/moss-vendor.mjs drift
+      - name: Bundle boundary
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: node scripts/ci/deps.mjs
       - name: Typecheck
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: pnpm -r --if-present typecheck
       - name: Lint
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: pnpm lint
+      # Unit tests, converter L1 (Node), L2 (workerd) and L3 (parity with moss at the pin).
       - name: Unit tests
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: pnpm test
+        env:
+          GOLDEN_OUT: ${{ runner.temp }}/converter-goldens
+      # A missing converter golden is written here for review; it fails the run until committed.
+      - name: Upload missing converter goldens
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: converter-goldens
+          path: ${{ runner.temp }}/converter-goldens
+          if-no-files-found: ignore
+          retention-days: 3
 
   build:
     needs: plan
