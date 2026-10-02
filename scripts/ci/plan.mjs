@@ -5,8 +5,12 @@
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
+import { ALL, GROUPS, readJourneys } from './journeys.mjs';
 
 export const BROWSERS = ['chromium', 'webkit'];
+// Minutes per e2e shard (the job timeout): a ready-PR shard must finish within 13; repeated and @slow runs get 25.
+const SHARD_MINUTES = 13;
+const LONG_SHARD_MINUTES = 25;
 const LANES = ['auto', 'checks', 'e2e', 'full', 'parity'];
 const BROWSER_INPUTS = { both: BROWSERS, chromium: ['chromium'], webkit: ['webkit'] };
 
@@ -27,8 +31,26 @@ export function traceMilestoneFor(branch) {
 
 // macos: the @macos legs in WebKit on a macOS runner (SP15: Linux WebKit never navigates on Backspace).
 // parity: the Ladle oracle and the shell parity job (A§20), on the build job's bytes.
+// slow: @slow legs (60 s holds, soaks, idles) are excluded, included (milestone gates, on request) or the only
+// legs run (nightly).
 function lanes({ checks = false, build = false, browsers = [], macos = false, parity = false }, reason, extra = {}) {
-  return { checks, build: build || parity, browsers, macos, parity, grep: '', repeat: 1, traceMilestone: null, reason, ...extra };
+  return { checks, build: build || parity, browsers, macos, parity, grep: '', repeat: 1, slow: 'exclude', traceMilestone: null, reason, ...extra };
+}
+
+// One shard per engine and journey group, each on its own stack (A§20). A grep dispatch runs the whole suite in
+// one shard per engine; with no journey yet, that shard runs the selftests alone.
+function shardsFor(plan, journeys) {
+  if (plan.browsers.length === 0) return [];
+  const orphans = journeys.filter((journey) => !journey.group).map((journey) => journey.file);
+  if (orphans.length > 0) throw new Error(`${orphans.join(', ')} in no journey group: add it to GROUPS in scripts/ci/journeys.mjs`);
+  let groups = [ALL];
+  if (!plan.grep) {
+    const pool = plan.slow === 'only' ? journeys.filter((journey) => journey.slow) : journeys;
+    const present = Object.keys(GROUPS).filter((group) => pool.some((journey) => journey.group === group));
+    if (present.length > 0) groups = present;
+  }
+  const timeout = plan.slow === 'exclude' && plan.repeat === 1 ? SHARD_MINUTES : LONG_SHARD_MINUTES;
+  return plan.browsers.flatMap((browser) => groups.map((group) => ({ browser, group, timeout })));
 }
 
 function docsOnly(changedFiles) {
@@ -51,6 +73,8 @@ function dispatchPlan(payload) {
   if (macosText !== 'true' && macosText !== 'false') throw new Error(`macos must be true or false, got "${macosText}"`);
   const parityText = String(inputs.parity ?? 'false');
   if (parityText !== 'true' && parityText !== 'false') throw new Error(`parity must be true or false, got "${parityText}"`);
+  const slowText = String(inputs.slow ?? 'false');
+  if (slowText !== 'true' && slowText !== 'false') throw new Error(`slow must be true or false, got "${slowText}"`);
   const journeys = lane === 'e2e' || lane === 'full';
   const traceMilestone = traceMilestoneFor((payload.ref ?? '').replace(/^refs\/heads\//, ''));
   return lanes(
@@ -62,7 +86,7 @@ function dispatchPlan(payload) {
       parity: lane === 'full' || lane === 'parity' || (lane === 'e2e' && parityText === 'true'),
     },
     `dispatch, ${lane} lane`,
-    { grep, repeat, traceMilestone },
+    { grep, repeat, traceMilestone, slow: slowText === 'true' ? 'include' : 'exclude' },
   );
 }
 
@@ -91,17 +115,31 @@ function pullRequestPlan(payload, changedFiles, degraded) {
   }
   const browsers = degraded && !labels.includes('e2e-full') ? ['chromium'] : BROWSERS;
   const reason = browsers.length < BROWSERS.length ? 'ready pull request (CI_DEGRADED: Chromium only)' : 'ready pull request';
-  // A milestone gate (ready m<k> -> main) also runs the @macos legs.
+  // A milestone gate (ready m<k> -> main) also runs the @macos and @slow legs.
   const gate = Boolean(exit) && pr.base?.ref === 'main';
-  return lanes({ checks: true, build: true, browsers, macos: gate, parity: true }, gate ? `${reason}, milestone gate` : reason, { traceMilestone });
+  return lanes({ checks: true, build: true, browsers, macos: gate, parity: true }, gate ? `${reason}, milestone gate` : reason, {
+    traceMilestone,
+    slow: gate ? 'include' : 'exclude',
+  });
 }
 
-// Pure: the event name, its payload, the changed paths (null when unknown) and CI_DEGRADED decide the lanes.
-export function computePlan({ event, payload = {}, changedFiles = null, degraded = false }) {
-  if (event === 'workflow_dispatch') return dispatchPlan(payload);
-  if (event === 'push') return pushPlan(payload, changedFiles);
-  if (event === 'pull_request') return pullRequestPlan(payload, changedFiles, degraded);
-  return lanes({}, `unhandled event ${event}`);
+// Nightly, on main: only the @slow legs, in both engines, and only when main moved since the last green nightly.
+function schedulePlan(journeys, headSha, lastNightlySha) {
+  if (headSha && headSha === lastNightlySha) return lanes({}, `nightly: main is still ${headSha.slice(0, 12)}, already green`);
+  if (!journeys.some((journey) => journey.slow)) return lanes({}, 'nightly: no @slow legs');
+  return lanes({ build: true, browsers: BROWSERS }, 'nightly @slow legs', { slow: 'only' });
+}
+
+// Pure: the event name, its payload, the changed paths (null when unknown), CI_DEGRADED, the journey files and,
+// nightly, main's head and the last green nightly's head decide the lanes and shards.
+export function computePlan({ event, payload = {}, changedFiles = null, degraded = false, journeys = [], headSha = '', lastNightlySha = '' }) {
+  let plan;
+  if (event === 'workflow_dispatch') plan = dispatchPlan(payload);
+  else if (event === 'push') plan = pushPlan(payload, changedFiles);
+  else if (event === 'pull_request') plan = pullRequestPlan(payload, changedFiles, degraded);
+  else if (event === 'schedule') plan = schedulePlan(journeys, headSha, lastNightlySha);
+  else plan = lanes({}, `unhandled event ${event}`);
+  return { ...plan, shards: shardsFor(plan, journeys) };
 }
 
 export function toOutputs(plan) {
@@ -115,6 +153,8 @@ export function toOutputs(plan) {
       `parity=${plan.parity}`,
       `grep=${plan.grep}`,
       `repeat=${plan.repeat}`,
+      `slow=${plan.slow}`,
+      `shards=${JSON.stringify(plan.shards)}`,
       `trace_milestone=${plan.traceMilestone ?? ''}`,
       `plan=${JSON.stringify(plan)}`,
     ].join('\n') + '\n'
@@ -173,9 +213,13 @@ function main(argv) {
     payload,
     changedFiles: changedFilesFor(event, payload),
     degraded: process.env.CI_DEGRADED === 'true',
+    journeys: readJourneys(),
+    headSha: process.env.GITHUB_SHA ?? '',
+    lastNightlySha: process.env.LAST_NIGHTLY_SHA ?? '',
   });
   process.stdout.write(toOutputs(plan));
-  const summary = `plan: ${plan.reason}. checks=${plan.checks} build=${plan.build} browsers=${JSON.stringify(plan.browsers)} macos=${plan.macos} parity=${plan.parity} trace_milestone=${plan.traceMilestone ?? 'none'}`;
+  const shards = plan.shards.map((shard) => `${shard.browser}/${shard.group}`).join(' ') || 'none';
+  const summary = `plan: ${plan.reason}. checks=${plan.checks} build=${plan.build} shards=${shards} slow=${plan.slow} macos=${plan.macos} parity=${plan.parity} trace_milestone=${plan.traceMilestone ?? 'none'}`;
   console.error(summary);
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${summary}\n`);
   return 0;

@@ -37,12 +37,13 @@ function stackRun({ status = 'running', session = null } = {}) {
   return { runsDir, dir, state };
 }
 
-/** A fake `bb browser-automation`: records every call; `run` writes a 2x PNG where the script would. */
-function fakeBb({ onRun = null } = {}) {
+/** A fake `bb browser-automation`: records every call; `list` reports `sessions`; `run` defers to `onRun`. */
+function fakeBb({ onRun = null, sessions = [] } = {}) {
   const calls = [];
   const bb = async (args) => {
     calls.push(args);
     const [command] = args;
+    if (command === 'list') return sessions;
     if (command === 'open') return { id: 'sid-1', state: 'ready', previewDirective: '::browser-preview{session="sid-1"}' };
     if (command === 'close') return { id: args[1], state: 'closed' };
     if (command === 'run') return onRun ? onRun(args) : { text: 'ok', images: [], exitCode: 0, hostId: 'host_test' };
@@ -99,11 +100,21 @@ describe('open', () => {
     expect(JSON.parse(readFileSync(join(dir, 'qa.json'), 'utf8'))).toMatchObject({ sessionId: 'sid-1', machine: 'host_test' });
   });
 
-  it('refuses a stack that is not running, and a second session', async () => {
+  it('refuses a stack that is not running', async () => {
     const { bb, calls } = fakeBb();
     await expect(openSession({ runId: 'r1', machine: 'host_test' }, { runsDir: stackRun({ status: 'stopped' }).runsDir, bb })).rejects.toThrow(/not running/);
-    await expect(openSession({ runId: 'r1', machine: 'host_test' }, { runsDir: stackRun({ session: 'sid-0' }).runsDir, bb })).rejects.toThrow(/sid-0/);
     expect(calls).toEqual([]);
+  });
+
+  it('refuses a second live session for the run, and replaces an expired one', async () => {
+    const live = fakeBb({ sessions: [{ id: 'sid-0', state: 'ready' }] });
+    await expect(openSession({ runId: 'r1', machine: 'host_test' }, { runsDir: stackRun({ session: 'sid-0' }).runsDir, bb: live.bb })).rejects.toThrow(/sid-0/);
+    expect(live.calls).toEqual([['list']]);
+    const expired = fakeBb({ sessions: [{ id: 'sid-0', state: 'closed' }] });
+    const { runsDir, dir } = stackRun({ session: 'sid-0' });
+    await openSession({ runId: 'r1', machine: 'host_test' }, { runsDir, bb: expired.bb });
+    expect(expired.calls.map(([command]) => command)).toEqual(['list', 'open']);
+    expect(JSON.parse(readFileSync(join(dir, 'qa.json'), 'utf8')).sessionId).toBe('sid-1');
   });
 });
 

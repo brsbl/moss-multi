@@ -1,10 +1,15 @@
 // One living suite (A§20; S-test §3.2). CI runs `--project=selftest-<engine> --project=<engine>`: the selftests
 // always run first (journeys depend on them), and a --grep that matches no test fails with "No tests found".
+// E2E_GROUP narrows the journey projects to one shard's group (scripts/ci/journeys.mjs); `all` or unset runs every
+// journey.
 import { existsSync, readFileSync } from 'node:fs';
 import { defineConfig } from '@playwright/test';
+import { ALL, journeyMatch } from '../scripts/ci/journeys.mjs';
 
 const statePath = process.env.STACK_STATE;
 const stack = statePath && existsSync(statePath) ? (JSON.parse(readFileSync(statePath, 'utf8')) as { baseUrl: string }) : null;
+const group = process.env.E2E_GROUP;
+const journeys = group && group !== ALL ? { testMatch: journeyMatch(group) } : {};
 
 export default defineConfig({
   testDir: '.',
@@ -39,8 +44,8 @@ export default defineConfig({
   projects: [
     { name: 'selftest-chromium', testDir: './selftest', use: { browserName: 'chromium' } },
     { name: 'selftest-webkit', testDir: './selftest', use: { browserName: 'webkit' } },
-    { name: 'chromium', testDir: './journeys', dependencies: ['selftest-chromium'], use: { browserName: 'chromium' } },
-    { name: 'webkit', testDir: './journeys', dependencies: ['selftest-webkit'], use: { browserName: 'webkit' } },
+    { name: 'chromium', testDir: './journeys', ...journeys, dependencies: ['selftest-chromium'], use: { browserName: 'chromium' } },
+    { name: 'webkit', testDir: './journeys', ...journeys, dependencies: ['selftest-webkit'], use: { browserName: 'webkit' } },
     // Shell parity against the Ladle oracle (A§20): the parity job only, in the e2e image's Chromium.
     { name: 'parity', testDir: './parity', use: { browserName: 'chromium' } },
   ],
