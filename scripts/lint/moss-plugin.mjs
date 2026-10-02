@@ -66,12 +66,19 @@ const noHistoricTag = {
     schema: [],
   },
   create(context) {
+    // An import specifier's imported and local names share a range; report it once.
+    const reported = new Set();
+    const report = (node) => {
+      if (reported.has(node.range[0])) return;
+      reported.add(node.range[0]);
+      context.report({ node, messageId: 'historic' });
+    };
     return {
       Identifier(node) {
-        if (node.name === 'HISTORIC_TAG') context.report({ node, messageId: 'historic' });
+        if (node.name === 'HISTORIC_TAG') report(node);
       },
       Literal(node) {
-        if (node.value === 'historic') context.report({ node, messageId: 'historic' });
+        if (node.value === 'historic') report(node);
       },
     };
   },

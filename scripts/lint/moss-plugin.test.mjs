@@ -48,9 +48,10 @@ describe('moss/no-contenteditable-pick in e2e', { timeout: 30_000 }, () => {
 });
 
 describe('moss/no-historic-tag in host, package and vendor code', { timeout: 30_000 }, () => {
-  it('flags a HISTORIC_TAG import in host code', async () => {
+  it('flags a HISTORIC_TAG import in host code, once per occurrence', async () => {
     const code = "import { HISTORIC_TAG } from 'lexical';\nexport const tags = [HISTORIC_TAG];\n";
-    expect(await errors(code, 'apps/web/src/host/collab/undo.ts')).toContain('moss/no-historic-tag');
+    const ids = await errors(code, 'apps/web/src/host/collab/undo.ts');
+    expect(ids.filter((id) => id === 'moss/no-historic-tag')).toHaveLength(2);
   });
 
   it('flags the literal historic tag in a package', async () => {
