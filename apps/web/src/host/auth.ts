@@ -17,9 +17,12 @@ export const auth = createAuthStore({
 
 if (typeof window !== 'undefined') {
   // A degraded tab retries at once when the network or the tab comes back.
-  window.addEventListener('online', () => auth.retryNow());
+  const retryIfDegraded = () => {
+    if (auth.get().status === 'degraded') auth.retryNow();
+  };
+  window.addEventListener('online', retryIfDegraded);
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') auth.retryNow();
+    if (document.visibilityState === 'visible') retryIfDegraded();
   });
 }
 

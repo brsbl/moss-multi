@@ -44,8 +44,11 @@ export interface AuthDeps {
 /** Waits between failed lookups: 1 s, 2 s, 4 s, 8 s, then every 15 s. */
 export const RETRY_MS = [1_000, 2_000, 4_000, 8_000, 15_000];
 
-/** A lookup with no answer after this long counts as failed. */
+/** A lookup with no answer after this long counts as failed (a stalled Worker or D1 read), and the next one starts. */
 export const LOOKUP_TIMEOUT_MS = 10_000;
+
+type Decided = Exclude<SessionAnswer, { kind: 'unavailable' }>;
+const UNAVAILABLE: SessionAnswer = { kind: 'unavailable' };
 
 export const SIGN_IN_PATH = '/api/auth/sign-in/email';
 export const SIGN_UP_PATH = '/api/auth/sign-up/email';
@@ -130,6 +133,19 @@ export function createAuthStore(deps: AuthDeps) {
   const listeners = new Set<(state: AuthState) => void>();
   let resolving: Promise<SessionUser | null> | null = null;
   let wakeNow: () => void = () => undefined;
+  let woken = false;
+
+  /** Waits `ms`, or until retryNow; `woken` says which. */
+  function pause(ms: number): Promise<void> {
+    woken = false;
+    const wake = new Promise<void>((done) => {
+      wakeNow = () => {
+        woken = true;
+        done();
+      };
+    });
+    return sleep(ms, wake);
+  }
 
   /** The one writer: listeners run synchronously, so a sign-out gesture stops subscribers before any await. */
   function write(next: AuthState): void {
@@ -144,24 +160,37 @@ export function createAuthStore(deps: AuthDeps) {
     try {
       return asSessionAnswer(await deps.lookup());
     } catch {
-      return { kind: 'unavailable' };
+      return UNAVAILABLE;
+    }
+  }
+
+  /** Asks until the server says signed in or signed out, publishing `degraded` while it cannot (R10). */
+  async function untilDecided(): Promise<Decided> {
+    // The first definitive answer wins, even from a lookup that answers after its own attempt timed out.
+    let decide: (answer: Decided) => void = () => undefined;
+    const decided = new Promise<Decided>((done) => (decide = done));
+    for (let attempt = 0; ; attempt += 1) {
+      const reply = ask().then((result) => {
+        if (result.kind !== 'unavailable') decide(result);
+        return result;
+      });
+      const first = await Promise.race([decided, reply, pause(LOOKUP_TIMEOUT_MS).then(() => UNAVAILABLE)]);
+      if (first.kind !== 'unavailable') return first;
+      if (woken) continue; // "Try again" while a lookup hangs asks again at once
+      write({ status: 'degraded', attempts: attempt + 1 });
+      const late = await Promise.race([decided, pause(RETRY_MS[Math.min(attempt, RETRY_MS.length - 1)]).then(() => null)]);
+      if (late) return late;
     }
   }
 
   async function resolveLoop(): Promise<SessionUser | null> {
-    for (let attempt = 0; ; attempt += 1) {
-      const answer = await ask();
-      if (answer.kind === 'signed-in') {
-        write({ status: 'signed-in', user: answer.user });
-        return answer.user;
-      }
-      if (answer.kind === 'signed-out') {
-        write({ status: 'signed-out' });
-        return null;
-      }
-      write({ status: 'degraded', attempts: attempt + 1 });
-      await sleep(RETRY_MS[Math.min(attempt, RETRY_MS.length - 1)], new Promise<void>((wake) => (wakeNow = wake)));
+    const answer = await untilDecided();
+    if (answer.kind === 'signed-out') {
+      write({ status: 'signed-out' });
+      return null;
     }
+    write({ status: 'signed-in', user: answer.user });
+    return answer.user;
   }
 
   async function credentialRequest(path: string, body: Record<string, string>): Promise<AuthOutcome & { session?: boolean }> {
@@ -210,7 +239,7 @@ export function createAuthStore(deps: AuthDeps) {
       return resolving;
     },
 
-    /** Skips the wait before the next lookup ("Try again", back online, tab visible again). */
+    /** Asks again now ("Try again", back online, tab visible again), without waiting out a backoff or a hung lookup. */
     retryNow(): void {
       wakeNow();
     },
