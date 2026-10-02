@@ -1,6 +1,5 @@
 import { createFileRoute, redirect } from '@tanstack/react-router';
 import { loginProviders, lookupSession } from '../auth/session-fn.ts';
-import { auth } from '../host/auth.ts';
 import { asSessionAnswer, safeNext } from '../host/auth-state.ts';
 import { LoginCard } from '../host/surfaces/LoginCard.tsx';
 
@@ -9,8 +8,6 @@ import { LoginCard } from '../host/surfaces/LoginCard.tsx';
 export const Route = createFileRoute('/login')({
   validateSearch: (search: Record<string, unknown>): { next?: string } => (typeof search.next === 'string' ? { next: search.next } : {}),
   beforeLoad: async ({ search }) => {
-    // The shell route that sent us here has just heard "signed out"; don't ask again.
-    if (!import.meta.env.SSR && auth.get().status === 'signed-out') return;
     const answer = asSessionAnswer(await lookupSession().catch(() => null));
     if (answer.kind === 'signed-in') throw redirect({ href: safeNext(search.next), replace: true });
   },
