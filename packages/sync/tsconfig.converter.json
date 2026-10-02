@@ -18,7 +18,8 @@
       "@moss/shared": ["../../vendor/moss/packages/shared/src/index.ts"],
       "@moss/shared/*": ["../../vendor/moss/packages/shared/src/*"],
       "@/*": ["../../vendor/moss/packages/shared/src/*"],
-      "@moss-desktop/*": ["../../vendor/moss/packages/desktop/src/*"]
+      "@moss-desktop/*": ["../../vendor/moss/packages/desktop/src/*"],
+      "@moss-multi/host/*": ["../../apps/web/src/host/*"]
     }
   },
   "include": ["src/converter/**/*.ts", "test/**/*.ts", "measure/**/*.ts"]
