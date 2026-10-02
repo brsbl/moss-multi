@@ -26,6 +26,10 @@ on:
         description: 'Playwright --repeat-each (1-10)'
         type: number
         default: 1
+      macos:
+        description: 'Also run the @macos legs in WebKit on a macOS runner (billed at 10x)'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -49,6 +53,7 @@ jobs:
       build: ${{ steps.plan.outputs.build }}
       e2e: ${{ steps.plan.outputs.e2e }}
       browsers: ${{ steps.plan.outputs.browsers }}
+      macos: ${{ steps.plan.outputs.macos }}
       grep: ${{ steps.plan.outputs.grep }}
       repeat: ${{ steps.plan.outputs.repeat }}
       trace_milestone: ${{ steps.plan.outputs.trace_milestone }}
@@ -145,38 +150,136 @@ jobs:
       - name: Stop the smoke stack
         if: always()
         run: node scripts/stack.mjs stop --run-id "$SMOKE_RUN" || true
+      - name: Pack the built bytes for e2e
+        if: needs.plan.outputs.e2e == 'true' || needs.plan.outputs.macos == 'true'
+        run: tar -czf web-dist.tgz -C apps/web dist
+      - if: needs.plan.outputs.e2e == 'true' || needs.plan.outputs.macos == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: web-dist
+          path: web-dist.tgz
+          retention-days: 3
 
-  # Placeholder until T0.9b wires the stack and Playwright. It never passes a requested grep.
+  # Every journey engine boots the real Worker stack on the build job's bytes, runs the selftests, then the
+  # journeys (e2e/journeys) that exist. T0.9b shards it by journey group. The Playwright image carries both
+  # engines and their system libraries, so no job waits on apt mirrors.
   e2e:
     needs: [plan, build]
     if: needs.plan.outputs.e2e == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    container:
+      # Keep the tag equal to @playwright/test in e2e/package.json; the first step checks it.
+      image: mcr.microsoft.com/playwright:v1.61.1-noble
+      options: --ipc=host --init
     strategy:
       fail-fast: false
       matrix:
         browser: ${{ fromJSON(needs.plan.outputs.browsers) }}
+    env:
+      RUN_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.browser }}
+      PLAYWRIGHT_IMAGE: v1.61.1
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v6
-      - name: Journeys
+      - name: The Playwright image matches e2e/package.json
+        run: |
+          want="v$(node -p "require('./e2e/package.json').devDependencies['@playwright/test']")"
+          if [ "$want" != "$PLAYWRIGHT_IMAGE" ]; then echo "::error::container image is $PLAYWRIGHT_IMAGE, e2e/package.json pins $want"; exit 1; fi
+          command -v ps > /dev/null || (apt-get update -qq && apt-get install -y -qq --no-install-recommends procps > /dev/null)
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v8
+        with:
+          name: web-dist
+      - run: mkdir -p .local-stack/prebuilt && tar -xzf web-dist.tgz -C .local-stack/prebuilt
+      - name: Boot the Worker stack on the built bytes
+        run: >
+          node scripts/stack.mjs start --run-id "$RUN_ID" --prebuilt .local-stack/prebuilt/dist --hooks
+          --expect-commit "${{ needs.build.outputs.commit }}" --expect-bundle "${{ needs.build.outputs.bundleHash }}"
+      - run: echo "STACK_STATE=$PWD/.local-stack/runs/$RUN_ID/state.json" >> "$GITHUB_ENV"
+      - name: Selftests, then journeys
+        working-directory: e2e
         env:
           BROWSER: ${{ matrix.browser }}
           GREP: ${{ needs.plan.outputs.grep }}
           REPEAT: ${{ needs.plan.outputs.repeat }}
         run: |
-          if [ -f e2e/playwright.config.ts ]; then
-            echo "::error::e2e/playwright.config.ts exists but the e2e job is still the T0.1 placeholder; wire it (T0.9b)."
-            exit 1
-          fi
-          if [ -n "$GREP" ]; then
-            echo "::error::No journey suite exists yet, so grep '$GREP' matched nothing."
-            exit 1
-          fi
-          echo "e2e ($BROWSER): no journey suite yet (T0.9b wires this job)." | tee -a "$GITHUB_STEP_SUMMARY"
+          args=(--project="selftest-$BROWSER" --project="$BROWSER" --repeat-each="$REPEAT")
+          if [ -n "$GREP" ]; then args+=(--grep "$GREP"); fi
+          pnpm exec playwright test "${args[@]}"
+      - name: Stop the stack
+        if: always()
+        run: node scripts/stack.mjs stop --run-id "$RUN_ID" || true
+      - name: Upload results, traces and screenshots
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-${{ matrix.browser }}-${{ github.run_attempt }}
+          path: |
+            e2e/test-results/
+            e2e/playwright-report/
+            .local-stack/runs/*/wrangler.log
+            .local-stack/runs/*/state.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # SP15: Linux WebKit never navigates history on a bare Backspace, so the legs that prove the guard (tagged
+  # @macos) run in macOS WebKit at milestone gates and on request (dispatch input macos).
+  macos:
+    needs: [plan, build]
+    if: needs.plan.outputs.macos == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 20
+    env:
+      RUN_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}-macos
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v8
+        with:
+          name: web-dist
+      - run: mkdir -p .local-stack/prebuilt && tar -xzf web-dist.tgz -C .local-stack/prebuilt
+      - name: Install webkit
+        working-directory: e2e
+        run: pnpm exec playwright install webkit
+      - name: Boot the Worker stack on the built bytes
+        run: >
+          node scripts/stack.mjs start --run-id "$RUN_ID" --prebuilt .local-stack/prebuilt/dist --hooks
+          --expect-commit "${{ needs.build.outputs.commit }}" --expect-bundle "${{ needs.build.outputs.bundleHash }}"
+      - run: echo "STACK_STATE=$PWD/.local-stack/runs/$RUN_ID/state.json" >> "$GITHUB_ENV"
+      - name: The @macos legs in WebKit
+        working-directory: e2e
+        run: pnpm exec playwright test --project=selftest-webkit --project=webkit --grep @macos
+      - name: Stop the stack
+        if: always()
+        run: node scripts/stack.mjs stop --run-id "$RUN_ID" || true
+      - name: Upload results, traces and screenshots
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-macos-webkit-${{ github.run_attempt }}
+          path: |
+            e2e/test-results/
+            e2e/playwright-report/
+            .local-stack/runs/*/wrangler.log
+          retention-days: 7
+          if-no-files-found: ignore
 
   ci-ok:
     if: always()
-    needs: [plan, checks, build, e2e]
+    needs: [plan, checks, build, e2e, macos]
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:

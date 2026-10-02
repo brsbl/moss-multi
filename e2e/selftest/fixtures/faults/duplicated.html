@@ -1,0 +1,13 @@
+<!-- Invariant 7: an echo applies the typed text twice ('WORD' becomes 'WORDWORD'). -->
+<script>
+  const body = document.querySelector('[data-body-binding]');
+  const initial = body.textContent.length;
+  let timer = 0;
+  body.addEventListener('input', () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      body.querySelector('p').append(body.textContent.slice(initial));
+      document.documentElement.setAttribute('data-echoed', 'true');
+    }, 200);
+  });
+</script>
