@@ -4,17 +4,23 @@ import { ciOk, computePlan, isDocsOnlyPath, toOutputs, traceMilestoneFor } from 
 const SHA_A = 'a'.repeat(40);
 const SHA_B = 'b'.repeat(40);
 const BOTH = ['chromium', 'webkit'];
-const NOTHING = { checks: false, build: false, browsers: [], macos: false };
+const NOTHING = { checks: false, build: false, browsers: [], macos: false, shards: [] };
+// One journey per group in use: a quick shell leg and an editing journey with a 60 s hold.
+const JOURNEYS = [
+  { file: 'j00-shell.spec.ts', group: 'shell', slow: false },
+  { file: 'j00-persist.spec.ts', group: 'editing', slow: true },
+];
 
 function push(branch, changedFiles = ['scripts/ci/plan.mjs'], extra = {}) {
   return computePlan({
     event: 'push',
     payload: { ref: `refs/heads/${branch}`, before: SHA_A, after: SHA_B, ...extra },
     changedFiles,
+    journeys: JOURNEYS,
   });
 }
 
-function pr({ draft = false, head = 't/T0.1', base = 'm0', labels = [], degraded = false, action = 'synchronize', changedFiles = ['package.json'] } = {}) {
+function pr({ draft = false, head = 't/T0.1', base = 'm0', labels = [], degraded = false, action = 'synchronize', changedFiles = ['package.json'], journeys = JOURNEYS } = {}) {
   return computePlan({
     event: 'pull_request',
     payload: {
@@ -28,12 +34,19 @@ function pr({ draft = false, head = 't/T0.1', base = 'm0', labels = [], degraded
     },
     changedFiles,
     degraded,
+    journeys,
   });
 }
 
-function dispatch(inputs, branch = 't/T0.1') {
-  return computePlan({ event: 'workflow_dispatch', payload: { ref: `refs/heads/${branch}`, inputs } });
+function dispatch(inputs, branch = 't/T0.1', journeys = JOURNEYS) {
+  return computePlan({ event: 'workflow_dispatch', payload: { ref: `refs/heads/${branch}`, inputs }, journeys });
 }
+
+function nightly({ journeys = JOURNEYS, lastNightlySha = SHA_A } = {}) {
+  return computePlan({ event: 'schedule', payload: { schedule: '23 7 * * *' }, journeys, headSha: SHA_B, lastNightlySha });
+}
+
+const shard = (browser, group, timeout = 13) => ({ browser, group, timeout });
 
 describe('push', () => {
   it('runs checks and build on a task branch, with no journey run', () => {
@@ -163,6 +176,85 @@ describe('workflow_dispatch', () => {
     expect(() => dispatch({ grep: 'a\nb' })).toThrow(/grep/);
     expect(() => dispatch({ macos: 'yes' })).toThrow(/macos/);
     expect(() => dispatch({ parity: 'yes' })).toThrow(/parity/);
+    expect(() => dispatch({ slow: 'yes' })).toThrow(/slow/);
+  });
+});
+
+describe('journey shards', () => {
+  it('shards a ready PR by journey group, one stack per engine and group, within 13 minutes each', () => {
+    expect(pr().shards).toEqual([
+      shard('chromium', 'shell'),
+      shard('chromium', 'editing'),
+      shard('webkit', 'shell'),
+      shard('webkit', 'editing'),
+    ]);
+  });
+
+  it('shards only the groups that have journeys', () => {
+    expect(pr({ journeys: [JOURNEYS[0]] }).shards).toEqual([shard('chromium', 'shell'), shard('webkit', 'shell')]);
+  });
+
+  it('runs one shard per engine over the whole suite for a grep dispatch', () => {
+    expect(dispatch({ grep: 'j00-shell', browsers: 'chromium' }).shards).toEqual([shard('chromium', 'all')]);
+  });
+
+  it('runs the selftests in one shard per engine when no journey exists yet', () => {
+    expect(pr({ journeys: [] }).shards).toEqual([shard('chromium', 'all'), shard('webkit', 'all')]);
+  });
+
+  it('fails the plan when a journey is in no group, so no shard silently drops it', () => {
+    expect(() => pr({ journeys: [...JOURNEYS, { file: 'j99-new.spec.ts', group: null, slow: false }] })).toThrow(/j99-new\.spec\.ts.*no journey group/);
+  });
+
+  it('plans no shard when no journey run is planned', () => {
+    expect(push('t/T0.1').shards).toEqual([]);
+    expect(dispatch({ lane: 'checks' }).shards).toEqual([]);
+  });
+
+  it('gives repeated or @slow runs a longer shard timeout', () => {
+    expect(dispatch({ browsers: 'chromium', repeat_each: '5' }).shards[0].timeout).toBe(25);
+    expect(dispatch({ browsers: 'chromium', slow: 'true' }).shards[0].timeout).toBe(25);
+    expect(dispatch({ browsers: 'chromium' }).shards[0].timeout).toBe(13);
+  });
+});
+
+describe('@slow legs', () => {
+  it('leaves @slow legs out of task branches, drafts, ready PRs and main pushes', () => {
+    expect(push('t/T0.1').slow).toBe('exclude');
+    expect(pr({ draft: true, labels: ['e2e'] }).slow).toBe('exclude');
+    expect(pr().slow).toBe('exclude');
+    expect(pr({ head: 't/T1.2', base: 'm1' }).slow).toBe('exclude');
+    expect(push('main').slow).toBe('exclude');
+  });
+
+  it('runs @slow legs at a milestone gate', () => {
+    expect(pr({ head: 'm1', base: 'main' }).slow).toBe('include');
+    expect(pr({ head: 'm1', base: 'main', draft: true }).slow).toBe('exclude');
+  });
+
+  it('runs @slow legs on a dispatch that asks for them', () => {
+    expect(dispatch({}).slow).toBe('exclude');
+    expect(dispatch({ slow: 'true' }).slow).toBe('include');
+    expect(dispatch({ grep: 'j00-persist', slow: true }).slow).toBe('include');
+  });
+
+  it('runs only the @slow legs nightly, in both engines, for the groups that have them', () => {
+    expect(nightly()).toMatchObject({
+      checks: false,
+      build: true,
+      browsers: BOTH,
+      parity: false,
+      slow: 'only',
+      shards: [shard('chromium', 'editing', 25), shard('webkit', 'editing', 25)],
+    });
+  });
+
+  it('skips the nightly when main has not moved since the last green nightly', () => {
+    expect(nightly({ lastNightlySha: SHA_B })).toMatchObject(NOTHING);
+  });
+
+  it('skips the nightly when no journey has a @slow leg', () => {
+    expect(nightly({ journeys: [JOURNEYS[0]] })).toMatchObject(NOTHING);
   });
 });
 
@@ -198,6 +290,8 @@ describe('toOutputs', () => {
     expect(lines).toContain('grep=j01');
     expect(lines).toContain('repeat=1');
     expect(lines).toContain('trace_milestone=0');
+    expect(lines).toContain('slow=exclude');
+    expect(lines).toContain('shards=[{"browser":"webkit","group":"all","timeout":13}]');
     const plan = lines.find((line) => line.startsWith('plan='));
     expect(JSON.parse(plan.slice('plan='.length))).toMatchObject({ browsers: ['webkit'] });
   });
@@ -251,6 +345,11 @@ describe('ciOk', () => {
     expect(ciOk(needs(gate, passed)).problems).toEqual(['oracle: skipped (planned to run)', 'parity: skipped (planned to run)']);
     expect(ciOk(needs(gate, { ...passed, oracle: 'success', parity: 'failure' })).problems).toEqual(['parity: failure (planned to run)']);
     expect(ciOk(needs(gate, { ...passed, oracle: 'success', parity: 'success' })).ok).toBe(true);
+  });
+
+  it('accepts a nightly that built and ran its @slow shards, and a skipped nightly', () => {
+    expect(ciOk(needs(nightly(), { build: 'success', e2e: 'success' })).ok).toBe(true);
+    expect(ciOk(needs(nightly({ lastNightlySha: SHA_B }))).ok).toBe(true);
   });
 
   it('fails when the plan itself failed', () => {

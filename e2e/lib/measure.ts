@@ -46,3 +46,43 @@ export class Measure {
 export function budgetProblem({ name, ms, budgetMs }: Latency): string | null {
   return budgetMs !== null && ms > budgetMs ? `${name}: ${ms} ms is over its ${budgetMs} ms budget` : null;
 }
+
+export interface LatencySample { project: string; name: string; ms: number; budgetMs: number | null }
+
+export interface LatencyRow { name: string; project: string; n: number; p50: number; p95: number; max: number; budgetMs: number | null; headroom: number | null }
+
+/** The nearest-rank percentile: with 5 samples, p95 is the slowest. Null with no samples. */
+export function percentile(values: number[], p: number): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.max(0, Math.ceil((p / 100) * sorted.length) - 1)];
+}
+
+/**
+ * One row per latency name and project (engine), sorted: the p95 headroom table. Headroom is the budget over p95;
+ * a budget is asserted only once its row exists from a `repeat_each=5` run in both engines (METHOD.md).
+ */
+export function latencyRows(samples: LatencySample[]): LatencyRow[] {
+  const groups = new Map<string, LatencySample[]>();
+  for (const sample of samples) {
+    const key = JSON.stringify([sample.name, sample.project]);
+    groups.set(key, [...(groups.get(key) ?? []), sample]);
+  }
+  return [...groups.values()]
+    .map((group) => {
+      const values = group.map((sample) => sample.ms);
+      const p95 = percentile(values, 95) ?? 0;
+      const budgetMs = group.find((sample) => sample.budgetMs !== null)?.budgetMs ?? null;
+      return {
+        name: group[0].name,
+        project: group[0].project,
+        n: values.length,
+        p50: percentile(values, 50) ?? 0,
+        p95,
+        max: Math.max(...values),
+        budgetMs,
+        headroom: budgetMs !== null && p95 > 0 ? Number((budgetMs / p95).toFixed(1)) : null,
+      };
+    })
+    .sort((a, b) => a.name.localeCompare(b.name) || a.project.localeCompare(b.project));
+}

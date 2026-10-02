@@ -6,6 +6,9 @@ on:
     branches: ['**']
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, labeled]
+  # Nightly on main: the @slow legs only, skipped when main has not moved since the last green nightly.
+  schedule:
+    - cron: '23 7 * * *'
   workflow_dispatch:
     inputs:
       lane:
@@ -32,6 +35,10 @@ on:
         default: false
       parity:
         description: 'Also run shell parity against the Ladle oracle (the full and parity lanes always do)'
+        type: boolean
+        default: false
+      slow:
+        description: 'Also run the @slow legs (60 s holds, soaks, idles); milestone gates and the nightly always do'
         type: boolean
         default: false
 
@@ -61,6 +68,8 @@ jobs:
       parity: ${{ steps.plan.outputs.parity }}
       grep: ${{ steps.plan.outputs.grep }}
       repeat: ${{ steps.plan.outputs.repeat }}
+      slow: ${{ steps.plan.outputs.slow }}
+      shards: ${{ steps.plan.outputs.shards }}
       trace_milestone: ${{ steps.plan.outputs.trace_milestone }}
       plan: ${{ steps.plan.outputs.plan }}
     steps:
@@ -70,10 +79,17 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version-file: .node-version
+      # The nightly skips a main head that already has a green nightly.
+      - id: nightly
+        if: github.event_name == 'schedule'
+        run: echo "sha=$(gh run list --workflow ci.yml --event schedule --branch main --status success --limit 1 --json headSha --jq '.[0].headSha // ""')" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ github.token }}
       - id: plan
         run: node scripts/ci/plan.mjs >> "$GITHUB_OUTPUT"
         env:
           CI_DEGRADED: ${{ vars.CI_DEGRADED }}
+          LAST_NIGHTLY_SHA: ${{ steps.nightly.outputs.sha }}
 
   checks:
     needs: plan
@@ -187,14 +203,16 @@ jobs:
           path: web-dist.tgz
           retention-days: 3
 
-  # Every journey engine boots the real Worker stack on the build job's bytes, runs the selftests, then the
-  # journeys (e2e/journeys) that exist. T0.9b shards it by journey group. The Playwright image carries both
-  # engines and their system libraries, so no job waits on apt mirrors.
+  # One shard per engine and journey group (scripts/ci/journeys.mjs), each booting its own Worker stack on the
+  # build job's bytes, then running the selftests and its group's journeys. A ready-PR shard has 13 minutes;
+  # repeated and @slow runs get 25. The Playwright image carries both engines and their system libraries, so no
+  # job waits on apt mirrors.
   e2e:
+    name: e2e (${{ matrix.browser }}, ${{ matrix.group }})
     needs: [plan, build]
     if: needs.plan.outputs.e2e == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: ${{ matrix.timeout }}
     container:
       # Keep the tag equal to @playwright/test in e2e/package.json; the first step checks it.
       image: mcr.microsoft.com/playwright:v1.61.1-noble
@@ -202,9 +220,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        browser: ${{ fromJSON(needs.plan.outputs.browsers) }}
+        include: ${{ fromJSON(needs.plan.outputs.shards) }}
     env:
-      RUN_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.browser }}
+      RUN_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.browser }}-${{ matrix.group }}
       PLAYWRIGHT_IMAGE: v1.61.1
     defaults:
       run:
@@ -231,15 +249,21 @@ jobs:
           node scripts/stack.mjs start --run-id "$RUN_ID" --prebuilt .local-stack/prebuilt/dist --hooks
           --expect-commit "${{ needs.build.outputs.commit }}" --expect-bundle "${{ needs.build.outputs.bundleHash }}"
       - run: echo "STACK_STATE=$PWD/.local-stack/runs/$RUN_ID/state.json" >> "$GITHUB_ENV"
-      - name: Selftests, then journeys
+      - name: Selftests, then the group's journeys
         working-directory: e2e
         env:
           BROWSER: ${{ matrix.browser }}
+          E2E_GROUP: ${{ matrix.group }}
           GREP: ${{ needs.plan.outputs.grep }}
           REPEAT: ${{ needs.plan.outputs.repeat }}
+          SLOW: ${{ needs.plan.outputs.slow }}
         run: |
           args=(--project="selftest-$BROWSER" --project="$BROWSER" --repeat-each="$REPEAT")
           if [ -n "$GREP" ]; then args+=(--grep "$GREP"); fi
+          case "$SLOW" in
+            exclude) args+=(--grep-invert @slow) ;;
+            only) args+=(--grep @slow) ;;
+          esac
           pnpm exec playwright test "${args[@]}"
       - name: Stop the stack
         if: always()
@@ -248,7 +272,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: e2e-${{ matrix.browser }}-${{ github.run_attempt }}
+          name: e2e-${{ matrix.browser }}-${{ matrix.group }}-${{ github.run_attempt }}
           path: |
             e2e/test-results/
             e2e/playwright-report/
