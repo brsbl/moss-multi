@@ -33,7 +33,9 @@ export default defineConfig([
   {
     files: [`e2e/**/*.${CODE}`],
     plugins: { moss },
-    rules: { 'moss/no-contenteditable-pick': 'error' },
+    // Detectors run in the page; Playwright fixtures destructure `{}` when they need no other fixture.
+    languageOptions: { globals: { ...globals.browser, ...globals.node } },
+    rules: { 'moss/no-contenteditable-pick': 'error', 'no-empty-pattern': 'off' },
   },
   {
     files: [`apps/**/*.${CODE}`, `packages/**/*.${CODE}`, `vendor/**/*.${CODE}`],

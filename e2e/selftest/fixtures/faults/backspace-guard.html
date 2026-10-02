@@ -1,0 +1,8 @@
+<!-- SP15: the guard the product needs; a bare Backspace with no editable focus must not navigate history. -->
+<script>
+  document.addEventListener('keydown', (event) => {
+    const target = document.activeElement;
+    const editable = target && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName));
+    if (event.key === 'Backspace' && !editable) event.preventDefault();
+  });
+</script>

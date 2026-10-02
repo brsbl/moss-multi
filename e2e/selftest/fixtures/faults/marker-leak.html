@@ -1,0 +1,4 @@
+<!-- Invariant 6: a comment marker leaks into the rendered body. -->
+<script>
+  document.querySelector('[data-body-binding] p').append(' %%m:c1:start%%');
+</script>

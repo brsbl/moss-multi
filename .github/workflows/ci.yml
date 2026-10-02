@@ -132,8 +132,18 @@ jobs:
       - name: Stop the smoke stack
         if: always()
         run: node scripts/stack.mjs stop --run-id "$SMOKE_RUN" || true
+      - name: Pack the built bytes for e2e
+        if: needs.plan.outputs.e2e == 'true'
+        run: tar -czf web-dist.tgz -C apps/web dist
+      - if: needs.plan.outputs.e2e == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: web-dist
+          path: web-dist.tgz
+          retention-days: 3
 
-  # Placeholder until T0.9b wires the stack and Playwright. It never passes a requested grep.
+  # Every journey engine boots the real Worker stack on the build job's bytes, runs the selftests, then the
+  # journeys (e2e/journeys) that exist. T0.9b shards it by journey group.
   e2e:
     needs: [plan, build]
     if: needs.plan.outputs.e2e == 'true'
@@ -143,23 +153,65 @@ jobs:
       fail-fast: false
       matrix:
         browser: ${{ fromJSON(needs.plan.outputs.browsers) }}
+    env:
+      RUN_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.browser }}
     steps:
       - uses: actions/checkout@v6
-      - name: Journeys
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v8
+        with:
+          name: web-dist
+      - run: mkdir -p .local-stack/prebuilt && tar -xzf web-dist.tgz -C .local-stack/prebuilt
+      - id: pw
+        run: echo "version=$(node -p "require('./e2e/node_modules/@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+      - id: pw-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: pw-${{ runner.os }}-${{ steps.pw.outputs.version }}-${{ matrix.browser }}
+      - name: Install ${{ matrix.browser }}
+        working-directory: e2e
+        run: |
+          if [ "${{ steps.pw-cache.outputs.cache-hit }}" = 'true' ]; then
+            pnpm exec playwright install-deps ${{ matrix.browser }}
+          else
+            pnpm exec playwright install --with-deps ${{ matrix.browser }}
+          fi
+      - name: Boot the Worker stack on the built bytes
+        run: >
+          node scripts/stack.mjs start --run-id "$RUN_ID" --prebuilt .local-stack/prebuilt/dist --hooks
+          --expect-commit "${{ needs.build.outputs.commit }}" --expect-bundle "${{ needs.build.outputs.bundleHash }}"
+      - run: echo "STACK_STATE=$PWD/.local-stack/runs/$RUN_ID/state.json" >> "$GITHUB_ENV"
+      - name: Selftests, then journeys
+        working-directory: e2e
         env:
           BROWSER: ${{ matrix.browser }}
           GREP: ${{ needs.plan.outputs.grep }}
           REPEAT: ${{ needs.plan.outputs.repeat }}
         run: |
-          if [ -f e2e/playwright.config.ts ]; then
-            echo "::error::e2e/playwright.config.ts exists but the e2e job is still the T0.1 placeholder; wire it (T0.9b)."
-            exit 1
-          fi
-          if [ -n "$GREP" ]; then
-            echo "::error::No journey suite exists yet, so grep '$GREP' matched nothing."
-            exit 1
-          fi
-          echo "e2e ($BROWSER): no journey suite yet (T0.9b wires this job)." | tee -a "$GITHUB_STEP_SUMMARY"
+          args=(--project="selftest-$BROWSER" --project="$BROWSER" --repeat-each="$REPEAT")
+          if [ -n "$GREP" ]; then args+=(--grep "$GREP"); fi
+          pnpm exec playwright test "${args[@]}"
+      - name: Stop the stack
+        if: always()
+        run: node scripts/stack.mjs stop --run-id "$RUN_ID" || true
+      - name: Upload results, traces and screenshots
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-${{ matrix.browser }}-${{ github.run_attempt }}
+          path: |
+            e2e/test-results/
+            e2e/playwright-report/
+            .local-stack/runs/*/wrangler.log
+            .local-stack/runs/*/state.json
+          retention-days: 7
+          if-no-files-found: ignore
 
   ci-ok:
     if: always()
