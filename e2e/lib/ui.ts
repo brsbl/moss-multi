@@ -3,14 +3,51 @@
 import { expect, type Locator } from '@playwright/test';
 import type { Actor } from './actors.ts';
 import {
-  BODY_BINDING_ATTR, DOC_STATE_ATTR, EDITOR_PANE_ATTR, LEXICAL_EDITOR_SELECTOR, NAMES, paneSelector, SIDEBAR_ROW_ATTR,
-  TITLE_BINDING_ATTR,
+  APP_STATE_ATTR, BODY_BINDING_ATTR, DOC_STATE_ATTR, EDITOR_PANE_ATTR, LEXICAL_EDITOR_SELECTOR, NAMES, paneSelector,
+  SIDEBAR_ROW_ATTR, TITLE_BINDING_ATTR,
 } from './contract.ts';
 import { fieldTexts } from './detectors.js';
+import type { Principal } from './principals.ts';
 import type { Field } from './text.ts';
 
 /** moss's notes-panel button (`NotesListPanel`, aria-label at the pin). */
 export const NEW_NOTE = { role: 'button', name: 'Create new note' } as const;
+
+/** The login card (T0.10): one form named for its mode, fields found by their labels. */
+export type LoginMode = 'Sign in' | 'Create account';
+
+export const loginForm = (actor: Actor, mode: LoginMode = 'Sign in'): Locator => actor.page.getByRole('form', { name: mode, exact: true });
+
+/** The card is on screen and hydrated: `/login` publishes `data-app-state=ready` once its fields accept input. */
+export async function waitForLoginCard(actor: Actor, mode: LoginMode = 'Sign in'): Promise<void> {
+  await actor.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: BIND_TIMEOUT });
+  await expect(loginForm(actor, mode), `${actor.label}: the login card shows its ${mode} form`).toBeVisible();
+}
+
+/** Signs in through the card; `password` overrides the principal's own (a wrong-password leg). */
+export async function signInThroughCard(actor: Actor, principal: Principal, { password = principal.password } = {}): Promise<void> {
+  const form = loginForm(actor, 'Sign in');
+  await form.getByLabel('Email', { exact: true }).fill(principal.email);
+  await form.getByLabel('Password', { exact: true }).fill(password);
+  await form.getByRole('button', { name: 'Sign in', exact: true }).click();
+}
+
+/** Switches the card to sign-up and creates the principal's account. */
+export async function signUpThroughCard(actor: Actor, principal: Principal): Promise<void> {
+  await actor.page.getByRole('button', { name: 'Create an account', exact: true }).click();
+  const form = loginForm(actor, 'Create account');
+  await expect(form).toBeVisible();
+  await form.getByLabel('Name', { exact: true }).fill(principal.name);
+  await form.getByLabel('Email', { exact: true }).fill(principal.email);
+  await form.getByLabel('Password', { exact: true }).fill(principal.password);
+  await form.getByRole('button', { name: 'Create account', exact: true }).click();
+}
+
+/** moss's Settings, then the web build's Account section: Sign out. */
+export async function signOutThroughSettings(actor: Actor): Promise<void> {
+  await actor.page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await actor.page.getByRole('dialog').getByRole('button', { name: 'Sign out', exact: true }).click();
+}
 
 const BIND_TIMEOUT = 15_000;
 

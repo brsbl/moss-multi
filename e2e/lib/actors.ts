@@ -9,7 +9,7 @@ import { assertNotInfra, InfraBlocked } from './infra.ts';
 import {
   actorFindings, domFindings, principalFindings, typedFindings, type ActorView, type DeclaredHttp, type Finding,
 } from './invariants.ts';
-import { mintPrincipal, signIn, type Principal } from './principals.ts';
+import { mintPrincipal, newPrincipal, signIn, type Principal } from './principals.ts';
 import { makeSeverable, type Sever } from './sever.ts';
 import type { Provenance, Stack } from './stack.ts';
 import { Telemetry } from './telemetry.ts';
@@ -101,6 +101,17 @@ export class Actors {
   async principal(label: string): Promise<Principal> {
     minted += 1;
     const principal = await mintPrincipal(this.stack.baseUrl, this.options.runToken, label, minted);
+    this.principals.push(principal);
+    return principal;
+  }
+
+  /**
+   * Per-run @example.invalid credentials that nobody has signed up yet, for a journey that signs up through the
+   * login card. They count for invariant 8; set `id` once the account exists.
+   */
+  credentials(label: string): Principal {
+    minted += 1;
+    const principal = newPrincipal(this.options.runToken, label, minted);
     this.principals.push(principal);
     return principal;
   }
