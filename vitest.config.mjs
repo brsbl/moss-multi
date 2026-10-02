@@ -40,13 +40,13 @@ export default defineConfig({
         },
       },
       {
-        // L3: parity with moss's pipeline at the pin, in jsdom as moss's own tests run.
+        // L3: parity with moss's pipeline at the pin, and the client node views, in jsdom as moss's tests run.
         extends: true,
         define: { __MOSS_PRISTINE__: pristine },
         test: {
           name: 'converter-parity',
           environment: 'jsdom',
-          include: ['packages/sync/test/parity/**/*.test.ts'],
+          include: ['packages/sync/test/parity/**/*.test.ts', 'packages/sync/test/views/**/*.test.ts'],
           setupFiles: ['packages/sync/test/parity/setup.ts'],
           globalSetup: ['packages/sync/test/pristine.setup.ts'],
         },
