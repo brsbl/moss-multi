@@ -165,11 +165,18 @@ test('a failed session lookup shows data-app-state=degraded and retries in place
   const ada = await actors.session(await actors.principal('ada'));
   await actors.requireDistinct(2);
 
-  // The lookup answers the way the server does when D1 fails under it.
+  // Each lookup fails a different way, in turn: a refused request (Start's fetcher throws), an error page served as
+  // 200, and the server's own answer when D1 fails under it. A 5xx or a network abort would itself fail invariant 1.
+  const FAILURES = [
+    { status: 429, contentType: 'text/plain', body: 'Too many requests' },
+    { status: 200, contentType: 'text/html', body: '<!doctype html><title>Error</title><p>Something went wrong.</p>' },
+    { status: 200, contentType: 'application/json', body: JSON.stringify({ kind: 'unavailable' }) },
+  ];
+  ada.expectHttp(429, /^\/_serverFn\//);
   let failed = 0;
   await ada.page.route(SERVER_FNS, async (route) => {
+    await route.fulfill(FAILURES[failed % FAILURES.length]);
     failed += 1;
-    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ kind: 'unavailable' }) });
   });
   const navigations = recordNavigations(ada.page);
   const path = docPath();
@@ -178,11 +185,21 @@ test('a failed session lookup shows data-app-state=degraded and retries in place
   const html = ada.page.locator('html');
   await expect(html, 'a failed lookup degrades the app').toHaveAttribute(APP_STATE_ATTR, 'degraded', { timeout: BOOT_TIMEOUT });
   await expect(ada.page.getByRole('status'), 'and says so').toContainText(/can.t reach/i);
-  await expect.poll(() => failed, { message: 'the lookup retries on its own', timeout: BOOT_TIMEOUT }).toBeGreaterThanOrEqual(2);
+  await expect
+    .poll(() => failed, { message: 'the lookup retries on its own through every kind of failure', timeout: BOOT_TIMEOUT })
+    .toBeGreaterThanOrEqual(FAILURES.length);
   await expect(html, 'still degraded in place').toHaveAttribute(APP_STATE_ATTR, 'degraded');
   expect(new URL(ada.page.url()).pathname, 'no bounce to /login while degraded').toBe(path);
 
+  // "Try again" asks at once; the automatic retry after the third failure waits 4 s and after the fourth 8 s.
+  const tryAgain = ada.page.getByRole('status').getByRole('button', { name: 'Try again', exact: true });
+  const before = failed;
+  await tryAgain.click();
+  await expect.poll(() => failed, { message: 'Try again retries the lookup at once', timeout: 2_000 }).toBeGreaterThan(before);
+  await expect(html, 'and stays degraded while it fails').toHaveAttribute(APP_STATE_ATTR, 'degraded');
+
   await ada.page.unroute(SERVER_FNS);
+  await tryAgain.click();
   await waitForShell(ada);
   expect(new URL(ada.page.url()).pathname, 'the retry boots the same doc').toBe(path);
   expect([...new Set(navigations.map((url) => new URL(url).pathname))], 'every commit stayed on the doc: never redirected').toEqual([path]);

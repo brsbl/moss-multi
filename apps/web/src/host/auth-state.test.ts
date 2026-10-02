@@ -33,6 +33,20 @@ describe('the auth store (the single auth-state writer)', () => {
     expect(vi.mocked(deps.sleep!).mock.calls.map(([ms]) => ms)).toEqual([1_000, 2_000, 4_000]);
   });
 
+  it('asks again at once on retryNow instead of waiting out the backoff', async () => {
+    const answers: unknown[] = [{ kind: 'unavailable' }, { kind: 'signed-in', user: ADA }];
+    // No `sleep` dep: the real wait, 1 s before the second lookup.
+    const lookup = vi.fn(async () => answers.shift());
+    const auth = createAuthStore({ lookup, fetch: vi.fn<typeof globalThis.fetch>(), leave: vi.fn(), setAppState: vi.fn() });
+    const degraded = new Promise<void>((done) => auth.subscribe((state) => state.status === 'degraded' && done()));
+    const resolved = auth.resolve();
+    await degraded;
+    auth.retryNow();
+    const raced = await Promise.race([resolved, new Promise((done) => setTimeout(() => done('still waiting'), 250))]);
+    expect(raced).toEqual(ADA);
+    expect(lookup).toHaveBeenCalledTimes(2);
+  });
+
   it('says signed out only when the server says so', async () => {
     const { auth, seen } = store([{ kind: 'signed-out' }]);
     await expect(auth.resolve()).resolves.toBeNull();
