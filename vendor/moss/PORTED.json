@@ -56,7 +56,7 @@
     {"path":"packages/desktop/src/renderer/components/NoteBreadcrumb.tsx","pin":"762abb777","upstreamSha256":"0e3de9398294d756f43b62834ea96dcaa4f3fc2049bce3bbd8336a7d297acb2a","mode":"verbatim"},
     {"path":"packages/desktop/src/renderer/components/NoteSearchInput.tsx","pin":"762abb777","upstreamSha256":"ac92baaf3fd0ae4906e44170e29902361b800e3d2a8ad67df4575a0813ae491b","mode":"verbatim"},
     {"path":"packages/desktop/src/renderer/components/SearchToolbarInput.tsx","pin":"762abb777","upstreamSha256":"d57113d9261cd4c062ba7b4b687af17ed6fdefea76faef49cfcb52697c300b1a","mode":"verbatim"},
-    {"path":"packages/desktop/src/renderer/components/SettingsModal.tsx","pin":"762abb777","upstreamSha256":"917c65b54786587d0312d64a0097e106a419835a0ba75dbb5592e78449d1cbf5","mode":"verbatim"},
+    {"path":"packages/desktop/src/renderer/components/SettingsModal.tsx","pin":"762abb777","upstreamSha256":"917c65b54786587d0312d64a0097e106a419835a0ba75dbb5592e78449d1cbf5","mode":"patched","patch":"patches/moss/packages/desktop/src/renderer/components/SettingsModal.tsx.patch"},
     {"path":"packages/desktop/src/renderer/components/UpdateWidget.tsx","pin":"762abb777","upstreamSha256":"e06ead43c6ef6ec71646add61be8364d0681863b0fed9d74c5e0efda02262169","mode":"verbatim"},
     {"path":"packages/desktop/src/renderer/editor/AutoArrowPlugin.tsx","pin":"762abb777","upstreamSha256":"bc5781c58d7c363bcd71665a0a5a1d086cdd7d9e381e49adca8b4988f606014e","mode":"verbatim"},
     {"path":"packages/desktop/src/renderer/editor/AutoDividerPlugin.tsx","pin":"762abb777","upstreamSha256":"80ad33dc8ddb7511a534f363ac7afa429a88791be0fb940b30ad9e1fd8abe80e","mode":"verbatim"},

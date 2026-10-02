@@ -20,6 +20,8 @@ import {
 } from '../state/granted-dirs-atoms';
 import { refreshWorkspaceInfoAtom, workspaceInfoAtom } from '../state/workspace-info-atoms';
 import { ModalShell } from './ModalShell';
+// moss-multi seam: settings-account (BUILDPLAN T0.10: sign-out lives in Settings)
+import { AccountSection } from '@moss-multi/host/surfaces/AccountSection';
 
 function toTildePath(fullPath: string): string {
   return fullPath.replace(/^\/(?:Users|home)\/[^/]+/, '~');
@@ -164,6 +166,9 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
 
   return (
     <ModalShell open={open} onOpenChange={onOpenChange} title="Settings" description="Manage workspace, editor, and external directory settings.">
+
+            {/* moss-multi seam: settings-account (BUILDPLAN T0.10) */}
+            <AccountSection />
 
             <AppearanceSection />
 
