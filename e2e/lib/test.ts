@@ -1,5 +1,6 @@
 // The only import journeys use: `test` with the stack, actors and phase clocks, and an auto fixture that checks
 // the 9 invariants on every actor after every test (S-test §3.3).
+import { randomBytes } from 'node:crypto';
 import { test as base } from '@playwright/test';
 import { Actors } from './actors.ts';
 import { Measure } from './measure.ts';
@@ -12,7 +13,13 @@ interface TestFixtures { actors: Actors; stack: Stack; measure: Measure }
 interface WorkerFixtures { runToken: string; stackW: Stack }
 
 export const test = base.extend<TestFixtures, WorkerFixtures>({
-  runToken: [async ({}, use, workerInfo) => use(`${(process.env.RUN_ID ?? 'local').toLowerCase()}-w${workerInfo.workerIndex}`), { scope: 'worker' }],
+  runToken: [
+    async ({}, use, workerInfo) => {
+      const run = process.env.RUN_ID ?? `local-${randomBytes(3).toString('hex')}`;
+      await use(`${run.toLowerCase()}-w${workerInfo.workerIndex}`);
+    },
+    { scope: 'worker' },
+  ],
   stackW: [
     async ({}, use) => {
       const stack = Stack.fromState();

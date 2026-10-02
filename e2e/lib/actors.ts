@@ -73,13 +73,15 @@ export class Actor implements ActorView {
   }
 }
 
+// Per worker process, so every principal minted in a run has its own email.
+let minted = 0;
+
 export class Actors {
   readonly list: Actor[] = [];
   readonly typed: Typed[] = [];
   readonly principals: Principal[] = [];
   readonly journey: string;
   private soloReason: string | null = null;
-  private minted = 0;
   private version: Provenance | null = null;
 
   constructor(
@@ -97,8 +99,8 @@ export class Actors {
 
   /** A per-run @example.invalid principal, signed up through the auth API as declared setup. */
   async principal(label: string): Promise<Principal> {
-    this.minted += 1;
-    const principal = await mintPrincipal(this.stack.baseUrl, this.options.runToken, label, this.minted);
+    minted += 1;
+    const principal = await mintPrincipal(this.stack.baseUrl, this.options.runToken, label, minted);
     this.principals.push(principal);
     return principal;
   }
@@ -113,10 +115,16 @@ export class Actors {
     return actor;
   }
 
-  /** A signed-in actor in a fresh context with its own session, landed on a ready shell. */
-  async open(principal: Principal, options: OpenOptions = {}): Promise<Actor> {
+  /** A fresh context holding its own new session for `principal`, not navigated yet. */
+  async session(principal: Principal, options: OpenOptions = {}): Promise<Actor> {
     const actor = await this.newActor(options.label ?? principal.label, principal, options);
     await actor.context.addCookies(await signIn(this.stack.baseUrl, principal));
+    return actor;
+  }
+
+  /** A signed-in actor in a fresh context with its own session, landed on a ready shell. */
+  async open(principal: Principal, options: OpenOptions = {}): Promise<Actor> {
+    const actor = await this.session(principal, options);
     await actor.goto(options.path ?? '/');
     await actor.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached' });
     return actor;
@@ -133,6 +141,19 @@ export class Actors {
     const actor = await this.newActor(options.label ?? `anon${this.list.length + 1}`, null, options);
     await actor.goto(url);
     return actor;
+  }
+
+  /** `/api/me` through each signed-in actor's own context must name at least `n` distinct principals. */
+  async requireDistinct(n: number): Promise<string[]> {
+    const ids: string[] = [];
+    for (const actor of this.list.filter((a) => a.principal)) {
+      const response = await actor.context.request.get(new URL('/api/me', this.stack.baseUrl).href);
+      const body = (await response.json()) as { principal?: { id?: string } };
+      if (!response.ok() || !body.principal?.id) throw new Error(`${actor.label}: /api/me ${response.status()} ${JSON.stringify(body)}`);
+      ids.push(body.principal.id);
+    }
+    if (new Set(ids).size < n) throw new Error(`${new Set(ids).size} distinct principals behind ${ids.length} actors, need ${n}`);
+    return ids;
   }
 
   /** Opts this test out of the two-principal rule (invariant 8); the reason is required. */
