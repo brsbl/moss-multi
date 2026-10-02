@@ -8,6 +8,7 @@ import type { Page } from '@playwright/test';
 import { AFFORDANCES, type Surface } from '../../apps/web/src/host/affordances.ts';
 import type { Actor, Actors } from '../lib/actors.ts';
 import { APP_STATE_ATTR, BUILD_META, CLIENT_BUILD_ATTR, EDITOR_CANVAS_ATTR, OVERLAY_SURFACE_ATTR } from '../lib/contract.ts';
+import type { Measure } from '../lib/measure.ts';
 import type { Principal } from '../lib/principals.ts';
 import { expect, test } from '../lib/test.ts';
 
@@ -109,6 +110,21 @@ async function twoShells(actors: Actors): Promise<[Actor, Actor]> {
 
 const bodyBackground = (page: Page) => page.evaluate(() => getComputedStyle(document.body).backgroundColor);
 
+type Marked = { __mossPrevious?: boolean };
+
+/** Reloads, then times the new document to `data-app-state=ready`; the old document is marked so it never counts. */
+async function timedReload(actor: Actor, measure: Measure): Promise<void> {
+  await actor.page.evaluate(() => {
+    (window as unknown as Marked).__mossPrevious = true;
+  });
+  await actor.page.reload({ waitUntil: 'commit' });
+  const ready = () =>
+    actor.page
+      .evaluate((attr) => !(window as unknown as Marked).__mossPrevious && document.documentElement.getAttribute(attr) === 'ready', APP_STATE_ATTR)
+      .catch(() => false);
+  await measure.until('reload to shell ready', ready, { timeoutMs: BOOT_TIMEOUT });
+}
+
 test('two principals boot the moss shell with no console errors, page errors or CSP violations', async ({ actors }) => {
   for (const actor of await twoShells(actors)) {
     const sheets = await actor.page.locator('head link[rel="stylesheet"]').evaluateAll((links) => links.map((link) => (link as HTMLLinkElement).href));
@@ -125,7 +141,7 @@ test('two principals boot the moss shell with no console errors, page errors or 
   }
 });
 
-test('the build stamps equal /api/version on every navigation', async ({ actors, stack }) => {
+test('the build stamps equal /api/version on every navigation', async ({ actors, stack, measure }) => {
   const version = await stack.assertProvenance();
   const expected = { meta: `${version.commit}:${version.bundleHash}`, client: `${version.commit}:${version.clientHash}` };
   const stamps = (page: Page) =>
@@ -138,7 +154,7 @@ test('the build stamps equal /api/version on every navigation', async ({ actors,
     );
   for (const actor of await twoShells(actors)) {
     expect(await stamps(actor.page), `${actor.label} /`).toEqual(expected);
-    await actor.page.reload();
+    await timedReload(actor, measure);
     await waitForShell(actor);
     expect(await stamps(actor.page), `${actor.label} / after reload`).toEqual(expected);
     await actor.goto(`/d/${randomBytes(8).toString('hex')}`);
@@ -148,7 +164,7 @@ test('the build stamps equal /api/version on every navigation', async ({ actors,
   }
 });
 
-test('light and dark switch through moss Settings and persist for that viewer only', async ({ actors }) => {
+test('light and dark switch through moss Settings and persist for that viewer only', async ({ actors, measure }) => {
   const [ada, ben] = await twoShells(actors);
   const html = ada.page.locator('html');
   await expect(html).toHaveAttribute('data-theme', 'light');
@@ -157,6 +173,7 @@ test('light and dark switch through moss Settings and persist for that viewer on
   const choose = async (label: 'Light' | 'Dark') => {
     await ada.page.getByRole('button', { name: 'Settings', exact: true }).click();
     await ada.page.getByRole('radiogroup', { name: 'Theme' }).getByRole('radio', { name: label, exact: true }).click();
+    await measure.until('theme switch', async () => (await html.getAttribute('data-theme')) === label.toLowerCase());
     await expect(html).toHaveAttribute('data-theme', label.toLowerCase());
     await ada.page.keyboard.press('Escape');
     await expect(ada.page.getByRole('radiogroup', { name: 'Theme' })).toBeHidden();
