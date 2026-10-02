@@ -4,12 +4,28 @@ import { FIXTURES, golden, stringify } from '../../src/converter/fixtures.ts';
 
 declare const __MOSS_PRISTINE__: string;
 
+// The import cycle (S-conv B5): nodes → CommentPlugin → comment-import → MarkdownEditor → nodes. Entered at a
+// node file, the transformer module runs before that class exists. A native ESM engine throws the TDZ
+// ReferenceError; Vite's module runner hands over `undefined` instead. Either is the same defect.
+async function enterAtChartNode(load: () => Promise<{ chart: unknown; nodes: unknown[] }>) {
+  try {
+    const { chart, nodes } = await load();
+    const captured = nodes.filter((node) => node === undefined).length;
+    return { broken: captured > 0 || !nodes.includes(chart), detail: `${captured} node classes captured before initialization` };
+  } catch (error) {
+    return { broken: /before initialization/.test(String(error)), detail: String(error) };
+  }
+}
+
 describe('L2 converter in workerd @p:tech-1', () => {
-  it('imports the node classes before the transformers, as a server entry does, and converts', { timeout: 120_000 }, async () => {
-    // Entering at a node file is what a server does; on the unsplit tree this is the TDZ cycle (S-conv B5).
-    const { ChartNode } = await import('@moss-desktop/renderer/editor/nodes/ChartNode');
-    const { exportMarkdown, importMarkdown, MARKDOWN_EDITOR_NODES } = await import('../../src/converter/index.ts');
-    expect(MARKDOWN_EDITOR_NODES).toContain(ChartNode);
+  it('enters at a node class, as a server entry does, and gets every class it registers', { timeout: 120_000 }, async () => {
+    const entered = await enterAtChartNode(async () => {
+      const { ChartNode } = await import('@moss-desktop/renderer/editor/nodes/ChartNode');
+      const { MARKDOWN_EDITOR_NODES } = await import('../../src/converter/index.ts');
+      return { chart: ChartNode, nodes: [...MARKDOWN_EDITOR_NODES] };
+    });
+    expect(entered.broken, `TDZ in the converter's import graph: ${entered.detail}`).toBe(false);
+    const { exportMarkdown, importMarkdown } = await import('../../src/converter/index.ts');
     expect(typeof document).toBe('undefined');
     expect(exportMarkdown(importMarkdown('Hello **workerd**'))).toBe('Hello **workerd**');
   });
@@ -32,11 +48,13 @@ describe('L2 converter in workerd @p:tech-1', () => {
 });
 
 describe('L2 negative control: the unsplit tree @p:tech-1', () => {
-  it('entering pristine moss at nodes/ChartNode throws the TDZ error', { timeout: 120_000 }, async () => {
-    // Prism's global is installed first so the only failure left is the import cycle (S-conv B4, B5).
-    const prism = (await import('prismjs')) as { default?: unknown };
-    (globalThis as { Prism?: unknown }).Prism ??= prism.default ?? prism;
-    const entry = `${__MOSS_PRISTINE__}/packages/desktop/src/renderer/editor/nodes/ChartNode.tsx`;
-    await expect(import(/* @vite-ignore */ entry)).rejects.toThrow(/before initialization/);
+  it('entering pristine moss at nodes/ChartNode breaks the node set', { timeout: 120_000 }, async () => {
+    const editor = `${__MOSS_PRISTINE__}/packages/desktop/src/renderer/editor`;
+    const entered = await enterAtChartNode(async () => {
+      const { ChartNode } = await import(/* @vite-ignore */ `${editor}/nodes/ChartNode.tsx`);
+      const { MARKDOWN_EDITOR_NODES } = await import(/* @vite-ignore */ `${editor}/MarkdownEditor.tsx`);
+      return { chart: ChartNode, nodes: [...MARKDOWN_EDITOR_NODES] };
+    });
+    expect(entered.broken, entered.detail).toBe(true);
   });
 });
