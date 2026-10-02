@@ -2,12 +2,12 @@
 // (A2) and the fixpoint (A3). A missing golden fails; with GOLDEN_OUT set it is also written there for review.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { $convertFromMarkdownString, type Transformer } from '@lexical/markdown';
+import { $convertFromMarkdownString, $convertToMarkdownString, type Transformer } from '@lexical/markdown';
 import { LinkNode } from '@lexical/link';
 import { CodeNode } from '@lexical/code-core';
 import { describe, expect, it } from 'vitest';
 import { withImportFormulaIds } from '@moss-desktop/renderer/editor/markdown/fixes';
-import { $postImportNormalize, escapeHtmlEntities, normalizeMarkdownForImport } from '@moss-desktop/renderer/editor/markdown/normalize';
+import { $postImportNormalize, escapeHtmlEntities, normalizeMarkdownForImport, unescapeHtmlEntities } from '@moss-desktop/renderer/editor/markdown/normalize';
 import { createConverterEditor, exportMarkdown, importMarkdown, MARKDOWN_EDITOR_TRANSFORMERS, type NoteBodyImportOptions } from './index.ts';
 import { CANONICALIZED, DEVIATING, FIXTURES, fixture, golden, NOT_IDEMPOTENT, stringify } from './fixtures.ts';
 
@@ -87,14 +87,14 @@ describe('converter fixes @p:tech-4', () => {
     const exported = exportMarkdown(importMarkdown(fixture('line-loss').markdown));
     expect(exported).toContain('caption (x)');
     expect(exported).toContain('https://cdn.example.com/clip.mp4');
-    expect(exported).toContain('| --- |');
+    expect(exported).toContain('| --- | --- |');
   });
 });
 
 // Each control must break a golden, proving the goldens see transformer order and membership.
 describe('negative controls @p:tech-4', () => {
-  // The pipeline's own steps with a substitute transformer list.
-  function importWith(transformers: Transformer[], markdown: string, options: NoteBodyImportOptions = {}): string {
+  // The pipeline's own steps with a substitute transformer list: the A1 tree and the A2 export, as one string.
+  function roundTripWith(transformers: Transformer[], markdown: string, options: NoteBodyImportOptions = {}): string {
     const editor = createConverterEditor();
     editor.update(
       () =>
@@ -104,8 +104,10 @@ describe('negative controls @p:tech-4', () => {
         }),
       { discrete: true },
     );
-    return stringify(editor.getEditorState().toJSON());
+    const state = editor.getEditorState();
+    return `${stringify(state.toJSON())}${state.read(() => unescapeHtmlEntities($convertToMarkdownString(transformers)))}`;
   }
+  const goldenPair = (name: string) => `${golden(`${name}.json`)}${golden(`${name}.export.md`)}`;
   const list = () => [...MARKDOWN_EDITOR_TRANSFORMERS];
   const indexOf = (transformers: Transformer[], test: (t: Transformer & Record<string, unknown>) => boolean) => {
     const index = transformers.findIndex((t) => test(t as Transformer & Record<string, unknown>));
@@ -129,29 +131,29 @@ describe('negative controls @p:tech-4', () => {
   it('reproduces the goldens with the real list', () => {
     for (const name of ['images', 'embed-pills', 'moss-html']) {
       const { markdown, options } = fixture(name);
-      expect(importWith(list(), markdown, options), name).toBe(golden(`${name}.json`));
+      expect(roundTripWith(list(), markdown, options), name).toBe(goldenPair(name));
     }
   });
 
   it('removing IMAGE_TRANSFORMER breaks the images golden', () => {
     const transformers = list();
     transformers.splice(indexOf(transformers, isImage), 1);
-    expect(importWith(transformers, fixture('images').markdown)).not.toBe(golden('images.json'));
+    expect(roundTripWith(transformers, fixture('images').markdown)).not.toBe(goldenPair('images'));
   });
 
   it('moving EMBED_PILL_TRANSFORMER after LINK_TRANSFORMER breaks the legacy pill', () => {
     const transformers = list();
     const [pill] = transformers.splice(indexOf(transformers, isLegacyPill), 1);
     transformers.splice(indexOf(transformers, isLink) + 1, 0, pill);
-    expect(importWith(transformers, fixture('embed-pills').markdown)).not.toBe(golden('embed-pills.json'));
+    expect(roundTripWith(transformers, fixture('embed-pills').markdown)).not.toBe(goldenPair('embed-pills'));
   });
 
   it('moving the moss-html transformer after CODE turns the block into code', () => {
     const transformers = list();
     const [html] = transformers.splice(indexOf(transformers, isMossHtml), 1);
     transformers.splice(indexOf(transformers, isCode) + 1, 0, html);
-    const tree = importWith(transformers, fixture('moss-html').markdown);
-    expect(tree).not.toBe(golden('moss-html.json'));
-    expect(JSON.parse(tree).root.children[0].type).toBe('code-block');
+    const result = roundTripWith(transformers, fixture('moss-html').markdown);
+    expect(result).not.toBe(goldenPair('moss-html'));
+    expect(result).toContain('"type": "code-block"');
   });
 });

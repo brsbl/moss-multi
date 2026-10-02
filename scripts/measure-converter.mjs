@@ -93,7 +93,7 @@ async function startWorker(name, port) {
   const started = performance.now();
   const child = spawn(
     process.execPath,
-    [WRANGLER, 'dev', '--local', '--ip', '127.0.0.1', '--port', String(port), '--inspector-port', String(port + 1000), '--config', join(OUT, name, 'wrangler.jsonc'), '--log-level', 'error', '--persist-to', join(OUT, name, `state-${port}`)],
+    [WRANGLER, 'dev', '--local', '--ip', '127.0.0.1', '--port', String(port), '--inspector-port', String(port + 1000), '--config', join(OUT, name, 'wrangler.jsonc'), '--log-level', 'warn', '--persist-to', join(OUT, 'state', String(port))],
     { cwd: join(OUT, name), env: { ...process.env, NO_COLOR: '1', WRANGLER_SEND_METRICS: 'false' }, stdio: ['ignore', 'pipe', 'pipe'], detached: true },
   );
   const logs = { value: '' };
@@ -257,7 +257,7 @@ async function main() {
 
   const fixtures = corpus();
   const conversions = [];
-  for (const bytes of [512 * 1024, 1024 * 1024, 2 * 1024 * 1024]) {
+  for (const bytes of [64 * 1024, 512 * 1024, 1024 * 1024, 2 * 1024 * 1024]) {
     const markdown = corpusOfSize(fixtures, bytes);
     conversions.push({ bytes: Buffer.byteLength(markdown), ...(await measureSize(markdown, port)) });
     port += 1;

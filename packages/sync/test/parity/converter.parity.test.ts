@@ -74,7 +74,7 @@ describe('L3 parity with moss at the pin @p:tech-4', () => {
     const { markdown, options } = fixture('line-loss');
     const pristine = pristineRoundTrip(markdown, options).markdown;
     const ours = oursRoundTrip(markdown, options).markdown;
-    for (const text of ['caption (x)', 'https://cdn.example.com/clip.mp4', '| --- |']) {
+    for (const text of ['caption (x)', 'https://cdn.example.com/clip.mp4', '| --- | --- |']) {
       expect(pristine).not.toContain(text);
       expect(ours).toContain(text);
     }
