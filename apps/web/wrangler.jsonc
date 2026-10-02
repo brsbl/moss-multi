@@ -1,0 +1,28 @@
+// Local bindings (A§4, A§5). Staging (T1.10) adds env.staging with the permanent names of A§21.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // DO storage is bound to the Worker name: never rename it.
+  "name": "moss-multi",
+  "main": "src/server.ts",
+  "compatibility_date": "2025-09-02",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [
+      // partyserver kebab-cases the binding into the URL: DocDO is /parties/doc-d-o/<docId>.
+      { "name": "DocDO", "class_name": "DocDO" },
+      { "name": "PrincipalDO", "class_name": "PrincipalDO" },
+      { "name": "SearchDO", "class_name": "SearchDO" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["DocDO", "PrincipalDO", "SearchDO"] }],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "moss-multi",
+      // Local only; wrangler dev --local ignores the id.
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "drizzle"
+    }
+  ],
+  "r2_buckets": [{ "binding": "ASSETS", "bucket_name": "moss-multi-assets" }]
+}

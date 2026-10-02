@@ -33,6 +33,9 @@ Read this with PRODUCT.md, your BUILDPLAN entry and the A§ it cites, before wri
 - `new Request(request, {headers})` drops the WebSocket upgrade headers; clone without init, then set headers. [L§4.7]
 - One launcher kills by process group; a "vite dev" pattern never matched "vite.js dev" and three rounds tested stale code. Check `/api/version` before any gate. [L§4.18]
 - `wrangler dev` needs `--inspector-port P+1000` (9229 collides across stacks); `vite preview` binds only `[::1]`. [L§5.3; L§4.18]
+- SP1 (T0.3): React 19.3.0, Start 1.168.32, Vite 8.1.5, plugin-react 6.0.2 and Tailwind 3.4.19 through PostCSS build and serve the Worker, so no React 19.2.8 fallback is needed; moss alias resolution is proven in T0.5a.
+- Local stack: `node scripts/stack.mjs start` builds the tree into `.local-stack/builds/<key>`, boots `wrangler dev` on those bytes and prints `http://127.0.0.1:<port>` (never `localhost`); `stop --run-id <id>` when done. Ready means `/api/version` equals the build, `/` carries `meta[name=moss-build]`, and every linked stylesheet and module script is 200 with its type. Starting a third stack fails; every start reaps orphans first. [L§5.3]
+- Provenance comes from `apps/web/vite-provenance.ts`: the Worker gets `__MOSS_BUILD__` in full, the client only `commit` and `clientHash`; `scripts/provenance.mjs read <dist>` prints it for `$GITHUB_OUTPUT` and fails unless there is exactly one record.
 
 ## Porting moss
 
