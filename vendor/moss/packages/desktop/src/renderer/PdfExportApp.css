@@ -1,0 +1,242 @@
+/* ported-from: packages/desktop/src/renderer/PdfExportApp.css @ 762abb777 */
+:root {
+  --pdf-page-width: 8.5in;
+  --pdf-page-height: 11in;
+  --pdf-page-padding-x: 14mm;
+  --pdf-page-padding-y: 14mm;
+}
+
+@page {
+  size: Letter;
+  margin: 0;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  min-height: 100%;
+}
+
+body[data-pdf-export-preview='false'] {
+  background: var(--ink-inverse);
+}
+
+.pdf-export-shell {
+  min-height: 100vh;
+  color: rgb(var(--color-ink, 72 67 60));
+}
+
+.pdf-export-page {
+  box-sizing: border-box;
+  width: var(--pdf-page-width);
+  min-height: var(--pdf-page-height);
+  margin: 0 auto;
+  padding: var(--pdf-page-padding-y) var(--pdf-page-padding-x);
+  background: var(--ink-inverse);
+}
+
+.pdf-export-content {
+  min-height: calc(var(--pdf-page-height) - (var(--pdf-page-padding-y) * 2));
+}
+
+.pdf-export-content [data-lexical-editor] {
+  animation: none;
+}
+
+.pdf-export-content [data-moss-note-editor-root='true'] {
+  min-height: 0;
+}
+
+/* Chromium can emit an embedded static JetBrains Mono subset whose glyphs
+ * render as .notdef boxes. Its variable face follows the same reliable outline
+ * path as the variable Inter font used elsewhere in the exported note. */
+.pdf-export-content .font-mono,
+.pdf-export-content .moss-codeblock-body,
+.pdf-export-content .moss-codeblock-body * {
+  font-family: 'JetBrains Mono Variable', monospace !important;
+}
+
+.pdf-export-content .moss-tab-bar button {
+  display: none;
+}
+
+.pdf-export-content .moss-tab-bar [role='tab'] {
+  pointer-events: none;
+}
+
+.pdf-export-content [data-video-play-overlay='true'] {
+  display: none;
+}
+
+.pdf-export-content [data-media-node-header='true'],
+.pdf-export-content [data-tweet-open-overlay='true'] {
+  display: none;
+}
+
+.pdf-export-content [data-block-decorator-key] {
+  margin-top: 0.625rem !important;
+  margin-bottom: 0.625rem !important;
+}
+
+.pdf-export-content [data-file-link-node-key],
+.pdf-export-content [data-formula-node-key] {
+  margin-block: 2px;
+  vertical-align: baseline;
+}
+
+.pdf-export-content :is(h2, h3, h4) {
+  margin-top: 1rem;
+  margin-bottom: 0.625rem;
+}
+
+.pdf-export-content [data-block-decorator-key],
+.pdf-export-content .editor-block-surface,
+.pdf-export-content .moss-table,
+.pdf-export-content .moss-tab-group,
+.pdf-export-content .moss-codeblock {
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+.pdf-export-content :is(h1, h2, h3, h4, h5, h6) {
+  break-after: avoid;
+  page-break-after: avoid;
+}
+
+.pdf-export-content :is(p, li) {
+  orphans: 3;
+  widows: 3;
+}
+
+.pdf-export-content :is(ul:not(.moss-checklist), ol) {
+  padding-left: 2rem;
+}
+
+.pdf-export-content :is(ul:not(.moss-checklist), ol) > li {
+  padding-left: 0.25rem;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+.pdf-export-content .moss-checklist > li {
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+body[data-pdf-export-preview='true'] {
+  background: var(--ink-inverse);
+}
+
+body[data-pdf-export-preview='true'] .pdf-export-shell {
+  padding: 0;
+}
+
+body[data-pdf-export-preview='true'] .pdf-export-preview-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
+}
+
+body[data-pdf-export-preview='true'] .pdf-export-page {
+  height: var(--pdf-page-height);
+  margin: 0;
+  border: 0;
+  box-shadow: none;
+  break-after: page;
+  page-break-after: always;
+}
+
+body[data-pdf-export-preview='true'] .pdf-export-page:last-child {
+  break-after: auto;
+  page-break-after: auto;
+}
+
+body[data-pdf-export-preview='true'] .pdf-export-page[data-pdf-preview-page='true'] {
+  overflow: hidden;
+}
+
+body[data-pdf-export-preview='true'] .pdf-export-page[data-pdf-preview-oversized='true'] {
+  height: auto;
+  min-height: var(--pdf-page-height);
+  overflow: visible;
+}
+
+body[data-pdf-export-preview='true'][data-pdf-export-status='ready'] .pdf-export-measure-layer,
+body[data-pdf-export-preview='true'][data-pdf-export-status='ready'] .pdf-export-preview-sandbox {
+  display: none;
+}
+
+.pdf-export-content--preview-clone {
+  overflow: hidden;
+}
+
+.pdf-export-measure-layer,
+.pdf-export-preview-sandbox {
+  position: absolute;
+  left: -99999px;
+  top: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.pdf-export-page--measure,
+.pdf-export-page--measure-frame {
+  overflow: hidden;
+}
+
+.pdf-export-message {
+  margin: 0 auto;
+  max-width: 42rem;
+  padding: 48px 24px;
+  color: rgb(var(--color-ink-muted, 97 92 85));
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+@media print {
+  html,
+  body,
+  #root,
+  .pdf-export-shell {
+    min-height: 0;
+    background: var(--ink-inverse) !important;
+  }
+
+  .pdf-export-shell {
+    padding: 0 !important;
+  }
+
+  .pdf-export-preview-stack {
+    display: block;
+  }
+
+  .pdf-export-measure-layer,
+  .pdf-export-preview-sandbox {
+    display: none !important;
+  }
+
+  .pdf-export-page {
+    height: var(--pdf-page-height);
+    margin: 0;
+    border: 0;
+    box-shadow: none;
+  }
+
+  .pdf-export-page[data-pdf-preview-oversized='true'] {
+    height: auto;
+    min-height: var(--pdf-page-height);
+    overflow: visible;
+  }
+
+  .pdf-export-preview-stack .pdf-export-page {
+    break-after: page;
+    page-break-after: always;
+  }
+
+  .pdf-export-preview-stack .pdf-export-page:last-child {
+    break-after: auto;
+    page-break-after: auto;
+  }
+}

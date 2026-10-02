@@ -88,6 +88,9 @@ jobs:
         run: node scripts/ci/trace.mjs
         env:
           TRACE_MILESTONE: ${{ needs.plan.outputs.trace_milestone }}
+      - name: Vendor drift
+        if: ${{ !cancelled() }}
+        run: node scripts/moss-vendor.mjs drift
       - name: Typecheck
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: pnpm -r --if-present typecheck

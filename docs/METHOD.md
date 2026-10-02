@@ -40,6 +40,7 @@ Read this with PRODUCT.md, your BUILDPLAN entry and the A§ it cites, before wri
 ## Porting moss
 
 - One pin (762abb777) and a `ported-from` header on every vendored file; changes are marked seams. Vendor the DS wholesale; never port class by class. [L§4.1]
+- `scripts/moss-vendor.mjs drift` (the checks step "Vendor drift") fails on any vendored byte that is not upstream plus a recorded patch. An edit to a vendored file ships with `vendor/patches/<root>/<path>.patch` against the pristine bytes (`makePatch`) and `mode: patched` in PORTED.json. `pristine <dir>` rebuilds the upstream tree, `.ladle` and stories included, for the Ladle oracle.
 - The title is its own contenteditable (`div.text-h1`, the first `[role=textbox]`, placeholder "What if…") and a new note's title holds the literal text "Untitled". The body is `[data-lexical-editor="true"]`. [L§4.1]
 - `hasElectronBridge` is true on the web, so native-only items render enabled unless the hide registry hides them. [L§4.1]
 - Never remount or re-key a bound editor because of a REST response; moss's `updatedAt`-keyed refetch caused the 30 s flash and dropped keystrokes. [L§4.1]
