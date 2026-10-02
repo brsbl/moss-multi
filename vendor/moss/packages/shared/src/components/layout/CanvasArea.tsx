@@ -80,6 +80,8 @@ export function CanvasArea({
           '@container/canvas'
         )}
         data-scrolling={isScrolling ? 'true' : 'false'}
+        // moss-multi seam: editor-canvas (A§19, the floating-chrome detector's target)
+        data-editor-canvas=""
         onScroll={handleScroll}
         style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
       >

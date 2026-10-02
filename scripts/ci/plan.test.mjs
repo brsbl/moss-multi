@@ -66,6 +66,11 @@ describe('push', () => {
   it('runs both engines on main', () => {
     expect(push('main')).toMatchObject({ checks: true, build: true, browsers: BOTH });
   });
+
+  it('runs shell parity on main only', () => {
+    expect(push('main').parity).toBe(true);
+    expect(push('t/T0.5a').parity).toBe(false);
+  });
 });
 
 describe('pull_request', () => {
@@ -102,6 +107,11 @@ describe('pull_request', () => {
     expect(pr({ head: 't/T1.2', base: 'm1' }).traceMilestone).toBe(0);
   });
 
+  it('runs shell parity on a ready PR, not a draft', () => {
+    expect(pr().parity).toBe(true);
+    expect(pr({ draft: true, labels: ['e2e'] }).parity).toBe(false);
+  });
+
   it('does nothing when a PR closes', () => {
     expect(pr({ action: 'closed' })).toMatchObject(NOTHING);
   });
@@ -132,6 +142,14 @@ describe('workflow_dispatch', () => {
     expect(dispatch({ lane: 'checks', macos: true }).macos).toBe(false);
   });
 
+  it('runs parity in the full lane, the parity lane, or a journey dispatch that asks for it', () => {
+    expect(dispatch({}).parity).toBe(true);
+    expect(dispatch({ lane: 'parity' })).toMatchObject({ checks: false, build: true, browsers: [], parity: true });
+    expect(dispatch({ grep: 'j00-shell', browsers: 'chromium' }).parity).toBe(false);
+    expect(dispatch({ grep: 'j00-shell', browsers: 'chromium', parity: 'true' })).toMatchObject({ build: true, parity: true });
+    expect(dispatch({ lane: 'checks', parity: true })).toMatchObject({ build: false, parity: false });
+  });
+
   it('carries the branch trace gate', () => {
     expect(dispatch({ lane: 'checks' }, 't/T2.1').traceMilestone).toBe(1);
   });
@@ -144,6 +162,7 @@ describe('workflow_dispatch', () => {
     expect(() => dispatch({ lane: 'nightly' })).toThrow(/lane/);
     expect(() => dispatch({ grep: 'a\nb' })).toThrow(/grep/);
     expect(() => dispatch({ macos: 'yes' })).toThrow(/macos/);
+    expect(() => dispatch({ parity: 'yes' })).toThrow(/parity/);
   });
 });
 
@@ -175,6 +194,7 @@ describe('toOutputs', () => {
     expect(lines).toContain('e2e=true');
     expect(lines).toContain('browsers=["webkit"]');
     expect(lines).toContain('macos=false');
+    expect(lines).toContain('parity=false');
     expect(lines).toContain('grep=j01');
     expect(lines).toContain('repeat=1');
     expect(lines).toContain('trace_milestone=0');
@@ -195,6 +215,8 @@ describe('ciOk', () => {
       build: { result: results.build ?? 'skipped' },
       e2e: { result: results.e2e ?? 'skipped' },
       macos: { result: results.macos ?? 'skipped' },
+      oracle: { result: results.oracle ?? 'skipped' },
+      parity: { result: results.parity ?? 'skipped' },
     };
   }
 
@@ -221,6 +243,14 @@ describe('ciOk', () => {
     const gate = { ...everything, macos: true };
     expect(ciOk(needs(gate, { checks: 'success', build: 'success', e2e: 'success' })).problems).toEqual(['macos: skipped (planned to run)']);
     expect(ciOk(needs(gate, { checks: 'success', build: 'success', e2e: 'success', macos: 'success' })).ok).toBe(true);
+  });
+
+  it('requires the oracle and parity jobs when parity is planned', () => {
+    const gate = { ...everything, parity: true };
+    const passed = { checks: 'success', build: 'success', e2e: 'success' };
+    expect(ciOk(needs(gate, passed)).problems).toEqual(['oracle: skipped (planned to run)', 'parity: skipped (planned to run)']);
+    expect(ciOk(needs(gate, { ...passed, oracle: 'success', parity: 'failure' })).problems).toEqual(['parity: failure (planned to run)']);
+    expect(ciOk(needs(gate, { ...passed, oracle: 'success', parity: 'success' })).ok).toBe(true);
   });
 
   it('fails when the plan itself failed', () => {

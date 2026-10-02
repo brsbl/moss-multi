@@ -41,5 +41,7 @@ export default defineConfig({
     { name: 'selftest-webkit', testDir: './selftest', use: { browserName: 'webkit' } },
     { name: 'chromium', testDir: './journeys', dependencies: ['selftest-chromium'], use: { browserName: 'chromium' } },
     { name: 'webkit', testDir: './journeys', dependencies: ['selftest-webkit'], use: { browserName: 'webkit' } },
+    // Shell parity against the Ladle oracle (A§20): the parity job only, in the e2e image's Chromium.
+    { name: 'parity', testDir: './parity', use: { browserName: 'chromium' } },
   ],
 });
