@@ -1,0 +1,26 @@
+// Per-doc limits (A§5.1, A§18; P:Tech "2 MB/doc, 50 connections").
+
+/** PRODUCT's 2 MB is the markdown a doc can hold. */
+export const MARKDOWN_CAP_BYTES = 2 * 1024 * 1024;
+
+/**
+ * State-to-markdown ratio r (SP2). The scale note measures about 10.5; a canvas alone about 47. The value is
+ * provisional until the SP2 ruling recorded in METHOD.md.
+ */
+export const STATE_RATIO = 10.5;
+
+/** Every entry point checks the encoded doc state against this, so a doc under 2 MB of markdown stays typeable. */
+export const STATE_CAP_BYTES = Math.round(MARKDOWN_CAP_BYTES * STATE_RATIO * 1.25);
+
+export const MAX_CONNECTIONS = 50;
+
+/** Writes per connection per window; the overflow frame is not applied and the socket closes 4420. */
+export const WRITE_RATE = { max: 300, windowMs: 5_000 } as const;
+
+export const AWARENESS_MAX_BYTES = 8 * 1024;
+
+/** Display names in a socket's attachment. */
+export const NAME_MAX_CHARS = 80;
+
+/** Acks to one connection coalesce over this window. */
+export const ACK_COALESCE_MS = 250;

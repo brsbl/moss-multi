@@ -10,7 +10,8 @@ export type PartyAuth = { ok: true; headers: Record<string, string> } | { ok: fa
 export interface RouteDeps {
   build: Build;
   testHooksAllowed: (request: Request) => boolean;
-  handleTestHook: (request: Request) => Promise<Response>;
+  /** null for a path or method no hook serves. */
+  handleTestHook: (request: Request) => Promise<Response | null>;
   handleAuth: (request: Request) => Promise<Response>;
   handleWorkspaceSocket: (request: Request) => Promise<Response>;
   handleApi: (request: Request) => Promise<Response>;
@@ -71,8 +72,11 @@ async function routePartyRequest(request: Request, deps: RouteDeps): Promise<Res
 export async function routeRequest(request: Request, deps: RouteDeps): Promise<Response> {
   const { pathname } = new URL(request.url);
   if (pathname === '/api/version') return versionResponse(request, deps.build);
-  // Without the gate, hook paths fall through to the same 404 as any unknown route.
-  if (under(pathname, '/__test') && deps.testHooksAllowed(request)) return deps.handleTestHook(request);
+  // Without the gate, or for a path no hook serves, hook paths get the same 404 as any unknown route.
+  if (under(pathname, '/__test') && deps.testHooksAllowed(request)) {
+    const hooked = await deps.handleTestHook(request);
+    if (hooked) return hooked;
+  }
   if (pathname.startsWith('/api/auth/')) return deps.handleAuth(request);
   if (pathname === '/api/workspace/ws') return deps.handleWorkspaceSocket(request);
   if (under(pathname, '/api')) return deps.handleApi(request);

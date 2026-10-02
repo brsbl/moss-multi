@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./dom-contract": "./src/dom-contract.ts"
+    "./dom-contract": "./src/dom-contract.ts",
+    "./limits": "./src/limits.ts",
+    "./roles": "./src/roles.ts",
+    "./sync": "./src/sync.ts"
   }
 }
