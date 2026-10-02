@@ -42,10 +42,12 @@ describe('L2 converter in workerd @p:tech-1', () => {
   it('converts the mixed-family scale note with every block of every copy', { timeout: 120_000 }, async () => {
     const { exportMarkdown, importMarkdown } = await import('../../src/converter/index.ts');
     const blocks = (editor: LexicalEditor) => editor.getEditorState().read(() => $getRoot().getChildrenSize());
+    // Each copy mints its own formula ids; everything else exports the same in every copy.
+    const sansIds = (markdown: string) => markdown.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, '<id>');
     const unit = importMarkdown(SCALE_UNIT);
     const editor = importMarkdown(scaleNote(8));
     expect(blocks(editor)).toBe(8 * blocks(unit));
-    expect(blocks(importMarkdown(exportMarkdown(editor)))).toBe(8 * blocks(importMarkdown(exportMarkdown(unit))));
+    expect(sansIds(exportMarkdown(editor))).toBe(Array.from({ length: 8 }, () => sansIds(exportMarkdown(unit))).join('\n\n'));
   });
 });
 

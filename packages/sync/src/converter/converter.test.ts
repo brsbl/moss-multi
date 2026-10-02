@@ -152,12 +152,8 @@ describe('scale @p:tech-1', () => {
   const blocks = (markdown: string) => importMarkdown(markdown).getEditorState().read(() => $getRoot().getChildrenSize());
   const formulaIds = (markdown: string) => [...treeOf(markdown).matchAll(/"formulaId": "([^"]+)"/g)].map((m) => m[1]);
 
-  it('every fixture in the scale note keeps its blocks when repeated, so no copy swallows the next', () => {
-    const swallowing = SCALE_FIXTURES.filter((f) => blocks(`${f.markdown}\n\n${f.markdown}`) !== 2 * blocks(f.markdown)).map((f) => f.name);
-    expect(swallowing).toEqual([]);
-  });
-
-  it('the scale unit has exactly the blocks of its fixtures', () => {
+  // Fewer blocks means one fixture or copy swallowed the next (fixtures/scale.json says what is left out and why).
+  it('the scale unit has exactly the blocks of its fixtures, and two units twice that', () => {
     expect(blocks(SCALE_UNIT)).toBe(SCALE_FIXTURES.reduce((sum, f) => sum + blocks(f.markdown), 0));
     expect(blocks(`${SCALE_UNIT}\n\n${SCALE_UNIT}`)).toBe(2 * blocks(SCALE_UNIT));
   });
@@ -188,10 +184,11 @@ describe('negative controls @p:tech-4', () => {
   // The pipeline's own steps with a substitute transformer list: the A1 tree and the A2 export, as one string.
   function roundTripWith(transformers: Transformer[], markdown: string, options: NoteBodyImportOptions = {}): string {
     const editor = createConverterEditor();
+    const prepared = escapeHtmlEntities(normalizeMarkdownForImport(markdown));
     editor.update(
       () =>
-        withImportFormulaIds(() => {
-          $convertFromMarkdownString(escapeHtmlEntities(normalizeMarkdownForImport(markdown)), transformers);
+        withImportFormulaIds(prepared, () => {
+          $convertFromMarkdownString(prepared, transformers);
           $postImportNormalize(options.comments, undefined, { layoutMetadata: options.layout });
         }),
       { discrete: true },

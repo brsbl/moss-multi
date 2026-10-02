@@ -17,8 +17,9 @@ export interface NoteBodyImportOptions {
 
 // Call inside editor.update(); replaces the root's children.
 export function $importNoteBody(markdown: string, options: NoteBodyImportOptions = {}): void {
-  withImportFormulaIds(() => {
-    $convertFromMarkdownString(escapeHtmlEntities(normalizeMarkdownForImport(markdown)), MARKDOWN_EDITOR_TRANSFORMERS);
+  const prepared = escapeHtmlEntities(normalizeMarkdownForImport(markdown));
+  withImportFormulaIds(prepared, () => {
+    $convertFromMarkdownString(prepared, MARKDOWN_EDITOR_TRANSFORMERS);
     $postImportNormalize(options.comments, undefined, { layoutMetadata: options.layout });
   });
 }

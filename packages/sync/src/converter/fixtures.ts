@@ -48,6 +48,7 @@ export const DEVIATING = new Set(['line-loss']);
 export const CANONICALIZED: Record<string, string> = {
   composition: "a space inside bold before a wiki link moves outside the bold",
   'embed-pills': 'a legacy ?[label](url) pill exports as its bare URL, dropping the label',
+  'escaped-blockquote': 'an escaped one-line blockquote swallows every line up to the next </blockquote> into one HTML block, which the export writes out raw',
   tables: 'legacy column widths are per-viewer layout, so the export drops them',
 };
 export const NOT_IDEMPOTENT: Record<string, string> = {

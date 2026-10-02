@@ -1774,7 +1774,7 @@ const TABLE_TRANSFORMER: ElementTransformer = {
     return output.join('\n');
   },
   regExp: TABLE_ROW_REG_EXP,
-  replace: (parentNode, _1, match) => {
+  replace: (parentNode, _1, match, isImport) => { // moss-multi seam: line-loss (A§12; S-conv §1.2)
     // Handle divider row - marks previous row as header
     if (isTableDividerRow(match[0])) {
       const nextSibling = parentNode.getNextSibling();
@@ -1784,12 +1784,12 @@ const TABLE_TRANSFORMER: ElementTransformer = {
       if (!table) {
         const previousText = getSingleParagraphTextChild(previousSibling);
         if (!previousText || !isTableBodyRowCandidate(previousText.getTextContent())) {
-          return $rejectLine(_1, match); // moss-multi seam: line-loss (A§12; S-conv §1.2)
+          return $rejectLine(_1, match, isImport); // moss-multi seam: line-loss (A§12; S-conv §1.2)
         }
 
         const headerCells = mapToTableCells(previousText.getTextContent());
         if (headerCells == null) {
-          return $rejectLine(_1, match); // moss-multi seam: line-loss (A§12; S-conv §1.2)
+          return $rejectLine(_1, match, isImport); // moss-multi seam: line-loss (A§12; S-conv §1.2)
         }
 
         table = $createTableNode();
@@ -1827,14 +1827,14 @@ const TABLE_TRANSFORMER: ElementTransformer = {
         isTableDividerRow(nextSiblingText.getTextContent());
 
       if (!$isTableNode(previousSibling) && !nextIsDivider) {
-        return $rejectLine(_1, match); // moss-multi seam: line-loss (A§12; S-conv §1.2)
+        return $rejectLine(_1, match, isImport); // moss-multi seam: line-loss (A§12; S-conv §1.2)
       }
     }
 
     const mergedRowText = consumeBrokenTableLineContinuations(parentNode, match[0]);
     const matchCells = mapToTableCells(mergedRowText);
     if (matchCells == null) {
-      return $rejectLine(_1, match); // moss-multi seam: line-loss (A§12; S-conv §1.2)
+      return $rejectLine(_1, match, isImport); // moss-multi seam: line-loss (A§12; S-conv §1.2)
     }
 
     const immediatePrevious = parentNode.getPreviousSibling();
@@ -2211,10 +2211,10 @@ const IMAGE_TRANSFORMER: ElementTransformer = {
   // Match whole candidate markdown image lines and parse with a balanced parser.
   // Matching only `![` can truncate content before replace() runs.
   regExp: /^!\[.*\]\(.*\)\s*$/,
-  replace: (parentNode, _children, match) => {
+  replace: (parentNode, _children, match, isImport) => { // moss-multi seam: line-loss (A§12; S-conv §1.2)
     const mediaNode = createMediaNodeFromMarkdownImage(match[0]);
     if (!mediaNode) {
-      return $rejectLine(_children, match); // moss-multi seam: line-loss (A§12; S-conv §1.2)
+      return $rejectLine(_children, match, isImport); // moss-multi seam: line-loss (A§12; S-conv §1.2)
     }
     parentNode.replace(mediaNode);
   },

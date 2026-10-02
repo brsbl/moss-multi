@@ -7,6 +7,4 @@
 <p>A multi-line raw blockquote</p>
 </blockquote>
 
-<blockquote><p>Escaped blockquote</p></blockquote>
-
 Text after quotes.

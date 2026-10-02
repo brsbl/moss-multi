@@ -2,7 +2,7 @@
 // Bundle-boundary rule (ARCHITECTURE §4.4): nothing statically reachable from the Worker or the converter imports
 // a node view, CSS, the @moss/shared barrel, react-dom, jotai, @lexical/code (code-core is the converter's) or the
 // Electron API. Type-only imports, imports used only as types (bundlers drop them) and dynamic import() don't count.
-//   node scripts/ci/deps.mjs [entry ...]      default entries: the Worker, the sync package, the converter
+//   node scripts/ci/deps.mjs [entry ...]      default entries: the Worker, the sync package, the converter; a missing entry fails
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, posix, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -60,10 +60,15 @@ export function resolveSpecifier(repo, fromFile, spec) {
   return { bare: clean };
 }
 
+// A class's `extends X` names X as a value, though its node is a type node; `implements` stays type-only.
+const isClassExtends = (node) =>
+  ts.isExpressionWithTypeArguments(node) && ts.isHeritageClause(node.parent) && node.parent.token === ts.SyntaxKind.ExtendsKeyword && ts.isClassLike(node.parent.parent);
+
 // Names used as values anywhere outside import declarations (by name; shadowing only adds edges).
 function valueNames(sf) {
   const names = new Set();
   const visit = (node) => {
+    if (isClassExtends(node)) return visit(node.expression);
     if (ts.isImportDeclaration(node) || ts.isTypeNode(node) || ts.isInterfaceDeclaration(node) || ts.isTypeAliasDeclaration(node)) return;
     if (ts.isIdentifier(node)) {
       const parent = node.parent;
@@ -114,6 +119,7 @@ export function checkBoundary({ repo = REPO, entries = DEFAULT_ENTRIES } = {}) {
   const parents = new Map();
   const queue = [];
   const roots = entries.map((entry) => resolve(repo, entry)).filter(isFile);
+  const missing = entries.filter((entry) => !isFile(resolve(repo, entry)));
   for (const file of roots) {
     parents.set(file, null);
     queue.push(file);
@@ -150,17 +156,17 @@ export function checkBoundary({ repo = REPO, entries = DEFAULT_ENTRIES } = {}) {
       }
     }
   }
-  return { violations, unresolved, files: parents.size, entries: roots.map((file) => toRepo(repo, file)) };
+  return { violations, unresolved, missing, files: parents.size, entries: roots.map((file) => toRepo(repo, file)) };
 }
 
 function main(argv) {
   const entries = argv.length > 0 ? argv : DEFAULT_ENTRIES;
-  const { violations, unresolved, files, entries: found } = checkBoundary({ entries });
+  const { violations, unresolved, missing, files, entries: found } = checkBoundary({ entries });
   console.log(`bundle boundary: ${files} files reachable from ${found.join(', ') || '(no entries)'}`);
   for (const v of violations) console.log(`  FAIL ${v.at} imports ${v.rule} ('${v.import}')\n       via ${v.chain.join(' → ')}`);
   for (const u of unresolved) console.log(`  FAIL ${u}`);
-  if (found.length === 0) console.log('  FAIL no entry exists');
-  return violations.length > 0 || unresolved.length > 0 || found.length === 0 ? 1 : 0;
+  for (const entry of missing) console.log(`  FAIL entry ${entry} does not exist`);
+  return violations.length > 0 || unresolved.length > 0 || missing.length > 0 || found.length === 0 ? 1 : 0;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

@@ -1,14 +1,21 @@
 import { $isTextNode, type LexicalNode } from 'lexical';
+import { parseFormulaMarkdownPayload } from '../utils/formula-runtime';
 
 // Converter fixes called from seams in markdown/transformers.ts (A§12; docs/DEVIATIONS.md).
 
-let formulaIds: Map<string, number> | null = null;
+interface FormulaIdScope {
+  seen: Map<string, number>;
+  used: Set<string>;
+}
+
+let formulaIds: FormulaIdScope | null = null;
 
 // Formulas imported without `id=` get ids derived from their payload and occurrence, so the client, the DocDO
-// and the CLI mint the same ids for the same markdown (S-conv B9). Nested imports share the outer scope.
-export function withImportFormulaIds<T>(run: () => T): T {
+// and the CLI mint the same ids for the same markdown (S-conv B9). Every id the markdown already carries is
+// reserved first, so a minted id never repeats one in the same note. Nested imports share the outer scope.
+export function withImportFormulaIds<T>(markdown: string, run: () => T): T {
   const outer = formulaIds;
-  formulaIds = outer ?? new Map();
+  formulaIds = outer ?? { seen: new Map(), used: authoredFormulaIds(markdown) };
   try {
     return run();
   } finally {
@@ -16,12 +23,27 @@ export function withImportFormulaIds<T>(run: () => T): T {
   }
 }
 
+function authoredFormulaIds(markdown: string): Set<string> {
+  const ids = new Set<string>();
+  for (const [, payload] of markdown.matchAll(/\{\{([^{}\n]+)\}\}/g)) {
+    const id = parseFormulaMarkdownPayload(payload)?.formulaId;
+    if (id) ids.add(id);
+  }
+  return ids;
+}
+
 // `{ formulaId }` inside an import; `{}` elsewhere, where live typing keeps FormulaNode's random id.
 export function importFormulaId(payload: string): { formulaId?: string } {
   if (!formulaIds) return {};
-  const seen = formulaIds.get(payload) ?? 0;
-  formulaIds.set(payload, seen + 1);
-  return { formulaId: deterministicId(`${payload}\u0000${seen}`) };
+  let seen = formulaIds.seen.get(payload) ?? 0;
+  let formulaId = deterministicId(`${payload}\u0000${seen}`);
+  while (formulaIds.used.has(formulaId)) {
+    seen += 1;
+    formulaId = deterministicId(`${payload}\u0000${seen}`);
+  }
+  formulaIds.seen.set(payload, seen + 1);
+  formulaIds.used.add(formulaId);
+  return { formulaId };
 }
 
 const OFFSETS = [0x811c9dc5, 0x01000193, 0x6c62272e, 0x9e3779b9];
@@ -39,11 +61,12 @@ function deterministicId(seed: string): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
-// Lexical clears a line before an element transformer's replace() runs and keeps it cleared unless replace
-// returns false after putting it back. Moss returned undefined on rejected IMAGE and TABLE lines, which
-// imported them as empty paragraphs (S-conv §1.2).
-export function $rejectLine(children: LexicalNode[], match: string[] & { input?: string }): false {
+// An element transformer rejecting its line returns false so the line stays text (S-conv §1.2). On import Lexical
+// has already cleared the line from `children[0]`, so it is put back first. While typing, `children` is the text
+// after the caret and nothing was cleared, so it is left alone. Moss returned undefined on rejected IMAGE and
+// TABLE lines, which dropped them.
+export function $rejectLine(children: LexicalNode[], match: string[] & { input?: string }, isImport: boolean): false {
   const [line] = children;
-  if ($isTextNode(line) && match.input !== undefined) line.setTextContent(match.input);
+  if (isImport && $isTextNode(line) && match.input !== undefined) line.setTextContent(match.input);
   return false;
 }
