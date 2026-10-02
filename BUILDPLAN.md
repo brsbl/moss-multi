@@ -1,0 +1,442 @@
+# moss-multi build plan
+
+The plan of record for M0–M8. It follows LEARNINGS §7.2, adapted to the surveys, the restart rulings and the three architecture critiques of 2026-10-02.
+
+- **Inputs:** [PRODUCT.md](PRODUCT.md) is the contract; it is re-read before every brief. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), cited here as `A§n`, says how it is built. Where the test-infra survey (S-test) disagrees with either, they win (A§20).
+- **Progress:** [PROGRESS.md](PROGRESS.md) carries one overall % (finished task-days over planned task-days, M0–M8) plus an inline milestone/program visual and the month's CI minutes, updated in the same commit as every dispatch and verdict. [L§1.10]
+
+**Before T0.1** the owner settles OA2 (an Actions budget of about 3,000 billable minutes a month, see Spending) and receives the OA3 list for T1.10 (A§22).
+
+**Conventions**
+
+- **Tasks.** `Tm.n` is one implementer agent's work, at most one working day including CI round trips. `[A·codex]` means lane A with a cross-vendor checker; `fresh` means a same-vendor independent checker.
+  - Different lanes touch disjoint files. The DocDO is split into modules with one owning lane per milestone (A§5.1). At most 3 lanes run at once, and at most 2 local stacks exist (`scripts/stack.mjs` enforces this).
+- **Tests first.** The named tests are written and pushed first. A CI dispatch must show them red on the named product assertion; infrastructure failures don't count.
+- **Done.** The evidence the checker re-derives. "Shots" are 2× PNGs from `scripts/qa.mjs` on a clean tree, decisive ones only. A surface moss lacks is done only with a glyphdown | ours | neighbouring-moss triptych the checker has read, using the T0.11 reference shots.
+- **Journeys.** One living Playwright suite under `e2e/journeys`, UI-only, with ≥ 2 distinct per-run `@example.invalid` principals, run in Chromium and WebKit in CI.
+  - The 9 global invariants (A§20) apply to every journey from the milestone they go live.
+  - A missing affordance is a FAIL, never BLOCKED. A control whose backend lands later is `staged:<M>` in the bridge inventory: minimally real or hidden until then, and CI fails once milestone M closes with it still staged (A§9).
+  - Grants made through the members API are declared setup for journeys whose promise is not sharing. j01's setup leg and every sharing journey go through the UI.
+  - Every leg carries the `@p:<id>` tags of the trace rows it proves.
+- **Tier A.** Any task touching the reading view, top bar, login card, denial page or share landing runs its legs `@tierA` and attaches a 390×844 / 1440×1000 pair.
+
+**Changes from LEARNINGS §7.2**
+
+- **R7 removed the playground,** so a minimal login card ships in M0 and person-sharing in M1.
+- **Vault switching and shared-doc discovery are in M1,** so a person can find what was shared with them; vault creation stays in M3.
+- **Folders and trash move to M2,** next to the access work that shares their fan-out paths. Their entry points are staged (hidden) until then.
+- **The "a server-created doc renders identically" gate starts in M1** through the import endpoint, not in M7. [L§7.1 #7]
+- **Decorator registers land in M1,** because code blocks are co-editable from M1. [L§4.3]
+- **A staging canary runs from M1 exit onward,** not only at M8. [L§0; L§7.1 #3]
+- **Settings → Agents lands in M3,** before the CLI needs keys.
+
+## Trace
+
+Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg by its milestone blocks that milestone; `scripts/ci/trace.mjs` enforces this in `checks`. R5, R6 and R12–R14 are process rulings owned by The loop and A§.
+
+| Id | PRODUCT line | Owning legs | M |
+|---|---|---|---|
+| col-1 | Two clients co-edit live (two people, or one person in two windows); no lost work; identical convergence | j01 typing, same-principal, split-pane and code-block legs | 1 |
+| col-2 | Face pile and per-client cursors in one color, label while typing, ~1 s tracking, prompt clear, distinct and stable colors | j01 presence legs, including 3 peers | 1 |
+| col-3 | Cmd+Z undoes only your own edits; programmatic writes add no step | j01 undo legs; j18 push leg | 1, 7 |
+| col-4 | A brief disconnection buffers losslessly behind a truthful indicator | j03 | 1 |
+| col-5 | The title is shared state: ≤ 5 s everywhere, merges, never clobbered | j02 | 1 |
+| col-6 | An existing doc reopens with content; a new note has an editable title and one paragraph | j00-persist; j04 | 0, 1 |
+| note-1 | Docs are files; the H1 is content; wiki links resolve by stem | j02 filename legs; j12 | 1, 3 |
+| note-2 | Every node family styled; Electron-only surfaces web-adapted | j14; j11 HTML, embed and browser legs; T3.7 | 3 |
+| note-3 | Content extensions stay in the markdown; exports are clean | j15 export; j18 pull; T3.7 download | 3, 4, 7 |
+| note-4 | Folders and vaults are created, switched and trashed in the web UI | j01 discovery legs; j06; j13 | 1–3 |
+| note-5 | Delete is 30-day trash; a fresh load 404s; open peers go terminal (notes and folder subtrees) | j05; j06 peer-lock leg | 2 |
+| note-6 | No title field discards typed input; WebKit Backspace never navigates | j02 bind and "+ Note" legs; invariant 9 | 0, 1 |
+| note-7 | Search and backlinks across everything you can access | j12 | 3 |
+| note-8 | Moss's media set, shareable; YouTube; HTML is content; upload needs editor | j11, including an anonymous-link leg | 3 |
+| ppl-1 | Email+password auth; OAuth only when configured; open sign-up; copy-link invites | j07; T2.8 legs | 0, 2 |
+| ppl-2 | Share vault, folder or doc with a person or agent at a role, or by link; anonymous view; sign in to do more; demotion bites live | j01 setup; j08; j09; j18 agent-grant leg | 1, 2, 7 |
+| ppl-3 | The bell notifies on mention, share-invite, suggestion and reply | T2.8 legs; j15; j16 | 2, 4, 5 |
+| mean-1 | Moss's full comment experience plus reactions; typing after commenting | j15 | 4 |
+| mean-2 | Suggestions: accept or reject; a violation never lands and is never silent | j16; j18 `--suggest` | 5, 7 |
+| mean-3 | History: auto and named versions, read-only view, diff, anchor-safe restore | j17 | 6 |
+| agt-1 | CLI agents pull, push and sync; pushes merge with live typing; Bot presence | j18 | 7 |
+| agt-2 | Folder-watch daemon | T7.4 legs | 7 |
+| agt-3 | Agent panel present and inert; unworkable affordances hidden through one registry | j00-shell registry legs | 0 |
+| tech-1 | The Lexical tree in a Y.Doc via @lexical/yjs | j00-roundtrip; L1–L4 | 0 |
+| tech-2 | Title and frontmatter live in the shared doc | j02; T1.4 Properties leg | 1 |
+| tech-3 | Comments and suggestions are CRDT data with derived paint | j15; j16 | 4, 5 |
+| tech-4 | One converter | L3; G1 | 0, 1 |
+| tech-5 | CLI push is a structural merge | j18 | 7 |
+| tech-6 | One DO per doc; restore after hibernation is a permanent gate | j04; the staging canary | 1 |
+| tech-7 | A content write merges or is refused loudly | T0.5b bridge control; j16; j18 | 0, 5, 7 |
+| tech-8 | 2 MB/doc, 50 connections, 60 pushes/min | T1.3 4429 leg; j18 cap and 429 legs | 1, 7 |
+| tech-9 | Tier A works at 390 and 1440; Tier B never traps an affordance | j07 card pair; j10; T2.7 trap sweep | 0, 2 |
+| R1 | Pin 762abb777 with `ported-from` headers | vendor drift check | 0 |
+| R2 | No field accepts focus before bind | invariant 9; j02 | 0, 1 |
+| R3 | The title is the one name; filename and D1 are projections | j02 filename legs; j12 | 1, 3 |
+| R4 | Electron-only surfaces as PRODUCT says | T3.7; j11 browser leg | 3 |
+| R7 | No playground | j00 unknown-route and hook-404 leg | 0 |
+| R8 | Demo content in a test account, built through the UI | j14; T8.5 | 3, 8 |
+| R9 | The daemon follows glyphdown's sync model | T7.4 | 7 |
+| R10 | Transient failures degrade in place | j07 degraded leg; j03 retrying leg | 0, 1 |
+| R11 | Per-viewer layout stays local | T1.6 layout legs | 1 |
+| R15 | Staging only, personal account, permanent names | T1.10; T8.2 | 1, 8 |
+
+---
+
+## M0 Foundation
+
+**A person can newly** open the real moss shell, light and dark, from the built Worker on a local stack; sign up, sign in and sign out on a moss-styled login card; click "+ Note", type, reload, restart the stack, and still see the text. CI proves it with provenance on every PR.
+
+- **T0.1 Repo, toolchain, CI skeleton: the loop pilot** `[A·fresh]`
+  - **Scope:** pnpm workspace with A§3 pins and overrides; lint, including a no-raw-color rule for `packages/ui` and bans on `[contenteditable=true].first()` in `e2e` and on `HISTORIC_TAG` in host and vendor code; `ci.yml` with plan, checks, build and ci-ok, plus a checks-only dispatch lane (about 5 min); `scripts/ci/{plan,minutes,trace}.mjs`; `.node-version`; seed `docs/METHOD.md` with the L§4–5 gotchas and the anti-stall preamble, and `docs/DEVIATIONS.md` with A§23.
+  - **Pilot:** this task runs the whole loop alone (brief, red dispatch, green, a checker on a fake run that validates the verdict schema) before any lane opens. [L§6 pilot; L§4.19 hygiene]
+  - **Tests first:** `plan.mjs` unit tests; a single-version check that `lexical`, every `@lexical/*` and `yjs` resolve to one version each, red on a fixture lockfile; `trace.mjs`, red on a row with no tagged leg.
+  - **Done:** ci-ok is green on a draft PR; a deliberate lint violation and a `HISTORIC_TAG` import each turn checks red; `minutes.mjs` prints the month's use.
+- **T0.2 Vendor moss and the collab plugin** `[B·fresh]`
+  - **Scope:** `scripts/moss-vendor.mjs` with vendor, repin, pristine and drift modes; moss@762abb777 vendored verbatim with `ported-from` headers; @lexical/react 0.48.0's collab plugin files vendored (A§2.1).
+  - **Tests first:** the drift test fails on a one-byte change to a verbatim file and on a missing header.
+  - **Done:** the drift check is green in CI, and `PORTED.json` lists every file with 0 patched.
+- **T0.3 Worker skeleton, provenance, stack launcher** `[C·fresh]`
+  - **Scope:** the Start app; `server.ts` in A§4.1 order with stubbed handlers; `/api/version`; the provenance plugin with SSR meta and client stamp; `wrangler.jsonc` with local bindings and all three DO classes; `scripts/stack.mjs` (start, stop, restart, pause, resume, verify, reap, principals), which records host state (a bb dev stack or Nightly running, 1-minute load) with every run so local deaths are classed as infrastructure [L§5.1]; `scripts/provenance.mjs`. SP1 is settled here.
+  - **Tests first:** router units: POST `/api/version` gets 405; an unknown party gets 404; client `x-moss-*` headers are stripped; upgrade headers survive the clone. A CI smoke step: build, start the stack, check `/api/version` equals the commit, and check the CSS asset returns 200 `text/css`.
+  - **Done:** the build and smoke jobs are green, and a local `stack.mjs start` prints a clickable `http://127.0.0.1:<port>`.
+- **T0.4 D1 schema and auth core** `[C·codex]`, after T0.3
+  - **Scope:** the A§6 schema as a drizzle-kit `0000_init`; `createAuth` per request with email and password, explicit rate limits, the fail-closed checks and the Home-vault hook (A§7); principal resolution; `/api/me`; minted principals.
+  - **Tests first:** DDL parity, red when one `onDelete` is removed from the SQL; fail-closed cases (missing, placeholder or short secret; hooks on a non-loopback URL); sign-up without `Origin` gets 403 and with it gets a session; the Home vault is created exactly once; with production limits, repeated sign-ins from one `cf-connecting-ip` get 429.
+  - **Done:** CI is green, and two principals can be minted on a local stack.
+- **T0.5a Moss shell host and shell parity** `[A·fresh]`, after T0.2 and T0.4
+  - **Scope:** the client entry order (A§4.3); root CSS, fonts and theme script; the per-request CSP nonce (SP13); `MossAppHost`; `/d/$docId`; Tailwind config plus a coverage test; `ChunkReloadBoundary`; the parity job with shell targets.
+  - **Tests first:** journey **j00-shell**: two principals each boot with zero console errors, page errors and `securitypolicyviolation` events; provenance meta matches on navigation; a stylesheet is linked; light↔dark works through the real Settings toggle; the floating detector passes its live negative control; a script inside an injected `data:` iframe runs under the page CSP; `/__test/*` and a playground path return the unknown-route 404.
+  - **Done:** j00-shell is green in both engines; `shell-default` and `shell-empty` triptychs in light and dark meet ≤ 0.05% with a largest blob ≤ 16 px², diff images read (oracle from OA1 or the A§22 pristine fallback).
+- **T0.5b Bridge, inventory, hide registry, DOM-contract seams** `[A·fresh]`, after T0.5a
+  - **Scope:** a bridge with every namespace (A§9), where `GET /api/workspace` and `POST /api/docs` are real and the rest follow the table, `staged` entries included; the inventory; the hide registry; every A§2.2 seam on the shared DS primitives and the notes list, installed once.
+  - **Tests first:** the inventory and affordance drift tests, red on an unlisted method and on an expired `staged` entry; a bridge unit test: `notes.update({content:''})` rejects loudly and sends no request; j00-shell legs: no hidden or staged affordance is in the DOM, and every opened DS menu or dialog carries `data-overlay-surface`.
+  - **Done:** j00-shell is green in both engines.
+- **T0.6 One converter: extraction and workerd smoke** `[B·codex]`, after T0.2
+  - **Scope:** `moss-vendor.mjs extract` and its AST symbol manifest, generating the S-conv §2.3 split (`markdown/*`, `commands.ts`, 8 class/view splits, node views with per-view error boundaries) from pristine upstream as `mode: extracted` (A§2.1, A§12); deterministic formula ids; the line-loss fix; the headless converter host in `packages/sync`; the dependency rule (A§4.4).
+  - **Tests first:** re-extraction from pristine reproduces the committed bytes; L1 fixtures for every family in S-conv §5.4 (goldens and a fixpoint); an L2 workerd import smoke, red on the unsplit tree with its TDZ error; L3 parity with the pristine pipeline; negative controls: remove `IMAGE_TRANSFORMER`, move `EMBED_PILL` after `LINK`, move moss-html after `CODE`, and import a view into the converter closure.
+  - **Done:** L1–L3 are green, and the PR records Worker upload size, cold start, peak heap, 2 MB import/export CPU and the state-to-markdown size ratio over the family corpus (SP2).
+- **T0.7 DocDO persistence, seed, socket route** `[B·codex]`, after T0.4 and T0.6
+  - **Scope:** the A§5.1 DocDO core in modules (persistence, admission and gates, projections, awareness): load, persist, compact, seed, `serverWrite`, export cache, acks, `onConnect` order, the write classifier with loud refusal, limits, the `ready()` RPC guard, `probeInstance`. Also the `/parties/doc-d-o` route that never refuses before the upgrade (A§4.1), `POST /api/docs` calling `DocDO.create`, the test hooks and the owner-only instance route (A§19), and a Node DO harness.
+  - **Tests first:** harness: replay order; 1.5 MB chunking; compaction keeps RelativePositions valid; seeding is idempotent and writes no title text; a viewer's connect and post-wake step 2 frames are accepted silently, while a viewer frame that would change the doc gets write-refused and 4403; a missing or denied doc's socket opens and closes 4404, never 1006. Journey **j00-roundtrip**, protocol-level with YProvider and a headless V1 binding: seed, edit, `stack.restart()`, reconnect and see the text, with the instance id changed.
+  - **Done:** the harness and j00-roundtrip are green in CI (the server half of SP3).
+- **T0.8 The bound moss editor in a browser** `[A·codex]`, after T0.5b and T0.7
+  - **Scope:** the MarkdownEditor `collaboration` seam and the full `useMossMultiPane` call-site set (A§2.2 rows 1–2, installed once); the four vendored plugin seams (A§10.2); the doc session and hardened provider (A§10.1); the first-sync mount gate and readiness attributes (A§10.3, A§19); type-aware exclusions; `data-editor-generation`.
+  - **Tests first:** journey **j00-persist**: "+ Note"; the body is not focusable before `data-body-binding=live`; type text with spaces, punctuation and "é"; reload; the bytes are exact. Exactly one `/parties/doc-d-o/<id>` socket for 60 s, no generation bump across a metadata refresh, and no reconnect across a pane rerender. A unit test for the exclusion map's type fallback.
+  - **Done:** j00-persist is green in both engines, with a shot of the note after reload (SP3 complete).
+- **T0.9a Journey library, invariants, selftests** `[D·fresh]`, after T0.3; time-boxed to one day
+  - **Scope:** `e2e/lib` (actors, telemetry, invariants 1–9, sever, hibernate, UI verbs, measure, reporter, InfraBlocked), built against fixture pages only; principals plug in after T0.4. Selftest fixtures (S-test §3.8), plus one proving the WebKit bare-Backspace leg fails on the CI engine with the guard removed (SP15).
+  - **Tests first:** each selftest fixture violates exactly one invariant and must be flagged; the clean fixture yields no findings.
+  - **Done:** every detector is proven red, and the selftest projects are green.
+- **T0.9b Journey CI jobs and `qa.mjs`** `[D·fresh]`, after T0.9a and T0.5a
+  - **Scope:** the e2e job sharded by journey group with one stack per shard; `@slow` legs (60 s holds, soaks, idles) run at milestone gates and nightly; the `scripts/qa.mjs` bb Browser Automation prelude (S-test §4.4); a p95 headroom table from `repeat_each=5` before any latency budget is asserted. `red-proof.yml` lands with the first defect-fix brief and overlays `packages/protocol/src/dom-contract.ts` with `e2e/` (A§20).
+  - **Done:** each ready-PR shard finishes in ≤ 13 min; `qa.mjs` writes a 2880×2000 PNG of the local stack; the p95 table is in METHOD.md.
+- **T0.10 Login card** `[C·codex]`, after T0.4 and T0.5a
+  - **Scope:** a `/login` LoginCard with glyphdown's layout, composed from vendored moss `input`, `label`, `button` and `card` (new variants only where moss lacks them, each with a story); sign in, sign up, and sign-out with a JSON body; a single auth-state writer; the `beforeLoad` degraded state (R10).
+  - **Tests first:** journey **j07-auth**: sign-up lands in the Home vault shell; sign-out goes to login; sign-in returns to the same doc through `next`; a wrong password shows a message; no OAuth button renders; a session lookup failed with `page.route` shows `data-app-state=degraded` and retries in place with no redirect.
+  - **Done:** j07 is green in both engines, with card shots at 1440×1000 and 390×844 (Tier A).
+- **T0.11 Glyphdown reference shots** `[D·fresh]`
+  - **Scope:** build glyphdown@faf98d0 from a temp copy of `.refs/glyphdown` on one local stack (L§5.2) and capture 2× light and dark shots of the login card, share dialog, presence and cursors, connection pill and offline banner, bell and inbox, vault switcher, history page, suggest mode and SuggestionsPanel. Attach them to the M0 milestone PR with `gh pr edit --attach` and index the URLs by state in `docs/design/glyphdown-reference.md`. Delete the temp copy.
+  - **Done:** every surface named in PRODUCT's intro has a light and a dark reference in the index.
+
+**Order:** T0.1 alone (the pilot), then T0.2, then T0.3; lanes open once the pilot's verdicts converge. Then T0.4 ∥ T0.6 ∥ T0.9a, then T0.5a ∥ T0.7 ∥ T0.11, then T0.5b ∥ T0.10 ∥ T0.9b, then T0.8, then the polish task.
+
+**Journeys added:** j00-shell, j00-roundtrip, j00-persist, j07-auth.
+
+**Exit criteria** [L§7.3]: invariants 1–5, 8 and 9 are live and selftested; served bytes equal `/api/version` on every navigation; converter L1–L3 are green for every family; a note reopens with its content after a stack restart; one socket is held for ≥ 60 s with no remount; the shell meets the parity floor in light and dark; the login card works at both widths; the reference index is complete; the critic, starting from `/login`, recognizes moss and finds no dead or native-only affordance among unstaged surfaces.
+
+**M0 hand-off asks** (one plain-language list with a recommendation each): R5's cross-vendor scope and R7 against PRODUCT's dev-flag playground line; deviations 6, 8, 9 and 12 and hidden-tab presence (A§10.7, A§23); and capturing the Ladle oracle on CI's ubuntu Chromium, which changes the owner-gated capture baseline (L§1.1). Until R5 is confirmed, every task in an R5 risk class stays cross-vendor.
+
+## M1 Two people, one note
+
+**A person can newly** share a note with another person, who finds it in their own sidebar without a URL and can switch vaults and back; edit it live together, or in two windows of their own, each window seeing every other one as a chip with a cursor in the same color; rename it from either side; type through a network blip behind a truthful indicator; undo only their own edits; co-edit a code block without losing either side; duplicate a note; and reopen it after the doc hibernates, locally and on staging.
+
+**Lanes:** A for access and discovery (T1.1 → T1.2 → T1.8 → T1.10). B for connection and persistence (T1.3 → T1.7). C for collaborative editing (T1.4 → T1.5 → T1.6 → T1.9). Lanes B and C start alongside T1.1 with declared-setup grants. DocDO modules: admission and recheck belong to A, persistence and gates to B, projections, awareness and registers to C.
+
+- **T1.1 Access resolver and sharing with a person** `[A·codex]`
+  - **Scope:** `protocol/roles.ts`; `api/access.ts` (A§8) and the `/parties` admission rules (A§4.1); the members API (owner only, emails hidden from others); ShareDialog v1 with person rows by email at viewer, commenter or editor; the Share button in the top-bar collab slot; the denial surface (A§4.2).
+  - **Tests first:** property tests for the MAX fold and the link ceiling; a byte-identical 404 for missing versus inaccessible docs (SHA compare); j01 setup: A shares with B through the dialog; a signed-in stranger opening the doc URL sees the denial page, and its socket closes 4404 without a reconnect.
+  - **Done:** the j01 setup is green, and the checker's raw attacks fail (a non-owner share, a viewer write over REST, a viewer write frame).
+- **T1.2 Discovery and vault switching** `[A·codex]`
+  - **Scope:** glyphdown's discovery model (A§11): directly shared docs and folders surface at the root of the active vault; the vault switcher in the notes-panel header (switch, owned vaults, then shared vaults with role badges, persisted choice), with "Share vault…" staged to M2 and "New vault" to M3.
+  - **Tests first:** j01 legs: B finds A's note in their own sidebar without typing a URL, opens it, and the sidebar stays on B's Home; B, holding a vault grant, switches to A's vault and back; no shared row offers move or folder actions.
+  - **Done:** the legs are green, with a shot of B's sidebar.
+- **T1.3 Connection truth** `[B·codex]`
+  - **Scope:** the heartbeat (1 s check, 4408 after 12 s silence, detach without waiting for `close`); the connection-truth reducer; the persistent indicator in the top-bar slot and the DS Banner in the reserved band; close-code dispatch (A§10.5), including bounded handshake failures and the 4420 rate close; the first-sync deadline and `retrying` state; the terminal store; the per-tab socket registry; 4429.
+  - **Tests first:** journey **j03-connection**: `routeWebSocket` black-holes B, and the banner shows within 14 s while A is unaffected; B types offline, and after restore both converge to exact bytes. A SIGSTOP leg: the banner shows on every actor within 14 s, no close frame arrives before 4408, and resume is lossless. A negative control: 20 s idle with no banner and no reconnect. A first sync delayed 10 s shows `retrying` and recovers with no remount. A 51st connection goes terminal `conn-limit` with a retry action (protocol-level).
+  - **Done:** j03 is green in both engines, with banner shots.
+- **T1.4 Title and frontmatter as shared state** `[C·codex]`
+  - **Scope:** the A§10.4 title and frontmatter bindings; the DocDO title, filename and `updated_at` projections (an empty title never projects); the "+ Note" seam with its opening guard and the new-note-focuses-title step (R2); the WebKit Backspace guard; the refusal announcer in the reserved band.
+  - **Tests first:** `doc-fields` units: minimal diff, budget fallback, delta caret remap including "aa"→"aaa". Journey **j02-title**: A renames, and within 5 s B's title, sidebar row and breadcrumb update with zero keystrokes in B; A→B→C converges monotonically with no stale flash; concurrent renames merge, and B's mid-edit title is never clobbered; renames cause no remount; emptying a title and retyping it keeps the filename; a bare WebKit Backspace with no focus keeps the URL; the title is unfocusable before `data-title-binding=live` and focused after; on a warm stack, "+ Note" then "hello world" typed at once creates exactly one note, and every key shows a visible refusal. A Properties leg: two people edit different properties at once, both survive, and the header renders after reload.
+  - **Done:** j02 is green in both engines, with A/B shots of title, sidebar and breadcrumb.
+- **T1.5 Presence, colors, cursors** `[C·codex]`
+  - **Scope:** the A§10.7 per-client presence lifecycle and color claiming; FacePile and AvatarChip with stories; the top-bar slot; the cursor overlay with labels while typing; DocDO awareness validation and its cap (SP6).
+  - **Tests first:** fast-check color-claim properties (distinct among present clients, stable through joins and leaves). j01 legs: 0 chips alone, 1 each after B joins, 2 each with a third principal, all colors distinct; the caret and selection color equals the chip color; a caret move reaches the peer within 1 s; the label shows while B types; A's chip clears promptly when B closes, and within 8–20 s after a hard drop; a spoofed awareness name is dropped. One principal in two windows (a declared `solo` opt-out): each window shows one chip for the other, and Cmd+Z in one never removes the other's text.
+  - **Done:** the legs are green, plus a signature shot: remote caret with label beside the face pile.
+- **T1.6 Undo, origins, background writers, layout, split view** `[C·codex]`
+  - **Scope:** plugin seams (a) and (b); the title `UndoManager`; background-writer guards (A§10.10); the `--link-selection` highlight; the local layout plugin, applied after first sync (R11); the floating toolbar hides while the editor is unfocused (deviation 10); the split-view seam (A§10.1); the SP5 stress run.
+  - **Tests first:** j01 legs: concurrent typing in one paragraph; Cmd+Z in A never removes B's text, and derived writes add no undo step; "Insert row" adds exactly one row on both sides; a markdown paste in A while B types keeps both; a frame scan finds no excluded key and does find `__type`, `__result` and `__name` (positive controls); table widths, tab widths and collapsed headings persist locally across reload without syncing, and still apply after a peer inserts a table above; the toolbar is absent while the editor is unfocused; two docs in split panes hold one socket each with no #38, and no path shows one doc in both panes; a 60 s two-tab concurrent-typing soak (`@slow`) raises no Lexical #343.
+  - **Done:** the legs are green in both engines.
+- **T1.7 Reopen after hibernation, and eviction calibration** `[B·codex]`
+  - **Scope:** the wake path; every in-memory DocDO value rebuildable from storage; presence re-announcing after idle; `e2e/calibration` and `calibrated.json` (SP4); j04's shared `@hibernate` idle window.
+  - **Tests first:** the induction proof fails when the instance id does not change. Journey **j04-hibernation**: reopen after a restart is non-empty; reopen after a calibrated idle shows content; a peer joining after idle sees presence both ways; a warm creator with a cold peer. Every leg asserts the instance id changed.
+  - **Done:** j04 is green with the instance-id evidence; `IDLE_MS` is committed and the nightly job is wired.
+- **T1.8 Duplicate and server import (G1)** `[A·fresh]`
+  - **Scope:** a server-side duplicate endpoint (App seam); `POST /api/docs {markdown}` importing through the converter; the G1 comparator; WebKit authoring through a synthetic `paste` event carrying a DataTransfer.
+  - **Tests first:** j00 G1 leg: for every family fixture, a server-imported doc and the same markdown pasted in the UI render the same normalized DOM and decorator counts. A j01 leg: Duplicate from the note menu yields a copy both peers see in their sidebars.
+  - **Done:** G1 is green for every family in both engines.
+- **T1.9 Decorator registers** `[C·codex]`, after T1.6
+  - **Scope:** SP8: the register mechanism (A§10.10) with `Y.Text` registers for `code-block.__code`, `html-block.__rawHtml` and `formula.__formula`, written through the title binding's minimal-diff and caret-remap code; register fields join the exclusions; the converter reads them through node getters; the DocDO mirror and the undo scope include them.
+  - **Tests first:** L4 replication for each register; a j01 leg: A and B type into one code block at once and both keep every character; Cmd+Z in a code block undoes only your own typing; export is byte-identical with and without registers.
+  - **Done:** the legs are green in both engines. A field that cannot take a register goes to the owner with the data loss stated plainly.
+- **T1.10 Staging canary** `[A·codex]`, after OA3
+  - **Scope:** the A§21 names on the personal account (`wrangler whoami` first), D1, R2, secrets, `env.staging`, a fixed pool of test principals, and `deploy-staging.yml` deploying the exact `dist` the suite tested.
+  - **Tests first:** the workflow asserts staging `/api/version.bundleHash` equals the tested bytes and the test hooks return 404; j00-shell, the j01 setup and j04's staging legs (≥ 15 s idle, wake proven through the owner-only instance route, SP14) run against staging.
+  - **Done:** the canary is green on staging.
+
+**Journeys added:** j01-coedit, j02-title, j03-connection, j04-hibernation.
+
+**Exit criteria** [L§7.3 M1]: peer text appears within 2 s; B finds a shared note without a URL and switches back; a rename reaches the title, sidebar and breadcrumb within 5 s, and A→B→C converges monotonically; 0 chips alone, 1 each with two clients, 2 each with three, with the caret color equal to the chip color; one principal in two windows behaves as two users; a hard drop clears in 8–20 s; a sever or SIGSTOP shows the banner within 14 s and resume is lossless; a stalled first sync shows `retrying`; a forced hibernation reopens non-empty locally and on staging; Cmd+Z never removes B's text; concurrent code-block typing keeps both sides; one socket held ≥ 60 s with no remount; nothing is editable before bind; bytes are exact on both peers and after reload; the signature shot is posted inline.
+
+## M2 Workspace and access
+
+**A person can newly** create, rename, move and trash folders; trash and restore notes, with open peers locked in place; see peers' creates and renames appear live in the sidebar; share a vault from the switcher, a folder from its context menu, or a doc, with a person or a revocable link at a role; as a stranger, read a shared link on a phone, sign up and land on the same doc; receive invites in a bell; and watch demotion, revocation and sign-out take effect in open windows immediately.
+
+**Lanes:** A for workspace (T2.1 → T2.2 → T2.3). B for access (T2.4 → T2.5 → T2.6). C for surfaces (T2.7 after T2.4, T2.8 after T2.1).
+
+- **T2.1 Workspace channel** `[A·codex]`
+  - **Scope:** PrincipalDO with its channel and `publish`, `fanout.publishMeta` (A§5.2, A§11), metadata-only `onDiskChange`, live `updated_at` sorting.
+  - **Tests first:** while B has another doc open, A's new doc, rename and trash reach B's sidebar within 5 s; a bound id never appears as a content change (the remount detector stays clean); the channel stops synchronously on sign-out.
+  - **Done:** the legs are green.
+- **T2.2 Folders from the web UI** `[A·codex]`
+  - **Scope:** the folders API (create, rename, move; editors can create in shared vaults, recorded with `created_by`); the refreshed id↔path map; deleting a folder sends its subtree to trash as a batch; the folder entry points are unstaged.
+  - **Tests first:** journey **j06-folders**, from an empty workspace as a naive principal: create a folder, rename it, move a note in, delete the subtree to trash; a peer with a note open inside that subtree goes terminal in place; an editor on a shared vault creates a folder; no "Unknown parent folder" and no bare "Failed".
+  - **Done:** j06 is green.
+- **T2.3 Trash lifecycle and terminal state** `[A·codex]`
+  - **Scope:** trash and restore (owner only), the trash list, and the owner's read-only trash view on the one owner read path for trashed docs (A§8); terminal 4410 on every surface and a 404 on fresh load; one module for retention copy; the sidebar Trash button accepts a drop; the client closes the doc to writes and waits for unacked = 0, at most 5 s, before the DELETE; the Trash items are unstaged.
+  - **Tests first:** journey **j05-trash**: A trashes while B types, and an attribute sweep finds every editable surface in B inert, `data-terminal-reason=deleted`, and no reconnect; B black-holed during the trash and then restored goes terminal, accepts no keystroke and makes at most 3 handshakes; a fresh load gets the byte-identical 404; the trash view shows the content read-only with "30 days" copy; restore converges on both; telemetry shows no 4xx noise after the trash. A build test enumerates every retention-copy surface from `deleted_at` writers and delete-route callers, proven able to fail; a 2-day-old doc never reads "Just now".
+  - **Done:** j05 is green, with a parity target for the trash view.
+- **T2.4 Full sharing** `[B·codex]`
+  - **Scope:** ShareDialog v2: vault, folder and doc targets; viewer, commenter, editor and owner roles; the member list; create, revoke and copy share links. The folder context menu's "Share…" and the switcher's "Share vault…" are unstaged. The link role acts as a ceiling, anonymous visitors get viewer, and "Sign in to do more" returns to the same doc. The token is threaded through every path, including the socket. The `/f/$folderId` landing.
+  - **Tests first:** journey **j08-share**: a folder shared from its context menu and a vault shared from the switcher reach B; a viewer link opened signed out reads at viewer and offers sign-in; an editor link gives viewer when signed out, editor when signed in without a grant, and the max when there is a grant; revoked, forged and inaccessible links get byte-identical 404s; non-owners see no emails.
+  - **Done:** j08 is green.
+- **T2.5 One kick path** `[B·codex]`
+  - **Scope:** `fanout.ts` covering every revocation kind and its recipient DOs (A§8); durable DocDO revocations and `recheck`; the PrincipalDO session registry, its memory of ended sessions, and `endSession`; the client re-asks on 4403 and rebinds read-only with a message.
+  - **Tests first:** journey **j09-revoke-live**: demotion closes B's socket with 4403 within 1 s and makes the UI read-only with a message; removing a member is terminal `revoked`; revoking a link closes signed-in riders; sign-out in window A ends window B (`session-ended`); a socket that registers after its session ended closes 4402. Cold rows in j04's idle window: a revoked doc link's first frame after wake never lands, and neither does one on a subfolder doc after its folder link is revoked.
+  - **Done:** j09 and the cold rows are green, and a codex adversarial pass over raw requests and sockets finds nothing.
+- **T2.6 Role-gated affordances** `[B·codex]`
+  - **Scope:** one capability helper for every moss menu and control. Viewer and commenter are truly read-only, decorator controls included (checkbox, slash, tab add).
+  - **Tests first:** j08 legs: menus grow with rank; a viewer's checkbox and slash commands send no frame; an unknown role gets no actions.
+  - **Done:** the legs are green.
+- **T2.7 A stranger on a phone (Tier A)** `[C·fresh]`, after T2.4
+  - **Scope:** below 640 px the notes panel overlays the canvas, the chrome yields in a set order, Share becomes icon-only with an overflow menu, and the login card, denial page and share landing work at 390 px.
+  - **Tests first:** journey **j10-stranger-phone**, `@tierA`, at 390×844 and 1440×1000 with 0, 1 and 2+ collaborators: open the link, read, sign up through the card, land back on the same doc; a revoked and a forged link show the denial page; every control's centre passes an `elementFromPoint` hit test. A Tier B sweep: the share dialog, settings and every menu opened at 390 px keep every control reachable.
+  - **Done:** j10 is green, with shot pairs at both widths.
+- **T2.8 Invites and the bell** `[C·fresh]`, after T2.1
+  - **Scope:** copy-link-only invites, including pending invites for unknown emails (`/invite/$token`); the notifications API, re-checked against the live grant when read; DS InboxItem and the bell in the top-bar collab slot, pushed through PrincipalDO; mark-read with `keepalive`; the navigation module (A§9).
+  - **Tests first:** inviting B makes B's bell show it without a reload, and clicking it opens the doc; clicking a notice mid-sentence drops no keystroke; an invite to an unknown email gives a copyable link that redeems after sign-up; a notice whose grant was revoked is omitted.
+  - **Done:** the legs are green, with a triptych against the glyphdown bell.
+
+**Journeys added:** j05-trash, j06-folders, j07 (sign-out severs another window), j08-share, j09-revoke-live, j10-stranger-phone.
+
+**Exit criteria** [L§7.3]: trash closes peers with 4410, every surface is disabled, a fresh load gets 404, an offline peer goes terminal on reconnect, and restore converges; a trashed folder subtree locks open peers; an anonymous link opens at viewer with "Sign in to do more" and works at 390×844; revoked, forged and inaccessible docs get byte-identical 404s and a rendered denial page; demotion closes the socket with 4403 within 1 s and the UI goes read-only; sign-out in A severs B; a viewer's checkbox and slash are inert; a revoked link's first frame after wake never lands.
+
+## M3 Rich workspace
+
+**A person can newly** upload images and video, which render after reload and inside copies, and edit image alt text; see HTML blocks, web embeds and the in-app browser render live and sandboxed; use every moss node family, styled; search with text snippets and follow backlinks; create, rename and trash vaults; mint and revoke agent keys in Settings and share with an agent; and open a note in a new tab and print it to PDF.
+
+**Lanes:** A (T3.1 → T3.2). B (T3.3 ∥ T3.4). C (T3.5, then T3.6 → T3.7).
+
+- **T3.1 Assets** `[A·codex]`
+  - **Scope:** upload, serving, Range, the SVG sandbox and SWR caching (A§16); the asset-url substitution; the `images.*` bridge; copies carry media (SP9); "Edit Alt Text…" in a moss-DS image context menu (A§9).
+  - **Tests first:** journey **j11-media**: drop, paste and "/media → From computer" for png, jpg, gif, webp, svg, mp4, webm and mov, then reload; a copied note keeps its media; an anonymous link reader sees the media; alt text edited from the image menu reaches the peer and the export; a viewer gets no upload control and a raw upload gets 403; a PDF upload gets 415; WebKit plays video through 206 responses.
+  - **Done:** j11 is green, with shots of an image and a video poster.
+- **T3.2 HTML, embeds, in-app browser** `[A·codex]`
+  - **Scope:** the HtmlBlockquoteNode live-iframe seam; `/api/unfurl` with `ssrf.ts`; the RemoteWebSurface substitute; remote-image `persistUrl`.
+  - **Tests first:** an SSRF unit matrix covering redirect chains, DoH answers with private addresses, obfuscated IPv4, 169.254, CGNAT and ULA. j11 legs: moss-html runs scripts in a sandbox without same-origin, under the page CSP, and cannot reach the parent's cookie; a web embed card renders; a YouTube embed plays; the in-app browser opens a sandboxed iframe with a working "open in new tab", and its back, forward and find controls are absent.
+  - **Done:** green, plus a codex adversarial SSRF pass.
+- **T3.3 Every node family, live** `[B·codex]`
+  - **Scope:** the formula overlay and draft-chip decoration; per-viewer file-link resolution; chart and sketch registers on the T1.9 mechanism; per-decorator error boundaries; computed-style parity against a pristine-moss Ladle oracle story (A§20).
+  - **Tests first:** L4 replication and A8 concurrency for every decorator, with no loss; journey **j14-demo-note** builds every family through paste and slash commands in a test account (R8); computed-style parity per node selector.
+  - **Done:** j14 is green, with full-window shots of the demo note in light and dark.
+- **T3.4 Search and backlinks** `[B·fresh]`
+  - **Scope:** the SearchDO port and its DO feeds; `/api/search`; backlinks; wiki resolution by title and stem; headings (A§15).
+  - **Tests first:** journey **j12-search**: B finds A's shared doc by body text and gets a text snippet, never "[object Object]"; backlinks survive an edit; an unresolved link shows its unresolved state; inaccessible docs never appear.
+  - **Done:** j12 is green.
+- **T3.5 Vault lifecycle** `[C·fresh]`
+  - **Scope:** the switcher's inline "New vault" row, rename, and an owner-only trash with ConfirmationDialog (A§11), unstaged.
+  - **Tests first:** journey **j13-vaults**: create a vault inline, switch, create a note; B, with a root grant, sees it with a role badge; a member sees no vault actions.
+  - **Done:** j13 is green, with a triptych against the glyphdown switcher.
+- **T3.6 Settings → Agents, agent sharing, the device page** `[C·codex]`
+  - **Scope:** an Agents section in SettingsModal (mint once, list with a copyable agent id, revoke through the kick path); the ShareDialog accepts an agent id and tags agent rows (A§8); `/device` styled with moss tokens.
+  - **Tests first:** a minted key is shown once; revoking it 401s a raw bearer request and closes the agent's live socket; an agent added by id appears as an "agent" row at its role; unit tests for device-flow claim, approve, deny and replay. **Done:** green, with a parity target for Settings.
+- **T3.7 Tab and print** `[C·fresh]`
+  - **Scope:** Open in New Window becomes a browser tab; Save as PDF prints through `/pdf-export`; Save as Markdown downloads the export.
+  - **Tests first:** a new page opens at `/d/<id>`; the print route reaches `data-pdf-export-status=ready` and calls `window.print` (spied); the downloaded bytes equal the export and contain no markers. **Done:** green.
+
+**Journeys added:** j11-media, j12-search, j13-vaults, j14-demo-note.
+
+**Exit criteria** [L§7.3 M3]: images and video render after reload, inside a copied note and through an anonymous link; the HTML preview runs in a sandboxed iframe; snippets show text and backlinks survive a save; the demo note shows every family styled, in light and dark, and concurrent decorator edits lose nothing; revoking a key kills its socket.
+
+## M4 Comments
+
+**A person can newly** comment on text and blocks with moss's gutter, highlights and popovers; reply, react, @mention, resolve, and edit or delete their own comments; get mention and reply notifications; and keep typing right after commenting without losing anything.
+
+- **T4.0 Design review** `[—·codex]`
+  - **Scope:** `docs/design/comments.md` resolves A§13 for this milestone: anchor minting, the SP7 classifier, SP10 paint, an adapter for moss's 8 call sites, the API, and import/export. A fresh architect and a codex critic review it; the owner gets a one-page summary.
+  - **Done:** merged, with every finding dispositioned.
+- **T4.1 The comment data plane** `[A·codex]`
+  - **Scope:** DocDO writes to the comments map; anchors with a quote fallback; client writes to the maps refused; marker import in the converter; clean export.
+  - **Tests first:** fast-check: anchors survive random concurrent edits. A client frame touching `comments` gets 4409. Importing the onboarding note and its sidecar yields 4 anchored threads. Export contains zero `%%m:` or `{%c:`. **Done:** green.
+- **T4.2 Paint and moss's comment UI** `[B·codex]`
+  - **Scope:** highlight paint; the adapter; the `CREATE_COMMENT_COMMAND` seam; gutter, popover, threads, replies and resolve; Cmd+Shift+A; the reply composer autofocuses.
+  - **Tests first:** journey **j15-comments**: A comments, then both type anywhere in both directions; two comments in one paragraph; the peer sees the highlight; a commenter can comment but not edit; no `%m:` in the DOM.
+  - **Done:** j15 is green, with shots and parity targets for the gutter and popover.
+- **T4.3 Reactions, mentions, edit and delete, notifications** `[B·fresh]`
+  - **Tests first:** j15 legs: reactions toggle per principal; an @mention reaches B's bell; a reply reaches the root author's bell; a non-author sees no Edit or Delete, and a raw delete gets 403. **Done:** green, with a reactions triptych.
+
+**Exit criteria:** typing anywhere after a comment replicates exactly; there are no markers in the DOM or any export; the author identity comes from the server principal.
+
+## M5 Suggestions
+
+**A person can newly** switch to Suggest in the floating toolbar, or be shared as a suggester and locked to it; propose inserts and deletes that others see painted; and have an editor accept or reject them. A violating edit is refused visibly and never lands.
+
+- **T5.0 Design review** `[—·codex]`
+  - **Scope:** `docs/design/suggestions.md`: inserts anywhere accepted and registered (A§13); structural ops (checkbox, table row, list indent) as suggestion parts (SP11); mirror vetting rules, records, paint, accept and reject; the review UI's placement from the glyphdown SuggestionsPanel reference.
+  - **Done:** merged, with every finding dispositioned.
+- **T5.1 Suggest-mode UI** `[A·codex]`
+  - **Scope:** the toolbar toggle and the role-locked chip; suggester in the share role menu; the baseline taken after first sync; deletes recorded as delete parts.
+  - **Tests first:** journey **j16-suggest**: a solo owner with nothing selected toggles Suggest in the docked toolbar; a principal shared as suggester through the dialog opens locked to the "Suggesting" chip; on a cold load, a suggester's first delete leaves the text in the server export and paints a strike. **Done:** green.
+- **T5.2 Server vetting and loud refusal** `[B·codex]`
+  - **Scope:** vetting on a mirror; write-refused followed by 4409; the client hard-resyncs.
+  - **Tests first:** colliding-prefix typing ("the " before "the …", a duplicated word, a sentence pasted before itself) and an insert outside any existing suggestion are never refused; a forged raw frame deleting original text never lands, and the refusal is visible in the band. **Done:** green.
+- **T5.3 Review, accept, reject, withdraw, notify** `[B·codex]`
+  - **Scope:** glyphdown's SuggestionsPanel rebuilt in the moss DS inside moss chrome, with accept and reject reachable from the painted suggestion (moss's ActionsPanel stays the inert agent panel); range transactions in the DO; the 0.8 drift guard; notifications for live suggestions.
+  - **Tests first:** an editor's accept and reject converge on both sides; withdraw removes the inserted text; the peer's review UI lists the suggestion. **Done:** green, with a triptych against the glyphdown panel.
+
+**Exit criteria:** colliding-prefix typing is never refused; a suggester's first delete never removes text on the server; violating edits never land and the client shows the refusal; the demo note shows live pending suggestions.
+
+## M6 History
+
+**A person can newly** open History from the top bar, see automatic and named versions, view one read-only, diff it against now, and restore it while a peer keeps typing, without losing the peer's words or comment anchors.
+
+- **T6.1 Identity-preserving reconcile** `[A·codex]`
+  - **Scope:** SP12: port the two-tier reconcile to 0.48 in `packages/core`, with verify-or-refuse.
+  - **Tests first:** properties: the result exports the target; untouched subtrees keep their Yjs item ids; a concurrent insert in an untouched block survives; anchors survive. **Done:** green.
+- **T6.2 Version storage and triggers** `[A·codex]`
+  - **Scope:** A§14 storage, R2 spill, triggers, REST, and a rate limit on named versions.
+  - **Tests first:** harness: an auto version on last disconnect; the activity trigger; dedupe; a spill above 1.5 MB; a failed restore verification gets 409. **Done:** green.
+- **T6.3 History view** `[B·fresh]`
+  - **Scope:** glyphdown's history page rebuilt in the moss DS inside the editor pane (A§14): the version list with badges, View and Diff vs current, Restore with ConfirmationDialog, `VersionHistoryEmptyState`, a first named checkpoint from the empty state, honest errors.
+  - **Tests first:** journey **j17-history**: an auto version appears after the last disconnect; a selected version is read-only; Diff vs current shows the peer's change; a named version is saved from the empty state and from a non-empty list; restore while the peer types keeps the peer's insert and a comment anchor; a versions fetch failed with `page.route` renders an error, never "No checkpoints".
+  - **Done:** j17 is green, with a triptych against the glyphdown history page.
+
+**Exit criteria:** a restore during peer typing keeps the peer's insert and the anchors; view is read-only and diff shows the peer's change; a failed fetch shows an error.
+
+## M7 Agents and local sync
+
+**A person can newly** let an agent with an API key pull, push and sync `.md` files while humans type; see the agent as a Bot-badged collaborator; give another person's agent a role on a doc; push suggestions with `--suggest`; and run a folder-watch daemon that keeps a local folder in sync.
+
+- **T7.1 CLI core** `[A·fresh]`
+  - **Scope:** the A§17 command surface, device login, key auth, doc references by id, URL or title prefix, raw `cat`, `rm` copy and JSON, exit codes.
+  - **Tests first:** unit tests against a fake server; the CI e2e job runs the built CLI against the stack: `cat` is byte-exact with no trailing LF; a 2 MB pull returns every byte; a title-prefix reference resolves; a `url` output opens the doc in the web app. **Done:** green.
+- **T7.2 Structural push merge** `[B·codex]`
+  - **Scope:** the A§17 push path through the T6.1 reconcile; the PrincipalDO rate limit; the base cache; the degenerate guard; the size-cap check on the simulated result.
+  - **Tests first:** merge properties: untouched blocks keep identity, duplicates keep their positions, `:::tabs` splits correctly. Journey **j18-agents**: a CLI push while a human types in the same paragraph keeps both; the 61st push in a minute gets 429 with `retry-after`; a 2 MB push lands and the doc stays typeable, and a push past the cap is refused loudly; a push deleting most of the doc is refused without `--force`. **Done:** green.
+- **T7.3 Agent presence, agent grants, `--suggest`, key revocation** `[B·codex]`
+  - **Tests first:** a push shows a Bot-badged chip for about 15 s and adds no undo step; `--suggest` lands as a pending suggestion; another user's agent granted commenter can pull, has its push refused loudly, has its comment land, and is disconnected when the grant is revoked; revoking the key closes the agent's socket and 401s the CLI. **Done:** green.
+- **T7.4 Folder-watch daemon and sync** `[A·codex]`
+  - **Tests first:** in the CI e2e job: a local edit appears on the web; a web edit updates the local file; an untracked file becomes a doc titled from its stem and the file is renamed; a local delete doesn't propagate; a CLI-created doc renders in the web editor; a moss-format note with its `# Title` line and comments sidecar imports through the moss interchange path with one title and anchored comments. **Done:** green.
+
+**Exit criteria** [L§7.3 M7]: a CLI push during typing preserves both sides; `cat` is byte-exact; a 2 MB push and pull work; a CLI-created doc renders; an agent grant is enforced; revoking a key closes its socket; the daemon round-trips a local edit.
+
+## M8 Ship
+
+**A person can newly** use the whole product at a permanent staging URL, with demo content that shows every feature.
+
+- **T8.1 Staging hygiene** `[A·codex]`
+  - **Scope:** the fixed principal pool reused across runs, a request budget per run, a check that `.dev.vars` is never uploaded, and a review of DO storage growth. **Done:** green.
+- **T8.2 The full suite on staging** `[A·codex]`
+  - **Scope:** run every journey except `@local-only` legs against the deployed bytes, with wake proven through the owner-only instance route. **Done:** green.
+- **T8.3 Security sweep** `[B·codex]`
+  - **Scope:** an adversarial pass on staging: header stripping, existence leaks, CSP, SSRF, limits including auth 429s, token threading, sign-out. Only P0 and P1 findings are fixed here. **Done:** green.
+- **T8.4 MIGRATION.md** `[C·fresh]`
+  - **Scope:** how each part maps back onto moss desktop: seams, bridge namespaces, the converter extraction, the collab layer, registers, the server model. **Done:** green.
+- **T8.5 Demo content and signature shot** `[C·fresh]`
+  - **Scope:** demo notes built through the UI in a test account on staging (R8), with live comments and pending suggestions; a share link to the demo vault posted with the staging URL so the owner can open it signed in as themselves; the signature shot: a peer's cursor and a suggestion in a long sentence beside rich nodes. **Done:** green.
+
+**Exit criteria:** every journey passes on the deployed build; staging `/api/version` equals the tested bytes; the critic passes on staging; the signature shot and demo link are posted inline.
+
+---
+
+## The loop
+
+### Per task
+
+1. **Brief.** The coordinator commits `docs/briefs/Tm.n.md` to the milestone branch `m<k>`, at most 40 lines: scope, files, the trace ids and A§ sections touched, the reference shots (glyphdown and moss) for any surface moss lacks or a seam changes, the tests-first list, the done evidence, the risk class, the CI-minute budget, the anti-stall preamble, and the provider, model, effort and fallback tuple. A defect fix on a ported or moss-absent surface also carries the three-way record (glyphdown's interaction, moss at the pin, ours) before any fix [L§7.1 #9]. The task branch `m<k>/Tm.n` opens in a BB-managed worktree; the owner-visible checkout stays on `main`. [L§5.6]
+2. **Tests first.** The implementer is Claude Code Opus with a fresh context, spawned with provider, model and effort passed explicitly and checked in its first output [L§6]. It reads PRODUCT, the cited A§, METHOD.md and the brief, writes the failing tests, pushes, and dispatches a Chromium-only grep run (`gh workflow run ci.yml --ref <branch> -f grep=… -f browsers=chromium`). The run must be red on the named assertions.
+3. **Implement.** Make the smallest change that meets the brief. The inner loop is a local `vite build` and stack launch (compile and boot only; no tests run locally), then Chromium grep dispatches or the checks-only lane. Push every green step. The head SHA ends green.
+4. **Independent checker.** A fresh agent with its own driver, Codex through `codex exec` for the risk classes below after a `codex exec "reply OK"` probe:
+   - it reads the diff against the brief and the cited A§ sections;
+   - it reuses the implementer's green run for the same head SHA and dispatches once more: WebKit for the touched journeys, plus `repeat_each=3` on changed timing legs;
+   - it runs the change's one browser QA pass on its own stack, and reads the triptych for any surface moss lacks;
+   - for a defect fix, it dispatches `red-proof` against the merge base.
+
+   It returns schema-checked, null-guarded output: `{verdict: PASS|FAIL|BLOCKED, findings: [{severity: P0|P1|P2, …}], evidence}`. When Codex is out of quota, a fresh same-vendor checker runs flagged `degraded`, and the cross-vendor check is owed before the milestone exits. [L§4.19; L§5.6]
+5. **Integrate.** On PASS, the coordinator merges into `m<k>`, re-runs the touched journeys in both engines on `m<k>`, and pushes. Checker findings visible on a shipped surface are fixed within the milestone; only code-review P2s are parked, as PROGRESS.md follow-ups.
+
+### Per milestone
+
+6. **Milestone journeys in CI.** The `m<k> → main` PR is opened as a draft at milestone start and carries the `BB-Thread-ID` line. When it goes ready, the full suite runs in both engines, plus parity for the milestone's targets (A§20) and the trace check. `CI_DEGRADED` never waives the exit's WebKit run.
+7. **Polish.** One bounded task clears every visible-UI follow-up before the critic. [L§6 avoid: the POLISH-FIXES backlog never ran]
+8. **Naive critic.** A fresh agent with PRODUCT.md, a local stack URL, the Ladle oracle URL and the glyphdown reference index, and no code, uses the milestone's promise as a new user and reports gaps with shots. Each finding is fixed now or ruled out of scope with a PRODUCT citation. [L§6 critic]
+9. **Staging canary** (from M1). Deploy the milestone head and run its canary legs on staging.
+10. **Upstream drift.** `moss-vendor.mjs drift` reports moss `origin/main` changes since the pin that touch vendored files. It is a report; pin changes stay owner-gated. [L§4.1]
+11. **Owner hand-off.**
+    - The coordinator reads the decisive shots at full resolution and posts inline one 2× before/after pair per promise clause (before from `main`, after from the `m<k>` head, attached with `gh pr edit --attach`), the triptychs, the Tier A pairs, and the progress visual.
+    - The PR gets one code review, and only P0 and P1 findings are fixed.
+    - The owner approves the transition and the PR merges.
+    - Briefs are pruned, workers and worktrees are archived, and the coordinator hands off to a fresh thread if its context is large. [L§1.10; L§6]
+
+### Coordinator rules
+
+- **Owner-flagged defects preempt the queue,** whatever their rating. [L§7.1 #10]
+- **An owner correction to a running fix's design stops or re-briefs it at once.** [L§6 avoid]
+- **Invariants outrank brief bounds.** A worker does the minimum invariant-satisfying work and says which bound it set aside. [L§6 CASE-LAW]
+- **Spec conflicts** between PRODUCT, A§ and the surveys go to a standing adjudicator thread that cites each text verbatim and logs any softening loudly. [L§6]
+- **Visible orchestration.** Checkers, critics and the adjudicator run as bb threads, and every status report says what is running now and what comes next, checked fresh. [L§1.10; L§2.1]
+
+### Proportional verification
+
+| Change class | Checker | Required adversarial legs |
+|---|---|---|
+| Auth, sharing and access, revocation | Cross-vendor, `codex exec`, framed as authorized QA | Raw requests as the wrong principal, forged and revoked tokens, a cold DO |
+| Concurrency, CRDT and binding, presence | Cross-vendor | Two-actor races, severs, forged frames, frame scans |
+| Persistence, DO storage, data loss | Cross-vendor | Restart and eviction, a doc at the size cap, red-proof on the pre-fix bytes |
+| UI chrome, styling, copy, tooling | Same-vendor, fresh | One QA pass plus CI; screenshots and triptychs read |
+
+Infrastructure verdicts are never product verdicts: a Cloudflare page, D1 7429, Worker 1101, a quota death, a runner failure or a host death recorded by `stack.mjs` counts as BLOCKED. Evidence-only cycles stop once the behavior is confirmed. [L§6 proportional; L§4.19 escalation]
+
+### Failure budgets
+
+- **Attempts.** At most 4 implement attempts per task, and at most 2 checker cycles per attempt. [L§6 deterministic orchestration]
+- **Oracle first, then one fix.** The brief's three-way record comes before the first fix. After one failed fix, instrument (the Lexical error number, the component stack, `wrangler tail`, a frame census) and ask whether the structure is wrong before another attempt. [L§7.1 #9; L§6 diagnose first]
+- **Park and report.** After 4 attempts, at 2× the task's CI-minute budget, or after 2 coordinator interventions without a change in state, the task is parked and reported in plain language with options and a recommendation.
+- **Requeue infra deaths** without consuming an attempt, at most twice, then report BLOCKED.
+
+### Repo hygiene
+
+- **No evidence in git.**
+  - Evidence lives in CI artifacts (at most 10 PNGs per engine) and in task-scoped `.local-stack/runs/*/shots`, deleted after use.
+  - Decisive shots and the glyphdown references are PR attachments (`gh pr edit --attach`); the repo holds only their index. [L§7.1 #22]
+- **Docs stay lean:** PRODUCT, ARCHITECTURE, BUILDPLAN, PROGRESS, METHOD (gotchas), DEVIATIONS, and the design reviews. There is no rubric, ledger, case law or versioned test copy. [L§6 avoid]
+- **Code comments are short and factual,** with no ticket archaeology. Vendor seams carry `moss-multi seam:` markers.
+- **Git practice.** Push every green step. Never stash, and never `git add -A` in a shared worktree. Archive finished workers and worktrees as you go. [L§7.1 #1]
+- **Liveness.** A scheduled bb automation checks workflow and CI state every 30 minutes and alerts only on a state change. [L§7.1 #18]
+
+### Spending
+
+- **CI minutes** (S-test §2.9, re-modeled per task): about 60 billable minutes per task (red 11, two or three Chromium iterations, one checker dispatch), about 150 per milestone gate, and about 6,500 for M0–M8, roughly 3,000 a month at the planned pace (OA2).
+  - Each task's budget and use are tracked in PROGRESS.md.
+  - `CI_DEGRADED` moves WebKit and parity off ready PRs only; task gates are Chromium-only by design, and no milestone exits without a green WebKit run on its head.
+  - When the month's budget is spent, work pauses and is reported; gates are never silently degraded. [L§7.1 #20]
+- **Cloudflare** is touched from T1.10 on: one staging Worker, a fixed principal pool, a request budget per canary run, and soft-deleted DOs counted as they never reclaim storage. [L§4.7]
+- **Codex quota** is probed before every cross-vendor dispatch. [L§5.6]
