@@ -71,7 +71,9 @@ Read this with PRODUCT.md, your BUILDPLAN entry and the A§ it cites, before wri
 - A DO replays its update log before serving sync; compacted state is chunked at 1.5 MB (rows cap at 2 MB). After a wake, an empty revocation cache means "unknown": hold frames until the authority answers. [L§4.7]
 - Soft delete never frees DO storage, and DO storage is bound to the Worker name: reuse persistent test docs and budget requests. [L§4.7]
 - Every drizzle `onDelete` must appear in the migration DDL. D1 enforces foreign keys (`PRAGMA defer_foreign_keys=ON` for cleanup). Moss expects seconds, not milliseconds. [L§4.8]
-- better-auth: a request with no `Origin` gets 403 (stamp a same-origin `Origin`); signing up an existing email returns 200 with a fabricated id; sign-out needs a JSON body `{}`; register a social provider only when its id and secret both exist. [L§4.9]
+- better-auth: a request with no `Origin` gets 403 (stamp a same-origin `Origin`); sign-out needs a JSON body `{}`; register a social provider only when its id and secret both exist. With our config (auto sign-in, no verification) signing up an existing email is a 422. [L§4.9]
+- better-auth 1.6.23 checks `Origin` only on requests carrying a cookie or fetch metadata, skips the check entirely under `NODE_ENV=test`, and rate-limits only under `NODE_ENV=production`. So `auth/route.ts` refuses an unsafe auth request without `Origin` (the device flow excepted) and `createAuth` sets the checks and limits explicitly. [T0.4]
+- Unit tests that touch D1 use a real local D1 through Miniflare (`apps/web/src/test/d1.ts`) with the committed `apps/web/drizzle/*.sql` applied. After editing `schema.ts`, run `pnpm --filter web db:generate`; checks fails on a stale `apps/web/drizzle`. [T0.4]
 - The share token rides `?share=` on the WebSocket and every read path; a link role is a ceiling. One roles module, one kick path. [L§4.10]
 
 ## Testing and browsers

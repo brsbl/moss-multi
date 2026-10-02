@@ -19,8 +19,21 @@ export function isLoopbackUrl(url: string | undefined): boolean {
 export type ConfigEnv = Pick<AppEnv, 'BETTER_AUTH_SECRET' | 'BETTER_AUTH_URL' | 'MOSS_TEST_HOOKS'>;
 
 /** Why this env must not serve, or null. Never echoes the secret. */
-// T0.4 tests first: not implemented yet.
-export const configProblem: (env: ConfigEnv) => string | null = () => null;
+export function configProblem(env: ConfigEnv): string | null {
+  const secret = env.BETTER_AUTH_SECRET;
+  if (!secret) return 'BETTER_AUTH_SECRET is missing';
+  if (secret.startsWith(PLACEHOLDER_SECRET)) return 'BETTER_AUTH_SECRET is the placeholder';
+  if (secret.length < MIN_SECRET_LENGTH) return `BETTER_AUTH_SECRET is under ${MIN_SECRET_LENGTH} characters`;
+  try {
+    new URL(env.BETTER_AUTH_URL ?? '');
+  } catch {
+    return 'BETTER_AUTH_URL is missing or not a URL';
+  }
+  if (env.MOSS_TEST_HOOKS === '1' && !isLoopbackUrl(env.BETTER_AUTH_URL)) {
+    return 'MOSS_TEST_HOOKS=1 with a non-loopback BETTER_AUTH_URL';
+  }
+  return null;
+}
 
 /** The response for every request while the env is misconfigured, or null when it may serve. */
 export function refusalFor(env: ConfigEnv): Response | null {
@@ -36,8 +49,10 @@ export function refusalFor(env: ConfigEnv): Response | null {
 export type SocialEnv = Pick<AppEnv, 'GITHUB_CLIENT_ID' | 'GITHUB_CLIENT_SECRET' | 'GOOGLE_CLIENT_ID' | 'GOOGLE_CLIENT_SECRET'>;
 
 /** OAuth providers with both an id and a secret. The server registers, and the login card renders, only these. */
-export function configuredSocialProviders(env: SocialEnv): Record<string, { clientId: string; clientSecret: string }> {
-  const providers: Record<string, { clientId: string; clientSecret: string }> = {};
+type Credentials = { clientId: string; clientSecret: string };
+
+export function configuredSocialProviders(env: SocialEnv): { github?: Credentials; google?: Credentials } {
+  const providers: { github?: Credentials; google?: Credentials } = {};
   if (env.GITHUB_CLIENT_ID && env.GITHUB_CLIENT_SECRET) {
     providers.github = { clientId: env.GITHUB_CLIENT_ID, clientSecret: env.GITHUB_CLIENT_SECRET };
   }

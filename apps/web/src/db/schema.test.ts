@@ -16,21 +16,20 @@ const label = (fk: ForeignKey) => `${fk.table}(${fk.columns}) -> ${fk.refTable}(
 const names = (list: string) => list.split(',').map((s) => s.trim().replace(/^[`"]|[`"]$/g, '')).join(',');
 
 function declaredForeignKeys(): ForeignKey[] {
-  return Object.values(schema)
-    .filter((value): value is SQLiteTable => is(value, SQLiteTable))
-    .flatMap((table) => {
-      const config = getTableConfig(table);
-      return config.foreignKeys.map((fk) => {
-        const ref = fk.reference();
-        return {
-          table: config.name,
-          columns: ref.columns.map((c) => c.name).join(','),
-          refTable: getTableConfig(ref.foreignTable).name,
-          refColumns: ref.foreignColumns.map((c) => c.name).join(','),
-          onDelete: fk.onDelete ?? 'no action',
-        };
-      });
+  const tables = Object.values(schema).filter((value) => is(value, SQLiteTable)) as unknown as SQLiteTable[];
+  return tables.flatMap((table) => {
+    const config = getTableConfig(table);
+    return config.foreignKeys.map((fk) => {
+      const ref = fk.reference();
+      return {
+        table: config.name,
+        columns: ref.columns.map((c) => c.name).join(','),
+        refTable: getTableConfig(ref.foreignTable).name,
+        refColumns: ref.foreignColumns.map((c) => c.name).join(','),
+        onDelete: fk.onDelete ?? 'no action',
+      };
     });
+  });
 }
 
 function parseForeignKeys(table: string, body: string): ForeignKey[] {
