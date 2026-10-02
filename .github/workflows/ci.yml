@@ -1,0 +1,155 @@
+name: CI
+
+# Lanes are decided by scripts/ci/plan.mjs; ci-ok is the one status to require.
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
+  workflow_dispatch:
+    inputs:
+      lane:
+        description: 'auto (grep set: e2e, else full), checks (checks-only lane), e2e, or full'
+        type: choice
+        options: [auto, checks, e2e, full]
+        default: auto
+      grep:
+        description: 'Playwright --grep for the journey run'
+        type: string
+        default: ''
+      browsers:
+        description: 'Journey engines'
+        type: choice
+        options: [both, chromium, webkit]
+        default: both
+      repeat_each:
+        description: 'Playwright --repeat-each (1-10)'
+        type: number
+        default: 1
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  # PRs and branch pushes: newest wins. main: one group per commit. Dispatches never cancel each other.
+  group: ci-${{ github.event_name }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.event.pull_request.number || (github.ref == 'refs/heads/main' && github.sha) || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref != 'refs/heads/main') }}
+
+env:
+  CI: 'true'
+  NO_COLOR: '1'
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      checks: ${{ steps.plan.outputs.checks }}
+      build: ${{ steps.plan.outputs.build }}
+      e2e: ${{ steps.plan.outputs.e2e }}
+      browsers: ${{ steps.plan.outputs.browsers }}
+      grep: ${{ steps.plan.outputs.grep }}
+      repeat: ${{ steps.plan.outputs.repeat }}
+      trace_milestone: ${{ steps.plan.outputs.trace_milestone }}
+      plan: ${{ steps.plan.outputs.plan }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+      - id: plan
+        run: node scripts/ci/plan.mjs >> "$GITHUB_OUTPUT"
+        env:
+          CI_DEGRADED: ${{ vars.CI_DEGRADED }}
+
+  checks:
+    needs: plan
+    if: needs.plan.outputs.checks == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - id: install
+        run: pnpm install --frozen-lockfile
+      # Each check runs even if an earlier one failed, so one run shows every failure.
+      - name: Single version of lexical, @lexical/* and yjs
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: node scripts/ci/single-version.mjs pnpm-lock.yaml
+      - name: Trace
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: node scripts/ci/trace.mjs
+        env:
+          TRACE_MILESTONE: ${{ needs.plan.outputs.trace_milestone }}
+      - name: Typecheck
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: pnpm -r --if-present typecheck
+      - name: Lint
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: pnpm lint
+      - name: Unit tests
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: pnpm test
+
+  build:
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+
+  # Placeholder until T0.9b wires the stack and Playwright. It never passes a requested grep.
+  e2e:
+    needs: [plan, build]
+    if: needs.plan.outputs.e2e == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: ${{ fromJSON(needs.plan.outputs.browsers) }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Journeys
+        env:
+          BROWSER: ${{ matrix.browser }}
+          GREP: ${{ needs.plan.outputs.grep }}
+          REPEAT: ${{ needs.plan.outputs.repeat }}
+        run: |
+          if [ -f e2e/playwright.config.ts ]; then
+            echo "::error::e2e/playwright.config.ts exists but the e2e job is still the T0.1 placeholder; wire it (T0.9b)."
+            exit 1
+          fi
+          if [ -n "$GREP" ]; then
+            echo "::error::No journey suite exists yet, so grep '$GREP' matched nothing."
+            exit 1
+          fi
+          echo "e2e ($BROWSER): no journey suite yet (T0.9b wires this job)." | tee -a "$GITHUB_STEP_SUMMARY"
+
+  ci-ok:
+    if: always()
+    needs: [plan, checks, build, e2e]
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          sparse-checkout: scripts/ci
+      - run: node scripts/ci/plan.mjs ci-ok
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
