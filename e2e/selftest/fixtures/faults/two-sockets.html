@@ -1,0 +1,4 @@
+<!-- Invariant 3: two concurrent sockets to one doc. -->
+<script>
+  window.sockets = [0, 1].map(() => new WebSocket(`ws://${location.host}/parties/doc-d-o/doc-a`));
+</script>

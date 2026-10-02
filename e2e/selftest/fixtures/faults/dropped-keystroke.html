@@ -1,0 +1,15 @@
+<!-- Invariant 7: every third typed character is dropped. -->
+<script>
+  let typed = 0;
+  document.addEventListener('input', (event) => {
+    if (event.inputType !== 'insertText' || !event.target.matches('[data-body-binding]')) return;
+    typed += 1;
+    if (typed % 3 !== 0) return;
+    const selection = getSelection();
+    const node = selection.anchorNode;
+    const offset = selection.anchorOffset;
+    if (!node || node.nodeType !== Node.TEXT_NODE || offset < 1) return;
+    node.data = node.data.slice(0, offset - 1) + node.data.slice(offset);
+    selection.collapse(node, offset - 1);
+  });
+</script>

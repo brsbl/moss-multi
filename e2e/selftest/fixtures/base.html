@@ -1,0 +1,80 @@
+<!doctype html>
+<!-- The clean fixture: a static stand-in for the moss shell that satisfies every invariant. Each faults/<name>.html
+     is spliced in at the fault marker and violates exactly one. -->
+<html lang="en" data-client-build="selftest:client0" data-app-state="ready">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="moss-build" content="selftest:bundle0" />
+    <link rel="icon" href="data:," />
+    <title>selftest</title>
+    <style>
+      body { margin: 0; display: flex; height: 100vh; font: 15px/1.5 sans-serif; }
+      aside { width: 220px; flex-shrink: 0; border-right: 1px solid #ddd; padding: 8px; }
+      main { display: flex; flex: 1; min-width: 0; flex-direction: column; }
+      [data-editor-pane] { display: flex; flex: 1; min-height: 0; flex-direction: column; }
+      [data-top-bar] { display: flex; height: 44px; align-items: center; gap: 8px; padding: 0 12px; border-bottom: 1px solid #eee; }
+      [data-editor-canvas] { flex: 1; overflow: auto; padding: 24px 48px; }
+      [data-sidebar-row] { padding: 4px 6px; }
+      .title { min-height: 1.3em; font-size: 28px; font-weight: 600; outline: none; }
+      .body { min-height: 240px; outline: none; }
+    </style>
+  </head>
+  <body>
+    <aside>
+      <div class="panel-header"><button type="button" aria-label="Create new note">+</button></div>
+      <div id="rows"><div data-sidebar-row data-doc-id="doc-a" data-active="true">First note</div></div>
+    </aside>
+    <main id="main"></main>
+    <template id="pane">
+      <div data-editor-pane data-doc-state="binding" data-role="owner" data-sync-unacked="0">
+        <div data-top-bar><span data-collab-chrome data-presence-pile></span></div>
+        <div data-editor-canvas>
+          <div class="title" role="textbox" data-title-binding="unbound" contenteditable="false"></div>
+          <div class="body" role="textbox" data-body-binding="unbound" contenteditable="false" data-lexical-editor="true"><p></p></div>
+        </div>
+      </div>
+    </template>
+    <script>
+      // Mirrors the product's contract: nothing is editable until bound, then title, Enter, body.
+      let generation = 0;
+      function mountPane(docId, title, body) {
+        const pane = document.getElementById('pane').content.firstElementChild.cloneNode(true);
+        pane.setAttribute('data-doc-id', docId);
+        pane.querySelector('.title').textContent = title;
+        pane.querySelector('.body p').textContent = body;
+        pane.querySelector('.body').setAttribute('data-editor-generation', String((generation += 1)));
+        document.getElementById('main').replaceChildren(pane);
+        return pane;
+      }
+      function bind(pane) {
+        for (const field of pane.querySelectorAll('[data-title-binding], [data-body-binding]')) {
+          field.setAttribute(field.hasAttribute('data-title-binding') ? 'data-title-binding' : 'data-body-binding', 'live');
+          field.setAttribute('contenteditable', 'true');
+        }
+        pane.setAttribute('data-doc-state', 'live');
+        const title = pane.querySelector('.title');
+        title.addEventListener('keydown', (event) => {
+          if (event.key !== 'Enter') return;
+          event.preventDefault();
+          pane.querySelector('.body').focus();
+        });
+      }
+      bind(mountPane('doc-a', 'First note', 'Hello'));
+      document.querySelector('[aria-label="Create new note"]').addEventListener('click', (event) => {
+        event.currentTarget.blur();
+        const docId = `doc-${Date.now().toString(36)}`;
+        const row = document.createElement('div');
+        row.setAttribute('data-sidebar-row', '');
+        row.setAttribute('data-doc-id', docId);
+        row.textContent = 'Untitled';
+        document.getElementById('rows').append(row);
+        const pane = mountPane(docId, '', '');
+        setTimeout(() => {
+          bind(pane);
+          pane.querySelector('.title').focus();
+        }, 300);
+      });
+    </script>
+    <!--fault-->
+  </body>
+</html>

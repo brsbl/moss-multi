@@ -1,0 +1,11 @@
+<!-- Invariant 4: the bound editor is replaced by a fresh element, with or without a generation bump. -->
+<script>
+  window.remount = ({ bump }) => {
+    const old = document.querySelector('[data-body-binding]');
+    const fresh = document.createElement('div');
+    for (const { name, value } of old.attributes) if (!name.startsWith('data-e2e-')) fresh.setAttribute(name, value);
+    if (bump) fresh.setAttribute('data-editor-generation', String(Number(old.getAttribute('data-editor-generation')) + 1));
+    fresh.innerHTML = old.innerHTML;
+    old.replaceWith(fresh);
+  };
+</script>

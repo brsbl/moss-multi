@@ -1,0 +1,6 @@
+<!-- Invariant 1: an uncaught page error. -->
+<script>
+  setTimeout(() => {
+    throw new Error('selftest: uncaught page error');
+  });
+</script>
