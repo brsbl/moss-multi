@@ -1,10 +1,12 @@
 // The rest of e2e/lib proven able to fail: exact-bytes helpers, the allowlist expiry, the principal guard
-// (invariant 8), the hibernation proof, infra classification, phase-clock budgets, the sever and the UI verbs.
+// (invariant 8), the hibernation proof, infra classification, phase-clock budgets and percentiles, the shard guard,
+// the sever and the UI verbs.
 import { ALLOWLIST, expiredEntries, isAllowed, type AllowEntry } from '../lib/allowlist.ts';
 import { inductionProblems } from '../lib/hibernate.ts';
 import { classifyInfra, InfraBlocked, isInfraBlocked } from '../lib/infra.ts';
-import { budgetProblem, Measure } from '../lib/measure.ts';
+import { budgetProblem, latencyRows, Measure, percentile } from '../lib/measure.ts';
 import { assertTestEmail, parseSetCookie, principalProblems } from '../lib/principals.ts';
+import { emptyShardProblem } from '../lib/reporter.ts';
 import { makeSeverable } from '../lib/sever.ts';
 import { typedProblems, type Typed } from '../lib/text.ts';
 import * as ui from '../lib/ui.ts';
@@ -112,6 +114,38 @@ test.describe('phase clocks', () => {
     await actor.page.getByRole('button', { name: 'Create new note' }).click();
     const ms = await measure.until('bind', () => actor.page.locator('[data-doc-state="live"]').isVisible(), { budgetMs: 5_000 });
     expect(ms).toBeGreaterThanOrEqual(200);
+  });
+});
+
+test.describe('percentiles (the p95 headroom table)', () => {
+  test('nearest-rank percentiles', () => {
+    expect(percentile([5, 1, 4, 2, 3], 50)).toBe(3);
+    expect(percentile([5, 1, 4, 2, 3], 95)).toBe(5);
+    expect(percentile(Array.from({ length: 20 }, (_, i) => i + 1), 95)).toBe(19);
+    expect(percentile([7], 95)).toBe(7);
+    expect(percentile([], 95)).toBeNull();
+  });
+  test('rows per latency and engine, with headroom as budget over p95', () => {
+    const sample = (project: string, name: string, ms: number, budgetMs: number | null = null) => ({ project, name, ms, budgetMs });
+    expect(latencyRows([
+      sample('webkit', 'peer text', 500, 2_000),
+      sample('chromium', 'peer text', 400, 2_000),
+      sample('chromium', 'peer text', 800, 2_000),
+      sample('chromium', 'theme switch', 30),
+    ])).toEqual([
+      { name: 'peer text', project: 'chromium', n: 2, p50: 400, p95: 800, max: 800, budgetMs: 2_000, headroom: 2.5 },
+      { name: 'peer text', project: 'webkit', n: 1, p50: 500, p95: 500, max: 500, budgetMs: 2_000, headroom: 4 },
+      { name: 'theme switch', project: 'chromium', n: 1, p50: 30, p95: 30, max: 30, budgetMs: null, headroom: null },
+    ]);
+  });
+});
+
+test.describe('shard guard', () => {
+  test('a journey-group shard that plans no journey fails; the whole-suite shard may run only selftests', () => {
+    expect(emptyShardProblem('shell', 0)).toMatch(/shell/);
+    expect(emptyShardProblem('shell', 3)).toBeNull();
+    expect(emptyShardProblem('all', 0)).toBeNull();
+    expect(emptyShardProblem(undefined, 0)).toBeNull();
   });
 });
 

@@ -46,3 +46,20 @@ export class Measure {
 export function budgetProblem({ name, ms, budgetMs }: Latency): string | null {
   return budgetMs !== null && ms > budgetMs ? `${name}: ${ms} ms is over its ${budgetMs} ms budget` : null;
 }
+
+export interface LatencySample { project: string; name: string; ms: number; budgetMs: number | null }
+
+export interface LatencyRow { name: string; project: string; n: number; p50: number; p95: number; max: number; budgetMs: number | null; headroom: number | null }
+
+/** T0.9b tests first: not implemented yet. */
+export function percentile(values: number[], p: number): number | null {
+  void values;
+  void p;
+  return null;
+}
+
+/** T0.9b tests first: not implemented yet. */
+export function latencyRows(samples: LatencySample[]): LatencyRow[] {
+  void samples;
+  return [];
+}

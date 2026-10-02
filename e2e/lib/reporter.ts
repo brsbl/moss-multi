@@ -18,6 +18,13 @@ interface Row {
 
 const SLOW_MS = 90_000;
 
+/** T0.9b tests first: not implemented yet. */
+export function emptyShardProblem(group: string | undefined, planned: number): string | null {
+  void group;
+  void planned;
+  return null;
+}
+
 export default class MossReporter implements Reporter {
   private rows: Row[] = [];
   private browsers = new Map<string, string>();
