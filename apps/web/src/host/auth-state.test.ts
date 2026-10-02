@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import { asSessionAnswer, createAuthStore, refusalMessage, safeNext, SIGN_OUT_PATH, type AuthDeps, type AuthState } from './auth-state.ts';
+import {
+  asSessionAnswer, createAuthStore, LOOKUP_TIMEOUT_MS, refusalMessage, RETRY_MS, safeNext, SIGN_OUT_PATH, type AuthDeps, type AuthState,
+} from './auth-state.ts';
 
 const ADA = { id: 'u1', name: 'Ada', email: 'ada@example.invalid' };
 
@@ -15,7 +17,8 @@ function store(lookups: unknown[], respond: (path: string, init?: RequestInit) =
     fetch,
     leave: vi.fn(),
     setAppState: vi.fn(),
-    sleep: vi.fn(async () => undefined),
+    // Backoff waits end at once; a lookup's timeout ends only when woken, so a quick answer always beats it.
+    sleep: vi.fn(async (ms: number, wake: Promise<void>) => (ms === LOOKUP_TIMEOUT_MS ? wake : undefined)),
   };
   const auth = createAuthStore(deps);
   const seen: AuthState['status'][] = [];
@@ -30,7 +33,8 @@ describe('the auth store (the single auth-state writer)', () => {
     expect(deps.lookup).toHaveBeenCalledTimes(4);
     expect(seen).toEqual(['degraded', 'degraded', 'degraded', 'signed-in']);
     expect(vi.mocked(deps.setAppState).mock.calls).toEqual([['degraded'], ['degraded'], ['degraded'], ['booting']]);
-    expect(vi.mocked(deps.sleep!).mock.calls.map(([ms]) => ms)).toEqual([1_000, 2_000, 4_000]);
+    const backoff = vi.mocked(deps.sleep!).mock.calls.map(([ms]) => ms).filter((ms) => ms !== LOOKUP_TIMEOUT_MS);
+    expect(backoff).toEqual([1_000, 2_000, 4_000]);
   });
 
   it('asks again at once on retryNow instead of waiting out the backoff', async () => {
@@ -45,6 +49,48 @@ describe('the auth store (the single auth-state writer)', () => {
     const raced = await Promise.race([resolved, new Promise((done) => setTimeout(() => done('still waiting'), 250))]);
     expect(raced).toEqual(ADA);
     expect(lookup).toHaveBeenCalledTimes(2);
+  });
+
+  it('counts a lookup that never answers as failed after the timeout, asks again, and takes a late answer', async () => {
+    let answerLate: (value: unknown) => void = () => undefined;
+    const hanging = [new Promise((done) => (answerLate = done))];
+    const lookup = vi.fn(() => hanging.shift() ?? new Promise(() => undefined));
+    const timers: { ms: number; fire: () => void }[] = [];
+    const sleep = vi.fn((ms: number, wake: Promise<void>) => new Promise<void>((fire) => {
+      timers.push({ ms, fire });
+      void wake.then(() => fire());
+    }));
+    const setAppState = vi.fn();
+    const auth = createAuthStore({ lookup, fetch: vi.fn<typeof globalThis.fetch>(), leave: vi.fn(), setAppState, sleep });
+    const resolved = auth.resolve();
+
+    await vi.waitFor(() => expect(timers.map((t) => t.ms), 'the first lookup is timed').toEqual([LOOKUP_TIMEOUT_MS]));
+    expect(auth.get().status, 'nothing is decided while it is pending').toBe('unknown');
+    timers[0].fire();
+    await vi.waitFor(() => expect(auth.get().status, 'a lookup that never answers degrades in place').toBe('degraded'));
+    expect(setAppState).toHaveBeenLastCalledWith('degraded');
+
+    await vi.waitFor(() => expect(timers.map((t) => t.ms)).toEqual([LOOKUP_TIMEOUT_MS, RETRY_MS[0]]));
+    timers[1].fire();
+    await vi.waitFor(() => expect(lookup, 'then asks again with a new request').toHaveBeenCalledTimes(2));
+
+    answerLate({ kind: 'signed-in', user: ADA });
+    await expect(resolved, 'the abandoned lookup still answers for this boot').resolves.toEqual(ADA);
+    expect(auth.get()).toEqual({ status: 'signed-in', user: ADA });
+  });
+
+  it('asks again at once on retryNow while a lookup is still waiting for its answer', async () => {
+    const answers: Promise<unknown>[] = [Promise.resolve({ kind: 'unavailable' }), new Promise(() => undefined)];
+    const lookup = vi.fn(() => answers.shift() ?? Promise.resolve({ kind: 'signed-in', user: ADA }));
+    const sleep = vi.fn(async (ms: number, wake: Promise<void>) => (ms === LOOKUP_TIMEOUT_MS ? wake : undefined));
+    const auth = createAuthStore({ lookup, fetch: vi.fn<typeof globalThis.fetch>(), leave: vi.fn(), setAppState: vi.fn(), sleep });
+    const resolved = auth.resolve();
+    await vi.waitFor(() => expect(lookup, 'the second lookup is in flight').toHaveBeenCalledTimes(2));
+    expect(auth.get().status).toBe('degraded');
+    auth.retryNow();
+    const raced = await Promise.race([resolved, new Promise((done) => setTimeout(() => done('still waiting'), 250))]);
+    expect(raced, 'Try again does not wait on the hung lookup').toEqual(ADA);
+    expect(lookup).toHaveBeenCalledTimes(3);
   });
 
   it('says signed out only when the server says so', async () => {

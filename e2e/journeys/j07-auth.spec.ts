@@ -1,8 +1,9 @@
 // j07-auth (T0.10): email and password on the moss-styled login card. Sign-up lands in the Home vault shell,
 // sign-out from Settings goes to the card, sign-in returns to the doc `next` names, a wrong password says so, no
-// OAuth button renders, the card works at both Tier A widths, and a failed session lookup degrades in place (R10).
+// OAuth button renders, the card works at both Tier A widths, and a session lookup that fails or hangs degrades in
+// place (R10).
 import { randomBytes } from 'node:crypto';
-import type { Page } from '@playwright/test';
+import type { Page, Request, Route } from '@playwright/test';
 import type { Actor } from '../lib/actors.ts';
 import { APP_STATE_ATTR } from '../lib/contract.ts';
 import { expect, test, ui } from '../lib/test.ts';
@@ -202,6 +203,55 @@ test('a failed session lookup shows data-app-state=degraded and retries in place
   await tryAgain.click();
   await waitForShell(ada);
   expect(new URL(ada.page.url()).pathname, 'the retry boots the same doc').toBe(path);
+  expect([...new Set(navigations.map((url) => new URL(url).pathname))], 'every commit stayed on the doc: never redirected').toEqual([path]);
+  await waitForShell(ben);
+});
+
+test('a session lookup that never answers degrades in place, asks again and boots the same doc @p:R10', async ({ actors }) => {
+  const ben = await actors.open(await actors.principal('ben'));
+  const ada = await actors.session(await actors.principal('ada'));
+  await actors.requireDistinct(2);
+
+  // The first lookup hangs (a stalled Worker or D1 read). Later ones fail until the leg lets them through, and the
+  // hung one is answered last with a stale "signed out" that must not undo the boot.
+  let hung: Route | null = null;
+  let failing = true;
+  let asked = 0;
+  await ada.page.route(SERVER_FNS, async (route) => {
+    asked += 1;
+    if (!hung) {
+      hung = route;
+      return;
+    }
+    if (failing) await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ kind: 'unavailable' }) });
+    else await route.continue();
+  });
+  const navigations = recordNavigations(ada.page);
+  const path = docPath();
+  await ada.goto(path);
+
+  const html = ada.page.locator('html');
+  await expect(html, 'a lookup that never answers degrades the app').toHaveAttribute(APP_STATE_ATTR, 'degraded', { timeout: BOOT_TIMEOUT });
+  await expect(ada.page.getByRole('status'), 'and says so').toContainText(/can.t reach/i);
+  await expect
+    .poll(() => asked, { message: 'it asks again with a new request while the first still hangs', timeout: BOOT_TIMEOUT })
+    .toBeGreaterThanOrEqual(2);
+  expect(new URL(ada.page.url()).pathname, 'no bounce to /login while degraded').toBe(path);
+
+  failing = false;
+  await ada.page.getByRole('status').getByRole('button', { name: 'Try again', exact: true }).click();
+  await waitForShell(ada);
+  expect(new URL(ada.page.url()).pathname, 'the retry boots the same doc').toBe(path);
+
+  const stale = hung as Route | null;
+  if (!stale) throw new Error('the first lookup was never held');
+  const request: Request = stale.request();
+  const finished = ada.page.waitForEvent('requestfinished', { predicate: (r) => r === request, timeout: 10_000 });
+  await stale.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ kind: 'signed-out' }) });
+  await finished;
+  await ada.page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
+  await expect(html, 'the stale answer changes nothing').toHaveAttribute(APP_STATE_ATTR, 'ready');
+  expect(new URL(ada.page.url()).pathname).toBe(path);
   expect([...new Set(navigations.map((url) => new URL(url).pathname))], 'every commit stayed on the doc: never redirected').toEqual([path]);
   await waitForShell(ben);
 });

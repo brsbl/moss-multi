@@ -44,6 +44,9 @@ export interface AuthDeps {
 /** Waits between failed lookups: 1 s, 2 s, 4 s, 8 s, then every 15 s. */
 export const RETRY_MS = [1_000, 2_000, 4_000, 8_000, 15_000];
 
+/** A lookup with no answer after this long counts as failed. */
+export const LOOKUP_TIMEOUT_MS = 10_000;
+
 export const SIGN_IN_PATH = '/api/auth/sign-in/email';
 export const SIGN_UP_PATH = '/api/auth/sign-up/email';
 export const SIGN_OUT_PATH = '/api/auth/sign-out';
