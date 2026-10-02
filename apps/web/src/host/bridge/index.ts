@@ -1,6 +1,10 @@
 // The web window.electronAPI (A§9), installed whole before moss's App module evaluates: every namespace and
-// subscription exists, because moss calls some unconditionally. At T0.5a only the workspace listing is real
-// (GET /api/workspace); T0.5b adds the inventory, the hide registry and the rest of the A§9 table.
+// subscription exists, because moss calls some unconditionally. inventory.ts says how each method is treated;
+// a staged method is minimally real until its milestone, and its entry points are hidden through the registry.
+import {
+  buildCopyNoteLinkClipboardData,
+  buildMossNoteLinkClipboardHtml,
+} from '@moss-desktop/renderer/editor/utils/note-link-clipboard';
 
 /** moss's NoteMetadataRecord: timestamps in seconds, folders as `Notes/...` paths. */
 export interface NoteMetadata {
@@ -11,43 +15,87 @@ export interface NoteMetadata {
   folderPath: string;
   lastOpenedAt: number | null;
   trashedAt: number | null;
+  pinned?: boolean;
+  pinnedAt?: number | null;
 }
 
-/** `GET /api/workspace`: the active vault and its docs, timestamps in epoch ms (A§6). */
+/** A doc as the API returns it (A§6): timestamps in epoch ms. */
+export interface ApiDoc {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** `GET /api/workspace`: the active vault and its docs. */
 export interface WorkspaceListing {
   vault: { id: string; name: string };
-  docs: { id: string; title: string; createdAt: number; updatedAt: number }[];
+  docs: ApiDoc[];
+}
+
+/** The browser behind the bridge; injected in unit tests. */
+export interface BrowserHooks {
+  origin: string;
+  open(url: string): void;
+  replacePath(path: string): void;
+  onPopState(listener: () => void): () => void;
+  copy(text: string, html: string): Promise<void>;
 }
 
 export interface BridgeOptions {
   /** The current path; `/d/$docId` names moss's window-context startup note (A§4.2). */
   pathname: () => string;
   fetch?: typeof fetch;
-  storage?: Pick<Storage, 'getItem' | 'setItem'> | null;
+  storage?: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> | null;
+  browser?: BrowserHooks;
+}
+
+type ThemeChoice = 'system' | 'light' | 'dark';
+type Listener<T extends unknown[]> = (...args: T) => void;
+
+interface UpdateInput {
+  title?: string;
+  content?: string;
+  pinned?: boolean;
+  pinnedAt?: number | null;
+  layoutMetadata?: unknown;
+  collapsedHeadings?: string[];
+  [field: string]: unknown;
 }
 
 const ROOT_FOLDER = 'Notes';
+/** moss's display name for a note with no title; never authored into the doc (A§5.1 seed). */
+const UNTITLED = 'Untitled';
 const THEME_KEY = 'moss_theme';
-type ThemeChoice = 'system' | 'light' | 'dark';
+const PINS_KEY = 'moss-multi:pins';
+const NOTE_INTELLIGENCE_KEY = 'moss-multi:note-intelligence';
+const layoutKey = (id: string) => `moss-multi:layout:${id}`;
+const collapsedKey = (id: string) => `moss-multi:collapsed-headings:${id}`;
+
+type Method<R> = (...args: unknown[]) => Promise<R>;
 
 const seconds = (ms: number) => Math.floor(ms / 1000);
 const noop = () => undefined;
-const unsubscribe = () => noop;
-const none = async () => undefined;
-const empty = async () => [];
-const unavailable = (what: string) => async () => {
-  throw new Error(`${what} is not available on the web yet`);
+/** A subscription that never fires; it must still return an unsubscriber. */
+const silent: (callback?: unknown) => () => void = () => noop;
+const none: Method<void> = async () => undefined;
+const empty: Method<never[]> = async () => [];
+const nothing: Method<null> = async () => null;
+const refuse = (what: string): Method<never> => async () => {
+  throw new Error(`moss-multi: ${what}`);
 };
+const later = (what: string, milestone: number) => refuse(`${what} is not available on the web until M${milestone}`);
+const unavailable = (what: string) => refuse(`${what} is not available on the web`);
 
 export function docIdFromPath(pathname: string): string | null {
   const match = /^\/d\/([^/]+)\/?$/.exec(pathname);
   return match ? decodeURIComponent(match[1]) : null;
 }
 
-export function toNoteMetadata(doc: WorkspaceListing['docs'][number]): NoteMetadata {
+export function toNoteMetadata(doc: ApiDoc): NoteMetadata {
   return {
     id: doc.id,
-    title: doc.title,
+    title: doc.title.trim() ? doc.title : UNTITLED,
     createdAt: seconds(doc.createdAt),
     updatedAt: seconds(doc.updatedAt),
     folderPath: ROOT_FOLDER,
@@ -56,24 +104,68 @@ export function toNoteMetadata(doc: WorkspaceListing['docs'][number]): NoteMetad
   };
 }
 
-export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis), storage = null }: BridgeOptions) {
+function readJson<T>(storage: BridgeOptions['storage'], key: string): T | undefined {
+  try {
+    const raw = storage?.getItem(key);
+    return raw ? (JSON.parse(raw) as T) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function writeJson(storage: BridgeOptions['storage'], key: string, value: unknown): void {
+  if (value === undefined || value === null) storage?.removeItem(key);
+  else storage?.setItem(key, JSON.stringify(value));
+}
+
+const inertBrowser: BrowserHooks = {
+  origin: 'http://localhost',
+  open: noop,
+  replacePath: noop,
+  onPopState: () => noop,
+  copy: async () => undefined,
+};
+
+export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis), storage = null, browser = inertBrowser }: BridgeOptions) {
+  const request = (path: string, init: RequestInit = {}) =>
+    fetcher(path, { credentials: 'same-origin', ...init, headers: { accept: 'application/json', ...init.headers } });
+
+  // Every doc this tab has seen, from the listing or from a create; the listing promise is the boot read.
+  const known = new Map<string, NoteMetadata>();
   let listing: Promise<NoteMetadata[]> | null = null;
+  const pins = () => readJson<Record<string, number>>(storage, PINS_KEY) ?? {};
+  const withLocal = (note: NoteMetadata): NoteMetadata => {
+    const pinnedAt = pins()[note.id];
+    return pinnedAt ? { ...note, pinned: true, pinnedAt } : note;
+  };
   const notes = () => {
-    listing ??= fetcher('/api/workspace', { credentials: 'same-origin', headers: { accept: 'application/json' } }).then(async (response) => {
+    listing ??= request('/api/workspace').then(async (response) => {
       if (!response.ok) throw new Error(`GET /api/workspace: ${response.status}`);
-      return ((await response.json()) as WorkspaceListing).docs.map(toNoteMetadata);
+      const docs = ((await response.json()) as WorkspaceListing).docs.map(toNoteMetadata);
+      for (const doc of docs) known.set(doc.id, doc);
+      return docs;
     });
     // A failed read is retried on the next call rather than cached.
     listing.catch(() => {
       listing = null;
     });
-    return listing;
+    return listing.then((docs) => docs.map(withLocal));
   };
-  const byId = async (id: string) => (await notes()).find((note) => note.id === id);
+  const byId = async (id: string): Promise<NoteMetadata | undefined> => {
+    if (!known.has(id)) await notes();
+    const note = known.get(id);
+    return note && withLocal(note);
+  };
+  const record = (note: NoteMetadata) => ({
+    ...note,
+    stickyTabs: [],
+    collapsedHeadings: readJson<string[]>(storage, collapsedKey(note.id)),
+  });
   const theme = (): ThemeChoice => {
     const stored = storage?.getItem(THEME_KEY);
     return stored === 'light' || stored === 'dark' ? stored : 'system';
   };
+  const docUrl = (id: string) => new URL(`/d/${encodeURIComponent(id)}`, browser.origin).href;
 
   return {
     notes: {
@@ -81,67 +173,139 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
       getMetadataByIds: async (ids: string[]) => (await notes()).filter((note) => ids.includes(note.id)),
       getById: async (id: string) => {
         const note = await byId(id);
-        return note ? { ...note, content: '', stickyTabs: [] } : undefined;
+        // A doc that will bind gets no content from REST: the binding fills it (A§9).
+        return note ? { ...record(note), content: '', layoutMetadata: readJson(storage, layoutKey(id)) } : undefined;
       },
       getContent: async (id: string) => ((await byId(id)) ? { id, content: '', version: 1 } : undefined),
+      getFrontmatterSuggestions: async () => ({}),
       getHeadings: empty,
-      create: unavailable('Creating a note'),
-      update: async (id: string) => {
-        const note = await byId(id);
-        return note ? { ...note, stickyTabs: [] } : undefined;
+      create: async (title: string, folderPath: string = ROOT_FOLDER) => {
+        // Folders land in M2; until then every note lives at the vault root.
+        if (folderPath !== ROOT_FOLDER) throw new Error('moss-multi: folders are not available on the web until M2');
+        // "Untitled" is moss's placeholder name; the doc's title starts empty (A§5.1).
+        const body = title.trim() && title.trim() !== UNTITLED ? { title: title.trim() } : {};
+        const response = await request('/api/docs', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!response.ok) throw new Error(`POST /api/docs: ${response.status}`);
+        const note = toNoteMetadata(((await response.json()) as { doc: ApiDoc }).doc);
+        known.set(note.id, note);
+        listing = null;
+        return { ...record(note), content: '' };
       },
-      delete: async () => false,
-      restore: none,
-      search: empty,
+      update: async (id: string, input: UpdateInput = {}) => {
+        // Content reaches a doc only through its binding or a server merge; the bridge has no path that could
+        // wipe one (P:Tech; L§4.6 D-F3).
+        if ('content' in input) throw new Error(`moss-multi: a content write through the bridge is refused for ${id}`);
+        if ('title' in input) throw new Error('moss-multi: renaming a note is not available on the web until M1');
+        const note = await byId(id);
+        if (!note) return undefined;
+        if ('pinned' in input || 'pinnedAt' in input) {
+          const next = pins();
+          if (input.pinned === false) delete next[id];
+          else next[id] = input.pinnedAt ?? seconds(Date.now());
+          writeJson(storage, PINS_KEY, Object.keys(next).length > 0 ? next : null);
+        }
+        if ('layoutMetadata' in input) writeJson(storage, layoutKey(id), input.layoutMetadata);
+        if ('collapsedHeadings' in input) writeJson(storage, collapsedKey(id), input.collapsedHeadings);
+        return record(withLocal(note));
+      },
+      delete: later('Trash', 2),
+      restore: later('Restoring from Trash', 2),
+      search: async ({ query, limit, searchTrashed }: { query: string; limit?: number; searchTrashed?: boolean }) => {
+        // Title matches over the listing until search lands in M3.
+        const needle = query.trim().toLowerCase();
+        if (searchTrashed || !needle) return [];
+        return (await notes())
+          .filter((note) => note.title.toLowerCase().includes(needle))
+          .slice(0, limit ?? 50)
+          .map((note) => ({ id: note.id, title: note.title, folderPath: note.folderPath, updatedAt: note.updatedAt, matchType: 'title' as const }));
+      },
+      getFilesystemPath: async (id: string) => docUrl(id),
+      setOpenFileWatchTargets: none,
+      copyLinkToClipboard: async (id: string, input: { noteTitle?: string } = {}) => {
+        const note = await byId(id);
+        const { payload } = buildCopyNoteLinkClipboardData({ noteId: id, noteTitle: input.noteTitle ?? note?.title ?? '', folderPath: ROOT_FOLDER });
+        try {
+          await browser.copy(docUrl(id), buildMossNoteLinkClipboardHtml(payload));
+          return true;
+        } catch {
+          return false;
+        }
+      },
       showInFinder: none,
-      onExternalFileOpen: unsubscribe,
-      onInternalFileOpen: unsubscribe,
-      onDiskChange: unsubscribe,
-      onMetadataReindexed: unsubscribe,
-      onRequestFlush: unsubscribe,
+      getPdfExportSession: nothing,
+      createPdfExportSession: nothing,
+      openPdfExportPreview: nothing,
+      openPdfExportRenderSurface: nothing,
+      exportPdf: unavailable('Exporting a PDF file'),
+      exportMarkdown: async () => ({ canceled: true }),
+      onExternalFileOpen: silent,
+      onInternalFileOpen: (callback?: Listener<[string]>) =>
+        browser.onPopState(() => {
+          const id = docIdFromPath(pathname());
+          if (id && callback) callback(id);
+        }),
+      onDiskChange: silent,
+      onMetadataReindexed: silent,
+      onRequestFlush: silent,
       flushComplete: none,
     },
     folders: {
       list: empty,
-      create: unavailable('Creating a folder'),
-      rename: unavailable('Renaming a folder'),
-      delete: async () => false,
-      moveNotes: empty,
-      moveFolder: unavailable('Moving a folder'),
+      create: later('Folders', 2),
+      rename: later('Folders', 2),
+      delete: later('Folders', 2),
+      moveNotes: later('Moving notes into folders', 2),
+      moveFolder: later('Folders', 2),
       showInFinder: none,
     },
     agent: {
       execute: unavailable('The agent'),
       cancel: none,
       cancelByTabId: none,
-      onStream: unsubscribe,
+      onStream: silent,
     },
     chat: { getMessages: empty },
     checkpoints: { getAll: empty },
     files: { search: empty, listDirectory: empty, open: empty },
     images: {
-      save: unavailable('Image upload'),
-      pick: empty,
-      persistUrl: unavailable('Saving a remote image'),
-      copyFromPath: unavailable('Copying a local image'),
-      copyFromNoteAsset: unavailable('Copying an image'),
+      save: later('Uploading media', 3),
+      pick: later('Uploading media', 3),
+      persistUrl: later('Saving a remote image', 3),
+      copyFromPath: unavailable('Copying a local file'),
+      copyFromNoteAsset: later('Copying media between notes', 3),
     },
-    htmlPreview: { ensure: async () => null, onMaterialized: unsubscribe, onFailed: unsubscribe },
-    videoThumbnail: { ensure: async () => null, onMaterialized: unsubscribe },
+    htmlPreview: { ensure: nothing, onMaterialized: silent, onFailed: silent },
+    webEmbedPreview: { ensure: nothing, subscribe: silent },
+    videoThumbnail: { ensure: nothing, onMaterialized: silent },
     system: {
       showEmojiPanel: none,
-      getMediaServerInfo: async () => null,
+      getMediaServerInfo: nothing,
       getGlobalShortcut: async () => ({ quickCapture: '', enabled: false }),
       setGlobalShortcut: async () => false,
       setGlobalShortcutEnabled: none,
-      createWindow: async () => ({ action: 'created' as const, windowId: 1 }),
+      setImageAltTextMenuEnabled: none,
+      // Open in New Window is a browser tab (R4).
+      createWindow: async (input: { noteId?: string | null } = {}) => {
+        browser.open(input.noteId ? docUrl(input.noteId) : new URL('/', browser.origin).href);
+        return { action: 'created' as const, windowId: -1 };
+      },
       getWindowContext: async () => ({ windowId: 1, initialNoteId: docIdFromPath(pathname()), launchReason: 'initial-launch' as const, openedFromWindowId: null }),
-      setFocusedNoteId: none,
+      // The address follows the focused note, so a reload or a copied URL reopens it (A§4.2).
+      setFocusedNoteId: async (id: string | null) => {
+        if (id && docIdFromPath(pathname()) !== id) browser.replacePath(`/d/${encodeURIComponent(id)}`);
+      },
       startWindowDrag: none,
       moveWindowDrag: none,
       endWindowDrag: none,
-      onGlobalShortcutActivated: unsubscribe,
-      waitForReady: none,
+      onGlobalShortcutActivated: silent,
+      onNativeMenuCommand: silent,
+      waitForReady: async () => {
+        await notes().catch(() => undefined);
+      },
     },
     filesystem: {
       openFolderDialog: empty,
@@ -151,13 +315,23 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
       readFile: unavailable('Reading a local file'),
     },
     grantedDirs: { list: empty, grant: empty, revoke: empty },
-    externalNotes: { close: async () => false, closeByRoot: empty, resolveLink: async () => null },
-    update: { install: none, onReady: unsubscribe },
-    analytics: { capture: none },
+    externalNotes: { close: async () => false, closeByRoot: empty, resolveLink: nothing },
+    update: { install: none, onReady: silent },
+    analytics: {
+      capture: async (event: string, properties: Record<string, unknown> = {}) => {
+        if (event !== 'feedback_submitted') return;
+        const response = await request('/api/feedback', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ body: properties.feedback_text, email: properties.email, page: pathname() }),
+        });
+        if (!response.ok) throw new Error(`POST /api/feedback: ${response.status}`);
+      },
+    },
     shell: { revealPath: none },
     settings: {
-      getNoteIntelligence: async () => true,
-      setNoteIntelligence: none,
+      getNoteIntelligence: async () => storage?.getItem(NOTE_INTELLIGENCE_KEY) !== 'false',
+      setNoteIntelligence: async (enabled: boolean) => storage?.setItem(NOTE_INTELLIGENCE_KEY, String(enabled)),
       getTheme: async () => theme(),
       setTheme: async (choice: ThemeChoice) => storage?.setItem(THEME_KEY, choice),
       isDefaultMdEditor: async () => true,
@@ -168,7 +342,7 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
     appConfig: {
       getWorkspacePath: async () => ({ path: null, envOverride: false, effectivePath: '' }),
       setWorkspacePath: async () => ({ success: false, error: 'not available on the web' }),
-      pickWorkspaceFolder: async () => null,
+      pickWorkspaceFolder: nothing,
       restartApp: none,
     },
   };
@@ -184,9 +358,30 @@ function localStorageOrNull(): Storage | null {
   }
 }
 
+function windowBrowser(): BrowserHooks {
+  return {
+    origin: window.location.origin,
+    open: (url) => {
+      window.open(url, '_blank', 'noopener');
+    },
+    // Keep the router's history state; moss keeps its own back and forward (A§9 navigation).
+    replacePath: (path) => window.history.replaceState(window.history.state, '', path),
+    onPopState: (listener) => {
+      window.addEventListener('popstate', listener);
+      return () => window.removeEventListener('popstate', listener);
+    },
+    copy: async (text, html) => {
+      if (typeof ClipboardItem === 'undefined' || !navigator.clipboard?.write) return navigator.clipboard.writeText(text);
+      await navigator.clipboard.write([
+        new ClipboardItem({ 'text/plain': new Blob([text], { type: 'text/plain' }), 'text/html': new Blob([html], { type: 'text/html' }) }),
+      ]);
+    },
+  };
+}
+
 /** Installs the bridge on `window` before App's module evaluates (A§4.3). */
 export function installBridge(): Bridge {
-  const bridge = createBridge({ pathname: () => window.location.pathname, storage: localStorageOrNull() });
+  const bridge = createBridge({ pathname: () => window.location.pathname, storage: localStorageOrNull(), browser: windowBrowser() });
   (window as unknown as { electronAPI: Bridge }).electronAPI = bridge;
   return bridge;
 }

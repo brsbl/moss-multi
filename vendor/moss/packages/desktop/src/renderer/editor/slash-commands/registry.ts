@@ -66,6 +66,8 @@ import { OPEN_COLOR_PICKER_COMMAND } from '../plugins/colorPickerCommands';
 import type { SlashCommand, SlashCommandCategory } from './types';
 import { CATEGORY_ORDER } from './types';
 import { runSlashCommandWhenAllowed } from './nested-content';
+// moss-multi seam: hide-registry (A§9)
+import { hidden } from '@moss-multi/host/affordances';
 
 /**
  * Find the ListItemNode containing the given node, if any
@@ -622,7 +624,8 @@ export const DEFAULT_SLASH_COMMANDS: SlashCommand[] = [
       });
     }
   }
-];
+  // moss-multi seam: hide-registry (A§9)
+].filter((command) => !(command.id === 'emoji' && hidden('emoji-panel')) && !(command.id === 'media' && hidden('media-upload')));
 
 /**
  * Filter commands based on search query

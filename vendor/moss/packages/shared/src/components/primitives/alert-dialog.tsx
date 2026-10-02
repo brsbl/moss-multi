@@ -134,7 +134,12 @@ const AlertDialogTrigger = React.forwardRef<HTMLElement, AlertDialogTriggerProps
 );
 AlertDialogTrigger.displayName = 'AlertDialogTrigger';
 
-const AlertDialogPortal = BaseAlertDialog.Portal;
+// moss-multi seam: overlay-surface (A§19, the floating detector's allowlist)
+const AlertDialogPortal = React.forwardRef<
+  HTMLDivElement,
+  React.ComponentPropsWithoutRef<typeof BaseAlertDialog.Portal>
+>((props, ref) => <BaseAlertDialog.Portal ref={ref} data-overlay-surface="" {...props} />);
+AlertDialogPortal.displayName = 'AlertDialogPortal';
 
 type AlertDialogOverlayProps = Omit<
   React.ComponentPropsWithoutRef<typeof BaseAlertDialog.Backdrop>,
@@ -183,6 +188,8 @@ const AlertDialogContent = React.forwardRef<HTMLDivElement, AlertDialogContentPr
       <BaseAlertDialog.Popup
         ref={ref}
         data-remote-web-surface-blocking-dialog="true"
+        // moss-multi seam: overlay-surface (A§19, the floating detector's allowlist)
+        data-overlay-surface=""
         className={withBaseClassName(alertDialogContentClassName, className)}
         style={{ ...dialogPositionStyle, ...style }}
         render={(renderProps, state) =>

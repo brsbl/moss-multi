@@ -215,7 +215,13 @@ type DialogPortalProps = Omit<
 
 const DialogPortal = React.forwardRef<HTMLDivElement, DialogPortalProps>(
   ({ forceMount, keepMounted, ...props }, ref) => (
-    <BaseDialog.Portal ref={ref} keepMounted={keepMounted ?? forceMount} {...props} />
+    <BaseDialog.Portal
+      ref={ref}
+      keepMounted={keepMounted ?? forceMount}
+      // moss-multi seam: overlay-surface (A§19, the floating detector's allowlist)
+      data-overlay-surface=""
+      {...props}
+    />
   )
 );
 DialogPortal.displayName = 'DialogPortal';
@@ -334,6 +340,8 @@ const DialogContent = React.forwardRef<HTMLDivElement, DialogContentProps>(
     return (
       <BaseDialog.Popup
         ref={ref}
+        // moss-multi seam: overlay-surface (A§19, the floating detector's allowlist)
+        data-overlay-surface=""
         className={withBaseClassName('', className)}
         initialFocus={onOpenAutoFocus ? initialFocus : undefined}
         finalFocus={onCloseAutoFocus ? finalFocus : undefined}

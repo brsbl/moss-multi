@@ -20,8 +20,10 @@ import {
 } from '../state/granted-dirs-atoms';
 import { refreshWorkspaceInfoAtom, workspaceInfoAtom } from '../state/workspace-info-atoms';
 import { ModalShell } from './ModalShell';
-// moss-multi seam: settings-account (BUILDPLAN T0.10: sign-out lives in Settings)
-import { AccountSection } from '@moss-multi/host/surfaces/AccountSection';
+// moss-multi seam: hide-registry (A§9)
+import { hidden } from '@moss-multi/host/affordances';
+// moss-multi seam: settings-sections (A§2.2: the Agents section slot)
+import { SettingsSections } from '@moss-multi/host/slots';
 
 function toTildePath(fullPath: string): string {
   return fullPath.replace(/^\/(?:Users|home)\/[^/]+/, '~');
@@ -167,13 +169,11 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
   return (
     <ModalShell open={open} onOpenChange={onOpenChange} title="Settings" description="Manage workspace, editor, and external directory settings.">
 
-            {/* moss-multi seam: settings-account (BUILDPLAN T0.10) */}
-            <AccountSection />
-
             <AppearanceSection />
 
             {/* Workspace Location */}
-            {workspaceInfo && (
+            {/* moss-multi seam: hide-registry (A§9) */}
+            {workspaceInfo && !hidden('settings-workspace-location') && (
               <div className="space-y-2">
                 <span className="text-micro font-medium uppercase tracking-wider text-ink-faint">Workspace Location</span>
                 <div className="rounded-lg border border-border-subtle bg-surface-raised-card p-3">
@@ -213,6 +213,8 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
             )}
 
             {/* Default Markdown Editor */}
+            {/* moss-multi seam: hide-registry (A§9) */}
+            {hidden('settings-default-md-editor') ? null : (
             <div className="space-y-2">
               <span className="text-micro font-medium uppercase tracking-wider text-ink-faint">Default Markdown Editor</span>
               <div className="rounded-lg border border-border-subtle bg-surface-raised-card p-3">
@@ -236,6 +238,7 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
                 )}
               </div>
             </div>
+            )}
 
             {/* Note Intelligence */}
             <div className="space-y-2">
@@ -284,6 +287,8 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
             </div>
 
             {/* Connected Folders Section */}
+            {/* moss-multi seam: hide-registry (A§9) */}
+            {hidden('settings-connected-folders') ? null : (
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <span className="text-micro font-medium uppercase tracking-wider text-ink-faint">Connected Folders</span>
@@ -337,6 +342,9 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
                 )}
               </div>
             </div>
+            )}
+
+            <SettingsSections />
 
     </ModalShell>
   );

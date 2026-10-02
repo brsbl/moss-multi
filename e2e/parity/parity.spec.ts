@@ -5,6 +5,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { expect, test, type Browser, type Page } from '@playwright/test';
 import { PNG } from 'pngjs';
+import { AFFORDANCES } from '../../apps/web/src/host/affordances.ts';
 import { APP_STATE_ATTR } from '../lib/contract.ts';
 import { InfraBlocked } from '../lib/infra.ts';
 import { mintPrincipal, signIn } from '../lib/principals.ts';
@@ -85,7 +86,29 @@ async function maskRects(page: Page, selectors: string[]): Promise<Rect[]> {
   return rects.map((r: DOMRect) => ({ x: Math.floor((r.x - origin.x) * 2), y: Math.floor((r.y - origin.y) * 2), width: Math.ceil(r.width * 2), height: Math.ceil(r.height * 2) }));
 }
 
-interface OracleCapture { png: Buffer; listing: NoteListing[]; openTitle: string | null }
+/**
+ * The web withholds the hide registry's affordances (A§9; deviations 3, 4 and 7), so the oracle shows pristine moss
+ * with the same ones out of layout: each probe that j00-shell finds absent in the product is hidden here.
+ */
+async function withholdAffordances(page: Page): Promise<string[]> {
+  const probes = AFFORDANCES.flatMap((entry) =>
+    (entry.probes as readonly { selector: string; text?: string }[]).map((probe) => ({ id: entry.id, selector: probe.selector, text: probe.text ?? null })),
+  );
+  return page.evaluate((list) => {
+    const withheld: string[] = [];
+    for (const { id, selector, text } of list) {
+      for (const el of document.querySelectorAll<HTMLElement>(selector)) {
+        if (text !== null && (el.textContent ?? '').trim() !== text) continue;
+        el.hidden = true;
+        el.style.setProperty('display', 'none', 'important');
+        withheld.push(id);
+      }
+    }
+    return withheld;
+  }, probes);
+}
+
+interface OracleCapture { png: Buffer; listing: NoteListing[]; openTitle: string | null; withheld: string[] }
 
 /** The open note's title field (moss's title is the first textbox in the shell). */
 const openTitle = (page: Page) => page.evaluate((crop) => document.querySelector(`${crop} [role="textbox"]`)?.textContent ?? null, CROP);
@@ -98,7 +121,8 @@ async function captureOracle(browser: Browser, target: Target, theme: Theme): Pr
     const listing = await page.evaluate(() =>
       (window as unknown as { electronAPI: { notes: { getAll: () => Promise<NoteListing[]> } } }).electronAPI.notes.getAll(),
     );
-    return { png: await capture(page), listing, openTitle: await openTitle(page) };
+    const withheld = await withholdAffordances(page);
+    return { png: await capture(page), listing, openTitle: await openTitle(page), withheld };
   } finally {
     await page.context().close();
   }
@@ -155,7 +179,7 @@ for (const target of TARGETS) {
       writeFileSync(join(dir, 'candidate.png'), candidate.png);
       writeFileSync(join(dir, 'diff.png'), PNG.sync.write(diff));
       writeFileSync(join(dir, 'triptych.png'), PNG.sync.write(triptych));
-      writeFileSync(join(dir, 'metrics.json'), `${JSON.stringify({ target, theme, ...metrics }, null, 2)}\n`);
+      writeFileSync(join(dir, 'metrics.json'), `${JSON.stringify({ target, theme, withheld: first.withheld, ...metrics }, null, 2)}\n`);
       testInfo.annotations.push({ type: 'parity', description: JSON.stringify(metrics) });
       if (metrics.diffPct > 0.8 * target.floor && metrics.diffPct <= target.floor) {
         testInfo.annotations.push({ type: 'near-threshold', description: `${metrics.diffPct.toFixed(4)}%: read diff.png and explain` });

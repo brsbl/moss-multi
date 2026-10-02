@@ -19,6 +19,22 @@ declare module '@moss-desktop/renderer/PdfExportApp' {
   export default PdfExportApp;
 }
 
+declare module '@moss-desktop/renderer/editor/utils/note-link-clipboard' {
+  export interface MossNoteLinkClipboardPayload {
+    noteId: string;
+    noteTitle: string;
+    wikiLink: string;
+  }
+  export function buildCopyNoteLinkClipboardData(input: {
+    noteId: string;
+    noteTitle: string;
+    folderPath?: string | null;
+    filesystemPath?: string | null;
+    headingText?: string | null;
+  }): { payload: MossNoteLinkClipboardPayload; plainText: string };
+  export function buildMossNoteLinkClipboardHtml(payload: MossNoteLinkClipboardPayload): string;
+}
+
 // moss's DS primitives the host surfaces compose (T0.10), typed as moss declares them.
 declare module '@moss/shared/components/ui/button' {
   import type { ButtonHTMLAttributes, ForwardRefExoticComponent, RefAttributes } from 'react';
