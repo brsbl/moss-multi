@@ -1,10 +1,10 @@
 # moss-multi progress
 
-**Overall: 15% done** (10 of 67 planned tasks verified)
+**Overall: 16% done** (11 of 67 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
-| M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 10 / 15 | in progress |
+| M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 11 / 15 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 0 / 11 | |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 0 / 9 | |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys | 0 / 8 | |
@@ -29,3 +29,4 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-02 — T0.5a verified: the built Worker serves the real moss shell at `/` and `/d/$docId` under a per-request CSP nonce, with moss's root CSS, fonts, theme script and Tailwind config; j00-shell boots two principals cleanly in Chromium and WebKit, light↔dark works through moss Settings, and the parity job compares `shell-default` and `shell-empty` in light and dark against the Ladle oracle.
 - 2026-10-02 — T0.6b verified: whole-document markdown import runs with no selection, so a 2 MB note imports in linear time within the DocDO CPU budget (SP2 now fails any import up to 2 MB over 5 s of workerd CPU), while typing and moss paste conversion still move the caret; the new SP2 table is in METHOD.md.
 - 2026-10-02 — T0.5b verified: moss's shell talks to the Worker through a bridge covering every ElectronAPI method, with the workspace list, note creation and feedback real and a content write refused loudly without a request; withheld affordances are absent from the DOM through one hide registry, and every opened DS menu or dialog carries `data-overlay-surface`.
+- 2026-10-02 — T0.9b verified: CI runs e2e as one shard per journey group, each with its own stack (a ready-PR shard takes under 4 min), with `@slow` legs at milestone gates and nightly; `scripts/qa.mjs` drives a local stack through bb Browser Automation and writes 2880×2000 shots; METHOD.md holds the p95 headroom table that any latency budget must cite.
