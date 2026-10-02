@@ -55,7 +55,17 @@ Read this with PRODUCT.md, your BUILDPLAN entry and the A§ it cites, before wri
 - Converter (server) code imports `@lexical/code-core`, never `@lexical/code`; `scripts/ci/deps.mjs` (checks step "Bundle boundary") fails on views, CSS, the `@moss/shared` barrel, react-dom, jotai, `@lexical/code` or `api/electron` reachable from the Worker or the converter.
 - On import Lexical clears a line before an element transformer's `replace()`, so returning `false` alone still loses it; as a typing shortcut it clears nothing and `children` is the text after the caret. Reject a line with `$rejectLine(children, match, isImport)` from `markdown/fixes.ts`.
 - Converter goldens live in `packages/sync/src/converter/fixtures/goldens`; a missing one fails CI and is uploaded as the `converter-goldens` artifact for review. L2 runs in workerd and L3 against pristine moss in jsdom, both from `.cache/moss-pristine`.
-- SP2 (T0.6, checks step "Converter in workerd"): converter import is quadratic in block count. The scale note (the family corpus repeated; 27,140 blocks at 2 MB) takes about 55 s of workerd CPU to import at 2 MB, 15 s at 1 MB and 1.4 s at 256 KB, and grows RSS by about 140 MB; export takes about 0.5 s. A 2 MB import in the DocDO is over the 30 s default CPU limit and a 128 MB isolate, so it needs a ruling before T0.7. The worst state-to-markdown ratio is a canvas (about 47: its 7,200-cell grid is one attribute; the scale note is about 10.5), so `STATE_CAP` from the per-family worst needs a ruling too.
+- SP2 (T0.6, T0.6b; checks step "Converter in workerd"): a whole-document import runs with no selection. While a RangeSelection exists, every Lexical `remove()` and `insertAfter()` pays `getIndexWithinParent()`, and moss's TABLE and raw-URL transformers `selectEnd()` during import, so import was quadratic in blocks. `$importNoteBody` drops the selection and a seam skips those calls (`markdown/fixes.ts`); never add a caret move to an import path. The step fails any scale-note import up to 2 MB over 5 s of workerd CPU. The scale note is the family corpus repeated (27,140 blocks at 2 MB):
+
+  | Workerd CPU (median of 3; T0.6 ran 1 and 2 MB once, the bound import runs once) | T0.6 | T0.6b |
+  | --- | --- | --- |
+  | 256 KB import | 1.5 s | 0.4 s |
+  | 1 MB import | 16.4 s | 1.1 s |
+  | 2 MB import | 56.2 s | 2.1 s |
+  | 2 MB import into a bound Y.Doc (21 MB of state), the serverWrite path | 62.4 s | 5.7 s |
+  | 2 MB export | 0.6 s | 0.3 s |
+
+  Still open for T0.7: a 2 MB import grows RSS by about 140 MB, and about 150 MB with the bound Y.Doc, against a 128 MB isolate; the worst state-to-markdown ratio is a canvas (about 47: its 7,200-cell grid is one attribute; the scale note is about 10.5), so `STATE_CAP` from the per-family worst needs a ruling. State bytes vary by a few percent between runs of the same code (each Y.Doc's random client id is varint-encoded).
 - An escaped one-line `&lt;blockquote…&gt;` swallows every line up to the next standalone `</blockquote>` (moss at the pin; `fixtures/escaped-blockquote.md`). A note built by repeating fixtures leaves it out (`fixtures/scale.json`) and checks its block count, or it measures one giant HTML block.
 - `hasElectronBridge` is true on the web, so native-only items render enabled unless the hide registry hides them. [L§4.1]
 - Seams reach host code as `@moss-multi/host/<module>`, aliased in `apps/web/vite.config.ts`, `vitest.config.mjs` and `packages/sync/tsconfig.converter.json` (which typechecks the vendored closure). Slots that later tasks fill live in `apps/web/src/host/slots.tsx`. [T0.5b]

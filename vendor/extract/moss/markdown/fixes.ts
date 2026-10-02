@@ -1,4 +1,4 @@
-import { $isTextNode, type LexicalNode } from 'lexical';
+import { $isTextNode, $setSelection, type LexicalNode } from 'lexical';
 import { parseFormulaMarkdownPayload } from '../utils/formula-runtime';
 
 // Converter fixes called from seams in markdown/transformers.ts (A§12; docs/DEVIATIONS.md).
@@ -69,4 +69,26 @@ export function $rejectLine(children: LexicalNode[], match: string[] & { input?:
   const [line] = children;
   if (isImport && $isTextNode(line) && match.input !== undefined) line.setTextContent(match.input);
   return false;
+}
+
+let documentImport = false;
+
+// A whole-document import runs with no selection (SP2). While a RangeSelection exists, every remove() and
+// insertAfter() pays getIndexWithinParent(), which made a 2 MB import quadratic in blocks (54 s of workerd CPU).
+// Like moss's agent-content replace, it drops any selection first; the transformers then add none.
+export function $withDocumentImport<T>(run: () => T): T {
+  const outer = documentImport;
+  documentImport = true;
+  $setSelection(null);
+  try {
+    return run();
+  } finally {
+    documentImport = outer;
+  }
+}
+
+// Moss's TABLE and raw-URL transformers put the caret after what they insert. Typing and moss's paste conversion
+// keep that; a whole-document import skips it.
+export function $selectEndOutsideDocumentImport(node: LexicalNode): void {
+  if (!documentImport) node.selectEnd();
 }
