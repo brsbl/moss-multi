@@ -1,0 +1,126 @@
+// POST /api/docs writes the D1 row and calls DocDO.create (A§9 "+ Note"); GET /api/docs/:id/instance is the
+// owner-only probe (A§19).
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { migratedD1, type TestD1 } from '../test/d1.ts';
+import { BASE, insertDoc, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
+import { handleApi } from './router.ts';
+
+interface Created {
+  docId: string;
+  input: unknown;
+}
+
+const created: Created[] = [];
+const probed: string[] = [];
+
+/** A DocDO namespace: getServerByName's setName, then the RPCs these routes call. */
+const DocDO = {
+  idFromName: (name: string) => ({ name, toString: () => name }),
+  get: (id: { name: string }) => ({
+    setName: async () => undefined,
+    create: async (input: unknown) => {
+      created.push({ docId: id.name, input });
+    },
+    probeInstance: async () => {
+      probed.push(id.name);
+      return { instanceId: `instance-${id.name}`, constructedAt: 1 };
+    },
+  }),
+};
+
+let d1: TestD1;
+let env: AuthTestEnv & Parameters<typeof handleApi>[1];
+let ada: TestUser;
+let ben: TestUser;
+
+beforeAll(async () => {
+  d1 = await migratedD1();
+  env = { DB: d1.db, BETTER_AUTH_SECRET: SECRET, BETTER_AUTH_URL: BASE, DocDO: DocDO as never };
+  ada = await signedUpUser(env, 'docs-ada');
+  ben = await signedUpUser(env, 'docs-ben', 'Ben');
+}, 60_000);
+afterAll(() => d1?.dispose());
+beforeEach(() => {
+  created.length = 0;
+  probed.length = 0;
+});
+
+const create = (cookie: string | null, body: unknown = {}, headers: Record<string, string> = {}) =>
+  handleApi(
+    new Request(`${BASE}/api/docs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: BASE, ...(cookie ? { cookie } : {}), ...headers },
+      body: JSON.stringify(body),
+    }),
+    env,
+  );
+
+interface DocBody {
+  doc: { id: string; folderId: string; title: string; filename: string; createdAt: number; updatedAt: number };
+}
+
+describe('POST /api/docs', () => {
+  it('gets 401 without a session', async () => {
+    const response = await create(null);
+    expect(response.status).toBe(401);
+    expect(created).toEqual([]);
+  });
+
+  it("creates an empty note in the caller's Home vault and has the DocDO seed it", async () => {
+    const response = await create(ada.cookie);
+    expect(response.status).toBe(201);
+    const { doc } = (await response.json()) as DocBody;
+    expect(doc).toMatchObject({ folderId: ada.homeId, title: '', filename: 'untitled.md' });
+    const row = await d1.db
+      .prepare('SELECT owner_user_id, created_by, folder_id, title, filename, deleted_at FROM docs WHERE id = ?')
+      .bind(doc.id)
+      .first();
+    expect(row).toEqual({ owner_user_id: ada.id, created_by: ada.id, folder_id: ada.homeId, title: '', filename: 'untitled.md', deleted_at: null });
+    expect(created).toEqual([{ docId: doc.id, input: { folderId: ada.homeId, ownerId: ada.id } }]);
+  });
+
+  it('gives each live note in a folder its own filename', async () => {
+    const user = await signedUpUser(env, 'docs-names');
+    const names: string[] = [];
+    for (let i = 0; i < 3; i += 1) names.push(((await (await create(user.cookie)).json()) as DocBody).doc.filename);
+    names.push(((await (await create(user.cookie, { title: '  Café notes ' })).json()) as DocBody).doc.filename);
+    expect(names).toEqual(['untitled.md', 'untitled-2.md', 'untitled-3.md', 'café-notes.md']);
+  });
+
+  it("gets 404 for a folder the caller does not own, and writes nothing", async () => {
+    const response = await create(ben.cookie, { folderId: ada.homeId });
+    expect(response.status).toBe(404);
+    expect(created).toEqual([]);
+    const count = await d1.db.prepare('SELECT COUNT(*) AS n FROM docs WHERE created_by = ?').bind(ben.id).first<{ n: number }>();
+    expect(count?.n).toBe(0);
+  });
+
+  it('gets 403 from a foreign Origin', async () => {
+    const response = await create(ada.cookie, {}, { origin: 'https://evil.example' });
+    expect(response.status).toBe(403);
+    expect(created).toEqual([]);
+  });
+});
+
+describe('GET /api/docs/:id/instance', () => {
+  const probe = (docId: string, cookie: string | null) =>
+    handleApi(new Request(`${BASE}/api/docs/${docId}/instance`, { headers: cookie ? { cookie } : {} }), env);
+
+  it("answers the owner with the DO's instance", async () => {
+    const docId = await insertDoc(d1.db, ada);
+    const response = await probe(docId, ada.cookie);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ instanceId: `instance-${docId}`, constructedAt: 1 });
+  });
+
+  it('gives anyone else the same 404 as a missing doc, without waking the DO', async () => {
+    const docId = await insertDoc(d1.db, ada);
+    const denied = await probe(docId, ben.cookie);
+    const missing = await probe(crypto.randomUUID(), ada.cookie);
+    expect(denied.status).toBe(404);
+    expect(missing.status).toBe(404);
+    expect(await denied.text()).toBe(await missing.text());
+    expect((await probe(docId, null)).status).toBe(404);
+    expect(probed).toEqual([]);
+  });
+});

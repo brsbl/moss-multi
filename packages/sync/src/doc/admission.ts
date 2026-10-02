@@ -1,0 +1,141 @@
+// DocDO admission and gates (A§5.1): the connect order, frame parsing, the write classifier, the write rate and the
+// state-size simulation. The DO turns their verdicts into closes; a refused write is never silent.
+import * as decoding from 'lib0/decoding';
+import * as Y from 'yjs';
+import { NAME_MAX_CHARS } from '@moss-multi/protocol/limits';
+import { isRole, type Role } from '@moss-multi/protocol/roles';
+import { CLOSE, decodePartyPrincipal, TRUSTED, type PrincipalKind } from '@moss-multi/protocol/sync';
+import type { Revoked } from './persistence.ts';
+
+/** What a socket carries through hibernation (connection.setState). */
+export interface Attachment {
+  principalId: string;
+  kind: PrincipalKind;
+  name: string;
+  role: Role;
+  sessionId: string | null;
+  shareToken: string | null;
+}
+
+/** The Worker's trusted headers, or null with no principal or no known role. */
+export function attachmentFrom(headers: Headers): Attachment | null {
+  const principal = decodePartyPrincipal(headers.get(TRUSTED.principal));
+  const role = headers.get(TRUSTED.role);
+  if (!principal || !isRole(role)) return null;
+  return {
+    principalId: principal.id,
+    kind: principal.kind,
+    name: principal.name.slice(0, NAME_MAX_CHARS),
+    role,
+    sessionId: headers.get(TRUSTED.session) || null,
+    shareToken: headers.get(TRUSTED.share) || null,
+  };
+}
+
+/** 4402 for an ended session; 4403 for a revoked principal or share token. */
+export function revocationCode(attachment: Attachment, revoked: Revoked): number | null {
+  if (attachment.sessionId !== null && revoked.session.has(attachment.sessionId)) return CLOSE.sessionEnded;
+  if (revoked.principal.has(attachment.principalId)) return CLOSE.revoked;
+  if (attachment.shareToken !== null && revoked.token.has(attachment.shareToken)) return CLOSE.revoked;
+  return null;
+}
+
+export interface ConnectState {
+  revoked: Revoked;
+  deleted: boolean;
+  /** Open sockets, this one included. */
+  connections: number;
+  maxConnections: number;
+}
+
+/** The onConnect order: 4401, then 4402 and 4403, then 4410, then 4429; null admits. */
+export function connectCode(attachment: Attachment | null, state: ConnectState): number | null {
+  if (!attachment) return CLOSE.noPrincipal;
+  const revoked = revocationCode(attachment, state.revoked);
+  if (revoked !== null) return revoked;
+  if (state.deleted) return CLOSE.deleted;
+  if (state.connections > state.maxConnections) return CLOSE.connectionLimit;
+  return null;
+}
+
+export type Frame =
+  | { kind: 'awareness'; bytes: number }
+  | { kind: 'step1' }
+  /** A step 2 or an update: a write only if it would change the doc. */
+  | { kind: 'sync'; update: Uint8Array }
+  | { kind: 'other' };
+
+/** The y-protocols envelope: message type 0 is sync (step 1, step 2, update), 1 is awareness. */
+export function parseFrame(message: ArrayBuffer | ArrayBufferView): Frame {
+  const bytes = message instanceof ArrayBuffer ? new Uint8Array(message) : new Uint8Array(message.buffer, message.byteOffset, message.byteLength);
+  try {
+    const decoder = decoding.createDecoder(bytes);
+    const type = decoding.readVarUint(decoder);
+    if (type === 1) return { kind: 'awareness', bytes: bytes.byteLength };
+    if (type !== 0) return { kind: 'other' };
+    const step = decoding.readVarUint(decoder);
+    if (step === 0) return { kind: 'step1' };
+    if (step === 1 || step === 2) return { kind: 'sync', update: decoding.readVarUint8Array(decoder) };
+  } catch {
+    // A frame that does not parse is dropped like an unknown type.
+  }
+  return { kind: 'other' };
+}
+
+/**
+ * The write classifier: a sync frame changes the doc only if it carries a struct the doc's state vector lacks or
+ * deletes an item the doc has not deleted. Every step 2 that merely answers a step 1 is inert.
+ */
+export function wouldChange(doc: Y.Doc, update: Uint8Array): boolean {
+  const { structs, ds } = Y.decodeUpdate(update);
+  for (const struct of structs) {
+    if (struct instanceof Y.Skip) continue;
+    if (Y.getState(doc.store, struct.id.client) < struct.id.clock + struct.length) return true;
+  }
+  for (const [client, deletes] of ds.clients) {
+    const known = doc.store.clients.get(client) ?? [];
+    const state = Y.getState(doc.store, client);
+    for (const { clock, len } of deletes) {
+      if (len <= 0) continue;
+      if (clock + len > state) return true;
+      for (let i = Y.findIndexSS(known, clock); i < known.length && known[i].id.clock < clock + len; i += 1) {
+        if (!known[i].deleted) return true;
+      }
+    }
+  }
+  return false;
+}
+
+/** The encoded state the doc would have after `update`, measured on a copy. */
+export function stateBytesAfter(doc: Y.Doc, update: Uint8Array): number {
+  const copy = new Y.Doc();
+  try {
+    Y.applyUpdate(copy, Y.encodeStateAsUpdate(doc));
+    Y.applyUpdate(copy, update);
+    return Y.encodeStateAsUpdate(copy).byteLength;
+  } finally {
+    copy.destroy();
+  }
+}
+
+/** Writes per connection in a sliding window. In memory: a wake starts every count at zero. */
+export class WriteRate {
+  private readonly hits = new Map<string, number[]>();
+
+  constructor(
+    private readonly max: number,
+    private readonly windowMs: number,
+  ) {}
+
+  /** Counts one write; false once the connection is past `max` in the window. */
+  allow(connectionId: string, now = Date.now()): boolean {
+    const recent = (this.hits.get(connectionId) ?? []).filter((at) => now - at < this.windowMs);
+    recent.push(now);
+    this.hits.set(connectionId, recent);
+    return recent.length <= this.max;
+  }
+
+  forget(connectionId: string): void {
+    this.hits.delete(connectionId);
+  }
+}

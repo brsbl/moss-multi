@@ -9,12 +9,13 @@ const BASE = 'http://127.0.0.1:8851';
 const SECRET = 'b'.repeat(64);
 
 let d1: TestD1;
-let env: { DB: D1Database; BETTER_AUTH_SECRET: string; BETTER_AUTH_URL: string };
+let env: Parameters<typeof handleApi>[1];
 let cookie: string;
 
 beforeAll(async () => {
   d1 = await migratedD1();
-  env = { DB: d1.db, BETTER_AUTH_SECRET: SECRET, BETTER_AUTH_URL: BASE };
+  // /api/feedback never reaches a DO.
+  env = { DB: d1.db, BETTER_AUTH_SECRET: SECRET, BETTER_AUTH_URL: BASE, DocDO: {} as never };
   const response = await handleAuthRoute(
     new Request(`${BASE}/api/auth/sign-up/email`, {
       method: 'POST',

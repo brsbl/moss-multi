@@ -1,4 +1,6 @@
 {
+  // The DOs and the Node DO harness. The converter's vendored closure stops at src/moss-modules.d.ts here;
+  // tsconfig.converter.json checks it for real.
   "compilerOptions": {
     "target": "ES2022",
     "module": "ESNext",
@@ -7,7 +9,8 @@
       "ES2022"
     ],
     "types": [
-      "@cloudflare/workers-types"
+      "@cloudflare/workers-types",
+      "node"
     ],
     "strict": true,
     "skipLibCheck": true,
@@ -19,7 +22,8 @@
     "noEmit": true
   },
   "include": [
-    "src"
+    "src",
+    "test/harness"
   ],
   "exclude": [
     "src/converter"

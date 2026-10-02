@@ -12,11 +12,12 @@ const SECRET = 'a'.repeat(64);
 const PASSWORD = 'correct horse battery';
 
 let d1: TestD1;
-let env: { DB: D1Database; BETTER_AUTH_SECRET: string; BETTER_AUTH_URL: string; MOSS_TEST_HOOKS?: string };
+let env: Parameters<typeof handleApi>[1] & { MOSS_TEST_HOOKS?: string };
 
 beforeAll(async () => {
   d1 = await migratedD1();
-  env = { DB: d1.db, BETTER_AUTH_SECRET: SECRET, BETTER_AUTH_URL: BASE };
+  // /api/me never reaches a DO.
+  env = { DB: d1.db, BETTER_AUTH_SECRET: SECRET, BETTER_AUTH_URL: BASE, DocDO: {} as never };
 }, 60_000);
 afterAll(() => d1?.dispose());
 
