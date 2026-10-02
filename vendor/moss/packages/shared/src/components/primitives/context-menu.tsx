@@ -291,7 +291,13 @@ type ContextMenuPortalProps = Omit<
 
 const ContextMenuPortal = React.forwardRef<HTMLDivElement, ContextMenuPortalProps>(
   ({ forceMount, keepMounted, ...props }, ref) => (
-    <BaseContextMenu.Portal ref={ref} keepMounted={keepMounted ?? forceMount} {...props} />
+    <BaseContextMenu.Portal
+      ref={ref}
+      keepMounted={keepMounted ?? forceMount}
+      // moss-multi seam: overlay-surface (A§19, the floating detector's allowlist)
+      data-overlay-surface=""
+      {...props}
+    />
   )
 );
 ContextMenuPortal.displayName = 'ContextMenuPortal';

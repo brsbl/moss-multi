@@ -172,7 +172,10 @@ const TooltipContent = React.forwardRef<HTMLDivElement, TooltipContentProps>(
     );
 
     return (
-      <BaseTooltip.Portal>
+      <BaseTooltip.Portal
+        // moss-multi seam: overlay-surface (A§19, the floating detector's allowlist)
+        data-overlay-surface=""
+      >
         <BaseTooltip.Positioner
           render={(renderProps) => (
             <div

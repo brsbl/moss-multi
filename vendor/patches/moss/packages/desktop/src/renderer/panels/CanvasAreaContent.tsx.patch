@@ -1,0 +1,88 @@
+diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx
+--- a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx
++++ b/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx
+@@ -162,6 +162,8 @@ import { NoteBreadcrumb } from '../components/NoteBreadcrumb';
+ import { useTitleEmojiTypeahead } from './useTitleEmojiTypeahead';
+ import { TopNavBar, TopNavIconButton, TOP_NAV_ICON_SIZE_CLASSNAMES } from './TopNavControls';
+ import { isQuitProfilingEnabled } from '../utils/renderer-env';
++// moss-multi seam: hide-registry (A§9)
++import { hidden } from '@moss-multi/host/affordances';
+ 
+ const TRASH_RETENTION_DAYS = 30;
+ const MS_IN_DAY = 24 * 60 * 60 * 1000;
+@@ -4610,6 +4612,8 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+           />
+         )}
+         {/* Share with Agent */}
++        {/* moss-multi seam: hide-registry (A§9) */}
++        {hidden('share-with-agent') ? null : (
+         <TooltipProvider>
+           <Tooltip>
+             <TooltipTrigger asChild>
+@@ -4633,6 +4637,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+             )}
+           </Tooltip>
+         </TooltipProvider>
++        )}
+         {/* Overflow menu */}
+         <DropdownMenu open={moreActionsOpen} onOpenChange={setMoreActionsOpen}>
+           <TooltipProvider>
+@@ -4663,6 +4668,8 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+             </DropdownMenuItem>
+             <DropdownMenuSeparator />
+             {/* Export group */}
++            {/* moss-multi seam: hide-registry (A§9) */}
++            {hidden('save-as-pdf') ? null : (
+             <DropdownMenuItem
+               className="gap-2 text-xs"
+               onSelect={handleSaveAsPdf}
+@@ -4671,6 +4678,8 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+               <FileDown aria-hidden className="h-3.5 w-3.5" />
+               Save as PDF
+             </DropdownMenuItem>
++            )}
++            {hidden('save-as-markdown') ? null : (
+             <DropdownMenuItem
+               className="gap-2 text-xs"
+               onSelect={handleSaveAsMarkdown}
+@@ -4679,12 +4688,15 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+               <FileCode aria-hidden className="h-3.5 w-3.5" />
+               {isSavingMarkdown ? 'Saving...' : 'Save as Markdown'}
+             </DropdownMenuItem>
+-            <DropdownMenuSeparator />
++            )}
++            {hidden('save-as-pdf') && hidden('save-as-markdown') ? null : <DropdownMenuSeparator />}
+             {/* Stats */}
+             <DropdownMenuItem className="gap-2 text-xs" onSelect={() => { requestAnimationFrame(() => setShowNoteStats(true)); }}>
+               <FileDigit aria-hidden className="h-3.5 w-3.5" />
+               Note stats
+             </DropdownMenuItem>
++            {/* moss-multi seam: hide-registry (A§9) */}
++            {hidden('trash') && !isExternal ? null : (<>
+             <DropdownMenuSeparator />
+             {/* Danger group */}
+             <DropdownMenuItem
+@@ -4699,6 +4711,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+                 <><Trash2 aria-hidden className="h-3.5 w-3.5" />Trash</>
+               )}
+             </DropdownMenuItem>
++            </>)}
+           </DropdownMenuContent>
+         </DropdownMenu>
+         <CopyForAgentDialog
+@@ -4944,12 +4957,15 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+                   aria-hidden
+                 >
+                   <span className="min-w-0 truncate">{currentPlaceholder.title}</span>
++                  {/* moss-multi seam: hide-registry (A§9) */}
++                  {hidden('title-shortcut-label') ? null : (
+                   <KeyboardShortcut
+                     keys={['⌘', 'T']}
+                     size="compact"
+                     variant="placeholder"
+                     className="shrink-0 opacity-60"
+                   />
++                  )}
+                 </div>
+               ) : null}
+               </div>

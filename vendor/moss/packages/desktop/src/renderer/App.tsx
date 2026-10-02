@@ -168,6 +168,8 @@ import {
   isRendererDevelopment,
   isRendererProduction
 } from './utils/renderer-env';
+// moss-multi seam: hide-registry (A§9)
+import { hidden } from '@moss-multi/host/affordances';
 
 const nowInSeconds = (): number => Math.floor(Date.now() / 1000);
 const NOTE_LIST_SYNC_DEBOUNCE_MS = 150;
@@ -3789,7 +3791,8 @@ export function App() {
 
       const key = e.key.toLowerCase();
 
-      if (key === 'k' && !e.shiftKey) {
+      // moss-multi seam: hide-registry (A§9)
+      if (key === 'k' && !e.shiftKey && !hidden('ai-run-action')) {
         e.preventDefault();
         if (showCommandPalette) {
           // Already open - just focus the input
@@ -3879,7 +3882,8 @@ export function App() {
       }
 
       // Switch to Trash tab: Cmd+2
-      if (key === '2') {
+      // moss-multi seam: hide-registry (A§9)
+      if (key === '2' && !hidden('trash')) {
         e.preventDefault();
         handlePanelViewChange('trash');
         return;
@@ -3948,7 +3952,8 @@ export function App() {
     onExpandActionsPanel: () => { zenModeActive ? toggleZenMode() : setActionsPanelHidden(false); },
     isAgentStreaming: hasActiveStreaming,
     onCanvasClick: handlePromptClose,
-    onActionClick: handleOpenPrompt,
+    // moss-multi seam: hide-registry (A§9)
+    onActionClick: hidden('ai-run-action') ? undefined : handleOpenPrompt,
   };
 
   const actionsPanelContent = (
@@ -4094,7 +4099,8 @@ export function App() {
         onSelectNote={handleSelectNote}
         onCreateNote={handleCreateNote}
         onDeleteNote={handleNoteDeleted}
-        onDuplicateNote={handleDuplicateNote}
+        // moss-multi seam: hide-registry (A§9)
+        onDuplicateNote={hidden('duplicate-note') ? undefined : handleDuplicateNote}
         onRenameNote={handleRenameNote}
         onCollapse={handleCollapseNotesPanel}
         footerContent={panelFooter}

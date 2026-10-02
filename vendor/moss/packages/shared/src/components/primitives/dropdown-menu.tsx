@@ -299,7 +299,13 @@ type DropdownMenuPortalProps = Omit<
 
 const DropdownMenuPortal = React.forwardRef<HTMLDivElement, DropdownMenuPortalProps>(
   ({ forceMount, keepMounted, ...props }, ref) => (
-    <BaseMenu.Portal ref={ref} keepMounted={keepMounted ?? forceMount} {...props} />
+    <BaseMenu.Portal
+      ref={ref}
+      keepMounted={keepMounted ?? forceMount}
+      // moss-multi seam: overlay-surface (A§19, the floating detector's allowlist)
+      data-overlay-surface=""
+      {...props}
+    />
   )
 );
 DropdownMenuPortal.displayName = 'DropdownMenuPortal';

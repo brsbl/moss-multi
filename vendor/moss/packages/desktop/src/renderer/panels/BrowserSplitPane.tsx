@@ -42,6 +42,8 @@ import { RemoteWebSurface } from '../editor/preview/RemoteWebSurface';
 import { useRemoteWebSurfaceSelection } from '../editor/preview/useRemoteWebSurfaceSelection';
 import { toDisplaySrc } from '../editor/utils/asset-url';
 import { TopNavBar, TopNavIconButton, TOP_NAV_ICON_SIZE_CLASSNAMES } from './TopNavControls';
+// moss-multi seam: hide-registry (A§9)
+import { hidden } from '@moss-multi/host/affordances';
 
 const SPLIT_SURFACE_ID = 'web-embed:browser-split';
 
@@ -487,6 +489,8 @@ export function BrowserSplitPane({
             className="flex shrink-0 items-center gap-1"
             style={{ WebkitAppRegion: 'no-drag' } as CSSProperties}
           >
+            {/* moss-multi seam: hide-registry (A§9) */}
+            {hidden('browser-back-forward') ? null : (<>
             <TopNavIconButton
               onClick={handleGoBack}
               disabled={!canGoBack}
@@ -503,6 +507,7 @@ export function BrowserSplitPane({
             >
               <ChevronRight aria-hidden className={cn(TOP_NAV_ICON_SIZE_CLASSNAMES.md, 'shrink-0')} />
             </TopNavIconButton>
+            </>)}
           </div>
           <div className="w-2 shrink-0" />
           {showFind ? (
@@ -597,6 +602,8 @@ export function BrowserSplitPane({
             data-browser-actions-cluster="true"
             style={{ WebkitAppRegion: 'no-drag' } as CSSProperties}
           >
+            {/* moss-multi seam: hide-registry (A§9) */}
+            {hidden('browser-find') ? null : (<>
             <TopNavIconButton
               onClick={openBrowserFind}
               aria-label="Search in browser"
@@ -604,7 +611,8 @@ export function BrowserSplitPane({
               <Search aria-hidden className={cn(TOP_NAV_ICON_SIZE_CLASSNAMES.sm, 'shrink-0')} />
             </TopNavIconButton>
             <BrowserTopNavDivider />
-            {fullPane ? (
+            </>)}
+            {hidden('ai-run-action') ? null : fullPane ? (
               // Full-pane: keep the affordance visible but inert. The command
               // palette would render behind the native WebContentsView, so we
               // do not open it. The unavailable state is conveyed only to
