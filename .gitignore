@@ -12,3 +12,5 @@ playwright-report/
 *.tsbuildinfo
 .vite/
 .refs/
+.oracle/
+e2e/parity/oracle/moss/

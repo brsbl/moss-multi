@@ -9,9 +9,9 @@ on:
   workflow_dispatch:
     inputs:
       lane:
-        description: 'auto (grep set: e2e, else full), checks (checks-only lane), e2e, or full'
+        description: 'auto (grep set: e2e, else full), checks (checks-only lane), e2e, full, or parity (oracle and shell parity only)'
         type: choice
-        options: [auto, checks, e2e, full]
+        options: [auto, checks, e2e, full, parity]
         default: auto
       grep:
         description: 'Playwright --grep for the journey run'
@@ -28,6 +28,10 @@ on:
         default: 1
       macos:
         description: 'Also run the @macos legs in WebKit on a macOS runner (billed at 10x)'
+        type: boolean
+        default: false
+      parity:
+        description: 'Also run shell parity against the Ladle oracle (the full and parity lanes always do)'
         type: boolean
         default: false
 
@@ -54,6 +58,7 @@ jobs:
       e2e: ${{ steps.plan.outputs.e2e }}
       browsers: ${{ steps.plan.outputs.browsers }}
       macos: ${{ steps.plan.outputs.macos }}
+      parity: ${{ steps.plan.outputs.parity }}
       grep: ${{ steps.plan.outputs.grep }}
       repeat: ${{ steps.plan.outputs.repeat }}
       trace_milestone: ${{ steps.plan.outputs.trace_milestone }}
@@ -151,9 +156,9 @@ jobs:
         if: always()
         run: node scripts/stack.mjs stop --run-id "$SMOKE_RUN" || true
       - name: Pack the built bytes for e2e
-        if: needs.plan.outputs.e2e == 'true' || needs.plan.outputs.macos == 'true'
+        if: needs.plan.outputs.e2e == 'true' || needs.plan.outputs.macos == 'true' || needs.plan.outputs.parity == 'true'
         run: tar -czf web-dist.tgz -C apps/web dist
-      - if: needs.plan.outputs.e2e == 'true' || needs.plan.outputs.macos == 'true'
+      - if: needs.plan.outputs.e2e == 'true' || needs.plan.outputs.macos == 'true' || needs.plan.outputs.parity == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: web-dist
@@ -277,9 +282,96 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+  # The Ladle oracle (A§20; A§22 OA1 fallback, no deploy key): moss@pin's own files, stories and .ladle from
+  # `moss-vendor.mjs pristine`, plus main.tsx's font preamble, built with its own frozen install.
+  oracle:
+    needs: plan
+    if: needs.plan.outputs.parity == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+      - id: cache
+        uses: actions/cache@v6
+        with:
+          path: .oracle
+          key: ladle-oracle-762abb777-${{ hashFiles('vendor/moss/PORTED.json', 'scripts/moss-vendor.mjs', 'e2e/parity/oracle/*', 'e2e/parity/oracle/.npmrc') }}
+      - name: Install the oracle's dependencies
+        if: steps.cache.outputs.cache-hit != 'true'
+        working-directory: e2e/parity/oracle
+        run: pnpm install --frozen-lockfile --ignore-workspace
+      - name: Build the oracle
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: node e2e/parity/oracle/build.mjs .oracle
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ladle-oracle
+          path: .oracle
+          retention-days: 3
+
+  # Shell parity (A§20): the build job's Worker against the oracle, in the same Chromium, 1440x1000 at 2x.
+  # test-results/parity/<target>-<theme>/ holds oracle, candidate, diff, triptych and metrics for reading.
+  parity:
+    needs: [plan, build, oracle]
+    if: needs.plan.outputs.parity == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    container:
+      image: mcr.microsoft.com/playwright:v1.61.1-noble
+      options: --ipc=host --init
+    env:
+      RUN_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}-parity
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+      - run: command -v ps > /dev/null || (apt-get update -qq && apt-get install -y -qq --no-install-recommends procps > /dev/null)
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v8
+        with:
+          name: web-dist
+      - run: mkdir -p .local-stack/prebuilt && tar -xzf web-dist.tgz -C .local-stack/prebuilt
+      - uses: actions/download-artifact@v8
+        with:
+          name: ladle-oracle
+          path: .oracle
+      - name: Boot the Worker stack on the built bytes
+        run: >
+          node scripts/stack.mjs start --run-id "$RUN_ID" --prebuilt .local-stack/prebuilt/dist
+          --expect-commit "${{ needs.build.outputs.commit }}" --expect-bundle "${{ needs.build.outputs.bundleHash }}"
+      - run: echo "STACK_STATE=$PWD/.local-stack/runs/$RUN_ID/state.json" >> "$GITHUB_ENV"
+      - name: Shell parity
+        working-directory: e2e
+        env:
+          ORACLE_DIR: ${{ github.workspace }}/.oracle
+        run: pnpm exec playwright test --project=parity
+      - name: Stop the stack
+        if: always()
+        run: node scripts/stack.mjs stop --run-id "$RUN_ID" || true
+      - name: Upload triptychs, diffs and metrics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: parity-${{ github.run_attempt }}
+          path: |
+            e2e/test-results/
+            .local-stack/runs/*/wrangler.log
+          retention-days: 7
+          if-no-files-found: ignore
+
   ci-ok:
     if: always()
-    needs: [plan, checks, build, e2e, macos]
+    needs: [plan, checks, build, e2e, macos, oracle, parity]
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
