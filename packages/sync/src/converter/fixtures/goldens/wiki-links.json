@@ -1,0 +1,284 @@
+{
+  "root": {
+    "children": [
+      {
+        "children": [
+          {
+            "detail": 0,
+            "format": 0,
+            "mode": "normal",
+            "style": "",
+            "text": "See ",
+            "type": "text",
+            "version": 1
+          },
+          {
+            "type": "file-link",
+            "version": 1,
+            "noteId": null,
+            "noteTitle": "Launch Plan",
+            "isResolved": false,
+            "headingText": null,
+            "resolutionState": "unresolved",
+            "displayText": null
+          },
+          {
+            "detail": 0,
+            "format": 0,
+            "mode": "normal",
+            "style": "",
+            "text": " for details.",
+            "type": "text",
+            "version": 1
+          }
+        ],
+        "direction": null,
+        "format": "",
+        "indent": 0,
+        "type": "paragraph",
+        "version": 1,
+        "textFormat": 0,
+        "textStyle": ""
+      },
+      {
+        "children": [
+          {
+            "detail": 0,
+            "format": 0,
+            "mode": "normal",
+            "style": "",
+            "text": "Resolved ",
+            "type": "text",
+            "version": 1
+          },
+          {
+            "type": "file-link",
+            "version": 1,
+            "noteId": "4f6c2a1e-8b3d-4c5e-9f7a-1b2c3d4e5f60",
+            "noteTitle": "Launch Plan",
+            "isResolved": true,
+            "headingText": null,
+            "resolutionState": "note_resolved",
+            "displayText": null
+          },
+          {
+            "detail": 0,
+            "format": 0,
+            "mode": "normal",
+            "style": "",
+            "text": " by id.",
+            "type": "text",
+            "version": 1
+          }
+        ],
+        "direction": null,
+        "format": "",
+        "indent": 0,
+        "type": "paragraph",
+        "version": 1,
+        "textFormat": 0,
+        "textStyle": ""
+      },
+      {
+        "children": [
+          {
+            "detail": 0,
+            "format": 0,
+            "mode": "normal",
+            "style": "",
+            "text": "Aliased ",
+            "type": "text",
+            "version": 1
+          },
+          {
+            "type": "file-link",
+            "version": 1,
+            "noteId": null,
+            "noteTitle": "Launch Plan",
+            "isResolved": false,
+            "headingText": null,
+            "resolutionState": "unresolved",
+            "displayText": "the plan"
+          },
+          {
+            "detail": 0,
+            "format": 0,
+            "mode": "normal",
+            "style": "",
+            "text": " by label.",
+            "type": "text",
+            "version": 1
+          }
+        ],
+        "direction": null,
+        "format": "",
+        "indent": 0,
+        "type": "paragraph",
+        "version": 1,
+        "textFormat": 0,
+        "textStyle": ""
+      },
+      {
+        "children": [
+          {
+            "detail": 0,
+            "format": 0,
+            "mode": "normal",
+            "style": "",
+            "text": "Same-note heading ",
+            "type": "text",
+            "version": 1
+          },
+          {
+            "type": "file-link",
+            "version": 1,
+            "noteId": null,
+            "noteTitle": "",
+            "isResolved": false,
+            "headingText": "Timeline",
+            "resolutionState": "unresolved",
+            "displayText": null
+          },
+          {
+            "detail": 0,
+            "format": 0,
+            "mode": "normal",
+            "style": "",
+            "text": " link.",
+            "type": "text",
+            "version": 1
+          }
+        ],
+        "direction": null,
+        "format": "",
+        "indent": 0,
+        "type": "paragraph",
+        "version": 1,
+        "textFormat": 0,
+        "textStyle": ""
+      },
+      {
+        "children": [
+          {
+            "detail": 0,
+            "format": 0,
+            "mode": "normal",
+            "style": "",
+            "text": "Heading in another note ",
+            "type": "text",
+            "version": 1
+          },
+          {
+            "type": "file-link",
+            "version": 1,
+            "noteId": "4f6c2a1e-8b3d-4c5e-9f7a-1b2c3d4e5f60",
+            "noteTitle": "Launch Plan",
+            "isResolved": true,
+            "headingText": "Risks",
+            "resolutionState": "note_resolved",
+            "displayText": null
+          },
+          {
+            "detail": 0,
+            "format": 0,
+            "mode": "normal",
+            "style": "",
+            "text": ".",
+            "type": "text",
+            "version": 1
+          }
+        ],
+        "direction": null,
+        "format": "",
+        "indent": 0,
+        "type": "paragraph",
+        "version": 1,
+        "textFormat": 0,
+        "textStyle": ""
+      },
+      {
+        "children": [
+          {
+            "detail": 0,
+            "format": 0,
+            "mode": "normal",
+            "style": "",
+            "text": "Escaped hash ",
+            "type": "text",
+            "version": 1
+          },
+          {
+            "type": "file-link",
+            "version": 1,
+            "noteId": null,
+            "noteTitle": "C# Notes",
+            "isResolved": false,
+            "headingText": null,
+            "resolutionState": "unresolved",
+            "displayText": null
+          },
+          {
+            "detail": 0,
+            "format": 0,
+            "mode": "normal",
+            "style": "",
+            "text": " in a title.",
+            "type": "text",
+            "version": 1
+          }
+        ],
+        "direction": null,
+        "format": "",
+        "indent": 0,
+        "type": "paragraph",
+        "version": 1,
+        "textFormat": 0,
+        "textStyle": ""
+      },
+      {
+        "children": [
+          {
+            "detail": 0,
+            "format": 0,
+            "mode": "normal",
+            "style": "",
+            "text": "Formatted ",
+            "type": "text",
+            "version": 1
+          },
+          {
+            "type": "file-link",
+            "version": 1,
+            "noteId": null,
+            "noteTitle": "Launch Plan",
+            "isResolved": false,
+            "headingText": null,
+            "resolutionState": "unresolved",
+            "displayText": null
+          },
+          {
+            "detail": 0,
+            "format": 0,
+            "mode": "normal",
+            "style": "",
+            "text": " loses its wrapper.",
+            "type": "text",
+            "version": 1
+          }
+        ],
+        "direction": null,
+        "format": "",
+        "indent": 0,
+        "type": "paragraph",
+        "version": 1,
+        "textFormat": 0,
+        "textStyle": ""
+      }
+    ],
+    "direction": null,
+    "format": "",
+    "indent": 0,
+    "type": "root",
+    "version": 1
+  }
+}

@@ -33,6 +33,7 @@
     "@lexical/selection": "0.48.0",
     "@lexical/table": "0.48.0",
     "@lexical/utils": "0.48.0",
+    "@mdx-js/mdx": "3.1.1",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "jotai": "2.20.2",
@@ -47,6 +48,7 @@
     "react-dom": "19.3.0",
     "react-is": "19.3.0",
     "recharts": "3.10.1",
+    "remark-gfm": "4.0.1",
     "tailwind-merge": "2.6.1"
   },
   "devDependencies": {

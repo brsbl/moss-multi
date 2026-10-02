@@ -1,0 +1,49 @@
+{
+  "root": {
+    "children": [
+      {
+        "type": "html-block",
+        "version": 1,
+        "rawHtml": "<div style=\"padding: 8px\">Hello &amp; welcome</div>",
+        "source": "fenced"
+      },
+      {
+        "type": "html-block",
+        "version": 1,
+        "rawHtml": "<pre>```not a fence```</pre>",
+        "source": "fenced"
+      },
+      {
+        "type": "html-block",
+        "version": 1,
+        "rawHtml": "<button onclick=\"this.textContent = 'clicked'\">Click</button>",
+        "source": "fenced"
+      },
+      {
+        "children": [
+          {
+            "detail": 0,
+            "format": 0,
+            "mode": "normal",
+            "style": "",
+            "text": "Text after HTML blocks.",
+            "type": "text",
+            "version": 1
+          }
+        ],
+        "direction": null,
+        "format": "",
+        "indent": 0,
+        "type": "paragraph",
+        "version": 1,
+        "textFormat": 0,
+        "textStyle": ""
+      }
+    ],
+    "direction": null,
+    "format": "",
+    "indent": 0,
+    "type": "root",
+    "version": 1
+  }
+}

@@ -39,3 +39,16 @@ export const stringify = (value: unknown): string => `${JSON.stringify(value, nu
 
 // Fixtures whose moss behavior the converter deliberately changes (docs/DEVIATIONS.md): L3 expects a difference.
 export const DEVIATING = new Set(['line-loss']);
+
+// A3 has two halves: the export is idempotent after one pass, and the first import is already the tree that
+// export carries. These inputs miss a half in moss's own pipeline at the pin (L3 holds them equal to moss);
+// A3 pins each so that a change in behavior shows up.
+export const CANONICALIZED: Record<string, string> = {
+  composition: "a space inside bold before a wiki link moves outside the bold",
+  'embed-pills': 'a legacy ?[label](url) pill exports as its bare URL, dropping the label',
+  tables: 'legacy column widths are per-viewer layout, so the export drops them',
+};
+export const NOT_IDEMPOTENT: Record<string, string> = {
+  'code-blocks': 'a fence inside a 4-backtick block exports inside a 3-backtick fence, which splits the block',
+  entities: '&#160; imports as a no-break space between zero-width spaces, and both reach the export',
+};

@@ -394,7 +394,7 @@ export function extract({ manifest, read, exists, readTemplate }) {
       for (const statement of statements) {
         const split = ts.isClassDeclaration(statement) && views.has(statement.name?.text);
         if (split) skip.add(decorateOf(statement).body);
-        chunks.push({ statement, source: take.from, text: split ? viewSplitClass(file, statement) : chunkOf(file, statement).text });
+        chunks.push({ statement, source: take.from, text: movedText(file, statement, m.path, split) });
         if (split) views.delete(statement.name.text);
       }
       for (const [name, ref] of referencesOf(file, statements, skip)) {
@@ -416,7 +416,7 @@ export function extract({ manifest, read, exists, readTemplate }) {
         }
       }
     }
-    for (const name of views) throw new Error(`${m.path}: views lists ${name}, which is not a class moved here`);
+    if (views.size > 0) throw new Error(`${m.path}: views lists ${[...views].join(", ")}, not a class moved here`);
     if (m.views.length > 0) set.add(relSpec(m.path, stripExt(templateExports.get('renderNodeView'))), 'renderNodeView', 'renderNodeView', false, 2000);
     const symbols = chunks.flatMap((c) => declaredNames(c.statement));
     outputs.set(m.path, { kind: 'extracted', sources, symbols, chunks, imports: set.print() });
@@ -529,14 +529,38 @@ function decorateOf(statement) {
   return method;
 }
 
-// The class stays pure: decorate() asks the view registry, which only the client fills.
-function viewSplitClass(file, statement) {
+// A moved statement's text for its new module. Relative paths in `import('…')` types and calls are rebased on
+// the new location; a view class's decorate() body becomes a registry call, so the class stays pure and the
+// view (which only the client registers) keeps the body.
+function movedText(file, statement, outPath, split) {
   const { text, offset } = chunkOf(file, statement);
-  const method = decorateOf(statement);
-  const args = method.parameters.map((p) => p.name.getText(file.sf));
-  const call = args.length ? `renderNodeView(this, [${args.join(', ')}])` : 'renderNodeView(this)';
-  const start = method.body.getStart(file.sf) - offset;
-  return `${text.slice(0, start)}{\n    ${VIEW_SEAM}\n    return ${call};\n  }${text.slice(method.body.end - offset)}`;
+  const edits = [];
+  let body = null;
+  if (split) {
+    const method = decorateOf(statement);
+    const args = method.parameters.map((p) => p.name.getText(file.sf));
+    const call = args.length ? `renderNodeView(this, [${args.join(', ')}])` : 'renderNodeView(this)';
+    body = [method.body.getStart(file.sf), method.body.end];
+    edits.push({ start: body[0], end: body[1], text: `{\n    ${VIEW_SEAM}\n    return ${call};\n  }` });
+  }
+  const visit = (node) => {
+    let literal = null;
+    if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument) && ts.isStringLiteral(node.argument.literal)) literal = node.argument.literal;
+    if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword && node.arguments[0] && ts.isStringLiteral(node.arguments[0])) literal = node.arguments[0];
+    const start = literal?.getStart(file.sf);
+    if (literal && isRelative(literal.text) && !(body && start >= body[0] && start < body[1])) {
+      const spec = relSpec(outPath, posix.normalize(posix.join(posix.dirname(file.path), literal.text)));
+      const quote = file.text[start];
+      if (spec !== literal.text) edits.push({ start, end: literal.end, text: `${quote}${spec}${quote}` });
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(statement);
+  let result = text;
+  for (const edit of edits.sort((a, b) => b.start - a.start)) {
+    result = `${result.slice(0, edit.start - offset)}${edit.text}${result.slice(edit.end - offset)}`;
+  }
+  return result;
 }
 
 // The view keeps decorate()'s body byte for byte, bound to the node.

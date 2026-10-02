@@ -198,6 +198,38 @@ function corpus() {
     .map((file) => [file.replace(/\.md$/, ''), readFileSync(join(FIXTURES, file), 'utf8')]);
 }
 
+// The family corpus repeated to `bytes`.
+function corpusOfSize(fixtures, bytes) {
+  const joined = fixtures.map(([, text]) => text).join('\n\n');
+  let doc = '';
+  while (Buffer.byteLength(doc) < bytes) doc += `${joined}\n\n`;
+  return doc;
+}
+
+// Import and export one document in a fresh worker, so a crash at one size leaves the others measurable.
+async function measureSize(markdown, port) {
+  const server = await startWorker('converter', port);
+  const runs = { import: [], export: [] };
+  try {
+    for (let run = 0; run < CONVERSION_RUNS; run += 1) {
+      runs.import.push(await timedRequest(server, '/import', { method: 'POST', body: markdown }));
+      runs.export.push(await timedRequest(server, '/export'));
+    }
+    return {
+      importCpuMs: round(median(runs.import.map((s) => s.cpuMs))),
+      importWallMs: round(median(runs.import.map((s) => s.wallMs))),
+      exportCpuMs: round(median(runs.export.map((s) => s.cpuMs))),
+      exportWallMs: round(median(runs.export.map((s) => s.wallMs))),
+      peakMb: round(Math.max(...runs.import.map((s) => s.peakRssKb - s.rssBeforeKb)) / 1024),
+    };
+  } catch (error) {
+    const log = server.logs.value.split('\n').filter(Boolean).slice(-6).join(' / ');
+    return { failed: `${String(error.message).split('\n')[0]}${log ? ` (wrangler: ${log})` : ''}` };
+  } finally {
+    await stop(server.child);
+  }
+}
+
 async function main() {
   rmSync(OUT, { recursive: true, force: true });
   mkdirSync(join(OUT, 'baseline'), { recursive: true });
@@ -224,19 +256,17 @@ async function main() {
   }
 
   const fixtures = corpus();
-  const joined = fixtures.map(([, text]) => text).join('\n\n');
-  let big = '';
-  while (Buffer.byteLength(big) < 2 * 1024 * 1024) big += `${joined}\n\n`;
-  const server = await startWorker('converter', port);
-  const conversions = { import: [], export: [] };
+  const conversions = [];
+  for (const bytes of [512 * 1024, 1024 * 1024, 2 * 1024 * 1024]) {
+    const markdown = corpusOfSize(fixtures, bytes);
+    conversions.push({ bytes: Buffer.byteLength(markdown), ...(await measureSize(markdown, port)) });
+    port += 1;
+  }
+
   const ratios = [];
+  const server = await startWorker('converter', port);
   try {
-    await timedRequest(server, '/import', { method: 'POST', body: fixtures[0][1] });
-    for (let run = 0; run < CONVERSION_RUNS; run += 1) {
-      conversions.import.push(await timedRequest(server, '/import', { method: 'POST', body: big }));
-      conversions.export.push(await timedRequest(server, '/export'));
-    }
-    for (const [name, text] of [...fixtures, ['2 MB corpus', big]]) {
+    for (const [name, text] of [...fixtures, ['512 KB corpus', corpusOfSize(fixtures, 512 * 1024)]]) {
       const { body } = await timedRequest(server, '/state', { method: 'POST', body: text });
       const { markdownBytes, stateBytes } = JSON.parse(body);
       ratios.push({ name, markdownBytes, stateBytes, ratio: stateBytes / markdownBytes });
@@ -246,27 +276,30 @@ async function main() {
   }
 
   const coldOf = (name, key) => round(median(cold[name].map((sample) => sample[key])));
-  const peak = Math.max(...conversions.import.map((s) => s.peakRssKb - s.rssBeforeKb));
-  const worst = ratios.filter((r) => r.name !== '2 MB corpus').reduce((a, b) => (b.ratio > a.ratio ? b : a));
+  const families = ratios.filter((r) => !r.name.includes('corpus'));
+  const worst = families.reduce((a, b) => (b.ratio > a.ratio ? b : a));
+  const kb = (bytes) => `${Math.round(bytes / 1024)} KB`;
   const lines = [
     '### Converter in workerd (SP2)',
     '',
     '| Measure | Value |',
     '| --- | --- |',
-    `| Worker upload size, converter only (minified, gzip) | ${sizes.converter.rawBytes} B raw, ${sizes.converter.gzipBytes} B gzip (baseline Worker ${sizes.baseline.gzipBytes} B gzip) |`,
-    `| Cold start: \`wrangler dev\` start to listening, median of ${COLD_RUNS} | ${coldOf('converter', 'startupMs')} ms (baseline ${coldOf('baseline', 'startupMs')} ms) |`,
-    `| Cold start: first request wall / workerd CPU, median | ${coldOf('converter', 'firstMs')} ms / ${coldOf('converter', 'firstCpuMs')} ms (baseline ${coldOf('baseline', 'firstMs')} ms / ${coldOf('baseline', 'firstCpuMs')} ms) |`,
+    `| Worker upload size, converter only (minified) | ${kb(sizes.converter.rawBytes)} raw, ${kb(sizes.converter.gzipBytes)} gzip (empty Worker ${sizes.baseline.gzipBytes} B gzip) |`,
+    `| Cold start: \`wrangler dev\` start to listening, median of ${COLD_RUNS} | ${coldOf('converter', 'startupMs')} ms (empty Worker ${coldOf('baseline', 'startupMs')} ms) |`,
+    `| Cold start: first request wall / workerd CPU, median | ${coldOf('converter', 'firstMs')} ms / ${coldOf('converter', 'firstCpuMs')} ms (empty Worker ${coldOf('baseline', 'firstMs')} ms / ${coldOf('baseline', 'firstCpuMs')} ms) |`,
     `| Warm request wall, median | ${coldOf('converter', 'warmMs')} ms |`,
-    `| 2 MB import (${Buffer.byteLength(big)} B): workerd CPU, median of ${CONVERSION_RUNS} | ${round(median(conversions.import.map((s) => s.cpuMs)))} ms (wall ${round(median(conversions.import.map((s) => s.wallMs)))} ms) |`,
-    `| 2 MB export: workerd CPU, median | ${round(median(conversions.export.map((s) => s.cpuMs)))} ms (wall ${round(median(conversions.export.map((s) => s.wallMs)))} ms) |`,
-    `| Peak memory growth during a 2 MB import (workerd RSS) | ${round(peak / 1024)} MB |`,
-    `| State-to-markdown ratio r, worst family | ${round(worst.ratio * 100) / 100} (${worst.name}) |`,
+    ...conversions.map((c) =>
+      c.failed
+        ? `| ${kb(c.bytes)} import | FAILED: ${c.failed} |`
+        : `| ${kb(c.bytes)} import / export: workerd CPU, median of ${CONVERSION_RUNS} | ${c.importCpuMs} ms / ${c.exportCpuMs} ms (wall ${c.importWallMs} / ${c.exportWallMs} ms); peak RSS growth ${c.peakMb} MB |`,
+    ),
+    `| State-to-markdown ratio r, worst family | ${worst.ratio.toFixed(2)} (${worst.name}) |`,
     '',
     '| Fixture | Markdown B | Y.Doc state B | Ratio |',
     '| --- | --- | --- | --- |',
-    ...ratios.map((r) => `| ${r.name} | ${r.markdownBytes} | ${r.stateBytes} | ${(Math.round(r.ratio * 100) / 100).toFixed(2)} |`),
+    ...ratios.map((r) => `| ${r.name} | ${r.markdownBytes} | ${r.stateBytes} | ${r.ratio.toFixed(2)} |`),
     '',
-    'CPU and RSS are process figures from `ps` for the workerd children of `wrangler dev --local` on this runner.',
+    'CPU (10 ms ticks) and RSS come from /proc for the workerd children of `wrangler dev --local` on this runner.',
   ];
   const report = lines.join('\n');
   console.log(report);

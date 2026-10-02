@@ -1,0 +1,28 @@
+{
+  "root": {
+    "children": [
+      {
+        "type": "video",
+        "version": 1,
+        "src": "assets/clip.mp4",
+        "altText": "A clip"
+      },
+      {
+        "type": "video",
+        "version": 1,
+        "src": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        "altText": "A talk"
+      },
+      {
+        "type": "video",
+        "version": 1,
+        "src": "assets/legacy.mp4"
+      }
+    ],
+    "direction": null,
+    "format": "",
+    "indent": 0,
+    "type": "root",
+    "version": 1
+  }
+}

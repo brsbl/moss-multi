@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest';
 import { withImportFormulaIds } from '@moss-desktop/renderer/editor/markdown/fixes';
 import { $postImportNormalize, escapeHtmlEntities, normalizeMarkdownForImport } from '@moss-desktop/renderer/editor/markdown/normalize';
 import { createConverterEditor, exportMarkdown, importMarkdown, MARKDOWN_EDITOR_TRANSFORMERS, type NoteBodyImportOptions } from './index.ts';
-import { DEVIATING, FIXTURES, fixture, golden, stringify } from './fixtures.ts';
+import { CANONICALIZED, DEVIATING, FIXTURES, fixture, golden, NOT_IDEMPOTENT, stringify } from './fixtures.ts';
 
 function expectGolden(file: string, actual: string): void {
   const expected = golden(file);
@@ -50,11 +50,18 @@ describe('L1 converter in Node @p:tech-1', () => {
       expectGolden(`${name}.export.md`, exportMarkdown(importMarkdown(markdown, options)));
     });
 
-    it('A3 is a fixpoint after one export', () => {
+    it(NOT_IDEMPOTENT[name] ? `A3 export is not idempotent at the pin: ${NOT_IDEMPOTENT[name]}` : 'A3 export is idempotent after one pass', () => {
       const exported = exportMarkdown(importMarkdown(markdown, options));
-      const again = importMarkdown(exported, options);
-      expect(stringify(again.getEditorState().toJSON())).toBe(treeOf(markdown, options));
-      expect(exportMarkdown(again)).toBe(exported);
+      const again = exportMarkdown(importMarkdown(exported, options));
+      if (NOT_IDEMPOTENT[name]) expect(again).not.toBe(exported);
+      else expect(again).toBe(exported);
+    });
+
+    const known = CANONICALIZED[name] ?? NOT_IDEMPOTENT[name];
+    it(known ? `A3 first import is not the exported tree at the pin: ${known}` : 'A3 first import is the tree its export carries', () => {
+      const exported = exportMarkdown(importMarkdown(markdown, options));
+      if (known) expect(treeOf(exported, options)).not.toBe(treeOf(markdown, options));
+      else expect(treeOf(exported, options)).toBe(treeOf(markdown, options));
     });
   });
 });

@@ -655,7 +655,7 @@ const FILE_LINK_TRANSFORMER: TextMatchTransformer = {
     // Note: When headingText is present, we use 'note_resolved' (not 'fully_resolved')
     // because heading existence must be validated asynchronously in FileLinkPlugin.
     // For same-note anchors (no noteTitle), we also start with 'note_resolved'.
-    let resolutionState: import('../../common/noteTypes').LinkResolutionState;
+    let resolutionState: import('../../../common/noteTypes').LinkResolutionState;
     if (isResolved) {
       resolutionState = 'note_resolved';
     } else if (!noteTitle && headingText) {
