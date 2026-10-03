@@ -34,6 +34,7 @@ const ALIASES = [
   [/^@moss\/shared\//, `${vendor}/shared/src/`],
   [/^@\//, `${vendor}/shared/src/`],
   [/^@moss-desktop\//, `${vendor}/desktop/src/`],
+  [/^@moss-multi\/host\//, `${REPO}/apps/web/src/host/`],
 ];
 
 // Moss's aliases as an esbuild plugin (wrangler's own `alias` matches whole specifiers only).

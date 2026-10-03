@@ -9,6 +9,7 @@ import * as Y from 'yjs';
 import { readField } from '@moss-multi/core/doc-fields';
 import { composeFrontmatter, importFrontmatter } from '@moss-multi/core/frontmatter';
 import { $importNoteBody, createConverterEditor, exportMarkdown } from './converter/index.ts';
+import { $recomputeExportFormulas } from './formula-export.ts';
 import { excludedPropertiesFor } from './excluded-properties.ts';
 
 export const SERVER_SEED = 'server-seed';
@@ -123,6 +124,7 @@ export function importBody(live: Y.Doc, markdown: string, admit?: (diff: Uint8Ar
 export function exportDocMarkdown(live: Y.Doc): string {
   const mirror = mirrorOf(live);
   try {
+    mirror.editor.update($recomputeExportFormulas, { discrete: true });
     return composeFrontmatter(readField(live, 'frontmatter'), exportMarkdown(mirror.editor));
   } finally {
     mirror.dispose();

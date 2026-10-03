@@ -1,16 +1,396 @@
 diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx
 --- a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx
 +++ b/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx
-@@ -1690,7 +1690,11 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
-     // moss-multi seam: bound-pane (A§2.2): a bound note's content is its doc. No REST read and no remount on updatedAt; the editor
-     // mounts at once and its binding opens it at first sync (A§10.3).
-     if (mossMultiPane.bound) {
--      if (noteIdChanged) setContentHydratedForNoteId(note.id);
+@@ -162,6 +162,10 @@ import { NoteBreadcrumb } from '../components/NoteBreadcrumb';
+ import { useTitleEmojiTypeahead } from './useTitleEmojiTypeahead';
+ import { TopNavBar, TopNavIconButton, TOP_NAV_ICON_SIZE_CLASSNAMES } from './TopNavControls';
+ import { isQuitProfilingEnabled } from '../utils/renderer-env';
++// moss-multi seam: hide-registry (A§9)
++import { hidden } from '@moss-multi/host/affordances';
++// moss-multi seam: bound-pane (A§2.2, A§10.3): the one hook for the doc binding, its gate and the pane's attributes
++import { useMossMultiPane } from '@moss-multi/host/collab/pane';
+ 
+ const TRASH_RETENTION_DAYS = 30;
+ const MS_IN_DAY = 24 * 60 * 60 * 1000;
+@@ -920,6 +924,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+   const overrideNote = useAtomValue(noteEntityAtom(noteIdOverride ?? NO_NOTE_SENTINEL));
+   const note = noteIdOverride ? overrideNote : activeNote;
+   const store = useStore();
++  const mossMultiPane = useMossMultiPane(note); // moss-multi seam: bound-pane (A§2.2)
+   const titleInputRef = useRef<HTMLDivElement>(null);
+   const editorInstanceRef = useRef<LexicalEditor | null>(null);
+   const markdownEditorRef = useRef<MarkdownEditorHandle>(null);
+@@ -940,7 +945,12 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+     hasElectronBridge &&
+     !(typeof navigator !== 'undefined' && /jsdom/i.test(navigator.userAgent));
+ 
+-  const [titleValue, setTitleValue] = useState('');
++  const [titleValue, setTitleValueState] = useState('');
++  // moss-multi seam: all authored title paths write the shared field.
++  const setTitleValue = useCallback((text: string) => {
++    setTitleValueState(text);
++    mossMultiPane.title.write(text);
++  }, [mossMultiPane.title]);
+   const titleValueRef = useRef(titleValue);
+   titleValueRef.current = titleValue;
+   const commitTitleChangeRef = useRef<() => void>(() => {});
+@@ -1170,6 +1180,8 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+     latestOnBodyFocusCompleteRef.current = onBodyFocusComplete;
+   }, [onBodyFocusComplete]);
+ 
++  mossMultiPane.title.connect(titleInputRef, setTitleValueState); // moss-multi seam: render shared title
++
+   const getLiveTitleText = useCallback((): string => {
+     return titleInputRef.current?.textContent ?? titleValueRef.current;
+   }, []);
+@@ -1326,7 +1338,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+   }, [note?.id]);
+ 
+   useLayoutEffect(() => {
+-    if (!note?.id || contentHydratedForNoteId !== noteIdForAtoms) {
++    if (mossMultiPane.bound || !note?.id || contentHydratedForNoteId !== noteIdForAtoms) {
+       return;
+     }
+ 
+@@ -1366,9 +1378,10 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+ 
+   useLayoutEffect(() => {
+     const el = titleInputRef.current;
+-    if (!el || !autoFocusTitle || titleFocusCompletedRef.current || contentHydratedForNoteId !== noteIdForAtoms) {
++    if (!el || !autoFocusTitle || (!mossMultiPane.bound && titleFocusCompletedRef.current) || contentHydratedForNoteId !== noteIdForAtoms) {
+       return;
+     }
++    if (!mossMultiPane.titleLive) return; // moss-multi seam: bound-pane (A§2.2): the title takes focus once bound (R2)
+ 
+     el.focus();
+     const range = document.createRange();
+@@ -1380,14 +1393,15 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+     titleFocusCompletedRef.current = true;
+     latestOnTitleFocusCompleteRef.current?.();
+     setPlaceholderIdx((i) => (i + 1) % PLACEHOLDER_PAIRS.length);
+-  }, [autoFocusTitle, contentHydratedForNoteId, note?.id, noteIdForAtoms, setPlaceholderIdx]);
++  }, [autoFocusTitle, contentHydratedForNoteId, mossMultiPane.titleLive, note?.id, noteIdForAtoms, setPlaceholderIdx]);
+ 
+   useLayoutEffect(() => {
+     if (
+       !autoFocusBody ||
+       bodyFocusCompletedRef.current ||
+       contentHydratedForNoteId !== noteIdForAtoms ||
+-      editorReadyForFocusNoteId !== noteIdForAtoms
++      editorReadyForFocusNoteId !== noteIdForAtoms ||
++      !mossMultiPane.bodyLive // moss-multi seam: bound-pane (A§2.2): the body takes focus once bound (R2)
+     ) {
+       return;
+     }
+@@ -1402,6 +1416,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+     contentHydratedForNoteId,
+     editorReadyForFocusNoteId,
+     focusEditorStart,
++    mossMultiPane.bodyLive,
+     noteIdForAtoms,
+     setPlaceholderIdx
+   ]);
+@@ -1471,7 +1486,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+     h1Title: string | null,
+     opts?: { skipIfTitleFocused?: boolean }
+   ): void => {
+-    if (!h1Title) return;
++    if (!h1Title || mossMultiPane.bound) return; // moss-multi seam: bound-pane (A§2.2): the title is its doc's field (A§10.4)
+     if (opts?.skipIfTitleFocused && document.activeElement === titleInputRef.current) return;
+     const currentTitle = store.get(noteEntityAtom(noteId))?.title;
+     if (h1Title === currentTitle) return;
+@@ -1672,6 +1687,17 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+     const noteIdChanged = prevNoteId !== note.id;
+     previousNoteIdRef.current = note.id;
+ 
++    // moss-multi seam: bound-pane (A§2.2): a bound note's content is its doc. No REST read and no remount on updatedAt; the editor
++    // mounts at once and its binding opens it at first sync (A§10.3).
++    if (mossMultiPane.bound) {
 +      if (noteIdChanged) {
 +        // moss-multi seam: local heading identities must precede the first-sync restore.
 +        try { store.set(noteCollapsedHeadingsAtom(note.id), JSON.parse(localStorage.getItem(`moss-multi:collapsed-headings:${note.id}`) ?? '[]')); } catch { /* unavailable storage */ }
 +        setContentHydratedForNoteId(note.id);
 +      }
++      return;
++    }
++
+     // Force a fresh hydration gate on note switches so the editor never mounts
+     // with stale atom content from a previous visit while the new disk fetch is in flight.
+     if (noteIdChanged) {
+@@ -2515,7 +2541,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+ 
+   // Save both markdown (for export) and JSON state (canonical format)
+   const saveContent = useCallback((options?: { force?: boolean; updatedAt?: number }): Promise<void> => {
+-    if (!note?.id || !hasElectronBridge || isTrashed) {
++    if (!note?.id || !hasElectronBridge || isTrashed || mossMultiPane.bound /* moss-multi seam: bound-pane (A§2.2): the binding persists */) {
+       return Promise.resolve();
+     }
+     const noteId = note.id;
+@@ -3202,7 +3228,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+ 
+   // Autosave triggers: 30-min periodic safety net + comment dirty signal subscription
+   useEffect(() => {
+-    if (!note?.id || !hasElectronBridge || isTrashed) {
++    if (!note?.id || !hasElectronBridge || isTrashed || mossMultiPane.bound /* moss-multi seam: bound-pane (A§2.2) */) {
        return;
      }
  
+@@ -3231,7 +3257,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+   // If the user has unsaved edits (dirty), skip — user wins.
+   // =========================================================================
+   useEffect(() => {
+-    if (!hasElectronBridge || !note?.id || isTrashed) return;
++    if (!hasElectronBridge || !note?.id || isTrashed || mossMultiPane.bound /* moss-multi seam: bound-pane (A§2.2) */) return;
+ 
+     const runPendingDiskRevalidation = () => {
+       pendingDiskRevalidateOnFocusRef.current = false;
+@@ -3311,6 +3337,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+ 
+   // Focus the title field and select all text
+   const focusTitle = useCallback(() => {
++    if (mossMultiPane.title.deferFocus()) return; // moss-multi seam: focus only after bind
+     if (titleInputRef.current) {
+       titleInputRef.current.focus();
+       const range = document.createRange();
+@@ -3504,7 +3531,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+ 
+   const forceReloadFromDisk = useCallback(async (): Promise<boolean> => {
+     const noteId = note?.id;
+-    if (!noteId) return false;
++    if (!noteId || mossMultiPane.bound /* moss-multi seam: bound-pane (A§2.2) */) return false;
+     try {
+       const result = await notesApi.getById.invoke(noteId, { skipAnalytics: true });
+       if (!result) return false;
+@@ -3591,7 +3618,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+   // Sync title contentEditable with external title changes (agent rename, file watcher)
+   useEffect(() => {
+     const el = titleInputRef.current;
+-    if (!el || !note) return;
++    if (!el || !note || mossMultiPane.bound) return; // moss-multi seam: the binding renders remote titles
+     if (shouldPreserveDirtyEditor(note.id)) return;
+     // Don't overwrite while user is actively editing the title
+     if (isTitleFocusedRef.current || document.activeElement === el) return;
+@@ -3610,7 +3637,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+   // Agent writes go to disk via SDK tools; the disk watcher picks them up.
+   // =========================================================================
+   useEffect(() => {
+-    if (!hasElectronBridge || !note?.id) return;
++    if (!hasElectronBridge || !note?.id || mossMultiPane.bound /* moss-multi seam: bound-pane (A§2.2) */) return;
+ 
+     const unsub = agentApi.onStream((event) => {
+       if (event.type === 'editor_update') {
+@@ -4088,6 +4115,12 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+     let skippedBootstrapUpdate = false;
+     editorUpdateUnregisterRef.current = editor.registerUpdateListener(
+       ({ dirtyElements, dirtyLeaves, tags }) => {
++        // moss-multi seam: bound-pane (A§2.2): the binding persists a bound note, so no dirty state and no autosave;
++        // every update, local or a peer's, still clears the body cache that Copy markdown and Note stats read.
++        if (mossMultiPane.bound) {
++          bumpEditorContentRevision();
++          return;
++        }
+         const hasDirtyMutations = dirtyElements.size > 0 || dirtyLeaves.size > 0;
+         const hasContentUpdateTag = hasTrackedEditorUpdateTag(tags, DIRTY_TRACKER_CONTENT_TAGS);
+ 
+@@ -4116,7 +4149,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+     // After post-mount transforms (AutoArrow, FormatWhitespaceBoundary) settle,
+     // sync lastEditorOutputRef and clear false dirty. Double rAF ensures all
+     // Lexical reconciliation is complete before capturing the baseline.
+-    scheduleEditorSettlingBaselineCapture(note?.id);
++    if (!mossMultiPane.bound) scheduleEditorSettlingBaselineCapture(note?.id); // moss-multi seam: bound-pane (A§2.2)
+ 
+     // Restore scroll position if pending (from agent update)
+     const pendingScrollTop = pendingScrollRestoreRef.current;
+@@ -4199,7 +4232,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+   }, [bumpEditorContentRevision, isTrashed, markDirty, note?.id, scheduleDebouncedAutosave, scheduleEditorSettlingBaselineCapture]);
+ 
+   const commitTitleChange = useCallback(() => {
+-    if (!note || isTrashed) return;
++    if (!note || isTrashed || mossMultiPane.bound) return; // moss-multi seam: no second title writer
+ 
+     const nextTitleRaw = getLiveTitleText();
+     if (titleValueRef.current !== nextTitleRaw) {
+@@ -4315,16 +4348,21 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+     />
+   );
+ 
++  // moss-multi seam: bound-pane (A§2.2): a bound note never fills `content`, so its stats read the editor's body while
++  // the dialog is open and keep that read through its close animation
++  const boundStatsMarkdownRef = useRef('');
++  if (mossMultiPane.bound && showNoteStats) boundStatsMarkdownRef.current = getEditorBodyMarkdown()?.markdownBody ?? '';
++  const statsMarkdown = mossMultiPane.bound ? boundStatsMarkdownRef.current : content;
+   // Note stats computed from body markdown content
+   const noteStats = useMemo(() => {
+-    const text = content.replace(/```[\s\S]*?```/g, '').replace(/!\[.*?\]\(.*?\)/g, '').replace(/\[([^\]]*)\]\([^)]*\)/g, '$1');
++    const text = statsMarkdown.replace(/```[\s\S]*?```/g, '').replace(/!\[.*?\]\(.*?\)/g, '').replace(/\[([^\]]*)\]\([^)]*\)/g, '$1');
+     const words = text.split(/\s+/).filter((w) => w.length > 0).length;
+-    const characters = content.length;
++    const characters = statsMarkdown.length;
+     const readingTime = Math.max(1, Math.ceil(words / 200));
+-    const images = (content.match(/!\[.*?\]\(.*?\)/g) ?? []).length;
++    const images = (statsMarkdown.match(/!\[.*?\]\(.*?\)/g) ?? []).length;
+     return { words, characters, readingTime, images };
+-  }, [content]);
+-  const hasBodyContent = content.trim().length > 0;
++  }, [statsMarkdown]);
++  const hasBodyContent = mossMultiPane.bound ? mossMultiPane.hasBodyText : content.trim().length > 0; // moss-multi seam: bound-pane (A§2.2)
+ 
+   const canvasMouseDownFocusedEditorRef = useRef(false);
+ 
+@@ -4421,8 +4459,9 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+   // Hooks must be called unconditionally in the same order every render.
+   if (!note) {
+     return (
+-      <div className="relative flex h-full min-w-0 flex-1 bg-surface-canvas">
++      <div className="relative flex h-full min-w-0 flex-1 flex-col bg-surface-canvas">
+         {canvasTopDragStrip}
++        {mossMultiPane.noticeBand /* moss-multi seam: input refusals before the first note opens */}
+         <CanvasArea className="min-w-0 flex-1" fullWidth innerClassName="flex h-full items-center justify-center">
+           <p className="text-sm text-ink-muted">Create a new note to get started</p>
+         </CanvasArea>
+@@ -4437,6 +4476,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+         tone={paneId ? (isPaneFocused ? 'focusedSplit' : 'inactiveSplit') : 'primary'}
+         onClick={paneId && !isPaneFocused ? () => setFocusPane(paneId) : undefined}
+         appRegion={paneId && !isPaneFocused ? 'no-drag' : 'drag'}
++        data-top-bar="" // moss-multi seam: bound-pane (A§2.2): web chrome lives inside the top bar (A§19)
+       >
+       <div className="relative flex h-8 min-w-0 items-center justify-between">
+       {/* Left: traffic light clearance + panel toggle + nav */}
+@@ -4556,6 +4596,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+       {/* Right: metadata toggle + find bar + copy + more + panel toggle */}
+       {hideRightControls ? <div className="flex-1" /> : (
+       <div className="flex shrink-0 items-center gap-1.5" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
++        {mossMultiPane.topBarCollab /* moss-multi seam: bound-pane (A§2.2): Share, connection, face pile, bell */}
+         {!showFocusedSearchBar && onOpenSearch ? (
+           <TooltipProvider>
+             <Tooltip>
+@@ -4610,6 +4651,8 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+           />
+         )}
+         {/* Share with Agent */}
++        {/* moss-multi seam: hide-registry (A§9) */}
++        {hidden('share-with-agent') ? null : (
+         <TooltipProvider>
+           <Tooltip>
+             <TooltipTrigger asChild>
+@@ -4633,6 +4676,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+             )}
+           </Tooltip>
+         </TooltipProvider>
++        )}
+         {/* Overflow menu */}
+         <DropdownMenu open={moreActionsOpen} onOpenChange={setMoreActionsOpen}>
+           <TooltipProvider>
+@@ -4663,6 +4707,8 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+             </DropdownMenuItem>
+             <DropdownMenuSeparator />
+             {/* Export group */}
++            {/* moss-multi seam: hide-registry (A§9) */}
++            {hidden('save-as-pdf') ? null : (
+             <DropdownMenuItem
+               className="gap-2 text-xs"
+               onSelect={handleSaveAsPdf}
+@@ -4671,6 +4717,8 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+               <FileDown aria-hidden className="h-3.5 w-3.5" />
+               Save as PDF
+             </DropdownMenuItem>
++            )}
++            {hidden('save-as-markdown') ? null : (
+             <DropdownMenuItem
+               className="gap-2 text-xs"
+               onSelect={handleSaveAsMarkdown}
+@@ -4679,12 +4727,15 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+               <FileCode aria-hidden className="h-3.5 w-3.5" />
+               {isSavingMarkdown ? 'Saving...' : 'Save as Markdown'}
+             </DropdownMenuItem>
+-            <DropdownMenuSeparator />
++            )}
++            {hidden('save-as-pdf') && hidden('save-as-markdown') ? null : <DropdownMenuSeparator />}
+             {/* Stats */}
+             <DropdownMenuItem className="gap-2 text-xs" onSelect={() => { requestAnimationFrame(() => setShowNoteStats(true)); }}>
+               <FileDigit aria-hidden className="h-3.5 w-3.5" />
+               Note stats
+             </DropdownMenuItem>
++            {/* moss-multi seam: hide-registry (A§9) */}
++            {hidden('trash') && !isExternal ? null : (<>
+             <DropdownMenuSeparator />
+             {/* Danger group */}
+             <DropdownMenuItem
+@@ -4699,6 +4750,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+                 <><Trash2 aria-hidden className="h-3.5 w-3.5" />Trash</>
+               )}
+             </DropdownMenuItem>
++            </>)}
+           </DropdownMenuContent>
+         </DropdownMenu>
+         <CopyForAgentDialog
+@@ -4826,8 +4878,10 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+       className="relative flex h-full min-w-0 flex-1 flex-col bg-surface-canvas"
+       onMouseDown={handleCanvasAreaMouseDown}
+       onClick={handleCanvasAreaClick}
++      {...mossMultiPane.paneProps /* moss-multi seam: bound-pane (A§2.2): data-editor-pane, data-doc-id, data-doc-state (A§19) */}
+     >
+       {!hideTopBar && staticTopBar}
++      {mossMultiPane.noticeBand /* moss-multi seam: connection notices in flow below the top bar */}
+       <CanvasArea
+         className="relative min-w-0 flex-1"
+         responsiveLayout
+@@ -4857,7 +4911,9 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+               {/* Contenteditable H1 title field */}
+               <div
+                 ref={titleRefCallback}
+-                contentEditable={!isTrashed}
++                contentEditable={!isTrashed && mossMultiPane.titleLive /* moss-multi seam: bound-pane (A§2.2): closed until bound (R2) */}
++                data-title-binding={mossMultiPane.titleBinding}
++                aria-disabled={mossMultiPane.titleLive ? undefined : true}
+                 suppressContentEditableWarning
+                 role="textbox"
+                 aria-label="Note title"
+@@ -4944,12 +5000,15 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+                   aria-hidden
+                 >
+                   <span className="min-w-0 truncate">{currentPlaceholder.title}</span>
++                  {/* moss-multi seam: hide-registry (A§9) */}
++                  {hidden('title-shortcut-label') ? null : (
+                   <KeyboardShortcut
+                     keys={['⌘', 'T']}
+                     size="compact"
+                     variant="placeholder"
+                     className="shrink-0 opacity-60"
+                   />
++                  )}
+                 </div>
+               ) : null}
+               </div>
+@@ -4972,7 +5031,9 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+                   ))}
+                 </div>
+               ) : null}
++              {/* moss-multi seam: bound-pane (A§2.2): the editor mounts at once and binds behind the skeleton until first sync (A§10.3) */}
+               {shouldMountEditor ? (
++                <div className={mossMultiPane.bodyVisible ? 'contents' : 'hidden'}>
+                 <MarkdownEditor
+                   ref={markdownEditorRef}
+                   key={`${note.id}-${editorVersion}`}
+@@ -4980,7 +5041,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+                   value={content}
+                   layoutMetadata={lastKnownDiskLayoutMetadataRef.current[note.id]}
+                   onChange={handleEditorChange}
+-                  readOnly={isTrashed}
++                  readOnly={isTrashed || mossMultiPane.readOnly}
+                   placeholder={isAgentActive && content === '' ? '' : currentPlaceholder.body}
+                   onReady={handleEditorReady}
+                   onNavigateToNote={onNavigateToNote}
+@@ -4996,8 +5057,11 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+                       ? editorRemountReasonRef.current[note.id]?.reason
+                       : null
+                   }
++                  collaboration={mossMultiPane.collaboration}
+                 />
+-              ) : (
++                </div>
++              ) : null}
++              {shouldMountEditor && mossMultiPane.bodyVisible ? null : (
+                 <div className="agent-skeleton agent-skeleton--content pt-4">
+                   {[100, 94, 88, 72, 96, 64].map((width, i) => (
+                     <div

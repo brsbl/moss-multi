@@ -1,4 +1,6 @@
 // ported-from: packages/desktop/src/renderer/prompt/CommandPaletteOverlay.tsx @ 762abb777
+// moss-multi seam: an empty prompt routes undo to the focused note.
+import { undoFromEmptyPrompt } from '@moss-multi/host/collab/undo';
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { Dialog } from '@moss/shared/primitives';
@@ -1297,6 +1299,7 @@ export const CommandPaletteOverlay = forwardRef<CommandPaletteOverlayHandle, Com
           className={`${PALETTE_FRAME_RADIUS_CLASS} overflow-hidden rounded-t-none ${
             contextIsEmpty ? 'bg-surface-raised-control' : 'bg-surface-panel/50'
           }`}
+          onKeyDownCapture={event => { if (!promptDraft.trim()) undoFromEmptyPrompt(event); }}
           data-command-palette-composer={location}
           data-command-palette-docked-composer={compact ? 'true' : undefined}
         >
