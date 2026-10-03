@@ -485,6 +485,46 @@ test('j02-title: Rename in a row menu focuses the bound title, and the name type
   await expect.poll(() => listed(ada, first).then((doc) => doc?.title), { message: 'the DocDO projects it', timeout: RENAME_MS }).toBe(name);
 });
 
+for (const check of ['typing', 'navigation'] as const) {
+  test(`j02-title: Rename on the open note preserves ${check} focus @p:R2 @p:note-6`, async ({ actors }) => {
+    const ada = await openShell(actors, 'ada');
+    await openShell(actors, 'ben');
+    await actors.requireDistinct(2);
+    const other = await ui.createNote(ada);
+    await ui.typeTitle(ada, other, 'Other title');
+    await waitAcked(ada, other);
+    const current = await ui.createNote(ada);
+    await ui.typeTitle(ada, current, 'Current title');
+    await waitAcked(ada, current);
+    await row(ada, current).click({ button: 'right' });
+    await ada.page.getByRole('menuitem', { name: 'Rename', exact: true }).click();
+    await expect(ada.page.getByRole('menu')).toBeHidden();
+    if (check === 'typing') {
+      await expect(ui.title(ada, current), 'menu close leaves focus in the requested title').toBeFocused();
+      await ada.page.keyboard.type('Renamed');
+      await expect(ui.title(ada, current)).toHaveText('Renamed');
+      await waitAcked(ada, current);
+    } else {
+      await row(ada, other).click();
+      await ui.waitLive(ada, other);
+      ada.expectReconnects(1, other);
+      await ada.declareRemount(other);
+      await expect(ui.title(ada, other), 'plain navigation must not inherit a Rename intent').not.toBeFocused();
+      await expect(ui.title(ada, other)).toHaveText('Other title');
+    }
+  });
+}
+
+test('j02-title: an empty refusal band preserves the note layout @p:note-6', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  await openShell(actors, 'ben');
+  await actors.requireDistinct(2);
+  await ui.createNote(ada);
+  await expect(refusal(ada)).toHaveText('');
+  expect(await refusal(ada).evaluate((element) => element.getBoundingClientRect().height),
+    'an empty band adds no space below the top bar').toBe(0);
+});
+
 test('j02-title: a bare Backspace with nothing focused keeps the URL, while the doc binds and once it is live @p:note-6 @macos', async ({ actors }) => {
   const ada = await openShell(actors, 'ada', { severable: true });
   await openShell(actors, 'ben');

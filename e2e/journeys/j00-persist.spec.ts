@@ -348,6 +348,7 @@ test('j00-persist: keys typed while "+ Note" is still opening are refused visibl
   await openShell(actors, 'ben');
   await actors.requireDistinct(2);
 
+  await expect(ada.page.locator(`[${EDITOR_PANE_ATTR}]`), 'the first note starts on an empty canvas').toHaveCount(0);
   // The create request is held, so the keys land between the click and the bind on every run.
   let creates = 0;
   let release: () => void = () => undefined;
