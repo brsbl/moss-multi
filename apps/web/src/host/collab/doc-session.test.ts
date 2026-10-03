@@ -126,3 +126,47 @@ it('a repeated 4403 with editor REST access backs off instead of looping immedia
   await vi.advanceTimersByTimeAsync(1);
   expect(sockets).toHaveLength(3);
 });
+
+it('re-announces unchanged presence every four seconds without changing the caret', async () => {
+  latest().open(); session.provider.synced = true;
+  const state = { name: 'Ada', anchorPos: { tname: 'root', index: 2 }, focusPos: null, focusing: true };
+  session.provider.awareness.setLocalState(state);
+  const clock = () => session.provider.awareness.meta.get(session.doc.clientID)?.clock ?? 0;
+  const before = clock();
+  await vi.advanceTimersByTimeAsync(4_000);
+  expect(clock()).toBeGreaterThan(before);
+  expect(session.provider.awareness.getLocalState()).toEqual(state);
+});
+
+it('a hidden idle tab sends no frames or reconnects and immediately re-announces on return', async () => {
+  latest().open(); session.provider.synced = true;
+  const state = { name: 'Ada', anchorPos: null, focusPos: null, focusing: false };
+  session.provider.awareness.setLocalState(state);
+  vi.spyOn(document, 'hidden', 'get').mockReturnValue(true);
+  document.dispatchEvent(new Event('visibilitychange'));
+  const socket = latest();
+  const sent = socket.sent.length;
+  const clock = () => session.provider.awareness.meta.get(session.doc.clientID)?.clock ?? 0;
+  const before = clock();
+  await vi.advanceTimersByTimeAsync(100_000);
+  expect(socket.sent).toHaveLength(sent);
+  expect(sockets).toHaveLength(1);
+  expect(socket.closes).toEqual([]);
+  vi.spyOn(document, 'hidden', 'get').mockReturnValue(false);
+  document.dispatchEvent(new Event('visibilitychange'));
+  expect(clock()).toBeGreaterThan(before);
+  expect(session.provider.awareness.getLocalState()).toEqual(state);
+  expect(socket.sent.length).toBeGreaterThan(sent);
+});
+
+it('pagehide suspends automatic traffic and never resurrects cleared presence', async () => {
+  latest().open(); session.provider.synced = true;
+  session.provider.awareness.setLocalState({ name: 'Ada' });
+  window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }));
+  const sent = latest().sent.length;
+  await vi.advanceTimersByTimeAsync(100_000);
+  expect(latest().sent).toHaveLength(sent);
+  expect(sockets).toHaveLength(1);
+  window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
+  expect(session.provider.awareness.getLocalState()).toBeNull();
+});

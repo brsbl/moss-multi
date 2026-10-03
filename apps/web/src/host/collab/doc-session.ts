@@ -493,6 +493,10 @@ export class DocSession {
     this.#lastResync = Date.now();
     try {
       ws.send(syncFrame(0, Y.encodeStateVector(this.doc)));
+      // A woken DO has an empty awareness map even when this socket survived. Preserve the caret and focus.
+      const awareness = this.provider.awareness;
+      const state = awareness.getLocalState();
+      if (state !== null && !this.#ended && !this.#lingering) awareness.setLocalState(state);
       const pending = this.#ledger.pendingUpdate();
       if (pending && !this.#ended) ws.send(syncFrame(2, pending));
     } catch {
@@ -502,7 +506,7 @@ export class DocSession {
 
   /** Back in view: the silence clock restarts and a step 1 asks the server for anything missed while hidden. */
   readonly #onVisibility = (): void => {
-    if (document.hidden) return;
+    if (document.hidden || this.#paused || this.#disposed) return;
     this.#visibleSince = Date.now();
     const ws = this.provider.ws;
     if (ws?.readyState === WebSocket.OPEN) this.#resync(ws);
@@ -516,7 +520,7 @@ export class DocSession {
   readonly #onPageShow = (event: PageTransitionEvent): void => {
     if (!event.persisted) return;
     this.#paused = false;
-    this.#visibleSince = Date.now();
+    this.#onVisibility();
   };
 
   #wrote(update: Uint8Array): void {
