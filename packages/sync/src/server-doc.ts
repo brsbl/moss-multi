@@ -48,7 +48,7 @@ function mirrorOf(live: Y.Doc): Mirror {
   root.observeDeep(observer);
   Y.applyUpdate(doc, Y.encodeStateAsUpdate(live), HYDRATE);
   // The hydration commits on its own, under the collaboration tag, before any mutation runs.
-  editor.update(noop, { discrete: true });
+  editor.update(noop, { discrete: true, skipTransforms: true });
   return {
     doc,
     editor,
@@ -63,11 +63,11 @@ function mirrorOf(live: Y.Doc): Mirror {
 }
 
 /** What `mutate` changes, as an update against `live`'s state. */
-function mirrorDiff(live: Y.Doc, mutate: () => void): Uint8Array {
+function mirrorDiff(live: Y.Doc, mutate: (doc: Y.Doc) => void): Uint8Array {
   const mirror = mirrorOf(live);
   try {
     const hydrated = Y.encodeStateVector(mirror.doc);
-    mirror.editor.update(mutate, { discrete: true });
+    mirror.editor.update(() => mutate(mirror.doc), { discrete: true });
     return Y.encodeStateAsUpdate(mirror.doc, hydrated);
   } finally {
     mirror.dispose();
@@ -80,7 +80,7 @@ function mirrorDiff(live: Y.Doc, mutate: () => void): Uint8Array {
  * the diff to the live doc under `origin`. The mirror is released before returning. Returns whether the live doc
  * changed.
  */
-export function serverWrite(live: Y.Doc, origin: unknown, mutate: () => void, admit: (diff: Uint8Array) => void = noop): boolean {
+export function serverWrite(live: Y.Doc, origin: unknown, mutate: (doc: Y.Doc) => void, admit: (diff: Uint8Array) => void = noop): boolean {
   const diff = mirrorDiff(live, mutate);
   admit(diff);
   let changed = false;
@@ -108,8 +108,15 @@ export function seedEmptyParagraph(live: Y.Doc): boolean {
 }
 
 /** Replaces the body with `markdown` through the one converter (A§12), which imports with no selection (SP2). */
-export function importBody(live: Y.Doc, markdown: string, admit?: (diff: Uint8Array) => void): boolean {
-  return serverWrite(live, SERVER_IMPORT, () => $importNoteBody(markdown, { comments: {} }), admit);
+export function importBody(live: Y.Doc, markdown: string, admit?: (diff: Uint8Array) => void, frontmatter?: string): boolean {
+  return serverWrite(live, SERVER_IMPORT, (doc) => {
+    $importNoteBody(markdown, { comments: {} });
+    if (frontmatter !== undefined) {
+      const field = doc.getText('frontmatter');
+      field.delete(0, field.length);
+      field.insert(0, frontmatter);
+    }
+  }, admit);
 }
 
 /** The `.md` file (A§12): the raw frontmatter block, then the body through the one converter. */

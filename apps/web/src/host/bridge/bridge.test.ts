@@ -177,7 +177,7 @@ it.each(['switch', 'navigation'] as const)('a listing poll never overrides an in
   const held = new Promise<Response>((done) => { resolve = done; });
   const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
     const url = String(input);
-    return url.includes('vault=v2') || url.includes('doc=d2') ? held : Response.json(LISTING);
+    return url.includes('vault=v2') || url.includes('doc=d2') ? (await held).clone() : Response.json(LISTING);
   });
   const api = createBridge({ pathname: () => '/', fetch, storage });
   const stop = api.notes.onDiskChange(vi.fn());

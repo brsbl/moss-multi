@@ -148,10 +148,8 @@ export class DocDO extends YServer<SyncEnv> {
     if (input.markdown) {
       const parts = splitFrontmatter(input.markdown);
       const hasFrontmatter = parts.hasFrontmatter && !parts.error;
-      importBody(this.document, hasFrontmatter ? parts.body : input.markdown, (diff) => this.#admitServerWrite(store, diff));
-      if (hasFrontmatter) this.document.transact(() => {
-        this.document.getText('frontmatter').insert(0, input.markdown!.slice(0, input.markdown!.length - parts.body.length));
-      }, SERVER_IMPORT);
+      const frontmatter = hasFrontmatter ? input.markdown.slice(0, input.markdown.length - parts.body.length) : undefined;
+      importBody(this.document, hasFrontmatter ? parts.body : input.markdown, (diff) => this.#admitServerWrite(store, diff), frontmatter);
     }
     const title = input.title?.trim();
     // POST /api/docs wrote the D1 title, so this write needs no projection.

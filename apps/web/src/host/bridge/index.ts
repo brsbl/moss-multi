@@ -149,10 +149,12 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
   const workspaceListeners = new Set<() => void>();
   const diskListeners = new Set<Listener<[string[], string[]]>>();
   let loadVersion = 0;
+  let loadsInFlight = 0;
   let poll: ReturnType<typeof setInterval> | null = null;
   let polling = false;
   const load = (vaultId: string | null, docId: string | null = null): Promise<NoteMetadata[]> => {
     const version = ++loadVersion;
+    loadsInFlight += 1;
     const query = new URLSearchParams();
     if (vaultId) query.set('vault', vaultId);
     if (docId) query.set('doc', docId);
@@ -167,7 +169,7 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
       for (const doc of docs) known.set(doc.id, doc);
       workspaceListeners.forEach((listener) => listener());
       return docs;
-    });
+    }).finally(() => { loadsInFlight -= 1; });
     listing = pending;
     void pending.catch(() => { if (listing === pending) listing = null; });
     return pending;
@@ -322,7 +324,7 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
       onDiskChange: (callback?: Listener<[string[], string[]]>) => {
         if (callback) diskListeners.add(callback);
         if (!poll && diskListeners.size) poll = setInterval(async () => {
-          if (polling || !workspaceSnapshot) return;
+          if (polling || loadsInFlight || !workspaceSnapshot) return;
           polling = true;
           const before = JSON.stringify(workspaceSnapshot);
           try {

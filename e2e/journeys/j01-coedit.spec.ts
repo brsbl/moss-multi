@@ -285,4 +285,16 @@ test('j01 duplicate: the note menu makes a content-preserving copy visible to bo
   await ben.page.reload();
   await waitBodyLive(ben, copyId);
   expect(await ui.fieldText(ben, copyId, 'body')).toBe(text);
+  const copyEdit = ' Only the copy gains this sentence.';
+  await ui.typeBody(ben, copyId, copyEdit);
+  await expect(ui.body(ada, copyId)).toContainText(copyEdit);
+  await ada.page.locator(`[data-sidebar-row][data-doc-id="${docId}"]`).click();
+  await waitBodyLive(ada, docId);
+  expect(await ui.fieldText(ada, docId, 'body')).toBe(text);
+  const sourceEdit = ' Only the source gains this sentence.';
+  await ui.typeBody(ada, docId, sourceEdit);
+  await expect(ui.pane(ada, docId)).toHaveAttribute(SYNC_UNACKED_ATTR, '0');
+  await ben.page.reload();
+  await waitBodyLive(ben, copyId);
+  expect(await ui.fieldText(ben, copyId, 'body')).toBe(text + copyEdit);
 });

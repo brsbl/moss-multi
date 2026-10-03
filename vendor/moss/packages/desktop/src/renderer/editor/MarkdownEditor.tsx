@@ -860,8 +860,11 @@ const convertMarkdownPasteToNodes = (markdown: string): LexicalNode[] => {
   const root = $getRoot();
   const savedChildren = root.getChildren();
 
-  // moss-multi seam: paste and server import share the exact body converter.
-  $importNoteBody(markdown, { comments: {} });
+  $convertFromMarkdownString(
+    escapeHtmlEntities(normalizeMarkdownForImport(markdown)),
+    MARKDOWN_EDITOR_TRANSFORMERS
+  );
+  $postImportNormalize();
 
   // Clear selection created by conversion before detaching nodes
   $setSelection(null);
