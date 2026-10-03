@@ -166,3 +166,35 @@ it('refreshes peer-created metadata only when it changes and stops polling when 
     vi.useRealTimers();
   }
 });
+
+it.each(['switch', 'navigation'] as const)('a listing poll never overrides an in-flight vault %s', async (action) => {
+  vi.useFakeTimers();
+  const values = new Map<string, string>();
+  const storage = { getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => { values.set(key, value); }, removeItem: (key: string) => { values.delete(key); } };
+  const target = { vault: { id: 'v2', name: 'Other' }, docs: [{ ...LISTING.docs[0], id: 'd2' }] };
+  let resolve!: (response: Response) => void;
+  const held = new Promise<Response>((done) => { resolve = done; });
+  const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+    const url = String(input);
+    return url.includes('vault=v2') || url.includes('doc=d2') ? held : Response.json(LISTING);
+  });
+  const api = createBridge({ pathname: () => '/', fetch, storage });
+  const stop = api.notes.onDiskChange(vi.fn());
+  try {
+    await api.notes.getAll();
+    const navigate = action === 'switch' ? api[WORKSPACE].switchVault('v2') : api.system.setFocusedNoteId('d2');
+    await vi.advanceTimersByTimeAsync(3_000);
+    resolve(Response.json(target));
+    await navigate;
+    expect(api[WORKSPACE].getSnapshot()?.vault.id).toBe('v2');
+    expect(values.get('moss-multi:active-vault')).toBe('v2');
+    expect((await api.notes.getAll()).map((doc) => doc.id)).toEqual(['d2']);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(api[WORKSPACE].getSnapshot()?.vault.id).toBe('v2');
+  } finally {
+    stop();
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  }
+});
