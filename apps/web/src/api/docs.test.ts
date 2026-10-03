@@ -3,6 +3,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
 import { BASE, insertDoc, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
+import { d1Projections } from '@moss-multi/sync/projections';
 import { handleApi } from './router.ts';
 
 interface Created {
@@ -20,6 +21,7 @@ const DocDO = {
     setName: async () => undefined,
     create: async (input: unknown) => {
       created.push({ docId: id.name, input });
+      await d1Projections(d1.db).title(id.name, (input as { title?: string }).title ?? '');
     },
     probeInstance: async () => {
       probed.push(id.name);

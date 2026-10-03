@@ -240,7 +240,8 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
             </div>
             )}
 
-            {/* Note Intelligence */}
+            {/* moss-multi seam: no background inference service on the web */}
+            {hidden('settings-note-intelligence') ? null : (
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <span className="text-micro font-medium uppercase tracking-wider text-ink-faint">Note Intelligence</span>
@@ -285,6 +286,8 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
                 </ul>
               </div>
             </div>
+
+            )}
 
             {/* Connected Folders Section */}
             {/* moss-multi seam: hide-registry (A§9) */}

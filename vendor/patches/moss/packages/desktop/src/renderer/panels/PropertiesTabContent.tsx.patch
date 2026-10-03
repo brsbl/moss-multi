@@ -1,0 +1,57 @@
+diff --git a/packages/desktop/src/renderer/panels/PropertiesTabContent.tsx b/packages/desktop/src/renderer/panels/PropertiesTabContent.tsx
+--- a/packages/desktop/src/renderer/panels/PropertiesTabContent.tsx
++++ b/packages/desktop/src/renderer/panels/PropertiesTabContent.tsx
+@@ -1,3 +1,4 @@
++import { useFieldWritable } from '@moss-multi/host/collab/title-binding'; // moss-multi seam: same gate as the title
+ import { useCallback } from 'react';
+ import { useAtomValue, useSetAtom, useStore } from 'jotai';
+ import { Plus } from 'lucide-react';
+@@ -35,6 +36,7 @@ const stableStringifyUnknown = (value: unknown): string => {
+ export function PropertiesTabContent() {
+   const focusedNoteId = useAtomValue(focusedNoteIdAtom);
+   const noteId = focusedNoteId ?? NO_NOTE_SENTINEL;
++  const writable = useFieldWritable(noteId);
+   const noteEntity = useAtomValue(noteEntityAtom(noteId));
+   const frontmatter = useAtomValue(noteFrontmatterAtom(noteId));
+   const store = useStore();
+@@ -59,7 +61,7 @@ export function PropertiesTabContent() {
+ 
+   const handleFieldChange = useCallback(
+     (field: string, value: unknown) => {
+-      if (noteId === NO_NOTE_SENTINEL) return;
++      if (noteId === NO_NOTE_SENTINEL || !writable) return;
+       if (noteEntity?.trashedAt != null) return;
+ 
+       const current = store.get(noteFrontmatterAtom(noteId)) ?? {};
+@@ -89,7 +91,7 @@ export function PropertiesTabContent() {
+       // Signal CanvasAreaContent to schedule autosave
+       bumpDirtySignal((c) => c + 1);
+     },
+-    [noteId, noteEntity, store, bumpDirtySignal]
++    [noteId, noteEntity, store, bumpDirtySignal, writable]
+   );
+ 
+   if (noteId === NO_NOTE_SENTINEL) {
+@@ -102,7 +104,7 @@ export function PropertiesTabContent() {
+     return (
+       <div className="py-8 text-center">
+         <p className="text-caption text-ink-faint">No properties yet</p>
+-        {noteEntity?.trashedAt == null && (
++        {writable && noteEntity?.trashedAt == null && (
+           <button
+             type="button"
+             onClick={() => {
+@@ -121,11 +123,13 @@ export function PropertiesTabContent() {
+   }
+ 
+   return (
++    <fieldset disabled={!writable} className="min-w-0">
+     <FrontmatterHeader
+       noteId={noteId}
+       onFieldChange={handleFieldChange}
+       onTagClick={handleTagClick}
+       onFieldSearchClick={handleFieldSearchClick}
+     />
++    </fieldset>
+   );
+ }

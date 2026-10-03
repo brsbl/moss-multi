@@ -104,6 +104,13 @@ export const AFFORDANCES = [
     cite: 'P:Agents; deviation 4',
     probes: [{ surface: 'shell', selector: 'button[aria-label="Create new note"] > span:has(kbd)' }],
   },
+  {
+    id: 'settings-note-intelligence',
+    sites: [`${R}/components/SettingsModal.tsx`],
+    reason: 'Automatic property inference and related-note suggestions require desktop background agents; manual Properties works independently.',
+    cite: 'P:Agents; T1.4',
+    probes: [{ surface: 'settings', selector: '[role="dialog"] span', text: 'Note Intelligence' }],
+  },
   // The same "cannot work on the web" rule.
   {
     id: 'title-shortcut-label',

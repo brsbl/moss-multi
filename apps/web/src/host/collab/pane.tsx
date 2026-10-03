@@ -62,7 +62,10 @@ class DocFields {
     this.title.bind(docId, doc);
     if (this.#frontmatter?.doc === doc) return;
     this.#frontmatter?.stop();
-    this.#frontmatter = { doc, stop: bindFrontmatter(this.store, docId, doc, canWrite) };
+    const stop = bindFrontmatter(this.store, docId, doc, canWrite);
+    const updated = () => this.store.set(syncNoteEntityAtom, { noteId: docId, updates: { updatedAt: Math.floor(Date.now() / 1000) } });
+    doc.on('update', updated);
+    this.#frontmatter = { doc, stop: () => { stop(); doc.off('update', updated); } };
   }
 
   unbind(doc: Doc | null): void {

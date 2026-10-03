@@ -2,10 +2,9 @@
 // GET /api/docs/:id is the doc and the caller's role on it; /members is the members API (members.ts); GET
 // /api/docs/:id/instance is the owner-only DO probe (A§19), which reads nothing from the doc. A missing doc and one the
 // caller cannot open get the same 404 on every route (A§8).
-import { and, eq, isNull } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { getServerByName } from 'partyserver';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
-import { filenameFor } from '@moss-multi/core/filenames';
 import type { AuthEnv } from '../auth/auth.ts';
 import { resolvePrincipal, shareTokenOf } from '../auth/principal.ts';
 import { createDb, type Db } from '../db/client.ts';
@@ -22,7 +21,6 @@ export type DocsEnv = AuthEnv & Pick<AppEnv, 'DocDO'>;
 const DOC = /^\/api\/docs\/([^/]+)$/;
 const MEMBERS = /^\/api\/docs\/([^/]+)\/members$/;
 const INSTANCE = /^\/api\/docs\/([^/]+)\/instance$/;
-const FILENAME_ATTEMPTS = 5;
 
 export interface DocRecord {
   id: string;
@@ -34,29 +32,11 @@ export interface DocRecord {
 }
 
 async function insertDoc(db: Db, row: { folderId: string; ownerUserId: string; createdBy: string; title: string }): Promise<DocRecord> {
-  for (let attempt = 1; ; attempt += 1) {
-    const live = await db
-      .select({ filename: docs.filename })
-      .from(docs)
-      .where(and(eq(docs.folderId, row.folderId), isNull(docs.deletedAt)));
-    const now = Date.now();
-    const doc: DocRecord = {
-      id: crypto.randomUUID(),
-      folderId: row.folderId,
-      title: row.title,
-      filename: filenameFor(row.title, new Set(live.map((d) => d.filename))),
-      createdAt: now,
-      updatedAt: now,
-    };
-    try {
-      await db.insert(docs).values({ ...doc, ownerUserId: row.ownerUserId, createdBy: row.createdBy });
-      return doc;
-    } catch (error) {
-      // A concurrent create took the name; the live-filename index refused this one.
-      const unique = /UNIQUE/i.test(`${error} ${(error as { cause?: unknown }).cause ?? ''}`);
-      if (!unique || attempt >= FILENAME_ATTEMPTS) throw error;
-    }
-  }
+  const id = crypto.randomUUID();
+  const now = Date.now();
+  const doc = { id, folderId: row.folderId, title: '', filename: `pending-${id}.md`, createdAt: now, updatedAt: now };
+  await db.insert(docs).values({ ...doc, ownerUserId: row.ownerUserId, createdBy: row.createdBy });
+  return doc;
 }
 
 async function createDoc(request: Request, env: DocsEnv): Promise<Response> {
@@ -77,7 +57,8 @@ async function createDoc(request: Request, env: DocsEnv): Promise<Response> {
   const doc = await insertDoc(db, { folderId, ownerUserId: folder.ownerUserId, createdBy: principal.id, title });
   const stub = await getServerByName(env.DocDO, doc.id);
   await stub.create({ folderId, ownerId: folder.ownerUserId, ...(title ? { title } : {}) });
-  return json({ doc, role: folder.role }, 201, NO_STORE);
+  const [projected] = await db.select({ id: docs.id, folderId: docs.folderId, title: docs.title, filename: docs.filename, createdAt: docs.createdAt, updatedAt: docs.updatedAt }).from(docs).where(eq(docs.id, doc.id));
+  return json({ doc: projected, role: folder.role }, 201, NO_STORE);
 }
 
 /** The doc's listing fields and the caller's role, for a doc the workspace listing does not carry. */

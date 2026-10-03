@@ -160,8 +160,9 @@ export class DocDO extends YServer<SyncEnv> {
     if (title) writeField(this.document, 'title', title, SERVER_TITLE);
     store.setMeta('folder', input.folderId);
     store.setMeta('owner', input.ownerId);
-    store.setMeta('created', '1');
+    if (!title) await this.#projections?.initializeEmpty();
     await this.#projections?.flush();
+    store.setMeta('created', '1');
   }
 
   /**
@@ -171,6 +172,7 @@ export class DocDO extends YServer<SyncEnv> {
   async renameTitle(text: string): Promise<void> {
     await this.#ready();
     writeField(this.document, 'title', text, SERVER_TITLE);
+    this.#projections?.touch();
     await this.#projections?.flush();
   }
 

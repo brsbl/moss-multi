@@ -9,6 +9,7 @@
 import { observeField, readField, remapCaret, writeField, type FieldChange } from '@moss-multi/core/doc-fields';
 import { diffText } from '@moss-multi/core/text-diff';
 import { Doc, applyUpdate, encodeStateAsUpdate, encodeStateVector } from 'yjs';
+import { useSyncExternalStore } from 'react';
 import { OPENING_NOTE } from '../opening-guard.ts';
 import { refuseInput } from '../refusal.ts';
 
@@ -22,6 +23,12 @@ export const displayTitle = (text: string): string => text.trim() || UNTITLED;
 
 /** The tab's bound titles by doc id, for metadata the bridge serves while a doc is open (A§9 overlay). */
 const bound = new Map<string, TitleField>();
+const fieldListeners = new Set<() => void>();
+const changed = () => { for (const listener of fieldListeners) listener(); };
+export function useFieldWritable(docId: string): boolean {
+  return useSyncExternalStore((listener) => { fieldListeners.add(listener); return () => { fieldListeners.delete(listener); }; },
+    () => bound.get(docId)?.writable ?? false, () => false);
+}
 
 /** The doc's title as its binding holds it now, or null when no pane of this tab binds it. */
 export function liveTitle(docId: string): string | null {
@@ -100,6 +107,8 @@ export class TitleField {
     this.#noteId = noteId;
   }
 
+  get writable(): boolean { return this.#open && this.#binding?.docId === this.#noteId; }
+
   get text(): string | null {
     return this.#binding ? readField(this.#binding.doc, 'title') : null;
   }
@@ -161,11 +170,13 @@ export class TitleField {
     this.#composing = false;
     this.#composition?.doc.destroy();
     this.#composition = null;
+    changed();
   }
 
   /** Open: bound, synced, editable and not terminal (A§10.4). A focus asked for while closed runs now. */
   setOpen(open: boolean): void {
     this.#open = open && this.#binding !== null && this.#binding.docId === this.#noteId;
+    changed();
     if (!this.#open || this.#pendingFocus === null) return;
     const wanted = this.#pendingFocus;
     this.#pendingFocus = null;

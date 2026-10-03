@@ -1,7 +1,7 @@
 // The DocDO's D1 projections (A§5.1; R3): Y.Text('title') projects docs.title and docs.filename, and principal
 // edits touch docs.updated_at. The DO is their only writer. An empty title never projects, so clearing a title and
 // typing it again cannot churn the filename. Writes run one at a time on one chain, in order.
-import { filenameFor } from '@moss-multi/core/filenames';
+import { filenameFor, slug } from '@moss-multi/core/filenames';
 
 /** Where the projections land: D1 in the Worker, a fake in the harness. */
 export interface ProjectionTarget {
@@ -19,6 +19,7 @@ export class Projections {
   #title: string | null = null;
   #titleTimer: ReturnType<typeof setTimeout> | null = null;
   #projected: string | null = null;
+  #error: unknown = null;
   #touchedAt = Number.NEGATIVE_INFINITY;
   #touchTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -30,8 +31,8 @@ export class Projections {
   /** The title changed: its trimmed text projects within 750 ms, coalesced with later changes. */
   title(text: string): void {
     const value = text.trim();
-    if (!value) return;
     this.#title = value;
+    if (!value) return;
     this.#titleTimer ??= setTimeout(() => this.#flushTitle(), TITLE_PROJECTION_MS);
   }
 
@@ -43,7 +44,8 @@ export class Projections {
       this.#run(() => this.target.touch(this.docId, now));
       return;
     }
-    this.#touchTimer ??= setTimeout(() => {
+    if (this.#touchTimer !== null) return;
+    this.#touchTimer = setTimeout(() => {
       this.#touchTimer = null;
       this.touch();
     }, TOUCH_INTERVAL_MS - (now - this.#touchedAt));
@@ -53,28 +55,28 @@ export class Projections {
   async flush(): Promise<void> {
     if (this.#titleTimer) this.#flushTitle();
     await this.#chain;
+    if (this.#error) throw this.#error;
   }
 
   #flushTitle(): void {
     if (this.#titleTimer) clearTimeout(this.#titleTimer);
     this.#titleTimer = null;
-    const value = this.#title;
-    this.#title = null;
-    if (value === null || value === this.#projected) return;
-    this.#projected = value;
     this.#run(async () => {
-      try {
-        await this.target.title(this.docId, value);
-      } catch (error) {
-        // The next title change projects again.
-        if (this.#projected === value) this.#projected = null;
-        throw error;
-      }
+      const value = this.#title;
+      if (!value || value === this.#projected) return;
+      await this.target.title(this.docId, value);
+      this.#projected = value;
     });
   }
 
+  /** Initial empty name: reserve its filename without authoring placeholder text. */
+  async initializeEmpty(): Promise<void> {
+    await this.target.title(this.docId, '');
+  }
+
   #run(write: () => Promise<void>): void {
-    this.#chain = this.#chain.then(write).catch((error: unknown) => {
+    this.#chain = this.#chain.then(async () => { await write(); this.#error = null; }).catch((error: unknown) => {
+      this.#error = error;
       console.error(`projection for ${this.docId} failed`, error);
     });
   }
@@ -95,7 +97,10 @@ export function d1Projections(db: D1Database): ProjectionTarget {
           )
           .bind(docId)
           .all<{ filename: string }>();
-        const filename = filenameFor(title, new Set(taken.results.map((row) => row.filename)));
+        const self = await db.prepare('SELECT title, filename FROM docs WHERE id = ?').bind(docId).first<{ title: string; filename: string }>();
+        const occupied = new Set(taken.results.map((row) => row.filename));
+        const keep = self && slug(self.title) === slug(title) && !self.filename.startsWith('pending-') && !occupied.has(self.filename);
+        const filename = keep ? self.filename : filenameFor(title, occupied);
         try {
           await db.prepare('UPDATE docs SET title = ?, filename = ? WHERE id = ?').bind(title, filename, docId).run();
           return;
