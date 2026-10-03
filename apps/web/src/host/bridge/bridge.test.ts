@@ -141,3 +141,28 @@ it('keeps the last successful vault after a failed switch', async () => {
   expect(api[WORKSPACE].getSnapshot()?.vault.id).toBe('v1');
   expect((await api.notes.getAll()).map((note) => note.id)).toEqual(['d1']);
 });
+
+it('refreshes peer-created metadata only when it changes and stops polling when the last subscriber leaves', async () => {
+  vi.useFakeTimers();
+  try {
+    let listing = LISTING;
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json(listing));
+    const api = createBridge({ pathname: () => '/', fetch });
+    await api.notes.getAll();
+    const changed = vi.fn();
+    const stop = api.notes.onDiskChange(changed);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(changed).not.toHaveBeenCalled();
+    listing = { ...LISTING, docs: [...LISTING.docs, { ...LISTING.docs[0], id: 'copy' }] };
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(changed).toHaveBeenCalledExactlyOnceWith([], []);
+    expect((await api.notes.getAll()).map((doc) => doc.id)).toEqual(['d1', 'copy']);
+    stop();
+    const requests = fetch.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(fetch).toHaveBeenCalledTimes(requests);
+  } finally {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  }
+});

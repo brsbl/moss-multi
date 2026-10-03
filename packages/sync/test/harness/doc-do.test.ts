@@ -79,6 +79,16 @@ describe('server writes', () => {
     expect(await opened.dobj.exportMarkdown()).toBe(exportMarkdown(reference));
   });
 
+  it('imports raw frontmatter separately and keeps the leading H1 in the body', async () => {
+    const opened = await start(openDoc());
+    const frontmatter = '---\r\ntag: "keep these quotes"\r\n---\r\n';
+    await opened.dobj.create({ folderId: 'folder', ownerId: 'owner', title: 'File name', markdown: `${frontmatter}# Body heading\n\nText` });
+    expect(opened.dobj.document.getText('title').toString()).toBe('File name');
+    expect(opened.dobj.document.getText('frontmatter').toString()).toBe(frontmatter);
+    expect(blockTypes(opened.dobj.document)).toEqual(['heading', 'paragraph']);
+    expect(await opened.dobj.exportMarkdown()).toBe(`${frontmatter}# Body heading\n\nText`);
+  });
+
   it('duplicates a snapshot without a markdown round trip, keeps anchors, persists and remains independent', async () => {
     const source = await start(openDoc());
     await source.dobj.create({ folderId: 'source', ownerId: 'owner', title: 'Original', markdown: MARKDOWN });

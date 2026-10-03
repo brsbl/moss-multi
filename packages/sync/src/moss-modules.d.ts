@@ -18,3 +18,7 @@ declare module '@moss-desktop/renderer/editor/markdown/transformers' {
   export const MARKDOWN_EDITOR_TRANSFORMERS: Transformer[];
   export const MARKDOWN_EDITOR_NODES: Klass<LexicalNode>[];
 }
+
+declare module '@moss-desktop/common/markdown-layers' {
+  export function splitFrontmatter(raw: string): { body: string; hasFrontmatter: boolean; error?: string };
+}

@@ -158,12 +158,22 @@ describe('POST /api/docs/:id/duplicate', () => {
     expect(created).toEqual([{ docId: doc.id, input: { folderId: ada.homeId, ownerId: ada.id, title: 'Original copy' } }]);
   });
 
+  it('puts a direct editor’s copy in their Home, without granting access to the source folder', async () => {
+    const id = await insertDoc(d1.db, ada);
+    await d1.db.prepare("INSERT INTO doc_members (doc_id, principal_id, principal_type, role, added_by, created_at) VALUES (?, ?, 'user', ?, ?, 1)").bind(id, ben.id, 'editor', ada.id).run();
+    const response = await duplicate(id, ben.cookie);
+    expect(response.status).toBe(201);
+    const { doc } = await response.json() as DocBody;
+    expect(doc.folderId).toBe(ben.homeId);
+    expect(await d1.db.prepare('SELECT owner_user_id FROM docs WHERE id = ?').bind(doc.id).first()).toEqual({ owner_user_id: ben.id });
+  });
+
   it('hides inaccessible sources and refuses a viewer without creating anything', async () => {
     const id = await insertDoc(d1.db, ada);
     const denied = await duplicate(id, ben.cookie);
     expect(denied.status).toBe(404);
     expect(await denied.text()).toBe(await (await duplicate(crypto.randomUUID(), ben.cookie)).text());
-    await d1.db.prepare('INSERT INTO doc_members (doc_id, principal_id, principal_type, role, added_by, created_at) VALUES (?, ?, 'user', ?, ?, 1)').bind(id, ben.id, 'viewer', ada.id).run();
+    await d1.db.prepare("INSERT INTO doc_members (doc_id, principal_id, principal_type, role, added_by, created_at) VALUES (?, ?, 'user', ?, ?, 1)").bind(id, ben.id, 'viewer', ada.id).run();
     expect((await duplicate(id, ben.cookie)).status).toBe(403);
     expect(created).toEqual([]);
   });

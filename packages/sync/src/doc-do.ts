@@ -1,6 +1,7 @@
 import type { Connection, ConnectionContext, WSMessage } from 'partyserver';
 import { YServer } from 'y-partyserver';
 import * as Y from 'yjs';
+import { splitFrontmatter } from '@moss-desktop/common/markdown-layers';
 import { ACK_COALESCE_MS, AWARENESS_MAX_BYTES, MAX_CONNECTIONS, STATE_CAP_BYTES, WRITE_RATE } from '@moss-multi/protocol/limits';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
 import { bytesToBase64, CLOSE, type ServerEvent, type WriteRefusalReason } from '@moss-multi/protocol/sync';
@@ -144,7 +145,14 @@ export class DocDO extends YServer<SyncEnv> {
     const store = await this.#ready();
     this.#seed(store);
     if (store.meta('created') !== null) return;
-    if (input.markdown) importBody(this.document, input.markdown, (diff) => this.#admitServerWrite(store, diff));
+    if (input.markdown) {
+      const parts = splitFrontmatter(input.markdown);
+      const hasFrontmatter = parts.hasFrontmatter && !parts.error;
+      importBody(this.document, hasFrontmatter ? parts.body : input.markdown, (diff) => this.#admitServerWrite(store, diff));
+      if (hasFrontmatter) this.document.transact(() => {
+        this.document.getText('frontmatter').insert(0, input.markdown!.slice(0, input.markdown!.length - parts.body.length));
+      }, SERVER_IMPORT);
+    }
     const title = input.title?.trim();
     // POST /api/docs wrote the D1 title, so this write needs no projection.
     if (title) this.document.transact(() => this.document.getText('title').insert(0, title), SERVER_SEED);
