@@ -1,5 +1,6 @@
-// The doc socket's wire vocabulary (A§4.1, A§5.1, A§10.5): close codes, the server's unicast events and the
-// trusted headers the Worker sets on a party request.
+// The doc socket's wire vocabulary (A§4.1, A§5.1, A§10.5): close codes and what a client does on each, the server's
+// unicast events and the trusted headers the Worker sets on a party request.
+import type { TerminalReason } from './dom-contract.ts';
 
 /** Close codes, defined once. 1001, 1006, 1011-1013, 4408 and 4420 are transient; the 44xx below are designed. */
 export const CLOSE = {
@@ -15,6 +16,41 @@ export const CLOSE = {
   connectionLimit: 4429,
 } as const;
 export type CloseCode = (typeof CLOSE)[keyof typeof CLOSE];
+
+/** What a client does when its doc socket closes with a code (A§10.5), decided once here. */
+export type CloseAction =
+  /** 1000: an intentional close or a superseded socket; nothing to dispatch. */
+  | { kind: 'normal' }
+  /** 1001, 1006, 1011-1013, 4408, 4420 and any undefined code: reconnect with backoff, keeping the Y.Doc. */
+  | { kind: 'retry' }
+  /** The doc is over for this client: stop reconnecting at once. */
+  | { kind: 'terminal'; reason: TerminalReason }
+  /** 4403: ask REST, then rebind read-only or go terminal `revoked`. */
+  | { kind: 'reask' }
+  /** 4409: the write-refused reason arrived just before; the local doc cannot be delivered. */
+  | { kind: 'refused' };
+
+export function closeAction(code: number): CloseAction {
+  switch (code) {
+    case CLOSE.normal:
+      return { kind: 'normal' };
+    case CLOSE.noPrincipal:
+    case CLOSE.sessionEnded:
+      return { kind: 'terminal', reason: 'session-ended' };
+    case CLOSE.unavailable:
+      return { kind: 'terminal', reason: 'unavailable' };
+    case CLOSE.deleted:
+      return { kind: 'terminal', reason: 'deleted' };
+    case CLOSE.connectionLimit:
+      return { kind: 'terminal', reason: 'conn-limit' };
+    case CLOSE.revoked:
+      return { kind: 'reask' };
+    case CLOSE.writeRefused:
+      return { kind: 'refused' };
+    default:
+      return { kind: 'retry' };
+  }
+}
 
 /** Unicast events travel as `__YPS:<json>`, the envelope the provider delivers as `custom-message`. */
 export const CUSTOM_PREFIX = '__YPS:';

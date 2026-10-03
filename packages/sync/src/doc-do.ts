@@ -4,7 +4,9 @@ import * as Y from 'yjs';
 import { ACK_COALESCE_MS, AWARENESS_MAX_BYTES, MAX_CONNECTIONS, STATE_CAP_BYTES, WRITE_RATE } from '@moss-multi/protocol/limits';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
 import { bytesToBase64, CLOSE, type ServerEvent, type WriteRefusalReason } from '@moss-multi/protocol/sync';
-import { attachmentFrom, connectCode, parseFrame, revocationCode, stateBytesAfter, wouldChange, WriteRate, type Attachment } from './doc/admission.ts';
+import {
+  attachmentFrom, classifySync, connectCode, parseFrame, revocationCode, stateBytesAfter, WriteRate, type Attachment, type DeleteSet,
+} from './doc/admission.ts';
 import { attach, attachmentOf, awarenessTooLarge } from './doc/awareness.ts';
 import { AckCoalescer, DocStore, PERSISTENCE } from './doc/persistence.ts';
 import type { SyncEnv } from './env.ts';
@@ -59,7 +61,9 @@ export class DocDO extends YServer<SyncEnv> {
   #exported: string | null = null;
   readonly #limits = (this.constructor as typeof DocDO).limits;
   readonly #rate = new WriteRate(this.#limits.writeRate.max, this.#limits.writeRate.windowMs);
-  readonly #acks = new AckCoalescer((connectionId) => this.#ack(connectionId), ACK_COALESCE_MS);
+  readonly #acks = new AckCoalescer<Connection>((connection, deletes) => this.#ack(connection, deletes), ACK_COALESCE_MS);
+  /** The deletes of the sync frame being applied, which its ack names. */
+  #frameDeletes: DeleteSet | undefined;
 
   /** Runs inside partyserver's blockConcurrencyWhile, so a woken DO replays before it sees any frame. */
   override async onLoad(): Promise<void> {
@@ -114,15 +118,21 @@ export class DocDO extends YServer<SyncEnv> {
     if (frame.kind === 'awareness' && awarenessTooLarge(frame.bytes, this.#limits.awarenessMaxBytes)) return;
     // Inert frames (every step 2 answering a step 1) pass whatever the role; writes meet the gates.
     if (frame.kind === 'sync') {
-      if (wouldChange(this.document, frame.update)) {
+      const { changes, deletes } = classifySync(this.document, frame.update);
+      if (changes) {
         if (this.#refused(connection, attachment, store, frame.update)) return;
       } else if (roleAtLeast(attachment.role, 'editor')) {
         // The doc already holds it, so nothing persists to ack it: an editor's reconnect step 2 after its ack was lost
         // with the old socket. Acked too, so the client learns its edits are on the server (A§10.6).
-        this.#acks.schedule(connection.id);
+        this.#acks.schedule(connection, deletes);
       }
+      this.#frameDeletes = deletes;
     }
-    super.onMessage(connection, message);
+    try {
+      super.onMessage(connection, message);
+    } finally {
+      this.#frameDeletes = undefined;
+    }
   }
 
   /** Defense in depth: below editor, y-partyserver never applies a step 2 or update, inert or not. */
@@ -132,8 +142,8 @@ export class DocDO extends YServer<SyncEnv> {
 
   override onClose(connection: Connection, code: number, reason: string, wasClean: boolean): void {
     super.onClose(connection, code, reason, wasClean);
-    this.#rate.forget(connection.id);
-    this.#acks.cancel(connection.id);
+    this.#rate.forget(connection);
+    this.#acks.cancel(connection);
   }
 
   /**
@@ -186,7 +196,7 @@ export class DocDO extends YServer<SyncEnv> {
     this.#exported = null;
     if (origin === PERSISTENCE) return;
     store.record(update, this.document);
-    if (isConnection(origin)) this.#acks.schedule(origin.id);
+    if (isConnection(origin)) this.#acks.schedule(origin, this.#frameDeletes);
   }
 
   /** Simulated only near the cap, since the copy costs a full encode. */
@@ -204,7 +214,7 @@ export class DocDO extends YServer<SyncEnv> {
     if (!roleAtLeast(attachment.role, 'suggester')) return this.#refuse(connection, 'role', CLOSE.revoked);
     // A suggester's writes are vetted on a mirror (M5); until then they are refused, never applied unvetted.
     if (!roleAtLeast(attachment.role, 'editor')) return this.#refuse(connection, 'suggest', CLOSE.writeRefused);
-    if (!this.#rate.allow(connection.id)) {
+    if (!this.#rate.allow(connection)) {
       // Transient: the client keeps its Y.Doc and its next step 2 re-delivers everything.
       connection.close(CLOSE.writeRate, 'write rate');
       return true;
@@ -220,10 +230,13 @@ export class DocDO extends YServer<SyncEnv> {
     return true;
   }
 
-  #ack(connectionId: string): void {
-    const connection = this.getConnection(connectionId);
-    if (!connection) return;
-    const event: ServerEvent = { t: 'ack', sv: bytesToBase64(Y.encodeStateVector(this.document)) };
+  #ack(connection: Connection, deletes: DeleteSet): void {
+    const event: ServerEvent = {
+      t: 'ack',
+      sv: bytesToBase64(Y.encodeStateVector(this.document)),
+      ds: bytesToBase64(Y.encodeSnapshot(Y.createSnapshot(deletes, new Map()))),
+    };
+    // sendCustomMessage skips a socket that has closed.
     this.sendCustomMessage(connection, JSON.stringify(event));
   }
 }
