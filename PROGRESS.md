@@ -76,3 +76,5 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 ### T1.3 implementation in progress
 
 Reused tests-first head f22b105 and its red j03 run https://github.com/brsbl/moss-multi/actions/runs/37119822769 (missing indicator/banner); red checks https://github.com/brsbl/moss-multi/actions/runs/37119819996 (delete coverage, stale socket ack and rate collisions). Reviewed and reused the saved implementation, completed pane wiring, refusal rebind and chunk recovery. Both-engine j03 and remote checks dispatched on the implementation head; verdict pending. Budget: about 60 CI minutes.
+
+T1.3 validation update: the first implementation push built successfully; checks found a nullable listener type error in the salvaged socket wrapper, now corrected. Added focused close-code/heartbeat tests. Local build and stack boot succeeded on arm64 Node 24; Browser Automation is blocked (`unknown command browser-automation`, plugin discovery HTTP 401). Stopped the stack without substituting a driver.

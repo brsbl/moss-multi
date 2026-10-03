@@ -51,10 +51,13 @@ class PaneBinding {
   readonly #listeners = new Set<() => void>();
   #session: DocSession | null = null;
   #editor: LexicalEditor | null = null;
+  #trashed = false;
+  canWrite = true;
 
   constructor(readonly docId: string) {}
 
   trash(trashed: boolean): void {
+    this.#trashed = trashed;
     if (trashed && this.#session) this.#session.end('deleted');
   }
 
@@ -74,6 +77,7 @@ class PaneBinding {
   /** Called from the plugin's provider factory with the session it opened. */
   attach(session: DocSession): void {
     this.#session = session;
+    if (this.#trashed) session.end('deleted');
     this.set({ docState: 'binding' });
     session.subscribe((state) => this.#apply(state));
     this.#apply(session.state);
@@ -109,6 +113,7 @@ class PaneBinding {
     const editor = this.#editor;
     if (!editor) return;
     const terminal = terminalOf(this.docId);
+    this.canWrite = state.canWrite;
     const bodyState: BindingState = terminal ? 'terminal' : !state.synced || state.resync ? 'unbound' : state.canWrite && !state.halted ? 'live' : 'readonly';
     editor.setEditable(bodyState === 'live');
     closeRoot(editor.getRootElement(), bodyState);
@@ -182,7 +187,7 @@ function DocBinding({ docId, binding }: { docId: string; binding: PaneBinding })
   const owner = useSyncExternalStore(subscribeDocOwners, () => docOwner(docId));
   const providerFactory = useCallback(
     (id: string, docMap: Map<string, Doc>): Provider => {
-      const session = openDocSession(id, binding);
+      const session = openDocSession(id, binding, binding.canWrite);
       // Refused when another pane took the doc in the same commit: the plugin renders nothing without a provider,
       // and the owner gate above unmounts it until the doc is free.
       if (!session) return undefined as unknown as Provider;

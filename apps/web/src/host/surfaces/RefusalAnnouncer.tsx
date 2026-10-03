@@ -1,5 +1,5 @@
 // The input-refusal notice (A§19 `data-input-refusal`): one polite live region, always mounted so screen readers
-// hear each refusal, centered over the top bar's empty middle so it never covers the canvas.
+// hear each refusal, in the reserved notice band below the top bar.
 import { INPUT_REFUSAL_ATTR } from '@moss-multi/protocol/dom-contract';
 import { useSyncExternalStore, type ReactNode } from 'react';
 import { refusalMessage, subscribeRefusal } from '../refusal.ts';

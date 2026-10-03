@@ -46,7 +46,6 @@ export const WRITE_REFUSED: Record<WriteRefusalReason, string> = {
   suggest: "Suggestions aren't available yet, so your change was not saved.",
 };
 export const HALTED_REFUSED = 'Your last change could not be saved. Reload to keep working on this note.';
-export const HALTED_VIEW_ONLY = 'You can view this note but can no longer edit it. Reload to see its latest version.';
 const VIEW_ONLY = 'You can view this note but can no longer edit it.';
 
 /**
@@ -80,6 +79,7 @@ DocSocket.prototype.addEventListener = function addEventListener(
   listener: EventListenerOrEventListenerObject | null,
   options?: boolean | AddEventListenerOptions,
 ): void {
+  if (listener === null) return;
   if (typeof listener !== 'function') {
     nativeAddEventListener.call(this, type, listener, options);
     return;
@@ -224,7 +224,8 @@ export class DocSession {
   readonly #tick: ReturnType<typeof setInterval>;
   readonly #deadline: ReturnType<typeof setTimeout>;
 
-  constructor(readonly docId: string) {
+  constructor(readonly docId: string, canWrite = true) {
+    this.#state.canWrite = canWrite;
     this.#link = startLink(Date.now());
     this.provider = new YProvider(window.location.host, docId, this.doc, {
       party: PARTY,
@@ -403,7 +404,7 @@ export class DocSession {
         this.#ended = true;
         this.provider.shouldConnect = false;
         refuseInput(this.#refusedMessage);
-        this.#set({ resync: true, canWrite: false });
+        this.#set({ resync: true });
         if (this.#lingering) this.dispose();
         return;
       case 'retry':
@@ -437,12 +438,10 @@ export class DocSession {
       case 'role':
         if (!answer.canWrite) {
           refuseInput(VIEW_ONLY);
-          this.#set({ canWrite: false });
-          // Edits typed under the old role would be refused again on every reconnect: stop with them in place.
-          if (this.#state.unacked) {
-            this.#halt(HALTED_VIEW_ONLY);
-            return;
-          }
+          this.#ended = true;
+          this.#set({ canWrite: false, resync: true });
+          if (this.#lingering) this.dispose();
+          return;
         }
         break;
       case 'unknown':
@@ -450,17 +449,6 @@ export class DocSession {
     }
     this.#failedHandshakes = 0;
     void this.provider.connect();
-  }
-
-  /** A refused write, or a lowered role with edits pending: this session cannot deliver its doc any more. */
-  #halt(message: string): void {
-    this.#ended = true;
-    this.provider.shouldConnect = false;
-    if (this.#lingering) {
-      this.dispose();
-      return;
-    }
-    this.#set({ halted: message, canWrite: false });
   }
 
   #heartbeat(): void {
@@ -536,10 +524,10 @@ export class DocSession {
  * refusal never throws (A§10.1): the refused pane stays closed until the holder lets go. A new session is a fresh
  * attempt, so a terminal reason left by an earlier one clears.
  */
-export function openDocSession(docId: string, owner: object): DocSession | null {
+export function openDocSession(docId: string, owner: object, canWrite = true): DocSession | null {
   if (held.has(docId)) return null;
   clearTerminal(docId);
-  const session = new DocSession(docId);
+  const session = new DocSession(docId, canWrite);
   held.set(docId, { session, owner });
   byProvider.set(session.provider, session);
   ownersChanged();
