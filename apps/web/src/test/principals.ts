@@ -46,21 +46,59 @@ export async function signedUpUser(env: AuthTestEnv, label: string, name = 'Ada'
 
 /** A live `mm_sk_` key for an agent acting for `owner`. */
 export async function agentKey(db: D1Database, owner: TestUser): Promise<string> {
+  return (await insertAgent(db, owner)).key;
+}
+
+/** An agent acting for `owner`: its id, which a grant can name, and its live key. */
+export async function insertAgent(db: D1Database, owner: TestUser): Promise<{ id: string; key: string }> {
+  const id = crypto.randomUUID();
   const key = `${AGENT_KEY_PREFIX}${crypto.randomUUID().replaceAll('-', '')}`;
   await db
     .prepare('INSERT INTO agents (id, owner_user_id, name, key_hash, created_at, revoked_at) VALUES (?, ?, ?, ?, ?, NULL)')
-    .bind(crypto.randomUUID(), owner.id, 'Scribe', await sha256Hex(key), Date.now())
+    .bind(id, owner.id, 'Scribe', await sha256Hex(key), Date.now())
     .run();
-  return key;
+  return { id, key };
 }
 
-/** A docs row as POST /api/docs writes it, straight into D1. */
-export async function insertDoc(db: D1Database, owner: TestUser, options: { deleted?: boolean } = {}): Promise<string> {
+/** A docs row as POST /api/docs writes it, straight into D1; in the owner's Home vault unless `folderId` says. */
+export async function insertDoc(db: D1Database, owner: TestUser, options: { deleted?: boolean; folderId?: string } = {}): Promise<string> {
   const id = crypto.randomUUID();
   const now = Date.now();
   await db
     .prepare('INSERT INTO docs (id, owner_user_id, created_by, folder_id, title, filename, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .bind(id, owner.id, owner.id, owner.homeId, '', `${id}.md`, now, now, options.deleted ? now : null)
+    .bind(id, owner.id, owner.id, options.folderId ?? owner.homeId, '', `${id}.md`, now, now, options.deleted ? now : null)
     .run();
   return id;
+}
+
+/** A folder under `parentId` (a vault when null), owned by `owner`. */
+export async function insertFolder(db: D1Database, owner: TestUser, parentId: string | null): Promise<string> {
+  const id = crypto.randomUUID();
+  await db
+    .prepare('INSERT INTO folders (id, owner_user_id, created_by, name, kind, parent_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .bind(id, owner.id, owner.id, `f-${id.slice(0, 8)}`, parentId === null ? 'vault' : 'folder', parentId, Date.now())
+    .run();
+  return id;
+}
+
+export type GrantTarget = { docId: string } | { folderId: string };
+
+/** A grant row as the members API writes one. */
+export async function insertGrant(db: D1Database, target: GrantTarget, principal: { id: string; type?: 'user' | 'agent' }, role: string): Promise<void> {
+  const [table, column, targetId] = 'docId' in target ? ['doc_members', 'doc_id', target.docId] : ['folder_members', 'folder_id', target.folderId];
+  await db
+    .prepare(`INSERT INTO ${table} (${column}, principal_id, principal_type, role, added_by, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
+    .bind(targetId, principal.id, principal.type ?? 'user', role, 'test', Date.now())
+    .run();
+}
+
+/** A share-link row (T2.4 creates them through the UI); returns its token. */
+export async function insertLink(db: D1Database, target: GrantTarget, role: string, options: { revoked?: boolean } = {}): Promise<string> {
+  const token = crypto.randomUUID().replaceAll('-', '');
+  const [type, id] = 'docId' in target ? ['doc', target.docId] : ['folder', target.folderId];
+  await db
+    .prepare('INSERT INTO share_links (token, target_type, target_id, role, created_by, created_at, revoked_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .bind(token, type, id, role, 'test', Date.now(), options.revoked ? Date.now() : null)
+    .run();
+  return token;
 }

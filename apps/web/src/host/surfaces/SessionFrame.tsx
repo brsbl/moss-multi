@@ -6,7 +6,8 @@ import type { ReactNode } from 'react';
 import { auth, useAuthState } from '../auth.ts';
 import { BootFrame } from '../MossAppHost.tsx';
 
-function DegradedFrame(): ReactNode {
+/** The degraded notice (R10): the page cannot reach the server and retries in place. */
+export function DegradedFrame({ onRetry }: { onRetry: () => void }): ReactNode {
   return (
     <main className="flex h-full w-full items-center justify-center bg-surface-panel px-6">
       <div role="status" aria-live="polite" className="flex max-w-sm flex-col items-center gap-1.5 text-center">
@@ -14,7 +15,7 @@ function DegradedFrame(): ReactNode {
         <p className="text-xs text-ink-muted">Retrying automatically.</p>
         <button
           type="button"
-          onClick={() => auth.retryNow()}
+          onClick={onRetry}
           className="mt-3 rounded-md bg-border-subtle px-3 py-1.5 text-xs font-medium text-ink-default shadow-sm transition-colors hover:bg-border-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-default/20"
         >
           Try again
@@ -27,5 +28,5 @@ function DegradedFrame(): ReactNode {
 /** The `pendingComponent` of every route that renders the moss shell. */
 export function SessionPending(): ReactNode {
   const state = useAuthState();
-  return <div id="root">{state.status === 'degraded' ? <DegradedFrame /> : <BootFrame />}</div>;
+  return <div id="root">{state.status === 'degraded' ? <DegradedFrame onRetry={() => auth.retryNow()} /> : <BootFrame />}</div>;
 }

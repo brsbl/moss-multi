@@ -22,5 +22,6 @@ export async function workspace(request: Request, env: AuthEnv): Promise<Respons
     .from(docs)
     .where(and(eq(docs.folderId, vaultId), isNull(docs.deletedAt)))
     .orderBy(desc(docs.updatedAt));
-  return json({ vault, docs: rows }, 200, NO_STORE);
+  // The default vault is the caller's own, so they own every doc in it; shared items surface here in T1.2.
+  return json({ vault, docs: rows.map((row) => ({ ...row, role: 'owner' })) }, 200, NO_STORE);
 }

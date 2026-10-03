@@ -25,7 +25,8 @@ export interface Target {
 }
 
 export const TARGETS: Target[] = [
-  { id: 'shell-default', story: 'app--default', seed: 'story-listing', masks: [], floor: 0.05, maxBlob: 16 },
+  // The owner's Share button (T1.1) is web chrome in the open note's top bar.
+  { id: 'shell-default', story: 'app--default', seed: 'story-listing', masks: ['[data-collab-chrome]'], floor: 0.05, maxBlob: 16 },
   { id: 'shell-empty', story: 'app--empty-notes', seed: 'fresh', masks: [], floor: 0.05, maxBlob: 16 },
 ];
 

@@ -5,6 +5,7 @@ import { crossOriginCookie, needsAppOrigin } from '../worker/origin-gate.ts';
 import { json } from '../worker/route.ts';
 import { handleDocs, type DocsEnv } from './docs.ts';
 import { feedback } from './feedback.ts';
+import { handleFolders } from './members.ts';
 import { workspace } from './workspace.ts';
 
 const NO_STORE = { 'cache-control': 'no-store' };
@@ -31,5 +32,6 @@ export async function handleApi(request: Request, env: ApiEnv): Promise<Response
   if (pathname === '/api/workspace') return workspace(request, env);
   if (pathname === '/api/feedback') return feedback(request, env);
   if (pathname === '/api/docs' || pathname.startsWith('/api/docs/')) return handleDocs(request, env);
+  if (pathname.startsWith('/api/folders/')) return handleFolders(request, env);
   return json({ error: 'not-found' }, 404);
 }

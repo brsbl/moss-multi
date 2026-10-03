@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { knownRole } from '../access.ts';
 import { createBridge, docIdFromPath } from './index.ts';
 
 const LISTING = {
@@ -70,5 +71,36 @@ describe('the T0.5b bridge', () => {
     const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json({ error: 'not-found' }, { status: 404 }));
     const api = createBridge({ pathname: () => '/', fetch });
     await expect(api.notes.create('Untitled')).rejects.toThrow(/POST \/api\/docs: 404/);
+  });
+});
+
+describe('the T1.1 bridge', () => {
+  it("reads a doc shared with the caller from GET /api/docs/:id when the listing lacks it, with the caller's role", async () => {
+    const shared = { doc: { id: 's1', folderId: 'v9', title: 'Their plans', createdAt: 1_700_000_300_000, updatedAt: 1_700_000_400_000 }, role: 'editor' };
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+      const url = String(input);
+      if (url === '/api/docs/s1') return Response.json(shared);
+      if (url.startsWith('/api/docs/')) return Response.json({ error: 'not-found' }, { status: 404 });
+      return Response.json(LISTING);
+    });
+    const api = createBridge({ pathname: () => '/d/s1', fetch });
+    expect(await api.notes.getById('s1')).toMatchObject({ id: 's1', title: 'Their plans', updatedAt: 1_700_000_400, folderPath: 'Notes', content: '' });
+    expect(knownRole('s1')).toBe('editor');
+    expect(await api.notes.getById('gone'), 'a doc the caller cannot open is no note at all').toBeUndefined();
+    expect(knownRole('gone')).toBeNull();
+  });
+
+  it('knows the caller owns every doc of its own listing and every doc it creates', async () => {
+    const created = { doc: { id: 'n1', folderId: 'v1', title: '', filename: 'untitled.md', createdAt: 1, updatedAt: 1 }, role: 'owner' };
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) =>
+      String(input) === '/api/docs' && init?.method === 'POST'
+        ? Response.json(created, { status: 201 })
+        : Response.json({ ...LISTING, docs: LISTING.docs.map((doc) => ({ ...doc, id: 'o1', role: 'owner' })) }),
+    );
+    const api = createBridge({ pathname: () => '/', fetch });
+    await api.notes.getAll();
+    expect(knownRole('o1')).toBe('owner');
+    await api.notes.create('Untitled');
+    expect(knownRole('n1')).toBe('owner');
   });
 });

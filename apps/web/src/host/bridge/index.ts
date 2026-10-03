@@ -6,6 +6,7 @@ import {
   buildMossNoteLinkClipboardHtml,
 } from '@moss-desktop/renderer/editor/utils/note-link-clipboard';
 import { displayTitle, liveTitle, writeLiveTitle } from '../collab/title-binding.ts';
+import { askDocAccess, rememberRole } from '../access.ts';
 
 /** moss's NoteMetadataRecord: timestamps in seconds, folders as `Notes/...` paths. */
 export interface NoteMetadata {
@@ -20,12 +21,13 @@ export interface NoteMetadata {
   pinnedAt?: number | null;
 }
 
-/** A doc as the API returns it (A§6): timestamps in epoch ms. */
+/** A doc as the API returns it (A§6): timestamps in epoch ms, and the caller's role where the API says it. */
 export interface ApiDoc {
   id: string;
   title: string;
   createdAt: number;
   updatedAt: number;
+  role?: string;
 }
 
 /** `GET /api/workspace`: the active vault and its docs. */
@@ -145,7 +147,9 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
   const notes = () => {
     listing ??= request('/api/workspace').then(async (response) => {
       if (!response.ok) throw new Error(`GET /api/workspace: ${response.status}`);
-      const docs = ((await response.json()) as WorkspaceListing).docs.map(toNoteMetadata);
+      const rows = ((await response.json()) as WorkspaceListing).docs;
+      for (const row of rows) rememberRole(row.id, row.role);
+      const docs = rows.map(toNoteMetadata);
       for (const doc of docs) known.set(doc.id, doc);
       return docs;
     });
@@ -157,6 +161,11 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
   };
   const byId = async (id: string): Promise<NoteMetadata | undefined> => {
     if (!known.has(id)) await notes();
+    if (!known.has(id)) {
+      // A doc shared with the caller that the listing does not carry, opened by its URL.
+      const answer = await askDocAccess(id, fetcher);
+      if (answer.kind === 'open' && !known.has(id)) known.set(id, toNoteMetadata(answer.doc));
+    }
     const note = known.get(id);
     return note && withLocal(note);
   };
@@ -194,7 +203,9 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
           body: JSON.stringify(body),
         });
         if (!response.ok) throw new Error(`POST /api/docs: ${response.status}`);
-        const note = toNoteMetadata(((await response.json()) as { doc: ApiDoc }).doc);
+        const created = (await response.json()) as { doc: ApiDoc; role?: string };
+        rememberRole(created.doc.id, created.role);
+        const note = toNoteMetadata(created.doc);
         known.set(note.id, note);
         listing = null;
         return { ...record(note), content: '' };
