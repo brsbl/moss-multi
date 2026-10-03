@@ -113,9 +113,9 @@ describe('structured property regressions', () => {
   });
 });
 
-it('imports an empty commented YAML block as no properties', () => {
+it.each(['---\n# no fields yet\n---\n', '---\n---\n'])('imports an empty YAML block as no properties: %s', (yaml) => {
   const doc = new Y.Doc();
-  writeField(doc, 'frontmatter', '---\n# no fields yet\n---\n', 'import');
+  writeField(doc, 'frontmatter', yaml, 'import');
   expect(readFrontmatter(doc)).toBeNull();
   doc.destroy();
 });

@@ -1,0 +1,29 @@
+diff --git a/packages/desktop/src/renderer/editor/components/FrontmatterHeader.tsx b/packages/desktop/src/renderer/editor/components/FrontmatterHeader.tsx
+--- a/packages/desktop/src/renderer/editor/components/FrontmatterHeader.tsx
++++ b/packages/desktop/src/renderer/editor/components/FrontmatterHeader.tsx
+@@ -1326,6 +1326,8 @@ export function FrontmatterPropertyGrid({
+ 
+ interface FrontmatterHeaderProps {
+   noteId: string;
++  // moss-multi seam: structured-properties (A§10.4): the shared map supplies display order.
++  preserveOrder?: boolean;
+   onFieldChange?: (field: string, value: unknown) => void;
+   onTagClick?: (tag: string) => void;
+   onFieldSearchClick?: (query: string) => void;
+@@ -1333,6 +1335,7 @@ interface FrontmatterHeaderProps {
+ 
+ export function FrontmatterHeader({
+   noteId,
++  preserveOrder = false,
+   onFieldChange,
+   onTagClick,
+   onFieldSearchClick,
+@@ -1398,7 +1401,7 @@ export function FrontmatterHeader({
+     orderedEntries.push([key, data[key]]);
+   }
+ 
+-  const filteredEntries = orderedEntries.filter(([key, value]) => {
++  const filteredEntries = (preserveOrder ? Object.entries(data) : orderedEntries).filter(([key, value]) => {
+     if (key === 'created_date') return true;
+     if (!KNOWN_KEYS.has(key)) return true;
+     if (value === null || value === undefined || value === '') return false;

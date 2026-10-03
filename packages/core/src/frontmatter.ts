@@ -17,12 +17,16 @@ function normalizeDates(value: unknown): unknown {
 }
 
 /** Accept both the old fenced storage format and YAML from a file's frontmatter block. */
+function loadFrontmatter(yaml: string): Frontmatter {
+  const fenced = /^---\r?\n(?:([\s\S]*?)\r?\n)?---(?:\r?\n|$)/.exec(yaml);
+  const parsed: unknown = jsYaml.load(fenced ? fenced[1] ?? '' : yaml, { json: true });
+  if (parsed == null) return null;
+  if (typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Frontmatter must be a YAML mapping');
+  return normalizeDates(parsed) as Frontmatter;
+}
+
 export function parseFrontmatter(yaml: string): Frontmatter {
-  const fenced = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(yaml);
-  try {
-    const parsed: unknown = jsYaml.load(fenced ? fenced[1] : yaml, { json: true });
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? normalizeDates(parsed) as Frontmatter : null;
-  } catch { return null; }
+  try { return loadFrontmatter(yaml); } catch { return null; }
 }
 
 /** Order-insensitive equality for nested values; top-level order is tracked separately. */
@@ -90,8 +94,7 @@ export function writeFrontmatterKey(doc: Y.Doc, key: string, value: unknown, ori
 
 /** File import replaces the properties together; interactive edits use updateFrontmatter's baseline. */
 export function importFrontmatter(doc: Y.Doc, yaml: string, origin: unknown): boolean {
-  const data = parseFrontmatter(yaml);
-  if (yaml.trim() && !data && !/^---\r?\n\s*---\s*$/.test(yaml)) throw new Error('Invalid frontmatter');
+  const data = loadFrontmatter(yaml);
   return updateFrontmatter(doc, readFrontmatter(doc), data, origin);
 }
 
@@ -117,8 +120,7 @@ export function migrateFrontmatter(doc: Y.Doc, origin: unknown): void {
     yaml = legacy.getText('frontmatter').toString();
   } finally { legacy.destroy(); }
   if (!yaml.trim()) return;
-  const data = parseFrontmatter(yaml);
-  if (!data) throw new Error('Invalid legacy frontmatter');
+  const data = loadFrontmatter(yaml) ?? {};
   doc.transact(() => {
     const map = doc.getMap('frontmatter');
     for (const [key, value] of Object.entries(data)) if (!map.has(key)) map.set(key, value);

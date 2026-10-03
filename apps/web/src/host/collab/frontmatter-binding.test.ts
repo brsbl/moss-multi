@@ -62,3 +62,19 @@ it('keeps values when Properties reorders its keys', () => {
   stop();
   doc.destroy();
 });
+
+it('keeps the empty Add field form open until its first value commits', () => {
+  const doc = new Y.Doc();
+  const store = createStore();
+  const atom = noteFrontmatterAtom('first-field');
+  const signal = frontmatterDirtySignalAtom('first-field');
+  const stop = bindFrontmatter(store, 'first-field', doc, () => true);
+  store.set(atom, {});
+  store.set(signal, (n) => n + 1);
+  expect(store.get(atom)).toEqual({});
+  store.set(atom, { first: 'value' });
+  store.set(signal, (n) => n + 1);
+  expect(readField(doc, 'frontmatter')).toBe('first: value\n');
+  stop();
+  doc.destroy();
+});

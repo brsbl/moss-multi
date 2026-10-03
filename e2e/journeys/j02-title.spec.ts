@@ -57,7 +57,7 @@ const rowTitle = async (actor: Actor, docId: string): Promise<string | null> =>
   row(actor, docId).locator('span[title]').first().getAttribute('title', { timeout: 1_000 }).catch(() => null);
 /** The note's name in the pane's top bar: moss's breadcrumb for a note at the vault root. */
 const crumbText = async (actor: Actor, docId: string): Promise<string> =>
-  ((await ui.pane(actor, docId).locator(`[${TOP_BAR_ATTR}]`).textContent()) ?? '').trim();
+  ((await ui.pane(actor, docId).locator(`[${TOP_BAR_ATTR}] nav[aria-label="Note location"]`).textContent()) ?? '').trim();
 
 async function expectNoRemount(actor: Actor, docId: string, when: string): Promise<void> {
   const observed = actor.observations.get(docId);
@@ -145,7 +145,7 @@ const startTitleLog = (actor: Actor, docId: string) =>
       const values = {
         title: paneEl?.querySelector(`[${title}]`)?.textContent ?? null,
         row: document.querySelector(`[${rowAttr}][${docIdAttr}="${docId}"] span[title]`)?.getAttribute('title') ?? null,
-        crumb: paneEl?.querySelector(`[${topBar}]`)?.textContent?.trim() ?? null,
+        crumb: paneEl?.querySelector(`[${topBar}] nav[aria-label="Note location"]`)?.textContent?.trim() ?? null,
       };
       for (const key of ['title', 'row', 'crumb'] as const) {
         const value = values[key];

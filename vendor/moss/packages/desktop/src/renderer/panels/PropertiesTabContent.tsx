@@ -127,6 +127,7 @@ export function PropertiesTabContent() {
     <fieldset disabled={!writable} className="min-w-0">
     <FrontmatterHeader
       noteId={noteId}
+      preserveOrder // moss-multi seam: structured-properties (A§10.4)
       onFieldChange={handleFieldChange}
       onTagClick={handleTagClick}
       onFieldSearchClick={handleFieldSearchClick}

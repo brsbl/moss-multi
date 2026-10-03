@@ -22,7 +22,8 @@ export function bindFrontmatter(store: Store, noteId: string, doc: Doc, canWrite
       store.set(atom, synced);
       return;
     }
-    updateFrontmatter(doc, synced, next, FRONTMATTER_LOCAL_ORIGIN);
+    // Opening an empty Add field form is local UI state, not a document mutation.
+    if (!updateFrontmatter(doc, synced, next, FRONTMATTER_LOCAL_ORIGIN)) return;
     synced = readFrontmatter(doc);
     store.set(atom, synced);
   });

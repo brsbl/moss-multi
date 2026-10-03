@@ -41,13 +41,14 @@ diff --git a/packages/desktop/src/renderer/panels/PropertiesTabContent.tsx b/pac
            <button
              type="button"
              onClick={() => {
-@@ -121,11 +123,13 @@ export function PropertiesTabContent() {
+@@ -121,11 +123,14 @@ export function PropertiesTabContent() {
    }
  
    return (
 +    <fieldset disabled={!writable} className="min-w-0">
      <FrontmatterHeader
        noteId={noteId}
++      preserveOrder // moss-multi seam: structured-properties (A§10.4)
        onFieldChange={handleFieldChange}
        onTagClick={handleTagClick}
        onFieldSearchClick={handleFieldSearchClick}

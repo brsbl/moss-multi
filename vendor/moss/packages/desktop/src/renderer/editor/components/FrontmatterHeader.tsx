@@ -1327,6 +1327,8 @@ export function FrontmatterPropertyGrid({
 
 interface FrontmatterHeaderProps {
   noteId: string;
+  // moss-multi seam: structured-properties (A§10.4): the shared map supplies display order.
+  preserveOrder?: boolean;
   onFieldChange?: (field: string, value: unknown) => void;
   onTagClick?: (tag: string) => void;
   onFieldSearchClick?: (query: string) => void;
@@ -1334,6 +1336,7 @@ interface FrontmatterHeaderProps {
 
 export function FrontmatterHeader({
   noteId,
+  preserveOrder = false,
   onFieldChange,
   onTagClick,
   onFieldSearchClick,
@@ -1399,7 +1402,7 @@ export function FrontmatterHeader({
     orderedEntries.push([key, data[key]]);
   }
 
-  const filteredEntries = orderedEntries.filter(([key, value]) => {
+  const filteredEntries = (preserveOrder ? Object.entries(data) : orderedEntries).filter(([key, value]) => {
     if (key === 'created_date') return true;
     if (!KNOWN_KEYS.has(key)) return true;
     if (value === null || value === undefined || value === '') return false;

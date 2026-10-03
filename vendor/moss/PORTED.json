@@ -78,7 +78,7 @@
     {"path":"packages/desktop/src/renderer/editor/components/CommentTextContent.tsx","pin":"762abb777","upstreamSha256":"0375db4bebe528caffe676cb5a5c44492313f6ffd7c26402bcdcb36d9fe490d7","mode":"verbatim"},
     {"path":"packages/desktop/src/renderer/editor/components/CommentTextInput.tsx","pin":"762abb777","upstreamSha256":"d5722eb3d2442a4d1f7a5d78b8c8d89e00153d8c29db72b14f96fcb417b59c62","mode":"verbatim"},
     {"path":"packages/desktop/src/renderer/editor/components/CommentUIWrapper.tsx","pin":"762abb777","upstreamSha256":"5aa9ed941e722b2eb89b4be3278781523875aca5f10b7eb7d783f9978399fc0b","mode":"verbatim"},
-    {"path":"packages/desktop/src/renderer/editor/components/FrontmatterHeader.tsx","pin":"762abb777","upstreamSha256":"0c572994ca3a3c9ef2eb4c60464b461b66802a78278429a670a8a8d9bcd1d988","mode":"verbatim"},
+    {"path":"packages/desktop/src/renderer/editor/components/FrontmatterHeader.tsx","pin":"762abb777","upstreamSha256":"0c572994ca3a3c9ef2eb4c60464b461b66802a78278429a670a8a8d9bcd1d988","mode":"patched","patch":"patches/moss/packages/desktop/src/renderer/editor/components/FrontmatterHeader.tsx.patch"},
     {"path":"packages/desktop/src/renderer/editor/components/ImageLightbox.tsx","pin":"762abb777","upstreamSha256":"f013d174bf742e7e2c25513f5e87be382959c6e649b4e85dbce59516b131bc28","mode":"verbatim"},
     {"path":"packages/desktop/src/renderer/editor/components/ImageResizer.tsx","pin":"762abb777","upstreamSha256":"e8e890745faaf83a9df84e120db5bc61724f35022e576f29ee473bcda94b941e","mode":"verbatim"},
     {"path":"packages/desktop/src/renderer/editor/components/InlinePill.tsx","pin":"762abb777","upstreamSha256":"7c844577fc12861fbd1d64be6f4c122ce18447c0d8c3147d066bfb58c171f9dc","mode":"verbatim"},
