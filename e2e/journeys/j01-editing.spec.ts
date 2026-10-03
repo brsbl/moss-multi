@@ -14,7 +14,8 @@ async function setup(actors: Actors, baseUrl: string, markdown = fixture) {
   const wire: Buffer[] = [];
   ada.page.on('websocket', socket => {
     if (!socket.url().includes(id)) return;
-    for (const event of ['framesent', 'framereceived'] as const) socket.on(event, ({ payload }) => { if (typeof payload !== 'string') wire.push(payload); });
+    const record = ({ payload }: { payload: string | Buffer }) => { if (typeof payload !== 'string') wire.push(payload); };
+    socket.on('framesent', record); socket.on('framereceived', record);
   });
   await ada.goto(`/d/${id}`);
   const ben = await actors.open(principal, { path: `/d/${id}` });
@@ -129,4 +130,49 @@ test('j01 editing: 60 second concurrent typing soak has no cascade or lost text 
   await expect.poll(async () => ui.fieldText(ada, id, 'body')).toBe(await ui.fieldText(ben, id, 'body'));
   const text = await ui.fieldText(ada, id, 'body');
   for (let n = 0; n < count; n++) for (const author of ['a', 'b']) expect(text).toContain(`${author}${n}`);
+});
+
+test('j01 editing: Insert row adds exactly one row to both peers @p:col-1', async ({ actors, stack }) => {
+  const { ada, ben, id } = await setup(actors, stack.baseUrl);
+  await ui.body(ada, id).getByRole('cell', { name: 'cell', exact: true }).click();
+  await ada.page.getByRole('button', { name: 'Table actions', exact: true }).click();
+  await ada.page.getByRole('menuitem', { name: 'Insert below', exact: true }).click();
+  for (const actor of [ada, ben]) await expect(ui.body(actor, id).locator('table tr')).toHaveCount(3);
+  await ada.page.waitForTimeout(300);
+  for (const actor of [ada, ben]) await expect(ui.body(actor, id).locator('table tr')).toHaveCount(3);
+});
+
+test('j01 editing: split panes own one socket each and never show the same doc twice @p:col-1', async ({ actors, stack }) => {
+  const { ada, id } = await setup(actors, stack.baseUrl);
+  const response = await ada.context.request.post('/api/docs', { headers: { origin: stack.baseUrl }, data: { title: 'Second note', markdown: 'Second body' } });
+  const { doc: { id: second } } = await response.json();
+  await expect(ada.page.locator(`[data-sidebar-row][data-doc-id="${second}"]`)).toBeVisible();
+  await ada.page.locator(`[data-sidebar-row][data-doc-id="${second}"]`).click({ button: 'right' });
+  await ada.page.getByRole('menuitem', { name: 'Open in Split Tab', exact: true }).click();
+  await ui.waitLive(ada, second);
+  await expect(ada.page.locator('[data-editor-pane]')).toHaveCount(2);
+  for (const docId of [id, second]) expect(ada.telemetry.sockets.filter(s => s.docId === docId && s.closedAt === null)).toHaveLength(1);
+  await ui.body(ada, second).click(); await ada.page.keyboard.press('End'); await ada.page.keyboard.type(' changed');
+  await expect(ui.body(ada, second)).toContainText('changed');
+  ada.observations.delete(id);
+  await ada.page.locator(`[data-sidebar-row][data-doc-id="${second}"]`).click();
+  await expect(ada.page.locator('[data-editor-pane]')).toHaveCount(1);
+  await ui.waitLive(ada, second);
+});
+
+test('j01 editing: derived writes replicate without consuming a local undo step @p:col-3', async ({ actors, stack }) => {
+  const { ada, ben, id } = await setup(actors, stack.baseUrl, 'Shared paragraph.');
+  await paragraphEnd(ada, id); await ada.page.keyboard.type(' local');
+  await expect(ui.body(ben, id)).toContainText('local');
+  await ui.body(ada, id).evaluate(element => {
+    const editor = (element as HTMLElement & { __lexicalEditor: LexicalEditor }).__lexicalEditor;
+    editor.update(() => {
+      for (const node of editor.getEditorState()._nodeMap.values()) {
+        if (node.getType() === 'paragraph') { (node as unknown as { setFormat(f: string): void }).setFormat('center'); break; }
+      }
+    }, { discrete: true, tag: 'formula-workspace-refresh' });
+  });
+  await expect(ui.body(ben, id).locator('p')).toHaveCSS('text-align', 'center');
+  await ada.page.keyboard.press('ControlOrMeta+z');
+  for (const actor of [ada, ben]) { await expect(ui.body(actor, id)).not.toContainText('local'); await expect(ui.body(actor, id).locator('p')).toHaveCSS('text-align', 'center'); }
 });
