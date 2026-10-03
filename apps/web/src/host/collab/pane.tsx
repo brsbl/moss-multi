@@ -1,6 +1,7 @@
 // The one pane hook (A§2.2): CanvasAreaContent calls useMossMultiPane(note) once and reads from it everything a bound
 // pane needs: the binding plugin MarkdownEditor mounts in place of its history, the first-sync gate (A§10.3), the
-// readiness attributes (A§19), the title slot, the top-bar collab slot and the terminal reason.
+// readiness attributes (A§19), the title and Properties bindings (A§10.4), the top-bar collab slot and the terminal
+// reason.
 import { LexicalCollaboration } from '@lexical/react/LexicalCollaborationContext';
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
 import type { Provider } from '@lexical/yjs';
@@ -10,6 +11,8 @@ import {
   TERMINAL_REASON_ATTR, type BindingState, type DocState,
 } from '@moss-multi/protocol/dom-contract';
 import { excludedPropertiesFor } from '@moss-multi/sync/excluded-properties';
+import { syncNoteEntityAtom } from '@moss/shared/state/atoms';
+import { useStore } from 'jotai';
 import { $getRoot, type EditorState, type LexicalEditor } from 'lexical';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
 import type { Doc } from 'yjs';
@@ -17,6 +20,8 @@ import { TopBarCollab } from '../slots.tsx';
 import {
   docOwner, openDocSession, subscribeDocOwners, type DocSession, type SessionState,
 } from './doc-session.ts';
+import { bindFrontmatter } from './frontmatter-binding.ts';
+import { displayTitle, TitleField } from './title-binding.ts';
 import { localIdentity } from './presence.ts';
 import { useTerminal } from './terminal.ts';
 
@@ -38,6 +43,32 @@ function generation(editor: LexicalEditor): number {
   return value;
 }
 
+/** The doc's fields beside its body, bound at first sync (A§10.4): the title and Properties. One per pane. */
+class DocFields {
+  readonly title: TitleField;
+  #frontmatter: { doc: Doc; stop: () => void } | null = null;
+
+  constructor(private readonly store: ReturnType<typeof useStore>) {
+    // Every title change names the note everywhere moss shows it: sidebar, breadcrumb, tabs.
+    this.title = new TitleField((docId, text) => store.set(syncNoteEntityAtom, { noteId: docId, updates: { title: displayTitle(text) } }));
+  }
+
+  bind(docId: string, doc: Doc, canWrite: () => boolean): void {
+    this.title.bind(docId, doc);
+    if (this.#frontmatter?.doc === doc) return;
+    this.#frontmatter?.stop();
+    this.#frontmatter = { doc, stop: bindFrontmatter(this.store, docId, doc, canWrite) };
+  }
+
+  unbind(doc: Doc | null): void {
+    if (!doc) return;
+    this.title.unbind(doc);
+    if (this.#frontmatter?.doc !== doc) return;
+    this.#frontmatter.stop();
+    this.#frontmatter = null;
+  }
+}
+
 /**
  * One pane's binding of one doc: the session the plugin opened, the editor it binds, and the state the pane renders.
  * `data-sync-unacked` is written here, in the tick of the write it reports, not through a render.
@@ -47,6 +78,9 @@ class PaneBinding {
   readonly #listeners = new Set<() => void>();
   #session: DocSession | null = null;
   #editor: LexicalEditor | null = null;
+  #fields: DocFields | null = null;
+  /** Writes from the title and Properties land only while this holds (terminal and roles close them). */
+  canWrite: () => boolean = () => true;
 
   readonly get = (): PaneState => this.#state;
 
@@ -78,6 +112,17 @@ class PaneBinding {
     };
   }
 
+  /** The pane's fields; bound now when the doc already synced. Returns the release. */
+  attachFields(fields: DocFields): () => void {
+    this.#fields = fields;
+    const session = this.#session;
+    if (session && this.#state.docState === 'live') fields.bind(session.docId, session.doc, () => this.canWrite());
+    return () => {
+      if (this.#fields === fields) this.#fields = null;
+      fields.unbind(this.#session?.doc ?? null);
+    };
+  }
+
   get bodyState(): BindingState {
     return this.#state.docState === 'live' ? 'live' : 'unbound';
   }
@@ -87,6 +132,9 @@ class PaneBinding {
     if (!editor) return;
     editor.getRootElement()?.closest(`[${EDITOR_PANE_ATTR}]`)?.setAttribute(SYNC_UNACKED_ATTR, state.unacked ? '1' : '0');
     if (!state.synced || this.#state.docState === 'live') return;
+    const session = this.#session;
+    // The title and Properties render the doc's own values before anything opens.
+    if (session) this.#fields?.bind(session.docId, session.doc, () => this.canWrite());
     // A§10.3: at first sync, in one render: the editable root, the body attribute (the gate's layout effect), the pane
     // state, then moss's pending focus. Editability waits for nothing else until roles (T1.1) and the terminal store
     // (T1.3) can close it.
@@ -186,9 +234,11 @@ export interface MossMultiPane {
   collaboration: { plugin: ReactNode } | null;
   /** The body is bound, synced and editable; moss's pending body focus waits for it. */
   bodyLive: boolean;
-  /** The title stays closed until its Y.Text binding (T1.4). */
+  /** The title opens with the body: bound to its doc's Y.Text('title') and synced (A§10.4, R2). */
   titleLive: boolean;
   titleBinding: BindingState;
+  /** The title field's binding; CanvasAreaContent's input, paste, drop and emoji paths write through it. */
+  title: TitleField;
   hasBodyText: boolean;
   /** The pane root's A§19 attributes. */
   paneProps: Record<string, string>;
@@ -198,6 +248,8 @@ export interface MossMultiPane {
 
 export function useMossMultiPane(note: { id: string } | null): MossMultiPane {
   const docId = note?.id ?? null;
+  const store = useStore();
+  const [fields] = useState(() => new DocFields(store));
   // A fresh binding for every doc the pane shows.
   const binding = useMemo(() => (docId ? new PaneBinding() : null), [docId]);
   const state = usePaneState(binding);
@@ -207,12 +259,20 @@ export function useMossMultiPane(note: { id: string } | null): MossMultiPane {
     [binding, docId],
   );
   const live = state.docState === 'live' && !terminal;
+  useLayoutEffect(() => fields.title.show(docId), [fields, docId]);
+  useLayoutEffect(() => binding?.attachFields(fields), [binding, fields]);
+  useLayoutEffect(() => {
+    if (binding) binding.canWrite = () => !terminal;
+  }, [binding, terminal]);
+  // In the commit that opens the field, so a focus moss asked for while it was closed lands in it.
+  useLayoutEffect(() => fields.title.setOpen(live), [fields, live]);
   return {
     bound: true,
     collaboration,
     bodyLive: live,
-    titleLive: false,
-    titleBinding: terminal ? 'terminal' : 'unbound',
+    titleLive: live,
+    titleBinding: terminal ? 'terminal' : live ? 'live' : 'unbound',
+    title: fields.title,
     hasBodyText: state.hasText,
     paneProps: docId
       ? {

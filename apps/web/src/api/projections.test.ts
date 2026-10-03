@@ -2,8 +2,8 @@
 // trimmed title, the filename is `<slug>.md` unique among live docs in the doc's folder (a collision gets `-N`, never
 // an error), a doc keeps its own filename when its slug does not change, and updated_at takes the touch time.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { migratedD1, type TestD1 } from '../../../../apps/web/src/test/d1.ts';
-import { d1Projections } from './projections.ts';
+import { d1Projections } from '@moss-multi/sync/projections';
+import { migratedD1, type TestD1 } from '../test/d1.ts';
 
 let d1: TestD1;
 const OWNER = 'user-projections';

@@ -216,6 +216,9 @@ importers:
       '@lexical/yjs':
         specifier: 0.48.0
         version: 0.48.0(typescript@5.9.3)(yjs@13.6.31)
+      '@moss-multi/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@moss-multi/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
@@ -379,6 +382,9 @@ importers:
       '@lexical/yjs':
         specifier: 0.48.0
         version: 0.48.0(typescript@5.9.3)(yjs@13.6.31)
+      '@moss-multi/core':
+        specifier: workspace:*
+        version: link:../core
       '@moss-multi/protocol':
         specifier: workspace:*
         version: link:../protocol

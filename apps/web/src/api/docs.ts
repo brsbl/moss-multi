@@ -1,7 +1,9 @@
-// /api/docs. POST writes the D1 row in a vault the caller owns, then DocDO.create seeds the doc (A§9 "+ Note").
+// /api/docs. POST writes the D1 row in a vault the caller owns, then DocDO.create seeds the doc (A§9 "+ Note") and
+// projects any title, with the same filename rule (A§5.1).
 // GET /api/docs/:id/instance is the owner-only DO probe (A§19); it reads nothing from the doc.
 import { and, eq, isNull } from 'drizzle-orm';
 import { getServerByName } from 'partyserver';
+import { filenameFor } from '@moss-multi/core/filenames';
 import type { AuthEnv } from '../auth/auth.ts';
 import { resolvePrincipal } from '../auth/principal.ts';
 import { createDb, type Db } from '../db/client.ts';
@@ -27,24 +29,7 @@ export interface DocRecord {
   updatedAt: number;
 }
 
-export function slug(title: string): string {
-  return title
-    .trim()
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}]+/gu, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 80)
-    .replace(/-+$/, '');
-}
-
-/** `<stem>.md`, else `<stem>-2.md`, `<stem>-3.md`…: collisions get a suffix, never a 409 (A§5.1). */
-export function availableFilename(stem: string, taken: Set<string>): string {
-  if (!taken.has(`${stem}.md`)) return `${stem}.md`;
-  for (let n = 2; ; n += 1) if (!taken.has(`${stem}-${n}.md`)) return `${stem}-${n}.md`;
-}
-
 async function insertDoc(db: Db, row: { folderId: string; ownerUserId: string; createdBy: string; title: string }): Promise<DocRecord> {
-  const stem = slug(row.title) || 'untitled';
   for (let attempt = 1; ; attempt += 1) {
     const live = await db
       .select({ filename: docs.filename })
@@ -55,7 +40,7 @@ async function insertDoc(db: Db, row: { folderId: string; ownerUserId: string; c
       id: crypto.randomUUID(),
       folderId: row.folderId,
       title: row.title,
-      filename: availableFilename(stem, new Set(live.map((d) => d.filename))),
+      filename: filenameFor(row.title, new Set(live.map((d) => d.filename))),
       createdAt: now,
       updatedAt: now,
     };

@@ -18,7 +18,7 @@ export async function workspace(request: Request, env: AuthEnv): Promise<Respons
   const vaultId = await ensureDefaultVault(db, principal.id);
   const [vault] = await db.select({ id: folders.id, name: folders.name }).from(folders).where(eq(folders.id, vaultId)).limit(1);
   const rows = await db
-    .select({ id: docs.id, title: docs.title, createdAt: docs.createdAt, updatedAt: docs.updatedAt })
+    .select({ id: docs.id, title: docs.title, filename: docs.filename, createdAt: docs.createdAt, updatedAt: docs.updatedAt })
     .from(docs)
     .where(and(eq(docs.folderId, vaultId), isNull(docs.deletedAt)))
     .orderBy(desc(docs.updatedAt));

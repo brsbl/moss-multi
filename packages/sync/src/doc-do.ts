@@ -7,9 +7,13 @@ import { bytesToBase64, CLOSE, type ServerEvent, type WriteRefusalReason } from 
 import { attachmentFrom, connectCode, parseFrame, revocationCode, stateBytesAfter, wouldChange, WriteRate, type Attachment } from './doc/admission.ts';
 import { attach, attachmentOf, awarenessTooLarge } from './doc/awareness.ts';
 import { AckCoalescer, DocStore, PERSISTENCE } from './doc/persistence.ts';
-import type { ProjectionTarget } from './doc/projections.ts';
+import { d1Projections, Projections, type ProjectionTarget } from './doc/projections.ts';
 import type { SyncEnv } from './env.ts';
+import { writeField } from '@moss-multi/core/doc-fields';
 import { exportDocMarkdown, importBody, rootIsEmpty, SERVER_SEED, seedEmptyParagraph } from './server-doc.ts';
+
+/** A title written by create() or a REST rename; both project. */
+export const SERVER_TITLE = 'server-title';
 
 export interface DocLimits {
   stateCapBytes: number;
@@ -53,13 +57,14 @@ export class DocDO extends YServer<SyncEnv> {
     awarenessMaxBytes: AWARENESS_MAX_BYTES,
   };
   /** Where the title, filename and updated_at projections land (A§5.1). */
-  static projectionTarget: (env: SyncEnv) => ProjectionTarget | null = () => null;
+  static projectionTarget: (env: SyncEnv) => ProjectionTarget | null = (env) => (env?.DB ? d1Projections(env.DB) : null);
 
   readonly instanceId = crypto.randomUUID();
   readonly constructedAt = Date.now();
 
   #store: DocStore | null = null;
   #exported: string | null = null;
+  #projections: Projections | null = null;
   readonly #limits = (this.constructor as typeof DocDO).limits;
   readonly #rate = new WriteRate(this.#limits.writeRate.max, this.#limits.writeRate.windowMs);
   readonly #acks = new AckCoalescer((connectionId) => this.#ack(connectionId), ACK_COALESCE_MS);
@@ -71,6 +76,8 @@ export class DocDO extends YServer<SyncEnv> {
     this.#store = store;
     this.document.on('update', (update: Uint8Array, origin: unknown) => this.#persist(store, update, origin));
     this.#seed(store);
+    const target = (this.constructor as typeof DocDO).projectionTarget(this.env);
+    if (target) this.#project(new Projections(this.name, target));
   }
 
   /** Debounced by y-partyserver (2 s, at most 10 s). */
@@ -149,11 +156,22 @@ export class DocDO extends YServer<SyncEnv> {
     if (store.meta('created') !== null) return;
     if (input.markdown) importBody(this.document, input.markdown, (diff) => this.#admitServerWrite(store, diff));
     const title = input.title?.trim();
-    // POST /api/docs wrote the D1 title, so this write needs no projection.
-    if (title) this.document.transact(() => this.document.getText('title').insert(0, title), SERVER_SEED);
+    // POST /api/docs wrote a provisional row; the title and its filename arrive through the projection.
+    if (title) writeField(this.document, 'title', title, SERVER_TITLE);
     store.setMeta('folder', input.folderId);
     store.setMeta('owner', input.ownerId);
     store.setMeta('created', '1');
+    await this.#projections?.flush();
+  }
+
+  /**
+   * A rename from outside the doc's sockets (REST, CLI): a minimal write to Y.Text('title') that every open client
+   * merges, projected before it returns.
+   */
+  async renameTitle(text: string): Promise<void> {
+    await this.#ready();
+    writeField(this.document, 'title', text, SERVER_TITLE);
+    await this.#projections?.flush();
   }
 
   /** The doc as a `.md` file, memoized until the next update. */
@@ -189,7 +207,20 @@ export class DocDO extends YServer<SyncEnv> {
     this.#exported = null;
     if (origin === PERSISTENCE) return;
     store.record(update, this.document);
-    if (isConnection(origin)) this.#acks.schedule(origin.id);
+    if (isConnection(origin)) {
+      this.#acks.schedule(origin.id);
+      this.#projections?.touch();
+    }
+  }
+
+  /** Title changes project, except the replay and the seed (A§5.1). */
+  #project(projections: Projections): void {
+    this.#projections = projections;
+    const title = this.document.getText('title');
+    title.observe((_event, transaction) => {
+      if (transaction.origin === PERSISTENCE || transaction.origin === SERVER_SEED) return;
+      projections.title(title.toString());
+    });
   }
 
   /** Simulated only near the cap, since the copy costs a full encode. */
