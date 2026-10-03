@@ -37,6 +37,10 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-03 — T0.13 verified: `packages/viewer` builds a browser bundle whose `mountMossViewer` shows a note in moss's own editor, read-only and unbound: the title renders once, `%%m:` markers stay hidden, the `layout.json` sidecar applies and tabs switch but never change, with no socket, write or input and assets and links only through injected services; CI builds the `moss-viewer` artifact with its `viewer.json` manifest and screenshots the fixture in Chromium and WebKit.
 - 2026-10-03 — T0.P verified: M0 polish. Keys typed right after "+ Note" are held with a visible "Opening note…" notice instead of vanishing or making a second note; edits typed offline survive switching notes and land on reconnect, even when an ack was lost with the dropped socket; the link popover highlights without writing to the note; a pasted or dropped image or video is refused visibly; a refused password can be fixed straight from the keyboard; and Rename, which could not work yet, is hidden.
 
+- 2026-10-03 — T1.4 implemented, awaiting independent checker: title and Properties bind to shared Y.Text fields, new notes and Rename focus only after sync, and DocDO owns title/filename/timestamp projections. Reused the prior tests-first red [journey run](https://github.com/brsbl/moss-multi/actions/runs/37119711876) and [unit run](https://github.com/brsbl/moss-multi/actions/runs/37119709094). Chromium and WebKit j02 pass on `fb23af5` ([journeys](https://github.com/brsbl/moss-multi/actions/runs/37130424174)); checks/build/viewer pass ([push](https://github.com/brsbl/moss-multi/actions/runs/37130423993)). Local Chrome for Testing confirmed two-person renames and simultaneous Properties edits at 2×. Final changes add REST rename authorization/metadata regressions only; remote push CI remains required before handoff. No task count increment before the checker.
+  - Deviations: reused and completed `t/T1.4-wip`; merged `t/T1.1` at `9fdcb05` for the members API and role gate required by declared-setup grants, rather than duplicating that lane. Corrected tests that retained their positive-control failures, mistook input values for text, treated browser NBSP rendering as a stale rename, and failed to declare intentional navigation remounts. Title undo remains T1.6's declared scope.
+  - Local tooling: the PATH-first bb wrapper targeted an unconfigured CLI; `/usr/local/bin/bb` exposes the configured Browser Automation plugin. Two timed-out plugin sessions were replaced after confirming they had stopped; at most one was live.
+
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
@@ -44,11 +48,9 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - The sign-up "too short" error does not say how long a password must be → T0.10
 - Switching to "Create an account" leaves focus on the toggle link → T0.10
 - A wrong password logs a browser console error → T0.10 (only if the zero-console-error invariant should cover the auth error path)
-- Sidebar times do not update when a note is edited → T1.4 (DocDO `updated_at` projection)
-- Sidebar search matches titles only, so body text is never found → the M3 search task (SearchDO), together with T1.4 titles
+- Sidebar search matches titles only, so body text is never found → the M3 search task (SearchDO); live title matching is bound in T1.4
 - A missing or bad doc URL silently opens a different note → T1.1 (DenialPage)
 - During a stack restart the editor stays editable with no sign it is disconnected → T1.3 (connection truth indicator and banner)
-- Settings shows Note Intelligence, and its description mentions a hidden section → T1.4 (Properties unstaging), or a hide-registry entry if it cannot work on the web
 - Sign-out leaves the session's other live doc sockets reading and writing → T2.5
 - Close codes are never dispatched: a refused or unauthorized socket reconnects forever behind an editable pane → T1.3 (a session lingering with unacked edits behind a refused socket also holds its doc until then; a terminal code should end it)
 - A lost ack leaves `data-sync-unacked=1` after reconnect → T1.3 (T0.P: the DocDO now acks an editor's inert step 2, so a reconnect ends in an ack; T1.3 confirms it in j03)
@@ -59,7 +61,6 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - `qa.mjs close` forgets the session even when closing it failed → tooling follow-up
 - `stack.mjs` puts `BETTER_AUTH_SECRET` and the test-hook secret on wrangler's command line → tooling follow-up
 - Signing out does not wait for unsynced edits, and no task owns that safeguard → extend T2.3's unacked-wait step to sign-out, or add it to the T2.x sign-out legs
-- Creating a note writes the D1 title and filename from the Worker, not the DocDO → T1.4 (title and filename projections): move slug and `availableFilename` to `packages/core` and let create go through the DO projection
 - Table and tab widths and collapsed headings reset on every reload in M0 → T1.6
 - Page-attribute names, the socket path name and the roles list are each defined in more than one place → the T1.x lane that next touches each module
 - Several docs disagree with each other: deviation 13, the M0 progress count and the viewer's copied title → the coordinator at the M0 hand-off; the viewer follow-up goes with T3.8
@@ -68,7 +69,5 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - Several negative assertions cannot fail
 - The persistence legs check flattened text, and the M0 "restart and still see it" promise has no UI leg
 - Two j07 claims are proven more weakly than their titles say
-- Enter or Space right after "+ Note" creates duplicate empty notes that cannot be deleted in M0 → T1.4 ("+ Note" seam and opening guard); M2 trash makes the junk removable (T0.P's opening guard now blurs the trigger, so the keys no longer press it)
-- The title field looks editable but is permanently dead, so every note is "Untitled" → T1.4 (title binding); until then, stage or visibly disable it so it does not invite typing
 - At 390×844, signing in lands on an unreadable doc: the editor is squeezed to one character per line → T2.7 (deviation 11: below 640 px the notes panel overlays the canvas)
 - At M0 a link's "Open in Split View" opens an in-app browser that loads forever, and an HTML block's "Preview unavailable" Retry cannot succeed → T3.2 (RemoteWebSurface and the live iframe), or stage both now if the M0 critic counts them as dead

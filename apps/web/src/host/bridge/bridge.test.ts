@@ -104,3 +104,16 @@ describe('the T1.1 bridge', () => {
     expect(knownRole('n1')).toBe('owner');
   });
 });
+
+
+describe('title rename through the bridge', () => {
+  it('returns the DocDO projection after an unbound rename', async () => {
+    const renamed = { ...LISTING.docs[0], title: 'Next plans' };
+    const fetch = vi.fn<typeof globalThis.fetch>(async (_input, init) =>
+      init?.method === 'PATCH' ? Response.json({ doc: renamed }) : Response.json(LISTING));
+    const api = createBridge({ pathname: () => '/', fetch });
+    expect(await api.notes.update('d1', { title: 'Next plans' })).toMatchObject({ title: 'Next plans' });
+    expect(await api.notes.getById('d1')).toMatchObject({ title: 'Next plans' });
+    expect(fetch).toHaveBeenCalledWith('/api/docs/d1', expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ title: 'Next plans' }) }));
+  });
+});
