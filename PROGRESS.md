@@ -1,11 +1,11 @@
 # moss-multi progress
 
-**Overall: 26% done** (18 of 70 planned tasks verified)
+**Overall: 27% done** (19 of 70 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 17 / 17 | in progress |
-| M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 1 / 11 | in progress |
+| M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 2 / 11 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 0 / 9 | |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 0 / 9 | |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
@@ -37,6 +37,13 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-03 — T0.13 verified: `packages/viewer` builds a browser bundle whose `mountMossViewer` shows a note in moss's own editor, read-only and unbound: the title renders once, `%%m:` markers stay hidden, the `layout.json` sidecar applies and tabs switch but never change, with no socket, write or input and assets and links only through injected services; CI builds the `moss-viewer` artifact with its `viewer.json` manifest and screenshots the fixture in Chromium and WebKit.
 - 2026-10-03 — T0.P verified: M0 polish. Keys typed right after "+ Note" are held with a visible "Opening note…" notice instead of vanishing or making a second note; edits typed offline survive switching notes and land on reconnect, even when an ack was lost with the dropped socket; the link popover highlights without writing to the note; a pasted or dropped image or video is refused visibly; a refused password can be fixed straight from the keyboard; and Rename, which could not work yet, is hidden.
 - 2026-10-03 — T1.1 verified: a note's owner can click Share, add a person by email as viewer, commenter or editor, and see who has access; that person opens the note from its link while a signed-in stranger sees one denial page that is byte-identical for a missing and an inaccessible note, and the stranger's socket closes 4404 without reconnecting. One access resolver (A§8) now answers every REST and socket check, and anonymous and link-only visitors never see member emails.
+- 2026-10-03 — T1.1s verified: a signed-in visitor who holds only a doc or folder link now gets the same 404 as a stranger for a note's member list, while owners still see grantee names and emails; the other identity-bearing endpoints were audited and the presence and comment follow-ups are recorded below.
+
+## T1.1s identity audit
+
+- Members: signed-in link-only readers reached doc member names through either a doc or ancestor-folder token. Authorization now omits the token; folder members already used grants only. The regression run [37133412126](https://github.com/brsbl/moss-multi/actions/runs/37133412126) failed all four doc cases (query/header × doc/folder link) with 200 instead of 404. Owner emails, grantee names, anonymous denial and owner-only writes remain covered.
+- Presence follow-up for T1.5: `worker/party.ts` admits link-only sockets, and `doc-do.ts` delegates initial awareness and broadcasts to y-partyserver without filtering recipients; `doc/awareness.ts` caps size only. Any identities published into awareness reach link-only readers. `host/collab/presence.ts` currently publishes blank names and no principal ids. Before publishing real identities, enforce ownership/grant-based recipient privacy on initial snapshots and live frames, including signed-in link-only readers.
+- Other reads: `api/docs.ts` returns document fields and role, no owner/creator identity; `api/workspace.ts` returns only the caller's own vault and docs; `/api/me` returns the caller alone. Comment-author and notification endpoints are not implemented (`api/router.ts`, `principal-do.ts` skeleton). T4.1/T4.3 must enforce identity privacy in synced comment data as well as REST, and T2.8 must recheck live grants on notification reads (A§8).
 
 - 2026-10-03 — T1.4 implemented, awaiting independent checker: title and Properties bind to shared Y.Text fields, new notes and Rename focus only after sync, and DocDO owns title/filename/timestamp projections. Reused the prior tests-first red [journey run](https://github.com/brsbl/moss-multi/actions/runs/37119711876) and [unit run](https://github.com/brsbl/moss-multi/actions/runs/37119709094). Chromium and WebKit j02 pass on `fb23af5` ([journeys](https://github.com/brsbl/moss-multi/actions/runs/37130424174)); checks/build/viewer pass ([push](https://github.com/brsbl/moss-multi/actions/runs/37130423993)). Local Chrome for Testing confirmed two-person renames and simultaneous Properties edits at 2×. Final changes add REST rename authorization/metadata regressions only; remote push CI remains required before handoff. No task count increment before the checker.
   - Deviations: reused and completed `t/T1.4-wip`; merged `t/T1.1` at `9fdcb05` for the members API and role gate required by declared-setup grants, rather than duplicating that lane. Corrected tests that retained their positive-control failures, mistook input values for text, treated browser NBSP rendering as a stale rename, and failed to declare intentional navigation remounts. Title undo remains T1.6's declared scope.

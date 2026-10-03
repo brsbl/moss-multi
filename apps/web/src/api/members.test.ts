@@ -39,11 +39,11 @@ beforeEach(() => {
   created.length = 0;
 });
 
-const call = (method: string, path: string, cookie: string | null, body?: unknown) =>
+const call = (method: string, path: string, cookie: string | null, body?: unknown, headers: Record<string, string> = {}) =>
   handleApi(
     new Request(`${BASE}${path}`, {
       method,
-      headers: { 'content-type': 'application/json', origin: BASE, ...(cookie ? { cookie } : {}) },
+      headers: { 'content-type': 'application/json', origin: BASE, ...(cookie ? { cookie } : {}), ...headers },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     }),
     env,
@@ -189,6 +189,49 @@ describe('anonymous member-list privacy', () => {
     expect(reader.every((member) => member.email === undefined)).toBe(true);
     // The token is live and grants document access, even though identities stay private.
     expect((await call('GET', `/api/docs/${docId}?share=${token}`, null)).status).toBe(200);
+  });
+});
+
+describe.each(['query', 'header'] as const)('signed-in link-only member privacy (%s token)', (transport) => {
+  it.each([
+    ['doc', 'doc'],
+    ['folder', 'doc'],
+    ['folder', 'folder'],
+  ] as const)('a viewer %s link cannot disclose %s members', async (linkKind, memberKind) => {
+    const folderId = await insertFolder(d1.db, ada, ada.homeId);
+    const docId = await insertDoc(d1.db, ada, { folderId });
+    const target = memberKind === 'doc' ? { docId } : { folderId };
+    await insertGrant(d1.db, target, ben, 'viewer');
+    const token = await insertLink(d1.db, linkKind === 'doc' ? { docId } : { folderId }, 'viewer');
+    const path = memberKind === 'doc' ? `/api/docs/${docId}/members` : `/api/folders/${folderId}/members`;
+    const withLink = (method: string, url: string, cookie: string | null, body?: unknown) =>
+      call(method, `${url}${transport === 'query' ? `?share=${token}` : ''}`, cookie, body,
+        transport === 'header' ? { 'x-moss-share': token } : {});
+
+    // The credential really grants content access to the signed-in stranger.
+    expect((await withLink('GET', `/api/docs/${docId}`, cy.cookie)).status).toBe(200);
+    const denied = await withLink('GET', path, cy.cookie);
+    expect(denied.status).toBe(404);
+    const missing = path.replace(memberKind === 'doc' ? docId : folderId, crypto.randomUUID());
+    expect(await fingerprint(denied)).toEqual(await fingerprint(await withLink('GET', missing, cy.cookie)));
+    expect(await fingerprint(await withLink('GET', path, null))).toEqual(await fingerprint(await call('GET', path, cy.cookie)));
+
+    const reader = await withLink('GET', path, ben.cookie);
+    expect(reader.status).toBe(200);
+    expect(await reader.json()).toEqual({ members: [
+      { principalId: ada.id, principalType: 'user', name: 'Ada', role: 'owner' },
+      { principalId: ben.id, principalType: 'user', name: 'Ben', role: 'viewer' },
+    ] });
+    const owner = await withLink('GET', path, ada.cookie);
+    expect(owner.status).toBe(200);
+    expect(await owner.json()).toEqual({ members: [
+      { principalId: ada.id, principalType: 'user', name: 'Ada', email: ada.email, role: 'owner' },
+      { principalId: ben.id, principalType: 'user', name: 'Ben', email: ben.email, role: 'viewer' },
+    ] });
+    const grant = { email: cy.email, role: 'editor' };
+    expect((await withLink('POST', path, cy.cookie, grant)).status).toBe(404);
+    expect((await withLink('POST', path, ben.cookie, grant)).status).toBe(403);
+    expect((await call('GET', path, cy.cookie)).status).toBe(404);
   });
 });
 
