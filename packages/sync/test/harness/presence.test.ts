@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import * as encoding from 'lib0/encoding';
 import { connect, openDoc, start, wake } from './do-harness.ts';
 
-beforeEach(() => vi.useFakeTimers());
+beforeEach(() => vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] }));
 afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); });
 const state = (name = 'Ada') => ({ name, color: '#abcdef', user: { principalId: 'ada', name, isAgent: false, color: '#abcdef', colorSettled: true } });
 function frame(id: number, value: unknown, clock = 1) {

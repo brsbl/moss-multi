@@ -24,7 +24,7 @@ export function cursorController(editor: LexicalEditor) {
       selection.caret.dataset.presenceColor = user.color;
       selection.caret.style.backgroundColor = user.color;
       selection.name.dataset.cursorLabel = '';
-      selection.name.textContent = user.name + (user.isAgent ? ' ♟' : '');
+      selection.name.textContent = user.name + (user.isAgent ? ' 🤖' : '');
       selection.name.style.backgroundColor = user.color;
       selection.name.style.color = avatarInk(getComputedStyle(selection.name).backgroundColor);
       selection.name.style.fontFamily = 'inherit';

@@ -128,6 +128,9 @@ Read this with PRODUCT.md, your BUILDPLAN entry and the A§ it cites, before wri
 - "+ Note" arms the opening guard (`host/opening-guard.ts`): the trigger blurs, and until a live field takes focus each printable key, Space, Enter and Backspace aimed at no editable is consumed and announced "Opening note…". A journey holds `POST /api/docs` with `page.route` to type into that window every run. [T0.P]
 - One module owns navigation; `location.assign`, `replace` and `reload` cannot be wrapped. Sign-out stops polls and sockets synchronously from one auth-state writer. A transient failure degrades in place (R10). [L§4.6]
 
+- T1.5: Lexical initializes identity under `awarenessData`, while cursor rendering reads top-level `name` and `color`; the presence setter lifts the validated identity and preserves the claimed color through focus updates. Never change the plugin's identity props to recolor a client, since that reconnects it.
+- T1.5: y-partyserver broadcasts awareness directly from both `onMessage` and its null-origin removal handler. DocDO owns awareness snapshots, frame handling and departure instead; removal uses the connection origin. Only ownership/grant recipients see identities, even when a signed-in reader holds a link.
+
 ## Data, auth, access
 
 - A DO replays its update log before serving sync; compacted state is chunked at 1.5 MB (rows cap at 2 MB). After a wake, an empty revocation cache means "unknown": hold frames until the authority answers. [L§4.7]
