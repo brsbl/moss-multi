@@ -65,7 +65,7 @@ test('j01 editing: concurrent typing, local undo and paste retain both authors @
   for (const actor of [ada, ben]) { await expect.poll(async () => (await ui.fieldText(actor, id, 'body')).match(/A/g)?.length ?? 0).toBe(0); expect((await ui.fieldText(actor, id, 'body')).match(/B/g)).toHaveLength(3); }
   await paragraphEnd(ada, id); await paragraphEnd(ben, id);
   await Promise.all([paste(ada, id, '\n\n**Pasted content**'), ben.page.keyboard.type(' PEER')]);
-  for (const actor of [ada, ben]) { await expect(ui.body(actor, id)).toContainText('Pasted content'); await expect(ui.body(actor, id)).toContainText('PEER'); }
+  for (const actor of [ada, ben]) { await expect(ui.body(actor, id)).toContainText('Pasted content'); await expect.poll(async () => (await ui.fieldText(actor, id, 'body')).replace('Pasted content', '')).toContain('PEER'); }
 });
 
 test('j01 editing: title undo is local and redo preserves the peer @p:col-3', async ({ actors, stack }) => {
@@ -91,7 +91,7 @@ test('j01 editing: local layout survives reload and a peer table inserted above;
   await ada.page.getByRole('button', { name: 'Collapse section', exact: true }).click();
   await expect(ui.body(ada, id).getByText('Hidden paragraph.', { exact: true })).toBeHidden();
   await expect(ui.body(ben, id).getByText('Hidden paragraph.', { exact: true })).toBeVisible();
-  await ada.page.waitForTimeout(400);
+  await expect.poll(() => ada.page.evaluate(id => JSON.parse(localStorage.getItem(`moss-multi:collapsed-headings:${id}`) ?? '[]').length, id)).toBe(1);
   await actors.reloadAll();
   for (const actor of [ada, ben]) await ui.waitLive(actor, id);
   expect((await widths(ada, id))[0].widths).toEqual([210, 170]);
@@ -140,6 +140,7 @@ test('j01 editing: Insert row adds exactly one row to both peers @p:col-1', asyn
   for (const actor of [ada, ben]) await expect(ui.body(actor, id).locator('table tr')).toHaveCount(3);
   await ada.page.waitForTimeout(300);
   for (const actor of [ada, ben]) await expect(ui.body(actor, id).locator('table tr')).toHaveCount(3);
+  await ui.title(ada, id).click();
 });
 
 test('j01 editing: split panes own one socket each and never show the same doc twice @p:col-1', async ({ actors, stack }) => {
@@ -154,7 +155,10 @@ test('j01 editing: split panes own one socket each and never show the same doc t
   for (const docId of [id, second]) expect(ada.telemetry.sockets.filter(s => s.docId === docId && s.closedAt === null)).toHaveLength(1);
   await ui.body(ada, second).click(); await ada.page.keyboard.press('End'); await ada.page.keyboard.type(' changed');
   await expect(ui.body(ada, second)).toContainText('changed');
+  await expect(ui.pane(ada, second)).toHaveAttribute('data-sync-unacked', '0');
+  await ui.body(ada, id).click();
   ada.observations.delete(id);
+  ada.expectReconnects(1, second);
   await ada.page.locator(`[data-sidebar-row][data-doc-id="${second}"]`).click();
   await expect(ada.page.locator('[data-editor-pane]')).toHaveCount(1);
   await ui.waitLive(ada, second);
@@ -175,4 +179,32 @@ test('j01 editing: derived writes replicate without consuming a local undo step 
   await expect(ui.body(ben, id).locator('p')).toHaveCSS('text-align', 'center');
   await ada.page.keyboard.press('ControlOrMeta+z');
   for (const actor of [ada, ben]) { await expect(ui.body(actor, id)).not.toContainText('local'); await expect(ui.body(actor, id).locator('p')).toHaveCSS('text-align', 'center'); }
+});
+
+test('j01 editing: formula drafts and background conversions stay out of shared presentation fields @p:col-1 @p:col-3', async ({ actors, stack }) => {
+  const { ada, ben, id, wire } = await setup(actors, stack.baseUrl, 'Shared paragraph.');
+  await paragraphEnd(ada, id); await ada.page.keyboard.press('Enter'); await ada.page.keyboard.type('=2+3');
+  await expect(ui.body(ben, id)).toContainText('=2+3');
+  await ada.page.keyboard.press('Enter');
+  for (const actor of [ada, ben]) await expect(ui.body(actor, id).locator('[data-formula-id]')).toHaveCount(1);
+  await ada.page.keyboard.type('#aabbcc ');
+  for (const actor of [ada, ben]) await expect(ui.body(actor, id).locator('[data-color-value="#aabbcc"]')).toHaveCount(1);
+  await expect(ui.pane(ada, id)).toHaveAttribute('data-sync-unacked', '0');
+  const frames = Buffer.concat(wire).toString('utf8');
+  for (const marker of ['--formula-draft-chip', '--formula-edit-id', '--formula-ref-note-id']) expect(frames).not.toContain(marker);
+  await actors.reloadAll();
+  for (const actor of [ada, ben]) { await ui.waitLive(actor, id); await expect(ui.body(actor, id).locator('[data-formula-id]')).toHaveCount(1); await expect(ui.body(actor, id).locator('[data-color-value="#aabbcc"]')).toHaveCount(1); }
+});
+
+test('j01 editing: an empty command prompt routes undo back to the note @p:col-3', async ({ actors, stack }) => {
+  const { ada, ben, id } = await setup(actors, stack.baseUrl, 'Shared paragraph.');
+  await paragraphEnd(ada, id); await ada.page.keyboard.type(' local');
+  await expect(ui.body(ben, id)).toContainText('local');
+  await ada.page.keyboard.press('ControlOrMeta+k');
+  const prompt = ada.page.locator('[data-command-palette-composer] [contenteditable="true"]:visible');
+  await expect(prompt).toBeVisible();
+  await expect(prompt).toHaveText('');
+  await prompt.click(); await ada.page.keyboard.press('ControlOrMeta+z');
+  for (const actor of [ada, ben]) await expect(ui.body(actor, id)).toHaveText('Shared paragraph.');
+  await ada.page.keyboard.press('Escape');
 });

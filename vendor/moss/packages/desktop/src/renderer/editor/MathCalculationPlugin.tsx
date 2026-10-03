@@ -1179,16 +1179,18 @@ export function MathCalculationPlugin({
 
   const applyDraftStylePlan = useCallback((plan: FormulaDraftStylePlan) => {
     if ($isBoundEditor()) {
-      const ranges: Range[] = [];
-      for (const segment of plan.segments) {
-        const element = editor.getElementByKey(segment.nodeKey);
-        const text = element?.firstChild;
-        const start = Math.max(0, plan.formulaStart - segment.start);
-        const end = Math.min(segment.end - segment.start, plan.formulaEnd - segment.start);
-        if (text?.nodeType !== Node.TEXT_NODE || end <= start) continue;
-        const range = document.createRange(); range.setStart(text, start); range.setEnd(text, end); ranges.push(range);
-      }
-      if (typeof Highlight !== 'undefined') CSS.highlights?.set('formula-draft', new Highlight(...ranges));
+      queueMicrotask(() => {
+        const ranges: Range[] = [];
+        for (const segment of plan.segments) {
+          const text = editor.getElementByKey(segment.nodeKey)?.firstChild;
+          if (text?.nodeType !== Node.TEXT_NODE) continue;
+          const start = Math.max(0, plan.formulaStart - segment.start);
+          const end = Math.min(text.textContent?.length ?? 0, segment.end - segment.start, plan.formulaEnd - segment.start);
+          if (end <= start) continue;
+          const range = document.createRange(); range.setStart(text, start); range.setEnd(text, end); ranges.push(range);
+        }
+        if (typeof Highlight !== 'undefined') CSS.highlights?.set('formula-draft', new Highlight(...ranges));
+      });
       return;
     }
     for (let index = plan.segments.length - 1; index >= 0; index -= 1) {

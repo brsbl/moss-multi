@@ -26,27 +26,29 @@ diff --git a/packages/desktop/src/renderer/editor/MathCalculationPlugin.tsx b/pa
      const root = $getRoot();
  
      const visit = (node: LexicalNode) => {
-@@ -1170,6 +1177,19 @@ export function MathCalculationPlugin({
+@@ -1170,6 +1177,21 @@ export function MathCalculationPlugin({
    }, []);
  
    const applyDraftStylePlan = useCallback((plan: FormulaDraftStylePlan) => {
 +    if ($isBoundEditor()) {
-+      const ranges: Range[] = [];
-+      for (const segment of plan.segments) {
-+        const element = editor.getElementByKey(segment.nodeKey);
-+        const text = element?.firstChild;
-+        const start = Math.max(0, plan.formulaStart - segment.start);
-+        const end = Math.min(segment.end - segment.start, plan.formulaEnd - segment.start);
-+        if (text?.nodeType !== Node.TEXT_NODE || end <= start) continue;
-+        const range = document.createRange(); range.setStart(text, start); range.setEnd(text, end); ranges.push(range);
-+      }
-+      if (typeof Highlight !== 'undefined') CSS.highlights?.set('formula-draft', new Highlight(...ranges));
++      queueMicrotask(() => {
++        const ranges: Range[] = [];
++        for (const segment of plan.segments) {
++          const text = editor.getElementByKey(segment.nodeKey)?.firstChild;
++          if (text?.nodeType !== Node.TEXT_NODE) continue;
++          const start = Math.max(0, plan.formulaStart - segment.start);
++          const end = Math.min(text.textContent?.length ?? 0, segment.end - segment.start, plan.formulaEnd - segment.start);
++          if (end <= start) continue;
++          const range = document.createRange(); range.setStart(text, start); range.setEnd(text, end); ranges.push(range);
++        }
++        if (typeof Highlight !== 'undefined') CSS.highlights?.set('formula-draft', new Highlight(...ranges));
++      });
 +      return;
 +    }
      for (let index = plan.segments.length - 1; index >= 0; index -= 1) {
        const segment = plan.segments[index];
  
-@@ -1259,6 +1279,11 @@ export function MathCalculationPlugin({
+@@ -1259,6 +1281,11 @@ export function MathCalculationPlugin({
        return;
      }
  
@@ -58,7 +60,7 @@ diff --git a/packages/desktop/src/renderer/editor/MathCalculationPlugin.tsx b/pa
      runDerivedEditorUpdate(editor, () => {
        applyWorkspaceResultsToEditor(noteId, evaluation as FormulaWorkspaceEvaluation);
      }, EDITOR_UPDATE_TAGS.derived.formulaWorkspaceRefresh);
-@@ -1615,7 +1640,7 @@ export function MathCalculationPlugin({
+@@ -1615,7 +1642,7 @@ export function MathCalculationPlugin({
        };
  
        const referenceNode = new TextNode(referenceLabel);
@@ -67,7 +69,7 @@ diff --git a/packages/desktop/src/renderer/editor/MathCalculationPlugin.tsx b/pa
          buildReferenceMetadataStyle(reference.noteId, reference.formulaId)
        );
        segment.node.insertAfter(referenceNode);
-@@ -1951,6 +1976,7 @@ export function MathCalculationPlugin({
+@@ -1951,6 +1978,7 @@ export function MathCalculationPlugin({
    // Dirty-gated so it skips selection-only changes (click-to-focus, arrow keys).
    useEffect(() => {
      return editor.registerUpdateListener(({ editorState, tags, dirtyLeaves, dirtyElements }) => {
@@ -75,7 +77,7 @@ diff --git a/packages/desktop/src/renderer/editor/MathCalculationPlugin.tsx b/pa
        if (tags.has(EDITOR_UPDATE_TAGS.ignored.formulaDraftStyle)) return;
        if (dirtyLeaves.size === 0 && dirtyElements.size === 0) return;
  
-@@ -2001,7 +2027,8 @@ export function MathCalculationPlugin({
+@@ -2001,7 +2029,8 @@ export function MathCalculationPlugin({
        return;
      }
  
