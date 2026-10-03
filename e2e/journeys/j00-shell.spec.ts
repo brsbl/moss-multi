@@ -365,17 +365,16 @@ test('an open note offers no comment until comments are shared data: no comment 
   expect.soft(await composerOpens(page), '⌘⇧A opens no comment composer').toBe(false);
 });
 
-// Each block with the toolbar control that sits beside moss's comment button: the code block's header, the chart's,
-// the canvas's, and the media header that HTML, image, video and embed blocks share. A new canvas opens in its
-// drawing mode, whose toolbar has no comment button; Cancel (its X) leaves it.
+// Each block with the toolbar control that sits beside moss's comment button. A new canvas opens in its drawing mode,
+// whose toolbar has no comment button; Cancel (its X) leaves it. The media header (HTML, image, video and embed
+// blocks) needs the asset layer: an HTML block's preview image is a moss-asset:// URL the page CSP refuses (M3).
 const BLOCKS = [
   { query: 'code', option: 'Code', control: 'Copy code', leave: null },
   { query: 'bar', option: 'Bar Chart', control: 'Edit', leave: null },
   { query: 'canvas', option: 'Canvas', control: 'Draw', leave: 'button:has(svg.lucide-x)' },
-  { query: 'html', option: 'HTML', control: 'Edit HTML', leave: null },
 ];
 
-test('no block toolbar offers a comment until comments are shared data: code, chart, canvas and media blocks @p:agt-3', async ({ actors }) => {
+test('no block toolbar offers a comment until comments are shared data: code, chart and canvas blocks @p:agt-3', async ({ actors }) => {
   const [ada] = await twoShells(actors);
   const { page } = ada;
   const notes: string[] = [];
