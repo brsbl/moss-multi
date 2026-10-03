@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { expect, test, type Browser, type Page } from '@playwright/test';
 import { PNG } from 'pngjs';
 import { AFFORDANCES } from '../../apps/web/src/host/affordances.ts';
-import { APP_STATE_ATTR } from '../lib/contract.ts';
+import { APP_STATE_ATTR, DOC_STATE_ATTR, EDITOR_PANE_ATTR } from '../lib/contract.ts';
 import { InfraBlocked } from '../lib/infra.ts';
 import { mintPrincipal, signIn } from '../lib/principals.ts';
 import { Stack } from '../lib/stack.ts';
@@ -138,10 +138,17 @@ async function captureCandidate(browser: Browser, target: Target, theme: Theme, 
     let path = '/';
     if (target.seed === 'story-listing') {
       if (listing.length === 0) throw new InfraBlocked(`${target.story} listed no notes`);
-      // The bridge converts epoch ms to moss's seconds, so the story's seconds go out as ms.
-      const docs = listing.map((note) => ({ id: note.id, title: note.title, createdAt: note.createdAt * 1000, updatedAt: note.updatedAt * 1000 }));
+      // Each story note becomes a real doc, so its pane binds (A§10.3); the story's empty body is the seed's empty
+      // paragraph. The bridge converts epoch ms to moss's seconds, so the story's seconds go out as ms.
+      const ids = new Map<string, string>();
+      for (const note of listing) {
+        const response = await page.request.post(new URL('/api/docs', stack.baseUrl).href, { data: { title: note.title } });
+        if (response.status() !== 201) throw new Error(`POST /api/docs for "${note.title}": ${response.status()}`);
+        ids.set(note.id, ((await response.json()) as { doc: { id: string } }).doc.id);
+      }
+      const docs = listing.map((note) => ({ id: ids.get(note.id), title: note.title, createdAt: note.createdAt * 1000, updatedAt: note.updatedAt * 1000 }));
       await page.route('**/api/workspace*', (route) => route.fulfill({ json: { vault: { id: 'parity-vault', name: 'Home' }, docs } }));
-      path = `/d/${encodeURIComponent(listing[0].id)}`;
+      path = `/d/${encodeURIComponent(ids.get(listing[0].id) ?? '')}`;
     }
     await page.goto(new URL(path, stack.baseUrl).href);
     await page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
@@ -151,6 +158,9 @@ async function captureCandidate(browser: Browser, target: Target, theme: Theme, 
       await expect(page.locator('[role="textbox"]').nth(0)).toHaveText(listing[0].title);
       await page.locator(CROP).getByText(oracleState.openTitle, { exact: true }).click();
       await expect(page.locator('[role="textbox"]').nth(0)).toHaveText(oracleState.openTitle);
+    }
+    if (target.seed === 'story-listing') {
+      await page.locator(`[${EDITOR_PANE_ATTR}][${DOC_STATE_ATTR}="live"]`).waitFor({ timeout: 30_000 });
     }
     await audit(page, theme, 'candidate');
     const masks = await maskRects(page, target.masks);

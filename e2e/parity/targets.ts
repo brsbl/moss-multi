@@ -11,9 +11,9 @@ export interface Target {
    * The candidate's state.
    * - `fresh`: a new principal's Home vault, as the product serves it.
    * - `story-listing`: the story bridge's own `notes.getAll()`, served as this principal's `GET /api/workspace`;
-   *   the story's first note opens through `/d/$docId`, then the note the oracle shows opens from the sidebar.
-   *   Notes and titles cannot be authored through the product until T0.8 and M1, so the listing is the one
-   *   fixture; everything rendered from it is the built Worker's.
+   *   each story note is created as a real doc with its title, the story's first note opens through `/d/$docId`,
+   *   then the note the oracle shows opens from the sidebar. Titles cannot be authored through the UI until M1, so
+   *   the listing is the one fixture; everything rendered from it is the built Worker's.
    */
   seed: 'fresh' | 'story-listing';
   /** Web chrome to paint out on both sides (sanctioned collab chrome only). */

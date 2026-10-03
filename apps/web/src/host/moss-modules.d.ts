@@ -34,3 +34,24 @@ declare module '@moss-desktop/renderer/editor/utils/note-link-clipboard' {
   }): { payload: MossNoteLinkClipboardPayload; plainText: string };
   export function buildMossNoteLinkClipboardHtml(payload: MossNoteLinkClipboardPayload): string;
 }
+
+declare module '@moss-desktop/renderer/editor/utils/editorUpdateTags' {
+  export const DIRTY_TRACKER_DERIVED_TAGS: ReadonlySet<string>;
+}
+
+// @lexical/react 0.48.0's collaboration plugin, vendored with moss-multi seams (A§10.2), through vite's alias.
+declare module '@moss-multi/lexical-react/LexicalCollaborationPlugin' {
+  import type { ExcludedProperties, Provider } from '@lexical/yjs';
+  import type { JSX, RefObject } from 'react';
+  import type { Doc } from 'yjs';
+  export function CollaborationPlugin(props: {
+    id: string;
+    providerFactory: (id: string, yjsDocMap: Map<string, Doc>) => Provider;
+    shouldBootstrap: boolean;
+    username?: string;
+    cursorColor?: string;
+    cursorsContainerRef?: RefObject<HTMLElement | null>;
+    excludedProperties?: ExcludedProperties;
+    awarenessData?: object;
+  }): JSX.Element;
+}

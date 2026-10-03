@@ -61,6 +61,9 @@ import {
   useState,
 } from 'react';
 import {createPortal} from 'react-dom';
+// moss-multi seam: plugin-a, plugin-b (A§10.2 a, b)
+import {isOwnOrigin, syncUnderOrigin} from '@moss-multi/host/collab/origins';
+import {createBindingUndoManager} from '@moss-multi/host/collab/undo';
 import {
   type Doc,
   type Snapshot,
@@ -118,7 +121,8 @@ export function useYjsCollaboration(
 
     const onYjsTreeChanges: OnYjsTreeChanges = (events, transaction) => {
       const origin = transaction.origin;
-      if (origin !== binding) {
+      // moss-multi seam: plugin-b (A§10.2 b): this binding's derived writes never fold back
+      if (!isOwnOrigin(origin, binding)) {
         const isFromUndoManger = origin instanceof UndoManager;
         syncYjsChangesToLexical(
           binding,
@@ -142,15 +146,18 @@ export function useYjsCollaboration(
         tags,
       }) => {
         if (!tags.has(SKIP_COLLAB_TAG)) {
-          syncLexicalUpdateToYjs(
-            binding,
-            provider,
-            prevEditorState,
-            editorState,
-            dirtyElements,
-            dirtyLeaves,
-            normalizedNodes,
-            tags,
+          // moss-multi seam: plugin-b (A§10.2 b): derived updates reach Yjs under DERIVED_ORIGIN
+          syncUnderOrigin(binding, tags, () =>
+            syncLexicalUpdateToYjs(
+              binding,
+              provider,
+              prevEditorState,
+              editorState,
+              dirtyElements,
+              dirtyLeaves,
+              normalizedNodes,
+              tags,
+            ),
           );
         }
       },
@@ -194,7 +201,8 @@ export function useYjsCollaboration(
     onBootstrap,
   );
 
-  useAwareness(binding, provider, selectionHighlight);
+  // moss-multi seam: plugin-d (A§10.2 d): awareness updates run the given cursor sync, so the label pass hooks it
+  useAwareness(binding, provider, selectionHighlight, syncCursorPositionsFn);
 
   return useYjsCursors(binding, cursorsContainerRef);
 }
@@ -479,18 +487,19 @@ function useAwareness(
   binding: Binding | BindingV2,
   provider: Provider,
   selectionHighlight: boolean,
+  syncCursorPositionsFn: SyncCursorPositionsFn = syncCursorPositions, // moss-multi seam: plugin-d
 ) {
   useEffect(() => {
     const {awareness} = provider;
     const onAwarenessUpdate = () => {
-      syncCursorPositions(binding, provider, {selectionHighlight});
+      syncCursorPositionsFn(binding, provider, {selectionHighlight});
     };
     awareness.on('update', onAwarenessUpdate);
 
     return () => {
       awareness.off('update', onAwarenessUpdate);
     };
-  }, [binding, provider, selectionHighlight]);
+  }, [binding, provider, selectionHighlight, syncCursorPositionsFn]);
 }
 
 export function useYjsCursors(
@@ -544,10 +553,8 @@ export function useYjsHistory(
   editor: LexicalEditor,
   binding: Binding,
 ): () => void {
-  const undoManager = useMemo(
-    () => createUndoManager(binding, binding.root.getSharedType()),
-    [binding],
-  );
+  // moss-multi seam: plugin-a (A§10.2 a): only this binding's writes are undoable, one step per 1000 ms burst
+  const undoManager = useMemo(() => createBindingUndoManager(binding), [binding]);
 
   return useYjsUndoManager(editor, undoManager);
 }

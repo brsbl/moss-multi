@@ -1,0 +1,130 @@
+diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/desktop/src/renderer/editor/MarkdownEditor.tsx
+--- a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx
++++ b/packages/desktop/src/renderer/editor/MarkdownEditor.tsx
+@@ -169,6 +169,8 @@ export interface MarkdownEditorProps {
+   enableSearchPlugin?: boolean;
+   editorMountVersion?: number;
+   editorRemountReason?: EditorRemountReason | null;
++  /** moss-multi seam: collaboration (A§2.2, A§10.3): present when the note is bound to its doc; the plugin replaces the history plugin. */
++  collaboration?: { plugin: ReactNode } | null;
+ }
+ 
+ export type MarkdownEditorHandle = {
+@@ -3649,6 +3651,7 @@ function FloatingSelectionTools({
+           <div
+             className="pointer-events-none fixed bottom-6 z-50 -translate-x-1/2 flex flex-col items-center gap-2 px-4"
+             style={bottomToolbarStyle}
++            data-floating-selection-toolbar="true" // moss-multi seam: toolbar-contract (A§19): moss's own bottom toolbar
+           >
+             <div ref={portalRef} className="w-full max-w-lg empty:hidden" />
+             <SelectionToolbarShell
+@@ -3760,11 +3763,14 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+       paneId,
+       enableSearchPlugin = true,
+       editorMountVersion,
+-      editorRemountReason = null
++      editorRemountReason = null,
++      collaboration = null
+     }: MarkdownEditorProps,
+     ref
+   ) {
+   const store = useStore();
++  // moss-multi seam: collaboration (A§2.2, A§10.3): a bound editor mounts empty and closed; its doc fills it at first sync.
++  const bound = collaboration !== null;
+   const latestEditorStateRef = useRef<EditorState | null>(null);
+   const editorRef = useRef<LexicalEditor | null>(null);
+   const lastContentChangeTagsRef = useRef<string | null>(null);
+@@ -3796,7 +3802,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+   // Capture editor instance when ready
+   const handleEditorReady = useCallback((editor: LexicalEditor) => {
+     editorRef.current = editor;
+-    if (hasInitialSerializedStateProp) {
++    if (hasInitialSerializedStateProp || bound /* moss-multi seam: collaboration (A§2.2, A§10.3): no state cache */) {
+       onReady?.(editor);
+       return;
+     }
+@@ -3813,7 +3819,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+       );
+     });
+     onReady?.(editor);
+-  }, [hasInitialSerializedStateProp, onReady]);
++  }, [bound, hasInitialSerializedStateProp, onReady]);
+ 
+   const analyticsOwnerId = `${paneId ?? 'single'}:${noteId}:${editorMountVersion ?? 0}`;
+ 
+@@ -3850,7 +3856,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+ 
+   const initialConfig = useMemo<InitialConfigType>(
+     () => {
+-      const cachedEditorState = readMarkdownEditorStateCache(editorStateCacheKey);
++      const cachedEditorState = bound ? undefined : readMarkdownEditorStateCache(editorStateCacheKey);
+ 
+       const importMarkdownValue = (editor: LexicalEditor): void => {
+         // Strip any residual comment footer from the value (defensive —
+@@ -3881,7 +3887,9 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+         editor.getRootElement()?.scrollTo({ top: 0 });
+       };
+ 
+-      const editorState = hasInitialSerializedStateProp
++      const editorState = bound
++        ? null
++        : hasInitialSerializedStateProp
+         ? (editor: LexicalEditor) => {
+             if (initialSerializedState) {
+               try {
+@@ -3903,7 +3911,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+         html: {
+           import: MARKDOWN_EDITOR_HTML_IMPORT
+         },
+-        editable: !readOnly,
++        editable: !readOnly && !bound,
+         nodes: MARKDOWN_EDITOR_NODES,
+         onError(error) {
+           throw error;
+@@ -3912,6 +3920,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+       };
+     },
+     [
++      bound,
+       editorStateCacheKey,
+       hasInitialSerializedStateProp,
+       initialSerializedState,
+@@ -4132,6 +4141,10 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+       layoutMetadata?: NoteLayoutMetadata;
+     }
+   ): { success: boolean; frontmatter: Record<string, unknown> | null; h1Title: string | null; body: string; comments: CommentMetadataMap } => {
++    // moss-multi seam: collaboration (A§2.2, A§10.3): a bound doc's content arrives only through its binding.
++    if (bound) {
++      throw new Error('moss-multi: updateContentFromMarkdown on a bound editor');
++    }
+     const editor = editorRef.current;
+     if (!editor) {
+       return { success: false, frontmatter: null, h1Title: null, body: markdown, comments: {} };
+@@ -4209,7 +4222,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+       console.error('[MarkdownEditor] In-place update failed:', error);
+       return { success: false, frontmatter: fmResult.data, h1Title: h1Result.h1Title, body: h1Result.body, comments: commentMetadata };
+     }
+-  }, []);
++  }, [bound]);
+ 
+   useImperativeHandle(
+     ref,
+@@ -4237,7 +4250,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+ 
+   return (
+     <CurrentNoteIdContext.Provider value={noteId}>
+-      <LexicalComposer key={`${noteId}-${readOnly ? 'locked' : 'edit'}`} initialConfig={initialConfig}>
++      {/* moss-multi seam: collaboration (A§2.2, A§10.3): role and trash changes call setEditable, never remount */}
++      <LexicalComposer key={bound ? noteId : `${noteId}-${readOnly ? 'locked' : 'edit'}`} initialConfig={initialConfig}>
+       <CurrentNoteIdEditorPlugin />
+       <div className="relative animate-[fadeIn_150ms_ease-out]" data-lexical-editor>
+         <RichTextPlugin
+@@ -4260,7 +4274,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+           placeholder={<Placeholder>{placeholder ?? 'Start typing...'}</Placeholder>}
+           ErrorBoundary={LexicalErrorBoundary}
+         />
+-        <HistoryPlugin />
++        {collaboration ? collaboration.plugin : <HistoryPlugin />}{/* moss-multi seam: collaboration (A§2.2, A§10.3) */}
+         {!readOnly && <SafePastePlugin />}
+         {!readOnly && <UndoRedoPlugin />}
+         <TableCellListNormalizationPlugin />

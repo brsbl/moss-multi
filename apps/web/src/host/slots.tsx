@@ -10,3 +10,7 @@ export const FolderMenuItems: (props: { folderPath: string }) => ReactNode = () 
 
 /** Sections added to moss's Settings dialog: Agents (T3.6). */
 export const SettingsSections: () => ReactNode = () => null;
+
+/** Web chrome at the start of an open note's top-bar right group: Share, the connection indicator, the face pile and
+ * the bell (T1.1, T1.3, T1.5, T2.8). */
+export const TopBarCollab: (props: { docId: string }) => ReactNode = () => null;

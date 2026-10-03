@@ -5,6 +5,7 @@ import { createBinding, syncLexicalUpdateToYjs, syncYjsChangesToLexical, type Pr
 import { $createParagraphNode, $getRoot, type LexicalEditor } from 'lexical';
 import * as Y from 'yjs';
 import { $importNoteBody, createConverterEditor, exportMarkdown } from './converter/index.ts';
+import { excludedPropertiesFor } from './excluded-properties.ts';
 
 export const SERVER_SEED = 'server-seed';
 export const SERVER_IMPORT = 'server-import';
@@ -30,7 +31,8 @@ interface Mirror {
 function mirrorOf(live: Y.Doc): Mirror {
   const doc = new Y.Doc();
   const editor = createConverterEditor();
-  const binding = createBinding(editor, provider, 'root', doc, new Map([['root', doc]]));
+  // The client's exclusions, so the mirror writes and reads the same fields the browser does (A§10.9).
+  const binding = createBinding(editor, provider, 'root', doc, new Map([['root', doc]]), excludedPropertiesFor(editor));
   const stopUpdates = editor.registerUpdateListener(({ prevEditorState, editorState, dirtyElements, dirtyLeaves, normalizedNodes, tags }) => {
     syncLexicalUpdateToYjs(binding, provider, prevEditorState, editorState, dirtyElements, dirtyLeaves, normalizedNodes, tags);
   });
