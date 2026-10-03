@@ -4869,6 +4869,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
       {...mossMultiPane.paneProps /* moss-multi seam: bound-pane (A§2.2): data-editor-pane, data-doc-id, data-doc-state (A§19) */}
     >
       {!hideTopBar && staticTopBar}
+      {mossMultiPane.noticeBand /* moss-multi seam: connection notices in flow below the top bar */}
       <CanvasArea
         className="relative min-w-0 flex-1"
         responsiveLayout
@@ -5028,7 +5029,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
                   value={content}
                   layoutMetadata={lastKnownDiskLayoutMetadataRef.current[note.id]}
                   onChange={handleEditorChange}
-                  readOnly={isTrashed}
+                  readOnly={isTrashed || mossMultiPane.readOnly}
                   placeholder={isAgentActive && content === '' ? '' : currentPlaceholder.body}
                   onReady={handleEditorReady}
                   onNavigateToNote={onNavigateToNote}

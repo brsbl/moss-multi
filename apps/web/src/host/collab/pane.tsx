@@ -10,7 +10,7 @@ import {
   TERMINAL_REASON_ATTR, type BindingState, type DocState,
 } from '@moss-multi/protocol/dom-contract';
 import { excludedPropertiesFor } from '@moss-multi/sync/excluded-properties';
-import { $getRoot, type EditorState, type LexicalEditor } from 'lexical';
+import { $createParagraphNode, $getRoot, $setSelection, type EditorState, type LexicalEditor } from 'lexical';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
 import type { Doc } from 'yjs';
 import { TopBarCollab } from '../slots.tsx';
@@ -18,10 +18,14 @@ import {
   docOwner, openDocSession, subscribeDocOwners, type DocSession, type SessionState,
 } from './doc-session.ts';
 import { localIdentity } from './presence.ts';
-import { useTerminal } from './terminal.ts';
+import { subscribeTerminal, terminalOf, useTerminal } from './terminal.ts';
+import { ConnectionNotice } from './ConnectionNotice.tsx';
 
 interface PaneState {
-  docState: Extract<DocState, 'binding' | 'live'>;
+  docState: DocState;
+  bodyState: BindingState;
+  resetting: boolean;
+  revision: number;
   /** The body holds any text; moss reads its markdown string for this, which a bound note never fills. */
   hasText: boolean;
 }
@@ -43,10 +47,16 @@ function generation(editor: LexicalEditor): number {
  * `data-sync-unacked` is written here, in the tick of the write it reports, not through a render.
  */
 class PaneBinding {
-  #state: PaneState = { docState: 'binding', hasText: false };
+  #state: PaneState = { docState: 'binding', bodyState: 'unbound', resetting: false, revision: 0, hasText: false };
   readonly #listeners = new Set<() => void>();
   #session: DocSession | null = null;
   #editor: LexicalEditor | null = null;
+
+  constructor(readonly docId: string) {}
+
+  trash(trashed: boolean): void {
+    if (trashed && this.#session) this.#session.end('deleted');
+  }
 
   readonly get = (): PaneState => this.#state;
 
@@ -73,30 +83,47 @@ class PaneBinding {
   bindEditor(editor: LexicalEditor): () => void {
     this.#editor = editor;
     if (this.#session) this.#apply(this.#session.state);
+    const stop = subscribeTerminal(() => {
+      if (this.#session) this.#apply(this.#session.state);
+    });
     return () => {
+      stop();
       if (this.#editor === editor) this.#editor = null;
     };
   }
 
   get bodyState(): BindingState {
-    return this.#state.docState === 'live' ? 'live' : 'unbound';
+    return this.#state.bodyState;
+  }
+
+  reset(editor: LexicalEditor): void {
+    editor.update(() => {
+      $getRoot().clear().append($createParagraphNode());
+      $setSelection(null);
+    }, { discrete: true });
+    this.#session = null;
+    this.set({ resetting: false, revision: this.#state.revision + 1 });
   }
 
   #apply(state: SessionState): void {
     const editor = this.#editor;
     if (!editor) return;
+    const terminal = terminalOf(this.docId);
+    const bodyState: BindingState = terminal ? 'terminal' : !state.synced || state.resync ? 'unbound' : state.canWrite && !state.halted ? 'live' : 'readonly';
+    editor.setEditable(bodyState === 'live');
+    closeRoot(editor.getRootElement(), bodyState);
     editor.getRootElement()?.closest(`[${EDITOR_PANE_ATTR}]`)?.setAttribute(SYNC_UNACKED_ATTR, state.unacked ? '1' : '0');
-    if (!state.synced || this.#state.docState === 'live') return;
-    // A§10.3: at first sync, in one render: the editable root, the body attribute (the gate's layout effect), the pane
-    // state, then moss's pending focus. Editability waits for nothing else until roles (T1.1) and the terminal store
-    // (T1.3) can close it.
-    editor.setEditable(true);
-    this.set({ docState: 'live' });
+    this.set({
+      bodyState,
+      resetting: state.resync,
+      docState: terminal ? 'terminal' : state.retrying ? 'retrying' : !state.synced || state.resync ? 'binding' : state.connection === 'offline' ? 'offline' : 'live',
+    });
   }
 }
 
 /** Closed until live: `@lexical/react` gives a non-editable root tabindex=-1, which would let it take focus (R2). */
-function closeRoot(root: HTMLElement, state: BindingState): void {
+function closeRoot(root: HTMLElement | null, state: BindingState): void {
+  if (!root) return;
   root.setAttribute(BODY_BINDING_ATTR, state);
   if (state === 'live') {
     root.removeAttribute('aria-disabled');
@@ -115,7 +142,7 @@ const hasText = (state: EditorState): boolean =>
 /** Inside the composer: binds the editor to the pane and keeps the root's attributes. */
 function BindingGate({ binding }: { binding: PaneBinding }): null {
   const [editor] = useLexicalComposerContext();
-  const body: BindingState = usePaneState(binding).docState === 'live' ? 'live' : 'unbound';
+  const body = usePaneState(binding).bodyState;
   // After the commit that made the root editable, before moss's pending focus runs (a parent's layout effect).
   useLayoutEffect(() => {
     const root = editor.getRootElement();
@@ -148,6 +175,10 @@ function DocBinding({ docId, binding }: { docId: string; binding: PaneBinding })
   const [editor] = useLexicalComposerContext();
   const [excluded] = useState(() => excludedPropertiesFor(editor));
   const [identity] = useState(localIdentity);
+  const { resetting, revision } = usePaneState(binding);
+  useEffect(() => {
+    if (resetting) binding.reset(editor);
+  }, [binding, editor, resetting]);
   const owner = useSyncExternalStore(subscribeDocOwners, () => docOwner(docId));
   const providerFactory = useCallback(
     (id: string, docMap: Map<string, Doc>): Provider => {
@@ -163,8 +194,9 @@ function DocBinding({ docId, binding }: { docId: string; binding: PaneBinding })
   );
   return (
     <LexicalCollaboration>
-      {owner === null || owner === binding ? (
+      {!resetting && (owner === null || owner === binding) ? (
         <CollaborationPlugin
+          key={revision}
           id={docId}
           providerFactory={providerFactory}
           shouldBootstrap={false}
@@ -194,21 +226,26 @@ export interface MossMultiPane {
   paneProps: Record<string, string>;
   /** Web chrome at the start of the top bar's right group. */
   topBarCollab: ReactNode;
+  noticeBand: ReactNode;
+  readOnly: boolean;
 }
 
-export function useMossMultiPane(note: { id: string } | null): MossMultiPane {
+export function useMossMultiPane(note: { id: string; trashedAt?: number | null } | null): MossMultiPane {
   const docId = note?.id ?? null;
   // A fresh binding for every doc the pane shows.
-  const binding = useMemo(() => (docId ? new PaneBinding() : null), [docId]);
+  const binding = useMemo(() => (docId ? new PaneBinding(docId) : null), [docId]);
+  useLayoutEffect(() => { binding?.trash(note?.trashedAt != null); }, [binding, note?.trashedAt]);
   const state = usePaneState(binding);
   const terminal = useTerminal(docId);
   const collaboration = useMemo(
     () => (docId && binding ? { plugin: <DocBinding key={docId} docId={docId} binding={binding} /> } : null),
     [binding, docId],
   );
-  const live = state.docState === 'live' && !terminal;
+  const live = state.bodyState === 'live' && !terminal;
   return {
     bound: true,
+    readOnly: !live,
+    noticeBand: docId ? <ConnectionNotice docId={docId} /> : null,
     collaboration,
     bodyLive: live,
     titleLive: false,
@@ -226,7 +263,7 @@ export function useMossMultiPane(note: { id: string } | null): MossMultiPane {
   };
 }
 
-const CLOSED: PaneState = { docState: 'binding', hasText: false };
+const CLOSED: PaneState = { docState: 'binding', bodyState: 'unbound', resetting: false, revision: 0, hasText: false };
 
 /**
  * The binding's state as React state rather than a store snapshot: going live must commit in the same render as the

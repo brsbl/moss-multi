@@ -11,10 +11,10 @@ export function RefusalAnnouncer(): ReactNode {
       {...{ [INPUT_REFUSAL_ATTR]: '' }}
       role="status"
       aria-live="polite"
-      className="pointer-events-none fixed left-1/2 top-2 z-40 flex max-w-[90vw] -translate-x-1/2 justify-center"
+      className="pointer-events-none text-xs text-ink-default"
     >
       {message ? (
-        <span className="rounded-md border border-border-subtle bg-surface-raised-card px-3 py-1.5 text-xs text-ink-default shadow-floating">
+        <span className="block border-b border-border-subtle bg-surface-raised-card px-4 py-2">
           {message}
         </span>
       ) : null}

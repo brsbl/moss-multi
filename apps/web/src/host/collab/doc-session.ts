@@ -9,6 +9,7 @@ import { isRole, roleAtLeast } from '@moss-multi/protocol/roles';
 import { CLOSE, closeAction, type ServerEvent, type WriteRefusalReason } from '@moss-multi/protocol/sync';
 import YProvider from 'y-partyserver/provider';
 import * as Y from 'yjs';
+import { leaveTo } from '../navigation.ts';
 import { refuseInput } from '../refusal.ts';
 import { AckLedger } from './acks.ts';
 import {
@@ -16,7 +17,7 @@ import {
   SILENCE_LIMIT_MS, startLink, type Link, type LinkEvent,
 } from './connection.ts';
 import { clearTerminal, setTerminal } from './terminal.ts';
-import { markUnacked } from './unacked.ts';
+import { markSession, markUnacked } from './unacked.ts';
 
 const PARTY = 'doc-d-o';
 const ACCESS_TIMEOUT_MS = 10_000;
@@ -24,6 +25,7 @@ const ACCESS_TIMEOUT_MS = 10_000;
 export interface SessionState {
   /** The provider has applied the server's first sync step 2. */
   synced: boolean;
+  resync: boolean;
   /** Some local write is not yet covered by a server ack (A§10.6). */
   unacked: boolean;
   /** The first sync is past its deadline (A§10.3). */
@@ -204,8 +206,9 @@ export function retryDoc(docId: string): void {
 export class DocSession {
   readonly doc = new Y.Doc();
   readonly provider: YProvider;
-  #state: SessionState = { synced: false, unacked: false, retrying: false, connection: 'reconnecting', canWrite: true, halted: null };
+  #state: SessionState = { synced: false, resync: false, unacked: false, retrying: false, connection: 'reconnecting', canWrite: true, halted: null };
   readonly #listeners = new Set<Listener>();
+  #refusedMessage = HALTED_REFUSED;
   #disposed = false;
   /** Released by its pane while edits were unacked: connected, without a pane, until the DocDO acks them. */
   #lingering = false;
@@ -257,6 +260,7 @@ export class DocSession {
     window.addEventListener('pagehide', this.#onPageHide);
     window.addEventListener('pageshow', this.#onPageShow);
     sessions.add(this);
+    markSession(this, true);
     this.#publish();
   }
 
@@ -324,6 +328,7 @@ export class DocSession {
     window.removeEventListener('pagehide', this.#onPageHide);
     window.removeEventListener('pageshow', this.#onPageShow);
     sessions.delete(this);
+    markSession(this, false);
     markUnacked(this, false);
     publishConnection(this.docId, this, null);
     if (held.get(this.docId)?.session === this) {
@@ -388,13 +393,18 @@ export class DocSession {
     switch (action.kind) {
       case 'terminal':
         this.end(action.reason);
+        if (event?.code === CLOSE.noPrincipal) leaveTo(`/login?next=${encodeURIComponent(window.location.pathname)}`);
         return;
       case 'reask':
         this.provider.shouldConnect = false;
         void this.#reask('revoked');
         return;
       case 'refused':
-        this.#halt(HALTED_REFUSED);
+        this.#ended = true;
+        this.provider.shouldConnect = false;
+        refuseInput(this.#refusedMessage);
+        this.#set({ resync: true, canWrite: false });
+        if (this.#lingering) this.dispose();
         return;
       case 'retry':
         // A designed refusal opens and then closes with its code, so a handshake that keeps failing is the network
@@ -405,6 +415,7 @@ export class DocSession {
         }
         return;
       case 'normal':
+        this.provider.shouldConnect = false;
         return;
     }
   }
@@ -512,7 +523,8 @@ export class DocSession {
     if (event.t === 'ack') {
       if (this.#state.unacked && this.#ledger.acked(event)) this.#set({ unacked: false });
     } else if (event.t === 'write-refused') {
-      refuseInput(WRITE_REFUSED[event.reason] ?? WRITE_REFUSED.role);
+      this.#refusedMessage = WRITE_REFUSED[event.reason] ?? WRITE_REFUSED.role;
+      refuseInput(this.#refusedMessage);
     } else if (event.t === 'doc-deleted') {
       this.end('deleted');
     }

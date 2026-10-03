@@ -247,15 +247,18 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
            </DropdownMenuContent>
          </DropdownMenu>
          <CopyForAgentDialog
-@@ -4826,6 +4865,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4826,8 +4865,10 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
        className="relative flex h-full min-w-0 flex-1 flex-col bg-surface-canvas"
        onMouseDown={handleCanvasAreaMouseDown}
        onClick={handleCanvasAreaClick}
 +      {...mossMultiPane.paneProps /* moss-multi seam: bound-pane (A§2.2): data-editor-pane, data-doc-id, data-doc-state (A§19) */}
      >
        {!hideTopBar && staticTopBar}
++      {mossMultiPane.noticeBand /* moss-multi seam: connection notices in flow below the top bar */}
        <CanvasArea
-@@ -4857,7 +4897,9 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+         className="relative min-w-0 flex-1"
+         responsiveLayout
+@@ -4857,7 +4898,9 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
                {/* Contenteditable H1 title field */}
                <div
                  ref={titleRefCallback}
@@ -266,7 +269,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
                  suppressContentEditableWarning
                  role="textbox"
                  aria-label="Note title"
-@@ -4944,12 +4986,15 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4944,12 +4987,15 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
                    aria-hidden
                  >
                    <span className="min-w-0 truncate">{currentPlaceholder.title}</span>
@@ -282,7 +285,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
                  </div>
                ) : null}
                </div>
-@@ -4972,7 +5017,9 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4972,7 +5018,9 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
                    ))}
                  </div>
                ) : null}
@@ -292,7 +295,16 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
                  <MarkdownEditor
                    ref={markdownEditorRef}
                    key={`${note.id}-${editorVersion}`}
-@@ -4996,8 +5043,11 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4980,7 +5028,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+                   value={content}
+                   layoutMetadata={lastKnownDiskLayoutMetadataRef.current[note.id]}
+                   onChange={handleEditorChange}
+-                  readOnly={isTrashed}
++                  readOnly={isTrashed || mossMultiPane.readOnly}
+                   placeholder={isAgentActive && content === '' ? '' : currentPlaceholder.body}
+                   onReady={handleEditorReady}
+                   onNavigateToNote={onNavigateToNote}
+@@ -4996,8 +5044,11 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
                        ? editorRemountReasonRef.current[note.id]?.reason
                        : null
                    }

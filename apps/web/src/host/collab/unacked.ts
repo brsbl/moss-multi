@@ -17,3 +17,11 @@ export function whenAllAcked(): Promise<void> {
   if (holding.size === 0) return Promise.resolve();
   return new Promise((done) => waiters.add(done));
 }
+
+export const hasUnacked = (): boolean => holding.size > 0;
+const openSessions = new Set<object>();
+export function markSession(session: object, open: boolean): void {
+  if (open) openSessions.add(session);
+  else openSessions.delete(session);
+}
+export const hasDocSessions = (): boolean => openSessions.size > 0;

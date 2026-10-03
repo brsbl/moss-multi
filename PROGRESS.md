@@ -72,3 +72,7 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - The title field looks editable but is permanently dead, so every note is "Untitled" → T1.4 (title binding); until then, stage or visibly disable it so it does not invite typing
 - At 390×844, signing in lands on an unreadable doc: the editor is squeezed to one character per line → T2.7 (deviation 11: below 640 px the notes panel overlays the canvas)
 - At M0 a link's "Open in Split View" opens an in-app browser that loads forever, and an HTML block's "Preview unavailable" Retry cannot succeed → T3.2 (RemoteWebSurface and the live iframe), or stage both now if the M0 critic counts them as dead
+
+### T1.3 implementation in progress
+
+Reused tests-first head f22b105 and its red j03 run https://github.com/brsbl/moss-multi/actions/runs/37119822769 (missing indicator/banner); red checks https://github.com/brsbl/moss-multi/actions/runs/37119819996 (delete coverage, stale socket ack and rate collisions). Reviewed and reused the saved implementation, completed pane wiring, refusal rebind and chunk recovery. Both-engine j03 and remote checks dispatched on the implementation head; verdict pending. Budget: about 60 CI minutes.
