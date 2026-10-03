@@ -192,17 +192,22 @@ export function ColorCodeConversionPlugin(): null {
 
       if (keysToConvert.length === 0) return;
 
-      editor.update(
-        () => {
-          for (const nodeKey of keysToConvert) {
-            const node = $getNodeByKey(nodeKey);
-            if (node instanceof TextNode) {
-              $convertColorLiteralsInTextNode(node, { liveTyping: true });
+      // moss-multi seam: conversion-order (A§10.10): finish this commit's listeners
+      // before replacing text that markdown shortcuts still read from its snapshot.
+      queueMicrotask(() => {
+        if (!editor.isEditable() || !editor.getRootElement()) return;
+        editor.update(
+          () => {
+            for (const nodeKey of keysToConvert) {
+              const node = $getNodeByKey(nodeKey);
+              if (node instanceof TextNode) {
+                $convertColorLiteralsInTextNode(node, { liveTyping: true });
+              }
             }
-          }
-        },
-        { tag: COLOR_CONVERT_TAG }
-      );
+          },
+          { tag: COLOR_CONVERT_TAG }
+        );
+      });
     });
   }, [editor]);
 

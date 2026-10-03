@@ -15,7 +15,40 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/ColorCodePlugin.tsx b/
        // Skip our own conversion writes and the backspace-to-text path so the
        // user can edit the expanded literal without it snapping back.
        if (updateTags?.has(COLOR_CONVERT_TAG) || updateTags?.has(COLOR_PILL_EXPAND_TAG)) return;
-@@ -209,6 +212,7 @@ export function ColorCodeConversionPlugin(): null {
+@@ -188,17 +191,22 @@ export function ColorCodeConversionPlugin(): null {
+ 
+       if (keysToConvert.length === 0) return;
+ 
+-      editor.update(
+-        () => {
+-          for (const nodeKey of keysToConvert) {
+-            const node = $getNodeByKey(nodeKey);
+-            if (node instanceof TextNode) {
+-              $convertColorLiteralsInTextNode(node, { liveTyping: true });
++      // moss-multi seam: conversion-order (A§10.10): finish this commit's listeners
++      // before replacing text that markdown shortcuts still read from its snapshot.
++      queueMicrotask(() => {
++        if (!editor.isEditable() || !editor.getRootElement()) return;
++        editor.update(
++          () => {
++            for (const nodeKey of keysToConvert) {
++              const node = $getNodeByKey(nodeKey);
++              if (node instanceof TextNode) {
++                $convertColorLiteralsInTextNode(node, { liveTyping: true });
++              }
+             }
+-          }
+-        },
+-        { tag: COLOR_CONVERT_TAG }
+-      );
++          },
++          { tag: COLOR_CONVERT_TAG }
++        );
++      });
+     });
+   }, [editor]);
+ 
+@@ -209,6 +217,7 @@ export function ColorCodeConversionPlugin(): null {
    // hex/function literals reach parity there too.
    // -----------------------------------------------------------------------
    useEffect(() => {
@@ -23,7 +56,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/ColorCodePlugin.tsx b/
      let cancelled = false;
      const run = (): void => {
        if (cancelled) return;
-@@ -428,6 +432,7 @@ export function ColorCodePlugin(): JSX.Element | null {
+@@ -428,6 +437,7 @@ export function ColorCodePlugin(): JSX.Element | null {
        if (pickerOpenRef.current) return;
  
        const updateTags = payload?.updateTags;
