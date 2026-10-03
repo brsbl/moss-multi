@@ -390,7 +390,9 @@ test('no block toolbar offers a comment until comments are shared data: code, ch
     // One block per note: the slash command replaces the caret's empty line with its block.
     const docId = await openNewNote(ada, notes);
     notes.push(docId);
-    await expect(ui.body(ada, docId), '"+ Note" leaves the caret in the body').toBeFocused();
+    await expect(ui.title(ada, docId), '"+ Note" focuses the bound title (R2)').toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(ui.body(ada, docId), 'Enter moves from the title to the body').toBeFocused();
     await page.keyboard.type(`/${block.query}`);
     await page.locator('button[data-index]').filter({ hasText: new RegExp(`^${block.option}`) }).click();
     const decorator = page.locator('[data-lexical-decorator]');
@@ -409,7 +411,9 @@ test('the slash menu offers no hidden or staged command: no Emoji (no OS panel) 
   const [ada] = await twoShells(actors);
   const { page } = ada;
   const docId = await openNewNote(ada);
-  await expect(ui.body(ada, docId), '"+ Note" leaves the caret in the body').toBeFocused();
+  await expect(ui.title(ada, docId), '"+ Note" focuses the bound title (R2)').toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(ui.body(ada, docId), 'Enter moves from the title to the body').toBeFocused();
 
   // The whole menu, then each withheld command by name; a command that stays proves each query reached the menu.
   await page.keyboard.type('/');

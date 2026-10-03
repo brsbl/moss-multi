@@ -42,6 +42,10 @@ A task counts only after an independent checker passes it on green CI. Each mile
   - Deviations: reused and completed `t/T1.4-wip`; merged `t/T1.1` at `9fdcb05` for the members API and role gate required by declared-setup grants, rather than duplicating that lane. Corrected tests that retained their positive-control failures, mistook input values for text, treated browser NBSP rendering as a stale rename, and failed to declare intentional navigation remounts. Title undo remains T1.6's declared scope.
   - Local tooling: the PATH-first bb wrapper targeted an unconfigured CLI; `/usr/local/bin/bb` exposes the configured Browser Automation plugin. Two timed-out plugin sessions were replaced after confirming they had stopped; at most one was live.
 
+- 2026-10-03 — T1.4 second attempt: merged current `m1`; regression-only [red run](https://github.com/brsbl/moss-multi/actions/runs/37134959608) on `20060e0` reproduced all six assertions: empty-canvas refusal missing, open-note Rename loses focus, Rename leaks focus to the next note, empty band occupies 32 px, and the two outdated body-focus shell legs. Fixes hand off Rename at menu close, consume repeated bound-title focus intents, render refusals on the empty canvas, collapse an empty band, and move shell slash interactions through title Enter. Remote checks, touched journeys in both engines and parity are required before handoff.
+  - Three-way focus record: glyphdown uses a discrete rename input (LEARNINGS §4.4); moss at the pin defers Rename focus 150 ms (S-ren §4.3); this branch now uses menu-close completion plus first-sync readiness without a timer. The checker owns the real browser pass and screenshots under the implementer brief's browser exception.
+  - Deviation: “reserved band” means a reserved render location, with no blank height when idle, as requested by the parity finding. P2 implementation remains deferred under the owner's review rule; deviation 14's malformed row is repaired and its unsupported “ruled” status corrected to pending.
+
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
@@ -71,3 +75,5 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - Two j07 claims are proven more weakly than their titles say
 - At 390×844, signing in lands on an unreadable doc: the editor is squeezed to one character per line → T2.7 (deviation 11: below 640 px the notes panel overlays the canvas)
 - At M0 a link's "Open in Split View" opens an in-app browser that loads forever, and an HTML block's "Preview unavailable" Retry cannot succeed → T3.2 (RemoteWebSurface and the live iframe), or stage both now if the M0 critic counts them as dead
+
+- T1.4 checker P2 follow-ups (deferred under the owner's P0/P1-only review rule): cap and principal validation for REST title writes; retry/reconcile failed D1 title projections and serialize empty initialization; preserve hyphen-leading YAML keys and handle concurrent additions of one key; add independent negative controls for j02's monotonic, filename, merge and Properties assertions; remove Properties unstaging residue, avoid a placeholder flash before binding, and investigate the unconfirmed bridge-cache issue.

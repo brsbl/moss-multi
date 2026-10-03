@@ -3139,9 +3139,8 @@ export function App() {
       handleSelectNote(noteId);
       // moss-multi seam: the pane consumes this focus intent after first sync.
       setShouldFocusTitle(true);
-      if (activeNoteId === noteId) canvasRef.current?.focusTitle();
     },
-    [handleSelectNote, activeNoteId]
+    [handleSelectNote]
   );
 
   const handleNoteRestored = useCallback(

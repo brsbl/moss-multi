@@ -138,8 +138,15 @@ function NoteContextMenuItems({
   onDuplicateNote,
   onDeleteNote
 }: NoteContextMenuItemsProps) {
+  // moss-multi seam: transfer Rename focus after the menu releases it.
+  const renameOnClose = useRef(false);
   return (
-    <ContextMenuContent>
+    <ContextMenuContent onCloseAutoFocus={(event) => {
+      if (!renameOnClose.current) return;
+      renameOnClose.current = false;
+      event.preventDefault();
+      onRenameNote?.(noteId);
+    }}>
       <ContextMenuItem onSelect={() => handleOpenInNewWindow(noteId)}>
         <ExternalLink className="h-3.5 w-3.5 text-ink-muted" />
         <span>Open in New Window</span>
@@ -157,7 +164,7 @@ function NoteContextMenuItems({
         <span>{pinned ? 'Unpin' : 'Pin'}</span>
       </ContextMenuItem>
       {onRenameNote && !externalFilePath && (
-        <ContextMenuItem onSelect={() => onRenameNote(noteId)}>
+        <ContextMenuItem onSelect={() => { renameOnClose.current = true; }}>
           <Pencil className="h-3.5 w-3.5 text-ink-muted" />
           <span>Rename</span>
         </ContextMenuItem>

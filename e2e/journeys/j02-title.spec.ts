@@ -494,7 +494,8 @@ for (const check of ['typing', 'navigation'] as const) {
     await ui.typeTitle(ada, other, 'Other title');
     await waitAcked(ada, other);
     const current = await ui.createNote(ada);
-    await ui.typeTitle(ada, current, 'Current title');
+    // This draft is deliberately replaced by Rename; only the final name is retained.
+    await ada.page.keyboard.type('Current title');
     await waitAcked(ada, current);
     await row(ada, current).click({ button: 'right' });
     await ada.page.getByRole('menuitem', { name: 'Rename', exact: true }).click();
@@ -502,6 +503,7 @@ for (const check of ['typing', 'navigation'] as const) {
     if (check === 'typing') {
       await expect(ui.title(ada, current), 'menu close leaves focus in the requested title').toBeFocused();
       await ada.page.keyboard.type('Renamed');
+      ada.typed({ docId: current, field: 'title', text: 'Renamed', ordered: true });
       await expect(ui.title(ada, current)).toHaveText('Renamed');
       await waitAcked(ada, current);
     } else {

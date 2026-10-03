@@ -372,6 +372,7 @@ test('j00-persist: keys typed while "+ Note" is still opening are refused visibl
   await ada.page.keyboard.type('Quick ');
   await ada.page.keyboard.press('Enter');
   await expect(refusal(ada.page), 'the refused keys are announced').toContainText('Opening note');
+  await expect(refusal(ada.page), 'the announcement is visible on the empty canvas').toBeVisible();
   expect(creates, 'Space and Enter create no second note').toBe(1);
 
   release();

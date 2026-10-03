@@ -17,5 +17,4 @@ Every deliberate difference from moss@762abb777, seeded from ARCHITECTURE §23. 
 | 11 | Below 640 px the notes panel overlays the canvas and the chrome row yields in order | P:Viewports Tier A; LEARNINGS §1.9 | ruled |
 | 12 | Split navigation never shows one doc in both panes (moss's own rule, made total) | P:Collab one binding per doc; A§10.1 | pending |
 | 13 | Formulas imported without an `id=` get ids derived from their payload and occurrence instead of random ones, so the client, the DocDO and the CLI agree; a derived id skips any id the note already carries (fixture `formula-ids.md`); typing a formula still mints a random id | A§12; S-conv B9 | pending |
-
-| 14 | Settings’ Note Intelligence section is hidden because automatic inference and related-note suggestions have no web service; manual Properties is available | P:Agents (cannot work → hidden); T1.4 follow-up | ruled |
+| 14 | Settings’ Note Intelligence section is hidden because automatic inference and related-note suggestions have no web service; manual Properties is available | P:Agents (cannot work → hidden); T1.4 follow-up | pending |
