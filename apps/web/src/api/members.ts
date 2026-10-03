@@ -4,7 +4,7 @@
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { ROLES, SHARE_ROLES, type Role, type ShareRole } from '@moss-multi/protocol/roles';
 import type { AuthEnv } from '../auth/auth.ts';
-import { resolvePrincipal, shareTokenOf, type Principal } from '../auth/principal.ts';
+import { resolvePrincipal, type Principal } from '../auth/principal.ts';
 import { createDb, type Db } from '../db/client.ts';
 import { agents, docMembers, folderMembers, user } from '../db/schema.ts';
 import { json } from '../worker/route.ts';
@@ -27,10 +27,10 @@ const isShareRole = (value: unknown): value is ShareRole => typeof value === 'st
 
 const refuse = (status: number, error: string, message: string) => json({ error, message }, status, NO_STORE);
 
-/** The caller's role on a live target, or null when it is missing, trashed or not theirs to see. */
-async function accessTo(db: Db, principal: Principal, target: MemberTarget, request: Request): Promise<{ role: Role; ownerUserId: string } | null> {
+/** Member identities require ownership or grants; a share link grants content access only. */
+async function accessTo(db: Db, principal: Principal, target: MemberTarget): Promise<{ role: Role; ownerUserId: string } | null> {
   const access = target.type === 'doc'
-    ? await resolveDocAccess(db, principal, target.id, shareTokenOf(request))
+    ? await resolveDocAccess(db, principal, target.id)
     : await resolveFolderAccess(db, principal, target.id);
   return access && !access.deleted ? access : null;
 }
@@ -134,7 +134,7 @@ export async function handleMembers(request: Request, env: AuthEnv, target: Memb
   // Link-only visitors may read content, never the identities of its collaborators.
   if (principal.type === 'anonymous') return notFound();
   const db = createDb(env.DB);
-  const access = await accessTo(db, principal, target, request);
+  const access = await accessTo(db, principal, target);
   if (!access) return notFound();
   if (request.method === 'GET') {
     return json({ members: await listMembers(db, target, access.ownerUserId, access.role === 'owner') }, 200, NO_STORE);
