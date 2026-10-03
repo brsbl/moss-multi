@@ -18,6 +18,8 @@ A task counts only after an independent checker passes it on green CI. Each mile
 
 ## Log
 
+- 2026-10-03 — T1.8 implementation on `t/T1.8`: server markdown import, snapshot duplication, and the 32-fixture G1 comparator. Tests-first failures: [import assertions](https://github.com/brsbl/moss-multi/actions/runs/37137777414) and [G1/duplicate browser assertions](https://github.com/brsbl/moss-multi/actions/runs/37137778302). Independent checker and local browser QA remain with the coordinator; this does not increment the verified count.
+
 - 2026-10-02 — Restart begun. History distilled into docs/history/LEARNINGS.md; PRODUCT.md carried over with restart rulings; ARCHITECTURE.md and BUILDPLAN.md drafted, critiqued by three lenses and revised.
 - 2026-10-02 — T0.1 verified: the repo installs as a pnpm workspace, and every push runs CI (plan, checks, build, ci-ok) with lint, single-version, trace and unit checks; a checks-only lane can be dispatched and `minutes.mjs` prints the month's Actions use.
 - 2026-10-02 — T0.2 verified: moss@762abb777 (387 files) and @lexical/react 0.48.0's collab plugin (2 files) are vendored verbatim with `ported-from` headers, and every CI run's drift check fails on any byte change or missing header.
@@ -51,6 +53,12 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+- T1.8 checker: replace the interim listing poll/full metadata hydrate with A§11's workspace channel, including avoiding unchanged vault-switcher notifications → T2.1 (deviation 16).
+- T1.8 checker: large explicit-markdown pastes bypass chunking to preserve nested blocks; measure responsiveness and retain nesting in any future chunker. G1 covers empty-note explicit paste, not the complete plain-text paste path → editor follow-up (deviation 14).
+- T1.8 checker: confirm snapshot duplicate's metadata policy before comments and suggestions ship; it currently retains frontmatter and anchor maps, unlike Moss's fresh-metadata duplicate → T4.0/T5.0 (deviation 15).
+- T1.8 checker: distinguish native assets awaiting web delivery from truly missing images; the current image fallback says the file could not be found → T3.1.
+- T1.8 checker: calibrate the duplicate leg's 30 s WebKit setup-ack allowance against the standard 10 s allowance → test-infra follow-up; this is setup readiness, not a claimed latency budget.
 
 - The sign-up "too short" error does not say how long a password must be → T0.10
 - Switching to "Create an account" leaves focus on the toggle link → T0.10

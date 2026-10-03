@@ -138,6 +138,7 @@ import {
 } from './components/SelectionToolbarPrimitives';
 import './MarkdownEditor.css';
 // moss-multi seam: hide-registry (A§9)
+import { $importNoteBody } from './markdown/pipeline';
 import { hidden } from '@moss-multi/host/affordances';
 // moss-multi seam: link-selection (A§10.10)
 import { clearLinkSelection, markLinkSelection } from '@moss-multi/host/link-highlight';
@@ -912,6 +913,15 @@ const insertMarkdownChunk = (
         return;
       }
 
+      // moss-multi seam: whole-note paste must not let insertion rewrite formatting boundaries.
+      const root = $getRoot();
+      const only = root.getFirstChild();
+      if (root.getChildrenSize() === 1 && $isParagraphNode(only) && only.isEmpty()) {
+        $importNoteBody(markdown, { comments: {} });
+        $getRoot().selectEnd();
+        return;
+      }
+
       // convertMarkdownPasteToNodes nulls the selection to prevent temp root
       // corruption, so we re-restore the saved selection after conversion.
       const nodesToInsert = convertMarkdownPasteToNodes(markdown);
@@ -1159,7 +1169,7 @@ export const registerPasteFormattingHandlers = (editor: LexicalEditor): (() => v
       if (hasExplicitMarkdownPayload || shouldImportMarkdownFromPaste(pastedMarkdownCandidate)) {
         event.preventDefault();
         event.stopPropagation();
-        if (shouldChunkMarkdownPaste(pastedMarkdownCandidate)) {
+        if (!hasExplicitMarkdownPayload && shouldChunkMarkdownPaste(pastedMarkdownCandidate)) {
           const savedSelection = captureSelectionForPaste(editor);
           if (!savedSelection) {
             return false;

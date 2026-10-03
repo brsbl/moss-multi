@@ -89,7 +89,8 @@ function VideoComponent({
     isYouTube || useAssetFallback ? assetSrc : mediaServerSrc ?? assetSrc;
   const thumbPath = `assets/video-thumb-${computeContentHash(src)}.png`;
   const thumbBaseSrc = isYouTube ? null : toDisplaySrc(thumbPath, noteId);
-  const thumbSrc = thumbBaseSrc
+  // moss-multi seam: no Electron thumbnail requests while local media is staged.
+  const thumbSrc = thumbBaseSrc && !thumbBaseSrc.startsWith('moss-asset:')
     ? `${thumbBaseSrc}${thumbBaseSrc.includes('?') ? '&' : '?'}v=${thumbVersion}`
     : null;
 

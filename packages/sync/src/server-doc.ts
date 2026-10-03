@@ -2,7 +2,9 @@
 // every server-side content write, the seed, and markdown export. Typechecks reach the vendored converter modules
 // through src/moss-modules.d.ts.
 import { createBinding, syncLexicalUpdateToYjs, syncYjsChangesToLexical, type Provider } from '@lexical/yjs';
-import { $createParagraphNode, $getRoot, type LexicalEditor } from 'lexical';
+import { registerList } from '@lexical/list';
+import { $normalizeFormatWhitespace } from '@moss-desktop/renderer/editor/markdown/format-whitespace';
+import { $createParagraphNode, $getRoot, TextNode, type LexicalEditor } from 'lexical';
 import * as Y from 'yjs';
 import { $importNoteBody, createConverterEditor, exportMarkdown } from './converter/index.ts';
 import { excludedPropertiesFor } from './excluded-properties.ts';
@@ -31,6 +33,9 @@ interface Mirror {
 function mirrorOf(live: Y.Doc): Mirror {
   const doc = new Y.Doc();
   const editor = createConverterEditor();
+  // Moss's live editor runs these transforms on imports before its binding writes them.
+  const stopLists = registerList(editor);
+  const stopWhitespace = editor.registerNodeTransform(TextNode, $normalizeFormatWhitespace);
   // The client's exclusions, so the mirror writes and reads the same fields the browser does (A§10.9).
   const binding = createBinding(editor, provider, 'root', doc, new Map([['root', doc]]), excludedPropertiesFor(editor));
   const stopUpdates = editor.registerUpdateListener(({ prevEditorState, editorState, dirtyElements, dirtyLeaves, normalizedNodes, tags }) => {
@@ -43,12 +48,14 @@ function mirrorOf(live: Y.Doc): Mirror {
   root.observeDeep(observer);
   Y.applyUpdate(doc, Y.encodeStateAsUpdate(live), HYDRATE);
   // The hydration commits on its own, under the collaboration tag, before any mutation runs.
-  editor.update(noop, { discrete: true });
+  editor.update(noop, { discrete: true, skipTransforms: true });
   return {
     doc,
     editor,
     dispose: () => {
       stopUpdates();
+      stopWhitespace();
+      stopLists();
       root.unobserveDeep(observer);
       doc.destroy();
     },
@@ -56,11 +63,11 @@ function mirrorOf(live: Y.Doc): Mirror {
 }
 
 /** What `mutate` changes, as an update against `live`'s state. */
-function mirrorDiff(live: Y.Doc, mutate: () => void): Uint8Array {
+function mirrorDiff(live: Y.Doc, mutate: (doc: Y.Doc) => void): Uint8Array {
   const mirror = mirrorOf(live);
   try {
     const hydrated = Y.encodeStateVector(mirror.doc);
-    mirror.editor.update(mutate, { discrete: true });
+    mirror.editor.update(() => mutate(mirror.doc), { discrete: true });
     return Y.encodeStateAsUpdate(mirror.doc, hydrated);
   } finally {
     mirror.dispose();
@@ -73,7 +80,7 @@ function mirrorDiff(live: Y.Doc, mutate: () => void): Uint8Array {
  * the diff to the live doc under `origin`. The mirror is released before returning. Returns whether the live doc
  * changed.
  */
-export function serverWrite(live: Y.Doc, origin: unknown, mutate: () => void, admit: (diff: Uint8Array) => void = noop): boolean {
+export function serverWrite(live: Y.Doc, origin: unknown, mutate: (doc: Y.Doc) => void, admit: (diff: Uint8Array) => void = noop): boolean {
   const diff = mirrorDiff(live, mutate);
   admit(diff);
   let changed = false;
@@ -101,8 +108,15 @@ export function seedEmptyParagraph(live: Y.Doc): boolean {
 }
 
 /** Replaces the body with `markdown` through the one converter (A§12), which imports with no selection (SP2). */
-export function importBody(live: Y.Doc, markdown: string, admit?: (diff: Uint8Array) => void): boolean {
-  return serverWrite(live, SERVER_IMPORT, () => $importNoteBody(markdown), admit);
+export function importBody(live: Y.Doc, markdown: string, admit?: (diff: Uint8Array) => void, frontmatter?: string): boolean {
+  return serverWrite(live, SERVER_IMPORT, (doc) => {
+    $importNoteBody(markdown, { comments: {} });
+    if (frontmatter !== undefined) {
+      const field = doc.getText('frontmatter');
+      field.delete(0, field.length);
+      field.insert(0, frontmatter);
+    }
+  }, admit);
 }
 
 /** The `.md` file (A§12): the raw frontmatter block, then the body through the one converter. */
