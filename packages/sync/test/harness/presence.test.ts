@@ -19,6 +19,8 @@ it('drops spoofed identity, top-level aliases, other-client updates and oversize
   await ada.deliver(frame(42, state()));
   expect(opened.dobj.document.awareness.getStates().get(42)?.user.name).toBe('Ada');
   await ada.deliver(frame(42, state('Owner'), 2));
+  await ada.deliver(frame(42, { ...state(), user: { ...state().user, principalId: 'ben' } }, 2));
+  await ada.deliver(frame(42, { ...state(), user: { ...state().user, isAgent: true } }, 2));
   await ada.deliver(frame(42, { ...state(), name: 'Owner' }, 3));
   await ben.deliver(frame(42, null, 4));
   await ada.deliver(frame(43, state(), 5));

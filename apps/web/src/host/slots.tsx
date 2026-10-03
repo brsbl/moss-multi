@@ -1,5 +1,7 @@
 // Host slots the vendored notes list and Settings call through moss-multi seams (A§2.2: seam once, fill in host).
 // Each renders nothing until the task named beside it fills it.
+import { FacePile } from '../../../../packages/ui/src/FacePile.tsx';
+import { usePeers } from './collab/presence.ts';
 import type { ReactNode } from 'react';
 import { ConnectionIndicator } from './collab/ConnectionNotice.tsx';
 import { AccountSection } from './surfaces/AccountSection.tsx';
@@ -18,4 +20,4 @@ export const SettingsSections: () => ReactNode = () => <AccountSection />;
 
 /** Web chrome at the start of an open note's top-bar right group: Share, the connection indicator, the face pile and
  * the bell (T1.1, T1.3, T1.5, T2.8). */
-export const TopBarCollab: (props: { docId: string }) => ReactNode = ({ docId }) => <><ShareControl docId={docId} /><ConnectionIndicator docId={docId} /></>;
+export const TopBarCollab: (props: { docId: string }) => ReactNode = ({ docId }) => <><FacePile peers={usePeers(docId)} /><ShareControl docId={docId} /><ConnectionIndicator docId={docId} /></>;

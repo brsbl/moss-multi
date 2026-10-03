@@ -149,3 +149,9 @@ Local browser verification remains assigned to the independent checker under the
 - Existing review P2 follow-ups remain separate under the owner's P0/P1-only rule; no unrelated review abstractions are added. Green-head CI and both-engine j02 remain required before the implementer handoff; this is not an independent grade.
 
 - The first map implementation passed its units and builds; both engines exposed an empty Add field form being reset to null, now kept local until a value commits. The monotonic breadcrumb detector reads Moss’s root-note title span, excluding T1.3’s connection indicator; the removal journey targets Moss’s existing modal marker. The additional empty-YAML regression is red in [37150390929](https://github.com/brsbl/moss-multi/actions/runs/37150390929).
+
+### T1.5 — presence implementation
+
+- Tests-first: [checks 37153509612](https://github.com/brsbl/moss-multi/actions/runs/37153509612) failed on distinct-color and spoof/privacy assertions; [Chromium 37153871963](https://github.com/brsbl/moss-multi/actions/runs/37153871963) failed on the missing peer chip. The first browser dispatch exposed a test setup typo, corrected before implementation.
+- Per-client claims, face pile and stories, official cursor geometry with typing labels, stale-peer sweep, and validated, recipient-filtered awareness are implemented. T1.1s's awareness privacy follow-up is covered for anonymous and signed-in link-only readers.
+- Verification in progress; no local tests, typechecks or lint. Browser self-check is deferred to the independent checker per the implementer brief.

@@ -14,7 +14,7 @@ import { excludedPropertiesFor } from '@moss-multi/sync/excluded-properties';
 import { syncNoteEntityAtom } from '@moss/shared/state/atoms';
 import { useStore } from 'jotai';
 import { $createParagraphNode, $getRoot, $setSelection, type EditorState, type LexicalEditor } from 'lexical';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import type { Doc } from 'yjs';
 import { can, type Role } from '@moss-multi/protocol/roles';
 import { knownRole, useDocRole } from '../access.ts';
@@ -24,7 +24,8 @@ import {
 } from './doc-session.ts';
 import { bindFrontmatter } from './frontmatter-binding.ts';
 import { displayTitle, TitleField } from './title-binding.ts';
-import { localIdentity } from './presence.ts';
+import { localIdentity, startPresence } from './presence.ts';
+import { cursorController } from './cursors.ts';
 import { subscribeTerminal, terminalOf, useTerminal } from './terminal.ts';
 import { ConnectionNotice } from './ConnectionNotice.tsx';
 
@@ -240,6 +241,24 @@ function DocBinding({ docId, binding }: { docId: string; binding: PaneBinding })
   const [editor] = useLexicalComposerContext();
   const [excluded] = useState(() => excludedPropertiesFor(editor));
   const [identity] = useState(localIdentity);
+  const [cursors] = useState(() => cursorController(editor));
+  const overlayRef = useRef<HTMLDivElement | null>(null);
+  const [overlayReady, setOverlayReady] = useState(false);
+  useLayoutEffect(() => editor.registerRootListener(root => {
+    overlayRef.current?.remove();
+    overlayRef.current = null;
+    if (!root?.parentElement) { setOverlayReady(false); return; }
+    const overlay = document.createElement('div');
+    overlay.dataset.cursorOverlay = '';
+    overlay.style.pointerEvents = 'none';
+    overlay.style.position = 'absolute';
+    overlay.style.inset = '0';
+    if (getComputedStyle(root.parentElement).position === 'static') root.parentElement.style.position = 'relative';
+    root.parentElement.appendChild(overlay);
+    overlayRef.current = overlay;
+    setOverlayReady(true);
+  }), [editor]);
+  useEffect(() => () => { overlayRef.current?.remove(); }, []);
   const { resetting, revision } = usePaneState(binding);
   useEffect(() => {
     if (resetting) binding.reset(editor);
@@ -253,13 +272,18 @@ function DocBinding({ docId, binding }: { docId: string; binding: PaneBinding })
       if (!session) return undefined as unknown as Provider;
       docMap.set(id, session.doc);
       binding.attach(session);
+      if (!session.stopPresence) {
+        const stopPresence = startPresence(id, session.provider);
+        const stopCursors = cursors.start(session.provider);
+        session.stopPresence = () => { stopPresence(); stopCursors(); };
+      }
       return session.provider as unknown as Provider;
     },
-    [binding],
+    [binding, cursors],
   );
   return (
     <LexicalCollaboration>
-      {!resetting && (owner === null || owner === binding) ? (
+      {overlayReady && !resetting && (owner === null || owner === binding) ? (
         <CollaborationPlugin
           key={revision}
           id={docId}
@@ -269,6 +293,8 @@ function DocBinding({ docId, binding }: { docId: string; binding: PaneBinding })
           cursorColor={identity.color}
           awarenessData={identity.awarenessData}
           excludedProperties={excluded}
+          cursorsContainerRef={overlayRef}
+          syncCursorPositionsFn={cursors.sync}
         />
       ) : null}
       <BindingGate binding={binding} />

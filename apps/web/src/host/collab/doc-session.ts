@@ -210,6 +210,7 @@ export function retryDoc(docId: string): void {
 
 export class DocSession {
   readonly doc = new Y.Doc();
+  stopPresence?: () => void;
   readonly provider: YProvider;
   #state: SessionState = { synced: false, resync: false, unacked: false, retrying: false, connection: 'reconnecting', canWrite: true, writePaused: false, halted: null };
   readonly #listeners = new Set<Listener>();
@@ -303,6 +304,7 @@ export class DocSession {
       return;
     }
     this.#lingering = true;
+    this.stopPresence?.();
     this.#listeners.clear();
     this.provider.awareness.setLocalState(null);
     this.#listeners.add((state) => {
@@ -338,6 +340,7 @@ export class DocSession {
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
+    this.stopPresence?.();
     this.#lingering = false;
     clearTimeout(this.#accessRetry);
     clearInterval(this.#tick);
@@ -515,6 +518,7 @@ export class DocSession {
   /** Heartbeats stop on pagehide so the DO can hibernate, and resume if the page comes back from the cache. */
   readonly #onPageHide = (): void => {
     this.#paused = true;
+    this.provider.awareness.setLocalState(null);
   };
 
   readonly #onPageShow = (event: PageTransitionEvent): void => {

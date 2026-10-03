@@ -21,3 +21,13 @@ it('settled claims beat provisional ones; ties use UTF-16 order', () => {
   expect(claimColor({ id: 'a', slot: 0, settled: false }, [{ id: 'z', slot: 0, settled: true }])).not.toBe(0);
   expect(claimColor({ id: 'z', slot: 0, settled: false }, [{ id: 'a', slot: 0, settled: false }])).not.toBe(0);
 });
+
+it('simultaneous provisional collisions converge within the palette', () => {
+  fc.assert(fc.property(fc.uniqueArray(fc.string({ minLength: 1 }), { minLength: 2, maxLength: 10 }), fc.integer({ min: 0, max: 9 }), (ids, slot) => {
+    const peers = ids.map(id => ({ id, slot, settled: false }));
+    for (let round = 0; round < peers.length; round++) {
+      for (const peer of peers) peer.slot = claimColor(peer, peers);
+    }
+    expect(new Set(peers.map(peer => peer.slot)).size).toBe(peers.length);
+  }));
+});

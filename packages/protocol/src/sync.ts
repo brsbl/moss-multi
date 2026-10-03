@@ -74,6 +74,7 @@ export const TRUSTED = {
   role: 'x-moss-role',
   session: 'x-moss-session',
   share: 'x-moss-share',
+  presence: 'x-moss-presence',
 } as const;
 
 export const PRINCIPAL_KINDS = ['user', 'agent', 'anonymous'] as const;

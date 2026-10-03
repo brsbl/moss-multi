@@ -60,7 +60,8 @@ test('j01 presence: a hard drop clears within 8–20 seconds @p:col-2', async ({
 test('j01 presence: one principal in two windows sees the other client and undo keeps peer text @p:col-1 @p:col-2 @p:col-3', async ({ actors, stack }) => {
   actors.solo('PRODUCT counts each window as a user; this leg deliberately shares a principal.');
   const { ada, ben, id } = await setup(actors, stack.baseUrl, true);
-  await ui.typeBody(ada, id, ' Ada');
+  await ui.body(ada, id).click(); await ada.page.keyboard.press('ControlOrMeta+End');
+  await ada.page.keyboard.type(' Ada');
   await expect(ui.body(ben, id)).toContainText(' Ada');
   await ui.typeBody(ben, id, ' Ben');
   await expect(ui.body(ada, id)).toContainText(' Ben');

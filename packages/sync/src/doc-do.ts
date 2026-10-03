@@ -1,6 +1,8 @@
 import type { Connection, ConnectionContext, WSMessage } from 'partyserver';
 import { YServer } from 'y-partyserver';
 import * as Y from 'yjs';
+import * as encoding from 'lib0/encoding';
+import { writeSyncStep1 } from 'y-protocols/sync';
 import { splitFrontmatter } from '@moss-desktop/common/markdown-layers';
 import { ACK_COALESCE_MS, AWARENESS_MAX_BYTES, MAX_CONNECTIONS, STATE_CAP_BYTES, WRITE_RATE } from '@moss-multi/protocol/limits';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
@@ -8,7 +10,7 @@ import { bytesToBase64, CLOSE, type ServerEvent, type WriteRefusalReason } from 
 import {
   attachmentFrom, classifySync, connectCode, parseFrame, revocationCode, stateBytesAfter, WriteRate, type Attachment, type DeleteSet,
 } from './doc/admission.ts';
-import { attach, attachmentOf, awarenessTooLarge } from './doc/awareness.ts';
+import { attach, attachmentOf, awarenessTooLarge, awarenessFrame, receivePresence, leavePresence } from './doc/awareness.ts';
 import { AckCoalescer, DocStore, PERSISTENCE } from './doc/persistence.ts';
 import { d1Projections, Projections, type ProjectionTarget } from './doc/projections.ts';
 import type { SyncEnv } from './env.ts';
@@ -107,7 +109,13 @@ export class DocDO extends YServer<SyncEnv> {
     }
     attach(connection, attachment);
     // Registering the socket in the PrincipalDO's sign-out registry lands with that registry (A§5.2, M2).
-    return super.onConnect(connection, ctx);
+    const encoder = encoding.createEncoder();
+    encoding.writeVarUint(encoder, 0);
+    writeSyncStep1(encoder, this.document);
+    connection.send(encoding.toUint8Array(encoder));
+    if (attachment.presenceAllowed && this.document.awareness.getStates().size) {
+      connection.send(awarenessFrame(this.document.awareness, [...this.document.awareness.getStates().keys()]));
+    }
   }
 
   override onMessage(connection: Connection, message: WSMessage): void {
@@ -128,7 +136,10 @@ export class DocDO extends YServer<SyncEnv> {
     }
     const frame = parseFrame(message);
     if (frame.kind === 'other') return;
-    if (frame.kind === 'awareness' && awarenessTooLarge(frame.bytes, this.#limits.awarenessMaxBytes)) return;
+    if (frame.kind === 'awareness') {
+      if (!awarenessTooLarge(frame.bytes, this.#limits.awarenessMaxBytes)) receivePresence(this.document.awareness, connection, message, [...this.getConnections()]);
+      return;
+    }
     // Inert frames (every step 2 answering a step 1) pass whatever the role; writes meet the gates.
     if (frame.kind === 'sync') {
       const { changes, deletes } = classifySync(this.document, frame.update);
@@ -153,8 +164,8 @@ export class DocDO extends YServer<SyncEnv> {
     return !roleAtLeast(attachmentOf(connection)?.role, 'editor');
   }
 
-  override onClose(connection: Connection, code: number, reason: string, wasClean: boolean): void {
-    super.onClose(connection, code, reason, wasClean);
+  override onClose(connection: Connection): void {
+    leavePresence(this.document.awareness, connection, this.getConnections());
     this.#rate.forget(connection);
     this.#acks.cancel(connection);
   }
