@@ -141,7 +141,13 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
   - **Scope:** build glyphdown@faf98d0 from a temp copy of `.refs/glyphdown` on one local stack (L§5.2) and capture 2× light and dark shots of the login card, share dialog, presence and cursors, connection pill and offline banner, bell and inbox, vault switcher, history page, suggest mode and SuggestionsPanel. Attach them to the M0 milestone PR with `gh pr edit --attach` and index the URLs by state in `docs/design/glyphdown-reference.md`. Delete the temp copy.
   - **Done:** every surface named in PRODUCT's intro has a light and a dark reference in the index.
 
-**Order:** T0.1 alone (the pilot), then T0.2, then T0.3; lanes open once the pilot's verdicts converge. Then T0.4 ∥ T0.6 ∥ T0.9a, then T0.5a ∥ T0.7 ∥ T0.11, then T0.5b ∥ T0.10 ∥ T0.9b, then T0.8, then the polish task.
+- **T0.13 Read-only viewer entry, first slice** `[B·fresh]`, after T0.8. Requested by the owner for the bb Moss viewer plugin (thr_imhynzt3h5, relayed by thr_7za4t3fuac); it must not delay the rest of M0.
+  - **Scope:** `packages/viewer`: a versioned browser bundle (ESM entry, CSS and moss's fonts) exposing `mountMossViewer(el, { markdown | state, frontmatter, layout, theme, services })` in an unbound read-only mode. It reuses the exact extracted converter, nodes and views from T0.6/T0.8; there is no second renderer. No login, Y.Doc, WebSocket, Cloudflare dependency or file writes. `services` is injectable per viewer: asset URLs (including Range video), note lookup (ids, titles, headings), navigation and unfurl. Tabs stay switchable. A `viewer.json` manifest records the moss pin, repo commit and bundle hash.
+  - **Moss-file compatibility:** a leading `# Title` H1 becomes the title through the A§12 moss-interchange path; legacy `[[Title|note-id]]` links resolve through the injected note lookup; the `layout.json` sidecar applies; `%%m:` comment markers never render.
+  - **Tests first:** a read-only acceptance fixture modeled on a real moss note with tabs, tables and tweet embeds (synthetic content, never the owner's own notes); assertions that the mounted viewer opens no socket, sends no write, accepts no input, renders the title once, hides markers, and resolves assets and links only through the injected services. A CI job builds the bundle and screenshots the fixture in Chromium and WebKit.
+  - **Done:** the bundle and manifest are CI artifacts, the fixture shots are read, and the consumer thread has the entry API.
+
+**Order:** T0.1 alone (the pilot), then T0.2, then T0.3; lanes open once the pilot's verdicts converge. Then T0.4 ∥ T0.6 ∥ T0.9a, then T0.5a ∥ T0.7 ∥ T0.11, then T0.5b ∥ T0.10 ∥ T0.9b, then T0.8, then T0.13, then the polish task. T0.12 (Origin gate) runs alongside.
 
 **Journeys added:** j00-shell, j00-roundtrip, j00-persist, j07-auth.
 
@@ -247,7 +253,7 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
 
 **A person can newly** upload images and video, which render after reload and inside copies, and edit image alt text; see HTML blocks, web embeds and the in-app browser render live and sandboxed; use every moss node family, styled; search with text snippets and follow backlinks; create, rename and trash vaults; mint and revoke agent keys in Settings and share with an agent; and open a note in a new tab and print it to PDF.
 
-**Lanes:** A (T3.1 → T3.2). B (T3.3 ∥ T3.4). C (T3.5, then T3.6 → T3.7).
+**Lanes:** A (T3.1 → T3.2). B (T3.3 ∥ T3.4, then T3.8). C (T3.5, then T3.6 → T3.7).
 
 - **T3.1 Assets** `[A·codex]`
   - **Scope:** upload, serving, Range, the SVG sandbox and SWR caching (A§16); the asset-url substitution; the `images.*` bridge; copies carry media (SP9); "Edit Alt Text…" in a moss-DS image context menu (A§9).
@@ -276,6 +282,10 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
   - **Scope:** Open in New Window becomes a browser tab; Save as PDF prints through `/pdf-export`; Save as Markdown downloads the export.
   - **Tests first:** a new page opens at `/d/<id>`; the print route reaches `data-pdf-export-status=ready` and calls `window.print` (spied); the downloaded bytes equal the export and contain no markers. **Done:** green.
 
+- **T3.8 Read-only viewer, full capability** `[B·fresh]`, after T3.1–T3.4 and T0.13
+  - **Scope:** the T0.13 viewer gains everything M3 adds: every node family styled, media and Range video through injected asset services, sandboxed HTML and embeds through injected unfurl, wiki links and headings through injected note lookup, and per-viewer layout. A versioned release artifact for the bb Moss viewer plugin, with pinned provenance.
+  - **Tests first:** the T0.13 fixture plus j14's demo-note markdown render through the viewer with computed-style parity against the editor's read-only view; injected services are the only network path; video plays through 206 responses in WebKit.
+  - **Done:** green in both engines, with shots of the fixture and the demo note, and the consumer thread notified.
 **Journeys added:** j11-media, j12-search, j13-vaults, j14-demo-note.
 
 **Exit criteria** [L§7.3 M3]: images and video render after reload, inside a copied note and through an anonymous link; the HTML preview runs in a sandboxed iframe; snippets show text and backlinks survive a save; the demo note shows every family styled, in light and dark, and concurrent decorator edits lose nothing; revoking a key kills its socket.
