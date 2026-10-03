@@ -627,7 +627,12 @@ test('j02-title: @tierA disconnected additions of the same property converge and
     await expect(PROPERTIES(ada).getByRole('textbox', { name: 'owner', exact: true })).toHaveValue('ada');
     await expect(PROPERTIES(ben).getByRole('textbox', { name: 'owner', exact: true })).toHaveValue('ben');
     expect(ada.sever.census().dropped.out, 'the sever actually withheld a local write').toBeGreaterThan(0);
-  } finally { ada.sever.restore(); }
+  } finally {
+    // T1.3 owns half-open recovery; restore this race through a real reconnect and sync handshake.
+    ada.expectReconnects(1, docId);
+    ada.sever.reset();
+    ada.sever.restore();
+  }
   const owner = (actor: Actor) => PROPERTIES(actor).getByRole('textbox', { name: 'owner', exact: true });
   await expect.poll(async () => {
     const values = [await owner(ada).inputValue(), await owner(ben).inputValue()];

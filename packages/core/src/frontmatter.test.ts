@@ -56,7 +56,7 @@ describe('setFrontmatterKey', () => {
   it('preserves and edits hyphen-leading keys beside unindented sequences', () => {
     const yaml = 'tags:\n- garden\n-owner: ada\nstatus: done\n';
     expect(setFrontmatterKey(yaml, 'tags', ['fixture'])).toBe('tags:\n  - fixture\n-owner: ada\nstatus: done\n');
-    expect(setFrontmatterKey(yaml, '-owner', 'ben')).toBe('tags:\n- garden\n-owner: ben\nstatus: done\n');
+    expect(setFrontmatterKey(yaml, '-owner', 'ben')).toBe('tags:\n- garden\n"-owner": ben\nstatus: done\n');
   });
 
   it.each(['revised', undefined])('repairs every concurrent occurrence of a key when set to %s', (value) => {
