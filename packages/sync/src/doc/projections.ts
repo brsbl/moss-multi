@@ -99,7 +99,7 @@ export function d1Projections(db: D1Database): ProjectionTarget {
           .all<{ filename: string }>();
         const self = await db.prepare('SELECT title, filename FROM docs WHERE id = ?').bind(docId).first<{ title: string; filename: string }>();
         const occupied = new Set(taken.results.map((row) => row.filename));
-        const keep = self && slug(self.title) === slug(title) && !self.filename.startsWith('pending-') && !occupied.has(self.filename);
+        const keep = self && self.title.trim() !== '' && slug(self.title) === slug(title) && !self.filename.startsWith('pending-') && !occupied.has(self.filename);
         const filename = keep ? self.filename : filenameFor(title, occupied);
         try {
           await db.prepare('UPDATE docs SET title = ?, filename = ? WHERE id = ?').bind(title, filename, docId).run();

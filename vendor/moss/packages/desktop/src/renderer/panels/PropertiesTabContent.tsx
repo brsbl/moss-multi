@@ -1,5 +1,5 @@
 // ported-from: packages/desktop/src/renderer/panels/PropertiesTabContent.tsx @ 762abb777
-import { useFieldWritable } from '@moss-multi/host/collab/title-binding'; // moss-multi seam: same gate as the title
+import { useFieldWritable } from '@moss-multi/host/collab/title-binding'; // moss-multi seam: shared-properties (A§10.4): same gate as the title
 import { useCallback } from 'react';
 import { useAtomValue, useSetAtom, useStore } from 'jotai';
 import { Plus } from 'lucide-react';

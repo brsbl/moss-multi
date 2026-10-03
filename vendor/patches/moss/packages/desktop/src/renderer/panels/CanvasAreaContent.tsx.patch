@@ -52,15 +52,6 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
        return;
      }
  
-@@ -1338,7 +1350,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
-   }, []);
- 
-   useEffect(() => {
--    if (!note?.id || contentHydratedForNoteId !== noteIdForAtoms) {
-+    if (mossMultiPane.bound || !note?.id || contentHydratedForNoteId !== noteIdForAtoms) {
-       setEditorMountReadyForNoteId(null);
-       return;
-     }
 @@ -1369,6 +1381,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
      if (!el || !autoFocusTitle || titleFocusCompletedRef.current || contentHydratedForNoteId !== noteIdForAtoms) {
        return;

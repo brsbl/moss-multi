@@ -1351,7 +1351,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
   }, []);
 
   useEffect(() => {
-    if (mossMultiPane.bound || !note?.id || contentHydratedForNoteId !== noteIdForAtoms) {
+    if (!note?.id || contentHydratedForNoteId !== noteIdForAtoms) {
       setEditorMountReadyForNoteId(null);
       return;
     }
