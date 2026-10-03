@@ -11,7 +11,10 @@ for (const name of readdirSync(fixtures).filter((name) => name.endsWith('.md')).
     const pasted = await actors.session(await actors.principal('pasted'));
     for (const actor of [imported, pasted]) {
       // Fixture media is synthetic. Keep the renderer's resource path while answering it deterministically.
-      await actor.page.route('https://**/*', (route) => route.fulfill({ status: 200, contentType: 'text/html', body: '' }));
+      await actor.page.route('https://**/*', (route) => route.request().resourceType() === 'image'
+        ? route.fulfill({ status: 200, contentType: 'image/png', body: Buffer.from(
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGP4DwQACfsD/fteaysAAAAASUVORK5CYII=', 'base64') })
+        : route.fulfill({ status: 200, contentType: 'text/html', body: '' }));
     }
     const create = async (actor: typeof imported, content?: string) => {
       const response = await actor.context.request.post('/api/docs', {

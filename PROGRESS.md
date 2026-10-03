@@ -18,6 +18,8 @@ A task counts only after an independent checker passes it on green CI. Each mile
 
 ## Log
 
+- 2026-10-03 — T1.8 implementation on `t/T1.8`: server markdown import, snapshot duplication, and the 32-fixture G1 comparator. Tests-first failures: [import assertions](https://github.com/brsbl/moss-multi/actions/runs/37137777414) and [G1/duplicate browser assertions](https://github.com/brsbl/moss-multi/actions/runs/37137778302). Independent checker and local browser QA remain with the coordinator; this does not increment the verified count.
+
 - 2026-10-02 — Restart begun. History distilled into docs/history/LEARNINGS.md; PRODUCT.md carried over with restart rulings; ARCHITECTURE.md and BUILDPLAN.md drafted, critiqued by three lenses and revised.
 - 2026-10-02 — T0.1 verified: the repo installs as a pnpm workspace, and every push runs CI (plan, checks, build, ci-ok) with lint, single-version, trace and unit checks; a checks-only lane can be dispatched and `minutes.mjs` prints the month's Actions use.
 - 2026-10-02 — T0.2 verified: moss@762abb777 (387 files) and @lexical/react 0.48.0's collab plugin (2 files) are vendored verbatim with `ported-from` headers, and every CI run's drift check fails on any byte change or missing header.

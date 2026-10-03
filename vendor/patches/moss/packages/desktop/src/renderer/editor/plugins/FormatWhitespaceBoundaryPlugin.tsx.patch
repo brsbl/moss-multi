@@ -26,7 +26,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FormatWhitespaceBounda
 - *
 - * Runs as a node transform — O(1) per dirty node, batched with reconciliation.
 - */
-+// moss-multi seam: the same transform runs on server imports.
++// moss-multi seam: import-formatting (A§12): share the transform with server imports.
  export function FormatWhitespaceBoundaryPlugin(): null {
    const [editor] = useLexicalComposerContext();
 -
