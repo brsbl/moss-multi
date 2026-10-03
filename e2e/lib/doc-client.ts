@@ -1,5 +1,7 @@
 // Protocol-level doc clients (j00-roundtrip): YProvider over a real WebSocket carrying a principal's session cookie,
-// bound to a headless V1 Lexical editor as a browser pane binds one (A§10.1-10.2), with no UI.
+// bound to a headless V1 Lexical editor as a browser pane binds one (A§10.1-10.2), with no UI. Also raw doc sockets
+// that only hold a connection slot (j03).
+import { randomUUID } from 'node:crypto';
 import { createHeadlessEditor } from '@lexical/headless';
 import { createBinding, syncLexicalUpdateToYjs, syncYjsChangesToLexical, type Provider } from '@lexical/yjs';
 import { $createParagraphNode, $createTextNode, $getRoot, type ElementNode } from 'lexical';
@@ -154,4 +156,53 @@ export function probeSocket(baseUrl: string, docId: string, cookie: string | nul
       resolve({ opened, code });
     });
   });
+}
+
+export interface HeldSockets {
+  /** Sockets still open. */
+  open(): number;
+  /** Closes every socket with 1000 and waits for each close. */
+  close(): Promise<void>;
+}
+
+/**
+ * `n` doc sockets that complete the upgrade and stay open without speaking sync, so the DocDO counts them against
+ * its connection limit. Each carries its own `_pk`, as a provider does.
+ */
+export async function holdDocSockets(baseUrl: string, docId: string, cookie: string, n: number): Promise<HeldSockets> {
+  const url = `${baseUrl.replace(/^http/, 'ws')}${DOC_SOCKET_PATH}${encodeURIComponent(docId)}`;
+  const sockets: WebSocket[] = [];
+  const closed = new Set<WebSocket>();
+  const held: HeldSockets = {
+    open: () => sockets.length - closed.size,
+    close: async () => {
+      await Promise.all(
+        sockets
+          .filter((socket) => !closed.has(socket))
+          .map(
+            (socket) =>
+              new Promise<void>((done) => {
+                socket.once('close', () => done());
+                socket.close(1000, 'held socket released');
+              }),
+          ),
+      );
+    },
+  };
+  try {
+    for (let i = 0; i < n; i += 1) {
+      const socket = new WebSocket(`${url}?_pk=held-${i}-${randomUUID()}`, { headers: upgradeHeaders(baseUrl, cookie) });
+      socket.on('error', noop);
+      socket.on('close', () => closed.add(socket));
+      sockets.push(socket);
+      await new Promise<void>((resolve, reject) => {
+        socket.once('open', () => resolve());
+        socket.once('close', (code) => reject(new Error(`held socket ${i + 1} of ${n} closed ${code} before it opened`)));
+      });
+    }
+  } catch (error) {
+    await held.close();
+    throw error;
+  }
+  return held;
 }

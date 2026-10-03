@@ -24,8 +24,12 @@ export type WriteRefusalReason = 'role' | 'doc-cap' | 'suggest';
 export type ServerEvent =
   /** A write that did not land; the close follows. */
   | { t: 'write-refused'; reason: WriteRefusalReason }
-  /** The server state vector (base64) after persisting this connection's writes. */
-  | { t: 'ack'; sv: string }
+  /**
+   * The server state vector (base64) after persisting this connection's writes, and the deletes those frames
+   * carried (base64 `Y.encodeSnapshot` of a snapshot with an empty state vector): a delete never moves a state
+   * vector, so `sv` alone cannot say a delete has landed.
+   */
+  | { t: 'ack'; sv: string; ds?: string }
   | { t: 'doc-deleted' };
 
 /** Headers the Worker sets after stripping every client `x-moss-*` and `x-partykit-*` header. */

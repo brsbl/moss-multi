@@ -238,6 +238,63 @@ describe('admission and the write classifier', () => {
     expect(counts(opened.backing), 'an inert step 2 writes nothing').toEqual(stored);
   });
 
+  it('names the deletes it applied in the ack, so a delete never reads as synced before it lands', async () => {
+    const { opened, editor } = await sharedDoc();
+    vi.advanceTimersByTime(250);
+    await editor.pump();
+    const local: Uint8Array[] = [];
+    editor.doc.on('update', (update: Uint8Array, origin: unknown) => {
+      if (typeof origin !== 'symbol') local.push(update);
+    });
+    editor.doc.getText('title').delete(0, 2);
+    const deletion = Y.mergeUpdates(local);
+    const before = editor.events.filter((e) => e.t === 'ack');
+    const earlier = before[before.length - 1];
+    if (earlier?.t !== 'ack') throw new Error('no earlier ack');
+    // The state vector cannot tell: the earlier ack already "covers" a delete the server has not seen.
+    expect(Y.snapshotContainsUpdate(Y.createSnapshot(Y.createDeleteSet(), Y.decodeStateVector(base64ToBytes(earlier.sv))), deletion)).toBe(false);
+
+    await editor.flush();
+    expect(opened.dobj.document.getText('title').toString()).toBe('ared');
+    vi.advanceTimersByTime(250);
+    await editor.pump();
+    const acks = editor.events.filter((e) => e.t === 'ack');
+    const ack = acks[acks.length - 1];
+    expect(acks.length, 'the delete is acked').toBe(before.length + 1);
+    if (ack?.t !== 'ack') throw new Error('no ack');
+    expect(ack.ds, 'the ack carries the deletes').toEqual(expect.any(String));
+    const deleted = Y.decodeSnapshot(base64ToBytes(ack.ds ?? '')).ds;
+    expect(Y.snapshotContainsUpdate(Y.createSnapshot(deleted, Y.decodeStateVector(base64ToBytes(ack.sv))), deletion), 'the ack covers the delete').toBe(true);
+  });
+
+  it("keeps a socket's ack when a stale socket with the same connection id closes", async () => {
+    const opened = await start(openDoc());
+    const stale = await connect(opened, { role: 'editor' }, undefined, 'reused-pk');
+    await stale.hello();
+    const fresh = await connect(opened, { role: 'editor' }, undefined, 'reused-pk');
+    await fresh.hello();
+    await typeTitle(fresh, 'kept');
+    // The stale socket's close finally lands inside the fresh socket's ack window.
+    await stale.drop();
+    vi.advanceTimersByTime(250);
+    await fresh.pump();
+    expect(fresh.events.filter((e) => e.t === 'ack'), "the stale close never cancels the fresh socket's ack").toHaveLength(1);
+    expect(stale.events.filter((e) => e.t === 'ack'), 'the ack goes to the socket that wrote').toHaveLength(0);
+  });
+
+  it('counts the write rate per socket, not per reused connection id', async () => {
+    const opened = await start(openDoc());
+    const stale = await connect(opened, { role: 'editor' }, undefined, 'reused-rate');
+    await stale.hello();
+    for (let i = 0; i < 300; i += 1) await typeTitle(stale, 'a');
+    expect(stale.closed).toBeNull();
+    const fresh = await connect(opened, { role: 'editor' }, undefined, 'reused-rate');
+    await fresh.hello();
+    await typeTitle(fresh, 'Z');
+    expect(fresh.closed, "another socket's writes never count against this one").toBeNull();
+    expect(opened.dobj.document.getText('title').toString()).toBe(`${'a'.repeat(300)}Z`);
+  });
+
   it("never acks a viewer's inert step 2", async () => {
     const { viewer } = await sharedDoc();
     await viewer.hello();
