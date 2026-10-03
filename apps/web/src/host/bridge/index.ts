@@ -214,7 +214,7 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
         // Content reaches a doc only through its binding or a server merge; the bridge has no path that could
         // wipe one (P:Tech; L§4.6 D-F3).
         if ('content' in input) throw new Error(`moss-multi: a content write through the bridge is refused for ${id}`);
-        const note = await byId(id);
+        let note = await byId(id);
         if (!note) return undefined;
         if (typeof input.title === 'string' && !writeLiveTitle(id, input.title)) {
           // A doc no pane of this tab binds: the DocDO writes the title into its Y.Text (A§5.1 renameTitle).
@@ -224,6 +224,10 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
             body: JSON.stringify({ title: input.title }),
           });
           if (!response.ok) throw new Error(`PATCH /api/docs/${id}: ${response.status}`);
+          const answer = (await response.json()) as { doc: ApiDoc };
+          note = toNoteMetadata(answer.doc);
+          known.set(id, note);
+          listing = null;
         }
         if ('pinned' in input || 'pinnedAt' in input) {
           const next = pins();

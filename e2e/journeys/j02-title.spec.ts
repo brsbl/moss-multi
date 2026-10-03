@@ -163,7 +163,9 @@ const titleLog = (actor: Actor) => actor.page.evaluate(() => (window as unknown 
 function nonMonotonic(values: string[]): string[] {
   const problems: string[] = [];
   let previous: string | null = null;
-  for (const value of values) {
+  for (const raw of values) {
+    // contenteditable represents a trailing typed space as NBSP until the next character.
+    const value = raw.replace(/\u00a0/g, ' ');
     const placeholder = value === '' || value === UNTITLED;
     if (placeholder) {
       if (previous !== null) problems.push(`"${value}" flashed back after "${previous}"`);
@@ -360,6 +362,10 @@ test('j02-title: the title takes no focus and no input before data-title-binding
     expect(flagged.some((p) => p.endsWith(problem)), `the control: the recorder flags a title that ${problem}`).toBe(true);
   }
 
+  await ada.page.evaluate(() => {
+    (window as unknown as { __mossClosedTitles: { problems: string[] } }).__mossClosedTitles.problems.length = 0;
+  });
+
   // The doc socket goes nowhere, so the new note cannot bind until the sever lifts.
   sever.blackhole();
   const before = await paneIds(ada);
@@ -468,6 +474,8 @@ test('j02-title: Rename in a row menu focuses the bound title, and the name type
   await ada.page.getByRole('menuitem', { name: 'Rename', exact: true }).click();
   await expect(ui.pane(ada, second)).toHaveCount(0, { timeout: BIND_TIMEOUT });
   await ui.waitLive(ada, first);
+  ada.expectReconnects(1, first);
+  await ada.declareRemount(first);
   await expect(ui.title(ada, first), 'Rename focuses the bound title').toBeFocused({ timeout: BIND_TIMEOUT });
   const name = `Renamed ${token()}`;
   await ada.page.keyboard.type(name);
@@ -485,6 +493,7 @@ test('j02-title: a bare Backspace with nothing focused keeps the URL, while the 
   if (!sever) throw new Error('ada is not severable');
   const docId = await ui.createNote(ada);
 
+  ada.observations.clear();
   // A second document load, so history has an entry to go back to; the doc stays binding behind the sever.
   sever.blackhole();
   await ada.goto(`/d/${docId}`);
@@ -540,8 +549,8 @@ test('j02-title: two people add different properties at once, both keep theirs, 
 
   for (const actor of [ada, ben]) {
     const header = PROPERTIES(actor).locator('section[aria-label="Frontmatter properties"]');
-    await expect(header, `${actor.label} sees both properties`).toContainText(adaValue, { timeout: RENAME_MS });
-    await expect(header, `${actor.label} sees both properties`).toContainText(benValue, { timeout: RENAME_MS });
+    await expect(header.getByRole('textbox', { name: 'reviewer', exact: true }), `${actor.label} sees Ada's property`).toHaveValue(adaValue, { timeout: RENAME_MS });
+    await expect(header.getByRole('textbox', { name: 'deadline', exact: true }), `${actor.label} sees Ben's property`).toHaveValue(benValue, { timeout: RENAME_MS });
   }
   await waitAcked(ada, docId);
   await waitAcked(ben, docId);
@@ -551,7 +560,7 @@ test('j02-title: two people add different properties at once, both keep theirs, 
     await actor.page.reload();
     await ui.waitLive(actor, docId);
     const header = await openProperties(actor);
-    await expect(header, `${actor.label}: after a reload the header shows Ada's property`).toContainText(adaValue);
-    await expect(header, `${actor.label}: after a reload the header shows Ben's property`).toContainText(benValue);
+    await expect(header.getByRole('textbox', { name: 'reviewer', exact: true }), `${actor.label}: after reload`).toHaveValue(adaValue);
+    await expect(header.getByRole('textbox', { name: 'deadline', exact: true }), `${actor.label}: after reload`).toHaveValue(benValue);
   }
 });
