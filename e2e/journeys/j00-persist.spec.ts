@@ -2,6 +2,7 @@
 // no focus and no input before it is live, text with spaces, punctuation and "é" survives a reload byte for byte, and
 // one doc socket carries the note through a metadata refresh and a pane rerender with no editor remount, and holds
 // for 60 s. Split view never shows one note in both panes, so the tab never asks for a second session (A§10.1).
+// Copy markdown and Note stats read the body as it is now, after local and remote edits.
 import type { Locator } from '@playwright/test';
 import type { Actor, Actors } from '../lib/actors.ts';
 import {
@@ -9,6 +10,8 @@ import {
   LEXICAL_EDITOR_SELECTOR, NAMES, SIDEBAR_ROW_ATTR, SYNC_UNACKED_ATTR, paneSelector,
 } from '../lib/contract.ts';
 import { remountSince } from '../lib/detectors.js';
+import { cookieHeader, openDocClient } from '../lib/doc-client.ts';
+import { signIn } from '../lib/principals.ts';
 import type { SocketEntry } from '../lib/telemetry.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
@@ -50,10 +53,71 @@ function recordClosedBodies({ body, lexical }: { body: string; lexical: string }
 const closedRecord = (actor: Actor) =>
   actor.page.evaluate(() => (window as unknown as { __mossClosed?: ClosedRecord }).__mossClosed ?? null);
 
-/** A signed-in actor on a ready shell, with the closed-body recorder installed before the first document. */
-async function openShell(actors: Actors, label: string): Promise<Actor> {
+/**
+ * The recorder's negative control: two roots that are open before they are live, one per selector it watches (a
+ * Lexical root with no binding attribute yet, and an unbound one), each editable, focusable and focused for a tick.
+ * Returns what the recorder flagged for them.
+ */
+const recorderFlagsOpenRoots = (actor: Actor): Promise<string[]> =>
+  actor.page.evaluate(async ({ body }) => {
+    const record = (window as unknown as { __mossClosed: ClosedRecord }).__mossClosed;
+    const from = record.problems.length;
+    const tick = () => new Promise((done) => setTimeout(done, 0));
+    for (const attr of [['data-lexical-editor', 'true'], [body, 'unbound']]) {
+      const root = document.createElement('div');
+      root.setAttribute(attr[0], attr[1]);
+      root.contentEditable = 'true';
+      root.tabIndex = 0;
+      document.body.append(root);
+      root.focus();
+      await tick();
+      root.remove();
+      await tick();
+    }
+    return record.problems.slice(from);
+  }, { body: BODY_BINDING_ATTR });
+
+/** Init script: the page's clipboard writes, recorded (WebKit cannot read the clipboard back). */
+function recordCopies(): void {
+  const copies: string[] = [];
+  (window as unknown as { __mossCopies: string[] }).__mossCopies = copies;
+  const writeText = async (text: string) => {
+    copies.push(text);
+  };
+  if (navigator.clipboard) Object.defineProperty(navigator.clipboard, 'writeText', { value: writeText, configurable: true });
+  else Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+}
+
+const copies = (actor: Actor): Promise<string[]> =>
+  actor.page.evaluate(() => (window as unknown as { __mossCopies?: string[] }).__mossCopies ?? []);
+
+/** More actions → Copy markdown, then the text it wrote to the clipboard. */
+async function copyMarkdown(actor: Actor): Promise<string> {
+  const before = (await copies(actor)).length;
+  await actor.page.getByRole('button', { name: 'More actions', exact: true }).click();
+  await actor.page.getByRole('menuitem', { name: 'Copy markdown', exact: true }).click();
+  await expect(actor.page.getByRole('menu')).toBeHidden();
+  await expect.poll(async () => (await copies(actor)).length, { message: `${actor.label}: Copy markdown writes the clipboard` }).toBe(before + 1);
+  return (await copies(actor))[before] ?? '';
+}
+
+/** More actions → Note stats, then the word count it shows. */
+async function statsWords(actor: Actor): Promise<string> {
+  await actor.page.getByRole('button', { name: 'More actions', exact: true }).click();
+  await actor.page.getByRole('menuitem', { name: 'Note stats', exact: true }).click();
+  const dialog = actor.page.getByRole('dialog', { name: 'Note stats' });
+  await expect(dialog, `${actor.label}: Note stats opens`).toBeVisible();
+  const words = (await dialog.getByText('Words', { exact: true }).locator('xpath=following-sibling::span[1]').textContent()) ?? '';
+  await actor.page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+  return words.trim();
+}
+
+/** A signed-in actor on a ready shell, with the closed-body recorder and any `scripts` installed before the first document. */
+async function openShell(actors: Actors, label: string, ...scripts: (() => void)[]): Promise<Actor> {
   const actor = await actors.session(await actors.principal(label));
   await actor.context.addInitScript(recordClosedBodies, { body: BODY_BINDING_ATTR, lexical: LEXICAL_EDITOR_SELECTOR });
+  for (const script of scripts) await actor.context.addInitScript(script);
   await actor.goto('/');
   await actor.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
   return actor;
@@ -147,6 +211,12 @@ test('j00-persist: "+ Note" binds the editor; typed text survives a reload byte 
   const ada = await openShell(actors, 'ada');
   const ben = await openShell(actors, 'ben');
   await actors.requireDistinct(2);
+  const flagged = await recorderFlagsOpenRoots(ben);
+  for (const problem of ['is editable', 'has a tabindex', 'holds focus']) {
+    for (const root of ['=(none)', '=unbound']) {
+      expect(flagged.filter((p) => p.includes(root) && p.endsWith(problem)), `the control: the recorder flags a root with ${BODY_BINDING_ATTR}${root} that ${problem}`).not.toEqual([]);
+    }
+  }
 
   const docId = await newNote(ada);
   await waitBodyLive(ada, docId);
@@ -176,6 +246,41 @@ test('j00-persist: "+ Note" binds the editor; typed text survives a reload byte 
   expect((await closedRecord(ada))?.problems, 'nothing in the reloaded body took focus or input before it was live').toEqual([]);
   await expectOneOpenSocket(ada, docId, 'after the reload');
   await actors.checkpoint('after-reload');
+});
+
+const FIRST = 'Copied on first use';
+const SECOND = ' then edited here';
+const REMOTE = ' and a peer wrote this';
+
+test('j00-persist: Copy markdown and Note stats read the bound body as it is now, after local and remote edits @p:tech-1', async ({ actors, stack }) => {
+  const ada = await openShell(actors, 'ada', recordCopies);
+  await openShell(actors, 'ben');
+  await actors.requireDistinct(2);
+
+  const docId = await newNote(ada);
+  await waitBodyLive(ada, docId);
+  await ui.typeBody(ada, docId, FIRST);
+  await waitAcked(ada, docId);
+  expect(await copyMarkdown(ada), 'the first copy holds the body').toContain(FIRST);
+
+  await ui.typeBody(ada, docId, SECOND);
+  await waitAcked(ada, docId);
+  expect.soft(await copyMarkdown(ada), 'a copy after an edit holds the edit').toContain(`${FIRST}${SECOND}`);
+
+  // A peer's edit arrives through the binding, not the keyboard. The writer is Ada's own protocol client.
+  if (!ada.principal) throw new Error('ada has no principal');
+  const writer = await openDocClient(stack.baseUrl, docId, cookieHeader(await signIn(stack.baseUrl, ada.principal)));
+  try {
+    await writer.synced;
+    writer.type(REMOTE);
+    await writer.acked();
+  } finally {
+    writer.close();
+  }
+  const all = `${FIRST}${SECOND}${REMOTE}`;
+  await expect.poll(() => ui.fieldText(ada, docId, 'body'), { message: "the peer's edit reaches the pane", timeout: BIND_TIMEOUT }).toBe(all);
+  expect.soft(await copyMarkdown(ada), "a copy after a peer's edit holds it").toContain(all);
+  expect.soft(await statsWords(ada), 'Note stats counts the words in the body').toBe(String(all.split(/\s+/).filter(Boolean).length));
 });
 
 test('j00-persist: one doc socket holds a bound note for 60 s with no remount @slow @p:col-6', async ({ actors }) => {
