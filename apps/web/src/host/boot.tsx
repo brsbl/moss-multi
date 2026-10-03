@@ -4,7 +4,7 @@
 import { useEffect, type ComponentType } from 'react';
 import { readyWhenShellRenders } from './app-state.ts';
 import { installBridge } from './bridge/index.ts';
-import { RefusalAnnouncer } from './surfaces/RefusalAnnouncer.tsx';
+import { installBackspaceGuard } from './opening-guard.ts';
 
 export async function bootMoss(): Promise<{ default: ComponentType }> {
   installBridge();
@@ -16,10 +16,10 @@ export async function bootMoss(): Promise<{ default: ComponentType }> {
   const { default: App } = await import('@moss-desktop/renderer/App');
   function MossShell() {
     useEffect(() => readyWhenShellRenders(), []);
+    useEffect(() => installBackspaceGuard(), []);
     return (
       <>
         <App />
-        <RefusalAnnouncer />
       </>
     );
   }

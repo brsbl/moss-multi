@@ -2930,7 +2930,7 @@ export function App() {
       opening.disarm();
       return;
     }
-    if (await createAndActivateNote({ focusTarget: 'body' })) opening.created();
+    if (await createAndActivateNote({ focusTarget: 'title' })) opening.created();
     else opening.disarm();
   }, [createAndActivateNote, flushBeforeNoteSwitch]);
 
@@ -3137,16 +3137,11 @@ export function App() {
   const handleRenameNote = useCallback(
     (noteId: string) => {
       handleSelectNote(noteId);
-      // Race: 150ms delay heuristic for note switch + IPC hydration to complete.
-      // May fire too early under heavy load. Cleanup at line ~566 cancels on unmount.
-      // TODO: Replace with event-driven approach (e.g., contentHydrated callback).
-      if (renameTimerRef.current) clearTimeout(renameTimerRef.current);
-      renameTimerRef.current = setTimeout(() => {
-        canvasRef.current?.focusTitle();
-        renameTimerRef.current = null;
-      }, 150);
+      // moss-multi seam: the pane consumes this focus intent after first sync.
+      setShouldFocusTitle(true);
+      if (activeNoteId === noteId) canvasRef.current?.focusTitle();
     },
-    [handleSelectNote]
+    [handleSelectNote, activeNoteId]
   );
 
   const handleNoteRestored = useCallback(
@@ -4108,7 +4103,7 @@ export function App() {
         onDeleteNote={handleNoteDeleted}
         // moss-multi seam: hide-registry (A§9)
         onDuplicateNote={hidden('duplicate-note') ? undefined : handleDuplicateNote}
-        onRenameNote={hidden('rename-note') ? undefined : handleRenameNote}
+        onRenameNote={handleRenameNote}
         onCollapse={handleCollapseNotesPanel}
         footerContent={panelFooter}
       />

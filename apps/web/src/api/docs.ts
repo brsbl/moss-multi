@@ -96,6 +96,23 @@ async function readDoc(request: Request, env: DocsEnv, docId: string): Promise<R
   return json({ doc, role: access.role }, 200, NO_STORE);
 }
 
+async function renameDoc(request: Request, env: DocsEnv, docId: string): Promise<Response> {
+  const principal = await resolvePrincipal(request, env);
+  if (!principal) return unauthenticated();
+  const access = await resolveDocAccess(createDb(env.DB), principal, docId, shareTokenOf(request));
+  if (!access || access.deleted) return notFound();
+  if (!roleAtLeast(access.role, 'editor')) return json({ error: 'forbidden' }, 403, NO_STORE);
+  const body = await readJsonObject(request);
+  if (!body || typeof body.title !== 'string') return json({ error: 'bad-request' }, 400, NO_STORE);
+  try {
+    const stub = await getServerByName(env.DocDO, docId);
+    await stub.renameTitle(body.title);
+    return readDoc(request, env, docId);
+  } catch {
+    return json({ error: 'unavailable' }, 503, NO_STORE);
+  }
+}
+
 async function docInstance(request: Request, env: DocsEnv, docId: string): Promise<Response> {
   const principal = await resolvePrincipal(request, env);
   const access = principal ? await resolveDocAccess(createDb(env.DB), principal, docId) : null;
@@ -112,7 +129,7 @@ export async function handleDocs(request: Request, env: DocsEnv): Promise<Respon
   const { pathname } = new URL(request.url);
   if (pathname === '/api/docs') return only('POST', request, () => createDoc(request, env));
   const doc = DOC.exec(pathname);
-  if (doc) return only('GET', request, () => readDoc(request, env, doc[1]));
+  if (doc) return request.method === 'PATCH' ? renameDoc(request, env, doc[1]) : only('GET', request, () => readDoc(request, env, doc[1]));
   const members = MEMBERS.exec(pathname);
   if (members) return handleMembers(request, env, { type: 'doc', id: members[1] });
   const instance = INSTANCE.exec(pathname);

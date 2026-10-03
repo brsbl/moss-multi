@@ -58,7 +58,7 @@ export function ActionsPanelWrapper({
   const [activeTab, setActiveTab] = useAtom(actionsPanelActiveTabAtom);
   const isCommandPaletteDockPreviewing = useAtomValue(commandPaletteDockPreviewAtom);
   // moss-multi seam: hide-registry (A§9): with Properties staged, Actions is the only tab
-  const displayedTab = isCommandPaletteDockPreviewing || hidden('note-properties') ? 'actions' : activeTab;
+  const displayedTab = isCommandPaletteDockPreviewing ? 'actions' : activeTab;
 
   const propertiesContentRef = React.useRef<HTMLDivElement>(null);
 
@@ -151,7 +151,7 @@ export function ActionsPanelWrapper({
               )}
             </Tabs.Trigger>
             {/* moss-multi seam: hide-registry (A§9) */}
-            {hidden('note-properties') ? null : (
+            {(
             <Tabs.Trigger value="properties" className={triggerClass(displayedTab === 'properties')}>
               Properties
             </Tabs.Trigger>
@@ -171,7 +171,7 @@ export function ActionsPanelWrapper({
 
         {/* Properties tab content */}
         {/* moss-multi seam: hide-registry (A§9) */}
-        {hidden('note-properties') ? null : (
+        {(
         <Tabs.Content value="properties" forceMount className={cn('min-h-0 flex-1 flex-col outline-none', displayedTab === 'properties' ? 'flex' : 'hidden')}>
           <div ref={propertiesContentRef} className="sidebar-scroll min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-panel-inset pt-panel-section-gap pb-3">
             {propertiesContent}

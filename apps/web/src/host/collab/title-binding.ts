@@ -8,7 +8,7 @@
 // name moss shows everywhere else (sidebar, breadcrumb, tabs) as `title.trim() || 'Untitled'`.
 import { observeField, readField, remapCaret, writeField, type FieldChange } from '@moss-multi/core/doc-fields';
 import { diffText } from '@moss-multi/core/text-diff';
-import type { Doc } from 'yjs';
+import { Doc, applyUpdate, encodeStateAsUpdate, encodeStateVector } from 'yjs';
 import { OPENING_NOTE } from '../opening-guard.ts';
 import { refuseInput } from '../refusal.ts';
 
@@ -85,7 +85,7 @@ export class TitleField {
   /** A focus asked for while the field was closed, for this note. */
   #pendingFocus: string | null = null;
   #composing = false;
-  #repaintAfterComposition = false;
+  #composition: { doc: Doc; base: Uint8Array } | null = null;
 
   constructor(private readonly project: (docId: string, title: string) => void) {}
 
@@ -113,20 +113,25 @@ export class TitleField {
       if (change.origin !== TITLE_LOCAL_ORIGIN) this.#render(text, change.delta);
     });
     const onCompositionStart = (event: Event) => {
-      if (this.#owns(event.target)) this.#composing = true;
+      if (!this.#owns(event.target) || !this.#open) return;
+      this.#composing = true;
+      const draft = new Doc();
+      applyUpdate(draft, encodeStateAsUpdate(doc));
+      this.#composition = { doc: draft, base: encodeStateVector(draft) };
     };
     const onCompositionEnd = (event: Event) => {
       if (!this.#owns(event.target)) return;
-      this.#composing = false;
-      if (!this.#repaintAfterComposition) return;
-      this.#repaintAfterComposition = false;
+      const draft = this.#composition;
       const el = this.#element?.current;
-      const binding = this.#binding;
-      if (!el || !binding) return;
-      // The composed text is ours: land it, then show whatever peers merged in meanwhile.
-      this.write(el.textContent ?? '');
-      const text = readField(binding.doc, 'title');
-      this.#render(text, diffText(el.textContent ?? '', text));
+      if (draft && el && this.#open) {
+        writeField(draft.doc, 'title', el.textContent ?? '', TITLE_LOCAL_ORIGIN);
+        applyUpdate(doc, encodeStateAsUpdate(draft.doc, draft.base), TITLE_LOCAL_ORIGIN);
+      }
+      this.#composing = false;
+      this.#composition = null;
+      draft?.doc.destroy();
+      const text = readField(doc, 'title');
+      this.#render(text, diffText(el?.textContent ?? '', text));
     };
     document.addEventListener('compositionstart', onCompositionStart, true);
     document.addEventListener('compositionend', onCompositionEnd, true);
@@ -152,8 +157,10 @@ export class TitleField {
     binding.stop();
     if (bound.get(binding.docId) === this) bound.delete(binding.docId);
     this.#binding = null;
+    this.#open = false;
     this.#composing = false;
-    this.#repaintAfterComposition = false;
+    this.#composition?.doc.destroy();
+    this.#composition = null;
   }
 
   /** Open: bound, synced, editable and not terminal (A§10.4). A focus asked for while closed runs now. */
@@ -184,7 +191,7 @@ export class TitleField {
       if (binding) this.#render(readField(binding.doc, 'title'), null);
       return;
     }
-    writeField(binding.doc, 'title', text, TITLE_LOCAL_ORIGIN);
+    writeField(this.#composition?.doc ?? binding.doc, 'title', text, TITLE_LOCAL_ORIGIN);
   }
 
   /** A rename from outside the field (the bridge): rendered as a peer's change would be. */
@@ -206,7 +213,6 @@ export class TitleField {
     const el = this.#element?.current;
     if (el && el.textContent !== text) {
       if (this.#composing) {
-        this.#repaintAfterComposition = true;
         return;
       }
       const focused = el.ownerDocument.activeElement === el;

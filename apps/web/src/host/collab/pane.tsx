@@ -18,6 +18,7 @@ import { $getRoot, type EditorState, type LexicalEditor } from 'lexical';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
 import type { Doc } from 'yjs';
 import { knownRole, useDocRole } from '../access.ts';
+import { RefusalAnnouncer } from '../surfaces/RefusalAnnouncer.tsx';
 import { TopBarCollab } from '../slots.tsx';
 import {
   docOwner, openDocSession, subscribeDocOwners, type DocSession, type SessionState,
@@ -267,6 +268,7 @@ export interface MossMultiPane {
   paneProps: Record<string, string>;
   /** Web chrome at the start of the top bar's right group. */
   topBarCollab: ReactNode;
+  noticeBand: ReactNode;
 }
 
 export function useMossMultiPane(note: { id: string } | null): MossMultiPane {
@@ -296,7 +298,7 @@ export function useMossMultiPane(note: { id: string } | null): MossMultiPane {
     collaboration,
     bodyLive: live,
     titleLive: live,
-    titleBinding: terminal ? 'terminal' : live ? 'live' : 'unbound',
+    titleBinding: terminal ? 'terminal' : live ? 'live' : state.docState === 'live' ? 'readonly' : 'unbound',
     title: fields.title,
     hasBodyText: state.hasText,
     paneProps: docId
@@ -308,6 +310,7 @@ export function useMossMultiPane(note: { id: string } | null): MossMultiPane {
           ...(terminal ? { [TERMINAL_REASON_ATTR]: terminal } : {}),
         }
       : {},
+    noticeBand: <RefusalAnnouncer />,
     topBarCollab: docId ? <TopBarCollab docId={docId} /> : null,
   };
 }

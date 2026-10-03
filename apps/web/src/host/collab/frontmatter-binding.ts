@@ -51,12 +51,6 @@ export function bindFrontmatter(store: Store, noteId: string, doc: Doc, canWrite
     for (const key of changedKeys(base, next)) writeFrontmatterKey(doc, key, next && key in next ? next[key] : undefined, FRONTMATTER_LOCAL_ORIGIN);
   };
 
-  // Keys someone added before the doc synced are theirs to keep; the doc's own keys win otherwise.
-  const early = store.get(atom) as Data;
-  if (early && Object.keys(early).length > 0 && canWrite()) {
-    write({ ...synced, ...early }, synced);
-    synced = parseFrontmatter(readField(doc, 'frontmatter'));
-  }
   store.set(atom, synced);
 
   const stopSignal = store.sub(frontmatterDirtySignalAtom(noteId), () => {

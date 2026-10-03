@@ -158,22 +158,6 @@ export const AFFORDANCES = [
     ],
   },
   {
-    id: 'note-properties',
-    sites: ['shared/src/components/layout/ActionsPanelWrapper.tsx'],
-    reason: "Properties edits the note's frontmatter, which binds to Y.Text('frontmatter') in M1; a bound note has no save path, so an edit would vanish on reload.",
-    cite: 'T1.4; A§10.4',
-    staged: 1,
-    probes: [{ surface: 'actions-panel', selector: '[data-actions-panel-wrapper] [role="tab"]', text: 'Properties' }],
-  },
-  {
-    id: 'rename-note',
-    sites: [`${R}/App.tsx`],
-    reason: "Rename focuses the note's title, which stays closed until it binds to Y.Text('title') in M1, so the name typed after it would land nowhere.",
-    cite: 'T1.4; R2',
-    staged: 1,
-    probes: [{ surface: 'note-menu', selector: MENU_ITEM, text: 'Rename' }],
-  },
-  {
     id: 'duplicate-note',
     sites: [`${R}/App.tsx`],
     reason: 'Duplicate goes through a server endpoint in M1; the bridge refuses content writes.',
