@@ -20,5 +20,5 @@ export function testHooksAllowed(request: Request, env: HookEnv): boolean {
 const notImplemented = async () => json({ error: 'not-implemented' }, 501);
 
 export const stubHandlers = {
-  handleWorkspaceSocket: notImplemented, // PrincipalDO workspace channel
+  handleWorkspaceSocket: notImplemented, // PrincipalDO workspace channel; its upgrade passes origin-gate.ts first
 };

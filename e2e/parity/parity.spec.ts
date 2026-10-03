@@ -142,7 +142,11 @@ async function captureCandidate(browser: Browser, target: Target, theme: Theme, 
       // paragraph. The bridge converts epoch ms to moss's seconds, so the story's seconds go out as ms.
       const ids = new Map<string, string>();
       for (const note of listing) {
-        const response = await page.request.post(new URL('/api/docs', stack.baseUrl).href, { data: { title: note.title } });
+        // A cookie principal's mutation carries the app's Origin (T0.12's gate), as the page's own fetch would.
+        const response = await page.request.post(new URL('/api/docs', stack.baseUrl).href, {
+          data: { title: note.title },
+          headers: { origin: new URL(stack.baseUrl).origin },
+        });
         if (response.status() !== 201) throw new Error(`POST /api/docs for "${note.title}": ${response.status()}`);
         ids.set(note.id, ((await response.json()) as { doc: { id: string } }).doc.id);
       }

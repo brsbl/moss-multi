@@ -30,7 +30,7 @@ export function versionResponse(request: Request, build: Build): Response {
   return json(build, 200, { 'cache-control': 'no-store' });
 }
 
-const isUpgrade = (request: Request) => request.headers.get('upgrade')?.toLowerCase() === 'websocket';
+export const isUpgrade = (request: Request) => request.headers.get('upgrade')?.toLowerCase() === 'websocket';
 const under = (pathname: string, prefix: string) => pathname === prefix || pathname.startsWith(`${prefix}/`);
 
 const UNTRUSTED = /^x-(?:moss|partykit)-/i;

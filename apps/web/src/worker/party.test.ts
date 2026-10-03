@@ -1,9 +1,10 @@
 // Doc-socket admission (A§4.1 step 6): the verdict the Worker closes with after the upgrade, and the trusted
 // headers it forwards. M0 knows owners only; grants and links arrive with the resolver's later rows (T1.1, M2).
+// A browser always sends Origin on an upgrade, so requests carry the app's unless a test says otherwise.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { CLOSE, decodePartyPrincipal, TRUSTED } from '@moss-multi/protocol/sync';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
-import { BASE, insertDoc, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
+import { agentKey, BASE, insertDoc, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
 import { authenticateParty } from './party.ts';
 
 let d1: TestD1;
@@ -19,8 +20,14 @@ beforeAll(async () => {
 }, 60_000);
 afterAll(() => d1?.dispose());
 
-const upgrade = (docId: string, headers: Record<string, string> = {}, query = '') =>
-  new Request(`${BASE}/parties/doc-d-o/${docId}${query}`, { headers: { upgrade: 'websocket', ...headers } });
+/** An upgrade with the app's Origin; a header set to undefined is left out. */
+const upgrade = (docId: string, headers: Record<string, string | undefined> = {}, query = '') =>
+  new Request(`${BASE}/parties/doc-d-o/${docId}${query}`, {
+    headers: Object.entries({ upgrade: 'websocket', origin: BASE, ...headers }).filter((h): h is [string, string] => h[1] !== undefined),
+  });
+
+/** Same-site pages the cookie still rides to: another port on the app's host, and a sibling subdomain. */
+const FOREIGN = ['http://127.0.0.1:8851', 'https://evil.example', 'null'];
 
 describe('authenticateParty', () => {
   it("admits the owner as owner, with the principal and session the DO trusts", async () => {
@@ -51,5 +58,56 @@ describe('authenticateParty', () => {
     const docId = await insertDoc(d1.db, ada, { deleted: true });
     expect(await authenticateParty(upgrade(docId, { cookie: ada.cookie }), docId, env)).toEqual({ ok: false, code: CLOSE.deleted });
     expect(await authenticateParty(upgrade(docId, { cookie: ben.cookie }), docId, env)).toEqual({ ok: false, code: CLOSE.unavailable });
+  });
+});
+
+describe('the origin gate (A§18)', () => {
+  const ownerOf = (verdict: Awaited<ReturnType<typeof authenticateParty>>) =>
+    verdict.ok ? { id: decodePartyPrincipal(verdict.headers[TRUSTED.principal])?.id, role: verdict.headers[TRUSTED.role] } : verdict;
+
+  it('closes 4401 for a cookie from another origin or with no Origin, whether or not the doc exists', async () => {
+    const docId = await insertDoc(d1.db, ada);
+    const missing = crypto.randomUUID();
+    for (const origin of [...FOREIGN, undefined]) {
+      expect(await authenticateParty(upgrade(docId, { cookie: ada.cookie, origin }), docId, env), `Origin ${origin}`).toEqual({ ok: false, code: CLOSE.noPrincipal });
+      expect(await authenticateParty(upgrade(missing, { cookie: ada.cookie, origin }), missing, env), `Origin ${origin}, no doc`).toEqual({ ok: false, code: CLOSE.noPrincipal });
+    }
+  });
+
+  it("admits a cookie from the app's origin", async () => {
+    const docId = await insertDoc(d1.db, ada);
+    expect(ownerOf(await authenticateParty(upgrade(docId, { cookie: ada.cookie }), docId, env))).toEqual({ id: ada.id, role: 'owner' });
+  });
+
+  it('admits a session bearer and an agent key from anywhere: neither rides along on its own', async () => {
+    const docId = await insertDoc(d1.db, ada);
+    const key = await agentKey(d1.db, ada);
+    for (const origin of [undefined, ...FOREIGN]) {
+      const bearer = await authenticateParty(upgrade(docId, { authorization: `Bearer ${ada.token}`, origin }), docId, env);
+      expect(ownerOf(bearer), `session bearer, Origin ${origin}`).toEqual({ id: ada.id, role: 'owner' });
+      const agent = await authenticateParty(upgrade(docId, { authorization: `Bearer ${key}`, origin }), docId, env);
+      expect(agent.ok && agent.headers[TRUSTED.role], `agent key, Origin ${origin}`).toBe('owner');
+    }
+  });
+
+  it('judges a cookie and a bearer by the bearer, and never falls back to the cookie', async () => {
+    const docId = await insertDoc(d1.db, ben);
+    const both = await authenticateParty(upgrade(docId, { cookie: ada.cookie, authorization: `Bearer ${ben.token}`, origin: FOREIGN[0] }), docId, env);
+    expect(ownerOf(both)).toEqual({ id: ben.id, role: 'owner' });
+    const adas = await insertDoc(d1.db, ada);
+    for (const forged of ['forged.signature', 'forged']) {
+      const verdict = await authenticateParty(upgrade(adas, { cookie: ada.cookie, authorization: `Bearer ${forged}`, origin: undefined }), adas, env);
+      expect(verdict, `a failed bearer "${forged}" beside Ada's cookie`).toEqual({ ok: false, code: CLOSE.noPrincipal });
+    }
+  });
+
+  it('lets a share token alone through: its verdict is the same from any origin', async () => {
+    const docId = await insertDoc(d1.db, ada);
+    const fromApp = await authenticateParty(upgrade(docId, {}, '?share=link-token'), docId, env);
+    for (const origin of [...FOREIGN, undefined]) {
+      expect(await authenticateParty(upgrade(docId, { origin }, '?share=link-token'), docId, env), `Origin ${origin}`).toEqual(fromApp);
+    }
+    // M0 resolves no links yet (T1.1), so a token alone opens nothing; the gate never turns it into 4401.
+    expect(fromApp).toEqual({ ok: false, code: CLOSE.unavailable });
   });
 });
