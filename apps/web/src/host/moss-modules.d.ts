@@ -44,6 +44,7 @@ declare module '@moss/shared/state/atoms' {
   import type { WritableAtom } from 'jotai';
   export const activeNoteIdAtom: WritableAtom<string | null, [string | null], void>;
   export const activeFolderPathAtom: WritableAtom<string, [string], void>;
+  export const hydrateNotesAtom: WritableAtom<null, [], Promise<void>>;
   export const splitTabNoteIdAtom: WritableAtom<string | null, [string | null], void>;
   export const openSplitTabAtom: WritableAtom<null, [string], void>;
   export const splitNavigateToNoteAtom: WritableAtom<null, [string], void>;

@@ -211,6 +211,8 @@ test('j01 discovery: Ben finds a directly shared note in Home without a URL or m
   const ben = await actors.open(benPrincipal);
   const row = ben.page.locator(`[data-sidebar-row][data-doc-id="${docId}"]`);
   await expect(row).toBeVisible();
+  await expect(ada.page.locator(`[data-sidebar-row][data-doc-id="${docId}"] [draggable="true"]`)).toHaveCount(1);
+  await expect(row.locator('[draggable="true"]')).toHaveCount(0);
   await expect(ben.page.getByRole('button', { name: 'Vault: Home', exact: true })).toBeVisible();
   await row.click();
   await waitBodyLive(ben, docId);

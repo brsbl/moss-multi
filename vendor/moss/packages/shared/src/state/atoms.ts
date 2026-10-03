@@ -370,10 +370,10 @@ const baseActiveNoteIdAtom = atom<string | null>(null);
 export const activeNoteIdAtom = atom(
   (get) => {
     const storedId = get(baseActiveNoteIdAtom);
-    const noteIds = get(noteIdsAtom);
 
     // Check if stored ID exists (allow trashed notes - needed for trash view)
-    if (storedId && noteIds.has(storedId)) {
+    // moss-multi seam: an open note may belong to a different vault than the sidebar.
+    if (storedId) {
       const entity = get(noteEntityAtom(storedId));
       if (entity) {
         return storedId;

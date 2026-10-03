@@ -11,6 +11,19 @@ diff --git a/packages/shared/src/state/atoms.ts b/packages/shared/src/state/atom
      if (orphanedIds.length > 0) {
        await Promise.all(orphanedIds.map((id) => set(removeNoteEntityAtom, id)));
      }
+@@ -368,10 +369,10 @@ const baseActiveNoteIdAtom = atom<string | null>(null);
+ export const activeNoteIdAtom = atom(
+   (get) => {
+     const storedId = get(baseActiveNoteIdAtom);
+-    const noteIds = get(noteIdsAtom);
+ 
+     // Check if stored ID exists (allow trashed notes - needed for trash view)
+-    if (storedId && noteIds.has(storedId)) {
++    // moss-multi seam: an open note may belong to a different vault than the sidebar.
++    if (storedId) {
+       const entity = get(noteEntityAtom(storedId));
+       if (entity) {
+         return storedId;
 @@ -385,6 +386,9 @@ export const activeNoteIdAtom = atom(
    (get, set, update: string | null | ((prev: string | null) => string | null)) => {
      const nextValue = typeof update === 'function' ? update(get(baseActiveNoteIdAtom)) : update;
