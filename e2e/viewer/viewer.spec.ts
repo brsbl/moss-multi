@@ -110,7 +110,7 @@ test('paints the note once, read-only: one title, no markers or frontmatter, the
 
   // Real tables; layout.json's column widths apply (moss infers percentages without them).
   await expect(body.locator('table')).toHaveCount(2);
-  await expect(body.locator('table').first().locator('col').first()).toHaveCSS('width', '260px');
+  await expect(body.locator('table').first().locator('col').first()).toHaveAttribute('style', /width: 260px/);
 
   // Tabs switch in the read-only view.
   const shelf = body.locator('[data-tab-panel][data-tab-label="Shelf map"]');
@@ -140,6 +140,11 @@ test('accepts no input: nothing is editable and typing, Enter, Backspace and a c
   const open = body.locator('li[role="checkbox"]', { hasText: 'Order envelopes' });
   await expect(open).toHaveAttribute('aria-checked', 'false');
   await open.click({ position: { x: 2, y: 10 } });
+  // Tabs switch but never edit: no Add tab or Tab options, and a double-click opens no rename.
+  await expect(viewer.locator('[role="tablist"] button')).toHaveCount(0);
+  await viewer.locator('[data-tab-title]', { hasText: 'Posts' }).dblclick();
+  await expect(page.locator('input[aria-label^="Rename"]')).toHaveCount(0);
+  await expect(viewer.locator('[role="tab"]')).toHaveText(['Posts', 'Shelf map', 'Photo']);
 
   await expect(open).toHaveAttribute('aria-checked', 'false');
   await expect(viewer).not.toContainText('zzqx');
@@ -214,6 +219,7 @@ test('reaches the network only through the injected services: media, links and e
 for (const theme of ['light', 'dark'] as const) {
   test(`fixture shot, ${theme}`, async ({ page, browserName }, testInfo) => {
     await mount(page, theme);
+    await expect(page.locator('[data-moss-viewer-title]')).toHaveText(TITLE);
     const frames = page.locator(`iframe[src^="${PROVIDER}/embed/Tweet.html"]`);
     // Post frames load lazily; bring each into view once so the shot shows them.
     for (const frame of await frames.all()) await frame.scrollIntoViewIfNeeded();

@@ -42,7 +42,10 @@ function manifest(): Plugin {
     apply: 'build',
     writeBundle(options, bundle) {
       const outputs = Object.values(bundle)
-        .map((output) => ({ fileName: output.fileName, bytes: Buffer.from(output.type === 'chunk' ? output.code : output.source) }))
+        .map((output) => {
+          const content = output.type === 'chunk' ? output.code : output.source;
+          return { fileName: output.fileName, bytes: typeof content === 'string' ? Buffer.from(content) : Buffer.from(content) };
+        })
         .sort((a, b) => (a.fileName < b.fileName ? -1 : 1));
       const digest = createHash('sha256');
       for (const { fileName, bytes } of outputs) digest.update(`${fileName}\0${bytes.length}\0`).update(bytes);

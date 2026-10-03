@@ -1,7 +1,12 @@
-// @moss-multi/viewer, tests-first harness: the entry contract with no moss renderer behind it yet. The
-// acceptance fixture (e2e/viewer) runs against this bundle and must fail on its product assertions.
-import type { MossViewerHandle, MossViewerOptions, MossViewerTheme } from './types.ts';
+// @moss-multi/viewer: a moss note, read-only, in any page. It renders with moss's own editor, nodes and views at
+// the pin (no second renderer), opens no socket and writes nothing; it reaches outside its bundle only through the
+// services the host passes. Load moss-viewer.css (moss's tokens, Tailwind layers and fonts) in the same document.
+// Prism goes on the global scope before moss's prism-setup and any code-highlighting module evaluates (L§4.1).
+import '@moss-multi/host/prism-global.ts';
+import '@moss-desktop/renderer/editor/plugins/code-block/prism-setup';
+import './viewer.css';
 
+export { mountMossViewer } from './mount.tsx';
 export type {
   MossViewerAssetKind,
   MossViewerHandle,
@@ -15,23 +20,3 @@ export type {
 
 /** The entry contract's version; viewer.json carries it too. */
 export const MOSS_VIEWER_API = 1;
-
-export function mountMossViewer(el: HTMLElement, options: MossViewerOptions): MossViewerHandle {
-  const host = document.createElement('pre');
-  host.dataset.mossViewer = '';
-  host.dataset.theme = options.theme ?? 'light';
-  host.dataset.mossViewerState = 'ready';
-  host.textContent = options.markdown ?? '';
-  el.append(host);
-  return {
-    title: '',
-    frontmatter: null,
-    ready: Promise.resolve(),
-    setTheme(theme: MossViewerTheme) {
-      host.dataset.theme = theme;
-    },
-    unmount() {
-      host.remove();
-    },
-  };
-}
