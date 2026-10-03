@@ -4337,8 +4337,11 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
     />
   );
 
-  // moss-multi seam: bound-pane (A§2.2): a bound note never fills `content`, so its stats read the editor's body when shown
-  const statsMarkdown = !mossMultiPane.bound ? content : showNoteStats ? getEditorBodyMarkdown()?.markdownBody ?? '' : '';
+  // moss-multi seam: bound-pane (A§2.2): a bound note never fills `content`, so its stats read the editor's body while
+  // the dialog is open and keep that read through its close animation
+  const boundStatsMarkdownRef = useRef('');
+  if (mossMultiPane.bound && showNoteStats) boundStatsMarkdownRef.current = getEditorBodyMarkdown()?.markdownBody ?? '';
+  const statsMarkdown = mossMultiPane.bound ? boundStatsMarkdownRef.current : content;
   // Note stats computed from body markdown content
   const noteStats = useMemo(() => {
     const text = statsMarkdown.replace(/```[\s\S]*?```/g, '').replace(/!\[.*?\]\(.*?\)/g, '').replace(/\[([^\]]*)\]\([^)]*\)/g, '$1');
