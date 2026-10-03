@@ -651,8 +651,10 @@ test('j02-title: @tierA disconnected additions of the same property converge and
     await expect(header.getByRole('textbox', { name: 'status', exact: true }), 'untouched properties survive the race and reload').toHaveValue('done');
     await expect(owner(actor)).toHaveValue(winner);
   }
-  await owner(ada).fill('repaired');
-  await owner(ada).press('Enter');
+  await owner(ada).click();
+  const editOwner = PROPERTIES(ada).getByRole('textbox', { name: 'Edit owner', exact: true });
+  await editOwner.fill('repaired');
+  await editOwner.press('Enter');
   await (await addPropertyUpToValue(ada, 'due', 'soon')).press('Enter');
   await expect(owner(ben)).toHaveValue('repaired');
   await expect(PROPERTIES(ben).getByRole('textbox', { name: 'due', exact: true })).toHaveValue('soon');
