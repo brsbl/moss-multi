@@ -15,7 +15,8 @@ export type Surface =
   | 'editor-toolbar' // the floating selection toolbar
   | 'slash-menu' // the editor's "/" menu
   | 'browser-split' // the in-app browser's header
-  | 'actions-panel'; // an open note's actions panel ("Show actions panel")
+  | 'actions-panel' // an open note's actions panel ("Show actions panel")
+  | 'block-toolbar'; // a hovered code, chart, sketch or media block's toolbar
 
 export interface Probe {
   surface: Surface;
@@ -170,6 +171,20 @@ export const AFFORDANCES = [
     cite: 'T1.8',
     staged: 1,
     probes: [{ surface: 'note-menu', selector: MENU_ITEM, text: 'Duplicate' }],
+  },
+  {
+    id: 'comments',
+    sites: [
+      `${R}/editor/MarkdownEditor.tsx`, `${R}/editor/nodes/CodeBlockNode.view.tsx`, `${R}/editor/nodes/ChartNode.view.tsx`,
+      `${R}/editor/nodes/SketchNode.view.tsx`, `${R}/editor/components/media-primitives.tsx`,
+    ],
+    reason: "A new comment's thread lives in an atom that only moss's save path persists, and a bound note has none, so its text would vanish on reload. Comments become shared data in M4: the toolbar button, ⌘⇧A and the block buttons go together.",
+    cite: 'T4.2; A§13',
+    staged: 4,
+    probes: [
+      { surface: 'editor-toolbar', selector: 'button[aria-label="Add comment"]' },
+      { surface: 'block-toolbar', selector: '[data-lexical-decorator] button:has(svg.lucide-sticky-note)' },
+    ],
   },
   {
     id: 'media-upload',

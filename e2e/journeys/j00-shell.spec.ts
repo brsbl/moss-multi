@@ -13,7 +13,7 @@ import {
 } from '../lib/contract.ts';
 import type { Measure } from '../lib/measure.ts';
 import type { Principal } from '../lib/principals.ts';
-import { expect, test } from '../lib/test.ts';
+import { expect, test, ui } from '../lib/test.ts';
 
 const SHELL = '[data-moss-app-shell]';
 const BOOT_TIMEOUT = 30_000;
@@ -340,6 +340,24 @@ test('no hidden or staged affordance renders on an open note: actions panel, top
   expect(await probeHits(page, 'note-menu'), "the note's row menu").toEqual([]);
   await page.keyboard.press('Escape');
   await expect(page.getByRole('menu')).toBeHidden();
+});
+
+/** Lets the page handle the last input and render what it opened: two animation frames. */
+const settled = (page: Page) => page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+
+test('an open note offers no comment until comments are shared data: no comment button, and ⌘⇧A opens nothing @p:agt-3', async ({ actors }) => {
+  const [ada] = await twoShells(actors);
+  const { page } = ada;
+  const docId = await openNewNote(ada);
+  await ui.typeBody(ada, docId, 'A line no comment can hold yet');
+
+  // A comment's thread text would live only in an atom that a bound note never saves, so it would vanish on reload.
+  // Over a caret, moss's ⌘⇧A selects the paragraph and opens its comment composer.
+  await page.keyboard.press('ControlOrMeta+Shift+A');
+  await settled(page);
+  expect.soft(await page.getByRole('dialog', { name: 'Add comment' }).count(), '⌘⇧A opens no comment composer').toBe(0);
+  expect.soft(await probeHits(page, 'editor-toolbar'), "the editor's toolbar").toEqual([]);
+  await expect(page.locator('[data-floating-selection-toolbar]:visible'), "moss's toolbar is on screen").not.toHaveCount(0);
 });
 
 test('every DS menu, dialog and tooltip opens inside a data-overlay-surface, even over the canvas', async ({ actors }) => {
