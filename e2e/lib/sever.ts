@@ -14,9 +14,9 @@ export interface Sever {
   blackhole(): void;
   /** Abrupt drop on both ends; 1012 is in the product's transient-retry set. */
   reset(code?: number): void;
-  /** Delivers again, and lets reconnects that arrived while severed (and are still open) through. */
+  /** Delivers again, acks included, and lets reconnects that arrived while severed (and are still open) through. */
   restore(): void;
-  /** Until the next reset, no DocDO ack reaches the page (acks lost in flight); everything else still crosses. */
+  /** Until the next reset or restore, no DocDO ack reaches the page (acks lost in flight); everything else crosses. */
   loseAcks(): void;
   census(): { connections: number; dropped: { out: number; in: number }; acksLost: number };
 }
@@ -76,6 +76,7 @@ export async function makeSeverable(context: BrowserContext, census?: SocketCens
     },
     restore() {
       ctl.mode = 'up';
+      ctl.losingAcks = false;
       for (const conn of ctl.conns.filter((c) => !c.server && !c.closed)) attach(conn);
     },
     loseAcks() {

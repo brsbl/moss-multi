@@ -179,6 +179,15 @@ export async function handleDocs(request: Request, env: DocsEnv): Promise<Respon
   if (doc) return only('GET', request, () => readDoc(request, env, doc[1]));
   const members = MEMBERS.exec(pathname);
   if (members) return handleMembers(request, env, { type: 'doc', id: members[1] });
+  const accessMatch = /^\/api\/docs\/([^/]+)\/access$/.exec(pathname);
+  if (accessMatch) {
+    if (request.method !== 'GET') return json({ error: 'method-not-allowed' }, 405, { allow: 'GET' });
+    const principal = await resolvePrincipal(request, env);
+    if (!principal) return json({ error: 'unauthenticated' }, 401, NO_STORE);
+    const access = await resolveDocAccess(createDb(env.DB), principal, accessMatch[1], shareTokenOf(request));
+    return access ? json({ role: access.role, deleted: access.deleted }, 200, NO_STORE) : notFound();
+  }
+
   const instance = INSTANCE.exec(pathname);
   if (instance) return only('GET', request, () => docInstance(request, env, instance[1]));
   return notFound();

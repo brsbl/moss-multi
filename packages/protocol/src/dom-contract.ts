@@ -35,14 +35,26 @@ export const EDITOR_GENERATION_ATTR = 'data-editor-generation';
 /** On the pane: `0` or `1`. */
 export const SYNC_UNACKED_ATTR = 'data-sync-unacked';
 
-/** On the connection indicator. */
+/** On the connection indicator, in the pane's top bar. */
 export const CONNECTION_ATTR = 'data-connection';
 export const CONNECTION_STATES = ['online', 'reconnecting', 'offline'] as const;
+export type ConnectionState = (typeof CONNECTION_STATES)[number];
 
 /** On the pane. */
 export const TERMINAL_REASON_ATTR = 'data-terminal-reason';
 export const TERMINAL_REASONS = ['deleted', 'revoked', 'session-ended', 'unavailable', 'conn-limit'] as const;
 export type TerminalReason = (typeof TERMINAL_REASONS)[number];
+
+/** The reserved notice band under each pane's top bar (A§10.5): in flow, empty and zero-height until it has news. */
+export const NOTICE_BAND_ATTR = 'data-notice-band';
+
+/**
+ * The banner in the notice band: `retrying` while a first sync is late, `offline` while a synced doc is not
+ * delivering, `halted` after a refused write stopped the doc, or the terminal reason.
+ */
+export const CONNECTION_BANNER_ATTR = 'data-connection-banner';
+export const CONNECTION_BANNERS = ['retrying', 'offline', 'halted', ...TERMINAL_REASONS] as const;
+export type ConnectionBanner = (typeof CONNECTION_BANNERS)[number];
 
 /** On the pane: the effective role. */
 export const ROLE_ATTR = 'data-role';

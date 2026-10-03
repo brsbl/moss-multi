@@ -6,26 +6,29 @@ import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext
 import type { Provider } from '@lexical/yjs';
 import { CollaborationPlugin } from '@moss-multi/lexical-react/LexicalCollaborationPlugin';
 import {
-  BODY_BINDING_ATTR, DOC_ID_ATTR, DOC_STATE_ATTR, EDITOR_GENERATION_ATTR, EDITOR_PANE_ATTR, ROLE_ATTR, SYNC_UNACKED_ATTR,
-  TERMINAL_REASON_ATTR, type BindingState, type DocState,
+  BODY_BINDING_ATTR, DOC_ID_ATTR, DOC_STATE_ATTR, EDITOR_GENERATION_ATTR, EDITOR_PANE_ATTR, SYNC_UNACKED_ATTR,
+  TERMINAL_REASON_ATTR, ROLE_ATTR, type BindingState, type DocState,
 } from '@moss-multi/protocol/dom-contract';
-import { can, type Role } from '@moss-multi/protocol/roles';
 import { excludedPropertiesFor } from '@moss-multi/sync/excluded-properties';
-import { $getRoot, type EditorState, type LexicalEditor } from 'lexical';
+import { $createParagraphNode, $getRoot, $setSelection, type EditorState, type LexicalEditor } from 'lexical';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
 import type { Doc } from 'yjs';
+import { can, type Role } from '@moss-multi/protocol/roles';
 import { knownRole, useDocRole } from '../access.ts';
 import { TopBarCollab } from '../slots.tsx';
 import {
   docOwner, openDocSession, subscribeDocOwners, type DocSession, type SessionState,
 } from './doc-session.ts';
 import { localIdentity } from './presence.ts';
-import { useTerminal } from './terminal.ts';
+import { subscribeTerminal, terminalOf, useTerminal } from './terminal.ts';
+import { ConnectionNotice } from './ConnectionNotice.tsx';
 
 interface PaneState {
-  docState: Extract<DocState, 'binding' | 'live'>;
-  /** Live below editor (A§8): the body shows the doc and takes no input. */
-  readOnly: boolean;
+  docState: DocState;
+  bodyState: BindingState;
+  bodyVisible: boolean;
+  resetting: boolean;
+  revision: number;
   /** The body holds any text; moss reads its markdown string for this, which a bound note never fills. */
   hasText: boolean;
 }
@@ -47,22 +50,24 @@ function generation(editor: LexicalEditor): number {
  * `data-sync-unacked` is written here, in the tick of the write it reports, not through a render.
  */
 class PaneBinding {
-  #state: PaneState = { docState: 'binding', readOnly: false, hasText: false };
+  #state: PaneState = { docState: 'binding', bodyState: 'unbound', bodyVisible: false, resetting: false, revision: 0, hasText: false };
   readonly #listeners = new Set<() => void>();
   #session: DocSession | null = null;
   #editor: LexicalEditor | null = null;
+  #trashed = false;
+  canWrite = true;
 
-  /** The caller's role on the doc; the body stays closed until it is known. */
   #role: Role | null;
-
-  constructor(role: Role | null) {
-    this.#role = role;
-  }
+  constructor(readonly docId: string) { this.#role = knownRole(docId); }
 
   setRole(role: Role | null): void {
-    if (role === this.#role) return;
     this.#role = role;
     if (this.#session) this.#apply(this.#session.state);
+  }
+
+  trash(trashed: boolean): void {
+    this.#trashed = trashed;
+    if (trashed && this.#session) this.#session.end('deleted');
   }
 
   readonly get = (): PaneState => this.#state;
@@ -81,6 +86,7 @@ class PaneBinding {
   /** Called from the plugin's provider factory with the session it opened. */
   attach(session: DocSession): void {
     this.#session = session;
+    if (this.#trashed) session.end('deleted');
     this.set({ docState: 'binding' });
     session.subscribe((state) => this.#apply(state));
     this.#apply(session.state);
@@ -90,41 +96,56 @@ class PaneBinding {
   bindEditor(editor: LexicalEditor): () => void {
     this.#editor = editor;
     if (this.#session) this.#apply(this.#session.state);
+    const stop = subscribeTerminal(() => {
+      if (this.#session) this.#apply(this.#session.state);
+    });
     return () => {
+      stop();
       if (this.#editor === editor) this.#editor = null;
     };
   }
 
   get bodyState(): BindingState {
-    return bodyBinding(this.#state);
+    return this.#state.bodyState;
+  }
+
+  reset(editor: LexicalEditor): void {
+    editor.update(() => {
+      $getRoot().clear().append($createParagraphNode());
+      $setSelection(null);
+    }, { discrete: true });
+    this.#session = null;
+    this.set({ resetting: false, revision: this.#state.revision + 1 });
   }
 
   #apply(state: SessionState): void {
     const editor = this.#editor;
     if (!editor) return;
+    const terminal = terminalOf(this.docId);
+    this.canWrite = state.canWrite;
+    const bodyState: BindingState = terminal ? 'terminal' : !state.synced || state.resync || !this.#role ? 'unbound' : state.canWrite && can(this.#role, 'edit') && !state.halted && !state.writePaused ? 'live' : 'readonly';
+    editor.setEditable(bodyState === 'live');
+    closeRoot(editor.getRootElement(), bodyState);
     editor.getRootElement()?.closest(`[${EDITOR_PANE_ATTR}]`)?.setAttribute(SYNC_UNACKED_ATTR, state.unacked ? '1' : '0');
-    if (!state.synced || this.#state.docState === 'live' || this.#role === null) return;
-    // Below editor the doc is live and the body stays shut: the DocDO would refuse its writes (A§8).
-    if (!can(this.#role, 'edit')) {
-      this.set({ docState: 'live', readOnly: true });
-      return;
-    }
-    // A§10.3: at first sync, in one render: the editable root, the body attribute (the gate's layout effect), the pane
-    // state, then moss's pending focus. The terminal store (T1.3) closes it again.
-    editor.setEditable(true);
-    this.set({ docState: 'live', readOnly: false });
+    this.set({
+      bodyState,
+      bodyVisible: state.synced && !state.resync,
+      resetting: state.resync,
+      docState: terminal ? 'terminal' : state.retrying ? 'retrying' : !state.synced || state.resync ? 'binding' : state.connection === 'offline' ? 'offline' : 'live',
+    });
   }
 }
 
-const bodyBinding = (state: PaneState): BindingState => (state.docState !== 'live' ? 'unbound' : state.readOnly ? 'readonly' : 'live');
-
 /** Closed until live: `@lexical/react` gives a non-editable root tabindex=-1, which would let it take focus (R2). */
-function closeRoot(root: HTMLElement, state: BindingState): void {
+function closeRoot(root: HTMLElement | null, state: BindingState): void {
+  if (!root) return;
   root.setAttribute(BODY_BINDING_ATTR, state);
   if (state === 'live') {
     root.removeAttribute('aria-disabled');
     return;
   }
+  const focused = root.ownerDocument.activeElement;
+  if (focused instanceof HTMLElement && root.contains(focused)) focused.blur();
   root.removeAttribute('tabindex');
   root.setAttribute('aria-disabled', 'true');
 }
@@ -138,7 +159,7 @@ const hasText = (state: EditorState): boolean =>
 /** Inside the composer: binds the editor to the pane and keeps the root's attributes. */
 function BindingGate({ binding }: { binding: PaneBinding }): null {
   const [editor] = useLexicalComposerContext();
-  const body = bodyBinding(usePaneState(binding));
+  const body = usePaneState(binding).bodyState;
   // After the commit that made the root editable, before moss's pending focus runs (a parent's layout effect).
   useLayoutEffect(() => {
     const root = editor.getRootElement();
@@ -171,10 +192,14 @@ function DocBinding({ docId, binding }: { docId: string; binding: PaneBinding })
   const [editor] = useLexicalComposerContext();
   const [excluded] = useState(() => excludedPropertiesFor(editor));
   const [identity] = useState(localIdentity);
+  const { resetting, revision } = usePaneState(binding);
+  useEffect(() => {
+    if (resetting) binding.reset(editor);
+  }, [binding, editor, resetting]);
   const owner = useSyncExternalStore(subscribeDocOwners, () => docOwner(docId));
   const providerFactory = useCallback(
     (id: string, docMap: Map<string, Doc>): Provider => {
-      const session = openDocSession(id, binding);
+      const session = openDocSession(id, binding, binding.canWrite);
       // Refused when another pane took the doc in the same commit: the plugin renders nothing without a provider,
       // and the owner gate above unmounts it until the doc is free.
       if (!session) return undefined as unknown as Provider;
@@ -186,8 +211,9 @@ function DocBinding({ docId, binding }: { docId: string; binding: PaneBinding })
   );
   return (
     <LexicalCollaboration>
-      {owner === null || owner === binding ? (
+      {!resetting && (owner === null || owner === binding) ? (
         <CollaborationPlugin
+          key={revision}
           id={docId}
           providerFactory={providerFactory}
           shouldBootstrap={false}
@@ -209,6 +235,8 @@ export interface MossMultiPane {
   collaboration: { plugin: ReactNode } | null;
   /** The body is bound, synced and editable; moss's pending body focus waits for it. */
   bodyLive: boolean;
+  /** Synced content stays visible when editing pauses or the session ends. */
+  bodyVisible: boolean;
   /** The title stays closed until its Y.Text binding (T1.4). */
   titleLive: boolean;
   titleBinding: BindingState;
@@ -217,13 +245,16 @@ export interface MossMultiPane {
   paneProps: Record<string, string>;
   /** Web chrome at the start of the top bar's right group. */
   topBarCollab: ReactNode;
+  noticeBand: ReactNode;
+  readOnly: boolean;
 }
 
-export function useMossMultiPane(note: { id: string } | null): MossMultiPane {
+export function useMossMultiPane(note: { id: string; trashedAt?: number | null } | null): MossMultiPane {
   const docId = note?.id ?? null;
   const role = useDocRole(docId);
   // A fresh binding for every doc the pane shows.
-  const binding = useMemo(() => (docId ? new PaneBinding(knownRole(docId)) : null), [docId]);
+  const binding = useMemo(() => (docId ? new PaneBinding(docId) : null), [docId]);
+  useLayoutEffect(() => { binding?.trash(note?.trashedAt != null); }, [binding, note?.trashedAt]);
   useLayoutEffect(() => binding?.setRole(role), [binding, role]);
   const state = usePaneState(binding);
   const terminal = useTerminal(docId);
@@ -231,11 +262,14 @@ export function useMossMultiPane(note: { id: string } | null): MossMultiPane {
     () => (docId && binding ? { plugin: <DocBinding key={docId} docId={docId} binding={binding} /> } : null),
     [binding, docId],
   );
-  const live = state.docState === 'live' && !state.readOnly && !terminal;
+  const live = state.bodyState === 'live' && !terminal;
   return {
     bound: true,
+    readOnly: !live,
+    noticeBand: <ConnectionNotice docId={docId} />,
     collaboration,
     bodyLive: live,
+    bodyVisible: state.bodyVisible,
     titleLive: false,
     titleBinding: terminal ? 'terminal' : 'unbound',
     hasBodyText: state.hasText,
@@ -243,8 +277,8 @@ export function useMossMultiPane(note: { id: string } | null): MossMultiPane {
       ? {
           [EDITOR_PANE_ATTR]: '',
           [DOC_ID_ATTR]: docId,
-          [DOC_STATE_ATTR]: terminal ? 'terminal' : state.docState,
           ...(role ? { [ROLE_ATTR]: role } : {}),
+          [DOC_STATE_ATTR]: terminal ? 'terminal' : state.docState,
           ...(terminal ? { [TERMINAL_REASON_ATTR]: terminal } : {}),
         }
       : {},
@@ -252,7 +286,7 @@ export function useMossMultiPane(note: { id: string } | null): MossMultiPane {
   };
 }
 
-const CLOSED: PaneState = { docState: 'binding', readOnly: false, hasText: false };
+const CLOSED: PaneState = { docState: 'binding', bodyState: 'unbound', bodyVisible: false, resetting: false, revision: 0, hasText: false };
 
 /**
  * The binding's state as React state rather than a store snapshot: going live must commit in the same render as the

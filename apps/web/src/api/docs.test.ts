@@ -2,7 +2,7 @@
 // owner-only probe (A§19).
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
-import { BASE, insertDoc, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
+import { BASE, insertDoc, insertLink, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
 import { handleApi } from './router.ts';
 
 interface Created {
@@ -176,5 +176,19 @@ describe('POST /api/docs/:id/duplicate', () => {
     await d1.db.prepare("INSERT INTO doc_members (doc_id, principal_id, principal_type, role, added_by, created_at) VALUES (?, ?, 'user', ?, ?, 1)").bind(id, ben.id, 'viewer', ada.id).run();
     expect((await duplicate(id, ben.cookie)).status).toBe(403);
     expect(created).toEqual([]);
+  });
+});
+
+describe('GET /api/docs/:id/access', () => {
+  it('uses the same share-link access as a doc read for a signed-in nonmember', async () => {
+    const docId = await insertDoc(d1.db, ada);
+    const share = await insertLink(d1.db, { docId }, 'viewer');
+    const withoutLink = await handleApi(new Request(`${BASE}/api/docs/${docId}/access`, { headers: { cookie: ben.cookie } }), env);
+    expect(withoutLink.status).toBe(404);
+    for (const suffix of ['', '/access']) {
+      const response = await handleApi(new Request(`${BASE}/api/docs/${docId}${suffix}?share=${share}`, { headers: { cookie: ben.cookie } }), env);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ role: 'viewer' });
+    }
   });
 });

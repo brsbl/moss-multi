@@ -1,7 +1,14 @@
 diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/renderer/App.tsx
 --- a/packages/desktop/src/renderer/App.tsx
 +++ b/packages/desktop/src/renderer/App.tsx
-@@ -152,7 +152,8 @@ import type { TrashedNotesPanelContentHandle } from './panels/TrashedNotesPanelC
+@@ -1,4 +1,5 @@
+-import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
++import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
++import { recoverableLazy } from '@moss-multi/host/recoverable-lazy';
+ import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
+ import { useAtom, useAtomValue, useSetAtom, useStore } from 'jotai';
+ import { useThemeEffect } from '@moss/shared/themes';
+@@ -152,7 +153,8 @@ import type { TrashedNotesPanelContentHandle } from './panels/TrashedNotesPanelC
  import { PropertiesTabContent } from './panels/PropertiesTabContent';
  import { DefaultEditorPrompt } from './components/DefaultEditorPrompt';
  import type { MossWindowContext, UpdateReadyInfo } from '../types/electron-api';
@@ -11,7 +18,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
  import { hydrateComments } from './editor/utils/comment-import';
  import { noteIntelligenceEnabledAtom, pendingAgentCommentContextAtom, promptDraftAtom } from '@moss/shared/state/atoms';
  import { connectedFolderEntriesAtom, contextPillsAtom, setMentionPillsAtom } from './state/granted-dirs-atoms';
-@@ -167,6 +168,10 @@ import {
+@@ -167,6 +169,10 @@ import {
    isRendererDevelopment,
    isRendererProduction
  } from './utils/renderer-env';
@@ -22,7 +29,41 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
  
  const nowInSeconds = (): number => Math.floor(Date.now() / 1000);
  const NOTE_LIST_SYNC_DEBOUNCE_MS = 150;
-@@ -2917,11 +2922,16 @@ export function App() {
+@@ -312,27 +318,28 @@ const mapRecordToMockNote = (record: NoteMetadataRecord): MockNote => {
+   };
+ };
+ 
+-const LazyCommandPaletteOverlay = lazy(async () => {
++// moss-multi seam: optional imports fail in place without unmounting a bound editor.
++const LazyCommandPaletteOverlay = recoverableLazy(async () => {
+   const module = await import('./prompt/CommandPaletteOverlay');
+   return { default: module.CommandPaletteOverlay };
+ }) as typeof import('./prompt/CommandPaletteOverlay').CommandPaletteOverlay;
+ 
+-const LazySettingsModal = lazy(async () => {
++const LazySettingsModal = recoverableLazy(async () => {
+   const module = await import('./components/SettingsModal');
+   return { default: module.SettingsModal };
+ });
+ 
+-const LazyFeedbackDialog = lazy(async () => {
++const LazyFeedbackDialog = recoverableLazy(async () => {
+   const module = await import('./components/FeedbackDialog');
+   return { default: module.FeedbackDialog };
+ });
+ 
+-const LazyUpdateWidget = lazy(async () => {
++const LazyUpdateWidget = recoverableLazy(async () => {
+   const module = await import('./components/UpdateWidget');
+   return { default: module.UpdateWidget };
+ });
+ 
+-const LazyTrashedNotesPanelContent = lazy(async () => {
++const LazyTrashedNotesPanelContent = recoverableLazy(async () => {
+   const module = await import('./panels/TrashedNotesPanelContent');
+   return { default: module.TrashedNotesPanelContent };
+ }) as typeof import('./panels/TrashedNotesPanelContent').TrashedNotesPanelContent;
+@@ -2917,11 +2924,16 @@ export function App() {
    ]);
  
    const handleCreateNote = useCallback(async () => {
@@ -40,7 +81,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
    }, [createAndActivateNote, flushBeforeNoteSwitch]);
  
    const handleDuplicateNote = useCallback(async (noteId: string) => {
-@@ -2932,35 +2942,7 @@ export function App() {
+@@ -2932,35 +2944,7 @@ export function App() {
      if (!entity) return;
  
      try {
@@ -77,7 +118,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
        const note = mapRecordToMockNote(persistedRecord);
        insertNote(note);
        applyNoteRecordToStore(persistedRecord);
-@@ -3788,7 +3770,8 @@ export function App() {
+@@ -3788,7 +3772,8 @@ export function App() {
  
        const key = e.key.toLowerCase();
  
@@ -87,7 +128,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
          e.preventDefault();
          if (showCommandPalette) {
            // Already open - just focus the input
-@@ -3878,7 +3861,8 @@ export function App() {
+@@ -3878,7 +3863,8 @@ export function App() {
        }
  
        // Switch to Trash tab: Cmd+2
@@ -97,7 +138,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
          e.preventDefault();
          handlePanelViewChange('trash');
          return;
-@@ -3947,7 +3931,8 @@ export function App() {
+@@ -3947,7 +3933,8 @@ export function App() {
      onExpandActionsPanel: () => { zenModeActive ? toggleZenMode() : setActionsPanelHidden(false); },
      isAgentStreaming: hasActiveStreaming,
      onCanvasClick: handlePromptClose,
@@ -107,7 +148,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
    };
  
    const actionsPanelContent = (
-@@ -4093,8 +4078,9 @@ export function App() {
+@@ -4093,8 +4080,9 @@ export function App() {
          onSelectNote={handleSelectNote}
          onCreateNote={handleCreateNote}
          onDeleteNote={handleNoteDeleted}

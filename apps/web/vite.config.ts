@@ -4,12 +4,13 @@ import { tanstackStart } from '@tanstack/react-start/plugin/vite';
 import viteReact from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
 import { provenance } from './vite-provenance.ts';
+import { recoverableImports } from './vite-recoverable-imports.ts';
 
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 const vendor = `${repoRoot}vendor/moss/packages`;
 
 export default defineConfig({
-  plugins: [cloudflare({ viteEnvironment: { name: 'ssr' } }), tanstackStart(), viteReact(), provenance(repoRoot)],
+  plugins: [cloudflare({ viteEnvironment: { name: 'ssr' } }), tanstackStart(), viteReact(), provenance(repoRoot), recoverableImports()],
   resolve: {
     // moss's aliases in moss's order (A§2), for vendored code and for host code that imports it.
     alias: [
