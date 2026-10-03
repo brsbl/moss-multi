@@ -77,7 +77,7 @@ Connection heartbeat/reducer, indicator and notice band, first-sync retrying, te
 
 ### T1.3 — attempt 2 regression repairs
 
-Tests-first head `2ad05cc` reproduced all three P1s and the lingering conn-limit/backoff defects in [full-lane CI](https://github.com/brsbl/moss-multi/actions/runs/37134139961): the sign-out confirmation was absent and peer text was lost; a real Settings import returned 404 and removed the shell with the reported TypeError; shell parity failed at 58/62 px² and the indicator lacked its chrome tag. The access-ceiling regression is in `1478128`.
+Tests-first head `2ad05cc` reproduced all three P1s and the lingering conn-limit/backoff defects in [full-lane CI](https://github.com/brsbl/moss-multi/actions/runs/37134139961): the sign-out confirmation was absent and peer text was lost; a real Settings import returned 404 and removed the shell with the reported TypeError; shell parity failed at 58/62 px² and the indicator lacked its chrome tag. The access regression was introduced in `1478128`; its first fixture incorrectly expected a link to demote its owner. The corrected fixture uses a signed-in nonmember, preserving T1.1’s MAX-of-grants contract.
 
 Repairs keep sessions recoverable until confirmed sign-out, pause writes and wait five seconds for acks before a Cancel-default confirmation, contain optional import failures within their surface, tag the indicator for the existing `m1` parity mask and use moss’s defined dot token. Connection-limit Retry retains lingering edits; REST rechecks use the integrated T1.1 resolver and link ceiling, with bounded backoff.
 

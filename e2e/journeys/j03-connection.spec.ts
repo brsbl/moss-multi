@@ -478,6 +478,12 @@ test('j03-connection: a real Settings chunk load failure preserves the shell and
   await waitAcked(bea, docId, RECOVER_TIMEOUT);
   await expect.poll(() => bodyText(ada, docId)).toBe('A failed import leaves the editor here with an unsynced addition and more after the failure');
   await expectNoRemount(bea, docId, 'a failed lazy import');
+  await bea.page.unroute('**/assets/SettingsModal-*.js');
+  await expect(bea.page.getByRole('button', { name: 'Retry loading' })).toBeInViewport();
+  await bea.page.getByRole('button', { name: 'Retry loading' }).click();
+  await expect(bea.page.getByRole('dialog')).toBeVisible();
+  await bea.page.keyboard.press('Escape');
+  await expectNoRemount(bea, docId, 'retrying the lazy import');
 });
 
 test('j03-connection: the online indicator is sanctioned chrome with a visible mobile dot @p:col-4', async ({ actors }) => {

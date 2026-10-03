@@ -17,7 +17,7 @@ interface ConfirmationDialogProps {
   confirmDisabled?: boolean;
   cancelDisabled?: boolean;
   collisionBoundary?: Element | null;
-  // moss-multi seam: destructive sign-out defaults to keeping unsynced work.
+  // moss-multi seam: cancel-focus (A§10.6): destructive sign-out defaults to keeping unsynced work.
   cancelAutoFocus?: boolean;
 }
 

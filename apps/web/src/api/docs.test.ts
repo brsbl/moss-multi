@@ -127,11 +127,13 @@ describe('GET /api/docs/:id/instance', () => {
 
 
 describe('GET /api/docs/:id/access', () => {
-  it('uses the same link ceiling as a doc read, even for its signed-in owner', async () => {
+  it('uses the same share-link access as a doc read for a signed-in nonmember', async () => {
     const docId = await insertDoc(d1.db, ada);
     const share = await insertLink(d1.db, { docId }, 'viewer');
+    const withoutLink = await handleApi(new Request(`${BASE}/api/docs/${docId}/access`, { headers: { cookie: ben.cookie } }), env);
+    expect(withoutLink.status).toBe(404);
     for (const suffix of ['', '/access']) {
-      const response = await handleApi(new Request(`${BASE}/api/docs/${docId}${suffix}?share=${share}`, { headers: { cookie: ada.cookie } }), env);
+      const response = await handleApi(new Request(`${BASE}/api/docs/${docId}${suffix}?share=${share}`, { headers: { cookie: ben.cookie } }), env);
       expect(response.status).toBe(200);
       expect(await response.json()).toMatchObject({ role: 'viewer' });
     }

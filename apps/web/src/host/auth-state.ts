@@ -1,6 +1,5 @@
 // The single auth-state writer (A§7, L§4.6): every change of who is signed in in this tab goes through one
-// store, so anything that must stop on sign-out (polls, sockets) subscribes here and stops synchronously on the
-// gesture. Pure: the page wires the session lookup, fetch, navigation and html[data-app-state] in host/auth.ts.
+// store: a sign-out gesture pauses writes and polling; confirmed sign-out severs sockets. Pure: the page wires the session lookup, fetch, navigation and html[data-app-state] in host/auth.ts.
 
 export interface SessionUser {
   id: string;
@@ -155,7 +154,7 @@ export function createAuthStore(deps: AuthDeps) {
     return sleep(ms, wake);
   }
 
-  /** The one writer: listeners run synchronously, so a sign-out gesture stops subscribers before any await. */
+  /** The one writer: listeners synchronously pause writes before the sign-out guard awaits acks. */
   function write(next: AuthState): void {
     const wasDegraded = state.status === 'degraded';
     state = next;
