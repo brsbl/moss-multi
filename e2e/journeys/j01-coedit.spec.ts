@@ -290,6 +290,7 @@ test('j01 duplicate: the note menu makes a content-preserving copy visible to bo
   const copyEdit = ' Only the copy gains this sentence.';
   await ui.typeBody(ben, copyId, copyEdit);
   await expect(ui.body(ada, copyId)).toContainText(copyEdit);
+  ada.expectReconnects(1, docId); // Returning to the original intentionally opens its session again.
   await ada.page.locator(`[data-sidebar-row][data-doc-id="${docId}"]`).click();
   await waitBodyLive(ada, docId);
   expect(await ui.fieldText(ada, docId, 'body')).toBe(text);
