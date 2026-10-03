@@ -12,6 +12,7 @@ export async function pasteMarkdown(actor: Actor, docId: string, markdown: strin
     element.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: data }));
   }, markdown);
   await actor.page.keyboard.press('Escape');
+  await actor.page.mouse.move(0, 0);
   await target.evaluate((element) => {
     (element as HTMLElement).blur();
     window.getSelection()?.removeAllRanges();
@@ -22,13 +23,25 @@ export async function pasteMarkdown(actor: Actor, docId: string, markdown: strin
 export async function renderedBody(actor: Actor, docId: string) {
   return body(actor, docId).evaluate((element) => {
     const root = element.cloneNode(true) as HTMLElement;
-    const identities = /^(id|data-(?:lexical-key|node-key|formula-id|note-id|doc-id)|aria-(?:controls|labelledby|describedby|activedescendant))$/;
+    const identities = /^(id|data-(?:.*-key|formula-id|note-id|doc-id|lexical-managed-linebreak)|aria-(?:controls|labelledby|describedby|activedescendant))$/;
+    // Lexical's block cursor is selection paint, not a node. Table widths are per-viewer layout (A§10.9).
+    root.querySelectorAll('[data-lexical-cursor]').forEach((cursor) => cursor.remove());
+    root.querySelectorAll<HTMLElement>('table, col').forEach((table) => {
+      table.style.removeProperty('width');
+      table.style.removeProperty('min-width');
+      if (!table.getAttribute('style')) table.removeAttribute('style');
+    });
+    const ids = new Map([...root.querySelectorAll('[id]')].map((el, i) => [el.id, `instance-${i}`]));
     for (const node of [root, ...root.querySelectorAll('*')]) {
       for (const attr of [...node.attributes]) {
         if (identities.test(attr.name)) node.removeAttribute(attr.name);
+        else node.setAttribute(attr.name, attr.value.replace(/url\(#([^)]+)\)/g, (_, id: string) => `url(#${ids.get(id) ?? id})`));
       }
       node.classList.remove('selected', 'selected-editor');
       if (!node.getAttribute('class')) node.removeAttribute('class');
+      const attrs = [...node.attributes].sort((a, b) => a.name.localeCompare(b.name));
+      for (const attr of [...node.attributes]) node.removeAttribute(attr.name);
+      for (const attr of attrs) node.setAttribute(attr.name, attr.value);
     }
     // The body binding's root carries readiness and actor identity, rather than authored content.
     const dom = root.innerHTML;

@@ -102,7 +102,7 @@ export function seedEmptyParagraph(live: Y.Doc): boolean {
 
 /** Replaces the body with `markdown` through the one converter (A§12), which imports with no selection (SP2). */
 export function importBody(live: Y.Doc, markdown: string, admit?: (diff: Uint8Array) => void): boolean {
-  return serverWrite(live, SERVER_IMPORT, () => $importNoteBody(markdown), admit);
+  return serverWrite(live, SERVER_IMPORT, () => $importNoteBody(markdown, { comments: {} }), admit);
 }
 
 /** The `.md` file (A§12): the raw frontmatter block, then the body through the one converter. */

@@ -30,6 +30,8 @@ for (const name of readdirSync(fixtures).filter((name) => name.endsWith('.md')).
     await expect(ui.pane(pasted, pastedId)).toHaveAttribute('data-sync-unacked', '0');
     const authored = await renderedBody(pasted, pastedId);
     expect(authored, 'the paste changes the empty document (positive control)').not.toEqual(empty);
-    await expect.poll(() => renderedBody(imported, importedId), { timeout: 15_000 }).toEqual(authored);
+    await expect(async () => {
+      expect(await renderedBody(imported, importedId)).toEqual(await renderedBody(pasted, pastedId));
+    }).toPass({ timeout: 10_000 });
   });
 }
