@@ -1,11 +1,11 @@
 # moss-multi progress
 
-**Overall: 31% done** (22 of 70 planned tasks verified)
+**Overall: 33% done** (23 of 70 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 17 / 17 | in progress |
-| M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 5 / 11 | in progress |
+| M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 6 / 11 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 0 / 9 | |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 0 / 9 | |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
@@ -17,8 +17,6 @@
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
 ## Log
-
-- 2026-10-03 — T1.8 implementation on `t/T1.8`: server markdown import, snapshot duplication, and the 32-fixture G1 comparator. Tests-first failures: [import assertions](https://github.com/brsbl/moss-multi/actions/runs/37137777414) and [G1/duplicate browser assertions](https://github.com/brsbl/moss-multi/actions/runs/37137778302). Independent checker and local browser QA remain with the coordinator; this does not increment the verified count.
 
 - 2026-10-02 — Restart begun. History distilled into docs/history/LEARNINGS.md; PRODUCT.md carried over with restart rulings; ARCHITECTURE.md and BUILDPLAN.md drafted, critiqued by three lenses and revised.
 - 2026-10-02 — T0.1 verified: the repo installs as a pnpm workspace, and every push runs CI (plan, checks, build, ci-ok) with lint, single-version, trace and unit checks; a checks-only lane can be dispatched and `minutes.mjs` prints the month's Actions use.
@@ -43,6 +41,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-03 — T1.2 verified: a note or folder shared with you appears at the root of your sidebar without typing its URL, and opening it leaves the sidebar on your own Home; the notes-panel header has a vault switcher that lists your vaults and then vaults shared with you with role badges, remembers your choice, and keeps open panes when you switch; shared rows offer no move or folder actions.
 - 2026-10-03 — T1.3 verified: when a note's connection drops or stalls, a banner and a top-bar indicator show within 14 s and say what is wrong; typing offline survives and lands exactly on reconnect; a stalled first sync shows "retrying" and recovers without remounting the editor; a refused, read-only or over-limit session keeps its text visible and offers a retry; and signing out waits for unsent edits behind a confirmation. j03-connection is green in Chromium and WebKit.
 - 2026-10-03 — T1.7 verified: a note reopened cold or after a real server eviction (measured at about 30 s idle, tested after 95 s) keeps its exact text and paragraphs, and an idle open note renews its presence on a four-second tick and on tab return, so collaborators reappear without reloading; j04-hibernation runs in Chromium and WebKit, and a calibration test recomputes the eviction window and fails nightly if it ever exceeds 150 s.
+- 2026-10-03 — T1.8 verified: a person can choose Duplicate from a note's menu and get a copy that every collaborator sees in their sidebar, and `POST /api/docs {markdown}` imports a note on the server that renders the same as pasting that markdown into the editor; the G1 comparator holds this for all 32 family fixtures in Chromium and WebKit.
 
 ## T1.1s identity audit
 
