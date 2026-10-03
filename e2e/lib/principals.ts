@@ -44,13 +44,17 @@ export function assertTestEmail(email: string): void {
 
 const DISPLAY = ['Ada', 'Ben', 'Cy', 'Dee', 'Eve', 'Fay', 'Gus', 'Hal'];
 
-/** Signs up `mm-<runToken>-<label>-<n>@example.invalid` with a same-origin Origin (better-auth 403s without it). */
-export async function mintPrincipal(baseUrl: string, runToken: string, label: string, n: number): Promise<Principal> {
+/** Credentials for `mm-<runToken>-<label>-<n>@example.invalid`, not signed up yet (the auth journey uses the card). */
+export function newPrincipal(runToken: string, label: string, n: number): Principal {
   const email = `mm-${runToken}-${label}-${n}${EXAMPLE_DOMAIN}`.toLowerCase();
   assertTestEmail(email);
   const first = DISPLAY.find((name) => name.toLowerCase() === label.toLowerCase()) ?? `${label[0].toUpperCase()}${label.slice(1)}`;
-  const name = `${first} ${runToken.slice(-4)}`;
-  const password = randomBytes(18).toString('base64url');
+  return { label, name: `${first} ${runToken.slice(-4)}`, email, password: randomBytes(18).toString('base64url'), id: null };
+}
+
+/** Signs up `mm-<runToken>-<label>-<n>@example.invalid` with a same-origin Origin (better-auth 403s without it). */
+export async function mintPrincipal(baseUrl: string, runToken: string, label: string, n: number): Promise<Principal> {
+  const { email, name, password } = newPrincipal(runToken, label, n);
   const response = await fetch(`${baseUrl}/api/auth/sign-up/email`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', origin: baseUrl },

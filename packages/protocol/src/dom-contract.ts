@@ -6,7 +6,10 @@ export const BUILD_META = 'moss-build';
 /** `html[data-client-build="<commit>:<clientHash>"]`, stamped by the client entry before React mounts. */
 export const CLIENT_BUILD_ATTR = 'data-client-build';
 
-/** On `html`. */
+/**
+ * On `html`: `booting` in the SSR document; `ready` once moss's shell renders, or once /login's card accepts input;
+ * `degraded` while the session lookup keeps failing, retrying in place (R10).
+ */
 export const APP_STATE_ATTR = 'data-app-state';
 export const APP_STATES = ['booting', 'ready', 'degraded'] as const;
 export type AppState = (typeof APP_STATES)[number];
