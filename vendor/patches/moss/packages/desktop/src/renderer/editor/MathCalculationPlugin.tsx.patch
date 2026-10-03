@@ -1,0 +1,87 @@
+diff --git a/packages/desktop/src/renderer/editor/MathCalculationPlugin.tsx b/packages/desktop/src/renderer/editor/MathCalculationPlugin.tsx
+--- a/packages/desktop/src/renderer/editor/MathCalculationPlugin.tsx
++++ b/packages/desktop/src/renderer/editor/MathCalculationPlugin.tsx
+@@ -1,3 +1,5 @@
++// moss-multi seam: local computed paint never becomes document content.
++import { $isBoundEditor, isBoundEditor, setNodeView } from '@moss-multi/host/collab/view-state';
+ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+ import { useAtomValue } from 'jotai';
+ import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
+@@ -468,6 +470,10 @@ function applyWorkspaceResultsToEditor(
+       const key = createFormulaCompoundKey(noteId, node.getFormulaId());
+       const record = evaluation.byKey.get(key);
+       if (record) {
++        if ($isBoundEditor()) {
++          setNodeView(node.getKey(), { result: record.result, stale: record.stale });
++          return;
++        }
+         if (node.getFormula() !== record.expression) {
+           node.setFormula(record.expression);
+         }
+@@ -1145,6 +1151,7 @@ export function MathCalculationPlugin({
+   );
+ 
+   const clearAllDraftStyles = useCallback(() => {
++    if ($isBoundEditor()) { CSS.highlights?.delete('formula-draft'); return; }
+     const root = $getRoot();
+ 
+     const visit = (node: LexicalNode) => {
+@@ -1170,6 +1177,19 @@ export function MathCalculationPlugin({
+   }, []);
+ 
+   const applyDraftStylePlan = useCallback((plan: FormulaDraftStylePlan) => {
++    if ($isBoundEditor()) {
++      const ranges: Range[] = [];
++      for (const segment of plan.segments) {
++        const element = editor.getElementByKey(segment.nodeKey);
++        const text = element?.firstChild;
++        const start = Math.max(0, plan.formulaStart - segment.start);
++        const end = Math.min(segment.end - segment.start, plan.formulaEnd - segment.start);
++        if (text?.nodeType !== Node.TEXT_NODE || end <= start) continue;
++        const range = document.createRange(); range.setStart(text, start); range.setEnd(text, end); ranges.push(range);
++      }
++      if (typeof Highlight !== 'undefined') CSS.highlights?.set('formula-draft', new Highlight(...ranges));
++      return;
++    }
+     for (let index = plan.segments.length - 1; index >= 0; index -= 1) {
+       const segment = plan.segments[index];
+ 
+@@ -1259,6 +1279,11 @@ export function MathCalculationPlugin({
+       return;
+     }
+ 
++    if (isBoundEditor(editor)) {
++      editor.getEditorState().read(() => applyWorkspaceResultsToEditor(noteId, evaluation as FormulaWorkspaceEvaluation));
++      return;
++    }
++    if (!editor.isEditable()) return;
+     runDerivedEditorUpdate(editor, () => {
+       applyWorkspaceResultsToEditor(noteId, evaluation as FormulaWorkspaceEvaluation);
+     }, EDITOR_UPDATE_TAGS.derived.formulaWorkspaceRefresh);
+@@ -1615,7 +1640,7 @@ export function MathCalculationPlugin({
+       };
+ 
+       const referenceNode = new TextNode(referenceLabel);
+-      referenceNode.setStyle(
++      if (!$isBoundEditor()) referenceNode.setStyle(
+         buildReferenceMetadataStyle(reference.noteId, reference.formulaId)
+       );
+       segment.node.insertAfter(referenceNode);
+@@ -1951,6 +1976,7 @@ export function MathCalculationPlugin({
+   // Dirty-gated so it skips selection-only changes (click-to-focus, arrow keys).
+   useEffect(() => {
+     return editor.registerUpdateListener(({ editorState, tags, dirtyLeaves, dirtyElements }) => {
++      if (!editor.isEditable() || tags.has('collaboration')) return;
+       if (tags.has(EDITOR_UPDATE_TAGS.ignored.formulaDraftStyle)) return;
+       if (dirtyLeaves.size === 0 && dirtyElements.size === 0) return;
+ 
+@@ -2001,7 +2027,8 @@ export function MathCalculationPlugin({
+       return;
+     }
+ 
+-    return editor.registerUpdateListener(({ editorState, dirtyLeaves, dirtyElements }) => {
++    return editor.registerUpdateListener(({ editorState, tags, dirtyLeaves, dirtyElements }) => {
++      if (!editor.isEditable() || tags.has('collaboration')) return;
+       // Always keep selection ref current (cheap: one clone)
+       editorState.read(() => {
+         const selection = $getSelection();

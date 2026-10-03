@@ -3,11 +3,13 @@
 import type { Binding } from '@lexical/yjs';
 import { UndoManager } from 'yjs';
 
+export const REGISTER_LOCAL_ORIGIN = Symbol('moss-multi:register-local');
+
 export const UNDO_CAPTURE_TIMEOUT_MS = 1_000;
 
 export function createBindingUndoManager(binding: Binding): UndoManager {
-  return new UndoManager(binding.root.getSharedType(), {
-    trackedOrigins: new Set([binding]),
+  return new UndoManager([binding.root.getSharedType(), binding.doc.getMap('registers')], {
+    trackedOrigins: new Set([binding, REGISTER_LOCAL_ORIGIN]),
     captureTimeout: UNDO_CAPTURE_TIMEOUT_MS,
   });
 }

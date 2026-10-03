@@ -1,4 +1,6 @@
 // ported-from: packages/desktop/src/renderer/editor/MarkdownEditor.tsx @ 762abb777
+// moss-multi seam: bound editors do not normalize hydration or expose an unfocused toolbar.
+import { isBoundEditor } from '@moss-multi/host/collab/view-state';
 import type { ReactNode } from 'react';
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -323,11 +325,12 @@ function CodeNodeNormalizationPlugin(): null {
   useEffect(() => {
     // Normalize any pre-existing CodeNodes (e.g. from older sessions/state)
     // so custom code block UI appears without requiring a reload.
-    editor.update(() => {
+    if (!isBoundEditor(editor) && editor.isEditable()) editor.update(() => {
       $convertMossCustomCodeNodes();
     }, { tag: 'skip-dirty' });
 
-    return editor.registerMutationListener(CodeNode, (mutations) => {
+    return editor.registerMutationListener(CodeNode, (mutations, { updateTags }) => {
+      if (!editor.isEditable() || updateTags.has('collaboration') || updateTags.has('registerMutationListener')) return;
       let hasNewCodeNode = false;
       for (const [, mutation] of mutations) {
         if (mutation === 'created') {
@@ -1772,6 +1775,19 @@ function FloatingSelectionTools({
     };
   }, [onSelectedImageNodeKeyChange]);
   const floatingToolbarRef = useRef<HTMLDivElement | null>(null);
+  const [editorFocused, setEditorFocused] = useState(false);
+  useEffect(() => {
+    const update = () => {
+      const active = document.activeElement;
+      setEditorFocused(!!active && (!!editor.getRootElement()?.contains(active) || !!floatingToolbarRef.current?.contains(active)));
+    };
+    const blur = () => queueMicrotask(update);
+    document.addEventListener('focusin', update);
+    document.addEventListener('focusout', blur);
+    update();
+    return () => { document.removeEventListener('focusin', update); document.removeEventListener('focusout', blur); };
+  }, [editor]);
+
   // Scroll tracking — hide floating bar while scrolling
   const [isScrolling, setIsScrolling] = useState(false);
   const scrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -3588,7 +3604,7 @@ function FloatingSelectionTools({
   const showFloatingBar = (
     hasActiveSelection
     || !!linkInputState?.open
-  ) && shouldRenderToolbarForPane && selectionRectRef.current !== null && !isPaletteOpen && !isTrashed && !isScrolling && !isMouseSelecting && !commentInputState.open;
+  ) && (editorFocused || !!linkInputState?.open || fontDropdownOpen || headingDropdownOpen || highlightDropdownOpen || listDropdownOpen) && shouldRenderToolbarForPane && selectionRectRef.current !== null && !isPaletteOpen && !isTrashed && !isScrolling && !isMouseSelecting && !commentInputState.open;
 
   // Calculate floating bar position from selection rect
   // Clamp below the topnav (~48px from viewport top) to avoid overlap

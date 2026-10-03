@@ -59,10 +59,10 @@ test('j01 editing: concurrent typing, local undo and paste retain both authors @
   const { ada, ben, id } = await setup(actors, stack.baseUrl, 'Shared paragraph.');
   await Promise.all([paragraphEnd(ada, id), paragraphEnd(ben, id)]);
   await Promise.all([ada.page.keyboard.type(' AAA', { delay: 30 }), ben.page.keyboard.type(' BBB', { delay: 30 })]);
-  await expect.poll(async () => ui.fieldText(ada, id, 'body')).toBe(await ui.fieldText(ben, id, 'body'));
-  for (const actor of [ada, ben]) { await expect(ui.body(actor, id)).toContainText('AAA'); await expect(ui.body(actor, id)).toContainText('BBB'); }
+  await expect.poll(async () => (await ui.fieldText(ada, id, 'body')) === (await ui.fieldText(ben, id, 'body'))).toBe(true);
+  for (const actor of [ada, ben]) { const text = await ui.fieldText(actor, id, 'body'); expect(text.match(/A/g)).toHaveLength(3); expect(text.match(/B/g)).toHaveLength(3); }
   await ada.page.keyboard.press('ControlOrMeta+z');
-  for (const actor of [ada, ben]) { await expect(ui.body(actor, id)).not.toContainText('AAA'); await expect(ui.body(actor, id)).toContainText('BBB'); }
+  for (const actor of [ada, ben]) { await expect.poll(async () => (await ui.fieldText(actor, id, 'body')).match(/A/g)?.length ?? 0).toBe(0); expect((await ui.fieldText(actor, id, 'body')).match(/B/g)).toHaveLength(3); }
   await paragraphEnd(ada, id); await paragraphEnd(ben, id);
   await Promise.all([paste(ada, id, '\n\n**Pasted content**'), ben.page.keyboard.type(' PEER')]);
   for (const actor of [ada, ben]) { await expect(ui.body(actor, id)).toContainText('Pasted content'); await expect(ui.body(actor, id)).toContainText('PEER'); }
@@ -124,12 +124,12 @@ test('j01 editing: 60 second concurrent typing soak has no cascade or lost text 
   await paragraphEnd(ada, id); await paragraphEnd(ben, id);
   const until = Date.now() + 60_000; let count = 0;
   while (Date.now() < until) {
-    await Promise.all([ada.page.keyboard.type(` a${count} `), ben.page.keyboard.type(` b${count} `)]); count++;
+    await Promise.all([ada.page.keyboard.type('A'), ben.page.keyboard.type('B')]); count++;
     await ada.page.waitForTimeout(200);
   }
-  await expect.poll(async () => ui.fieldText(ada, id, 'body')).toBe(await ui.fieldText(ben, id, 'body'));
+  await expect.poll(async () => (await ui.fieldText(ada, id, 'body')) === (await ui.fieldText(ben, id, 'body'))).toBe(true);
   const text = await ui.fieldText(ada, id, 'body');
-  for (let n = 0; n < count; n++) for (const author of ['a', 'b']) expect(text).toContain(`${author}${n}`);
+  expect(text.match(/A/g)).toHaveLength(count); expect(text.match(/B/g)).toHaveLength(count);
 });
 
 test('j01 editing: Insert row adds exactly one row to both peers @p:col-1', async ({ actors, stack }) => {

@@ -63,5 +63,7 @@ export const runDerivedEditorUpdate = (
   // Derived updates recompute presentation state (formula results, localized
   // images) and must never move the user's selection or steal focus — e.g.
   // a workspace refresh while the formula edit popover holds focus.
+  // moss-multi seam: flush authored content before a separately originated derived write.
+  editor.update(() => {}, { discrete: true });
   editor.update(update, { tag: [tag, SKIP_DOM_SELECTION_TAG] });
 };

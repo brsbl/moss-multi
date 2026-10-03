@@ -1,0 +1,30 @@
+diff --git a/packages/desktop/src/renderer/editor/ChecklistSortPlugin.tsx b/packages/desktop/src/renderer/editor/ChecklistSortPlugin.tsx
+--- a/packages/desktop/src/renderer/editor/ChecklistSortPlugin.tsx
++++ b/packages/desktop/src/renderer/editor/ChecklistSortPlugin.tsx
+@@ -17,6 +17,8 @@ import { EDITOR_UPDATE_TAGS } from './utils/editorUpdateTags';
+ const SORT_DELAY_MS = 50;
+ const CHECKLIST_SORT_IGNORED_TAGS = new Set<string>([
+   'history-merge',
++  // moss-multi seam: never sort a peer's update a second time.
++  'collaboration',
+   EDITOR_UPDATE_TAGS.ignored.agentContentUpdate,
+ ]);
+ 
+@@ -36,7 +38,7 @@ export function ChecklistSortPlugin(): null {
+ 
+   useEffect(() => {
+     const unregister = editor.registerMutationListener(ListItemNode, (mutations, { updateTags }) => {
+-      if (hasIgnoredSortTag(updateTags)) {
++      if (!editor.isEditable() || hasIgnoredSortTag(updateTags)) {
+         return;
+       }
+ 
+@@ -61,7 +63,7 @@ export function ChecklistSortPlugin(): null {
+         timerRef.current = null;
+         reorderRafRef.current = requestAnimationFrame(() => {
+           reorderRafRef.current = null;
+-          if (editor.getRootElement() === null) {
++          if (!editor.isEditable() || editor.getRootElement() === null) {
+             return;
+           }
+           editor.update(() => {

@@ -1,96 +1,22 @@
 diff --git a/shared/useYjsCollaboration.tsx b/shared/useYjsCollaboration.tsx
 --- a/shared/useYjsCollaboration.tsx
 +++ b/shared/useYjsCollaboration.tsx
-@@ -60,6 +60,9 @@ import {
-   useState,
- } from 'react';
+@@ -62,6 +62,7 @@ import {
  import {createPortal} from 'react-dom';
-+// moss-multi seam: plugin-a, plugin-b (A§10.2 a, b)
-+import {isOwnOrigin, syncUnderOrigin} from '@moss-multi/host/collab/origins';
-+import {createBindingUndoManager} from '@moss-multi/host/collab/undo';
+ // moss-multi seam: plugin-a, plugin-b (A§10.2 a, b)
+ import {isOwnOrigin, syncUnderOrigin} from '@moss-multi/host/collab/origins';
++import {bindLocalLayout} from '@moss-multi/host/collab/layout-local';
+ import {createBindingUndoManager} from '@moss-multi/host/collab/undo';
  import {
    type Doc,
-   type Snapshot,
-@@ -117,7 +120,8 @@ export function useYjsCollaboration(
- 
-     const onYjsTreeChanges: OnYjsTreeChanges = (events, transaction) => {
-       const origin = transaction.origin;
--      if (origin !== binding) {
-+      // moss-multi seam: plugin-b (A§10.2 b): this binding's derived writes never fold back
-+      if (!isOwnOrigin(origin, binding)) {
-         const isFromUndoManger = origin instanceof UndoManager;
-         syncYjsChangesToLexical(
-           binding,
-@@ -141,15 +145,18 @@ export function useYjsCollaboration(
-         tags,
-       }) => {
-         if (!tags.has(SKIP_COLLAB_TAG)) {
--          syncLexicalUpdateToYjs(
--            binding,
--            provider,
--            prevEditorState,
--            editorState,
--            dirtyElements,
--            dirtyLeaves,
--            normalizedNodes,
--            tags,
-+          // moss-multi seam: plugin-b (A§10.2 b): derived updates reach Yjs under DERIVED_ORIGIN
-+          syncUnderOrigin(binding, tags, () =>
-+            syncLexicalUpdateToYjs(
-+              binding,
-+              provider,
-+              prevEditorState,
-+              editorState,
-+              dirtyElements,
-+              dirtyLeaves,
-+              normalizedNodes,
-+              tags,
-+            ),
-           );
-         }
+@@ -162,7 +163,10 @@ export function useYjsCollaboration(
        },
-@@ -193,7 +200,8 @@ export function useYjsCollaboration(
-     onBootstrap,
-   );
+     );
  
--  useAwareness(binding, provider, selectionHighlight);
-+  // moss-multi seam: plugin-d (A§10.2 d): awareness updates run the given cursor sync, so the label pass hooks it
-+  useAwareness(binding, provider, selectionHighlight, syncCursorPositionsFn);
- 
-   return useYjsCursors(binding, cursorsContainerRef);
- }
-@@ -478,18 +486,19 @@ function useAwareness(
-   binding: Binding | BindingV2,
-   provider: Provider,
-   selectionHighlight: boolean,
-+  syncCursorPositionsFn: SyncCursorPositionsFn = syncCursorPositions, // moss-multi seam: plugin-d
- ) {
-   useEffect(() => {
-     const {awareness} = provider;
-     const onAwarenessUpdate = () => {
--      syncCursorPositions(binding, provider, {selectionHighlight});
-+      syncCursorPositionsFn(binding, provider, {selectionHighlight});
-     };
-     awareness.on('update', onAwarenessUpdate);
- 
++    // moss-multi seam: local layout is restored only after hydrated Yjs identities exist.
++    const stopLayout = bindLocalLayout(editor, binding);
      return () => {
-       awareness.off('update', onAwarenessUpdate);
++      stopLayout();
+       root.getSharedType().unobserveDeep(onYjsTreeChanges);
+       removeListener();
      };
--  }, [binding, provider, selectionHighlight]);
-+  }, [binding, provider, selectionHighlight, syncCursorPositionsFn]);
- }
- 
- export function useYjsCursors(
-@@ -543,10 +552,8 @@ export function useYjsHistory(
-   editor: LexicalEditor,
-   binding: Binding,
- ): () => void {
--  const undoManager = useMemo(
--    () => createUndoManager(binding, binding.root.getSharedType()),
--    [binding],
--  );
-+  // moss-multi seam: plugin-a (A§10.2 a): only this binding's writes are undoable, one step per 1000 ms burst
-+  const undoManager = useMemo(() => createBindingUndoManager(binding), [binding]);
- 
-   return useYjsUndoManager(editor, undoManager);
- }
