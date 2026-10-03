@@ -98,6 +98,9 @@
       "@lexical/yjs": "0.48.0",
       "yjs": "13.6.31",
       "@lexical/yjs>yjs": "13.6.31"
+    },
+    "patchedDependencies": {
+      "wrangler@4.113.0": "patches/wrangler@4.113.0.patch"
     }
   }
 }
