@@ -6,7 +6,7 @@ async function setup(actors: Actors, baseUrl: string, solo = false) {
   const ada = await actors.open(principal);
   const response = await ada.context.request.post('/api/docs', { headers: { Origin: baseUrl }, data: { title: 'Presence', markdown: 'A shared paragraph for our cursors.' } });
   expect(response.status()).toBe(201);
-  const { id } = await response.json();
+  const { doc: { id } } = await response.json();
   await ada.goto(`/d/${id}`);
   await expect(ui.body(ada, id)).toHaveAttribute('data-body-binding', 'live');
   await expect(chips(ada)).toHaveCount(0);
