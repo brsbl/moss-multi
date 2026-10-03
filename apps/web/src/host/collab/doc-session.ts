@@ -96,6 +96,11 @@ export class DocSession {
     });
     broadcastAwarenessOnUpdate(this.provider);
     closeNormally(this.provider, () => this.#lingering);
+    // Each socket gets its own partyserver connection id (`_pk`, read at every reconnect): the DocDO keys acks by it,
+    // so a dropped socket the server still holds would otherwise take the new socket's acks and leave edits unacked.
+    this.provider.on('connection-close', () => {
+      this.provider.id = crypto.randomUUID();
+    });
     this.provider.on('sync', (synced: boolean) => {
       if (synced && !this.#state.synced) this.#set({ synced: true });
     });

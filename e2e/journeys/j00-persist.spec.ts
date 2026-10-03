@@ -529,8 +529,11 @@ test('j00-persist: the unbound title is offered to nothing: no Rename and no foc
   await ada.page.keyboard.press('Escape');
   await expect(ada.page.getByRole('menu')).toBeHidden();
 
-  // A click on the closed title gives it no focus and no caret (invariant 9 at the checkpoint).
-  await title.click();
+  // A click on the closed title gives it no focus and no caret (invariant 9 at the checkpoint). The mouse is used
+  // directly: Playwright's click refuses an aria-disabled element.
+  const box = await title.boundingBox();
+  if (!box) throw new Error('the title has no box');
+  await ada.page.mouse.click(box.x + 20, box.y + box.height / 2);
   await expect(title).not.toBeFocused();
   expect(await title.evaluate((el) => (el as HTMLElement).isContentEditable || el.hasAttribute('tabindex')), 'the title is neither editable nor focusable').toBe(false);
   await actors.checkpoint('closed-title');
