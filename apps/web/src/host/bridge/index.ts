@@ -27,11 +27,17 @@ export interface ApiDoc {
   createdAt: number;
   updatedAt: number;
   role?: string;
+  folderPath?: string;
+  surfaced?: boolean;
 }
 
+export interface Vault { id: string; name: string; role?: string; owned?: boolean }
+export interface WorkspaceFolder { id: string; name: string; path: string; surfaced: boolean; createdAt: number; noteCount: number }
 /** `GET /api/workspace`: the active vault and its docs. */
 export interface WorkspaceListing {
-  vault: { id: string; name: string };
+  vault: Vault;
+  vaults?: Vault[];
+  folders?: WorkspaceFolder[];
   docs: ApiDoc[];
 }
 
@@ -71,6 +77,7 @@ const UNTITLED = 'Untitled';
 const THEME_KEY = 'moss_theme';
 const PINS_KEY = 'moss-multi:pins';
 const NOTE_INTELLIGENCE_KEY = 'moss-multi:note-intelligence';
+const VAULT_KEY = 'moss-multi:active-vault';
 const layoutKey = (id: string) => `moss-multi:layout:${id}`;
 const collapsedKey = (id: string) => `moss-multi:collapsed-headings:${id}`;
 
@@ -100,7 +107,7 @@ export function toNoteMetadata(doc: ApiDoc): NoteMetadata {
     title: doc.title.trim() ? doc.title : UNTITLED,
     createdAt: seconds(doc.createdAt),
     updatedAt: seconds(doc.updatedAt),
-    folderPath: ROOT_FOLDER,
+    folderPath: doc.folderPath ?? ROOT_FOLDER,
     lastOpenedAt: null,
     trashedAt: null,
   };
@@ -135,25 +142,45 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
   // Every doc this tab has seen, from the listing or from a create; the listing promise is the boot read.
   const known = new Map<string, NoteMetadata>();
   let listing: Promise<NoteMetadata[]> | null = null;
+  let workspaceSnapshot: WorkspaceListing | null = null;
+  const workspaceListeners = new Set<() => void>();
+  const diskListeners = new Set<Listener<[string[], string[]]>>();
+  let loadVersion = 0;
+  const load = (vaultId: string | null, docId: string | null = null): Promise<NoteMetadata[]> => {
+    const version = ++loadVersion;
+    const query = new URLSearchParams();
+    if (vaultId) query.set('vault', vaultId);
+    if (docId) query.set('doc', docId);
+    const pending: Promise<NoteMetadata[]> = request(`/api/workspace${query.size ? `?${query}` : ''}`).then(async (response) => {
+      if (!response.ok) throw new Error(`GET /api/workspace: ${response.status}`);
+      const data = (await response.json()) as WorkspaceListing;
+      if (version !== loadVersion) return listing ?? [];
+      workspaceSnapshot = data;
+      try { storage?.setItem(VAULT_KEY, data.vault.id); } catch { /* An in-memory choice still works. */ }
+      for (const row of data.docs) rememberRole(row.id, row.role);
+      const docs = data.docs.map(toNoteMetadata);
+      for (const doc of docs) known.set(doc.id, doc);
+      workspaceListeners.forEach((listener) => listener());
+      return docs;
+    });
+    listing = pending;
+    void pending.catch(() => { if (listing === pending) listing = null; });
+    return pending;
+  };
+  const storedVault = () => {
+    try { return storage?.getItem(VAULT_KEY) ?? null; } catch { return null; }
+  };
+  const refreshForNavigation = async (id: string) => {
+    await load(workspaceSnapshot?.vault.id ?? storedVault(), id);
+    diskListeners.forEach((listener) => listener([], []));
+  };
   const pins = () => readJson<Record<string, number>>(storage, PINS_KEY) ?? {};
   const withLocal = (note: NoteMetadata): NoteMetadata => {
     const pinnedAt = pins()[note.id];
     return pinnedAt ? { ...note, pinned: true, pinnedAt } : note;
   };
   const notes = () => {
-    listing ??= request('/api/workspace').then(async (response) => {
-      if (!response.ok) throw new Error(`GET /api/workspace: ${response.status}`);
-      const rows = ((await response.json()) as WorkspaceListing).docs;
-      for (const row of rows) rememberRole(row.id, row.role);
-      const docs = rows.map(toNoteMetadata);
-      for (const doc of docs) known.set(doc.id, doc);
-      return docs;
-    });
-    // A failed read is retried on the next call rather than cached.
-    listing.catch(() => {
-      listing = null;
-    });
-    return listing.then((docs) => docs.map(withLocal));
+    return (listing ?? load(workspaceSnapshot?.vault.id ?? storedVault(), workspaceSnapshot ? null : docIdFromPath(pathname()))).then((docs) => docs.map(withLocal));
   };
   const byId = async (id: string): Promise<NoteMetadata | undefined> => {
     if (!known.has(id)) await notes();
@@ -177,6 +204,20 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
   const docUrl = (id: string) => new URL(`/d/${encodeURIComponent(id)}`, browser.origin).href;
 
   return {
+    workspace: {
+      getSnapshot: () => workspaceSnapshot,
+      subscribe: (listener: () => void) => {
+        workspaceListeners.add(listener);
+        return () => { workspaceListeners.delete(listener); };
+      },
+      switchVault: async (id: string) => {
+        await load(id);
+        diskListeners.forEach((listener) => listener([], []));
+      },
+      surfacedShared: (id: string) => workspaceSnapshot?.docs.some((doc) => doc.id === id && doc.surfaced) ?? false,
+      surfacedFolder: (path: string) => workspaceSnapshot?.folders?.some((folder) => folder.surfaced &&
+        (path === folder.path || path.startsWith(`${folder.path}/`))) ?? false,
+    },
     notes: {
       getAll: () => notes(),
       getMetadataByIds: async (ids: string[]) => (await notes()).filter((note) => ids.includes(note.id)),
@@ -192,7 +233,8 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
         // Folders land in M2; until then every note lives at the vault root.
         if (folderPath !== ROOT_FOLDER) throw new Error('moss-multi: folders are not available on the web until M2');
         // "Untitled" is moss's placeholder name; the doc's title starts empty (A§5.1).
-        const body = title.trim() && title.trim() !== UNTITLED ? { title: title.trim() } : {};
+        const body = { ...(title.trim() && title.trim() !== UNTITLED ? { title: title.trim() } : {}),
+          ...(workspaceSnapshot ? { folderId: workspaceSnapshot.vault.id } : {}) };
         const response = await request('/api/docs', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -257,15 +299,24 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
       onInternalFileOpen: (callback?: Listener<[string]>) =>
         browser.onPopState(() => {
           const id = docIdFromPath(pathname());
-          if (id && callback) callback(id);
+          if (id && callback) {
+            void refreshForNavigation(id);
+            callback(id);
+          }
         }),
-      onDiskChange: silent,
+      onDiskChange: (callback?: Listener<[string[], string[]]>) => {
+        if (callback) diskListeners.add(callback);
+        return () => { if (callback) diskListeners.delete(callback); };
+      },
       onMetadataReindexed: silent,
       onRequestFlush: silent,
       flushComplete: none,
     },
     folders: {
-      list: empty,
+      list: async () => {
+        await notes();
+        return (workspaceSnapshot?.folders ?? []).map((folder) => ({ ...folder, createdAt: seconds(folder.createdAt) }));
+      },
       create: later('Folders', 2),
       rename: later('Folders', 2),
       delete: later('Folders', 2),
@@ -307,7 +358,10 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
       getWindowContext: async () => ({ windowId: 1, initialNoteId: docIdFromPath(pathname()), launchReason: 'initial-launch' as const, openedFromWindowId: null }),
       // The address follows the focused note, so a reload or a copied URL reopens it (A§4.2).
       setFocusedNoteId: async (id: string | null) => {
-        if (id && docIdFromPath(pathname()) !== id) browser.replacePath(`/d/${encodeURIComponent(id)}`);
+        if (id && docIdFromPath(pathname()) !== id) {
+          browser.replacePath(`/d/${encodeURIComponent(id)}`);
+          await refreshForNavigation(id);
+        }
       },
       startWindowDrag: none,
       moveWindowDrag: none,
@@ -360,6 +414,8 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
 }
 
 export type Bridge = ReturnType<typeof createBridge>;
+let installedBridge: Bridge | null = null;
+export const getBridge = () => installedBridge;
 
 function localStorageOrNull(): Storage | null {
   try {
@@ -394,6 +450,7 @@ function windowBrowser(): BrowserHooks {
 /** Installs the bridge on `window` before App's module evaluates (A§4.3). */
 export function installBridge(): Bridge {
   const bridge = createBridge({ pathname: () => window.location.pathname, storage: localStorageOrNull(), browser: windowBrowser() });
+  installedBridge = bridge;
   (window as unknown as { electronAPI: Bridge }).electronAPI = bridge;
   return bridge;
 }

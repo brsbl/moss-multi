@@ -43,6 +43,7 @@ declare module '@moss-desktop/renderer/editor/utils/editorUpdateTags' {
 declare module '@moss/shared/state/atoms' {
   import type { WritableAtom } from 'jotai';
   export const activeNoteIdAtom: WritableAtom<string | null, [string | null], void>;
+  export const activeFolderPathAtom: WritableAtom<string, [string], void>;
   export const splitTabNoteIdAtom: WritableAtom<string | null, [string | null], void>;
   export const openSplitTabAtom: WritableAtom<null, [string], void>;
   export const splitNavigateToNoteAtom: WritableAtom<null, [string], void>;
@@ -87,6 +88,14 @@ declare module '@moss/shared/components/ui/button' {
 declare module '@moss/shared/components/ui/card' {
   import type { ForwardRefExoticComponent, HTMLAttributes, RefAttributes } from 'react';
   export const Card: ForwardRefExoticComponent<HTMLAttributes<HTMLDivElement> & RefAttributes<HTMLDivElement>>;
+}
+
+declare module '@moss/shared/components/ui/dropdown-menu' {
+  import type { ComponentType, HTMLAttributes, ButtonHTMLAttributes, ReactNode } from 'react';
+  export const DropdownMenu: ComponentType<{ children: ReactNode }>;
+  export const DropdownMenuTrigger: ComponentType<ButtonHTMLAttributes<HTMLButtonElement> & { asChild?: boolean }>;
+  export const DropdownMenuContent: ComponentType<HTMLAttributes<HTMLDivElement> & { align?: 'start' | 'center' | 'end' }>;
+  export const DropdownMenuItem: ComponentType<HTMLAttributes<HTMLDivElement> & { onSelect?: () => void }>;
 }
 
 declare module '@moss/shared/components/ui/input' {

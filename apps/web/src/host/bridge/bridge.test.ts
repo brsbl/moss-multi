@@ -104,3 +104,40 @@ describe('the T1.1 bridge', () => {
     expect(knownRole('n1')).toBe('owner');
   });
 });
+
+it('switches the listing without losing an open note, persists the vault and creates in the selected vault', async () => {
+  const values = new Map<string, string>();
+  const storage = { getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => { values.set(key, value); }, removeItem: (key: string) => { values.delete(key); } };
+  const shared = { vault: { id: 'v2', name: 'Shared', role: 'editor', owned: false },
+    docs: [{ ...LISTING.docs[0], id: 's2', folderPath: 'Notes/Project' }],
+    folders: [{ id: 'f2', path: 'Notes/Project', name: 'Project', createdAt: 1_700_000_000_000, noteCount: 1, surfaced: false }] };
+  const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
+    if (init?.method === 'POST') return Response.json({ doc: { ...LISTING.docs[0], id: 'new' } });
+    return Response.json(String(input).includes('vault=v2') ? shared : LISTING);
+  });
+  const api = createBridge({ pathname: () => '/', fetch, storage });
+  await api.notes.getAll();
+  const changed = vi.fn();
+  api.notes.onDiskChange(changed);
+  await api.workspace.switchVault('v2');
+  expect(changed).toHaveBeenCalledWith([], []);
+  expect((await api.notes.getAll()).map((note) => note.id)).toEqual(['s2']);
+  expect(await api.notes.getById('d1')).toMatchObject({ id: 'd1' });
+  expect(await api.folders.list()).toContainEqual(expect.objectContaining({ path: 'Notes/Project', createdAt: 1_700_000_000 }));
+  await api.notes.create('Untitled');
+  const post = fetch.mock.calls.find(([, init]) => init?.method === 'POST');
+  expect(JSON.parse(String(post?.[1]?.body))).toEqual({ folderId: 'v2' });
+  const reopened = createBridge({ pathname: () => '/', fetch, storage });
+  expect((await reopened.notes.getAll()).map((note) => note.id)).toEqual(['s2']);
+});
+
+it('keeps the last successful vault after a failed switch', async () => {
+  const fetch = vi.fn<typeof globalThis.fetch>(async (input) => String(input).includes('vault=broken')
+    ? new Response('{}', { status: 503 }) : Response.json(LISTING));
+  const api = createBridge({ pathname: () => '/', fetch });
+  await api.notes.getAll();
+  await expect(api.workspace.switchVault('broken')).rejects.toThrow('503');
+  expect(api.workspace.getSnapshot()?.vault.id).toBe('v1');
+  expect((await api.notes.getAll()).map((note) => note.id)).toEqual(['d1']);
+});

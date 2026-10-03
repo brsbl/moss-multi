@@ -230,7 +230,8 @@ export const hydrateNotesAtom = atom(null, async (get, set) => {
 
     // Reconcile: remove atoms for notes no longer in backend
     // This handles permanently deleted notes (30+ days in trash)
-    const orphanedIds = [...existingIds].filter((id) => !freshIds.has(id));
+    // moss-multi seam: a vault switch replaces the sidebar, never an open editor.
+    const orphanedIds = [...existingIds].filter((id) => !freshIds.has(id) && id !== get(activeNoteIdAtom) && id !== get(splitTabNoteIdAtom));
     if (orphanedIds.length > 0) {
       await Promise.all(orphanedIds.map((id) => set(removeNoteEntityAtom, id)));
     }

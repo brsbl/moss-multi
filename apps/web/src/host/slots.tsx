@@ -3,9 +3,12 @@
 import type { ReactNode } from 'react';
 import { AccountSection } from './surfaces/AccountSection.tsx';
 import { ShareControl } from './surfaces/ShareDialog.tsx';
+import { getBridge } from './bridge/index.ts';
+export { VaultSwitcher } from './surfaces/VaultSwitcher.tsx';
 
 /** True for a doc surfaced at the vault root because it was shared directly (A§11); it offers no move. T1.2. */
-export const surfacedShared: (docId: string) => boolean = () => false;
+export const surfacedShared = (docId: string): boolean => getBridge()?.workspace.surfacedShared(docId) ?? false;
+export const surfacedFolder = (path: string): boolean => getBridge()?.workspace.surfacedFolder(path) ?? false;
 
 /** Items added to a folder's context menu: "Share..." (T2.4). */
 export const FolderMenuItems: (props: { folderPath: string }) => ReactNode = () => null;

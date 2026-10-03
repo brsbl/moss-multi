@@ -1,7 +1,7 @@
 // The one access resolver (A§8): a principal's role on a doc is the MAX of ownership, its grant on the doc, its grants
 // on every folder up to the vault, and a presented share link, folded by protocol/roles.ts (the link is a ceiling).
 // Agents act with their owner's access, and a grant to the agent itself adds by MAX.
-import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import { foldRole, type Role } from '@moss-multi/protocol/roles';
 import type { Principal } from '../auth/principal.ts';
 import type { Db } from '../db/client.ts';
@@ -108,4 +108,50 @@ export async function resolveFolderAccess(db: Db, principal: Principal, folderId
   const role = foldRole({ owner: actingUserId(principal) === folder.ownerUserId, grants, link: null, anonymous: principal.type === 'anonymous' });
   if (role === null) return null;
   return { role, ownerUserId: folder.ownerUserId, kind: folder.kind, deleted: folder.deletedAt !== null };
+}
+
+/** Batched folder closure for discovery; the same MAX fold and depth bound as individual reads. */
+export async function accessibleFolders(db: Db, principal: Principal) {
+  const ids = grantees(principal);
+  const [rows, grants] = await Promise.all([
+    db.select().from(folders),
+    ids.length ? db.select().from(folderMembers).where(inArray(folderMembers.principalId, ids)) : [],
+  ]);
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  return rows.flatMap((row) => {
+    const chain: string[] = [];
+    let current: typeof row | undefined = row;
+    while (current && chain.length < MAX_FOLDER_DEPTH && !chain.includes(current.id)) {
+      if (current.deletedAt !== null) return [];
+      chain.push(current.id);
+      current = current.parentId ? byId.get(current.parentId) : undefined;
+    }
+    const root = byId.get(chain[chain.length - 1]);
+    if (root?.kind !== 'vault') return [];
+    const role = foldRole({ owner: actingUserId(principal) === row.ownerUserId,
+      grants: grants.filter((grant) => chain.includes(grant.folderId)).map((grant) => grant.role), link: null,
+      anonymous: principal.type === 'anonymous' });
+    return role ? [{ ...row, role, vaultId: root.id }] : [];
+  });
+}
+
+/** The discovery closure for lists, search and backlinks (A§8). Link grants do not imply discovery. */
+export async function accessibleDocs(db: Db, principal: Principal, visibleFolders = accessibleFolders(db, principal)) {
+  const folders = await visibleFolders;
+  const ids = grantees(principal);
+  const grants = ids.length ? await db.select().from(docMembers).where(inArray(docMembers.principalId, ids)) : [];
+  const folderIds = folders.map((folder) => folder.id);
+  const ownerId = actingUserId(principal);
+  const rows = await db.select().from(docs).where(and(isNull(docs.deletedAt), or(
+    ownerId ? eq(docs.ownerUserId, ownerId) : sql`0`,
+    grants.length ? inArray(docs.id, grants.map((grant) => grant.docId)) : sql`0`,
+    folderIds.length ? inArray(docs.folderId, folderIds) : sql`0`,
+  )));
+  return rows.flatMap((row) => {
+    const folderRole = folders.find((folder) => folder.id === row.folderId)?.role;
+    const role = foldRole({ owner: ownerId === row.ownerUserId,
+      grants: [...grants.filter((grant) => grant.docId === row.id).map((grant) => grant.role), ...(folderRole ? [folderRole] : [])],
+      link: null, anonymous: principal.type === 'anonymous' });
+    return role ? [{ ...row, role }] : [];
+  });
 }
