@@ -86,6 +86,14 @@ Read this with PRODUCT.md, your BUILDPLAN entry and the A§ it cites, before wri
 - A browser never loads `moss-asset://`, and the page CSP logs each try as a console error, so `useHtmlPreviewImage` never requests a cached HTML preview screenshot that resolves there; the block reads "Preview unavailable" until T3.2's live iframe. [T0.P]
 - A pasted or dropped image or video is refused visibly while `media-upload` is staged (seams in VideoPastePlugin and MediaDropPlugin); moss's own paths only `console.warn` a failed upload. Refusals go through `refuseInput` (`host/refusal.ts`), which shows `[data-input-refusal]`. [T0.P]
 
+## Local editing state (T1.6)
+
+- Table and tab widths and active tabs use Yjs item identities after hydration; `moss-multi:layout:<id>` still carries Moss's ordinal metadata, and `moss-multi:layout-identities:<id>` keeps widths attached after peer insertions. Collapsed headings use Moss's existing local identity storage and 500 ms save debounce.
+- Formula results and wiki-link resolution paint through a local view store. Formula drafts use CSS Highlights and retain edit/reference identities in the existing local maps. Formula export recomputes on a disposable server mirror; authored symbolic values and the live Y.Doc remain untouched.
+- `$getEditor()` requires `editor.read`, an update callback, or `editor.getEditorState().read(callback, {editor})`; a state-only read has no active editor and throws Lexical #337. [T1.6]
+- Lexical command listeners already execute in an update. Calling `editor.update` inside a command queues the callback until after lower-priority handlers; formula Enter must commit directly before the default handler moves the caret. [T1.6]
+- A mutation listener must not synchronously replace text while other listeners still use that commit's snapshot. Color conversion schedules one microtask, rechecks editability and resolves node keys afresh; otherwise Markdown shortcuts can throw Lexical #113 on the replaced node. [T1.6]
+
 ## Import and duplicate (T1.8)
 
 - `POST /api/docs {markdown}` imports through the DocDO; a valid frontmatter block seeds `Y.Map('frontmatter')` and exports as canonical YAML, and a leading H1 stays in the body. Body and frontmatter share one admission check. Empty-note markdown paste uses the whole-body importer; insertion into existing content keeps Moss's raw conversion and random formula ids. Explicit markdown clipboard payloads are not chunked (deviation 14).
