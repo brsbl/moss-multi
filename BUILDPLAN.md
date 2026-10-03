@@ -301,7 +301,7 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
   - **Scope:** DocDO writes to the comments map; anchors with a quote fallback; client writes to the maps refused; marker import in the converter; clean export.
   - **Tests first:** fast-check: anchors survive random concurrent edits. A client frame touching `comments` gets 4409. Importing the onboarding note and its sidecar yields 4 anchored threads. Export contains zero `%%m:` or `{%c:`. **Done:** green.
 - **T4.2 Paint and moss's comment UI** `[B·codex]`
-  - **Scope:** highlight paint; the adapter; the `CREATE_COMMENT_COMMAND` seam; gutter, popover, threads, replies and resolve; Cmd+Shift+A; the reply composer autofocuses.
+  - **Scope:** highlight paint; the adapter; the `CREATE_COMMENT_COMMAND` seam, unstaging `comments`; gutter, popover, threads, replies and resolve; Cmd+Shift+A; the reply composer autofocuses.
   - **Tests first:** journey **j15-comments**: A comments, then both type anywhere in both directions; two comments in one paragraph; the peer sees the highlight; a commenter can comment but not edit; no `%m:` in the DOM.
   - **Done:** j15 is green, with shots and parity targets for the gutter and popover.
 - **T4.3 Reactions, mentions, edit and delete, notifications** `[B·fresh]`

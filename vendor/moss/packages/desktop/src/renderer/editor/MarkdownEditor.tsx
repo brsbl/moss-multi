@@ -137,6 +137,8 @@ import {
   SelectionToolbarShell
 } from './components/SelectionToolbarPrimitives';
 import './MarkdownEditor.css';
+// moss-multi seam: hide-registry (A§9)
+import { hidden } from '@moss-multi/host/affordances';
 // moss-multi seam: converter-split (A§12; S-conv §2.3)
 import { $convertMossCustomCodeNodes, $postImportNormalize, escapeHtmlEntities, normalizeMarkdownForImport, unescapeHtmlEntities } from './markdown/normalize';
 import { EDITOR_FONT_FAMILY_LABELS, type EditorSelectionFontFamily, HIGHLIGHT_COLOR_VARIABLES, HIGHLIGHT_YELLOW_VALUE, HIGHLIGHT_YELLOW_VAR, MARKDOWN_EDITOR_HTML_IMPORT, SERIF_FONT_FAMILY_STYLE, SERIF_FONT_FAMILY_VALUE, SERIF_OPTICAL_FONT_SIZE_ADJUST, STYLE_FONT_FAMILY_PROPERTY, STYLE_FONT_SIZE_ADJUST_PROPERTY, selectionFontFamilyFromStyleValue } from './markdown/text-style';
@@ -3124,7 +3126,7 @@ function FloatingSelectionTools({
         }
 
         // Cmd+Shift+A for comment annotation
-        if (key === 'a' && !event.altKey) {
+        if (key === 'a' && !event.altKey && !hidden('comments') /* moss-multi seam: hide-registry (A§9) */) {
           event.preventDefault();
           openCommentInput();
           return true;
@@ -3512,7 +3514,8 @@ function FloatingSelectionTools({
     </ToolbarTooltip>
   );
 
-  const commentButton = (
+  // moss-multi seam: hide-registry (A§9)
+  const commentButton = hidden('comments') ? null : (
     <ToolbarTooltip label="Comment" keys={['⌘', '⇧', 'A']}>
       <button
         type="button"

@@ -1,7 +1,7 @@
 diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx
 --- a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx
 +++ b/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx
-@@ -1,25 +1,12 @@
+@@ -1,25 +1,14 @@
  import React, { useCallback, useEffect, useRef, useState } from 'react';
  import type { JSX } from 'react';
 -import {
@@ -25,12 +25,14 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/pa
  import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@moss/shared/components/ui/tooltip';
 -import { initCommentIds, cloneCommentIds, exportCommentIds, importCommentIds } from '../utils/commentable-node';
 -import { OPEN_BLOCK_COMMENT_COMMAND } from '../plugins/CommentPlugin';
++// moss-multi seam: hide-registry (A§9)
++import { hidden } from '@moss-multi/host/affordances';
 +// moss-multi seam: converter-split (A§12; S-conv §2.3)
 +import { OPEN_BLOCK_COMMENT_COMMAND } from '../commands';
  import { EDITOR_CHROME_COLORS } from '../colors';
  import {
    BLOCK_HEADER_CLASSNAME,
-@@ -31,26 +18,14 @@ import {
+@@ -31,26 +20,14 @@ import {
    registerDecoratorDraftFlusher,
    unregisterDecoratorDraftFlusher
  } from '../utils/decoratorDraftRegistry';
@@ -62,7 +64,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/pa
  const CELL_PX = 5;
  const CANVAS_W = GRID_COLS * CELL_PX; // 600
  const CANVAS_H = GRID_ROWS * CELL_PX; // 300
-@@ -60,11 +35,7 @@ const GRID_LINE_DEVICE_PX = 1;
+@@ -60,11 +37,7 @@ const GRID_LINE_DEVICE_PX = 1;
  // Integer offset keeps fillRect edges pixel-aligned at common DPRs.
  const STROKE_PX = 3;
  const STROKE_OFFSET = (CELL_PX - STROKE_PX) / 2; // 1
@@ -75,7 +77,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/pa
  
  const FILL_COLOR = EDITOR_CHROME_COLORS.sketchFill;
  const GRID_LINE_COLOR = 'var(--ink-fn-rgba000003)';
-@@ -145,130 +116,6 @@ function drawGridLines(
+@@ -145,130 +118,6 @@ function drawGridLines(
    ctx.stroke();
  }
  
@@ -206,7 +208,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/pa
  function bresenhamLine(
    x0: number,
    y0: number,
-@@ -473,18 +320,6 @@ function renderFullCanvas(
+@@ -473,18 +322,6 @@ function renderFullCanvas(
    return rc;
  }
  
@@ -225,7 +227,24 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/pa
  // ---------------------------------------------------------------------------
  // SketchSurface -- canvas-based drawing surface
  // ---------------------------------------------------------------------------
-@@ -1521,170 +1356,6 @@ function SketchWrapper({
+@@ -1482,6 +1319,8 @@ function SketchWrapper({
+                     </TooltipTrigger>
+                     <TooltipContent side="bottom"><p>Edit canvas</p></TooltipContent>
+                   </Tooltip>
++                  {/* moss-multi seam: hide-registry (A§9) */}
++                  {hidden('comments') ? null : (
+                   <Tooltip>
+                     <TooltipTrigger asChild>
+                       <button
+@@ -1497,6 +1336,7 @@ function SketchWrapper({
+                     </TooltipTrigger>
+                     <TooltipContent side="bottom"><p>Add comment</p></TooltipContent>
+                   </Tooltip>
++                  )}
+                 </div>
+               </TooltipProvider>
+             )}
+@@ -1521,170 +1361,6 @@ function SketchWrapper({
    );
  }
  
@@ -396,7 +415,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/pa
  export function commitSketchDraftToNode(
    editor: LexicalEditor,
    nodeKey: NodeKey,
-@@ -1705,3 +1376,8 @@ export function commitSketchDraftToNode(
+@@ -1705,3 +1381,8 @@ export function commitSketchDraftToNode(
      { discrete: true }
    );
  }
