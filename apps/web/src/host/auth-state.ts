@@ -172,6 +172,8 @@ export function createAuthStore(deps: AuthDeps) {
     for (let attempt = 0; ; attempt += 1) {
       const reply = ask().then((result) => {
         if (result.kind !== 'unavailable') decide(result);
+        // NEGATIVE CONTROL for j07's stale-answer assertion, removed in the next commit: a late "signed out" lands.
+        if (result.kind === 'signed-out' && state.status === 'signed-in') write({ status: 'signed-out' });
         return result;
       });
       const first = await Promise.race([decided, reply, pause(LOOKUP_TIMEOUT_MS).then(() => UNAVAILABLE)]);

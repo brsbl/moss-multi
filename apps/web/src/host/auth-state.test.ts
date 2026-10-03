@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  asSessionAnswer, createAuthStore, LOOKUP_TIMEOUT_MS, refusalMessage, RETRY_MS, safeNext, SIGN_OUT_PATH, type AuthDeps, type AuthState,
+  asSessionAnswer, createAuthStore, LOOKUP_TIMEOUT_MS, refusalMessage, RETRY_MS, safeNext, SIGN_OUT_PATH, UNREACHABLE, type AuthDeps,
+  type AuthState,
 } from './auth-state.ts';
 
 const ADA = { id: 'u1', name: 'Ada', email: 'ada@example.invalid' };
@@ -120,6 +121,23 @@ describe('the auth store (the single auth-state writer)', () => {
     expect(deps.leave).not.toHaveBeenCalled();
   });
 
+  it('asks the server when the sign-out response is lost, and leaves for /login when the session is gone', async () => {
+    const lost = () => {
+      throw new TypeError('Failed to fetch');
+    };
+    const gone = store([{ kind: 'signed-in', user: ADA }, { kind: 'signed-out' }], lost);
+    await gone.auth.resolve();
+    expect(await gone.auth.signOut(), 'better-auth ended the session; only its answer was lost').toEqual({ ok: true });
+    expect(gone.auth.get().status).toBe('signed-out');
+    expect(gone.deps.leave).toHaveBeenCalledWith('/login');
+
+    const kept = store([{ kind: 'signed-in', user: ADA }, { kind: 'signed-in', user: ADA }], lost);
+    await kept.auth.resolve();
+    expect(await kept.auth.signOut(), 'the request never reached the server').toEqual({ ok: false, message: UNREACHABLE });
+    expect(kept.auth.get()).toEqual({ status: 'signed-in', user: ADA });
+    expect(kept.deps.leave).not.toHaveBeenCalled();
+  });
+
   it('turns better-auth refusals into sentences', async () => {
     const { auth } = store([], () => Response.json({ code: 'INVALID_EMAIL_OR_PASSWORD', message: 'Invalid email or password' }, { status: 401 }));
     expect(await auth.signIn({ email: 'ada@example.invalid', password: 'nope' })).toEqual({ ok: false, message: 'That email and password don’t match an account.' });
@@ -146,8 +164,15 @@ describe('session answers and next paths', () => {
 
   it('returns only to same-origin paths, never to /login', () => {
     expect(safeNext('/d/abc?x=1#h')).toBe('/d/abc?x=1#h');
-    for (const bad of [undefined, '', 'https://evil.example/', '//evil.example/x', '/\\evil.example', '/login?next=/', '/login']) {
+    expect(safeNext('/d/abc/../xyz?next=//evil.example#//x')).toBe('/d/xyz?next=//evil.example#//x');
+    expect(safeNext('/%2F%2Fevil.example'), 'an encoded slash stays a path').toBe('/%2F%2Fevil.example');
+    for (const bad of [undefined, '', 'https://evil.example/', '//evil.example/x', '/\\evil.example', '/login?next=/', '/login', '/x/../login']) {
       expect(safeNext(bad), String(bad)).toBe('/');
     }
+  });
+
+  it('never returns a path that normalizes to a protocol-relative //host', () => {
+    const escapes = ['/x/..//evil.example', '/.//evil.example', '/%2e%2e//evil.example', '/a/../\\evil.example', '/..//evil.example/x?y#z', '/./\\evil.example'];
+    for (const next of escapes) expect(safeNext(next), next).toBe('/');
   });
 });

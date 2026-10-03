@@ -1,7 +1,7 @@
 // j07-auth (T0.10): email and password on the moss-styled login card. Sign-up lands in the Home vault shell,
-// sign-out from Settings goes to the card, sign-in returns to the doc `next` names, a wrong password says so, no
-// OAuth button renders, the card works at both Tier A widths, and a session lookup that fails or hangs degrades in
-// place (R10).
+// sign-out from Settings goes to the card, sign-in returns to the doc `next` names (and never off the site), a wrong
+// password says so, no OAuth button renders, the card works at both Tier A widths, and a session lookup that fails
+// or hangs degrades in place (R10).
 import { randomBytes } from 'node:crypto';
 import type { Page, Request, Route } from '@playwright/test';
 import type { Actor } from '../lib/actors.ts';
@@ -34,6 +34,29 @@ async function expectNoOAuth(actor: Actor): Promise<void> {
   const oauth = actor.page.getByRole('button', { name: /github|google|oauth|continue with/i });
   await expect(oauth, `${actor.label}: no OAuth provider is configured, so none renders`).toHaveCount(0);
   await expect(actor.page.getByRole('link', { name: /github|google|oauth|continue with/i })).toHaveCount(0);
+}
+
+type Fulfilment = Parameters<Route['fulfill']>[0];
+
+/**
+ * The stack's own answer to this session lookup sent with no cookie: Start's serialized `{kind:'signed-out'}`
+ * (`x-tss-serialized`), which the page decodes like any real answer; Start decodes a bare JSON body as undefined.
+ * `unavailable` swaps the kind, giving what the server sends when D1 fails under it.
+ */
+async function serverAnswer(request: Request, kind: 'signed-out' | 'unavailable'): Promise<Fulfilment> {
+  const response = await fetch(request.url(), {
+    headers: { 'x-tsr-serverfn': 'true', accept: request.headers().accept ?? 'application/json' },
+    signal: AbortSignal.timeout(10_000),
+  });
+  const body = await response.text();
+  if (!response.ok || response.headers.get('x-tss-serialized') !== 'true' || body.split('"signed-out"').length !== 2) {
+    throw new Error(`no serialized signed-out answer from ${request.url()}: ${response.status} ${body.slice(0, 300)}`);
+  }
+  return {
+    status: 200,
+    headers: { 'content-type': response.headers.get('content-type') ?? 'application/json', 'x-tss-serialized': 'true' },
+    body: body.replace('"signed-out"', JSON.stringify(kind)),
+  };
 }
 
 /** Every main-frame URL the page commits, to prove a leg never left its path. */
@@ -117,6 +140,32 @@ test('sign-in on the card returns to the doc next names; a wrong password shows 
   }
 });
 
+// `next` values that pass a same-origin check but normalize to a protocol-relative `//host` once their dot segments
+// go (a backslash is a slash): returning to one would leave the site.
+const ESCAPING_NEXT = ['/x/..//example.invalid/phish', '/.//example.invalid/phish', '/%2e%2e//example.invalid/phish', '/a/../\\example.invalid/phish'];
+
+test('a next that would leave the site returns to / instead, after sign-in and when already signed in @p:ppl-1', async ({ actors, stack }) => {
+  const home = new URL('/', stack.baseUrl).href;
+  const [adaPerson, benPerson] = [await actors.principal('ada'), await actors.principal('ben')];
+
+  const ada = await actors.anonymous(`/login?next=${encodeURIComponent(ESCAPING_NEXT[0])}`, { label: 'ada' });
+  await ui.waitForLoginCard(ada);
+  await ui.signInThroughCard(ada, adaPerson);
+  await expect(ada.page, 'sign-in returns to / on this site, not to another host').toHaveURL(home, { timeout: BOOT_TIMEOUT });
+  await waitForShell(ada);
+
+  const ben = await actors.open(benPerson);
+  for (const next of ESCAPING_NEXT) {
+    // A redirect off the site fails to load and goto rejects; where it went is the evidence either way.
+    const landed = await ben.page.goto(`/login?next=${encodeURIComponent(next)}`).then(
+      (response) => response?.url() ?? null,
+      (error: Error) => error.message,
+    );
+    expect(landed, `${next}: someone already signed in is sent to / on this site`).toBe(home);
+    await waitForShell(ben);
+  }
+});
+
 const TIER_A = [
   { width: 390, height: 844 },
   { width: 1440, height: 1000 },
@@ -152,6 +201,9 @@ test('the login card works at 390x844 and 1440x1000 @p:tech-9 @tierA @evidence',
       submitTappable: true,
       submitBelowFold: false,
     });
+    // moss's Button fades in from disabled:opacity-50 as the card hydrates; the evidence shot waits it out.
+    await expect(ui.loginForm(actor).getByRole('button', { name: 'Sign in', exact: true })).toHaveCSS('opacity', '1');
+    await expect(actor.page.getByRole('button', { name: 'Create an account', exact: true })).toHaveCSS('opacity', '1');
     await actors.checkpoint(`login-card-${size.width}x${size.height}`);
 
     await ui.signInThroughCard(actor, person);
@@ -168,15 +220,15 @@ test('a failed session lookup shows data-app-state=degraded and retries in place
 
   // Each lookup fails a different way, in turn: a refused request (Start's fetcher throws), an error page served as
   // 200, and the server's own answer when D1 fails under it. A 5xx or a network abort would itself fail invariant 1.
-  const FAILURES = [
-    { status: 429, contentType: 'text/plain', body: 'Too many requests' },
-    { status: 200, contentType: 'text/html', body: '<!doctype html><title>Error</title><p>Something went wrong.</p>' },
-    { status: 200, contentType: 'application/json', body: JSON.stringify({ kind: 'unavailable' }) },
+  const FAILURES: ((route: Route) => Promise<Fulfilment>)[] = [
+    async () => ({ status: 429, contentType: 'text/plain', body: 'Too many requests' }),
+    async () => ({ status: 200, contentType: 'text/html', body: '<!doctype html><title>Error</title><p>Something went wrong.</p>' }),
+    (route) => serverAnswer(route.request(), 'unavailable'),
   ];
   ada.expectHttp(429, /^\/_serverFn\//);
   let failed = 0;
   await ada.page.route(SERVER_FNS, async (route) => {
-    await route.fulfill(FAILURES[failed % FAILURES.length]);
+    await route.fulfill(await FAILURES[failed % FAILURES.length](route));
     failed += 1;
   });
   const navigations = recordNavigations(ada.page);
@@ -209,7 +261,8 @@ test('a failed session lookup shows data-app-state=degraded and retries in place
 
 test('a session lookup that never answers degrades in place, asks again and boots the same doc @p:R10', async ({ actors }) => {
   const ben = await actors.open(await actors.principal('ben'));
-  const ada = await actors.session(await actors.principal('ada'));
+  const adaPerson = await actors.principal('ada');
+  const ada = await actors.session(adaPerson);
   await actors.requireDistinct(2);
 
   // The first lookup hangs (a stalled Worker or D1 read). Later ones fail until the leg lets them through, and the
@@ -223,7 +276,7 @@ test('a session lookup that never answers degrades in place, asks again and boot
       hung = route;
       return;
     }
-    if (failing) await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ kind: 'unavailable' }) });
+    if (failing) await route.fulfill(await serverAnswer(route.request(), 'unavailable'));
     else await route.continue();
   });
   const navigations = recordNavigations(ada.page);
@@ -247,11 +300,13 @@ test('a session lookup that never answers degrades in place, asks again and boot
   if (!stale) throw new Error('the first lookup was never held');
   const request: Request = stale.request();
   const finished = ada.page.waitForEvent('requestfinished', { predicate: (r) => r === request, timeout: 10_000 });
-  await stale.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ kind: 'signed-out' }) });
+  await stale.fulfill(await serverAnswer(request, 'signed-out'));
   await finished;
   await ada.page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
   await expect(html, 'the stale answer changes nothing').toHaveAttribute(APP_STATE_ATTR, 'ready');
   expect(new URL(ada.page.url()).pathname).toBe(path);
+  const settings = await ui.openSettings(ada);
+  await expect(settings.getByText(adaPerson.email, { exact: true }), 'the stale "signed out" leaves ada signed in').toBeVisible();
   expect([...new Set(navigations.map((url) => new URL(url).pathname))], 'every commit stayed on the doc: never redirected').toEqual([path]);
   await waitForShell(ben);
 });

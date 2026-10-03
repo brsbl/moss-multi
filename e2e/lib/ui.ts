@@ -43,10 +43,17 @@ export async function signUpThroughCard(actor: Actor, principal: Principal): Pro
   await form.getByRole('button', { name: 'Create account', exact: true }).click();
 }
 
+/** Opens moss's Settings; the web build's Account section in it names who is signed in. */
+export async function openSettings(actor: Actor): Promise<Locator> {
+  await actor.page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const dialog = actor.page.getByRole('dialog');
+  await expect(dialog, `${actor.label}: Settings opens`).toBeVisible();
+  return dialog;
+}
+
 /** moss's Settings, then the web build's Account section: Sign out. */
 export async function signOutThroughSettings(actor: Actor): Promise<void> {
-  await actor.page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await actor.page.getByRole('dialog').getByRole('button', { name: 'Sign out', exact: true }).click();
+  await (await openSettings(actor)).getByRole('button', { name: 'Sign out', exact: true }).click();
 }
 
 const BIND_TIMEOUT = 15_000;
