@@ -4,6 +4,8 @@ import { sql } from 'drizzle-orm';
 import {
   check, index, integer, primaryKey, sqliteTable, text, uniqueIndex, type AnySQLiteColumn,
 } from 'drizzle-orm/sqlite-core';
+// Grantable roles, from the one roles module; the owner is never stored, it derives from owner_user_id.
+import { MEMBER_ROLES } from '@moss-multi/protocol/roles';
 
 const now = () => new Date();
 
@@ -96,8 +98,6 @@ export const rateLimit = sqliteTable('rate_limit', {
 // ---------- moss-multi ----------
 
 const PRINCIPAL_TYPES = ['user', 'agent'] as const;
-/** Grantable roles. The owner is never stored; it derives from owner_user_id. */
-const MEMBER_ROLES = ['viewer', 'commenter', 'suggester', 'editor'] as const;
 const TARGET_TYPES = ['doc', 'folder'] as const;
 
 export const agents = sqliteTable(

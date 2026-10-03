@@ -31,8 +31,7 @@ export type Capability = keyof typeof CAPABILITY_FLOORS;
 
 /** Whether `role` clears the capability's floor; null and unknown roles clear none. */
 export function can(role: unknown, capability: Capability): boolean {
-  void capability; // tests first: M0 knows owners only
-  return roleAtLeast(role, 'owner');
+  return roleAtLeast(role, CAPABILITY_FLOORS[capability]);
 }
 
 export function maxRole(a: Role | null, b: Role | null): Role | null {
@@ -57,6 +56,9 @@ export interface RoleSources {
  * The effective role (A§8): the MAX of ownership, the grants and the link. The link is a ceiling: it lifts a
  * signed-in caller to its role and no further, and an anonymous caller to viewer at most.
  */
-export function foldRole({ owner }: RoleSources): Role | null {
-  return owner ? 'owner' : null; // tests first: M0 knows owners only
+export function foldRole({ owner, grants, link, anonymous }: RoleSources): Role | null {
+  if (anonymous) return link === null ? null : 'viewer';
+  let role: Role | null = owner ? 'owner' : null;
+  for (const grant of grants) role = maxRole(role, grant);
+  return maxRole(role, link);
 }
