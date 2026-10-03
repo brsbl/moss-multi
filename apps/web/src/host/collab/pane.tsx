@@ -38,7 +38,7 @@ function generation(editor: LexicalEditor): number {
 
 /**
  * One pane's binding of one doc: the session the plugin opened, the editor it binds, and the state the pane renders.
- * The DOM attributes that must change in the same tick as the editor are written here, not through a render.
+ * `data-sync-unacked` is written here, in the tick of the write it reports, not through a render.
  */
 class PaneBinding {
   #state: PaneState = { docState: 'binding', hasText: false };
