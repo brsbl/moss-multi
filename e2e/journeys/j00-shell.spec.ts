@@ -342,8 +342,9 @@ test('no hidden or staged affordance renders on an open note: actions panel, top
   await expect(page.getByRole('menu')).toBeHidden();
 });
 
-/** Lets the page handle the last input and render what it opened: two animation frames. */
-const settled = (page: Page) => page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+/** Whether moss's comment composer opens within `windowMs`: a negative check needs a window, as the Backspace leg's does. */
+const composerOpens = (page: Page, windowMs = 1_000): Promise<boolean> =>
+  page.getByRole('dialog', { name: 'Add comment' }).waitFor({ state: 'attached', timeout: windowMs }).then(() => true, () => false);
 
 test('an open note offers no comment until comments are shared data: no comment button, and ⌘⇧A opens nothing @p:agt-3', async ({ actors }) => {
   const [ada] = await twoShells(actors);
@@ -352,12 +353,14 @@ test('an open note offers no comment until comments are shared data: no comment 
   await ui.typeBody(ada, docId, 'A line no comment can hold yet');
 
   // A comment's thread text would live only in an atom that a bound note never saves, so it would vanish on reload.
-  // Over a caret, moss's ⌘⇧A selects the paragraph and opens its comment composer.
+  await expect(page.getByRole('button', { name: 'Insert slash command' }), "moss's bottom toolbar is on screen").toBeVisible();
+  expect.soft(await probeHits(page, 'editor-toolbar'), 'the bottom toolbar').toEqual([]);
+  await page.keyboard.press('ControlOrMeta+A');
+  await expect(page.getByRole('button', { name: 'Add link' }), 'the selection toolbar is on screen').toBeVisible();
+  expect.soft(await probeHits(page, 'editor-toolbar'), 'the selection toolbar').toEqual([]);
+  // Over a selection, moss's ⌘⇧A opens its comment composer.
   await page.keyboard.press('ControlOrMeta+Shift+A');
-  await settled(page);
-  expect.soft(await page.getByRole('dialog', { name: 'Add comment' }).count(), '⌘⇧A opens no comment composer').toBe(0);
-  expect.soft(await probeHits(page, 'editor-toolbar'), "the editor's toolbar").toEqual([]);
-  await expect(page.locator('[data-floating-selection-toolbar]:visible'), "moss's toolbar is on screen").not.toHaveCount(0);
+  expect.soft(await composerOpens(page), '⌘⇧A opens no comment composer').toBe(false);
 });
 
 test('every DS menu, dialog and tooltip opens inside a data-overlay-surface, even over the canvas', async ({ actors }) => {
