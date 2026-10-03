@@ -1,6 +1,6 @@
 // The one input-refusal notice (A§0 #2, A§19 `data-input-refusal`): an input the web cannot take is refused visibly,
 // never dropped silently. Host code and vendored seams call refuseInput; RefusalAnnouncer renders the message.
-// T1.3 and T1.4 move it into the reserved notice band under the top bar.
+// It occupies the reserved notice band under the top bar.
 
 const SHOWN_MS = 4_000;
 

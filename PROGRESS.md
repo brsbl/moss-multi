@@ -55,18 +55,11 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - A wrong password logs a browser console error → T0.10 (only if the zero-console-error invariant should cover the auth error path)
 - Sidebar times do not update when a note is edited → T1.4 (DocDO `updated_at` projection)
 - Sidebar search matches titles only, so body text is never found → the M3 search task (SearchDO), together with T1.4 titles
-- During a stack restart the editor stays editable with no sign it is disconnected → T1.3 (connection truth indicator and banner)
 - Settings shows Note Intelligence, and its description mentions a hidden section → T1.4 (Properties unstaging), or a hide-registry entry if it cannot work on the web
 - Sign-out leaves the session's other live doc sockets reading and writing → T2.5
-- Close codes are never dispatched: a refused or unauthorized socket reconnects forever behind an editable pane → T1.3 (a session lingering with unacked edits behind a refused socket also holds its doc until then; a terminal code should end it)
-- A lost ack leaves `data-sync-unacked=1` after reconnect → T1.3 (T0.P: the DocDO now acks an editor's inert step 2, so a reconnect ends in an ack; T1.3 confirms it in j03)
-- Ack coverage by state vector is unsound for deletions → T1.3
-- Acks and the write-rate window are keyed by the client's reused `_pk` connection id, so a stale socket breaks the new one's acks → T1.3 (T0.P: each socket now gets a fresh id on the client; T1.3 checks the server side)
-- ChunkReloadBoundary hard-reloads when a lazy chunk fails because the network or stack is down, discarding buffered edits → T1.3
 - The wrangler ProxyWorker patch replays non-idempotent requests after an ambiguous failure → T0.9b follow-up (stack infra)
 - `qa.mjs close` forgets the session even when closing it failed → tooling follow-up
 - `stack.mjs` puts `BETTER_AUTH_SECRET` and the test-hook secret on wrangler's command line → tooling follow-up
-- Signing out does not wait for unsynced edits, and no task owns that safeguard → extend T2.3's unacked-wait step to sign-out, or add it to the T2.x sign-out legs
 - Creating a note writes the D1 title and filename from the Worker, not the DocDO → T1.4 (title and filename projections): move slug and `availableFilename` to `packages/core` and let create go through the DO projection
 - Table and tab widths and collapsed headings reset on every reload in M0 → T1.6
 - Page-attribute names, the socket path name and the roles list are each defined in more than one place → the T1.x lane that next touches each module
@@ -80,3 +73,38 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - The title field looks editable but is permanently dead, so every note is "Untitled" → T1.4 (title binding); until then, stage or visibly disable it so it does not invite typing
 - At 390×844, signing in lands on an unreadable doc: the editor is squeezed to one character per line → T2.7 (deviation 11: below 640 px the notes panel overlays the canvas)
 - At M0 a link's "Open in Split View" opens an in-app browser that loads forever, and an HTML block's "Preview unavailable" Retry cannot succeed → T3.2 (RemoteWebSurface and the live iframe), or stage both now if the M0 critic counts them as dead
+
+### T1.3 — implemented; local UI verification blocked
+
+Connection heartbeat/reducer, indicator and notice band, first-sync retrying, terminal gates/retry, fresh refusal/read-only rebinds, per-tab sign-out teardown, delete-aware acks and per-socket accounting are implemented. Chunk failures preserve live/unsynced documents. The notice band also covers the empty canvas before the first note opens.
+
+- Red proof: [j03](https://github.com/brsbl/moss-multi/actions/runs/37119822769), [ack/socket regressions](https://github.com/brsbl/moss-multi/actions/runs/37119819996), at f22b105.
+- Green proof: [both-engine j03](https://github.com/brsbl/moss-multi/actions/runs/37129674970) at be193a2; [complete CI](https://github.com/brsbl/moss-multi/actions/runs/37129924046) at 4f80045. Final dispatch adds refusal/rebind, deletion, preload-error and the existing early-key regression, with desktop/mobile banner evidence. Complete CI and both-engine targeted journeys also passed at 27adc6b ([checks](https://github.com/brsbl/moss-multi/actions/runs/37130498139), [journeys](https://github.com/brsbl/moss-multi/actions/runs/37130498571)). The final evidence adjustment collapses the notes panel through its UI for the 390px reading view. Budget: 60 CI minutes.
+- Local arm64 Node 24 build and stack boot succeeded. Browser Automation returned `unknown command browser-automation`; plugin discovery returned HTTP 401. No substitute driver or personal app was used; the stack was stopped. Local QA/triptych remains owed.
+- Deviations: reused the earlier tests-first red runs and critically reviewed WIP; no separate task brief exists; same-owner windows exercise j03 until T1.1 grants are integrated; added the minimal `/api/docs/:id/access` read using the existing resolver, needed by bounded handshake and role rechecks. The optional ack `ds` field preserves the existing wire contract. Transient chunk errors degrade in place; an open document never auto-reloads.
+
+### T1.3 — attempt 2 regression repairs
+
+Tests-first head `2ad05cc` reproduced all three P1s and the lingering conn-limit/backoff defects in [full-lane CI](https://github.com/brsbl/moss-multi/actions/runs/37134139961): the sign-out confirmation was absent and peer text was lost; a real Settings import returned 404 and removed the shell with the reported TypeError; shell parity failed at 58/62 px² and the indicator lacked its chrome tag. The access regression was introduced in `1478128`; its first fixture incorrectly expected a link to demote its owner. The corrected fixture uses a signed-in nonmember, preserving T1.1’s MAX-of-grants contract.
+
+Repairs keep sessions recoverable until confirmed sign-out, pause writes and wait five seconds for acks before a Cancel-default confirmation, contain optional import failures within their surface, tag the indicator for the existing `m1` parity mask and use moss’s defined dot token. Connection-limit Retry retains lingering edits; REST rechecks use the integrated T1.1 resolver and link ceiling, with bounded backoff.
+
+- Local QA deviation: `bb browser-automation --help` returned unknown command and plugin discovery returned HTTP 401. No substitute driver or personal app was used; the independent checker owns the real browser pass.
+- Integration: merged `origin/m1` at `77c5b4a`, retaining T1.1’s role gate, Share control and denial routes.
+- Deferred P2s: stronger banner salience/triptych, the dead `halted` field, one refusal announcer across split panes, and incremental AckLedger compaction. These are outside the three P1 regression repairs and need their own focused validation; the retry, dot, navigation and link-access nits were included.
+
+### T1.3 — resumed regression repairs
+
+Resumed the existing task branch and merged `m1` at `c6bc688`. The original tests-first [red run](https://github.com/brsbl/moss-multi/actions/runs/37134139961) proves all three checker findings. [Full CI at 5012cce](https://github.com/brsbl/moss-multi/actions/runs/37135956317) passes checks, viewer, both shell groups and parity (zero differing pixels in light and dark); both editing groups expose the remaining cached-import retry failure.
+
+Cancel now receives its ref through the DS wrapper, lazy component state has the correct initializer, and heartbeat resync replays pending updates so a channel restored before its timeout still delivers them. The failed-sign-out journey now passes. Optional surface imports receive fresh attempt URLs to retry cached fetch failures without remounting the editor. Local browser QA remains with the independent checker as the brief directs; final CI evidence is recorded in the implementer result.
+
+[Full CI at 5699641](https://github.com/brsbl/moss-multi/actions/runs/37136739592) passed every planned job in both engines. The required final fetch then brought in verified T1.2 at `b9242c9`; [integration CI](https://github.com/brsbl/moss-multi/actions/runs/37137312745) exposed its untagged vault selector as a 127 px² parity blob in all four shell targets. The selector button now carries `data-collab-chrome`, with its own rectangle masked in the empty shell as well as the open-note shell (A§19–20).
+
+### T1.3 — confirmation lifetime and visible read-only content
+
+Tests-first head `a0bbe50` reproduced both P1 findings in [Chromium CI](https://github.com/brsbl/moss-multi/actions/runs/37140221673): j01's viewer and j03's terminal/paused bodies were hidden, and dismissing Settings during the ack wait left no confirmation to answer. The confirmation now belongs to the app shell. Body visibility follows first sync and reset state independently of editability, retaining visible content through read-only, paused and terminal states. The same editor remains mounted. Connection journeys now share with a distinct Ben principal through the Share dialog.
+
+Reference comparison: glyphdown's `DocEditorPage.tsx:476` keeps its read-only editor rendered; moss at the pin's `CanvasAreaContent.tsx:4975–5000` mounts a trashed note with `readOnly`; our visibility gate incorrectly reused editability. The change restores that separation using the existing vendored wrapper and skeleton. Moss has no account flow; the existing moss ConfirmationDialog is moved intact to the shell.
+
+Local browser verification remains assigned to the independent checker under the implementer brief. Other P2s remain follow-ups: sign-out pause inheritance and HTTP deadline, banner salience, access-route deletion semantics, chunk-recovery tradeoffs, split refusal duplication and the minor carry-overs listed by the checker. No API or wire contracts change in this repair.

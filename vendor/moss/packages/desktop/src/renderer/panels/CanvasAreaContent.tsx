@@ -4448,8 +4448,9 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
   // Hooks must be called unconditionally in the same order every render.
   if (!note) {
     return (
-      <div className="relative flex h-full min-w-0 flex-1 bg-surface-canvas">
+      <div className="relative flex h-full min-w-0 flex-1 flex-col bg-surface-canvas">
         {canvasTopDragStrip}
+        {mossMultiPane.noticeBand /* moss-multi seam: input refusals before the first note opens */}
         <CanvasArea className="min-w-0 flex-1" fullWidth innerClassName="flex h-full items-center justify-center">
           <p className="text-sm text-ink-muted">Create a new note to get started</p>
         </CanvasArea>
@@ -4869,6 +4870,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
       {...mossMultiPane.paneProps /* moss-multi seam: bound-pane (A§2.2): data-editor-pane, data-doc-id, data-doc-state (A§19) */}
     >
       {!hideTopBar && staticTopBar}
+      {mossMultiPane.noticeBand /* moss-multi seam: connection notices in flow below the top bar */}
       <CanvasArea
         className="relative min-w-0 flex-1"
         responsiveLayout
@@ -5020,7 +5022,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
               ) : null}
               {/* moss-multi seam: bound-pane (A§2.2): the editor mounts at once and binds behind the skeleton until first sync (A§10.3) */}
               {shouldMountEditor ? (
-                <div className={mossMultiPane.bodyLive ? 'contents' : 'hidden'}>
+                <div className={mossMultiPane.bodyVisible ? 'contents' : 'hidden'}>
                 <MarkdownEditor
                   ref={markdownEditorRef}
                   key={`${note.id}-${editorVersion}`}
@@ -5028,7 +5030,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
                   value={content}
                   layoutMetadata={lastKnownDiskLayoutMetadataRef.current[note.id]}
                   onChange={handleEditorChange}
-                  readOnly={isTrashed}
+                  readOnly={isTrashed || mossMultiPane.readOnly}
                   placeholder={isAgentActive && content === '' ? '' : currentPlaceholder.body}
                   onReady={handleEditorReady}
                   onNavigateToNote={onNavigateToNote}
@@ -5048,7 +5050,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
                 />
                 </div>
               ) : null}
-              {shouldMountEditor && mossMultiPane.bodyLive ? null : (
+              {shouldMountEditor && mossMultiPane.bodyVisible ? null : (
                 <div className="agent-skeleton agent-skeleton--content pt-4">
                   {[100, 94, 88, 72, 96, 64].map((width, i) => (
                     <div

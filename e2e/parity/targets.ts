@@ -25,9 +25,9 @@ export interface Target {
 }
 
 export const TARGETS: Target[] = [
-  // The owner's Share button (T1.1) is web chrome in the open note's top bar.
+  // Mask only web controls: Share and connection in the top bar, and the vault selector in either shell.
   { id: 'shell-default', story: 'app--default', seed: 'story-listing', masks: ['[data-collab-chrome]'], floor: 0.05, maxBlob: 16 },
-  { id: 'shell-empty', story: 'app--empty-notes', seed: 'fresh', masks: [], floor: 0.05, maxBlob: 16 },
+  { id: 'shell-empty', story: 'app--empty-notes', seed: 'fresh', masks: ['[data-collab-chrome]'], floor: 0.05, maxBlob: 16 },
 ];
 
 export const THEMES: Theme[] = ['light', 'dark'];

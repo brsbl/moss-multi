@@ -2,6 +2,7 @@
 // item identity, into ystate chunks under the 2 MB row cap; meta holds flags and stateBytes; revocations are
 // durable so a woken DO already knows them.
 import * as Y from 'yjs';
+import type { DeleteSet } from './admission.ts';
 
 /** The origin of everything replayed from storage; it is never persisted again. */
 export const PERSISTENCE = 'persistence';
@@ -115,26 +116,36 @@ export class DocStore {
   }
 }
 
-/** One ack per connection per window, sent when the window closes. In memory: a wake simply sends none. */
-export class AckCoalescer {
-  private readonly pending = new Map<string, ReturnType<typeof setTimeout>>();
+/**
+ * One ack per socket per window, sent when the window closes, naming the deletes the acked frames carried. Keyed by
+ * the socket itself: a client may reuse its connection id while the DO still holds the old socket, whose close must
+ * never cancel the new one's ack. In memory: a wake simply sends none.
+ */
+export class AckCoalescer<Socket extends object> {
+  private readonly pending = new Map<Socket, { timer: ReturnType<typeof setTimeout>; deletes: DeleteSet[] }>();
 
   constructor(
-    private readonly send: (connectionId: string) => void,
+    private readonly send: (socket: Socket, deletes: DeleteSet) => void,
     private readonly windowMs: number,
   ) {}
 
-  schedule(connectionId: string): void {
-    if (this.pending.has(connectionId)) return;
+  schedule(socket: Socket, deletes?: DeleteSet): void {
+    const entry = this.pending.get(socket);
+    if (entry) {
+      if (deletes) entry.deletes.push(deletes);
+      return;
+    }
     const timer = setTimeout(() => {
-      this.pending.delete(connectionId);
-      this.send(connectionId);
+      const due = this.pending.get(socket);
+      this.pending.delete(socket);
+      this.send(socket, Y.mergeDeleteSets(due?.deletes ?? []));
     }, this.windowMs);
-    this.pending.set(connectionId, timer);
+    this.pending.set(socket, { timer, deletes: deletes ? [deletes] : [] });
   }
 
-  cancel(connectionId: string): void {
-    clearTimeout(this.pending.get(connectionId));
-    this.pending.delete(connectionId);
+  cancel(socket: Socket): void {
+    const entry = this.pending.get(socket);
+    if (entry) clearTimeout(entry.timer);
+    this.pending.delete(socket);
   }
 }

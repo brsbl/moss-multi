@@ -1,7 +1,14 @@
 diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/renderer/App.tsx
 --- a/packages/desktop/src/renderer/App.tsx
 +++ b/packages/desktop/src/renderer/App.tsx
-@@ -167,6 +167,10 @@ import {
+@@ -1,4 +1,5 @@
+-import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
++import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
++import { recoverableLazy } from '@moss-multi/host/recoverable-lazy';
+ import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
+ import { useAtom, useAtomValue, useSetAtom, useStore } from 'jotai';
+ import { useThemeEffect } from '@moss/shared/themes';
+@@ -167,6 +168,10 @@ import {
    isRendererDevelopment,
    isRendererProduction
  } from './utils/renderer-env';
@@ -12,7 +19,41 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
  
  const nowInSeconds = (): number => Math.floor(Date.now() / 1000);
  const NOTE_LIST_SYNC_DEBOUNCE_MS = 150;
-@@ -2917,11 +2921,16 @@ export function App() {
+@@ -312,27 +317,28 @@ const mapRecordToMockNote = (record: NoteMetadataRecord): MockNote => {
+   };
+ };
+ 
+-const LazyCommandPaletteOverlay = lazy(async () => {
++// moss-multi seam: optional imports fail in place without unmounting a bound editor.
++const LazyCommandPaletteOverlay = recoverableLazy(async () => {
+   const module = await import('./prompt/CommandPaletteOverlay');
+   return { default: module.CommandPaletteOverlay };
+ }) as typeof import('./prompt/CommandPaletteOverlay').CommandPaletteOverlay;
+ 
+-const LazySettingsModal = lazy(async () => {
++const LazySettingsModal = recoverableLazy(async () => {
+   const module = await import('./components/SettingsModal');
+   return { default: module.SettingsModal };
+ });
+ 
+-const LazyFeedbackDialog = lazy(async () => {
++const LazyFeedbackDialog = recoverableLazy(async () => {
+   const module = await import('./components/FeedbackDialog');
+   return { default: module.FeedbackDialog };
+ });
+ 
+-const LazyUpdateWidget = lazy(async () => {
++const LazyUpdateWidget = recoverableLazy(async () => {
+   const module = await import('./components/UpdateWidget');
+   return { default: module.UpdateWidget };
+ });
+ 
+-const LazyTrashedNotesPanelContent = lazy(async () => {
++const LazyTrashedNotesPanelContent = recoverableLazy(async () => {
+   const module = await import('./panels/TrashedNotesPanelContent');
+   return { default: module.TrashedNotesPanelContent };
+ }) as typeof import('./panels/TrashedNotesPanelContent').TrashedNotesPanelContent;
+@@ -2917,11 +2923,16 @@ export function App() {
    ]);
  
    const handleCreateNote = useCallback(async () => {
@@ -30,7 +71,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
    }, [createAndActivateNote, flushBeforeNoteSwitch]);
  
    const handleDuplicateNote = useCallback(async (noteId: string) => {
-@@ -3788,7 +3797,8 @@ export function App() {
+@@ -3788,7 +3799,8 @@ export function App() {
  
        const key = e.key.toLowerCase();
  
@@ -40,7 +81,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
          e.preventDefault();
          if (showCommandPalette) {
            // Already open - just focus the input
-@@ -3878,7 +3888,8 @@ export function App() {
+@@ -3878,7 +3890,8 @@ export function App() {
        }
  
        // Switch to Trash tab: Cmd+2
@@ -50,7 +91,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
          e.preventDefault();
          handlePanelViewChange('trash');
          return;
-@@ -3947,7 +3958,8 @@ export function App() {
+@@ -3947,7 +3960,8 @@ export function App() {
      onExpandActionsPanel: () => { zenModeActive ? toggleZenMode() : setActionsPanelHidden(false); },
      isAgentStreaming: hasActiveStreaming,
      onCanvasClick: handlePromptClose,
@@ -60,7 +101,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
    };
  
    const actionsPanelContent = (
-@@ -4093,8 +4105,9 @@ export function App() {
+@@ -4093,8 +4107,9 @@ export function App() {
          onSelectNote={handleSelectNote}
          onCreateNote={handleCreateNote}
          onDeleteNote={handleNoteDeleted}

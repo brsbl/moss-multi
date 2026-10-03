@@ -200,7 +200,7 @@ It starts from glyphdown's `do.ts` shape, not moss-collab's 3,511-line class, an
 4. A write that would push `stateBytes` past the cap (Limits, below) is refused with `doc-cap`, simulated only near the cap. A suggester's write is vetted on a mirror (M5). These refusals close 4409, and the client discards its optimistic state. [S-prior §7.5]
 5. Super applies the frame with `origin = connection`.
 
-**Acks.** After persisting, the DocDO unicasts `{t:'ack', sv}` to the originating connection, coalesced over 250 ms. This drives `data-sync-unacked`. An editor's sync frame the doc already holds is acked too: a socket that drops inside the window loses its ack, and the reconnect's step 2 then changes nothing, so without that ack the edits would read as unsynced forever (T0.P). [L§4.6 durability honesty]
+**Acks.** After persisting, the DocDO unicasts `{t:'ack', sv, ds}` to the originating connection, coalesced over 250 ms. The additive optional `ds` field encodes the deletes carried by the acknowledged frames as a Yjs snapshot with an empty state vector; legacy vector-only acks can settle inserts but never pending deletes. Coalescing and rate counts are keyed by socket identity, not the client-provided connection id. Delete-only edits do not advance a state vector, so deletion coverage is required to avoid reporting an unsent deletion as durable. This drives `data-sync-unacked`. An editor's sync frame the doc already holds is acked too: a socket that drops inside the window loses its ack, and the reconnect's step 2 then changes nothing, so without that ack the edits would read as unsynced forever (T0.P). [L§4.6 durability honesty]
 
 **Projections.** The DO writes D1 directly; glyphdown's DO does not, but R3 forces it. [S-gd §2.10.9; S-prior §6.2] A `title` observer, throttled to 750 ms with a trailing flush and serialized on one chain, writes `docs.title = trim(text)` and `docs.filename = availableFilename(slug(title))`, unique among live docs in the folder (collisions get `-N`, never a 409). An empty title never projects: the column keeps its last value, so clearing and retyping a title cannot churn the filename. [L§4.4] Principal edits touch `docs.updated_at` at most every 5 s. Each change feeds SearchDO and publishes a meta event (§11). Origins `persistence` and `server-seed` never project.
 
@@ -650,6 +650,8 @@ CRLF becomes LF at the boundary. [P:Tech; S-prior §8.2–8.3]
 | `data-title-binding`, `data-body-binding` | title field, body root | `unbound`, `live`, `readonly`, `terminal`. While not `live`, the element is non-focusable |
 | `data-editor-generation` | body root | +1 on every Lexical editor creation (remount detector) |
 | `data-sync-unacked` | pane | `0` or `1` (§10.6) |
+| `data-notice-band` | reserved band below each pane’s top bar | connection and input-refusal notices |
+| `data-connection-banner` | connection notice | `offline`, `retrying`, `halted`, or the terminal reason |
 | `data-connection` | connection indicator | `online`, `reconnecting`, `offline` |
 | `data-terminal-reason` | pane | `deleted`, `revoked`, `session-ended`, `unavailable`, `conn-limit` (S-test's `suggest-policy` is not terminal; it is a 4409 resync) |
 | `data-role` | pane | the effective role |

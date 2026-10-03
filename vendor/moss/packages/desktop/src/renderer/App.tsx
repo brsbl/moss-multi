@@ -1,5 +1,6 @@
 // ported-from: packages/desktop/src/renderer/App.tsx @ 762abb777
-import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import { recoverableLazy } from '@moss-multi/host/recoverable-lazy';
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
 import { useAtom, useAtomValue, useSetAtom, useStore } from 'jotai';
 import { useThemeEffect } from '@moss/shared/themes';
@@ -317,27 +318,28 @@ const mapRecordToMockNote = (record: NoteMetadataRecord): MockNote => {
   };
 };
 
-const LazyCommandPaletteOverlay = lazy(async () => {
+// moss-multi seam: optional imports fail in place without unmounting a bound editor.
+const LazyCommandPaletteOverlay = recoverableLazy(async () => {
   const module = await import('./prompt/CommandPaletteOverlay');
   return { default: module.CommandPaletteOverlay };
 }) as typeof import('./prompt/CommandPaletteOverlay').CommandPaletteOverlay;
 
-const LazySettingsModal = lazy(async () => {
+const LazySettingsModal = recoverableLazy(async () => {
   const module = await import('./components/SettingsModal');
   return { default: module.SettingsModal };
 });
 
-const LazyFeedbackDialog = lazy(async () => {
+const LazyFeedbackDialog = recoverableLazy(async () => {
   const module = await import('./components/FeedbackDialog');
   return { default: module.FeedbackDialog };
 });
 
-const LazyUpdateWidget = lazy(async () => {
+const LazyUpdateWidget = recoverableLazy(async () => {
   const module = await import('./components/UpdateWidget');
   return { default: module.UpdateWidget };
 });
 
-const LazyTrashedNotesPanelContent = lazy(async () => {
+const LazyTrashedNotesPanelContent = recoverableLazy(async () => {
   const module = await import('./panels/TrashedNotesPanelContent');
   return { default: module.TrashedNotesPanelContent };
 }) as typeof import('./panels/TrashedNotesPanelContent').TrashedNotesPanelContent;
