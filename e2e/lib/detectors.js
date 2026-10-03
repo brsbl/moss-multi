@@ -130,7 +130,8 @@ export function remountSince({ names, docId, mark, generation }) {
 export function fieldTexts({ names, docId }) {
   return [...document.querySelectorAll(`[${names.pane}][${names.docId}="${docId}"]`)].map((pane) => {
     const title = pane.querySelector(`[${names.titleBinding}]`);
-    const body = pane.querySelector(names.lexical) ?? pane.querySelector(`[${names.bodyBinding}]`);
+    // The bound root carries the binding attribute; moss also marks its editor wrapper `data-lexical-editor`.
+    const body = pane.querySelector(`[${names.bodyBinding}]`) ?? pane.querySelector(names.lexical);
     return { title: title ? (title.textContent ?? '') : '', body: body ? (body.textContent ?? '') : '' };
   });
 }
