@@ -38,6 +38,9 @@ function validIdentity(connection: Connection, identity: Attachment, user: Recor
 function clientId(connection: Connection): number | undefined {
   return (connection.state as { presenceClientId?: number } | null)?.presenceClientId;
 }
+function superseded(connection: Connection): boolean {
+  return (connection.state as { presenceSuperseded?: boolean } | null)?.presenceSuperseded === true;
+}
 export function awarenessFrame(awareness: Awareness, ids: number[]): Uint8Array {
   const encoder = encoding.createEncoder();
   encoding.writeVarUint(encoder, 1);
@@ -53,7 +56,7 @@ export function sendPresence(connections: Iterable<Connection>, frame: Uint8Arra
 /** One awareness id per socket, persisted across hibernation; malformed or forged frames have no effect. */
 export function receivePresence(awareness: Awareness, connection: Connection, message: ArrayBuffer | ArrayBufferView, connections: Connection[]): void {
   const identity = attachmentOf(connection);
-  if (!identity?.presenceAllowed) return;
+  if (!identity?.presenceAllowed || superseded(connection)) return;
   try {
     const bytes = message instanceof ArrayBuffer ? new Uint8Array(message) : new Uint8Array(message.buffer, message.byteOffset, message.byteLength);
     const outer = decoding.createDecoder(bytes);
@@ -68,11 +71,18 @@ export function receivePresence(awareness: Awareness, connection: Connection, me
     if (decoding.hasContent(decoder)) return;
     const owned = clientId(connection);
     if (owned !== undefined && owned !== id) return;
-    if (owned === undefined && connections.some(peer => peer.id !== connection.id && clientId(peer) === id)) return;
     if (state !== null) {
       const user = state.user;
       if (!user || !validIdentity(connection, identity, user, state.name) || state.color !== user.color || typeof user.color !== 'string' || user.color.length > 100 || typeof user.colorSettled !== 'boolean') return;
     } else if (owned !== id) return;
+    const previousOwners = connections.filter(peer => peer !== connection && !superseded(peer) && clientId(peer) === id);
+    if (previousOwners.some(peer => {
+      const previous = attachmentOf(peer);
+      return previous?.principalId !== identity.principalId || previous.kind !== identity.kind;
+    })) return;
+    // Reconnects retain the Y.Doc clientID, even while the old socket is half-open. Persist retirement so late
+    // frames or closes from that socket cannot erase or reclaim the replacement's presence after a DO wake.
+    for (const peer of previousOwners) (peer as unknown as Connection<State>).setState(previous => ({ ...previous, presenceSuperseded: true }));
     if (owned === undefined) (connection as unknown as Connection<State>).setState(previous => ({ ...previous, presenceClientId: id }));
     applyAwarenessUpdate(awareness, payload, connection);
     sendPresence(connections, awarenessFrame(awareness, [id]));
@@ -82,7 +92,7 @@ export function receivePresence(awareness: Awareness, connection: Connection, me
 }
 export function leavePresence(awareness: Awareness, connection: Connection, connections: Iterable<Connection>): void {
   const id = clientId(connection);
-  if (id === undefined) return;
+  if (id === undefined || superseded(connection) || !awareness.meta.has(id)) return;
   removeAwarenessStates(awareness, [id], connection);
   sendPresence(connections, awarenessFrame(awareness, [id]));
 }

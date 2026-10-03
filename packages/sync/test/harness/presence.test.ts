@@ -63,16 +63,21 @@ it('link-only recipients receive no identities in initial snapshots or live fram
 
 it.each([false, true])('a replacement socket takes over half-open presence, including across wake=%s', async (hibernate) => {
   let opened = await start(openDoc());
-  const first = await connect(opened, { id: 'ada', name: 'Ada' });
+  const first = await connect(opened, { id: 'ada', name: 'Ada' }, undefined, 'old-provider');
   const peer = await connect(opened, { id: 'ben', name: 'Ben' });
   await first.deliver(frame(42, { ...state(), tag: 'first' }));
   if (hibernate) opened = await start(wake(opened));
   first.opened = opened;
   // No close event reaches the server; the provider keeps its Y.Doc clientID on reconnect.
-  const replacement = await connect(opened, { id: 'ada', name: 'Ada' });
+  const replacement = await connect(opened, { id: 'ada', name: 'Ada' }, undefined, hibernate ? 'old-provider' : 'new-provider');
   await replacement.deliver(frame(42, { ...state(), tag: 'reconnected' }, 2));
   expect(first.socket.readyState).toBe(1);
   expect(opened.dobj.document.awareness.getStates().get(42)?.tag).toBe('reconnected');
+  if (hibernate) {
+    opened = await start(wake(opened));
+    first.opened = replacement.opened = opened;
+    await replacement.deliver(frame(42, { ...state(), tag: 'reconnected' }, 3));
+  }
   const delivered = peer.socket.sent.length;
   await first.deliver(frame(42, { ...state(), tag: 'late-old-frame' }, 3));
   await first.deliver(frame(42, null, 4));

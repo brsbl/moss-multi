@@ -44,6 +44,7 @@ export function startPresence(docId: string, provider: YProvider): () => void {
   const update = () => {
     if (changing || ended) return;
     changing = true;
+    if (!provider.synced) { clearTimeout(settling); settling = undefined; }
     const peers: Peer[] = [];
     const claims: Claim[] = [];
     for (const [clientId, state] of awareness.getStates()) {
@@ -63,10 +64,10 @@ export function startPresence(docId: string, provider: YProvider): () => void {
         awareness.setLocalState({ ...state, color: colorOf(slot), user: { ...user, slot, color: colorOf(slot), colorSettled: false } });
       }
       const current = awareness.getLocalState()!;
-      if (!current.user.colorSettled && !settling) settling = setTimeout(() => {
+      if (provider.synced && !current.user.colorSettled && !settling) settling = setTimeout(() => {
         settling = undefined;
         const now = awareness.getLocalState();
-        if (now && !document.hidden) awareness.setLocalState({ ...now, user: { ...now.user, colorSettled: true } });
+        if (now && provider.synced && !document.hidden) awareness.setLocalState({ ...now, user: { ...now.user, colorSettled: true } });
       }, 500);
       try { sessionStorage.setItem(key, String(slot)); } catch { /* storage unavailable */ }
     }
@@ -79,11 +80,14 @@ export function startPresence(docId: string, provider: YProvider): () => void {
     if (stale.length) removeAwarenessStates(awareness, stale, provider);
   }, 2000);
   awareness.on('update', update);
+  // The server sends its roster before first sync completes; only then start the provisional claim window.
+  provider.on('sync', update);
   document.addEventListener('visibilitychange', update);
   update();
   return () => {
     ended = true; awareness.setLocalState = originalSet; clearInterval(sweep); clearTimeout(settling);
     awareness.off('update', update); document.removeEventListener('visibilitychange', update);
+    provider.off('sync', update);
     publish(docId, []);
   };
 }
