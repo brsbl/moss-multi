@@ -99,10 +99,9 @@ export function ConfirmationDialog({
             )
           ) : null}
           <div className="mt-4 flex justify-end gap-2">
-            <Dialog.Close asChild>
+            <Dialog.Close asChild ref={cancelRef}>
               <button
                 type="button"
-                ref={cancelRef}
                 onClick={handleCancel}
                 disabled={cancelDisabled}
                 className="rounded-lg border border-border-subtle bg-surface-linen px-3 py-1.5 text-xs font-medium text-ink-default transition hover:bg-surface-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-default/20 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60"

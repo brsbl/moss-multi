@@ -27,8 +27,8 @@ export function recoverableLazy<P extends object>(load: () => Promise<{ default:
   // Initial suspension discards component hooks; keep the first lazy identity outside that render.
   let latest = createSurface();
   return function Recoverable(props: P) {
-    const [Surface, setSurface] = useState(latest);
-    return <RetryChunk.Provider value={() => { latest = createSurface(); setSurface(latest); }}>
+    const [Surface, setSurface] = useState(() => latest);
+    return <RetryChunk.Provider value={() => { latest = createSurface(); setSurface(() => latest); }}>
       {createElement(Surface, props)}
     </RetryChunk.Provider>;
   };

@@ -21,6 +21,11 @@ export class AckLedger {
     this.#pending.push(update);
   }
 
+  /** Replay only unacknowledged writes if a channel recovers without reconnecting. */
+  pendingUpdate(): Uint8Array | null {
+    return this.#pending.length ? Y.mergeUpdates(this.#pending) : null;
+  }
+
   /** Reads an ack; true when it settles every pending write. */
   acked(ack: Ack): boolean {
     if (this.#pending.length === 0) return true;

@@ -105,14 +105,13 @@ function varUint(out: number[], value: number): void {
   out.push(rest);
 }
 
-/** A y-protocols sync step 1: message 0 (sync), step 0, then the state vector as a length-prefixed array. */
-function syncStep1(doc: Y.Doc): Uint8Array {
-  const sv = Y.encodeStateVector(doc);
-  const head = [0, 0];
-  varUint(head, sv.length);
-  const frame = new Uint8Array(head.length + sv.length);
+/** A y-protocols sync frame: message 0, the step, then its length-prefixed payload. */
+function syncFrame(step: number, payload: Uint8Array): Uint8Array {
+  const head = [0, step];
+  varUint(head, payload.length);
+  const frame = new Uint8Array(head.length + payload.length);
   frame.set(head);
-  frame.set(sv, head.length);
+  frame.set(payload, head.length);
   return frame;
 }
 
@@ -493,7 +492,9 @@ export class DocSession {
   #resync(ws: WebSocket): void {
     this.#lastResync = Date.now();
     try {
-      ws.send(syncStep1(this.doc));
+      ws.send(syncFrame(0, Y.encodeStateVector(this.doc)));
+      const pending = this.#ledger.pendingUpdate();
+      if (pending && !this.#ended) ws.send(syncFrame(2, pending));
     } catch {
       // closing; the close path takes over
     }
