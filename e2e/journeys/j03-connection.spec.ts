@@ -166,7 +166,7 @@ const LOST_ACK = ' then an edit whose ack went missing';
 const OFFLINE_EDIT = ' plus words typed into the void';
 const MEANWHILE = ' while the other window kept going';
 
-test('j03-connection: a black-holed socket shows the banner within 14 s while the other window is unaffected, and the offline edits converge byte for byte @p:col-4 @evidence', async ({ actors, measure }) => {
+test('j03-connection: a black-holed socket shows the banner within 14 s while the other window is unaffected, and the offline edits converge byte for byte @p:col-4 @evidence @tierA', async ({ actors, measure }) => {
   const shared = await sharedNote(actors, OPENING_1);
   const { ada, docId } = shared;
   const bea = await secondWindow(actors, shared, true);
@@ -200,6 +200,11 @@ test('j03-connection: a black-holed socket shows the banner within 14 s while th
   await bea.page.evaluate(() => window.dispatchEvent(new Event('vite:preloadError', { cancelable: true })));
   await expect(ui.pane(bea, docId)).toHaveAttribute(SYNC_UNACKED_ATTR, '1');
   await actors.checkpoint('black-hole-banner');
+  await bea.page.setViewportSize({ width: 390, height: 844 });
+  await expect(indicator(bea, docId)).toBeInViewport();
+  await expect(banner(bea, docId)).toBeInViewport();
+  await actors.checkpoint('black-hole-mobile');
+  await bea.page.setViewportSize({ width: 1440, height: 1000 });
   // The first socket, its heartbeat reconnect into the black hole, and at most one more before the restore.
   bea.expectReconnects(2, docId);
   sever.restore();

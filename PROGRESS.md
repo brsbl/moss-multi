@@ -47,14 +47,8 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - Sidebar times do not update when a note is edited → T1.4 (DocDO `updated_at` projection)
 - Sidebar search matches titles only, so body text is never found → the M3 search task (SearchDO), together with T1.4 titles
 - A missing or bad doc URL silently opens a different note → T1.1 (DenialPage)
-- During a stack restart the editor stays editable with no sign it is disconnected → T1.3 (connection truth indicator and banner)
 - Settings shows Note Intelligence, and its description mentions a hidden section → T1.4 (Properties unstaging), or a hide-registry entry if it cannot work on the web
 - Sign-out leaves the session's other live doc sockets reading and writing → T2.5
-- Close codes are never dispatched: a refused or unauthorized socket reconnects forever behind an editable pane → T1.3 (a session lingering with unacked edits behind a refused socket also holds its doc until then; a terminal code should end it)
-- A lost ack leaves `data-sync-unacked=1` after reconnect → T1.3 (T0.P: the DocDO now acks an editor's inert step 2, so a reconnect ends in an ack; T1.3 confirms it in j03)
-- Ack coverage by state vector is unsound for deletions → T1.3
-- Acks and the write-rate window are keyed by the client's reused `_pk` connection id, so a stale socket breaks the new one's acks → T1.3 (T0.P: each socket now gets a fresh id on the client; T1.3 checks the server side)
-- ChunkReloadBoundary hard-reloads when a lazy chunk fails because the network or stack is down, discarding buffered edits → T1.3
 - The wrangler ProxyWorker patch replays non-idempotent requests after an ambiguous failure → T0.9b follow-up (stack infra)
 - `qa.mjs close` forgets the session even when closing it failed → tooling follow-up
 - `stack.mjs` puts `BETTER_AUTH_SECRET` and the test-hook secret on wrangler's command line → tooling follow-up
@@ -73,12 +67,11 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - At 390×844, signing in lands on an unreadable doc: the editor is squeezed to one character per line → T2.7 (deviation 11: below 640 px the notes panel overlays the canvas)
 - At M0 a link's "Open in Split View" opens an in-app browser that loads forever, and an HTML block's "Preview unavailable" Retry cannot succeed → T3.2 (RemoteWebSurface and the live iframe), or stage both now if the M0 critic counts them as dead
 
-### T1.3 implementation in progress
+### T1.3 — implemented; local UI verification blocked
 
-Reused tests-first head f22b105 and its red j03 run https://github.com/brsbl/moss-multi/actions/runs/37119822769 (missing indicator/banner); red checks https://github.com/brsbl/moss-multi/actions/runs/37119819996 (delete coverage, stale socket ack and rate collisions). Reviewed and reused the saved implementation, completed pane wiring, refusal rebind and chunk recovery. Both-engine j03 and remote checks dispatched on the implementation head; verdict pending. Budget: about 60 CI minutes.
+Connection heartbeat/reducer, indicator and notice band, first-sync retrying, terminal gates/retry, fresh refusal/read-only rebinds, per-tab sign-out teardown, delete-aware acks and per-socket accounting are implemented. Chunk failures preserve live/unsynced documents. The notice band also covers the empty canvas before the first note opens.
 
-T1.3 validation update: the first implementation push built successfully; checks found a nullable listener type error in the salvaged socket wrapper, now corrected. Added focused close-code/heartbeat tests. Local build and stack boot succeeded on arm64 Node 24; Browser Automation is blocked (`unknown command browser-automation`, plugin discovery HTTP 401). Stopped the stack without substituting a driver.
-
-T1.3 remote evidence: both-engine j03 green at be193a2 (https://github.com/brsbl/moss-multi/actions/runs/37129674970); complete push CI green at 4f80045 (https://github.com/brsbl/moss-multi/actions/runs/37129924046). Inspected the 2× offline and connection-limit screenshots. Final dispatch adds refusal-rebind/deletion coverage and a preload-error regression inside the blackout. Local Browser Automation remains blocked by missing authenticated BB context.
-
-T1.3 final targeted correction: retain the notice band in the empty canvas so the existing j00-persist early-key refusal remains visible before the first note opens. Final validation includes that leg alongside j03 in both engines.
+- Red proof: [j03](https://github.com/brsbl/moss-multi/actions/runs/37119822769), [ack/socket regressions](https://github.com/brsbl/moss-multi/actions/runs/37119819996), at f22b105.
+- Green proof: [both-engine j03](https://github.com/brsbl/moss-multi/actions/runs/37129674970) at be193a2; [complete CI](https://github.com/brsbl/moss-multi/actions/runs/37129924046) at 4f80045. Final dispatch adds refusal/rebind, deletion, preload-error and the existing early-key regression, with desktop/mobile banner evidence. About 29 completed CI job-minutes so far; budget 60.
+- Local arm64 Node 24 build and stack boot succeeded. Browser Automation returned `unknown command browser-automation`; plugin discovery returned HTTP 401. No substitute driver or personal app was used; the stack was stopped. Local QA/triptych remains owed.
+- Deviations: reused the earlier tests-first red runs and critically reviewed WIP; no separate task brief exists; same-owner windows exercise j03 until T1.1 grants are integrated; added the minimal `/api/docs/:id/access` read using the existing resolver, needed by bounded handshake and role rechecks. The optional ack `ds` field preserves the existing wire contract. Transient chunk errors degrade in place; an open document never auto-reloads.
