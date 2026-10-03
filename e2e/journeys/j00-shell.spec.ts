@@ -302,13 +302,15 @@ test('no hidden or staged affordance renders in the shell, its menus or Settings
   }
 });
 
-/** "+ Note" in a vault with no other note, then the new note's id once its pane is live (its title binds in T1.4). */
-async function openNewNote(actor: Actor): Promise<string> {
+/** "+ Note", then the new note's id once its pane is live (its title binds in T1.4); `known` are the notes opened before. */
+async function openNewNote(actor: Actor, known: string[] = []): Promise<string> {
   await actor.page.getByRole('button', { name: 'Create new note' }).click();
   const live = actor.page.locator(`[${EDITOR_PANE_ATTR}][${DOC_STATE_ATTR}="live"]`);
-  await expect(live, `${actor.label}: the new note binds`).toHaveCount(1, { timeout: 15_000 });
-  const docId = await live.getAttribute(DOC_ID_ATTR);
-  if (!docId) throw new Error(`${actor.label}: the live pane has no ${DOC_ID_ATTR}`);
+  let docId = '';
+  await expect.poll(async () => {
+    docId = (await live.count()) === 1 ? ((await live.getAttribute(DOC_ID_ATTR)) ?? '') : '';
+    return docId !== '' && !known.includes(docId);
+  }, { message: `${actor.label}: the new note binds`, timeout: 15_000 }).toBe(true);
   return docId;
 }
 
@@ -361,6 +363,35 @@ test('an open note offers no comment until comments are shared data: no comment 
   // Over a selection, moss's ⌘⇧A opens its comment composer.
   await page.keyboard.press('ControlOrMeta+Shift+A');
   expect.soft(await composerOpens(page), '⌘⇧A opens no comment composer').toBe(false);
+});
+
+// Each block with the toolbar control that sits beside moss's comment button: the code block's header, the chart's,
+// the canvas's, and the media header that HTML, image, video and embed blocks share. A new canvas opens in its
+// drawing mode, whose toolbar has no comment button; Cancel (its X) leaves it.
+const BLOCKS = [
+  { query: 'code', option: 'Code', control: 'Copy code', leave: null },
+  { query: 'bar', option: 'Bar Chart', control: 'Edit', leave: null },
+  { query: 'canvas', option: 'Canvas', control: 'Draw', leave: 'button:has(svg.lucide-x)' },
+  { query: 'html', option: 'HTML', control: 'Edit HTML', leave: null },
+];
+
+test('no block toolbar offers a comment until comments are shared data: code, chart, canvas and media blocks @p:agt-3', async ({ actors }) => {
+  const [ada] = await twoShells(actors);
+  const { page } = ada;
+  const notes: string[] = [];
+  for (const block of BLOCKS) {
+    // One block per note: the slash command replaces the caret's empty line with its block.
+    const docId = await openNewNote(ada, notes);
+    notes.push(docId);
+    await expect(ui.body(ada, docId), '"+ Note" leaves the caret in the body').toBeFocused();
+    await page.keyboard.type(`/${block.query}`);
+    await page.locator('button[data-index]').filter({ hasText: new RegExp(`^${block.option}`) }).click();
+    const decorator = page.locator('[data-lexical-decorator]');
+    if (block.leave) await decorator.locator(block.leave).click();
+    const toolbarControl = decorator.getByRole('button', { name: block.control, exact: true });
+    await expect(toolbarControl, `the ${block.option} block's toolbar renders`).toHaveCount(1);
+    expect.soft(await probeHits(page, 'block-toolbar'), `the ${block.option} block's toolbar`).toEqual([]);
+  }
 });
 
 test('every DS menu, dialog and tooltip opens inside a data-overlay-surface, even over the canvas', async ({ actors }) => {
