@@ -1,13 +1,16 @@
 // j00-shell (T0.5a, T0.5b): the real moss shell from the built Worker. Two principals boot it clean under the page
 // CSP, every navigation carries the served build, light and dark switch through moss's own Settings, the floating
 // detector bites on the live canvas, an HTML block frame's script runs under the CSP (SP13), test-hook and
-// playground paths are the unknown-route 404 (R7), no hidden or staged affordance renders (A§9), and every DS
-// menu, dialog and tooltip opens inside a `data-overlay-surface` (A§19).
+// playground paths are the unknown-route 404 (R7), no hidden or staged affordance renders in the shell or on an open
+// note (A§9), and every DS menu, dialog and tooltip opens inside a `data-overlay-surface` (A§19).
 import { randomBytes } from 'node:crypto';
 import type { Page } from '@playwright/test';
 import { AFFORDANCES, type Surface } from '../../apps/web/src/host/affordances.ts';
 import type { Actor, Actors } from '../lib/actors.ts';
-import { APP_STATE_ATTR, BUILD_META, CLIENT_BUILD_ATTR, EDITOR_CANVAS_ATTR, OVERLAY_SURFACE_ATTR } from '../lib/contract.ts';
+import {
+  APP_STATE_ATTR, BUILD_META, CLIENT_BUILD_ATTR, DOC_ID_ATTR, DOC_STATE_ATTR, EDITOR_CANVAS_ATTR, EDITOR_PANE_ATTR,
+  OVERLAY_SURFACE_ATTR, SIDEBAR_ROW_ATTR,
+} from '../lib/contract.ts';
 import type { Measure } from '../lib/measure.ts';
 import type { Principal } from '../lib/principals.ts';
 import { expect, test } from '../lib/test.ts';
@@ -297,6 +300,46 @@ test('no hidden or staged affordance renders in the shell, its menus or Settings
     await expect(page.getByRole('button', { name: 'Back to notes' }), `${actor.label}: ⌘2 opens no trash view`).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Create new note' })).toBeVisible();
   }
+});
+
+/** "+ Note" in a vault with no other note, then the new note's id once its pane is live (its title binds in T1.4). */
+async function openNewNote(actor: Actor): Promise<string> {
+  await actor.page.getByRole('button', { name: 'Create new note' }).click();
+  const live = actor.page.locator(`[${EDITOR_PANE_ATTR}][${DOC_STATE_ATTR}="live"]`);
+  await expect(live, `${actor.label}: the new note binds`).toHaveCount(1, { timeout: 15_000 });
+  const docId = await live.getAttribute(DOC_ID_ATTR);
+  if (!docId) throw new Error(`${actor.label}: the live pane has no ${DOC_ID_ATTR}`);
+  return docId;
+}
+
+test('no hidden or staged affordance renders on an open note: actions panel, top bar, title and menus @p:agt-3', async ({ actors }) => {
+  const [ada] = await twoShells(actors);
+  const { page } = ada;
+  const docId = await openNewNote(ada);
+
+  // Properties edits frontmatter, which a bound note cannot keep until T1.4, so the tab is staged rather than left
+  // to accept an edit that vanishes on reload.
+  await page.getByRole('button', { name: 'Show actions panel', exact: true }).click();
+  const panel = page.locator('[data-actions-panel-wrapper]');
+  await expect(panel.getByRole('tab', { name: 'Actions', exact: true }), 'the actions panel opens on its Actions tab').toBeVisible();
+  expect(await probeHits(page, 'actions-panel'), 'the actions panel').toEqual([]);
+  await expect(panel.getByRole('tab', { name: 'Properties' }), 'no Properties tab').toHaveCount(0);
+  await expect(panel.getByRole('button', { name: 'Add field', includeHidden: true }), 'no frontmatter input, shown or not').toHaveCount(0);
+
+  expect(await probeHits(page, 'note-top-bar'), 'the note top bar').toEqual([]);
+  expect(await probeHits(page, 'title'), 'the title').toEqual([]);
+
+  await page.getByRole('button', { name: 'More actions', exact: true }).click();
+  await expect(page.getByRole('menu'), 'More actions opens').toBeVisible();
+  expect(await probeHits(page, 'note-more-menu'), 'More actions').toEqual([]);
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('menu')).toBeHidden();
+
+  await page.locator(`[${SIDEBAR_ROW_ATTR}][${DOC_ID_ATTR}="${docId}"]`).click({ button: 'right' });
+  await expect(page.getByRole('menu'), "the note's row menu opens").toBeVisible();
+  expect(await probeHits(page, 'note-menu'), "the note's row menu").toEqual([]);
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('menu')).toBeHidden();
 });
 
 test('every DS menu, dialog and tooltip opens inside a data-overlay-surface, even over the canvas', async ({ actors }) => {

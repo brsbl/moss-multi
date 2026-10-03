@@ -14,7 +14,8 @@ export type Surface =
   | 'title' // an open note's empty title
   | 'editor-toolbar' // the floating selection toolbar
   | 'slash-menu' // the editor's "/" menu
-  | 'browser-split'; // the in-app browser's header
+  | 'browser-split' // the in-app browser's header
+  | 'actions-panel'; // an open note's actions panel ("Show actions panel")
 
 export interface Probe {
   surface: Surface;
@@ -153,6 +154,14 @@ export const AFFORDANCES = [
       { surface: 'note-menu', selector: MENU_ITEM, text: 'Trash' },
       { surface: 'note-more-menu', selector: MENU_ITEM, text: 'Trash' },
     ],
+  },
+  {
+    id: 'note-properties',
+    sites: ['shared/src/components/layout/ActionsPanelWrapper.tsx'],
+    reason: "Properties edits the note's frontmatter, which binds to Y.Text('frontmatter') in M1; a bound note has no save path, so an edit would vanish on reload.",
+    cite: 'T1.4; A§10.4',
+    staged: 1,
+    probes: [{ surface: 'actions-panel', selector: '[data-actions-panel-wrapper] [role="tab"]', text: 'Properties' }],
   },
   {
     id: 'duplicate-note',
