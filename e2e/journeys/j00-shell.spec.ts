@@ -160,7 +160,12 @@ test('the build stamps equal /api/version on every navigation', async ({ actors,
     await timedReload(actor, measure);
     await waitForShell(actor);
     expect(await stamps(actor.page), `${actor.label} / after reload`).toEqual(expected);
-    await actor.goto(`/d/${randomBytes(8).toString('hex')}`);
+    const created = await actor.context.request.post(`${stack.baseUrl}/api/docs`, {
+      headers: { origin: stack.baseUrl }, data: {},
+    });
+    expect(created.status(), 'declared setup: navigate to a real note').toBe(201);
+    const { doc } = (await created.json()) as { doc: { id: string } };
+    await actor.goto(`/d/${doc.id}`);
     await waitForShell(actor);
     expect(await stamps(actor.page), `${actor.label} /d/$docId`).toEqual(expected);
     await expectNoCspViolations(actor);

@@ -92,6 +92,31 @@ export async function createNote(actor: Actor): Promise<string> {
   return docId;
 }
 
+/** The Share dialog's access choices (T1.1); suggester joins in M5. */
+export type Access = 'Can view' | 'Can comment' | 'Can edit';
+
+/** Opens Share from the note's top bar and returns the dialog. */
+export async function openShare(actor: Actor, docId: string): Promise<Locator> {
+  await pane(actor, docId).getByRole('button', { name: 'Share', exact: true }).click();
+  const dialog = actor.page.getByRole('dialog', { name: 'Share' });
+  await expect(dialog, `${actor.label}: the Share dialog opens`).toBeVisible();
+  return dialog;
+}
+
+/** A person's row in the open Share dialog's "People with access" list. */
+export const accessRow = (dialog: Locator, person: Principal): Locator =>
+  dialog.getByRole('listitem').filter({ hasText: person.name });
+
+/** Shares the note with `person` at `access` through the dialog, then waits for their row; the dialog stays open. */
+export async function shareWith(actor: Actor, docId: string, person: Principal, access: Access): Promise<Locator> {
+  const dialog = await openShare(actor, docId);
+  await dialog.getByLabel('Email', { exact: true }).fill(person.email);
+  await dialog.getByRole('radio', { name: access, exact: true }).click();
+  await dialog.getByRole('button', { name: 'Share', exact: true }).click();
+  await expect(accessRow(dialog, person), `${actor.label}: ${person.label} is listed at "${access}"`).toContainText(access);
+  return dialog;
+}
+
 /** Opens a doc from its notes-list row and waits for it to bind. */
 export async function openNote(actor: Actor, docId: string): Promise<void> {
   await actor.page.locator(`[${SIDEBAR_ROW_ATTR}][${NAMES.docId}="${docId}"]`).click();
