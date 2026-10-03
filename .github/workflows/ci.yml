@@ -267,6 +267,10 @@ jobs:
             only) args+=(--grep @slow) ;;
           esac
           pnpm exec playwright test "${args[@]}"
+      - name: Calibrate idle eviction (SP4)
+        if: matrix.browser == 'chromium' && (github.event_name == 'schedule' && matrix.group == 'editing' || contains(needs.plan.outputs.grep, 'calibration'))
+        working-directory: e2e
+        run: pnpm exec playwright test --project=calibration
       - name: Stop the stack
         if: always()
         run: node scripts/stack.mjs stop --run-id "$RUN_ID" || true
