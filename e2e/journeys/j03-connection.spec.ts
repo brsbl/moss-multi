@@ -201,10 +201,12 @@ test('j03-connection: a black-holed socket shows the banner within 14 s while th
   await expect(ui.pane(bea, docId)).toHaveAttribute(SYNC_UNACKED_ATTR, '1');
   await actors.checkpoint('black-hole-banner');
   await bea.page.setViewportSize({ width: 390, height: 844 });
+  await bea.page.getByRole('button', { name: 'Hide notes panel', exact: true }).click();
   await expect(indicator(bea, docId)).toBeInViewport();
   await expect(banner(bea, docId)).toBeInViewport();
   await actors.checkpoint('black-hole-mobile');
   await bea.page.setViewportSize({ width: 1440, height: 1000 });
+  await bea.page.getByRole('button', { name: 'Show notes panel', exact: true }).click();
   // The first socket, its heartbeat reconnect into the black hole, and at most one more before the restore.
   bea.expectReconnects(2, docId);
   sever.restore();
