@@ -214,6 +214,38 @@ describe('admission and the write classifier', () => {
     }
   });
 
+  it("acks a reconnecting editor's step 2 even when the doc already holds it, so an ack lost with its socket comes back", async () => {
+    const { opened, editor } = await sharedDoc();
+    vi.advanceTimersByTime(250);
+    await typeTitle(editor, ' lost');
+    // The socket drops inside the ack window: the DocDO holds the edit, and the drop cancels its ack.
+    await editor.drop();
+    vi.advanceTimersByTime(250);
+    expect(opened.dobj.document.getText('title').toString()).toBe('shared lost');
+    const stored = counts(opened.backing);
+
+    // The provider reconnects with the same Y.Doc; its step 2 brings nothing the doc lacks.
+    const again = await connect(opened, { role: 'editor' }, editor.doc);
+    await again.hello();
+    vi.advanceTimersByTime(250);
+    await again.pump();
+    const acks = again.events.filter((e) => e.t === 'ack');
+    expect(acks, 'the reconnect is acked').toHaveLength(1);
+    const acked = Y.decodeStateVector(base64ToBytes(acks[0]?.t === 'ack' ? acks[0].sv : ''));
+    for (const [client, clock] of Y.decodeStateVector(Y.encodeStateVector(editor.doc))) {
+      expect(acked.get(client) ?? 0, 'the ack covers the edit whose ack was lost').toBeGreaterThanOrEqual(clock);
+    }
+    expect(counts(opened.backing), 'an inert step 2 writes nothing').toEqual(stored);
+  });
+
+  it("never acks a viewer's inert step 2", async () => {
+    const { viewer } = await sharedDoc();
+    await viewer.hello();
+    vi.advanceTimersByTime(250);
+    await viewer.pump();
+    expect(viewer.events).toEqual([]);
+  });
+
   it('closes 4420 past 300 writes in 5 s and does not apply the overflow frame', async () => {
     const opened = openDoc();
     const editor = await editorOn(opened);

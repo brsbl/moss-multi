@@ -216,4 +216,38 @@ test.describe('sever', () => {
     expect(sever.census().connections).toBe(1);
     await context.close();
   });
+
+  test('lost acks: until the next reset no DocDO ack reaches the page, while other frames do', async ({ server, browser }) => {
+    const context = await browser.newContext();
+    const sever = await makeSeverable(context);
+    const page = await context.newPage();
+    await page.goto(`${server.url}/clean.html`);
+    const open = () => page.evaluate(() => new Promise<void>((done) => {
+      const socket = new WebSocket(`ws://${location.host}/parties/doc-d-o/doc-a`);
+      const w = window as unknown as { received: string[]; socket: WebSocket };
+      w.received = [];
+      w.socket = socket;
+      socket.onmessage = (event) => w.received.push(String(event.data));
+      socket.onopen = () => done();
+    }));
+    const send = (text: string) => page.evaluate((t) => (window as unknown as { socket: WebSocket }).socket.send(t), text);
+    const received = () => page.evaluate(() => (window as unknown as { received: string[] }).received);
+    const ack = (sv: string) => `__YPS:${JSON.stringify({ t: 'ack', sv })}`;
+    await open();
+    sever.loseAcks();
+    await send(ack('first'));
+    await send('one');
+    await send(ack('second'));
+    await send('two');
+    await expect.poll(received).toEqual(['one', 'two']);
+    expect(sever.census().acksLost).toBe(2);
+
+    sever.reset();
+    sever.restore();
+    await open();
+    await send(ack('third'));
+    await expect.poll(received, { message: 'a reset ends the loss' }).toEqual([ack('third')]);
+    expect(sever.census().acksLost).toBe(2);
+    await context.close();
+  });
 });

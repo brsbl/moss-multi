@@ -434,6 +434,46 @@ test('j00-persist: edits typed while the doc socket is down outlive a switch to 
   expect(await ui.fieldText(ada, a, 'body'), 'and the server kept it').toBe(`${ONLINE}${OFFLINE}`);
 });
 
+const ACKED = 'Acked before the drop';
+const LOST_ACK = ' whose ack was lost';
+
+test('j00-persist: an edit whose ack is lost with its socket is acked after the reconnect, so the note still reopens after a switch @p:col-6 @p:R10', async ({ actors }) => {
+  const ada = await actors.session(await actors.principal('ada'), { severable: true });
+  await ada.goto('/');
+  await ada.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
+  await openShell(actors, 'ben');
+  await actors.requireDistinct(2);
+  const sever = ada.sever;
+  if (!sever) throw new Error('ada is not severable');
+
+  const b = await newNote(ada);
+  await waitBodyLive(ada, b);
+  const a = await newNote(ada);
+  await waitBodyLive(ada, a);
+  await ui.typeBody(ada, a, ACKED);
+  await waitAcked(ada, a);
+
+  // The DocDO takes the edit (one input, one update), and its ack is lost as the socket drops.
+  sever.loseAcks();
+  await ada.page.keyboard.insertText(LOST_ACK);
+  ada.typed({ docId: a, field: 'body', text: LOST_ACK, ordered: true });
+  await expect.poll(() => sever.census().acksLost, { message: 'the DocDO acked the edit, and the ack was lost', timeout: ACK_TIMEOUT }).toBeGreaterThan(0);
+  await expect(ui.pane(ada, a), 'the edit is still unacked').toHaveAttribute(SYNC_UNACKED_ATTR, '1');
+  sever.reset();
+  sever.restore();
+  // A: the first socket, the reconnect, then the reopen. B: its first, then the reopen.
+  ada.expectReconnects(2, a);
+  ada.expectReconnects(1, b);
+  await expect(ui.pane(ada, a), "the reconnect's ack covers the edit the server already held").toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout: ACK_TIMEOUT });
+
+  await row(ada, b).click();
+  await expect(ui.pane(ada, a), 'A leaves the pane').toHaveCount(0, { timeout: BIND_TIMEOUT });
+  await waitBodyLive(ada, b);
+  await row(ada, a).click();
+  await waitBodyLive(ada, a);
+  expect(await ui.fieldText(ada, a, 'body'), 'A reopens with every edit').toBe(`${ACKED}${LOST_ACK}`);
+});
+
 const LINKED = 'alpha bravo charlie';
 
 test("j00-persist: the link popover's highlight is paint, never a doc write: a reload leaves no mark @p:tech-1", async ({ actors }) => {
@@ -471,7 +511,7 @@ const PNG = [
   13, 73, 68, 65, 84, 120, 156, 99, 248, 15, 4, 0, 9, 251, 3, 253, 167, 98, 133, 112, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
 ];
 
-test('j00-persist: a pasted or dropped image is refused visibly until uploads land, and the body is unchanged @p:tech-7', async ({ actors }) => {
+test('j00-persist: a pasted image or video, or a dropped image, is refused visibly until uploads land, and the body is unchanged @p:tech-7', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
   await openShell(actors, 'ben');
   await actors.requireDistinct(2);
@@ -481,16 +521,19 @@ test('j00-persist: a pasted or dropped image is refused visibly until uploads la
   await ui.typeBody(ada, docId, text);
   await waitAcked(ada, docId);
 
-  const pasted = await ui.body(ada, docId).evaluate((root, bytes) => {
-    const data = new DataTransfer();
-    data.items.add(new File([new Uint8Array(bytes)], 'screenshot.png', { type: 'image/png' }));
-    const event = new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true });
-    root.dispatchEvent(event);
-    return event.defaultPrevented;
-  }, PNG);
-  expect(pasted, 'the editor takes the pasted image').toBe(true);
-  await expect(refusal(ada.page), 'a pasted image is refused visibly').toContainText(/upload/i);
-  await expect(refusal(ada.page), 'the notice clears on its own').toHaveText('', { timeout: 10_000 });
+  // A screenshot paste, then a copied video file (a browser File has no Electron `path`).
+  for (const file of [{ name: 'screenshot.png', type: 'image/png' }, { name: 'clip.mp4', type: 'video/mp4' }]) {
+    const pasted = await ui.body(ada, docId).evaluate((root, { bytes, name, type }) => {
+      const data = new DataTransfer();
+      data.items.add(new File([new Uint8Array(bytes)], name, { type }));
+      const event = new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true });
+      root.dispatchEvent(event);
+      return event.defaultPrevented;
+    }, { bytes: PNG, ...file });
+    expect(pasted, `the editor takes the pasted ${file.type}`).toBe(true);
+    await expect(refusal(ada.page), `a pasted ${file.type} is refused visibly`).toContainText(/upload/i);
+    await expect(refusal(ada.page), 'the notice clears on its own').toHaveText('', { timeout: 10_000 });
+  }
 
   const box = await ui.body(ada, docId).boundingBox();
   if (!box) throw new Error('the body has no box');
