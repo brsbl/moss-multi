@@ -136,6 +136,8 @@ Read this with PRODUCT.md, your BUILDPLAN entry and the A§ it cites, before wri
 - `/login`'s fields stay disabled until hydration and it publishes `html[data-app-state=ready]` when they open; wait for that before typing. Sign-in, sign-up and sign-out leave the page through `host/navigation.ts` (a full load drops moss's and the bridge's in-memory state).
 - moss's `Button` imports the whole primitives barrel, so a page that uses it loads all of `@base-ui` (about 700 KB in the `/login` SSR chunk). Keep it out of a route's `pendingComponent`, which is not code-split and lands in the entry chunk of every page.
 - The share token rides `?share=` on the WebSocket and every read path; a link role is a ceiling. One roles module, one kick path. [L§4.10]
+- T1.1: `api/access.ts` is the one resolver (`foldRole` in `protocol/roles.ts`); every doc route answers a missing, trashed or inaccessible doc with `respond.ts`'s one 404. Grants come from `POST /api/{docs,folders}/:id/members {email, role}` (owner only; viewer, commenter or editor), which journeys whose promise is not sharing use as declared setup; a role lower than one held is refused 409 until T2.5's kick path.
+- T1.1: `/d/$docId` asks `GET /api/docs/:id` before moss mounts, and a 404 renders the DenialPage with no moss and no socket (moss would open another note in its place), so a journey that opens a denied URL declares that 404. The pane opens the body only once the tab knows its role (`host/access.ts`: the listing, a create, or that GET), and below editor it goes live with `data-body-binding=readonly`.
 
 ## Testing and browsers
 

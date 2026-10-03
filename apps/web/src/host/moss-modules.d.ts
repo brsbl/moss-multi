@@ -98,3 +98,16 @@ declare module '@moss/shared/components/ui/label' {
   import type { ForwardRefExoticComponent, LabelHTMLAttributes, RefAttributes } from 'react';
   export const Label: ForwardRefExoticComponent<LabelHTMLAttributes<HTMLLabelElement> & RefAttributes<HTMLLabelElement>>;
 }
+
+// moss's modal frame (Settings' shell), which the Share dialog (T1.1) is built in.
+declare module '@moss-desktop/renderer/components/ModalShell' {
+  import type { ComponentType, ReactNode } from 'react';
+  export const ModalShell: ComponentType<{
+    open: boolean;
+    onOpenChange: (open: boolean) => void;
+    title: string;
+    description: string;
+    footer?: ReactNode;
+    children: ReactNode;
+  }>;
+}

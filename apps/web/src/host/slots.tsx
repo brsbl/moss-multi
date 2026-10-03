@@ -3,6 +3,7 @@
 import type { ReactNode } from 'react';
 import { ConnectionIndicator } from './collab/ConnectionNotice.tsx';
 import { AccountSection } from './surfaces/AccountSection.tsx';
+import { ShareControl } from './surfaces/ShareDialog.tsx';
 
 /** True for a doc surfaced at the vault root because it was shared directly (A§11); it offers no move. T1.2. */
 export const surfacedShared: (docId: string) => boolean = () => false;
@@ -15,4 +16,4 @@ export const SettingsSections: () => ReactNode = () => <AccountSection />;
 
 /** Web chrome at the start of an open note's top-bar right group: Share, the connection indicator, the face pile and
  * the bell (T1.1, T1.3, T1.5, T2.8). */
-export const TopBarCollab: (props: { docId: string }) => ReactNode = ({ docId }) => <ConnectionIndicator docId={docId} />;
+export const TopBarCollab: (props: { docId: string }) => ReactNode = ({ docId }) => <><ShareControl docId={docId} /><ConnectionIndicator docId={docId} /></>;

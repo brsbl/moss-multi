@@ -7,12 +7,14 @@ import type { Provider } from '@lexical/yjs';
 import { CollaborationPlugin } from '@moss-multi/lexical-react/LexicalCollaborationPlugin';
 import {
   BODY_BINDING_ATTR, DOC_ID_ATTR, DOC_STATE_ATTR, EDITOR_GENERATION_ATTR, EDITOR_PANE_ATTR, SYNC_UNACKED_ATTR,
-  TERMINAL_REASON_ATTR, type BindingState, type DocState,
+  TERMINAL_REASON_ATTR, ROLE_ATTR, type BindingState, type DocState,
 } from '@moss-multi/protocol/dom-contract';
 import { excludedPropertiesFor } from '@moss-multi/sync/excluded-properties';
 import { $createParagraphNode, $getRoot, $setSelection, type EditorState, type LexicalEditor } from 'lexical';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
 import type { Doc } from 'yjs';
+import { can, type Role } from '@moss-multi/protocol/roles';
+import { knownRole, useDocRole } from '../access.ts';
 import { TopBarCollab } from '../slots.tsx';
 import {
   docOwner, openDocSession, subscribeDocOwners, type DocSession, type SessionState,
@@ -54,7 +56,13 @@ class PaneBinding {
   #trashed = false;
   canWrite = true;
 
-  constructor(readonly docId: string) {}
+  #role: Role | null;
+  constructor(readonly docId: string) { this.#role = knownRole(docId); }
+
+  setRole(role: Role | null): void {
+    this.#role = role;
+    if (this.#session) this.#apply(this.#session.state);
+  }
 
   trash(trashed: boolean): void {
     this.#trashed = trashed;
@@ -114,7 +122,7 @@ class PaneBinding {
     if (!editor) return;
     const terminal = terminalOf(this.docId);
     this.canWrite = state.canWrite;
-    const bodyState: BindingState = terminal ? 'terminal' : !state.synced || state.resync ? 'unbound' : state.canWrite && !state.halted ? 'live' : 'readonly';
+    const bodyState: BindingState = terminal ? 'terminal' : !state.synced || state.resync || !this.#role ? 'unbound' : state.canWrite && can(this.#role, 'edit') && !state.halted ? 'live' : 'readonly';
     editor.setEditable(bodyState === 'live');
     closeRoot(editor.getRootElement(), bodyState);
     editor.getRootElement()?.closest(`[${EDITOR_PANE_ATTR}]`)?.setAttribute(SYNC_UNACKED_ATTR, state.unacked ? '1' : '0');
@@ -239,9 +247,11 @@ export interface MossMultiPane {
 
 export function useMossMultiPane(note: { id: string; trashedAt?: number | null } | null): MossMultiPane {
   const docId = note?.id ?? null;
+  const role = useDocRole(docId);
   // A fresh binding for every doc the pane shows.
   const binding = useMemo(() => (docId ? new PaneBinding(docId) : null), [docId]);
   useLayoutEffect(() => { binding?.trash(note?.trashedAt != null); }, [binding, note?.trashedAt]);
+  useLayoutEffect(() => binding?.setRole(role), [binding, role]);
   const state = usePaneState(binding);
   const terminal = useTerminal(docId);
   const collaboration = useMemo(
@@ -262,6 +272,7 @@ export function useMossMultiPane(note: { id: string; trashedAt?: number | null }
       ? {
           [EDITOR_PANE_ATTR]: '',
           [DOC_ID_ATTR]: docId,
+          ...(role ? { [ROLE_ATTR]: role } : {}),
           [DOC_STATE_ATTR]: terminal ? 'terminal' : state.docState,
           ...(terminal ? { [TERMINAL_REASON_ATTR]: terminal } : {}),
         }
