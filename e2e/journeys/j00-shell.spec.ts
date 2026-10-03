@@ -319,14 +319,12 @@ test('no hidden or staged affordance renders on an open note: actions panel, top
   const { page } = ada;
   const docId = await openNewNote(ada);
 
-  // Properties edits frontmatter, which a bound note cannot keep until T1.4, so the tab is staged rather than left
-  // to accept an edit that vanishes on reload.
+  // Properties edits the doc's Y.Text('frontmatter') (T1.4), so its tab is offered.
   await page.getByRole('button', { name: 'Show actions panel', exact: true }).click();
   const panel = page.locator('[data-actions-panel-wrapper]');
   await expect(panel.getByRole('tab', { name: 'Actions', exact: true }), 'the actions panel opens on its Actions tab').toBeVisible();
   expect(await probeHits(page, 'actions-panel'), 'the actions panel').toEqual([]);
-  await expect(panel.getByRole('tab', { name: 'Properties' }), 'no Properties tab').toHaveCount(0);
-  await expect(panel.getByRole('button', { name: 'Add field', includeHidden: true }), 'no frontmatter input, shown or not').toHaveCount(0);
+  await expect(panel.getByRole('tab', { name: 'Properties', exact: true }), 'the Properties tab').toBeVisible();
 
   expect(await probeHits(page, 'note-top-bar'), 'the note top bar').toEqual([]);
   expect(await probeHits(page, 'title'), 'the title').toEqual([]);
@@ -341,8 +339,8 @@ test('no hidden or staged affordance renders on an open note: actions panel, top
   await expect(page.getByRole('menu'), "the note's row menu opens").toBeVisible();
   await expect(page.getByRole('menuitem', { name: 'Pin', exact: true }), 'the row menu renders its items').toBeVisible();
   expect(await probeHits(page, 'note-menu'), "the note's row menu").toEqual([]);
-  // Rename would focus a title that stays closed until it binds (T1.4), taking the typed name nowhere.
-  await expect(page.getByRole('menuitem', { name: 'Rename', exact: true }), 'no Rename while the title cannot bind').toHaveCount(0);
+  // Rename focuses the bound title (T1.4; j02 types through it).
+  await expect(page.getByRole('menuitem', { name: 'Rename', exact: true }), 'Rename, now that the title binds').toBeVisible();
   await page.keyboard.press('Escape');
   await expect(page.getByRole('menu')).toBeHidden();
 });

@@ -7,6 +7,7 @@ import { bytesToBase64, CLOSE, type ServerEvent, type WriteRefusalReason } from 
 import { attachmentFrom, connectCode, parseFrame, revocationCode, stateBytesAfter, wouldChange, WriteRate, type Attachment } from './doc/admission.ts';
 import { attach, attachmentOf, awarenessTooLarge } from './doc/awareness.ts';
 import { AckCoalescer, DocStore, PERSISTENCE } from './doc/persistence.ts';
+import type { ProjectionTarget } from './doc/projections.ts';
 import type { SyncEnv } from './env.ts';
 import { exportDocMarkdown, importBody, rootIsEmpty, SERVER_SEED, seedEmptyParagraph } from './server-doc.ts';
 
@@ -51,6 +52,8 @@ export class DocDO extends YServer<SyncEnv> {
     writeRate: WRITE_RATE,
     awarenessMaxBytes: AWARENESS_MAX_BYTES,
   };
+  /** Where the title, filename and updated_at projections land (A§5.1). */
+  static projectionTarget: (env: SyncEnv) => ProjectionTarget | null = () => null;
 
   readonly instanceId = crypto.randomUUID();
   readonly constructedAt = Date.now();
