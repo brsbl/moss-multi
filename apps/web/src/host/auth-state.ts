@@ -82,7 +82,14 @@ export function safeNext(value: unknown): string {
     return '/';
   }
   if (url.origin !== base || url.pathname === LOGIN_PATH || url.pathname.startsWith(`${LOGIN_PATH}/`)) return '/';
-  return `${url.pathname}${url.search}${url.hash}`;
+  const path = `${url.pathname}${url.search}${url.hash}`;
+  // Dot segments can normalize to `//host` ('/x/..//evil'), which a browser and a Location header read as another
+  // origin: keep only a path that resolves back to the same URL.
+  try {
+    return new URL(path, base).href === url.href ? path : '/';
+  } catch {
+    return '/'; // `//[x` is not even a URL
+  }
 }
 
 const MISMATCH = 'That email and password don’t match an account.';
@@ -172,8 +179,6 @@ export function createAuthStore(deps: AuthDeps) {
     for (let attempt = 0; ; attempt += 1) {
       const reply = ask().then((result) => {
         if (result.kind !== 'unavailable') decide(result);
-        // NEGATIVE CONTROL for j07's stale-answer assertion, removed in the next commit: a late "signed out" lands.
-        if (result.kind === 'signed-out' && state.status === 'signed-in') write({ status: 'signed-out' });
         return result;
       });
       const first = await Promise.race([decided, reply, pause(LOOKUP_TIMEOUT_MS).then(() => UNAVAILABLE)]);
@@ -212,6 +217,12 @@ export function createAuthStore(deps: AuthDeps) {
     const { user, token } = (payload ?? {}) as { user?: unknown; token?: unknown };
     if (!isUser(user)) return { ok: false, message: GENERIC };
     return { ok: true, user: { id: user.id, name: user.name, email: user.email }, session: token !== null };
+  }
+
+  function signedOut(): SignOutOutcome {
+    write({ status: 'signed-out' });
+    deps.leave(LOGIN_PATH);
+    return { ok: true };
   }
 
   async function signIn({ email, password }: Credentials): Promise<AuthOutcome> {
@@ -273,6 +284,10 @@ export function createAuthStore(deps: AuthDeps) {
           body: '{}',
         });
       } catch {
+        // A lost response may hide a sign-out that happened: ask the server before keeping the session.
+        const never = new Promise<void>(() => undefined);
+        const answer = await Promise.race([ask(), sleep(LOOKUP_TIMEOUT_MS, never).then(() => UNAVAILABLE)]);
+        if (answer.kind === 'signed-out') return signedOut();
         write({ status: 'signed-in', user });
         return { ok: false, message: UNREACHABLE };
       }
@@ -280,9 +295,7 @@ export function createAuthStore(deps: AuthDeps) {
         write({ status: 'signed-in', user });
         return { ok: false, message: 'Couldn’t sign you out. Try again.' };
       }
-      write({ status: 'signed-out' });
-      deps.leave(LOGIN_PATH);
-      return { ok: true };
+      return signedOut();
     },
   };
 }

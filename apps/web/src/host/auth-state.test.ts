@@ -172,7 +172,7 @@ describe('session answers and next paths', () => {
   });
 
   it('never returns a path that normalizes to a protocol-relative //host', () => {
-    const escapes = ['/x/..//evil.example', '/.//evil.example', '/%2e%2e//evil.example', '/a/../\\evil.example', '/..//evil.example/x?y#z', '/./\\evil.example'];
+    const escapes = ['/x/..//evil.example', '/.//evil.example', '/%2e%2e//evil.example', '/a/../\\evil.example', '/..//evil.example/x?y#z', '/./\\evil.example', '/x/..//[evil'];
     for (const next of escapes) expect(safeNext(next), next).toBe('/');
   });
 });
