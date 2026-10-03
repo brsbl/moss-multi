@@ -253,3 +253,36 @@ test('j01 discovery: Ben switches to a shared vault and back, with a role badge 
   await expect(ui.pane(ben, docId)).toBeVisible();
   await actors.checkpoint('switched-back-with-doc-open');
 });
+
+test('j01 duplicate: the note menu makes a content-preserving copy visible to both vault peers @p:note-4 @p:col-6', async ({ actors, stack }) => {
+  const ada = await openShell(actors, 'ada');
+  const benPrincipal = await actors.principal('ben');
+  const docId = await newNote(ada);
+  await waitBodyLive(ada, docId);
+  const text = 'Duplicate keeps the original words, café and punctuation.';
+  await ui.typeBody(ada, docId, text);
+  await waitAcked(ada, docId);
+  const { vault } = await (await ada.context.request.get('/api/workspace')).json();
+  expect((await ada.context.request.post(`/api/folders/${vault.id}/members`, {
+    headers: { origin: stack.baseUrl }, data: { email: benPrincipal.email, role: 'editor' },
+  })).status()).toBe(201);
+  const ben = await actors.open(benPrincipal, { path: `/d/${docId}` });
+  await waitBodyLive(ben, docId);
+  await ada.page.locator(`[data-sidebar-row][data-doc-id="${docId}"]`).click({ button: 'right' });
+  await ada.page.getByRole('menuitem', { name: 'Duplicate', exact: true }).click();
+  const copyPane = ada.page.locator(`[${EDITOR_PANE_ATTR}]:not([data-doc-id="${docId}"])`);
+  await expect(copyPane).toHaveCount(1);
+  const copyId = await copyPane.getAttribute('data-doc-id');
+  if (!copyId) throw new Error('duplicate has no doc id');
+  await waitBodyLive(ada, copyId);
+  expect(await ui.fieldText(ada, copyId, 'body')).toBe(text);
+  for (const actor of [ada, ben]) {
+    await expect(actor.page.locator(`[data-sidebar-row][data-doc-id="${copyId}"]`)).toBeVisible({ timeout: 15_000 });
+  }
+  await ben.page.locator(`[data-sidebar-row][data-doc-id="${copyId}"]`).click();
+  await waitBodyLive(ben, copyId);
+  expect(await ui.fieldText(ben, copyId, 'body')).toBe(text);
+  await ben.page.reload();
+  await waitBodyLive(ben, copyId);
+  expect(await ui.fieldText(ben, copyId, 'body')).toBe(text);
+});

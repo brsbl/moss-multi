@@ -60,6 +60,22 @@ interface DocBody {
 }
 
 describe('POST /api/docs', () => {
+  it('passes markdown, including an empty body, to the server converter without lifting its H1', async () => {
+    for (const markdown of ['# Body heading\n\n**Imported** text.', '']) {
+      const response = await create(ada.cookie, { title: 'File stem', markdown });
+      expect(response.status).toBe(201);
+      const { doc } = await response.json() as DocBody;
+      expect(doc.title).toBe('File stem');
+      expect(created.at(-1)).toEqual({ docId: doc.id, input: { folderId: ada.homeId, ownerId: ada.id, title: 'File stem', markdown } });
+    }
+  });
+
+  it('refuses invalid and oversized markdown before creating a doc', async () => {
+    expect((await create(ada.cookie, { markdown: 42 })).status).toBe(400);
+    expect((await create(ada.cookie, { markdown: 'é'.repeat(1024 * 1024 + 1) })).status).toBe(413);
+    expect(created).toEqual([]);
+  });
+
   it('gets 401 without a session', async () => {
     const response = await create(null);
     expect(response.status).toBe(401);

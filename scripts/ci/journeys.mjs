@@ -16,7 +16,7 @@ export const GROUPS = {
   // Chrome, auth, sharing and access.
   shell: ['j00-shell', 'j07', 'j08', 'j09', 'j10'],
   // A doc's live session: persistence, co-editing, titles, connection, hibernation.
-  editing: ['j00-roundtrip', 'j00-persist', 'j01', 'j02', 'j03', 'j04'],
+  editing: ['j00-import', 'j00-roundtrip', 'j00-persist', 'j01', 'j02', 'j03', 'j04'],
   // Trash, folders, media, search, vaults, the demo note.
   workspace: ['j05', 'j06', 'j11', 'j12', 'j13', 'j14'],
   // Comments, suggestions, history, agents.
