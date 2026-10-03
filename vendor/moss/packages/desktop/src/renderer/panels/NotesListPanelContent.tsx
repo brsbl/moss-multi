@@ -51,7 +51,7 @@ import { SystemFolderSection } from './SystemFolderSection';
 import { foldersApi } from '../api/electron';
 // moss-multi seam: hide-registry (A§9); sidebar rows and slots (A§19, A§11)
 import { hidden } from '@moss-multi/host/affordances';
-import { FolderMenuItems, surfacedShared } from '@moss-multi/host/slots';
+import { FolderMenuItems, surfacedShared, surfacedFolder } from '@moss-multi/host/slots';
 
 const NOTES_FOLDER_NAME = 'Notes';
 const nowInSeconds = (): number => Math.floor(Date.now() / 1000);
@@ -1224,7 +1224,9 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
         const isExpanded = expandedFolders.has(folder.path);
         // Show inline subfolder creation input if creating inside this folder
         const showSubfolderInput = isCreatingFolder && creatingFolderParentPath === folder.path;
-        const isFolderDraggable = folder.type !== 'system';
+        // moss-multi seam: surfaced shares never offer folder mutations.
+        const mutable = !hidden('new-folder') && !surfacedFolder(folder.path);
+        const isFolderDraggable = mutable && folder.type !== 'system';
 
         return (
           <ContextMenu key={folder.path}>
@@ -1236,9 +1238,9 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
             noteCount={folder.noteCount}
             depth={depth}
             isDragOver={dragOverTarget === folder.path && (draggingNoteId != null || (draggingFolderPath != null && isFolderDropTargetValid))}
-            onDragOver={handleFolderDragOver(folder.path)}
+            onDragOver={mutable ? handleFolderDragOver(folder.path) : undefined}
             onDragLeave={handleFolderDragLeave}
-            onDrop={handleFolderDrop(folder.path)}
+            onDrop={mutable ? handleFolderDrop(folder.path) : undefined}
             draggable={isFolderDraggable}
             onDragStart={(e) => {
               e.dataTransfer.setData('application/x-moss-folder', folder.path);
@@ -1251,8 +1253,8 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
             }}
             isDragging={draggingFolderPath === folder.path}
             onFolderClick={() => setActiveFolderPath(folder.path)}
-            onCreateSubfolder={() => handleStartCreateFolder(folder.path)}
-            onRename={async (newName) => {
+            onCreateSubfolder={mutable ? () => handleStartCreateFolder(folder.path) : undefined}
+            onRename={mutable ? async (newName) => {
               await foldersApi.rename.invoke({
                 currentPath: folder.path,
                 newName
@@ -1272,7 +1274,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
                   updates: { folderPath: updatedFolderPath }
                 });
               }
-            }}
+            } : undefined}
           >
             {/* Subfolder creation input */}
             {isExpanded && showSubfolderInput && (
@@ -1326,7 +1328,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
           </ContextMenuTrigger>
           <ContextMenuContent>
             {/* moss-multi seam: folder-menu (A§2.2: the folder "Share..." item slot) */}
-            <FolderMenuItems folderPath={folder.path} />
+            {mutable && <FolderMenuItems folderPath={folder.path} />}
             {/* moss-multi seam: hide-registry (A§9) */}
             {hidden('reveal-in-finder') ? null : (
             <ContextMenuItem onSelect={() => handleShowFolderInFinder(folder.path)}>

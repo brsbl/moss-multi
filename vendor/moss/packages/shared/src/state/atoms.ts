@@ -230,7 +230,8 @@ export const hydrateNotesAtom = atom(null, async (get, set) => {
 
     // Reconcile: remove atoms for notes no longer in backend
     // This handles permanently deleted notes (30+ days in trash)
-    const orphanedIds = [...existingIds].filter((id) => !freshIds.has(id));
+    // moss-multi seam: a vault switch replaces the sidebar, never an open editor.
+    const orphanedIds = [...existingIds].filter((id) => !freshIds.has(id) && id !== get(activeNoteIdAtom) && id !== get(splitTabNoteIdAtom));
     if (orphanedIds.length > 0) {
       await Promise.all(orphanedIds.map((id) => set(removeNoteEntityAtom, id)));
     }
@@ -369,10 +370,10 @@ const baseActiveNoteIdAtom = atom<string | null>(null);
 export const activeNoteIdAtom = atom(
   (get) => {
     const storedId = get(baseActiveNoteIdAtom);
-    const noteIds = get(noteIdsAtom);
 
     // Check if stored ID exists (allow trashed notes - needed for trash view)
-    if (storedId && noteIds.has(storedId)) {
+    // moss-multi seam: an open note may belong to a different vault than the sidebar.
+    if (storedId) {
       const entity = get(noteEntityAtom(storedId));
       if (entity) {
         return storedId;
