@@ -46,7 +46,6 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - A wrong password logs a browser console error → T0.10 (only if the zero-console-error invariant should cover the auth error path)
 - Sidebar times do not update when a note is edited → T1.4 (DocDO `updated_at` projection)
 - Sidebar search matches titles only, so body text is never found → the M3 search task (SearchDO), together with T1.4 titles
-- A missing or bad doc URL silently opens a different note → T1.1 (DenialPage)
 - During a stack restart the editor stays editable with no sign it is disconnected → T1.3 (connection truth indicator and banner)
 - Settings shows Note Intelligence, and its description mentions a hidden section → T1.4 (Properties unstaging), or a hide-registry entry if it cannot work on the web
 - Sign-out leaves the session's other live doc sockets reading and writing → T2.5
