@@ -185,12 +185,15 @@ test('j01 editing: formula drafts and background conversions stay out of shared 
   const { ada, ben, id, wire } = await setup(actors, stack.baseUrl, 'Shared paragraph.');
   await paragraphEnd(ada, id); await ada.page.keyboard.press('Enter'); await ada.page.keyboard.type('=2+3');
   await expect(ui.body(ben, id)).toContainText('=2+3');
+  expect(ada.telemetry.pageErrors, 'draft typing').toEqual([]);
   await ada.page.keyboard.press('Enter');
   for (const actor of [ada, ben]) await expect(ui.body(actor, id).locator('[data-formula-id]')).toHaveCount(1);
+  expect(ada.telemetry.pageErrors, 'formula commit').toEqual([]);
   await ada.page.keyboard.press('Enter'); await ada.page.keyboard.type('#aabbcc ');
   for (const actor of [ada, ben]) await expect(ui.body(actor, id).locator('[data-color-value="#aabbcc"]')).toHaveCount(1);
   await expect(ui.pane(ada, id)).toHaveAttribute('data-sync-unacked', '0');
   const frames = Buffer.concat(wire).toString('utf8');
+  expect(ada.telemetry.pageErrors, 'color conversion').toEqual([]);
   for (const marker of ['--formula-draft-chip', '--formula-edit-id', '--formula-ref-note-id']) expect(frames).not.toContain(marker);
   await actors.reloadAll();
   for (const actor of [ada, ben]) { await ui.waitLive(actor, id); await expect(ui.body(actor, id).locator('[data-formula-id]')).toHaveCount(1); await expect(ui.body(actor, id).locator('[data-color-value="#aabbcc"]')).toHaveCount(1); }
