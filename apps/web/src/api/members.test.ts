@@ -197,6 +197,8 @@ describe('folder and vault grants', () => {
 
 describe('non-disclosure: a missing doc and an inaccessible one answer alike', () => {
   it('gives byte-identical 404s on every doc route, the owner a 200, and wakes no DocDO', async () => {
+    // Someone with no grant anywhere: Cy holds a grant on Ada's Home vault by now.
+    const dee = await signedUpUser(env, 'members-dee', 'Dee');
     const docId = await insertDoc(d1.db, ada);
     const trashed = await insertDoc(d1.db, ada, { deleted: true });
     const missing = crypto.randomUUID();
@@ -207,9 +209,9 @@ describe('non-disclosure: a missing doc and an inaccessible one answer alike', (
       ['GET', '/instance'],
     ];
     for (const [method, suffix, body] of routes) {
-      const denied = await fingerprint(await call(method, `/api/docs/${docId}${suffix}`, cy.cookie, body));
-      const absent = await fingerprint(await call(method, `/api/docs/${missing}${suffix}`, cy.cookie, body));
-      const gone = await fingerprint(await call(method, `/api/docs/${trashed}${suffix}`, cy.cookie, body));
+      const denied = await fingerprint(await call(method, `/api/docs/${docId}${suffix}`, dee.cookie, body));
+      const absent = await fingerprint(await call(method, `/api/docs/${missing}${suffix}`, dee.cookie, body));
+      const gone = await fingerprint(await call(method, `/api/docs/${trashed}${suffix}`, dee.cookie, body));
       expect(denied.status, `${method} ${suffix || '/'}`).toBe(404);
       expect(denied, `${method} ${suffix || '/'}: inaccessible vs missing`).toEqual(absent);
       expect(gone, `${method} ${suffix || '/'}: someone else's trashed doc vs missing`).toEqual(absent);
@@ -217,7 +219,7 @@ describe('non-disclosure: a missing doc and an inaccessible one answer alike', (
     // The positive control: the same routes answer the owner.
     expect((await call('GET', `/api/docs/${docId}`, ada.cookie)).status).toBe(200);
     expect((await call('GET', `/api/docs/${docId}/members`, ada.cookie)).status).toBe(200);
-    expect(await roleOf(cy.cookie, docId)).toBeNull();
+    expect(await roleOf(dee.cookie, docId)).toBeNull();
     expect(created).toEqual([]);
   });
 });
