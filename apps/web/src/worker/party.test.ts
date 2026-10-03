@@ -82,8 +82,13 @@ describe('authenticateParty', () => {
     expect(alone.ok && decodePartyPrincipal(alone.headers[TRUSTED.principal])?.kind).toBe('anonymous');
     expect(alone.ok && alone.headers[TRUSTED.role]).toBe('viewer');
     expect(alone.ok && alone.headers[TRUSTED.share]).toBe(token);
+    expect(alone.ok && alone.headers[TRUSTED.presence]).toBe('0');
     const signedIn = await authenticateParty(upgrade(docId, { cookie: ben.cookie }, `?share=${token}`), docId, env);
     expect(signedIn.ok && signedIn.headers[TRUSTED.role]).toBe('editor');
+    expect(signedIn.ok && signedIn.headers[TRUSTED.presence]).toBe('0');
+    await insertGrant(d1.db, { docId }, ben, 'viewer');
+    const granted = await authenticateParty(upgrade(docId, { cookie: ben.cookie }, `?share=${token}`), docId, env);
+    expect(granted.ok && granted.headers[TRUSTED.presence]).toBe('1');
     const revoked = await insertLink(d1.db, { docId }, 'editor', { revoked: true });
     expect(await authenticateParty(upgrade(docId, {}, `?share=${revoked}`), docId, env)).toEqual({ ok: false, code: CLOSE.unavailable });
   });

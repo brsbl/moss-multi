@@ -210,6 +210,7 @@ export function retryDoc(docId: string): void {
 
 export class DocSession {
   readonly doc = new Y.Doc();
+  stopPresence?: () => void;
   readonly provider: YProvider;
   #state: SessionState = { synced: false, resync: false, unacked: false, retrying: false, connection: 'reconnecting', canWrite: true, writePaused: false, halted: null };
   readonly #listeners = new Set<Listener>();
@@ -228,6 +229,7 @@ export class DocSession {
   #accessRetries = 0;
   #accessRetry: ReturnType<typeof setTimeout> | undefined;
   #paused = false;
+  #pagePresence: ReturnType<YProvider['awareness']['getLocalState']> = null;
   readonly #tick: ReturnType<typeof setInterval>;
   readonly #deadline: ReturnType<typeof setTimeout>;
 
@@ -272,7 +274,8 @@ export class DocSession {
     }, FIRST_SYNC_DEADLINE_MS);
     this.#tick = setInterval(() => this.#heartbeat(), HEARTBEAT_CHECK_MS);
     document.addEventListener('visibilitychange', this.#onVisibility);
-    window.addEventListener('pagehide', this.#onPageHide);
+    // Capture before the provider and Lexical's pagehide listeners clear awareness.
+    window.addEventListener('pagehide', this.#onPageHide, true);
     window.addEventListener('pageshow', this.#onPageShow);
     sessions.add(this);
     markSession(this, true);
@@ -303,6 +306,8 @@ export class DocSession {
       return;
     }
     this.#lingering = true;
+    this.#pagePresence = null;
+    this.stopPresence?.();
     this.#listeners.clear();
     this.provider.awareness.setLocalState(null);
     this.#listeners.add((state) => {
@@ -315,6 +320,7 @@ export class DocSession {
   end(reason: TerminalReason): void {
     if (this.#disposed) return;
     this.#ended = true;
+    this.#pagePresence = null;
     this.provider.shouldConnect = false;
     setTerminal(this.docId, reason);
     if (this.#lingering && reason !== 'conn-limit') {
@@ -338,12 +344,14 @@ export class DocSession {
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
+    this.#pagePresence = null;
+    this.stopPresence?.();
     this.#lingering = false;
     clearTimeout(this.#accessRetry);
     clearInterval(this.#tick);
     clearTimeout(this.#deadline);
     document.removeEventListener('visibilitychange', this.#onVisibility);
-    window.removeEventListener('pagehide', this.#onPageHide);
+    window.removeEventListener('pagehide', this.#onPageHide, true);
     window.removeEventListener('pageshow', this.#onPageShow);
     sessions.delete(this);
     markSession(this, false);
@@ -513,13 +521,19 @@ export class DocSession {
   };
 
   /** Heartbeats stop on pagehide so the DO can hibernate, and resume if the page comes back from the cache. */
-  readonly #onPageHide = (): void => {
+  readonly #onPageHide = (event: PageTransitionEvent): void => {
+    if (!this.#paused && event.persisted && !this.#ended && !this.#lingering) this.#pagePresence = this.provider.awareness.getLocalState();
     this.#paused = true;
+    this.provider.awareness.setLocalState(null);
   };
 
   readonly #onPageShow = (event: PageTransitionEvent): void => {
     if (!event.persisted) return;
     this.#paused = false;
+    if (this.#pagePresence && !this.#disposed && !this.#ended && !this.#lingering && this.provider.awareness.getLocalState() === null) {
+      this.provider.awareness.setLocalState(this.#pagePresence);
+    }
+    this.#pagePresence = null;
     this.#onVisibility();
   };
 

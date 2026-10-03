@@ -15,6 +15,7 @@ export interface Attachment {
   role: Role;
   sessionId: string | null;
   shareToken: string | null;
+  presenceAllowed?: boolean;
 }
 
 /** The Worker's trusted headers, or null with no principal or no known role. */
@@ -29,6 +30,7 @@ export function attachmentFrom(headers: Headers): Attachment | null {
     role,
     sessionId: headers.get(TRUSTED.session) || null,
     shareToken: headers.get(TRUSTED.share) || null,
+    presenceAllowed: headers.get(TRUSTED.presence) === '1' || (headers.get(TRUSTED.presence) === null && principal.kind !== 'anonymous' && !headers.get(TRUSTED.share)),
   };
 }
 

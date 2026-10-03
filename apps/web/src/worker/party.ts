@@ -15,13 +15,15 @@ export async function authenticateParty(request: Request, docId: string, env: Au
   // Before the doc is looked up, so the close says nothing about whether it exists.
   if (!principal || crossOriginCookie(request, principal, env)) return { ok: false, code: CLOSE.noPrincipal };
   const share = shareTokenOf(request);
-  const access = await resolveDocAccess(createDb(env.DB), principal, docId, share);
+  const db = createDb(env.DB);
+  const access = await resolveDocAccess(db, principal, docId, share);
   if (!access) return { ok: false, code: CLOSE.unavailable };
   if (access.deleted) return { ok: false, code: CLOSE.deleted };
   const party: PartyPrincipal = { id: principal.id, kind: principal.type, name: principal.name };
   const headers: Record<string, string> = {
     [TRUSTED.principal]: encodePartyPrincipal(party),
     [TRUSTED.role]: access.role,
+    [TRUSTED.presence]: principal.type !== 'anonymous' && (!share || await resolveDocAccess(db, principal, docId)) ? '1' : '0',
   };
   if (principal.type === 'user') headers[TRUSTED.session] = principal.sessionId;
   if (share) headers[TRUSTED.share] = share;

@@ -159,14 +159,27 @@ it('a hidden idle tab sends no frames or reconnects and immediately re-announces
   expect(socket.sent.length).toBeGreaterThan(sent);
 });
 
-it('pagehide suspends automatic traffic and never resurrects cleared presence', async () => {
+it('a persisted pageshow restores the presence and caret saved before pagehide', async () => {
   latest().open(); session.provider.synced = true;
-  session.provider.awareness.setLocalState({ name: 'Ada' });
+  const state = { name: 'Ada', anchorPos: { tname: 'root', index: 2 }, focusPos: null, focusing: true };
+  session.provider.awareness.setLocalState(state);
   window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }));
+  expect(session.provider.awareness.getLocalState()).toBeNull();
   const sent = latest().sent.length;
   await vi.advanceTimersByTimeAsync(100_000);
   expect(latest().sent).toHaveLength(sent);
   expect(sockets).toHaveLength(1);
+  window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
+  expect(session.provider.awareness.getLocalState()).toEqual(state);
+  expect(latest().sent.length).toBeGreaterThan(sent);
+});
+
+it.each(['cleared', 'ended', 'released'] as const)('pageshow never revives %s presence', (reason) => {
+  latest().open(); session.provider.synced = true;
+  session.provider.awareness.setLocalState(reason === 'cleared' ? null : { name: 'Ada' });
+  window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }));
+  if (reason === 'ended') session.end('session-ended');
+  if (reason === 'released') { session.doc.getText('title').insert(0, 'pending'); session.release(); }
   window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
   expect(session.provider.awareness.getLocalState()).toBeNull();
 });
