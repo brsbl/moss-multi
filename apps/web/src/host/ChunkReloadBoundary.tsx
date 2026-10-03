@@ -1,6 +1,7 @@
 // One hard reload when a lazy chunk fails to load, as after a redeploy (L§4.1 stale chunks). Any other error, or
 // a second failure within the window, is rethrown: a chunk error on a fresh load is a different bug.
 import { Component, type ReactNode } from 'react';
+import { reloadDocument } from './navigation.ts';
 
 const RELOAD_KEY = 'moss_chunk_reload_at';
 const RELOAD_WINDOW_MS = 10_000;
@@ -15,7 +16,7 @@ export function isChunkLoadError(error: unknown): boolean {
 }
 
 /** Reloads unless this tab already did within the window; returns whether it reloads. */
-export function reloadOnce(now = Date.now(), storage: Pick<Storage, 'getItem' | 'setItem'> | null = safeSession(), reload = () => window.location.reload()): boolean {
+export function reloadOnce(now = Date.now(), storage: Pick<Storage, 'getItem' | 'setItem'> | null = safeSession(), reload = reloadDocument): boolean {
   const last = Number(storage?.getItem(RELOAD_KEY) ?? 0);
   if (now - last < RELOAD_WINDOW_MS) return false;
   storage?.setItem(RELOAD_KEY, String(now));

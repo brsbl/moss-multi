@@ -10,7 +10,7 @@ const MossApp = lazy(() =>
 );
 
 /** What paints until moss's shell does: moss's panel surface, nothing focusable. */
-function BootFrame(): ReactNode {
+export function BootFrame(): ReactNode {
   return <div aria-hidden="true" className="h-full w-full bg-surface-panel" />;
 }
 
