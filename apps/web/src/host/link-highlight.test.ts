@@ -36,7 +36,7 @@ afterEach(() => {
 function paragraph(first: string, format: TextFormatType, second: string): { editor: LexicalEditor; keys: [string, string] } {
   const root = document.createElement('div');
   root.contentEditable = 'true';
-  document.body.append(root);
+  document.body.appendChild(root);
   const editor = createEditor({
     onError: (error) => {
       throw error;

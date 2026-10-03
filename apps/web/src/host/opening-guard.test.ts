@@ -47,7 +47,7 @@ describe('the opening guard', () => {
     const field = document.createElement('div');
     field.setAttribute(BODY_BINDING_ATTR, 'live');
     field.tabIndex = 0;
-    document.body.append(field);
+    document.body.appendChild(field);
     field.focus();
     field.blur();
     expect(press('q'), 'the guard let go once the note was live').toBe(false);
