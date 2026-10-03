@@ -351,7 +351,7 @@
     {"path":"packages/shared/src/components/ui/base-button.tsx","pin":"762abb777","upstreamSha256":"6769b48dff4484ca19c316386a7f2da1ab065d6abfacf70928da18936c542431","mode":"verbatim"},
     {"path":"packages/shared/src/components/ui/button.tsx","pin":"762abb777","upstreamSha256":"264b97b496fb67e71ae30312aa67e16b66e1a985da12d0a25a1bb7f54a592811","mode":"verbatim"},
     {"path":"packages/shared/src/components/ui/card.tsx","pin":"762abb777","upstreamSha256":"968c16b79592f31a57ef0fe5c44c9406307a0e3d3d6837f1d03708fff5704492","mode":"verbatim"},
-    {"path":"packages/shared/src/components/ui/confirmation-dialog.tsx","pin":"762abb777","upstreamSha256":"6f80e372f1d5962cdc96adbcc775766b50c76e871a2c2ddfad82541db567cf49","mode":"verbatim"},
+    {"path":"packages/shared/src/components/ui/confirmation-dialog.tsx","pin":"762abb777","upstreamSha256":"6f80e372f1d5962cdc96adbcc775766b50c76e871a2c2ddfad82541db567cf49","mode":"patched","patch":"patches/moss/packages/shared/src/components/ui/confirmation-dialog.tsx.patch"},
     {"path":"packages/shared/src/components/ui/connected-folders-dropdown.tsx","pin":"762abb777","upstreamSha256":"6c0cf993ea5a972da7fe61a4af16e14de7da1c5666e413061f2ec7933e7fbfec","mode":"verbatim"},
     {"path":"packages/shared/src/components/ui/context-menu.tsx","pin":"762abb777","upstreamSha256":"8d72ebfda7a8e16021b28787734e658231ed4f320efa2dffad5f56f229d43e3c","mode":"verbatim"},
     {"path":"packages/shared/src/components/ui/context-pill.tsx","pin":"762abb777","upstreamSha256":"080615ecf85db013ecf491f8e95ff1868572b844d1fdc3b41cbced231b1b2879","mode":"verbatim"},

@@ -16,7 +16,7 @@ import {
   connectionOf, FIRST_SYNC_DEADLINE_MS, HANDSHAKE_FAILURES, HEARTBEAT_CHECK_MS, publishConnection, reduceLink, RESYNC_MS,
   SILENCE_LIMIT_MS, startLink, type Link, type LinkEvent,
 } from './connection.ts';
-import { clearTerminal, setTerminal } from './terminal.ts';
+import { clearTerminal, setTerminal, terminalOf } from './terminal.ts';
 import { markSession, markUnacked } from './unacked.ts';
 
 const PARTY = 'doc-d-o';
@@ -33,6 +33,7 @@ export interface SessionState {
   connection: ConnectionState;
   /** The role allows writing; a 4403 re-ask can lower it. */
   canWrite: boolean;
+  writePaused: boolean;
   /** Why the session stopped delivering edits (a refused write, or a lower role with edits pending). */
   halted: string | null;
 }
@@ -193,7 +194,12 @@ export function docOwner(docId: string): object | null {
   return held.get(docId)?.owner ?? null;
 }
 
-/** Sign-out severs every doc socket of this window at once; nothing reconnects. */
+/** Keep the sync channel delivering while the sign-out guard waits for acks. */
+export function pauseDocWrites(paused: boolean): void {
+  for (const session of sessions) session.pauseWrites(paused);
+}
+
+/** Confirmed sign-out severs every socket of this window; nothing reconnects. */
 export function severDocSessions(): void {
   for (const session of [...sessions]) session.end('session-ended');
 }
@@ -206,7 +212,7 @@ export function retryDoc(docId: string): void {
 export class DocSession {
   readonly doc = new Y.Doc();
   readonly provider: YProvider;
-  #state: SessionState = { synced: false, resync: false, unacked: false, retrying: false, connection: 'reconnecting', canWrite: true, halted: null };
+  #state: SessionState = { synced: false, resync: false, unacked: false, retrying: false, connection: 'reconnecting', canWrite: true, writePaused: false, halted: null };
   readonly #listeners = new Set<Listener>();
   #refusedMessage = HALTED_REFUSED;
   #disposed = false;
@@ -220,6 +226,8 @@ export class DocSession {
   #lastResync = 0;
   #visibleSince = 0;
   #failedHandshakes = 0;
+  #accessRetries = 0;
+  #accessRetry: ReturnType<typeof setTimeout> | undefined;
   #paused = false;
   readonly #tick: ReturnType<typeof setInterval>;
   readonly #deadline: ReturnType<typeof setTimeout>;
@@ -272,6 +280,8 @@ export class DocSession {
     this.#publish();
   }
 
+  pauseWrites(writePaused: boolean): void { this.#set({ writePaused }); }
+
   get state(): SessionState {
     return this.#state;
   }
@@ -289,7 +299,7 @@ export class DocSession {
    */
   release(): void {
     if (this.#disposed || this.#lingering) return;
-    if (!this.#state.unacked || this.#ended) {
+    if (!this.#state.unacked || (this.#ended && terminalOf(this.docId) !== 'conn-limit')) {
       this.dispose();
       return;
     }
@@ -299,7 +309,7 @@ export class DocSession {
     this.#listeners.add((state) => {
       if (!state.unacked) this.dispose();
     });
-    if (!this.provider.shouldConnect) void this.provider.connect();
+    if (!this.provider.shouldConnect && !this.#ended) void this.provider.connect();
   }
 
   /** The doc is over for this session (A§10.6): no reconnect, every surface goes inert, a lingering session lets go. */
@@ -308,7 +318,7 @@ export class DocSession {
     this.#ended = true;
     this.provider.shouldConnect = false;
     setTerminal(this.docId, reason);
-    if (this.#lingering) {
+    if (this.#lingering && reason !== 'conn-limit') {
       this.dispose();
       return;
     }
@@ -330,6 +340,7 @@ export class DocSession {
     if (this.#disposed) return;
     this.#disposed = true;
     this.#lingering = false;
+    clearTimeout(this.#accessRetry);
     clearInterval(this.#tick);
     clearTimeout(this.#deadline);
     document.removeEventListener('visibilitychange', this.#onVisibility);
@@ -382,6 +393,7 @@ export class DocSession {
   }
 
   #synced(): void {
+    this.#accessRetries = 0;
     this.#update({ type: 'synced' });
     if (this.#state.synced) return;
     clearTimeout(this.#deadline);
@@ -455,7 +467,10 @@ export class DocSession {
         break;
     }
     this.#failedHandshakes = 0;
-    void this.provider.connect();
+    const delay = Math.min(15_000, 1_000 * 2 ** this.#accessRetries++);
+    this.#accessRetry = setTimeout(() => {
+      if (!this.#disposed && !this.#ended) void this.provider.connect();
+    }, delay);
   }
 
   #heartbeat(): void {

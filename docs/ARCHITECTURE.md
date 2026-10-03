@@ -650,6 +650,8 @@ CRLF becomes LF at the boundary. [P:Tech; S-prior §8.2–8.3]
 | `data-title-binding`, `data-body-binding` | title field, body root | `unbound`, `live`, `readonly`, `terminal`. While not `live`, the element is non-focusable |
 | `data-editor-generation` | body root | +1 on every Lexical editor creation (remount detector) |
 | `data-sync-unacked` | pane | `0` or `1` (§10.6) |
+| `data-notice-band` | reserved band below each pane’s top bar | connection and input-refusal notices |
+| `data-connection-banner` | connection notice | `offline`, `retrying`, `halted`, or the terminal reason |
 | `data-connection` | connection indicator | `online`, `reconnecting`, `offline` |
 | `data-terminal-reason` | pane | `deleted`, `revoked`, `session-ended`, `unavailable`, `conn-limit` (S-test's `suggest-policy` is not terminal; it is a 4409 resync) |
 | `data-role` | pane | the effective role |

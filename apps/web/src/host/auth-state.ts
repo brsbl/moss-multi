@@ -32,6 +32,7 @@ export interface Credentials {
 export interface AuthDeps {
   /** One session lookup; may throw or resolve to anything, both of which count as `unavailable`. */
   lookup: () => Promise<unknown>;
+  beforeSignOut?: () => Promise<boolean>;
   fetch: typeof fetch;
   /** Leaves the page for `href` (host/navigation.ts). */
   leave: (href: string) => void;
@@ -275,6 +276,10 @@ export function createAuthStore(deps: AuthDeps) {
       if (state.status !== 'signed-in') return { ok: false, message: GENERIC };
       const { user } = state;
       write({ status: 'signing-out', user });
+      if (deps.beforeSignOut && !await deps.beforeSignOut()) {
+        write({ status: 'signed-in', user });
+        return { ok: false, message: 'Sign-out cancelled. Your edits are kept here.' };
+      }
       let response: Response;
       try {
         response = await deps.fetch(SIGN_OUT_PATH, {

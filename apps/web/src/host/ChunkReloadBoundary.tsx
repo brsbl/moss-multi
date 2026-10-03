@@ -1,5 +1,4 @@
-// One hard reload when a lazy chunk fails to load, as after a redeploy (L§4.1 stale chunks). Any other error, or
-// a second failure within the window, is rethrown: a chunk error on a fresh load is a different bug.
+// Initial-shell chunk recovery. Optional surfaces use recoverableLazy so their failures never unmount an editor.
 import { Component, type ReactNode } from 'react';
 import { hasDocSessions, hasUnacked } from './collab/unacked.ts';
 import { refuseInput } from './refusal.ts';
@@ -48,13 +47,6 @@ export async function recoverChunk(): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-if (typeof window !== 'undefined') {
-  window.addEventListener('vite:preloadError', (event) => {
-    event.preventDefault();
-    void recoverChunk();
-  });
 }
 
 interface Props {

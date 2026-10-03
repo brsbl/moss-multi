@@ -52,7 +52,6 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - The wrangler ProxyWorker patch replays non-idempotent requests after an ambiguous failure → T0.9b follow-up (stack infra)
 - `qa.mjs close` forgets the session even when closing it failed → tooling follow-up
 - `stack.mjs` puts `BETTER_AUTH_SECRET` and the test-hook secret on wrangler's command line → tooling follow-up
-- Signing out does not wait for unsynced edits, and no task owns that safeguard → extend T2.3's unacked-wait step to sign-out, or add it to the T2.x sign-out legs
 - Creating a note writes the D1 title and filename from the Worker, not the DocDO → T1.4 (title and filename projections): move slug and `availableFilename` to `packages/core` and let create go through the DO projection
 - Table and tab widths and collapsed headings reset on every reload in M0 → T1.6
 - Page-attribute names, the socket path name and the roles list are each defined in more than one place → the T1.x lane that next touches each module
@@ -75,3 +74,13 @@ Connection heartbeat/reducer, indicator and notice band, first-sync retrying, te
 - Green proof: [both-engine j03](https://github.com/brsbl/moss-multi/actions/runs/37129674970) at be193a2; [complete CI](https://github.com/brsbl/moss-multi/actions/runs/37129924046) at 4f80045. Final dispatch adds refusal/rebind, deletion, preload-error and the existing early-key regression, with desktop/mobile banner evidence. Complete CI and both-engine targeted journeys also passed at 27adc6b ([checks](https://github.com/brsbl/moss-multi/actions/runs/37130498139), [journeys](https://github.com/brsbl/moss-multi/actions/runs/37130498571)). The final evidence adjustment collapses the notes panel through its UI for the 390px reading view. Budget: 60 CI minutes.
 - Local arm64 Node 24 build and stack boot succeeded. Browser Automation returned `unknown command browser-automation`; plugin discovery returned HTTP 401. No substitute driver or personal app was used; the stack was stopped. Local QA/triptych remains owed.
 - Deviations: reused the earlier tests-first red runs and critically reviewed WIP; no separate task brief exists; same-owner windows exercise j03 until T1.1 grants are integrated; added the minimal `/api/docs/:id/access` read using the existing resolver, needed by bounded handshake and role rechecks. The optional ack `ds` field preserves the existing wire contract. Transient chunk errors degrade in place; an open document never auto-reloads.
+
+### T1.3 — attempt 2 regression repairs
+
+Tests-first head `2ad05cc` reproduced all three P1s and the lingering conn-limit/backoff defects in [full-lane CI](https://github.com/brsbl/moss-multi/actions/runs/37134139961): the sign-out confirmation was absent and peer text was lost; a real Settings import returned 404 and removed the shell with the reported TypeError; shell parity failed at 58/62 px² and the indicator lacked its chrome tag. The access-ceiling regression is in `1478128`.
+
+Repairs keep sessions recoverable until confirmed sign-out, pause writes and wait five seconds for acks before a Cancel-default confirmation, contain optional import failures within their surface, tag the indicator for the existing `m1` parity mask and use moss’s defined dot token. Connection-limit Retry retains lingering edits; REST rechecks use the integrated T1.1 resolver and link ceiling, with bounded backoff.
+
+- Local QA deviation: `bb browser-automation --help` returned unknown command and plugin discovery returned HTTP 401. No substitute driver or personal app was used; the independent checker owns the real browser pass.
+- Integration: merged `origin/m1` at `77c5b4a`, retaining T1.1’s role gate, Share control and denial routes.
+- Deferred P2s: stronger banner salience/triptych, the dead `halted` field, one refusal announcer across split panes, and incremental AckLedger compaction. These are outside the three P1 regression repairs and need their own focused validation; the retry, dot, navigation and link-access nits were included.

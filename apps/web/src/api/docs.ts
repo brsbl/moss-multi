@@ -136,7 +136,7 @@ export async function handleDocs(request: Request, env: DocsEnv): Promise<Respon
     if (request.method !== 'GET') return json({ error: 'method-not-allowed' }, 405, { allow: 'GET' });
     const principal = await resolvePrincipal(request, env);
     if (!principal) return json({ error: 'unauthenticated' }, 401, NO_STORE);
-    const access = await resolveDocAccess(createDb(env.DB), principal, accessMatch[1]);
+    const access = await resolveDocAccess(createDb(env.DB), principal, accessMatch[1], shareTokenOf(request));
     return access ? json({ role: access.role, deleted: access.deleted }, 200, NO_STORE) : notFound();
   }
 

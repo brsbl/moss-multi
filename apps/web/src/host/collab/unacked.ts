@@ -25,3 +25,18 @@ export function markSession(session: object, open: boolean): void {
   else openSessions.delete(session);
 }
 export const hasDocSessions = (): boolean => openSessions.size > 0;
+
+/** A bounded wait removes its subscription even when the server never answers. */
+export function waitForAllAcked(timeoutMs: number): Promise<boolean> {
+  if (!hasUnacked()) return Promise.resolve(true);
+  return new Promise(resolve => {
+    const finish = (acked: boolean) => {
+      clearTimeout(timer);
+      waiters.delete(done);
+      resolve(acked);
+    };
+    const done = () => finish(true);
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    waiters.add(done);
+  });
+}
