@@ -13,9 +13,9 @@ on:
   workflow_dispatch:
     inputs:
       lane:
-        description: 'auto (grep set: e2e, else full), checks (checks-only lane), e2e, full, or parity (oracle and shell parity only)'
+        description: 'auto (grep set: e2e, else full), checks (checks-only lane), e2e, full, parity (oracle and shell parity only), or viewer (the viewer bundle and its fixture only)'
         type: choice
-        options: [auto, checks, e2e, full, parity]
+        options: [auto, checks, e2e, full, parity, viewer]
         default: auto
       grep:
         description: 'Playwright --grep for the journey run'
@@ -67,6 +67,7 @@ jobs:
       browsers: ${{ steps.plan.outputs.browsers }}
       macos: ${{ steps.plan.outputs.macos }}
       parity: ${{ steps.plan.outputs.parity }}
+      viewer: ${{ steps.plan.outputs.viewer }}
       grep: ${{ steps.plan.outputs.grep }}
       repeat: ${{ steps.plan.outputs.repeat }}
       slow: ${{ steps.plan.outputs.slow }}
@@ -329,6 +330,53 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+  # The read-only viewer bundle (T0.13): build packages/viewer, keep dist/ (bundle, stylesheet, fonts, viewer.json)
+  # as the moss-viewer artifact, then run its acceptance fixture and shots in both engines (e2e/viewer).
+  viewer:
+    needs: plan
+    if: needs.plan.outputs.viewer == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    container:
+      image: mcr.microsoft.com/playwright:v1.61.1-noble
+      options: --ipc=host --init
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+      # The manifest records the commit; the container's checkout belongs to another uid.
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build the viewer bundle
+        run: pnpm --filter @moss-multi/viewer build
+        env:
+          MOSS_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      - run: cat packages/viewer/dist/viewer.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: moss-viewer
+          path: packages/viewer/dist
+          retention-days: 30
+      - name: Acceptance fixture and shots, Chromium and WebKit
+        working-directory: e2e
+        run: pnpm exec playwright test --project=viewer-chromium --project=viewer-webkit
+      - name: Upload results and shots
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: viewer-results-${{ github.run_attempt }}
+          path: |
+            e2e/test-results/
+            e2e/playwright-report/
+          retention-days: 7
+          if-no-files-found: ignore
+
   # The Ladle oracle (A§20; A§22 OA1 fallback, no deploy key): moss@pin's own files, stories and .ladle from
   # `moss-vendor.mjs pristine`, plus main.tsx's font preamble, built with its own frozen install.
   oracle:
@@ -424,7 +472,7 @@ jobs:
 
   ci-ok:
     if: always()
-    needs: [plan, checks, build, e2e, macos, oracle, parity]
+    needs: [plan, checks, build, e2e, macos, oracle, parity, viewer]
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:

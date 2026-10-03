@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "tableCount": 2,
+  "tables": [{ "columnWidths": [260, 120, 120] }, { "columnWidths": [90, 220] }],
+  "tabGroupCount": 1,
+  "tabGroups": [{ "panelLabels": ["Posts", "Shelf map", "Photo"] }]
+}

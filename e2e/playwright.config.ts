@@ -48,5 +48,8 @@ export default defineConfig({
     { name: 'webkit', testDir: './journeys', ...journeys, dependencies: ['selftest-webkit'], use: { browserName: 'webkit' } },
     // Shell parity against the Ladle oracle (A§20): the parity job only, in the e2e image's Chromium.
     { name: 'parity', testDir: './parity', use: { browserName: 'chromium' } },
+    // The read-only viewer bundle's acceptance fixture (T0.13): the viewer job only, against packages/viewer/dist.
+    { name: 'viewer-chromium', testDir: './viewer', use: { browserName: 'chromium' } },
+    { name: 'viewer-webkit', testDir: './viewer', use: { browserName: 'webkit' } },
   ],
 });

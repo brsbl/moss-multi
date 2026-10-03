@@ -22,7 +22,7 @@ interface Row {
 const SLOW_MS = 90_000;
 const WHOLE_SUITE = 'all';
 
-const isJourneyProject = (name: string) => !name.startsWith('selftest-') && name !== 'parity';
+const isJourneyProject = (name: string) => !name.startsWith('selftest-') && !name.startsWith('viewer-') && name !== 'parity';
 
 /** A journey-group shard that plans no journey test (a group or testMatch mistake) must not pass on selftests alone. */
 export function emptyShardProblem(group: string | undefined, planned: number): string | null {
