@@ -1,0 +1,29 @@
+diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx
+--- a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx
++++ b/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx
+@@ -5,6 +5,8 @@ import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext
+ import { useLexicalNodeSelection } from '@lexical/react/useLexicalNodeSelection';
+ import { Undo2, Redo2, Eraser, Check, X, CopyPlus, Minus, Pen, Type, StickyNote } from 'lucide-react';
+ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@moss/shared/components/ui/tooltip';
++// moss-multi seam: hide-registry (A§9)
++import { hidden } from '@moss-multi/host/affordances';
+ // moss-multi seam: converter-split (A§12; S-conv §2.3)
+ import { OPEN_BLOCK_COMMENT_COMMAND } from '../commands';
+ import { EDITOR_CHROME_COLORS } from '../colors';
+@@ -1317,6 +1319,8 @@ function SketchWrapper({
+                     </TooltipTrigger>
+                     <TooltipContent side="bottom"><p>Edit canvas</p></TooltipContent>
+                   </Tooltip>
++                  {/* moss-multi seam: hide-registry (A§9) */}
++                  {hidden('comments') ? null : (
+                   <Tooltip>
+                     <TooltipTrigger asChild>
+                       <button
+@@ -1332,6 +1336,7 @@ function SketchWrapper({
+                     </TooltipTrigger>
+                     <TooltipContent side="bottom"><p>Add comment</p></TooltipContent>
+                   </Tooltip>
++                  )}
+                 </div>
+               </TooltipProvider>
+             )}

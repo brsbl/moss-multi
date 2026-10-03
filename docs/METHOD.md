@@ -76,6 +76,12 @@ Read this with PRODUCT.md, your BUILDPLAN entry and the A§ it cites, before wri
 - `bridge/inventory.ts` lists every ElectronAPI method at the pin. A `staged` inventory entry or registry entry fails the unit tests once CI's `TRACE_MILESTONE` (the last closed milestone) reaches its milestone. [T0.5b]
 - Base UI renders every portal as `div[data-base-ui-portal]` with modal internal backdrops inside it, so `data-overlay-surface` sits on the DS Portal wrappers; an inline Popover's backdrop is not covered. [T0.5b]
 - Never remount or re-key a bound editor because of a REST response; moss's `updatedAt`-keyed refetch caused the 30 s flash and dropped keystrokes. [L§4.1]
+- Every note the web opens binds through `useMossMultiPane` (`host/collab/pane.tsx`), CanvasAreaContent's one seam: moss's REST hydration, autosave, disk and agent paths return early, and the editor mounts behind the skeleton until first sync. [T0.8]
+- A hand seam in a generated residual file (`MarkdownEditor.tsx`) cannot go through `extract`, whose drift precheck reverse-applies the residual patch first and fails. Record it as `extract` settles one (the `.seam.patch` generated to final, the residual patch upstream to final, `seam` in PORTED.json); `extract` must then leave the tree unchanged. [T0.8]
+- TanStack Router wraps `window.history.replaceState`, so an address change from the bridge became a route change that remounted moss's whole App (a second doc socket, the pending focus lost); the bridge writes through `History.prototype.replaceState`. [T0.8]
+- A bound note has no save path, so a moss input that only writes an atom for that path to persist vanishes on reload with no error. Two did: Properties (frontmatter), staged in the hide registry as `note-properties` until T1.4 binds `Y.Text('frontmatter')`, and new comments (the highlight is in the doc, the thread text only in an atom), staged as `comments` until T4.2. A surface that writes outside the Y.Doc is bound, staged or closed before it ships. [T0.8]
+- The reverse holds for reads: a bound note never fills moss's `content` string (`noteContentAtom`), and only the editor update listener clears the body-markdown cache behind Copy markdown, Note stats and the staged exports. So a bound pane keeps that listener's cache clear for every update, local or a peer's, and skips only its dirty and autosave half; a moss read of the body goes through the editor, never `content`. Copy markdown returned its first copy forever when the whole listener was skipped. [T0.8]
+- Moss's split rule is total through an `atoms.ts` seam, installed ahead of T1.6 because a split back to the left pane's note crashed the M0 app: split back or forward to the left pane's note, and any left-pane move to the split's note, closes the split. The session registry refuses a second session for a doc without throwing; the refused pane mounts no plugin and binds once the holder lets go. [T0.8]
 - Side panels `shrink-0`, the editor `flex-1 min-w-0`; a dropdown inside a dialog at the same z-index paints behind it. [L§4.1]
 
 ## Lexical and the binding
@@ -88,6 +94,8 @@ Read this with PRODUCT.md, your BUILDPLAN entry and the A§ it cites, before wri
 - One doc id spans several Y.Docs over its life; track boundness per instance. [L§4.3]
 - y-partyserver 2.2.0: patch `unload` to `pagehide`; `connect:false` plus one explicit connect; heartbeat with close 4408 after 12 s silence; awareness on `update`; close with 1000; wrap server messages in `__YPS:`. [L§4.3]
 - Undo: `captureTimeout` 1000 ms, `trackedOrigins` = the local binding, `readOnly` from the role, not mount-time editability. [L§4.3]
+- `@lexical/react`'s ContentEditable gives a non-editable root `tabindex=-1`, so the gate removes it while the body is closed (R2). The pane goes live in the same render as the root turns editable (React state; a store snapshot renders on its own, first), so moss's pending focus finds an editable root. [T0.8]
+- `data-sync-unacked` turns `1` in the tick of a local write and `0` on the DocDO ack that covers it; a journey waits for `0` before a reload. moss's bottom toolbar carries `data-floating-selection-toolbar` (a MarkdownEditor seam), so invariant 5 allows it as it does the selection bar. [T0.8]
 
 ## Title, presence, connection
 

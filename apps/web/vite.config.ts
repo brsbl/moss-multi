@@ -19,6 +19,8 @@ export default defineConfig({
       { find: /^@moss-desktop\/(.*)$/, replacement: `${vendor}/desktop/src/$1` },
       // moss-multi seams in vendored files call host hooks and slots (A§2.2).
       { find: /^@moss-multi\/host\/(.*)$/, replacement: `${repoRoot}apps/web/src/host/$1` },
+      // @lexical/react's collaboration plugin, vendored with its seams (A§10.2).
+      { find: /^@moss-multi\/lexical-react\/(.*)$/, replacement: `${repoRoot}vendor/lexical-react/$1` },
     ],
     dedupe: ['react', 'react-dom', 'jotai', 'jotai-family', 'lexical', 'yjs', 'prismjs'],
   },

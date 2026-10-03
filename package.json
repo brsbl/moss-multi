@@ -33,6 +33,7 @@
     "@lexical/selection": "0.48.0",
     "@lexical/table": "0.48.0",
     "@lexical/utils": "0.48.0",
+    "@lexical/yjs": "0.48.0",
     "@mdx-js/mdx": "3.1.1",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
@@ -49,7 +50,8 @@
     "react-is": "19.3.0",
     "recharts": "3.10.1",
     "remark-gfm": "4.0.1",
-    "tailwind-merge": "2.6.1"
+    "tailwind-merge": "2.6.1",
+    "yjs": "13.6.31"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "0.18.7",
@@ -100,7 +102,8 @@
       "@lexical/yjs>yjs": "13.6.31"
     },
     "patchedDependencies": {
-      "wrangler@4.113.0": "patches/wrangler@4.113.0.patch"
+      "wrangler@4.113.0": "patches/wrangler@4.113.0.patch",
+      "y-partyserver@2.2.0": "patches/y-partyserver@2.2.0.patch"
     }
   }
 }

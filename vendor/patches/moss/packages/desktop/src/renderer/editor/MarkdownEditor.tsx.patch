@@ -267,10 +267,12 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
  import { MediaSourceDialog } from './dialogs/MediaSourceDialog';
  import { useMediaSourceDialog, setGlobalMediaSourceDialogOpener } from './dialogs/useMediaSourceDialog';
  import {
-@@ -322,6 +136,13 @@ import {
+@@ -322,6 +136,15 @@ import {
    SelectionToolbarShell
  } from './components/SelectionToolbarPrimitives';
  import './MarkdownEditor.css';
++// moss-multi seam: hide-registry (A§9)
++import { hidden } from '@moss-multi/host/affordances';
 +// moss-multi seam: converter-split (A§12; S-conv §2.3)
 +import { $convertMossCustomCodeNodes, $postImportNormalize, escapeHtmlEntities, normalizeMarkdownForImport, unescapeHtmlEntities } from './markdown/normalize';
 +import { EDITOR_FONT_FAMILY_LABELS, type EditorSelectionFontFamily, HIGHLIGHT_COLOR_VARIABLES, HIGHLIGHT_YELLOW_VALUE, HIGHLIGHT_YELLOW_VAR, MARKDOWN_EDITOR_HTML_IMPORT, SERIF_FONT_FAMILY_STYLE, SERIF_FONT_FAMILY_VALUE, SERIF_OPTICAL_FONT_SIZE_ADJUST, STYLE_FONT_FAMILY_PROPERTY, STYLE_FONT_SIZE_ADJUST_PROPERTY, selectionFontFamilyFromStyleValue } from './markdown/text-style';
@@ -281,10 +283,77 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
  
  export type EditorRemountReason = 'disk_content_changed' | 'in_place_import_failed';
  
-@@ -477,3103 +298,67 @@ const theme = {
-   mark: 'comment-mark'
- };
+@@ -348,6 +171,8 @@ export interface MarkdownEditorProps {
+   enableSearchPlugin?: boolean;
+   editorMountVersion?: number;
+   editorRemountReason?: EditorRemountReason | null;
++  /** moss-multi seam: collaboration (A§2.2, A§10.3): present when the note is bound to its doc; the plugin replaces the history plugin. */
++  collaboration?: { plugin: ReactNode } | null;
+ }
  
+ export type MarkdownEditorHandle = {
+@@ -419,3105 +244,69 @@ const theme = {
+     namespace: 'token namespace',
+     number: 'token number',
+     operator: 'token operator',
+-    prolog: 'token prolog',
+-    property: 'token property',
+-    punctuation: 'token punctuation',
+-    regex: 'token regex',
+-    selector: 'token selector',
+-    string: 'token string',
+-    symbol: 'token symbol',
+-    tag: 'token tag',
+-    url: 'token url',
+-    variable: 'token variable'
+-  },
+-  link: 'cursor-pointer text-action-primary underline underline-offset-2 transition-colors hover:text-action-primary-hover',
+-  list: {
+-    nested: {
+-      listitem: 'moss-nested-listitem'
+-    },
+-    ol: 'moss-document-ink mb-2 list-decimal pl-3 text-body',
+-    ul: 'moss-document-ink mb-2 list-disc pl-3 text-body',
+-    checklist: 'moss-checklist',
+-    listitem: 'moss-document-ink mb-1 text-body',
+-    listitemChecked: 'moss-checklist-item moss-checklist-item--checked',
+-    listitemUnchecked: 'moss-checklist-item moss-checklist-item--unchecked'
+-  },
+-  text: {
+-    bold: 'font-semibold',
+-    italic: 'italic',
+-    underline: 'underline',
+-    strikethrough: 'moss-strikethrough line-through',
+-    underlineStrikethrough: 'underline moss-strikethrough line-through',
+-    code: 'rounded bg-surface-code px-1 py-0.5 font-mono text-[0.95em]'
+-  },
+-  heading: {
+-    h1: 'moss-document-ink mb-3 text-h1 tracking-title',
+-    h2: 'moss-document-ink mb-2 mt-4 text-h2',
+-    h3: 'moss-document-ink mb-2 mt-3 text-h3',
+-    h4: 'moss-document-ink mb-1 mt-3 text-h4'
+-  },
+-  formula: 'inline-flex items-center',
+-  fileLink: 'inline-flex items-center',
+-  embedPill: 'inline-flex items-center',
+-  colorCode: 'inline-flex items-center',
+-  table: 'moss-table',
+-  tableCell: 'moss-table-cell',
+-  tableCellHeader: 'moss-table-cell-header',
+-  tableRow: 'moss-table-row',
+-  tableScrollableWrapper: 'moss-table-scroll-shell moss-table-scroll-viewport',
+-  tableSelection: 'moss-table-selection',
+-  hrSelected: 'moss-divider-selected',
+-  callout: 'outline-none',
+-  chart: 'outline-none',
+-  codeBlock: 'outline-none',
+-  image: 'outline-none',
+-  sketch: 'outline-none',
+-  webEmbed: 'outline-none',
+-  htmlBlockquote: 'outline-none', htmlBlock: 'outline-none',
+-  mark: 'comment-mark'
+-};
+-
 -type EditorSelectionFontFamily = 'sans' | 'serif';
 -
 -const STYLE_FONT_FAMILY_PROPERTY = 'font-family';
@@ -338,12 +407,12 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
 -const SERIF_FONT_FAMILY_MARKDOWN_STYLE_PATTERN =
 -  '[^"]*font-family\\s*:\\s*[^"]*(?:Charter|Iowan Old Style|ui-serif|Georgia|Cambria|Times New Roman|Times|(?:^|[^-])serif)[^"]*';
 -
- const Placeholder = ({ children }: { children: ReactNode }) => (
-   <div className="pointer-events-none absolute inset-x-0 top-4 mx-auto w-full max-w-canvas-prose select-none text-left text-body text-ink-faint">
-     {children}
-   </div>
- );
- 
+-const Placeholder = ({ children }: { children: ReactNode }) => (
+-  <div className="pointer-events-none absolute inset-x-0 top-4 mx-auto w-full max-w-canvas-prose select-none text-left text-body text-ink-faint">
+-    {children}
+-  </div>
+-);
+-
 -const HIGHLIGHT_YELLOW_VAR = '--color-highlight-yellow';
 -const HIGHLIGHT_YELLOW_VALUE = `var(${HIGHLIGHT_YELLOW_VAR})`;
 -
@@ -699,13 +768,10 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
 -  type: 'text-match'
 -};
 -
- /**
+-/**
 - * Obsidian highlight syntax: ==text==
 - * Preserves source syntax losslessly while rendering as a yellow highlight.
-+ * Converts newly created Lexical CodeNodes into Moss custom code nodes in real time.
-+ * This covers editor-native creation paths (e.g. markdown shortcuts / pasted fences)
-+ * that happen after the initial markdown import pipeline has already run.
-  */
+- */
 -const OBSIDIAN_HIGHLIGHT_TRANSFORMER: TextMatchTransformer = {
 -  dependencies: [TextNode],
 -  export: (node, _exportChildren, exportFormat) => {
@@ -717,9 +783,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
 -    if (!style.includes('--obsidian-highlight')) {
 -      return null;
 -    }
-+function CodeNodeNormalizationPlugin(): null {
-+  const [editor] = useLexicalComposerContext();
- 
+-
 -    const text = node.getTextContent();
 -    const formatted = exportFormat ? exportFormat(node, text) : text;
 -    return `==${isSerifFontFamilyValue(style) ? wrapSerifFontFamilyMarkdownSpan(formatted) : formatted}==`;
@@ -743,13 +807,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
 -  trigger: '=',
 -  type: 'text-match'
 -};
-+  useEffect(() => {
-+    // Normalize any pre-existing CodeNodes (e.g. from older sessions/state)
-+    // so custom code block UI appears without requiring a reload.
-+    editor.update(() => {
-+      $convertMossCustomCodeNodes();
-+    }, { tag: 'skip-dirty' });
- 
+-
 -// Horizontal rule transformer for ---
 -const HORIZONTAL_RULE_TRANSFORMER: ElementTransformer = {
 -  dependencies: [HorizontalRuleNode],
@@ -767,19 +825,8 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
 -  },
 -  type: 'element'
 -};
-+    return editor.registerMutationListener(CodeNode, (mutations) => {
-+      let hasNewCodeNode = false;
-+      for (const [, mutation] of mutations) {
-+        if (mutation === 'created') {
-+          hasNewCodeNode = true;
-+          break;
-+        }
-+      }
- 
-+      if (!hasNewCodeNode) {
-+        return;
-+      }
- 
+-
+-
 -// Formula transformer:
 -// - Legacy: {{formula|result}}
 -// - Extended: {{formula|result|id=...;name=...;stale=1}}
@@ -814,10 +861,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
 -      ...(parsed.formulaId ? { formulaId: parsed.formulaId } : {}),
 -      ...(parsed.name ? { name: parsed.name } : {}),
 -      ...(parsed.stale ? { stale: true } : {})
-+      editor.update(() => {
-+        $convertMossCustomCodeNodes(undefined, { autoEditEmptyBlocks: true });
-+      }, { tag: 'skip-dirty' });
-     });
+-    });
 -    textNode.replace(formulaNode);
 -  },
 -  trigger: '}',
@@ -869,8 +913,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
 - * code-level enhancement over portable Markdown.
 - */
 -const EMBED_PILL_SUPPORTED_TEXT_FORMAT = IS_BOLD | IS_ITALIC | IS_STRIKETHROUGH;
-+  }, [editor]);
- 
+-
 -const markdownDelimiterToTextFormat = (delimiter: string): number => {
 -  if (delimiter === '***') {
 -    return IS_BOLD | IS_ITALIC;
@@ -886,9 +929,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
 -  }
 -  return 0;
 -};
-+  return null;
-+}
- 
+-
 -const markdownWrapperPairToTextFormat = (opening: string, closing: string): number => {
 -  if (opening === closing) {
 -    return markdownDelimiterToTextFormat(opening);
@@ -903,9 +944,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
 -  ]);
 -  return pairs.get(`${opening}\0${closing}`) ?? 0;
 -};
-+function TableCellListNormalizationPlugin(): null {
-+  const [editor] = useLexicalComposerContext();
- 
+-
 -const formatEmbedPillMarkdown = (markdown: string, textFormat: number): string => {
 -  let formatted = markdown;
 -  if (textFormat & IS_BOLD) {
@@ -919,12 +958,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
 -  }
 -  return formatted;
 -};
-+  useEffect(() => {
-+    const normalizeBeforeListInsert = () => {
-+      $normalizeSelectionTableCells($getSelection());
-+      return false;
-+    };
- 
+-
 -const EMBED_PILL_TRANSFORMER: TextMatchTransformer = {
 -  dependencies: [EmbedPillNode],
 -  export: (node) => {
@@ -934,11 +968,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
 -    return wrapInlineWithCommentMarkers(
 -      node,
 -      formatEmbedPillMarkdown(node.getUrl(), node.getTextFormat() & EMBED_PILL_SUPPORTED_TEXT_FORMAT)
-+    const unregisterUnordered = editor.registerCommand(
-+      INSERT_UNORDERED_LIST_COMMAND,
-+      normalizeBeforeListInsert,
-+      COMMAND_PRIORITY_HIGH
-     );
+-    );
 -  },
 -  importRegExp: /\?\[((?:\\.|[^\]\\])*)\]\(([^()\s]*(?:\([^()]*\)[^()\s]*)*)\)/,
 -  regExp: /\?\[((?:\\.|[^\]\\])*)\]\(([^()\s]*(?:\([^()]*\)[^()\s]*)*)\)$/,
@@ -3136,7 +3166,17 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
 -    }
 -
 -    return false;
--  },
++    prolog: 'token prolog',
++    property: 'token property',
++    punctuation: 'token punctuation',
++    regex: 'token regex',
++    selector: 'token selector',
++    string: 'token string',
++    symbol: 'token symbol',
++    tag: 'token tag',
++    url: 'token url',
++    variable: 'token variable'
+   },
 -  handleImportAfterStartMatch: ({ lines, startLineIndex, startMatch, rootNode }) => {
 -    const endRegExp = /^\s*(<\/blockquote>|&lt;\/blockquote&gt;)\s*$/i;
 -
@@ -3158,7 +3198,18 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
 -    }
 -
 -    return null;
--  },
++  link: 'cursor-pointer text-action-primary underline underline-offset-2 transition-colors hover:text-action-primary-hover',
++  list: {
++    nested: {
++      listitem: 'moss-nested-listitem'
++    },
++    ol: 'moss-document-ink mb-2 list-decimal pl-3 text-body',
++    ul: 'moss-document-ink mb-2 list-disc pl-3 text-body',
++    checklist: 'moss-checklist',
++    listitem: 'moss-document-ink mb-1 text-body',
++    listitemChecked: 'moss-checklist-item moss-checklist-item--checked',
++    listitemUnchecked: 'moss-checklist-item moss-checklist-item--unchecked'
+   },
 -  type: 'multiline-element'
 -};
 -
@@ -3173,7 +3224,14 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
 -      return false;
 -    }
 -    return false;
--  },
++  text: {
++    bold: 'font-semibold',
++    italic: 'italic',
++    underline: 'underline',
++    strikethrough: 'moss-strikethrough line-through',
++    underlineStrikethrough: 'underline moss-strikethrough line-through',
++    code: 'rounded bg-surface-code px-1 py-0.5 font-mono text-[0.95em]'
+   },
 -  handleImportAfterStartMatch: ({ lines, startLineIndex, rootNode }) => {
 -    const startLine = lines[startLineIndex] ?? '';
 -    const startMatch = startLine.match(MOSS_HTML_FENCE_START_RE);
@@ -3192,7 +3250,12 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
 -    }
 -
 -    return null;
--  },
++  heading: {
++    h1: 'moss-document-ink mb-3 text-h1 tracking-title',
++    h2: 'moss-document-ink mb-2 mt-4 text-h2',
++    h3: 'moss-document-ink mb-2 mt-3 text-h3',
++    h4: 'moss-document-ink mb-1 mt-3 text-h4'
+   },
 -  type: 'multiline-element'
 -};
 -
@@ -3203,8 +3266,27 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
 -  // Set only on the live editing path (markdown `\`\`\`` shortcut / pasted
 -  // empty fence) — never during disk import, which would steal focus on load.
 -  autoEditEmptyBlocks?: boolean;
--};
--
++  formula: 'inline-flex items-center',
++  fileLink: 'inline-flex items-center',
++  embedPill: 'inline-flex items-center',
++  colorCode: 'inline-flex items-center',
++  table: 'moss-table',
++  tableCell: 'moss-table-cell',
++  tableCellHeader: 'moss-table-cell-header',
++  tableRow: 'moss-table-row',
++  tableScrollableWrapper: 'moss-table-scroll-shell moss-table-scroll-viewport',
++  tableSelection: 'moss-table-selection',
++  hrSelected: 'moss-divider-selected',
++  callout: 'outline-none',
++  chart: 'outline-none',
++  codeBlock: 'outline-none',
++  image: 'outline-none',
++  sketch: 'outline-none',
++  webEmbed: 'outline-none',
++  htmlBlockquote: 'outline-none', htmlBlock: 'outline-none',
++  mark: 'comment-mark'
+ };
+ 
 -export function $convertMossCustomCodeNodes(
 -  root: import('lexical').ElementNode = $getRoot(),
 -  options: PostImportNormalizeOptions = {}
@@ -3365,70 +3447,15 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
 -  $applyTableLayoutMetadata(options.layoutMetadata, root);
 -  $applyTabGroupLayoutMetadata(options.layoutMetadata, root);
 -}
--
--/**
-- * Converts newly created Lexical CodeNodes into Moss custom code nodes in real time.
-- * This covers editor-native creation paths (e.g. markdown shortcuts / pasted fences)
-- * that happen after the initial markdown import pipeline has already run.
-- */
--function CodeNodeNormalizationPlugin(): null {
--  const [editor] = useLexicalComposerContext();
--
--  useEffect(() => {
--    // Normalize any pre-existing CodeNodes (e.g. from older sessions/state)
--    // so custom code block UI appears without requiring a reload.
--    editor.update(() => {
--      $convertMossCustomCodeNodes();
--    }, { tag: 'skip-dirty' });
--
--    return editor.registerMutationListener(CodeNode, (mutations) => {
--      let hasNewCodeNode = false;
--      for (const [, mutation] of mutations) {
--        if (mutation === 'created') {
--          hasNewCodeNode = true;
--          break;
--        }
--      }
--
--      if (!hasNewCodeNode) {
--        return;
--      }
--
--      editor.update(() => {
--        $convertMossCustomCodeNodes(undefined, { autoEditEmptyBlocks: true });
--      }, { tag: 'skip-dirty' });
--    });
--  }, [editor]);
--
--  return null;
--}
--
--function TableCellListNormalizationPlugin(): null {
--  const [editor] = useLexicalComposerContext();
--
--  useEffect(() => {
--    const normalizeBeforeListInsert = () => {
--      $normalizeSelectionTableCells($getSelection());
--      return false;
--    };
--
--    const unregisterUnordered = editor.registerCommand(
--      INSERT_UNORDERED_LIST_COMMAND,
--      normalizeBeforeListInsert,
--      COMMAND_PRIORITY_HIGH
--    );
--    const unregisterOrdered = editor.registerCommand(
--      INSERT_ORDERED_LIST_COMMAND,
--      normalizeBeforeListInsert,
--      COMMAND_PRIORITY_HIGH
-+    const unregisterOrdered = editor.registerCommand(
-+      INSERT_ORDERED_LIST_COMMAND,
-+      normalizeBeforeListInsert,
-+      COMMAND_PRIORITY_HIGH
-     );
-     const unregisterCheck = editor.registerCommand(
-       INSERT_CHECK_LIST_COMMAND,
-@@ -3591,604 +376,6 @@ function TableCellListNormalizationPlugin(): null {
++const Placeholder = ({ children }: { children: ReactNode }) => (
++  <div className="pointer-events-none absolute inset-x-0 top-4 mx-auto w-full max-w-canvas-prose select-none text-left text-body text-ink-faint">
++    {children}
++  </div>
++);
+ 
+ /**
+  * Converts newly created Lexical CodeNodes into Moss custom code nodes in real time.
+@@ -3591,604 +380,6 @@ function TableCellListNormalizationPlugin(): null {
    return null;
  }
  
@@ -4033,3 +4060,140 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
  // URL regex for AutoLinkPlugin: matches http(s), ftp, and www. prefixed URLs
  const URL_REGEX =
    /((https?:\/\/|ftp:\/\/|www\.)[^\s<>{}|\\^[\]`]+)/;
+@@ -6934,7 +3125,7 @@ function FloatingSelectionTools({
+         }
+ 
+         // Cmd+Shift+A for comment annotation
+-        if (key === 'a' && !event.altKey) {
++        if (key === 'a' && !event.altKey && !hidden('comments') /* moss-multi seam: hide-registry (A§9) */) {
+           event.preventDefault();
+           openCommentInput();
+           return true;
+@@ -7322,7 +3513,8 @@ function FloatingSelectionTools({
+     </ToolbarTooltip>
+   );
+ 
+-  const commentButton = (
++  // moss-multi seam: hide-registry (A§9)
++  const commentButton = hidden('comments') ? null : (
+     <ToolbarTooltip label="Comment" keys={['⌘', '⇧', 'A']}>
+       <button
+         type="button"
+@@ -7462,6 +3654,7 @@ function FloatingSelectionTools({
+           <div
+             className="pointer-events-none fixed bottom-6 z-50 -translate-x-1/2 flex flex-col items-center gap-2 px-4"
+             style={bottomToolbarStyle}
++            data-floating-selection-toolbar="true" // moss-multi seam: toolbar-contract (A§19): moss's own bottom toolbar
+           >
+             <div ref={portalRef} className="w-full max-w-lg empty:hidden" />
+             <SelectionToolbarShell
+@@ -7573,11 +3766,14 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+       paneId,
+       enableSearchPlugin = true,
+       editorMountVersion,
+-      editorRemountReason = null
++      editorRemountReason = null,
++      collaboration = null
+     }: MarkdownEditorProps,
+     ref
+   ) {
+   const store = useStore();
++  // moss-multi seam: collaboration (A§2.2, A§10.3): a bound editor mounts empty and closed; its doc fills it at first sync.
++  const bound = collaboration !== null;
+   const latestEditorStateRef = useRef<EditorState | null>(null);
+   const editorRef = useRef<LexicalEditor | null>(null);
+   const lastContentChangeTagsRef = useRef<string | null>(null);
+@@ -7609,7 +3805,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+   // Capture editor instance when ready
+   const handleEditorReady = useCallback((editor: LexicalEditor) => {
+     editorRef.current = editor;
+-    if (hasInitialSerializedStateProp) {
++    if (hasInitialSerializedStateProp || bound /* moss-multi seam: collaboration (A§2.2, A§10.3): no state cache */) {
+       onReady?.(editor);
+       return;
+     }
+@@ -7626,7 +3822,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+       );
+     });
+     onReady?.(editor);
+-  }, [hasInitialSerializedStateProp, onReady]);
++  }, [bound, hasInitialSerializedStateProp, onReady]);
+ 
+   const analyticsOwnerId = `${paneId ?? 'single'}:${noteId}:${editorMountVersion ?? 0}`;
+ 
+@@ -7663,7 +3859,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+ 
+   const initialConfig = useMemo<InitialConfigType>(
+     () => {
+-      const cachedEditorState = readMarkdownEditorStateCache(editorStateCacheKey);
++      const cachedEditorState = bound ? undefined : readMarkdownEditorStateCache(editorStateCacheKey);
+ 
+       const importMarkdownValue = (editor: LexicalEditor): void => {
+         // Strip any residual comment footer from the value (defensive —
+@@ -7694,7 +3890,9 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+         editor.getRootElement()?.scrollTo({ top: 0 });
+       };
+ 
+-      const editorState = hasInitialSerializedStateProp
++      const editorState = bound
++        ? null
++        : hasInitialSerializedStateProp
+         ? (editor: LexicalEditor) => {
+             if (initialSerializedState) {
+               try {
+@@ -7716,7 +3914,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+         html: {
+           import: MARKDOWN_EDITOR_HTML_IMPORT
+         },
+-        editable: !readOnly,
++        editable: !readOnly && !bound,
+         nodes: MARKDOWN_EDITOR_NODES,
+         onError(error) {
+           throw error;
+@@ -7725,6 +3923,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+       };
+     },
+     [
++      bound,
+       editorStateCacheKey,
+       hasInitialSerializedStateProp,
+       initialSerializedState,
+@@ -7945,6 +4144,10 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+       layoutMetadata?: NoteLayoutMetadata;
+     }
+   ): { success: boolean; frontmatter: Record<string, unknown> | null; h1Title: string | null; body: string; comments: CommentMetadataMap } => {
++    // moss-multi seam: collaboration (A§2.2, A§10.3): a bound doc's content arrives only through its binding.
++    if (bound) {
++      throw new Error('moss-multi: updateContentFromMarkdown on a bound editor');
++    }
+     const editor = editorRef.current;
+     if (!editor) {
+       return { success: false, frontmatter: null, h1Title: null, body: markdown, comments: {} };
+@@ -8022,7 +4225,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+       console.error('[MarkdownEditor] In-place update failed:', error);
+       return { success: false, frontmatter: fmResult.data, h1Title: h1Result.h1Title, body: h1Result.body, comments: commentMetadata };
+     }
+-  }, []);
++  }, [bound]);
+ 
+   useImperativeHandle(
+     ref,
+@@ -8050,7 +4253,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+ 
+   return (
+     <CurrentNoteIdContext.Provider value={noteId}>
+-      <LexicalComposer key={`${noteId}-${readOnly ? 'locked' : 'edit'}`} initialConfig={initialConfig}>
++      {/* moss-multi seam: collaboration (A§2.2, A§10.3): role and trash changes call setEditable, never remount */}
++      <LexicalComposer key={bound ? noteId : `${noteId}-${readOnly ? 'locked' : 'edit'}`} initialConfig={initialConfig}>
+       <CurrentNoteIdEditorPlugin />
+       <div className="relative animate-[fadeIn_150ms_ease-out]" data-lexical-editor>
+         <RichTextPlugin
+@@ -8073,7 +4277,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+           placeholder={<Placeholder>{placeholder ?? 'Start typing...'}</Placeholder>}
+           ErrorBoundary={LexicalErrorBoundary}
+         />
+-        <HistoryPlugin />
++        {collaboration ? collaboration.plugin : <HistoryPlugin />}{/* moss-multi seam: collaboration (A§2.2, A§10.3) */}
+         {!readOnly && <SafePastePlugin />}
+         {!readOnly && <UndoRedoPlugin />}
+         <TableCellListNormalizationPlugin />

@@ -1,0 +1,158 @@
+diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/desktop/src/renderer/editor/MarkdownEditor.tsx
+--- a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx
++++ b/packages/desktop/src/renderer/editor/MarkdownEditor.tsx
+@@ -136,6 +136,8 @@ import {
+   SelectionToolbarShell
+ } from './components/SelectionToolbarPrimitives';
+ import './MarkdownEditor.css';
++// moss-multi seam: hide-registry (A§9)
++import { hidden } from '@moss-multi/host/affordances';
+ // moss-multi seam: converter-split (A§12; S-conv §2.3)
+ import { $convertMossCustomCodeNodes, $postImportNormalize, escapeHtmlEntities, normalizeMarkdownForImport, unescapeHtmlEntities } from './markdown/normalize';
+ import { EDITOR_FONT_FAMILY_LABELS, type EditorSelectionFontFamily, HIGHLIGHT_COLOR_VARIABLES, HIGHLIGHT_YELLOW_VALUE, HIGHLIGHT_YELLOW_VAR, MARKDOWN_EDITOR_HTML_IMPORT, SERIF_FONT_FAMILY_STYLE, SERIF_FONT_FAMILY_VALUE, SERIF_OPTICAL_FONT_SIZE_ADJUST, STYLE_FONT_FAMILY_PROPERTY, STYLE_FONT_SIZE_ADJUST_PROPERTY, selectionFontFamilyFromStyleValue } from './markdown/text-style';
+@@ -169,6 +171,8 @@ export interface MarkdownEditorProps {
+   enableSearchPlugin?: boolean;
+   editorMountVersion?: number;
+   editorRemountReason?: EditorRemountReason | null;
++  /** moss-multi seam: collaboration (A§2.2, A§10.3): present when the note is bound to its doc; the plugin replaces the history plugin. */
++  collaboration?: { plugin: ReactNode } | null;
+ }
+ 
+ export type MarkdownEditorHandle = {
+@@ -3121,7 +3125,7 @@ function FloatingSelectionTools({
+         }
+ 
+         // Cmd+Shift+A for comment annotation
+-        if (key === 'a' && !event.altKey) {
++        if (key === 'a' && !event.altKey && !hidden('comments') /* moss-multi seam: hide-registry (A§9) */) {
+           event.preventDefault();
+           openCommentInput();
+           return true;
+@@ -3509,7 +3513,8 @@ function FloatingSelectionTools({
+     </ToolbarTooltip>
+   );
+ 
+-  const commentButton = (
++  // moss-multi seam: hide-registry (A§9)
++  const commentButton = hidden('comments') ? null : (
+     <ToolbarTooltip label="Comment" keys={['⌘', '⇧', 'A']}>
+       <button
+         type="button"
+@@ -3649,6 +3654,7 @@ function FloatingSelectionTools({
+           <div
+             className="pointer-events-none fixed bottom-6 z-50 -translate-x-1/2 flex flex-col items-center gap-2 px-4"
+             style={bottomToolbarStyle}
++            data-floating-selection-toolbar="true" // moss-multi seam: toolbar-contract (A§19): moss's own bottom toolbar
+           >
+             <div ref={portalRef} className="w-full max-w-lg empty:hidden" />
+             <SelectionToolbarShell
+@@ -3760,11 +3766,14 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+       paneId,
+       enableSearchPlugin = true,
+       editorMountVersion,
+-      editorRemountReason = null
++      editorRemountReason = null,
++      collaboration = null
+     }: MarkdownEditorProps,
+     ref
+   ) {
+   const store = useStore();
++  // moss-multi seam: collaboration (A§2.2, A§10.3): a bound editor mounts empty and closed; its doc fills it at first sync.
++  const bound = collaboration !== null;
+   const latestEditorStateRef = useRef<EditorState | null>(null);
+   const editorRef = useRef<LexicalEditor | null>(null);
+   const lastContentChangeTagsRef = useRef<string | null>(null);
+@@ -3796,7 +3805,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+   // Capture editor instance when ready
+   const handleEditorReady = useCallback((editor: LexicalEditor) => {
+     editorRef.current = editor;
+-    if (hasInitialSerializedStateProp) {
++    if (hasInitialSerializedStateProp || bound /* moss-multi seam: collaboration (A§2.2, A§10.3): no state cache */) {
+       onReady?.(editor);
+       return;
+     }
+@@ -3813,7 +3822,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+       );
+     });
+     onReady?.(editor);
+-  }, [hasInitialSerializedStateProp, onReady]);
++  }, [bound, hasInitialSerializedStateProp, onReady]);
+ 
+   const analyticsOwnerId = `${paneId ?? 'single'}:${noteId}:${editorMountVersion ?? 0}`;
+ 
+@@ -3850,7 +3859,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+ 
+   const initialConfig = useMemo<InitialConfigType>(
+     () => {
+-      const cachedEditorState = readMarkdownEditorStateCache(editorStateCacheKey);
++      const cachedEditorState = bound ? undefined : readMarkdownEditorStateCache(editorStateCacheKey);
+ 
+       const importMarkdownValue = (editor: LexicalEditor): void => {
+         // Strip any residual comment footer from the value (defensive —
+@@ -3881,7 +3890,9 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+         editor.getRootElement()?.scrollTo({ top: 0 });
+       };
+ 
+-      const editorState = hasInitialSerializedStateProp
++      const editorState = bound
++        ? null
++        : hasInitialSerializedStateProp
+         ? (editor: LexicalEditor) => {
+             if (initialSerializedState) {
+               try {
+@@ -3903,7 +3914,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+         html: {
+           import: MARKDOWN_EDITOR_HTML_IMPORT
+         },
+-        editable: !readOnly,
++        editable: !readOnly && !bound,
+         nodes: MARKDOWN_EDITOR_NODES,
+         onError(error) {
+           throw error;
+@@ -3912,6 +3923,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+       };
+     },
+     [
++      bound,
+       editorStateCacheKey,
+       hasInitialSerializedStateProp,
+       initialSerializedState,
+@@ -4132,6 +4144,10 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+       layoutMetadata?: NoteLayoutMetadata;
+     }
+   ): { success: boolean; frontmatter: Record<string, unknown> | null; h1Title: string | null; body: string; comments: CommentMetadataMap } => {
++    // moss-multi seam: collaboration (A§2.2, A§10.3): a bound doc's content arrives only through its binding.
++    if (bound) {
++      throw new Error('moss-multi: updateContentFromMarkdown on a bound editor');
++    }
+     const editor = editorRef.current;
+     if (!editor) {
+       return { success: false, frontmatter: null, h1Title: null, body: markdown, comments: {} };
+@@ -4209,7 +4225,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+       console.error('[MarkdownEditor] In-place update failed:', error);
+       return { success: false, frontmatter: fmResult.data, h1Title: h1Result.h1Title, body: h1Result.body, comments: commentMetadata };
+     }
+-  }, []);
++  }, [bound]);
+ 
+   useImperativeHandle(
+     ref,
+@@ -4237,7 +4253,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+ 
+   return (
+     <CurrentNoteIdContext.Provider value={noteId}>
+-      <LexicalComposer key={`${noteId}-${readOnly ? 'locked' : 'edit'}`} initialConfig={initialConfig}>
++      {/* moss-multi seam: collaboration (A§2.2, A§10.3): role and trash changes call setEditable, never remount */}
++      <LexicalComposer key={bound ? noteId : `${noteId}-${readOnly ? 'locked' : 'edit'}`} initialConfig={initialConfig}>
+       <CurrentNoteIdEditorPlugin />
+       <div className="relative animate-[fadeIn_150ms_ease-out]" data-lexical-editor>
+         <RichTextPlugin
+@@ -4260,7 +4277,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+           placeholder={<Placeholder>{placeholder ?? 'Start typing...'}</Placeholder>}
+           ErrorBoundary={LexicalErrorBoundary}
+         />
+-        <HistoryPlugin />
++        {collaboration ? collaboration.plugin : <HistoryPlugin />}{/* moss-multi seam: collaboration (A§2.2, A§10.3) */}
+         {!readOnly && <SafePastePlugin />}
+         {!readOnly && <UndoRedoPlugin />}
+         <TableCellListNormalizationPlugin />

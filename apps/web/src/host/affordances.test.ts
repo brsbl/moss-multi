@@ -78,7 +78,7 @@ describe('the hide registry', () => {
     );
     expect(Object.keys(staged).length).toBeGreaterThan(0);
     expect(expiredStaged(staged, closedMilestone(process.env.TRACE_MILESTONE))).toEqual([]);
-    expect(expiredStaged(staged, 3), 'every staged entry expires by M3').toEqual(Object.keys(staged));
+    expect(expiredStaged(staged, 4), 'every staged entry expires by M4').toEqual(Object.keys(staged));
   });
 
   // Quick capture, auto-update, "open in default app" and in-embed ⌘K capture are named by PRODUCT but have no

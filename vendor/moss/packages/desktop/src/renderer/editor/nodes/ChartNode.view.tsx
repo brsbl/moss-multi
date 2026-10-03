@@ -12,6 +12,8 @@ import {
   DropdownMenuItem
 } from '@moss/shared/components/ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@moss/shared/components/ui/tooltip';
+// moss-multi seam: hide-registry (A§9)
+import { hidden } from '@moss-multi/host/affordances';
 import type { ChartConfig, ChartPalette, ChartType } from '../utils/chartDefaults';
 import {
   BLOCK_HEADER_CLASSNAME,
@@ -543,6 +545,8 @@ function ChartWrapper({
                 <TooltipContent side="bottom"><p>Edit chart data</p></TooltipContent>
               </Tooltip>
             </TooltipProvider>
+            {/* moss-multi seam: hide-registry (A§9) */}
+            {hidden('comments') ? null : (
             <TooltipProvider delayDuration={200}>
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -560,6 +564,7 @@ function ChartWrapper({
                 <TooltipContent side="bottom"><p>Add comment</p></TooltipContent>
               </Tooltip>
             </TooltipProvider>
+            )}
           </div>
         </div>
 

@@ -1,7 +1,7 @@
 diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx
 --- a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx
 +++ b/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx
-@@ -1,27 +1,15 @@
+@@ -1,27 +1,17 @@
  import React, { useCallback, useState, useRef, useEffect, useMemo } from 'react';
  import type { JSX } from 'react';
 -import {
@@ -27,13 +27,15 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b
 -import { OPEN_BLOCK_COMMENT_COMMAND } from '../plugins/CommentPlugin';
 -import { cloneCommentIds } from '../utils/commentable-node';
 -import { getThemeById, DEFAULT_THEME } from '../plugins/code-block/themes';
++// moss-multi seam: hide-registry (A§9)
++import { hidden } from '@moss-multi/host/affordances';
 +// moss-multi seam: converter-split (A§12; S-conv §2.3)
 +import { OPEN_BLOCK_COMMENT_COMMAND } from '../commands';
 +import { getThemeById } from '../plugins/code-block/themes';
  import { highlightCodeToHtml } from '../utils/code-highlighting';
  import {
    BLOCK_HEADER_CLASSNAME,
-@@ -35,26 +23,11 @@ import {
+@@ -35,26 +25,11 @@ import {
    isSnapshotModeEnabled,
    markCodeblockReady,
  } from '../../automation/snapshot-mode';
@@ -65,7 +67,24 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b
  
  /**
   * CodeBlock component with inline toolbar and edit/display modes
-@@ -444,131 +417,8 @@ function CodeBlockComponent({
+@@ -373,6 +348,8 @@ function CodeBlockComponent({
+                 getCodeContent={getCodeContent}
+                 onDropdownOpenChange={setIsDropdownOpen}
+               />
++              {/* moss-multi seam: hide-registry (A§9) */}
++              {hidden('comments') ? null : (
+               <button
+                 type="button"
+                 onClick={(e) => {
+@@ -384,6 +361,7 @@ function CodeBlockComponent({
+               >
+                 <StickyNote className="h-3 w-3" />
+               </button>
++              )}
+             </div>
+           </div>
+ 
+@@ -444,131 +422,8 @@ function CodeBlockComponent({
    );
  }
  
@@ -199,7 +218,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b
      return (
        <CodeBlockComponent
          code={this.__code}
-@@ -578,30 +428,4 @@ export class CodeBlockNode extends DecoratorNode<JSX.Element> {
+@@ -578,30 +433,4 @@ export class CodeBlockNode extends DecoratorNode<JSX.Element> {
          commentIds={this.__commentIds}
        />
      );

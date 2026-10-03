@@ -1,16 +1,19 @@
 // j00-shell (T0.5a, T0.5b): the real moss shell from the built Worker. Two principals boot it clean under the page
 // CSP, every navigation carries the served build, light and dark switch through moss's own Settings, the floating
 // detector bites on the live canvas, an HTML block frame's script runs under the CSP (SP13), test-hook and
-// playground paths are the unknown-route 404 (R7), no hidden or staged affordance renders (A§9), and every DS
-// menu, dialog and tooltip opens inside a `data-overlay-surface` (A§19).
+// playground paths are the unknown-route 404 (R7), no hidden or staged affordance renders in the shell or on an open
+// note (A§9), and every DS menu, dialog and tooltip opens inside a `data-overlay-surface` (A§19).
 import { randomBytes } from 'node:crypto';
 import type { Page } from '@playwright/test';
 import { AFFORDANCES, type Surface } from '../../apps/web/src/host/affordances.ts';
 import type { Actor, Actors } from '../lib/actors.ts';
-import { APP_STATE_ATTR, BUILD_META, CLIENT_BUILD_ATTR, EDITOR_CANVAS_ATTR, OVERLAY_SURFACE_ATTR } from '../lib/contract.ts';
+import {
+  APP_STATE_ATTR, BUILD_META, CLIENT_BUILD_ATTR, DOC_ID_ATTR, DOC_STATE_ATTR, EDITOR_CANVAS_ATTR, EDITOR_PANE_ATTR,
+  OVERLAY_SURFACE_ATTR, SIDEBAR_ROW_ATTR,
+} from '../lib/contract.ts';
 import type { Measure } from '../lib/measure.ts';
 import type { Principal } from '../lib/principals.ts';
-import { expect, test } from '../lib/test.ts';
+import { expect, test, ui } from '../lib/test.ts';
 
 const SHELL = '[data-moss-app-shell]';
 const BOOT_TIMEOUT = 30_000;
@@ -296,6 +299,97 @@ test('no hidden or staged affordance renders in the shell, its menus or Settings
     await page.keyboard.press('ControlOrMeta+2');
     await expect(page.getByRole('button', { name: 'Back to notes' }), `${actor.label}: ⌘2 opens no trash view`).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Create new note' })).toBeVisible();
+  }
+});
+
+/** "+ Note", then the new note's id once its pane is live (its title binds in T1.4); `known` are the notes opened before. */
+async function openNewNote(actor: Actor, known: string[] = []): Promise<string> {
+  await actor.page.getByRole('button', { name: 'Create new note' }).click();
+  const live = actor.page.locator(`[${EDITOR_PANE_ATTR}][${DOC_STATE_ATTR}="live"]`);
+  let docId = '';
+  await expect.poll(async () => {
+    docId = (await live.count()) === 1 ? ((await live.getAttribute(DOC_ID_ATTR)) ?? '') : '';
+    return docId !== '' && !known.includes(docId);
+  }, { message: `${actor.label}: the new note binds`, timeout: 15_000 }).toBe(true);
+  return docId;
+}
+
+test('no hidden or staged affordance renders on an open note: actions panel, top bar, title and menus @p:agt-3', async ({ actors }) => {
+  const [ada] = await twoShells(actors);
+  const { page } = ada;
+  const docId = await openNewNote(ada);
+
+  // Properties edits frontmatter, which a bound note cannot keep until T1.4, so the tab is staged rather than left
+  // to accept an edit that vanishes on reload.
+  await page.getByRole('button', { name: 'Show actions panel', exact: true }).click();
+  const panel = page.locator('[data-actions-panel-wrapper]');
+  await expect(panel.getByRole('tab', { name: 'Actions', exact: true }), 'the actions panel opens on its Actions tab').toBeVisible();
+  expect(await probeHits(page, 'actions-panel'), 'the actions panel').toEqual([]);
+  await expect(panel.getByRole('tab', { name: 'Properties' }), 'no Properties tab').toHaveCount(0);
+  await expect(panel.getByRole('button', { name: 'Add field', includeHidden: true }), 'no frontmatter input, shown or not').toHaveCount(0);
+
+  expect(await probeHits(page, 'note-top-bar'), 'the note top bar').toEqual([]);
+  expect(await probeHits(page, 'title'), 'the title').toEqual([]);
+
+  await page.getByRole('button', { name: 'More actions', exact: true }).click();
+  await expect(page.getByRole('menu'), 'More actions opens').toBeVisible();
+  expect(await probeHits(page, 'note-more-menu'), 'More actions').toEqual([]);
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('menu')).toBeHidden();
+
+  await page.locator(`[${SIDEBAR_ROW_ATTR}][${DOC_ID_ATTR}="${docId}"]`).click({ button: 'right' });
+  await expect(page.getByRole('menu'), "the note's row menu opens").toBeVisible();
+  expect(await probeHits(page, 'note-menu'), "the note's row menu").toEqual([]);
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('menu')).toBeHidden();
+});
+
+/** Whether moss's comment composer opens within `windowMs`: a negative check needs a window, as the Backspace leg's does. */
+const composerOpens = (page: Page, windowMs = 1_000): Promise<boolean> =>
+  page.getByRole('dialog', { name: 'Add comment' }).waitFor({ state: 'attached', timeout: windowMs }).then(() => true, () => false);
+
+test('an open note offers no comment until comments are shared data: no comment button, and ⌘⇧A opens nothing @p:agt-3', async ({ actors }) => {
+  const [ada] = await twoShells(actors);
+  const { page } = ada;
+  const docId = await openNewNote(ada);
+  await ui.typeBody(ada, docId, 'A line no comment can hold yet');
+
+  // A comment's thread text would live only in an atom that a bound note never saves, so it would vanish on reload.
+  await expect(page.getByRole('button', { name: 'Insert slash command' }), "moss's bottom toolbar is on screen").toBeVisible();
+  expect.soft(await probeHits(page, 'editor-toolbar'), 'the bottom toolbar').toEqual([]);
+  await page.keyboard.press('ControlOrMeta+A');
+  await expect(page.getByRole('button', { name: 'Add link' }), 'the selection toolbar is on screen').toBeVisible();
+  expect.soft(await probeHits(page, 'editor-toolbar'), 'the selection toolbar').toEqual([]);
+  // Over a selection, moss's ⌘⇧A opens its comment composer.
+  await page.keyboard.press('ControlOrMeta+Shift+A');
+  expect.soft(await composerOpens(page), '⌘⇧A opens no comment composer').toBe(false);
+});
+
+// Each block with the toolbar control that sits beside moss's comment button. A new canvas opens in its drawing mode,
+// whose toolbar has no comment button; Cancel (its X) leaves it. The media header (HTML, image, video and embed
+// blocks) needs the asset layer: an HTML block's preview image is a moss-asset:// URL the page CSP refuses (M3).
+const BLOCKS = [
+  { query: 'code', option: 'Code', control: 'Copy code', leave: null },
+  { query: 'bar', option: 'Bar Chart', control: 'Edit', leave: null },
+  { query: 'canvas', option: 'Canvas', control: 'Draw', leave: 'button:has(svg.lucide-x)' },
+];
+
+test('no block toolbar offers a comment until comments are shared data: code, chart and canvas blocks @p:agt-3', async ({ actors }) => {
+  const [ada] = await twoShells(actors);
+  const { page } = ada;
+  const notes: string[] = [];
+  for (const block of BLOCKS) {
+    // One block per note: the slash command replaces the caret's empty line with its block.
+    const docId = await openNewNote(ada, notes);
+    notes.push(docId);
+    await expect(ui.body(ada, docId), '"+ Note" leaves the caret in the body').toBeFocused();
+    await page.keyboard.type(`/${block.query}`);
+    await page.locator('button[data-index]').filter({ hasText: new RegExp(`^${block.option}`) }).click();
+    const decorator = page.locator('[data-lexical-decorator]');
+    if (block.leave) await decorator.locator(block.leave).click();
+    const toolbarControl = decorator.getByRole('button', { name: block.control, exact: true });
+    await expect(toolbarControl, `the ${block.option} block's toolbar renders`).toHaveCount(1);
+    expect.soft(await probeHits(page, 'block-toolbar'), `the ${block.option} block's toolbar`).toEqual([]);
   }
 });
 

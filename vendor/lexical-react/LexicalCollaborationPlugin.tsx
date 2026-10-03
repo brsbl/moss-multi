@@ -24,6 +24,8 @@ import {
   type SyncCursorPositionsFn,
 } from '@lexical/yjs';
 import {type JSX, useEffect, useRef, useState} from 'react';
+// moss-multi seam: plugin-d (A§10.2 d, A§10.1)
+import {releaseProvider} from '@moss-multi/host/collab/doc-session';
 
 import {
   type CursorsContainerRef,
@@ -82,8 +84,14 @@ export function CollaborationPlugin({
 }: CollaborationPluginProps): JSX.Element {
   const isBindingInitialized = useRef(false);
   const isProviderInitialized = useRef(false);
+  // moss-multi seam: plugin-c (A§10.2 c): identity, color and awareness data are fixed at mount, because the
+  // provider effect depends on all three and any change would reconnect.
+  const [atMount] = useState(() => ({awarenessData, cursorColor, username}));
 
-  const collabContext = useCollaborationContext(username, cursorColor);
+  const collabContext = useCollaborationContext(
+    atMount.username,
+    atMount.cursorColor,
+  );
   const {yjsDocMap, name, color} = collabContext;
 
   const [editor] = useLexicalComposerContext();
@@ -105,7 +113,9 @@ export function CollaborationPlugin({
     setDoc(yjsDocMap.get(id));
 
     return () => {
-      newProvider.disconnect();
+      // moss-multi seam: plugin-d (A§10.2 d): the session's ordered teardown also destroys the doc and clears
+      // the doc map.
+      releaseProvider(id, newProvider, yjsDocMap);
     };
   }, [id, providerFactory, yjsDocMap]);
 
@@ -148,7 +158,7 @@ export function CollaborationPlugin({
 
   return (
     <YjsCollaborationCursors
-      awarenessData={awarenessData}
+      awarenessData={atMount.awarenessData /* moss-multi seam: plugin-c */}
       binding={binding}
       collabContext={collabContext}
       color={color}

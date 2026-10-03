@@ -8,6 +8,8 @@ import { KeyboardShortcut } from '@moss/shared/components/ui/keyboard-shortcut';
 import { CodeBlockToolbar } from '../plugins/code-block/CodeBlockToolbar';
 import { resolveLanguage } from '../plugins/code-block/languages';
 import { StickyNote } from 'lucide-react';
+// moss-multi seam: hide-registry (A§9)
+import { hidden } from '@moss-multi/host/affordances';
 // moss-multi seam: converter-split (A§12; S-conv §2.3)
 import { OPEN_BLOCK_COMMENT_COMMAND } from '../commands';
 import { getThemeById } from '../plugins/code-block/themes';
@@ -347,6 +349,8 @@ function CodeBlockComponent({
                 getCodeContent={getCodeContent}
                 onDropdownOpenChange={setIsDropdownOpen}
               />
+              {/* moss-multi seam: hide-registry (A§9) */}
+              {hidden('comments') ? null : (
               <button
                 type="button"
                 onClick={(e) => {
@@ -358,6 +362,7 @@ function CodeBlockComponent({
               >
                 <StickyNote className="h-3 w-3" />
               </button>
+              )}
             </div>
           </div>
 

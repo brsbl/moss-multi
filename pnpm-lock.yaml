@@ -39,6 +39,9 @@ patchedDependencies:
   wrangler@4.113.0:
     hash: 8a37e7d39b3e06c049196ef483747f3b2a01005c035f879c6cac460fd6d85597
     path: patches/wrangler@4.113.0.patch
+  y-partyserver@2.2.0:
+    hash: 59f26a9e2dfe2a17c286b60beb4de43d9b1db10bab7828c60fa92f36657cfb2b
+    path: patches/y-partyserver@2.2.0.patch
 
 importers:
 
@@ -95,6 +98,9 @@ importers:
       '@lexical/utils':
         specifier: 0.48.0
         version: 0.48.0(typescript@5.9.3)
+      '@lexical/yjs':
+        specifier: 0.48.0
+        version: 0.48.0(typescript@5.9.3)(yjs@13.6.31)
       '@mdx-js/mdx':
         specifier: 3.1.1
         version: 3.1.1
@@ -146,6 +152,9 @@ importers:
       tailwind-merge:
         specifier: 2.6.1
         version: 2.6.1
+      yjs:
+        specifier: 13.6.31
+        version: 13.6.31
     devDependencies:
       '@cloudflare/vitest-pool-workers':
         specifier: 0.18.7
@@ -201,6 +210,12 @@ importers:
       '@fontsource/jetbrains-mono':
         specifier: 5.3.0
         version: 5.3.0
+      '@lexical/react':
+        specifier: 0.48.0
+        version: 0.48.0(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@5.9.3)(yjs@13.6.31)
+      '@lexical/yjs':
+        specifier: 0.48.0
+        version: 0.48.0(typescript@5.9.3)(yjs@13.6.31)
       '@moss-multi/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
@@ -222,6 +237,9 @@ importers:
       drizzle-orm:
         specifier: 0.45.2
         version: 0.45.2(@cloudflare/workers-types@4.20260702.1)(kysely@0.29.6)
+      lexical:
+        specifier: 0.48.0
+        version: 0.48.0(typescript@5.9.3)
       partyserver:
         specifier: 0.5.8
         version: 0.5.8(@cloudflare/workers-types@4.20260702.1)
@@ -234,6 +252,12 @@ importers:
       react-dom:
         specifier: 19.3.0
         version: 19.3.0(react@19.3.0)
+      y-partyserver:
+        specifier: 2.2.0
+        version: 2.2.0(patch_hash=59f26a9e2dfe2a17c286b60beb4de43d9b1db10bab7828c60fa92f36657cfb2b)(@cloudflare/workers-types@4.20260702.1)(partyserver@0.5.8(@cloudflare/workers-types@4.20260702.1))(yjs@13.6.31)
+      yjs:
+        specifier: 13.6.31
+        version: 13.6.31
     devDependencies:
       '@cloudflare/vite-plugin':
         specifier: 1.46.0
@@ -318,7 +342,7 @@ importers:
         version: 8.21.0
       y-partyserver:
         specifier: 2.2.0
-        version: 2.2.0(@cloudflare/workers-types@4.20260702.1)(partyserver@0.5.8(@cloudflare/workers-types@4.20260702.1))(yjs@13.6.31)
+        version: 2.2.0(patch_hash=59f26a9e2dfe2a17c286b60beb4de43d9b1db10bab7828c60fa92f36657cfb2b)(@cloudflare/workers-types@4.20260702.1)(partyserver@0.5.8(@cloudflare/workers-types@4.20260702.1))(yjs@13.6.31)
       yjs:
         specifier: 13.6.31
         version: 13.6.31
@@ -350,7 +374,7 @@ importers:
         version: 0.5.8(@cloudflare/workers-types@4.20260702.1)
       y-partyserver:
         specifier: 2.2.0
-        version: 2.2.0(@cloudflare/workers-types@4.20260702.1)(partyserver@0.5.8(@cloudflare/workers-types@4.20260702.1))(yjs@13.6.31)
+        version: 2.2.0(patch_hash=59f26a9e2dfe2a17c286b60beb4de43d9b1db10bab7828c60fa92f36657cfb2b)(@cloudflare/workers-types@4.20260702.1)(partyserver@0.5.8(@cloudflare/workers-types@4.20260702.1))(yjs@13.6.31)
       y-protocols:
         specifier: 1.0.7
         version: 1.0.7(yjs@13.6.31)
@@ -8145,7 +8169,7 @@ snapshots:
 
   xmlchars@2.2.0: {}
 
-  y-partyserver@2.2.0(@cloudflare/workers-types@4.20260702.1)(partyserver@0.5.8(@cloudflare/workers-types@4.20260702.1))(yjs@13.6.31):
+  y-partyserver@2.2.0(patch_hash=59f26a9e2dfe2a17c286b60beb4de43d9b1db10bab7828c60fa92f36657cfb2b)(@cloudflare/workers-types@4.20260702.1)(partyserver@0.5.8(@cloudflare/workers-types@4.20260702.1))(yjs@13.6.31):
     dependencies:
       '@cloudflare/workers-types': 4.20260702.1
       lib0: 0.2.119
