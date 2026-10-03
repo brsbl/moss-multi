@@ -63,7 +63,7 @@ declare module '@moss/shared/state/note-atoms' {
 
 // @lexical/react 0.48.0's collaboration plugin, vendored with moss-multi seams (A§10.2), through vite's alias.
 declare module '@moss-multi/lexical-react/LexicalCollaborationPlugin' {
-  import type { ExcludedProperties, Provider } from '@lexical/yjs';
+  import type { ExcludedProperties, Provider, SyncCursorPositionsFn } from '@lexical/yjs';
   import type { JSX, RefObject } from 'react';
   import type { Doc } from 'yjs';
   export function CollaborationPlugin(props: {
@@ -75,6 +75,7 @@ declare module '@moss-multi/lexical-react/LexicalCollaborationPlugin' {
     cursorsContainerRef?: RefObject<HTMLElement | null>;
     excludedProperties?: ExcludedProperties;
     awarenessData?: object;
+    syncCursorPositionsFn?: SyncCursorPositionsFn;
   }): JSX.Element;
 }
 

@@ -47,3 +47,14 @@ it('link-only recipients receive no identities in initial snapshots or live fram
   await ada.drop();
   expect(opened.dobj.document.awareness.getStates().has(42)).toBe(false);
 });
+
+it('SP6 validates 1000 repeated awareness frames within a bounded CPU budget', async () => {
+  const opened = await start(openDoc());
+  const ada = await connect(opened, { id: 'ada', name: 'Ada' });
+  const began = process.hrtime.bigint();
+  for (let clock = 1; clock <= 1000; clock++) await ada.deliver(frame(42, state(), clock));
+  const elapsedMs = Number(process.hrtime.bigint() - began) / 1e6;
+  console.info(`SP6: ${elapsedMs.toFixed(2)} ms / 1000 awareness frames (Node harness, includes socket dispatch)`);
+  expect(elapsedMs).toBeLessThan(5000);
+  expect(opened.dobj.document.awareness.getStates().get(42)?.name).toBe('Ada');
+});

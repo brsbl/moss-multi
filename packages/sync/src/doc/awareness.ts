@@ -1,5 +1,4 @@
-// DocDO awareness (A§5.1, A§10.7): the socket attachment that y-partyserver's awareness bookkeeping shares, and the
-// awareness size cap. Validating the identity inside awareness states lands with presence (T1.5).
+// DocDO awareness: validated socket-owned identities and grant-only recipients, including after hibernation.
 import * as decoding from 'lib0/decoding';
 import * as encoding from 'lib0/encoding';
 import { applyAwarenessUpdate, encodeAwarenessUpdate, removeAwarenessStates, type Awareness } from 'y-protocols/awareness';
@@ -26,6 +25,16 @@ export function attachmentOf(connection: Connection): Attachment | null {
 /** Awareness frames above the cap are dropped, neither applied nor relayed. */
 export const awarenessTooLarge = (bytes: number, maxBytes: number): boolean => bytes > maxBytes;
 
+const identityVerdicts = new WeakMap<object, { fields: unknown[]; valid: boolean }>();
+function validIdentity(connection: Connection, identity: Attachment, user: Record<string, unknown>, name: unknown): boolean {
+  const fields = [identity.principalId, identity.name, identity.kind, user.principalId, user.name, user.isAgent, name];
+  const cached = identityVerdicts.get(connection);
+  if (cached && fields.every((field, index) => field === cached.fields[index])) return cached.valid;
+  const valid = user.principalId === identity.principalId && user.name === identity.name && user.isAgent === (identity.kind === 'agent') && name === identity.name;
+  identityVerdicts.set(connection, { fields, valid });
+  return valid;
+}
+
 function clientId(connection: Connection): number | undefined {
   return (connection.state as { presenceClientId?: number } | null)?.presenceClientId;
 }
@@ -37,7 +46,8 @@ export function awarenessFrame(awareness: Awareness, ids: number[]): Uint8Array 
 }
 export function sendPresence(connections: Iterable<Connection>, frame: Uint8Array): void {
   for (const connection of connections) {
-    if (attachmentOf(connection)?.presenceAllowed) connection.send(frame);
+    if (!attachmentOf(connection)?.presenceAllowed) continue;
+    try { connection.send(frame); } catch { /* A closing peer must not interrupt delivery to the others. */ }
   }
 }
 /** One awareness id per socket, persisted across hibernation; malformed or forged frames have no effect. */
@@ -58,12 +68,12 @@ export function receivePresence(awareness: Awareness, connection: Connection, me
     if (decoding.hasContent(decoder)) return;
     const owned = clientId(connection);
     if (owned !== undefined && owned !== id) return;
-    if (connections.some(peer => peer.id !== connection.id && clientId(peer) === id)) return;
+    if (owned === undefined && connections.some(peer => peer.id !== connection.id && clientId(peer) === id)) return;
     if (state !== null) {
       const user = state.user;
-      if (!user || user.principalId !== identity.principalId || user.name !== identity.name || user.isAgent !== (identity.kind === 'agent') || state.name !== identity.name || state.color !== user.color || typeof user.color !== 'string' || user.color.length > 100 || typeof user.colorSettled !== 'boolean') return;
+      if (!user || !validIdentity(connection, identity, user, state.name) || state.color !== user.color || typeof user.color !== 'string' || user.color.length > 100 || typeof user.colorSettled !== 'boolean') return;
     } else if (owned !== id) return;
-    (connection as unknown as Connection<State>).setState(previous => ({ ...previous, presenceClientId: id }));
+    if (owned === undefined) (connection as unknown as Connection<State>).setState(previous => ({ ...previous, presenceClientId: id }));
     applyAwarenessUpdate(awareness, payload, connection);
     sendPresence(connections, awarenessFrame(awareness, [id]));
   } catch {

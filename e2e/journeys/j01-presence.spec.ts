@@ -1,3 +1,6 @@
+import YProvider from 'y-partyserver/provider';
+import * as Y from 'yjs';
+import WebSocket from 'ws';
 import { expect, test, ui } from '../lib/test.ts';
 import type { Actor, Actors } from '../lib/actors.ts';
 const chips = (actor: Actor) => actor.page.locator('[data-presence-client]');
@@ -69,4 +72,26 @@ test('j01 presence: one principal in two windows sees the other client and undo 
   await expect(ui.body(ada, id)).toContainText(' Ben');
   await expect(ui.body(ada, id)).not.toContainText(' Ada');
   await expect(ui.body(ben, id)).not.toContainText(' Ada');
+});
+
+test('j01 presence: a spoofed awareness name never reaches a peer @p:col-2', async ({ actors, stack }) => {
+  const { ada, ben, id } = await setup(actors, stack.baseUrl);
+  const cookie = (await ben.context.cookies()).map(c => `${c.name}=${c.value}`).join('; ');
+  const doc = new Y.Doc();
+  const provider = new YProvider(new URL(stack.baseUrl).host, id, doc, {
+    party: 'doc-d-o', connect: false, disableBc: true,
+    WebSocketPolyfill: class extends WebSocket { constructor(url: string) { super(url, { headers: { cookie, origin: stack.baseUrl } }); } } as unknown as typeof globalThis.WebSocket,
+  });
+  try {
+    await provider.connect();
+    await expect.poll(() => provider.synced).toBe(true);
+    const user = { principalId: ben.principal!.id, name: ben.principal!.name, isAgent: false, color: 'var(--chart-blue)', colorSettled: true, slot: 0 };
+    provider.awareness.setLocalState({ name: user.name, color: user.color, user });
+    const chip = ada.page.locator(`[data-presence-client="${doc.clientID}"]`);
+    await expect(chip).toHaveAttribute('title', user.name);
+    provider.awareness.setLocalState({ name: 'Forged owner', color: user.color, user: { ...user, name: 'Forged owner' } });
+    await ada.page.waitForTimeout(500);
+    await expect(chip).toHaveAttribute('title', user.name);
+    await expect(ada.page.getByTitle('Forged owner')).toHaveCount(0);
+  } finally { provider.awareness.setLocalState(null); provider.destroy(); doc.destroy(); }
 });
