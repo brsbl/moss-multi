@@ -12,7 +12,30 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
  
  const nowInSeconds = (): number => Math.floor(Date.now() / 1000);
  const NOTE_LIST_SYNC_DEBOUNCE_MS = 150;
-@@ -2917,11 +2921,16 @@ export function App() {
+@@ -1138,10 +1142,11 @@ export function App() {
+   const didInitializeStartupSelectionRef = useRef(false);
+   const commandPaletteRef = useRef<CommandPaletteOverlayHandle>(null);
+ 
+-  const [shouldFocusTitle, setShouldFocusTitle] = useState(false);
++  // moss-multi seam: only the requested note may consume a title-focus intent.
++  const [titleFocusNoteId, setTitleFocusNoteId] = useState<string | null>(null);
+   const [shouldFocusBody, setShouldFocusBody] = useState(false);
+   const handleTitleFocusComplete = useCallback(() => {
+-    setShouldFocusTitle(false);
++    setTitleFocusNoteId(null);
+   }, []);
+   const handleBodyFocusComplete = useCallback(() => {
+     setShouldFocusBody(false);
+@@ -2859,7 +2864,7 @@ export function App() {
+       }
+       navigateToNote(note.id);
+       if (focusTarget === 'title') {
+-        setShouldFocusTitle(true);
++        setTitleFocusNoteId(note.id);
+       } else {
+         setShouldFocusBody(true);
+       }
+@@ -2917,11 +2922,16 @@ export function App() {
    ]);
  
    const handleCreateNote = useCallback(async () => {
@@ -30,7 +53,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
    }, [createAndActivateNote, flushBeforeNoteSwitch]);
  
    const handleDuplicateNote = useCallback(async (noteId: string) => {
-@@ -3127,14 +3136,8 @@ export function App() {
+@@ -3127,14 +3137,8 @@ export function App() {
    const handleRenameNote = useCallback(
      (noteId: string) => {
        handleSelectNote(noteId);
@@ -43,11 +66,11 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
 -        renameTimerRef.current = null;
 -      }, 150);
 +      // moss-multi seam: the pane consumes this focus intent after first sync.
-+      setShouldFocusTitle(true);
++      setTitleFocusNoteId(noteId);
      },
      [handleSelectNote]
    );
-@@ -3788,7 +3791,8 @@ export function App() {
+@@ -3788,7 +3792,8 @@ export function App() {
  
        const key = e.key.toLowerCase();
  
@@ -57,7 +80,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
          e.preventDefault();
          if (showCommandPalette) {
            // Already open - just focus the input
-@@ -3878,7 +3882,8 @@ export function App() {
+@@ -3878,7 +3883,8 @@ export function App() {
        }
  
        // Switch to Trash tab: Cmd+2
@@ -67,7 +90,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
          e.preventDefault();
          handlePanelViewChange('trash');
          return;
-@@ -3947,7 +3952,8 @@ export function App() {
+@@ -3947,7 +3953,8 @@ export function App() {
      onExpandActionsPanel: () => { zenModeActive ? toggleZenMode() : setActionsPanelHidden(false); },
      isAgentStreaming: hasActiveStreaming,
      onCanvasClick: handlePromptClose,
@@ -77,7 +100,16 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
    };
  
    const actionsPanelContent = (
-@@ -4093,7 +4099,8 @@ export function App() {
+@@ -4047,7 +4054,7 @@ export function App() {
+       searchBarAutoFocus={searchBarAutoFocus}
+       onCloseSearch={handleCloseSearch}
+       onOpenSearch={() => { setSearchQuery(''); setSearchBarAutoFocus(true); }}
+-      leftAutoFocusTitle={shouldFocusTitle}
++      leftAutoFocusTitle={titleFocusNoteId !== null && titleFocusNoteId === activeNoteId}
+       onLeftTitleFocusComplete={handleTitleFocusComplete}
+       leftAutoFocusBody={shouldFocusBody}
+       onLeftBodyFocusComplete={handleBodyFocusComplete}
+@@ -4093,7 +4100,8 @@ export function App() {
          onSelectNote={handleSelectNote}
          onCreateNote={handleCreateNote}
          onDeleteNote={handleNoteDeleted}

@@ -111,7 +111,7 @@ Read this with PRODUCT.md, your BUILDPLAN entry and the A§ it cites, before wri
 
 ## Title, presence, connection
 
-- A row-menu Rename transfers focus in `onCloseAutoFocus`, cancelling the return to its trigger. The bound title consumes every autofocus intent, including repeat renames of the same note. The input-refusal region also renders on the empty canvas and collapses when empty. [T1.4]
+- A row-menu Rename transfers focus in `onCloseAutoFocus`, cancelling the return to its trigger. The intent carries the target note id so an async selection cannot focus the old pane. The bound title consumes every autofocus intent, including repeat renames of the same note. The input-refusal region also renders on the empty canvas and collapses when empty. [T1.4]
 
 - The title has one writer, `Y.Text('title')`, with minimal character-diff writes. Never seed "Untitled" as text; nothing is focusable before bind (R2). WebKit navigates history on a bare Backspace with no editable focus. [L§4.4]
 - On teardown and `pagehide`, `setLocalState(null)` and `removeAwarenessStates`. After hibernation the DO's awareness map is empty: republish every 4 s, sweep at 2 s and 12 s. [L§4.5]

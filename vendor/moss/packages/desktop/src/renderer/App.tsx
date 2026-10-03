@@ -1143,10 +1143,11 @@ export function App() {
   const didInitializeStartupSelectionRef = useRef(false);
   const commandPaletteRef = useRef<CommandPaletteOverlayHandle>(null);
 
-  const [shouldFocusTitle, setShouldFocusTitle] = useState(false);
+  // moss-multi seam: only the requested note may consume a title-focus intent.
+  const [titleFocusNoteId, setTitleFocusNoteId] = useState<string | null>(null);
   const [shouldFocusBody, setShouldFocusBody] = useState(false);
   const handleTitleFocusComplete = useCallback(() => {
-    setShouldFocusTitle(false);
+    setTitleFocusNoteId(null);
   }, []);
   const handleBodyFocusComplete = useCallback(() => {
     setShouldFocusBody(false);
@@ -2864,7 +2865,7 @@ export function App() {
       }
       navigateToNote(note.id);
       if (focusTarget === 'title') {
-        setShouldFocusTitle(true);
+        setTitleFocusNoteId(note.id);
       } else {
         setShouldFocusBody(true);
       }
@@ -3138,7 +3139,7 @@ export function App() {
     (noteId: string) => {
       handleSelectNote(noteId);
       // moss-multi seam: the pane consumes this focus intent after first sync.
-      setShouldFocusTitle(true);
+      setTitleFocusNoteId(noteId);
     },
     [handleSelectNote]
   );
@@ -4054,7 +4055,7 @@ export function App() {
       searchBarAutoFocus={searchBarAutoFocus}
       onCloseSearch={handleCloseSearch}
       onOpenSearch={() => { setSearchQuery(''); setSearchBarAutoFocus(true); }}
-      leftAutoFocusTitle={shouldFocusTitle}
+      leftAutoFocusTitle={titleFocusNoteId !== null && titleFocusNoteId === activeNoteId}
       onLeftTitleFocusComplete={handleTitleFocusComplete}
       leftAutoFocusBody={shouldFocusBody}
       onLeftBodyFocusComplete={handleBodyFocusComplete}
