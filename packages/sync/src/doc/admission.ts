@@ -87,7 +87,19 @@ export function parseFrame(message: ArrayBuffer | ArrayBufferView): Frame {
  * deletes an item the doc has not deleted. Every step 2 that merely answers a step 1 is inert.
  */
 export function wouldChange(doc: Y.Doc, update: Uint8Array): boolean {
+  return classifySync(doc, update).changes;
+}
+
+/** yjs does not export its DeleteSet type by name. */
+export type DeleteSet = ReturnType<typeof Y.createDeleteSet>;
+
+/** The classifier's verdict, and the deletes the frame carries (its ack names them, A§5.1 Acks). */
+export function classifySync(doc: Y.Doc, update: Uint8Array): { changes: boolean; deletes: DeleteSet } {
   const { structs, ds } = Y.decodeUpdate(update);
+  return { changes: changes(doc, structs, ds), deletes: ds };
+}
+
+function changes(doc: Y.Doc, structs: (Y.Item | Y.GC | Y.Skip)[], ds: DeleteSet): boolean {
   for (const struct of structs) {
     if (struct instanceof Y.Skip) continue;
     if (Y.getState(doc.store, struct.id.client) < struct.id.clock + struct.length) return true;
@@ -118,24 +130,27 @@ export function stateBytesAfter(doc: Y.Doc, update: Uint8Array): number {
   }
 }
 
-/** Writes per connection in a sliding window. In memory: a wake starts every count at zero. */
+/**
+ * Writes per socket in a sliding window, keyed by the socket itself: a client may reuse its connection id while the
+ * DO still holds the old socket. In memory: a wake starts every count at zero.
+ */
 export class WriteRate {
-  private readonly hits = new Map<string, number[]>();
+  private readonly hits = new WeakMap<object, number[]>();
 
   constructor(
     private readonly max: number,
     private readonly windowMs: number,
   ) {}
 
-  /** Counts one write; false once the connection is past `max` in the window. */
-  allow(connectionId: string, now = Date.now()): boolean {
-    const recent = (this.hits.get(connectionId) ?? []).filter((at) => now - at < this.windowMs);
+  /** Counts one write; false once the socket is past `max` in the window. */
+  allow(socket: object, now = Date.now()): boolean {
+    const recent = (this.hits.get(socket) ?? []).filter((at) => now - at < this.windowMs);
     recent.push(now);
-    this.hits.set(connectionId, recent);
+    this.hits.set(socket, recent);
     return recent.length <= this.max;
   }
 
-  forget(connectionId: string): void {
-    this.hits.delete(connectionId);
+  forget(socket: object): void {
+    this.hits.delete(socket);
   }
 }

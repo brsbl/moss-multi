@@ -1,0 +1,8 @@
+{
+  "measuredMs": 30000,
+  "idleMs": 95000,
+  "resetSocketsSurvive": false,
+  "method": "First evicted 30 s bucket (upper bound), confirmed through 150 s; sockets survive natural idle.",
+  "sourceCommit": "9357eb59cc6e35d7a3b640123b31745dbac7bd56",
+  "runUrl": "https://github.com/brsbl/moss-multi/actions/runs/37143723049"
+}

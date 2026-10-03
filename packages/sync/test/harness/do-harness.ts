@@ -87,9 +87,9 @@ let connections = 0;
 
 /**
  * A WebSocket upgrade through the DO's own fetch, with the headers the Worker would set. Pass `doc` to reconnect a
- * provider that keeps its Y.Doc across sockets.
+ * provider that keeps its Y.Doc across sockets, and `pk` to reuse a partyserver connection id.
  */
-export async function connect(opened: Opened, who: Who = {}, doc?: Y.Doc): Promise<TestClient> {
+export async function connect(opened: Opened, who: Who = {}, doc?: Y.Doc, pk?: string): Promise<TestClient> {
   connections += 1;
   const headers = new Headers({ upgrade: 'websocket' });
   if (who.id !== null) {
@@ -99,7 +99,7 @@ export async function connect(opened: Opened, who: Who = {}, doc?: Y.Doc): Promi
   if (who.session !== null) headers.set(TRUSTED.session, who.session ?? `session-${connections}`);
   if (who.share) headers.set(TRUSTED.share, who.share);
   const made = serverEnds.length;
-  const url = `https://doc.test/parties/doc-d-o/${opened.backing.docId}?_pk=conn-${connections}`;
+  const url = `https://doc.test/parties/doc-d-o/${opened.backing.docId}?_pk=${pk ?? `conn-${connections}`}`;
   const response = await opened.dobj.fetch(new Request(url, { headers }));
   if (response.status !== 101) throw new Error(`upgrade answered ${response.status}: ${await response.text()}`);
   const socket = serverEnds[made];

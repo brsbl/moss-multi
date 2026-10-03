@@ -1,7 +1,24 @@
 diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/renderer/App.tsx
 --- a/packages/desktop/src/renderer/App.tsx
 +++ b/packages/desktop/src/renderer/App.tsx
-@@ -167,6 +167,10 @@ import {
+@@ -1,4 +1,5 @@
+-import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
++import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
++import { recoverableLazy } from '@moss-multi/host/recoverable-lazy';
+ import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
+ import { useAtom, useAtomValue, useSetAtom, useStore } from 'jotai';
+ import { useThemeEffect } from '@moss/shared/themes';
+@@ -152,7 +153,8 @@ import type { TrashedNotesPanelContentHandle } from './panels/TrashedNotesPanelC
+ import { PropertiesTabContent } from './panels/PropertiesTabContent';
+ import { DefaultEditorPrompt } from './components/DefaultEditorPrompt';
+ import type { MossWindowContext, UpdateReadyInfo } from '../types/electron-api';
+-import { disassembleNote, assembleNote } from '../common/markdown-layers';
++// moss-multi seam: duplicate from the server's Yjs snapshot.
++import { duplicateNote } from '@moss-multi/host/duplicate';
+ import { hydrateComments } from './editor/utils/comment-import';
+ import { noteIntelligenceEnabledAtom, pendingAgentCommentContextAtom, promptDraftAtom } from '@moss/shared/state/atoms';
+ import { connectedFolderEntriesAtom, contextPillsAtom, setMentionPillsAtom } from './state/granted-dirs-atoms';
+@@ -167,6 +169,10 @@ import {
    isRendererDevelopment,
    isRendererProduction
  } from './utils/renderer-env';
@@ -12,7 +29,41 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
  
  const nowInSeconds = (): number => Math.floor(Date.now() / 1000);
  const NOTE_LIST_SYNC_DEBOUNCE_MS = 150;
-@@ -1138,10 +1142,11 @@ export function App() {
+@@ -312,27 +318,28 @@ const mapRecordToMockNote = (record: NoteMetadataRecord): MockNote => {
+   };
+ };
+ 
+-const LazyCommandPaletteOverlay = lazy(async () => {
++// moss-multi seam: optional imports fail in place without unmounting a bound editor.
++const LazyCommandPaletteOverlay = recoverableLazy(async () => {
+   const module = await import('./prompt/CommandPaletteOverlay');
+   return { default: module.CommandPaletteOverlay };
+ }) as typeof import('./prompt/CommandPaletteOverlay').CommandPaletteOverlay;
+ 
+-const LazySettingsModal = lazy(async () => {
++const LazySettingsModal = recoverableLazy(async () => {
+   const module = await import('./components/SettingsModal');
+   return { default: module.SettingsModal };
+ });
+ 
+-const LazyFeedbackDialog = lazy(async () => {
++const LazyFeedbackDialog = recoverableLazy(async () => {
+   const module = await import('./components/FeedbackDialog');
+   return { default: module.FeedbackDialog };
+ });
+ 
+-const LazyUpdateWidget = lazy(async () => {
++const LazyUpdateWidget = recoverableLazy(async () => {
+   const module = await import('./components/UpdateWidget');
+   return { default: module.UpdateWidget };
+ });
+ 
+-const LazyTrashedNotesPanelContent = lazy(async () => {
++const LazyTrashedNotesPanelContent = recoverableLazy(async () => {
+   const module = await import('./panels/TrashedNotesPanelContent');
+   return { default: module.TrashedNotesPanelContent };
+ }) as typeof import('./panels/TrashedNotesPanelContent').TrashedNotesPanelContent;
+@@ -1138,10 +1145,11 @@ export function App() {
    const didInitializeStartupSelectionRef = useRef(false);
    const commandPaletteRef = useRef<CommandPaletteOverlayHandle>(null);
  
@@ -26,7 +77,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
    }, []);
    const handleBodyFocusComplete = useCallback(() => {
      setShouldFocusBody(false);
-@@ -2859,7 +2864,7 @@ export function App() {
+@@ -2859,7 +2867,7 @@ export function App() {
        }
        navigateToNote(note.id);
        if (focusTarget === 'title') {
@@ -35,7 +86,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
        } else {
          setShouldFocusBody(true);
        }
-@@ -2917,11 +2922,16 @@ export function App() {
+@@ -2917,11 +2925,16 @@ export function App() {
    ]);
  
    const handleCreateNote = useCallback(async () => {
@@ -53,7 +104,44 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
    }, [createAndActivateNote, flushBeforeNoteSwitch]);
  
    const handleDuplicateNote = useCallback(async (noteId: string) => {
-@@ -3127,14 +3137,8 @@ export function App() {
+@@ -2932,35 +2945,7 @@ export function App() {
+     if (!entity) return;
+ 
+     try {
+-      // Read source content from disk
+-      const contentResult = await notesApi.getContent.invoke(noteId);
+-      if (!contentResult) {
+-        showOperationFailure('Could not read note content.');
+-        return;
+-      }
+-
+-      // Strip frontmatter and comments — duplicate gets fresh metadata
+-      const { body, h1Title } = disassembleNote(contentResult.content);
+-
+-      // Create new note in the same folder
+-      const title = entity.title ? `${entity.title} copy` : 'Untitled copy';
+-      const record = await notesApi.create.invoke(title, entity.folderPath);
+-      if (!record) {
+-        showOperationFailure('Could not create duplicate note.');
+-        await reconcileNotesFromDisk('duplicate-empty-response');
+-        return;
+-      }
+-
+-      // Write the cleaned body to the new note
+-      const cleanedContent = assembleNote({ h1Title: h1Title || title, body });
+-      const updatedRecord = await notesApi.update.invoke(record.id, {
+-        content: cleanedContent,
+-        ...(contentResult.layoutMetadata ? { layoutMetadata: contentResult.layoutMetadata } : {}),
+-        ...(entity.pinned ? { pinned: true, pinnedAt: Math.floor(Date.now() / 1000) } : {})
+-      });
+-
+-      // Navigate to the duplicate
+-      const persistedRecord = updatedRecord ?? record;
++      const persistedRecord = await duplicateNote(noteId);
+       const note = mapRecordToMockNote(persistedRecord);
+       insertNote(note);
+       applyNoteRecordToStore(persistedRecord);
+@@ -3127,14 +3112,8 @@ export function App() {
    const handleRenameNote = useCallback(
      (noteId: string) => {
        handleSelectNote(noteId);
@@ -70,7 +158,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
      },
      [handleSelectNote]
    );
-@@ -3788,7 +3792,8 @@ export function App() {
+@@ -3788,7 +3767,8 @@ export function App() {
  
        const key = e.key.toLowerCase();
  
@@ -80,7 +168,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
          e.preventDefault();
          if (showCommandPalette) {
            // Already open - just focus the input
-@@ -3878,7 +3883,8 @@ export function App() {
+@@ -3878,7 +3858,8 @@ export function App() {
        }
  
        // Switch to Trash tab: Cmd+2
@@ -90,7 +178,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
          e.preventDefault();
          handlePanelViewChange('trash');
          return;
-@@ -3947,7 +3953,8 @@ export function App() {
+@@ -3947,7 +3928,8 @@ export function App() {
      onExpandActionsPanel: () => { zenModeActive ? toggleZenMode() : setActionsPanelHidden(false); },
      isAgentStreaming: hasActiveStreaming,
      onCanvasClick: handlePromptClose,
@@ -100,7 +188,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
    };
  
    const actionsPanelContent = (
-@@ -4047,7 +4054,7 @@ export function App() {
+@@ -4047,7 +4029,7 @@ export function App() {
        searchBarAutoFocus={searchBarAutoFocus}
        onCloseSearch={handleCloseSearch}
        onOpenSearch={() => { setSearchQuery(''); setSearchBarAutoFocus(true); }}
@@ -109,13 +197,11 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
        onLeftTitleFocusComplete={handleTitleFocusComplete}
        leftAutoFocusBody={shouldFocusBody}
        onLeftBodyFocusComplete={handleBodyFocusComplete}
-@@ -4093,7 +4100,8 @@ export function App() {
+@@ -4093,6 +4075,7 @@ export function App() {
          onSelectNote={handleSelectNote}
          onCreateNote={handleCreateNote}
          onDeleteNote={handleNoteDeleted}
--        onDuplicateNote={handleDuplicateNote}
 +        // moss-multi seam: hide-registry (A§9)
-+        onDuplicateNote={hidden('duplicate-note') ? undefined : handleDuplicateNote}
+         onDuplicateNote={handleDuplicateNote}
          onRenameNote={handleRenameNote}
          onCollapse={handleCollapseNotesPanel}
-         footerContent={panelFooter}

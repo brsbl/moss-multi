@@ -2,7 +2,7 @@
 // owner-only probe (A§19).
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
-import { BASE, insertDoc, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
+import { BASE, insertDoc, insertLink, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
 import { d1Projections } from '@moss-multi/sync/projections';
 import { handleApi } from './router.ts';
 
@@ -30,6 +30,8 @@ const DocDO = {
       renamed.push({ docId: id.name, title });
       await d1Projections(d1.db).title(id.name, title);
     },
+    snapshotForDuplicate: async () => ({ title: 'Original', state: new Uint8Array([1, 2]) }),
+    createFromSnapshot: async (input: unknown) => { created.push({ docId: id.name, input }); },
     probeInstance: async () => {
       probed.push(id.name);
       return { instanceId: `instance-${id.name}`, constructedAt: 1 };
@@ -71,6 +73,22 @@ interface DocBody {
 }
 
 describe('POST /api/docs', () => {
+  it('passes markdown, including an empty body, to the server converter without lifting its H1', async () => {
+    for (const markdown of ['# Body heading\n\n**Imported** text.', '']) {
+      const response = await create(ada.cookie, { title: 'File stem', markdown });
+      expect(response.status).toBe(201);
+      const { doc } = await response.json() as DocBody;
+      expect(doc.title).toBe('File stem');
+      expect(created.at(-1)).toEqual({ docId: doc.id, input: { folderId: ada.homeId, ownerId: ada.id, title: 'File stem', markdown } });
+    }
+  });
+
+  it('refuses invalid and oversized markdown before creating a doc', async () => {
+    expect((await create(ada.cookie, { markdown: 42 })).status).toBe(400);
+    expect((await create(ada.cookie, { markdown: 'é'.repeat(1024 * 1024 + 1) })).status).toBe(413);
+    expect(created).toEqual([]);
+  });
+
   it('gets 401 without a session', async () => {
     const response = await create(null);
     expect(response.status).toBe(401);
@@ -171,5 +189,55 @@ describe('PATCH /api/docs/:id', () => {
     const id = await insertDoc(d1.db, ada);
     renameFails = true;
     expect((await rename(id, ada.cookie, 'Failed')).status).toBe(503);
+  });
+});
+
+describe('POST /api/docs/:id/duplicate', () => {
+  const duplicate = (id: string, cookie: string) => handleApi(new Request(`${BASE}/api/docs/${id}/duplicate`, {
+    method: 'POST', headers: { cookie, origin: BASE },
+  }), env);
+
+  it('copies in the source folder for its owner, with a new name and no doc grants', async () => {
+    const id = await insertDoc(d1.db, ada);
+    const response = await duplicate(id, ada.cookie);
+    expect(response.status).toBe(201);
+    const { doc } = await response.json() as DocBody;
+    expect(doc.id).not.toBe(id);
+    expect(doc).toMatchObject({ title: 'Original copy', folderId: ada.homeId });
+    expect(created).toEqual([{ docId: doc.id, input: { folderId: ada.homeId, ownerId: ada.id, title: 'Original copy' } }]);
+  });
+
+  it('puts a direct editor’s copy in their Home, without granting access to the source folder', async () => {
+    const id = await insertDoc(d1.db, ada);
+    await d1.db.prepare("INSERT INTO doc_members (doc_id, principal_id, principal_type, role, added_by, created_at) VALUES (?, ?, 'user', ?, ?, 1)").bind(id, ben.id, 'editor', ada.id).run();
+    const response = await duplicate(id, ben.cookie);
+    expect(response.status).toBe(201);
+    const { doc } = await response.json() as DocBody;
+    expect(doc.folderId).toBe(ben.homeId);
+    expect(await d1.db.prepare('SELECT owner_user_id FROM docs WHERE id = ?').bind(doc.id).first()).toEqual({ owner_user_id: ben.id });
+  });
+
+  it('hides inaccessible sources and refuses a viewer without creating anything', async () => {
+    const id = await insertDoc(d1.db, ada);
+    const denied = await duplicate(id, ben.cookie);
+    expect(denied.status).toBe(404);
+    expect(await denied.text()).toBe(await (await duplicate(crypto.randomUUID(), ben.cookie)).text());
+    await d1.db.prepare("INSERT INTO doc_members (doc_id, principal_id, principal_type, role, added_by, created_at) VALUES (?, ?, 'user', ?, ?, 1)").bind(id, ben.id, 'viewer', ada.id).run();
+    expect((await duplicate(id, ben.cookie)).status).toBe(403);
+    expect(created).toEqual([]);
+  });
+});
+
+describe('GET /api/docs/:id/access', () => {
+  it('uses the same share-link access as a doc read for a signed-in nonmember', async () => {
+    const docId = await insertDoc(d1.db, ada);
+    const share = await insertLink(d1.db, { docId }, 'viewer');
+    const withoutLink = await handleApi(new Request(`${BASE}/api/docs/${docId}/access`, { headers: { cookie: ben.cookie } }), env);
+    expect(withoutLink.status).toBe(404);
+    for (const suffix of ['', '/access']) {
+      const response = await handleApi(new Request(`${BASE}/api/docs/${docId}${suffix}?share=${share}`, { headers: { cookie: ben.cookie } }), env);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ role: 'viewer' });
+    }
   });
 });

@@ -1,6 +1,7 @@
 // Host slots the vendored notes list and Settings call through moss-multi seams (A§2.2: seam once, fill in host).
 // Each renders nothing until the task named beside it fills it.
 import type { ReactNode } from 'react';
+import { ConnectionIndicator } from './collab/ConnectionNotice.tsx';
 import { AccountSection } from './surfaces/AccountSection.tsx';
 import { ShareControl } from './surfaces/ShareDialog.tsx';
 import { getBridge, WORKSPACE } from './bridge/index.ts';
@@ -17,4 +18,4 @@ export const SettingsSections: () => ReactNode = () => <AccountSection />;
 
 /** Web chrome at the start of an open note's top-bar right group: Share, the connection indicator, the face pile and
  * the bell (T1.1, T1.3, T1.5, T2.8). */
-export const TopBarCollab: (props: { docId: string }) => ReactNode = ({ docId }) => <ShareControl docId={docId} />;
+export const TopBarCollab: (props: { docId: string }) => ReactNode = ({ docId }) => <><ShareControl docId={docId} /><ConnectionIndicator docId={docId} /></>;

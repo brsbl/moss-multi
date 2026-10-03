@@ -1,16 +1,19 @@
 import type { Connection, ConnectionContext, WSMessage } from 'partyserver';
 import { YServer } from 'y-partyserver';
 import * as Y from 'yjs';
+import { splitFrontmatter } from '@moss-desktop/common/markdown-layers';
 import { ACK_COALESCE_MS, AWARENESS_MAX_BYTES, MAX_CONNECTIONS, STATE_CAP_BYTES, WRITE_RATE } from '@moss-multi/protocol/limits';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
 import { bytesToBase64, CLOSE, type ServerEvent, type WriteRefusalReason } from '@moss-multi/protocol/sync';
-import { attachmentFrom, connectCode, parseFrame, revocationCode, stateBytesAfter, wouldChange, WriteRate, type Attachment } from './doc/admission.ts';
+import {
+  attachmentFrom, classifySync, connectCode, parseFrame, revocationCode, stateBytesAfter, WriteRate, type Attachment, type DeleteSet,
+} from './doc/admission.ts';
 import { attach, attachmentOf, awarenessTooLarge } from './doc/awareness.ts';
 import { AckCoalescer, DocStore, PERSISTENCE } from './doc/persistence.ts';
 import { d1Projections, Projections, type ProjectionTarget } from './doc/projections.ts';
 import type { SyncEnv } from './env.ts';
 import { writeField } from '@moss-multi/core/doc-fields';
-import { exportDocMarkdown, importBody, rootIsEmpty, SERVER_SEED, seedEmptyParagraph } from './server-doc.ts';
+import { exportDocMarkdown, importBody, rootIsEmpty, SERVER_IMPORT, SERVER_SEED, seedEmptyParagraph } from './server-doc.ts';
 
 /** A title written by create() or a REST rename; both project. */
 export const SERVER_TITLE = 'server-title';
@@ -67,7 +70,9 @@ export class DocDO extends YServer<SyncEnv> {
   #projections: Projections | null = null;
   readonly #limits = (this.constructor as typeof DocDO).limits;
   readonly #rate = new WriteRate(this.#limits.writeRate.max, this.#limits.writeRate.windowMs);
-  readonly #acks = new AckCoalescer((connectionId) => this.#ack(connectionId), ACK_COALESCE_MS);
+  readonly #acks = new AckCoalescer<Connection>((connection, deletes) => this.#ack(connection, deletes), ACK_COALESCE_MS);
+  /** The deletes of the sync frame being applied, which its ack names. */
+  #frameDeletes: DeleteSet | undefined;
 
   /** Runs inside partyserver's blockConcurrencyWhile, so a woken DO replays before it sees any frame. */
   override async onLoad(): Promise<void> {
@@ -124,15 +129,21 @@ export class DocDO extends YServer<SyncEnv> {
     if (frame.kind === 'awareness' && awarenessTooLarge(frame.bytes, this.#limits.awarenessMaxBytes)) return;
     // Inert frames (every step 2 answering a step 1) pass whatever the role; writes meet the gates.
     if (frame.kind === 'sync') {
-      if (wouldChange(this.document, frame.update)) {
+      const { changes, deletes } = classifySync(this.document, frame.update);
+      if (changes) {
         if (this.#refused(connection, attachment, store, frame.update)) return;
       } else if (roleAtLeast(attachment.role, 'editor')) {
         // The doc already holds it, so nothing persists to ack it: an editor's reconnect step 2 after its ack was lost
         // with the old socket. Acked too, so the client learns its edits are on the server (A§10.6).
-        this.#acks.schedule(connection.id);
+        this.#acks.schedule(connection, deletes);
       }
+      this.#frameDeletes = deletes;
     }
-    super.onMessage(connection, message);
+    try {
+      super.onMessage(connection, message);
+    } finally {
+      this.#frameDeletes = undefined;
+    }
   }
 
   /** Defense in depth: below editor, y-partyserver never applies a step 2 or update, inert or not. */
@@ -142,8 +153,8 @@ export class DocDO extends YServer<SyncEnv> {
 
   override onClose(connection: Connection, code: number, reason: string, wasClean: boolean): void {
     super.onClose(connection, code, reason, wasClean);
-    this.#rate.forget(connection.id);
-    this.#acks.cancel(connection.id);
+    this.#rate.forget(connection);
+    this.#acks.cancel(connection);
   }
 
   /**
@@ -154,7 +165,12 @@ export class DocDO extends YServer<SyncEnv> {
     const store = await this.#ready();
     this.#seed(store);
     if (store.meta('created') !== null) return;
-    if (input.markdown) importBody(this.document, input.markdown, (diff) => this.#admitServerWrite(store, diff));
+    if (input.markdown) {
+      const parts = splitFrontmatter(input.markdown);
+      const hasFrontmatter = parts.hasFrontmatter && !parts.error;
+      const frontmatter = hasFrontmatter ? input.markdown.slice(0, input.markdown.length - parts.body.length) : undefined;
+      importBody(this.document, hasFrontmatter ? parts.body : input.markdown, (diff) => this.#admitServerWrite(store, diff), frontmatter);
+    }
     const title = input.title?.trim();
     // POST /api/docs wrote a provisional row; the title and its filename arrive through the projection.
     if (title) writeField(this.document, 'title', title, SERVER_TITLE);
@@ -174,6 +190,30 @@ export class DocDO extends YServer<SyncEnv> {
     writeField(this.document, 'title', text, SERVER_TITLE);
     this.#projections?.touch();
     await this.#projections?.flush();
+  }
+
+  /** Internal RPC: preserves Yjs item identity, including relative anchors, without a markdown round trip. */
+  async snapshotForDuplicate(): Promise<{ title: string; state: Uint8Array }> {
+    await this.#ready();
+    return { title: this.document.getText('title').toString(), state: Y.encodeStateAsUpdate(this.document) };
+  }
+
+  async createFromSnapshot(input: Omit<CreateDocInput, 'markdown'>, state: Uint8Array): Promise<void> {
+    const store = await this.#ready();
+    if (store.meta('created') !== null) return;
+    if (state.byteLength > this.#limits.stateCapBytes) throw new DocCapError();
+    this.document.transact(() => {
+      // Drop only this new doc's seed, then apply the independent source snapshot.
+      const root = this.document.get('root', Y.XmlText);
+      root.delete(0, root.length);
+      Y.applyUpdate(this.document, state, SERVER_IMPORT);
+      const title = this.document.getText('title');
+      title.delete(0, title.length);
+      title.insert(0, input.title ?? '');
+    }, SERVER_IMPORT);
+    store.setMeta('folder', input.folderId);
+    store.setMeta('owner', input.ownerId);
+    store.setMeta('created', '1');
   }
 
   /** The doc as a `.md` file, memoized until the next update. */
@@ -210,7 +250,7 @@ export class DocDO extends YServer<SyncEnv> {
     if (origin === PERSISTENCE) return;
     store.record(update, this.document);
     if (isConnection(origin)) {
-      this.#acks.schedule(origin.id);
+      this.#acks.schedule(origin, this.#frameDeletes);
       this.#projections?.touch();
     }
   }
@@ -240,7 +280,7 @@ export class DocDO extends YServer<SyncEnv> {
     if (!roleAtLeast(attachment.role, 'suggester')) return this.#refuse(connection, 'role', CLOSE.revoked);
     // A suggester's writes are vetted on a mirror (M5); until then they are refused, never applied unvetted.
     if (!roleAtLeast(attachment.role, 'editor')) return this.#refuse(connection, 'suggest', CLOSE.writeRefused);
-    if (!this.#rate.allow(connection.id)) {
+    if (!this.#rate.allow(connection)) {
       // Transient: the client keeps its Y.Doc and its next step 2 re-delivers everything.
       connection.close(CLOSE.writeRate, 'write rate');
       return true;
@@ -256,10 +296,13 @@ export class DocDO extends YServer<SyncEnv> {
     return true;
   }
 
-  #ack(connectionId: string): void {
-    const connection = this.getConnection(connectionId);
-    if (!connection) return;
-    const event: ServerEvent = { t: 'ack', sv: bytesToBase64(Y.encodeStateVector(this.document)) };
+  #ack(connection: Connection, deletes: DeleteSet): void {
+    const event: ServerEvent = {
+      t: 'ack',
+      sv: bytesToBase64(Y.encodeStateVector(this.document)),
+      ds: bytesToBase64(Y.encodeSnapshot(Y.createSnapshot(deletes, new Map()))),
+    };
+    // sendCustomMessage skips a socket that has closed.
     this.sendCustomMessage(connection, JSON.stringify(event));
   }
 }

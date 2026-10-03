@@ -1,5 +1,6 @@
 // ported-from: packages/desktop/src/renderer/App.tsx @ 762abb777
-import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import { recoverableLazy } from '@moss-multi/host/recoverable-lazy';
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
 import { useAtom, useAtomValue, useSetAtom, useStore } from 'jotai';
 import { useThemeEffect } from '@moss/shared/themes';
@@ -153,7 +154,8 @@ import type { TrashedNotesPanelContentHandle } from './panels/TrashedNotesPanelC
 import { PropertiesTabContent } from './panels/PropertiesTabContent';
 import { DefaultEditorPrompt } from './components/DefaultEditorPrompt';
 import type { MossWindowContext, UpdateReadyInfo } from '../types/electron-api';
-import { disassembleNote, assembleNote } from '../common/markdown-layers';
+// moss-multi seam: duplicate from the server's Yjs snapshot.
+import { duplicateNote } from '@moss-multi/host/duplicate';
 import { hydrateComments } from './editor/utils/comment-import';
 import { noteIntelligenceEnabledAtom, pendingAgentCommentContextAtom, promptDraftAtom } from '@moss/shared/state/atoms';
 import { connectedFolderEntriesAtom, contextPillsAtom, setMentionPillsAtom } from './state/granted-dirs-atoms';
@@ -317,27 +319,28 @@ const mapRecordToMockNote = (record: NoteMetadataRecord): MockNote => {
   };
 };
 
-const LazyCommandPaletteOverlay = lazy(async () => {
+// moss-multi seam: optional imports fail in place without unmounting a bound editor.
+const LazyCommandPaletteOverlay = recoverableLazy(async () => {
   const module = await import('./prompt/CommandPaletteOverlay');
   return { default: module.CommandPaletteOverlay };
 }) as typeof import('./prompt/CommandPaletteOverlay').CommandPaletteOverlay;
 
-const LazySettingsModal = lazy(async () => {
+const LazySettingsModal = recoverableLazy(async () => {
   const module = await import('./components/SettingsModal');
   return { default: module.SettingsModal };
 });
 
-const LazyFeedbackDialog = lazy(async () => {
+const LazyFeedbackDialog = recoverableLazy(async () => {
   const module = await import('./components/FeedbackDialog');
   return { default: module.FeedbackDialog };
 });
 
-const LazyUpdateWidget = lazy(async () => {
+const LazyUpdateWidget = recoverableLazy(async () => {
   const module = await import('./components/UpdateWidget');
   return { default: module.UpdateWidget };
 });
 
-const LazyTrashedNotesPanelContent = lazy(async () => {
+const LazyTrashedNotesPanelContent = recoverableLazy(async () => {
   const module = await import('./panels/TrashedNotesPanelContent');
   return { default: module.TrashedNotesPanelContent };
 }) as typeof import('./panels/TrashedNotesPanelContent').TrashedNotesPanelContent;
@@ -2943,35 +2946,7 @@ export function App() {
     if (!entity) return;
 
     try {
-      // Read source content from disk
-      const contentResult = await notesApi.getContent.invoke(noteId);
-      if (!contentResult) {
-        showOperationFailure('Could not read note content.');
-        return;
-      }
-
-      // Strip frontmatter and comments — duplicate gets fresh metadata
-      const { body, h1Title } = disassembleNote(contentResult.content);
-
-      // Create new note in the same folder
-      const title = entity.title ? `${entity.title} copy` : 'Untitled copy';
-      const record = await notesApi.create.invoke(title, entity.folderPath);
-      if (!record) {
-        showOperationFailure('Could not create duplicate note.');
-        await reconcileNotesFromDisk('duplicate-empty-response');
-        return;
-      }
-
-      // Write the cleaned body to the new note
-      const cleanedContent = assembleNote({ h1Title: h1Title || title, body });
-      const updatedRecord = await notesApi.update.invoke(record.id, {
-        content: cleanedContent,
-        ...(contentResult.layoutMetadata ? { layoutMetadata: contentResult.layoutMetadata } : {}),
-        ...(entity.pinned ? { pinned: true, pinnedAt: Math.floor(Date.now() / 1000) } : {})
-      });
-
-      // Navigate to the duplicate
-      const persistedRecord = updatedRecord ?? record;
+      const persistedRecord = await duplicateNote(noteId);
       const note = mapRecordToMockNote(persistedRecord);
       insertNote(note);
       applyNoteRecordToStore(persistedRecord);
@@ -4102,7 +4077,7 @@ export function App() {
         onCreateNote={handleCreateNote}
         onDeleteNote={handleNoteDeleted}
         // moss-multi seam: hide-registry (A§9)
-        onDuplicateNote={hidden('duplicate-note') ? undefined : handleDuplicateNote}
+        onDuplicateNote={handleDuplicateNote}
         onRenameNote={handleRenameNote}
         onCollapse={handleCollapseNotesPanel}
         footerContent={panelFooter}

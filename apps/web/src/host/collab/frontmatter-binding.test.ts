@@ -50,3 +50,15 @@ describe('frontmatter binding', () => {
     } finally { stops.forEach((stop) => stop()); a.destroy(); b.destroy(); }
   });
 });
+
+it('keeps values when Properties reorders its keys', () => {
+  const doc = new Y.Doc();
+  writeField(doc, 'frontmatter', 'first: one\nsecond: two\n', 'seed');
+  const store = createStore();
+  const stop = bindFrontmatter(store, 'reorder', doc, () => true);
+  store.set(noteFrontmatterAtom('reorder'), { second: 'two', first: 'one' });
+  store.set(frontmatterDirtySignalAtom('reorder'), (n) => n + 1);
+  expect(Object.keys(parseFrontmatter(readField(doc, 'frontmatter')) ?? {})).toEqual(['second', 'first']);
+  stop();
+  doc.destroy();
+});

@@ -165,14 +165,6 @@ export const AFFORDANCES = [
     ],
   },
   {
-    id: 'duplicate-note',
-    sites: [`${R}/App.tsx`],
-    reason: 'Duplicate goes through a server endpoint in M1; the bridge refuses content writes.',
-    cite: 'T1.8',
-    staged: 1,
-    probes: [{ surface: 'note-menu', selector: MENU_ITEM, text: 'Duplicate' }],
-  },
-  {
     id: 'comments',
     sites: [
       `${R}/editor/MarkdownEditor.tsx`, `${R}/editor/nodes/CodeBlockNode.view.tsx`, `${R}/editor/nodes/ChartNode.view.tsx`,

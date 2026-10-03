@@ -51,6 +51,7 @@ import { SystemFolderSection } from './SystemFolderSection';
 import { foldersApi } from '../api/electron';
 // moss-multi seam: hide-registry (A§9); sidebar rows and slots (A§19, A§11)
 import { hidden } from '@moss-multi/host/affordances';
+import { canDuplicateNote } from '@moss-multi/host/duplicate';
 import { FolderMenuItems, surfacedShared, surfacedFolder } from '@moss-multi/host/slots';
 
 const NOTES_FOLDER_NAME = 'Notes';
@@ -169,7 +170,8 @@ function NoteContextMenuItems({
           <span>Rename</span>
         </ContextMenuItem>
       )}
-      {onDuplicateNote && !externalFilePath && (
+      {/* moss-multi seam: duplicate requires editor access. */}
+      {onDuplicateNote && !externalFilePath && canDuplicateNote(noteId) && (
         <ContextMenuItem onSelect={() => onDuplicateNote(noteId)}>
           <Copy className="h-3.5 w-3.5 text-ink-muted" />
           <span>Duplicate</span>

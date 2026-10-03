@@ -7,6 +7,8 @@
 // never navigates; and two people adding different properties at once both keep theirs, across a reload.
 // Grants to the second and third principals are declared setup through the members API (BUILDPLAN conventions).
 import { randomBytes } from 'node:crypto';
+import { readField } from '../../packages/core/src/doc-fields.ts';
+import { cookieHeader, openDocClient } from '../lib/doc-client.ts';
 import type { Locator, Route } from '@playwright/test';
 import type { Actor, Actors } from '../lib/actors.ts';
 import {
@@ -643,6 +645,13 @@ test('j02-title: @tierA disconnected additions of the same property converge and
   const winner = await owner(ada).inputValue();
   await waitAcked(ada, docId);
   await waitAcked(ben, docId);
+  const reader = await openDocClient(new URL(ada.page.url()).origin, docId, cookieHeader(await ada.context.cookies()));
+  try {
+    await reader.synced;
+    expect(readField(reader.doc, 'frontmatter').match(/^owner:/gm), 'serialized properties have exactly one owner key').toHaveLength(1);
+  } finally { reader.close(); }
+  await waitAcked(ada, docId);
+  await waitAcked(ben, docId);
   for (const actor of [ada, ben]) {
     actor.observations.clear();
     await actor.page.reload();
@@ -667,4 +676,44 @@ test('j02-title: @tierA disconnected additions of the same property converge and
   await expect(header.getByRole('textbox', { name: 'status', exact: true })).toHaveValue('done');
   await expect(header.getByRole('textbox', { name: 'due', exact: true })).toHaveValue('soon');
   await actors.checkpoint('same-property-recovered');
+});
+
+test('j02-title: @tierA delete versus edit of one property preserves neighbouring fields after reconnect and reload @p:tech-2 @p:col-1 @p:col-4', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada', { severable: true });
+  const ben = await openShell(actors, 'ben');
+  await actors.requireDistinct(2);
+  const docId = await ui.createNote(ada);
+  for (const [key, value] of [['owner', 'ada'], ['status', 'done'], ['due', 'soon']]) {
+    await (await addPropertyUpToValue(ada, key, value)).press('Enter');
+  }
+  await waitAcked(ada, docId);
+  await grantDoc(ada, docId, principalOf(ben));
+  await openDoc(ben, docId);
+  const benHeader = await openProperties(ben);
+  await benHeader.getByRole('textbox', { name: 'owner', exact: true }).click();
+  const draft = benHeader.getByRole('textbox', { name: 'Edit owner', exact: true });
+  await draft.fill('ben');
+  if (!ada.sever) throw new Error('Ada must be severable');
+  ada.sever.blackhole();
+  try {
+    await PROPERTIES(ada).getByRole('button', { name: 'Delete owner field', exact: true }).click();
+    await ada.page.getByRole('alertdialog').getByRole('button', { name: 'Remove', exact: true }).click();
+    await draft.press('Enter');
+    expect(ada.sever.census().dropped.out).toBeGreaterThan(0);
+  } finally {
+    ada.expectReconnects(1, docId);
+    ada.sever.reset();
+    ada.sever.restore();
+  }
+  for (const actor of [ada, ben]) {
+    await expect(PROPERTIES(actor).getByRole('textbox', { name: 'status', exact: true })).toHaveValue('done');
+    await expect(PROPERTIES(actor).getByRole('textbox', { name: 'due', exact: true })).toHaveValue('soon');
+    await waitAcked(actor, docId);
+    actor.observations.clear();
+    await actor.page.reload();
+    await ui.waitLive(actor, docId);
+    const header = await openProperties(actor);
+    await expect(header.getByRole('textbox', { name: 'status', exact: true })).toHaveValue('done');
+    await expect(header.getByRole('textbox', { name: 'due', exact: true })).toHaveValue('soon');
+  }
 });

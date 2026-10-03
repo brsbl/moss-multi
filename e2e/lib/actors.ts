@@ -128,6 +128,7 @@ export class Actors {
       : null;
     const page = await context.newPage();
     telemetry = Telemetry.install(page, { routed: !!sever });
+    await telemetry.ready;
     const actor = new Actor(this, label, context, page, telemetry, principal, sever);
     this.list.push(actor);
     return actor;

@@ -1,11 +1,11 @@
 # moss-multi progress
 
-**Overall: 29% done** (20 of 70 planned tasks verified)
+**Overall: 33% done** (23 of 70 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 17 / 17 | in progress |
-| M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 3 / 11 | in progress |
+| M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 6 / 11 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 0 / 9 | |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 0 / 9 | |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
@@ -39,6 +39,9 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-03 — T1.1 verified: a note's owner can click Share, add a person by email as viewer, commenter or editor, and see who has access; that person opens the note from its link while a signed-in stranger sees one denial page that is byte-identical for a missing and an inaccessible note, and the stranger's socket closes 4404 without reconnecting. One access resolver (A§8) now answers every REST and socket check, and anonymous and link-only visitors never see member emails.
 - 2026-10-03 — T1.1s verified: a signed-in visitor who holds only a doc or folder link now gets the same 404 as a stranger for a note's member list, while owners still see grantee names and emails; the other identity-bearing endpoints were audited and the presence and comment follow-ups are recorded below.
 - 2026-10-03 — T1.2 verified: a note or folder shared with you appears at the root of your sidebar without typing its URL, and opening it leaves the sidebar on your own Home; the notes-panel header has a vault switcher that lists your vaults and then vaults shared with you with role badges, remembers your choice, and keeps open panes when you switch; shared rows offer no move or folder actions.
+- 2026-10-03 — T1.3 verified: when a note's connection drops or stalls, a banner and a top-bar indicator show within 14 s and say what is wrong; typing offline survives and lands exactly on reconnect; a stalled first sync shows "retrying" and recovers without remounting the editor; a refused, read-only or over-limit session keeps its text visible and offers a retry; and signing out waits for unsent edits behind a confirmation. j03-connection is green in Chromium and WebKit.
+- 2026-10-03 — T1.7 verified: a note reopened cold or after a real server eviction (measured at about 30 s idle, tested after 95 s) keeps its exact text and paragraphs, and an idle open note renews its presence on a four-second tick and on tab return, so collaborators reappear without reloading; j04-hibernation runs in Chromium and WebKit, and a calibration test recomputes the eviction window and fails nightly if it ever exceeds 150 s.
+- 2026-10-03 — T1.8 verified: a person can choose Duplicate from a note's menu and get a copy that every collaborator sees in their sidebar, and `POST /api/docs {markdown}` imports a note on the server that renders the same as pasting that markdown into the editor; the G1 comparator holds this for all 32 family fixtures in Chromium and WebKit.
 
 ## T1.1s identity audit
 
@@ -61,21 +64,20 @@ A task counts only after an independent checker passes it on green CI. Each mile
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
 
+- T1.8 checker: replace the interim listing poll/full metadata hydrate with A§11's workspace channel, including avoiding unchanged vault-switcher notifications → T2.1 (deviation 16).
+- T1.8 checker: large explicit-markdown pastes bypass chunking to preserve nested blocks; measure responsiveness and retain nesting in any future chunker. G1 covers empty-note explicit paste, not the complete plain-text paste path → editor follow-up (deviation 14).
+- T1.8 checker: confirm snapshot duplicate's metadata policy before comments and suggestions ship; it currently retains frontmatter and anchor maps, unlike Moss's fresh-metadata duplicate → T4.0/T5.0 (deviation 15).
+- T1.8 checker: distinguish native assets awaiting web delivery from truly missing images; the current image fallback says the file could not be found → T3.1.
+- T1.8 checker: calibrate the duplicate leg's 30 s WebKit setup-ack allowance against the standard 10 s allowance → test-infra follow-up; this is setup readiness, not a claimed latency budget.
+
 - The sign-up "too short" error does not say how long a password must be → T0.10
 - Switching to "Create an account" leaves focus on the toggle link → T0.10
 - A wrong password logs a browser console error → T0.10 (only if the zero-console-error invariant should cover the auth error path)
-- Sidebar search matches titles only, so body text is never found → the M3 search task (SearchDO); live title matching is bound in T1.4
-- During a stack restart the editor stays editable with no sign it is disconnected → T1.3 (connection truth indicator and banner)
+- Sidebar search matches titles only; body search belongs to M3. Live title matching is bound in T1.4.
 - Sign-out leaves the session's other live doc sockets reading and writing → T2.5
-- Close codes are never dispatched: a refused or unauthorized socket reconnects forever behind an editable pane → T1.3 (a session lingering with unacked edits behind a refused socket also holds its doc until then; a terminal code should end it)
-- A lost ack leaves `data-sync-unacked=1` after reconnect → T1.3 (T0.P: the DocDO now acks an editor's inert step 2, so a reconnect ends in an ack; T1.3 confirms it in j03)
-- Ack coverage by state vector is unsound for deletions → T1.3
-- Acks and the write-rate window are keyed by the client's reused `_pk` connection id, so a stale socket breaks the new one's acks → T1.3 (T0.P: each socket now gets a fresh id on the client; T1.3 checks the server side)
-- ChunkReloadBoundary hard-reloads when a lazy chunk fails because the network or stack is down, discarding buffered edits → T1.3
 - The wrangler ProxyWorker patch replays non-idempotent requests after an ambiguous failure → T0.9b follow-up (stack infra)
 - `qa.mjs close` forgets the session even when closing it failed → tooling follow-up
 - `stack.mjs` puts `BETTER_AUTH_SECRET` and the test-hook secret on wrangler's command line → tooling follow-up
-- Signing out does not wait for unsynced edits, and no task owns that safeguard → extend T2.3's unacked-wait step to sign-out, or add it to the T2.x sign-out legs
 - Table and tab widths and collapsed headings reset on every reload in M0 → T1.6
 - Page-attribute names, the socket path name and the roles list are each defined in more than one place → the T1.x lane that next touches each module
 - Several docs disagree with each other: deviation 13, the M0 progress count and the viewer's copied title → the coordinator at the M0 hand-off; the viewer follow-up goes with T3.8
@@ -90,3 +92,48 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T1.4 checker P2 follow-ups (deferred under the owner's P0/P1-only review rule): cap and principal validation for REST title writes; retry/reconcile failed D1 title projections and serialize empty initialization; add independent negative controls for j02's monotonic, filename, merge and Properties assertions; remove Properties unstaging residue, avoid a placeholder flash before binding, and investigate the unconfirmed bridge-cache issue.
 
 - T1.4 remaining checker P2s: protect an in-progress property draft from a peer deletion; guard title Enter/ArrowDown during IME; retry/reconcile D1 title projection failures; use one refusal live region across split panes; add independent negative controls for the older j02 assertions. The macOS WebKit invariant-7 selftest flake belongs to tooling. Viewer Rename remains T2.6; title draft-client allocation and writeText identity guarding remain follow-ups.
+
+### T1.3 — implemented; local UI verification blocked
+
+Connection heartbeat/reducer, indicator and notice band, first-sync retrying, terminal gates/retry, fresh refusal/read-only rebinds, per-tab sign-out teardown, delete-aware acks and per-socket accounting are implemented. Chunk failures preserve live/unsynced documents. The notice band also covers the empty canvas before the first note opens.
+
+- Red proof: [j03](https://github.com/brsbl/moss-multi/actions/runs/37119822769), [ack/socket regressions](https://github.com/brsbl/moss-multi/actions/runs/37119819996), at f22b105.
+- Green proof: [both-engine j03](https://github.com/brsbl/moss-multi/actions/runs/37129674970) at be193a2; [complete CI](https://github.com/brsbl/moss-multi/actions/runs/37129924046) at 4f80045. Final dispatch adds refusal/rebind, deletion, preload-error and the existing early-key regression, with desktop/mobile banner evidence. Complete CI and both-engine targeted journeys also passed at 27adc6b ([checks](https://github.com/brsbl/moss-multi/actions/runs/37130498139), [journeys](https://github.com/brsbl/moss-multi/actions/runs/37130498571)). The final evidence adjustment collapses the notes panel through its UI for the 390px reading view. Budget: 60 CI minutes.
+- Local arm64 Node 24 build and stack boot succeeded. Browser Automation returned `unknown command browser-automation`; plugin discovery returned HTTP 401. No substitute driver or personal app was used; the stack was stopped. Local QA/triptych remains owed.
+- Deviations: reused the earlier tests-first red runs and critically reviewed WIP; no separate task brief exists; same-owner windows exercise j03 until T1.1 grants are integrated; added the minimal `/api/docs/:id/access` read using the existing resolver, needed by bounded handshake and role rechecks. The optional ack `ds` field preserves the existing wire contract. Transient chunk errors degrade in place; an open document never auto-reloads.
+
+### T1.3 — attempt 2 regression repairs
+
+Tests-first head `2ad05cc` reproduced all three P1s and the lingering conn-limit/backoff defects in [full-lane CI](https://github.com/brsbl/moss-multi/actions/runs/37134139961): the sign-out confirmation was absent and peer text was lost; a real Settings import returned 404 and removed the shell with the reported TypeError; shell parity failed at 58/62 px² and the indicator lacked its chrome tag. The access regression was introduced in `1478128`; its first fixture incorrectly expected a link to demote its owner. The corrected fixture uses a signed-in nonmember, preserving T1.1’s MAX-of-grants contract.
+
+Repairs keep sessions recoverable until confirmed sign-out, pause writes and wait five seconds for acks before a Cancel-default confirmation, contain optional import failures within their surface, tag the indicator for the existing `m1` parity mask and use moss’s defined dot token. Connection-limit Retry retains lingering edits; REST rechecks use the integrated T1.1 resolver and link ceiling, with bounded backoff.
+
+- Local QA deviation: `bb browser-automation --help` returned unknown command and plugin discovery returned HTTP 401. No substitute driver or personal app was used; the independent checker owns the real browser pass.
+- Integration: merged `origin/m1` at `77c5b4a`, retaining T1.1’s role gate, Share control and denial routes.
+- Deferred P2s: stronger banner salience/triptych, the dead `halted` field, one refusal announcer across split panes, and incremental AckLedger compaction. These are outside the three P1 regression repairs and need their own focused validation; the retry, dot, navigation and link-access nits were included.
+
+### T1.3 — resumed regression repairs
+
+Resumed the existing task branch and merged `m1` at `c6bc688`. The original tests-first [red run](https://github.com/brsbl/moss-multi/actions/runs/37134139961) proves all three checker findings. [Full CI at 5012cce](https://github.com/brsbl/moss-multi/actions/runs/37135956317) passes checks, viewer, both shell groups and parity (zero differing pixels in light and dark); both editing groups expose the remaining cached-import retry failure.
+
+Cancel now receives its ref through the DS wrapper, lazy component state has the correct initializer, and heartbeat resync replays pending updates so a channel restored before its timeout still delivers them. The failed-sign-out journey now passes. Optional surface imports receive fresh attempt URLs to retry cached fetch failures without remounting the editor. Local browser QA remains with the independent checker as the brief directs; final CI evidence is recorded in the implementer result.
+
+[Full CI at 5699641](https://github.com/brsbl/moss-multi/actions/runs/37136739592) passed every planned job in both engines. The required final fetch then brought in verified T1.2 at `b9242c9`; [integration CI](https://github.com/brsbl/moss-multi/actions/runs/37137312745) exposed its untagged vault selector as a 127 px² parity blob in all four shell targets. The selector button now carries `data-collab-chrome`, with its own rectangle masked in the empty shell as well as the open-note shell (A§19–20).
+
+### T1.3 — confirmation lifetime and visible read-only content
+
+Tests-first head `a0bbe50` reproduced both P1 findings in [Chromium CI](https://github.com/brsbl/moss-multi/actions/runs/37140221673): j01's viewer and j03's terminal/paused bodies were hidden, and dismissing Settings during the ack wait left no confirmation to answer. The confirmation now belongs to the app shell. Body visibility follows first sync and reset state independently of editability, retaining visible content through read-only, paused and terminal states. The same editor remains mounted. Connection journeys now share with a distinct Ben principal through the Share dialog.
+
+Reference comparison: glyphdown's `DocEditorPage.tsx:476` keeps its read-only editor rendered; moss at the pin's `CanvasAreaContent.tsx:4975–5000` mounts a trashed note with `readOnly`; our visibility gate incorrectly reused editability. The change restores that separation using the existing vendored wrapper and skeleton. Moss has no account flow; the existing moss ConfirmationDialog is moved intact to the shell.
+
+Local browser verification remains assigned to the independent checker under the implementer brief. Other P2s remain follow-ups: sign-out pause inheritance and HTTP deadline, banner salience, access-route deletion semantics, chunk-recovery tradeoffs, split refusal duplication and the minor carry-overs listed by the checker. No API or wire contracts change in this repair.
+
+### T1.7 — implementation and calibration
+
+- Tests-first [37143394833](https://github.com/brsbl/moss-multi/actions/runs/37143394833) failed the two new awareness-renewal assertions: neither the four-second tick nor visibility restoration advanced the local clock (636 other units passed). The first browser dispatch [37143407413](https://github.com/brsbl/moss-multi/actions/runs/37143407413) proved restart restoration; its idle fixture needed to wait for the newly created pane rather than the previous note's pane.
+- The session re-announces existing awareness on its four-second resync and visibility restoration, preserving the whole state and never reviving a null state. Storage replay, persisted revocations and the RPC initialization guard already satisfy the wake path and remain covered by the DocDO harness.
+- Deviations: T1.5 owns the face pile and named identities, so j04 observes presence in real browser awareness frames by client ID. Headless visibility is simulated and labeled. Calibration includes a fifth 150 s bucket to prove the architecture's ceiling. Local browser self-check is deferred to the independent checker as directed by the implementer brief; no local tests ran.
+- CI budget: approximately 60 runner-minutes for the task; two initial runs used about 14 job-minutes. Calibration and the corrected journeys are dispatched together in Chromium; the checker owns WebKit and the browser QA pass.
+- Implementation checks [37143723391](https://github.com/brsbl/moss-multi/actions/runs/37143723391): 638 units, typecheck, lint, build and both-engine viewer checks green. Chromium [37143723049](https://github.com/brsbl/moss-multi/actions/runs/37143723049): both j04 journeys and calibration green; the 95 s shared idle changed both DocDO identities, restored exact text and paragraph structure, and restored presence both ways on the surviving creator socket.
+- SP4 measured eviction by the first 30 s probe, confirmed at 60/90/120/150 s with sockets alive; `ctx.abort()` closed its socket. `e2e/lib/calibrated.json` records the source commit/run and `IDLE_MS = max(95 s, 1.2 × 30 s) = 95 s`. Nightly Chromium editing shards recalibrate and fail above 150 s or when the committed window is too short. Calibration output stays separate from journey evidence.
+- Final T1.7 code revision `61c05fc`: push checks [37144380556](https://github.com/brsbl/moss-multi/actions/runs/37144380556) and Chromium [37144380313](https://github.com/brsbl/moss-multi/actions/runs/37144380313) are green, including j04, the existing black-hole and healthy-idle legs, and a second calibration. The artifacts retain all three instance proofs separately from calibration. Integrated the later documentation-only `m1` tip `3cfe679`; this does not implement its frontmatter redesign. T1.4 still owns compatibility, approval and migration validation for that redesign. Final merged-head checks are dispatched; browser evidence remains applicable to the identical implementation.

@@ -16,5 +16,5 @@
     "noUnusedParameters": true,
     "noEmit": true
   },
-  "include": ["playwright.config.ts", "lib", "selftest", "journeys", "parity/*.ts", "viewer/*.ts"]
+  "include": ["playwright.config.ts", "lib", "selftest", "journeys", "calibration", "parity/*.ts", "viewer/*.ts"]
 }

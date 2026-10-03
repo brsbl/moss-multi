@@ -6,6 +6,7 @@ import { useSyncExternalStore } from 'react';
 import { lookupSession } from '../auth/session-fn.ts';
 import { setAppState } from './app-state.ts';
 import { createAuthStore, LOGIN_PATH, type AuthState, type SessionUser } from './auth-state.ts';
+import { prepareSignOut } from './sign-out-guard.ts';
 import { leaveTo } from './navigation.ts';
 
 export const auth = createAuthStore({
@@ -13,6 +14,7 @@ export const auth = createAuthStore({
   fetch: (input, init) => fetch(input, init),
   leave: leaveTo,
   setAppState,
+  beforeSignOut: prepareSignOut,
 });
 
 if (typeof window !== 'undefined') {

@@ -124,3 +124,29 @@ describe('composeFrontmatter', () => {
     expect(composeFrontmatter('', 'Body\n')).toBe('Body\n');
   });
 });
+
+describe('structured property regressions', () => {
+  it('same-key additions export one valid YAML key immediately after merge', () => {
+    const { a, b, sync } = apart('status: done\n');
+    writeFrontmatterKey(a, 'owner', 'ada', LOCAL);
+    writeFrontmatterKey(b, 'owner', 'ben', LOCAL);
+    sync();
+    const yaml = readField(a, 'frontmatter');
+    expect(yaml.match(/^owner:/gm)).toHaveLength(1);
+    expect(parse(yaml)).toEqual({ status: 'done', owner: expect.stringMatching(/^(ada|ben)$/) });
+    expect(readField(b, 'frontmatter')).toBe(yaml);
+  });
+
+  it('delete versus edit never renames or drops the following property', () => {
+    const { a, b, sync } = apart('owner: ada\nstatus: done\ntags: [keep, both]\n');
+    writeFrontmatterKey(a, 'owner', undefined, LOCAL);
+    writeFrontmatterKey(b, 'owner', 'ben', LOCAL);
+    sync();
+    for (const doc of [a, b]) {
+      const values = parse(readField(doc, 'frontmatter'));
+      expect(values).toMatchObject({ status: 'done', tags: ['keep', 'both'] });
+      expect(Object.keys(values ?? {}).every((key) => ['owner', 'status', 'tags'].includes(key))).toBe(true);
+    }
+    expect(readField(a, 'frontmatter')).toBe(readField(b, 'frontmatter'));
+  });
+});

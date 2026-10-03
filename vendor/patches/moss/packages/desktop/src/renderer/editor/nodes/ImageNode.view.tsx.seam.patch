@@ -1,0 +1,32 @@
+diff --git a/packages/desktop/src/renderer/editor/nodes/ImageNode.view.tsx b/packages/desktop/src/renderer/editor/nodes/ImageNode.view.tsx
+--- a/packages/desktop/src/renderer/editor/nodes/ImageNode.view.tsx
++++ b/packages/desktop/src/renderer/editor/nodes/ImageNode.view.tsx
+@@ -158,7 +158,9 @@ function ImageComponent({
+ 
+   // Render error state — still selectable and removable: a missing asset must
+   // not leave an undeletable block in the note.
+-  if (hasError) {
++  // moss-multi seam: local asset delivery lands in M3; never request Electron's protocol in a browser.
++  const desktopAsset = displaySrc.startsWith('moss-asset:');
++  if (hasError || desktopAsset) {
+     const missingLabel = (obsidianRef || src).trim();
+     return (
+       <div
+@@ -168,7 +170,7 @@ function ImageComponent({
+       >
+         <span>{`"${missingLabel}" could not be found.`}</span>
+         <span className="ml-2 inline-flex items-center gap-2">
+-          <button
++          {!desktopAsset && <button
+             type="button"
+             className="text-xs text-ink-faint underline-offset-2 hover:text-ink-muted hover:underline focus-visible:outline-none"
+             onClick={(e) => {
+@@ -178,7 +180,7 @@ function ImageComponent({
+             }}
+           >
+             Retry
+-          </button>
++          </button>}
+           <button
+             type="button"
+             className="text-xs text-ink-faint underline-offset-2 hover:text-ink-muted hover:underline focus-visible:outline-none"

@@ -168,6 +168,7 @@ test('j01 access: a viewer reads the shared note but cannot share, write through
   const ben = await actors.open(benPrincipal, { path: `/d/${docId}` });
   await expect(ui.pane(ben, docId)).toHaveAttribute(ROLE_ATTR, 'viewer');
   await expect(ui.body(ben, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'readonly');
+  await expect(ui.body(ben, docId), 'the read-only note remains visible').toBeVisible();
   await expect(ui.body(ben, docId)).toHaveAttribute('contenteditable', 'false');
   expect(await ui.fieldText(ben, docId, 'body')).toBe(ADA_TEXT);
   await expect(ui.pane(ben, docId).getByRole('button', { name: 'Share', exact: true })).toHaveCount(0);
@@ -198,6 +199,7 @@ test('j01 access: a viewer reads the shared note but cannot share, write through
   }
   await ben.page.reload();
   await expect(ui.body(ben, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'readonly');
+  await expect(ui.body(ben, docId), 'the read-only note remains visible').toBeVisible();
   expect(await ui.fieldText(ben, docId, 'body')).toBe(ADA_TEXT);
 });
 
@@ -252,4 +254,50 @@ test('j01 discovery: Ben switches to a shared vault and back, with a role badge 
   await expect(row).toHaveCount(0);
   await expect(ui.pane(ben, docId)).toBeVisible();
   await actors.checkpoint('switched-back-with-doc-open');
+});
+
+test('j01 duplicate: the note menu makes a content-preserving copy visible to both vault peers @p:note-4 @p:col-6', async ({ actors, stack }) => {
+  const ada = await openShell(actors, 'ada');
+  const benPrincipal = await actors.principal('ben');
+  const docId = await newNote(ada);
+  await waitBodyLive(ada, docId);
+  const text = 'Duplicate keeps the original words, café and punctuation.';
+  await ui.typeBody(ada, docId, text);
+  await expect(ui.pane(ada, docId)).toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout: 30_000 });
+  const { vault } = await (await ada.context.request.get('/api/workspace')).json();
+  expect((await ada.context.request.post(`/api/folders/${vault.id}/members`, {
+    headers: { origin: stack.baseUrl }, data: { email: benPrincipal.email, role: 'editor' },
+  })).status()).toBe(201);
+  const ben = await actors.open(benPrincipal, { path: `/d/${docId}` });
+  await waitBodyLive(ben, docId);
+  await ada.page.locator(`[data-sidebar-row][data-doc-id="${docId}"]`).click({ button: 'right' });
+  await ada.page.getByRole('menuitem', { name: 'Duplicate', exact: true }).click();
+  const copyPane = ada.page.locator(`[${EDITOR_PANE_ATTR}]:not([data-doc-id="${docId}"])`);
+  await expect(copyPane).toHaveCount(1);
+  const copyId = await copyPane.getAttribute('data-doc-id');
+  if (!copyId) throw new Error('duplicate has no doc id');
+  await waitBodyLive(ada, copyId);
+  expect(await ui.fieldText(ada, copyId, 'body')).toBe(text);
+  for (const actor of [ada, ben]) {
+    await expect(actor.page.locator(`[data-sidebar-row][data-doc-id="${copyId}"]`)).toBeVisible({ timeout: 15_000 });
+  }
+  await ben.page.locator(`[data-sidebar-row][data-doc-id="${copyId}"]`).click();
+  await waitBodyLive(ben, copyId);
+  expect(await ui.fieldText(ben, copyId, 'body')).toBe(text);
+  await ben.page.reload();
+  await waitBodyLive(ben, copyId);
+  expect(await ui.fieldText(ben, copyId, 'body')).toBe(text);
+  const copyEdit = ' Only the copy gains this sentence.';
+  await ui.typeBody(ben, copyId, copyEdit);
+  await expect(ui.body(ada, copyId)).toContainText(copyEdit);
+  ada.expectReconnects(1, docId); // Returning to the original intentionally opens its session again.
+  await ada.page.locator(`[data-sidebar-row][data-doc-id="${docId}"]`).click();
+  await waitBodyLive(ada, docId);
+  expect(await ui.fieldText(ada, docId, 'body')).toBe(text);
+  const sourceEdit = ' Only the source gains this sentence.';
+  await ui.typeBody(ada, docId, sourceEdit);
+  await expect(ui.pane(ada, docId)).toHaveAttribute(SYNC_UNACKED_ATTR, '0');
+  await ben.page.reload();
+  await waitBodyLive(ben, copyId);
+  expect(await ui.fieldText(ben, copyId, 'body')).toBe(text + copyEdit);
 });

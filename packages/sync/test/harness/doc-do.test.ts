@@ -1,11 +1,12 @@
 // The DocDO core in the Node harness (BUILDPLAN T0.7; A§5.1): replay, chunking, compaction identity, the seed,
 // admission, the write classifier with loud refusal, acks, limits and the RPC guard.
-import { $getRoot } from 'lexical';
+import { $createParagraphNode, $createTextNode, $getRoot } from 'lexical';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as Y from 'yjs';
 import { base64ToBytes, CLOSE } from '@moss-multi/protocol/sync';
 import { exportMarkdown, importMarkdown } from '../../src/converter/index.ts';
 import { DocDO } from '../../src/doc-do.ts';
+import { serverWrite } from '../../src/server-doc.ts';
 import { Backing, bindLexical, blockTypes, connect, counts, openDoc, start, wake, type Opened, type TestClient } from './do-harness.ts';
 
 const CHUNK = 1.5 * 1024 * 1024;
@@ -62,6 +63,22 @@ describe('seed', () => {
 describe('server writes', () => {
   const MARKDOWN = '## Plan\n\nA *first* paragraph with a [link](https://example.invalid).\n\n- one\n- two\n';
 
+  it('hydrates the persisted tree before a server write without normalizing its formatting', () => {
+    const doc = new Y.Doc();
+    const lexical = bindLexical(doc);
+    lexical.editor.update(() => {
+      $getRoot().append($createParagraphNode().append($createTextNode(' padded ').toggleFormat('bold')));
+    }, { discrete: true });
+    const before = Y.encodeStateAsUpdate(doc);
+    let hydrated: { text: string; bold: boolean }[] = [];
+    serverWrite(doc, 'probe', () => {
+      hydrated = $getRoot().getAllTextNodes().map((node) => ({ text: node.getTextContent(), bold: node.hasFormat('bold') }));
+    });
+    expect(hydrated).toEqual([{ text: ' padded ', bold: true }]);
+    expect(Y.encodeStateAsUpdate(doc)).toEqual(before);
+    doc.destroy();
+  });
+
   it('imports a created body through the one converter, once', async () => {
     const opened = await start(openDoc());
     await opened.dobj.create({ folderId: 'folder-1', ownerId: 'user-1', markdown: MARKDOWN });
@@ -79,6 +96,39 @@ describe('server writes', () => {
     expect(await opened.dobj.exportMarkdown()).toBe(exportMarkdown(reference));
   });
 
+  it('imports raw frontmatter separately and keeps the leading H1 in the body', async () => {
+    const opened = await start(openDoc());
+    const frontmatter = '---\r\ntag: "keep these quotes"\r\n---\r\n';
+    await opened.dobj.create({ folderId: 'folder', ownerId: 'owner', title: 'File name', markdown: `${frontmatter}# Body heading\n\nText` });
+    expect(opened.dobj.document.getText('title').toString()).toBe('File name');
+    expect(opened.dobj.document.getText('frontmatter').toString()).toBe(frontmatter);
+    expect(blockTypes(opened.dobj.document)).toEqual(['heading', 'paragraph']);
+    expect(await opened.dobj.exportMarkdown()).toBe(`${frontmatter}# Body heading\n\nText`);
+  });
+
+  it('duplicates a snapshot without a markdown round trip, keeps anchors, persists and remains independent', async () => {
+    const source = await start(openDoc());
+    await source.dobj.create({ folderId: 'source', ownerId: 'owner', title: 'Original', markdown: MARKDOWN });
+    source.dobj.document.getText('frontmatter').insert(0, '---\ntag: keep\n---\n');
+    const root = source.dobj.document.get('root', Y.XmlText);
+    const anchor = Y.createRelativePositionFromTypeIndex(root, 1);
+    source.dobj.document.getMap('comments').set('anchor', Y.encodeRelativePosition(anchor));
+    const snapshot = await source.dobj.snapshotForDuplicate();
+    const target = await start(openDoc());
+    await target.dobj.createFromSnapshot({ folderId: 'target', ownerId: 'other', title: 'Original copy' }, snapshot.state);
+    expect(await target.dobj.exportMarkdown()).toBe(await source.dobj.exportMarkdown());
+    expect(blockTypes(target.dobj.document)).toEqual(blockTypes(source.dobj.document));
+    expect(Y.createAbsolutePositionFromRelativePosition(anchor, target.dobj.document)?.index).toBe(1);
+    expect(target.dobj.document.getMap('comments').get('anchor')).toEqual(Y.encodeRelativePosition(anchor));
+    expect(source.dobj.document.getText('title').toString()).toBe('Original');
+    expect(target.dobj.document.getText('title').toString()).toBe('Original copy');
+    await target.dobj.createFromSnapshot({ folderId: 'target', ownerId: 'other' }, snapshot.state);
+    const woken = await start(wake(target));
+    expect(await woken.dobj.exportMarkdown()).toBe(await source.dobj.exportMarkdown());
+    woken.dobj.document.getText('frontmatter').insert(0, 'independent');
+    expect(source.dobj.document.getText('frontmatter').toString()).not.toContain('independent');
+  });
+
   it('refuses an import past the state cap and keeps the seed', async () => {
     class SmallDoc extends DocDO {
       static override limits = { ...DocDO.limits, stateCapBytes: 4 * 1024 };
@@ -87,6 +137,17 @@ describe('server writes', () => {
     await expect(opened.dobj.create({ folderId: 'folder-1', ownerId: 'user-1', markdown: 'word '.repeat(4_000) })).rejects.toThrow('doc-cap');
     expect(blockTypes(opened.dobj.document)).toEqual(['paragraph']);
     expect((await opened.dobj.exportMarkdown()).trim()).toBe('');
+  });
+
+  it('counts imported frontmatter in admission and refuses the entire file together', async () => {
+    class SmallDoc extends DocDO {
+      static override limits = { ...DocDO.limits, stateCapBytes: 4 * 1024 };
+    }
+    const opened = await start(openDoc(new Backing(), SmallDoc as never));
+    const before = Y.encodeStateAsUpdate(opened.dobj.document);
+    const markdown = `---\nlarge: ${'x'.repeat(5_000)}\n---\n\nSmall body`;
+    await expect(opened.dobj.create({ folderId: 'folder', ownerId: 'owner', markdown })).rejects.toThrow('doc-cap');
+    expect(Y.encodeStateAsUpdate(opened.dobj.document)).toEqual(before);
   });
 });
 
@@ -236,6 +297,63 @@ describe('admission and the write classifier', () => {
       expect(acked.get(client) ?? 0, 'the ack covers the edit whose ack was lost').toBeGreaterThanOrEqual(clock);
     }
     expect(counts(opened.backing), 'an inert step 2 writes nothing').toEqual(stored);
+  });
+
+  it('names the deletes it applied in the ack, so a delete never reads as synced before it lands', async () => {
+    const { opened, editor } = await sharedDoc();
+    vi.advanceTimersByTime(250);
+    await editor.pump();
+    const local: Uint8Array[] = [];
+    editor.doc.on('update', (update: Uint8Array, origin: unknown) => {
+      if (typeof origin !== 'symbol') local.push(update);
+    });
+    editor.doc.getText('title').delete(0, 2);
+    const deletion = Y.mergeUpdates(local);
+    const before = editor.events.filter((e) => e.t === 'ack');
+    const earlier = before[before.length - 1];
+    if (earlier?.t !== 'ack') throw new Error('no earlier ack');
+    // The state vector cannot tell: the earlier ack already "covers" a delete the server has not seen.
+    expect(Y.snapshotContainsUpdate(Y.createSnapshot(Y.createDeleteSet(), Y.decodeStateVector(base64ToBytes(earlier.sv))), deletion)).toBe(false);
+
+    await editor.flush();
+    expect(opened.dobj.document.getText('title').toString()).toBe('ared');
+    vi.advanceTimersByTime(250);
+    await editor.pump();
+    const acks = editor.events.filter((e) => e.t === 'ack');
+    const ack = acks[acks.length - 1];
+    expect(acks.length, 'the delete is acked').toBe(before.length + 1);
+    if (ack?.t !== 'ack') throw new Error('no ack');
+    expect(ack.ds, 'the ack carries the deletes').toEqual(expect.any(String));
+    const deleted = Y.decodeSnapshot(base64ToBytes(ack.ds ?? '')).ds;
+    expect(Y.snapshotContainsUpdate(Y.createSnapshot(deleted, Y.decodeStateVector(base64ToBytes(ack.sv))), deletion), 'the ack covers the delete').toBe(true);
+  });
+
+  it("keeps a socket's ack when a stale socket with the same connection id closes", async () => {
+    const opened = await start(openDoc());
+    const stale = await connect(opened, { role: 'editor' }, undefined, 'reused-pk');
+    await stale.hello();
+    const fresh = await connect(opened, { role: 'editor' }, undefined, 'reused-pk');
+    await fresh.hello();
+    await typeTitle(fresh, 'kept');
+    // The stale socket's close finally lands inside the fresh socket's ack window.
+    await stale.drop();
+    vi.advanceTimersByTime(250);
+    await fresh.pump();
+    expect(fresh.events.filter((e) => e.t === 'ack'), "the stale close never cancels the fresh socket's ack").toHaveLength(1);
+    expect(stale.events.filter((e) => e.t === 'ack'), 'the ack goes to the socket that wrote').toHaveLength(0);
+  });
+
+  it('counts the write rate per socket, not per reused connection id', async () => {
+    const opened = await start(openDoc());
+    const stale = await connect(opened, { role: 'editor' }, undefined, 'reused-rate');
+    await stale.hello();
+    for (let i = 0; i < 300; i += 1) await typeTitle(stale, 'a');
+    expect(stale.closed).toBeNull();
+    const fresh = await connect(opened, { role: 'editor' }, undefined, 'reused-rate');
+    await fresh.hello();
+    await typeTitle(fresh, 'Z');
+    expect(fresh.closed, "another socket's writes never count against this one").toBeNull();
+    expect(opened.dobj.document.getText('title').toString()).toBe(`${'a'.repeat(300)}Z`);
   });
 
   it("never acks a viewer's inert step 2", async () => {
