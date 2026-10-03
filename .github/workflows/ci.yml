@@ -268,7 +268,7 @@ jobs:
           esac
           pnpm exec playwright test "${args[@]}"
       - name: Calibrate idle eviction (SP4)
-        if: matrix.browser == 'chromium' && (github.event_name == 'schedule' && matrix.group == 'editing' || contains(needs.plan.outputs.grep, 'calibration'))
+        if: ${{ !cancelled() && matrix.browser == 'chromium' && (github.event_name == 'schedule' && matrix.group == 'editing' || contains(needs.plan.outputs.grep, 'calibration')) }}
         working-directory: e2e
         run: pnpm exec playwright test --project=calibration
       - name: Stop the stack

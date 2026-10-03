@@ -9,17 +9,23 @@ import { expect, test, ui } from '../lib/test.ts';
 const TEXT = 'Kept after sleep: café, two  spaces & a peer.';
 async function live(actor: Actor, docId: string) {
   await expect(ui.body(actor, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'live', { timeout: 30_000 });
-  await expect(ui.body(actor, docId)).toHaveText(TEXT);
+  await expect.poll(() => ui.fieldText(actor, docId, 'body')).toBe(TEXT);
+  await expect(ui.body(actor, docId).locator('p')).toHaveCount(1);
 }
 async function note(actors: Actors, owner: Principal, peer: Principal, label: string) {
   const actor = await actors.session(owner, { label });
   const frames = awarenessFrames(actor);
   await actor.goto('/');
+  await actor.page.locator('html[data-app-state=ready]').waitFor();
+  const panes = actor.page.locator(`[${EDITOR_PANE_ATTR}]`);
+  const ids = () => panes.evaluateAll((nodes, attr) => nodes.map((node) => node.getAttribute(attr)), DOC_ID_ATTR);
+  const before = await ids();
   await actor.page.getByRole(ui.NEW_NOTE.role, { name: ui.NEW_NOTE.name }).click();
-  const pane = actor.page.locator(`[${EDITOR_PANE_ATTR}]`);
-  await expect(pane).toHaveCount(1);
-  const docId = await pane.getAttribute(DOC_ID_ATTR);
+  const fresh = async () => (await ids()).filter((id) => id && !before.includes(id));
+  await expect.poll(fresh).toHaveLength(1);
+  const [docId] = await fresh();
   if (!docId) throw new Error('new note has no doc id');
+  const pane = ui.pane(actor, docId);
   await expect(ui.body(actor, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'live');
   await ui.typeBody(actor, docId, TEXT);
   await expect(pane).toHaveAttribute(SYNC_UNACKED_ATTR, '0');
