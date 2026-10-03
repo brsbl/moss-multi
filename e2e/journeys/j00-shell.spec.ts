@@ -339,7 +339,10 @@ test('no hidden or staged affordance renders on an open note: actions panel, top
 
   await page.locator(`[${SIDEBAR_ROW_ATTR}][${DOC_ID_ATTR}="${docId}"]`).click({ button: 'right' });
   await expect(page.getByRole('menu'), "the note's row menu opens").toBeVisible();
+  await expect(page.getByRole('menuitem', { name: 'Pin', exact: true }), 'the row menu renders its items').toBeVisible();
   expect(await probeHits(page, 'note-menu'), "the note's row menu").toEqual([]);
+  // Rename would focus a title that stays closed until it binds (T1.4), taking the typed name nowhere.
+  await expect(page.getByRole('menuitem', { name: 'Rename', exact: true }), 'no Rename while the title cannot bind').toHaveCount(0);
   await page.keyboard.press('Escape');
   await expect(page.getByRole('menu')).toBeHidden();
 });
@@ -366,15 +369,17 @@ test('an open note offers no comment until comments are shared data: no comment 
 });
 
 // Each block with the toolbar control that sits beside moss's comment button. A new canvas opens in its drawing mode,
-// whose toolbar has no comment button; Cancel (its X) leaves it. The media header (HTML, image, video and embed
-// blocks) needs the asset layer: an HTML block's preview image is a moss-asset:// URL the page CSP refuses (M3).
+// whose toolbar has no comment button; Cancel (its X) leaves it. An HTML block carries the media header (image, video
+// and embed blocks need the asset layer, M3); its cached preview screenshot is a moss-asset:// URL a browser never
+// loads, so the web never requests it.
 const BLOCKS = [
   { query: 'code', option: 'Code', control: 'Copy code', leave: null },
   { query: 'bar', option: 'Bar Chart', control: 'Edit', leave: null },
   { query: 'canvas', option: 'Canvas', control: 'Draw', leave: 'button:has(svg.lucide-x)' },
+  { query: 'html', option: 'HTML', control: 'Edit HTML', leave: null },
 ];
 
-test('no block toolbar offers a comment until comments are shared data: code, chart and canvas blocks @p:agt-3', async ({ actors }) => {
+test('no block toolbar offers a comment until comments are shared data: code, chart, canvas and HTML blocks @p:agt-3', async ({ actors }) => {
   const [ada] = await twoShells(actors);
   const { page } = ada;
   const notes: string[] = [];
@@ -391,6 +396,67 @@ test('no block toolbar offers a comment until comments are shared data: code, ch
     await expect(toolbarControl, `the ${block.option} block's toolbar renders`).toHaveCount(1);
     expect.soft(await probeHits(page, 'block-toolbar'), `the ${block.option} block's toolbar`).toEqual([]);
   }
+});
+
+/** The labels of the open slash menu's commands. */
+const slashLabels = (page: Page): Promise<string[]> =>
+  page.locator('button[data-index] .text-sm.font-medium').allTextContents().then((labels) => labels.map((label) => label.trim()));
+
+test('the slash menu offers no hidden or staged command: no Emoji (no OS panel) and no Media (uploads land in M3) @p:agt-3', async ({ actors }) => {
+  const [ada] = await twoShells(actors);
+  const { page } = ada;
+  const docId = await openNewNote(ada);
+  await expect(ui.body(ada, docId), '"+ Note" leaves the caret in the body').toBeFocused();
+
+  // The whole menu, then each withheld command by name; a command that stays proves each query reached the menu.
+  await page.keyboard.type('/');
+  await expect.poll(() => slashLabels(page), { message: 'the slash menu lists its commands' }).toContain('Code');
+  expect(await probeHits(page, 'slash-menu'), 'the whole slash menu').toEqual([]);
+  // The probes match a command the menu does show (negative control): a probe that could never match proves nothing.
+  const shown = await page.evaluate(
+    (selector) => [...document.querySelectorAll(selector)].filter((el) => (el.textContent ?? '').trim() === 'Code').length,
+    AFFORDANCES.find((entry) => entry.id === 'emoji-panel')?.probes[0]?.selector ?? '',
+  );
+  expect(shown, "the slash-menu probe's selector matches a shown command").toBe(1);
+  for (const [query, label] of [['emoji', 'Emoji'], ['media', 'Media']] as const) {
+    await page.keyboard.type(query);
+    // "Code" leaving the list shows the menu applied the query before the negative check reads it.
+    await expect.poll(() => slashLabels(page), { message: `/${query} filters the menu` }).not.toContain('Code');
+    expect(await slashLabels(page), `/${query} offers no ${label}`).not.toContain(label);
+    expect(await probeHits(page, 'slash-menu'), `/${query}`).toEqual([]);
+    for (let i = 0; i < query.length; i += 1) await page.keyboard.press('Backspace');
+    await expect.poll(() => slashLabels(page), { message: 'the menu lists every command again' }).toContain('Code');
+  }
+  await page.keyboard.press('Escape');
+});
+
+test("the in-app browser offers no back, forward, find or agent action, which a cross-origin page can't serve @p:agt-3", async ({ actors }) => {
+  const [ada] = await twoShells(actors);
+  const { page } = ada;
+  const docId = await openNewNote(ada);
+  await ui.typeBody(ada, docId, 'Read the guide');
+  for (let i = 0; i < 'guide'.length; i += 1) await page.keyboard.press('Shift+ArrowLeft');
+  await page.getByRole('button', { name: 'Add link' }).click();
+  await page.keyboard.type('https://example.invalid/guide');
+  await page.keyboard.press('Enter');
+  const link = ui.body(ada, docId).locator('a[href="https://example.invalid/guide"]');
+  await expect(link, 'the link is in the body').toHaveCount(1);
+
+  await link.click({ button: 'right' });
+  await page.getByRole('button', { name: 'Open in Split View', exact: true }).click();
+  const close = page.getByRole('button', { name: 'Close browser split tab', exact: true });
+  await expect(close, "the in-app browser's header renders").toBeVisible();
+  expect(await probeHits(page, 'browser-split'), "the in-app browser's header").toEqual([]);
+  // Positive control: every probe's scope renders with a shown control in it, so an empty result means absence.
+  const scopes = new Set(
+    AFFORDANCES.flatMap((entry) => entry.probes as readonly { surface: Surface; selector: string }[])
+      .filter((probe) => probe.surface === 'browser-split')
+      .flatMap((probe) => probe.selector.split(',').map((part: string) => part.trim().split(' ')[0] ?? '')),
+  );
+  expect([...scopes].sort(), 'the browser-split probes are scoped to the header').toEqual(['[data-browser-actions-cluster]', '[data-browser-header-content]']);
+  for (const scope of scopes) await expect(page.locator(`${scope} button`).first(), `${scope} renders with a control in it`).toBeVisible();
+  await close.click();
+  await expect(close).toHaveCount(0);
 });
 
 test('every DS menu, dialog and tooltip opens inside a data-overlay-surface, even over the canvas', async ({ actors }) => {

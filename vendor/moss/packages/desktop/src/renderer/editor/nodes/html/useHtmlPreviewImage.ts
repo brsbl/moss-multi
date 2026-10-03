@@ -493,13 +493,18 @@ export function useHtmlPreviewImage({
     });
   }, [ensurePreviewImage]);
 
+  // moss-multi seam: html-preview (A§16; P:Notes): a browser never loads moss-asset://, so a cached preview
+  // screenshot that resolves there is never requested (the page CSP would refuse it with a console error); the
+  // preview reads as unavailable until the live sandboxed iframe replaces screenshots (T3.2).
+  const screenshotLoads = !toDisplaySrc(currentPreviewDescriptor.relativePath, noteId).startsWith('moss-asset://');
+  const status = screenshotLoads || previewState.status === 'loading' ? previewState.status : 'error';
   return {
-    previewImageUrl,
-    preloadImageUrl,
-    previewImageFailed: previewState.status === 'error',
-    shouldRenderPreviewImage: !!previewState.visibleRelativePath,
-    status: previewState.status,
-    derivedStatus: HTML_PREVIEW_STATUS_TO_DERIVED[previewState.status],
+    previewImageUrl: screenshotLoads ? previewImageUrl : '',
+    preloadImageUrl: screenshotLoads ? preloadImageUrl : null,
+    previewImageFailed: status === 'error',
+    shouldRenderPreviewImage: screenshotLoads && !!previewState.visibleRelativePath,
+    status,
+    derivedStatus: HTML_PREVIEW_STATUS_TO_DERIVED[status],
     retryPreviewImage,
     handlePreviewImageLoad,
     handlePreviewImageError,

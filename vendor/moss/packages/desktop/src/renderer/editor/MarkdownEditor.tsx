@@ -139,6 +139,8 @@ import {
 import './MarkdownEditor.css';
 // moss-multi seam: hide-registry (A§9)
 import { hidden } from '@moss-multi/host/affordances';
+// moss-multi seam: link-selection (A§10.10)
+import { clearLinkSelection, markLinkSelection } from '@moss-multi/host/link-highlight';
 // moss-multi seam: converter-split (A§12; S-conv §2.3)
 import { $convertMossCustomCodeNodes, $postImportNormalize, escapeHtmlEntities, normalizeMarkdownForImport, unescapeHtmlEntities } from './markdown/normalize';
 import { EDITOR_FONT_FAMILY_LABELS, type EditorSelectionFontFamily, HIGHLIGHT_COLOR_VARIABLES, HIGHLIGHT_YELLOW_VALUE, HIGHLIGHT_YELLOW_VAR, MARKDOWN_EDITOR_HTML_IMPORT, SERIF_FONT_FAMILY_STYLE, SERIF_FONT_FAMILY_VALUE, SERIF_OPTICAL_FONT_SIZE_ADJUST, STYLE_FONT_FAMILY_PROPERTY, STYLE_FONT_SIZE_ADJUST_PROPERTY, selectionFontFamilyFromStyleValue } from './markdown/text-style';
@@ -2553,6 +2555,7 @@ function FloatingSelectionTools({
 
   // Clear the temporary visual highlight applied while the link popover is open
   const clearLinkSelectionMark = useCallback(() => {
+    clearLinkSelection(); // moss-multi seam: link-selection (A§10.10)
     editor.update(() => {
       const root = $getRoot();
       const textNodes: TextNode[] = [];
@@ -2596,7 +2599,8 @@ function FloatingSelectionTools({
 
       const selection = selectLinkNodeContents(node);
       if ($isRangeSelection(selection) && !selection.isCollapsed()) {
-        $patchStyleText(selection, { '--link-selection': 'true' });
+        // moss-multi seam: link-selection (A§10.10): paint, never a style written into the shared doc
+        markLinkSelection(editor, selection);
       }
 
       setLinkInputState({
@@ -2700,7 +2704,8 @@ function FloatingSelectionTools({
       // when the link popover steals focus. Uses a CSS custom property that
       // won't serialize to markdown.
       if (!selection.isCollapsed()) {
-        $patchStyleText(selection, { '--link-selection': 'true' });
+        // moss-multi seam: link-selection (A§10.10): paint, never a style written into the shared doc
+        markLinkSelection(editor, selection);
       }
 
       if (linkParent) {
@@ -2726,6 +2731,7 @@ function FloatingSelectionTools({
   }, [editor]);
 
   const applyLink = useCallback((url: string) => {
+    clearLinkSelection(); // moss-multi seam: link-selection (A§10.10)
     editor.update(() => {
       // Inline link-selection cleanup to avoid a separate update cycle
       const root = $getRoot();
@@ -2757,6 +2763,7 @@ function FloatingSelectionTools({
   }, [editor]);
 
   const removeLink = useCallback(() => {
+    clearLinkSelection(); // moss-multi seam: link-selection (A§10.10)
     editor.update(() => {
       // Inline link-selection cleanup to avoid a separate update cycle
       const root = $getRoot();

@@ -113,7 +113,15 @@ export class DocDO extends YServer<SyncEnv> {
     if (frame.kind === 'other') return;
     if (frame.kind === 'awareness' && awarenessTooLarge(frame.bytes, this.#limits.awarenessMaxBytes)) return;
     // Inert frames (every step 2 answering a step 1) pass whatever the role; writes meet the gates.
-    if (frame.kind === 'sync' && wouldChange(this.document, frame.update) && this.#refused(connection, attachment, store, frame.update)) return;
+    if (frame.kind === 'sync') {
+      if (wouldChange(this.document, frame.update)) {
+        if (this.#refused(connection, attachment, store, frame.update)) return;
+      } else if (roleAtLeast(attachment.role, 'editor')) {
+        // The doc already holds it, so nothing persists to ack it: an editor's reconnect step 2 after its ack was lost
+        // with the old socket. Acked too, so the client learns its edits are on the server (A§10.6).
+        this.#acks.schedule(connection.id);
+      }
+    }
     super.onMessage(connection, message);
   }
 

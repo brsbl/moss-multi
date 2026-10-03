@@ -23,7 +23,12 @@ export class Telemetry {
   private documentStatus: number | null = null;
   private pending: Promise<void>[] = [];
 
-  static install(page: Page): Telemetry {
+  /**
+   * `routed`: the context's doc sockets run through a routeWebSocket proxy (a severable actor). The page's own
+   * sockets are then mocks CDP never sees (it sees only the proxy's server legs), so the proxy reports each one
+   * through routedSocket instead.
+   */
+  static install(page: Page, { routed = false } = {}): Telemetry {
     const t = new Telemetry();
     page.on('console', (message) => {
       if (message.type() !== 'error' && message.type() !== 'warning') return;
@@ -42,17 +47,9 @@ export class Telemetry {
       t.failed.push({ method: request.method(), url: request.url(), failure: request.failure()?.errorText ?? '', at: Date.now() }),
     );
     page.on('websocket', (socket) => {
-      const path = new URL(socket.url()).pathname;
-      if (!path.startsWith(DOC_SOCKET_PATH)) return;
-      const entry: SocketEntry = {
-        url: socket.url(),
-        docId: decodeURIComponent(path.slice(DOC_SOCKET_PATH.length).split('/')[0]),
-        epoch: t.epoch,
-        openedAt: Date.now(),
-        closedAt: null,
-        error: null,
-      };
-      t.sockets.push(entry);
+      if (routed) return;
+      const entry = t.socketOpened(socket.url());
+      if (!entry) return;
       socket.on('close', () => { entry.closedAt = Date.now(); });
       socket.on('socketerror', (error) => { entry.error = String(error); });
     });
@@ -60,6 +57,32 @@ export class Telemetry {
       t.pending.push(t.stamp(page));
     });
     return t;
+  }
+
+  /** Records a doc socket the page opened now; null for any other socket. */
+  socketOpened(url: string): SocketEntry | null {
+    const path = new URL(url).pathname;
+    if (!path.startsWith(DOC_SOCKET_PATH)) return null;
+    const entry: SocketEntry = {
+      url,
+      docId: decodeURIComponent(path.slice(DOC_SOCKET_PATH.length).split('/')[0]),
+      epoch: this.epoch,
+      openedAt: Date.now(),
+      closedAt: null,
+      error: null,
+    };
+    this.sockets.push(entry);
+    return entry;
+  }
+
+  /** A routed page socket, as the proxy saw it open; `closed()` records its close, once. */
+  routedSocket(url: string): { closed(): void } {
+    const entry = this.socketOpened(url);
+    return {
+      closed() {
+        if (entry && entry.closedAt === null) entry.closedAt = Date.now();
+      },
+    };
   }
 
   /** Waits for stamp reads started by load events. */

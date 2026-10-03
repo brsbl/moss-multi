@@ -170,6 +170,8 @@ import {
 } from './utils/renderer-env';
 // moss-multi seam: hide-registry (A§9)
 import { hidden } from '@moss-multi/host/affordances';
+// moss-multi seam: new-note (A§9, R2)
+import { armOpeningGuard } from '@moss-multi/host/opening-guard';
 
 const nowInSeconds = (): number => Math.floor(Date.now() / 1000);
 const NOTE_LIST_SYNC_DEBOUNCE_MS = 150;
@@ -2920,11 +2922,16 @@ export function App() {
   ]);
 
   const handleCreateNote = useCallback(async () => {
+    // moss-multi seam: new-note (A§9, R2): the trigger lets go of focus, and keys typed before the note binds are
+    // refused visibly rather than lost or pressing "+ Note" again.
+    const opening = armOpeningGuard();
     const canSwitch = await flushBeforeNoteSwitch();
     if (!canSwitch) {
+      opening.disarm();
       return;
     }
-    await createAndActivateNote({ focusTarget: 'body' });
+    if (await createAndActivateNote({ focusTarget: 'body' })) opening.created();
+    else opening.disarm();
   }, [createAndActivateNote, flushBeforeNoteSwitch]);
 
   const handleDuplicateNote = useCallback(async (noteId: string) => {
@@ -4101,7 +4108,7 @@ export function App() {
         onDeleteNote={handleNoteDeleted}
         // moss-multi seam: hide-registry (A§9)
         onDuplicateNote={hidden('duplicate-note') ? undefined : handleDuplicateNote}
-        onRenameNote={handleRenameNote}
+        onRenameNote={hidden('rename-note') ? undefined : handleRenameNote}
         onCollapse={handleCollapseNotesPanel}
         footerContent={panelFooter}
       />

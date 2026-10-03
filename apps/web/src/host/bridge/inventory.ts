@@ -45,7 +45,7 @@ export const INVENTORY: Record<string, InventoryEntry> = {
     note: 'routes by field',
     fields: {
       content: real('refused loudly, before any request: the bridge cannot wipe a doc (P:Tech)'),
-      title: staged(1, "a Y.Text write when bound, else a REST rename (T1.4); refused loudly until then"),
+      title: staged(1, "a Y.Text write when bound, else a REST rename (T1.4); refused loudly until then", 'rename-note'),
       pinned: staged(2, "user_doc_prefs; this viewer's localStorage until then"),
       layoutMetadata: real('localStorage, per viewer (R11)'),
       collapsedHeadings: real('localStorage, per viewer (R11)'),

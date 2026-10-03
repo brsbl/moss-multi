@@ -40,7 +40,8 @@ export interface Affordance {
 
 const R = 'desktop/src/renderer';
 const MENU_ITEM = '[role="menuitem"]';
-const SLASH_ITEM = '[role="option"]';
+// A slash-menu command's label (SlashCommandPlugin renders each command as a `button[data-index]`).
+const SLASH_ITEM = 'button[data-index] .text-sm.font-medium';
 
 export const AFFORDANCES = [
   // PRODUCT's named set (P:Agents).
@@ -165,6 +166,14 @@ export const AFFORDANCES = [
     probes: [{ surface: 'actions-panel', selector: '[data-actions-panel-wrapper] [role="tab"]', text: 'Properties' }],
   },
   {
+    id: 'rename-note',
+    sites: [`${R}/App.tsx`],
+    reason: "Rename focuses the note's title, which stays closed until it binds to Y.Text('title') in M1, so the name typed after it would land nowhere.",
+    cite: 'T1.4; R2',
+    staged: 1,
+    probes: [{ surface: 'note-menu', selector: MENU_ITEM, text: 'Rename' }],
+  },
+  {
     id: 'duplicate-note',
     sites: [`${R}/App.tsx`],
     reason: 'Duplicate goes through a server endpoint in M1; the bridge refuses content writes.',
@@ -188,8 +197,8 @@ export const AFFORDANCES = [
   },
   {
     id: 'media-upload',
-    sites: [`${R}/editor/slash-commands/registry.ts`],
-    reason: 'Asset upload and remote-image storage land in M3.',
+    sites: [`${R}/editor/slash-commands/registry.ts`, `${R}/editor/plugins/VideoPastePlugin.tsx`, `${R}/editor/plugins/MediaDropPlugin.tsx`],
+    reason: 'Asset upload and remote-image storage land in M3: /media goes, and a pasted or dropped image or video is refused visibly.',
     cite: 'T3.1',
     staged: 3,
     probes: [{ surface: 'slash-menu', selector: SLASH_ITEM, text: 'Media' }],

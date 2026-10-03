@@ -2,12 +2,16 @@
 // no focus and no input before it is live, text with spaces, punctuation and "é" survives a reload byte for byte, and
 // one doc socket carries the note through a metadata refresh and a pane rerender with no editor remount, and holds
 // for 60 s. Split view never shows one note in both panes, so the tab never asks for a second session (A§10.1).
-// Copy markdown and Note stats read the body as it is now, after local and remote edits.
-import type { Locator } from '@playwright/test';
+// Copy markdown and Note stats read the body as it is now, after local and remote edits. Keys typed while "+ Note" is
+// still opening are refused visibly; edits typed while the socket is down outlive a note switch; the link popover's
+// highlight never enters the doc; a pasted or dropped image is refused visibly until uploads land (M3); and the
+// unbound title is offered to nothing (no Rename).
+import type { Locator, Page, Route } from '@playwright/test';
 import type { Actor, Actors } from '../lib/actors.ts';
 import {
   APP_STATE_ATTR, BODY_BINDING_ATTR, DOC_ID_ATTR, DOC_STATE_ATTR, EDITOR_GENERATION_ATTR, EDITOR_PANE_ATTR,
-  LEXICAL_EDITOR_SELECTOR, NAMES, SIDEBAR_ROW_ATTR, SYNC_UNACKED_ATTR, paneSelector,
+  INPUT_REFUSAL_ATTR, LEXICAL_EDITOR_SELECTOR, NAMES, SIDEBAR_ROW_ATTR, SYNC_UNACKED_ATTR, TITLE_BINDING_ATTR,
+  paneSelector,
 } from '../lib/contract.ts';
 import { remountSince } from '../lib/detectors.js';
 import { cookieHeader, openDocClient } from '../lib/doc-client.ts';
@@ -336,4 +340,244 @@ test('j00-persist: split navigation never shows one note in both panes, and the 
   await waitBodyLive(ada, b);
   expect(await ui.fieldText(ada, b, 'body'), 'B still shows its text').toBe(SPLIT_TEXT);
   expect(socketsFor(ada, b).filter((socket) => socket.closedAt === null), 'B holds one open doc socket').toHaveLength(1);
+});
+
+const refusal = (page: Page): Locator => page.locator(`[${INPUT_REFUSAL_ATTR}]`);
+
+test('j00-persist: keys typed while "+ Note" is still opening are refused visibly, never swallowed, and make no second note @p:R2', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  await openShell(actors, 'ben');
+  await actors.requireDistinct(2);
+
+  // The create request is held, so the keys land between the click and the bind on every run.
+  let creates = 0;
+  let release: () => void = () => undefined;
+  const held = new Promise<void>((done) => {
+    release = done;
+  });
+  await ada.page.route('**/api/docs', async (route: Route) => {
+    if (route.request().method() !== 'POST') return route.continue();
+    creates += 1;
+    await held;
+    await route.continue();
+  });
+
+  const before = await paneIds(ada);
+  const rows = await ada.page.locator(`[${SIDEBAR_ROW_ATTR}]`).count();
+  const trigger = ada.page.getByRole(ui.NEW_NOTE.role, { name: ui.NEW_NOTE.name });
+  await trigger.click();
+  await expect.poll(() => creates, { message: '"+ Note" asks for one note' }).toBe(1);
+  await expect(trigger, 'the trigger lets go of focus, so Space or Enter cannot press it again').not.toBeFocused();
+  // Printable keys, Space and Enter while the note is still opening.
+  await ada.page.keyboard.type('Quick ');
+  await ada.page.keyboard.press('Enter');
+  await expect(refusal(ada.page), 'the refused keys are announced').toContainText('Opening note');
+  expect(creates, 'Space and Enter create no second note').toBe(1);
+
+  release();
+  const fresh = async () => (await paneIds(ada)).filter((id) => id !== '' && !before.includes(id));
+  await expect.poll(fresh, { message: 'the new note opens', timeout: BIND_TIMEOUT }).toHaveLength(1);
+  const [docId] = await fresh();
+  if (!docId) throw new Error('no new pane');
+  await waitBodyLive(ada, docId);
+  await expect(ui.body(ada, docId), 'the bound body takes focus').toBeFocused();
+  const after = 'brown fox';
+  await ada.page.keyboard.type(after);
+  ada.typed({ docId, field: 'body', text: after, ordered: true });
+  await waitAcked(ada, docId);
+  expect(await ui.fieldText(ada, docId, 'body'), 'keys after the bind land; refused keys never reach the doc').toBe(after);
+  expect(creates, 'one note was created').toBe(1);
+  await expect(ada.page.locator(`[${SIDEBAR_ROW_ATTR}]`), 'one new row').toHaveCount(rows + 1);
+});
+
+const ONLINE = 'Typed while online';
+const OFFLINE = ' and kept through an outage';
+
+test('j00-persist: edits typed while the doc socket is down outlive a switch to another note and reach the server @p:col-6', async ({ actors }) => {
+  const ada = await actors.session(await actors.principal('ada'), { severable: true });
+  await ada.goto('/');
+  await ada.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
+  await openShell(actors, 'ben');
+  await actors.requireDistinct(2);
+  const sever = ada.sever;
+  if (!sever) throw new Error('ada is not severable');
+
+  const b = await newNote(ada);
+  await waitBodyLive(ada, b);
+  const a = await newNote(ada);
+  await waitBodyLive(ada, a);
+  await ui.typeBody(ada, a, ONLINE);
+  await waitAcked(ada, a);
+
+  // The socket drops, and the client reconnects into a sever that delivers nothing until restore.
+  sever.reset();
+  await ui.typeBody(ada, a, OFFLINE);
+  await expect(ui.pane(ada, a), 'the offline edit is unacked').toHaveAttribute(SYNC_UNACKED_ATTR, '1');
+  // A: the first socket, the reconnect into the sever, then the reopen. B: its first, then one held until restore.
+  ada.expectReconnects(2, a);
+  ada.expectReconnects(1, b);
+
+  await row(ada, b).click();
+  await expect(ui.pane(ada, a), 'A leaves the pane').toHaveCount(0, { timeout: BIND_TIMEOUT });
+  sever.restore();
+  await waitBodyLive(ada, b);
+  // The edits reach the DocDO before A's last socket closes.
+  await expect
+    .poll(() => socketsFor(ada, a).every((socket) => socket.closedAt !== null), { message: "A's session lets go once its edits are acked", timeout: 20_000 })
+    .toBe(true);
+
+  await row(ada, a).click();
+  await waitBodyLive(ada, a);
+  expect(await ui.fieldText(ada, a, 'body'), 'A reopens with the text typed offline').toBe(`${ONLINE}${OFFLINE}`);
+  await ada.page.reload();
+  await waitBodyLive(ada, a);
+  expect(await ui.fieldText(ada, a, 'body'), 'and the server kept it').toBe(`${ONLINE}${OFFLINE}`);
+});
+
+const ACKED = 'Acked before the drop';
+const LOST_ACK = ' whose ack was lost';
+
+test('j00-persist: an edit whose ack is lost with its socket is acked after the reconnect, so the note still reopens after a switch @p:col-6 @p:R10', async ({ actors }) => {
+  const ada = await actors.session(await actors.principal('ada'), { severable: true });
+  await ada.goto('/');
+  await ada.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
+  await openShell(actors, 'ben');
+  await actors.requireDistinct(2);
+  const sever = ada.sever;
+  if (!sever) throw new Error('ada is not severable');
+
+  const b = await newNote(ada);
+  await waitBodyLive(ada, b);
+  const a = await newNote(ada);
+  await waitBodyLive(ada, a);
+  await ui.typeBody(ada, a, ACKED);
+  await waitAcked(ada, a);
+
+  // The DocDO takes the edit (one input, one update), and its ack is lost as the socket drops.
+  sever.loseAcks();
+  await ada.page.keyboard.insertText(LOST_ACK);
+  ada.typed({ docId: a, field: 'body', text: LOST_ACK, ordered: true });
+  await expect.poll(() => sever.census().acksLost, { message: 'the DocDO acked the edit, and the ack was lost', timeout: ACK_TIMEOUT }).toBeGreaterThan(0);
+  await expect(ui.pane(ada, a), 'the edit is still unacked').toHaveAttribute(SYNC_UNACKED_ATTR, '1');
+  sever.reset();
+  sever.restore();
+  // A: the first socket, the reconnect, then the reopen. B: its first, then the reopen.
+  ada.expectReconnects(2, a);
+  ada.expectReconnects(1, b);
+  await expect(ui.pane(ada, a), "the reconnect's ack covers the edit the server already held").toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout: ACK_TIMEOUT });
+
+  await row(ada, b).click();
+  await expect(ui.pane(ada, a), 'A leaves the pane').toHaveCount(0, { timeout: BIND_TIMEOUT });
+  await waitBodyLive(ada, b);
+  await row(ada, a).click();
+  await waitBodyLive(ada, a);
+  expect(await ui.fieldText(ada, a, 'body'), 'A reopens with every edit').toBe(`${ACKED}${LOST_ACK}`);
+});
+
+const LINKED = 'alpha bravo charlie';
+
+test("j00-persist: the link popover's highlight is paint, never a doc write: a reload leaves no mark @p:tech-1", async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  await openShell(actors, 'ben');
+  await actors.requireDistinct(2);
+  const docId = await newNote(ada);
+  await waitBodyLive(ada, docId);
+  await ui.typeBody(ada, docId, LINKED);
+  await waitAcked(ada, docId);
+
+  for (let i = 0; i < 'charlie'.length; i += 1) await ada.page.keyboard.press('Shift+ArrowLeft');
+  await ada.page.getByRole('button', { name: 'Add link' }).click();
+  await expect(ada.page.getByPlaceholder('Paste or type a URL...'), 'the link popover opens').toBeVisible();
+  await expect
+    .poll(
+      () => ada.page.evaluate(() => (CSS as unknown as { highlights?: { has: (name: string) => boolean } }).highlights?.has('link-selection') ?? null),
+      { message: 'the selected text is painted as a CSS highlight while the popover holds focus' },
+    )
+    .toBe(true);
+  const marks = () => ui.body(ada, docId).locator('[style*="--link-selection"]').count();
+  expect(await marks(), 'no style mark in the body').toBe(0);
+  await expect(ui.pane(ada, docId), 'the popover writes nothing to the doc').toHaveAttribute(SYNC_UNACKED_ATTR, '0');
+
+  // Leaving with the popover still open (a reload) must leave the doc as it was.
+  await ada.page.reload();
+  await waitBodyLive(ada, docId);
+  expect(await marks(), 'no mark after reload').toBe(0);
+  expect(await ui.fieldText(ada, docId, 'body')).toBe(LINKED);
+});
+
+/** A 1x1 PNG, as a screenshot paste or a Finder drop carries one. */
+const PNG = [
+  137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0,
+  13, 73, 68, 65, 84, 120, 156, 99, 248, 15, 4, 0, 9, 251, 3, 253, 167, 98, 133, 112, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+];
+
+test('j00-persist: a pasted image or video, or a dropped image, is refused visibly until uploads land, and the body is unchanged @p:tech-7', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  await openShell(actors, 'ben');
+  await actors.requireDistinct(2);
+  const docId = await newNote(ada);
+  await waitBodyLive(ada, docId);
+  const text = 'An image would go here';
+  await ui.typeBody(ada, docId, text);
+  await waitAcked(ada, docId);
+
+  // A screenshot paste, then a copied video file (a browser File has no Electron `path`).
+  for (const file of [{ name: 'screenshot.png', type: 'image/png' }, { name: 'clip.mp4', type: 'video/mp4' }]) {
+    const pasted = await ui.body(ada, docId).evaluate((root, { bytes, name, type }) => {
+      const data = new DataTransfer();
+      data.items.add(new File([new Uint8Array(bytes)], name, { type }));
+      const event = new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true });
+      root.dispatchEvent(event);
+      return event.defaultPrevented;
+    }, { bytes: PNG, ...file });
+    expect(pasted, `the editor takes the pasted ${file.type}`).toBe(true);
+    await expect(refusal(ada.page), `a pasted ${file.type} is refused visibly`).toContainText(/upload/i);
+    await expect(refusal(ada.page), 'the notice clears on its own').toHaveText('', { timeout: 10_000 });
+  }
+
+  const box = await ui.body(ada, docId).boundingBox();
+  if (!box) throw new Error('the body has no box');
+  const dropped = await ui.body(ada, docId).evaluate((root, { bytes, x, y }) => {
+    const data = new DataTransfer();
+    data.items.add(new File([new Uint8Array(bytes)], 'photo.png', { type: 'image/png' }));
+    const init = { dataTransfer: data, clientX: x, clientY: y, bubbles: true, cancelable: true };
+    root.dispatchEvent(new DragEvent('dragenter', init));
+    root.dispatchEvent(new DragEvent('dragover', init));
+    const event = new DragEvent('drop', init);
+    root.dispatchEvent(event);
+    return event.defaultPrevented;
+  }, { bytes: PNG, x: box.x + 20, y: box.y + box.height / 2 });
+  expect(dropped, 'the editor takes the dropped image').toBe(true);
+  // The paste's notice has cleared, so this one is the drop's own.
+  await expect(refusal(ada.page), 'a dropped image is refused visibly').toContainText(/upload/i);
+
+  await waitAcked(ada, docId);
+  expect(await ui.body(ada, docId).locator('img, video, [data-lexical-decorator]').count(), 'no media node lands').toBe(0);
+  expect(await ui.fieldText(ada, docId, 'body'), 'the body is unchanged').toBe(text);
+});
+
+test('j00-persist: the unbound title is offered to nothing: no Rename and no focus, so no typed name can vanish into it @p:note-6 @p:R2', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  await openShell(actors, 'ben');
+  await actors.requireDistinct(2);
+  const docId = await newNote(ada);
+  await waitBodyLive(ada, docId);
+  const title = ui.title(ada, docId);
+  await expect(title, 'the title stays closed until it binds (T1.4)').toHaveAttribute(TITLE_BINDING_ATTR, 'unbound');
+
+  // Rename focuses the title, so while the title cannot bind the row menu does not offer it.
+  await row(ada, docId).click({ button: 'right' });
+  await expect(ada.page.getByRole('menuitem', { name: 'Pin', exact: true }), 'the row menu renders its items').toBeVisible();
+  await expect(ada.page.getByRole('menuitem', { name: 'Rename', exact: true }), 'no Rename while the title is unbound').toHaveCount(0);
+  await ada.page.keyboard.press('Escape');
+  await expect(ada.page.getByRole('menu')).toBeHidden();
+
+  // A click on the closed title gives it no focus and no caret (invariant 9 at the checkpoint). The mouse is used
+  // directly: Playwright's click refuses an aria-disabled element.
+  const box = await title.boundingBox();
+  if (!box) throw new Error('the title has no box');
+  await ada.page.mouse.click(box.x + 20, box.y + box.height / 2);
+  await expect(title).not.toBeFocused();
+  expect(await title.evaluate((el) => (el as HTMLElement).isContentEditable || el.hasAttribute('tabindex')), 'the title is neither editable nor focusable').toBe(false);
+  await actors.checkpoint('closed-title');
 });

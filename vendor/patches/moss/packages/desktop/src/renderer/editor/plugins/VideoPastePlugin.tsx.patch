@@ -1,0 +1,28 @@
+diff --git a/packages/desktop/src/renderer/editor/plugins/VideoPastePlugin.tsx b/packages/desktop/src/renderer/editor/plugins/VideoPastePlugin.tsx
+--- a/packages/desktop/src/renderer/editor/plugins/VideoPastePlugin.tsx
++++ b/packages/desktop/src/renderer/editor/plugins/VideoPastePlugin.tsx
+@@ -24,6 +24,9 @@ import { $createVideoNode } from '../nodes/VideoNode';
+ import { isYouTubeUrl } from '../utils/video-url';
+ import { useCurrentNoteId } from '../CurrentNoteIdContext';
+ import { imagesApi } from '../../api/electron';
++// moss-multi seam: hide-registry (A§9)
++import { hidden } from '@moss-multi/host/affordances';
++import { MEDIA_UPLOAD_REFUSED, refuseInput } from '@moss-multi/host/refusal';
+ 
+ const VIDEO_MIME_TYPES = ['video/mp4', 'video/webm', 'video/quicktime'];
+ 
+@@ -117,6 +120,14 @@ export function registerVideoPaste(editor: LexicalEditor, noteId: string | null)
+       // Check for video files in clipboard
+       const files = collectClipboardFiles(clipboardData);
+       if (files.length > 0 && noteId) {
++        // moss-multi seam: hide-registry (A§9): uploads land in M3; until then a pasted image or video is refused
++        // visibly (a browser File has no Electron `path`, so the video branch would drop it silently)
++        if (hidden('media-upload') && Array.from(files).some(f => VIDEO_MIME_TYPES.includes(f.type) || f.type.startsWith('image/'))) {
++          event.preventDefault();
++          (event as ClipboardEvent).stopPropagation();
++          refuseInput(MEDIA_UPLOAD_REFUSED);
++          return true;
++        }
+         const videoFile = Array.from(files).find(f => VIDEO_MIME_TYPES.includes(f.type));
+         if (videoFile) {
+           // Electron exposes .path on File objects

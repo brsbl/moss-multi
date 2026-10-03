@@ -142,6 +142,34 @@ test('sign-in on the card returns to the doc next names; a wrong password shows 
   }
 });
 
+test('after a wrong password the password field keeps focus, so the keyboard fixes it in place and signs in @p:ppl-1', async ({ actors }) => {
+  for (const person of [await actors.principal('ada'), await actors.principal('ben')]) {
+    const path = docPath();
+    const actor = await actors.anonymous(path, { label: person.label });
+    await ui.waitForLoginCard(actor);
+    actor.expectHttp(401, '/api/auth/sign-in/email');
+    const form = ui.loginForm(actor);
+    const password = form.getByLabel('Password', { exact: true });
+    const { keyboard } = actor.page;
+
+    // Keyboard only: the email, Tab, a password with a typo, Enter.
+    await form.getByLabel('Email', { exact: true }).click();
+    await keyboard.type(person.email);
+    await keyboard.press('Tab');
+    await expect(password).toBeFocused();
+    const typo = '-typo';
+    await keyboard.type(`${person.password}${typo}`);
+    await keyboard.press('Enter');
+    await expect(form.getByRole('alert'), 'the wrong password says so').toContainText(/don.t match an account/);
+    await expect(password, 'the password field keeps focus through the refusal').toBeFocused();
+
+    for (let i = 0; i < typo.length; i += 1) await keyboard.press('Backspace');
+    await keyboard.press('Enter');
+    await expect(actor.page, `${person.label}: the corrected password signs in and returns to ${path}`).toHaveURL(atPath(path), { timeout: BOOT_TIMEOUT });
+    await waitForShell(actor);
+  }
+});
+
 // `next` values that pass a same-origin check but normalize to a protocol-relative `//host` once their dot segments
 // go (a backslash is a slash): returning to one would leave the site.
 const ESCAPING_NEXT = ['/x/..//example.invalid/phish', '/.//example.invalid/phish', '/%2e%2e//example.invalid/phish', '/a/../\\example.invalid/phish'];

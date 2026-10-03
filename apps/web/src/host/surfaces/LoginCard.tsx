@@ -2,14 +2,16 @@
 // the wordmark, a two-line tagline, then the actions full width), built from moss's own card, label, input and
 // button. Email and password are first-class; an OAuth button renders only for a provider the Worker registers,
 // and none is configured (P:People). Fields stay disabled until hydration, so nothing typed is lost to a
-// pre-hydration submit, and `/login` publishes data-app-state=ready when they open.
+// pre-hydration submit, and `/login` publishes data-app-state=ready when they open. While a request is out they are
+// read-only rather than disabled, so the field being typed in keeps focus, and a refusal leaves the caret in the
+// password field for the fix.
 import { Button } from '@moss/shared/components/ui/button';
 import { Card } from '@moss/shared/components/ui/card';
 import { Input } from '@moss/shared/components/ui/input';
 import { Label } from '@moss/shared/components/ui/label';
 import { useHydrated } from '@tanstack/react-router';
 import { Sprout } from 'lucide-react';
-import { useEffect, useId, useState, type ComponentProps, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useId, useRef, useState, type ComponentProps, type FormEvent, type ReactNode } from 'react';
 import { setAppState } from '../app-state.ts';
 import { auth } from '../auth.ts';
 import { refusalMessage, UNREACHABLE, type SocialProviderId } from '../auth-state.ts';
@@ -49,12 +51,15 @@ export function LoginCard({ next, providers }: LoginCardProps): ReactNode {
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  const passwordRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => setAppState('ready'), []);
 
   const signingUp = mode === 'sign-up';
   const action = signingUp ? 'Create account' : 'Sign in';
   const disabled = !hydrated || pending;
+  // A disabled input drops focus to <body>, so keys typed to fix a refused password would go nowhere.
+  const fieldProps = { disabled: !hydrated, readOnly: pending };
 
   function switchMode(): void {
     setMode(signingUp ? 'sign-in' : 'sign-up');
@@ -78,6 +83,7 @@ export function LoginCard({ next, providers }: LoginCardProps): ReactNode {
     }
     setError(outcome.message);
     setPending(false);
+    passwordRef.current?.focus();
   }
 
   async function continueWith(provider: SocialProviderId): Promise<void> {
@@ -115,16 +121,17 @@ export function LoginCard({ next, providers }: LoginCardProps): ReactNode {
 
         <form aria-label={action} method="post" noValidate onSubmit={submit} className="mt-8 flex flex-col gap-3">
           {signingUp && (
-            <Field label="Name" type="text" autoComplete="name" value={name} onChange={(e) => setName(e.target.value)} disabled={disabled} />
+            <Field label="Name" type="text" autoComplete="name" value={name} onChange={(e) => setName(e.target.value)} {...fieldProps} />
           )}
-          <Field label="Email" type="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} disabled={disabled} />
+          <Field label="Email" type="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} {...fieldProps} />
           <Field
             label="Password"
             type="password"
             autoComplete={signingUp ? 'new-password' : 'current-password'}
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            disabled={disabled}
+            ref={passwordRef}
+            {...fieldProps}
           />
           {error !== null && (
             <p role="alert" className="m-0 rounded-md border border-accent-terracotta/40 bg-surface-danger-soft px-3 py-2 text-xs text-ink-default">

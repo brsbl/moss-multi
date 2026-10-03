@@ -85,8 +85,11 @@ export interface Who {
 
 let connections = 0;
 
-/** A WebSocket upgrade through the DO's own fetch, with the headers the Worker would set. */
-export async function connect(opened: Opened, who: Who = {}): Promise<TestClient> {
+/**
+ * A WebSocket upgrade through the DO's own fetch, with the headers the Worker would set. Pass `doc` to reconnect a
+ * provider that keeps its Y.Doc across sockets.
+ */
+export async function connect(opened: Opened, who: Who = {}, doc?: Y.Doc): Promise<TestClient> {
   connections += 1;
   const headers = new Headers({ upgrade: 'websocket' });
   if (who.id !== null) {
@@ -101,12 +104,11 @@ export async function connect(opened: Opened, who: Who = {}): Promise<TestClient
   if (response.status !== 101) throw new Error(`upgrade answered ${response.status}: ${await response.text()}`);
   const socket = serverEnds[made];
   if (!socket) throw new Error('the upgrade made no socket pair');
-  return new TestClient(opened, socket);
+  return new TestClient(opened, socket, doc);
 }
 
 /** A provider's half of the sync protocol over one accepted socket. */
 export class TestClient {
-  readonly doc = new Y.Doc();
   readonly events: ServerEvent[] = [];
   private read = 0;
   private readonly outbox: Uint8Array[] = [];
@@ -114,6 +116,7 @@ export class TestClient {
   constructor(
     public opened: Opened,
     readonly socket: FakeSocket,
+    readonly doc = new Y.Doc(),
   ) {
     this.doc.on('update', (update: Uint8Array, origin: unknown) => {
       if (origin !== FROM_SERVER) this.outbox.push(syncFrame(syncProtocol.messageYjsUpdate, update));
@@ -128,6 +131,12 @@ export class TestClient {
   async deliver(frame: Uint8Array | string): Promise<void> {
     const message = typeof frame === 'string' ? frame : (frame.slice().buffer as ArrayBuffer);
     await this.opened.dobj.webSocketMessage(this.socket as never, message);
+  }
+
+  /** The socket drops: workerd closes it and runs the DO's close handler. */
+  async drop(code = 1006): Promise<void> {
+    this.socket.close(code);
+    await this.opened.dobj.webSocketClose(this.socket as never, code, '', false);
   }
 
   /** What a provider sends on open (and on every resync), then the replies. */
