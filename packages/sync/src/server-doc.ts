@@ -2,7 +2,9 @@
 // every server-side content write, the seed, and markdown export. Typechecks reach the vendored converter modules
 // through src/moss-modules.d.ts.
 import { createBinding, syncLexicalUpdateToYjs, syncYjsChangesToLexical, type Provider } from '@lexical/yjs';
-import { $createParagraphNode, $getRoot, type LexicalEditor } from 'lexical';
+import { registerList } from '@lexical/list';
+import { $normalizeFormatWhitespace } from '@moss-desktop/renderer/editor/markdown/format-whitespace';
+import { $createParagraphNode, $getRoot, TextNode, type LexicalEditor } from 'lexical';
 import * as Y from 'yjs';
 import { $importNoteBody, createConverterEditor, exportMarkdown } from './converter/index.ts';
 import { excludedPropertiesFor } from './excluded-properties.ts';
@@ -31,6 +33,9 @@ interface Mirror {
 function mirrorOf(live: Y.Doc): Mirror {
   const doc = new Y.Doc();
   const editor = createConverterEditor();
+  // Moss's live editor runs these transforms on imports before its binding writes them.
+  const stopLists = registerList(editor);
+  const stopWhitespace = editor.registerNodeTransform(TextNode, $normalizeFormatWhitespace);
   // The client's exclusions, so the mirror writes and reads the same fields the browser does (A§10.9).
   const binding = createBinding(editor, provider, 'root', doc, new Map([['root', doc]]), excludedPropertiesFor(editor));
   const stopUpdates = editor.registerUpdateListener(({ prevEditorState, editorState, dirtyElements, dirtyLeaves, normalizedNodes, tags }) => {
@@ -49,6 +54,8 @@ function mirrorOf(live: Y.Doc): Mirror {
     editor,
     dispose: () => {
       stopUpdates();
+      stopWhitespace();
+      stopLists();
       root.unobserveDeep(observer);
       doc.destroy();
     },

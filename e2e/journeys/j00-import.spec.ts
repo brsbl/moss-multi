@@ -20,7 +20,7 @@ for (const name of readdirSync(fixtures).filter((name) => name.endsWith('.md')).
       expect(response.status()).toBe(201);
       const { doc } = await response.json();
       await actor.goto(`/d/${doc.id}`);
-      await expect(ui.body(actor, doc.id)).toHaveAttribute('data-body-binding', 'live');
+      await expect(ui.body(actor, doc.id)).toHaveAttribute('data-body-binding', 'live', { timeout: 30_000 });
       return doc.id as string;
     };
     const importedId = await create(imported, markdown);

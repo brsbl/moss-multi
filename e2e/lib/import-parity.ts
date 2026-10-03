@@ -12,7 +12,7 @@ export async function pasteMarkdown(actor: Actor, docId: string, markdown: strin
     element.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: data }));
   }, markdown);
   await actor.page.keyboard.press('Escape');
-  await actor.page.mouse.move(0, 0);
+  await actor.page.mouse.click(0, 0);
   await target.evaluate((element) => {
     (element as HTMLElement).blur();
     window.getSelection()?.removeAllRanges();
