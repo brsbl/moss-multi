@@ -112,3 +112,10 @@ describe('structured property regressions', () => {
     expect(readField(a, 'frontmatter')).toBe(readField(b, 'frontmatter'));
   });
 });
+
+it('imports an empty commented YAML block as no properties', () => {
+  const doc = new Y.Doc();
+  writeField(doc, 'frontmatter', '---\n# no fields yet\n---\n', 'import');
+  expect(readFrontmatter(doc)).toBeNull();
+  doc.destroy();
+});

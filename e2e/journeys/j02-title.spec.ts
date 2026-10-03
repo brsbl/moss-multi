@@ -8,6 +8,7 @@
 // Grants to the second and third principals are declared setup through the members API (BUILDPLAN conventions).
 import { randomBytes } from 'node:crypto';
 import { readField } from '../../packages/core/src/doc-fields.ts';
+import { parseFrontmatter } from '../../packages/core/src/frontmatter.ts';
 import { openDocClient } from '../lib/doc-client.ts';
 import type { Locator, Route } from '@playwright/test';
 import type { Actor, Actors } from '../lib/actors.ts';
@@ -717,4 +718,47 @@ test('j02-title: @tierA delete versus edit of one property preserves neighbourin
     await expect(header.getByRole('textbox', { name: 'status', exact: true })).toHaveValue('done');
     await expect(header.getByRole('textbox', { name: 'due', exact: true })).toHaveValue('soon');
   }
+});
+
+test('j02-title: @tierA shared property rename and order reach both panels without changing values @p:tech-2 @p:col-1', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  const ben = await openShell(actors, 'ben');
+  await actors.requireDistinct(2);
+  const docId = await ui.createNote(ada);
+  for (const [key, value] of [['first', 'one'], ['second', 'two'], ['third', 'three']]) {
+    await (await addPropertyUpToValue(ada, key, value)).press('Enter');
+  }
+  await waitAcked(ada, docId);
+  await grantDoc(ada, docId, principalOf(ben));
+  await openDoc(ben, docId);
+  await openProperties(ben);
+  // Moss has no key-rename or reorder control. Exercise that shared-state intent through an authenticated peer.
+  const peer = await openDocClient(new URL(ada.page.url()).origin, docId,
+    (await ada.context.cookies()).map(({ name, value }) => `${name}=${value}`).join('; '));
+  try {
+    await peer.synced;
+    peer.doc.transact(() => {
+      const map = peer.doc.getMap('frontmatter');
+      map.set('renamed', map.get('first'));
+      map.delete('first');
+      const order = peer.doc.getArray<string>('frontmatterOrder');
+      order.delete(0, order.length);
+      order.push(['third', 'renamed', 'second']);
+    }, 'property-intent');
+    await peer.acked();
+    for (const actor of [ada, ben]) {
+      const fields = PROPERTIES(actor).locator('section[aria-label="Frontmatter properties"]');
+      await expect(fields.getByRole('textbox', { name: 'renamed', exact: true })).toHaveValue('one');
+      await expect(fields.getByRole('textbox', { name: 'second', exact: true })).toHaveValue('two');
+      await expect(fields.getByRole('textbox', { name: 'third', exact: true })).toHaveValue('three');
+      await expect(fields.locator('label')).toHaveText(['Third', 'Renamed', 'Second']);
+      actor.observations.clear();
+      await actor.page.reload();
+      await ui.waitLive(actor, docId);
+      const reloaded = await openProperties(actor);
+      await expect(reloaded.locator('label')).toHaveText(['Third', 'Renamed', 'Second']);
+      await expect(reloaded.getByRole('textbox', { name: 'renamed', exact: true })).toHaveValue('one');
+    }
+    expect(Object.keys(parseFrontmatter(readField(peer.doc, 'frontmatter')) ?? {})).toEqual(['third', 'renamed', 'second']);
+  } finally { peer.close(); }
 });

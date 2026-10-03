@@ -99,7 +99,8 @@ export function observeFrontmatter(doc: Y.Doc, listener: (data: Frontmatter, ori
   const map = doc.getMap('frontmatter');
   const order = doc.getArray<string>('frontmatterOrder');
   const changed = (transaction: Y.Transaction) => {
-    if (transaction.changed.has(map) || transaction.changed.has(order)) listener(readFrontmatter(doc), transaction.origin);
+    const types: ReadonlyMap<unknown, unknown> = transaction.changed;
+    if (types.has(map) || types.has(order)) listener(readFrontmatter(doc), transaction.origin);
   };
   doc.on('afterTransaction', changed);
   return () => doc.off('afterTransaction', changed);
