@@ -106,7 +106,7 @@ async function untilAll(
   }
 }
 
-test('j02-title: a rename reaches the other person\'s title, sidebar row and breadcrumb within 5 s, with no keystroke or remount there @p:col-5 @p:tech-2 @evidence', async ({ actors, measure }) => {
+test('j02-title: @tierA a rename reaches the other person\'s title, sidebar row and breadcrumb within 5 s, with no keystroke or remount there @p:col-5 @p:tech-2 @evidence', async ({ actors, measure }) => {
   const ada = await openShell(actors, 'ada');
   const ben = await openShell(actors, 'ben');
   await actors.requireDistinct(2);
@@ -184,7 +184,7 @@ async function pinFromSidebar(actor: Actor, docId: string): Promise<void> {
   await expect(actor.page.getByRole('menu')).toBeHidden();
 }
 
-test('j02-title: renames from Ada and then Ben reach Cy in order, with no stale name flashing back @p:col-5', async ({ actors }) => {
+test('j02-title: @tierA renames from Ada and then Ben reach Cy in order, with no stale name flashing back @p:col-5', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
   const ben = await openShell(actors, 'ben');
   const cy = await openShell(actors, 'cy');
@@ -231,7 +231,7 @@ const caretIn = (field: Locator) =>
     return range.toString().length;
   });
 
-test('j02-title: concurrent renames merge character by character, and a title someone is typing in is never clobbered @p:col-5', async ({ actors }) => {
+test('j02-title: @tierA concurrent renames merge character by character, and a title someone is typing in is never clobbered @p:col-5', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
   const ben = await openShell(actors, 'ben');
   await actors.requireDistinct(2);
@@ -264,7 +264,7 @@ test('j02-title: concurrent renames merge character by character, and a title so
   await expectNoRemount(ben, docId, 'after concurrent renames');
 });
 
-test('j02-title: emptying a title and typing it again keeps the filename; an empty title never projects @p:note-1 @p:R3', async ({ actors }) => {
+test('j02-title: @tierA emptying a title and typing it again keeps the filename; an empty title never projects @p:note-1 @p:R3', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
   const ben = await openShell(actors, 'ben');
   await actors.requireDistinct(2);
@@ -333,7 +333,7 @@ async function newPane(actor: Actor, before: string[]): Promise<string> {
   return docId ?? '';
 }
 
-test('j02-title: the title takes no focus and no input before data-title-binding=live, and takes focus once it is @p:R2 @p:note-6 @p:col-6', async ({ actors }) => {
+test('j02-title: @tierA the title takes no focus and no input before data-title-binding=live, and takes focus once it is @p:R2 @p:note-6 @p:col-6', async ({ actors }) => {
   const ada = await actors.session(await actors.principal('ada'), { severable: true });
   await ada.context.addInitScript(recordClosedTitles, { title: TITLE_BINDING_ATTR });
   await ada.goto('/');
@@ -420,7 +420,7 @@ function recordKeys({ title, refusalAttr }: { title: string; refusalAttr: string
   );
 }
 
-test('j02-title: on a warm stack, "+ Note" then "hello world" typed at once makes one note, and every key lands in its title or is refused visibly @p:note-6 @p:R2', async ({ actors }) => {
+test('j02-title: @tierA on a warm stack, "+ Note" then "hello world" typed at once makes one note, and every key lands in its title or is refused visibly @p:note-6 @p:R2', async ({ actors }) => {
   const ada = await actors.session(await actors.principal('ada'));
   await ada.context.addInitScript(recordKeys, { title: TITLE_BINDING_ATTR, refusalAttr: INPUT_REFUSAL_ATTR });
   await ada.goto('/');
@@ -462,7 +462,7 @@ test('j02-title: on a warm stack, "+ Note" then "hello world" typed at once make
   await expect(ada.page.locator(`[${SIDEBAR_ROW_ATTR}]`), 'one new row').toHaveCount(rows + 1);
 });
 
-test('j02-title: Rename in a row menu focuses the bound title, and the name typed after it lands @p:R2 @p:col-5', async ({ actors }) => {
+test('j02-title: @tierA Rename in a row menu focuses the bound title, and the name typed after it lands @p:R2 @p:col-5', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
   await openShell(actors, 'ben');
   await actors.requireDistinct(2);
@@ -486,7 +486,7 @@ test('j02-title: Rename in a row menu focuses the bound title, and the name type
 });
 
 for (const check of ['typing', 'navigation'] as const) {
-  test(`j02-title: Rename on the open note preserves ${check} focus @p:R2 @p:note-6`, async ({ actors }) => {
+  test(`j02-title: @tierA Rename on the open note preserves ${check} focus @p:R2 @p:note-6`, async ({ actors }) => {
     const ada = await openShell(actors, 'ada');
     await openShell(actors, 'ben');
     await actors.requireDistinct(2);
@@ -517,7 +517,7 @@ for (const check of ['typing', 'navigation'] as const) {
   });
 }
 
-test('j02-title: an empty refusal band preserves the note layout @p:note-6', async ({ actors }) => {
+test('j02-title: @tierA an empty refusal band preserves the note layout @p:note-6', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
   await openShell(actors, 'ben');
   await actors.requireDistinct(2);
@@ -527,7 +527,7 @@ test('j02-title: an empty refusal band preserves the note layout @p:note-6', asy
     'an empty band adds no space below the top bar').toBe(0);
 });
 
-test('j02-title: a bare Backspace with nothing focused keeps the URL, while the doc binds and once it is live @p:note-6 @macos', async ({ actors }) => {
+test('j02-title: @tierA a bare Backspace with nothing focused keeps the URL, while the doc binds and once it is live @p:note-6 @macos', async ({ actors }) => {
   const ada = await openShell(actors, 'ada', { severable: true });
   await openShell(actors, 'ben');
   await actors.requireDistinct(2);
@@ -575,7 +575,7 @@ async function openProperties(actor: Actor): Promise<Locator> {
   return PROPERTIES(actor).locator('section[aria-label="Frontmatter properties"]');
 }
 
-test('j02-title: two people add different properties at once, both keep theirs, and the header shows both after a reload @p:tech-2', async ({ actors }) => {
+test('j02-title: @tierA two people add different properties at once, both keep theirs, and the header shows both after a reload @p:tech-2', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
   const ben = await openShell(actors, 'ben');
   await actors.requireDistinct(2);
@@ -608,7 +608,7 @@ test('j02-title: two people add different properties at once, both keep theirs, 
   }
 });
 
-test('j02-title: disconnected additions of the same property converge and survive reload and later edits @evidence @p:tech-2 @p:col-1 @p:col-4', async ({ actors }) => {
+test('j02-title: @tierA disconnected additions of the same property converge and survive reload and later edits @evidence @p:tech-2 @p:col-1 @p:col-4', async ({ actors }) => {
   const ada = await openShell(actors, 'ada', { severable: true });
   const ben = await openShell(actors, 'ben');
   await actors.requireDistinct(2);

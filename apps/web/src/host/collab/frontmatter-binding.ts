@@ -3,9 +3,9 @@
 // changed, under FRONTMATTER_LOCAL_ORIGIN, and parses a peer's change back into the atom. A key being edited lives in
 // the header's own draft state until it commits, so a peer's change never clobbers it.
 import { observeField, readField } from '@moss-multi/core/doc-fields';
-import { writeFrontmatterKey, composeFrontmatter } from '@moss-multi/core/frontmatter';
-import { splitFrontmatter } from '@moss-desktop/common/markdown-layers';
+import { writeFrontmatterKey } from '@moss-multi/core/frontmatter';
 import { frontmatterDirtySignalAtom, noteFrontmatterAtom } from '@moss/shared/state/note-atoms';
+import jsYaml from 'js-yaml';
 import type { useStore } from 'jotai';
 import type { Doc } from 'yjs';
 import { refuseInput } from '../refusal.ts';
@@ -17,10 +17,28 @@ export const PROPERTIES_CLOSED = "This note's properties can't be changed right 
 type Store = ReturnType<typeof useStore>;
 type Data = Record<string, unknown> | null;
 
-/** The block's data, or null for no block (moss's "No properties yet"). A block that does not parse reads as null. */
+/** Preserve moss's date strings, including dates nested in lists and mappings. */
+function normalizeDates(value: unknown): unknown {
+  if (value instanceof Date) {
+    const iso = value.toISOString();
+    return iso.endsWith('T00:00:00.000Z') ? iso.slice(0, 10) : iso;
+  }
+  if (Array.isArray(value)) return value.map(normalizeDates);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, normalizeDates(entry)]));
+  }
+  return value;
+}
+
+/** Concurrent duplicate keys use the last occurrence in converged CRDT order; reads never rewrite the raw block. */
 export function parseFrontmatter(yaml: string): Data {
   if (!yaml.trim()) return null;
-  return splitFrontmatter(composeFrontmatter(yaml, '')).data;
+  try {
+    const parsed: unknown = jsYaml.load(yaml, { json: true });
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? normalizeDates(parsed) as Data : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Order-insensitive equality for property values, as moss's Properties tab compares them. */

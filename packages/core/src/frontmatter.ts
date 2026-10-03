@@ -12,6 +12,7 @@ const DUMP = { lineWidth: -1, noRefs: true, sortKeys: false, quotingType: '"' } 
 
 /** The top-level key a line opens, or null for a continuation, comment or blank line. */
 function keyOf(line: string): string | null {
+  if (/^-(?:\s|$)/.test(line)) return null;
   const quoted = /^"((?:[^"\\]|\\.)*)"\s*:(?:\s|$)/.exec(line);
   if (quoted) {
     try {
@@ -22,16 +23,17 @@ function keyOf(line: string): string | null {
   }
   const single = /^'((?:[^']|'')*)'\s*:(?:\s|$)/.exec(line);
   if (single) return single[1].replace(/''/g, "'");
-  const plain = /^([^\s#'"-][^:]*?)\s*:(?:\s|$)/.exec(line);
+  const plain = /^([^\s#'"][^:]*?)\s*:(?:\s|$)/.exec(line);
   return plain ? plain[1] : null;
 }
 
 /** A line that belongs to the key above it: indented, or a sequence item at column 0. */
-const continues = (line: string): boolean => /^[ \t-]/.test(line);
+const continues = (line: string): boolean => /^(?:[ \t]|-(?:\s|$))/.test(line);
 
-/** The character range of `key`'s lines (its own line, its continuation lines, and their newlines), or null. */
-function keyRange(yaml: string, key: string): [number, number] | null {
+/** Every occurrence of `key`, including continuation lines; concurrent additions can produce duplicates. */
+function keyRanges(yaml: string, key: string): [number, number][] {
   const lines = yaml.split('\n');
+  const ranges: [number, number][] = [];
   let offset = 0;
   for (let i = 0; i < lines.length; i += 1) {
     if (keyOf(lines[i]) === key) {
@@ -43,18 +45,25 @@ function keyRange(yaml: string, key: string): [number, number] | null {
       }
       let endOffset = offset;
       for (let j = i; j < end; j += 1) endOffset += lines[j].length + 1;
-      return [offset, Math.min(endOffset, yaml.length)];
+      ranges.push([offset, Math.min(endOffset, yaml.length)]);
     }
     offset += lines[i].length + 1;
   }
-  return null;
+  return ranges;
 }
 
 /** `yaml` with `key` set to `value` (removed when `value` is undefined), every other line kept byte for byte. */
 export function setFrontmatterKey(yaml: string, key: string, value: unknown): string {
   const lines = value === undefined ? '' : jsYaml.dump({ [key]: value }, DUMP);
-  const range = keyRange(yaml, key);
-  if (range) return `${yaml.slice(0, range[0])}${lines}${yaml.slice(range[1])}`;
+  const ranges = keyRanges(yaml, key);
+  if (ranges.length) {
+    // Keep one occurrence, removing all duplicates without touching intervening keys or comments.
+    for (let i = ranges.length - 1; i >= 0; i -= 1) {
+      const [start, end] = ranges[i];
+      yaml = `${yaml.slice(0, start)}${i === 0 ? lines : ''}${yaml.slice(end)}`;
+    }
+    return yaml;
+  }
   if (!lines) return yaml;
   return `${yaml && !yaml.endsWith('\n') ? `${yaml}\n` : yaml}${lines}`;
 }

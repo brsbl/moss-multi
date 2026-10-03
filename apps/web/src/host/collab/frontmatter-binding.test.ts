@@ -7,6 +7,13 @@ import { frontmatterDirtySignalAtom, noteFrontmatterAtom } from '@moss/shared/st
 import { bindFrontmatter, parseFrontmatter } from './frontmatter-binding.ts';
 
 describe('frontmatter binding', () => {
+  it('keeps moss date normalization and rejects malformed or non-mapping YAML', () => {
+    expect(parseFrontmatter('due: 2026-10-03\nnested:\n  dates: [2026-10-04, 2026-10-03T12:34:56Z]\n'))
+      .toEqual({ due: '2026-10-03', nested: { dates: ['2026-10-04', '2026-10-03T12:34:56.000Z'] } });
+    for (const yaml of ['', '  ', '- item\n', 'scalar\n', 'broken: [\n']) expect(parseFrontmatter(yaml)).toBeNull();
+    expect(parseFrontmatter('status: done\n')).toEqual({ status: 'done' });
+  });
+
   it('converges after disconnected same-key additions and reopens with untouched properties', () => {
     const a = new Y.Doc();
     const b = new Y.Doc();
