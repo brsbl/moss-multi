@@ -460,8 +460,8 @@ test('j03-connection: a real Settings chunk load failure preserves the shell and
   await waitBodyLive(bea, docId);
   await bea.observeEditor(docId);
   let failures = 0;
-  bea.expectHttp(404, /\/assets\/SettingsModal-.*\.js$/);
-  await bea.page.route('**/assets/SettingsModal-*.js', async route => {
+  bea.expectHttp(404, /\/assets\/SettingsModal-.*\.js(?:\?.*)?$/);
+  await bea.page.route('**/assets/SettingsModal-*.js*', async route => {
     failures += 1;
     await route.fulfill({ status: 404, contentType: 'text/javascript', body: '' });
   });
@@ -478,7 +478,7 @@ test('j03-connection: a real Settings chunk load failure preserves the shell and
   await waitAcked(bea, docId, RECOVER_TIMEOUT);
   await expect.poll(() => bodyText(ada, docId)).toBe('A failed import leaves the editor here with an unsynced addition and more after the failure');
   await expectNoRemount(bea, docId, 'a failed lazy import');
-  await bea.page.unroute('**/assets/SettingsModal-*.js');
+  await bea.page.unroute('**/assets/SettingsModal-*.js*');
   await expect(bea.page.getByRole('button', { name: 'Retry loading' })).toBeInViewport();
   await bea.page.getByRole('button', { name: 'Retry loading' }).click();
   await expect(bea.page.getByRole('dialog')).toBeVisible();

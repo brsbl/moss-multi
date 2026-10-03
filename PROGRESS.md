@@ -91,3 +91,9 @@ Repairs keep sessions recoverable until confirmed sign-out, pause writes and wai
 - Local QA deviation: `bb browser-automation --help` returned unknown command and plugin discovery returned HTTP 401. No substitute driver or personal app was used; the independent checker owns the real browser pass.
 - Integration: merged `origin/m1` at `77c5b4a`, retaining T1.1’s role gate, Share control and denial routes.
 - Deferred P2s: stronger banner salience/triptych, the dead `halted` field, one refusal announcer across split panes, and incremental AckLedger compaction. These are outside the three P1 regression repairs and need their own focused validation; the retry, dot, navigation and link-access nits were included.
+
+### T1.3 — resumed regression repairs
+
+Resumed the existing task branch and merged `m1` at `c6bc688`. The original tests-first [red run](https://github.com/brsbl/moss-multi/actions/runs/37134139961) proves all three checker findings. [Full CI at 5012cce](https://github.com/brsbl/moss-multi/actions/runs/37135956317) passes checks, viewer, both shell groups and parity (zero differing pixels in light and dark); both editing groups expose the remaining cached-import retry failure.
+
+Cancel now receives its ref through the DS wrapper, lazy component state has the correct initializer, and heartbeat resync replays pending updates so a channel restored before its timeout still delivers them. The failed-sign-out journey now passes. Optional surface imports receive fresh attempt URLs to retry cached fetch failures without remounting the editor. Local browser QA remains with the independent checker as the brief directs; final CI evidence is recorded in the implementer result.
