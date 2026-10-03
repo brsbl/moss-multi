@@ -8,7 +8,7 @@ import type { Actor, Actors } from '../lib/actors.ts';
 import {
   APP_STATE_ATTR, BODY_BINDING_ATTR, DOC_SOCKET_PATH, DOC_STATE_ATTR, EDITOR_PANE_ATTR, ROLE_ATTR, SYNC_UNACKED_ATTR, paneSelector,
 } from '../lib/contract.ts';
-import { cookieHeader } from '../lib/doc-client.ts';
+import { cookieHeader, openDocClient } from '../lib/doc-client.ts';
 import { signIn } from '../lib/principals.ts';
 import { CLOSE } from '../../packages/protocol/src/sync.ts';
 import { expect, test, ui } from '../lib/test.ts';
@@ -151,4 +151,52 @@ test('j01 setup: a signed-in stranger opening the note URL gets the denial page;
   await cy.goto(`/d/${missing}`);
   await expect(cy.page.getByRole('heading', { name: DENIAL }), 'a missing note shows the same page').toBeVisible();
   await expect(cy.page.locator(`[${EDITOR_PANE_ATTR}]`), 'and opens no other note').toHaveCount(0);
+});
+
+
+test('j01 access: a viewer reads the shared note but cannot share, write through REST or forge a write frame @p:ppl-2', async ({ actors, stack }) => {
+  const ada = await openShell(actors, 'ada');
+  const benPrincipal = await actors.principal('ben');
+  const docId = await newNote(ada);
+  await waitBodyLive(ada, docId);
+  await ui.typeBody(ada, docId, ADA_TEXT);
+  await waitAcked(ada, docId);
+  const dialog = await ui.shareWith(ada, docId, benPrincipal, 'Can view');
+  await ada.page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+
+  const ben = await actors.open(benPrincipal, { path: `/d/${docId}` });
+  await expect(ui.pane(ben, docId)).toHaveAttribute(ROLE_ATTR, 'viewer');
+  await expect(ui.body(ben, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'readonly');
+  await expect(ui.body(ben, docId)).toHaveAttribute('contenteditable', 'false');
+  expect(await ui.fieldText(ben, docId, 'body')).toBe(ADA_TEXT);
+  await expect(ui.pane(ben, docId).getByRole('button', { name: 'Share', exact: true })).toHaveCount(0);
+
+  const headers = { origin: stack.baseUrl };
+  const reshared = await ben.context.request.post(`/api/docs/${docId}/members`, {
+    headers, data: { email: benPrincipal.email, role: 'editor' },
+  });
+  expect(reshared.status()).toBe(403);
+  const workspace = await ada.context.request.get('/api/workspace');
+  const { vault } = (await workspace.json()) as { vault: { id: string } };
+  const grant = await ada.context.request.post(`/api/folders/${vault.id}/members`, {
+    headers, data: { email: benPrincipal.email, role: 'viewer' },
+  });
+  expect(grant.status()).toBe(201);
+  const created = await ben.context.request.post('/api/docs', { headers, data: { folderId: vault.id } });
+  expect(created.status()).toBe(403);
+
+  const cookie = (await ben.context.cookies()).map(({ name, value }) => `${name}=${value}`).join('; ');
+  const raw = await openDocClient(stack.baseUrl, docId, cookie);
+  try {
+    await expect.poll(() => raw.text(), { timeout: BIND_TIMEOUT }).toBe(ADA_TEXT);
+    raw.type(' FORGED-VIEWER-WRITE');
+    await expect.poll(() => raw.events).toContainEqual({ t: 'write-refused', reason: 'role' });
+    expect(await ui.fieldText(ada, docId, 'body')).toBe(ADA_TEXT);
+  } finally {
+    raw.close();
+  }
+  await ben.page.reload();
+  await expect(ui.body(ben, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'readonly');
+  expect(await ui.fieldText(ben, docId, 'body')).toBe(ADA_TEXT);
 });

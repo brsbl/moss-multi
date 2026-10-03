@@ -4,7 +4,7 @@
 // 404s on every doc route (A§8 non-disclosure).
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
-import { BASE, insertDoc, insertGrant, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
+import { BASE, insertDoc, insertFolder, insertGrant, insertLink, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
 import { handleApi } from './router.ts';
 
 const created: string[] = [];
@@ -170,6 +170,25 @@ describe('GET /api/docs/:id/members', () => {
     const text = await asMember.text();
     expect(text, 'no email reaches a non-owner').not.toContain('@');
     expect((JSON.parse(text) as { members: Member[] }).members.map((m) => [m.name, m.role])).toEqual([['Ada', 'owner'], ['Ben', 'editor'], ['Cy', 'viewer']]);
+  });
+});
+
+describe('anonymous member-list privacy', () => {
+  it.each(['doc', 'folder'] as const)('discloses no %s members to link-only visitors, while signed-in readers keep names without emails', async (kind) => {
+    const folderId = await insertFolder(d1.db, ada, ada.homeId);
+    const docId = await insertDoc(d1.db, ada, { folderId });
+    const target = kind === 'doc' ? { docId } : { folderId };
+    const path = kind === 'doc' ? `/api/docs/${docId}/members` : `/api/folders/${folderId}/members`;
+    await insertGrant(d1.db, target, ben, 'viewer');
+    const token = await insertLink(d1.db, target, 'editor');
+    const anonymous = await call('GET', `${path}?share=${token}`, null);
+    expect(anonymous.status).toBe(404);
+    expect(await anonymous.json()).toEqual({ error: 'not-found' });
+    const reader = await members(ben.cookie, path);
+    expect(reader.map(({ name }) => name)).toEqual(['Ada', 'Ben']);
+    expect(reader.every((member) => member.email === undefined)).toBe(true);
+    // The token is live and grants document access, even though identities stay private.
+    expect((await call('GET', `/api/docs/${docId}?share=${token}`, null)).status).toBe(200);
   });
 });
 

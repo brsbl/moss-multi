@@ -131,6 +131,8 @@ export async function handleMembers(request: Request, env: AuthEnv, target: Memb
   if (request.method !== 'GET' && request.method !== 'POST') return json({ error: 'method-not-allowed' }, 405, { allow: 'GET, POST' });
   const principal = await resolvePrincipal(request, env);
   if (!principal) return unauthenticated();
+  // Link-only visitors may read content, never the identities of its collaborators.
+  if (principal.type === 'anonymous') return notFound();
   const db = createDb(env.DB);
   const access = await accessTo(db, principal, target, request);
   if (!access) return notFound();

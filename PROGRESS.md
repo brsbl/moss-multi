@@ -1,11 +1,11 @@
 # moss-multi progress
 
-**Overall: 24% done** (17 of 70 planned tasks verified)
+**Overall: 26% done** (18 of 70 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 17 / 17 | in progress |
-| M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 0 / 11 | |
+| M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 1 / 11 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 0 / 9 | |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 0 / 9 | |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
@@ -36,6 +36,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-02 — T0.8 verified: a person can click "+ Note" and type in the real moss editor bound to the note's Y.Doc in the browser; the body unlocks only once it is live, the exact text (spaces, punctuation, "é") survives a reload over a single doc socket, and Copy markdown and Note stats read the current body; j00-persist is green in Chromium and WebKit.
 - 2026-10-03 — T0.13 verified: `packages/viewer` builds a browser bundle whose `mountMossViewer` shows a note in moss's own editor, read-only and unbound: the title renders once, `%%m:` markers stay hidden, the `layout.json` sidecar applies and tabs switch but never change, with no socket, write or input and assets and links only through injected services; CI builds the `moss-viewer` artifact with its `viewer.json` manifest and screenshots the fixture in Chromium and WebKit.
 - 2026-10-03 — T0.P verified: M0 polish. Keys typed right after "+ Note" are held with a visible "Opening note…" notice instead of vanishing or making a second note; edits typed offline survive switching notes and land on reconnect, even when an ack was lost with the dropped socket; the link popover highlights without writing to the note; a pasted or dropped image or video is refused visibly; a refused password can be fixed straight from the keyboard; and Rename, which could not work yet, is hidden.
+- 2026-10-03 — T1.1 verified: a note's owner can click Share, add a person by email as viewer, commenter or editor, and see who has access; that person opens the note from its link while a signed-in stranger sees one denial page that is byte-identical for a missing and an inaccessible note, and the stranger's socket closes 4404 without reconnecting. One access resolver (A§8) now answers every REST and socket check, and anonymous and link-only visitors never see member emails.
 
 - 2026-10-03 — T1.4 implemented, awaiting independent checker: title and Properties bind to shared Y.Text fields, new notes and Rename focus only after sync, and DocDO owns title/filename/timestamp projections. Reused the prior tests-first red [journey run](https://github.com/brsbl/moss-multi/actions/runs/37119711876) and [unit run](https://github.com/brsbl/moss-multi/actions/runs/37119709094). Chromium and WebKit j02 pass on `fb23af5` ([journeys](https://github.com/brsbl/moss-multi/actions/runs/37130424174)); checks/build/viewer pass ([push](https://github.com/brsbl/moss-multi/actions/runs/37130423993)). Local Chrome for Testing confirmed two-person renames and simultaneous Properties edits at 2×. Final changes add REST rename authorization/metadata regressions only; remote push CI remains required before handoff. No task count increment before the checker.
   - Deviations: reused and completed `t/T1.4-wip`; merged `t/T1.1` at `9fdcb05` for the members API and role gate required by declared-setup grants, rather than duplicating that lane. Corrected tests that retained their positive-control failures, mistook input values for text, treated browser NBSP rendering as a stale rename, and failed to declare intentional navigation remounts. Title undo remains T1.6's declared scope.
@@ -49,7 +50,6 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - Switching to "Create an account" leaves focus on the toggle link → T0.10
 - A wrong password logs a browser console error → T0.10 (only if the zero-console-error invariant should cover the auth error path)
 - Sidebar search matches titles only, so body text is never found → the M3 search task (SearchDO); live title matching is bound in T1.4
-- A missing or bad doc URL silently opens a different note → T1.1 (DenialPage)
 - During a stack restart the editor stays editable with no sign it is disconnected → T1.3 (connection truth indicator and banner)
 - Sign-out leaves the session's other live doc sockets reading and writing → T2.5
 - Close codes are never dispatched: a refused or unauthorized socket reconnects forever behind an editable pane → T1.3 (a session lingering with unacked edits behind a refused socket also holds its doc until then; a terminal code should end it)
