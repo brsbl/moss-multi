@@ -5022,7 +5022,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
               ) : null}
               {/* moss-multi seam: bound-pane (A§2.2): the editor mounts at once and binds behind the skeleton until first sync (A§10.3) */}
               {shouldMountEditor ? (
-                <div className={mossMultiPane.bodyLive ? 'contents' : 'hidden'}>
+                <div className={mossMultiPane.bodyVisible ? 'contents' : 'hidden'}>
                 <MarkdownEditor
                   ref={markdownEditorRef}
                   key={`${note.id}-${editorVersion}`}
@@ -5050,7 +5050,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
                 />
                 </div>
               ) : null}
-              {shouldMountEditor && mossMultiPane.bodyLive ? null : (
+              {shouldMountEditor && mossMultiPane.bodyVisible ? null : (
                 <div className="agent-skeleton agent-skeleton--content pt-4">
                   {[100, 94, 88, 72, 96, 64].map((width, i) => (
                     <div

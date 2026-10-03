@@ -1,13 +1,10 @@
 // Settings' Account section (T0.10), the web build's one addition to moss Settings: who is signed in, and Sign
 // out. Moss has no accounts, so it uses Settings' own section vocabulary (micro label over a bordered card).
-import { useState, useSyncExternalStore, type ReactNode } from 'react';
-import { ConfirmationDialog } from '@moss/shared/components/ui/confirmation-dialog';
-import { answerSignOut, needsSignOutConfirmation, subscribeSignOutConfirmation } from '../sign-out-guard.ts';
+import { useState, type ReactNode } from 'react';
 import { auth, useAuthState } from '../auth.ts';
 
 export function AccountSection(): ReactNode {
   const state = useAuthState();
-  const confirm = useSyncExternalStore(subscribeSignOutConfirmation, needsSignOutConfirmation, () => false);
   const [error, setError] = useState<string | null>(null);
   if (state.status !== 'signed-in' && state.status !== 'signing-out') return null;
   const signingOut = state.status === 'signing-out';
@@ -20,10 +17,6 @@ export function AccountSection(): ReactNode {
 
   return (
     <div className="space-y-2">
-      <ConfirmationDialog open={confirm} onOpenChange={open => { if (!open) answerSignOut(false); }}
-        title="Some edits haven’t synced" description="Signing out now will discard unsynced edits in this window. Cancel to keep editing and wait for the connection to return."
-        confirmLabel="Sign out anyway" cancelLabel="Cancel" cancelAutoFocus variant="danger"
-        onConfirm={() => answerSignOut(true)} onCancel={() => answerSignOut(false)} />
       <span className="text-micro font-medium uppercase tracking-wider text-ink-faint">Account</span>
       <div className="rounded-lg border border-border-subtle bg-surface-raised-card p-3">
         <div className="flex items-center justify-between gap-2">

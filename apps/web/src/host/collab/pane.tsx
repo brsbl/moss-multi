@@ -26,6 +26,7 @@ import { ConnectionNotice } from './ConnectionNotice.tsx';
 interface PaneState {
   docState: DocState;
   bodyState: BindingState;
+  bodyVisible: boolean;
   resetting: boolean;
   revision: number;
   /** The body holds any text; moss reads its markdown string for this, which a bound note never fills. */
@@ -49,7 +50,7 @@ function generation(editor: LexicalEditor): number {
  * `data-sync-unacked` is written here, in the tick of the write it reports, not through a render.
  */
 class PaneBinding {
-  #state: PaneState = { docState: 'binding', bodyState: 'unbound', resetting: false, revision: 0, hasText: false };
+  #state: PaneState = { docState: 'binding', bodyState: 'unbound', bodyVisible: false, resetting: false, revision: 0, hasText: false };
   readonly #listeners = new Set<() => void>();
   #session: DocSession | null = null;
   #editor: LexicalEditor | null = null;
@@ -128,6 +129,7 @@ class PaneBinding {
     editor.getRootElement()?.closest(`[${EDITOR_PANE_ATTR}]`)?.setAttribute(SYNC_UNACKED_ATTR, state.unacked ? '1' : '0');
     this.set({
       bodyState,
+      bodyVisible: state.synced && !state.resync,
       resetting: state.resync,
       docState: terminal ? 'terminal' : state.retrying ? 'retrying' : !state.synced || state.resync ? 'binding' : state.connection === 'offline' ? 'offline' : 'live',
     });
@@ -233,6 +235,8 @@ export interface MossMultiPane {
   collaboration: { plugin: ReactNode } | null;
   /** The body is bound, synced and editable; moss's pending body focus waits for it. */
   bodyLive: boolean;
+  /** Synced content stays visible when editing pauses or the session ends. */
+  bodyVisible: boolean;
   /** The title stays closed until its Y.Text binding (T1.4). */
   titleLive: boolean;
   titleBinding: BindingState;
@@ -265,6 +269,7 @@ export function useMossMultiPane(note: { id: string; trashedAt?: number | null }
     noticeBand: <ConnectionNotice docId={docId} />,
     collaboration,
     bodyLive: live,
+    bodyVisible: state.bodyVisible,
     titleLive: false,
     titleBinding: terminal ? 'terminal' : 'unbound',
     hasBodyText: state.hasText,
@@ -281,7 +286,7 @@ export function useMossMultiPane(note: { id: string; trashedAt?: number | null }
   };
 }
 
-const CLOSED: PaneState = { docState: 'binding', bodyState: 'unbound', resetting: false, revision: 0, hasText: false };
+const CLOSED: PaneState = { docState: 'binding', bodyState: 'unbound', bodyVisible: false, resetting: false, revision: 0, hasText: false };
 
 /**
  * The binding's state as React state rather than a store snapshot: going live must commit in the same render as the

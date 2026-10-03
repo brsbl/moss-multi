@@ -148,7 +148,6 @@ async function sharedNote(actors: Actors, opening: string): Promise<Shared> {
   const peer = await actors.principal('ben');
   await ui.shareWith(ada, docId, peer, 'Can edit');
   await ada.page.keyboard.press('Escape');
-  await actors.open(peer);
   return { owner, peer, ada, docId };
 }
 
@@ -528,7 +527,8 @@ test('j03-connection: a real Settings chunk load failure preserves the shell and
 });
 
 test('j03-connection: the online indicator is sanctioned chrome with a visible mobile dot @p:col-4', async ({ actors }) => {
-  const { ada, docId } = await sharedNote(actors, 'An online dot');
+  const { ada, docId, peer } = await sharedNote(actors, 'An online dot');
+  await actors.open(peer);
   await actors.requireDistinct(2);
   await expect(indicator(ada, docId)).toHaveAttribute('data-collab-chrome', '');
   await ada.page.setViewportSize({ width: 390, height: 844 });
