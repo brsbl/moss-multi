@@ -25,7 +25,7 @@ export function ConnectionIndicator({ docId }: { docId: string }) {
   </span>;
 }
 
-export function ConnectionNotice({ docId }: { docId: string }) {
+export function ConnectionNotice({ docId }: { docId: string | null }) {
   const view = useDocConnection(docId);
   const terminal = useTerminal(docId);
   const kind = terminal ?? (view?.halted ? 'halted' : view?.retrying ? 'retrying' : view?.synced && view.connection === 'offline' ? 'offline' : null);
@@ -34,7 +34,7 @@ export function ConnectionNotice({ docId }: { docId: string }) {
     : 'Connection lost. Your edits are kept in this window and will sync when the connection returns.');
   return <div {...{ [NOTICE_BAND_ATTR]: '' }} className="relative z-10 shrink-0">
     {kind ? <Banner {...{ [CONNECTION_BANNER_ATTR]: kind }} action={terminal === 'conn-limit'
-      ? <button type="button" className="underline" onClick={() => retryDoc(docId)}>Retry</button>
+      ? <button type="button" className="underline" onClick={() => { if (docId) retryDoc(docId); }}>Retry</button>
       : terminal === 'session-ended' ? <a href="/login" className="underline">Sign in</a> : undefined}>{message}</Banner> : null}
     <RefusalAnnouncer />
   </div>;

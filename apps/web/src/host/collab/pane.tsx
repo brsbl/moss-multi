@@ -252,7 +252,7 @@ export function useMossMultiPane(note: { id: string; trashedAt?: number | null }
   return {
     bound: true,
     readOnly: !live,
-    noticeBand: docId ? <ConnectionNotice docId={docId} /> : null,
+    noticeBand: <ConnectionNotice docId={docId} />,
     collaboration,
     bodyLive: live,
     titleLive: false,

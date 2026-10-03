@@ -4448,8 +4448,9 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
   // Hooks must be called unconditionally in the same order every render.
   if (!note) {
     return (
-      <div className="relative flex h-full min-w-0 flex-1 bg-surface-canvas">
+      <div className="relative flex h-full min-w-0 flex-1 flex-col bg-surface-canvas">
         {canvasTopDragStrip}
+        {mossMultiPane.noticeBand /* moss-multi seam: input refusals before the first note opens */}
         <CanvasArea className="min-w-0 flex-1" fullWidth innerClassName="flex h-full items-center justify-center">
           <p className="text-sm text-ink-muted">Create a new note to get started</p>
         </CanvasArea>
