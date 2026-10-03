@@ -9,7 +9,8 @@ export const SHARE_PARAM = 'share';
 export const SHARE_HEADER = 'x-moss-share';
 
 export type Principal =
-  | { type: 'user'; id: string; name: string; email: string; sessionId: string }
+  /** `credential` says what proved the session: a cookie must pass the origin gate (worker/origin-gate.ts). */
+  | { type: 'user'; id: string; name: string; email: string; sessionId: string; credential: 'cookie' | 'bearer' }
   /** Acts with its owner's access (A§8). */
   | { type: 'agent'; id: string; name: string; ownerUserId: string }
   /** A share-link holder with no session, capped at viewer (A§8). */
@@ -24,7 +25,16 @@ export function shareTokenOf(request: Request): string | null {
   return new URL(request.url).searchParams.get(SHARE_PARAM) || request.headers.get(SHARE_HEADER) || null;
 }
 
-export async function resolvePrincipal(request: Request, env: AuthEnv): Promise<Principal | null> {
+// One resolution per request: the origin gate and the route handler share it.
+const resolved = new WeakMap<Request, Promise<Principal | null>>();
+
+export function resolvePrincipal(request: Request, env: AuthEnv): Promise<Principal | null> {
+  let principal = resolved.get(request);
+  if (!principal) resolved.set(request, (principal = identify(request, env)));
+  return principal;
+}
+
+async function identify(request: Request, env: AuthEnv): Promise<Principal | null> {
   const bearer = /^Bearer\s+(\S+)$/i.exec(request.headers.get('authorization') ?? '')?.[1];
   if (bearer?.startsWith(AGENT_KEY_PREFIX)) {
     // A key that is unknown or revoked is a failed credential: no fallback to the cookie or a share token.
@@ -36,10 +46,14 @@ export async function resolvePrincipal(request: Request, env: AuthEnv): Promise<
     return agent ? { type: 'agent', ...agent } : null;
   }
   if (bearer || request.headers.has('cookie')) {
-    const found = await createAuth(env).api.getSession({ headers: request.headers });
+    // A bearer is the credential: better-auth would fall back to the cookie beside a bearer it cannot verify, and
+    // that cookie may have ridden in from another origin.
+    const headers = new Headers(request.headers);
+    if (bearer) headers.delete('cookie');
+    const found = await createAuth(env).api.getSession({ headers });
     if (found) {
       const { user, session } = found;
-      return { type: 'user', id: user.id, name: user.name, email: user.email, sessionId: session.id };
+      return { type: 'user', id: user.id, name: user.name, email: user.email, sessionId: session.id, credential: bearer ? 'bearer' : 'cookie' };
     }
   }
   const shareToken = shareTokenOf(request);
