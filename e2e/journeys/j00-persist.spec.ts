@@ -1,7 +1,7 @@
 // j00-persist (T0.8; the browser half of SP3): "+ Note" binds moss's real editor to the note's DocDO. The body takes
 // no focus and no input before it is live, text with spaces, punctuation and "é" survives a reload byte for byte, and
 // one doc socket carries the note through a metadata refresh and a pane rerender with no editor remount, and holds
-// for 60 s.
+// for 60 s. Split view never shows one note in both panes, so the tab never asks for a second session (A§10.1).
 import type { Locator } from '@playwright/test';
 import type { Actor, Actors } from '../lib/actors.ts';
 import {
@@ -16,6 +16,7 @@ const BIND_TIMEOUT = 15_000;
 const ACK_TIMEOUT = 10_000;
 const TEXT = 'Kept after reload, café & “curly” quotes, two  spaces!';
 const LATER = 'Still bound after a minute';
+const SPLIT_TEXT = 'Seen in one pane at a time';
 
 interface ClosedRecord { problems: string[]; roots: number }
 
@@ -58,12 +59,18 @@ async function openShell(actors: Actors, label: string): Promise<Actor> {
   return actor;
 }
 
+/** The doc ids of the open editor panes, left to right. */
+const paneIds = (actor: Actor): Promise<string[]> =>
+  actor.page.locator(`[${EDITOR_PANE_ATTR}]`).evaluateAll((panes, attr) => panes.map((p) => p.getAttribute(attr) ?? ''), DOC_ID_ATTR);
+
 /** "+ Note", then the new pane's doc id; the pane binds on its own. */
 async function newNote(actor: Actor): Promise<string> {
+  const before = await paneIds(actor);
   await actor.page.getByRole(ui.NEW_NOTE.role, { name: ui.NEW_NOTE.name }).click();
-  const pane = actor.page.locator(`[${EDITOR_PANE_ATTR}]`);
-  await expect(pane, 'the new note opens in one editor pane').toHaveCount(1, { timeout: BIND_TIMEOUT });
-  const docId = await pane.getAttribute(DOC_ID_ATTR);
+  const fresh = async () => (await paneIds(actor)).filter((id) => id !== '' && !before.includes(id));
+  await expect.poll(fresh, { message: 'the new note opens in an editor pane', timeout: BIND_TIMEOUT }).toHaveLength(1);
+  await expect(actor.page.locator(`[${EDITOR_PANE_ATTR}]`), 'the new note opens in one editor pane').toHaveCount(1);
+  const [docId] = await fresh();
   if (!docId) throw new Error(`${actor.label}: the pane has no ${DOC_ID_ATTR}`);
   return docId;
 }
@@ -106,6 +113,27 @@ async function pinFromSidebar(actor: Actor, docId: string): Promise<void> {
   await expect(actor.page.getByRole('menuitem', { name: 'Unpin', exact: true }), 'the note is pinned').toBeVisible();
   await actor.page.keyboard.press('Escape');
   await expect(actor.page.getByRole('menu')).toBeHidden();
+}
+
+/** Opens the note in the split (right) pane from its sidebar row, as moss's notes list does. */
+async function openInSplit(actor: Actor, docId: string): Promise<void> {
+  await row(actor, docId).click({ button: 'right' });
+  await actor.page.getByRole('menuitem', { name: 'Open in Split Tab', exact: true }).click();
+  await expect(actor.page.getByRole('menu')).toBeHidden();
+  await waitBodyLive(actor, docId);
+}
+
+/** Focuses the pane showing `paneDocId` by clicking its body, then opens `docId` from the sidebar into that pane. */
+async function openFromSidebarIn(actor: Actor, paneDocId: string, docId: string): Promise<void> {
+  await ui.body(actor, paneDocId).click();
+  await row(actor, docId).click();
+  await expect(ui.pane(actor, paneDocId), `${actor.label}: the focused pane leaves its note`).toHaveCount(0, { timeout: BIND_TIMEOUT });
+  await waitBodyLive(actor, docId);
+}
+
+/** Moss's app shell is still mounted: an error that escapes the editor unmounts it ("Something went wrong!"). */
+async function expectAppUp(actor: Actor, when: string): Promise<void> {
+  await expect(actor.page.locator('[data-moss-app-shell]'), `${when}: moss's app is still up`).toHaveCount(1);
 }
 
 /** Hides the notes panel and brings it back: two rerenders of the open pane with changed props. */
@@ -169,4 +197,38 @@ test('j00-persist: one doc socket holds a bound note for 60 s with no remount @s
   await ui.typeBody(ada, docId, LATER);
   await waitAcked(ada, docId);
   await expectOneOpenSocket(ada, docId, 'after typing on the held socket');
+});
+
+test('j00-persist: split navigation never shows one note in both panes, and the note stays live on one socket @p:col-6', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  await openShell(actors, 'ben');
+  await actors.requireDistinct(2);
+
+  const a = await newNote(ada);
+  await waitBodyLive(ada, a);
+  const b = await newNote(ada);
+  await waitBodyLive(ada, b);
+  await ui.typeBody(ada, b, SPLIT_TEXT);
+  await waitAcked(ada, b);
+  const c = await newNote(ada);
+  await waitBodyLive(ada, c);
+  // Each note switch closes the pane's socket before the next opens: B binds in three panes over the leg, A in two.
+  ada.expectReconnects(2, b);
+  ada.expectReconnects(1, a);
+
+  // Left C, right B. The right pane moves to A, so its history is B, A; then the left pane moves to B.
+  await openInSplit(ada, b);
+  await openFromSidebarIn(ada, b, a);
+  await openFromSidebarIn(ada, c, b);
+  await expectAppUp(ada, 'with B left and A right');
+  expect([...(await paneIds(ada))].sort(), 'B and A, each in one pane').toEqual([a, b].sort());
+
+  // The right pane's back leads to B, which the left pane shows. Moss's rule closes the split instead.
+  await ui.pane(ada, a).getByRole('button', { name: 'Go back' }).click();
+  await expect(ui.pane(ada, a), 'the split closes rather than show B twice').toHaveCount(0, { timeout: BIND_TIMEOUT });
+  await expectAppUp(ada, "after the split's back reached the left pane's note");
+  expect(await paneIds(ada), 'one pane, showing B').toEqual([b]);
+  await waitBodyLive(ada, b);
+  expect(await ui.fieldText(ada, b, 'body'), 'B still shows its text').toBe(SPLIT_TEXT);
+  expect(socketsFor(ada, b).filter((socket) => socket.closedAt === null), 'B holds one open doc socket').toHaveLength(1);
 });
