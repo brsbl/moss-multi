@@ -78,6 +78,7 @@ Read this with PRODUCT.md, your BUILDPLAN entry and the A§ it cites, before wri
 - Every note the web opens binds through `useMossMultiPane` (`host/collab/pane.tsx`), CanvasAreaContent's one seam: moss's REST hydration, autosave, disk and agent paths return early, and the editor mounts behind the skeleton until first sync. [T0.8]
 - A hand seam in a generated residual file (`MarkdownEditor.tsx`) cannot go through `extract`, whose drift precheck reverse-applies the residual patch first and fails. Record it as `extract` settles one (the `.seam.patch` generated to final, the residual patch upstream to final, `seam` in PORTED.json); `extract` must then leave the tree unchanged. [T0.8]
 - TanStack Router wraps `window.history.replaceState`, so an address change from the bridge became a route change that remounted moss's whole App (a second doc socket, the pending focus lost); the bridge writes through `History.prototype.replaceState`. [T0.8]
+- Moss's split rule is total through an `atoms.ts` seam, installed ahead of T1.6 because a split back to the left pane's note crashed the M0 app: split back or forward to the left pane's note, and any left-pane move to the split's note, closes the split. The session registry refuses a second session for a doc without throwing; the refused pane mounts no plugin and binds once the holder lets go. [T0.8]
 - Side panels `shrink-0`, the editor `flex-1 min-w-0`; a dropdown inside a dialog at the same z-index paints behind it. [L§4.1]
 
 ## Lexical and the binding

@@ -383,7 +383,7 @@
     {"path":"packages/shared/src/mocks/notes/files/daily-journal.json","pin":"762abb777","upstreamSha256":"ddcdcb3fc45a997bf63cae1dff63f2fefd95d2fa1e93e3cae9e71f515ab0a1c6","mode":"verbatim"},
     {"path":"packages/shared/src/mocks/notes/files/daily-journal.md","pin":"762abb777","upstreamSha256":"a3dea786ecf48edd27f2ad349026e10ec04cb77c112035ce42b7904f515e9ba2","mode":"verbatim"},
     {"path":"packages/shared/src/primitives.ts","pin":"762abb777","upstreamSha256":"b0f6aab9f7c8da06344f0bfee43fb2c26a77104a6bce46f6b9fa645b943dfe0e","mode":"verbatim"},
-    {"path":"packages/shared/src/state/atoms.ts","pin":"762abb777","upstreamSha256":"19288fdbbbfe1081bdeb8d491796ab1a88099bfb4935e12a67c17640740228ec","mode":"verbatim"},
+    {"path":"packages/shared/src/state/atoms.ts","pin":"762abb777","upstreamSha256":"19288fdbbbfe1081bdeb8d491796ab1a88099bfb4935e12a67c17640740228ec","mode":"patched","patch":"patches/moss/packages/shared/src/state/atoms.ts.patch"},
     {"path":"packages/shared/src/state/derived.ts","pin":"762abb777","upstreamSha256":"510fc972f0409928e8ad404ef8bfdc03453d76aaa5d582719b721dc78eedc387","mode":"verbatim"},
     {"path":"packages/shared/src/state/formula-registry-atoms.ts","pin":"762abb777","upstreamSha256":"93e8a632d70e41d24a5e1eb79ecedc31d0840be56fa1628bb45650bb71b9af44","mode":"verbatim"},
     {"path":"packages/shared/src/state/index.ts","pin":"762abb777","upstreamSha256":"5b96f3e5e9939833d822b2b95b1b19624697ebae46c5a2aa52b996220e5a9a25","mode":"verbatim"},

@@ -11,10 +11,12 @@ import {
 } from '@moss-multi/protocol/dom-contract';
 import { excludedPropertiesFor } from '@moss-multi/sync/excluded-properties';
 import { $getRoot, type EditorState, type LexicalEditor } from 'lexical';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
 import type { Doc } from 'yjs';
 import { TopBarCollab } from '../slots.tsx';
-import { openDocSession, type DocSession, type SessionState } from './doc-session.ts';
+import {
+  docOwner, openDocSession, subscribeDocOwners, type DocSession, type SessionState,
+} from './doc-session.ts';
 import { localIdentity } from './presence.ts';
 import { useTerminal } from './terminal.ts';
 
@@ -138,14 +140,21 @@ function BindingGate({ binding }: { binding: PaneBinding }): null {
   return null;
 }
 
-/** The vendored V1 plugin with this pane's session, in its own collaboration context (A§10.1: never shared). */
+/**
+ * The vendored V1 plugin with this pane's session, in its own collaboration context (A§10.1: never shared). While
+ * another pane of the tab holds the doc, this pane mounts no plugin and stays closed; it binds once the doc is free.
+ */
 function DocBinding({ docId, binding }: { docId: string; binding: PaneBinding }): ReactNode {
   const [editor] = useLexicalComposerContext();
   const [excluded] = useState(() => excludedPropertiesFor(editor));
   const [identity] = useState(localIdentity);
+  const owner = useSyncExternalStore(subscribeDocOwners, () => docOwner(docId));
   const providerFactory = useCallback(
     (id: string, docMap: Map<string, Doc>): Provider => {
-      const session = openDocSession(id);
+      const session = openDocSession(id, binding);
+      // Refused when another pane took the doc in the same commit: the plugin renders nothing without a provider,
+      // and the owner gate above unmounts it until the doc is free.
+      if (!session) return undefined as unknown as Provider;
       docMap.set(id, session.doc);
       binding.attach(session);
       return session.provider as unknown as Provider;
@@ -154,15 +163,17 @@ function DocBinding({ docId, binding }: { docId: string; binding: PaneBinding })
   );
   return (
     <LexicalCollaboration>
-      <CollaborationPlugin
-        id={docId}
-        providerFactory={providerFactory}
-        shouldBootstrap={false}
-        username={identity.name}
-        cursorColor={identity.color}
-        awarenessData={identity.awarenessData}
-        excludedProperties={excluded}
-      />
+      {owner === null || owner === binding ? (
+        <CollaborationPlugin
+          id={docId}
+          providerFactory={providerFactory}
+          shouldBootstrap={false}
+          username={identity.name}
+          cursorColor={identity.color}
+          awarenessData={identity.awarenessData}
+          excludedProperties={excluded}
+        />
+      ) : null}
       <BindingGate binding={binding} />
     </LexicalCollaboration>
   );

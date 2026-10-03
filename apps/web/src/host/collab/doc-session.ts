@@ -50,9 +50,25 @@ function covered(local: Map<number, number>, acked: Map<number, number>): boolea
 
 const shareToken = (): string | null => new URLSearchParams(window.location.search).get('share');
 
-/** The tab's sessions by doc id, and by provider for the plugin's teardown. */
-const sessions = new Map<string, DocSession>();
+/** The tab's sessions by doc id with the pane holding each, and by provider for the plugin's teardown. */
+const held = new Map<string, { session: DocSession; owner: object }>();
 const byProvider = new WeakMap<object, DocSession>();
+const ownerListeners = new Set<() => void>();
+
+function ownersChanged(): void {
+  for (const listener of ownerListeners) listener();
+}
+
+/** Calls `listener` whenever a doc is taken or released in this tab; returns the unsubscriber. */
+export function subscribeDocOwners(listener: () => void): () => void {
+  ownerListeners.add(listener);
+  return () => ownerListeners.delete(listener);
+}
+
+/** The pane holding `docId` in this tab, or null. */
+export function docOwner(docId: string): object | null {
+  return held.get(docId)?.owner ?? null;
+}
 
 export class DocSession {
   readonly doc = new Y.Doc();
@@ -98,7 +114,10 @@ export class DocSession {
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
-    if (sessions.get(this.docId) === this) sessions.delete(this.docId);
+    if (held.get(this.docId)?.session === this) {
+      held.delete(this.docId);
+      ownersChanged();
+    }
     this.#listeners.clear();
     const { awareness } = this.provider;
     awareness.setLocalState(null);
@@ -128,18 +147,25 @@ export class DocSession {
   }
 }
 
-/** A new session for `docId`; a second session for a doc this tab already holds is refused loudly (A§10.1). */
-export function openDocSession(docId: string): DocSession {
-  if (sessions.has(docId)) throw new Error(`moss-multi: ${docId} is already open in this tab`);
+/**
+ * A new session for `docId`, held by the pane `owner`, or null while another pane of this tab holds the doc. The
+ * refusal never throws (A§10.1): the refused pane stays closed until the holder lets go.
+ */
+export function openDocSession(docId: string, owner: object): DocSession | null {
+  if (held.has(docId)) return null;
   const session = new DocSession(docId);
-  sessions.set(docId, session);
+  held.set(docId, { session, owner });
   byProvider.set(session.provider, session);
+  ownersChanged();
   return session;
 }
 
-/** Seam (d) of the vendored plugin: its provider effect's cleanup tears the session down and clears the doc map. */
-export function releaseProvider(docId: string, provider: object, docMap: Map<string, Y.Doc>): void {
-  const session = byProvider.get(provider);
+/**
+ * Seam (d) of the vendored plugin: its provider effect's cleanup tears the session down and clears the doc map. A
+ * refused pane's plugin has no provider.
+ */
+export function releaseProvider(docId: string, provider: object | undefined, docMap: Map<string, Y.Doc>): void {
+  const session = provider && byProvider.get(provider);
   if (!session) return;
   if (docMap.get(docId) === session.doc) docMap.delete(docId);
   session.dispose();

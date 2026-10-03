@@ -386,6 +386,9 @@ export const activeNoteIdAtom = atom(
   (get, set, update: string | null | ((prev: string | null) => string | null)) => {
     const nextValue = typeof update === 'function' ? update(get(baseActiveNoteIdAtom)) : update;
     set(baseActiveNoteIdAtom, nextValue);
+    // moss-multi seam: one-doc-split (A§10.1): the left pane moving to the split's note closes the split, as moss's
+    // sidebar already does, whatever the path (back, forward, a link).
+    if (nextValue && nextValue === get(splitTabNoteIdAtom)) set(closeSplitTabAtom);
 
     if (!nextValue) {
       return;
@@ -809,6 +812,11 @@ export const splitGoBackAtom = atom(null, (get, set) => {
   const newIndex = hist.index - 1;
   const targetNoteId = hist.stack[newIndex];
   if (targetNoteId) {
+    // moss-multi seam: one-doc-split (A§10.1): back to the left pane's note closes the split, as moss's sidebar does
+    if (targetNoteId === get(activeNoteIdAtom)) {
+      set(closeSplitTabAtom);
+      return;
+    }
     if (hist.headings) {
       set(pendingScrollTargetAtom, {
         noteId: targetNoteId,
@@ -827,6 +835,11 @@ export const splitGoForwardAtom = atom(null, (get, set) => {
   const newIndex = hist.index + 1;
   const targetNoteId = hist.stack[newIndex];
   if (targetNoteId) {
+    // moss-multi seam: one-doc-split (A§10.1): forward to the left pane's note closes the split, as moss's sidebar does
+    if (targetNoteId === get(activeNoteIdAtom)) {
+      set(closeSplitTabAtom);
+      return;
+    }
     if (hist.headings) {
       set(pendingScrollTargetAtom, {
         noteId: targetNoteId,
