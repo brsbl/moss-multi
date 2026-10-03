@@ -134,6 +134,8 @@ function closeRoot(root: HTMLElement | null, state: BindingState): void {
     root.removeAttribute('aria-disabled');
     return;
   }
+  const focused = root.ownerDocument.activeElement;
+  if (focused instanceof HTMLElement && root.contains(focused)) focused.blur();
   root.removeAttribute('tabindex');
   root.setAttribute('aria-disabled', 'true');
 }

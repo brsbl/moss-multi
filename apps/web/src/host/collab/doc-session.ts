@@ -240,6 +240,13 @@ export class DocSession {
         return share ? { share } : {};
       },
     });
+    // An async params lookup cannot reopen a session that ended while it was in flight.
+    let intent = this.provider.shouldConnect;
+    Object.defineProperty(this.provider, 'shouldConnect', {
+      configurable: true,
+      get: () => intent && !this.#ended && !this.#disposed,
+      set: (value: boolean) => { intent = value; },
+    });
     broadcastAwarenessOnUpdate(this.provider);
     closeNormally(this.provider, () => this.#lingering);
     this.provider.on('status', ({ status }: { status: string }) => {

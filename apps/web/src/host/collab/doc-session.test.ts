@@ -93,3 +93,10 @@ it('the first-sync deadline leaves the doc closed and sign-out stops every socke
   expect(terminalOf('doc')).toBe('session-ended');
   expect(session.provider.shouldConnect).toBe(false);
 });
+
+it('a connect requested after a terminal close cannot reopen it', async () => {
+  latest().open(); latest().ended(4410);
+  await session.provider.connect();
+  expect(session.provider.shouldConnect).toBe(false);
+  expect(sockets).toHaveLength(1);
+});

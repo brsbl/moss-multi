@@ -197,6 +197,8 @@ test('j03-connection: a black-holed socket shows the banner within 14 s while th
   await ui.typeBody(ada, docId, MEANWHILE);
   await waitAcked(ada, docId);
   await expect(ui.pane(bea, docId), 'the offline edit waits in the window').toHaveAttribute(SYNC_UNACKED_ATTR, '1');
+  await bea.page.evaluate(() => window.dispatchEvent(new Event('vite:preloadError', { cancelable: true })));
+  await expect(ui.pane(bea, docId)).toHaveAttribute(SYNC_UNACKED_ATTR, '1');
   await actors.checkpoint('black-hole-banner');
   // The first socket, its heartbeat reconnect into the black hole, and at most one more before the restore.
   bea.expectReconnects(2, docId);
@@ -364,4 +366,38 @@ test('j03-connection: a 51st connection goes terminal conn-limit with a Retry th
   } finally {
     await held.close();
   }
+});
+
+
+test('j03-connection: a refused write rebinds fresh and a deleted doc locks in place @p:col-4', async ({ actors }) => {
+  const shared = await sharedNote(actors, 'The server keeps this sentence');
+  const { docId } = shared;
+  const bea = await secondWindow(actors, shared, true);
+  await actors.requireDistinct(2);
+  await waitBodyLive(bea, docId);
+  await bea.observeEditor(docId);
+  const sever = bea.sever;
+  if (!sever) throw new Error('missing sever');
+  sever.blackhole();
+  // Intentionally rejected text is not registered as a durability promise.
+  const body = ui.body(bea, docId);
+  await body.click();
+  await body.press('End');
+  await body.pressSequentially(' rejected change');
+  await expect(body).toContainText('rejected change');
+  bea.expectReconnects(1, docId);
+  sever.reset(4409);
+  sever.restore();
+  await expect.poll(() => bodyText(bea, docId), { timeout: RECOVER_TIMEOUT }).toBe('The server keeps this sentence');
+  await waitBodyLive(bea, docId);
+  await expectNoRemount(bea, docId, 'refusal replaces the binding, not the editor');
+  await ui.typeBody(bea, docId, ' and writing works again');
+  await waitAcked(bea, docId);
+  await expect.poll(() => bodyText(shared.ada, docId)).toBe('The server keeps this sentence and writing works again');
+  sever.reset(4410);
+  await expect(ui.pane(bea, docId)).toHaveAttribute(TERMINAL_REASON_ATTR, 'deleted');
+  await expect(body).toHaveAttribute(BODY_BINDING_ATTR, 'terminal');
+  await expect(body).toHaveAttribute('contenteditable', 'false');
+  await expect(banner(bea, docId)).toHaveAttribute(CONNECTION_BANNER_ATTR, 'deleted');
+  await expectNoRemount(bea, docId, 'terminal state keeps the content in place');
 });
