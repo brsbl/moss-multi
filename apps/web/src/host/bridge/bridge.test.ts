@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { knownRole } from '../access.ts';
-import { createBridge, docIdFromPath } from './index.ts';
+import { createBridge, docIdFromPath, WORKSPACE } from './index.ts';
 
 const LISTING = {
   vault: { id: 'v1', name: 'Home' },
@@ -120,7 +120,7 @@ it('switches the listing without losing an open note, persists the vault and cre
   await api.notes.getAll();
   const changed = vi.fn();
   api.notes.onDiskChange(changed);
-  await api.workspace.switchVault('v2');
+  await api[WORKSPACE].switchVault('v2');
   expect(changed).toHaveBeenCalledWith([], []);
   expect((await api.notes.getAll()).map((note) => note.id)).toEqual(['s2']);
   expect(await api.notes.getById('d1')).toMatchObject({ id: 'd1' });
@@ -137,7 +137,7 @@ it('keeps the last successful vault after a failed switch', async () => {
     ? new Response('{}', { status: 503 }) : Response.json(LISTING));
   const api = createBridge({ pathname: () => '/', fetch });
   await api.notes.getAll();
-  await expect(api.workspace.switchVault('broken')).rejects.toThrow('503');
-  expect(api.workspace.getSnapshot()?.vault.id).toBe('v1');
+  await expect(api[WORKSPACE].switchVault('broken')).rejects.toThrow('503');
+  expect(api[WORKSPACE].getSnapshot()?.vault.id).toBe('v1');
   expect((await api.notes.getAll()).map((note) => note.id)).toEqual(['d1']);
 });

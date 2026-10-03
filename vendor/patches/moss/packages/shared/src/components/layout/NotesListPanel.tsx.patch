@@ -3,7 +3,7 @@ diff --git a/packages/shared/src/components/layout/NotesListPanel.tsx b/packages
 +++ b/packages/shared/src/components/layout/NotesListPanel.tsx
 @@ -1,8 +1,12 @@
 +// moss-multi seam: the web vault selector occupies the native drag row.
-+import { VaultSwitcher } from '@moss-multi/host/slots';
++import { VaultSwitcher } from '@moss-multi/host/surfaces/VaultSwitcher';
  import * as React from 'react';
  import { Search, X, PanelLeft, Plus } from 'lucide-react';
  import { KeyboardShortcut } from '@/components/ui/keyboard-shortcut';

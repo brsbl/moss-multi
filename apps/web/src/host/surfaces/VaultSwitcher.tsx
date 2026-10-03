@@ -5,7 +5,7 @@ import { activeFolderPathAtom } from '@moss/shared/state/atoms';
 import { Check, ChevronDown, FolderRoot } from 'lucide-react';
 import { Button } from '@moss/shared/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@moss/shared/components/ui/dropdown-menu';
-import { getBridge, type Bridge } from '../bridge/index.ts';
+import { getBridge, WORKSPACE, type Bridge } from '../bridge/index.ts';
 
 export function VaultSwitcher() {
   const bridge = getBridge();
@@ -13,7 +13,7 @@ export function VaultSwitcher() {
 }
 
 function VaultMenu({ bridge }: { bridge: Bridge }) {
-  const workspace = useSyncExternalStore(bridge.workspace.subscribe, bridge.workspace.getSnapshot);
+  const workspace = useSyncExternalStore(bridge[WORKSPACE].subscribe, bridge[WORKSPACE].getSnapshot);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   if (!workspace) return null;
@@ -21,7 +21,7 @@ function VaultMenu({ bridge }: { bridge: Bridge }) {
     setPending(true);
     setError(null);
     try {
-      await bridge.workspace.switchVault(id);
+      await bridge[WORKSPACE].switchVault(id);
       getDefaultStore().set(activeFolderPathAtom, 'Notes');
     } catch {
       setError('Could not switch vaults. Please try again.');

@@ -31,6 +31,9 @@ export interface ApiDoc {
   surfaced?: boolean;
 }
 
+/** Host-only controller, kept outside the ElectronAPI namespace inventory. */
+export const WORKSPACE = Symbol('workspace');
+
 export interface Vault { id: string; name: string; role?: string; owned?: boolean }
 export interface WorkspaceFolder { id: string; name: string; path: string; surfaced: boolean; createdAt: number; noteCount: number }
 /** `GET /api/workspace`: the active vault and its docs. */
@@ -204,7 +207,7 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
   const docUrl = (id: string) => new URL(`/d/${encodeURIComponent(id)}`, browser.origin).href;
 
   return {
-    workspace: {
+    [WORKSPACE]: {
       getSnapshot: () => workspaceSnapshot,
       subscribe: (listener: () => void) => {
         workspaceListeners.add(listener);

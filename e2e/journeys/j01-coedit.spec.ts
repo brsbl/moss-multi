@@ -216,7 +216,7 @@ test('j01 discovery: Ben finds a directly shared note in Home without a URL or m
   await waitBodyLive(ben, docId);
   await expect(ben.page.getByRole('button', { name: 'Vault: Home', exact: true })).toBeVisible();
   await row.click({ button: 'right' });
-  await expect(ben.page.getByRole('menuitem', { name: 'Copy link', exact: true })).toBeVisible();
+  await expect(ben.page.getByRole('menuitem', { name: 'Copy Link', exact: true })).toBeVisible();
   await expect(ben.page.getByRole('menuitem', { name: /Move|New folder|Create folder/ })).toHaveCount(0);
   await ben.page.keyboard.press('Escape');
   await actors.checkpoint('discovered-in-home');

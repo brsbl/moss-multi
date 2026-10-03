@@ -40,7 +40,8 @@ it('surfaces a directly shared doc at Home without disclosing its parent or unre
 
 it('surfaces shared folders with collision-free paths, includes descendants, and never invents inaccessible ancestors', async () => {
   const first = await insertFolder(d1.db, ada, ada.homeId);
-  const second = await insertFolder(d1.db, ada, ada.homeId);
+  const otherParent = await insertFolder(d1.db, ada, ada.homeId);
+  const second = await insertFolder(d1.db, ada, otherParent);
   const own = await insertFolder(d1.db, ben, ben.homeId);
   await d1.db.prepare('UPDATE folders SET name = ? WHERE id IN (?, ?, ?)').bind('Same', first, second, own).run();
   const child = await insertFolder(d1.db, ada, first);
