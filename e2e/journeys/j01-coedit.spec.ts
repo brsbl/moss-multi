@@ -200,3 +200,54 @@ test('j01 access: a viewer reads the shared note but cannot share, write through
   await expect(ui.body(ben, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'readonly');
   expect(await ui.fieldText(ben, docId, 'body')).toBe(ADA_TEXT);
 });
+
+test('j01 discovery: Ben finds a directly shared note in Home without a URL or mutation actions @p:note-4 @p:ppl-2 @evidence', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  const benPrincipal = await actors.principal('ben');
+  const docId = await newNote(ada);
+  await waitBodyLive(ada, docId);
+  await ui.shareWith(ada, docId, benPrincipal, 'Can edit');
+  await ada.page.keyboard.press('Escape');
+  const ben = await actors.open(benPrincipal);
+  const row = ben.page.locator(`[data-sidebar-row][data-doc-id="${docId}"]`);
+  await expect(row).toBeVisible();
+  await expect(ben.page.getByRole('button', { name: 'Vault: Home', exact: true })).toBeVisible();
+  await row.click();
+  await waitBodyLive(ben, docId);
+  await expect(ben.page.getByRole('button', { name: 'Vault: Home', exact: true })).toBeVisible();
+  await row.click({ button: 'right' });
+  await expect(ben.page.getByRole('menuitem', { name: 'Copy link', exact: true })).toBeVisible();
+  await expect(ben.page.getByRole('menuitem', { name: /Move|New folder|Create folder/ })).toHaveCount(0);
+  await ben.page.keyboard.press('Escape');
+  await actors.checkpoint('discovered-in-home');
+});
+
+test('j01 discovery: Ben switches to a shared vault and back, with a role badge and a persisted choice @p:note-4 @evidence', async ({ actors, stack }) => {
+  const ada = await openShell(actors, 'ada');
+  const benPrincipal = await actors.principal('ben');
+  const docId = await newNote(ada);
+  await waitBodyLive(ada, docId);
+  const { vault } = await (await ada.context.request.get('/api/workspace')).json();
+  const grant = await ada.context.request.post(`/api/folders/${vault.id}/members`, {
+    headers: { origin: stack.baseUrl }, data: { email: benPrincipal.email, role: 'editor' },
+  });
+  expect(grant.status()).toBe(201);
+  const ben = await actors.open(benPrincipal);
+  const switcher = ben.page.getByRole('button', { name: 'Vault: Home', exact: true });
+  await switcher.click();
+  const shared = ben.page.getByRole('menuitem', { name: 'Home editor', exact: true });
+  await expect(shared).toBeVisible();
+  await expect(ben.page.getByRole('menuitem', { name: /New vault|Share vault|Rename|Delete/ })).toHaveCount(0);
+  await shared.click();
+  const row = ben.page.locator(`[data-sidebar-row][data-doc-id="${docId}"]`);
+  await expect(row).toBeVisible();
+  await ben.page.reload();
+  await expect(row).toBeVisible();
+  await row.click();
+  await waitBodyLive(ben, docId);
+  await switcher.click();
+  await ben.page.getByRole('menuitem', { name: 'Home', exact: true }).click();
+  await expect(row).toHaveCount(0);
+  await expect(ui.pane(ben, docId)).toBeVisible();
+  await actors.checkpoint('switched-back-with-doc-open');
+});
