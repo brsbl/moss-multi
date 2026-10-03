@@ -153,14 +153,14 @@ test('accepts no input: nothing is editable and typing, Enter, Backspace and a c
   expect(seen.pageErrors).toEqual([]);
 });
 
-test('reaches the network only through the injected services: media, links and embeds; no socket, no write', async ({ page }) => {
+test('reaches the network only through the injected services: media, links and embeds; no socket, no write', async ({ page, browserName }) => {
   const seen = watch(page);
   await mount(page);
   const viewer = page.locator('[data-moss-viewer]');
   const body = viewer.locator('[data-moss-note-editor-root]');
   const pill = (text: string) => body.locator('[data-file-link-node-key]').filter({ hasText: new RegExp(`^${text}$`) });
 
-  // Media: the image and the video come from the URLs assetUrl returned, the video over HTTP Range.
+  // Media: the image and the video come from the URLs assetUrl returned.
   const image = body.locator('img[alt="Sunflower gradient"]');
   await image.scrollIntoViewIfNeeded();
   await expect(image).toHaveAttribute('src', '/svc/assets/sunflower.png');
@@ -169,7 +169,11 @@ test('reaches the network only through the injected services: media, links and e
   await video.scrollIntoViewIfNeeded();
   await video.locator('[data-video-play-overlay]').locator('..').click();
   await expect(body.locator('video')).toHaveAttribute('src', /^\/svc\/assets\/drawer\.webm/);
-  await expect.poll(() => server.media.filter((request) => request.path === '/svc/assets/drawer.webm' && request.range !== null && request.status === 206).length).toBeGreaterThan(0);
+  const clip = () => server.media.filter((request) => request.path === '/svc/assets/drawer.webm' && (request.status === 200 || request.status === 206));
+  await expect.poll(() => clip().length).toBeGreaterThan(0);
+  // Chromium asks for byte ranges from the first load and the service answers 206; WebKit's GStreamer fetches a
+  // small file whole and asks for ranges only when it seeks.
+  if (browserName === 'chromium') expect(clip().filter((request) => request.range !== null && request.status === 206)).not.toEqual([]);
 
   // Posts: moss's card asks the unfurl service, and its provider frame is X's.
   await expect.poll(async () => (await calls(page)).unfurl).toContain(POST);

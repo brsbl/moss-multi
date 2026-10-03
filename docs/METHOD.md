@@ -84,6 +84,14 @@ Read this with PRODUCT.md, your BUILDPLAN entry and the A§ it cites, before wri
 - Moss's split rule is total through an `atoms.ts` seam, installed ahead of T1.6 because a split back to the left pane's note crashed the M0 app: split back or forward to the left pane's note, and any left-pane move to the split's note, closes the split. The session registry refuses a second session for a doc without throwing; the refused pane mounts no plugin and binds once the holder lets go. [T0.8]
 - Side panels `shrink-0`, the editor `flex-1 min-w-0`; a dropdown inside a dialog at the same z-index paints behind it. [L§4.1]
 
+## The read-only viewer (T0.13)
+
+- `packages/viewer` mounts moss's MarkdownEditor with `readOnly` and its own Jotai store, as moss's PdfExportApp does; the note file goes through moss's `disassembleNote`, so the leading H1 is the title and the body never paints it. Each viewer renders under a unique note id, which routes moss's media and preview calls (`toDisplaySrc(src, noteId)`, `webEmbedPreview.ensure({noteId})`) to that viewer's services.
+- It is an app build of a script entry, not library mode: Vite's library mode inlines every font into the stylesheet as `data:` URLs. `base: './'` keeps asset URLs relative to the bundle.
+- Its substitutes load under the vendored path, so they import by alias: `@moss-viewer/<module>`, and moss's own bytes as `@moss-pristine/<name>` (the vendored file with `?pristine`, which the substitution skips).
+- A read-only moss editor at the pin still edited its tab bar (add, options, rename, reorder); the `read-only-tabs` seam gates them on `editor.isEditable()`, as moss already gated tab resize. Media headers still render Delete in read-only views, re-guarded inert (T2.6 hides them).
+- `-f lane=viewer` dispatches the viewer job alone: it builds the bundle (the `moss-viewer` artifact: bundle, stylesheet, fonts, `viewer.json`) and runs `e2e/viewer` in both engines, with X's embed frame answered by a stand-in.
+
 ## Lexical and the binding
 
 - `HISTORIC_TAG` updates never replicate: exclude writes from undo by origin, never by tag. [L§4.3]
