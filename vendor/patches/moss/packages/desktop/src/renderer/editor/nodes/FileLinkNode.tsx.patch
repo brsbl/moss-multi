@@ -3,7 +3,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/FileLinkNode.tsx b/packa
 +++ b/packages/desktop/src/renderer/editor/nodes/FileLinkNode.tsx
 @@ -1,4 +1,6 @@
  import type { JSX } from 'react';
-+// moss-multi seam: resolution depends on the viewer's access.
++// moss-multi seam: local-view (A§10): resolution depends on the viewer's access.
 +import { useNodeView } from '@moss-multi/host/collab/view-state';
  import {
    $applyNodeReplacement,

@@ -2,7 +2,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/ColorCodePlugin.tsx b/
 --- a/packages/desktop/src/renderer/editor/plugins/ColorCodePlugin.tsx
 +++ b/packages/desktop/src/renderer/editor/plugins/ColorCodePlugin.tsx
 @@ -1,3 +1,5 @@
-+// moss-multi seam: only the author converts local text; hydration is already normalized.
++// moss-multi seam: local-view (A§10): only the author converts local text; hydration is already normalized.
 +import { isBoundEditor } from '@moss-multi/host/collab/view-state';
  /**
   * ColorCodePlugin – first-class inline color pills.

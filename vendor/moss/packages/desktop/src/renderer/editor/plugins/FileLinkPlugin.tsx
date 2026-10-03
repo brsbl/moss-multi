@@ -1,5 +1,5 @@
 // ported-from: packages/desktop/src/renderer/editor/plugins/FileLinkPlugin.tsx @ 762abb777
-// moss-multi seam: access-dependent resolution is local paint, never a tree write.
+// moss-multi seam: local-view (A§10): access-dependent resolution is local paint, never a tree write.
 import { $isBoundEditor, setNodeView } from '@moss-multi/host/collab/view-state';
 import { useEffect, useCallback, useState, useRef } from 'react';
 import { createPortal } from 'react-dom';

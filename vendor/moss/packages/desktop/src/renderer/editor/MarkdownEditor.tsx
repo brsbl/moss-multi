@@ -1779,14 +1779,14 @@ function FloatingSelectionTools({
   useEffect(() => {
     const update = () => {
       const active = document.activeElement;
-      setEditorFocused(!!active && (!!editor.getRootElement()?.contains(active) || !!floatingToolbarRef.current?.contains(active)));
+      setEditorFocused(!!active && (!!editor.getRootElement()?.contains(active) || !!active.closest(`[data-toolbar-note="${noteId}"]`)));
     };
     const blur = () => queueMicrotask(update);
     document.addEventListener('focusin', update);
     document.addEventListener('focusout', blur);
     update();
     return () => { document.removeEventListener('focusin', update); document.removeEventListener('focusout', blur); };
-  }, [editor]);
+  }, [editor, noteId]);
 
   // Scroll tracking — hide floating bar while scrolling
   const [isScrolling, setIsScrolling] = useState(false);
@@ -3653,6 +3653,7 @@ function FloatingSelectionTools({
           <SelectionToolbarShell
             ref={floatingToolbarRef}
             style={floatingBarStyle}
+            data-toolbar-note={noteId}
             data-floating-selection-toolbar="true"
           >
             <SelectionToolbarInner>
@@ -3683,11 +3684,12 @@ function FloatingSelectionTools({
         </TooltipProvider>
       )}
       {/* Bottom bar — shown when NO text is selected (also hidden during scroll with active selection to prevent flash) */}
-      {shouldRenderToolbarForPane && !showFloatingBar && !(selectionState.isActive && isScrolling) && (
+      {shouldRenderToolbarForPane && (editorFocused || fontDropdownOpen || headingDropdownOpen || highlightDropdownOpen || listDropdownOpen) && !showFloatingBar && !(selectionState.isActive && isScrolling) && (
         <TooltipProvider delayDuration={200}>
           <div
             className="pointer-events-none fixed bottom-6 z-50 -translate-x-1/2 flex flex-col items-center gap-2 px-4"
             style={bottomToolbarStyle}
+            data-toolbar-note={noteId}
             data-floating-selection-toolbar="true" // moss-multi seam: toolbar-contract (A§19): moss's own bottom toolbar
           >
             <div ref={portalRef} className="w-full max-w-lg empty:hidden" />

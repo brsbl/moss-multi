@@ -1,5 +1,5 @@
 // ported-from: packages/desktop/src/renderer/editor/MathCalculationPlugin.tsx @ 762abb777
-// moss-multi seam: local computed paint never becomes document content.
+// moss-multi seam: local-view (A§10): local computed paint never becomes document content.
 import { $isBoundEditor, isBoundEditor, setNodeView } from '@moss-multi/host/collab/view-state';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAtomValue } from 'jotai';
@@ -1281,7 +1281,7 @@ export function MathCalculationPlugin({
     }
 
     if (isBoundEditor(editor)) {
-      editor.getEditorState().read(() => applyWorkspaceResultsToEditor(noteId, evaluation as FormulaWorkspaceEvaluation));
+      editor.getEditorState().read(() => applyWorkspaceResultsToEditor(noteId, evaluation as FormulaWorkspaceEvaluation), { editor });
       return;
     }
     if (!editor.isEditable()) return;

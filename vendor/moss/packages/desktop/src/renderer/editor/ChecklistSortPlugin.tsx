@@ -18,7 +18,7 @@ import { EDITOR_UPDATE_TAGS } from './utils/editorUpdateTags';
 const SORT_DELAY_MS = 50;
 const CHECKLIST_SORT_IGNORED_TAGS = new Set<string>([
   'history-merge',
-  // moss-multi seam: never sort a peer's update a second time.
+  // moss-multi seam: local-view (A§10): never sort a peer's update a second time.
   'collaboration',
   EDITOR_UPDATE_TAGS.ignored.agentContentUpdate,
 ]);

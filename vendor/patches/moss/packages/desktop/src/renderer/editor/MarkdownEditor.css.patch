@@ -6,8 +6,8 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.css b/packages/
    display: block;
  }
 +
-+/* moss-multi seam: formula drafts are local paint, without splitting shared text. */
++/* moss-multi seam: local-view (A§10): formula drafts are local paint, without splitting shared text. */
 +::highlight(formula-draft) {
-+  background-color: var(--surface-panel);
-+  color: var(--ink-default);
++  background-color: theme('colors.surface-panel');
++  color: theme('colors.ink-default');
 +}

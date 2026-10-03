@@ -1,5 +1,5 @@
 // ported-from: packages/desktop/src/renderer/prompt/CommandPaletteOverlay.tsx @ 762abb777
-// moss-multi seam: an empty prompt routes undo to the focused note.
+// moss-multi seam: local-view (A§10): an empty prompt routes undo to the focused note.
 import { undoFromEmptyPrompt } from '@moss-multi/host/collab/undo';
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import { createPortal } from 'react-dom';

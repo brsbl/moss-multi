@@ -3,7 +3,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/FormulaNode.tsx b/packag
 +++ b/packages/desktop/src/renderer/editor/nodes/FormulaNode.tsx
 @@ -1,4 +1,6 @@
  import type { JSX } from 'react';
-+// moss-multi seam: computed values paint locally, outside the shared node.
++// moss-multi seam: local-view (A§10): computed values paint locally, outside the shared node.
 +import { useNodeView } from '@moss-multi/host/collab/view-state';
  import {
    $applyNodeReplacement,

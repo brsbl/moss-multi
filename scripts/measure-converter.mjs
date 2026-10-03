@@ -41,7 +41,7 @@ const ALIASES = [
 const aliasPlugin = {
   name: 'moss-aliases',
   setup(build) {
-    build.onResolve({ filter: /^@(moss\/shared|moss-desktop\/|\/)/ }, async (args) => {
+    build.onResolve({ filter: /^@(moss\/shared|moss-desktop\/|moss-multi\/host\/|\/)/ }, async (args) => {
       for (const [pattern, target] of ALIASES) {
         if (!pattern.test(args.path)) continue;
         const path = args.path.replace(pattern, target);

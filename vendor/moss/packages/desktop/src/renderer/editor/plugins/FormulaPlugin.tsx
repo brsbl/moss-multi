@@ -1,5 +1,5 @@
 // ported-from: packages/desktop/src/renderer/editor/plugins/FormulaPlugin.tsx @ 762abb777
-// moss-multi seam: edit-session identity stays in the existing local map.
+// moss-multi seam: local-view (A§10): edit-session identity stays in the existing local map.
 import { $isBoundEditor } from '@moss-multi/host/collab/view-state';
 /**
  * FormulaPlugin - Keyboard navigation for formula nodes

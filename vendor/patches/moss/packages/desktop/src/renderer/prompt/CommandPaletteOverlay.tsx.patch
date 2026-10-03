@@ -2,7 +2,7 @@ diff --git a/packages/desktop/src/renderer/prompt/CommandPaletteOverlay.tsx b/pa
 --- a/packages/desktop/src/renderer/prompt/CommandPaletteOverlay.tsx
 +++ b/packages/desktop/src/renderer/prompt/CommandPaletteOverlay.tsx
 @@ -1,3 +1,5 @@
-+// moss-multi seam: an empty prompt routes undo to the focused note.
++// moss-multi seam: local-view (A§10): an empty prompt routes undo to the focused note.
 +import { undoFromEmptyPrompt } from '@moss-multi/host/collab/undo';
  import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
  import { createPortal } from 'react-dom';

@@ -1,6 +1,6 @@
 // ported-from: packages/desktop/src/renderer/editor/nodes/FormulaNode.tsx @ 762abb777
 import type { JSX } from 'react';
-// moss-multi seam: computed values paint locally, outside the shared node.
+// moss-multi seam: local-view (A§10): computed values paint locally, outside the shared node.
 import { useNodeView } from '@moss-multi/host/collab/view-state';
 import {
   $applyNodeReplacement,
