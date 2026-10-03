@@ -1,11 +1,12 @@
 // The DocDO core in the Node harness (BUILDPLAN T0.7; A§5.1): replay, chunking, compaction identity, the seed,
 // admission, the write classifier with loud refusal, acks, limits and the RPC guard.
-import { $getRoot } from 'lexical';
+import { $createParagraphNode, $createTextNode, $getRoot } from 'lexical';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as Y from 'yjs';
 import { base64ToBytes, CLOSE } from '@moss-multi/protocol/sync';
 import { exportMarkdown, importMarkdown } from '../../src/converter/index.ts';
 import { DocDO } from '../../src/doc-do.ts';
+import { serverWrite } from '../../src/server-doc.ts';
 import { Backing, bindLexical, blockTypes, connect, counts, openDoc, start, wake, type Opened, type TestClient } from './do-harness.ts';
 
 const CHUNK = 1.5 * 1024 * 1024;
@@ -61,6 +62,22 @@ describe('seed', () => {
 
 describe('server writes', () => {
   const MARKDOWN = '## Plan\n\nA *first* paragraph with a [link](https://example.invalid).\n\n- one\n- two\n';
+
+  it('hydrates the persisted tree before a server write without normalizing its formatting', () => {
+    const doc = new Y.Doc();
+    const lexical = bindLexical(doc);
+    lexical.editor.update(() => {
+      $getRoot().append($createParagraphNode().append($createTextNode(' padded ').toggleFormat('bold')));
+    }, { discrete: true });
+    const before = Y.encodeStateAsUpdate(doc);
+    let hydrated: { text: string; bold: boolean }[] = [];
+    serverWrite(doc, 'probe', () => {
+      hydrated = $getRoot().getAllTextNodes().map((node) => ({ text: node.getTextContent(), bold: node.hasFormat('bold') }));
+    });
+    expect(hydrated).toEqual([{ text: ' padded ', bold: true }]);
+    expect(Y.encodeStateAsUpdate(doc)).toEqual(before);
+    doc.destroy();
+  });
 
   it('imports a created body through the one converter, once', async () => {
     const opened = await start(openDoc());
@@ -120,6 +137,17 @@ describe('server writes', () => {
     await expect(opened.dobj.create({ folderId: 'folder-1', ownerId: 'user-1', markdown: 'word '.repeat(4_000) })).rejects.toThrow('doc-cap');
     expect(blockTypes(opened.dobj.document)).toEqual(['paragraph']);
     expect((await opened.dobj.exportMarkdown()).trim()).toBe('');
+  });
+
+  it('counts imported frontmatter in admission and refuses the entire file together', async () => {
+    class SmallDoc extends DocDO {
+      static override limits = { ...DocDO.limits, stateCapBytes: 4 * 1024 };
+    }
+    const opened = await start(openDoc(new Backing(), SmallDoc as never));
+    const before = Y.encodeStateAsUpdate(opened.dobj.document);
+    const markdown = `---\nlarge: ${'x'.repeat(5_000)}\n---\n\nSmall body`;
+    await expect(opened.dobj.create({ folderId: 'folder', ownerId: 'owner', markdown })).rejects.toThrow('doc-cap');
+    expect(Y.encodeStateAsUpdate(opened.dobj.document)).toEqual(before);
   });
 });
 
