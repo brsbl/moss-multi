@@ -4102,8 +4102,14 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
     setEditorReadyForFocusNoteId(note?.id ?? null);
 
     let skippedBootstrapUpdate = false;
-    if (!mossMultiPane.bound) editorUpdateUnregisterRef.current = editor.registerUpdateListener( // moss-multi seam: bound-pane (A§2.2)
+    editorUpdateUnregisterRef.current = editor.registerUpdateListener(
       ({ dirtyElements, dirtyLeaves, tags }) => {
+        // moss-multi seam: bound-pane (A§2.2): the binding persists a bound note, so no dirty state and no autosave;
+        // every update, local or a peer's, still clears the body cache that Copy markdown and Note stats read.
+        if (mossMultiPane.bound) {
+          bumpEditorContentRevision();
+          return;
+        }
         const hasDirtyMutations = dirtyElements.size > 0 || dirtyLeaves.size > 0;
         const hasContentUpdateTag = hasTrackedEditorUpdateTag(tags, DIRTY_TRACKER_CONTENT_TAGS);
 
@@ -4331,15 +4337,17 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
     />
   );
 
+  // moss-multi seam: bound-pane (A§2.2): a bound note never fills `content`, so its stats read the editor's body when shown
+  const statsMarkdown = !mossMultiPane.bound ? content : showNoteStats ? getEditorBodyMarkdown()?.markdownBody ?? '' : '';
   // Note stats computed from body markdown content
   const noteStats = useMemo(() => {
-    const text = content.replace(/```[\s\S]*?```/g, '').replace(/!\[.*?\]\(.*?\)/g, '').replace(/\[([^\]]*)\]\([^)]*\)/g, '$1');
+    const text = statsMarkdown.replace(/```[\s\S]*?```/g, '').replace(/!\[.*?\]\(.*?\)/g, '').replace(/\[([^\]]*)\]\([^)]*\)/g, '$1');
     const words = text.split(/\s+/).filter((w) => w.length > 0).length;
-    const characters = content.length;
+    const characters = statsMarkdown.length;
     const readingTime = Math.max(1, Math.ceil(words / 200));
-    const images = (content.match(/!\[.*?\]\(.*?\)/g) ?? []).length;
+    const images = (statsMarkdown.match(/!\[.*?\]\(.*?\)/g) ?? []).length;
     return { words, characters, readingTime, images };
-  }, [content]);
+  }, [statsMarkdown]);
   const hasBodyContent = mossMultiPane.bound ? mossMultiPane.hasBodyText : content.trim().length > 0; // moss-multi seam: bound-pane (A§2.2)
 
   const canvasMouseDownFocusedEditorRef = useRef(false);
