@@ -1,6 +1,7 @@
 // /api/* (A§4.1 step 5). Unknown paths get a JSON 404; /api never answers with HTML.
 import type { AuthEnv } from '../auth/auth.ts';
 import { resolvePrincipal } from '../auth/principal.ts';
+import { crossOriginCookie, needsAppOrigin } from '../worker/origin-gate.ts';
 import { json } from '../worker/route.ts';
 import { handleDocs, type DocsEnv } from './docs.ts';
 import { feedback } from './feedback.ts';
@@ -21,6 +22,10 @@ async function me(request: Request, env: AuthEnv): Promise<Response> {
 export type ApiEnv = DocsEnv;
 
 export async function handleApi(request: Request, env: ApiEnv): Promise<Response> {
+  // The origin gate (A§18) before any mutation; a read resolves no principal here.
+  if (needsAppOrigin(request) && crossOriginCookie(request, await resolvePrincipal(request, env), env)) {
+    return json({ error: 'forbidden', message: 'Cross-origin request refused' }, 403, NO_STORE);
+  }
   const { pathname } = new URL(request.url);
   if (pathname === '/api/me') return me(request, env);
   if (pathname === '/api/workspace') return workspace(request, env);

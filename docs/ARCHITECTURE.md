@@ -128,11 +128,11 @@ The Worker exports `createServerEntry({fetch})` and re-exports the DO classes. [
 1. **`/api/version`** answers GET only (405 otherwise) with `cache-control: no-store` and `{commit, headSha, dirty, diffHash, bundleHash, clientHash, buildTime, env}`. [L§4.18; S-test §2.4]
 2. **`/__test/*`** works only behind the four-condition gate (§19). Otherwise it returns the same 404 as an unknown route.
 3. **`/api/auth/*`** goes to `handleAuthRoute`, which wraps better-auth built per request. Sign-out fans out first (§7).
-4. **`/api/workspace/ws`** authenticates, then upgrades to `PrincipalDO(principalId)` (§5.2).
-5. **`/api/*`** goes to `handleApi`. Unknown paths get a JSON 404.
+4. **`/api/workspace/ws`** authenticates through the origin gate (§18), then upgrades to `PrincipalDO(principalId)` (§5.2).
+5. **`/api/*`** goes to `handleApi`, which runs the origin gate (§18) before any unsafe method. Unknown paths get a JSON 404.
 6. **`/parties/doc-d-o/<docId>`** is the only party namespace; any other gets 404.
-   - Authenticate by cookie, bearer or `?share=`, then resolve the role (§8).
-   - Never refuse before the upgrade: a refused handshake reaches the client as a transient 1006, and it would retry forever [L§4.6]. On a denial the Worker accepts the upgrade itself (`WebSocketPair`) and closes it, without waking the DocDO: 4401 with no credential; 4404 for a missing, inaccessible, forged-token or revoked-token doc (one code for all four, so nothing is disclosed); 4410 for a trashed doc the caller could otherwise open.
+   - Authenticate by cookie, bearer or `?share=`, pass the origin gate (§18), then resolve the role (§8).
+   - Never refuse before the upgrade: a refused handshake reaches the client as a transient 1006, and it would retry forever [L§4.6]. On a denial the Worker accepts the upgrade itself (`WebSocketPair`) and closes it, without waking the DocDO: 4401 with no credential or a cookie from another origin; 4404 for a missing, inaccessible, forged-token or revoked-token doc (one code for all four, so nothing is disclosed); 4410 for a trashed doc the caller could otherwise open.
    - Strip every client `x-moss-*` and `x-partykit-*` header by prefix, then set the trusted `x-moss-principal|role|session|share` headers.
    - Clone the request without an init before setting headers, so `Upgrade` and `Sec-WebSocket-*` survive. Then call `routePartykitRequest`. [L§4.7 upgrade trap; S-gd §1.3]
 7. **`/frame/html`** serves the HTML-block frame: a fixed document whose only policy is `sandbox allow-scripts`, which writes the block HTML its embedding page posts to it (SP13).
@@ -259,7 +259,7 @@ Folder delete stamps `deleted_at` and one `trash_batch_id` across the whole subt
 
 **Principal resolution order:**
 1. `Bearer mm_sk_…`: a sha256 lookup that ignores revoked keys. The result is an agent acting with its owner's access.
-2. Any other bearer value, or a cookie: a session user.
+2. Any other bearer value, or a cookie: a session user. A request with a bearer is judged by it alone and never falls back to its cookie.
 3. A share token alone (`?share=` or `x-moss-share`): an anonymous principal, capped at viewer. [S-gd §3.1]
 
 **Sign-out.** The client posts JSON `{}`. The wrapper resolves the session first, lets better-auth delete it, then awaits `PrincipalDO.endSession` before responding. The client stops subscriptions synchronously on the gesture, through the single auth-state writer. [L§4.9; L§4.6 background work]
@@ -621,6 +621,7 @@ CRLF becomes LF at the boundary. [P:Tech; S-prior §8.2–8.3]
 - **Secrets.** Fail closed on a weak or missing secret. Test hooks are refused on non-loopback origins. `.dev.vars` never ships, and secrets are set with `wrangler secret put`. [L§4.9; L§4.17]
 - **OAuth.** Providers are registered and rendered only when configured; none are. [P:People]
 - **Trust boundary.** Client `x-moss-*` and `x-partykit-*` headers are stripped by prefix. Only the `doc-d-o` party is reachable. Internal DO calls are RPC. [S-gd §1.3; S-prior §7.6]
+- **Cross-origin cookies.** The browser attaches the session cookie to every request for the host, and a same-site page (another port on 127.0.0.1, a sibling subdomain) gets past SameSite=Lax. One gate (`worker/origin-gate.ts`): when the principal came from a cookie, a socket upgrade (`/parties`, `/api/workspace/ws`) or an unsafe `/api/*` method must carry Origin equal to `BETTER_AUTH_URL`'s, else REST gets 403 and the socket closes 4401 after the upgrade, before any doc lookup. Bearer tokens, agent keys and a share token alone are never ambient and pass; reads are not gated. better-auth checks `/api/auth/*` itself. [T0.12]
 - **Disclosure.** The 404 for missing, inaccessible, trashed, revoked or forged docs is byte-identical, and member emails go to owners only. [L§1.6; S-gd §5.3]
 - **Share tokens** are threaded through every doc, asset, list, metadata and socket path. The link role is a ceiling, and anonymous access is capped at viewer. [L§4.10]
 - **Revocation** goes through one kick path, persisted in the DocDO before the request returns. Sign-out severs every socket of the session. [§8; L§4.9]

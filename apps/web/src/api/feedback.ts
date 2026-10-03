@@ -8,15 +8,8 @@ import { json } from '../worker/route.ts';
 const MAX_BODY = 10_000;
 const MAX_PAGE = 2_000;
 
-/** A cookie-authenticated write needs a same-origin `Origin` (L§4.9). */
-function sameOrigin(request: Request): boolean {
-  const origin = request.headers.get('origin');
-  return origin !== null && origin === new URL(request.url).origin;
-}
-
 export async function feedback(request: Request, env: AuthEnv): Promise<Response> {
   if (request.method !== 'POST') return json({ error: 'method-not-allowed' }, 405, { allow: 'POST' });
-  if (!sameOrigin(request)) return json({ error: 'forbidden' }, 403);
   const principal = await resolvePrincipal(request, env);
   if (!principal || principal.type !== 'user') return json({ error: 'unauthenticated' }, 401);
   const input = (await request.json().catch(() => null)) as { body?: unknown; email?: unknown; page?: unknown } | null;

@@ -81,8 +81,6 @@ async function readBody(request: Request): Promise<Record<string, unknown> | nul
 }
 
 async function createDoc(request: Request, env: DocsEnv): Promise<Response> {
-  const origin = request.headers.get('origin');
-  if (origin && origin !== new URL(env.BETTER_AUTH_URL ?? request.url).origin) return json({ error: 'forbidden' }, 403);
   const principal = await resolvePrincipal(request, env);
   if (!principal || principal.type === 'anonymous') return json({ error: 'unauthenticated' }, 401, NO_STORE);
   const userId = principal.type === 'agent' ? principal.ownerUserId : principal.id;

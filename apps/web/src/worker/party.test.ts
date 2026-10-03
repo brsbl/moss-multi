@@ -63,7 +63,7 @@ describe('authenticateParty', () => {
 
 describe('the origin gate (A§18)', () => {
   const ownerOf = (verdict: Awaited<ReturnType<typeof authenticateParty>>) =>
-    verdict.ok ? { id: decodePartyPrincipal(verdict.headers[TRUSTED.principal]).id, role: verdict.headers[TRUSTED.role] } : verdict;
+    verdict.ok ? { id: decodePartyPrincipal(verdict.headers[TRUSTED.principal])?.id, role: verdict.headers[TRUSTED.role] } : verdict;
 
   it('closes 4401 for a cookie from another origin or with no Origin, whether or not the doc exists', async () => {
     const docId = await insertDoc(d1.db, ada);
