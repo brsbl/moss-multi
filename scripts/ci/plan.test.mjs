@@ -258,6 +258,27 @@ describe('@slow legs', () => {
   });
 });
 
+describe('the viewer lane', () => {
+  it('builds and checks the viewer bundle on every code push and ready PR', () => {
+    expect(push('t/T0.13').viewer).toBe(true);
+    expect(push('main').viewer).toBe(true);
+    expect(pr().viewer).toBe(true);
+  });
+
+  it('skips it for docs, drafts, journey greps and the nightly', () => {
+    expect(push('m0', ['docs/x.md']).viewer).toBe(false);
+    expect(pr({ draft: true, labels: ['e2e'] }).viewer).toBe(false);
+    expect(dispatch({ grep: 'j00-shell' }).viewer).toBe(false);
+    expect(nightly().viewer).toBe(false);
+  });
+
+  it('runs alone in the viewer lane, and in the full lane', () => {
+    expect(dispatch({ lane: 'viewer' })).toMatchObject({ checks: false, build: false, browsers: [], parity: false, viewer: true, shards: [] });
+    expect(dispatch({}).viewer).toBe(true);
+    expect(toOutputs(dispatch({ lane: 'viewer' }))).toMatch(/^viewer=true$/m);
+  });
+});
+
 describe('isDocsOnlyPath', () => {
   it('classifies paths', () => {
     expect(isDocsOnlyPath('docs/design/x.md')).toBe(true);
@@ -311,6 +332,7 @@ describe('ciOk', () => {
       macos: { result: results.macos ?? 'skipped' },
       oracle: { result: results.oracle ?? 'skipped' },
       parity: { result: results.parity ?? 'skipped' },
+      viewer: { result: results.viewer ?? 'skipped' },
     };
   }
 
@@ -345,6 +367,13 @@ describe('ciOk', () => {
     expect(ciOk(needs(gate, passed)).problems).toEqual(['oracle: skipped (planned to run)', 'parity: skipped (planned to run)']);
     expect(ciOk(needs(gate, { ...passed, oracle: 'success', parity: 'failure' })).problems).toEqual(['parity: failure (planned to run)']);
     expect(ciOk(needs(gate, { ...passed, oracle: 'success', parity: 'success' })).ok).toBe(true);
+  });
+
+  it('requires the viewer job when planned', () => {
+    const branch = { ...checksOnly, build: true, viewer: true };
+    expect(ciOk(needs(branch, { checks: 'success', build: 'success' })).problems).toEqual(['viewer: skipped (planned to run)']);
+    expect(ciOk(needs(branch, { checks: 'success', build: 'success', viewer: 'failure' })).problems).toEqual(['viewer: failure (planned to run)']);
+    expect(ciOk(needs(branch, { checks: 'success', build: 'success', viewer: 'success' })).ok).toBe(true);
   });
 
   it('accepts a nightly that built and ran its @slow shards, and a skipped nightly', () => {

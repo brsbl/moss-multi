@@ -11,7 +11,7 @@ export const BROWSERS = ['chromium', 'webkit'];
 // Minutes per e2e shard (the job timeout): a ready-PR shard must finish within 13; repeated and @slow runs get 25.
 const SHARD_MINUTES = 13;
 const LONG_SHARD_MINUTES = 25;
-const LANES = ['auto', 'checks', 'e2e', 'full', 'parity'];
+const LANES = ['auto', 'checks', 'e2e', 'full', 'parity', 'viewer'];
 const BROWSER_INPUTS = { both: BROWSERS, chromium: ['chromium'], webkit: ['webkit'] };
 
 // BUILDPLAN.md feeds trace.mjs, e2e/ markdown may feed the suite and vendor/ markdown is drift-checked,
@@ -31,10 +31,11 @@ export function traceMilestoneFor(branch) {
 
 // macos: the @macos legs in WebKit on a macOS runner (SP15: Linux WebKit never navigates on Backspace).
 // parity: the Ladle oracle and the shell parity job (A§20), on the build job's bytes.
+// viewer: the read-only viewer bundle and its acceptance fixture in both engines (T0.13); it needs no stack.
 // slow: @slow legs (60 s holds, soaks, idles) are excluded, included (milestone gates, on request) or the only
 // legs run (nightly).
-function lanes({ checks = false, build = false, browsers = [], macos = false, parity = false }, reason, extra = {}) {
-  return { checks, build: build || parity, browsers, macos, parity, grep: '', repeat: 1, slow: 'exclude', traceMilestone: null, reason, ...extra };
+function lanes({ checks = false, build = false, browsers = [], macos = false, parity = false, viewer = false }, reason, extra = {}) {
+  return { checks, build: build || parity, browsers, macos, parity, viewer, grep: '', repeat: 1, slow: 'exclude', traceMilestone: null, reason, ...extra };
 }
 
 // One shard per engine and journey group, each on its own stack (A§20). A grep dispatch runs the whole suite in
@@ -84,6 +85,7 @@ function dispatchPlan(payload) {
       browsers: journeys ? browsers : [],
       macos: journeys && macosText === 'true',
       parity: lane === 'full' || lane === 'parity' || (lane === 'e2e' && parityText === 'true'),
+      viewer: lane === 'full' || lane === 'viewer',
     },
     `dispatch, ${lane} lane`,
     { grep, repeat, traceMilestone, slow: slowText === 'true' ? 'include' : 'exclude' },
@@ -96,8 +98,8 @@ function pushPlan(payload, changedFiles) {
   const branch = ref.slice('refs/heads/'.length);
   if (payload.deleted) return lanes({}, `branch ${branch} deleted`);
   if (docsOnly(changedFiles)) return lanes({}, 'docs-only push');
-  if (branch === 'main') return lanes({ checks: true, build: true, browsers: BROWSERS, parity: true }, 'push to main');
-  return lanes({ checks: true, build: true }, `push to ${branch}`, { traceMilestone: traceMilestoneFor(branch) });
+  if (branch === 'main') return lanes({ checks: true, build: true, browsers: BROWSERS, parity: true, viewer: true }, 'push to main');
+  return lanes({ checks: true, build: true, viewer: true }, `push to ${branch}`, { traceMilestone: traceMilestoneFor(branch) });
 }
 
 function pullRequestPlan(payload, changedFiles, degraded) {
@@ -117,7 +119,7 @@ function pullRequestPlan(payload, changedFiles, degraded) {
   const reason = browsers.length < BROWSERS.length ? 'ready pull request (CI_DEGRADED: Chromium only)' : 'ready pull request';
   // A milestone gate (ready m<k> -> main) also runs the @macos and @slow legs.
   const gate = Boolean(exit) && pr.base?.ref === 'main';
-  return lanes({ checks: true, build: true, browsers, macos: gate, parity: true }, gate ? `${reason}, milestone gate` : reason, {
+  return lanes({ checks: true, build: true, browsers, macos: gate, parity: true, viewer: true }, gate ? `${reason}, milestone gate` : reason, {
     traceMilestone,
     slow: gate ? 'include' : 'exclude',
   });
@@ -151,6 +153,7 @@ export function toOutputs(plan) {
       `browsers=${JSON.stringify(plan.browsers)}`,
       `macos=${plan.macos}`,
       `parity=${plan.parity}`,
+      `viewer=${plan.viewer}`,
       `grep=${plan.grep}`,
       `repeat=${plan.repeat}`,
       `slow=${plan.slow}`,
@@ -172,7 +175,15 @@ export function ciOk(needs) {
     return { ok: false, problems: ['plan: outputs.plan is not JSON'] };
   }
   const parity = Boolean(plan.parity);
-  const expected = { checks: plan.checks, build: plan.build, e2e: plan.browsers.length > 0, macos: Boolean(plan.macos), oracle: parity, parity };
+  const expected = {
+    checks: plan.checks,
+    build: plan.build,
+    e2e: plan.browsers.length > 0,
+    macos: Boolean(plan.macos),
+    oracle: parity,
+    parity,
+    viewer: Boolean(plan.viewer),
+  };
   const problems = [];
   for (const [job, planned] of Object.entries(expected)) {
     const result = needs[job]?.result ?? 'missing';
@@ -219,7 +230,7 @@ function main(argv) {
   });
   process.stdout.write(toOutputs(plan));
   const shards = plan.shards.map((shard) => `${shard.browser}/${shard.group}`).join(' ') || 'none';
-  const summary = `plan: ${plan.reason}. checks=${plan.checks} build=${plan.build} shards=${shards} slow=${plan.slow} macos=${plan.macos} parity=${plan.parity} trace_milestone=${plan.traceMilestone ?? 'none'}`;
+  const summary = `plan: ${plan.reason}. checks=${plan.checks} build=${plan.build} shards=${shards} slow=${plan.slow} macos=${plan.macos} parity=${plan.parity} viewer=${plan.viewer} trace_milestone=${plan.traceMilestone ?? 'none'}`;
   console.error(summary);
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${summary}\n`);
   return 0;

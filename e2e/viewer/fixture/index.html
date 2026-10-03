@@ -1,0 +1,62 @@
+<!doctype html>
+<!-- A host page for the viewer, as a plugin frame would be: the bundle and stylesheet from /viewer/, and services that
+     record every call. Media resolves to /svc/, which the test server answers with Range support. -->
+<html lang="en" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>moss viewer fixture</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/viewer/moss-viewer.css" />
+    <style>
+      html, body { height: auto; }
+    </style>
+  </head>
+  <body>
+    <div id="viewer"></div>
+    <script type="module">
+      import { mountMossViewer, MOSS_VIEWER_API } from '/viewer/moss-viewer.js';
+
+      const NOTES = [
+        { id: 'note-planting', title: 'Planting Calendar', folderPath: 'Notes/Garden', updatedAt: 1790000000, headings: ['March', 'April'] },
+        { id: '5b1f3c2a-9d8e-4f70-a1b2-c3d4e5f60718', title: 'Seed Index', folderPath: 'Notes', updatedAt: 1790000000 },
+      ];
+      const calls = { assetUrl: [], notes: 0, navigate: [], unfurl: [] };
+
+      const services = {
+        assetUrl(ref, kind) {
+          const url = ref.startsWith('assets/') && !ref.includes('video-thumb-') ? `/svc/${ref}` : null;
+          calls.assetUrl.push({ ref, kind, url });
+          return url;
+        },
+        notes() {
+          calls.notes += 1;
+          return NOTES;
+        },
+        navigate(target) {
+          calls.navigate.push(target);
+        },
+        async unfurl(url) {
+          calls.unfurl.push(url);
+          return { title: 'Seed library post', providerName: 'X', height: 240 };
+        },
+      };
+
+      window.viewerFixture = {
+        api: MOSS_VIEWER_API,
+        calls,
+        mount(options) {
+          document.documentElement.dataset.theme = options.theme ?? 'light';
+          const handle = mountMossViewer(document.getElementById('viewer'), { ...options, services });
+          window.viewerFixture.handle = handle;
+          return handle.ready.then(() => ({ title: handle.title, frontmatter: handle.frontmatter }));
+        },
+        setTheme(theme) {
+          document.documentElement.dataset.theme = theme;
+          window.viewerFixture.handle.setTheme(theme);
+        },
+      };
+      document.documentElement.dataset.fixture = 'ready';
+    </script>
+  </body>
+</html>

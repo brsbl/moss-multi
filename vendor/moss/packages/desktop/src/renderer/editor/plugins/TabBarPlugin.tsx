@@ -1012,6 +1012,10 @@ function TabBar({
 
   const handleTabPointerDown = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>, tabKey: string, tabIndex: number) => {
+      // moss-multi seam: read-only-tabs (T0.13): a read-only editor's tabs never reorder
+      if (!editor.isEditable()) {
+        return;
+      }
       if ((event.button != null && event.button !== 0) || editingTabKey === tabKey) {
         return;
       }
@@ -1038,7 +1042,7 @@ function TabBar({
         hasDragged: false
       };
     },
-    [editingTabKey]
+    [editor, editingTabKey]
   );
 
   const handleTabPointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
@@ -1064,13 +1068,15 @@ function TabBar({
 
   const startRename = useCallback(
     (tabKey: string, currentLabel: string) => {
+      // moss-multi seam: read-only-tabs (T0.13): a read-only editor's tabs switch but never rename
+      if (!editor.isEditable()) return;
       skipBlurCommitRef.current = false;
       outsideRenamePointerRef.current = false;
       pendingRenameFocusRef.current = { tabKey, label: currentLabel };
       setEditValue(currentLabel);
       setEditingTabKey(tabKey);
     },
-    []
+    [editor]
   );
 
   const handleTitleTouchEnd = useCallback(
@@ -1722,7 +1728,8 @@ function TabBar({
               </span>
             )}
 
-            {tab.isActive && (
+            {/* moss-multi seam: read-only-tabs (T0.13): no tab options (rename, keep only, delete) when read-only */}
+            {tab.isActive && isEditorEditable && (
               <>
                 <div className="relative ml-1 flex h-5 w-5 items-center justify-center">
                   <button
@@ -1864,6 +1871,8 @@ function TabBar({
           );
         })}
 
+        {/* moss-multi seam: read-only-tabs (T0.13): no Add tab when read-only */}
+        {isEditorEditable && (
         <button
           className="mb-px flex h-7 w-7 items-center justify-center rounded text-ink-muted hover:bg-border-subtle hover:text-ink-default"
           onClick={handleAddTab}
@@ -1871,6 +1880,7 @@ function TabBar({
         >
           <Plus size={16} />
         </button>
+        )}
       </div>
       {editingTab
         ? createPortal(

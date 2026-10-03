@@ -158,7 +158,7 @@
     {"path":"packages/desktop/src/renderer/editor/plugins/MediaDropPlugin.tsx","pin":"762abb777","upstreamSha256":"5ccb24e5a2aa441f5dc20e4a918a8e62b1b9303a742eec34742b6067ebd92dca","mode":"verbatim"},
     {"path":"packages/desktop/src/renderer/editor/plugins/SafePastePlugin.tsx","pin":"762abb777","upstreamSha256":"b83133b365ccf68801e042c3a83522a185d647d370f151e1ac73076252f62c55","mode":"verbatim"},
     {"path":"packages/desktop/src/renderer/editor/plugins/SearchPlugin.tsx","pin":"762abb777","upstreamSha256":"02db7c07991a2f7f0ba43918d87b7e1e2913943860fda7cebff543d32e1a52d5","mode":"verbatim"},
-    {"path":"packages/desktop/src/renderer/editor/plugins/TabBarPlugin.tsx","pin":"762abb777","upstreamSha256":"6b37cee1e38fa3f77d7b6a51ae60b31007d34ff2156147bd601215a3445b32c2","mode":"verbatim"},
+    {"path":"packages/desktop/src/renderer/editor/plugins/TabBarPlugin.tsx","pin":"762abb777","upstreamSha256":"6b37cee1e38fa3f77d7b6a51ae60b31007d34ff2156147bd601215a3445b32c2","mode":"patched","patch":"patches/moss/packages/desktop/src/renderer/editor/plugins/TabBarPlugin.tsx.patch"},
     {"path":"packages/desktop/src/renderer/editor/plugins/TabExitPlugin.tsx","pin":"762abb777","upstreamSha256":"14effec3d6353e57d10685ad37892ed5991812c96d810a627e79ae1e50dbc43c","mode":"verbatim"},
     {"path":"packages/desktop/src/renderer/editor/plugins/TabSelectionScopePlugin.tsx","pin":"762abb777","upstreamSha256":"1b7fc85fd9e173c9ec91ddadd11d5dc1f09cb8ad5e1f0d2d66b304a09c3dbc2c","mode":"verbatim"},
     {"path":"packages/desktop/src/renderer/editor/plugins/TableActionMenuPlugin.tsx","pin":"762abb777","upstreamSha256":"0302669a650c0eb47118bbbf2879353fefca13393761cb12049e0589cab7117c","mode":"verbatim"},
