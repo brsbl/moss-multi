@@ -40,7 +40,8 @@ export interface Affordance {
 
 const R = 'desktop/src/renderer';
 const MENU_ITEM = '[role="menuitem"]';
-const SLASH_ITEM = '[role="option"]';
+// A slash-menu command's label (SlashCommandPlugin renders each command as a `button[data-index]`).
+const SLASH_ITEM = 'button[data-index] .text-sm.font-medium';
 
 export const AFFORDANCES = [
   // PRODUCT's named set (P:Agents).
@@ -163,6 +164,14 @@ export const AFFORDANCES = [
     cite: 'T1.4; A§10.4',
     staged: 1,
     probes: [{ surface: 'actions-panel', selector: '[data-actions-panel-wrapper] [role="tab"]', text: 'Properties' }],
+  },
+  {
+    id: 'rename-note',
+    sites: [`${R}/App.tsx`],
+    reason: "Rename focuses the note's title, which stays closed until it binds to Y.Text('title') in M1, so the name typed after it would land nowhere.",
+    cite: 'T1.4; R2',
+    staged: 1,
+    probes: [{ surface: 'note-menu', selector: MENU_ITEM, text: 'Rename' }],
   },
   {
     id: 'duplicate-note',

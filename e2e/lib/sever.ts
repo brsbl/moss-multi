@@ -3,14 +3,14 @@
 import type { BrowserContext, WebSocketRoute } from '@playwright/test';
 import { DOC_SOCKET_PATH } from './contract.ts';
 
-interface Conn { page: WebSocketRoute; server: WebSocketRoute | null }
+interface Conn { page: WebSocketRoute; server: WebSocketRoute | null; closed: boolean }
 
 export interface Sever {
   /** Half-open: both ends stay OPEN and nothing is delivered either way. */
   blackhole(): void;
   /** Abrupt drop on both ends; 1012 is in the product's transient-retry set. */
   reset(code?: number): void;
-  /** Delivers again, and lets reconnects that arrived while severed through. */
+  /** Delivers again, and lets reconnects that arrived while severed (and are still open) through. */
   restore(): void;
   census(): { connections: number; dropped: { out: number; in: number } };
 }
@@ -24,12 +24,19 @@ export async function makeSeverable(context: BrowserContext): Promise<Sever> {
     conn.server = server;
     conn.page.onMessage((message) => (ctl.mode === 'up' ? server.send(message) : ctl.dropped.out++));
     server.onMessage((message) => (ctl.mode === 'up' ? conn.page.send(message) : ctl.dropped.in++));
-    conn.page.onClose((code, reason) => server.close({ code, reason }));
-    server.onClose((code, reason) => conn.page.close({ code, reason }));
+    server.onClose((code, reason) => {
+      conn.closed = true;
+      conn.page.close({ code, reason });
+    });
   };
   await context.routeWebSocket(DOC_SOCKET, (page) => {
-    const conn: Conn = { page, server: null };
+    const conn: Conn = { page, server: null, closed: false };
     ctl.conns.push(conn);
+    // A socket the page closes while severed never reaches the server.
+    page.onClose((code, reason) => {
+      conn.closed = true;
+      conn.server?.close({ code, reason });
+    });
     if (ctl.mode === 'up') attach(conn);
   });
   return {
@@ -38,14 +45,15 @@ export async function makeSeverable(context: BrowserContext): Promise<Sever> {
     },
     reset(code = 1012) {
       ctl.mode = 'blackhole';
-      for (const conn of ctl.conns) {
+      for (const conn of ctl.conns.filter((c) => !c.closed)) {
+        conn.closed = true;
         conn.page.close({ code, reason: 'qa-sever' });
         conn.server?.close({ code });
       }
     },
     restore() {
       ctl.mode = 'up';
-      for (const conn of ctl.conns.filter((c) => !c.server)) attach(conn);
+      for (const conn of ctl.conns.filter((c) => !c.server && !c.closed)) attach(conn);
     },
     census: () => ({ connections: ctl.conns.length, dropped: { ...ctl.dropped } }),
   };
