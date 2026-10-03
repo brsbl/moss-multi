@@ -48,6 +48,8 @@ function probe(url: string, method: 'GET' | 'POST', ms: number): Promise<number 
 // script then waits until the test times out and the shell never boots. So each burst lands as the pool idles out.
 test('every request handed to the stack as its pooled connections idle out is answered at once @slow', async () => {
   test.skip(!process.env.STACK_STATE, 'needs a stack: node scripts/stack.mjs start --hooks');
+  // Selftests are a dependency project, which `--grep-invert @slow` never reaches.
+  test.skip(process.env.SLOW === 'exclude', '@slow: milestone gates, nightly and -f slow=true');
   test.setTimeout(180_000);
   const url = new URL('/api/version', Stack.fromState().baseUrl).href;
   const burst = () => Promise.all(Array.from({ length: 16 }, async (_, i) => {

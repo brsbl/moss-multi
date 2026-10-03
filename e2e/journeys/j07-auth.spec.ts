@@ -41,16 +41,18 @@ type Fulfilment = Parameters<Route['fulfill']>[0];
 /**
  * The stack's own answer to this session lookup sent with no cookie: Start's serialized `{kind:'signed-out'}`
  * (`x-tss-serialized`), which the page decodes like any real answer; Start decodes a bare JSON body as undefined.
- * `unavailable` swaps the kind, giving what the server sends when D1 fails under it.
+ * `unavailable` swaps the kind, giving what the server sends when D1 fails under it. Start's CSRF check wants a
+ * same-origin `Origin`.
  */
 async function serverAnswer(request: Request, kind: 'signed-out' | 'unavailable'): Promise<Fulfilment> {
-  const response = await fetch(request.url(), {
-    headers: { 'x-tsr-serverfn': 'true', accept: request.headers().accept ?? 'application/json' },
+  const url = new URL(request.url());
+  const response = await fetch(url, {
+    headers: { 'x-tsr-serverfn': 'true', accept: request.headers().accept ?? 'application/json', origin: url.origin },
     signal: AbortSignal.timeout(10_000),
   });
   const body = await response.text();
   if (!response.ok || response.headers.get('x-tss-serialized') !== 'true' || body.split('"signed-out"').length !== 2) {
-    throw new Error(`no serialized signed-out answer from ${request.url()}: ${response.status} ${body.slice(0, 300)}`);
+    throw new Error(`no serialized signed-out answer from ${url.href}: ${response.status} ${body.slice(0, 300)}`);
   }
   return {
     status: 200,
