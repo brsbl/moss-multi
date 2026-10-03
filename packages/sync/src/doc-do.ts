@@ -8,7 +8,7 @@ import { attachmentFrom, connectCode, parseFrame, revocationCode, stateBytesAfte
 import { attach, attachmentOf, awarenessTooLarge } from './doc/awareness.ts';
 import { AckCoalescer, DocStore, PERSISTENCE } from './doc/persistence.ts';
 import type { SyncEnv } from './env.ts';
-import { exportDocMarkdown, importBody, rootIsEmpty, SERVER_SEED, seedEmptyParagraph } from './server-doc.ts';
+import { exportDocMarkdown, importBody, rootIsEmpty, SERVER_IMPORT, SERVER_SEED, seedEmptyParagraph } from './server-doc.ts';
 
 export interface DocLimits {
   stateCapBytes: number;
@@ -148,6 +148,30 @@ export class DocDO extends YServer<SyncEnv> {
     const title = input.title?.trim();
     // POST /api/docs wrote the D1 title, so this write needs no projection.
     if (title) this.document.transact(() => this.document.getText('title').insert(0, title), SERVER_SEED);
+    store.setMeta('folder', input.folderId);
+    store.setMeta('owner', input.ownerId);
+    store.setMeta('created', '1');
+  }
+
+  /** Internal RPC: preserves Yjs item identity, including relative anchors, without a markdown round trip. */
+  async snapshotForDuplicate(): Promise<{ title: string; state: Uint8Array }> {
+    await this.#ready();
+    return { title: this.document.getText('title').toString(), state: Y.encodeStateAsUpdate(this.document) };
+  }
+
+  async createFromSnapshot(input: Omit<CreateDocInput, 'markdown'>, state: Uint8Array): Promise<void> {
+    const store = await this.#ready();
+    if (store.meta('created') !== null) return;
+    if (state.byteLength > this.#limits.stateCapBytes) throw new DocCapError();
+    this.document.transact(() => {
+      // Drop only this new doc's seed, then apply the independent source snapshot.
+      const root = this.document.get('root', Y.XmlText);
+      root.delete(0, root.length);
+      Y.applyUpdate(this.document, state, SERVER_IMPORT);
+      const title = this.document.getText('title');
+      title.delete(0, title.length);
+      title.insert(0, input.title ?? '');
+    }, SERVER_IMPORT);
     store.setMeta('folder', input.folderId);
     store.setMeta('owner', input.ownerId);
     store.setMeta('created', '1');

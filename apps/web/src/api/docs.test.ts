@@ -21,6 +21,8 @@ const DocDO = {
     create: async (input: unknown) => {
       created.push({ docId: id.name, input });
     },
+    snapshotForDuplicate: async () => ({ title: 'Original', state: new Uint8Array([1, 2]) }),
+    createFromSnapshot: async (input: unknown) => { created.push({ docId: id.name, input }); },
     probeInstance: async () => {
       probed.push(id.name);
       return { instanceId: `instance-${id.name}`, constructedAt: 1 };
@@ -138,5 +140,31 @@ describe('GET /api/docs/:id/instance', () => {
     expect(await denied.text()).toBe(await missing.text());
     expect((await probe(docId, null)).status).toBe(404);
     expect(probed).toEqual([]);
+  });
+});
+
+describe('POST /api/docs/:id/duplicate', () => {
+  const duplicate = (id: string, cookie: string) => handleApi(new Request(`${BASE}/api/docs/${id}/duplicate`, {
+    method: 'POST', headers: { cookie, origin: BASE },
+  }), env);
+
+  it('copies in the source folder for its owner, with a new name and no doc grants', async () => {
+    const id = await insertDoc(d1.db, ada);
+    const response = await duplicate(id, ada.cookie);
+    expect(response.status).toBe(201);
+    const { doc } = await response.json() as DocBody;
+    expect(doc.id).not.toBe(id);
+    expect(doc).toMatchObject({ title: 'Original copy', folderId: ada.homeId });
+    expect(created).toEqual([{ docId: doc.id, input: { folderId: ada.homeId, ownerId: ada.id, title: 'Original copy' } }]);
+  });
+
+  it('hides inaccessible sources and refuses a viewer without creating anything', async () => {
+    const id = await insertDoc(d1.db, ada);
+    const denied = await duplicate(id, ben.cookie);
+    expect(denied.status).toBe(404);
+    expect(await denied.text()).toBe(await (await duplicate(crypto.randomUUID(), ben.cookie)).text());
+    await d1.db.prepare('INSERT INTO doc_members (doc_id, principal_id, principal_type, role, added_by, created_at) VALUES (?, ?, 'user', ?, ?, 1)').bind(id, ben.id, 'viewer', ada.id).run();
+    expect((await duplicate(id, ben.cookie)).status).toBe(403);
+    expect(created).toEqual([]);
   });
 });

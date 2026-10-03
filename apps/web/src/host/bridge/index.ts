@@ -149,6 +149,8 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
   const workspaceListeners = new Set<() => void>();
   const diskListeners = new Set<Listener<[string[], string[]]>>();
   let loadVersion = 0;
+  let poll: ReturnType<typeof setInterval> | null = null;
+  let polling = false;
   const load = (vaultId: string | null, docId: string | null = null): Promise<NoteMetadata[]> => {
     const version = ++loadVersion;
     const query = new URLSearchParams();
@@ -208,6 +210,16 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
 
   return {
     [WORKSPACE]: {
+      duplicate: async (id: string) => {
+        const response = await request(`/api/docs/${encodeURIComponent(id)}/duplicate`, { method: 'POST' });
+        if (!response.ok) throw new Error(`Duplicate: ${response.status}`);
+        const result = await response.json() as { doc: ApiDoc; role: string };
+        rememberRole(result.doc.id, result.role);
+        const note = toNoteMetadata(result.doc);
+        known.set(note.id, note);
+        listing = null;
+        return { ...record(note), content: '' };
+      },
       getSnapshot: () => workspaceSnapshot,
       subscribe: (listener: () => void) => {
         workspaceListeners.add(listener);
@@ -309,7 +321,20 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
         }),
       onDiskChange: (callback?: Listener<[string[], string[]]>) => {
         if (callback) diskListeners.add(callback);
-        return () => { if (callback) diskListeners.delete(callback); };
+        if (!poll && diskListeners.size) poll = setInterval(async () => {
+          if (polling || !workspaceSnapshot) return;
+          polling = true;
+          const before = JSON.stringify(workspaceSnapshot);
+          try {
+            await load(workspaceSnapshot.vault.id);
+            if (JSON.stringify(workspaceSnapshot) !== before) diskListeners.forEach((listener) => listener([], []));
+          } catch { /* Keep the last listing during a transient failure. */ }
+          finally { polling = false; }
+        }, 3_000);
+        return () => {
+          if (callback) diskListeners.delete(callback);
+          if (!diskListeners.size && poll) { clearInterval(poll); poll = null; }
+        };
       },
       onMetadataReindexed: silent,
       onRequestFlush: silent,

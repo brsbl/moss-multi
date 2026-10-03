@@ -25,10 +25,11 @@ for (const name of readdirSync(fixtures).filter((name) => name.endsWith('.md')).
     };
     const importedId = await create(imported, markdown);
     const pastedId = await create(pasted);
+    const empty = await renderedBody(pasted, pastedId);
     await pasteMarkdown(pasted, pastedId, markdown);
     await expect(ui.pane(pasted, pastedId)).toHaveAttribute('data-sync-unacked', '0');
     const authored = await renderedBody(pasted, pastedId);
-    expect(authored.dom, 'the paste is nonempty (positive control)').not.toBe('<p><br></p>');
+    expect(authored, 'the paste changes the empty document (positive control)').not.toEqual(empty);
     await expect.poll(() => renderedBody(imported, importedId), { timeout: 15_000 }).toEqual(authored);
   });
 }

@@ -79,6 +79,29 @@ describe('server writes', () => {
     expect(await opened.dobj.exportMarkdown()).toBe(exportMarkdown(reference));
   });
 
+  it('duplicates a snapshot without a markdown round trip, keeps anchors, persists and remains independent', async () => {
+    const source = await start(openDoc());
+    await source.dobj.create({ folderId: 'source', ownerId: 'owner', title: 'Original', markdown: MARKDOWN });
+    source.dobj.document.getText('frontmatter').insert(0, '---\ntag: keep\n---\n');
+    const root = source.dobj.document.get('root', Y.XmlText);
+    const anchor = Y.createRelativePositionFromTypeIndex(root, 1);
+    source.dobj.document.getMap('comments').set('anchor', Y.encodeRelativePosition(anchor));
+    const snapshot = await source.dobj.snapshotForDuplicate();
+    const target = await start(openDoc());
+    await target.dobj.createFromSnapshot({ folderId: 'target', ownerId: 'other', title: 'Original copy' }, snapshot.state);
+    expect(await target.dobj.exportMarkdown()).toBe(await source.dobj.exportMarkdown());
+    expect(blockTypes(target.dobj.document)).toEqual(blockTypes(source.dobj.document));
+    expect(Y.createAbsolutePositionFromRelativePosition(anchor, target.dobj.document)?.index).toBe(1);
+    expect(target.dobj.document.getMap('comments').get('anchor')).toEqual(Y.encodeRelativePosition(anchor));
+    expect(source.dobj.document.getText('title').toString()).toBe('Original');
+    expect(target.dobj.document.getText('title').toString()).toBe('Original copy');
+    await target.dobj.createFromSnapshot({ folderId: 'target', ownerId: 'other' }, snapshot.state);
+    const woken = await start(wake(target));
+    expect(await woken.dobj.exportMarkdown()).toBe(await source.dobj.exportMarkdown());
+    woken.dobj.document.getText('frontmatter').insert(0, 'independent');
+    expect(source.dobj.document.getText('frontmatter').toString()).not.toContain('independent');
+  });
+
   it('refuses an import past the state cap and keeps the seed', async () => {
     class SmallDoc extends DocDO {
       static override limits = { ...DocDO.limits, stateCapBytes: 4 * 1024 };
