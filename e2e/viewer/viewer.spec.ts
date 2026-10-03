@@ -204,9 +204,11 @@ test('reaches the network only through the injected services: media, links and e
   ]));
 
   // Every request is the bundle, the host page, a URL the services returned, or X's provider frame; all GETs.
+  // blob: and data: URLs are the page's own memory (WebKit reports blob: loads as requests), never the network.
   const served = new Set(recorded.assetUrl.flatMap((call) => (call.url ? [call.url] : [])));
   const outside = seen.requests.filter(({ url }) => {
     const parsed = new URL(url);
+    if (parsed.protocol === 'blob:' || parsed.protocol === 'data:') return false;
     if (parsed.origin === server.url) {
       if (parsed.pathname.startsWith('/viewer/') || parsed.pathname.startsWith('/fixture/')) return false;
       return !served.has(parsed.pathname);
