@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import * as encoding from 'lib0/encoding';
+import * as decoding from 'lib0/decoding';
 import { connect, openDoc, start, wake } from './do-harness.ts';
 
 beforeEach(() => vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] }));
@@ -40,12 +41,66 @@ it('link-only recipients receive no identities in initial snapshots or live fram
   await ada.deliver(frame(42, state()));
   const anonymous = await connect(opened, { id: 'link', kind: 'anonymous', share: 'token' });
   const signedIn = await connect(opened, { id: 'stranger', share: 'token' });
+  const member = await connect(opened, { id: 'ben', name: 'Ben' });
   await ada.deliver(frame(42, state(), 2));
   for (const client of [anonymous, signedIn]) {
     expect(client.socket.sent.filter(f => typeof f !== 'string' && f[0] === 1)).toHaveLength(0);
   }
   await ada.drop();
   expect(opened.dobj.document.awareness.getStates().has(42)).toBe(false);
+  for (const client of [anonymous, signedIn]) {
+    expect(client.socket.sent.filter(f => typeof f !== 'string' && f[0] === 1)).toHaveLength(0);
+  }
+  const departure = member.socket.sent.filter(f => typeof f !== 'string' && f[0] === 1).at(-1) as Uint8Array;
+  const outer = decoding.createDecoder(departure);
+  expect(decoding.readVarUint(outer)).toBe(1);
+  const payload = decoding.createDecoder(decoding.readVarUint8Array(outer));
+  expect(decoding.readVarUint(payload)).toBe(1);
+  expect(decoding.readVarUint(payload)).toBe(42);
+  decoding.readVarUint(payload);
+  expect(JSON.parse(decoding.readVarString(payload))).toBeNull();
+});
+
+it.each([false, true])('a replacement socket takes over half-open presence, including across wake=%s', async (hibernate) => {
+  let opened = await start(openDoc());
+  const first = await connect(opened, { id: 'ada', name: 'Ada' });
+  const peer = await connect(opened, { id: 'ben', name: 'Ben' });
+  await first.deliver(frame(42, { ...state(), tag: 'first' }));
+  if (hibernate) opened = await start(wake(opened));
+  first.opened = opened;
+  // No close event reaches the server; the provider keeps its Y.Doc clientID on reconnect.
+  const replacement = await connect(opened, { id: 'ada', name: 'Ada' });
+  await replacement.deliver(frame(42, { ...state(), tag: 'reconnected' }, 2));
+  expect(first.socket.readyState).toBe(1);
+  expect(opened.dobj.document.awareness.getStates().get(42)?.tag).toBe('reconnected');
+  const delivered = peer.socket.sent.length;
+  await first.deliver(frame(42, { ...state(), tag: 'late-old-frame' }, 3));
+  await first.deliver(frame(42, null, 4));
+  await first.drop();
+  expect(peer.socket.sent).toHaveLength(delivered);
+  expect(opened.dobj.document.awareness.getStates().get(42)?.tag).toBe('reconnected');
+  await replacement.deliver(frame(42, { ...state(), tag: 'still-here' }, 5));
+  expect(opened.dobj.document.awareness.getStates().get(42)?.tag).toBe('still-here');
+  await replacement.drop();
+  expect(opened.dobj.document.awareness.getStates().has(42)).toBe(false);
+});
+
+it('a different principal cannot take over an occupied presence id with its own valid identity', async () => {
+  const opened = await start(openDoc());
+  const ada = await connect(opened, { id: 'ada', name: 'Ada' });
+  const ben = await connect(opened, { id: 'ben', name: 'Ben' });
+  await ada.deliver(frame(42, state()));
+  await ben.deliver(frame(42, { ...state('Ben'), user: { ...state('Ben').user, principalId: 'ben' } }, 2));
+  expect(opened.dobj.document.awareness.getStates().get(42)?.name).toBe('Ada');
+});
+
+it('closing just after wake does not encode missing awareness metadata', async () => {
+  const opened = await start(openDoc());
+  const ada = await connect(opened, { id: 'ada', name: 'Ada' });
+  await ada.deliver(frame(42, state()));
+  ada.opened = await start(wake(opened));
+  expect(ada.opened.dobj.document.awareness.meta.has(42)).toBe(false);
+  await expect(ada.drop()).resolves.toBeUndefined();
 });
 
 it('SP6 validates 1000 repeated awareness frames within a bounded CPU budget', async () => {
