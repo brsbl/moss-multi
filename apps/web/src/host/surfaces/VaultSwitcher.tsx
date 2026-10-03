@@ -33,7 +33,7 @@ function VaultMenu({ bridge }: { bridge: Bridge }) {
     <div className="mr-auto min-w-0 flex-1" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button variant="ghost" size="sm" disabled={pending} aria-label={`Vault: ${workspace.vault.name}`} className="max-w-full gap-1.5 px-1.5">
+          <Button data-collab-chrome="" variant="ghost" size="sm" disabled={pending} aria-label={`Vault: ${workspace.vault.name}`} className="max-w-full gap-1.5 px-1.5">
             <FolderRoot className="h-3.5 w-3.5 shrink-0 text-ink-muted" aria-hidden />
             <span className="truncate">{workspace.vault.name}</span>
             <ChevronDown className="h-3 w-3 shrink-0 text-ink-faint" aria-hidden />
