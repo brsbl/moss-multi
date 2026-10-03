@@ -38,11 +38,20 @@ test('j01 presence: three clients have stable distinct colors, matching carets a
   const caret = ada.page.locator('[data-remote-caret]').filter({ has: ada.page.locator('[data-cursor-label]', { hasText: ben.principal!.name }) });
   await expect(caret).toBeVisible();
   const before = await caret.boundingBox();
+  expect(before).not.toBeNull();
   await ben.page.keyboard.press('ArrowLeft');
-  await expect.poll(async () => (await caret.boundingBox())?.x, { timeout: 1000, intervals: [20] }).not.toBe(before?.x);
+  await expect.poll(async () => {
+    const after = await caret.boundingBox();
+    return after !== null && after.x !== before!.x;
+  }, { timeout: 1000, intervals: [20] }).toBe(true);
   await expect(caret).toHaveAttribute('data-presence-color', benColor!);
+  const chipFill = await peer.evaluate(element => getComputedStyle(element).backgroundColor);
+  expect(chipFill).not.toBe('rgba(0, 0, 0, 0)');
+  await expect(caret).toHaveCSS('background-color', chipFill);
   await ben.page.keyboard.press('Shift+ArrowLeft');
-  await expect(ada.page.locator('[data-remote-selection]')).toHaveAttribute('data-presence-color', benColor!);
+  const selection = ada.page.locator('[data-remote-selection]');
+  await expect(selection).toHaveAttribute('data-presence-color', benColor!);
+  await expect(selection.locator(':scope > *')).toHaveCSS('background-color', chipFill);
   await ben.page.keyboard.press('ArrowRight');
   await ben.page.keyboard.type(' typing');
   await expect(caret.locator('[data-cursor-label]')).toBeVisible();

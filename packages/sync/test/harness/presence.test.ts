@@ -100,7 +100,8 @@ it('closing just after wake does not encode missing awareness metadata', async (
   await ada.deliver(frame(42, state()));
   ada.opened = await start(wake(opened));
   expect(ada.opened.dobj.document.awareness.meta.has(42)).toBe(false);
-  await expect(ada.drop()).resolves.toBeUndefined();
+  // partyserver catches onClose errors, so assert its callback directly rather than its swallowing wrapper.
+  expect(() => ada.opened.dobj.onClose(ada.socket as never)).not.toThrow();
 });
 
 it('SP6 validates 1000 repeated awareness frames within a bounded CPU budget', async () => {
