@@ -52,6 +52,31 @@ describe('setFrontmatterKey', () => {
   it('finds a quoted key', () => {
     expect(setFrontmatterKey('"my key": 1\nother: 2\n', 'my key', 3)).toBe('my key: 3\nother: 2\n');
   });
+
+  it('preserves and edits hyphen-leading keys beside unindented sequences', () => {
+    const yaml = 'tags:\n- garden\n-owner: ada\nstatus: done\n';
+    expect(setFrontmatterKey(yaml, 'tags', ['fixture'])).toBe('tags:\n  - fixture\n-owner: ada\nstatus: done\n');
+    expect(setFrontmatterKey(yaml, '-owner', 'ben')).toBe('tags:\n- garden\n-owner: ben\nstatus: done\n');
+  });
+
+  it.each(['revised', undefined])('repairs every concurrent occurrence of a key when set to %s', (value) => {
+    const { a, b, sync } = apart('status: done\n');
+    try {
+      writeFrontmatterKey(a, 'owner', ['ada'], LOCAL);
+      writeFrontmatterKey(b, 'owner', ['ben'], LOCAL);
+      sync();
+      expect(readField(a, 'frontmatter')).toBe(readField(b, 'frontmatter'));
+      expect(readField(a, 'frontmatter').match(/^owner:/gm)).toHaveLength(2);
+      writeFrontmatterKey(a, 'owner', value, LOCAL);
+      sync();
+      const repaired = readField(a, 'frontmatter');
+      expect(repaired).toBe(readField(b, 'frontmatter'));
+      expect(parse(repaired)).toEqual(value === undefined ? { status: 'done' } : { status: 'done', owner: value });
+    } finally {
+      a.destroy();
+      b.destroy();
+    }
+  });
 });
 
 describe('writeFrontmatterKey', () => {

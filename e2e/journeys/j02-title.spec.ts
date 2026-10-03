@@ -555,7 +555,8 @@ const PROPERTIES = (actor: Actor): Locator => actor.page.locator('[data-actions-
 
 /** Opens the actions panel's Properties tab, and the add-field row, up to its value field. */
 async function addPropertyUpToValue(actor: Actor, key: string, value: string): Promise<Locator> {
-  await actor.page.getByRole('button', { name: 'Show actions panel', exact: true }).click();
+  const show = actor.page.getByRole('button', { name: 'Show actions panel', exact: true });
+  if (await show.isVisible()) await show.click();
   await PROPERTIES(actor).getByRole('tab', { name: 'Properties', exact: true }).click();
   const panel = PROPERTIES(actor);
   const empty = panel.getByText('No properties yet', { exact: true });
@@ -605,4 +606,58 @@ test('j02-title: two people add different properties at once, both keep theirs, 
     await expect(header.getByRole('textbox', { name: 'reviewer', exact: true }), `${actor.label}: after reload`).toHaveValue(adaValue);
     await expect(header.getByRole('textbox', { name: 'deadline', exact: true }), `${actor.label}: after reload`).toHaveValue(benValue);
   }
+});
+
+test('j02-title: disconnected additions of the same property converge and survive reload and later edits @evidence @p:tech-2 @p:col-1 @p:col-4', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada', { severable: true });
+  const ben = await openShell(actors, 'ben');
+  await actors.requireDistinct(2);
+  const docId = await ui.createNote(ada);
+  await (await addPropertyUpToValue(ada, 'status', 'done')).press('Enter');
+  await waitAcked(ada, docId);
+  await grantDoc(ada, docId, principalOf(ben));
+  await openDoc(ben, docId);
+  const adaField = await addPropertyUpToValue(ada, 'owner', 'ada');
+  const benField = await addPropertyUpToValue(ben, 'owner', 'ben');
+  if (!ada.sever) throw new Error('Ada must be severable');
+  ada.sever.blackhole();
+  try {
+    await adaField.press('Enter');
+    await benField.press('Enter');
+    await expect(PROPERTIES(ada).getByRole('textbox', { name: 'owner', exact: true })).toHaveValue('ada');
+    await expect(PROPERTIES(ben).getByRole('textbox', { name: 'owner', exact: true })).toHaveValue('ben');
+    expect(ada.sever.census().dropped.out, 'the sever actually withheld a local write').toBeGreaterThan(0);
+  } finally { ada.sever.restore(); }
+  const owner = (actor: Actor) => PROPERTIES(actor).getByRole('textbox', { name: 'owner', exact: true });
+  await expect.poll(async () => {
+    const values = [await owner(ada).inputValue(), await owner(ben).inputValue()];
+    return values[0] === values[1] && ['ada', 'ben'].includes(values[0]);
+  },
+    { message: 'same-key additions render the same winner in both windows', timeout: 15_000 })
+    .toBe(true);
+  const winner = await owner(ada).inputValue();
+  await waitAcked(ada, docId);
+  await waitAcked(ben, docId);
+  for (const actor of [ada, ben]) {
+    actor.observations.clear();
+    await actor.page.reload();
+    await ui.waitLive(actor, docId);
+    const header = await openProperties(actor);
+    await expect(header.getByRole('textbox', { name: 'status', exact: true }), 'untouched properties survive the race and reload').toHaveValue('done');
+    await expect(owner(actor)).toHaveValue(winner);
+  }
+  await owner(ada).fill('repaired');
+  await owner(ada).press('Enter');
+  await (await addPropertyUpToValue(ada, 'due', 'soon')).press('Enter');
+  await expect(owner(ben)).toHaveValue('repaired');
+  await expect(PROPERTIES(ben).getByRole('textbox', { name: 'due', exact: true })).toHaveValue('soon');
+  await waitAcked(ada, docId);
+  ben.observations.clear();
+  await ben.page.reload();
+  await ui.waitLive(ben, docId);
+  const header = await openProperties(ben);
+  await expect(owner(ben)).toHaveValue('repaired');
+  await expect(header.getByRole('textbox', { name: 'status', exact: true })).toHaveValue('done');
+  await expect(header.getByRole('textbox', { name: 'due', exact: true })).toHaveValue('soon');
+  await actors.checkpoint('same-property-recovered');
 });
