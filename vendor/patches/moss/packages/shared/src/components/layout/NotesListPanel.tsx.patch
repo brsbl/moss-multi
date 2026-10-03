@@ -1,7 +1,11 @@
 diff --git a/packages/shared/src/components/layout/NotesListPanel.tsx b/packages/shared/src/components/layout/NotesListPanel.tsx
 --- a/packages/shared/src/components/layout/NotesListPanel.tsx
 +++ b/packages/shared/src/components/layout/NotesListPanel.tsx
-@@ -3,6 +3,8 @@ import { Search, X, PanelLeft, Plus } from 'lucide-react';
+@@ -1,8 +1,12 @@
++// moss-multi seam: the web vault selector occupies the native drag row.
++import { VaultSwitcher } from '@moss-multi/host/surfaces/VaultSwitcher';
+ import * as React from 'react';
+ import { Search, X, PanelLeft, Plus } from 'lucide-react';
  import { KeyboardShortcut } from '@/components/ui/keyboard-shortcut';
  import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
  import { cn } from '@/lib/utils';
@@ -10,7 +14,15 @@ diff --git a/packages/shared/src/components/layout/NotesListPanel.tsx b/packages
  
  export interface NotesListPanelProps {
    className?: string;
-@@ -284,9 +286,12 @@ export const NotesListPanel = React.forwardRef<NotesListPanelHandle, NotesListPa
+@@ -200,6 +204,7 @@ export const NotesListPanel = React.forwardRef<NotesListPanelHandle, NotesListPa
+         style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
+       >
+         <div className="flex h-8 items-center justify-end">
++          <VaultSwitcher />
+           {onCollapse && (
+             <TooltipProvider>
+               <Tooltip>
+@@ -284,9 +289,12 @@ export const NotesListPanel = React.forwardRef<NotesListPanelHandle, NotesListPa
                        <Plus className="h-3.5 w-3.5" strokeWidth={1.5} aria-hidden />
                        Note
                      </span>
