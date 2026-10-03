@@ -4,8 +4,7 @@
 // keep buffering, and on reconnect both windows converge byte for byte. A healthy idle socket shows nothing. A late
 // first sync shows `retrying` and binds in place, and a 51st connection is terminal `conn-limit` with a Retry.
 //
-// Until T1.1's members API is on m1, the peer is the owner's second window (each window is its own client, A§10.7);
-// a second principal is signed in beside them (invariant 8).
+// Ada shares with Ben through the real Share dialog; the severed peer is a distinct principal.
 import type { Locator } from '@playwright/test';
 import type { Actor, Actors } from '../lib/actors.ts';
 import {
@@ -132,11 +131,12 @@ async function expectNoRemount(actor: Actor, docId: string, when: string): Promi
 
 interface Shared {
   owner: Principal;
+  peer: Principal;
   ada: Actor;
   docId: string;
 }
 
-/** Ada creates a note and types `opening`, acked; Ben, a second principal, signs in elsewhere (invariant 8). */
+/** Ada creates the note and shares it with Ben as an editor. */
 async function sharedNote(actors: Actors, opening: string): Promise<Shared> {
   const owner = await actors.principal('ada');
   const ada = await windowFor(actors, owner, { label: 'ada' });
@@ -145,13 +145,16 @@ async function sharedNote(actors: Actors, opening: string): Promise<Shared> {
   await waitBodyLive(ada, docId);
   await ui.typeBody(ada, docId, opening);
   await waitAcked(ada, docId);
-  await actors.open(await actors.principal('ben'));
-  return { owner, ada, docId };
+  const peer = await actors.principal('ben');
+  await ui.shareWith(ada, docId, peer, 'Can edit');
+  await ada.page.keyboard.press('Escape');
+  await actors.open(peer);
+  return { owner, peer, ada, docId };
 }
 
-/** Ada's second window on the note. */
-async function secondWindow(actors: Actors, { owner, docId }: Shared, severable = false): Promise<Actor> {
-  const bea = await windowFor(actors, owner, { label: 'ada-2', severable });
+/** Ben's window on Ada's shared note. */
+async function peerWindow(actors: Actors, { peer, docId }: Shared, severable = false): Promise<Actor> {
+  const bea = await windowFor(actors, peer, { label: 'ben', severable });
   await land(bea, `/d/${docId}`);
   return bea;
 }
@@ -169,7 +172,7 @@ const MEANWHILE = ' while the other window kept going';
 test('j03-connection: a black-holed socket shows the banner within 14 s while the other window is unaffected, and the offline edits converge byte for byte @p:col-4 @evidence @tierA', async ({ actors, measure }) => {
   const shared = await sharedNote(actors, OPENING_1);
   const { ada, docId } = shared;
-  const bea = await secondWindow(actors, shared, true);
+  const bea = await peerWindow(actors, shared, true);
   await actors.requireDistinct(2);
   const sever = bea.sever;
   if (!sever) throw new Error('the second window is not severable');
@@ -231,7 +234,7 @@ test('j03-connection: with the stack stopped every window shows the banner withi
   test.setTimeout(180_000);
   const shared = await sharedNote(actors, OPENING_2);
   const { ada, docId } = shared;
-  const bea = await secondWindow(actors, shared);
+  const bea = await peerWindow(actors, shared);
   await actors.requireDistinct(2);
   await waitBodyLive(bea, docId);
   const windows = [ada, bea];
@@ -282,7 +285,7 @@ const OPENING_3 = 'A quiet note left alone';
 test('j03-connection: a healthy socket idle for 20 s shows no banner and opens no second socket @p:col-4', async ({ actors }) => {
   const shared = await sharedNote(actors, OPENING_3);
   const { ada, docId } = shared;
-  const bea = await secondWindow(actors, shared);
+  const bea = await peerWindow(actors, shared);
   await actors.requireDistinct(2);
   await waitBodyLive(bea, docId);
   const windows = [ada, bea];
@@ -312,7 +315,7 @@ const FIRST_SYNC_HOLD_MS = 10_000;
 test('j03-connection: a first sync held back 10 s shows retrying and still connecting, then binds in place with no remount @p:R10', async ({ actors }) => {
   const shared = await sharedNote(actors, OPENING_4);
   const { docId } = shared;
-  const bea = await windowFor(actors, shared.owner, { label: 'ada-2', severable: true });
+  const bea = await windowFor(actors, shared.peer, { label: 'ben', severable: true });
   await actors.requireDistinct(2);
   const sever = bea.sever;
   if (!sever) throw new Error('the second window is not severable');
@@ -345,7 +348,7 @@ test('j03-connection: a 51st connection goes terminal conn-limit with a Retry th
   // Ada's window holds one connection; 49 protocol-level sockets fill the doc to its 50.
   const held = await holdDocSockets(stack.baseUrl, docId, cookieHeader(await signIn(stack.baseUrl, shared.owner)), 49);
   try {
-    const bea = await secondWindow(actors, shared);
+    const bea = await peerWindow(actors, shared);
     await actors.requireDistinct(2);
     await expect(ui.pane(bea, docId), 'the 51st connection is terminal').toHaveAttribute(TERMINAL_REASON_ATTR, 'conn-limit', { timeout: BIND_TIMEOUT });
     await expect(ui.pane(bea, docId)).toHaveAttribute(DOC_STATE_ATTR, 'terminal');
@@ -378,7 +381,7 @@ test('j03-connection: a 51st connection goes terminal conn-limit with a Retry th
 test('j03-connection: a refused write rebinds fresh and a deleted doc locks in place @p:col-4', async ({ actors }) => {
   const shared = await sharedNote(actors, 'The server keeps this sentence');
   const { docId } = shared;
-  const bea = await secondWindow(actors, shared, true);
+  const bea = await peerWindow(actors, shared, true);
   await actors.requireDistinct(2);
   await waitBodyLive(bea, docId);
   await bea.observeEditor(docId);
@@ -404,15 +407,53 @@ test('j03-connection: a refused write rebinds fresh and a deleted doc locks in p
   await expect(ui.pane(bea, docId)).toHaveAttribute(TERMINAL_REASON_ATTR, 'deleted');
   await expect(body).toHaveAttribute(BODY_BINDING_ATTR, 'terminal');
   await expect(body).toHaveAttribute('contenteditable', 'false');
+  await expect(body, 'terminal content stays visible in place').toBeVisible();
+  await expect(body).toHaveText('The server keeps this sentence and writing works again');
   await expect(banner(bea, docId)).toHaveAttribute(CONNECTION_BANNER_ATTR, 'deleted');
   await expectNoRemount(bea, docId, 'terminal state keeps the content in place');
 });
 
 
+test('j03-connection: closing Settings during sign-out keeps the confirmation reachable and the note visible @p:col-4', async ({ actors }) => {
+  const shared = await sharedNote(actors, 'The note stays here during sign-out');
+  const { ada, docId } = shared;
+  const ben = await peerWindow(actors, shared, true);
+  await actors.requireDistinct(2);
+  await waitBodyLive(ben, docId);
+  await ben.observeEditor(docId);
+  await ui.openSettings(ben);
+  await ben.page.keyboard.press('Escape');
+  ben.sever!.blackhole();
+  await ui.typeBody(ben, docId, ' with pending edits');
+  await expect(ui.pane(ben, docId)).toHaveAttribute(SYNC_UNACKED_ATTR, '1');
+  let requests = 0;
+  await ben.page.route('**/api/auth/sign-out', async route => {
+    requests += 1;
+    await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+  });
+  await ui.signOutThroughSettings(ben);
+  await ben.page.keyboard.press('Escape');
+  await expect(ben.page.getByRole('dialog')).toBeHidden();
+  await expect(ui.body(ben, docId)).toHaveAttribute('contenteditable', 'false');
+  await expect.soft(ui.body(ben, docId), 'paused text is visible').toBeVisible();
+  const confirmation = ben.page.getByRole('alertdialog');
+  await expect(confirmation, 'confirmation survives closing Settings during the ack wait').toBeVisible({ timeout: 8000 });
+  await expect(confirmation.getByRole('button', { name: 'Cancel', exact: true })).toBeFocused();
+  expect(requests).toBe(0);
+  await confirmation.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(ui.body(ben, docId)).toHaveAttribute('contenteditable', 'true');
+  await ui.typeBody(ben, docId, ' and more after cancelling');
+  ben.expectReconnects(2, docId);
+  ben.sever!.restore();
+  await waitAcked(ben, docId, RECOVER_TIMEOUT);
+  await expect.poll(() => bodyText(ada, docId)).toBe('The note stays here during sign-out with pending edits and more after cancelling');
+  await expectNoRemount(ben, docId, 'closing Settings and cancelling sign-out');
+});
+
 test('j03-connection: failed sign-out preserves offline edits and cancelling unsynced sign-out keeps the session @p:col-4', async ({ actors }) => {
   const shared = await sharedNote(actors, 'Sign-out must preserve this note');
   const { ada, docId } = shared;
-  const bea = await secondWindow(actors, shared, true);
+  const bea = await peerWindow(actors, shared, true);
   await actors.requireDistinct(2);
   await waitBodyLive(bea, docId);
   await bea.observeEditor(docId);
@@ -455,7 +496,7 @@ test('j03-connection: failed sign-out preserves offline edits and cancelling uns
 test('j03-connection: a real Settings chunk load failure preserves the shell and offline edits @p:R10', async ({ actors }) => {
   const shared = await sharedNote(actors, 'A failed import leaves the editor here');
   const { ada, docId } = shared;
-  const bea = await secondWindow(actors, shared, true);
+  const bea = await peerWindow(actors, shared, true);
   await actors.requireDistinct(2);
   await waitBodyLive(bea, docId);
   await bea.observeEditor(docId);

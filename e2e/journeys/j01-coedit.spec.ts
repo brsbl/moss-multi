@@ -168,6 +168,7 @@ test('j01 access: a viewer reads the shared note but cannot share, write through
   const ben = await actors.open(benPrincipal, { path: `/d/${docId}` });
   await expect(ui.pane(ben, docId)).toHaveAttribute(ROLE_ATTR, 'viewer');
   await expect(ui.body(ben, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'readonly');
+  await expect(ui.body(ben, docId), 'the read-only note remains visible').toBeVisible();
   await expect(ui.body(ben, docId)).toHaveAttribute('contenteditable', 'false');
   expect(await ui.fieldText(ben, docId, 'body')).toBe(ADA_TEXT);
   await expect(ui.pane(ben, docId).getByRole('button', { name: 'Share', exact: true })).toHaveCount(0);
@@ -198,6 +199,7 @@ test('j01 access: a viewer reads the shared note but cannot share, write through
   }
   await ben.page.reload();
   await expect(ui.body(ben, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'readonly');
+  await expect(ui.body(ben, docId), 'the read-only note remains visible').toBeVisible();
   expect(await ui.fieldText(ben, docId, 'body')).toBe(ADA_TEXT);
 });
 
