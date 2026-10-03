@@ -2,7 +2,7 @@
 // GET /api/docs/:id is the doc and the caller's role on it; /members is the members API (members.ts); GET
 // /api/docs/:id/instance is the owner-only DO probe (A§19), which reads nothing from the doc. A missing doc and one the
 // caller cannot open get the same 404 on every route (A§8).
-import { and, eq, isNull } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { getServerByName } from 'partyserver';
 import { MARKDOWN_CAP_BYTES } from '@moss-multi/protocol/limits';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
@@ -22,7 +22,6 @@ export type DocsEnv = AuthEnv & Pick<AppEnv, 'DocDO'>;
 const DOC = /^\/api\/docs\/([^/]+)$/;
 const MEMBERS = /^\/api\/docs\/([^/]+)\/members$/;
 const INSTANCE = /^\/api\/docs\/([^/]+)\/instance$/;
-const FILENAME_ATTEMPTS = 5;
 
 export interface DocRecord {
   id: string;
@@ -33,47 +32,12 @@ export interface DocRecord {
   updatedAt: number;
 }
 
-export function slug(title: string): string {
-  return title
-    .trim()
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}]+/gu, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 80)
-    .replace(/-+$/, '');
-}
-
-/** `<stem>.md`, else `<stem>-2.md`, `<stem>-3.md`…: collisions get a suffix, never a 409 (A§5.1). */
-export function availableFilename(stem: string, taken: Set<string>): string {
-  if (!taken.has(`${stem}.md`)) return `${stem}.md`;
-  for (let n = 2; ; n += 1) if (!taken.has(`${stem}-${n}.md`)) return `${stem}-${n}.md`;
-}
-
 async function insertDoc(db: Db, row: { folderId: string; ownerUserId: string; createdBy: string; title: string }): Promise<DocRecord> {
-  const stem = slug(row.title) || 'untitled';
-  for (let attempt = 1; ; attempt += 1) {
-    const live = await db
-      .select({ filename: docs.filename })
-      .from(docs)
-      .where(and(eq(docs.folderId, row.folderId), isNull(docs.deletedAt)));
-    const now = Date.now();
-    const doc: DocRecord = {
-      id: crypto.randomUUID(),
-      folderId: row.folderId,
-      title: row.title,
-      filename: availableFilename(stem, new Set(live.map((d) => d.filename))),
-      createdAt: now,
-      updatedAt: now,
-    };
-    try {
-      await db.insert(docs).values({ ...doc, ownerUserId: row.ownerUserId, createdBy: row.createdBy });
-      return doc;
-    } catch (error) {
-      // A concurrent create took the name; the live-filename index refused this one.
-      const unique = /UNIQUE/i.test(`${error} ${(error as { cause?: unknown }).cause ?? ''}`);
-      if (!unique || attempt >= FILENAME_ATTEMPTS) throw error;
-    }
-  }
+  const id = crypto.randomUUID();
+  const now = Date.now();
+  const doc = { id, folderId: row.folderId, title: '', filename: `pending-${id}.md`, createdAt: now, updatedAt: now };
+  await db.insert(docs).values({ ...doc, ownerUserId: row.ownerUserId, createdBy: row.createdBy });
+  return doc;
 }
 
 async function createDoc(request: Request, env: DocsEnv): Promise<Response> {
@@ -105,7 +69,8 @@ async function createDoc(request: Request, env: DocsEnv): Promise<Response> {
     if (error instanceof Error && error.message === 'doc-cap') return json({ error: 'doc-cap' }, 413, NO_STORE);
     throw error;
   }
-  return json({ doc, role: folder.role }, 201, NO_STORE);
+  const [projected] = await db.select({ id: docs.id, folderId: docs.folderId, title: docs.title, filename: docs.filename, createdAt: docs.createdAt, updatedAt: docs.updatedAt }).from(docs).where(eq(docs.id, doc.id));
+  return json({ doc: projected, role: folder.role }, 201, NO_STORE);
 }
 
 /** Duplicate content at one server snapshot; grants stay on the source and folder access is inherited. */
@@ -139,7 +104,8 @@ async function duplicateDoc(request: Request, env: DocsEnv, docId: string): Prom
     if (error instanceof Error && error.message === 'doc-cap') return json({ error: 'doc-cap' }, 413, NO_STORE);
     throw error;
   }
-  return json({ doc, role: folder.role }, 201, NO_STORE);
+  const [projected] = await db.select({ id: docs.id, folderId: docs.folderId, title: docs.title, filename: docs.filename, createdAt: docs.createdAt, updatedAt: docs.updatedAt }).from(docs).where(eq(docs.id, doc.id));
+  return json({ doc: projected, role: folder.role }, 201, NO_STORE);
 }
 
 /** The doc's listing fields and the caller's role, for a doc the workspace listing does not carry. */
@@ -156,6 +122,23 @@ async function readDoc(request: Request, env: DocsEnv, docId: string): Promise<R
     .limit(1);
   if (!doc) return notFound();
   return json({ doc, role: access.role }, 200, NO_STORE);
+}
+
+async function renameDoc(request: Request, env: DocsEnv, docId: string): Promise<Response> {
+  const principal = await resolvePrincipal(request, env);
+  if (!principal) return unauthenticated();
+  const access = await resolveDocAccess(createDb(env.DB), principal, docId, shareTokenOf(request));
+  if (!access || access.deleted) return notFound();
+  if (!roleAtLeast(access.role, 'editor')) return json({ error: 'forbidden' }, 403, NO_STORE);
+  const body = await readJsonObject(request);
+  if (!body || typeof body.title !== 'string') return json({ error: 'bad-request' }, 400, NO_STORE);
+  try {
+    const stub = await getServerByName(env.DocDO, docId);
+    await stub.renameTitle(body.title);
+    return readDoc(request, env, docId);
+  } catch {
+    return json({ error: 'unavailable' }, 503, NO_STORE);
+  }
 }
 
 async function docInstance(request: Request, env: DocsEnv, docId: string): Promise<Response> {
@@ -176,7 +159,7 @@ export async function handleDocs(request: Request, env: DocsEnv): Promise<Respon
   const duplicate = /^\/api\/docs\/([^/]+)\/duplicate$/.exec(pathname);
   if (duplicate) return only('POST', request, () => duplicateDoc(request, env, duplicate[1]));
   const doc = DOC.exec(pathname);
-  if (doc) return only('GET', request, () => readDoc(request, env, doc[1]));
+  if (doc) return request.method === 'PATCH' ? renameDoc(request, env, doc[1]) : only('GET', request, () => readDoc(request, env, doc[1]));
   const members = MEMBERS.exec(pathname);
   if (members) return handleMembers(request, env, { type: 'doc', id: members[1] });
   const accessMatch = /^\/api\/docs\/([^/]+)\/access$/.exec(pathname);

@@ -10,8 +10,14 @@ import {
 } from './doc/admission.ts';
 import { attach, attachmentOf, awarenessTooLarge } from './doc/awareness.ts';
 import { AckCoalescer, DocStore, PERSISTENCE } from './doc/persistence.ts';
+import { d1Projections, Projections, type ProjectionTarget } from './doc/projections.ts';
 import type { SyncEnv } from './env.ts';
+import { migrateFrontmatter } from '@moss-multi/core/frontmatter';
+import { writeField } from '@moss-multi/core/doc-fields';
 import { exportDocMarkdown, importBody, rootIsEmpty, SERVER_IMPORT, SERVER_SEED, seedEmptyParagraph } from './server-doc.ts';
+
+/** A title written by create() or a REST rename; both project. */
+export const SERVER_TITLE = 'server-title';
 
 export interface DocLimits {
   stateCapBytes: number;
@@ -54,12 +60,15 @@ export class DocDO extends YServer<SyncEnv> {
     writeRate: WRITE_RATE,
     awarenessMaxBytes: AWARENESS_MAX_BYTES,
   };
+  /** Where the title, filename and updated_at projections land (A§5.1). */
+  static projectionTarget: (env: SyncEnv) => ProjectionTarget | null = (env) => (env?.DB ? d1Projections(env.DB) : null);
 
   readonly instanceId = crypto.randomUUID();
   readonly constructedAt = Date.now();
 
   #store: DocStore | null = null;
   #exported: string | null = null;
+  #projections: Projections | null = null;
   readonly #limits = (this.constructor as typeof DocDO).limits;
   readonly #rate = new WriteRate(this.#limits.writeRate.max, this.#limits.writeRate.windowMs);
   readonly #acks = new AckCoalescer<Connection>((connection, deletes) => this.#ack(connection, deletes), ACK_COALESCE_MS);
@@ -72,7 +81,10 @@ export class DocDO extends YServer<SyncEnv> {
     store.load(this.document);
     this.#store = store;
     this.document.on('update', (update: Uint8Array, origin: unknown) => this.#persist(store, update, origin));
+    migrateFrontmatter(this.document, 'frontmatter-migration');
     this.#seed(store);
+    const target = (this.constructor as typeof DocDO).projectionTarget(this.env);
+    if (target) this.#project(new Projections(this.name, target));
   }
 
   /** Debounced by y-partyserver (2 s, at most 10 s). */
@@ -162,11 +174,24 @@ export class DocDO extends YServer<SyncEnv> {
       importBody(this.document, hasFrontmatter ? parts.body : input.markdown, (diff) => this.#admitServerWrite(store, diff), frontmatter);
     }
     const title = input.title?.trim();
-    // POST /api/docs wrote the D1 title, so this write needs no projection.
-    if (title) this.document.transact(() => this.document.getText('title').insert(0, title), SERVER_SEED);
+    // POST /api/docs wrote a provisional row; the title and its filename arrive through the projection.
+    if (title) writeField(this.document, 'title', title, SERVER_TITLE);
     store.setMeta('folder', input.folderId);
     store.setMeta('owner', input.ownerId);
+    if (!title) await this.#projections?.initializeEmpty();
+    await this.#projections?.flush();
     store.setMeta('created', '1');
+  }
+
+  /**
+   * A rename from outside the doc's sockets (REST, CLI): a minimal write to Y.Text('title') that every open client
+   * merges, projected before it returns.
+   */
+  async renameTitle(text: string): Promise<void> {
+    await this.#ready();
+    writeField(this.document, 'title', text, SERVER_TITLE);
+    this.#projections?.touch();
+    await this.#projections?.flush();
   }
 
   /** Internal RPC: preserves Yjs item identity, including relative anchors, without a markdown round trip. */
@@ -190,6 +215,7 @@ export class DocDO extends YServer<SyncEnv> {
     }, SERVER_IMPORT);
     store.setMeta('folder', input.folderId);
     store.setMeta('owner', input.ownerId);
+    await this.#projections?.flush();
     store.setMeta('created', '1');
   }
 
@@ -226,7 +252,20 @@ export class DocDO extends YServer<SyncEnv> {
     this.#exported = null;
     if (origin === PERSISTENCE) return;
     store.record(update, this.document);
-    if (isConnection(origin)) this.#acks.schedule(origin, this.#frameDeletes);
+    if (isConnection(origin)) {
+      this.#acks.schedule(origin, this.#frameDeletes);
+      this.#projections?.touch();
+    }
+  }
+
+  /** Title changes project, except the replay and the seed (A§5.1). */
+  #project(projections: Projections): void {
+    this.#projections = projections;
+    const title = this.document.getText('title');
+    title.observe((_event, transaction) => {
+      if (transaction.origin === PERSISTENCE || transaction.origin === SERVER_SEED) return;
+      projections.title(title.toString());
+    });
   }
 
   /** Simulated only near the cap, since the copy costs a full encode. */

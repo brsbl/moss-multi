@@ -4,14 +4,13 @@
 // for 60 s. Split view never shows one note in both panes, so the tab never asks for a second session (A§10.1).
 // Copy markdown and Note stats read the body as it is now, after local and remote edits. Keys typed while "+ Note" is
 // still opening are refused visibly; edits typed while the socket is down outlive a note switch; the link popover's
-// highlight never enters the doc; a pasted or dropped image is refused visibly until uploads land (M3); and the
-// unbound title is offered to nothing (no Rename).
+// highlight never enters the doc; and a pasted or dropped image is refused visibly until
+// uploads land (M3). The title binds in j02 (T1.4).
 import type { Locator, Page, Route } from '@playwright/test';
 import type { Actor, Actors } from '../lib/actors.ts';
 import {
   APP_STATE_ATTR, BODY_BINDING_ATTR, DOC_ID_ATTR, DOC_STATE_ATTR, EDITOR_GENERATION_ATTR, EDITOR_PANE_ATTR,
-  INPUT_REFUSAL_ATTR, LEXICAL_EDITOR_SELECTOR, NAMES, SIDEBAR_ROW_ATTR, SYNC_UNACKED_ATTR, TITLE_BINDING_ATTR,
-  paneSelector,
+  INPUT_REFUSAL_ATTR, LEXICAL_EDITOR_SELECTOR, NAMES, SIDEBAR_ROW_ATTR, SYNC_UNACKED_ATTR, paneSelector,
 } from '../lib/contract.ts';
 import { remountSince } from '../lib/detectors.js';
 import { cookieHeader, openDocClient } from '../lib/doc-client.ts';
@@ -227,7 +226,7 @@ test('j00-persist: "+ Note" binds the editor; typed text survives a reload byte 
   const closed = await closedRecord(ada);
   expect(closed?.roots, 'the recorder saw the body root').toBeGreaterThan(0);
   expect(closed?.problems, 'nothing in the body took focus or input before it was live').toEqual([]);
-  await expect(ui.body(ada, docId), '"+ Note" leaves the caret in the bound body').toBeFocused();
+  await expect(ui.title(ada, docId), '"+ Note" leaves the caret in the bound title (R2)').toBeFocused();
   await expect(ui.body(ada, docId).locator('p'), 'the DocDO seeded one empty paragraph').toHaveCount(1);
   await ada.observeEditor(docId);
 
@@ -349,6 +348,7 @@ test('j00-persist: keys typed while "+ Note" is still opening are refused visibl
   await openShell(actors, 'ben');
   await actors.requireDistinct(2);
 
+  await expect(ada.page.locator(`[${EDITOR_PANE_ATTR}]`), 'the first note starts on an empty canvas').toHaveCount(0);
   // The create request is held, so the keys land between the click and the bind on every run.
   let creates = 0;
   let release: () => void = () => undefined;
@@ -372,6 +372,7 @@ test('j00-persist: keys typed while "+ Note" is still opening are refused visibl
   await ada.page.keyboard.type('Quick ');
   await ada.page.keyboard.press('Enter');
   await expect(refusal(ada.page), 'the refused keys are announced').toContainText('Opening note');
+  await expect(refusal(ada.page), 'the announcement is visible on the empty canvas').toBeVisible();
   expect(creates, 'Space and Enter create no second note').toBe(1);
 
   release();
@@ -380,12 +381,13 @@ test('j00-persist: keys typed while "+ Note" is still opening are refused visibl
   const [docId] = await fresh();
   if (!docId) throw new Error('no new pane');
   await waitBodyLive(ada, docId);
-  await expect(ui.body(ada, docId), 'the bound body takes focus').toBeFocused();
+  await expect(ui.title(ada, docId), 'the bound title takes focus (R2)').toBeFocused();
   const after = 'brown fox';
   await ada.page.keyboard.type(after);
-  ada.typed({ docId, field: 'body', text: after, ordered: true });
+  ada.typed({ docId, field: 'title', text: after, ordered: true });
   await waitAcked(ada, docId);
-  expect(await ui.fieldText(ada, docId, 'body'), 'keys after the bind land; refused keys never reach the doc').toBe(after);
+  expect(await ui.fieldText(ada, docId, 'title'), 'keys after the bind land; refused keys never reach the doc').toBe(after);
+  expect(await ui.fieldText(ada, docId, 'body'), 'the body holds none of them').toBe('');
   expect(creates, 'one note was created').toBe(1);
   await expect(ada.page.locator(`[${SIDEBAR_ROW_ATTR}]`), 'one new row').toHaveCount(rows + 1);
 });
@@ -554,30 +556,4 @@ test('j00-persist: a pasted image or video, or a dropped image, is refused visib
   await waitAcked(ada, docId);
   expect(await ui.body(ada, docId).locator('img, video, [data-lexical-decorator]').count(), 'no media node lands').toBe(0);
   expect(await ui.fieldText(ada, docId, 'body'), 'the body is unchanged').toBe(text);
-});
-
-test('j00-persist: the unbound title is offered to nothing: no Rename and no focus, so no typed name can vanish into it @p:note-6 @p:R2', async ({ actors }) => {
-  const ada = await openShell(actors, 'ada');
-  await openShell(actors, 'ben');
-  await actors.requireDistinct(2);
-  const docId = await newNote(ada);
-  await waitBodyLive(ada, docId);
-  const title = ui.title(ada, docId);
-  await expect(title, 'the title stays closed until it binds (T1.4)').toHaveAttribute(TITLE_BINDING_ATTR, 'unbound');
-
-  // Rename focuses the title, so while the title cannot bind the row menu does not offer it.
-  await row(ada, docId).click({ button: 'right' });
-  await expect(ada.page.getByRole('menuitem', { name: 'Pin', exact: true }), 'the row menu renders its items').toBeVisible();
-  await expect(ada.page.getByRole('menuitem', { name: 'Rename', exact: true }), 'no Rename while the title is unbound').toHaveCount(0);
-  await ada.page.keyboard.press('Escape');
-  await expect(ada.page.getByRole('menu')).toBeHidden();
-
-  // A click on the closed title gives it no focus and no caret (invariant 9 at the checkpoint). The mouse is used
-  // directly: Playwright's click refuses an aria-disabled element.
-  const box = await title.boundingBox();
-  if (!box) throw new Error('the title has no box');
-  await ada.page.mouse.click(box.x + 20, box.y + box.height / 2);
-  await expect(title).not.toBeFocused();
-  expect(await title.evaluate((el) => (el as HTMLElement).isContentEditable || el.hasAttribute('tabindex')), 'the title is neither editable nor focusable').toBe(false);
-  await actors.checkpoint('closed-title');
 });

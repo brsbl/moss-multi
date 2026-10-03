@@ -1146,10 +1146,11 @@ export function App() {
   const didInitializeStartupSelectionRef = useRef(false);
   const commandPaletteRef = useRef<CommandPaletteOverlayHandle>(null);
 
-  const [shouldFocusTitle, setShouldFocusTitle] = useState(false);
+  // moss-multi seam: only the requested note may consume a title-focus intent.
+  const [titleFocusNoteId, setTitleFocusNoteId] = useState<string | null>(null);
   const [shouldFocusBody, setShouldFocusBody] = useState(false);
   const handleTitleFocusComplete = useCallback(() => {
-    setShouldFocusTitle(false);
+    setTitleFocusNoteId(null);
   }, []);
   const handleBodyFocusComplete = useCallback(() => {
     setShouldFocusBody(false);
@@ -2867,7 +2868,7 @@ export function App() {
       }
       navigateToNote(note.id);
       if (focusTarget === 'title') {
-        setShouldFocusTitle(true);
+        setTitleFocusNoteId(note.id);
       } else {
         setShouldFocusBody(true);
       }
@@ -2933,7 +2934,7 @@ export function App() {
       opening.disarm();
       return;
     }
-    if (await createAndActivateNote({ focusTarget: 'body' })) opening.created();
+    if (await createAndActivateNote({ focusTarget: 'title' })) opening.created();
     else opening.disarm();
   }, [createAndActivateNote, flushBeforeNoteSwitch]);
 
@@ -3112,14 +3113,8 @@ export function App() {
   const handleRenameNote = useCallback(
     (noteId: string) => {
       handleSelectNote(noteId);
-      // Race: 150ms delay heuristic for note switch + IPC hydration to complete.
-      // May fire too early under heavy load. Cleanup at line ~566 cancels on unmount.
-      // TODO: Replace with event-driven approach (e.g., contentHydrated callback).
-      if (renameTimerRef.current) clearTimeout(renameTimerRef.current);
-      renameTimerRef.current = setTimeout(() => {
-        canvasRef.current?.focusTitle();
-        renameTimerRef.current = null;
-      }, 150);
+      // moss-multi seam: the pane consumes this focus intent after first sync.
+      setTitleFocusNoteId(noteId);
     },
     [handleSelectNote]
   );
@@ -4035,7 +4030,7 @@ export function App() {
       searchBarAutoFocus={searchBarAutoFocus}
       onCloseSearch={handleCloseSearch}
       onOpenSearch={() => { setSearchQuery(''); setSearchBarAutoFocus(true); }}
-      leftAutoFocusTitle={shouldFocusTitle}
+      leftAutoFocusTitle={titleFocusNoteId !== null && titleFocusNoteId === activeNoteId}
       onLeftTitleFocusComplete={handleTitleFocusComplete}
       leftAutoFocusBody={shouldFocusBody}
       onLeftBodyFocusComplete={handleBodyFocusComplete}
@@ -4083,7 +4078,7 @@ export function App() {
         onDeleteNote={handleNoteDeleted}
         // moss-multi seam: hide-registry (A§9)
         onDuplicateNote={handleDuplicateNote}
-        onRenameNote={hidden('rename-note') ? undefined : handleRenameNote}
+        onRenameNote={handleRenameNote}
         onCollapse={handleCollapseNotesPanel}
         footerContent={panelFooter}
       />

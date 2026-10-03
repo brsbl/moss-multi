@@ -5,6 +5,7 @@ import {
   buildCopyNoteLinkClipboardData,
   buildMossNoteLinkClipboardHtml,
 } from '@moss-desktop/renderer/editor/utils/note-link-clipboard';
+import { displayTitle, liveTitle, writeLiveTitle } from '../collab/title-binding.ts';
 import { askDocAccess, rememberRole } from '../access.ts';
 
 /** moss's NoteMetadataRecord: timestamps in seconds, folders as `Notes/...` paths. */
@@ -182,7 +183,10 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
     diskListeners.forEach((listener) => listener([], []));
   };
   const pins = () => readJson<Record<string, number>>(storage, PINS_KEY) ?? {};
-  const withLocal = (note: NoteMetadata): NoteMetadata => {
+  const withLocal = (listed: NoteMetadata): NoteMetadata => {
+    // A doc this tab binds is named by its live Y.Text title, never by a listing read before a rename (A§9).
+    const live = liveTitle(listed.id);
+    const note = live === null ? listed : { ...listed, title: displayTitle(live) };
     const pinnedAt = pins()[note.id];
     return pinnedAt ? { ...note, pinned: true, pinnedAt } : note;
   };
@@ -269,9 +273,21 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
         // Content reaches a doc only through its binding or a server merge; the bridge has no path that could
         // wipe one (P:Tech; L§4.6 D-F3).
         if ('content' in input) throw new Error(`moss-multi: a content write through the bridge is refused for ${id}`);
-        if ('title' in input) throw new Error('moss-multi: renaming a note is not available on the web until M1');
-        const note = await byId(id);
+        let note = await byId(id);
         if (!note) return undefined;
+        if (typeof input.title === 'string' && !writeLiveTitle(id, input.title)) {
+          // A doc no pane of this tab binds: the DocDO writes the title into its Y.Text (A§5.1 renameTitle).
+          const response = await request(`/api/docs/${encodeURIComponent(id)}`, {
+            method: 'PATCH',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ title: input.title }),
+          });
+          if (!response.ok) throw new Error(`PATCH /api/docs/${id}: ${response.status}`);
+          const answer = (await response.json()) as { doc: ApiDoc };
+          note = toNoteMetadata(answer.doc);
+          known.set(id, note);
+          listing = null;
+        }
         if ('pinned' in input || 'pinnedAt' in input) {
           const next = pins();
           if (input.pinned === false) delete next[id];

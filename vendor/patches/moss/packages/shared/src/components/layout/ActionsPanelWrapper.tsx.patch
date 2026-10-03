@@ -10,22 +10,20 @@ diff --git a/packages/shared/src/components/layout/ActionsPanelWrapper.tsx b/pac
  
  export interface ActionsPanelWrapperProps {
    children: React.ReactNode;
-@@ -54,7 +56,8 @@ export function ActionsPanelWrapper({
+@@ -54,6 +56,7 @@ export function ActionsPanelWrapper({
    // Global tab state — sticky across note switches
    const [activeTab, setActiveTab] = useAtom(actionsPanelActiveTabAtom);
    const isCommandPaletteDockPreviewing = useAtomValue(commandPaletteDockPreviewAtom);
--  const displayedTab = isCommandPaletteDockPreviewing ? 'actions' : activeTab;
 +  // moss-multi seam: hide-registry (A§9): with Properties staged, Actions is the only tab
-+  const displayedTab = isCommandPaletteDockPreviewing || hidden('note-properties') ? 'actions' : activeTab;
+   const displayedTab = isCommandPaletteDockPreviewing ? 'actions' : activeTab;
  
    const propertiesContentRef = React.useRef<HTMLDivElement>(null);
- 
 @@ -146,9 +149,12 @@ export function ActionsPanelWrapper({
                  <span className="ml-1 h-1 w-1 shrink-0 animate-pulse rounded-full bg-accent-terracotta" />
                )}
              </Tabs.Trigger>
 +            {/* moss-multi seam: hide-registry (A§9) */}
-+            {hidden('note-properties') ? null : (
++            {(
              <Tabs.Trigger value="properties" className={triggerClass(displayedTab === 'properties')}>
                Properties
              </Tabs.Trigger>
@@ -38,7 +36,7 @@ diff --git a/packages/shared/src/components/layout/ActionsPanelWrapper.tsx b/pac
  
          {/* Properties tab content */}
 +        {/* moss-multi seam: hide-registry (A§9) */}
-+        {hidden('note-properties') ? null : (
++        {(
          <Tabs.Content value="properties" forceMount className={cn('min-h-0 flex-1 flex-col outline-none', displayedTab === 'properties' ? 'flex' : 'hidden')}>
            <div ref={propertiesContentRef} className="sidebar-scroll min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-panel-inset pt-panel-section-gap pb-3">
              {propertiesContent}

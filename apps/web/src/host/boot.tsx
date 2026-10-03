@@ -7,6 +7,7 @@ import { auth } from './auth.ts';
 import { pauseDocWrites, severDocSessions } from './collab/doc-session.ts';
 import { SignOutConfirmation } from './surfaces/SignOutConfirmation.tsx';
 import { installBridge } from './bridge/index.ts';
+import { installBackspaceGuard } from './opening-guard.ts';
 
 export async function bootMoss(): Promise<{ default: ComponentType }> {
   installBridge();
@@ -18,6 +19,7 @@ export async function bootMoss(): Promise<{ default: ComponentType }> {
   const { default: App } = await import('@moss-desktop/renderer/App');
   function MossShell() {
     useEffect(() => readyWhenShellRenders(), []);
+    useEffect(() => installBackspaceGuard(), []);
     useEffect(() => auth.subscribe((state) => {
       if (state.status === 'signed-out') severDocSessions();
       else pauseDocWrites(state.status === 'signing-out');

@@ -64,3 +64,12 @@ export function armOpeningGuard(): OpeningGuard {
     },
   };
 }
+
+/** Browsers must never interpret Backspace outside an editable as history navigation. */
+export function installBackspaceGuard(): () => void {
+  const guard = (event: KeyboardEvent) => {
+    if (event.key === 'Backspace' && !event.metaKey && !event.ctrlKey && !event.altKey && !isEditable(event.target)) event.preventDefault();
+  };
+  window.addEventListener('keydown', guard, true);
+  return () => window.removeEventListener('keydown', guard, true);
+}

@@ -6,6 +6,8 @@ import { registerList } from '@lexical/list';
 import { $normalizeFormatWhitespace } from '@moss-desktop/renderer/editor/markdown/format-whitespace';
 import { $createParagraphNode, $getRoot, TextNode, type LexicalEditor } from 'lexical';
 import * as Y from 'yjs';
+import { readField } from '@moss-multi/core/doc-fields';
+import { composeFrontmatter, importFrontmatter } from '@moss-multi/core/frontmatter';
 import { $importNoteBody, createConverterEditor, exportMarkdown } from './converter/index.ts';
 import { excludedPropertiesFor } from './excluded-properties.ts';
 
@@ -112,21 +114,16 @@ export function importBody(live: Y.Doc, markdown: string, admit?: (diff: Uint8Ar
   return serverWrite(live, SERVER_IMPORT, (doc) => {
     $importNoteBody(markdown, { comments: {} });
     if (frontmatter !== undefined) {
-      const field = doc.getText('frontmatter');
-      field.delete(0, field.length);
-      field.insert(0, frontmatter);
+      importFrontmatter(doc, frontmatter, SERVER_IMPORT);
     }
   }, admit);
 }
 
-/** The `.md` file (A§12): the raw frontmatter block, then the body through the one converter. */
+/** The `.md` file (A§12): the frontmatter block in its fences, then the body through the one converter. */
 export function exportDocMarkdown(live: Y.Doc): string {
   const mirror = mirrorOf(live);
   try {
-    const body = exportMarkdown(mirror.editor);
-    const frontmatter = live.getText('frontmatter').toString();
-    if (!frontmatter) return body;
-    return frontmatter.endsWith('\n') ? `${frontmatter}${body}` : `${frontmatter}\n${body}`;
+    return composeFrontmatter(readField(live, 'frontmatter'), exportMarkdown(mirror.editor));
   } finally {
     mirror.dispose();
   }

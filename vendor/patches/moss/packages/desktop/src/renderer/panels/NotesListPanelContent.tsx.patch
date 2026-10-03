@@ -12,7 +12,30 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
  
  const NOTES_FOLDER_NAME = 'Notes';
  const nowInSeconds = (): number => Math.floor(Date.now() / 1000);
-@@ -158,7 +162,8 @@ function NoteContextMenuItems({
+@@ -134,8 +138,15 @@ function NoteContextMenuItems({
+   onDuplicateNote,
+   onDeleteNote
+ }: NoteContextMenuItemsProps) {
++  // moss-multi seam: transfer Rename focus after the menu releases it.
++  const renameOnClose = useRef(false);
+   return (
+-    <ContextMenuContent>
++    <ContextMenuContent onCloseAutoFocus={(event) => {
++      if (!renameOnClose.current) return;
++      renameOnClose.current = false;
++      event.preventDefault();
++      onRenameNote?.(noteId);
++    }}>
+       <ContextMenuItem onSelect={() => handleOpenInNewWindow(noteId)}>
+         <ExternalLink className="h-3.5 w-3.5 text-ink-muted" />
+         <span>Open in New Window</span>
+@@ -153,12 +164,13 @@ function NoteContextMenuItems({
+         <span>{pinned ? 'Unpin' : 'Pin'}</span>
+       </ContextMenuItem>
+       {onRenameNote && !externalFilePath && (
+-        <ContextMenuItem onSelect={() => onRenameNote(noteId)}>
++        <ContextMenuItem onSelect={() => { renameOnClose.current = true; }}>
+           <Pencil className="h-3.5 w-3.5 text-ink-muted" />
            <span>Rename</span>
          </ContextMenuItem>
        )}
@@ -22,7 +45,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
          <ContextMenuItem onSelect={() => onDuplicateNote(noteId)}>
            <Copy className="h-3.5 w-3.5 text-ink-muted" />
            <span>Duplicate</span>
-@@ -169,10 +174,13 @@ function NoteContextMenuItems({
+@@ -169,10 +181,13 @@ function NoteContextMenuItems({
          <Link className="h-3.5 w-3.5 text-ink-muted" />
          <span>Copy Link</span>
        </ContextMenuItem>
@@ -36,7 +59,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
        {externalFilePath ? (
          <>
            <ContextMenuSeparator />
-@@ -181,7 +189,7 @@ function NoteContextMenuItems({
+@@ -181,7 +196,7 @@ function NoteContextMenuItems({
              <span>Close</span>
            </ContextMenuItem>
          </>
@@ -45,7 +68,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
          <>
            <ContextMenuSeparator />
            <ContextMenuItem onSelect={() => onDeleteNote(noteId)}>
-@@ -239,7 +247,8 @@ const NoteListItemWithMenu = memo(function NoteListItemWithMenu({
+@@ -239,7 +254,8 @@ const NoteListItemWithMenu = memo(function NoteListItemWithMenu({
  }: NoteListItemWithMenuProps) {
    const isActive = useIsActiveNote(note.id);
    const [isContextMenuOpen, setIsContextMenuOpen] = useState(false);
@@ -55,7 +78,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
    const showActiveState = options?.showActiveState ?? true;
    const isVisuallyActive = showActiveState && isActive;
    const cardRef = options?.isSelected
-@@ -251,7 +260,13 @@ const NoteListItemWithMenu = memo(function NoteListItemWithMenu({
+@@ -251,7 +267,13 @@ const NoteListItemWithMenu = memo(function NoteListItemWithMenu({
    return (
      <ContextMenu onOpenChange={setIsContextMenuOpen}>
        <ContextMenuTrigger asChild>
@@ -70,7 +93,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
            <NoteCard
              id={note.id}
              title={note.title}
-@@ -336,7 +351,12 @@ const SearchResultNoteCard = memo(function SearchResultNoteCard({
+@@ -336,7 +358,12 @@ const SearchResultNoteCard = memo(function SearchResultNoteCard({
    return (
      <ContextMenu onOpenChange={setIsContextMenuOpen}>
        <ContextMenuTrigger asChild>
@@ -84,7 +107,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
            <NoteCard
              id={result.id}
              title={result.title}
-@@ -1205,7 +1225,9 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1205,7 +1232,9 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
          const isExpanded = expandedFolders.has(folder.path);
          // Show inline subfolder creation input if creating inside this folder
          const showSubfolderInput = isCreatingFolder && creatingFolderParentPath === folder.path;
@@ -95,7 +118,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
  
          return (
            <ContextMenu key={folder.path}>
-@@ -1217,9 +1239,9 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1217,9 +1246,9 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
              noteCount={folder.noteCount}
              depth={depth}
              isDragOver={dragOverTarget === folder.path && (draggingNoteId != null || (draggingFolderPath != null && isFolderDropTargetValid))}
@@ -107,7 +130,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
              draggable={isFolderDraggable}
              onDragStart={(e) => {
                e.dataTransfer.setData('application/x-moss-folder', folder.path);
-@@ -1232,8 +1254,8 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1232,8 +1261,8 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
              }}
              isDragging={draggingFolderPath === folder.path}
              onFolderClick={() => setActiveFolderPath(folder.path)}
@@ -118,7 +141,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
                await foldersApi.rename.invoke({
                  currentPath: folder.path,
                  newName
-@@ -1253,7 +1275,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1253,7 +1282,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
                    updates: { folderPath: updatedFolderPath }
                  });
                }
@@ -127,7 +150,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
            >
              {/* Subfolder creation input */}
              {isExpanded && showSubfolderInput && (
-@@ -1306,15 +1328,22 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1306,15 +1335,22 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
            </div>
            </ContextMenuTrigger>
            <ContextMenuContent>
@@ -151,7 +174,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
            </ContextMenuContent>
            </ContextMenu>
          );
-@@ -1647,7 +1676,8 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1647,7 +1683,8 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
            onCollapse={onCollapse}
            showTitle={false}
            sortContent={sortDropdown}
@@ -161,7 +184,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
              <DropdownMenu open={folderActionsOpen} onOpenChange={setFolderActionsOpen}>
                <TooltipProvider>
                  <Tooltip>
-@@ -1666,14 +1696,18 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1666,14 +1703,18 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
                  </Tooltip>
                </TooltipProvider>
                <DropdownMenuContent align="start" side="bottom" sideOffset={6} className="min-w-0 w-max">

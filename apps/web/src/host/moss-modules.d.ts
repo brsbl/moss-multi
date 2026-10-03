@@ -42,6 +42,7 @@ declare module '@moss-desktop/renderer/editor/utils/editorUpdateTags' {
 // Moss's note and split atoms, as the one-doc-per-tab unit test drives them (A§10.1).
 declare module '@moss/shared/state/atoms' {
   import type { WritableAtom } from 'jotai';
+  export const syncNoteEntityAtom: WritableAtom<null, [{ noteId: string; updates: { title?: string; updatedAt?: number } }], void>;
   export const activeNoteIdAtom: WritableAtom<string | null, [string | null], void>;
   export const activeFolderPathAtom: WritableAtom<string, [string], void>;
   export const hydrateNotesAtom: WritableAtom<null, [], Promise<void>>;
@@ -55,6 +56,8 @@ declare module '@moss/shared/state/atoms' {
 declare module '@moss/shared/state/note-atoms' {
   import type { PrimitiveAtom } from 'jotai';
   export function noteEntityAtom(noteId: string): PrimitiveAtom<object | null>;
+  export function noteFrontmatterAtom(noteId: string): PrimitiveAtom<Record<string, unknown> | null>;
+  export function frontmatterDirtySignalAtom(noteId: string): PrimitiveAtom<number>;
   export const noteIdsAtom: PrimitiveAtom<Set<string>>;
 }
 
@@ -120,6 +123,10 @@ declare module '@moss-desktop/renderer/components/ModalShell' {
     footer?: ReactNode;
     children: ReactNode;
   }>;
+}
+
+declare module '@moss-desktop/common/markdown-layers' {
+  export function splitFrontmatter(text: string): { data: Record<string, unknown> | null };
 }
 
 declare module '@moss/shared/components/ui/confirmation-dialog' {

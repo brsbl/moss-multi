@@ -63,7 +63,30 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
    const module = await import('./panels/TrashedNotesPanelContent');
    return { default: module.TrashedNotesPanelContent };
  }) as typeof import('./panels/TrashedNotesPanelContent').TrashedNotesPanelContent;
-@@ -2917,11 +2924,16 @@ export function App() {
+@@ -1138,10 +1145,11 @@ export function App() {
+   const didInitializeStartupSelectionRef = useRef(false);
+   const commandPaletteRef = useRef<CommandPaletteOverlayHandle>(null);
+ 
+-  const [shouldFocusTitle, setShouldFocusTitle] = useState(false);
++  // moss-multi seam: only the requested note may consume a title-focus intent.
++  const [titleFocusNoteId, setTitleFocusNoteId] = useState<string | null>(null);
+   const [shouldFocusBody, setShouldFocusBody] = useState(false);
+   const handleTitleFocusComplete = useCallback(() => {
+-    setShouldFocusTitle(false);
++    setTitleFocusNoteId(null);
+   }, []);
+   const handleBodyFocusComplete = useCallback(() => {
+     setShouldFocusBody(false);
+@@ -2859,7 +2867,7 @@ export function App() {
+       }
+       navigateToNote(note.id);
+       if (focusTarget === 'title') {
+-        setShouldFocusTitle(true);
++        setTitleFocusNoteId(note.id);
+       } else {
+         setShouldFocusBody(true);
+       }
+@@ -2917,11 +2925,16 @@ export function App() {
    ]);
  
    const handleCreateNote = useCallback(async () => {
@@ -76,12 +99,12 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
        return;
      }
 -    await createAndActivateNote({ focusTarget: 'body' });
-+    if (await createAndActivateNote({ focusTarget: 'body' })) opening.created();
++    if (await createAndActivateNote({ focusTarget: 'title' })) opening.created();
 +    else opening.disarm();
    }, [createAndActivateNote, flushBeforeNoteSwitch]);
  
    const handleDuplicateNote = useCallback(async (noteId: string) => {
-@@ -2932,35 +2944,7 @@ export function App() {
+@@ -2932,35 +2945,7 @@ export function App() {
      if (!entity) return;
  
      try {
@@ -118,7 +141,24 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
        const note = mapRecordToMockNote(persistedRecord);
        insertNote(note);
        applyNoteRecordToStore(persistedRecord);
-@@ -3788,7 +3772,8 @@ export function App() {
+@@ -3127,14 +3112,8 @@ export function App() {
+   const handleRenameNote = useCallback(
+     (noteId: string) => {
+       handleSelectNote(noteId);
+-      // Race: 150ms delay heuristic for note switch + IPC hydration to complete.
+-      // May fire too early under heavy load. Cleanup at line ~566 cancels on unmount.
+-      // TODO: Replace with event-driven approach (e.g., contentHydrated callback).
+-      if (renameTimerRef.current) clearTimeout(renameTimerRef.current);
+-      renameTimerRef.current = setTimeout(() => {
+-        canvasRef.current?.focusTitle();
+-        renameTimerRef.current = null;
+-      }, 150);
++      // moss-multi seam: the pane consumes this focus intent after first sync.
++      setTitleFocusNoteId(noteId);
+     },
+     [handleSelectNote]
+   );
+@@ -3788,7 +3767,8 @@ export function App() {
  
        const key = e.key.toLowerCase();
  
@@ -128,7 +168,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
          e.preventDefault();
          if (showCommandPalette) {
            // Already open - just focus the input
-@@ -3878,7 +3863,8 @@ export function App() {
+@@ -3878,7 +3858,8 @@ export function App() {
        }
  
        // Switch to Trash tab: Cmd+2
@@ -138,7 +178,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
          e.preventDefault();
          handlePanelViewChange('trash');
          return;
-@@ -3947,7 +3933,8 @@ export function App() {
+@@ -3947,7 +3928,8 @@ export function App() {
      onExpandActionsPanel: () => { zenModeActive ? toggleZenMode() : setActionsPanelHidden(false); },
      isAgentStreaming: hasActiveStreaming,
      onCanvasClick: handlePromptClose,
@@ -148,14 +188,20 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
    };
  
    const actionsPanelContent = (
-@@ -4093,8 +4080,9 @@ export function App() {
+@@ -4047,7 +4029,7 @@ export function App() {
+       searchBarAutoFocus={searchBarAutoFocus}
+       onCloseSearch={handleCloseSearch}
+       onOpenSearch={() => { setSearchQuery(''); setSearchBarAutoFocus(true); }}
+-      leftAutoFocusTitle={shouldFocusTitle}
++      leftAutoFocusTitle={titleFocusNoteId !== null && titleFocusNoteId === activeNoteId}
+       onLeftTitleFocusComplete={handleTitleFocusComplete}
+       leftAutoFocusBody={shouldFocusBody}
+       onLeftBodyFocusComplete={handleBodyFocusComplete}
+@@ -4093,6 +4075,7 @@ export function App() {
          onSelectNote={handleSelectNote}
          onCreateNote={handleCreateNote}
          onDeleteNote={handleNoteDeleted}
 +        // moss-multi seam: hide-registry (A§9)
          onDuplicateNote={handleDuplicateNote}
--        onRenameNote={handleRenameNote}
-+        onRenameNote={hidden('rename-note') ? undefined : handleRenameNote}
+         onRenameNote={handleRenameNote}
          onCollapse={handleCollapseNotesPanel}
-         footerContent={panelFooter}
-       />

@@ -53,7 +53,7 @@ export async function workspace(request: Request, env: AuthEnv): Promise<Respons
   const rows = docs.flatMap((doc) => {
     const surfaced = !byId.has(doc.folderId);
     const folderPath = surfaced ? 'Notes' : pathFor(doc.folderId);
-    return folderPath ? [{ id: doc.id, title: doc.title, createdAt: doc.createdAt, updatedAt: doc.updatedAt,
+    return folderPath ? [{ id: doc.id, title: doc.title, filename: doc.filename, createdAt: doc.createdAt, updatedAt: doc.updatedAt,
       role: doc.role, folderPath, surfaced }] : [];
   }).sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
   return json({ vault, vaults, docs: rows, folders }, 200, NO_STORE);

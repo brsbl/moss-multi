@@ -946,7 +946,12 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
     hasElectronBridge &&
     !(typeof navigator !== 'undefined' && /jsdom/i.test(navigator.userAgent));
 
-  const [titleValue, setTitleValue] = useState('');
+  const [titleValue, setTitleValueState] = useState('');
+  // moss-multi seam: all authored title paths write the shared field.
+  const setTitleValue = useCallback((text: string) => {
+    setTitleValueState(text);
+    mossMultiPane.title.write(text);
+  }, [mossMultiPane.title]);
   const titleValueRef = useRef(titleValue);
   titleValueRef.current = titleValue;
   const commitTitleChangeRef = useRef<() => void>(() => {});
@@ -1176,6 +1181,8 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
     latestOnBodyFocusCompleteRef.current = onBodyFocusComplete;
   }, [onBodyFocusComplete]);
 
+  mossMultiPane.title.connect(titleInputRef, setTitleValueState); // moss-multi seam: render shared title
+
   const getLiveTitleText = useCallback((): string => {
     return titleInputRef.current?.textContent ?? titleValueRef.current;
   }, []);
@@ -1332,7 +1339,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
   }, [note?.id]);
 
   useLayoutEffect(() => {
-    if (!note?.id || contentHydratedForNoteId !== noteIdForAtoms) {
+    if (mossMultiPane.bound || !note?.id || contentHydratedForNoteId !== noteIdForAtoms) {
       return;
     }
 
@@ -1372,7 +1379,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
 
   useLayoutEffect(() => {
     const el = titleInputRef.current;
-    if (!el || !autoFocusTitle || titleFocusCompletedRef.current || contentHydratedForNoteId !== noteIdForAtoms) {
+    if (!el || !autoFocusTitle || (!mossMultiPane.bound && titleFocusCompletedRef.current) || contentHydratedForNoteId !== noteIdForAtoms) {
       return;
     }
     if (!mossMultiPane.titleLive) return; // moss-multi seam: bound-pane (A§2.2): the title takes focus once bound (R2)
@@ -3327,6 +3334,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
 
   // Focus the title field and select all text
   const focusTitle = useCallback(() => {
+    if (mossMultiPane.title.deferFocus()) return; // moss-multi seam: focus only after bind
     if (titleInputRef.current) {
       titleInputRef.current.focus();
       const range = document.createRange();
@@ -3607,7 +3615,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
   // Sync title contentEditable with external title changes (agent rename, file watcher)
   useEffect(() => {
     const el = titleInputRef.current;
-    if (!el || !note) return;
+    if (!el || !note || mossMultiPane.bound) return; // moss-multi seam: the binding renders remote titles
     if (shouldPreserveDirtyEditor(note.id)) return;
     // Don't overwrite while user is actively editing the title
     if (isTitleFocusedRef.current || document.activeElement === el) return;
@@ -4221,7 +4229,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
   }, [bumpEditorContentRevision, isTrashed, markDirty, note?.id, scheduleDebouncedAutosave, scheduleEditorSettlingBaselineCapture]);
 
   const commitTitleChange = useCallback(() => {
-    if (!note || isTrashed) return;
+    if (!note || isTrashed || mossMultiPane.bound) return; // moss-multi seam: no second title writer
 
     const nextTitleRaw = getLiveTitleText();
     if (titleValueRef.current !== nextTitleRaw) {

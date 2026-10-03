@@ -104,6 +104,13 @@ export const AFFORDANCES = [
     cite: 'P:Agents; deviation 4',
     probes: [{ surface: 'shell', selector: 'button[aria-label="Create new note"] > span:has(kbd)' }],
   },
+  {
+    id: 'settings-note-intelligence',
+    sites: [`${R}/components/SettingsModal.tsx`],
+    reason: 'Automatic property inference and related-note suggestions require desktop background agents; manual Properties works independently.',
+    cite: 'P:Agents; T1.4',
+    probes: [{ surface: 'settings', selector: '[role="dialog"] span', text: 'Note Intelligence' }],
+  },
   // The same "cannot work on the web" rule.
   {
     id: 'title-shortcut-label',
@@ -156,22 +163,6 @@ export const AFFORDANCES = [
       { surface: 'note-menu', selector: MENU_ITEM, text: 'Trash' },
       { surface: 'note-more-menu', selector: MENU_ITEM, text: 'Trash' },
     ],
-  },
-  {
-    id: 'note-properties',
-    sites: ['shared/src/components/layout/ActionsPanelWrapper.tsx'],
-    reason: "Properties edits the note's frontmatter, which binds to Y.Text('frontmatter') in M1; a bound note has no save path, so an edit would vanish on reload.",
-    cite: 'T1.4; A§10.4',
-    staged: 1,
-    probes: [{ surface: 'actions-panel', selector: '[data-actions-panel-wrapper] [role="tab"]', text: 'Properties' }],
-  },
-  {
-    id: 'rename-note',
-    sites: [`${R}/App.tsx`],
-    reason: "Rename focuses the note's title, which stays closed until it binds to Y.Text('title') in M1, so the name typed after it would land nowhere.",
-    cite: 'T1.4; R2',
-    staged: 1,
-    probes: [{ surface: 'note-menu', selector: MENU_ITEM, text: 'Rename' }],
   },
   {
     id: 'comments',

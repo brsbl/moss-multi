@@ -3,6 +3,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
 import { BASE, insertDoc, insertLink, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
+import { d1Projections } from '@moss-multi/sync/projections';
 import { handleApi } from './router.ts';
 
 interface Created {
@@ -12,6 +13,8 @@ interface Created {
 
 const created: Created[] = [];
 const probed: string[] = [];
+const renamed: { docId: string; title: string }[] = [];
+let renameFails = false;
 
 /** A DocDO namespace: getServerByName's setName, then the RPCs these routes call. */
 const DocDO = {
@@ -20,9 +23,18 @@ const DocDO = {
     setName: async () => undefined,
     create: async (input: unknown) => {
       created.push({ docId: id.name, input });
+      await d1Projections(d1.db).title(id.name, (input as { title?: string }).title ?? '');
+    },
+    renameTitle: async (title: string) => {
+      if (renameFails) throw new Error('projection unavailable');
+      renamed.push({ docId: id.name, title });
+      await d1Projections(d1.db).title(id.name, title);
     },
     snapshotForDuplicate: async () => ({ title: 'Original', state: new Uint8Array([1, 2]) }),
-    createFromSnapshot: async (input: unknown) => { created.push({ docId: id.name, input }); },
+    createFromSnapshot: async (input: unknown) => {
+      created.push({ docId: id.name, input });
+      await d1Projections(d1.db).title(id.name, (input as { title?: string }).title ?? '');
+    },
     probeInstance: async () => {
       probed.push(id.name);
       return { instanceId: `instance-${id.name}`, constructedAt: 1 };
@@ -45,6 +57,8 @@ afterAll(() => d1?.dispose());
 beforeEach(() => {
   created.length = 0;
   probed.length = 0;
+  renamed.length = 0;
+  renameFails = false;
 });
 
 const create = (cookie: string | null, body: unknown = {}, headers: Record<string, string> = {}) =>
@@ -140,6 +154,44 @@ describe('GET /api/docs/:id/instance', () => {
     expect(await denied.text()).toBe(await missing.text());
     expect((await probe(docId, null)).status).toBe(404);
     expect(probed).toEqual([]);
+  });
+});
+
+
+describe('PATCH /api/docs/:id', () => {
+  const rename = (id: string, cookie: string, title: string) => handleApi(new Request(`${BASE}/api/docs/${id}`, {
+    method: 'PATCH', headers: { cookie, origin: BASE, 'content-type': 'application/json' }, body: JSON.stringify({ title }),
+  }), env);
+
+  it('routes an owner rename through the DocDO and returns its projection', async () => {
+    const id = await insertDoc(d1.db, ada);
+    const response = await rename(id, ada.cookie, 'Renamed via DO');
+    expect(response.status).toBe(200);
+    expect(renamed).toEqual([{ docId: id, title: 'Renamed via DO' }]);
+    expect(await response.json()).toMatchObject({ doc: { title: 'Renamed via DO' } });
+  });
+
+  it('does not disclose or write inaccessible documents', async () => {
+    const id = await insertDoc(d1.db, ada);
+    const denied = await rename(id, ben.cookie, 'Forbidden');
+    const missing = await rename(crypto.randomUUID(), ben.cookie, 'Forbidden');
+    expect(denied.status).toBe(404);
+    expect(await denied.text()).toBe(await missing.text());
+    expect(renamed).toEqual([]);
+  });
+
+  it('refuses a viewer rename before it reaches the DocDO', async () => {
+    const id = await insertDoc(d1.db, ada);
+    await d1.db.prepare("INSERT INTO doc_members (doc_id, principal_id, principal_type, role, added_by, created_at) VALUES (?, ?, 'user', 'viewer', ?, ?)")
+      .bind(id, ben.id, ada.id, Date.now()).run();
+    expect((await rename(id, ben.cookie, 'Viewer write')).status).toBe(403);
+    expect(renamed).toEqual([]);
+  });
+
+  it('reports a failed DocDO write as 503', async () => {
+    const id = await insertDoc(d1.db, ada);
+    renameFails = true;
+    expect((await rename(id, ada.cookie, 'Failed')).status).toBe(503);
   });
 });
 
