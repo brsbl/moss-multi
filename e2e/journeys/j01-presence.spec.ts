@@ -51,7 +51,7 @@ test('j01 presence: three clients have stable distinct colors, matching carets a
   await ben.page.keyboard.press('Shift+ArrowLeft');
   const selection = ada.page.locator('[data-remote-selection]');
   await expect(selection).toHaveAttribute('data-presence-color', benColor!);
-  await expect(selection.locator(':scope > *')).toHaveCSS('background-color', chipFill);
+  await expect(selection.locator(':scope > span:not([data-remote-caret])')).toHaveCSS('background-color', chipFill);
   await ben.page.keyboard.press('ArrowRight');
   await ben.page.keyboard.type(' typing');
   await expect(caret.locator('[data-cursor-label]')).toBeVisible();
