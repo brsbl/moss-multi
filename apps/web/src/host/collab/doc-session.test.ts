@@ -100,3 +100,29 @@ it('a connect requested after a terminal close cannot reopen it', async () => {
   expect(session.provider.shouldConnect).toBe(false);
   expect(sockets).toHaveLength(1);
 });
+
+it('a connection limit preserves a lingering unacked document for Retry', async () => {
+  latest().open(); session.provider.synced = true;
+  session.doc.getText('title').insert(0, 'pending');
+  session.release();
+  latest().ended(4429);
+  expect(hasUnacked()).toBe(true);
+  expect(session.doc.isDestroyed).toBe(false);
+  session.retry();
+  await vi.advanceTimersByTimeAsync(1);
+  expect(sockets).toHaveLength(2);
+  expect(session.doc.getText('title').toString()).toBe('pending');
+});
+it('a repeated 4403 with editor REST access backs off instead of looping immediately', async () => {
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ role: 'editor' }));
+  latest().open(); latest().ended(4403);
+  await vi.advanceTimersByTimeAsync(999);
+  expect(sockets).toHaveLength(1);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(sockets).toHaveLength(2);
+  latest().open(); latest().ended(4403);
+  await vi.advanceTimersByTimeAsync(1999);
+  expect(sockets).toHaveLength(2);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(sockets).toHaveLength(3);
+});

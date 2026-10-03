@@ -197,7 +197,6 @@ test('j03-connection: a black-holed socket shows the banner within 14 s while th
   await ui.typeBody(ada, docId, MEANWHILE);
   await waitAcked(ada, docId);
   await expect(ui.pane(bea, docId), 'the offline edit waits in the window').toHaveAttribute(SYNC_UNACKED_ATTR, '1');
-  await bea.page.evaluate(() => window.dispatchEvent(new Event('vite:preloadError', { cancelable: true })));
   await expect(ui.pane(bea, docId)).toHaveAttribute(SYNC_UNACKED_ATTR, '1');
   await actors.checkpoint('black-hole-banner');
   await bea.page.setViewportSize({ width: 390, height: 844 });
@@ -407,4 +406,85 @@ test('j03-connection: a refused write rebinds fresh and a deleted doc locks in p
   await expect(body).toHaveAttribute('contenteditable', 'false');
   await expect(banner(bea, docId)).toHaveAttribute(CONNECTION_BANNER_ATTR, 'deleted');
   await expectNoRemount(bea, docId, 'terminal state keeps the content in place');
+});
+
+
+test('j03-connection: failed sign-out preserves offline edits and cancelling unsynced sign-out keeps the session @p:col-4', async ({ actors }) => {
+  const shared = await sharedNote(actors, 'Sign-out must preserve this note');
+  const { ada, docId } = shared;
+  const bea = await secondWindow(actors, shared, true);
+  await actors.requireDistinct(2);
+  await waitBodyLive(bea, docId);
+  await bea.observeEditor(docId);
+  // Load Settings while connected, then return to the editor.
+  await ui.openSettings(bea);
+  await bea.page.keyboard.press('Escape');
+  const sever = bea.sever!;
+  sever.blackhole();
+  await ui.typeBody(bea, docId, ' buffered through a failed sign-out');
+  await expect(ui.pane(bea, docId)).toHaveAttribute(SYNC_UNACKED_ATTR, '1');
+  let requests = 0;
+  bea.expectHttp(409, '/api/auth/sign-out');
+  await bea.page.route('**/api/auth/sign-out', async route => {
+    requests += 1;
+    await route.fulfill({ status: 409, contentType: 'application/json', body: '{}' });
+  });
+  await ui.signOutThroughSettings(bea);
+  const confirmation = bea.page.getByRole('alertdialog');
+  await expect(confirmation).toBeVisible({ timeout: 8000 });
+  expect(requests).toBe(0);
+  await expect(confirmation.getByRole('button', { name: 'Cancel', exact: true })).toBeFocused();
+  await confirmation.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await bea.page.keyboard.press('Escape');
+  await expect(ui.body(bea, docId)).toHaveAttribute('contenteditable', 'true');
+  await ui.signOutThroughSettings(bea);
+  await expect(confirmation).toBeVisible({ timeout: 8000 });
+  await confirmation.getByRole('button', { name: 'Sign out anyway', exact: true }).click();
+  await expect(bea.page.getByRole('alert')).toContainText('Couldn’t sign you out');
+  expect(requests).toBe(1);
+  await bea.page.keyboard.press('Escape');
+  await expect(ui.pane(bea, docId)).not.toHaveAttribute(TERMINAL_REASON_ATTR, /./);
+  await expect(ui.body(bea, docId)).toHaveAttribute('contenteditable', 'true');
+  bea.expectReconnects(2, docId);
+  sever.restore();
+  await waitAcked(bea, docId, RECOVER_TIMEOUT);
+  await expect.poll(() => bodyText(ada, docId)).toBe('Sign-out must preserve this note buffered through a failed sign-out');
+  await expectNoRemount(bea, docId, 'failed sign-out');
+});
+
+test('j03-connection: a real Settings chunk load failure preserves the shell and offline edits @p:R10', async ({ actors }) => {
+  const shared = await sharedNote(actors, 'A failed import leaves the editor here');
+  const { ada, docId } = shared;
+  const bea = await secondWindow(actors, shared, true);
+  await actors.requireDistinct(2);
+  await waitBodyLive(bea, docId);
+  await bea.observeEditor(docId);
+  let failures = 0;
+  bea.expectHttp(404, /\/assets\/SettingsModal-.*\.js$/);
+  await bea.page.route('**/assets/SettingsModal-*.js', async route => {
+    failures += 1;
+    await route.fulfill({ status: 404, contentType: 'text/javascript', body: '' });
+  });
+  bea.sever!.blackhole();
+  await ui.typeBody(bea, docId, ' with an unsynced addition');
+  await bea.page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await expect.poll(() => failures).toBeGreaterThan(0);
+  await expect(bea.page.locator('[data-input-refusal]')).toContainText('could not load');
+  await expect(bea.page.locator('[data-moss-app-shell]')).toBeVisible();
+  await expect(ui.pane(bea, docId)).toHaveAttribute(SYNC_UNACKED_ATTR, '1');
+  await ui.typeBody(bea, docId, ' and more after the failure');
+  bea.expectReconnects(2, docId);
+  bea.sever!.restore();
+  await waitAcked(bea, docId, RECOVER_TIMEOUT);
+  await expect.poll(() => bodyText(ada, docId)).toBe('A failed import leaves the editor here with an unsynced addition and more after the failure');
+  await expectNoRemount(bea, docId, 'a failed lazy import');
+});
+
+test('j03-connection: the online indicator is sanctioned chrome with a visible mobile dot @p:col-4', async ({ actors }) => {
+  const { ada, docId } = await sharedNote(actors, 'An online dot');
+  await actors.requireDistinct(2);
+  await expect(indicator(ada, docId)).toHaveAttribute('data-collab-chrome', '');
+  await ada.page.setViewportSize({ width: 390, height: 844 });
+  const color = await indicator(ada, docId).locator('[aria-hidden]').evaluate(el => getComputedStyle(el).backgroundColor);
+  expect(color).not.toBe('rgba(0, 0, 0, 0)');
 });
