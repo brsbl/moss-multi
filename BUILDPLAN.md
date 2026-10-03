@@ -237,7 +237,7 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
   - **Tests first:** journey **j09-revoke-live**: demotion closes B's socket with 4403 within 1 s and makes the UI read-only with a message; removing a member is terminal `revoked`; revoking a link closes signed-in riders; sign-out in window A ends window B (`session-ended`); a socket that registers after its session ended closes 4402. Cold rows in j04's idle window: a revoked doc link's first frame after wake never lands, and neither does one on a subfolder doc after its folder link is revoked.
   - **Done:** j09 and the cold rows are green, and a codex adversarial pass over raw requests and sockets finds nothing.
 - **T2.6 Role-gated affordances** `[B·codex]`
-  - **Scope:** one capability helper for every moss menu and control. Viewer and commenter are truly read-only, decorator controls included (checkbox, slash, tab add).
+  - **Scope:** one capability helper for every moss menu and control. This includes media decorator headers (hover Delete and other mutating controls) in every read-only view, including the T0.13 viewer. Viewer and commenter are truly read-only, decorator controls included (checkbox, slash, tab add).
   - **Tests first:** j08 legs: menus grow with rank; a viewer's checkbox and slash commands send no frame; an unknown role gets no actions.
   - **Done:** the legs are green.
 - **T2.7 A stranger on a phone (Tier A)** `[C·fresh]`, after T2.4
@@ -288,6 +288,7 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
 
 - **T3.8 Read-only viewer, full capability** `[B·fresh]`, after T3.1–T3.4 and T0.13
   - **Scope:** the T0.13 viewer gains everything M3 adds: every node family styled, media and Range video through injected asset services, sandboxed HTML and embeds through injected unfurl, wiki links and headings through injected note lookup, and per-viewer layout. A versioned release artifact for the bb Moss viewer plugin, with pinned provenance.
+  - **Consumer-reported gaps (bb Moss viewer plugin, brsbl/bb-plugins#241):** media decorators must not show the hover Delete (or any mutating control) in read-only mode; X post embeds must follow the viewer theme (moss at the pin hardcodes `theme=light`) and re-render on `setTheme`.
   - **Tests first:** the T0.13 fixture plus j14's demo-note markdown render through the viewer with computed-style parity against the editor's read-only view; injected services are the only network path; video plays through 206 responses in WebKit.
   - **Done:** green in both engines, with shots of the fixture and the demo note, and the consumer thread notified.
 **Journeys added:** j11-media, j12-search, j13-vaults, j14-demo-note.
