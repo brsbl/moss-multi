@@ -1757,13 +1757,6 @@ export function MathCalculationPlugin({
     return 'committed';
   }, [applyPreparedCommit, prepareCommitFromSelection]);
 
-  const runCommitInUpdate = useCallback((opts?: { trailingSpace?: boolean }): 'committed' | 'cycle' | 'none' => {
-    let outcome: 'committed' | 'cycle' | 'none' = 'none';
-    editor.update(() => {
-      outcome = tryCommitFormulaAtSelection(opts);
-    });
-    return outcome;
-  }, [editor, tryCommitFormulaAtSelection]);
 
   useEffect(() => {
     const notesSnapshot = workspaceFormulaNotesRef.current;
@@ -2278,7 +2271,7 @@ export function MathCalculationPlugin({
           return false;
         }
 
-        const outcome = runCommitInUpdate();
+        const outcome = tryCommitFormulaAtSelection();
 
         if (outcome === 'cycle') {
           event.preventDefault();
@@ -2310,7 +2303,9 @@ export function MathCalculationPlugin({
           return true;
         }
 
-        const outcome = runCommitInUpdate({ trailingSpace: false });
+        // moss-multi seam: formula-command (A§10.10): commands already own an update;
+        // nesting one defers the commit until the default Enter moves the selection.
+        const outcome = tryCommitFormulaAtSelection({ trailingSpace: false });
 
         if (outcome === 'cycle') {
           event?.preventDefault();
@@ -2336,7 +2331,7 @@ export function MathCalculationPlugin({
   }, [
     closeTypeahead,
     editor,
-    runCommitInUpdate
+    tryCommitFormulaAtSelection
   ]);
 
   const referenceHoverCard = (

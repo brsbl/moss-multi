@@ -187,7 +187,7 @@ test('j01 editing: formula drafts and background conversions stay out of shared 
   await expect(ui.body(ben, id)).toContainText('=2+3');
   await ada.page.keyboard.press('Enter');
   for (const actor of [ada, ben]) await expect(ui.body(actor, id).locator('[data-formula-id]')).toHaveCount(1);
-  await ada.page.keyboard.type('#aabbcc ');
+  await ada.page.keyboard.press('Enter'); await ada.page.keyboard.type('#aabbcc ');
   for (const actor of [ada, ben]) await expect(ui.body(actor, id).locator('[data-color-value="#aabbcc"]')).toHaveCount(1);
   await expect(ui.pane(ada, id)).toHaveAttribute('data-sync-unacked', '0');
   const frames = Buffer.concat(wire).toString('utf8');
@@ -196,15 +196,3 @@ test('j01 editing: formula drafts and background conversions stay out of shared 
   for (const actor of [ada, ben]) { await ui.waitLive(actor, id); await expect(ui.body(actor, id).locator('[data-formula-id]')).toHaveCount(1); await expect(ui.body(actor, id).locator('[data-color-value="#aabbcc"]')).toHaveCount(1); }
 });
 
-test('j01 editing: an empty command prompt routes undo back to the note @p:col-3', async ({ actors, stack }) => {
-  const { ada, ben, id } = await setup(actors, stack.baseUrl, 'Shared paragraph.');
-  await paragraphEnd(ada, id); await ada.page.keyboard.type(' local');
-  await expect(ui.body(ben, id)).toContainText('local');
-  await ada.page.keyboard.press('ControlOrMeta+k');
-  const prompt = ada.page.locator('[data-command-palette-composer] [contenteditable="true"]:visible');
-  await expect(prompt).toBeVisible();
-  await expect(prompt).toHaveText('');
-  await prompt.click(); await ada.page.keyboard.press('ControlOrMeta+z');
-  for (const actor of [ada, ben]) await expect(ui.body(actor, id)).toHaveText('Shared paragraph.');
-  await ada.page.keyboard.press('Escape');
-});

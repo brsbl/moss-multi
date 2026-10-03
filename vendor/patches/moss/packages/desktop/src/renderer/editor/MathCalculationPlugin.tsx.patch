@@ -69,7 +69,21 @@ diff --git a/packages/desktop/src/renderer/editor/MathCalculationPlugin.tsx b/pa
          buildReferenceMetadataStyle(reference.noteId, reference.formulaId)
        );
        segment.node.insertAfter(referenceNode);
-@@ -1951,6 +1978,7 @@ export function MathCalculationPlugin({
+@@ -1729,13 +1756,6 @@ export function MathCalculationPlugin({
+     return 'committed';
+   }, [applyPreparedCommit, prepareCommitFromSelection]);
+ 
+-  const runCommitInUpdate = useCallback((opts?: { trailingSpace?: boolean }): 'committed' | 'cycle' | 'none' => {
+-    let outcome: 'committed' | 'cycle' | 'none' = 'none';
+-    editor.update(() => {
+-      outcome = tryCommitFormulaAtSelection(opts);
+-    });
+-    return outcome;
+-  }, [editor, tryCommitFormulaAtSelection]);
+ 
+   useEffect(() => {
+     const notesSnapshot = workspaceFormulaNotesRef.current;
+@@ -1951,6 +1971,7 @@ export function MathCalculationPlugin({
    // Dirty-gated so it skips selection-only changes (click-to-focus, arrow keys).
    useEffect(() => {
      return editor.registerUpdateListener(({ editorState, tags, dirtyLeaves, dirtyElements }) => {
@@ -77,7 +91,7 @@ diff --git a/packages/desktop/src/renderer/editor/MathCalculationPlugin.tsx b/pa
        if (tags.has(EDITOR_UPDATE_TAGS.ignored.formulaDraftStyle)) return;
        if (dirtyLeaves.size === 0 && dirtyElements.size === 0) return;
  
-@@ -2001,7 +2029,8 @@ export function MathCalculationPlugin({
+@@ -2001,7 +2022,8 @@ export function MathCalculationPlugin({
        return;
      }
  
@@ -87,3 +101,32 @@ diff --git a/packages/desktop/src/renderer/editor/MathCalculationPlugin.tsx b/pa
        // Always keep selection ref current (cheap: one clone)
        editorState.read(() => {
          const selection = $getSelection();
+@@ -2248,7 +2270,7 @@ export function MathCalculationPlugin({
+           return false;
+         }
+ 
+-        const outcome = runCommitInUpdate();
++        const outcome = tryCommitFormulaAtSelection();
+ 
+         if (outcome === 'cycle') {
+           event.preventDefault();
+@@ -2280,7 +2302,9 @@ export function MathCalculationPlugin({
+           return true;
+         }
+ 
+-        const outcome = runCommitInUpdate({ trailingSpace: false });
++        // moss-multi seam: formula-command (A§10.10): commands already own an update;
++        // nesting one defers the commit until the default Enter moves the selection.
++        const outcome = tryCommitFormulaAtSelection({ trailingSpace: false });
+ 
+         if (outcome === 'cycle') {
+           event?.preventDefault();
+@@ -2306,7 +2330,7 @@ export function MathCalculationPlugin({
+   }, [
+     closeTypeahead,
+     editor,
+-    runCommitInUpdate
++    tryCommitFormulaAtSelection
+   ]);
+ 
+   const referenceHoverCard = (
