@@ -75,6 +75,9 @@ Read this with PRODUCT.md, your BUILDPLAN entry and the A§ it cites, before wri
 - `bridge/inventory.ts` lists every ElectronAPI method at the pin. A `staged` inventory entry or registry entry fails the unit tests once CI's `TRACE_MILESTONE` (the last closed milestone) reaches its milestone. [T0.5b]
 - Base UI renders every portal as `div[data-base-ui-portal]` with modal internal backdrops inside it, so `data-overlay-surface` sits on the DS Portal wrappers; an inline Popover's backdrop is not covered. [T0.5b]
 - Never remount or re-key a bound editor because of a REST response; moss's `updatedAt`-keyed refetch caused the 30 s flash and dropped keystrokes. [L§4.1]
+- Every note the web opens binds through `useMossMultiPane` (`host/collab/pane.tsx`), CanvasAreaContent's one seam: moss's REST hydration, autosave, disk and agent paths return early, and the editor mounts behind the skeleton until first sync. [T0.8]
+- A hand seam in a generated residual file (`MarkdownEditor.tsx`) cannot go through `extract`, whose drift precheck reverse-applies the residual patch first and fails. Record it as `extract` settles one (the `.seam.patch` generated to final, the residual patch upstream to final, `seam` in PORTED.json); `extract` must then leave the tree unchanged. [T0.8]
+- TanStack Router wraps `window.history.replaceState`, so an address change from the bridge became a route change that remounted moss's whole App (a second doc socket, the pending focus lost); the bridge writes through `History.prototype.replaceState`. [T0.8]
 - Side panels `shrink-0`, the editor `flex-1 min-w-0`; a dropdown inside a dialog at the same z-index paints behind it. [L§4.1]
 
 ## Lexical and the binding
@@ -87,6 +90,8 @@ Read this with PRODUCT.md, your BUILDPLAN entry and the A§ it cites, before wri
 - One doc id spans several Y.Docs over its life; track boundness per instance. [L§4.3]
 - y-partyserver 2.2.0: patch `unload` to `pagehide`; `connect:false` plus one explicit connect; heartbeat with close 4408 after 12 s silence; awareness on `update`; close with 1000; wrap server messages in `__YPS:`. [L§4.3]
 - Undo: `captureTimeout` 1000 ms, `trackedOrigins` = the local binding, `readOnly` from the role, not mount-time editability. [L§4.3]
+- `@lexical/react`'s ContentEditable gives a non-editable root `tabindex=-1`, so the gate removes it while the body is closed (R2). The pane goes live in the same render as the root turns editable (React state; a store snapshot renders on its own, first), so moss's pending focus finds an editable root. [T0.8]
+- `data-sync-unacked` turns `1` in the tick of a local write and `0` on the DocDO ack that covers it; a journey waits for `0` before a reload. moss's bottom toolbar carries `data-floating-selection-toolbar` (a MarkdownEditor seam), so invariant 5 allows it as it does the selection bar. [T0.8]
 
 ## Title, presence, connection
 

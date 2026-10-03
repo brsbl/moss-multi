@@ -11,7 +11,7 @@ import {
 } from '@moss-multi/protocol/dom-contract';
 import { excludedPropertiesFor } from '@moss-multi/sync/excluded-properties';
 import { $getRoot, type EditorState, type LexicalEditor } from 'lexical';
-import { useCallback, useLayoutEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState, type ReactNode } from 'react';
 import type { Doc } from 'yjs';
 import { TopBarCollab } from '../slots.tsx';
 import { openDocSession, type DocSession, type SessionState } from './doc-session.ts';
@@ -85,12 +85,10 @@ class PaneBinding {
     if (!editor) return;
     editor.getRootElement()?.closest(`[${EDITOR_PANE_ATTR}]`)?.setAttribute(SYNC_UNACKED_ATTR, state.unacked ? '1' : '0');
     if (!state.synced || this.#state.docState === 'live') return;
-    // A§10.3: at first sync, in one step: editable, the body attribute, the pane state; the pending focus follows.
-    // Editability waits for nothing else until roles (T1.1) and the terminal store (T1.3) can close it.
+    // A§10.3: at first sync, in one render: the editable root, the body attribute (the gate's layout effect), the pane
+    // state, then moss's pending focus. Editability waits for nothing else until roles (T1.1) and the terminal store
+    // (T1.3) can close it.
     editor.setEditable(true);
-    const root = editor.getRootElement();
-    root?.setAttribute(BODY_BINDING_ATTR, 'live');
-    root?.removeAttribute('aria-disabled');
     this.set({ docState: 'live' });
   }
 }
@@ -98,7 +96,10 @@ class PaneBinding {
 /** Closed until live: `@lexical/react` gives a non-editable root tabindex=-1, which would let it take focus (R2). */
 function closeRoot(root: HTMLElement, state: BindingState): void {
   root.setAttribute(BODY_BINDING_ATTR, state);
-  if (state === 'live') return;
+  if (state === 'live') {
+    root.removeAttribute('aria-disabled');
+    return;
+  }
   root.removeAttribute('tabindex');
   root.setAttribute('aria-disabled', 'true');
 }
@@ -109,9 +110,15 @@ const hasText = (state: EditorState): boolean =>
     return root.getChildrenSize() > 1 || (root.getFirstChild()?.getTextContentSize() ?? 0) > 0;
   });
 
-/** Inside the composer: opens the body at first sync and keeps the root's attributes. */
+/** Inside the composer: binds the editor to the pane and keeps the root's attributes. */
 function BindingGate({ binding }: { binding: PaneBinding }): null {
   const [editor] = useLexicalComposerContext();
+  const body: BindingState = usePaneState(binding).docState === 'live' ? 'live' : 'unbound';
+  // After the commit that made the root editable, before moss's pending focus runs (a parent's layout effect).
+  useLayoutEffect(() => {
+    const root = editor.getRootElement();
+    if (root) closeRoot(root, body);
+  }, [body, editor]);
   useLayoutEffect(() => {
     const value = String(generation(editor));
     const stopRoot = editor.registerRootListener((root) => {
@@ -182,7 +189,7 @@ export function useMossMultiPane(note: { id: string } | null): MossMultiPane {
   const docId = note?.id ?? null;
   // A fresh binding for every doc the pane shows.
   const binding = useMemo(() => (docId ? new PaneBinding() : null), [docId]);
-  const state = useSyncExternalStore(binding?.subscribe ?? noSubscription, binding?.get ?? closedPane);
+  const state = usePaneState(binding);
   const terminal = useTerminal(docId);
   const collaboration = useMemo(
     () => (docId && binding ? { plugin: <DocBinding key={docId} docId={docId} binding={binding} /> } : null),
@@ -209,5 +216,19 @@ export function useMossMultiPane(note: { id: string } | null): MossMultiPane {
 }
 
 const CLOSED: PaneState = { docState: 'binding', hasText: false };
-const closedPane = (): PaneState => CLOSED;
-const noSubscription = (): (() => void) => () => undefined;
+
+/**
+ * The binding's state as React state rather than a store snapshot: going live must commit in the same render as the
+ * editor's own editable flip, so the pending focus finds an editable root; a useSyncExternalStore update would
+ * render first, on its own.
+ */
+function usePaneState(binding: PaneBinding | null): PaneState {
+  const [seen, setSeen] = useState(() => ({ binding, state: binding?.get() ?? CLOSED }));
+  useEffect(() => {
+    if (!binding) return;
+    const update = () => setSeen({ binding, state: binding.get() });
+    update();
+    return binding.subscribe(update);
+  }, [binding]);
+  return seen.binding === binding ? seen.state : (binding?.get() ?? CLOSED);
+}

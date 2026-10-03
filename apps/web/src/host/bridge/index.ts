@@ -364,8 +364,9 @@ function windowBrowser(): BrowserHooks {
     open: (url) => {
       window.open(url, '_blank', 'noopener');
     },
-    // Keep the router's history state; moss keeps its own back and forward (A§9 navigation).
-    replacePath: (path) => window.history.replaceState(window.history.state, '', path),
+    // Moss keeps its own back and forward (A§9 navigation), so the address changes without the router: TanStack wraps
+    // window.history.replaceState, and the route change it reports would remount moss's whole App.
+    replacePath: (path) => History.prototype.replaceState.call(window.history, window.history.state, '', path),
     onPopState: (listener) => {
       window.addEventListener('popstate', listener);
       return () => window.removeEventListener('popstate', listener);
