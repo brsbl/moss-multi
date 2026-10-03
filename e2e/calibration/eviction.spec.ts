@@ -1,6 +1,7 @@
 // SP4: probe each idle doc once, never poll the same doc and accidentally reset its idle clock.
 import { writeFile } from 'node:fs/promises';
 import { holdDocSockets, cookieHeader } from '../lib/doc-client.ts';
+import { IDLE_MS } from '../lib/hibernate.ts';
 import { signIn } from '../lib/principals.ts';
 import { expect, test } from '../lib/test.ts';
 
@@ -47,6 +48,10 @@ test('calibration: bucket real workerd eviction and record reset socket survival
     await writeFile(path, JSON.stringify(result, null, 2));
     await info.attach('calibrated.json', { path, contentType: 'application/json' });
     expect(measuredMs, 'workerd eviction exceeds 150 s; recalibration needs investigation').not.toBeNull();
+    if (measuredMs !== null) {
+      expect(samples.filter((sample) => sample.idleMs >= measuredMs).every((sample) => sample.evicted), 'later buckets confirm eviction').toBe(true);
+      expect(IDLE_MS, 'committed idle window needs recalibration').toBeGreaterThanOrEqual(result.idleMs!);
+    }
     expect(samples.filter((sample) => sample.evicted).every((sample) => sample.survivingSockets === 1), 'natural hibernation preserves sockets').toBe(true);
   } finally { await Promise.all(docs.map((doc) => doc.sockets.close())); }
 });
