@@ -1,11 +1,11 @@
 # moss-multi progress
 
-**Overall: 26% done** (18 of 70 planned tasks verified)
+**Overall: 27% done** (19 of 70 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 17 / 17 | in progress |
-| M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 1 / 11 | in progress |
+| M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 2 / 11 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 0 / 9 | |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 0 / 9 | |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
@@ -37,6 +37,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-03 — T0.13 verified: `packages/viewer` builds a browser bundle whose `mountMossViewer` shows a note in moss's own editor, read-only and unbound: the title renders once, `%%m:` markers stay hidden, the `layout.json` sidecar applies and tabs switch but never change, with no socket, write or input and assets and links only through injected services; CI builds the `moss-viewer` artifact with its `viewer.json` manifest and screenshots the fixture in Chromium and WebKit.
 - 2026-10-03 — T0.P verified: M0 polish. Keys typed right after "+ Note" are held with a visible "Opening note…" notice instead of vanishing or making a second note; edits typed offline survive switching notes and land on reconnect, even when an ack was lost with the dropped socket; the link popover highlights without writing to the note; a pasted or dropped image or video is refused visibly; a refused password can be fixed straight from the keyboard; and Rename, which could not work yet, is hidden.
 - 2026-10-03 — T1.1 verified: a note's owner can click Share, add a person by email as viewer, commenter or editor, and see who has access; that person opens the note from its link while a signed-in stranger sees one denial page that is byte-identical for a missing and an inaccessible note, and the stranger's socket closes 4404 without reconnecting. One access resolver (A§8) now answers every REST and socket check, and anonymous and link-only visitors never see member emails.
+- 2026-10-03 — T1.1s verified: a signed-in visitor who holds only a doc or folder link now gets the same 404 as a stranger for a note's member list, while owners still see grantee names and emails; the other identity-bearing endpoints were audited and the presence and comment follow-ups are recorded below.
 
 ## T1.1s identity audit
 
