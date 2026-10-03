@@ -22,6 +22,9 @@ import { $createImageNode } from '../nodes/ImageNode';
 import { $createVideoNode } from '../nodes/VideoNode';
 import { imagesApi } from '../../api/electron';
 import { EDITOR_CHROME_COLORS } from '../colors';
+// moss-multi seam: hide-registry (A§9)
+import { hidden } from '@moss-multi/host/affordances';
+import { MEDIA_UPLOAD_REFUSED, refuseInput } from '@moss-multi/host/refusal';
 import {
   extractAltFromUrl,
   isHttpsImageUrl,
@@ -550,6 +553,11 @@ export function registerMediaDrop(
 
       if (mediaFiles.length > 0) {
         event.preventDefault();
+        // moss-multi seam: hide-registry (A§9): uploads land in M3; until then a dropped file is refused visibly
+        if (hidden('media-upload')) {
+          refuseInput(MEDIA_UPLOAD_REFUSED);
+          return true;
+        }
         const droppedLocalMediaReferences = dataTransfer.types.includes('text/uri-list')
           ? parseLocalMediaReferencesFromUriList(dataTransfer.getData('text/uri-list'))
           : [];

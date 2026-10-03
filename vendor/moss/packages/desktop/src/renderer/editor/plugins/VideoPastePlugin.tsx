@@ -25,6 +25,9 @@ import { $createVideoNode } from '../nodes/VideoNode';
 import { isYouTubeUrl } from '../utils/video-url';
 import { useCurrentNoteId } from '../CurrentNoteIdContext';
 import { imagesApi } from '../../api/electron';
+// moss-multi seam: hide-registry (A§9)
+import { hidden } from '@moss-multi/host/affordances';
+import { MEDIA_UPLOAD_REFUSED, refuseInput } from '@moss-multi/host/refusal';
 
 const VIDEO_MIME_TYPES = ['video/mp4', 'video/webm', 'video/quicktime'];
 
@@ -151,6 +154,11 @@ export function registerVideoPaste(editor: LexicalEditor, noteId: string | null)
         if (imageFile) {
           event.preventDefault();
           (event as ClipboardEvent).stopPropagation();
+          // moss-multi seam: hide-registry (A§9): uploads land in M3; until then a pasted image is refused visibly
+          if (hidden('media-upload')) {
+            refuseInput(MEDIA_UPLOAD_REFUSED);
+            return true;
+          }
 
           const insertionPoint = captureSelection();
           if (!insertionPoint) return true;

@@ -1,5 +1,7 @@
 // The doc session (A§10.1): per pane per doc, a fresh Y.Doc and one hardened YProvider, created when the binding
-// plugin mounts and torn down in order when it unmounts. A tab holds at most one session per doc.
+// plugin mounts and torn down in order when it unmounts. A tab holds at most one session per doc. Edits the DocDO has
+// not acked (typed while the socket was down) live only in this Y.Doc, so a session released with unacked edits stays
+// connected without its pane until they are acked, and only then tears down (A§10.6).
 import { base64ToBytes, type ServerEvent } from '@moss-multi/protocol/sync';
 import YProvider from 'y-partyserver/provider';
 import * as Y from 'yjs';
@@ -33,9 +35,10 @@ function broadcastAwarenessOnUpdate(provider: YProvider): void {
   };
 }
 
-/** An intentional close sends 1000, never a bare close. */
-function closeNormally(provider: YProvider): void {
+/** An intentional close sends 1000, never a bare close; `held()` keeps a session that still owes edits connected. */
+function closeNormally(provider: YProvider, held: () => boolean): void {
   provider.disconnect = () => {
+    if (held()) return;
     provider.shouldConnect = false;
     provider.disconnectBc();
     provider.ws?.close(NORMAL_CLOSURE, 'session closed');
@@ -76,6 +79,8 @@ export class DocSession {
   #state: SessionState = { synced: false, unacked: false };
   readonly #listeners = new Set<Listener>();
   #disposed = false;
+  /** Released by its pane while edits were unacked: connected, without a pane, until the DocDO acks them. */
+  #lingering = false;
 
   constructor(readonly docId: string) {
     this.provider = new YProvider(window.location.host, docId, this.doc, {
@@ -90,7 +95,7 @@ export class DocSession {
       },
     });
     broadcastAwarenessOnUpdate(this.provider);
-    closeNormally(this.provider);
+    closeNormally(this.provider, () => this.#lingering);
     this.provider.on('sync', (synced: boolean) => {
       if (synced && !this.#state.synced) this.#set({ synced: true });
     });
@@ -110,10 +115,31 @@ export class DocSession {
     return () => this.#listeners.delete(listener);
   }
 
+  /**
+   * The pane let go. With every edit acked the session tears down now; otherwise it leaves presence, keeps (or
+   * reopens) its socket so the next sync step 2 delivers the edits, and tears down at the ack. The doc stays held
+   * meanwhile, so a pane that reopens it binds a fresh Y.Doc once the edits are on the server.
+   */
+  release(): void {
+    if (this.#disposed || this.#lingering) return;
+    if (!this.#state.unacked) {
+      this.dispose();
+      return;
+    }
+    this.#lingering = true;
+    this.#listeners.clear();
+    this.provider.awareness.setLocalState(null);
+    this.#listeners.add((state) => {
+      if (!state.unacked) this.dispose();
+    });
+    if (!this.provider.shouldConnect) void this.provider.connect();
+  }
+
   /** Teardown in A§10.1 order: presence cleared while the socket is open, close 1000, then the doc. */
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
+    this.#lingering = false;
     if (held.get(this.docId)?.session === this) {
       held.delete(this.docId);
       ownersChanged();
@@ -168,5 +194,5 @@ export function releaseProvider(docId: string, provider: object | undefined, doc
   const session = provider && byProvider.get(provider);
   if (!session) return;
   if (docMap.get(docId) === session.doc) docMap.delete(docId);
-  session.dispose();
+  session.release();
 }

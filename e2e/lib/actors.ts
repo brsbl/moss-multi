@@ -118,9 +118,16 @@ export class Actors {
 
   private async newActor(label: string, principal: Principal | null, options: OpenOptions): Promise<Actor> {
     const context = await this.browser.newContext();
-    const sever = options.severable ? await makeSeverable(context) : null;
+    let telemetry: Telemetry | null = null;
+    // A routed page's doc sockets are counted by the proxy, which sees them open and close (Telemetry.install).
+    const sever = options.severable
+      ? await makeSeverable(context, (url) => {
+          if (!telemetry) throw new Error(`${label}: a doc socket opened before telemetry`);
+          return telemetry.routedSocket(url);
+        })
+      : null;
     const page = await context.newPage();
-    const telemetry = Telemetry.install(page);
+    telemetry = Telemetry.install(page, { routed: !!sever });
     const actor = new Actor(this, label, context, page, telemetry, principal, sever);
     this.list.push(actor);
     return actor;

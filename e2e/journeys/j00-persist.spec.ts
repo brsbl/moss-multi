@@ -413,8 +413,9 @@ test('j00-persist: edits typed while the doc socket is down outlive a switch to 
   sever.reset();
   await ui.typeBody(ada, a, OFFLINE);
   await expect(ui.pane(ada, a), 'the offline edit is unacked').toHaveAttribute(SYNC_UNACKED_ATTR, '1');
-  // A: the first socket, the reconnect into the sever, then the reopen. B: one, held until restore.
+  // A: the first socket, the reconnect into the sever, then the reopen. B: its first, then one held until restore.
   ada.expectReconnects(2, a);
+  ada.expectReconnects(1, b);
 
   await row(ada, b).click();
   await expect(ui.pane(ada, a), 'A leaves the pane').toHaveCount(0, { timeout: BIND_TIMEOUT });
@@ -447,10 +448,12 @@ test("j00-persist: the link popover's highlight is paint, never a doc write: a r
   for (let i = 0; i < 'charlie'.length; i += 1) await ada.page.keyboard.press('Shift+ArrowLeft');
   await ada.page.getByRole('button', { name: 'Add link' }).click();
   await expect(ada.page.getByPlaceholder('Paste or type a URL...'), 'the link popover opens').toBeVisible();
-  expect(
-    await ada.page.evaluate(() => (CSS as unknown as { highlights?: { has: (name: string) => boolean } }).highlights?.has('link-selection') ?? null),
-    'the selected text is painted as a CSS highlight while the popover holds focus',
-  ).toBe(true);
+  await expect
+    .poll(
+      () => ada.page.evaluate(() => (CSS as unknown as { highlights?: { has: (name: string) => boolean } }).highlights?.has('link-selection') ?? null),
+      { message: 'the selected text is painted as a CSS highlight while the popover holds focus' },
+    )
+    .toBe(true);
   const marks = () => ui.body(ada, docId).locator('[style*="--link-selection"]').count();
   expect(await marks(), 'no style mark in the body').toBe(0);
   await expect(ui.pane(ada, docId), 'the popover writes nothing to the doc').toHaveAttribute(SYNC_UNACKED_ATTR, '0');

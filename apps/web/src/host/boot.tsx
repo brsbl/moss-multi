@@ -1,9 +1,10 @@
 // moss's renderer entry on the web, the analog of R/main.tsx (A§4.3): the bridge is installed before App's module
 // evaluates, App keeps Jotai's default store (no Provider) inside Start's StrictMode root, error analytics install
-// as in main.tsx, and ?mossMode=pdf-export renders PdfExportApp instead.
+// as in main.tsx, and ?mossMode=pdf-export renders PdfExportApp instead. The input-refusal notice sits beside App.
 import { useEffect, type ComponentType } from 'react';
 import { readyWhenShellRenders } from './app-state.ts';
 import { installBridge } from './bridge/index.ts';
+import { RefusalAnnouncer } from './surfaces/RefusalAnnouncer.tsx';
 
 export async function bootMoss(): Promise<{ default: ComponentType }> {
   installBridge();
@@ -15,7 +16,12 @@ export async function bootMoss(): Promise<{ default: ComponentType }> {
   const { default: App } = await import('@moss-desktop/renderer/App');
   function MossShell() {
     useEffect(() => readyWhenShellRenders(), []);
-    return <App />;
+    return (
+      <>
+        <App />
+        <RefusalAnnouncer />
+      </>
+    );
   }
   return { default: MossShell };
 }
