@@ -1,11 +1,11 @@
 # moss-multi progress
 
-**Overall: 29% done** (20 of 70 planned tasks verified)
+**Overall: 30% done** (21 of 70 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 17 / 17 | in progress |
-| M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 3 / 11 | in progress |
+| M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 4 / 11 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 0 / 9 | |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 0 / 9 | |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
@@ -39,6 +39,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-03 — T1.1 verified: a note's owner can click Share, add a person by email as viewer, commenter or editor, and see who has access; that person opens the note from its link while a signed-in stranger sees one denial page that is byte-identical for a missing and an inaccessible note, and the stranger's socket closes 4404 without reconnecting. One access resolver (A§8) now answers every REST and socket check, and anonymous and link-only visitors never see member emails.
 - 2026-10-03 — T1.1s verified: a signed-in visitor who holds only a doc or folder link now gets the same 404 as a stranger for a note's member list, while owners still see grantee names and emails; the other identity-bearing endpoints were audited and the presence and comment follow-ups are recorded below.
 - 2026-10-03 — T1.2 verified: a note or folder shared with you appears at the root of your sidebar without typing its URL, and opening it leaves the sidebar on your own Home; the notes-panel header has a vault switcher that lists your vaults and then vaults shared with you with role badges, remembers your choice, and keeps open panes when you switch; shared rows offer no move or folder actions.
+- 2026-10-03 — T1.3 verified: when a note's connection drops or stalls, a banner and a top-bar indicator show within 14 s and say what is wrong; typing offline survives and lands exactly on reconnect; a stalled first sync shows "retrying" and recovers without remounting the editor; a refused, read-only or over-limit session keeps its text visible and offers a retry; and signing out waits for unsent edits behind a confirmation. j03-connection is green in Chromium and WebKit.
 
 ## T1.1s identity audit
 
