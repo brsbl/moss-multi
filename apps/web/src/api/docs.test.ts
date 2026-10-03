@@ -31,7 +31,10 @@ const DocDO = {
       await d1Projections(d1.db).title(id.name, title);
     },
     snapshotForDuplicate: async () => ({ title: 'Original', state: new Uint8Array([1, 2]) }),
-    createFromSnapshot: async (input: unknown) => { created.push({ docId: id.name, input }); },
+    createFromSnapshot: async (input: unknown) => {
+      created.push({ docId: id.name, input });
+      await d1Projections(d1.db).title(id.name, (input as { title?: string }).title ?? '');
+    },
     probeInstance: async () => {
       probed.push(id.name);
       return { instanceId: `instance-${id.name}`, constructedAt: 1 };

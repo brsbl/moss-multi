@@ -8,7 +8,7 @@
 // Grants to the second and third principals are declared setup through the members API (BUILDPLAN conventions).
 import { randomBytes } from 'node:crypto';
 import { readField } from '../../packages/core/src/doc-fields.ts';
-import { cookieHeader, openDocClient } from '../lib/doc-client.ts';
+import { openDocClient } from '../lib/doc-client.ts';
 import type { Locator, Route } from '@playwright/test';
 import type { Actor, Actors } from '../lib/actors.ts';
 import {
@@ -645,7 +645,7 @@ test('j02-title: @tierA disconnected additions of the same property converge and
   const winner = await owner(ada).inputValue();
   await waitAcked(ada, docId);
   await waitAcked(ben, docId);
-  const reader = await openDocClient(new URL(ada.page.url()).origin, docId, cookieHeader(await ada.context.cookies()));
+  const reader = await openDocClient(new URL(ada.page.url()).origin, docId, (await ada.context.cookies()).map(({ name, value }) => `${name}=${value}`).join('; '));
   try {
     await reader.synced;
     expect(readField(reader.doc, 'frontmatter').match(/^owner:/gm), 'serialized properties have exactly one owner key').toHaveLength(1);
@@ -696,8 +696,9 @@ test('j02-title: @tierA delete versus edit of one property preserves neighbourin
   if (!ada.sever) throw new Error('Ada must be severable');
   ada.sever.blackhole();
   try {
+    await PROPERTIES(ada).locator('label').filter({ hasText: /^Owner$/ }).hover();
     await PROPERTIES(ada).getByRole('button', { name: 'Delete owner field', exact: true }).click();
-    await ada.page.getByRole('alertdialog').getByRole('button', { name: 'Remove', exact: true }).click();
+    await ada.page.getByRole('dialog').getByRole('button', { name: 'Remove', exact: true }).click();
     await draft.press('Enter');
     expect(ada.sever.census().dropped.out).toBeGreaterThan(0);
   } finally {

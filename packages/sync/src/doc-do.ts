@@ -12,6 +12,7 @@ import { attach, attachmentOf, awarenessTooLarge } from './doc/awareness.ts';
 import { AckCoalescer, DocStore, PERSISTENCE } from './doc/persistence.ts';
 import { d1Projections, Projections, type ProjectionTarget } from './doc/projections.ts';
 import type { SyncEnv } from './env.ts';
+import { migrateFrontmatter } from '@moss-multi/core/frontmatter';
 import { writeField } from '@moss-multi/core/doc-fields';
 import { exportDocMarkdown, importBody, rootIsEmpty, SERVER_IMPORT, SERVER_SEED, seedEmptyParagraph } from './server-doc.ts';
 
@@ -80,6 +81,7 @@ export class DocDO extends YServer<SyncEnv> {
     store.load(this.document);
     this.#store = store;
     this.document.on('update', (update: Uint8Array, origin: unknown) => this.#persist(store, update, origin));
+    migrateFrontmatter(this.document, 'frontmatter-migration');
     this.#seed(store);
     const target = (this.constructor as typeof DocDO).projectionTarget(this.env);
     if (target) this.#project(new Projections(this.name, target));
@@ -213,6 +215,7 @@ export class DocDO extends YServer<SyncEnv> {
     }, SERVER_IMPORT);
     store.setMeta('folder', input.folderId);
     store.setMeta('owner', input.ownerId);
+    await this.#projections?.flush();
     store.setMeta('created', '1');
   }
 

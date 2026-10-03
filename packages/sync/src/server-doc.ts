@@ -7,7 +7,7 @@ import { $normalizeFormatWhitespace } from '@moss-desktop/renderer/editor/markdo
 import { $createParagraphNode, $getRoot, TextNode, type LexicalEditor } from 'lexical';
 import * as Y from 'yjs';
 import { readField } from '@moss-multi/core/doc-fields';
-import { composeFrontmatter } from '@moss-multi/core/frontmatter';
+import { composeFrontmatter, importFrontmatter } from '@moss-multi/core/frontmatter';
 import { $importNoteBody, createConverterEditor, exportMarkdown } from './converter/index.ts';
 import { excludedPropertiesFor } from './excluded-properties.ts';
 
@@ -114,9 +114,7 @@ export function importBody(live: Y.Doc, markdown: string, admit?: (diff: Uint8Ar
   return serverWrite(live, SERVER_IMPORT, (doc) => {
     $importNoteBody(markdown, { comments: {} });
     if (frontmatter !== undefined) {
-      const field = doc.getText('frontmatter');
-      field.delete(0, field.length);
-      field.insert(0, frontmatter);
+      importFrontmatter(doc, frontmatter, SERVER_IMPORT);
     }
   }, admit);
 }

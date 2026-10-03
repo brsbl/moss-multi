@@ -33,7 +33,7 @@ describe('frontmatter binding', () => {
       Y.applyUpdate(b, Y.encodeStateAsUpdate(a));
       const raw = readField(a, 'frontmatter');
       expect(raw).toBe(readField(b, 'frontmatter'));
-      expect(raw.match(/^owner:/gm)).toHaveLength(2);
+      expect(raw.match(/^owner:/gm)).toHaveLength(1);
       expect(ada.get(atom)).toEqual(ben.get(atom));
       expect(ada.get(atom)).toEqual({ status: 'done', owner: raw.trimEnd().split('\n').at(-1)?.slice('owner: '.length) });
 

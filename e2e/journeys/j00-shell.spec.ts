@@ -324,7 +324,7 @@ test('no hidden or staged affordance renders on an open note: actions panel, top
   const { page } = ada;
   const docId = await openNewNote(ada);
 
-  // Properties edits the doc's Y.Text('frontmatter') (T1.4), so its tab is offered.
+  // Properties edits the doc's Y.Map('frontmatter') (T1.4), so its tab is offered.
   await page.getByRole('button', { name: 'Show actions panel', exact: true }).click();
   const panel = page.locator('[data-actions-panel-wrapper]');
   await expect(panel.getByRole('tab', { name: 'Actions', exact: true }), 'the actions panel opens on its Actions tab').toBeVisible();

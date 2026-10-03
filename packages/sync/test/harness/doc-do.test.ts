@@ -6,6 +6,7 @@ import * as Y from 'yjs';
 import { base64ToBytes, CLOSE } from '@moss-multi/protocol/sync';
 import { exportMarkdown, importMarkdown } from '../../src/converter/index.ts';
 import { DocDO } from '../../src/doc-do.ts';
+import { readFrontmatter, writeFrontmatterKey } from '@moss-multi/core/frontmatter';
 import { serverWrite } from '../../src/server-doc.ts';
 import { Backing, bindLexical, blockTypes, connect, counts, openDoc, start, wake, type Opened, type TestClient } from './do-harness.ts';
 
@@ -35,7 +36,7 @@ describe('seed', () => {
     const first = await start(openDoc());
     expect(blockTypes(first.dobj.document)).toEqual(['paragraph']);
     expect(first.dobj.document.getText('title').toString()).toBe('');
-    expect(first.dobj.document.getText('frontmatter').toString()).toBe('');
+    expect(readFrontmatter(first.dobj.document)).toBeNull();
     const stored = counts(first.backing);
     expect(stored.updates + stored.state, 'the seed is persisted').toBeGreaterThan(0);
 
@@ -96,20 +97,20 @@ describe('server writes', () => {
     expect(await opened.dobj.exportMarkdown()).toBe(exportMarkdown(reference));
   });
 
-  it('imports raw frontmatter separately and keeps the leading H1 in the body', async () => {
+  it('imports canonical frontmatter separately and keeps the leading H1 in the body', async () => {
     const opened = await start(openDoc());
     const frontmatter = '---\r\ntag: "keep these quotes"\r\n---\r\n';
     await opened.dobj.create({ folderId: 'folder', ownerId: 'owner', title: 'File name', markdown: `${frontmatter}# Body heading\n\nText` });
     expect(opened.dobj.document.getText('title').toString()).toBe('File name');
-    expect(opened.dobj.document.getText('frontmatter').toString()).toBe(frontmatter);
+    expect(readFrontmatter(opened.dobj.document)).toEqual({ tag: 'keep these quotes' });
     expect(blockTypes(opened.dobj.document)).toEqual(['heading', 'paragraph']);
-    expect(await opened.dobj.exportMarkdown()).toBe(`${frontmatter}# Body heading\n\nText`);
+    expect(await opened.dobj.exportMarkdown()).toBe('---\ntag: keep these quotes\n---\n# Body heading\n\nText');
   });
 
   it('duplicates a snapshot without a markdown round trip, keeps anchors, persists and remains independent', async () => {
     const source = await start(openDoc());
     await source.dobj.create({ folderId: 'source', ownerId: 'owner', title: 'Original', markdown: MARKDOWN });
-    source.dobj.document.getText('frontmatter').insert(0, '---\ntag: keep\n---\n');
+    writeFrontmatterKey(source.dobj.document, 'tag', 'keep', 'test');
     const root = source.dobj.document.get('root', Y.XmlText);
     const anchor = Y.createRelativePositionFromTypeIndex(root, 1);
     source.dobj.document.getMap('comments').set('anchor', Y.encodeRelativePosition(anchor));
@@ -125,8 +126,24 @@ describe('server writes', () => {
     await target.dobj.createFromSnapshot({ folderId: 'target', ownerId: 'other' }, snapshot.state);
     const woken = await start(wake(target));
     expect(await woken.dobj.exportMarkdown()).toBe(await source.dobj.exportMarkdown());
-    woken.dobj.document.getText('frontmatter').insert(0, 'independent');
-    expect(source.dobj.document.getText('frontmatter').toString()).not.toContain('independent');
+    writeFrontmatterKey(woken.dobj.document, 'tag', 'independent', 'test');
+    expect(readFrontmatter(source.dobj.document)).toEqual({ tag: 'keep' });
+  });
+
+  it('replays legacy YAML into the map, persists its upgrade, and exports after a second wake', async () => {
+    const legacy = await start(openDoc());
+    await legacy.dobj.create({ folderId: 'folder', ownerId: 'owner', title: 'Old note', markdown: MARKDOWN });
+    // The pre-map server's persisted wire shape, including its fenced YAML and CRLFs.
+    legacy.dobj.document.getText('frontmatter').insert(0, '---\r\nstatus: draft\r\ntags: [keep, both]\r\n---\r\n');
+    await legacy.dobj.onSave();
+    const restored = await start(wake(legacy));
+    expect(readFrontmatter(restored.dobj.document)).toEqual({ status: 'draft', tags: ['keep', 'both'] });
+    writeFrontmatterKey(restored.dobj.document, 'status', undefined, 'test');
+    await restored.dobj.onSave();
+    const again = await start(wake(restored));
+    expect(readFrontmatter(again.dobj.document)).toEqual({ tags: ['keep', 'both'] });
+    expect(await again.dobj.exportMarkdown()).toBe(`---\ntags:\n  - keep\n  - both\n---\n${exportMarkdown(importMarkdown(MARKDOWN))}`);
+    expect(again.dobj.document.getText('title').toString()).toBe('Old note');
   });
 
   it('refuses an import past the state cap and keeps the seed', async () => {

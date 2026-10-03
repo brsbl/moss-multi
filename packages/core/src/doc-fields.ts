@@ -1,6 +1,7 @@
-// The doc's title and frontmatter fields (A§10.4): Y.Texts beside the Lexical root.
+// Title text and the canonical YAML boundary for structured properties (A§10.4).
 import * as Y from 'yjs';
 import { diffText } from './text-diff.ts';
+import { frontmatterYaml, importFrontmatter, observeFrontmatter } from './frontmatter.ts';
 
 export type DocField = 'title' | 'frontmatter';
 
@@ -12,10 +13,11 @@ export interface FieldChange {
 
 export const fieldText = (doc: Y.Doc, field: DocField): Y.Text => doc.getText(field);
 
-export const readField = (doc: Y.Doc, field: DocField): string => fieldText(doc, field).toString();
+export const readField = (doc: Y.Doc, field: DocField): string => field === 'frontmatter' ? frontmatterYaml(doc) : fieldText(doc, field).toString();
 
 /** Writes `next` into the field in one transaction under `origin`; false when nothing changed. */
 export function writeField(doc: Y.Doc, field: DocField, next: string, origin: unknown): boolean {
+  if (field === 'frontmatter') return importFrontmatter(doc, next, origin);
   const text = fieldText(doc, field);
   const current = text.toString();
   if (current === next) return false;
@@ -25,6 +27,15 @@ export function writeField(doc: Y.Doc, field: DocField, next: string, origin: un
 
 /** Calls `listener` with the text after every change; returns the unsubscriber. */
 export function observeField(doc: Y.Doc, field: DocField, listener: (text: string, change: FieldChange) => void): () => void {
+  if (field === 'frontmatter') {
+    let previous = frontmatterYaml(doc);
+    return observeFrontmatter(doc, (_data, origin) => {
+      const text = frontmatterYaml(doc);
+      const delta = diffText(previous, text);
+      previous = text;
+      listener(text, { delta, origin });
+    });
+  }
   const text = fieldText(doc, field);
   const handler = (event: Y.YTextEvent, transaction: Y.Transaction) => {
     listener(text.toString(), { delta: event.delta, origin: transaction.origin });

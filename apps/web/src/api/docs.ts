@@ -104,7 +104,8 @@ async function duplicateDoc(request: Request, env: DocsEnv, docId: string): Prom
     if (error instanceof Error && error.message === 'doc-cap') return json({ error: 'doc-cap' }, 413, NO_STORE);
     throw error;
   }
-  return json({ doc, role: folder.role }, 201, NO_STORE);
+  const [projected] = await db.select({ id: docs.id, folderId: docs.folderId, title: docs.title, filename: docs.filename, createdAt: docs.createdAt, updatedAt: docs.updatedAt }).from(docs).where(eq(docs.id, doc.id));
+  return json({ doc: projected, role: folder.role }, 201, NO_STORE);
 }
 
 /** The doc's listing fields and the caller's role, for a doc the workspace listing does not carry. */
