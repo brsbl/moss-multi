@@ -261,7 +261,7 @@ test('j01 duplicate: the note menu makes a content-preserving copy visible to bo
   await waitBodyLive(ada, docId);
   const text = 'Duplicate keeps the original words, café and punctuation.';
   await ui.typeBody(ada, docId, text);
-  await waitAcked(ada, docId);
+  await expect(ui.pane(ada, docId)).toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout: 30_000 });
   const { vault } = await (await ada.context.request.get('/api/workspace')).json();
   expect((await ada.context.request.post(`/api/folders/${vault.id}/members`, {
     headers: { origin: stack.baseUrl }, data: { email: benPrincipal.email, role: 'editor' },
