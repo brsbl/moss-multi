@@ -2924,13 +2924,14 @@ export function App() {
   const handleCreateNote = useCallback(async () => {
     // moss-multi seam: new-note (A§9, R2): the trigger lets go of focus, and keys typed before the note binds are
     // refused visibly rather than lost or pressing "+ Note" again.
-    const disarmOpening = armOpeningGuard();
+    const opening = armOpeningGuard();
     const canSwitch = await flushBeforeNoteSwitch();
     if (!canSwitch) {
-      disarmOpening();
+      opening.disarm();
       return;
     }
-    if (!(await createAndActivateNote({ focusTarget: 'body' }))) disarmOpening();
+    if (await createAndActivateNote({ focusTarget: 'body' })) opening.created();
+    else opening.disarm();
   }, [createAndActivateNote, flushBeforeNoteSwitch]);
 
   const handleDuplicateNote = useCallback(async (noteId: string) => {

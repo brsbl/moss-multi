@@ -449,9 +449,9 @@ test("the in-app browser offers no back, forward, find or agent action, which a 
   expect(await probeHits(page, 'browser-split'), "the in-app browser's header").toEqual([]);
   // Positive control: every probe's scope renders with a shown control in it, so an empty result means absence.
   const scopes = new Set(
-    AFFORDANCES.flatMap((entry) => entry.probes)
+    AFFORDANCES.flatMap((entry) => entry.probes as readonly { surface: Surface; selector: string }[])
       .filter((probe) => probe.surface === 'browser-split')
-      .flatMap((probe) => probe.selector.split(',').map((part) => part.trim().split(' ')[0] ?? '')),
+      .flatMap((probe) => probe.selector.split(',').map((part: string) => part.trim().split(' ')[0] ?? '')),
   );
   expect([...scopes].sort(), 'the browser-split probes are scoped to the header').toEqual(['[data-browser-actions-cluster]', '[data-browser-header-content]']);
   for (const scope of scopes) await expect(page.locator(`${scope} button`).first(), `${scope} renders with a control in it`).toBeVisible();

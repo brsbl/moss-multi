@@ -7,8 +7,8 @@ import { BODY_BINDING_ATTR, TITLE_BINDING_ATTR } from '@moss-multi/protocol/dom-
 import { refuseInput, settleRefusal } from './refusal.ts';
 
 export const OPENING_NOTE = 'Opening note…';
-/** A bind that never comes leaves typing to the page again; the doc state says why (T1.3). */
-const MAX_ARMED_MS = 30_000;
+/** After the create, a bind that never comes leaves typing to the page again; the doc state says why (T1.3). */
+const MAX_UNBOUND_MS = 30_000;
 const LIVE_FIELD = `[${BODY_BINDING_ATTR}="live"], [${TITLE_BINDING_ATTR}="live"]`;
 
 let current: (() => void) | null = null;
@@ -22,8 +22,15 @@ const isEditable = (target: EventTarget | null): boolean =>
 const isTyping = (event: KeyboardEvent): boolean =>
   !event.metaKey && !event.ctrlKey && !event.altKey && (event.key.length === 1 || event.key === 'Enter' || event.key === 'Backspace');
 
-/** Arms the guard (replacing an earlier one) and returns its disarm, for a create that fails or is abandoned. */
-export function armOpeningGuard(): () => void {
+export interface OpeningGuard {
+  /** The create failed or was abandoned: keys go back to the page now. */
+  disarm(): void;
+  /** The note exists and is opening: the guard holds until a live field takes focus, or MAX_UNBOUND_MS. */
+  created(): void;
+}
+
+/** Arms the guard (replacing an earlier one); it holds for as long as the create is pending. */
+export function armOpeningGuard(): OpeningGuard {
   current?.();
   const active = document.activeElement;
   if (active instanceof HTMLElement && active !== document.body) active.blur();
@@ -37,11 +44,11 @@ export function armOpeningGuard(): () => void {
   const onFocusIn = (event: FocusEvent): void => {
     if (isLiveField(event.target)) disarm();
   };
-  const timer = setTimeout(() => disarm(), MAX_ARMED_MS);
+  let timer: ReturnType<typeof setTimeout> | null = null;
   function disarm(): void {
     if (current !== disarm) return;
     current = null;
-    clearTimeout(timer);
+    if (timer) clearTimeout(timer);
     window.removeEventListener('keydown', onKeyDown, true);
     document.removeEventListener('focusin', onFocusIn, true);
     settleRefusal(OPENING_NOTE);
@@ -50,5 +57,10 @@ export function armOpeningGuard(): () => void {
   window.addEventListener('keydown', onKeyDown, true);
   document.addEventListener('focusin', onFocusIn, true);
   current = disarm;
-  return disarm;
+  return {
+    disarm,
+    created() {
+      if (current === disarm && !timer) timer = setTimeout(disarm, MAX_UNBOUND_MS);
+    },
+  };
 }

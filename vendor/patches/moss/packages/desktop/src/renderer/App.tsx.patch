@@ -12,24 +12,25 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
  
  const nowInSeconds = (): number => Math.floor(Date.now() / 1000);
  const NOTE_LIST_SYNC_DEBOUNCE_MS = 150;
-@@ -2917,11 +2921,15 @@ export function App() {
+@@ -2917,11 +2921,16 @@ export function App() {
    ]);
  
    const handleCreateNote = useCallback(async () => {
 +    // moss-multi seam: new-note (A§9, R2): the trigger lets go of focus, and keys typed before the note binds are
 +    // refused visibly rather than lost or pressing "+ Note" again.
-+    const disarmOpening = armOpeningGuard();
++    const opening = armOpeningGuard();
      const canSwitch = await flushBeforeNoteSwitch();
      if (!canSwitch) {
-+      disarmOpening();
++      opening.disarm();
        return;
      }
 -    await createAndActivateNote({ focusTarget: 'body' });
-+    if (!(await createAndActivateNote({ focusTarget: 'body' }))) disarmOpening();
++    if (await createAndActivateNote({ focusTarget: 'body' })) opening.created();
++    else opening.disarm();
    }, [createAndActivateNote, flushBeforeNoteSwitch]);
  
    const handleDuplicateNote = useCallback(async (noteId: string) => {
-@@ -3788,7 +3796,8 @@ export function App() {
+@@ -3788,7 +3797,8 @@ export function App() {
  
        const key = e.key.toLowerCase();
  
@@ -39,7 +40,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
          e.preventDefault();
          if (showCommandPalette) {
            // Already open - just focus the input
-@@ -3878,7 +3887,8 @@ export function App() {
+@@ -3878,7 +3888,8 @@ export function App() {
        }
  
        // Switch to Trash tab: Cmd+2
@@ -49,7 +50,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
          e.preventDefault();
          handlePanelViewChange('trash');
          return;
-@@ -3947,7 +3957,8 @@ export function App() {
+@@ -3947,7 +3958,8 @@ export function App() {
      onExpandActionsPanel: () => { zenModeActive ? toggleZenMode() : setActionsPanelHidden(false); },
      isAgentStreaming: hasActiveStreaming,
      onCanvasClick: handlePromptClose,
@@ -59,7 +60,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
    };
  
    const actionsPanelContent = (
-@@ -4093,8 +4104,9 @@ export function App() {
+@@ -4093,8 +4105,9 @@ export function App() {
          onSelectNote={handleSelectNote}
          onCreateNote={handleCreateNote}
          onDeleteNote={handleNoteDeleted}

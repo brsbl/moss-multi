@@ -11,13 +11,17 @@ let generation = 0;
 
 const supported = (): boolean => typeof CSS !== 'undefined' && 'highlights' in CSS && typeof Highlight !== 'undefined';
 
-/** A Lexical point as a DOM position: a text point's span holds one DOM text node. */
+/**
+ * A Lexical point as a DOM position. A text node's element holds one DOM text node, directly or inside an inner tag
+ * (code, highlight, sub and sup text render as `<code><span>text</span></code>`).
+ */
 function domPoint(editor: LexicalEditor, point: { key: string; offset: number; type: PointType['type'] }): [Node, number] | null {
   const element = editor.getElementByKey(point.key);
   if (!element) return null;
   if (point.type === 'element') return [element, Math.min(point.offset, element.childNodes.length)];
-  const text = element.firstChild;
-  return text ? [text, Math.min(point.offset, text.textContent?.length ?? 0)] : null;
+  let text: Node | null = element;
+  while (text && text.nodeType !== Node.TEXT_NODE) text = text.firstChild;
+  return text ? [text, Math.min(point.offset, text.textContent?.length ?? 0)] : [element, 0];
 }
 
 /** Paints `selection` (read inside the update that opens the popover) once that update has reached the DOM. */

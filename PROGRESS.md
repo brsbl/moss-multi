@@ -49,10 +49,10 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - During a stack restart the editor stays editable with no sign it is disconnected → T1.3 (connection truth indicator and banner)
 - Settings shows Note Intelligence, and its description mentions a hidden section → T1.4 (Properties unstaging), or a hide-registry entry if it cannot work on the web
 - Sign-out leaves the session's other live doc sockets reading and writing → T2.5
-- Close codes are never dispatched: a refused or unauthorized socket reconnects forever behind an editable pane → T1.3
-- A lost ack leaves `data-sync-unacked=1` after reconnect → T1.3
+- Close codes are never dispatched: a refused or unauthorized socket reconnects forever behind an editable pane → T1.3 (a session lingering with unacked edits behind a refused socket also holds its doc until then; a terminal code should end it)
+- A lost ack leaves `data-sync-unacked=1` after reconnect → T1.3 (T0.P: the DocDO now acks an editor's inert step 2, so a reconnect ends in an ack; T1.3 confirms it in j03)
 - Ack coverage by state vector is unsound for deletions → T1.3
-- Acks and the write-rate window are keyed by the client's reused `_pk` connection id, so a stale socket breaks the new one's acks → T1.3
+- Acks and the write-rate window are keyed by the client's reused `_pk` connection id, so a stale socket breaks the new one's acks → T1.3 (T0.P: each socket now gets a fresh id on the client; T1.3 checks the server side)
 - ChunkReloadBoundary hard-reloads when a lazy chunk fails because the network or stack is down, discarding buffered edits → T1.3
 - The wrangler ProxyWorker patch replays non-idempotent requests after an ambiguous failure → T0.9b follow-up (stack infra)
 - `qa.mjs close` forgets the session even when closing it failed → tooling follow-up
@@ -70,3 +70,4 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - Enter or Space right after "+ Note" creates duplicate empty notes that cannot be deleted in M0 → T1.4 ("+ Note" seam and opening guard); M2 trash makes the junk removable (T0.P's opening guard now blurs the trigger, so the keys no longer press it)
 - The title field looks editable but is permanently dead, so every note is "Untitled" → T1.4 (title binding); until then, stage or visibly disable it so it does not invite typing
 - At 390×844, signing in lands on an unreadable doc: the editor is squeezed to one character per line → T2.7 (deviation 11: below 640 px the notes panel overlays the canvas)
+- At M0 a link's "Open in Split View" opens an in-app browser that loads forever, and an HTML block's "Preview unavailable" Retry cannot succeed → T3.2 (RemoteWebSurface and the live iframe), or stage both now if the M0 critic counts them as dead
