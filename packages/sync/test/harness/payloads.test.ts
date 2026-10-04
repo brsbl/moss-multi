@@ -538,13 +538,17 @@ describe('T1.F2 security: no reveal by naming, no cap bypass, bounded work @p:co
     const ada = await LiveClient.open(opened);
     try {
       const count = 2_000;
-      const started = performance.now();
+      // Fake timers fake performance.now, so the budget is CPU time, which they leave alone.
+      const started = process.cpuUsage();
+      const heap = process.memoryUsage().heapUsed;
       ada.insertMany('code-block', count);
       await ada.sync();
-      const elapsed = performance.now() - started;
+      const { user, system } = process.cpuUsage(started);
       expect(opened.dobj.payloadWork.held, 'payload docs held in memory are bounded').toBeLessThanOrEqual(PAYLOAD_DOCS_HELD);
-      // Stated budget in the Node harness: 2,000 new blocks' frames land in well under 30 s.
-      expect(elapsed).toBeLessThan(30_000);
+      // Stated budget in the Node harness (client and server together): 2,000 new blocks' frames in under 30 s of CPU
+      // and 256 MB of heap growth.
+      expect((user + system) / 1_000, 'CPU ms').toBeLessThan(30_000);
+      expect((process.memoryUsage().heapUsed - heap) / 2 ** 20, 'heap MB').toBeLessThan(256);
       const ack = (await acks(ada)).at(-1);
       expect(Object.keys(ack?.p ?? {}).length, 'the ack names the ids its frames wrote').toBe(count);
       ada.type(1_234, 0, 'x');
@@ -647,5 +651,132 @@ describe('T1.F2 the DocDO: migration and cost @p:col-1 @p:tech-8', () => {
       expect(carries(served(opened, since), 'VIEWER-delta')).toBe(false);
       expect(heldText(ada.payloads.get(id))).toBe('VIEWER-delta');
     } finally { ada.dispose(); }
+  });
+});
+
+describe('T1.F2 checker regressions @p:col-1 @p:tech-8', () => {
+  /** What a client's ack ledger does: an ack settles a payload once its vector and acked deletes cover every write. */
+  function settles(client: LiveClient, id: string, received: Extract<ServerEvent, { t: 'ack' }>[]): boolean {
+    const covering = received.map((ack) => ack.p?.[id]).filter((ack) => ack !== undefined);
+    const last = covering.at(-1);
+    if (!last) return false;
+    const deletes = Y.mergeDeleteSets(covering.map((ack) => Y.decodeSnapshot(base64ToBytes(ack.ds)).ds));
+    const covered = Y.createSnapshot(deletes, Y.decodeStateVector(base64ToBytes(last.sv)));
+    return Y.snapshotContainsUpdate(covered, Y.mergeUpdates(client.written.get(id) ?? []));
+  }
+
+  it('acks cover every later edit to a block and every resend, so the client\'s unacked payload writes settle', async () => {
+    const opened = await seeded();
+    const ada = await LiveClient.open(opened);
+    try {
+      ada.insert('code-block', 'a');
+      await ada.sync();
+      const id = ada.ids()[0];
+      expect(settles(ada, id, await acks(ada)), 'the first text').toBe(true);
+      // Edits whose first struct is past clock 0, one frame each, in one ack window and across windows.
+      for (const text of ['b', 'c', 'd']) {
+        ada.type(0, 99, text);
+        await ada.up();
+      }
+      expect(settles(ada, id, await acks(ada)), 'three later edits in one window').toBe(true);
+      ada.erase(0, 0, 1);
+      await ada.up();
+      expect(settles(ada, id, await acks(ada)), 'a later delete').toBe(true);
+      // A frame lost on the wire, then the heartbeat's resend of only what is unacked.
+      const sent = (ada.written.get(id) ?? []).length;
+      ada.type(0, 99, 'e');
+      await ada.settle();
+      ada.socket.drain();
+      await ada.resend(id, Y.mergeUpdates((ada.written.get(id) ?? []).slice(sent)));
+      expect(settles(ada, id, await acks(ada)), 'a pending-only resend').toBe(true);
+      expect(ada.texts()).toEqual(['bcde']);
+    } finally { ada.dispose(); }
+  });
+
+  it('a reader\'s move, delete or undo of a block forged with a deleted block\'s id never reveals the text', async () => {
+    const opened = await seeded();
+    const ada = await LiveClient.open(opened, { id: 'ada', role: 'editor' });
+    const ben = await LiveClient.open(opened, { id: 'ben', role: 'editor' });
+    try {
+      ada.insert('code-block', 'MOVED-secret');
+      await syncAll(ada, ben);
+      const id = ada.ids()[0];
+      ada.remove(0);
+      await syncAll(ada, ben);
+      const since = mark();
+      const cat = await LiveClient.open(opened, { id: 'cat', role: 'editor' });
+      try {
+        cat.forge(id);
+        await syncAll(cat, ada, ben);
+        // Readers move the forged block (V1 recreates it under their own origin), and move a block before it.
+        ada.moveToEnd(0);
+        await syncAll(ada, ben, cat);
+        ben.moveToStart(0);
+        await syncAll(ben, ada, cat);
+        // A reader deletes the empty forged block, then undoes that.
+        ada.remove(0);
+        await syncAll(ada, ben, cat);
+        ada.undo.undo();
+        await syncAll(ada, ben, cat);
+        await syncAll(ada, ben, cat);
+        expect(cat.texts().every((text) => text === ''), "the forger's block stays empty").toBe(true);
+        expect(carries(served(opened, since), 'MOVED-secret'), 'no frame carried the text').toBe(false);
+        expect((await lateReader(opened)).every((text) => text === ''), 'a later joiner reads nothing').toBe(true);
+        // Ada's own undo of her delete still restores it.
+        for (let i = 0; i < 3 && !ada.texts().includes('MOVED-secret'); i++) {
+          ada.undo.undo();
+          await syncAll(ada, ben, cat);
+          await syncAll(ada, ben, cat);
+        }
+        expect(ada.texts(), "the deleter's undo still restores her block").toContain('MOVED-secret');
+        expect(await lateReader(opened)).toContain('MOVED-secret');
+      } finally { cat.dispose(); }
+    } finally { ada.dispose(); ben.dispose(); }
+  });
+
+  it('an identity\'s withheld bytes stay capped across a DocDO wake', async () => {
+    class SmallDoc extends DocDO {
+      static override limits = { ...DocDO.limits, withheldBytesPerIdentity: 4 * 1024 };
+    }
+    const first = await start(openDoc(new Backing(), SmallDoc as never));
+    await first.dobj.create({ folderId: 'folder', ownerId: 'owner', markdown: SEED });
+    const minted = (text: string) => {
+      const doc = new Y.Doc();
+      doc.getText('payload').insert(0, text);
+      return Y.encodeStateAsUpdate(doc);
+    };
+    const eve = await connect(first, { id: 'eve', role: 'editor' });
+    await eve.hello();
+    await eve.deliver(encodePayloadFrame('eve-0', PAYLOAD_UPDATE, minted('x'.repeat(3 * 1024))));
+    expect(eve.closed, 'within her withheld bytes').toBeNull();
+    const woken = await start(wake(first));
+    const again = await connect(woken, { id: 'eve', role: 'editor' });
+    await again.hello();
+    await again.deliver(encodePayloadFrame('eve-1', PAYLOAD_UPDATE, minted('y'.repeat(3 * 1024))));
+    expect(again.closed?.code, 'a wake does not reset her withheld bytes').toBe(CLOSE.writeRefused);
+  });
+
+  it('the creator of an empty block keeps typing that lands after a peer opened and deleted it', async () => {
+    const opened = await seeded();
+    const ada = await LiveClient.open(opened, { id: 'ada', role: 'editor' });
+    const ben = await LiveClient.open(opened, { id: 'ben', role: 'editor' });
+    try {
+      ada.insert('code-block', '');
+      await syncAll(ada, ben);
+      await syncAll(ben, ada);
+      expect(ben.texts(), 'ben holds the empty block').toEqual(['']);
+      // Ada types while her frames are delayed; Ben deletes the block meanwhile.
+      ada.type(0, 0, 'ADA-offline');
+      await ada.settle();
+      ben.remove(0);
+      await syncAll(ben);
+      await ada.up();
+      expect(ada.socket.closed, "ada's typing into the block she created is accepted").toBeNull();
+      await ada.down();
+      ben.undo.undo();
+      await syncAll(ben, ada);
+      await syncAll(ada, ben);
+      for (const peer of [ada, ben]) expect(peer.texts(), 'undo brings back her typing').toEqual(['ADA-offline']);
+    } finally { ada.dispose(); ben.dispose(); }
   });
 });

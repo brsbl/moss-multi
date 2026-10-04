@@ -41,6 +41,8 @@ export class LiveClient {
   readonly payloads: PayloadDocs;
   readonly undo: BodyUndo;
   readonly errors: unknown[] = [];
+  /** Every local write to each payload, as a client's ack ledger records them. */
+  readonly written = new Map<string, Uint8Array[]>();
   socket!: TestClient;
   #sync!: PayloadSync;
   readonly #stops: (() => void)[] = [];
@@ -88,6 +90,10 @@ export class LiveClient {
     this.#sync = new PayloadSync(this.payloads, {
       send: (frame) => this.socket.queue(frame),
       open: () => this.socket.socket.readyState === 1,
+      wrote: (id, update) => {
+        const list = this.written.get(id);
+        if (list) list.push(update); else this.written.set(id, [update]);
+      },
       remote: FROM_SERVER,
     });
     await this.socket.hello();
@@ -114,6 +120,12 @@ export class LiveClient {
     for (const [id, doc] of this.payloads.docs) this.#sync.resend(id, Y.encodeStateAsUpdate(doc));
     await this.socket.push();
     await this.down();
+  }
+
+  /** Re-delivers `update` for payload `id` as a step 2 (the heartbeat's resend of unacked writes). */
+  async resend(id: string, update: Uint8Array): Promise<void> {
+    this.#sync.resend(id, update);
+    await this.socket.push();
   }
 
   /** Commits pending Lexical work and runs queued register refreshes. */
