@@ -496,6 +496,9 @@ test('j11-media: a paste over a selection replaces it at once, and the held uplo
   await expect.poll(() => ada.page.evaluate(() => document.getSelection()?.toString()), { message: 'Ada selects "pl"' }).toBe('pl');
   await ada.page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
   expect(await paste(ada, docId, PNG, false), 'the editor takes the pasted image').toBe(true);
+  // The paste replaces "pl" by design, so invariant 7 no longer expects the typed "Uploads" whole.
+  const typedLine = actors.typed.findIndex((entry) => entry.docId === docId && entry.text === 'Uploads');
+  if (typedLine >= 0) actors.typed.splice(typedLine, 1);
 
   // While it uploads, Ben types at the line's start and Ada at its end.
   await line(ben).click();
