@@ -479,4 +479,21 @@ describe('RPC', () => {
     await client.flush();
     expect((await cold.dobj.exportMarkdown()).trim()).toBe('Persisted body and more');
   });
+
+  it('trash() persists the deleted flag, tells every socket the doc is gone, closes them 4410 and refuses new ones after a wake', async () => {
+    const opened = await start(openDoc());
+    const editor = await editorOn(opened);
+    const viewer = await connect(opened, { role: 'viewer' });
+    await viewer.hello();
+    await opened.dobj.trash();
+    await editor.pump();
+    await viewer.pump();
+    for (const client of [editor, viewer]) {
+      expect(client.events).toContainEqual({ t: 'doc-deleted' });
+      expect(client.closed?.code).toBe(CLOSE.deleted);
+    }
+    await opened.dobj.trash();
+    const woken = await start(wake(opened));
+    expect((await connect(woken, { role: 'editor' })).closed?.code, 'a woken doc remembers').toBe(CLOSE.deleted);
+  });
 });
