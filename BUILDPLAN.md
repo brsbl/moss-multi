@@ -467,6 +467,7 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
     - a forged raw frame from a suggester deleting original text never lands, and the refusal is visible in the band;
     - leases are exclusive and never in the body state vector;
     - a delete-only frame after accept opens a continuation record;
+    - `first_insert_after_accept_opens_continuation`: the suggester's first `suggest-ops` insert after an editor accepts their record opens a continuation record and lands. It is never refused, and nothing typed is lost (T5.0 final check, P1 routed here).
     - `all_roles_cannot_write_suggestions_via_sync`: step 2, update, and nested writes and deletes under `suggestions` from suggester, editor and owner are all refused with the map unchanged; editor and owner body writes land as positive controls (I2; T4.1 SP7 is not yet on m4);
     - `accepted_record_continuation_preserves_occupied_id`: with two principals, another principal's open record holds the continuation id; a delete-only frame and an ops frame aimed at the accepted record both leave that record's author, status, ops and parts unchanged, and long ids that share a 48-character prefix never collide;
     - `accepted_suggestion_text_is_valid_body_delete_target`: after an editor accepts Alice's insert, another principal's suggest-delete over those characters is accepted as a part, while targets still under a pending lease stay refused `target`;
@@ -515,6 +516,7 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
     - a randomized struct-level fuzz over records built from real peer frames: retarget origins, swap content kinds, add deletes, re-point `__regId`, write non-body roots, use non-leased clients, open gaps, GC parents. It asserts that accept either refuses with nothing applied, or lands exactly the hashed preview, touching only `root` and `registers` and only leased clients;
     - the same fuzz applied to clients' F and C builds, asserting no throw escapes and broken records are excluded;
     - a generative honest-edit fuzz through real moss editors in suggest mode (random typing, Enter, soft breaks, formatting, undo, lists, tables, decorators next to links, line breaks and inline formulas), asserting zero ingest refusals, zero broken records and accept-equivalence;
+    - re-prove spike tests 2-8 red on behavior assertions, not on not-implemented stubs (T5.0 final check, P2);
     - cost regression tests for ingest and the body-frame lease check at the frame cap, including `fixed_frame_ingest_cost_independent_of_closed_record_count_and_continuation_depth` at fuzz scale.
   - **Done:** green in CI.
 
