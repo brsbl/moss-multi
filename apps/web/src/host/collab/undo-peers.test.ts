@@ -123,6 +123,22 @@ describe('Cmd+Z undoes only your own edits and never removes a peer\'s character
     } finally { dispose(); }
   });
 
+  it('redoing Ada\'s delete of the peer\'s paragraph deletes it again', async () => {
+    const { ada, ben, dispose } = await pair(() => $getRoot().append($createParagraphNode().append($createTextNode('Intro.'))));
+    try {
+      ben.step(() => $getRoot().append($createParagraphNode().append($createTextNode('Ben line.'))));
+      await exchange(ada, ben);
+      ada.step(() => paragraph(1).remove());
+      await expectBoth(ada, ben, text => expect(text).toBe('Intro.'));
+      for (let round = 1; round <= 2; round++) {
+        ada.undo.undo();
+        await expectBoth(ada, ben, text => expect(text, `round ${round}: undo restores Ben's paragraph`).toBe('Intro.\n\nBen line.'));
+        ada.undo.redo();
+        await expectBoth(ada, ben, text => expect(text, `round ${round}: redo deletes it again`).toBe('Intro.'));
+      }
+    } finally { dispose(); }
+  });
+
   it('a peer typing inside a word Ada is editing keeps those characters through her undo', async () => {
     const { ada, ben, dispose } = await pair(() => $getRoot().append($createParagraphNode().append($createTextNode('Intro.'))));
     try {
