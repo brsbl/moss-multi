@@ -16,7 +16,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
 +import { hidden } from '@moss-multi/host/affordances';
 +// moss-multi seam: link-selection (A§10.10)
 +import { clearLinkSelection, markLinkSelection } from '@moss-multi/host/link-highlight';
-+// moss-multi seam: trash copy (T2.3): one module says how long Trash keeps a note
++// moss-multi seam: trash-copy (T2.3): one module says how long Trash keeps a note
 +import { TRASH_COPY } from '@moss-multi/host/retention';
  // moss-multi seam: converter-split (A§12; S-conv §2.3)
  import { $convertMossCustomCodeNodes, $postImportNormalize, escapeHtmlEntities, normalizeMarkdownForImport, unescapeHtmlEntities } from './markdown/normalize';
@@ -158,7 +158,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
    const trashedToolbar = (
      <div className="px-3 py-2 text-sm text-ink-muted">
 -      Note will be deleted in {trashCountdownDays} {trashCountdownDays === 1 ? 'day' : 'days'}
-+      {TRASH_COPY.trashedNote /* moss-multi seam: trash copy (T2.3) */}
++      {TRASH_COPY.trashedNote /* moss-multi seam: trash-copy (T2.3) */}
      </div>
    );
  

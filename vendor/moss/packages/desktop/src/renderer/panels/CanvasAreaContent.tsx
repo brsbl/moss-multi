@@ -4866,7 +4866,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
       </TopNavBar>
   );
 
-  // moss-multi seam: trash copy (T2.3): a trash is restorable, never counted down
+  // moss-multi seam: trash-copy (T2.3): a trash is restorable, never counted down
   const trashCountdownMessage = TRASH_COPY.trashedNote;
   const showContentSkeleton = skeletonLines > 0 && hasBodyContent;
   const showEmptySkeleton = skeletonLines > 0 && !hasBodyContent;
@@ -5104,7 +5104,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
             className="pointer-events-none absolute bottom-8 left-1/2 z-40 -translate-x-1/2"
             style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
           >
-            <div data-retention-notice="" /* moss-multi seam: trash copy (T2.3) */ className="pointer-events-auto flex items-center gap-2 rounded-lg border border-border-subtle/50 bg-surface-raised-card px-4 py-2.5 shadow-floating backdrop-blur-sm">
+            <div data-retention-notice="" /* moss-multi seam: trash-copy (T2.3) */ className="pointer-events-auto flex items-center gap-2 rounded-lg border border-border-subtle/50 bg-surface-raised-card px-4 py-2.5 shadow-floating backdrop-blur-sm">
               <AlertTriangle aria-hidden className="h-4 w-4 shrink-0 text-accent-terracotta/80" />
               <span className="text-xs text-ink-muted">{trashCountdownMessage}</span>
             </div>

@@ -4045,7 +4045,7 @@ export function App() {
       feedbackTooltipOpen={feedbackTooltipFixtureOpen}
       mode={appMode}
       onModeChange={handlePanelViewChange}
-      onTrashNote={handleNoteDeleted} // moss-multi seam: trash drop (T2.3)
+      onTrashNote={handleNoteDeleted} // moss-multi seam: trash-drop (T2.3)
       onOpenFeedback={() => setFeedbackDialogOpen(true)}
       onOpenSettings={async () => {
         handleCloseSearch();

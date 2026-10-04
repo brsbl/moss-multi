@@ -191,7 +191,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
        feedbackTooltipOpen={feedbackTooltipFixtureOpen}
        mode={appMode}
        onModeChange={handlePanelViewChange}
-+      onTrashNote={handleNoteDeleted} // moss-multi seam: trash drop (T2.3)
++      onTrashNote={handleNoteDeleted} // moss-multi seam: trash-drop (T2.3)
        onOpenFeedback={() => setFeedbackDialogOpen(true)}
        onOpenSettings={async () => {
          handleCloseSearch();

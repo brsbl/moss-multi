@@ -203,7 +203,7 @@ function NoteContextMenuItems({
             <span>Close</span>
           </ContextMenuItem>
         </>
-      ) : onDeleteNote && canTrashNote(noteId) /* moss-multi seam: only the owner trashes a note (A§8) */ ? (
+      ) : onDeleteNote && canTrashNote(noteId) /* moss-multi seam: trash (A§8): only the owner trashes a note */ ? (
         <>
           <ContextMenuSeparator />
           <ContextMenuItem onSelect={() => onDeleteNote(noteId)}>
@@ -1745,7 +1745,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
           open={trashFolderTarget !== null}
           onOpenChange={(open) => { if (!open) setTrashFolderTarget(null); }}
           title="Trash folder?"
-          description={TRASH_COPY.trashFolder(trashFolderTarget?.split('/').pop() ?? '') /* moss-multi seam: trash copy (T2.3) */}
+          description={TRASH_COPY.trashFolder(trashFolderTarget?.split('/').pop() ?? '') /* moss-multi seam: trash-copy (T2.3) */}
           confirmLabel="Trash"
           variant="danger"
           onConfirm={handleTrashFolderConfirm}
