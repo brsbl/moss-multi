@@ -84,7 +84,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
          className="flex items-center gap-1 rounded-md border border-surface-panel bg-surface-raised-control px-2 py-1 text-xs text-ink-muted shadow-sm hover:bg-surface-canvas focus:border-accent-success focus:outline-none focus:ring-1 focus:ring-accent-success/30"
          onClick={(e) => e.stopPropagation()}
        >
-@@ -275,6 +287,11 @@ function ChartWrapper({
+@@ -275,6 +287,24 @@ function ChartWrapper({
    const [editor] = useLexicalComposerContext();
    const [isSelected, setSelected, clearSelection] = useLexicalNodeSelection(nodeKey);
    const [isEditing, setIsEditing] = useState(false);
@@ -93,10 +93,23 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
 +  useEffect(() => {
 +    if (!editable) setIsEditing(false);
 +  }, [editable]);
++  // Nothing under a closed body takes focus (invariant 9): the chart library's focusable svg and layers lose their tabindex.
++  const chartBodyRef = useRef<HTMLDivElement>(null);
++  useEffect(() => {
++    const root = chartBodyRef.current;
++    if (editable || !root) return;
++    const strip = () => {
++      for (const el of root.querySelectorAll('[tabindex]')) el.removeAttribute('tabindex');
++    };
++    strip();
++    const observer = new MutationObserver(strip);
++    observer.observe(root, { subtree: true, childList: true, attributes: true, attributeFilter: ['tabindex'] });
++    return () => observer.disconnect();
++  }, [editable]);
    const [isTypeDropdownOpen, setIsTypeDropdownOpen] = useState(false);
    const [isPaletteDropdownOpen, setIsPaletteDropdownOpen] = useState(false);
    const currentPalette = getSafePalette(config.options?.palette);
-@@ -282,6 +299,7 @@ function ChartWrapper({
+@@ -282,6 +312,7 @@ function ChartWrapper({
  
    // Handle deletion of error-state chart
    const handleDelete = useCallback(() => {
@@ -104,7 +117,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
      editor.update(() => {
        const node = $getNodeByKey(nodeKey);
        if (node) {
-@@ -313,13 +331,15 @@ function ChartWrapper({
+@@ -313,13 +344,15 @@ function ChartWrapper({
      (e: React.MouseEvent) => {
        e.preventDefault();
        e.stopPropagation();
@@ -121,7 +134,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
        editor.update(() => {
          const node = $getNodeByKey(nodeKey);
          if (node && $isChartNode(node)) {
-@@ -344,6 +364,7 @@ function ChartWrapper({
+@@ -344,6 +377,7 @@ function ChartWrapper({
  
    const handlePaletteChange = useCallback(
      (newPalette: ChartPalette) => {
@@ -129,7 +142,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
        editor.update(() => {
          const node = $getNodeByKey(nodeKey);
          if (node && $isChartNode(node)) {
-@@ -363,6 +384,7 @@ function ChartWrapper({
+@@ -363,6 +397,7 @@ function ChartWrapper({
  
    const handleTitleChange = useCallback(
      (newTitle: string) => {
@@ -137,7 +150,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
        editor.update(() => {
          const node = $getNodeByKey(nodeKey);
          if (node && $isChartNode(node)) {
-@@ -379,6 +401,7 @@ function ChartWrapper({
+@@ -379,6 +414,7 @@ function ChartWrapper({
  
    const handleDone = useCallback(
      (newConfig: ChartConfig) => {
@@ -145,7 +158,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
        editor.update(() => {
          const node = $getNodeByKey(nodeKey);
          if (node && $isChartNode(node)) {
-@@ -398,6 +421,7 @@ function ChartWrapper({
+@@ -398,6 +434,7 @@ function ChartWrapper({
      (position: 'before' | 'after') => (e: React.MouseEvent) => {
        e.preventDefault();
        e.stopPropagation();
@@ -153,7 +166,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
        editor.update(() => {
          const node = $getNodeByKey(nodeKey);
          if (!node) return;
-@@ -415,7 +439,7 @@ function ChartWrapper({
+@@ -415,7 +452,7 @@ function ChartWrapper({
          selected={isSelected}
          beforeLabel="Insert paragraph before chart"
          afterLabel="Insert paragraph after chart"
@@ -162,7 +175,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
          className="my-6"
          data-block-decorator-key={nodeKey}
        >
-@@ -430,6 +454,7 @@ function ChartWrapper({
+@@ -430,6 +467,7 @@ function ChartWrapper({
                </pre>
              )}
            </div>
@@ -170,7 +183,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
            <button
              type="button"
              onClick={handleDelete}
-@@ -438,19 +463,20 @@ function ChartWrapper({
+@@ -438,19 +476,20 @@ function ChartWrapper({
            >
              <X className="h-4 w-4" />
            </button>
@@ -193,7 +206,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
          className="my-6"
          data-block-decorator-key={nodeKey}
        >
-@@ -470,7 +496,7 @@ function ChartWrapper({
+@@ -470,11 +509,11 @@ function ChartWrapper({
        selected={isSelected}
        beforeLabel="Insert paragraph before chart"
        afterLabel="Insert paragraph after chart"
@@ -202,7 +215,12 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
        className="my-6 outline-none transition-colors"
        data-block-decorator-key={nodeKey}
        onClick={handleContainerClick}
-@@ -483,7 +509,7 @@ function ChartWrapper({
+-      tabIndex={-1}
++      tabIndex={editable ? -1 : undefined /* moss-multi seam: read-only-decorators (T2.3) */}
+     >
+       <div className={BLOCK_SURFACE_CLASSNAME}>
+         {/* Header */}
+@@ -483,7 +522,7 @@ function ChartWrapper({
            onClick={(e) => e.stopPropagation()}
          >
            <div className="min-w-0">
@@ -211,7 +229,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
            </div>
  
            {/* Controls - show on hover or when dropdown is open */}
-@@ -492,7 +518,7 @@ function ChartWrapper({
+@@ -492,7 +531,7 @@ function ChartWrapper({
            }`}>
              {/* Chart type dropdown */}
              <DropdownMenu open={isTypeDropdownOpen} onOpenChange={setIsTypeDropdownOpen}>
@@ -220,7 +238,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
                  {CHART_TYPE_LABELS[config.type]}
                </ChartDropdownTrigger>
                <DropdownMenuContent align="end">
-@@ -510,7 +536,7 @@ function ChartWrapper({
+@@ -510,7 +549,7 @@ function ChartWrapper({
  
              {/* Palette dropdown */}
              <DropdownMenu open={isPaletteDropdownOpen} onOpenChange={setIsPaletteDropdownOpen}>
@@ -229,7 +247,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
                  {CHART_PALETTES[currentPalette].name}
                </ChartDropdownTrigger>
                <DropdownMenuContent align="end">
-@@ -527,6 +553,8 @@ function ChartWrapper({
+@@ -527,6 +566,8 @@ function ChartWrapper({
              </DropdownMenu>
  
              {/* Edit JSON button */}
@@ -238,7 +256,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
              <TooltipProvider delayDuration={200}>
                <Tooltip>
                  <TooltipTrigger asChild>
-@@ -542,6 +570,9 @@ function ChartWrapper({
+@@ -542,6 +583,9 @@ function ChartWrapper({
                  <TooltipContent side="bottom"><p>Edit chart data</p></TooltipContent>
                </Tooltip>
              </TooltipProvider>
@@ -248,7 +266,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
              <TooltipProvider delayDuration={200}>
                <Tooltip>
                  <TooltipTrigger asChild>
-@@ -559,6 +590,7 @@ function ChartWrapper({
+@@ -559,11 +603,13 @@ function ChartWrapper({
                  <TooltipContent side="bottom"><p>Add comment</p></TooltipContent>
                </Tooltip>
              </TooltipProvider>
@@ -256,3 +274,10 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
            </div>
          </div>
  
+         {/* Chart body */}
+-        <div className="bg-surface-canvas p-canvas-surface-pad">
++        {/* moss-multi seam: read-only-decorators (T2.3): keyed so a reopened body gets the chart's own tabindexes back */}
++        <div key={editable ? 'live' : 'closed'} ref={chartBodyRef} className="bg-surface-canvas p-canvas-surface-pad">
+           <Suspense fallback={<ChartSkeleton />}>
+             <ChartRenderer config={config} nodeKey={nodeKey} showTitle={false} />
+           </Suspense>

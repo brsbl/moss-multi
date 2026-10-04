@@ -293,6 +293,19 @@ function ChartWrapper({
   useEffect(() => {
     if (!editable) setIsEditing(false);
   }, [editable]);
+  // Nothing under a closed body takes focus (invariant 9): the chart library's focusable svg and layers lose their tabindex.
+  const chartBodyRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const root = chartBodyRef.current;
+    if (editable || !root) return;
+    const strip = () => {
+      for (const el of root.querySelectorAll('[tabindex]')) el.removeAttribute('tabindex');
+    };
+    strip();
+    const observer = new MutationObserver(strip);
+    observer.observe(root, { subtree: true, childList: true, attributes: true, attributeFilter: ['tabindex'] });
+    return () => observer.disconnect();
+  }, [editable]);
   const [isTypeDropdownOpen, setIsTypeDropdownOpen] = useState(false);
   const [isPaletteDropdownOpen, setIsPaletteDropdownOpen] = useState(false);
   const currentPalette = getSafePalette(config.options?.palette);
@@ -501,7 +514,7 @@ function ChartWrapper({
       className="my-6 outline-none transition-colors"
       data-block-decorator-key={nodeKey}
       onClick={handleContainerClick}
-      tabIndex={-1}
+      tabIndex={editable ? -1 : undefined /* moss-multi seam: read-only-decorators (T2.3) */}
     >
       <div className={BLOCK_SURFACE_CLASSNAME}>
         {/* Header */}
@@ -596,7 +609,8 @@ function ChartWrapper({
         </div>
 
         {/* Chart body */}
-        <div className="bg-surface-canvas p-canvas-surface-pad">
+        {/* moss-multi seam: read-only-decorators (T2.3): keyed so a reopened body gets the chart's own tabindexes back */}
+        <div key={editable ? 'live' : 'closed'} ref={chartBodyRef} className="bg-surface-canvas p-canvas-surface-pad">
           <Suspense fallback={<ChartSkeleton />}>
             <ChartRenderer config={config} nodeKey={nodeKey} showTitle={false} />
           </Suspense>
