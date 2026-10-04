@@ -5,6 +5,8 @@ import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { createConverterEditor } from '../../src/converter/index.ts';
 import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { importBody } from '../../src/server-doc.ts';
 
 /** Root > paragraphs, as V1 writes them: a property map, then text. */
@@ -138,17 +140,21 @@ describe('T4.0 pinned Yjs facts @p:tech-3', () => {
     expect([...kinds].filter(([, kind]) => kind === 'other')).toEqual([]);
     expect([...kinds.values()]).toContain('XmlElement');
 
-    const dir = new URL('../../src/converter/fixtures/', import.meta.url);
+    const dir = fileURLToPath(new URL('../../src/converter/fixtures/', import.meta.url).href);
     const corpus = readdirSync(dir).filter((file) => file.endsWith('.md'));
     expect(corpus.length).toBeGreaterThan(20);
     for (const name of corpus) {
-      const fixture = { name, markdown: readFileSync(new URL(name, dir), 'utf8') };
+      const fixture = { name, markdown: readFileSync(join(dir, name), 'utf8') };
       const ydoc = new Y.Doc();
       importBody(ydoc, fixture.markdown);
       const visit = (type: Y.XmlText) => {
         for (let item = type._start; item; item = item.right) {
           if (!(item.content instanceof Y.ContentType)) continue;
           const child = item.content.type;
+          // No node at the pin declares @lexical/yjs slots, so no attribute holds a nested type.
+          if (child instanceof Y.XmlText || child instanceof Y.XmlElement) {
+            for (const value of Object.values(child.getAttributes())) expect(value, `${fixture.name}: an attribute holds no type`).not.toBeInstanceOf(Y.AbstractType);
+          }
           if (child instanceof Y.XmlText) visit(child);
           else if (child instanceof Y.XmlElement) expect(child._start, `${fixture.name}: ${child.nodeName} is a leaf`).toBeNull();
           else expect(child, fixture.name).toBeInstanceOf(Y.Map);
