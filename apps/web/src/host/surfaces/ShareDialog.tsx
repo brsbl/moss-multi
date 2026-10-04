@@ -150,14 +150,16 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
     void load();
   }, [open, load]);
 
-  /** One request at a time; a failure says why, in the section that asked. */
-  async function run(where: 'people' | 'links', work: () => Promise<string | null>): Promise<void> {
+  /** One request at a time; a failure says why, in the section that asked. A change is confirmed as soon as the
+   * server takes it, and then the lists are read again. */
+  async function run(where: 'people' | 'links', work: () => Promise<string | null>, reload = true): Promise<void> {
     if (pending) return;
     setPending(true);
     setStatus(null);
     try {
       const done = await work();
       if (done) setStatus({ tone: 'done', text: done, where });
+      if (reload) await load();
     } catch (error) {
       setStatus({ tone: 'error', text: error instanceof Error && error.message ? error.message : UNREACHABLE, where });
     } finally {
@@ -179,7 +181,6 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
         .catch(() => { throw new Error(UNREACHABLE); });
       if (!answer.ok || !answer.body?.shared) throw refused(answer.body, 'Sharing didn’t work. Try again.');
       setEmail('');
-      await load();
       return `Shared with ${answer.body.shared.email}.`;
     });
   }
@@ -189,7 +190,6 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
       const answer = await call<{ link?: ShareLink }>(`${base}/links`, { method: 'POST', body: JSON.stringify({ role: linkAccess }) })
         .catch(() => { throw new Error(UNREACHABLE); });
       if (!answer.ok || !answer.body?.link) throw refused(answer.body, 'The link wasn’t created. Try again.');
-      await load();
       return 'Link created. Anyone who has it can open this.';
     });
   }
@@ -198,7 +198,6 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
     void run('links', async () => {
       const answer = await call(`${base}/links/${link.token}`, { method: 'DELETE' }).catch(() => { throw new Error(UNREACHABLE); });
       if (!answer.ok) throw refused(answer.body, 'The link wasn’t revoked. Try again.');
-      await load();
       return 'Link revoked. It no longer opens anything.';
     });
   }
@@ -211,7 +210,7 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
         throw new Error('Couldn’t copy. Select the link and copy it instead.');
       }
       return 'Copied the link.';
-    });
+    }, false);
   }
 
   return (
