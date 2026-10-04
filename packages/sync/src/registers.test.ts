@@ -249,8 +249,8 @@ describe('register refresh cost @p:col-1 @p:tech-8', () => {
   async function stringified(run: () => Promise<void> | void): Promise<number> {
     const original = Y.Text.prototype.toString;
     let bytes = 0;
-    const spy = vi.spyOn(Y.Text.prototype, 'toString').mockImplementation(function (this: Y.Text) {
-      const value = original.call(this);
+    const spy = vi.spyOn(Y.Text.prototype as { toString(): string }, 'toString').mockImplementation(function (this: unknown) {
+      const value = original.call(this as Y.Text);
       if (!(this instanceof Y.XmlText)) bytes += value.length;
       return value;
     });
@@ -271,7 +271,7 @@ describe('register refresh cost @p:col-1 @p:tech-8', () => {
       const paragraph = await stringified(async () => {
         for (let i = 0; i < edits; i++) {
           a.editor.update(() => {
-            const text = $getRoot().getFirstChild()!.getFirstDescendant() as LexicalNode & { getTextContent(): string; setTextContent(text: string): void };
+            const text = $getRoot().getFirstDescendant() as LexicalNode & { setTextContent(text: string): void };
             text.setTextContent(`${text.getTextContent()}!`);
           }, { discrete: true });
           await settle();
@@ -318,7 +318,7 @@ describe('register refresh cost @p:col-1 @p:tech-8', () => {
       const bytes = await stringified(async () => {
         for (let i = 0; i < writes; i++) {
           serverWrite(live, 'burst', () => {
-            const text = $getRoot().getFirstChild()!.getFirstDescendant() as LexicalNode & { getTextContent(): string; setTextContent(text: string): void };
+            const text = $getRoot().getFirstDescendant() as LexicalNode & { setTextContent(text: string): void };
             text.setTextContent(`${text.getTextContent()}!`);
           });
           await new Promise(resolve => setTimeout(resolve, 0));

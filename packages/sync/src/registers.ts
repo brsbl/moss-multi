@@ -1,9 +1,12 @@
-import { $getEditor, $getNodeByKey, $getRoot, $isElementNode, COLLABORATION_TAG, type LexicalEditor, type LexicalNode } from 'lexical';
+import {
+  $getEditor, $getNodeByKey, $getRoot, $isElementNode, COLLABORATION_TAG, type EditorState, type LexicalEditor, type LexicalNode, type NodeKey,
+} from 'lexical';
 import * as Y from 'yjs';
 import { diffText } from '@moss-multi/core/text-diff';
 
 export const REGISTER_LOCAL_ORIGIN = Symbol('moss-multi:register-local');
 const REGISTER_INIT = Symbol('moss-multi:register-init');
+const REFRESH_TAG = 'moss-multi:register-refresh';
 export const REGISTER_FIELDS: Readonly<Record<string, string>> = {
   'code-block': '__code', 'html-block': '__rawHtml', formula: '__formula',
 };
@@ -67,6 +70,8 @@ export function $assignRegisterIds(): void {
   const doc = currentDoc();
   const unique = doc !== undefined && !serialized.has(doc);
   const used = new Set(doc?.getMap('registers').keys());
+  // Ordinals only grow per prefix, so N identical blocks cost O(N), not O(N^2).
+  const next = new Map<string, number>();
   const walk = (node: LexicalNode) => {
     const field = REGISTER_FIELDS[node.getType()];
     if (field && unique) {
@@ -77,8 +82,9 @@ export function $assignRegisterIds(): void {
       let hash = 2166136261;
       for (let i = 0; i < seed.length; i++) hash = Math.imul(hash ^ seed.charCodeAt(i), 16777619);
       const prefix = `import:${node.getType()}:${(hash >>> 0).toString(16)}`;
-      let ordinal = 0;
+      let ordinal = next.get(prefix) ?? 0;
       while (used.has(`${prefix}:${ordinal}`)) ordinal++;
+      next.set(prefix, ordinal + 1);
       const id = `${prefix}:${ordinal}`;
       used.add(id);
       (target.getWritable() as RegisterNode).__regId = id;
@@ -88,16 +94,22 @@ export function $assignRegisterIds(): void {
   walk($getRoot());
 }
 
-/** Copy shared payloads into Lexical's excluded render cache. Never writes to the shared tree. */
+/** Copy the payload into one node's excluded render cache. Never writes to the shared tree. */
+function $refreshNode(node: LexicalNode | null, registers: Y.Map<unknown>): void {
+  const field = node && REGISTER_FIELDS[node.getType()];
+  if (!node || !field) return;
+  const target = node as RegisterNode;
+  const text = registers.get(target.__regId);
+  if (!(text instanceof Y.Text)) return;
+  const value = text.toString();
+  if (target[field] !== value) (target.getWritable() as RegisterNode)[field] = value;
+}
+
+/** Fill every register node's cache once; a hydrated mirror needs it before its first read. */
 export function $refreshRegisters(editor: LexicalEditor, doc: Y.Doc): void {
   const registers = doc.getMap('registers');
   for (const snapshot of editor.getEditorState()._nodeMap.values()) {
-    const field = REGISTER_FIELDS[snapshot.getType()];
-    if (!field) continue;
-    const node = $getNodeByKey(snapshot.getKey()) as RegisterNode | null;
-    if (!node) continue;
-    const text = registers.get(node.__regId);
-    if (text instanceof Y.Text && node[field] !== text.toString()) node.getWritable()[field] = text.toString();
+    if (REGISTER_FIELDS[snapshot.getType()]) $refreshNode($getNodeByKey(snapshot.getKey()), registers);
   }
 }
 
@@ -118,28 +130,73 @@ export function bindRegisters(editor: LexicalEditor, doc: Y.Doc, { serializedImp
       if (!registers.has(id)) {
         doc.transact(() => registers.set(id, new Y.Text(String(node[field] ?? ''))), REGISTER_INIT);
       }
-      const text = registers.get(id)!;
-      if (node[field] !== text.toString()) node.getWritable()[field] = text.toString();
+      const payload = registers.get(id)!.toString();
+      if (node[field] !== payload) node.getWritable()[field] = payload;
     }));
   }
+  // Refreshes stay proportional to what changed: the nodes an update touched and the registers whose text moved.
+  const keysById = new Map<string, Set<NodeKey>>();
+  const idByKey = new Map<NodeKey, string>();
+  const dirtyKeys = new Set<NodeKey>();
+  const dirtyIds = new Set<string>();
+  const index = (key: NodeKey, state: EditorState) => {
+    const node = state._nodeMap.get(key) as RegisterNode | undefined;
+    const id = node && REGISTER_FIELDS[node.getType()] ? node.__regId : undefined;
+    const previous = idByKey.get(key);
+    if (previous !== id) {
+      if (previous !== undefined) {
+        keysById.get(previous)?.delete(key);
+        if (!keysById.get(previous)?.size) keysById.delete(previous);
+      }
+      if (id === undefined) idByKey.delete(key);
+      else {
+        idByKey.set(key, id);
+        let keys = keysById.get(id);
+        if (!keys) keysById.set(id, keys = new Set());
+        keys.add(key);
+      }
+    }
+    if (id !== undefined) dirtyKeys.add(key);
+  };
   let stopped = false;
   let queued = false;
   const refresh = () => {
-    if (queued || stopped) return;
+    if (queued || stopped || (!dirtyKeys.size && !dirtyIds.size)) return;
     queued = true;
     queueMicrotask(() => {
       queued = false;
       // The commit listener retries after pending edits; tagging them would drop their Yjs writes.
       if (stopped || editor._pendingEditorState !== null) return;
       // Finish this cache-only update before any later authored update can join it.
-      editor.update(() => $refreshRegisters(editor, doc), { tag: COLLABORATION_TAG, skipTransforms: true, discrete: true });
+      editor.update(() => {
+        const keys = new Set(dirtyKeys);
+        for (const id of dirtyIds) for (const key of keysById.get(id) ?? []) keys.add(key);
+        dirtyKeys.clear();
+        dirtyIds.clear();
+        for (const key of keys) $refreshNode($getNodeByKey(key), registers);
+      }, { tag: [COLLABORATION_TAG, REFRESH_TAG], skipTransforms: true, discrete: true });
     });
   };
-  const observe = (_events: unknown, transaction: Y.Transaction) => {
-    if (transaction.origin !== REGISTER_INIT) refresh();
+  const observe = (events: Y.YEvent<Y.AbstractType<unknown>>[], transaction: Y.Transaction) => {
+    if (transaction.origin === REGISTER_INIT) return;
+    for (const event of events) {
+      if (event.target === registers) for (const id of event.keysChanged) dirtyIds.add(id);
+      else if (typeof event.target._item?.parentSub === 'string') dirtyIds.add(event.target._item.parentSub);
+    }
+    refresh();
   };
   registers.observeDeep(observe);
   // Hydration can skip transforms, and may deliver the tree after the registers.
-  stops.push(editor.registerUpdateListener(refresh));
+  stops.push(editor.registerUpdateListener(({ editorState, prevEditorState, dirtyElements, dirtyLeaves, tags }) => {
+    if (!tags.has(REFRESH_TAG)) {
+      // setEditorState marks only the root: re-index the whole state once.
+      const replaced = dirtyLeaves.size === 0 && dirtyElements.size === 1 && dirtyElements.has('root') && editorState !== prevEditorState;
+      const keys = replaced ? new Set([...idByKey.keys(), ...editorState._nodeMap.keys()]) : [...dirtyLeaves, ...dirtyElements.keys()];
+      for (const key of keys) index(key, editorState);
+    }
+    refresh();
+  }));
+  for (const key of editor.getEditorState()._nodeMap.keys()) index(key, editor.getEditorState());
+  refresh();
   return () => { stopped = true; stops.forEach(stop => stop()); registers.unobserveDeep(observe); bindings.delete(editor); bindingCount--; };
 }
