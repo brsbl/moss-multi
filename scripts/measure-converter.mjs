@@ -6,7 +6,8 @@
 // fails to load or convert in workerd, including a note that imports to fewer blocks than its copies hold, and
 // when an import up to 2 MB takes more than IMPORT_BUDGET_MS of workerd CPU. It also renames a doc's title back and
 // forth between worst-case caller texts (packages/sync/measure/title-cases.ts), the DocDO's REST rename path, and
-// exits non-zero when a rename lands inexactly or takes more than TITLE_WRITE_BUDGET_MS of workerd CPU on any request.
+// exits non-zero when a rename lands inexactly or averages more than TITLE_WRITE_BUDGET_MS of workerd CPU,
+// or any single rename exceeds it by more than one /proc tick.
 import { spawn, spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -32,6 +33,8 @@ const IMPORT_BUDGET_MS = 5_000;
 // A REST rename diffs two caller-supplied texts; one request may spend at most this much workerd CPU on it.
 const TITLE_WRITE_BUDGET_MS = 20;
 const TITLE_WRITES = 6;
+// /proc reports CPU in 10 ms ticks, so a single request's reading may sit one tick above its real cost.
+const TICK_MS = 10;
 
 const vendor = join(REPO, 'vendor/moss/packages');
 const ALIASES = [
@@ -267,7 +270,7 @@ async function measureSize(unit, units, port, bound) {
   }
 }
 
-// Renames the title A → B → A … per case, after one untimed write of A; every timed rename is held to the budget.
+// Renames the title A → B → A … per case, after one untimed write of A; the mean is held to the budget and each rename to the budget plus one tick.
 async function measureTitleWrites(port) {
   const { TITLE_CASES } = await import('../packages/sync/measure/title-cases.ts');
   const server = await startWorker('converter', port);
@@ -289,6 +292,8 @@ async function measureTitleWrites(port) {
   }
   return results;
 }
+
+const overTitleBudget = (t) => t.cpuMs > TITLE_WRITE_BUDGET_MS || t.maxCpuMs > TITLE_WRITE_BUDGET_MS + TICK_MS;
 
 async function main() {
   rmSync(OUT, { recursive: true, force: true });
@@ -372,7 +377,7 @@ async function main() {
     ...titles.map((t) =>
       t.failed
         ? `| Title rename, ${t.name} | FAILED: ${t.failed} |`
-        : `| Title rename, ${t.name} (${t.chars.join(' ↔ ')} chars): workerd CPU per request, mean (max) of ${TITLE_WRITES} | ${t.cpuMs} (${t.maxCpuMs}) ms${t.maxCpuMs > TITLE_WRITE_BUDGET_MS ? `, over the ${TITLE_WRITE_BUDGET_MS} ms budget` : ''} (wall ${t.wallMs} ms) |`,
+        : `| Title rename, ${t.name} (${t.chars.join(' ↔ ')} chars): workerd CPU per request, mean (max) of ${TITLE_WRITES} | ${t.cpuMs} (${t.maxCpuMs}) ms${overTitleBudget(t) ? `, over the ${TITLE_WRITE_BUDGET_MS} ms budget` : ''} (wall ${t.wallMs} ms) |`,
     ),
     `| State-to-markdown ratio r, worst family | ${worst.ratio.toFixed(2)} (${worst.name}) |`,
     '',
@@ -396,9 +401,9 @@ async function main() {
     console.error(`measure-converter: import over the ${seconds(IMPORT_BUDGET_MS)} workerd CPU budget: ${sizes}`);
     process.exitCode = 1;
   }
-  const badTitles = titles.filter((t) => t.failed || t.maxCpuMs > TITLE_WRITE_BUDGET_MS);
+  const badTitles = titles.filter((t) => t.failed || overTitleBudget(t));
   if (badTitles.length > 0) {
-    const detail = badTitles.map((t) => (t.failed ? `${t.name}: ${t.failed}` : `${t.name} at ${t.maxCpuMs} ms`)).join(', ');
+    const detail = badTitles.map((t) => (t.failed ? `${t.name}: ${t.failed}` : `${t.name} at ${t.cpuMs} ms mean, ${t.maxCpuMs} ms max`)).join(', ');
     console.error(`measure-converter: title rename failed or over the ${TITLE_WRITE_BUDGET_MS} ms workerd CPU budget: ${detail}`);
     process.exitCode = 1;
   }
