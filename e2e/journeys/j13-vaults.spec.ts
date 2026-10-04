@@ -97,6 +97,7 @@ test('j13-vaults: Ada creates a vault inline, switches, and creates a note that 
   await expect(noteRow(ada, docId)).toBeVisible();
 
   // A duplicate name is refused in place with a sentence; nothing is created.
+  ada.expectHttp(409, '/api/vaults');
   await switcher(ada, VAULT).click();
   await ada.page.getByRole('menuitem', { name: 'New vault', exact: true }).click();
   const input = ada.page.getByRole('textbox', { name: 'New vault name', exact: true });
@@ -162,7 +163,7 @@ test('j13-vaults: Ben, with a root grant, sees the vault with a role badge and n
   // Cancelling the confirmation keeps the vault.
   await actionsButton(ada).click();
   await ada.page.getByRole('menuitem', { name: 'Move to Trash…', exact: true }).click();
-  let confirm = ada.page.getByRole('dialog').filter({ hasText: RENAMED });
+  let confirm = ada.page.getByRole('alertdialog').filter({ hasText: RENAMED });
   await expect(confirm, 'trash asks first').toBeVisible();
   await confirm.getByRole('button', { name: 'Cancel', exact: true }).click();
   await expect(confirm).toHaveCount(0);
@@ -171,7 +172,7 @@ test('j13-vaults: Ben, with a root grant, sees the vault with a role badge and n
   // Confirming sends it to Trash: her open note goes terminal in place and the vault leaves both switchers.
   await actionsButton(ada).click();
   await ada.page.getByRole('menuitem', { name: 'Move to Trash…', exact: true }).click();
-  confirm = ada.page.getByRole('dialog').filter({ hasText: RENAMED });
+  confirm = ada.page.getByRole('alertdialog').filter({ hasText: RENAMED });
   await confirm.getByRole('button', { name: 'Move to Trash', exact: true }).click();
   await expect(ui.pane(ada, docId), 'the open note goes terminal').toHaveAttribute(TERMINAL_REASON_ATTR, 'deleted', { timeout: PEER_SIDEBAR_MS });
   await expect(ui.body(ada, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'terminal');
