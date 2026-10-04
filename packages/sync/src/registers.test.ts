@@ -38,6 +38,10 @@ const cases = [
   { type: 'formula', field: '__formula', setter: 'setFormula', markdown: '{{2+3|5}}', before: '2+3', a: '1+2+3', b: '2+3+4', merged: '1+2+3+4' },
 ] as const;
 
+function findAll(type: string, node: LexicalNode = $getRoot()): LexicalNode[] {
+  if (node.getType() === type) return [node];
+  return $isElementNode(node) ? node.getChildren().flatMap(child => findAll(type, child)) : [];
+}
 function find(type: string, node: LexicalNode = $getRoot()): LexicalNode | undefined {
   if (node.getType() === type) return node;
   if ($isElementNode(node)) for (const child of node.getChildren()) { const found = find(type, child); if (found) return found; }
@@ -180,10 +184,11 @@ describe('L4 decorator registers @p:col-1 @p:col-3 @p:tech-1', () => {
   });
 
   it.each(cases)('$type pasted concurrently into one empty note by two editors stays two independent registers', (fixture) => {
+    const getter = { 'code-block': 'getCode', 'html-block': 'getRawHtml', formula: 'getFormula' }[fixture.type];
     const seed = new Y.Doc(); seedEmptyParagraph(seed);
     const a = client(seed); const b = client(seed);
-    const all = (peer: ReturnType<typeof client>) => peer.editor.getEditorState().read(() =>
-      $getRoot().getChildren().filter(node => node.getType() === fixture.type) as unknown as Record<string, unknown>[]);
+    const blocks = () => findAll(fixture.type) as unknown as (Record<string, () => string> & { __regId: string })[];
+    const texts = (peer: ReturnType<typeof client>) => peer.editor.read(() => blocks().map(block => block[getter]()).sort());
     try {
       // MarkdownEditor's whole-note paste seam imports into an empty note through the converter.
       for (const peer of [a, b]) peer.editor.update(() => $importNoteBody(fixture.markdown, { comments: {} }), { discrete: true });
@@ -194,18 +199,18 @@ describe('L4 decorator registers @p:col-1 @p:col-3 @p:tech-1', () => {
       Y.applyUpdate(b.doc, Y.encodeStateAsUpdate(a.doc));
       for (const peer of [a, b]) {
         peer.editor.update(noop, { discrete: true });
-        const blocks = all(peer);
-        expect(blocks).toHaveLength(2);
-        expect(blocks[0].__regId, 'concurrent pastes must not share a register').not.toBe(blocks[1].__regId);
-        expect(blocks.map(block => block[fixture.field]).sort(), 'both authors keep their typing').toEqual([fixture.a, fixture.b].sort());
+        const ids = peer.editor.read(() => blocks().map(block => block.__regId));
+        expect(ids).toHaveLength(2);
+        expect(ids[0], 'concurrent pastes must not share a register').not.toBe(ids[1]);
+        expect(texts(peer), 'both authors keep their typing').toEqual([fixture.a, fixture.b].sort());
       }
       a.editor.update(() => {
-        const node = $getRoot().getChildren().find(child => (child as unknown as Record<string, unknown>)[fixture.field] === fixture.a)!;
-        (node as unknown as Record<string, (text: string) => void>)[fixture.setter](`${fixture.a}!`);
+        const node = blocks().find(block => block[getter]() === fixture.a) as unknown as Record<string, (text: string) => void>;
+        node[fixture.setter](`${fixture.a}!`);
       }, { discrete: true });
       Y.applyUpdate(b.doc, Y.encodeStateAsUpdate(a.doc));
       b.editor.update(noop, { discrete: true });
-      expect(all(b).map(block => block[fixture.field]).sort(), 'editing one block leaves the other').toEqual([`${fixture.a}!`, fixture.b].sort());
+      expect(texts(b), 'editing one block leaves the other').toEqual([`${fixture.a}!`, fixture.b].sort());
     } finally { a.dispose(); b.dispose(); seed.destroy(); }
   });
 
