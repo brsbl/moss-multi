@@ -6,9 +6,10 @@
 // fails to load or convert in workerd, including a note that imports to fewer blocks than its copies hold, and
 // when an import up to 2 MB takes more than IMPORT_BUDGET_MS of workerd CPU. It also renames a doc's title back and
 // forth between worst-case caller texts (packages/sync/measure/title-cases.ts), the DocDO's REST rename path, and
-// exits non-zero when a rename lands inexactly or averages more than TITLE_WRITE_BUDGET_MS of workerd CPU. Last, it
-// runs the real DocDO (packages/sync/measure/doc-worker.ts) and sends many tiny payload frames over thousands of ids
-// (T1.F2), exiting non-zero past the stated per-frame CPU, memory, held-doc and scaling budgets.
+// exits non-zero when a rename lands inexactly or averages more than TITLE_WRITE_BUDGET_MS of workerd CPU, or any
+// single rename exceeds it by more than one /proc tick. Last, it runs the real DocDO (packages/sync/measure/doc-worker.ts)
+// and sends many tiny payload frames over thousands of ids (T1.F2), exiting non-zero past the stated per-frame CPU,
+// memory, held-doc and scaling budgets.
 import { spawn, spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -34,6 +35,8 @@ const IMPORT_BUDGET_MS = 5_000;
 // A REST rename diffs two caller-supplied texts; one request may spend at most this much workerd CPU on it.
 const TITLE_WRITE_BUDGET_MS = 20;
 const TITLE_WRITES = 6;
+// /proc reports CPU in 10 ms ticks, so a single request's reading may sit one tick above its real cost.
+const TICK_MS = 10;
 
 const vendor = join(REPO, 'vendor/moss/packages');
 const ALIASES = [
@@ -269,7 +272,7 @@ async function measureSize(unit, units, port, bound) {
   }
 }
 
-// Renames the title A → B → A … per case, after one untimed write of A; CPU is averaged over the timed renames.
+// Renames the title A → B → A … per case, after one untimed write of A; the mean is held to the budget and each rename to the budget plus one tick.
 async function measureTitleWrites(port) {
   const { TITLE_CASES } = await import('../packages/sync/measure/title-cases.ts');
   const server = await startWorker('converter', port);
@@ -281,7 +284,7 @@ async function measureTitleWrites(port) {
         const runs = [];
         for (let run = 0; run < TITLE_WRITES; run += 1) runs.push(await timedRequest(server, '/title', { method: 'POST', body: run % 2 ? a : b }));
         const mean = (key) => round(runs.reduce((sum, r) => sum + r[key], 0) / runs.length);
-        results.push({ name, chars: [a.length, b.length], cpuMs: mean('cpuMs'), wallMs: mean('wallMs') });
+        results.push({ name, chars: [a.length, b.length], cpuMs: mean('cpuMs'), maxCpuMs: Math.max(...runs.map((r) => r.cpuMs)), wallMs: mean('wallMs') });
       } catch (error) {
         results.push({ name, chars: [a.length, b.length], failed: String(error.message).split('\n')[0] });
       }
@@ -411,6 +414,8 @@ async function measurePayloadFrames(port) {
   }
 }
 
+const overTitleBudget = (t) => t.cpuMs > TITLE_WRITE_BUDGET_MS || t.maxCpuMs > TITLE_WRITE_BUDGET_MS + TICK_MS;
+
 async function main() {
   rmSync(OUT, { recursive: true, force: true });
   mkdirSync(join(OUT, 'baseline'), { recursive: true });
@@ -498,7 +503,7 @@ async function main() {
     ...titles.map((t) =>
       t.failed
         ? `| Title rename, ${t.name} | FAILED: ${t.failed} |`
-        : `| Title rename, ${t.name} (${t.chars.join(' ↔ ')} chars): workerd CPU per request, mean of ${TITLE_WRITES} | ${t.cpuMs} ms${t.cpuMs > TITLE_WRITE_BUDGET_MS ? `, over the ${TITLE_WRITE_BUDGET_MS} ms budget` : ''} (wall ${t.wallMs} ms) |`,
+        : `| Title rename, ${t.name} (${t.chars.join(' ↔ ')} chars): workerd CPU per request, mean (max) of ${TITLE_WRITES} | ${t.cpuMs} (${t.maxCpuMs}) ms${overTitleBudget(t) ? `, over the ${TITLE_WRITE_BUDGET_MS} ms budget` : ''} (wall ${t.wallMs} ms) |`,
     ),
     ...(payloads.failed
       ? [`| Payload frames (T1.F2) | FAILED: ${payloads.failed} |`]
@@ -528,9 +533,9 @@ async function main() {
     console.error(`measure-converter: import over the ${seconds(IMPORT_BUDGET_MS)} workerd CPU budget: ${sizes}`);
     process.exitCode = 1;
   }
-  const badTitles = titles.filter((t) => t.failed || t.cpuMs > TITLE_WRITE_BUDGET_MS);
+  const badTitles = titles.filter((t) => t.failed || overTitleBudget(t));
   if (badTitles.length > 0) {
-    const detail = badTitles.map((t) => (t.failed ? `${t.name}: ${t.failed}` : `${t.name} in ${t.cpuMs} ms`)).join(', ');
+    const detail = badTitles.map((t) => (t.failed ? `${t.name}: ${t.failed}` : `${t.name} at ${t.cpuMs} ms mean, ${t.maxCpuMs} ms max`)).join(', ');
     console.error(`measure-converter: title rename failed or over the ${TITLE_WRITE_BUDGET_MS} ms workerd CPU budget: ${detail}`);
     process.exitCode = 1;
   }
