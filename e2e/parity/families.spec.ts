@@ -17,10 +17,12 @@ const STORY = 'demo-note--default';
 const DEMO = readFileSync(new URL('../fixtures/demo-note.md', import.meta.url), 'utf8');
 const EDITOR = `${CROP} [data-moss-note-editor-root="true"]`;
 
-/** One selector per family (and per styled part of a compound family), matched inside the editor root. */
+/**
+ * One selector per family (and per styled part of a compound family), matched inside the editor root. No H1: moss
+ * lifts a note's first H1 into its title (A§12 keeps it as content), so the oracle's body has none to compare.
+ */
 export const FAMILY_SELECTORS: Record<string, string> = {
   paragraph: ':scope > p',
-  'heading 1': 'h1',
   'heading 2': 'h2',
   'heading 3': 'h3',
   'heading 4': 'h4',
