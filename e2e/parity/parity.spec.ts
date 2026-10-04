@@ -156,7 +156,8 @@ async function captureCandidate(browser: Browser, target: Target, theme: Theme, 
         ids.set(note.id, ((await response.json()) as { doc: { id: string } }).doc.id);
       }
       const docs = listing.map((note) => ({ id: ids.get(note.id), title: note.title, createdAt: note.createdAt * 1000, updatedAt: note.updatedAt * 1000 }));
-      await page.route('**/api/workspace*', (route) => route.fulfill({ json: { vault: { id: 'parity-vault', name: 'Home' }, docs } }));
+      // The vault carries the caller's role as the API does, so owner controls (Folder actions, T2.2) match the oracle.
+      await page.route('**/api/workspace*', (route) => route.fulfill({ json: { vault: { id: 'parity-vault', name: 'Home', role: 'owner', owned: true }, folders: [], docs } }));
       path = `/d/${encodeURIComponent(ids.get(listing[0].id) ?? '')}`;
     }
     await page.goto(new URL(path, stack.baseUrl).href);
