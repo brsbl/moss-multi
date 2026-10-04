@@ -42,6 +42,21 @@ const DocDO = {
   }),
 };
 
+/** A PrincipalDO namespace: grants REST write tokens until `writeTokens` runs out, recording whose DO was asked. */
+const tokenAsks: string[] = [];
+let writeTokens = Infinity;
+const PrincipalDO = {
+  idFromName: (name: string) => ({ name, toString: () => name }),
+  get: (id: { name: string }) => ({
+    setName: async () => undefined,
+    takeWriteToken: async () => {
+      tokenAsks.push(id.name);
+      writeTokens -= 1;
+      return writeTokens >= 0;
+    },
+  }),
+};
+
 let d1: TestD1;
 let env: AuthTestEnv & Parameters<typeof handleApi>[1];
 let ada: TestUser;
@@ -49,7 +64,7 @@ let ben: TestUser;
 
 beforeAll(async () => {
   d1 = await migratedD1();
-  env = { DB: d1.db, BETTER_AUTH_SECRET: SECRET, BETTER_AUTH_URL: BASE, DocDO: DocDO as never };
+  env = { DB: d1.db, BETTER_AUTH_SECRET: SECRET, BETTER_AUTH_URL: BASE, DocDO: DocDO as never, PrincipalDO: PrincipalDO as never };
   ada = await signedUpUser(env, 'docs-ada');
   ben = await signedUpUser(env, 'docs-ben', 'Ben');
 }, 60_000);
@@ -59,6 +74,8 @@ beforeEach(() => {
   probed.length = 0;
   renamed.length = 0;
   renameFails = false;
+  tokenAsks.length = 0;
+  writeTokens = Infinity;
 });
 
 const create = (cookie: string | null, body: unknown = {}, headers: Record<string, string> = {}) =>
@@ -186,6 +203,24 @@ describe('PATCH /api/docs/:id', () => {
       .bind(id, ben.id, ada.id, Date.now()).run();
     expect((await rename(id, ben.cookie, 'Viewer write')).status).toBe(403);
     expect(renamed).toEqual([]);
+  });
+
+  it("refuses a rename past the caller's own write rate with 429 before it reaches the DocDO @p:tech-8", async () => {
+    const id = await insertDoc(d1.db, ada);
+    writeTokens = 1;
+    expect((await rename(id, ada.cookie, 'Within the rate')).status).toBe(200);
+    const limited = await rename(id, ada.cookie, 'Past the rate');
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get('retry-after')).toBe('60');
+    expect(await limited.json()).toEqual({ error: 'rate-limited' });
+    expect(renamed).toEqual([{ docId: id, title: 'Within the rate' }]);
+    expect(tokenAsks).toEqual([ada.id, ada.id]);
+  });
+
+  it('spends no write token on a rename it refuses for access', async () => {
+    const id = await insertDoc(d1.db, ada);
+    expect((await rename(id, ben.cookie, 'Forbidden')).status).toBe(404);
+    expect(tokenAsks).toEqual([]);
   });
 
   it('reports a failed DocDO write as 503', async () => {
