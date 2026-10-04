@@ -8,7 +8,7 @@
 // name moss shows everywhere else (sidebar, breadcrumb, tabs) as `title.trim() || 'Untitled'`.
 import { observeField, readField, remapCaret, writeField, type FieldChange } from '@moss-multi/core/doc-fields';
 import { diffText } from '@moss-multi/core/text-diff';
-import { Doc, applyUpdate, encodeStateAsUpdate, encodeStateVector } from 'yjs';
+import { UndoManager, Doc, applyUpdate, encodeStateAsUpdate, encodeStateVector } from 'yjs';
 import { useSyncExternalStore } from 'react';
 import { OPENING_NOTE } from '../opening-guard.ts';
 import { refuseInput } from '../refusal.ts';
@@ -142,6 +142,18 @@ export class TitleField {
       const text = readField(doc, 'title');
       this.#render(text, diffText(el?.textContent ?? '', text));
     };
+    const undo = new UndoManager(doc.getText('title'), {
+      trackedOrigins: new Set([TITLE_LOCAL_ORIGIN]), captureTimeout: 1_000,
+    });
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!this.#owns(event.target) || !(event.metaKey || event.ctrlKey) || event.altKey) return;
+      const key = event.key.toLowerCase();
+      if (key !== 'z' && !(key === 'y' && event.ctrlKey)) return;
+      event.preventDefault(); event.stopImmediatePropagation();
+      if (!this.writable || this.#composing) return;
+      if (event.shiftKey || key === 'y') undo.redo(); else undo.undo();
+    };
+    document.addEventListener('keydown', onKeyDown, true);
     document.addEventListener('compositionstart', onCompositionStart, true);
     document.addEventListener('compositionend', onCompositionEnd, true);
     this.#binding = {
@@ -149,6 +161,8 @@ export class TitleField {
       doc,
       stop: () => {
         stopObserving();
+        undo.destroy();
+        document.removeEventListener('keydown', onKeyDown, true);
         document.removeEventListener('compositionstart', onCompositionStart, true);
         document.removeEventListener('compositionend', onCompositionEnd, true);
       },

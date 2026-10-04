@@ -27,3 +27,13 @@ declare module '@moss-desktop/renderer/editor/markdown/format-whitespace' {
   import type { TextNode } from 'lexical';
   export function $normalizeFormatWhitespace(node: TextNode): void;
 }
+
+declare module '@moss-desktop/renderer/editor/utils/formula-runtime' {
+  export interface FormulaInput {
+    noteId: string; noteTitle: string; formulaId: string; name: string | null;
+    expression: string; result: string; stale: boolean;
+  }
+  export function evaluateWorkspaceFormulas(inputs: FormulaInput[]): {
+    byKey: Map<string, FormulaInput & { sourceMode: string }>;
+  };
+}

@@ -63,6 +63,7 @@ import {
 import {createPortal} from 'react-dom';
 // moss-multi seam: plugin-a, plugin-b (A§10.2 a, b)
 import {isOwnOrigin, syncUnderOrigin} from '@moss-multi/host/collab/origins';
+import {bindLocalLayout} from '@moss-multi/host/collab/layout-local';
 import {createBindingUndoManager} from '@moss-multi/host/collab/undo';
 import {
   type Doc,
@@ -163,7 +164,10 @@ export function useYjsCollaboration(
       },
     );
 
+    // moss-multi seam: local layout is restored only after hydrated Yjs identities exist.
+    const stopLayout = bindLocalLayout(editor, binding);
     return () => {
+      stopLayout();
       root.getSharedType().unobserveDeep(onYjsTreeChanges);
       removeListener();
     };

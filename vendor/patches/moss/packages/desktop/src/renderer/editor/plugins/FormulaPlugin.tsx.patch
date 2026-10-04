@@ -1,0 +1,18 @@
+diff --git a/packages/desktop/src/renderer/editor/plugins/FormulaPlugin.tsx b/packages/desktop/src/renderer/editor/plugins/FormulaPlugin.tsx
+--- a/packages/desktop/src/renderer/editor/plugins/FormulaPlugin.tsx
++++ b/packages/desktop/src/renderer/editor/plugins/FormulaPlugin.tsx
+@@ -1,3 +1,5 @@
++// moss-multi seam: local-view (A§10): edit-session identity stays in the existing local map.
++import { $isBoundEditor } from '@moss-multi/host/collab/view-state';
+ /**
+  * FormulaPlugin - Keyboard navigation for formula nodes
+  *
+@@ -1228,7 +1230,7 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
+     onConvert: (targetNode, textNode) => {
+       const formulaId = targetNode.getFormulaId();
+       registerEditedFormulaId(textNode.getKey(), formulaId);
+-      textNode.setStyle(`--formula-edit-id: ${formulaId}`);
++      if (!$isBoundEditor()) textNode.setStyle(`--formula-edit-id: ${formulaId}`);
+     }
+   });
+ 

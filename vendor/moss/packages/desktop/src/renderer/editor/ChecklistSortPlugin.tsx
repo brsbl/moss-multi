@@ -18,6 +18,8 @@ import { EDITOR_UPDATE_TAGS } from './utils/editorUpdateTags';
 const SORT_DELAY_MS = 50;
 const CHECKLIST_SORT_IGNORED_TAGS = new Set<string>([
   'history-merge',
+  // moss-multi seam: local-view (A§10): never sort a peer's update a second time.
+  'collaboration',
   EDITOR_UPDATE_TAGS.ignored.agentContentUpdate,
 ]);
 
@@ -37,7 +39,7 @@ export function ChecklistSortPlugin(): null {
 
   useEffect(() => {
     const unregister = editor.registerMutationListener(ListItemNode, (mutations, { updateTags }) => {
-      if (hasIgnoredSortTag(updateTags)) {
+      if (!editor.isEditable() || hasIgnoredSortTag(updateTags)) {
         return;
       }
 
@@ -62,7 +64,7 @@ export function ChecklistSortPlugin(): null {
         timerRef.current = null;
         reorderRafRef.current = requestAnimationFrame(() => {
           reorderRafRef.current = null;
-          if (editor.getRootElement() === null) {
+          if (!editor.isEditable() || editor.getRootElement() === null) {
             return;
           }
           editor.update(() => {

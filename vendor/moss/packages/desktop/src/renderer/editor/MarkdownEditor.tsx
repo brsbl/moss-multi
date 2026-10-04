@@ -1,4 +1,6 @@
 // ported-from: packages/desktop/src/renderer/editor/MarkdownEditor.tsx @ 762abb777
+// moss-multi seam: bound editors do not normalize hydration or expose an unfocused toolbar.
+import { isBoundEditor } from '@moss-multi/host/collab/view-state';
 import type { ReactNode } from 'react';
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -323,11 +325,12 @@ function CodeNodeNormalizationPlugin(): null {
   useEffect(() => {
     // Normalize any pre-existing CodeNodes (e.g. from older sessions/state)
     // so custom code block UI appears without requiring a reload.
-    editor.update(() => {
+    if (!isBoundEditor(editor) && editor.isEditable()) editor.update(() => {
       $convertMossCustomCodeNodes();
     }, { tag: 'skip-dirty' });
 
-    return editor.registerMutationListener(CodeNode, (mutations) => {
+    return editor.registerMutationListener(CodeNode, (mutations, { updateTags }) => {
+      if (!editor.isEditable() || updateTags.has('collaboration') || updateTags.has('registerMutationListener')) return;
       let hasNewCodeNode = false;
       for (const [, mutation] of mutations) {
         if (mutation === 'created') {
@@ -1772,6 +1775,19 @@ function FloatingSelectionTools({
     };
   }, [onSelectedImageNodeKeyChange]);
   const floatingToolbarRef = useRef<HTMLDivElement | null>(null);
+  const [editorFocused, setEditorFocused] = useState(false);
+  useEffect(() => {
+    const update = () => {
+      const active = document.activeElement;
+      setEditorFocused(!!active && (!!editor.getRootElement()?.contains(active) || !!active.closest(`[data-toolbar-note="${noteId}"]`)));
+    };
+    const blur = () => queueMicrotask(update);
+    document.addEventListener('focusin', update);
+    document.addEventListener('focusout', blur);
+    update();
+    return () => { document.removeEventListener('focusin', update); document.removeEventListener('focusout', blur); };
+  }, [editor, noteId]);
+
   // Scroll tracking — hide floating bar while scrolling
   const [isScrolling, setIsScrolling] = useState(false);
   const scrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -3588,7 +3604,7 @@ function FloatingSelectionTools({
   const showFloatingBar = (
     hasActiveSelection
     || !!linkInputState?.open
-  ) && shouldRenderToolbarForPane && selectionRectRef.current !== null && !isPaletteOpen && !isTrashed && !isScrolling && !isMouseSelecting && !commentInputState.open;
+  ) && (editorFocused || !!linkInputState?.open || fontDropdownOpen || headingDropdownOpen || highlightDropdownOpen || listDropdownOpen) && shouldRenderToolbarForPane && selectionRectRef.current !== null && !isPaletteOpen && !isTrashed && !isScrolling && !isMouseSelecting && !commentInputState.open;
 
   // Calculate floating bar position from selection rect
   // Clamp below the topnav (~48px from viewport top) to avoid overlap
@@ -3637,6 +3653,7 @@ function FloatingSelectionTools({
           <SelectionToolbarShell
             ref={floatingToolbarRef}
             style={floatingBarStyle}
+            data-toolbar-note={noteId}
             data-floating-selection-toolbar="true"
           >
             <SelectionToolbarInner>
@@ -3667,11 +3684,12 @@ function FloatingSelectionTools({
         </TooltipProvider>
       )}
       {/* Bottom bar — shown when NO text is selected (also hidden during scroll with active selection to prevent flash) */}
-      {shouldRenderToolbarForPane && !showFloatingBar && !(selectionState.isActive && isScrolling) && (
+      {shouldRenderToolbarForPane && (editorFocused || fontDropdownOpen || headingDropdownOpen || highlightDropdownOpen || listDropdownOpen) && !showFloatingBar && !(selectionState.isActive && isScrolling) && (
         <TooltipProvider delayDuration={200}>
           <div
             className="pointer-events-none fixed bottom-6 z-50 -translate-x-1/2 flex flex-col items-center gap-2 px-4"
             style={bottomToolbarStyle}
+            data-toolbar-note={noteId}
             data-floating-selection-toolbar="true" // moss-multi seam: toolbar-contract (A§19): moss's own bottom toolbar
           >
             <div ref={portalRef} className="w-full max-w-lg empty:hidden" />

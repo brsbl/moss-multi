@@ -27,6 +27,7 @@ import { displayTitle, TitleField } from './title-binding.ts';
 import { localIdentity, startPresence } from './presence.ts';
 import { cursorController } from './cursors.ts';
 import { subscribeTerminal, terminalOf, useTerminal } from './terminal.ts';
+import { trackUndoFocus } from './undo.ts';
 import { ConnectionNotice } from './ConnectionNotice.tsx';
 
 interface PaneState {
@@ -239,6 +240,7 @@ function BindingGate({ binding }: { binding: PaneBinding }): null {
  */
 function DocBinding({ docId, binding }: { docId: string; binding: PaneBinding }): ReactNode {
   const [editor] = useLexicalComposerContext();
+  useEffect(() => trackUndoFocus(editor), [editor]);
   const [excluded] = useState(() => excludedPropertiesFor(editor));
   const [identity] = useState(localIdentity);
   const [cursors] = useState(() => cursorController(editor));

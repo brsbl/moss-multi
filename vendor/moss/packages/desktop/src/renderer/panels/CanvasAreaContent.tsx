@@ -1691,7 +1691,11 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
     // moss-multi seam: bound-pane (A§2.2): a bound note's content is its doc. No REST read and no remount on updatedAt; the editor
     // mounts at once and its binding opens it at first sync (A§10.3).
     if (mossMultiPane.bound) {
-      if (noteIdChanged) setContentHydratedForNoteId(note.id);
+      if (noteIdChanged) {
+        // moss-multi seam: local heading identities must precede the first-sync restore.
+        try { store.set(noteCollapsedHeadingsAtom(note.id), JSON.parse(localStorage.getItem(`moss-multi:collapsed-headings:${note.id}`) ?? '[]')); } catch { /* unavailable storage */ }
+        setContentHydratedForNoteId(note.id);
+      }
       return;
     }
 
