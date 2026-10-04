@@ -108,6 +108,38 @@ export function deleteDestroyedRegisters(editor: LexicalEditor, transaction: Y.T
   for (const id of gone) registers.delete(id);
 }
 
+/** Whether a live container under `type`, other than `except`, names register `id`. */
+export function namesRegister(type: { _start: Y.Item | null; _map: Map<string, Y.Item> }, id: string, except?: unknown): boolean {
+  const visit = (item: Y.Item | null): boolean => {
+    if (!item || item.deleted || !(item.content instanceof Y.ContentType)) return false;
+    const child = item.content.type;
+    if (child !== except && (child instanceof Y.XmlText || child instanceof Y.XmlElement) && child.getAttribute('__regId') === id) return true;
+    return namesRegister(child, id, except);
+  };
+  for (let item = type._start; item; item = item.right) if (visit(item)) return true;
+  for (const item of type._map.values()) if (visit(item)) return true;
+  return false;
+}
+
+/**
+ * A peer deleted a payload that a block here still names: it deleted the block while this client moved it. Write the
+ * payload back from this editor's cache; a set made after the delete survives it.
+ */
+function restoreNamedRegisters(editor: LexicalEditor, doc: Y.Doc, keys: Iterable<string>): void {
+  const registers = doc.getMap<Y.Text>('registers');
+  const root = doc.get('root', Y.XmlText);
+  for (const id of keys) {
+    if (registers.has(id) || !namesRegister(root, id)) continue;
+    for (const node of editor.getEditorState()._nodeMap.values()) {
+      const field = REGISTER_FIELDS[node.getType()];
+      const value = field && (node as RegisterNode).__regId === id ? (node as RegisterNode)[field] : undefined;
+      if (typeof value !== 'string') continue;
+      doc.transact(() => registers.set(id, new Y.Text(value)), REGISTER_INIT);
+      break;
+    }
+  }
+}
+
 /** Copy shared payloads into Lexical's excluded render cache. Never writes to the shared tree. */
 export function $refreshRegisters(editor: LexicalEditor, doc: Y.Doc): void {
   const registers = doc.getMap('registers');
@@ -155,8 +187,12 @@ export function bindRegisters(editor: LexicalEditor, doc: Y.Doc, { serializedImp
       editor.update(() => $refreshRegisters(editor, doc), { tag: COLLABORATION_TAG, skipTransforms: true, discrete: true });
     });
   };
-  const observe = (_events: unknown, transaction: Y.Transaction) => {
-    if (transaction.origin !== REGISTER_INIT) refresh();
+  const observe: Parameters<typeof registers.observeDeep>[0] = (events, transaction) => {
+    if (transaction.origin === REGISTER_INIT) return;
+    if (!transaction.local && editor.isEditable()) {
+      for (const event of events) if (event instanceof Y.YMapEvent) restoreNamedRegisters(editor, doc, event.keysChanged);
+    }
+    refresh();
   };
   registers.observeDeep(observe);
   // Hydration can skip transforms, and may deliver the tree after the registers.

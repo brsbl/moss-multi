@@ -7,7 +7,7 @@ import {
   type Item, type Transaction,
 } from 'yjs';
 
-import { REGISTER_LOCAL_ORIGIN } from '@moss-multi/sync/registers';
+import { REGISTER_LOCAL_ORIGIN, namesRegister } from '@moss-multi/sync/registers';
 export { REGISTER_LOCAL_ORIGIN };
 
 export const UNDO_CAPTURE_TIMEOUT_MS = 1_000;
@@ -16,6 +16,7 @@ type StackItem = UndoManager['undoStack'][number];
 export function createBindingUndoManager(binding: Binding): UndoManager {
   const { doc } = binding;
   const registers = doc.getMap('registers');
+  const root = binding.root.getSharedType();
   const trackedOrigins = new Set<unknown>([binding, REGISTER_LOCAL_ORIGIN]);
   // Clients whose items this manager may remove: this doc, plus any draft doc merged in under a tracked origin.
   const own = new Set([doc.clientID]);
@@ -29,8 +30,10 @@ export function createBindingUndoManager(binding: Binding): UndoManager {
       if (foreign(item)) return true;
       if (!item.deleted && item.content instanceof ContentType && holdsForeign(item.content.type)) return true;
     }
+    // A shared payload is this container's alone unless another live block names it (a move's other copy).
     const regId = type instanceof XmlText || type instanceof XmlElement ? type.getAttribute('__regId') : undefined;
-    const payload = typeof regId === 'string' ? registers.get(regId) : undefined;
+    if (typeof regId !== 'string' || namesRegister(root, regId, type)) return false;
+    const payload = registers.get(regId);
     return payload instanceof YText && holdsForeign(payload);
   };
   /**
@@ -51,21 +54,24 @@ export function createBindingUndoManager(binding: Binding): UndoManager {
     }
     return holdsForeign(type);
   };
-  // The step being undone or redone, so a kept container also keeps the properties it was created with.
-  let step: StackItem | null = null;
+  // The step Yjs is undoing or redoing, so a kept container also keeps the properties it was created with. One
+  // undo() pops past steps that change nothing, so this follows the stack rather than its top at the call.
+  let step: () => StackItem | undefined = () => undefined;
   const deleteFilter = (item: Item): boolean => {
     const owner = item.parentSub === null ? null : (item.parent as { _item: Item | null })._item;
     if (!owner) return !keeps(item);
-    return !(step && isDeleted(step.insertions, owner.id) && keeps(owner));
+    const current = step();
+    return !(current && isDeleted(current.insertions, owner.id) && keeps(owner));
   };
-  const undo = new UndoManager([binding.root.getSharedType(), registers], {
+  const undo = new UndoManager([root, registers], {
     trackedOrigins,
     captureTimeout: UNDO_CAPTURE_TIMEOUT_MS,
     deleteFilter,
   });
   const during = (stack: () => StackItem[], run: () => StackItem | null) => () => {
-    step = stack().at(-1) ?? null;
-    try { return run(); } finally { step = null; }
+    const items = stack().slice();
+    step = () => items[stack().length];
+    try { return run(); } finally { step = () => undefined; }
   };
   undo.undo = during(() => undo.undoStack, undo.undo.bind(undo));
   undo.redo = during(() => undo.redoStack, undo.redo.bind(undo));
