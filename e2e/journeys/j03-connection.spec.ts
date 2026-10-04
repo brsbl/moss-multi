@@ -535,3 +535,39 @@ test('j03-connection: the online indicator is sanctioned chrome with a visible m
   const color = await indicator(ada, docId).locator('[aria-hidden]').evaluate(el => getComputedStyle(el).backgroundColor);
   expect(color).not.toBe('rgba(0, 0, 0, 0)');
 });
+
+const UNSYNCED = ' then words only this window holds';
+const PEER_MEANWHILE = ' while Ada keeps typing';
+
+test('j03-connection: closing the tab while an edit is unacked asks first and keeps the window; once acked, a reload never asks @p:col-4', async ({ actors }) => {
+  const shared = await sharedNote(actors, 'Edits kept in this window');
+  const { ada, docId } = shared;
+  const ben = await peerWindow(actors, shared, true);
+  await actors.requireDistinct(2);
+  await waitBodyLive(ben, docId);
+  await ben.observeEditor(docId);
+  const sever = ben.sever;
+  if (!sever) throw new Error('Ben must be severable');
+  const dialogs: string[] = [];
+  ben.page.on('dialog', (dialog) => { dialogs.push(dialog.type()); void dialog.dismiss(); });
+
+  sever.blackhole();
+  await ui.typeBody(ben, docId, UNSYNCED);
+  await expect(ui.pane(ben, docId), 'the edit is unacked').toHaveAttribute(SYNC_UNACKED_ATTR, '1');
+  await ui.typeBody(ada, docId, PEER_MEANWHILE);
+  await ben.page.close({ runBeforeUnload: true });
+  await expect.poll(() => dialogs, { message: 'closing the tab asks before discarding unsynced edits' }).toEqual(['beforeunload']);
+  expect(ben.page.isClosed(), 'declining keeps the window open').toBe(false);
+  expect(await bodyText(ben, docId)).toContain(UNSYNCED);
+
+  ben.expectReconnects(2, docId);
+  sever.restore();
+  await waitAcked(ben, docId, RECOVER_TIMEOUT);
+  await expect.poll(() => converged([ada, ben], docId), { message: 'both windows converge', timeout: RECOVER_TIMEOUT }).toBe(true);
+  await expectNoRemount(ben, docId, 'declining to close');
+  ben.observations.clear();
+  await ben.page.reload();
+  await waitBodyLive(ben, docId);
+  expect(dialogs, 'an acked window reloads without asking').toEqual(['beforeunload']);
+  for (const text of [UNSYNCED, PEER_MEANWHILE]) expect(await bodyText(ben, docId), `the reloaded body holds "${text}"`).toContain(text);
+});
