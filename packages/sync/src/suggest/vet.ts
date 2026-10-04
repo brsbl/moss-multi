@@ -192,11 +192,12 @@ function vet(transaction: Y.Transaction, options: VetOptions): { inserts: IdSpan
   /** Fresh items that stay original: copies of moved text and the maps governing them (`copies`), same-value rewrites. */
   const copies = new Set<string>();
   const kept = new Set<string>();
-  const movedBefore = options.moved ?? [];
+  const movedBefore = new SpanIndex(options.moved ?? []);
+  const ownBefore = new SpanIndex(options.own);
   const isOwnClock = (item: Y.Item, clock: number): boolean => {
     const client = item.id.client;
-    if (coveredBy(movedBefore, client, clock, clock + 1) || copies.has(`${client}:${clock}`)) return false;
-    return isFresh(item) || coveredBy(options.own, client, clock, clock + 1);
+    if (movedBefore.has(client, clock) || copies.has(`${client}:${clock}`)) return false;
+    return isFresh(item) || ownBefore.has(client, clock);
   };
   const isOwn = (item: Y.Item) => isOwnClock(item, item.id.clock);
 
@@ -281,20 +282,29 @@ function vet(transaction: Y.Transaction, options: VetOptions): { inserts: IdSpan
   }
 
   // The body in document order, over the top-level blocks the frame touched. Before: every original unit (a character
-  // with the values of the text map governing it, or an embed) live before. After: the original units live after and
-  // every fresh unit. Each original must still be there, in order, with the same format; an original character may be
-  // deleted only as half of a split (Enter mid-paragraph, a soft break, a run formatted mid-word, or undoing one), by
-  // matching a fresh copy with the same character and format at its place in document order, and the copy stays
-  // original.
+  // with its format, or an embed) live before. After: the original units live after and every fresh unit. Each original
+  // must still be there, in order, with the same format; an original character may be deleted only as half of a split
+  // (Enter mid-paragraph, a soft break, a run formatted mid-word, or undoing one), by matching a fresh copy with the
+  // same character and format at its place in document order, and the copy stays original. A character's format is
+  // its text map's values, its depth and the attributes of every block around it; a copy's block may differ from the
+  // original's only as Lexical's Enter makes it (enterMakes), or back again when the copy goes into an existing
+  // original block (an undo, or a join back).
   const body = transaction.doc.share.get(BODY) as Type | undefined;
   if (body) {
     const window = topLevel(body, [...fresh, ...deleted, ...[...touched].map((type) => type._item)]);
     if (window.size > 0) {
       const ownUnit = (unit: Unit) => !unit.fresh && isOwnClock(unit.item, unit.clock);
+      const sameBlock = (o: Unit, p: Unit): boolean => {
+        if (o.blockKey === p.blockKey) return true;
+        if (!o.block || !p.block || !p.container) return false;
+        if (enterMakes(o.block, p.block)) return true;
+        return !isFresh(p.container) && !isOwn(p.container) && enterMakes(p.block, o.block);
+      };
       const { pre, post } = units(body, window, liveBefore, isFresh);
       align(pre.filter((unit) => !ownUnit(unit)), post.filter((unit) => unit.fresh || !ownUnit(unit)), {
         wanted: () => true,
-        same: (o, p) => o.char !== null && p.char === o.char && p.fmt === o.fmt, // an embed is never a copy
+        // An embed is never a copy.
+        same: (o, p) => o.char !== null && p.char === o.char && p.text === o.text && sameBlock(o, p),
         kept: (o, p) => {
           if (p.fmt !== o.fmt) throw new Refusal('mutate-original');
         },
@@ -349,6 +359,37 @@ function topLevel(body: Type, items: Iterable<Y.Item | null>): Set<Y.Item> {
   return out;
 }
 
+/** Block attributes that only style what is typed next into an empty block, never the text already in it. */
+const NEXT_TYPING: ReadonlySet<string> = new Set(['__textFormat', '__textStyle']);
+/** Element attributes Lexical's heading and quote Enter do not copy to the new block. */
+const ENTER_RESETS = ['__format', '__indent', '__style'] as const;
+type Attrs = Readonly<Record<string, unknown>>;
+
+const isDefault = (value: unknown) => value === undefined || value === null || value === 0 || value === '';
+const sameValue = (a: unknown, b: unknown) => a === b || (a == null && b == null) || JSON.stringify(a) === JSON.stringify(b);
+
+/**
+ * Whether Lexical's Enter in a block with `from`'s attributes makes a block with `to`'s (lexical 0.48:
+ * ParagraphNode, HeadingNode and QuoteNode `insertNewAfter`; a list item is copied whole). A paragraph keeps
+ * everything but its indent, a heading keeps its tag and direction, and a quote becomes a paragraph with its
+ * direction. Any other difference is a restyle, never a split.
+ */
+function enterMakes(from: Attrs, to: Attrs): boolean {
+  const equalExcept = (skip: readonly string[]) => {
+    for (const key of new Set([...Object.keys(from), ...Object.keys(to)])) {
+      if (!skip.includes(key) && !sameValue(from[key], to[key])) return false;
+    }
+    return true;
+  };
+  const resetOrKept = (keys: readonly string[]) => keys.every((key) => isDefault(to[key]) || sameValue(to[key], from[key]));
+  if (from.__type === 'paragraph' && to.__type === 'paragraph') return equalExcept(['__indent']) && resetOrKept(['__indent']);
+  if (from.__type === 'heading' && to.__type === 'heading') return equalExcept(ENTER_RESETS) && resetOrKept(ENTER_RESETS);
+  if (from.__type === 'quote' && to.__type === 'paragraph') {
+    return sameValue(from.__dir, to.__dir) && ENTER_RESETS.every((key) => isDefault(to[key]));
+  }
+  return false;
+}
+
 /** The units of the `window` blocks, in document order, before and after the transaction. */
 function units(body: Type, window: ReadonlySet<Y.Item>, liveBefore: (item: Y.Item) => boolean, isFresh: (item: Y.Item) => boolean) {
   const pre: Unit[] = [];
@@ -369,9 +410,14 @@ function units(body: Type, window: ReadonlySet<Y.Item>, liveBefore: (item: Y.Ite
  * applies the frame, so a suggestion's text keeps its paint, its reject target and its clean-export exclusion.
  */
 export function carryIdentity(doc: Y.Doc, update: Uint8Array, spans: readonly IdSpan[]): IdSpan[] {
+  return carryIdentities(doc, update, [spans])[0];
+}
+
+/** carryIdentity for every open record at once, the way the DocDO runs it. */
+export function carryIdentities(doc: Y.Doc, update: Uint8Array, records: readonly (readonly IdSpan[])[]): IdSpan[][] {
   const mirror = new SuggestMirror(doc);
   try {
-    return mirror.apply(update, (transaction) => carryTransaction(transaction, spans)) ?? spans.map((span) => ({ ...span }));
+    return mirror.apply(update, (transaction) => carryRecords(transaction, records)) ?? records.map((spans) => spans.map((span) => ({ ...span })));
   } finally {
     mirror.destroy();
   }
@@ -379,30 +425,42 @@ export function carryIdentity(doc: Y.Doc, update: Uint8Array, spans: readonly Id
 
 /** The carry on an applied transaction, from afterTransaction. */
 export function carryTransaction(transaction: Y.Transaction, spans: readonly IdSpan[]): IdSpan[] {
-  const out = spans.map((span) => ({ ...span }));
+  return carryRecords(transaction, [spans])[0];
+}
+
+/**
+ * The carry of every record on one alignment. Every deleted character takes part, tracked or not, so each copy is
+ * matched to exactly one source, and the copy goes to the record that owned that source: identical characters of
+ * different records, or of a record and original text, side by side never share a copy.
+ */
+export function carryRecords(transaction: Y.Transaction, records: readonly (readonly IdSpan[])[]): IdSpan[][] {
+  const out = records.map((spans) => spans.map((span) => ({ ...span })));
+  const indexes = records.map((spans) => new SpanIndex(spans));
+  const owners = (client: number, clock: number) => indexes.flatMap((index, i) => (index.has(client, clock) ? [i] : []));
   const { isFresh, liveBefore, fresh, deleted } = frameOf(transaction, { structs: Infinity, types: Infinity });
-  const tracked = (client: number, clock: number) => coveredBy(spans, client, clock, clock + 1);
   const hit = deleted.some((item) => {
     if (!(item.content instanceof Y.ContentString)) return false;
-    for (let i = 0; i < item.length; i++) if (tracked(item.id.client, item.id.clock + i)) return true;
+    for (let i = 0; i < item.length; i++) if (owners(item.id.client, item.id.clock + i).length > 0) return true;
     return false;
   });
   const body = transaction.doc.share.get(BODY) as Type | undefined;
   if (!hit || !body) return out;
   const { pre, post } = units(body, topLevel(body, [...fresh, ...deleted]), liveBefore, isFresh);
   // Characters only: an editor's bold re-inserts the run with new text properties, and it is still the same text.
-  const added = new Set<string>();
+  const added = records.map(() => new Set<string>());
   align(pre, post, {
-    wanted: (o) => o.char !== null && tracked(o.client, o.clock),
+    wanted: (o) => o.char !== null,
     same: (o, p) => o.char !== null && p.char === o.char,
     kept: () => {},
-    matched: (_o, p) => {
-      added.add(keyOf(p));
-      if (p.gov && isFresh(p.gov)) added.add(keyOf(p.gov.id));
+    matched: (o, p) => {
+      for (const i of owners(o.client, o.clock)) {
+        added[i].add(keyOf(p));
+        if (p.gov && isFresh(p.gov)) added[i].add(keyOf(p.gov.id));
+      }
     },
     missing: () => {},
   });
-  for (const span of spansOf(added)) out.push(span);
+  added.forEach((keys, i) => out[i].push(...spansOf(keys)));
   return out;
 }
 
@@ -414,7 +472,30 @@ export function carryTransaction(transaction: Y.Transaction, spans: readonly IdS
  */
 export function rejectPlan(doc: Y.Doc, inserts: readonly IdSpan[]): IdSpan[] {
   const remove = new Set<string>();
-  const own = (id: { client: number; clock: number }) => coveredBy(inserts, id.client, id.clock, id.clock + 1);
+  const index = new SpanIndex(inserts);
+  const own = (id: { client: number; clock: number }) => index.has(id.client, id.clock);
+  const registers = rootType(doc, REGISTERS);
+  // A decorator's payload lives in its register, not under the decorator, and deleting the register's entry deletes
+  // its text with it: an own register holding someone else's text stays, with the decorator naming it.
+  const registerForeign = new Map<string, boolean>();
+  const visitRegister = (key: string): boolean => {
+    const known = registerForeign.get(key);
+    if (known !== undefined) return known;
+    registerForeign.set(key, false);
+    const entry = registers?._map.get(key);
+    if (!entry || entry.deleted) return false;
+    const foreign = entry.content instanceof Y.ContentType ? visit(entry.content.type as Type) : false;
+    if (own(entry.id) && !foreign) remove.add(keyOf(entry.id));
+    registerForeign.set(key, foreign);
+    return foreign;
+  };
+  const registerOf = (type: Type): string | null => {
+    const entry = type._map.get('__regId');
+    if (!entry || entry.deleted) return null;
+    const values = entry.content.getContent();
+    const value = values[values.length - 1];
+    return typeof value === 'string' && value !== '' ? value : null;
+  };
   /** Marks the author's items under `type`; returns whether anything live there is someone else's. */
   const visit = (type: Type): boolean => {
     let foreign = false;
@@ -440,7 +521,12 @@ export function rejectPlan(doc: Y.Doc, inserts: readonly IdSpan[]): IdSpan[] {
         gov.map = item;
         continue;
       }
-      const inner = content instanceof Y.ContentType ? visit(content.type as Type) : false;
+      let inner = false;
+      if (content instanceof Y.ContentType) {
+        const children = visit(content.type as Type);
+        const register = registerOf(content.type as Type);
+        inner = (register !== null && visitRegister(register)) || children;
+      }
       if (!own(id)) foreign = true;
       else if (!inner) remove.add(keyOf(id));
       if (inner) foreign = true;
@@ -450,9 +536,7 @@ export function rejectPlan(doc: Y.Doc, inserts: readonly IdSpan[]): IdSpan[] {
   };
   const body = rootType(doc, BODY);
   if (body) visit(body);
-  for (const item of rootType(doc, REGISTERS)?._map.values() ?? []) {
-    if (!item.deleted && own(item.id)) remove.add(keyOf(item.id));
-  }
+  for (const key of registers?._map.keys() ?? []) visitRegister(key);
   return spansOf(remove);
 }
 
@@ -499,11 +583,27 @@ interface Unit {
   fresh: boolean;
   /** Null for an embed. */
   char: string | null;
-  /** A character's effective format: the values of the text map governing it, as stable JSON. */
+  /** A character's text format: its depth, the attributes of the blocks around its block, and its text map's values. */
+  text: string | null;
+  /** A character's effective format: `text` plus its block's attributes. */
   fmt: string | null;
   /** The text map governing a character. */
   gov: Y.Item | null;
+  /** The block holding a character, and that block's attributes (without NEXT_TYPING) as an object and as JSON. */
+  container: Y.Item | null;
+  block: Attrs | null;
+  blockKey: string | null;
 }
+
+/** Where flatten is: the depth, the blocks around the current one, and the current block. */
+interface Place {
+  depth: number;
+  outer: string;
+  container: Y.Item | null;
+  block: Attrs | null;
+  blockKey: string;
+}
+const ROOT_PLACE: Place = { depth: 0, outer: '', container: null, block: null, blockKey: '-' };
 const keyOf = (e: { client: number; clock: number }) => `${e.client}:${e.clock}`;
 
 /** Whether a type is a V1 text node's map, as of the `include`d entries. */
@@ -516,28 +616,39 @@ function isTextMapType(type: unknown, include: (item: Y.Item) => boolean): type 
  * a unit: it is the format of the characters after it, up to the next embed. Formatting marks and tombstones carry
  * nothing a V1 body shows.
  */
-function flatten(items: Iterable<Y.Item>, include: (item: Y.Item) => boolean, isFresh: (item: Y.Item) => boolean, out: Unit[], depth = 0): void {
-  let fmt: string | null = null;
+function flatten(items: Iterable<Y.Item>, include: (item: Y.Item) => boolean, isFresh: (item: Y.Item) => boolean, out: Unit[], place = ROOT_PLACE): void {
+  let map: string | null = null;
   let gov: Y.Item | null = null;
+  const { container, block, blockKey } = place;
   for (const item of items) {
     const { content, id } = item;
     if (content instanceof Y.ContentFormat || content instanceof Y.ContentDeleted) continue;
     const fresh = isFresh(item);
     if (content instanceof Y.ContentString) {
       // The nesting depth is part of the format: a split never moves text into or out of a nested block.
-      const format = `${depth} ${fmt ?? '-'}`;
-      for (let i = 0; i < content.str.length; i++) out.push({ client: id.client, clock: id.clock + i, item, fresh, char: content.str[i], fmt: format, gov });
+      const text = `${place.depth} ${place.outer} ${map ?? '-'}`;
+      const fmt = `${text} ${blockKey}`;
+      for (let i = 0; i < content.str.length; i++) {
+        out.push({ client: id.client, clock: id.clock + i, item, fresh, char: content.str[i], text, fmt, gov, container, block, blockKey });
+      }
       continue;
     }
     if (content instanceof Y.ContentType && isTextMapType(content.type, include)) {
-      fmt = stableJson(mapJson(content.type, include));
+      map = stableJson(mapJson(content.type, include));
       gov = item;
       continue;
     }
-    fmt = null;
+    map = null;
     gov = null;
-    for (let i = 0; i < item.length; i++) out.push({ client: id.client, clock: id.clock + i, item, fresh, char: null, fmt: null, gov: null });
-    if (content instanceof Y.ContentType) flatten(children(content.type as Type, include), include, isFresh, out, depth + 1);
+    for (let i = 0; i < item.length; i++) {
+      out.push({ client: id.client, clock: id.clock + i, item, fresh, char: null, text: null, fmt: null, gov: null, container, block, blockKey });
+    }
+    if (content instanceof Y.ContentType) {
+      const attrs = mapJson(content.type, include);
+      for (const key of NEXT_TYPING) delete attrs[key];
+      const next: Place = { depth: place.depth + 1, outer: `${place.outer}/${blockKey}`, container: item, block: attrs, blockKey: stableJson(attrs) };
+      flatten(children(content.type as Type, include), include, isFresh, out, next);
+    }
   }
 }
 
@@ -597,14 +708,42 @@ function align(
   }
 }
 
-function coveredBy(spans: readonly IdSpan[], client: number, from: number, to: number): boolean {
-  let at = from;
-  for (const span of spans.filter((s) => s.client === client).sort((a, b) => a.clock - b.clock)) {
-    if (span.clock > at) break;
-    at = Math.max(at, span.clock + span.len);
-    if (at >= to) return true;
+/** An id set indexed once: per client, sorted and merged [from, to) ranges, looked up by binary search. */
+class SpanIndex {
+  readonly #ranges = new Map<number, number[]>();
+
+  constructor(spans: readonly IdSpan[]) {
+    const byClient = new Map<number, IdSpan[]>();
+    for (const span of spans) {
+      if (span.len <= 0) continue;
+      const list = byClient.get(span.client);
+      if (list) list.push(span);
+      else byClient.set(span.client, [span]);
+    }
+    for (const [client, list] of byClient) {
+      const flat: number[] = [];
+      for (const { clock, len } of list.sort((a, b) => a.clock - b.clock)) {
+        const end = flat.length - 1;
+        if (end > 0 && clock <= flat[end]) flat[end] = Math.max(flat[end], clock + len);
+        else flat.push(clock, clock + len);
+      }
+      this.#ranges.set(client, flat);
+    }
   }
-  return at >= to;
+
+  has(client: number, clock: number): boolean {
+    const flat = this.#ranges.get(client);
+    if (!flat) return false;
+    let lo = 0;
+    let hi = flat.length / 2 - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (clock < flat[2 * mid]) hi = mid - 1;
+      else if (clock >= flat[2 * mid + 1]) lo = mid + 1;
+      else return true;
+    }
+    return false;
+  }
 }
 
 /** Adds one item id to the id set, extending the last span when the clock continues it. */
