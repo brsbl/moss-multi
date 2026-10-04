@@ -17,6 +17,8 @@ import { hidden } from '@moss-multi/host/affordances';
 import { OPEN_BLOCK_COMMENT_COMMAND } from '../commands';
 import { getThemeById } from '../plugins/code-block/themes';
 import { highlightCodeToHtml } from '../utils/code-highlighting';
+// moss-multi seam: read-only-decorators (T2.3): a read-only or terminal editor offers no code-block edit
+import { useIsEditorEditable } from '../components/media-primitives';
 import {
   BLOCK_HEADER_CLASSNAME,
   BLOCK_SURFACE_CLASSNAME,
@@ -55,6 +57,7 @@ function CodeBlockComponent({
   commentIds?: string[];
 }): JSX.Element {
   const [editor] = useLexicalComposerContext();
+  const editable = useIsEditorEditable(); // moss-multi seam: read-only-decorators (T2.3)
   const [isSelected, setSelected, clearSelection] = useLexicalNodeSelection(nodeKey);
   const [isEditing, setIsEditing] = useState(() => consumeAutoEdit(nodeKey));
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
@@ -71,6 +74,11 @@ function CodeBlockComponent({
       setLocalCode(code);
     }
   }, [code, isEditing]);
+
+  // moss-multi seam: read-only-decorators (T2.3): a body that closes mid-edit closes its textarea
+  useEffect(() => {
+    if (!editable) setIsEditing(false);
+  }, [editable]);
 
   // Auto-focus textarea when entering edit mode
   useEffect(() => {
@@ -147,6 +155,7 @@ function CodeBlockComponent({
       if (target.closest('button')) return;
       // Keep shift+click behavior for multi-select
       if (e.shiftKey) return;
+      if (!editor.isEditable()) return; // moss-multi seam: read-only-decorators (T2.3): a closed body opens no textarea
 
       e.preventDefault();
       // Capture rendered height before switching to textarea
@@ -161,6 +170,7 @@ function CodeBlockComponent({
   // Save code to node
   const commitCode = useCallback(() => {
     setIsEditing(false);
+    if (!editor.isEditable()) return; // moss-multi seam: read-only-decorators (T2.3)
     editor.update(() => {
       const node = $getNodeByKey(nodeKey);
       if (node && $isCodeBlockNode(node)) {
@@ -172,6 +182,11 @@ function CodeBlockComponent({
   // Handle textarea keydown
   const handleTextareaKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      // moss-multi seam: read-only-decorators (T2.3): a read-only textarea only closes
+      if (!editor.isEditable() && e.key !== 'Escape') {
+        if (!(e.metaKey || e.ctrlKey)) e.stopPropagation();
+        return;
+      }
       // Cmd/Ctrl+S — commit code to node, then let the save propagate
       if (e.key === 's' && (e.metaKey || e.ctrlKey)) {
         commitCode();
@@ -258,6 +273,7 @@ function CodeBlockComponent({
   // Handle language change
   const handleLanguageChange = useCallback(
     (newLanguage: string) => {
+      if (!editor.isEditable()) return; // moss-multi seam: read-only-decorators (T2.3)
       editor.update(() => {
         const node = $getNodeByKey(nodeKey);
         if (node && $isCodeBlockNode(node)) {
@@ -271,6 +287,7 @@ function CodeBlockComponent({
   // Handle theme change
   const handleThemeChange = useCallback(
     (newTheme: string) => {
+      if (!editor.isEditable()) return; // moss-multi seam: read-only-decorators (T2.3)
       editor.update(() => {
         const node = $getNodeByKey(nodeKey);
         if (node && $isCodeBlockNode(node)) {
@@ -308,6 +325,7 @@ function CodeBlockComponent({
     (position: 'before' | 'after') => (e: React.MouseEvent) => {
       e.preventDefault();
       e.stopPropagation();
+      if (!editor.isEditable()) return; // moss-multi seam: read-only-decorators (T2.3)
       editor.update(() => {
         const node = $getNodeByKey(nodeKey);
         if (!node) return;
@@ -329,7 +347,7 @@ function CodeBlockComponent({
         selected={isSelected}
         beforeLabel="Insert paragraph before code block"
         afterLabel="Insert paragraph after code block"
-        onGapClick={handleGapClick}
+        onGapClick={editable ? handleGapClick : undefined /* moss-multi seam: read-only-decorators (T2.3) */}
         className="moss-codeblock transition-colors"
         style={themeColors}
       >
@@ -351,6 +369,7 @@ function CodeBlockComponent({
                 onThemeChange={handleThemeChange}
                 getCodeContent={getCodeContent}
                 onDropdownOpenChange={setIsDropdownOpen}
+                readOnly={!editable /* moss-multi seam: read-only-decorators (T2.3) */}
               />
               {/* moss-multi seam: hide-registry (A§9) */}
               {hidden('comments') ? null : (
@@ -382,7 +401,7 @@ function CodeBlockComponent({
             {isEditing ? (
               <textarea
                 ref={textareaRef}
-                readOnly={!editor.isEditable()}
+                readOnly={!editable /* moss-multi seam: read-only-decorators (T2.3) */}
                 value={localCode}
                 onChange={(e) => setLocalCode(e.target.value)}
                 onKeyDown={handleTextareaKeyDown}

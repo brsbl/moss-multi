@@ -5,11 +5,13 @@
 import { useEffect, type ComponentType } from 'react';
 import { readyWhenShellRenders } from './app-state.ts';
 import { auth } from './auth.ts';
-import { pauseDocWrites, severDocSessions } from './collab/doc-session.ts';
+import { closeDocsToWrites, endTrashedDocs, pauseDocWrites, severDocSessions, waitDocsAcked } from './collab/doc-session.ts';
 import { SignOutConfirmation } from './surfaces/SignOutConfirmation.tsx';
+import { TrashConfirmation } from './surfaces/TrashConfirmation.tsx';
 import { folderIdFromPath, installBridge, WORKSPACE, type Bridge } from './bridge/index.ts';
 import { installBackspaceGuard } from './opening-guard.ts';
 import { printWhenReady } from './pdf-print.ts';
+import { askTrashConfirmation, createTrashGuard } from './trash-guard.ts';
 
 /** The `/f/$folderId` landing (A§4.2): once the listing names the folder, select it and expand its ancestors. */
 async function revealLandingFolder(bridge: Bridge): Promise<void> {
@@ -24,7 +26,7 @@ async function revealLandingFolder(bridge: Bridge): Promise<void> {
 }
 
 export async function bootMoss(): Promise<{ default: ComponentType }> {
-  const bridge = installBridge(auth);
+  const bridge = installBridge(auth, createTrashGuard({ close: closeDocsToWrites, waitAcked: waitDocsAcked, confirm: askTrashConfirmation, end: endTrashedDocs }));
   const analytics = await import('@moss-desktop/renderer/error-analytics');
   analytics.installRendererErrorAnalytics();
   if (window.location.pathname === '/pdf-export' || new URLSearchParams(window.location.search).get('mossMode') === 'pdf-export') {
@@ -48,6 +50,7 @@ export async function bootMoss(): Promise<{ default: ComponentType }> {
       <>
         <App />
         <SignOutConfirmation />
+        <TrashConfirmation />
         <ShareDialogHost />
       </>
     );

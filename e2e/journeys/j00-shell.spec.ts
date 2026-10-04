@@ -300,9 +300,10 @@ test('no hidden or staged affordance renders in the shell, its menus or Settings
     await page.keyboard.press('Escape');
     await expect(page.getByRole('dialog')).toBeHidden();
 
-    // ⌘2 is the trash view's other entry point (staged to M2).
+    // ⌘2 opens the trash view (T2.3) and ⌘1 comes back.
     await page.keyboard.press('ControlOrMeta+2');
-    await expect(page.getByRole('button', { name: 'Back to notes' }), `${actor.label}: ⌘2 opens no trash view`).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Back to notes' }), `${actor.label}: ⌘2 opens the trash view`).toBeVisible();
+    await page.keyboard.press('ControlOrMeta+1');
     await expect(page.getByRole('button', { name: 'Create new note' })).toBeVisible();
   }
 });
