@@ -7,8 +7,8 @@ import * as Y from 'yjs';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
 import {
-  applyRecord, hydrate, itemKey, previewHash, projectDoc, projectionDiff, recordDigest, type GateReason, type Hunk, type Inserted,
-  type Projection,
+  applyRecord, canonical, hydrate, itemKey, previewHash, projectDoc, projectionDiff, recordDigest, yValue, type GateReason, type Hunk,
+  type Inserted, type Projection,
 } from '@moss-multi/core/suggest/apply';
 import { createConverterEditor } from '../converter/index.ts';
 import { mirrorOf } from '../server-doc.ts';
@@ -42,19 +42,17 @@ const inRange = (inserted: Inserted, id: Y.ID) => {
 
 /**
  * G7: binds moss's converter editor to a copy of `doc`, then reruns the node transforms on every node the record
- * created and its parent. Lexical refusing the tree (a throw) or rewriting it (any write back) means a reader would
- * not see what the reviewer was shown.
+ * created and its parent. Lexical refusing the tree (a throw) or normalizing it into something else (the body's
+ * shared content changes) means a reader would not see what the reviewer was shown. Same-value writes back are not
+ * changes.
  */
 export function bindCheck(doc: Y.Doc, inserted: Inserted): boolean {
   let mirror: ReturnType<typeof mirrorOf> | null = null;
   try {
     mirror = mirrorOf(doc);
     const bound = mirror;
-    let wrote = false;
-    const onUpdate = () => {
-      wrote = true;
-    };
-    bound.doc.on('update', onUpdate);
+    const body = () => canonical([yValue(bound.doc.get('root', Y.XmlText)), yValue(bound.doc.getMap('registers'))]);
+    const before = body();
     bound.editor.update(
       () => {
         for (const [key, collab] of bound.binding.collabNodeMap) {
@@ -67,8 +65,7 @@ export function bindCheck(doc: Y.Doc, inserted: Inserted): boolean {
       },
       { discrete: true },
     );
-    bound.doc.off('update', onUpdate);
-    return !wrote;
+    return body() === before;
   } catch {
     return false;
   } finally {

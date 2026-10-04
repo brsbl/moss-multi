@@ -58,17 +58,19 @@ function forgeRecord(live: Y.Doc, id: string, clients: number[], ops: Uint8Array
   }, SUGGESTIONS_ORIGIN);
 }
 
-/** What `write` does to a copy of `live` under client `client`, as one V1 update. */
-function forged(live: Y.Doc, write: (doc: Y.Doc) => void, client = LEASED, from?: Uint8Array): Uint8Array {
+/** The updates `write`'s transactions emit on a copy of `live` under `client`, as a fork's provider sends them. */
+function updatesOf(live: Y.Doc, write: (doc: Y.Doc) => void, client = LEASED): Uint8Array[] {
   const doc = new Y.Doc({ gc: false });
   doc.clientID = client;
   Y.applyUpdate(doc, Y.encodeStateAsUpdate(live));
-  const sv = from ?? Y.encodeStateVector(doc);
+  const updates: Uint8Array[] = [];
+  doc.on('update', (update: Uint8Array) => updates.push(update));
   write(doc);
-  const update = Y.encodeStateAsUpdate(doc, sv);
   doc.destroy();
-  return update;
+  return updates;
 }
+
+const forged = (live: Y.Doc, write: (doc: Y.Doc) => void, client = LEASED): Uint8Array => Y.mergeUpdates(updatesOf(live, write, client));
 
 const root = (doc: Y.Doc) => doc.get('root', Y.XmlText);
 
@@ -99,7 +101,7 @@ function paragraphNaming(doc: Y.Doc, key: string): void {
   formula.setAttribute('__regId', key);
 }
 
-describe('T5.0 reject and withdraw never write the body @p:mean-2', () => {
+describe('T5.0 reject and withdraw never write the body @p:mean-2 @p:R16', () => {
   it.each(['reject', 'withdraw'] as const)('%s leaves the body byte-identical; only meta, ops and parts change', (how) => {
     const { live, ingest, suggest, dispose } = setup();
     try {
@@ -142,29 +144,20 @@ const GATES: Gate[] = [
   {
     name: 'G1: a clock gap',
     reason: 'unresolvable',
-    ops: (live) => {
-      const doc = new Y.Doc();
-      doc.clientID = LEASED;
-      Y.applyUpdate(doc, Y.encodeStateAsUpdate(live));
+    ops: (live) => updatesOf(live, (doc) => {
       root(doc).insertEmbed(root(doc).length, block('paragraph'));
-      const after = Y.encodeStateVector(doc);
       root(doc).insertEmbed(root(doc).length, block('paragraph'));
-      return [Y.encodeStateAsUpdate(doc, after)];
-    },
+    }).slice(1),
   },
   {
     name: 'G1: a missing origin',
     reason: 'unresolvable',
-    ops: (live) => {
-      const doc = new Y.Doc();
-      Y.applyUpdate(doc, Y.encodeStateAsUpdate(live));
+    ops: (live) => updatesOf(live, (doc) => {
       doc.clientID = 0x6fff0001;
       root(doc).insertEmbed(root(doc).length, block('paragraph'));
-      const peer = Y.encodeStateVector(doc);
       doc.clientID = LEASED;
       root(doc).insertEmbed(root(doc).length, block('paragraph'));
-      return [Y.encodeStateAsUpdate(doc, peer)];
-    },
+    }).slice(1),
   },
   {
     name: 'G2: a client the record does not lease',

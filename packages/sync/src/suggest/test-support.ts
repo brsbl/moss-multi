@@ -191,12 +191,13 @@ export function registersInOrder(doc: Y.Doc): string[] {
   const registers = doc.getMap('registers');
   const visit = (type: Y.AbstractType<unknown>) => {
     const id = type instanceof Y.XmlText || type instanceof Y.XmlElement ? type.getAttribute('__regId') : undefined;
-    if (typeof id === 'string') out.push(JSON.stringify(registers.get(id)?.toJSON() ?? null));
+    const value = typeof id === 'string' ? registers.get(id) : undefined;
+    if (typeof id === 'string') out.push(JSON.stringify(value instanceof Y.AbstractType ? value.toJSON() : (value ?? null)));
     if (type instanceof Y.XmlText) {
       for (const op of type.toDelta() as { insert: unknown }[]) if (op.insert instanceof Y.AbstractType) visit(op.insert);
     } else if (type instanceof Y.XmlElement) for (const child of type.toArray()) visit(child as Y.AbstractType<unknown>);
   };
-  visit(doc.get('root', Y.XmlText));
+  visit(doc.get('root', Y.XmlText) as unknown as Y.AbstractType<unknown>);
   return out;
 }
 
@@ -216,7 +217,7 @@ export function changedRoots(doc: Y.Doc): { roots: Set<string>; stop: () => void
   const roots = new Set<string>();
   const handler = (transaction: Y.Transaction) => {
     for (const type of transaction.changed.keys()) {
-      let top: Y.AbstractType<unknown> = type;
+      let top = type as unknown as Y.AbstractType<unknown>;
       while (top._item) top = top._item.parent as Y.AbstractType<unknown>;
       for (const [name, shared] of doc.share) if (shared === top) roots.add(name);
     }
@@ -260,6 +261,6 @@ export function spansOfText(doc: Y.Doc, text: string): { client: number; clock: 
     }
     return true;
   };
-  walk(doc.get('root', Y.XmlText));
+  walk(doc.get('root', Y.XmlText) as unknown as Y.AbstractType<unknown>);
   return spans;
 }

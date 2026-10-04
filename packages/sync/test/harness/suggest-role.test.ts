@@ -24,7 +24,12 @@ interface Span {
 }
 
 const root = (doc: Y.Doc) => doc.get('root', Y.XmlText);
-const firstBlock = (doc: Y.Doc): Y.XmlText => (root(doc)._start!.content as Y.ContentType).type as Y.XmlText;
+/** The first live top-level block item. */
+function blockItem(doc: Y.Doc): Y.Item {
+  for (let item = root(doc)._start; item; item = item.right) if (!item.deleted && item.content instanceof Y.ContentType) return item;
+  throw new Error('no block');
+}
+const firstBlock = (doc: Y.Doc): Y.XmlText => (blockItem(doc).content as Y.ContentType).type as Y.XmlText;
 
 /** The first original text item of the first paragraph. */
 function helloItem(doc: Y.Doc): Y.Item {
@@ -121,7 +126,8 @@ const FORGED: [string, (server: Y.Doc) => Uint8Array][] = [
   }],
   ["a write under another writer's client id", (server) => forge(server, (doc) => firstBlock(doc).insert(3, 'x'), helloItem(server).id.client)],
   ['a tombstone placed after an original map value', (server) => {
-    const map = firstBlock(server)._start!;
+    let map = firstBlock(server)._start!;
+    while (map.deleted) map = map.right!;
     const encoder = new Y.UpdateEncoderV1();
     encoding.writeVarUint(encoder.restEncoder, 1);
     encoding.writeVarUint(encoder.restEncoder, 1);
@@ -139,7 +145,7 @@ const FORGED: [string, (server: Y.Doc) => Uint8Array][] = [
     firstBlock(doc).removeAttribute('__type');
   }))],
   ['a same-value write ordered before the live value, deleting it', (server) => {
-    const block = root(server)._start!;
+    const block = blockItem(server);
     const live = (block.content as Y.ContentType).type._map.get('__type')!;
     const item = new Y.Item(Y.createID(1, 0), null, live.origin, null, null, live.origin ? null : block.id, live.origin ? null : '__type', new Y.ContentAny(['paragraph']));
     return encodeFrame([item], [{ client: live.id.client, clock: live.id.clock, len: 1 }]);
@@ -172,7 +178,7 @@ const FORGED: [string, (server: Y.Doc) => Uint8Array][] = [
   ['a suggestions record write', (server) => forge(server, (doc) => doc.getMap('suggestions').set('forged', 'accepted'))],
 ];
 
-describe('T5.0 a suggester body frame is refused by role @p:mean-2', () => {
+describe('T5.0 a suggester body frame is refused by role @p:mean-2 @p:R17', () => {
   it.each(FORGED)('%s', async (_name, make) => {
     const opened = await start(openDoc());
     await opened.dobj.create({ folderId: 'folder-1', ownerId: 'owner-1', markdown: SEED });

@@ -140,6 +140,7 @@ export function applyRecord(mirror: Y.Doc, record: SuggestionRecord, options: Ap
   // G5 (a) and (b) read the doc as it was before the record, so they run first and report after G1–G4.
   const outdated = !groups.every((spans) => removesLiveRun(store, spans, state));
   const registersBefore = liveEntries(mirror.getMap('registers'));
+  const refsBefore = regRefs(mirror);
 
   let transaction: Y.Transaction | null = null;
   try {
@@ -168,12 +169,12 @@ export function applyRecord(mirror: Y.Doc, record: SuggestionRecord, options: Ap
 
   // G3: every changed type, including each deleted item's parent, lives under root or registers.
   for (const type of tr.changed.keys()) {
-    const name = rootName(mirror, type);
+    const name = rootName(mirror, type as unknown as Y.AbstractType<unknown>);
     if (name === null || !BODY_ROOTS.has(name)) return fail('outside-body');
   }
 
   // G4: registers are never aliased.
-  if (!registersUnaliased(mirror, registersBefore, inserted)) return fail('register-alias');
+  if (!registersUnaliased(mirror, registersBefore, refsBefore, inserted)) return fail('register-alias');
 
   // G5 (c): every struct the record inserted and did not itself delete integrated as a live item.
   if (outdated || !insertedLive(store, inserted, ownDeletes)) return fail('outdated');
@@ -269,11 +270,19 @@ const isInserted = (inserted: Inserted, id: Y.ID): boolean => {
 };
 
 /**
- * G4. A `__regId` written by the record sits on a type the record created and names a registers entry the record
- * created; an entry that existed before is never replaced, and is deleted only once nothing live names it; an entry
- * the record created is named only by the record's own `__regId` writes.
+ * G4. A `__regId` written by the record sits on a type the record created. It names a registers entry the record
+ * created, or moves an existing one: the record removed every type that named it, and the new type is the only one
+ * naming it after (an Enter before an inline formula re-creates the decorator, since @lexical/yjs moves a node by
+ * deleting it and inserting a copy). An entry that existed before is never replaced, and is deleted only once nothing
+ * live names it. An entry the record created is named only by the record's own `__regId` writes. So no register is
+ * ever shared, borrowed or re-pointed.
  */
-function registersUnaliased(doc: Y.Doc, before: ReadonlyMap<string, Y.Item>, inserted: Inserted): boolean {
+function registersUnaliased(
+  doc: Y.Doc,
+  before: ReadonlyMap<string, Y.Item>,
+  refsBefore: ReadonlyMap<string, Y.AbstractType<unknown>[]>,
+  inserted: Inserted,
+): boolean {
   const registers = doc.getMap('registers');
   const refs = regRefs(doc);
   for (const [key, item] of before) {
@@ -288,7 +297,11 @@ function registersUnaliased(doc: Y.Doc, before: ReadonlyMap<string, Y.Item>, ins
       if (!holder._item || !isInserted(inserted, holder._item.id)) return false;
       const key = struct.content.getContent().at(-1);
       const entry = typeof key === 'string' ? registers._map.get(key) : undefined;
-      if (!entry || entry.deleted || !isInserted(inserted, entry.id)) return false;
+      if (!entry || entry.deleted || typeof key !== 'string') return false;
+      if (isInserted(inserted, entry.id)) continue;
+      const namedBefore = refsBefore.get(key) ?? [];
+      const moved = namedBefore.length > 0 && namedBefore.every((type) => type._item?.deleted) && refs.get(key)?.length === 1;
+      if (!moved) return false;
     }
   }
   for (const [key, item] of registers._map) {

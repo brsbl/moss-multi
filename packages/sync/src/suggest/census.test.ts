@@ -44,16 +44,17 @@ describe('T5.0 census through a real moss editor on the fork @p:mean-2', () => {
   });
 });
 
-describe('T5.0 accept equals the direct edit @p:mean-2', () => {
+describe('T5.0 accept equals the direct edit @p:mean-2 @p:R17', () => {
   it.each(CENSUS)('$name', ({ steps }) => {
     const { live, fork } = suggest(steps);
     try {
       const preview = previewRecord(live, 'r1');
       if (!preview.ok) throw new Error(`preview refused: ${preview.reason}`);
-      expect(preview.hunks.length, 'the reviewer is shown the change').toBeGreaterThan(0);
       expect(acceptRecord(live, 'r1', { previewHash: preview.hash, digest: preview.digest }, EDITOR)).toEqual({ ok: true });
       resetIds();
       const oracle = directEdit(seededBody(), steps);
+      // A record that changes nothing visible (a split and its undo) shows no hunk; everything else shows one.
+      if (exported(oracle) !== exported(seededBody())) expect(preview.hunks.length, 'the reviewer is shown the change').toBeGreaterThan(0);
       expect(exported(live)).toBe(exported(oracle));
       expect(registersInOrder(live)).toEqual(registersInOrder(oracle));
     } finally {
