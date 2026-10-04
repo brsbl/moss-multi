@@ -15,6 +15,27 @@ const bindings = new WeakMap<LexicalEditor, Y.Doc>();
 const nodeDocs = new WeakMap<LexicalNode, Y.Doc>();
 const serialized = new WeakSet<Y.Doc>();
 let bindingCount = 0;
+const payloads = new WeakMap<Y.Text, string>();
+const invalidated = new WeakSet<Y.Doc>();
+
+/**
+ * A register's text, cached between transactions: every Lexical commit reads each top-level node's text, so an
+ * uncached read stringifies every register per keystroke. A transaction's changes evict before its observers run,
+ * and reads while one is open or still cleaning up bypass the cache.
+ */
+function payload(text: Y.Text): string {
+  const doc = text.doc;
+  if (!doc || doc._transaction || doc._transactionCleanups.length) return text.toString();
+  if (!invalidated.has(doc)) {
+    invalidated.add(doc);
+    doc.on('beforeObserverCalls', (transaction: Y.Transaction) => {
+      for (const type of transaction.changed.keys()) if (type instanceof Y.Text) payloads.delete(type);
+    });
+  }
+  let value = payloads.get(text);
+  if (value === undefined) payloads.set(text, value = text.toString());
+  return value;
+}
 
 export const registerDoc = (editor: LexicalEditor): Y.Doc | undefined => bindings.get(editor);
 
@@ -50,15 +71,14 @@ export function initRegisterNode(node: LexicalNode): string {
 export function readRegister(node: LexicalNode, fallback: string): string {
   const id = (node as RegisterNode).__regId;
   const text = id && (nodeDocs.get(node) ?? currentDoc())?.getMap('registers').get(id);
-  return text instanceof Y.Text ? text.toString() : fallback ?? '';
+  return text instanceof Y.Text ? payload(text) : fallback ?? '';
 }
 export function writeRegister(node: LexicalNode, next: string): boolean {
   const doc = currentDoc();
   const id = (node as RegisterNode).__regId;
   const text = id && doc?.getMap('registers').get(id);
-  if (doc && text instanceof Y.Text && text.toString() !== next) {
-    doc.transact(() => text.applyDelta(diffText(text.toString(), next)), REGISTER_LOCAL_ORIGIN);
-  }
+  const current = doc && text instanceof Y.Text ? payload(text) : next;
+  if (current !== next) doc!.transact(() => (text as Y.Text).applyDelta(diffText(current, next)), REGISTER_LOCAL_ORIGIN);
   return text instanceof Y.Text;
 }
 
@@ -95,19 +115,19 @@ export function $assignRegisterIds(): void {
 }
 
 /** Copy the payload into one node's excluded render cache. Never writes to the shared tree. */
-function $refreshNode(node: LexicalNode | null, registers: Y.Map<unknown>): void {
+function $refreshNode(node: LexicalNode | null, registers: Y.Map<Y.Text>): void {
   const field = node && REGISTER_FIELDS[node.getType()];
   if (!node || !field) return;
   const target = node as RegisterNode;
   const text = registers.get(target.__regId);
   if (!(text instanceof Y.Text)) return;
-  const value = text.toString();
+  const value = payload(text);
   if (target[field] !== value) (target.getWritable() as RegisterNode)[field] = value;
 }
 
 /** Fill every register node's cache once; a hydrated mirror needs it before its first read. */
 export function $refreshRegisters(editor: LexicalEditor, doc: Y.Doc): void {
-  const registers = doc.getMap('registers');
+  const registers = doc.getMap<Y.Text>('registers');
   for (const snapshot of editor.getEditorState()._nodeMap.values()) {
     if (REGISTER_FIELDS[snapshot.getType()]) $refreshNode($getNodeByKey(snapshot.getKey()), registers);
   }
@@ -130,8 +150,8 @@ export function bindRegisters(editor: LexicalEditor, doc: Y.Doc, { serializedImp
       if (!registers.has(id)) {
         doc.transact(() => registers.set(id, new Y.Text(String(node[field] ?? ''))), REGISTER_INIT);
       }
-      const payload = registers.get(id)!.toString();
-      if (node[field] !== payload) node.getWritable()[field] = payload;
+      const value = payload(registers.get(id)!);
+      if (node[field] !== value) node.getWritable()[field] = value;
     }));
   }
   // Refreshes stay proportional to what changed: the nodes an update touched and the registers whose text moved.
@@ -180,7 +200,7 @@ export function bindRegisters(editor: LexicalEditor, doc: Y.Doc, { serializedImp
   const observe = (events: Y.YEvent<Y.AbstractType<unknown>>[], transaction: Y.Transaction) => {
     if (transaction.origin === REGISTER_INIT) return;
     for (const event of events) {
-      if (event.target === registers) for (const id of event.keysChanged) dirtyIds.add(id);
+      if (event.target === registers) for (const id of (event as Y.YMapEvent<Y.Text>).keysChanged) dirtyIds.add(id);
       else if (typeof event.target._item?.parentSub === 'string') dirtyIds.add(event.target._item.parentSub);
     }
     refresh();
