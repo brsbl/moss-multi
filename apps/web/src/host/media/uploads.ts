@@ -45,7 +45,7 @@ export function uploadName(filename: string, mimeType: string): string {
   return extension ? `${filename || 'media'}.${extension}` : filename;
 }
 
-function decodeBase64(data: string): Uint8Array {
+function decodeBase64(data: string): Uint8Array<ArrayBuffer> {
   const binary = atob(data);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);

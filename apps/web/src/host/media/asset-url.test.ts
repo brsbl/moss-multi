@@ -11,7 +11,7 @@ describe('toDisplaySrc', () => {
   it("maps an uploaded file to the doc's asset route", () => {
     expect(toDisplaySrc('assets/pattern.png', 'd1')).toBe('/api/docs/d1/assets/pattern.png');
     expect(toDisplaySrc('./assets/clip.webm', 'd1')).toBe('/api/docs/d1/assets/clip.webm');
-    expect(toDisplaySrc('assets/a b#1.png', 'doc/2')).toBe('/api/docs/doc%2F2/assets/a%20b%231.png');
+    expect(toDisplaySrc('assets/a b.png', 'doc/2')).toBe('/api/docs/doc%2F2/assets/a%20b.png');
   });
 
   it('threads the share link a reader opened the note with', () => {

@@ -180,7 +180,7 @@ async function serve(request: Request, env: AssetsEnv, docId: string, rawName: s
   const db = createDb(env.DB);
   const access = await resolveDocAccess(db, principal, docId, shareTokenOf(request));
   if (!access || access.deleted) return notFound();
-  let filename: string | null = null;
+  let filename: string | null;
   try {
     filename = storedName(decodeURIComponent(rawName));
   } catch {
