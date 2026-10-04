@@ -6,7 +6,7 @@ interface Formula extends LexicalNode {
   setResult(result: string): void; setStale(stale: boolean): void;
 }
 /** Recompute on the disposable export mirror, never on the shared doc or a viewer's undo stack. */
-export function $recomputeExportFormulas(): void {
+export function $recomputeExportFormulas(noteId: string): void {
   const nodes: Formula[] = [];
   const visit = (node: LexicalNode) => {
     if (node.getType() === 'formula') nodes.push(node as Formula);
@@ -14,7 +14,7 @@ export function $recomputeExportFormulas(): void {
   };
   visit($getRoot());
   const evaluation = evaluateWorkspaceFormulas(nodes.map(node => ({
-    noteId: 'export', noteTitle: '', formulaId: node.getFormulaId(), name: node.getName(),
+    noteId, noteTitle: '', formulaId: node.getFormulaId(), name: node.getName(),
     expression: node.getFormula(), result: node.getResult(), stale: node.isStale(),
   })));
   for (const record of evaluation.byKey.values()) {

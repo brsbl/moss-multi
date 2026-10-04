@@ -67,9 +67,21 @@ A task counts only after an independent checker passes it on green CI. Each mile
   - The brief permits skipping the local browser self-check because BB Browser Automation is unavailable in Codex. No local stack or browser was launched; the independent checker owns the real browser pass. Remote Chromium and WebKit journeys cover the task, including SP5's 60-second concurrent-typing soak.
   - Empty-prompt undo routing has a focused Lexical command test because AI/⌘K remains intentionally hidden (A§2.3). Formula typing coverage exposed an existing nested-update Enter bug; committing inside the command's current update preserves its selection and avoids sharing draft styles. The color conversion listener now waits until the current commit’s listeners finish, avoiding a stale-node access in Markdown shortcuts.
 
+### T1.6 — checker regression repairs
+
+- The [tests-first export run](https://github.com/brsbl/moss-multi/actions/runs/37164692835) reproduced a dependent formula exporting frozen `4` instead of recomputed `6`. Export now carries the real doc identity into evaluation; the regression also covers a foreign-note fallback, an unchanged live Y.Doc, export-cache invalidation and wake.
+- The [tests-first parity run](https://github.com/brsbl/moss-multi/actions/runs/37164693065) reproduced both 144 px² shell-default failures. The target now focuses both editors before capture, retaining the toolbar in the pixel comparison without widening masks or thresholds (deviation 10). The j01 blur leg remains the behavior gate.
+- The read-only color plugin's initial sweep is guarded by editability; the [tests-first run](https://github.com/brsbl/moss-multi/actions/runs/37164862573) changed read-only text into a color node while its editable positive control passed. Local browser verification remains assigned to the independent checker by the implementer brief; no local tests run.
+
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+- T1.6 checker: prune deleted layout identities, avoid unchanged localStorage writes and restrict ordinal migration to stores without identity metadata → local-layout follow-up. These need lifecycle and persisted-state regressions beyond this P1 repair.
+- T1.6 checker: bound link activation and preview must consume locally resolved note identity, not only its displayed title/state → T3.3 links.
+- T1.6 checker: route empty-prompt undo from a split pane's title to that pane's body; AI and Cmd+K remain hidden → command-palette unstaging.
+- T1.6 checker: replace model-only width assertions with rendered dimensions and a real resize drag → editing-journey follow-up; the checker already confirmed the rendered behavior manually.
+
 
 - T1.8 checker: replace the interim listing poll/full metadata hydrate with A§11's workspace channel, including avoiding unchanged vault-switcher notifications → T2.1 (deviation 16).
 - T1.8 checker: large explicit-markdown pastes bypass chunking to preserve nested blocks; measure responsiveness and retain nesting in any future chunker. G1 covers empty-note explicit paste, not the complete plain-text paste path → editor follow-up (deviation 14).

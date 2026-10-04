@@ -15,7 +15,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/ColorCodePlugin.tsx b/
        // Skip our own conversion writes and the backspace-to-text path so the
        // user can edit the expanded literal without it snapping back.
        if (updateTags?.has(COLOR_CONVERT_TAG) || updateTags?.has(COLOR_PILL_EXPAND_TAG)) return;
-@@ -188,17 +191,22 @@ export function ColorCodeConversionPlugin(): null {
+@@ -188,30 +191,35 @@ export function ColorCodeConversionPlugin(): null {
  
        if (keysToConvert.length === 0) return;
  
@@ -48,15 +48,23 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/ColorCodePlugin.tsx b/
      });
    }, [editor]);
  
-@@ -209,6 +217,7 @@ export function ColorCodeConversionPlugin(): null {
-   // hex/function literals reach parity there too.
+   // -----------------------------------------------------------------------
+   // Initial sweep: convert any color literals present at editor mount, e.g.
+   // after markdown import where the COLOR_TRANSFORMER didn't catch a token.
+-  // This non-interactive pass also runs in read-only/PDF renderers so
+-  // hex/function literals reach parity there too.
++  // Read-only renderers retain the imported tree without background writes.
    // -----------------------------------------------------------------------
    useEffect(() => {
-+    if (isBoundEditor(editor)) return;
++    if (!editor.isEditable() || isBoundEditor(editor)) return;
      let cancelled = false;
      const run = (): void => {
-       if (cancelled) return;
-@@ -428,6 +437,7 @@ export function ColorCodePlugin(): JSX.Element | null {
+-      if (cancelled) return;
++      if (cancelled || !editor.isEditable()) return;
+       const keysToConvert: string[] = [];
+       editor.getEditorState().read(() => {
+         const root = $getRoot();
+@@ -428,6 +436,7 @@ export function ColorCodePlugin(): JSX.Element | null {
        if (pickerOpenRef.current) return;
  
        const updateTags = payload?.updateTags;

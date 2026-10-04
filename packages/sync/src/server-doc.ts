@@ -121,10 +121,10 @@ export function importBody(live: Y.Doc, markdown: string, admit?: (diff: Uint8Ar
 }
 
 /** The `.md` file (A§12): the frontmatter block in its fences, then the body through the one converter. */
-export function exportDocMarkdown(live: Y.Doc): string {
+export function exportDocMarkdown(live: Y.Doc, noteId = live.guid): string {
   const mirror = mirrorOf(live);
   try {
-    mirror.editor.update($recomputeExportFormulas, { discrete: true });
+    mirror.editor.update(() => $recomputeExportFormulas(noteId), { discrete: true });
     return composeFrontmatter(readField(live, 'frontmatter'), exportMarkdown(mirror.editor));
   } finally {
     mirror.dispose();

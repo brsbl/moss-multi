@@ -214,14 +214,13 @@ export function ColorCodeConversionPlugin(): null {
   // -----------------------------------------------------------------------
   // Initial sweep: convert any color literals present at editor mount, e.g.
   // after markdown import where the COLOR_TRANSFORMER didn't catch a token.
-  // This non-interactive pass also runs in read-only/PDF renderers so
-  // hex/function literals reach parity there too.
+  // Read-only renderers retain the imported tree without background writes.
   // -----------------------------------------------------------------------
   useEffect(() => {
-    if (isBoundEditor(editor)) return;
+    if (!editor.isEditable() || isBoundEditor(editor)) return;
     let cancelled = false;
     const run = (): void => {
-      if (cancelled) return;
+      if (cancelled || !editor.isEditable()) return;
       const keysToConvert: string[] = [];
       editor.getEditorState().read(() => {
         const root = $getRoot();
