@@ -306,6 +306,13 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
   - **Done:** merged, with every finding dispositioned.
 - **T4.1 The comment data plane** `[A·codex]`
   - **Scope:** DocDO writes to the comments map; anchors with a quote fallback; client writes to the maps refused; marker import in the converter; clean export.
+  - **Per-frame cost bound (security review of the T4.0 spike, 2026-10-04):** `refreshAnchors` runs synchronously in the DocDO on every `root` frame, so its work must be bounded by the frame, not by the document or by how many comments exist. In the spike, every frame re-projects the whole doc. It runs a `similarity` LCS (up to the 4M-cell text-diff budget) for every comment. `restoresAfter` walks every struct in the store once per distinct orphan fence. `findQuote` rescans the whole text for every position-less anchor. A commenter who adds many long or orphaned comments can therefore stall the DO on each keystroke. Required:
+    - revalidate only anchors whose start or end type, or recorded block, is among the frame's touched types (reuse `touchedTypes`);
+    - build the restore index from the frame's own new structs only, never the whole store;
+    - compare quotes by equality first, then a bounded check (a small cell budget or a length cap on the stored quote), never the full LCS budget;
+    - run the quote search for a position-less anchor once, at creation or import, never per frame;
+    - cap comments per doc and comment creation per identity.
+    Test: a large note with hundreds of long and orphaned comments plus a burst of single-key frames stays within a stated per-frame CPU budget in workerd, and the result is recorded in METHOD.md. Correct the cost section of comments.md to match.
   - **Tests first:** fast-check: anchors survive random concurrent edits. A client frame touching `comments` gets 4409. Importing the onboarding note and its sidecar yields 4 anchored threads. Export contains zero `%%m:` or `{%c:`. **Done:** green.
 - **T4.2 Paint and moss's comment UI** `[B·codex]`
   - **Scope:** highlight paint; the adapter; the `CREATE_COMMENT_COMMAND` seam, unstaging `comments`; gutter, popover, threads, replies and resolve; Cmd+Shift+A; the reply composer autofocuses.
