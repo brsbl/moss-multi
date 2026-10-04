@@ -17,11 +17,12 @@ import { createDb, type Db } from '../db/client.ts';
 import { docs, folders } from '../db/schema.ts';
 import type { AppEnv } from '../env.ts';
 import { json } from '../worker/route.ts';
+import { carryAssets } from './assets.ts';
 import { folderChain, MAX_FOLDER_DEPTH, resolveDocAccess, resolveFolderAccess, type FolderAccess } from './access.ts';
 import { handleFolders as handleFolderMembers } from './members.ts';
 import { NO_STORE, notFound, readJsonObject, unauthenticated } from './respond.ts';
 
-export type FoldersEnv = AuthEnv & Pick<AppEnv, 'DocDO'> & Partial<Pick<AppEnv, 'PrincipalDO'>>;
+export type FoldersEnv = AuthEnv & Pick<AppEnv, 'DocDO'> & Partial<Pick<AppEnv, 'PrincipalDO' | 'ASSETS'>>;
 
 export const FOLDER_NAME_MAX = 100;
 
@@ -274,6 +275,12 @@ export async function moveDoc(request: Request, env: FoldersEnv, docId: string, 
     return refuse(409, 'other-vault', 'Notes can only move within their own vault.');
   }
   const recipients = await collectRecipients(env.DB, { docIds: [docId] });
+  // The note's media moves with it (moss moves the note's bundle): the files it references are named in the new folder
+  // first, so it never lands without them, and its references follow any file the folder named differently.
+  const stub = access.folderId !== folderId && env.ASSETS ? await getServerByName(env.DocDO, docId) : null;
+  const renames = stub && env.ASSETS
+    ? await carryAssets({ ...env, ASSETS: env.ASSETS }, access.folderId, folderId as string, await stub.referencedAssets(), principal.id)
+    : {};
   if (access.folderId !== folderId) {
     for (let attempt = 1; ; attempt += 1) {
       const [doc] = await db.select({ title: docs.title, filename: docs.filename }).from(docs).where(eq(docs.id, docId));
@@ -293,6 +300,7 @@ export async function moveDoc(request: Request, env: FoldersEnv, docId: string, 
         if (!isUnique(error) || attempt >= 5) throw error;
       }
     }
+    if (stub && Object.keys(renames).length > 0) await stub.renameAssets(renames);
   }
   await notify(env, await collectRecipients(env.DB, { docIds: [docId] }, recipients));
   const [doc] = await db

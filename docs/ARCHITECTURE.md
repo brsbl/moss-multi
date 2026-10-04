@@ -570,7 +570,8 @@ There is no polling and no per-doc watch socket. [S-prior §14.1] Bound docs ign
 **References.**
 - Markdown keeps moss's relative form, `![alt](assets/<file>)`.
 - The substituted `asset-url.ts` maps that to `/api/docs/:docId/assets/<file>`, resolved in the doc's folder scope, with the share token appended.
-- A copied note carries its media. [S-ren §2.5]
+- A copied note carries its media, and so does a moved one. [S-ren §2.5]
+- Storage is per folder but sharing is per doc: a reader of the folder reads any file in it; a reader holding only the doc's grant or link reads the files the doc's export references (and an uploader their own upload).
 
 **Serving.**
 - The current version is `private, max-age=0, stale-while-revalidate=86400` with ETag/304. A specific version is immutable.

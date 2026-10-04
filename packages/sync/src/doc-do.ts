@@ -4,6 +4,7 @@ import * as Y from 'yjs';
 import * as encoding from 'lib0/encoding';
 import { writeSyncStep1 } from 'y-protocols/sync';
 import { splitFrontmatter } from '@moss-desktop/common/markdown-layers';
+import { assetNamesIn } from '@moss-multi/protocol/media';
 import { ACK_COALESCE_MS, AWARENESS_MAX_BYTES, MAX_CONNECTIONS, STATE_CAP_BYTES, WRITE_RATE } from '@moss-multi/protocol/limits';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
 import { bytesToBase64, CLOSE, type ServerEvent, type WriteRefusalReason } from '@moss-multi/protocol/sync';
@@ -29,6 +30,8 @@ const SEARCH_FEED_VERSION = '2';
 
 /** A title written by create() or a REST rename; both project. */
 export const SERVER_TITLE = 'server-title';
+/** A move's rename of the doc's media references. */
+const SERVER_MEDIA = 'server-media';
 
 export interface DocLimits {
   stateCapBytes: number;
@@ -286,6 +289,20 @@ export class DocDO extends YServer<SyncEnv> {
     await this.#ready();
     this.#exported ??= exportDocMarkdown(this.document, this.name);
     return this.#exported;
+  }
+
+  /**
+   * The stored names of the uploaded files the doc references (A§16): what a reader holding only this doc's grant or
+   * link may load from its folder. Read from the export, so media nested in any node family counts.
+   */
+  async referencedAssets(): Promise<string[]> {
+    return [...assetNamesIn(await this.exportMarkdown())];
+  }
+
+  /** A moved doc's references to files its new folder named differently (old stored name → new), for every client. */
+  async renameAssets(renames: Readonly<Record<string, string>>): Promise<void> {
+    await this.#ready();
+    renameAssetReferences(this.document, renames, SERVER_MEDIA);
   }
 
   /** Feeds search now, even with nothing changed: the Worker's backfill for a doc the index lacks. */

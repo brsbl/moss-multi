@@ -5,6 +5,7 @@
 import { eq } from 'drizzle-orm';
 import { getServerByName } from 'partyserver';
 import { MARKDOWN_CAP_BYTES } from '@moss-multi/protocol/limits';
+import { assetNamesIn } from '@moss-multi/protocol/media';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
 import type { AuthEnv } from '../auth/auth.ts';
 import { resolvePrincipal, shareTokenOf } from '../auth/principal.ts';
@@ -13,7 +14,7 @@ import { docs } from '../db/schema.ts';
 import type { AppEnv } from '../env.ts';
 import { json } from '../worker/route.ts';
 import { resolveDocAccess, resolveFolderAccess } from './access.ts';
-import { copyReferencedAssets } from './assets.ts';
+import { carryAssets } from './assets.ts';
 import { folderNotFound, liveIn, moveDoc, upFrom, vaultOf } from './folders.ts';
 import { handleMembers } from './members.ts';
 import { NO_STORE, notFound, readJsonObject, unauthenticated } from './respond.ts';
@@ -105,7 +106,7 @@ async function duplicateDoc(request: Request, env: DocsEnv, docId: string): Prom
   // A copy made outside the source's folder brings the media the snapshot references (A§16), renamed where that
   // folder already uses a name for other bytes.
   const renames = env.ASSETS && folderId !== source.folderId
-    ? await copyReferencedAssets({ ...env, ASSETS: env.ASSETS }, source.folderId, folderId, snapshot.markdown, principal.id)
+    ? await carryAssets({ ...env, ASSETS: env.ASSETS }, source.folderId, folderId, assetNamesIn(snapshot.markdown), principal.id)
     : {};
   const title = `${snapshot.title.trim() || 'Untitled'} copy`;
   const doc = await insertDoc(env, db, { folderId, ownerUserId: folder.ownerUserId, createdBy: principal.id });

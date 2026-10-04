@@ -3,22 +3,24 @@
 //   POST /api/docs/:id/assets?filename=     raw body into the doc's folder; editor and above on the doc
 //   POST /api/folders/:id/assets?filename=  raw body into the folder; editor and above on the folder
 //   POST /api/docs/:id/assets/copy          {sourceNoteId, sourceRelativePath}: moss's cross-note paste
-//   GET|HEAD /api/docs/:id/assets/:file     any reader of the doc, a share link included
+//   GET|HEAD /api/docs/:id/assets/:file     any reader of the doc, a share link included, for a file the doc references
 // Markdown keeps moss's `assets/<file>`, resolved in the doc's folder, so a note's media follows it into any copy in
-// that folder; a copy made elsewhere carries what its markdown references (copyReferencedAssets).
+// that folder; a copy made, or a note moved, elsewhere carries what it references (carryAssets). Sharing is per doc,
+// so a reader of the folder reads any file in it, and a reader of one doc only the files that doc references.
 import { and, eq, inArray } from 'drizzle-orm';
+import { getServerByName } from 'partyserver';
 import { MEDIA_CAP_BYTES, isDesktopDerived, mediaFilename, mediaTypeOf, suffixedFilename, ASSET_DIR } from '@moss-multi/protocol/media';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
 import type { AuthEnv } from '../auth/auth.ts';
-import { resolvePrincipal, shareTokenOf } from '../auth/principal.ts';
+import { resolvePrincipal, shareTokenOf, type Principal } from '../auth/principal.ts';
 import { createDb, type Db } from '../db/client.ts';
 import { assets, assetVersions } from '../db/schema.ts';
 import type { AppEnv } from '../env.ts';
 import { json } from '../worker/route.ts';
-import { resolveDocAccess, resolveFolderAccess } from './access.ts';
+import { resolveDocAccess, resolveFolderAccess, type DocAccess } from './access.ts';
 import { NO_STORE, notFound, readJsonObject } from './respond.ts';
 
-export type AssetsEnv = AuthEnv & Pick<AppEnv, 'ASSETS'>;
+export type AssetsEnv = AuthEnv & Pick<AppEnv, 'ASSETS' | 'DocDO'>;
 
 export const ASSET_ROUTE = /^\/api\/(?:docs|folders)\/[^/]+\/assets(?:\/.*)?$/;
 const DOC_UPLOAD = /^\/api\/docs\/([^/]+)\/assets$/;
@@ -46,13 +48,13 @@ async function sha256Hex(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
 /** The filename a `?filename=` or `assets/<file>` path names, decoded and folded to a stored name. */
 const storedName = (raw: string): string | null => mediaFilename(raw.replace(/^\.?\/?(?:assets\/)?/, ''));
 
-interface Current { id: string; filename: string; contentHash: string; versionId: string }
+interface Current { id: string; filename: string; contentHash: string; versionId: string; createdBy: string }
 
 /** The folder's asset under `filename` and its current version's bytes, if any. */
 async function currentAsset(db: Db, folderId: string, filename: string): Promise<(Current & { contentType: string; size: number; etag: string }) | null> {
   const [row] = await db
     .select({ id: assets.id, filename: assets.filename, contentType: assets.contentType, versionId: assetVersions.id,
-      contentHash: assetVersions.contentHash, size: assetVersions.size, etag: assetVersions.etag })
+      contentHash: assetVersions.contentHash, size: assetVersions.size, etag: assetVersions.etag, createdBy: assets.createdBy })
     .from(assets)
     .innerJoin(assetVersions, eq(assetVersions.id, assets.currentVersionId))
     .where(and(eq(assets.folderId, folderId), eq(assets.filename, filename)))
@@ -142,6 +144,18 @@ async function uploadToFolder(request: Request, env: AssetsEnv, folderId: string
   return store(request, env, folderId, principal.id);
 }
 
+/**
+ * Whether a reader of `docId` may load `asset` from the doc's folder: anyone who reads the folder (every note in it),
+ * its uploader (whose image renders before the doc's update reaches the server), or a reader of the doc that
+ * references it. A grant or link on one doc never reaches the files only its sibling notes use.
+ */
+async function mayRead(env: AssetsEnv, db: Db, principal: Principal, docId: string, access: DocAccess, asset: Current): Promise<boolean> {
+  if (principal.type !== 'anonymous' && asset.createdBy === principal.id) return true;
+  if (principal.type !== 'anonymous' && (await resolveFolderAccess(db, principal, access.folderId))) return true;
+  const references = await (await getServerByName(env.DocDO, docId)).referencedAssets();
+  return references.includes(asset.filename);
+}
+
 /** moss's copyFromNoteAsset: the source's file, named in the target's folder (the same asset when they share one). */
 async function copyFromNote(request: Request, env: AssetsEnv, docId: string): Promise<Response> {
   const principal = await resolvePrincipal(request, env);
@@ -156,7 +170,7 @@ async function copyFromNote(request: Request, env: AssetsEnv, docId: string): Pr
   if (!target || target.deleted || !source || source.deleted) return notFound();
   if (!roleAtLeast(target.role, 'editor')) return refuse(403, 'forbidden', 'You can view this note but not add media to it.');
   const found = await currentAsset(db, source.folderId, filename);
-  if (!found) return notFound();
+  if (!found || !(await mayRead(env, db, principal, sourceId, source, found))) return notFound();
   const asset = await placeAsset(env, target.folderId, filename, { hash: found.contentHash, size: found.size, contentType: found.contentType }, principal.id);
   return asset ? placed(asset) : refuse(409, 'name-taken', 'Too many files share that name here. Rename the file and try again.');
 }
@@ -189,7 +203,7 @@ async function serve(request: Request, env: AssetsEnv, docId: string, rawName: s
     return notFound();
   }
   const current = filename ? await currentAsset(db, access.folderId, filename) : null;
-  if (!current) return notFound();
+  if (!current || !(await mayRead(env, db, principal, docId, access, current))) return notFound();
   const versionId = new URL(request.url).searchParams.get('version');
   let version = { hash: current.contentHash, size: current.size, etag: current.etag };
   if (versionId) {
@@ -223,26 +237,21 @@ async function serve(request: Request, env: AssetsEnv, docId: string, rawName: s
 }
 
 /**
- * A duplicate made outside the source's folder (A§16 "a copied note carries its media"): every source-folder asset
- * the markdown references is named in the target folder too. Where the target already gives the name other bytes,
- * the copy's file takes the next free name; the returned map (old stored name → new) renames the copy's references.
+ * A note copied or moved out of its folder (A§16 "a copied note carries its media"): every file in `fromFolderId`
+ * named in `names` is named in `toFolderId` too. Where the target already gives the name other bytes, the note's file
+ * takes the next free name; the returned map (old stored name → new) renames the note's references.
  */
-export async function copyReferencedAssets(env: AssetsEnv, fromFolderId: string, toFolderId: string, markdown: string, createdBy: string): Promise<Record<string, string>> {
+export async function carryAssets(env: AssetsEnv, fromFolderId: string, toFolderId: string, names: Iterable<string>, createdBy: string): Promise<Record<string, string>> {
   const renames: Record<string, string> = {};
-  if (fromFolderId === toFolderId) return renames;
-  const names = new Set<string>();
-  for (const match of markdown.matchAll(/(?:^|[(<"'\s])\.?\/?assets\/([^)\s>"'?#]+)/g)) {
-    try {
-      const name = storedName(decodeURIComponent(match[1]));
-      if (name) names.add(name);
-    } catch {
-      // a malformed escape names no file
-    }
-  }
-  if (names.size === 0) return renames;
+  const wanted = [...new Set(names)];
+  if (fromFolderId === toFolderId || wanted.length === 0) return renames;
   const db = createDb(env.DB);
-  const rows = await db.select({ filename: assets.filename }).from(assets)
-    .where(and(eq(assets.folderId, fromFolderId), inArray(assets.filename, [...names])));
+  const rows: { filename: string }[] = [];
+  // D1 binds at most 100 parameters per statement.
+  for (let i = 0; i < wanted.length; i += 50) {
+    rows.push(...await db.select({ filename: assets.filename }).from(assets)
+      .where(and(eq(assets.folderId, fromFolderId), inArray(assets.filename, wanted.slice(i, i + 50)))));
+  }
   for (const { filename } of rows) {
     const found = await currentAsset(db, fromFolderId, filename);
     if (!found) continue;
