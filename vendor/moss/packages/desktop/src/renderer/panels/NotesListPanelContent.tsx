@@ -54,7 +54,7 @@ import { hidden } from '@moss-multi/host/affordances';
 import { canDuplicateNote } from '@moss-multi/host/duplicate';
 import { FolderMenuItems, surfacedShared, surfacedFolder } from '@moss-multi/host/slots';
 // moss-multi seam: folders (T2.2): folder controls follow the caller's role; a refusal reads as the server's sentence.
-import { canCreateFolder, canEditFolder, canTrashFolder, folderRefusal } from '@moss-multi/host/folders';
+import { canCreateFolder, canEditFolder, canMoveItems, canTrashFolder, folderRefusal } from '@moss-multi/host/folders';
 import { refuseInput } from '@moss-multi/host/refusal';
 
 const NOTES_FOLDER_NAME = 'Notes';
@@ -258,8 +258,8 @@ const NoteListItemWithMenu = memo(function NoteListItemWithMenu({
 }: NoteListItemWithMenuProps) {
   const isActive = useIsActiveNote(note.id);
   const [isContextMenuOpen, setIsContextMenuOpen] = useState(false);
-  // moss-multi seam: shared-rows (A§11: a surfaced shared row offers no move)
-  const draggable = (options?.draggable ?? true) && !surfacedShared(note.id);
+  // moss-multi seam: shared-rows (A§11: a surfaced shared row offers no move); only the vault's owner moves (A§8)
+  const draggable = (options?.draggable ?? true) && !surfacedShared(note.id) && canMoveItems();
   const showActiveState = options?.showActiveState ?? true;
   const isVisuallyActive = showActiveState && isActive;
   const cardRef = options?.isSelected
@@ -1239,7 +1239,8 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
         const showSubfolderInput = isCreatingFolder && creatingFolderParentPath === folder.path;
         // moss-multi seam: surfaced shares never offer folder mutations, and only editors change folders (T2.2).
         const mutable = !surfacedFolder(folder.path) && canEditFolder(folder.path);
-        const isFolderDraggable = mutable && folder.type !== 'system';
+        // moss-multi seam: folders: a move changes who can open the subtree, so only the vault's owner drags (A§8).
+        const isFolderDraggable = mutable && canMoveItems() && folder.type !== 'system';
 
         return (
           <ContextMenu key={folder.path}>

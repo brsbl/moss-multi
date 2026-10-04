@@ -1,14 +1,15 @@
 // The folders API (T2.2; A§6, A§8, A§9 folders). POST /api/folders creates, PATCH /api/folders/:id renames or moves
 // within the vault, DELETE /api/folders/:id sends the subtree to Trash as one batch, and moveDoc moves a note
-// between folders (PATCH /api/docs/:id {folderId}). Editors create, rename and move; the vault's owner owns what an
-// editor creates (created_by records who); only the owner trashes. Every refusal carries a sentence, because moss
+// between folders (PATCH /api/docs/:id {folderId}). Editors create and rename; the vault's owner owns what an
+// editor creates (created_by records who). Access inherits through the folder chain, so a move is a sharing decision:
+// only the owner (A§8 manage) moves, on ownership alone, never on a grant or a share link; only the owner trashes. Every refusal carries a sentence, because moss
 // shows the message it gets. Writes that depend on the tree re-check it in the same statement, so concurrent moves
 // can't build a cycle or leave something live under a trashed folder. A moved or trashed folder changes who can open
 // its docs; the live kick for that is T2.5's one path.
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { getServerByName } from 'partyserver';
 import { filenameFor } from '@moss-multi/core/filenames';
-import { roleAtLeast } from '@moss-multi/protocol/roles';
+import { can, roleAtLeast } from '@moss-multi/protocol/roles';
 import { collectRecipients, publishRecipients, type FanoutEnv, type Recipients } from '@moss-multi/sync/fanout';
 import type { AuthEnv } from '../auth/auth.ts';
 import { resolvePrincipal, shareTokenOf, type Principal } from '../auth/principal.ts';
@@ -42,6 +43,9 @@ function folderName(value: unknown): { name: string } | { problem: string } {
   if (/[/\\\u0000-\u001f\u007f]/.test(name)) return { problem: 'Folder names can’t contain “/” or “\\”.' };
   return { name };
 }
+
+/** A move changes who can open what, so it needs the manage capability (A§8). */
+const ownerMoves = (what: 'folders' | 'notes') => refuse(403, 'forbidden', `Only the vault’s owner can move ${what}, because a move changes who can open them.`);
 
 const exists = (name: string) => refuse(409, 'folder-exists', `A folder named “${name}” already exists here.`);
 const tooDeep = () => refuse(409, 'too-deep', `Folders can be nested at most ${MAX_FOLDER_DEPTH - 1} deep.`);
@@ -153,6 +157,7 @@ async function updateFolder(request: Request, env: FoldersEnv, id: string): Prom
   let vault: string | undefined;
   const recipients: Recipients = new Map();
   if ('parentId' in body && body.parentId !== current.parentId) {
+    if (!can(folder.role, 'manage')) return ownerMoves('folders');
     const target = await liveFolder(db, principal, body.parentId);
     if (!target) return folderNotFound();
     if (!roleAtLeast(target.role, 'editor')) return refuse(403, 'forbidden', 'You can view that folder but not move folders into it.');
@@ -255,9 +260,11 @@ export async function moveDoc(request: Request, env: FoldersEnv, docId: string, 
   const principal = await signedIn(request, env);
   if (!principal) return unauthenticated();
   const db = createDb(env.DB);
-  const access = await resolveDocAccess(db, principal, docId, shareTokenOf(request));
-  if (!access || access.deleted) return notFound();
-  if (!roleAtLeast(access.role, 'editor')) return refuse(403, 'forbidden', 'You can view this note but not move it.');
+  const seen = await resolveDocAccess(db, principal, docId, shareTokenOf(request));
+  if (!seen || seen.deleted) return notFound();
+  // Authority to move comes from ownership alone: a link only decides whether the refusal may say so.
+  const access = await resolveDocAccess(db, principal, docId);
+  if (!access || !can(access.role, 'manage')) return ownerMoves('notes');
   const target = await liveFolder(db, principal, folderId);
   if (!target) return folderNotFound();
   if (!roleAtLeast(target.role, 'editor')) return refuse(403, 'forbidden', 'You can view that folder but not move notes into it.');
