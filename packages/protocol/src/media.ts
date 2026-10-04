@@ -54,8 +54,16 @@ export function mediaFilename(raw: string): string | null {
   return `${stem || 'media'}.${type.extension}`;
 }
 
-/** `name.ext` → `name-n.ext`, the next candidate after a collision. */
+/**
+ * `name.ext` → `name-n.ext`, the next candidate after a collision. The stem gives way to the suffix at the length cap,
+ * so the result folds to itself and a read finds this file, not the first.
+ */
 export function suffixedFilename(filename: string, n: number): string {
   const dot = filename.lastIndexOf('.');
-  return `${filename.slice(0, dot)}-${n}${filename.slice(dot)}`;
+  const suffix = `-${n}`;
+  const stem = filename.slice(0, dot).slice(0, STEM_MAX - suffix.length).replace(/[-.]+$/, '') || 'media';
+  return `${stem}${suffix}${filename.slice(dot)}`;
 }
+
+/** Moss desktop's derived video thumbnails (`assets/video-thumb-<hash>.png`), which only moss desktop makes. */
+export const isDesktopDerived = (filename: string): boolean => filename.startsWith('video-thumb-');

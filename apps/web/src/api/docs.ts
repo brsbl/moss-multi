@@ -102,16 +102,17 @@ async function duplicateDoc(request: Request, env: DocsEnv, docId: string): Prom
   if (!folder || folder.deleted || !roleAtLeast(folder.role, 'editor')) return notFound();
   const original = await getServerByName(env.DocDO, docId);
   const snapshot = await original.snapshotForDuplicate();
-  // A copy made outside the source's folder brings the media its markdown references (A§16).
-  if (env.ASSETS && folderId !== source.folderId) {
-    await copyReferencedAssets({ ...env, ASSETS: env.ASSETS }, source.folderId, folderId, await original.exportMarkdown(), principal.id);
-  }
+  // A copy made outside the source's folder brings the media the snapshot references (A§16), renamed where that
+  // folder already uses a name for other bytes.
+  const renames = env.ASSETS && folderId !== source.folderId
+    ? await copyReferencedAssets({ ...env, ASSETS: env.ASSETS }, source.folderId, folderId, snapshot.markdown, principal.id)
+    : {};
   const title = `${snapshot.title.trim() || 'Untitled'} copy`;
   const doc = await insertDoc(env, db, { folderId, ownerUserId: folder.ownerUserId, createdBy: principal.id });
   if (!doc) return folderNotFound();
   try {
     const target = await getServerByName(env.DocDO, doc.id);
-    await target.createFromSnapshot({ folderId, ownerId: folder.ownerUserId, title }, snapshot.state);
+    await target.createFromSnapshot({ folderId, ownerId: folder.ownerUserId, title }, snapshot.state, renames);
   } catch (error) {
     await db.delete(docs).where(eq(docs.id, doc.id));
     if (error instanceof Error && error.message === 'doc-cap') return json({ error: 'doc-cap' }, 413, NO_STORE);

@@ -3,6 +3,8 @@
 // `assets/` is uploaded media; deeper paths (moss's `.moss-cache` previews) and video thumbnails are files moss
 // desktop derives beside a note, which the web never has.
 
+import { isDesktopDerived } from '@moss-multi/protocol/media';
+
 export interface WebAsset {
   /** The URL as it appeared. */
   url: string;
@@ -13,11 +15,10 @@ export interface WebAsset {
 }
 
 const UPLOADED = /^(?:\.\/)?assets\/([^/\\?#]+)$/;
-const DESKTOP_ONLY = /^video-thumb-/;
 const ROUTE = /^\/api\/docs\/([^/?#]+)\/assets\/([^/?#]+)(?:\?[^#]*)?$/;
 
-/** The page's share link (A§8: the token rides every read path). */
-const shareToken = (): string | null => {
+/** The page's share link (A§8: the token rides every request for the doc). */
+export const shareToken = (): string | null => {
   const search = (globalThis as { location?: { search?: string } }).location?.search ?? '';
   return new URLSearchParams(search).get('share');
 };
@@ -25,7 +26,7 @@ const shareToken = (): string | null => {
 /** The uploaded file a note-relative path names, or null when the web cannot have it. */
 export function uploadedFilename(src: string): string | null {
   const name = UPLOADED.exec(src.trim())?.[1];
-  return name && !DESKTOP_ONLY.test(name) ? name : null;
+  return name && !isDesktopDerived(name) ? name : null;
 }
 
 /** The asset route for a note's uploaded file. */

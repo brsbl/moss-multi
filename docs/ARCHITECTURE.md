@@ -576,7 +576,7 @@ There is no polling and no per-doc watch socket. [S-prior §14.1] Bound docs ign
 - The current version is `private, max-age=0, stale-while-revalidate=86400` with ETag/304. A specific version is immutable.
 - HTTP Range (206) serves video.
 - SVG gets `content-security-policy: sandbox` and `nosniff`. [L§4.15; L§4.17]
-- Only a single file under `assets/` is uploaded media; moss desktop's derived files (`assets/.moss-cache/…`, `video-thumb-*`) and local paths stay unresolvable and read as desktop files. A duplicate made outside its folder copies the assets its markdown references; `POST /api/docs/:id/assets/copy` is moss's cross-note paste. `GET /api/docs/:id/export` is the DocDO markdown for any reader.
+- Only a single file under `assets/` is uploaded media; moss desktop's derived files (`assets/.moss-cache/…`, `video-thumb-*`) and local paths stay unresolvable and read as desktop files. A duplicate made outside its folder copies the assets its snapshot references, renaming a file whose name the target folder already uses for other bytes and its references in the copy; a web video poster is the clip's first frame; `POST /api/docs/:id/assets/copy` is moss's cross-note paste. `GET /api/docs/:id/export` is the DocDO markdown for any reader.
 
 **HTML and embeds.**
 - **HTML blocks** render live in a `data:` iframe with `sandbox="allow-scripts"`, which gives them an opaque origin.

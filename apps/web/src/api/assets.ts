@@ -7,7 +7,7 @@
 // Markdown keeps moss's `assets/<file>`, resolved in the doc's folder, so a note's media follows it into any copy in
 // that folder; a copy made elsewhere carries what its markdown references (copyReferencedAssets).
 import { and, eq, inArray } from 'drizzle-orm';
-import { MEDIA_CAP_BYTES, mediaFilename, mediaTypeOf, suffixedFilename, ASSET_DIR } from '@moss-multi/protocol/media';
+import { MEDIA_CAP_BYTES, isDesktopDerived, mediaFilename, mediaTypeOf, suffixedFilename, ASSET_DIR } from '@moss-multi/protocol/media';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
 import type { AuthEnv } from '../auth/auth.ts';
 import { resolvePrincipal, shareTokenOf } from '../auth/principal.ts';
@@ -103,7 +103,9 @@ const placed = (asset: { id: string; filename: string; versionId: string; size: 
 /** The raw body into `folderId`, after the caller's right to write there was checked. */
 async function store(request: Request, env: AssetsEnv, folderId: string, createdBy: string): Promise<Response> {
   const raw = new URL(request.url).searchParams.get('filename') ?? '';
-  const filename = storedName(raw);
+  const named = storedName(raw);
+  // The web never loads a name moss desktop reserves for its derived thumbnails.
+  const filename = named && isDesktopDerived(named) ? mediaFilename(`upload-${named}`) : named;
   const type = filename ? mediaTypeOf(filename) : null;
   if (!filename || !type) return unsupported();
   const declared = (request.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase();
@@ -222,11 +224,12 @@ async function serve(request: Request, env: AssetsEnv, docId: string, rawName: s
 
 /**
  * A duplicate made outside the source's folder (A§16 "a copied note carries its media"): every source-folder asset
- * the markdown references is named in the target folder too. A name the target already gives other bytes is left
- * as it is, since the copy's markdown cannot be rewritten here.
+ * the markdown references is named in the target folder too. Where the target already gives the name other bytes,
+ * the copy's file takes the next free name; the returned map (old stored name → new) renames the copy's references.
  */
-export async function copyReferencedAssets(env: AssetsEnv, fromFolderId: string, toFolderId: string, markdown: string, createdBy: string): Promise<void> {
-  if (fromFolderId === toFolderId) return;
+export async function copyReferencedAssets(env: AssetsEnv, fromFolderId: string, toFolderId: string, markdown: string, createdBy: string): Promise<Record<string, string>> {
+  const renames: Record<string, string> = {};
+  if (fromFolderId === toFolderId) return renames;
   const names = new Set<string>();
   for (const match of markdown.matchAll(/(?:^|[(<"'\s])\.?\/?assets\/([^)\s>"'?#]+)/g)) {
     try {
@@ -236,16 +239,18 @@ export async function copyReferencedAssets(env: AssetsEnv, fromFolderId: string,
       // a malformed escape names no file
     }
   }
-  if (names.size === 0) return;
+  if (names.size === 0) return renames;
   const db = createDb(env.DB);
   const rows = await db.select({ filename: assets.filename }).from(assets)
     .where(and(eq(assets.folderId, fromFolderId), inArray(assets.filename, [...names])));
   for (const { filename } of rows) {
     const found = await currentAsset(db, fromFolderId, filename);
-    const there = await currentAsset(db, toFolderId, filename);
-    if (!found || there) continue;
-    await placeAsset(env, toFolderId, filename, { hash: found.contentHash, size: found.size, contentType: found.contentType }, createdBy);
+    if (!found) continue;
+    const copy = await placeAsset(env, toFolderId, filename, { hash: found.contentHash, size: found.size, contentType: found.contentType }, createdBy);
+    if (!copy) throw new Error(`no free name for ${filename}`);
+    if (copy.filename !== filename) renames[filename] = copy.filename;
   }
+  return renames;
 }
 
 export async function handleAssets(request: Request, env: AssetsEnv): Promise<Response> {

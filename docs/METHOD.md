@@ -90,6 +90,8 @@ Read this with PRODUCT.md, your BUILDPLAN entry and the A§ it cites, before wri
 - `asset-url.ts` and `media-server-url.ts` are substituted whole in apps/web's build (`vite.config.ts` `substitutes`, as the viewer does); a substitute loads under the vendored path, so it imports by alias (`@moss-multi/host/*`, and moss's own bytes as `@moss-pristine/<name>`), which apps/web's tsconfig `paths` and vitest's aliases mirror. [T3.1]
 - A synthetic click on a moss media block selects nothing when the editor is unfocused, and a DS menu taking focus drops the node selection; host code selects a node through Lexical (`getNearestEditorFromDOMNode`, `$createNodeSelection`) instead (`host/media/ImageContextMenu.tsx`). [T3.1]
 - Media fixtures for journeys live in `e2e/fixtures/media`. Chromium (Playwright's open build) has no H.264, so a playback leg uses the webm; every engine's `<video>` reads through Range (206). [T3.1]
+- Moss's video poster is a desktop-derived `assets/video-thumb-<hash>.png` the web never has, so VideoNode's `web-assets` seam paints the clip's own first frame (`video[data-video-thumbnail-state="frame"]`, muted, `preload=metadata`); a player locator excludes it. Uploads may not take a `video-thumb-` name. [T3.1]
+- A duplicate into another folder copies the media its snapshot's markdown names (`snapshotForDuplicate` returns both from one state); a name the target folder already gives other bytes gets the next free name, and `createFromSnapshot`'s renames rewrite the copy's `assets/<file>` attributes. Uploads and cross-note copies carry the page's `?share=` like every read. [T3.1]
 
 ## Local editing state (T1.6)
 

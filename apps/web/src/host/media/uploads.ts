@@ -3,6 +3,7 @@
 // so every refusal is announced first, in the server's own sentence (A§0 #2: never dropped silently).
 import { MEDIA_TYPES, mediaTypeOf } from '@moss-multi/protocol/media';
 import { AnnouncedRefusal, announceRefusal } from '../refusal.ts';
+import { shareToken, webAssetUrl } from './web-asset-url.ts';
 
 /** moss's ImageSaveResult. */
 export interface SavedMedia {
@@ -15,6 +16,8 @@ export interface UploadDeps {
   request: (path: string, init?: RequestInit) => Promise<Response>;
   /** The browser's file chooser; resolves `[]` when it is dismissed. */
   chooseFiles: (accept: string) => Promise<File[]>;
+  /** The page's share link, which a link editor's uploads carry as the doc socket does. */
+  share?: () => string | null;
 }
 
 export const MEDIA_ACCEPT = Object.keys(MEDIA_TYPES).map((extension) => `.${extension}`).join(',');
@@ -52,12 +55,18 @@ function decodeBase64(data: string): Uint8Array<ArrayBuffer> {
   return bytes;
 }
 
-export function createImagesApi({ request, chooseFiles }: UploadDeps) {
+export function createImagesApi({ request, chooseFiles, share = shareToken }: UploadDeps) {
   const assetPath = (noteId: string) => `/api/docs/${encodeURIComponent(noteId)}/assets`;
+  const withShare = (query: URLSearchParams) => {
+    const token = share();
+    if (token) query.set('share', token);
+    const search = query.toString();
+    return search ? `?${search}` : '';
+  };
   const saved = async (noteId: string, response: Response): Promise<SavedMedia> => {
     if (!response.ok) throw announceRefusal(await sentenceOf(response));
     const { relativePath, filename } = (await response.json()) as { relativePath: string; filename: string };
-    return { relativePath, absolutePath: `${assetPath(noteId)}/${encodeURIComponent(filename)}`, filename };
+    return { relativePath, absolutePath: webAssetUrl(noteId, filename), filename };
   };
   const send = async (path: string, init: RequestInit): Promise<Response> => {
     try {
@@ -71,8 +80,8 @@ export function createImagesApi({ request, chooseFiles }: UploadDeps) {
     if (!noteId) throw announceRefusal(NO_NOTE);
     const name = uploadName(filename, mimeType);
     const contentType = mediaTypeOf(name)?.contentType ?? mimeType;
-    const query = new URLSearchParams({ filename: name });
-    return saved(noteId, await send(`${assetPath(noteId)}?${query}`, { method: 'POST', headers: { 'content-type': contentType }, body }));
+    const query = withShare(new URLSearchParams({ filename: name }));
+    return saved(noteId, await send(`${assetPath(noteId)}${query}`, { method: 'POST', headers: { 'content-type': contentType }, body }));
   };
 
   return {
@@ -92,7 +101,7 @@ export function createImagesApi({ request, chooseFiles }: UploadDeps) {
     },
     copyFromNoteAsset: async (input: { sourceNoteId: string; sourceRelativePath: string; destinationNoteId: string }): Promise<SavedMedia> => {
       const body = JSON.stringify({ sourceNoteId: input.sourceNoteId, sourceRelativePath: input.sourceRelativePath });
-      const response = await send(`${assetPath(input.destinationNoteId)}/copy`, { method: 'POST', headers: { 'content-type': 'application/json' }, body });
+      const response = await send(`${assetPath(input.destinationNoteId)}/copy${withShare(new URLSearchParams())}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body });
       return saved(input.destinationNoteId, response);
     },
   };

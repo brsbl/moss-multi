@@ -18,6 +18,7 @@ import type { SyncEnv } from './env.ts';
 import { migrateFrontmatter } from '@moss-multi/core/frontmatter';
 import { writeField } from '@moss-multi/core/doc-fields';
 import { migrateRegisters } from './registers.ts';
+import { renameAssetReferences } from './asset-refs.ts';
 import { exportDocMarkdown, importBody, rootIsEmpty, SERVER_IMPORT, SERVER_SEED, seedEmptyParagraph } from './server-doc.ts';
 
 /** A title written by create() or a REST rename; both project. */
@@ -222,13 +223,18 @@ export class DocDO extends YServer<SyncEnv> {
     }
   }
 
-  /** Internal RPC: preserves Yjs item identity, including relative anchors, without a markdown round trip. */
-  async snapshotForDuplicate(): Promise<{ title: string; state: Uint8Array }> {
+  /**
+   * Internal RPC: preserves Yjs item identity, including relative anchors, without a markdown round trip. The
+   * markdown is the same state's export, so the copy's media list names exactly what the state references.
+   */
+  async snapshotForDuplicate(): Promise<{ title: string; state: Uint8Array; markdown: string }> {
     await this.#ready();
-    return { title: this.document.getText('title').toString(), state: Y.encodeStateAsUpdate(this.document) };
+    this.#exported ??= exportDocMarkdown(this.document, this.name);
+    return { title: this.document.getText('title').toString(), state: Y.encodeStateAsUpdate(this.document), markdown: this.#exported };
   }
 
-  async createFromSnapshot(input: Omit<CreateDocInput, 'markdown'>, state: Uint8Array): Promise<void> {
+  /** `renames` (old stored media name → new) points the copy at the files its folder named differently (A§16). */
+  async createFromSnapshot(input: Omit<CreateDocInput, 'markdown'>, state: Uint8Array, renames: Readonly<Record<string, string>> = {}): Promise<void> {
     const store = await this.#ready();
     if (store.meta('created') !== null) return;
     if (state.byteLength > this.#limits.stateCapBytes) throw new DocCapError();
@@ -240,6 +246,7 @@ export class DocDO extends YServer<SyncEnv> {
       const title = this.document.getText('title');
       title.delete(0, title.length);
       title.insert(0, input.title ?? '');
+      renameAssetReferences(this.document, renames, SERVER_IMPORT);
     }, SERVER_IMPORT);
     store.setMeta('folder', input.folderId);
     store.setMeta('owner', input.ownerId);
