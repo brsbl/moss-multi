@@ -737,6 +737,115 @@ describe('T1.F2 checker regressions @p:col-1 @p:tech-8', () => {
     } finally { ada.dispose(); ben.dispose(); }
   });
 
+  it('an element that waits on a reader\'s next edit is never credited to that reader, so it reveals nothing', async () => {
+    const opened = await seeded();
+    const ada = await LiveClient.open(opened, { id: 'ada', role: 'editor' });
+    try {
+      ada.insert('code-block', 'PENDING-secret');
+      await ada.sync();
+      const id = ada.ids()[0];
+      ada.remove(0);
+      await ada.sync();
+      const since = mark();
+      const cat = await LiveClient.open(opened, { id: 'cat', role: 'editor' });
+      try {
+        // Ada makes an edit the server has not seen yet; Cat learns it out of band and anchors a forged element on it.
+        const before = Y.encodeStateVector(ada.doc);
+        ada.insertParagraph('ada next');
+        await ada.settle();
+        Y.applyUpdate(cat.doc, Y.encodeStateAsUpdate(ada.doc, before));
+        cat.flush();
+        cat.socket.drain();
+        cat.forge(id);
+        await cat.up();
+        // Ada's ordinary edit arrives.
+        await ada.sync();
+        expect(carries(served(opened, since), 'PENDING-secret'), 'no frame carried the text').toBe(false);
+        expect((await lateReader(opened)).every((text) => text === ''), 'a later joiner reads nothing').toBe(true);
+        expect(cat.socket.closed?.code, 'a frame naming a clock the server lacks is refused').toBe(CLOSE.writeRate);
+      } finally { cat.dispose(); }
+    } finally { ada.dispose(); }
+  });
+
+  it('payload and note frames held back on a missing clock are refused, so the withheld and state caps count every byte', async () => {
+    class SmallDoc extends DocDO {
+      static override limits = { ...DocDO.limits, stateCapBytes: 64 * 1024, withheldBytesPerIdentity: 4 * 1024 };
+    }
+    const opened = await start(openDoc(new Backing(), SmallDoc as never));
+    await opened.dobj.create({ folderId: 'folder', ownerId: 'owner', markdown: SEED });
+    // Each update after the first starts at a clock the server lacks until the first arrives.
+    const split = (doc: Y.Doc, name: string, chunk: number) => {
+      const updates: Uint8Array[] = [];
+      doc.on('update', (update: Uint8Array) => updates.push(update));
+      const text = doc.getText(name);
+      text.insert(0, 'a');
+      for (let i = 0; i < 3; i++) text.insert(text.length, String(i).repeat(chunk));
+      return updates;
+    };
+    const eve = await connect(opened, { id: 'eve', role: 'editor' });
+    await eve.hello();
+    const [first, ...rest] = split(new Y.Doc(), 'payload', 3 * 1024);
+    for (const update of rest) if (!eve.closed) await eve.deliver(encodePayloadFrame('eve-x', PAYLOAD_UPDATE, update));
+    if (!eve.closed) await eve.deliver(encodePayloadFrame('eve-x', PAYLOAD_UPDATE, first));
+    const held = opened.backing.query<{ data: ArrayBuffer }>("SELECT data FROM payload_updates WHERE reg_id = 'eve-x'")
+      .reduce((sum, row) => sum + row.data.byteLength, 0);
+    expect(held, "eve's withheld bytes stay under her cap").toBeLessThanOrEqual(4 * 1024);
+    expect(eve.closed?.code, 'the first held-back frame is refused').toBe(CLOSE.writeRate);
+    const eve2 = await connect(opened, { id: 'eve', role: 'editor' });
+    await eve2.hello();
+    const note = new Y.Doc();
+    Y.applyUpdate(note, Y.encodeStateAsUpdate(opened.dobj.document));
+    const [head, ...tail] = split(note, 'scratch', 30 * 1024);
+    for (const update of tail) if (!eve2.closed) await eve2.deliver(syncFrame(2, update));
+    if (!eve2.closed) await eve2.deliver(syncFrame(2, head));
+    expect(Y.encodeStateAsUpdate(opened.dobj.document).byteLength, 'the note stays under the state cap').toBeLessThanOrEqual(64 * 1024);
+    expect(eve2.closed?.code, 'the first held-back note frame is refused').toBe(CLOSE.writeRate);
+  });
+
+  it('a non-reader resending clocks of a withheld payload learns nothing: no ack, refused', async () => {
+    const opened = await seeded();
+    const ada = await LiveClient.open(opened, { id: 'ada', role: 'editor' });
+    try {
+      ada.insert('code-block', 'PROBE-secret');
+      await ada.sync();
+      const id = ada.ids()[0];
+      const writer = ada.payloadDoc(0)!.clientID;
+      ada.remove(0);
+      await ada.sync();
+      const eve = await connect(opened, { id: 'eve', role: 'editor' });
+      await eve.hello();
+      // A struct at a clock the server holds for Ada's payload client: the classifier reads clocks, not content.
+      const probe = new Y.Doc();
+      probe.clientID = writer;
+      probe.getText('payload').insert(0, 'x');
+      await eve.deliver(encodePayloadFrame(id, PAYLOAD_UPDATE, Y.encodeStateAsUpdate(probe)));
+      vi.advanceTimersByTime(ACK_COALESCE_MS + 1);
+      await eve.pump();
+      expect(eve.events.filter((event) => event.t === 'ack' && event.p?.[id]), 'no ack names the id').toEqual([]);
+      expect(eve.closed?.code).toBe(CLOSE.writeRefused);
+    } finally { ada.dispose(); }
+  });
+
+  it('a delete of clocks the server lacks is refused, never acked from a volatile pending delete', async () => {
+    const opened = await seeded();
+    const ada = await LiveClient.open(opened, { id: 'ada', role: 'editor' });
+    try {
+      ada.insert('code-block', 'served');
+      await ada.sync();
+      const id = ada.ids()[0];
+      const eve = await connect(opened, { id: 'eve', role: 'editor' });
+      await eve.hello();
+      const ghost = new Y.Doc();
+      ghost.getText('payload').insert(0, 'zzz');
+      ghost.getText('payload').delete(0, 3);
+      await eve.deliver(encodePayloadFrame(id, PAYLOAD_UPDATE, Y.encodeStateAsUpdate(ghost, Y.encodeStateVector(ghost))));
+      vi.advanceTimersByTime(ACK_COALESCE_MS + 1);
+      await eve.pump();
+      expect(eve.events.filter((event) => event.t === 'ack' && event.p?.[id]), 'no ack names the id').toEqual([]);
+      expect(eve.closed?.code).toBe(CLOSE.writeRate);
+    } finally { ada.dispose(); }
+  });
+
   it('an identity\'s withheld bytes stay capped across a DocDO wake', async () => {
     class SmallDoc extends DocDO {
       static override limits = { ...DocDO.limits, withheldBytesPerIdentity: 4 * 1024 };

@@ -62,6 +62,24 @@ it('a rate close keeps the doc and reconnects', async () => {
   expect(session.doc.getText('title').toString()).toBe('pending');
   expect(session.state.unacked).toBe(true);
 });
+it('a reconnect sends the note\'s unacked writes before any payload frame, so blocks made offline are named first', async () => {
+  const first = latest(); first.open(); session.provider.synced = true;
+  first.ended(1006);
+  // Offline: a note write (a new block's element) and its payload's first text.
+  session.doc.getText('title').insert(0, 'offline');
+  session.payloads.hold('minted', true).getText('payload').insert(0, 'code');
+  await vi.advanceTimersByTimeAsync(300);
+  const socket = latest();
+  expect(socket).not.toBe(first);
+  socket.open();
+  const kinds = socket.sent.map((frame) => {
+    const bytes = frame as Uint8Array;
+    return bytes[0] === 7 ? 'payload' : bytes[0] === 0 && bytes[1] !== 0 ? 'note write' : 'other';
+  });
+  const payload = kinds.indexOf('payload');
+  expect(payload, 'the payload is resent').toBeGreaterThan(-1);
+  expect(kinds.slice(0, payload), 'the note write goes first').toContain('note write');
+});
 it('three failed handshakes stop the ladder and ask REST before retrying', async () => {
   const request = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 404 }));
   for (let i = 0; i < 3; i++) { latest().ended(1006); await vi.advanceTimersByTimeAsync(1000); }
