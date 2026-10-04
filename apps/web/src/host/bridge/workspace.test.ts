@@ -45,3 +45,65 @@ it('workspace pushes create, rename, trash and updated_at as targeted metadata, 
     expect(fetch).toHaveBeenCalledTimes(count);
   } finally { off(); }
 });
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+it('does not restart a metadata refresh when sign-out interrupts a vault-switch wait', async () => {
+  vi.useFakeTimers();
+  const refresh = deferred<Response>();
+  const switched = deferred<Response>();
+  const home = () => Response.json({ vault: { id: 'home', name: 'Home' }, docs: [] });
+  const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(home())
+    .mockReturnValueOnce(refresh.promise).mockReturnValueOnce(switched.promise)
+    .mockResolvedValue(new Response(null, { status: 503 }));
+  let receive!: Parameters<NonNullable<BridgeOptions['subscribeWorkspace']>>[0];
+  let pause!: () => void;
+  const bridge = createBridge({ pathname: () => '/', fetch,
+    subscribeWorkspace: (cb, stop) => { receive = cb; pause = stop; return () => undefined; } });
+  const changed = vi.fn();
+  const off = bridge.notes.onDiskChange(changed);
+  try {
+    await bridge.notes.getAll();
+    receive({ type: 'meta', docIds: ['new'], folderIds: [] });
+    await vi.advanceTimersByTimeAsync(0);
+    const switching = bridge[WORKSPACE].switchVault('other');
+    refresh.resolve(home());
+    await vi.advanceTimersByTimeAsync(0);
+    pause();
+    switched.resolve(Response.json({ vault: { id: 'other', name: 'Other' }, docs: [] }));
+    await switching;
+    changed.mockClear();
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(changed).not.toHaveBeenCalled();
+  } finally { off(); }
+});
+
+it('retries metadata received during a failed initial listing without another event', async () => {
+  vi.useFakeTimers();
+  const first = deferred<Response>();
+  const rows = [{ id: 'new', title: 'Created', createdAt: 2000, updatedAt: 2000 }];
+  const fetch = vi.fn<typeof globalThis.fetch>().mockReturnValueOnce(first.promise)
+    .mockImplementation(async () => Response.json({ vault: { id: 'home', name: 'Home' }, docs: rows }));
+  let receive!: Parameters<NonNullable<BridgeOptions['subscribeWorkspace']>>[0];
+  const bridge = createBridge({ pathname: () => '/', fetch,
+    subscribeWorkspace: (cb) => { receive = cb; return () => undefined; } });
+  const changed = vi.fn();
+  const off = bridge.notes.onDiskChange(changed);
+  try {
+    const initial = bridge.notes.getAll().catch(() => undefined);
+    receive({ type: 'meta', docIds: ['new'], folderIds: [] });
+    first.resolve(new Response(null, { status: 503 }));
+    await initial;
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(changed).toHaveBeenCalledWith(['new'], []);
+    expect(await bridge.notes.getMetadataByIds(['new'])).toEqual([expect.objectContaining({ title: 'Created' })]);
+    const calls = fetch.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(fetch).toHaveBeenCalledTimes(calls);
+  } finally { off(); }
+});

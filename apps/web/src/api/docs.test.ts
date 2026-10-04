@@ -15,6 +15,8 @@ const created: Created[] = [];
 const probed: string[] = [];
 const renamed: { docId: string; title: string }[] = [];
 let renameFails = false;
+let notificationFails = false;
+const publish = async () => { if (notificationFails) throw new Error('PrincipalDO unavailable'); };
 
 /** A DocDO namespace: getServerByName's setName, then the RPCs these routes call. */
 const DocDO = {
@@ -23,17 +25,17 @@ const DocDO = {
     setName: async () => undefined,
     create: async (input: unknown) => {
       created.push({ docId: id.name, input });
-      await d1Projections(d1.db).title(id.name, (input as { title?: string }).title ?? '');
+      await d1Projections(d1.db, publish).title(id.name, (input as { title?: string }).title ?? '');
     },
     renameTitle: async (title: string) => {
       if (renameFails) throw new Error('projection unavailable');
       renamed.push({ docId: id.name, title });
-      await d1Projections(d1.db).title(id.name, title);
+      await d1Projections(d1.db, publish).title(id.name, title);
     },
     snapshotForDuplicate: async () => ({ title: 'Original', state: new Uint8Array([1, 2]) }),
     createFromSnapshot: async (input: unknown) => {
       created.push({ docId: id.name, input });
-      await d1Projections(d1.db).title(id.name, (input as { title?: string }).title ?? '');
+      await d1Projections(d1.db, publish).title(id.name, (input as { title?: string }).title ?? '');
     },
     probeInstance: async () => {
       probed.push(id.name);
@@ -59,6 +61,7 @@ beforeEach(() => {
   probed.length = 0;
   renamed.length = 0;
   renameFails = false;
+  notificationFails = false;
 });
 
 const create = (cookie: string | null, body: unknown = {}, headers: Record<string, string> = {}) =>
@@ -76,6 +79,14 @@ interface DocBody {
 }
 
 describe('POST /api/docs', () => {
+  it.each([{}, { title: 'Created despite notification failure' }])('keeps a successful create when notification fails: %j', async (body) => {
+    notificationFails = true;
+    const response = await create(ada.cookie, body);
+    expect(response.status).toBe(201);
+    const { doc } = await response.json() as DocBody;
+    expect(await d1.db.prepare('SELECT id FROM docs WHERE id = ?').bind(doc.id).first()).toEqual({ id: doc.id });
+  });
+
   it('passes markdown, including an empty body, to the server converter without lifting its H1', async () => {
     for (const markdown of ['# Body heading\n\n**Imported** text.', '']) {
       const response = await create(ada.cookie, { title: 'File stem', markdown });
@@ -163,6 +174,14 @@ describe('PATCH /api/docs/:id', () => {
     method: 'PATCH', headers: { cookie, origin: BASE, 'content-type': 'application/json' }, body: JSON.stringify({ title }),
   }), env);
 
+  it('returns a committed rename when notification fails', async () => {
+    const id = await insertDoc(d1.db, ada);
+    notificationFails = true;
+    const response = await rename(id, ada.cookie, 'Committed rename');
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ doc: { title: 'Committed rename' } });
+  });
+
   it('routes an owner rename through the DocDO and returns its projection', async () => {
     const id = await insertDoc(d1.db, ada);
     const response = await rename(id, ada.cookie, 'Renamed via DO');
@@ -199,6 +218,15 @@ describe('POST /api/docs/:id/duplicate', () => {
   const duplicate = (id: string, cookie: string) => handleApi(new Request(`${BASE}/api/docs/${id}/duplicate`, {
     method: 'POST', headers: { cookie, origin: BASE },
   }), env);
+
+  it('keeps a successful duplicate when notification fails', async () => {
+    const id = await insertDoc(d1.db, ada);
+    notificationFails = true;
+    const response = await duplicate(id, ada.cookie);
+    expect(response.status).toBe(201);
+    const { doc } = await response.json() as DocBody;
+    expect(await d1.db.prepare('SELECT id FROM docs WHERE id = ?').bind(doc.id).first()).toEqual({ id: doc.id });
+  });
 
   it('copies in the source folder for its owner, with a new name and no doc grants', async () => {
     const id = await insertDoc(d1.db, ada);

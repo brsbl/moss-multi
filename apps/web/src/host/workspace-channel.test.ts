@@ -70,3 +70,24 @@ it('pings only while visible and refreshes missed metadata on reconnect; termina
   expect(sockets).toHaveLength(2);
   off();
 });
+
+it.each([4401, 4402])('keeps refusal %i terminal across visibility, online and auth notifications', async (code) => {
+  vi.useFakeTimers();
+  const auth = createAuthStore({ lookup: async () => ({ kind: 'signed-in', user: { id: 'ada', name: 'Ada', email: 'ada@example.invalid' } }),
+    fetch: vi.fn(), leave: vi.fn(), setAppState: vi.fn() });
+  await auth.resolve();
+  let visible!: () => void;
+  const sockets: Socket[] = [];
+  const off = subscribeWorkspace({ auth, socket: () => { const s = new Socket(); sockets.push(s); return s as unknown as WebSocket; },
+    visible: () => true, onVisible: (cb) => { visible = cb; return () => undefined; } }, vi.fn());
+  try {
+    sockets[0].onopen?.();
+    sockets[0].onclose?.({ code });
+    visible();
+    visible();
+    await auth.resolve();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(sockets).toHaveLength(1);
+    expect(sockets[0].send).not.toHaveBeenCalled();
+  } finally { off(); }
+});

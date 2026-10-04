@@ -51,3 +51,19 @@ it('workspace upgrades derive identity from auth, strip forged headers, and refu
   }
   expect(forwarded).toHaveLength(1);
 });
+
+it('returns the committed share even when its notification RPC fails', async () => {
+  const { handleApi } = await import('./router.ts');
+  const id = await insertDoc(d1.db, owner);
+  const response = await handleApi(new Request(`${BASE}/api/docs/${id}/members`, {
+    method: 'POST', headers: { cookie: owner.cookie, origin: BASE, 'content-type': 'application/json' },
+    body: JSON.stringify({ email: reader.email, role: 'editor' }),
+  }), { DB: d1.db, BETTER_AUTH_SECRET: SECRET, BETTER_AUTH_URL: BASE, DocDO: {} as never, PrincipalDO: {
+    idFromName: (name: string) => name,
+    get: () => ({ setName: async () => undefined, publish: async () => { throw new Error('PrincipalDO unavailable'); } }),
+  } as never });
+  expect(response.status).toBe(201);
+  expect(await response.json()).toMatchObject({ member: { principalId: reader.id, role: 'editor' } });
+  expect(await d1.db.prepare('SELECT role FROM doc_members WHERE doc_id = ? AND principal_id = ?')
+    .bind(id, reader.id).first()).toEqual({ role: 'editor' });
+});

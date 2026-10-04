@@ -182,3 +182,8 @@ Local browser verification remains assigned to the independent checker under the
 - T2.1 second Chromium run found the missing server close reply at the pinned workerd compatibility date: client sign-out stopped callbacks/timers but the close handshake remained pending. PrincipalDO now acknowledges close; the cold-DO harness asserts it. Run: https://github.com/brsbl/moss-multi/actions/runs/37165316896. The only remaining typecheck error was a test header-union annotation (fixed).
 
 - All push checks, build and viewer passed on `0195ce4`. The sign-out transport assertions passed in Chromium; its final login check raced the old page's ready attribute, so the leg now waits for the login document before testing readiness. Evidence: https://github.com/brsbl/moss-multi/actions/runs/37165490345 and https://github.com/brsbl/moss-multi/actions/runs/37165498051.
+
+### T2.1 — notification and channel lifecycle repairs
+
+- Attempt 2 adds tests first for committed create/rename/duplicate and timestamp writes surviving notification failure, committed shares surviving RPC failure, sign-out during a vault switch, events arriving during a failed listing, and terminal workspace refusals across visibility/online events. Remote red proof precedes implementation; no local tests run.
+- Current `origin/m1` and `origin/m2` are already ancestors of the task branch. This repair preserves the existing API and wire contracts and does not edit the M1 collaboration bindings.
