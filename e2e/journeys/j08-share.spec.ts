@@ -325,6 +325,12 @@ test('j08 privacy: an email with no account answers like one with an account, an
   const ghost: Principal = actors.credentials('ghost');
   const dialog = await ui.openShare(ada, docId);
 
+  // A slow reload of the lists must not hold the email field read-only once the share is confirmed.
+  const members = `**/api/docs/${docId}/members`;
+  await ada.page.route(members, async (route) => {
+    if (route.request().method() === 'GET') await new Promise((resolve) => setTimeout(resolve, 3_000));
+    await route.fallback();
+  });
   const answers: { status: number; body: unknown }[] = [];
   for (const email of [benPrincipal.email, ghost.email]) {
     const posted = ada.page.waitForResponse((response) => response.request().method() === 'POST' && response.url().endsWith(`/api/docs/${docId}/members`));
@@ -332,7 +338,9 @@ test('j08 privacy: an email with no account answers like one with an account, an
     const response = await posted;
     answers.push({ status: response.status(), body: await response.json() });
     await expect(dialog.getByRole('status'), 'the same confirmation either way').toHaveText(`Shared with ${email}.`);
+    await expect(dialog.getByLabel('Email', { exact: true }), 'the next email can be typed at once').toBeEditable({ timeout: 1_000 });
   }
+  await ada.page.unroute(members);
   expect(answers[0].status).toBe(201);
   expect(answers[1].status, 'an unknown email gets the same status').toBe(answers[0].status);
   expect(answers[1].body, 'and the same body, but for the email').toEqual(JSON.parse(JSON.stringify(answers[0].body).replaceAll(benPrincipal.email, ghost.email)));

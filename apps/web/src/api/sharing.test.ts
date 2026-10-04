@@ -128,6 +128,34 @@ describe('share-by-email is not an enumeration oracle', () => {
     expect(folderAfter.invites).toEqual([]);
   });
 
+  it('refuses a lowering for an invited email that has since signed up without granting anything, and admits a raise at once', async () => {
+    const docId = await insertDoc(d1.db, ada);
+    const path = `/api/docs/${docId}/members`;
+    const email = unknownEmail('later');
+    expect((await call('POST', path, ada.cookie, { email, role: 'editor' })).status).toBe(201);
+    const gus = await signedUpUser(env, 'sharing-later-gus', 'Gus', email);
+    expect(await roleOf(gus.cookie, docId), 'an invite to an email that had no account waits for its link').toBeNull();
+    const lowered = await call('POST', path, ada.cookie, { email, role: 'viewer' });
+    expect(lowered.status).toBe(409);
+    expect(await lowered.json()).toMatchObject({ error: 'demotion-unavailable' });
+    expect(await roleOf(gus.cookie, docId), 'a refused share grants nothing').toBeNull();
+    const pending = (await (await call('GET', path, ada.cookie)).json()) as { members: { name: string }[]; invites: unknown[] };
+    expect(pending.members.map((m) => m.name)).toEqual(['Ada']);
+    expect(pending.invites, 'the editor invite stands').toEqual([{ email, role: 'editor' }]);
+    expect((await call('POST', path, ada.cookie, { email, role: 'editor' })).status, 'a repeat').toBe(200);
+    expect(await roleOf(gus.cookie, docId), 'a repeat at the invite role grants it').toBe('editor');
+
+    const other = await insertDoc(d1.db, ada);
+    const ghost = unknownEmail('raised');
+    expect((await call('POST', `/api/docs/${other}/members`, ada.cookie, { email: ghost, role: 'viewer' })).status).toBe(201);
+    const hal = await signedUpUser(env, 'sharing-later-hal', 'Hal', ghost);
+    expect((await call('POST', `/api/docs/${other}/members`, ada.cookie, { email: ghost, role: 'editor' })).status).toBe(200);
+    expect(await roleOf(hal.cookie, other), 'a raise grants the raised role').toBe('editor');
+    const after = (await (await call('GET', `/api/docs/${other}/members`, ada.cookie)).json()) as { members: { name: string; role: string }[]; invites: unknown[] };
+    expect(after.members.map((m) => [m.name, m.role])).toEqual([['Ada', 'owner'], ['Hal', 'editor']]);
+    expect(after.invites).toEqual([]);
+  });
+
   it(`limits each owner to ${SHARES_PER_HOUR} new shares an hour, refusing known and unknown emails alike`, async () => {
     const owner = await signedUpUser(env, 'sharing-busy', 'Busy');
     const docId = await insertDoc(d1.db, owner);
