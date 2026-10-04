@@ -10,6 +10,7 @@ export const REGISTER_FIELDS: Readonly<Record<string, string>> = {
 type RegisterNode = LexicalNode & { __regId: string; [key: string]: unknown };
 const bindings = new WeakMap<LexicalEditor, Y.Doc>();
 const nodeDocs = new WeakMap<LexicalNode, Y.Doc>();
+const serialized = new WeakSet<Y.Doc>();
 let bindingCount = 0;
 
 export const registerDoc = (editor: LexicalEditor): Y.Doc | undefined => bindings.get(editor);
@@ -58,12 +59,19 @@ export function writeRegister(node: LexicalNode, next: string): boolean {
   return text instanceof Y.Text;
 }
 
-/** Imports have repeatable identities; identical blocks still get independent registers. */
+/**
+ * Serialized writers (the DocDO mirror, unbound converters) import repeatable identities; identical blocks still get
+ * independent registers. A live editor's import (whole-note paste) can race a peer's, so it mints unique ids.
+ */
 export function $assignRegisterIds(): void {
-  const used = new Set(currentDoc()?.getMap('registers').keys());
+  const doc = currentDoc();
+  const unique = doc !== undefined && !serialized.has(doc);
+  const used = new Set(doc?.getMap('registers').keys());
   const walk = (node: LexicalNode) => {
     const field = REGISTER_FIELDS[node.getType()];
-    if (field) {
+    if (field && unique) {
+      (node.getWritable() as RegisterNode).__regId = crypto.randomUUID();
+    } else if (field) {
       const target = node as RegisterNode;
       const seed = `${node.getType()}:${String(target[field])}`;
       let hash = 2166136261;
@@ -93,9 +101,10 @@ export function $refreshRegisters(editor: LexicalEditor, doc: Y.Doc): void {
   }
 }
 
-/** Installed before V1 hydration on both the client and the DocDO mirror. */
-export function bindRegisters(editor: LexicalEditor, doc: Y.Doc): () => void {
+/** Installed before V1 hydration on both the client and the DocDO mirror (`serializedImports`, one writer). */
+export function bindRegisters(editor: LexicalEditor, doc: Y.Doc, { serializedImports = false } = {}): () => void {
   bindings.set(editor, doc);
+  if (serializedImports) serialized.add(doc);
   bindingCount++;
   const registers = doc.getMap<Y.Text>('registers');
   const stops: (() => void)[] = [];

@@ -79,7 +79,8 @@ A task counts only after an independent checker passes it on green CI. Each mile
 Parked from the M0 checker and critic passes, each with the task that owns it.
 
 - T1.9 checker P2: `$copyNode` must mint a new register identity for duplicated code, HTML and formula nodes before T3.3 uses that path; current clipboard copies serialize without the identity → T3.3 register extension.
-- T1.9 checker P2: namespace concurrent identical imports independently and rebind open field observers when a register map entry is replaced; preserve deterministic converter imports → register/import follow-up.
+- T1.9 checker P2: rebind open field observers when a register map entry is replaced (live imports now mint unique ids; server imports are serialized) → register/import follow-up.
+- T1.9 checker P2: register writes diff by value without a caret hint, so typing inside a run of identical characters can land at the wrong position (seen after a peer's undo); FormulaPlugin's remote repaint diffs strings instead of using the event delta → register caret follow-up.
 - T1.9 checker P2: replace the full node-map refresh after every editor commit with targeted invalidation → register performance follow-up.
 
 - T1.6 checker: prune deleted layout identities, avoid unchanged localStorage writes and restrict ordinal migration to stores without identity metadata → local-layout follow-up. These need lifecycle and persisted-state regressions beyond this P1 repair.
@@ -206,3 +207,8 @@ Local browser verification remains assigned to the independent checker under the
 - Refresh must wait while Lexical has a pending update, retry after its commit, and commit its own excluded cache writes discretely. This prevents collaboration tags from swallowing either an earlier or a later authored update. Regression assertions cover peer state, persisted state, undo and background-writer eligibility; final verification uses the full CI lane in both engines.
 - Reference comparison: glyphdown stores the body in one `Y.Text` (S-gd §0), so has no Lexical register cache. Moss at the pin writes code and formula fields directly (`CodeBlockNode.tsx:535`, `FormulaNode.tsx:252–260`). Our register cache introduced the extra tagged update; the fix isolates it without changing stored fields or node identities.
 - Deviations: the existing j01 formula-to-color leg is reused as the P1 browser regression. No separate task brief exists beyond BUILDPLAN and `.codex-brief.md`. The optional local browser pass remains with the independent checker because Browser Automation is unavailable in this Codex environment, as the brief states. No local tests, typechecks or lint ran, and no stack or browser was started. The three P2 findings remain recorded follow-ups under the owner's P0/P1-only review rule; this repair changes only commit isolation. Exact final-head evidence is in `.codex-result.json`.
+
+### T1.9 — unique register ids for live imports
+
+- The checker reproduced two editors pasting the same markdown into one empty note: both minted the deterministic `import:` id, Y.Map kept one `Y.Text`, and the two blocks stayed linked. [Checks 37176278081](https://github.com/brsbl/moss-multi/actions/runs/37176278081) proved it red for all three registers.
+- `$assignRegisterIds` now mints `crypto.randomUUID()` in a live editor. Only the DocDO mirror (`bindRegisters(..., { serializedImports: true })`, one serialized writer) and unbound converters keep repeatable import ids (A§10.10).

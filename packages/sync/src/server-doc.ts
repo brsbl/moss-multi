@@ -45,7 +45,7 @@ function mirrorOf(live: Y.Doc): Mirror {
   const stopUpdates = editor.registerUpdateListener(({ prevEditorState, editorState, dirtyElements, dirtyLeaves, normalizedNodes, tags }) => {
     syncLexicalUpdateToYjs(binding, provider, prevEditorState, editorState, dirtyElements, dirtyLeaves, normalizedNodes, tags);
   });
-  const stopRegisters = bindRegisters(editor, doc);
+  const stopRegisters = bindRegisters(editor, doc, { serializedImports: true });
   const root = binding.root.getSharedType();
   const observer: Parameters<Y.XmlText['observeDeep']>[0] = (events, transaction) => {
     if (transaction.origin !== binding) syncYjsChangesToLexical(binding, provider, events as never, false, noop);
