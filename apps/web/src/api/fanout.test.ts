@@ -45,7 +45,8 @@ it('workspace upgrades derive identity from auth, strip forged headers, and refu
   expect(forwarded[0].request.headers.get('x-moss-principal')).toBe(reader.id);
   expect(forwarded[0].request.headers.get('x-moss-session')).not.toBe('forged');
   expect(forwarded[0].request.headers.has('x-partykit-room')).toBe(false);
-  for (const headers of [{ origin: 'https://evil.example', cookie: reader.cookie }, { origin: BASE }, { cookie: reader.cookie }]) {
+  const refusedHeaders: Record<string, string>[] = [{ origin: 'https://evil.example', cookie: reader.cookie }, { origin: BASE }, { cookie: reader.cookie }];
+  for (const headers of refusedHeaders) {
     expect(await (await workspaceSocket(upgrade(headers), env, refuse)).text()).toBe('4401');
   }
   expect(forwarded).toHaveLength(1);

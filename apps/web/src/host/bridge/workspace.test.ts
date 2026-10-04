@@ -33,6 +33,7 @@ it('workspace pushes create, rename, trash and updated_at as targeted metadata, 
     await vi.advanceTimersByTimeAsync(100);
     expect(changed).toHaveBeenLastCalledWith(['bound'], []);
     expect(await bridge.notes.getMetadataByIds(['bound'])).toEqual([expect.objectContaining({ title: 'Renamed', updatedAt: 9 })]);
+    expect((await bridge.notes.getAll()).map((row) => row.id)).toEqual(['bound', 'new']);
     rows = rows.filter((row) => row.id !== 'new');
     receive({ type: 'meta', docIds: ['new'], folderIds: [] });
     await vi.advanceTimersByTimeAsync(100);
