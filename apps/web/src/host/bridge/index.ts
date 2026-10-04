@@ -215,7 +215,12 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
         if (!response.ok) throw new Error(`GET /api/workspace: ${response.status}`);
         const data = await response.json() as WorkspaceListing;
         if (generation !== channelGeneration) break;
-        if (version !== loadVersion) { await listing?.catch(() => undefined); refreshAll = true; continue; }
+        if (version !== loadVersion) {
+          await listing?.catch(() => undefined);
+          if (generation !== channelGeneration) break;
+          refreshAll = true;
+          continue;
+        }
         const changedVaults = JSON.stringify([workspaceSnapshot.vault, workspaceSnapshot.vaults]) !== JSON.stringify([data.vault, data.vaults]);
         const removed: Set<string> = new Set(full ? workspaceSnapshot.docs.map((doc) => doc.id) : ids);
         const docs: ApiDoc[] = [...(full ? [] : workspaceSnapshot.docs.filter((doc) => !removed.has(doc.id))), ...data.docs]
@@ -237,11 +242,23 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
       if (generation !== channelGeneration && (refreshAll || pendingIds.size)) void refreshWorkspace();
     }
   };
+  const requestWorkspaceRefresh = () => {
+    const generation = channelGeneration;
+    void (listing ?? notes()).then(() => {
+      if (generation === channelGeneration) return refreshWorkspace();
+    }).catch(() => {
+      if (generation !== channelGeneration || refreshRetry) return;
+      refreshRetry = setTimeout(() => {
+        refreshRetry = null;
+        requestWorkspaceRefresh();
+      }, 1000);
+    });
+  };
   const receiveWorkspace = (event: WorkspaceEvent) => {
     if (event.type !== 'meta' && event.type !== 'vaults') return;
     if (event.type === 'vaults' || event.folderIds.length) refreshAll = true;
     if (event.type === 'meta') for (const id of event.docIds) pendingIds.add(id);
-    void (listing ?? notes()).then(refreshWorkspace).catch(() => undefined);
+    requestWorkspaceRefresh();
   };
   const pins = () => readJson<Record<string, number>>(storage, PINS_KEY) ?? {};
   const withLocal = (listed: NoteMetadata): NoteMetadata => {

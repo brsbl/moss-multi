@@ -12,12 +12,13 @@ export interface WorkspaceChannelDeps {
 /** Reconnect catches up through REST; no document watch sockets and no metadata poll. */
 export function subscribeWorkspace(deps: WorkspaceChannelDeps, receive: (event: WorkspaceEvent) => void): () => void {
   let disposed = false;
+  let terminal = false;
   let socket: WebSocket | null = null;
   let retry: ReturnType<typeof setTimeout> | null = null;
   let heartbeat: ReturnType<typeof setInterval> | null = null;
   let attempts = 0;
   let lastPong = 0;
-  const allowed = () => !disposed && deps.auth.get().status === 'signed-in';
+  const allowed = () => !disposed && !terminal && deps.auth.get().status === 'signed-in';
   const stop = () => {
     if (retry) clearTimeout(retry);
     if (heartbeat) clearInterval(heartbeat);
@@ -62,7 +63,7 @@ export function subscribeWorkspace(deps: WorkspaceChannelDeps, receive: (event: 
     };
     current.onclose = (event) => {
       if (socket !== current) return;
-      if (event.code === 4401 || event.code === 4402) { stop(); return; }
+      if (event.code === 4401 || event.code === 4402) { terminal = true; stop(); deps.onPause?.(); return; }
       reconnect();
     };
     current.onerror = () => { if (socket === current) reconnect(); };

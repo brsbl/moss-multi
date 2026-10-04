@@ -87,6 +87,11 @@ const FILENAME_ATTEMPTS = 5;
 
 /** The projections as D1 writes. */
 export function d1Projections(db: D1Database, publish: (docId: string) => Promise<void> = async () => undefined): ProjectionTarget {
+  const notify = async (docId: string) => {
+    // A notification failure must not turn a committed write into a failed mutation.
+    try { await publish(docId); }
+    catch (error) { console.error(`workspace notification for ${docId} failed`, error); }
+  };
   return {
     async title(docId, title) {
       for (let attempt = 1; ; attempt += 1) {
@@ -103,7 +108,7 @@ export function d1Projections(db: D1Database, publish: (docId: string) => Promis
         const filename = keep ? self.filename : filenameFor(title, occupied);
         try {
           await db.prepare('UPDATE docs SET title = ?, filename = ? WHERE id = ?').bind(title, filename, docId).run();
-          await publish(docId);
+          await notify(docId);
           return;
         } catch (error) {
           const unique = /UNIQUE/i.test(`${error} ${(error as { cause?: unknown }).cause ?? ''}`);
@@ -113,7 +118,7 @@ export function d1Projections(db: D1Database, publish: (docId: string) => Promis
     },
     async touch(docId, at) {
       await db.prepare('UPDATE docs SET updated_at = MAX(updated_at, ?) WHERE id = ?').bind(at, docId).run();
-      await publish(docId);
+      await notify(docId);
     },
   };
 }

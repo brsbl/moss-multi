@@ -37,7 +37,10 @@ export async function handleApi(request: Request, env: ApiEnv): Promise<Response
     const response = pathname.startsWith('/api/folders/') ? await handleFolders(request, env) : await handleDocs(request, env);
     if (request.method === 'POST' && pathname.endsWith('/members') && response.ok && env.PrincipalDO) {
       const body = await response.clone().json() as { member?: { principalId?: string } };
-      if (body.member?.principalId) await publishTo({ DB: env.DB, PrincipalDO: env.PrincipalDO }, body.member.principalId, { type: 'vaults' });
+      if (body.member?.principalId) {
+        try { await publishTo({ DB: env.DB, PrincipalDO: env.PrincipalDO }, body.member.principalId, { type: 'vaults' }); }
+        catch (error) { console.error('workspace share notification failed', error); }
+      }
     }
     return response;
   }
