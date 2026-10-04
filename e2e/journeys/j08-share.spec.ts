@@ -172,6 +172,32 @@ test('j08 vault: Ada shares her vault from the switcher and Ben switches to it @
   await actors.checkpoint('vault-shared');
 });
 
+test('j08 vault: a granted co-owner of Ada\'s vault can share it, but gets no create, rename or trash @p:ppl-2', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  const cyPrincipal = await actors.principal('cy');
+  const cy = await openShell(actors, 'cy');
+
+  await ada.page.getByRole('button', { name: 'Vault: Home', exact: true }).click();
+  await ada.page.getByRole('menuitem', { name: 'Share vault…', exact: true }).click();
+  const dialog = ada.page.getByRole('dialog', { name: 'Share vault' });
+  await ui.shareInDialog(dialog, cyPrincipal.email, 'Owner');
+  await expect(ui.inviteRow(dialog, cyPrincipal.email), 'Cy is a co-owner of the vault').toContainText('Owner');
+  await ada.page.keyboard.press('Escape');
+
+  await cy.page.getByRole('button', { name: 'Vault: Home', exact: true }).click();
+  const shared = cy.page.getByRole('menuitem', { name: 'Home owner', exact: true });
+  await expect(shared, "Ada's vault reaches Cy's switcher as owner").toBeVisible({ timeout: LIVE_TIMEOUT });
+  await shared.click();
+  await expect(cy.page.getByRole('button', { name: 'Vault: Home', exact: true })).toBeEnabled({ timeout: LIVE_TIMEOUT });
+  await cy.page.getByRole('button', { name: 'Vault: Home', exact: true }).click();
+  const menu = cy.page.getByRole('menu');
+  await expect(menu.getByRole('menuitem', { name: 'Home owner', exact: true }), 'the switcher is open').toBeVisible();
+  await expect(menu.getByRole('menuitem', { name: 'Share vault…', exact: true }), 'a co-owner may share the vault').toBeVisible();
+  await expect(menu.getByRole('menuitem', { name: 'New vault', exact: true }), 'New vault belongs to the owned section').toHaveCount(0);
+  await cy.page.keyboard.press('Escape');
+  await expect(cy.page.getByRole('button', { name: 'Vault actions', exact: true }), "only the vault's owner renames or trashes it").toHaveCount(0);
+});
+
 test('j08 link: a viewer link opened signed out reads at viewer and offers sign-in, which returns to the same note @p:ppl-2 @evidence', async ({ actors, browserName }) => {
   const ada = await openShell(actors, 'ada');
   const docId = await noteWithText(ada);
