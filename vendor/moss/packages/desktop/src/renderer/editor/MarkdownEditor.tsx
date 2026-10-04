@@ -3917,7 +3917,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
         // Strip leading H1 from body — it lives in the dedicated title field
         let bodyForEditor = strippedContent;
         const h1Match = bodyForEditor.match(/^#(?!#)\s+(.*?)(?:\s*#*)?\s*(?:\n|$)/);
-        if (h1Match) {
+        if (h1Match && false /* moss-multi seam: body-h1 (T2.3): the title is its own field, so a leading H1 is body */) {
           bodyForEditor = bodyForEditor.slice(h1Match[0].length).replace(/^\n+/, '');
         }
 

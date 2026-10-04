@@ -1,0 +1,56 @@
+diff --git a/packages/desktop/src/renderer/editor/plugins/code-block/CodeBlockToolbar.tsx b/packages/desktop/src/renderer/editor/plugins/code-block/CodeBlockToolbar.tsx
+--- a/packages/desktop/src/renderer/editor/plugins/code-block/CodeBlockToolbar.tsx
++++ b/packages/desktop/src/renderer/editor/plugins/code-block/CodeBlockToolbar.tsx
+@@ -27,6 +27,8 @@ export interface CodeBlockToolbarProps {
+   onThemeChange: (theme: string) => void;
+   getCodeContent: () => string;
+   onDropdownOpenChange?: (open: boolean) => void;
++  /** moss-multi seam: read-only-decorators (T2.3): a read-only editor shows the language and theme, never changes them */
++  readOnly?: boolean;
+ }
+ 
+ export function CodeBlockToolbar({
+@@ -35,7 +37,8 @@ export function CodeBlockToolbar({
+   theme,
+   onThemeChange,
+   getCodeContent,
+-  onDropdownOpenChange
++  onDropdownOpenChange,
++  readOnly = false
+ }: CodeBlockToolbarProps): JSX.Element {
+   const [copySuccess, setCopySuccess] = useState(false);
+   const openCountRef = useRef(0);
+@@ -71,6 +74,7 @@ export function CodeBlockToolbar({
+                   type="button"
+                   className="moss-code-toolbar-btn moss-code-toolbar-language"
+                   aria-label="Select language"
++                  disabled={readOnly}
+                 >
+                   <span className="truncate">{currentLabel}</span>
+                   <ChevronDown size={12} aria-hidden />
+@@ -83,7 +87,7 @@ export function CodeBlockToolbar({
+             {CORE_LANGUAGES.map((lang) => (
+               <DropdownMenuItem
+                 key={lang.id}
+-                onSelect={() => onLanguageChange(lang.id)}
++                onSelect={() => { if (!readOnly) onLanguageChange(lang.id); }}
+                 className={language === lang.id ? 'bg-surface-panel' : ''}
+               >
+                 <span className="flex-1">{lang.label}</span>
+@@ -101,6 +105,7 @@ export function CodeBlockToolbar({
+                   type="button"
+                   className="moss-code-toolbar-btn moss-code-toolbar-language"
+                   aria-label="Select theme"
++                  disabled={readOnly}
+                 >
+                   <span className="truncate">{currentThemeLabel}</span>
+                   <ChevronDown size={12} aria-hidden />
+@@ -113,7 +118,7 @@ export function CodeBlockToolbar({
+             {CODE_THEMES.map((t) => (
+               <DropdownMenuItem
+                 key={t.id}
+-                onSelect={() => onThemeChange(t.id)}
++                onSelect={() => { if (!readOnly) onThemeChange(t.id); }}
+                 className={theme === t.id ? 'bg-surface-panel' : ''}
+               >
+                 <span className="flex-1">{t.label}</span>

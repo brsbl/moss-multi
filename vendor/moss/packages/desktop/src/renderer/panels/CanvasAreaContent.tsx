@@ -1543,7 +1543,9 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
       return true;
     }
 
-    const layers = disassembleNote(rawContent);
+    // moss-multi seam: body-h1 (T2.3): the title is its own field, so a leading H1 is body, never the title
+    const disassembled = disassembleNote(rawContent);
+    const layers = { ...disassembled, h1Title: null, body: parseCommentFooter(disassembled.bodyAfterFrontmatter).strippedContent };
     const diskCommentMetadata = result.commentMetadata ?? layers.comments;
     lastKnownDiskCommentMetadataRef.current[noteId] = diskCommentMetadata;
     lastKnownDiskCommentSignatureRef.current[noteId] = buildCommentMetadataSignature(diskCommentMetadata);

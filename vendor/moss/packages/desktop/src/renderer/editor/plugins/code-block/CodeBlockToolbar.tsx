@@ -28,6 +28,8 @@ export interface CodeBlockToolbarProps {
   onThemeChange: (theme: string) => void;
   getCodeContent: () => string;
   onDropdownOpenChange?: (open: boolean) => void;
+  /** moss-multi seam: read-only-decorators (T2.3): a read-only editor shows the language and theme, never changes them */
+  readOnly?: boolean;
 }
 
 export function CodeBlockToolbar({
@@ -36,7 +38,8 @@ export function CodeBlockToolbar({
   theme,
   onThemeChange,
   getCodeContent,
-  onDropdownOpenChange
+  onDropdownOpenChange,
+  readOnly = false
 }: CodeBlockToolbarProps): JSX.Element {
   const [copySuccess, setCopySuccess] = useState(false);
   const openCountRef = useRef(0);
@@ -72,6 +75,7 @@ export function CodeBlockToolbar({
                   type="button"
                   className="moss-code-toolbar-btn moss-code-toolbar-language"
                   aria-label="Select language"
+                  disabled={readOnly}
                 >
                   <span className="truncate">{currentLabel}</span>
                   <ChevronDown size={12} aria-hidden />
@@ -84,7 +88,7 @@ export function CodeBlockToolbar({
             {CORE_LANGUAGES.map((lang) => (
               <DropdownMenuItem
                 key={lang.id}
-                onSelect={() => onLanguageChange(lang.id)}
+                onSelect={() => { if (!readOnly) onLanguageChange(lang.id); }}
                 className={language === lang.id ? 'bg-surface-panel' : ''}
               >
                 <span className="flex-1">{lang.label}</span>
@@ -102,6 +106,7 @@ export function CodeBlockToolbar({
                   type="button"
                   className="moss-code-toolbar-btn moss-code-toolbar-language"
                   aria-label="Select theme"
+                  disabled={readOnly}
                 >
                   <span className="truncate">{currentThemeLabel}</span>
                   <ChevronDown size={12} aria-hidden />
@@ -114,7 +119,7 @@ export function CodeBlockToolbar({
             {CODE_THEMES.map((t) => (
               <DropdownMenuItem
                 key={t.id}
-                onSelect={() => onThemeChange(t.id)}
+                onSelect={() => { if (!readOnly) onThemeChange(t.id); }}
                 className={theme === t.id ? 'bg-surface-panel' : ''}
               >
                 <span className="flex-1">{t.label}</span>
