@@ -181,3 +181,35 @@ describe('a peer clearing the value of the property being edited (Properties hid
     } finally { close(); }
   });
 });
+
+describe('a peer changing the value of the property being edited (A§10.4: except the key being edited)', () => {
+  it('a peer recreating an edited list property as text keeps the list draft, and a commit writes it', () => {
+    const { ada, ben, store, atom, commit, close } = peers('draft-retype', 'owner: ada\ntags: [a]\n');
+    try {
+      setPropertyDraft('draft-retype', { key: 'tags' });
+      writeField(ada, 'frontmatter', 'owner: ada\n', 'seed');
+      writeField(ada, 'frontmatter', 'owner: ada\ntags: x\n', 'seed');
+      expect(store.get(atom), 'the open list field keeps its value and type').toEqual({ owner: 'ada', tags: ['a'] });
+      writeField(ada, 'frontmatter', 'owner: cy\ntags: x\n', 'seed');
+      expect(store.get(atom), 'other keys follow the peer').toEqual({ owner: 'cy', tags: ['a'] });
+      commit({ ...store.get(atom), tags: ['a', 'b'] });
+      setPropertyDraft('draft-retype', { key: null });
+      expect(parseFrontmatter(readField(ben, 'frontmatter'))).toEqual({ owner: 'cy', tags: ['a', 'b'] });
+      expect(store.get(atom)).toEqual({ owner: 'cy', tags: ['a', 'b'] });
+    } finally { close(); }
+  });
+
+  it("committing another field or cancelling accepts the peer's new value for the edited key", () => {
+    const { ada, ben, store, atom, commit, close } = peers('draft-peer-value', 'owner: ada\nstatus: draft\n');
+    try {
+      setPropertyDraft('draft-peer-value', { key: 'status' });
+      writeField(ada, 'frontmatter', 'owner: ada\nstatus: review\n', 'seed');
+      expect(store.get(atom), 'the open field keeps the value it opened with').toEqual({ owner: 'ada', status: 'draft' });
+      commit({ ...store.get(atom), owner: 'ben' });
+      expect(parseFrontmatter(readField(ben, 'frontmatter'))).toEqual({ owner: 'ben', status: 'review' });
+      expect(store.get(atom), 'still held after another field commits').toEqual({ owner: 'ben', status: 'draft' });
+      setPropertyDraft('draft-peer-value', { key: null });
+      expect(store.get(atom)).toEqual({ owner: 'ben', status: 'review' });
+    } finally { close(); }
+  });
+});

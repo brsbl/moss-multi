@@ -8,7 +8,7 @@
 // Grants to the second and third principals are declared setup through the members API (BUILDPLAN conventions).
 import { randomBytes } from 'node:crypto';
 import { readField } from '../../packages/core/src/doc-fields.ts';
-import { parseFrontmatter } from '../../packages/core/src/frontmatter.ts';
+import { parseFrontmatter, writeFrontmatterKey } from '../../packages/core/src/frontmatter.ts';
 import { openDocClient } from '../lib/doc-client.ts';
 import type { Locator, Route } from '@playwright/test';
 import type { Actor, Actors } from '../lib/actors.ts';
@@ -858,4 +858,62 @@ test('j02-title: @tierA an open Properties draft survives a peer deleting its pr
     await expect(header.getByRole('textbox', { name: 'reviewer', exact: true })).toHaveValue(reviewer);
     await expect(header.locator('label')).toHaveText(['Reviewer']);
   }
+});
+
+test('j02-title: @tierA an open list-property draft survives a peer deleting it and adding it back as text @p:tech-2 @p:col-1', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  const ben = await openShell(actors, 'ben');
+  await actors.requireDistinct(2);
+  const docId = await ui.createNote(ada);
+  await (await addPropertyUpToValue(ada, 'owner', 'ada')).press('Enter');
+  await waitAcked(ada, docId);
+  const origin = new URL(ada.page.url()).origin;
+  const cookie = (await ada.context.cookies()).map(({ name, value }) => `${name}=${value}`).join('; ');
+  // Properties can only create text values, so a list property arrives the way an import would bring it.
+  const seeder = await openDocClient(origin, docId, cookie);
+  try {
+    await seeder.synced;
+    writeFrontmatterKey(seeder.doc, 'tags', ['alpha'], 'seed');
+    await seeder.acked();
+  } finally { seeder.close(); }
+  await grantDoc(ada, docId, principalOf(ben));
+  await openDoc(ben, docId);
+  const benHeader = await openProperties(ben);
+  const tagsCell = benHeader.locator('label', { hasText: /^Tags$/ }).locator('xpath=following-sibling::div[1]');
+  await expect(tagsCell).toContainText('alpha');
+  const box = await tagsCell.boundingBox();
+  if (!box) throw new Error("Ben's tags cell has no box");
+  await tagsCell.click({ position: { x: box.width - 4, y: box.height / 2 } });
+  const pills = benHeader.getByRole('textbox', { name: 'Edit tags', exact: true });
+  await pills.fill('beta');
+  await pills.press('Enter');
+  await pills.fill('gamma');
+  await expect(benHeader.getByRole('button', { name: 'Remove beta', exact: true })).toBeVisible();
+
+  // Ada deletes tags and adds it back as text while Ben's list draft is open.
+  await deleteProperty(ada, 'tags');
+  await (await addPropertyUpToValue(ada, 'tags', 'x')).press('Enter');
+  await expect(PROPERTIES(ada).getByRole('textbox', { name: 'tags', exact: true })).toHaveValue('x');
+  await PROPERTIES(ada).getByRole('textbox', { name: 'owner', exact: true }).click();
+  await PROPERTIES(ada).getByRole('textbox', { name: 'Edit owner', exact: true }).fill('ada-2');
+  await PROPERTIES(ada).getByRole('textbox', { name: 'Edit owner', exact: true }).press('Enter');
+  // Ada's later edit reaching Ben means her delete and re-add reached him first.
+  await expect(benHeader.getByRole('textbox', { name: 'owner', exact: true }), 'Ben is synced past the re-add').toHaveValue('ada-2', { timeout: RENAME_MS });
+  await expect(pills, "Ben's list draft is still open with his query").toHaveValue('gamma');
+  await expect(pills).toBeFocused();
+  for (const pill of ['alpha', 'beta']) await expect(benHeader.getByRole('button', { name: `Remove ${pill}`, exact: true }), `Ben's ${pill} pill`).toBeVisible();
+  await pills.press('Enter');
+  await pills.press('Enter');
+  for (const actor of [ada, ben]) {
+    const header = PROPERTIES(actor).locator('section[aria-label="Frontmatter properties"]');
+    await expect(header.getByRole('textbox', { name: 'tags', exact: true }), `${actor.label}: tags is a list again`).toHaveCount(0, { timeout: RENAME_MS });
+    for (const pill of ['alpha', 'beta', 'gamma']) await expect(header.getByText(pill, { exact: true }), `${actor.label} sees ${pill}`).toBeVisible();
+    await waitAcked(actor, docId);
+  }
+  // A cold reader sees Ben's list.
+  const reader = await openDocClient(origin, docId, cookie);
+  try {
+    await reader.synced;
+    expect(parseFrontmatter(readField(reader.doc, 'frontmatter'))).toEqual({ owner: 'ada-2', tags: ['alpha', 'beta', 'gamma'] });
+  } finally { reader.close(); }
 });
