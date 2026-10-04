@@ -150,8 +150,8 @@ export function bindRegisters(editor: LexicalEditor, doc: Y.Doc, { serializedImp
       if (!registers.has(id)) {
         doc.transact(() => registers.set(id, new Y.Text(String(node[field] ?? ''))), REGISTER_INIT);
       }
-      const value = payload(registers.get(id)!);
-      if (node[field] !== value) node.getWritable()[field] = value;
+      const shared = payload(registers.get(id)!);
+      if (node[field] !== shared) node.getWritable()[field] = shared;
     }));
   }
   // Refreshes stay proportional to what changed: the nodes an update touched and the registers whose text moved.
