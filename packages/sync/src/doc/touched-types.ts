@@ -164,18 +164,37 @@ export function touchedTypes(doc: Y.Doc, update: Uint8Array): TouchedTypes {
     else if (landing !== null) roots.add(landing);
   };
 
-  // Each client's new structs must start at the doc's state and run without gaps; Yjs parks anything past a gap until
-  // the gap fills, which for the server's client id is a later server write.
-  const next = new Map<number, number>();
+  // Yjs parks a struct while its origin, right origin or parent id names a clock its doc lacks (Item.getMissing), or
+  // while its own client's clocks have a gap, and integrates it whenever that clock arrives: for the server's client id,
+  // with the server's own next write. Replay Yjs's order: a client's next struct integrates once every id it names is
+  // held or integrated earlier. Whatever never integrates (a missing id, a gap, a reference loop) would park.
   for (const struct of structs) {
-    const { client, clock } = struct.id;
-    const state = Y.getState(store, client);
-    const end = clock + struct.length;
-    if (end <= state) continue;
-    const expected = Math.max(next.get(client) ?? state, state);
-    if (struct instanceof Y.Skip || clock > expected) unresolved = true;
-    next.set(client, Math.max(expected, end));
+    if (struct instanceof Y.Skip && struct.id.clock + struct.length > Y.getState(store, struct.id.client)) unresolved = true;
   }
+  const integrated = new Map<number, number>();
+  const available = (client: number) => integrated.get(client) ?? Y.getState(store, client);
+  const cursor = new Map<number, number>();
+  const has = (id: Y.ID | null) => id === null || id.clock < available(id.client);
+  for (let progress = true; progress;) {
+    progress = false;
+    for (const [client, list] of incoming) {
+      let at = cursor.get(client) ?? 0;
+      for (; at < list.length; at += 1) {
+        const struct = list[at];
+        const state = available(client);
+        if (struct.id.clock > state) break;
+        if (struct.id.clock + struct.length <= state) continue;
+        if (struct instanceof Y.Item) {
+          const parent = struct.parent as unknown;
+          if (!has(struct.origin) || !has(struct.rightOrigin) || (parent instanceof Y.ID && !has(parent))) break;
+        }
+        integrated.set(client, struct.id.clock + struct.length);
+        progress = true;
+      }
+      cursor.set(client, at);
+    }
+  }
+  for (const [client, list] of incoming) if ((cursor.get(client) ?? 0) < list.length) unresolved = true;
 
   for (const struct of structs) {
     if (!(struct instanceof Y.Item)) continue;

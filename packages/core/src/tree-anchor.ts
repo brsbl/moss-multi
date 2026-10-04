@@ -250,3 +250,23 @@ export function validateAnchor(
   if (found) return { anchor: mintAnchor(doc, found.start, found.end, projection), range: found, reanchored: true, changed: true };
   return { anchor: { ...anchor, status: 'orphaned' }, range: null, reanchored: false, changed: anchor.status !== 'orphaned' };
 }
+
+/**
+ * Validates every anchor in `Y.Map('comments')` against one projection and rewrites, in one transaction under
+ * `origin`, the records whose anchor changed. The DocDO calls it in the same synchronous step that applies a `root`
+ * frame, so the refresh is persisted beside that frame and a restart never loses it (comments.md §3.4). Returns the
+ * ids it rewrote.
+ */
+export function refreshAnchors(doc: Y.Doc, origin: unknown): string[] {
+  const comments = doc.getMap<{ anchor?: TreeAnchor }>('comments');
+  const rewritten: [string, { anchor?: TreeAnchor }][] = [];
+  let projection: Projection | null = null;
+  for (const [id, record] of comments) {
+    if (!record?.anchor) continue;
+    projection ??= project(doc);
+    const checked = validateAnchor(doc, record.anchor, projection);
+    if (checked.changed) rewritten.push([id, { ...record, anchor: checked.anchor }]);
+  }
+  if (rewritten.length > 0) doc.transact(() => { for (const [id, record] of rewritten) comments.set(id, record); }, origin);
+  return rewritten.map(([id]) => id);
+}
