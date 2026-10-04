@@ -158,7 +158,7 @@ describe('T4.0 spike: tree anchors over the V1 binding @p:tech-3', () => {
 
   it('a refreshed quote persists with the frame that changed it, so a restart before any save tick keeps the typing', () => scene(async (seed, a) => {
     // The DocDO's log: every update it applies is a row (doc-do.ts #persist); a wake replays the rows, or a compaction.
-    const log: Uint8Array[] = [];
+    const log: Uint8Array[] = [Y.encodeStateAsUpdate(seed)];
     seed.on('update', (update: Uint8Array) => log.push(update));
     const comments = seed.getMap<{ id: string; anchor?: TreeAnchor }>('comments');
     seed.transact(() => comments.set('c1', { id: 'c1', anchor: anchorOn(seed, 'brown fox') }), 'server-comments');
