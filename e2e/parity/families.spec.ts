@@ -137,12 +137,17 @@ async function candidateStyles(browser: Browser, theme: Theme): Promise<Styles> 
   try {
     const principal = await mintPrincipal(stack.baseUrl, `parity-${process.env.RUN_ID ?? 'local'}-${Date.now().toString(36)}`, `families-${theme}`, 1);
     await page.context().addCookies(await signIn(stack.baseUrl, principal));
-    const response = await page.request.post(new URL('/api/docs', stack.baseUrl).href, {
-      data: { title: 'Demo note', markdown: DEMO },
-      headers: { origin: new URL(stack.baseUrl).origin },
-    });
-    if (response.status() !== 201) throw new Error(`POST /api/docs: ${response.status()}`);
-    const { doc } = (await response.json()) as { doc: { id: string } };
+    const create = async (title: string, markdown: string) => {
+      const response = await page.request.post(new URL('/api/docs', stack.baseUrl).href, {
+        data: { title, markdown },
+        headers: { origin: new URL(stack.baseUrl).origin },
+      });
+      if (response.status() !== 201) throw new Error(`POST /api/docs: ${response.status()}`);
+      return ((await response.json()) as { doc: { id: string } }).doc;
+    };
+    // The oracle paints its wiki link resolved; here it resolves only when its target note exists.
+    await create('Demo target', 'The wiki link\'s target.');
+    const doc = await create('Demo note', DEMO);
     await page.goto(new URL(`/d/${encodeURIComponent(doc.id)}`, stack.baseUrl).href);
     await page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
     await page.locator(`[${EDITOR_PANE_ATTR}][${DOC_STATE_ATTR}="live"]`).waitFor({ timeout: 30_000 });
