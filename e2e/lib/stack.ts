@@ -104,16 +104,6 @@ export class Stack {
     if (!response.ok) throw new Error(`reset of ${docId}: ${response.status} ${await response.text()}`);
   }
 
-  /**
-   * Declared setup: a live share link on `docId` at `role`, made by the doc's owner (`POST /__test/docs/:id/link`).
-   * Journeys whose promise is not sharing use it until T2.4's links API lands.
-   */
-  async shareLink(docId: string, role: 'viewer' | 'commenter' | 'editor' = 'viewer'): Promise<string> {
-    const response = await this.hook('POST', `/__test/docs/${encodeURIComponent(docId)}/link?role=${role}`);
-    if (!response.ok) throw new Error(`share link for ${docId}: ${response.status} ${await response.text()}`);
-    return ((await response.json()) as { token: string }).token;
-  }
-
   logTail(lines = 40): string {
     return existsSync(this.state.logPath) ? readFileSync(this.state.logPath, 'utf8').split('\n').slice(-lines).join('\n') : '';
   }

@@ -11,7 +11,6 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Input } from '@moss/shared/components/ui/input';
 import { getBridge, WORKSPACE, type Bridge } from '../bridge/index.ts';
 import { openShare } from './ShareDialog.tsx';
-import { openShare } from './ShareDialog.tsx';
 
 // moss's DropdownMenu is Base UI's Menu root, which takes a controlled `open`; the Content takes `onCloseAutoFocus`.
 const Menu = DropdownMenu as ComponentType<{ children: ReactNode; open?: boolean; onOpenChange?: (open: boolean) => void }>;
