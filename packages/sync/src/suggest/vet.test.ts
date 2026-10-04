@@ -85,9 +85,9 @@ function client(server: Y.Doc) {
   };
 }
 
-function seeded(): Y.Doc {
+function seeded(markdown = SEED): Y.Doc {
   const server = new Y.Doc();
-  importBody(server, SEED);
+  importBody(server, markdown);
   return server;
 }
 
@@ -738,11 +738,11 @@ const deletesOf = (ds: { clients: Map<number, { clock: number; len: number }[]> 
 const covers = (spans: readonly IdSpan[], client: number, clock: number) =>
   spans.some((span) => span.client === client && span.clock <= clock && clock < span.clock + span.len);
 
-/** A map type's live entries as stable JSON (a type-valued entry by its item id). */
-function attrsOf(type: Y.AbstractType<unknown>): string {
+/** A map type's live entries as stable JSON (a type-valued entry by its item id), without the `skip` keys. */
+function attrsOf(type: Y.AbstractType<unknown>, skip: ReadonlySet<string> = new Set()): string {
   const out: [string, unknown][] = [];
   for (const [key, item] of [...type._map].sort((a, b) => (a[0] < b[0] ? -1 : 1))) {
-    if (item.deleted) continue;
+    if (item.deleted || skip.has(key)) continue;
     const values = item.content.getContent();
     const value = values[values.length - 1];
     out.push([key, value instanceof Y.AbstractType ? `type ${item.id.client}:${item.id.clock}` : value]);
@@ -750,22 +750,26 @@ function attrsOf(type: Y.AbstractType<unknown>): string {
   return JSON.stringify(out);
 }
 
+/** Block attributes that only style what is typed next into an empty block, never existing text. */
+const NEXT_TYPING = new Set(['__textFormat', '__textStyle']);
+
 /**
  * The test's oracle for the invariant: the document as it reads without the author's pending items. Every live
- * character that is not the author's, with the text map governing it; every live embed that is not the author's, with
- * its attributes, in document order; and every other root (registers, title, ...) entry by entry. A split's copies
- * count as the text they copy, so characters are compared by character and format, not by id.
+ * character that is not the author's, with the text map governing it and the attributes of every block around it;
+ * every live embed that is not the author's, with its attributes, in document order; and every other root
+ * (registers, title, ...) entry by entry. A split's copies count as the text they copy, so characters are compared by
+ * character and format, not by id.
  */
 function originalProjection(doc: Y.Doc, own: readonly IdSpan[]): string[] {
   const out: string[] = [];
   const mine = (client: number, clock: number) => covers(own, client, clock);
-  const walk = (type: Y.AbstractType<unknown>, depth: number) => {
+  const walk = (type: Y.AbstractType<unknown>, depth: number, blocks: string) => {
     let gov = '-';
     for (let item = type._start; item; item = item.right) {
       if (item.deleted) continue;
       const { content, id } = item;
       if (content instanceof Y.ContentString) {
-        for (let i = 0; i < content.str.length; i++) if (!mine(id.client, id.clock + i)) out.push(`${depth} c ${content.str[i]} ${gov}`);
+        for (let i = 0; i < content.str.length; i++) if (!mine(id.client, id.clock + i)) out.push(`${depth} c ${content.str[i]} ${gov} in ${blocks}`);
       } else if (content instanceof Y.ContentType) {
         const attrs = attrsOf(content.type);
         if (content.type instanceof Y.Map && content.type.get('__type') === 'text') {
@@ -774,7 +778,7 @@ function originalProjection(doc: Y.Doc, own: readonly IdSpan[]): string[] {
         }
         gov = '-';
         if (!mine(id.client, id.clock)) out.push(`${depth} e ${id.client}:${id.clock} ${attrs}`);
-        walk(content.type, depth + 1);
+        walk(content.type, depth + 1, `${blocks}/${attrsOf(content.type, NEXT_TYPING)}`);
       } else if (!(content instanceof Y.ContentDeleted)) {
         gov = '-';
         const values = content.getContent();
@@ -785,7 +789,7 @@ function originalProjection(doc: Y.Doc, own: readonly IdSpan[]): string[] {
     }
   };
   const body = doc.share.get('root');
-  if (body) walk(body as Y.AbstractType<unknown>, 0);
+  if (body) walk(body as Y.AbstractType<unknown>, 0, '');
   for (const [name, type] of [...doc.share].sort((a, b) => (a[0] < b[0] ? -1 : 1))) {
     if (name === 'root') continue;
     for (const [key, item] of [...type._map].sort((a, b) => (a[0] < b[0] ? -1 : 1))) {
@@ -996,6 +1000,145 @@ describe('SP11 per-frame cost and the mirror @p:mean-2', () => {
   });
 });
 
+/** The live top-level decorator a Yjs client created that names a register, with its register key. */
+function ownDecorator(doc: Y.Doc, client: number): { item: Y.Item; regId: string } | null {
+  for (const item of blocksOf(doc, client)) {
+    const regId = ((item.content as Y.ContentType).type as Y.XmlElement).getAttribute('__regId');
+    if (typeof regId === 'string' && regId !== '') return { item, regId };
+  }
+  return null;
+}
+
+/** A fresh block's attribute item in a decoded frame: the key's first write, parented on a fresh block by id. */
+function freshBlockAttr(structs: readonly (Y.Item | Y.GC | Y.Skip)[], key: string): Y.Item {
+  const blocks = new Set(structs.filter((struct): struct is Y.Item => struct instanceof Y.Item && struct.content instanceof Y.ContentType
+    && struct.content.type instanceof Y.XmlText).map((item) => `${item.id.client}:${item.id.clock}`));
+  const attr = structs.find((struct): struct is Y.Item => struct instanceof Y.Item && struct.parentSub === key
+    && struct.parent instanceof Y.ID && blocks.has(`${struct.parent.client}:${struct.parent.clock}`));
+  if (!attr) throw new Error(`no fresh block attribute ${key}`);
+  return attr;
+}
+
+/** The nth live top-level block's attribute. */
+function blockAttr(doc: Y.Doc, nth: number, key: string): unknown {
+  let block = doc.get('root', Y.XmlText)._start;
+  for (let i = 0; block; block = block.right) if (!block.deleted && i++ === nth) break;
+  return ((block!.content as Y.ContentType).type as Y.XmlText).getAttribute(key);
+}
+
+describe('SP11 round-4 findings: carry, registers and block attributes @p:mean-2', () => {
+  it('identical suggested characters from two records side by side each keep their own copy through a split', () => {
+    const server = seeded();
+    const alice = client(server);
+    let bob: ReturnType<typeof client> | null = null;
+    let editor: ReturnType<typeof client> | null = null;
+    try {
+      const a = session(server, alice.doc);
+      a.land(alice.frame(() => select(24).insertText('a')));
+      bob = client(server);
+      const b = session(server, bob.doc);
+      b.land(bob.frame(() => select(25).insertText('a')));
+      expect(visible(server, [...a.own, ...b.own])).toBe('aa');
+      editor = client(server);
+      const enter = editor.frame(() => select(24).insertParagraph());
+      const carriedA = carryIdentity(server, enter, a.own);
+      const carriedB = carryIdentity(server, enter, b.own);
+      Y.applyUpdate(server, enter);
+      expect(blockText(server, 1), 'the split moved both characters').toBe('aa');
+      expect(visible(server, carriedA)).toBe('a');
+      expect(visible(server, carriedB)).toBe('a');
+      expect(visible(server, [...carriedA, ...carriedB]), 'each record holds its own copy').toBe('aa');
+      // Both withdraw: no suggested character survives as unowned text.
+      const copy = applied(server, rawUpdate([], rejectPlan(server, [...carriedA, ...carriedB])));
+      expect(blockText(copy, 0)).toBe('Hello world and the cat.');
+      expect(blockText(copy, 1)).toBe('');
+      copy.destroy();
+    } finally { editor?.dispose(); bob?.dispose(); alice.dispose(); server.destroy(); }
+  });
+
+  it("reject and withdraw keep a peer's text typed into a suggested code block's register", () => {
+    const suggestCodeBlock = () => {
+      const server = seeded();
+      const suggester = client(server);
+      const s = session(server, suggester.doc);
+      s.land(suggester.frame(() => {
+        const original = codeBlocks()[0];
+        const copy = $copyNode(original) as unknown as LexicalNode & { __regId: string };
+        copy.__regId = '';
+        original.insertAfter(copy);
+      }));
+      s.land(suggester.frame(() => { codeBlocks()[1].setCode('mine'); }));
+      return { server, suggester, s };
+    };
+    const shared = suggestCodeBlock();
+    const peer = client(shared.server);
+    try {
+      const typed = peer.frame(() => { codeBlocks()[1].setCode('mine theirs'); });
+      expect(typed.byteLength, 'the peer edit must reach the wire').toBeGreaterThan(2);
+      Y.applyUpdate(shared.server, typed);
+      const decorator = ownDecorator(shared.server, shared.suggester.doc.clientID);
+      expect(decorator, 'the suggested code block').not.toBeNull();
+      const copy = applied(shared.server, rawUpdate([], rejectPlan(shared.server, shared.s.own)));
+      expect(copy.getMap('registers').get(decorator!.regId)?.toString(), "only the peer's words stay").toBe(' theirs');
+      expect(ownDecorator(copy, shared.suggester.doc.clientID)?.regId, 'the block stays, pointing at the register').toBe(decorator!.regId);
+      copy.destroy();
+    } finally { peer.dispose(); shared.suggester.dispose(); shared.server.destroy(); }
+    const solo = suggestCodeBlock();
+    try {
+      const decorator = ownDecorator(solo.server, solo.suggester.doc.clientID)!;
+      const copy = applied(solo.server, rawUpdate([], rejectPlan(solo.server, solo.s.own)));
+      expect(ownDecorator(copy, solo.suggester.doc.clientID), 'a wholly own code block goes').toBeNull();
+      expect(copy.getMap('registers').has(decorator.regId), 'with its register').toBe(false);
+      copy.destroy();
+    } finally { solo.suggester.dispose(); solo.server.destroy(); }
+  });
+
+  it("a forged split cannot restyle the moved text through the new block's attributes", () => {
+    for (const [key, value] of [['__format', 2], ['__type', 'quote'], ['__indent', 2]] as const) {
+      const server = seeded();
+      const suggester = client(server);
+      try {
+        const clients = new Set([suggester.doc.clientID]);
+        const real = suggester.frame(() => select(5).insertParagraph());
+        expect(vetSuggestFrame(server, real, { own: [], clients }), 'the real split passes').toMatchObject({ ok: true });
+        const { structs, ds } = Y.decodeUpdate(real);
+        freshBlockAttr(structs, key).content = new Y.ContentAny([value]);
+        const forged = encodeFrame(structs, deletesOf(ds));
+        const copy = applied(server, forged);
+        expect(blockText(copy, 1), 'the original tail moved').toBe(' world and the cat.');
+        expect(blockAttr(copy, 1, key), `Yjs restyles it: ${key}`).toBe(value);
+        copy.destroy();
+        expect(vetSuggestFrame(server, forged, { own: [], clients }), key).toMatchObject({ ok: false });
+      } finally { suggester.dispose(); server.destroy(); }
+    }
+  });
+
+  it('Enter mid-block in a heading, a quote, a checked list item and a centered paragraph is a split', () => {
+    const blocks = ['# Heading words here', '', '> quoted words here', '', '- [x] done item here'].join('\n');
+    for (const nth of [0, 1, 2]) {
+      const server = seeded(blocks);
+      const suggester = client(server);
+      try {
+        const update = suggester.frame(() => select(7, 7, nth).insertParagraph());
+        const result = vetSuggestFrame(server, update, { own: [], clients: new Set([suggester.doc.clientID]) });
+        if (!result.ok) throw new Error(`block ${nth} refused: ${result.reason} ${summarize(update)}`);
+        expect(result.moved.length, `block ${nth}: the moved tail stays original`).toBeGreaterThan(0);
+      } finally { suggester.dispose(); server.destroy(); }
+    }
+    const server = seeded();
+    const editor = client(server);
+    let suggester: ReturnType<typeof client> | null = null;
+    try {
+      Y.applyUpdate(server, editor.frame(() => { texts()[0].getParentOrThrow<ParagraphNode>().setFormat('center'); }));
+      suggester = client(server);
+      const update = suggester.frame(() => select(5).insertParagraph());
+      const result = vetSuggestFrame(server, update, { own: [], clients: new Set([suggester.doc.clientID]) });
+      if (!result.ok) throw new Error(`centered refused: ${result.reason} ${summarize(update)}`);
+      expect(result.moved.length).toBeGreaterThan(0);
+    } finally { suggester?.dispose(); editor.dispose(); server.destroy(); }
+  });
+});
+
 /** mulberry32: a small seeded PRNG, so a failing fuzz round reproduces. */
 function prng(seed: number): () => number {
   let state = seed;
@@ -1033,6 +1176,7 @@ describe('SP11 struct-level fuzz of real frames @p:mean-2', () => {
       return Y.createID(item.id.client, item.id.clock + Math.floor(random() * item.length));
     };
     const keys = ['__type', '__format', '__checked', '__style', '__indent', 'x'];
+    const values: unknown[] = [0, 1, 2, 'quote', 'heading', 'h1', true, '', 'color: red'];
     let accepted = 0;
     try {
       for (let round = 0; round < 400; round++) {
@@ -1043,7 +1187,7 @@ describe('SP11 struct-level fuzz of real frames @p:mean-2', () => {
         const mutations = random() < 0.15 ? 0 : 1 + Math.floor(random() * 3);
         for (let m = 0; m < mutations && fresh.length > 0; m++) {
           const item = pick(fresh);
-          switch (Math.floor(random() * 5)) {
+          switch (Math.floor(random() * 6)) {
             case 0: item.origin = target(); break;
             case 1: item.rightOrigin = random() < 0.3 ? null : target(); break;
             case 2: {
@@ -1056,6 +1200,12 @@ describe('SP11 struct-level fuzz of real frames @p:mean-2', () => {
             case 3: {
               const id = anyId();
               deletes.push({ client: id.client, clock: id.clock, len: 1 + Math.floor(random() * 3) });
+              break;
+            }
+            case 4: {
+              // Restyle: one of the frame's map writes (a new block's or text map's attribute) gets another value.
+              const writes = fresh.filter((struct) => struct.parentSub !== null);
+              if (writes.length > 0) pick(writes).content = new Y.ContentAny([pick(values)]);
               break;
             }
             default:
