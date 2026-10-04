@@ -267,8 +267,8 @@ test('j08 link: an editor folder link lifts a viewer grant to editor, and lands 
   await row.click();
   await waitOpen(dee, docId, 'live');
   await expect(ui.pane(dee, docId), 'signed in without a grant, the link role').toHaveAttribute(ROLE_ATTR, 'editor');
-  const made = await newNote(dee);
-  await expect(ui.pane(dee, made), 'Dee adds a note to the linked folder').toHaveAttribute(ROLE_ATTR, 'editor');
+  const added = await newNote(dee);
+  await expect(ui.pane(dee, added), 'Dee adds a note to the linked folder').toHaveAttribute(ROLE_ATTR, 'editor');
   await actors.requireDistinct(3);
 });
 
