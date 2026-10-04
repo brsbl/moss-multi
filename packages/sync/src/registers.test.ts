@@ -244,6 +244,7 @@ describe('L4 decorator registers @p:col-1 @p:col-3 @p:tech-1', () => {
 type Fields = Record<string, unknown>;
 type Peer = ReturnType<typeof client>;
 const CHART = '```moss-chart\n{"type":"bar","title":"Seed","data":[{"label":"Mon","value":1}],"options":{"showLegend":true}}\n```';
+const POINTS = '```moss-chart\n{"type":"bar","title":"Points","data":[{"label":"Mon","value":1},{"label":"Tue","value":2},{"label":"Wed","value":3}],"series":[{"name":"One","data":[{"label":"Mon","value":1},{"label":"Tue","value":2},{"label":"Wed","value":3}]},{"name":"Two","data":[{"label":"Mon","value":4}]}]}\n```';
 const SKETCH = '```moss-canvas\n[moss:grid:v2]\n[moss:labels:[{"id":"seed","text":"Seed","col":1,"row":1}]]\n.##.\n```';
 const call = (node: LexicalNode, method: string, ...args: unknown[]) =>
   (node as unknown as Record<string, (...values: unknown[]) => unknown>)[method](...args);
@@ -301,6 +302,94 @@ describe('L4/A8 chart and sketch registers @p:col-1 @p:col-3 @p:note-2', () => {
       exchange(a, b);
       for (const peer of [a, b]) expect(chartOf(peer)).toMatchObject({ type: 'line', title: 'Ben title' });
     } finally { a.dispose(); b.dispose(); seed.destroy(); }
+  });
+
+  it('concurrent edits to different chart data points and series both survive, and undo keeps the peer', () => {
+    const seed = new Y.Doc(); importBody(seed, POINTS);
+    const a = client(seed); const b = client(seed);
+    try {
+      const edit = (peer: Peer, mutate: (config: Fields & { data: { value: number }[]; series: { name: string }[] }) => void) =>
+        peer.editor.update(() => {
+          const base = chartOf(peer); const next = structuredClone(base) as Parameters<typeof mutate>[0];
+          mutate(next);
+          call(find('chart')!, 'setConfig', next, base);
+        }, { discrete: true });
+      edit(a, (config) => { config.data[0].value = 10; config.series[0].name = 'Ada series'; });
+      edit(b, (config) => { config.data[1].value = 20; config.series[1].name = 'Ben series'; });
+      exchange(a, b);
+      for (const peer of [a, b]) {
+        const config = chartOf(peer) as Fields & { data: { value: number }[]; series: { name: string }[] };
+        expect(config.data.map((point) => point.value), 'both data points keep their edit').toEqual([10, 20, 3]);
+        expect(config.series.map((series) => series.name), 'both series keep their edit').toEqual(['Ada series', 'Ben series']);
+      }
+      expect(exportDocMarkdown(a.doc)).toBe(exportMarkdown(a.editor));
+      expect(exportMarkdown(b.editor)).toBe(exportMarkdown(a.editor));
+      a.undo.undo();
+      Y.applyUpdate(b.doc, Y.encodeStateAsUpdate(a.doc)); b.editor.update(noop, { discrete: true });
+      for (const peer of [a, b]) {
+        expect((chartOf(peer) as { data: { value: number }[] }).data.map((point) => point.value), "Ada's undo keeps Ben's point").toEqual([1, 20, 3]);
+      }
+    } finally { a.dispose(); b.dispose(); seed.destroy(); }
+  });
+
+  it('a JSON draft opened before a peer saved keeps the peer\'s data point', () => {
+    const seed = new Y.Doc(); importBody(seed, POINTS);
+    const a = client(seed); const b = client(seed);
+    try {
+      const draft = chartOf(b) as Fields & { data: { value: number }[] };
+      a.editor.update(() => {
+        const base = chartOf(a) as Fields & { data: { value: number }[] };
+        call(find('chart')!, 'setConfig', { ...base, data: base.data.map((point, index) => (index === 0 ? { ...point, value: 10 } : point)) }, base);
+      }, { discrete: true });
+      exchange(a, b);
+      b.editor.update(() => call(find('chart')!, 'setConfig',
+        { ...draft, data: draft.data.map((point, index) => (index === 1 ? { ...point, value: 20 } : point)) }, draft), { discrete: true });
+      exchange(a, b);
+      for (const peer of [a, b]) expect((chartOf(peer) as { data: { value: number }[] }).data.map((point) => point.value)).toEqual([10, 20, 3]);
+    } finally { a.dispose(); b.dispose(); seed.destroy(); }
+  });
+
+  it('concurrent appends both land, and a deleted point never takes a peer\'s edit to another point', () => {
+    const seed = new Y.Doc(); importBody(seed, POINTS);
+    const a = client(seed); const b = client(seed);
+    try {
+      const write = (peer: Peer, next: (data: { label: string; value: number }[]) => { label: string; value: number }[]) =>
+        peer.editor.update(() => {
+          const base = chartOf(peer) as Fields & { data: { label: string; value: number }[] };
+          call(find('chart')!, 'setConfig', { ...base, data: next(base.data) }, base);
+        }, { discrete: true });
+      write(a, (data) => [...data, { label: 'Ada', value: 7 }]);
+      write(b, (data) => [...data, { label: 'Ben', value: 8 }]);
+      exchange(a, b);
+      const labels = (peer: Peer) => (chartOf(peer) as { data: { label: string }[] }).data.map((point) => point.label);
+      expect(labels(a), 'both appended points stay').toEqual(expect.arrayContaining(['Mon', 'Tue', 'Wed', 'Ada', 'Ben']));
+      expect(labels(a)).toHaveLength(5);
+      expect(labels(b), 'both peers order them the same').toEqual(labels(a));
+      write(a, (data) => data.slice(1));
+      write(b, (data) => data.map((point) => (point.label === 'Tue' ? { ...point, value: 22 } : point)));
+      exchange(a, b);
+      for (const peer of [a, b]) {
+        const data = (chartOf(peer) as { data: { label: string; value: number }[] }).data;
+        expect(data.map((point) => point.label), "Ada's delete removes only Mon").toEqual(labels(a));
+        expect(data.find((point) => point.label === 'Tue')?.value, "Ben's edit stays on Tue").toBe(22);
+        expect(data.map((point) => point.label)).not.toContain('Mon');
+      }
+    } finally { a.dispose(); b.dispose(); seed.destroy(); }
+  });
+
+  it('a read-only editor writes nothing to a chart or sketch register', () => {
+    const seed = new Y.Doc(); importBody(seed, `${CHART}\n\n${SKETCH}`);
+    const a = client(seed);
+    try {
+      const before = Y.encodeStateVector(a.doc);
+      a.editor.setEditable(false);
+      a.editor.update(() => {
+        call(find('chart')!, 'setConfig', { ...chartOf(a), title: 'Viewer title' });
+        call(find('sketch')!, 'setGrid', withCells(gridOf(a), [42]));
+      }, { discrete: true });
+      expect(Y.encodeStateVector(a.doc), 'no Yjs update leaves a viewer').toEqual(before);
+      expect(chartOf(a).title).toBe('Seed');
+    } finally { a.dispose(); seed.destroy(); }
   });
 
   it('concurrent sketch strokes and labels union on both peers and the server, and undo keeps the peer', () => {

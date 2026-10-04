@@ -108,6 +108,13 @@ test('j14 demo note: Ada builds every family through paste and slash commands, a
   }
   expect((await renderedBody(ben, id)).decorators, 'the same decorators on both sides').toEqual((await renderedBody(ada, id)).decorators);
   await actors.checkpoint('demo-note');
+  await ben.page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await ben.page.getByRole('radiogroup', { name: 'Theme' }).getByRole('radio', { name: 'Dark', exact: true }).click();
+  await expect(ben.page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  await ben.page.keyboard.press('Escape');
+  await expect(ben.page.getByRole('radiogroup', { name: 'Theme' })).toBeHidden();
+  await expect(ui.body(ben, id).locator('[data-node-view-error]'), 'dark: no block falls back to its error placeholder').toHaveCount(0);
+  await actors.checkpoint('demo-note-dark');
 
   await ben.page.reload();
   await ui.waitLive(ben, id);
@@ -124,10 +131,10 @@ const SETUP = [
 const payloads = (actor: Actor, id: string) => ui.body(actor, id).evaluate((element) => {
   const editor = (element as HTMLElement & { __lexicalEditor: LexicalEditor }).__lexicalEditor;
   return editor.getEditorState().read(() => {
-    const nodes = [...editor.getEditorState()._nodeMap.values()] as unknown as { getType(): string; getConfig(): { type: string; options?: { palette?: string } }; getGrid(): boolean[] }[];
+    const nodes = [...editor.getEditorState()._nodeMap.values()] as unknown as { getType(): string; getConfig(): { type: string; options?: { palette?: string }; data: { value: number }[] }; getGrid(): boolean[] }[];
     const chart = nodes.find(node => node.getType() === 'chart')!.getConfig();
     const grid = nodes.find(node => node.getType() === 'sketch')!.getGrid();
-    return { type: chart.type, palette: chart.options?.palette ?? null, cells: grid.flatMap((on, index) => (on ? [index] : [])) };
+    return { type: chart.type, palette: chart.options?.palette ?? null, values: chart.data.map(point => point.value), cells: grid.flatMap((on, index) => (on ? [index] : [])) };
   });
 });
 
@@ -150,11 +157,30 @@ async function stroke(page: Page, canvas: Locator, row: number, from: number, to
   await page.mouse.up();
 }
 
+const chartBlock = (actor: Actor, id: string) =>
+  ui.body(actor, id).locator('[data-block-decorator-key]').filter({ has: actor.page.locator('[aria-label="Insert paragraph before chart"]') });
+
 async function pick(actor: Actor, id: string, trigger: string, item: string): Promise<void> {
-  const chart = ui.body(actor, id).locator('[data-block-decorator-key]').filter({ has: actor.page.locator('[aria-label="Insert paragraph before chart"]') });
+  const chart = chartBlock(actor, id);
   await chart.hover();
   await chart.getByRole('button', { name: trigger, exact: true }).click();
   await actor.page.getByRole('menuitem', { name: item, exact: true }).click();
+}
+
+/** Opens the chart's JSON editor; the returned save changes one data point's value in that open draft. */
+async function openJson(actor: Actor, id: string): Promise<(point: number, value: number) => Promise<void>> {
+  const chart = chartBlock(actor, id);
+  await chart.hover();
+  await chart.getByRole('button', { name: 'Edit', exact: true }).click();
+  const draft = chart.locator('textarea');
+  await expect(draft).toBeVisible();
+  return async (point, value) => {
+    const config = JSON.parse(await draft.inputValue()) as { data: { value: number }[] };
+    config.data[point].value = value;
+    await draft.fill(JSON.stringify(config, null, 2));
+    await chart.getByRole('button', { name: 'Done', exact: true }).click();
+    await expect(draft).toHaveCount(0);
+  };
 }
 
 test('j14 demo note: concurrent chart and canvas edits keep both authors live and after reload @p:col-1 @p:note-2 @evidence', async ({ actors, stack }) => {
@@ -180,6 +206,11 @@ test('j14 demo note: concurrent chart and canvas edits keep both authors live an
     await stroke(ben.page, canvas(ben), 40, 70, 90);
     await pick(ada, id, 'Bar', 'Line');
     await pick(ben, id, 'Classic', 'Accessible');
+    // Both JSON drafts are open before either saves, and each changes a different data point.
+    const adaSaves = await openJson(ada, id);
+    const benSaves = await openJson(ben, id);
+    await adaSaves(0, 30);
+    await benSaves(1, 50);
     expect(ben.sever.census().dropped.out, "the cut withheld Ben's writes").toBeGreaterThan(0);
   } finally {
     ben.expectReconnects(1, id);
@@ -190,8 +221,8 @@ test('j14 demo note: concurrent chart and canvas edits keep both authors live an
   for (const actor of [ada, ben]) {
     await expect.poll(async () => {
       const state = await payloads(actor, id);
-      return { type: state.type, palette: state.palette, strokes: both(state.cells) };
-    }, { message: `${actor.label}: both chart keys and both strokes`, timeout: PEER_TIMEOUT }).toEqual({ type: 'line', palette: 'accessible', strokes: true });
+      return { type: state.type, palette: state.palette, values: state.values, strokes: both(state.cells) };
+    }, { message: `${actor.label}: both chart keys, both data points and both strokes`, timeout: PEER_TIMEOUT }).toEqual({ type: 'line', palette: 'accessible', values: [30, 50], strokes: true });
   }
   for (const actor of [ada, ben]) {
     await ui.body(actor, id).locator('button:has(svg.lucide-check)').click();
@@ -206,6 +237,6 @@ test('j14 demo note: concurrent chart and canvas edits keep both authors live an
   await ben.declareRemount(id);
   await expect.poll(async () => {
     const state = await payloads(ben, id);
-    return { type: state.type, palette: state.palette, strokes: both(state.cells) };
-  }, { message: 'both authors survive a reload', timeout: PEER_TIMEOUT }).toEqual({ type: 'line', palette: 'accessible', strokes: true });
+    return { type: state.type, palette: state.palette, values: state.values, strokes: both(state.cells) };
+  }, { message: 'both authors survive a reload', timeout: PEER_TIMEOUT }).toEqual({ type: 'line', palette: 'accessible', values: [30, 50], strokes: true });
 });
