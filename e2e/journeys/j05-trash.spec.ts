@@ -91,6 +91,20 @@ async function expectLanguageFixed(actor: Actor, scope: Locator): Promise<void> 
   await expect(picker, `${actor.label}: the language is unchanged`).toContainText('JavaScript');
 }
 
+/** Records every input refusal the page shows from now on into `window.refused`; the notice itself clears in 4 s. */
+async function recordRefusals(actor: Actor): Promise<void> {
+  await actor.page.evaluate((attr) => {
+    const refused: string[] = [];
+    (window as unknown as { refused: string[] }).refused = refused;
+    new MutationObserver(() => {
+      for (const el of document.querySelectorAll(`[${attr}]`)) {
+        const text = el.textContent?.trim();
+        if (text && refused.at(-1) !== text) refused.push(text);
+      }
+    }).observe(document.body, { subtree: true, childList: true, characterData: true });
+  }, INPUT_REFUSAL_ATTR);
+}
+
 /** Keystrokes into a terminal note land nowhere: the title and the body read as before. */
 async function expectNoKeystrokeLands(actor: Actor, docId: string): Promise<void> {
   const before = { title: await ui.fieldText(actor, docId, 'title'), body: await ui.fieldText(actor, docId, 'body') };
@@ -198,6 +212,7 @@ test('j05-trash: a fresh load of a trashed note is the one 404; Ada reads it rea
   await expect(ben.page.locator(`[${EDITOR_PANE_ATTR}]`)).toHaveCount(0);
 
   // Ada's Trash: the note, when it went there, and its content read-only under the 30-day promise.
+  await recordRefusals(ada);
   await ada.page.getByRole('button', { name: 'Trash', exact: true }).click();
   await expect(trashRow(ada, docId), 'the note is in Trash').toContainText(TITLE);
   await expect(trashRow(ada, docId)).toContainText(/Deleted (Just now|1 min ago)/);
@@ -209,8 +224,8 @@ test('j05-trash: a fresh load of a trashed note is the one 404; Ada reads it rea
   await expect(noteBody, 'read-only').toHaveAttribute('contenteditable', 'false');
   await expect(ui.title(ada, docId)).toHaveText(TITLE);
   expect(await editableSurfaces(ada, docId), 'nothing in the trash view is editable').toEqual([]);
-  // Showing the trashed note's title is no write, so nothing is refused (the notice lasts 4 s).
-  await expect(ada.page.locator(`[${INPUT_REFUSAL_ATTR}]`).filter({ hasText: /\S/ }), 'opening the Trash view refuses nothing').toHaveCount(0);
+  // Showing the trashed note's title is no write, so nothing was refused on the way.
+  expect(await ada.page.evaluate(() => (window as unknown as { refused: string[] }).refused), 'opening the Trash view refuses nothing').toEqual([]);
   const notice = ada.page.getByText(TRASH_COPY.trashedNote, { exact: true });
   await expect(notice, 'the 30-day promise').toBeVisible();
   await expect(ada.page.getByText(/will be deleted|deleted in|forever/i), 'never a countdown or "forever"').toHaveCount(0);
