@@ -38,6 +38,8 @@ import {
   preflightRemoteImageUrl
 } from '../utils/remote-image-url';
 import { useCurrentNoteId } from '../CurrentNoteIdContext';
+// moss-multi seam: web-assets (A§16)
+import { webAssetsInHtml } from '@moss-multi/host/media/web-asset-url';
 
 const CROSS_NOTE_ASSET_PASTE_CONCURRENCY = 2;
 
@@ -127,6 +129,13 @@ function extractAllMossAssetsFromHtml(html: string): MossAssetInfo[] {
 
     seenUrls.add(fullUrl);
     results.push(parsed);
+  }
+  // moss-multi seam: web-assets (A§16): on the web a copied note's media is an asset route URL naming its note
+  for (const asset of webAssetsInHtml(html)) {
+    if (!seenUrls.has(asset.url)) {
+      seenUrls.add(asset.url);
+      results.push(asset);
+    }
   }
   return results;
 }

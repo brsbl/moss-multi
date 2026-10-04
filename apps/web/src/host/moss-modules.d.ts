@@ -103,6 +103,14 @@ declare module '@moss/shared/components/ui/dropdown-menu' {
   export const DropdownMenuItem: ComponentType<HTMLAttributes<HTMLDivElement> & { onSelect?: () => void }>;
 }
 
+declare module '@moss/shared/components/ui/context-menu' {
+  import type { ComponentType, ForwardRefExoticComponent, HTMLAttributes, ReactElement, ReactNode, RefAttributes } from 'react';
+  export const ContextMenu: ComponentType<{ children: ReactNode }>;
+  export const ContextMenuTrigger: ForwardRefExoticComponent<{ render?: ReactElement } & RefAttributes<HTMLElement>>;
+  export const ContextMenuContent: ComponentType<HTMLAttributes<HTMLDivElement> & { onCloseAutoFocus?: (event: Event) => void }>;
+  export const ContextMenuItem: ComponentType<HTMLAttributes<HTMLDivElement> & { disabled?: boolean; onSelect?: (event: Event) => void }>;
+}
+
 declare module '@moss/shared/components/ui/input' {
   import type { ComponentProps, ForwardRefExoticComponent } from 'react';
   export const Input: ForwardRefExoticComponent<ComponentProps<'input'>>;

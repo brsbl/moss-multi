@@ -9,6 +9,8 @@ import {
 } from '@moss-desktop/renderer/editor/utils/note-link-clipboard';
 import { displayTitle, liveTitle, writeLiveTitle } from '../collab/title-binding.ts';
 import { askDocAccess, rememberRole } from '../access.ts';
+import { onNativeMenuCommand, setAltTextMenuEnabled } from '../media/image-menu.ts';
+import { chooseFilesInBrowser, createImagesApi } from '../media/uploads.ts';
 
 /** moss's NoteMetadataRecord: timestamps in seconds, folders as `Notes/...` paths. */
 export interface NoteMetadata {
@@ -54,6 +56,8 @@ export interface BrowserHooks {
   replacePath(path: string): void;
   onPopState(listener: () => void): () => void;
   copy(text: string, html: string): Promise<void>;
+  /** The file chooser behind "/media → From computer"; `[]` when dismissed. */
+  chooseFiles(accept: string): Promise<File[]>;
 }
 
 export interface BridgeOptions {
@@ -160,6 +164,7 @@ const inertBrowser: BrowserHooks = {
   replacePath: noop,
   onPopState: () => noop,
   copy: async () => undefined,
+  chooseFiles: async () => [],
 };
 
 export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis), storage = null, browser = inertBrowser, subscribeWorkspace: subscribe }: BridgeOptions) {
@@ -560,11 +565,9 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
     checkpoints: { getAll: empty },
     files: { search: empty, listDirectory: empty, open: empty },
     images: {
-      save: later('Uploading media', 3),
-      pick: later('Uploading media', 3),
+      ...createImagesApi({ request, chooseFiles: (accept) => browser.chooseFiles(accept) }),
       persistUrl: later('Saving a remote image', 3),
       copyFromPath: unavailable('Copying a local file'),
-      copyFromNoteAsset: later('Copying media between notes', 3),
     },
     htmlPreview: { ensure: nothing, onMaterialized: silent, onFailed: silent },
     webEmbedPreview: { ensure: nothing, subscribe: silent },
@@ -575,7 +578,8 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
       getGlobalShortcut: async () => ({ quickCapture: '', enabled: false }),
       setGlobalShortcut: async () => false,
       setGlobalShortcutEnabled: none,
-      setImageAltTextMenuEnabled: none,
+      // moss's native Edit → "Edit Alt Text…" is the image context menu on the web (deviation 5; ImageContextMenu).
+      setImageAltTextMenuEnabled: async (enabled: boolean) => setAltTextMenuEnabled(enabled),
       // Open in New Window is a browser tab (R4).
       createWindow: async (input: { noteId?: string | null } = {}) => {
         browser.open(input.noteId ? docUrl(input.noteId) : new URL('/', browser.origin).href);
@@ -593,7 +597,7 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
       moveWindowDrag: none,
       endWindowDrag: none,
       onGlobalShortcutActivated: silent,
-      onNativeMenuCommand: silent,
+      onNativeMenuCommand,
       waitForReady: async () => {
         await notes().catch(() => undefined);
       },
@@ -670,6 +674,7 @@ function windowBrowser(): BrowserHooks {
         new ClipboardItem({ 'text/plain': new Blob([text], { type: 'text/plain' }), 'text/html': new Blob([html], { type: 'text/html' }) }),
       ]);
     },
+    chooseFiles: chooseFilesInBrowser,
   };
 }
 

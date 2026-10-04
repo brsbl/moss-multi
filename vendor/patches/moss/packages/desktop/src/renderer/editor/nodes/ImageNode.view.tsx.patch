@@ -60,27 +60,31 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ImageNode.view.tsx b/pac
  
  /**
   * Navigation (arrow keys, enter, backspace, delete) is handled by DecoratorBlockPlugin
-@@ -186,7 +158,9 @@ function ImageComponent({
+@@ -186,7 +158,10 @@ function ImageComponent({
  
    // Render error state — still selectable and removable: a missing asset must
    // not leave an undeletable block in the note.
 -  if (hasError) {
-+  // moss-multi seam: local asset delivery lands in M3; never request Electron's protocol in a browser.
++  // moss-multi seam: web-assets (A§16): uploaded media loads from its asset route; a file only moss desktop has (an
++  // absolute or nested local path) is never requested through Electron's protocol, and says why it is missing.
 +  const desktopAsset = displaySrc.startsWith('moss-asset:');
 +  if (hasError || desktopAsset) {
      const missingLabel = (obsidianRef || src).trim();
      return (
        <div
-@@ -196,7 +170,7 @@ function ImageComponent({
+@@ -194,9 +169,9 @@ function ImageComponent({
+         data-block-decorator-key={nodeKey}
+         onClick={handleContainerClick}
        >
-         <span>{`"${missingLabel}" could not be found.`}</span>
+-        <span>{`"${missingLabel}" could not be found.`}</span>
++        <span>{desktopAsset ? `"${missingLabel}" is a desktop file that isn't available on the web.` : `"${missingLabel}" could not be found.`}</span>
          <span className="ml-2 inline-flex items-center gap-2">
 -          <button
 +          {!desktopAsset && <button
              type="button"
              className="text-xs text-ink-faint underline-offset-2 hover:text-ink-muted hover:underline focus-visible:outline-none"
              onClick={(e) => {
-@@ -206,7 +180,7 @@ function ImageComponent({
+@@ -206,7 +181,7 @@ function ImageComponent({
              }}
            >
              Retry
@@ -89,7 +93,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ImageNode.view.tsx b/pac
            <button
              type="button"
              className="text-xs text-ink-faint underline-offset-2 hover:text-ink-muted hover:underline focus-visible:outline-none"
-@@ -319,148 +293,8 @@ function ImageComponent({
+@@ -319,148 +294,8 @@ function ImageComponent({
    );
  }
  
@@ -240,7 +244,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ImageNode.view.tsx b/pac
      return (
        <ImageComponent
          src={this.__src}
-@@ -470,29 +304,4 @@ export class ImageNode extends DecoratorNode<JSX.Element> {
+@@ -470,29 +305,4 @@ export class ImageNode extends DecoratorNode<JSX.Element> {
          commentIds={this.__commentIds}
        />
      );

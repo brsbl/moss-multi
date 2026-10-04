@@ -7,6 +7,7 @@ import { handleApi } from './router.ts';
 
 const PNG = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 31, 21, 196, 137]);
 const OTHER_PNG = new Uint8Array([...PNG, 1, 2, 3]);
+const SHOT = new Uint8Array([...PNG, 7, 7]);
 const VIDEO = new Uint8Array(Array.from({ length: 64 }, (_, i) => i));
 const SVG = new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"><script>alert(1)</script></svg>');
 
@@ -45,7 +46,7 @@ function call(method: string, path: string, cookie: string | null, init: { body?
   }), env);
 }
 
-const upload = (cookie: string | null, docId: string, filename: string, bytes: Uint8Array, contentType = '') =>
+const upload = (cookie: string | null, docId: string, filename: string, bytes: Uint8Array<ArrayBuffer>, contentType = '') =>
   call('POST', `/api/docs/${docId}/assets?filename=${encodeURIComponent(filename)}`, cookie, {
     body: bytes, headers: contentType ? { 'content-type': contentType } : {},
   });
@@ -90,14 +91,14 @@ describe('upload (A§16)', () => {
 
   it('keeps one content-addressed blob for identical bytes, reuses a name holding them, and suffixes a clash', async () => {
     const docId = await insertDoc(d1.db, ada);
-    const first = await uploaded(await upload(ada.cookie, docId, 'Screen Shot 2026.PNG', PNG, 'image/png'));
+    const first = await uploaded(await upload(ada.cookie, docId, 'Screen Shot 2026.PNG', SHOT, 'image/png'));
     expect(first.filename, 'a stored name never needs escaping').toBe('Screen-Shot-2026.png');
-    const again = await uploaded(await upload(ada.cookie, docId, 'Screen Shot 2026.PNG', PNG, 'image/png'));
+    const again = await uploaded(await upload(ada.cookie, docId, 'Screen Shot 2026.PNG', SHOT, 'image/png'));
     expect(again.relativePath, 'the same bytes under the same name are the same asset').toBe(first.relativePath);
-    const twin = await uploaded(await upload(ada.cookie, docId, 'twin.png', PNG, 'image/png'));
+    const twin = await uploaded(await upload(ada.cookie, docId, 'twin.png', SHOT, 'image/png'));
     const clash = await uploaded(await upload(ada.cookie, docId, 'Screen Shot 2026.PNG', OTHER_PNG, 'image/png'));
     expect(clash.filename).toBe('Screen-Shot-2026-2.png');
-    const hash = [...new Uint8Array(await crypto.subtle.digest('SHA-256', PNG))].map((b) => b.toString(16).padStart(2, '0')).join('');
+    const hash = [...new Uint8Array(await crypto.subtle.digest('SHA-256', SHOT))].map((b) => b.toString(16).padStart(2, '0')).join('');
     const row = await d1.db.prepare('SELECT refcount FROM content_objects WHERE hash = ?').bind(hash).first<{ refcount: number }>();
     expect(row?.refcount, 'two assets hold the bytes').toBe(2);
     expect(await d1.assets.head(`asset-blobs/sha256/${hash}`)).not.toBeNull();

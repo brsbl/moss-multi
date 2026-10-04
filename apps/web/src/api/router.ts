@@ -5,6 +5,7 @@ import type { AuthEnv } from '../auth/auth.ts';
 import { resolvePrincipal } from '../auth/principal.ts';
 import { crossOriginCookie, needsAppOrigin } from '../worker/origin-gate.ts';
 import { json } from '../worker/route.ts';
+import { ASSET_ROUTE, handleAssets } from './assets.ts';
 import { handleDocs, type DocsEnv } from './docs.ts';
 import { feedback } from './feedback.ts';
 import { handleFolderRoutes } from './folders.ts';
@@ -33,6 +34,9 @@ export async function handleApi(request: Request, env: ApiEnv): Promise<Response
   if (pathname === '/api/me') return me(request, env);
   if (pathname === '/api/workspace') return workspace(request, env);
   if (pathname === '/api/feedback') return feedback(request, env);
+  if (ASSET_ROUTE.test(pathname)) {
+    return env.ASSETS ? handleAssets(request, { ...env, ASSETS: env.ASSETS }) : json({ error: 'unavailable' }, 503, NO_STORE);
+  }
   const isFolders = pathname === '/api/folders' || pathname.startsWith('/api/folders/');
   if (pathname === '/api/docs' || pathname.startsWith('/api/docs/') || isFolders) {
     const response = isFolders ? await handleFolderRoutes(request, env) : await handleDocs(request, env);

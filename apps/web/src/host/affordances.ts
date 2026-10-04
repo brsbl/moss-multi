@@ -168,14 +168,6 @@ export const AFFORDANCES = [
     ],
   },
   {
-    id: 'media-upload',
-    sites: [`${R}/editor/slash-commands/registry.ts`, `${R}/editor/plugins/VideoPastePlugin.tsx`, `${R}/editor/plugins/MediaDropPlugin.tsx`],
-    reason: 'Asset upload and remote-image storage land in M3: /media goes, and a pasted or dropped image or video is refused visibly.',
-    cite: 'T3.1',
-    staged: 3,
-    probes: [{ surface: 'slash-menu', selector: SLASH_ITEM, text: 'Media' }],
-  },
-  {
     id: 'save-as-pdf',
     sites: [`${R}/panels/CanvasAreaContent.tsx`],
     reason: 'Browser print through /pdf-export lands in M3.',

@@ -13,12 +13,13 @@ import { docs } from '../db/schema.ts';
 import type { AppEnv } from '../env.ts';
 import { json } from '../worker/route.ts';
 import { resolveDocAccess, resolveFolderAccess } from './access.ts';
+import { copyReferencedAssets } from './assets.ts';
 import { folderNotFound, liveIn, moveDoc, upFrom, vaultOf } from './folders.ts';
 import { handleMembers } from './members.ts';
 import { NO_STORE, notFound, readJsonObject, unauthenticated } from './respond.ts';
 import { ensureDefaultVault } from './vaults.ts';
 
-export type DocsEnv = AuthEnv & Pick<AppEnv, 'DocDO'> & Partial<Pick<AppEnv, 'PrincipalDO'>>;
+export type DocsEnv = AuthEnv & Pick<AppEnv, 'DocDO'> & Partial<Pick<AppEnv, 'PrincipalDO' | 'ASSETS'>>;
 
 const DOC = /^\/api\/docs\/([^/]+)$/;
 const MEMBERS = /^\/api\/docs\/([^/]+)\/members$/;
@@ -101,6 +102,10 @@ async function duplicateDoc(request: Request, env: DocsEnv, docId: string): Prom
   if (!folder || folder.deleted || !roleAtLeast(folder.role, 'editor')) return notFound();
   const original = await getServerByName(env.DocDO, docId);
   const snapshot = await original.snapshotForDuplicate();
+  // A copy made outside the source's folder brings the media its markdown references (A§16).
+  if (env.ASSETS && folderId !== source.folderId) {
+    await copyReferencedAssets({ ...env, ASSETS: env.ASSETS }, source.folderId, folderId, await original.exportMarkdown(), principal.id);
+  }
   const title = `${snapshot.title.trim() || 'Untitled'} copy`;
   const doc = await insertDoc(env, db, { folderId, ownerUserId: folder.ownerUserId, createdBy: principal.id });
   if (!doc) return folderNotFound();
@@ -130,6 +135,16 @@ async function readDoc(request: Request, env: DocsEnv, docId: string): Promise<R
     .limit(1);
   if (!doc) return notFound();
   return json({ doc, role: access.role }, 200, NO_STORE);
+}
+
+/** The DocDO's markdown export (A§12) for any reader of the doc; T3.7's download serves the same bytes. */
+async function exportDoc(request: Request, env: DocsEnv, docId: string): Promise<Response> {
+  const principal = await resolvePrincipal(request, env);
+  if (!principal) return notFound();
+  const access = await resolveDocAccess(createDb(env.DB), principal, docId, shareTokenOf(request));
+  if (!access || access.deleted) return notFound();
+  const markdown = await (await getServerByName(env.DocDO, docId)).exportMarkdown();
+  return new Response(markdown, { status: 200, headers: { 'content-type': 'text/markdown; charset=utf-8', ...NO_STORE } });
 }
 
 /** PATCH /api/docs/:id: `{title}` renames through the DocDO; `{folderId}` moves the note (folders.ts). */
@@ -184,6 +199,9 @@ export async function handleDocs(request: Request, env: DocsEnv): Promise<Respon
     const access = await resolveDocAccess(createDb(env.DB), principal, accessMatch[1], shareTokenOf(request));
     return access ? json({ role: access.role, deleted: access.deleted }, 200, NO_STORE) : notFound();
   }
+
+  const exportMatch = /^\/api\/docs\/([^/]+)\/export$/.exec(pathname);
+  if (exportMatch) return only('GET', request, () => exportDoc(request, env, exportMatch[1]));
 
   const instance = INSTANCE.exec(pathname);
   if (instance) return only('GET', request, () => docInstance(request, env, instance[1]));

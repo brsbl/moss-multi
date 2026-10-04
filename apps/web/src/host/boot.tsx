@@ -5,6 +5,7 @@ import { useEffect, type ComponentType } from 'react';
 import { readyWhenShellRenders } from './app-state.ts';
 import { auth } from './auth.ts';
 import { pauseDocWrites, severDocSessions } from './collab/doc-session.ts';
+import { ImageContextMenu } from './media/ImageContextMenu.tsx';
 import { SignOutConfirmation } from './surfaces/SignOutConfirmation.tsx';
 import { installBridge } from './bridge/index.ts';
 import { installBackspaceGuard } from './opening-guard.ts';
@@ -28,6 +29,7 @@ export async function bootMoss(): Promise<{ default: ComponentType }> {
       <>
         <App />
         <SignOutConfirmation />
+        <ImageContextMenu />
       </>
     );
   }
