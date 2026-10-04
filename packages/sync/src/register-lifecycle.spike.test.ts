@@ -118,16 +118,25 @@ function payloadClient(state: Uint8Array, { filterPayloadEvents = true, dedupeUn
     while (parent && !(parent instanceof Y.XmlElement)) parent = (parent._item?.parent ?? null) as Y.AbstractType<unknown> | null;
     return parent;
   };
-  const holdsPeerText = (item: Y.Item) => {
+  // Only when the undo deletes the block itself: undoing one's own typing inside a shared payload still works.
+  let undoing: ReturnType<typeof Y.createDeleteSet> | null = null;
+  const keepsBlock = (item: Y.Item) => {
     const block = blockOf(item);
-    const payload = block ? block.getAttribute(PAYLOAD) as unknown : null;
+    if (!block?._item || !undoing || !Y.isDeleted(undoing, block._item.id)) return false;
+    const payload = block.getAttribute(PAYLOAD) as unknown;
     if (!(payload instanceof Y.Text)) return false;
     for (let run = payload._start; run; run = run.right) if (!run.deleted && run.id.client !== doc.clientID) return true;
     return false;
   };
-  const undo = new Y.UndoManager([root], {
-    trackedOrigins: new Set<unknown>([binding, PAYLOAD_LOCAL]), captureTimeout: 0, deleteFilter: (item) => !holdsPeerText(item),
+  const manager = new Y.UndoManager([root], {
+    trackedOrigins: new Set<unknown>([binding, PAYLOAD_LOCAL]), captureTimeout: 0, deleteFilter: (item) => !keepsBlock(item),
   });
+  // The product follows the step Yjs actually pops (T1.P: one undo() skips steps that change nothing); the spike's
+  // steps all change something, so the top of the stack is that step.
+  const undo = {
+    undo: () => { undoing = manager.undoStack.at(-1)?.insertions ?? null; try { manager.undo(); } finally { undoing = null; } },
+    stopCapturing: () => manager.stopCapturing(),
+  };
   // An undo may restore a block that a peer has meanwhile moved (V1 recreated it under the same block id). Only the
   // undoing client checks, only blocks its own undo just created, so a peer's live block is never touched.
   const afterUndo = (transaction: Y.Transaction) => {
@@ -170,7 +179,7 @@ function payloadClient(state: Uint8Array, { filterPayloadEvents = true, dedupeUn
     moveToEnd: (index: number) => { const key = blockKeys()[index]; editor.update(() => { $getRoot().getLastChildOrThrow().insertAfter($getNodeByKey(key)!); }, { discrete: true }); },
     /** A local edit that touches the block without its payload (as a language or theme change does). */
     touch: (index: number) => { const key = blockKeys()[index]; editor.update(() => { $getNodeByKey(key)!.getWritable(); }, { discrete: true }); },
-    dispose: () => { stopUpdates(); root.unobserveDeep(observer); doc.off('afterTransaction', afterUndo); undo.destroy(); doc.destroy(); },
+    dispose: () => { stopUpdates(); root.unobserveDeep(observer); doc.off('afterTransaction', afterUndo); manager.destroy(); doc.destroy(); },
   };
 }
 type PayloadClient = ReturnType<typeof payloadClient>;
