@@ -496,4 +496,21 @@ describe('RPC', () => {
     const woken = await start(wake(opened));
     expect((await connect(woken, { role: 'editor' })).closed?.code, 'a woken doc remembers').toBe(CLOSE.deleted);
   });
+
+  it('restore() clears the deleted flag for good: after a wake an editor connects again and the content is intact', async () => {
+    const opened = await start(openDoc());
+    const editor = await connect(opened, { role: 'editor' });
+    const lexical = bindLexical(editor.doc);
+    await editor.hello();
+    lexical.type('Kept through the trash');
+    await editor.flush();
+    await opened.dobj.trash();
+    await opened.dobj.restore();
+    await opened.dobj.restore();
+    const woken = await start(wake(opened));
+    const back = await connect(woken, { role: 'editor' });
+    await back.hello();
+    expect(back.closed, 'a restored doc admits its editors').toBeNull();
+    expect((await woken.dobj.exportMarkdown()).trim()).toBe('Kept through the trash');
+  });
 });

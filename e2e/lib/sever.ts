@@ -4,14 +4,17 @@ import type { BrowserContext, WebSocketRoute } from '@playwright/test';
 import { CUSTOM_PREFIX } from '../../packages/protocol/src/sync.ts';
 import { DOC_SOCKET_PATH } from './contract.ts';
 
-interface Conn { page: WebSocketRoute; server: WebSocketRoute | null; closed: boolean; census: { closed(): void } | null }
+interface Conn { page: WebSocketRoute; server: WebSocketRoute | null; closed: boolean; census: { closed(): void } | null; lost: boolean }
 
 /** Reports each page socket the proxy sees, so telemetry counts the page's sockets rather than the proxy's legs. */
 export type SocketCensus = (url: string) => { closed(): void };
 
 export interface Sever {
-  /** Half-open: both ends stay OPEN and nothing is delivered either way. */
-  blackhole(): void;
+  /**
+   * Half-open: both ends stay OPEN and nothing is delivered either way. With `swallowCloses`, a close from the server
+   * is lost too, as on a dead network: the page learns its socket is gone only when `restore` drops it (1012).
+   */
+  blackhole(options?: { swallowCloses?: boolean }): void;
   /** Abrupt drop on both ends; 1012 is in the product's transient-retry set. */
   reset(code?: number): void;
   /** Delivers again, acks included, and lets reconnects that arrived while severed (and are still open) through. */
@@ -33,7 +36,7 @@ const isAck = (message: string | Buffer): boolean => {
 const DOC_SOCKET = new RegExp(DOC_SOCKET_PATH.replace(/\//g, '\\/'));
 
 export async function makeSeverable(context: BrowserContext, census?: SocketCensus): Promise<Sever> {
-  const ctl = { mode: 'up' as 'up' | 'blackhole', conns: [] as Conn[], dropped: { out: 0, in: 0 }, losingAcks: false, acksLost: 0 };
+  const ctl = { mode: 'up' as 'up' | 'blackhole', swallowCloses: false, conns: [] as Conn[], dropped: { out: 0, in: 0 }, losingAcks: false, acksLost: 0 };
   const attach = (conn: Conn) => {
     const server = conn.page.connectToServer();
     conn.server = server;
@@ -44,13 +47,17 @@ export async function makeSeverable(context: BrowserContext, census?: SocketCens
       else conn.page.send(message);
     });
     server.onClose((code, reason) => {
+      if (ctl.mode === 'blackhole' && ctl.swallowCloses) {
+        conn.lost = true;
+        return;
+      }
       conn.closed = true;
       conn.census?.closed();
       conn.page.close({ code, reason });
     });
   };
   await context.routeWebSocket(DOC_SOCKET, (page) => {
-    const conn: Conn = { page, server: null, closed: false, census: census?.(page.url()) ?? null };
+    const conn: Conn = { page, server: null, closed: false, census: census?.(page.url()) ?? null, lost: false };
     ctl.conns.push(conn);
     // A socket the page closes while severed never reaches the server.
     page.onClose((code, reason) => {
@@ -61,8 +68,9 @@ export async function makeSeverable(context: BrowserContext, census?: SocketCens
     if (ctl.mode === 'up') attach(conn);
   });
   return {
-    blackhole() {
+    blackhole({ swallowCloses = false } = {}) {
       ctl.mode = 'blackhole';
+      ctl.swallowCloses = swallowCloses;
     },
     reset(code = 1012) {
       ctl.mode = 'blackhole';
@@ -77,6 +85,13 @@ export async function makeSeverable(context: BrowserContext, census?: SocketCens
     restore() {
       ctl.mode = 'up';
       ctl.losingAcks = false;
+      ctl.swallowCloses = false;
+      // A socket the server closed during a swallowing black hole is dead; the page finds out now.
+      for (const conn of ctl.conns.filter((c) => c.lost && !c.closed)) {
+        conn.closed = true;
+        conn.census?.closed();
+        conn.page.close({ code: 1012, reason: 'qa-sever' });
+      }
       for (const conn of ctl.conns.filter((c) => !c.server && !c.closed)) attach(conn);
     },
     loseAcks() {
