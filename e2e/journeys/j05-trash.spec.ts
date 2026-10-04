@@ -174,11 +174,17 @@ test('j05-trash: a fresh load of a trashed note is the one 404; Ada reads it rea
   const ben = await actors.open(benPrincipal, { path: `/d/${docId}` });
   await ui.waitLive(ben, docId);
   await actors.requireDistinct(2);
+  // A second note (declared setup): the trash moves Ada's pane onto it, live, before her Trash view shows this one.
+  const origin = new URL(ada.page.url()).origin;
+  const other = await ada.context.request.post(`${origin}/api/docs`, { headers: { origin }, data: { title: 'Other plan', markdown: 'Still here.' } });
+  expect(other.status()).toBe(201);
+  const { doc: { id: otherId } } = (await other.json()) as { doc: { id: string } };
+  await expect(noteRow(ada, otherId)).toBeVisible({ timeout: PEER_MS });
   await trashFromSidebar(ada, docId);
   await expectTerminalInPlace(ben, docId, BODY);
+  await expect(ui.pane(ada, otherId), 'moss opens the next note').toHaveAttribute(DOC_STATE_ATTR, 'live', { timeout: BIND_TIMEOUT });
 
   // The API answers a trashed note exactly as it answers one that never existed, for its owner too.
-  const origin = new URL(ada.page.url()).origin;
   const missing = crypto.randomUUID();
   for (const actor of [ada, ben]) {
     const trashed = await actor.context.request.get(`${origin}/api/docs/${docId}`);
