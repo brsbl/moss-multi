@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // The one stack launcher, for local work and CI (A§20, S-test §4.1–4.2): `wrangler dev --local` on built bytes,
-// in its own process group, at most 2 live stacks per machine, orphans reaped. Every run records host state
+// in its own process group, at most MAX_STACKS (5; MOSS_MAX_STACKS overrides) live stacks per machine, orphans reaped. Every run records host state
 // (load, a bb dev stack or Nightly running) so a local death can be classed as infrastructure (L§5.1).
 //   start      [--run-id ID] [--port P] [--prebuilt DIST] [--hooks] [--expect-commit SHA] [--expect-bundle HASH] [--json]
 //   restart    --run-id ID                same bytes, storage, secrets and port
@@ -27,7 +27,7 @@ const WEB = join(REPO, 'apps/web');
 const RUNS = join(REPO, '.local-stack/runs');
 const BUILDS = join(REPO, '.local-stack/builds');
 const REGISTRY = process.env.MOSS_STACK_REGISTRY || join(os.homedir(), '.cache/moss-multi/stacks');
-const MAX_STACKS = 2;
+const MAX_STACKS = Number(process.env.MOSS_MAX_STACKS) || 5;
 const PORT_RANGE = [8850, 8869];
 const READY_MS = 60_000;
 const BLANK_VARS = ['GITHUB_CLIENT_ID', 'GITHUB_CLIENT_SECRET', 'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'RESEND_API_KEY',
