@@ -147,3 +147,37 @@ describe('an open Properties draft survives peer changes (A§10.4: except the ke
     } finally { close(); }
   });
 });
+
+describe('a peer clearing the value of the property being edited (Properties hides an empty known field)', () => {
+  it('keeps its row and draft; a commit writes the draft', () => {
+    const { ada, ben, store, atom, commit, close } = peers('draft-clear', 'owner: ada\nstatus: draft\n');
+    try {
+      setPropertyDraft('draft-clear', { key: 'status' });
+      writeField(ada, 'frontmatter', "owner: ada\nstatus: ''\n", 'seed');
+      expect(store.get(atom), 'the open field keeps its row').toEqual({ owner: 'ada', status: 'draft' });
+      commit({ ...store.get(atom), status: 'review' });
+      setPropertyDraft('draft-clear', { key: null });
+      expect(parseFrontmatter(readField(ben, 'frontmatter'))).toEqual({ owner: 'ada', status: 'review' });
+    } finally { close(); }
+  });
+
+  it("committing another field or cancelling accepts the peer's empty value without deleting the key", () => {
+    const { ada, ben, store, atom, commit, close } = peers('draft-clear-other', 'owner: ada\nstatus: draft\n');
+    try {
+      setPropertyDraft('draft-clear-other', { key: 'status' });
+      writeField(ada, 'frontmatter', "owner: ada\nstatus: ''\n", 'seed');
+      expect(store.get(atom)).toEqual({ owner: 'ada', status: 'draft' });
+      commit({ ...store.get(atom), owner: 'ben' });
+      expect(parseFrontmatter(readField(ben, 'frontmatter'))).toEqual({ owner: 'ben', status: '' });
+      setPropertyDraft('draft-clear-other', { key: null });
+      expect(store.get(atom)).toEqual({ owner: 'ben', status: '' });
+
+      // A held key a peer deleted and then recreated empty stays held.
+      writeField(ada, 'frontmatter', 'owner: ben\ntags: [a]\n', 'seed');
+      setPropertyDraft('draft-clear-other', { key: 'tags' });
+      writeField(ada, 'frontmatter', 'owner: ben\n', 'seed');
+      writeField(ada, 'frontmatter', 'owner: ben\ntags: []\n', 'seed');
+      expect(store.get(atom)).toEqual({ owner: 'ben', tags: ['a'] });
+    } finally { close(); }
+  });
+});

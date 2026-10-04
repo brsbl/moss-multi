@@ -808,6 +808,27 @@ test('j02-title: @tierA an open Properties draft survives a peer deleting its pr
     await expect(PROPERTIES(actor).getByRole('textbox', { name: 'status', exact: true })).toHaveValue('review');
   }
 
+  // A peer clearing the value being edited (Properties hides an empty status) keeps the draft open too.
+  const statusDraft = `ben-status-${token()}`;
+  await benHeader.getByRole('textbox', { name: 'status', exact: true }).click();
+  const benStatus = benHeader.getByRole('textbox', { name: 'Edit status', exact: true });
+  await benStatus.fill(statusDraft);
+  await PROPERTIES(ada).getByRole('textbox', { name: 'status', exact: true }).click();
+  await PROPERTIES(ada).getByRole('textbox', { name: 'Edit status', exact: true }).fill('');
+  await PROPERTIES(ada).getByRole('textbox', { name: 'Edit status', exact: true }).press('Enter');
+  await expect(PROPERTIES(cy).getByRole('textbox', { name: 'status', exact: true }), 'the clear reached Cy').toHaveCount(0, { timeout: RENAME_MS });
+  // Cy's edit after seeing the clear reaching Ben means the clear reached him first.
+  await PROPERTIES(cy).getByRole('textbox', { name: 'due', exact: true }).click();
+  await PROPERTIES(cy).getByRole('textbox', { name: 'Edit due', exact: true }).fill('later');
+  await PROPERTIES(cy).getByRole('textbox', { name: 'Edit due', exact: true }).press('Enter');
+  await expect(benHeader.getByRole('textbox', { name: 'due', exact: true }), 'Ben is synced past the clear').toHaveValue('later', { timeout: RENAME_MS });
+  await expect(benStatus, "Ben's status draft is still open with his text").toHaveValue(statusDraft);
+  await expect(benStatus).toBeFocused();
+  await benStatus.press('Enter');
+  for (const actor of [ada, ben, cy]) {
+    await expect(PROPERTIES(actor).getByRole('textbox', { name: 'status', exact: true }), `${actor.label}: Ben's committed status`).toHaveValue(statusDraft, { timeout: RENAME_MS });
+  }
+
   // Cancelling a draft whose property a peer deleted accepts the delete.
   await benHeader.getByRole('textbox', { name: 'due', exact: true }).click();
   await benHeader.getByRole('textbox', { name: 'Edit due', exact: true }).fill('never');
