@@ -8,8 +8,8 @@ import { handleDocs, type DocsEnv } from './docs.ts';
 import { feedback } from './feedback.ts';
 import { handleFolderRoutes } from './folders.ts';
 import { handleSearchRoutes } from './search.ts';
-import { handleTrash } from './trash.ts';
 import { handleVaults } from './vault-routes.ts';
+import { handleTrash } from './trash.ts';
 import { workspace } from './workspace.ts';
 
 const NO_STORE = { 'cache-control': 'no-store' };

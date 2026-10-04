@@ -4,7 +4,9 @@
 // 2 MB, the 2 MB import into a bound Y.Doc, memory growth and the Y.Doc state-to-markdown ratio over the family
 // corpus. Prints a markdown table (and appends it to $GITHUB_STEP_SUMMARY). Exits non-zero when the converter
 // fails to load or convert in workerd, including a note that imports to fewer blocks than its copies hold, and
-// when an import up to 2 MB takes more than IMPORT_BUDGET_MS of workerd CPU.
+// when an import up to 2 MB takes more than IMPORT_BUDGET_MS of workerd CPU. It also renames a doc's title back and
+// forth between worst-case caller texts (packages/sync/measure/title-cases.ts), the DocDO's REST rename path, and
+// exits non-zero when a rename lands inexactly or averages more than TITLE_WRITE_BUDGET_MS of workerd CPU.
 import { spawn, spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -27,6 +29,9 @@ const SCALE_SIZES = [64 * 1024, 256 * 1024, 1024 * 1024, 2 * 1024 * 1024];
 const CPU_LIMIT_MS = 30_000;
 // T0.6b: a whole-document import at PRODUCT's 2 MB/doc limit stays well inside CPU_LIMIT_MS.
 const IMPORT_BUDGET_MS = 5_000;
+// A REST rename diffs two caller-supplied texts; one request may spend at most this much workerd CPU on it.
+const TITLE_WRITE_BUDGET_MS = 20;
+const TITLE_WRITES = 6;
 
 const vendor = join(REPO, 'vendor/moss/packages');
 const ALIASES = [
@@ -187,10 +192,18 @@ async function timedRequest(server, path, init) {
     peakRssKb = Math.max(peakRssKb, workerdStats(server.child.pid).rssKb);
   }, 20);
   const started = performance.now();
-  const response = await fetch(`${server.origin}${path}`, init);
-  const body = await response.text();
+  let response;
+  let body;
+  try {
+    response = await fetch(`${server.origin}${path}`, init);
+    body = await response.text();
+  } catch (error) {
+    throw new Error(`${path}: ${error.message} (${error.cause?.message ?? 'no cause'})\n${server.logs.value}`, { cause: error });
+  } finally {
+    // A live interval would keep the process from exiting after a failure.
+    clearInterval(sampler);
+  }
   const wallMs = performance.now() - started;
-  clearInterval(sampler);
   const after = workerdStats(server.child.pid);
   if (!response.ok) throw new Error(`${path}: HTTP ${response.status} ${body}\n${server.logs.value}`);
   return { wallMs, cpuMs: after.cpuMs - before.cpuMs, rssBeforeKb: before.rssKb, peakRssKb: Math.max(peakRssKb, after.rssKb), body };
@@ -254,6 +267,29 @@ async function measureSize(unit, units, port, bound) {
   }
 }
 
+// Renames the title A → B → A … per case, after one untimed write of A; CPU is averaged over the timed renames.
+async function measureTitleWrites(port) {
+  const { TITLE_CASES } = await import('../packages/sync/measure/title-cases.ts');
+  const server = await startWorker('converter', port);
+  const results = [];
+  try {
+    for (const [name, [a, b]] of Object.entries(TITLE_CASES)) {
+      try {
+        await timedRequest(server, '/title', { method: 'POST', body: a });
+        const runs = [];
+        for (let run = 0; run < TITLE_WRITES; run += 1) runs.push(await timedRequest(server, '/title', { method: 'POST', body: run % 2 ? a : b }));
+        const mean = (key) => round(runs.reduce((sum, r) => sum + r[key], 0) / runs.length);
+        results.push({ name, chars: [a.length, b.length], cpuMs: mean('cpuMs'), wallMs: mean('wallMs') });
+      } catch (error) {
+        results.push({ name, chars: [a.length, b.length], failed: String(error.message).split('\n')[0] });
+      }
+    }
+  } finally {
+    await stop(server.child);
+  }
+  return results;
+}
+
 async function main() {
   rmSync(OUT, { recursive: true, force: true });
   mkdirSync(join(OUT, 'baseline'), { recursive: true });
@@ -303,6 +339,8 @@ async function main() {
     await stop(server.child);
   }
 
+  const titles = await measureTitleWrites(port + 1);
+
   const coldOf = (name, key) => round(median(cold[name].map((sample) => sample[key])));
   const families = ratios.filter((r) => !r.name.startsWith('scale note'));
   const worst = families.reduce((a, b) => (b.ratio > a.ratio ? b : a));
@@ -331,6 +369,11 @@ async function main() {
         (c) =>
           `| ${kb(c.bytes)} scale note imported into a bound Y.Doc (the DocDO's serverWrite path): workerd CPU, one run | ${c.boundCpuMs} ms; Y.Doc state ${mb(c.stateBytes)}; RSS growth ${c.boundPeakMb} MB |`,
       ),
+    ...titles.map((t) =>
+      t.failed
+        ? `| Title rename, ${t.name} | FAILED: ${t.failed} |`
+        : `| Title rename, ${t.name} (${t.chars.join(' ↔ ')} chars): workerd CPU per request, mean of ${TITLE_WRITES} | ${t.cpuMs} ms${t.cpuMs > TITLE_WRITE_BUDGET_MS ? `, over the ${TITLE_WRITE_BUDGET_MS} ms budget` : ''} (wall ${t.wallMs} ms) |`,
+    ),
     `| State-to-markdown ratio r, worst family | ${worst.ratio.toFixed(2)} (${worst.name}) |`,
     '',
     '| Fixture | Markdown B | Y.Doc state B | Ratio |',
@@ -351,6 +394,12 @@ async function main() {
   if (slow.length > 0) {
     const sizes = slow.map((c) => `${kb(c.bytes)} in ${seconds(c.importCpuMs)}`).join(', ');
     console.error(`measure-converter: import over the ${seconds(IMPORT_BUDGET_MS)} workerd CPU budget: ${sizes}`);
+    process.exitCode = 1;
+  }
+  const badTitles = titles.filter((t) => t.failed || t.cpuMs > TITLE_WRITE_BUDGET_MS);
+  if (badTitles.length > 0) {
+    const detail = badTitles.map((t) => (t.failed ? `${t.name}: ${t.failed}` : `${t.name} in ${t.cpuMs} ms`)).join(', ');
+    console.error(`measure-converter: title rename failed or over the ${TITLE_WRITE_BUDGET_MS} ms workerd CPU budget: ${detail}`);
     process.exitCode = 1;
   }
 }

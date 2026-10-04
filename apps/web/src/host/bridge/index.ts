@@ -418,8 +418,7 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
       else unwatch(id);
     }
   };
-  // Only live listed notes: moss records links for them, and one trashed or unshared would 404 (the owner's listing
-  // also carries their trashed notes, for the Trash view).
+  // Only live listed notes: moss records links for them, and a trashed or unshared one would 404.
   const inListing = (id: string) => workspaceSnapshot?.docs.some((doc) => doc.id === id && doc.trashedAt == null) ?? false;
   const watchBacklinks = (id: string) => {
     if (!inListing(id)) return;
@@ -449,13 +448,14 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
   const search = async ({ query, limit = 20, excludeNoteId, searchTrashed }: { query: string; limit?: number; excludeNoteId?: string; searchTrashed?: boolean }) => {
     const needle = query.trim().toLowerCase();
     if (!needle) return [];
-    const all = await notes();
     if (searchTrashed) {
-      // The Trash view searches only the owner's trashed notes, by title; the index holds live docs only.
-      return all.filter((note) => note.trashedAt != null && note.title.toLowerCase().includes(needle)).slice(0, limit)
+      // The Trash view searches only the owner's trashed notes, by title; the index holds live docs.
+      return (await notes())
+        .filter((note) => note.trashedAt != null && note.title.toLowerCase().includes(needle))
+        .slice(0, limit)
         .map((note) => ({ id: note.id, title: note.title, folderPath: note.folderPath, updatedAt: note.updatedAt, matchType: 'title' as const }));
     }
-    const listed = all.filter((note) => note.id !== excludeNoteId && note.trashedAt == null);
+    const listed = (await notes()).filter((note) => note.id !== excludeNoteId && note.trashedAt == null);
     const rank = (title: string) => (title === needle ? 0 : title.startsWith(needle) ? 1 : 2);
     const titled: NoteSearchResult[] = listed
       .filter((note) => note.title.toLowerCase().includes(needle))
@@ -614,6 +614,7 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
       getMetadataByIds: async (ids: string[]) => (await notes()).filter((note) => ids.includes(note.id)),
       getById: async (id: string) => {
         const note = await byId(id);
+        if (note && note.trashedAt == null) watchBacklinks(id);
         if (note?.trashedAt != null) {
           // The owner's Trash view reads a trashed note on its one read path, read-only (A§8).
           const response = await request(`/api/trash/${encodeURIComponent(id)}`);
@@ -621,7 +622,6 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
           const { markdown } = (await response.json()) as { markdown: string };
           return { ...record(note), content: markdown };
         }
-        if (note) watchBacklinks(id);
         // A doc that will bind gets no content from REST: the binding fills it (A§9).
         return note ? { ...record(note), content: '', layoutMetadata: readJson(storage, layoutKey(id)) } : undefined;
       },
@@ -875,7 +875,7 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
       getWindowContext: async () => ({ windowId: 1, initialNoteId: docIdFromPath(pathname()), launchReason: 'initial-launch' as const, openedFromWindowId: null }),
       // The address follows the focused note, so a reload or a copied URL reopens it (A§4.2).
       setFocusedNoteId: async (id: string | null) => {
-        if (id) watchBacklinks(id);
+        if (id && known.get(id)?.trashedAt == null) watchBacklinks(id);
         // A trashed note has no address: a fresh load of it is the one 404 (A§8).
         if (id && known.get(id)?.trashedAt == null && docIdFromPath(pathname()) !== id) {
           browser.replacePath(withShare(`/d/${encodeURIComponent(id)}`));

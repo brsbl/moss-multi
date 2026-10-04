@@ -1,16 +1,18 @@
 diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx
 --- a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx
 +++ b/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx
-@@ -11,6 +11,8 @@ import {
+@@ -11,6 +11,10 @@ import {
    DropdownMenuItem
  } from '@moss/shared/components/ui/dropdown-menu';
  import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@moss/shared/components/ui/tooltip';
 +// moss-multi seam: hide-registry (A§9)
 +import { hidden } from '@moss-multi/host/affordances';
++// moss-multi seam: register payloads (A§10.10)
++import { RegisterDraft } from '@moss-multi/host/collab/registers';
  import type { ChartConfig, ChartPalette, ChartType } from '../utils/chartDefaults';
  import {
    BLOCK_HEADER_CLASSNAME,
-@@ -18,6 +20,8 @@ import {
+@@ -18,6 +22,8 @@ import {
    BlockNodeShell
  } from '../components/block-node-primitives';
  import { insertParagraphAdjacentToBlock } from '../utils/block-node-insertion';
@@ -19,7 +21,40 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
  // moss-multi seam: converter-split (A§12; S-conv §2.3)
  import { OPEN_BLOCK_COMMENT_COMMAND } from '../commands';
  import { serializeChartConfig, parseChartConfig, CHART_PALETTES, DISPLAY_PALETTES, CHART_TYPES, CHART_TYPE_LABELS, getSafePalette } from '../utils/chartDefaults';
-@@ -173,10 +177,13 @@ function ChartEditView({
+@@ -64,6 +70,8 @@ function ChartEditView({
+ }): JSX.Element {
+   const [editor] = useLexicalComposerContext();
+   const [jsonText, setJsonText] = useState(() => serializeChartConfig(initialConfig));
++  // moss-multi seam: register payloads (A§10.10): the draft follows its edits so a save keeps each data point's identity.
++  const [draft] = useState(() => new RegisterDraft(initialConfig, serializeChartConfig(initialConfig)));
+   const [validation, setValidation] = useState<{ isValid: boolean; error?: string }>({ isValid: true });
+   const textareaRef = useRef<HTMLTextAreaElement>(null);
+ 
+@@ -82,9 +90,10 @@ function ChartEditView({
+   const handleDone = useCallback(() => {
+     const result = parseChartConfig(jsonText);
+     if (result.valid && result.config) {
++      draft.identify(result.config);
+       onDone(result.config);
+     }
+-  }, [jsonText, onDone]);
++  }, [jsonText, onDone, draft]);
+ 
+   useEffect(() => {
+     const flushDraft = () => {
+@@ -158,7 +167,10 @@ function ChartEditView({
+       <textarea
+         ref={textareaRef}
+         value={jsonText}
+-        onChange={(e) => setJsonText(e.target.value)}
++        onChange={(e) => {
++          draft.edit(e.target.value, e.target.selectionEnd);
++          setJsonText(e.target.value);
++        }}
+         onKeyDown={handleKeyDown}
+         className="w-full resize-y rounded-md border border-surface-panel bg-surface-raised-control p-canvas-surface-pad font-mono text-sm text-ink-default focus:border-ink-default/20 focus:outline-none focus:ring-1 focus:ring-ink-default/20"
+         rows={12}
+@@ -173,10 +185,13 @@ function ChartEditView({
   */
  function EditableTitle({
    title,
@@ -34,7 +69,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
  }): JSX.Element {
    const [isEditingTitle, setIsEditingTitle] = useState(false);
    const [editValue, setEditValue] = useState(title);
-@@ -192,9 +199,10 @@ function EditableTitle({
+@@ -192,9 +207,10 @@ function EditableTitle({
    const handleClick = useCallback((e: React.MouseEvent) => {
      e.preventDefault();
      e.stopPropagation();
@@ -46,7 +81,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
  
    const handleSave = useCallback(() => {
      const trimmed = editValue.trim();
-@@ -215,7 +223,7 @@ function EditableTitle({
+@@ -215,7 +231,7 @@ function EditableTitle({
      }
    }, [handleSave]);
  
@@ -55,7 +90,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
      return (
        <input
          ref={inputRef}
-@@ -234,7 +242,7 @@ function EditableTitle({
+@@ -234,7 +250,7 @@ function EditableTitle({
      <span
        onClick={handleClick}
        className="min-w-0 flex-1 cursor-text truncate font-mono text-xs text-ink-muted hover:text-ink-default"
@@ -64,7 +99,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
      >
        {title}
      </span>
-@@ -245,14 +253,18 @@ function EditableTitle({
+@@ -245,14 +261,18 @@ function EditableTitle({
   * Styled dropdown trigger button for chart controls
   */
  function ChartDropdownTrigger({
@@ -84,7 +119,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
          className="flex items-center gap-1 rounded-md border border-surface-panel bg-surface-raised-control px-2 py-1 text-xs text-ink-muted shadow-sm hover:bg-surface-canvas focus:border-accent-success focus:outline-none focus:ring-1 focus:ring-accent-success/30"
          onClick={(e) => e.stopPropagation()}
        >
-@@ -275,6 +287,24 @@ function ChartWrapper({
+@@ -275,6 +295,24 @@ function ChartWrapper({
    const [editor] = useLexicalComposerContext();
    const [isSelected, setSelected, clearSelection] = useLexicalNodeSelection(nodeKey);
    const [isEditing, setIsEditing] = useState(false);
@@ -109,7 +144,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
    const [isTypeDropdownOpen, setIsTypeDropdownOpen] = useState(false);
    const [isPaletteDropdownOpen, setIsPaletteDropdownOpen] = useState(false);
    const currentPalette = getSafePalette(config.options?.palette);
-@@ -282,6 +312,7 @@ function ChartWrapper({
+@@ -282,6 +320,7 @@ function ChartWrapper({
  
    // Handle deletion of error-state chart
    const handleDelete = useCallback(() => {
@@ -117,15 +152,22 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
      editor.update(() => {
        const node = $getNodeByKey(nodeKey);
        if (node) {
-@@ -313,13 +344,15 @@ function ChartWrapper({
+@@ -309,17 +348,22 @@ function ChartWrapper({
+     [isSelected, setSelected, clearSelection]
+   );
+ 
++  // moss-multi seam: register payloads (A§10.10): the JSON draft writes only what changed since it opened.
++  const editBaseRef = useRef(config);
+   const handleEditClick = useCallback(
      (e: React.MouseEvent) => {
        e.preventDefault();
        e.stopPropagation();
 +      if (!editor.isEditable()) return; // moss-multi seam: read-only-decorators (T2.3)
++      editBaseRef.current = config;
        setIsEditing(true);
      },
 -    []
-+    [editor]
++    [config, editor]
    );
  
    const handleTypeChange = useCallback(
@@ -134,7 +176,17 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
        editor.update(() => {
          const node = $getNodeByKey(nodeKey);
          if (node && $isChartNode(node)) {
-@@ -344,6 +377,7 @@ function ChartWrapper({
+@@ -335,7 +379,8 @@ function ChartWrapper({
+             type: newType,
+             title: newTitle
+           };
+-          node.setConfig(updatedConfig);
++          // moss-multi seam: register payloads (A§10.10): write only what this control changed.
++          node.setConfig(updatedConfig, config);
+         }
+       });
+     },
+@@ -344,6 +389,7 @@ function ChartWrapper({
  
    const handlePaletteChange = useCallback(
      (newPalette: ChartPalette) => {
@@ -142,7 +194,17 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
        editor.update(() => {
          const node = $getNodeByKey(nodeKey);
          if (node && $isChartNode(node)) {
-@@ -363,6 +397,7 @@ function ChartWrapper({
+@@ -354,7 +400,8 @@ function ChartWrapper({
+               palette: newPalette
+             }
+           };
+-          node.setConfig(updatedConfig);
++          // moss-multi seam: register payloads (A§10.10): write only what this control changed.
++          node.setConfig(updatedConfig, config);
+         }
+       });
+     },
+@@ -363,6 +410,7 @@ function ChartWrapper({
  
    const handleTitleChange = useCallback(
      (newTitle: string) => {
@@ -150,7 +212,17 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
        editor.update(() => {
          const node = $getNodeByKey(nodeKey);
          if (node && $isChartNode(node)) {
-@@ -379,6 +414,7 @@ function ChartWrapper({
+@@ -370,7 +418,8 @@ function ChartWrapper({
+             ...config,
+             title: newTitle
+           };
+-          node.setConfig(updatedConfig);
++          // moss-multi seam: register payloads (A§10.10): write only what this control changed.
++          node.setConfig(updatedConfig, config);
+         }
+       });
+     },
+@@ -379,10 +428,11 @@ function ChartWrapper({
  
    const handleDone = useCallback(
      (newConfig: ChartConfig) => {
@@ -158,7 +230,12 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
        editor.update(() => {
          const node = $getNodeByKey(nodeKey);
          if (node && $isChartNode(node)) {
-@@ -398,6 +434,7 @@ function ChartWrapper({
+-          node.setConfig(newConfig);
++          node.setConfig(newConfig, editBaseRef.current);
+         }
+       });
+       setIsEditing(false);
+@@ -398,6 +448,7 @@ function ChartWrapper({
      (position: 'before' | 'after') => (e: React.MouseEvent) => {
        e.preventDefault();
        e.stopPropagation();
@@ -166,7 +243,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
        editor.update(() => {
          const node = $getNodeByKey(nodeKey);
          if (!node) return;
-@@ -415,7 +452,7 @@ function ChartWrapper({
+@@ -415,7 +466,7 @@ function ChartWrapper({
          selected={isSelected}
          beforeLabel="Insert paragraph before chart"
          afterLabel="Insert paragraph after chart"
@@ -175,7 +252,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
          className="my-6"
          data-block-decorator-key={nodeKey}
        >
-@@ -430,6 +467,7 @@ function ChartWrapper({
+@@ -430,6 +481,7 @@ function ChartWrapper({
                </pre>
              )}
            </div>
@@ -183,7 +260,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
            <button
              type="button"
              onClick={handleDelete}
-@@ -438,19 +476,20 @@ function ChartWrapper({
+@@ -438,19 +490,20 @@ function ChartWrapper({
            >
              <X className="h-4 w-4" />
            </button>
@@ -206,7 +283,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
          className="my-6"
          data-block-decorator-key={nodeKey}
        >
-@@ -470,11 +509,11 @@ function ChartWrapper({
+@@ -470,11 +523,11 @@ function ChartWrapper({
        selected={isSelected}
        beforeLabel="Insert paragraph before chart"
        afterLabel="Insert paragraph after chart"
@@ -220,7 +297,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
      >
        <div className={BLOCK_SURFACE_CLASSNAME}>
          {/* Header */}
-@@ -483,7 +522,7 @@ function ChartWrapper({
+@@ -483,7 +536,7 @@ function ChartWrapper({
            onClick={(e) => e.stopPropagation()}
          >
            <div className="min-w-0">
@@ -229,7 +306,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
            </div>
  
            {/* Controls - show on hover or when dropdown is open */}
-@@ -492,7 +531,7 @@ function ChartWrapper({
+@@ -492,7 +545,7 @@ function ChartWrapper({
            }`}>
              {/* Chart type dropdown */}
              <DropdownMenu open={isTypeDropdownOpen} onOpenChange={setIsTypeDropdownOpen}>
@@ -238,7 +315,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
                  {CHART_TYPE_LABELS[config.type]}
                </ChartDropdownTrigger>
                <DropdownMenuContent align="end">
-@@ -510,7 +549,7 @@ function ChartWrapper({
+@@ -510,7 +563,7 @@ function ChartWrapper({
  
              {/* Palette dropdown */}
              <DropdownMenu open={isPaletteDropdownOpen} onOpenChange={setIsPaletteDropdownOpen}>
@@ -247,7 +324,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
                  {CHART_PALETTES[currentPalette].name}
                </ChartDropdownTrigger>
                <DropdownMenuContent align="end">
-@@ -527,6 +566,8 @@ function ChartWrapper({
+@@ -527,6 +580,8 @@ function ChartWrapper({
              </DropdownMenu>
  
              {/* Edit JSON button */}
@@ -256,7 +333,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
              <TooltipProvider delayDuration={200}>
                <Tooltip>
                  <TooltipTrigger asChild>
-@@ -542,6 +583,9 @@ function ChartWrapper({
+@@ -542,6 +597,9 @@ function ChartWrapper({
                  <TooltipContent side="bottom"><p>Edit chart data</p></TooltipContent>
                </Tooltip>
              </TooltipProvider>
@@ -266,7 +343,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
              <TooltipProvider delayDuration={200}>
                <Tooltip>
                  <TooltipTrigger asChild>
-@@ -559,11 +603,13 @@ function ChartWrapper({
+@@ -559,11 +617,13 @@ function ChartWrapper({
                  <TooltipContent side="bottom"><p>Add comment</p></TooltipContent>
                </Tooltip>
              </TooltipProvider>
@@ -281,3 +358,10 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
            <Suspense fallback={<ChartSkeleton />}>
              <ChartRenderer config={config} nodeKey={nodeKey} showTitle={false} />
            </Suspense>
+@@ -575,5 +635,5 @@ function ChartWrapper({
+ 
+ // moss-multi seam: node-views (A§12)
+ registerNodeView(ChartNode.getType(), function decorate(this: ChartNode): JSX.Element {
+-    return <ChartWrapper config={this.__config} nodeKey={this.__key} commentIds={this.__commentIds} />;
++    return <ChartWrapper config={this.getConfig()} nodeKey={this.__key} commentIds={this.__commentIds} />;
+   });

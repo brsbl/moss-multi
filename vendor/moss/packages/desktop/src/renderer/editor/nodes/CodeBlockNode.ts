@@ -1,6 +1,6 @@
 // ported-from: packages/desktop/src/renderer/editor/nodes/CodeBlockNode.tsx @ 762abb777 (extracted)
 // moss-multi seam: register payloads (A§10.10).
-import { readRegister, writeRegister, initRegisterNode } from '@moss-multi/host/collab/registers';
+import { readRegister, writeRegister, initRegisterNode, resetRegisterOnCopy } from '@moss-multi/host/collab/registers';
 import type { JSX } from 'react';
 import { $applyNodeReplacement, type DOMConversionMap, type DOMConversionOutput, type DOMExportOutput, DecoratorNode, type EditorConfig, type LexicalNode, type NodeKey, type SerializedLexicalNode, type Spread } from 'lexical';
 import { resolveLanguage } from '../plugins/code-block/languages';
@@ -46,6 +46,11 @@ export class CodeBlockNode extends DecoratorNode<JSX.Element> {
   afterCloneFrom(previous: this): void {
     super.afterCloneFrom(previous);
     this.__regId = previous.__regId;
+  }
+
+  resetOnCopyNodeFrom(original: this): void {
+    super.resetOnCopyNodeFrom(original);
+    resetRegisterOnCopy(this);
   }
 
   static getType(): string {

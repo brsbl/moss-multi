@@ -52,8 +52,6 @@ function fakeServer() {
       const doc = state.docs.find((row) => row.id === id && row.trashedAt !== null);
       return doc ? Response.json({ doc, markdown: `The body of ${doc.title}\n` }) : Response.json({ error: 'not-found' }, { status: 404 });
     }
-    // The index holds live docs only (T3.4).
-    if (method === 'GET' && url.pathname === '/api/search') return Response.json({ results: [] });
     return Response.json({ error: 'not-found' }, { status: 404 });
   });
   return { calls, state, fetch };
@@ -169,6 +167,8 @@ it('reads backlinks for a live note, never for a trashed one the Trash view open
 it('searches trashed notes only in the trash view', async () => {
   const server = fakeServer();
   const bridge = createBridge({ pathname: () => '/', fetch: server.fetch });
+  // The index holds live docs only (T3.4); the live search's title matches skip the trashed note.
+  server.state.answers.set('GET /api/search', [() => Response.json({ results: [] })]);
   expect((await bridge.notes.search({ query: 'plan' })).map((hit) => hit.id)).toEqual([]);
   expect((await bridge.notes.search({ query: 'plan', searchTrashed: true })).map((hit) => hit.id)).toEqual(['old']);
 });
