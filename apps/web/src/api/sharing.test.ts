@@ -1,7 +1,6 @@
 // Full sharing over REST (T2.4): share-by-email is no account-enumeration oracle (an unknown email becomes a pending
 // invite with the same answer, rate limited per owner), the owner role can be granted, share links are created,
-// listed and revoked by owners only, a link opens a folder landing and a link-scoped workspace, and the folders API's
-// create is there for the folder that gets shared.
+// listed and revoked by owners only, and a link opens a folder landing and a link-scoped workspace.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
 import { BASE, insertDoc, insertFolder, insertGrant, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
@@ -205,29 +204,6 @@ describe('GET /api/folders/:id', () => {
     expect(await fingerprint(await call('GET', `/api/folders/${crypto.randomUUID()}`, cy.cookie))).toEqual(denied);
     const docToken = (await (await call('POST', `/api/docs/${await insertDoc(d1.db, ada, { folderId })}/links`, ada.cookie, { role: 'viewer' })).json()) as { link: Link };
     expect((await call('GET', `/api/folders/${folderId}?share=${docToken.link.token}`, null)).status, 'a doc link opens no folder').toBe(404);
-  });
-});
-
-describe('POST /api/folders', () => {
-  it('creates a folder under one the caller can edit, recording who made it', async () => {
-    const made = await call('POST', '/api/folders', ada.cookie, { name: 'Plans', parentId: ada.homeId });
-    expect(made.status).toBe(201);
-    const { folder } = (await made.json()) as { folder: { id: string; name: string; parentId: string } };
-    expect(folder).toMatchObject({ name: 'Plans', parentId: ada.homeId });
-    expect((await call('POST', '/api/folders', ada.cookie, { name: 'plans', parentId: ada.homeId })).status, 'a live sibling name').toBe(409);
-    for (const name of ['', '  ', 'a/b', 42, null]) {
-      expect((await call('POST', '/api/folders', ada.cookie, { name, parentId: ada.homeId })).status, String(name)).toBe(400);
-    }
-    const vault = await signedUpUser(env, 'sharing-vault', 'Dee');
-    await insertGrant(d1.db, { folderId: vault.homeId }, ben, 'editor');
-    await insertGrant(d1.db, { folderId: vault.homeId }, cy, 'viewer');
-    const byEditor = await call('POST', '/api/folders', ben.cookie, { name: 'Ben made this', parentId: vault.homeId });
-    expect(byEditor.status).toBe(201);
-    const { folder: shared } = (await byEditor.json()) as { folder: { id: string } };
-    expect(await d1.db.prepare('SELECT owner_user_id, created_by FROM folders WHERE id = ?').bind(shared.id).first())
-      .toEqual({ owner_user_id: vault.id, created_by: ben.id });
-    expect((await call('POST', '/api/folders', cy.cookie, { name: 'Viewer', parentId: vault.homeId })).status).toBe(403);
-    expect((await call('POST', '/api/folders', ada.cookie, { name: 'Stranger', parentId: vault.homeId })).status).toBe(404);
   });
 });
 

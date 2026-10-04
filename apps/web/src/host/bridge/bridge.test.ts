@@ -37,18 +37,28 @@ describe('the T0.5a bridge', () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
-  it('drops a listing in flight when the page leaves instead of failing it', async () => {
+  it('holds a listing in flight while the page leaves, and sends it again if the page stays', async () => {
     const controller = new AbortController();
-    const fetch = vi.fn<typeof globalThis.fetch>((_input, init) => new Promise((_resolve, reject) => {
-      init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
-    }));
-    const api = createBridge({ pathname: () => '/', fetch, leaving: () => controller.signal });
+    let stay = () => undefined as void;
+    const stayed = new Promise<void>((resolve) => { stay = resolve; });
+    const fetch = vi.fn<typeof globalThis.fetch>((_input, init) => fetch.mock.calls.length > 1
+      ? Promise.resolve(Response.json(LISTING))
+      : new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+      }));
+    let leave = { signal: controller.signal, stayed };
+    const api = createBridge({ pathname: () => '/', fetch, leaving: () => leave });
     const settled = vi.fn();
-    void api.notes.getAll().then(settled, settled);
+    const listed = api.notes.getAll();
+    void listed.then(settled, settled);
     controller.abort();
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(fetch.mock.calls[0]?.[1]?.signal).toBe(controller.signal);
-    expect(settled).not.toHaveBeenCalled();
+    expect(settled, 'a leave never fails the read').not.toHaveBeenCalled();
+    leave = { signal: new AbortController().signal, stayed: new Promise(() => undefined) };
+    stay();
+    expect((await listed).map((note) => note.id), 'the page stayed, so the read is sent again').toEqual(['d1']);
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
 
   it('keeps every subscription callable', () => {

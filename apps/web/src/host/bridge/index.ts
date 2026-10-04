@@ -65,9 +65,12 @@ export interface BridgeOptions {
   fetch?: typeof fetch;
   storage?: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> | null;
   browser?: BrowserHooks;
-  /** Aborts when the page starts to leave; workspace reads in flight are dropped rather than cancelled by the navigation. */
-  leaving?: () => AbortSignal;
+  /** The page's current leave: `signal` aborts as the page starts to leave, and `stayed` resolves if it is still
+   * running afterwards (a cancelled navigation), so workspace reads are held, never cancelled by a navigation. */
+  leaving?: () => Leave;
 }
+
+export interface Leave { signal: AbortSignal; stayed: Promise<void> }
 
 type ThemeChoice = 'system' | 'light' | 'dark';
 type Listener<T extends unknown[]> = (...args: T) => void;
@@ -176,13 +179,22 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
     fetcher(path, { credentials: 'same-origin', ...init, headers: { accept: 'application/json', ...init.headers } });
   /** Workspace reads carry the tab's share token, so a link holder's listing is the link's (T2.4). WebKit logs a
    * fetch cancelled by navigation as an access-control page error, so a read in flight is aborted as the page leaves
-   * and never settles. */
-  const listingRequest = (path: string): Promise<Response> => {
-    const token = share();
-    const signal = leaving?.();
-    if (signal?.aborted) return new Promise(() => undefined);
-    return request(path, { ...(token ? { headers: { 'x-moss-share': token } } : {}), ...(signal ? { signal } : {}) })
-      .catch((error: unknown) => (signal?.aborted ? new Promise<Response>(() => undefined) : Promise.reject(error)));
+   * and held; if the page stays (the navigation was cancelled), it is sent again. */
+  const listingRequest = async (path: string): Promise<Response> => {
+    for (;;) {
+      const token = share();
+      const leave = leaving?.();
+      if (leave?.signal.aborted) {
+        await leave.stayed;
+        continue;
+      }
+      try {
+        return await request(path, { ...(token ? { headers: { 'x-moss-share': token } } : {}), ...(leave ? { signal: leave.signal } : {}) });
+      } catch (error) {
+        if (!leave?.signal.aborted) throw error;
+        await leave.stayed;
+      }
+    }
   };
   /** A path in this tab keeps its share token, so a reload or a reconnect still presents it. */
   const withShare = (path: string) => {
@@ -706,13 +718,30 @@ function windowBrowser(): BrowserHooks {
   };
 }
 
-/** Aborts on `beforeunload`, before WebKit stops the page's loads for the navigation; a page restored from the
- * back-forward cache gets a fresh signal. */
-function leavingSignal(): () => AbortSignal {
-  let controller = new AbortController();
-  window.addEventListener('beforeunload', () => controller.abort());
-  window.addEventListener('pageshow', (event) => { if (event.persisted) controller = new AbortController(); });
-  return () => controller.signal;
+/** A page still running this long after `beforeunload` stayed: its navigation was cancelled (a prompt, a download). */
+const STAYED_MS = 5_000;
+
+/** Aborts on `beforeunload`, before WebKit stops the page's loads for the navigation. The leave ends, releasing the
+ * held reads, when the page is still here after STAYED_MS or comes back from the back-forward cache. */
+function leavingSignal(): () => Leave {
+  const arm = () => {
+    let end = () => undefined as void;
+    const stayed = new Promise<void>((resolve) => { end = resolve; });
+    return { controller: new AbortController(), stayed, end };
+  };
+  let current = arm();
+  const stay = () => {
+    if (!current.controller.signal.aborted) return;
+    const left = current;
+    current = arm();
+    left.end();
+  };
+  window.addEventListener('beforeunload', () => {
+    current.controller.abort();
+    setTimeout(stay, STAYED_MS);
+  });
+  window.addEventListener('pageshow', (event) => { if (event.persisted) stay(); });
+  return () => ({ signal: current.controller.signal, stayed: current.stayed });
 }
 
 /** Installs the bridge on `window` before App's module evaluates (A§4.3). */
