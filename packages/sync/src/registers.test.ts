@@ -243,11 +243,13 @@ describe('L4 decorator registers @p:col-1 @p:col-3 @p:tech-1', () => {
       importBody(live, 'Intro.\n\n```js\nconst KEY = "SECRET-123";\n```\n\n{{2+3|5}}');
       expect(live.getMap('registers').size).toBe(2);
       serverWrite(live, 'test-delete', () => { for (const node of $getRoot().getChildren()) if (node.getTextContent() !== 'Intro.') node.remove(); });
-      expect([...live.getMap('registers').keys()]).toEqual([]);
+      // An emptied payload stays as a small tombstone, so a block a peer moved meanwhile keeps the same text.
+      const payloads = () => [...live.getMap<Y.Text>('registers').values()].map(text => text.toString());
+      expect(payloads().every(text => text === '')).toBe(true);
       expect(new TextDecoder().decode(Y.encodeStateAsUpdate(live))).not.toContain('SECRET-123');
       importBody(live, 'Replaced.\n\n```js\nnext\n```');
       importBody(live, 'Replaced again.');
-      expect(live.getMap('registers').size, 'a body replacement leaves no orphans').toBe(0);
+      expect(payloads().every(text => text === ''), 'a body replacement leaves no orphaned text').toBe(true);
     } finally { live.destroy(); }
   });
 });

@@ -1,13 +1,14 @@
 // Two editors wired as the vendored collaboration plugin wires them (A§10.2): Cmd+Z undoes only this client's edits
 // and never deletes a peer's text, and a deleted block's register payload leaves the shared state.
 import { createBinding, syncLexicalUpdateToYjs, syncYjsChangesToLexical, type Provider } from '@lexical/yjs';
-import { $createParagraphNode, $createTextNode, $getRoot, type ElementNode, type TextNode } from 'lexical';
+import { $createParagraphNode, $createTextNode, $getNodeByKey, $getRoot, type ElementNode, type TextNode } from 'lexical';
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { $importNoteBody, createConverterEditor, exportMarkdown } from '@moss-multi/sync/converter';
 import { excludedPropertiesFor } from '@moss-multi/sync/excluded-properties';
 import { bindRegisters } from '@moss-multi/sync/registers';
 import { isOwnOrigin, syncUnderOrigin } from './origins.ts';
+import { nodeRegister } from './register-input.ts';
 import { createBindingUndoManager } from './undo.ts';
 
 const noop = () => {};
@@ -158,6 +159,78 @@ describe('moving a register block', () => {
   });
 });
 
+type CodeNode = { getKey(): string; getCode(): string; setCode(code: string): void };
+const codeKey = (actor: Peer) => actor.editor.getEditorState().read(() => codeBlock().getKey());
+const code = (actor: Peer) => actor.editor.getEditorState().read(() => (codeBlock() as unknown as CodeNode).getCode());
+// What an open code view's setter does: it writes its draft, the bound register's text plus the keystroke.
+const typeCode = (actor: Peer, key: string, next: string) => actor.editor.update(() => {
+  ($getNodeByKey(key) as unknown as CodeNode).setCode(next);
+}, { discrete: true });
+const send = (from: Peer, to: Peer) => Y.applyUpdate(to.doc, Y.encodeStateAsUpdate(from.doc, Y.encodeStateVector(to.doc)));
+const occurrences = (actor: Peer, text: string) => exportMarkdown(actor.editor).split(text).length - 1;
+
+describe('a delete racing a move', () => {
+  it('the mover\'s open view stays bound to the live payload', async () => {
+    const seeder = seeded(() => $importNoteBody(CODE_NOTE));
+    const ada = peer(seeder.doc); const ben = peer(seeder.doc);
+    try {
+      await settle();
+      ada.editor.update(() => codeBlock().remove(), { discrete: true });
+      ben.editor.update(moveCodeFirst, { discrete: true });
+      await settle();
+      const key = codeKey(ben);
+      const bound = nodeRegister(ben.editor, key)!;
+      await exchange(ada, ben);
+      typeCode(ada, codeKey(ada), `${code(ada)} // ada`);
+      await exchange(ada, ben);
+      expect(bound.toString(), 'Ben\'s open view must receive Ada\'s edit').toBe('const kept = 1; // ada');
+      typeCode(ben, key, `${bound.toString()}!`);
+      await exchange(ada, ben);
+      for (const actor of [ada, ben]) expect(code(actor), 'Ben\'s keystroke must keep Ada\'s text').toBe('const kept = 1; // ada!');
+    } finally { ada.dispose(); ben.dispose(); seeder.dispose(); }
+  });
+
+  it('a third peer\'s concurrent edit to the payload survives', async () => {
+    const seeder = seeded(() => $importNoteBody(CODE_NOTE));
+    const ada = peer(seeder.doc); const ben = peer(seeder.doc); const carl = peer(seeder.doc);
+    try {
+      await settle();
+      ada.editor.update(() => codeBlock().remove(), { discrete: true });
+      ben.editor.update(moveCodeFirst, { discrete: true });
+      typeCode(carl, codeKey(carl), `${code(carl)} // carl`);
+      await settle();
+      await exchange(ada, ben, carl);
+      for (const actor of [ada, ben, carl]) {
+        expect(types(actor)).toEqual(['code-block', 'paragraph', 'paragraph']);
+        expect(code(actor), 'Carl\'s edit must survive').toBe('const kept = 1; // carl');
+      }
+    } finally { ada.dispose(); ben.dispose(); carl.dispose(); seeder.dispose(); }
+  });
+
+  it('a peer that saw the move first restores no second copy, and both keep typing', async () => {
+    const seeder = seeded(() => $importNoteBody(CODE_NOTE));
+    const ada = peer(seeder.doc); const ben = peer(seeder.doc); const dan = peer(seeder.doc);
+    try {
+      await settle();
+      ada.editor.update(() => codeBlock().remove(), { discrete: true });
+      ben.editor.update(moveCodeFirst, { discrete: true });
+      await settle();
+      send(ben, dan); await settle();
+      send(ada, dan); send(ada, ben); await settle();
+      typeCode(ben, codeKey(ben), `${code(ben)} B`);
+      typeCode(dan, codeKey(dan), `${code(dan)} D`);
+      await exchange(ada, ben, dan);
+      for (const actor of [ada, ben, dan]) {
+        expect(types(actor)).toEqual(['code-block', 'paragraph', 'paragraph']);
+        expect(occurrences(actor, 'const kept = 1;'), 'one copy of the payload').toBe(1);
+        expect(code(actor)).toContain(' B');
+        expect(code(actor)).toContain(' D');
+      }
+      expect(code(ada)).toBe(code(ben)); expect(code(ben)).toBe(code(dan));
+    } finally { ada.dispose(); ben.dispose(); dan.dispose(); seeder.dispose(); }
+  });
+});
+
 describe('a deleted block\'s register payload leaves the shared state', () => {
   it('later readers never receive deleted code, and undo restores it', async () => {
     const seeder = seeded(() => $importNoteBody('Intro.\n\n```js\nconst KEY = "SECRET-123";\n```'));
@@ -172,7 +245,7 @@ describe('a deleted block\'s register payload leaves the shared state', () => {
       ada.editor.update(() => { for (const node of $getRoot().getChildren()) if (node.getType() === 'code-block') node.remove(); }, { discrete: true });
       await settle(); toServer();
       expect(exportMarkdown(ada.editor)).not.toContain('SECRET-123');
-      expect([...server.getMap('registers').keys()], 'no register outlives its block').toEqual([]);
+      expect([...server.getMap<Y.Text>('registers').values()].map(text => text.toString()), 'no payload outlives its block').toEqual(['']);
       expect(leaked(), 'a viewer shared in later must not receive deleted code').toBe(false);
       ada.undo.undo();
       await settle(); toServer();
