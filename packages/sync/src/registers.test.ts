@@ -1,8 +1,8 @@
 import { $getRoot, $isElementNode, COLLABORATION_TAG, type LexicalNode } from 'lexical';
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
-import { exportDocMarkdown, importBody, serverWrite } from './server-doc.ts';
-import { exportMarkdown, importMarkdown } from './converter/index.ts';
+import { exportDocMarkdown, importBody, seedEmptyParagraph, serverWrite } from './server-doc.ts';
+import { $importNoteBody, exportMarkdown, importMarkdown } from './converter/index.ts';
 import { EXCLUDED_FIELDS } from './excluded-properties.ts';
 import { createBinding, syncLexicalUpdateToYjs, syncYjsChangesToLexical, type Provider } from '@lexical/yjs';
 import { createConverterEditor } from './converter/index.ts';
@@ -177,6 +177,36 @@ describe('L4 decorator registers @p:col-1 @p:col-3 @p:tech-1', () => {
       expect(exportDocMarkdown(a).match(/changed seed/g)).toHaveLength(1);
       expect(exportDocMarkdown(b)).toBe(before);
     } finally { a.destroy(); b.destroy(); }
+  });
+
+  it.each(cases)('$type pasted concurrently into one empty note by two editors stays two independent registers', (fixture) => {
+    const seed = new Y.Doc(); seedEmptyParagraph(seed);
+    const a = client(seed); const b = client(seed);
+    const all = (peer: ReturnType<typeof client>) => peer.editor.getEditorState().read(() =>
+      $getRoot().getChildren().filter(node => node.getType() === fixture.type) as unknown as Record<string, unknown>[]);
+    try {
+      // MarkdownEditor's whole-note paste seam imports into an empty note through the converter.
+      for (const peer of [a, b]) peer.editor.update(() => $importNoteBody(fixture.markdown, { comments: {} }), { discrete: true });
+      for (const [peer, value] of [[a, fixture.a], [b, fixture.b]] as const) peer.editor.update(() => {
+        (find(fixture.type) as unknown as Record<string, (text: string) => void>)[fixture.setter](value);
+      }, { discrete: true });
+      Y.applyUpdate(a.doc, Y.encodeStateAsUpdate(b.doc));
+      Y.applyUpdate(b.doc, Y.encodeStateAsUpdate(a.doc));
+      for (const peer of [a, b]) {
+        peer.editor.update(noop, { discrete: true });
+        const blocks = all(peer);
+        expect(blocks).toHaveLength(2);
+        expect(blocks[0].__regId, 'concurrent pastes must not share a register').not.toBe(blocks[1].__regId);
+        expect(blocks.map(block => block[fixture.field]).sort(), 'both authors keep their typing').toEqual([fixture.a, fixture.b].sort());
+      }
+      a.editor.update(() => {
+        const node = $getRoot().getChildren().find(child => (child as unknown as Record<string, unknown>)[fixture.field] === fixture.a)!;
+        (node as unknown as Record<string, (text: string) => void>)[fixture.setter](`${fixture.a}!`);
+      }, { discrete: true });
+      Y.applyUpdate(b.doc, Y.encodeStateAsUpdate(a.doc));
+      b.editor.update(noop, { discrete: true });
+      expect(all(b).map(block => block[fixture.field]).sort(), 'editing one block leaves the other').toEqual([`${fixture.a}!`, fixture.b].sort());
+    } finally { a.dispose(); b.dispose(); seed.destroy(); }
   });
 
   it('upgrades persisted attributes without replacing nodes or changing export bytes', () => {
