@@ -54,7 +54,7 @@ import { hidden } from '@moss-multi/host/affordances';
 import { canDuplicateNote } from '@moss-multi/host/duplicate';
 import { FolderMenuItems, surfacedShared, surfacedFolder } from '@moss-multi/host/slots';
 // moss-multi seam: folders (T2.2): folder controls follow the caller's role; a refusal reads as the server's sentence.
-import { canCreateFolder, canEditFolder, canTrashFolder, folderError } from '@moss-multi/host/folders';
+import { canCreateFolder, canEditFolder, canTrashFolder, folderRefusal } from '@moss-multi/host/folders';
 import { refuseInput } from '@moss-multi/host/refusal';
 
 const NOTES_FOLDER_NAME = 'Notes';
@@ -787,7 +787,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
         isSubmittingRef.current = false;
       } catch (err) {
         console.warn('[FolderCreate] Failed to create folder:', err);
-        setFolderError(folderError(err)); // moss-multi seam: folders (T2.2)
+        setFolderError(folderRefusal(err)); // moss-multi seam: folders (T2.2)
         isSubmittingRef.current = false;
       }
     }, [newFolderName, folderList, creatingFolderParentPath, fetchBackendFolders, setExpandedFolders]);
@@ -1219,7 +1219,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
         await fetchBackendFolders();
       } catch (err) {
         console.warn('[NotesListPanel] Failed to trash folder:', err);
-        refuseInput(folderError(err)); // moss-multi seam: folders (T2.2): a refused trash is never silent
+        refuseInput(folderRefusal(err)); // moss-multi seam: folders (T2.2): a refused trash is never silent
       }
       setTrashFolderTarget(null);
     }, [trashFolderTarget, fetchBackendFolders]);

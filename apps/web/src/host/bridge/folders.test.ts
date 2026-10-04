@@ -35,6 +35,10 @@ function fakeServer() {
       state.docs = state.docs.map((doc) => doc.id === id ? { ...doc, folderPath: path, updatedAt: 3000 } : doc);
       return Response.json({ doc: { ...state.docs.find((doc) => doc.id === id), folderId: body.folderId }, role: 'owner' });
     }
+    if (method === 'PATCH' && url.pathname.startsWith('/api/folders/')) {
+      const folder = state.folders.find((f) => url.pathname.endsWith(f.id));
+      return folder ? Response.json({ folder: { id: folder.id, name: body.name ?? folder.name } }) : Response.json({ error: 'not-found' }, { status: 404 });
+    }
     if (method === 'DELETE' && url.pathname.startsWith('/api/folders/')) {
       state.folders = state.folders.filter((f) => !url.pathname.endsWith(f.id));
       return Response.json({ trashBatchId: 'b', docIds: [], folderIds: [] });

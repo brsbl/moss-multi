@@ -3,7 +3,7 @@
 // whose open docs are closed through DocDO.trash; every refusal is a sentence.
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
-import { BASE, insertDoc, insertFolder, insertGrant, SECRET, signedUpUser, type TestUser } from '../test/principals.ts';
+import { BASE, insertDoc, insertFolder, insertGrant, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
 import { handleApi } from './router.ts';
 
 const trashed: string[] = [];
@@ -30,7 +30,7 @@ const PrincipalDO = {
 };
 
 let d1: TestD1;
-let env: Parameters<typeof handleApi>[1];
+let env: AuthTestEnv & Parameters<typeof handleApi>[1];
 let ada: TestUser;
 let ben: TestUser;
 let cy: TestUser;

@@ -15,5 +15,5 @@ export const canCreateFolder = (): boolean => canEditFolder('Notes');
 export const canTrashFolder = (path: string): boolean => roleOf(path) === 'owner';
 
 /** What a refused folder change says; moss itself would show a bare "Failed". */
-export const folderError = (error: unknown): string =>
+export const folderRefusal = (error: unknown): string =>
   error instanceof Error && error.message.trim() ? error.message : 'The folder couldn’t be changed. Try again.';
