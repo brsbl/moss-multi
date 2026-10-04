@@ -1,3 +1,4 @@
+import { $assignRegisterIds } from '@moss-multi/host/collab/registers';
 import { $convertFromMarkdownString, $convertToMarkdownString } from '@lexical/markdown';
 import type { NoteLayoutMetadata } from '../../../common/noteTypes';
 import type { CommentMetadataMap } from '../utils/comment-markdown';
@@ -22,6 +23,7 @@ export function $importNoteBody(markdown: string, options: NoteBodyImportOptions
     withImportFormulaIds(prepared, () => {
       $convertFromMarkdownString(prepared, MARKDOWN_EDITOR_TRANSFORMERS);
       $postImportNormalize(options.comments, undefined, { layoutMetadata: options.layout });
+      $assignRegisterIds();
     }),
   );
 }

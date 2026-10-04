@@ -17,6 +17,7 @@ import { publishMeta } from './fanout.ts';
 import type { SyncEnv } from './env.ts';
 import { migrateFrontmatter } from '@moss-multi/core/frontmatter';
 import { writeField } from '@moss-multi/core/doc-fields';
+import { migrateRegisters } from './registers.ts';
 import { exportDocMarkdown, importBody, rootIsEmpty, SERVER_IMPORT, SERVER_SEED, seedEmptyParagraph } from './server-doc.ts';
 
 /** A title written by create() or a REST rename; both project. */
@@ -85,6 +86,7 @@ export class DocDO extends YServer<SyncEnv> {
     this.#store = store;
     this.document.on('update', (update: Uint8Array, origin: unknown) => this.#persist(store, update, origin));
     migrateFrontmatter(this.document, 'frontmatter-migration');
+    migrateRegisters(this.document);
     this.#seed(store);
     const target = (this.constructor as typeof DocDO).projectionTarget(this.env);
     if (target) this.#project(new Projections(this.name, target));
@@ -204,6 +206,20 @@ export class DocDO extends YServer<SyncEnv> {
     writeField(this.document, 'title', text, SERVER_TITLE);
     this.#projections?.touch();
     await this.#projections?.flush();
+  }
+
+  /**
+   * The doc went to Trash (A§5.1): the flag is persisted before anyone hears of it, so a woken DO and a reconnect
+   * also meet 4410; every open socket is told, then closed 4410. Idempotent.
+   */
+  async trash(): Promise<void> {
+    const store = await this.#ready();
+    store.setMeta('deleted', '1');
+    const event: ServerEvent = { t: 'doc-deleted' };
+    for (const connection of this.getConnections()) {
+      this.sendCustomMessage(connection, JSON.stringify(event));
+      connection.close(CLOSE.deleted, 'deleted');
+    }
   }
 
   /** Internal RPC: preserves Yjs item identity, including relative anchors, without a markdown round trip. */

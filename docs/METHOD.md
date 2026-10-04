@@ -45,7 +45,7 @@ Read this with PRODUCT.md, your BUILDPLAN entry and the A§ it cites, before wri
 - Host code imports moss through `@moss-desktop/*`, declared in `apps/web/src/host/moss-modules.d.ts`, so apps/web's tsc stops at the vendor boundary; `tailwind.config.ts` stays out of tsconfig because moss's config imports its theme state. The moss chunk sits behind `import.meta.env.SSR` in `MossAppHost`, so the Worker bundle never carries it.
 - SP13 (T0.5a): a `data:` iframe inherits the page CSP in Chromium, so a moss-html block's inline script is refused under the nonce policy. Blocks load `/frame/html` (its own policy is only `sandbox allow-scripts`); never inject a scripted `data:` iframe in a journey, since Chromium logs the refusal as a console error.
 - `html[data-app-state]` is `booting` in the SSR document and `ready` once moss's `[data-moss-app-shell]` renders; the shell's editor canvas is moss's `CanvasArea` scroll container (`data-editor-canvas`, a seam in the shared primitive).
-- Local stack: `node scripts/stack.mjs start` builds the tree into `.local-stack/builds/<key>`, boots `wrangler dev` on those bytes and prints `http://127.0.0.1:<port>` (never `localhost`); `stop --run-id <id>` when done. Ready means `/api/version` equals the build, `/` carries `meta[name=moss-build]`, and every linked stylesheet and module script is 200 with its type. Starting a third stack fails; every start reaps orphans first. [L§5.3]
+- Local stack: `node scripts/stack.mjs start` builds the tree into `.local-stack/builds/<key>`, boots `wrangler dev` on those bytes and prints `http://127.0.0.1:<port>` (never `localhost`); `stop --run-id <id>` when done. Ready means `/api/version` equals the build, `/` carries `meta[name=moss-build]`, and every linked stylesheet and module script is 200 with its type. Starting a sixth stack fails; every start reaps orphans first. [L§5.3]
 - Provenance comes from `apps/web/vite-provenance.ts`: the Worker gets `__MOSS_BUILD__` in full, the client only `commit` and `clientHash`; `scripts/provenance.mjs read <dist>` prints it for `$GITHUB_OUTPUT` and fails unless there is exactly one record.
 
 ## Porting moss
@@ -113,6 +113,8 @@ Read this with PRODUCT.md, your BUILDPLAN entry and the A§ it cites, before wri
 
 ## Lexical and the binding
 
+- Register cache refreshes wait for any pending Lexical update to commit, then commit discretely themselves. A microtask alone can tag a pending authored update, or leave its own collaboration tag for the next edit, silently dropping tree writes and background conversions. [T1.9]
+- Deterministic ids are safe only for one serialized writer. A live editor's import (empty-note paste) races its peers, so it mints unique register ids; identical deterministic ids collide in Y.Map and link the blocks. [T1.9]
 - `HISTORIC_TAG` updates never replicate: exclude writes from undo by origin, never by tag. [L§4.3]
 - Never mutate the synced tree locally; a paint-only mark split text nodes and every later keystroke in that tab was dropped. Paint is derived. [L§4.3]
 - Derived-origin transactions must not fold back through the binding ("Insert row" added two rows). [L§4.3]
@@ -127,6 +129,9 @@ Read this with PRODUCT.md, your BUILDPLAN entry and the A§ it cites, before wri
 - `data-sync-unacked` turns `1` in the tick of a local write and `0` on the DocDO ack that covers it; a journey waits for `0` before a reload. moss's bottom toolbar carries `data-floating-selection-toolbar` (a MarkdownEditor seam), so invariant 5 allows it as it does the selection bar. [T0.8]
 
 ## Title, presence, connection
+
+- A host import into a vendored component can be shadowed by moss's own locals (`folderError` is a `useState` in NotesListPanelContent); name seam imports so they cannot collide, since vendor/ is neither linted nor typechecked from apps/web. [T2.2]
+- Folders (T2.2): moss names folders by `Notes/...` path, so every folder call maps the path through the listing's id↔path map and re-reads the listing after the change; moss renders a thrown `Error.message` as is, so the server sends a sentence on every refusal. A folder's subtree trashes as one `trash_batch_id`, D1 first, then `DocDO.trash()` closes each open doc 4410; an owner's retry re-closes the batch.
 
 - A row-menu Rename transfers focus in `onCloseAutoFocus`, cancelling the return to its trigger. The intent carries the target note id so an async selection cannot focus the old pane. The bound title consumes every autofocus intent, including repeat renames of the same note. The input-refusal region also renders on the empty canvas and collapses when empty. [T1.4]
 

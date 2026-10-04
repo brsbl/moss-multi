@@ -4,7 +4,8 @@ import { UNDO_COMMAND, REDO_COMMAND, type LexicalEditor } from 'lexical';
 import type { Binding } from '@lexical/yjs';
 import { UndoManager } from 'yjs';
 
-export const REGISTER_LOCAL_ORIGIN = Symbol('moss-multi:register-local');
+import { REGISTER_LOCAL_ORIGIN } from '@moss-multi/sync/registers';
+export { REGISTER_LOCAL_ORIGIN };
 
 export const UNDO_CAPTURE_TIMEOUT_MS = 1_000;
 

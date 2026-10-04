@@ -284,7 +284,7 @@ test('no hidden or staged affordance renders in the shell, its menus or Settings
     await expect(page.getByRole('button', { name: 'Create new note' }), `${actor.label}: "+ Note" stays`).toBeVisible();
     expect(await probeHits(page, 'shell'), `${actor.label}: the shell`).toEqual([]);
 
-    // Folder actions holds "Open..." (native-only) and "New Folder" (staged to M2); with both hidden the trigger goes too.
+    // Folder actions holds "Open..." (native-only, withheld) and "New Folder" (T2.2, offered to editors and the owner).
     const folderActions = page.getByRole('button', { name: 'Folder actions' });
     if ((await folderActions.count()) > 0) {
       await folderActions.click();

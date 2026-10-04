@@ -13,6 +13,7 @@ import { docs } from '../db/schema.ts';
 import type { AppEnv } from '../env.ts';
 import { json } from '../worker/route.ts';
 import { resolveDocAccess, resolveFolderAccess } from './access.ts';
+import { folderNotFound, liveIn, moveDoc, upFrom, vaultOf } from './folders.ts';
 import { handleLinks } from './links.ts';
 import { handleMembers, type MembersEnv } from './members.ts';
 import { NO_STORE, notFound, readJsonObject, unauthenticated } from './respond.ts';
@@ -34,12 +35,17 @@ export interface DocRecord {
   updatedAt: number;
 }
 
-async function insertDoc(db: Db, row: { folderId: string; ownerUserId: string; createdBy: string; title: string }): Promise<DocRecord> {
+/** Inserts the row only while its folder is still live in its vault (a trash may be under way); null when it isn't. */
+async function insertDoc(env: DocsEnv, db: Db, row: { folderId: string; ownerUserId: string; createdBy: string }): Promise<DocRecord | null> {
   const id = crypto.randomUUID();
   const now = Date.now();
   const doc = { id, folderId: row.folderId, title: '', filename: `pending-${id}.md`, createdAt: now, updatedAt: now };
-  await db.insert(docs).values({ ...doc, ownerUserId: row.ownerUserId, createdBy: row.createdBy });
-  return doc;
+  const vault = await vaultOf(db, row.folderId);
+  const inserted = await env.DB.prepare(`WITH RECURSIVE ${upFrom(1)}
+    INSERT INTO docs (id, owner_user_id, created_by, folder_id, title, filename, created_at, updated_at)
+    SELECT ?2, ?3, ?4, ?1, '', ?5, ?6, ?6 WHERE ${liveIn(7)}`)
+    .bind(row.folderId, id, row.ownerUserId, row.createdBy, doc.filename, now, vault).run();
+  return (inserted.meta?.changes ?? 0) > 0 ? doc : null;
 }
 
 async function createDoc(request: Request, env: DocsEnv): Promise<Response> {
@@ -61,7 +67,8 @@ async function createDoc(request: Request, env: DocsEnv): Promise<Response> {
     return json({ error: 'forbidden', message: 'You can view this folder but not add notes to it.' }, 403, NO_STORE);
   }
   const title = typeof body.title === 'string' ? body.title.trim() : '';
-  const doc = await insertDoc(db, { folderId, ownerUserId: folder.ownerUserId, createdBy: principal.id, title });
+  const doc = await insertDoc(env, db, { folderId, ownerUserId: folder.ownerUserId, createdBy: principal.id });
+  if (!doc) return folderNotFound();
   const stub = await getServerByName(env.DocDO, doc.id);
   try {
     await stub.create({ folderId, ownerId: folder.ownerUserId, ...(title ? { title } : {}),
@@ -97,7 +104,8 @@ async function duplicateDoc(request: Request, env: DocsEnv, docId: string): Prom
   const original = await getServerByName(env.DocDO, docId);
   const snapshot = await original.snapshotForDuplicate();
   const title = `${snapshot.title.trim() || 'Untitled'} copy`;
-  const doc = await insertDoc(db, { folderId, ownerUserId: folder.ownerUserId, createdBy: principal.id, title });
+  const doc = await insertDoc(env, db, { folderId, ownerUserId: folder.ownerUserId, createdBy: principal.id });
+  if (!doc) return folderNotFound();
   try {
     const target = await getServerByName(env.DocDO, doc.id);
     await target.createFromSnapshot({ folderId, ownerId: folder.ownerUserId, title }, snapshot.state);
@@ -126,13 +134,19 @@ async function readDoc(request: Request, env: DocsEnv, docId: string): Promise<R
   return json({ doc, role: access.role }, 200, NO_STORE);
 }
 
-async function renameDoc(request: Request, env: DocsEnv, docId: string): Promise<Response> {
+/** PATCH /api/docs/:id: `{title}` renames through the DocDO; `{folderId}` moves the note (folders.ts). */
+async function patchDoc(request: Request, env: DocsEnv, docId: string): Promise<Response> {
+  const body = await readJsonObject(request);
+  if (body && 'folderId' in body && !('title' in body)) return moveDoc(request, env, docId, body.folderId);
+  return renameDoc(request, env, docId, body);
+}
+
+async function renameDoc(request: Request, env: DocsEnv, docId: string, body: Record<string, unknown> | null): Promise<Response> {
   const principal = await resolvePrincipal(request, env);
   if (!principal) return unauthenticated();
   const access = await resolveDocAccess(createDb(env.DB), principal, docId, shareTokenOf(request));
   if (!access || access.deleted) return notFound();
   if (!roleAtLeast(access.role, 'editor')) return json({ error: 'forbidden' }, 403, NO_STORE);
-  const body = await readJsonObject(request);
   if (!body || typeof body.title !== 'string') return json({ error: 'bad-request' }, 400, NO_STORE);
   try {
     const stub = await getServerByName(env.DocDO, docId);
@@ -161,7 +175,7 @@ export async function handleDocs(request: Request, env: DocsEnv): Promise<Respon
   const duplicate = /^\/api\/docs\/([^/]+)\/duplicate$/.exec(pathname);
   if (duplicate) return only('POST', request, () => duplicateDoc(request, env, duplicate[1]));
   const doc = DOC.exec(pathname);
-  if (doc) return request.method === 'PATCH' ? renameDoc(request, env, doc[1]) : only('GET', request, () => readDoc(request, env, doc[1]));
+  if (doc) return request.method === 'PATCH' ? patchDoc(request, env, doc[1]) : only('GET', request, () => readDoc(request, env, doc[1]));
   const members = MEMBERS.exec(pathname);
   if (members) return handleMembers(request, env, { type: 'doc', id: members[1] });
   const links = LINKS.exec(pathname);

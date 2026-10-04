@@ -53,6 +53,9 @@ import { foldersApi } from '../api/electron';
 import { hidden } from '@moss-multi/host/affordances';
 import { canDuplicateNote } from '@moss-multi/host/duplicate';
 import { FolderMenuItems, surfacedShared, surfacedFolder } from '@moss-multi/host/slots';
+// moss-multi seam: folders (T2.2): folder controls follow the caller's role; a refusal reads as the server's sentence.
+import { canCreateFolder, canEditFolder, canMoveItems, canTrashFolder, folderRefusal } from '@moss-multi/host/folders';
+import { refuseInput } from '@moss-multi/host/refusal';
 
 const NOTES_FOLDER_NAME = 'Notes';
 const nowInSeconds = (): number => Math.floor(Date.now() / 1000);
@@ -255,8 +258,8 @@ const NoteListItemWithMenu = memo(function NoteListItemWithMenu({
 }: NoteListItemWithMenuProps) {
   const isActive = useIsActiveNote(note.id);
   const [isContextMenuOpen, setIsContextMenuOpen] = useState(false);
-  // moss-multi seam: shared-rows (A§11: a surfaced shared row offers no move)
-  const draggable = (options?.draggable ?? true) && !surfacedShared(note.id);
+  // moss-multi seam: shared-rows (A§11: a surfaced shared row offers no move); only the vault's owner moves (A§8)
+  const draggable = (options?.draggable ?? true) && !surfacedShared(note.id) && canMoveItems(note.id);
   const showActiveState = options?.showActiveState ?? true;
   const isVisuallyActive = showActiveState && isActive;
   const cardRef = options?.isSelected
@@ -784,7 +787,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
         isSubmittingRef.current = false;
       } catch (err) {
         console.warn('[FolderCreate] Failed to create folder:', err);
-        setFolderError('Failed');
+        setFolderError(folderRefusal(err)); // moss-multi seam: folders (T2.2)
         isSubmittingRef.current = false;
       }
     }, [newFolderName, folderList, creatingFolderParentPath, fetchBackendFolders, setExpandedFolders]);
@@ -1216,6 +1219,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
         await fetchBackendFolders();
       } catch (err) {
         console.warn('[NotesListPanel] Failed to trash folder:', err);
+        refuseInput(folderRefusal(err)); // moss-multi seam: folders (T2.2): a refused trash is never silent
       }
       setTrashFolderTarget(null);
     }, [trashFolderTarget, fetchBackendFolders]);
@@ -1233,9 +1237,10 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
         const isExpanded = expandedFolders.has(folder.path);
         // Show inline subfolder creation input if creating inside this folder
         const showSubfolderInput = isCreatingFolder && creatingFolderParentPath === folder.path;
-        // moss-multi seam: surfaced shares never offer folder mutations.
-        const mutable = !hidden('new-folder') && !surfacedFolder(folder.path);
-        const isFolderDraggable = mutable && folder.type !== 'system';
+        // moss-multi seam: surfaced shares never offer folder mutations, and only editors change folders (T2.2).
+        const mutable = !surfacedFolder(folder.path) && canEditFolder(folder.path);
+        // moss-multi seam: folders: a move changes who can open the subtree, so only the vault's owner drags (A§8).
+        const isFolderDraggable = mutable && canMoveItems() && folder.type !== 'system';
 
         return (
           <ContextMenu key={folder.path}>
@@ -1346,7 +1351,8 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
             </ContextMenuItem>
             )}
             {hidden('reveal-in-finder') || hidden('trash') ? null : <ContextMenuSeparator />}
-            {hidden('trash') ? null : (
+            {/* moss-multi seam: folders (T2.2): only the owner trashes a folder (A§8) */}
+            {surfacedFolder(folder.path) || !canTrashFolder(folder.path) ? null : (
             <ContextMenuItem onSelect={() => handleTrashFolderClick(folder.path)}>
               <Trash2 className="h-3.5 w-3.5 text-accent-terracotta" />
               <span>Trash Folder</span>
@@ -1360,7 +1366,8 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
     );
 
     const renderedNotes = useMemo(() => {
-      if (!hasAnyNotes) {
+      // moss-multi seam: folders (T2.2): an empty workspace still shows the folder being created and its folders.
+      if (!hasAnyNotes && !isCreatingFolder && folderList.length === 0) {
         return (
           <div className="rounded-xl border border-dashed border-border-subtle bg-surface-raised-card p-4 text-sm text-ink-muted">
             Notes you create will appear here.
@@ -1684,8 +1691,8 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
           onCollapse={onCollapse}
           showTitle={false}
           sortContent={sortDropdown}
-          // moss-multi seam: hide-registry (A§9): with "Open..." and "New Folder" both withheld the menu goes too
-          topContent={!isCreatingFolder && !(hidden('open-directory') && hidden('new-folder')) ? (
+          // moss-multi seam: hide-registry (A§9): with "Open..." withheld and no folder to create the menu goes too (T2.2)
+          topContent={!isCreatingFolder && !(hidden('open-directory') && !canCreateFolder()) ? (
             <DropdownMenu open={folderActionsOpen} onOpenChange={setFolderActionsOpen}>
               <TooltipProvider>
                 <Tooltip>
@@ -1710,7 +1717,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
                   Open...
                 </DropdownMenuItem>
                 )}
-                {hidden('new-folder') ? null : (
+                {!canCreateFolder() ? null : (
                 <DropdownMenuItem className="gap-2 text-xs" onSelect={() => handleStartCreateFolder()}>
                   <FolderPlus className="h-3.5 w-3.5" aria-hidden />
                   New Folder

@@ -282,7 +282,7 @@ Folder delete stamps `deleted_at` and one `trash_batch_id` across the whole subt
   - Commenter and above: comment, reply, react, resolve.
   - Suggester and above: suggest.
   - Editor and above: edit content and title, rename, duplicate, create in shared vaults (the row owner stays the vault owner and `created_by` records the creator), upload, take named versions, restore, accept and reject.
-  - Owner only: trash and restore, share, members, links, invites, vault actions.
+  - Owner only: trash and restore, moving notes and folders (a move changes who can open them), share, members, links, invites, vault actions.
   - The share UI offers viewer, commenter, editor and owner; suggester appears in M5. Its add field takes an email or an agent id (copied from the agent's row in its owner's Settings → Agents); agent rows are tagged "agent", as in glyphdown's ShareDialog. [P:People; S-gd §5.8; L§1.3]
 - **Non-disclosure.** A missing, inaccessible, trashed, revoked-token or forged-token doc returns one byte-identical 404. The only exception is a 401 for a credential-less CLI, so it can prompt. Member emails are shown to the owner only. The owner's trash view and every owner GET of a trashed doc share one read path; mutations stay strict. [L§1.6; S-gd §5.1, §5.3; L§4.10 I-14]
 - **Notifications** are re-checked against the live grant when read, and unreachable targets are omitted. [L§1.6 D-G6]
@@ -685,7 +685,7 @@ S-test is the detailed design of record, but where it disagrees with this file o
   - It checks 9 global invariants on every actor of every test, and selftest fixtures prove each detector can fail.
   - Every journey uses at least 2 distinct per-run principals, and user actions go through the UI only.
   - Real severs use `routeWebSocket` and SIGSTOP. Hibernation is induced and then proven by an instance-id change. [S-test §3; L§7.1 #11–13]
-- **Local work.** `scripts/stack.mjs` is the same launcher CI uses. It allows at most 2 stacks machine-wide, reaps orphans, refuses translated Node, and records host state (a bb dev stack or Nightly running, load) with each run so local deaths are classed as infrastructure. `scripts/qa.mjs` drives bb Browser Automation (local headless Chrome for Testing) with per-principal contexts and 2× PNGs. The checker's pass is a change's one browser QA pass. No tests ever run locally. [S-test §4; owner rule; L§5.1]
+- **Local work.** `scripts/stack.mjs` is the same launcher CI uses. It allows at most 5 stacks machine-wide (`MOSS_MAX_STACKS` overrides), reaps orphans, refuses translated Node, and records host state (a bb dev stack or Nightly running, load) with each run so local deaths are classed as infrastructure. `scripts/qa.mjs` drives bb Browser Automation (local headless Chrome for Testing) with per-principal contexts and 2× PNGs. The checker's pass is a change's one browser QA pass. No tests ever run locally. [S-test §4; owner rule; L§5.1]
 - **Parity.**
   - The Ladle oracle is built in CI from moss@pin, with the `main.tsx` Prism and font preamble added. The shell stories are `app--default` and `app--empty-notes`; with no deploy key (OA1) it is built from `moss-vendor.mjs pristine` (§22). Capturing it on CI's ubuntu Chromium changes L§1.1's owner-gated capture baseline, so it is put to the owner at the M0 hand-off.
   - A target passes with a pixel diff of at most 0.05%, a largest blob of at most 16 px², and the diff image read.
