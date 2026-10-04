@@ -53,8 +53,11 @@ export class DocCapError extends Error {
 const isConnection = (origin: unknown): origin is Connection =>
   typeof origin === 'object' && origin !== null && typeof (origin as Connection).send === 'function' && 'id' in origin;
 
-/** Classifies frames for payload ids the store has never seen; never written. */
-const UNKNOWN_PAYLOAD = new Y.Doc();
+/**
+ * Classifies frames for payload ids the store has never seen; never written. Made on first use: a Y.Doc draws a
+ * random client id, which workerd refuses in global scope.
+ */
+let unknownPayload: Y.Doc | null = null;
 
 /** y-partyserver's guard: a socket that is closing or closed is skipped. */
 function send(connection: Connection, message: Uint8Array): void {
@@ -377,7 +380,7 @@ export class DocDO extends YServer<SyncEnv> {
         return;
       }
       // An id the store has never seen stays unloaded unless the frame writes to it.
-      const { changes, deletes } = classifySync(payloads.has(id) ? payloads.doc(id) : UNKNOWN_PAYLOAD, data);
+      const { changes, deletes } = classifySync(payloads.has(id) ? payloads.doc(id) : (unknownPayload ??= new Y.Doc()), data);
       if (!changes) {
         // An editor's resend of what is already stored: acked, since the ack that covered it may have been lost.
         if (roleAtLeast(attachment.role, 'editor')) this.#acks.schedule(connection, deletes, id);

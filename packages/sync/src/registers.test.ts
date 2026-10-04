@@ -192,6 +192,22 @@ describe('L4 decorator registers @p:col-1 @p:col-3 @p:tech-1', () => {
     } finally { doc.destroy(); }
   });
 
+  it.each(cases)('$type copied with $copyNode gets its own payload, seeded with the source text', (fixture) => {
+    const getter = { 'code-block': 'getCode', 'html-block': 'getRawHtml', formula: 'getFormula' }[fixture.type];
+    const seed = new Y.Doc(); importBody(seed, fixture.markdown);
+    const a = client(seed);
+    const blocks = () => findAll(fixture.type) as unknown as (LexicalNode & Record<string, (text?: string) => string> & { __regId: string })[];
+    try {
+      a.editor.update(() => { const node = blocks()[0]; node.insertAfter($copyNode(node)); }, { discrete: true });
+      const ids = a.editor.read(() => blocks().map(block => block.__regId));
+      expect(new Set(ids).size, 'the copy mints its own id').toBe(2);
+      expect(a.editor.read(() => blocks().map(block => block[getter]()))).toEqual([fixture.before, fixture.before]);
+      a.editor.update(() => { blocks()[1][fixture.setter](fixture.a); }, { discrete: true });
+      expect(a.editor.read(() => blocks().map(block => block[getter]())), 'editing the copy leaves the source').toEqual([fixture.before, fixture.a]);
+      expect(payloadsOf(a.doc).sort()).toEqual([fixture.a, fixture.before].sort());
+    } finally { a.dispose(); seed.destroy(); }
+  });
+
   it('imports stable register identities and gives duplicate blocks independent payloads', () => {
     const markdown = cases.map(item => `${item.markdown}\n\n${item.markdown}`).join('\n\n');
     const a = new Y.Doc(); const b = new Y.Doc();

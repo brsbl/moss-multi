@@ -170,16 +170,19 @@ interface Step {
 
 /**
  * The body's one Cmd+Z stack (A§10.8): the note's UndoManager and one per held payload doc, since a Y.UndoManager
- * spans one doc. Each new tracked edit records which manager took it, and undo and redo replay that order; edits one
- * action made in several docs (a setter and an attribute in one Lexical update, same `stamp`) are one step. A new
- * step ends every redo chain and closes every other manager's capture window, so steps never merge across managers.
- * It stands in for the root UndoManager where the plugin expects one (undo, redo, the stacks' lengths, the events).
+ * spans one doc. Each new tracked edit records which manager took it, and undo and redo replay that order. As one
+ * UndoManager over every doc would, edits within the root's capture window of the last one join its step, and so do
+ * edits one action made in several docs (a setter and an attribute in one Lexical update, same `stamp`). A new edit
+ * ends every redo chain. It stands in for the root UndoManager where the plugin expects one (undo, redo, the stacks'
+ * lengths, the events).
  */
 export class BodyUndo extends Observable<StackEvent> {
   readonly managers: Y.UndoManager[] = [];
   readonly undone: Step[] = [];
   readonly redone: Step[] = [];
   #replaying = false;
+  /** When the last tracked edit landed, in any doc. */
+  #lastChange = 0;
 
   constructor(
     readonly root: Y.UndoManager,
@@ -203,20 +206,26 @@ export class BodyUndo extends Observable<StackEvent> {
       if (!this.#replaying && event.type === 'undo') this.#added(manager);
       this.emit('stack-item-added', [event, this]);
     });
-    manager.on('stack-item-updated', (event: unknown) => this.emit('stack-item-updated', [event, this]));
+    manager.on('stack-item-updated', (event: { type: 'undo' | 'redo' }) => {
+      if (!this.#replaying && event.type === 'undo') this.#lastChange = Date.now();
+      this.emit('stack-item-updated', [event, this]);
+    });
     manager.on('stack-item-popped', (event: unknown) => this.emit('stack-item-popped', [event, this]));
   }
 
   #added(manager: Y.UndoManager): void {
+    const now = Date.now();
     const stamp = this.stamp();
     const last = this.undone.at(-1);
     this.redone.length = 0;
-    if (stamp !== null && last?.stamp === stamp) {
+    if (last && ((stamp !== null && last.stamp === stamp) || now - this.#lastChange < this.root.captureTimeout)) {
       last.managers.push(manager);
+      last.stamp = stamp;
     } else {
       this.undone.push({ managers: [manager], stamp });
       for (const other of this.managers) if (other !== manager) other.stopCapturing();
     }
+    this.#lastChange = now;
     for (const other of this.managers) if (other !== manager && other.redoStack.length) other.clear(false, true);
   }
 
@@ -246,6 +255,7 @@ export class BodyUndo extends Observable<StackEvent> {
 
   stopCapturing(): void {
     for (const manager of this.managers) manager.stopCapturing();
+    this.#lastChange = 0;
   }
 
   clear(clearUndo = true, clearRedo = true): void {
@@ -263,6 +273,7 @@ export class BodyUndo extends Observable<StackEvent> {
 
   /** Pops steps until one has something to replay (a peer may have emptied another's). */
   #step(from: Step[], to: Step[], run: (managers: Y.UndoManager[]) => unknown[]): unknown {
+    this.stopCapturing();
     this.#replaying = true;
     try {
       while (from.length) {

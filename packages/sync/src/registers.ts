@@ -181,6 +181,9 @@ export function bindRegisters(editor: LexicalEditor, doc: Y.Doc, { serializedImp
       const node = value as RegisterNode;
       const id = node.__regId;
       if (!id || $isCopy(node.getKey(), id)) {
+        // A copy starts from its source's current text, not a render cache that may lag it.
+        const source = id && !registry.pending.has(id) ? host.get(id) : undefined;
+        if (source) (node.getWritable() as RegisterNode)[field] = payload(payloadText(source));
         $mint(registry, node);
         return;
       }
