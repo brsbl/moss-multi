@@ -110,9 +110,17 @@ function payloadClient(state: Uint8Array, { filterPayloadEvents = true, dedupeUn
 
   // T1.P's undo rule, which the element-owned payload makes local: an undo never deletes a block whose payload holds
   // another client's live text (undoing a creation or a move a peer has since typed into).
+  // The filter sees each struct the undo would delete (the element, its attributes, the payload and its runs), so it
+  // decides for the block that contains the struct.
+  const blockOf = (item: Y.Item): Y.XmlElement | null => {
+    if (item.content instanceof Y.ContentType && item.content.type instanceof Y.XmlElement) return item.content.type;
+    let parent = item.parent as Y.AbstractType<unknown> | null;
+    while (parent && !(parent instanceof Y.XmlElement)) parent = (parent._item?.parent ?? null) as Y.AbstractType<unknown> | null;
+    return parent;
+  };
   const holdsPeerText = (item: Y.Item) => {
-    const type = item.content instanceof Y.ContentType ? item.content.type : null;
-    const payload = type instanceof Y.XmlElement ? type.getAttribute(PAYLOAD) as unknown : null;
+    const block = blockOf(item);
+    const payload = block ? block.getAttribute(PAYLOAD) as unknown : null;
     if (!(payload instanceof Y.Text)) return false;
     for (let run = payload._start; run; run = run.right) if (!run.deleted && run.id.client !== doc.clientID) return true;
     return false;
