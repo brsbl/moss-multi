@@ -62,12 +62,14 @@ describe('T4.0 per-frame anchor cost is bounded by the frame @p:tech-3', () => {
     expect(orphans.every(([, anchor]) => anchor.lost !== undefined)).toBe(true);
 
     for (const p of [30, 55, 77]) {
+      // Index 12 is the space after the paragraph's second word (index 0 is the property map).
+      expect(send(() => paragraph(client, p).delete(12, 1)).refused).toBeNull();
+      expect(host.engine.stats.comments).toBe(0);
+      expect(host.engine.stats.structs).toBe(0);
       expect(send(() => paragraph(client, p).insert(3, 'z')).refused).toBeNull();
       expect(host.engine.stats.comments).toBe(0);
       expect(host.engine.stats.structs).toBe(0);
       expect(host.engine.stats.lookups).toBeLessThanOrEqual(2);
-      expect(send(() => paragraph(client, p).delete(12, 1)).refused).toBeNull();
-      expect(host.engine.stats.structs).toBe(0);
     }
   });
 

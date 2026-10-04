@@ -41,9 +41,15 @@ export class CommentsHost {
   receive(update: Uint8Array, origin: unknown = CLIENT_FRAME): FrameVerdict {
     const refused = this.writer.check(update);
     if (refused) return { refused };
-    Y.applyUpdate(this.doc, update, origin);
+    let threw = false;
+    try {
+      Y.applyUpdate(this.doc, update, origin);
+    } catch {
+      // A malformed frame (a self-parented struct, say) can make Yjs throw mid-apply; it is refused like a parked one.
+      threw = true;
+    }
     const store = this.doc.store;
-    const parked = store.pendingStructs !== null || store.pendingDs !== null;
+    const parked = threw || store.pendingStructs !== null || store.pendingDs !== null;
     store.pendingStructs = null;
     store.pendingDs = null;
     const changed = this.flush();

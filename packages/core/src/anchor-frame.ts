@@ -5,6 +5,7 @@
 // frame inserted between the same survivors (I4), or is orphaned with its lost place and comes back only when live
 // items inside that place read exactly as the lost passage did (I5).
 import { digest } from 'lib0/hash/sha256';
+import { encodeUtf8 } from 'lib0/string';
 import * as Y from 'yjs';
 import { BLOCK_CHAR, fromBase64, toBase64 } from './tree-anchor.ts';
 
@@ -273,9 +274,8 @@ function entryTokens(entries: Entry[], full: boolean, live: Live): Tok[] {
 const sameTokens = (a: Tok[], b: Tok[]) => a.length === b.length && a.every((tok, i) => tok.t === b[i].t);
 const textOf = (tokens: Tok[]) => tokens.map((tok) => (tok.t.length === 1 ? tok.t : BLOCK_CHAR)).join('');
 
-const encoder = new TextEncoder();
 function signature(tokens: Tok[]): string {
-  const bytes = digest(encoder.encode(tokens.map((tok) => `${tok.t.length}:${tok.t}`).join('')));
+  const bytes = digest(encodeUtf8(tokens.map((tok) => `${tok.t.length}:${tok.t}`).join('')));
   return [...bytes.subarray(0, 16)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
