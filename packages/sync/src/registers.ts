@@ -9,6 +9,7 @@ export const REGISTER_FIELDS: Readonly<Record<string, string>> = {
 };
 type RegisterNode = LexicalNode & { __regId: string; [key: string]: unknown };
 const bindings = new WeakMap<LexicalEditor, Y.Doc>();
+let bindingCount = 0;
 
 export const registerDoc = (editor: LexicalEditor): Y.Doc | undefined => bindings.get(editor);
 
@@ -31,6 +32,7 @@ export function migrateRegisters(doc: Y.Doc): void {
   doc.transact(() => visit(doc.get('root', Y.XmlText)), REGISTER_INIT);
 }
 function currentDoc(): Y.Doc | undefined {
+  if (!bindingCount) return undefined;
   // SerializedEditorState.toJSON() has no active editor; cached fields cover that read.
   try { return bindings.get($getEditor()); } catch { return undefined; }
 }
@@ -86,6 +88,7 @@ export function $refreshRegisters(editor: LexicalEditor, doc: Y.Doc): void {
 /** Installed before V1 hydration on both the client and the DocDO mirror. */
 export function bindRegisters(editor: LexicalEditor, doc: Y.Doc): () => void {
   bindings.set(editor, doc);
+  bindingCount++;
   const registers = doc.getMap<Y.Text>('registers');
   const stops: (() => void)[] = [];
   for (const [type, field] of Object.entries(REGISTER_FIELDS)) {
@@ -103,8 +106,11 @@ export function bindRegisters(editor: LexicalEditor, doc: Y.Doc): () => void {
     }));
   }
   const refresh = () => editor.update(() => $refreshRegisters(editor, doc), { tag: COLLABORATION_TAG, skipTransforms: true });
-  registers.observeDeep(refresh);
+  const observe = (_events: unknown, transaction: Y.Transaction) => {
+    if (transaction.origin !== REGISTER_INIT && transaction.origin !== REGISTER_LOCAL_ORIGIN) refresh();
+  };
+  registers.observeDeep(observe);
   // Hydration can skip transforms, and may deliver the tree after the registers.
-  stops.push(editor.registerUpdateListener(({ tags }) => { if (tags.has(COLLABORATION_TAG)) refresh(); }));
-  return () => { stops.forEach(stop => stop()); registers.unobserveDeep(refresh); bindings.delete(editor); };
+  stops.push(editor.registerUpdateListener(refresh));
+  return () => { stops.forEach(stop => stop()); registers.unobserveDeep(observe); bindings.delete(editor); bindingCount--; };
 }

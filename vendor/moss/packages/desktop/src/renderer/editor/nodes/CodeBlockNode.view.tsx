@@ -1,7 +1,7 @@
 // ported-from: packages/desktop/src/renderer/editor/nodes/CodeBlockNode.tsx @ 762abb777
 // moss-multi seam: publish decorator drafts as register edits.
 import { useRegisterDraft } from '@moss-multi/host/collab/register-input';
-import { registerDoc } from '@moss-multi/sync/registers';
+import { registerDoc } from '@moss-multi/host/collab/registers';
 import React, { useCallback, useState, useRef, useEffect, useMemo } from 'react';
 import type { JSX } from 'react';
 import { $getNodeByKey, type NodeKey } from 'lexical';

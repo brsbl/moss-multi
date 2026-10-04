@@ -64,7 +64,7 @@ import {createPortal} from 'react-dom';
 // moss-multi seam: plugin-a, plugin-b (A§10.2 a, b)
 import {isOwnOrigin, syncUnderOrigin} from '@moss-multi/host/collab/origins';
 import {bindLocalLayout} from '@moss-multi/host/collab/layout-local';
-import {bindRegisters} from '@moss-multi/sync/registers';
+import {bindRegisters} from '@moss-multi/host/collab/registers';
 import {createBindingUndoManager} from '@moss-multi/host/collab/undo';
 import {
   type Doc,

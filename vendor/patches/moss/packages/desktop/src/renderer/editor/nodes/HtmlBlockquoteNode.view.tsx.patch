@@ -4,7 +4,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
 @@ -1,25 +1,13 @@
 +// moss-multi seam: publish decorator drafts as register edits.
 +import { useRegisterDraft } from '@moss-multi/host/collab/register-input';
-+import { registerDoc } from '@moss-multi/sync/registers';
++import { registerDoc } from '@moss-multi/host/collab/registers';
  import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
  import type { JSX } from 'react';
 -import {
@@ -133,6 +133,15 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
        }
      });
      setHasTextSelection(false);
+@@ -369,7 +315,7 @@ function RawHtmlBlockquoteComponent({
+   }, [commitRawHtml, editor._key, isEditing, nodeKey]);
+ 
+   const cancelEdit = useCallback(() => {
+-    setLocalRawHtml(rawHtml);
++    if (!registerDoc(editor)) setLocalRawHtml(rawHtml);
+     setHasTextSelection(false);
+     setIsEditing(false);
+   }, [rawHtml]);
 @@ -453,6 +399,7 @@ function RawHtmlBlockquoteComponent({
                    </pre>
                    <textarea
@@ -172,6 +181,15 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
        }
      });
      setHasTextSelection(false);
+@@ -825,7 +772,7 @@ function MossHtmlPreviewComponent({
+   }, [commitRawHtml, editor._key, isEditing, nodeKey]);
+ 
+   const cancelEdit = useCallback(() => {
+-    setLocalRawHtml(rawHtml);
++    if (!registerDoc(editor)) setLocalRawHtml(rawHtml);
+     setHasTextSelection(false);
+     setIsEditing(false);
+   }, [rawHtml]);
 @@ -884,6 +831,7 @@ function MossHtmlPreviewComponent({
          </pre>
          <textarea

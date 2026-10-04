@@ -1,7 +1,7 @@
 // ported-from: packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.tsx @ 762abb777
 // moss-multi seam: publish decorator drafts as register edits.
 import { useRegisterDraft } from '@moss-multi/host/collab/register-input';
-import { registerDoc } from '@moss-multi/sync/registers';
+import { registerDoc } from '@moss-multi/host/collab/registers';
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { JSX } from 'react';
 import { $createNodeSelection, $getNodeByKey, $setSelection, type NodeKey } from 'lexical';
@@ -316,7 +316,7 @@ function RawHtmlBlockquoteComponent({
   }, [commitRawHtml, editor._key, isEditing, nodeKey]);
 
   const cancelEdit = useCallback(() => {
-    setLocalRawHtml(rawHtml);
+    if (!registerDoc(editor)) setLocalRawHtml(rawHtml);
     setHasTextSelection(false);
     setIsEditing(false);
   }, [rawHtml]);
@@ -773,7 +773,7 @@ function MossHtmlPreviewComponent({
   }, [commitRawHtml, editor._key, isEditing, nodeKey]);
 
   const cancelEdit = useCallback(() => {
-    setLocalRawHtml(rawHtml);
+    if (!registerDoc(editor)) setLocalRawHtml(rawHtml);
     setHasTextSelection(false);
     setIsEditing(false);
   }, [rawHtml]);

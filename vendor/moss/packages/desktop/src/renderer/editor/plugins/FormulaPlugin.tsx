@@ -2,8 +2,8 @@
 // moss-multi seam: local-view (A§10): edit-session identity stays in the existing local map.
 // moss-multi seam: register drafts merge while the formula popover stays open.
 import { nodeRegister, repaint } from '@moss-multi/host/collab/register-input';
-import { registerDoc, REGISTER_LOCAL_ORIGIN } from '@moss-multi/sync/registers';
-import { diffText } from '@moss-multi/core/text-diff';
+import { registerDoc, REGISTER_LOCAL_ORIGIN } from '@moss-multi/host/collab/registers';
+import { diffText } from '@moss-multi/host/collab/registers';
 import { $isBoundEditor } from '@moss-multi/host/collab/view-state';
 /**
  * FormulaPlugin - Keyboard navigation for formula nodes
