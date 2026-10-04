@@ -19,6 +19,8 @@ let settleFails = 0;
 let settleGate: Promise<void> | null = null;
 /** While set, the next D1 statement matching it fails, as a D1 outage would. */
 let failSql: RegExp | null = null;
+/** D1 statements the routes prepared. */
+let statements = 0;
 const published = new Map<string, { type: string; docIds?: string[]; folderIds?: string[] }[]>();
 
 const docState = (doc: string) => model.get(doc) ?? model.set(doc, { holds: new Set(), deleted: false }).get(doc)!;
@@ -63,6 +65,7 @@ function flakyDb(db: D1Database): D1Database {
     get(target, key) {
       if (key !== 'prepare') return Reflect.get(target, key, target);
       return (sql: string) => {
+        statements += 1;
         if (!failSql?.test(sql)) return target.prepare(sql);
         failSql = null;
         const refuse = async () => { throw new Error('D1_ERROR: storage unavailable'); };
@@ -351,6 +354,39 @@ describe('the workspace listing', () => {
     expect((await list(ada)).find((row) => row.id === byDoc)).toMatchObject({ trashedAt: expect.any(Number) });
 
     expect((await call(ben, 'POST', `/api/docs/${byDoc}/restore`)).status).toBe(200);
-    expect((await list(ben)).find((row) => row.id === byDoc)?.trashedAt ?? null).toBeNull();
+    const live = (await list(ben)).find((row) => row.id === byDoc);
+    expect(live).toMatchObject({ id: byDoc, role: 'owner' });
+    expect(live?.trashedAt ?? null).toBeNull();
+  });
+
+  it('authorizes Trash in a bounded number of queries, however many trashed notes the caller reaches, and lists them all', async () => {
+    const vault = await insertFolder(d1.db, ada, null);
+    const folder = await insertFolder(d1.db, ada, vault);
+    await insertGrant(d1.db, { folderId: vault }, ben, 'owner');
+    const shown = await insertFolder(d1.db, ada, null);
+    await insertGrant(d1.db, { folderId: shown }, cy, 'editor');
+    const trash = async (count: number) => {
+      for (let i = 0; i < count; i += 1) {
+        await insertDoc(d1.db, ada, { folderId: folder, deleted: true });
+        await insertDoc(d1.db, ada, { folderId: shown, deleted: true });
+      }
+    };
+    const listing = async (user: TestUser, query: string) => {
+      statements = 0;
+      const response = await call(user, 'GET', `/api/workspace${query}`);
+      expect(response.status).toBe(200);
+      const docs = ((await response.json()) as { docs: { trashedAt?: number }[] }).docs.filter((row) => row.trashedAt);
+      return { statements, trashed: docs.length };
+    };
+    await trash(1);
+    const few = await listing(ben, `?vault=${vault}`);
+    const fewCy = await listing(cy, `?vault=${shown}`);
+    await trash(60);
+    const many = await listing(ben, `?vault=${vault}`);
+    expect(many.trashed, 'every trashed note is listed, none truncated').toBe(61);
+    expect(many.statements, 'the query count does not grow with Trash').toBe(few.statements);
+    const manyCy = await listing(cy, `?vault=${shown}`);
+    expect(manyCy.trashed, 'an editor still sees none').toBe(0);
+    expect(manyCy.statements, 'nor does an editor pay per trashed note').toBe(fewCy.statements);
   });
 });
