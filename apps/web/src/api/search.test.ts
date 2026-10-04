@@ -1,6 +1,6 @@
 // /api/search, /api/docs/:id/backlinks and /headings (T3.4; A§15): the Worker hands the index only the caller's
 // discovery closure (A§8), so a doc the caller cannot open never comes back, whatever the index holds.
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
 import { BASE, insertDoc, insertGrant, insertLink, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
 import { handleApi } from './router.ts';
@@ -18,7 +18,11 @@ const SearchDO = {
     setName: async () => undefined,
     search: async (input: { allowedDocIds: string[] }) => {
       asked.push({ method: 'search', input });
-      return { results: hits.map((docId) => ({ docId, title: 'stale', snippet: `…${docId} text…`, score: 1 })), unindexed };
+      const fed = unindexed.filter((id) => reindexed.includes(id));
+      return {
+        results: [...hits, ...fed].map((docId) => ({ docId, title: 'stale', snippet: `…${docId} text…`, score: 1 })),
+        unindexed: unindexed.filter((id) => !reindexed.includes(id)),
+      };
     },
     backlinks: async (input: { keys: string[]; allowedDocIds: string[] }) => {
       asked.push({ method: 'backlinks', input });
@@ -84,11 +88,13 @@ describe('GET /api/search', () => {
     expect(allowed).not.toContain(trashed);
   });
 
-  it('feeds allowed docs the index lacks, answers an empty query without the index, and 401s with no session', async () => {
+  it('feeds allowed docs the index lacks and answers with them, answers an empty query without the index, and 401s with no session', async () => {
     const doc = await named(ada, 'Unfed', 'unfed.md');
     unindexed = [doc];
-    expect((await get('/api/search?q=x', ada.cookie)).status).toBe(200);
-    await vi.waitFor(() => expect(reindexed).toEqual([doc]));
+    const first = await get('/api/search?q=x', ada.cookie);
+    expect(first.status).toBe(200);
+    expect(reindexed).toEqual([doc]);
+    expect(((await first.json()) as { results: { id: string }[] }).results.map((hit) => hit.id), 'a cold doc is found on the first search').toEqual([doc]);
     asked.length = 0;
     expect(await (await get('/api/search?q=%20', ada.cookie)).json()).toEqual({ results: [] });
     expect(asked).toEqual([]);
@@ -106,7 +112,7 @@ describe('GET /api/search', () => {
 });
 
 describe('GET /api/docs/:id/backlinks', () => {
-  it("asks by the target's title key and filename stem, and returns only sources the caller can open", async () => {
+  it("asks by the target's title key, filename stem and id, and returns only sources the caller can open", async () => {
     const target = await named(ada, 'Launch Plan', 'launch-plan-2.md');
     const visible = await named(ada, 'Kickoff', 'kickoff.md');
     const hidden = await named(ada, 'Private', 'private.md');
@@ -115,7 +121,7 @@ describe('GET /api/docs/:id/backlinks', () => {
     linking = [visible, hidden];
     const forAda = await (await get(`/api/docs/${target}/backlinks`, ada.cookie)).json() as { backlinks: { id: string; title: string }[] };
     expect(forAda.backlinks.map((link) => link.id).sort()).toEqual([visible, hidden].sort());
-    expect(asked.at(-1)?.input.keys).toEqual(['launch-plan', 'launch-plan-2']);
+    expect(asked.at(-1)?.input.keys).toEqual(['launch-plan', 'launch-plan-2', `id:${target}`]);
     const forBen = await (await get(`/api/docs/${target}/backlinks`, ben.cookie)).json() as { backlinks: { id: string; title: string }[] };
     expect(forBen.backlinks).toEqual([expect.objectContaining({ id: visible, title: 'Kickoff' })]);
   });

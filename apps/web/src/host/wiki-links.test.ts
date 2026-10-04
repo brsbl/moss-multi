@@ -15,3 +15,15 @@ it('resolves a wiki target by normalized title, then filename stem, and nothing 
   expect(resolveWikiTarget('Nowhere')).toBeNull();
   expect(resolveWikiTarget('  !! ')).toBeNull();
 });
+
+it('resolves within the source note’s vault: a doc surfaced from another vault never wins for an in-vault note (A§15)', () => {
+  setWikiCandidates(() => [
+    { id: 'away', title: 'Launch Plan', filename: 'launch-plan.md', surfaced: true },
+    { id: 'src', title: 'Kickoff', filename: 'kickoff.md' },
+    { id: 'home', title: 'Launch plan', filename: 'launch-plan-2.md' },
+    { id: 'only-away', title: 'Elsewhere', filename: 'elsewhere.md', surfaced: true },
+  ]);
+  expect(resolveWikiTarget('launch plan', 'src')).toBe('home');
+  expect(resolveWikiTarget('elsewhere', 'src')).toBeNull();
+  expect(resolveWikiTarget('launch plan', 'away'), 'a surfaced source keeps the whole listing').toBe('away');
+});

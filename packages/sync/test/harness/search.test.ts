@@ -29,6 +29,17 @@ describe('SearchDO', () => {
     expect((await index.search({ query: 'quokka', allowedDocIds: ['a'] })).results).toEqual([]);
   });
 
+  it('filters by the caller before ranking, so 400+ better-ranked docs they cannot open never crowd theirs out', async () => {
+    const index = await searchIndex();
+    for (let i = 0; i < 450; i += 1) {
+      await index.index({ docId: `other-${i}`, title: 'Quokka quokka', body: 'quokka quokka quokka quokka' });
+    }
+    await index.index({ docId: 'mine', title: 'Field notes', body: 'One quokka among many words in a long body.' });
+    const answer = await index.search({ query: 'quokka', allowedDocIds: ['mine', 'other-1'], limit: 1 });
+    expect(answer.results.map((hit) => hit.docId)).toEqual(['other-1']);
+    expect((await index.search({ query: 'quokka', allowedDocIds: ['mine'] })).results.map((hit) => hit.docId)).toEqual(['mine']);
+  });
+
   it('finds backlinks by any of a doc’s keys, within the allowed set, and says when a doc’s links change', async () => {
     const index = await searchIndex();
     expect(await index.index({ docId: 'src', title: 'Kickoff', body: 'Read [[Launch Plan]].' })).toEqual({ linksChanged: true });

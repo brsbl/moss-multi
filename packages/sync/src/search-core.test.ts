@@ -1,11 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { buildFtsMatch, extractWikiLinks, makeSnippet, parseHeadings, scoreEntry, wikiKey } from './search-core.ts';
+import { buildFtsMatch, extractWikiLinks, makeSnippet, idKey, parseHeadings, scoreEntry, wikiKey } from './search-core.ts';
 
 describe('search core (A§5.3)', () => {
   it('extracts wiki keys by title slug, never from an embed or a same-note heading', () => {
-    expect(extractWikiLinks('See [[Launch Plan]], [[Launch Plan#Risks]], [[launch-plan|n1]] and [[Café Notes]].')).toEqual(['launch-plan', 'café-notes']);
+    expect(extractWikiLinks('See [[Launch Plan]], [[Launch Plan#Risks]], [[launch-plan|alias]] and [[Café Notes]].')).toEqual(['launch-plan', 'café-notes']);
     expect(extractWikiLinks('![[ref.png|100x200]] and [[#Comments]]')).toEqual([]);
     expect(wikiKey('  Launch: Plan! ')).toBe('launch-plan');
+  });
+
+  it("keys moss's resolved [[title|noteId]] by its note id, so a same-titled doc or a rename doesn't move the backlink", () => {
+    const id = '0f8fad5b-d9cb-469f-a165-70867728950e';
+    expect(extractWikiLinks(`[[Launch Plan|${id}]] and [[Launch Plan#Risks|${id.toUpperCase()}]]`)).toEqual([idKey(id)]);
+    expect(idKey(id)).toBe(`id:${id}`);
   });
 
   it('quotes every token so a query is never FTS syntax', () => {
