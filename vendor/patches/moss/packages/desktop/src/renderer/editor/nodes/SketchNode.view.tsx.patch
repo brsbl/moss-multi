@@ -229,7 +229,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/pa
  // ---------------------------------------------------------------------------
  // SketchSurface -- canvas-based drawing surface
  // ---------------------------------------------------------------------------
-@@ -1170,11 +1009,30 @@ function SketchWrapper({
+@@ -1170,11 +1009,29 @@ function SketchWrapper({
      [isSelected, setSelected, clearSelection]
    );
  
@@ -255,15 +255,14 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/pa
 -    (nextGrid: boolean[], nextLabels: TextLabel[] = labelsRef.current) => {
 -      commitSketchDraftToNode(editor, nodeKey, nextGrid, nextLabels);
 +    (nextGrid: boolean[], nextLabels: TextLabel[] = labelsRef.current, base = { grid: gridRef.current, labels: labelsRef.current }) => {
-+      commitSketchDraftToNode(editor, nodeKey, nextGrid, nextLabels, base);
-+      peerSync.committed(base, { grid: nextGrid, labels: nextLabels });
++      peerSync.write(() => commitSketchDraftToNode(editor, nodeKey, nextGrid, nextLabels, base));
      },
 -    [editor, nodeKey]
 +    [editor, nodeKey, peerSync]
    );
  
    const handleDone = useCallback(() => {
-@@ -1217,6 +1075,7 @@ function SketchWrapper({
+@@ -1217,6 +1074,7 @@ function SketchWrapper({
    }, [editor._key, handleDone, isEditing, nodeKey]);
  
    const handleCancel = useCallback(() => {
@@ -271,7 +270,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/pa
      const baselineGrid = editBaselineGridRef.current;
      const baselineLabels = editBaselineLabelsRef.current;
      setGrid(baselineGrid);
-@@ -1225,7 +1084,7 @@ function SketchWrapper({
+@@ -1225,7 +1083,7 @@ function SketchWrapper({
      labelsRef.current = baselineLabels;
      setUndoStack([]);
      setRedoStack([]);
@@ -280,7 +279,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/pa
      setIsEditing(false);
    }, [persistSketchDraft]);
  
-@@ -1235,40 +1094,44 @@ function SketchWrapper({
+@@ -1235,40 +1093,44 @@ function SketchWrapper({
    // depend on the toolbar Done path.
    // Undo/redo is grid-only — labels are not part of the undo history.
    const handleGridChange = useCallback((newGrid: boolean[]) => {
@@ -329,7 +328,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/pa
      },
      [persistSketchDraft]
    );
-@@ -1482,6 +1345,8 @@ function SketchWrapper({
+@@ -1482,6 +1344,8 @@ function SketchWrapper({
                      </TooltipTrigger>
                      <TooltipContent side="bottom"><p>Edit canvas</p></TooltipContent>
                    </Tooltip>
@@ -338,7 +337,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/pa
                    <Tooltip>
                      <TooltipTrigger asChild>
                        <button
-@@ -1497,6 +1362,7 @@ function SketchWrapper({
+@@ -1497,6 +1361,7 @@ function SketchWrapper({
                      </TooltipTrigger>
                      <TooltipContent side="bottom"><p>Add comment</p></TooltipContent>
                    </Tooltip>
@@ -346,7 +345,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/pa
                  </div>
                </TooltipProvider>
              )}
-@@ -1521,175 +1387,12 @@ function SketchWrapper({
+@@ -1521,175 +1386,12 @@ function SketchWrapper({
    );
  }
  
@@ -524,7 +523,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/pa
  ): void {
    // Commit synchronously: note-switch cleanup saves immediately after flushing
    // decorator drafts. A non-discrete update can defer dirty notification until
-@@ -1698,10 +1401,15 @@ export function commitSketchDraftToNode(
+@@ -1698,10 +1400,15 @@ export function commitSketchDraftToNode(
      () => {
        const node = $getNodeByKey(nodeKey);
        if (node && $isSketchNode(node)) {

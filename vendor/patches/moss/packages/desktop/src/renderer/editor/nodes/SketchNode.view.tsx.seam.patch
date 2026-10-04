@@ -12,7 +12,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/pa
  // moss-multi seam: converter-split (A§12; S-conv §2.3)
  import { OPEN_BLOCK_COMMENT_COMMAND } from '../commands';
  import { EDITOR_CHROME_COLORS } from '../colors';
-@@ -1005,11 +1009,30 @@ function SketchWrapper({
+@@ -1005,11 +1009,29 @@ function SketchWrapper({
      [isSelected, setSelected, clearSelection]
    );
  
@@ -38,15 +38,14 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/pa
 -    (nextGrid: boolean[], nextLabels: TextLabel[] = labelsRef.current) => {
 -      commitSketchDraftToNode(editor, nodeKey, nextGrid, nextLabels);
 +    (nextGrid: boolean[], nextLabels: TextLabel[] = labelsRef.current, base = { grid: gridRef.current, labels: labelsRef.current }) => {
-+      commitSketchDraftToNode(editor, nodeKey, nextGrid, nextLabels, base);
-+      peerSync.committed(base, { grid: nextGrid, labels: nextLabels });
++      peerSync.write(() => commitSketchDraftToNode(editor, nodeKey, nextGrid, nextLabels, base));
      },
 -    [editor, nodeKey]
 +    [editor, nodeKey, peerSync]
    );
  
    const handleDone = useCallback(() => {
-@@ -1052,6 +1075,7 @@ function SketchWrapper({
+@@ -1052,6 +1074,7 @@ function SketchWrapper({
    }, [editor._key, handleDone, isEditing, nodeKey]);
  
    const handleCancel = useCallback(() => {
@@ -54,7 +53,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/pa
      const baselineGrid = editBaselineGridRef.current;
      const baselineLabels = editBaselineLabelsRef.current;
      setGrid(baselineGrid);
-@@ -1060,7 +1084,7 @@ function SketchWrapper({
+@@ -1060,7 +1083,7 @@ function SketchWrapper({
      labelsRef.current = baselineLabels;
      setUndoStack([]);
      setRedoStack([]);
@@ -63,7 +62,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/pa
      setIsEditing(false);
    }, [persistSketchDraft]);
  
-@@ -1070,40 +1094,44 @@ function SketchWrapper({
+@@ -1070,40 +1093,44 @@ function SketchWrapper({
    // depend on the toolbar Done path.
    // Undo/redo is grid-only — labels are not part of the undo history.
    const handleGridChange = useCallback((newGrid: boolean[]) => {
@@ -112,7 +111,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/pa
      },
      [persistSketchDraft]
    );
-@@ -1317,6 +1345,8 @@ function SketchWrapper({
+@@ -1317,6 +1344,8 @@ function SketchWrapper({
                      </TooltipTrigger>
                      <TooltipContent side="bottom"><p>Edit canvas</p></TooltipContent>
                    </Tooltip>
@@ -121,7 +120,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/pa
                    <Tooltip>
                      <TooltipTrigger asChild>
                        <button
-@@ -1332,6 +1362,7 @@ function SketchWrapper({
+@@ -1332,6 +1361,7 @@ function SketchWrapper({
                      </TooltipTrigger>
                      <TooltipContent side="bottom"><p>Add comment</p></TooltipContent>
                    </Tooltip>
@@ -129,7 +128,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/pa
                  </div>
                </TooltipProvider>
              )}
-@@ -1360,7 +1391,8 @@ export function commitSketchDraftToNode(
+@@ -1360,7 +1390,8 @@ export function commitSketchDraftToNode(
    editor: LexicalEditor,
    nodeKey: NodeKey,
    grid: boolean[],
@@ -139,7 +138,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/pa
  ): void {
    // Commit synchronously: note-switch cleanup saves immediately after flushing
    // decorator drafts. A non-discrete update can defer dirty notification until
-@@ -1369,8 +1401,8 @@ export function commitSketchDraftToNode(
+@@ -1369,8 +1400,8 @@ export function commitSketchDraftToNode(
      () => {
        const node = $getNodeByKey(nodeKey);
        if (node && $isSketchNode(node)) {
@@ -150,7 +149,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/pa
        }
      },
      { discrete: true }
-@@ -1379,5 +1411,5 @@ export function commitSketchDraftToNode(
+@@ -1379,5 +1410,5 @@ export function commitSketchDraftToNode(
  
  // moss-multi seam: node-views (A§12)
  registerNodeView(SketchNode.getType(), function decorate(this: SketchNode): JSX.Element {

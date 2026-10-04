@@ -120,14 +120,24 @@ test('j14 demo note: Ada builds every family through paste and slash commands, a
     await expect(ui.body(actor, id).locator('[data-node-view-error]'), `${actor.label}: no block falls back to its error placeholder`).toHaveCount(0);
   }
   expect((await renderedBody(ben, id)).decorators, 'the same decorators on both sides').toEqual((await renderedBody(ada, id)).decorators);
-  await actors.checkpoint('demo-note');
+  // The window shows the note's top; the evidence also scrolls each lower family into view on both sides.
+  const checkpointAll = async (name: string) => {
+    for (const actor of [ada, ben]) await ui.body(actor, id).evaluate((root) => root.closest('[data-editor-canvas]')?.scrollTo(0, 0));
+    await actors.checkpoint(name);
+    for (const family of ['chart', 'canvas', 'HTML block']) {
+      const { selector } = FAMILIES.find(f => f.family === family)!;
+      for (const actor of [ada, ben]) await ui.body(actor, id).evaluate((root, s) => root.querySelector(s)?.scrollIntoView({ block: 'center' }), selector);
+      await actors.checkpoint(`${name}-${family.replace(' ', '-').toLowerCase()}`);
+    }
+  };
+  await checkpointAll('demo-note');
   await ben.page.getByRole('button', { name: 'Settings', exact: true }).click();
   await ben.page.getByRole('radiogroup', { name: 'Theme' }).getByRole('radio', { name: 'Dark', exact: true }).click();
   await expect(ben.page.locator('html')).toHaveAttribute('data-theme', 'dark');
   await ben.page.keyboard.press('Escape');
   await expect(ben.page.getByRole('radiogroup', { name: 'Theme' })).toBeHidden();
   await expect(ui.body(ben, id).locator('[data-node-view-error]'), 'dark: no block falls back to its error placeholder').toHaveCount(0);
-  await actors.checkpoint('demo-note-dark');
+  await checkpointAll('demo-note-dark');
 
   await ben.page.reload();
   await ui.waitLive(ben, id);

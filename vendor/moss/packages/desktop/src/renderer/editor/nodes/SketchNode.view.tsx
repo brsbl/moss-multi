@@ -1030,8 +1030,7 @@ function SketchWrapper({
 
   const persistSketchDraft = useCallback(
     (nextGrid: boolean[], nextLabels: TextLabel[] = labelsRef.current, base = { grid: gridRef.current, labels: labelsRef.current }) => {
-      commitSketchDraftToNode(editor, nodeKey, nextGrid, nextLabels, base);
-      peerSync.committed(base, { grid: nextGrid, labels: nextLabels });
+      peerSync.write(() => commitSketchDraftToNode(editor, nodeKey, nextGrid, nextLabels, base));
     },
     [editor, nodeKey, peerSync]
   );

@@ -430,15 +430,30 @@ export class RegisterDraft {
 }
 
 interface Label { id?: unknown; [key: string]: unknown }
+/** SketchNode's fixed 120 x 60 grid; the register never sets its size. */
 const SKETCH_CELLS = 120 * 60;
-/** The sketch grid as one key per inked cell (`c<index>`), labels by id (`l<id>`) with `#l` holding their order. */
+const cellOf = (key: string): number | undefined => {
+  const match = /^c(\d+)(?:\.|$)/.exec(key);
+  return match ? Number(match[1]) : undefined;
+};
+/**
+ * The sketch grid as one key per inking of a cell (`c<index>.<tag>`), labels by id (`l<id>`) with `#l` holding their
+ * order. Each new ink gets a fresh tag, so two authors inking one cell write two keys; undoing one keeps the other.
+ */
 const sketchCodec: MapCodec = {
   fields: ['__grid', '__labels'],
-  encode(fields) {
+  encode(fields, ref) {
     const out = new Map<string, unknown>();
     if (Array.isArray(fields.__grid)) {
-      out.set('#n', fields.__grid.length);
-      fields.__grid.forEach((on, index) => { if (on) out.set(`c${index}`, true); });
+      const inked = new Map<number, string[]>();
+      for (const [key, value] of ref?.entries() ?? []) {
+        const cell = cellOf(key);
+        if (cell !== undefined && value === true) inked.set(cell, [...(inked.get(cell) ?? []), key]);
+      }
+      const tag = Math.random().toString(36).slice(2, 8);
+      fields.__grid.forEach((on, index) => {
+        if (on) for (const key of inked.get(index) ?? [`c${index}.${tag}`]) out.set(key, true);
+      });
     }
     if (Array.isArray(fields.__labels)) {
       const ids: string[] = [];
@@ -453,16 +468,16 @@ const sketchCodec: MapCodec = {
     return out;
   },
   decode(entries) {
-    const size = typeof entries.get('#n') === 'number' ? entries.get('#n') as number : SKETCH_CELLS;
-    const grid = new Array<boolean>(size).fill(false);
+    const grid = new Array<boolean>(SKETCH_CELLS).fill(false);
     const present: string[] = [];
     for (const [key, value] of entries.entries()) {
-      if (key.startsWith('c') && value === true) {
-        const index = Number(key.slice(1));
-        if (Number.isInteger(index) && index >= 0 && index < size) grid[index] = true;
-      } else if (key.startsWith('l')) present.push(key.slice(1));
+      const cell = cellOf(key);
+      if (cell !== undefined) {
+        if (value === true && cell < SKETCH_CELLS) grid[cell] = true;
+      } else if (key.startsWith('l') && isPlainObject(value)) present.push(key.slice(1));
     }
-    const listed = ((entries.get('#l') as string[] | undefined) ?? []).filter(id => present.includes(id));
+    const ids = entries.get('#l');
+    const listed = (Array.isArray(ids) ? ids : []).filter((id): id is string => present.includes(id));
     const order = [...new Set(listed), ...present.filter(id => !listed.includes(id)).sort()];
     return { __grid: grid, __labels: order.map(id => clone(entries.get(`l${id}`))) };
   },
@@ -569,34 +584,31 @@ export function writeMapRegister(node: LexicalNode, next: Fields, base?: Fields)
   return true;
 }
 
-/**
- * Moves `value` by the change from `from` to `to`, key by key: how a view's local copies (its draft, its undo
- * snapshots) take a peer's edit without dropping their own. Returns the fields `value` has.
- */
-export function rebaseMapFields(type: string, value: Fields, from: Fields, to: Fields): Fields {
-  const codec = MAP_REGISTERS[type];
-  const before = codec.encode(from);
-  const entries = codec.encode(value, before);
-  const after = codec.encode(to, before);
-  for (const key of new Set([...before.keys(), ...after.keys()])) {
-    if (sameValue(before.get(key), after.get(key))) continue;
-    if (after.has(key)) entries.set(key, after.get(key));
-    else entries.delete(key);
-  }
-  const decoded = codec.decode(entries);
-  return Object.fromEntries(Object.keys(value).map(field => [field, decoded[field]]));
-}
-
 /** The register's raw entries, copied, or undefined when the node has none. */
 export function readMapEntries(node: LexicalNode): Map<string, unknown> | undefined {
   const map = registerOf(node);
   return map instanceof Y.Map ? new Map((map as Y.Map<unknown>).entries()) : undefined;
 }
 
-/** Moves `value` by the change from entries `from` to entries `to`. */
+/** Applies the change from entries `from` to entries `to` onto `target`, key by key. */
+export function moveEntries(target: Map<string, unknown>, from: Entries, to: Entries): Map<string, unknown> {
+  for (const key of new Set([...from.keys(), ...to.keys()])) {
+    if (from.has(key) === to.has(key) && sameValue(from.get(key), to.get(key))) continue;
+    if (to.has(key)) target.set(key, to.get(key));
+    else target.delete(key);
+  }
+  return target;
+}
+
+/**
+ * Moves `value` by the register's change from entries `from` to entries `to`, key by key: how a view's local copies
+ * (its draft, its undo snapshots) take a peer's edit without dropping their own. Keys, not decoded values, carry the
+ * change, so a peer's ink on a cell `value` already has still reaches it. Returns the fields `value` has.
+ */
 export function rebaseMapEntries(type: string, value: Fields, from: Entries, to: Entries): Fields {
   const codec = MAP_REGISTERS[type];
-  return rebaseMapFields(type, value, codec.decode(from), codec.decode(to));
+  const decoded = codec.decode(moveEntries(codec.encode(value, from), from, to));
+  return Object.fromEntries(Object.keys(value).map(field => [field, decoded[field]]));
 }
 
 const seedOf = (node: RegisterNode): string => {
