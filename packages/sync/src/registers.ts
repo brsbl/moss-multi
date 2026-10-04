@@ -2,7 +2,7 @@ import {
   $getEditor, $getNodeByKey, $getRoot, $isElementNode, COLLABORATION_TAG, type EditorState, type LexicalEditor, type LexicalNode, type NodeKey,
 } from 'lexical';
 import * as Y from 'yjs';
-import { diffText } from '@moss-multi/core/text-diff';
+import { diffText, SERVER_CELL_BUDGET } from '@moss-multi/core/text-diff';
 
 export const REGISTER_LOCAL_ORIGIN = Symbol('moss-multi:register-local');
 const REGISTER_INIT = Symbol('moss-multi:register-init');
@@ -78,7 +78,9 @@ export function writeRegister(node: LexicalNode, next: string): boolean {
   const id = (node as RegisterNode).__regId;
   const text = id && doc?.getMap('registers').get(id);
   const current = doc && text instanceof Y.Text ? payload(text) : next;
-  if (current !== next) doc!.transact(() => (text as Y.Text).applyDelta(diffText(current, next)), REGISTER_LOCAL_ORIGIN);
+  // The DocDO mirror writes text no client typed, so it diffs within the server budget.
+  const budget = serialized.has(doc!) ? SERVER_CELL_BUDGET : undefined;
+  if (current !== next) doc!.transact(() => (text as Y.Text).applyDelta(diffText(current, next, budget)), REGISTER_LOCAL_ORIGIN);
   return text instanceof Y.Text;
 }
 

@@ -5,7 +5,7 @@
 // route (A§8).
 import { eq } from 'drizzle-orm';
 import { getServerByName } from 'partyserver';
-import { MARKDOWN_CAP_BYTES } from '@moss-multi/protocol/limits';
+import { MARKDOWN_CAP_BYTES, REST_WRITE_RATE } from '@moss-multi/protocol/limits';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
 import type { AuthEnv } from '../auth/auth.ts';
 import { resolvePrincipal, shareTokenOf } from '../auth/principal.ts';
@@ -22,7 +22,7 @@ import { restoreDoc, trashDoc } from './trash.ts';
 import { NO_STORE, notFound, readJsonObject, unauthenticated } from './respond.ts';
 import { ensureDefaultVault } from './vaults.ts';
 
-export type DocsEnv = AuthEnv & Pick<AppEnv, 'DocDO'> & MembersEnv & Partial<Pick<AppEnv, 'ASSETS'>>;
+export type DocsEnv = AuthEnv & Pick<AppEnv, 'DocDO' | 'PrincipalDO'> & MembersEnv & Partial<Pick<AppEnv, 'ASSETS'>>;
 
 const DOC = /^\/api\/docs\/([^/]+)$/;
 const MEMBERS = /^\/api\/docs\/([^/]+)\/members$/;
@@ -165,6 +165,11 @@ async function renameDoc(request: Request, env: DocsEnv, docId: string, body: Re
   if (!roleAtLeast(access.role, 'editor')) return json({ error: 'forbidden' }, 403, NO_STORE);
   if (!body || typeof body.title !== 'string') return json({ error: 'bad-request' }, 400, NO_STORE);
   try {
+    // Per identity, not per doc: a rename diffs caller text, so one principal cannot spread a flood across docs.
+    const principalDO = await getServerByName(env.PrincipalDO, principal.id);
+    if (!(await principalDO.takeWriteToken())) {
+      return json({ error: 'rate-limited' }, 429, { ...NO_STORE, 'retry-after': String(REST_WRITE_RATE.windowMs / 1000) });
+    }
     const stub = await getServerByName(env.DocDO, docId);
     await stub.renameTitle(body.title);
     return readDoc(request, env, docId);

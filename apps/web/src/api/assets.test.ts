@@ -27,6 +27,12 @@ const DocDO = {
   }),
 };
 
+/** Workspace notifications and REST write tokens, which these tests never count. */
+const PrincipalDO = {
+  idFromName: (name: string) => ({ name, toString: () => name }),
+  get: () => ({ setName: async () => undefined, publish: async () => undefined, takeWriteToken: async () => true }),
+};
+
 let d1: TestD1;
 let env: AuthTestEnv & Parameters<typeof handleApi>[1];
 let ada: TestUser;
@@ -35,7 +41,7 @@ let cy: TestUser;
 
 beforeAll(async () => {
   d1 = await migratedD1();
-  env = { DB: d1.db, ASSETS: d1.assets, BETTER_AUTH_SECRET: SECRET, BETTER_AUTH_URL: BASE, DocDO: DocDO as never };
+  env = { DB: d1.db, ASSETS: d1.assets, BETTER_AUTH_SECRET: SECRET, BETTER_AUTH_URL: BASE, DocDO: DocDO as never, PrincipalDO: PrincipalDO as never };
   ada = await signedUpUser(env, 'assets-ada');
   ben = await signedUpUser(env, 'assets-ben', 'Ben');
   cy = await signedUpUser(env, 'assets-cy', 'Cy');
