@@ -375,9 +375,9 @@ export class DocDO extends YServer<SyncEnv> {
 
   /** True when the write was refused and the socket closed; a refusal is never silent. */
   #refused(connection: Connection, attachment: Attachment, store: DocStore, update: Uint8Array): boolean {
-    // Suggesters never write the body: their changes travel as suggestion records (docs/design/suggestions.md I1).
-    // The role decides, never the frame's contents.
-    if (!roleAtLeast(attachment.role, 'editor')) return this.#refuse(connection, 'role', CLOSE.revoked);
+    if (!roleAtLeast(attachment.role, 'suggester')) return this.#refuse(connection, 'role', CLOSE.revoked);
+    // A suggester's writes are vetted on a mirror (M5); until then they are refused, never applied unvetted.
+    if (!roleAtLeast(attachment.role, 'editor')) return this.#refuse(connection, 'suggest', CLOSE.writeRefused);
     if (!this.#rate.allow(connection)) {
       // Transient: the client keeps its Y.Doc and its next step 2 re-delivers everything.
       connection.close(CLOSE.writeRate, 'write rate');
