@@ -587,6 +587,18 @@ export function rebaseMapFields(type: string, value: Fields, from: Fields, to: F
   return Object.fromEntries(Object.keys(value).map(field => [field, decoded[field]]));
 }
 
+/** The register's raw entries, copied, or undefined when the node has none. */
+export function readMapEntries(node: LexicalNode): Map<string, unknown> | undefined {
+  const map = registerOf(node);
+  return map instanceof Y.Map ? new Map((map as Y.Map<unknown>).entries()) : undefined;
+}
+
+/** Moves `value` by the change from entries `from` to entries `to`. */
+export function rebaseMapEntries(type: string, value: Fields, from: Entries, to: Entries): Fields {
+  const codec = MAP_REGISTERS[type];
+  return rebaseMapFields(type, value, codec.decode(from), codec.decode(to));
+}
+
 const seedOf = (node: RegisterNode): string => {
   const field = REGISTER_FIELDS[node.getType()];
   return field ? String(node[field]) : JSON.stringify(fieldsOf(node, MAP_REGISTERS[node.getType()]));

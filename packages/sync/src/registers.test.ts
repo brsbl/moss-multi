@@ -8,7 +8,7 @@ import { EXCLUDED_FIELDS } from './excluded-properties.ts';
 import { createBinding, syncLexicalUpdateToYjs, syncYjsChangesToLexical, type Provider } from '@lexical/yjs';
 import { createConverterEditor } from './converter/index.ts';
 import { excludedPropertiesFor } from './excluded-properties.ts';
-import { bindRegisters, migrateRegisters, REGISTER_LOCAL_ORIGIN, RegisterDraft } from './registers.ts';
+import { bindRegisters, migrateRegisters, readMapEntries, rebaseMapEntries, REGISTER_LOCAL_ORIGIN, RegisterDraft } from './registers.ts';
 
 const noop = () => {};
 const provider = {
@@ -587,6 +587,71 @@ describe('L4/A8 chart and sketch registers @p:col-1 @p:col-3 @p:note-2', () => {
       exchange(a, b);
       for (const peer of [a, b]) expect(cells(gridOf(peer))).toEqual(expect.arrayContaining([900, 901]));
     } finally { a.dispose(); b.dispose(); seed.destroy(); }
+  });
+
+  // Both authors ink cell 301. Yjs keeps only one of two writes to one key, so neither undo may take the other's ink.
+  it.each(['a', 'b'] as const)('overlapping concurrent strokes keep the other author\'s ink when %s undoes', (undoer) => {
+    const seed = new Y.Doc(); importBody(seed, SKETCH);
+    const a = client(seed); const b = client(seed);
+    try {
+      a.editor.update(() => call(find('sketch')!, 'setGrid', withCells(gridOf(a), [300, 301])), { discrete: true });
+      b.editor.update(() => call(find('sketch')!, 'setGrid', withCells(gridOf(b), [301, 302])), { discrete: true });
+      exchange(a, b);
+      for (const peer of [a, b]) expect(cells(gridOf(peer))).toEqual(expect.arrayContaining([300, 301, 302]));
+      (undoer === 'a' ? a : b).undo.undo();
+      exchange(a, b);
+      const [gone, kept] = undoer === 'a' ? [300, [301, 302]] : [302, [300, 301]];
+      for (const peer of [a, b]) {
+        expect(cells(gridOf(peer)), 'the shared cell and the other stroke stay').toEqual(expect.arrayContaining(kept));
+        expect(cells(gridOf(peer))).not.toContain(gone);
+      }
+      const restored = client(a.doc);
+      try { expect(cells(gridOf(restored))).toEqual(cells(gridOf(b))); } finally { restored.dispose(); }
+    } finally { a.dispose(); b.dispose(); seed.destroy(); }
+  });
+
+  // The canvas's own Undo and Cancel write a local snapshot (an undo-stack entry, the edit baseline) that the view moves
+  // by each peer change (sketch-sync.ts); a peer's ink on a cell the snapshot's author also inked must survive it.
+  it('a canvas Undo or Cancel snapshot keeps a peer\'s ink on a cell both inked', () => {
+    const seed = new Y.Doc(); importBody(seed, SKETCH);
+    const a = client(seed); const b = client(seed);
+    const entries = (peer: Peer) => peer.editor.read(() => readMapEntries(find('sketch')!))!;
+    try {
+      const preStroke = gridOf(a);
+      a.editor.update(() => call(find('sketch')!, 'setGrid', withCells(preStroke, [300, 301]), preStroke), { discrete: true });
+      const synced = entries(a);
+      b.editor.update(() => call(find('sketch')!, 'setGrid', withCells(gridOf(b), [301, 302])), { discrete: true });
+      exchange(a, b);
+      const snapshot = rebaseMapEntries('sketch', { __grid: preStroke, __labels: [] }, synced, entries(a)).__grid as boolean[];
+      expect(cells(snapshot), "the snapshot takes Ben's whole stroke").toEqual(expect.arrayContaining([301, 302]));
+      const current = gridOf(a);
+      a.editor.update(() => call(find('sketch')!, 'setGrid', snapshot, current), { discrete: true });
+      exchange(a, b);
+      for (const peer of [a, b]) {
+        expect(cells(gridOf(peer)), "Ada's undo keeps Ben's whole stroke").toEqual(expect.arrayContaining([301, 302]));
+        expect(cells(gridOf(peer))).not.toContain(300);
+      }
+      expect(exportDocMarkdown(a.doc)).toBe(exportMarkdown(b.editor));
+    } finally { a.dispose(); b.dispose(); seed.destroy(); }
+  });
+
+  it.each([-1, 2.5, 7201, 2 ** 32, Number.NaN, '9'])('a sketch register with a hostile size (%s) decodes to the fixed grid, live and reloaded', (size) => {
+    const seed = new Y.Doc(); importBody(seed, SKETCH);
+    const a = client(seed);
+    try {
+      const expected = cells(gridOf(a));
+      const register = [...a.doc.getMap('registers').values()].find((value) => value instanceof Y.Map) as Y.Map<unknown>;
+      a.doc.transact(() => { register.set('#n', size); register.set('#l', 5); });
+      a.editor.update(noop, { discrete: true });
+      expect(gridOf(a)).toHaveLength(120 * 60);
+      expect(cells(gridOf(a))).toEqual(expected);
+      expect(exportDocMarkdown(a.doc)).toBe(exportMarkdown(a.editor));
+      const restored = client(a.doc);
+      try {
+        expect(gridOf(restored)).toHaveLength(120 * 60);
+        expect(cells(gridOf(restored))).toEqual(expected);
+      } finally { restored.dispose(); }
+    } finally { a.dispose(); seed.destroy(); }
   });
 
   it.each([
