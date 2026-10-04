@@ -155,6 +155,17 @@ it('a restored note opens live at once, even when the listing after the restore 
   expect(server.calls, 'never the Trash view’s read path').not.toContainEqual({ method: 'GET', path: '/api/trash/old' });
 });
 
+it('reads backlinks for a live note, never for a trashed one the Trash view opens (T3.4 with T2.3)', async () => {
+  const server = fakeServer();
+  const bridge = createBridge({ pathname: () => '/', fetch: server.fetch });
+  await bridge.notes.getAll();
+  await bridge.notes.getById('old');
+  await bridge.system.setFocusedNoteId('old');
+  await bridge.notes.getById('d1');
+  await vi.waitFor(() => expect(server.calls).toContainEqual({ method: 'GET', path: '/api/docs/d1/backlinks' }));
+  expect(server.calls, 'a trashed note has no backlinks route').not.toContainEqual({ method: 'GET', path: '/api/docs/old/backlinks' });
+});
+
 it('searches trashed notes only in the trash view', async () => {
   const server = fakeServer();
   const bridge = createBridge({ pathname: () => '/', fetch: server.fetch });

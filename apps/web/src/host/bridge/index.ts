@@ -418,8 +418,9 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
       else unwatch(id);
     }
   };
-  // Only listed notes: moss records links for them, and one that left the listing (trashed, unshared) would 404.
-  const inListing = (id: string) => workspaceSnapshot?.docs.some((doc) => doc.id === id) ?? false;
+  // Only live listed notes: moss records links for them, and one trashed or unshared would 404 (the owner's listing
+  // also carries their trashed notes, for the Trash view).
+  const inListing = (id: string) => workspaceSnapshot?.docs.some((doc) => doc.id === id && doc.trashedAt == null) ?? false;
   const watchBacklinks = (id: string) => {
     if (!inListing(id)) return;
     const at = watched.indexOf(id);
