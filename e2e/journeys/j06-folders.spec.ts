@@ -2,8 +2,8 @@
 // workspace and uses only moss's own sidebar: Folder actions → New Folder, a subfolder from the hover button, a note
 // dragged into the folder, a rename by clicking the open folder's name, and Trash Folder from its context menu,
 // which sends the whole subtree to Trash as one batch. A collaborator with a note open inside that subtree sees it
-// go terminal in place. An editor on a shared vault creates a folder that the owner sees live; a viewer is offered
-// none. A refused folder change always reads as a sentence: never "Unknown parent folder", never a bare "Failed".
+// go terminal in place. An editor on a shared vault creates a folder that the owner sees live but is offered no move
+// (a move is a sharing decision, the owner's); a viewer is offered none. A refused folder change always reads as a sentence: never "Unknown parent folder", never a bare "Failed".
 //
 // Vault grants are declared setup through the members API; sharing is not this journey's promise.
 import type { Actor, Actors } from '../lib/actors.ts';
@@ -194,8 +194,46 @@ test('j06-folders: an editor on a shared vault creates a folder the owner sees l
   await folderRow(ben, 'Ben research').click({ button: 'right' });
   await expect(ben.page.getByRole('menuitem', { name: 'Trash Folder', exact: true }), 'an editor cannot trash').toHaveCount(0);
   await ben.page.keyboard.press('Escape');
+  // A move changes who can open what, so only the owner is offered one: Ben's rows don't drag, Ada's do.
+  await expect(folderRow(ada, 'Ben research'), 'the owner can drag a folder').toHaveAttribute('draggable', 'true');
+  await expect(noteRow(ada, docId).locator('[draggable="true"]'), 'the owner can drag a note').toHaveCount(1);
+  await expect(folderRow(ben, 'Ben research'), 'an editor cannot move a folder').toHaveAttribute('draggable', 'false');
+  await expect(noteRow(ben, docId).locator('[draggable="true"]'), 'an editor cannot move a note').toHaveCount(0);
   await actors.requireDistinct(3);
   await actors.checkpoint('shared-vault-folder');
+});
+
+test("j06-folders: a folder shared into an editor's own Home offers no move of its notes @p:note-4", async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  const benPrincipal = await actors.principal('ben');
+  const origin = new URL(ada.page.url()).origin;
+  const post = (actor: Actor, path: string, data: object) =>
+    actor.context.request.post(`${origin}${path}`, { headers: { origin, 'content-type': 'application/json' }, data, timeout: 15_000 });
+  // Declared setup: Ada shares one folder (not her vault) with Ben as an editor, with a note inside it.
+  const { vault } = (await (await ada.context.request.get(`${origin}/api/workspace`)).json()) as { vault: { id: string } };
+  const made = await post(ada, '/api/folders', { parentId: vault.id, name: 'Shared plans' });
+  expect(made.status(), 'declared setup: the folder').toBe(201);
+  const folderId = ((await made.json()) as { folder: { id: string } }).folder.id;
+  expect((await post(ada, `/api/folders/${folderId}/members`, { email: benPrincipal.email, role: 'editor' })).status(),
+    'declared setup: Ben edits the folder').toBe(201);
+  const shared = await post(ada, '/api/docs', { folderId, title: 'Plan A' });
+  expect(shared.status(), "declared setup: Ada's note").toBe(201);
+  const sharedId = ((await shared.json()) as { doc: { id: string } }).doc.id;
+
+  // The folder lands in Ben's own Home, where he owns the vault, but Ada's note in it is not his to move.
+  const ben = await actors.open(benPrincipal);
+  await ben.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: BOOT_TIMEOUT });
+  const own = await post(ben, '/api/docs', { title: 'Ben own note' });
+  expect(own.status(), "declared setup: Ben's note").toBe(201);
+  const ownId = ((await own.json()) as { doc: { id: string } }).doc.id;
+  await ben.page.reload();
+  await ben.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: BOOT_TIMEOUT });
+  await expect(noteRow(ben, ownId).locator('[draggable="true"]'), 'Ben can drag his own note').toHaveCount(1, { timeout: PEER_SIDEBAR_MS });
+  await expandFolder(ben, 'Shared plans');
+  await expect(noteRow(ben, sharedId), "Ada's note shows in the shared folder").toBeVisible();
+  await expect(noteRow(ben, sharedId).locator('[draggable="true"]'), 'an editor cannot move a shared note').toHaveCount(0);
+  await expect(folderRow(ben, 'Shared plans'), 'nor the shared folder').toHaveAttribute('draggable', 'false');
+  await actors.requireDistinct(2);
 });
 
 test('j06-folders: a folder change refused by the server reads as a sentence, never a coded error or a bare "Failed" @p:note-4', async ({ actors }) => {

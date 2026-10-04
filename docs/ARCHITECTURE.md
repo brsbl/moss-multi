@@ -282,7 +282,7 @@ Folder delete stamps `deleted_at` and one `trash_batch_id` across the whole subt
   - Commenter and above: comment, reply, react, resolve.
   - Suggester and above: suggest.
   - Editor and above: edit content and title, rename, duplicate, create in shared vaults (the row owner stays the vault owner and `created_by` records the creator), upload, take named versions, restore, accept and reject.
-  - Owner only: trash and restore, share, members, links, invites, vault actions.
+  - Owner only: trash and restore, moving notes and folders (a move changes who can open them), share, members, links, invites, vault actions.
   - The share UI offers viewer, commenter, editor and owner; suggester appears in M5. Its add field takes an email or an agent id (copied from the agent's row in its owner's Settings → Agents); agent rows are tagged "agent", as in glyphdown's ShareDialog. [P:People; S-gd §5.8; L§1.3]
 - **Non-disclosure.** A missing, inaccessible, trashed, revoked-token or forged-token doc returns one byte-identical 404. The only exception is a 401 for a credential-less CLI, so it can prompt. Member emails are shown to the owner only. The owner's trash view and every owner GET of a trashed doc share one read path; mutations stay strict. [L§1.6; S-gd §5.1, §5.3; L§4.10 I-14]
 - **Notifications** are re-checked against the live grant when read, and unreachable targets are omitted. [L§1.6 D-G6]

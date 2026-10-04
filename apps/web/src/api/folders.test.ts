@@ -3,7 +3,7 @@
 // whose open docs are closed through DocDO.trash; every refusal is a sentence.
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
-import { BASE, insertDoc, insertFolder, insertGrant, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
+import { BASE, insertDoc, insertFolder, insertGrant, insertLink, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
 import { handleApi } from './router.ts';
 
 const trashed: string[] = [];
@@ -194,6 +194,72 @@ describe('PATCH /api/docs/:id {folderId}', () => {
     await expectSentence(await call(ada, 'PATCH', `/api/docs/${doc}`, { folderId: viewing }), 403);
     await expectSentence(await call(ada, 'PATCH', `/api/docs/${doc}`, { folderId: editing }), 409, /vault/);
     expect(await docRow(doc)).toMatchObject({ folder_id: ada.homeId });
+  });
+});
+
+// Access inherits through the folder chain, so a move changes who can open what: it is a sharing decision, the
+// vault owner's alone (A§8 manage). An editor grant on the vault, a sub-folder or the doc, and a share link, never move.
+describe('moving is the vault owner’s', () => {
+  const linked = (user: TestUser, method: string, path: string, token: string, body: unknown) =>
+    handleApi(new Request(`${BASE}${path}?share=${token}`, {
+      method, headers: { origin: BASE, 'content-type': 'application/json', cookie: user.cookie }, body: JSON.stringify(body),
+    }), env);
+
+  it('refuses an editor on the vault a doc or folder move in words, keeps their rename, and lets the owner move', async () => {
+    const owner = await signedUpUser(env, 'folders-move-owner');
+    await insertGrant(d1.db, { folderId: owner.homeId }, ben, 'editor');
+    const a = await create(owner, owner.homeId, 'Move source');
+    const b = await create(owner, owner.homeId, 'Move target');
+    const doc = await insertDoc(d1.db, owner);
+    await expectSentence(await call(ben, 'PATCH', `/api/folders/${a}`, { parentId: b }), 403, /owner/);
+    await expectSentence(await call(ben, 'PATCH', `/api/folders/${a}`, { name: 'Renamed and moved', parentId: b }), 403, /owner/);
+    await expectSentence(await call(ben, 'PATCH', `/api/docs/${doc}`, { folderId: b }), 403, /owner/);
+    expect(await row(a)).toMatchObject({ parent_id: owner.homeId, name: 'Move source' });
+    expect(await docRow(doc)).toMatchObject({ folder_id: owner.homeId });
+
+    expect((await call(ben, 'PATCH', `/api/folders/${a}`, { name: 'Ben renamed' })).status, 'an editor still renames').toBe(200);
+    expect((await call(ben, 'PATCH', `/api/folders/${a}`, { name: 'Ben renamed again', parentId: owner.homeId })).status,
+      'a rename that names the current parent is not a move').toBe(200);
+    expect(await create(ben, b, 'Ben made'), 'an editor still creates').toBeTruthy();
+
+    expect((await call(owner, 'PATCH', `/api/folders/${a}`, { parentId: b })).status).toBe(200);
+    expect((await call(owner, 'PATCH', `/api/docs/${doc}`, { folderId: a })).status).toBe(200);
+    expect(await row(a)).toMatchObject({ parent_id: b });
+    expect(await docRow(doc)).toMatchObject({ folder_id: a });
+  });
+
+  it('refuses an editor on a sub-folder or on the doc itself, even within what they can edit', async () => {
+    const owner = await signedUpUser(env, 'folders-move-sub');
+    const shared = await create(owner, owner.homeId, 'Shared');
+    const inner = await create(owner, shared, 'Inner');
+    const loose = await create(owner, shared, 'Loose');
+    const doc = await insertDoc(d1.db, owner, { folderId: shared });
+    const rootDoc = await insertDoc(d1.db, owner);
+    await insertGrant(d1.db, { folderId: shared }, ben, 'editor');
+    await insertGrant(d1.db, { docId: rootDoc }, ben, 'editor');
+    await expectSentence(await call(ben, 'PATCH', `/api/folders/${loose}`, { parentId: inner }), 403, /owner/);
+    await expectSentence(await call(ben, 'PATCH', `/api/docs/${doc}`, { folderId: inner }), 403, /owner/);
+    // Out of the shared folder, the doc would leave everyone else who reaches it through that folder.
+    await expectSentence(await call(ben, 'PATCH', `/api/docs/${rootDoc}`, { folderId: inner }), 403, /owner/);
+    expect(await row(loose)).toMatchObject({ parent_id: shared });
+    expect(await docRow(doc)).toMatchObject({ folder_id: shared });
+    expect(await docRow(rootDoc)).toMatchObject({ folder_id: owner.homeId });
+  });
+
+  it('never moves on a share link’s authority, a doc link or a folder link', async () => {
+    const owner = await signedUpUser(env, 'folders-move-link');
+    const target = await create(owner, owner.homeId, 'Link target');
+    const linkedFolder = await create(owner, owner.homeId, 'Linked folder');
+    const doc = await insertDoc(d1.db, owner);
+    // Cy edits the target by grant, so only the link stands between Cy and moving the doc there.
+    await insertGrant(d1.db, { folderId: target }, cy, 'editor');
+    const docLink = await insertLink(d1.db, { docId: doc }, 'editor');
+    const folderLink = await insertLink(d1.db, { folderId: linkedFolder }, 'editor');
+    await expectSentence(await linked(cy, 'PATCH', `/api/docs/${doc}`, docLink, { folderId: target }), 403, /owner/);
+    const folderMove = await linked(cy, 'PATCH', `/api/folders/${linkedFolder}`, folderLink, { parentId: target });
+    expect([403, 404]).toContain(folderMove.status);
+    expect(await docRow(doc)).toMatchObject({ folder_id: owner.homeId });
+    expect(await row(linkedFolder)).toMatchObject({ parent_id: owner.homeId });
   });
 });
 

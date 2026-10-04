@@ -10,7 +10,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
 +import { canDuplicateNote } from '@moss-multi/host/duplicate';
 +import { FolderMenuItems, surfacedShared, surfacedFolder } from '@moss-multi/host/slots';
 +// moss-multi seam: folders (T2.2): folder controls follow the caller's role; a refusal reads as the server's sentence.
-+import { canCreateFolder, canEditFolder, canTrashFolder, folderRefusal } from '@moss-multi/host/folders';
++import { canCreateFolder, canEditFolder, canMoveItems, canTrashFolder, folderRefusal } from '@moss-multi/host/folders';
 +import { refuseInput } from '@moss-multi/host/refusal';
  
  const NOTES_FOLDER_NAME = 'Notes';
@@ -76,8 +76,8 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
    const isActive = useIsActiveNote(note.id);
    const [isContextMenuOpen, setIsContextMenuOpen] = useState(false);
 -  const draggable = options?.draggable ?? true;
-+  // moss-multi seam: shared-rows (A§11: a surfaced shared row offers no move)
-+  const draggable = (options?.draggable ?? true) && !surfacedShared(note.id);
++  // moss-multi seam: shared-rows (A§11: a surfaced shared row offers no move); only the vault's owner moves (A§8)
++  const draggable = (options?.draggable ?? true) && !surfacedShared(note.id) && canMoveItems(note.id);
    const showActiveState = options?.showActiveState ?? true;
    const isVisuallyActive = showActiveState && isActive;
    const cardRef = options?.isSelected
@@ -127,18 +127,19 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
        }
        setTrashFolderTarget(null);
      }, [trashFolderTarget, fetchBackendFolders]);
-@@ -1205,7 +1236,9 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1205,7 +1236,10 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
          const isExpanded = expandedFolders.has(folder.path);
          // Show inline subfolder creation input if creating inside this folder
          const showSubfolderInput = isCreatingFolder && creatingFolderParentPath === folder.path;
 -        const isFolderDraggable = folder.type !== 'system';
 +        // moss-multi seam: surfaced shares never offer folder mutations, and only editors change folders (T2.2).
 +        const mutable = !surfacedFolder(folder.path) && canEditFolder(folder.path);
-+        const isFolderDraggable = mutable && folder.type !== 'system';
++        // moss-multi seam: folders: a move changes who can open the subtree, so only the vault's owner drags (A§8).
++        const isFolderDraggable = mutable && canMoveItems() && folder.type !== 'system';
  
          return (
            <ContextMenu key={folder.path}>
-@@ -1217,9 +1250,9 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1217,9 +1251,9 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
              noteCount={folder.noteCount}
              depth={depth}
              isDragOver={dragOverTarget === folder.path && (draggingNoteId != null || (draggingFolderPath != null && isFolderDropTargetValid))}
@@ -150,7 +151,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
              draggable={isFolderDraggable}
              onDragStart={(e) => {
                e.dataTransfer.setData('application/x-moss-folder', folder.path);
-@@ -1232,8 +1265,8 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1232,8 +1266,8 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
              }}
              isDragging={draggingFolderPath === folder.path}
              onFolderClick={() => setActiveFolderPath(folder.path)}
@@ -161,7 +162,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
                await foldersApi.rename.invoke({
                  currentPath: folder.path,
                  newName
-@@ -1253,7 +1286,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1253,7 +1287,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
                    updates: { folderPath: updatedFolderPath }
                  });
                }
@@ -170,7 +171,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
            >
              {/* Subfolder creation input */}
              {isExpanded && showSubfolderInput && (
-@@ -1306,15 +1339,23 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1306,15 +1340,23 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
            </div>
            </ContextMenuTrigger>
            <ContextMenuContent>
@@ -195,7 +196,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
            </ContextMenuContent>
            </ContextMenu>
          );
-@@ -1323,7 +1364,8 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1323,7 +1365,8 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
      );
  
      const renderedNotes = useMemo(() => {
@@ -205,7 +206,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
          return (
            <div className="rounded-xl border border-dashed border-border-subtle bg-surface-raised-card p-4 text-sm text-ink-muted">
              Notes you create will appear here.
-@@ -1647,7 +1689,8 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1647,7 +1690,8 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
            onCollapse={onCollapse}
            showTitle={false}
            sortContent={sortDropdown}
@@ -215,7 +216,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
              <DropdownMenu open={folderActionsOpen} onOpenChange={setFolderActionsOpen}>
                <TooltipProvider>
                  <Tooltip>
-@@ -1666,14 +1709,18 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1666,14 +1710,18 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
                  </Tooltip>
                </TooltipProvider>
                <DropdownMenuContent align="start" side="bottom" sideOffset={6} className="min-w-0 w-max">
