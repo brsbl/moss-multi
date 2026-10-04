@@ -47,7 +47,6 @@ function fakeServer() {
       state.docs = state.docs.map((doc) => doc.id === id ? { ...doc, trashedAt: null, folderPath: 'Notes' } : doc);
       return Response.json({ doc: { id, folderId: 'home' } });
     }
-    if (url.pathname === '/api/search') return Response.json({ results: [] });
     if (method === 'GET' && url.pathname.startsWith('/api/trash/')) {
       const id = url.pathname.split('/').pop();
       const doc = state.docs.find((row) => row.id === id && row.trashedAt !== null);

@@ -440,7 +440,6 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
       .filter((note) => note.title.toLowerCase().includes(needle))
       .sort((a, b) => rank(a.title.toLowerCase()) - rank(b.title.toLowerCase()) || b.updatedAt - a.updatedAt)
       .map((note) => ({ id: note.id, title: note.title, folderPath: note.folderPath, updatedAt: note.updatedAt, matchType: 'title' }));
-    if (searchTrashed) return titled.slice(0, limit);
     const response = await request(`/api/search?${new URLSearchParams({ q: query.trim(), limit: String(limit) })}`);
     if (!response.ok) throw new Error(`GET /api/search: ${response.status}`);
     const { results } = await response.json() as { results: (ApiDoc & { snippet: string })[] };
