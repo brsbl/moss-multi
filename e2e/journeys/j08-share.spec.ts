@@ -236,6 +236,40 @@ test('j08 link: an editor link is viewer signed out, editor signed in without a 
   await actors.requireDistinct(3);
 });
 
+test('j08 link: an editor folder link lifts a viewer grant to editor, and lands a signed-in visitor without a grant on the folder @p:ppl-2', async ({ actors, stack }) => {
+  const adaPrincipal = await actors.principal('ada');
+  const ada = await actors.session(adaPrincipal);
+  const headers = { origin: stack.baseUrl };
+  // Declared setup over the API: a folder holding a note, Ben at view on it, and an editor link to it.
+  const { vault } = (await (await ada.context.request.get('/api/workspace')).json()) as { vault: { id: string } };
+  const name = `Linked ${randomBytes(2).toString('hex')}`;
+  const made = await ada.context.request.post('/api/folders', { headers, data: { name, parentId: vault.id } });
+  expect(made.status(), 'declared setup: a folder').toBe(201);
+  const folderId = ((await made.json()) as { folder: { id: string } }).folder.id;
+  const note = await ada.context.request.post('/api/docs', { headers, data: { folderId, title: 'Under the link' } });
+  expect(note.status(), 'declared setup: a note in the folder').toBe(201);
+  const docId = ((await note.json()) as { doc: { id: string } }).doc.id;
+  const benPrincipal = await actors.principal('ben');
+  const shared = await ada.context.request.post(`/api/folders/${folderId}/members`, { headers, data: { email: benPrincipal.email, role: 'viewer' } });
+  expect(shared.status(), 'declared setup: Ben at view').toBe(201);
+  const linked = await ada.context.request.post(`/api/folders/${folderId}/links`, { headers, data: { role: 'editor' } });
+  expect(linked.status(), 'declared setup: an editor link').toBe(201);
+  const { token } = ((await linked.json()) as { link: { token: string } }).link;
+
+  const ben = await actors.open(benPrincipal, { path: `/d/${docId}?share=${token}` });
+  await waitOpen(ben, docId, 'live');
+  await expect(ui.pane(ben, docId), 'a viewer grant below an editor link: the link').toHaveAttribute(ROLE_ATTR, 'editor');
+
+  const dee = await actors.open(await actors.principal('dee'), { path: `/f/${folderId}?share=${token}` });
+  await expect(dee.page.getByRole('button', { name: `Vault: ${name}`, exact: true }), 'the folder is the workspace').toBeVisible({ timeout: LIVE_TIMEOUT });
+  const row = dee.page.locator(`[data-sidebar-row][data-doc-id="${docId}"]`);
+  await expect(row, 'its note is listed').toBeVisible();
+  await row.click();
+  await waitOpen(dee, docId, 'live');
+  await expect(ui.pane(dee, docId), 'signed in without a grant, the link role').toHaveAttribute(ROLE_ATTR, 'editor');
+  await actors.requireDistinct(3);
+});
+
 test('j08 denial: revoked, forged and inaccessible links get byte-identical 404s and the denial page @p:ppl-2 @evidence', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
   const docId = await noteWithText(ada);
