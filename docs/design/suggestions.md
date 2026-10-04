@@ -88,6 +88,8 @@ If all pass, one server transaction pushes the update and bumps `updatedAt`, `cl
   - **(c)** after `T`, every struct the record inserted (each leased client's clocks from its state before `T` to after) is a live Item unless the record's own delete set covers it. A struct that integrated as GC or deleted means its parent or neighbour is gone.
 
   Together these make "the record applies to the same context it was written against". A step's removals are one contiguous selection in the author's view (Lexical edits one range per transaction), so (b) is judged per step: a later step may keep text between earlier removals.
+
+  **Deviation from the decision.** `.panel/T5.0-decision.md` states G5(b) over the record's whole removal set. Read that way, two separate deletes in one record (a and c of "abc") form one run with live "b" inside, so an honest record is refused (I6). Judging per step fixes that. It cannot remove foreign content: when an editor inserts X between two single-character parts on a and b, accept removes only a and b, X stays, and the hash-bound preview shows exactly that (I3). T5.3 pins it with `g5_split_parts_around_foreign_insert_keep_foreign_text_and_preview_shows_it`.
 - **G6 `changed`:** `projectionDiff(before, after)` hashes to something other than `previewHash`.
 - **G7 `broken`:** binding the converter editor to the result throws (an unregistered node type, an invalid parent), or rerunning the node transforms on every node the record created and its parent changes the body's shared content (a list item under the root gets wrapped). Same-value writes back are not changes.
 - **G8 `doc-cap`:** the result exceeds the state cap.
@@ -213,7 +215,7 @@ Paint is derived and never mutates the tree (L§4.12), on the T4.0 paint layer (
 7. projectionDiff (`review.test.ts`): text-only, attribute-only and register-only records each have a hunk; a stale preview hash gets 409 `changed`.
 8. Cost (`packages/sync/src/doc/suggest.test.ts`): `suggest-ops` at the frame cap and the body-frame lease check, small doc against the 1.69 MB doc.
 
-Red: run [37220685257](https://github.com/brsbl/moss-multi/actions/runs/37220685257) on the tests-first commit (the role table failed on `reason: 'suggest'`, close 4409; everything else on the unimplemented spike). Green: run [37221610786](https://github.com/brsbl/moss-multi/actions/runs/37221610786), 912 of 912 tests. Measured there (test 8, medians, one ~200 KB frame of 20 000 structs at the cap): `suggest-ops` 23.7 ms on a 3 KB doc and 14.5 ms on the 1.77 MB doc; the lease check of a typing frame plus the cap frame 9.4 ms and 11.2 ms. Neither grows with the doc; both are the frame's own decode.
+Red: run [37220685257](https://github.com/brsbl/moss-multi/actions/runs/37220685257) on the tests-first commit failed tests 2–8 on the unimplemented spike. In that run, 7 of the 17 role-table cases failed on `reason: 'suggest'`. The other 10 crashed while building their fixtures, because the helper read a deleted block. The fixture was fixed with the implementation. Red control for test 1: run [37223175293](https://github.com/brsbl/moss-multi/actions/runs/37223175293) runs the corrected table against m4's pre-change role floor (scratch branch `t/T5.0-red2`, which restores m4's `#refused`). All 17 cases fail there on `reason: 'suggest'` instead of `'role'`. Green: run [37221610786](https://github.com/brsbl/moss-multi/actions/runs/37221610786), 912 of 912 tests. Measured there (test 8, medians, one ~200 KB frame of 20 000 structs at the cap): `suggest-ops` 23.7 ms on a 3 KB doc and 14.5 ms on the 1.77 MB doc; the lease check of a typing frame plus the cap frame 9.4 ms and 11.2 ms. Neither grows with the doc; both are the frame's own decode.
 
 ## 10. What it costs users (ruling 17)
 
@@ -273,6 +275,14 @@ Every finding from the six review rounds and the commit security reviews of the 
 | 41 | Panel P2 (S3) | Records under a GC'd parent integrate as GC and lose content | G5(c) treats GC and deleted inserts as outdated; the ops bytes are kept for "Copy suggested text". Test 6 "deletes, and Yjs collects, the paragraph" |
 | 42 | Spike | An op encoded with `encodeStateAsUpdate` carries the doc's whole delete set, so every old deletion reads as outdated | Ops are per-transaction updates (§1); the CLI diff must carry only its own deletes (§5). Routed to T6.1/T7 `--suggest` |
 | 43 | Spike | The binding writes object-valued decorator properties back unchanged when a node is marked dirty | G7 compares the body's shared content, not whether a write happened (§4.2) |
+| 44 | Checker (attempt 1) | Editor and owner sync frames can still write `Y.Map('suggestions')`: I2 depends on T4.1 SP7, not yet on m4 | Design holds (I2). Routed: T5.2 `all_roles_cannot_write_suggestions_via_sync` |
+| 45 | Checker (attempt 1) | A continuation record can overwrite an occupied record id; 48-character truncation can collide | Routed: T5.2 `accepted_record_continuation_preserves_occupied_id` |
+| 46 | Checker (attempt 1) | Leases are never marked spent on accept, so accepted text can never be a delete target | §4.3 already marks leases spent. Routed: T5.2 `accepted_suggestion_text_is_valid_body_delete_target`, with the transition in T5.3 |
+| 47 | Checker (attempt 1) | Root `XmlText` attributes are missing from the hash-bound projectionDiff | Routed: T5.3 `preview_hash_covers_root_attributes` |
+| 48 | Checker (attempt 1) | G7 takes its baseline after hydration has repaired the candidate | Routed: T5.3 `g7_refuses_candidate_repaired_during_hydration` |
+| 49 | Checker (attempt 1) | G5(b) is per step, not record-wide as the decision says | Deliberate, stated in §4.2. Pinned by T5.3 `g5_split_parts_around_foreign_insert_keep_foreign_text_and_preview_shows_it` |
+| 50 | Checker (attempt 1) | Ingest cost grows with closed-record history and continuation depth | Routed: T5.2 and T5.4 `fixed_frame_ingest_cost_independent_of_closed_record_count_and_continuation_depth` |
+| 51 | Checker (attempt 1) | Red evidence for 10 of 17 role-table cases was a fixture crash, not the assertion | Re-proven red against m4's role floor (§9) |
 
 ## 12. Changes to other documents
 
@@ -290,6 +300,9 @@ Implementation-level items the spike leaves for the named tasks, each a red-firs
 
 - **T5.2:** leases persisted in `suggest_leases`; open-record counts and bytes kept per principal without re-reading metas; the doc-socket handlers and acks; the `protected-type` refusal; `suggest-merge` and `suggest-undelete`.
 - **T5.3:** the accept REST route with its rate limit; storing every failing reason; auto-reject of an empty preview; `?view=working`.
+- **T5.2:** `all_roles_cannot_write_suggestions_via_sync` (I2 depends on T4.1 SP7, which is not on m4 yet; the spike's `#refused` checks only role, rate and cap); `accepted_record_continuation_preserves_occupied_id`; `accepted_suggestion_text_is_valid_body_delete_target`; `fixed_frame_ingest_cost_independent_of_closed_record_count_and_continuation_depth` (findings 44–46, 50).
+- **T5.3:** `preview_hash_covers_root_attributes`; `g7_refuses_candidate_repaired_during_hydration`; `g5_split_parts_around_foreign_insert_keep_foreign_text_and_preview_shows_it`; leases marked spent on accept (findings 46–49).
+- **T5.4:** `fixed_frame_ingest_cost_independent_of_closed_record_count_and_continuation_depth` at fuzz scale (finding 50).
 - **T6.1/T7 (`--suggest`):** record ops built from the reconcile transaction's own updates (finding 42).
 
 ## Appendix: the BUILDPLAN M5 text (the panel's, verbatim)

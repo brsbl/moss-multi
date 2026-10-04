@@ -383,7 +383,11 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
     - colliding-prefix typing ("the " before "the …", a duplicated word, a sentence pasted before itself) and an insert outside any existing suggestion are never refused;
     - a forged raw frame from a suggester deleting original text never lands, and the refusal is visible in the band;
     - leases are exclusive and never in the body state vector;
-    - a delete-only frame after accept opens a continuation record.
+    - a delete-only frame after accept opens a continuation record;
+    - `all_roles_cannot_write_suggestions_via_sync`: step 2, update, and nested writes and deletes under `suggestions` from suggester, editor and owner are all refused with the map unchanged; editor and owner body writes land as positive controls (I2; T4.1 SP7 is not yet on m4);
+    - `accepted_record_continuation_preserves_occupied_id`: with two principals, another principal's open record holds the continuation id; a delete-only frame and an ops frame aimed at the accepted record both leave that record's author, status, ops and parts unchanged, and long ids that share a 48-character prefix never collide;
+    - `accepted_suggestion_text_is_valid_body_delete_target`: after an editor accepts Alice's insert, another principal's suggest-delete over those characters is accepted as a part, while targets still under a pending lease stay refused `target`;
+    - `fixed_frame_ingest_cost_independent_of_closed_record_count_and_continuation_depth`: one fixed `suggest-ops` frame costs the same with 5 and with thousands of closed records, and at continuation depth 1 and at the maximum.
   - **Done:** green.
 - **T5.3 Review, accept, reject, withdraw, notify** `[B·codex]`
   - **Scope:**
@@ -399,6 +403,7 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
       - G6: the previewHash matches;
       - G7: the headless bind succeeds;
       - G8: the state cap holds;
+    - accept marks the record's leases spent in the same turn, so accepted text is ordinary body text (design §4.3);
     - reject and withdraw as status-only transactions that never write the body (PRODUCT ruling 16);
     - outdated and broken badges with "Copy suggested text", and auto-reject when the preview is empty;
     - accept rate-limited per principal;
@@ -412,14 +417,17 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
     - each gate refused with nothing applied;
     - outdated cases: an editor types inside a bolded run, deletes a delete target, or deletes the parent paragraph and it is GC'd; and two conflicting records;
     - a text-only, an attribute-only and a register-only record each produce a hunk;
-    - a stale hash gets 409.
+    - a stale hash gets 409;
+    - `preview_hash_covers_root_attributes`: a root-only record (`__format`, `__direction` on `root`) and a mixed text-plus-root record each change the previewHash from the empty-diff value, and a stale hash over them gets 409;
+    - `g7_refuses_candidate_repaired_during_hydration`: a fresh decorator in legacy shape (a code block with `__code` and no `__regId`) gets 409 `broken` with the body unchanged, because G7's baseline is taken before hydration repairs anything;
+    - `g5_split_parts_around_foreign_insert_keep_foreign_text_and_preview_shows_it`: two single-character delete parts on adjacent a and b, then an editor inserts X between them; accept removes only a and b, X stays, and the preview shows exactly that (G5(b) is per step, design §4.2).
   - **Done:** green, with a triptych against the glyphdown panel.
 - **T5.4 Adversarial suite and composite robustness** `[B·codex]`
   - **Scope:**
     - a randomized struct-level fuzz over records built from real peer frames: retarget origins, swap content kinds, add deletes, re-point `__regId`, write non-body roots, use non-leased clients, open gaps, GC parents. It asserts that accept either refuses with nothing applied, or lands exactly the hashed preview, touching only `root` and `registers` and only leased clients;
     - the same fuzz applied to clients' F and C builds, asserting no throw escapes and broken records are excluded;
     - a generative honest-edit fuzz through real moss editors in suggest mode (random typing, Enter, soft breaks, formatting, undo, lists, tables, decorators next to links, line breaks and inline formulas), asserting zero ingest refusals, zero broken records and accept-equivalence;
-    - cost regression tests for ingest and the body-frame lease check at the frame cap.
+    - cost regression tests for ingest and the body-frame lease check at the frame cap, including `fixed_frame_ingest_cost_independent_of_closed_record_count_and_continuation_depth` at fuzz scale.
   - **Done:** green in CI.
 
 **Exit criteria:** colliding-prefix typing is never refused; a suggester's first delete never removes text on the server; a suggester's body frame never lands and the client shows the refusal; reject and withdraw never change the body; accept lands exactly the previewed diff or nothing; the demo note shows live pending suggestions (Review mode inline, Edit mode markers).
