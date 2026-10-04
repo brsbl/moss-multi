@@ -2,8 +2,8 @@
 // workspace and uses only moss's own sidebar: Folder actions → New Folder, a subfolder from the hover button, a note
 // dragged into the folder, a rename by clicking the open folder's name, and Trash Folder from its context menu,
 // which sends the whole subtree to Trash as one batch. A collaborator with a note open inside that subtree sees it
-// go terminal in place. An editor on a shared vault creates a folder that the owner sees live; a viewer is offered
-// none. A refused folder change always reads as a sentence: never "Unknown parent folder", never a bare "Failed".
+// go terminal in place. An editor on a shared vault creates a folder that the owner sees live but is offered no move
+// (a move is a sharing decision, the owner's); a viewer is offered none. A refused folder change always reads as a sentence: never "Unknown parent folder", never a bare "Failed".
 //
 // Vault grants are declared setup through the members API; sharing is not this journey's promise.
 import type { Actor, Actors } from '../lib/actors.ts';
@@ -194,6 +194,11 @@ test('j06-folders: an editor on a shared vault creates a folder the owner sees l
   await folderRow(ben, 'Ben research').click({ button: 'right' });
   await expect(ben.page.getByRole('menuitem', { name: 'Trash Folder', exact: true }), 'an editor cannot trash').toHaveCount(0);
   await ben.page.keyboard.press('Escape');
+  // A move changes who can open what, so only the owner is offered one: Ben's rows don't drag, Ada's do.
+  await expect(folderRow(ada, 'Ben research'), 'the owner can drag a folder').toHaveAttribute('draggable', 'true');
+  await expect(noteRow(ada, docId).locator('[draggable="true"]'), 'the owner can drag a note').toHaveCount(1);
+  await expect(folderRow(ben, 'Ben research'), 'an editor cannot move a folder').toHaveAttribute('draggable', 'false');
+  await expect(noteRow(ben, docId).locator('[draggable="true"]'), 'an editor cannot move a note').toHaveCount(0);
   await actors.requireDistinct(3);
   await actors.checkpoint('shared-vault-folder');
 });
