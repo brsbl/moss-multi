@@ -206,6 +206,20 @@ export class DocDO extends YServer<SyncEnv> {
     await this.#projections?.flush();
   }
 
+  /**
+   * The doc went to Trash (A§5.1): the flag is persisted before anyone hears of it, so a woken DO and a reconnect
+   * also meet 4410; every open socket is told, then closed 4410. Idempotent.
+   */
+  async trash(): Promise<void> {
+    const store = await this.#ready();
+    store.setMeta('deleted', '1');
+    const event: ServerEvent = { t: 'doc-deleted' };
+    for (const connection of this.getConnections()) {
+      this.sendCustomMessage(connection, JSON.stringify(event));
+      connection.close(CLOSE.deleted, 'deleted');
+    }
+  }
+
   /** Internal RPC: preserves Yjs item identity, including relative anchors, without a markdown round trip. */
   async snapshotForDuplicate(): Promise<{ title: string; state: Uint8Array }> {
     await this.#ready();

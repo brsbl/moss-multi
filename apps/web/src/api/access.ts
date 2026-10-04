@@ -35,7 +35,7 @@ function grantees(principal: Principal): string[] {
 }
 
 /** `folderId` and its ancestors, nearest first, at most MAX_FOLDER_DEPTH of them; a cycle or a missing parent ends it. */
-async function folderChain(db: Db, folderId: string): Promise<string[]> {
+export async function folderChain(db: Db, folderId: string): Promise<string[]> {
   const rows = await db.all<{ id: string }>(sql`
     WITH RECURSIVE chain(id, parent_id, depth) AS (
       SELECT id, parent_id, 1 FROM folders WHERE id = ${folderId}

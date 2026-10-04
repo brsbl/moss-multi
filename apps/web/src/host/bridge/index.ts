@@ -38,7 +38,7 @@ export interface ApiDoc {
 export const WORKSPACE = Symbol('workspace');
 
 export interface Vault { id: string; name: string; role?: string; owned?: boolean }
-export interface WorkspaceFolder { id: string; name: string; path: string; surfaced: boolean; createdAt: number; noteCount: number }
+export interface WorkspaceFolder { id: string; name: string; path: string; surfaced: boolean; createdAt: number; noteCount: number; role?: string }
 /** `GET /api/workspace`: the active vault and its docs. */
 export interface WorkspaceListing {
   vault: Vault;
@@ -102,6 +102,26 @@ const refuse = (what: string): Method<never> => async () => {
 };
 const later = (what: string, milestone: number) => refuse(`${what} is not available on the web until M${milestone}`);
 const unavailable = (what: string) => refuse(`${what} is not available on the web`);
+
+/** What moss shows when the server refused a folder change without saying why: always a sentence. */
+const FOLDER_REFUSALS: Record<number, string> = {
+  401: 'You’re signed out. Sign in again to change folders.',
+  403: 'You don’t have permission to change this folder.',
+  404: 'That folder is no longer available, or you don’t have access to it.',
+  409: 'That change conflicts with the folders as they are now. Refresh and try again.',
+};
+const FOLDER_UNAVAILABLE = 'The server couldn’t change the folder right now. Try again.';
+const FOLDER_GONE = 'That folder is no longer here. It may have been moved or sent to Trash.';
+
+/** The server's own sentence for a refused change, else one chosen by status; moss renders `error.message` as is. */
+async function refusalOf(response: Response): Promise<Error> {
+  let message = '';
+  try {
+    const body = (await response.json()) as { message?: unknown };
+    if (typeof body.message === 'string') message = body.message.trim();
+  } catch { /* not JSON: fall back below */ }
+  return new Error(message || FOLDER_REFUSALS[response.status] || FOLDER_UNAVAILABLE);
+}
 
 export function docIdFromPath(pathname: string): string | null {
   const match = /^\/d\/([^/]+)\/?$/.exec(pathname);
@@ -292,6 +312,56 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
   };
   const docUrl = (id: string) => new URL(`/d/${encodeURIComponent(id)}`, browser.origin).href;
 
+  // Folders (A§9): moss names a folder by its `Notes/...` path; the refreshed id↔path map turns it into a server id.
+  const idForPath = (path: string): string | null => {
+    if (!workspaceSnapshot) return null;
+    if (path === ROOT_FOLDER) return workspaceSnapshot.vault.id;
+    return workspaceSnapshot.folders?.find((folder) => folder.path === path)?.id ?? null;
+  };
+  /** The id for a path, re-reading the listing once if this tab's map is behind; a vanished folder is a sentence. */
+  const folderId = async (path: string | undefined): Promise<string> => {
+    const target = path || ROOT_FOLDER;
+    if (!workspaceSnapshot) await notes();
+    let id = idForPath(target);
+    if (!id) {
+      await load(workspaceSnapshot?.vault.id ?? storedVault());
+      id = idForPath(target);
+    }
+    if (!id) throw new Error(FOLDER_GONE);
+    return id;
+  };
+  /** A folder change: the request, a sentence on refusal, then the fresh listing that moss reads back. */
+  const changeFolders = async (path: string, init: { method: string; json?: unknown }): Promise<unknown> => {
+    let response: Response;
+    try {
+      response = await request(path, {
+        method: init.method,
+        ...(init.json === undefined ? {} : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(init.json) }),
+      });
+    } catch {
+      throw new Error('The server couldn’t be reached. Check your connection and try again.');
+    }
+    if (!response.ok) throw await refusalOf(response);
+    const answer: unknown = await response.json().catch(() => ({}));
+    await load(workspaceSnapshot?.vault.id ?? storedVault()).catch(() => undefined);
+    return answer;
+  };
+  /** Notes and folders re-read after a folder change, as a disk change does on the desktop. */
+  const announceFolders = () => diskListeners.forEach((listener) => listener([], []));
+  const folderEntry = (folder: WorkspaceFolder) => ({ name: folder.name, path: folder.path, noteCount: folder.noteCount, createdAt: seconds(folder.createdAt) });
+  const entryFor = (id: string, fallback: { name: string; path: string }) => {
+    const folder = workspaceSnapshot?.folders?.find((candidate) => candidate.id === id);
+    return folder ? folderEntry(folder) : { ...fallback, noteCount: 0, createdAt: seconds(Date.now()) };
+  };
+  const moveNotes = async (noteIds: string[], targetFolderPath: string) => {
+    const target = await folderId(targetFolderPath);
+    for (const id of noteIds) await changeFolders(`/api/docs/${encodeURIComponent(id)}`, { method: 'PATCH', json: { folderId: target } });
+    return noteIds.flatMap((id) => {
+      const note = known.get(id);
+      return note ? [record(withLocal(note))] : [];
+    });
+  };
+
   return {
     [WORKSPACE]: {
       duplicate: async (id: string) => {
@@ -316,6 +386,12 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
       surfacedShared: (id: string) => workspaceSnapshot?.docs.some((doc) => doc.id === id && doc.surfaced) ?? false,
       surfacedFolder: (path: string) => workspaceSnapshot?.folders?.some((folder) => folder.surfaced &&
         (path === folder.path || path.startsWith(`${folder.path}/`))) ?? false,
+      /** The caller's role on a sidebar folder (`Notes` is the active vault), or null for a path the map lacks. */
+      folderRole: (path: string): string | null => {
+        if (!workspaceSnapshot) return null;
+        if (path === ROOT_FOLDER) return workspaceSnapshot.vault.role ?? null;
+        return workspaceSnapshot.folders?.find((folder) => folder.path === path)?.role ?? null;
+      },
     },
     notes: {
       getAll: () => notes(),
@@ -329,11 +405,11 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
       getFrontmatterSuggestions: async () => ({}),
       getHeadings: empty,
       create: async (title: string, folderPath: string = ROOT_FOLDER) => {
-        // Folders land in M2; until then every note lives at the vault root.
-        if (folderPath !== ROOT_FOLDER) throw new Error('moss-multi: folders are not available on the web until M2');
+        // moss creates in the active folder; before the first listing the server picks the caller's Home.
+        const target = folderPath !== ROOT_FOLDER || workspaceSnapshot ? await folderId(folderPath) : null;
         // "Untitled" is moss's placeholder name; the doc's title starts empty (A§5.1).
         const body = { ...(title.trim() && title.trim() !== UNTITLED ? { title: title.trim() } : {}),
-          ...(workspaceSnapshot ? { folderId: workspaceSnapshot.vault.id } : {}) };
+          ...(target ? { folderId: target } : {}) };
         const response = await request('/api/docs', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -436,11 +512,42 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
         await notes();
         return (workspaceSnapshot?.folders ?? []).map((folder) => ({ ...folder, createdAt: seconds(folder.createdAt) }));
       },
-      create: later('Folders', 2),
-      rename: later('Folders', 2),
-      delete: later('Folders', 2),
-      moveNotes: later('Moving notes into folders', 2),
-      moveFolder: later('Folders', 2),
+      create: async ({ name, parentPath, noteIds = [] }: { name: string; parentPath?: string; noteIds?: string[] }) => {
+        const parentId = await folderId(parentPath);
+        const answer = await changeFolders('/api/folders', { method: 'POST', json: { parentId, name } }) as { folder?: { id: string; name: string } };
+        const created = answer.folder?.name ?? name;
+        const entry = entryFor(answer.folder?.id ?? '', { name: created, path: `${parentPath || ROOT_FOLDER}/${created}` });
+        if (noteIds.length) await moveNotes(noteIds, entry.path);
+        announceFolders();
+        return entry;
+      },
+      rename: async ({ currentPath, newName }: { currentPath: string; newName: string }) => {
+        const id = await folderId(currentPath);
+        const answer = await changeFolders(`/api/folders/${encodeURIComponent(id)}`, { method: 'PATCH', json: { name: newName } }) as { folder?: { name: string } };
+        announceFolders();
+        const renamed = answer.folder?.name ?? newName;
+        return entryFor(id, { name: renamed, path: `${currentPath.split('/').slice(0, -1).join('/')}/${renamed}` });
+      },
+      // moss's one caller trashes the subtree; the server keeps it as one batch for restore (A§6).
+      delete: async ({ path }: { path: string; moveNotesTo?: 'root' | 'trash' }) => {
+        const id = await folderId(path);
+        await changeFolders(`/api/folders/${encodeURIComponent(id)}`, { method: 'DELETE' });
+        announceFolders();
+        return true;
+      },
+      moveNotes: async ({ noteIds, targetFolderPath }: { noteIds: string[]; targetFolderPath: string }) => {
+        const moved = await moveNotes(noteIds, targetFolderPath);
+        announceFolders();
+        return moved;
+      },
+      moveFolder: async ({ sourcePath, targetParentPath }: { sourcePath: string; targetParentPath: string }) => {
+        const id = await folderId(sourcePath);
+        const parentId = await folderId(targetParentPath);
+        await changeFolders(`/api/folders/${encodeURIComponent(id)}`, { method: 'PATCH', json: { parentId } });
+        announceFolders();
+        const name = sourcePath.split('/').pop() ?? '';
+        return entryFor(id, { name, path: `${targetParentPath}/${name}` });
+      },
       showInFinder: none,
     },
     agent: {

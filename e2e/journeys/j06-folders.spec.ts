@@ -33,6 +33,14 @@ const folderRow = (actor: Actor, name: string) =>
 
 const noteRow = (actor: Actor, docId: string) => actor.page.locator(`[${SIDEBAR_ROW_ATTR}][${NAMES.docId}="${docId}"]`);
 
+/** Opens a folder (clicking it also makes it moss's active folder, where "+ Note" creates). */
+async function expandFolder(actor: Actor, name: string): Promise<void> {
+  const row = folderRow(actor, name);
+  await expect(row).toBeVisible();
+  if (/collapsed$/.test((await row.getAttribute('aria-label')) ?? '')) await row.click();
+  await expect(row, `${actor.label}: ${name} opens`).toHaveAccessibleName(/expanded$/);
+}
+
 /** Folder actions → New Folder, then the name and Enter in moss's inline input. */
 async function newFolder(actor: Actor, name: string): Promise<void> {
   await actor.page.getByRole('button', { name: 'Folder actions', exact: true }).click();
@@ -78,7 +86,7 @@ test('j06-folders: from an empty workspace, create, nest, fill, rename and trash
   await expect(folderRow(ada, 'Plans'), 'the folder counts the moved note').toHaveAccessibleName(/^Plans folder, 1 note,/);
 
   // Open the folder, rename it by clicking its name, and nest a subfolder from the hover button.
-  await folderRow(ada, 'Plans').click();
+  await expandFolder(ada, 'Plans');
   await folderRow(ada, 'Plans').getByRole('button', { name: 'Click to rename folder' }).click();
   const rename = folderRow(ada, 'Plans').getByRole('textbox');
   await expect(rename, 'the folder name becomes an input').toBeFocused();
@@ -86,6 +94,7 @@ test('j06-folders: from an empty workspace, create, nest, fill, rename and trash
   await rename.press('Enter');
   await expect(folderRow(ada, 'Projects'), 'the folder is renamed').toBeVisible();
   await expect(folderRow(ada, 'Plans')).toHaveCount(0);
+  await expandFolder(ada, 'Projects');
   const inside = ada.page.getByRole('region', { name: 'Notes in Projects folder' });
   await expect(inside.locator(`[${SIDEBAR_ROW_ATTR}][${NAMES.docId}="${docId}"]`), 'the note is inside the renamed folder').toBeVisible();
   await folderRow(ada, 'Projects').hover();
@@ -101,6 +110,7 @@ test('j06-folders: from an empty workspace, create, nest, fill, rename and trash
   ada.expectReconnects(1, docId);
   await ada.page.reload();
   await ui.waitLive(ada, docId);
+  await ada.declareRemount(docId);
   await expect(folderRow(ada, 'Projects')).toBeVisible();
   await expect(folderRow(ada, 'Projects'), 'the moved note is still counted after a reload').toHaveAccessibleName(/^Projects folder, 1 note,/);
   await actors.checkpoint('folders-made');
@@ -159,12 +169,12 @@ test('j06-folders: an editor on a shared vault creates a folder the owner sees l
   await expectNoCodedErrors(ben);
 
   // A note Ben makes inside it is Ada's vault's note, at Ben's editor role.
-  await folderRow(ben, 'Ben research').click();
+  await expandFolder(ben, 'Ben research');
   const docId = await ui.createNote(ben);
   await expect(ui.pane(ben, docId)).toHaveAttribute(ROLE_ATTR, 'editor');
   await expect(ben.page.getByRole('region', { name: 'Notes in Ben research folder' }).locator(`[${SIDEBAR_ROW_ATTR}][${NAMES.docId}="${docId}"]`),
     'the note lands in the active folder').toBeVisible();
-  await folderRow(ada, 'Ben research').click();
+  await expandFolder(ada, 'Ben research');
   await expect(ada.page.getByRole('region', { name: 'Notes in Ben research folder' }).locator(`[${SIDEBAR_ROW_ATTR}][${NAMES.docId}="${docId}"]`),
     "Ada sees Ben's note in her folder").toBeVisible({ timeout: PEER_SIDEBAR_MS });
 
@@ -174,7 +184,7 @@ test('j06-folders: an editor on a shared vault creates a folder the owner sees l
   await cy.page.getByRole('menuitem', { name: 'Home viewer', exact: true }).click();
   await expect(folderRow(cy, 'Ben research')).toBeVisible();
   await expect(cy.page.getByRole('button', { name: 'Folder actions', exact: true }), 'a viewer gets no New Folder').toHaveCount(0);
-  await folderRow(cy, 'Ben research').click();
+  await expandFolder(cy, 'Ben research');
   await expect(folderRow(cy, 'Ben research').getByRole('button', { name: 'Click to rename folder' }), 'a viewer cannot rename').toHaveCount(0);
   await expect(folderRow(cy, 'Ben research').getByRole('button', { name: 'Create subfolder' }), 'a viewer cannot nest').toHaveCount(0);
   await folderRow(cy, 'Ben research').click({ button: 'right' });

@@ -13,11 +13,12 @@ import { docs } from '../db/schema.ts';
 import type { AppEnv } from '../env.ts';
 import { json } from '../worker/route.ts';
 import { resolveDocAccess, resolveFolderAccess } from './access.ts';
+import { moveDoc } from './folders.ts';
 import { handleMembers } from './members.ts';
 import { NO_STORE, notFound, readJsonObject, unauthenticated } from './respond.ts';
 import { ensureDefaultVault } from './vaults.ts';
 
-export type DocsEnv = AuthEnv & Pick<AppEnv, 'DocDO'>;
+export type DocsEnv = AuthEnv & Pick<AppEnv, 'DocDO'> & Partial<Pick<AppEnv, 'PrincipalDO'>>;
 
 const DOC = /^\/api\/docs\/([^/]+)$/;
 const MEMBERS = /^\/api\/docs\/([^/]+)\/members$/;
@@ -124,13 +125,19 @@ async function readDoc(request: Request, env: DocsEnv, docId: string): Promise<R
   return json({ doc, role: access.role }, 200, NO_STORE);
 }
 
-async function renameDoc(request: Request, env: DocsEnv, docId: string): Promise<Response> {
+/** PATCH /api/docs/:id: `{title}` renames through the DocDO; `{folderId}` moves the note (folders.ts). */
+async function patchDoc(request: Request, env: DocsEnv, docId: string): Promise<Response> {
+  const body = await readJsonObject(request);
+  if (body && 'folderId' in body && !('title' in body)) return moveDoc(request, env, docId, body.folderId);
+  return renameDoc(request, env, docId, body);
+}
+
+async function renameDoc(request: Request, env: DocsEnv, docId: string, body: Record<string, unknown> | null): Promise<Response> {
   const principal = await resolvePrincipal(request, env);
   if (!principal) return unauthenticated();
   const access = await resolveDocAccess(createDb(env.DB), principal, docId, shareTokenOf(request));
   if (!access || access.deleted) return notFound();
   if (!roleAtLeast(access.role, 'editor')) return json({ error: 'forbidden' }, 403, NO_STORE);
-  const body = await readJsonObject(request);
   if (!body || typeof body.title !== 'string') return json({ error: 'bad-request' }, 400, NO_STORE);
   try {
     const stub = await getServerByName(env.DocDO, docId);
@@ -159,7 +166,7 @@ export async function handleDocs(request: Request, env: DocsEnv): Promise<Respon
   const duplicate = /^\/api\/docs\/([^/]+)\/duplicate$/.exec(pathname);
   if (duplicate) return only('POST', request, () => duplicateDoc(request, env, duplicate[1]));
   const doc = DOC.exec(pathname);
-  if (doc) return request.method === 'PATCH' ? renameDoc(request, env, doc[1]) : only('GET', request, () => readDoc(request, env, doc[1]));
+  if (doc) return request.method === 'PATCH' ? patchDoc(request, env, doc[1]) : only('GET', request, () => readDoc(request, env, doc[1]));
   const members = MEMBERS.exec(pathname);
   if (members) return handleMembers(request, env, { type: 'doc', id: members[1] });
   const accessMatch = /^\/api\/docs\/([^/]+)\/access$/.exec(pathname);
