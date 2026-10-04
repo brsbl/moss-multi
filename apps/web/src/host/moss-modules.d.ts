@@ -149,3 +149,11 @@ declare module '@moss-desktop/renderer/editor/markdown/transformers' {
   export function $collectTableLayoutMetadata(): LocalLayoutMetadata;
   export function $collectTabGroupLayoutMetadata(): Pick<LocalLayoutMetadata, 'tabGroupCount' | 'tabGroups'>;
 }
+
+// The module a substitute replaces, at the pin (A§2.1; vite.config.ts `substitutes`).
+declare module '@moss-pristine/asset-url' {
+  export const REMOTE_URL_PATTERN: RegExp;
+  export function normalizeLocalAssetPathForDisplay(src: string): string;
+  export function toDisplaySrc(src: string, noteId?: string | null): string;
+  export function fromDisplaySrc(src: string, currentNoteId?: string | null): string;
+}
