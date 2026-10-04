@@ -35,7 +35,9 @@ export async function renderedBody(actor: Actor, docId: string) {
     for (const node of [root, ...root.querySelectorAll('*')]) {
       for (const attr of [...node.attributes]) {
         if (identities.test(attr.name)) node.removeAttribute(attr.name);
-        else node.setAttribute(attr.name, attr.value.replace(/url\(#([^)]+)\)/g, (_, id: string) => `url(#${ids.get(id) ?? id})`));
+        // An asset route names its doc (T3.1); the two docs compared are different instances.
+        else node.setAttribute(attr.name, attr.value.replace(/url\(#([^)]+)\)/g, (_, id: string) => `url(#${ids.get(id) ?? id})`)
+          .replace(/\/api\/docs\/[^/]+\/assets\//g, '/api/docs/{doc}/assets/'));
       }
       node.classList.remove('selected', 'selected-editor');
       if (!node.getAttribute('class')) node.removeAttribute('class');
