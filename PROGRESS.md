@@ -1,12 +1,12 @@
 # moss-multi progress
 
-**Overall: 41% done** (29 of 70 planned tasks verified)
+**Overall: 43% done** (30 of 70 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 17 / 17 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 10 / 11 | in progress |
-| M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 2 / 9 | in progress |
+| M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 3 / 9 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 0 / 9 | |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
@@ -258,3 +258,4 @@ Local browser verification remains assigned to the independent checker under the
 
 - The checker reproduced two editors pasting the same markdown into one empty note: both minted the deterministic `import:` id, Y.Map kept one `Y.Text`, and the two blocks stayed linked. [Checks 37176278081](https://github.com/brsbl/moss-multi/actions/runs/37176278081) proved it red for all three registers.
 - `$assignRegisterIds` now mints `crypto.randomUUID()` in a live editor. Only the DocDO mirror (`bindRegisters(..., { serializedImports: true })`, one serialized writer) and unbound converters keep repeatable import ids (A§10.10).
+- T2.2s verified: moving a note or folder is the vault owner's alone; editors (by grant or share link) can still create and rename but are refused a move and are not offered a drag.
