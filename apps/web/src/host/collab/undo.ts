@@ -24,7 +24,7 @@ export function createBindingUndoManager(binding: Binding): UndoManager {
     transaction.afterState.forEach((clock, client) => { if ((transaction.beforeState.get(client) ?? 0) < clock) own.add(client); });
   };
   const foreign = (item: Item) => !item.deleted && !own.has(item.id.client);
-  const holdsForeign = (type: AbstractType<unknown>): boolean => {
+  const holdsForeign = <T,>(type: AbstractType<T>): boolean => {
     for (let item = type._start; item; item = item.right) {
       if (foreign(item)) return true;
       if (!item.deleted && item.content instanceof ContentType && holdsForeign(item.content.type)) return true;
@@ -54,7 +54,7 @@ export function createBindingUndoManager(binding: Binding): UndoManager {
   // The step being undone or redone, so a kept container also keeps the properties it was created with.
   let step: StackItem | null = null;
   const deleteFilter = (item: Item): boolean => {
-    const owner = item.parentSub === null ? null : (item.parent as AbstractType<unknown>)._item;
+    const owner = item.parentSub === null ? null : (item.parent as { _item: Item | null })._item;
     if (!owner) return !keeps(item);
     return !(step && isDeleted(step.insertions, owner.id) && keeps(owner));
   };
