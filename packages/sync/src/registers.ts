@@ -62,8 +62,9 @@ export const registerPayloads = (editor: LexicalEditor): PayloadDocs | undefined
 export function payloadTextOf(editor: LexicalEditor, key: NodeKey): Y.Text | undefined {
   const registry = registries.get(editor);
   const id = (editor.getEditorState()._nodeMap.get(key) as RegisterNode | undefined)?.__regId;
-  if (!registry || !id || registry.pending.has(id)) return undefined;
-  return payloadText(registry.host.hold(id));
+  if (!registry || !id) return undefined;
+  // A view can mount before its new block's first text is written; it subscribes to the doc that text will fill.
+  return payloadText(registry.host.hold(id, registry.pending.has(id)));
 }
 
 function currentRegistry(): Registry | undefined {

@@ -7,7 +7,7 @@ import { EXCLUDED_FIELDS } from './excluded-properties.ts';
 import { createBinding, syncLexicalUpdateToYjs, syncYjsChangesToLexical, type Provider } from '@lexical/yjs';
 import { createConverterEditor } from './converter/index.ts';
 import { excludedPropertiesFor } from './excluded-properties.ts';
-import { $assignRegisterIds, bindRegisters, REGISTER_LOCAL_ORIGIN } from './registers.ts';
+import { $assignRegisterIds, bindRegisters, payloadTextOf, REGISTER_LOCAL_ORIGIN } from './registers.ts';
 import { BodyUndo, lexicalAction, payloadDocsFor, payloadText } from './payload-docs.ts';
 import { migratePayloads } from './payloads.ts';
 
@@ -206,6 +206,26 @@ describe('L4 decorator registers @p:col-1 @p:col-3 @p:tech-1', () => {
       a.editor.update(() => { blocks()[1][fixture.setter](fixture.a); }, { discrete: true });
       expect(a.editor.read(() => blocks().map(block => block[getter]())), 'editing the copy leaves the source').toEqual([fixture.before, fixture.a]);
       expect(payloadsOf(a.doc).sort()).toEqual([fixture.a, fixture.before].sort());
+    } finally { a.dispose(); seed.destroy(); }
+  });
+
+  it('a view that subscribes before a new block\'s first text is written receives it', async () => {
+    const seed = new Y.Doc(); seedEmptyParagraph(seed);
+    const a = client(seed);
+    try {
+      let key = '';
+      a.editor.update(() => {
+        const klass = a.editor._nodes.get('code-block')!.klass as unknown as new (code: string) => LexicalNode;
+        const node = new klass('minted();');
+        $getRoot().append(node);
+        key = node.getKey();
+      }, { discrete: true });
+      const text = payloadTextOf(a.editor, key)!;
+      const seen: string[] = [];
+      text.observe(() => seen.push(text.toString()));
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(seen).toEqual(['minted();']);
+      expect(a.editor.read(() => (findAll('code-block')[0] as unknown as { getCode(): string }).getCode())).toBe('minted();');
     } finally { a.dispose(); seed.destroy(); }
   });
 
