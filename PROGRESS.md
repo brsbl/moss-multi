@@ -1,12 +1,12 @@
 # moss-multi progress
 
-**Overall: 37% done** (26 of 70 planned tasks verified)
+**Overall: 39% done** (27 of 70 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 17 / 17 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 9 / 11 | in progress |
-| M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 0 / 9 | |
+| M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 1 / 9 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 0 / 9 | |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
@@ -45,6 +45,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-03 — T1.4 verified: a note's title and Properties are shared live state, so when two people rename a note or edit its properties at the same time both see the same result, in the editor, the sidebar and the filename, and it survives reloads and dropped connections; new notes and Rename put the cursor in the title once the note is live.
 - 2026-10-03 — T1.5 verified: people on the same note see each other in a face pile in the top bar, each with a distinct color, and see each other's carets and selections in that color with a name label while typing; a closed tab clears its chip promptly and a dropped connection within 20 s, spoofed names are dropped, and only members and owners receive presence identities.
 - 2026-10-03 — T1.6 verified: Cmd+Z in one person's editor undoes only their own typing, never a collaborator's or a formula's derived update, in both the title and the body; table and tab widths, active tabs and collapsed headings stay local to each person and survive reload and a peer inserting a table above; floating toolbars hide when the editor loses focus; and two notes in split panes each hold their own connection.
+- 2026-10-03 — T2.1 verified: while someone has a note open, a collaborator's new note, rename or trash shows up in their sidebar within 5 s without a reload, sorted by last update, without remounting the open editor; the workspace channel stops at once on sign-out.
 
 ## T1.1s identity audit
 
@@ -90,7 +91,7 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T1.8 checker: confirm snapshot duplicate's metadata policy before comments and suggestions ship; it currently retains frontmatter and anchor maps, unlike Moss's fresh-metadata duplicate → T4.0/T5.0 (deviation 15).
 - T1.8 checker: distinguish native assets awaiting web delivery from truly missing images; the current image fallback says the file could not be found → T3.1.
 - T1.8 checker: calibrate the duplicate leg's 30 s WebKit setup-ack allowance against the standard 10 s allowance → test-infra follow-up; this is setup readiness, not a claimed latency budget.
-- T1.6 integration: the [full lane on `ee2488a`](https://github.com/brsbl/moss-multi/actions/runs/37167459553) (tree identical to T1.6's green head) went green only on its third rerun of the WebKit editing shard; each attempt failed different single legs: Chromium j01 duplicate `GET /api/workspace` socket hang up; WebKit j01 presence spoofed-name leg twice (an "access control checks" page error on `/api/workspace`, then a missing peer chip), j00-roundtrip "hibernation not induced" (instance constructed 2.3 s after restart), and j00-persist offline-switch (`hydrateNotesAtom` "Load failed"). A [5× WebKit j01 presence probe](https://github.com/brsbl/moss-multi/actions/runs/37169366494) passed → test-infra follow-up on WebKit editing-shard stability.
+- T1.6 integration: the [full lane on `ee2488a`](https://github.com/brsbl/moss-multi/actions/runs/37167459553) (tree identical to T1.6's green head) went green only on its third rerun of the WebKit editing shard; each attempt failed different single legs: Chromium j01 duplicate `GET /api/workspace` socket hang up; WebKit j01 presence spoofed-name leg twice (an "access control checks" page error on `/api/workspace`, then a missing peer chip), j00-roundtrip "hibernation not induced" (instance constructed 2.3 s after restart), and j00-persist offline-switch (`hydrateNotesAtom` "Load failed"). A [5× WebKit j01 presence probe](https://github.com/brsbl/moss-multi/actions/runs/37169366494) passed → test-infra follow-up on WebKit editing-shard stability. It recurred on m1's head (j07-auth) and on m2's T2.1 integration (j01 discovery after `reload()`): a `/api/workspace?vault=` fetch cancelled by navigation surfaces as an uncaught WebKit page error; the [m2 full lane](https://github.com/brsbl/moss-multi/actions/runs/37171338601) went green on rerun.
 
 - The sign-up "too short" error does not say how long a password must be → T0.10
 - Switching to "Create an account" leaves focus on the toggle link → T0.10
