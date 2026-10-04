@@ -312,8 +312,14 @@ describe('register refresh cost @p:col-1 @p:tech-8', () => {
     const seed = new Y.Doc(); importBody(seed, markdown);
     const a = client(seed);
     const settle = () => new Promise(resolve => setTimeout(resolve, 0));
+    // Every register refresh is an editor.update tagged as one, whether or not it changes a node.
     let refreshes = 0;
-    const stop = a.editor.registerUpdateListener(({ tags }) => { if (tags.has('moss-multi:register-refresh')) refreshes++; });
+    const update = a.editor.update.bind(a.editor);
+    const spy = vi.spyOn(a.editor, 'update').mockImplementation((fn, options) => {
+      const tags = options?.tag === undefined ? [] : [options.tag].flat();
+      if (tags.includes('moss-multi:register-refresh')) refreshes++;
+      return update(fn, options);
+    });
     try {
       await settle();
       refreshes = 0;
@@ -328,7 +334,7 @@ describe('register refresh cost @p:col-1 @p:tech-8', () => {
       expect(refreshes, 'no register refresh runs').toBe(0);
       expect(bytes, 'no payload is read').toBe(0);
       expect(exportMarkdown(a.editor)).toContain(body(blocks - 1));
-    } finally { stop(); a.dispose(); seed.destroy(); }
+    } finally { spy.mockRestore(); a.dispose(); seed.destroy(); }
   }, 120_000);
 
   it('the DocDO mirror stringifies each register a bounded number of times per server write', async () => {

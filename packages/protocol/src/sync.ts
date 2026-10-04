@@ -135,7 +135,7 @@ export function decodePayloadFrame(bytes: Uint8Array): PayloadFrame | null {
     if (varUint() !== PAYLOAD_MESSAGE) return null;
     const length = varUint();
     if (length === 0 || at + length > bytes.length) return null;
-    const id = new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(at, at + length));
+    const id = new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(bytes.subarray(at, at + length));
     at += length;
     if (id.length > PAYLOAD_ID_MAX) return null;
     const step = varUint();
