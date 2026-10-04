@@ -97,7 +97,10 @@ function session(server: Y.Doc, doc: Y.Doc) {
 
 /** A frame's structs, for a refusal message. */
 const summarize = (update: Uint8Array) => JSON.stringify(Y.decodeUpdate(update).structs.map((struct) => struct instanceof Y.Item
-  ? [struct.id.client, struct.id.clock, struct.length, struct.parentSub, struct.content.constructor.name, struct.content.getContent().map(String).join('').slice(0, 40)]
+  ? [struct.id.clock, struct.length, struct.parentSub, struct.content.constructor.name, JSON.stringify(struct.content.getContent().map((v) => (v instanceof Y.AbstractType ? v.constructor.name : v))).slice(0, 40),
+    struct.origin && `o${struct.origin.client === struct.id.client ? '' : struct.origin.client}:${struct.origin.clock}`,
+    struct.rightOrigin && `r${struct.rightOrigin.client === struct.id.client ? '' : struct.rightOrigin.client}:${struct.rightOrigin.clock}`,
+    typeof (struct.parent as unknown) === 'string' ? `p${String(struct.parent)}` : struct.parent instanceof Y.ID ? `p${struct.parent.client}:${struct.parent.clock}` : null]
   : [struct.id.client, struct.id.clock, struct.length]));
 
 const all = (node: LexicalNode = $getRoot()): LexicalNode[] =>
@@ -171,7 +174,7 @@ describe('SP11 suggester vetting census @p:mean-2', () => {
       expect(update.byteLength, 'the operation must reach the wire').toBeGreaterThan(2);
       const result = vetSuggestFrame(server, update, { own: [], clients: new Set([suggester.doc.clientID]) });
       if (verdict === 'allowed' || verdict === 'split') {
-        if (!result.ok) throw new Error(`refused: ${result.reason}`);
+        if (!result.ok) throw new Error(`refused: ${result.reason} ${summarize(update)}`);
         expect(result.inserts.length, 'an allowed insert registers a part').toBeGreaterThan(0);
         if (verdict === 'split') expect(result.moved.length, 'the moved tail stays original').toBeGreaterThan(0);
         else expect(result.moved).toEqual([]);
