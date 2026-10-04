@@ -1,12 +1,12 @@
 # moss-multi progress
 
-**Overall: 40% done** (28 of 70 planned tasks verified)
+**Overall: 41% done** (29 of 70 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 17 / 17 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 10 / 11 | in progress |
-| M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 1 / 9 | in progress |
+| M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 2 / 9 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 0 / 9 | |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
@@ -47,6 +47,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-03 — T1.6 verified: Cmd+Z in one person's editor undoes only their own typing, never a collaborator's or a formula's derived update, in both the title and the body; table and tab widths, active tabs and collapsed headings stay local to each person and survive reload and a peer inserting a table above; floating toolbars hide when the editor loses focus; and two notes in split panes each hold their own connection.
 - 2026-10-03 — T2.1 verified: while someone has a note open, a collaborator's new note, rename or trash shows up in their sidebar within 5 s without a reload, sorted by last update, without remounting the open editor; the workspace channel stops at once on sign-out.
 - 2026-10-03 — T1.9 verified: code, HTML and formula blocks now keep their text in shared registers, so two people typing in the same block merge live in both engines, drafts survive reloads and imports, and Cmd+Z inside a block undoes only that person's edits to it.
+- 2026-10-04 — T2.2 verified: anyone can create, rename and move folders and move notes between them from the web sidebar, editors included in a shared vault; deleting a folder sends its whole subtree to trash as one batch, and a peer with a note open inside it goes terminal in place.
 
 ## T1.1s identity audit
 
@@ -99,6 +100,7 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T1.8 checker: calibrate the duplicate leg's 30 s WebKit setup-ack allowance against the standard 10 s allowance → test-infra follow-up; this is setup readiness, not a claimed latency budget.
 - T1.6 integration: the [full lane on `ee2488a`](https://github.com/brsbl/moss-multi/actions/runs/37167459553) (tree identical to T1.6's green head) went green only on its third rerun of the WebKit editing shard; each attempt failed different single legs: Chromium j01 duplicate `GET /api/workspace` socket hang up; WebKit j01 presence spoofed-name leg twice (an "access control checks" page error on `/api/workspace`, then a missing peer chip), j00-roundtrip "hibernation not induced" (instance constructed 2.3 s after restart), and j00-persist offline-switch (`hydrateNotesAtom` "Load failed"). A [5× WebKit j01 presence probe](https://github.com/brsbl/moss-multi/actions/runs/37169366494) passed → test-infra follow-up on WebKit editing-shard stability. It recurred on m1's head (j07-auth) and on m2's T2.1 integration (j01 discovery after `reload()`): a `/api/workspace?vault=` fetch cancelled by navigation surfaces as an uncaught WebKit page error; the [m2 full lane](https://github.com/brsbl/moss-multi/actions/runs/37171338601) went green on rerun.
 - T1.9 integration: the [full lane on `1cfebf0`](https://github.com/brsbl/moss-multi/actions/runs/37178515882) went green on the third attempt of the WebKit editing shard; attempt 1 failed j02 empty-title projection (5 s poll), attempt 2 the j02 concurrent-Properties leg on the same `/api/workspace` "access control checks" page error → same WebKit editing-shard follow-up.
+- T2.2 integration: the [full lane on `b1a1460`](https://github.com/brsbl/moss-multi/actions/runs/37181868184) (tree identical to T2.2's twice-green head `597cd36`) went green on the third attempt; WebKit j02, j03, j04-hibernation and j07-auth legs failed singly, mostly on the same `/api/workspace` "access control checks" page error → same WebKit follow-up.
 
 - The sign-up "too short" error does not say how long a password must be → T0.10
 - Switching to "Create an account" leaves focus on the toggle link → T0.10
