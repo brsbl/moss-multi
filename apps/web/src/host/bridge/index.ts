@@ -519,9 +519,16 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
           throw new Error(UNREACHABLE);
         }
         if (!response.ok) throw await refusalOf(response, NOTE_REFUSALS, NOTE_UNAVAILABLE);
+        // Live at once: a listing that lands later, or a refresh that supersedes this one, must not reopen the Trash view.
+        const restored = () => {
+          const note = known.get(id);
+          if (note?.trashedAt != null) known.set(id, { ...note, trashedAt: null });
+          return known.get(id);
+        };
+        restored();
         await load(workspaceSnapshot?.vault.id ?? storedVault()).catch(() => undefined);
-        const note = known.get(id);
-        return note ? record(withLocal({ ...note, trashedAt: null })) : undefined;
+        const note = restored();
+        return note ? record(withLocal(note)) : undefined;
       },
       search: async ({ query, limit, searchTrashed }: { query: string; limit?: number; searchTrashed?: boolean }) => {
         // Title matches over the listing until search lands in M3; the Trash view searches only trashed notes.
