@@ -122,6 +122,17 @@ describe('budget fallback', () => {
     expect(ops.filter((op) => 'insert' in op)).toHaveLength(1);
   });
 
+  it('a large paste replacing a small selection (n=500,000) is exact, coalesced and bounded', () => {
+    const paste = 'y'.repeat(500_000);
+    const started = Date.now();
+    const ops = diffText('aXb', `a${paste}b`);
+    expect(Date.now() - started, 'bounded work').toBeLessThan(2_000);
+    expect(ops).toEqual([{ retain: 1 }, { delete: 1 }, { insert: paste }]);
+    const [a, b] = pair('aXb');
+    writeField(a, 'title', `a${paste}b`, LOCAL);
+    expect(readField(b, 'title')).toBe(`a${paste}b`);
+  });
+
   it('writeField stays exact on a large title edit', () => {
     const [a, b] = pair('x'.repeat(5_000));
     writeField(a, 'title', 'y'.repeat(5_000), LOCAL);
