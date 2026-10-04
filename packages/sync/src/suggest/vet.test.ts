@@ -241,7 +241,7 @@ describe('SP11 suggester vetting census @p:mean-2', () => {
       const s = session(server, suggester.doc);
       s.land(suggester.frame(() => {
         const original = codeBlocks()[0];
-        const copy = $copyNode(original) as LexicalNode & { __regId: string };
+        const copy = $copyNode(original) as unknown as LexicalNode & { __regId: string };
         copy.__regId = '';
         original.insertAfter(copy);
       }));
@@ -323,8 +323,8 @@ describe('SP11 forged and out-of-order frames @p:mean-2', () => {
     const server = seeded();
     const copy = new Y.Doc();
     try {
-      const S = server.clientID;
       const hello = helloItem(server);
+      const S = hello.id.client;
       const forged = rawUpdate([{ client: S, clock: 0, len: Y.getState(server.store, S) + 1 }], [{ client: S, clock: hello.id.clock, len: 5 }]);
       Y.applyUpdate(copy, Y.encodeStateAsUpdate(server));
       Y.applyUpdate(copy, forged);
@@ -355,7 +355,7 @@ describe('SP11 forged and out-of-order frames @p:mean-2', () => {
     const forger = new Y.Doc();
     try {
       Y.applyUpdate(forger, Y.encodeStateAsUpdate(server));
-      forger.clientID = server.clientID;
+      forger.clientID = helloItem(server).id.client;
       const sv = Y.encodeStateVector(forger);
       const paragraph = (forger.get('root', Y.XmlText).toDelta() as { insert: unknown }[])[0].insert as Y.XmlText;
       paragraph.insert(3, 'x');
@@ -413,7 +413,7 @@ function visible(doc: Y.Doc, spans: readonly IdSpan[]): string {
       } else if (content instanceof Y.ContentType) walk(content.type);
     }
   };
-  walk(doc.get('root', Y.XmlText));
+  walk(doc.get('root', Y.XmlText) as unknown as Y.AbstractType<unknown>);
   return out;
 }
 
