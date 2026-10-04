@@ -1,12 +1,12 @@
 # moss-multi progress
 
-**Overall: 43% done** (34 of 79 planned tasks verified)
+**Overall: 44% done** (35 of 79 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 17 / 17 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 13 / 18 | in progress |
-| M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 4 / 10 | in progress |
+| M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 5 / 10 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 0 / 9 | |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
@@ -52,6 +52,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-04 — T1.R verified: a reviewed design now exists for code, HTML and formula block text: each block's text lives in its own small document that the server hides once the block is deleted and shows again intact on undo or a raced move, proven by a spike test and split into the T1.F2 and T1.F4 build briefs.
 - 2026-10-04 — T1.F3 verified: an open Properties edit keeps what the person typed when a peer clears or changes that property, closing a tab while edits are still unsent asks before leaving, and pasting a 1 MB note goes through without a hang.
 - 2026-10-04 — T2.4 verified: an owner can share a note, a folder (from its context menu) or a whole vault (from the switcher) by email at viewer, commenter, editor or owner, see and revoke members, and create, copy and revoke share links; an unknown email becomes a pending invite indistinguishable from a known one, a link visitor signed out reads at viewer with a sign-in that returns to the same note, and revoked, forged and inaccessible links all get the same 404.
+- 2026-10-04 — T2.3 verified: an owner can trash a note (including by dropping it on the sidebar Trash button) and restore it; anyone else with it open goes read-only in place on every surface with no reconnects, a fresh load gets a 404, and the owner can read a trashed note in a read-only Trash view that says it is kept for 30 days.
 
 ## T1.1s identity audit
 
