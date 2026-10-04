@@ -77,10 +77,10 @@ describe('resolveDocAccess', () => {
     expect(await roleOn(user(cy), tree.top)).toBe('editor');
   });
 
-  it("gives an agent its owner's access, plus by MAX any grant to the agent itself", async () => {
+  it("gives an agent its owner's access, plus by MAX any grant to the agent itself, but never above editor", async () => {
     const docId = await insertDoc(d1.db, ada);
     const adas = await insertAgent(d1.db, ada);
-    expect(await roleOn(agentOf(ada, adas.id), docId), "Ada's agent on Ada's note").toBe('owner');
+    expect(await roleOn(agentOf(ada, adas.id), docId), "Ada's agent on Ada's note: owner access needs a person").toBe('editor');
     const bens = await insertAgent(d1.db, ben);
     expect(await roleOn(agentOf(ben, bens.id), docId), "Ben's agent, Ben without access").toBeNull();
     await insertGrant(d1.db, { docId }, { id: bens.id, type: 'agent' }, 'viewer');
