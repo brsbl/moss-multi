@@ -1177,6 +1177,7 @@ html[data-moss-comment-ui-open="true"] .comment-highlight-active .editor-block-g
 
 /* moss-multi seam: local-view (A§10): formula drafts are local paint, without splitting shared text. */
 ::highlight(formula-draft) {
-  background-color: theme('colors.surface-panel');
-  color: theme('colors.ink-default');
+  /* moss's draft chip colors (MathCalculationPlugin FORMULA_CHIP_BASE_STYLE); a highlight cannot pad or round. */
+  background-color: var(--surface-note-selected-bright);
+  color: var(--accent-brand-pressed);
 }

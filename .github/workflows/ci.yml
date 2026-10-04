@@ -402,7 +402,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: .oracle
-          key: ladle-oracle-762abb777-${{ hashFiles('vendor/moss/PORTED.json', 'scripts/moss-vendor.mjs', 'e2e/parity/oracle/*', 'e2e/parity/oracle/.npmrc') }}
+          key: ladle-oracle-762abb777-${{ hashFiles('vendor/moss/PORTED.json', 'scripts/moss-vendor.mjs', 'e2e/parity/oracle/*', 'e2e/parity/oracle/.npmrc', 'e2e/fixtures/demo-note.md') }}
       # moss-vendor.mjs pristine loads moss-extract.mjs, which needs the workspace's typescript.
       - name: Install the workspace
         if: steps.cache.outputs.cache-hit != 'true'
