@@ -15,13 +15,13 @@ export const fieldText = (doc: Y.Doc, field: DocField): Y.Text => doc.getText(fi
 
 export const readField = (doc: Y.Doc, field: DocField): string => field === 'frontmatter' ? frontmatterYaml(doc) : fieldText(doc, field).toString();
 
-/** Writes `next` into the field in one transaction under `origin`; false when nothing changed. */
-export function writeField(doc: Y.Doc, field: DocField, next: string, origin: unknown): boolean {
+/** Writes `next` into the field in one transaction under `origin`, diffed within `budget` cells; false when nothing changed. */
+export function writeField(doc: Y.Doc, field: DocField, next: string, origin: unknown, budget?: number): boolean {
   if (field === 'frontmatter') return importFrontmatter(doc, next, origin);
   const text = fieldText(doc, field);
   const current = text.toString();
   if (current === next) return false;
-  doc.transact(() => text.applyDelta(diffText(current, next)), origin);
+  doc.transact(() => text.applyDelta(diffText(current, next, budget)), origin);
   return true;
 }
 
