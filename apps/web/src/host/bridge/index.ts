@@ -527,7 +527,7 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
       exportPdf: unavailable('Exporting a PDF file'),
       // Save as Markdown downloads the server's export (A§12, one converter): content extensions stay and no comment
       // or layout marker is in it. moss's client-side markdown is not used.
-      exportMarkdown: async (id: string, input: { title?: string } = {}) => {
+      exportMarkdown: async (id: string, input: { title?: string; markdown?: string } = {}) => {
         const share = browser.share();
         const response = await request(`/api/docs/${encodeURIComponent(id)}/content`, {
           headers: { accept: 'text/markdown', ...(share ? { 'x-moss-share': share } : {}) },
@@ -727,7 +727,7 @@ function windowBrowser(): BrowserHooks {
       const href = URL.createObjectURL(body);
       const link = Object.assign(document.createElement('a'), { href, download: filename });
       link.style.display = 'none';
-      document.body.append(link);
+      document.body.appendChild(link);
       link.click();
       link.remove();
       setTimeout(() => URL.revokeObjectURL(href), 60_000);
