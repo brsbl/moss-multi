@@ -1,0 +1,13 @@
+diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.css b/packages/desktop/src/renderer/editor/MarkdownEditor.css
+--- a/packages/desktop/src/renderer/editor/MarkdownEditor.css
++++ b/packages/desktop/src/renderer/editor/MarkdownEditor.css
+@@ -1173,3 +1173,9 @@ html[data-moss-comment-ui-open="true"] .comment-highlight-active .editor-block-g
+ .moss-tab-group > [data-tab-panel][data-active] {
+   display: block;
+ }
++
++/* moss-multi seam: local-view (A§10): formula drafts are local paint, without splitting shared text. */
++::highlight(formula-draft) {
++  background-color: theme('colors.surface-panel');
++  color: theme('colors.ink-default');
++}

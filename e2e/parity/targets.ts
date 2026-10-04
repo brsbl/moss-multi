@@ -16,6 +16,8 @@ export interface Target {
    *   the listing is the one fixture; everything rendered from it is the built Worker's.
    */
   seed: 'fresh' | 'story-listing';
+  /** Match editor focus on both sides; deviation 10 hides the candidate toolbar on blur. */
+  focusEditor: boolean;
   /** Web chrome to paint out on both sides (sanctioned collab chrome only). */
   masks: string[];
   /** Largest diff share, in percent. */
@@ -25,9 +27,10 @@ export interface Target {
 }
 
 export const TARGETS: Target[] = [
+  // Compare the default shell with editing controls visible; j01 separately gates deviation 10 on blur.
   // Mask only web controls: Share and connection in the top bar, and the vault selector in either shell.
-  { id: 'shell-default', story: 'app--default', seed: 'story-listing', masks: ['[data-collab-chrome]'], floor: 0.05, maxBlob: 16 },
-  { id: 'shell-empty', story: 'app--empty-notes', seed: 'fresh', masks: ['[data-collab-chrome]'], floor: 0.05, maxBlob: 16 },
+  { id: 'shell-default', story: 'app--default', seed: 'story-listing', focusEditor: true, masks: ['[data-collab-chrome]'], floor: 0.05, maxBlob: 16 },
+  { id: 'shell-empty', story: 'app--empty-notes', seed: 'fresh', focusEditor: false, masks: ['[data-collab-chrome]'], floor: 0.05, maxBlob: 16 },
 ];
 
 export const THEMES: Theme[] = ['light', 'dark'];

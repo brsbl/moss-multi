@@ -1,0 +1,20 @@
+diff --git a/packages/desktop/src/renderer/editor/nodes/FileLinkNode.tsx b/packages/desktop/src/renderer/editor/nodes/FileLinkNode.tsx
+--- a/packages/desktop/src/renderer/editor/nodes/FileLinkNode.tsx
++++ b/packages/desktop/src/renderer/editor/nodes/FileLinkNode.tsx
+@@ -1,4 +1,6 @@
+ import type { JSX } from 'react';
++// moss-multi seam: local-view (A§10): resolution depends on the viewer's access.
++import { useNodeView } from '@moss-multi/host/collab/view-state';
+ import {
+   $applyNodeReplacement,
+   DecoratorNode,
+@@ -47,6 +49,9 @@ function FileLinkComponent({
+   resolutionState: LinkResolutionState;
+   nodeKey: NodeKey;
+ }): JSX.Element {
++  const view = useNodeView(nodeKey);
++  noteTitle = view?.noteTitle ?? noteTitle;
++  resolutionState = (view?.resolutionState as LinkResolutionState | undefined) ?? resolutionState;
+   // Click handling is done by FileLinkPlugin at the editor root level
+   // This allows the plugin to access the editor context for navigation
+ 

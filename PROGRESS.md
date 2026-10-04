@@ -1,11 +1,11 @@
 # moss-multi progress
 
-**Overall: 36% done** (25 of 70 planned tasks verified)
+**Overall: 37% done** (26 of 70 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 17 / 17 | in progress |
-| M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 8 / 11 | in progress |
+| M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 9 / 11 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 0 / 9 | |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 0 / 9 | |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
@@ -44,6 +44,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-03 — T1.8 verified: a person can choose Duplicate from a note's menu and get a copy that every collaborator sees in their sidebar, and `POST /api/docs {markdown}` imports a note on the server that renders the same as pasting that markdown into the editor; the G1 comparator holds this for all 32 family fixtures in Chromium and WebKit.
 - 2026-10-03 — T1.4 verified: a note's title and Properties are shared live state, so when two people rename a note or edit its properties at the same time both see the same result, in the editor, the sidebar and the filename, and it survives reloads and dropped connections; new notes and Rename put the cursor in the title once the note is live.
 - 2026-10-03 — T1.5 verified: people on the same note see each other in a face pile in the top bar, each with a distinct color, and see each other's carets and selections in that color with a name label while typing; a closed tab clears its chip promptly and a dropped connection within 20 s, spoofed names are dropped, and only members and owners receive presence identities.
+- 2026-10-03 — T1.6 verified: Cmd+Z in one person's editor undoes only their own typing, never a collaborator's or a formula's derived update, in both the title and the body; table and tab widths, active tabs and collapsed headings stay local to each person and survive reload and a peer inserting a table above; floating toolbars hide when the editor loses focus; and two notes in split panes each hold their own connection.
 
 ## T1.1s identity audit
 
@@ -62,15 +63,33 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-03 — T1.4 third attempt: merged current `m1` discovery, retaining projected filenames and Rename focus. The [Chromium red run](https://github.com/brsbl/moss-multi/actions/runs/37139123583) failed at same-key convergence after a verified sever; the [unit red run](https://github.com/brsbl/moss-multi/actions/runs/37139138695) failed at divergent atoms, duplicate replacement/removal, and hyphen-leading-key preservation. Properties now reads duplicate keys with deterministic last-occurrence semantics while retaining moss date normalization; editing or deleting that key removes all its duplicates and preserves other keys. The regression reloads both peers, edits the repaired key, adds another field and reloads again. j02 legs now carry `@tierA`; deviation 15 records the pre-existing notice-band layout tradeoff. Remote green runs on the final head and independent checker QA remain required; no self-grade or task-count increment.
   - Deviations: the brief permits skipping implementer browser self-checks because the BB driver is unavailable in Codex. No local stack or browser was started. The checker owns the real browser pass and 390×844 / 1440×1000 evidence pair. The race fixture restores its sever through an explicit reconnect: the current base lacks T1.3 half-open recovery, and merely unblocking frames left the dropped write unacked. The YAML dumper quotes an edited hyphen-leading key, so the unit expectation follows that existing format. Kept the repair focused on the P1 data-loss race plus the adjacent key-range defect, rather than expanding into the remaining P2 behavior changes.
 
+- 2026-10-03 — T1.6 implemented, awaiting independent checker: title and body undo preserve peer edits and exclude derived origins; background formula/link presentation stays local; table and tab widths, active tabs and collapsed headings survive reload; widths follow stable Yjs identities after peer table insertion; both floating toolbars hide on blur. Existing split-navigation guards are covered for one socket per pane and no duplicate doc. Tests-first [unit red](https://github.com/brsbl/moss-multi/actions/runs/37160955665) and [browser red](https://github.com/brsbl/moss-multi/actions/runs/37160954402) demonstrated the missing title undo, layout restoration and toolbar behavior. The focused formula/color regression passes in both engines on `614a7e4` ([browser run](https://github.com/brsbl/moss-multi/actions/runs/37163056520)); [checks, build and viewer](https://github.com/brsbl/moss-multi/actions/runs/37163056675) also pass. The final cumulative editing/soak run is recorded in the implementer handoff; no verified count changes before the checker.
+  - Deviation 20 supplements, rather than replaces, Moss's ordinal layout storage with stable CRDT identities. The width fixture calls the editor's actual resize setters deterministically, then checks rendered state, reloads, peer insertion and captured frames; tab switching and heading collapse use the real UI.
+  - The brief permits skipping the local browser self-check because BB Browser Automation is unavailable in Codex. No local stack or browser was launched; the independent checker owns the real browser pass. Remote Chromium and WebKit journeys cover the task, including SP5's 60-second concurrent-typing soak.
+  - Empty-prompt undo routing has a focused Lexical command test because AI/⌘K remains intentionally hidden (A§2.3). Formula typing coverage exposed an existing nested-update Enter bug; committing inside the command's current update preserves its selection and avoids sharing draft styles. The color conversion listener now waits until the current commit’s listeners finish, avoiding a stale-node access in Markdown shortcuts.
+
+### T1.6 — checker regression repairs
+
+- The [tests-first export run](https://github.com/brsbl/moss-multi/actions/runs/37164692835) reproduced a dependent formula exporting frozen `4` instead of recomputed `6`. Export now carries the real doc identity into evaluation; the regression also covers a foreign-note fallback, an unchanged live Y.Doc, export-cache invalidation and wake.
+- The [tests-first parity run](https://github.com/brsbl/moss-multi/actions/runs/37164693065) reproduced both 144 px² shell-default failures. The target now focuses both editors before capture, retaining the toolbar in the pixel comparison without widening masks or thresholds (deviation 10). The j01 blur leg remains the behavior gate.
+- The read-only color plugin's initial sweep is guarded by editability; the [tests-first run](https://github.com/brsbl/moss-multi/actions/runs/37164862573) changed read-only text into a color node while its editable positive control passed. Local browser verification remains assigned to the independent checker by the implementer brief; no local tests run.
+
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+- T1.6 checker: prune deleted layout identities, avoid unchanged localStorage writes and restrict ordinal migration to stores without identity metadata → local-layout follow-up. These need lifecycle and persisted-state regressions beyond this P1 repair.
+- T1.6 checker: bound link activation and preview must consume locally resolved note identity, not only its displayed title/state → T3.3 links.
+- T1.6 checker: route empty-prompt undo from a split pane's title to that pane's body; AI and Cmd+K remain hidden → command-palette unstaging.
+- T1.6 checker: replace model-only width assertions with rendered dimensions and a real resize drag → editing-journey follow-up; the checker already confirmed the rendered behavior manually.
+
 
 - T1.8 checker: replace the interim listing poll/full metadata hydrate with A§11's workspace channel, including avoiding unchanged vault-switcher notifications → T2.1 (deviation 16).
 - T1.8 checker: large explicit-markdown pastes bypass chunking to preserve nested blocks; measure responsiveness and retain nesting in any future chunker. G1 covers empty-note explicit paste, not the complete plain-text paste path → editor follow-up (deviation 14).
 - T1.8 checker: confirm snapshot duplicate's metadata policy before comments and suggestions ship; it currently retains frontmatter and anchor maps, unlike Moss's fresh-metadata duplicate → T4.0/T5.0 (deviation 15).
 - T1.8 checker: distinguish native assets awaiting web delivery from truly missing images; the current image fallback says the file could not be found → T3.1.
 - T1.8 checker: calibrate the duplicate leg's 30 s WebKit setup-ack allowance against the standard 10 s allowance → test-infra follow-up; this is setup readiness, not a claimed latency budget.
+- T1.6 integration: the [full lane on `ee2488a`](https://github.com/brsbl/moss-multi/actions/runs/37167459553) (tree identical to T1.6's green head) went green only on its third rerun of the WebKit editing shard; each attempt failed different single legs: Chromium j01 duplicate `GET /api/workspace` socket hang up; WebKit j01 presence spoofed-name leg twice (an "access control checks" page error on `/api/workspace`, then a missing peer chip), j00-roundtrip "hibernation not induced" (instance constructed 2.3 s after restart), and j00-persist offline-switch (`hydrateNotesAtom` "Load failed"). A [5× WebKit j01 presence probe](https://github.com/brsbl/moss-multi/actions/runs/37169366494) passed → test-infra follow-up on WebKit editing-shard stability.
 
 - The sign-up "too short" error does not say how long a password must be → T0.10
 - Switching to "Create an account" leaves focus on the toggle link → T0.10
@@ -80,7 +99,7 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - The wrangler ProxyWorker patch replays non-idempotent requests after an ambiguous failure → T0.9b follow-up (stack infra)
 - `qa.mjs close` forgets the session even when closing it failed → tooling follow-up
 - `stack.mjs` puts `BETTER_AUTH_SECRET` and the test-hook secret on wrangler's command line → tooling follow-up
-- Table and tab widths and collapsed headings reset on every reload in M0 → T1.6
+- T1.6 implementation closes the M0 local-layout reset follow-up: table/tab widths and collapsed headings restore after sync; confirmed by the independent checker.
 - Page-attribute names, the socket path name and the roles list are each defined in more than one place → the T1.x lane that next touches each module
 - Several docs disagree with each other: deviation 13, the M0 progress count and the viewer's copied title → the coordinator at the M0 hand-off; the viewer follow-up goes with T3.8
 - `trace.mjs` gates each row only at its first milestone and counts a tag anywhere in a file, so later-milestone owning legs are never enforced → T0.1 follow-up: per-milestone tags (e.g. `@p:col-6@1`) or an owning-journey-file check per milestone

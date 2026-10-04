@@ -1,4 +1,6 @@
 // ported-from: packages/desktop/src/renderer/editor/plugins/ColorCodePlugin.tsx @ 762abb777
+// moss-multi seam: local-view (A§10): only the author converts local text; hydration is already normalized.
+import { isBoundEditor } from '@moss-multi/host/collab/view-state';
 /**
  * ColorCodePlugin – first-class inline color pills.
  *
@@ -157,6 +159,7 @@ export function ColorCodeConversionPlugin(): null {
     if (typeof editor.registerMutationListener !== 'function') return undefined;
     return editor.registerMutationListener(TextNode, (mutations, payload) => {
       const updateTags = payload?.updateTags;
+      if (!editor.isEditable() || updateTags?.has('collaboration') || (isBoundEditor(editor) && updateTags?.has('registerMutationListener'))) return;
       // Skip our own conversion writes and the backspace-to-text path so the
       // user can edit the expanded literal without it snapping back.
       if (updateTags?.has(COLOR_CONVERT_TAG) || updateTags?.has(COLOR_PILL_EXPAND_TAG)) return;
@@ -189,30 +192,35 @@ export function ColorCodeConversionPlugin(): null {
 
       if (keysToConvert.length === 0) return;
 
-      editor.update(
-        () => {
-          for (const nodeKey of keysToConvert) {
-            const node = $getNodeByKey(nodeKey);
-            if (node instanceof TextNode) {
-              $convertColorLiteralsInTextNode(node, { liveTyping: true });
+      // moss-multi seam: conversion-order (A§10.10): finish this commit's listeners
+      // before replacing text that markdown shortcuts still read from its snapshot.
+      queueMicrotask(() => {
+        if (!editor.isEditable() || !editor.getRootElement()) return;
+        editor.update(
+          () => {
+            for (const nodeKey of keysToConvert) {
+              const node = $getNodeByKey(nodeKey);
+              if (node instanceof TextNode) {
+                $convertColorLiteralsInTextNode(node, { liveTyping: true });
+              }
             }
-          }
-        },
-        { tag: COLOR_CONVERT_TAG }
-      );
+          },
+          { tag: COLOR_CONVERT_TAG }
+        );
+      });
     });
   }, [editor]);
 
   // -----------------------------------------------------------------------
   // Initial sweep: convert any color literals present at editor mount, e.g.
   // after markdown import where the COLOR_TRANSFORMER didn't catch a token.
-  // This non-interactive pass also runs in read-only/PDF renderers so
-  // hex/function literals reach parity there too.
+  // Read-only renderers retain the imported tree without background writes.
   // -----------------------------------------------------------------------
   useEffect(() => {
+    if (!editor.isEditable() || isBoundEditor(editor)) return;
     let cancelled = false;
     const run = (): void => {
-      if (cancelled) return;
+      if (cancelled || !editor.isEditable()) return;
       const keysToConvert: string[] = [];
       editor.getEditorState().read(() => {
         const root = $getRoot();
@@ -429,6 +437,7 @@ export function ColorCodePlugin(): JSX.Element | null {
       if (pickerOpenRef.current) return;
 
       const updateTags = payload?.updateTags;
+      if (!editor.isEditable() || updateTags?.has('collaboration') || (isBoundEditor(editor) && updateTags?.has('registerMutationListener'))) return;
       if (updateTags?.has(COLOR_CONVERT_TAG) || updateTags?.has(COLOR_PILL_EXPAND_TAG)) return;
 
       let nextPayload: OpenColorPickerPayload | null = null;

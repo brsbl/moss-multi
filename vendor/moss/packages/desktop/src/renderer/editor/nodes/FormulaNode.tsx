@@ -1,5 +1,7 @@
 // ported-from: packages/desktop/src/renderer/editor/nodes/FormulaNode.tsx @ 762abb777
 import type { JSX } from 'react';
+// moss-multi seam: local-view (A§10): computed values paint locally, outside the shared node.
+import { useNodeView } from '@moss-multi/host/collab/view-state';
 import {
   $applyNodeReplacement,
   DecoratorNode,
@@ -83,6 +85,9 @@ function FormulaComponent({
   stale: boolean;
   nodeKey: NodeKey;
 }): JSX.Element {
+  const view = useNodeView(nodeKey);
+  result = view?.result ?? result;
+  stale = view?.stale ?? stale;
   const sourceMode = classifyFormulaSource(formula, { storedDisplay: result });
   const isSymbolic = sourceMode === 'symbolic';
   const isStale = stale && !isSymbolic;
