@@ -176,6 +176,22 @@ function vet(view: View, structs: (Y.Item | Y.GC | Y.Skip)[], ds: DeleteSet, opt
   };
   /** Own containers the frame writes attributes on: checked for moved content once the splits are known. */
   const attributed = new Set<Y.Item>();
+  /**
+   * Lexical rewrites every property of a node it marks dirty whose value is not `===` the previous one, so inserting
+   * beside an original decorator re-sets its object-valued properties to equal values. A write that keeps the value
+   * changes nothing: it is allowed on any body container, with the delete of the value it replaces.
+   */
+  const unchanged = new Set<string>();
+  const sameAsBefore = (container: Y.Item, item: Y.Item): boolean => {
+    if (!(container.content instanceof Y.ContentType) || item.content instanceof Y.ContentType || item.parentSub === null) return false;
+    let previous: Y.Item | null | undefined = container.content.type._map.get(item.parentSub);
+    while (previous && isFreshId(previous.id)) previous = previous.left;
+    if (!previous || !view.liveBefore(previous) || previous.content instanceof Y.ContentType || previous.content instanceof Y.ContentDeleted) {
+      return false;
+    }
+    const last = (values: unknown[]) => JSON.stringify(values[values.length - 1]);
+    return last(previous.content.getContent()) === last(item.content.getContent());
+  };
 
   // Inserts: sequence inserts anywhere in the body; attribute and map writes only on the author's own containers.
   const candidates: Y.Item[] = [];
@@ -211,6 +227,10 @@ function vet(view: View, structs: (Y.Item | Y.GC | Y.Skip)[], ds: DeleteSet, opt
           candidates.push(item);
           continue;
         }
+        if (root === BODY && sameAsBefore(at.typeItem, item)) {
+          unchanged.add(`${keyOf(at.typeItem.id)}|${item.parentSub}`);
+          continue;
+        }
         throw new Refusal(root === BODY || root === REGISTERS ? 'mutate-original' : 'outside-body');
       }
       // A new key in the registers map belongs to a new decorator; overwriting a live one mutates the original.
@@ -233,8 +253,9 @@ function vet(view: View, structs: (Y.Item | Y.GC | Y.Skip)[], ds: DeleteSet, opt
         if (item && !found.fresh && view.liveBefore(item)) {
           const holder = place(item, false);
           if (holder.sub !== null) {
-            if (holder.typeItem ? !isOwnId(holder.typeItem.id) : !isOwnId(item.id)) throw new Refusal('mutate-original');
-            if (holder.typeItem) attributed.add(holder.typeItem);
+            const kept = holder.typeItem !== null && unchanged.has(`${keyOf(holder.typeItem.id)}|${holder.sub}`);
+            if (!kept && (holder.typeItem ? !isOwnId(holder.typeItem.id) : !isOwnId(item.id))) throw new Refusal('mutate-original');
+            if (holder.typeItem && !kept) attributed.add(holder.typeItem);
           } else if (isMoved(client, at, stop) || !covered(client, at, stop)) {
             if (!(item.content instanceof Y.ContentString)) throw new Refusal('delete-original');
             touchBlock(holder.typeItem);

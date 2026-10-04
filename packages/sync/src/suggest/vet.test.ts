@@ -5,7 +5,7 @@ import { createBinding, syncLexicalUpdateToYjs, syncYjsChangesToLexical, type Pr
 import { $insertTableRowAtNode, $isTableCellNode, type TableCellNode } from '@lexical/table';
 import { $createListItemNode, $isListItemNode, type ListItemNode } from '@lexical/list';
 import {
-  $copyNode, $createRangeSelection, $getRoot, $getSelection, $isElementNode, $isRangeSelection, $isTextNode, $setSelection,
+  $copyNode, $createParagraphNode, $createRangeSelection, $getRoot, $getSelection, $isElementNode, $isRangeSelection, $isTextNode, $setSelection,
   type LexicalNode, type TextNode,
 } from 'lexical';
 import * as encoding from 'lib0/encoding';
@@ -86,7 +86,7 @@ function session(server: Y.Doc, doc: Y.Doc) {
   const vet = (update: Uint8Array): Verdict => vetSuggestFrame(server, update, { own, moved, clients });
   const land = (update: Uint8Array) => {
     const result = vet(update);
-    if (!result.ok) throw new Error(`refused: ${result.reason}`);
+    if (!result.ok) throw new Error(`refused: ${result.reason} ${summarize(update)}`);
     own.push(...result.inserts);
     moved.push(...result.moved);
     Y.applyUpdate(server, update);
@@ -94,6 +94,11 @@ function session(server: Y.Doc, doc: Y.Doc) {
   };
   return { own, moved, clients, vet, land };
 }
+
+/** A frame's structs, for a refusal message. */
+const summarize = (update: Uint8Array) => JSON.stringify(Y.decodeUpdate(update).structs.map((struct) => struct instanceof Y.Item
+  ? [struct.id.client, struct.id.clock, struct.length, struct.parentSub, struct.content.constructor.name, struct.content.getContent().map(String).join('').slice(0, 40)]
+  : [struct.id.client, struct.id.clock, struct.length]));
 
 const all = (node: LexicalNode = $getRoot()): LexicalNode[] =>
   [node, ...($isElementNode(node) ? node.getChildren().flatMap((child) => all(child)) : [])];
@@ -124,6 +129,7 @@ const cases: Case[] = [
   { name: 'a sentence pasted before itself', op: () => select(0).insertText('Hello world and the cat. '), verdict: 'allowed' },
   { name: 'Enter at the end of a block', op: () => select(24).insertParagraph(), verdict: 'allowed' },
   { name: 'a new table row', op: () => { $insertTableRowAtNode(cell('1'), true); }, verdict: 'allowed' },
+  { name: 'a new paragraph right after an original code block', op: () => { codeBlocks()[0].insertAfter($createParagraphNode()); }, verdict: 'allowed' },
   // Splits: @lexical/yjs deletes the original tail and re-inserts a copy; the vetter proves the copy and keeps it original.
   { name: 'Enter mid-paragraph', op: () => select(5).insertParagraph(), verdict: 'split' },
   { name: 'a soft break mid-paragraph', op: () => select(5).insertLineBreak(), verdict: 'split' },
