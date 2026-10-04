@@ -178,3 +178,5 @@ Local browser verification remains assigned to the independent checker under the
 
 - T2.1 first Chromium workspace run passed: https://github.com/brsbl/moss-multi/actions/runs/37165101021 (`a9eeccf`). The push checks exposed two TS inference annotations (fixed) and the inherited closed-M1 assumption (missing R11/R15 and three staged M1 bridge methods).
 - CI deviation under the parallel-M2 brief: branch checks cap the inferred trace gate at `CI_CLOSED_MILESTONE` (repository variable, workflow default 0 while M1 remains open). Ready `m<k> → main` milestone exits still enforce all Mk rows. The coordinator must advance the variable when each milestone closes; this does not waive M1's missing work.
+
+- T2.1 second Chromium run found the missing server close reply at the pinned workerd compatibility date: client sign-out stopped callbacks/timers but the close handshake remained pending. PrincipalDO now acknowledges close; the cold-DO harness asserts it. Run: https://github.com/brsbl/moss-multi/actions/runs/37165316896. The only remaining typecheck error was a test header-union annotation (fixed).

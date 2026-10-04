@@ -37,6 +37,7 @@ Read this with PRODUCT.md, your BUILDPLAN entry and the A§ it cites, before wri
 - TanStack Start: the root route uses `shellComponent`; the Worker exports `createServerEntry({fetch})`; parents need `<Outlet/>`. [L§4.18]
 - Global CSS is imported in `__root`; a lazy import ships an unstyled production build while dev stays green. Tailwind globs cover every file that writes a `className`. [L§4.1]
 - Prism is installed first in the client entry and in workerd; a chunk-order shift crashed the deployed app. [L§4.1]
+- Hibernatable sockets must reply with `connection.close()` in `onClose` at the pinned 2025 compatibility date; otherwise the client remains CLOSING after sign-out. [T2.1]
 - `new Request(request, {headers})` drops the WebSocket upgrade headers; clone without init, then set headers. [L§4.7]
 - One launcher kills by process group; a "vite dev" pattern never matched "vite.js dev" and three rounds tested stale code. Check `/api/version` before any gate. [L§4.18]
 - `wrangler dev` needs `--inspector-port P+1000` (9229 collides across stacks); `vite preview` binds only `[::1]`. [L§5.3; L§4.18]

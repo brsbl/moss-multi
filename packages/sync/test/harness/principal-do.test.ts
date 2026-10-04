@@ -22,5 +22,7 @@ it('publishes to hibernated workspace sockets on a fresh RPC and does not accept
   expect(socket.sent).toHaveLength(before);
   await cold.webSocketMessage(socket as never, 'ping');
   expect(socket.sent.at(-1)).toBe('pong');
+  await cold.webSocketClose(socket as never, 1000, '', true);
+  expect(socket.closed).toEqual({ code: 1000, reason: 'closed' });
   backing.db.close();
 });

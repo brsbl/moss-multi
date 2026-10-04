@@ -22,6 +22,11 @@ export class PrincipalDO extends Server<SyncEnv> {
     if (message === 'ping') connection.send('pong');
   }
 
+  override onClose(connection: Connection): void {
+    // The pinned workerd compatibility date predates automatic close replies.
+    connection.close(1000, 'closed');
+  }
+
   async publish(event: WorkspaceEvent): Promise<void> {
     await this.__unsafe_ensureInitialized();
     this.broadcast(JSON.stringify(event));
