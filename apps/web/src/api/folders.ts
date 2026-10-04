@@ -27,7 +27,7 @@ export const FOLDER_NAME_MAX = 100;
 const refuse = (status: number, error: string, message: string) => json({ error, message }, status, NO_STORE);
 
 /** One answer for a missing, inaccessible or trashed folder, so none of them can be told apart. */
-const folderNotFound = () =>
+export const folderNotFound = () =>
   refuse(404, 'not-found', 'That folder is no longer available, or you don’t have access to it.');
 
 const isUnique = (error: unknown) => /UNIQUE/i.test(`${error} ${(error as { cause?: unknown })?.cause ?? ''}`);
@@ -61,19 +61,19 @@ async function notify(env: FoldersEnv, recipients: Recipients): Promise<void> {
  * it in the same statement, so two requests that both read the old tree can't both commit (no cycle, no depth
  * overrun, nothing live under a trashed parent).
  */
-const upFrom = (p: number) => `up(id, parent_id, deleted_at, kind, depth) AS (
+export const upFrom = (p: number) => `up(id, parent_id, deleted_at, kind, depth) AS (
     SELECT id, parent_id, deleted_at, kind, 1 FROM folders WHERE id = ?${p}
     UNION ALL SELECT f.id, f.parent_id, f.deleted_at, f.kind, up.depth + 1 FROM folders f JOIN up ON f.id = up.parent_id
       WHERE up.depth < ${MAX_FOLDER_DEPTH}
   )`;
 /** `up` is live throughout and ends at vault `?{vault}`. */
-const liveIn = (vault: number) =>
+export const liveIn = (vault: number) =>
   `NOT EXISTS (SELECT 1 FROM up WHERE deleted_at IS NOT NULL) AND EXISTS (SELECT 1 FROM up WHERE id = ?${vault} AND kind = 'vault')`;
 
 const changed = (result: D1Result) => (result.meta?.changes ?? 0) > 0;
 
 /** The vault a folder is in (the last of its chain). */
-const vaultOf = async (db: Db, folderId: string) => (await folderChain(db, folderId)).at(-1);
+export const vaultOf = async (db: Db, folderId: string) => (await folderChain(db, folderId)).at(-1);
 
 /** The live folders under `id`, `id` first, each with its depth below `id` (1 for `id`). */
 async function subtree(db: D1Database, id: string): Promise<{ id: string; depth: number }[]> {
@@ -169,9 +169,11 @@ async function updateFolder(request: Request, env: FoldersEnv, id: string): Prom
     await collectRecipients(env.DB, { folderIds: moved.map((row) => row.id) }, recipients);
   }
   const moving = parentId !== current.parentId;
+  // Only a sent name is written, so a move can't undo a rename that lands between its read and its write.
+  const newName = 'name' in body ? name : null;
   try {
     if (!moving) {
-      await db.update(folders).set({ name }).where(and(eq(folders.id, id), isNull(folders.deletedAt)));
+      if (newName !== null) await db.update(folders).set({ name: newName }).where(and(eq(folders.id, id), isNull(folders.deletedAt)));
     } else {
       // The target's live ancestry, the cycle check and the depth bound hold at the moment of the write.
       const updated = await env.DB.prepare(`WITH RECURSIVE ${upFrom(1)},
@@ -180,11 +182,11 @@ async function updateFolder(request: Request, env: FoldersEnv, id: string): Prom
           UNION ALL SELECT f.id, s.depth + 1 FROM folders f JOIN sub s ON f.parent_id = s.id
             WHERE f.deleted_at IS NULL AND s.depth <= ${MAX_FOLDER_DEPTH}
         )
-        UPDATE folders SET name = ?3, parent_id = ?1
+        UPDATE folders SET name = coalesce(?3, name), parent_id = ?1
         WHERE id = ?2 AND deleted_at IS NULL AND ${liveIn(4)}
           AND NOT EXISTS (SELECT 1 FROM up WHERE id = ?2)
           AND (SELECT count(*) FROM up) + (SELECT max(depth) FROM sub) <= ${MAX_FOLDER_DEPTH}`)
-        .bind(parentId, id, name, vault).run();
+        .bind(parentId, id, newName, vault).run();
       if (!changed(updated)) return refuseStaleMove(db, principal, id, parentId);
     }
   } catch (error) {
