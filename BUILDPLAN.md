@@ -78,6 +78,7 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
 | R10 | Transient failures degrade in place | j07 degraded leg; j03 retrying leg | 0, 1 |
 | R11 | Per-viewer layout stays local | T1.6 layout legs | 1 |
 | R15 | Staging only, personal account, permanent names | T1.10; T8.2 | 1, 8 |
+| R16 | A comment never jumps to other text; retyping the same text does not reattach it | T4.0 never-jump and undo scenes; T4.2 | 4 |
 
 ---
 
