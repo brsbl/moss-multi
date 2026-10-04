@@ -216,6 +216,29 @@ describe('Cmd+Z undoes only your own edits and never removes a peer\'s character
     } finally { dispose(); }
   });
 
+  for (const [what, remove] of [
+    ['text node', () => textAt(1).remove()],
+    ['paragraph', () => paragraph(1).remove()],
+  ] as const) {
+    it(`redoing Ada's delete of the peer's ${what} keeps what the peer typed into it after her undo`, async () => {
+      const { ada, ben, dispose } = await pair(() => $getRoot().append($createParagraphNode().append($createTextNode('Intro.'))));
+      try {
+        ben.step(() => $getRoot().append($createParagraphNode().append($createTextNode('Ben line'))));
+        await exchange(ada, ben);
+        ada.step(remove);
+        await expectBoth(ada, ben, text => expect(text).toBe(what === 'paragraph' ? 'Intro.' : 'Intro.\n\n'));
+        ada.undo.undo();
+        await expectBoth(ada, ben, text => expect(text, 'undo restores Ben\'s line').toBe('Intro.\n\nBen line'));
+        ben.step(typeAt(1, 8, ' NEW'));
+        await expectBoth(ada, ben, text => expect(text).toBe('Intro.\n\nBen line NEW'));
+        ada.undo.redo();
+        await expectBoth(ada, ben, text => expect(text, 'Ada\'s Cmd+Shift+Z must leave Ben\'s new words').toBe('Intro.\n\n NEW'));
+        ada.undo.undo();
+        await expectBoth(ada, ben, text => expect(text).toBe('Intro.\n\nBen line NEW'));
+      } finally { dispose(); }
+    });
+  }
+
   it('a peer typing inside a word Ada is editing keeps those characters through her undo', async () => {
     const { ada, ben, dispose } = await pair(() => $getRoot().append($createParagraphNode().append($createTextNode('Intro.'))));
     try {

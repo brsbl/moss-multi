@@ -103,9 +103,10 @@ export function createBindingUndoManager(binding: Binding): UndoManager {
     for (const item of type._map.values()) if (holdsNested(item)) return true;
     return false;
   };
-  // Only a container this client made is kept; redoing its delete of a peer's restored container still deletes it.
+  // Kept while it holds a peer's live characters, whoever wrote the container: redoing a delete of a peer's restored
+  // line removes only what the step restored, not what the peer typed into it since.
   const keeps = (item: Item): boolean => {
-    if (item.deleted || !(item.content instanceof ContentType) || byPeer(item)) return false;
+    if (item.deleted || !(item.content instanceof ContentType)) return false;
     const type = item.content.type as AbstractType<unknown>;
     if (item.parent instanceof XmlText && item.parentSub === null && type instanceof YMap) {
       for (let next = item.right; next; next = next.right) {
