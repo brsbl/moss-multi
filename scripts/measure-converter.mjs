@@ -6,7 +6,7 @@
 // fails to load or convert in workerd, including a note that imports to fewer blocks than its copies hold, and
 // when an import up to 2 MB takes more than IMPORT_BUDGET_MS of workerd CPU. It also renames a doc's title back and
 // forth between worst-case caller texts (packages/sync/measure/title-cases.ts), the DocDO's REST rename path, and
-// exits non-zero when a rename lands inexactly or averages more than TITLE_WRITE_BUDGET_MS of workerd CPU.
+// exits non-zero when a rename lands inexactly or takes more than TITLE_WRITE_BUDGET_MS of workerd CPU on any request.
 import { spawn, spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -267,7 +267,7 @@ async function measureSize(unit, units, port, bound) {
   }
 }
 
-// Renames the title A → B → A … per case, after one untimed write of A; CPU is averaged over the timed renames.
+// Renames the title A → B → A … per case, after one untimed write of A; every timed rename is held to the budget.
 async function measureTitleWrites(port) {
   const { TITLE_CASES } = await import('../packages/sync/measure/title-cases.ts');
   const server = await startWorker('converter', port);
@@ -279,7 +279,7 @@ async function measureTitleWrites(port) {
         const runs = [];
         for (let run = 0; run < TITLE_WRITES; run += 1) runs.push(await timedRequest(server, '/title', { method: 'POST', body: run % 2 ? a : b }));
         const mean = (key) => round(runs.reduce((sum, r) => sum + r[key], 0) / runs.length);
-        results.push({ name, chars: [a.length, b.length], cpuMs: mean('cpuMs'), wallMs: mean('wallMs') });
+        results.push({ name, chars: [a.length, b.length], cpuMs: mean('cpuMs'), maxCpuMs: Math.max(...runs.map((r) => r.cpuMs)), wallMs: mean('wallMs') });
       } catch (error) {
         results.push({ name, chars: [a.length, b.length], failed: String(error.message).split('\n')[0] });
       }
@@ -372,7 +372,7 @@ async function main() {
     ...titles.map((t) =>
       t.failed
         ? `| Title rename, ${t.name} | FAILED: ${t.failed} |`
-        : `| Title rename, ${t.name} (${t.chars.join(' ↔ ')} chars): workerd CPU per request, mean of ${TITLE_WRITES} | ${t.cpuMs} ms${t.cpuMs > TITLE_WRITE_BUDGET_MS ? `, over the ${TITLE_WRITE_BUDGET_MS} ms budget` : ''} (wall ${t.wallMs} ms) |`,
+        : `| Title rename, ${t.name} (${t.chars.join(' ↔ ')} chars): workerd CPU per request, mean (max) of ${TITLE_WRITES} | ${t.cpuMs} (${t.maxCpuMs}) ms${t.maxCpuMs > TITLE_WRITE_BUDGET_MS ? `, over the ${TITLE_WRITE_BUDGET_MS} ms budget` : ''} (wall ${t.wallMs} ms) |`,
     ),
     `| State-to-markdown ratio r, worst family | ${worst.ratio.toFixed(2)} (${worst.name}) |`,
     '',
@@ -396,9 +396,9 @@ async function main() {
     console.error(`measure-converter: import over the ${seconds(IMPORT_BUDGET_MS)} workerd CPU budget: ${sizes}`);
     process.exitCode = 1;
   }
-  const badTitles = titles.filter((t) => t.failed || t.cpuMs > TITLE_WRITE_BUDGET_MS);
+  const badTitles = titles.filter((t) => t.failed || t.maxCpuMs > TITLE_WRITE_BUDGET_MS);
   if (badTitles.length > 0) {
-    const detail = badTitles.map((t) => (t.failed ? `${t.name}: ${t.failed}` : `${t.name} in ${t.cpuMs} ms`)).join(', ');
+    const detail = badTitles.map((t) => (t.failed ? `${t.name}: ${t.failed}` : `${t.name} at ${t.maxCpuMs} ms`)).join(', ');
     console.error(`measure-converter: title rename failed or over the ${TITLE_WRITE_BUDGET_MS} ms workerd CPU budget: ${detail}`);
     process.exitCode = 1;
   }
