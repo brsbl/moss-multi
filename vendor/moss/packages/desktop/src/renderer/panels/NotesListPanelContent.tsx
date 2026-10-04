@@ -55,6 +55,9 @@ import { canDuplicateNote } from '@moss-multi/host/duplicate';
 import { FolderMenuItems, surfacedShared, surfacedFolder } from '@moss-multi/host/slots';
 // moss-multi seam: folders (T2.2): folder controls follow the caller's role; a refusal reads as the server's sentence.
 import { canCreateFolder, canEditFolder, canMoveItems, canTrashFolder, folderRefusal } from '@moss-multi/host/folders';
+// moss-multi seam: trash (T2.3): only the owner trashes a note; trash copy comes from the one module
+import { TRASH_COPY } from '@moss-multi/host/retention';
+import { canTrashNote } from '@moss-multi/host/trash';
 import { refuseInput } from '@moss-multi/host/refusal';
 
 const NOTES_FOLDER_NAME = 'Notes';
@@ -200,7 +203,7 @@ function NoteContextMenuItems({
             <span>Close</span>
           </ContextMenuItem>
         </>
-      ) : onDeleteNote && !hidden('trash') /* moss-multi seam: hide-registry (A§9) */ ? (
+      ) : onDeleteNote && canTrashNote(noteId) /* moss-multi seam: trash (A§8): only the owner trashes a note */ ? (
         <>
           <ContextMenuSeparator />
           <ContextMenuItem onSelect={() => onDeleteNote(noteId)}>
@@ -1350,7 +1353,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
               <span>Open in Finder</span>
             </ContextMenuItem>
             )}
-            {hidden('reveal-in-finder') || hidden('trash') ? null : <ContextMenuSeparator />}
+            {hidden('reveal-in-finder') ? null : <ContextMenuSeparator />}
             {/* moss-multi seam: folders (T2.2): only the owner trashes a folder (A§8) */}
             {surfacedFolder(folder.path) || !canTrashFolder(folder.path) ? null : (
             <ContextMenuItem onSelect={() => handleTrashFolderClick(folder.path)}>
@@ -1742,7 +1745,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
           open={trashFolderTarget !== null}
           onOpenChange={(open) => { if (!open) setTrashFolderTarget(null); }}
           title="Trash folder?"
-          description={`Move "${trashFolderTarget?.split('/').pop() ?? ''}" and all its notes to Trash?`}
+          description={TRASH_COPY.trashFolder(trashFolderTarget?.split('/').pop() ?? '') /* moss-multi seam: trash-copy (T2.3) */}
           confirmLabel="Trash"
           variant="danger"
           onConfirm={handleTrashFolderConfirm}

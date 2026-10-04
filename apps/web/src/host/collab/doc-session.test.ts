@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import * as Y from 'yjs';
 
 const sockets: FakeSocket[] = [];
 class FakeSocket extends EventTarget {
@@ -172,6 +173,22 @@ it('a persisted pageshow restores the presence and caret saved before pagehide',
   window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
   expect(session.provider.awareness.getLocalState()).toEqual(state);
   expect(latest().sent.length).toBeGreaterThan(sent);
+});
+
+it('an ended session sends nothing on its closing socket: no reply to a late server frame, no presence, no edit', async () => {
+  latest().open(); session.provider.synced = true;
+  session.provider.awareness.setLocalState({ name: 'Ada' });
+  session.end('deleted');
+  const socket = latest();
+  expect(socket.readyState).toBe(FakeSocket.CLOSING);
+  const sent = socket.sent.length;
+  // A server sync step 1 still in flight when the close began: y-partyserver answers it with a step 2.
+  const vector = Y.encodeStateVector(new Y.Doc());
+  socket.dispatchEvent(new MessageEvent('message', { data: new Uint8Array([0, 0, vector.length, ...vector]).buffer }));
+  session.provider.awareness.setLocalStateField('focusing', false);
+  session.doc.getText('title').insert(0, 'late');
+  await vi.advanceTimersByTimeAsync(5_000);
+  expect(socket.sent).toHaveLength(sent);
 });
 
 it.each(['cleared', 'ended', 'released'] as const)('pageshow never revives %s presence', (reason) => {

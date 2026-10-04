@@ -7,6 +7,7 @@ import { json } from '../worker/route.ts';
 import { handleDocs, type DocsEnv } from './docs.ts';
 import { feedback } from './feedback.ts';
 import { handleFolderRoutes } from './folders.ts';
+import { handleTrash } from './trash.ts';
 import { workspace } from './workspace.ts';
 
 const NO_STORE = { 'cache-control': 'no-store' };
@@ -32,6 +33,7 @@ export async function handleApi(request: Request, env: ApiEnv): Promise<Response
   if (pathname === '/api/me') return me(request, env);
   if (pathname === '/api/workspace') return workspace(request, env);
   if (pathname === '/api/feedback') return feedback(request, env);
+  if (pathname.startsWith('/api/trash/')) return handleTrash(request, env);
   if (pathname === '/api/docs' || pathname.startsWith('/api/docs/')) return handleDocs(request, env);
   if (pathname === '/api/folders' || pathname.startsWith('/api/folders/')) return handleFolderRoutes(request, env);
   return json({ error: 'not-found' }, 404);
