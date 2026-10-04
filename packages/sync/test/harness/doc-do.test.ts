@@ -8,7 +8,6 @@ import { exportMarkdown, importMarkdown } from '../../src/converter/index.ts';
 import { DocDO } from '../../src/doc-do.ts';
 import { readFrontmatter, writeFrontmatterKey } from '@moss-multi/core/frontmatter';
 import { serverWrite } from '../../src/server-doc.ts';
-import { $isFormulaNode } from '@moss-desktop/renderer/editor/nodes/FormulaNode';
 import { Backing, bindLexical, blockTypes, connect, counts, openDoc, start, wake, type Opened, type TestClient } from './do-harness.ts';
 
 const CHUNK = 1.5 * 1024 * 1024;
@@ -64,7 +63,7 @@ describe('seed', () => {
 
 describe('server writes', () => {
   it('exports current dependent formula results after an author edits the source and after wake', async () => {
-    const opened = await start(openDoc());
+    const opened = await start(openDoc(new Backing('1d0c7f3b-5b65-4eb7-b510-8c3b2e170caa')));
     const noteId = opened.state.id.name;
     const priceId = '7bea9c0f-317a-48a1-83a7-9a1e4e7b36aa';
     const doubleId = 'd787ef71-6050-45e0-8a24-dbb8190880dc';
@@ -72,10 +71,11 @@ describe('server writes', () => {
       `{{2|2|id=${priceId};name=price}} and {{@(price#${noteId}#${priceId})*2|4|id=${doubleId};name=double}}` });
     expect(await opened.dobj.exportMarkdown()).toContain(`)*2|4|id=${doubleId};name=double}}`);
     serverWrite(opened.dobj.document, 'author-edit', () => {
-      const formula = $getRoot().getChildren().flatMap(node => $isElementNode(node) ? node.getChildren() : []).find($isFormulaNode);
+      const formula = $getRoot().getChildren().flatMap(node => $isElementNode(node) ? node.getChildren() : []).find(node => node.getType() === 'formula');
       if (!formula) throw new Error('missing price formula');
-      formula.setFormula('3');
-      formula.setResult('3');
+      const price = formula as typeof formula & { setFormula(value: string): void; setResult(value: string): void };
+      price.setFormula('3');
+      price.setResult('3');
     });
     const before = Y.encodeStateAsUpdate(opened.dobj.document);
     expect(await opened.dobj.exportMarkdown()).toContain(`)*2|6|id=${doubleId};name=double}}`);
