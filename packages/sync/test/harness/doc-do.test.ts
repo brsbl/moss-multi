@@ -583,7 +583,3 @@ describe('RPC', () => {
     expect(live.closed, 'the trash never committed, so the doc reopens').toBeNull();
   });
 });
-    await back.hello();
-    expect(back.closed).toBeNull();
-  });
-});
