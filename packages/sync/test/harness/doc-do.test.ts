@@ -485,14 +485,14 @@ describe('RPC', () => {
     const editor = await editorOn(opened);
     const viewer = await connect(opened, { role: 'viewer' });
     await viewer.hello();
-    await opened.dobj.trash();
+    await opened.dobj.trash('batch-1');
     await editor.pump();
     await viewer.pump();
     for (const client of [editor, viewer]) {
       expect(client.events).toContainEqual({ t: 'doc-deleted' });
       expect(client.closed?.code).toBe(CLOSE.deleted);
     }
-    await opened.dobj.trash();
+    await opened.dobj.trash('batch-1');
     const woken = await start(wake(opened));
     expect((await connect(woken, { role: 'editor' })).closed?.code, 'a woken doc remembers').toBe(CLOSE.deleted);
   });
@@ -504,13 +504,35 @@ describe('RPC', () => {
     await editor.hello();
     lexical.type('Kept through the trash');
     await editor.flush();
-    await opened.dobj.trash();
-    await opened.dobj.restore();
-    await opened.dobj.restore();
+    await opened.dobj.trash('batch-1');
+    await opened.dobj.restore('batch-1');
+    await opened.dobj.restore('batch-1');
     const woken = await start(wake(opened));
     const back = await connect(woken, { role: 'editor' });
     await back.hello();
     expect(back.closed, 'a restored doc admits its editors').toBeNull();
     expect((await woken.dobj.exportMarkdown()).trim()).toBe('Kept through the trash');
+  });
+
+  it('orders a trash and a restore by their batch: a trash whose batch was already restored is stale, and a restore of an older batch never reopens a newer trash', async () => {
+    const opened = await start(openDoc());
+    // The restore of batch-1 overtook its trash's close: the late close changes nothing, after a wake too.
+    await opened.dobj.restore('batch-1');
+    await opened.dobj.trash('batch-1');
+    const live = await connect(opened, { role: 'editor' });
+    await live.hello();
+    expect(live.closed, 'the restored note stays open').toBeNull();
+    const woken = await start(wake(opened));
+    const again = await connect(woken, { role: 'editor' });
+    await again.hello();
+    expect(again.closed, 'and remembers it after a wake').toBeNull();
+
+    await woken.dobj.trash('batch-2');
+    await woken.dobj.restore('batch-1');
+    expect((await connect(woken, { role: 'editor' })).closed?.code, 'a stale restore leaves the newer trash closed').toBe(CLOSE.deleted);
+    await woken.dobj.restore('batch-2');
+    const back = await connect(woken, { role: 'editor' });
+    await back.hello();
+    expect(back.closed).toBeNull();
   });
 });

@@ -27,6 +27,7 @@ const DENIAL = /doesn.t exist or you don.t have access/i;
 const TITLE = 'Trash journey plan';
 const BODY = 'Ada wrote this before the trash';
 const toEnd = process.platform === 'darwin' ? 'Meta+ArrowDown' : 'Control+End';
+const CHART = JSON.stringify({ type: 'bar', title: 'Sales', data: [{ label: 'Q1', value: 3 }, { label: 'Q2', value: 5 }] });
 
 async function openShell(actors: Actors, label: string): Promise<Actor> {
   const actor = await actors.open(await actors.principal(label));
@@ -89,6 +90,25 @@ async function expectLanguageFixed(actor: Actor, scope: Locator): Promise<void> 
   await expect(actor.page.getByRole('menuitem', { name: 'Python', exact: true }), `${actor.label}: no language menu opens`).toHaveCount(0);
   await actor.page.keyboard.press('Escape');
   await expect(picker, `${actor.label}: the language is unchanged`).toContainText('JavaScript');
+}
+
+/** The note's one chart block, by its decorator key, so it stays the same block whichever view it shows. */
+async function chartBlock(actor: Actor, docId: string): Promise<Locator> {
+  const shown = ui.pane(actor, docId).locator('[data-block-decorator-key]').filter({ has: actor.page.getByText('Sales', { exact: true }) });
+  await expect(shown, `${actor.label}: the chart shows`).toHaveCount(1, { timeout: BIND_TIMEOUT });
+  const key = await shown.getAttribute('data-block-decorator-key');
+  return ui.pane(actor, docId).locator(`[data-block-decorator-key="${key}"]`);
+}
+
+/** A chart in a read-only or terminal note: no editor of it is left open and its title takes no keystroke. */
+async function expectChartFixed(actor: Actor, chart: Locator): Promise<void> {
+  await expect(chart.locator('textarea, input'), `${actor.label}: no chart editor is open`).toHaveCount(0);
+  await chart.getByText('Sales', { exact: true }).click({ force: true });
+  await actor.page.keyboard.type('zombie');
+  await actor.page.keyboard.press('Enter');
+  await expect(chart.locator('textarea, input'), `${actor.label}: the chart title opens no field`).toHaveCount(0);
+  await expect(chart, `${actor.label}: the chart title is unchanged`).toContainText('Sales');
+  await expect(chart).not.toContainText('zombie');
 }
 
 /** Records every input refusal the page shows from now on into `window.refused`; the notice itself clears in 4 s. */
@@ -264,13 +284,13 @@ test('j05-trash: a note dropped on the sidebar’s Trash button goes to Trash, a
   await expect(ada.page.getByRole('button', { name: 'Trash', exact: true })).toBeVisible();
 });
 
-test('j05-trash: a code block and a body H1 survive the trash: no control in Ben\u2019s terminal note or Ada\u2019s Trash view changes them, and the Trash view keeps the body\u2019s leading heading @p:note-5', async ({ actors }) => {
+test('j05-trash: a code block, a chart and a body H1 survive the trash: no control in Ben\u2019s terminal note or Ada\u2019s Trash view changes them, an open chart edit closes, and the Trash view keeps the body\u2019s leading heading @p:note-5', async ({ actors }) => {
   const benPrincipal = await actors.principal('ben');
   const ada = await openShell(actors, 'ada');
-  // The title is its own field; the body starts with its own H1 and holds a code block (declared setup).
+  // The title is its own field; the body starts with its own H1 and holds a code block and a chart (declared setup).
   const origin = new URL(ada.page.url()).origin;
   const created = await ada.context.request.post(`${origin}/api/docs`, {
-    headers: { origin }, data: { title: 'Plan', markdown: '# Findings\n\nDetails here.\n\n```js\nconst x = 1;\n```' },
+    headers: { origin }, data: { title: 'Plan', markdown: `# Findings\n\nDetails here.\n\n\`\`\`js\nconst x = 1;\n\`\`\`\n\n\`\`\`moss-chart\n${CHART}\n\`\`\`` },
   });
   expect(created.status()).toBe(201);
   const { doc: { id: docId } } = (await created.json()) as { doc: { id: string } };
@@ -280,10 +300,17 @@ test('j05-trash: a code block and a body H1 survive the trash: no control in Ben
   await actors.requireDistinct(2);
   await expect(ui.body(ben, docId).getByRole('heading', { name: 'Findings' })).toBeVisible();
 
+  // Ben has the chart's data open in its editor when the trash lands.
+  const benChart = await chartBlock(ben, docId);
+  await benChart.hover();
+  await benChart.getByRole('button', { name: 'Edit', exact: true }).click();
+  await expect(benChart.locator('textarea'), 'Ben is editing the chart').toBeVisible();
+
   await expect(noteRow(ada, docId)).toBeVisible({ timeout: PEER_MS });
   await trashFromSidebar(ada, docId);
   await expectTerminalInPlace(ben, docId, /^Findings[\s\S]*Details here\./);
   await expectLanguageFixed(ben, ui.pane(ben, docId));
+  await expectChartFixed(ben, benChart);
 
   await ada.page.getByRole('button', { name: 'Trash', exact: true }).click();
   await trashRow(ada, docId).click();
@@ -294,4 +321,31 @@ test('j05-trash: a code block and a body H1 survive the trash: no control in Ben
   await expect(ui.title(ada, docId)).toHaveText('Plan');
   expect(await editableSurfaces(ada, docId), 'nothing in the trash view changes the note').toEqual([]);
   await expectLanguageFixed(ada, ui.pane(ada, docId));
+  await expectChartFixed(ada, await chartBlock(ada, docId));
+});
+
+test('j05-trash: a note trashed while open and then restored comes back live in place, without a reload @p:note-5', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  actors.solo('one owner trashes and restores her own open note from another window');
+  const docId = await ui.createNote(ada);
+  await ui.typeTitle(ada, docId, TITLE, { enter: true });
+  await ui.typeBody(ada, docId, BODY);
+  await expect(ui.pane(ada, docId)).toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout: BIND_TIMEOUT });
+
+  // Her other window trashes the note under this open pane, then restores it (declared setup: that window's API calls).
+  const origin = new URL(ada.page.url()).origin;
+  expect((await ada.context.request.delete(`${origin}/api/docs/${docId}`, { headers: { origin } })).status()).toBe(200);
+  await expect(ui.pane(ada, docId), 'the open note goes terminal in place').toHaveAttribute(TERMINAL_REASON_ATTR, 'deleted', { timeout: PEER_MS });
+  ada.expectReconnects(1, docId);
+  expect((await ada.context.request.post(`${origin}/api/docs/${docId}/restore`, { headers: { origin } })).status()).toBe(200);
+  await expect(noteRow(ada, docId), 'back in her notes').toBeVisible({ timeout: PEER_MS });
+
+  await expect(ui.pane(ada, docId), 'the open note is live again').toHaveAttribute(DOC_STATE_ATTR, 'live', { timeout: BIND_TIMEOUT });
+  await expect(ui.pane(ada, docId)).not.toHaveAttribute(TERMINAL_REASON_ATTR, /.*/);
+  await expect(ui.pane(ada, docId).locator(`[${CONNECTION_BANNER_ATTR}="deleted"]`), 'no stale Trash notice').toHaveCount(0);
+  await expect(ui.body(ada, docId)).toHaveText(BODY);
+  await ui.typeBody(ada, docId, ' and after the restore');
+  await expect(ui.pane(ada, docId)).toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout: BIND_TIMEOUT });
+  expect(await ui.fieldText(ada, docId, 'body')).toBe(`${BODY} and after the restore`);
+  await actors.checkpoint('restored-in-place');
 });

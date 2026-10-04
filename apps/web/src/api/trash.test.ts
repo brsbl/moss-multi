@@ -2,28 +2,34 @@
 // the row, closes every open socket through DocDO.trash and tells everyone who could see it; a trashed note answers
 // every other route with the one 404, while its owner reads it on the one trashed-doc read path; restore brings it
 // back where it can live.
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
 import { BASE, insertDoc, insertFolder, insertGrant, insertLink, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
 import { handleApi } from './router.ts';
 
 const trashed: string[] = [];
 const restored: string[] = [];
+/** Every DocDO trash and restore in order, with the trash batch it names. */
+const calls: [op: 'trash' | 'restore', doc: string, batch: unknown][] = [];
 let closeFails = 0;
+/** While set, a DocDO trash waits for it after being called. */
+let trashGate: Promise<void> | null = null;
 const published = new Map<string, { type: string; docIds?: string[]; folderIds?: string[] }[]>();
 
 const DocDO = {
   idFromName: (name: string) => ({ name, toString: () => name }),
   get: (id: { name: string }) => ({
     setName: async () => undefined,
-    trash: async () => {
+    trash: async (batch?: unknown) => {
+      calls.push(['trash', id.name, batch]);
+      await trashGate;
       if (closeFails > 0) {
         closeFails -= 1;
         throw new Error('DocDO unavailable');
       }
       trashed.push(id.name);
     },
-    restore: async () => { restored.push(id.name); },
+    restore: async (batch?: unknown) => { calls.push(['restore', id.name, batch]); restored.push(id.name); },
     exportMarkdown: async () => `Body of ${id.name}\n`,
   }),
 };
@@ -53,6 +59,8 @@ afterAll(() => d1?.dispose());
 beforeEach(() => {
   trashed.length = 0;
   restored.length = 0;
+  calls.length = 0;
+  trashGate = null;
   closeFails = 0;
   published.clear();
 });
@@ -185,6 +193,33 @@ describe('POST /api/docs/:id/restore', () => {
     const row = await docRow(doc);
     expect(row).toMatchObject({ folder_id: ada.homeId, deleted_at: null });
     expect(row?.filename).not.toBe('plans.md');
+  });
+
+  it('a restore that lands while the trash is still closing the doc names that trash’s batch, so the late close is stale and the note stays live', async () => {
+    const doc = await insertDoc(d1.db, ada);
+    let release!: () => void;
+    trashGate = new Promise((resolve) => { release = resolve; });
+    const trashing = call(ada, 'DELETE', `/api/docs/${doc}`);
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    const { trash_batch_id: batch } = (await docRow(doc)) as { trash_batch_id: string };
+    expect((await call(ada, 'POST', `/api/docs/${doc}/restore`)).status).toBe(200);
+    release();
+    expect((await trashing).status).toBe(200);
+    expect(typeof batch).toBe('string');
+    // The DocDO orders the two by the batch: a trash of a batch already restored changes nothing.
+    expect(calls).toEqual([['trash', doc, batch], ['restore', doc, batch]]);
+    expect(await docRow(doc)).toMatchObject({ deleted_at: null, trash_batch_id: null });
+  });
+
+  it('a second restore of an older batch never reopens a newer trash', async () => {
+    const doc = await insertDoc(d1.db, ada);
+    expect((await call(ada, 'DELETE', `/api/docs/${doc}`)).status).toBe(200);
+    expect((await call(ada, 'POST', `/api/docs/${doc}/restore`)).status).toBe(200);
+    expect((await call(ada, 'DELETE', `/api/docs/${doc}`)).status).toBe(200);
+    const [[, , first], [, , restoredBatch], [, , second]] = calls;
+    expect(restoredBatch).toBe(first);
+    expect(second, 'each trash is its own batch').not.toBe(first);
+    expect((await docRow(doc))?.trash_batch_id).toBe(second);
   });
 
   it('refuses everyone but the owner: an editor in words, a stranger with the one 404', async () => {
