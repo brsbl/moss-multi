@@ -15,6 +15,9 @@ import { getBridge, WORKSPACE, type Bridge } from '../bridge/index.ts';
 const Menu = DropdownMenu as ComponentType<{ children: ReactNode; open?: boolean; onOpenChange?: (open: boolean) => void }>;
 const MenuContent = DropdownMenuContent as ComponentType<ComponentProps<typeof DropdownMenuContent> & { onCloseAutoFocus?: (event: Event) => void }>;
 
+const stop = (event: { stopPropagation: () => void }) => event.stopPropagation();
+const holdHover = { onMouseMoveCapture: stop, onPointerMoveCapture: stop, onMouseOverCapture: stop, onPointerOverCapture: stop };
+
 const UNREACHABLE = 'The server couldn’t be reached. Check your connection and try again.';
 
 /** A vault request; a refusal throws the server's sentence. */
@@ -115,7 +118,8 @@ function VaultMenu({ bridge }: { bridge: Bridge }) {
                 <ChevronDown className="h-3 w-3 shrink-0 text-ink-faint" aria-hidden />
               </Button>
             </DropdownMenuTrigger>
-            <MenuContent align="start" className="w-60 max-w-[calc(100vw-2rem)]">
+            {/* While the inline row is open, hovering an item must not move focus out of its field. */}
+            <MenuContent align="start" className="w-60 max-w-[calc(100vw-2rem)]" {...(creating ? holdHover : {})}>
               {vaults.map((vault) => (
                 <DropdownMenuItem key={vault.id} onSelect={() => { void switchTo(vault.id); }}>
                   <FolderRoot className="h-3.5 w-3.5 shrink-0 text-ink-faint" aria-hidden />
@@ -217,7 +221,7 @@ function NewVaultRow({ onCreate, onCancel }: { onCreate: (name: string) => Promi
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   return (
-    <div className="px-1 py-1" onPointerMove={(event) => event.stopPropagation()}>
+    <div className="px-1 py-1">
       <div className="flex items-center gap-1.5 pl-1">
         <FolderRoot className="h-3.5 w-3.5 shrink-0 text-ink-faint" aria-hidden />
         <NameInput label="New vault name" placeholder="Vault name" busy={pending} onCancel={onCancel}
