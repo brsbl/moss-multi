@@ -18,6 +18,14 @@ describe('stored media names', () => {
     expect(mediaFilename(suffixedFilename(name, 12))).toBe(suffixedFilename(name, 12));
   });
 
+  it('folds a long name whose cap lands on a separator to itself, so the returned name reads back', () => {
+    for (const raw of [`${'a'.repeat(99)}-b.png`, `${'a'.repeat(99)}.b.png`, `${'a'.repeat(98)}--b.webm`]) {
+      const name = mediaFilename(raw) ?? '';
+      expect(name, raw).not.toMatch(/[-.]\.[a-z0-9]+$/);
+      expect(mediaFilename(name), raw).toBe(name);
+    }
+  });
+
   it("names moss desktop's derived video thumbnails, which the web never has", () => {
     expect(isDesktopDerived('video-thumb-0123abcd.png')).toBe(true);
     expect(isDesktopDerived('thumb.png')).toBe(false);

@@ -171,6 +171,20 @@ describe('server writes', () => {
     expect(await woken.dobj.exportMarkdown(), 'the renamed references persist').toBe(copied);
   });
 
+  it('names the media its nodes reference, and renames a moved note\'s references in place', async () => {
+    const doc = await start(openDoc());
+    const markdown = 'Intro\n\n![Pasted](assets/image.png)\n\n![A clip](./assets/clip.webm)\n\n[elsewhere](https://example.invalid/assets/x.png)\n';
+    await doc.dobj.create({ folderId: 'source', ownerId: 'owner', title: 'Media', markdown });
+    expect((await doc.dobj.referencedAssets()).sort()).toEqual(['clip.webm', 'image.png']);
+    await doc.dobj.renameAssets({ 'image.png': 'image-2.png' });
+    const moved = await doc.dobj.exportMarkdown();
+    expect(moved).toContain('(assets/image-2.png)');
+    expect(moved).not.toContain('(assets/image.png)');
+    expect((await doc.dobj.referencedAssets()).sort(), 'the renamed name is what readers may now load').toEqual(['clip.webm', 'image-2.png']);
+    const woken = await start(wake(doc));
+    expect(await woken.dobj.exportMarkdown(), 'the rename persists').toBe(moved);
+  });
+
   it('replays legacy YAML into the map, persists its upgrade, and exports after a second wake', async () => {
     const legacy = await start(openDoc());
     await legacy.dobj.create({ folderId: 'folder', ownerId: 'owner', title: 'Old note', markdown: MARKDOWN });

@@ -4,8 +4,9 @@
 // control and a raw upload gets 403; a PDF gets 415. A copied note keeps its media, in the same folder and in the
 // copier's own Home, even when that Home already holds a different file under the same name. A signed-in link reader
 // sees the media, and so does an anonymous one, through the token the asset URL carries; a signed-in editor-link
-// holder uploads. A video's poster is its first frame, and it plays through 206 responses. Alt text edited from the image's context menu reaches the peer and
-// the export.
+// holder uploads, and a grant on the note reaches only the media it references. A moved note keeps its media. A
+// video's poster is its first frame, and it seeks and plays through 206 responses. Alt text edited from the image's
+// context menu reaches the peer and the export.
 //
 // Grants are declared setup through the members API, and the share link through the loopback hook until T2.4's
 // links API lands; sharing is not this journey's promise. Files reach the editor as browsers deliver them: a
@@ -228,14 +229,17 @@ test('j11-media: drop, paste and /media → From computer upload every moss type
   expect(raw.status(), 'a raw upload by a viewer is forbidden').toBe(403);
 });
 
-test('j11-media: a copied note keeps its media in its folder and in the copier\'s Home; link readers see it; an editor link uploads; video plays through 206 @p:note-8', async ({ actors, stack, browserName }) => {
+test('j11-media: a copied or moved note keeps its media; link readers see only the note\'s own media; an editor link uploads; video plays and seeks through 206 @p:note-8 @evidence', async ({ actors, stack, browserName }) => {
   const ada = await openShell(actors, 'ada');
   const benPrincipal = await actors.principal('ben');
   const docId = await newNote(ada, 'Media to copy');
   // Every read of the clip, the poster's and the player's (WebKit's player may reuse what the poster read).
   const partial: number[] = [];
+  const rangedReads: number[] = [];
   ada.page.on('response', (response) => {
-    if (new URL(response.url()).pathname.endsWith(`/assets/${WEBM.name}`)) partial.push(response.status());
+    if (!new URL(response.url()).pathname.endsWith(`/assets/${WEBM.name}`)) return;
+    partial.push(response.status());
+    if (response.request().headers().range) rangedReads.push(response.status());
   });
   expect(await drop(ada, docId, [PNG, WEBM])).toBe(true);
   await expectImagesDecode(ada, docId, 1);
@@ -244,14 +248,33 @@ test('j11-media: a copied note keeps its media in its folder and in the copier\'
 
   // The video plays from the asset route, which answers the player's Range requests with 206.
   await expectPoster(ada, docId);
+  await actors.checkpoint('poster');
   await videos(ada, docId).click();
   const player = ui.body(ada, docId).locator('video:not([data-video-thumbnail-state])');
   await expect.poll(() => player.evaluate((video: HTMLVideoElement) => video.readyState), { message: 'the video has frames', timeout: UPLOAD_TIMEOUT })
     .toBeGreaterThanOrEqual(2);
+  // It seeks and plays in both engines: WebKit plays a clip only from a server that honors Range.
+  const seekedTo = await player.evaluate((video: HTMLVideoElement) => new Promise<number>((resolve, reject) => {
+    video.muted = true;
+    video.pause();
+    const target = Number.isFinite(video.duration) && video.duration > 0 ? video.duration / 2 : 0.5;
+    video.addEventListener('seeked', () => resolve(video.currentTime), { once: true });
+    video.addEventListener('error', () => reject(new Error(`media error ${video.error?.code}`)), { once: true });
+    video.currentTime = target;
+  }));
+  expect(seekedTo, 'the player seeks into the clip').toBeGreaterThan(0);
+  await player.evaluate((video: HTMLVideoElement) => {
+    video.currentTime = 0;
+    return video.play();
+  });
+  await expect.poll(() => player.evaluate((video: HTMLVideoElement) => video.currentTime), { message: 'the clip plays', timeout: UPLOAD_TIMEOUT })
+    .toBeGreaterThan(0.1);
+  await player.evaluate((video: HTMLVideoElement) => video.pause());
   // WebKit reports a media read it cancels or answers from its cache with status 0.
   const answered = partial.filter((status) => status > 0);
   expect(answered.length, 'the clip was read from the asset route').toBeGreaterThan(0);
   expect(answered.filter((status) => ![200, 206, 304].includes(status)), 'every read of the clip succeeds or revalidates').toEqual([]);
+  expect(rangedReads.filter((status) => ![0, 206, 304].includes(status)), 'every ranged read of the clip is answered 206').toEqual([]);
   // Chromium's player always reads in ranges; WebKit may read a small file whole.
   if (browserName === 'chromium') expect(partial, "the player's reads are ranged").toContain(206);
   const ranged = await ada.page.evaluate(async (url) => {
@@ -299,6 +322,15 @@ test('j11-media: a copied note keeps its media in its folder and in the copier\'
   expect(shown, "Ben's copy shows Ada's image, not the file his Home already had").toBe(bytes(PNG.name).byteLength);
   await actors.checkpoint('copied');
 
+  // A grant on this note reaches only the media it references, not every file in Ada's folder.
+  const adaFolder = await folderOf(ada, docId);
+  const secret = await ada.context.request.post(`/api/folders/${adaFolder}/assets?filename=secret.png`, {
+    headers: { origin: origin(ada), 'content-type': PNG.type }, data: Buffer.concat([bytes(PNG.name), Buffer.from('another note')]),
+  });
+  expect(secret.status(), "a file another of Ada's notes uses").toBe(201);
+  expect((await ada.context.request.get(`/api/docs/${docId}/assets/secret.png`)).status(), 'the folder owner reads it').toBe(200);
+  expect((await ben.context.request.get(`/api/docs/${docId}/assets/secret.png`)).status(), "the note's grant does not reach it").toBe(404);
+
   // A signed-in reader with only a link sees the media through it.
   const token = await stack.shareLink(docId, 'viewer');
   const cy = await openShell(actors, 'cy', `/d/${docId}?share=${encodeURIComponent(token)}`);
@@ -328,6 +360,42 @@ test('j11-media: a copied note keeps its media in its folder and in the copier\'
   await ui.waitLive(dee, docId);
   expect(await drop(dee, docId, [GIF]), 'the editor takes the dropped file').toBe(true);
   await expectImagesDecode(dee, docId, 2);
+  await expectVideos(dee, docId, 1);
+  await waitAcked(dee, docId);
+
+  // Ada moves the note into a folder that already holds a different pattern.png: its media moves with it, renamed
+  // where the name is taken, and a reader holding only the link still sees the note's own files after a reload.
+  const made = await ada.context.request.post('/api/folders', {
+    headers: { origin: origin(ada), 'content-type': 'application/json' }, data: { parentId: adaFolder, name: 'Moved media' },
+  });
+  expect(made.status(), 'declared setup: the destination folder').toBe(201);
+  const destination = ((await made.json()) as { folder: { id: string } }).folder.id;
+  const taken = await ada.context.request.post(`/api/folders/${destination}/assets?filename=${PNG.name}`, {
+    headers: { origin: origin(ada), 'content-type': PNG.type }, data: Buffer.concat([bytes(PNG.name), Buffer.from('already here')]),
+  });
+  expect(taken.status(), 'the destination already has its own pattern.png').toBe(201);
+  const moved = await ada.context.request.patch(`/api/docs/${docId}`, {
+    headers: { origin: origin(ada), 'content-type': 'application/json' }, data: { folderId: destination },
+  });
+  expect(moved.status(), 'the note moves').toBe(200);
+  await expect.poll(async () => (await ada.context.request.get(`/api/docs/${docId}/export`)).text(), { message: "the moved note's image takes a free name" })
+    .toContain(`(assets/pattern-2.png)`);
+  const renamedImage = ui.body(dee, docId).locator('img[src*="/assets/pattern-2.png"]');
+  await expect(renamedImage, 'the open note follows the rename').toHaveCount(1, { timeout: PEER_TIMEOUT });
+  dee.expectReconnects(1, docId);
+  await dee.page.reload();
+  await ui.waitLive(dee, docId);
+  await dee.declareRemount(docId);
+  await expectImagesDecode(dee, docId, 2);
+  await expectVideos(dee, docId, 1);
+  await expect(ui.body(dee, docId).locator('img[src*="/assets/pattern.png"]'), 'no reference names the old file').toHaveCount(0);
+  const pngSrc = (await renamedImage.getAttribute('src')) ?? '';
+  const movedBytes = await dee.page.evaluate(async (url) => (await (await fetch(url)).arrayBuffer()).byteLength, pngSrc);
+  expect(movedBytes, "the moved note shows its own image, not the folder's").toBe(bytes(PNG.name).byteLength);
+  const clip = await dee.page.evaluate(async (url) => (await fetch(url, { headers: { range: 'bytes=0-9' } })).status,
+    `/api/docs/${docId}/assets/${WEBM.name}?share=${encodeURIComponent(editorToken)}`);
+  expect(clip, 'the moved clip still answers Range').toBe(206);
+  await actors.checkpoint('moved');
 });
 
 test("j11-media: alt text edited from the image's context menu reaches the peer and the export @p:note-8", async ({ actors }) => {
