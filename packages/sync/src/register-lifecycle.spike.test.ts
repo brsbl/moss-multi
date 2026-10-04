@@ -192,6 +192,10 @@ function payloadServer(state?: Uint8Array, { honorDeletes = true } = {}) {
   const trash = new Map<string, Piece[]>();
   const touched = new Set<string>();
   const stats = { evaluated: 0, reclaimed: 0, revived: 0, deduped: 0 };
+  // What the DocDO persists to yupdates and y-partyserver fans out: every 'update' the doc emits, synchronously
+  // inside applyUpdate (doc-do.ts #persist; y-partyserver onStart's update listener).
+  const wire: Uint8Array[] = [];
+  doc.on('update', (update: Uint8Array) => { wire.push(update); });
 
   // The index of live elements by id, kept from each transaction's own structs: the elements it integrated and the
   // ones it deleted, including every element inside a moved or deleted paragraph or container (Yjs deletes a subtree
@@ -328,7 +332,7 @@ function payloadServer(state?: Uint8Array, { honorDeletes = true } = {}) {
     run();
   }
   return {
-    doc, stats, trash,
+    doc, stats, trash, wire,
     /** One client message: an incremental update, or a sync step 2 with its sender's state vector. */
     receive: (update: Uint8Array, senderState?: Map<number, number>) => {
       Y.applyUpdate(doc, update, 'client');
@@ -348,7 +352,8 @@ const sync = (server: PayloadServer, ...clients: PayloadClient[]) => {
 /** A reconnecting client: it sends a sync step 2 (all it has, every deletion it knows) instead of its queued updates. */
 const reconnect = (server: PayloadServer, client: PayloadClient) => {
   client.outbox.length = 0;
-  server.receive(Y.encodeStateAsUpdate(client.doc, Y.encodeStateVector(server.doc)), Y.decodeStateVector(Y.encodeStateVector(client.doc)));
+  // A y-protocols step 2 carries only the update (its structs and its full delete set), never the sender's vector.
+  server.receive(Y.encodeStateAsUpdate(client.doc, Y.encodeStateVector(server.doc)));
   down(server, client);
 };
 const join = (server: PayloadServer) => payloadClient(Y.encodeStateAsUpdate(server.doc));
@@ -684,6 +689,67 @@ describe('T1.R spike: payloads keyed by block id, deleted and restored only by t
         expect([server.stats.reclaimed, server.stats.revived]).toEqual([reclaimed, 0]);
       }
       expect(ada.texts()).toHaveLength(199);
+    } finally { ada.dispose(); ben.dispose(); }
+  });
+});
+
+/** True when any frame the server persisted or fanned out carries `text`. */
+const onWire = (server: { wire: Uint8Array[] }, text: string) => server.wire.some((frame) => Buffer.from(frame).includes(Buffer.from(text)));
+
+// The independent checker's findings against attempt 2 (the janitor that deletes and revives payload text).
+describe('T1.R regressions: the attempt-2 checker findings @p:col-1 @p:col-3', () => {
+  it('P1-1: a real sync step 2 after a reclaim (no state vector) leaves the deleter\'s undo its text', () => {
+    const server = seededServer();
+    const ada = join(server);
+    const ben = join(server);
+    try {
+      ada.insertBlock('kept-after-wake');
+      sync(server, ada, ben);
+      ben.remove(0);
+      sync(server, ada, ben);
+      reconnect(server, ada);
+      ben.undo.undo();
+      sync(server, ada, ben);
+      for (const peer of [ada, ben]) expect(peer.texts()).toEqual(['kept-after-wake']);
+    } finally { ada.dispose(); ben.dispose(); }
+  });
+
+  it('P1-2: an erase that arrives after the block was restored is applied, and its author\'s undo restores it once', () => {
+    const server = seededServer();
+    const ada = join(server);
+    const ben = join(server);
+    try {
+      ada.insertBlock('keep-xy-keep');
+      sync(server, ada, ben);
+      ada.erase(0, 5, 2);
+      // Ada is briefly offline: her erase waits while Ben deletes the block and undoes the delete.
+      ben.remove(0);
+      sync(server, ben);
+      ben.undo.undo();
+      sync(server, ben);
+      expect(ben.texts()).toEqual(['keep-xy-keep']);
+      sync(server, ada, ben);
+      for (const peer of [ada, ben]) expect(peer.texts(), "Ada's erase is kept").toEqual(['keep--keep']);
+      ada.undo.undo();
+      sync(server, ada, ben);
+      for (const peer of [ada, ben]) expect(peer.texts(), 'her undo restores the characters once').toEqual(['keep-xy-keep']);
+    } finally { ada.dispose(); ben.dispose(); }
+  });
+
+  it('P1-3: offline typing into a deleted block never reaches a persisted or fanned-out frame', () => {
+    const server = seededServer();
+    const ada = join(server);
+    const ben = join(server);
+    try {
+      ada.insertBlock('shared');
+      sync(server, ada, ben);
+      expect(onWire(server, 'shared'), 'positive control').toBe(true);
+      ben.type(0, 6, ' OFFLINE-ben');
+      ada.remove(0);
+      sync(server, ada);
+      sync(server, ben);
+      expect(onWire(server, 'OFFLINE-ben')).toBe(false);
+      expect(lateReader(server)).toEqual([]);
     } finally { ada.dispose(); ben.dispose(); }
   });
 });
