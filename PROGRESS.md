@@ -1,12 +1,12 @@
 # moss-multi progress
 
-**Overall: 47% done** (37 of 79 planned tasks verified)
+**Overall: 48% done** (38 of 79 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 17 / 17 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 13 / 18 | in progress |
-| M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 5 / 10 | in progress |
+| M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 6 / 10 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 2 / 9 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
@@ -55,6 +55,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-04 — T2.3 verified: an owner can trash a note (including by dropping it on the sidebar Trash button) and restore it; anyone else with it open goes read-only in place on every surface with no reconnects, a fresh load gets a 404, and the owner can read a trashed note in a read-only Trash view that says it is kept for 30 days.
 - 2026-10-04 — T3.5 verified: a vault owner can create a vault inline from the switcher, rename it and move it to trash behind a confirmation; a person granted the vault root sees it with a role badge, and a member is offered no vault actions.
 - 2026-10-04 — T3.4 verified: a person can search the body text of every note they can access and see snippets, never a note they cannot; a note shows its backlinks, and wiki links resolve by title or filename or show an honest unresolved state.
+- 2026-10-04 — T2.4s verified: sharing by email answers and behaves the same for a known and an unknown address, a co-owner cannot lower, remove or replace the vault owner, owner access never comes from a share link or an agent key, and two simultaneous shares to one person end as one invite at the higher role.
 
 ## T1.1s identity audit
 
