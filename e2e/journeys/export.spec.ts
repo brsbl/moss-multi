@@ -113,6 +113,8 @@ test('export: Save as Markdown waits for unsynced edits and refuses rather than 
   actor.page.on('download', (file) => downloads.push(file.suggestedFilename()));
 
   // Doc frames are held while HTTP still works: the server has not seen the typed text.
+  // The hold may trip the 12 s heartbeat before the reset below, so up to two reconnects.
+  actor.expectReconnects(2, docId);
   sever.blackhole();
   const typed = ' Typed while the socket is held.';
   await ui.typeBody(actor, docId, typed);
@@ -123,8 +125,6 @@ test('export: Save as Markdown waits for unsynced edits and refuses rather than 
   expect(downloads, 'no stale file is downloaded').toEqual([]);
 
   // A save started while held completes once the socket reconnects and the DocDO acks the edit.
-  // The hold may also trip the 12 s heartbeat, so up to two reconnects.
-  actor.expectReconnects(2, docId);
   const download = actor.page.waitForEvent('download', { timeout: BIND_TIMEOUT });
   await moreAction(actor, docId, 'Save as Markdown');
   sever.reset(1012);

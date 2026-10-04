@@ -9,6 +9,7 @@ import {
 } from '@moss-desktop/renderer/editor/utils/note-link-clipboard';
 import { displayTitle, liveTitle, writeLiveTitle } from '../collab/title-binding.ts';
 import { askDocAccess, rememberRole } from '../access.ts';
+import { waitForAllAcked } from '../collab/unacked.ts';
 import { setWikiCandidates } from '../wiki-links.ts';
 
 /** moss's NoteMetadataRecord: timestamps in seconds, folders as `Notes/...` paths. */
@@ -627,6 +628,9 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
       // or layout marker is in it. moss's client-side markdown is not used. The server only has what it acked, so the
       // export waits for this tab's edits to be acked and refuses rather than download a file that misses them (A§10.6).
       exportMarkdown: async (id: string, input: { title?: string; markdown?: string } = {}) => {
+        if (!(await waitForAllAcked(EXPORT_ACK_WAIT_MS))) {
+          throw new Error('Your latest edits haven’t synced yet, so the export would miss them. Try again once they sync.');
+        }
         const share = browser.share();
         const response = await request(`/api/docs/${encodeURIComponent(id)}/content`, {
           headers: { accept: 'text/markdown', ...(share ? { 'x-moss-share': share } : {}) },
