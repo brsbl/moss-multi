@@ -309,6 +309,49 @@ describe('T4.0 spike: tree anchors over the V1 binding @p:tech-3', () => {
     expect([stored(seed).start, stored(seed).end]).toEqual([minted.start, minted.end]);
   }));
 
+  it('text a peer typed before it saw the deletion is not taken for a restore', () => scene(async (seed, a, b) => {
+    const minted = comment(seed, 'brown fox');
+    a.edit(() => { firstText().spliceText(10, 'brown fox'.length, ''); });
+    frame(seed, a.doc);
+    expect(stored(seed).status).toBe('orphaned');
+    // b has not seen the deletion, so its insert names the still-live 'b' as its right origin.
+    b.edit(() => { firstText().spliceText(10, 0, 'Xbrown fox'); });
+    frame(seed, b.doc);
+    expect(project(seed).text.startsWith('The quick Xbrown fox jumps')).toBe(true);
+    expect(stored(seed).status, 'never moves onto a peer\'s text').toBe('orphaned');
+    expect([stored(seed).start, stored(seed).end]).toEqual([minted.start, minted.end]);
+  }));
+
+  it('deleting and retyping the same text inside one frame leaves the comment orphaned', () => scene(async (seed, a) => {
+    const minted = comment(seed, 'brown fox');
+    // Two edits buffered offline reach the DocDO as one frame.
+    a.edit(() => { firstText().spliceText(10, 'brown fox'.length, ''); });
+    a.edit(() => { firstText().spliceText(10, 0, 'brown fox'); });
+    frame(seed, a.doc);
+    expect(project(seed).text.startsWith('The quick brown fox jumps')).toBe(true);
+    expect(stored(seed).status, 'no silent retarget').toBe('orphaned');
+    expect([stored(seed).start, stored(seed).end]).toEqual([minted.start, minted.end]);
+  }));
+
+  it('deleting a commented paragraph and undoing it inside one frame reattaches the comment', () => scene(async (seed, a) => {
+    comment(seed, 'lazy dog');
+    const start = project(seed).text.indexOf('lazy dog');
+    a.edit(() => paragraph(0).remove());
+    a.undo();
+    frame(seed, a.doc);
+    expect(stored(seed).status).toBe('anchored');
+    expect(validateAnchor(seed, stored(seed)).range).toEqual({ start, end: start + 'lazy dog'.length });
+  }));
+
+  it('deleting commented text and undoing it inside one frame reattaches the comment', () => scene(async (seed, a) => {
+    comment(seed, 'TODO: fix this');
+    a.edit(() => { firstText().spliceText(0, 'TODO: fix this'.length, ''); });
+    a.undo();
+    frame(seed, a.doc);
+    expect(stored(seed).status).toBe('anchored');
+    expect(validateAnchor(seed, stored(seed)).range).toEqual({ start: 0, end: 'TODO: fix this'.length });
+  }, TWINS));
+
   it('deleting a commented block whose twin has the same context orphans it', () => scene(async (seed, a) => {
     const twin = project(seed).text.indexOf('￼');
     comment(seed, '￼', twin + 1);
