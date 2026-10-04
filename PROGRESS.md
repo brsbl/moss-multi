@@ -1,12 +1,12 @@
 # moss-multi progress
 
-**Overall: 44% done** (32 of 73 planned tasks verified)
+**Overall: 48% done** (38 of 79 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 17 / 17 | in progress |
-| M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 10 / 11 | in progress |
-| M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 3 / 9 | in progress |
+| M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 13 / 18 | in progress |
+| M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 6 / 10 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 2 / 9 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
@@ -50,6 +50,12 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-04 — T2.2 verified: anyone can create, rename and move folders and move notes between them from the web sidebar, editors included in a shared vault; deleting a folder sends its whole subtree to trash as one batch, and a peer with a note open inside it goes terminal in place.
 - 2026-10-04 — T3.5 verified: a vault owner can create a vault inline from the switcher, rename it and move it to trash behind a confirmation; a person granted the vault root sees it with a role badge, and a member is offered no vault actions.
 - 2026-10-04 — T3.4 verified: a person can search the body text of every note they can access and see snippets, never a note they cannot; a note shows its backlinks, and wiki links resolve by title or filename or show an honest unresolved state.
+- 2026-10-04 — T1.9s verified: typing in a large note full of code blocks now refreshes only the block being edited instead of every block, and importing a note with tens of thousands of identical blocks assigns their ids in linear time.
+- 2026-10-04 — T1.R verified: a reviewed design now exists for code, HTML and formula block text: each block's text lives in its own small document that the server hides once the block is deleted and shows again intact on undo or a raced move, proven by a spike test and split into the T1.F2 and T1.F4 build briefs.
+- 2026-10-04 — T1.F3 verified: an open Properties edit keeps what the person typed when a peer clears or changes that property, closing a tab while edits are still unsent asks before leaving, and pasting a 1 MB note goes through without a hang.
+- 2026-10-04 — T2.4 verified: an owner can share a note, a folder (from its context menu) or a whole vault (from the switcher) by email at viewer, commenter, editor or owner, see and revoke members, and create, copy and revoke share links; an unknown email becomes a pending invite indistinguishable from a known one, a link visitor signed out reads at viewer with a sign-in that returns to the same note, and revoked, forged and inaccessible links all get the same 404.
+- 2026-10-04 — T2.3 verified: an owner can trash a note (including by dropping it on the sidebar Trash button) and restore it; anyone else with it open goes read-only in place on every surface with no reconnects, a fresh load gets a 404, and the owner can read a trashed note in a read-only Trash view that says it is kept for 30 days.
+- 2026-10-04 — T2.4s verified: sharing by email answers and behaves the same for a known and an unknown address, a co-owner cannot lower, remove or replace the vault owner, owner access never comes from a share link or an agent key, and two simultaneous shares to one person end as one invite at the higher role.
 
 ## T1.1s identity audit
 
@@ -112,6 +118,9 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - Sidebar search matches titles only; body search belongs to M3. Live title matching is bound in T1.4. Closed by T3.4: body search through the SearchDO.
 - T3.4 checker P2s left open: backlinks reach only notes in the listing (a note opened by URL outside it gets none) and have no backfill for docs the index lacks → search follow-up; `notes.search` with `searchTrashed` returns [] → T2.3's trash surface.
 - Sign-out leaves the session's other live doc sockets reading and writing → T2.5
+- T2.4 checker: `GET /api/docs/:id` returns the owner's real `folderId` to a link holder, unlike `/api/workspace`'s synthetic root (METHOD: never the owner's vault or folder ids) → T2.5/T2.6 access follow-up
+- T2.4 checker: a share counts as redeemed on any doc load or socket admission, so a grantee idling on an empty workspace auto-opens the new share and the owner sees their name within seconds → count only an explicit open (T2.8 invites)
+- A signed-out share-link visitor (and any viewer of the active vault) is offered "+ Note", which fails with "Could not create note. Try again." → T2.6 (capability helper)
 - The wrangler ProxyWorker patch replays non-idempotent requests after an ambiguous failure → T0.9b follow-up (stack infra)
 - `qa.mjs close` forgets the session even when closing it failed → tooling follow-up
 - `stack.mjs` puts `BETTER_AUTH_SECRET` and the test-hook secret on wrangler's command line → tooling follow-up

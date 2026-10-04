@@ -1,7 +1,8 @@
 // /api/docs. POST writes the D1 row in a folder the caller may edit, then DocDO.create seeds the doc (A§9 "+ Note").
-// GET /api/docs/:id is the doc and the caller's role on it; /members is the members API (members.ts); GET
-// /api/docs/:id/instance is the owner-only DO probe (A§19), which reads nothing from the doc. A missing doc and one the
-// caller cannot open get the same 404 on every route (A§8).
+// GET /api/docs/:id is the doc and the caller's role on it; DELETE and POST /restore are trash.ts; /members is the
+// members API (members.ts) and /links the share links (links.ts); GET /api/docs/:id/instance is the owner-only DO probe
+// (A§19), which reads nothing from the doc. A missing doc and one the caller cannot open get the same 404 on every
+// route (A§8).
 import { eq } from 'drizzle-orm';
 import { getServerByName } from 'partyserver';
 import { MARKDOWN_CAP_BYTES } from '@moss-multi/protocol/limits';
@@ -16,14 +17,17 @@ import { json } from '../worker/route.ts';
 import { resolveDocAccess, resolveFolderAccess } from './access.ts';
 import { carryAssets } from './assets.ts';
 import { folderNotFound, liveIn, moveDoc, upFrom, vaultOf } from './folders.ts';
-import { handleMembers } from './members.ts';
+import { handleLinks } from './links.ts';
+import { acceptShares, handleMembers, type MembersEnv } from './members.ts';
+import { restoreDoc, trashDoc } from './trash.ts';
 import { NO_STORE, notFound, readJsonObject, unauthenticated } from './respond.ts';
 import { ensureDefaultVault } from './vaults.ts';
 
-export type DocsEnv = AuthEnv & Pick<AppEnv, 'DocDO'> & Partial<Pick<AppEnv, 'PrincipalDO' | 'ASSETS'>>;
+export type DocsEnv = AuthEnv & Pick<AppEnv, 'DocDO'> & MembersEnv & Partial<Pick<AppEnv, 'ASSETS'>>;
 
 const DOC = /^\/api\/docs\/([^/]+)$/;
 const MEMBERS = /^\/api\/docs\/([^/]+)\/members$/;
+const LINKS = /^\/api\/docs\/([^/]+)\/links(?:\/([^/]+))?$/;
 const INSTANCE = /^\/api\/docs\/([^/]+)\/instance$/;
 
 export interface DocRecord {
@@ -61,7 +65,7 @@ async function createDoc(request: Request, env: DocsEnv): Promise<Response> {
   const db = createDb(env.DB);
   const folderId = typeof body.folderId === 'string' ? body.folderId : await ensureDefaultVault(db, userId);
   // Editors create in a shared folder or vault; the vault's owner owns the doc and created_by records who made it.
-  const folder = await resolveFolderAccess(db, principal, folderId);
+  const folder = await resolveFolderAccess(db, principal, folderId, shareTokenOf(request));
   if (!folder || folder.deleted) return notFound();
   if (!roleAtLeast(folder.role, 'editor')) {
     return json({ error: 'forbidden', message: 'You can view this folder but not add notes to it.' }, 403, NO_STORE);
@@ -94,7 +98,7 @@ async function duplicateDoc(request: Request, env: DocsEnv, docId: string): Prom
   if (!source) return notFound();
   const userId = principal.type === 'agent' ? principal.ownerUserId : principal.id;
   let folderId = source.folderId;
-  let folder = await resolveFolderAccess(db, principal, folderId);
+  let folder = await resolveFolderAccess(db, principal, folderId, shareTokenOf(request));
   // A direct document grant gives no right to create siblings in someone else's folder.
   if (!folder || folder.deleted || !roleAtLeast(folder.role, 'editor')) {
     folderId = await ensureDefaultVault(db, userId);
@@ -140,6 +144,7 @@ async function readDoc(request: Request, env: DocsEnv, docId: string): Promise<R
     .where(eq(docs.id, docId))
     .limit(1);
   if (!doc) return notFound();
+  await acceptShares(env.DB, principal, docId, access);
   return json({ doc, role: access.role }, 200, NO_STORE);
 }
 
@@ -193,10 +198,18 @@ export async function handleDocs(request: Request, env: DocsEnv): Promise<Respon
   if (pathname === '/api/docs') return only('POST', request, () => createDoc(request, env));
   const duplicate = /^\/api\/docs\/([^/]+)\/duplicate$/.exec(pathname);
   if (duplicate) return only('POST', request, () => duplicateDoc(request, env, duplicate[1]));
+  const restore = /^\/api\/docs\/([^/]+)\/restore$/.exec(pathname);
+  if (restore) return only('POST', request, () => restoreDoc(request, env, restore[1]));
   const doc = DOC.exec(pathname);
-  if (doc) return request.method === 'PATCH' ? patchDoc(request, env, doc[1]) : only('GET', request, () => readDoc(request, env, doc[1]));
+  if (doc) {
+    if (request.method === 'PATCH') return patchDoc(request, env, doc[1]);
+    if (request.method === 'DELETE') return trashDoc(request, env, doc[1]);
+    return request.method === 'GET' ? readDoc(request, env, doc[1]) : json({ error: 'method-not-allowed' }, 405, { allow: 'GET, PATCH, DELETE' });
+  }
   const members = MEMBERS.exec(pathname);
   if (members) return handleMembers(request, env, { type: 'doc', id: members[1] });
+  const links = LINKS.exec(pathname);
+  if (links) return handleLinks(request, env, { type: 'doc', id: links[1] }, links[2] ?? null);
   const accessMatch = /^\/api\/docs\/([^/]+)\/access$/.exec(pathname);
   if (accessMatch) {
     if (request.method !== 'GET') return json({ error: 'method-not-allowed' }, 405, { allow: 'GET' });

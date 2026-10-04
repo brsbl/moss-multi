@@ -1,7 +1,9 @@
 // The one pane hook (A§2.2): CanvasAreaContent calls useMossMultiPane(note) once and reads from it everything a bound
 // pane needs: the binding plugin MarkdownEditor mounts in place of its history, the first-sync gate (A§10.3), the
 // readiness attributes (A§19), the title and Properties bindings (A§10.4), the top-bar collab slot and the terminal
-// reason.
+// reason. A note opened from Trash binds nothing: moss shows it read-only from the owner's one read path for trashed
+// notes (A§8), and its restore turns the view into a fresh binding. A note trashed while open stays bound and goes
+// terminal in place.
 import { LexicalCollaboration } from '@lexical/react/LexicalCollaborationContext';
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
 import type { Provider } from '@lexical/yjs';
@@ -19,6 +21,7 @@ import type { Doc } from 'yjs';
 import { can, type Role } from '@moss-multi/protocol/roles';
 import { knownRole, useDocRole } from '../access.ts';
 import { TopBarCollab } from '../slots.tsx';
+import { getBridge, WORKSPACE } from '../bridge/index.ts';
 import {
   docOwner, openDocSession, subscribeDocOwners, type DocSession, type SessionState,
 } from './doc-session.ts';
@@ -95,7 +98,11 @@ class PaneBinding {
   canWrite = true;
 
   #role: Role | null;
-  constructor(readonly docId: string) { this.#role = knownRole(docId); }
+  /** `fromTrash`: the editor holds the Trash view's REST content, which is cleared before the plugin binds. */
+  constructor(readonly docId: string, fromTrash = false) {
+    this.#role = knownRole(docId);
+    if (fromTrash) this.#state = { ...this.#state, resetting: true };
+  }
 
   setRole(role: Role | null): void {
     this.#role = role;
@@ -305,8 +312,9 @@ function DocBinding({ docId, binding }: { docId: string; binding: PaneBinding })
 }
 
 export interface MossMultiPane {
-  /** Every note the web opens is bound to its doc; moss's REST content paths never run. */
-  bound: true;
+  /** Every note the web opens is bound to its doc, so moss's REST content paths never run; a note opened from
+   * Trash is the one exception, read-only. */
+  bound: boolean;
   /** MarkdownEditor's `collaboration` prop. */
   collaboration: { plugin: ReactNode } | null;
   /** The body is bound, synced and editable; moss's pending body focus waits for it. */
@@ -327,25 +335,61 @@ export interface MossMultiPane {
   readOnly: boolean;
 }
 
+/**
+ * Whether the pane shows `docId` as the Trash view. A trashed note is shown that way unless this pane already shows
+ * its synced content, which then stays in place, terminal. A restore, from the view or in place, starts a fresh
+ * binding: `epoch` counts restores so each one gets its own.
+ */
+function useTrashView(docId: string | null, trashed: boolean, synced: boolean): { trashView: boolean; restored: boolean; epoch: number } {
+  const mode = useRef({ docId, trashed, trashView: trashed, restored: false, epoch: 0 });
+  const current = mode.current;
+  if (current.docId !== docId) mode.current = { docId, trashed, trashView: trashed, restored: false, epoch: 0 };
+  else if (current.trashed && !trashed) mode.current = { docId, trashed, trashView: false, restored: true, epoch: current.epoch + 1 };
+  else if (!current.trashed && trashed) mode.current = { ...current, trashed, trashView: current.trashView || !synced };
+  return mode.current;
+}
+
 export function useMossMultiPane(note: { id: string; trashedAt?: number | null } | null): MossMultiPane {
   const docId = note?.id ?? null;
   const store = useStore();
   const [fields] = useState(() => new DocFields(store));
   const role = useDocRole(docId);
-  // A fresh binding for every doc the pane shows.
-  const binding = useMemo(() => (docId ? new PaneBinding(docId) : null), [docId]);
-  useLayoutEffect(() => { binding?.trash(note?.trashedAt != null); }, [binding, note?.trashedAt]);
+  // The bridge learns of a trash before moss's note record does, so a pane opening that note never binds it.
+  const trashed = note?.trashedAt != null || (docId !== null && getBridge()?.[WORKSPACE].isTrashed(docId) === true);
+  const synced = useRef<{ docId: string | null; synced: boolean }>({ docId, synced: false });
+  if (synced.current.docId !== docId) synced.current = { docId, synced: false };
+  const { trashView, restored, epoch } = useTrashView(docId, trashed, synced.current.synced);
+  // A fresh binding for every doc the pane shows and every restore of it, none for the Trash view.
+  const binding = useMemo(() => (docId && !trashView ? new PaneBinding(docId, restored) : null), [docId, trashView, restored, epoch]);
+  useLayoutEffect(() => { binding?.trash(trashed); }, [binding, trashed]);
   useLayoutEffect(() => binding?.setRole(role), [binding, role]);
   const state = usePaneState(binding);
+  if (state.bodyVisible) synced.current.synced = true;
   const terminal = useTerminal(docId);
   const collaboration = useMemo(
-    () => (docId && binding ? { plugin: <DocBinding key={docId} docId={docId} binding={binding} /> } : null),
-    [binding, docId],
+    () => (docId && binding ? { plugin: <DocBinding key={`${docId}:${epoch}`} docId={docId} binding={binding} /> } : null),
+    [binding, docId, epoch],
   );
   const live = state.bodyState === 'live' && !terminal;
   useLayoutEffect(() => fields.title.show(docId), [fields, docId]);
   useLayoutEffect(() => binding?.attachFields(fields), [binding, fields]);
   useLayoutEffect(() => fields.title.setOpen(live), [fields, live]);
+  if (docId && trashView) {
+    return {
+      bound: false,
+      readOnly: true,
+      noticeBand: <ConnectionNotice docId={null} />,
+      collaboration: null,
+      bodyLive: false,
+      bodyVisible: true,
+      titleLive: false,
+      titleBinding: 'readonly',
+      title: fields.title,
+      hasBodyText: false,
+      paneProps: { [EDITOR_PANE_ATTR]: '', [DOC_ID_ATTR]: docId, [DOC_STATE_ATTR]: 'terminal', [TERMINAL_REASON_ATTR]: 'deleted' },
+      topBarCollab: null,
+    };
+  }
   return {
     bound: true,
     readOnly: !live,

@@ -1,7 +1,7 @@
 // The DocDO core in the Node harness (BUILDPLAN T0.7; A§5.1): replay, chunking, compaction identity, the seed,
 // admission, the write classifier with loud refusal, acks, limits and the RPC guard.
 import { $createParagraphNode, $createTextNode, $getRoot, $isElementNode } from 'lexical';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import * as Y from 'yjs';
 import { base64ToBytes, CLOSE } from '@moss-multi/protocol/sync';
 import { exportMarkdown, importMarkdown } from '../../src/converter/index.ts';
@@ -19,6 +19,19 @@ afterEach(() => {
   vi.clearAllTimers();
   vi.useRealTimers();
 });
+
+/** D1's view of the doc for the DocDO's liveness reads: trashed or not, and whether it answers. */
+function liveness(): { deleted: boolean; fails: boolean; reads: number } {
+  const d1 = { deleted: false, fails: false, reads: 0 };
+  const original = DocDO.liveness;
+  DocDO.liveness = () => async () => {
+    d1.reads += 1;
+    if (d1.fails) throw new Error('D1 unavailable');
+    return d1.deleted;
+  };
+  onTestFinished(() => { DocDO.liveness = original; });
+  return d1;
+}
 
 async function editorOn(opened: Opened): Promise<TestClient> {
   const client = await connect(opened, { role: 'editor' });
@@ -533,20 +546,93 @@ describe('RPC', () => {
     expect((await cold.dobj.exportMarkdown()).trim()).toBe('Persisted body and more');
   });
 
-  it('trash() persists the deleted flag, tells every socket the doc is gone, closes them 4410 and refuses new ones after a wake', async () => {
+  it('trash(hold) tells every socket the doc is gone, closes them 4410 and refuses new ones, after a wake too, until the hold settles', async () => {
     const opened = await start(openDoc());
     const editor = await editorOn(opened);
     const viewer = await connect(opened, { role: 'viewer' });
     await viewer.hello();
-    await opened.dobj.trash();
+    await opened.dobj.trash('hold-1');
     await editor.pump();
     await viewer.pump();
     for (const client of [editor, viewer]) {
       expect(client.events).toContainEqual({ t: 'doc-deleted' });
       expect(client.closed?.code).toBe(CLOSE.deleted);
     }
-    await opened.dobj.trash();
+    await opened.dobj.trash('hold-1');
     const woken = await start(wake(opened));
-    expect((await connect(woken, { role: 'editor' })).closed?.code, 'a woken doc remembers').toBe(CLOSE.deleted);
+    expect((await connect(woken, { role: 'editor' })).closed?.code, 'a woken doc remembers the hold').toBe(CLOSE.deleted);
+  });
+
+  it('settle(hold) applies D1: a committed trash stays closed after a wake, and a restore committed in D1 reopens with the content intact', async () => {
+    const d1 = liveness();
+    const opened = await start(openDoc());
+    const editor = await connect(opened, { role: 'editor' });
+    const lexical = bindLexical(editor.doc);
+    await editor.hello();
+    lexical.type('Kept through the trash');
+    await editor.flush();
+    await opened.dobj.trash('hold-1');
+    d1.deleted = true;
+    expect(await opened.dobj.settle('hold-1')).toEqual({ deleted: true });
+    const woken = await start(wake(opened));
+    expect((await connect(woken, { role: 'editor' })).closed?.code, 'a settled trash is remembered').toBe(CLOSE.deleted);
+    d1.deleted = false;
+    expect(await woken.dobj.settle()).toEqual({ deleted: false });
+    const back = await connect(await start(wake(woken)), { role: 'editor' });
+    await back.hello();
+    expect(back.closed, 'a restored doc admits its editors').toBeNull();
+    expect((await back.opened.dobj.exportMarkdown()).trim()).toBe('Kept through the trash');
+  });
+
+  it('a trash whose D1 write failed reopens when its hold settles against the live row; another trash’s hold keeps it closed', async () => {
+    const d1 = liveness();
+    const opened = await start(openDoc());
+    await opened.dobj.trash('hold-1');
+    await opened.dobj.trash('hold-2');
+    expect(await opened.dobj.settle('hold-1')).toEqual({ deleted: false });
+    expect((await connect(opened, { role: 'editor' })).closed?.code, 'hold-2 still closes it').toBe(CLOSE.deleted);
+    expect(await opened.dobj.settle(), 'a settle without its hold leaves it').toEqual({ deleted: false });
+    expect((await connect(opened, { role: 'editor' })).closed?.code).toBe(CLOSE.deleted);
+    await opened.dobj.settle('hold-2');
+    const live = await connect(opened, { role: 'editor' });
+    await live.hello();
+    expect(live.closed).toBeNull();
+    expect(d1.reads).toBeGreaterThan(0);
+  });
+
+  it('a missed settle heals on the next admission from D1, and fails closed when D1 cannot answer', async () => {
+    const d1 = liveness();
+    const opened = await start(openDoc());
+    await opened.dobj.trash('hold-1');
+    d1.deleted = true;
+    await opened.dobj.settle('hold-1');
+    // The restore committed in D1, but its settle never reached the doc.
+    d1.deleted = false;
+    d1.fails = true;
+    const woken = await start(wake(opened));
+    expect((await connect(woken, { role: 'editor' })).closed?.code, 'an unconfirmed doc admits nobody, and says try again').toBe(1013);
+    d1.fails = false;
+    const healed = await connect(woken, { role: 'editor' });
+    await healed.hello();
+    expect(healed.closed, 'D1 says live, so the doc reopens').toBeNull();
+  });
+
+  it('a hold left unsettled (its route died) settles on the alarm, and stays closed while D1 cannot answer', async () => {
+    const d1 = liveness();
+    const opened = await start(openDoc());
+    await opened.dobj.trash('hold-1');
+    expect(opened.backing.alarm, 'the hold schedules its own settle').not.toBeNull();
+    d1.fails = true;
+    vi.setSystemTime(opened.backing.alarm ?? 0);
+    const woken = await start(wake(opened));
+    await woken.dobj.alarm();
+    expect((await connect(woken, { role: 'editor' })).closed?.code, 'still held').toBe(CLOSE.deleted);
+    expect(woken.backing.alarm, 'and it tries again').toBeGreaterThan(Date.now());
+    d1.fails = false;
+    vi.setSystemTime(woken.backing.alarm ?? 0);
+    await woken.dobj.alarm();
+    const live = await connect(woken, { role: 'editor' });
+    await live.hello();
+    expect(live.closed, 'the trash never committed, so the doc reopens').toBeNull();
   });
 });

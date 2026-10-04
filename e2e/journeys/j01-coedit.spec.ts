@@ -58,7 +58,7 @@ test('j01 setup: Ada shares her note with Ben from the Share dialog, and Ben ope
   await waitAcked(ada, docId);
 
   const dialog = await ui.shareWith(ada, docId, benPrincipal, 'Can edit');
-  await expect(ui.accessRow(dialog, benPrincipal), 'the owner sees the email she shared with').toContainText(benPrincipal.email);
+  await expect(ui.inviteRow(dialog, benPrincipal.email), 'the owner sees the email she shared with, pending until Ben opens it').toContainText('Invited');
   if (!ada.principal) throw new Error('ada has no principal');
   await expect(ui.accessRow(dialog, ada.principal), 'Ada is listed as the owner').toContainText('Owner');
   await actors.checkpoint('shared');
@@ -246,6 +246,11 @@ test('j01 discovery: Ben switches to a shared vault and back, with a role badge 
   await shared.click();
   const row = ben.page.locator(`[data-sidebar-row][data-doc-id="${docId}"]`);
   await expect(row).toBeVisible();
+  // A member gets no vault actions on the shared vault; "Share vault…" is the owner's (T2.4).
+  await switcher.click();
+  await expect(ben.page.getByRole('menuitem', { name: 'Home editor', exact: true })).toBeVisible();
+  await expect(ben.page.getByRole('menuitem', { name: /Share vault|New vault|Rename|Delete/ })).toHaveCount(0);
+  await ben.page.keyboard.press('Escape');
   await ben.page.reload();
   await expect(row).toBeVisible();
   await row.click();

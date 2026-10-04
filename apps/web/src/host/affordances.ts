@@ -142,18 +142,6 @@ export const AFFORDANCES = [
   },
   // Staged: the entry points stay hidden until their backend lands, so no live control ever 404s.
   {
-    id: 'trash',
-    sites: [`${R}/panels/NotesPanelFooter.tsx`, `${R}/panels/NotesListPanelContent.tsx`, `${R}/panels/CanvasAreaContent.tsx`, `${R}/App.tsx`],
-    reason: "Trash, restore and the trash list land in M2: the footer Trash view, the note Trash items and ⌘2. A folder's Trash Folder is real (T2.2).",
-    cite: 'T2.3',
-    staged: 2,
-    probes: [
-      { surface: 'shell', selector: 'button[aria-label="Trash"]' },
-      { surface: 'note-menu', selector: MENU_ITEM, text: 'Trash' },
-      { surface: 'note-more-menu', selector: MENU_ITEM, text: 'Trash' },
-    ],
-  },
-  {
     id: 'comments',
     sites: [
       `${R}/editor/MarkdownEditor.tsx`, `${R}/editor/nodes/CodeBlockNode.view.tsx`, `${R}/editor/nodes/ChartNode.view.tsx`,

@@ -63,7 +63,7 @@ it('returns the committed share even when its notification RPC fails', async () 
     get: () => ({ setName: async () => undefined, publish: async () => { throw new Error('PrincipalDO unavailable'); } }),
   } as never });
   expect(response.status).toBe(201);
-  expect(await response.json()).toMatchObject({ member: { principalId: reader.id, role: 'editor' } });
+  expect(await response.json()).toEqual({ shared: { email: reader.email, role: 'editor' } });
   expect(await d1.db.prepare('SELECT role FROM doc_members WHERE doc_id = ? AND principal_id = ?')
     .bind(id, reader.id).first()).toEqual({ role: 'editor' });
 });

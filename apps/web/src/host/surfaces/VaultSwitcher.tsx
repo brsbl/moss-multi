@@ -1,15 +1,17 @@
 // Glyphdown's owned-first vault menu, composed from moss's DS in the notes-panel header (A§11). On a vault the caller
 // owns, the menu ends with an inline "New vault" row and an always-visible actions button beside it offers Rename and
-// Move to Trash (T3.5); members get no vault actions.
+// Move to Trash (T3.5), and its owner can share the active vault from it (T2.4); members get no vault actions.
 import { useRef, useState, useSyncExternalStore, type ComponentProps, type ComponentType, type ReactNode } from 'react';
 import { getDefaultStore } from 'jotai';
 import { activeFolderPathAtom } from '@moss/shared/state/atoms';
-import { Check, ChevronDown, FolderRoot, MoreHorizontal, Pencil, Plus, Trash2 } from 'lucide-react';
+import { Check, ChevronDown, FolderRoot, MoreHorizontal, Pencil, Plus, Trash2, UserPlus } from 'lucide-react';
 import { Button } from '@moss/shared/components/ui/button';
 import { ConfirmationDialog } from '@moss/shared/components/ui/confirmation-dialog';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@moss/shared/components/ui/dropdown-menu';
 import { Input } from '@moss/shared/components/ui/input';
 import { getBridge, WORKSPACE, type Bridge } from '../bridge/index.ts';
+import { openShare } from './ShareDialog.tsx';
+import { openShare } from './ShareDialog.tsx';
 
 // moss's DropdownMenu is Base UI's Menu root, which takes a controlled `open`; the Content takes `onCloseAutoFocus`.
 const Menu = DropdownMenu as ComponentType<{ children: ReactNode; open?: boolean; onOpenChange?: (open: boolean) => void }>;
@@ -141,6 +143,12 @@ function VaultMenu({ bridge }: { bridge: Bridge }) {
                     </DropdownMenuItem>
                   )}
                 </>
+              )}
+              {active.role === 'owner' && (
+                <DropdownMenuItem onSelect={() => openShare({ type: 'folder', id: active.id, name: active.name, vault: true })}>
+                  <UserPlus className="h-3.5 w-3.5 shrink-0 text-ink-faint" aria-hidden />
+                  <span className="min-w-0 flex-1 truncate">Share vault…</span>
+                </DropdownMenuItem>
               )}
             </MenuContent>
           </Menu>

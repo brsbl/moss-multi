@@ -5,11 +5,14 @@
 // only the owner (A§8 manage) moves, on ownership alone, never on a grant or a share link; only the owner trashes. Every refusal carries a sentence, because moss
 // shows the message it gets. Writes that depend on the tree re-check it in the same statement, so concurrent moves
 // can't build a cycle or leave something live under a trashed folder. A moved or trashed folder changes who can open
-// its docs; the live kick for that is T2.5's one path.
+// its docs; the live kick for that is T2.5's one path. GET /api/folders/:id is a folder or vault and the caller's
+// role on it (the `/f/$folderId` landing, T2.4), which a folder link opens; /members and /links are the sharing APIs.
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { getServerByName } from 'partyserver';
 import { filenameFor } from '@moss-multi/core/filenames';
+import { TRASHED_ACTION } from '@moss-multi/protocol/retention';
 import { can, roleAtLeast } from '@moss-multi/protocol/roles';
+import type { DocDO } from '@moss-multi/sync';
 import { collectRecipients, publishRecipients, type FanoutEnv, type Recipients } from '@moss-multi/sync/fanout';
 import type { AuthEnv } from '../auth/auth.ts';
 import { resolvePrincipal, shareTokenOf, type Principal } from '../auth/principal.ts';
@@ -19,7 +22,8 @@ import type { AppEnv } from '../env.ts';
 import { json } from '../worker/route.ts';
 import { carryAssets } from './assets.ts';
 import { folderChain, MAX_FOLDER_DEPTH, resolveDocAccess, resolveFolderAccess, type FolderAccess } from './access.ts';
-import { handleFolders as handleFolderMembers } from './members.ts';
+import { handleLinks } from './links.ts';
+import { handleMembers } from './members.ts';
 import { NO_STORE, notFound, readJsonObject, unauthenticated } from './respond.ts';
 
 export type FoldersEnv = AuthEnv & Pick<AppEnv, 'DocDO'> & Partial<Pick<AppEnv, 'PrincipalDO' | 'ASSETS'>>;
@@ -95,9 +99,10 @@ async function signedIn(request: Request, env: AuthEnv): Promise<Principal | nul
   return principal && principal.type !== 'anonymous' ? principal : null;
 }
 
-async function liveFolder(db: Db, principal: Principal, id: unknown): Promise<FolderAccess | null> {
+/** `shareToken` is a link the caller presented, for creating and renaming under it; moves never take one. */
+async function liveFolder(db: Db, principal: Principal, id: unknown, shareToken: string | null = null): Promise<FolderAccess | null> {
   if (typeof id !== 'string' || !id) return null;
-  const access = await resolveFolderAccess(db, principal, id);
+  const access = await resolveFolderAccess(db, principal, id, shareToken);
   return access && !access.deleted ? access : null;
 }
 
@@ -113,7 +118,7 @@ async function createFolder(request: Request, env: FoldersEnv): Promise<Response
   const body = await readJsonObject(request);
   if (!body) return refuse(400, 'bad-request', 'The request body must be a JSON object.');
   const db = createDb(env.DB);
-  const parent = await liveFolder(db, principal, body.parentId);
+  const parent = await liveFolder(db, principal, body.parentId, shareTokenOf(request));
   if (!parent) return folderNotFound();
   if (!roleAtLeast(parent.role, 'editor')) return refuse(403, 'forbidden', 'You can view this folder but not add folders to it.');
   const named = folderName(body.name);
@@ -128,7 +133,7 @@ async function createFolder(request: Request, env: FoldersEnv): Promise<Response
       WHERE ${liveIn(7)} AND (SELECT count(*) FROM up) < ${MAX_FOLDER_DEPTH}`)
       .bind(body.parentId, id, parent.ownerUserId, principal.id, named.name, Date.now(), chain.at(-1)).run();
     // The parent was trashed or nested deeper in the meantime.
-    if (!changed(inserted)) return (await liveFolder(db, principal, body.parentId)) ? tooDeep() : folderNotFound();
+    if (!changed(inserted)) return (await liveFolder(db, principal, body.parentId, shareTokenOf(request))) ? tooDeep() : folderNotFound();
   } catch (error) {
     if (isUnique(error)) return exists(named.name);
     throw error;
@@ -143,7 +148,7 @@ async function updateFolder(request: Request, env: FoldersEnv, id: string): Prom
   const body = await readJsonObject(request);
   if (!body || (!('name' in body) && !('parentId' in body))) return refuse(400, 'bad-request', 'Send a new name or a new parent folder.');
   const db = createDb(env.DB);
-  const folder = await liveFolder(db, principal, id);
+  const folder = await liveFolder(db, principal, id, shareTokenOf(request));
   if (!folder) return folderNotFound();
   if (folder.kind === 'vault') return refuse(409, 'vault', 'This is a vault, not a folder, so it can’t be renamed or moved here.');
   if (!roleAtLeast(folder.role, 'editor')) return refuse(403, 'forbidden', 'You can view this folder but not change it.');
@@ -211,12 +216,18 @@ async function refuseStaleMove(db: Db, principal: Principal, id: string, parentI
   return tooDeep();
 }
 
-/** Closes every doc of a trash batch on its DocDO (A§5.1 trash); false when one did not answer. */
-async function closeDocs(env: FoldersEnv, docIds: string[]): Promise<boolean> {
-  const results = await Promise.allSettled(docIds.map(async (docId) => (await getServerByName(env.DocDO, docId)).trash()));
-  const failed = results.filter((result) => result.status === 'rejected');
-  for (const failure of failed) console.error('DocDO trash failed', (failure as PromiseRejectedResult).reason);
-  return failed.length === 0;
+type DocStub = DurableObjectStub<DocDO>;
+
+/** Calls `call` on each doc's DocDO; the docs that did not answer. */
+async function eachDoc(env: FoldersEnv, docIds: string[], what: string, call: (stub: DocStub) => Promise<unknown>): Promise<string[]> {
+  const results = await Promise.allSettled(docIds.map(async (docId) => call(await getServerByName(env.DocDO, docId))));
+  const failed: string[] = [];
+  results.forEach((result, i) => {
+    if (result.status === 'fulfilled') return;
+    console.error(`DocDO ${what} failed`, result.reason);
+    failed.push(docIds[i]);
+  });
+  return failed;
 }
 
 /** DELETE /api/folders/:id, and DELETE /api/vaults/:id with `kind` vault: the subtree goes to Trash as one batch. */
@@ -233,28 +244,52 @@ export async function trashFolder(request: Request, env: FoldersEnv, id: string,
   if (folder.role !== 'owner') return refuse(403, 'forbidden', 'Only the owner can move this folder to Trash.');
 
   const batch = row?.batch ?? crypto.randomUUID();
+  // The subtree's live docs are held closed before the batch commits (A§8): a doc that cannot close fails the trash
+  // before anything commits, and a failed commit settles them open again from D1.
+  let held: string[] = [];
   if (!folder.deleted) {
+    held = (await env.DB.prepare(`WITH RECURSIVE sub(id, depth) AS (
+        SELECT id, 1 FROM folders WHERE id = ?1 AND deleted_at IS NULL
+        UNION ALL SELECT f.id, s.depth + 1 FROM folders f JOIN sub s ON f.parent_id = s.id
+          WHERE f.deleted_at IS NULL AND s.depth <= ${MAX_FOLDER_DEPTH}
+      ) SELECT d.id AS id FROM docs d JOIN sub ON d.folder_id = sub.id WHERE d.deleted_at IS NULL`).bind(id).all<{ id: string }>()).results.map((r) => r.id);
+    const unheld = await eachDoc(env, held, 'trash', (stub) => stub.trash(batch));
+    const cannot = () => refuse(503, 'unavailable', 'The folder couldn’t be moved to Trash right now. Try again.');
+    if (unheld.length > 0) {
+      await eachDoc(env, held, 'settle', (stub) => stub.settle(batch));
+      return cannot();
+    }
     const now = Date.now();
     // The subtree is read inside the write, so a folder created or a note moved in just before is in the batch.
-    await env.DB.batch([
-      env.DB.prepare(`WITH RECURSIVE sub(id, depth) AS (
-          SELECT id, 1 FROM folders WHERE id = ?3 AND deleted_at IS NULL
-          UNION ALL SELECT f.id, s.depth + 1 FROM folders f JOIN sub s ON f.parent_id = s.id
-            WHERE f.deleted_at IS NULL AND s.depth <= ${MAX_FOLDER_DEPTH}
-        ) UPDATE folders SET deleted_at = ?1, trash_batch_id = ?2 WHERE id IN (SELECT id FROM sub)`)
-        .bind(now, batch, id),
-      env.DB.prepare('UPDATE docs SET deleted_at = ?1, trash_batch_id = ?2 WHERE folder_id IN (SELECT id FROM folders WHERE trash_batch_id = ?2) AND deleted_at IS NULL')
-        .bind(now, batch),
-    ]);
+    try {
+      await env.DB.batch([
+        env.DB.prepare(`WITH RECURSIVE sub(id, depth) AS (
+            SELECT id, 1 FROM folders WHERE id = ?3 AND deleted_at IS NULL
+            UNION ALL SELECT f.id, s.depth + 1 FROM folders f JOIN sub s ON f.parent_id = s.id
+              WHERE f.deleted_at IS NULL AND s.depth <= ${MAX_FOLDER_DEPTH}
+          ) UPDATE folders SET deleted_at = ?1, trash_batch_id = ?2 WHERE id IN (SELECT id FROM sub)`)
+          .bind(now, batch, id),
+        env.DB.prepare('UPDATE docs SET deleted_at = ?1, trash_batch_id = ?2 WHERE folder_id IN (SELECT id FROM folders WHERE trash_batch_id = ?2) AND deleted_at IS NULL')
+          .bind(now, batch),
+      ]);
+    } catch (error) {
+      console.error('folder trash write failed', error);
+      await eachDoc(env, held, 'settle', (stub) => stub.settle(batch));
+      return cannot();
+    }
   }
   const [docIds, folderIds] = await Promise.all([
     db.select({ id: docs.id }).from(docs).where(eq(docs.trashBatchId, batch)).then((rows) => rows.map((r) => r.id)),
     db.select({ id: folders.id }).from(folders).where(eq(folders.trashBatchId, batch)).then((rows) => rows.map((r) => r.id)),
   ]);
-  const closed = await closeDocs(env, docIds);
+  // Each doc settles from the committed rows; a held doc that does not answer stays closed until its alarm settles it,
+  // but one that joined the batch after the holds may still be open, so the owner's retry settles it again.
+  const unsettled = await eachDoc(env, [...new Set([...held, ...docIds])], 'settle', (stub) => stub.settle(batch));
   if (!folder.deleted) await notify(env, await collectRecipients(env.DB, { docIds, folderIds }));
-  if (!closed) return refuse(503, 'unavailable', 'The folder is in Trash, but some open notes haven’t closed yet. Try again.');
-  return json({ trashBatchId: batch, docIds, folderIds }, 200, NO_STORE);
+  if (unsettled.some((docId) => !held.includes(docId))) {
+    return refuse(503, 'unavailable', 'The folder is in Trash, but some open notes haven’t closed yet. Try again.');
+  }
+  return json({ trashBatchId: batch, docIds, folderIds, ...TRASHED_ACTION }, 200, NO_STORE);
 }
 
 /** PATCH /api/docs/:id {folderId}: a note moves within its vault, keeping its filename unless the folder has it. */
@@ -311,8 +346,22 @@ export async function moveDoc(request: Request, env: FoldersEnv, docId: string, 
 }
 
 const FOLDER = /^\/api\/folders\/([^/]+)$/;
+const MEMBERS = /^\/api\/folders\/([^/]+)\/members$/;
+const LINKS = /^\/api\/folders\/([^/]+)\/links(?:\/([^/]+))?$/;
 
-/** `/api/folders` and `/api/folders/:id`; members and anything else under it go to the members API. */
+/** GET /api/folders/:id: the folder, and the vault around it unless the caller holds only a link to it. */
+async function readFolder(request: Request, env: FoldersEnv, folderId: string): Promise<Response> {
+  const principal = await resolvePrincipal(request, env);
+  if (!principal) return unauthenticated();
+  const db = createDb(env.DB);
+  const access = await resolveFolderAccess(db, principal, folderId, shareTokenOf(request));
+  if (!access || access.deleted) return notFound();
+  // A link holder sees the folder it was handed, never the vault around it.
+  const folder = { id: folderId, name: access.name, kind: access.kind, ...(access.linkOnly ? {} : { vaultId: await vaultOf(db, folderId) }) };
+  return json({ folder, role: access.role }, 200, NO_STORE);
+}
+
+/** `/api/folders` and everything under it. */
 export function handleFolderRoutes(request: Request, env: FoldersEnv): Promise<Response> {
   const { pathname } = new URL(request.url);
   if (pathname === '/api/folders') {
@@ -320,9 +369,14 @@ export function handleFolderRoutes(request: Request, env: FoldersEnv): Promise<R
   }
   const folder = FOLDER.exec(pathname);
   if (folder) {
+    if (request.method === 'GET') return readFolder(request, env, folder[1]);
     if (request.method === 'PATCH') return updateFolder(request, env, folder[1]);
     if (request.method === 'DELETE') return trashFolder(request, env, folder[1]);
-    return Promise.resolve(json({ error: 'method-not-allowed' }, 405, { allow: 'PATCH, DELETE' }));
+    return Promise.resolve(json({ error: 'method-not-allowed' }, 405, { allow: 'GET, PATCH, DELETE' }));
   }
-  return handleFolderMembers(request, env);
+  const members = MEMBERS.exec(pathname);
+  if (members) return handleMembers(request, env, { type: 'folder', id: members[1] });
+  const links = LINKS.exec(pathname);
+  if (links) return handleLinks(request, env, { type: 'folder', id: links[1] }, links[2] ?? null);
+  return Promise.resolve(json({ error: 'not-found' }, 404));
 }
