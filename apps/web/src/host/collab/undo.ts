@@ -3,7 +3,7 @@
 import { UNDO_COMMAND, REDO_COMMAND, type LexicalEditor } from 'lexical';
 import type { Binding } from '@lexical/yjs';
 import {
-  ContentString, ContentType, Item, Map as YMap, UndoManager, XmlText, findIndexSS, isDeleted, type AbstractType, type Transaction,
+  ContentString, ContentType, Item, Map as YMap, UndoManager, XmlText, findIndexSS, getItem, type AbstractType, type Transaction,
 } from 'yjs';
 
 import { REGISTER_LOCAL_ORIGIN } from '@moss-multi/sync/registers';
@@ -48,26 +48,41 @@ export function createBindingUndoManager(binding: Binding): UndoManager {
   };
   const byPeer = (item: Item) => authorsOf(item.id.client, item.id.clock, item.length).some(({ author }) => !own.has(author));
   const isPeers = (item: Item) => !item.deleted && byPeer(item);
-  // After an undo or redo, each deleted item it restored points (`redone`) at its copy.
-  const rememberCopies = (steps: StackItem[]) => {
+  // Every item overlapping a delete set's ranges, read without splitting.
+  const eachItem = (set: StackItem['deletions'], visit: (item: Item) => void) => set.clients.forEach((ranges, client) => {
+    const structs = doc.store.clients.get(client);
+    if (!structs) return;
+    const end = structs.at(-1)!.id.clock + structs.at(-1)!.length;
+    for (const { clock, len } of ranges) {
+      if (clock >= end) continue;
+      for (let i = findIndexSS(structs, clock); i < structs.length && structs[i]!.id.clock < clock + len; i++) {
+        const struct = structs[i]!;
+        if (struct instanceof Item) visit(struct);
+      }
+    }
+  });
+  // Each deleted item a step restored points (`redone`) at its copy; the copy keeps the original's author.
+  const rememberCopies = (step: StackItem) => {
     const found: [number, { clock: number; len: number; author: number }][] = [];
-    for (const step of steps) step.deletions.clients.forEach((ranges, client) => {
-      const structs = doc.store.clients.get(client);
-      if (!structs) return;
-      const end = structs.at(-1)!.id.clock + structs.at(-1)!.length;
-      for (const { clock, len } of ranges) {
-        if (clock >= end) continue;
-        for (let i = findIndexSS(structs, clock); i < structs.length && structs[i]!.id.clock < clock + len; i++) {
-          const original = structs[i]!;
-          if (!(original instanceof Item) || !original.redone) continue;
-          const { redone } = original;
-          for (const part of authorsOf(client, original.id.clock, original.length)) {
-            if (part.author !== redone.client) found.push([redone.client, { ...part, clock: redone.clock + part.clock - original.id.clock }]);
-          }
-        }
+    eachItem(step.deletions, original => {
+      const { redone } = original;
+      if (!redone) return;
+      for (const part of authorsOf(original.id.client, original.id.clock, original.length)) {
+        if (part.author !== redone.client) found.push([redone.client, { ...part, clock: redone.clock + part.clock - original.id.clock }]);
       }
     });
     for (const [client, copy] of found) copies.set(client, [...copies.get(client) ?? [], copy].sort((a, b) => a.clock - b.clock));
+  };
+  // The containers a step created, as they are now: undoing a delete replaced some of them with restored copies.
+  const createdBy = (step: StackItem) => {
+    const created = new Set<Item>();
+    eachItem(step.insertions, item => {
+      if (!(item.content instanceof ContentType)) return;
+      let current = item;
+      while (current.redone) current = getItem(doc.store, current.redone) as Item;
+      created.add(current);
+    });
+    return created;
   };
   const holdsNested = (item: Item | null): boolean =>
     !!item && !item.deleted && item.content instanceof ContentType && holdsPeers(item.content.type as AbstractType<unknown>);
@@ -94,11 +109,20 @@ export function createBindingUndoManager(binding: Binding): UndoManager {
   // The step being undone or redone. One undo() pops past steps that change nothing, so this follows the stack.
   let stack: StackItem[] | null = null;
   let popped: StackItem[] = [];
+  const prepared = new Map<StackItem, Set<Item>>();
+  // Yjs restores a step's deletions before it filters its insertions, so authorship of the copies is known first.
+  const prepare = (step: StackItem) => {
+    let created = prepared.get(step);
+    if (!created) { rememberCopies(step); created = createdBy(step); prepared.set(step, created); }
+    return created;
+  };
   const deleteFilter = (item: Item): boolean => {
-    if (item.parentSub === null) return !keeps(item);
-    const owner = (item.parent as AbstractType<unknown>)._item;
     const step = stack ? popped[stack.length] : undefined;
-    return !(owner && step && isDeleted(step.insertions, owner.id) && keeps(owner));
+    const created = step ? prepare(step) : null;
+    if (item.parentSub === null) return !keeps(item);
+    // A property goes with its container: kept while the container the step created is kept.
+    const owner = (item.parent as AbstractType<unknown>)._item;
+    return !(owner && created?.has(owner) && keeps(owner));
   };
   const undo = new UndoManager([binding.root.getSharedType(), doc.getMap('registers')], {
     trackedOrigins,
@@ -107,7 +131,7 @@ export function createBindingUndoManager(binding: Binding): UndoManager {
   });
   const following = (read: () => StackItem[], run: () => StackItem | null) => () => {
     stack = read(); popped = stack.slice();
-    try { return run(); } finally { rememberCopies(popped.slice(stack.length)); stack = null; popped = []; }
+    try { return run(); } finally { for (const step of popped.slice(stack.length)) prepare(step); stack = null; popped = []; prepared.clear(); }
   };
   undo.undo = following(() => undo.undoStack, undo.undo.bind(undo));
   undo.redo = following(() => undo.redoStack, undo.redo.bind(undo));
