@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { knownRole } from '../access.ts';
-import { createBridge, docIdFromPath, inertBrowser, WORKSPACE, type BrowserHooks } from './index.ts';
+import { markUnacked } from '../collab/unacked.ts';
+import { createBridge, docIdFromPath, EXPORT_ACK_WAIT_MS, inertBrowser, WORKSPACE, type BrowserHooks } from './index.ts';
 
 const LISTING = {
   vault: { id: 'v1', name: 'Home' },
@@ -256,6 +257,46 @@ describe('the T3.7 bridge: tab, print and download (R4; A§9 Export)', () => {
     const api = createBridge({ pathname: () => '/d/d1', fetch, browser: hooks({ download }) });
     await expect(api.notes.exportMarkdown('d1', { title: 'Plans', markdown: '' })).rejects.toThrow(/couldn’t export/i);
     expect(download).not.toHaveBeenCalled();
+  });
+
+  it("waits for this tab's unacked edits before reading the export, so the file holds them", async () => {
+    const download = vi.fn();
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input) => String(input) === '/api/docs/d1/content'
+      ? new Response('typed', { headers: { 'content-type': 'text/markdown' } })
+      : Response.json(LISTING));
+    const api = createBridge({ pathname: () => '/d/d1', fetch, browser: hooks({ download }) });
+    const session = {};
+    markUnacked(session, true);
+    try {
+      const saved = api.notes.exportMarkdown('d1', { title: 'Plans', markdown: '' });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(fetch.mock.calls.map(([input]) => String(input)), 'no export read while an edit is unacked').not.toContain('/api/docs/d1/content');
+      markUnacked(session, false);
+      expect(await saved).toEqual({ canceled: false });
+      expect(fetch.mock.calls.map(([input]) => String(input))).toContain('/api/docs/d1/content');
+      expect(download).toHaveBeenCalledTimes(1);
+    } finally {
+      markUnacked(session, false);
+    }
+  });
+
+  it('refuses Save as Markdown loudly when the edits stay unacked, and downloads nothing', async () => {
+    vi.useFakeTimers();
+    const download = vi.fn();
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response('stale', { headers: { 'content-type': 'text/markdown' } }));
+    const api = createBridge({ pathname: () => '/d/d1', fetch, browser: hooks({ download }) });
+    const session = {};
+    markUnacked(session, true);
+    try {
+      const saved = expect(api.notes.exportMarkdown('d1', { title: 'Plans', markdown: '' })).rejects.toThrow(/haven’t synced/i);
+      await vi.advanceTimersByTimeAsync(EXPORT_ACK_WAIT_MS + 1);
+      await saved;
+      expect(fetch.mock.calls.map(([input]) => String(input))).not.toContain('/api/docs/d1/content');
+      expect(download).not.toHaveBeenCalled();
+    } finally {
+      markUnacked(session, false);
+      vi.useRealTimers();
+    }
   });
 });
 

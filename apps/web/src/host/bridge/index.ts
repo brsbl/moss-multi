@@ -126,6 +126,8 @@ const layoutKey = (id: string) => `moss-multi:layout:${id}`;
 const collapsedKey = (id: string) => `moss-multi:collapsed-headings:${id}`;
 /** The one PDF export session a tab holds: the next Save as PDF replaces it, so session storage never accumulates. */
 const PDF_SESSION_KEY = 'moss-multi:pdf-export';
+/** How long Save as Markdown waits for unacked edits before refusing. */
+export const EXPORT_ACK_WAIT_MS = 8_000;
 
 /** moss's save-dialog file name (main/ipc-handlers.ts sanitizeFilename): no path separators or reserved characters. */
 export function markdownFileName(title: string): string {
@@ -622,7 +624,8 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
       openPdfExportRenderSurface: async (sessionId: string) => pdfTab(sessionId),
       exportPdf: unavailable('Exporting a PDF file'),
       // Save as Markdown downloads the server's export (A§12, one converter): content extensions stay and no comment
-      // or layout marker is in it. moss's client-side markdown is not used.
+      // or layout marker is in it. moss's client-side markdown is not used. The server only has what it acked, so the
+      // export waits for this tab's edits to be acked and refuses rather than download a file that misses them (A§10.6).
       exportMarkdown: async (id: string, input: { title?: string; markdown?: string } = {}) => {
         const share = browser.share();
         const response = await request(`/api/docs/${encodeURIComponent(id)}/content`, {

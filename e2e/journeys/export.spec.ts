@@ -13,8 +13,8 @@ import { expect, test, ui } from '../lib/test.ts';
 const BIND_TIMEOUT = 30_000;
 const SOLO = 'one person exports their own note; nothing here is shared';
 
-async function openImported(actors: Actors, stack: Stack, title: string, markdown: string): Promise<{ actor: Actor; docId: string }> {
-  const actor = await actors.session(await actors.principal('ada'));
+async function openImported(actors: Actors, stack: Stack, title: string, markdown: string, severable = false): Promise<{ actor: Actor; docId: string }> {
+  const actor = await actors.session(await actors.principal('ada'), { severable });
   const response = await actor.context.request.post('/api/docs', { headers: { origin: stack.baseUrl }, data: { title, markdown } });
   expect(response.status(), 'declared setup: the note is imported').toBe(201);
   const { doc } = (await response.json()) as { doc: { id: string } };
@@ -102,4 +102,35 @@ test('export: Save as Markdown downloads the export, clean, with content extensi
   expect(text, 'wiki links stay content').toContain('[[Launch Plan]]');
   expect(text, 'the title is the file name, never a body line').not.toMatch(/^# Quarterly/m);
   expect(text, 'the export holds what was typed').toContain(typed.trim());
+});
+
+test('export: Save as Markdown waits for unsynced edits and refuses rather than download a stale file @p:note-3 @p:R4', async ({ actors, stack }) => {
+  actors.solo(SOLO);
+  const { actor, docId } = await openImported(actors, stack, 'Held edits', 'Synced before the hold.', true);
+  const sever = actor.sever;
+  if (!sever) throw new Error('the window is not severable');
+  const downloads: string[] = [];
+  actor.page.on('download', (file) => downloads.push(file.suggestedFilename()));
+
+  // Doc frames are held while HTTP still works: the server has not seen the typed text.
+  sever.blackhole();
+  const typed = ' Typed while the socket is held.';
+  await ui.typeBody(actor, docId, typed);
+  await expect(ui.pane(actor, docId), 'the edit is unacked').toHaveAttribute(SYNC_UNACKED_ATTR, '1');
+  await moreAction(actor, docId, 'Save as Markdown');
+  await expect(actor.page.getByText(/haven’t synced yet/), 'the save is refused loudly').toBeVisible({ timeout: BIND_TIMEOUT });
+  await expect(actor.page.getByText('Saved Markdown', { exact: true }), 'and never reported as saved').toHaveCount(0);
+  expect(downloads, 'no stale file is downloaded').toEqual([]);
+
+  // A save started while held completes once the socket reconnects and the DocDO acks the edit.
+  // The hold may also trip the 12 s heartbeat, so up to two reconnects.
+  actor.expectReconnects(2, docId);
+  const download = actor.page.waitForEvent('download', { timeout: BIND_TIMEOUT });
+  await moreAction(actor, docId, 'Save as Markdown');
+  sever.reset(1012);
+  sever.restore();
+  const file = await download;
+  const text = readFileSync(await file.path()).toString('utf8');
+  expect(text, 'the export holds what was typed during the hold').toContain(typed.trim());
+  await expect(ui.pane(actor, docId)).toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout: BIND_TIMEOUT });
 });
