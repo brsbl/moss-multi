@@ -78,7 +78,9 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
 | R10 | Transient failures degrade in place | j07 degraded leg; j03 retrying leg | 0, 1 |
 | R11 | Per-viewer layout stays local | T1.6 layout legs | 1 |
 | R15 | Staging only, personal account, permanent names | T1.10; T8.2 | 1, 8 |
-| R16 | A comment never jumps to other text; retyping the same text does not reattach it | T4.0 never-jump and undo scenes; T4.2 | 4 |
+| R16 | Rejecting or withdrawing a suggestion keeps other people's words | T5.0 reject and withdraw legs; T5.3 | 5 |
+| R17 | A pending suggestion lives beside the body until an editor accepts it | T5.0 spike legs; j16 | 5 |
+| R18 | A comment never jumps to other text; retyping the same text does not reattach it | T4.0 never-jump and undo scenes; T4.2 | 4 |
 
 ---
 
@@ -397,25 +399,106 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
 **A person can newly** switch to Suggest in the floating toolbar, or be shared as a suggester and locked to it; propose inserts and deletes that others see painted; and have an editor accept or reject them. A violating edit is refused visibly and never lands.
 
 - **T5.0 Design review** `[—·codex]`
-  - **Scope:** `docs/design/suggestions.md`: inserts anywhere accepted and registered (A§13); structural ops (checkbox, table row, list indent) as suggestion parts (SP11); mirror vetting rules, records, paint, accept and reject; the review UI's placement from the glyphdown SuggestionsPanel reference.
-  - **Done:** merged, with every finding dispositioned.
-- **T5.1 Suggest-mode UI** `[A·codex]`
-  - **Scope:** the toolbar toggle and the role-locked chip; suggester in the share role menu; the baseline taken after first sync; deletes recorded as delete parts.
-  - **Tests first:** journey **j16-suggest**: a solo owner with nothing selected toggles Suggest in the docked toolbar; a principal shared as suggester through the dialog opens locked to the "Suggesting" chip; on a cold load, a suggester's first delete leaves the text in the server export and paints a strike. **Done:** green.
-- **T5.2 Server vetting and loud refusal** `[B·codex]`
-  - **Scope:** vetting on a mirror; write-refused followed by 4409; the client hard-resyncs.
-  - **Security brief (commit reviews of the T5.0 spike `packages/sync/src/suggest/vet.ts`, 2026-10-04):** treat the spike as untrusted evidence, not as code to wire in. Seven reviews found authorization bypasses: forged tombstones and GC, same-value writes, embed maps restyling neighbours, recursive container deletes, and decorator `__regId` and register ownership. They also found a denial of service in the per-frame vetting cost, and a parser differential. Required:
-    - judge exactly what Yjs applies (apply to the mirror and inspect the transaction), never a separate decode of the frame;
-    - use one invariant: the original projection of every touched type is unchanged, except for the suggester's own new items and deletions of their own pending items. The projection includes characters, embeds, map values, effective formats, and every register reachable from an original decorator;
-    - a new decorator may name only a register its author created in the same pending suggestion, and an original register's entry may never be replaced, deleted or re-pointed;
-    - bound vetting cost per frame (cap types and structs touched; refuse above the cap) and test a large forged frame;
-    - run adversarial tests: every forged-frame case from the T5.0 review tables, plus a randomized struct-level fuzz over real peer frames (retarget origins, swap content kinds, add deletes, re-point `__regId`). Assert that an accepted frame never changes the original projection.
-  - **Tests first:** colliding-prefix typing ("the " before "the …", a duplicated word, a sentence pasted before itself) and an insert outside any existing suggestion are never refused; a forged raw frame deleting original text never lands, and the refusal is visible in the band. **Done:** green.
+  - **Scope:** `docs/design/suggestions.md`, built on the records model:
+    - suggesters never write the body;
+    - a suggestion is a record of the exact Yjs ops from the author's fork, plus id-precise delete parts;
+    - accept is an editor action gated by G0–G8 and bound to a projection-diff hash;
+    - reject and withdraw change only the record.
+    - A spike proves the role gate, accept equivalence, reject leaving the body byte-identical, the gates, the outdated rule, projectionDiff and O(frame) ingest cost.
+  - **Done:** merged, with every review-history and panel finding dispositioned, and the ARCHITECTURE A§5.1/A§13, DEVIATIONS and PRODUCT ruling 17 diffs included.
+- **T5.1 Suggest-mode client: fork, modes, routing, paint** `[A·codex]`
+  - **Scope:**
+    - the toolbar toggle and the role-locked "Suggesting" chip;
+    - suggester in the share role menu;
+    - the fork shim: F = B plus the author's valid open records, with clientID set to the active lease. It forwards every transaction whose origin is not `shim-body-apply` or `shim-record-apply`, so REGISTER_INIT, REGISTER_LOCAL_ORIGIN and the UndoManager are included;
+    - the baseline taken after first sync;
+    - the composite C and Review mode;
+    - Edit-mode wedge, gutter, strike, attribute-dot and hover-preview paint;
+    - explicit deletes over body items (Backspace, Delete, word or line delete, Cut, typing over a selection) recorded as id-precise delete parts, with the caret moving past struck text;
+    - grouping (30 s idle or one paragraph away), `suggest-merge`, and offline continuation of the active record;
+    - dropping UndoManager items when a record closes;
+    - mode switches waiting for `data-sync-unacked=0`, with caret restore;
+    - the refusal copy-back: close input in the same tick, export the unacked blocks, rebuild F, show "Copy what wasn't saved" until dismissed;
+    - title and Properties read-only;
+    - background writers off.
+  - **Tests first:**
+    - journey **j16-suggest**:
+      - a solo owner with nothing selected toggles Suggest in the docked toolbar;
+      - a principal shared as suggester through the dialog opens locked to the chip;
+      - on a cold load, a suggester's first delete leaves the text in the server export and paints a strike;
+    - zero ops emitted when F binds, before the first input;
+    - every census operation through the real UI with zero refusals: colliding prefixes, Enter before a link, line break or inline formula, Enter in an indented paragraph or quote, lists, tables, checkbox, new code, HTML, formula, chart and sketch blocks, an edit of an original register, undo of a split, join;
+    - a record that fails the bind check is marked broken and excluded from C, and Review falls back to B if binding C throws;
+    - a record-closed race offers back every unacked block, and typing after the remount lands.
+  - **Done:** green.
+- **T5.2 Server: role floor, record ingest, leases, loud refusal** `[B·codex]`
+  - **Scope:**
+    - A§5.1 step 2 floor raised to editor, so a doc-changing frame from role suggester gets write-refused('role') and 4403 before apply;
+    - editor and owner body frames naming a leased client id refused `protected-type`;
+    - the `suggest_leases` table, and the `suggest-lease`, `suggest-ops`, `suggest-delete`, `suggest-merge` and `suggest-withdraw` handlers;
+    - continuation records for frames aimed at an accepted record, and `record-closed` for rejected or withdrawn ones;
+    - caps: ops ≤ 256 KB per record, at most 20 open records per principal, all open ops ≤ 25% of STATE_CAP, the projected stateBytes cap, and 300 writes per 5 s;
+    - a registry-name check on `__type` values at ingest;
+    - a refusal rate limit of 3 per principal per minute, then a 60 s 4429 cooldown;
+    - acks driving `data-sync-unacked`.
+  - **Security brief** (commit reviews of the old T5.0 spike `vet.ts`, 2026-10-04, carried in full). Seven reviews found authorization bypasses: forged tombstones and GC, same-value writes, embed maps restyling neighbours, recursive container deletes, and decorator `__regId` and register ownership. They also found a per-frame vetting DoS and a parser differential. Required:
+    - **Authorization never decodes a frame.** Suggester body writes are refused by role, and `parseUpdateMeta` is bookkeeping only.
+    - **Every forged-frame case from the T5.0 review tables is refused.** Each is sent as a suggester body frame, refused by role, and the body bytes are asserted unchanged.
+    - **Per-frame DO cost is O(frame bytes) for body frames, `suggest-ops` and `suggest-delete`.** Test a maximum-size forged frame, and show the cost is independent of doc size (small doc against 1.69 MB).
+    - **Nothing a suggester sends can be applied to the body except through T5.3's accept.**
+    - **Carried from the previous brief (2026-10-04), each now closed by construction or owned here:** "judge exactly what Yjs applies, never a separate decode" is moot for frames by I1 (a suggester's body frame is refused by role before apply; authorization never decodes) and holds at accept, where G1–G5 judge the applied mirror transaction (T5.3); "one invariant: the original projection is unchanged" is moot by I1 and I3 (nothing a suggester sends reaches the body except through the hash-bound accept); "a new decorator names only its own register; an original register entry is never replaced, deleted or re-pointed" is G4 (T5.3); "bound vetting cost per frame" is I5 (no per-frame vetting; O(frame) ingest, tested here); "every forged-frame case, plus a randomized struct-level fuzz" is the role-refusal table here and the T5.4 fuzz.
+  - **Tests first:**
+    - colliding-prefix typing ("the " before "the …", a duplicated word, a sentence pasted before itself) and an insert outside any existing suggestion are never refused;
+    - a forged raw frame from a suggester deleting original text never lands, and the refusal is visible in the band;
+    - leases are exclusive and never in the body state vector;
+    - a delete-only frame after accept opens a continuation record;
+    - `all_roles_cannot_write_suggestions_via_sync`: step 2, update, and nested writes and deletes under `suggestions` from suggester, editor and owner are all refused with the map unchanged; editor and owner body writes land as positive controls (I2; T4.1 SP7 is not yet on m4);
+    - `accepted_record_continuation_preserves_occupied_id`: with two principals, another principal's open record holds the continuation id; a delete-only frame and an ops frame aimed at the accepted record both leave that record's author, status, ops and parts unchanged, and long ids that share a 48-character prefix never collide;
+    - `accepted_suggestion_text_is_valid_body_delete_target`: after an editor accepts Alice's insert, another principal's suggest-delete over those characters is accepted as a part, while targets still under a pending lease stay refused `target`;
+    - `fixed_frame_ingest_cost_independent_of_closed_record_count_and_continuation_depth`: one fixed `suggest-ops` frame costs the same with 5 and with thousands of closed records, and at continuation depth 1 and at the maximum.
+  - **Done:** green.
 - **T5.3 Review, accept, reject, withdraw, notify** `[B·codex]`
-  - **Scope:** glyphdown's SuggestionsPanel rebuilt in the moss DS inside moss chrome, with accept and reject reachable from the painted suggestion (moss's ActionsPanel stays the inert agent panel); range transactions in the DO; the 0.8 drift guard; notifications for live suggestions.
-  - **Tests first:** an editor's accept and reject converge on both sides; withdraw removes the inserted text; the peer's review UI lists the suggestion. **Done:** green, with a triptych against the glyphdown panel.
+  - **Scope:**
+    - glyphdown's SuggestionsPanel rebuilt in the moss DS inside moss chrome, with accept and reject reachable from painted suggestions (moss's ActionsPanel stays the inert agent panel);
+    - `packages/core/suggest/apply.ts`, shared by client and server: projectionDiff serializes each top-level block recursively, keyed by Y item id, plus full register contents; the hunk list and previewHash;
+    - accept through `serverWrite` in one synchronous DO turn, with these gates (any failure answers 409 and applies nothing):
+      - G0: the record is open and its ops are the ones previewed;
+      - G1: no pending structs or deletes;
+      - G2: advanced clients ⊆ the record's leases;
+      - G3: changed types only under `root` and `registers`;
+      - G4: register aliasing (a fresh decorator names only a key this record created; an existing registers entry is never replaced or re-pointed, and deleted only with every decorator naming it);
+      - G5: outdated (removed body items live, no foreign item inside a removed run, every inserted struct integrates live);
+      - G6: the previewHash matches;
+      - G7: the headless bind succeeds;
+      - G8: the state cap holds;
+    - accept marks the record's leases spent in the same turn, so accepted text is ordinary body text (design §4.3);
+    - reject and withdraw as status-only transactions that never write the body (PRODUCT ruling 16);
+    - outdated and broken badges with "Copy suggested text", and auto-reject when the preview is empty;
+    - accept rate-limited per principal;
+    - the default export is the clean body, with `?view=working` for the composite;
+    - notifications for live suggestions.
+  - **Tests first:**
+    - an editor's accept and reject converge on both sides;
+    - withdraw removes the inserted text from every view while the body stays byte-identical;
+    - the peer's review UI lists the suggestion;
+    - accept-equivalence: for every census operation, accept equals an editor's direct edit (markdown and registers);
+    - each gate refused with nothing applied;
+    - outdated cases: an editor types inside a bolded run, deletes a delete target, or deletes the parent paragraph and it is GC'd; and two conflicting records;
+    - a text-only, an attribute-only and a register-only record each produce a hunk;
+    - a stale hash gets 409;
+    - `preview_hash_covers_root_attributes`: a root-only record (`__format`, `__direction` on `root`) and a mixed text-plus-root record each change the previewHash from the empty-diff value, and a stale hash over them gets 409;
+    - `g7_refuses_candidate_repaired_during_hydration`: a fresh decorator in legacy shape (a code block with `__code` and no `__regId`) gets 409 `broken` with the body unchanged, because G7's baseline is taken before hydration repairs anything;
+    - `g5_split_parts_around_foreign_insert_keep_foreign_text_and_preview_shows_it`: two single-character delete parts on adjacent a and b, then an editor inserts X between them; accept removes only a and b, X stays, and the preview shows exactly that (G5(b) is per step, design §4.2).
+  - **Done:** green, with a triptych against the glyphdown panel.
+- **T5.4 Adversarial suite and composite robustness** `[B·codex]`
+  - **Scope:**
+    - a randomized struct-level fuzz over records built from real peer frames: retarget origins, swap content kinds, add deletes, re-point `__regId`, write non-body roots, use non-leased clients, open gaps, GC parents. It asserts that accept either refuses with nothing applied, or lands exactly the hashed preview, touching only `root` and `registers` and only leased clients;
+    - the same fuzz applied to clients' F and C builds, asserting no throw escapes and broken records are excluded;
+    - a generative honest-edit fuzz through real moss editors in suggest mode (random typing, Enter, soft breaks, formatting, undo, lists, tables, decorators next to links, line breaks and inline formulas), asserting zero ingest refusals, zero broken records and accept-equivalence;
+    - cost regression tests for ingest and the body-frame lease check at the frame cap, including `fixed_frame_ingest_cost_independent_of_closed_record_count_and_continuation_depth` at fuzz scale.
+  - **Done:** green in CI.
 
-**Exit criteria:** colliding-prefix typing is never refused; a suggester's first delete never removes text on the server; violating edits never land and the client shows the refusal; the demo note shows live pending suggestions.
+**Exit criteria:** colliding-prefix typing is never refused; a suggester's first delete never removes text on the server; a suggester's body frame never lands and the client shows the refusal; reject and withdraw never change the body; accept lands exactly the previewed diff or nothing; the demo note shows live pending suggestions (Review mode inline, Edit mode markers).
 
 ## M6 History
 

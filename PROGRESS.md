@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 44% done** (32 of 73 planned tasks verified)
+**Overall: 42% done** (33 of 79 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -9,7 +9,7 @@
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 3 / 9 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 2 / 9 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
-| M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
+| M5 Suggestions | Suggest mode, vetting, accept/reject | 1 / 5 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
@@ -50,6 +50,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-04 — T2.2 verified: anyone can create, rename and move folders and move notes between them from the web sidebar, editors included in a shared vault; deleting a folder sends its whole subtree to trash as one batch, and a peer with a note open inside it goes terminal in place.
 - 2026-10-04 — T3.5 verified: a vault owner can create a vault inline from the switcher, rename it and move it to trash behind a confirmation; a person granted the vault root sees it with a role badge, and a member is offered no vault actions.
 - 2026-10-04 — T3.4 verified: a person can search the body text of every note they can access and see snippets, never a note they cannot; a note shows its backlinks, and wiki links resolve by title or filename or show an honest unresolved state.
+- 2026-10-04 — T5.0 verified: the suggestions design exists on the records model: a suggester never writes the note body, a suggestion is a record of exact ops from their fork, accept is an editor action behind gates G0–G8, and reject or withdraw leave the body byte-identical; a spike proves each on CI.
 
 ## T1.1s identity audit
 

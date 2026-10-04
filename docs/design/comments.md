@@ -203,7 +203,7 @@ Never per frame: a whole-doc projection, an LCS, a store scan, a container scan,
 - The client then sends step 2, which arrives inert.
 - Replay is paced to at most 40 frames per second, below the 300-per-5-s rate limit.
 
-The discipline matters only for honest users and ruling 16. Safety (I1–I8) never depends on it: a client that ignores it can at most keep a comment on identical text in the identical place.
+The discipline matters only for honest users and ruling 18. Safety (I1–I8) never depends on it: a client that ignores it can at most keep a comment on identical text in the identical place.
 
 **Paint.** The client resolves positions with `followUndoneDeletions = false` and paints with CSS Custom Highlights (SP10, §11). It runs the same pure §5.2 engine read-only on every applied transaction as an overlay until the server's `a:` record arrives, so a bold never blinks the highlight. Orphans show `quote` in the thread list, marked as detached.
 
@@ -246,7 +246,7 @@ Every finding in `.panel/T4.0-review-history.md` (six rounds and two commit secu
 | R5 P1 | Batched in-range edit plus deletion, then undo, never reattached | Discipline plus `pre` over the members (the typed X is preLive in the deleting frame). Test: "offline: type inside it, delete all of it, undo" reattaches as `brXown` |
 | R5 P2 | A split elsewhere plus delete-and-retype in one frame re-mints | Separate frames under the discipline; a forged frame is P2 #3 |
 | R5 P2 | The restore candidate search does not backtrack | Not applicable: there is no candidate search |
-| R5 P2 | A stale peer typing the exact deleted text there reattaches | P2 #1, and the ruling 16 clarification |
+| R5 P2 | A stale peer typing the exact deleted text there reattaches | P2 #1, and the ruling 18 clarification |
 | R6 P1 | A fully held struct with a missing dependency parks and the classifier admits it | I2: purge after every applied frame. Test: "a fully held struct with a forged missing origin parks the tail and is purged" |
 | R6 P1 | Delete, undo, redo, undo in one frame stays orphaned | Gap map over the frame's live copies. Test: "delete, undo, redo, undo: frame by frame, and as one frame" |
 | R6 P2 | The cost note understated per-frame work | §5.6, counted. T4.2 records the workerd CPU budget |
@@ -339,7 +339,7 @@ A per-pane observer projects `Y.Map('comments')` into moss's `noteCommentsMapAto
 1. Cmd+Z does not undo creating a comment; Delete in its popover removes it. PRODUCT says programmatic writes create no undo step.
 2. Commenters cannot attach images to comments, because PRODUCT reserves uploads to editors.
 3. Readers without a grant see other commenters as "Collaborator".
-4. A deleted comment is orphaned and comes back only onto identical text in the identical place, as clarified in PRODUCT restart ruling 16 (2026-10-04).
+4. A deleted comment is orphaned and comes back only onto identical text in the identical place, as clarified in PRODUCT restart ruling 18 (2026-10-04).
 
 ---
 
@@ -350,7 +350,7 @@ A per-pane observer projects `Y.Map('comments')` into moss's `noteCommentsMapAto
 **How it works.**
 1. **Only the server writes comments, under its own reserved signature.** Every comment write carries a writer id that only the server uses. A browser's edit is refused, loudly, if it carries that id, points at it, aims at the comments directly, or deletes a comment. Reviewers spent six rounds finding ways around the old "predict what this edit will do" check; this rule doesn't predict anything, so there is nothing to outguess. A malformed edit that the database would hold back and apply later is dropped instead, and the note is never saved with one inside.
 2. **A comment stays on its own characters.** Bolding, Enter, line breaks, joining paragraphs and markdown shortcuts keep it on exactly the text you commented on; the server checks, in the same step, that the re-written text reads the same and sits between the same untouched neighbours.
-3. **Deleting the text detaches the comment; undo brings it back.** The comment stays in the thread list marked as detached. It reattaches only when the restored text reappears in exactly the spot it was deleted from and reads exactly the same, which is what undo and redo do, online or offline. Typing the same words again lands just after that spot, so it does not reattach. Two rare cases look identical to an undo and are written into PRODUCT ruling 16 as a clarification: a collaborator who hadn't seen the deletion typing inside it, and a paragraph deleted after its text and then restored.
+3. **Deleting the text detaches the comment; undo brings it back.** The comment stays in the thread list marked as detached. It reattaches only when the restored text reappears in exactly the spot it was deleted from and reads exactly the same, which is what undo and redo do, online or offline. Typing the same words again lands just after that spot, so it does not reattach. Two rare cases look identical to an undo and are written into PRODUCT ruling 18 as a clarification: a collaborator who hadn't seen the deletion typing inside it, and a paragraph deleted after its text and then restored.
 4. **It stays fast with many comments.** The server only looks at comments whose first or last character an edit actually deletes, capped at 32 per character, so a keystroke in a note with 2,000 comments does no comment work at all. The tests count this.
 5. **Highlights are painted on top of the page, never into it**, proven in Chrome's and Safari's engines.
 

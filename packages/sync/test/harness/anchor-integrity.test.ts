@@ -23,7 +23,7 @@ function idsOf(s: Scene, quote: string, nth = 0): { before: Y.ID; first: Y.ID; l
   return { before: id(at - 1), first: id(at), last: id(at + quote.length - 1) };
 }
 
-describe('T4.0 never-jump: a comment stays orphaned or on its own text @p:tech-3 @p:R16', () => {
+describe('T4.0 never-jump: a comment stays orphaned or on its own text @p:tech-3 @p:R18', () => {
   it('two identical lines: deleting the commented one never moves the comment to the other', () => scene((s) => {
     const a = s.peer();
     s.comment('c1', 'TODO: fix this', 1);

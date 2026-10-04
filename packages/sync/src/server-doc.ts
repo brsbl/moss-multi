@@ -1,7 +1,7 @@
 // The DocDO's headless side (A§5.1, A§12): moss's converter editor bound (V1) to a mirror Y.Doc, serverWrite for
 // every server-side content write, the seed, and markdown export. Typechecks reach the vendored converter modules
 // through src/moss-modules.d.ts.
-import { createBinding, syncLexicalUpdateToYjs, syncYjsChangesToLexical, type Provider } from '@lexical/yjs';
+import { createBinding, syncLexicalUpdateToYjs, syncYjsChangesToLexical, type Binding, type Provider } from '@lexical/yjs';
 import { registerList } from '@lexical/list';
 import { $normalizeFormatWhitespace } from '@moss-desktop/renderer/editor/markdown/format-whitespace';
 import { $createParagraphNode, $getRoot, TextNode, type LexicalEditor } from 'lexical';
@@ -27,14 +27,15 @@ const provider = {
   off: noop,
 } as unknown as Provider;
 
-interface Mirror {
+export interface Mirror {
   doc: Y.Doc;
   editor: LexicalEditor;
+  binding: Binding;
   dispose: () => void;
 }
 
 /** A headless editor bound to a fresh Y.Doc that holds `live`'s state, with the hydration committed. */
-function mirrorOf(live: Y.Doc): Mirror {
+export function mirrorOf(live: Y.Doc): Mirror {
   const doc = new Y.Doc();
   const editor = createConverterEditor();
   // Moss's live editor runs these transforms on imports before its binding writes them.
@@ -58,6 +59,7 @@ function mirrorOf(live: Y.Doc): Mirror {
   return {
     doc,
     editor,
+    binding,
     dispose: () => {
       stopRegisters();
       stopUpdates();

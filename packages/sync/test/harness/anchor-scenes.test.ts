@@ -94,7 +94,7 @@ describe('T4.0 supported liveness: a comment keeps its exact characters @p:tech-
   }));
 });
 
-describe('T4.0 supported liveness: orphan on deletion, reattach on undo and redo @p:tech-3 @p:R16', () => {
+describe('T4.0 supported liveness: orphan on deletion, reattach on undo and redo @p:tech-3 @p:R18', () => {
   it('delete then undo, in separate frames', () => scene((s) => {
     const a = s.peer();
     s.comment('c1', 'brown fox');

@@ -10,7 +10,8 @@
     "./text-diff": "./src/text-diff.ts",
     "./anchor-frame": "./src/anchor-frame.ts",
     "./group-pending": "./src/group-pending.ts",
-    "./tree-anchor": "./src/tree-anchor.ts"
+    "./tree-anchor": "./src/tree-anchor.ts",
+    "./suggest/apply": "./src/suggest/apply.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json"
