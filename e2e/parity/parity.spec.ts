@@ -75,7 +75,7 @@ async function capture(page: Page, target: Target): Promise<Buffer> {
     window.getSelection()?.removeAllRanges();
   });
   if (target.focusEditor) {
-    const body = page.locator(`${CROP} [data-lexical-editor="true"]`);
+    const body = page.locator(`${CROP} [data-lexical-editor="true"][contenteditable="true"]`);
     await body.focus();
     await expect(body).toBeFocused();
   }
