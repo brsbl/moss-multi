@@ -12,7 +12,7 @@ export interface IdSpan {
   len: number;
 }
 
-export type VetReason = 'delete-original' | 'mutate-original' | 'outside-body' | 'unresolvable';
+export type VetReason = 'delete-original' | 'mutate-original' | 'outside-body' | 'unresolvable' | 'foreign-client';
 /** `inserts` are the author's new content; `moved` are copies of original text a split moved, still original. */
 export type Verdict = { ok: true; inserts: IdSpan[]; moved: IdSpan[] } | { ok: false; reason: VetReason };
 
@@ -43,7 +43,14 @@ const isLive = (item: Y.Item | undefined): boolean => item !== undefined && !ite
  * `own` are the author's open insert parts; `moved` are original text a split of theirs moved (never theirs to delete).
  * Both come from the author's open suggestion records.
  */
-export function vetSuggestFrame(doc: Y.Doc, update: Uint8Array, own: readonly IdSpan[], moved: readonly IdSpan[] = []): Verdict {
+export interface VetOptions {
+  own: readonly IdSpan[];
+  moved?: readonly IdSpan[];
+  clients: ReadonlySet<number>;
+}
+
+export function vetSuggestFrame(doc: Y.Doc, update: Uint8Array, options: VetOptions): Verdict {
+  const { own, moved = [] } = options;
   try {
     return { ok: true, ...vet(doc, update, own, moved) };
   } catch (error) {
@@ -298,4 +305,29 @@ function register(spans: IdSpan[], client: number, clock: number): void {
   const last = spans[spans.length - 1];
   if (last && last.client === client && last.clock + last.len === clock) last.len += 1;
   else spans.push({ client, clock, len: 1 });
+}
+
+/** Red-run stub: vets the transaction's update against the doc after it applied. */
+export function vetTransaction(transaction: Y.Transaction, options: VetOptions): Verdict {
+  return vetSuggestFrame(transaction.doc, Y.encodeStateAsUpdate(transaction.doc, Y.encodeStateVector(transaction.beforeState)), options);
+}
+
+/** Red-run stub. */
+export function carryIdentity(_doc: Y.Doc, _update: Uint8Array, spans: readonly IdSpan[]): IdSpan[] {
+  return [...spans];
+}
+
+export const SEEN_GRACE_SECONDS = 30;
+export interface OwnedRecord {
+  author: string;
+  status: 'open' | 'accepted' | 'rejected' | 'withdrawn';
+  resolvedRev?: number;
+  resolvedAt?: number;
+  inserts: IdSpan[];
+  moved: IdSpan[];
+}
+/** Red-run stub: open records only. */
+export function ownSpans(records: readonly OwnedRecord[], author: string, _basis: { seenRev: number; now: number }): { own: IdSpan[]; moved: IdSpan[] } {
+  const mine = records.filter((r) => r.author === author && r.status === 'open');
+  return { own: mine.flatMap((r) => r.inserts), moved: mine.flatMap((r) => r.moved) };
 }
