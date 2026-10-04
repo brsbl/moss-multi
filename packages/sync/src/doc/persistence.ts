@@ -47,27 +47,6 @@ export class DocStore {
     this.sql.exec(
       'CREATE TABLE IF NOT EXISTS revocations (kind TEXT NOT NULL, id TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (kind, id))',
     );
-    this.sql.exec('CREATE TABLE IF NOT EXISTS media (filename TEXT PRIMARY KEY)');
-  }
-
-  /** The folder files an upload, copy or carry placed in the doc (A§16), by stored name. */
-  media(): string[] {
-    return this.sql.exec<{ filename: string }>('SELECT filename FROM media').toArray().map((row) => row.filename);
-  }
-
-  hasMedia(filename: string): boolean {
-    return this.sql.exec('SELECT 1 FROM media WHERE filename = ?', filename).toArray().length > 0;
-  }
-
-  addMedia(filenames: Iterable<string>): void {
-    for (const filename of filenames) this.sql.exec('INSERT OR IGNORE INTO media (filename) VALUES (?)', filename);
-  }
-
-  replaceMedia(filenames: Iterable<string>): void {
-    this.storage.transactionSync(() => {
-      this.sql.exec('DELETE FROM media');
-      this.addMedia(filenames);
-    });
   }
 
   /** Applies the state chunks in idx order, then every update row in seq order, under PERSISTENCE. */

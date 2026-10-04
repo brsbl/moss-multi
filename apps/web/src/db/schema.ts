@@ -286,6 +286,26 @@ export const assetVersions = sqliteTable(
   (t) => [index('asset_versions_asset_idx').on(t.assetId), index('asset_versions_content_hash_idx').on(t.contentHash)],
 );
 
+/**
+ * A doc's media (A§16): each `assets/<filename>` the doc uses, bound to the immutable bytes an upload into it, a copy
+ * from a doc the copier reads, or a duplicate placed there. Reads resolve only through this record, never by filename
+ * in a folder; a move keeps it as it is.
+ */
+export const docMedia = sqliteTable(
+  'doc_media',
+  {
+    docId: text('doc_id').notNull().references(() => docs.id, { onDelete: 'cascade' }),
+    filename: text('filename').notNull(),
+    versionId: text('version_id').references(() => assetVersions.id, { onDelete: 'set null' }),
+    contentHash: text('content_hash').notNull().references(() => contentObjects.hash),
+    contentType: text('content_type').notNull(),
+    size: integer('size').notNull(),
+    createdBy: text('created_by').notNull(),
+    createdAt: integer('created_at').notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.docId, t.filename] })],
+);
+
 export const userPrefs = sqliteTable('user_prefs', {
   userId: text('user_id').primaryKey().references(() => user.id, { onDelete: 'cascade' }),
   defaultVaultId: text('default_vault_id').references(() => folders.id, { onDelete: 'set null' }),

@@ -107,7 +107,7 @@ export const INVENTORY: Record<string, InventoryEntry> = {
   'images.pick': real('<input type=file multiple>, then each file uploads as save does'),
   'images.persistUrl': staged(3, 'SSRF-safe fetch-and-store (T3.2); refused loudly until then'),
   'images.copyFromPath': stub('rejects: browsers have no file paths'),
-  'images.copyFromNoteAsset': real("POST /api/docs/:id/assets/copy: the source's file, named in the target's folder"),
+  'images.copyFromNoteAsset': real("POST /api/docs/:id/assets/copy: the bytes the source's media record names, bound in the target's"),
   'htmlPreview.ensure': staged(3, 'null; the preview decision renders the live sandboxed iframe (T3.2)'),
   'htmlPreview.onMaterialized': stub('silent'),
   'htmlPreview.onFailed': stub('silent'),

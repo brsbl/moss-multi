@@ -1,31 +1,28 @@
-// Assets (A§16): moss's media set, folder-scoped, with the bytes content-addressed in R2 (`asset-blobs/sha256/<hash>`)
-// behind `content_objects` refcounts and `asset_versions`.
-//   POST /api/docs/:id/assets?filename=     raw body into the doc's folder; editor and above on the doc
-//   POST /api/folders/:id/assets?filename=  raw body into the folder; editor and above on the folder
+// Assets (A§16): moss's media set, with the bytes content-addressed in R2 (`asset-blobs/sha256/<hash>`) behind
+// `content_objects` refcounts and `asset_versions`.
+//   POST /api/docs/:id/assets?filename=     raw body into the doc; editor and above on the doc
 //   POST /api/docs/:id/assets/copy          {sourceNoteId, sourceRelativePath}: moss's cross-note paste
-//   GET|HEAD /api/docs/:id/assets/:file     any reader of the doc, a share link included, for a file placed in the doc
-// Markdown keeps moss's `assets/<file>`, resolved in the doc's folder, so a note's media follows it into any copy in
-// that folder; a copy made, or a note moved, elsewhere carries what it references (carryAssets). Sharing is per doc,
-// so a reader of the folder reads any file in it, and a reader of one doc only the files an upload, copy or carry
-// placed in it (the DocDO keeps that record): the text names files too, but any editor of the doc writes the text.
-import { and, eq, inArray } from 'drizzle-orm';
-import { getServerByName } from 'partyserver';
+//   GET|HEAD /api/docs/:id/assets/:file     any reader of the doc, a share link included
+// A doc's media are its own record (`doc_media`): each `assets/<file>` it uses, bound to the exact bytes an upload into
+// it, a copy from a doc the copier reads, or a duplicate placed there. A read resolves only through that record, never
+// by filename in the doc's folder, so writing a name into the note reaches nothing, and a move changes nothing. An
+// upload also names its version in the folder's `assets/` namespace, collision-safe, for export and sync.
+import { and, eq } from 'drizzle-orm';
 import { MEDIA_CAP_BYTES, isDesktopDerived, mediaFilename, mediaTypeOf, suffixedFilename, ASSET_DIR } from '@moss-multi/protocol/media';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
 import type { AuthEnv } from '../auth/auth.ts';
-import { resolvePrincipal, shareTokenOf, type Principal } from '../auth/principal.ts';
+import { resolvePrincipal, shareTokenOf } from '../auth/principal.ts';
 import { createDb, type Db } from '../db/client.ts';
-import { assets, assetVersions } from '../db/schema.ts';
+import { assets, assetVersions, docMedia } from '../db/schema.ts';
 import type { AppEnv } from '../env.ts';
 import { json } from '../worker/route.ts';
-import { resolveDocAccess, resolveFolderAccess } from './access.ts';
+import { resolveDocAccess } from './access.ts';
 import { NO_STORE, notFound, readJsonObject } from './respond.ts';
 
 export type AssetsEnv = AuthEnv & Pick<AppEnv, 'ASSETS' | 'DocDO'>;
 
-export const ASSET_ROUTE = /^\/api\/(?:docs|folders)\/[^/]+\/assets(?:\/.*)?$/;
-const DOC_UPLOAD = /^\/api\/docs\/([^/]+)\/assets$/;
-const FOLDER_UPLOAD = /^\/api\/folders\/([^/]+)\/assets$/;
+export const ASSET_ROUTE = /^\/api\/docs\/[^/]+\/assets(?:\/.*)?$/;
+const UPLOAD = /^\/api\/docs\/([^/]+)\/assets$/;
 const COPY = /^\/api\/docs\/([^/]+)\/assets\/copy$/;
 const FILE = /^\/api\/docs\/([^/]+)\/assets\/([^/]+)$/;
 
@@ -35,11 +32,13 @@ const VERSION_CACHE = 'private, max-age=31536000, immutable';
 const NAME_ATTEMPTS = 50;
 
 const blobKey = (hash: string) => `asset-blobs/sha256/${hash}`;
+const etagOf = (hash: string) => `"${hash}"`;
 const refuse = (status: number, error: string, message: string) => json({ error, message }, status, NO_STORE);
 const tooLarge = (kind: 'image' | 'video') =>
   refuse(413, 'too-large', `${kind === 'image' ? 'Images' : 'Videos'} can be at most ${MEDIA_CAP_BYTES[kind] / (1024 * 1024)} MB.`);
 const unsupported = () =>
   refuse(415, 'unsupported-media', 'Only images (png, jpg, gif, webp, svg) and video (mp4, webm, mov) can be uploaded.');
+const nameTaken = () => refuse(409, 'name-taken', 'Too many files share that name here. Rename the file and try again.');
 
 async function sha256Hex(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', bytes);
@@ -49,13 +48,26 @@ async function sha256Hex(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
 /** The filename a `?filename=` or `assets/<file>` path names, decoded and folded to a stored name. */
 const storedName = (raw: string): string | null => mediaFilename(raw.replace(/^\.?\/?(?:assets\/)?/, ''));
 
-interface Current { id: string; filename: string; contentHash: string; versionId: string; createdBy: string }
+/** Immutable bytes: what a doc's record binds a path to. */
+interface Bytes { contentHash: string; contentType: string; size: number; versionId: string | null }
+type Placed = Bytes & { filename: string; assetId: string | null };
 
-/** The folder's asset under `filename` and its current version's bytes, if any. */
-async function currentAsset(db: Db, folderId: string, filename: string): Promise<(Current & { contentType: string; size: number; etag: string }) | null> {
+/** The bytes `docId`'s record binds `filename` to, if any. */
+async function mediaOf(db: Db, docId: string, filename: string): Promise<Placed | null> {
   const [row] = await db
-    .select({ id: assets.id, filename: assets.filename, contentType: assets.contentType, versionId: assetVersions.id,
-      contentHash: assetVersions.contentHash, size: assetVersions.size, etag: assetVersions.etag, createdBy: assets.createdBy })
+    .select({ filename: docMedia.filename, contentHash: docMedia.contentHash, contentType: docMedia.contentType, size: docMedia.size,
+      versionId: docMedia.versionId, assetId: assetVersions.assetId })
+    .from(docMedia)
+    .leftJoin(assetVersions, eq(assetVersions.id, docMedia.versionId))
+    .where(and(eq(docMedia.docId, docId), eq(docMedia.filename, filename)))
+    .limit(1);
+  return row ?? null;
+}
+
+/** The folder's asset named `filename` and its current version's bytes, if any. */
+async function folderAsset(db: Db, folderId: string, filename: string): Promise<{ id: string; versionId: string; contentHash: string } | null> {
+  const [row] = await db
+    .select({ id: assets.id, versionId: assetVersions.id, contentHash: assetVersions.contentHash })
     .from(assets)
     .innerJoin(assetVersions, eq(assetVersions.id, assets.currentVersionId))
     .where(and(eq(assets.folderId, folderId), eq(assets.filename, filename)))
@@ -63,35 +75,33 @@ async function currentAsset(db: Db, folderId: string, filename: string): Promise
   return row ?? null;
 }
 
-const isUnique = (error: unknown) => /UNIQUE/i.test(`${error} ${(error as { cause?: unknown })?.cause ?? ''}`);
+const isUnique = (error: unknown) => /UNIQUE|PRIMARY KEY/i.test(`${error} ${(error as { cause?: unknown })?.cause ?? ''}`);
+
+const bindStatement = (env: AuthEnv, docId: string, filename: string, bytes: Bytes, createdBy: string) =>
+  env.DB.prepare('INSERT INTO doc_media (doc_id, filename, version_id, content_hash, content_type, size, created_by, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)')
+    .bind(docId, filename, bytes.versionId, bytes.contentHash, bytes.contentType, bytes.size, createdBy, Date.now());
 
 /**
- * Names `hash`'s bytes `filename` in `folderId`: the asset already holding them under that name or a suffixed one, else a
- * new asset at the first free name. One D1 batch per attempt, so a concurrent upload that takes the name retries.
+ * Binds `bytes` in `docId`'s record under `filename`, or the first `-n` name free there: a name already bound to the
+ * same bytes is reused, never rebound. `plan(name)` may refuse a name or add statements to the binding's batch, which
+ * fails as a whole when a concurrent writer took the name; the name is then checked again.
  */
-async function placeAsset(env: AssetsEnv, folderId: string, filename: string, blob: { hash: string; size: number; contentType: string }, createdBy: string) {
+async function bind(env: AuthEnv, docId: string, filename: string, bytes: Bytes, createdBy: string,
+  plan: (name: string) => Promise<{ bytes: Bytes; statements: D1PreparedStatement[] } | 'taken'>): Promise<Placed | null> {
   const db = createDb(env.DB);
-  const type = mediaTypeOf(filename);
-  if (!type) throw new Error(`not media: ${filename}`);
-  for (let attempt = 1; attempt <= NAME_ATTEMPTS; attempt += 1) {
+  let attempt = 1;
+  for (let tries = 0; attempt <= NAME_ATTEMPTS && tries < NAME_ATTEMPTS * 2; tries += 1) {
     const name = attempt === 1 ? filename : suffixedFilename(filename, attempt);
-    const existing = await currentAsset(db, folderId, name);
-    if (existing?.contentHash === blob.hash) return { id: existing.id, filename: name, versionId: existing.versionId, size: blob.size };
-    if (existing) continue;
-    const id = crypto.randomUUID();
-    const versionId = crypto.randomUUID();
-    const now = Date.now();
+    const own = await mediaOf(db, docId, name);
+    if (own?.contentHash === bytes.contentHash) return own;
+    const planned = own ? 'taken' : await plan(name);
+    if (planned === 'taken') {
+      attempt += 1;
+      continue;
+    }
     try {
-      await env.DB.batch([
-        env.DB.prepare('INSERT INTO content_objects (hash, size, refcount) VALUES (?1, ?2, 1) ON CONFLICT(hash) DO UPDATE SET refcount = refcount + 1')
-          .bind(blob.hash, blob.size),
-        env.DB.prepare('INSERT INTO assets (id, folder_id, filename, kind, content_type, size, current_version_id, created_by, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8)')
-          .bind(id, folderId, name, type.kind, blob.contentType, blob.size, createdBy, now),
-        env.DB.prepare('INSERT INTO asset_versions (id, asset_id, content_hash, size, etag, created_by, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)')
-          .bind(versionId, id, blob.hash, blob.size, `"${blob.hash}"`, createdBy, now),
-        env.DB.prepare('UPDATE assets SET current_version_id = ?1 WHERE id = ?2').bind(versionId, id),
-      ]);
-      return { id, filename: name, versionId, size: blob.size };
+      await env.DB.batch([...planned.statements, bindStatement(env, docId, name, planned.bytes, createdBy)]);
+      return (await mediaOf(db, docId, name)) ?? { ...planned.bytes, filename: name, assetId: null };
     } catch (error) {
       if (!isUnique(error)) throw error;
     }
@@ -99,17 +109,12 @@ async function placeAsset(env: AssetsEnv, folderId: string, filename: string, bl
   return null;
 }
 
-const placed = (asset: { id: string; filename: string; versionId: string; size: number }) =>
-  json({ relativePath: `${ASSET_DIR}${asset.filename}`, filename: asset.filename,
-    asset: { id: asset.id, versionId: asset.versionId, size: asset.size } }, 201, NO_STORE);
+const placed = (media: Placed) =>
+  json({ relativePath: `${ASSET_DIR}${media.filename}`, filename: media.filename,
+    asset: { id: media.assetId, versionId: media.versionId, size: media.size } }, 201, NO_STORE);
 
-/** Records files an authorized upload, copy or carry placed in `docId`, which its doc-only readers then load. */
-async function placeIn(env: AssetsEnv, docId: string, filenames: string[]): Promise<void> {
-  if (filenames.length > 0) await (await getServerByName(env.DocDO, docId)).placeMedia(filenames);
-}
-
-/** The raw body into `folderId`, after the caller's right to write there was checked; placed in `docId` when given. */
-async function store(request: Request, env: AssetsEnv, folderId: string, createdBy: string, docId?: string): Promise<Response> {
+/** The raw body into `docId`, after the caller's right to edit it was checked. */
+async function store(request: Request, env: AssetsEnv, docId: string, folderId: string, createdBy: string): Promise<Response> {
   const raw = new URL(request.url).searchParams.get('filename') ?? '';
   const named = storedName(raw);
   // The web never loads a name moss desktop reserves for its derived thumbnails.
@@ -128,42 +133,41 @@ async function store(request: Request, env: AssetsEnv, folderId: string, created
   if (!(await env.ASSETS.head(blobKey(hash)))) {
     await env.ASSETS.put(blobKey(hash), bytes, { httpMetadata: { contentType: type.contentType } });
   }
-  const asset = await placeAsset(env, folderId, filename, { hash, size: bytes.byteLength, contentType: type.contentType }, createdBy);
-  if (!asset) return refuse(409, 'name-taken', 'Too many files share that name here. Rename the file and try again.');
-  if (docId) await placeIn(env, docId, [asset.filename]);
-  return placed(asset);
+  const db = createDb(env.DB);
+  const blob: Bytes = { contentHash: hash, contentType: type.contentType, size: bytes.byteLength, versionId: null };
+  // The name is free in the doc's record and in its folder's namespace, or holds these same bytes there.
+  const media = await bind(env, docId, filename, blob, createdBy, async (name) => {
+    const existing = await folderAsset(db, folderId, name);
+    if (existing) return existing.contentHash === hash ? { bytes: { ...blob, versionId: existing.versionId }, statements: [] } : 'taken';
+    const id = crypto.randomUUID();
+    const versionId = crypto.randomUUID();
+    const now = Date.now();
+    return {
+      bytes: { ...blob, versionId },
+      statements: [
+        env.DB.prepare('INSERT INTO content_objects (hash, size, refcount) VALUES (?1, ?2, 1) ON CONFLICT(hash) DO UPDATE SET refcount = refcount + 1')
+          .bind(hash, blob.size),
+        env.DB.prepare('INSERT INTO assets (id, folder_id, filename, kind, content_type, size, current_version_id, created_by, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8)')
+          .bind(id, folderId, name, type.kind, blob.contentType, blob.size, createdBy, now),
+        env.DB.prepare('INSERT INTO asset_versions (id, asset_id, content_hash, size, etag, created_by, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)')
+          .bind(versionId, id, hash, blob.size, etagOf(hash), createdBy, now),
+        env.DB.prepare('UPDATE assets SET current_version_id = ?1 WHERE id = ?2').bind(versionId, id),
+      ],
+    };
+  });
+  return media ? placed(media) : nameTaken();
 }
 
-async function uploadToDoc(request: Request, env: AssetsEnv, docId: string): Promise<Response> {
+async function upload(request: Request, env: AssetsEnv, docId: string): Promise<Response> {
   const principal = await resolvePrincipal(request, env);
   if (!principal) return notFound();
   const access = await resolveDocAccess(createDb(env.DB), principal, docId, shareTokenOf(request));
   if (!access || access.deleted) return notFound();
   if (!roleAtLeast(access.role, 'editor')) return refuse(403, 'forbidden', 'You can view this note but not add media to it.');
-  return store(request, env, access.folderId, principal.id, docId);
+  return store(request, env, docId, access.folderId, principal.id);
 }
 
-async function uploadToFolder(request: Request, env: AssetsEnv, folderId: string): Promise<Response> {
-  const principal = await resolvePrincipal(request, env);
-  if (!principal) return notFound();
-  const folder = await resolveFolderAccess(createDb(env.DB), principal, folderId);
-  if (!folder || folder.deleted) return notFound();
-  if (!roleAtLeast(folder.role, 'editor')) return refuse(403, 'forbidden', 'You can view this folder but not add media to it.');
-  return store(request, env, folderId, principal.id);
-}
-
-/**
- * Whether a reader of `docId` may load `asset` from the doc's folder: anyone who reads the folder (every note in it),
- * its uploader, or a reader of the doc an upload, copy or carry placed it in. What the doc's text references never
- * counts, since anyone who edits the doc writes that: a grant or link on one doc never reaches its sibling notes' files.
- */
-async function mayRead(env: AssetsEnv, db: Db, principal: Principal, docId: string, folderId: string, asset: Pick<Current, 'filename' | 'createdBy'>): Promise<boolean> {
-  if (principal.type !== 'anonymous' && asset.createdBy === principal.id) return true;
-  if (principal.type !== 'anonymous' && (await resolveFolderAccess(db, principal, folderId))) return true;
-  return (await getServerByName(env.DocDO, docId)).placesMedia(asset.filename);
-}
-
-/** moss's copyFromNoteAsset: the source's file, named in the target's folder (the same asset when they share one). */
+/** moss's copyFromNoteAsset: the bytes the source's record binds the path to, bound in the target's record. */
 async function copyFromNote(request: Request, env: AssetsEnv, docId: string): Promise<Response> {
   const principal = await resolvePrincipal(request, env);
   if (!principal) return notFound();
@@ -176,12 +180,17 @@ async function copyFromNote(request: Request, env: AssetsEnv, docId: string): Pr
   const [target, source] = await Promise.all([resolveDocAccess(db, principal, docId, token), resolveDocAccess(db, principal, sourceId, token)]);
   if (!target || target.deleted || !source || source.deleted) return notFound();
   if (!roleAtLeast(target.role, 'editor')) return refuse(403, 'forbidden', 'You can view this note but not add media to it.');
-  const found = await currentAsset(db, source.folderId, filename);
-  if (!found || !(await mayRead(env, db, principal, sourceId, source.folderId, found))) return notFound();
-  const asset = await placeAsset(env, target.folderId, filename, { hash: found.contentHash, size: found.size, contentType: found.contentType }, principal.id);
-  if (!asset) return refuse(409, 'name-taken', 'Too many files share that name here. Rename the file and try again.');
-  await placeIn(env, docId, [asset.filename]);
-  return placed(asset);
+  const found = await mediaOf(db, sourceId, filename);
+  if (!found) return notFound();
+  const media = await bind(env, docId, filename, found, principal.id, async () => ({ bytes: found, statements: [] }));
+  return media ? placed(media) : nameTaken();
+}
+
+/** A duplicate's media (A§16): the source's whole record, bound to the same bytes under the same names. */
+export async function copyMedia(d1: D1Database, fromDocId: string, toDocId: string): Promise<void> {
+  await d1.prepare(`INSERT INTO doc_media (doc_id, filename, version_id, content_hash, content_type, size, created_by, created_at)
+    SELECT ?1, filename, version_id, content_hash, content_type, size, created_by, created_at FROM doc_media WHERE doc_id = ?2`)
+    .bind(toDocId, fromDocId).run();
 }
 
 /** `bytes=a-b`, `bytes=a-` or `bytes=-n` against `size`; null when absent or not one range, 'unsatisfiable' past the end. */
@@ -211,72 +220,34 @@ async function serve(request: Request, env: AssetsEnv, docId: string, rawName: s
   } catch {
     return notFound();
   }
-  const current = filename ? await currentAsset(db, access.folderId, filename) : null;
-  if (!current || !(await mayRead(env, db, principal, docId, access.folderId, current))) return notFound();
+  const media = filename ? await mediaOf(db, docId, filename) : null;
+  if (!media) return notFound();
+  // The record names one immutable version; `?version=` pins it in the cache.
   const versionId = new URL(request.url).searchParams.get('version');
-  let version = { hash: current.contentHash, size: current.size, etag: current.etag };
-  if (versionId) {
-    const [row] = await db.select({ hash: assetVersions.contentHash, size: assetVersions.size, etag: assetVersions.etag })
-      .from(assetVersions).where(and(eq(assetVersions.id, versionId), eq(assetVersions.assetId, current.id))).limit(1);
-    if (!row) return notFound();
-    version = row;
-  }
+  if (versionId && versionId !== media.versionId) return notFound();
+  const etag = etagOf(media.contentHash);
   const headers = new Headers({
-    'content-type': current.contentType,
+    'content-type': media.contentType,
     'cache-control': versionId ? VERSION_CACHE : CURRENT_CACHE,
-    etag: version.etag,
+    etag,
     'accept-ranges': 'bytes',
     'x-content-type-options': 'nosniff',
   });
   // An SVG opened as a page runs nothing and reaches nothing (A§18 user HTML).
-  if (current.contentType === 'image/svg+xml') headers.set('content-security-policy', 'sandbox');
-  if (request.headers.get('if-none-match') === version.etag) return new Response(null, { status: 304, headers });
-  const range = parseRange(request.headers.get('range'), version.size);
+  if (media.contentType === 'image/svg+xml') headers.set('content-security-policy', 'sandbox');
+  if (request.headers.get('if-none-match') === etag) return new Response(null, { status: 304, headers });
+  const range = parseRange(request.headers.get('range'), media.size);
   if (range === 'unsatisfiable') {
-    headers.set('content-range', `bytes */${version.size}`);
+    headers.set('content-range', `bytes */${media.size}`);
     return new Response(null, { status: 416, headers });
   }
-  if (range) headers.set('content-range', `bytes ${range.offset}-${range.offset + range.length - 1}/${version.size}`);
-  headers.set('content-length', String(range ? range.length : version.size));
+  if (range) headers.set('content-range', `bytes ${range.offset}-${range.offset + range.length - 1}/${media.size}`);
+  headers.set('content-length', String(range ? range.length : media.size));
   const status = range ? 206 : 200;
   if (request.method === 'HEAD') return new Response(null, { status, headers });
-  const object = await env.ASSETS.get(blobKey(version.hash), range ? { range } : undefined);
+  const object = await env.ASSETS.get(blobKey(media.contentHash), range ? { range } : undefined);
   if (!object) return notFound();
   return new Response(object.body, { status, headers });
-}
-
-/**
- * A note copied or moved out of its folder (A§16 "a copied note carries its media"): every file in the source doc's
- * folder named in `names` that `principal` may read through that doc is named in `toFolderId` too. Where the target
- * already gives the name other bytes, the note's file takes the next free name; `renames` (old stored name → new)
- * renames the note's references, and `carried` lists the source names that came along.
- */
-export async function carryAssets(env: AssetsEnv, principal: Principal, source: { docId: string; folderId: string }, toFolderId: string,
-  names: Iterable<string>): Promise<{ renames: Record<string, string>; carried: string[] }> {
-  const renames: Record<string, string> = {};
-  const carried: string[] = [];
-  const wanted = [...new Set(names)];
-  if (source.folderId === toFolderId || wanted.length === 0 || principal.type === 'anonymous') return { renames, carried };
-  const db = createDb(env.DB);
-  const rows: { filename: string }[] = [];
-  // D1 binds at most 100 parameters per statement.
-  for (let i = 0; i < wanted.length; i += 50) {
-    rows.push(...await db.select({ filename: assets.filename }).from(assets)
-      .where(and(eq(assets.folderId, source.folderId), inArray(assets.filename, wanted.slice(i, i + 50)))));
-  }
-  // The names come from text any editor of the doc writes, so each file is carried only for a caller who may read it.
-  const readsFolder = !!(await resolveFolderAccess(db, principal, source.folderId));
-  const stub = readsFolder ? null : await getServerByName(env.DocDO, source.docId);
-  for (const { filename } of rows) {
-    const found = await currentAsset(db, source.folderId, filename);
-    if (!found) continue;
-    if (stub && found.createdBy !== principal.id && !(await stub.placesMedia(filename))) continue;
-    const copy = await placeAsset(env, toFolderId, filename, { hash: found.contentHash, size: found.size, contentType: found.contentType }, principal.id);
-    if (!copy) throw new Error(`no free name for ${filename}`);
-    carried.push(filename);
-    if (copy.filename !== filename) renames[filename] = copy.filename;
-  }
-  return { renames, carried };
 }
 
 export async function handleAssets(request: Request, env: AssetsEnv): Promise<Response> {
@@ -285,10 +256,8 @@ export async function handleAssets(request: Request, env: AssetsEnv): Promise<Re
     request.method === 'POST' ? run() : Promise.resolve(json({ error: 'method-not-allowed' }, 405, { allow: 'POST' }));
   const copy = COPY.exec(pathname);
   if (copy) return post(() => copyFromNote(request, env, copy[1]));
-  const doc = DOC_UPLOAD.exec(pathname);
-  if (doc) return post(() => uploadToDoc(request, env, doc[1]));
-  const folder = FOLDER_UPLOAD.exec(pathname);
-  if (folder) return post(() => uploadToFolder(request, env, folder[1]));
+  const doc = UPLOAD.exec(pathname);
+  if (doc) return post(() => upload(request, env, doc[1]));
   const file = FILE.exec(pathname);
   if (file) return serve(request, env, file[1], file[2]);
   return notFound();

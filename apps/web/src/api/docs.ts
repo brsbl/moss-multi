@@ -6,7 +6,6 @@
 import { eq } from 'drizzle-orm';
 import { getServerByName } from 'partyserver';
 import { MARKDOWN_CAP_BYTES } from '@moss-multi/protocol/limits';
-import { assetNamesIn } from '@moss-multi/protocol/media';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
 import type { AuthEnv } from '../auth/auth.ts';
 import { resolvePrincipal, shareTokenOf } from '../auth/principal.ts';
@@ -15,7 +14,7 @@ import { docs } from '../db/schema.ts';
 import type { AppEnv } from '../env.ts';
 import { json } from '../worker/route.ts';
 import { resolveDocAccess, resolveFolderAccess } from './access.ts';
-import { carryAssets } from './assets.ts';
+import { copyMedia } from './assets.ts';
 import { folderNotFound, liveIn, moveDoc, upFrom, vaultOf } from './folders.ts';
 import { handleLinks } from './links.ts';
 import { acceptShares, handleMembers, type MembersEnv } from './members.ts';
@@ -107,21 +106,14 @@ async function duplicateDoc(request: Request, env: DocsEnv, docId: string): Prom
   if (!folder || folder.deleted || !roleAtLeast(folder.role, 'editor')) return notFound();
   const original = await getServerByName(env.DocDO, docId);
   const snapshot = await original.snapshotForDuplicate();
-  // A copy made outside the source's folder brings the media the snapshot references that the caller may read
-  // (A§16), renamed where that folder already uses a name for other bytes. Of the files placed in the source, those
-  // that came along are placed in the copy.
-  const carry = env.ASSETS && folderId !== source.folderId
-    ? await carryAssets({ ...env, ASSETS: env.ASSETS }, principal, { docId, folderId: source.folderId }, folderId, assetNamesIn(snapshot.markdown))
-    : null;
-  const renames = carry?.renames ?? {};
-  const media = folderId === source.folderId ? snapshot.media
-    : snapshot.media.filter((name) => carry?.carried.includes(name)).map((name) => renames[name] ?? name);
   const title = `${snapshot.title.trim() || 'Untitled'} copy`;
   const doc = await insertDoc(env, db, { folderId, ownerUserId: folder.ownerUserId, createdBy: principal.id });
   if (!doc) return folderNotFound();
   try {
+    // The copy's media are the source's own record, so it shows the same files wherever it lands (A§16).
+    await copyMedia(env.DB, docId, doc.id);
     const target = await getServerByName(env.DocDO, doc.id);
-    await target.createFromSnapshot({ folderId, ownerId: folder.ownerUserId, title }, snapshot.state, renames, media);
+    await target.createFromSnapshot({ folderId, ownerId: folder.ownerUserId, title }, snapshot.state);
   } catch (error) {
     await db.delete(docs).where(eq(docs.id, doc.id));
     if (error instanceof Error && error.message === 'doc-cap') return json({ error: 'doc-cap' }, 413, NO_STORE);

@@ -12,37 +12,17 @@ const SHOT = new Uint8Array([...PNG, 7, 7]);
 const VIDEO = new Uint8Array(Array.from({ length: 64 }, (_, i) => i));
 const SVG = new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"><script>alert(1)</script></svg>');
 
-/**
- * The DocDO RPCs duplicate, move and serve call, over markdown and media references each test sets; a snapshot
- * carries its own markdown. `placed` mirrors the DocDO's record of the files an upload, copy or carry placed in a doc.
- */
+/** The DocDO RPCs duplicate and export call, over markdown each test sets; `created` records each copy's arguments. */
 const exported = new Map<string, string>();
-const snapshotted = new Map<string, string>();
-const created = new Map<string, { renames?: Record<string, string> }>();
-const referenced = new Map<string, string[]>();
-const renamed = new Map<string, Record<string, string>>();
-const placed = new Map<string, Set<string>>();
-const placedIn = (doc: string) => placed.get(doc) ?? placed.set(doc, new Set()).get(doc)!;
+const created = new Map<string, unknown[]>();
 const DocDO = {
   idFromName: (name: string) => ({ name, toString: () => name }),
   get: (id: { name: string }) => ({
     setName: async () => undefined,
-    referencedAssets: async () => referenced.get(id.name) ?? [],
-    placeMedia: async (names: string[]) => {
-      for (const name of names) placedIn(id.name).add(name);
-    },
-    placesMedia: async (name: string) => placedIn(id.name).has(name),
-    renameAssets: async (renames: Record<string, string>, carried: string[]) => {
-      renamed.set(id.name, renames);
-      referenced.set(id.name, (referenced.get(id.name) ?? []).map((name) => renames[name] ?? name));
-      placed.set(id.name, new Set([...placedIn(id.name)].filter((name) => carried.includes(name)).map((name) => renames[name] ?? name)));
-    },
     exportMarkdown: async () => exported.get(id.name) ?? '',
-    snapshotForDuplicate: async () => ({ title: 'Original', state: new Uint8Array([1]),
-      markdown: snapshotted.get(id.name) ?? exported.get(id.name) ?? '', media: [...placedIn(id.name)] }),
-    createFromSnapshot: async (_input: unknown, _state: Uint8Array, renames?: Record<string, string>, media: string[] = []) => {
-      created.set(id.name, { renames });
-      placed.set(id.name, new Set(media));
+    snapshotForDuplicate: async () => ({ title: 'Original', state: new Uint8Array([1]) }),
+    createFromSnapshot: async (...args: unknown[]) => {
+      created.set(id.name, args);
     },
   }),
 };
@@ -214,7 +194,6 @@ describe('serving (A§16)', () => {
   it('lets a reader and an anonymous link holder read, and gives a stranger, a forged link and a trashed doc one 404', async () => {
     const docId = await insertDoc(d1.db, ada);
     await uploaded(await upload(ada.cookie, docId, 'shared.png', PNG, 'image/png'));
-    referenced.set(docId, ['shared.png']);
     const path = `/api/docs/${docId}/assets/shared.png`;
     await insertGrant(d1.db, { docId }, ben, 'viewer');
     expect((await call('GET', path, ben.cookie)).status).toBe(200);
@@ -235,13 +214,10 @@ describe('serving (A§16)', () => {
   });
 
   it("gives a reader of one note none of the media its folder's other notes reference", async () => {
-    // A reader with no grant on Ada's Home, which an earlier case gives Ben.
     const reader = await signedUpUser(env, 'assets-note-reader', 'Reader');
     const secret = await insertDoc(d1.db, ada);
     await uploaded(await upload(ada.cookie, secret, 'secret.png', PNG, 'image/png'));
-    referenced.set(secret, ['secret.png']);
     const shared = await insertDoc(d1.db, ada);
-    referenced.set(shared, []);
     await insertGrant(d1.db, { docId: shared }, reader, 'viewer');
     const token = await insertLink(d1.db, { docId: shared }, 'viewer');
     const path = `/api/docs/${shared}/assets/secret.png`;
@@ -255,7 +231,6 @@ describe('serving (A§16)', () => {
     expect(tries.map((response) => response.status), 'a doc grant or link is not folder-wide media').toEqual([404, 404, 404, 404]);
     expect(await tries[0].text(), 'the refusal is the one 404').toBe(await missing.text());
     // Writing a reference to the file into the note, which any editor of it can, reaches it no better.
-    referenced.set(shared, ['secret.png']);
     exported.set(shared, '![x](assets/secret.png)\n');
     expect((await call('GET', path, reader.cookie)).status, "a reference the note's editor wrote").toBe(404);
     expect((await call('GET', `${path}?share=${token}`, null)).status).toBe(404);
@@ -273,7 +248,6 @@ describe('serving (A§16)', () => {
     await uploaded(await upload(ada.cookie, secret, 'private.png', PNG, 'image/png'));
     const shared = await insertDoc(d1.db, ada);
     await insertGrant(d1.db, { docId: shared }, editor, 'editor');
-    referenced.set(shared, ['private.png']);
     exported.set(shared, '![x](assets/private.png)\n');
     expect((await call('GET', `/api/docs/${shared}/assets/private.png`, editor.cookie)).status).toBe(404);
     const body = JSON.stringify({ sourceNoteId: shared, sourceRelativePath: 'assets/private.png' });
@@ -290,9 +264,7 @@ describe('serving (A§16)', () => {
     const reader = await signedUpUser(env, 'assets-copy-reader', 'Reader');
     const secret = await insertDoc(d1.db, ada);
     await uploaded(await upload(ada.cookie, secret, 'hidden.png', PNG, 'image/png'));
-    referenced.set(secret, ['hidden.png']);
     const shared = await insertDoc(d1.db, ada);
-    referenced.set(shared, ['hidden.png']);
     await insertGrant(d1.db, { docId: shared }, reader, 'viewer');
     const own = await insertDoc(d1.db, reader);
     const body = JSON.stringify({ sourceNoteId: shared, sourceRelativePath: 'assets/hidden.png' });
@@ -314,24 +286,21 @@ describe('a moved note keeps its media (A§16)', () => {
     return folder;
   }
 
-  it('keeps every file it holds, with its references unchanged', async () => {
+  it('keeps every file it holds', async () => {
     const docId = await insertDoc(d1.db, ada);
     await uploaded(await upload(ada.cookie, docId, 'travels.png', PNG, 'image/png'));
     await uploaded(await upload(ada.cookie, docId, 'travels.webm', VIDEO, 'video/webm'));
-    referenced.set(docId, ['travels.png', 'travels.webm']);
     const folder = await insertFolder(d1.db, ada, ada.homeId);
     const moved = await move(ada, docId, folder);
     expect(moved.status, await moved.clone().text()).toBe(200);
     expect(await bytesOf(await call('GET', `/api/docs/${docId}/assets/travels.png`, ada.cookie))).toEqual(PNG);
     expect(await bytesOf(await call('GET', `/api/docs/${docId}/assets/travels.webm`, ada.cookie))).toEqual(VIDEO);
-    expect(renamed.get(docId), 'nothing is renamed').toBeUndefined();
   });
 
   it('keeps showing its own image in a folder holding a same-named private file, to every reader', async () => {
     const folder = await folderHolding('image.png');
     const docId = await insertDoc(d1.db, ada);
     await uploaded(await upload(ada.cookie, docId, 'image.png', PNG, 'image/png'));
-    referenced.set(docId, ['image.png']);
     exported.set(docId, '![Mine](assets/image.png)\n');
     const reader = await signedUpUser(env, 'assets-move-reader', 'Reader');
     await insertGrant(d1.db, { docId }, reader, 'viewer');
@@ -342,7 +311,6 @@ describe('a moved note keeps its media (A§16)', () => {
       expect(served.status, who).toBe(200);
       expect(await bytesOf(served), `${who} sees the note's own image`).toEqual(PNG);
     }
-    expect(renamed.get(docId), "the note's references never change").toBeUndefined();
   });
 
   it('an upload held open while its note moves lands as the note\'s own file, never a same-named one in the new folder', async () => {
@@ -384,10 +352,12 @@ describe('copies carry media (A§16)', () => {
     expect(copied.status, await copied.clone().text()).toBe(201);
     expect(((await copied.json()) as Uploaded).relativePath).toBe('assets/moved.png');
     expect(await bytesOf(await call('GET', `/api/docs/${target}/assets/moved.png`, ada.cookie))).toEqual(PNG);
-    // A note in the same folder already reaches it; a reader of the source who cannot edit the target is refused.
+    // A sibling note gets its own binding to the same bytes; a reader of the source who cannot edit the target is refused.
     const sibling = await insertDoc(d1.db, ada);
     const same = await call('POST', `/api/docs/${sibling}/assets/copy`, ada.cookie, { body, headers: { 'content-type': 'application/json' } });
     expect(((await same.json()) as Uploaded).relativePath).toBe('assets/moved.png');
+    expect(await bytesOf(await call('GET', `/api/docs/${sibling}/assets/moved.png`, ada.cookie))).toEqual(PNG);
+    await insertGrant(d1.db, { docId: source }, ben, 'viewer');
     await insertGrant(d1.db, { docId: target }, ben, 'viewer');
     expect((await call('POST', `/api/docs/${target}/assets/copy`, ben.cookie, { body, headers: { 'content-type': 'application/json' } })).status).toBe(403);
   });
@@ -420,20 +390,9 @@ describe('copies carry media (A§16)', () => {
     expect(response.status, await response.clone().text()).toBe(201);
     const { doc } = (await response.json()) as { doc: { id: string; folderId: string } };
     expect(doc.folderId).toBe(cy.homeId);
-    expect(created.get(doc.id)?.renames ?? {}, "the copy's references are the source's").toEqual({});
+    expect(created.get(doc.id), "the copy's references are the source's: nothing renames them").toHaveLength(2);
     expect(await bytesOf(await call('GET', `/api/docs/${doc.id}/assets/image.png`, cy.cookie)), "the copy shows the source's bytes").toEqual(PNG);
     expect(await bytesOf(await call('GET', `/api/docs/${cyNote}/assets/image.png`, cy.cookie)), "Cy's own note keeps its file").toEqual(OTHER_PNG);
-  });
-
-  it('copies the media of the snapshot it duplicates, not of a later export', async () => {
-    const docId = await insertDoc(d1.db, ada);
-    await uploaded(await upload(ada.cookie, docId, 'then.png', PNG, 'image/png'));
-    snapshotted.set(docId, '![Then](assets/then.png)\n');
-    exported.set(docId, 'A peer removed the image after the snapshot.\n');
-    await insertGrant(d1.db, { docId }, ben, 'editor');
-    const response = await call('POST', `/api/docs/${docId}/duplicate`, ben.cookie);
-    const { doc } = (await response.json()) as { doc: { id: string } };
-    expect((await call('GET', `/api/docs/${doc.id}/assets/then.png`, ben.cookie)).status).toBe(200);
   });
 });
 
