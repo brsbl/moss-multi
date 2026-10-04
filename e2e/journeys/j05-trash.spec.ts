@@ -9,7 +9,7 @@
 import type { Locator } from '@playwright/test';
 import type { Actor, Actors } from '../lib/actors.ts';
 import {
-  APP_STATE_ATTR, BODY_BINDING_ATTR, CONNECTION_BANNER_ATTR, DOC_STATE_ATTR, EDITOR_PANE_ATTR, NAMES, SIDEBAR_ROW_ATTR,
+  APP_STATE_ATTR, BODY_BINDING_ATTR, CONNECTION_BANNER_ATTR, DOC_STATE_ATTR, EDITOR_PANE_ATTR, INPUT_REFUSAL_ATTR, NAMES, SIDEBAR_ROW_ATTR,
   SYNC_UNACKED_ATTR, TERMINAL_REASON_ATTR, TITLE_BINDING_ATTR, TRASH_ROW_ATTR, paneSelector,
 } from '../lib/contract.ts';
 import { grantDoc } from '../lib/grants.ts';
@@ -203,6 +203,8 @@ test('j05-trash: a fresh load of a trashed note is the one 404; Ada reads it rea
   await expect(noteBody, 'read-only').toHaveAttribute('contenteditable', 'false');
   await expect(ui.title(ada, docId)).toHaveText(TITLE);
   expect(await editableSurfaces(ada, docId), 'nothing in the trash view is editable').toEqual([]);
+  // Showing the trashed note's title is no write, so nothing is refused (the notice lasts 4 s).
+  await expect(ada.page.locator(`[${INPUT_REFUSAL_ATTR}]`).filter({ hasText: /\S/ }), 'opening the Trash view refuses nothing').toHaveCount(0);
   const notice = ada.page.getByText(TRASH_COPY.trashedNote, { exact: true });
   await expect(notice, 'the 30-day promise').toBeVisible();
   await expect(ada.page.getByText(/will be deleted|deleted in|forever/i), 'never a countdown or "forever"').toHaveCount(0);
