@@ -95,7 +95,7 @@ export class DocDO extends YServer<SyncEnv> {
   readonly instanceId = crypto.randomUUID();
   /** Payload work since the last reset, which the harness reads to bound it (A§10.10). */
   get payloadWork(): PayloadWork {
-    return this.#payloads?.work ?? { evaluated: 0, revealed: 0, withheld: 0, deduped: 0, compared: 0 };
+    return this.#payloads?.work ?? { evaluated: 0, revealed: 0, withheld: 0, deduped: 0, compared: 0, held: 0 };
   }
   readonly constructedAt = Date.now();
 

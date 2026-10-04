@@ -163,9 +163,8 @@ export class PayloadStore {
   readonly #sql: SqlStorage;
   readonly #now: () => number;
   #settling = false;
-  /** Stored bytes of every payload, and of the withheld ones, kept as they change. */
+  /** Stored bytes of every payload, kept as they change. */
   #totalBytes = 0;
-  #withheldBytes = 0;
   /** Bytes each principal wrote into payloads while they were withheld, released when one is served or dropped. */
   readonly #byIdentity = new Map<string, number>();
   readonly #attributed = new Map<string, Map<string, number>>();
@@ -187,7 +186,6 @@ export class PayloadStore {
       const meta = { bytes: Number(row.bytes), withheldSince: row.withheld_since === null ? null : Number(row.withheld_since), rows: 0, rowBytes: 0 };
       this.#meta.set(row.reg_id, meta);
       this.#totalBytes += meta.bytes;
-      if (meta.withheldSince !== null) this.#withheldBytes += meta.bytes;
     }
     this.names = new NameIndex(note, JANITOR);
   }
@@ -421,14 +419,12 @@ export class PayloadStore {
 
   #resize(meta: Meta, bytes: number): void {
     this.#totalBytes += bytes - meta.bytes;
-    if (meta.withheldSince !== null) this.#withheldBytes += bytes - meta.bytes;
     meta.bytes = bytes;
   }
 
   #withhold(id: string, since: number): void {
     const meta = this.#meta.get(id)!;
     if (meta.withheldSince !== null) return;
-    this.#withheldBytes += meta.bytes;
     meta.withheldSince = since;
     this.#writeMeta(id, meta);
   }
@@ -436,7 +432,6 @@ export class PayloadStore {
   #serve(id: string): void {
     const meta = this.#meta.get(id)!;
     if (meta.withheldSince === null) return;
-    this.#withheldBytes -= meta.bytes;
     meta.withheldSince = null;
     this.#writeMeta(id, meta);
     this.#release(id);
@@ -449,11 +444,7 @@ export class PayloadStore {
   }
 
   #drop(id: string): void {
-    const meta = this.#meta.get(id);
-    if (meta) {
-      this.#totalBytes -= meta.bytes;
-      if (meta.withheldSince !== null) this.#withheldBytes -= meta.bytes;
-    }
+    this.#totalBytes -= this.#meta.get(id)?.bytes ?? 0;
     this.#release(id);
     this.#sql.exec('DELETE FROM payload_updates WHERE reg_id = ?', id);
     this.#sql.exec('DELETE FROM payload_meta WHERE reg_id = ?', id);
