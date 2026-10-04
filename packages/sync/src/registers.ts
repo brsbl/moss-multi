@@ -118,10 +118,12 @@ export function bindRegisters(editor: LexicalEditor, doc: Y.Doc): () => void {
   const refresh = () => {
     if (queued || stopped) return;
     queued = true;
-    // Never tag an enclosing authored update or clone half-hydrated node attributes.
     queueMicrotask(() => {
       queued = false;
-      if (!stopped) editor.update(() => $refreshRegisters(editor, doc), { tag: COLLABORATION_TAG, skipTransforms: true });
+      // The commit listener retries after pending edits; tagging them would drop their Yjs writes.
+      if (stopped || editor._pendingEditorState !== null) return;
+      // Finish this cache-only update before any later authored update can join it.
+      editor.update(() => $refreshRegisters(editor, doc), { tag: COLLABORATION_TAG, skipTransforms: true, discrete: true });
     });
   };
   const observe = (_events: unknown, transaction: Y.Transaction) => {

@@ -111,6 +111,7 @@ Read this with PRODUCT.md, your BUILDPLAN entry and the A§ it cites, before wri
 
 ## Lexical and the binding
 
+- Register cache refreshes wait for any pending Lexical update to commit, then commit discretely themselves. A microtask alone can tag a pending authored update, or leave its own collaboration tag for the next edit, silently dropping tree writes and background conversions. [T1.9]
 - `HISTORIC_TAG` updates never replicate: exclude writes from undo by origin, never by tag. [L§4.3]
 - Never mutate the synced tree locally; a paint-only mark split text nodes and every later keystroke in that tab was dropped. Paint is derived. [L§4.3]
 - Derived-origin transactions must not fold back through the binding ("Insert row" added two rows). [L§4.3]
