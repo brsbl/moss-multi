@@ -6,8 +6,8 @@ import { $importNoteBody, createConverterEditor, exportMarkdown, importMarkdown 
 import { writeTitle } from '../src/server-title.ts';
 
 let imported: LexicalEditor | null = null;
-/** The doc /title renames, as the DocDO's renameTitle does. */
-const titled = new Y.Doc();
+/** The doc /title renames, as the DocDO's renameTitle does; made in a handler, since a Y.Doc draws a random id. */
+let titled: Y.Doc | null = null;
 
 // A headless binding needs a provider; nothing here talks to one.
 const awareness = {
@@ -56,6 +56,7 @@ export default {
     if (pathname === '/title') {
       // The body is the new title, sent as a REST rename would send it.
       const text = await request.text();
+      titled ??= new Y.Doc();
       writeTitle(titled, text, 'measure-title');
       const landed = titled.getText('title').toString() === text;
       return landed ? Response.json({ chars: text.length }) : new Response('title did not land exactly', { status: 500 });
