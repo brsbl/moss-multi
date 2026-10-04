@@ -38,9 +38,10 @@ const verdict = (doc: Y.Doc, update: Uint8Array) => {
 };
 
 /** Ground truth: apply to a copy and read every changed type's root. */
+type SharedType = Y.Transaction['changed'] extends Map<infer K, unknown> ? K : never;
 function appliedRoots(doc: Y.Doc, update: Uint8Array): string[] {
   const copy = copyOf(doc);
-  const changed: Y.AbstractType<unknown>[] = [];
+  const changed: SharedType[] = [];
   copy.on('afterTransaction', (transaction: Y.Transaction) => {
     for (const type of transaction.changed.keys()) changed.push(type);
   });
@@ -48,7 +49,7 @@ function appliedRoots(doc: Y.Doc, update: Uint8Array): string[] {
   const names = new Map([...copy.share].map(([name, type]) => [type, name] as const));
   const roots = new Set<string>();
   for (let type of changed) {
-    while (type._item) type = type._item.parent as Y.AbstractType<unknown>;
+    while (type._item) type = type._item.parent as SharedType;
     const name = names.get(type);
     if (name !== undefined) roots.add(name);
   }
