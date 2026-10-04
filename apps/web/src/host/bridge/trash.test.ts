@@ -142,6 +142,17 @@ it('restores through REST and gives moss the record back where it now lives', as
   expect(record).toMatchObject({ id: 'old', trashedAt: null, folderPath: 'Notes' });
 });
 
+it('a restored note opens live at once, even when the listing after the restore has not landed', async () => {
+  const server = fakeServer();
+  const bridge = createBridge({ pathname: () => '/', fetch: server.fetch });
+  await bridge.notes.getAll();
+  server.state.answers.set('GET /api/workspace', [() => Response.json({ error: 'unavailable' }, { status: 503 })]);
+  await bridge.notes.restore('old');
+  const record = await bridge.notes.getById('old');
+  expect(record, 'the restored note binds').toMatchObject({ id: 'old', content: '', trashedAt: null });
+  expect(server.calls, 'never the Trash view’s read path').not.toContainEqual({ method: 'GET', path: '/api/trash/old' });
+});
+
 it('searches trashed notes only in the trash view', async () => {
   const server = fakeServer();
   const bridge = createBridge({ pathname: () => '/', fetch: server.fetch });
