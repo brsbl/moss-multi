@@ -15,8 +15,10 @@ export const ALL = 'all';
 export const GROUPS = {
   // Chrome, auth, sharing and access.
   shell: ['j00-shell', 'j07', 'j08', 'j09', 'j10'],
-  // A doc's content: import, persistence, co-editing, presence, titles.
-  editing: ['j00-import', 'j00-roundtrip', 'j00-persist', 'j01', 'j02'],
+  // A doc's content: import, persistence, co-editing, presence.
+  editing: ['j00-import', 'j00-roundtrip', 'j00-persist', 'j01'],
+  // Titles and properties. Split from editing so WebKit stays within 13 min (it reached 12.2 min at T1.9s).
+  title: ['j02'],
   // A doc's connection: drops, stalls, limits, hibernation. Split from editing so WebKit stays within 13 min.
   session: ['j03', 'j04'],
   // Trash, folders, media, search, vaults, the demo note.
