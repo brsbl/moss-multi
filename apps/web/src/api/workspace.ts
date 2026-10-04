@@ -3,7 +3,7 @@
 // one-vault workspace; a signed-in holder of a folder link they cannot otherwise see is offered that folder beside
 // their vaults. Link listings never name the owner's vault or the folders around the link.
 import { and, eq, inArray, isNull } from 'drizzle-orm';
-import type { Role } from '@moss-multi/protocol/roles';
+import { maxRole, type Role } from '@moss-multi/protocol/roles';
 import type { AuthEnv } from '../auth/auth.ts';
 import { resolvePrincipal, shareTokenOf, type Principal } from '../auth/principal.ts';
 import { createDb, type Db } from '../db/client.ts';
@@ -98,6 +98,17 @@ async function linkScope(db: Db, principal: Principal, token: string | null) {
     list: () => folderLinkListing(db, principal, token, { id: link.targetId, name: access.name, ownerUserId: access.ownerUserId, role: access.role }) };
 }
 
+/** The docs and folders a presented link covers (a folder link covers its live subtree), with the link's role. */
+async function linkCover(db: Db, token: string) {
+  const link = await liveLink(db, token);
+  if (!link) return null;
+  if (link.targetType === 'doc') return { role: link.role, docIds: new Set([link.targetId]), folderIds: new Set<string>() };
+  const [root] = await db.select({ ownerUserId: foldersTable.ownerUserId }).from(foldersTable).where(eq(foldersTable.id, link.targetId)).limit(1);
+  if (!root) return null;
+  const below = await subtree(db, link.targetId, root.ownerUserId);
+  return { role: link.role, docIds: new Set<string>(), folderIds: new Set([link.targetId, ...below.map((row) => row.id)]) };
+}
+
 export async function workspace(request: Request, env: AuthEnv): Promise<Response> {
   if (request.method !== 'GET') return json({ error: 'method-not-allowed' }, 405, { allow: 'GET' });
   const principal = await resolvePrincipal(request, env);
@@ -127,14 +138,27 @@ export async function workspace(request: Request, env: AuthEnv): Promise<Respons
   const scope = token ? await linkScope(db, principal, token) : null;
   const linkVault = scope?.kind === 'folder' && scope.linkOnly ? scope : null;
   if (linkVault) vaults.push(linkVault.vault);
-  if (linkVault && params.get('vault') === linkVault.vault.id) {
-    const { docs: rows, folders } = await linkVault.list();
-    return json({ vault: linkVault.vault, vaults, docs: only(rows), folders }, 200, NO_STORE);
-  }
 
   const doc = docs.find((doc) => doc.id === params.get('doc'));
   const shownFolder = byId.get(params.get('folder') ?? '');
   const followed = (doc && byId.get(doc.folderId)?.vaultId) || shownFolder?.vaultId;
+  // The link's own workspace when asked for, or when the landing's folder or doc is reachable only through it.
+  const askedLink = linkVault !== null && params.get('vault') === linkVault.vault.id;
+  if (linkVault && (askedLink || (!followed && (params.has('folder') || params.has('doc'))))) {
+    const { docs: rows, folders } = await linkVault.list();
+    const folderId = params.get('folder');
+    if (askedLink || folderId === linkVault.vault.id || folders.some((folder) => folder.id === folderId)
+      || rows.some((row) => row.id === params.get('doc'))) {
+      return json({ vault: linkVault.vault, vaults, docs: only(rows), folders }, 200, NO_STORE);
+    }
+  }
+
+  // A presented link lifts every row it covers to the MAX of the caller's role and the link's (A§8).
+  const cover = token ? await linkCover(db, token) : null;
+  const lift = (role: Role, docId: string | null, folderId: string): Role =>
+    cover && ((docId !== null && cover.docIds.has(docId)) || cover.folderIds.has(folderId)) ? (maxRole(role, cover.role) ?? role) : role;
+  for (const row of vaults) if (row !== linkVault?.vault) row.role = lift(row.role, null, row.id);
+
   const requested = followed && vaults.some((vault) => vault.id === followed) ? followed : params.get('vault');
   const vault = vaults.find((vault) => vault.id === requested && vault !== linkVault?.vault) ?? vaults.find((vault) => vault.id === home)!;
 
@@ -143,7 +167,7 @@ export async function workspace(request: Request, env: AuthEnv): Promise<Respons
     Number(b.ownerUserId === principal.id) - Number(a.ownerUserId === principal.id) || a.id.localeCompare(b.id),
   ).flatMap((folder) => {
     const path = pathFor(folder.id);
-    return path ? [{ id: folder.id, name: path.split('/').pop()!, path, role: folder.role,
+    return path ? [{ id: folder.id, name: path.split('/').pop()!, path, role: lift(folder.role, null, folder.id),
       surfaced: !folder.parentId || !byId.has(folder.parentId), createdAt: folder.createdAt,
       noteCount: docs.filter((doc) => doc.folderId === folder.id).length }] : [];
   });
@@ -151,7 +175,7 @@ export async function workspace(request: Request, env: AuthEnv): Promise<Respons
     const surfaced = !byId.has(doc.folderId);
     const folderPath = surfaced ? 'Notes' : pathFor(doc.folderId);
     return folderPath ? [{ id: doc.id, title: doc.title, filename: doc.filename, createdAt: doc.createdAt, updatedAt: doc.updatedAt,
-      role: doc.role, folderPath, surfaced }] : [];
+      role: lift(doc.role, doc.id, doc.folderId), folderPath, surfaced }] : [];
   }).sort(byUpdated);
   return json({ vault, vaults, docs: only(rows), folders }, 200, NO_STORE);
 }

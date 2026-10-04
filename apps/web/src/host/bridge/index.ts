@@ -175,21 +175,23 @@ const inertBrowser: BrowserHooks = {
 };
 
 export function createBridge({ pathname, share = () => null, fetch: fetcher = fetch.bind(globalThis), storage = null, browser = inertBrowser, subscribeWorkspace: subscribe, leaving }: BridgeOptions) {
-  const request = (path: string, init: RequestInit = {}) =>
-    fetcher(path, { credentials: 'same-origin', ...init, headers: { accept: 'application/json', ...init.headers } });
-  /** Workspace reads carry the tab's share token, so a link holder's listing is the link's (T2.4). WebKit logs a
-   * fetch cancelled by navigation as an access-control page error, so a read in flight is aborted as the page leaves
-   * and held; if the page stays (the navigation was cancelled), it is sent again. */
+  /** Every API call carries the tab's share token, so a link holder reads and edits through the link (T2.4). */
+  const request = (path: string, init: RequestInit = {}) => {
+    const token = share();
+    return fetcher(path, { credentials: 'same-origin', ...init,
+      headers: { accept: 'application/json', ...(token ? { 'x-moss-share': token } : {}), ...init.headers } });
+  };
+  /** WebKit logs a fetch cancelled by navigation as an access-control page error, so a workspace read in flight is
+   * aborted as the page leaves and held; if the page stays (the navigation was cancelled), it is sent again. */
   const listingRequest = async (path: string): Promise<Response> => {
     for (;;) {
-      const token = share();
       const leave = leaving?.();
       if (leave?.signal.aborted) {
         await leave.stayed;
         continue;
       }
       try {
-        return await request(path, { ...(token ? { headers: { 'x-moss-share': token } } : {}), ...(leave ? { signal: leave.signal } : {}) });
+        return await request(path, leave ? { signal: leave.signal } : {});
       } catch (error) {
         if (!leave?.signal.aborted) throw error;
         await leave.stayed;
@@ -349,7 +351,7 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
     const stored = storage?.getItem(THEME_KEY);
     return stored === 'light' || stored === 'dark' ? stored : 'system';
   };
-  const docUrl = (id: string) => new URL(`/d/${encodeURIComponent(id)}`, browser.origin).href;
+  const docUrl = (id: string) => new URL(withShare(`/d/${encodeURIComponent(id)}`), browser.origin).href;
 
   // Folders (A§9): moss names a folder by its `Notes/...` path; the refreshed id↔path map turns it into a server id.
   const idForPath = (path: string): string | null => {

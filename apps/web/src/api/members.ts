@@ -3,7 +3,8 @@
 // oracle: an email with no account becomes a pending invite (redeemed through T2.8's /invite/$token) and the answer
 // is the same as for an email with one, and each owner may make SHARES_PER_HOUR new shares an hour. Lowering or
 // removing access waits for the one kick path (T2.5), so a share here only adds or raises.
-import { and, count, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
+import { waitUntil } from 'cloudflare:workers';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { publishTo } from '@moss-multi/sync/fanout';
 import { ROLES, SHARE_ROLES, type Role, type ShareRole } from '@moss-multi/protocol/roles';
 import type { AppEnv } from '../env.ts';
@@ -122,11 +123,7 @@ async function heldRole(db: Db, target: MemberTarget, personId: string | null, e
   return (await listInvites(db, target)).find((row) => row.email === email)?.role ?? null;
 }
 
-/** New shares by this owner in the last hour: every grant and invite made through this API writes an invites row. */
-async function recentShares(db: Db, inviter: string): Promise<number> {
-  const [row] = await db.select({ n: count() }).from(invites).where(and(eq(invites.invitedBy, inviter), gt(invites.createdAt, Date.now() - HOUR_MS)));
-  return row?.n ?? 0;
-}
+const changed = (result: D1Result | undefined) => (result?.meta?.changes ?? 0) > 0;
 
 const randomToken = () => [...crypto.getRandomValues(new Uint8Array(24))].map((b) => b.toString(16).padStart(2, '0')).join('');
 
@@ -159,27 +156,34 @@ async function share(db: Db, env: MembersEnv, target: MemberTarget, ownerUserId:
     return answer(200);
   }
 
-  if ((await recentShares(db, inviter)) >= SHARES_PER_HOUR) {
+  // Every new share writes an invites row (an already-accepted one for a known account), admitted only while the
+  // owner's last hour holds fewer than SHARES_PER_HOUR, in the one statement that inserts it, so a burst can't pass.
+  const now = Date.now();
+  const token = randomToken();
+  const statements = [env.DB.prepare(`INSERT INTO invites (token, email, target_type, target_id, role, invited_by, created_at, accepted_at, accepted_by)
+    SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9
+    WHERE (SELECT count(*) FROM invites WHERE invited_by = ?6 AND created_at > ?10) < ${SHARES_PER_HOUR}`)
+    .bind(token, email, target.type, target.id, role, inviter, now, person ? now : null, person?.id ?? null, now - HOUR_MS)];
+  if (person) {
+    const [table, column] = target.type === 'doc' ? ['doc_members', 'doc_id'] : ['folder_members', 'folder_id'];
+    statements.push(env.DB.prepare(`INSERT INTO ${table} (${column}, principal_id, principal_type, role, added_by, created_at)
+      SELECT ?1, ?2, 'user', ?3, ?4, ?5 WHERE EXISTS (SELECT 1 FROM invites WHERE token = ?6)
+      ON CONFLICT DO NOTHING`).bind(target.id, person.id, role, caller.id, now, token));
+  }
+  const [admitted, granted] = await env.DB.batch(statements);
+  if (!changed(admitted)) {
     return refuse(429, 'rate-limited', 'You’ve shared with a lot of people in the last hour. Try again later.', { 'retry-after': '3600' });
   }
-  const now = Date.now();
-  const invite = { token: randomToken(), email, targetType: target.type, targetId: target.id, role, invitedBy: inviter, createdAt: now };
-  if (!person) {
-    await db.insert(invites).values(invite);
-  } else {
-    // The grant, and an already-accepted invite row that records the share and counts toward the hourly limit.
-    const grant = { principalId: person.id, principalType: 'user' as const, role, addedBy: caller.id, createdAt: now };
-    await db.batch([
-      target.type === 'doc'
-        ? db.insert(docMembers).values({ docId: target.id, ...grant }).onConflictDoNothing()
-        : db.insert(folderMembers).values({ folderId: target.id, ...grant }).onConflictDoNothing(),
-      db.insert(invites).values({ ...invite, acceptedAt: now, acceptedBy: person.id }),
-    ]);
-    if (env.PrincipalDO) {
-      // The grantee's open tabs refresh their vaults and shared items; the committed share stands if this fails.
-      try { await publishTo({ DB: env.DB, PrincipalDO: env.PrincipalDO }, person.id, { type: 'vaults' }); }
-      catch (error) { console.error('workspace share notification failed', error); }
-    }
+  if (person && !changed(granted)) {
+    // A concurrent share of this person committed first: answer against the role that is now stored.
+    return share(db, env, target, ownerUserId, caller, body);
+  }
+  if (person && env.PrincipalDO) {
+    // The grantee's open tabs refresh their vaults and shared items, off the response path so its timing says
+    // nothing about whether the email has an account; the committed share stands if this fails.
+    const notify = publishTo({ DB: env.DB, PrincipalDO: env.PrincipalDO }, person.id, { type: 'vaults' })
+      .catch((error: unknown) => console.error('workspace share notification failed', error));
+    waitUntil(notify);
   }
   return answer(201);
 }

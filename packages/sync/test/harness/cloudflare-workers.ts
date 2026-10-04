@@ -7,3 +7,8 @@ export class DurableObject<Env = unknown> {
 }
 
 export const env: Record<string, unknown> = {};
+
+/** Work kept alive past the response; in Node it simply runs. */
+export function waitUntil(promise: Promise<unknown>): void {
+  void promise.catch(() => undefined);
+}

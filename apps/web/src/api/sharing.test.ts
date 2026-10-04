@@ -258,7 +258,7 @@ describe('a link-scoped workspace', () => {
   });
 });
 
-type RoleListing = Listing & { folders: { id: string; role: string }[] };
+type RoleListing = Omit<Listing, 'folders'> & { folders: { id: string; role: string }[] };
 
 describe('a presented link on a signed-in listing', () => {
   it('lists every row the link covers at the MAX of the grant and the link', async () => {
