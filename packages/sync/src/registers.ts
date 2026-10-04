@@ -16,7 +16,13 @@ interface Entries { get(key: string): unknown; has(key: string): boolean; keys()
  * A compound payload as one `Y.Map` of independent keys, so concurrent edits to different keys both land. `ref`, an
  * encoding of the value `fields` was derived from (or the register itself), lets array elements keep their identity.
  */
-interface MapCodec { fields: readonly string[]; encode(fields: Fields, ref?: Entries): Map<string, unknown>; decode(entries: Entries): Fields }
+interface MapCodec {
+  fields: readonly string[];
+  encode(fields: Fields, ref?: Entries): Map<string, unknown>;
+  decode(entries: Entries): Fields;
+  /** Structural keys the register lacks although its value implies them; a write restores them. */
+  implied?(entries: Entries): Set<string>;
+}
 
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -166,21 +172,41 @@ const chartCodec: MapCodec = {
     if (!entries.has('#k')) return { __config: undefined };
     return { __config: chartValue(entries, chartIndex(entries), '') };
   },
+  implied(entries) {
+    const index = chartIndex(entries);
+    const out = new Set<string>();
+    for (const path of index.keys()) if (!entries.has(`#a${path}`) && isChartArray(entries, index, path)) out.add(`#a${path}`);
+    return out;
+  },
 };
 
 type ChartIndex = Map<string, Set<string>>;
 interface Slot { id: string; at: number }
-/** Each path's child segments, from every key that names one. */
+/** Each path's child segments, from every key that names it or a descendant. */
 function chartIndex(entries: Entries): ChartIndex {
   const children: ChartIndex = new Map();
   for (const key of entries.keys()) {
-    const path = key.startsWith('#k') || key.startsWith('#a') ? key.slice(2) : key.startsWith('=') || key.startsWith('@') ? key.slice(1) : null;
-    if (!path) continue;
-    const cut = path.lastIndexOf('/');
-    const parent = path.slice(0, cut);
-    children.set(parent, (children.get(parent) ?? new Set()).add(path.slice(cut + 1)));
+    let path = key.startsWith('#k') || key.startsWith('#a') ? key.slice(2) : key.startsWith('=') || key.startsWith('@') ? key.slice(1) : '';
+    while (path) {
+      const cut = path.lastIndexOf('/');
+      const parent = path.slice(0, cut);
+      const segs = children.get(parent) ?? new Set();
+      if (segs.has(path.slice(cut + 1))) break;
+      children.set(parent, segs.add(path.slice(cut + 1)));
+      path = parent;
+    }
   }
   return children;
+}
+/**
+ * An array is present while its marker is, or while it still has a positioned element: the marker belongs to whoever
+ * created the array, and their undo must not take the elements a peer added (or created alongside) with it.
+ */
+function isChartArray(entries: Entries, index: ChartIndex, path: string): boolean {
+  if (entries.has(`#a${path}`)) return true;
+  if (entries.has(`#k${path}`) || entries.has(`=${path}`)) return false;
+  for (const id of index.get(path) ?? []) if (typeof entries.get(`@${path}/${id}`) === 'number') return true;
+  return false;
 }
 /** An array's elements in order: those with a position, by position then id. */
 function chartElements(entries: Entries, index: ChartIndex, path: string): Slot[] {
@@ -192,14 +218,14 @@ function chartElements(entries: Entries, index: ChartIndex, path: string): Slot[
 function chartValue(entries: Entries, index: ChartIndex, path: string): unknown {
   if (entries.has(`#k${path}`)) {
     const present = new Set([...index.get(path) ?? []].filter(seg =>
-      entries.has(`#k${path}/${seg}`) || entries.has(`#a${path}/${seg}`) || entries.has(`=${path}/${seg}`)));
+      entries.has(`#k${path}/${seg}`) || entries.has(`=${path}/${seg}`) || isChartArray(entries, index, `${path}/${seg}`)));
     const listed = ((entries.get(`#k${path}`) as string[] | undefined) ?? []).filter(seg => present.has(seg));
     const order = [...new Set(listed), ...[...present].filter(seg => !listed.includes(seg)).sort()];
     const object: Record<string, unknown> = {};
     for (const seg of order) object[unsegment(seg)] = chartValue(entries, index, `${path}/${seg}`);
     return object;
   }
-  if (entries.has(`#a${path}`)) {
+  if (isChartArray(entries, index, path)) {
     const slots = chartElements(entries, index, path);
     return remember(slots.map(({ id }) => chartValue(entries, index, `${path}/${id}`)), path, slots);
   }
@@ -226,7 +252,7 @@ function elementSlots(value: readonly unknown[], path: string, ref: Entries | un
   let slots: (Slot | null)[];
   if (known?.length === value.length) slots = [...known];
   else if (!ref) return value.map((_, index) => ({ id: `i${index}`, at: index }));
-  else if (!ref.has(`#a${path}`)) slots = value.map(() => null);
+  else if (!isChartArray(ref, refIndex(), path)) slots = value.map(() => null);
   else {
     const prev = chartElements(ref, refIndex(), path);
     slots = alignElements(prev.map(({ id }) => chartValue(ref, refIndex(), `${path}/${id}`)), value).map(j => (j >= 0 ? prev[j] : null));
@@ -510,9 +536,10 @@ export function writeMapRegister(node: LexicalNode, next: Fields, base?: Fields)
   const current = codec.decode(register);
   const before = codec.encode(base ?? Object.fromEntries(Object.keys(next).map(field => [field, current[field]])), register);
   const after = codec.encode(next, before);
+  const implied = codec.implied?.(register);
   doc.transact(() => {
     for (const [key, value] of after) {
-      if (before.has(key) && sameValue(before.get(key), value)) continue;
+      if (before.has(key) && sameValue(before.get(key), value) && !implied?.has(key)) continue;
       if (!map.has(key) || !sameValue(map.get(key), value)) map.set(key, value);
     }
     for (const key of before.keys()) if (!after.has(key) && map.has(key)) map.delete(key);
