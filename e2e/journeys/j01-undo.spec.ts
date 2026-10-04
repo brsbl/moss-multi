@@ -61,7 +61,19 @@ async function caretAtEnd(actor: Actor, id: string, start: string, left = 0) {
   });
   await expect.poll(caretIn, { message: `${actor.label}: the caret is in "${start}"` }).toMatch(new RegExp(`^${start}`));
   await actor.page.keyboard.press('End');
-  for (let i = 0; i < left; i++) await actor.page.keyboard.press('ArrowLeft');
+  if (left === 0) return;
+  // Arrow keys raced the editor's own selection handling in CI, so the caret moves through the editor.
+  await ui.body(actor, id).evaluate((element, { start, left }) => {
+    const editor = (element as HTMLElement & { __lexicalEditor: LexicalEditor }).__lexicalEditor;
+    editor.update(() => {
+      const nodes = [...editor.getEditorState()._nodeMap.values()];
+      const block = nodes.find(node => node.getType() === 'paragraph' && new RegExp(`^${start}`).test(node.getTextContent()));
+      const text = block && (block as unknown as { getLastDescendant(): { getTextContentSize(): number; select(a: number, b: number): void } | null }).getLastDescendant();
+      if (!text) throw new Error(`no paragraph "${start}"`);
+      const at = text.getTextContentSize() - left;
+      text.select(at, at);
+    }, { discrete: true });
+  }, { start, left });
 }
 
 test('j01 undo: interleaved typing in one paragraph; Ada\'s Cmd+Z keeps Ben\'s words, redo restores hers @p:col-3', async ({ actors, stack }) => {
@@ -91,8 +103,7 @@ test('j01 undo: Ben joins mid-edit and types inside the word Ada is typing; her 
   await ada.page.keyboard.press('Enter'); await ada.page.keyboard.type('Words');
   await expect(ui.pane(ada, id)).toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout: PEER_TIMEOUT });
   const ben = await openBen();
-  await caretAtEnd(ben, id, 'Words');
-  for (let i = 0; i < 3; i++) await ben.page.keyboard.press('ArrowLeft');
+  await caretAtEnd(ben, id, 'Words', 3);
   await Promise.all([ada.page.keyboard.type('mith', { delay: 80 }), ben.page.keyboard.type('BEN', { delay: 80 })]);
   const full = await converged(ada, ben, id, 'typed');
   expect(letters(full)).toBe(letters('Intro line.WordsmithBEN'));
