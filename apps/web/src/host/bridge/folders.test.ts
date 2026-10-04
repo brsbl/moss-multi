@@ -37,7 +37,18 @@ function fakeServer() {
     }
     if (method === 'PATCH' && url.pathname.startsWith('/api/folders/')) {
       const folder = state.folders.find((f) => url.pathname.endsWith(f.id));
-      return folder ? Response.json({ folder: { id: folder.id, name: body.name ?? folder.name } }) : Response.json({ error: 'not-found' }, { status: 404 });
+      if (!folder) return Response.json({ error: 'not-found' }, { status: 404 });
+      // A rename or move changes the folder's path and every path under it.
+      const name = body.name ?? folder.name;
+      const parentPath = 'parentId' in body
+        ? (body.parentId === 'home' ? 'Notes' : state.folders.find((f) => f.id === body.parentId)?.path)
+        : folder.path.slice(0, folder.path.lastIndexOf('/'));
+      const from = folder.path;
+      const to = `${parentPath}/${name}`;
+      const repath = (path: string) => path === from || path.startsWith(`${from}/`) ? to + path.slice(from.length) : path;
+      state.folders = state.folders.map((f) => ({ ...f, ...(f.id === folder.id ? { name } : {}), path: repath(f.path) }));
+      state.docs = state.docs.map((doc) => ({ ...doc, folderPath: repath(doc.folderPath) }));
+      return Response.json({ folder: { id: folder.id, name } });
     }
     if (method === 'DELETE' && url.pathname.startsWith('/api/folders/')) {
       state.folders = state.folders.filter((f) => !url.pathname.endsWith(f.id));
@@ -86,15 +97,20 @@ it('renames, moves and trashes by id, and has moss re-read notes and folders aft
   await bridge.notes.getAll();
   await bridge.folders.rename({ currentPath: 'Notes/Plans', newName: 'Projects' });
   expect(server.calls).toContainEqual({ method: 'PATCH', path: '/api/folders/f-plans', body: { name: 'Projects' } });
-  await bridge.folders.moveFolder({ sourcePath: 'Notes/Plans', targetParentPath: 'Notes' });
-  expect(server.calls).toContainEqual({ method: 'PATCH', path: '/api/folders/f-plans', body: { parentId: 'home' } });
-  const moved = await bridge.folders.moveNotes({ noteIds: ['d1'], targetFolderPath: 'Notes/Plans' });
+  // The map follows the new path: the old one no longer resolves.
+  expect((await bridge.folders.list()).map((folder) => folder.path)).toEqual(['Notes/Projects']);
+  await expect(bridge.folders.moveFolder({ sourcePath: 'Notes/Plans', targetParentPath: 'Notes' })).rejects.toThrow(/no longer/);
+  await bridge.folders.create({ name: 'Archive' });
+  await bridge.folders.moveFolder({ sourcePath: 'Notes/Projects', targetParentPath: 'Notes/Archive' });
+  expect(server.calls).toContainEqual({ method: 'PATCH', path: '/api/folders/f-plans', body: { parentId: 'f-Archive' } });
+  expect((await bridge.folders.list()).map((folder) => folder.path).sort()).toEqual(['Notes/Archive', 'Notes/Archive/Projects']);
+  const moved = await bridge.folders.moveNotes({ noteIds: ['d1'], targetFolderPath: 'Notes/Archive/Projects' });
   expect(server.calls).toContainEqual({ method: 'PATCH', path: '/api/docs/d1', body: { folderId: 'f-plans' } });
-  expect(moved).toEqual([expect.objectContaining({ id: 'd1', folderPath: 'Notes/Plans' })]);
-  expect(await bridge.folders.delete({ path: 'Notes/Plans', moveNotesTo: 'trash' })).toBe(true);
+  expect(moved).toEqual([expect.objectContaining({ id: 'd1', folderPath: 'Notes/Archive/Projects' })]);
+  expect(await bridge.folders.delete({ path: 'Notes/Archive/Projects', moveNotesTo: 'trash' })).toBe(true);
   expect(server.calls).toContainEqual({ method: 'DELETE', path: '/api/folders/f-plans', body: undefined });
   expect(changed).toHaveBeenCalledWith([], []);
-  expect(await bridge.folders.list()).toEqual([]);
+  expect((await bridge.folders.list()).map((folder) => folder.path)).toEqual(['Notes/Archive']);
 });
 
 it('creates a note in the active folder, and reports each folder’s role for the sidebar’s controls', async () => {

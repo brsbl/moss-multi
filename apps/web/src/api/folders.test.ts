@@ -18,6 +18,9 @@ const DocDO = {
       if (trashFails) throw new Error('DocDO unavailable');
       trashed.push(id.name);
     },
+    create: async () => undefined,
+    createFromSnapshot: async () => undefined,
+    snapshotForDuplicate: async () => ({ title: 'Source', state: new Uint8Array() }),
   }),
 };
 
@@ -251,11 +254,13 @@ describe('DELETE /api/folders/:id', () => {
 /**
  * A D1 whose writes to folders and docs wait until `arrivals` of them are pending (or a second passes), so two
  * requests both finish their reads before either writes: the interleaving a real race takes. With `batchFirst`, a
- * batch (a trash) commits before the other writes go.
+ * batch (a trash) commits before the other writes go; with `first`, the write whose SQL matches it does.
  */
-function racingEnv(arrivals: number, { batchFirst = false } = {}): typeof env {
+function racingEnv(arrivals: number, { batchFirst = false, first }: { batchFirst?: boolean; first?: RegExp } = {}): typeof env {
   let waiting: (() => void)[] = [];
   let batchDone: Promise<unknown> = Promise.resolve();
+  let firstGone = () => undefined as void;
+  const firstDone = first ? new Promise<void>((resolve) => { firstGone = resolve; setTimeout(resolve, 2000); }) : Promise.resolve();
   const gate = () => new Promise<void>((resolve) => {
     waiting.push(resolve);
     const release = () => { const all = waiting; waiting = []; for (const go of all) go(); };
@@ -269,7 +274,15 @@ function racingEnv(arrivals: number, { batchFirst = false } = {}): typeof env {
       if (typeof value !== 'function') return value;
       if (key === 'bind') return (...args: unknown[]) => wrap(value.apply(target, args), sql);
       if (WRITE.test(sql) && ['run', 'all', 'first', 'raw'].includes(key as string)) {
-        return async (...args: unknown[]) => { await gate(); await batchDone; return value.apply(target, args); };
+        return async (...args: unknown[]) => {
+          await gate();
+          await batchDone;
+          if (first?.test(sql)) {
+            try { return await value.apply(target, args); } finally { firstGone(); }
+          }
+          await firstDone;
+          return value.apply(target, args);
+        };
       }
       return value.bind(target);
     },
@@ -349,6 +362,45 @@ describe('concurrent writes', () => {
     expect(trash.status).toBe(200);
     const live = await d1.db.prepare('SELECT id FROM docs WHERE folder_id = ? AND deleted_at IS NULL').bind(doomed).all();
     expect(live.results, `move answered ${move.status}`).toEqual([]);
+  });
+
+  it('a note created in a folder being trashed is trashed with it or refused, never left live under it', async () => {
+    const doomed = await create(ada, ada.homeId, 'Doomed create race');
+    const race = racingEnv(2, { batchFirst: true });
+    const [trash, created] = await Promise.all([
+      callIn(race, ada, 'DELETE', `/api/folders/${doomed}`),
+      callIn(race, ada, 'POST', '/api/docs', { folderId: doomed }),
+    ]);
+    expect(trash.status).toBe(200);
+    const live = await d1.db.prepare('SELECT id FROM docs WHERE folder_id = ? AND deleted_at IS NULL').bind(doomed).all();
+    expect(live.results, `create answered ${created.status}`).toEqual([]);
+    if (created.status !== 201) await expectSentence(created, 404, /no longer/);
+  });
+
+  it('a note duplicated into a folder being trashed is trashed with it or refused, never left live under it', async () => {
+    const doomed = await create(ada, ada.homeId, 'Doomed duplicate race');
+    const source = await insertDoc(d1.db, ada, { folderId: doomed });
+    const race = racingEnv(2, { batchFirst: true });
+    const [trash, copy] = await Promise.all([
+      callIn(race, ada, 'DELETE', `/api/folders/${doomed}`),
+      callIn(race, ada, 'POST', `/api/docs/${source}/duplicate`),
+    ]);
+    expect(trash.status).toBe(200);
+    const live = await d1.db.prepare('SELECT id FROM docs WHERE folder_id = ? AND deleted_at IS NULL').bind(doomed).all();
+    expect(live.results, `duplicate answered ${copy.status}`).toEqual([]);
+    if (copy.status !== 201) await expectSentence(copy, 404, /no longer/);
+  });
+
+  it('a move that sends no name keeps a rename that commits between its read and its write', async () => {
+    const renamed = await create(ada, ada.homeId, 'Before rename');
+    const target = await create(ada, ada.homeId, 'Move target');
+    const race = racingEnv(2, { first: /set "name"/i });
+    const statuses = (await Promise.all([
+      callIn(race, ada, 'PATCH', `/api/folders/${renamed}`, { parentId: target }),
+      callIn(race, ada, 'PATCH', `/api/folders/${renamed}`, { name: 'After rename' }),
+    ])).map((response) => response.status);
+    expect(statuses).toEqual([200, 200]);
+    expect(await row(renamed)).toMatchObject({ name: 'After rename', parent_id: target });
   });
 });
 
