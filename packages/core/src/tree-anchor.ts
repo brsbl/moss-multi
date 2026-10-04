@@ -202,8 +202,9 @@ export function resolveAnchor(doc: Y.Doc, anchor: TreeAnchor, projection = proje
 export function similarity(a: string, b: string): number {
   if (a === b) return 1;
   if (!a.length || !b.length) return 0;
-  let equal = 0;
-  for (const op of diffText(a, b)) if ('retain' in op) equal += op.retain;
+  // Every character of `a` is kept or deleted; the script leaves the common prefix and suffix as implicit retains.
+  let equal = a.length;
+  for (const op of diffText(a, b)) if ('delete' in op) equal -= op.delete;
   return (2 * equal) / (a.length + b.length);
 }
 
@@ -226,17 +227,26 @@ export function findQuote(text: string, quote: TextQuote, hint: number): Range |
   return { start: best.start, end: best.start + exact.length };
 }
 
+const sameQuote = (a: TextQuote, b: TextQuote) => a.exact === b.exact && a.prefix === b.prefix && a.suffix === b.suffix;
+
 /**
- * Keeps an anchor whose range still matches its quote; otherwise re-anchors by quote and re-mints its positions;
- * otherwise orphans it. Pure: the caller decides whether to persist a changed anchor.
+ * Keeps an anchor whose range still matches its quote, refreshing the quote to the text it now covers (the quote is
+ * the fallback when a format split collapses the positions, so it must follow accepted edits); otherwise re-anchors
+ * by quote and re-mints its positions; otherwise orphans it. Pure: `changed` says the anchor differs in anything but
+ * its hint, which is what the caller persists.
  */
-export function validateAnchor(doc: Y.Doc, anchor: TreeAnchor): { anchor: TreeAnchor; range: Range | null; reanchored: boolean } {
-  const projection = project(doc);
+export function validateAnchor(
+  doc: Y.Doc,
+  anchor: TreeAnchor,
+  projection = project(doc),
+): { anchor: TreeAnchor; range: Range | null; reanchored: boolean; changed: boolean } {
   const range = resolveAnchor(doc, anchor, projection);
   if (range && (anchor.quote.exact.length === 0 || similarity(projection.text.slice(range.start, range.end), anchor.quote.exact) >= REANCHOR_THRESHOLD)) {
-    return { anchor: { ...anchor, hint: range.start, status: 'anchored' }, range, reanchored: false };
+    const quote = captureQuote(projection.text, range.start, range.end);
+    const changed = anchor.status !== 'anchored' || !sameQuote(quote, anchor.quote);
+    return { anchor: { ...anchor, quote, hint: range.start, status: 'anchored' }, range, reanchored: false, changed };
   }
   const found = findQuote(projection.text, anchor.quote, range?.start ?? anchor.hint);
-  if (found) return { anchor: mintAnchor(doc, found.start, found.end, projection), range: found, reanchored: true };
-  return { anchor: { ...anchor, status: 'orphaned' }, range: null, reanchored: false };
+  if (found) return { anchor: mintAnchor(doc, found.start, found.end, projection), range: found, reanchored: true, changed: true };
+  return { anchor: { ...anchor, status: 'orphaned' }, range: null, reanchored: false, changed: anchor.status !== 'orphaned' };
 }

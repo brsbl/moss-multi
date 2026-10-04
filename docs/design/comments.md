@@ -8,10 +8,10 @@ This resolves A§13's comments sketch for M4 (BUILDPLAN T4.1–T4.3). It was wri
 |---|---|---|---|
 | D1 | Where threads live | `Y.Map('comments')`: comment id → one plain JSON record (§1). Replies are records with `parentId`; roots carry the anchor. | PRODUCT: "threads/anchors are first-class CRDT data". One writer (D2), so a whole-record write per change is exact and smaller than nested maps. |
 | D2 | Who writes it | Only the DocDO, under origin `server-comments`. Clients call REST. | A§13; glyphdown's property that a commenter never gets CRDT write access (S-gd §6.1, §12 option a). |
-| D3 | How a forged client write is stopped | SP7: every client sync frame is classified by the root types it touches before it is applied. Clients may write only `root`, `title`, `frontmatter`, `frontmatterOrder` and `registers`; anything else, or a frame that depends on an item the server lacks, gets `write-refused('protected-type')` and 4409. | A§5.1 gate order; an allowlist also blocks `suggestions` (M5) and junk roots. The "missing dependency" rule closes a parking attack (§2.3). |
+| D3 | How a forged client write is stopped | SP7: every client sync frame is classified by the root types it touches before it is applied. Clients may write only `root`, `title`, `frontmatter`, `frontmatterOrder` and `registers`; anything else, a frame that depends on an item the server lacks or skips clocks, or a malformed frame (a parent cycle, or a partly held struct whose encoding disagrees with the held item) gets `write-refused('protected-type')` and 4409. | A§5.1 gate order; an allowlist also blocks `suggestions` (M5) and junk roots. The "missing dependency", gap and partly-held rules close parking and tail-splicing attacks (§2.3). |
 | D4 | Anchor shape | Two base64 `Y.RelativePosition`s into the V1 `XmlText` that holds the text, a quote over one text projection, a hint and a status (glyphdown's `Anchor`, re-targeted at the tree). A block comment anchors the decorator's one-character embed. | S-conv §3.2; LEARNINGS §4.11. The projection is computed from Y types alone, so the DocDO resolves and re-anchors without a Lexical mirror. |
 | D5 | Who mints anchors, when | The client, from its own binding, at the moment the composer opens (not at submit). The DocDO re-derives the quote from its own projection and refuses a mismatch. | The selection is exact only on the client; minting at open keeps the target fixed while peers type during composition (§3.2). |
-| D6 | Keeping anchors on their text | Relative positions first; a quote re-anchor when the positions collapse. Clients re-anchor locally for paint on every update; the DocDO persists re-anchors after root changes. | Spike: bolding any word earlier in the same text node deletes and reinserts the text under the anchor, which collapses the positions (§3.4). |
+| D6 | Keeping anchors on their text | Relative positions first; a quote re-anchor when the positions collapse. While the positions hold, the quote is refreshed to the text they cover, so it follows accepted edits. Clients re-anchor locally for paint on every update; the DocDO keeps a live quote per anchor after every applied `root` frame and persists changes on its save tick. | Spike: bolding any word earlier in the same text node deletes and reinserts the text under the anchor, which collapses the positions (§3.4). |
 | D7 | Paint | CSS Custom Highlights rebuilt from anchors after every update; decorator comments get a class on their wrapper element. No MarkNode or `__commentIds` ever enters the synced tree, and `__commentIds` joins the wire exclusions. | SP10: Chromium and WebKit paint background, overlap and underline with zero DOM mutations (§4). Moss itself already paints the composer's pending selection this way (`MarkdownEditor.tsx:2831`). |
 | D8 | Moss's UI | Ported unchanged except for seams that route its tree queries through one adapter with eight functions (§5). | Invariant 3 (port, don't reimplement). |
 | D9 | Names and privacy | The doc stores principal ids, never names or emails. Names come from `GET /api/docs/:id/people`, answered only to the owner and grant holders (the presence rule, T1.5). | Keeps the T1.1s/T1.5 boundary: everyone who can read a doc receives its whole Y.Doc. |
@@ -50,6 +50,7 @@ interface TreeAnchor {
 
 - **Plain values, not nested maps.** Only the DocDO writes, one operation at a time, so replacing a record never loses a concurrent change. A reaction toggle rewrites one small record; the old value is garbage-collected. The SP7 classifier still handles nested types, because a forged frame may contain them.
 - **Deletes remove the key.** Moss's sidecar keeps no tombstones either. A thread delete removes the root and every record whose `parentId` chain reaches it (`collectCommentSubtreeIds`, `note-atoms.ts:177`).
+- **Deleting a root message alone (`scope=comment`) promotes the oldest reply**, as moss does (`note-atoms.ts:226–283`). In one DO write, the promoted reply takes the root's `anchor`, `resolvedAt` and `resolvedBy`, loses its `parentId`, and the other replies are re-parented to it. Its author stays its own; authority over "Delete thread" passes to that author. With no replies the root is simply removed. T4.3 tests that a reply survives with the anchor.
 - **Orphaned roots stay** with `status: 'orphaned'`, invisible in the UI (moss shows a comment only through its mark or gutter icon), and come back if their quote reappears (an undo of the deletion, a history restore). Moss prunes orphans on save but keeps them in the atom "so undo can resurrect them" (`CanvasAreaContent.tsx:2057`); this is the same behavior made durable.
 - **Bytes count.** Every map write goes through the state-cap check (`STATE_CAP_BYTES`, simulated only near the cap, as `#overCap` does today).
 
@@ -91,16 +92,23 @@ All routes sit under `/api/docs/:id/comments`. The Worker resolves the caller an
 - an item whose encoding omits the parent shares the parent of its left or right origin;
 - a delete counts for the root of each live item it removes;
 - structs and deletes the doc already holds are inert, so the usual step 2 classifies as touching nothing;
-- an item hanging off a garbage-collected type lands nowhere, exactly as Yjs would treat it.
+- an item hanging off a garbage-collected type lands nowhere, exactly as Yjs would treat it;
+- each client's new structs must start at the doc's state and run without gaps, or the frame is `unresolved`;
+- a struct the doc partly holds is `malformed` unless its encoding names the same parent and key as the held item `(client, state − 1)`, and it also counts for that item's root;
+- a parent or origin cycle among the frame's own structs is `malformed`; the walk tracks the items it visits, so it always ends.
 
 T4.1 folds it into `classifySync` so a frame is decoded once. Gate order (A§5.1 `onMessage`), with the new step 2b:
 
 1. Revocation; string frames; awareness; step 1.
 2. A write from a role below suggester → `write-refused('role')`, close 4403 (unchanged).
-   - **2b.** A write touching any root outside `CLIENT_ROOTS = {root, title, frontmatter, frontmatterOrder, registers}`, or an `unresolved` frame → `write-refused('protected-type')`, close 4409. The client discards its Y.Doc and rebinds (A§10.5).
+   - **2b.** A write touching any root outside `CLIENT_ROOTS = {root, title, frontmatter, frontmatterOrder, registers}`, or an `unresolved` or `malformed` frame → `write-refused('protected-type')`, close 4409. The client discards its Y.Doc and rebinds (A§10.5).
 3. The write rate, the cap and suggester vetting, unchanged.
 
-**Why "unresolved" is refused, not parked.** A frame can carry an item whose parent is a server item that does not exist yet. Yjs would hold it pending and integrate it the moment the server writes that id. The server's client id is visible in every update, and its clock is predictable, so a client could plant a write into a future comment. The spike builds exactly this frame and checks that it reports `unresolved` (§11). An honest client never depends on an item the server lacks: everything it holds came from the server or from itself over the same ordered socket.
+**Why "unresolved" is refused, not parked.** A frame can carry an item whose parent is a server item that does not exist yet. Yjs would hold it pending and integrate it the moment the server writes that id. The server's client id is visible in every update, and its clock is predictable, so a client could plant a write into a future comment. The spike builds exactly this frame and checks that it reports `unresolved` (§11). An honest client never depends on an item the server lacks: everything it holds came from the server or from itself over the same ordered socket. For the same reason a struct past a gap in its client's clocks is refused: Yjs parks it until the gap fills, and for the server's client id the gap fills with the server's own next writes.
+
+**Why a partly held struct is checked against the held item.** Yjs integrates the tail of a struct whose head it already holds immediately right of the held item `(client, state − 1)`, and ignores the encoding's origin for placement. The server's latest write is usually a comment record, and its id is public. A forged struct at that id with a `root` origin or a `frontmatter` parent would therefore splice its tail into the comments map while classifying as an allowed root. The spike reproduces this (the forged tail replaces `comments.c2`) and refuses it. An honest partly held struct, such as a merged run the server half holds, names the held item's own parent and still classifies normally.
+
+**Why the walk is bounded.** Parent and origin links among a frame's own structs are attacker-chosen. A self-parented item or a two-item loop would otherwise spin the DocDO before the rate and cap gates. The walk keeps a visited set per chain, so each struct is visited at most once per walk and a cycle is refused.
 
 ## 3. Anchors
 
@@ -139,7 +147,7 @@ Moss saves the selection as Lexical keys and offsets (`savedSelectionRef`, `Mark
 
 `validateAnchor(doc, anchor)` returns the anchor, its range and whether it moved:
 
-1. **Resolve** both positions. If the resolved text's similarity to `quote.exact` is at least 0.5 (glyphdown's `REANCHOR_THRESHOLD`), keep it and refresh `hint`.
+1. **Resolve** both positions. If the resolved text's similarity to `quote.exact` is at least 0.5 (glyphdown's `REANCHOR_THRESHOLD`), keep it, refresh `hint`, and **refresh the quote and its context** to what the range now covers; `changed` reports a quote or status change. Similarity is `2·equal / (|a| + |b|)`, where `equal` counts every character of `a` the edit script keeps, including the common prefix and suffix the script leaves implicit, so one typed character inside a 9-character quote scores about 0.95.
 2. **Otherwise search** the projection for `quote.exact`. Candidates are scored by prefix and suffix similarity, with distance to `hint` breaking ties.
    - A quote of at least 8 characters (`MIN_ANCHOR_CHARS`) accepts the best exact candidate. T4.1 adds glyphdown's fuzzy bitap step at 0.8 for these, through `@sanity/diff-match-patch`, glyphdown's dependency.
    - A shorter quote accepts a candidate only if its prefix and suffix each match at 0.8 or better. A short comment can orphan, but it never jumps to another occurrence of the same word.
@@ -147,10 +155,11 @@ Moss saves the selection as Lexical keys and offsets (`savedSelectionRef`, `Mark
 
 **What the spike showed.**
 
-- Typing inside the range grows it.
+- Typing inside the range grows it, including one character just after its first character.
 - Typing at either edge stays outside it.
 - Every replica and the server agree.
 - Bolding any word earlier in the same text node collapses the raw positions, because `@lexical/yjs` V1 rewrites a split text node as delete-and-reinsert. The quote then restores the same text, and a re-minted anchor resolves on every replica.
+- Typing inside the range and then bolding an earlier word keeps the grown text, because the refreshed quote is the one the fallback searches for.
 - A 3-character comment survives that bold through its context.
 - When its word is deleted, the same short comment orphans instead of jumping to the same word elsewhere.
 - A block comment survives a paragraph inserted above it and edits inside its register.
@@ -158,7 +167,12 @@ Moss saves the selection as Lexical keys and offsets (`savedSelectionRef`, `Mark
 Formatting is routine, so the quote is load-bearing, not a corner case. That is why both sides run `validateAnchor`:
 
 - **Client, for paint.** After every editor update and comments-map change, the paint layer validates each root anchor locally. A bold never makes a highlight blink while waiting for the server.
-- **DocDO, for persistence.** After `root` changes, on the existing debounced `onSave` tick (2 s, at most 10 s; A§5.1), it validates every root anchor and writes only those whose status or positions changed, under `COMMENT_ORIGIN`. A hint moves with every keystroke above the anchor, so a hint-only change is never written; a re-mint carries a fresh hint. Every client then converges on the same positions. The fast path resolves two positions per comment. The full projection is built once per pass, and only when the pass has comments.
+- **DocDO, live quotes.** The quote is the recovery path, so it must never lag far behind accepted text. After every applied client frame that touched `root`, the DocDO runs `validateAnchor` for each root anchor (one projection per frame, only when the doc has anchored comments) and keeps the result in memory as that comment's live anchor. A format split in a later frame is then recovered from the live quote, which already contains the earlier typing. The DO applies frames one at a time, so there is no race between refresh and collapse except inside a single frame (§3.5).
+- **DocDO, persistence.** On the existing debounced `onSave` tick (2 s, at most 10 s; A§5.1) it writes, in one transaction under `COMMENT_ORIGIN`, every live anchor whose `changed` is set: a refreshed quote, a re-mint, or a status change. A hint-only change is never written. The DO is the only writer of `comments`, so a persisted refresh cannot conflict with another writer; a `create` or `edit` during the tick reads and writes the same in-memory record. A wake rebuilds live anchors from the persisted ones on the first `root` frame. Clients do the same refresh in memory for paint, so a client that sees a collapse before the next tick still recovers from its own live quote.
+
+### 3.5 Residual risk
+
+A single frame that both types inside a range and splits the same text node (a paste-and-format, or a client batching several edits) collapses the positions before any refresh sees the typing. The fallback then searches for the older quote: the bitap step (at 0.8) recovers modest growth, and larger rewrites orphan the comment, which stays recoverable (D6, §10 decision 4). T4.1's fast-check over two bound editors measures how often this happens with the binding's real batching.
 
 Undo does not follow `redone` (yjs#638: that link exists only in the undoing client). A deleted-then-undone range comes back through the quote, on the client at once and in the doc on the next pass.
 
@@ -226,9 +240,11 @@ Moss encodes `U+2063 @Title [U+2062 id] U+2064`, with `@folder:` for folders (`u
 
 After a successful `create` or `reply`, the Worker writes `notifications` rows (`apps/web/src/db/schema.ts:232`; `mention` and `comment-reply` already exist):
 
-- one per mentioned principal who can open the doc;
-- one for the root's author on a reply, when that author is not the replier;
+- one per mentioned **user** principal who can open the doc;
+- one for the root's author on a reply, when that author is a user and not the replier;
 - none to the actor.
+
+`notifications.userId` is a non-null foreign key to `user.id` (`schema.ts:232–242`), so agent principals never get rows. An agent's owner is not notified on the agent's behalf either: a mention of an agent is content, and an agent reads its comments through the doc it already has access to (its owner's access plus any direct grant, A§8). Recipients are filtered through the same access resolver as reads, so a direct agent grant never widens who is notified. T4.3 tests that a mention of an agent principal writes no row.
 
 It then publishes `{type: 'notifications'}` to each recipient's PrincipalDO. Reads re-check the live grant (A§8). This depends on T2.8's bell.
 
@@ -269,12 +285,12 @@ An optional moss-format export (markers plus `comments.json`, for migrating back
 These refine BUILDPLAN's tests-first lists. Each item is a claim from this design that must be proven red first.
 
 **T4.1, the data plane** (`[A·codex]`)
-- Wire `touchedTypes` into `classifySync` with `CLIENT_ROOTS`. Harness: a client frame touching `comments` gets `write-refused('protected-type')` and 4409, and so does an unresolved-dependency frame. The spike's property test moves here.
+- Wire `touchedTypes` into `classifySync` with `CLIENT_ROOTS`. Harness: a client frame touching `comments` gets `write-refused('protected-type')` and 4409, and so do an unresolved-dependency frame, a clock-gap frame, a forged partly held struct and a cyclic frame (the spike's raw encodings). The spike's property test moves here.
 - The `comments` module and RPC; the REST routes of §2.2.
   - Unit tests: authorship from the principal, 403 for a non-author edit or delete, anchors in `title` refused, `anchor-pending`, `anchor-mismatch`.
 - `tree-anchor.ts` hardening: `kind`, fuzzy re-anchor for long quotes, and a binary search over the projection runs for large docs.
   - fast-check: anchors survive random concurrent typing, formatting and paragraph splits on two bound editors plus the server.
-- Server re-anchor on `onSave`.
+- Server live anchors after each `root` frame, persisted on `onSave` (§3.4), with a test that types inside a range and then formats in a later frame, through the DO.
 - The marker import and the export guard. "Importing the onboarding note and its sidecar yields 4 anchored threads"; "export contains zero `%%m:` or `{%c:`", including a forged MarkNode.
 - `__commentIds` in `EXCLUDED_FIELDS`, with a frame-scan control.
 
@@ -286,7 +302,7 @@ These refine BUILDPLAN's tests-first lists. Each item is a claim from this desig
   - a reply composer autofocuses.
 
 **T4.3, reactions, mentions, edit and delete, notifications** (`[B·fresh]`)
-- As BUILDPLAN lists it, plus: a signed-in link-only reader sees "Collaborator" and no names in `/people`.
+- As BUILDPLAN lists it, plus: a signed-in link-only reader sees "Collaborator" and no names in `/people`; deleting a root message with replies promotes the oldest reply with the anchor (§1); mentioning an agent writes no notification row (§6.4).
 
 ## 10. Owner decisions recorded (made under delegation, for confirmation at the M4 hand-off)
 
@@ -299,7 +315,7 @@ These refine BUILDPLAN's tests-first lists. Each item is a claim from this desig
 
 | Spike | File | Claim | Result |
 |---|---|---|---|
-| SP7 | `packages/sync/src/doc/touched-types.test.ts` | Classifies typing, title, comment writes (new, nested, deleted), mixed frames and new root names without applying; inert step 2; refuses future-item dependencies; agrees with "apply to a copy and read `transaction.changed`" on 300 random concurrent edit sets across every root | Red on the stub: [37194578875](https://github.com/brsbl/moss-multi/actions/runs/37194578875). Green: [37194794917](https://github.com/brsbl/moss-multi/actions/runs/37194794917) |
+| SP7 | `packages/sync/src/doc/touched-types.test.ts` | Classifies typing, title, comment writes (new, nested, deleted), mixed frames and new root names without applying; inert step 2; refuses future-item dependencies, clock gaps, forged partly held structs (raw encodings that really overwrite `comments.c2` when applied) and parent cycles; keeps an honest partly held run; agrees with "apply to a copy and read `transaction.changed`" on 300 random concurrent edit sets across every root | Red on the stub: [37194578875](https://github.com/brsbl/moss-multi/actions/runs/37194578875). Green: [37194794917](https://github.com/brsbl/moss-multi/actions/runs/37194794917) |
 | Anchors | `packages/sync/src/tree-anchor.test.ts` | One projection on every replica and the server; binding-minted positions equal projection-minted ones; edge and interior typing; a format split collapses positions and the quote restores them; a short quote keeps or orphans by context; a deleted paragraph orphans; a block anchor survives | Same runs as SP7 |
 | SP10 | `e2e/selftest/highlight-paint.spec.ts` | Zero-mutation paint with overlap and underline; rect geometry; pointer hit-test; a replaced text node collapses a live Range, so paint is rebuilt | Green in Chromium and Linux WebKit: [37194962320](https://github.com/brsbl/moss-multi/actions/runs/37194962320). The first run ([37194584664](https://github.com/brsbl/moss-multi/actions/runs/37194584664)) already passed in WebKit; it corrected two probe tolerances, Chromium's subpixel fringe on unpainted text and the half-leading above a line box |
 
@@ -317,8 +333,8 @@ The fresh architect and the Codex critic review this document at the head the ch
 
 **How it works, in four lines.**
 1. **The server is the only writer of comments.** The web app asks the server to add, edit, delete, resolve or react. The server checks who you are and your role, then writes the comment into the note. A commenter therefore can never touch the note's text, and the author's name comes from the server, never from the browser.
-2. **A browser cannot sneak a comment in.** Every edit a browser sends is checked first for which part of the note it would change. Anything aimed at comments, or at something the server has not created yet, is refused loudly and never lands.
-3. **A comment remembers its exact characters, plus a copy of the quoted text.** Ordinary typing moves the highlight with the text. When someone bolds a word earlier in the same line, the editor quietly rewrites that line and the exact link breaks. The tests proved this happens. The comment then finds its quote again in the same place. Short comments re-attach only when the surrounding words match too, so they never jump to the same word elsewhere.
+2. **A browser cannot sneak a comment in.** Every edit a browser sends is checked first for which part of the note it would change. Anything aimed at comments, at something the server has not created yet, or shaped to trick that check (a reviewer found two such shapes; both are now refused and tested), is refused loudly and never lands.
+3. **A comment remembers its exact characters, plus a copy of the quoted text.** Ordinary typing moves the highlight with the text. When someone bolds a word earlier in the same line, the editor quietly rewrites that line and the exact link breaks. The tests proved this happens. The comment then finds its quote again in the same place. The quote is kept up to date as people type inside the comment, so it still matches after a later bold. Short comments re-attach only when the surrounding words match too, so they never jump to the same word elsewhere.
 4. **Highlights are painted on top of the page, never into it.** The tests proved this works in both Chrome and Safari's engine: overlapping comments, the hover underline, finding the comment under the mouse, and repainting after typing.
 
 **What stays exactly like moss.** The gutter icons, highlight colors, popover, threads, replies, resolve, the open/resolved filter and Cmd+Shift+A are moss's own code, with small marked hooks. Reactions follow glyphdown's design (emoji pills plus a small picker), built from moss parts. Mentioning a person and replying notify them in the bell.

@@ -10,6 +10,11 @@ export interface TouchedTypes {
    * be a later server write (its client id and clock are predictable), so the frame must be refused, not deferred.
    */
   unresolved: boolean;
+  /**
+   * The frame cannot be classified by its encoding: its parent links form a cycle, or a struct the doc partly holds
+   * would integrate its tail beside an item under a different parent than the encoding names. Refused.
+   */
+  malformed: boolean;
 }
 
 /** An item lands nowhere (garbage-collected parent or neighbour), in a named root, or cannot be placed yet. */
@@ -70,9 +75,10 @@ export function touchedTypes(doc: Y.Doc, update: Uint8Array): TouchedTypes {
   const rootOfStored = (struct: Y.Item | Y.GC): Landing =>
     struct instanceof Y.Item && struct.parent instanceof Y.AbstractType ? rootOfType(struct.parent) : null;
 
+  let malformed = false;
   const memo = new Map<Y.Item, Landing>();
   const rootOfIncoming = (item: Y.Item): Landing => {
-    const chain: Y.Item[] = [];
+    const chain = new Set<Y.Item>();
     let current = item;
     let landing: Landing;
     for (;;) {
@@ -81,7 +87,13 @@ export function touchedTypes(doc: Y.Doc, update: Uint8Array): TouchedTypes {
         landing = known;
         break;
       }
-      chain.push(current);
+      if (chain.has(current)) {
+        // A parent or origin cycle: Yjs would park it forever; the walk must not.
+        malformed = true;
+        landing = null;
+        break;
+      }
+      chain.add(current);
       const parent = current.parent as unknown;
       if (typeof parent === 'string') {
         landing = parent;
@@ -132,6 +144,19 @@ export function touchedTypes(doc: Y.Doc, update: Uint8Array): TouchedTypes {
     return landing;
   };
 
+  /** The (type, key) an incoming item's encoding places it in, when that is a type the doc already holds. */
+  const placeOf = (item: Y.Item): { parent: unknown; sub: string | null } | null => {
+    const parent = item.parent as unknown;
+    if (typeof parent === 'string') return { parent: doc.share.get(parent), sub: item.parentSub };
+    if (parent instanceof Y.ID) {
+      const stored = findStored(parent);
+      return stored instanceof Y.Item && stored.content instanceof Y.ContentType ? { parent: stored.content.type, sub: item.parentSub } : null;
+    }
+    const neighbour = item.origin ?? item.rightOrigin;
+    const stored = neighbour ? findStored(neighbour) : undefined;
+    return stored instanceof Y.Item ? { parent: stored.parent, sub: stored.parentSub } : null;
+  };
+
   const roots = new Set<string>();
   let unresolved = false;
   const count = (landing: Landing) => {
@@ -139,10 +164,32 @@ export function touchedTypes(doc: Y.Doc, update: Uint8Array): TouchedTypes {
     else if (landing !== null) roots.add(landing);
   };
 
+  // Each client's new structs must start at the doc's state and run without gaps; Yjs parks anything past a gap until
+  // the gap fills, which for the server's client id is a later server write.
+  const next = new Map<number, number>();
+  for (const struct of structs) {
+    const { client, clock } = struct.id;
+    const state = Y.getState(store, client);
+    const end = clock + struct.length;
+    if (end <= state) continue;
+    const expected = Math.max(next.get(client) ?? state, state);
+    if (struct instanceof Y.Skip || clock > expected) unresolved = true;
+    next.set(client, Math.max(expected, end));
+  }
+
   for (const struct of structs) {
     if (!(struct instanceof Y.Item)) continue;
-    // Already held: Yjs skips it (a partly held struct integrates its tail, under the same parent).
-    if (struct.id.clock + struct.length <= Y.getState(store, struct.id.client)) continue;
+    const state = Y.getState(store, struct.id.client);
+    // Already held: Yjs skips it.
+    if (struct.id.clock + struct.length <= state) continue;
+    if (struct.id.clock < state) {
+      // Partly held: Yjs integrates the tail right of the held item (client, state - 1), whatever the encoding says,
+      // so the encoding is trusted only when it names that item's own parent and key.
+      const held = findStored(Y.createID(struct.id.client, state - 1));
+      const place = placeOf(struct);
+      if (!(held instanceof Y.Item) || !place || place.parent !== held.parent || place.sub !== held.parentSub) malformed = true;
+      if (held) count(rootOfStored(held));
+    }
     count(rootOfIncoming(struct));
   }
 
@@ -170,5 +217,5 @@ export function touchedTypes(doc: Y.Doc, update: Uint8Array): TouchedTypes {
       }
     }
   }
-  return { roots, unresolved };
+  return { roots, unresolved, malformed };
 }
