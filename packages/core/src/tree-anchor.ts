@@ -257,7 +257,7 @@ export function validateAnchor(
  * frame, so the refresh is persisted beside that frame and a restart never loses it (comments.md §3.4). Returns the
  * ids it rewrote.
  */
-export function refreshAnchors(doc: Y.Doc, origin: unknown): string[] {
+export function refreshAnchors(doc: Y.Doc, origin: unknown, _before?: unknown): string[] {
   const comments = doc.getMap<{ anchor?: TreeAnchor }>('comments');
   const rewritten: [string, { anchor?: TreeAnchor }][] = [];
   let projection: Projection | null = null;
@@ -269,4 +269,9 @@ export function refreshAnchors(doc: Y.Doc, origin: unknown): string[] {
   }
   if (rewritten.length > 0) doc.transact(() => { for (const [id, record] of rewritten) comments.set(id, record); }, origin);
   return rewritten.map(([id]) => id);
+}
+
+/** Test-first stub: replaced by the frame snapshot in the next commit. */
+export function anchorsBefore(_doc: Y.Doc): unknown {
+  return undefined;
 }

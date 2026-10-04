@@ -8,7 +8,9 @@ import {
 } from 'lexical';
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
-import { decodeRelPos, mintAnchor, project, refreshAnchors, resolveAnchor, similarity, validateAnchor, type TreeAnchor } from '@moss-multi/core/tree-anchor';
+import {
+  anchorsBefore, decodeRelPos, mintAnchor, project, refreshAnchors, resolveAnchor, similarity, validateAnchor, type TreeAnchor,
+} from '@moss-multi/core/tree-anchor';
 import { createConverterEditor } from './converter/index.ts';
 import { excludedPropertiesFor } from './excluded-properties.ts';
 import { bindRegisters } from './registers.ts';
@@ -37,10 +39,13 @@ function peer(seed: Y.Doc) {
   root.observeDeep(observer);
   Y.applyUpdate(doc, Y.encodeStateAsUpdate(seed), REMOTE);
   editor.update(noop, { discrete: true });
+  // Cmd+Z as the CollaborationPlugin wires it: a Y.UndoManager over the root that tracks the binding's writes.
+  const history = new Y.UndoManager(root, { trackedOrigins: new Set([binding]), captureTimeout: 0 });
   return {
     doc, editor, binding,
     edit: (fn: () => void) => editor.update(fn, { discrete: true }),
-    dispose: () => { stop(); stopRegisters(); root.unobserveDeep(observer); doc.destroy(); },
+    undo: () => { history.undo(); },
+    dispose: () => { stop(); stopRegisters(); history.destroy(); root.unobserveDeep(observer); doc.destroy(); },
   };
 }
 type Peer = ReturnType<typeof peer>;
@@ -53,7 +58,10 @@ async function sync(...docs: Y.Doc[]): Promise<void> {
   await settle();
 }
 
+/** Longer than the quote context, so two blocks between copies of it have identical context. */
+const PAD = 'A padding sentence longer than the thirty-two characters of quote context.';
 const BODY = 'The quick brown fox jumps over the lazy dog.\n\nSecond paragraph here, a fox too.\n\n```js\nconst x = 1;\n```';
+const TWINS = 'TODO: fix this\n\nTODO: fix this\n\nTail.';
 const paragraph = (index: number) => $getRoot().getChildren()[index] as ElementNode;
 const firstText = () => paragraph(0).getFirstChild() as TextNode;
 function bold(from: number, to: number): void {
@@ -65,9 +73,10 @@ function bold(from: number, to: number): void {
   selection.formatText('bold');
   $setSelection(null);
 }
-function find(type: string, node: LexicalNode = $getRoot()): LexicalNode | undefined {
-  if (node.getType() === type) return node;
-  if ($isElementNode(node)) for (const child of node.getChildren()) { const found = find(type, child); if (found) return found; }
+function findAll(type: string, node: LexicalNode = $getRoot(), out: LexicalNode[] = []): LexicalNode[] {
+  if (node.getType() === type) out.push(node);
+  if ($isElementNode(node)) for (const child of node.getChildren()) findAll(type, child, out);
+  return out;
 }
 const textOf = (doc: Y.Doc, anchor: TreeAnchor) => {
   const range = validateAnchor(doc, anchor).range;
@@ -80,9 +89,24 @@ function anchorOn(doc: Y.Doc, quote: string, from = 0): TreeAnchor {
   return mintAnchor(doc, start, start + quote.length);
 }
 
-async function scene(run: (seed: Y.Doc, a: Peer, b: Peer) => Promise<void>): Promise<void> {
+/** The DocDO's step for one client frame: note the anchors, apply the frame, refresh them in the same synchronous step. */
+function frame(server: Y.Doc, client: Y.Doc): string[] {
+  const before = anchorsBefore(server);
+  Y.applyUpdate(server, Y.encodeStateAsUpdate(client, Y.encodeStateVector(server)), REMOTE);
+  return refreshAnchors(server, 'server-comments', before);
+}
+const comments = (doc: Y.Doc) => doc.getMap<{ id: string; anchor: TreeAnchor }>('comments');
+/** Stores comment `c1` on the first occurrence of `quote` after `from`, as the DocDO's create does. */
+function comment(server: Y.Doc, quote: string, from = 0): TreeAnchor {
+  const anchor = anchorOn(server, quote, from);
+  server.transact(() => comments(server).set('c1', { id: 'c1', anchor }), 'server-comments');
+  return anchor;
+}
+const stored = (doc: Y.Doc) => comments(doc).get('c1')!.anchor;
+
+async function scene(run: (seed: Y.Doc, a: Peer, b: Peer) => Promise<void>, body = BODY): Promise<void> {
   const seed = new Y.Doc();
-  importBody(seed, BODY);
+  importBody(seed, body);
   const a = peer(seed);
   const b = peer(seed);
   try {
@@ -96,7 +120,7 @@ async function scene(run: (seed: Y.Doc, a: Peer, b: Peer) => Promise<void>): Pro
 describe('T4.0 spike: tree anchors over the V1 binding @p:tech-3', () => {
   it('every replica and the server compute one projection, and an anchor minted on one resolves on all', () => scene(async (seed, a, b) => {
     expect(project(a.doc).text).toBe(project(seed).text);
-    expect(project(seed).text.startsWith('The quick brown fox jumps over the lazy dog.\nSecond paragraph here, a fox too.\n\uFFFC')).toBe(true);
+    expect(project(seed).text.startsWith('The quick brown fox jumps over the lazy dog.\nSecond paragraph here, a fox too.\n￼')).toBe(true);
     const anchor = anchorOn(b.doc, 'brown fox');
     for (const doc of [seed, a.doc, b.doc]) expect(textOf(doc, anchor)).toBe('brown fox');
   }));
@@ -141,27 +165,23 @@ describe('T4.0 spike: tree anchors over the V1 binding @p:tech-3', () => {
     }
   }));
 
-  it('typing inside the range refreshes the quote, so a later format collapse still finds the grown text', () => scene(async (seed, a, b) => {
-    const minted = anchorOn(seed, 'brown fox');
+  it('typing inside the range refreshes the quote, and a later format split keeps the grown text', () => scene(async (seed, a) => {
+    comment(seed, 'brown fox');
     a.edit(() => { firstText().spliceText(16, 0, 'very '); });
-    await sync(seed, a.doc, b.doc);
-    // The DocDO persists what validateAnchor returns when it reports a change (comments.md §3.4).
-    const typed = validateAnchor(seed, minted);
-    expect(typed.changed).toBe(true);
-    expect(typed.anchor.quote.exact).toBe('brown very fox');
+    expect(frame(seed, a.doc)).toEqual(['c1']);
+    expect(stored(seed).quote.exact).toBe('brown very fox');
     a.edit(() => bold(4, 9));
-    await sync(seed, a.doc, b.doc);
-    const formatted = validateAnchor(seed, typed.anchor);
-    expect(formatted.anchor.status).toBe('anchored');
-    for (const doc of [seed, a.doc, b.doc]) expect(textOf(doc, formatted.anchor)).toBe('brown very fox');
+    frame(seed, a.doc);
+    expect(stored(seed).status).toBe('anchored');
+    await sync(seed, a.doc);
+    for (const doc of [seed, a.doc]) expect(textOf(doc, stored(seed))).toBe('brown very fox');
   }));
 
-  it('a refreshed quote persists with the frame that changed it, so a restart before any save tick keeps the typing', () => scene(async (seed, a) => {
+  it('a refreshed anchor persists with the frame that changed it, so a restart before any save tick keeps it', () => scene(async (seed, a) => {
     // The DocDO's log: every update it applies is a row (doc-do.ts #persist); a wake replays the rows, or a compaction.
     const log: Uint8Array[] = [Y.encodeStateAsUpdate(seed)];
     seed.on('update', (update: Uint8Array) => log.push(update));
-    const comments = seed.getMap<{ id: string; anchor?: TreeAnchor }>('comments');
-    seed.transact(() => comments.set('c1', { id: 'c1', anchor: anchorOn(seed, 'brown fox') }), 'server-comments');
+    comment(seed, 'brown fox');
     const frameTo = (doc: Y.Doc) => Y.applyUpdate(doc, Y.encodeStateAsUpdate(a.doc, Y.encodeStateVector(doc)), REMOTE);
     const wake = () => {
       const doc = new Y.Doc();
@@ -170,21 +190,23 @@ describe('T4.0 spike: tree anchors over the V1 binding @p:tech-3', () => {
     };
 
     a.edit(() => { firstText().spliceText(16, 0, 'very '); });
+    const before = anchorsBefore(seed);
     frameTo(seed);
     // Control: the refresh only in memory (or on a later tick) is lost by a restart here.
     const lost = wake();
     expect(lost.getMap<{ anchor: TreeAnchor }>('comments').get('c1')?.anchor.quote.exact).toBe('brown fox');
     // The design: refresh in the same synchronous step as the root frame, so its row lands with the frame's row.
-    expect(refreshAnchors(seed, 'server-comments')).toEqual(['c1']);
+    expect(refreshAnchors(seed, 'server-comments', before)).toEqual(['c1']);
     expect(refreshAnchors(seed, 'server-comments'), 'nothing changed since').toEqual([]);
 
     const compacted = new Y.Doc();
     Y.applyUpdate(compacted, Y.encodeStateAsUpdate(seed));
     a.edit(() => bold(4, 9));
     for (const woken of [wake(), compacted]) {
+      const ahead = anchorsBefore(woken);
       frameTo(woken);
-      refreshAnchors(woken, 'server-comments');
-      const anchor = woken.getMap<{ anchor: TreeAnchor }>('comments').get('c1')!.anchor;
+      refreshAnchors(woken, 'server-comments', ahead);
+      const anchor = stored(woken);
       expect(anchor.status).toBe('anchored');
       expect(textOf(woken, anchor)).toBe('brown very fox');
       woken.destroy();
@@ -192,38 +214,38 @@ describe('T4.0 spike: tree anchors over the V1 binding @p:tech-3', () => {
     lost.destroy();
   }));
 
-  it('bolding a word before the range collapses the raw positions; the quote restores the same text and re-mints', () => scene(async (seed, a, b) => {
-    const anchor = anchorOn(seed, 'brown fox');
+  it('a format split collapses the raw positions; the DocDO re-mints them at the same offsets in that frame', () => scene(async (seed, a, b) => {
+    const minted = comment(seed, 'brown fox');
     a.edit(() => bold(4, 9));
-    await sync(seed, a.doc, b.doc);
-    const raw = resolveAnchor(seed, anchor);
+    await sync(a.doc, b.doc);
+    const before = anchorsBefore(seed);
+    Y.applyUpdate(seed, Y.encodeStateAsUpdate(a.doc, Y.encodeStateVector(seed)), REMOTE);
+    const raw = resolveAnchor(seed, minted);
     expect(raw === null || raw.start === raw.end, `raw positions after a format split: ${JSON.stringify(raw)}`).toBe(true);
-    const checked = validateAnchor(seed, anchor);
-    expect(checked.reanchored).toBe(true);
-    expect(checked.anchor.status).toBe('anchored');
-    const restored = resolveAnchor(seed, checked.anchor);
-    expect(restored && project(seed).text.slice(restored.start, restored.end)).toBe('brown fox');
-    for (const doc of [a.doc, b.doc]) expect(textOf(doc, checked.anchor)).toBe('brown fox');
+    expect(validateAnchor(seed, minted).anchor.status, 'collapsed positions alone orphan: no quote search').toBe('orphaned');
+    expect(refreshAnchors(seed, 'server-comments', before)).toEqual(['c1']);
+    expect(stored(seed).status).toBe('anchored');
+    expect(stored(seed).start).not.toBe(minted.start);
+    await sync(seed, a.doc, b.doc);
+    for (const doc of [seed, a.doc, b.doc]) expect(textOf(doc, stored(seed))).toBe('brown fox');
+    expect(validateAnchor(seed, stored(seed)).range?.start).toBe(project(seed).text.indexOf('brown fox'));
   }));
 
-  it('a short comment re-anchors only where its context still matches, and orphans instead of jumping', () => scene(async (seed, a) => {
-    const fox = anchorOn(seed, 'fox');
-    a.edit(() => bold(4, 9));
-    await sync(seed, a.doc);
-    expect(textOf(seed, fox), 'same word, same context: kept').toBe('fox');
+  it('a short comment keeps its word through a format split and orphans when the word is deleted', () => scene(async (seed, a) => {
+    comment(seed, 'fox');
     const start = project(seed).text.indexOf('fox');
-    expect(validateAnchor(seed, fox).range?.start).toBe(start);
+    a.edit(() => bold(4, 9));
+    frame(seed, a.doc);
+    expect(validateAnchor(seed, stored(seed)).range?.start, 'same word, same place').toBe(start);
 
-    const moved = anchorOn(seed, 'fox');
     a.edit(() => {
       const text = paragraph(0).getChildren().at(-1) as TextNode;
       text.setTextContent(text.getTextContent().replace('fox ', ''));
     });
-    await sync(seed, a.doc);
+    frame(seed, a.doc);
     expect(project(seed).text).toContain('a fox too');
-    const checked = validateAnchor(seed, moved);
-    expect(checked.range, 'the other "fox" has a different context').toBeNull();
-    expect(checked.anchor.status).toBe('orphaned');
+    expect(stored(seed).status, 'never moves to the other "fox"').toBe('orphaned');
+    expect(validateAnchor(seed, stored(seed)).range).toBeNull();
   }));
 
   it('deleting the commented paragraph orphans the anchor', () => scene(async (seed, a) => {
@@ -235,16 +257,86 @@ describe('T4.0 spike: tree anchors over the V1 binding @p:tech-3', () => {
     expect(checked.anchor.status).toBe('orphaned');
   }));
 
+  it('deleting commented text and undoing it reattaches the comment in the same place, past an identical line', () => scene(async (seed, a) => {
+    const minted = comment(seed, 'TODO: fix this');
+    a.edit(() => { firstText().spliceText(0, 'TODO: fix this'.length, ''); });
+    frame(seed, a.doc);
+    expect(stored(seed).status).toBe('orphaned');
+    expect([stored(seed).start, stored(seed).end], 'positions are kept').toEqual([minted.start, minted.end]);
+    a.undo();
+    frame(seed, a.doc);
+    expect(project(seed).text.startsWith('TODO: fix this\nTODO: fix this')).toBe(true);
+    expect(stored(seed).status).toBe('anchored');
+    expect(validateAnchor(seed, stored(seed)).range).toEqual({ start: 0, end: 'TODO: fix this'.length });
+    await sync(seed, a.doc);
+    expect(textOf(a.doc, stored(seed))).toBe('TODO: fix this');
+  }, TWINS));
+
+  it('deleting a commented paragraph with an identical one elsewhere orphans it, and it never moves', () => scene(async (seed, a) => {
+    const minted = comment(seed, 'TODO: fix this');
+    a.edit(() => paragraph(0).remove());
+    frame(seed, a.doc);
+    expect(project(seed).text.startsWith('TODO: fix this\nTail.')).toBe(true);
+    expect(stored(seed).status).toBe('orphaned');
+    a.edit(() => { (paragraph(1).getFirstChild() as TextNode).spliceText(0, 0, 'More. '); });
+    frame(seed, a.doc);
+    expect(stored(seed).status, 'a later frame does not retarget it').toBe('orphaned');
+    expect([stored(seed).start, stored(seed).end]).toEqual([minted.start, minted.end]);
+    expect(validateAnchor(seed, stored(seed)).range).toBeNull();
+  }, TWINS));
+
+  it('deleting a commented paragraph and undoing it reattaches the comment', () => scene(async (seed, a) => {
+    comment(seed, 'lazy dog');
+    const start = project(seed).text.indexOf('lazy dog');
+    a.edit(() => paragraph(0).remove());
+    frame(seed, a.doc);
+    expect(stored(seed).status).toBe('orphaned');
+    a.undo();
+    frame(seed, a.doc);
+    expect(stored(seed).status).toBe('anchored');
+    expect(validateAnchor(seed, stored(seed)).range).toEqual({ start, end: start + 'lazy dog'.length });
+  }));
+
+  it('deleting and retyping the same text leaves the comment orphaned', () => scene(async (seed, a) => {
+    const minted = comment(seed, 'brown fox');
+    a.edit(() => { firstText().spliceText(10, 'brown fox'.length, ''); });
+    frame(seed, a.doc);
+    expect(stored(seed).status).toBe('orphaned');
+    a.edit(() => { firstText().spliceText(10, 0, 'brown fox'); });
+    frame(seed, a.doc);
+    expect(project(seed).text.startsWith('The quick brown fox jumps')).toBe(true);
+    expect(stored(seed).status, 'no silent retarget').toBe('orphaned');
+    expect([stored(seed).start, stored(seed).end]).toEqual([minted.start, minted.end]);
+  }));
+
+  it('deleting a commented block whose twin has the same context orphans it', () => scene(async (seed, a) => {
+    const twin = project(seed).text.indexOf('￼');
+    comment(seed, '￼', twin + 1);
+    a.edit(() => findAll('code-block')[1].remove());
+    frame(seed, a.doc);
+    expect(project(seed).text.indexOf('￼')).toBe(twin);
+    expect(project(seed).text.lastIndexOf('￼')).toBe(twin);
+    expect(stored(seed).status).toBe('orphaned');
+    expect(validateAnchor(seed, stored(seed)).range).toBeNull();
+  }, `${PAD}\n\n\`\`\`js\nx\n\`\`\`\n\n${PAD}\n\n\`\`\`js\nx\n\`\`\`\n\n${PAD}`));
+
+  it('an anchor that never had positions (an import, or a quote-only REST comment) attaches by its quote', () => scene(async (seed) => {
+    const quoteOnly: TreeAnchor = { start: '', end: '', quote: { exact: 'lazy dog', prefix: 'over the ', suffix: '.' }, hint: 0, status: 'orphaned' };
+    const checked = validateAnchor(seed, quoteOnly);
+    expect(checked.anchor.status).toBe('anchored');
+    expect(textOf(seed, checked.anchor)).toBe('lazy dog');
+  }));
+
   it('a block comment anchors the decorator embed and survives a paragraph above and edits inside its register', () => scene(async (seed, a, b) => {
-    const anchor = anchorOn(seed, '\uFFFC');
+    const anchor = anchorOn(seed, '￼');
     a.edit(() => { paragraph(0).insertBefore($createParagraphNode().append($createTextNode('Intro line'))); });
-    b.edit(() => { (find('code-block') as unknown as { setCode: (code: string) => void }).setCode('const x = 2;'); });
+    b.edit(() => { (findAll('code-block')[0] as unknown as { setCode: (code: string) => void }).setCode('const x = 2;'); });
     await sync(seed, a.doc, b.doc);
     expect(project(seed).text.startsWith('Intro line\n')).toBe(true);
     for (const doc of [seed, a.doc, b.doc]) {
       const range = validateAnchor(doc, anchor).range;
       expect(range && range.end - range.start).toBe(1);
-      expect(range?.start).toBe(project(doc).text.indexOf('\uFFFC'));
+      expect(range?.start).toBe(project(doc).text.indexOf('￼'));
     }
   }));
 });
