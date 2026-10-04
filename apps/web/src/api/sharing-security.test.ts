@@ -102,20 +102,22 @@ describe('(a) no account enumeration beyond the rate limit', () => {
 
 describe('(b) the vault owner stays the owner', () => {
   it("lets a co-owner neither lower nor remove the vault's owner, nor take the vault", async () => {
+    // Its own co-owner: a grant on Ada's Home reaches every note of Ada's the later tests make.
+    const co = await signedUpUser(env, 't24s-co', 'Co');
     const folderId = await insertFolder(d1.db, ada, ada.homeId);
     const docId = await insertDoc(d1.db, ada, { folderId });
-    await insertGrant(d1.db, { folderId: ada.homeId }, cy, 'owner');
-    expect(await roleOf({ cookie: cy.cookie }, docId), 'Cy co-owns the vault').toBe('owner');
+    await insertGrant(d1.db, { folderId: ada.homeId }, co, 'owner');
+    expect(await roleOf({ cookie: co.cookie }, docId), 'Co co-owns the vault').toBe('owner');
 
     for (const [type, id] of [['folders', ada.homeId], ['folders', folderId], ['docs', docId]] as const) {
       const path = `/api/${type}/${id}/members`;
       for (const email of [ada.email, ada.email.toUpperCase(), ` ${ada.email} `]) {
-        const lowered = await call('POST', path, cy.cookie, { email, role: 'viewer' });
+        const lowered = await call('POST', path, co.cookie, { email, role: 'viewer' });
         expect(lowered.status, `${type} ${email}`).toBe(409);
         expect(await lowered.json()).toMatchObject({ error: 'already-owner' });
       }
       for (const method of ['DELETE', 'PATCH', 'PUT']) {
-        expect((await call(method, path, cy.cookie, { email: ada.email, role: 'viewer' })).status, `${method} ${path}`).toBe(405);
+        expect((await call(method, path, co.cookie, { email: ada.email, role: 'viewer' })).status, `${method} ${path}`).toBe(405);
       }
     }
     const written = await d1.db.prepare(`SELECT
@@ -125,10 +127,10 @@ describe('(b) the vault owner stays the owner', () => {
     expect(written, 'nothing names the vault owner as a member').toEqual({ invites: 0, grants: 0 });
 
     // What a co-owner makes and shares stays in the vault owner's hands.
-    const created = await call('POST', '/api/docs', cy.cookie, { folderId });
+    const created = await call('POST', '/api/docs', co.cookie, { folderId });
     expect(created.status).toBe(201);
     const { id: newDoc } = ((await created.json()) as { doc: { id: string } }).doc;
-    expect((await call('POST', `/api/docs/${newDoc}/members`, cy.cookie, { email: ben.email, role: 'owner' })).status).toBe(201);
+    expect((await call('POST', `/api/docs/${newDoc}/members`, co.cookie, { email: ben.email, role: 'owner' })).status).toBe(201);
     const owners = await d1.db.prepare('SELECT owner_user_id AS owner FROM docs WHERE id IN (?1, ?2) UNION SELECT owner_user_id FROM folders WHERE id IN (?3, ?4)')
       .bind(docId, newDoc, folderId, ada.homeId).all();
     expect(owners.results, 'ownership never moves').toEqual([{ owner: ada.id }]);
