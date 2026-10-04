@@ -358,5 +358,6 @@ test('j01 workspace: sign-out closes the channel while the auth request is still
     await ada.page.waitForTimeout(1100);
     expect(opened).toBe(1);
   } finally { release(); }
+  await ada.page.waitForURL('**/login', { waitUntil: 'domcontentloaded' });
   await ui.waitForLoginCard(ada);
 });
