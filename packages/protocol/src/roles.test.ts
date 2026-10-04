@@ -121,6 +121,26 @@ describe('foldRole: the link ceiling', () => {
   });
 });
 
+describe('foldRole: owner access needs a person (T2.4s)', () => {
+  it('never takes owner from a link, even a row that says owner', () => {
+    for (const sources of everySource()) {
+      const withOwnerLink = { ...sources, link: 'owner' as const };
+      const expected = sources.anonymous ? 'viewer' : highest([sources.owner ? 'owner' : null, ...sources.grants, 'editor']);
+      expect(foldRole(withOwnerLink), describeSources(withOwnerLink)).toBe(expected);
+    }
+  });
+
+  it('caps an agent at editor whatever its owner, its grants or a link hold', () => {
+    for (const sources of everySource()) {
+      for (const extra of [[], ['owner' as const]]) {
+        const agent = { ...sources, grants: [...sources.grants, ...extra], agent: true };
+        const person = foldRole({ ...agent, agent: false });
+        expect(foldRole(agent), describeSources(agent)).toBe(person === 'owner' ? 'editor' : person);
+      }
+    }
+  });
+});
+
 describe('can', () => {
   const capabilities = Object.keys(CAPABILITY_FLOORS) as Capability[];
 

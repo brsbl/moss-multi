@@ -25,9 +25,9 @@ export interface TestUser {
 
 let seq = 0;
 
-export async function signedUpUser(env: AuthTestEnv, label: string, name = 'Ada'): Promise<TestUser> {
+export async function signedUpUser(env: AuthTestEnv, label: string, name = 'Ada', address?: string): Promise<TestUser> {
   seq += 1;
-  const email = `mm-t07-${label}-${seq}-${Date.now()}@example.invalid`;
+  const email = address ?? `mm-t07-${label}-${seq}-${Date.now()}@example.invalid`;
   const response = await handleAuthRoute(
     new Request(`${BASE}/api/auth/sign-up/email`, {
       method: 'POST',

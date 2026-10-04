@@ -3,7 +3,7 @@
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { observeField, readField, remapCaret, writeField } from './doc-fields.ts';
-import { applyOps, diffText, LCS_CELL_BUDGET, type TextOp } from './text-diff.ts';
+import { applyOps, diffText, LCS_CELL_BUDGET, SERVER_CELL_BUDGET, type TextOp } from './text-diff.ts';
 
 const LOCAL = 'local';
 
@@ -120,6 +120,33 @@ describe('budget fallback', () => {
     expect(Date.now() - started, 'bounded work').toBeLessThan(2_000);
     expect(applyOps(current, ops)).toBe(target);
     expect(ops.filter((op) => 'insert' in op)).toHaveLength(1);
+  });
+
+  it('a large paste replacing a small selection (n=500,000) is exact, coalesced and bounded', () => {
+    const paste = 'y'.repeat(500_000);
+    const started = Date.now();
+    const ops = diffText('aXb', `a${paste}b`);
+    expect(Date.now() - started, 'bounded work').toBeLessThan(2_000);
+    expect(ops).toEqual([{ retain: 1 }, { delete: 1 }, { insert: paste }]);
+    const [a, b] = pair('aXb');
+    writeField(a, 'title', `a${paste}b`, LOCAL);
+    expect(readField(b, 'title')).toBe(`a${paste}b`);
+  });
+
+  it('the server budget still diffs a title by character, and past it by lines, then one replace, all exact', () => {
+    const ops = diffText('ab'.repeat(100), 'ba'.repeat(100), SERVER_CELL_BUDGET);
+    expect(applyOps('ab'.repeat(100), ops)).toBe('ba'.repeat(100));
+    expect(touched(ops)).toBe(2);
+    const lines = (word: string) => Array.from({ length: 100 }, (_, i) => `${kept(i)}\n${word} line ${i}`).join('\n');
+    const current = lines('old');
+    const target = lines('new');
+    const byLines = diffText(current, target, SERVER_CELL_BUDGET);
+    expect(applyOps(current, byLines)).toBe(target);
+    expect(touched(byLines)).toBeLessThan((current.length + target.length) * 0.6);
+    const long = (word: string) => Array.from({ length: 300 }, (_, i) => `${word} ${i}`).join('\n');
+    const replaced = diffText(long('a'), long('b'), SERVER_CELL_BUDGET);
+    expect(applyOps(long('a'), replaced)).toBe(long('b'));
+    expect(replaced.filter((op) => 'insert' in op)).toHaveLength(1);
   });
 
   it('writeField stays exact on a large title edit', () => {

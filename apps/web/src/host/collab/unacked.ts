@@ -3,10 +3,30 @@
 
 const holding = new Set<object>();
 const waiters = new Set<() => void>();
+let leaving = false;
+
+/** A reload or tab close would discard edits only this window holds, so the browser asks first. */
+function guardUnload(event: BeforeUnloadEvent): void {
+  if (leaving || holding.size === 0) return;
+  event.preventDefault();
+  event.returnValue = '';
+}
+
+/** navigation.ts's leaves have already waited for acks or asked, so the browser does not ask again. */
+export function allowUnload(): void {
+  leaving = true;
+  // A page restored from the back-forward cache guards again.
+  window.addEventListener('pageshow', () => { leaving = false; }, { once: true });
+}
 
 export function markUnacked(session: object, unacked: boolean): void {
   if (unacked) holding.add(session);
   else holding.delete(session);
+  // Listening only while needed: a beforeunload listener keeps a page out of the back-forward cache.
+  if (typeof window !== 'undefined') {
+    if (holding.size > 0) window.addEventListener('beforeunload', guardUnload);
+    else window.removeEventListener('beforeunload', guardUnload);
+  }
   if (holding.size > 0) return;
   for (const done of [...waiters]) done();
   waiters.clear();

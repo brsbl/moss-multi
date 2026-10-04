@@ -45,6 +45,7 @@ declare module '@moss/shared/state/atoms' {
   export const syncNoteEntityAtom: WritableAtom<null, [{ noteId: string; updates: { title?: string; updatedAt?: number } }], void>;
   export const activeNoteIdAtom: WritableAtom<string | null, [string | null], void>;
   export const activeFolderPathAtom: WritableAtom<string, [string], void>;
+  export const revealFolderPathAtom: WritableAtom<null, [string | null | undefined], void>;
   export const hydrateNotesAtom: WritableAtom<null, [], Promise<void>>;
   export const splitTabNoteIdAtom: WritableAtom<string | null, [string | null], void>;
   export const openSplitTabAtom: WritableAtom<null, [string], void>;
@@ -101,6 +102,13 @@ declare module '@moss/shared/components/ui/dropdown-menu' {
   export const DropdownMenuTrigger: ComponentType<ButtonHTMLAttributes<HTMLButtonElement> & { asChild?: boolean }>;
   export const DropdownMenuContent: ComponentType<HTMLAttributes<HTMLDivElement> & { align?: 'start' | 'center' | 'end' }>;
   export const DropdownMenuItem: ComponentType<HTMLAttributes<HTMLDivElement> & { onSelect?: () => void }>;
+  export const DropdownMenuSeparator: ComponentType<HTMLAttributes<HTMLDivElement>>;
+}
+
+// The notes list's context-menu item, which the folder "Share…" slot renders (T2.4).
+declare module '@moss/shared/components/ui/context-menu' {
+  import type { ComponentType, HTMLAttributes } from 'react';
+  export const ContextMenuItem: ComponentType<HTMLAttributes<HTMLDivElement> & { onSelect?: () => void }>;
 }
 
 declare module '@moss/shared/components/ui/input' {
@@ -148,4 +156,9 @@ declare module '@moss-desktop/renderer/editor/markdown/transformers' {
   }
   export function $collectTableLayoutMetadata(): LocalLayoutMetadata;
   export function $collectTabGroupLayoutMetadata(): Pick<LocalLayoutMetadata, 'tabGroupCount' | 'tabGroups'>;
+}
+
+declare module '@moss-desktop/renderer/panels/notesPanelUtils' {
+  /** moss's sidebar time: `timestamp` in seconds. */
+  export function formatRelativeTime(timestamp: number): string;
 }

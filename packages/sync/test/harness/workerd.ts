@@ -95,6 +95,8 @@ export class Backing {
   readonly db = new DatabaseSync(':memory:');
   readonly kv = new Map<string, unknown>();
   readonly sockets: { ws: FakeSocket; tags: string[] }[] = [];
+  /** The scheduled alarm, which outlives an eviction; a test fires it by calling the instance's alarm(). */
+  alarm: number | null = null;
 
   constructor(readonly docId = `doc-${(backings += 1)}`) {}
 
@@ -114,6 +116,9 @@ export class FakeState {
     get(key: string): Promise<unknown>;
     put(key: string, value: unknown): Promise<void>;
     delete(key: string): Promise<boolean>;
+    getAlarm(): Promise<number | null>;
+    setAlarm(at: number | Date): Promise<void>;
+    deleteAlarm(): Promise<void>;
   };
 
   constructor(readonly backing: Backing) {
@@ -161,6 +166,18 @@ export class FakeState {
       delete: async (key) => {
         live();
         return backing.kv.delete(key);
+      },
+      getAlarm: async () => {
+        live();
+        return backing.alarm;
+      },
+      setAlarm: async (at) => {
+        live();
+        backing.alarm = typeof at === 'number' ? at : at.getTime();
+      },
+      deleteAlarm: async () => {
+        live();
+        backing.alarm = null;
       },
     };
   }
