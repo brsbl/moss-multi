@@ -6,7 +6,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { Actor, Actors } from '../lib/actors.ts';
 import {
-  APP_STATE_ATTR, BODY_BINDING_ATTR, DOC_SOCKET_PATH, DOC_STATE_ATTR, EDITOR_PANE_ATTR, ROLE_ATTR, SYNC_UNACKED_ATTR, paneSelector,
+  APP_STATE_ATTR, BODY_BINDING_ATTR, DOC_SOCKET_PATH, DOC_STATE_ATTR, EDITOR_PANE_ATTR, NAMES, ROLE_ATTR, SYNC_UNACKED_ATTR, paneSelector,
 } from '../lib/contract.ts';
 import { cookieHeader, openDocClient } from '../lib/doc-client.ts';
 import { signIn } from '../lib/principals.ts';
@@ -332,6 +332,24 @@ test('j01 workspace: another open document keeps its binding while peer creates 
   await ui.typeBody(ben, openId, 'Still bound after metadata');
   await waitAcked(ben, openId);
   await actors.checkpoint('workspace-metadata');
+  await actors.assertInvariants();
+
+  // Prove this journey armed invariant 4, even when a remount reuses the same session generation.
+  const original = await ui.pane(ben, openId).locator(`[${NAMES.generation}]`).evaluateHandle((root, observe) => {
+    const replacement = root.cloneNode(true) as Element;
+    replacement.removeAttribute(observe);
+    root.replaceWith(replacement);
+    return root;
+  }, NAMES.observe);
+  try {
+    expect((await actors.findings()).filter((finding) => finding.actor === ben.label && finding.invariant === 4),
+      'the workspace journey detects a replaced bound body at the same generation').not.toHaveLength(0);
+  } finally {
+    await original.evaluate((root, { pane, generation }) => {
+      document.querySelector(`${pane} [${generation}]`)!.replaceWith(root);
+    }, { pane: paneSelector(openId), generation: NAMES.generation });
+    await original.dispose();
+  }
 });
 
 test('j01 workspace: sign-out closes the channel while the auth request is still pending @p:ppl-1', async ({ actors }) => {

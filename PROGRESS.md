@@ -213,3 +213,8 @@ Local browser verification remains assigned to the independent checker under the
 - Local browser self-check is omitted under the implementer brief, which assigns the available browser driver and decisive PR screenshots to the independent checker. No local tests, typechecks, lint, stacks or browsers were run.
 
 - [Chromium workspace journeys](https://github.com/brsbl/moss-multi/actions/runs/37167038946) passed at `3a5a726`. All 12 regression assertions passed in [push CI](https://github.com/brsbl/moss-multi/actions/runs/37167038647); the now-successful empty-create regression occupied `untitled.md` for an older shared-fixture test, so the new regression now uses its own principal. Product code is unchanged by that test isolation. Final-head push CI is recorded in `.codex-result.json`.
+
+### T2.1 — arm the bound-editor metadata gate
+
+- Attempt 3 merges current M1 while preserving the verified-task union (25/70). The tests-first change adds a same-generation body replacement positive control to the actual workspace journey: invariant 4 must report it, then the original body is restored. This must fail while Ben's observation remains unarmed. No product behavior or public contracts change.
+- The P1 repair will observe Ben after the intentional reload and await a peer-originated bound-id metadata event and its bridge delivery before checking invariants. The checker owns local browser QA under the implementer brief.
