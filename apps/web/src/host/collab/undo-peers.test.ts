@@ -35,8 +35,9 @@ function peer(seed?: Y.Doc) {
   editor.update(noop, { discrete: true });
   const undo = createBindingUndoManager(binding);
   const text = () => editor.getEditorState().read(() => $getRoot().getTextContent());
-  const step = (fn: () => void) => { editor.update(fn, { discrete: true }); undo.stopCapturing(); };
-  return { doc, editor, undo, text, step, dispose: () => { undo.destroy(); stop(); stopRegisters(); root.unobserveDeep(observer); doc.destroy(); } };
+  const edit = (fn: () => void) => editor.update(fn, { discrete: true });
+  const step = (fn: () => void) => { edit(fn); undo.stopCapturing(); };
+  return { doc, editor, undo, text, edit, step, dispose: () => { undo.destroy(); stop(); stopRegisters(); root.unobserveDeep(observer); doc.destroy(); } };
 }
 type Peer = ReturnType<typeof peer>;
 
@@ -120,6 +121,47 @@ describe('Cmd+Z undoes only your own edits and never removes a peer\'s character
         ada.undo.redo();
         await expectBoth(ada, ben, text => expect(text).toBe('Intro.\n\nAlpha'));
       }
+    } finally { dispose(); }
+  });
+
+  it('after Ada deletes her whole text node holding the peer\'s words and undoes that, her next Cmd+Z keeps them', async () => {
+    const { ada, ben, dispose } = await pair(() => $getRoot().append($createParagraphNode().append($createTextNode('Intro.'))));
+    try {
+      ada.step(() => $getRoot().append($createParagraphNode().append($createTextNode('Alpha'))));
+      await exchange(ada, ben);
+      ben.step(typeAt(1, 5, ' BEN'));
+      await exchange(ada, ben);
+      // Selecting the line and pressing Backspace deletes the text node, so its property map is restored as a copy.
+      ada.step(() => textAt(1).remove());
+      await expectBoth(ada, ben, text => expect(text).toBe('Intro.\n\n'));
+      ada.undo.undo();
+      await expectBoth(ada, ben, text => expect(text, 'undoing the delete restores the line').toBe('Intro.\n\nAlpha BEN'));
+      ada.undo.undo();
+      await expectBoth(ada, ben, text => expect(text, 'Ada\'s Cmd+Z must leave Ben\'s text').toBe('Intro.\n\n BEN'));
+      for (const actor of [ada, ben]) {
+        expect(actor.editor.getEditorState().read(() => textAt(1).getType()), 'the kept text node keeps its properties').toBe('text');
+      }
+      ada.undo.redo();
+      await expectBoth(ada, ben, text => expect(text).toBe('Intro.\n\nAlpha BEN'));
+      ada.undo.redo();
+      await expectBoth(ada, ben, text => expect(text).toBe('Intro.\n\n'));
+    } finally { dispose(); }
+  });
+
+  it('a line Ada created and deleted the peer\'s words from in one capture window keeps them through her undo', async () => {
+    const { ada, ben, dispose } = await pair(() => $getRoot().append($createParagraphNode().append($createTextNode('Intro.'))));
+    try {
+      ada.edit(() => $getRoot().append($createParagraphNode().append($createTextNode('Alpha'))));
+      await exchange(ada, ben);
+      ben.step(typeAt(1, 5, ' BEN'));
+      await exchange(ada, ben);
+      ada.edit(() => textAt(1).spliceText(5, 4, ''));
+      await expectBoth(ada, ben, text => expect(text).toBe('Intro.\n\nAlpha'));
+      expect(ada.undo.undoStack, 'creating the line and deleting Ben\'s words are one step').toHaveLength(1);
+      ada.undo.undo();
+      await expectBoth(ada, ben, text => expect(text, 'Ada\'s Cmd+Z must leave Ben\'s text').toBe('Intro.\n\n BEN'));
+      ada.undo.redo();
+      await expectBoth(ada, ben, text => expect(text).toBe('Intro.\n\nAlpha'));
     } finally { dispose(); }
   });
 
