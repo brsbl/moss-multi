@@ -5,7 +5,7 @@ import { createBinding, syncLexicalUpdateToYjs, syncYjsChangesToLexical, type Pr
 import { $insertTableRowAtNode, $isTableCellNode, type TableCellNode } from '@lexical/table';
 import { $createListItemNode, $isListItemNode, type ListItemNode } from '@lexical/list';
 import {
-  $copyNode, $createParagraphNode, $createRangeSelection, $getRoot, $getSelection, $isElementNode, $isRangeSelection, $isTextNode, $setSelection,
+  $copyNode, $createParagraphNode, type ParagraphNode, $createRangeSelection, $getRoot, $getSelection, $isElementNode, $isRangeSelection, $isTextNode, $setSelection,
   type LexicalNode, type TextNode,
 } from 'lexical';
 import * as encoding from 'lib0/encoding';
@@ -69,7 +69,19 @@ function client(server: Y.Doc) {
     editor.update(fn, { discrete: true });
     return Y.mergeUpdates(sent);
   };
-  return { doc, editor, frame, receive, dispose: () => { stop(); stopRegisters(); root.unobserveDeep(observer); doc.destroy(); } };
+  // The binding's UndoManager (seam (a)): every local editor change is its own step here.
+  const history = new Y.UndoManager(root, { trackedOrigins: new Set([binding]), captureTimeout: 0 });
+  /** Cmd+Z: the frame that the UndoManager's transaction and Lexical's reconcile of it put on the wire. */
+  const undo = (): Uint8Array => {
+    sent.length = 0;
+    history.undo();
+    editor.update(noop, { discrete: true });
+    return Y.mergeUpdates(sent);
+  };
+  return {
+    doc, editor, frame, receive, undo,
+    dispose: () => { history.destroy(); stop(); stopRegisters(); root.unobserveDeep(observer); doc.destroy(); },
+  };
 }
 
 function seeded(): Y.Doc {
@@ -479,5 +491,197 @@ describe('SP11 identity across other writers @p:mean-2', () => {
       expect(vet(4, 1005)).toEqual({ ok: false, reason: 'delete-original' });
       expect(vet(3, 1000 + SEEN_GRACE_SECONDS + 1)).toEqual({ ok: false, reason: 'delete-original' });
     } finally { author.dispose(); server.destroy(); }
+  });
+});
+
+/** A V1 update holding one forged item of `content`, placed only by its origin, with an empty delete set. */
+function placedByOrigin(client: number, origin: Y.ID, content: Y.ContentDeleted): Uint8Array {
+  const encoder = new Y.UpdateEncoderV1();
+  encoding.writeVarUint(encoder.restEncoder, 1);
+  encoding.writeVarUint(encoder.restEncoder, 1);
+  encoder.writeClient(client);
+  encoding.writeVarUint(encoder.restEncoder, 0);
+  new Y.Item(Y.createID(client, 0), null, origin, null, null, null, null, content).write(encoder, 0);
+  encoding.writeVarUint(encoder.restEncoder, 0);
+  return encoder.toUint8Array();
+}
+
+/** The live text of the nth live top-level block. */
+function blockText(doc: Y.Doc, nth: number): string {
+  let block = doc.get('root', Y.XmlText)._start;
+  for (let i = 0; block; block = block.right) if (!block.deleted && i++ === nth) break;
+  let out = '';
+  const walk = (type: Y.AbstractType<unknown>) => {
+    for (let item = type._start; item; item = item.right) {
+      if (item.deleted) continue;
+      if (item.content instanceof Y.ContentString) out += item.content.str;
+      else if (item.content instanceof Y.ContentType) walk(item.content.type);
+    }
+  };
+  if (block?.content instanceof Y.ContentType) walk(block.content.type);
+  return out;
+}
+
+/** The live top-level blocks a Yjs client created, in order. */
+function blocksOf(doc: Y.Doc, client: number): Y.Item[] {
+  const out: Y.Item[] = [];
+  for (let item = doc.get('root', Y.XmlText)._start; item; item = item.right) {
+    if (!item.deleted && item.id.client === client && item.content instanceof Y.ContentType) out.push(item);
+  }
+  return out;
+}
+
+/** The suggester's own new paragraph "mine" after the first block, landed. */
+function withOwnParagraph() {
+  const server = seeded();
+  const suggester = client(server);
+  const s = session(server, suggester.doc);
+  s.land(suggester.frame(() => {
+    select(24).insertParagraph();
+    const selection = $getSelection();
+    if ($isRangeSelection(selection)) selection.insertText('mine');
+  }));
+  return { server, suggester, s };
+}
+
+/** withOwnParagraph, plus a peer's " theirs" typed into the same text node. */
+function peerInsideOwn() {
+  const { server, suggester, s } = withOwnParagraph();
+  const peer = client(server);
+  const typed = peer.frame(() => { select(4, 4, texts().findIndex((node) => node.getTextContent() === 'mine')).insertText(' theirs'); });
+  Y.applyUpdate(server, typed);
+  suggester.receive(typed);
+  const nth = () => texts().findIndex((node) => node.getTextContent() === 'mine theirs');
+  return { server, suggester, s, nth, dispose: () => { peer.dispose(); suggester.dispose(); server.destroy(); } };
+}
+
+describe('SP11 implicit deletes and governed text @p:mean-2', () => {
+  it('a forged tombstone placed after an original map value cannot delete it', () => {
+    const server = seeded();
+    const check = (origin: Y.ID, gone: (doc: Y.Doc) => boolean) => {
+      const forged = placedByOrigin(424243, origin, new Y.ContentDeleted(1));
+      const copy = new Y.Doc();
+      Y.applyUpdate(copy, Y.encodeStateAsUpdate(server));
+      Y.applyUpdate(copy, forged);
+      expect(gone(copy), 'Yjs deletes the original value').toBe(true);
+      copy.destroy();
+      expect(vetSuggestFrame(server, forged, { own: [], clients: new Set() })).toEqual({ ok: false, reason: 'mutate-original' });
+    };
+    try {
+      const registers = server.getMap('registers');
+      const [key] = [...registers.keys()];
+      check(registers._map.get(key)!.lastId, (doc) => !doc.getMap('registers').has(key));
+      const paragraph = (server.get('root', Y.XmlText)._start!.content as Y.ContentType).type;
+      check(paragraph._map.get('__type')!.lastId, (doc) => {
+        const block = (doc.get('root', Y.XmlText)._start!.content as Y.ContentType).type as Y.XmlText;
+        return block.getAttribute('__type') === undefined;
+      });
+    } finally { server.destroy(); }
+  });
+
+  it('a forged formatting mark in the body is refused', () => {
+    const server = seeded();
+    const forger = new Y.Doc();
+    try {
+      Y.applyUpdate(forger, Y.encodeStateAsUpdate(server));
+      const sv = Y.encodeStateVector(forger);
+      const paragraph = (forger.get('root', Y.XmlText).toDelta() as { insert: unknown }[])[0].insert as Y.XmlText;
+      paragraph.insert(3, 'x', { bold: true });
+      expect(vetSuggestFrame(server, Y.encodeStateAsUpdate(forger, sv), { own: [], clients: new Set() }))
+        .toEqual({ ok: false, reason: 'mutate-original' });
+    } finally { forger.destroy(); server.destroy(); }
+  });
+
+  it('deleting an own block cannot take the moved text inside it', () => {
+    const server = seeded();
+    const suggester = client(server);
+    const copy = new Y.Doc();
+    try {
+      const s = session(server, suggester.doc);
+      s.land(suggester.frame(() => select(5).insertParagraph()));
+      const [block] = blocksOf(server, suggester.doc.clientID);
+      const forged = rawUpdate([], [{ client: block.id.client, clock: block.id.clock, len: 1 }]);
+      Y.applyUpdate(copy, Y.encodeStateAsUpdate(server));
+      Y.applyUpdate(copy, forged);
+      expect(blockText(copy, 1), 'Yjs deletes the moved text with its block').not.toContain('world');
+      expect(s.vet(forged)).toEqual({ ok: false, reason: 'delete-original' });
+    } finally { copy.destroy(); suggester.dispose(); server.destroy(); }
+  });
+
+  it("deleting an own block cannot take a peer's text inside it; a wholly own block can go", () => {
+    const setup = peerInsideOwn();
+    try {
+      const [block] = blocksOf(setup.server, setup.suggester.doc.clientID);
+      expect(setup.s.vet(rawUpdate([], [{ client: block.id.client, clock: block.id.clock, len: 1 }])))
+        .toEqual({ ok: false, reason: 'delete-original' });
+      const removed = setup.suggester.frame(() => { texts()[setup.nth()].getParentOrThrow().remove(); });
+      expect(setup.s.vet(removed)).toEqual({ ok: false, reason: 'delete-original' });
+    } finally { setup.dispose(); }
+    const { server, suggester, s } = withOwnParagraph();
+    try {
+      expect(s.vet(suggester.frame(() => { texts()[1].getParentOrThrow().remove(); }))).toMatchObject({ ok: true });
+    } finally { suggester.dispose(); server.destroy(); }
+  });
+
+  it("formatting an own text node or block cannot change a peer's text governed by it", () => {
+    const own = withOwnParagraph();
+    try {
+      const bold = own.suggester.frame(() => { select(0, 4, 1).formatText('bold'); });
+      expect(own.s.vet(bold), 'a wholly own node').toMatchObject({ ok: true });
+      const centred = own.suggester.frame(() => { texts()[1].getParentOrThrow<ParagraphNode>().setFormat('center'); });
+      expect(own.s.vet(centred), 'a wholly own block').toMatchObject({ ok: true });
+    } finally { own.suggester.dispose(); own.server.destroy(); }
+    const setup = peerInsideOwn();
+    try {
+      const bold = setup.suggester.frame(() => { select(0, 11, setup.nth()).formatText('bold'); });
+      expect(bold.byteLength).toBeGreaterThan(2);
+      expect(setup.s.vet(bold)).toEqual({ ok: false, reason: 'mutate-original' });
+      const centred = setup.suggester.frame(() => { texts()[setup.nth()].getParentOrThrow<ParagraphNode>().setFormat('center'); });
+      expect(centred.byteLength).toBeGreaterThan(2);
+      expect(setup.s.vet(centred)).toEqual({ ok: false, reason: 'mutate-original' });
+    } finally { setup.dispose(); }
+  });
+
+  it("an editor's Backspace join keeps suggested text the suggestion's", () => {
+    const server = seeded();
+    const author = client(server);
+    let editor: ReturnType<typeof client> | null = null;
+    try {
+      const s = session(server, author.doc);
+      s.land(author.frame(() => {
+        select(24).insertParagraph();
+        const selection = $getSelection();
+        if ($isRangeSelection(selection)) selection.insertText('New line');
+      }));
+      expect(visible(server, s.own)).toBe('New line');
+      editor = client(server);
+      const join = editor.frame(() => { select(0, 0, 1).deleteCharacter(true); });
+      const carried = carryIdentity(server, join, s.own);
+      Y.applyUpdate(server, join);
+      expect(blockText(server, 0)).toBe('Hello world and the cat.New line');
+      expect(visible(server, carried)).toBe('New line');
+    } finally { editor?.dispose(); author.dispose(); server.destroy(); }
+  });
+
+  it('undoing a split is vetted like any split: allowed on the server and in the self-check', () => {
+    const server = seeded();
+    const suggester = client(server);
+    try {
+      const s = session(server, suggester.doc);
+      s.land(suggester.frame(() => select(5).insertParagraph()));
+      expect(blockText(server, 1)).toBe(' world and the cat.');
+      const verdicts: Verdict[] = [];
+      const onTransaction = (transaction: Y.Transaction) => {
+        if (transaction.local) verdicts.push(vetTransaction(transaction, { own: s.own, moved: s.moved, clients: s.clients }));
+      };
+      suggester.doc.on('afterTransaction', onTransaction);
+      const undone = suggester.undo();
+      suggester.doc.off('afterTransaction', onTransaction);
+      expect(verdicts.length, 'the undo is a local transaction').toBeGreaterThan(0);
+      for (const verdict of verdicts) if (!verdict.ok) throw new Error(`self-check refused the undo: ${verdict.reason}`);
+      const landed = s.land(undone);
+      expect(landed.ok && landed.moved.length, 'the re-inserted tail stays original').toBeGreaterThan(0);
+      expect(blockText(server, 0)).toBe('Hello world and the cat.');
+    } finally { suggester.dispose(); server.destroy(); }
   });
 });
