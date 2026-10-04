@@ -1,7 +1,10 @@
 diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.tsx b/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.tsx
 --- a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.tsx
 +++ b/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.tsx
-@@ -1,25 +1,10 @@
+@@ -1,25 +1,13 @@
++// moss-multi seam: publish decorator drafts as register edits.
++import { useRegisterDraft } from '@moss-multi/host/collab/register-input';
++import { registerDoc } from '@moss-multi/sync/registers';
  import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
  import type { JSX } from 'react';
 -import {
@@ -28,7 +31,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
  import {
    registerDecoratorDraftFlusher,
    unregisterDecoratorDraftFlusher
-@@ -34,10 +19,6 @@ import {
+@@ -34,10 +22,6 @@ import {
    useMediaNodeActions
  } from '../components/media-primitives';
  import { useCurrentNoteId } from '../CurrentNoteIdContext';
@@ -39,7 +42,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
  import {
    MOSS_HIDE_SCROLLBARS_CSS,
    wrapWithMossHtmlRuntime as sharedWrapWithMossHtmlRuntime
-@@ -55,8 +36,11 @@ import {
+@@ -55,8 +39,11 @@ import {
    useAnchoredViewportSize,
    useObservedElementWidth
  } from '../preview/usePreviewFrameSizing';
@@ -53,7 +56,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
  
  // See docs/html-node-architecture.md for the HTML preview/cache/fullscreen contract.
  const LIVE_PREVIEW_SCROLL_CSS = `html,body{overflow:auto !important}
-@@ -95,47 +79,6 @@ export const resolveStableHtmlPreviewLayerVisibilityClass = ({
+@@ -95,47 +82,6 @@ export const resolveStableHtmlPreviewLayerVisibilityClass = ({
    return `transition-opacity duration-100 ${interactivePreviewReady ? 'opacity-0' : 'opacity-100'}`;
  };
  
@@ -101,7 +104,83 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
  export interface HtmlBlockquotePreviewLink {
    href: string;
    text: string;
-@@ -1108,170 +1051,8 @@ function MossHtmlPreviewComponent({
+@@ -254,9 +200,9 @@ function RawHtmlBlockquoteComponent({
+   const [isSelected, setSelected, clearSelection] = useLexicalNodeSelection(nodeKey);
+   const { handleDelete, handleGapClick } = useMediaNodeActions(nodeKey);
+   const [isEditing, setIsEditing] = useState(false);
+-  const [localRawHtml, setLocalRawHtml] = useState(rawHtml);
+   const [hasTextSelection, setHasTextSelection] = useState(false);
+   const textareaRef = useRef<HTMLTextAreaElement>(null);
++  const [localRawHtml, setLocalRawHtml] = useRegisterDraft(editor, nodeKey, rawHtml, 'setRawHtml', textareaRef, isEditing);
+   const highlightedPreRef = useRef<HTMLPreElement>(null);
+   const previewContent = useMemo(
+     () => parseHtmlBlockquotePreviewContent(rawHtml),
+@@ -285,7 +231,7 @@ function RawHtmlBlockquoteComponent({
+   }, []);
+ 
+   useEffect(() => {
+-    if (!isEditing) {
++    if (!isEditing && !registerDoc(editor)) {
+       setLocalRawHtml(rawHtml);
+     }
+   }, [rawHtml, isEditing]);
+@@ -345,7 +291,7 @@ function RawHtmlBlockquoteComponent({
+     editor.update(() => {
+       const node = $getNodeByKey(nodeKey);
+       if (node && $isHtmlBlockquoteNode(node)) {
+-        node.setRawHtml(trimmed);
++        if (!registerDoc(editor)) node.setRawHtml(trimmed);
+       }
+     });
+     setHasTextSelection(false);
+@@ -453,6 +399,7 @@ function RawHtmlBlockquoteComponent({
+                   </pre>
+                   <textarea
+                     ref={textareaRef}
++                readOnly={!editor.isEditable()}
+                     value={localRawHtml}
+                     onChange={(e) => {
+                       setLocalRawHtml(e.target.value);
+@@ -553,11 +500,11 @@ function MossHtmlPreviewComponent({
+   const [isSelected, setSelected, clearSelection] = useLexicalNodeSelection(nodeKey);
+   const { handleDelete, handleGapClick } = useMediaNodeActions(nodeKey);
+   const [isEditing, setIsEditing] = useState(false);
+-  const [localRawHtml, setLocalRawHtml] = useState(rawHtml);
+   const [hasTextSelection, setHasTextSelection] = useState(false);
+   const [isInteractive, setIsInteractive] = useState(false);
+   const { isFullscreen, enterFullscreen, exitFullscreen } = useMediaFullscreen();
+   const textareaRef = useRef<HTMLTextAreaElement>(null);
++  const [localRawHtml, setLocalRawHtml] = useRegisterDraft(editor, nodeKey, rawHtml, 'setRawHtml', textareaRef, isEditing);
+   const highlightedPreRef = useRef<HTMLPreElement>(null);
+ 
+   const [interactivePreviewReady, setInteractivePreviewReady] = useState(false);
+@@ -715,7 +662,7 @@ function MossHtmlPreviewComponent({
+   }, [retryPreviewImage]);
+ 
+   useEffect(() => {
+-    if (!isEditing) {
++    if (!isEditing && !registerDoc(editor)) {
+       setLocalRawHtml(rawHtml);
+     }
+   }, [rawHtml, isEditing]);
+@@ -801,7 +748,7 @@ function MossHtmlPreviewComponent({
+     editor.update(() => {
+       const node = $getNodeByKey(nodeKey);
+       if (node && $isHtmlBlockquoteNode(node)) {
+-        node.setRawHtml(trimmed);
++        if (!registerDoc(editor)) node.setRawHtml(trimmed);
+       }
+     });
+     setHasTextSelection(false);
+@@ -884,6 +831,7 @@ function MossHtmlPreviewComponent({
+         </pre>
+         <textarea
+           ref={textareaRef}
++                readOnly={!editor.isEditable()}
+           value={localRawHtml}
+           onChange={(e) => {
+             setLocalRawHtml(e.target.value);
+@@ -1108,204 +1056,14 @@ function MossHtmlPreviewComponent({
    );
  }
  
@@ -273,8 +352,10 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
 +registerNodeView(HtmlBlockquoteNode.getType(), function decorate(this: HtmlBlockquoteNode): JSX.Element {
      return (
        <HtmlBlockquoteComponent
-         rawHtml={this.__rawHtml}
-@@ -1280,32 +1061,4 @@ export class HtmlBlockquoteNode extends DecoratorNode<JSX.Element> {
+-        rawHtml={this.__rawHtml}
++        rawHtml={this.getRawHtml()}
+         source={this.__source}
+         commentIds={this.__commentIds}
          nodeKey={this.__key}
        />
      );

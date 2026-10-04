@@ -1,4 +1,7 @@
 // ported-from: packages/desktop/src/renderer/editor/nodes/CodeBlockNode.tsx @ 762abb777
+// moss-multi seam: publish decorator drafts as register edits.
+import { useRegisterDraft } from '@moss-multi/host/collab/register-input';
+import { registerDoc } from '@moss-multi/sync/registers';
 import React, { useCallback, useState, useRef, useEffect, useMemo } from 'react';
 import type { JSX } from 'react';
 import { $getNodeByKey, type NodeKey } from 'lexical';
@@ -55,16 +58,16 @@ function CodeBlockComponent({
   const [isSelected, setSelected, clearSelection] = useLexicalNodeSelection(nodeKey);
   const [isEditing, setIsEditing] = useState(() => consumeAutoEdit(nodeKey));
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
-  const [localCode, setLocalCode] = useState(code);
   const [preHeight, setPreHeight] = useState<number>(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [localCode, setLocalCode] = useRegisterDraft(editor, nodeKey, code, 'setCode', textareaRef, isEditing);
   const preRef = useRef<HTMLPreElement>(null);
   const enterTrackerRef = useRef(createBlockEndEnterTracker());
   const resolvedLanguage = resolveLanguage(language);
 
   // Sync local state when prop changes (e.g., undo/redo)
   useEffect(() => {
-    if (!isEditing) {
+    if (!isEditing && !registerDoc(editor)) {
       setLocalCode(code);
     }
   }, [code, isEditing]);
@@ -161,7 +164,7 @@ function CodeBlockComponent({
     editor.update(() => {
       const node = $getNodeByKey(nodeKey);
       if (node && $isCodeBlockNode(node)) {
-        node.setCode(localCode);
+        if (!registerDoc(editor)) node.setCode(localCode);
       }
     });
   }, [editor, nodeKey, localCode]);
@@ -189,7 +192,7 @@ function CodeBlockComponent({
         e.preventDefault();
         e.stopPropagation();
         enterTrackerRef.current.clear();
-        setLocalCode(code);
+        if (!registerDoc(editor)) setLocalCode(code);
         setIsEditing(false);
         return;
       }
@@ -379,6 +382,7 @@ function CodeBlockComponent({
             {isEditing ? (
               <textarea
                 ref={textareaRef}
+                readOnly={!editor.isEditable()}
                 value={localCode}
                 onChange={(e) => setLocalCode(e.target.value)}
                 onKeyDown={handleTextareaKeyDown}
@@ -427,7 +431,7 @@ function CodeBlockComponent({
 registerNodeView(CodeBlockNode.getType(), function decorate(this: CodeBlockNode): JSX.Element {
     return (
       <CodeBlockComponent
-        code={this.__code}
+        code={this.getCode()}
         language={this.__language}
         theme={this.__theme}
         nodeKey={this.__key}

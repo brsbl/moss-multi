@@ -1,4 +1,6 @@
 // ported-from: packages/desktop/src/renderer/editor/nodes/CodeBlockNode.tsx @ 762abb777 (extracted)
+// moss-multi seam: register payloads (A§10.10).
+import { readRegister, writeRegister } from '@moss-multi/host/collab/registers';
 import type { JSX } from 'react';
 import { $applyNodeReplacement, type DOMConversionMap, type DOMConversionOutput, type DOMExportOutput, DecoratorNode, type EditorConfig, type LexicalNode, type NodeKey, type SerializedLexicalNode, type Spread } from 'lexical';
 import { resolveLanguage } from '../plugins/code-block/languages';
@@ -35,10 +37,16 @@ function $convertCodeElement(domNode: HTMLElement): DOMConversionOutput | null {
 }
 
 export class CodeBlockNode extends DecoratorNode<JSX.Element> {
+  __regId = '';
   __code: string;
   __language: string;
   __theme: string;
   __commentIds: string[];
+
+  afterCloneFrom(previous: this): void {
+    super.afterCloneFrom(previous);
+    this.__regId = previous.__regId;
+  }
 
   static getType(): string {
     return 'code-block';
@@ -71,7 +79,7 @@ export class CodeBlockNode extends DecoratorNode<JSX.Element> {
     return {
       type: 'code-block',
       version: 1,
-      code: this.__code,
+      code: this.getCode(),
       language: this.__language,
       ...(this.__theme !== DEFAULT_THEME ? { theme: this.__theme } : {}),
       ...(this.__commentIds.length > 0 ? { commentIds: this.__commentIds } : {})
@@ -90,7 +98,7 @@ export class CodeBlockNode extends DecoratorNode<JSX.Element> {
   exportDOM(): DOMExportOutput {
     const element = document.createElement('pre');
     const codeElement = document.createElement('code');
-    codeElement.textContent = this.__code;
+    codeElement.textContent = this.getCode();
     codeElement.setAttribute('data-language', this.__language);
     element.appendChild(codeElement);
     return { element };
@@ -111,12 +119,13 @@ export class CodeBlockNode extends DecoratorNode<JSX.Element> {
   }
 
   getCode(): string {
-    return this.__code;
+    return readRegister(this, this.__code);
   }
 
   setCode(code: string): void {
     const writable = this.getWritable();
     writable.__code = code;
+    writeRegister(writable, code);
   }
 
   getLanguage(): string {
@@ -147,7 +156,7 @@ export class CodeBlockNode extends DecoratorNode<JSX.Element> {
   }
 
   getTextContent(): string {
-    return '```' + (this.__language || '') + '\n' + this.__code + '\n```';
+    return '```' + (this.__language || '') + '\n' + this.getCode() + '\n```';
   }
 
   decorate(): JSX.Element {

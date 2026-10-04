@@ -1,5 +1,9 @@
 // ported-from: packages/desktop/src/renderer/editor/plugins/FormulaPlugin.tsx @ 762abb777
 // moss-multi seam: local-view (A§10): edit-session identity stays in the existing local map.
+// moss-multi seam: register drafts merge while the formula popover stays open.
+import { nodeRegister, repaint } from '@moss-multi/host/collab/register-input';
+import { registerDoc, REGISTER_LOCAL_ORIGIN } from '@moss-multi/sync/registers';
+import { diffText } from '@moss-multi/core/text-diff';
 import { $isBoundEditor } from '@moss-multi/host/collab/view-state';
 /**
  * FormulaPlugin - Keyboard navigation for formula nodes
@@ -396,6 +400,7 @@ function FormulaEditPopover({
   readCurrentDraft: () => FormulaDraft | null;
   getSuggestions: (query: string) => FormulaSuggestion[];
 }): JSX.Element | null {
+  const [editor] = useLexicalComposerContext();
   const [name, setName] = useState(editingFormula.name);
   const [expression, setExpression] = useState(editingFormula.expression);
   const [suggestionState, setSuggestionState] = useState<PopoverSuggestionState | null>(null);
@@ -438,6 +443,26 @@ function FormulaEditPopover({
     }
     setDraftState(draft);
   }, [readCurrentDraft, setDraftState]);
+
+  useEffect(() => {
+    const text = nodeRegister(editor, editingFormula.nodeKey);
+    if (!text) return;
+    let stopped = false;
+    const changed = (_event: unknown, transaction: { origin: unknown }) => {
+      if (transaction.origin === REGISTER_LOCAL_ORIGIN) return;
+      queueMicrotask(() => {
+        if (stopped) return;
+        const draft = readCurrentDraft();
+        if (!draft) return;
+        const input = editingFormula.sourceMode === 'symbolic' ? nameInputRef.current : expressionInputRef.current;
+        const next = editingFormula.sourceMode === 'symbolic' ? draft.name : draft.expression;
+        if (input) repaint(input, next, diffText(input.value, next));
+        setDraftState(draft);
+      });
+    };
+    text.observe(changed);
+    return () => { stopped = true; text.unobserve(changed); };
+  }, [editor, editingFormula, readCurrentDraft, setDraftState]);
 
   useEffect(() => {
     setDraftState({ name: editingFormula.name, expression: editingFormula.expression });
@@ -949,7 +974,7 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
     }
 
     let draft: FormulaDraft | null = null;
-    editor.getEditorState().read(() => {
+    editor.read(() => {
       const node = $getNodeByKey(target.nodeKey);
       if (!$isFormulaNode(node)) {
         return;
@@ -1173,6 +1198,10 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
 
   const handleHistoryShortcut = useCallback(
     (direction: 'undo' | 'redo'): FormulaDraft | null => {
+      if (registerDoc(editor)) {
+        editor.dispatchCommand(direction === 'redo' ? REDO_COMMAND : UNDO_COMMAND, undefined);
+        return null;
+      }
       const originalDraft = editOriginalDraftRef.current;
       const currentDraft = readCurrentDraft();
       const currentFormulaId = readCurrentFormulaId();

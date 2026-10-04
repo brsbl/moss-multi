@@ -4,6 +4,33 @@ import * as Y from 'yjs';
 import { exportDocMarkdown, importBody, serverWrite } from './server-doc.ts';
 import { exportMarkdown, importMarkdown } from './converter/index.ts';
 import { EXCLUDED_FIELDS } from './excluded-properties.ts';
+import { createBinding, syncLexicalUpdateToYjs, syncYjsChangesToLexical, type Provider } from '@lexical/yjs';
+import { createConverterEditor } from './converter/index.ts';
+import { excludedPropertiesFor } from './excluded-properties.ts';
+import { bindRegisters, migrateRegisters, REGISTER_LOCAL_ORIGIN } from './registers.ts';
+
+const noop = () => {};
+const provider = {
+  awareness: { getLocalState: () => null, getStates: () => new Map(), on: noop, off: noop, setLocalState: noop, setLocalStateField: noop },
+  connect: noop, disconnect: noop, on: noop, off: noop,
+} as unknown as Provider;
+function client(seed: Y.Doc) {
+  const doc = new Y.Doc(); const editor = createConverterEditor();
+  const binding = createBinding(editor, provider, 'root', doc, new Map([['root', doc]]), excludedPropertiesFor(editor));
+  const stopRegisters = bindRegisters(editor, doc);
+  const stop = editor.registerUpdateListener(({ prevEditorState, editorState, dirtyElements, dirtyLeaves, normalizedNodes, tags }) => {
+    syncLexicalUpdateToYjs(binding, provider, prevEditorState, editorState, dirtyElements, dirtyLeaves, normalizedNodes, tags);
+  });
+  const root = binding.root.getSharedType();
+  const observer: Parameters<typeof root.observeDeep>[0] = (events, transaction) => {
+    if (transaction.origin !== binding) syncYjsChangesToLexical(binding, provider, events as never, false, noop);
+  };
+  root.observeDeep(observer);
+  Y.applyUpdate(doc, Y.encodeStateAsUpdate(seed));
+  editor.update(noop, { discrete: true });
+  const undo = new Y.UndoManager([root, doc.getMap('registers')], { trackedOrigins: new Set([binding, REGISTER_LOCAL_ORIGIN]) });
+  return { doc, editor, undo, dispose: () => { undo.destroy(); stop(); stopRegisters(); root.unobserveDeep(observer); doc.destroy(); } };
+}
 
 const cases = [
   { type: 'code-block', field: '__code', setter: 'setCode', markdown: '```js\nseed\n```', before: 'seed', a: 'Ada seed', b: 'seed Ben', merged: 'Ada seed Ben' },
@@ -17,6 +44,31 @@ function find(type: string, node: LexicalNode = $getRoot()): LexicalNode | undef
 }
 
 describe('L4 decorator registers @p:col-1 @p:col-3 @p:tech-1', () => {
+  it.each(cases)('$type replicates between live V1 editors and undo preserves peer writes', (fixture) => {
+    const seed = new Y.Doc(); importBody(seed, fixture.markdown);
+    const a = client(seed); const b = client(seed);
+    try {
+      for (const [peer, value] of [[a, fixture.a], [b, fixture.b]] as const) peer.editor.update(() => {
+        const node = find(fixture.type) as unknown as Record<string, (text: string) => void>;
+        node[fixture.setter](value);
+      }, { discrete: true });
+      Y.applyUpdate(a.doc, Y.encodeStateAsUpdate(b.doc));
+      Y.applyUpdate(b.doc, Y.encodeStateAsUpdate(a.doc));
+      for (const peer of [a, b]) {
+        peer.editor.update(noop, { discrete: true });
+        expect(exportMarkdown(peer.editor)).toContain(fixture.merged);
+      }
+      a.undo.undo();
+      Y.applyUpdate(b.doc, Y.encodeStateAsUpdate(a.doc));
+      for (const peer of [a, b]) {
+        peer.editor.update(noop, { discrete: true });
+        expect(exportMarkdown(peer.editor)).toContain(fixture.b);
+      }
+      a.undo.redo();
+      expect(exportDocMarkdown(a.doc)).toContain(fixture.merged);
+    } finally { a.dispose(); b.dispose(); seed.destroy(); }
+  });
+
   it.each(cases)('$type merges concurrent setter writes through the mirror and survives persistence', (fixture) => {
     const a = new Y.Doc(); const b = new Y.Doc(); const restored = new Y.Doc();
     try {
@@ -50,5 +102,27 @@ describe('L4 decorator registers @p:col-1 @p:col-3 @p:tech-1', () => {
       expect(registers[0]).toBeInstanceOf(Y.Text);
       expect((registers[0] as Y.Text).toString()).toBe(fixture.before);
     } finally { doc.destroy(); }
+  });
+
+  it('upgrades persisted attributes without replacing nodes or changing export bytes', () => {
+    const legacy = new Y.Doc();
+    const root = legacy.get('root', Y.XmlText);
+    const block = new Y.XmlElement('code-block');
+    root.insertEmbed(0, block);
+    block.setAttribute('__type', 'code-block'); block.setAttribute('__code', 'stored code');
+    block.setAttribute('__language', 'plaintext');
+    const identity = block._item!.id;
+    const restored = new Y.Doc();
+    try {
+      Y.applyUpdate(restored, Y.encodeStateAsUpdate(legacy));
+      migrateRegisters(restored);
+      expect(exportDocMarkdown(restored)).toContain('stored code');
+      const node = restored.get('root', Y.XmlText).toDelta()[0].insert as Y.XmlElement;
+      expect(node._item!.id).toEqual(identity);
+      const bytes = Y.encodeStateAsUpdate(restored);
+      migrateRegisters(restored);
+      expect(Y.encodeStateAsUpdate(restored)).toEqual(bytes);
+      expect(node.getAttribute('__code')).toBe('stored code');
+    } finally { legacy.destroy(); restored.destroy(); }
   });
 });
