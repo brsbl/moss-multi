@@ -229,43 +229,46 @@ describe('serving (A§16)', () => {
   });
 
   it("gives a reader of one note none of the media its folder's other notes reference", async () => {
+    // A reader with no grant on Ada's Home, which an earlier case gives Ben.
+    const reader = await signedUpUser(env, 'assets-note-reader', 'Reader');
     const secret = await insertDoc(d1.db, ada);
     await uploaded(await upload(ada.cookie, secret, 'secret.png', PNG, 'image/png'));
     referenced.set(secret, ['secret.png']);
     const shared = await insertDoc(d1.db, ada);
     referenced.set(shared, []);
-    await insertGrant(d1.db, { docId: shared }, ben, 'viewer');
+    await insertGrant(d1.db, { docId: shared }, reader, 'viewer');
     const token = await insertLink(d1.db, { docId: shared }, 'viewer');
     const path = `/api/docs/${shared}/assets/secret.png`;
     const tries = [
-      await call('GET', path, ben.cookie),
+      await call('GET', path, reader.cookie),
       await call('GET', `${path}?share=${token}`, null),
       await call('GET', `${path}?share=${token}`, cy.cookie),
-      await call('HEAD', path, ben.cookie),
+      await call('HEAD', path, reader.cookie),
     ];
-    const missing = await call('GET', `/api/docs/${shared}/assets/missing.png`, ben.cookie);
+    const missing = await call('GET', `/api/docs/${shared}/assets/missing.png`, reader.cookie);
     expect(tries.map((response) => response.status), 'a doc grant or link is not folder-wide media').toEqual([404, 404, 404, 404]);
     expect(await tries[0].text(), 'the refusal is the one 404').toBe(await missing.text());
     // Once the shared note references the file, its readers load it; the folder's owner always does.
     referenced.set(shared, ['secret.png']);
-    expect((await call('GET', path, ben.cookie)).status).toBe(200);
+    expect((await call('GET', path, reader.cookie)).status).toBe(200);
     expect((await call('GET', `${path}?share=${token}`, null)).status).toBe(200);
     referenced.set(shared, []);
     expect((await call('GET', path, ada.cookie)).status, 'the folder owner reads every file in it').toBe(200);
   });
 
   it("refuses a cross-note copy of a file the readable source note doesn't reference", async () => {
+    const reader = await signedUpUser(env, 'assets-copy-reader', 'Reader');
     const secret = await insertDoc(d1.db, ada);
     await uploaded(await upload(ada.cookie, secret, 'hidden.png', PNG, 'image/png'));
     referenced.set(secret, ['hidden.png']);
     const shared = await insertDoc(d1.db, ada);
     referenced.set(shared, []);
-    await insertGrant(d1.db, { docId: shared }, ben, 'viewer');
-    const own = await insertDoc(d1.db, ben);
+    await insertGrant(d1.db, { docId: shared }, reader, 'viewer');
+    const own = await insertDoc(d1.db, reader);
     const body = JSON.stringify({ sourceNoteId: shared, sourceRelativePath: 'assets/hidden.png' });
-    const copied = await call('POST', `/api/docs/${own}/assets/copy`, ben.cookie, { body, headers: { 'content-type': 'application/json' } });
+    const copied = await call('POST', `/api/docs/${own}/assets/copy`, reader.cookie, { body, headers: { 'content-type': 'application/json' } });
     expect(copied.status).toBe(404);
-    expect((await call('GET', `/api/docs/${own}/assets/hidden.png`, ben.cookie)).status).toBe(404);
+    expect((await call('GET', `/api/docs/${own}/assets/hidden.png`, reader.cookie)).status).toBe(404);
   });
 });
 
