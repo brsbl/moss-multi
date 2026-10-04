@@ -410,7 +410,7 @@ The plugin is passed as MarkdownEditor's `collaboration` prop in place of `<Hist
 
 **Terminal store.** `host/collab/terminal.ts` is a doc-level `useSyncExternalStore` store keyed by docId, with reasons `deleted`, `revoked`, `session-ended`, `unavailable` and `conn-limit`. A terminal close sets `provider.shouldConnect=false` synchronously inside the close handler, before y-partyserver can schedule a reconnect. Every editable surface (title, body, frontmatter, comment composer, decorator controls) subscribes and goes inert in place, and `data-terminal-reason` is published on the pane. [L§4.6; S-prior §3.4]
 
-**Before a destructive action** (trash or sign-out), the client closes the doc to writes and waits for `data-sync-unacked=0`, at most 5 s; past that, a ConfirmationDialog says some edits have not synced, with Cancel as the default. That attribute is driven by the DO's acks (§5.1). Copy-link never vouches for bytes while unacked. [L§4.6 C-12]
+**Before a destructive action** (trash or sign-out), the client closes the doc to writes and waits for `data-sync-unacked=0`, at most 5 s; past that, a ConfirmationDialog says some edits have not synced, with Cancel as the default. That attribute is driven by the DO's acks (§5.1). Copy-link never vouches for bytes while unacked. A reload or tab close while any edit is unacked gets the browser's leave prompt; programmatic leaves through `host/navigation.ts` have already waited or asked. [L§4.6 C-12; P:Collab "neither ever loses work"]
 
 ### 10.7 Presence, colors, cursors
 
@@ -447,7 +447,7 @@ The body uses seam (a) and the title its own `UndoManager`. Server-origin writes
   - `Y.Text` for `code-block.__code`, `html-block.__rawHtml` and `formula.__formula` (T1.9), written through the title binding's minimal-diff and caret-remap code;
   - per-key `Y.Map`s for `chart.__config` and the sketch grid and labels (T3.3).
 
-  Register fields join the exclusions. The getter and setter seams sit in the extracted node classes, and views get the register through a host wrapper registered in `node-views.ts`. The converter reads through the getters, so export is unchanged. Registers are in the client undo scope (§10.2), the DocDO mirror, the CLI merge and suggester vetting. `callout.__level` and the code language stay whole-value, since each is a single choice. If SP8 shows a payload cannot take a register, the owner gets the data loss stated plainly before anything ships. [P:Collab "neither ever loses work"; L§4.3; S-conv §4.6]
+  Register fields join the exclusions. The getter and setter seams sit in the extracted node classes, and views get the register through a host wrapper registered in `node-views.ts`. The converter reads through the getters, so export is unchanged. Registers are in the client undo scope (§10.2), the DocDO mirror, the CLI merge and suggester vetting. A block's payload is deleted in the same transaction that deletes the block (client sync and DocDO mirror), so one undo step restores both and a later reader or duplicate never receives deleted text. `callout.__level` and the code language stay whole-value, since each is a single choice. If SP8 shows a payload cannot take a register, the owner gets the data loss stated plainly before anything ships. [P:Collab "neither ever loses work"; L§4.3; S-conv §4.6]
 
 ## 11. Workspace metadata and vaults
 

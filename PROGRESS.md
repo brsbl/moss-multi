@@ -214,3 +214,41 @@ Local browser verification remains assigned to the independent checker under the
 
 - The checker reproduced two editors pasting the same markdown into one empty note: both minted the deterministic `import:` id, Y.Map kept one `Y.Text`, and the two blocks stayed linked. [Checks 37176278081](https://github.com/brsbl/moss-multi/actions/runs/37176278081) proved it red for all three registers.
 - `$assignRegisterIds` now mints `crypto.randomUUID()` in a live editor. Only the DocDO mirror (`bindRegisters(..., { serializedImports: true })`, one serialized writer) and unbound converters keep repeatable import ids (A§10.10).
+
+### T1.P — M1 polish
+
+- Tests-first: [checks 37181916262](https://github.com/brsbl/moss-multi/actions/runs/37181916262) failed every new assertion (Ada's undo emptied Ben's " Beta.", a deleted code block's payload still reached later readers and survived a server body replacement, a 1M-character paste threw `RangeError`, a peer's delete closed an open Properties draft, and a reload with unacked edits did not ask). [Chromium 37181918921](https://github.com/brsbl/moss-multi/actions/runs/37181918921) reproduced the undo loss through the UI.
+- Undo keeps any container it would delete (paragraph, block, or a text node's property map, which in @lexical/yjs owns the characters after it) while it holds another client's live text; the container keeps the properties it was created with. Deleting that map had left the peer's characters dangling, and @lexical/yjs then deleted them for everyone.
+- A register payload is deleted in the same transaction as its block, on the client and in the DocDO mirror, so one undo step restores both and later readers and duplicates never receive deleted code, HTML or formula text. Payloads orphaned by undoing a block's insertion, and those already stored, remain under the T1.9 follow-up.
+- `diffText` no longer spreads a per-character edit script into one call. The Properties binding keeps a field's row while its draft is open (FrontmatterHeader seam `open-property`): committing writes the key back, cancelling accepts the delete (A§10.4). A reload or tab close asks first while any edit is unacked; programmatic leaves through `navigation.ts` have already waited or asked.
+
+## Follow-ups (P2) — M1 critic and review
+
+- Shared notes carry no shared or owner cue in the recipient's sidebar or top bar → T1.2 discovery polish
+- A note shared with you opens by itself on your screen → T1.2
+- The offline banner shifts the whole document down and looks unlike glyphdown's banner → T1.3
+- Your own other window shows as an indistinguishable chip of yourself → T1.5
+- Share dialog and breadcrumb polish → T1.1 / T1.4
+- The note's ⋮ menu has no Duplicate or Rename → T1.8
+- Expected-but-noisy console errors → T1.1 / T1.3
+- Not verified: staging hibernation → T1.10
+- Apply document admission limits before REST title mutations → T1.4 Title and frontmatter as shared state
+- Failed title projection is never retried or reconciled → T1.4 Title and frontmatter as shared state; T1.7 Reopen after hibernation
+- Failed D1 title projection is never retried, leaving two names → M1 (T1.4 follow-up)
+- Ten-slot palette cannot honor distinct colors beyond 10 clients → M1 (T1.5) or owner ruling
+- Layout acceptance leg sets widths through private editor setters, not the UI → M1 (T1.6)
+- Peer-text delivery never enforces the 2 s exit budget → T1.6
+- Concurrent-edit fixtures cannot detect character-order corruption → T1.6
+- Derived-write undo journey supplies the production tag itself → T1.6
+- j02 @tierA tags never exercise a phone viewport → T1.4
+- Duplicate unit test never checks its no-grants promise → T1.8
+- A raise from viewer to editor makes the body editable before the socket's role changes, so the first edit shows a false refusal → T2.5 (kick/recheck path) or T1.3
+- Duplicate copies the server's snapshot, so the newest local edits can be missing from the copy → T1.8
+- Each IME composition copies the whole doc into a draft Y.Doc and adds a new Yjs client id → T1.4 / T1.9 follow-up
+- The workspace listing loads every folder row in the database, and each tab polls it every 3 seconds → T2.1 (workspace channel replaces the poll)
+- Edits awaiting acknowledgement only clear when one ack covers all of them, so continuous typing makes each ack and resend slower → T1.3 follow-up
+- No way in the UI to switch vaults and back → T1.2 / M2 vault sharing (Share vault…)
+- At 390x844 an opened shared doc is crushed into a sliver by the notes panel (Tier A) → T1.1/T1.2 Tier A legs (or the M2 share-link/reading-view task if phone reading is deferred)
+- Make grant increases atomic with the stored role → T1.1 Access resolver and sharing with a person
+- Register payloads are never reclaimed after their blocks are deleted → T1.9 Decorator registers (T1.P now deletes them with their block; insertion-undo orphans and stored orphans remain)
+- Server title writes bypass the doc-size admission cap → M1 (T1.4)
