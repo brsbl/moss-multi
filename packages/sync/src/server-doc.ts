@@ -10,6 +10,7 @@ import { readField } from '@moss-multi/core/doc-fields';
 import { composeFrontmatter, importFrontmatter } from '@moss-multi/core/frontmatter';
 import { $importNoteBody, createConverterEditor, exportMarkdown } from './converter/index.ts';
 import { $recomputeExportFormulas } from './formula-export.ts';
+import { bindRegisters, $refreshRegisters, migrateRegisters } from './registers.ts';
 import { excludedPropertiesFor } from './excluded-properties.ts';
 
 export const SERVER_SEED = 'server-seed';
@@ -44,18 +45,21 @@ function mirrorOf(live: Y.Doc): Mirror {
   const stopUpdates = editor.registerUpdateListener(({ prevEditorState, editorState, dirtyElements, dirtyLeaves, normalizedNodes, tags }) => {
     syncLexicalUpdateToYjs(binding, provider, prevEditorState, editorState, dirtyElements, dirtyLeaves, normalizedNodes, tags);
   });
+  const stopRegisters = bindRegisters(editor, doc, { serializedImports: true });
   const root = binding.root.getSharedType();
   const observer: Parameters<Y.XmlText['observeDeep']>[0] = (events, transaction) => {
     if (transaction.origin !== binding) syncYjsChangesToLexical(binding, provider, events as never, false, noop);
   };
   root.observeDeep(observer);
   Y.applyUpdate(doc, Y.encodeStateAsUpdate(live), HYDRATE);
+  migrateRegisters(doc);
   // The hydration commits on its own, under the collaboration tag, before any mutation runs.
-  editor.update(noop, { discrete: true, skipTransforms: true });
+  editor.update(() => $refreshRegisters(editor, doc), { discrete: true, skipTransforms: true });
   return {
     doc,
     editor,
     dispose: () => {
+      stopRegisters();
       stopUpdates();
       stopWhitespace();
       stopLists();

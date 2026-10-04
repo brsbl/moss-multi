@@ -1,11 +1,11 @@
 # moss-multi progress
 
-**Overall: 39% done** (27 of 70 planned tasks verified)
+**Overall: 40% done** (28 of 70 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 17 / 17 | in progress |
-| M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 9 / 11 | in progress |
+| M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 10 / 11 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 1 / 9 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 0 / 9 | |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
@@ -46,6 +46,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-03 — T1.5 verified: people on the same note see each other in a face pile in the top bar, each with a distinct color, and see each other's carets and selections in that color with a name label while typing; a closed tab clears its chip promptly and a dropped connection within 20 s, spoofed names are dropped, and only members and owners receive presence identities.
 - 2026-10-03 — T1.6 verified: Cmd+Z in one person's editor undoes only their own typing, never a collaborator's or a formula's derived update, in both the title and the body; table and tab widths, active tabs and collapsed headings stay local to each person and survive reload and a peer inserting a table above; floating toolbars hide when the editor loses focus; and two notes in split panes each hold their own connection.
 - 2026-10-03 — T2.1 verified: while someone has a note open, a collaborator's new note, rename or trash shows up in their sidebar within 5 s without a reload, sorted by last update, without remounting the open editor; the workspace channel stops at once on sign-out.
+- 2026-10-03 — T1.9 verified: code, HTML and formula blocks now keep their text in shared registers, so two people typing in the same block merge live in both engines, drafts survive reloads and imports, and Cmd+Z inside a block undoes only that person's edits to it.
 
 ## T1.1s identity audit
 
@@ -80,6 +81,11 @@ A task counts only after an independent checker passes it on green CI. Each mile
 Parked from the M0 checker and critic passes, each with the task that owns it.
 
 - T1.8 workspace follow-up implemented in T2.1: push events replace listing polling, changed document ids refresh metadata, and unchanged vault choices do not notify the switcher; awaiting CI and independent verification.
+- T1.9 checker P2: `$copyNode` must mint a new register identity for duplicated code, HTML and formula nodes before T3.3 uses that path; current clipboard copies serialize without the identity → T3.3 register extension.
+- T1.9 checker P2: rebind open field observers when a register map entry is replaced (live imports now mint unique ids; server imports are serialized) → register/import follow-up.
+- T1.9 checker P2: register writes diff by value without a caret hint, so typing inside a run of identical characters can land at the wrong position (seen after a peer's undo); FormulaPlugin's remote repaint diffs strings instead of using the event delta → register caret follow-up.
+- T1.9 checker P2: replace the full node-map refresh after every editor commit with targeted invalidation → register performance follow-up.
+
 - T1.6 checker: prune deleted layout identities, avoid unchanged localStorage writes and restrict ordinal migration to stores without identity metadata → local-layout follow-up. These need lifecycle and persisted-state regressions beyond this P1 repair.
 - T1.6 checker: bound link activation and preview must consume locally resolved note identity, not only its displayed title/state → T3.3 links.
 - T1.6 checker: route empty-prompt undo from a split pane's title to that pane's body; AI and Cmd+K remain hidden → command-palette unstaging.
@@ -92,6 +98,7 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T1.8 checker: distinguish native assets awaiting web delivery from truly missing images; the current image fallback says the file could not be found → T3.1.
 - T1.8 checker: calibrate the duplicate leg's 30 s WebKit setup-ack allowance against the standard 10 s allowance → test-infra follow-up; this is setup readiness, not a claimed latency budget.
 - T1.6 integration: the [full lane on `ee2488a`](https://github.com/brsbl/moss-multi/actions/runs/37167459553) (tree identical to T1.6's green head) went green only on its third rerun of the WebKit editing shard; each attempt failed different single legs: Chromium j01 duplicate `GET /api/workspace` socket hang up; WebKit j01 presence spoofed-name leg twice (an "access control checks" page error on `/api/workspace`, then a missing peer chip), j00-roundtrip "hibernation not induced" (instance constructed 2.3 s after restart), and j00-persist offline-switch (`hydrateNotesAtom` "Load failed"). A [5× WebKit j01 presence probe](https://github.com/brsbl/moss-multi/actions/runs/37169366494) passed → test-infra follow-up on WebKit editing-shard stability. It recurred on m1's head (j07-auth) and on m2's T2.1 integration (j01 discovery after `reload()`): a `/api/workspace?vault=` fetch cancelled by navigation surfaces as an uncaught WebKit page error; the [m2 full lane](https://github.com/brsbl/moss-multi/actions/runs/37171338601) went green on rerun.
+- T1.9 integration: the [full lane on `1cfebf0`](https://github.com/brsbl/moss-multi/actions/runs/37178515882) went green on the third attempt of the WebKit editing shard; attempt 1 failed j02 empty-title projection (5 s poll), attempt 2 the j02 concurrent-Properties leg on the same `/api/workspace` "access control checks" page error → same WebKit editing-shard follow-up.
 
 - The sign-up "too short" error does not say how long a password must be → T0.10
 - Switching to "Create an account" leaves focus on the toggle link → T0.10
@@ -226,3 +233,24 @@ Local browser verification remains assigned to the independent checker under the
 - The repaired journey observes Ben immediately after reload, makes Ada rename Ben's bound document, verifies its received `meta` frame and completed metadata-only bridge delivery, and checks all invariants before injecting the positive-control replacement. The replacement preserves the generation, is required to trigger invariant 4, and is restored before teardown.
 - Deviation: this is a test-gate repair, so the red proof is a deliberate same-generation DOM replacement in the real journey, not a product mutation. No M1 binding files were edited; current M1 changes arrived only through the required merge. No local tests, stack or browser were run.
 - P2 follow-ups remain scoped separately under the owner's review rule: T2.1 channel hardening (fetch deadline, visibility preserving the pong deadline, retries respecting vault-listing prerequisites); reconciliation after dropped notifications and targeted listing queries; T2.3 trash/restore publication and j05 delivery; T2.4/T2.5 agent grants/removals and session-ended. The coordinator still owns the inherited `CI_CLOSED_MILESTONE` policy.
+
+### T1.9 — decorator text registers
+
+- Tests-first [checks 37170094056](https://github.com/brsbl/moss-multi/actions/runs/37170094056) reproduced lost concurrent edits for code, HTML and formula payloads; [Chromium 37170314835](https://github.com/brsbl/moss-multi/actions/runs/37170314835) reproduced the missing peer text in an open code field.
+- The three payloads use `Y.Text` entries under stable node register identities. Setters use the title's minimal text diff; fields are excluded from whole-value attributes. The client undo scope and DocDO mirror share the mechanism, and converter getters preserve markdown bytes. Legacy V1 attributes migrate in place on load without replacing nodes or deleting their original attributes.
+- Code and HTML drafts publish live, remap remote caret positions, and merge composition drafts. Formula popovers receive remote source edits and use collaborative undo. The existing node views call a shared field hook directly; the Formula node is not part of the extracted view registry. This is the task-specific alternative to A§10.10's proposed view wrapper. Deviation 21 records live field closing behavior.
+- Validation covers live V1 editor replication for all three fields, concurrent setters, own-origin undo/redo, persistence, import identities, legacy migration and export parity. The j01 register journeys exercise code merging/undo/redo/reload, HTML merging/undo, and formula peer updates/undo in CI. Final head and run URLs are recorded in the uncommitted `.codex-result.json`.
+- No separate `docs/briefs/T1.9.md` exists; BUILDPLAN's entry and the supplied implementer brief define the scope. No local tests, typechecks or lint ran. Browser Automation is unavailable to this Codex implementer as the brief states; the independent checker owns the real browser pass. No local stack or browser was started. No T1.9-owned P2 follow-up was listed.
+- The first complete implementation check is green at `0f98ba9` ([37171579169](https://github.com/brsbl/moss-multi/actions/runs/37171579169)). Code and formula journeys pass in both engines. The HTML journey exposed a pre-existing preview-error layer intercepting Edit HTML; the viewport now isolates its layers so the existing header remains clickable. Moss’s `SharedPreviewFrame` and `MediaNodeHeader` at the pin put the header before a same-level preview error overlay; the web’s unavailable native screenshot consistently exposes that state. This small HTML-only repair is required to exercise the register through its UI.
+
+### T1.9 — register refresh commit isolation
+
+- Tests-first [checks 37173699258](https://github.com/brsbl/moss-multi/actions/runs/37173699258) reproduced lost code-language and formula-result writes in non-discrete updates. The existing [formula-to-color journey 37173699220](https://github.com/brsbl/moss-multi/actions/runs/37173699220) failed at the reported missing peer color chip. [Checks 37173874624](https://github.com/brsbl/moss-multi/actions/runs/37173874624) proved all three regression assertions red, including an authored update arriving after a remote register refresh begins.
+- Refresh must wait while Lexical has a pending update, retry after its commit, and commit its own excluded cache writes discretely. This prevents collaboration tags from swallowing either an earlier or a later authored update. Regression assertions cover peer state, persisted state, undo and background-writer eligibility; final verification uses the full CI lane in both engines.
+- Reference comparison: glyphdown stores the body in one `Y.Text` (S-gd §0), so has no Lexical register cache. Moss at the pin writes code and formula fields directly (`CodeBlockNode.tsx:535`, `FormulaNode.tsx:252–260`). Our register cache introduced the extra tagged update; the fix isolates it without changing stored fields or node identities.
+- Deviations: the existing j01 formula-to-color leg is reused as the P1 browser regression. No separate task brief exists beyond BUILDPLAN and `.codex-brief.md`. The optional local browser pass remains with the independent checker because Browser Automation is unavailable in this Codex environment, as the brief states. No local tests, typechecks or lint ran, and no stack or browser was started. The three P2 findings remain recorded follow-ups under the owner's P0/P1-only review rule; this repair changes only commit isolation. Exact final-head evidence is in `.codex-result.json`.
+
+### T1.9 — unique register ids for live imports
+
+- The checker reproduced two editors pasting the same markdown into one empty note: both minted the deterministic `import:` id, Y.Map kept one `Y.Text`, and the two blocks stayed linked. [Checks 37176278081](https://github.com/brsbl/moss-multi/actions/runs/37176278081) proved it red for all three registers.
+- `$assignRegisterIds` now mints `crypto.randomUUID()` in a live editor. Only the DocDO mirror (`bindRegisters(..., { serializedImports: true })`, one serialized writer) and unbound converters keep repeatable import ids (A§10.10).
