@@ -785,7 +785,7 @@ function originalProjection(doc: Y.Doc, own: readonly IdSpan[]): string[] {
     }
   };
   const body = doc.share.get('root');
-  if (body) walk(body, 0);
+  if (body) walk(body as Y.AbstractType<unknown>, 0);
   for (const [name, type] of [...doc.share].sort((a, b) => (a[0] < b[0] ? -1 : 1))) {
     if (name === 'root') continue;
     for (const [key, item] of [...type._map].sort((a, b) => (a[0] < b[0] ? -1 : 1))) {

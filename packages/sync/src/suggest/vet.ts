@@ -101,7 +101,7 @@ export class SuggestMirror {
     }
     // Nothing parks: a struct or delete Yjs could not integrate now would land later, unvetted.
     const store = this.doc.store;
-    if (verdict.ok && (store.pendingStructs !== null || store.pendingDs !== null)) verdict = { ok: false, reason: 'unresolvable' };
+    if (store.pendingStructs !== null || store.pendingDs !== null) verdict = { ok: false, reason: 'unresolvable' };
     if (!verdict.ok) this.reset();
     return verdict;
   }
@@ -294,7 +294,7 @@ function vet(transaction: Y.Transaction, options: VetOptions): { inserts: IdSpan
       const { pre, post } = units(body, window, liveBefore, isFresh);
       align(pre.filter((unit) => !ownUnit(unit)), post.filter((unit) => unit.fresh || !ownUnit(unit)), {
         wanted: () => true,
-        same: (o, p) => p.char === o.char && p.fmt === o.fmt,
+        same: (o, p) => o.char !== null && p.char === o.char && p.fmt === o.fmt, // an embed is never a copy
         kept: (o, p) => {
           if (p.fmt !== o.fmt) throw new Refusal('mutate-original');
         },
@@ -394,7 +394,7 @@ export function carryTransaction(transaction: Y.Transaction, spans: readonly IdS
   const added = new Set<string>();
   align(pre, post, {
     wanted: (o) => o.char !== null && tracked(o.client, o.clock),
-    same: (o, p) => p.char === o.char,
+    same: (o, p) => o.char !== null && p.char === o.char,
     kept: () => {},
     matched: (_o, p) => {
       added.add(keyOf(p));
@@ -516,7 +516,7 @@ function isTextMapType(type: unknown, include: (item: Y.Item) => boolean): type 
  * a unit: it is the format of the characters after it, up to the next embed. Formatting marks and tombstones carry
  * nothing a V1 body shows.
  */
-function flatten(items: Iterable<Y.Item>, include: (item: Y.Item) => boolean, isFresh: (item: Y.Item) => boolean, out: Unit[]): void {
+function flatten(items: Iterable<Y.Item>, include: (item: Y.Item) => boolean, isFresh: (item: Y.Item) => boolean, out: Unit[], depth = 0): void {
   let fmt: string | null = null;
   let gov: Y.Item | null = null;
   for (const item of items) {
@@ -524,7 +524,9 @@ function flatten(items: Iterable<Y.Item>, include: (item: Y.Item) => boolean, is
     if (content instanceof Y.ContentFormat || content instanceof Y.ContentDeleted) continue;
     const fresh = isFresh(item);
     if (content instanceof Y.ContentString) {
-      for (let i = 0; i < content.str.length; i++) out.push({ client: id.client, clock: id.clock + i, item, fresh, char: content.str[i], fmt, gov });
+      // The nesting depth is part of the format: a split never moves text into or out of a nested block.
+      const format = `${depth} ${fmt ?? '-'}`;
+      for (let i = 0; i < content.str.length; i++) out.push({ client: id.client, clock: id.clock + i, item, fresh, char: content.str[i], fmt: format, gov });
       continue;
     }
     if (content instanceof Y.ContentType && isTextMapType(content.type, include)) {
@@ -535,7 +537,7 @@ function flatten(items: Iterable<Y.Item>, include: (item: Y.Item) => boolean, is
     fmt = null;
     gov = null;
     for (let i = 0; i < item.length; i++) out.push({ client: id.client, clock: id.clock + i, item, fresh, char: null, fmt: null, gov: null });
-    if (content instanceof Y.ContentType) flatten(children(content.type as Type, include), include, isFresh, out);
+    if (content instanceof Y.ContentType) flatten(children(content.type as Type, include), include, isFresh, out, depth + 1);
   }
 }
 
