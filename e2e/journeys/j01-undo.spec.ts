@@ -35,6 +35,7 @@ const docText = (actor: Actor, id: string) => ui.body(actor, id).evaluate(elemen
   return editor.getEditorState().read(() => editor.getEditorState()._nodeMap.get('root')!.getTextContent());
 });
 const paragraph = (actor: Actor, id: string, start: string) => ui.body(actor, id).locator('p').filter({ hasText: new RegExp(`^${start}`) });
+/** Concurrent typing interleaves in either order, so only the letters are compared. */
 const letters = (text: string) => [...text.replace(/\s/g, '')].sort().join('');
 
 /** Both peers show the same body; returns it. */
@@ -92,9 +93,9 @@ test('j01 undo: interleaved typing in one paragraph; Ada\'s Cmd+Z keeps Ben\'s w
   const undone = await press(ada, ben, id, UNDO, 2, ['BEN-TWO']);
   expect(undone, 'both of Ada\'s steps are undone and nothing of Ben\'s').toBe('Intro line.\n\n BEN-TWO');
   const redone = await press(ada, ben, id, REDO, 2, ['BEN-TWO']);
-  expect(letters(redone)).toBe(letters(full));
+  expect(redone, 'redo restores the text exactly').toBe(full);
   await actors.reloadAll();
-  for (const actor of [ada, ben]) { await ui.waitLive(actor, id); expect(letters(await docText(actor, id))).toBe(letters(full)); }
+  for (const actor of [ada, ben]) { await ui.waitLive(actor, id); expect(await docText(actor, id)).toBe(full); }
 });
 
 test('j01 undo: Ben joins mid-edit and types inside the word Ada is typing; her Cmd+Z keeps his letters @p:col-3', async ({ actors, stack }) => {
@@ -111,7 +112,7 @@ test('j01 undo: Ben joins mid-edit and types inside the word Ada is typing; her 
   const undone = await press(ada, ben, id, UNDO, 3, ['BEN']);
   expect(undone, 'every letter Ada typed is undone, and only those').toBe('Intro line.\n\nBEN');
   const redone = await press(ada, ben, id, REDO, 3, ['BEN']);
-  expect(letters(redone)).toBe(letters(full));
+  expect(redone, 'redo restores the text exactly').toBe(full);
 });
 
 test('j01 undo: a paragraph split and merge by one peer while the other types; Cmd+Z keeps the other\'s text @p:col-3', async ({ actors, stack }) => {
@@ -167,8 +168,31 @@ test('j01 undo: after a dropped socket reconnects, Ada\'s Cmd+Z keeps what Ben t
   const undone = await press(ada, ben, id, UNDO, 2, ['BEN-MEANWHILE']);
   expect(undone, 'Ada\'s typing before and during the drop is undone').toBe('Intro line.\n\n BEN-MEANWHILE');
   const redone = await press(ada, ben, id, REDO, 2, ['BEN-MEANWHILE']);
-  expect(letters(redone)).toBe(letters(full));
+  expect(redone, 'redo restores the text exactly').toBe(full);
   await expect(ui.pane(ada, id)).toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout: PEER_TIMEOUT });
   await actors.reloadAll();
-  for (const actor of [ada, ben]) { await ui.waitLive(actor, id); expect(letters(await docText(actor, id))).toBe(letters(full)); }
+  for (const actor of [ada, ben]) { await ui.waitLive(actor, id); expect(await docText(actor, id)).toBe(full); }
+});
+
+test('j01 undo: Ada deletes Ben\'s words, undoes that, then undoes her line; his words stay on both screens @p:col-3', async ({ actors, stack }) => {
+  const { ada, ben, id } = await setup(actors, stack.baseUrl, 'Intro line.');
+  if (!ben) throw new Error('no ben');
+  await caretAtEnd(ada, id, 'Intro line');
+  await ada.page.keyboard.press('Enter'); await ada.page.keyboard.type('Alpha');
+  await expect(paragraph(ben, id, 'Alpha')).toBeVisible({ timeout: PEER_TIMEOUT });
+  await caretAtEnd(ben, id, 'Alpha'); await ben.page.keyboard.type(' BEN');
+  await expect(paragraph(ada, id, 'Alpha BEN')).toBeVisible({ timeout: PEER_TIMEOUT });
+  await ada.page.waitForTimeout(NEW_STEP_MS);
+  await caretAtEnd(ada, id, 'Alpha BEN');
+  for (let i = 0; i < ' BEN'.length; i++) await ada.page.keyboard.press('Backspace');
+  expect(await converged(ada, ben, id, 'deleted')).toBe('Intro line.\n\nAlpha');
+  await ada.page.waitForTimeout(NEW_STEP_MS);
+  // Undoing the delete restores Ben's words as copies made by Ada's client; they are still his.
+  expect(await press(ada, ben, id, UNDO, 1, ['BEN']), 'undoing the delete restores Ben\'s words').toBe('Intro line.\n\nAlpha BEN');
+  expect(await press(ada, ben, id, UNDO, 2, ['BEN']), 'only Ada\'s line is undone').toBe('Intro line.\n\n BEN');
+  // A second round restores copies of the copies the first one restored.
+  expect(await press(ada, ben, id, REDO, 3, ['BEN']), 'redo replays Ada\'s delete last').toBe('Intro line.\n\nAlpha');
+  expect(await press(ada, ben, id, UNDO, 3, ['BEN'])).toBe('Intro line.\n\n BEN');
+  await press(ada, ben, id, REDO, 3, ['BEN']);
+  expect(await converged(ada, ben, id, 'redone again')).toBe('Intro line.\n\nAlpha');
 });

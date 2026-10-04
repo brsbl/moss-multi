@@ -71,7 +71,6 @@ const mergeInto = (index: number) => () => {
   paragraph(index - 1).append(...merged.getChildren());
   merged.remove();
 };
-const letters = (text: string) => [...text.replace(/\s/g, '')].sort().join('');
 
 async function expectBoth(ada: Peer, ben: Peer, check: (text: string) => void) {
   await exchange(ada, ben);
@@ -101,6 +100,29 @@ describe('Cmd+Z undoes only your own edits and never removes a peer\'s character
     } finally { dispose(); }
   });
 
+  it('after Ada deletes the peer\'s words and undoes that, her next Cmd+Z still keeps them', async () => {
+    const { ada, ben, dispose } = await pair(() => $getRoot().append($createParagraphNode().append($createTextNode('Intro.'))));
+    try {
+      ada.step(() => $getRoot().append($createParagraphNode().append($createTextNode('Alpha'))));
+      await exchange(ada, ben);
+      ben.step(typeAt(1, 5, ' BEN'));
+      await exchange(ada, ben);
+      ada.step(() => textAt(1).spliceText(5, 4, ''));
+      await expectBoth(ada, ben, text => expect(text).toBe('Intro.\n\nAlpha'));
+      // Two rounds: the second restores copies of the copies the first restored.
+      for (let round = 1; round <= 2; round++) {
+        ada.undo.undo();
+        await expectBoth(ada, ben, text => expect(text, `round ${round}: undoing the delete restores Ben's words`).toBe('Intro.\n\nAlpha BEN'));
+        ada.undo.undo();
+        await expectBoth(ada, ben, text => expect(text, `round ${round}: Ada's Cmd+Z must leave Ben's text`).toBe('Intro.\n\n BEN'));
+        ada.undo.redo();
+        await expectBoth(ada, ben, text => expect(text).toBe('Intro.\n\nAlpha BEN'));
+        ada.undo.redo();
+        await expectBoth(ada, ben, text => expect(text).toBe('Intro.\n\nAlpha'));
+      }
+    } finally { dispose(); }
+  });
+
   it('a peer typing inside a word Ada is editing keeps those characters through her undo', async () => {
     const { ada, ben, dispose } = await pair(() => $getRoot().append($createParagraphNode().append($createTextNode('Intro.'))));
     try {
@@ -112,7 +134,7 @@ describe('Cmd+Z undoes only your own edits and never removes a peer\'s character
       ada.undo.undo();
       await expectBoth(ada, ben, text => expect(text, 'Ada\'s Cmd+Z must leave Ben\'s text').toBe('Intro.\n\nBEN'));
       ada.undo.redo();
-      await expectBoth(ada, ben, text => { expect(text).toContain('BEN'); expect(letters(text)).toBe(letters('Intro.AlphBENabet')); });
+      await expectBoth(ada, ben, text => expect(text).toBe('Intro.\n\nAlphBENabet'));
     } finally { dispose(); }
   });
 
@@ -224,7 +246,7 @@ describe('Cmd+Z undoes only your own edits and never removes a peer\'s character
           ada.undo.redo();
           await expectBoth(ada, ben, text => expect(text, `redo ${i + 1} of round ${round + 1}`).toContain('BEN'));
         }
-        expect(letters(ada.text())).toBe(letters(full));
+        expect(ada.text()).toBe(full);
       }
     } finally { dispose(); }
   });
