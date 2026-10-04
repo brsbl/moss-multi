@@ -8,7 +8,7 @@ import {
 } from 'lexical';
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
-import { decodeRelPos, mintAnchor, project, resolveAnchor, validateAnchor, type TreeAnchor } from '@moss-multi/core/tree-anchor';
+import { decodeRelPos, mintAnchor, project, resolveAnchor, similarity, validateAnchor, type TreeAnchor } from '@moss-multi/core/tree-anchor';
 import { createConverterEditor } from './converter/index.ts';
 import { excludedPropertiesFor } from './excluded-properties.ts';
 import { bindRegisters } from './registers.ts';
@@ -122,6 +122,38 @@ describe('T4.0 spike: tree anchors over the V1 binding @p:tech-3', () => {
     expect(project(a.doc).text).toBe(project(b.doc).text);
     expect(project(a.doc).text.startsWith('Hey, The quick old brown very fox! jumps')).toBe(true);
     for (const doc of [seed, a.doc, b.doc]) expect(textOf(doc, anchor)).toBe('brown very fox');
+  }));
+
+  it('similarity counts the common prefix and suffix, so one typed character barely moves it', () => {
+    expect(similarity('brown fox', 'bXrown fox')).toBeGreaterThan(0.9);
+    expect(similarity('brown fox', 'brown foXx')).toBeGreaterThan(0.9);
+    expect(similarity('abc', 'xyz')).toBe(0);
+  });
+
+  it('typing just inside the start of a commented phrase keeps it anchored', () => scene(async (seed, a, b) => {
+    const anchor = anchorOn(seed, 'brown fox');
+    a.edit(() => { firstText().spliceText(11, 0, 'X'); });
+    await sync(seed, a.doc, b.doc);
+    for (const doc of [seed, a.doc, b.doc]) {
+      const checked = validateAnchor(doc, anchor);
+      expect(checked.anchor.status).toBe('anchored');
+      expect(textOf(doc, anchor)).toBe('bXrown fox');
+    }
+  }));
+
+  it('typing inside the range refreshes the quote, so a later format collapse still finds the grown text', () => scene(async (seed, a, b) => {
+    const minted = anchorOn(seed, 'brown fox');
+    a.edit(() => { firstText().spliceText(16, 0, 'very '); });
+    await sync(seed, a.doc, b.doc);
+    // The DocDO persists what validateAnchor returns when it reports a change (comments.md §3.4).
+    const typed = validateAnchor(seed, minted);
+    expect(typed.changed).toBe(true);
+    expect(typed.anchor.quote.exact).toBe('brown very fox');
+    a.edit(() => bold(4, 9));
+    await sync(seed, a.doc, b.doc);
+    const formatted = validateAnchor(seed, typed.anchor);
+    expect(formatted.anchor.status).toBe('anchored');
+    for (const doc of [seed, a.doc, b.doc]) expect(textOf(doc, formatted.anchor)).toBe('brown very fox');
   }));
 
   it('bolding a word before the range collapses the raw positions; the quote restores the same text and re-mints', () => scene(async (seed, a, b) => {

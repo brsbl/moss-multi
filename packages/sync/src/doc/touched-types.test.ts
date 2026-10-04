@@ -1,6 +1,7 @@
 // SP7 (T4.0, A§13): the DocDO must know which root shared types a client frame would touch before applying it, so a
 // frame that writes `comments` or `suggestions` (or any root outside the client allowlist) never lands.
 import fc from 'fast-check';
+import * as encoding from 'lib0/encoding';
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { touchedTypes } from './touched-types.ts';
@@ -36,6 +37,27 @@ const verdict = (doc: Y.Doc, update: Uint8Array) => {
   const { roots, unresolved } = touchedTypes(doc, update);
   return { roots: [...roots].sort(), unresolved };
 };
+const CLIENT_ROOTS = new Set(['root', 'title', 'frontmatter', 'frontmatterOrder', 'registers']);
+/** The DocDO's step 2b verdict (comments.md §2.3). */
+const refused = (doc: Y.Doc, update: Uint8Array) => {
+  const result = touchedTypes(doc, update);
+  return result.unresolved || result.malformed || [...result.roots].some((root) => !CLIENT_ROOTS.has(root));
+};
+
+/** A hand-encoded V1 update of consecutive items from one client, as an attacker can send it. */
+function raw(items: Y.Item[]): Uint8Array {
+  const encoder = new Y.UpdateEncoderV1();
+  encoding.writeVarUint(encoder.restEncoder, 1);
+  encoding.writeVarUint(encoder.restEncoder, items.length);
+  encoder.writeClient(items[0].id.client);
+  encoding.writeVarUint(encoder.restEncoder, items[0].id.clock);
+  for (const item of items) item.write(encoder, 0);
+  encoding.writeVarUint(encoder.restEncoder, 0);
+  return encoder.toUint8Array();
+}
+const forged = (id: Y.ID, at: { origin?: Y.ID; parent?: string | Y.ID; sub?: string }, content: ConstructorParameters<typeof Y.Item>[7]) =>
+  new Y.Item(id, null, at.origin ?? null, null, null, (at.parent ?? null) as never, at.sub ?? null, content);
+const rootStart = (doc: Y.Doc) => (doc.get('root', Y.XmlText) as unknown as { _start: Y.Item })._start.id;
 
 /** Ground truth: apply to a copy and read every changed type's root. */
 type SharedType = Y.Transaction['changed'] extends Map<infer K, unknown> ? K : never;
@@ -116,6 +138,49 @@ describe('SP7: classify a frame by the root types it touches, without applying i
     const eraser = copyOf(future);
     eraser.getMap('comments').delete('next');
     expect(verdict(s, frame(eraser, future)).unresolved).toBe(true);
+  });
+
+  it('a forged struct whose head the server holds cannot carry its tail into the latest comment record', () => {
+    const s = server();
+    const state = Y.getState(s.store, s.clientID);
+    // The server's last write is comments.c2; Yjs integrates the tail of a partly held struct next to (S, state - 1).
+    const viaRoot = raw([forged(Y.createID(s.clientID, state - 1), { origin: rootStart(s) }, new Y.ContentAny([{ text: 'plain' }, { text: 'FORGED' }]))]);
+    const proof = copyOf(s);
+    Y.applyUpdate(proof, viaRoot);
+    expect(proof.getMap('comments').get('c2'), 'the attack is real').toEqual({ text: 'FORGED' });
+    expect(refused(s, viaRoot)).toBe(true);
+
+    const viaFrontmatter = raw([forged(Y.createID(s.clientID, state - 1), { parent: 'frontmatter', sub: 'k' }, new Y.ContentAny(['plain', 'x']))]);
+    expect(refused(s, viaFrontmatter)).toBe(true);
+  });
+
+  it('an honest partly held struct (a merged run the server half holds) still classifies by its parent', () => {
+    const s = server();
+    const c = copyOf(s);
+    paragraphOf(c).insert(5, 'ab');
+    Y.applyUpdate(s, frame(c, s));
+    paragraphOf(c).insert(7, 'cde');
+    // A full update re-sends the merged run (C, 0..4); the server holds (C, 0..1).
+    const update = Y.encodeStateAsUpdate(c);
+    expect(touchedTypes(s, update)).toEqual({ roots: new Set(['root']), unresolved: false, malformed: false });
+  });
+
+  it('a frame whose parent links form a cycle is refused promptly', () => {
+    const s = server();
+    const self = raw([forged(Y.createID(777, 0), { parent: Y.createID(777, 0) }, new Y.ContentType(new Y.Map()))]);
+    expect(touchedTypes(s, self).malformed).toBe(true);
+    const pair = raw([
+      forged(Y.createID(777, 0), { parent: Y.createID(777, 1) }, new Y.ContentType(new Y.Map())),
+      forged(Y.createID(777, 1), { parent: Y.createID(777, 0) }, new Y.ContentType(new Y.Map())),
+    ]);
+    expect(touchedTypes(s, pair).malformed).toBe(true);
+  });
+
+  it('a struct past a gap in its client\'s clocks is unresolved: Yjs would park it until the server fills the gap', () => {
+    const s = server();
+    const state = Y.getState(s.store, s.clientID);
+    const ahead = raw([forged(Y.createID(s.clientID, state + 2), { parent: 'frontmatter', sub: 'k' }, new Y.ContentAny(['x']))]);
+    expect(touchedTypes(s, ahead).unresolved).toBe(true);
   });
 
   it('classifying applies nothing: the state vector, the root names and the pending queue are unchanged', () => {
