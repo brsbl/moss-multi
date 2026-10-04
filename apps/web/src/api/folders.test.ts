@@ -155,6 +155,18 @@ describe('PATCH /api/folders/:id', () => {
     await create(ada, ada.homeId, 'Child');
     await expectSentence(await call(ada, 'PATCH', `/api/folders/${child}`, { parentId: ada.homeId }), 409, /already/);
   });
+
+  it('keeps folders and notes within their vault even when the owner has another vault', async () => {
+    const second = crypto.randomUUID();
+    await d1.db.prepare("INSERT INTO folders (id, owner_user_id, created_by, name, kind, parent_id, created_at) VALUES (?, ?, ?, 'Second vault', 'vault', NULL, ?)")
+      .bind(second, ada.id, ada.id, Date.now()).run();
+    const folder = await create(ada, ada.homeId, 'Stays home');
+    const doc = await insertDoc(d1.db, ada);
+    await expectSentence(await call(ada, 'PATCH', `/api/folders/${folder}`, { parentId: second }), 409, /vault/);
+    await expectSentence(await call(ada, 'PATCH', `/api/docs/${doc}`, { folderId: second }), 409, /vault/);
+    expect(await row(folder)).toMatchObject({ parent_id: ada.homeId });
+    expect(await docRow(doc)).toMatchObject({ folder_id: ada.homeId });
+  });
 });
 
 describe('PATCH /api/docs/:id {folderId}', () => {
@@ -233,6 +245,102 @@ describe('DELETE /api/folders/:id', () => {
     trashFails = false;
     expect((await call(ada, 'DELETE', `/api/folders/${folder}`)).status).toBe(200);
     expect(trashed).toEqual([doc]);
+  });
+});
+
+/**
+ * A D1 whose writes to folders and docs wait until `arrivals` of them are pending (or a second passes), so two
+ * requests both finish their reads before either writes: the interleaving a real race takes.
+ */
+function racingEnv(arrivals: number): typeof env {
+  let waiting: (() => void)[] = [];
+  const gate = () => new Promise<void>((resolve) => {
+    waiting.push(resolve);
+    const release = () => { const all = waiting; waiting = []; for (const go of all) go(); };
+    if (waiting.length >= arrivals) release();
+    else setTimeout(release, 1000);
+  });
+  const WRITE = /\b(update|insert\s+into)\s+[`"]?(folders|docs)\b/i;
+  const wrap = (statement: D1PreparedStatement, sql: string): D1PreparedStatement => new Proxy(statement, {
+    get(target, key) {
+      const value = Reflect.get(target, key, target);
+      if (typeof value !== 'function') return value;
+      if (key === 'bind') return (...args: unknown[]) => wrap(value.apply(target, args), sql);
+      if (WRITE.test(sql) && ['run', 'all', 'first', 'raw'].includes(key as string)) {
+        return async (...args: unknown[]) => { await gate(); return value.apply(target, args); };
+      }
+      return value.bind(target);
+    },
+  });
+  const DB = new Proxy(d1.db, {
+    get(target, key) {
+      if (key === 'prepare') return (sql: string) => wrap(target.prepare(sql), sql);
+      if (key === 'batch') return async (statements: D1PreparedStatement[]) => { await gate(); return target.batch(statements); };
+      const value = Reflect.get(target, key, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  return { ...env, DB };
+}
+
+const callIn = (raceEnv: typeof env, user: TestUser, method: string, path: string, body?: unknown) =>
+  handleApi(new Request(`${BASE}${path}`, {
+    method,
+    headers: { origin: BASE, 'content-type': 'application/json', cookie: user.cookie },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  }), raceEnv);
+
+const visibleFolderIds = async (user: TestUser) =>
+  ((await (await call(user, 'GET', '/api/workspace')).json()) as { folders: { id: string }[] }).folders.map((f) => f.id);
+
+describe('concurrent writes', () => {
+  it('two crossing moves never both commit, so no parent cycle hides the folders', async () => {
+    const a = await create(ada, ada.homeId, 'Cross A');
+    const b = await create(ada, ada.homeId, 'Cross B');
+    const race = racingEnv(2);
+    const statuses = (await Promise.all([
+      callIn(race, ada, 'PATCH', `/api/folders/${a}`, { parentId: b }),
+      callIn(race, ada, 'PATCH', `/api/folders/${b}`, { parentId: a }),
+    ])).map((response) => response.status).sort();
+    expect(statuses).toEqual([200, 409]);
+    expect(await visibleFolderIds(ada)).toEqual(expect.arrayContaining([a, b]));
+  });
+
+  it('a move and a deep create never together nest past the depth bound', async () => {
+    let deep = ada.homeId;
+    for (let depth = 1; depth <= 9; depth += 1) deep = await create(ada, deep, `Deep ${depth}`);
+    const mover = await create(ada, ada.homeId, 'Mover');
+    const race = racingEnv(2);
+    const [moved, created] = await Promise.all([
+      callIn(race, ada, 'PATCH', `/api/folders/${mover}`, { parentId: deep }),
+      callIn(race, ada, 'POST', '/api/folders', { parentId: mover, name: 'Under mover' }),
+    ]);
+    expect([[200, 409], [409, 201]], `move ${moved.status}, create ${created.status}`).toContainEqual([moved.status, created.status]);
+  });
+
+  it('a folder created in a folder being trashed is trashed with it or refused, never left live under it', async () => {
+    const doomed = await create(ada, ada.homeId, 'Doomed race');
+    const race = racingEnv(2);
+    const [trash, child] = await Promise.all([
+      callIn(race, ada, 'DELETE', `/api/folders/${doomed}`),
+      callIn(race, ada, 'POST', '/api/folders', { parentId: doomed, name: 'Late child' }),
+    ]);
+    expect(trash.status).toBe(200);
+    const live = await d1.db.prepare('SELECT id FROM folders WHERE parent_id = ? AND deleted_at IS NULL').bind(doomed).all();
+    expect(live.results, `child answered ${child.status}`).toEqual([]);
+  });
+
+  it('a note moved into a folder being trashed is trashed with it or refused, never left live under it', async () => {
+    const doomed = await create(ada, ada.homeId, 'Doomed note race');
+    const doc = await insertDoc(d1.db, ada);
+    const race = racingEnv(2);
+    const [trash, move] = await Promise.all([
+      callIn(race, ada, 'DELETE', `/api/folders/${doomed}`),
+      callIn(race, ada, 'PATCH', `/api/docs/${doc}`, { folderId: doomed }),
+    ]);
+    expect(trash.status).toBe(200);
+    const live = await d1.db.prepare('SELECT id FROM docs WHERE folder_id = ? AND deleted_at IS NULL').bind(doomed).all();
+    expect(live.results, `move answered ${move.status}`).toEqual([]);
   });
 });
 
