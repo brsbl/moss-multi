@@ -182,7 +182,8 @@ test('j13-vaults: Ben, with a root grant, sees the vault with a role badge and n
   for (const actor of [ada, ben]) {
     await switcher(actor, 'Home').click();
     await expect(actor.page.getByRole('menuitem', { name: new RegExp(`^${RENAMED}`) }), `${actor.label}: the vault leaves the switcher`).toHaveCount(0);
-    await actor.page.keyboard.press('Escape');
+    await actor.page.getByRole('menuitem', { name: 'Home', exact: true }).click();
+    await expect(actor.page.getByRole('menu')).toHaveCount(0);
     await expect(noteRow(actor, docId)).toHaveCount(0);
   }
   await actors.checkpoint('vault-trashed');
