@@ -13,6 +13,7 @@ import { readFileSync } from 'node:fs';
 import type { Actor, Actors } from '../lib/actors.ts';
 import { APP_STATE_ATTR, BODY_BINDING_ATTR, EDITOR_PANE_ATTR, NAMES, SIDEBAR_ROW_ATTR, SYNC_UNACKED_ATTR } from '../lib/contract.ts';
 import { grantDoc } from '../lib/grants.ts';
+import type { Principal } from '../lib/principals.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
 const BOOT_TIMEOUT = 30_000;
@@ -42,8 +43,8 @@ const ALT = 'Green stripes on a test card';
 const bytes = (name: string) => readFileSync(new URL(name, FIXTURES));
 const payload = (files: Fixture[]) => files.map((file) => ({ ...file, base64: bytes(file.name).toString('base64') }));
 
-async function openShell(actors: Actors, label: string, path = '/'): Promise<Actor> {
-  const actor = await actors.open(await actors.principal(label), { path });
+async function openShell(actors: Actors, who: string | Principal, path = '/'): Promise<Actor> {
+  const actor = await actors.open(typeof who === 'string' ? await actors.principal(who) : who, { path });
   await actor.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: BOOT_TIMEOUT });
   return actor;
 }
@@ -97,15 +98,24 @@ async function drop(actor: Actor, docId: string, files: Fixture[]): Promise<bool
   }, { files: payload(files), x: box.x + 24, y: box.y + 12 });
 }
 
-/** The caret at the end of the note's first line, where each paste and the slash command land. */
+/**
+ * The caret at the end of the note's first line, where each paste and the slash command land. Lexical reads the
+ * browser's selection on `selectionchange`, a task after the key, so the paste waits until it has.
+ */
 async function caretAfterFirstLine(actor: Actor, docId: string): Promise<void> {
-  await ui.body(actor, docId).getByText('Uploads', { exact: true }).click();
+  const line = ui.body(actor, docId).getByText('Uploads', { exact: true });
+  await line.click();
   await actor.page.keyboard.press('End');
+  await expect.poll(() => line.evaluate((el) => {
+    const selection = document.getSelection();
+    return !!selection?.isCollapsed && el.contains(selection.focusNode) && selection.focusOffset === (selection.focusNode?.textContent ?? '').length;
+  }), { message: `${actor.label}: the caret ends the first line` }).toBe(true);
+  await actor.page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
 }
 
 /** A clipboard paste of one file, as a copied file or a screenshot arrives. */
-async function paste(actor: Actor, docId: string, file: Fixture): Promise<boolean> {
-  await caretAfterFirstLine(actor, docId);
+async function paste(actor: Actor, docId: string, file: Fixture, caret = true): Promise<boolean> {
+  if (caret) await caretAfterFirstLine(actor, docId);
   return ui.body(actor, docId).evaluate((root, file) => {
     const data = new DataTransfer();
     data.items.add(new File([Uint8Array.from(atob(file.base64), (c) => c.charCodeAt(0))], file.name, { type: file.type }));
@@ -142,7 +152,7 @@ test('j11-media: drop, paste and /media → From computer upload every moss type
   await expect(ada.page.locator('button[data-index]').filter({ hasText: 'Media' })).toHaveCount(1);
   await ada.page.keyboard.press('Enter');
   const chooser = ada.page.waitForEvent('filechooser', { timeout: BIND_TIMEOUT });
-  await ada.page.getByRole('button', { name: /From computer/ }).click();
+  await ada.page.getByRole('option', { name: /From computer/ }).click();
   await (await chooser).setFiles(MEDIA.map((file) => ({ name: file.name, mimeType: file.type, buffer: bytes(file.name) })));
   await expectImagesDecode(ada, docId, IMAGES * 3);
   await expectVideos(ada, docId, VIDEOS * 3);
@@ -173,7 +183,7 @@ test('j11-media: drop, paste and /media → From computer upload every moss type
 
   // Ben reads at viewer: the media renders, and he has no way to upload.
   await grantDoc(ada, docId, benPrincipal, 'viewer');
-  const ben = await openShell(actors, 'ben', `/d/${docId}`);
+  const ben = await openShell(actors, benPrincipal, `/d/${docId}`);
   await actors.requireDistinct(2);
   await expect(ui.body(ben, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'readonly', { timeout: BIND_TIMEOUT });
   await expectImagesDecode(ben, docId, IMAGES * 3);
@@ -185,7 +195,7 @@ test('j11-media: drop, paste and /media → From computer upload every moss type
   await ben.page.keyboard.type('/media');
   await expect(ben.page.locator('button[data-index]'), 'a viewer gets no slash menu').toHaveCount(0);
   await drop(ben, docId, [PNG]);
-  await paste(ben, docId, PNG);
+  await paste(ben, docId, PNG, false);
   await expect(images(ben, docId), 'nothing lands in a read-only note').toHaveCount(IMAGES * 3);
   expect(uploads, 'a viewer sends no upload').toEqual([]);
   const raw = await ben.context.request.post(`/api/docs/${docId}/assets?filename=pattern.png`, {
@@ -212,7 +222,12 @@ test('j11-media: a copied note keeps its media in its folder and in the copier\'
   const player = ui.body(ada, docId).locator('video');
   await expect.poll(() => player.evaluate((video: HTMLVideoElement) => video.readyState), { message: 'the video has frames', timeout: UPLOAD_TIMEOUT })
     .toBeGreaterThanOrEqual(2);
-  expect(partial, 'the player read the video through Range').toContain(206);
+  expect(partial.filter((status) => status > 0).every((status) => status === 200 || status === 206), 'the player read the video').toBe(true);
+  const ranged = await ada.page.evaluate(async (url) => {
+    const response = await fetch(url, { headers: { range: 'bytes=0-99' } });
+    return { status: response.status, range: response.headers.get('content-range'), length: (await response.arrayBuffer()).byteLength };
+  }, (await player.getAttribute('src')) ?? '');
+  expect(ranged, 'the video URL answers Range with 206').toEqual({ status: 206, range: expect.stringMatching(/^bytes 0-99\/\d+$/), length: 100 });
 
   // Duplicate in Ada's folder.
   await ada.page.locator(`[${SIDEBAR_ROW_ATTR}][${NAMES.docId}="${docId}"]`).click({ button: 'right' });
@@ -227,7 +242,7 @@ test('j11-media: a copied note keeps its media in its folder and in the copier\'
 
   // Ben edits only this note, so his copy lands in his own Home, and its media comes with it.
   await grantDoc(ada, docId, benPrincipal, 'editor');
-  const ben = await openShell(actors, 'ben', `/d/${docId}`);
+  const ben = await openShell(actors, benPrincipal, `/d/${docId}`);
   await actors.requireDistinct(2);
   await ui.waitLive(ben, docId);
   await ben.page.locator(`[${SIDEBAR_ROW_ATTR}][${NAMES.docId}="${docId}"]`).click({ button: 'right' });
@@ -276,7 +291,7 @@ test("j11-media: alt text edited from the image's context menu reaches the peer 
   await expectImagesDecode(ada, docId, 1);
   await waitAcked(ada, docId);
   await grantDoc(ada, docId, benPrincipal, 'editor');
-  const ben = await openShell(actors, 'ben', `/d/${docId}`);
+  const ben = await openShell(actors, benPrincipal, `/d/${docId}`);
   await actors.requireDistinct(2);
   await ui.waitLive(ben, docId);
   await expectImagesDecode(ben, docId, 1);
