@@ -63,6 +63,19 @@ const isConnection = (origin: unknown): origin is Connection =>
  */
 let unknownPayload: Y.Doc | null = null;
 
+/**
+ * What a payload frame's own structs put on the server: for each client in it, the end of its clock range, as far as
+ * the doc holds it contiguously. Never more than the frame carried, so an ack tells the client nothing it did not send.
+ */
+function coverage(doc: Y.Doc, update: Uint8Array): Map<number, number> {
+  const covered = new Map<number, number>();
+  for (const [client, end] of Y.parseUpdateMeta(update).to) {
+    const held = Math.min(end, Y.getState(doc.store, client));
+    if (held > 0) covered.set(client, held);
+  }
+  return covered;
+}
+
 /** y-partyserver's guard: a socket that is closing or closed is skipped. */
 function send(connection: Connection, message: Uint8Array): void {
   if (connection.readyState !== undefined && connection.readyState !== 0 && connection.readyState !== 1) return;
@@ -95,7 +108,7 @@ export class DocDO extends YServer<SyncEnv> {
   readonly instanceId = crypto.randomUUID();
   /** Payload work since the last reset, which the harness reads to bound it (A§10.10). */
   get payloadWork(): PayloadWork {
-    return this.#payloads?.work ?? { evaluated: 0, revealed: 0, withheld: 0, deduped: 0, compared: 0, held: 0 };
+    return this.#payloads?.work ?? { evaluated: 0, revealed: 0, withheld: 0, deduped: 0, renamed: 0, compared: 0, held: 0 };
   }
   readonly constructedAt = Date.now();
 
@@ -391,10 +404,11 @@ export class DocDO extends YServer<SyncEnv> {
       }
       // An id the store has never seen stays unloaded unless the frame writes to it.
       const known = payloads.has(id);
-      const { changes, deletes } = classifySync(known ? payloads.doc(id) : (unknownPayload ??= new Y.Doc()), data);
+      const target = known ? payloads.doc(id) : (unknownPayload ??= new Y.Doc());
+      const { changes, deletes } = classifySync(target, data);
       if (!changes) {
         // An editor's resend of what is already stored: acked, since the ack that covered it may have been lost.
-        if (roleAtLeast(attachment.role, 'editor')) this.#acks.schedule(connection, deletes, id, data);
+        if (roleAtLeast(attachment.role, 'editor')) this.#acks.schedule(connection, deletes, id, coverage(target, data));
         return;
       }
       const withheld = !payloads.served(id);
@@ -408,8 +422,9 @@ export class DocDO extends YServer<SyncEnv> {
       };
       if (this.#refused(connection, attachment, overCap)) return;
       payloads.addReaders(id, [attachment.principalId]);
-      Y.applyUpdate(payloads.doc(id), data, connection);
-      this.#acks.schedule(connection, deletes, id, data);
+      const doc = payloads.doc(id);
+      Y.applyUpdate(doc, data, connection);
+      this.#acks.schedule(connection, deletes, id, coverage(doc, data));
     } catch {
       // A frame that does not decode is dropped like an unknown one.
     }

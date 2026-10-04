@@ -302,7 +302,7 @@ const PAYLOAD_NOTES = { small: 300, large: 3_000 };
 // Mean workerd CPU per payload frame (parse, gates, load, apply, persist, fan-out to the other sockets, ack).
 const PAYLOAD_FRAME_BUDGET_MS = 3;
 // workerd RSS growth over the frame rounds; payload docs held in memory are bounded (PAYLOAD_DOCS_HELD).
-const PAYLOAD_RSS_BUDGET_MB = 96;
+const PAYLOAD_RSS_BUDGET_MB = 64;
 const PAYLOAD_SCALING = 3;
 const PAYLOAD_DOCS_HELD = 256;
 

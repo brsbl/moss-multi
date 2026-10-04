@@ -118,8 +118,8 @@ export class DocStore {
 
 /**
  * One ack per socket per window, sent when the window closes, naming the deletes the acked frames carried, the note's
- * and each payload's. A payload's coverage is built from the acked frames alone (their state vectors merged), never
- * from the server's doc, so an ack tells a client nothing it did not send. Keyed by the socket itself: a client may
+ * and each payload's. A payload's coverage is the clock ranges of the acked frames themselves, as far as the server
+ * holds them, so an ack tells a client nothing it did not send. Keyed by the socket itself: a client may
  * reuse its connection id while the DO still holds the old socket, whose close must never cancel the new one's ack.
  * In memory: a wake simply sends none.
  */
@@ -131,8 +131,8 @@ export class AckCoalescer<Socket extends object> {
     private readonly windowMs: number,
   ) {}
 
-  /** `payload` names the payload doc the acked frame (`update`) wrote; the note's otherwise. */
-  schedule(socket: Socket, deletes?: DeleteSet, payload?: string, update?: Uint8Array): void {
+  /** `payload` names the payload doc the acked frame wrote, and `covered` the clocks the frame put there; the note's otherwise. */
+  schedule(socket: Socket, deletes?: DeleteSet, payload?: string, covered?: Map<number, number>): void {
     let entry = this.pending.get(socket);
     if (!entry) {
       const timer = setTimeout(() => {
@@ -148,13 +148,11 @@ export class AckCoalescer<Socket extends object> {
       if (deletes) entry.deletes.push(deletes);
       return;
     }
-    let covered = entry.payloads.get(payload);
-    if (!covered) entry.payloads.set(payload, (covered = { sv: new Map(), deletes: [] }));
-    if (deletes) covered.deletes.push(deletes);
-    if (update) {
-      for (const [client, clock] of Y.decodeStateVector(Y.encodeStateVectorFromUpdate(update))) {
-        if ((covered.sv.get(client) ?? 0) < clock) covered.sv.set(client, clock);
-      }
+    let acked = entry.payloads.get(payload);
+    if (!acked) entry.payloads.set(payload, (acked = { sv: new Map(), deletes: [] }));
+    if (deletes) acked.deletes.push(deletes);
+    for (const [client, clock] of covered ?? []) {
+      if ((acked.sv.get(client) ?? 0) < clock) acked.sv.set(client, clock);
     }
   }
 
