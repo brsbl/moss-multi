@@ -152,15 +152,22 @@ function restoreRacedPayloads(doc: Y.Doc, transaction: Y.Transaction, ids: Itera
   for (const id of ids) {
     const text = registers.get(id);
     if (!(text instanceof Y.Text) || !findNamer(root, id, block => block._item?.id.client === doc.clientID)) continue;
-    const pieces: [number, string][] = [];
-    let index = 0;
+    const removed: Y.Item[] = [];
     for (let item = text._start; item; item = item.right) {
-      if (item.deleted && item.content instanceof Y.ContentString && Y.isDeleted(transaction.deleteSet, item.id)) {
-        pieces.push([index, item.content.str]);
-        index += item.length;
-      } else if (!item.deleted && item.countable) index += item.length;
+      if (item.deleted && item.content instanceof Y.ContentString && Y.isDeleted(transaction.deleteSet, item.id)) removed.push(item);
     }
-    if (pieces.length) doc.transact(() => { for (const [at, str] of pieces) text.insert(at, str); }, REGISTER_INIT);
+    if (!removed.length) continue;
+    // Each copy goes immediately before its deleted original, as Yjs's own redo does, so a peer's concurrent insert
+    // after an original still lands after its copy; Y.Text.insert would skip past the deleted run first.
+    doc.transact((restore) => {
+      for (const original of removed) {
+        const left = original.left;
+        const id = Y.createID(doc.clientID, Y.getState(doc.store, doc.clientID));
+        const copy = new Y.ContentString((original.content as Y.ContentString).str);
+        new Y.Item(id, left, left && left.lastId, original, original.id, text, null, copy).integrate(restore, 0);
+      }
+      if (text._searchMarker) text._searchMarker.length = 0;
+    }, REGISTER_INIT);
   }
 }
 
