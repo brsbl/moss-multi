@@ -1139,6 +1139,168 @@ describe('SP11 round-4 findings: carry, registers and block attributes @p:mean-2
   });
 });
 
+/** The live child types of a Y.XmlText in order (its embedded blocks, decorators and text maps). */
+const embeds = (type: Y.XmlText): Y.AbstractType<unknown>[] =>
+  (type.toDelta() as { insert: unknown }[]).map((op) => op.insert).filter((insert): insert is Y.AbstractType<unknown> => insert instanceof Y.AbstractType);
+
+/**
+ * A suggester's own new paragraph holding an own inline decorator (a formula) whose own register holds 'mine', landed
+ * as a suggest-mode frame; then a peer writes into that register unless `solo`. `kind` picks a Y.Text register or a
+ * per-key Y.Map register (A§10.10).
+ */
+function ownDecoratorRegister(kind: 'text' | 'map', solo = false) {
+  const server = seeded();
+  const author = new Y.Doc();
+  Y.applyUpdate(author, Y.encodeStateAsUpdate(server));
+  const sv = Y.encodeStateVector(author);
+  author.transact(() => {
+    const register = kind === 'text' ? new Y.Text('mine') : new Y.Map<unknown>();
+    author.getMap('registers').set('r-own', register);
+    if (register instanceof Y.Map) register.set('mine', 1);
+    const root = author.get('root', Y.XmlText);
+    const block = new Y.XmlText();
+    root.insertEmbed(root.length, block);
+    block.setAttribute('__type', 'paragraph');
+    const decorator = new Y.XmlElement('formula');
+    block.insertEmbed(0, decorator);
+    decorator.setAttribute('__type', 'formula');
+    decorator.setAttribute('__regId', 'r-own');
+  });
+  const own: IdSpan[] = [];
+  const clients = new Set([author.clientID]);
+  const first = Y.encodeStateAsUpdate(author, sv);
+  const landed = vetSuggestFrame(server, first, { own, clients });
+  if (!landed.ok) throw new Error(`the own decorator was refused: ${landed.reason}`);
+  own.push(...landed.inserts);
+  Y.applyUpdate(server, first);
+  if (!solo) {
+    const peer = new Y.Doc();
+    Y.applyUpdate(peer, Y.encodeStateAsUpdate(server));
+    const psv = Y.encodeStateVector(peer);
+    const register = peer.getMap('registers').get('r-own');
+    if (register instanceof Y.Text) register.insert(4, ' theirs');
+    else (register as Y.Map<unknown>).set('theirs', 2);
+    const typed = Y.encodeStateAsUpdate(peer, psv);
+    peer.destroy();
+    Y.applyUpdate(server, typed);
+    Y.applyUpdate(author, typed);
+  }
+  const root = author.get('root', Y.XmlText);
+  const block = embeds(root).at(-1) as Y.XmlText;
+  const decorator = embeds(block)[0] as Y.XmlElement;
+  /** The frame `write` makes on the author's copy, vetted as suggest mode. */
+  const vet = (write: () => void): Verdict => {
+    const before = Y.encodeStateVector(author);
+    write();
+    return vetSuggestFrame(server, Y.encodeStateAsUpdate(author, before), { own, clients });
+  };
+  return { server, author, root, block, decorator, own, vet, dispose: () => { author.destroy(); server.destroy(); } };
+}
+
+/** The register keys of the live formula decorators in `doc`'s body. */
+function formulas(doc: Y.Doc): string[] {
+  const out: string[] = [];
+  const walk = (type: Y.AbstractType<unknown>) => {
+    for (let item = type._start; item; item = item.right) {
+      if (item.deleted || !(item.content instanceof Y.ContentType)) continue;
+      const child = item.content.type;
+      if (child instanceof Y.XmlElement && child.getAttribute('__type') === 'formula') out.push(String(child.getAttribute('__regId')));
+      walk(child);
+    }
+  };
+  walk(doc.get('root', Y.XmlText) as unknown as Y.AbstractType<unknown>);
+  return out;
+}
+
+type DecoratorSetup = ReturnType<typeof ownDecoratorRegister>;
+
+describe('SP11 round-5 findings: block order and decorator registers @p:mean-2', () => {
+  it('a forged split cannot move original text past a block the frame does not touch', () => {
+    const server = seeded(['abc', '', 'XYZ'].join('\n'));
+    const forger = new Y.Doc();
+    try {
+      Y.applyUpdate(forger, Y.encodeStateAsUpdate(server));
+      const sv = Y.encodeStateVector(forger);
+      forger.transact(() => {
+        const root = forger.get('root', Y.XmlText);
+        const first = embeds(root)[0] as Y.XmlText;
+        const textMap = embeds(first)[0] as Y.Map<unknown>;
+        first.delete(2, 2); // 'bc', after the text map embed and 'a'
+        const block = new Y.XmlText();
+        root.insertEmbed(root.length, block);
+        for (const [key, value] of Object.entries(first.getAttributes())) block.setAttribute(key, value as never);
+        block.insertEmbed(0, new Y.Map(Object.entries(textMap.toJSON())));
+        block.insert(1, 'bc');
+      });
+      const forged = Y.encodeStateAsUpdate(forger, sv);
+      const copy = applied(server, forged);
+      expect([blockText(copy, 0), blockText(copy, 1), blockText(copy, 2)], 'Yjs reorders the original text').toEqual(['a', 'XYZ', 'bc']);
+      copy.destroy();
+      expect(vetSuggestFrame(server, forged, { own: [], clients: new Set([forger.clientID]) })).toEqual({ ok: false, reason: 'delete-original' });
+    } finally { forger.destroy(); server.destroy(); }
+  });
+
+  it("deleting an own decorator, or the own block around it, cannot hide a peer's text in its register", () => {
+    const deletes: [string, (s: DecoratorSetup) => void][] = [
+      ['the decorator', (s) => s.block.delete(0, 1)],
+      ['the own block around it', (s) => s.root.delete(s.root.length - 1, 1)],
+    ];
+    for (const kind of ['text', 'map'] as const) {
+      for (const [name, write] of deletes) {
+        const setup = ownDecoratorRegister(kind);
+        try {
+          expect(setup.vet(() => write(setup)), `${kind} register, deleting ${name}`).toEqual({ ok: false, reason: 'delete-original' });
+        } finally { setup.dispose(); }
+        const solo = ownDecoratorRegister(kind, true);
+        try {
+          expect(solo.vet(() => write(solo)), `${kind} register, a wholly own ${name} can go`).toMatchObject({ ok: true });
+        } finally { solo.dispose(); }
+      }
+    }
+  });
+
+  it("retargeting an own decorator's __regId cannot hide a peer's text, nor borrow an original register", () => {
+    const swap = (s: DecoratorSetup) => s.author.transact(() => {
+      s.author.getMap('registers').set('r-new', new Y.Text(''));
+      s.decorator.setAttribute('__regId', 'r-new');
+    });
+    for (const kind of ['text', 'map'] as const) {
+      const setup = ownDecoratorRegister(kind);
+      try {
+        expect(setup.vet(() => swap(setup)), `${kind} register`).toEqual({ ok: false, reason: 'mutate-original' });
+      } finally { setup.dispose(); }
+    }
+    const borrow = ownDecoratorRegister('text', true);
+    try {
+      const original = [...borrow.author.getMap('registers').keys()].find((key) => key !== 'r-own');
+      expect(original, 'the seed has an original code block register').toBeDefined();
+      expect(borrow.vet(() => borrow.decorator.setAttribute('__regId', original!)), 'borrowing an original register').toEqual({ ok: false, reason: 'mutate-original' });
+    } finally { borrow.dispose(); }
+    const solo = ownDecoratorRegister('text', true);
+    try {
+      expect(solo.vet(() => swap(solo)), 'a wholly own register can be swapped').toMatchObject({ ok: true });
+    } finally { solo.dispose(); }
+  });
+
+  it("reject and withdraw keep a peer's keys in a suggested decorator's Y.Map register", () => {
+    const setup = ownDecoratorRegister('map');
+    try {
+      const copy = applied(setup.server, rawUpdate([], rejectPlan(setup.server, setup.own)));
+      const register = copy.getMap('registers').get('r-own') as Y.Map<unknown> | undefined;
+      expect(register?.toJSON(), "only the peer's key stays").toEqual({ theirs: 2 });
+      expect(formulas(copy), 'the decorator stays, naming its register').toEqual(['r-own']);
+      copy.destroy();
+    } finally { setup.dispose(); }
+    const solo = ownDecoratorRegister('map', true);
+    try {
+      const copy = applied(solo.server, rawUpdate([], rejectPlan(solo.server, solo.own)));
+      expect(copy.getMap('registers').has('r-own'), 'a wholly own register goes').toBe(false);
+      expect(formulas(copy), 'with its decorator').toEqual([]);
+      copy.destroy();
+    } finally { solo.dispose(); }
+  });
+});
+
 /** mulberry32: a small seeded PRNG, so a failing fuzz round reproduces. */
 function prng(seed: number): () => number {
   let state = seed;
@@ -1168,6 +1330,8 @@ describe('SP11 struct-level fuzz of real frames @p:mean-2', () => {
         if (struct.content instanceof Y.ContentType) containers.push(struct);
       }
     }
+    const topLevel: Y.Item[] = [];
+    for (let item = server.get('root', Y.XmlText)._start; item; item = item.right) topLevel.push(item);
     const before = originalProjection(server, []);
     const random = prng(0x5eed);
     const pick = <T,>(list: readonly T[]): T => list[Math.floor(random() * list.length)];
@@ -1187,7 +1351,7 @@ describe('SP11 struct-level fuzz of real frames @p:mean-2', () => {
         const mutations = random() < 0.15 ? 0 : 1 + Math.floor(random() * 3);
         for (let m = 0; m < mutations && fresh.length > 0; m++) {
           const item = pick(fresh);
-          switch (Math.floor(random() * 6)) {
+          switch (Math.floor(random() * 7)) {
             case 0: item.origin = target(); break;
             case 1: item.rightOrigin = random() < 0.3 ? null : target(); break;
             case 2: {
@@ -1206,6 +1370,15 @@ describe('SP11 struct-level fuzz of real frames @p:mean-2', () => {
               // Restyle: one of the frame's map writes (a new block's or text map's attribute) gets another value.
               const writes = fresh.filter((struct) => struct.parentSub !== null);
               if (writes.length > 0) pick(writes).content = new Y.ContentAny([pick(values)]);
+              break;
+            }
+            case 5: {
+              // Place one of the frame's new blocks after another top-level block: a split's copy moved past blocks the
+              // frame does not touch.
+              const blocks = fresh.filter((struct) => struct.content instanceof Y.ContentType);
+              const moved = blocks.length > 0 ? pick(blocks) : item;
+              moved.origin = pick(topLevel).id;
+              moved.rightOrigin = null;
               break;
             }
             default:
