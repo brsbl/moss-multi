@@ -12,8 +12,11 @@ export const REGISTER_FIELDS: Readonly<Record<string, string>> = {
 type Fields = Record<string, unknown>;
 /** What a codec reads: a `Map` of encoded keys, or the register's `Y.Map` itself. */
 interface Entries { get(key: string): unknown; has(key: string): boolean; keys(): IterableIterator<string>; entries(): IterableIterator<[string, unknown]> }
-/** A compound payload as one `Y.Map` of independent keys, so concurrent edits to different keys both land. */
-interface MapCodec { fields: readonly string[]; encode(fields: Fields): Map<string, unknown>; decode(entries: Entries): Fields }
+/**
+ * A compound payload as one `Y.Map` of independent keys, so concurrent edits to different keys both land. `ref`, an
+ * encoding of the value `fields` was derived from (or the register itself), lets array elements keep their identity.
+ */
+interface MapCodec { fields: readonly string[]; encode(fields: Fields, ref?: Entries): Map<string, unknown>; decode(entries: Entries): Fields }
 
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -32,18 +35,58 @@ const segment = (key: string) => key.replace(/~/g, '~0').replace(/\//g, '~1');
 const unsegment = (seg: string) => seg.replace(/~1/g, '/').replace(/~0/g, '~');
 
 /**
- * `chart.__config` as JSON-pointer keys: `#k<path>` holds an object's key order, `=<path>` a leaf (arrays included).
- * Order lists are last-writer-wins, so a key missing from its object's list still renders, after the listed ones.
+ * For each element of `next`, the index of the element of `prev` it continues, or -1 for a new one: equal elements
+ * pair by longest common subsequence, then the elements left between two pairs pair in order (edited in place).
+ */
+export function alignElements(prev: readonly unknown[], next: readonly unknown[]): number[] {
+  const n = prev.length;
+  const m = next.length;
+  const lcs = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      lcs[i][j] = sameValue(prev[i], next[j]) ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+    }
+  }
+  const pairs: [number, number][] = [];
+  for (let i = 0, j = 0; i < n && j < m;) {
+    if (sameValue(prev[i], next[j]) && lcs[i][j] === lcs[i + 1][j + 1] + 1) pairs.push([i++, j++]);
+    else if (lcs[i + 1][j] >= lcs[i][j + 1]) i++;
+    else j++;
+  }
+  const match = new Array<number>(m).fill(-1);
+  let i0 = 0;
+  let j0 = 0;
+  for (const [i1, j1] of [...pairs, [n, m] as [number, number]]) {
+    for (let k = 0; k < Math.min(i1 - i0, j1 - j0); k++) match[j0 + k] = i0 + k;
+    if (i1 < n) match[j1] = i1;
+    i0 = i1 + 1;
+    j0 = j1 + 1;
+  }
+  return match;
+}
+
+/**
+ * `chart.__config` as JSON-pointer keys: `#k<path>` holds an object's key order and `=<path>` a leaf. An array is
+ * `#a<path>` plus one id per element: `@<path>/<id>` holds its position and `<path>/<id>` its value, so concurrent edits
+ * to different data points, and concurrent appends, all land. Order lists are last-writer-wins, so a key missing from
+ * its object's list still renders, after the listed ones; an element a peer deleted stays deleted.
  */
 const chartCodec: MapCodec = {
   fields: ['__config'],
-  encode(fields) {
+  encode(fields, ref) {
     const out = new Map<string, unknown>();
     const walk = (value: unknown, path: string) => {
       if (isPlainObject(value)) {
         const keys = Object.keys(value).filter(key => value[key] !== undefined);
         out.set(`#k${path}`, keys.map(segment));
         for (const key of keys) walk(value[key], `${path}/${segment(key)}`);
+      } else if (Array.isArray(value)) {
+        out.set(`#a${path}`, true);
+        const slots = elementSlots(value, path, ref);
+        value.forEach((element, index) => {
+          out.set(`@${path}/${slots[index].id}`, slots[index].at);
+          walk(element, `${path}/${slots[index].id}`);
+        });
       } else if (value !== undefined) {
         out.set(`=${path}`, clone(value));
       }
@@ -53,28 +96,68 @@ const chartCodec: MapCodec = {
   },
   decode(entries) {
     if (!entries.has('#k')) return { __config: undefined };
-    const children = new Map<string, Set<string>>();
-    for (const key of entries.keys()) {
-      const path = key.startsWith('#k') ? key.slice(2) : key.startsWith('=') ? key.slice(1) : null;
-      if (!path) continue;
-      const cut = path.lastIndexOf('/');
-      const parent = path.slice(0, cut);
-      children.set(parent, (children.get(parent) ?? new Set()).add(path.slice(cut + 1)));
-    }
-    const build = (path: string): Record<string, unknown> => {
-      const present = children.get(path) ?? new Set<string>();
-      const listed = ((entries.get(`#k${path}`) as string[] | undefined) ?? []).filter(seg => present.has(seg));
-      const order = [...new Set(listed), ...[...present].filter(seg => !listed.includes(seg)).sort()];
-      const object: Record<string, unknown> = {};
-      for (const seg of order) {
-        const child = `${path}/${seg}`;
-        object[unsegment(seg)] = entries.has(`#k${child}`) ? build(child) : clone(entries.get(`=${child}`));
-      }
-      return object;
-    };
-    return { __config: build('') };
+    return { __config: chartValue(entries, chartIndex(entries), '') };
   },
 };
+
+type ChartIndex = Map<string, Set<string>>;
+interface Slot { id: string; at: number }
+/** Each path's child segments, from every key that names one. */
+function chartIndex(entries: Entries): ChartIndex {
+  const children: ChartIndex = new Map();
+  for (const key of entries.keys()) {
+    const path = key.startsWith('#k') || key.startsWith('#a') ? key.slice(2) : key.startsWith('=') || key.startsWith('@') ? key.slice(1) : null;
+    if (!path) continue;
+    const cut = path.lastIndexOf('/');
+    const parent = path.slice(0, cut);
+    children.set(parent, (children.get(parent) ?? new Set()).add(path.slice(cut + 1)));
+  }
+  return children;
+}
+/** An array's elements in order: those with a position, by position then id. */
+function chartElements(entries: Entries, index: ChartIndex, path: string): Slot[] {
+  return [...index.get(path) ?? []]
+    .map(id => ({ id, at: entries.get(`@${path}/${id}`) }))
+    .filter((slot): slot is Slot => typeof slot.at === 'number')
+    .sort((a, b) => a.at - b.at || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+}
+function chartValue(entries: Entries, index: ChartIndex, path: string): unknown {
+  if (entries.has(`#k${path}`)) {
+    const present = new Set([...index.get(path) ?? []].filter(seg =>
+      entries.has(`#k${path}/${seg}`) || entries.has(`#a${path}/${seg}`) || entries.has(`=${path}/${seg}`)));
+    const listed = ((entries.get(`#k${path}`) as string[] | undefined) ?? []).filter(seg => present.has(seg));
+    const order = [...new Set(listed), ...[...present].filter(seg => !listed.includes(seg)).sort()];
+    const object: Record<string, unknown> = {};
+    for (const seg of order) object[unsegment(seg)] = chartValue(entries, index, `${path}/${seg}`);
+    return object;
+  }
+  if (entries.has(`#a${path}`)) return chartElements(entries, index, path).map(({ id }) => chartValue(entries, index, `${path}/${id}`));
+  return clone(entries.get(`=${path}`));
+}
+/** Ids and positions for `value`'s elements: one continuing an element of `ref`'s array keeps its id and position. */
+function elementSlots(value: readonly unknown[], path: string, ref?: Entries): Slot[] {
+  if (!ref?.has(`#a${path}`)) return value.map((_, index) => ({ id: `i${index}`, at: index }));
+  const refIndex = chartIndex(ref);
+  const prev = chartElements(ref, refIndex, path);
+  const match = alignElements(prev.map(({ id }) => chartValue(ref, refIndex, `${path}/${id}`)), value);
+  const slots = match.map(j => (j >= 0 ? prev[j] : null));
+  // A run of new elements spreads between its neighbours' positions.
+  for (let start = 0; start < slots.length; start++) {
+    if (slots[start]) continue;
+    let end = start;
+    while (end < slots.length && !slots[end]) end++;
+    const low = start > 0 ? slots[start - 1]!.at : undefined;
+    const high = end < slots.length ? slots[end]!.at : undefined;
+    const count = end - start + 1;
+    for (let k = 1; k < count; k++) {
+      const at = low !== undefined && high !== undefined ? low + ((high - low) * k) / count
+        : low !== undefined ? low + k : high !== undefined ? high - count + k : k - 1;
+      slots[start + k - 1] = { id: `n${crypto.randomUUID().slice(0, 13)}`, at };
+    }
+    start = end;
+  }
+  return slots as Slot[];
+}
 
 interface Label { id?: unknown; [key: string]: unknown }
 const SKETCH_CELLS = 120 * 60;
@@ -199,9 +282,12 @@ export function writeMapRegister(node: LexicalNode, next: Fields, base?: Fields)
   const map = id && doc?.getMap('registers').get(id);
   const codec = MAP_REGISTERS[node.getType()];
   if (!doc || !codec || !(map instanceof Y.Map)) return false;
-  const after = codec.encode(next);
-  const current = codec.decode(map as Y.Map<unknown>);
-  const before = codec.encode(base ?? Object.fromEntries(Object.keys(next).map(field => [field, current[field]])));
+  // A viewer's write would leave the client and get its socket closed as revoked; its controls are inert instead.
+  if (!$getEditor().isEditable()) return true;
+  const register = map as Y.Map<unknown>;
+  const current = codec.decode(register);
+  const before = codec.encode(base ?? Object.fromEntries(Object.keys(next).map(field => [field, current[field]])), register);
+  const after = codec.encode(next, before);
   doc.transact(() => {
     for (const [key, value] of after) {
       if (before.has(key) && sameValue(before.get(key), value)) continue;
@@ -218,9 +304,9 @@ export function writeMapRegister(node: LexicalNode, next: Fields, base?: Fields)
  */
 export function rebaseMapFields(type: string, value: Fields, from: Fields, to: Fields): Fields {
   const codec = MAP_REGISTERS[type];
-  const entries = codec.encode(value);
   const before = codec.encode(from);
-  const after = codec.encode(to);
+  const entries = codec.encode(value, before);
+  const after = codec.encode(to, before);
   for (const key of new Set([...before.keys(), ...after.keys()])) {
     if (sameValue(before.get(key), after.get(key))) continue;
     if (after.has(key)) entries.set(key, after.get(key));

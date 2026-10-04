@@ -64,7 +64,8 @@ export function useSketchPeerSync<L>(nodeKey: string, grid: boolean[], labels: L
   const committed = useCallback((from: SketchValue<L>, to: SketchValue<L>) => {
     if (sameSketch(from, to)) return;
     synced.current = rebaseSketch(synced.current, from, to);
-    ownPending.current = true;
+    // New props come only if the write changed the register: a stroke over cells a peer already inked writes nothing.
+    ownPending.current = !sameSketch(rebaseSketch(value.current, from, to), value.current);
   }, []);
   return useMemo(() => ({ committed }), [committed]);
 }
