@@ -4,7 +4,7 @@
 import { createHeadlessEditor } from '@lexical/headless';
 import { createBinding, syncLexicalUpdateToYjs, syncYjsChangesToLexical, type Binding, type Provider } from '@lexical/yjs';
 import {
-  $createParagraphNode, $createTextNode, $getNodeByKey, $getRoot, $isElementNode, COLLABORATION_TAG, DecoratorNode, HISTORIC_TAG,
+  $createParagraphNode, $createTextNode, $getNodeByKey, $getRoot, $isElementNode, COLLABORATION_TAG, DecoratorNode,
   type LexicalNode, type NodeKey, type SerializedLexicalNode,
 } from 'lexical';
 import { describe, expect, it } from 'vitest';
@@ -76,7 +76,7 @@ function payloadClient(state: Uint8Array, { filterPayloadEvents = true, dedupeUn
   // The creator attaches a payload, in the binding's own transaction, to each block element it just created; a move
   // (delete + recreate in V1) copies the live payload as it stood before the sync. Nobody else ever creates one.
   const stopUpdates = editor.registerUpdateListener(({ prevEditorState, editorState, dirtyElements, dirtyLeaves, normalizedNodes, tags }) => {
-    const authored = !tags.has(COLLABORATION_TAG) && !tags.has(HISTORIC_TAG);
+    const authored = !tags.has(COLLABORATION_TAG);
     const before = new Map<NodeKey, string>();
     if (authored) for (const key of dirtyLeaves) { const text = payloadOf(key); if (text) before.set(key, text.toString()); }
     doc.transact((transaction) => {
@@ -104,7 +104,7 @@ function payloadClient(state: Uint8Array, { filterPayloadEvents = true, dedupeUn
     for (const event of events) {
       if (isPayload(event.target)) payloadEvents.push(((event.target.parent as unknown as { _collabNode?: CollabLike })._collabNode?._key) ?? '?');
     }
-    if (tree.length) syncYjsChangesToLexical(binding, provider, tree as never, transaction.origin instanceof Y.UndoManager, noop);
+    if (tree.length) syncYjsChangesToLexical(binding, provider, tree as never, false, noop);
   };
   root.observeDeep(observer);
 
@@ -157,11 +157,11 @@ function payloadClient(state: Uint8Array, { filterPayloadEvents = true, dedupeUn
       if (!payload) throw new Error('no payload');
       doc.transact(() => payload.insert(Math.min(at, payload.length), text), PAYLOAD_LOCAL);
     },
-    remove: (index: number) => editor.update(() => { $getNodeByKey(blockKeys()[index])!.remove(); }, { discrete: true }),
+    remove: (index: number) => { const key = blockKeys()[index]; editor.update(() => { $getNodeByKey(key)!.remove(); }, { discrete: true }); },
     /** Moves block `index` to the end of the root: V1 deletes its element and creates a new one. */
-    moveToEnd: (index: number) => editor.update(() => { $getRoot().getLastChildOrThrow().insertAfter($getNodeByKey(blockKeys()[index])!); }, { discrete: true }),
+    moveToEnd: (index: number) => { const key = blockKeys()[index]; editor.update(() => { $getRoot().getLastChildOrThrow().insertAfter($getNodeByKey(key)!); }, { discrete: true }); },
     /** A local edit that touches the block without its payload (as a language or theme change does). */
-    touch: (index: number) => editor.update(() => { $getNodeByKey(blockKeys()[index])!.getWritable(); }, { discrete: true }),
+    touch: (index: number) => { const key = blockKeys()[index]; editor.update(() => { $getNodeByKey(key)!.getWritable(); }, { discrete: true }); },
     dispose: () => { stopUpdates(); root.unobserveDeep(observer); doc.off('afterTransaction', afterUndo); undo.destroy(); doc.destroy(); },
   };
 }
