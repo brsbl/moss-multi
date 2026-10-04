@@ -165,6 +165,36 @@ describe('Cmd+Z undoes only your own edits and never removes a peer\'s character
     } finally { dispose(); }
   });
 
+  for (const [what, remove] of [
+    ['text node', () => textAt(1).remove()],
+    ['paragraph', () => paragraph(1).remove()],
+  ] as const) {
+    it(`a line Ada created and deleted her whole ${what} from in one capture window keeps the peer's words through her undo`, async () => {
+      const { ada, ben, dispose } = await pair(() => $getRoot().append($createParagraphNode().append($createTextNode('Intro.'))));
+      try {
+        ada.edit(() => $getRoot().append($createParagraphNode().append($createTextNode('Alpha'))));
+        await exchange(ada, ben);
+        ben.step(typeAt(1, 0, 'BEN '));
+        await exchange(ada, ben);
+        ada.edit(() => textAt(1).spliceText(9, 0, 'x'));
+        ada.edit(remove);
+        const deleted = what === 'paragraph' ? 'Intro.' : 'Intro.\n\n';
+        await expectBoth(ada, ben, text => expect(text).toBe(deleted));
+        expect(ada.undo.undoStack, `creating the line and deleting its ${what} are one step`).toHaveLength(1);
+        ada.undo.undo();
+        await expectBoth(ada, ben, text => expect(text, 'Ada\'s Cmd+Z must leave Ben\'s text').toBe('Intro.\n\nBEN '));
+        for (const actor of [ada, ben]) {
+          expect(actor.editor.getEditorState().read(() => textAt(1).getType()), 'the restored text node has its properties').toBe('text');
+        }
+        ada.undo.redo();
+        // The kept paragraph is not part of the redo step, so the paragraph case leaves it empty.
+        await expectBoth(ada, ben, text => expect(text, 'redo replays Ada\'s delete').toBe('Intro.\n\n'));
+        ada.undo.undo();
+        await expectBoth(ada, ben, text => expect(text, 'a second undo keeps Ben\'s text').toBe('Intro.\n\nBEN '));
+      } finally { dispose(); }
+    });
+  }
+
   it('redoing Ada\'s delete of the peer\'s paragraph deletes it again', async () => {
     const { ada, ben, dispose } = await pair(() => $getRoot().append($createParagraphNode().append($createTextNode('Intro.'))));
     try {
