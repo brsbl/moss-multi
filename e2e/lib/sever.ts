@@ -56,6 +56,18 @@ export async function makeSeverable(context: BrowserContext, census?: SocketCens
       conn.page.close({ code, reason });
     });
   };
+  // The proxy's own leg (Playwright's routing): a frame the page sent while its socket was OPEN is relayed to the real
+  // socket later, and if the server's close reached that socket first, Chromium logs "WebSocket is already in CLOSING
+  // or CLOSED state." for a send the page never made late. The relay drops such a frame, as the wire would. Only the
+  // native socket is patched, before the routing mock replaces it, so the page's own sends keep the mock's checks.
+  await context.addInitScript((path) => {
+    if (!String(WebSocket).includes('[native code]')) return;
+    const send = WebSocket.prototype.send;
+    WebSocket.prototype.send = function relaySend(this: WebSocket, data: Parameters<WebSocket['send']>[0]) {
+      if (this.readyState > WebSocket.OPEN && this.url.includes(path)) return;
+      send.call(this, data);
+    };
+  }, DOC_SOCKET_PATH);
   await context.routeWebSocket(DOC_SOCKET, (page) => {
     const conn: Conn = { page, server: null, closed: false, census: census?.(page.url()) ?? null, lost: false };
     ctl.conns.push(conn);

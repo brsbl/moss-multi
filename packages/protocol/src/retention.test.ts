@@ -38,8 +38,12 @@ const codeLines = (text: string) => text.split('\n').filter((line) => !/^\s*(\/\
 
 /** A write that sends something to trash: a non-null deleted_at. */
 const writesDeletedAt = (text: string) => codeLines(text).some((line) => /deleted_at\s*=\s*\?/.test(line) || /\.set\(\{[^}]*\bdeletedAt:\s*(?!null\b)/.test(line));
-/** A call of a delete route: the REST DELETE, or moss's own note and folder delete invokers. */
-const callsDeleteRoute = (text: string) => codeLines(text).some((line) => /method:\s*'DELETE'|(notesApi|foldersApi)\.delete\.invoke\(/.test(line));
+/**
+ * A call of a delete route: the REST DELETE, or moss's own note and folder delete invokers. Revoking a share link or
+ * a member (T2.4) is a DELETE that trashes nothing.
+ */
+const callsDeleteRoute = (text: string) => codeLines(text).some((line) =>
+  (/method:\s*'DELETE'/.test(line) && !/\/(links|members)\//.test(line)) || /(notesApi|foldersApi)\.delete\.invoke\(/.test(line));
 const readsModule = (text: string) => /from '@moss-multi\/(protocol|host)\/retention(\.ts)?'/.test(text);
 
 const FORBIDDEN: [RegExp, string][] = [
@@ -106,6 +110,7 @@ describe('retention copy', () => {
       expect(writesDeletedAt("db.prepare('UPDATE docs SET deleted_at = NULL')")).toBe(false);
       expect(callsDeleteRoute("await request(`/api/docs/${id}`, { method: 'DELETE' })")).toBe(true);
       expect(callsDeleteRoute('const ok = await notesApi.delete.invoke(noteId);')).toBe(true);
+      expect(callsDeleteRoute("await call(`${base}/links/${link.token}`, { method: 'DELETE' })"), 'a link revocation trashes nothing').toBe(false);
       expect(unregistered(['apps/web/src/api/vaults.ts'], SURFACES)).toEqual(['apps/web/src/api/vaults.ts']);
     });
 
