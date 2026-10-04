@@ -41,7 +41,8 @@ describe('the T0.5a bridge', () => {
     const controller = new AbortController();
     let stay = () => undefined as void;
     const stayed = new Promise<void>((resolve) => { stay = resolve; });
-    const fetch = vi.fn<typeof globalThis.fetch>((_input, init) => fetch.mock.calls.length > 1
+    let calls = 0;
+    const fetch = vi.fn<typeof globalThis.fetch>((_input, init) => ++calls > 1
       ? Promise.resolve(Response.json(LISTING))
       : new Promise((_resolve, reject) => {
         init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));

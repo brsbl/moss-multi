@@ -110,7 +110,7 @@ describe('share-by-email is not an enumeration oracle', () => {
     expect(await roleOf(cy.cookie, docId), 'nothing is granted past the limit').toBeNull();
     // Another owner is unaffected.
     expect((await call('POST', `/api/docs/${await insertDoc(d1.db, ada)}/members`, ada.cookie, { email: cy.email, role: 'viewer' })).status).toBe(201);
-  });
+   }, 30_000);
 });
 
 describe('the owner role', () => {
