@@ -88,6 +88,11 @@ Read this with PRODUCT.md, your BUILDPLAN entry and the A§ it cites, before wri
 - A browser never loads `moss-asset://`, and the page CSP logs each try as a console error, so `useHtmlPreviewImage` never requests a cached HTML preview screenshot that resolves there; the block reads "Preview unavailable" until T3.2's live iframe. [T0.P]
 - A pasted or dropped image or video is refused visibly while `media-upload` is staged (seams in VideoPastePlugin and MediaDropPlugin); moss's own paths only `console.warn` a failed upload. Refusals go through `refuseInput` (`host/refusal.ts`), which shows `[data-input-refusal]`. [T0.P]
 
+## Search and links (T3.4)
+
+- The DocDO feeds SearchDO on every save and once after each wake, with the body as the converter's markdown export (never the tree's `toString()`, L§4.14); `/api/search` hands the index only `accessibleDocs` ids, and allowed docs the index lacks are fed through `DocDO.reindex()`. A journey waits for the index through its own `/api/search` before searching in the UI: the feed lands about 2 s after the last edit.
+- Wiki links resolve by moss's exact title, then by title slug, then by filename stem (`host/wiki-links.ts`, the `wiki-stem` seam), and a bound note paints a link that resolves to nothing as moss's broken pill once the listing has loaded (`unresolved-paint` seam); moss at the pin only showed it after a hover. Backlinks ride moss's `incomingLinks` on the records of recently opened notes.
+
 ## Local editing state (T1.6)
 
 - Table and tab widths and active tabs use Yjs item identities after hydration; `moss-multi:layout:<id>` still carries Moss's ordinal metadata, and `moss-multi:layout-identities:<id>` keeps widths attached after peer insertions. Collapsed headings use Moss's existing local identity storage and 500 ms save debounce.

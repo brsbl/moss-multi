@@ -105,7 +105,7 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - The sign-up "too short" error does not say how long a password must be → T0.10
 - Switching to "Create an account" leaves focus on the toggle link → T0.10
 - A wrong password logs a browser console error → T0.10 (only if the zero-console-error invariant should cover the auth error path)
-- Sidebar search matches titles only; body search belongs to M3. Live title matching is bound in T1.4.
+- Sidebar search matches titles only; body search belongs to M3. Live title matching is bound in T1.4. Closed by T3.4: body search through the SearchDO.
 - Sign-out leaves the session's other live doc sockets reading and writing → T2.5
 - The wrangler ProxyWorker patch replays non-idempotent requests after an ambiguous failure → T0.9b follow-up (stack infra)
 - `qa.mjs close` forgets the session even when closing it failed → tooling follow-up

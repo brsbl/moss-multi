@@ -1,13 +1,39 @@
 diff --git a/packages/desktop/src/renderer/editor/plugins/FileLinkPlugin.tsx b/packages/desktop/src/renderer/editor/plugins/FileLinkPlugin.tsx
 --- a/packages/desktop/src/renderer/editor/plugins/FileLinkPlugin.tsx
 +++ b/packages/desktop/src/renderer/editor/plugins/FileLinkPlugin.tsx
-@@ -1,3 +1,5 @@
+@@ -1,3 +1,11 @@
 +// moss-multi seam: local-view (A§10): access-dependent resolution is local paint, never a tree write.
-+import { $isBoundEditor, setNodeView } from '@moss-multi/host/collab/view-state';
++import { $isBoundEditor, isBoundEditor, setNodeView } from '@moss-multi/host/collab/view-state';
++// moss-multi seam: wiki-stem (A§15): a normalized title, then a filename stem, resolves too.
++import { resolveWikiTarget } from '@moss-multi/host/wiki-links';
++// moss-multi seam: unresolved-paint (A§15): a bound note marks a link that resolves to nothing once the listing has
++// loaded, and re-checks when a link is added, instead of waiting for a hover.
++import { notesHydratedAtom } from '@moss/shared/state/note-atoms';
++import { FileLinkNode as FileLinkNodeClass } from '../nodes/FileLinkNode';
  import { useEffect, useCallback, useState, useRef } from 'react';
  import { createPortal } from 'react-dom';
  import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
-@@ -396,11 +398,11 @@ function setFileLinkResolvedInEditor(
+@@ -230,6 +238,19 @@ function resolveNoteByTitleFromAtoms(
+     }
+   }
+ 
++  // moss-multi seam: wiki-stem (A§15)
++  const stemId = resolveWikiTarget(noteTitle);
++  const stemEntity = stemId && noteIds.has(stemId) ? store.get(noteEntityAtom(stemId)) : null;
++  if (stemEntity) {
++    return {
++      noteId: stemEntity.id,
++      noteTitle: stemEntity.title,
++      isResolved: true,
++      updatedAt: stemEntity.updatedAt,
++      folderPath: stemEntity.folderPath
++    };
++  }
++
+   // Note not found
+   return {
+     noteId: null,
+@@ -396,11 +417,11 @@ function setFileLinkResolvedInEditor(
    runIgnoredEditorUpdate(editor, () => {
      const node = $getNodeByKey(nodeKey);
      if ($isFileLinkNode(node)) {
@@ -22,7 +48,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FileLinkPlugin.tsx b/p
          }
        }
      }
-@@ -541,11 +543,11 @@ function handleFileLinkActivation(
+@@ -541,11 +562,11 @@ function handleFileLinkActivation(
        const currentNode = $getNodeByKey(nodeKey);
        if ($isFileLinkNode(currentNode)) {
          if (result.isResolved) {
@@ -38,7 +64,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FileLinkPlugin.tsx b/p
          }
        }
      });
-@@ -564,7 +566,7 @@ function handleFileLinkActivation(
+@@ -564,7 +585,7 @@ function handleFileLinkActivation(
        editor.update(() => {
          const currentNode = $getNodeByKey(nodeKey);
          if ($isFileLinkNode(currentNode)) {
@@ -47,7 +73,19 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FileLinkPlugin.tsx b/p
          }
        });
        // Update cache with new key
-@@ -1178,17 +1180,17 @@ export function FileLinkPlugin({ onNavigateToNote }: FileLinkPluginProps) {
+@@ -963,6 +984,11 @@ export function FileLinkPlugin({ onNavigateToNote }: FileLinkPluginProps) {
+   const previewLoadGenerationRef = useRef(0);
+   const pluginMountedRef = useRef(true);
+   const previewTextCacheRef = useRef<Map<string, string>>(new Map());
++  // moss-multi seam: unresolved-paint (A§15)
++  const [linksAdded, setLinksAdded] = useState(0);
++  useEffect(() => editor.registerMutationListener(FileLinkNodeClass, (mutations) => {
++    if ([...mutations.values()].includes('created')) setLinksAdded((n) => n + 1);
++  }), [editor]);
+ 
+   const invalidatePreviewLoads = useCallback(() => {
+     previewLoadGenerationRef.current += 1;
+@@ -1178,17 +1204,17 @@ export function FileLinkPlugin({ onNavigateToNote }: FileLinkPluginProps) {
              const node = $getNodeByKey(nodeKey);
              if ($isFileLinkNode(node)) {
                if (result.isResolved) {
@@ -70,7 +108,18 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FileLinkPlugin.tsx b/p
                }
              }
            }, EDITOR_UPDATE_TAGS.ignored.skipDirty);
-@@ -1398,12 +1400,12 @@ export function FileLinkPlugin({ onNavigateToNote }: FileLinkPluginProps) {
+@@ -1363,6 +1389,10 @@ export function FileLinkPlugin({ onNavigateToNote }: FileLinkPluginProps) {
+ 
+           const result = resolveAndCache(noteTitle, store, sourceEntity);
+           if (!result.isResolved) {
++            // moss-multi seam: unresolved-paint (A§15)
++            if (isBoundEditor(editor) && store.get(notesHydratedAtom) && !sourceEntity?.externalFilePath) {
++              updates.push({ nodeKey, noteId: null, isResolved: false, resolutionState: 'not_found' });
++            }
+             return;
+           }
+ 
+@@ -1398,16 +1428,16 @@ export function FileLinkPlugin({ onNavigateToNote }: FileLinkPluginProps) {
          if (!$isFileLinkNode(node)) {
            continue;
          }
@@ -86,7 +135,12 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FileLinkPlugin.tsx b/p
          }
        }
      }, EDITOR_UPDATE_TAGS.ignored.skipDirty);
-@@ -1688,10 +1690,10 @@ export function FileLinkPlugin({ onNavigateToNote }: FileLinkPluginProps) {
+-  }, [currentNoteId, editor, noteList, store]);
++  }, [currentNoteId, editor, noteList, store, linksAdded]);
+ 
+   const handleHoverShow = useCallback(
+     ({ element, nodeKey }: { element: HTMLElement; nodeKey: string }) => {
+@@ -1688,10 +1718,10 @@ export function FileLinkPlugin({ onNavigateToNote }: FileLinkPluginProps) {
            if ($isFileLinkNode(node)) {
              const isHeadingValid = editorHeadings.has(headingText.trim().toLowerCase());
              if (isHeadingValid) {
@@ -100,7 +154,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FileLinkPlugin.tsx b/p
              }
            }
          }
-@@ -1751,3 +1753,16 @@ export const fileLinkPluginTestUtils = {
+@@ -1751,3 +1781,16 @@ export const fileLinkPluginTestUtils = {
    buildPreviewTextFromMarkdown,
    extractHeadingSectionMarkdown
  };

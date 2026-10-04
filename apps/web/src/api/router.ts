@@ -8,6 +8,7 @@ import { json } from '../worker/route.ts';
 import { handleDocs, type DocsEnv } from './docs.ts';
 import { feedback } from './feedback.ts';
 import { handleFolderRoutes } from './folders.ts';
+import { handleSearchRoutes } from './search.ts';
 import { workspace } from './workspace.ts';
 
 const NO_STORE = { 'cache-control': 'no-store' };
@@ -22,7 +23,7 @@ async function me(request: Request, env: AuthEnv): Promise<Response> {
   return json({ principal: { type, id, name, email } }, 200, NO_STORE);
 }
 
-export type ApiEnv = DocsEnv & Partial<Pick<AppEnv, 'PrincipalDO'>>;
+export type ApiEnv = DocsEnv & Partial<Pick<AppEnv, 'PrincipalDO' | 'SearchDO'>>;
 
 export async function handleApi(request: Request, env: ApiEnv): Promise<Response> {
   // The origin gate (A§18) before any mutation; a read resolves no principal here.
@@ -33,6 +34,8 @@ export async function handleApi(request: Request, env: ApiEnv): Promise<Response
   if (pathname === '/api/me') return me(request, env);
   if (pathname === '/api/workspace') return workspace(request, env);
   if (pathname === '/api/feedback') return feedback(request, env);
+  const searched = handleSearchRoutes(request, env);
+  if (searched) return searched;
   const isFolders = pathname === '/api/folders' || pathname.startsWith('/api/folders/');
   if (pathname === '/api/docs' || pathname.startsWith('/api/docs/') || isFolders) {
     const response = isFolders ? await handleFolderRoutes(request, env) : await handleDocs(request, env);
