@@ -167,6 +167,9 @@ import { isQuitProfilingEnabled } from '../utils/renderer-env';
 import { hidden } from '@moss-multi/host/affordances';
 // moss-multi seam: bound-pane (A§2.2, A§10.3): the one hook for the doc binding, its gate and the pane's attributes
 import { useMossMultiPane } from '@moss-multi/host/collab/pane';
+// moss-multi seam: trash (T2.3): only the owner trashes or restores; trash copy comes from the one module
+import { TRASH_COPY } from '@moss-multi/host/retention';
+import { canTrashNote } from '@moss-multi/host/trash';
 
 const TRASH_RETENTION_DAYS = 30;
 const MS_IN_DAY = 24 * 60 * 60 * 1000;
@@ -4735,8 +4738,8 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
               <FileDigit aria-hidden className="h-3.5 w-3.5" />
               Note stats
             </DropdownMenuItem>
-            {/* moss-multi seam: hide-registry (A§9) */}
-            {hidden('trash') && !isExternal ? null : (<>
+            {/* moss-multi seam: trash (T2.3): Trash and Restore note are the owner's (A§8) */}
+            {!isExternal && !canTrashNote(note?.id ?? '') ? null : (<>
             <DropdownMenuSeparator />
             {/* Danger group */}
             <DropdownMenuItem
@@ -4863,9 +4866,8 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
       </TopNavBar>
   );
 
-  const trashCountdownMessage = `Note will be deleted in ${trashCountdownDays} day${
-    trashCountdownDays === 1 ? '' : 's'
-  }.`;
+  // moss-multi seam: trash copy (T2.3): a trash is restorable, never counted down
+  const trashCountdownMessage = TRASH_COPY.trashedNote;
   const showContentSkeleton = skeletonLines > 0 && hasBodyContent;
   const showEmptySkeleton = skeletonLines > 0 && !hasBodyContent;
   const emptySkeletonLines = Math.max(3, Math.min(24, skeletonLines));
@@ -5102,7 +5104,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
             className="pointer-events-none absolute bottom-8 left-1/2 z-40 -translate-x-1/2"
             style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
           >
-            <div className="pointer-events-auto flex items-center gap-2 rounded-lg border border-border-subtle/50 bg-surface-raised-card px-4 py-2.5 shadow-floating backdrop-blur-sm">
+            <div data-retention-notice="" /* moss-multi seam: trash copy (T2.3) */ className="pointer-events-auto flex items-center gap-2 rounded-lg border border-border-subtle/50 bg-surface-raised-card px-4 py-2.5 shadow-floating backdrop-blur-sm">
               <AlertTriangle aria-hidden className="h-4 w-4 shrink-0 text-accent-terracotta/80" />
               <span className="text-xs text-ink-muted">{trashCountdownMessage}</span>
             </div>

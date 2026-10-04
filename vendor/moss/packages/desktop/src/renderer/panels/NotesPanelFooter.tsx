@@ -7,8 +7,8 @@ import {
   TooltipProvider,
   TooltipTrigger
 } from '@moss/shared/components/ui/tooltip';
-// moss-multi seam: hide-registry (A§9)
-import { hidden } from '@moss-multi/host/affordances';
+// moss-multi seam: trash drop (T2.3; deviation 10): the Trash button takes a dropped note
+import { trashDropTarget } from '@moss-multi/host/trash';
 
 export type NotesPanelMode = 'notes' | 'trash';
 
@@ -18,6 +18,7 @@ type NotesPanelFooterProps = {
   onModeChange: (mode: NotesPanelMode) => void;
   onOpenFeedback: () => void;
   onOpenSettings: () => void;
+  onTrashNote?: (noteId: string) => void; // moss-multi seam: trash drop (T2.3)
 };
 
 const footerButtonClass = 'flex h-7 w-7 items-center justify-center rounded text-ink-faint transition-colors hover:bg-surface-note-hover/40 hover:text-ink-muted';
@@ -27,7 +28,8 @@ export function NotesPanelFooter({
   mode,
   onModeChange,
   onOpenFeedback,
-  onOpenSettings
+  onOpenSettings,
+  onTrashNote
 }: NotesPanelFooterProps) {
   const isTrashMode = mode === 'trash';
 
@@ -65,8 +67,6 @@ export function NotesPanelFooter({
             </TooltipTrigger>
             <TooltipContent side="top">Feedback</TooltipContent>
           </Tooltip>
-          {/* moss-multi seam: hide-registry (A§9) */}
-          {hidden('trash') ? null : (
           <Tooltip>
             <TooltipTrigger asChild>
               <button
@@ -74,6 +74,7 @@ export function NotesPanelFooter({
                 onClick={() => onModeChange(isTrashMode ? 'notes' : 'trash')}
                 className={footerButtonClass}
                 aria-label={isTrashMode ? 'Back to notes' : 'Trash'}
+                {...(isTrashMode ? {} : trashDropTarget(onTrashNote)) /* moss-multi seam: trash drop (T2.3) */}
               >
                 {isTrashMode
                   ? <FileText className="h-3.5 w-3.5" strokeWidth={1.5} aria-hidden />
@@ -83,7 +84,6 @@ export function NotesPanelFooter({
             </TooltipTrigger>
             <TooltipContent side="top">{isTrashMode ? 'Back to Notes' : 'Trash'}</TooltipContent>
           </Tooltip>
-          )}
         </div>
       </div>
     </TooltipProvider>

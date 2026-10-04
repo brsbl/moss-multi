@@ -126,7 +126,7 @@ test('j06-folders: from an empty workspace, create, nest, fill, rename and trash
 
   await folderRow(ada, 'Projects').click({ button: 'right' });
   await ada.page.getByRole('menuitem', { name: 'Trash Folder', exact: true }).click();
-  await ada.page.getByRole('button', { name: 'Trash', exact: true }).click();
+  await ada.page.getByRole('dialog').getByRole('button', { name: 'Trash', exact: true }).click();
 
   for (const actor of [ada, ben]) {
     await expect(ui.pane(actor, docId), `${actor.label}: the open note goes terminal`).toHaveAttribute(TERMINAL_REASON_ATTR, 'deleted', { timeout: PEER_SIDEBAR_MS });
@@ -256,7 +256,7 @@ test('j06-folders: a folder change refused by the server reads as a sentence, ne
     await expect(folderRow(ada, 'Roadmap')).toBeVisible();
     await folderRow(ada, 'Archive').click({ button: 'right' });
     await ada.page.getByRole('menuitem', { name: 'Trash Folder', exact: true }).click();
-    await ada.page.getByRole('button', { name: 'Trash', exact: true }).click();
+    await ada.page.getByRole('dialog').getByRole('button', { name: 'Trash', exact: true }).click();
     await expect(folderRow(ada, 'Archive')).toHaveCount(0);
     await expect.poll(() => held.length, { message: "Ben's channel asked for the change", timeout: PEER_SIDEBAR_MS }).toBeGreaterThan(0);
 

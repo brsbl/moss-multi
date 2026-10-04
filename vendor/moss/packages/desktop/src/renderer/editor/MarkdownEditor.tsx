@@ -144,6 +144,8 @@ import { $importNoteBody } from './markdown/pipeline';
 import { hidden } from '@moss-multi/host/affordances';
 // moss-multi seam: link-selection (A§10.10)
 import { clearLinkSelection, markLinkSelection } from '@moss-multi/host/link-highlight';
+// moss-multi seam: trash copy (T2.3): one module says how long Trash keeps a note
+import { TRASH_COPY } from '@moss-multi/host/retention';
 // moss-multi seam: converter-split (A§12; S-conv §2.3)
 import { $convertMossCustomCodeNodes, $postImportNormalize, escapeHtmlEntities, normalizeMarkdownForImport, unescapeHtmlEntities } from './markdown/normalize';
 import { EDITOR_FONT_FAMILY_LABELS, type EditorSelectionFontFamily, HIGHLIGHT_COLOR_VARIABLES, HIGHLIGHT_YELLOW_VALUE, HIGHLIGHT_YELLOW_VAR, MARKDOWN_EDITOR_HTML_IMPORT, SERIF_FONT_FAMILY_STYLE, SERIF_FONT_FAMILY_VALUE, SERIF_OPTICAL_FONT_SIZE_ADJUST, STYLE_FONT_FAMILY_PROPERTY, STYLE_FONT_SIZE_ADJUST_PROPERTY, selectionFontFamilyFromStyleValue } from './markdown/text-style';
@@ -3590,7 +3592,7 @@ function FloatingSelectionTools({
 
   const trashedToolbar = (
     <div className="px-3 py-2 text-sm text-ink-muted">
-      Note will be deleted in {trashCountdownDays} {trashCountdownDays === 1 ? 'day' : 'days'}
+      {TRASH_COPY.trashedNote /* moss-multi seam: trash copy (T2.3) */}
     </div>
   );
 

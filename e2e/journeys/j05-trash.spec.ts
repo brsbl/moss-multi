@@ -10,7 +10,7 @@ import type { Locator } from '@playwright/test';
 import type { Actor, Actors } from '../lib/actors.ts';
 import {
   APP_STATE_ATTR, BODY_BINDING_ATTR, CONNECTION_BANNER_ATTR, DOC_STATE_ATTR, EDITOR_PANE_ATTR, NAMES, SIDEBAR_ROW_ATTR,
-  SYNC_UNACKED_ATTR, TERMINAL_REASON_ATTR, TITLE_BINDING_ATTR, paneSelector,
+  SYNC_UNACKED_ATTR, TERMINAL_REASON_ATTR, TITLE_BINDING_ATTR, TRASH_ROW_ATTR, paneSelector,
 } from '../lib/contract.ts';
 import { grantDoc } from '../lib/grants.ts';
 import type { Principal } from '../lib/principals.ts';
@@ -35,7 +35,7 @@ async function openShell(actors: Actors, label: string): Promise<Actor> {
 }
 
 const noteRow = (actor: Actor, docId: string): Locator => actor.page.locator(`[${SIDEBAR_ROW_ATTR}][${NAMES.docId}="${docId}"]`);
-const trashRow = (actor: Actor, docId: string): Locator => actor.page.locator(`[data-trash-row][${NAMES.docId}="${docId}"]`);
+const trashRow = (actor: Actor, docId: string): Locator => actor.page.locator(`[${TRASH_ROW_ATTR}][${NAMES.docId}="${docId}"]`);
 const banner = (actor: Actor, docId: string): Locator => ui.pane(actor, docId).locator(`[${CONNECTION_BANNER_ATTR}]`);
 const docSockets = (actor: Actor, docId: string) => actor.telemetry.sockets.filter((socket) => socket.docId === docId && socket.epoch === actor.telemetry.epoch);
 /** 4xx answers this window saw since `since`. */
@@ -194,7 +194,7 @@ test('j05-trash: a fresh load of a trashed note is the one 404; Ada reads it rea
   // Restore from the trash row's menu: the note is live for Ada and returns to Ben's sidebar.
   await trashRow(ada, docId).click({ button: 'right' });
   await ada.page.getByRole('menuitem', { name: 'Restore', exact: true }).click();
-  await ada.page.getByRole('button', { name: 'Back to notes', exact: true }).click();
+  await expect(ada.page.getByRole('button', { name: 'Trash', exact: true }), 'moss returns to the notes').toBeVisible();
   await expect(noteRow(ada, docId), 'back in Ada’s notes').toBeVisible({ timeout: PEER_MS });
   await ui.openNote(ada, docId);
   await ui.typeBody(ada, docId, ' and Ada after the restore');

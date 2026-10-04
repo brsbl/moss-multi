@@ -1,16 +1,27 @@
 diff --git a/packages/desktop/src/renderer/panels/TrashedNotesPanelContent.tsx b/packages/desktop/src/renderer/panels/TrashedNotesPanelContent.tsx
 --- a/packages/desktop/src/renderer/panels/TrashedNotesPanelContent.tsx
 +++ b/packages/desktop/src/renderer/panels/TrashedNotesPanelContent.tsx
-@@ -18,6 +18,8 @@ import {
+@@ -18,6 +18,10 @@ import {
  import type { NoteSearchResult } from '../../common/noteTypes';
  import { formatRelativeTime } from './notesPanelUtils';
  import { notesApi } from '../api/electron';
 +// moss-multi seam: hide-registry (A§9)
 +import { hidden } from '@moss-multi/host/affordances';
++// moss-multi seam: trash copy (T2.3): one module says how long Trash keeps a note
++import { TRASH_COPY } from '@moss-multi/host/retention';
  
  export type TrashedNotesPanelContentProps = {
    onSelectNote: (id: string) => void;
-@@ -55,10 +57,13 @@ function TrashedNoteContextMenu({
+@@ -48,17 +52,21 @@ function TrashedNoteContextMenu({
+   return (
+     <ContextMenu onOpenChange={setIsContextMenuOpen}>
+       <ContextMenuTrigger asChild>
+-        <div>{children(isContextMenuOpen)}</div>
++        {/* moss-multi seam: trash-row (A§19) */}
++        <div data-trash-row="" data-doc-id={noteId}>{children(isContextMenuOpen)}</div>
+       </ContextMenuTrigger>
+       <ContextMenuContent>
+         <ContextMenuItem onSelect={() => onRestoreNote(noteId)}>
            <RotateCcw className="h-3.5 w-3.5 text-ink-muted" />
            <span>Restore</span>
          </ContextMenuItem>
@@ -24,3 +35,12 @@ diff --git a/packages/desktop/src/renderer/panels/TrashedNotesPanelContent.tsx b
        </ContextMenuContent>
      </ContextMenu>
    );
+@@ -212,7 +220,7 @@ export const TrashedNotesPanelContent = forwardRef<TrashedNotesPanelContentHandl
+       if (!hasAnyNotes) {
+         return (
+           <div className="rounded-xl border border-dashed border-border-subtle bg-surface-raised-card p-4 text-sm text-ink-muted">
+-            Deleted notes stay here for 30 days before being removed forever.
++            {TRASH_COPY.emptyTrash /* moss-multi seam: trash copy (T2.3) */}
+           </div>
+         );
+       }

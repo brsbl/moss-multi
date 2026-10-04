@@ -3859,8 +3859,7 @@ export function App() {
       }
 
       // Switch to Trash tab: Cmd+2
-      // moss-multi seam: hide-registry (A§9)
-      if (key === '2' && !hidden('trash')) {
+      if (key === '2') {
         e.preventDefault();
         handlePanelViewChange('trash');
         return;
@@ -4046,6 +4045,7 @@ export function App() {
       feedbackTooltipOpen={feedbackTooltipFixtureOpen}
       mode={appMode}
       onModeChange={handlePanelViewChange}
+      onTrashNote={handleNoteDeleted} // moss-multi seam: trash drop (T2.3)
       onOpenFeedback={() => setFeedbackDialogOpen(true)}
       onOpenSettings={async () => {
         handleCloseSearch();

@@ -9,6 +9,7 @@
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { getServerByName } from 'partyserver';
 import { filenameFor } from '@moss-multi/core/filenames';
+import { TRASHED_ACTION } from '@moss-multi/protocol/retention';
 import { can, roleAtLeast } from '@moss-multi/protocol/roles';
 import { collectRecipients, publishRecipients, type FanoutEnv, type Recipients } from '@moss-multi/sync/fanout';
 import type { AuthEnv } from '../auth/auth.ts';
@@ -252,7 +253,7 @@ async function trashFolder(request: Request, env: FoldersEnv, id: string): Promi
   const closed = await closeDocs(env, docIds);
   if (!folder.deleted) await notify(env, await collectRecipients(env.DB, { docIds, folderIds }));
   if (!closed) return refuse(503, 'unavailable', 'The folder is in Trash, but some open notes haven’t closed yet. Try again.');
-  return json({ trashBatchId: batch, docIds, folderIds }, 200, NO_STORE);
+  return json({ trashBatchId: batch, docIds, folderIds, ...TRASHED_ACTION }, 200, NO_STORE);
 }
 
 /** PATCH /api/docs/:id {folderId}: a note moves within its vault, keeping its filename unless the folder has it. */

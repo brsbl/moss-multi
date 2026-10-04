@@ -1,5 +1,5 @@
 // /api/docs. POST writes the D1 row in a folder the caller may edit, then DocDO.create seeds the doc (A§9 "+ Note").
-// GET /api/docs/:id is the doc and the caller's role on it; /members is the members API (members.ts); GET
+// GET /api/docs/:id is the doc and the caller's role on it; DELETE and POST /restore are trash.ts; /members is the members API (members.ts); GET
 // /api/docs/:id/instance is the owner-only DO probe (A§19), which reads nothing from the doc. A missing doc and one the
 // caller cannot open get the same 404 on every route (A§8).
 import { eq } from 'drizzle-orm';
@@ -15,6 +15,7 @@ import { json } from '../worker/route.ts';
 import { resolveDocAccess, resolveFolderAccess } from './access.ts';
 import { folderNotFound, liveIn, moveDoc, upFrom, vaultOf } from './folders.ts';
 import { handleMembers } from './members.ts';
+import { restoreDoc, trashDoc } from './trash.ts';
 import { NO_STORE, notFound, readJsonObject, unauthenticated } from './respond.ts';
 import { ensureDefaultVault } from './vaults.ts';
 
@@ -172,8 +173,14 @@ export async function handleDocs(request: Request, env: DocsEnv): Promise<Respon
   if (pathname === '/api/docs') return only('POST', request, () => createDoc(request, env));
   const duplicate = /^\/api\/docs\/([^/]+)\/duplicate$/.exec(pathname);
   if (duplicate) return only('POST', request, () => duplicateDoc(request, env, duplicate[1]));
+  const restore = /^\/api\/docs\/([^/]+)\/restore$/.exec(pathname);
+  if (restore) return only('POST', request, () => restoreDoc(request, env, restore[1]));
   const doc = DOC.exec(pathname);
-  if (doc) return request.method === 'PATCH' ? patchDoc(request, env, doc[1]) : only('GET', request, () => readDoc(request, env, doc[1]));
+  if (doc) {
+    if (request.method === 'PATCH') return patchDoc(request, env, doc[1]);
+    if (request.method === 'DELETE') return trashDoc(request, env, doc[1]);
+    return request.method === 'GET' ? readDoc(request, env, doc[1]) : json({ error: 'method-not-allowed' }, 405, { allow: 'GET, PATCH, DELETE' });
+  }
   const members = MEMBERS.exec(pathname);
   if (members) return handleMembers(request, env, { type: 'doc', id: members[1] });
   const accessMatch = /^\/api\/docs\/([^/]+)\/access$/.exec(pathname);

@@ -9,6 +9,7 @@ import {
 } from '@moss-desktop/renderer/editor/utils/note-link-clipboard';
 import { displayTitle, liveTitle, writeLiveTitle } from '../collab/title-binding.ts';
 import { askDocAccess, rememberRole } from '../access.ts';
+import type { TrashGuard } from '../trash-guard.ts';
 
 /** moss's NoteMetadataRecord: timestamps in seconds, folders as `Notes/...` paths. */
 export interface NoteMetadata {
@@ -32,6 +33,8 @@ export interface ApiDoc {
   role?: string;
   folderPath?: string;
   surfaced?: boolean;
+  /** The owner's trashed notes only (A§11), in epoch ms. */
+  trashedAt?: number | null;
 }
 
 /** Host-only controller, kept outside the ElectronAPI namespace inventory. */
@@ -63,6 +66,8 @@ export interface BridgeOptions {
   fetch?: typeof fetch;
   storage?: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> | null;
   browser?: BrowserHooks;
+  /** Closes docs to writes and waits for their acks before a trash (A§10.6); boot.tsx wires the doc sessions in. */
+  trashGuard?: TrashGuard;
 }
 
 type ThemeChoice = 'system' | 'light' | 'dark';
@@ -112,15 +117,26 @@ const FOLDER_REFUSALS: Record<number, string> = {
 };
 const FOLDER_UNAVAILABLE = 'The server couldn’t change the folder right now. Try again.';
 const FOLDER_GONE = 'That folder is no longer here. It may have been moved or sent to Trash.';
+const NOTE_REFUSALS: Record<number, string> = {
+  401: 'You’re signed out. Sign in again to change this note.',
+  403: 'Only the note’s owner can do that.',
+  404: 'That note is no longer available, or you don’t have access to it.',
+};
+const NOTE_UNAVAILABLE = 'The server couldn’t change the note right now. Try again.';
+const UNREACHABLE = 'The server couldn’t be reached. Check your connection and try again.';
+/** A trash whose DocDO did not close answers 503; the owner's retry closes it (A§5.1 trash). */
+const TRASH_ATTEMPTS = 3;
+const TRASH_RETRY_MS = 500;
+const openGuard: TrashGuard = { prepare: async () => true, release: () => undefined };
 
 /** The server's own sentence for a refused change, else one chosen by status; moss renders `error.message` as is. */
-async function refusalOf(response: Response): Promise<Error> {
+async function refusalOf(response: Response, fallbacks = FOLDER_REFUSALS, unavailable = FOLDER_UNAVAILABLE): Promise<Error> {
   let message = '';
   try {
     const body = (await response.json()) as { message?: unknown };
     if (typeof body.message === 'string') message = body.message.trim();
   } catch { /* not JSON: fall back below */ }
-  return new Error(message || FOLDER_REFUSALS[response.status] || FOLDER_UNAVAILABLE);
+  return new Error(message || fallbacks[response.status] || unavailable);
 }
 
 export function docIdFromPath(pathname: string): string | null {
@@ -136,7 +152,7 @@ export function toNoteMetadata(doc: ApiDoc): NoteMetadata {
     updatedAt: seconds(doc.updatedAt),
     folderPath: doc.folderPath ?? ROOT_FOLDER,
     lastOpenedAt: null,
-    trashedAt: null,
+    trashedAt: doc.trashedAt != null ? seconds(doc.trashedAt) : null,
   };
 }
 
@@ -162,7 +178,7 @@ const inertBrowser: BrowserHooks = {
   copy: async () => undefined,
 };
 
-export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis), storage = null, browser = inertBrowser, subscribeWorkspace: subscribe }: BridgeOptions) {
+export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis), storage = null, browser = inertBrowser, subscribeWorkspace: subscribe, trashGuard = openGuard }: BridgeOptions) {
   const request = (path: string, init: RequestInit = {}) =>
     fetcher(path, { credentials: 'same-origin', ...init, headers: { accept: 'application/json', ...init.headers } });
 
@@ -353,6 +369,24 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
     const folder = workspaceSnapshot?.folders?.find((candidate) => candidate.id === id);
     return folder ? folderEntry(folder) : { ...fallback, noteCount: 0, createdAt: seconds(Date.now()) };
   };
+  /** The trash DELETE, repeated while a DocDO has not closed (503); a refusal is the server's sentence. */
+  const sendTrash = async (path: string, fallbacks: Record<number, string>, unavailable: string): Promise<void> => {
+    for (let attempt = 1; ; attempt += 1) {
+      let response: Response;
+      try {
+        response = await request(path, { method: 'DELETE' });
+      } catch {
+        throw new Error(UNREACHABLE);
+      }
+      if (response.ok) return;
+      if (response.status !== 503 || attempt >= TRASH_ATTEMPTS) throw await refusalOf(response, fallbacks, unavailable);
+      await new Promise((resolve) => setTimeout(resolve, TRASH_RETRY_MS));
+    }
+  };
+  /** Notes in a folder's subtree that this tab may hold open. */
+  const notesUnder = (path: string) => (workspaceSnapshot?.docs ?? [])
+    .filter((doc) => doc.trashedAt == null && (doc.folderPath === path || doc.folderPath?.startsWith(`${path}/`)))
+    .map((doc) => doc.id);
   const moveNotes = async (noteIds: string[], targetFolderPath: string) => {
     const target = await folderId(targetFolderPath);
     for (const id of noteIds) await changeFolders(`/api/docs/${encodeURIComponent(id)}`, { method: 'PATCH', json: { folderId: target } });
@@ -398,6 +432,13 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
       getMetadataByIds: async (ids: string[]) => (await notes()).filter((note) => ids.includes(note.id)),
       getById: async (id: string) => {
         const note = await byId(id);
+        if (note?.trashedAt != null) {
+          // The owner's Trash view reads a trashed note on its one read path, read-only (A§8).
+          const response = await request(`/api/trash/${encodeURIComponent(id)}`);
+          if (!response.ok) return undefined;
+          const { markdown } = (await response.json()) as { markdown: string };
+          return { ...record(note), content: markdown };
+        }
         // A doc that will bind gets no content from REST: the binding fills it (A§9).
         return note ? { ...record(note), content: '', layoutMetadata: readJson(storage, layoutKey(id)) } : undefined;
       },
@@ -452,14 +493,40 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
         if ('collapsedHeadings' in input) writeJson(storage, collapsedKey(id), input.collapsedHeadings);
         return record(withLocal(note));
       },
-      delete: later('Trash', 2),
-      restore: later('Restoring from Trash', 2),
+      // Trash (A§10.6): closed to writes and acked first, then the owner's DELETE; moss marks the note trashed.
+      delete: async (id: string) => {
+        const ready = await trashGuard.prepare([id]);
+        let trashed = false;
+        try {
+          if (!ready) return false;
+          await sendTrash(`/api/docs/${encodeURIComponent(id)}`, NOTE_REFUSALS, NOTE_UNAVAILABLE);
+          trashed = true;
+        } finally {
+          trashGuard.release([id], trashed);
+        }
+        const note = known.get(id);
+        if (note) known.set(id, { ...note, trashedAt: seconds(Date.now()) });
+        await load(workspaceSnapshot?.vault.id ?? storedVault()).catch(() => undefined);
+        return true;
+      },
+      restore: async (id: string) => {
+        let response: Response;
+        try {
+          response = await request(`/api/docs/${encodeURIComponent(id)}/restore`, { method: 'POST' });
+        } catch {
+          throw new Error(UNREACHABLE);
+        }
+        if (!response.ok) throw await refusalOf(response, NOTE_REFUSALS, NOTE_UNAVAILABLE);
+        await load(workspaceSnapshot?.vault.id ?? storedVault()).catch(() => undefined);
+        const note = known.get(id);
+        return note ? record(withLocal({ ...note, trashedAt: null })) : undefined;
+      },
       search: async ({ query, limit, searchTrashed }: { query: string; limit?: number; searchTrashed?: boolean }) => {
-        // Title matches over the listing until search lands in M3.
+        // Title matches over the listing until search lands in M3; the Trash view searches only trashed notes.
         const needle = query.trim().toLowerCase();
-        if (searchTrashed || !needle) return [];
+        if (!needle) return [];
         return (await notes())
-          .filter((note) => note.title.toLowerCase().includes(needle))
+          .filter((note) => (note.trashedAt != null) === Boolean(searchTrashed) && note.title.toLowerCase().includes(needle))
           .slice(0, limit ?? 50)
           .map((note) => ({ id: note.id, title: note.title, folderPath: note.folderPath, updatedAt: note.updatedAt, matchType: 'title' as const }));
       },
@@ -528,10 +595,21 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
         const renamed = answer.folder?.name ?? newName;
         return entryFor(id, { name: renamed, path: `${currentPath.split('/').slice(0, -1).join('/')}/${renamed}` });
       },
-      // moss's one caller trashes the subtree; the server keeps it as one batch for restore (A§6).
+      // moss's one caller trashes the subtree; the server keeps it as one batch for restore (A§6). Its open notes
+      // close to writes and ack first, as a note's trash does (A§10.6).
       delete: async ({ path }: { path: string; moveNotesTo?: 'root' | 'trash' }) => {
         const id = await folderId(path);
-        await changeFolders(`/api/folders/${encodeURIComponent(id)}`, { method: 'DELETE' });
+        const open = notesUnder(path);
+        const ready = await trashGuard.prepare(open);
+        let trashed = false;
+        try {
+          if (!ready) return false;
+          await sendTrash(`/api/folders/${encodeURIComponent(id)}`, FOLDER_REFUSALS, FOLDER_UNAVAILABLE);
+          trashed = true;
+        } finally {
+          trashGuard.release(open, trashed);
+        }
+        await load(workspaceSnapshot?.vault.id ?? storedVault()).catch(() => undefined);
         announceFolders();
         return true;
       },
@@ -584,7 +662,8 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
       getWindowContext: async () => ({ windowId: 1, initialNoteId: docIdFromPath(pathname()), launchReason: 'initial-launch' as const, openedFromWindowId: null }),
       // The address follows the focused note, so a reload or a copied URL reopens it (A§4.2).
       setFocusedNoteId: async (id: string | null) => {
-        if (id && docIdFromPath(pathname()) !== id) {
+        // A trashed note has no address: a fresh load of it is the one 404 (A§8).
+        if (id && known.get(id)?.trashedAt == null && docIdFromPath(pathname()) !== id) {
           browser.replacePath(`/d/${encodeURIComponent(id)}`);
           await refreshForNavigation(id);
         }
@@ -674,8 +753,8 @@ function windowBrowser(): BrowserHooks {
 }
 
 /** Installs the bridge on `window` before App's module evaluates (A§4.3). */
-export function installBridge(authStore: import('../auth-state.ts').AuthStore): Bridge {
-  const bridge = createBridge({ pathname: () => window.location.pathname, storage: localStorageOrNull(), browser: windowBrowser(),
+export function installBridge(authStore: import('../auth-state.ts').AuthStore, trashGuard?: TrashGuard): Bridge {
+  const bridge = createBridge({ pathname: () => window.location.pathname, storage: localStorageOrNull(), browser: windowBrowser(), trashGuard,
     subscribeWorkspace: (receive, pause) => subscribeWorkspace({
       onPause: pause,
       auth: authStore,

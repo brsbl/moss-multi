@@ -193,9 +193,45 @@ export function docOwner(docId: string): object | null {
   return held.get(docId)?.owner ?? null;
 }
 
+let signingOut = false;
+/** Docs closed to writes while a trash waits for their acks (A§10.6). */
+const closedForTrash = new Set<string>();
+const ackWaiters = new Set<() => void>();
+
 /** Keep the sync channel delivering while the sign-out guard waits for acks. */
 export function pauseDocWrites(paused: boolean): void {
-  for (const session of sessions) session.pauseWrites(paused);
+  signingOut = paused;
+  for (const session of sessions) session.pauseWrites();
+}
+
+/** Closes (or reopens) these docs to writes in this tab, every session of them, while their sockets keep delivering. */
+export function closeDocsToWrites(docIds: string[], closed: boolean): void {
+  for (const id of docIds) {
+    if (closed) closedForTrash.add(id);
+    else closedForTrash.delete(id);
+  }
+  for (const session of sessions) if (docIds.includes(session.docId)) session.pauseWrites();
+}
+
+/** The server trashed these docs: this tab's sessions of them end now, without waiting for the 4410. */
+export function endTrashedDocs(docIds: string[]): void {
+  for (const session of [...sessions]) if (docIds.includes(session.docId)) session.end('deleted');
+}
+
+/** Resolves true once no session of these docs holds an unacked edit, or false after `timeoutMs`. */
+export function waitDocsAcked(docIds: string[], timeoutMs: number): Promise<boolean> {
+  const pending = () => [...sessions].some((session) => docIds.includes(session.docId) && session.state.unacked);
+  if (!pending()) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const finish = (acked: boolean) => {
+      clearTimeout(timer);
+      ackWaiters.delete(check);
+      resolve(acked);
+    };
+    const check = () => { if (!pending()) finish(true); };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    ackWaiters.add(check);
+  });
 }
 
 /** Confirmed sign-out severs every socket of this window; nothing reconnects. */
@@ -279,10 +315,15 @@ export class DocSession {
     window.addEventListener('pageshow', this.#onPageShow);
     sessions.add(this);
     markSession(this, true);
+    this.#state.writePaused = signingOut || closedForTrash.has(docId);
     this.#publish();
   }
 
-  pauseWrites(writePaused: boolean): void { this.#set({ writePaused }); }
+  /** Writes pause for a sign-out in progress or a trash of this doc waiting for its acks. */
+  pauseWrites(): void {
+    const writePaused = signingOut || closedForTrash.has(this.docId);
+    if (writePaused !== this.#state.writePaused) this.#set({ writePaused });
+  }
 
   get state(): SessionState {
     return this.#state;
@@ -356,6 +397,7 @@ export class DocSession {
     sessions.delete(this);
     markSession(this, false);
     markUnacked(this, false);
+    for (const check of [...ackWaiters]) check();
     publishConnection(this.docId, this, null);
     if (held.get(this.docId)?.session === this) {
       held.delete(this.docId);
@@ -377,6 +419,7 @@ export class DocSession {
     markUnacked(this, this.#state.unacked);
     this.#publish();
     for (const listener of [...this.#listeners]) listener(this.#state);
+    for (const check of [...ackWaiters]) check();
   }
 
   #publish(): void {

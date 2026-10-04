@@ -1,5 +1,6 @@
 // Parity targets (A§20, S-test §5.2): a moss Ladle story at the pin against the built Worker in the same state.
 // Targets grow per milestone; M0 is the shell.
+import { RETENTION_NOTICE_ATTR } from '../../packages/protocol/src/dom-contract.ts';
 
 export type Theme = 'light' | 'dark';
 
@@ -38,7 +39,7 @@ export const TARGETS: Target[] = [
   { id: 'shell-empty', story: 'app--empty-notes', seed: 'fresh', focusEditor: false, masks: ['[data-collab-chrome]'], floor: 0.05, maxBlob: 16 },
   // The owner's trash view (T2.3). The retention notice's words differ by design (one module writes trash copy and
   // never counts days down), so only that pill is masked; it is wider than moss's and centred on the same point.
-  { id: 'trash-view', story: 'app--default', seed: 'story-listing', focusEditor: false, masks: ['[data-collab-chrome]', '[data-retention-notice]'], floor: 0.05, maxBlob: 16, prepare: 'trash-open-note' },
+  { id: 'trash-view', story: 'app--default', seed: 'story-listing', focusEditor: false, masks: ['[data-collab-chrome]', `[${RETENTION_NOTICE_ATTR}]`], floor: 0.05, maxBlob: 16, prepare: 'trash-open-note' },
 ];
 
 export const THEMES: Theme[] = ['light', 'dark'];

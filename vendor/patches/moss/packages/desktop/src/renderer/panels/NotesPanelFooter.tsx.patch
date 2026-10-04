@@ -5,25 +5,34 @@ diff --git a/packages/desktop/src/renderer/panels/NotesPanelFooter.tsx b/package
    TooltipProvider,
    TooltipTrigger
  } from '@moss/shared/components/ui/tooltip';
-+// moss-multi seam: hide-registry (A§9)
-+import { hidden } from '@moss-multi/host/affordances';
++// moss-multi seam: trash drop (T2.3; deviation 10): the Trash button takes a dropped note
++import { trashDropTarget } from '@moss-multi/host/trash';
  
  export type NotesPanelMode = 'notes' | 'trash';
  
-@@ -62,6 +64,8 @@ export function NotesPanelFooter({
-             </TooltipTrigger>
-             <TooltipContent side="top">Feedback</TooltipContent>
-           </Tooltip>
-+          {/* moss-multi seam: hide-registry (A§9) */}
-+          {hidden('trash') ? null : (
-           <Tooltip>
-             <TooltipTrigger asChild>
-               <button
-@@ -78,6 +82,7 @@ export function NotesPanelFooter({
-             </TooltipTrigger>
-             <TooltipContent side="top">{isTrashMode ? 'Back to Notes' : 'Trash'}</TooltipContent>
-           </Tooltip>
-+          )}
-         </div>
-       </div>
-     </TooltipProvider>
+@@ -15,6 +17,7 @@ type NotesPanelFooterProps = {
+   onModeChange: (mode: NotesPanelMode) => void;
+   onOpenFeedback: () => void;
+   onOpenSettings: () => void;
++  onTrashNote?: (noteId: string) => void; // moss-multi seam: trash drop (T2.3)
+ };
+ 
+ const footerButtonClass = 'flex h-7 w-7 items-center justify-center rounded text-ink-faint transition-colors hover:bg-surface-note-hover/40 hover:text-ink-muted';
+@@ -24,7 +27,8 @@ export function NotesPanelFooter({
+   mode,
+   onModeChange,
+   onOpenFeedback,
+-  onOpenSettings
++  onOpenSettings,
++  onTrashNote
+ }: NotesPanelFooterProps) {
+   const isTrashMode = mode === 'trash';
+ 
+@@ -69,6 +73,7 @@ export function NotesPanelFooter({
+                 onClick={() => onModeChange(isTrashMode ? 'notes' : 'trash')}
+                 className={footerButtonClass}
+                 aria-label={isTrashMode ? 'Back to notes' : 'Trash'}
++                {...(isTrashMode ? {} : trashDropTarget(onTrashNote)) /* moss-multi seam: trash drop (T2.3) */}
+               >
+                 {isTrashMode
+                   ? <FileText className="h-3.5 w-3.5" strokeWidth={1.5} aria-hidden />

@@ -222,6 +222,12 @@ export class DocDO extends YServer<SyncEnv> {
     }
   }
 
+  /** Back from Trash: the flag clears for good, so sockets are admitted again, after a wake too. Idempotent. */
+  async restore(): Promise<void> {
+    const store = await this.#ready();
+    store.setMeta('deleted', '0');
+  }
+
   /** Internal RPC: preserves Yjs item identity, including relative anchors, without a markdown round trip. */
   async snapshotForDuplicate(): Promise<{ title: string; state: Uint8Array }> {
     await this.#ready();
