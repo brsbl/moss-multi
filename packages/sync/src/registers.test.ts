@@ -308,6 +308,29 @@ describe('register refresh cost @p:col-1 @p:tech-8', () => {
     } finally { a.doc.off('update', forward); a.dispose(); b.dispose(); seed.destroy(); }
   }, 120_000);
 
+  it('a burst of root-level commits and same-node state replacements re-indexes and refreshes no payload', async () => {
+    const seed = new Y.Doc(); importBody(seed, markdown);
+    const a = client(seed);
+    const settle = () => new Promise(resolve => setTimeout(resolve, 0));
+    let refreshes = 0;
+    const stop = a.editor.registerUpdateListener(({ tags }) => { if (tags.has('moss-multi:register-refresh')) refreshes++; });
+    try {
+      await settle();
+      refreshes = 0;
+      const bytes = await stringified(async () => {
+        for (let i = 0; i < 40; i++) {
+          // A root-only commit, then setEditorState with the same nodes: neither touches a payload node.
+          a.editor.update(() => { $getRoot().setFormat(i % 2 ? 'center' : 'left'); }, { discrete: true });
+          a.editor.setEditorState(a.editor.getEditorState().clone());
+          await settle();
+        }
+      });
+      expect(refreshes, 'no register refresh runs').toBe(0);
+      expect(bytes, 'no payload is read').toBe(0);
+      expect(exportMarkdown(a.editor)).toContain(body(blocks - 1));
+    } finally { stop(); a.dispose(); seed.destroy(); }
+  }, 120_000);
+
   it('the DocDO mirror stringifies each register a bounded number of times per server write', async () => {
     const live = new Y.Doc();
     try {

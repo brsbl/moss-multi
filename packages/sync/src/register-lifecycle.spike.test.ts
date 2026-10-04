@@ -894,8 +894,8 @@ function codeBlocks(): (LexicalNode & { getCode(): string; setCode(code: string)
 }
 
 describe('T1.R spike: the M1 register map, for comparison @p:col-1', () => {
-  // Red on purpose until T1.F2 moves payloads out of the note's doc; then this becomes a plain `it`.
-  it.fails('M1 map: a deleted block\'s payload is still served to later readers and duplicates (privacy P1)', () => {
+  // Red on the M1 map (an `it.fails` until T1.F2 moved payloads out of the note's doc).
+  it('M1 map, fixed by T1.F2: a deleted block\'s payload is no longer served to later readers and duplicates (privacy P1)', () => {
     const server = new Y.Doc();
     importBody(server, 'Intro.\n\n```js\nSECRET-beta\n```');
     const ada = mapClient(Y.encodeStateAsUpdate(server));

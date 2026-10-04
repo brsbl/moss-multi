@@ -67,6 +67,8 @@ export class DocDO extends YServer<SyncEnv> {
   static projectionTarget: (env: SyncEnv) => ProjectionTarget | null = (env) => (env?.DB ? d1Projections(env.DB) : null);
 
   readonly instanceId = crypto.randomUUID();
+  /** Payload work since the last reset, which the harness reads to bound it (A§10.10). */
+  readonly payloadWork = { evaluated: 0, revealed: 0, withheld: 0, deduped: 0, compared: 0 };
   readonly constructedAt = Date.now();
 
   #store: DocStore | null = null;
@@ -208,12 +210,13 @@ export class DocDO extends YServer<SyncEnv> {
   }
 
   /** Internal RPC: preserves Yjs item identity, including relative anchors, without a markdown round trip. */
-  async snapshotForDuplicate(): Promise<{ title: string; state: Uint8Array }> {
+  async snapshotForDuplicate(): Promise<{ title: string; state: Uint8Array; payloads: [string, Uint8Array][] }> {
     await this.#ready();
-    return { title: this.document.getText('title').toString(), state: Y.encodeStateAsUpdate(this.document) };
+    return { title: this.document.getText('title').toString(), state: Y.encodeStateAsUpdate(this.document), payloads: [] };
   }
 
-  async createFromSnapshot(input: Omit<CreateDocInput, 'markdown'>, state: Uint8Array): Promise<void> {
+  async createFromSnapshot(input: Omit<CreateDocInput, 'markdown'>, state: Uint8Array, payloads: [string, Uint8Array][] = []): Promise<void> {
+    void payloads;
     const store = await this.#ready();
     if (store.meta('created') !== null) return;
     if (state.byteLength > this.#limits.stateCapBytes) throw new DocCapError();
