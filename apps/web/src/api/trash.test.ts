@@ -365,12 +365,10 @@ describe('the workspace listing', () => {
     await insertGrant(d1.db, { folderId: vault }, ben, 'owner');
     const shown = await insertFolder(d1.db, ada, null);
     await insertGrant(d1.db, { folderId: shown }, cy, 'editor');
-    const trash = async (count: number) => {
-      for (let i = 0; i < count; i += 1) {
-        await insertDoc(d1.db, ada, { folderId: folder, deleted: true });
-        await insertDoc(d1.db, ada, { folderId: shown, deleted: true });
-      }
-    };
+    const insert = d1.db.prepare(`INSERT INTO docs (id, owner_user_id, created_by, folder_id, title, filename, created_at, updated_at, deleted_at)
+      VALUES (?1, ?2, ?2, ?3, '', ?1 || '.md', ?4, ?4, ?4)`);
+    const trash = (count: number) => d1.db.batch(Array.from({ length: count }, () => [folder, shown]).flat()
+      .map((folderId) => insert.bind(crypto.randomUUID(), ada.id, folderId, Date.now())));
     const listing = async (user: TestUser, query: string) => {
       statements = 0;
       const response = await call(user, 'GET', `/api/workspace${query}`);
@@ -388,5 +386,5 @@ describe('the workspace listing', () => {
     const manyCy = await listing(cy, `?vault=${shown}`);
     expect(manyCy.trashed, 'an editor still sees none').toBe(0);
     expect(manyCy.statements, 'nor does an editor pay per trashed note').toBe(fewCy.statements);
-  });
+  }, 30_000);
 });
