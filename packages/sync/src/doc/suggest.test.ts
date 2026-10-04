@@ -129,6 +129,7 @@ function capFrame(live: Y.Doc, client: number): Uint8Array {
 
 function measure(paragraphs: number) {
   const live = docOf(paragraphs);
+  const bytes = Y.encodeStateAsUpdate(live).byteLength;
   const ingest = ingestOn(live);
   const ops: number[] = [];
   for (let run = 0; run < 5; run++) {
@@ -151,7 +152,7 @@ function measure(paragraphs: number) {
     expect(ingest.namesLease(big)).toBe(true);
     lease.push(performance.now() - started);
   }
-  return { bytes: Y.encodeStateAsUpdate(live).byteLength, ops: median(ops), lease: median(lease) };
+  return { bytes, ops: median(ops), lease: median(lease) };
 }
 
 describe('T5.0 cost: ingest and the lease check are O(frame) @p:mean-2', () => {
