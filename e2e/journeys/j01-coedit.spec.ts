@@ -301,3 +301,37 @@ test('j01 duplicate: the note menu makes a content-preserving copy visible to bo
   await waitBodyLive(ben, copyId);
   expect(await ui.fieldText(ben, copyId, 'body')).toBe(text + copyEdit);
 });
+
+test('j01 workspace: another open document keeps its binding while peer creates and renames arrive within five seconds @p:note-4 @p:col-5', async ({ actors, stack }) => {
+  const ada = await openShell(actors, 'ada');
+  const benPrincipal = await actors.principal('ben');
+  const openId = await newNote(ada);
+  await waitBodyLive(ada, openId);
+  const { vault } = await (await ada.context.request.get('/api/workspace')).json();
+  expect((await ada.context.request.post(`/api/folders/${vault.id}/members`, {
+    headers: { origin: stack.baseUrl }, data: { email: benPrincipal.email, role: 'editor' },
+  })).status()).toBe(201);
+  const ben = await actors.open(benPrincipal, { path: `/d/${openId}` });
+  await waitBodyLive(ben, openId);
+  const sockets = await ben.page.evaluate(() => performance.getEntriesByType('resource').filter((entry) => entry.name.includes('/api/workspace/ws')).length);
+  // Socket readiness is witnessed by the actual browser WebSocket, including its received events.
+  const received: string[] = [];
+  ben.page.on('websocket', (socket) => {
+    if (socket.url().includes('/api/workspace/ws')) socket.on('framereceived', (frame) => received.push(String(frame.payload)));
+  });
+  ben.expectReconnects(1, openId);
+  await ben.page.reload();
+  await waitBodyLive(ben, openId);
+  const peerId = await newNote(ada);
+  await waitBodyLive(ada, peerId);
+  const row = ben.page.locator(`[data-sidebar-row][data-doc-id="${peerId}"]`);
+  await expect(row).toBeVisible({ timeout: 5_000 });
+  await expect.poll(() => received.some((frame) => frame.includes(peerId)), { timeout: 5_000, message: 'workspace channel delivers the new id' }).toBe(true);
+  await ui.typeTitle(ada, peerId, 'Workspace peer rename');
+  await expect(row).toContainText('Workspace peer rename', { timeout: 5_000 });
+  await expect(ui.pane(ben, openId)).toHaveAttribute(DOC_STATE_ATTR, 'live');
+  await ui.typeBody(ben, openId, 'Still bound after metadata');
+  await waitAcked(ben, openId);
+  await actors.checkpoint('workspace-metadata');
+  void sockets;
+});
