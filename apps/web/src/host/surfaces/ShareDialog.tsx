@@ -156,15 +156,18 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
     if (pending) return;
     setPending(true);
     setStatus(null);
+    let took = false;
     try {
       const done = await work();
+      took = true;
       if (done) setStatus({ tone: 'done', text: done, where });
-      if (reload) await load();
     } catch (error) {
       setStatus({ tone: 'error', text: error instanceof Error && error.message ? error.message : UNREACHABLE, where });
     } finally {
       setPending(false);
     }
+    // The form frees with the confirmation; the lists catch up behind it.
+    if (took && reload) await load();
   }
 
   const refused = (body: { message?: string } | null, fallback: string) => new Error(body?.message ?? fallback);

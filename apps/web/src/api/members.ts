@@ -145,7 +145,8 @@ async function share(db: Db, env: MembersEnv, target: MemberTarget, ownerUserId:
   // One batch, each statement seeing the one before. The invite goes in only while the owner's last hour holds fewer
   // than SHARES_PER_HOUR (counted by the statement that inserts, so a burst can't pass), only for someone who is not
   // a member yet, and once per open email (a concurrent first share conflicts and becomes a repeat). A known account
-  // is granted while its invite is open. Repeats and raises only ever raise the stored role.
+  // is granted at its open invite's role, only when this share asks for no less (a refused lowering writes nothing).
+  // Repeats and raises only ever raise the stored role.
   const statements = [
     env.DB.prepare(`INSERT INTO invites (token, email, target_type, target_id, role, invited_by, created_at)
       SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7
@@ -158,24 +159,22 @@ async function share(db: Db, env: MembersEnv, target: MemberTarget, ownerUserId:
   if (personId) {
     statements.push(
       env.DB.prepare(`INSERT INTO ${table} (${column}, principal_id, principal_type, role, added_by, created_at)
-        SELECT ?2, ?4, 'user', ?5, ?6, ?7 WHERE EXISTS (SELECT 1 FROM invites WHERE target_type = ?1 AND target_id = ?2
-          AND email = ?3 AND accepted_at IS NULL AND revoked_at IS NULL)
+        SELECT ?2, ?4, 'user', invites.role, ?6, ?7 FROM invites WHERE target_type = ?1 AND target_id = ?2
+          AND email = ?3 AND accepted_at IS NULL AND revoked_at IS NULL AND ${rank('invites.role')} <= ${rank('?5')}
         ON CONFLICT DO NOTHING`).bind(target.type, target.id, email, personId, role, caller.id, now),
       env.DB.prepare(`UPDATE ${table} SET role = ?2 WHERE ${column} = ?1 AND principal_id = ?3 AND ${rank('role')} < ${rank('?2')}`)
         .bind(target.id, role, personId),
     );
   }
-  const [admitted] = await env.DB.batch(statements);
-  if (changed(admitted)) {
-    if (personId && env.PrincipalDO) {
-      // The grantee's open tabs refresh their vaults and shared items, off the response path so its timing says
-      // nothing about whether the email has an account; the committed share stands if this fails.
-      const notify = publishTo({ DB: env.DB, PrincipalDO: env.PrincipalDO }, personId, { type: 'vaults' })
-        .catch((error: unknown) => console.error('workspace share notification failed', error));
-      waitUntil(notify);
-    }
-    return json({ shared: { email, role } }, 201, NO_STORE);
+  const [admitted, , granted] = await env.DB.batch(statements);
+  if (personId && changed(granted) && env.PrincipalDO) {
+    // The grantee's open tabs refresh their vaults and shared items, off the response path so its timing says
+    // nothing about whether the email has an account; the committed share stands if this fails.
+    const notify = publishTo({ DB: env.DB, PrincipalDO: env.PrincipalDO }, personId, { type: 'vaults' })
+      .catch((error: unknown) => console.error('workspace share notification failed', error));
+    waitUntil(notify);
   }
+  if (changed(admitted)) return json({ shared: { email, role } }, 201, NO_STORE);
   // Not a new share: the person already has access here, or the owner is over the hourly limit.
   const [invite] = await db.select({ role: invites.role }).from(invites).where(openInvite(target, email)).limit(1);
   const [grant] = personId ? await grantRows(db, target, personId) : [];
