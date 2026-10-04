@@ -503,7 +503,7 @@ describe('L4/A8 chart and sketch registers @p:col-1 @p:col-3 @p:note-2', () => {
     } finally { a.dispose(); b.dispose(); seed.destroy(); }
   });
 
-  it.each(['Ada', 'Ben'] as const)('undoing one of two concurrent new arrays keeps the other (%s undoes)', (undoer) => {
+  it.each(['won', 'lost'] as const)('undoing one of two concurrent new arrays keeps the other (the write that %s the marker)', (outcome) => {
     const seed = new Y.Doc(); importBody(seed, CHART);
     const a = client(seed); const b = client(seed);
     try {
@@ -515,6 +515,10 @@ describe('L4/A8 chart and sketch registers @p:col-1 @p:col-3 @p:note-2', () => {
       }
       exchange(a, b);
       for (const peer of [a, b]) expect(seriesOf(peer).sort()).toEqual(['Ada', 'Ben']);
+      // Yjs keeps one of the two concurrent `#a/series` writes; undo the winner's write, or the loser's.
+      const register = [...a.doc.getMap<Y.Map<unknown>>('registers').values()][0];
+      const adaWon = register._map.get('#a/series')!.id.client === a.doc.clientID;
+      const undoer = adaWon === (outcome === 'won') ? 'Ada' : 'Ben';
       (undoer === 'Ada' ? a : b).undo.undo();
       exchange(a, b);
       const other = undoer === 'Ada' ? 'Ben' : 'Ada';
