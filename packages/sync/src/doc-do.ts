@@ -16,7 +16,8 @@ import { d1Projections, Projections, type ProjectionTarget } from './doc/project
 import type { SyncEnv } from './env.ts';
 import { migrateFrontmatter } from '@moss-multi/core/frontmatter';
 import { migrateRegisters } from './registers.ts';
-import { exportDocMarkdown, importBody, rootIsEmpty, SERVER_IMPORT, SERVER_SEED, seedEmptyParagraph, writeTitle } from './server-doc.ts';
+import { exportDocMarkdown, importBody, rootIsEmpty, SERVER_IMPORT, SERVER_SEED, seedEmptyParagraph } from './server-doc.ts';
+import { writeTitle } from './server-title.ts';
 
 /** A title written by create() or a REST rename; both project. */
 export const SERVER_TITLE = 'server-title';

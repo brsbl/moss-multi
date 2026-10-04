@@ -6,7 +6,7 @@ import { registerList } from '@lexical/list';
 import { $normalizeFormatWhitespace } from '@moss-desktop/renderer/editor/markdown/format-whitespace';
 import { $createParagraphNode, $getRoot, TextNode, type LexicalEditor } from 'lexical';
 import * as Y from 'yjs';
-import { readField, writeField } from '@moss-multi/core/doc-fields';
+import { readField } from '@moss-multi/core/doc-fields';
 import { composeFrontmatter, importFrontmatter } from '@moss-multi/core/frontmatter';
 import { $importNoteBody, createConverterEditor, exportMarkdown } from './converter/index.ts';
 import { $recomputeExportFormulas } from './formula-export.ts';
@@ -101,14 +101,6 @@ export function serverWrite(live: Y.Doc, origin: unknown, mutate: (doc: Y.Doc) =
     live.off('update', onUpdate);
   }
   return changed;
-}
-
-/**
- * A title written from outside the doc's sockets (create, a REST rename): a minimal diff into Y.Text('title') that
- * every open client merges. The text is the caller's, so its diff cost must stay bounded per request.
- */
-export function writeTitle(live: Y.Doc, text: string, origin: unknown): boolean {
-  return writeField(live, 'title', text, origin);
 }
 
 export const rootIsEmpty = (doc: Y.Doc): boolean => doc.get('root', Y.XmlText).length === 0;

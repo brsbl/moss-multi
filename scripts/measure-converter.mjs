@@ -192,10 +192,18 @@ async function timedRequest(server, path, init) {
     peakRssKb = Math.max(peakRssKb, workerdStats(server.child.pid).rssKb);
   }, 20);
   const started = performance.now();
-  const response = await fetch(`${server.origin}${path}`, init);
-  const body = await response.text();
+  let response;
+  let body;
+  try {
+    response = await fetch(`${server.origin}${path}`, init);
+    body = await response.text();
+  } catch (error) {
+    throw new Error(`${path}: ${error.message} (${error.cause?.message ?? 'no cause'})\n${server.logs.value}`);
+  } finally {
+    // A live interval would keep the process from exiting after a failure.
+    clearInterval(sampler);
+  }
   const wallMs = performance.now() - started;
-  clearInterval(sampler);
   const after = workerdStats(server.child.pid);
   if (!response.ok) throw new Error(`${path}: HTTP ${response.status} ${body}\n${server.logs.value}`);
   return { wallMs, cpuMs: after.cpuMs - before.cpuMs, rssBeforeKb: before.rssKb, peakRssKb: Math.max(peakRssKb, after.rssKb), body };

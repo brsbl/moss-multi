@@ -4,7 +4,7 @@
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { TITLE_CASES } from '../measure/title-cases.ts';
-import { writeTitle } from './server-doc.ts';
+import { writeTitle } from './server-title.ts';
 
 const title = (doc: Y.Doc) => doc.getText('title').toString();
 

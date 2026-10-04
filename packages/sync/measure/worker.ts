@@ -3,7 +3,7 @@ import { createBinding, syncLexicalUpdateToYjs, type Provider } from '@lexical/y
 import { $getRoot, type LexicalEditor } from 'lexical';
 import * as Y from 'yjs';
 import { $importNoteBody, createConverterEditor, exportMarkdown, importMarkdown } from '../src/converter/index.ts';
-import { writeTitle } from '../src/server-doc.ts';
+import { writeTitle } from '../src/server-title.ts';
 
 let imported: LexicalEditor | null = null;
 /** The doc /title renames, as the DocDO's renameTitle does. */
