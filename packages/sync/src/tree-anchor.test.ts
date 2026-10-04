@@ -352,7 +352,23 @@ describe('T4.0 spike: tree anchors over the V1 binding @p:tech-3', () => {
     expect(validateAnchor(seed, stored(seed)).range).toEqual({ start: 0, end: 'TODO: fix this'.length });
   }, TWINS));
 
-  it('deleting a commented block whose twin has the same context orphans it', () => scene(async (seed, a) => {
+  it('typing inside commented text and deleting it in one frame, then undoing the deletion, reattaches the comment', () => scene(async (seed, a) => {
+    comment(seed, 'brown fox');
+    // Offline: a keystroke inside the range, then the whole range deleted in its own undo group, sent as one frame.
+    a.edit(() => { firstText().spliceText(11, 0, 'X'); });
+    a.edit(() => { firstText().spliceText(10, 'bXrown fox'.length, ''); });
+    frame(seed, a.doc);
+    expect(stored(seed).status).toBe('orphaned');
+    expect(stored(seed).quote.exact).toBe('brown fox');
+    a.undo();
+    frame(seed, a.doc);
+    expect(project(seed).text.startsWith('The quick bXrown fox jumps')).toBe(true);
+    expect(stored(seed).status, 'the undo restores it in place').toBe('anchored');
+    expect(validateAnchor(seed, stored(seed)).range).toEqual({ start: 10, end: 10 + 'bXrown fox'.length });
+    expect(stored(seed).quote.exact).toBe('bXrown fox');
+  }));
+
+  it('deleting a commented block whose twin has the same context orphans it',() => scene(async (seed, a) => {
     const twin = project(seed).text.indexOf('￼');
     comment(seed, '￼', twin + 1);
     a.edit(() => findAll('code-block')[1].remove());
