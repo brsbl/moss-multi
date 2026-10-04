@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 42% done** (31 of 73 planned tasks verified)
+**Overall: 44% done** (32 of 73 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 17 / 17 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 10 / 11 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 3 / 9 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 1 / 9 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 2 / 9 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
@@ -49,6 +49,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-03 — T1.9 verified: code, HTML and formula blocks now keep their text in shared registers, so two people typing in the same block merge live in both engines, drafts survive reloads and imports, and Cmd+Z inside a block undoes only that person's edits to it.
 - 2026-10-04 — T2.2 verified: anyone can create, rename and move folders and move notes between them from the web sidebar, editors included in a shared vault; deleting a folder sends its whole subtree to trash as one batch, and a peer with a note open inside it goes terminal in place.
 - 2026-10-04 — T3.5 verified: a vault owner can create a vault inline from the switcher, rename it and move it to trash behind a confirmation; a person granted the vault root sees it with a role badge, and a member is offered no vault actions.
+- 2026-10-04 — T3.4 verified: a person can search the body text of every note they can access and see snippets, never a note they cannot; a note shows its backlinks, and wiki links resolve by title or filename or show an honest unresolved state.
 
 ## T1.1s identity audit
 
