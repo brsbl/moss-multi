@@ -27,11 +27,14 @@ export function setPropertyDraft(noteId: string, change: Partial<PropertyDraft>)
 }
 
 const same = (a: unknown, b: unknown): boolean => a === b || JSON.stringify(a) === JSON.stringify(b);
+/** Properties drops a known field whose value is empty, so a peer clearing it would close its open field too. */
+const empty = (value: unknown): boolean => value === null || value === undefined || value === '' || (Array.isArray(value) && value.length === 0);
+const gone = (data: Frontmatter, key: string): boolean => !(data && key in data) || empty(data[key]);
 
 export function bindFrontmatter(store: Store, noteId: string, doc: Doc, canWrite: () => boolean): () => void {
   const atom = noteFrontmatterAtom(noteId);
   let synced = readFrontmatter(doc);
-  // A property a peer deleted while its field is open here, still shown with the value it had.
+  // A property a peer deleted or cleared while its field is open here, still shown with the value it had.
   let held: { key: string; value: unknown } | null = null;
   // True while the atom shows something the doc does not have, for an open draft.
   let substituted = false;
@@ -41,11 +44,11 @@ export function bindFrontmatter(store: Store, noteId: string, doc: Doc, canWrite
     const draft = drafts.get(noteId);
     const shown = store.get(atom) as Frontmatter;
     const key = draft?.key;
-    held = key && shown && key in shown && !(data && key in data) ? { key, value: shown[key] } : null;
+    held = key && shown && key in shown && gone(data, key) ? { key, value: shown[key] } : null;
     substituted = Boolean(held) || (data === null && shown !== null && Boolean(draft?.adding));
     if (held && shown) {
       // In the row's place, so the open field does not jump.
-      const entries = Object.entries(data ?? {});
+      const entries = Object.entries(data ?? {}).filter(([k]) => k !== held?.key);
       entries.splice(Math.min(Object.keys(shown).indexOf(held.key), entries.length), 0, [held.key, held.value]);
       return Object.fromEntries(entries);
     }
@@ -61,10 +64,11 @@ export function bindFrontmatter(store: Store, noteId: string, doc: Doc, canWrite
       store.set(atom, present(synced));
       return;
     }
-    // A held row that rides along unchanged accepts the peer's delete; only an edited draft writes it back.
+    // A held row that rides along unchanged accepts the peer's delete or clear; only an edited draft writes it back.
     if (held && next && held.key in next && same(next[held.key], held.value)) {
       const rest = { ...next };
-      delete rest[held.key];
+      if (synced && held.key in synced) rest[held.key] = synced[held.key];
+      else delete rest[held.key];
       next = rest;
     }
     // Opening an empty Add field form is local UI state, not a document mutation.
