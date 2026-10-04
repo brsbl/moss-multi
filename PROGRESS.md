@@ -1,11 +1,11 @@
 # moss-multi progress
 
-**Overall: 36% done** (25 of 70 planned tasks verified)
+**Overall: 37% done** (26 of 70 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 17 / 17 | in progress |
-| M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 8 / 11 | in progress |
+| M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 9 / 11 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 0 / 9 | |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 0 / 9 | |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
@@ -44,6 +44,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-03 — T1.8 verified: a person can choose Duplicate from a note's menu and get a copy that every collaborator sees in their sidebar, and `POST /api/docs {markdown}` imports a note on the server that renders the same as pasting that markdown into the editor; the G1 comparator holds this for all 32 family fixtures in Chromium and WebKit.
 - 2026-10-03 — T1.4 verified: a note's title and Properties are shared live state, so when two people rename a note or edit its properties at the same time both see the same result, in the editor, the sidebar and the filename, and it survives reloads and dropped connections; new notes and Rename put the cursor in the title once the note is live.
 - 2026-10-03 — T1.5 verified: people on the same note see each other in a face pile in the top bar, each with a distinct color, and see each other's carets and selections in that color with a name label while typing; a closed tab clears its chip promptly and a dropped connection within 20 s, spoofed names are dropped, and only members and owners receive presence identities.
+- 2026-10-03 — T1.6 verified: Cmd+Z in one person's editor undoes only their own typing, never a collaborator's or a formula's derived update, in both the title and the body; table and tab widths, active tabs and collapsed headings stay local to each person and survive reload and a peer inserting a table above; floating toolbars hide when the editor loses focus; and two notes in split panes each hold their own connection.
 
 ## T1.1s identity audit
 
@@ -88,6 +89,7 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T1.8 checker: confirm snapshot duplicate's metadata policy before comments and suggestions ship; it currently retains frontmatter and anchor maps, unlike Moss's fresh-metadata duplicate → T4.0/T5.0 (deviation 15).
 - T1.8 checker: distinguish native assets awaiting web delivery from truly missing images; the current image fallback says the file could not be found → T3.1.
 - T1.8 checker: calibrate the duplicate leg's 30 s WebKit setup-ack allowance against the standard 10 s allowance → test-infra follow-up; this is setup readiness, not a claimed latency budget.
+- T1.6 integration: the [full lane on `ee2488a`](https://github.com/brsbl/moss-multi/actions/runs/37167459553) (tree identical to T1.6's green head) went green only on its third rerun of the WebKit editing shard; each attempt failed different single legs: Chromium j01 duplicate `GET /api/workspace` socket hang up; WebKit j01 presence spoofed-name leg twice (an "access control checks" page error on `/api/workspace`, then a missing peer chip), j00-roundtrip "hibernation not induced" (instance constructed 2.3 s after restart), and j00-persist offline-switch (`hydrateNotesAtom` "Load failed"). A [5× WebKit j01 presence probe](https://github.com/brsbl/moss-multi/actions/runs/37169366494) passed → test-infra follow-up on WebKit editing-shard stability.
 
 - The sign-up "too short" error does not say how long a password must be → T0.10
 - Switching to "Create an account" leaves focus on the toggle link → T0.10
@@ -97,7 +99,7 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - The wrangler ProxyWorker patch replays non-idempotent requests after an ambiguous failure → T0.9b follow-up (stack infra)
 - `qa.mjs close` forgets the session even when closing it failed → tooling follow-up
 - `stack.mjs` puts `BETTER_AUTH_SECRET` and the test-hook secret on wrangler's command line → tooling follow-up
-- T1.6 implementation closes the M0 local-layout reset follow-up: table/tab widths and collapsed headings restore after sync; independent checker confirmation remains pending.
+- T1.6 implementation closes the M0 local-layout reset follow-up: table/tab widths and collapsed headings restore after sync; confirmed by the independent checker.
 - Page-attribute names, the socket path name and the roles list are each defined in more than one place → the T1.x lane that next touches each module
 - Several docs disagree with each other: deviation 13, the M0 progress count and the viewer's copied title → the coordinator at the M0 hand-off; the viewer follow-up goes with T3.8
 - `trace.mjs` gates each row only at its first milestone and counts a tag anywhere in a file, so later-milestone owning legs are never enforced → T0.1 follow-up: per-milestone tags (e.g. `@p:col-6@1`) or an owning-journey-file check per milestone
