@@ -1,5 +1,6 @@
-// Assets (T3.1; A§16): folder-scoped uploads into content-addressed R2 bytes, served with SWR caching, ETag/304,
-// HTTP Range and a sandboxed SVG; editors upload, readers (a share link included) read; copies carry their media.
+// Assets (T3.1; A§16): uploads into content-addressed R2 bytes, served with SWR caching, ETag/304, HTTP Range and a
+// sandboxed SVG; editors upload, readers (a share link included) read. A doc's media are its own record, mapping each
+// `assets/<file>` it uses to the exact version placed in it: never a filename looked up in its folder.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
 import { BASE, insertDoc, insertFolder, insertGrant, insertLink, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
@@ -66,7 +67,9 @@ function call(method: string, path: string, cookie: string | null, init: { body?
     method,
     headers: { origin: BASE, ...(cookie ? { cookie } : {}), ...init.headers },
     body: init.body,
-  }), env);
+    // A streamed body, which a test holds open.
+    ...(init.body instanceof ReadableStream ? { duplex: 'half' } : {}),
+  } as RequestInit), env);
 }
 
 const upload = (cookie: string | null, docId: string, filename: string, bytes: Uint8Array<ArrayBuffer>, contentType = '') =>
@@ -101,15 +104,9 @@ describe('upload (A§16)', () => {
     }
   });
 
-  it('accepts an upload to a folder by id for its editors, and refuses its viewers', async () => {
-    const docId = await insertDoc(d1.db, ada);
+  it('takes uploads only into a note, never into a folder no note reads', async () => {
     const sent = await call('POST', `/api/folders/${ada.homeId}/assets?filename=folder.png`, ada.cookie, { body: PNG, headers: { 'content-type': 'image/png' } });
-    expect((await uploaded(sent)).relativePath).toBe('assets/folder.png');
-    expect((await call('GET', `/api/docs/${docId}/assets/folder.png`, ada.cookie)).status).toBe(200);
-    await insertGrant(d1.db, { folderId: ada.homeId }, ben, 'viewer');
-    const refused = await call('POST', `/api/folders/${ada.homeId}/assets?filename=nope.png`, ben.cookie, { body: PNG });
-    expect(refused.status).toBe(403);
-    expect((await call('POST', `/api/folders/${ada.homeId}/assets?filename=nope.png`, cy.cookie, { body: PNG })).status).toBe(404);
+    expect(sent.status).toBe(404);
   });
 
   it('keeps one content-addressed blob for identical bytes, reuses a name holding them, and suffixes a clash', async () => {
@@ -262,7 +259,8 @@ describe('serving (A§16)', () => {
     exported.set(shared, '![x](assets/secret.png)\n');
     expect((await call('GET', path, reader.cookie)).status, "a reference the note's editor wrote").toBe(404);
     expect((await call('GET', `${path}?share=${token}`, null)).status).toBe(404);
-    expect((await call('GET', path, ada.cookie)).status, 'the folder owner reads every file in it').toBe(200);
+    expect((await call('GET', path, ada.cookie)).status, 'nor through the folder owner: only the note holding it shows it').toBe(404);
+    expect((await call('GET', `/api/docs/${secret}/assets/secret.png`, ada.cookie)).status).toBe(200);
     // What was uploaded into the shared note is its readers' to load.
     await uploaded(await upload(ada.cookie, shared, 'given.png', OTHER_PNG, 'image/png'));
     expect(await bytesOf(await call('GET', `/api/docs/${shared}/assets/given.png`, reader.cookie))).toEqual(OTHER_PNG);
@@ -308,7 +306,15 @@ describe('a moved note keeps its media (A§16)', () => {
   const move = (user: TestUser, docId: string, folderId: string) =>
     call('PATCH', `/api/docs/${docId}`, user.cookie, { body: JSON.stringify({ folderId }), headers: { 'content-type': 'application/json' } });
 
-  it('carries the media a note references into its new folder', async () => {
+  /** A folder of Ada's whose own note holds `name` with other bytes: a file no reader of a moved note may see. */
+  async function folderHolding(name: string): Promise<string> {
+    const folder = await insertFolder(d1.db, ada, ada.homeId);
+    const resident = await insertDoc(d1.db, ada, { folderId: folder });
+    await uploaded(await upload(ada.cookie, resident, name, OTHER_PNG, 'image/png'));
+    return folder;
+  }
+
+  it('keeps every file it holds, with its references unchanged', async () => {
     const docId = await insertDoc(d1.db, ada);
     await uploaded(await upload(ada.cookie, docId, 'travels.png', PNG, 'image/png'));
     await uploaded(await upload(ada.cookie, docId, 'travels.webm', VIDEO, 'video/webm'));
@@ -318,25 +324,52 @@ describe('a moved note keeps its media (A§16)', () => {
     expect(moved.status, await moved.clone().text()).toBe(200);
     expect(await bytesOf(await call('GET', `/api/docs/${docId}/assets/travels.png`, ada.cookie))).toEqual(PNG);
     expect(await bytesOf(await call('GET', `/api/docs/${docId}/assets/travels.webm`, ada.cookie))).toEqual(VIDEO);
-    expect(renamed.get(docId), 'nothing to rename').toEqual({});
+    expect(renamed.get(docId), 'nothing is renamed').toBeUndefined();
   });
 
-  it("renames a file the new folder already gives other bytes, and the note's references with it", async () => {
-    const folder = await insertFolder(d1.db, ada, ada.homeId);
-    await uploaded(await call('POST', `/api/folders/${folder}/assets?filename=image.png`, ada.cookie, { body: OTHER_PNG, headers: { 'content-type': 'image/png' } }));
+  it('keeps showing its own image in a folder holding a same-named private file, to every reader', async () => {
+    const folder = await folderHolding('image.png');
     const docId = await insertDoc(d1.db, ada);
     await uploaded(await upload(ada.cookie, docId, 'image.png', PNG, 'image/png'));
     referenced.set(docId, ['image.png']);
-    expect((await move(ada, docId, folder)).status).toBe(200);
-    const renames = renamed.get(docId) ?? {};
-    expect(Object.keys(renames)).toEqual(['image.png']);
-    expect(await bytesOf(await call('GET', `/api/docs/${docId}/assets/${renames['image.png']}`, ada.cookie)), 'the note still shows its own image').toEqual(PNG);
-    expect(await bytesOf(await call('GET', `/api/docs/${docId}/assets/image.png`, ada.cookie)), "the folder's own file is untouched").toEqual(OTHER_PNG);
-    // A reader of only the note loads its own file under the new name, and never the folder's.
+    exported.set(docId, '![Mine](assets/image.png)\n');
     const reader = await signedUpUser(env, 'assets-move-reader', 'Reader');
     await insertGrant(d1.db, { docId }, reader, 'viewer');
-    expect(await bytesOf(await call('GET', `/api/docs/${docId}/assets/${renames['image.png']}`, reader.cookie))).toEqual(PNG);
-    expect((await call('GET', `/api/docs/${docId}/assets/image.png`, reader.cookie)).status).toBe(404);
+    const token = await insertLink(d1.db, { docId }, 'viewer');
+    expect((await move(ada, docId, folder)).status).toBe(200);
+    for (const [who, cookie, query] of [['the owner', ada.cookie, ''], ['a grant reader', reader.cookie, ''], ['an anonymous link', null, `?share=${token}`]] as const) {
+      const served = await call('GET', `/api/docs/${docId}/assets/image.png${query}`, cookie);
+      expect(served.status, who).toBe(200);
+      expect(await bytesOf(served), `${who} sees the note's own image`).toEqual(PNG);
+    }
+    expect(renamed.get(docId), "the note's references never change").toBeUndefined();
+  });
+
+  it('an upload held open while its note moves lands as the note\'s own file, never a same-named one in the new folder', async () => {
+    const folder = await folderHolding('race.png');
+    const docId = await insertDoc(d1.db, ada);
+    const reader = await signedUpUser(env, 'assets-race-reader', 'Reader');
+    await insertGrant(d1.db, { docId }, reader, 'viewer');
+    let release = () => {};
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        release = () => {
+          controller.enqueue(PNG);
+          controller.close();
+        };
+      },
+    });
+    const sending = call('POST', `/api/docs/${docId}/assets?filename=race.png`, ada.cookie, { body, headers: { 'content-type': 'image/png' } });
+    // The upload resolves its note's access and then waits on the body while the owner moves the note.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect((await move(ada, docId, folder)).status).toBe(200);
+    release();
+    const result = await uploaded(await sending);
+    for (const [who, cookie] of [['the owner', ada.cookie], ['a grant reader', reader.cookie]] as const) {
+      const served = await call('GET', `/api/docs/${docId}/${result.relativePath}`, cookie);
+      expect(served.status, who).toBe(200);
+      expect(await bytesOf(served), `${who} sees the uploaded bytes`).toEqual(PNG);
+    }
   });
 });
 
@@ -373,12 +406,12 @@ describe('copies carry media (A§16)', () => {
     const kept = await call('GET', `/api/docs/${doc.id}/assets/kept.png`, ben.cookie);
     expect(kept.status).toBe(200);
     expect(await bytesOf(kept)).toEqual(PNG);
-    expect((await call('GET', `/api/docs/${doc.id}/assets/unused.png`, ben.cookie)).status, 'only referenced media travels').toBe(404);
   });
 
-  it("a duplicate into a Home that already has a different file under the name renames the copy's file and its references", async () => {
+  it("a duplicate shows its own copy, even in a Home whose other note holds a different file under the name", async () => {
     // A pasted clipboard image is always `image.png`, so most Homes already hold one.
-    await uploaded(await call('POST', `/api/folders/${cy.homeId}/assets?filename=image.png`, cy.cookie, { body: OTHER_PNG, headers: { 'content-type': 'image/png' } }));
+    const cyNote = await insertDoc(d1.db, cy);
+    await uploaded(await upload(cy.cookie, cyNote, 'image.png', OTHER_PNG, 'image/png'));
     const docId = await insertDoc(d1.db, ada);
     await uploaded(await upload(ada.cookie, docId, 'image.png', PNG, 'image/png'));
     exported.set(docId, '![Pasted](assets/image.png)\n');
@@ -387,11 +420,9 @@ describe('copies carry media (A§16)', () => {
     expect(response.status, await response.clone().text()).toBe(201);
     const { doc } = (await response.json()) as { doc: { id: string; folderId: string } };
     expect(doc.folderId).toBe(cy.homeId);
-    const renames = created.get(doc.id)?.renames ?? {};
-    expect(Object.keys(renames), "the copy's reference to image.png is renamed").toEqual(['image.png']);
-    expect(renames['image.png']).not.toBe('image.png');
-    expect(await bytesOf(await call('GET', `/api/docs/${doc.id}/assets/${renames['image.png']}`, cy.cookie)), "the copy shows the source's bytes").toEqual(PNG);
-    expect(await bytesOf(await call('GET', `/api/docs/${doc.id}/assets/image.png`, cy.cookie)), "Cy's own file is untouched").toEqual(OTHER_PNG);
+    expect(created.get(doc.id)?.renames ?? {}, "the copy's references are the source's").toEqual({});
+    expect(await bytesOf(await call('GET', `/api/docs/${doc.id}/assets/image.png`, cy.cookie)), "the copy shows the source's bytes").toEqual(PNG);
+    expect(await bytesOf(await call('GET', `/api/docs/${cyNote}/assets/image.png`, cy.cookie)), "Cy's own note keeps its file").toEqual(OTHER_PNG);
   });
 
   it('copies the media of the snapshot it duplicates, not of a later export', async () => {

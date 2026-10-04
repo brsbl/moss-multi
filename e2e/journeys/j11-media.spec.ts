@@ -1,20 +1,21 @@
 // j11-media (T3.1; A§16, A§9 images): moss's media set uploads from the web. Ada drops, pastes and picks (the slash
 // menu's /media → "From computer") one of every moss type into a note: png, jpg, gif, webp, svg, mp4, webm and mov;
 // each renders and survives a reload, and the export keeps moss's relative `assets/` paths. A viewer gets no upload
-// control and a raw upload gets 403; a PDF gets 415. A copied note keeps its media, in the same folder and in the
-// copier's own Home, even when that Home already holds a different file under the same name. A signed-in link reader
-// sees the media, and so does an anonymous one, through the token the asset URL carries; a signed-in editor-link
-// holder uploads, and a grant or link on the note reaches only the media placed in it, even after an editor writes a
-// folder file's name into it. A moved note keeps its media. A video's poster is its first frame, and it seeks and
-// plays through 206 responses. Alt text edited from the image's context menu reaches the peer and the export.
+// control and a raw upload gets 403; a PDF gets 415. A note's media are its own: a copy shows the source's files even
+// in a Home whose other note holds a different file under the same name, and a note moved into a folder holding a
+// same-named file keeps showing its own. A signed-in link reader sees the media, and an anonymous one opens the note
+// through the link and sees them too; a signed-in editor-link holder uploads; a grant or link on the note reaches only
+// the media placed in it, even after an editor writes another note's file name into it. A video's poster is its first
+// frame, and it seeks and plays through 206 responses. Alt text edited from the image's context menu reaches the peer
+// and the export.
 //
-// Grants are declared setup through the members API, and the share link through the loopback hook until T2.4's
-// links API lands; sharing is not this journey's promise. Files reach the editor as browsers deliver them: a
-// DataTransfer on drop and paste, and the file chooser for "From computer".
+// Grants and links are declared setup through the members and links APIs; sharing is not this journey's promise.
+// Files reach the editor as browsers deliver them: a DataTransfer on drop and paste, and the file chooser for
+// "From computer".
 import { readFileSync } from 'node:fs';
 import type { Actor, Actors } from '../lib/actors.ts';
 import { APP_STATE_ATTR, BODY_BINDING_ATTR, EDITOR_PANE_ATTR, NAMES, SIDEBAR_ROW_ATTR, SYNC_UNACKED_ATTR } from '../lib/contract.ts';
-import { grantDoc } from '../lib/grants.ts';
+import { grantDoc, linkDoc } from '../lib/grants.ts';
 import type { Principal } from '../lib/principals.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
@@ -152,6 +153,29 @@ async function paste(actor: Actor, docId: string, file: Fixture, caret = true): 
 
 const origin = (actor: Actor) => new URL(actor.page.url()).origin;
 
+/** Declared setup: `file`'s name with `data` uploaded into `docId` through the asset API. */
+async function upload(actor: Actor, docId: string, file: Fixture, data: Buffer): Promise<void> {
+  const response = await actor.context.request.post(`/api/docs/${docId}/assets?filename=${encodeURIComponent(file.name)}`, {
+    headers: { origin: origin(actor), 'content-type': file.type }, data,
+  });
+  expect(response.status(), `${actor.label}: ${file.name} is uploaded`).toBe(201);
+}
+
+/** Declared setup: a note of `actor`'s in `folderId` that holds `file` with other bytes, as another note's media. */
+async function noteHolding(actor: Actor, folderId: string, file: Fixture, data: Buffer): Promise<string> {
+  const made = await actor.context.request.post('/api/docs', {
+    headers: { origin: origin(actor), 'content-type': 'application/json' }, data: { folderId, title: `Holds ${file.name}` },
+  });
+  expect(made.status(), `${actor.label}: a note in the folder`).toBe(201);
+  const docId = ((await made.json()) as { doc: { id: string } }).doc.id;
+  await upload(actor, docId, file, data);
+  return docId;
+}
+
+/** The byte length the image's own URL serves now, past the browser's cache. */
+const shownBytes = (image: ReturnType<typeof images>) =>
+  image.evaluate(async (img: HTMLImageElement) => (await (await fetch(img.currentSrc, { cache: 'no-store' })).arrayBuffer()).byteLength);
+
 test('j11-media: drop, paste and /media → From computer upload every moss type, which renders and survives a reload; a viewer cannot upload @p:note-8 @evidence', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
   const benPrincipal = await actors.principal('ben');
@@ -229,7 +253,7 @@ test('j11-media: drop, paste and /media → From computer upload every moss type
   expect(raw.status(), 'a raw upload by a viewer is forbidden').toBe(403);
 });
 
-test('j11-media: a copied or moved note keeps its media; link readers see only the note\'s own media; an editor link uploads; video plays and seeks through 206 @p:note-8 @evidence', async ({ actors, stack, browserName }) => {
+test('j11-media: a copied or moved note keeps its media; link readers see only the note\'s own media; an editor link uploads; video plays and seeks through 206 @p:note-8 @evidence', async ({ actors, browserName }) => {
   const ada = await openShell(actors, 'ada');
   const benPrincipal = await actors.principal('ben');
   const docId = await newNote(ada, 'Media to copy');
@@ -294,18 +318,14 @@ test('j11-media: a copied or moved note keeps its media; link readers see only t
   await expectImagesDecode(ada, copyId, 1);
   await expectVideos(ada, copyId, 1);
 
-  // Ben edits only this note, so his copy lands in his own Home, and its media comes with it. His Home already has
-  // a different pattern.png, as most Homes already hold a pasted `image.png`: the copy still shows Ada's file.
+  // Ben edits only this note, so his copy lands in his own Home, and its media comes with it. A note in his Home
+  // already has a different pattern.png, as most Homes already hold a pasted `image.png`: the copy still shows Ada's.
   await grantDoc(ada, docId, benPrincipal, 'editor');
   const ben = await openShell(actors, benPrincipal, `/d/${docId}`);
   await actors.requireDistinct(2);
   await ui.waitLive(ben, docId);
   const { vault: benHome } = (await (await ben.context.request.get('/api/workspace')).json()) as { vault: { id: string } };
-  const benOwn = Buffer.concat([bytes(PNG.name), Buffer.from('his own file')]);
-  const occupied = await ben.context.request.post(`/api/folders/${benHome.id}/assets?filename=${PNG.name}`, {
-    headers: { origin: origin(ben), 'content-type': PNG.type }, data: benOwn,
-  });
-  expect(occupied.status(), "Ben's Home holds his own pattern.png").toBe(201);
+  await noteHolding(ben, benHome.id, PNG, Buffer.concat([bytes(PNG.name), Buffer.from('his own file')]));
   await ben.page.locator(`[${SIDEBAR_ROW_ATTR}][${NAMES.docId}="${docId}"]`).click({ button: 'right' });
   await ben.page.getByRole('menuitem', { name: 'Duplicate', exact: true }).click();
   const benCopy = ben.page.locator(`[${EDITOR_PANE_ATTR}]:not([${NAMES.docId}="${docId}"])`);
@@ -318,21 +338,20 @@ test('j11-media: a copied or moved note keeps its media; link readers see only t
   expect(await folderOf(ben, benCopyId), "Ben's copy is in another folder").not.toBe(await folderOf(ada, docId));
   await expectImagesDecode(ben, benCopyId, 1);
   await expectVideos(ben, benCopyId, 1);
-  const shown = await images(ben, benCopyId).evaluate(async (img: HTMLImageElement) => (await (await fetch(img.currentSrc)).arrayBuffer()).byteLength);
-  expect(shown, "Ben's copy shows Ada's image, not the file his Home already had").toBe(bytes(PNG.name).byteLength);
+  await expect(images(ben, benCopyId), "the copy keeps the source's reference").toHaveAttribute('src', new RegExp(`/assets/${PNG.name}`));
+  expect(await shownBytes(images(ben, benCopyId)), "Ben's copy shows Ada's image, not the file his Home already had")
+    .toBe(bytes(PNG.name).byteLength);
   await actors.checkpoint('copied');
 
-  // A grant on this note reaches only the media placed in it, not every file in Ada's folder.
+  // A grant on this note reaches only the media placed in it: never a file another of Ada's notes holds.
   const adaFolder = await folderOf(ada, docId);
-  const secret = await ada.context.request.post(`/api/folders/${adaFolder}/assets?filename=secret.png`, {
-    headers: { origin: origin(ada), 'content-type': PNG.type }, data: Buffer.concat([bytes(PNG.name), Buffer.from('another note')]),
-  });
-  expect(secret.status(), "a file another of Ada's notes uses").toBe(201);
-  expect((await ada.context.request.get(`/api/docs/${docId}/assets/secret.png`)).status(), 'the folder owner reads it').toBe(200);
+  const secretNote = await noteHolding(ada, adaFolder, { ...PNG, name: 'secret.png' }, Buffer.concat([bytes(PNG.name), Buffer.from('another note')]));
+  expect((await ada.context.request.get(`/api/docs/${secretNote}/assets/secret.png`)).status(), 'its own note shows it').toBe(200);
   expect((await ben.context.request.get(`/api/docs/${docId}/assets/secret.png`)).status(), "the note's grant does not reach it").toBe(404);
+  expect((await ada.context.request.get(`/api/docs/${docId}/assets/secret.png`)).status(), 'nor does the folder owner read it through this note').toBe(404);
 
   // A signed-in reader with only a link sees the media through it.
-  const token = await stack.shareLink(docId, 'viewer');
+  const token = await linkDoc(ada, docId, 'viewer');
   const cy = await openShell(actors, 'cy', `/d/${docId}?share=${encodeURIComponent(token)}`);
   await expect(ui.body(cy, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'readonly', { timeout: BIND_TIMEOUT });
   await expectImagesDecode(cy, docId, 1);
@@ -340,22 +359,21 @@ test('j11-media: a copied or moved note keeps its media; link readers see only t
   const src = (await images(cy, docId).getAttribute('src')) ?? '';
   expect(src, "the image URL carries the reader's link").toContain(`share=${encodeURIComponent(token)}`);
 
-  // An anonymous visitor holding the link gets the same bytes, and Range for video; a forged link gets the 404.
-  const anon = await actors.anonymous('/login');
-  const width = await anon.page.evaluate((url) => new Promise<number>((resolve) => {
-    const image = new Image();
-    image.onload = () => resolve(image.naturalWidth);
-    image.onerror = () => resolve(0);
-    image.src = url;
-  }), src);
-  expect(width, 'an anonymous browser holding the link renders the image').toBeGreaterThan(0);
+  // An anonymous visitor opens the note through the link and sees its image and its video's poster; a forged link
+  // gets the 404.
+  const anon = await actors.anonymous(`/d/${docId}?share=${encodeURIComponent(token)}`, { label: 'anon' });
+  await expect(ui.body(anon, docId), 'the anonymous visitor reads the note').toHaveAttribute(BODY_BINDING_ATTR, 'readonly', { timeout: BOOT_TIMEOUT });
+  await expectImagesDecode(anon, docId, 1);
+  await expectVideos(anon, docId, 1);
+  await expectPoster(anon, docId);
+  await actors.checkpoint('anonymous-link');
   const webm = await anon.context.request.get(`/api/docs/${docId}/assets/${WEBM.name}?share=${encodeURIComponent(token)}`, { headers: { range: 'bytes=0-99' } });
   expect(webm.status(), 'an anonymous video read is a 206').toBe(206);
   expect((await anon.context.request.get(`/api/docs/${docId}/assets/${PNG.name}?share=forged`)).status()).toBe(404);
   expect((await anon.context.request.get(`/api/docs/${docId}/assets/${PNG.name}`)).status()).toBe(404);
 
   // A signed-in holder of an editor link adds media as she types: the upload carries her link.
-  const editorToken = await stack.shareLink(docId, 'editor');
+  const editorToken = await linkDoc(ada, docId, 'editor');
   const dee = await openShell(actors, 'dee', `/d/${docId}?share=${encodeURIComponent(editorToken)}`);
   await ui.waitLive(dee, docId);
   expect(await drop(dee, docId, [GIF]), 'the editor takes the dropped file').toBe(true);
@@ -363,44 +381,42 @@ test('j11-media: a copied or moved note keeps its media; link readers see only t
   await expectVideos(dee, docId, 1);
   await waitAcked(dee, docId);
 
-  // Ada moves the note into a folder that already holds a different pattern.png: its media moves with it, renamed
-  // where the name is taken, and a reader holding only the link still sees the note's own files after a reload.
+  // Ada moves the note into a folder whose own note holds a different pattern.png and a private.png: the note keeps
+  // its references and shows its own files, live and after a reload, to a reader holding only the link.
   const made = await ada.context.request.post('/api/folders', {
     headers: { origin: origin(ada), 'content-type': 'application/json' }, data: { parentId: adaFolder, name: 'Moved media' },
   });
   expect(made.status(), 'declared setup: the destination folder').toBe(201);
   const destination = ((await made.json()) as { folder: { id: string } }).folder.id;
-  const taken = await ada.context.request.post(`/api/folders/${destination}/assets?filename=${PNG.name}`, {
-    headers: { origin: origin(ada), 'content-type': PNG.type }, data: Buffer.concat([bytes(PNG.name), Buffer.from('already here')]),
-  });
-  expect(taken.status(), 'the destination already has its own pattern.png').toBe(201);
+  const resident = await noteHolding(ada, destination, PNG, Buffer.concat([bytes(PNG.name), Buffer.from('already here')]));
+  await upload(ada, resident, { ...PNG, name: 'private.png' }, Buffer.concat([bytes(PNG.name), Buffer.from('private')]));
   const moved = await ada.context.request.patch(`/api/docs/${docId}`, {
     headers: { origin: origin(ada), 'content-type': 'application/json' }, data: { folderId: destination },
   });
   expect(moved.status(), 'the note moves').toBe(200);
-  await expect.poll(async () => (await ada.context.request.get(`/api/docs/${docId}/export`)).text(), { message: "the moved note's image takes a free name" })
-    .toContain(`(assets/pattern-2.png)`);
-  const renamedImage = ui.body(dee, docId).locator('img[src*="/assets/pattern-2.png"]');
-  await expect(renamedImage, 'the open note follows the rename').toHaveCount(1, { timeout: PEER_TIMEOUT });
+  expect(await folderOf(ada, docId)).toBe(destination);
+  const after = await (await ada.context.request.get(`/api/docs/${docId}/export`)).text();
+  expect(after, 'the moved note keeps its reference').toContain(`(assets/${PNG.name})`);
+  expect(after, 'no reference is renamed').not.toContain('pattern-2');
+  const ownImage = ui.body(dee, docId).locator(`img[src*="/assets/${PNG.name}"]`);
+  await expect(ownImage).toHaveCount(1);
   dee.expectReconnects(1, docId);
   await dee.page.reload();
   await ui.waitLive(dee, docId);
   await dee.declareRemount(docId);
   await expectImagesDecode(dee, docId, 2);
   await expectVideos(dee, docId, 1);
-  await expect(ui.body(dee, docId).locator('img[src*="/assets/pattern.png"]'), 'no reference names the old file').toHaveCount(0);
-  const pngSrc = (await renamedImage.getAttribute('src')) ?? '';
-  const movedBytes = await dee.page.evaluate(async (url) => (await (await fetch(url)).arrayBuffer()).byteLength, pngSrc);
-  expect(movedBytes, "the moved note shows its own image, not the folder's").toBe(bytes(PNG.name).byteLength);
+  expect(await shownBytes(ownImage), "the moved note shows its own image, not the folder's").toBe(bytes(PNG.name).byteLength);
+  const benRead = await ben.context.request.get(`/api/docs/${docId}/assets/${PNG.name}`);
+  expect((await benRead.body()).byteLength, "Ben's grant reads the note's own image").toBe(bytes(PNG.name).byteLength);
   const clip = await dee.page.evaluate(async (url) => (await fetch(url, { headers: { range: 'bytes=0-9' } })).status,
     `/api/docs/${docId}/assets/${WEBM.name}?share=${encodeURIComponent(editorToken)}`);
   expect(clip, 'the moved clip still answers Range').toBe(206);
   await actors.checkpoint('moved');
 
   // Writing a reference to a file of the folder into the note does not reach it: Dee, holding only an editor link,
-  // pastes the text of a reference to the folder's own pattern.png, which the note never placed.
-  const folderFile = `/api/docs/${docId}/assets/${PNG.name}`;
-  // Past the browser's cache, which still holds the bytes this URL named before the move renamed the note's file.
+  // pastes the text of a reference to the folder note's private.png, which the note never placed.
+  const folderFile = `/api/docs/${docId}/assets/private.png`;
   const deeRead = () => dee.page.evaluate(async (url) => (await fetch(url, { cache: 'no-store' })).status, `${folderFile}?share=${encodeURIComponent(editorToken)}`);
   dee.expectHttp(404, folderFile);
   expect(await deeRead(), 'before the edit').toBe(404);
@@ -409,13 +425,14 @@ test('j11-media: a copied or moved note keeps its media; link readers see only t
     const data = new DataTransfer();
     data.setData('text/plain', text);
     root.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
-  }, ` ![x](assets/${PNG.name})`);
+  }, ' ![x](assets/private.png)');
   await waitAcked(dee, docId);
   await expect.poll(async () => (await ada.context.request.get(`/api/docs/${docId}/export`)).text(), { message: 'the export names the folder file' })
-    .toContain(`assets/${PNG.name}`);
+    .toContain('assets/private.png');
   expect(await deeRead(), 'the reference the editor wrote reaches nothing').toBe(404);
   expect((await ben.context.request.get(folderFile)).status(), "nor through Ben's grant").toBe(404);
-  expect((await ada.context.request.get(folderFile)).status(), 'the folder owner reads it').toBe(200);
+  expect((await ada.context.request.get(folderFile)).status(), 'nor through the owner: only the note holding it shows it').toBe(404);
+  expect((await ada.context.request.get(`/api/docs/${resident}/assets/private.png`)).status()).toBe(200);
 });
 
 test("j11-media: alt text edited from the image's context menu reaches the peer and the export @p:note-8", async ({ actors }) => {
