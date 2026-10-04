@@ -400,7 +400,9 @@ test('j11-media: a copied or moved note keeps its media; link readers see only t
   // Writing a reference to a file of the folder into the note does not reach it: Dee, holding only an editor link,
   // pastes the text of a reference to the folder's own pattern.png, which the note never placed.
   const folderFile = `/api/docs/${docId}/assets/${PNG.name}`;
-  const deeRead = () => dee.page.evaluate(async (url) => (await fetch(url)).status, `${folderFile}?share=${encodeURIComponent(editorToken)}`);
+  // Past the browser's cache, which still holds the bytes this URL named before the move renamed the note's file.
+  const deeRead = () => dee.page.evaluate(async (url) => (await fetch(url, { cache: 'no-store' })).status, `${folderFile}?share=${encodeURIComponent(editorToken)}`);
+  dee.expectHttp(404, folderFile);
   expect(await deeRead(), 'before the edit').toBe(404);
   await caretAfterFirstLine(dee, docId);
   await ui.body(dee, docId).evaluate((root, text) => {
