@@ -1199,7 +1199,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
     }
 
     if (titleValueRef.current !== display) {
-      setTitleValue(display);
+      setTitleValueState(display); // moss-multi seam: title-display (T2.3): an unbound pane shows the title, never writes it
     }
   }, []);
 
@@ -3633,7 +3633,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
       el.textContent = display;
     }
     if (titleValueRef.current !== display) {
-      setTitleValue(display);
+      setTitleValueState(display); // moss-multi seam: title-display (T2.3): an unbound pane shows the title, never writes it
     }
   }, [note, note?.title, shouldPreserveDirtyEditor]);
 

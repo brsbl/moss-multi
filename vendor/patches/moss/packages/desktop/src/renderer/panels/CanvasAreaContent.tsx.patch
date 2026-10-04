@@ -46,6 +46,15 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
    const getLiveTitleText = useCallback((): string => {
      return titleInputRef.current?.textContent ?? titleValueRef.current;
    }, []);
+@@ -1183,7 +1198,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+     }
+ 
+     if (titleValueRef.current !== display) {
+-      setTitleValue(display);
++      setTitleValueState(display); // moss-multi seam: title-display (T2.3): an unbound pane shows the title, never writes it
+     }
+   }, []);
+ 
 @@ -1326,7 +1341,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
    }, [note?.id]);
  
@@ -184,6 +193,15 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
      if (shouldPreserveDirtyEditor(note.id)) return;
      // Don't overwrite while user is actively editing the title
      if (isTitleFocusedRef.current || document.activeElement === el) return;
+@@ -3600,7 +3632,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+       el.textContent = display;
+     }
+     if (titleValueRef.current !== display) {
+-      setTitleValue(display);
++      setTitleValueState(display); // moss-multi seam: title-display (T2.3): an unbound pane shows the title, never writes it
+     }
+   }, [note, note?.title, shouldPreserveDirtyEditor]);
+ 
 @@ -3610,7 +3642,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
    // Agent writes go to disk via SDK tools; the disk watcher picks them up.
    // =========================================================================
