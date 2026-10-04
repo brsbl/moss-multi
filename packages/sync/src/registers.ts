@@ -169,13 +169,17 @@ const chartCodec: MapCodec = {
     return out;
   },
   decode(entries) {
-    if (!entries.has('#k')) return { __config: undefined };
-    return { __config: chartValue(entries, chartIndex(entries), '') };
+    const index = chartIndex(entries);
+    return { __config: chartKind(entries, index, '') ? chartValue(entries, index, '') : undefined };
   },
   implied(entries) {
     const index = chartIndex(entries);
     const out = new Set<string>();
-    for (const path of index.keys()) if (!entries.has(`#a${path}`) && isChartArray(entries, index, path)) out.add(`#a${path}`);
+    for (const path of index.keys()) {
+      const kind = chartKind(entries, index, path);
+      if (kind === 'array' && !entries.has(`#a${path}`)) out.add(`#a${path}`);
+      if (kind === 'object' && !entries.has(`#k${path}`)) out.add(`#k${path}`);
+    }
     return out;
   },
 };
@@ -198,15 +202,34 @@ function chartIndex(entries: Entries): ChartIndex {
   }
   return children;
 }
+type Kind = 'object' | 'array' | 'value' | undefined;
+/** The shape of the ids `elementSlots` mints; an unpositioned one is a deleted element's leftover, never an object key. */
+const ELEMENT_ID = /^(?:i\d+|n[0-9a-f]{8}-[0-9a-f]{4})$/;
+const kindMemo = new WeakMap<ChartIndex, Map<string, Kind>>();
 /**
- * An array is present while its marker is, or while it still has a positioned element: the marker belongs to whoever
- * created the array, and their undo must not take the elements a peer added (or created alongside) with it.
+ * What `path` holds. A container's marker belongs to the one write that created it, and Yjs keeps only one of two
+ * concurrent writes to a key, so undoing that write can take the marker while members other people wrote remain. A
+ * container therefore stays while it has a member: an array while it has a positioned element, an object while it has
+ * a present key.
  */
-function isChartArray(entries: Entries, index: ChartIndex, path: string): boolean {
-  if (entries.has(`#a${path}`)) return true;
-  if (entries.has(`#k${path}`) || entries.has(`=${path}`)) return false;
-  for (const id of index.get(path) ?? []) if (typeof entries.get(`@${path}/${id}`) === 'number') return true;
-  return false;
+function chartKind(entries: Entries, index: ChartIndex, path: string): Kind {
+  let memo = kindMemo.get(index);
+  if (!memo) kindMemo.set(index, (memo = new Map()));
+  if (memo.has(path)) return memo.get(path);
+  let kind: Kind;
+  if (entries.has(`#k${path}`)) kind = 'object';
+  else if (entries.has(`#a${path}`)) kind = 'array';
+  else if (entries.has(`=${path}`)) kind = 'value';
+  else if ([...index.get(path) ?? []].some(id => typeof entries.get(`@${path}/${id}`) === 'number')) kind = 'array';
+  else if (chartKeys(entries, index, path, []).length) kind = 'object';
+  memo.set(path, kind);
+  return kind;
+}
+/** An object's present keys: its listed ones, then the rest sorted, never a leftover element id it does not list. */
+function chartKeys(entries: Entries, index: ChartIndex, path: string, listed: readonly string[]): string[] {
+  const present = [...index.get(path) ?? []].filter(seg =>
+    (listed.includes(seg) || !ELEMENT_ID.test(seg)) && chartKind(entries, index, `${path}/${seg}`) !== undefined);
+  return [...new Set(listed.filter(seg => present.includes(seg))), ...present.filter(seg => !listed.includes(seg)).sort()];
 }
 /** An array's elements in order: those with a position, by position then id. */
 function chartElements(entries: Entries, index: ChartIndex, path: string): Slot[] {
@@ -216,16 +239,15 @@ function chartElements(entries: Entries, index: ChartIndex, path: string): Slot[
     .sort((a, b) => a.at - b.at || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }
 function chartValue(entries: Entries, index: ChartIndex, path: string): unknown {
-  if (entries.has(`#k${path}`)) {
-    const present = new Set([...index.get(path) ?? []].filter(seg =>
-      entries.has(`#k${path}/${seg}`) || entries.has(`=${path}/${seg}`) || isChartArray(entries, index, `${path}/${seg}`)));
-    const listed = ((entries.get(`#k${path}`) as string[] | undefined) ?? []).filter(seg => present.has(seg));
-    const order = [...new Set(listed), ...[...present].filter(seg => !listed.includes(seg)).sort()];
+  const kind = chartKind(entries, index, path);
+  if (kind === 'object') {
     const object: Record<string, unknown> = {};
-    for (const seg of order) object[unsegment(seg)] = chartValue(entries, index, `${path}/${seg}`);
+    for (const seg of chartKeys(entries, index, path, (entries.get(`#k${path}`) as string[] | undefined) ?? [])) {
+      object[unsegment(seg)] = chartValue(entries, index, `${path}/${seg}`);
+    }
     return object;
   }
-  if (isChartArray(entries, index, path)) {
+  if (kind === 'array') {
     const slots = chartElements(entries, index, path);
     return remember(slots.map(({ id }) => chartValue(entries, index, `${path}/${id}`)), path, slots);
   }
@@ -252,7 +274,7 @@ function elementSlots(value: readonly unknown[], path: string, ref: Entries | un
   let slots: (Slot | null)[];
   if (known?.length === value.length) slots = [...known];
   else if (!ref) return value.map((_, index) => ({ id: `i${index}`, at: index }));
-  else if (!isChartArray(ref, refIndex(), path)) slots = value.map(() => null);
+  else if (chartKind(ref, refIndex(), path) !== 'array') slots = value.map(() => null);
   else {
     const prev = chartElements(ref, refIndex(), path);
     slots = alignElements(prev.map(({ id }) => chartValue(ref, refIndex(), `${path}/${id}`)), value).map(j => (j >= 0 ? prev[j] : null));
