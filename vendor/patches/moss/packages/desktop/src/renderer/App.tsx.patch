@@ -168,17 +168,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
          e.preventDefault();
          if (showCommandPalette) {
            // Already open - just focus the input
-@@ -3878,7 +3858,8 @@ export function App() {
-       }
- 
-       // Switch to Trash tab: Cmd+2
--      if (key === '2') {
-+      // moss-multi seam: hide-registry (A§9)
-+      if (key === '2' && !hidden('trash')) {
-         e.preventDefault();
-         handlePanelViewChange('trash');
-         return;
-@@ -3947,7 +3928,8 @@ export function App() {
+@@ -3947,7 +3927,8 @@ export function App() {
      onExpandActionsPanel: () => { zenModeActive ? toggleZenMode() : setActionsPanelHidden(false); },
      isAgentStreaming: hasActiveStreaming,
      onCanvasClick: handlePromptClose,
@@ -188,7 +178,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
    };
  
    const actionsPanelContent = (
-@@ -4047,7 +4029,7 @@ export function App() {
+@@ -4047,7 +4028,7 @@ export function App() {
        searchBarAutoFocus={searchBarAutoFocus}
        onCloseSearch={handleCloseSearch}
        onOpenSearch={() => { setSearchQuery(''); setSearchBarAutoFocus(true); }}
@@ -197,6 +187,14 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
        onLeftTitleFocusComplete={handleTitleFocusComplete}
        leftAutoFocusBody={shouldFocusBody}
        onLeftBodyFocusComplete={handleBodyFocusComplete}
+@@ -4063,6 +4044,7 @@ export function App() {
+       feedbackTooltipOpen={feedbackTooltipFixtureOpen}
+       mode={appMode}
+       onModeChange={handlePanelViewChange}
++      onTrashNote={handleNoteDeleted} // moss-multi seam: trash-drop (T2.3)
+       onOpenFeedback={() => setFeedbackDialogOpen(true)}
+       onOpenSettings={async () => {
+         handleCloseSearch();
 @@ -4093,6 +4075,7 @@ export function App() {
          onSelectNote={handleSelectNote}
          onCreateNote={handleCreateNote}

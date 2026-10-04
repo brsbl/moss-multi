@@ -1,4 +1,5 @@
-// The active vault's tree, plus directly shared items whose parents are inaccessible (A§11). A share link scopes a
+// The active vault's tree, plus directly shared items whose parents are inaccessible, plus the caller's own trashed
+// notes in it for the Trash view, each with `trashedAt` (A§11). A share link scopes a
 // listing of its own (T2.4): an anonymous holder sees only the linked doc, or the linked folder as the root of a
 // one-vault workspace; a signed-in holder of a folder link they cannot otherwise see is offered that folder beside
 // their vaults. Link listings never name the owner's vault or the folders around the link.
@@ -15,7 +16,20 @@ import { ensureDefaultVault } from './vaults.ts';
 
 interface VaultRow { id: string; name: string; role: Role; owned: boolean }
 interface FolderRow { id: string; name: string; path: string; role: Role; surfaced: boolean; createdAt: number; noteCount: number }
-interface DocRow { id: string; title: string; filename: string; createdAt: number; updatedAt: number; role: Role; folderPath: string; surfaced: boolean }
+interface DocRow { id: string; title: string; filename: string; createdAt: number; updatedAt: number; role: Role; folderPath: string; surfaced: boolean; trashedAt?: number }
+interface TrashedRow { id: string; title: string; filename: string; folderId: string; createdAt: number; updatedAt: number; trashedAt: number }
+
+/** The owner's trashed notes whose folder chain ends at `vaultId`, trashed folders included. */
+async function trashedIn(db: D1Database, ownerId: string, vaultId: string): Promise<TrashedRow[]> {
+  const rows = await db.prepare(`WITH RECURSIVE up(doc_id, id, parent_id, kind, depth) AS (
+      SELECT d.id, f.id, f.parent_id, f.kind, 1 FROM docs d JOIN folders f ON f.id = d.folder_id
+        WHERE d.owner_user_id = ?1 AND d.deleted_at IS NOT NULL
+      UNION ALL SELECT up.doc_id, f.id, f.parent_id, f.kind, up.depth + 1 FROM folders f JOIN up ON f.id = up.parent_id
+        WHERE up.depth < ${MAX_FOLDER_DEPTH}
+    ) SELECT id, title, filename, folder_id AS folderId, created_at AS createdAt, updated_at AS updatedAt, deleted_at AS trashedAt
+      FROM docs WHERE id IN (SELECT doc_id FROM up WHERE id = ?2 AND kind = 'vault')`).bind(ownerId, vaultId).all<TrashedRow>();
+  return rows.results;
+}
 
 const byUpdated = (a: DocRow, b: DocRow) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id);
 
@@ -178,6 +192,12 @@ export async function workspace(request: Request, env: AuthEnv): Promise<Respons
     const folderPath = surfaced ? 'Notes' : pathFor(doc.folderId);
     return folderPath ? [{ id: doc.id, title: doc.title, filename: doc.filename, createdAt: doc.createdAt, updatedAt: doc.updatedAt,
       role: lift(doc.role, doc.id, doc.folderId), folderPath, surfaced }] : [];
-  }).sort(byUpdated);
+  });
+  // A trashed note shows under its folder while that folder is live, else at the root it would be restored to.
+  const trashed = (await trashedIn(env.DB, principal.id, vault.id)).map((doc): DocRow => ({ id: doc.id, title: doc.title,
+    filename: doc.filename, createdAt: doc.createdAt, updatedAt: doc.updatedAt, role: 'owner', folderPath: pathFor(doc.folderId) ?? 'Notes',
+    surfaced: false, trashedAt: doc.trashedAt }));
+  rows.push(...trashed);
+  rows.sort(byUpdated);
   return json({ vault, vaults, docs: only(rows), folders }, 200, NO_STORE);
 }

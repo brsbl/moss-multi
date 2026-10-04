@@ -92,6 +92,12 @@ export const INPUT_REFUSAL_ATTR = 'data-input-refusal';
 export const SIDEBAR_ROW_ATTR = 'data-sidebar-row';
 export const ACTIVE_ATTR = 'data-active';
 
+/** Trash-view rows, with `data-doc-id` (T2.3). */
+export const TRASH_ROW_ATTR = 'data-trash-row';
+
+/** The retention notice on a note open in the Trash view; its words come from protocol/retention.ts. */
+export const RETENTION_NOTICE_ATTR = 'data-retention-notice';
+
 /** The body editor root Lexical renders. */
 export const LEXICAL_EDITOR_SELECTOR = '[data-lexical-editor="true"]';
 

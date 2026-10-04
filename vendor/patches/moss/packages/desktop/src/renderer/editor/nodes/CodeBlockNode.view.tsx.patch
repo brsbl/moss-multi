@@ -1,7 +1,7 @@
 diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx
 --- a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx
 +++ b/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx
-@@ -1,27 +1,20 @@
+@@ -1,28 +1,23 @@
 +// moss-multi seam: publish decorator drafts as register edits.
 +import { useRegisterDraft } from '@moss-multi/host/collab/register-input';
 +import { registerDoc } from '@moss-multi/host/collab/registers';
@@ -36,9 +36,12 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b
 +import { OPEN_BLOCK_COMMENT_COMMAND } from '../commands';
 +import { getThemeById } from '../plugins/code-block/themes';
  import { highlightCodeToHtml } from '../utils/code-highlighting';
++// moss-multi seam: read-only-decorators (T2.3): a read-only or terminal editor offers no code-block edit
++import { useIsEditorEditable } from '../components/media-primitives';
  import {
    BLOCK_HEADER_CLASSNAME,
-@@ -35,26 +28,11 @@ import {
+   BLOCK_SURFACE_CLASSNAME,
+@@ -35,26 +30,11 @@ import {
    isSnapshotModeEnabled,
    markCodeblockReady,
  } from '../../automation/snapshot-mode';
@@ -70,7 +73,11 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b
  
  /**
   * CodeBlock component with inline toolbar and edit/display modes
-@@ -79,16 +57,16 @@ function CodeBlockComponent({
+@@ -76,23 +56,29 @@ function CodeBlockComponent({
+   commentIds?: string[];
+ }): JSX.Element {
+   const [editor] = useLexicalComposerContext();
++  const editable = useIsEditorEditable(); // moss-multi seam: read-only-decorators (T2.3)
    const [isSelected, setSelected, clearSelection] = useLexicalNodeSelection(nodeKey);
    const [isEditing, setIsEditing] = useState(() => consumeAutoEdit(nodeKey));
    const [isDropdownOpen, setIsDropdownOpen] = useState(false);
@@ -89,7 +96,28 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b
        setLocalCode(code);
      }
    }, [code, isEditing]);
-@@ -185,7 +163,7 @@ function CodeBlockComponent({
+ 
++  // moss-multi seam: read-only-decorators (T2.3): a body that closes mid-edit closes its textarea
++  useEffect(() => {
++    if (!editable) setIsEditing(false);
++  }, [editable]);
++
+   // Auto-focus textarea when entering edit mode
+   useEffect(() => {
+     if (isEditing && textareaRef.current) {
+@@ -168,6 +154,7 @@ function CodeBlockComponent({
+       if (target.closest('button')) return;
+       // Keep shift+click behavior for multi-select
+       if (e.shiftKey) return;
++      if (!editor.isEditable()) return; // moss-multi seam: read-only-decorators (T2.3): a closed body opens no textarea
+ 
+       e.preventDefault();
+       // Capture rendered height before switching to textarea
+@@ -182,10 +169,11 @@ function CodeBlockComponent({
+   // Save code to node
+   const commitCode = useCallback(() => {
+     setIsEditing(false);
++    if (!editor.isEditable()) return; // moss-multi seam: read-only-decorators (T2.3)
      editor.update(() => {
        const node = $getNodeByKey(nodeKey);
        if (node && $isCodeBlockNode(node)) {
@@ -98,7 +126,19 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b
        }
      });
    }, [editor, nodeKey, localCode]);
-@@ -208,12 +186,12 @@ function CodeBlockComponent({
+@@ -193,6 +181,11 @@ function CodeBlockComponent({
+   // Handle textarea keydown
+   const handleTextareaKeyDown = useCallback(
+     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
++      // moss-multi seam: read-only-decorators (T2.3): a read-only textarea only closes
++      if (!editor.isEditable() && e.key !== 'Escape') {
++        if (!(e.metaKey || e.ctrlKey)) e.stopPropagation();
++        return;
++      }
+       // Cmd/Ctrl+S — commit code to node, then let the save propagate
+       if (e.key === 's' && (e.metaKey || e.ctrlKey)) {
+         commitCode();
+@@ -208,12 +201,12 @@ function CodeBlockComponent({
          return;
        }
  
@@ -113,16 +153,51 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b
          setIsEditing(false);
          return;
        }
-@@ -373,6 +351,8 @@ function CodeBlockComponent({
+@@ -279,6 +272,7 @@ function CodeBlockComponent({
+   // Handle language change
+   const handleLanguageChange = useCallback(
+     (newLanguage: string) => {
++      if (!editor.isEditable()) return; // moss-multi seam: read-only-decorators (T2.3)
+       editor.update(() => {
+         const node = $getNodeByKey(nodeKey);
+         if (node && $isCodeBlockNode(node)) {
+@@ -292,6 +286,7 @@ function CodeBlockComponent({
+   // Handle theme change
+   const handleThemeChange = useCallback(
+     (newTheme: string) => {
++      if (!editor.isEditable()) return; // moss-multi seam: read-only-decorators (T2.3)
+       editor.update(() => {
+         const node = $getNodeByKey(nodeKey);
+         if (node && $isCodeBlockNode(node)) {
+@@ -329,6 +324,7 @@ function CodeBlockComponent({
+     (position: 'before' | 'after') => (e: React.MouseEvent) => {
+       e.preventDefault();
+       e.stopPropagation();
++      if (!editor.isEditable()) return; // moss-multi seam: read-only-decorators (T2.3)
+       editor.update(() => {
+         const node = $getNodeByKey(nodeKey);
+         if (!node) return;
+@@ -350,7 +346,7 @@ function CodeBlockComponent({
+         selected={isSelected}
+         beforeLabel="Insert paragraph before code block"
+         afterLabel="Insert paragraph after code block"
+-        onGapClick={handleGapClick}
++        onGapClick={editable ? handleGapClick : undefined /* moss-multi seam: read-only-decorators (T2.3) */}
+         className="moss-codeblock transition-colors"
+         style={themeColors}
+       >
+@@ -372,7 +368,10 @@ function CodeBlockComponent({
+                 onThemeChange={handleThemeChange}
                  getCodeContent={getCodeContent}
                  onDropdownOpenChange={setIsDropdownOpen}
++                readOnly={!editable /* moss-multi seam: read-only-decorators (T2.3) */}
                />
 +              {/* moss-multi seam: hide-registry (A§9) */}
 +              {hidden('comments') ? null : (
                <button
                  type="button"
                  onClick={(e) => {
-@@ -384,6 +364,7 @@ function CodeBlockComponent({
+@@ -384,6 +383,7 @@ function CodeBlockComponent({
                >
                  <StickyNote className="h-3 w-3" />
                </button>
@@ -130,15 +205,15 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b
              </div>
            </div>
  
-@@ -400,6 +381,7 @@ function CodeBlockComponent({
+@@ -400,6 +400,7 @@ function CodeBlockComponent({
              {isEditing ? (
                <textarea
                  ref={textareaRef}
-+                readOnly={!editor.isEditable()}
++                readOnly={!editable /* moss-multi seam: read-only-decorators (T2.3) */}
                  value={localCode}
                  onChange={(e) => setLocalCode(e.target.value)}
                  onKeyDown={handleTextareaKeyDown}
-@@ -431,11 +413,11 @@ function CodeBlockComponent({
+@@ -431,11 +432,11 @@ function CodeBlockComponent({
                <span className="inline-flex items-center gap-1 align-middle">
                  <KeyboardShortcut keys={['⌘', '⏎']} size="compact" />
                </span>{' '}
@@ -152,7 +227,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b
              </div>
            )}
          </div>
-@@ -444,164 +426,15 @@ function CodeBlockComponent({
+@@ -444,164 +445,15 @@ function CodeBlockComponent({
    );
  }
  

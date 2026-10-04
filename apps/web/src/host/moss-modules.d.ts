@@ -157,3 +157,8 @@ declare module '@moss-desktop/renderer/editor/markdown/transformers' {
   export function $collectTableLayoutMetadata(): LocalLayoutMetadata;
   export function $collectTabGroupLayoutMetadata(): Pick<LocalLayoutMetadata, 'tabGroupCount' | 'tabGroups'>;
 }
+
+declare module '@moss-desktop/renderer/panels/notesPanelUtils' {
+  /** moss's sidebar time: `timestamp` in seconds. */
+  export function formatRelativeTime(timestamp: number): string;
+}

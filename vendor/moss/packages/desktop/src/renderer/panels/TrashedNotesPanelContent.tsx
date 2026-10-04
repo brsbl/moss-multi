@@ -21,6 +21,8 @@ import { formatRelativeTime } from './notesPanelUtils';
 import { notesApi } from '../api/electron';
 // moss-multi seam: hide-registry (A§9)
 import { hidden } from '@moss-multi/host/affordances';
+// moss-multi seam: trash-copy (T2.3): one module says how long Trash keeps a note
+import { TRASH_COPY } from '@moss-multi/host/retention';
 
 export type TrashedNotesPanelContentProps = {
   onSelectNote: (id: string) => void;
@@ -51,7 +53,8 @@ function TrashedNoteContextMenu({
   return (
     <ContextMenu onOpenChange={setIsContextMenuOpen}>
       <ContextMenuTrigger asChild>
-        <div>{children(isContextMenuOpen)}</div>
+        {/* moss-multi seam: trash-row (A§19) */}
+        <div data-trash-row="" data-doc-id={noteId}>{children(isContextMenuOpen)}</div>
       </ContextMenuTrigger>
       <ContextMenuContent>
         <ContextMenuItem onSelect={() => onRestoreNote(noteId)}>
@@ -218,7 +221,7 @@ export const TrashedNotesPanelContent = forwardRef<TrashedNotesPanelContentHandl
       if (!hasAnyNotes) {
         return (
           <div className="rounded-xl border border-dashed border-border-subtle bg-surface-raised-card p-4 text-sm text-ink-muted">
-            Deleted notes stay here for 30 days before being removed forever.
+            {TRASH_COPY.emptyTrash /* moss-multi seam: trash-copy (T2.3) */}
           </div>
         );
       }

@@ -57,15 +57,21 @@ export interface RoleSources {
   link: Role | null;
   /** No signed-in identity: a share token alone. */
   anonymous: boolean;
+  /** An agent key: it acts at most as an editor. */
+  agent?: boolean;
 }
+
+/** Owner access needs a signed-in person: a link or an agent key stops at editor (T2.4s). */
+const belowOwner = (role: Role | null): Role | null => (role === 'owner' ? 'editor' : role);
 
 /**
  * The effective role (A§8): the MAX of ownership, the grants and the link. The link is a ceiling: it lifts a
- * signed-in caller to its role and no further, and an anonymous caller to viewer at most.
+ * signed-in caller to its role and no further (never to owner), and an anonymous caller to viewer at most.
  */
-export function foldRole({ owner, grants, link, anonymous }: RoleSources): Role | null {
+export function foldRole({ owner, grants, link, anonymous, agent = false }: RoleSources): Role | null {
   if (anonymous) return link === null ? null : 'viewer';
   let role: Role | null = owner ? 'owner' : null;
   for (const grant of grants) role = maxRole(role, grant);
-  return maxRole(role, link);
+  role = maxRole(role, belowOwner(link));
+  return agent ? belowOwner(role) : role;
 }

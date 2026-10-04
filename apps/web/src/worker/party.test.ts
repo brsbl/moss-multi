@@ -119,7 +119,7 @@ describe('the origin gate (A§18)', () => {
       const bearer = await authenticateParty(upgrade(docId, { authorization: `Bearer ${ada.token}`, origin }), docId, env);
       expect(ownerOf(bearer), `session bearer, Origin ${origin}`).toEqual({ id: ada.id, role: 'owner' });
       const agent = await authenticateParty(upgrade(docId, { authorization: `Bearer ${key}`, origin }), docId, env);
-      expect(agent.ok && agent.headers[TRUSTED.role], `agent key, Origin ${origin}`).toBe('owner');
+      expect(agent.ok && agent.headers[TRUSTED.role], `agent key, Origin ${origin}: an agent acts at most as an editor`).toBe('editor');
     }
   });
 
