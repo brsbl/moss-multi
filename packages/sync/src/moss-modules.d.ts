@@ -37,3 +37,7 @@ declare module '@moss-desktop/renderer/editor/utils/formula-runtime' {
     byKey: Map<string, FormulaInput & { sourceMode: string }>;
   };
 }
+
+declare module '@moss-desktop/common/utils' {
+  export function stripWikiLinks(text: string): string;
+}

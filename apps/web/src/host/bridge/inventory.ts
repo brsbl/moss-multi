@@ -33,12 +33,12 @@ const absent = (note: string): InventoryEntry => ({ treatment: 'absent', note })
 const REMOTE_WEB_SURFACE = 'left undefined: RemoteWebSurface is substituted with a sandboxed iframe (R4, T3.2)';
 
 export const INVENTORY: Record<string, InventoryEntry> = {
-  'notes.getAll': real('GET /api/workspace, mapped to NoteMetadataRecord in seconds under Notes'),
+  'notes.getAll': real('GET /api/workspace, mapped to NoteMetadataRecord in seconds under Notes; opened notes carry backlinks'),
   'notes.getMetadataByIds': real('the same listing, filtered'),
   'notes.getById': real("listing metadata plus this viewer's local extras; content '' for a doc that will bind"),
   'notes.getContent': staged(1, "the DocDO export behind a limit of 3 (T1.8); '' until then"),
   'notes.getFrontmatterSuggestions': staged(1, 'per-vault keys and values with Properties (T1.4); {} until then'),
-  'notes.getHeadings': staged(3, 'headings from the DO export (T3.4); [] until then'),
+  'notes.getHeadings': real('GET /api/docs/:id/headings: h1–h4 of the DO export (A§15)'),
   'notes.create': real('POST /api/docs; the DocDO seeds the doc and "Untitled" is never authored'),
   'notes.update': {
     treatment: 'real',
@@ -55,7 +55,7 @@ export const INVENTORY: Record<string, InventoryEntry> = {
   },
   'notes.delete': staged(2, 'REST trash (T2.3); refused until then', 'trash'),
   'notes.restore': staged(2, 'REST restore (T2.3); refused until then', 'trash'),
-  'notes.search': staged(3, 'SearchDO (T3.4); title matches over the listing until then'),
+  'notes.search': real('title matches over the listing, then GET /api/search over every doc the caller can discover (A§15)'),
   'notes.getFilesystemPath': real('the doc URL'),
   'notes.setOpenFileWatchTargets': stub('a hint; the workspace channel needs no per-doc watch'),
   'notes.copyLinkToClipboard': real("text/plain doc URL plus moss's HTML note-link payload"),
