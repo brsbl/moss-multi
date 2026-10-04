@@ -1,6 +1,6 @@
 // The DocDO core in the Node harness (BUILDPLAN T0.7; A§5.1): replay, chunking, compaction identity, the seed,
 // admission, the write classifier with loud refusal, acks, limits and the RPC guard.
-import { $createParagraphNode, $createTextNode, $getRoot } from 'lexical';
+import { $createParagraphNode, $createTextNode, $getRoot, $isElementNode } from 'lexical';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as Y from 'yjs';
 import { base64ToBytes, CLOSE } from '@moss-multi/protocol/sync';
@@ -8,6 +8,7 @@ import { exportMarkdown, importMarkdown } from '../../src/converter/index.ts';
 import { DocDO } from '../../src/doc-do.ts';
 import { readFrontmatter, writeFrontmatterKey } from '@moss-multi/core/frontmatter';
 import { serverWrite } from '../../src/server-doc.ts';
+import { $isFormulaNode } from '@moss-desktop/renderer/editor/nodes/FormulaNode';
 import { Backing, bindLexical, blockTypes, connect, counts, openDoc, start, wake, type Opened, type TestClient } from './do-harness.ts';
 
 const CHUNK = 1.5 * 1024 * 1024;
@@ -62,6 +63,27 @@ describe('seed', () => {
 });
 
 describe('server writes', () => {
+  it('exports current dependent formula results after an author edits the source and after wake', async () => {
+    const opened = await start(openDoc());
+    const noteId = opened.state.id.name;
+    const priceId = '7bea9c0f-317a-48a1-83a7-9a1e4e7b36aa';
+    const doubleId = 'd787ef71-6050-45e0-8a24-dbb8190880dc';
+    await opened.dobj.create({ folderId: 'folder', ownerId: 'owner', markdown:
+      `{{2|2|id=${priceId};name=price}} and {{@(price#${noteId}#${priceId})*2|4|id=${doubleId};name=double}}` });
+    expect(await opened.dobj.exportMarkdown()).toContain(`)*2|4|id=${doubleId};name=double}}`);
+    serverWrite(opened.dobj.document, 'author-edit', () => {
+      const formula = $getRoot().getChildren().flatMap(node => $isElementNode(node) ? node.getChildren() : []).find($isFormulaNode);
+      if (!formula) throw new Error('missing price formula');
+      formula.setFormula('3');
+      formula.setResult('3');
+    });
+    const before = Y.encodeStateAsUpdate(opened.dobj.document);
+    expect(await opened.dobj.exportMarkdown()).toContain(`)*2|6|id=${doubleId};name=double}}`);
+    expect(Y.encodeStateAsUpdate(opened.dobj.document)).toEqual(before);
+    const reopened = await start(wake(opened));
+    expect(await reopened.dobj.exportMarkdown()).toContain(`)*2|6|id=${doubleId};name=double}}`);
+  });
+
   const MARKDOWN = '## Plan\n\nA *first* paragraph with a [link](https://example.invalid).\n\n- one\n- two\n';
 
   it('hydrates the persisted tree before a server write without normalizing its formatting', () => {
