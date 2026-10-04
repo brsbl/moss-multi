@@ -660,10 +660,11 @@ describe('T1.F2 checker regressions @p:col-1 @p:tech-8', () => {
   /** What a client's ack ledger does: an ack settles a payload once its vector and acked deletes cover every write. */
   function settles(client: LiveClient, id: string, received: Extract<ServerEvent, { t: 'ack' }>[]): boolean {
     const covering = received.map((ack) => ack.p?.[id]).filter((ack) => ack !== undefined);
-    const last = covering.at(-1);
-    if (!last) return false;
+    if (!covering.length) return false;
     const deletes = Y.mergeDeleteSets(covering.map((ack) => (ack.ds ? Y.decodeSnapshot(base64ToBytes(ack.ds)).ds : Y.createDeleteSet())));
-    const covered = Y.createSnapshot(deletes, Y.decodeStateVector(base64ToBytes(last.sv)));
+    const sv = new Map<number, number>();
+    for (const ack of covering) for (const [client, clock] of Y.decodeStateVector(base64ToBytes(ack.sv))) sv.set(client, Math.max(sv.get(client) ?? 0, clock));
+    const covered = Y.createSnapshot(deletes, sv);
     return Y.snapshotContainsUpdate(covered, Y.mergeUpdates(client.written.get(id) ?? []));
   }
 

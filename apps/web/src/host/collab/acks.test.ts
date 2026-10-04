@@ -40,3 +40,31 @@ it('a payload write stays unacked until an ack names that payload and covers it'
   note.destroy();
   code.destroy();
 });
+
+it('a payload ack names only its own frames\' clocks, so an edit past clock 0 and a delete-only window still settle', () => {
+  const code = new Y.Doc();
+  const ledger = new AckLedger();
+  const frames: Uint8Array[] = [];
+  code.on('update', (update: Uint8Array) => {
+    ledger.wrote(update, 'code');
+    frames.push(update);
+  });
+  // The DocDO's coverage of a window: each frame's clock range end, never the doc's whole vector.
+  const ackOf = (window: Uint8Array[], deletes = false) => {
+    const sv = new Map<number, number>();
+    for (const frame of window) for (const [client, end] of Y.parseUpdateMeta(frame).to) sv.set(client, Math.max(sv.get(client) ?? 0, end));
+    const ds = deletes ? Y.mergeDeleteSets(window.map((frame) => Y.decodeUpdate(frame).ds)) : Y.createDeleteSet();
+    return { t: 'ack' as const, sv: '', p: { code: { sv: bytesToBase64(Y.encodeStateVector(sv)), ds: bytesToBase64(Y.encodeSnapshot(Y.createSnapshot(ds, new Map()))) } } };
+  };
+  code.getText('payload').insert(0, 'a');
+  expect(ledger.acked(ackOf(frames.splice(0))), 'the first write').toBe(true);
+  code.getText('payload').insert(1, 'b');
+  code.getText('payload').insert(2, 'c');
+  expect(ledger.acked(ackOf(frames.splice(0))), 'later writes start past clock 0').toBe(true);
+  code.getText('payload').insert(3, 'd');
+  const inserts = frames.splice(0);
+  code.getText('payload').delete(0, 1);
+  expect(ledger.acked(ackOf(inserts)), 'the delete is not acked yet').toBe(false);
+  expect(ledger.acked(ackOf(frames.splice(0), true)), 'a delete-only window settles with the earlier vector').toBe(true);
+  code.destroy();
+});
