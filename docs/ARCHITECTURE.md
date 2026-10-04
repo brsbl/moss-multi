@@ -495,7 +495,7 @@ There is no polling and no per-doc watch socket. [S-prior §14.1] Bound docs ign
 - L5: journeys G1–G3.
 - Plus the negative controls in S-conv §5.6.
 
-## 13. Comments and suggestions as CRDT data (sketch; the design review is T4.0 and T5.0)
+## 13. Comments and suggestions as CRDT data (comments resolved by docs/design/comments.md, T4.0; suggestions by T5.0)
 
 [P:Meaning; P:Tech; L§4.11–4.12; S-conv §3; S-gd §6.1–6.2]
 
@@ -503,9 +503,9 @@ There is no polling and no per-doc watch socket. [S-prior §14.1] Bound docs ign
 
 - **Data.** `Y.Map('comments')` maps id → `{text` (moss's mention encoding), `author` (server principal id), `createdAt`/`updatedAt` (seconds at the moss boundary), `source, parentId, imageUrls, resolvedAt, resolvedBy`, `reactions {emoji → principalIds}`, `anchor {start, end` (base64 RelativePositions), `quote {exact, prefix, suffix}, hint, status anchored|orphaned}}`.
 - **Only the DocDO writes the map.**
-  - Clients call REST (later also socket custom messages). The DO checks role ≥ commenter, takes authorship from the server principal, writes through `serverWrite` under a server origin, and returns the root author so the Worker can write notifications.
-  - Commenters never get CRDT write access. Client frames that touch `comments` or `suggestions` are refused; SP7 is the classifier. [S-gd §12 option a]
-- **Anchors** are RelativePositions into the V1 paragraph `XmlText`, where a decorator counts as one embed. Clients mint them from their binding. Re-anchoring uses glyphdown's thresholds: 0.5, 0.8, and an 8-character minimum. [S-conv §3.2; S-gd §6.1]
+  - Clients call REST. The DO checks role ≥ commenter, takes authorship from the server principal, writes one JSON record per comment under the server origin `server-comments` (a direct transact: the map holds no Lexical nodes, so `serverWrite`'s mirror is needed only for the marker import), and returns the root author so the Worker can write notifications.
+  - Commenters never get CRDT write access. A client frame touching any root outside `root`, `title`, `frontmatter`, `frontmatterOrder` and `registers`, or depending on an item the DO lacks, is refused with 4409; SP7's `touchedTypes` is the classifier. [S-gd §12 option a; T4.0]
+- **Anchors** are RelativePositions into the V1 paragraph `XmlText`, where a decorator counts as one embed. Clients mint them from their binding when the composer opens. Quotes use one projection of the tree computed from Y types alone. Re-anchoring uses glyphdown's thresholds (0.5, 0.8, 8 characters); a shorter quote re-anchors only where its context matches. A format split collapses the positions, so the quote is load-bearing: clients re-anchor locally for paint and the DO persists re-anchors. Names are never stored; records carry principal ids. [S-conv §3.2; S-gd §6.1; T4.0]
 - **Paint is derived, with zero tree mutation:** CSS Custom Highlight ranges plus per-comment geometry for the gutter and popover.
   - An adapter answers moss's 8 tree queries.
   - `CREATE_COMMENT_COMMAND` is the single write seam.
@@ -711,10 +711,10 @@ S-test is the detailed design of record, but where it disagrees with this file o
 | SP4 | What is workerd's idle-eviction time? Do sockets survive `ctx.abort()`? | T1.7 | `IDLE_MS = max(95 s, 1.2 × measured)`. Fail loudly above 150 s. |
 | SP5 | At 0.48, does two-tab concurrent typing cascade (#343 or markdown-shortcut follow-ups)? Does a pane rerender reconnect? (StrictMode double effects don't run in production builds; unstable provider-effect dependencies do.) | T0.8, T1.6 | Add a tagged-update latch in the vendored plugin only if proven; pin the effect dependencies in seam (c). |
 | SP6 | What does per-frame awareness validation cost in the DocDO? | T1.5 | Validate only identity changes; cache the per-client verdict. |
-| SP7 | Can an update be classified by the root types it touches without applying it (comment and suggestion map write protection)? | T4.0 | Apply to the mirror doc and read `changedParentTypes`. |
+| SP7 | Can an update be classified by the root types it touches without applying it (comment and suggestion map write protection)? **Yes (T4.0): `touchedTypes` agrees with applying the frame on random concurrent edits, and reports a dependency on a missing item, which is refused.** | T4.0 | Apply to the mirror doc and read `changedParentTypes`. |
 | SP8 | Registers for decorator payloads: a stable `__regId`, the host view wrapper, the undo scope, converter getters, and later the CLI merge and vetting. | T1.9, T3.3 | No pre-booked loss. If a payload cannot take a register, ask the owner with the data loss stated plainly. |
 | SP9 | Can video upload through the Worker under the body limit, with R2 Range reads? | T3.1 | Presigned R2 upload with a server-side finalize. |
-| SP10 | Comment paint: the CSS Custom Highlight API in WebKit, and geometry for moss's gutter and popover. | T4.0 | A pointer-transparent overlay with stable per-comment elements. |
+| SP10 | Comment paint: the CSS Custom Highlight API in WebKit, and geometry for moss's gutter and popover. **Yes (T4.0): background, overlap and underline paint with zero DOM mutations in Chromium and Linux WebKit; Range rects and a caret hit-test serve the gutter and pointer.** | T4.0 | A pointer-transparent overlay with stable per-comment elements. |
 | SP11 | Suggester vetting on a mirror for tree deltas, with structural ops (checkbox, table row, list indent) as suggestion parts. | T5.0 | Ask the owner with options before refusing any structural op in suggest mode. |
 | SP12 | Port the identity-preserving reconcile to 0.48: restore, then push. | T6.1 | Block-level landing with verify-or-refuse (409), never a silent rebuild. |
 | SP13 | Does a `data:` iframe inherit the page CSP in Chromium and WebKit, blocking moss-html scripts? **Yes in Chromium (T0.5a), so the default applies: `/frame/html`.** | T0.5a | Serve HTML blocks from a dedicated route whose response carries `content-security-policy: sandbox allow-scripts`, still opaque-origin. |
