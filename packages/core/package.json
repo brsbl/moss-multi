@@ -7,13 +7,15 @@
     "./doc-fields": "./src/doc-fields.ts",
     "./filenames": "./src/filenames.ts",
     "./frontmatter": "./src/frontmatter.ts",
-    "./text-diff": "./src/text-diff.ts"
+    "./text-diff": "./src/text-diff.ts",
+    "./suggest/apply": "./src/suggest/apply.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
     "js-yaml": "4.3.0",
+    "lib0": "0.2.119",
     "yjs": "13.6.31"
   },
   "devDependencies": {
