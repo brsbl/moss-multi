@@ -19,12 +19,12 @@ The janitor is a single serial writer that sees every update, so it settles the 
   - Only the person who creates a block ever creates its text, so someone joining mid-draft cannot replace it.
 - **What stays the same.** People typing in one code block merge character by character, Cmd+Z undoes only your own typing, a move keeps every character, and export bytes do not change.
 - **What you give up (narrow; nothing is destroyed in any of these):**
-  1. Undoing the creation of a block that someone else typed into hides it, along with their typing. Redo brings all of it back. V1 already does this for paragraphs on m1. Fixing it for all blocks is an undo-policy question for the whole tree, not a payload question, so it is filed separately.
+  1. Undoing the creation of a block that someone else typed into hides it, along with their typing. Redo brings all of it back. For paragraphs, m1 is worse today: the spike shows V1 removes the other person's text with the paragraph, and redo does not restore it. Fixing that for all blocks is an undo-policy question for the whole tree, not a payload question, so it is filed separately.
   2. When a delete and a move of one block race, the move wins: the block survives, as a V1 paragraph does. If the deleter then undoes, the server removes the duplicate and keeps the copy that comes first in the note, so the block may return to its original position.
   3. If a block is deleted and restored while someone is typing inside its text, their characters are kept but can land at the end of the restored stretch instead of in the middle. Yjs's own undo positions text the same way.
   4. If text was typed in a block before it was deleted and restored, its author can no longer undo that typing, because the restored text counts as a server write. The block and its text are unaffected.
   5. A property change made, at the same instant, to the duplicate the server removes (for example the code language) is lost.
-- **Cost.** The janitor reads only the ids an update touched (the spike counts one id per edit, delete or move in a 200-block note). The client side is T1.9s's per-id refresh, unchanged.
+- **Cost.** The janitor reads only the ids an update touched. In a 200-block note, an edit costs one id. A delete or move costs the blocks V1 rewrote. That is more than the moved block, because V1 recreates every later sibling: moving block 120 rewrote 79 blocks. The client side is T1.9s's per-id refresh, unchanged.
 
 ## Requirements and how each is met
 
@@ -40,7 +40,7 @@ The janitor is a single serial writer that sees every update, so it settles the 
 | Option | Verdict |
 | --- | --- |
 | A. Map, with the client deleting the payload alongside the block and repairing racing moves (T1.P) | Rejected. Three failed checks. A client cannot see a concurrent move at delete time, and a client-side repair adds a second writer for the same text, so the text comes back doubled or lost. |
-| B. Payload as a `Y.Text` attribute of the block's own element (attempt 1) | Rejected. A V1 move copies the text into a new element, so a peer's typing during the move is lost, which M1 keeps. Undo also needed two rules. The checker refuted both of them: one missed blocks restored by an earlier undo, the other missed containers. |
+| B. Payload as a `Y.Text` attribute of the block's own element (attempt 1) | Rejected. A V1 move copies the text into a new element, so a peer's typing during the move is lost, which M1 keeps. Because V1 also recreates every later sibling, that loss would reach every code block below a moved one. Undo also needed two rules. The checker refuted both of them: one missed blocks restored by an earlier undo, the other missed containers. |
 | C. Map plus a server pass that only deletes unnamed text | Rejected. It breaks the deleter's undo, because server writes never enter a client undo stack (A§10.8), and a raced move loses its text. C plus a trash with positional revival is the chosen design. |
 | D. Lexical named slots (`@experimental` in 0.48): the payload as a nested Lexical node | Rejected for now. It would rewrite moss's node model and views, and it has B's move problem. |
 | E. Glyphdown: the whole body is one `Y.Text` of markdown | Not applicable. A fenced block there is plain characters, so there is no payload lifecycle; our V1 tree schema is fixed (A§10.2). |
@@ -74,14 +74,18 @@ The spike is `packages/sync/src/register-lifecycle.spike.test.ts` (unit lane). I
 - **Delete racing a move:** both orders, three peers. The result is one block with the text once, including the mover's typing after the move. The deleter's undo restores nothing twice, and the mover's undo keeps a third peer's edit.
 - **Concurrent moves, then concurrent undos (P1-5):** exactly one block, in both orders.
 - **Multi-step undo (P1-2):** create, delete, undo, a peer types, then undo the creation. The block hides, nothing is served, and redo restores the peer's characters.
-- **Paragraph holding a formula (P1-3):** undoing its creation after a peer's formula edit hides both. Redo restores every character. A control shows V1 does the same to a paragraph's text on m1.
+- **Paragraph holding a formula (P1-3):** undoing its creation after a peer's formula edit hides both. Redo restores every character. A control shows that for a paragraph's own text, V1 on m1 also removes the peer's characters, and redo does not restore them.
 - **Join:** a peer that joins after every prefix of a drafter's update stream and touches the block never costs the drafter a character. The janitor never reclaims a new block, and only the drafter creates the payload.
 - **J4:** a concurrent character deletion is honored, both through incremental updates and through a reconnect's sync step 2, and a control without the rule doubles the characters. A reconnecting peer that had seen the reclaim does not cancel it.
 - **J5:** the load pass reclaims an M1-style orphan and keeps live payloads.
-- **Cost:** in a 200-block note the janitor evaluates one id for an edit, one for a delete and one for a move.
+- **Cost:** in a 200-block note the janitor evaluates one id for an edit. For a delete or a move it evaluates exactly the blocks whose elements V1 rewrote, and reclaims only the deleted one.
 - **M1 comparison:** the map's privacy failure stays `it.fails`. Binding order is safe (the register precedes its element on the wire). A whole-value write of a stale field snapshot deletes a peer's characters, which T1.F4 removes.
 
-Runs: the tests-first run was red on attempt 1's privacy assertion: [37194871289](https://github.com/brsbl/moss-multi/actions/runs/37194871289). The checker's five findings, written as tests against attempt 1's prototype, were red before this design replaced it (see the T1.R commit history). The final green run is on the branch head.
+Runs:
+
+- Attempt 1's tests-first run was red on the M1 privacy assertion: [37194871289](https://github.com/brsbl/moss-multi/actions/runs/37194871289).
+- The checker's five findings, written as tests against attempt 1's prototype, were all red before this design replaced it: [37198306446](https://github.com/brsbl/moss-multi/actions/runs/37198306446).
+- The final green run is on the branch head.
 
 **P0 (c) reproduction.** Attempt 1 made two local passes on m1 `8d2a388`, warm and cold, and neither reproduced the loss. The spike rules out binding order. Three mechanisms remain that fit "committed locally, gone after reload", and this design removes the first. T1.F4 removes the other two.
 

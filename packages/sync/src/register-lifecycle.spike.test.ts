@@ -545,7 +545,7 @@ describe('T1.R spike: payloads keyed by block id, deleted and restored only by t
     } finally { ada.dispose(); ben.dispose(); }
   });
 
-  it('control: V1 already removes a peer\'s text in a paragraph whose creation is undone, and redo restores it', () => {
+  it('control: V1 already removes a peer\'s text in a paragraph whose creation is undone, and redo does not restore it', () => {
     const server = seededServer();
     const ada = join(server);
     const ben = join(server);
@@ -559,7 +559,7 @@ describe('T1.R spike: payloads keyed by block id, deleted and restored only by t
       expect(ben.paragraphs()).toEqual(['Intro.', 'Outro.']);
       ada.undo.redo();
       sync(server, ada, ben);
-      expect(ben.paragraphs()).toEqual(['Intro.', 'Ada para ben', 'Outro.']);
+      expect(ben.paragraphs(), "the peer's characters are gone for good (an m1 gap for every text block)").toEqual(['Intro.', 'Ada para', 'Outro.']);
     } finally { ada.dispose(); ben.dispose(); }
   });
 
@@ -668,11 +668,20 @@ describe('T1.R spike: payloads keyed by block id, deleted and restored only by t
     try {
       ada.insertBlocks(200);
       sync(server, ada, ben);
-      for (const step of [() => ben.type(57, 0, 'x'), () => ada.remove(3), () => ada.moveToEnd(120)]) {
-        server.stats.evaluated = 0;
+      server.stats.evaluated = 0;
+      ben.type(57, 0, 'x');
+      sync(server, ada, ben);
+      expect(server.stats.evaluated, 'an edit').toBe(1);
+      // V1 rewrites more than the moved node (a move recreates every later sibling), so the janitor's work is the
+      // elements V1 actually rewrote, never the note.
+      for (const [step, reclaimed] of [[() => ada.remove(3), 1], [() => ada.moveToEnd(120), 0]] as const) {
+        const before = ada.elements();
+        Object.assign(server.stats, { evaluated: 0, reclaimed: 0, revived: 0 });
         step();
         sync(server, ada, ben);
-        expect(server.stats.evaluated).toBe(1);
+        const after = new Set(ada.elements());
+        expect(server.stats.evaluated).toBe(before.filter((element) => !after.has(element)).length);
+        expect([server.stats.reclaimed, server.stats.revived]).toEqual([reclaimed, 0]);
       }
       expect(ada.texts()).toHaveLength(199);
     } finally { ada.dispose(); ben.dispose(); }
