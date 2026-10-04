@@ -38,6 +38,7 @@ export const VET_LIMITS: VetLimits = { structs: 20_000, types: 2_000 };
 
 const BODY = 'root';
 const REGISTERS = 'registers';
+const REG_ID = '__regId';
 const VET_ORIGIN = Symbol('suggest-vet');
 
 class Refusal extends Error {
@@ -212,6 +213,29 @@ function vet(transaction: Y.Transaction, options: VetOptions): { inserts: IdSpan
     if (key === undefined) rootCache.set(at, (key = Y.findRootTypeKey(at)));
     return key;
   };
+  // A decorator's payload lives in the register its `__regId` names, not under the decorator. An own decorator may stop
+  // showing a register only when nothing live in it is someone else's, and may show only a register of its own.
+  const registers = transaction.doc.share.get(REGISTERS) as Type | undefined;
+  const holdsForeign = (key: string | null): boolean => {
+    const entry = key === null ? undefined : registers?._map.get(key);
+    if (!entry || entry.deleted) return false;
+    if (!isOwn(entry)) return true;
+    const stack: Type[] = entry.content instanceof Y.ContentType ? [entry.content.type as Type] : [];
+    for (let type = stack.pop(); type; type = stack.pop()) {
+      const items: Y.Item[] = [...type._map.values()];
+      for (let item = type._start; item; item = item.right) items.push(item);
+      for (const item of items) {
+        if (item.deleted) continue;
+        for (let i = 0; i < item.length; i++) if (!isOwnClock(item, item.id.clock + i)) return true;
+        if (item.content instanceof Y.ContentType) stack.push(item.content.type as Type);
+      }
+    }
+    return false;
+  };
+  const claim = (key: string | null): void => {
+    const entry = key === null ? undefined : registers?._map.get(key);
+    if (entry && !entry.deleted && !isOwn(entry)) throw new Refusal('mutate-original');
+  };
   const parentOf = (item: Y.Item): Type => {
     if (!(item.parent instanceof Y.AbstractType)) throw new Refusal('unresolvable');
     return item.parent as Type;
@@ -277,15 +301,29 @@ function vet(transaction: Y.Transaction, options: VetOptions): { inserts: IdSpan
         throw new Refusal('mutate-original');
       }
       if (!isOwn(holder)) throw new Refusal('mutate-original');
+      if (key === REG_ID) {
+        if (holdsForeign(regIdOf(previous))) throw new Refusal('mutate-original');
+        claim(regIdOf(current));
+      }
       if (!(type instanceof Y.Map)) ownBlocksChanged.push(type);
     }
   }
+  // A deleted decorator takes its register's content out of the document with it; a new one shows its register.
+  for (const item of deleted) {
+    if (item.content instanceof Y.ContentType && holdsForeign(regIdOf(liveEntry(item.content.type as Type, REG_ID, liveBefore)))) {
+      throw new Refusal('delete-original');
+    }
+  }
+  for (const item of fresh) {
+    if (!item.deleted && item.content instanceof Y.ContentType) claim(regIdOf(liveEntry(item.content.type as Type, REG_ID, (entry) => !entry.deleted)));
+  }
 
-  // The body in document order, over the top-level blocks the frame touched. Before: every original unit (a character
-  // with its format, or an embed) live before. After: the original units live after and every fresh unit. Each original
-  // must still be there, in order, with the same format; an original character may be deleted only as half of a split
-  // (Enter mid-paragraph, a soft break, a run formatted mid-word, or undoing one), by matching a fresh copy with the
-  // same character and format at its place in document order, and the copy stays original. A character's format is
+  // The body in document order, over the top-level blocks the frame touched, with every other block as a barrier
+  // between them. Before: every original unit (a character with its format, or an embed) live before. After: the
+  // original units live after and every fresh unit. Each original must still be there, in order, with the same format;
+  // an original character may be deleted only as half of a split (Enter mid-paragraph, a soft break, a run formatted
+  // mid-word, or undoing one), by matching a fresh copy with the same character and format at its place in document
+  // order, before the next unit that existed before (a block untouched or the author's own), and the copy stays original. A character's format is
   // its text map's values, its depth and the attributes of every block around it; a copy's block may differ from the
   // original's only as Lexical's Enter makes it (enterMakes), or back again when the copy goes into an existing
   // original block (an undo, or a join back).
@@ -300,13 +338,15 @@ function vet(transaction: Y.Transaction, options: VetOptions): { inserts: IdSpan
         if (enterMakes(o.block, p.block)) return true;
         return !isFresh(p.container) && !isOwn(p.container) && enterMakes(p.block, o.block);
       };
+      // The author's own units take part as positions only: deleting them is allowed and their format is theirs, but a
+      // copy is never matched across one that stays.
       const { pre, post } = units(body, window, liveBefore, isFresh);
-      align(pre.filter((unit) => !ownUnit(unit)), post.filter((unit) => unit.fresh || !ownUnit(unit)), {
-        wanted: () => true,
+      align(pre, post, {
+        wanted: (o) => !ownUnit(o),
         // An embed is never a copy.
         same: (o, p) => o.char !== null && p.char === o.char && p.text === o.text && sameBlock(o, p),
         kept: (o, p) => {
-          if (p.fmt !== o.fmt) throw new Refusal('mutate-original');
+          if (!ownUnit(o) && p.fmt !== o.fmt) throw new Refusal('mutate-original');
         },
         matched: (_o, p) => {
           copies.add(keyOf(p));
@@ -338,6 +378,21 @@ function vet(transaction: Y.Transaction, options: VetOptions): { inserts: IdSpan
     }
   }
   return { inserts, moved: spansOf(copies) };
+}
+
+/** The map entry `key` of `type` as of the `include`d items. */
+function liveEntry(type: Type, key: string, include: (item: Y.Item) => boolean): Y.Item | null {
+  let item: Y.Item | null = type._map.get(key) ?? null;
+  while (item && !include(item)) item = item.left;
+  return item;
+}
+
+/** The register key a `__regId` entry names, or null. */
+function regIdOf(item: Y.Item | null): string | null {
+  if (!item || item.content instanceof Y.ContentDeleted || item.content instanceof Y.ContentType) return null;
+  const values = item.content.getContent();
+  const value = values[values.length - 1];
+  return typeof value === 'string' && value !== '' ? value : null;
 }
 
 /** A map entry's value as comparable text: a type-valued entry by its item's identity, an absent one as null. */
@@ -393,13 +448,22 @@ function enterMakes(from: Attrs, to: Attrs): boolean {
   return false;
 }
 
-/** The units of the `window` blocks, in document order, before and after the transaction. */
+/**
+ * The units of the `window` blocks, in document order, before and after the transaction. Every other live top-level
+ * item is one barrier unit on both sides, so a copy is never matched across a block the frame did not touch.
+ */
 function units(body: Type, window: ReadonlySet<Y.Item>, liveBefore: (item: Y.Item) => boolean, isFresh: (item: Y.Item) => boolean) {
   const pre: Unit[] = [];
   const post: Unit[] = [];
   const liveAfter = (item: Y.Item) => !item.deleted;
   for (let top = body._start; top; top = top.right) {
-    if (!window.has(top)) continue;
+    if (!window.has(top)) {
+      if (top.deleted) continue; // untouched, so deleted before the frame too
+      const barrier: Unit = { client: top.id.client, clock: top.id.clock, item: top, fresh: false, char: null, text: null, fmt: null, gov: null, container: null, block: null, blockKey: null };
+      pre.push(barrier);
+      post.push(barrier);
+      continue;
+    }
     if (liveBefore(top)) flatten([top], liveBefore, isFresh, pre);
     if (liveAfter(top)) flatten([top], liveAfter, isFresh, post);
   }
@@ -487,9 +551,21 @@ export function rejectPlan(doc: Y.Doc, inserts: readonly IdSpan[]): IdSpan[] {
     registerForeign.set(key, false);
     const entry = registers?._map.get(key);
     if (!entry || entry.deleted) return false;
-    const foreign = entry.content instanceof Y.ContentType ? visit(entry.content.type as Type) : false;
+    const foreign = entry.content instanceof Y.ContentType ? visitRegisterType(entry.content.type as Type) : false;
     if (own(entry.id) && !foreign) remove.add(keyOf(entry.id));
     registerForeign.set(key, foreign);
+    return foreign;
+  };
+  /** A register's sequence and its per-key entries (a Y.Map register, A§10.10): the author's go unless they hold another's. */
+  const visitRegisterType = (type: Type): boolean => {
+    let foreign = visit(type);
+    for (const entry of type._map.values()) {
+      if (entry.deleted) continue;
+      const inner = entry.content instanceof Y.ContentType && visitRegisterType(entry.content.type as Type);
+      if (!own(entry.id)) foreign = true;
+      else if (!inner) remove.add(keyOf(entry.id));
+      if (inner) foreign = true;
+    }
     return foreign;
   };
   const registerOf = (type: Type): string | null => {
