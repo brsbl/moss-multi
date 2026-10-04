@@ -439,11 +439,12 @@ function mapThroughFrame(before: Projection, after: Projection, range: Range): R
 
 /** The outermost deleted block holding a range's start, and the range's offset in it, so a restore of it can be found. */
 function deletedBlock(before: Projection, range: Range): TreeAnchor['block'] {
+  // Walk the types, not their items' content: a deleted block's item content is already garbage-collected.
   let top: Y.XmlText | null = null;
-  let item: Y.Item | null = sideAt(before, range.start, 0)?.type._item ?? null;
-  while (item) {
-    if (item.deleted && item.content instanceof Y.ContentType && item.content.type instanceof Y.XmlText) top = item.content.type;
-    item = item.parent instanceof Y.AbstractType ? item.parent._item : null;
+  let type: unknown = sideAt(before, range.start, 0)?.type;
+  while (type instanceof Y.AbstractType && type._item) {
+    if (type._item.deleted && type instanceof Y.XmlText) top = type;
+    type = type._item.parent;
   }
   const start = top ? before.starts.get(top) : undefined;
   return top?._item && start !== undefined ? { client: top._item.id.client, clock: top._item.id.clock, offset: range.start - start } : undefined;
