@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 42% done** (31 of 73 planned tasks verified)
+**Overall: 44% done** (32 of 73 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 17 / 17 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 10 / 11 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 3 / 9 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 1 / 9 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 2 / 9 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
@@ -49,6 +49,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-03 — T1.9 verified: code, HTML and formula blocks now keep their text in shared registers, so two people typing in the same block merge live in both engines, drafts survive reloads and imports, and Cmd+Z inside a block undoes only that person's edits to it.
 - 2026-10-04 — T2.2 verified: anyone can create, rename and move folders and move notes between them from the web sidebar, editors included in a shared vault; deleting a folder sends its whole subtree to trash as one batch, and a peer with a note open inside it goes terminal in place.
 - 2026-10-04 — T3.5 verified: a vault owner can create a vault inline from the switcher, rename it and move it to trash behind a confirmation; a person granted the vault root sees it with a role badge, and a member is offered no vault actions.
+- 2026-10-04 — T3.4 verified: a person can search the body text of every note they can access and see snippets, never a note they cannot; a note shows its backlinks, and wiki links resolve by title or filename or show an honest unresolved state.
 
 ## T1.1s identity audit
 
@@ -107,7 +108,8 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - The sign-up "too short" error does not say how long a password must be → T0.10
 - Switching to "Create an account" leaves focus on the toggle link → T0.10
 - A wrong password logs a browser console error → T0.10 (only if the zero-console-error invariant should cover the auth error path)
-- Sidebar search matches titles only; body search belongs to M3. Live title matching is bound in T1.4.
+- Sidebar search matches titles only; body search belongs to M3. Live title matching is bound in T1.4. Closed by T3.4: body search through the SearchDO.
+- T3.4 checker P2s left open: backlinks reach only notes in the listing (a note opened by URL outside it gets none) and have no backfill for docs the index lacks → search follow-up; `notes.search` with `searchTrashed` returns [] → T2.3's trash surface.
 - Sign-out leaves the session's other live doc sockets reading and writing → T2.5
 - The wrangler ProxyWorker patch replays non-idempotent requests after an ambiguous failure → T0.9b follow-up (stack infra)
 - `qa.mjs close` forgets the session even when closing it failed → tooling follow-up

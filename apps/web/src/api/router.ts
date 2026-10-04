@@ -9,6 +9,7 @@ import { ASSET_ROUTE, handleAssets } from './assets.ts';
 import { handleDocs, type DocsEnv } from './docs.ts';
 import { feedback } from './feedback.ts';
 import { handleFolderRoutes } from './folders.ts';
+import { handleSearchRoutes } from './search.ts';
 import { handleVaults } from './vault-routes.ts';
 import { workspace } from './workspace.ts';
 
@@ -24,7 +25,7 @@ async function me(request: Request, env: AuthEnv): Promise<Response> {
   return json({ principal: { type, id, name, email } }, 200, NO_STORE);
 }
 
-export type ApiEnv = DocsEnv & Partial<Pick<AppEnv, 'PrincipalDO'>>;
+export type ApiEnv = DocsEnv & Partial<Pick<AppEnv, 'PrincipalDO' | 'SearchDO'>>;
 
 export async function handleApi(request: Request, env: ApiEnv): Promise<Response> {
   // The origin gate (A§18) before any mutation; a read resolves no principal here.
@@ -38,6 +39,8 @@ export async function handleApi(request: Request, env: ApiEnv): Promise<Response
   if (ASSET_ROUTE.test(pathname)) {
     return env.ASSETS ? handleAssets(request, { ...env, ASSETS: env.ASSETS }) : json({ error: 'unavailable' }, 503, NO_STORE);
   }
+  const searched = handleSearchRoutes(request, env);
+  if (searched) return searched;
   if (pathname === '/api/vaults' || pathname.startsWith('/api/vaults/')) return handleVaults(request, env);
   const isFolders = pathname === '/api/folders' || pathname.startsWith('/api/folders/');
   if (pathname === '/api/docs' || pathname.startsWith('/api/docs/') || isFolders) {
