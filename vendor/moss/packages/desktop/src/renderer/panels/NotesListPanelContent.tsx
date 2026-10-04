@@ -1337,7 +1337,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
           </ContextMenuTrigger>
           <ContextMenuContent>
             {/* moss-multi seam: folder-menu (A§2.2: the folder "Share..." item slot) */}
-            {mutable && <FolderMenuItems folderPath={folder.path} />}
+            <FolderMenuItems folderPath={folder.path} />
             {/* moss-multi seam: hide-registry (A§9) */}
             {hidden('reveal-in-finder') ? null : (
             <ContextMenuItem onSelect={() => handleShowFolderInFinder(folder.path)}>

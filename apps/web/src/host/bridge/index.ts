@@ -38,7 +38,7 @@ export interface ApiDoc {
 export const WORKSPACE = Symbol('workspace');
 
 export interface Vault { id: string; name: string; role?: string; owned?: boolean }
-export interface WorkspaceFolder { id: string; name: string; path: string; surfaced: boolean; createdAt: number; noteCount: number }
+export interface WorkspaceFolder { id: string; name: string; path: string; role?: string; surfaced: boolean; createdAt: number; noteCount: number }
 /** `GET /api/workspace`: the active vault and its docs. */
 export interface WorkspaceListing {
   vault: Vault;
@@ -57,8 +57,10 @@ export interface BrowserHooks {
 }
 
 export interface BridgeOptions {
-  /** The current path; `/d/$docId` names moss's window-context startup note (A§4.2). */
+  /** The current path; `/d/$docId` names moss's window-context startup note, `/f/$folderId` the folder to reveal (A§4.2). */
   pathname: () => string;
+  /** The share token this tab was opened with (`?share=`), threaded through every read (A§18). */
+  share?: () => string | null;
   subscribeWorkspace?: (receive: (event: WorkspaceEvent) => void, pause: () => void) => () => void;
   fetch?: typeof fetch;
   storage?: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> | null;
@@ -108,6 +110,11 @@ export function docIdFromPath(pathname: string): string | null {
   return match ? decodeURIComponent(match[1]) : null;
 }
 
+export function folderIdFromPath(pathname: string): string | null {
+  const match = /^\/f\/([^/]+)\/?$/.exec(pathname);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
 export function toNoteMetadata(doc: ApiDoc): NoteMetadata {
   return {
     id: doc.id,
@@ -142,9 +149,19 @@ const inertBrowser: BrowserHooks = {
   copy: async () => undefined,
 };
 
-export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis), storage = null, browser = inertBrowser, subscribeWorkspace: subscribe }: BridgeOptions) {
+export function createBridge({ pathname, share = () => null, fetch: fetcher = fetch.bind(globalThis), storage = null, browser = inertBrowser, subscribeWorkspace: subscribe }: BridgeOptions) {
   const request = (path: string, init: RequestInit = {}) =>
     fetcher(path, { credentials: 'same-origin', ...init, headers: { accept: 'application/json', ...init.headers } });
+  /** Workspace reads carry the tab's share token, so a link holder's listing is the link's (T2.4). */
+  const listingRequest = (path: string) => {
+    const token = share();
+    return request(path, token ? { headers: { 'x-moss-share': token } } : {});
+  };
+  /** A path in this tab keeps its share token, so a reload or a reconnect still presents it. */
+  const withShare = (path: string) => {
+    const token = share();
+    return token ? `${path}?share=${encodeURIComponent(token)}` : path;
+  };
 
   // Every doc this tab has seen, from the listing or from a create; the listing promise is the boot read.
   const known = new Map<string, NoteMetadata>();
@@ -166,12 +183,13 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
   };
   let refreshAll = false;
   const pendingIds = new Set<string>();
-  const load = (vaultId: string | null, docId: string | null = null): Promise<NoteMetadata[]> => {
+  const load = (vaultId: string | null, docId: string | null = null, folderId: string | null = null): Promise<NoteMetadata[]> => {
     const version = ++loadVersion;
     const query = new URLSearchParams();
     if (vaultId) query.set('vault', vaultId);
     if (docId) query.set('doc', docId);
-    const pending: Promise<NoteMetadata[]> = request(`/api/workspace${query.size ? `?${query}` : ''}`).then(async (response) => {
+    if (folderId) query.set('folder', folderId);
+    const pending: Promise<NoteMetadata[]> = listingRequest(`/api/workspace${query.size ? `?${query}` : ''}`).then(async (response) => {
       if (!response.ok) throw new Error(`GET /api/workspace: ${response.status}`);
       const data = (await response.json()) as WorkspaceListing;
       if (version !== loadVersion) return listing ?? [];
@@ -211,7 +229,7 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
         const vault = workspaceSnapshot.vault.id;
         const query = new URLSearchParams({ vault });
         if (!full) for (const id of ids) query.append('ids', id);
-        const response = await request(`/api/workspace?${query}`);
+        const response = await listingRequest(`/api/workspace?${query}`);
         if (!response.ok) throw new Error(`GET /api/workspace: ${response.status}`);
         const data = await response.json() as WorkspaceListing;
         if (generation !== channelGeneration) break;
@@ -269,7 +287,9 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
     return pinnedAt ? { ...note, pinned: true, pinnedAt } : note;
   };
   const notes = () => {
-    return (listing ?? load(workspaceSnapshot?.vault.id ?? storedVault(), workspaceSnapshot ? null : docIdFromPath(pathname()))).then((docs) => docs.map(withLocal));
+    const first = !workspaceSnapshot;
+    return (listing ?? load(workspaceSnapshot?.vault.id ?? storedVault(), first ? docIdFromPath(pathname()) : null, first ? folderIdFromPath(pathname()) : null))
+      .then((docs) => docs.map(withLocal));
   };
   const byId = async (id: string): Promise<NoteMetadata | undefined> => {
     if (!known.has(id)) await notes();
@@ -316,6 +336,12 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
       surfacedShared: (id: string) => workspaceSnapshot?.docs.some((doc) => doc.id === id && doc.surfaced) ?? false,
       surfacedFolder: (path: string) => workspaceSnapshot?.folders?.some((folder) => folder.surfaced &&
         (path === folder.path || path.startsWith(`${folder.path}/`))) ?? false,
+      /** The listed folder at a moss path, with the caller's role on it. */
+      folderAt: (path: string) => workspaceSnapshot?.folders?.find((folder) => folder.path === path) ?? null,
+      /** The listed folder with this id; the active vault itself is `Notes`. */
+      folderById: (id: string) => (workspaceSnapshot?.vault.id === id
+        ? { id, name: workspaceSnapshot.vault.name, path: ROOT_FOLDER }
+        : workspaceSnapshot?.folders?.find((folder) => folder.id === id) ?? null),
     },
     notes: {
       getAll: () => notes(),
@@ -478,7 +504,7 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
       // The address follows the focused note, so a reload or a copied URL reopens it (A§4.2).
       setFocusedNoteId: async (id: string | null) => {
         if (id && docIdFromPath(pathname()) !== id) {
-          browser.replacePath(`/d/${encodeURIComponent(id)}`);
+          browser.replacePath(withShare(`/d/${encodeURIComponent(id)}`));
           await refreshForNavigation(id);
         }
       },
@@ -569,6 +595,7 @@ function windowBrowser(): BrowserHooks {
 /** Installs the bridge on `window` before App's module evaluates (A§4.3). */
 export function installBridge(authStore: import('../auth-state.ts').AuthStore): Bridge {
   const bridge = createBridge({ pathname: () => window.location.pathname, storage: localStorageOrNull(), browser: windowBrowser(),
+    share: () => new URLSearchParams(window.location.search).get('share'),
     subscribeWorkspace: (receive, pause) => subscribeWorkspace({
       onPause: pause,
       auth: authStore,

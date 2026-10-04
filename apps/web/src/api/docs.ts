@@ -1,7 +1,7 @@
 // /api/docs. POST writes the D1 row in a folder the caller may edit, then DocDO.create seeds the doc (A§9 "+ Note").
-// GET /api/docs/:id is the doc and the caller's role on it; /members is the members API (members.ts); GET
-// /api/docs/:id/instance is the owner-only DO probe (A§19), which reads nothing from the doc. A missing doc and one the
-// caller cannot open get the same 404 on every route (A§8).
+// GET /api/docs/:id is the doc and the caller's role on it; /members is the members API (members.ts) and /links the
+// share links (links.ts); GET /api/docs/:id/instance is the owner-only DO probe (A§19), which reads nothing from the
+// doc. A missing doc and one the caller cannot open get the same 404 on every route (A§8).
 import { eq } from 'drizzle-orm';
 import { getServerByName } from 'partyserver';
 import { MARKDOWN_CAP_BYTES } from '@moss-multi/protocol/limits';
@@ -13,14 +13,16 @@ import { docs } from '../db/schema.ts';
 import type { AppEnv } from '../env.ts';
 import { json } from '../worker/route.ts';
 import { resolveDocAccess, resolveFolderAccess } from './access.ts';
-import { handleMembers } from './members.ts';
+import { handleLinks } from './links.ts';
+import { handleMembers, type MembersEnv } from './members.ts';
 import { NO_STORE, notFound, readJsonObject, unauthenticated } from './respond.ts';
 import { ensureDefaultVault } from './vaults.ts';
 
-export type DocsEnv = AuthEnv & Pick<AppEnv, 'DocDO'>;
+export type DocsEnv = AuthEnv & Pick<AppEnv, 'DocDO'> & MembersEnv;
 
 const DOC = /^\/api\/docs\/([^/]+)$/;
 const MEMBERS = /^\/api\/docs\/([^/]+)\/members$/;
+const LINKS = /^\/api\/docs\/([^/]+)\/links(?:\/([^/]+))?$/;
 const INSTANCE = /^\/api\/docs\/([^/]+)\/instance$/;
 
 export interface DocRecord {
@@ -162,6 +164,8 @@ export async function handleDocs(request: Request, env: DocsEnv): Promise<Respon
   if (doc) return request.method === 'PATCH' ? renameDoc(request, env, doc[1]) : only('GET', request, () => readDoc(request, env, doc[1]));
   const members = MEMBERS.exec(pathname);
   if (members) return handleMembers(request, env, { type: 'doc', id: members[1] });
+  const links = LINKS.exec(pathname);
+  if (links) return handleLinks(request, env, { type: 'doc', id: links[1] }, links[2] ?? null);
   const accessMatch = /^\/api\/docs\/([^/]+)\/access$/.exec(pathname);
   if (accessMatch) {
     if (request.method !== 'GET') return json({ error: 'method-not-allowed' }, 405, { allow: 'GET' });

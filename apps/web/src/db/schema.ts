@@ -4,8 +4,9 @@ import { sql } from 'drizzle-orm';
 import {
   check, index, integer, primaryKey, sqliteTable, text, uniqueIndex, type AnySQLiteColumn,
 } from 'drizzle-orm/sqlite-core';
-// Grantable roles, from the one roles module; the owner is never stored, it derives from owner_user_id.
-import { MEMBER_ROLES } from '@moss-multi/protocol/roles';
+// Roles from the one roles module: links stop at editor; a grant or invite may make a co-owner (the vault owner
+// itself is never stored, it derives from owner_user_id).
+import { GRANT_ROLES, MEMBER_ROLES } from '@moss-multi/protocol/roles';
 
 const now = () => new Date();
 
@@ -171,7 +172,7 @@ export const docMembers = sqliteTable(
     docId: text('doc_id').notNull().references(() => docs.id, { onDelete: 'cascade' }),
     principalId: text('principal_id').notNull(),
     principalType: text('principal_type', { enum: PRINCIPAL_TYPES }).notNull(),
-    role: text('role', { enum: MEMBER_ROLES }).notNull(),
+    role: text('role', { enum: GRANT_ROLES }).notNull(),
     addedBy: text('added_by').notNull(),
     createdAt: integer('created_at').notNull(),
   },
@@ -185,7 +186,7 @@ export const folderMembers = sqliteTable(
     folderId: text('folder_id').notNull().references(() => folders.id, { onDelete: 'cascade' }),
     principalId: text('principal_id').notNull(),
     principalType: text('principal_type', { enum: PRINCIPAL_TYPES }).notNull(),
-    role: text('role', { enum: MEMBER_ROLES }).notNull(),
+    role: text('role', { enum: GRANT_ROLES }).notNull(),
     addedBy: text('added_by').notNull(),
     createdAt: integer('created_at').notNull(),
   },
@@ -215,7 +216,7 @@ export const invites = sqliteTable(
     email: text('email').notNull(),
     targetType: text('target_type', { enum: TARGET_TYPES }).notNull(),
     targetId: text('target_id').notNull(),
-    role: text('role', { enum: MEMBER_ROLES }).notNull(),
+    role: text('role', { enum: GRANT_ROLES }).notNull(),
     invitedBy: text('invited_by').notNull(),
     createdAt: integer('created_at').notNull(),
     acceptedAt: integer('accepted_at'),
