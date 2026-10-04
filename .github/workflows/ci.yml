@@ -146,7 +146,8 @@ jobs:
           GOLDEN_OUT: ${{ runner.temp }}/converter-goldens
           # The last closed milestone: bridge-inventory and hide-registry entries staged to it fail (A§9).
           TRACE_MILESTONE: ${{ needs.plan.outputs.trace_milestone }}
-      # SP2: the converter bundled as a Worker under wrangler dev; the table lands in the job summary.
+      # SP2: the converter bundled as a Worker under wrangler dev, and T1.F2: payload frames through the real DocDO;
+      # the table lands in the job summary.
       - name: Converter in workerd (SP2)
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: node scripts/measure-converter.mjs

@@ -479,7 +479,9 @@ describe('T1.F2 security: no reveal by naming, no cap bypass, bounded work @p:co
       await syncAll(ada, cat, dan);
       await syncAll(ada, cat, dan);
       expect(ada.texts().sort()).toContain('NAMED-secret');
-      expect(await lateReader(opened), "the deleter's undo reveals it, one element per id").toEqual(['NAMED-secret']);
+      // The forgers' blocks were pointed at fresh, empty payloads, so they stay as empty blocks of their own.
+      expect(opened.dobj.payloadWork.renamed, 'each forged element was renamed').toBeGreaterThanOrEqual(2);
+      expect((await lateReader(opened)).sort(), "the deleter's undo reveals it, one element per id").toEqual(['', '', 'NAMED-secret']);
       cat.dispose();
       dan.dispose();
       demoted.dispose();
@@ -660,7 +662,7 @@ describe('T1.F2 checker regressions @p:col-1 @p:tech-8', () => {
     const covering = received.map((ack) => ack.p?.[id]).filter((ack) => ack !== undefined);
     const last = covering.at(-1);
     if (!last) return false;
-    const deletes = Y.mergeDeleteSets(covering.map((ack) => Y.decodeSnapshot(base64ToBytes(ack.ds)).ds));
+    const deletes = Y.mergeDeleteSets(covering.map((ack) => (ack.ds ? Y.decodeSnapshot(base64ToBytes(ack.ds)).ds : Y.createDeleteSet())));
     const covered = Y.createSnapshot(deletes, Y.decodeStateVector(base64ToBytes(last.sv)));
     return Y.snapshotContainsUpdate(covered, Y.mergeUpdates(client.written.get(id) ?? []));
   }

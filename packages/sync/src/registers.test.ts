@@ -303,6 +303,38 @@ describe('L4 decorator registers @p:col-1 @p:col-3 @p:tech-1', () => {
       expect(Buffer.from(bytes).includes('stored code')).toBe(false);
     } finally { legacy.destroy(); restored.destroy(); }
   });
+
+  it('a pre-register note migrated by M1 (id set, legacy attribute kept) keeps no legacy text after this migration', () => {
+    // M1's migrateRegisters set __regId and left the legacy attribute; the register later diverged from it.
+    const m1 = new Y.Doc();
+    const root = m1.get('root', Y.XmlText);
+    const make = (index: number, attrs: Record<string, unknown>) => {
+      const block = new Y.XmlElement('code-block');
+      root.insertEmbed(index, block);
+      for (const [key, value] of Object.entries({ __type: 'code-block', __language: 'plaintext', __commentIds: [], ...attrs })) block.setAttribute(key, value as never);
+    };
+    m1.transact(() => {
+      make(0, { __regId: 'code:1', __code: 'STALE-legacy' });
+      make(1, { __regId: 'code:2', __code: 'ATTR-only' });
+      m1.getMap<Y.Text>('registers').set('code:1', new Y.Text('edited in the register'));
+    });
+    const restored = new Y.Doc();
+    try {
+      Y.applyUpdate(restored, Y.encodeStateAsUpdate(m1));
+      const host = payloadDocsFor(restored);
+      const write = (id: string, text: string) => { const doc = host.hold(id); payloadText(doc).insert(0, text); };
+      expect(migratePayloads(restored, write)).toBe(true);
+      const nodes = restored.get('root', Y.XmlText).toDelta().map((op: { insert: Y.XmlElement }) => op.insert);
+      for (const node of nodes) expect(node.getAttribute('__code'), 'no legacy attribute survives').toBeUndefined();
+      const bytes = Buffer.from(Y.encodeStateAsUpdate(restored));
+      expect(bytes.includes('STALE-legacy') || bytes.includes('ATTR-only') || bytes.includes('edited in the register')).toBe(false);
+      const markdown = exportDocMarkdown(restored);
+      expect(markdown).toContain('edited in the register');
+      expect(markdown, 'an id with no register keeps its attribute text as its payload').toContain('ATTR-only');
+      expect(markdown).not.toContain('STALE-legacy');
+      expect(migratePayloads(restored, write)).toBe(false);
+    } finally { m1.destroy(); restored.destroy(); }
+  });
 });
 
 describe('register refresh cost @p:col-1 @p:tech-8', () => {
