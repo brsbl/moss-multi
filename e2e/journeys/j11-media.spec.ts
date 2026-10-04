@@ -232,6 +232,11 @@ test('j11-media: a copied note keeps its media in its folder and in the copier\'
   const ada = await openShell(actors, 'ada');
   const benPrincipal = await actors.principal('ben');
   const docId = await newNote(ada, 'Media to copy');
+  // Every read of the clip, the poster's and the player's (WebKit's player may reuse what the poster read).
+  const partial: number[] = [];
+  ada.page.on('response', (response) => {
+    if (new URL(response.url()).pathname.endsWith(`/assets/${WEBM.name}`)) partial.push(response.status());
+  });
   expect(await drop(ada, docId, [PNG, WEBM])).toBe(true);
   await expectImagesDecode(ada, docId, 1);
   await expectVideos(ada, docId, 1);
@@ -239,15 +244,11 @@ test('j11-media: a copied note keeps its media in its folder and in the copier\'
 
   // The video plays from the asset route, which answers the player's Range requests with 206.
   await expectPoster(ada, docId);
-  const partial: number[] = [];
-  ada.page.on('response', (response) => {
-    if (response.url().includes(`/assets/${WEBM.name}`) && response.request().resourceType() === 'media') partial.push(response.status());
-  });
   await videos(ada, docId).click();
   const player = ui.body(ada, docId).locator('video:not([data-video-thumbnail-state])');
   await expect.poll(() => player.evaluate((video: HTMLVideoElement) => video.readyState), { message: 'the video has frames', timeout: UPLOAD_TIMEOUT })
     .toBeGreaterThanOrEqual(2);
-  expect(partial.length, 'the player read the video from the asset route').toBeGreaterThan(0);
+  expect(partial.length, 'the clip was read from the asset route').toBeGreaterThan(0);
   expect(partial.every((status) => status === 200 || status === 206), 'every media read succeeded').toBe(true);
   // Chromium's player always reads in ranges; WebKit may read a small file whole.
   if (browserName === 'chromium') expect(partial, "the player's reads are ranged").toContain(206);
