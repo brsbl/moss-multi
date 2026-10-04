@@ -1,7 +1,44 @@
 diff --git a/packages/desktop/src/renderer/editor/components/FrontmatterHeader.tsx b/packages/desktop/src/renderer/editor/components/FrontmatterHeader.tsx
 --- a/packages/desktop/src/renderer/editor/components/FrontmatterHeader.tsx
 +++ b/packages/desktop/src/renderer/editor/components/FrontmatterHeader.tsx
-@@ -1326,6 +1326,8 @@ export function FrontmatterPropertyGrid({
+@@ -10,6 +10,7 @@ import {
+   type KeyboardEvent,
+ } from 'react';
+ import { Plus, X } from 'lucide-react';
++import { setPropertyDraft } from '@moss-multi/host/collab/frontmatter-binding'; // moss-multi seam: open-draft (A§10.4)
+ import { noteFrontmatterAtom, searchStateAtom, workspaceFrontmatterSuggestionsAtom } from '@moss/shared';
+ import { cn } from '@moss/shared/lib/utils';
+ import { Input } from '@moss/shared/components/ui/input';
+@@ -875,6 +876,7 @@ interface FrontmatterPropertyGridProps {
+   onAddFieldStart?: () => void;
+   onAddFieldEnd?: () => void;
+   addingField?: boolean;
++  onEditingFieldChange?: (field: string | null) => void; // moss-multi seam: open-draft (A§10.4)
+ }
+ 
+ export function FrontmatterPropertyGrid({
+@@ -888,6 +890,7 @@ export function FrontmatterPropertyGrid({
+   onAddFieldStart,
+   onAddFieldEnd,
+   addingField,
++  onEditingFieldChange,
+ }: FrontmatterPropertyGridProps) {
+   const isEditable = Boolean(onFieldChange);
+   const searchState = useAtomValue(searchStateAtom);
+@@ -954,6 +957,12 @@ export function FrontmatterPropertyGrid({
+     return result;
+   }, [entries, suggestionPools]);
+ 
++  // moss-multi seam: open-draft (A§10.4): the binding keeps this field's row while its draft is open
++  useEffect(() => {
++    onEditingFieldChange?.(editingField);
++  }, [editingField, onEditingFieldChange]);
++  useEffect(() => () => onEditingFieldChange?.(null), [onEditingFieldChange]);
++
+   useEffect(() => {
+     if (!editingField) {
+       return;
+@@ -1326,6 +1335,8 @@ export function FrontmatterPropertyGrid({
  
  interface FrontmatterHeaderProps {
    noteId: string;
@@ -10,7 +47,7 @@ diff --git a/packages/desktop/src/renderer/editor/components/FrontmatterHeader.t
    onFieldChange?: (field: string, value: unknown) => void;
    onTagClick?: (tag: string) => void;
    onFieldSearchClick?: (query: string) => void;
-@@ -1333,6 +1335,7 @@ interface FrontmatterHeaderProps {
+@@ -1333,6 +1344,7 @@ interface FrontmatterHeaderProps {
  
  export function FrontmatterHeader({
    noteId,
@@ -18,7 +55,20 @@ diff --git a/packages/desktop/src/renderer/editor/components/FrontmatterHeader.t
    onFieldChange,
    onTagClick,
    onFieldSearchClick,
-@@ -1398,7 +1401,7 @@ export function FrontmatterHeader({
+@@ -1348,6 +1360,12 @@ export function FrontmatterHeader({
+     },
+     [onFieldChange]
+   );
++  // moss-multi seam: open-draft (A§10.4): a peer's change never closes an open field or Add field row
++  const handleEditingFieldChange = useCallback((field: string | null) => setPropertyDraft(noteId, { key: field }), [noteId]);
++  useEffect(() => {
++    setPropertyDraft(noteId, { adding: addingField });
++    return () => setPropertyDraft(noteId, { adding: false });
++  }, [noteId, addingField]);
+ 
+   if (frontmatter === null) {
+     return null;
+@@ -1398,7 +1416,7 @@ export function FrontmatterHeader({
      orderedEntries.push([key, data[key]]);
    }
  
@@ -27,3 +77,11 @@ diff --git a/packages/desktop/src/renderer/editor/components/FrontmatterHeader.t
      if (key === 'created_date') return true;
      if (!KNOWN_KEYS.has(key)) return true;
      if (value === null || value === undefined || value === '') return false;
+@@ -1419,6 +1437,7 @@ export function FrontmatterHeader({
+         onAddFieldStart={() => setAddingField(true)}
+         onAddFieldEnd={() => setAddingField(false)}
+         addingField={addingField}
++        onEditingFieldChange={handleEditingFieldChange}
+       />
+     </section>
+   );
