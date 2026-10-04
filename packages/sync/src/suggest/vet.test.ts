@@ -626,10 +626,9 @@ describe('SP11 implicit deletes and governed text @p:mean-2', () => {
   it("formatting an own text node or block cannot change a peer's text governed by it", () => {
     const own = withOwnParagraph();
     try {
-      const bold = own.suggester.frame(() => { select(0, 4, 1).formatText('bold'); });
-      expect(own.s.vet(bold), 'a wholly own node').toMatchObject({ ok: true });
-      const centred = own.suggester.frame(() => { texts()[1].getParentOrThrow<ParagraphNode>().setFormat('center'); });
-      expect(own.s.vet(centred), 'a wholly own block').toMatchObject({ ok: true });
+      // A wholly own node and block: each lands (land throws on a refusal).
+      own.s.land(own.suggester.frame(() => { select(0, 4, 1).formatText('bold'); }));
+      own.s.land(own.suggester.frame(() => { texts()[1].getParentOrThrow<ParagraphNode>().setFormat('center'); }));
     } finally { own.suggester.dispose(); own.server.destroy(); }
     const setup = peerInsideOwn();
     try {
