@@ -81,6 +81,35 @@ test('j01 registers: simultaneous code typing merges live and undo keeps the pee
   }
 });
 
+test('j01 registers: open HTML drafts receive peer typing and local undo @p:col-1 @p:col-3', async ({ actors, stack }) => {
+  const { ada, ben, id } = await setup(actors, stack.baseUrl, '```moss-html\n<p>seed</p>\n```');
+  const field = (actor: Actor) => ui.body(actor, id).locator('textarea');
+  for (const actor of [ada, ben]) await ui.body(actor, id).getByTitle('Edit HTML', { exact: true }).click();
+  await Promise.all([ada.page.keyboard.type('AAAA', { delay: 60 }), ben.page.keyboard.type('BBBB', { delay: 60 })]);
+  for (const actor of [ada, ben]) {
+    await expect.poll(async () => (await field(actor).inputValue()).replace(/[^A]/g, '')).toBe('AAAA');
+    await expect.poll(async () => (await field(actor).inputValue()).replace(/[^B]/g, '')).toBe('BBBB');
+  }
+  await ada.page.keyboard.press('ControlOrMeta+z');
+  for (const actor of [ada, ben]) await expect(field(actor)).toHaveValue('<p>seed</p>BBBB');
+});
+
+test('j01 registers: a formula popover receives peer edits and undo keeps them @p:col-1 @p:col-3', async ({ actors, stack }) => {
+  const { ada, ben, id } = await setup(actors, stack.baseUrl, '{{2+3|5}}');
+  const field = (actor: Actor) => actor.page.getByPlaceholder('Formula', { exact: true });
+  for (const actor of [ada, ben]) {
+    await ui.body(actor, id).locator('[data-formula-node-key]').click();
+    await expect(field(actor)).toBeVisible();
+    await field(actor).press('End');
+  }
+  await ada.page.keyboard.type('+1');
+  await expect(field(ben)).toHaveValue('2+3+1');
+  await field(ben).press('End'); await ben.page.keyboard.type('+4');
+  await expect(field(ada)).toHaveValue('2+3+1+4');
+  await field(ada).press('ControlOrMeta+z');
+  for (const actor of [ada, ben]) await expect(field(actor)).toHaveValue('2+3+4');
+});
+
 test('j01 editing: concurrent typing, local undo and paste retain both authors @p:col-1 @p:col-3', async ({ actors, stack }) => {
   const { ada, ben, id } = await setup(actors, stack.baseUrl, 'Shared paragraph.');
   await Promise.all([paragraphEnd(ada, id), paragraphEnd(ben, id)]);

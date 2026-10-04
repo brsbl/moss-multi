@@ -142,14 +142,37 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
      setHasTextSelection(false);
      setIsEditing(false);
    }, [rawHtml]);
+@@ -424,7 +370,7 @@ function RawHtmlBlockquoteComponent({
+                   <div className="flex items-center gap-1">
+                     <MediaHeaderButton
+                       icon={X}
+-                      title="Cancel"
++                      title={registerDoc(editor) ? "Close" : "Cancel"}
+                       onClick={() => cancelEdit()}
+                     />
+                     <MediaHeaderButton
 @@ -453,6 +399,7 @@ function RawHtmlBlockquoteComponent({
                    </pre>
                    <textarea
                      ref={textareaRef}
-+                readOnly={!editor.isEditable()}
++                    readOnly={!editor.isEditable()}
                      value={localRawHtml}
                      onChange={(e) => {
                        setLocalRawHtml(e.target.value);
+@@ -480,11 +427,11 @@ function RawHtmlBlockquoteComponent({
+                   <span className="inline-flex items-center gap-1 align-middle">
+                     <KeyboardShortcut keys={['⌘', '⏎']} size="compact" />
+                   </span>{' '}
+-                  to save &middot;{' '}
++                  {registerDoc(editor) ? 'to finish' : 'to save'} &middot;{' '}
+                   <span className="inline-flex items-center gap-1 align-middle">
+                     <KeyboardShortcut keys={['Esc']} size="compact" />
+                   </span>{' '}
+-                  to cancel
++                  {registerDoc(editor) ? 'to close' : 'to cancel'}
+                 </div>
+               </div>
+             </div>
 @@ -553,11 +500,11 @@ function MossHtmlPreviewComponent({
    const [isSelected, setSelected, clearSelection] = useLexicalNodeSelection(nodeKey);
    const { handleDelete, handleGapClick } = useMediaNodeActions(nodeKey);
@@ -190,14 +213,37 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
      setHasTextSelection(false);
      setIsEditing(false);
    }, [rawHtml]);
+@@ -855,7 +802,7 @@ function MossHtmlPreviewComponent({
+         <div className="flex items-center gap-1">
+           <MediaHeaderButton
+             icon={X}
+-            title="Cancel"
++            title={registerDoc(editor) ? "Close" : "Cancel"}
+             onClick={() => cancelEdit()}
+           />
+           <MediaHeaderButton
 @@ -884,6 +831,7 @@ function MossHtmlPreviewComponent({
          </pre>
          <textarea
            ref={textareaRef}
-+                readOnly={!editor.isEditable()}
++          readOnly={!editor.isEditable()}
            value={localRawHtml}
            onChange={(e) => {
              setLocalRawHtml(e.target.value);
+@@ -911,11 +859,11 @@ function MossHtmlPreviewComponent({
+         <span className="inline-flex items-center gap-1 align-middle">
+           <KeyboardShortcut keys={['⌘', '⏎']} size="compact" />
+         </span>{' '}
+-        to save &middot;{' '}
++        {registerDoc(editor) ? 'to finish' : 'to save'} &middot;{' '}
+         <span className="inline-flex items-center gap-1 align-middle">
+           <KeyboardShortcut keys={['Esc']} size="compact" />
+         </span>{' '}
+-        to cancel
++        {registerDoc(editor) ? 'to close' : 'to cancel'}
+       </div>
+     </div>
+   );
 @@ -1108,204 +1056,14 @@ function MossHtmlPreviewComponent({
    );
  }

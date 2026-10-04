@@ -187,7 +187,7 @@ function CodeBlockComponent({
         return;
       }
 
-      // Escape to cancel
+      // Escape {registerDoc(editor) ? 'to close' : 'to cancel'}
       if (e.key === 'Escape') {
         e.preventDefault();
         e.stopPropagation();
@@ -414,11 +414,11 @@ function CodeBlockComponent({
               <span className="inline-flex items-center gap-1 align-middle">
                 <KeyboardShortcut keys={['⌘', '⏎']} size="compact" />
               </span>{' '}
-              to save &middot;{' '}
+              {registerDoc(editor) ? 'to finish' : 'to save'} &middot;{' '}
               <span className="inline-flex items-center gap-1 align-middle">
                 <KeyboardShortcut keys={['Esc']} size="compact" />
               </span>{' '}
-              to cancel
+              {registerDoc(editor) ? 'to close' : 'to cancel'}
             </div>
           )}
         </div>

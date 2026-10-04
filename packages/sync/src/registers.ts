@@ -9,6 +9,7 @@ export const REGISTER_FIELDS: Readonly<Record<string, string>> = {
 };
 type RegisterNode = LexicalNode & { __regId: string; [key: string]: unknown };
 const bindings = new WeakMap<LexicalEditor, Y.Doc>();
+const nodeDocs = new WeakMap<LexicalNode, Y.Doc>();
 let bindingCount = 0;
 
 export const registerDoc = (editor: LexicalEditor): Y.Doc | undefined => bindings.get(editor);
@@ -36,18 +37,25 @@ function currentDoc(): Y.Doc | undefined {
   // SerializedEditorState.toJSON() has no active editor; cached fields cover that read.
   try { return bindings.get($getEditor()); } catch { return undefined; }
 }
+/** Lexical also reads text while committing, outside an active-editor context. */
+export function initRegisterNode(node: LexicalNode): string {
+  const doc = currentDoc();
+  if (doc) nodeDocs.set(node, doc);
+  return '';
+}
 export function readRegister(node: LexicalNode, fallback: string): string {
   const id = (node as RegisterNode).__regId;
-  const text = id && currentDoc()?.getMap('registers').get(id);
-  return text instanceof Y.Text ? text.toString() : fallback;
+  const text = id && (nodeDocs.get(node) ?? currentDoc())?.getMap('registers').get(id);
+  return text instanceof Y.Text ? text.toString() : fallback ?? '';
 }
-export function writeRegister(node: LexicalNode, next: string): void {
+export function writeRegister(node: LexicalNode, next: string): boolean {
   const doc = currentDoc();
   const id = (node as RegisterNode).__regId;
   const text = id && doc?.getMap('registers').get(id);
   if (doc && text instanceof Y.Text && text.toString() !== next) {
     doc.transact(() => text.applyDelta(diffText(text.toString(), next)), REGISTER_LOCAL_ORIGIN);
   }
+  return text instanceof Y.Text;
 }
 
 /** Imports have repeatable identities; identical blocks still get independent registers. */
@@ -105,12 +113,22 @@ export function bindRegisters(editor: LexicalEditor, doc: Y.Doc): () => void {
       if (node[field] !== text.toString()) node.getWritable()[field] = text.toString();
     }));
   }
-  const refresh = () => editor.update(() => $refreshRegisters(editor, doc), { tag: COLLABORATION_TAG, skipTransforms: true });
+  let stopped = false;
+  let queued = false;
+  const refresh = () => {
+    if (queued || stopped) return;
+    queued = true;
+    // Never tag an enclosing authored update or clone half-hydrated node attributes.
+    queueMicrotask(() => {
+      queued = false;
+      if (!stopped) editor.update(() => $refreshRegisters(editor, doc), { tag: COLLABORATION_TAG, skipTransforms: true });
+    });
+  };
   const observe = (_events: unknown, transaction: Y.Transaction) => {
-    if (transaction.origin !== REGISTER_INIT && transaction.origin !== REGISTER_LOCAL_ORIGIN) refresh();
+    if (transaction.origin !== REGISTER_INIT) refresh();
   };
   registers.observeDeep(observe);
   // Hydration can skip transforms, and may deliver the tree after the registers.
   stops.push(editor.registerUpdateListener(refresh));
-  return () => { stops.forEach(stop => stop()); registers.unobserveDeep(observe); bindings.delete(editor); bindingCount--; };
+  return () => { stopped = true; stops.forEach(stop => stop()); registers.unobserveDeep(observe); bindings.delete(editor); bindingCount--; };
 }

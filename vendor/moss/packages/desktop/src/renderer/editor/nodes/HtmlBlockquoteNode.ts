@@ -1,6 +1,6 @@
 // ported-from: packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.tsx @ 762abb777 (extracted)
 // moss-multi seam: register payloads (A§10.10).
-import { readRegister, writeRegister } from '@moss-multi/host/collab/registers';
+import { readRegister, writeRegister, initRegisterNode } from '@moss-multi/host/collab/registers';
 import type { JSX } from 'react';
 import { $applyNodeReplacement, type DOMConversionMap, type DOMConversionOutput, type DOMExportOutput, DecoratorNode, type EditorConfig, type LexicalNode, type NodeKey, type SerializedLexicalNode, type Spread } from 'lexical';
 import { cloneCommentIds, exportCommentIds, importCommentIds, initCommentIds } from '../utils/commentable-node';
@@ -91,7 +91,7 @@ function $convertHtmlBlockquoteElement(domNode: HTMLElement): DOMConversionOutpu
 }
 
 export class HtmlBlockquoteNode extends DecoratorNode<JSX.Element> {
-  __regId = '';
+  __regId = initRegisterNode(this);
   __rawHtml: string;
   __source: HtmlBlockSource;
   __commentIds: string[];
@@ -181,9 +181,9 @@ export class HtmlBlockquoteNode extends DecoratorNode<JSX.Element> {
   }
 
   setRawHtml(rawHtml: string): void {
+    if (writeRegister(this, rawHtml)) return;
     const writable = this.getWritable();
     writable.__rawHtml = rawHtml;
-    writeRegister(writable, rawHtml);
   }
 
   getSource(): HtmlBlockSource {

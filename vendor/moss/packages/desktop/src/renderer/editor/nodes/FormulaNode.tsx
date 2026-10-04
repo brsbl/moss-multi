@@ -1,6 +1,6 @@
 // ported-from: packages/desktop/src/renderer/editor/nodes/FormulaNode.tsx @ 762abb777
 // moss-multi seam: register payloads (A§10.10).
-import { readRegister, writeRegister } from '@moss-multi/host/collab/registers';
+import { readRegister, writeRegister, initRegisterNode } from '@moss-multi/host/collab/registers';
 import type { JSX } from 'react';
 // moss-multi seam: local-view (A§10): computed values paint locally, outside the shared node.
 import { useNodeView } from '@moss-multi/host/collab/view-state';
@@ -132,7 +132,7 @@ function $convertFormulaElement(domNode: HTMLElement): DOMConversionOutput | nul
 }
 
 export class FormulaNode extends DecoratorNode<JSX.Element> {
-  __regId = '';
+  __regId = initRegisterNode(this);
   __formula: string;
   __result: string;
   __formulaId: string;
@@ -269,9 +269,9 @@ export class FormulaNode extends DecoratorNode<JSX.Element> {
   }
 
   setFormula(formula: string): void {
+    if (writeRegister(this, formula)) return;
     const writable = this.getWritable();
     writable.__formula = formula;
-    writeRegister(writable, formula);
   }
 
   setFormulaId(formulaId: string): void {

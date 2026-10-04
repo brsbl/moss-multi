@@ -111,6 +111,7 @@ describe('L4 decorator registers @p:col-1 @p:col-3 @p:tech-1', () => {
     root.insertEmbed(0, block);
     block.setAttribute('__type', 'code-block'); block.setAttribute('__code', 'stored code');
     block.setAttribute('__language', 'plaintext');
+    block.setAttribute('__commentIds', [] as never);
     const identity = block._item!.id;
     const restored = new Y.Doc();
     try {

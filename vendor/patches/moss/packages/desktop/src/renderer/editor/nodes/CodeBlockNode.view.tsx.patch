@@ -98,7 +98,13 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b
        }
      });
    }, [editor, nodeKey, localCode]);
-@@ -213,7 +191,7 @@ function CodeBlockComponent({
+@@ -208,12 +186,12 @@ function CodeBlockComponent({
+         return;
+       }
+ 
+-      // Escape to cancel
++      // Escape {registerDoc(editor) ? 'to close' : 'to cancel'}
+       if (e.key === 'Escape') {
          e.preventDefault();
          e.stopPropagation();
          enterTrackerRef.current.clear();
@@ -132,6 +138,20 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b
                  value={localCode}
                  onChange={(e) => setLocalCode(e.target.value)}
                  onKeyDown={handleTextareaKeyDown}
+@@ -431,11 +413,11 @@ function CodeBlockComponent({
+               <span className="inline-flex items-center gap-1 align-middle">
+                 <KeyboardShortcut keys={['⌘', '⏎']} size="compact" />
+               </span>{' '}
+-              to save &middot;{' '}
++              {registerDoc(editor) ? 'to finish' : 'to save'} &middot;{' '}
+               <span className="inline-flex items-center gap-1 align-middle">
+                 <KeyboardShortcut keys={['Esc']} size="compact" />
+               </span>{' '}
+-              to cancel
++              {registerDoc(editor) ? 'to close' : 'to cancel'}
+             </div>
+           )}
+         </div>
 @@ -444,164 +426,15 @@ function CodeBlockComponent({
    );
  }

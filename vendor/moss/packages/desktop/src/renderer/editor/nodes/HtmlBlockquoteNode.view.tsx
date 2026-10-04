@@ -371,7 +371,7 @@ function RawHtmlBlockquoteComponent({
                   <div className="flex items-center gap-1">
                     <MediaHeaderButton
                       icon={X}
-                      title="Cancel"
+                      title={registerDoc(editor) ? "Close" : "Cancel"}
                       onClick={() => cancelEdit()}
                     />
                     <MediaHeaderButton
@@ -400,7 +400,7 @@ function RawHtmlBlockquoteComponent({
                   </pre>
                   <textarea
                     ref={textareaRef}
-                readOnly={!editor.isEditable()}
+                    readOnly={!editor.isEditable()}
                     value={localRawHtml}
                     onChange={(e) => {
                       setLocalRawHtml(e.target.value);
@@ -428,11 +428,11 @@ function RawHtmlBlockquoteComponent({
                   <span className="inline-flex items-center gap-1 align-middle">
                     <KeyboardShortcut keys={['⌘', '⏎']} size="compact" />
                   </span>{' '}
-                  to save &middot;{' '}
+                  {registerDoc(editor) ? 'to finish' : 'to save'} &middot;{' '}
                   <span className="inline-flex items-center gap-1 align-middle">
                     <KeyboardShortcut keys={['Esc']} size="compact" />
                   </span>{' '}
-                  to cancel
+                  {registerDoc(editor) ? 'to close' : 'to cancel'}
                 </div>
               </div>
             </div>
@@ -803,7 +803,7 @@ function MossHtmlPreviewComponent({
         <div className="flex items-center gap-1">
           <MediaHeaderButton
             icon={X}
-            title="Cancel"
+            title={registerDoc(editor) ? "Close" : "Cancel"}
             onClick={() => cancelEdit()}
           />
           <MediaHeaderButton
@@ -832,7 +832,7 @@ function MossHtmlPreviewComponent({
         </pre>
         <textarea
           ref={textareaRef}
-                readOnly={!editor.isEditable()}
+          readOnly={!editor.isEditable()}
           value={localRawHtml}
           onChange={(e) => {
             setLocalRawHtml(e.target.value);
@@ -860,11 +860,11 @@ function MossHtmlPreviewComponent({
         <span className="inline-flex items-center gap-1 align-middle">
           <KeyboardShortcut keys={['⌘', '⏎']} size="compact" />
         </span>{' '}
-        to save &middot;{' '}
+        {registerDoc(editor) ? 'to finish' : 'to save'} &middot;{' '}
         <span className="inline-flex items-center gap-1 align-middle">
           <KeyboardShortcut keys={['Esc']} size="compact" />
         </span>{' '}
-        to cancel
+        {registerDoc(editor) ? 'to close' : 'to cancel'}
       </div>
     </div>
   );
