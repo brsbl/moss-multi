@@ -13,6 +13,12 @@ export const REGISTER_FIELDS: Readonly<Record<string, string>> = {
   'code-block': '__code', 'html-block': '__rawHtml', formula: '__formula',
 };
 
+/** A payload id: 128 random bits, since knowing an id is what lets an element name its payload. */
+export function newPayloadId(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
 /** The payload's one shared type. */
 export const PAYLOAD_TEXT = 'payload';
 

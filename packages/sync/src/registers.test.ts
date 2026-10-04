@@ -192,7 +192,7 @@ describe('L4 decorator registers @p:col-1 @p:col-3 @p:tech-1', () => {
     } finally { doc.destroy(); }
   });
 
-  it.each(cases)('$type copied with $copyNode gets its own payload, seeded with the source text', (fixture) => {
+  it.each(cases)('$type copied with $copyNode gets its own payload, seeded with the source text', async (fixture) => {
     const getter = { 'code-block': 'getCode', 'html-block': 'getRawHtml', formula: 'getFormula' }[fixture.type];
     const seed = new Y.Doc(); importBody(seed, fixture.markdown);
     const a = client(seed);
@@ -202,19 +202,21 @@ describe('L4 decorator registers @p:col-1 @p:col-3 @p:tech-1', () => {
       const ids = a.editor.read(() => blocks().map(block => block.__regId));
       expect(new Set(ids).size, 'the copy mints its own id').toBe(2);
       expect(a.editor.read(() => blocks().map(block => block[getter]()))).toEqual([fixture.before, fixture.before]);
+      await new Promise(resolve => setTimeout(resolve, 0));
       a.editor.update(() => { blocks()[1][fixture.setter](fixture.a); }, { discrete: true });
       expect(a.editor.read(() => blocks().map(block => block[getter]())), 'editing the copy leaves the source').toEqual([fixture.before, fixture.a]);
       expect(payloadsOf(a.doc).sort()).toEqual([fixture.a, fixture.before].sort());
     } finally { a.dispose(); seed.destroy(); }
   });
 
-  it('imports stable register identities and gives duplicate blocks independent payloads', () => {
+  it('imports unguessable identities and gives duplicate blocks independent payloads', () => {
     const markdown = cases.map(item => `${item.markdown}\n\n${item.markdown}`).join('\n\n');
     const a = new Y.Doc(); const b = new Y.Doc();
     try {
       importBody(a, markdown); importBody(b, markdown);
-      expect([...payloadDocsFor(a).docs.keys()]).toEqual([...payloadDocsFor(b).docs.keys()]);
-      expect(payloadDocsFor(a).docs.size).toBe(6);
+      const ids = [...payloadDocsFor(a).docs.keys(), ...payloadDocsFor(b).docs.keys()];
+      expect(new Set(ids).size, 'two imports of the same markdown share no id').toBe(12);
+      for (const id of ids) expect(id, 'an id is 128 random bits').toMatch(/^[0-9a-f]{32}$/);
       const before = exportDocMarkdown(b);
       const payload = [...payloadDocsFor(a).docs.values()].find(value => payloadText(value).toString() === 'seed')!;
       payload.transact(() => payloadText(payload).insert(0, 'changed '), 'peer');
@@ -223,7 +225,7 @@ describe('L4 decorator registers @p:col-1 @p:col-3 @p:tech-1', () => {
     } finally { a.destroy(); b.destroy(); }
   });
 
-  it.each(cases)('$type pasted concurrently into one empty note by two editors stays two independent registers', (fixture) => {
+  it.each(cases)('$type pasted concurrently into one empty note by two editors stays two independent registers', async (fixture) => {
     const getter = { 'code-block': 'getCode', 'html-block': 'getRawHtml', formula: 'getFormula' }[fixture.type];
     const seed = new Y.Doc(); seedEmptyParagraph(seed);
     const a = client(seed); const b = client(seed);
@@ -235,6 +237,8 @@ describe('L4 decorator registers @p:col-1 @p:col-3 @p:tech-1', () => {
       for (const [peer, value] of [[a, fixture.a], [b, fixture.b]] as const) peer.editor.update(() => {
         (find(fixture.type) as unknown as Record<string, (text: string) => void>)[fixture.setter](value);
       }, { discrete: true });
+      // A client writes its new blocks' first texts just after the commit.
+      await new Promise(resolve => setTimeout(resolve, 0));
       share(b.doc, a.doc);
       share(a.doc, b.doc);
       for (const peer of [a, b]) {
@@ -413,8 +417,7 @@ describe('register refresh cost @p:col-1 @p:tech-8', () => {
     const elapsed = performance.now() - started;
     const ids = editor.read(() => findAll('code-block').map(node => (node as unknown as { __regId: string }).__regId));
     expect(new Set(ids).size).toBe(count);
-    expect(ids[0]).toMatch(/:0$/);
-    expect(ids[count - 1]).toMatch(new RegExp(`:${count - 1}$`));
-    expect(elapsed, 'quadratic ordinal probing takes tens of seconds here').toBeLessThan(3_000);
+    for (const id of [ids[0], ids[count - 1]]) expect(id).toMatch(/^[0-9a-f]{32}$/);
+    expect(elapsed, 'linear in blocks').toBeLessThan(3_000);
   }, 180_000);
 });

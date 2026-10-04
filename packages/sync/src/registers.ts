@@ -7,7 +7,7 @@ import {
 } from 'lexical';
 import * as Y from 'yjs';
 import { diffText } from '@moss-multi/core/text-diff';
-import { payloadDocsFor, payloadText, REGISTER_FIELDS, type PayloadDocs } from './payload-docs.ts';
+import { newPayloadId, payloadDocsFor, payloadText, REGISTER_FIELDS, type PayloadDocs } from './payload-docs.ts';
 
 export { REGISTER_FIELDS };
 export const REGISTER_LOCAL_ORIGIN = Symbol('moss-multi:register-local');
@@ -19,8 +19,8 @@ type RegisterNode = LexicalNode & { __regId: string; [key: string]: unknown };
 interface Registry {
   root: Y.Doc;
   host: PayloadDocs;
-  /** One serialized writer (the DocDO mirror): imports get repeatable ids. */
-  serialized: boolean;
+  /** The DocDO's server mirror: it reads payloads on demand and writes first texts inside the update. */
+  mirror: boolean;
   /** Ids minted here whose first text is not written yet, by node key. */
   minted: Map<NodeKey, string>;
   pending: Set<string>;
@@ -102,40 +102,22 @@ export function writeRegister(node: LexicalNode, next: string): boolean {
 }
 
 /** Gives a node a new id whose first text this editor writes when the update commits (rule 2). */
-function $mint(registry: Registry, node: RegisterNode, id: string = crypto.randomUUID()): void {
+function $mint(registry: Registry, node: RegisterNode, id: string = newPayloadId()): void {
   (node.getWritable() as RegisterNode).__regId = id;
   registry.minted.set(node.getKey(), id);
   registry.pending.add(id);
 }
 
 /**
- * Serialized writers (the DocDO mirror, unbound converters) import repeatable identities, never one the doc already
- * knows (a withheld payload's id included); identical blocks still get independent payloads. A live editor's import
- * (whole-note paste) can race a peer's, so it mints unique ids.
+ * Every imported block gets a fresh, unguessable id (a payload id is its only access check), so identical blocks get
+ * independent payloads and an import never reuses an id the doc knows. Unbound converters only set the id.
  */
 export function $assignRegisterIds(): void {
   const registry = currentRegistry();
-  const unique = registry !== undefined && !registry.serialized;
-  const used = new Set<string>();
-  // Ordinals only grow per prefix, so N identical blocks cost O(N), not O(N^2).
-  const next = new Map<string, number>();
   const walk = (node: LexicalNode) => {
-    const field = REGISTER_FIELDS[node.getType()];
-    if (field && unique) {
-      $mint(registry!, node as RegisterNode);
-    } else if (field) {
-      const target = node as RegisterNode;
-      const seed = `${node.getType()}:${String(target[field])}`;
-      let hash = 2166136261;
-      for (let i = 0; i < seed.length; i++) hash = Math.imul(hash ^ seed.charCodeAt(i), 16777619);
-      const prefix = `import:${node.getType()}:${(hash >>> 0).toString(16)}`;
-      let ordinal = next.get(prefix) ?? 0;
-      while (used.has(`${prefix}:${ordinal}`) || registry?.host.has(`${prefix}:${ordinal}`)) ordinal++;
-      next.set(prefix, ordinal + 1);
-      const id = `${prefix}:${ordinal}`;
-      used.add(id);
-      if (registry) $mint(registry, target, id);
-      else (target.getWritable() as RegisterNode).__regId = id;
+    if (REGISTER_FIELDS[node.getType()]) {
+      if (registry) $mint(registry, node as RegisterNode);
+      else ((node as RegisterNode).getWritable() as RegisterNode).__regId = newPayloadId();
     }
     if ($isElementNode(node)) for (const child of node.getChildren()) walk(child);
   };
@@ -154,7 +136,7 @@ function $refreshNode(registry: Registry, node: LexicalNode | null): void {
 }
 
 export interface BindRegistersOptions {
-  /** One serialized writer (the DocDO mirror). */
+  /** The DocDO's server mirror (one serialized writer). */
   serializedImports?: boolean;
   /** The payload docs to use; a note doc's own (a session's, or in memory) by default. */
   payloads?: PayloadDocs;
@@ -162,7 +144,7 @@ export interface BindRegistersOptions {
 
 /** Installed before V1 hydration on the client and the DocDO mirror. */
 export function bindRegisters(editor: LexicalEditor, doc: Y.Doc, { serializedImports = false, payloads: host = payloadDocsFor(doc) }: BindRegistersOptions = {}): () => void {
-  const registry: Registry = { root: doc, host, serialized: serializedImports, minted: new Map(), pending: new Set(), keysById: new Map() };
+  const registry: Registry = { root: doc, host, mirror: serializedImports, minted: new Map(), pending: new Set(), keysById: new Map() };
   registries.set(editor, registry);
   bindingCount++;
   // A client holds every payload its tree names, so it asks for each; the mirror reads on demand.
@@ -252,8 +234,13 @@ export function bindRegisters(editor: LexicalEditor, doc: Y.Doc, { serializedImp
   };
   for (const [id, held] of host.docs) watch(id, held);
   stops.push(host.onHold(watch));
-  /** The minter's first texts, once their nodes are committed and attached; outside every undo manager. */
+  /**
+   * The minter's first texts, once their nodes are committed and attached; outside every undo manager. A client writes
+   * them after the commit's own note frame, so a payload's first frame names an id the server already knows.
+   */
+  let firstTextsQueued = false;
   const writeFirstTexts = (state: EditorState) => {
+    if (stopped) return;
     state.read(() => {
       for (const [key, id] of registry.minted) {
         registry.minted.delete(key);
@@ -267,7 +254,14 @@ export function bindRegisters(editor: LexicalEditor, doc: Y.Doc, { serializedImp
     }, { editor });
   };
   stops.push(editor.registerUpdateListener(({ editorState, prevEditorState, dirtyElements, dirtyLeaves, tags }) => {
-    if (registry.minted.size) writeFirstTexts(editorState);
+    if (registry.minted.size && registry.mirror) writeFirstTexts(editorState);
+    else if (registry.minted.size && !firstTextsQueued) {
+      firstTextsQueued = true;
+      queueMicrotask(() => {
+        firstTextsQueued = false;
+        writeFirstTexts(editor.getEditorState());
+      });
+    }
     if (!tags.has(REFRESH_TAG)) {
       if (dirtyLeaves.size === 0 && dirtyElements.size === 1 && dirtyElements.get('root') === false && editorState !== prevEditorState) {
         // setEditorState marks only the root: index just the nodes whose instances changed, and the ones that left.

@@ -1,16 +1,20 @@
 // The DocDO's payload docs (A§10.10; docs/design/registers.md rules 5, 6, 8 and 10), Yjs-level with no Lexical. Each
 // code, HTML or formula payload is a Y.Doc keyed by its block's `__regId`, stored in its own SQLite rows. The naming
 // index (id → the live elements that name it) is kept from each note transaction's own structs, so its cost is the
-// transaction. A payload no live element names is withheld: its updates are stored and acked, never fanned out or
-// answered, and when an element names it again its whole state is sent to every socket.
+// transaction. A payload is served (fanned out, its step 1 answered, read by duplicates and exports) only while an
+// element names it and the element came from the server or from someone who could already read it; otherwise it is
+// withheld: its updates are stored and acked, never sent. Knowing a payload's id never reveals it: ids are random,
+// and an element naming a withheld id serves it only when its author was already one of the payload's readers.
 import * as Y from 'yjs';
-import { PAYLOAD_LOADED, REGISTER_FIELDS } from './payload-docs.ts';
+import { newPayloadId, PAYLOAD_LOADED, REGISTER_FIELDS } from './payload-docs.ts';
 
 /** The janitor's note writes (dedupe, migration): no client tracks them, and the index records no change for them. */
 export const JANITOR = 'payload-janitor';
 
 /** A payload unnamed this long is dropped, as trash is (A§5.1). */
 export const PAYLOAD_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+/** Payload docs held in memory at once; the least recently used unload (their rows stay). */
+export const PAYLOAD_DOCS_HELD = 256;
 /** Per-payload compaction thresholds. */
 const COMPACT_ROWS = 100;
 const COMPACT_BYTES = 256 * 1024;
@@ -25,18 +29,25 @@ export interface PayloadWork {
   withheld: number;
   deduped: number;
   compared: number;
+  /** Payload docs held in memory now. */
+  held: number;
+}
+
+/** A changed id: whether it was named before, and the origin of the last transaction that added an element for it. */
+interface Change {
+  wasNamed: boolean;
+  adder: unknown;
 }
 
 /**
  * id → the live elements naming it, from each transaction's own structs: the elements it integrated (and `__regId`
  * attributes it set) and the ones it deleted, including every element inside a deleted or recreated paragraph or
- * container (Yjs deletes a subtree item by item). `take()` returns the ids changed since the last call, each with
- * whether it was named before.
+ * container (Yjs deletes a subtree item by item). `take()` returns the ids changed since the last call.
  */
 export class NameIndex {
   readonly live = new Map<string, Set<Y.XmlElement>>();
   readonly #ids = new WeakMap<Y.XmlElement, string>();
-  #changed = new Map<string, boolean>();
+  #changed = new Map<string, Change>();
 
   constructor(doc: Y.Doc, private readonly ignore: unknown) {
     doc.on('afterTransaction', (transaction: Y.Transaction) => this.#index(doc, transaction));
@@ -46,14 +57,15 @@ export class NameIndex {
     return (this.live.get(id)?.size ?? 0) > 0;
   }
 
-  take(): Map<string, boolean> {
+  take(): Map<string, Change> {
     const out = this.#changed;
     this.#changed = new Map();
     return out;
   }
 
   #index(doc: Y.Doc, transaction: Y.Transaction): void {
-    const record = transaction.origin !== this.ignore;
+    const origin = transaction.origin;
+    const record = origin !== this.ignore;
     transaction.afterState.forEach((after, client) => {
       const before = transaction.beforeState.get(client) ?? 0;
       if (after === before) return;
@@ -62,9 +74,9 @@ export class NameIndex {
         const struct = structs[i];
         if (!(struct instanceof Y.Item) || struct.deleted) continue;
         if (struct.content instanceof Y.ContentType && struct.content.type instanceof Y.XmlElement) {
-          this.#set(struct.content.type, record);
+          this.#set(struct.content.type, record, origin);
         } else if (struct.parentSub === '__regId' && struct.parent instanceof Y.XmlElement && !struct.parent._item?.deleted) {
-          this.#set(struct.parent, record);
+          this.#set(struct.parent, record, origin);
         }
       }
     });
@@ -75,8 +87,15 @@ export class NameIndex {
     });
   }
 
+  #note(id: string, wasNamed: boolean, record: boolean): Change | undefined {
+    if (!record) return undefined;
+    let change = this.#changed.get(id);
+    if (!change) this.#changed.set(id, (change = { wasNamed, adder: undefined }));
+    return change;
+  }
+
   /** Files a live element under its current id (moving it if its id changed). */
-  #set(element: Y.XmlElement, record: boolean): void {
+  #set(element: Y.XmlElement, record: boolean, origin: unknown): void {
     const attr: unknown = element.getAttribute('__regId');
     const id = REGISTER_FIELDS[String(element.getAttribute('__type'))] && typeof attr === 'string' && attr ? attr : undefined;
     const previous = this.#ids.get(element);
@@ -88,7 +107,8 @@ export class NameIndex {
     if (id === undefined) return;
     let set = this.live.get(id);
     if (!set) this.live.set(id, (set = new Set()));
-    if (record && !this.#changed.has(id)) this.#changed.set(id, set.size > 0);
+    const change = this.#note(id, set.size > 0, record);
+    if (change) change.adder = origin;
     set.add(element);
     this.#ids.set(element, id);
   }
@@ -97,7 +117,7 @@ export class NameIndex {
     const id = this.#ids.get(element);
     const set = id === undefined ? undefined : this.live.get(id);
     if (!set?.has(element)) return;
-    if (record && !this.#changed.has(id!)) this.#changed.set(id!, true);
+    this.#note(id!, true, record);
     set.delete(element);
     this.#ids.delete(element);
     if (!set.size) this.live.delete(id!);
@@ -106,8 +126,8 @@ export class NameIndex {
 
 interface Meta {
   bytes: number;
-  /** When it lost its last element (ms), or null while named. */
-  unnamedSince: number | null;
+  /** Since when it has been withheld (ms): unnamed, or named only by an element its readers did not make. */
+  withheldSince: number | null;
   rows: number;
   rowBytes: number;
 }
@@ -118,30 +138,37 @@ function blob(bytes: Uint8Array): ArrayBuffer {
 }
 
 export interface PayloadStoreOptions {
-  /** A named payload's update, to every socket (fan-out, or a reveal's whole state). */
+  /** A served payload's update to every socket but `origin`'s (fan-out, or a reveal's whole state). */
   broadcast(id: string, update: Uint8Array, origin: unknown): void;
-  /** A payload's update persisted from a connection (for its ack). */
+  /** A payload's update was persisted. */
   persisted?(id: string, update: Uint8Array, origin: unknown): void;
-  /** Withheld payloads together may hold this many bytes; the oldest unnamed go first. */
-  withheldCapBytes: number;
+  /** The principal behind a transaction origin (a connection); null for the server's own writes. */
+  principalOf(origin: unknown): string | null;
   now?: () => number;
 }
 
 /**
- * The payload docs and their private rows, `payload_updates(seq, reg_id, data, part)` plus `payload_meta(reg_id, bytes,
- * unnamed_since)`. Docs load lazily (on a frame, a step 1, a reveal or a read); each id compacts on its own.
+ * The payload docs and their private rows: `payload_updates(seq, reg_id, data, part)`, `payload_meta(reg_id, bytes,
+ * withheld_since)` and `payload_readers(reg_id, principal)`, the principals that have been sent or have written a
+ * payload. Docs load lazily (on a frame, a step 1, a reveal or a read), the least recently used unload, and each id
+ * compacts on its own.
  */
 export class PayloadStore {
   readonly names: NameIndex;
-  readonly work: PayloadWork = { evaluated: 0, revealed: 0, withheld: 0, deduped: 0, compared: 0 };
+  readonly work: PayloadWork = { evaluated: 0, revealed: 0, withheld: 0, deduped: 0, compared: 0, held: 0 };
+  /** Insertion order is recency: the first entry is the least recently used. */
   readonly #docs = new Map<string, Y.Doc>();
+  readonly #readers = new Map<string, Set<string>>();
   readonly #meta = new Map<string, Meta>();
   readonly #sql: SqlStorage;
   readonly #now: () => number;
   #settling = false;
-  /** Stored bytes of every payload, and of the withheld ones (`unnamedSince` set), kept as they change. */
+  /** Stored bytes of every payload, and of the withheld ones, kept as they change. */
   #totalBytes = 0;
   #withheldBytes = 0;
+  /** Bytes each principal wrote into payloads while they were withheld, released when one is served or dropped. */
+  readonly #byIdentity = new Map<string, number>();
+  readonly #attributed = new Map<string, Map<string, number>>();
 
   constructor(
     private readonly storage: DurableObjectStorage,
@@ -154,28 +181,28 @@ export class PayloadStore {
       'CREATE TABLE IF NOT EXISTS payload_updates (seq INTEGER PRIMARY KEY AUTOINCREMENT, reg_id TEXT NOT NULL, data BLOB NOT NULL, part INTEGER NOT NULL DEFAULT 0)',
     );
     this.#sql.exec('CREATE INDEX IF NOT EXISTS payload_updates_reg ON payload_updates (reg_id, seq)');
-    this.#sql.exec('CREATE TABLE IF NOT EXISTS payload_meta (reg_id TEXT PRIMARY KEY, bytes INTEGER NOT NULL, unnamed_since INTEGER)');
-    for (const row of this.#sql.exec<{ reg_id: string; bytes: number; unnamed_since: number | null }>('SELECT reg_id, bytes, unnamed_since FROM payload_meta').toArray()) {
-      const meta = { bytes: Number(row.bytes), unnamedSince: row.unnamed_since === null ? null : Number(row.unnamed_since), rows: 0, rowBytes: 0 };
+    this.#sql.exec('CREATE TABLE IF NOT EXISTS payload_meta (reg_id TEXT PRIMARY KEY, bytes INTEGER NOT NULL, withheld_since INTEGER)');
+    this.#sql.exec('CREATE TABLE IF NOT EXISTS payload_readers (reg_id TEXT NOT NULL, principal TEXT NOT NULL, PRIMARY KEY (reg_id, principal))');
+    for (const row of this.#sql.exec<{ reg_id: string; bytes: number; withheld_since: number | null }>('SELECT reg_id, bytes, withheld_since FROM payload_meta').toArray()) {
+      const meta = { bytes: Number(row.bytes), withheldSince: row.withheld_since === null ? null : Number(row.withheld_since), rows: 0, rowBytes: 0 };
       this.#meta.set(row.reg_id, meta);
       this.#totalBytes += meta.bytes;
-      if (meta.unnamedSince !== null) this.#withheldBytes += meta.bytes;
+      if (meta.withheldSince !== null) this.#withheldBytes += meta.bytes;
     }
     this.names = new NameIndex(note, JANITOR);
   }
 
-  /** After the note's replay: forget the replay's index changes, and drop payloads unnamed past the TTL. */
+  /**
+   * After the note's replay: forget the replay's index changes, withhold any stored payload no element names, and drop
+   * the ones withheld past the TTL. A named payload keeps its persisted state (served, or withheld from a forged name).
+   */
   loaded(): void {
     this.names.take();
     const expired = this.#now() - PAYLOAD_TTL_MS;
     for (const [id, meta] of this.#meta) {
-      if (this.names.named(id)) {
-        if (meta.unnamedSince !== null) this.#setUnnamed(id, null);
-      } else if (meta.unnamedSince === null) {
-        this.#setUnnamed(id, this.#now());
-      } else if (meta.unnamedSince < expired) {
-        this.#drop(id);
-      }
+      if (this.names.named(id)) continue;
+      if (meta.withheldSince === null) this.#withhold(id, this.#now());
+      else if (meta.withheldSince < expired) this.#drop(id);
     }
   }
 
@@ -183,23 +210,60 @@ export class PayloadStore {
     return this.names.named(id);
   }
 
+  /** Named, and not withheld: its updates fan out and its step 1 is answered. */
+  served(id: string): boolean {
+    return this.names.named(id) && (this.#meta.get(id)?.withheldSince ?? null) === null;
+  }
+
   has(id: string): boolean {
     return this.#meta.has(id) || this.#docs.has(id);
   }
 
-  /** Encoded bytes of every named payload, for the state cap. */
-  get namedBytes(): number {
-    return this.#totalBytes - this.#withheldBytes;
+  /** Encoded bytes of every stored payload, named or withheld, for the state cap. */
+  get totalBytes(): number {
+    return this.#totalBytes;
   }
 
   bytesOf(id: string): number {
     return this.#meta.get(id)?.bytes ?? 0;
   }
 
-  /** The payload's doc, loading its rows on first use. */
+  /** Bytes `principal` has written into withheld payloads (capped per identity, so nobody crowds out another). */
+  withheldBy(principal: string): number {
+    return this.#byIdentity.get(principal) ?? 0;
+  }
+
+  isReader(id: string, principal: string): boolean {
+    return this.#readersOf(id).has(principal);
+  }
+
+  /** Records principals that were sent or wrote payload `id`. */
+  addReaders(id: string, principals: Iterable<string>): void {
+    const readers = this.#readersOf(id);
+    for (const principal of principals) {
+      if (readers.has(principal)) continue;
+      readers.add(principal);
+      this.#sql.exec('INSERT OR IGNORE INTO payload_readers (reg_id, principal) VALUES (?, ?)', id, principal);
+    }
+  }
+
+  #readersOf(id: string): Set<string> {
+    let readers = this.#readers.get(id);
+    if (!readers) {
+      readers = new Set(this.#sql.exec<{ principal: string }>('SELECT principal FROM payload_readers WHERE reg_id = ?', id).toArray().map((row) => row.principal));
+      this.#readers.set(id, readers);
+    }
+    return readers;
+  }
+
+  /** The payload's doc, loading its rows on first use; the least recently used unload past PAYLOAD_DOCS_HELD. */
   doc(id: string): Y.Doc {
     let doc = this.#docs.get(id);
-    if (doc) return doc;
+    if (doc) {
+      this.#docs.delete(id);
+      this.#docs.set(id, doc);
+      return doc;
+    }
     doc = new Y.Doc({ guid: id });
     let rows = 0;
     let rowBytes = 0;
@@ -218,47 +282,60 @@ export class PayloadStore {
     if (meta) Object.assign(meta, { rows, rowBytes });
     doc.on('update', (update: Uint8Array, origin: unknown) => this.#updated(id, update, origin));
     this.#docs.set(id, doc);
+    for (const [held, loaded] of this.#docs) {
+      if (this.#docs.size <= PAYLOAD_DOCS_HELD) break;
+      if (held === id) continue;
+      loaded.destroy();
+      this.#docs.delete(held);
+      this.#readers.delete(held);
+    }
+    this.work.held = this.#docs.size;
     return doc;
   }
 
-  /** A named payload's whole state; null while withheld or unknown (duplicates, exports, the mirror). */
+  /** A served payload's whole state; null while withheld or unknown (duplicates, exports, the mirror). */
   read(id: string): Uint8Array | null {
-    if (!this.names.named(id) || !this.has(id)) return null;
+    if (!this.served(id) || !this.has(id)) return null;
     return Y.encodeStateAsUpdate(this.doc(id));
   }
 
-  /** Every named payload, for a duplicate (or, later, a version). */
-  namedStates(): [string, Uint8Array][] {
+  /** Every served payload, for a duplicate (or, later, a version). */
+  servedStates(): [string, Uint8Array][] {
     const out: [string, Uint8Array][] = [];
-    for (const id of this.#meta.keys()) if (this.names.named(id)) out.push([id, Y.encodeStateAsUpdate(this.doc(id))]);
+    for (const id of this.#meta.keys()) if (this.served(id)) out.push([id, Y.encodeStateAsUpdate(this.doc(id))]);
     return out;
   }
 
-  /** A server write to a payload (an import's first text, a duplicate, a migration). */
+  /** A write to a payload: a connection's frame (`origin` the connection) or the server's own. */
   write(id: string, update: Uint8Array, origin: unknown): void {
     Y.applyUpdate(this.doc(id), update, origin);
   }
 
   /**
-   * After each note update: serve every payload whose id became named again, record when one lost its last element,
-   * and keep one element per id. Work is the ids the update changed; a duplicate costs its copies.
+   * After each note update, for the ids it changed: withhold a payload that lost its last element; serve one an element
+   * names again if the server or one of its readers made that element (its whole state goes to every socket), and keep
+   * it withheld otherwise; keep one element per id. Work is the ids the update touched; a duplicate costs its copies.
    */
   settle(connected: () => boolean): void {
     if (this.#settling) return;
     this.#settling = true;
     try {
-      for (const [id, wasNamed] of this.names.take()) {
+      for (const [id, { adder }] of this.names.take()) {
         this.work.evaluated += 1;
         const live = this.names.live.get(id);
+        const meta = this.#meta.get(id);
         if (!live?.size) {
-          if (wasNamed && this.#meta.has(id)) this.#setUnnamed(id, this.#now());
+          if (meta && meta.withheldSince === null) this.#withhold(id, this.#now());
           continue;
         }
-        if (!wasNamed && this.#meta.has(id)) {
-          this.#setUnnamed(id, null);
-          if (connected()) {
-            this.options.broadcast(id, Y.encodeStateAsUpdate(this.doc(id)), null);
-            this.work.revealed += 1;
+        if (meta && meta.withheldSince !== null && adder !== undefined) {
+          const principal = this.options.principalOf(adder);
+          if (principal === null || this.isReader(id, principal)) {
+            this.#serve(id);
+            if (connected()) {
+              this.options.broadcast(id, Y.encodeStateAsUpdate(this.doc(id)), null);
+              this.work.revealed += 1;
+            }
           }
         }
         if (live.size > 1) this.#dedupe(live);
@@ -287,19 +364,24 @@ export class PayloadStore {
     if (origin === PAYLOAD_LOADED) return;
     this.#persist(id, update);
     this.options.persisted?.(id, update, origin);
-    if (this.names.named(id)) {
+    if (this.served(id)) {
       this.options.broadcast(id, update, origin);
-    } else {
-      this.work.withheld += 1;
-      if (this.#meta.get(id)!.unnamedSince === null) this.#setUnnamed(id, this.#now());
-      if (this.#withheldBytes > this.options.withheldCapBytes) this.#capWithheld();
+      return;
     }
+    this.work.withheld += 1;
+    const principal = this.options.principalOf(origin);
+    if (principal === null) return;
+    let attributed = this.#attributed.get(id);
+    if (!attributed) this.#attributed.set(id, (attributed = new Map()));
+    attributed.set(principal, (attributed.get(principal) ?? 0) + update.byteLength);
+    this.#byIdentity.set(principal, this.withheldBy(principal) + update.byteLength);
   }
 
   #persist(id: string, update: Uint8Array): void {
     let meta = this.#meta.get(id);
     if (!meta) {
-      meta = { bytes: 0, unnamedSince: this.names.named(id) ? null : this.#now(), rows: 0, rowBytes: 0 };
+      // A new payload is withheld until an element names it (a first text can arrive before its element).
+      meta = { bytes: 0, withheldSince: this.names.named(id) ? null : this.#now(), rows: 0, rowBytes: 0 };
       this.#meta.set(id, meta);
     }
     if (update.byteLength > PART_BYTES) {
@@ -332,47 +414,55 @@ export class PayloadStore {
 
   #writeMeta(id: string, meta: Meta): void {
     this.#sql.exec(
-      'INSERT INTO payload_meta (reg_id, bytes, unnamed_since) VALUES (?, ?, ?) ON CONFLICT(reg_id) DO UPDATE SET bytes = excluded.bytes, unnamed_since = excluded.unnamed_since',
-      id, meta.bytes, meta.unnamedSince,
+      'INSERT INTO payload_meta (reg_id, bytes, withheld_since) VALUES (?, ?, ?) ON CONFLICT(reg_id) DO UPDATE SET bytes = excluded.bytes, withheld_since = excluded.withheld_since',
+      id, meta.bytes, meta.withheldSince,
     );
   }
 
   #resize(meta: Meta, bytes: number): void {
     this.#totalBytes += bytes - meta.bytes;
-    if (meta.unnamedSince !== null) this.#withheldBytes += bytes - meta.bytes;
+    if (meta.withheldSince !== null) this.#withheldBytes += bytes - meta.bytes;
     meta.bytes = bytes;
   }
 
-  #setUnnamed(id: string, since: number | null): void {
-    const meta = this.#meta.get(id);
-    if (!meta || meta.unnamedSince === since) return;
-    if (meta.unnamedSince === null) this.#withheldBytes += meta.bytes;
-    else if (since === null) this.#withheldBytes -= meta.bytes;
-    meta.unnamedSince = since;
+  #withhold(id: string, since: number): void {
+    const meta = this.#meta.get(id)!;
+    if (meta.withheldSince !== null) return;
+    this.#withheldBytes += meta.bytes;
+    meta.withheldSince = since;
     this.#writeMeta(id, meta);
   }
 
-  /** Withheld payloads over their cap lose the oldest unnamed first; only reached past the cap. */
-  #capWithheld(): void {
-    const unnamed = [...this.#meta].filter(([, meta]) => meta.unnamedSince !== null);
-    unnamed.sort((a, b) => a[1].unnamedSince! - b[1].unnamedSince!);
-    for (const [id] of unnamed) {
-      if (this.#withheldBytes <= this.options.withheldCapBytes) break;
-      this.#drop(id);
-    }
+  #serve(id: string): void {
+    const meta = this.#meta.get(id)!;
+    if (meta.withheldSince === null) return;
+    this.#withheldBytes -= meta.bytes;
+    meta.withheldSince = null;
+    this.#writeMeta(id, meta);
+    this.#release(id);
+  }
+
+  /** Its writers' withheld bytes no longer count against them. */
+  #release(id: string): void {
+    for (const [principal, bytes] of this.#attributed.get(id) ?? []) this.#byIdentity.set(principal, this.withheldBy(principal) - bytes);
+    this.#attributed.delete(id);
   }
 
   #drop(id: string): void {
     const meta = this.#meta.get(id);
     if (meta) {
       this.#totalBytes -= meta.bytes;
-      if (meta.unnamedSince !== null) this.#withheldBytes -= meta.bytes;
+      if (meta.withheldSince !== null) this.#withheldBytes -= meta.bytes;
     }
+    this.#release(id);
     this.#sql.exec('DELETE FROM payload_updates WHERE reg_id = ?', id);
     this.#sql.exec('DELETE FROM payload_meta WHERE reg_id = ?', id);
+    this.#sql.exec('DELETE FROM payload_readers WHERE reg_id = ?', id);
     this.#meta.delete(id);
+    this.#readers.delete(id);
     this.#docs.get(id)?.destroy();
     this.#docs.delete(id);
+    this.work.held = this.#docs.size;
   }
 }
 
@@ -388,32 +478,51 @@ function concat(chunks: Uint8Array[]): Uint8Array {
 
 /**
  * M1 docs kept payloads in `Y.Map('registers')`, and pre-register docs in the element's own attribute. Each becomes a
- * payload doc written by the server alone, and the map entries are deleted (GC drops their bytes). Returns whether
- * the note changed.
+ * payload doc written by the server alone, under a fresh random id (an M1 id may be a guessable import id), and the
+ * map entries and legacy attributes are deleted (GC drops their bytes). Returns whether the note changed.
  */
 export function migratePayloads(note: Y.Doc, write: (id: string, text: string) => void): boolean {
   const registers = note.getMap<unknown>('registers');
-  const legacy: [Y.XmlElement, string, string, string][] = [];
+  const naming = new Map<string, Y.XmlElement[]>();
+  const legacy: [Y.XmlElement, string, string][] = [];
   const visit = (type: Y.XmlText | Y.XmlElement) => {
     const attrs = type.getAttributes() as Record<string, unknown>;
     const field = REGISTER_FIELDS[String(attrs.__type)];
-    if (field && !attrs.__regId && typeof attrs[field] === 'string' && type._item && type instanceof Y.XmlElement) {
-      legacy.push([type, `legacy:${type._item.id.client}:${type._item.id.clock}`, field, attrs[field] as string]);
+    if (field && type instanceof Y.XmlElement) {
+      if (typeof attrs.__regId === 'string' && attrs.__regId) {
+        const list = naming.get(attrs.__regId);
+        if (list) list.push(type); else naming.set(attrs.__regId, [type]);
+      } else if (typeof attrs[field] === 'string') {
+        legacy.push([type, field, attrs[field] as string]);
+      }
     }
     const children = type instanceof Y.XmlText ? type.toDelta().map((op: { insert?: unknown }) => op.insert) : type.toArray();
     for (const child of children) if (child instanceof Y.XmlText || child instanceof Y.XmlElement) visit(child);
   };
   visit(note.get('root', Y.XmlText));
   if (!registers.size && !legacy.length) return false;
-  for (const [id, text] of registers) if (text instanceof Y.Text) write(id, text.toString());
-  for (const [, id, , text] of legacy) write(id, text);
+  const renamed: [Y.XmlElement, string][] = [];
+  const texts: [string, string][] = [];
+  for (const [old, text] of registers) {
+    if (!(text instanceof Y.Text)) continue;
+    const id = newPayloadId();
+    texts.push([id, text.toString()]);
+    for (const element of naming.get(old) ?? []) renamed.push([element, id]);
+  }
+  const fields: [Y.XmlElement, string][] = [];
+  for (const [element, field, text] of legacy) {
+    const id = newPayloadId();
+    texts.push([id, text]);
+    renamed.push([element, id]);
+    fields.push([element, field]);
+  }
+  // Renamed first, so a payload an element names is written as named; an orphan entry stays withheld.
   note.transact(() => {
-    for (const id of [...registers.keys()]) registers.delete(id);
+    for (const key of [...registers.keys()]) registers.delete(key);
+    for (const [element, id] of renamed) element.setAttribute('__regId', id);
     // The note keeps no payload text: the legacy field goes too.
-    for (const [element, id, field] of legacy) {
-      element.setAttribute('__regId', id);
-      element.removeAttribute(field);
-    }
+    for (const [element, field] of fields) element.removeAttribute(field);
   }, JANITOR);
+  for (const [id, text] of texts) write(id, text);
   return true;
 }

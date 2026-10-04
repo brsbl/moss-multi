@@ -118,25 +118,27 @@ export class DocStore {
 
 /**
  * One ack per socket per window, sent when the window closes, naming the deletes the acked frames carried, the note's
- * and each payload's. Keyed by the socket itself: a client may reuse its connection id while the DO still holds the
- * old socket, whose close must never cancel the new one's ack. In memory: a wake simply sends none.
+ * and each payload's. A payload's coverage is built from the acked frames alone (their state vectors merged), never
+ * from the server's doc, so an ack tells a client nothing it did not send. Keyed by the socket itself: a client may
+ * reuse its connection id while the DO still holds the old socket, whose close must never cancel the new one's ack.
+ * In memory: a wake simply sends none.
  */
 export class AckCoalescer<Socket extends object> {
-  private readonly pending = new Map<Socket, { timer: ReturnType<typeof setTimeout>; deletes: DeleteSet[]; payloads: Map<string, DeleteSet[]> }>();
+  private readonly pending = new Map<Socket, { timer: ReturnType<typeof setTimeout>; deletes: DeleteSet[]; payloads: Map<string, { sv: Map<number, number>; deletes: DeleteSet[] }> }>();
 
   constructor(
-    private readonly send: (socket: Socket, deletes: DeleteSet, payloads: Map<string, DeleteSet>) => void,
+    private readonly send: (socket: Socket, deletes: DeleteSet, payloads: Map<string, { sv: Map<number, number>; deletes: DeleteSet }>) => void,
     private readonly windowMs: number,
   ) {}
 
-  /** `payload` names the payload doc the acked frame wrote; the note's otherwise. */
-  schedule(socket: Socket, deletes?: DeleteSet, payload?: string): void {
+  /** `payload` names the payload doc the acked frame (`update`) wrote; the note's otherwise. */
+  schedule(socket: Socket, deletes?: DeleteSet, payload?: string, update?: Uint8Array): void {
     let entry = this.pending.get(socket);
     if (!entry) {
       const timer = setTimeout(() => {
         const due = this.pending.get(socket);
         this.pending.delete(socket);
-        const payloads = new Map([...(due?.payloads ?? [])].map(([id, sets]) => [id, Y.mergeDeleteSets(sets)] as const));
+        const payloads = new Map([...(due?.payloads ?? [])].map(([id, { sv, deletes: sets }]) => [id, { sv, deletes: Y.mergeDeleteSets(sets) }] as const));
         this.send(socket, Y.mergeDeleteSets(due?.deletes ?? []), payloads);
       }, this.windowMs);
       entry = { timer, deletes: [], payloads: new Map() };
@@ -146,9 +148,14 @@ export class AckCoalescer<Socket extends object> {
       if (deletes) entry.deletes.push(deletes);
       return;
     }
-    let sets = entry.payloads.get(payload);
-    if (!sets) entry.payloads.set(payload, (sets = []));
-    if (deletes) sets.push(deletes);
+    let covered = entry.payloads.get(payload);
+    if (!covered) entry.payloads.set(payload, (covered = { sv: new Map(), deletes: [] }));
+    if (deletes) covered.deletes.push(deletes);
+    if (update) {
+      for (const [client, clock] of Y.decodeStateVector(Y.encodeStateVectorFromUpdate(update))) {
+        if ((covered.sv.get(client) ?? 0) < clock) covered.sv.set(client, clock);
+      }
+    }
   }
 
   cancel(socket: Socket): void {

@@ -65,6 +65,15 @@ export class LiveClient {
     this.#stops.push(this.payloads.onHold((_id, doc) => { this.undo.trackPayload(doc, REGISTER_LOCAL_ORIGIN, 0); }));
   }
 
+  /** Forges an element: a new code block naming `id`, as a client that learned the id could send. */
+  forge(id: string): void {
+    this.#update(() => {
+      const node = this.#make('code-block', '') as LexicalNode & { __regId: string };
+      node.__regId = id;
+      $getRoot().getFirstChildOrThrow().insertAfter(node);
+    });
+  }
+
   /** Connects, then exchanges the note's and every named payload's first sync. */
   static async open(opened: Opened, who: Who = {}): Promise<LiveClient> {
     const client = new LiveClient(opened, who);
@@ -113,9 +122,16 @@ export class LiveClient {
     if (this.errors.length) throw this.errors[0];
   }
 
+  /** Commits, then lets the client write its new blocks' first texts (a microtask after the commit). */
+  async settle(): Promise<void> {
+    this.flush();
+    await Promise.resolve();
+    await Promise.resolve();
+  }
+
   /** Sends what this client made, in order. */
   async up(): Promise<void> {
-    this.flush();
+    await this.settle();
     await this.socket.push();
   }
 

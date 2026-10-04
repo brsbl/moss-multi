@@ -5,9 +5,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as Y from 'yjs';
 import { ACK_COALESCE_MS } from '@moss-multi/protocol/limits';
-import { base64ToBytes, encodePayloadFrame, PAYLOAD_STEP1, type ServerEvent } from '@moss-multi/protocol/sync';
+import { base64ToBytes, CLOSE, encodePayloadFrame, PAYLOAD_STEP1, PAYLOAD_UPDATE, type ServerEvent } from '@moss-multi/protocol/sync';
+import { DocDO } from '../../src/doc-do.ts';
+import { PAYLOAD_DOCS_HELD } from '../../src/payloads.ts';
 import { payloadText } from '../../src/payload-docs.ts';
-import { connect, openDoc, start, syncFrame, wake, type Opened } from './do-harness.ts';
+import { Backing, connect, openDoc, start, syncFrame, wake, type Opened } from './do-harness.ts';
 import { heldText, KINDS, LiveClient, syncAll } from './live-client.ts';
 import { serverEnds, type FakeSocket } from './workerd.ts';
 
@@ -228,6 +230,7 @@ describe.each(KINDS)('T1.F2 payload docs, %s @p:col-1 @p:col-3', (kind) => {
       await syncAll(ada, ben);
       const withheld = opened.dobj.payloadWork.withheld;
       const id = ben.ids()[0];
+      const before = Y.encodeStateVector(ben.payloadDoc(0)!);
       ben.type(0, 6, ' OFFLINE-ben');
       ada.remove(0);
       const since = mark();
@@ -239,7 +242,9 @@ describe.each(KINDS)('T1.F2 payload docs, %s @p:col-1 @p:col-3', (kind) => {
       const ack = (await acks(ben)).at(-1);
       const covered = ack?.p?.[id];
       expect(covered, 'the withheld write is acked').toBeDefined();
-      expect(Y.snapshotContainsUpdate(Y.createSnapshot(Y.createDeleteSet(), Y.decodeStateVector(base64ToBytes(covered!.sv))), Y.encodeStateAsUpdate(ben.payloads.get(id)!))).toBe(true);
+      const typed = Y.encodeStateAsUpdate(ben.payloads.get(id)!, before);
+      expect(Y.snapshotContainsUpdate(Y.createSnapshot(Y.createDeleteSet(), Y.decodeStateVector(base64ToBytes(covered!.sv))), typed), 'the ack covers the typing').toBe(true);
+      expect(Y.decodeStateVector(base64ToBytes(covered!.sv)).size, "the ack's vector names only what Ben sent").toBe(1);
       ada.undo.undo();
       await syncAll(ada, ben);
       for (const peer of [ada, ben]) expect(peer.texts()).toEqual(['shared OFFLINE-ben']);
@@ -399,17 +404,20 @@ describe('T1.F2 payloads in moved paragraphs and containers @p:col-1', () => {
 });
 
 describe('T1.F2 joining a draft @p:col-1', () => {
-  it('a peer that joins at any point of a new block\'s drafting, and touches the block, never costs the drafter a character', async () => {
+  it.each(['element first', 'first text first'])('a peer that joins at any point of a new block\'s drafting, and touches the block, never costs the drafter a character (%s)', async (order) => {
     const base = await seeded();
     const seed = Y.encodeStateAsUpdate(base.dobj.document);
     const ada = await LiveClient.open(base);
     try {
       ada.insert('code-block', 'const ');
+      await ada.settle();
       for (const chunk of ['ada', ' = 1;']) ada.type(0, 99, chunk);
-      ada.flush();
-      const frames = ada.socket.drain();
-      expect(frames.map((frame) => (frame[0] === 0 ? 'root' : 'payload')), 'the first text can reach the server before its element')
-        .toEqual(['payload', 'root', 'payload', 'payload']);
+      await ada.settle();
+      const sent = ada.socket.drain();
+      expect(sent.map((frame) => (frame[0] === 0 ? 'root' : 'payload')), 'a client sends the element, then its first text')
+        .toEqual(['root', 'payload', 'payload', 'payload']);
+      // The server takes either order: a first text can reach it before its element (a minting write).
+      const frames = order === 'element first' ? sent : [sent[1], sent[0], ...sent.slice(2)];
       const drafter = ada.payloadDoc(0)!.clientID;
       for (let prefix = 0; prefix <= frames.length; prefix++) {
         const opened = await start(openDoc());
@@ -432,6 +440,120 @@ describe('T1.F2 joining a draft @p:col-1', () => {
       }
     } finally { ada.dispose(); }
   });
+});
+
+describe('T1.F2 security: no reveal by naming, no cap bypass, bounded work @p:col-1 @p:tech-8', () => {
+  it('a later joiner, a demoted reader and a second editor who name a deleted block\'s id receive nothing; the deleter\'s undo still restores it', async () => {
+    const opened = await seeded();
+    const ada = await LiveClient.open(opened, { id: 'ada', role: 'editor' });
+    const ben = await LiveClient.open(opened, { id: 'ben', role: 'editor' });
+    try {
+      ada.insert('code-block', 'NAMED-secret');
+      await syncAll(ada, ben);
+      const id = ada.ids()[0];
+      expect(ben.texts(), 'positive control: ben could read it').toEqual(['NAMED-secret']);
+      ada.remove(0);
+      await syncAll(ada, ben);
+      const since = mark();
+      // A second editor and a later joiner, who never could read it, each put an element naming the id.
+      const cat = await LiveClient.open(opened, { id: 'cat', role: 'editor' });
+      const dan = await LiveClient.open(opened, { id: 'dan', role: 'editor' });
+      for (const forger of [cat, dan]) {
+        forger.forge(id);
+        await syncAll(forger);
+        await forger.socket.deliver(encodePayloadFrame(id, PAYLOAD_STEP1, new Uint8Array([0])));
+        await forger.down();
+        expect(forger.texts().every((text) => text === ''), 'the forged block stays empty').toBe(true);
+      }
+      // Ben, demoted to viewer, cannot name it at all.
+      ben.dispose();
+      const demoted = await LiveClient.open(opened, { id: 'ben', role: 'viewer' });
+      demoted.forge(id);
+      await demoted.up();
+      expect(demoted.socket.closed?.code, "a viewer's write is refused").toBeDefined();
+      const late = await lateReader(opened);
+      expect(late.length > 0 && late.every((text) => text === ''), 'a later joiner reads nothing').toBe(true);
+      expect(carries(served(opened, since), 'NAMED-secret'), 'no frame carried the text').toBe(false);
+      expect(await opened.dobj.exportMarkdown()).not.toContain('NAMED-secret');
+      ada.undo.undo();
+      await syncAll(ada, cat, dan);
+      await syncAll(ada, cat, dan);
+      expect(ada.texts().sort()).toContain('NAMED-secret');
+      expect(await lateReader(opened), "the deleter's undo reveals it, one element per id").toEqual(['NAMED-secret']);
+      cat.dispose();
+      dan.dispose();
+      demoted.dispose();
+    } finally { ada.dispose(); }
+  });
+
+  it('withheld writes are bounded per connection and per identity, and never evict another\'s withheld payload', async () => {
+    class SmallDoc extends DocDO {
+      static override limits = { ...DocDO.limits, withheldIdsPerConnection: 3, withheldBytesPerIdentity: 4 * 1024 };
+    }
+    const opened = await start(openDoc(new Backing(), SmallDoc as never));
+    await opened.dobj.create({ folderId: 'folder', ownerId: 'owner', markdown: SEED });
+    const ada = await LiveClient.open(opened, { id: 'ada', role: 'editor' });
+    const ben = await LiveClient.open(opened, { id: 'ben', role: 'editor' });
+    try {
+      ada.insert('code-block', 'kept');
+      await syncAll(ada, ben);
+      const id = ada.ids()[0];
+      ben.type(0, 4, ' BEN-private');
+      ada.remove(0);
+      await syncAll(ada, ben);
+      expect(ben.socket.closed, "ben's withheld write is accepted").toBeNull();
+      // Eve mints ids no element names: the fourth is refused, as is a payload past her identity's bytes.
+      const eve = await connect(opened, { id: 'eve', role: 'editor' });
+      await eve.hello();
+      const minted = (text: string) => {
+        const doc = new Y.Doc();
+        doc.getText('payload').insert(0, text);
+        return Y.encodeStateAsUpdate(doc);
+      };
+      for (let i = 0; i < 3; i++) await eve.deliver(encodePayloadFrame(`eve-${i}`, PAYLOAD_UPDATE, minted(`e${i}`)));
+      expect(eve.closed, 'three withheld ids are allowed').toBeNull();
+      await eve.deliver(encodePayloadFrame('eve-3', PAYLOAD_UPDATE, minted('e3')));
+      expect(eve.closed?.code, 'a fourth is refused').toBe(CLOSE.writeRefused);
+      const eve2 = await connect(opened, { id: 'eve', role: 'editor' });
+      await eve2.hello();
+      await eve2.deliver(encodePayloadFrame('eve-big', PAYLOAD_UPDATE, minted('x'.repeat(8 * 1024))));
+      expect(eve2.closed?.code, "past eve's withheld bytes").toBe(CLOSE.writeRefused);
+      // Eve cannot write into Ben's withheld payload either.
+      const eve3 = await connect(opened, { id: 'eve', role: 'editor' });
+      await eve3.hello();
+      await eve3.deliver(encodePayloadFrame(id, PAYLOAD_UPDATE, minted('EVE')));
+      expect(eve3.closed?.code, 'a non-reader writing a withheld payload').toBe(CLOSE.writeRefused);
+      ada.undo.undo();
+      await syncAll(ada, ben);
+      for (const peer of [ada, ben]) expect(peer.texts(), "ben's withheld typing survived").toEqual(['kept BEN-private']);
+    } finally { ada.dispose(); ben.dispose(); }
+  });
+
+  it('many tiny payload frames over thousands of ids hold a bounded number of docs and ack only the ids they touched', async () => {
+    class BusyDoc extends DocDO {
+      static override limits = { ...DocDO.limits, writeRate: { max: 100_000, windowMs: 5_000 } };
+    }
+    const opened = await start(openDoc(new Backing(), BusyDoc as never));
+    await opened.dobj.create({ folderId: 'folder', ownerId: 'owner', markdown: SEED });
+    const ada = await LiveClient.open(opened);
+    try {
+      const count = 2_000;
+      const started = performance.now();
+      ada.insertMany('code-block', count);
+      await ada.sync();
+      const elapsed = performance.now() - started;
+      expect(opened.dobj.payloadWork.held, 'payload docs held in memory are bounded').toBeLessThanOrEqual(PAYLOAD_DOCS_HELD);
+      // Stated budget in the Node harness: 2,000 new blocks' frames land in well under 30 s.
+      expect(elapsed).toBeLessThan(30_000);
+      const ack = (await acks(ada)).at(-1);
+      expect(Object.keys(ack?.p ?? {}).length, 'the ack names the ids its frames wrote').toBe(count);
+      ada.type(1_234, 0, 'x');
+      await ada.up();
+      const next = (await acks(ada)).at(-1);
+      expect(Object.keys(next?.p ?? {}), 'and a later ack only the one touched').toEqual([ada.ids()[1_234]]);
+      expect(await lateReader(opened)).toHaveLength(count);
+    } finally { ada.dispose(); }
+  }, 120_000);
 });
 
 describe('T1.F2 the DocDO: migration and cost @p:col-1 @p:tech-8', () => {
