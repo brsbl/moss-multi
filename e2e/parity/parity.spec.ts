@@ -118,8 +118,13 @@ interface OracleCapture { png: Buffer; listing: NoteListing[]; openTitle: string
 /** The open note's sidebar row → Trash, then the footer's Trash view, which opens that note read-only. */
 async function trashOpenNote(page: Page): Promise<void> {
   const crop = page.locator(CROP);
-  await crop.locator('button[data-note-active]').click({ button: 'right' });
+  const active = crop.locator('button[data-note-active]');
+  const title = (await active.textContent()) ?? '';
+  await active.click({ button: 'right' });
   await page.getByRole('menuitem', { name: 'Trash', exact: true }).click();
+  // moss records the Trash view's selection only once the trash resolves, then selects the next note; the web's trash
+  // waits for acks and the server first, so the Trash button waits for that switch.
+  await expect(crop.locator('button[data-note-active]')).not.toHaveText(title, { timeout: 15_000 });
   await crop.getByRole('button', { name: 'Trash', exact: true }).click();
   await expect(crop.getByRole('button', { name: 'Back to notes', exact: true })).toBeVisible();
   await expect(crop.locator('[data-lexical-editor="true"][contenteditable="false"]')).toBeVisible({ timeout: 30_000 });
