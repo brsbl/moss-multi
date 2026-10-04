@@ -32,7 +32,8 @@ export interface TweetEmbedCardProps {
   /** False in read-only renders — withholds mutating controls + gap cursors. */
   editable: boolean;
   onDelete: () => void;
-  onGapClick: (position: 'before' | 'after') => (e: React.MouseEvent) => void;
+  // moss-multi seam: read-only-media: absent in a read-only render
+  onGapClick?: (position: 'before' | 'after') => (e: React.MouseEvent) => void;
   onOpenInBrowser: () => void;
   onContainerClick: (e: React.MouseEvent) => void;
   hostRef: Ref<HTMLDivElement>;
