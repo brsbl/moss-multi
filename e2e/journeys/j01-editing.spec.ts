@@ -143,6 +143,28 @@ test('j01 editing: concurrent typing, local undo and paste retain both authors @
   for (const actor of [ada, ben]) { await expect(ui.body(actor, id)).toContainText('Pasted content'); await expect.poll(async () => (await ui.fieldText(actor, id, 'body')).replace('Pasted content', '')).toContain('PEER'); }
 });
 
+test('j01 editing: undoing text the peer typed onto keeps the peer\'s text @p:col-3', async ({ actors, stack }) => {
+  const { ada, ben, id } = await setup(actors, stack.baseUrl, 'Intro.');
+  await ui.body(ada, id).locator('p').filter({ hasText: /^Intro\.$/ }).click();
+  await ada.page.keyboard.press('End'); await ada.page.keyboard.press('Enter');
+  await ada.page.waitForTimeout(1_500);
+  await ada.page.keyboard.type('Alpha.'); await ada.page.waitForTimeout(1_500);
+  await ui.body(ben, id).locator('p').filter({ hasText: /^Alpha\.$/ }).click();
+  await ben.page.keyboard.press('End'); await ben.page.keyboard.type(' Beta.');
+  for (const actor of [ada, ben]) await expect.poll(() => ui.fieldText(actor, id, 'body')).toContain('Alpha. Beta.');
+  await ada.page.waitForTimeout(1_500);
+  await ada.page.keyboard.press('ControlOrMeta+z');
+  for (const actor of [ada, ben]) {
+    await expect.poll(() => ui.fieldText(actor, id, 'body')).not.toContain('Alpha.');
+    expect(await ui.fieldText(actor, id, 'body')).toContain(' Beta.');
+  }
+  await ada.page.keyboard.press('ControlOrMeta+z');
+  await ada.page.waitForTimeout(1_000);
+  for (const actor of [ada, ben]) expect(await ui.fieldText(actor, id, 'body')).toContain(' Beta.');
+  await actors.reloadAll();
+  for (const actor of [ada, ben]) { await ui.waitLive(actor, id); expect(await ui.fieldText(actor, id, 'body')).toContain(' Beta.'); }
+});
+
 test('j01 editing: title undo is local and redo preserves the peer @p:col-3', async ({ actors, stack }) => {
   const { ada, ben, id } = await setup(actors, stack.baseUrl);
   await ui.title(ada, id).click(); await ada.page.keyboard.press('End'); await ada.page.keyboard.type(' Ada');

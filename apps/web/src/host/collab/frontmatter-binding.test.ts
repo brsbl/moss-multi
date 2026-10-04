@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { readField, writeField } from '@moss-multi/core/doc-fields';
 import { frontmatterDirtySignalAtom, noteFrontmatterAtom } from '@moss/shared/state/note-atoms';
-import { bindFrontmatter, parseFrontmatter } from './frontmatter-binding.ts';
+import { bindFrontmatter, parseFrontmatter, setEditingProperty } from './frontmatter-binding.ts';
 
 describe('frontmatter binding', () => {
   it('keeps moss date normalization and rejects malformed or non-mapping YAML', () => {
@@ -77,4 +77,32 @@ it('keeps the empty Add field form open until its first value commits', () => {
   expect(readField(doc, 'frontmatter')).toBe('first: value\n');
   stop();
   doc.destroy();
+});
+
+it('keeps the property being edited when a peer deletes it, until the draft commits or is cancelled', () => {
+  const ada = new Y.Doc();
+  const ben = new Y.Doc();
+  ada.on('update', (update: Uint8Array) => Y.applyUpdate(ben, update, 'remote'));
+  writeField(ada, 'frontmatter', 'status: draft\nowner: ada\n', 'seed');
+  const store = createStore();
+  const atom = noteFrontmatterAtom('delete-during-draft');
+  const signal = frontmatterDirtySignalAtom('delete-during-draft');
+  const stop = bindFrontmatter(store, 'delete-during-draft', ben, () => true);
+  try {
+    setEditingProperty('delete-during-draft', 'status');
+    writeField(ada, 'frontmatter', 'owner: ada\n', 'seed');
+    expect(Object.keys(store.get(atom) ?? {}), 'the open field keeps its row').toEqual(['status', 'owner']);
+    // Ben commits his draft: the edit is kept, not silently dropped.
+    store.set(atom, { ...store.get(atom), status: 'done' });
+    store.set(signal, (n) => n + 1);
+    setEditingProperty('delete-during-draft', null);
+    expect(parseFrontmatter(readField(ben, 'frontmatter'))).toEqual({ status: 'done', owner: 'ada' });
+
+    setEditingProperty('delete-during-draft', 'owner');
+    writeField(ada, 'frontmatter', 'status: done\n', 'seed');
+    expect(store.get(atom)).toEqual({ status: 'done', owner: 'ada' });
+    // Cancelling the draft accepts the peer's delete.
+    setEditingProperty('delete-during-draft', null);
+    expect(store.get(atom)).toEqual({ status: 'done' });
+  } finally { stop(); ada.destroy(); ben.destroy(); }
 });

@@ -122,6 +122,13 @@ describe('budget fallback', () => {
     expect(ops.filter((op) => 'insert' in op)).toHaveLength(1);
   });
 
+  it('a one-character selection replaced by a large paste stays exact and coalesced', () => {
+    const paste = 'y'.repeat(1_000_000);
+    const ops = diffText('aXb', `a${paste}b`);
+    expect(applyOps('aXb', ops)).toBe(`a${paste}b`);
+    expect(ops).toHaveLength(3);
+  });
+
   it('writeField stays exact on a large title edit', () => {
     const [a, b] = pair('x'.repeat(5_000));
     writeField(a, 'title', 'y'.repeat(5_000), LOCAL);

@@ -236,4 +236,18 @@ describe('L4 decorator registers @p:col-1 @p:col-3 @p:tech-1', () => {
       expect(node.getAttribute('__code')).toBe('stored code');
     } finally { legacy.destroy(); restored.destroy(); }
   });
+
+  it('a server write that deletes register blocks deletes their payloads with them', () => {
+    const live = new Y.Doc();
+    try {
+      importBody(live, 'Intro.\n\n```js\nconst KEY = "SECRET-123";\n```\n\n{{2+3|5}}');
+      expect(live.getMap('registers').size).toBe(2);
+      serverWrite(live, 'test-delete', () => { for (const node of $getRoot().getChildren()) if (node.getTextContent() !== 'Intro.') node.remove(); });
+      expect([...live.getMap('registers').keys()]).toEqual([]);
+      expect(new TextDecoder().decode(Y.encodeStateAsUpdate(live))).not.toContain('SECRET-123');
+      importBody(live, 'Replaced.\n\n```js\nnext\n```');
+      importBody(live, 'Replaced again.');
+      expect(live.getMap('registers').size, 'a body replacement leaves no orphans').toBe(0);
+    } finally { live.destroy(); }
+  });
 });
