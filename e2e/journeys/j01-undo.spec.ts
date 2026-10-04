@@ -52,9 +52,16 @@ async function press(ada: Actor, ben: Actor, id: string, key: string, times: num
   }
   return text;
 }
-async function caretAtEnd(actor: Actor, id: string, start: string) {
+/** The caret at the end of the paragraph starting with `start`, then `left` characters back. */
+async function caretAtEnd(actor: Actor, id: string, start: string, left = 0) {
   await paragraph(actor, id, start).click();
+  const caretIn = () => actor.page.evaluate(() => {
+    const node = window.getSelection()?.anchorNode;
+    return (node instanceof Element ? node : node?.parentElement)?.closest('p')?.textContent ?? '';
+  });
+  await expect.poll(caretIn, { message: `${actor.label}: the caret is in "${start}"` }).toMatch(new RegExp(`^${start}`));
   await actor.page.keyboard.press('End');
+  for (let i = 0; i < left; i++) await actor.page.keyboard.press('ArrowLeft');
 }
 
 test('j01 undo: interleaved typing in one paragraph; Ada\'s Cmd+Z keeps Ben\'s words, redo restores hers @p:col-3', async ({ actors, stack }) => {
@@ -100,8 +107,7 @@ test('j01 undo: a paragraph split and merge by one peer while the other types; C
   const { ada, ben, id } = await setup(actors, stack.baseUrl, 'First half second half.\n\nOther para.');
   if (!ben) throw new Error('no ben');
   // Ada splits the paragraph; Ben types into the half she moved while she types into the other.
-  await paragraph(ada, id, 'First half').click(); await ada.page.keyboard.press('Home');
-  for (let i = 0; i < 'First half'.length; i++) await ada.page.keyboard.press('ArrowRight');
+  await caretAtEnd(ada, id, 'First half', ' second half.'.length);
   await ada.page.keyboard.press('Enter');
   await expect(paragraph(ben, id, ' ?second half')).toBeVisible({ timeout: PEER_TIMEOUT });
   await caretAtEnd(ben, id, ' ?second half');
@@ -116,8 +122,7 @@ test('j01 undo: a paragraph split and merge by one peer while the other types; C
   // Ben merges his paragraph into the one above while Ada types into another.
   await caretAtEnd(ada, id, 'Other para');
   await ada.page.waitForTimeout(NEW_STEP_MS);
-  const benLine = paragraph(ben, id, ' ?BEN');
-  await benLine.click(); await ben.page.keyboard.press('Home');
+  await caretAtEnd(ben, id, ' ?BEN', ' BEN'.length);
   await Promise.all([ada.page.keyboard.type(' MORE', { delay: 60 }), ben.page.keyboard.press('Backspace')]);
   const merged = await converged(ada, ben, id, 'merged');
   expect(merged).toContain('MORE');
