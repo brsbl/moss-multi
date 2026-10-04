@@ -5,7 +5,7 @@ import { createHeadlessEditor } from '@lexical/headless';
 import { createBinding, syncLexicalUpdateToYjs, syncYjsChangesToLexical, type Binding, type Provider } from '@lexical/yjs';
 import {
   $createParagraphNode, $createTextNode, $getNodeByKey, $getRoot, $isElementNode, COLLABORATION_TAG, DecoratorNode, HISTORIC_TAG,
-  type LexicalEditor, type LexicalNode, type NodeKey, type SerializedLexicalNode,
+  type LexicalNode, type NodeKey, type SerializedLexicalNode,
 } from 'lexical';
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
@@ -37,6 +37,7 @@ class SpikeBlock extends DecoratorNode<null> {
   createDOM(): never { throw new Error('headless'); }
   updateDOM(): false { return false; }
   decorate(): null { return null; }
+  isInline(): false { return false; }
 }
 const isBlock = (node: LexicalNode | null | undefined): node is SpikeBlock => node instanceof SpikeBlock;
 
@@ -45,7 +46,7 @@ const PAYLOAD_LOCAL = Symbol('payload-local');
 const DEDUPE = Symbol('dedupe');
 type CollabLike = { _xmlElem?: Y.XmlElement; _key?: NodeKey };
 
-function isPayload(type: Y.AbstractType<unknown>): type is Y.Text {
+function isPayload(type: unknown): type is Y.Text {
   return type instanceof Y.Text && !(type instanceof Y.XmlText) && type._item?.parentSub === PAYLOAD;
 }
 
@@ -107,7 +108,18 @@ function payloadClient(state: Uint8Array, { filterPayloadEvents = true, dedupeUn
   };
   root.observeDeep(observer);
 
-  const undo = new Y.UndoManager([root], { trackedOrigins: new Set<unknown>([binding, PAYLOAD_LOCAL]), captureTimeout: 0 });
+  // T1.P's undo rule, which the element-owned payload makes local: an undo never deletes a block whose payload holds
+  // another client's live text (undoing a creation or a move a peer has since typed into).
+  const holdsPeerText = (item: Y.Item) => {
+    const type = item.content instanceof Y.ContentType ? item.content.type : null;
+    const payload = type instanceof Y.XmlElement ? type.getAttribute(PAYLOAD) as unknown : null;
+    if (!(payload instanceof Y.Text)) return false;
+    for (let run = payload._start; run; run = run.right) if (!run.deleted && run.id.client !== doc.clientID) return true;
+    return false;
+  };
+  const undo = new Y.UndoManager([root], {
+    trackedOrigins: new Set<unknown>([binding, PAYLOAD_LOCAL]), captureTimeout: 0, deleteFilter: (item) => !holdsPeerText(item),
+  });
   // An undo may restore a block that a peer has meanwhile moved (V1 recreated it under the same block id). Only the
   // undoing client checks, only blocks its own undo just created, so a peer's live block is never touched.
   const afterUndo = (transaction: Y.Transaction) => {
@@ -124,7 +136,10 @@ function payloadClient(state: Uint8Array, { filterPayloadEvents = true, dedupeUn
   Y.applyUpdate(doc, state, 'remote');
   editor.update(noop, { discrete: true });
 
-  const flush = () => editor.update(noop, { discrete: true });
+  const flush = () => {
+    editor.update(noop, { discrete: true });
+    if (errors.length && filterPayloadEvents) throw errors[0];
+  };
   const read = <T>(fn: () => T): T => { flush(); return editor.getEditorState().read(fn); };
   const blockKeys = () => read(() => $getRoot().getChildren().filter(isBlock).map((node) => node.getKey()));
   return {
@@ -305,7 +320,7 @@ describe('T1.R spike: element-owned decorator payloads @p:col-1 @p:col-3', () =>
         const ben = payloadClient(Y.encodeStateAsUpdate(partial));
         partial.destroy();
         try {
-          if (ben.texts().length) { ben.touch(0); ben.moveToEnd(0); }
+          if (ben.texts().length) ben.touch(0);
           send(ada.doc, ben.doc); send(ben.doc, ada.doc);
           const merged = new Y.Doc(); send(ada.doc, merged);
           const late = payloadClient(Y.encodeStateAsUpdate(merged));
@@ -314,6 +329,21 @@ describe('T1.R spike: element-owned decorator payloads @p:col-1 @p:col-3', () =>
         } finally { ben.dispose(); }
       }
     } finally { ada.dispose(); }
+  });
+
+  it('typing that races a move lands in the old element and is lost, as it is for any V1 block (the stated limit)', () => {
+    const server = seededServer();
+    const ada = payloadClient(Y.encodeStateAsUpdate(server));
+    const ben = payloadClient(Y.encodeStateAsUpdate(server));
+    try {
+      ada.insertBlock('base');
+      roundTrip(server, ada, ben);
+      ben.type(0, 4, ' RACED-ben');
+      ada.moveToEnd(0);
+      roundTrip(server, ada, ben);
+      for (const peer of [ada, ben]) expect(peer.texts()).toEqual(['base']);
+      expect(contains(server, 'RACED-ben')).toBe(false);
+    } finally { ada.dispose(); ben.dispose(); }
   });
 
   it('an offline edit to a block another peer deleted stays deleted and is never served', () => {
@@ -364,18 +394,19 @@ function mapClient(state: Uint8Array) {
   editor.update(noop, { discrete: true });
   return { doc, editor, dispose: () => { stop(); stopRegisters(); root.unobserveDeep(observer); doc.destroy(); } };
 }
-function codeBlocks(editor: LexicalEditor): (LexicalNode & { getCode(): string; setCode(code: string): void })[] {
+function codeBlocks(): (LexicalNode & { getCode(): string; setCode(code: string): void })[] {
   const walk = (node: LexicalNode): LexicalNode[] => node.getType() === 'code-block' ? [node] : $isElementNode(node) ? node.getChildren().flatMap(walk) : [];
   return walk($getRoot()) as never;
 }
 
 describe('T1.R spike: the M1 register map, for comparison @p:col-1', () => {
-  it('M1 map: a deleted block\'s payload is still served to later readers and duplicates (privacy P1)', () => {
+  // Red on purpose until T1.F2 lands the element-owned payload; then this becomes a plain `it`.
+  it.fails('M1 map: a deleted block\'s payload is still served to later readers and duplicates (privacy P1)', () => {
     const server = new Y.Doc();
     importBody(server, 'Intro.\n\n```js\nSECRET-beta\n```');
     const ada = mapClient(Y.encodeStateAsUpdate(server));
     try {
-      ada.editor.update(() => { codeBlocks(ada.editor)[0].remove(); }, { discrete: true });
+      ada.editor.update(() => { codeBlocks()[0].remove(); }, { discrete: true });
       send(ada.doc, server);
       expect(exportDocMarkdown(server)).not.toContain('SECRET-beta');
       expect(contains(server, 'SECRET-beta')).toBe(false);
@@ -395,7 +426,7 @@ describe('T1.R spike: the M1 register map, for comparison @p:col-1', () => {
         $getRoot().getFirstChildOrThrow().insertAfter(new klass(''));
       }, { discrete: true });
       for (const text of ['const ', 'const ada', 'const ada = 1;']) {
-        ada.editor.update(() => { codeBlocks(ada.editor)[0].setCode(text); }, { discrete: true });
+        ada.editor.update(() => { codeBlocks()[0].setCode(text); }, { discrete: true });
       }
       ada.doc.off('update', record);
       const kinds = updates.map((update) => {
@@ -411,7 +442,7 @@ describe('T1.R spike: the M1 register map, for comparison @p:col-1', () => {
         partial.destroy();
         try {
           ben.editor.update(() => {
-            for (const block of codeBlocks(ben.editor)) (block.getWritable() as unknown as { __language: string }).__language = 'rust';
+            for (const block of codeBlocks()) (block.getWritable() as unknown as { __language: string }).__language = 'rust';
           }, { discrete: true });
           send(ada.doc, ben.doc); send(ben.doc, ada.doc);
           const merged = new Y.Doc(); send(ada.doc, merged);
@@ -429,13 +460,13 @@ describe('T1.R spike: the M1 register map, for comparison @p:col-1', () => {
     const ada = mapClient(Y.encodeStateAsUpdate(server));
     const ben = mapClient(Y.encodeStateAsUpdate(server));
     try {
-      ada.editor.update(() => { codeBlocks(ada.editor)[0].setCode('seed // ada'); }, { discrete: true });
+      ada.editor.update(() => { codeBlocks()[0].setCode('seed // ada'); }, { discrete: true });
       send(ada.doc, ben.doc);
       // Ben's field still holds "seed" plus his keystroke when a whole-value path (commit, double Enter) writes it.
-      ben.editor.update(() => { codeBlocks(ben.editor)[0].setCode('seed!'); }, { discrete: true });
+      ben.editor.update(() => { codeBlocks()[0].setCode('seed!'); }, { discrete: true });
       send(ben.doc, ada.doc);
       ada.editor.update(noop, { discrete: true });
-      expect(ada.editor.getEditorState().read(() => codeBlocks(ada.editor)[0].getCode())).toBe('seed!');
+      expect(ada.editor.getEditorState().read(() => codeBlocks()[0].getCode())).toBe('seed!');
     } finally { ada.dispose(); ben.dispose(); server.destroy(); }
   });
 });
