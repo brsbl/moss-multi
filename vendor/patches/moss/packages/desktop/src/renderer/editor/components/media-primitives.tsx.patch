@@ -10,7 +10,41 @@ diff --git a/packages/desktop/src/renderer/editor/components/media-primitives.ts
  export {
    GapCursor,
    BlockNodeShell,
-@@ -392,7 +394,8 @@ export function MediaNodeHeader({
+@@ -182,9 +184,11 @@ type MediaNodeHeaderProps = {
+  */
+ export function useMediaNodeActions(nodeKey: NodeKey): {
+   handleDelete: () => void;
+-  handleGapClick: (position: 'before' | 'after') => (e: React.MouseEvent) => void;
++  // moss-multi seam: read-only-media (A§19 invariant 9): no gap insert while read-only
++  handleGapClick: ((position: 'before' | 'after') => (e: React.MouseEvent) => void) | undefined;
+ } {
+   const [editor] = useLexicalComposerContext();
++  const editable = useIsEditorEditable();
+ 
+   const handleDelete = useCallback(() => {
+     // Re-guard: Lexical applies editor.update() even when not editable, so a
+@@ -214,7 +218,8 @@ export function useMediaNodeActions(nodeKey: NodeKey): {
+     [editor, nodeKey]
+   );
+ 
+-  return { handleDelete, handleGapClick };
++  // moss-multi seam: read-only-media: a read-only render offers no insert-paragraph gaps, which are focusable.
++  return { handleDelete, handleGapClick: editable ? handleGapClick : undefined };
+ }
+ 
+ // ---------------------------------------------------------------------------
+@@ -383,6 +388,10 @@ export function MediaNodeHeader({
+   children,
+ }: MediaNodeHeaderProps): JSX.Element {
+   const [editor] = useLexicalComposerContext();
++  // moss-multi seam: read-only-media (A§19 invariant 9): node views never pass `editable`, so a read-only render
++  // offered Delete; nothing in a read-only body takes focus.
++  const editorEditable = useIsEditorEditable();
++  editable = editable && editorEditable;
+ 
+   return (
+     <div
+@@ -392,7 +401,8 @@ export function MediaNodeHeader({
      >
        <div className="flex items-center gap-1">
          {children}

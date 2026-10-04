@@ -38,7 +38,7 @@ const tooLarge = (kind: 'image' | 'video') =>
 const unsupported = () =>
   refuse(415, 'unsupported-media', 'Only images (png, jpg, gif, webp, svg) and video (mp4, webm, mov) can be uploaded.');
 
-async function sha256Hex(bytes: Uint8Array): Promise<string> {
+async function sha256Hex(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', bytes);
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }

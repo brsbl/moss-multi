@@ -112,7 +112,7 @@ export function chooseFilesInBrowser(accept: string): Promise<File[]> {
     };
     input.addEventListener('change', () => done([...(input.files ?? [])]), { once: true });
     input.addEventListener('cancel', () => done([]), { once: true });
-    document.body.append(input);
+    document.body.appendChild(input);
     input.click();
   });
 }
