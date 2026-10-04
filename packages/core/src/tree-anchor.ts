@@ -282,24 +282,31 @@ function followRestore(
   return restored && id ? { position: new Y.RelativePosition(null, null, id, position.assoc), restored } : { position, restored: false };
 }
 
-function resolveSides(doc: Y.Doc, anchor: TreeAnchor, projection: Projection, restores: Restores | null): { range: Range | null; restored: boolean } {
-  if (!anchor.start || !anchor.end) return { range: null, restored: false };
-  let restored = false;
+/**
+ * The range from the anchor's positions, following restores when `restores` is given. `copies` says both sides moved
+ * onto restored copies made by one client (an undo), so the range is that undo's even if its interior text changed.
+ */
+function resolveSides(
+  doc: Y.Doc,
+  anchor: TreeAnchor,
+  projection: Projection,
+  restores: Restores | null,
+): { range: Range | null; restored: boolean; copies: boolean } {
+  if (!anchor.start || !anchor.end) return { range: null, restored: false, copies: false };
   const side = (value: string, expected: string | undefined) => {
     let position = decodeRelPos(value);
-    if (restores) {
-      const followed = followRestore(doc, position, restores, expected);
-      position = followed.position;
-      restored ||= followed.restored;
-    }
+    let restored = false;
+    if (restores) ({ position, restored } = followRestore(doc, position, restores, expected));
     const absolute = Y.createAbsolutePositionFromRelativePosition(position, doc, false);
-    return absolute && absolute.type instanceof Y.XmlText ? flatOf(projection, absolute.type, absolute.index) : null;
+    const flat = absolute && absolute.type instanceof Y.XmlText ? flatOf(projection, absolute.type, absolute.index) : null;
+    return { flat, restored, client: position.item?.client };
   };
   const { exact } = anchor.quote;
   const start = side(anchor.start, exact ? exact[0] : undefined);
   const end = side(anchor.end, exact ? exact[exact.length - 1] : undefined);
-  if (start === null || end === null || end < start) return { range: null, restored: false };
-  return { range: { start, end }, restored };
+  if (start.flat === null || end.flat === null || end.flat < start.flat) return { range: null, restored: false, copies: false };
+  const copies = start.restored && end.restored && start.client === end.client;
+  return { range: { start: start.flat, end: end.flat }, restored: start.restored || end.restored, copies };
 }
 
 /** Where a deleted block now starts, when a copy inserted after the fence restored it. */
@@ -354,7 +361,8 @@ const fenceOf = (anchor: TreeAnchor) => (anchor.orphanedAt ? Y.decodeStateVector
  * Keeps an anchor whose positions still cover its quote, refreshing the quote to the text they now cover. A comment
  * never jumps: when its text or block is deleted it is orphaned with its positions kept, and it comes back only where
  * a later undo or restore re-inserts that same text (a copy whose right origin is the deleted item and which reads
- * exactly as the quote, so a peer's text that merely names the deleted item never takes its place). The quote is
+ * exactly as the quote, or whose two sides are both one client's copies, so a peer's text that merely names the
+ * deleted item never takes its place). The quote is
  * searched only for an anchor that never had positions (an import, a paste, a quote-only REST comment). Pure:
  * `changed` says the anchor differs in anything but its hint, which is what the caller persists.
  */
@@ -374,8 +382,11 @@ export function validateAnchor(
   const { exact } = anchor.quote;
   const covers = (range: Range | null): range is Range =>
     range !== null && (exact.length === 0 || similarity(projection.text.slice(range.start, range.end), exact) >= REANCHOR_THRESHOLD);
-  let { range, restored } = resolveSides(doc, anchor, projection, known);
-  if (!covers(range) && known && anchor.block) {
+  const sides = resolveSides(doc, anchor, projection, known);
+  let { range, restored } = sides;
+  // Both sides on one undo's copies: that undo restored the range, so text typed inside it before the deletion counts.
+  const undone = sides.copies && range !== null && range.end > range.start;
+  if (!undone && !covers(range) && known && anchor.block) {
     const at = restoredBlock(anchor.block, projection, known);
     const start = at === null ? -1 : at + anchor.block.offset;
     if (start >= 0 && projection.text.slice(start, start + exact.length) === exact) {
@@ -383,8 +394,8 @@ export function validateAnchor(
       restored = true;
     }
   }
-  if (!covers(range)) return orphan();
-  if (restored && projection.text.slice(range.start, range.end) !== exact) return orphan();
+  if (!range || (!undone && !covers(range))) return orphan();
+  if (!undone && restored && projection.text.slice(range.start, range.end) !== exact) return orphan();
   if (restored) return { anchor: mintAnchor(doc, range.start, range.end, projection), range, reanchored: true, changed: true };
   const quote = captureQuote(projection.text, range.start, range.end);
   const changed = anchor.status !== 'anchored' || !sameQuote(quote, anchor.quote);
