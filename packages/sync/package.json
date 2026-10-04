@@ -8,7 +8,8 @@
     "./converter": "./src/converter/index.ts",
     "./excluded-properties": "./src/excluded-properties.ts",
     "./projections": "./src/doc/projections.ts",
-    "./fanout": "./src/fanout.ts"
+    "./fanout": "./src/fanout.ts",
+    "./registers": "./src/registers.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.converter.json"

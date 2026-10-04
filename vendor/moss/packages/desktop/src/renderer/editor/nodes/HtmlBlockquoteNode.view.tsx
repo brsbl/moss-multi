@@ -1,4 +1,7 @@
 // ported-from: packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.tsx @ 762abb777
+// moss-multi seam: publish decorator drafts as register edits.
+import { useRegisterDraft } from '@moss-multi/host/collab/register-input';
+import { registerDoc } from '@moss-multi/host/collab/registers';
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { JSX } from 'react';
 import { $createNodeSelection, $getNodeByKey, $setSelection, type NodeKey } from 'lexical';
@@ -198,9 +201,9 @@ function RawHtmlBlockquoteComponent({
   const [isSelected, setSelected, clearSelection] = useLexicalNodeSelection(nodeKey);
   const { handleDelete, handleGapClick } = useMediaNodeActions(nodeKey);
   const [isEditing, setIsEditing] = useState(false);
-  const [localRawHtml, setLocalRawHtml] = useState(rawHtml);
   const [hasTextSelection, setHasTextSelection] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [localRawHtml, setLocalRawHtml] = useRegisterDraft(editor, nodeKey, rawHtml, 'setRawHtml', textareaRef, isEditing);
   const highlightedPreRef = useRef<HTMLPreElement>(null);
   const previewContent = useMemo(
     () => parseHtmlBlockquotePreviewContent(rawHtml),
@@ -229,7 +232,7 @@ function RawHtmlBlockquoteComponent({
   }, []);
 
   useEffect(() => {
-    if (!isEditing) {
+    if (!isEditing && !registerDoc(editor)) {
       setLocalRawHtml(rawHtml);
     }
   }, [rawHtml, isEditing]);
@@ -289,7 +292,7 @@ function RawHtmlBlockquoteComponent({
     editor.update(() => {
       const node = $getNodeByKey(nodeKey);
       if (node && $isHtmlBlockquoteNode(node)) {
-        node.setRawHtml(trimmed);
+        if (!registerDoc(editor)) node.setRawHtml(trimmed);
       }
     });
     setHasTextSelection(false);
@@ -313,7 +316,7 @@ function RawHtmlBlockquoteComponent({
   }, [commitRawHtml, editor._key, isEditing, nodeKey]);
 
   const cancelEdit = useCallback(() => {
-    setLocalRawHtml(rawHtml);
+    if (!registerDoc(editor)) setLocalRawHtml(rawHtml);
     setHasTextSelection(false);
     setIsEditing(false);
   }, [rawHtml]);
@@ -368,7 +371,7 @@ function RawHtmlBlockquoteComponent({
                   <div className="flex items-center gap-1">
                     <MediaHeaderButton
                       icon={X}
-                      title="Cancel"
+                      title={registerDoc(editor) ? "Close" : "Cancel"}
                       onClick={() => cancelEdit()}
                     />
                     <MediaHeaderButton
@@ -397,6 +400,7 @@ function RawHtmlBlockquoteComponent({
                   </pre>
                   <textarea
                     ref={textareaRef}
+                    readOnly={!editor.isEditable()}
                     value={localRawHtml}
                     onChange={(e) => {
                       setLocalRawHtml(e.target.value);
@@ -424,11 +428,11 @@ function RawHtmlBlockquoteComponent({
                   <span className="inline-flex items-center gap-1 align-middle">
                     <KeyboardShortcut keys={['⌘', '⏎']} size="compact" />
                   </span>{' '}
-                  to save &middot;{' '}
+                  {registerDoc(editor) ? 'to finish' : 'to save'} &middot;{' '}
                   <span className="inline-flex items-center gap-1 align-middle">
                     <KeyboardShortcut keys={['Esc']} size="compact" />
                   </span>{' '}
-                  to cancel
+                  {registerDoc(editor) ? 'to close' : 'to cancel'}
                 </div>
               </div>
             </div>
@@ -497,11 +501,11 @@ function MossHtmlPreviewComponent({
   const [isSelected, setSelected, clearSelection] = useLexicalNodeSelection(nodeKey);
   const { handleDelete, handleGapClick } = useMediaNodeActions(nodeKey);
   const [isEditing, setIsEditing] = useState(false);
-  const [localRawHtml, setLocalRawHtml] = useState(rawHtml);
   const [hasTextSelection, setHasTextSelection] = useState(false);
   const [isInteractive, setIsInteractive] = useState(false);
   const { isFullscreen, enterFullscreen, exitFullscreen } = useMediaFullscreen();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [localRawHtml, setLocalRawHtml] = useRegisterDraft(editor, nodeKey, rawHtml, 'setRawHtml', textareaRef, isEditing);
   const highlightedPreRef = useRef<HTMLPreElement>(null);
 
   const [interactivePreviewReady, setInteractivePreviewReady] = useState(false);
@@ -659,7 +663,7 @@ function MossHtmlPreviewComponent({
   }, [retryPreviewImage]);
 
   useEffect(() => {
-    if (!isEditing) {
+    if (!isEditing && !registerDoc(editor)) {
       setLocalRawHtml(rawHtml);
     }
   }, [rawHtml, isEditing]);
@@ -745,7 +749,7 @@ function MossHtmlPreviewComponent({
     editor.update(() => {
       const node = $getNodeByKey(nodeKey);
       if (node && $isHtmlBlockquoteNode(node)) {
-        node.setRawHtml(trimmed);
+        if (!registerDoc(editor)) node.setRawHtml(trimmed);
       }
     });
     setHasTextSelection(false);
@@ -769,7 +773,7 @@ function MossHtmlPreviewComponent({
   }, [commitRawHtml, editor._key, isEditing, nodeKey]);
 
   const cancelEdit = useCallback(() => {
-    setLocalRawHtml(rawHtml);
+    if (!registerDoc(editor)) setLocalRawHtml(rawHtml);
     setHasTextSelection(false);
     setIsEditing(false);
   }, [rawHtml]);
@@ -799,7 +803,7 @@ function MossHtmlPreviewComponent({
         <div className="flex items-center gap-1">
           <MediaHeaderButton
             icon={X}
-            title="Cancel"
+            title={registerDoc(editor) ? "Close" : "Cancel"}
             onClick={() => cancelEdit()}
           />
           <MediaHeaderButton
@@ -828,6 +832,7 @@ function MossHtmlPreviewComponent({
         </pre>
         <textarea
           ref={textareaRef}
+          readOnly={!editor.isEditable()}
           value={localRawHtml}
           onChange={(e) => {
             setLocalRawHtml(e.target.value);
@@ -855,11 +860,11 @@ function MossHtmlPreviewComponent({
         <span className="inline-flex items-center gap-1 align-middle">
           <KeyboardShortcut keys={['⌘', '⏎']} size="compact" />
         </span>{' '}
-        to save &middot;{' '}
+        {registerDoc(editor) ? 'to finish' : 'to save'} &middot;{' '}
         <span className="inline-flex items-center gap-1 align-middle">
           <KeyboardShortcut keys={['Esc']} size="compact" />
         </span>{' '}
-        to cancel
+        {registerDoc(editor) ? 'to close' : 'to cancel'}
       </div>
     </div>
   );
@@ -1018,7 +1023,7 @@ function MossHtmlPreviewComponent({
         ? { children: editorPanel }
         : {
             viewportRef: notePreviewViewportRef,
-            viewportClassName: `relative h-full overflow-hidden bg-ink-inverse ${
+            viewportClassName: `relative isolate h-full overflow-hidden bg-ink-inverse ${
               !isInteractive ? 'cursor-pointer' : ''
             }`,
             viewportDataAttributes: { 'data-moss-html-preview-viewport': 'true' },
@@ -1056,7 +1061,7 @@ function MossHtmlPreviewComponent({
 registerNodeView(HtmlBlockquoteNode.getType(), function decorate(this: HtmlBlockquoteNode): JSX.Element {
     return (
       <HtmlBlockquoteComponent
-        rawHtml={this.__rawHtml}
+        rawHtml={this.getRawHtml()}
         source={this.__source}
         commentIds={this.__commentIds}
         nodeKey={this.__key}

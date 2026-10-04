@@ -55,6 +55,81 @@ async function tabs(actor: Actor, id: string) {
   });
 }
 
+test('j01 registers: simultaneous code typing merges live and undo keeps the peer @p:col-1 @p:col-3 @evidence', async ({ actors, stack }) => {
+  const { ada, ben, id } = await setup(actors, stack.baseUrl, '```js\nseed\n```');
+  for (const actor of [ada, ben]) await ui.body(actor, id).locator('.moss-codeblock-pre').click();
+  const field = (actor: Actor) => ui.body(actor, id).getByPlaceholder('Enter code...');
+  await Promise.all([ada.page.keyboard.type('AAAA', { delay: 60 }), ben.page.keyboard.type('BBBB', { delay: 60 })]);
+  for (const actor of [ada, ben]) {
+    await expect.poll(async () => (await field(actor).inputValue()).replace(/[^A]/g, '')).toBe('AAAA');
+    await expect.poll(async () => (await field(actor).inputValue()).replace(/[^B]/g, '')).toBe('BBBB');
+  }
+  expect(await field(ada).inputValue()).toBe(await field(ben).inputValue());
+  await actors.checkpoint('concurrent-code');
+  await ada.page.keyboard.press('ControlOrMeta+z');
+  for (const actor of [ada, ben]) await expect(field(actor)).toHaveValue('seedBBBB');
+  await ada.page.keyboard.press('ControlOrMeta+Shift+z');
+  for (const actor of [ada, ben]) {
+    await expect.poll(async () => (await field(actor).inputValue()).replace(/[^A]/g, '')).toBe('AAAA');
+    await actor.page.keyboard.press('ControlOrMeta+Enter');
+  }
+  const expected = await ui.body(ada, id).locator('.moss-codeblock-code').innerText();
+  for (const actor of [ada, ben]) {
+    await actor.page.reload();
+    await ui.waitLive(actor, id); await actor.declareRemount(id);
+    await expect(ui.body(actor, id).locator('.moss-codeblock-code')).toHaveText(expected);
+  }
+});
+
+test('j01 registers: open HTML drafts receive peer typing and local undo @p:col-1 @p:col-3 @evidence', async ({ actors, stack }) => {
+  const { ada, ben, id } = await setup(actors, stack.baseUrl, '```moss-html\n<p>seed</p>\n```');
+  const field = (actor: Actor) => ui.body(actor, id).locator('textarea');
+  for (const actor of [ada, ben]) {
+    await ui.body(actor, id).locator('[data-moss-html-preview-viewport]').hover();
+    await ui.body(actor, id).getByTitle('Edit HTML', { exact: true }).click();
+  }
+  await Promise.all([ada.page.keyboard.type('AAAA', { delay: 60 }), ben.page.keyboard.type('BBBB', { delay: 60 })]);
+  for (const actor of [ada, ben]) {
+    await expect.poll(async () => (await field(actor).inputValue()).replace(/[^A]/g, '')).toBe('AAAA');
+    await expect.poll(async () => (await field(actor).inputValue()).replace(/[^B]/g, '')).toBe('BBBB');
+  }
+  await actors.checkpoint('concurrent-html');
+  await ada.page.keyboard.press('ControlOrMeta+z');
+  for (const actor of [ada, ben]) await expect(field(actor)).toHaveValue('<p>seed</p>BBBB');
+});
+
+test('j01 registers: a synthetic code composition merges peer text on compositionend @p:col-1', async ({ actors, stack }) => {
+  const { ada, ben, id } = await setup(actors, stack.baseUrl, '```js\nseed\n```');
+  const field = (actor: Actor) => ui.body(actor, id).getByPlaceholder('Enter code...');
+  for (const actor of [ada, ben]) await ui.body(actor, id).locator('.moss-codeblock-pre').click();
+  await field(ada).evaluate(input => input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true })));
+  await field(ada).fill('seed漢');
+  await ben.page.keyboard.type('BBBB');
+  await expect(field(ben)).toHaveValue('seedBBBB');
+  await expect(field(ada)).toHaveValue('seed漢');
+  await field(ada).evaluate(input => input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '漢' })));
+  for (const actor of [ada, ben]) {
+    await expect(field(actor)).toHaveValue(/^(seed漢BBBB|seedBBBB漢)$/);
+  }
+  expect(await field(ada).inputValue()).toBe(await field(ben).inputValue());
+});
+
+test('j01 registers: a formula popover receives peer edits and undo keeps them @p:col-1 @p:col-3', async ({ actors, stack }) => {
+  const { ada, ben, id } = await setup(actors, stack.baseUrl, '{{2+3|5}}');
+  const field = (actor: Actor) => actor.page.getByPlaceholder('Formula', { exact: true });
+  for (const actor of [ada, ben]) {
+    await ui.body(actor, id).locator('[data-formula-node-key]').click();
+    await expect(field(actor)).toBeVisible();
+    await field(actor).press('End');
+  }
+  await ada.page.keyboard.type('+1');
+  await expect(field(ben)).toHaveValue('2+3+1');
+  await field(ben).press('End'); await ben.page.keyboard.type('+4');
+  await expect(field(ada)).toHaveValue('2+3+1+4');
+  await field(ada).press('ControlOrMeta+z');
+  for (const actor of [ada, ben]) await expect(field(actor)).toHaveValue('2+3+4');
+});
+
 test('j01 editing: concurrent typing, local undo and paste retain both authors @p:col-1 @p:col-3', async ({ actors, stack }) => {
   const { ada, ben, id } = await setup(actors, stack.baseUrl, 'Shared paragraph.');
   await Promise.all([paragraphEnd(ada, id), paragraphEnd(ben, id)]);
@@ -198,4 +273,3 @@ test('j01 editing: formula drafts and background conversions stay out of shared 
   await actors.reloadAll();
   for (const actor of [ada, ben]) { await ui.waitLive(actor, id); await expect(ui.body(actor, id).locator('[data-formula-id]')).toHaveCount(1); await expect(ui.body(actor, id).locator('[data-color-value="#aabbcc"]')).toHaveCount(1); }
 });
-

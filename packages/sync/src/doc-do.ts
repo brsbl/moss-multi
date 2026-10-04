@@ -17,6 +17,7 @@ import { publishMeta } from './fanout.ts';
 import type { SyncEnv } from './env.ts';
 import { migrateFrontmatter } from '@moss-multi/core/frontmatter';
 import { writeField } from '@moss-multi/core/doc-fields';
+import { migrateRegisters } from './registers.ts';
 import { exportDocMarkdown, importBody, rootIsEmpty, SERVER_IMPORT, SERVER_SEED, seedEmptyParagraph } from './server-doc.ts';
 
 /** A title written by create() or a REST rename; both project. */
@@ -85,6 +86,7 @@ export class DocDO extends YServer<SyncEnv> {
     this.#store = store;
     this.document.on('update', (update: Uint8Array, origin: unknown) => this.#persist(store, update, origin));
     migrateFrontmatter(this.document, 'frontmatter-migration');
+    migrateRegisters(this.document);
     this.#seed(store);
     const target = (this.constructor as typeof DocDO).projectionTarget(this.env);
     if (target) this.#project(new Projections(this.name, target));

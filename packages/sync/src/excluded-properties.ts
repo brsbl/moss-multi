@@ -6,6 +6,9 @@ import type { Klass, LexicalEditor, LexicalNode } from 'lexical';
 
 /** By node type. `formula.__name`, `__result` and `__formulaId` are content at the pin and stay on the wire. */
 export const EXCLUDED_FIELDS: Readonly<Record<string, readonly string[]>> = {
+  'code-block': ['__code'],
+  'html-block': ['__rawHtml'],
+  formula: ['__formula'],
   'tab-group': ['__activeIndex', '__tabWidths'],
   table: ['__colWidths'],
   'file-link': ['__resolutionState'],
