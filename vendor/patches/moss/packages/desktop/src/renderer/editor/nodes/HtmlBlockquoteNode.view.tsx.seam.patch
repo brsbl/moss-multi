@@ -148,6 +148,15 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
        </div>
      </div>
    );
+@@ -1017,7 +1022,7 @@ function MossHtmlPreviewComponent({
+         ? { children: editorPanel }
+         : {
+             viewportRef: notePreviewViewportRef,
+-            viewportClassName: `relative h-full overflow-hidden bg-ink-inverse ${
++            viewportClassName: `relative isolate h-full overflow-hidden bg-ink-inverse ${
+               !isInteractive ? 'cursor-pointer' : ''
+             }`,
+             viewportDataAttributes: { 'data-moss-html-preview-viewport': 'true' },
 @@ -1055,7 +1060,7 @@ function MossHtmlPreviewComponent({
  registerNodeView(HtmlBlockquoteNode.getType(), function decorate(this: HtmlBlockquoteNode): JSX.Element {
      return (

@@ -1023,7 +1023,7 @@ function MossHtmlPreviewComponent({
         ? { children: editorPanel }
         : {
             viewportRef: notePreviewViewportRef,
-            viewportClassName: `relative h-full overflow-hidden bg-ink-inverse ${
+            viewportClassName: `relative isolate h-full overflow-hidden bg-ink-inverse ${
               !isInteractive ? 'cursor-pointer' : ''
             }`,
             viewportDataAttributes: { 'data-moss-html-preview-viewport': 'true' },

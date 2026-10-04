@@ -81,7 +81,7 @@ test('j01 registers: simultaneous code typing merges live and undo keeps the pee
   }
 });
 
-test('j01 registers: open HTML drafts receive peer typing and local undo @p:col-1 @p:col-3', async ({ actors, stack }) => {
+test('j01 registers: open HTML drafts receive peer typing and local undo @p:col-1 @p:col-3 @evidence', async ({ actors, stack }) => {
   const { ada, ben, id } = await setup(actors, stack.baseUrl, '```moss-html\n<p>seed</p>\n```');
   const field = (actor: Actor) => ui.body(actor, id).locator('textarea');
   for (const actor of [ada, ben]) await ui.body(actor, id).getByTitle('Edit HTML', { exact: true }).click();
@@ -90,8 +90,25 @@ test('j01 registers: open HTML drafts receive peer typing and local undo @p:col-
     await expect.poll(async () => (await field(actor).inputValue()).replace(/[^A]/g, '')).toBe('AAAA');
     await expect.poll(async () => (await field(actor).inputValue()).replace(/[^B]/g, '')).toBe('BBBB');
   }
+  await actors.checkpoint('concurrent-html');
   await ada.page.keyboard.press('ControlOrMeta+z');
   for (const actor of [ada, ben]) await expect(field(actor)).toHaveValue('<p>seed</p>BBBB');
+});
+
+test('j01 registers: a synthetic code composition merges peer text on compositionend @p:col-1', async ({ actors, stack }) => {
+  const { ada, ben, id } = await setup(actors, stack.baseUrl, '```js\nseed\n```');
+  const field = (actor: Actor) => ui.body(actor, id).getByPlaceholder('Enter code...');
+  for (const actor of [ada, ben]) await ui.body(actor, id).locator('.moss-codeblock-pre').click();
+  await field(ada).evaluate(input => input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true })));
+  await field(ada).fill('seed漢');
+  await ben.page.keyboard.type('BBBB');
+  await expect(field(ben)).toHaveValue('seedBBBB');
+  await expect(field(ada)).toHaveValue('seed漢');
+  await field(ada).evaluate(input => input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '漢' })));
+  for (const actor of [ada, ben]) {
+    await expect(field(actor)).toHaveValue(/^(seed漢BBBB|seedBBBB漢)$/);
+  }
+  expect(await field(ada).inputValue()).toBe(await field(ben).inputValue());
 });
 
 test('j01 registers: a formula popover receives peer edits and undo keeps them @p:col-1 @p:col-3', async ({ actors, stack }) => {

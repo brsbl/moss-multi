@@ -104,6 +104,21 @@ describe('L4 decorator registers @p:col-1 @p:col-3 @p:tech-1', () => {
     } finally { doc.destroy(); }
   });
 
+  it('imports stable register identities and gives duplicate blocks independent payloads', () => {
+    const markdown = cases.map(item => `${item.markdown}\n\n${item.markdown}`).join('\n\n');
+    const a = new Y.Doc(); const b = new Y.Doc();
+    try {
+      importBody(a, markdown); importBody(b, markdown);
+      expect([...a.getMap('registers').keys()]).toEqual([...b.getMap('registers').keys()]);
+      expect(a.getMap('registers').size).toBe(6);
+      const before = exportDocMarkdown(b);
+      const text = [...a.getMap<Y.Text>('registers').values()].find(value => value.toString() === 'seed')!;
+      a.transact(() => text.insert(0, 'changed '), 'peer');
+      expect(exportDocMarkdown(a).match(/changed seed/g)).toHaveLength(1);
+      expect(exportDocMarkdown(b)).toBe(before);
+    } finally { a.destroy(); b.destroy(); }
+  });
+
   it('upgrades persisted attributes without replacing nodes or changing export bytes', () => {
     const legacy = new Y.Doc();
     const root = legacy.get('root', Y.XmlText);

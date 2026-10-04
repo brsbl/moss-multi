@@ -71,8 +71,8 @@ export function useRegisterDraft(
       const draft = composing.current;
       if (!draft) return;
       write(input.value);
-      composing.current = null;
       if (editor.isEditable()) Y.applyUpdate(doc, Y.encodeStateAsUpdate(draft.doc, draft.base), REGISTER_LOCAL_ORIGIN);
+      composing.current = null;
       draft.doc.destroy();
       const next = text.toString(); repaint(input, next, diffText(input.value, next)); display(next);
     };
