@@ -15,7 +15,7 @@ let cookie: string;
 beforeAll(async () => {
   d1 = await migratedD1();
   // /api/feedback never reaches a DO.
-  env = { DB: d1.db, BETTER_AUTH_SECRET: SECRET, BETTER_AUTH_URL: BASE, DocDO: {} as never };
+  env = { DB: d1.db, BETTER_AUTH_SECRET: SECRET, BETTER_AUTH_URL: BASE, DocDO: {} as never, PrincipalDO: {} as never };
   const response = await handleAuthRoute(
     new Request(`${BASE}/api/auth/sign-up/email`, {
       method: 'POST',

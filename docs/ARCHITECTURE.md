@@ -277,7 +277,7 @@ Folder delete stamps `deleted_at` and one `trash_batch_id` across the whole subt
   - `resolveDocAccess(principal, docId, token?)` takes the maximum of owner, the doc grant, folder-chain grants including the vault (depth ≤ 11), and the link role. The link role is a ceiling: anonymous visitors are capped at viewer, and signing in lifts them to the link role.
   - `accessibleDocs(principal)` feeds lists, search and backlinks.
   - `principalsWithAccess(docId)` is the inverse used for fan-out. [S-gd §5.1; L§4.10]
-  - **Agents** act with their owner's access, and a direct grant to the agent adds to it by MAX, as in glyphdown's `computeDocRole`. Another person's agent can therefore hold a role on a doc its owner cannot open. [P:People; S-gd §5.3]
+  - **Agents** act with their owner's access, and a direct grant to the agent adds to it by MAX, as in glyphdown's `computeDocRole`. Another person's agent can therefore hold a role on a doc its owner cannot open. An agent acts at most as an editor, and a link never lifts anyone to owner: owner access (manage) needs a signed-in person, the vault owner or a co-owner by grant (T2.4s). [P:People; S-gd §5.3]
 - **Capabilities.**
   - Commenter and above: comment, reply, react, resolve.
   - Suggester and above: suggest.
