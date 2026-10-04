@@ -191,7 +191,7 @@ test('j11-media: drop, paste and /media → From computer upload every moss type
   ben.page.on('request', (request) => {
     if (request.method() === 'POST' && /\/assets/.test(request.url())) uploads.push(request.url());
   });
-  await ui.body(ben, docId).click();
+  await ui.body(ben, docId).click({ force: true });
   await ben.page.keyboard.type('/media');
   await expect(ben.page.locator('button[data-index]'), 'a viewer gets no slash menu').toHaveCount(0);
   await drop(ben, docId, [PNG]);
