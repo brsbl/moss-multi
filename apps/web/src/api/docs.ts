@@ -15,7 +15,7 @@ import { json } from '../worker/route.ts';
 import { resolveDocAccess, resolveFolderAccess } from './access.ts';
 import { folderNotFound, liveIn, moveDoc, upFrom, vaultOf } from './folders.ts';
 import { handleLinks } from './links.ts';
-import { handleMembers, type MembersEnv } from './members.ts';
+import { acceptShares, handleMembers, type MembersEnv } from './members.ts';
 import { NO_STORE, notFound, readJsonObject, unauthenticated } from './respond.ts';
 import { ensureDefaultVault } from './vaults.ts';
 
@@ -61,7 +61,7 @@ async function createDoc(request: Request, env: DocsEnv): Promise<Response> {
   const db = createDb(env.DB);
   const folderId = typeof body.folderId === 'string' ? body.folderId : await ensureDefaultVault(db, userId);
   // Editors create in a shared folder or vault; the vault's owner owns the doc and created_by records who made it.
-  const folder = await resolveFolderAccess(db, principal, folderId);
+  const folder = await resolveFolderAccess(db, principal, folderId, shareTokenOf(request));
   if (!folder || folder.deleted) return notFound();
   if (!roleAtLeast(folder.role, 'editor')) {
     return json({ error: 'forbidden', message: 'You can view this folder but not add notes to it.' }, 403, NO_STORE);
@@ -94,7 +94,7 @@ async function duplicateDoc(request: Request, env: DocsEnv, docId: string): Prom
   if (!source) return notFound();
   const userId = principal.type === 'agent' ? principal.ownerUserId : principal.id;
   let folderId = source.folderId;
-  let folder = await resolveFolderAccess(db, principal, folderId);
+  let folder = await resolveFolderAccess(db, principal, folderId, shareTokenOf(request));
   // A direct document grant gives no right to create siblings in someone else's folder.
   if (!folder || folder.deleted || !roleAtLeast(folder.role, 'editor')) {
     folderId = await ensureDefaultVault(db, userId);
@@ -131,6 +131,7 @@ async function readDoc(request: Request, env: DocsEnv, docId: string): Promise<R
     .where(eq(docs.id, docId))
     .limit(1);
   if (!doc) return notFound();
+  await acceptShares(env.DB, principal, docId, access);
   return json({ doc, role: access.role }, 200, NO_STORE);
 }
 

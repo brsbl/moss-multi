@@ -227,6 +227,8 @@ export const invites = sqliteTable(
     index('invites_email_idx').on(t.email),
     index('invites_target_idx').on(t.targetType, t.targetId),
     index('invites_inviter_idx').on(t.invitedBy, t.createdAt),
+    // One open invite per email and target, so two shares of one email at once leave one row (T2.4).
+    uniqueIndex('invites_open_idx').on(t.targetType, t.targetId, t.email).where(sql`accepted_at IS NULL AND revoked_at IS NULL`),
   ],
 );
 

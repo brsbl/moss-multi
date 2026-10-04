@@ -70,11 +70,13 @@ async function folderLinkListing(db: Db, principal: Principal, token: string, ro
     return access && folderPath ? { id: doc.id, title: doc.title, filename: doc.filename, createdAt: doc.createdAt, updatedAt: doc.updatedAt,
       role: access.role, folderPath, surfaced: true } : null;
   }))).filter((row): row is DocRow => row !== null).sort(byUpdated);
-  const folders: FolderRow[] = below.flatMap((folder) => {
+  // Each folder at the caller's own role, so a grant on a subfolder above the link's role shows.
+  const folders: FolderRow[] = (await Promise.all(below.map(async (folder): Promise<FolderRow | null> => {
     const path = pathFor(folder.id);
-    return path ? [{ id: folder.id, name: path.split('/').pop()!, path, role: root.role, surfaced: true, createdAt: folder.createdAt,
-      noteCount: docs.filter((doc) => doc.folderPath === path).length }] : [];
-  });
+    const role = (await resolveFolderAccess(db, principal, folder.id, token))?.role ?? root.role;
+    return path ? { id: folder.id, name: path.split('/').pop()!, path, role, surfaced: true, createdAt: folder.createdAt,
+      noteCount: docs.filter((doc) => doc.folderPath === path).length } : null;
+  }))).filter((row): row is FolderRow => row !== null);
   return { docs, folders };
 }
 

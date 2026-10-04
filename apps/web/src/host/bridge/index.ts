@@ -181,9 +181,10 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
     return fetcher(path, { credentials: 'same-origin', ...init,
       headers: { accept: 'application/json', ...(token ? { 'x-moss-share': token } : {}), ...init.headers } });
   };
-  /** WebKit logs a fetch cancelled by navigation as an access-control page error, so a workspace read in flight is
-   * aborted as the page leaves and held; if the page stays (the navigation was cancelled), it is sent again. */
-  const listingRequest = async (path: string): Promise<Response> => {
+  /** WebKit logs a fetch cancelled by navigation as an access-control page error, so a workspace read in flight (its
+   * body included) is aborted as the page leaves and held; if the page stays (the navigation was cancelled), it is
+   * sent again. */
+  const listingRequest = async (path: string): Promise<WorkspaceListing> => {
     for (;;) {
       const leave = leaving?.();
       if (leave?.signal.aborted) {
@@ -191,7 +192,9 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
         continue;
       }
       try {
-        return await request(path, leave ? { signal: leave.signal } : {});
+        const response = await request(path, leave ? { signal: leave.signal } : {});
+        if (!response.ok) throw new Error(`GET /api/workspace: ${response.status}`);
+        return (await response.json()) as WorkspaceListing;
       } catch (error) {
         if (!leave?.signal.aborted) throw error;
         await leave.stayed;
@@ -230,9 +233,7 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
     if (vaultId) query.set('vault', vaultId);
     if (docId) query.set('doc', docId);
     if (folderId) query.set('folder', folderId);
-    const pending: Promise<NoteMetadata[]> = listingRequest(`/api/workspace${query.size ? `?${query}` : ''}`).then(async (response) => {
-      if (!response.ok) throw new Error(`GET /api/workspace: ${response.status}`);
-      const data = (await response.json()) as WorkspaceListing;
+    const pending: Promise<NoteMetadata[]> = listingRequest(`/api/workspace${query.size ? `?${query}` : ''}`).then((data) => {
       if (version !== loadVersion) return listing ?? [];
       const vaultsChanged = JSON.stringify([workspaceSnapshot?.vault, workspaceSnapshot?.vaults]) !== JSON.stringify([data.vault, data.vaults]);
       workspaceSnapshot = data;
@@ -270,9 +271,7 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
         const vault = workspaceSnapshot.vault.id;
         const query = new URLSearchParams({ vault });
         if (!full) for (const id of ids) query.append('ids', id);
-        const response = await listingRequest(`/api/workspace?${query}`);
-        if (!response.ok) throw new Error(`GET /api/workspace: ${response.status}`);
-        const data = await response.json() as WorkspaceListing;
+        const data = await listingRequest(`/api/workspace?${query}`);
         if (generation !== channelGeneration) break;
         if (version !== loadVersion) {
           await listing?.catch(() => undefined);

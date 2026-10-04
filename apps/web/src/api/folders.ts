@@ -96,9 +96,10 @@ async function signedIn(request: Request, env: AuthEnv): Promise<Principal | nul
   return principal && principal.type !== 'anonymous' ? principal : null;
 }
 
-async function liveFolder(db: Db, principal: Principal, id: unknown): Promise<FolderAccess | null> {
+/** `shareToken` is a link the caller presented, for creating and renaming under it; moves never take one. */
+async function liveFolder(db: Db, principal: Principal, id: unknown, shareToken: string | null = null): Promise<FolderAccess | null> {
   if (typeof id !== 'string' || !id) return null;
-  const access = await resolveFolderAccess(db, principal, id);
+  const access = await resolveFolderAccess(db, principal, id, shareToken);
   return access && !access.deleted ? access : null;
 }
 
@@ -114,7 +115,7 @@ async function createFolder(request: Request, env: FoldersEnv): Promise<Response
   const body = await readJsonObject(request);
   if (!body) return refuse(400, 'bad-request', 'The request body must be a JSON object.');
   const db = createDb(env.DB);
-  const parent = await liveFolder(db, principal, body.parentId);
+  const parent = await liveFolder(db, principal, body.parentId, shareTokenOf(request));
   if (!parent) return folderNotFound();
   if (!roleAtLeast(parent.role, 'editor')) return refuse(403, 'forbidden', 'You can view this folder but not add folders to it.');
   const named = folderName(body.name);
@@ -129,7 +130,7 @@ async function createFolder(request: Request, env: FoldersEnv): Promise<Response
       WHERE ${liveIn(7)} AND (SELECT count(*) FROM up) < ${MAX_FOLDER_DEPTH}`)
       .bind(body.parentId, id, parent.ownerUserId, principal.id, named.name, Date.now(), chain.at(-1)).run();
     // The parent was trashed or nested deeper in the meantime.
-    if (!changed(inserted)) return (await liveFolder(db, principal, body.parentId)) ? tooDeep() : folderNotFound();
+    if (!changed(inserted)) return (await liveFolder(db, principal, body.parentId, shareTokenOf(request))) ? tooDeep() : folderNotFound();
   } catch (error) {
     if (isUnique(error)) return exists(named.name);
     throw error;
@@ -144,7 +145,7 @@ async function updateFolder(request: Request, env: FoldersEnv, id: string): Prom
   const body = await readJsonObject(request);
   if (!body || (!('name' in body) && !('parentId' in body))) return refuse(400, 'bad-request', 'Send a new name or a new parent folder.');
   const db = createDb(env.DB);
-  const folder = await liveFolder(db, principal, id);
+  const folder = await liveFolder(db, principal, id, shareTokenOf(request));
   if (!folder) return folderNotFound();
   if (folder.kind === 'vault') return refuse(409, 'vault', 'This is a vault, not a folder, so it can’t be renamed or moved here.');
   if (!roleAtLeast(folder.role, 'editor')) return refuse(403, 'forbidden', 'You can view this folder but not change it.');
