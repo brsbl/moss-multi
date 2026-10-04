@@ -9,7 +9,7 @@
 // Doc grants are declared setup through the members API; sharing is not this journey's promise.
 import { randomBytes } from 'node:crypto';
 import type { Actor, Actors } from '../lib/actors.ts';
-import { APP_STATE_ATTR, NAMES, SIDEBAR_ROW_ATTR, SYNC_UNACKED_ATTR } from '../lib/contract.ts';
+import { APP_STATE_ATTR, BODY_BINDING_ATTR, NAMES, SIDEBAR_ROW_ATTR, SYNC_UNACKED_ATTR } from '../lib/contract.ts';
 import { grantDoc } from '../lib/grants.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
@@ -130,6 +130,7 @@ test('j12-search: wiki links resolve by title and stem, an unresolved one shows 
   await expect(panel.getByRole('button', { name: sourceTitle }), 'the target lists the linking note').toBeVisible({ timeout: INDEX_TIMEOUT });
 
   // Edit the linking note, wait until the index holds the edit, then reload: the backlink came through the re-feed.
+  ada.expectReconnects(1, sourceId);
   await ui.openNote(ada, sourceId);
   const edited = `edited${token()}`;
   await ui.typeBody(ada, sourceId, ` ${edited}`);
@@ -145,7 +146,7 @@ test('j12-search: wiki links resolve by title and stem, an unresolved one shows 
   // Ben reads the target but not the linking note: no backlink reaches him.
   await grantDoc(ada, targetId, ben, 'viewer');
   const benActor = await actors.open(ben, { path: `/d/${targetId}` });
-  await ui.waitLive(benActor, targetId);
+  await expect(ui.body(benActor, targetId), 'Ben reads the target').toHaveAttribute(BODY_BINDING_ATTR, 'readonly', { timeout: BIND_TIMEOUT });
   await actors.requireDistinct(2);
   const origin = new URL(benActor.page.url()).origin;
   const answer = await (await benActor.context.request.get(`${origin}/api/docs/${targetId}/backlinks`)).json() as { backlinks: { id: string }[] };
