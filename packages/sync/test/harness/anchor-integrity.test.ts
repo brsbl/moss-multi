@@ -121,4 +121,29 @@ describe('T4.0 never-jump: a comment stays orphaned or on its own text @p:tech-3
     accepted(a.send());
     orphaned(s);
   }, TWINS));
+
+  it('a frame that keeps one of two identical passages never picks one for the comment', () => scene((s) => {
+    s.comment('c1', 'brown fox');
+    s.comment('c2', 'brown fox', 1);
+    const client = new Y.Doc();
+    Y.applyUpdate(client, Y.encodeStateAsUpdate(s.server));
+    const paragraph = client.get('root', Y.XmlText).toDelta()[0].insert as Y.XmlText;
+    let index = 0;
+    for (const { insert } of paragraph.toDelta() as { insert: unknown }[]) {
+      if (typeof insert === 'string' && insert.includes('brown fox brown fox')) {
+        index += insert.indexOf('brown fox brown fox');
+        break;
+      }
+      index += typeof insert === 'string' ? insert.length : 1;
+    }
+    // The frame only removes text (the lost text holds the inserted text in order), but the passage is in it twice.
+    client.transact(() => {
+      paragraph.delete(index, 'brown fox brown fox'.length);
+      paragraph.insert(index, 'brown fox');
+    });
+    accepted([s.deliver(Y.encodeStateAsUpdate(client, Y.encodeStateVector(s.server)))]);
+    orphaned(s, 'c1');
+    orphaned(s, 'c2');
+    client.destroy();
+  }, 'The quick brown fox brown fox jumps.'));
 });

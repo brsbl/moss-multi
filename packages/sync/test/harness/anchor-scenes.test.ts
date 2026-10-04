@@ -5,6 +5,7 @@
 import { BOLD_STAR, registerMarkdownShortcuts } from '@lexical/markdown';
 import { $getSelection, $isRangeSelection } from 'lexical';
 import { describe, expect, it } from 'vitest';
+import { MARKDOWN_EDITOR_TRANSFORMERS } from '../../src/converter/index.ts';
 import type { FrameVerdict } from '../../src/doc/comments-host.ts';
 import { $block, $caret, $select, scene, type Scene } from './comments-scene.ts';
 
@@ -92,6 +93,41 @@ describe('T4.0 supported liveness: a comment keeps its exact characters @p:tech-
       stop();
     }
   }));
+
+  // moss's own shortcut set. Typing the closing delimiter makes Lexical delete the commented text with its delimiters
+  // and reinsert it as a new formatted node, so the gap's lost text is the inserted text plus the delimiters.
+  for (const [label, open, close] of [
+    ['bold **', '**', '**'],
+    ['italic _', '_', '_'],
+    ['strikethrough ~~', '~~', '~~'],
+    ['inline code `', '`', '`'],
+    ['highlight ==', '==', '=='],
+    ['link [](url)', '[', '](https://example.invalid)'],
+  ] as const) {
+    it(`a markdown shortcut that wraps its text: ${label}`, () => scene((s) => {
+      const a = s.peer();
+      const stop = registerMarkdownShortcuts(a.editor, MARKDOWN_EDITOR_TRANSFORMERS);
+      const type = (text: string) => a.edit(() => {
+        const selection = $getSelection();
+        if ($isRangeSelection(selection)) selection.insertText(text);
+      });
+      try {
+        s.comment('c1', 'brown fox');
+        a.edit(() => $caret('brown'));
+        type(open);
+        accepted(a.send());
+        a.edit(() => $caret('fox', 0, 'end'));
+        // All but the last character at once (no shortcut fires), then the last one as a keystroke.
+        if (close.length > 1) type(close.slice(0, -1));
+        type(close.slice(-1));
+        accepted(a.send());
+        expect(a.text(), 'the shortcut fired').toContain('The quick brown fox jumps');
+        on(s, 'brown fox');
+      } finally {
+        stop();
+      }
+    }));
+  }
 });
 
 describe('T4.0 supported liveness: orphan on deletion, reattach on undo and redo @p:tech-3 @p:R18', () => {
