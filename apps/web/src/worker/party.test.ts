@@ -5,7 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { CLOSE, decodePartyPrincipal, TRUSTED } from '@moss-multi/protocol/sync';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
 import {
-  agentKey, BASE, insertDoc, insertGrant, insertLink, SECRET, signedUpUser, type AuthTestEnv, type TestUser,
+  agentKey, BASE, insertDoc, insertFolder, insertGrant, insertLink, SECRET, signedUpUser, type AuthTestEnv, type TestUser,
 } from '../test/principals.ts';
 import { authenticateParty } from './party.ts';
 
@@ -142,5 +142,24 @@ describe('the origin gate (A§18)', () => {
     }
     // No link has this token, so it opens nothing; the gate never turns it into 4401.
     expect(fromApp).toEqual({ ok: false, code: CLOSE.unavailable });
+  });
+});
+
+describe('opening a shared note', () => {
+  it("redeems the grantee's pending email share on the note or a folder above it, and nobody else's", async () => {
+    const folderId = await insertFolder(d1.db, ada, ada.homeId);
+    const docId = await insertDoc(d1.db, ada, { folderId });
+    const other = await insertDoc(d1.db, ada);
+    await insertGrant(d1.db, { folderId }, ben, 'viewer');
+    const invite = (token: string, type: string, id: string) => d1.db.prepare(`INSERT INTO invites (token, email, target_type, target_id, role, invited_by, created_at)
+      VALUES (?, ?, ?, ?, 'viewer', ?, ?)`).bind(token, ben.email, type, id, ada.id, Date.now()).run();
+    await invite('t-folder', 'folder', folderId);
+    await invite('t-other', 'doc', other);
+    const accepted = async (token: string) => (await d1.db.prepare('SELECT accepted_by FROM invites WHERE token = ?').bind(token).first<{ accepted_by: string | null }>())?.accepted_by;
+    expect((await authenticateParty(upgrade(docId, { cookie: ada.cookie }), docId, env)).ok).toBe(true);
+    expect(await accepted('t-folder'), 'the owner opening it redeems nothing').toBeNull();
+    expect((await authenticateParty(upgrade(docId, { cookie: ben.cookie }), docId, env)).ok).toBe(true);
+    expect(await accepted('t-folder')).toBe(ben.id);
+    expect(await accepted('t-other'), 'a share Ben has not opened, and holds no grant for, waits').toBeNull();
   });
 });

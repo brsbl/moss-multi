@@ -4,6 +4,7 @@
 // revoked link, 4410 for a trashed one the caller could otherwise open.
 import { CLOSE, encodePartyPrincipal, TRUSTED, type PartyPrincipal } from '@moss-multi/protocol/sync';
 import { resolveDocAccess } from '../api/access.ts';
+import { acceptShares } from '../api/members.ts';
 import type { AuthEnv } from '../auth/auth.ts';
 import { resolvePrincipal, shareTokenOf } from '../auth/principal.ts';
 import { createDb } from '../db/client.ts';
@@ -19,6 +20,7 @@ export async function authenticateParty(request: Request, docId: string, env: Au
   const access = await resolveDocAccess(db, principal, docId, share);
   if (!access) return { ok: false, code: CLOSE.unavailable };
   if (access.deleted) return { ok: false, code: CLOSE.deleted };
+  await acceptShares(env.DB, principal, docId, access);
   const party: PartyPrincipal = { id: principal.id, kind: principal.type, name: principal.name };
   const headers: Record<string, string> = {
     [TRUSTED.principal]: encodePartyPrincipal(party),

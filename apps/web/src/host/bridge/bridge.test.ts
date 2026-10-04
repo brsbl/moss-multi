@@ -38,6 +38,59 @@ describe('the T0.5a bridge', () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
+  it('holds a listing in flight while the page leaves, and sends it again if the page stays', async () => {
+    const controller = new AbortController();
+    let stay = () => undefined as void;
+    const stayed = new Promise<void>((resolve) => { stay = resolve; });
+    let calls = 0;
+    const fetch = vi.fn<typeof globalThis.fetch>((_input, init) => ++calls > 1
+      ? Promise.resolve(Response.json(LISTING))
+      : new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+      }));
+    let leave = { signal: controller.signal, stayed };
+    const api = createBridge({ pathname: () => '/', fetch, leaving: () => leave });
+    const settled = vi.fn();
+    const listed = api.notes.getAll();
+    void listed.then(settled, settled);
+    controller.abort();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(fetch.mock.calls[0]?.[1]?.signal).toBe(controller.signal);
+    expect(settled, 'a leave never fails the read').not.toHaveBeenCalled();
+    leave = { signal: new AbortController().signal, stayed: new Promise(() => undefined) };
+    stay();
+    expect((await listed).map((note) => note.id), 'the page stayed, so the read is sent again').toEqual(['d1']);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('holds a listing whose body is still arriving when the page leaves, and sends it again if the page stays', async () => {
+    const controller = new AbortController();
+    let stay = () => undefined as void;
+    const stayed = new Promise<void>((resolve) => { stay = resolve; });
+    let calls = 0;
+    const fetch = vi.fn<typeof globalThis.fetch>((_input, init) => {
+      if (++calls > 1) return Promise.resolve(Response.json(LISTING));
+      // The headers are in; the body fails when the navigation aborts the read.
+      const body = new ReadableStream<Uint8Array>({ start(stream) {
+        init?.signal?.addEventListener('abort', () => stream.error(new DOMException('aborted', 'AbortError')));
+      } });
+      return Promise.resolve(new Response(body, { headers: { 'content-type': 'application/json' } }));
+    });
+    let leave = { signal: controller.signal, stayed };
+    const api = createBridge({ pathname: () => '/', fetch, leaving: () => leave });
+    const settled = vi.fn();
+    const listed = api.notes.getAll();
+    void listed.then(settled, settled);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    controller.abort();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(settled, 'a leave never fails the read').not.toHaveBeenCalled();
+    leave = { signal: new AbortController().signal, stayed: new Promise(() => undefined) };
+    stay();
+    expect((await listed).map((note) => note.id), 'the page stayed, so the read is sent again').toEqual(['d1']);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
   it('keeps every subscription callable', () => {
     const { api } = bridge();
     for (const subscribe of [api.notes.onDiskChange, api.notes.onRequestFlush, api.agent.onStream, api.update.onReady]) {
@@ -204,9 +257,9 @@ describe('the T3.7 bridge: tab, print and download (R4; A§9 Export)', () => {
     const api = createBridge({ pathname: () => '/', fetch: quiet(), browser: hooks({ open }) });
     expect(await api.system.createWindow({ noteId: 'd1' })).toEqual({ action: 'created', windowId: -1 });
     expect(open).toHaveBeenLastCalledWith('https://moss.example/d/d1');
-    const shared = createBridge({ pathname: () => '/d/d1', fetch: quiet(), browser: hooks({ open, share: () => 'tok en' }) });
+    const shared = createBridge({ pathname: () => '/d/d1', fetch: quiet(), share: () => 'tok en', browser: hooks({ open }) });
     await shared.system.createWindow({ noteId: 'd1' });
-    expect(open).toHaveBeenLastCalledWith('https://moss.example/d/d1?share=tok+en');
+    expect(open).toHaveBeenLastCalledWith('https://moss.example/d/d1?share=tok%20en');
   });
 
   it('hands a PDF session to the /pdf-export tab it opens, and only that session', async () => {
@@ -241,7 +294,7 @@ describe('the T3.7 bridge: tab, print and download (R4; A§9 Export)', () => {
     const fetch = vi.fn<typeof globalThis.fetch>(async (input) => String(input) === '/api/docs/d1/content'
       ? new Response(exported, { headers: { 'content-type': 'text/markdown; charset=utf-8' } })
       : Response.json(LISTING));
-    const api = createBridge({ pathname: () => '/d/d1', fetch, browser: hooks({ download, share: () => 'tok' }) });
+    const api = createBridge({ pathname: () => '/d/d1', fetch, share: () => 'tok', browser: hooks({ download }) });
     expect(await api.notes.exportMarkdown('d1', { title: ' Q4 / plan: draft? ', markdown: 'Totals 4 and Launch Plan.' })).toEqual({ canceled: false });
     expect(fetch).toHaveBeenCalledWith('/api/docs/d1/content', expect.objectContaining({ headers: expect.objectContaining({ 'x-moss-share': 'tok' }) }));
     const [name, blob] = download.mock.calls[0] as [string, Blob];

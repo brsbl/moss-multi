@@ -85,21 +85,26 @@ export interface BrowserHooks {
   /** This tab's session storage, and its opener's when an opener of this origin exists. */
   session: SessionStore | null;
   openerSession(): Pick<Storage, 'getItem'> | null;
-  /** The page's `?share=` token. */
-  share(): string | null;
   replacePath(path: string): void;
   onPopState(listener: () => void): () => void;
   copy(text: string, html: string): Promise<void>;
 }
 
 export interface BridgeOptions {
-  /** The current path; `/d/$docId` names moss's window-context startup note (A§4.2). */
+  /** The current path; `/d/$docId` names moss's window-context startup note, `/f/$folderId` the folder to reveal (A§4.2). */
   pathname: () => string;
+  /** The share token this tab was opened with (`?share=`), threaded through every read (A§18). */
+  share?: () => string | null;
   subscribeWorkspace?: (receive: (event: WorkspaceEvent) => void, pause: () => void) => () => void;
   fetch?: typeof fetch;
   storage?: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> | null;
   browser?: BrowserHooks;
+  /** The page's current leave: `signal` aborts as the page starts to leave, and `stayed` resolves if it is still
+   * running afterwards (a cancelled navigation), so workspace reads are held, never cancelled by a navigation. */
+  leaving?: () => Leave;
 }
+
+export interface Leave { signal: AbortSignal; stayed: Promise<void> }
 
 type ThemeChoice = 'system' | 'light' | 'dark';
 type Listener<T extends unknown[]> = (...args: T) => void;
@@ -177,6 +182,11 @@ export function docIdFromPath(pathname: string): string | null {
   return match ? decodeURIComponent(match[1]) : null;
 }
 
+export function folderIdFromPath(pathname: string): string | null {
+  const match = /^\/f\/([^/]+)\/?$/.exec(pathname);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
 export function toNoteMetadata(doc: ApiDoc): NoteMetadata {
   return {
     id: doc.id,
@@ -210,15 +220,43 @@ export const inertBrowser: BrowserHooks = {
   download: noop,
   session: null,
   openerSession: () => null,
-  share: () => null,
   replacePath: noop,
   onPopState: () => noop,
   copy: async () => undefined,
 };
 
-export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis), storage = null, browser = inertBrowser, subscribeWorkspace: subscribe }: BridgeOptions) {
-  const request = (path: string, init: RequestInit = {}) =>
-    fetcher(path, { credentials: 'same-origin', ...init, headers: { accept: 'application/json', ...init.headers } });
+export function createBridge({ pathname, share = () => null, fetch: fetcher = fetch.bind(globalThis), storage = null, browser = inertBrowser, subscribeWorkspace: subscribe, leaving }: BridgeOptions) {
+  /** Every API call carries the tab's share token, so a link holder reads and edits through the link (T2.4). */
+  const request = (path: string, init: RequestInit = {}) => {
+    const token = share();
+    return fetcher(path, { credentials: 'same-origin', ...init,
+      headers: { accept: 'application/json', ...(token ? { 'x-moss-share': token } : {}), ...init.headers } });
+  };
+  /** WebKit logs a fetch cancelled by navigation as an access-control page error, so a workspace read in flight (its
+   * body included) is aborted as the page leaves and held; if the page stays (the navigation was cancelled), it is
+   * sent again. */
+  const listingRequest = async (path: string): Promise<WorkspaceListing> => {
+    for (;;) {
+      const leave = leaving?.();
+      if (leave?.signal.aborted) {
+        await leave.stayed;
+        continue;
+      }
+      try {
+        const response = await request(path, leave ? { signal: leave.signal } : {});
+        if (!response.ok) throw new Error(`GET /api/workspace: ${response.status}`);
+        return (await response.json()) as WorkspaceListing;
+      } catch (error) {
+        if (!leave?.signal.aborted) throw error;
+        await leave.stayed;
+      }
+    }
+  };
+  /** A path in this tab keeps its share token, so a reload or a reconnect still presents it. */
+  const withShare = (path: string) => {
+    const token = share();
+    return token ? `${path}?share=${encodeURIComponent(token)}` : path;
+  };
 
   // Every doc this tab has seen, from the listing or from a create; the listing promise is the boot read.
   const known = new Map<string, NoteMetadata>();
@@ -240,14 +278,13 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
   };
   let refreshAll = false;
   const pendingIds = new Set<string>();
-  const load = (vaultId: string | null, docId: string | null = null): Promise<NoteMetadata[]> => {
+  const load = (vaultId: string | null, docId: string | null = null, folderId: string | null = null): Promise<NoteMetadata[]> => {
     const version = ++loadVersion;
     const query = new URLSearchParams();
     if (vaultId) query.set('vault', vaultId);
     if (docId) query.set('doc', docId);
-    const pending: Promise<NoteMetadata[]> = request(`/api/workspace${query.size ? `?${query}` : ''}`).then(async (response) => {
-      if (!response.ok) throw new Error(`GET /api/workspace: ${response.status}`);
-      const data = (await response.json()) as WorkspaceListing;
+    if (folderId) query.set('folder', folderId);
+    const pending: Promise<NoteMetadata[]> = listingRequest(`/api/workspace${query.size ? `?${query}` : ''}`).then((data) => {
       if (version !== loadVersion) return listing ?? [];
       const vaultsChanged = JSON.stringify([workspaceSnapshot?.vault, workspaceSnapshot?.vaults]) !== JSON.stringify([data.vault, data.vaults]);
       workspaceSnapshot = data;
@@ -285,9 +322,7 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
         const vault = workspaceSnapshot.vault.id;
         const query = new URLSearchParams({ vault });
         if (!full) for (const id of ids) query.append('ids', id);
-        const response = await request(`/api/workspace?${query}`);
-        if (!response.ok) throw new Error(`GET /api/workspace: ${response.status}`);
-        const data = await response.json() as WorkspaceListing;
+        const data = await listingRequest(`/api/workspace?${query}`);
         if (generation !== channelGeneration) break;
         if (version !== loadVersion) {
           await listing?.catch(() => undefined);
@@ -416,7 +451,9 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
     return [...titled, ...indexed].slice(0, limit);
   };
   const notes = () => {
-    return (listing ?? load(workspaceSnapshot?.vault.id ?? storedVault(), workspaceSnapshot ? null : docIdFromPath(pathname()))).then((docs) => docs.map(withLocal));
+    const first = !workspaceSnapshot;
+    return (listing ?? load(workspaceSnapshot?.vault.id ?? storedVault(), first ? docIdFromPath(pathname()) : null, first ? folderIdFromPath(pathname()) : null))
+      .then((docs) => docs.map(withLocal));
   };
   const byId = async (id: string): Promise<NoteMetadata | undefined> => {
     if (!known.has(id)) await notes();
@@ -437,7 +474,7 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
     const stored = storage?.getItem(THEME_KEY);
     return stored === 'light' || stored === 'dark' ? stored : 'system';
   };
-  const docUrl = (id: string) => new URL(`/d/${encodeURIComponent(id)}`, browser.origin).href;
+  const docUrl = (id: string) => new URL(withShare(`/d/${encodeURIComponent(id)}`), browser.origin).href;
   /** moss's preview window id: any number for an opened tab, null when the browser blocked it. */
   const pdfTab = (sessionId: string): number | null =>
     browser.openWindow(`/pdf-export?pdfExportSessionId=${encodeURIComponent(sessionId)}`) ? 1 : null;
@@ -516,6 +553,12 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
       surfacedShared: (id: string) => workspaceSnapshot?.docs.some((doc) => doc.id === id && doc.surfaced) ?? false,
       surfacedFolder: (path: string) => workspaceSnapshot?.folders?.some((folder) => folder.surfaced &&
         (path === folder.path || path.startsWith(`${folder.path}/`))) ?? false,
+      /** The listed folder at a moss path, with the caller's role on it. */
+      folderAt: (path: string) => workspaceSnapshot?.folders?.find((folder) => folder.path === path) ?? null,
+      /** The listed folder with this id; the active vault itself is `Notes`. */
+      folderById: (id: string) => (workspaceSnapshot?.vault.id === id
+        ? { id, name: workspaceSnapshot.vault.name, path: ROOT_FOLDER }
+        : workspaceSnapshot?.folders?.find((folder) => folder.id === id) ?? null),
       /** The caller's role on a sidebar folder (`Notes` is the active vault), or null for a path the map lacks. */
       folderRole: (path: string): string | null => {
         if (!workspaceSnapshot) return null;
@@ -631,10 +674,7 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
         if (!(await waitForAllAcked(EXPORT_ACK_WAIT_MS))) {
           throw new Error('Your latest edits haven’t synced yet, so the export would miss them. Try again once they sync.');
         }
-        const share = browser.share();
-        const response = await request(`/api/docs/${encodeURIComponent(id)}/content`, {
-          headers: { accept: 'text/markdown', ...(share ? { 'x-moss-share': share } : {}) },
-        });
+        const response = await request(`/api/docs/${encodeURIComponent(id)}/content`, { headers: { accept: 'text/markdown' } });
         if (!response.ok) throw new Error('The note couldn’t export right now. Try again.');
         browser.download(markdownFileName(input.title ?? ''), new Blob([await response.arrayBuffer()], { type: 'text/markdown' }));
         return { canceled: false };
@@ -735,10 +775,7 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
       setImageAltTextMenuEnabled: none,
       // Open in New Window is a browser tab (R4).
       createWindow: async (input: { noteId?: string | null } = {}) => {
-        const url = new URL(input.noteId ? docUrl(input.noteId) : new URL('/', browser.origin).href);
-        const share = browser.share();
-        if (share) url.searchParams.set('share', share);
-        browser.open(url.href);
+        browser.open(input.noteId ? docUrl(input.noteId) : new URL(withShare('/'), browser.origin).href);
         return { action: 'created' as const, windowId: -1 };
       },
       getWindowContext: async () => ({ windowId: 1, initialNoteId: docIdFromPath(pathname()), launchReason: 'initial-launch' as const, openedFromWindowId: null }),
@@ -746,7 +783,7 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
       setFocusedNoteId: async (id: string | null) => {
         if (id) watchBacklinks(id);
         if (id && docIdFromPath(pathname()) !== id) {
-          browser.replacePath(`/d/${encodeURIComponent(id)}`);
+          browser.replacePath(withShare(`/d/${encodeURIComponent(id)}`));
           await refreshForNavigation(id);
         }
       },
@@ -845,7 +882,6 @@ function windowBrowser(): BrowserHooks {
         return null; // an opener on another origin
       }
     },
-    share: () => new URLSearchParams(window.location.search).get('share'),
     // Moss keeps its own back and forward (A§9 navigation), so the address changes without the router: TanStack wraps
     // window.history.replaceState, and the route change it reports would remount moss's whole App.
     replacePath: (path) => History.prototype.replaceState.call(window.history, window.history.state, '', path),
@@ -862,9 +898,37 @@ function windowBrowser(): BrowserHooks {
   };
 }
 
+/** A page still running this long after `beforeunload` stayed: its navigation was cancelled (a prompt, a download). */
+const STAYED_MS = 5_000;
+
+/** Aborts on `beforeunload`, before WebKit stops the page's loads for the navigation. The leave ends, releasing the
+ * held reads, when the page is still here after STAYED_MS or comes back from the back-forward cache. */
+function leavingSignal(): () => Leave {
+  const arm = () => {
+    let end = () => undefined as void;
+    const stayed = new Promise<void>((resolve) => { end = resolve; });
+    return { controller: new AbortController(), stayed, end };
+  };
+  let current = arm();
+  const stay = () => {
+    if (!current.controller.signal.aborted) return;
+    const left = current;
+    current = arm();
+    left.end();
+  };
+  window.addEventListener('beforeunload', () => {
+    current.controller.abort();
+    setTimeout(stay, STAYED_MS);
+  });
+  window.addEventListener('pageshow', (event) => { if (event.persisted) stay(); });
+  return () => ({ signal: current.controller.signal, stayed: current.stayed });
+}
+
 /** Installs the bridge on `window` before App's module evaluates (A§4.3). */
 export function installBridge(authStore: import('../auth-state.ts').AuthStore): Bridge {
   const bridge = createBridge({ pathname: () => window.location.pathname, storage: localStorageOrNull(), browser: windowBrowser(),
+    share: () => new URLSearchParams(window.location.search).get('share'),
+    leaving: leavingSignal(),
     subscribeWorkspace: (receive, pause) => subscribeWorkspace({
       onPause: pause,
       auth: authStore,
