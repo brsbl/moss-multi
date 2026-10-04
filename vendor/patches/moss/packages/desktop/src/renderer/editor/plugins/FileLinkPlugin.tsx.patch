@@ -100,7 +100,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FileLinkPlugin.tsx b/p
              }
            }
          }
-@@ -1751,3 +1753,16 @@ export const fileLinkPluginTestUtils = {
+@@ -1751,3 +1753,17 @@ export const fileLinkPluginTestUtils = {
    buildPreviewTextFromMarkdown,
    extractHeadingSectionMarkdown
  };
@@ -108,6 +108,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FileLinkPlugin.tsx b/p
 +function $setLinkView(node: FileLinkNode, view: { noteId?: string | null; isResolved?: boolean; noteTitle?: string; resolutionState?: LinkResolutionState }): void {
 +  if ($isBoundEditor()) {
 +    setNodeView(node.getKey(), {
++      ...(view.isResolved !== undefined ? { noteId: view.noteId ?? null, isResolved: view.isResolved } : {}),
 +      ...(view.noteTitle !== undefined ? { noteTitle: view.noteTitle } : {}),
 +      ...(view.resolutionState !== undefined ? { resolutionState: view.resolutionState } : {}),
 +    });

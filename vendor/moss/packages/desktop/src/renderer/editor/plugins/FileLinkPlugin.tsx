@@ -1758,6 +1758,7 @@ export const fileLinkPluginTestUtils = {
 function $setLinkView(node: FileLinkNode, view: { noteId?: string | null; isResolved?: boolean; noteTitle?: string; resolutionState?: LinkResolutionState }): void {
   if ($isBoundEditor()) {
     setNodeView(node.getKey(), {
+      ...(view.isResolved !== undefined ? { noteId: view.noteId ?? null, isResolved: view.isResolved } : {}),
       ...(view.noteTitle !== undefined ? { noteTitle: view.noteTitle } : {}),
       ...(view.resolutionState !== undefined ? { resolutionState: view.resolutionState } : {}),
     });

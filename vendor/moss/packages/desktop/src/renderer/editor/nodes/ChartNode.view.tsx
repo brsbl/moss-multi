@@ -312,13 +312,16 @@ function ChartWrapper({
     [isSelected, setSelected, clearSelection]
   );
 
+  // moss-multi seam: register payloads (A§10.10): the JSON draft writes only what changed since it opened.
+  const editBaseRef = useRef(config);
   const handleEditClick = useCallback(
     (e: React.MouseEvent) => {
       e.preventDefault();
       e.stopPropagation();
+      editBaseRef.current = config;
       setIsEditing(true);
     },
-    []
+    [config]
   );
 
   const handleTypeChange = useCallback(
@@ -338,7 +341,8 @@ function ChartWrapper({
             type: newType,
             title: newTitle
           };
-          node.setConfig(updatedConfig);
+          // moss-multi seam: register payloads (A§10.10): write only what this control changed.
+          node.setConfig(updatedConfig, config);
         }
       });
     },
@@ -357,7 +361,8 @@ function ChartWrapper({
               palette: newPalette
             }
           };
-          node.setConfig(updatedConfig);
+          // moss-multi seam: register payloads (A§10.10): write only what this control changed.
+          node.setConfig(updatedConfig, config);
         }
       });
     },
@@ -373,7 +378,8 @@ function ChartWrapper({
             ...config,
             title: newTitle
           };
-          node.setConfig(updatedConfig);
+          // moss-multi seam: register payloads (A§10.10): write only what this control changed.
+          node.setConfig(updatedConfig, config);
         }
       });
     },
@@ -385,7 +391,7 @@ function ChartWrapper({
       editor.update(() => {
         const node = $getNodeByKey(nodeKey);
         if (node && $isChartNode(node)) {
-          node.setConfig(newConfig);
+          node.setConfig(newConfig, editBaseRef.current);
         }
       });
       setIsEditing(false);
@@ -581,5 +587,5 @@ function ChartWrapper({
 
 // moss-multi seam: node-views (A§12)
 registerNodeView(ChartNode.getType(), function decorate(this: ChartNode): JSX.Element {
-    return <ChartWrapper config={this.__config} nodeKey={this.__key} commentIds={this.__commentIds} />;
+    return <ChartWrapper config={this.getConfig()} nodeKey={this.__key} commentIds={this.__commentIds} />;
   });

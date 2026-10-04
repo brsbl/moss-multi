@@ -10,7 +10,64 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
  import type { ChartConfig, ChartPalette, ChartType } from '../utils/chartDefaults';
  import {
    BLOCK_HEADER_CLASSNAME,
-@@ -542,6 +544,8 @@ function ChartWrapper({
+@@ -309,13 +311,16 @@ function ChartWrapper({
+     [isSelected, setSelected, clearSelection]
+   );
+ 
++  // moss-multi seam: register payloads (A§10.10): the JSON draft writes only what changed since it opened.
++  const editBaseRef = useRef(config);
+   const handleEditClick = useCallback(
+     (e: React.MouseEvent) => {
+       e.preventDefault();
+       e.stopPropagation();
++      editBaseRef.current = config;
+       setIsEditing(true);
+     },
+-    []
++    [config]
+   );
+ 
+   const handleTypeChange = useCallback(
+@@ -335,7 +340,8 @@ function ChartWrapper({
+             type: newType,
+             title: newTitle
+           };
+-          node.setConfig(updatedConfig);
++          // moss-multi seam: register payloads (A§10.10): write only what this control changed.
++          node.setConfig(updatedConfig, config);
+         }
+       });
+     },
+@@ -354,7 +360,8 @@ function ChartWrapper({
+               palette: newPalette
+             }
+           };
+-          node.setConfig(updatedConfig);
++          // moss-multi seam: register payloads (A§10.10): write only what this control changed.
++          node.setConfig(updatedConfig, config);
+         }
+       });
+     },
+@@ -370,7 +377,8 @@ function ChartWrapper({
+             ...config,
+             title: newTitle
+           };
+-          node.setConfig(updatedConfig);
++          // moss-multi seam: register payloads (A§10.10): write only what this control changed.
++          node.setConfig(updatedConfig, config);
+         }
+       });
+     },
+@@ -382,7 +390,7 @@ function ChartWrapper({
+       editor.update(() => {
+         const node = $getNodeByKey(nodeKey);
+         if (node && $isChartNode(node)) {
+-          node.setConfig(newConfig);
++          node.setConfig(newConfig, editBaseRef.current);
+         }
+       });
+       setIsEditing(false);
+@@ -542,6 +550,8 @@ function ChartWrapper({
                  <TooltipContent side="bottom"><p>Edit chart data</p></TooltipContent>
                </Tooltip>
              </TooltipProvider>
@@ -19,7 +76,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
              <TooltipProvider delayDuration={200}>
                <Tooltip>
                  <TooltipTrigger asChild>
-@@ -559,6 +563,7 @@ function ChartWrapper({
+@@ -559,6 +569,7 @@ function ChartWrapper({
                  <TooltipContent side="bottom"><p>Add comment</p></TooltipContent>
                </Tooltip>
              </TooltipProvider>
@@ -27,3 +84,10 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
            </div>
          </div>
  
+@@ -575,5 +586,5 @@ function ChartWrapper({
+ 
+ // moss-multi seam: node-views (A§12)
+ registerNodeView(ChartNode.getType(), function decorate(this: ChartNode): JSX.Element {
+-    return <ChartWrapper config={this.__config} nodeKey={this.__key} commentIds={this.__commentIds} />;
++    return <ChartWrapper config={this.getConfig()} nodeKey={this.__key} commentIds={this.__commentIds} />;
+   });

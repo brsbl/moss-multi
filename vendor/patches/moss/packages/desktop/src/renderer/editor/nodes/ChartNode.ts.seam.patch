@@ -1,0 +1,77 @@
+diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.ts b/packages/desktop/src/renderer/editor/nodes/ChartNode.ts
+--- a/packages/desktop/src/renderer/editor/nodes/ChartNode.ts
++++ b/packages/desktop/src/renderer/editor/nodes/ChartNode.ts
+@@ -1,3 +1,5 @@
++// moss-multi seam: register payloads (A§10.10): the config is a per-key register on a bound doc.
++import { readMapRegister, writeMapRegister, initRegisterNode, resetRegisterOnCopy } from '@moss-multi/host/collab/registers';
+ import type { JSX } from 'react';
+ import { $applyNodeReplacement, type DOMConversionMap, type DOMConversionOutput, type DOMExportOutput, DecoratorNode, type EditorConfig, type LexicalNode, type NodeKey, type SerializedLexicalNode, type Spread } from 'lexical';
+ import { cloneCommentIds, exportCommentIds, importCommentIds, initCommentIds } from '../utils/commentable-node';
+@@ -30,9 +32,20 @@ function $convertChartElement(domNode: HTMLElement): DOMConversionOutput | null
+ }
+ 
+ export class ChartNode extends DecoratorNode<JSX.Element> {
++  __regId = initRegisterNode(this);
+   __config: ChartConfig;
+   __commentIds: string[];
+ 
++  afterCloneFrom(previous: this): void {
++    super.afterCloneFrom(previous);
++    this.__regId = previous.__regId;
++  }
++
++  resetOnCopyNodeFrom(original: this): void {
++    super.resetOnCopyNodeFrom(original);
++    resetRegisterOnCopy(this);
++  }
++
+   static getType(): string {
+     return 'chart';
+   }
+@@ -57,7 +70,7 @@ export class ChartNode extends DecoratorNode<JSX.Element> {
+     return {
+       type: 'chart',
+       version: 1,
+-      config: this.__config,
++      config: this.getConfig(),
+       ...exportCommentIds(this.__commentIds)
+     };
+   }
+@@ -78,9 +91,10 @@ export class ChartNode extends DecoratorNode<JSX.Element> {
+ 
+   exportDOM(): DOMExportOutput {
+     const element = document.createElement('div');
+-    element.setAttribute('data-chart-config', JSON.stringify(this.__config));
+-    element.setAttribute('data-chart-type', this.__config.type);
+-    element.textContent = `[Chart: ${this.__config.type}]`;
++    const config = this.getConfig();
++    element.setAttribute('data-chart-config', JSON.stringify(config));
++    element.setAttribute('data-chart-type', config.type);
++    element.textContent = `[Chart: ${config.type}]`;
+     return { element };
+   }
+ 
+@@ -99,10 +113,12 @@ export class ChartNode extends DecoratorNode<JSX.Element> {
+   }
+ 
+   getConfig(): ChartConfig {
+-    return this.__config;
++    return (readMapRegister(this)?.__config as ChartConfig | undefined) ?? this.__config;
+   }
+ 
+-  setConfig(config: ChartConfig): void {
++  /** `base` is the config the caller derived `config` from; keys it left alone keep a peer's concurrent writes. */
++  setConfig(config: ChartConfig, base?: ChartConfig): void {
++    if (writeMapRegister(this, { __config: config }, base && { __config: base })) return;
+     const writable = this.getWritable();
+     writable.__config = config;
+   }
+@@ -117,7 +133,7 @@ export class ChartNode extends DecoratorNode<JSX.Element> {
+   }
+ 
+   getTextContent(): string {
+-    return '```moss-chart\n' + JSON.stringify(this.__config, null, 2) + '\n```';
++    return '```moss-chart\n' + JSON.stringify(this.getConfig(), null, 2) + '\n```';
+   }
+ 
+   decorate(): JSX.Element {

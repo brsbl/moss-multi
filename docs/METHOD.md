@@ -113,6 +113,8 @@ Read this with PRODUCT.md, your BUILDPLAN entry and the A§ it cites, before wri
 
 ## Lexical and the binding
 
+- Chart configs and canvas grids are per-key `Y.Map` registers (T3.3): a chart's JSON-pointer leaves, a canvas's inked cells and labels by id. A view that edits from a value it rendered passes that value as the write's `base`, so a key it left alone keeps a peer's concurrent write; an open canvas takes peer strokes through `host/collab/sketch-sync.ts`, which also moves its baseline and undo snapshots, and holds them back mid-stroke. [T3.3]
+- `$copyNode` copies `__regId` through `afterCloneFrom`; every register node resets it in `resetOnCopyNodeFrom`, so a copy mints its own register. [T3.3]
 - Register cache refreshes wait for any pending Lexical update to commit, then commit discretely themselves. A microtask alone can tag a pending authored update, or leave its own collaboration tag for the next edit, silently dropping tree writes and background conversions. [T1.9]
 - Deterministic ids are safe only for one serialized writer. A live editor's import (empty-note paste) races its peers, so it mints unique register ids; identical deterministic ids collide in Y.Map and link the blocks. [T1.9]
 - `HISTORIC_TAG` updates never replicate: exclude writes from undo by origin, never by tag. [L§4.3]

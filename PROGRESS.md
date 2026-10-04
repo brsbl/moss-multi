@@ -82,13 +82,13 @@ A task counts only after an independent checker passes it on green CI. Each mile
 Parked from the M0 checker and critic passes, each with the task that owns it.
 
 - T1.8 workspace follow-up implemented in T2.1: push events replace listing polling, changed document ids refresh metadata, and unchanged vault choices do not notify the switcher; awaiting CI and independent verification.
-- T1.9 checker P2: `$copyNode` must mint a new register identity for duplicated code, HTML and formula nodes before T3.3 uses that path; current clipboard copies serialize without the identity → T3.3 register extension.
+- T1.9 checker P2: `$copyNode` must mint a new register identity for duplicated code, HTML and formula nodes before T3.3 uses that path; current clipboard copies serialize without the identity → closed in T3.3 (`resetOnCopyNodeFrom` on every register node).
 - T1.9 checker P2: rebind open field observers when a register map entry is replaced (live imports now mint unique ids; server imports are serialized) → register/import follow-up.
 - T1.9 checker P2: register writes diff by value without a caret hint, so typing inside a run of identical characters can land at the wrong position (seen after a peer's undo); FormulaPlugin's remote repaint diffs strings instead of using the event delta → register caret follow-up.
 - T1.9 checker P2: replace the full node-map refresh after every editor commit with targeted invalidation → register performance follow-up.
 
 - T1.6 checker: prune deleted layout identities, avoid unchanged localStorage writes and restrict ordinal migration to stores without identity metadata → local-layout follow-up. These need lifecycle and persisted-state regressions beyond this P1 repair.
-- T1.6 checker: bound link activation and preview must consume locally resolved note identity, not only its displayed title/state → T3.3 links.
+- T1.6 checker: bound link activation and preview must consume locally resolved note identity, not only its displayed title/state → closed in T3.3 (FileLinkNode's `getNoteId`/`isResolved` read the local view).
 - T1.6 checker: route empty-prompt undo from a split pane's title to that pane's body; AI and Cmd+K remain hidden → command-palette unstaging.
 - T1.6 checker: replace model-only width assertions with rendered dimensions and a real resize drag → editing-journey follow-up; the checker already confirmed the rendered behavior manually.
 
