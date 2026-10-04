@@ -138,11 +138,18 @@ test('j01 registers: a ~1 MB paste over a small selection in a code block reache
   for (let i = 0; i < expected.length; i += 1) sum = (sum * 31 + expected.charCodeAt(i)) >>> 0;
   const want = [{ length: expected.length, head: expected.slice(0, 24), tail: expected.slice(-24), sum }];
 
+  // A real copy, then the browser's own paste: Input.insertText is quadratic in newlines inside a textarea.
+  await ada.page.evaluate(text => {
+    const area = document.createElement('textarea'); area.id = 'j01-clipboard'; area.value = text;
+    document.body.append(area); area.select();
+  }, paste);
+  await ada.page.keyboard.press('ControlOrMeta+C');
+  await ada.page.evaluate(() => document.getElementById('j01-clipboard')?.remove());
   await ui.body(ada, id).locator('.moss-codeblock-pre').click();
   const field = ui.body(ada, id).getByPlaceholder('Enter code...');
   await expect(field).toHaveValue('seed');
   await field.evaluate(input => (input as HTMLTextAreaElement).setSelectionRange(1, 2));
-  await ada.page.keyboard.insertText(paste);
+  await ada.page.keyboard.press('ControlOrMeta+V');
   await expect.poll(() => codeFingerprint(ada, id), { message: 'the paste is written to the register', timeout: 20_000 }).toEqual(want);
   await expect.poll(() => codeFingerprint(ben, id), { message: 'the peer receives the paste', timeout: 30_000 }).toEqual(want);
   await expect(ui.pane(ada, id), 'the DocDO acks the paste').toHaveAttribute('data-sync-unacked', '0', { timeout: 30_000 });
