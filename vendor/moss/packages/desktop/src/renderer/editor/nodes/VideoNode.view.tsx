@@ -305,8 +305,9 @@ function VideoComponent({
                 onError={handleThumbnailError}
                 draggable={false}
               />
-            ) : displaySrc && !frameFailed ? (
-              // moss-multi seam: web-assets (A§16): with no derived thumbnail, the clip's own first frame is its poster.
+            ) : displaySrc && !displaySrc.startsWith('moss-asset:') && !frameFailed ? (
+              // moss-multi seam: web-assets (A§16): with no derived thumbnail, the clip's own first frame is its poster;
+              // a desktop-only path has no web URL, so it never requests Electron's protocol.
               <video
                 src={`${displaySrc}#t=0.001`}
                 preload="metadata"

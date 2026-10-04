@@ -18,6 +18,7 @@ import type { AppEnv } from '../env.ts';
 import { json } from '../worker/route.ts';
 import { resolveDocAccess } from './access.ts';
 import { NO_STORE, notFound, readJsonObject } from './respond.ts';
+import { ownerOfTrashed } from './trash.ts';
 
 export type AssetsEnv = AuthEnv & Pick<AppEnv, 'ASSETS' | 'DocDO'>;
 
@@ -213,7 +214,8 @@ async function serve(request: Request, env: AssetsEnv, docId: string, rawName: s
   if (!principal) return notFound();
   const db = createDb(env.DB);
   const access = await resolveDocAccess(db, principal, docId, shareTokenOf(request));
-  if (!access || access.deleted) return notFound();
+  // A trashed note's media show only in its owner's Trash view, through the one owner read path (A§8).
+  if (!access || (access.deleted && !(await ownerOfTrashed(db, principal, docId)))) return notFound();
   let filename: string | null;
   try {
     filename = storedName(decodeURIComponent(rawName));
