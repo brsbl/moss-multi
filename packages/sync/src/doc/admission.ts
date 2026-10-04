@@ -103,10 +103,38 @@ export function wouldChange(doc: Y.Doc, update: Uint8Array): boolean {
 /** yjs does not export its DeleteSet type by name. */
 export type DeleteSet = ReturnType<typeof Y.createDeleteSet>;
 
-/** The classifier's verdict, and the deletes the frame carries (its ack names them, A§5.1 Acks). */
-export function classifySync(doc: Y.Doc, update: Uint8Array): { changes: boolean; deletes: DeleteSet } {
+/**
+ * The classifier's verdict, the deletes the frame carries (its ack names them, A§5.1 Acks), and whether the frame
+ * needs a clock the doc lacks (`missing`).
+ */
+export function classifySync(doc: Y.Doc, update: Uint8Array): { changes: boolean; missing: boolean; deletes: DeleteSet } {
   const { structs, ds } = Y.decodeUpdate(update);
-  return { changes: changes(doc, structs, ds), deletes: ds };
+  return { changes: changes(doc, structs, ds), missing: missing(doc, structs, ds), deletes: ds };
+}
+
+/**
+ * True when part of the frame would wait in Yjs's pending structs or deletes: a struct past the clocks the doc and the
+ * frame hold, an origin or parent the doc lacks, or a delete of clocks it lacks. A pending struct integrates later,
+ * inside whichever transaction supplies its dependency, so it would be counted and credited to that transaction's
+ * sender. A client sends what it holds, and holds nothing the server lacks, so it never sends one.
+ */
+function missing(doc: Y.Doc, structs: (Y.Item | Y.GC | Y.Skip)[], ds: DeleteSet): boolean {
+  const held = new Map<number, number>();
+  const end = (client: number) => held.get(client) ?? Y.getState(doc.store, client);
+  for (const struct of structs) {
+    if (struct instanceof Y.Skip) continue;
+    const { client, clock } = struct.id;
+    if (clock > end(client)) return true;
+    held.set(client, Math.max(end(client), clock + struct.length));
+  }
+  const lacks = (id: unknown) => id instanceof Y.ID && id.clock >= end(id.client);
+  for (const struct of structs) {
+    if (struct instanceof Y.Item && (lacks(struct.origin) || lacks(struct.rightOrigin) || lacks(struct.parent))) return true;
+  }
+  for (const [client, deletes] of ds.clients) {
+    for (const { clock, len } of deletes) if (len > 0 && clock + len > end(client)) return true;
+  }
+  return false;
 }
 
 function changes(doc: Y.Doc, structs: (Y.Item | Y.GC | Y.Skip)[], ds: DeleteSet): boolean {

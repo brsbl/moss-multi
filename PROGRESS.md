@@ -90,6 +90,7 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - ~~T1.9 checker P2: replace the full node-map refresh after every editor commit with targeted invalidation~~ closed by T1.9s and T1.F2: root-only commits and same-node state replacements refresh no payload.
 - T1.F2 checker P2, **blocks T1.10 carrying real docs**: rule 10 of docs/design/registers.md, the DocDO refusing clients whose bundle predates payload docs (an M1 bundle can still write `Y.Map('registers')` through note updates, past the payload gate) → T1.10.
 - T1.F2 checker P2: each connection's set of withheld ids it writes (at most 64) lives in memory, so a DocDO wake resets it; the per-principal withheld bytes are durable and bound the total → payload follow-up.
+- T1.F2 checker P2 (attempt 3): an offline session that made more than 64 blocks and deleted them again before reconnecting still resends their payloads as unnamed writes, and the 65th closes 4409; the client could skip resending payloads its tree no longer names → payload follow-up.
 
 - T1.6 checker: prune deleted layout identities, avoid unchanged localStorage writes and restrict ordinal migration to stores without identity metadata → local-layout follow-up. These need lifecycle and persisted-state regressions beyond this P1 repair.
 - T1.6 checker: bound link activation and preview must consume locally resolved note identity, not only its displayed title/state → T3.3 links.

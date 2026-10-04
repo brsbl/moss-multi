@@ -218,9 +218,9 @@ export class DocDO extends YServer<SyncEnv> {
     }
     // Inert frames (every step 2 answering a step 1) pass whatever the role; writes meet the gates.
     if (frame.kind === 'sync') {
-      const { changes, deletes } = classifySync(this.document, frame.update);
+      const { changes, missing, deletes } = classifySync(this.document, frame.update);
       if (changes) {
-        if (this.#refused(connection, attachment, () => this.#overCap(store, frame.update))) return;
+        if (this.#refused(connection, attachment, () => this.#overCap(store, frame.update), missing)) return;
       } else if (roleAtLeast(attachment.role, 'editor')) {
         // The doc already holds it, so nothing persists to ack it: an editor's reconnect step 2 after its ack was lost
         // with the old socket. Acked too, so the client learns its edits are on the server (A§10.6).
@@ -404,23 +404,28 @@ export class DocDO extends YServer<SyncEnv> {
       }
       // An id the store has never seen stays unloaded unless the frame writes to it.
       const known = payloads.has(id);
+      const withheld = !payloads.served(id);
+      // Every write to a withheld payload by someone who cannot read it is refused, whatever it carries, so neither an
+      // ack nor a refusal tells them which of its clocks the server holds.
+      if (known && withheld && !payloads.isReader(id, attachment.principalId)) {
+        this.#refused(connection, attachment, () => true);
+        return;
+      }
       const target = known ? payloads.doc(id) : (unknownPayload ??= new Y.Doc());
-      const { changes, deletes } = classifySync(target, data);
+      const { changes, missing, deletes } = classifySync(target, data);
       if (!changes) {
         // An editor's resend of what is already stored: acked, since the ack that covered it may have been lost.
         if (roleAtLeast(attachment.role, 'editor')) this.#acks.schedule(connection, deletes, id, coverage(target, data));
         return;
       }
-      const withheld = !payloads.served(id);
       const overCap = () => {
         if (withheld) {
-          if (known && !payloads.isReader(id, attachment.principalId)) return true;
           if (!this.#mayWriteWithheld(connection, payloads, id)) return true;
           if (payloads.withheldBy(attachment.principalId) + data.byteLength > this.#limits.withheldBytesPerIdentity) return true;
         }
         return this.#payloadOverCap(store, payloads, id, payloads.doc(id), data);
       };
-      if (this.#refused(connection, attachment, overCap)) return;
+      if (this.#refused(connection, attachment, overCap, missing)) return;
       payloads.addReaders(id, [attachment.principalId]);
       const doc = payloads.doc(id);
       Y.applyUpdate(doc, data, connection);
@@ -454,14 +459,22 @@ export class DocDO extends YServer<SyncEnv> {
     this.#payloads?.addReaders(id, readers);
   }
 
-  /** True when the write was refused and the socket closed; a refusal is never silent. */
-  #refused(connection: Connection, attachment: Attachment, overCap: () => boolean): boolean {
+  /**
+   * True when the write was refused and the socket closed; a refusal is never silent. `missing`: the frame needs a
+   * clock the doc lacks, which Yjs would hold pending, uncounted, and integrate under a later sender's transaction.
+   */
+  #refused(connection: Connection, attachment: Attachment, overCap: () => boolean, missing = false): boolean {
     if (!roleAtLeast(attachment.role, 'suggester')) return this.#refuse(connection, 'role', CLOSE.revoked);
     // A suggester's writes are vetted on a mirror (M5); until then they are refused, never applied unvetted.
     if (!roleAtLeast(attachment.role, 'editor')) return this.#refuse(connection, 'suggest', CLOSE.writeRefused);
     if (!this.#rate.allow(connection)) {
       // Transient: the client keeps its Y.Doc and its next step 2 re-delivers everything.
       connection.close(CLOSE.writeRate, 'write rate');
+      return true;
+    }
+    if (missing) {
+      // Transient too: a reconnect's step 2 carries whatever the frame depended on.
+      connection.close(CLOSE.writeRate, 'missing dependency');
       return true;
     }
     if (overCap()) return this.#refuse(connection, 'doc-cap', CLOSE.writeRefused);

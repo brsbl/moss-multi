@@ -413,6 +413,10 @@ export class DocSession {
     // The provider sends a step 1 on open; each held payload sends its own, and its unacked writes.
     this.#lastResync = Date.now();
     this.#failedHandshakes = 0;
+    // The note's unacked writes go first (the provider's own step 1 and step 2 follow this event): they hold the
+    // elements naming payloads made offline, so those payloads' resends never reach the DocDO as unnamed writes.
+    const pending = this.#ledger.pendingUpdate();
+    if (pending && !this.#ended) this.provider.ws?.send(syncFrame(2, pending));
     this.#payloadSync.connected((id) => this.#ledger.pendingUpdate(id));
   }
 
