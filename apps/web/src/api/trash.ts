@@ -1,9 +1,10 @@
 // Trash and restore (A§8, A§11; PRODUCT Notes): DELETE /api/docs/:id sends a note to Trash, POST
 // /api/docs/:id/restore brings it back, and GET /api/trash/:id is the one owner read path for a trashed note (its
 // Trash view). Only the owner trashes and restores, on ownership alone, never on a grant or a share link; a link
-// only decides whether a refusal may say so. A trash stamps the row first, then closes every open socket 4410
-// through DocDO.trash; a DocDO that did not answer is a 503 the owner's retry repeats. Everyone who could see the
-// note hears about either change.
+// only decides whether a refusal may say so. D1 is the one source of truth, and the DocDO fails closed (A§8): a trash
+// holds the doc closed (every socket 4410) before the row is stamped, then settles the doc from the row; a restore
+// clears the row before the doc settles open. A step that fails leaves the doc closed or the row unchanged, never a
+// live doc behind a trashed row. Everyone who could see the note hears about either change.
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { getServerByName } from 'partyserver';
 import { availableFilename } from '@moss-multi/core/filenames';
@@ -44,6 +45,19 @@ async function notify(env: FoldersEnv, docId: string): Promise<void> {
   }
 }
 
+const unavailable = (message: string) => refuse(503, 'unavailable', message);
+
+/** A settle whose failure leaves the doc as it was: held closed, or reopened at its next admission (A§8). */
+async function settleQuietly(stub: { settle(hold?: string): Promise<unknown> }, hold?: string): Promise<boolean> {
+  try {
+    await stub.settle(hold);
+    return true;
+  } catch (error) {
+    console.error('DocDO settle failed', error);
+    return false;
+  }
+}
+
 /** DELETE /api/docs/:id: the owner's note goes to Trash; a repeat by the owner re-closes it. */
 export async function trashDoc(request: Request, env: FoldersEnv, docId: string): Promise<Response> {
   const principal = await signedIn(request, env);
@@ -52,21 +66,33 @@ export async function trashDoc(request: Request, env: FoldersEnv, docId: string)
   const seen = await resolveDocAccess(db, principal, docId, shareTokenOf(request));
   const owned = await ownerOfTrashed(db, principal, docId);
   if (!seen || (seen.deleted && !owned)) return notFound();
+  const stub = await getServerByName(env.DocDO, docId);
   if (!seen.deleted) {
     // Authority comes from ownership alone: a link only decides whether the refusal may say so.
     const access = await resolveDocAccess(db, principal, docId);
     if (!access || !can(access.role, 'manage')) return refuse(403, 'forbidden', 'Only the note’s owner can move it to Trash.');
-    await db.update(docs).set({ deletedAt: Date.now(), trashBatchId: crypto.randomUUID() })
-      .where(and(eq(docs.id, docId), isNull(docs.deletedAt)));
+    const batch = crypto.randomUUID();
+    try {
+      await stub.trash(batch);
+    } catch (error) {
+      console.error('DocDO trash failed', error);
+      await settleQuietly(stub, batch);
+      return unavailable('The note couldn’t be moved to Trash right now. Try again.');
+    }
+    try {
+      await db.update(docs).set({ deletedAt: Date.now(), trashBatchId: batch }).where(and(eq(docs.id, docId), isNull(docs.deletedAt)));
+    } catch (error) {
+      console.error('trash write failed', error);
+      await settleQuietly(stub, batch);
+      return unavailable('The note couldn’t be moved to Trash right now. Try again.');
+    }
     await notify(env, docId);
+    // A settle that fails leaves the hold, which keeps the doc closed until the DocDO's alarm settles it.
+    await settleQuietly(stub, batch);
+  } else if (!(await settleQuietly(stub))) {
+    return unavailable('The note is in Trash, but it hasn’t closed for everyone yet. Try again.');
   }
   const [row] = await db.select({ deletedAt: docs.deletedAt }).from(docs).where(eq(docs.id, docId));
-  try {
-    await (await getServerByName(env.DocDO, docId)).trash();
-  } catch (error) {
-    console.error('DocDO trash failed', error);
-    return refuse(503, 'unavailable', 'The note is in Trash, but it hasn’t closed for everyone yet. Try again.');
-  }
   return json({ doc: { id: docId, trashedAt: row?.deletedAt ?? null }, ...TRASHED_ACTION }, 200, NO_STORE);
 }
 
@@ -93,13 +119,6 @@ export async function restoreDoc(request: Request, env: FoldersEnv, docId: strin
   if (access.deleted) {
     const folderId = await homeFor(db, access.folderId);
     if (!folderId) return notFound();
-    try {
-      // The doc reopens before the row does, so the row never admits a socket the DocDO would still refuse.
-      await (await getServerByName(env.DocDO, docId)).restore();
-    } catch (error) {
-      console.error('DocDO restore failed', error);
-      return refuse(503, 'unavailable', 'The note couldn’t be restored right now. Try again.');
-    }
     for (let attempt = 1; ; attempt += 1) {
       const [doc] = await db.select({ filename: docs.filename }).from(docs).where(eq(docs.id, docId));
       const taken = await db.select({ filename: docs.filename }).from(docs)
@@ -110,10 +129,15 @@ export async function restoreDoc(request: Request, env: FoldersEnv, docId: strin
         await db.update(docs).set({ deletedAt: null, trashBatchId: null, folderId, filename }).where(eq(docs.id, docId));
         break;
       } catch (error) {
-        if (!isUnique(error) || attempt >= 5) throw error;
+        if (isUnique(error) && attempt < 5) continue;
+        console.error('restore write failed', error);
+        return unavailable('The note couldn’t be restored right now. Try again.');
       }
     }
     await notify(env, docId);
+    // The row is live first, so the doc never admits a socket the row refuses; a settle that fails here leaves the
+    // doc closed until its next admission settles it from the row.
+    await settleQuietly(await getServerByName(env.DocDO, docId));
   }
   const [doc] = await db
     .select({ id: docs.id, folderId: docs.folderId, title: docs.title, filename: docs.filename, createdAt: docs.createdAt, updatedAt: docs.updatedAt })

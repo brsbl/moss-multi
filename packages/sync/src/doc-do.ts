@@ -39,12 +39,26 @@ export interface CreateDocInput {
   markdown?: string;
 }
 
+/** Whether D1 has the doc in Trash (or has no row for it); throws when D1 cannot answer. */
+export type TrashedInD1 = (docId: string) => Promise<boolean>;
+
+/** How long a trash's hold waits for its settle before the alarm settles it from D1. */
+export const HOLD_MS = 60_000;
+/** Close code for an admission the DocDO cannot confirm: the client retries (RFC 6455 "try again later"). */
+const TRY_AGAIN = 1013;
+
 /** A server write that would pass the state cap (A§5.1 Limits). */
 export class DocCapError extends Error {
   constructor() {
     super('doc-cap');
     this.name = 'DocCapError';
   }
+}
+
+/** The trashes holding the doc closed, each with when the alarm may settle it. */
+function holdsOf(store: DocStore): Map<string, number> {
+  const raw = store.meta('holds');
+  return new Map(raw ? Object.entries(JSON.parse(raw) as Record<string, number>) : []);
 }
 
 const isConnection = (origin: unknown): origin is Connection =>
@@ -66,6 +80,13 @@ export class DocDO extends YServer<SyncEnv> {
   };
   /** Where the title, filename and updated_at projections land (A§5.1). */
   static projectionTarget: (env: SyncEnv) => ProjectionTarget | null = (env) => (env?.DB ? d1Projections(env.DB, (id) => publishMeta(env, [id])) : null);
+  /** Where a settle reads whether the doc is in Trash: D1, the one source of truth (A§8). */
+  static liveness: (env: SyncEnv) => TrashedInD1 | null = (env) => (env?.DB
+    ? async (docId) => {
+      const row = await env.DB.prepare('SELECT deleted_at FROM docs WHERE id = ?').bind(docId).first<{ deleted_at: number | null }>();
+      return !row || row.deleted_at !== null;
+    }
+    : null);
 
   readonly instanceId = crypto.randomUUID();
   readonly constructedAt = Date.now();
@@ -78,6 +99,8 @@ export class DocDO extends YServer<SyncEnv> {
   readonly #acks = new AckCoalescer<Connection>((connection, deletes) => this.#ack(connection, deletes), ACK_COALESCE_MS);
   /** The deletes of the sync frame being applied, which its ack names. */
   #frameDeletes: DeleteSet | undefined;
+  /** Settles run one at a time, so the last one applies the newest D1 read. */
+  #settling: Promise<unknown> = Promise.resolve();
 
   /** Runs inside partyserver's blockConcurrencyWhile, so a woken DO replays before it sees any frame. */
   override async onLoad(): Promise<void> {
@@ -100,9 +123,21 @@ export class DocDO extends YServer<SyncEnv> {
   override async onConnect(connection: Connection, ctx: ConnectionContext): Promise<void> {
     const store = await this.#ready();
     const attachment = attachmentFrom(ctx.request.headers);
+    let deleted = store.meta('deleted') === '1' || holdsOf(store).size > 0;
+    // A doc closed without a hold may have missed the settle of a restore: D1 decides, and an unanswered read admits
+    // nobody (the 101 waits for this, so no frame arrives first).
+    if (deleted && holdsOf(store).size === 0 && this.#liveness()) {
+      try {
+        deleted = (await this.#queue(() => this.#settle([], connection))).deleted || holdsOf(store).size > 0;
+      } catch (error) {
+        console.error('DocDO admission could not confirm the doc is live', error);
+        connection.close(TRY_AGAIN, 'unconfirmed');
+        return;
+      }
+    }
     const code = connectCode(attachment, {
       revoked: store.revoked,
-      deleted: store.meta('deleted') === '1',
+      deleted,
       connections: [...this.getConnections()].length,
       maxConnections: this.#limits.maxConnections,
     });
@@ -209,23 +244,46 @@ export class DocDO extends YServer<SyncEnv> {
   }
 
   /**
-   * The doc went to Trash (A§5.1): the flag is persisted before anyone hears of it, so a woken DO and a reconnect
-   * also meet 4410; every open socket is told, then closed 4410. Idempotent.
+   * A trash is starting (A§5.1, A§8): the doc is held closed before D1 records it, so no write lands on a trashed note
+   * whatever fails next. The hold is persisted before anyone hears of it, so a woken DO and a reconnect also meet 4410;
+   * every open socket is told, then closed 4410. Only a settle naming the hold, or the alarm once it has waited
+   * HOLD_MS, lets it go, and only from a D1 read. Idempotent.
    */
-  async trash(): Promise<void> {
+  async trash(hold: string): Promise<void> {
     const store = await this.#ready();
-    store.setMeta('deleted', '1');
-    const event: ServerEvent = { t: 'doc-deleted' };
-    for (const connection of this.getConnections()) {
-      this.sendCustomMessage(connection, JSON.stringify(event));
-      connection.close(CLOSE.deleted, 'deleted');
+    const holds = holdsOf(store);
+    const fresh = !holds.has(hold);
+    if (fresh) {
+      holds.set(hold, Date.now() + HOLD_MS);
+      store.setMeta('holds', JSON.stringify(Object.fromEntries(holds)));
     }
+    this.#closeAll();
+    if (fresh) await this.#schedule(holds);
   }
 
-  /** Back from Trash: the flag clears for good, so sockets are admitted again, after a wake too. Idempotent. */
-  async restore(): Promise<void> {
+  /**
+   * Applies D1 (A§8): the doc is closed while D1 has it in Trash, and open again once D1 has it live and no other
+   * trash holds it. `hold` releases that trash's hold. Throws, changing nothing, when D1 cannot answer.
+   */
+  settle(hold?: string): Promise<{ deleted: boolean }> {
+    return this.#queue(() => this.#settle(hold === undefined ? [] : [hold]));
+  }
+
+  /** A hold whose route never settled it (A§5.1): settled from D1 once it has waited, retried while D1 cannot answer. */
+  override async onAlarm(): Promise<void> {
     const store = await this.#ready();
-    store.setMeta('deleted', '0');
+    const now = Date.now();
+    const expired = [...holdsOf(store)].filter(([, until]) => until <= now).map(([hold]) => hold);
+    if (expired.length > 0) {
+      try {
+        await this.#queue(() => this.#settle(expired));
+      } catch (error) {
+        console.error('DocDO hold settle failed; retrying', error);
+        await this.ctx.storage.setAlarm(now + HOLD_MS);
+        return;
+      }
+    }
+    await this.#schedule(holdsOf(store));
   }
 
   /** Internal RPC: preserves Yjs item identity, including relative anchors, without a markdown round trip. */
@@ -268,6 +326,46 @@ export class DocDO extends YServer<SyncEnv> {
   /** The reset test hook (A§19): drops this instance; the call that ends it rejects. */
   abortInstance(): void {
     this.ctx.abort('qa-reset');
+  }
+
+  #liveness(): TrashedInD1 | null {
+    return (this.constructor as typeof DocDO).liveness(this.env);
+  }
+
+  #queue<T>(run: () => Promise<T>): Promise<T> {
+    const next = this.#settling.then(run);
+    this.#settling = next.catch(() => undefined);
+    return next;
+  }
+
+  /** `admitting`, a socket still in onConnect, is left for its own refusal. */
+  async #settle(release: string[], admitting?: Connection): Promise<{ deleted: boolean }> {
+    const trashedInD1 = this.#liveness();
+    if (!trashedInD1) throw new Error('DocDO has no D1 to settle from');
+    const deleted = await trashedInD1(this.name);
+    const store = await this.#ready();
+    const holds = holdsOf(store);
+    for (const hold of release) holds.delete(hold);
+    store.setMeta('holds', JSON.stringify(Object.fromEntries(holds)));
+    store.setMeta('deleted', deleted ? '1' : '0');
+    if (deleted || holds.size > 0) this.#closeAll(admitting);
+    return { deleted };
+  }
+
+  /** The alarm goes off when the oldest hold has waited HOLD_MS. */
+  async #schedule(holds: Map<string, number>): Promise<void> {
+    if (holds.size === 0) return;
+    await this.ctx.storage.setAlarm(Math.min(...holds.values()));
+  }
+
+  /** Every open socket hears the doc is gone, then closes 4410. */
+  #closeAll(except?: Connection): void {
+    const event: ServerEvent = { t: 'doc-deleted' };
+    for (const connection of this.getConnections()) {
+      if (connection.id === except?.id) continue;
+      this.sendCustomMessage(connection, JSON.stringify(event));
+      connection.close(CLOSE.deleted, 'deleted');
+    }
   }
 
   async #ready(): Promise<DocStore> {

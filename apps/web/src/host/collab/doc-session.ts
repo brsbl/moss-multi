@@ -59,6 +59,11 @@ class DocSocket extends WebSocket {
   declare detached?: boolean;
   declare closeListeners?: ((event: CloseEvent) => void)[];
 
+  /** Nothing goes out on a socket that is closing: a reply to a late server frame would be lost and logs an error. */
+  override send(...args: Parameters<WebSocket['send']>): void {
+    if (this.readyState === WebSocket.OPEN) super.send(...args);
+  }
+
   detach(code: number, reason: string): void {
     if (this.detached) return;
     try {

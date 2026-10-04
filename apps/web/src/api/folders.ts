@@ -11,6 +11,7 @@ import { getServerByName } from 'partyserver';
 import { filenameFor } from '@moss-multi/core/filenames';
 import { TRASHED_ACTION } from '@moss-multi/protocol/retention';
 import { can, roleAtLeast } from '@moss-multi/protocol/roles';
+import type { DocDO } from '@moss-multi/sync';
 import { collectRecipients, publishRecipients, type FanoutEnv, type Recipients } from '@moss-multi/sync/fanout';
 import type { AuthEnv } from '../auth/auth.ts';
 import { resolvePrincipal, shareTokenOf, type Principal } from '../auth/principal.ts';
@@ -211,12 +212,18 @@ async function refuseStaleMove(db: Db, principal: Principal, id: string, parentI
   return tooDeep();
 }
 
-/** Closes every doc of a trash batch on its DocDO (A§5.1 trash); false when one did not answer. */
-async function closeDocs(env: FoldersEnv, docIds: string[]): Promise<boolean> {
-  const results = await Promise.allSettled(docIds.map(async (docId) => (await getServerByName(env.DocDO, docId)).trash()));
-  const failed = results.filter((result) => result.status === 'rejected');
-  for (const failure of failed) console.error('DocDO trash failed', (failure as PromiseRejectedResult).reason);
-  return failed.length === 0;
+type DocStub = DurableObjectStub<DocDO>;
+
+/** Calls `call` on each doc's DocDO; the docs that did not answer. */
+async function eachDoc(env: FoldersEnv, docIds: string[], what: string, call: (stub: DocStub) => Promise<unknown>): Promise<string[]> {
+  const results = await Promise.allSettled(docIds.map(async (docId) => call(await getServerByName(env.DocDO, docId))));
+  const failed: string[] = [];
+  results.forEach((result, i) => {
+    if (result.status === 'fulfilled') return;
+    console.error(`DocDO ${what} failed`, result.reason);
+    failed.push(docIds[i]);
+  });
+  return failed;
 }
 
 async function trashFolder(request: Request, env: FoldersEnv, id: string): Promise<Response> {
@@ -232,27 +239,51 @@ async function trashFolder(request: Request, env: FoldersEnv, id: string): Promi
   if (folder.role !== 'owner') return refuse(403, 'forbidden', 'Only the owner can move this folder to Trash.');
 
   const batch = row?.batch ?? crypto.randomUUID();
+  // The subtree's live docs are held closed before the batch commits (A§8): a doc that cannot close fails the trash
+  // before anything commits, and a failed commit settles them open again from D1.
+  let held: string[] = [];
   if (!folder.deleted) {
+    held = (await env.DB.prepare(`WITH RECURSIVE sub(id, depth) AS (
+        SELECT id, 1 FROM folders WHERE id = ?1 AND deleted_at IS NULL
+        UNION ALL SELECT f.id, s.depth + 1 FROM folders f JOIN sub s ON f.parent_id = s.id
+          WHERE f.deleted_at IS NULL AND s.depth <= ${MAX_FOLDER_DEPTH}
+      ) SELECT d.id AS id FROM docs d JOIN sub ON d.folder_id = sub.id WHERE d.deleted_at IS NULL`).bind(id).all<{ id: string }>()).results.map((r) => r.id);
+    const unheld = await eachDoc(env, held, 'trash', (stub) => stub.trash(batch));
+    const cannot = () => refuse(503, 'unavailable', 'The folder couldn’t be moved to Trash right now. Try again.');
+    if (unheld.length > 0) {
+      await eachDoc(env, held, 'settle', (stub) => stub.settle(batch));
+      return cannot();
+    }
     const now = Date.now();
     // The subtree is read inside the write, so a folder created or a note moved in just before is in the batch.
-    await env.DB.batch([
-      env.DB.prepare(`WITH RECURSIVE sub(id, depth) AS (
-          SELECT id, 1 FROM folders WHERE id = ?3 AND deleted_at IS NULL
-          UNION ALL SELECT f.id, s.depth + 1 FROM folders f JOIN sub s ON f.parent_id = s.id
-            WHERE f.deleted_at IS NULL AND s.depth <= ${MAX_FOLDER_DEPTH}
-        ) UPDATE folders SET deleted_at = ?1, trash_batch_id = ?2 WHERE id IN (SELECT id FROM sub)`)
-        .bind(now, batch, id),
-      env.DB.prepare('UPDATE docs SET deleted_at = ?1, trash_batch_id = ?2 WHERE folder_id IN (SELECT id FROM folders WHERE trash_batch_id = ?2) AND deleted_at IS NULL')
-        .bind(now, batch),
-    ]);
+    try {
+      await env.DB.batch([
+        env.DB.prepare(`WITH RECURSIVE sub(id, depth) AS (
+            SELECT id, 1 FROM folders WHERE id = ?3 AND deleted_at IS NULL
+            UNION ALL SELECT f.id, s.depth + 1 FROM folders f JOIN sub s ON f.parent_id = s.id
+              WHERE f.deleted_at IS NULL AND s.depth <= ${MAX_FOLDER_DEPTH}
+          ) UPDATE folders SET deleted_at = ?1, trash_batch_id = ?2 WHERE id IN (SELECT id FROM sub)`)
+          .bind(now, batch, id),
+        env.DB.prepare('UPDATE docs SET deleted_at = ?1, trash_batch_id = ?2 WHERE folder_id IN (SELECT id FROM folders WHERE trash_batch_id = ?2) AND deleted_at IS NULL')
+          .bind(now, batch),
+      ]);
+    } catch (error) {
+      console.error('folder trash write failed', error);
+      await eachDoc(env, held, 'settle', (stub) => stub.settle(batch));
+      return cannot();
+    }
   }
   const [docIds, folderIds] = await Promise.all([
     db.select({ id: docs.id }).from(docs).where(eq(docs.trashBatchId, batch)).then((rows) => rows.map((r) => r.id)),
     db.select({ id: folders.id }).from(folders).where(eq(folders.trashBatchId, batch)).then((rows) => rows.map((r) => r.id)),
   ]);
-  const closed = await closeDocs(env, docIds);
+  // Each doc settles from the committed rows; a held doc that does not answer stays closed until its alarm settles it,
+  // but one that joined the batch after the holds may still be open, so the owner's retry settles it again.
+  const unsettled = await eachDoc(env, [...new Set([...held, ...docIds])], 'settle', (stub) => stub.settle(batch));
   if (!folder.deleted) await notify(env, await collectRecipients(env.DB, { docIds, folderIds }));
-  if (!closed) return refuse(503, 'unavailable', 'The folder is in Trash, but some open notes haven’t closed yet. Try again.');
+  if (unsettled.some((docId) => !held.includes(docId))) {
+    return refuse(503, 'unavailable', 'The folder is in Trash, but some open notes haven’t closed yet. Try again.');
+  }
   return json({ trashBatchId: batch, docIds, folderIds, ...TRASHED_ACTION }, 200, NO_STORE);
 }
 
