@@ -1,4 +1,4 @@
-// T4.0 write isolation (docs/design/comments.md §2, I1-I2): raw client frames against the reserved-writer guard,
+// T4.0 write isolation (docs/design/comments.md §3, I1-I2): raw client frames against the reserved-writer guard,
 // the pending purge, and a fast-check that every item in the comments subtree has client R. The history's
 // tail-splice, fully-held, missing-right-origin and cycle fixtures are re-pointed here.
 import fc from 'fast-check';

@@ -1,4 +1,4 @@
-// The frame-scoped comment anchor engine (docs/design/comments.md §4). Pure: it reads one Yjs transaction before
+// The frame-scoped comment anchor engine (docs/design/comments.md §5). Pure: it reads one Yjs transaction before
 // garbage collection (afterTransaction, F1) and returns the anchor records that change; the caller writes them
 // through writeComments in the same synchronous turn. Nothing here searches the document for text, scores
 // similarity, or trusts undo-copy identity: an anchor shrinks to its own survivors, is re-minted onto text the same
@@ -32,7 +32,7 @@ export interface Sig {
   b: number;
 }
 
-/** One list's part of a lost place: (left, last] over the deleted members, or (left, right) once re-homed (§4.5). */
+/** One list's part of a lost place: (left, last] over the deleted members, or (left, right) once re-homed (§5.5). */
 export interface Seg {
   list: ItemId | 'root';
   left: ItemId | null;
@@ -105,7 +105,7 @@ const scratch = (): FrameStats => ({ structs: 0, comments: 0, lookups: 0 });
 type Live = (item: Y.Item) => boolean;
 const isLive: Live = (item) => !item.deleted;
 
-/** Liveness relative to one transaction (§4 predicates). */
+/** Liveness relative to one transaction (comments.md §5 predicates). */
 class View {
   constructor(readonly txn: Y.Transaction) {}
 
@@ -465,7 +465,7 @@ export class AnchorEngine {
     const out = new Map<string, Anchor>();
     const store = this.doc.store;
 
-    // §4.2: only comments whose endpoint this transaction deletes.
+    // §5.2: only comments whose endpoint this transaction deletes.
     const hits = new Set<string>();
     for (const [client, ranges] of txn.deleteSet.clients) {
       for (const range of ranges) {
@@ -480,7 +480,7 @@ export class AnchorEngine {
       if (changed) out.set(id, changed);
     }
 
-    // §4.5: orphans whose place sits inside a block this transaction deletes.
+    // §5.5: orphans whose place sits inside a block this transaction deletes.
     const outers = new Map<Y.Item, Outer | null>();
     for (const [client, ranges] of txn.deleteSet.clients) {
       const structs = store.clients.get(client);
@@ -500,7 +500,7 @@ export class AnchorEngine {
       }
     }
 
-    // §4.4: a frame-new item whose origin or right origin names a lost member or a re-homed bound.
+    // §5.4: a frame-new item whose origin or right origin names a lost member or a re-homed bound.
     const candidates = new Set<string>();
     for (const [client, after] of txn.afterState) {
       const before = txn.beforeState.get(client) ?? 0;
@@ -590,7 +590,7 @@ export class AnchorEngine {
     return [...left.reverse(), unit.item, ...right];
   }
 
-  /** §4.3: orphan with the place the text was lost from, or reattach at once if the frame already restored it. */
+  /** §5.3: orphan with the place the text was lost from, or reattach at once if the frame already restored it. */
   #lose(view: View, anchor: Anchor, s: Unit, e: Unit, entries: Entry[], quote: string): Anchor {
     const tops: Y.Item[] = [];
     const seen = new Set<Y.Item>();
@@ -699,7 +699,7 @@ export class AnchorEngine {
     return seg.last === undefined;
   }
 
-  /** §4.5: the place moves out to the outermost deleted block, keeping the old place's signature as `inner`. */
+  /** §5.5: the place moves out to the outermost deleted block, keeping the old place's signature as `inner`. */
   #lift(view: View, anchor: Anchor, outers: Map<Y.Item, Outer | null>): Anchor | null {
     const lost = anchor.lost!;
     if (lost.segs.length !== 1 || depthOf(lost.inner) >= MAX_LIFT_DEPTH) return detached(anchor);

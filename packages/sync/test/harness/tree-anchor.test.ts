@@ -1,4 +1,4 @@
-// T4.0 kept pieces (docs/design/comments.md §3): one projection on every replica, the client's minting arithmetic,
+// T4.0 kept pieces (docs/design/comments.md §4): one projection on every replica, the client's minting arithmetic,
 // and the create-time quote search with the round-1 suffix fix.
 import { $getRoot, type ElementNode, type TextNode } from 'lexical';
 import { describe, expect, it } from 'vitest';

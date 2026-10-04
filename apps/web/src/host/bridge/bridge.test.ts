@@ -188,3 +188,51 @@ it.each(['switch', 'navigation'] as const)('a workspace event never overrides an
     vi.useRealTimers();
   }
 });
+
+describe('the T3.4 bridge', () => {
+  const listing = { vault: { id: 'v1', name: 'Home' }, docs: [
+    { id: 'd1', title: 'Quokka plans', filename: 'quokka-plans.md', createdAt: 1_700_000_000_000, updatedAt: 1_700_000_100_000 },
+    { id: 'd2', title: 'Diary', filename: 'diary.md', createdAt: 1_700_000_000_000, updatedAt: 1_700_000_200_000 },
+  ] };
+  const routes = (extra: Record<string, unknown>) => vi.fn<typeof globalThis.fetch>(async (input) => {
+    const path = String(input).split('?')[0];
+    return Response.json(path in extra ? extra[path] : listing);
+  });
+
+  it('searches titles over the listing first, then content hits from GET /api/search with their snippet @p:note-7', async () => {
+    const fetch = routes({ '/api/search': { results: [
+      { id: 'd1', title: 'Quokka plans', snippet: 'x', folderId: 'v1', updatedAt: 1 },
+      { id: 'd2', title: 'Diary', snippet: '...a quokka grazing...', folderId: 'v1', updatedAt: 1_700_000_200_000 },
+      { id: 's9', title: '', snippet: 'shared quokka', folderId: 'v9', updatedAt: 1_700_000_300_000 },
+    ] } });
+    const api = createBridge({ pathname: () => '/', fetch });
+    const results = await api.notes.search({ query: 'quokka', limit: 10 });
+    expect(results).toEqual([
+      { id: 'd1', title: 'Quokka plans', folderPath: 'Notes', updatedAt: 1_700_000_100, matchType: 'title' },
+      { id: 'd2', title: 'Diary', folderPath: 'Notes', updatedAt: 1_700_000_200, snippet: '...a quokka grazing...', matchType: 'content' },
+      { id: 's9', title: 'Untitled', folderPath: 'Notes', updatedAt: 1_700_000_300, snippet: 'shared quokka', matchType: 'content' },
+    ]);
+    expect(fetch).toHaveBeenCalledWith('/api/search?q=quokka&limit=10', expect.anything());
+    expect(await api.notes.search({ query: 'quokka', excludeNoteId: 'd2' })).not.toContainEqual(expect.objectContaining({ id: 'd2' }));
+    expect(await api.notes.search({ query: '  ' })).toEqual([]);
+  });
+
+  it('reads headings from GET /api/docs/:id/headings', async () => {
+    const api = createBridge({ pathname: () => '/', fetch: routes({ '/api/docs/d1/headings': { headings: [{ level: 2, text: 'Risks' }] } }) });
+    expect(await api.notes.getHeadings('d1')).toEqual([{ level: 2, text: 'Risks' }]);
+  });
+
+  it("carries an opened note's backlinks as moss's incomingLinks and announces them as a metadata change @p:note-7", async () => {
+    const fetch = routes({ '/api/docs/d1/backlinks': { backlinks: [{ id: 'd2', title: 'Diary', folderId: 'v1', updatedAt: 1_700_000_200_000 }] } });
+    const api = createBridge({ pathname: () => '/', fetch });
+    const changed = vi.fn();
+    const off = api.notes.onDiskChange(changed);
+    try {
+      await api.notes.getById('d1');
+      await vi.waitFor(() => expect(changed).toHaveBeenCalledWith(['d1'], []));
+      const [record] = await api.notes.getMetadataByIds(['d1']);
+      expect(record.incomingLinks).toEqual([{ noteId: 'd2', title: 'Diary', folderPath: 'Notes', updatedAt: 1_700_000_200 }]);
+      expect((await api.notes.getAll()).find((note) => note.id === 'd1')?.incomingLinks, 'a full hydrate keeps them').toHaveLength(1);
+    } finally { off(); }
+  });
+});

@@ -1,4 +1,4 @@
-// T4.0 frame discipline (docs/design/comments.md §5): pending local updates replay as separate frames, coalescing
+// T4.0 frame discipline (docs/design/comments.md §6): pending local updates replay as separate frames, coalescing
 // only runs of insert-only or delete-only updates.
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';

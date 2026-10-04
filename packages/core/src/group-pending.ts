@@ -1,4 +1,4 @@
-// The client frame discipline (docs/design/comments.md §5): on recovery or reconnect the client replays its pending
+// The client frame discipline (docs/design/comments.md §6): on recovery or reconnect the client replays its pending
 // local updates as separate frames, coalescing only runs of insert-only or of delete-only updates. An update that
 // both inserts and deletes goes alone, so a deleting transaction is never merged with another one's inserts, and an
 // honest delete and retype always reach the server in different frames.

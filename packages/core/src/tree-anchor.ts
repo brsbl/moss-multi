@@ -1,4 +1,4 @@
-// The pieces of comment anchoring that live outside the frame engine (docs/design/comments.md §3): one plain-text
+// The pieces of comment anchoring that live outside the frame engine (docs/design/comments.md §4): one plain-text
 // projection of the V1 tree computed from Y types alone, RelativePosition encoding, the client's minting arithmetic,
 // and the quote search used once, at create or import, for an anchor that never had positions (I6).
 import * as Y from 'yjs';

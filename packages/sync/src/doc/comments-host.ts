@@ -1,4 +1,4 @@
-// The order the DocDO runs comments in around one client frame (docs/design/comments.md §2, §4): gate 2b, apply,
+// The order the DocDO runs comments in around one client frame (docs/design/comments.md §3, §5): gate 2b, apply,
 // the pending purge, then the anchor changes collected pre-GC, flushed through writeComments in the same turn.
 // T4.1 and T4.2 move these steps into the DocDO; the spike tests drive this class directly.
 import * as Y from 'yjs';

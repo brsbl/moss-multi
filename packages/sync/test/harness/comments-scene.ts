@@ -1,4 +1,4 @@
-// Bound-editor scenes for the comment anchor engine (docs/design/comments.md §4): real headless editors bound through
+// Bound-editor scenes for the comment anchor engine (docs/design/comments.md §5): real headless editors bound through
 // @lexical/yjs V1 with a Y.UndoManager as the CollaborationPlugin wires it, a server Y.Doc that runs the engine on
 // every frame through CommentsHost, and frames sent per local transaction (online), through groupPending (an
 // offline replay under the frame discipline), or merged into one (a batched or forged frame).
@@ -89,7 +89,7 @@ export class Peer {
     return verdicts;
   }
 
-  /** An offline replay under the frame discipline (§5). */
+  /** An offline replay under the frame discipline (§6). */
   sendGrouped(): FrameVerdict[] {
     const verdicts = groupPending(this.outbox.splice(0)).map((frame) => this.scene.deliver(frame));
     this.scene.pullAll();

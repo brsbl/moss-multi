@@ -1,4 +1,4 @@
-// Write isolation for Y.Map('comments') (docs/design/comments.md §2). Only the DocDO writes the map, always under a
+// Write isolation for Y.Map('comments') (docs/design/comments.md §3). Only the DocDO writes the map, always under a
 // reserved Yjs client id R, through writeComments. A client frame is refused before it applies if it carries an R
 // struct, names R as an origin, right origin or parent, uses a string parent outside CLIENT_ROOTS, or deletes a live
 // R item. A non-R item can then never land in `comments` (I1, proved from Yjs's integrate in comments.md §2), and
