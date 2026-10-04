@@ -75,6 +75,11 @@ function CodeBlockComponent({
     }
   }, [code, isEditing]);
 
+  // moss-multi seam: read-only-decorators (T2.3): a body that closes mid-edit closes its textarea
+  useEffect(() => {
+    if (!editable) setIsEditing(false);
+  }, [editable]);
+
   // Auto-focus textarea when entering edit mode
   useEffect(() => {
     if (isEditing && textareaRef.current) {
@@ -150,6 +155,7 @@ function CodeBlockComponent({
       if (target.closest('button')) return;
       // Keep shift+click behavior for multi-select
       if (e.shiftKey) return;
+      if (!editor.isEditable()) return; // moss-multi seam: read-only-decorators (T2.3): a closed body opens no textarea
 
       e.preventDefault();
       // Capture rendered height before switching to textarea

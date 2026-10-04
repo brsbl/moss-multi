@@ -59,15 +59,12 @@ async function trashFromSidebar(ada: Actor, docId: string): Promise<void> {
   await ada.page.getByRole('menuitem', { name: 'Trash', exact: true }).click();
 }
 
-/** Controls a read-only note may keep: they read the note and never change it. */
-const READ_ONLY_CONTROLS = ['Copy code'];
-
 /**
  * The attribute sweep: anything in the pane a person could still type into, focus, toggle or press to change the
  * note (buttons, role=button, menu items). A terminal pane has none, and its fields say why.
  */
 async function editableSurfaces(actor: Actor, docId: string): Promise<string[]> {
-  return actor.page.evaluate(({ selector, allowed }) => {
+  return actor.page.evaluate((selector) => {
     const pane = document.querySelector(selector);
     if (!pane) return ['no pane'];
     const found: string[] = [];
@@ -76,10 +73,10 @@ async function editableSurfaces(actor: Actor, docId: string): Promise<string[]> 
       const label = el.getAttribute('aria-label') ?? el.getAttribute('title') ?? el.textContent?.trim().slice(0, 40) ?? '';
       if (el.isContentEditable) found.push(`${tag}[contenteditable] ${el.textContent?.slice(0, 40) ?? ''}`);
       else if (el.matches('input, textarea, select') && !el.matches(':disabled') && !(el as HTMLInputElement).readOnly) found.push(`${tag} ${el.getAttribute('name') ?? ''}`);
-      else if (el.matches('button, [role="button"], [role^="menuitem"]') && !el.matches(':disabled, [aria-disabled="true"]') && !allowed.includes(label)) found.push(`${tag}[${el.getAttribute('role') ?? 'button'}] ${label}`);
+      else if (el.matches('button, [role="button"], [role^="menuitem"]') && !el.matches(':disabled, [aria-disabled="true"]')) found.push(`${tag}[${el.getAttribute('role') ?? 'button'}] ${label}`);
     }
     return found;
-  }, { selector: `${paneSelector(docId)} [data-editor-canvas]`, allowed: READ_ONLY_CONTROLS });
+  }, `${paneSelector(docId)} [data-editor-canvas]`);
 }
 
 /** A code block's language picker in a read-only or terminal note: shown, disabled, and pressing it changes nothing. */

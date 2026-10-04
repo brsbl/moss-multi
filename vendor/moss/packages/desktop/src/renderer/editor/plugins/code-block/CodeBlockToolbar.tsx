@@ -129,6 +129,8 @@ export function CodeBlockToolbar({
         </DropdownMenu>
 
         {/* Copy Button */}
+        {/* moss-multi seam: read-only-decorators (T2.3): nothing under a closed body takes focus (invariant 9); the code stays selectable */}
+        {readOnly ? null : (
         <Tooltip>
           <TooltipTrigger asChild>
             <button
@@ -146,6 +148,7 @@ export function CodeBlockToolbar({
           </TooltipTrigger>
           <TooltipContent side="bottom"><p>{copySuccess ? 'Copied!' : 'Copy code'}</p></TooltipContent>
         </Tooltip>
+        )}
       </div>
     </TooltipProvider>
   );

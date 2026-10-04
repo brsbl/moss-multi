@@ -73,7 +73,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b
  
  /**
   * CodeBlock component with inline toolbar and edit/display modes
-@@ -76,19 +56,20 @@ function CodeBlockComponent({
+@@ -76,23 +56,29 @@ function CodeBlockComponent({
    commentIds?: string[];
  }): JSX.Element {
    const [editor] = useLexicalComposerContext();
@@ -96,7 +96,24 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b
        setLocalCode(code);
      }
    }, [code, isEditing]);
-@@ -182,10 +163,11 @@ function CodeBlockComponent({
+ 
++  // moss-multi seam: read-only-decorators (T2.3): a body that closes mid-edit closes its textarea
++  useEffect(() => {
++    if (!editable) setIsEditing(false);
++  }, [editable]);
++
+   // Auto-focus textarea when entering edit mode
+   useEffect(() => {
+     if (isEditing && textareaRef.current) {
+@@ -168,6 +154,7 @@ function CodeBlockComponent({
+       if (target.closest('button')) return;
+       // Keep shift+click behavior for multi-select
+       if (e.shiftKey) return;
++      if (!editor.isEditable()) return; // moss-multi seam: read-only-decorators (T2.3): a closed body opens no textarea
+ 
+       e.preventDefault();
+       // Capture rendered height before switching to textarea
+@@ -182,10 +169,11 @@ function CodeBlockComponent({
    // Save code to node
    const commitCode = useCallback(() => {
      setIsEditing(false);
@@ -109,7 +126,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b
        }
      });
    }, [editor, nodeKey, localCode]);
-@@ -193,6 +175,11 @@ function CodeBlockComponent({
+@@ -193,6 +181,11 @@ function CodeBlockComponent({
    // Handle textarea keydown
    const handleTextareaKeyDown = useCallback(
      (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -121,7 +138,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b
        // Cmd/Ctrl+S — commit code to node, then let the save propagate
        if (e.key === 's' && (e.metaKey || e.ctrlKey)) {
          commitCode();
-@@ -208,12 +195,12 @@ function CodeBlockComponent({
+@@ -208,12 +201,12 @@ function CodeBlockComponent({
          return;
        }
  
@@ -136,7 +153,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b
          setIsEditing(false);
          return;
        }
-@@ -279,6 +266,7 @@ function CodeBlockComponent({
+@@ -279,6 +272,7 @@ function CodeBlockComponent({
    // Handle language change
    const handleLanguageChange = useCallback(
      (newLanguage: string) => {
@@ -144,7 +161,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b
        editor.update(() => {
          const node = $getNodeByKey(nodeKey);
          if (node && $isCodeBlockNode(node)) {
-@@ -292,6 +280,7 @@ function CodeBlockComponent({
+@@ -292,6 +286,7 @@ function CodeBlockComponent({
    // Handle theme change
    const handleThemeChange = useCallback(
      (newTheme: string) => {
@@ -152,7 +169,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b
        editor.update(() => {
          const node = $getNodeByKey(nodeKey);
          if (node && $isCodeBlockNode(node)) {
-@@ -329,6 +318,7 @@ function CodeBlockComponent({
+@@ -329,6 +324,7 @@ function CodeBlockComponent({
      (position: 'before' | 'after') => (e: React.MouseEvent) => {
        e.preventDefault();
        e.stopPropagation();
@@ -160,7 +177,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b
        editor.update(() => {
          const node = $getNodeByKey(nodeKey);
          if (!node) return;
-@@ -350,7 +340,7 @@ function CodeBlockComponent({
+@@ -350,7 +346,7 @@ function CodeBlockComponent({
          selected={isSelected}
          beforeLabel="Insert paragraph before code block"
          afterLabel="Insert paragraph after code block"
@@ -169,7 +186,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b
          className="moss-codeblock transition-colors"
          style={themeColors}
        >
-@@ -372,7 +362,10 @@ function CodeBlockComponent({
+@@ -372,7 +368,10 @@ function CodeBlockComponent({
                  onThemeChange={handleThemeChange}
                  getCodeContent={getCodeContent}
                  onDropdownOpenChange={setIsDropdownOpen}
@@ -180,7 +197,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b
                <button
                  type="button"
                  onClick={(e) => {
-@@ -384,6 +377,7 @@ function CodeBlockComponent({
+@@ -384,6 +383,7 @@ function CodeBlockComponent({
                >
                  <StickyNote className="h-3 w-3" />
                </button>
@@ -188,7 +205,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b
              </div>
            </div>
  
-@@ -400,6 +394,7 @@ function CodeBlockComponent({
+@@ -400,6 +400,7 @@ function CodeBlockComponent({
              {isEditing ? (
                <textarea
                  ref={textareaRef}
@@ -196,7 +213,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b
                  value={localCode}
                  onChange={(e) => setLocalCode(e.target.value)}
                  onKeyDown={handleTextareaKeyDown}
-@@ -431,11 +426,11 @@ function CodeBlockComponent({
+@@ -431,11 +432,11 @@ function CodeBlockComponent({
                <span className="inline-flex items-center gap-1 align-middle">
                  <KeyboardShortcut keys={['⌘', '⏎']} size="compact" />
                </span>{' '}
@@ -210,7 +227,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b
              </div>
            )}
          </div>
-@@ -444,164 +439,15 @@ function CodeBlockComponent({
+@@ -444,164 +445,15 @@ function CodeBlockComponent({
    );
  }
  
