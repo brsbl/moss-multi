@@ -30,7 +30,7 @@ const CPU_LIMIT_MS = 30_000;
 // T0.6b: a whole-document import at PRODUCT's 2 MB/doc limit stays well inside CPU_LIMIT_MS.
 const IMPORT_BUDGET_MS = 5_000;
 // A REST rename diffs two caller-supplied texts; one request may spend at most this much workerd CPU on it.
-const TITLE_WRITE_BUDGET_MS = 50;
+const TITLE_WRITE_BUDGET_MS = 20;
 const TITLE_WRITES = 6;
 
 const vendor = join(REPO, 'vendor/moss/packages');
@@ -198,7 +198,7 @@ async function timedRequest(server, path, init) {
     response = await fetch(`${server.origin}${path}`, init);
     body = await response.text();
   } catch (error) {
-    throw new Error(`${path}: ${error.message} (${error.cause?.message ?? 'no cause'})\n${server.logs.value}`);
+    throw new Error(`${path}: ${error.message} (${error.cause?.message ?? 'no cause'})\n${server.logs.value}`, { cause: error });
   } finally {
     // A live interval would keep the process from exiting after a failure.
     clearInterval(sampler);
