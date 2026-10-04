@@ -8,7 +8,7 @@ import {
 } from 'lexical';
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
-import { decodeRelPos, mintAnchor, project, resolveAnchor, similarity, validateAnchor, type TreeAnchor } from '@moss-multi/core/tree-anchor';
+import { decodeRelPos, mintAnchor, project, refreshAnchors, resolveAnchor, similarity, validateAnchor, type TreeAnchor } from '@moss-multi/core/tree-anchor';
 import { createConverterEditor } from './converter/index.ts';
 import { excludedPropertiesFor } from './excluded-properties.ts';
 import { bindRegisters } from './registers.ts';
@@ -154,6 +154,42 @@ describe('T4.0 spike: tree anchors over the V1 binding @p:tech-3', () => {
     const formatted = validateAnchor(seed, typed.anchor);
     expect(formatted.anchor.status).toBe('anchored');
     for (const doc of [seed, a.doc, b.doc]) expect(textOf(doc, formatted.anchor)).toBe('brown very fox');
+  }));
+
+  it('a refreshed quote persists with the frame that changed it, so a restart before any save tick keeps the typing', () => scene(async (seed, a) => {
+    // The DocDO's log: every update it applies is a row (doc-do.ts #persist); a wake replays the rows, or a compaction.
+    const log: Uint8Array[] = [];
+    seed.on('update', (update: Uint8Array) => log.push(update));
+    const comments = seed.getMap<{ id: string; anchor?: TreeAnchor }>('comments');
+    seed.transact(() => comments.set('c1', { id: 'c1', anchor: anchorOn(seed, 'brown fox') }), 'server-comments');
+    const frameTo = (doc: Y.Doc) => Y.applyUpdate(doc, Y.encodeStateAsUpdate(a.doc, Y.encodeStateVector(doc)), REMOTE);
+    const wake = () => {
+      const doc = new Y.Doc();
+      for (const row of log) Y.applyUpdate(doc, row);
+      return doc;
+    };
+
+    a.edit(() => { firstText().spliceText(16, 0, 'very '); });
+    frameTo(seed);
+    // Control: the refresh only in memory (or on a later tick) is lost by a restart here.
+    const lost = wake();
+    expect(lost.getMap<{ anchor: TreeAnchor }>('comments').get('c1')?.anchor.quote.exact).toBe('brown fox');
+    // The design: refresh in the same synchronous step as the root frame, so its row lands with the frame's row.
+    expect(refreshAnchors(seed, 'server-comments')).toEqual(['c1']);
+    expect(refreshAnchors(seed, 'server-comments'), 'nothing changed since').toEqual([]);
+
+    const compacted = new Y.Doc();
+    Y.applyUpdate(compacted, Y.encodeStateAsUpdate(seed));
+    a.edit(() => bold(4, 9));
+    for (const woken of [wake(), compacted]) {
+      frameTo(woken);
+      refreshAnchors(woken, 'server-comments');
+      const anchor = woken.getMap<{ anchor: TreeAnchor }>('comments').get('c1')!.anchor;
+      expect(anchor.status).toBe('anchored');
+      expect(textOf(woken, anchor)).toBe('brown very fox');
+      woken.destroy();
+    }
+    lost.destroy();
   }));
 
   it('bolding a word before the range collapses the raw positions; the quote restores the same text and re-mints', () => scene(async (seed, a, b) => {

@@ -46,17 +46,25 @@ const refused = (doc: Y.Doc, update: Uint8Array) => {
 
 /** A hand-encoded V1 update of consecutive items from one client, as an attacker can send it. */
 function raw(items: Y.Item[]): Uint8Array {
+  // Each client's items are consecutive and in clock order.
+  const byClient = new Map<number, Y.Item[]>();
+  for (const item of items) byClient.set(item.id.client, [...(byClient.get(item.id.client) ?? []), item]);
   const encoder = new Y.UpdateEncoderV1();
-  encoding.writeVarUint(encoder.restEncoder, 1);
-  encoding.writeVarUint(encoder.restEncoder, items.length);
-  encoder.writeClient(items[0].id.client);
-  encoding.writeVarUint(encoder.restEncoder, items[0].id.clock);
-  for (const item of items) item.write(encoder, 0);
+  encoding.writeVarUint(encoder.restEncoder, byClient.size);
+  for (const [client, list] of byClient) {
+    encoding.writeVarUint(encoder.restEncoder, list.length);
+    encoder.writeClient(client);
+    encoding.writeVarUint(encoder.restEncoder, list[0].id.clock);
+    for (const item of list) item.write(encoder, 0);
+  }
   encoding.writeVarUint(encoder.restEncoder, 0);
   return encoder.toUint8Array();
 }
-const forged = (id: Y.ID, at: { origin?: Y.ID; parent?: string | Y.ID; sub?: string }, content: ConstructorParameters<typeof Y.Item>[7]) =>
-  new Y.Item(id, null, at.origin ?? null, null, null, (at.parent ?? null) as never, at.sub ?? null, content);
+const forged = (
+  id: Y.ID,
+  at: { origin?: Y.ID; right?: Y.ID; parent?: string | Y.ID; sub?: string },
+  content: ConstructorParameters<typeof Y.Item>[7],
+) => new Y.Item(id, null, at.origin ?? null, null, at.right ?? null, (at.parent ?? null) as never, at.sub ?? null, content);
 const rootStart = (doc: Y.Doc) => (doc.get('root', Y.XmlText) as unknown as { _start: Y.Item })._start.id;
 
 /** Ground truth: apply to a copy and read every changed type's root. */
@@ -163,6 +171,42 @@ describe('SP7: classify a frame by the root types it touches, without applying i
     // A full update re-sends the merged run (C, 0..4); the server holds (C, 0..1).
     const update = Y.encodeStateAsUpdate(c);
     expect(touchedTypes(s, update)).toEqual({ roots: new Set(['root']), unresolved: false, malformed: false });
+  });
+
+  it('an item whose left origin the server holds but whose right origin it lacks is refused, never parked', () => {
+    const s = server();
+    const next = Y.createID(s.clientID, Y.getState(s.store, s.clientID));
+    // Left origin in root (held), right origin at the server's next clock: Yjs parks it until the server writes there.
+    const update = raw([forged(Y.createID(777, 0), { origin: rootStart(s), right: next }, new Y.ContentString('x'))]);
+    const proof = copyOf(s);
+    Y.applyUpdate(proof, update);
+    expect(proof.store.pendingStructs, 'the attack is real: Yjs parks the struct').not.toBeNull();
+    expect(touchedTypes(s, update).unresolved).toBe(true);
+    expect(refused(s, update)).toBe(true);
+
+    // Refused, so never applied: the server's next write leaves nothing pending and exactly the comments it wrote.
+    s.transact(() => s.getMap('comments').set('next', { text: 'server' }), SERVER);
+    expect(s.store.pendingStructs).toBeNull();
+    expect(s.getMap('comments').toJSON()).toEqual({ c1: { text: 'first' }, c2: { text: 'plain' }, next: { text: 'server' } });
+
+    // The same hole through a held frontmatter left origin.
+    const t = server();
+    t.transact(() => t.getMap('frontmatter').set('k', 'v'), SERVER);
+    const held = (t.getMap('frontmatter') as unknown as { _map: Map<string, Y.Item> })._map.get('k')!;
+    const tNext = Y.createID(t.clientID, Y.getState(t.store, t.clientID));
+    expect(refused(t, raw([forged(Y.createID(777, 0), { origin: held.id, right: tNext }, new Y.ContentAny(['x']))]))).toBe(true);
+  });
+
+  it('frame items whose right origins point at each other are refused: Yjs parks both', () => {
+    const s = server();
+    const update = raw([
+      forged(Y.createID(777, 0), { origin: rootStart(s), right: Y.createID(778, 0) }, new Y.ContentString('a')),
+      forged(Y.createID(778, 0), { origin: rootStart(s), right: Y.createID(777, 0) }, new Y.ContentString('b')),
+    ]);
+    const proof = copyOf(s);
+    Y.applyUpdate(proof, update);
+    expect(proof.store.pendingStructs, 'the attack is real').not.toBeNull();
+    expect(refused(s, update)).toBe(true);
   });
 
   it('a frame whose parent links form a cycle is refused promptly', () => {
