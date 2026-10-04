@@ -241,10 +241,15 @@ test('j01 discovery: Ben switches to a shared vault and back, with a role badge 
   await switcher.click();
   const shared = ben.page.getByRole('menuitem', { name: 'Home editor', exact: true });
   await expect(shared).toBeVisible();
-  await expect(ben.page.getByRole('menuitem', { name: /New vault|Share vault|Rename|Delete/ })).toHaveCount(0);
+  await expect(ben.page.getByRole('menuitem', { name: /New vault|Rename|Delete/ })).toHaveCount(0);
   await shared.click();
   const row = ben.page.locator(`[data-sidebar-row][data-doc-id="${docId}"]`);
   await expect(row).toBeVisible();
+  // A member gets no vault actions on the shared vault; "Share vault…" is the owner's (T2.4).
+  await switcher.click();
+  await expect(ben.page.getByRole('menuitem', { name: 'Home editor', exact: true })).toBeVisible();
+  await expect(ben.page.getByRole('menuitem', { name: /Share vault|New vault|Rename|Delete/ })).toHaveCount(0);
+  await ben.page.keyboard.press('Escape');
   await ben.page.reload();
   await expect(row).toBeVisible();
   await row.click();

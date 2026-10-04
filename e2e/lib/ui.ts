@@ -93,7 +93,9 @@ export async function createNote(actor: Actor): Promise<string> {
 }
 
 /** The Share dialog's access choices (T1.1); suggester joins in M5. */
-export type Access = 'Can view' | 'Can comment' | 'Can edit';
+export type Access = 'Can view' | 'Can comment' | 'Can edit' | 'Owner';
+/** A share link's access (T2.4): never more than edit, and signed-out visitors read at view. */
+export type LinkAccess = 'Can view' | 'Can comment' | 'Can edit';
 
 /** Opens Share from the note's top bar and returns the dialog. */
 export async function openShare(actor: Actor, docId: string): Promise<Locator> {
@@ -103,19 +105,40 @@ export async function openShare(actor: Actor, docId: string): Promise<Locator> {
   return dialog;
 }
 
+const people = (dialog: Locator): Locator => dialog.getByRole('list', { name: 'People with access' }).getByRole('listitem');
+
 /** A person's row in the open Share dialog's "People with access" list. */
-export const accessRow = (dialog: Locator, person: Principal): Locator =>
-  dialog.getByRole('listitem').filter({ hasText: person.name });
+export const accessRow = (dialog: Locator, person: Principal): Locator => people(dialog).filter({ hasText: person.name });
+
+/** A pending invite's row: an email nobody has signed up with yet (T2.4). */
+export const inviteRow = (dialog: Locator, email: string): Locator => people(dialog).filter({ hasText: email });
+
+/** The read-only field holding a live link's URL, and its row. */
+export const linkField = (dialog: Locator, access: LinkAccess): Locator => dialog.getByRole('textbox', { name: `${access} link`, exact: true });
+export const linkRow = (dialog: Locator, access: LinkAccess): Locator =>
+  dialog.getByRole('list', { name: 'Share links' }).getByRole('listitem').filter({ has: linkField(dialog, access) });
+
+/** Adds `email` at `access` in an open Share dialog (note, folder or vault); the dialog stays open. */
+export async function shareInDialog(dialog: Locator, email: string, access: Access): Promise<void> {
+  await dialog.getByLabel('Email', { exact: true }).fill(email);
+  await dialog.getByRole('radiogroup', { name: 'Access', exact: true }).getByRole('radio', { name: access, exact: true }).click();
+  await dialog.getByRole('button', { name: 'Share', exact: true }).click();
+  await expect(dialog.getByRole('status'), `shared with ${email}`).toHaveText(`Shared with ${email}.`);
+}
 
 /** Shares the note with `person` at `access` through the dialog, then waits for their row; the dialog stays open. */
 export async function shareWith(actor: Actor, docId: string, person: Principal, access: Access): Promise<Locator> {
   const dialog = await openShare(actor, docId);
-  await dialog.getByLabel('Email', { exact: true }).fill(person.email);
-  await dialog.getByRole('radio', { name: access, exact: true }).click();
-  await dialog.getByRole('button', { name: 'Share', exact: true }).click();
+  await shareInDialog(dialog, person.email, access);
   await expect(accessRow(dialog, person), `${actor.label}: ${person.label} is listed at "${access}"`).toContainText(access);
   return dialog;
 }
+
+const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** A folder's row in the notes list (moss's FolderGroup header names it "<name> folder, <n> notes, ..."). */
+export const folderRow = (actor: Actor, name: string): Locator =>
+  actor.page.getByRole('button', { name: new RegExp(`^${escapeRegExp(name)} folder, `) });
 
 /** Opens a doc from its notes-list row and waits for it to bind. */
 export async function openNote(actor: Actor, docId: string): Promise<void> {
