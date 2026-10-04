@@ -145,7 +145,8 @@ function vet(view: View, structs: (Y.Item | Y.GC | Y.Skip)[], ds: DeleteSet, opt
       const holder = lookup(item.parent).item;
       result = holder ? { typeItem: holder, rootKey: null, sub: item.parentSub, dead: false } : DEAD;
     } else {
-      // The encoder omits parent info when an origin implies it: Yjs places the item beside its origin.
+      // The encoder omits parent info, map key included, when an origin implies it: Yjs places the item beside its
+      // origin, in the origin's map key. Read the key from the place, never from a decoded item's parentSub.
       const neighbour = item.origin ?? item.rightOrigin;
       if (!neighbour) throw new Refusal('unresolvable');
       const found = lookup(neighbour);
@@ -182,9 +183,9 @@ function vet(view: View, structs: (Y.Item | Y.GC | Y.Skip)[], ds: DeleteSet, opt
    * changes nothing: it is allowed on any body container, with the delete of the value it replaces.
    */
   const unchanged = new Set<string>();
-  const sameAsBefore = (container: Y.Item, item: Y.Item): boolean => {
-    if (!(container.content instanceof Y.ContentType) || item.content instanceof Y.ContentType || item.parentSub === null) return false;
-    let previous: Y.Item | null | undefined = container.content.type._map.get(item.parentSub);
+  const sameAsBefore = (container: Y.Item, sub: string, item: Y.Item): boolean => {
+    if (!(container.content instanceof Y.ContentType) || item.content instanceof Y.ContentType) return false;
+    let previous: Y.Item | null | undefined = container.content.type._map.get(sub);
     while (previous && isFreshId(previous.id)) previous = previous.left;
     if (!previous || !view.liveBefore(previous) || previous.content instanceof Y.ContentType || previous.content instanceof Y.ContentDeleted) {
       return false;
@@ -227,14 +228,14 @@ function vet(view: View, structs: (Y.Item | Y.GC | Y.Skip)[], ds: DeleteSet, opt
           candidates.push(item);
           continue;
         }
-        if (root === BODY && sameAsBefore(at.typeItem, item)) {
-          unchanged.add(`${keyOf(at.typeItem.id)}|${item.parentSub}`);
+        if (root === BODY && sameAsBefore(at.typeItem, at.sub, item)) {
+          unchanged.add(`${keyOf(at.typeItem.id)}|${at.sub}`);
           continue;
         }
         throw new Refusal(root === BODY || root === REGISTERS ? 'mutate-original' : 'outside-body');
       }
       // A new key in the registers map belongs to a new decorator; overwriting a live one mutates the original.
-      if (at.rootKey === REGISTERS && !keyLiveBefore(view, item, isFreshId)) {
+      if (at.rootKey === REGISTERS && !keyLiveBefore(view, at.sub, isFreshId)) {
         candidates.push(item);
         continue;
       }
@@ -492,10 +493,9 @@ function align(pre: Elem[], post: Elem[], isFreshId: (id: Y.ID) => boolean, same
   return matched;
 }
 
-/** Whether the registers key `item` writes held a live value before the frame. */
-function keyLiveBefore(view: View, item: Y.Item, isFreshId: (id: Y.ID) => boolean): boolean {
-  if (item.parentSub === null) return false;
-  let entry: Y.Item | null | undefined = view.registers()?._map.get(item.parentSub);
+/** Whether a registers key held a live value before the frame. */
+function keyLiveBefore(view: View, key: string, isFreshId: (id: Y.ID) => boolean): boolean {
+  let entry: Y.Item | null | undefined = view.registers()?._map.get(key);
   while (entry && isFreshId(entry.id)) entry = entry.left;
   return !!entry && view.liveBefore(entry);
 }

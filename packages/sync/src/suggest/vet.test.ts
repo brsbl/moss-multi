@@ -343,6 +343,20 @@ describe('SP11 forged and out-of-order frames @p:mean-2', () => {
     } finally { copy.destroy(); server.destroy(); }
   });
 
+  it("a forged overwrite of an original decorator's register is refused", () => {
+    const server = seeded();
+    const forger = new Y.Doc();
+    try {
+      Y.applyUpdate(forger, Y.encodeStateAsUpdate(server));
+      const sv = Y.encodeStateVector(forger);
+      const registers = forger.getMap<Y.Text>('registers');
+      const [key] = [...registers.keys()];
+      registers.set(key, new Y.Text('forged'));
+      expect(vetSuggestFrame(server, Y.encodeStateAsUpdate(forger, sv), { own: [], clients: new Set() }))
+        .toEqual({ ok: false, reason: 'mutate-original' });
+    } finally { forger.destroy(); server.destroy(); }
+  });
+
   it('a frame with a clock gap is refused, never parked', () => {
     const server = seeded();
     const forger = new Y.Doc();
