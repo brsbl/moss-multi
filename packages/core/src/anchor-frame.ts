@@ -162,7 +162,8 @@ function attrs(type: { _map: Map<string, Y.Item> }, live: Live): string {
     if (!at) continue;
     const values = at.content.getContent();
     const value: unknown = values[values.length - 1];
-    out.push(JSON.stringify([key, value instanceof Y.AbstractType ? '[type]' : value ?? null]));
+    // A nested map is a node's NodeState (`__state`, F4); read it at the same moment.
+    out.push(JSON.stringify([key, value instanceof Y.Map ? `{${attrs(value, live)}}` : value instanceof Y.AbstractType ? '[type]' : value ?? null]));
   }
   return out.join(',');
 }

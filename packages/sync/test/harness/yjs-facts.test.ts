@@ -128,7 +128,7 @@ describe('T4.0 pinned Yjs facts @p:tech-3', () => {
     expect(same(copy!.rightOrigin, right)).toBe(true);
   });
 
-  it('F4: every node in the registry maps to an XmlText, a leaf XmlElement or a property map, and the corpus agrees', () => {
+  it('F4: every node in the registry maps to an XmlText, a leaf XmlElement or a property map, attributes hold at most a NodeState map, and the corpus agrees', () => {
     const editor = createConverterEditor();
     const kinds = new Map<string, string>();
     const is = (klass: Klass<LexicalNode>, base: { prototype: object }) =>
@@ -151,9 +151,15 @@ describe('T4.0 pinned Yjs facts @p:tech-3', () => {
         for (let item = type._start; item; item = item.right) {
           if (!(item.content instanceof Y.ContentType)) continue;
           const child = item.content.type;
-          // No node at the pin declares @lexical/yjs slots, so no attribute holds a nested type.
+          // No node at the pin declares @lexical/yjs slots; the one nested type an attribute holds is NodeState's
+          // `__state` map of JSON values, so no text lives outside the `_start` lists.
           if (child instanceof Y.XmlText || child instanceof Y.XmlElement) {
-            for (const value of Object.values(child.getAttributes())) expect(value, `${fixture.name}: an attribute holds no type`).not.toBeInstanceOf(Y.AbstractType);
+            for (const [key, value] of Object.entries(child.getAttributes())) {
+              if (!(value instanceof Y.AbstractType)) continue;
+              expect(key, `${fixture.name}: only __state holds a type`).toBe('__state');
+              expect(value).toBeInstanceOf(Y.Map);
+              for (const entry of (value as Y.Map<unknown>).values()) expect(entry, `${fixture.name}: __state holds JSON`).not.toBeInstanceOf(Y.AbstractType);
+            }
           }
           if (child instanceof Y.XmlText) visit(child);
           else if (child instanceof Y.XmlElement) expect(child._start, `${fixture.name}: ${child.nodeName} is a leaf`).toBeNull();
