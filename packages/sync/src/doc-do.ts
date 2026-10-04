@@ -18,10 +18,10 @@ import { AckCoalescer, DocStore, PERSISTENCE } from './doc/persistence.ts';
 import { d1Projections, Projections, type ProjectionTarget } from './doc/projections.ts';
 import type { SyncEnv } from './env.ts';
 import { migrateFrontmatter } from '@moss-multi/core/frontmatter';
-import { writeField } from '@moss-multi/core/doc-fields';
 import { payloadText } from './payload-docs.ts';
 import { JANITOR, migratePayloads, PayloadStore, type PayloadWork } from './payloads.ts';
 import { attachPayloadSource, exportDocMarkdown, importBody, rootIsEmpty, SERVER_IMPORT, SERVER_SEED, seedEmptyParagraph } from './server-doc.ts';
+import { writeTitle } from './server-title.ts';
 
 /** A title written by create() or a REST rename; both project. */
 export const SERVER_TITLE = 'server-title';
@@ -249,7 +249,7 @@ export class DocDO extends YServer<SyncEnv> {
     }
     const title = input.title?.trim();
     // POST /api/docs wrote a provisional row; the title and its filename arrive through the projection.
-    if (title) writeField(this.document, 'title', title, SERVER_TITLE);
+    if (title) writeTitle(this.document, title, SERVER_TITLE);
     store.setMeta('folder', input.folderId);
     store.setMeta('owner', input.ownerId);
     if (!title) await this.#projections?.initializeEmpty();
@@ -263,7 +263,7 @@ export class DocDO extends YServer<SyncEnv> {
    */
   async renameTitle(text: string): Promise<void> {
     await this.#ready();
-    writeField(this.document, 'title', text, SERVER_TITLE);
+    writeTitle(this.document, text, SERVER_TITLE);
     this.#projections?.touch();
     await this.#projections?.flush();
   }

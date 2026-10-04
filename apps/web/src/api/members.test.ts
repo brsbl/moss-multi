@@ -29,7 +29,7 @@ let cy: TestUser;
 
 beforeAll(async () => {
   d1 = await migratedD1();
-  env = { DB: d1.db, BETTER_AUTH_SECRET: SECRET, BETTER_AUTH_URL: BASE, DocDO: DocDO as never };
+  env = { DB: d1.db, BETTER_AUTH_SECRET: SECRET, BETTER_AUTH_URL: BASE, DocDO: DocDO as never, PrincipalDO: {} as never };
   ada = await signedUpUser(env, 'members-ada', 'Ada');
   ben = await signedUpUser(env, 'members-ben', 'Ben');
   cy = await signedUpUser(env, 'members-cy', 'Cy');
