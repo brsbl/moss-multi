@@ -6,6 +6,7 @@ import { useEffect, type ComponentType } from 'react';
 import { readyWhenShellRenders } from './app-state.ts';
 import { auth } from './auth.ts';
 import { closeDocsToWrites, endTrashedDocs, pauseDocWrites, severDocSessions, waitDocsAcked } from './collab/doc-session.ts';
+import { ImageContextMenu } from './media/ImageContextMenu.tsx';
 import { SignOutConfirmation } from './surfaces/SignOutConfirmation.tsx';
 import { TrashConfirmation } from './surfaces/TrashConfirmation.tsx';
 import { folderIdFromPath, installBridge, WORKSPACE, type Bridge } from './bridge/index.ts';
@@ -50,6 +51,7 @@ export async function bootMoss(): Promise<{ default: ComponentType }> {
       <>
         <App />
         <SignOutConfirmation />
+        <ImageContextMenu />
         <TrashConfirmation />
         <ShareDialogHost />
       </>

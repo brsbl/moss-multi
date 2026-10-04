@@ -53,6 +53,7 @@ function VideoComponent({
   const [isPlayerReady, setIsPlayerReady] = useState(false);
   const [thumbLoaded, setThumbLoaded] = useState(false);
   const [thumbMissing, setThumbMissing] = useState(false);
+  const [frameFailed, setFrameFailed] = useState(false);
   const [thumbVersion, setThumbVersion] = useState(0);
   const [videoVersion, setVideoVersion] = useState(0);
   const [useAssetFallback, setUseAssetFallback] = useState(false);
@@ -89,7 +90,7 @@ function VideoComponent({
     isYouTube || useAssetFallback ? assetSrc : mediaServerSrc ?? assetSrc;
   const thumbPath = `assets/video-thumb-${computeContentHash(src)}.png`;
   const thumbBaseSrc = isYouTube ? null : toDisplaySrc(thumbPath, noteId);
-  // moss-multi seam: no Electron thumbnail requests while local media is staged.
+  // moss-multi seam: web-assets (A§16): thumbnails are derived by moss desktop only; never request Electron's protocol.
   const thumbSrc = thumbBaseSrc && !thumbBaseSrc.startsWith('moss-asset:')
     ? `${thumbBaseSrc}${thumbBaseSrc.includes('?') ? '&' : '?'}v=${thumbVersion}`
     : null;
@@ -98,6 +99,7 @@ function VideoComponent({
     clearVideoRetryTimer();
     setThumbLoaded(false);
     setThumbMissing(false);
+    setFrameFailed(false);
     setThumbVersion(0);
     setHasError(false);
     setVideoVersion(0);
@@ -302,6 +304,18 @@ function VideoComponent({
                 onLoad={handleThumbnailLoad}
                 onError={handleThumbnailError}
                 draggable={false}
+              />
+            ) : displaySrc && !frameFailed ? (
+              // moss-multi seam: web-assets (A§16): with no derived thumbnail, the clip's own first frame is its poster.
+              <video
+                src={`${displaySrc}#t=0.001`}
+                preload="metadata"
+                muted
+                playsInline
+                aria-hidden="true"
+                className="pointer-events-none block aspect-video w-full bg-ink-default object-contain"
+                data-video-thumbnail-state="frame"
+                onError={() => setFrameFailed(true)}
               />
             ) : (
               <div

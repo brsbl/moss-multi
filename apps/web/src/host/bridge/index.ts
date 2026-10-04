@@ -10,6 +10,8 @@ import {
 import { displayTitle, liveTitle, writeLiveTitle } from '../collab/title-binding.ts';
 import { askDocAccess, rememberRole } from '../access.ts';
 import { waitForAllAcked } from '../collab/unacked.ts';
+import { onNativeMenuCommand } from '../media/image-menu.ts';
+import { chooseFilesInBrowser, createImagesApi } from '../media/uploads.ts';
 import { setWikiCandidates } from '../wiki-links.ts';
 import type { TrashGuard } from '../trash-guard.ts';
 
@@ -91,6 +93,8 @@ export interface BrowserHooks {
   replacePath(path: string): void;
   onPopState(listener: () => void): () => void;
   copy(text: string, html: string): Promise<void>;
+  /** The file chooser behind "/media → From computer"; `[]` when dismissed. */
+  chooseFiles(accept: string): Promise<File[]>;
 }
 
 export interface BridgeOptions {
@@ -239,6 +243,7 @@ export const inertBrowser: BrowserHooks = {
   replacePath: noop,
   onPopState: () => noop,
   copy: async () => undefined,
+  chooseFiles: async () => [],
 };
 
 export function createBridge({ pathname, share = () => null, fetch: fetcher = fetch.bind(globalThis), storage = null, browser = inertBrowser, subscribeWorkspace: subscribe, leaving, trashGuard = openGuard }: BridgeOptions) {
@@ -851,11 +856,9 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
     checkpoints: { getAll: empty },
     files: { search: empty, listDirectory: empty, open: empty },
     images: {
-      save: later('Uploading media', 3),
-      pick: later('Uploading media', 3),
+      ...createImagesApi({ request, chooseFiles: (accept) => browser.chooseFiles(accept) }),
       persistUrl: later('Saving a remote image', 3),
       copyFromPath: unavailable('Copying a local file'),
-      copyFromNoteAsset: later('Copying media between notes', 3),
     },
     htmlPreview: { ensure: nothing, onMaterialized: silent, onFailed: silent },
     webEmbedPreview: { ensure: nothing, subscribe: silent },
@@ -866,6 +869,7 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
       getGlobalShortcut: async () => ({ quickCapture: '', enabled: false }),
       setGlobalShortcut: async () => false,
       setGlobalShortcutEnabled: none,
+      // The image context menu offers Edit Alt Text… on any image in an editable note (deviation 5; ImageContextMenu).
       setImageAltTextMenuEnabled: none,
       // Open in New Window is a browser tab (R4).
       createWindow: async (input: { noteId?: string | null } = {}) => {
@@ -886,7 +890,7 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
       moveWindowDrag: none,
       endWindowDrag: none,
       onGlobalShortcutActivated: silent,
-      onNativeMenuCommand: silent,
+      onNativeMenuCommand,
       waitForReady: async () => {
         await notes().catch(() => undefined);
       },
@@ -990,6 +994,7 @@ function windowBrowser(): BrowserHooks {
         new ClipboardItem({ 'text/plain': new Blob([text], { type: 'text/plain' }), 'text/html': new Blob([html], { type: 'text/html' }) }),
       ]);
     },
+    chooseFiles: chooseFilesInBrowser,
   };
 }
 

@@ -168,7 +168,7 @@ test('reaches the network only through the injected services: media, links and e
   const video = body.locator('[data-video-node-kind="local"]');
   await video.scrollIntoViewIfNeeded();
   await video.locator('[data-video-play-overlay]').locator('..').click();
-  await expect(body.locator('video')).toHaveAttribute('src', /^\/svc\/assets\/drawer\.webm/);
+  await expect(body.locator('video:not([data-video-thumbnail-state])')).toHaveAttribute('src', /^\/svc\/assets\/drawer\.webm/);
   const clip = () => server.media.filter((request) => request.path === '/svc/assets/drawer.webm' && (request.status === 200 || request.status === 206));
   await expect.poll(() => clip().length).toBeGreaterThan(0);
   // Chromium asks for byte ranges from the first load and the service answers 206; WebKit's GStreamer fetches a

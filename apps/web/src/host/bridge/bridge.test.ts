@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { knownRole } from '../access.ts';
 import { markUnacked } from '../collab/unacked.ts';
+import { runNativeMenuCommand } from '../media/image-menu.ts';
+import { refusalMessage } from '../refusal.ts';
 import { createBridge, docIdFromPath, EXPORT_ACK_WAIT_MS, inertBrowser, WORKSPACE, type BrowserHooks } from './index.ts';
 
 const LISTING = {
@@ -350,6 +352,68 @@ describe('the T3.7 bridge: tab, print and download (R4; A§9 Export)', () => {
       markUnacked(session, false);
       vi.useRealTimers();
     }
+  });
+});
+
+describe('the T3.1 images bridge (A§9 images; A§16)', () => {
+  const uploadBridge = (answer: (url: string, init?: RequestInit) => Response) => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => answer(String(input), init));
+    return { fetch, api: createBridge({ pathname: () => '/d/d1', fetch }) };
+  };
+
+  it("uploads a saved file's raw bytes to its note's asset route and returns moss's relative path", async () => {
+    const { api, fetch } = uploadBridge(() => Response.json({ relativePath: 'assets/shot.png', filename: 'shot.png' }, { status: 201 }));
+    const result = await api.images.save({ data: btoa('png-bytes'), filename: 'shot.png', mimeType: 'image/png', noteId: 'd1' });
+    expect(result).toEqual({ relativePath: 'assets/shot.png', absolutePath: '/api/docs/d1/assets/shot.png', filename: 'shot.png' });
+    const [url, init] = fetch.mock.calls[0];
+    expect(url).toBe('/api/docs/d1/assets?filename=shot.png');
+    expect(init?.method).toBe('POST');
+    expect(new Headers(init?.headers).get('content-type')).toBe('image/png');
+    expect(new TextDecoder().decode(init?.body as Uint8Array)).toBe('png-bytes');
+  });
+
+  it("refuses a failed upload visibly with the server's sentence, never silently", async () => {
+    const message = 'That file is larger than this note accepts.';
+    const { api } = uploadBridge(() => Response.json({ error: 'too-large', message }, { status: 413 }));
+    await expect(api.images.save({ data: btoa('x'), filename: 'big.png', mimeType: 'image/png', noteId: 'd1' })).rejects.toThrow(message);
+    expect(refusalMessage()).toBe(message);
+  });
+
+  it('copies an asset from another note on the server', async () => {
+    const { api, fetch } = uploadBridge(() => Response.json({ relativePath: 'assets/a.png', filename: 'a.png' }, { status: 201 }));
+    const result = await api.images.copyFromNoteAsset({ sourceNoteId: 'd2', sourceRelativePath: 'assets/a.png', destinationNoteId: 'd1' });
+    expect(result.relativePath).toBe('assets/a.png');
+    const [url, init] = fetch.mock.calls[0];
+    expect(url).toBe('/api/docs/d1/assets/copy');
+    expect(JSON.parse(String(init?.body))).toEqual({ sourceNoteId: 'd2', sourceRelativePath: 'assets/a.png' });
+  });
+
+  it("carries the page's share link on an upload and a cross-note copy, as on every read", async () => {
+    vi.stubGlobal('location', { search: '?share=tok%2F1', origin: 'http://localhost', pathname: '/d/d1' });
+    try {
+      const { api, fetch } = uploadBridge(() => Response.json({ relativePath: 'assets/a.png', filename: 'a.png' }, { status: 201 }));
+      const saved = await api.images.save({ data: btoa('png'), filename: 'a.png', mimeType: 'image/png', noteId: 'd1' });
+      await api.images.copyFromNoteAsset({ sourceNoteId: 'd2', sourceRelativePath: 'assets/a.png', destinationNoteId: 'd1' });
+      const [upload, copy] = fetch.mock.calls.map(([url]) => new URL(String(url), 'http://localhost'));
+      expect(upload.pathname).toBe('/api/docs/d1/assets');
+      expect(upload.searchParams.get('share'), 'the upload carries the link').toBe('tok/1');
+      expect(copy.pathname).toBe('/api/docs/d1/assets/copy');
+      expect(copy.searchParams.get('share'), 'the copy carries the link').toBe('tok/1');
+      expect(new URL(saved.absolutePath, 'http://localhost').searchParams.get('share')).toBe('tok/1');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("carries the image context menu's Edit Alt Text… into moss's native command listener", async () => {
+    const { api } = uploadBridge(() => Response.json({}));
+    const commands: string[] = [];
+    const stop = api.system.onNativeMenuCommand((command: string) => commands.push(command));
+    runNativeMenuCommand('edit-image-alt-text');
+    expect(commands).toEqual(['edit-image-alt-text']);
+    stop();
+    runNativeMenuCommand('edit-image-alt-text');
+    expect(commands).toHaveLength(1);
   });
 });
 

@@ -50,12 +50,15 @@ for (const name of readdirSync(fixtures).filter((name) => name.endsWith('.md')).
     const markdown = readFileSync(new URL(name, fixtures), 'utf8');
     const imported = await actors.session(await actors.principal('imported'));
     const pasted = await actors.session(await actors.principal('pasted'));
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGP4DwQACfsD/fteaysAAAAASUVORK5CYII=', 'base64');
     for (const actor of [imported, pasted]) {
       // Fixture media is synthetic. Keep the renderer's resource path while answering it deterministically.
       await actor.page.route('https://**/*', (route) => route.request().resourceType() === 'image'
-        ? route.fulfill({ status: 200, contentType: 'image/png', body: Buffer.from(
-          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGP4DwQACfsD/fteaysAAAAASUVORK5CYII=', 'base64') })
+        ? route.fulfill({ status: 200, contentType: 'image/png', body: png })
         : route.fulfill({ status: 200, contentType: 'text/html', body: '' }));
+      // The fixtures' local `assets/` media was never uploaded; its asset route (T3.1) is answered the same way.
+      await actor.page.route((url) => /^\/api\/docs\/[^/]+\/assets\/[^/]+$/.test(url.pathname),
+        (route) => route.fulfill({ status: 200, contentType: 'image/png', body: png }));
     }
     const create = async (actor: typeof imported, content?: string) => {
       const response = await actor.context.request.post('/api/docs', {
