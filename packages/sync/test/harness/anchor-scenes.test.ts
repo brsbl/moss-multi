@@ -167,6 +167,44 @@ describe('T4.0 supported liveness: a comment keeps its exact characters @p:tech-
   }, 'The quick brown fox brown fox jumps.'));
 });
 
+// P2 #9 (comments.md §7): a shortcut whose rewritten span holds the commented text more than once cannot be mapped
+// without a guess, so the comment fails safe to orphaned. The same shortcut with the text unambiguous keeps it.
+describe('T4.0 a link shortcut maps its label only when the label is unambiguous in the rewritten span @p:tech-3', () => {
+  const link = (url: string) => (s: Scene) => {
+    const a = s.peer();
+    const stop = registerMarkdownShortcuts(a.editor, MARKDOWN_EDITOR_TRANSFORMERS);
+    const type = (text: string) => a.edit(() => {
+      const selection = $getSelection();
+      if ($isRangeSelection(selection)) selection.insertText(text);
+    });
+    try {
+      s.comment('c1', 'example');
+      a.edit(() => $caret('example'));
+      type('[');
+      accepted(a.send());
+      a.edit(() => $caret('example', 0, 'end'));
+      type(`](${url}`);
+      type(')');
+      accepted(a.send());
+      expect(a.text(), 'the shortcut fired').toBe('Visit example now.');
+    } finally {
+      stop();
+    }
+  };
+
+  it('link-label-in-url-keeps-the-comment', () => scene((s) => {
+    link('https://example.invalid')(s);
+    on(s, 'example');
+    placed(s, 'c1', 6, 'example');
+  }, 'Visit example now.'));
+
+  it('link-label-not-in-url-keeps-the-comment', () => scene((s) => {
+    link('https://moss.invalid')(s);
+    on(s, 'example');
+    placed(s, 'c1', 6, 'example');
+  }, 'Visit example now.'));
+});
+
 describe('T4.0 supported liveness: orphan on deletion, reattach on undo and redo @p:tech-3 @p:R18', () => {
   it('delete then undo, in separate frames', () => scene((s) => {
     const a = s.peer();
