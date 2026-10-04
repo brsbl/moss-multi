@@ -108,6 +108,7 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - A wrong password logs a browser console error → T0.10 (only if the zero-console-error invariant should cover the auth error path)
 - Sidebar search matches titles only; body search belongs to M3. Live title matching is bound in T1.4.
 - Sign-out leaves the session's other live doc sockets reading and writing → T2.5
+- A signed-out share-link visitor (and any viewer of the active vault) is offered "+ Note", which fails with "Could not create note. Try again." → T2.6 (capability helper)
 - The wrangler ProxyWorker patch replays non-idempotent requests after an ambiguous failure → T0.9b follow-up (stack infra)
 - `qa.mjs close` forgets the session even when closing it failed → tooling follow-up
 - `stack.mjs` puts `BETTER_AUTH_SECRET` and the test-hook secret on wrangler's command line → tooling follow-up
