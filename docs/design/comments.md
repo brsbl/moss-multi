@@ -1,6 +1,23 @@
 # Comments as CRDT data: design review (T4.0)
 
-This resolves A§13's comments sketch for M4 (BUILDPLAN T4.1–T4.4). It follows the 2026-10-04 design panel, which replaced the six-round first attempt (`t/T4.0-r1`): C2's identity-free anchors with C1's reserved-writer write guard. It was written against `origin/m4` at `80a4327`, yjs 13.6.31, @lexical/yjs 0.48.0 and moss at the pin `762abb777`. The spike proves only the load-bearing properties (§10); the owner summary is the last section.
+This resolves A§13's comments sketch for M4 (BUILDPLAN T4.1–T4.4). It follows the 2026-10-04 design panel, which replaced the six-round first attempt (`t/T4.0-r1`): C2's identity-free anchors with C1's reserved-writer write guard. It was written against `origin/m4` at `80a4327`, yjs 13.6.31, @lexical/yjs 0.48.0 and moss at the pin `762abb777`. The spike proves only the load-bearing properties (§10). The owner summary comes first; the design starts at "The whole design".
+
+## Owner summary
+
+**What this decides.** In M4 a comment becomes shared data inside the note, like the note's text and title. Everyone sees new comments, replies, reactions and resolves arrive live. Nothing about a comment is written into the note's text, so typing next to or inside a comment never loses a keystroke, and a downloaded `.md` never contains comment markers.
+
+**How it works.**
+1. **Only the server writes comments, under its own reserved signature.** Every comment write carries a writer id that only the server uses. A browser's edit is refused, loudly, if it carries that id, points at it, aims at the comments directly, or deletes a comment. Reviewers spent six rounds finding ways around the old "predict what this edit will do" check; this rule doesn't predict anything, so there is nothing to outguess. A malformed edit that the database would hold back and apply later is dropped instead, and the note is never saved with one inside.
+2. **A comment stays on its own characters.** Bolding, Enter, line breaks, joining paragraphs and markdown shortcuts keep it on exactly the text you commented on; the server checks, in the same step, that the re-written text reads the same and sits between the same untouched neighbours. One rare case detaches instead: a shortcut that rewrites a stretch where the commented words appear twice, such as a link whose address also contains its label (`[example](https://example.invalid)` on a comment on "example"). The server cannot tell which copy is yours, so it detaches the comment rather than guess (limitation 9 in §7).
+3. **Deleting the text detaches the comment; undo brings it back.** The comment stays in the thread list marked as detached. It reattaches only when the restored text reappears in exactly the spot it was deleted from and reads exactly the same, which is what undo and redo do, online or offline. Typing the same words again lands just after that spot, so it does not reattach. Two rare cases look identical to an undo and are written into PRODUCT ruling 18 as a clarification: a collaborator who hadn't seen the deletion typing inside it, and a paragraph deleted after its text and then restored.
+4. **It stays fast with many comments.** The server only looks at comments whose first or last character an edit actually deletes, capped at 32 per character, so a keystroke in a note with 2,000 comments does no comment work at all. The tests count this.
+5. **Highlights are painted on top of the page, never into it**, proven in Chrome's and Safari's engines.
+
+**For you to confirm at the M4 hand-off.** The four decisions in §14, and the one accepted gap above: a comment whose words repeat inside a rewritten stretch detaches rather than risk landing on the wrong copy.
+
+**What's next.** T4.1 builds the server side (the comment API, the guard inside the live server, import). T4.2 wires the anchor engine and the offline replay rule. T4.3 connects moss's comment UI with the painting. T4.4 adds reactions, mentions, edit and delete rules, and notifications.
+
+---
 
 **The whole design in a few sentences.** Comment data lives in `Y.Map('comments')` in the note's Y.Doc, and only the DocDO writes it, under a reserved Yjs client id R. A client frame can never place or delete an R item; this is proved by induction and needs no prediction of Yjs placement. An anchor is two RelativePositions. After a frame it changes in only four ways:
 1. it shrinks to its own surviving characters;
@@ -29,7 +46,7 @@ Nothing searches the document for a positioned anchor, scores similarity, or tru
 - Enter before or inside it (the range may then cross blocks);
 - a soft break;
 - a Backspace join of its block;
-- the moss markdown inline shortcuts.
+- the moss markdown inline shortcuts, including one that wraps the commented text, when that text occurs once in the span the shortcut rewrites. When it occurs more than once there (a repeat in the span, or a link label that also appears in its URL), the comment orphans by design: P2 #9 (coordinator amendment, 2026-10-04).
 
 It orphans on deletion of all its characters, including its block. It reattaches on undo or redo of:
 - a text deletion;
@@ -148,6 +165,7 @@ Each delete range in `txn.deleteSet` is looked up in EP. Comments whose endpoint
    - Otherwise apply the *wrap rule*, which reads I as D with tokens removed. A run I[j, j+n) equal to the part can be the part in such a reading when I[0, j) fits in order into D before the part and I[j+n, |I|) fits in order into D after it. Map onto that run if it is the only such run, and if no other occurrence of the part in D could be that same run in a reading. Otherwise do not map: never a guess.
    - Accept the mapping only if the whole new range, in text mode, equals the pre-frame range. Then re-mint.
    - This carries V1 format split and join, Enter (the end may move into the new block), soft break, a join, and the markdown inline shortcuts. A shortcut that wraps the commented text (`**`, `_`, `~~`, `` ` ``, `==`, a `[text](url)` link) makes Lexical delete the text with its delimiters and reinsert it as a new node, so D is I plus the delimiters, and neither the prefix nor the suffix holds the comment. The wrap rule maps it, even when the commented text recurs later in the same text node, which Lexical then deletes and reinserts in the same gap. It adds no new target: the run is frame-new, between the same survivors, the only run the comment's text can be, and the comment's text the only passage that run can be. The whole-range check still applies. A frame that leaves one of two identical passages, with either one a valid reading, maps neither copy.
+   - The coordinator amendment (2026-10-04) ratifies this rule as the amendment to decision §4.2. When the comment's text is ambiguous in the rewritten span, no run is the only reading and the comment orphans (P2 #9). The commonest honest case is a link whose URL contains its label: D holds the label twice, once in the brackets and once in the URL, and I holds it once.
 2. **Survivor shrink (I3b).** Otherwise, re-mint each deleted endpoint onto the nearest surviving unit inside the pre-frame range, walking inward. Replacement text typed at a deleted edge is not adopted.
 3. **Lose (§5.3).** If no survivor exists, the comment takes the lost path. A walk over budget orphans it with no `lost`.
 
@@ -220,6 +238,11 @@ The discipline matters only for honest users and ruling 18. Safety (I1–I8) nev
 6. Version restore does not reattach orphans; M6 owns server-trusted re-minting from snapshots.
 7. Dragging a block or cut-and-paste orphans the comment.
 8. Orphans whose lost place spans blocks, or is nested deeper than 3 lifts, do not lift; deleting their block detaches them.
+9. **Ambiguous text inside a rewritten span** (coordinator amendment, 2026-10-04; the decision's register). When one frame rewrites a span in which the comment's text occurs more than once, so that the rewritten text could be either occurrence, the comment orphans rather than guess. Examples, each a test asserting the orphan:
+   - a link shortcut whose label also appears in its URL: `link-label-in-url-orphans-the-comment`;
+   - a frame that leaves one of two identical passages: never-jump "a frame that keeps one of two identical passages never picks one for the comment".
+
+   The same shapes keep the comment when the text is unambiguous: `link-label-not-in-url-keeps-the-comment`, the wrapping-shortcut scenes, and `markdown-wrap-keeps-first-of-two-identical-passages`, where position in the node decides.
 
 None of these moves a comment to different text or to another occurrence.
 
@@ -271,7 +294,9 @@ Every finding in `.panel/T4.0-review-history.md` (six rounds and two commit secu
 | C3 P1/P2 | Endpoint envelopes, unseen comments, lineage rows, companion-doc restore | Not applicable: no lineage declarations or companion doc |
 | T4.0 check P1 | A markdown shortcut that wraps the commented text orphans it, though the shortcuts are on the supported list | The wrap rule (§5.2). Tests: "a markdown shortcut that wraps its text" for `**`, `_`, `~~`, `` ` ``, `==` and a link; never-jump "a frame that keeps one of two identical passages" |
 | T4.0 check P1 (round 3) | The wrap rule orphans a comment after a shortcut when its text recurs later in the same text node | The wrap rule maps through the readings of I as D minus tokens, not a unique occurrence (§5.2). Test: "markdown-wrap-keeps-first-of-two-identical-passages"; the never-jump guard stays |
-| T4.0 check P2 (round 3) | Typing `==marked==` then a space in the real app drops the word | Outside T4.0 (it changes no editor code): reported to the coordinator for the editor-shortcut owner |
+| T4.0 check P2 (round 3) | Typing `==marked==` then a space in the real app drops the word | Outside T4.0 (it changes no editor code): a PROGRESS follow-up owned by T3.3 (inline markdown shortcuts) |
+| T4.0 check P1 (round 4) | A link shortcut orphans the comment when its label also appears in the URL | P2 #9 under the coordinator amendment: ambiguous text in a rewritten span fails safe. Tests: `link-label-in-url-orphans-the-comment`, and `link-label-not-in-url-keeps-the-comment` for the unambiguous case |
+| T4.0 check P2 (round 4) | §10 cited the earlier wrap-rule runs | §10 cites each round's red and green runs |
 | T4.0 check P2 | MI fan-out is not bounded by the overlap cap | §5.1, §5.4: the sharing rule, by group. Test: T4.2 "anchor-cost: 500 disjoint comments orphaned by one deleted run…" |
 | T4.0 check P2 | Attribute history is read outside the walk budget | Test: T4.2 "anchor-attribute-history-obeys-walk-budget" |
 | T4.0 check P2 | SpanIndex maintenance is O(spans of the client) and uncounted | Test: T4.2 "anchor-index-maintenance-is-frame-bounded" |
@@ -292,7 +317,8 @@ Every finding in `.panel/T4.0-review-history.md` (six rounds and two commit secu
 | Guard (a)–(d), the history's raw fixtures, an honest step 2 with R tombstones, and a 300-run fast-check that every comments item is R | `packages/sync/test/harness/comments-guard.test.ts` | Red (stubs): [37221588284](https://github.com/brsbl/moss-multi/actions/runs/37221588284). Green: [37222799391](https://github.com/brsbl/moss-multi/actions/runs/37222799391) at `38e3ac2`, and the final head |
 | Pending purge: 4409, then a forced compaction and a restart leave nothing parked, and a release frame integrates nothing | same file, against the DocDO harness | same |
 | F1–F4 | `yjs-facts.test.ts` | same |
-| Supported liveness: bold and unbold before, inside, across and after; Enter before and inside; a soft break; a Backspace join; a markdown shortcut beside it, and one wrapping it for each of `**`, `_`, `~~`, `` ` ``, `==` and a link, and one wrapping the first of two identical passages; delete then undo in separate frames, one frame and DURDU; block, cross-block and lifted undo; the two offline replays | `anchor-scenes.test.ts` (real @lexical/yjs V1 editors with Y.UndoManager) | same; the wrapping shortcuts red in [37236080357](https://github.com/brsbl/moss-multi/actions/runs/37236080357), green with the wrap rule in [37237010575](https://github.com/brsbl/moss-multi/actions/runs/37237010575) |
+| Supported liveness: bold and unbold before, inside, across and after; Enter before and inside; a soft break; a Backspace join; a markdown shortcut beside it, and one wrapping it for each of `**`, `_`, `~~`, `` ` ``, `==` and a link, and one wrapping the first of two identical passages; delete then undo in separate frames, one frame and DURDU; block, cross-block and lifted undo; the two offline replays | `anchor-scenes.test.ts` (real @lexical/yjs V1 editors with Y.UndoManager) | same. Round 2, the wrapping shortcuts: red [37236080357](https://github.com/brsbl/moss-multi/actions/runs/37236080357), green [37237010575](https://github.com/brsbl/moss-multi/actions/runs/37237010575). Round 3, the first of two identical passages: red [37238240291](https://github.com/brsbl/moss-multi/actions/runs/37238240291), green [37238542630](https://github.com/brsbl/moss-multi/actions/runs/37238542630) |
+| P2 #9, ambiguous text in a rewritten span: a link whose URL contains its label orphans the comment, and the same link with a URL that does not keeps it | `anchor-scenes.test.ts` (`link-label-in-url-orphans-the-comment`, `link-label-not-in-url-keeps-the-comment`); never-jump "a frame that keeps one of two identical passages" | Round 4: red [37239929915](https://github.com/brsbl/moss-multi/actions/runs/37239929915) at `ac3d7a6` (the scene written as a keep fails on "expected 'orphaned' to be 'anchored'", so the rule orphans it); green as an orphan on the final head |
 | Never-jump and integrity | `anchor-integrity.test.ts` | same |
 | Cost by counters | `anchor-cost.test.ts` | same |
 | Kept pieces: one projection, binding minting, the create-time search | `tree-anchor.test.ts`, `group-pending.test.ts` | same |
@@ -348,18 +374,3 @@ A per-pane observer projects `Y.Map('comments')` into moss's `noteCommentsMapAto
 2. Commenters cannot attach images to comments, because PRODUCT reserves uploads to editors.
 3. Readers without a grant see other commenters as "Collaborator".
 4. A deleted comment is orphaned and comes back only onto identical text in the identical place, as clarified in PRODUCT restart ruling 18 (2026-10-04).
-
----
-
-## Owner summary
-
-**What this decides.** In M4 a comment becomes shared data inside the note, like the note's text and title. Everyone sees new comments, replies, reactions and resolves arrive live. Nothing about a comment is written into the note's text, so typing next to or inside a comment never loses a keystroke, and a downloaded `.md` never contains comment markers.
-
-**How it works.**
-1. **Only the server writes comments, under its own reserved signature.** Every comment write carries a writer id that only the server uses. A browser's edit is refused, loudly, if it carries that id, points at it, aims at the comments directly, or deletes a comment. Reviewers spent six rounds finding ways around the old "predict what this edit will do" check; this rule doesn't predict anything, so there is nothing to outguess. A malformed edit that the database would hold back and apply later is dropped instead, and the note is never saved with one inside.
-2. **A comment stays on its own characters.** Bolding, Enter, line breaks, joining paragraphs and markdown shortcuts keep it on exactly the text you commented on; the server checks, in the same step, that the re-written text reads the same and sits between the same untouched neighbours.
-3. **Deleting the text detaches the comment; undo brings it back.** The comment stays in the thread list marked as detached. It reattaches only when the restored text reappears in exactly the spot it was deleted from and reads exactly the same, which is what undo and redo do, online or offline. Typing the same words again lands just after that spot, so it does not reattach. Two rare cases look identical to an undo and are written into PRODUCT ruling 18 as a clarification: a collaborator who hadn't seen the deletion typing inside it, and a paragraph deleted after its text and then restored.
-4. **It stays fast with many comments.** The server only looks at comments whose first or last character an edit actually deletes, capped at 32 per character, so a keystroke in a note with 2,000 comments does no comment work at all. The tests count this.
-5. **Highlights are painted on top of the page, never into it**, proven in Chrome's and Safari's engines.
-
-**What's next.** T4.1 builds the server side (the comment API, the guard inside the live server, import). T4.2 wires the anchor engine and the offline replay rule. T4.3 connects moss's comment UI with the painting. T4.4 adds reactions, mentions, edit and delete rules, and notifications.

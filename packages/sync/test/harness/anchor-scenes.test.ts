@@ -192,10 +192,9 @@ describe('T4.0 a link shortcut maps its label only when the label is unambiguous
     }
   };
 
-  it('link-label-in-url-keeps-the-comment', () => scene((s) => {
+  it('link-label-in-url-orphans-the-comment', () => scene((s) => {
     link('https://example.invalid')(s);
-    on(s, 'example');
-    placed(s, 'c1', 6, 'example');
+    orphaned(s);
   }, 'Visit example now.'));
 
   it('link-label-not-in-url-keeps-the-comment', () => scene((s) => {
