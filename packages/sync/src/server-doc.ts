@@ -10,7 +10,7 @@ import { readField } from '@moss-multi/core/doc-fields';
 import { composeFrontmatter, importFrontmatter } from '@moss-multi/core/frontmatter';
 import { $importNoteBody, createConverterEditor, exportMarkdown } from './converter/index.ts';
 import { $recomputeExportFormulas } from './formula-export.ts';
-import { bindRegisters, $refreshRegisters, migrateRegisters } from './registers.ts';
+import { bindRegisters, deleteDestroyedRegisters, $refreshRegisters, migrateRegisters } from './registers.ts';
 import { excludedPropertiesFor } from './excluded-properties.ts';
 
 export const SERVER_SEED = 'server-seed';
@@ -43,7 +43,10 @@ function mirrorOf(live: Y.Doc): Mirror {
   // The client's exclusions, so the mirror writes and reads the same fields the browser does (A§10.9).
   const binding = createBinding(editor, provider, 'root', doc, new Map([['root', doc]]), excludedPropertiesFor(editor));
   const stopUpdates = editor.registerUpdateListener(({ prevEditorState, editorState, dirtyElements, dirtyLeaves, normalizedNodes, tags }) => {
-    syncLexicalUpdateToYjs(binding, provider, prevEditorState, editorState, dirtyElements, dirtyLeaves, normalizedNodes, tags);
+    doc.transact((transaction) => {
+      syncLexicalUpdateToYjs(binding, provider, prevEditorState, editorState, dirtyElements, dirtyLeaves, normalizedNodes, tags);
+      deleteDestroyedRegisters(editor, transaction);
+    }, binding);
   });
   const stopRegisters = bindRegisters(editor, doc, { serializedImports: true });
   const root = binding.root.getSharedType();

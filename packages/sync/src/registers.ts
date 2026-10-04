@@ -88,6 +88,26 @@ export function $assignRegisterIds(): void {
   walk($getRoot());
 }
 
+/**
+ * Inside the binding's sync transaction: delete the payloads of register blocks that transaction deleted, unless a
+ * live node still names them (a move re-inserts the block). One undo step then restores block and payload together,
+ * and a deleted payload never reaches a later reader or a duplicate.
+ */
+export function deleteDestroyedRegisters(editor: LexicalEditor, transaction: Y.Transaction): void {
+  const registers = bindings.get(editor)?.getMap('registers');
+  if (!registers?.size) return;
+  const gone = new Set<string>();
+  Y.iterateDeletedStructs(transaction, transaction.deleteSet, (struct) => {
+    if (!(struct instanceof Y.Item) || !(struct.content instanceof Y.ContentType)) return;
+    // The block's attributes are deleted with it, so read the entry itself; its content lives until the cleanup.
+    const id = struct.content.type._map.get('__regId')?.content.getContent()[0];
+    if (typeof id === 'string') gone.add(id);
+  });
+  if (!gone.size) return;
+  for (const node of editor.getEditorState()._nodeMap.values()) gone.delete((node as RegisterNode).__regId);
+  for (const id of gone) registers.delete(id);
+}
+
 /** Copy shared payloads into Lexical's excluded render cache. Never writes to the shared tree. */
 export function $refreshRegisters(editor: LexicalEditor, doc: Y.Doc): void {
   const registers = doc.getMap('registers');

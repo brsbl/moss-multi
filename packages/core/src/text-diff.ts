@@ -25,10 +25,8 @@ export function diffText(current: string, target: string): TextOp[] {
   if (suffix > 0 && isLow(current.charCodeAt(current.length - suffix))) suffix -= 1;
   const a = current.slice(prefix, current.length - suffix);
   const b = target.slice(prefix, target.length - suffix);
-  const ops: TextOp[] = [];
-  if (prefix > 0) ops.push({ retain: prefix });
-  ops.push(...middle(a, b));
-  return coalesce(ops);
+  // The middle can hold an op per code point, too many to spread into one call.
+  return coalesce(prefix > 0 ? [{ retain: prefix }, ...middle(a, b)] : middle(a, b));
 }
 
 function middle(a: string, b: string): TextOp[] {

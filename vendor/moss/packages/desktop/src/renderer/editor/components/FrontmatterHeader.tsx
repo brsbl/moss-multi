@@ -11,6 +11,7 @@ import {
   type KeyboardEvent,
 } from 'react';
 import { Plus, X } from 'lucide-react';
+import { setEditingProperty } from '@moss-multi/host/collab/frontmatter-binding'; // moss-multi seam: open-property (A§10.4)
 import { noteFrontmatterAtom, searchStateAtom, workspaceFrontmatterSuggestionsAtom } from '@moss/shared';
 import { cn } from '@moss/shared/lib/utils';
 import { Input } from '@moss/shared/components/ui/input';
@@ -876,6 +877,7 @@ interface FrontmatterPropertyGridProps {
   onAddFieldStart?: () => void;
   onAddFieldEnd?: () => void;
   addingField?: boolean;
+  onEditingFieldChange?: (field: string | null) => void; // moss-multi seam: open-property (A§10.4)
 }
 
 export function FrontmatterPropertyGrid({
@@ -889,6 +891,7 @@ export function FrontmatterPropertyGrid({
   onAddFieldStart,
   onAddFieldEnd,
   addingField,
+  onEditingFieldChange,
 }: FrontmatterPropertyGridProps) {
   const isEditable = Boolean(onFieldChange);
   const searchState = useAtomValue(searchStateAtom);
@@ -954,6 +957,12 @@ export function FrontmatterPropertyGrid({
     }
     return result;
   }, [entries, suggestionPools]);
+
+  // moss-multi seam: open-property (A§10.4): the binding keeps this field's row while its draft is open
+  useEffect(() => {
+    onEditingFieldChange?.(editingField);
+  }, [editingField, onEditingFieldChange]);
+  useEffect(() => () => onEditingFieldChange?.(null), [onEditingFieldChange]);
 
   useEffect(() => {
     if (!editingField) {
@@ -1352,6 +1361,8 @@ export function FrontmatterHeader({
     },
     [onFieldChange]
   );
+  // moss-multi seam: open-property (A§10.4)
+  const handleEditingFieldChange = useCallback((field: string | null) => setEditingProperty(noteId, field), [noteId]);
 
   if (frontmatter === null) {
     return null;
@@ -1423,6 +1434,7 @@ export function FrontmatterHeader({
         onAddFieldStart={() => setAddingField(true)}
         onAddFieldEnd={() => setAddingField(false)}
         addingField={addingField}
+        onEditingFieldChange={handleEditingFieldChange}
       />
     </section>
   );
