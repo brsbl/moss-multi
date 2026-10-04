@@ -160,8 +160,11 @@ test('j08 vault: Ada shares her vault from the switcher and Ben switches to it @
   const row = ben.page.locator(`[data-sidebar-row][data-doc-id="${docId}"]`);
   await expect(row).toBeVisible();
   await ben.page.getByRole('button', { name: 'Vault: Home', exact: true }).click();
-  await expect(ben.page.getByRole('menuitem', { name: 'Share vault…', exact: true }), 'a member gets no vault actions').toHaveCount(0);
+  const menu = ben.page.getByRole('menu');
+  await expect(menu.getByRole('menuitem', { name: 'Home editor', exact: true }), 'the switcher is open').toBeVisible();
+  await expect(menu.getByRole('menuitem', { name: 'Share vault…', exact: true }), 'a member gets no vault actions').toHaveCount(0);
   await ben.page.keyboard.press('Escape');
+  await expect(menu).toBeHidden();
   await row.click();
   await waitOpen(ben, docId, 'live');
   await expect(ui.pane(ben, docId)).toHaveAttribute(ROLE_ATTR, 'editor');
