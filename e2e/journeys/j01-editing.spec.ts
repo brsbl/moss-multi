@@ -84,7 +84,10 @@ test('j01 registers: simultaneous code typing merges live and undo keeps the pee
 test('j01 registers: open HTML drafts receive peer typing and local undo @p:col-1 @p:col-3 @evidence', async ({ actors, stack }) => {
   const { ada, ben, id } = await setup(actors, stack.baseUrl, '```moss-html\n<p>seed</p>\n```');
   const field = (actor: Actor) => ui.body(actor, id).locator('textarea');
-  for (const actor of [ada, ben]) await ui.body(actor, id).getByTitle('Edit HTML', { exact: true }).click();
+  for (const actor of [ada, ben]) {
+    await ui.body(actor, id).locator('[data-moss-html-preview-viewport]').hover();
+    await ui.body(actor, id).getByTitle('Edit HTML', { exact: true }).click();
+  }
   await Promise.all([ada.page.keyboard.type('AAAA', { delay: 60 }), ben.page.keyboard.type('BBBB', { delay: 60 })]);
   for (const actor of [ada, ben]) {
     await expect.poll(async () => (await field(actor).inputValue()).replace(/[^A]/g, '')).toBe('AAAA');
