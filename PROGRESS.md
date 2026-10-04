@@ -1,11 +1,11 @@
 # moss-multi progress
 
-**Overall: 39% done** (27 of 70 planned tasks verified)
+**Overall: 38% done** (28 of 73 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 17 / 17 | in progress |
-| M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 10 / 11 | in progress |
+| M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 11 / 13 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 0 / 9 | |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 0 / 9 | |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
@@ -46,6 +46,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-03 — T1.5 verified: people on the same note see each other in a face pile in the top bar, each with a distinct color, and see each other's carets and selections in that color with a name label while typing; a closed tab clears its chip promptly and a dropped connection within 20 s, spoofed names are dropped, and only members and owners receive presence identities.
 - 2026-10-03 — T1.6 verified: Cmd+Z in one person's editor undoes only their own typing, never a collaborator's or a formula's derived update, in both the title and the body; table and tab widths, active tabs and collapsed headings stay local to each person and survive reload and a peer inserting a table above; floating toolbars hide when the editor loses focus; and two notes in split panes each hold their own connection.
 - 2026-10-03 — T1.9 verified: code, HTML and formula blocks now keep their text in shared registers, so two people typing in the same block merge live in both engines, drafts survive reloads and imports, and Cmd+Z inside a block undoes only that person's edits to it.
+- 2026-10-04 — T1.9s verified: typing in a large note full of code blocks now refreshes only the block being edited instead of every block, and importing a note with tens of thousands of identical blocks assigns their ids in linear time.
 
 ## T1.1s identity audit
 
