@@ -660,7 +660,7 @@ function* children(type: Type, include: (item: Y.Item) => boolean): Generator<Y.
 }
 
 /** A map's entries as of the `include`d items: an entry the frame overwrote reads its previous value. */
-function mapJson(map: Type, include: (item: Y.Item) => boolean): Record<string, unknown> {
+function mapJson(map: { _map: Map<string, Y.Item> }, include: (item: Y.Item) => boolean): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [key, last] of map._map) {
     let item: Y.Item | null = last;
