@@ -249,7 +249,7 @@ test('j11-media: a copied note keeps its media in its folder and in the copier\'
   await expect.poll(() => player.evaluate((video: HTMLVideoElement) => video.readyState), { message: 'the video has frames', timeout: UPLOAD_TIMEOUT })
     .toBeGreaterThanOrEqual(2);
   expect(partial.length, 'the clip was read from the asset route').toBeGreaterThan(0);
-  expect(partial.every((status) => status === 200 || status === 206), 'every media read succeeded').toBe(true);
+  expect(partial.filter((status) => ![200, 206, 304].includes(status)), 'every read of the clip succeeds or revalidates').toEqual([]);
   // Chromium's player always reads in ranges; WebKit may read a small file whole.
   if (browserName === 'chromium') expect(partial, "the player's reads are ranged").toContain(206);
   const ranged = await ada.page.evaluate(async (url) => {
