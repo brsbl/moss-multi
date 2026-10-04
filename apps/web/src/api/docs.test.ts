@@ -80,8 +80,9 @@ interface DocBody {
 
 describe('POST /api/docs', () => {
   it.each([{}, { title: 'Created despite notification failure' }])('keeps a successful create when notification fails: %j', async (body) => {
+    const owner = await signedUpUser(env, 'docs-notification');
     notificationFails = true;
-    const response = await create(ada.cookie, body);
+    const response = await create(owner.cookie, body);
     expect(response.status).toBe(201);
     const { doc } = await response.json() as DocBody;
     expect(await d1.db.prepare('SELECT id FROM docs WHERE id = ?').bind(doc.id).first()).toEqual({ id: doc.id });
