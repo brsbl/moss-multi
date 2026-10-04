@@ -8,7 +8,7 @@ import { EXCLUDED_FIELDS } from './excluded-properties.ts';
 import { createBinding, syncLexicalUpdateToYjs, syncYjsChangesToLexical, type Provider } from '@lexical/yjs';
 import { createConverterEditor } from './converter/index.ts';
 import { excludedPropertiesFor } from './excluded-properties.ts';
-import { bindRegisters, migrateRegisters, REGISTER_LOCAL_ORIGIN } from './registers.ts';
+import { bindRegisters, migrateRegisters, REGISTER_LOCAL_ORIGIN, RegisterDraft } from './registers.ts';
 
 const noop = () => {};
 const provider = {
@@ -257,6 +257,8 @@ const exchange = (a: Peer, b: Peer) => {
   Y.applyUpdate(b.doc, Y.encodeStateAsUpdate(a.doc));
   for (const peer of [a, b]) peer.editor.update(noop, { discrete: true });
 };
+type Point = { label: string; value: number };
+const pointsOf = (peer: Peer) => (chartOf(peer) as { data: Point[] }).data.map((point) => [point.label, point.value]);
 const withCells = (grid: boolean[], on: number[]) => grid.map((value, index) => value || on.includes(index));
 
 describe('L4/A8 chart and sketch registers @p:col-1 @p:col-3 @p:note-2', () => {
@@ -375,6 +377,99 @@ describe('L4/A8 chart and sketch registers @p:col-1 @p:col-3 @p:note-2', () => {
         expect(data.map((point) => point.label)).not.toContain('Mon');
       }
     } finally { a.dispose(); b.dispose(); seed.destroy(); }
+  });
+
+  it('one save that deletes a point and renames its neighbour keeps a peer\'s edit to that neighbour', () => {
+    const seed = new Y.Doc(); importBody(seed, POINTS);
+    const a = client(seed); const b = client(seed);
+    try {
+      const write = (peer: Peer, next: (data: Point[]) => Point[]) => peer.editor.update(() => {
+        const base = chartOf(peer) as Fields & { data: Point[] };
+        call(find('chart')!, 'setConfig', { ...base, data: next(structuredClone(base.data)) }, base);
+      }, { discrete: true });
+      write(a, (data) => data.slice(1).map((point) => (point.label === 'Tue' ? { ...point, label: 'Tuesday' } : point)));
+      write(b, (data) => data.map((point) => (point.label === 'Tue' ? { ...point, value: 20 } : point)));
+      exchange(a, b);
+      for (const peer of [a, b]) {
+        expect(pointsOf(peer), "Ada's rename and Ben's value both land on the point Ada kept").toEqual([['Tuesday', 20], ['Wed', 3]]);
+      }
+    } finally { a.dispose(); b.dispose(); seed.destroy(); }
+  });
+
+  it('a JSON draft keeps each point\'s identity through its text edits', () => {
+    const seed = new Y.Doc(); importBody(seed, POINTS);
+    const a = client(seed); const b = client(seed);
+    try {
+      const base = chartOf(a);
+      const text = JSON.stringify(base, null, 2);
+      const draft = new RegisterDraft(base, text);
+      // Ada selects Mon's whole point and deletes it, types a new point in its place, then renames Tue.
+      const mon = text.indexOf('{', text.indexOf('"data": ['));
+      const tue = text.indexOf('{', mon + 1);
+      let now = text.slice(0, mon) + text.slice(tue);
+      draft.edit(now, mon);
+      const typed = '{ "label": "Thu", "value": 1 },\n    ';
+      for (let i = 1; i <= typed.length; i++) {
+        now = now.slice(0, mon) + typed.slice(0, i) + now.slice(mon + i - 1);
+        draft.edit(now, mon + i);
+      }
+      const label = now.indexOf('"Tue"') + 4;
+      now = `${now.slice(0, label)}sday${now.slice(label)}`;
+      draft.edit(now, label + 4);
+      const next = JSON.parse(now) as Fields;
+      draft.identify(next);
+      // Meanwhile Ben sets Mon to 10 and Tue to 20.
+      b.editor.update(() => {
+        const config = chartOf(b) as Fields & { data: Point[] };
+        call(find('chart')!, 'setConfig',
+          { ...config, data: config.data.map((point) => ({ ...point, value: ({ Mon: 10, Tue: 20 } as Record<string, number>)[point.label] ?? point.value })) }, config);
+      }, { discrete: true });
+      a.editor.update(() => call(find('chart')!, 'setConfig', next, base), { discrete: true });
+      exchange(a, b);
+      for (const peer of [a, b]) {
+        expect(pointsOf(peer), "Ada's typed point is new, and Ben's Tue edit stays on Tuesday").toEqual([['Thu', 1], ['Tuesday', 20], ['Wed', 3]]);
+      }
+    } finally { a.dispose(); b.dispose(); seed.destroy(); }
+  });
+
+  it('two people adding the same absent array both keep their records', () => {
+    const seed = new Y.Doc(); importBody(seed, CHART);
+    const a = client(seed); const b = client(seed);
+    try {
+      for (const [peer, name] of [[a, 'Ada'], [b, 'Ben']] as const) {
+        peer.editor.update(() => {
+          const base = chartOf(peer);
+          call(find('chart')!, 'setConfig', { ...base, type: 'line', series: [{ name, data: [{ label: name, value: name.length }] }] }, base);
+        }, { discrete: true });
+      }
+      exchange(a, b);
+      for (const peer of [a, b]) {
+        const series = (chartOf(peer) as { series: { name: string; data: Point[] }[] }).series;
+        expect(series.map((entry) => [entry.name, entry.data.map((point) => point.label)]).sort(), 'both series, unmixed')
+          .toEqual([['Ada', ['Ada']], ['Ben', ['Ben']]]);
+      }
+      expect(chartOf(b)).toEqual(chartOf(a));
+    } finally { a.dispose(); b.dispose(); seed.destroy(); }
+  });
+
+  it('a point inserted between two concurrent appends lands between them', () => {
+    for (let trial = 0; trial < 6; trial++) {
+      const seed = new Y.Doc(); importBody(seed, POINTS);
+      const a = client(seed); const b = client(seed);
+      try {
+        const write = (peer: Peer, next: (data: Point[]) => Point[]) => peer.editor.update(() => {
+          const base = chartOf(peer) as Fields & { data: Point[] };
+          call(find('chart')!, 'setConfig', { ...base, data: next(structuredClone(base.data)) }, base);
+        }, { discrete: true });
+        write(a, (data) => [...data, { label: 'Ada', value: 7 }]);
+        write(b, (data) => [...data, { label: 'Ben', value: 8 }]);
+        exchange(a, b);
+        const [first, second] = pointsOf(a).slice(3).map(([name]) => name);
+        write(a, (data) => [...data.slice(0, 4), { label: 'Mid', value: 5 }, ...data.slice(4)]);
+        exchange(a, b);
+        for (const peer of [a, b]) expect(pointsOf(peer).slice(3).map(([name]) => name)).toEqual([first, 'Mid', second]);
+      } finally { a.dispose(); b.dispose(); seed.destroy(); }
+    }
   });
 
   it('a read-only editor writes nothing to a chart or sketch register', () => {
