@@ -102,8 +102,8 @@ test('j08 folder: Ada shares a folder from its context menu and it reaches Ben\'
   await expect(dialog, 'the folder share dialog opens').toBeVisible();
   await expect(dialog).toContainText(name);
   await ui.shareInDialog(dialog, benPrincipal.email, 'Can view');
-  await expect(ui.accessRow(dialog, benPrincipal), 'Ben is listed at view with his email').toContainText('Can view');
-  await expect(ui.accessRow(dialog, benPrincipal)).toContainText(benPrincipal.email);
+  await expect(ui.inviteRow(dialog, benPrincipal.email), 'Ben waits at view, by email, until he opens it').toContainText('Can view');
+  await expect(ui.inviteRow(dialog, benPrincipal.email)).toContainText('Invited');
   await actors.checkpoint('folder-shared');
   await ada.page.keyboard.press('Escape');
   await expect(dialog).toBeHidden();
@@ -149,7 +149,7 @@ test('j08 vault: Ada shares her vault from the switcher and Ben switches to it @
   const dialog = ada.page.getByRole('dialog', { name: 'Share vault' });
   await expect(dialog, 'the vault share dialog opens').toBeVisible();
   await ui.shareInDialog(dialog, benPrincipal.email, 'Can edit');
-  await expect(ui.accessRow(dialog, benPrincipal)).toContainText('Can edit');
+  await expect(ui.inviteRow(dialog, benPrincipal.email)).toContainText('Can edit');
   await ada.page.keyboard.press('Escape');
   await expect(dialog).toBeHidden();
 
@@ -215,7 +215,7 @@ test('j08 link: an editor link is viewer signed out, editor signed in without a 
   const dialog = await ui.openShare(ada, docId);
   const url = await createLink(dialog, 'Can edit');
   await ui.shareInDialog(dialog, cyPrincipal.email, 'Owner');
-  await expect(ui.accessRow(dialog, cyPrincipal), 'Cy is a co-owner').toContainText('Owner');
+  await expect(ui.inviteRow(dialog, cyPrincipal.email), 'Cy is invited as a co-owner').toContainText('Owner');
   await ada.page.keyboard.press('Escape');
 
   const stranger = await actors.anonymous(pathOf(url), { label: 'stranger' });
@@ -267,6 +267,8 @@ test('j08 link: an editor folder link lifts a viewer grant to editor, and lands 
   await row.click();
   await waitOpen(dee, docId, 'live');
   await expect(ui.pane(dee, docId), 'signed in without a grant, the link role').toHaveAttribute(ROLE_ATTR, 'editor');
+  const made = await newNote(dee);
+  await expect(ui.pane(dee, made), 'Dee adds a note to the linked folder').toHaveAttribute(ROLE_ATTR, 'editor');
   await actors.requireDistinct(3);
 });
 
@@ -334,8 +336,12 @@ test('j08 privacy: an email with no account answers like one with an account, an
   expect(answers[0].status).toBe(201);
   expect(answers[1].status, 'an unknown email gets the same status').toBe(answers[0].status);
   expect(answers[1].body, 'and the same body, but for the email').toEqual(JSON.parse(JSON.stringify(answers[0].body).replaceAll(benPrincipal.email, ghost.email)));
-  await expect(ui.inviteRow(dialog, ghost.email), 'the unknown email waits as a pending invite').toContainText('Invited');
-  await expect(ui.inviteRow(dialog, ghost.email)).toContainText('Can edit');
+  // Until Ben opens the note, an email with an account and one without look the same to the owner.
+  for (const email of [benPrincipal.email, ghost.email]) {
+    await expect(ui.inviteRow(dialog, email), `${email} waits as a pending invite`).toContainText('Invited');
+    await expect(ui.inviteRow(dialog, email)).toContainText('Can edit');
+  }
+  await expect(ui.accessRow(dialog, benPrincipal), "Ben's name is not shown before he opens it").toHaveCount(0);
   await ada.page.keyboard.press('Escape');
   const linkDialog = await ui.openShare(ada, docId);
   const url = await createLink(linkDialog, 'Can view');
@@ -350,6 +356,10 @@ test('j08 privacy: an email with no account answers like one with an account, an
   expect((await ben.context.request.get(`/api/docs/${docId}/links`)).status(), 'a member cannot list links').toBe(403);
   expect((await ben.context.request.post(`/api/docs/${docId}/links`, { headers: { origin: stack.baseUrl }, data: { role: 'viewer' } })).status()).toBe(403);
   await expect(ui.pane(ben, docId).getByRole('button', { name: 'Share', exact: true })).toHaveCount(0);
+  const reopened = await ui.openShare(ada, docId);
+  await expect(ui.accessRow(reopened, benPrincipal), 'opened, Ben is listed by name').toContainText(benPrincipal.email);
+  await expect(ui.inviteRow(reopened, ghost.email)).toContainText('Invited');
+  await ada.page.keyboard.press('Escape');
 
   const token = new URL(url).searchParams.get('share') ?? '';
   const stranger = await actors.anonymous(pathOf(url), { label: 'stranger' });

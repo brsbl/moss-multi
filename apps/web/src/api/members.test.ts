@@ -162,6 +162,8 @@ describe('GET /api/docs/:id/members', () => {
     const docId = await insertDoc(d1.db, ada);
     await share(ada.cookie, docId, { email: ben.email, role: 'editor' });
     await share(ada.cookie, docId, { email: cy.email, role: 'viewer' });
+    // A person shared with by email is listed by name once they open the note (T2.4).
+    expect([await roleOf(ben.cookie, docId), await roleOf(cy.cookie, docId)]).toEqual(['editor', 'viewer']);
     expect(await members(ada.cookie, `/api/docs/${docId}/members`)).toEqual([
       { principalId: ada.id, principalType: 'user', name: 'Ada', email: ada.email, role: 'owner' },
       { principalId: ben.id, principalType: 'user', name: 'Ben', email: ben.email, role: 'editor' },
@@ -244,6 +246,7 @@ describe('folder and vault grants', () => {
     expect((await shareFolder(ada.cookie, ada.homeId, { email: cy.email, role: 'editor' })).status).toBe(201);
     expect(await roleOf(ben.cookie, docId)).toBe('viewer');
     expect((await shareFolder(ben.cookie, ada.homeId, { email: cy.email, role: 'viewer' })).status, 'a member shares nothing').toBe(403);
+    expect(await roleOf(cy.cookie, docId)).toBe('editor');
     expect((await members(ada.cookie, `/api/folders/${ada.homeId}/members`)).map((m) => [m.name, m.role])).toEqual([['Ada', 'owner'], ['Ben', 'viewer'], ['Cy', 'editor']]);
 
     // A viewer's write over REST: a note in the vault is refused and nothing is written.

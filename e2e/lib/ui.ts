@@ -110,7 +110,8 @@ const people = (dialog: Locator): Locator => dialog.getByRole('list', { name: 'P
 /** A person's row in the open Share dialog's "People with access" list. */
 export const accessRow = (dialog: Locator, person: Principal): Locator => people(dialog).filter({ hasText: person.name });
 
-/** A pending invite's row: an email nobody has signed up with yet (T2.4). */
+/** A row by email, as the owner sees it: an invite still pending (an email shared with nobody's account, or a person
+ * who has not opened the item yet, T2.4) or a member. */
 export const inviteRow = (dialog: Locator, email: string): Locator => people(dialog).filter({ hasText: email });
 
 /** The read-only field holding a live link's URL, and its row. */
@@ -127,11 +128,12 @@ export async function shareInDialog(dialog: Locator, email: string, access: Acce
   await expect(dialog.getByRole('status'), `shared with ${email}`).toHaveText(`Shared with ${email}.`);
 }
 
-/** Shares the note with `person` at `access` through the dialog, then waits for their row; the dialog stays open. */
+/** Shares the note with `person` at `access` through the dialog, then waits for their row (by email: it stays a
+ * pending invite until they open the note); the dialog stays open. */
 export async function shareWith(actor: Actor, docId: string, person: Principal, access: Access): Promise<Locator> {
   const dialog = await openShare(actor, docId);
   await shareInDialog(dialog, person.email, access);
-  await expect(accessRow(dialog, person), `${actor.label}: ${person.label} is listed at "${access}"`).toContainText(access);
+  await expect(inviteRow(dialog, person.email), `${actor.label}: ${person.label} is listed at "${access}"`).toContainText(access);
   return dialog;
 }
 

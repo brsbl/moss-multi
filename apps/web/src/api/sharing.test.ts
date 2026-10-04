@@ -93,7 +93,38 @@ describe('share-by-email is not an enumeration oracle', () => {
       expect(await lowered.json()).toMatchObject({ error: 'demotion-unavailable' });
     }
     const owner = (await (await call('GET', path, ada.cookie)).json()) as { invites: unknown[] };
-    expect(owner.invites).toEqual([{ email, role: 'editor' }]);
+    expect(owner.invites).toEqual([{ email, role: 'editor' }, { email: ben.email, role: 'editor' }]);
+  });
+
+  it('shows a known and an unknown email to the owner alike, by email and pending, until the grantee opens the item', async () => {
+    const docId = await insertDoc(d1.db, ada);
+    await insertGrant(d1.db, { docId }, cy, 'viewer');
+    const dee = await signedUpUser(env, 'sharing-pending-dee', 'Dee');
+    const ghost = unknownEmail('alike');
+    for (const email of [dee.email, ghost]) {
+      expect((await call('POST', `/api/docs/${docId}/members`, ada.cookie, { email, role: 'editor' })).status, email).toBe(201);
+    }
+    const before = (await (await call('GET', `/api/docs/${docId}/members`, ada.cookie)).json()) as { members: { name: string }[]; invites: unknown[] };
+    expect(before.members.map((m) => m.name), 'nobody is named before they open it').toEqual(['Ada', 'Cy']);
+    expect(before.invites).toEqual([{ email: dee.email, role: 'editor' }, { email: ghost, role: 'editor' }]);
+    expect(await (await call('GET', `/api/docs/${docId}/members`, cy.cookie)).text(), 'nor to another member').not.toContain('Dee');
+
+    expect(await roleOf(dee.cookie, docId), 'the grant works at once').toBe('editor');
+    const after = (await (await call('GET', `/api/docs/${docId}/members`, ada.cookie)).json()) as { members: { name: string; role: string }[]; invites: unknown[] };
+    expect(after.members.map((m) => [m.name, m.role]), 'opened, Dee is a member').toEqual([['Ada', 'owner'], ['Cy', 'viewer'], ['Dee', 'editor']]);
+    expect(after.invites).toEqual([{ email: ghost, role: 'editor' }]);
+    expect((await call('POST', `/api/docs/${docId}/members`, ada.cookie, { email: dee.email, role: 'editor' })).status, 'a repeat').toBe(200);
+
+    // A folder share is redeemed by opening a note anywhere inside it.
+    const folderId = await insertFolder(d1.db, ada, ada.homeId);
+    const inside = await insertDoc(d1.db, ada, { folderId: await insertFolder(d1.db, ada, folderId) });
+    expect((await call('POST', `/api/folders/${folderId}/members`, ada.cookie, { email: dee.email, role: 'viewer' })).status).toBe(201);
+    const folderPending = (await (await call('GET', `/api/folders/${folderId}/members`, ada.cookie)).json()) as { members: unknown[]; invites: unknown[] };
+    expect(folderPending.invites).toEqual([{ email: dee.email, role: 'viewer' }]);
+    expect(await roleOf(dee.cookie, inside)).toBe('viewer');
+    const folderAfter = (await (await call('GET', `/api/folders/${folderId}/members`, ada.cookie)).json()) as { members: { name: string }[]; invites: unknown[] };
+    expect(folderAfter.members.map((m) => m.name)).toEqual(['Ada', 'Dee']);
+    expect(folderAfter.invites).toEqual([]);
   });
 
   it(`limits each owner to ${SHARES_PER_HOUR} new shares an hour, refusing known and unknown emails alike`, async () => {
@@ -120,7 +151,8 @@ describe('the owner role', () => {
     expect(await roleOf(cy.cookie, docId)).toBe('owner');
     expect((await call('POST', `/api/docs/${docId}/members`, cy.cookie, { email: ben.email, role: 'viewer' })).status).toBe(201);
     const list = (await (await call('GET', `/api/docs/${docId}/members`, cy.cookie)).json()) as { members: { email?: string; role: string }[] };
-    expect(list.members.map((m) => [m.email, m.role])).toEqual([[ada.email, 'owner'], [cy.email, 'owner'], [ben.email, 'viewer']]);
+    expect(list.members.map((m) => [m.email, m.role])).toEqual([[ada.email, 'owner'], [cy.email, 'owner']]);
+    expect((list as unknown as { invites: unknown[] }).invites, 'Ben has not opened it yet').toEqual([{ email: ben.email, role: 'viewer' }]);
     expect((await call('POST', `/api/docs/${docId}/links`, cy.cookie, { role: 'viewer' })).status).toBe(201);
     expect((await call('POST', `/api/docs/${docId}/members`, ada.cookie, { email: cy.email, role: 'editor' })).status).toBe(409);
   });
@@ -282,6 +314,17 @@ describe('a presented link on a signed-in listing', () => {
     expect(viaDoc.docs.find((doc) => doc.id === docId)?.role, 'nothing the link does not cover').toBe('viewer');
   });
 
+  it('lists a subfolder at a grant above the link, in a link-only workspace', async () => {
+    const dee = await signedUpUser(env, 'sharing-subgrant', 'Sub');
+    const folderId = await insertFolder(d1.db, ada, ada.homeId);
+    const childId = await insertFolder(d1.db, ada, folderId);
+    await insertGrant(d1.db, { folderId: childId }, dee, 'editor');
+    const { link } = (await (await call('POST', `/api/folders/${folderId}/links`, ada.cookie, { role: 'viewer' })).json()) as { link: Link };
+    const listing = (await (await call('GET', `/api/workspace?vault=${folderId}&share=${link.token}`, dee.cookie)).json()) as RoleListing;
+    expect(listing.vault).toMatchObject({ id: folderId, role: 'viewer' });
+    expect(listing.folders.find((folder) => folder.id === childId)?.role, 'the grant, not the link').toBe('editor');
+  });
+
   it('lands a signed-in holder without a grant on the linked folder from its folder or doc alone', async () => {
     const dee = await signedUpUser(env, 'sharing-dee', 'Dee');
     const folderId = await insertFolder(d1.db, ada, ada.homeId);
@@ -295,6 +338,29 @@ describe('a presented link on a signed-in listing', () => {
     }
     const elsewhere = (await (await call('GET', `/api/workspace?folder=${crypto.randomUUID()}&share=${link.token}`, dee.cookie)).json()) as Listing;
     expect(elsewhere.vault.id, 'a folder outside the link stays home').toBe(dee.homeId);
+  });
+});
+
+describe('a signed-in editor-link holder without a grant', () => {
+  it('creates notes and folders in the linked folder and renames them, and copies a note beside its source', async () => {
+    const dee = await signedUpUser(env, 'sharing-writer', 'Writer');
+    const folderId = await insertFolder(d1.db, ada, ada.homeId);
+    const docId = await insertDoc(d1.db, ada, { folderId });
+    const { link } = (await (await call('POST', `/api/folders/${folderId}/links`, ada.cookie, { role: 'editor' })).json()) as { link: Link };
+    const share = { 'x-moss-share': link.token };
+    expect((await call('POST', '/api/docs', dee.cookie, { folderId })).status, 'without the link').toBe(404);
+    const made = await call('POST', '/api/docs', dee.cookie, { folderId }, share);
+    expect(made.status, 'a note in the linked folder').toBe(201);
+    expect(await made.json()).toMatchObject({ doc: { folderId }, role: 'editor' });
+    const folder = await call('POST', '/api/folders', dee.cookie, { name: 'Drafts', parentId: folderId }, share);
+    expect(folder.status, 'a folder in the linked folder').toBe(201);
+    const childId = ((await folder.json()) as { folder: { id: string } }).folder.id;
+    expect((await call('PATCH', `/api/folders/${childId}`, dee.cookie, { name: 'Drafts 2' }, share)).status, 'a rename').toBe(200);
+    const copy = await call('POST', `/api/docs/${docId}/duplicate`, dee.cookie, undefined, share);
+    expect(copy.status).toBe(201);
+    expect(((await copy.json()) as { doc: { folderId: string } }).doc.folderId, 'the copy lands beside its source').toBe(folderId);
+    const { link: viewer } = (await (await call('POST', `/api/folders/${folderId}/links`, ada.cookie, { role: 'viewer' })).json()) as { link: Link };
+    expect((await call('POST', '/api/docs', dee.cookie, { folderId }, { 'x-moss-share': viewer.token })).status, 'a viewer link').toBe(403);
   });
 });
 
@@ -317,6 +383,31 @@ describe('sharing under load', () => {
       // An editor share answered 2xx must have stored editor; a viewer share that lost the race is refused (409).
       expect(answers[1].status, 'the editor share is taken').toBeLessThan(300);
       expect(await roleOf(cy.cookie, docId), 'the higher share stands').toBe('editor');
+    }
+  }, 30_000);
+
+  it('answers two first shares of one email alike, known or not, and keeps one pending row', async () => {
+    const owner = await signedUpUser(env, 'sharing-twice', 'Twice');
+    const known = await signedUpUser(env, 'sharing-twice-known', 'Known');
+    for (let round = 0; round < 3; round += 1) {
+      const docId = await insertDoc(d1.db, owner);
+      for (const email of [known.email, unknownEmail(`twice${round}`)]) {
+        const statuses = await Promise.all([0, 1].map(() => call('POST', `/api/docs/${docId}/members`, owner.cookie, { email, role: 'viewer' }).then((r) => r.status)));
+        expect(statuses.sort(), email).toEqual([200, 201]);
+        const open = await d1.db.prepare('SELECT count(*) AS n FROM invites WHERE target_id = ? AND email = ? AND accepted_at IS NULL').bind(docId, email).first();
+        expect(open, email).toEqual({ n: 1 });
+      }
+    }
+  }, 30_000);
+
+  it('never lowers a role when two raises of one member land at once', async () => {
+    const owner = await signedUpUser(env, 'sharing-raise', 'Raise');
+    for (let round = 0; round < 4; round += 1) {
+      const docId = await insertDoc(d1.db, owner);
+      expect((await call('POST', `/api/docs/${docId}/members`, owner.cookie, { email: cy.email, role: 'viewer' })).status).toBe(201);
+      const statuses = await Promise.all(['editor', 'commenter'].map((role) => call('POST', `/api/docs/${docId}/members`, owner.cookie, { email: cy.email, role }).then((r) => r.status)));
+      expect(statuses[0], 'the editor raise is taken').toBe(200);
+      expect(await roleOf(cy.cookie, docId), 'the higher raise stands').toBe('editor');
     }
   }, 30_000);
 
