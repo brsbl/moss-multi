@@ -217,7 +217,7 @@ test('j11-media: drop, paste and /media → From computer upload every moss type
   await actors.checkpoint('uploaded');
 
   // The export keeps moss's relative form; identical bytes under one name are one asset.
-  const exported = await (await ada.context.request.get(`/api/docs/${docId}/export`)).text();
+  const exported = await (await ada.context.request.get(`/api/docs/${docId}/content`)).text();
   for (const file of MEDIA) expect(exported, `the export references ${file.name}`).toContain(`(assets/${file.name})`);
   expect(exported).not.toContain('/api/docs/');
   const svg = await ada.context.request.get(`/api/docs/${docId}/assets/pattern.svg`);
@@ -395,7 +395,7 @@ test('j11-media: a copied or moved note keeps its media; link readers see only t
   });
   expect(moved.status(), 'the note moves').toBe(200);
   expect(await folderOf(ada, docId)).toBe(destination);
-  const after = await (await ada.context.request.get(`/api/docs/${docId}/export`)).text();
+  const after = await (await ada.context.request.get(`/api/docs/${docId}/content`)).text();
   expect(after, 'the moved note keeps its reference').toContain(`(assets/${PNG.name})`);
   expect(after, 'no reference is renamed').not.toContain('pattern-2');
   const ownImage = ui.body(dee, docId).locator(`img[src*="/assets/${PNG.name}"]`);
@@ -427,7 +427,7 @@ test('j11-media: a copied or moved note keeps its media; link readers see only t
     root.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
   }, ' ![x](assets/private.png)');
   await waitAcked(dee, docId);
-  await expect.poll(async () => (await ada.context.request.get(`/api/docs/${docId}/export`)).text(), { message: 'the export names the folder file' })
+  await expect.poll(async () => (await ada.context.request.get(`/api/docs/${docId}/content`)).text(), { message: 'the export names the folder file' })
     .toContain('assets/private.png');
   expect(await deeRead(), 'the reference the editor wrote reaches nothing').toBe(404);
   expect((await ben.context.request.get(folderFile)).status(), "nor through Ben's grant").toBe(404);
@@ -459,7 +459,7 @@ test("j11-media: alt text edited from the image's context menu reaches the peer 
   await expect(images(ada, docId)).toHaveAttribute('alt', ALT);
   await expect(images(ben, docId), 'the peer sees the new alt text').toHaveAttribute('alt', ALT, { timeout: PEER_TIMEOUT });
   await waitAcked(ada, docId);
-  await expect.poll(async () => (await ada.context.request.get(`/api/docs/${docId}/export`)).text(), { message: 'the export carries the alt text' })
+  await expect.poll(async () => (await ada.context.request.get(`/api/docs/${docId}/content`)).text(), { message: 'the export carries the alt text' })
     .toContain(`![${ALT}](assets/${PNG.name})`);
 
   // A plain right-click elsewhere in the note keeps the browser's own menu.

@@ -406,10 +406,10 @@ describe('export (A§12)', () => {
   it("returns the DocDO's markdown to a reader and the one 404 to anyone else", async () => {
     const docId = await insertDoc(d1.db, ada);
     exported.set(docId, '![Alt](assets/x.png)\n');
-    const response = await call('GET', `/api/docs/${docId}/export`, ada.cookie);
+    const response = await call('GET', `/api/docs/${docId}/content`, ada.cookie);
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toBe('text/markdown; charset=utf-8');
     expect(await response.text()).toBe('![Alt](assets/x.png)\n');
-    expect((await call('GET', `/api/docs/${docId}/export`, cy.cookie)).status).toBe(404);
+    expect((await call('GET', `/api/docs/${docId}/content`, cy.cookie)).status).toBe(404);
   });
 });

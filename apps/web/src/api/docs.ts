@@ -1,8 +1,8 @@
 // /api/docs. POST writes the D1 row in a folder the caller may edit, then DocDO.create seeds the doc (A§9 "+ Note").
 // GET /api/docs/:id is the doc and the caller's role on it; DELETE and POST /restore are trash.ts; /members is the
 // members API (members.ts) and /links the share links (links.ts); GET /api/docs/:id/instance is the owner-only DO probe
-// (A§19), which reads nothing from the doc. A missing doc and one the caller cannot open get the same 404 on every
-// route (A§8).
+// (A§19), which reads nothing from the doc; GET /api/docs/:id/content is the doc's markdown export. A missing doc and
+// one the caller cannot open get the same 404 on every route (A§8).
 import { eq } from 'drizzle-orm';
 import { getServerByName } from 'partyserver';
 import { MARKDOWN_CAP_BYTES, REST_WRITE_RATE } from '@moss-multi/protocol/limits';
@@ -28,6 +28,7 @@ const DOC = /^\/api\/docs\/([^/]+)$/;
 const MEMBERS = /^\/api\/docs\/([^/]+)\/members$/;
 const LINKS = /^\/api\/docs\/([^/]+)\/links(?:\/([^/]+))?$/;
 const INSTANCE = /^\/api\/docs\/([^/]+)\/instance$/;
+const CONTENT = /^\/api\/docs\/([^/]+)\/content$/;
 
 export interface DocRecord {
   id: string;
@@ -140,16 +141,6 @@ async function readDoc(request: Request, env: DocsEnv, docId: string): Promise<R
   return json({ doc, role: access.role }, 200, NO_STORE);
 }
 
-/** The DocDO's markdown export (A§12) for any reader of the doc; T3.7's download serves the same bytes. */
-async function exportDoc(request: Request, env: DocsEnv, docId: string): Promise<Response> {
-  const principal = await resolvePrincipal(request, env);
-  if (!principal) return notFound();
-  const access = await resolveDocAccess(createDb(env.DB), principal, docId, shareTokenOf(request));
-  if (!access || access.deleted) return notFound();
-  const markdown = await (await getServerByName(env.DocDO, docId)).exportMarkdown();
-  return new Response(markdown, { status: 200, headers: { 'content-type': 'text/markdown; charset=utf-8', ...NO_STORE } });
-}
-
 /** PATCH /api/docs/:id: `{title}` renames through the DocDO; `{folderId}` moves the note (folders.ts). */
 async function patchDoc(request: Request, env: DocsEnv, docId: string): Promise<Response> {
   const body = await readJsonObject(request);
@@ -176,6 +167,16 @@ async function renameDoc(request: Request, env: DocsEnv, docId: string, body: Re
   } catch {
     return json({ error: 'unavailable' }, 503, NO_STORE);
   }
+}
+
+/** GET /api/docs/:id/content: the doc as a `.md` file through the one converter (A§12), for any reader (T3.7). */
+async function readContent(request: Request, env: DocsEnv, docId: string): Promise<Response> {
+  const principal = await resolvePrincipal(request, env);
+  if (!principal) return unauthenticated();
+  const access = await resolveDocAccess(createDb(env.DB), principal, docId, shareTokenOf(request));
+  if (!access || access.deleted) return notFound();
+  const markdown = await (await getServerByName(env.DocDO, docId)).exportMarkdown();
+  return new Response(markdown, { status: 200, headers: { 'content-type': 'text/markdown; charset=utf-8', ...NO_STORE } });
 }
 
 async function docInstance(request: Request, env: DocsEnv, docId: string): Promise<Response> {
@@ -215,10 +216,8 @@ export async function handleDocs(request: Request, env: DocsEnv): Promise<Respon
     const access = await resolveDocAccess(createDb(env.DB), principal, accessMatch[1], shareTokenOf(request));
     return access ? json({ role: access.role, deleted: access.deleted }, 200, NO_STORE) : notFound();
   }
-
-  const exportMatch = /^\/api\/docs\/([^/]+)\/export$/.exec(pathname);
-  if (exportMatch) return only('GET', request, () => exportDoc(request, env, exportMatch[1]));
-
+  const content = CONTENT.exec(pathname);
+  if (content) return only('GET', request, () => readContent(request, env, content[1]));
   const instance = INSTANCE.exec(pathname);
   if (instance) return only('GET', request, () => docInstance(request, env, instance[1]));
   return notFound();
