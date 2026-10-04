@@ -280,8 +280,8 @@ function signature(tokens: Tok[]): string {
   return [...bytes.subarray(0, 16)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-/** How often `part` occurs in `hay`, counting to 2 (KMP over token strings). */
-function occurrences(hay: Tok[], part: string[]): number {
+/** How often `part` occurs in `hay`, counting to 2 (KMP over token strings), and where the first occurrence starts. */
+function occurrences(hay: Tok[], part: string[]): { count: number; at: number } {
   const fail = new Array<number>(part.length).fill(0);
   for (let i = 1, k = 0; i < part.length; i += 1) {
     while (k > 0 && part[i] !== part[k]) k = fail[k - 1];
@@ -289,16 +289,25 @@ function occurrences(hay: Tok[], part: string[]): number {
     fail[i] = k;
   }
   let count = 0;
+  let at = -1;
   for (let i = 0, k = 0; i < hay.length; i += 1) {
     while (k > 0 && hay[i].t !== part[k]) k = fail[k - 1];
     if (hay[i].t === part[k]) k += 1;
     if (k === part.length) {
       count += 1;
-      if (count > 1) return count;
+      if (count > 1) return { count, at };
+      at = i - part.length + 1;
       k = fail[k - 1];
     }
   }
-  return count;
+  return { count, at };
+}
+
+/** Whether `sub` is `sup` with some tokens removed: every token of `sub` appears in `sup`, in order. */
+function removedOnly(sub: Tok[], sup: Tok[]): boolean {
+  let j = 0;
+  for (let i = 0; i < sup.length && j < sub.length; i += 1) if (sup[i].t === sub[j].t) j += 1;
+  return j === sub.length;
 }
 
 /** Disjoint clock spans per client, each naming the comments indexed on it. */
@@ -787,7 +796,7 @@ function rehome(inner: Inner, match: Match): LostPlace | null {
   return { v: 1, segs: [{ list: idOf(listItem.id), left, right }], members: [], pre: inner.pre, ...(inner.inner ? { inner: inner.inner } : {}) };
 }
 
-/** I4's two candidate maps, the D == I offset map and the unique prefix or suffix map, for one gap. */
+/** I4's candidate maps for one gap: D == I by offset, else a unique part in the common prefix or suffix, or in a wrap. */
 function mapIn(view: View, items: Y.Item[], s: Unit | null, e: Unit | null): [Unit | null, Unit | null] | null {
   const deleted: Tok[] = [];
   const inserted: Tok[] = [];
@@ -804,6 +813,9 @@ function mapIn(view: View, items: Y.Item[], s: Unit | null, e: Unit | null): [Un
   if (sameTokens(deleted, inserted)) {
     map = (i) => i;
   } else {
+    const part = deleted.slice(i0, i1 + 1).map((tok) => tok.t);
+    const there = occurrences(inserted, part);
+    if (occurrences(deleted, part).count !== 1 || there.count !== 1) return null;
     const most = Math.min(deleted.length, inserted.length);
     let p = 0;
     while (p < most && deleted[p].t === inserted[p].t) p += 1;
@@ -811,9 +823,10 @@ function mapIn(view: View, items: Y.Item[], s: Unit | null, e: Unit | null): [Un
     while (q < most - p && deleted[deleted.length - 1 - q].t === inserted[inserted.length - 1 - q].t) q += 1;
     if (i1 < p) map = (i) => i;
     else if (i0 >= deleted.length - q) map = (i) => i - deleted.length + inserted.length;
-    if (!map) return null;
-    const part = deleted.slice(i0, i1 + 1).map((tok) => tok.t);
-    if (occurrences(deleted, part) !== 1 || occurrences(inserted, part) !== 1) return null;
+    // A wrap: the frame only removed tokens (a markdown shortcut's delimiters) from the gap's text, so the comment's
+    // part maps onto its one occurrence in the inserted text.
+    else if (removedOnly(inserted, deleted)) map = (i) => i - i0 + there.at;
+    else return null;
   }
   const at = (i: number): Unit | null => {
     const tok = inserted[map!(i)];

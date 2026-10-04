@@ -338,6 +338,7 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
     - the T4.0 guard suite against the real DocDO in workerd, plus an inert step 2 carrying an R struct, refused 4409;
     - fast-check: every item in the comments subtree has client R;
     - park, then compact, then restart: no pending state survives;
+    - mixed-pending-frame-compacts-only-after-purge: one frame that integrates a valid edit, parks a struct and a delete, and crosses COMPACT_MAX_ROWS, followed at once by a restart; and the same with an integrated update larger than STATE_CHUNK_BYTES (the oversized path). The integrated edit survives; nothing parked persists or is released by a later frame (T4.0 check, 2026-10-04);
     - restart between a deletion and its undo: the comment still reattaches;
     - the onboarding note plus sidecar imports as 4 anchored threads;
     - export contains zero `%%m:` or `{%c:`.
@@ -346,8 +347,9 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
   - **Scope:**
     - `anchor-frame.ts` wired into the DocDO's pre-GC afterTransaction hook for client and serverWrite origins, flushed through writeComments in the same turn;
     - EP, MI and AI indexes rebuilt at onStart;
-    - gap map, survivor shrink, lost place with per-list segments over full member subtrees, exact full-mode reattach triggered by a rightOrigin in MI, lift at depth ≤ 3;
-    - decorator fingerprints;
+    - gap map (including the wrap rule of comments.md §5.2), survivor shrink, lost place with per-list segments over full member subtrees, exact full-mode reattach triggered by a rightOrigin in MI, lift at depth ≤ 3;
+    - orphans with an identical segment set share one walk (decision §4.4): MI is keyed by segment-set group, so a recheck costs one walk and one signature compare per group, and I7's fan-out bound is restated per group;
+    - decorator fingerprints, with attribute history reads inside the walk budget;
     - `groupPending` in acks.ts plus the patched provider: replay before step 2, paced at most 40 frames/s; a deleting update is never merged with another update's inserts.
   - **Integrity requirements carried from the review history:**
     - no positioned anchor is ever searched or similarity-scored;
@@ -365,7 +367,10 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
     - every supported-liveness scene and every never-jump scene from T4.0, against the real DocDO;
     - an offline journey: type inside a comment, delete it, reconnect, undo → reattached; delete then retype offline → stays detached;
     - fast-check: random concurrent edits never leave an anchored comment on text outside its lineage;
-    - workerd budget: a large note with 2,000 comments (hundreds long and orphaned) plus a burst of single-key frames, a frame deleting a char shared by 32 comments, and forged 1-item frames naming lost members, each within a stated per-frame CPU budget recorded in METHOD.md.
+    - workerd budget: a large note with 2,000 comments (hundreds long and orphaned) plus a burst of single-key frames, a frame deleting a char shared by 32 comments, and forged 1-item frames naming lost members, each within a stated per-frame CPU budget recorded in METHOD.md; it also measures the lift and loss writes of a frame that orphans many comments under one deleted block (output-proportional, bounded by the 2,000-record cap);
+    - anchor-cost: 500 disjoint comments orphaned by one deleted run, and 500 by one deleted paragraph; a forged one-item frame naming the shared member does one segment walk and work independent of orphan count (T4.0 check, 2026-10-04);
+    - anchor-attribute-history-obeys-walk-budget: grow a decorator's historical deleted attributes while keeping the deleting frame fixed; fingerprint work stays bounded and counted (T4.0 check);
+    - anchor-index-maintenance-is-frame-bounded: hold the edit and the affected anchor constant while adding unrelated later spans of the same client; index-maintenance work (SpanIndex updates after the flush) is counted with the tree visits and stays constant (T4.0 check).
   - **Done:** green, with the cost section of comments.md updated to the measurements.
 - **T4.3 Paint and moss's comment UI** `[B·codex]`
   - **Scope:**

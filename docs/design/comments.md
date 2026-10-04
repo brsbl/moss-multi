@@ -137,16 +137,16 @@ It costs O(frame · log) and follows no references.
 - **MI.** Lost member runs, and the two bounds of a re-homed place, → orphan ids.
 - **AI.** The ancestor blocks of each orphan's segment lists → orphan ids (depth ≤ 32).
 
-EP and MI are disjoint clock spans per client, so a lookup is a binary search. The overlap cap bounds each item's fan-out in EP and MI to 32.
+EP and MI are disjoint clock spans per client, so a lookup is a binary search. The overlap cap bounds each item's fan-out in EP to 32. It does not bound MI: disjoint comments under one deleted run or block all name that same member. The decision's sharing rule (§5.4) bounds it instead, by group; T4.2 keys MI by segment-set group (the spike indexes orphans one by one).
 
 ### 5.2 Anchored comments: only when the transaction deletes an endpoint
 
 Each delete range in `txn.deleteSet` is looked up in EP. Comments whose endpoints survive are never visited, so typing inside or at the edges of a range costs nothing and writes nothing. For each hit comment:
 1. **Gap map (I4).** For each deleted endpoint, walk the flattened order both ways to the nearest survivors (at most 4,096 structs per direction). Let D be the text-mode tokens of the preLive-but-not-postLive items in the gap, and I those of the frameNew postLive items.
    - If D == I, map the endpoint by offset.
-   - Otherwise let p = LCP and s = LCSuffix, with p + s ≤ min(|D|, |I|). Map only if the comment's part of the gap lies wholly in D[0, p) or in D[|D|−s, |D|), and its text occurs exactly once in D and exactly once in I.
+   - Otherwise the comment's part of the gap must occur exactly once in D and exactly once in I. Let p = LCP and s = LCSuffix, with p + s ≤ min(|D|, |I|). Map it if it lies wholly in D[0, p) or in D[|D|−s, |D|). Otherwise map it onto its one occurrence in I if I is D with tokens removed, every token of I appearing in D in order (the *wrap rule*).
    - Accept the mapping only if the whole new range, in text mode, equals the pre-frame range. Then re-mint.
-   - This carries V1 format split and join, Enter (the end may move into the new block), soft break, a join, and markdown shortcuts.
+   - This carries V1 format split and join, Enter (the end may move into the new block), soft break, a join, and the markdown inline shortcuts. A shortcut that wraps the commented text (`**`, `_`, `~~`, `` ` ``, `==`, a `[text](url)` link) makes Lexical delete the text with its delimiters and reinsert it as a new node, so D is I plus the delimiters, and neither the prefix nor the suffix holds the comment. The wrap rule maps it. It adds no new target: the occurrence is frame-new, between the same survivors, unique in D and in I, and the whole-range check still applies. A frame that leaves the passage twice in D maps neither copy.
 2. **Survivor shrink (I3b).** Otherwise, re-mint each deleted endpoint onto the nearest surviving unit inside the pre-frame range, walking inward. Replacement text typed at a deleted edge is not adopted.
 3. **Lose (§5.3).** If no survivor exists, the comment takes the lost path. A walk over budget orphans it with no `lost`.
 
@@ -166,7 +166,7 @@ Each delete range in `txn.deleteSet` is looked up in EP. Comments whose endpoint
 
 ### 5.4 Reattach (I5)
 
-**Trigger.** A frame-new item whose `origin` or `rightOrigin` falls in an MI run. F3 points undo copies' right origins at members and a lifted copy's origin at a re-homed bound; a stale peer's insert into the span points there too. Each orphan is checked at most once per frame.
+**Trigger.** A frame-new item whose `origin` or `rightOrigin` falls in an MI run. F3 points undo copies' right origins at members and a lifted copy's origin at a re-homed bound; a stale peer's insert into the span points there too. Each orphan is checked at most once per frame. Orphans with an identical segment set share one walk, and their `pre` hashes are compared against it (decision §4.4). The spike checks each orphan on its own, so a forged frame naming a member shared by k orphans costs k short checks; T4.2 groups them (BUILDPLAN T4.2 "anchor-cost: 500 disjoint comments…").
 
 **Check.** Walk each segment, plus the full subtrees of its live items, in full mode, with a budget of 4,096 + 4n structs, stopping as soon as the stream is longer than `pre.n`.
 - On an equal length and signature, re-mint the start and end on the live units at [a, b) and set `status: 'anchored'`.
@@ -189,11 +189,11 @@ When the outer place matches (the block was restored), the inner place is re-hom
 | Guard | O(F · log N) over the frame's structs and delete ranges | — |
 | EP lookups | one binary search per delete range | `stats.lookups` |
 | Hit comment | ≤ two 4,096-struct gap walks + two range walks (≤ 4,096 + 4 × 10,000) + one loss emission + one check (`COMMENT_BUDGET`), × ≤ 32 comments per deleted endpoint | `stats.structs`, `stats.comments` |
-| Lift | one emission per deleted outer block, shared by every orphan under it | `stats.structs` |
-| Reattach trigger | one MI search per frame-new struct's origin and right origin; each candidate's check is ≤ 4,096 + 4n structs and stops past n tokens | `stats.structs` |
+| Lift | one emission per deleted outer block, shared by every orphan under it; the writes are one per lifted orphan, bounded by the 2,000-record cap | `stats.structs` |
+| Reattach trigger | one MI search per frame-new struct's origin and right origin; one check per segment-set group, ≤ 4,096 + 4n structs, stopping past n tokens (T4.2; the spike checks per orphan) | `stats.structs`, `stats.comments` |
 | Records | written only on a re-mint or a status change | — |
 
-Never per frame: a whole-doc projection, an LCS, a store scan, a container scan, or a mirror apply. The spike counts this deterministically (`anchor-cost.test.ts`): on a 2,000-comment, 500-orphan doc a single-key insert or delete visits zero structs and zero comments; a frame deleting one character shared by 32 comments visits 32 comments within 32 × 64 structs; a forged one-item frame naming a lost member visits one struct per orphan sharing that member. T4.2 measures CPU in workerd and records the budget in METHOD.md.
+Never per frame: a whole-doc projection, an LCS, a store scan, a container scan, or a mirror apply. The spike counts this deterministically (`anchor-cost.test.ts`): on a 2,000-comment, 500-orphan doc a single-key insert or delete visits zero structs and zero comments; a frame deleting one character shared by 32 comments visits 32 comments within 32 × 64 structs; a forged one-item frame naming a lost member visits one struct per orphan sharing that member, which T4.2's grouping makes one walk per group. Attribute history in decorator fingerprints and SpanIndex maintenance after the flush are not yet counted; T4.2 counts and bounds both. T4.2 measures CPU in workerd and records the budget in METHOD.md.
 
 ## 6. Client
 
@@ -218,8 +218,7 @@ The discipline matters only for honest users and ruling 18. Safety (I1–I8) nev
 5. Undoing an adjacent older deletion inside a segment, or anything over budget, leaves the comment detached.
 6. Version restore does not reattach orphans; M6 owns server-trusted re-minting from snapshots.
 7. Dragging a block or cut-and-paste orphans the comment.
-8. A markdown shortcut that wraps the commented text itself (typing `**` on both sides of it) deletes and reinserts it with different neighbours in its gap, so the comment orphans. Shortcuts beside it keep it (the spike scene).
-9. Orphans whose lost place spans blocks, or is nested deeper than 3 lifts, do not lift; deleting their block detaches them.
+8. Orphans whose lost place spans blocks, or is nested deeper than 3 lifts, do not lift; deleting their block detaches them.
 
 None of these moves a comment to different text or to another occurrence.
 
@@ -269,6 +268,12 @@ Every finding in `.panel/T4.0-review-history.md` (six rounds and two commit secu
 | C2 P2 | The lift's open bounds let a retype reattach | P2 #2 |
 | C2 P2 | An adjacent older undo blocks reattachment | P2 #5 |
 | C3 P1/P2 | Endpoint envelopes, unseen comments, lineage rows, companion-doc restore | Not applicable: no lineage declarations or companion doc |
+| T4.0 check P1 | A markdown shortcut that wraps the commented text orphans it, though the shortcuts are on the supported list | The wrap rule (§5.2). Tests: "a markdown shortcut that wraps its text" for `**`, `_`, `~~`, `` ` ``, `==` and a link; never-jump "a frame that keeps one of two identical passages" |
+| T4.0 check P2 | MI fan-out is not bounded by the overlap cap | §5.1, §5.4: the sharing rule, by group. Test: T4.2 "anchor-cost: 500 disjoint comments orphaned by one deleted run…" |
+| T4.0 check P2 | Attribute history is read outside the walk budget | Test: T4.2 "anchor-attribute-history-obeys-walk-budget" |
+| T4.0 check P2 | SpanIndex maintenance is O(spans of the client) and uncounted | Test: T4.2 "anchor-index-maintenance-is-frame-bounded" |
+| T4.0 check P2 | The pending test cannot fail if compaction moves back into the update handler | Test: T4.1 "mixed-pending-frame-compacts-only-after-purge" |
+| T4.0 check P2 | Ruling numbering collides with T5.0's rulings 16 and 17 | The comment ruling is restart ruling 18, with its trace row R18 |
 | C3 P2 | Region-diff prefix mapping keeps a comment on replacement text | V1's text diff keeps the common prefix as survivors, so typing over a commented selection shrinks the comment to those characters (P2 #4 family); the gap map's prefix rule needs the comment's whole part inside the common prefix and unique in both |
 
 ## 9. Architecture edits landed with this review
@@ -284,7 +289,7 @@ Every finding in `.panel/T4.0-review-history.md` (six rounds and two commit secu
 | Guard (a)–(d), the history's raw fixtures, an honest step 2 with R tombstones, and a 300-run fast-check that every comments item is R | `packages/sync/test/harness/comments-guard.test.ts` | Red (stubs): [37221588284](https://github.com/brsbl/moss-multi/actions/runs/37221588284). Green: [37222799391](https://github.com/brsbl/moss-multi/actions/runs/37222799391) at `38e3ac2`, and the final head |
 | Pending purge: 4409, then a forced compaction and a restart leave nothing parked, and a release frame integrates nothing | same file, against the DocDO harness | same |
 | F1–F4 | `yjs-facts.test.ts` | same |
-| Supported liveness: bold and unbold before, inside, across and after; Enter before and inside; a soft break; a Backspace join; a markdown shortcut; delete then undo in separate frames, one frame and DURDU; block, cross-block and lifted undo; the two offline replays | `anchor-scenes.test.ts` (real @lexical/yjs V1 editors with Y.UndoManager) | same |
+| Supported liveness: bold and unbold before, inside, across and after; Enter before and inside; a soft break; a Backspace join; a markdown shortcut beside it, and one wrapping it for each of `**`, `_`, `~~`, `` ` ``, `==` and a link; delete then undo in separate frames, one frame and DURDU; block, cross-block and lifted undo; the two offline replays | `anchor-scenes.test.ts` (real @lexical/yjs V1 editors with Y.UndoManager) | same |
 | Never-jump and integrity | `anchor-integrity.test.ts` | same |
 | Cost by counters | `anchor-cost.test.ts` | same |
 | Kept pieces: one projection, binding minting, the create-time search | `tree-anchor.test.ts`, `group-pending.test.ts` | same |
