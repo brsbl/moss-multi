@@ -206,6 +206,7 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
   - **Scope:** the A§21 names on the personal account (`wrangler whoami` first), D1, R2, secrets, `env.staging`, a fixed pool of test principals, and `deploy-staging.yml` deploying the exact `dist` the suite tested.
   - **Tests first:** the workflow asserts staging `/api/version.bundleHash` equals the tested bytes and the test hooks return 404; j00-shell, the j01 setup and j04's staging legs (≥ 15 s idle, wake proven through the owner-only instance route, SP14) run against staging.
   - **Done:** the canary is green on staging.
+- **T1.F1 Peer-safe undo** `[C·claude]` (M1 review P0): Cmd+Z never removes a peer's characters typed into a paragraph or text node this client created (A§10.8; col-3); j01-undo covers interleaved typing, a peer inside a word, split and merge, and undo after a reconnect, in both engines.
 
 **Journeys added:** j01-coedit, j02-title, j03-connection, j04-hibernation.
 
