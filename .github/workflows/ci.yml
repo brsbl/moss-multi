@@ -1,0 +1,484 @@
+# CI for moss-multi (public repo; standard runners are free).
+name: CI
+
+# Lanes are decided by scripts/ci/plan.mjs; ci-ok is the one status to require.
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
+  # Nightly on main: the @slow legs only, skipped when main has not moved since the last green nightly.
+  schedule:
+    - cron: '23 7 * * *'
+  workflow_dispatch:
+    inputs:
+      lane:
+        description: 'auto (grep set: e2e, else full), checks (checks-only lane), e2e, full, parity (oracle and shell parity only), or viewer (the viewer bundle and its fixture only)'
+        type: choice
+        options: [auto, checks, e2e, full, parity, viewer]
+        default: auto
+      grep:
+        description: 'Playwright --grep for the journey run'
+        type: string
+        default: ''
+      browsers:
+        description: 'Journey engines'
+        type: choice
+        options: [both, chromium, webkit]
+        default: both
+      repeat_each:
+        description: 'Playwright --repeat-each (1-10)'
+        type: number
+        default: 1
+      macos:
+        description: 'Also run the @macos legs in WebKit on a macOS runner (billed at 10x)'
+        type: boolean
+        default: false
+      parity:
+        description: 'Also run shell parity against the Ladle oracle (the full and parity lanes always do)'
+        type: boolean
+        default: false
+      slow:
+        description: 'Also run the @slow legs (60 s holds, soaks, idles); milestone gates and the nightly always do'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  # PRs and branch pushes: newest wins. main: one group per commit. Dispatches never cancel each other.
+  group: ci-${{ github.event_name }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.event.pull_request.number || (github.ref == 'refs/heads/main' && github.sha) || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref != 'refs/heads/main') }}
+
+env:
+  CI: 'true'
+  NO_COLOR: '1'
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      checks: ${{ steps.plan.outputs.checks }}
+      build: ${{ steps.plan.outputs.build }}
+      e2e: ${{ steps.plan.outputs.e2e }}
+      browsers: ${{ steps.plan.outputs.browsers }}
+      macos: ${{ steps.plan.outputs.macos }}
+      parity: ${{ steps.plan.outputs.parity }}
+      viewer: ${{ steps.plan.outputs.viewer }}
+      grep: ${{ steps.plan.outputs.grep }}
+      repeat: ${{ steps.plan.outputs.repeat }}
+      slow: ${{ steps.plan.outputs.slow }}
+      shards: ${{ steps.plan.outputs.shards }}
+      trace_milestone: ${{ steps.plan.outputs.trace_milestone }}
+      plan: ${{ steps.plan.outputs.plan }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+      # The nightly skips a main head that already has a green nightly.
+      - id: nightly
+        if: github.event_name == 'schedule'
+        run: echo "sha=$(gh run list --workflow ci.yml --event schedule --branch main --status success --limit 1 --json headSha --jq '.[0].headSha // ""')" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - id: plan
+        run: node scripts/ci/plan.mjs >> "$GITHUB_OUTPUT"
+        env:
+          CI_DEGRADED: ${{ vars.CI_DEGRADED }}
+          LAST_NIGHTLY_SHA: ${{ steps.nightly.outputs.sha }}
+
+  checks:
+    needs: plan
+    if: needs.plan.outputs.checks == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - id: install
+        run: pnpm install --frozen-lockfile
+      # Each check runs even if an earlier one failed, so one run shows every failure.
+      - name: Single version of lexical, @lexical/* and yjs
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: node scripts/ci/single-version.mjs pnpm-lock.yaml
+      - name: Trace
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: node scripts/ci/trace.mjs
+        env:
+          TRACE_MILESTONE: ${{ needs.plan.outputs.trace_milestone }}
+      - name: Vendor drift
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: node scripts/moss-vendor.mjs drift
+      - name: Bundle boundary
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: node scripts/ci/deps.mjs
+      - name: Migrations match the schema
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        timeout-minutes: 3
+        run: |
+          pnpm --filter web db:generate
+          if [ -n "$(git status --porcelain -- apps/web/drizzle)" ]; then
+            git status --porcelain -- apps/web/drizzle
+            echo "::error::apps/web/drizzle does not match schema.ts: run pnpm --filter web db:generate and commit the result."
+            exit 1
+          fi
+      - name: Typecheck
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: pnpm -r --if-present typecheck
+      - name: Lint
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: pnpm lint
+      # Unit tests, converter L1 (Node), L2 (workerd) and L3 (parity with moss at the pin).
+      - name: Unit tests
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: pnpm test
+        env:
+          GOLDEN_OUT: ${{ runner.temp }}/converter-goldens
+          # The last closed milestone: bridge-inventory and hide-registry entries staged to it fail (A§9).
+          TRACE_MILESTONE: ${{ needs.plan.outputs.trace_milestone }}
+      # SP2: the converter bundled as a Worker under wrangler dev; the table lands in the job summary.
+      - name: Converter in workerd (SP2)
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: node scripts/measure-converter.mjs
+        timeout-minutes: 10
+      # A missing converter golden is written here for review; it fails the run until committed.
+      - name: Upload missing converter goldens
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: converter-goldens
+          path: ${{ runner.temp }}/converter-goldens
+          if-no-files-found: ignore
+          retention-days: 3
+
+  build:
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      commit: ${{ steps.provenance.outputs.commit }}
+      bundleHash: ${{ steps.provenance.outputs.bundleHash }}
+    env:
+      SMOKE_RUN: ci-${{ github.run_id }}-${{ github.run_attempt }}-smoke
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+        env:
+          MOSS_BUILD_ENV: ci
+          CLOUDFLARE_ENV: ''
+          MOSS_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      - id: provenance
+        run: node scripts/provenance.mjs read apps/web/dist >> "$GITHUB_OUTPUT"
+      # The built Worker boots under wrangler dev, /api/version is this commit, and / links CSS served 200 text/css.
+      - name: Smoke
+        run: node scripts/stack.mjs start --run-id "$SMOKE_RUN" --prebuilt apps/web/dist --expect-commit "$(git rev-parse HEAD)" --json
+      # Two principals sign up on the built Worker and /api/me resolves each one's session.
+      - name: Principals
+        run: node scripts/stack.mjs principals --run-id "$SMOKE_RUN" --count 2
+      - name: Stop the smoke stack
+        if: always()
+        run: node scripts/stack.mjs stop --run-id "$SMOKE_RUN" || true
+      - name: Pack the built bytes for e2e
+        if: needs.plan.outputs.e2e == 'true' || needs.plan.outputs.macos == 'true' || needs.plan.outputs.parity == 'true'
+        run: tar -czf web-dist.tgz -C apps/web dist
+      - if: needs.plan.outputs.e2e == 'true' || needs.plan.outputs.macos == 'true' || needs.plan.outputs.parity == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: web-dist
+          path: web-dist.tgz
+          retention-days: 3
+
+  # One shard per engine and journey group (scripts/ci/journeys.mjs), each booting its own Worker stack on the
+  # build job's bytes, then running the selftests and its group's journeys. A ready-PR shard has 13 minutes;
+  # repeated and @slow runs get 25. The Playwright image carries both engines and their system libraries, so no
+  # job waits on apt mirrors.
+  e2e:
+    name: e2e (${{ matrix.browser }}, ${{ matrix.group }})
+    needs: [plan, build]
+    if: needs.plan.outputs.e2e == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ matrix.timeout }}
+    container:
+      # Keep the tag equal to @playwright/test in e2e/package.json; the first step checks it.
+      image: mcr.microsoft.com/playwright:v1.61.1-noble
+      options: --ipc=host --init
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.shards) }}
+    env:
+      RUN_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.browser }}-${{ matrix.group }}
+      PLAYWRIGHT_IMAGE: v1.61.1
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+      - name: The Playwright image matches e2e/package.json
+        run: |
+          want="v$(node -p "require('./e2e/package.json').devDependencies['@playwright/test']")"
+          if [ "$want" != "$PLAYWRIGHT_IMAGE" ]; then echo "::error::container image is $PLAYWRIGHT_IMAGE, e2e/package.json pins $want"; exit 1; fi
+          command -v ps > /dev/null || (apt-get update -qq && apt-get install -y -qq --no-install-recommends procps > /dev/null)
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v8
+        with:
+          name: web-dist
+      - run: mkdir -p .local-stack/prebuilt && tar -xzf web-dist.tgz -C .local-stack/prebuilt
+      - name: Boot the Worker stack on the built bytes
+        run: >
+          node scripts/stack.mjs start --run-id "$RUN_ID" --prebuilt .local-stack/prebuilt/dist --hooks
+          --expect-commit "${{ needs.build.outputs.commit }}" --expect-bundle "${{ needs.build.outputs.bundleHash }}"
+      - run: echo "STACK_STATE=$PWD/.local-stack/runs/$RUN_ID/state.json" >> "$GITHUB_ENV"
+      - name: Selftests, then the group's journeys
+        working-directory: e2e
+        env:
+          BROWSER: ${{ matrix.browser }}
+          E2E_GROUP: ${{ matrix.group }}
+          GREP: ${{ needs.plan.outputs.grep }}
+          REPEAT: ${{ needs.plan.outputs.repeat }}
+          SLOW: ${{ needs.plan.outputs.slow }}
+        run: |
+          args=(--project="selftest-$BROWSER" --project="$BROWSER" --repeat-each="$REPEAT")
+          if [ -n "$GREP" ]; then args+=(--grep "$GREP"); fi
+          case "$SLOW" in
+            exclude) args+=(--grep-invert @slow) ;;
+            only) args+=(--grep @slow) ;;
+          esac
+          pnpm exec playwright test "${args[@]}"
+      - name: Stop the stack
+        if: always()
+        run: node scripts/stack.mjs stop --run-id "$RUN_ID" || true
+      - name: Upload results, traces and screenshots
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-${{ matrix.browser }}-${{ matrix.group }}-${{ github.run_attempt }}
+          path: |
+            e2e/test-results/
+            e2e/playwright-report/
+            .local-stack/runs/*/wrangler.log
+            .local-stack/runs/*/state.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # SP15: Linux WebKit never navigates history on a bare Backspace, so the legs that prove the guard (tagged
+  # @macos) run in macOS WebKit at milestone gates and on request (dispatch input macos).
+  macos:
+    needs: [plan, build]
+    if: needs.plan.outputs.macos == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 20
+    env:
+      RUN_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}-macos
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v8
+        with:
+          name: web-dist
+      - run: mkdir -p .local-stack/prebuilt && tar -xzf web-dist.tgz -C .local-stack/prebuilt
+      - name: Install webkit
+        working-directory: e2e
+        run: pnpm exec playwright install webkit
+      - name: Boot the Worker stack on the built bytes
+        run: >
+          node scripts/stack.mjs start --run-id "$RUN_ID" --prebuilt .local-stack/prebuilt/dist --hooks
+          --expect-commit "${{ needs.build.outputs.commit }}" --expect-bundle "${{ needs.build.outputs.bundleHash }}"
+      - run: echo "STACK_STATE=$PWD/.local-stack/runs/$RUN_ID/state.json" >> "$GITHUB_ENV"
+      - name: The @macos legs in WebKit
+        working-directory: e2e
+        run: pnpm exec playwright test --project=selftest-webkit --project=webkit --grep @macos
+      - name: Stop the stack
+        if: always()
+        run: node scripts/stack.mjs stop --run-id "$RUN_ID" || true
+      - name: Upload results, traces and screenshots
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-macos-webkit-${{ github.run_attempt }}
+          path: |
+            e2e/test-results/
+            e2e/playwright-report/
+            .local-stack/runs/*/wrangler.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # The read-only viewer bundle (T0.13): build packages/viewer, keep dist/ (bundle, stylesheet, fonts, viewer.json)
+  # as the moss-viewer artifact, then run its acceptance fixture and shots in both engines (e2e/viewer).
+  viewer:
+    needs: plan
+    if: needs.plan.outputs.viewer == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    container:
+      image: mcr.microsoft.com/playwright:v1.61.1-noble
+      options: --ipc=host --init
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+      # The manifest records the commit; the container's checkout belongs to another uid.
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build the viewer bundle
+        run: pnpm --filter @moss-multi/viewer build
+        env:
+          MOSS_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      - run: cat packages/viewer/dist/viewer.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: moss-viewer
+          path: packages/viewer/dist
+          retention-days: 30
+      - name: Acceptance fixture and shots, Chromium and WebKit
+        working-directory: e2e
+        run: pnpm exec playwright test --project=viewer-chromium --project=viewer-webkit
+      - name: Upload results and shots
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: viewer-results-${{ github.run_attempt }}
+          path: |
+            e2e/test-results/
+            e2e/playwright-report/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # The Ladle oracle (A§20; A§22 OA1 fallback, no deploy key): moss@pin's own files, stories and .ladle from
+  # `moss-vendor.mjs pristine`, plus main.tsx's font preamble, built with its own frozen install.
+  oracle:
+    needs: plan
+    if: needs.plan.outputs.parity == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - id: cache
+        uses: actions/cache@v6
+        with:
+          path: .oracle
+          key: ladle-oracle-762abb777-${{ hashFiles('vendor/moss/PORTED.json', 'scripts/moss-vendor.mjs', 'e2e/parity/oracle/*', 'e2e/parity/oracle/.npmrc') }}
+      # moss-vendor.mjs pristine loads moss-extract.mjs, which needs the workspace's typescript.
+      - name: Install the workspace
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: pnpm install --frozen-lockfile
+      - name: Install the oracle's dependencies
+        if: steps.cache.outputs.cache-hit != 'true'
+        working-directory: e2e/parity/oracle
+        run: pnpm install --frozen-lockfile --ignore-workspace
+      - name: Build the oracle
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: node e2e/parity/oracle/build.mjs .oracle
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ladle-oracle
+          path: .oracle
+          include-hidden-files: true
+          retention-days: 3
+
+  # Shell parity (A§20): the build job's Worker against the oracle, in the same Chromium, 1440x1000 at 2x.
+  # test-results/parity/<target>-<theme>/ holds oracle, candidate, diff, triptych and metrics for reading.
+  parity:
+    needs: [plan, build, oracle]
+    if: needs.plan.outputs.parity == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    container:
+      image: mcr.microsoft.com/playwright:v1.61.1-noble
+      options: --ipc=host --init
+    env:
+      RUN_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}-parity
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+      - run: command -v ps > /dev/null || (apt-get update -qq && apt-get install -y -qq --no-install-recommends procps > /dev/null)
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v8
+        with:
+          name: web-dist
+      - run: mkdir -p .local-stack/prebuilt && tar -xzf web-dist.tgz -C .local-stack/prebuilt
+      - uses: actions/download-artifact@v8
+        with:
+          name: ladle-oracle
+          path: .oracle
+      - name: Boot the Worker stack on the built bytes
+        run: >
+          node scripts/stack.mjs start --run-id "$RUN_ID" --prebuilt .local-stack/prebuilt/dist
+          --expect-commit "${{ needs.build.outputs.commit }}" --expect-bundle "${{ needs.build.outputs.bundleHash }}"
+      - run: echo "STACK_STATE=$PWD/.local-stack/runs/$RUN_ID/state.json" >> "$GITHUB_ENV"
+      - name: Shell parity
+        working-directory: e2e
+        env:
+          ORACLE_DIR: ${{ github.workspace }}/.oracle
+        run: pnpm exec playwright test --project=parity
+      - name: Stop the stack
+        if: always()
+        run: node scripts/stack.mjs stop --run-id "$RUN_ID" || true
+      - name: Upload triptychs, diffs and metrics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: parity-${{ github.run_attempt }}
+          path: |
+            e2e/test-results/
+            .local-stack/runs/*/wrangler.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+  ci-ok:
+    if: always()
+    needs: [plan, checks, build, e2e, macos, oracle, parity, viewer]
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          sparse-checkout: scripts/ci
+      - run: node scripts/ci/plan.mjs ci-ok
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}

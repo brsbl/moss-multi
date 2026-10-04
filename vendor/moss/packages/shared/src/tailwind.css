@@ -1,0 +1,72 @@
+/* ported-from: packages/shared/src/tailwind.css @ 762abb777 */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --color-highlight-yellow: theme('colors.highlight-yellow');
+    /* Legacy highlight names map to the single yellow highlight; preserved for
+       backward-compat parsing of old notes saved with multi-color highlights. */
+    --color-highlight-green: theme('colors.highlight-yellow');
+    --color-highlight-orange: theme('colors.highlight-yellow');
+    --color-highlight-blue: theme('colors.highlight-yellow');
+    --color-highlight-red: theme('colors.highlight-yellow');
+    --color-highlight-purple: theme('colors.highlight-yellow');
+    --selection-color-default: theme('colors.surface-note-hover');
+  }
+
+  /* Dark-mode text selection: same warm-grey family as the surface token but
+     at 25% opacity so the highlight is clearly visible on the dark canvas
+     without glowing.  The base token (surface-fn-rgba921249903) uses 14%
+     alpha in dark mode — too faint for selection contrast. */
+  [data-theme="dark"] {
+    --selection-color-default: rgb(var(--surface-fn-rgba921249903-rgb) / 0.25);
+  }
+
+  [data-moss-modal-overlay="true"] {
+    backdrop-filter: blur(4px);
+  }
+
+  [data-theme="dark"] [data-moss-modal-overlay="true"] {
+    backdrop-filter: none;
+  }
+
+  * {
+    @apply border-border-default;
+  }
+
+  /* Override default focus rings with moss green */
+  *:focus {
+    outline-color: theme('colors.accent-brand');
+  }
+
+  *:focus-visible {
+    outline-color: theme('colors.accent-brand');
+  }
+
+  /* Modals and menus should not inherit the global moss-green focus outline.
+     Most controls in them set subtle neutral rings explicitly; this catches
+     the popup surfaces themselves and any remaining native outlines inside. */
+  :where([role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"]):focus,
+  :where([role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"]):focus-visible,
+  :where([role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"]) :focus,
+  :where([role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"]) :focus-visible {
+    outline-color: rgb(var(--ink-default-rgb) / 0.25);
+  }
+
+  ::selection {
+    background-color: var(--selection-color, var(--selection-color-default));
+  }
+
+  /* Transparent-text textareas (comment input overlay) need visible selection */
+  .comment-input-transparent::selection {
+    background-color: theme('colors.accent-brand');
+    color: var(--ink-inverse);
+  }
+
+  body {
+    @apply bg-surface-canvas text-accent-brand-pressed;
+    font-feature-settings: 'rlig' 1, 'calt' 1;
+  }
+}

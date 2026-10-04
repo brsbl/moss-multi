@@ -1,0 +1,32 @@
+{
+  "name": "@moss-multi/sync",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./converter": "./src/converter/index.ts",
+    "./excluded-properties": "./src/excluded-properties.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.converter.json"
+  },
+  "dependencies": {
+    "@lexical/headless": "0.48.0",
+    "@lexical/markdown": "0.48.0",
+    "@lexical/yjs": "0.48.0",
+    "@moss-multi/protocol": "workspace:*",
+    "lexical": "0.48.0",
+    "lib0": "0.2.119",
+    "partyserver": "0.5.8",
+    "y-partyserver": "2.2.0",
+    "y-protocols": "1.0.7",
+    "yjs": "13.6.31"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "4.20260702.1",
+    "@types/node": "24.13.3",
+    "typescript": "5.9.3",
+    "wrangler": "4.113.0"
+  }
+}

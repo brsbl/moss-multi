@@ -1,0 +1,29 @@
+diff --git a/packages/desktop/src/renderer/panels/NotesPanelFooter.tsx b/packages/desktop/src/renderer/panels/NotesPanelFooter.tsx
+--- a/packages/desktop/src/renderer/panels/NotesPanelFooter.tsx
++++ b/packages/desktop/src/renderer/panels/NotesPanelFooter.tsx
+@@ -6,6 +6,8 @@ import {
+   TooltipProvider,
+   TooltipTrigger
+ } from '@moss/shared/components/ui/tooltip';
++// moss-multi seam: hide-registry (A§9)
++import { hidden } from '@moss-multi/host/affordances';
+ 
+ export type NotesPanelMode = 'notes' | 'trash';
+ 
+@@ -62,6 +64,8 @@ export function NotesPanelFooter({
+             </TooltipTrigger>
+             <TooltipContent side="top">Feedback</TooltipContent>
+           </Tooltip>
++          {/* moss-multi seam: hide-registry (A§9) */}
++          {hidden('trash') ? null : (
+           <Tooltip>
+             <TooltipTrigger asChild>
+               <button
+@@ -78,6 +82,7 @@ export function NotesPanelFooter({
+             </TooltipTrigger>
+             <TooltipContent side="top">{isTrashMode ? 'Back to Notes' : 'Trash'}</TooltipContent>
+           </Tooltip>
++          )}
+         </div>
+       </div>
+     </TooltipProvider>

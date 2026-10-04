@@ -1,0 +1,27 @@
+diff --git a/wrangler-dist/ProxyWorker.js b/wrangler-dist/ProxyWorker.js
+index 274b5d17ed4fb22f33efafca76efaa9f85279fbd..64f53813478e983d57823d4fcc3c04b32a38c83e 100644
+--- a/wrangler-dist/ProxyWorker.js
++++ b/wrangler-dist/ProxyWorker.js
+@@ -131,7 +131,21 @@ var ProxyWorker = class {
+           headers.set(key, value);
+         }
+       }
+-      void fetch(userWorkerUrl, new Request(request, { headers })).then(async (res) => {
++      // moss-multi patch (workers-sdk#14641): the Worker's side closes a pooled keep-alive connection after 5 s
++      // idle, and a forward written to one as it closes is lost. The catch below compares the full URL with the
++      // bare origin, so a lost GET waited in requestRetryQueue for the next request and a lost POST got a 503.
++      // Replay a lost forward at once, from an unread clone, while the Worker is unchanged.
++      let spare = request.clone();
++      const send = (replays) => {
++        const source = spare;
++        if (replays > 0) spare = source.clone();
++        return fetch(userWorkerUrl, new Request(source, { headers })).catch((error) => {
++          const current = this.proxyData && urlFromParts(this.proxyData.userWorkerUrl);
++          if (replays > 0 && current?.origin === userWorkerUrl.origin) return send(replays - 1);
++          throw error;
++        });
++      };
++      void send(3).then(async (res) => {
+         res = new Response(res.body, res);
+         rewriteUrlRelatedHeaders(res.headers, innerUrl, outerUrl);
+         await checkForPreviewTokenError(res, this.env, proxyData);

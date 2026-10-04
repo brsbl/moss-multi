@@ -1,0 +1,48 @@
+{
+  "root": {
+    "children": [
+      {
+        "type": "image",
+        "version": 1,
+        "src": "assets/local.png",
+        "altText": "A local image"
+      },
+      {
+        "type": "image",
+        "version": 1,
+        "src": "assets/escaped.png",
+        "altText": "Alt with ] bracket and \\ slash"
+      },
+      {
+        "type": "image",
+        "version": 1,
+        "src": "ref.png",
+        "altText": "",
+        "obsidianRef": "ref.png|100x200"
+      },
+      {
+        "type": "image",
+        "version": 1,
+        "src": "https://images.example.com/remote.jpg",
+        "altText": "Remote image"
+      },
+      {
+        "type": "image",
+        "version": 1,
+        "src": "assets/titled.png",
+        "altText": "Titled"
+      },
+      {
+        "type": "image",
+        "version": 1,
+        "src": "assets/img (1).png",
+        "altText": "Spaced"
+      }
+    ],
+    "direction": null,
+    "format": "",
+    "indent": 0,
+    "type": "root",
+    "version": 1
+  }
+}

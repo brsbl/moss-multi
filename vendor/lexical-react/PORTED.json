@@ -1,0 +1,10 @@
+{
+  "upstream": "facebook/lexical",
+  "pin": "v0.48.0",
+  "commit": "284b7491d014c412a11ecc8e4b8ea8e09e07f7e9",
+  "base": "packages/lexical-react/src",
+  "files": [
+    {"path":"LexicalCollaborationPlugin.tsx","pin":"v0.48.0","upstreamSha256":"964cc51798db6848b4802a5e6665e85b9fa6db3eef2bc970b80da794dcab2103","mode":"patched","patch":"patches/lexical-react/LexicalCollaborationPlugin.tsx.patch"},
+    {"path":"shared/useYjsCollaboration.tsx","pin":"v0.48.0","upstreamSha256":"b38822273cd1313e492c4da6b95218c9145c0cd0cc3df606ec88b417e53a65ad","mode":"patched","patch":"patches/lexical-react/shared/useYjsCollaboration.tsx.patch"}
+  ]
+}

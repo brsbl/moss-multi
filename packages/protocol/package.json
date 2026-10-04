@@ -1,0 +1,12 @@
+{
+  "name": "@moss-multi/protocol",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./dom-contract": "./src/dom-contract.ts",
+    "./limits": "./src/limits.ts",
+    "./roles": "./src/roles.ts",
+    "./sync": "./src/sync.ts"
+  }
+}

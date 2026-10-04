@@ -20,7 +20,7 @@ Browser tab
   moss App (vendored, client-only) ──window.electronAPI──► host/bridge  (REST · Y.Doc · browser APIs · localStorage)
   per editor pane: <LexicalCollaboration> + MossCollaborationPlugin ──1 WS /parties/doc-d-o/<docId>──► DocDO(docId)
   workspace channel (one per tab) ──────────────────────1 WS /api/workspace/ws──────────────► PrincipalDO(principalId)
-Worker (one script): /api/version → /__test → /api/auth → /api/workspace/ws → /api/* → /parties/doc-d-o → Start SSR
+Worker (one script): /api/version → /__test → /api/auth → /api/workspace/ws → /api/* → /parties/doc-d-o → /frame/html → Start SSR
   D1: accounts, vaults/folders/docs, grants, links, invites, notifications, assets, prefs
   R2: content-addressed asset blobs; version spill
   DocDO ─RPC─► SearchDO('global'), PrincipalDO(*)      DocDO ─D1─► docs.title / filename / updated_at projections
@@ -38,10 +38,11 @@ patches/y-partyserver@2.2.0.patch                      # the only dependency pat
 vendor/
   moss/                       # mirror of moss@762abb777, same relative layout, so relative imports resolve unchanged
     PORTED.json               # per file: path, pin, upstreamSha256, mode verbatim|patched|substituted|extracted, patch
-    logos/moss-sprout-icon.png
+    logos/moss-sprout-icon.png  tsconfig.base.json (extended by shared's tsconfig)
     packages/shared/{src/**, tailwind.config.ts, tsconfig.json}
     packages/desktop/src/{renderer/**, common/**, types/electron-api.d.ts, renderer-env.d.ts}
-  lexical-react/              # LexicalCollaborationPlugin.tsx + useYjsCollaboration.tsx @ @lexical/react 0.48.0
+    .ladle/**  packages/desktop/stories/**   # unused by the app; `pristine` builds the Ladle oracle from them (§22 OA1)
+  lexical-react/              # LexicalCollaborationPlugin.tsx + shared/useYjsCollaboration.tsx @ @lexical/react 0.48.0
   patches/{moss,lexical-react}/<path>.patch
 apps/web/                     # TanStack Start app + Worker
   wrangler.jsonc  vite.config.ts  tailwind.config.ts  postcss.config.cjs  drizzle.config.ts  drizzle/*.sql
@@ -62,6 +63,7 @@ packages/
               server-doc (headless binding + serverWrite), converter host
   ui/         moss DS extensions (AvatarChip, FacePile, Banner, MemberRow, InboxItem, VaultSwitcher parts) + stories
   cli/        moss-multi CLI and folder-watch daemon
+  viewer/     the read-only viewer bundle (T0.13): moss's MarkdownEditor unbound, with host-injected services
 e2e/          playwright.config.ts, lib/, selftest/, journeys/, parity/, calibration/, qa/
 scripts/      stack.mjs, qa.mjs, moss-vendor.mjs, provenance.mjs, ci/plan.mjs, ci/minutes.mjs, ci/trace.mjs
 .github/workflows/  ci.yml, red-proof.yml, deploy-staging.yml (canary from M1)
@@ -90,15 +92,16 @@ Each patched vendor file gets all of its seams in one task, as calls into host h
 
 | Vendored file | Seams | Installed |
 |---|---|---|
-| `R/editor/MarkdownEditor.tsx` | `collaboration` prop (bound mode: `editorState:null`, `editable:false`, no serialized-state cache, plugin replaces `<HistoryPlugin/>`, composer key without `readOnly`, throw if `updateContentFromMarkdown` runs bound); re-exports from `markdown/*`; `--link-selection` mark becomes a highlight | T0.6, T0.8 |
+| `R/editor/MarkdownEditor.tsx` | `collaboration` prop (bound mode: `editorState:null`, `editable:false`, no serialized-state cache, plugin replaces `<HistoryPlugin/>`, composer key without `readOnly`, throw if `updateContentFromMarkdown` runs bound); re-exports from `markdown/*`; `--link-selection` mark becomes a CSS highlight (§10.10) | T0.6, T0.8, T0.P |
 | `R/panels/CanvasAreaContent.tsx` | one `useMossMultiPane(note)` hook: bound init returns early before `getById`; save, disk, agent, flush and `syncH1ToTitle` paths removed when bound; mount gate on first sync; title binding slot; frontmatter binding; top-bar collab slot; terminal subscription; hide-registry reads; the `data-top-bar`, `data-editor-canvas` and `data-editor-pane` attributes (§19) | T0.8 |
-| `R/App.tsx` | AI action and ⌘K hidden; duplicate through the server; "+ Note" blurs its trigger, arms the opening guard and then focuses the title (R2, §9); phone notes-panel overlay | T0.5b, T1.4, T1.8, T2.7 |
-| NotesListPanelContent, TrashedNotesPanelContent, `S/…/NotesListPanel`, SettingsModal, slash registry | hide-registry and `staged` reads; `data-sidebar-row`; a folder "Share…" item slot; no move or folder actions on surfaced shared rows (§11); Agents section in Settings | T0.5b, T3.6 |
+| `R/App.tsx` | AI action and ⌘K hidden; Rename hidden until the title binds; duplicate through the server; "+ Note" blurs its trigger and arms the opening guard (T0.P), then focuses the title (R2, §9); phone notes-panel overlay | T0.5b, T0.P, T1.4, T1.8, T2.7 |
+| NotesListPanelContent, TrashedNotesPanelContent, `S/…/NotesListPanel`, SettingsModal, slash registry, VideoPastePlugin, MediaDropPlugin | hide-registry and `staged` reads (a pasted or dropped file is refused visibly while `media-upload` is staged); `data-sidebar-row`; a folder "Share…" item slot; no move or folder actions on surfaced shared rows (§11); Agents section in Settings | T0.5b, T0.P, T3.6 |
 | Shared DS primitives (dialog, alert-dialog, dropdown-menu, context-menu, popover, tooltip) | `data-overlay-surface` on every opened surface (§19); moss at the pin has none of the §19 attributes | T0.5b |
 | `S/state/atoms.ts` | split navigation (back, forward, left pane) never shows one doc in both panes (§10.1) | T1.6 |
 | 8 decorator nodes and `CommentPlugin`, `comment-import` | class/view split and `commands.ts`, generated by extraction (§2.1); register getter and setter seams in the extracted classes (§10.10) | T0.6, T1.9 |
 | ColorCodePlugin, CodeNodeNormalization, ChecklistSortPlugin, FileLinkPlugin, MathCalculationPlugin | remote-origin and read-only guards; no initial sweep on a bound doc; overlays instead of tree writes | T1.6, T3.3 |
-| `HtmlBlockquoteNode.tsx` view | live sandboxed iframe as the static preview | T3.2 |
+| `R/editor/plugins/TabBarPlugin.tsx` | a read-only editor's tabs switch but never add, rename, delete or reorder (moss gates only tab-width resize) | T0.13 |
+| `HtmlBlockquoteNode.tsx` view, `useHtmlPreviewImage` | no request for a moss-asset:// preview screenshot, which a browser never loads (T0.P); live sandboxed iframe as the static preview (T3.2) | T0.P, T3.2 |
 | Comment UI (8 call sites, `CommentPlugin`) | CRDT comment adapter | M4 |
 
 ## 3. Toolchain and pinned versions
@@ -127,14 +130,15 @@ The Worker exports `createServerEntry({fetch})` and re-exports the DO classes. [
 1. **`/api/version`** answers GET only (405 otherwise) with `cache-control: no-store` and `{commit, headSha, dirty, diffHash, bundleHash, clientHash, buildTime, env}`. [L§4.18; S-test §2.4]
 2. **`/__test/*`** works only behind the four-condition gate (§19). Otherwise it returns the same 404 as an unknown route.
 3. **`/api/auth/*`** goes to `handleAuthRoute`, which wraps better-auth built per request. Sign-out fans out first (§7).
-4. **`/api/workspace/ws`** authenticates, then upgrades to `PrincipalDO(principalId)` (§5.2).
-5. **`/api/*`** goes to `handleApi`. Unknown paths get a JSON 404.
+4. **`/api/workspace/ws`** authenticates through the origin gate (§18), then upgrades to `PrincipalDO(principalId)` (§5.2).
+5. **`/api/*`** goes to `handleApi`, which runs the origin gate (§18) before any unsafe method. Unknown paths get a JSON 404.
 6. **`/parties/doc-d-o/<docId>`** is the only party namespace; any other gets 404.
-   - Authenticate by cookie, bearer or `?share=`, then resolve the role (§8).
-   - Never refuse before the upgrade: a refused handshake reaches the client as a transient 1006, and it would retry forever [L§4.6]. On a denial the Worker accepts the upgrade itself (`WebSocketPair`) and closes it, without waking the DocDO: 4401 with no credential; 4404 for a missing, inaccessible, forged-token or revoked-token doc (one code for all four, so nothing is disclosed); 4410 for a trashed doc the caller could otherwise open.
+   - Authenticate by cookie, bearer or `?share=`, pass the origin gate (§18), then resolve the role (§8).
+   - Never refuse before the upgrade: a refused handshake reaches the client as a transient 1006, and it would retry forever [L§4.6]. On a denial the Worker accepts the upgrade itself (`WebSocketPair`) and closes it, without waking the DocDO: 4401 with no credential or a cookie from another origin; 4404 for a missing, inaccessible, forged-token or revoked-token doc (one code for all four, so nothing is disclosed); 4410 for a trashed doc the caller could otherwise open.
    - Strip every client `x-moss-*` and `x-partykit-*` header by prefix, then set the trusted `x-moss-principal|role|session|share` headers.
    - Clone the request without an init before setting headers, so `Upgrade` and `Sec-WebSocket-*` survive. Then call `routePartykitRequest`. [L§4.7 upgrade trap; S-gd §1.3]
-7. **Everything else** goes to TanStack Start SSR.
+7. **`/frame/html`** serves the HTML-block frame: a fixed document whose only policy is `sandbox allow-scripts`, which writes the block HTML its embedding page posts to it (SP13).
+8. **Everything else** goes to TanStack Start SSR.
 
 Errors are logged through `waitUntil` and rethrown. `/api` never answers with HTML.
 
@@ -161,7 +165,7 @@ Errors are logged through `waitUntil` and rethrown. `/api` never answers with HT
 
 **Mounting moss.** `MossAppHost` combines `ClientOnly`, a `ChunkReloadBoundary` (one hard reload when a dynamic import fails), and `lazy(boot)`. The bridge is installed before App's module evaluates. App keeps Jotai's default store (no Provider) and `React.StrictMode`, as moss does, and honors `?mossMode=pdf-export` as `R/main.tsx` does. [S-ren §1.1]
 
-**Content security policy:** `default-src 'self'`; `script-src 'self' 'nonce-<per request>'`; `style-src 'self' 'unsafe-inline'`; `connect-src 'self'` plus the same-origin `ws(s):` URL; `frame-src data: https:` (HTML blocks are `data:` iframes); `img-src 'self' data: https: blob:`; `media-src 'self' blob:`. Start's SSR injects per-request inline scripts and `ScriptOnce` rewrites the theme script, so a static hash would block hydration; the Worker mints the nonce, passes it as the router's `ssr.nonce`, and sets the header. Whether a `data:` iframe inherits this policy is SP13. [S-ren §5.1, §0.13; router-core `ssr-server.js`]
+**Content security policy:** `default-src 'self'`; `script-src 'self' 'nonce-<per request>'`; `style-src 'self' 'unsafe-inline'`; `connect-src 'self'` plus the same-origin `ws(s):` URL; `frame-src 'self' data: https:`; `img-src 'self' data: https: blob:`; `media-src 'self' blob:`. Start's SSR injects per-request inline scripts and `ScriptOnce` rewrites the theme script, so a static hash would block hydration; the Worker mints the nonce, passes it as the router's `ssr.nonce`, and sets the header. A `data:` iframe inherits this policy (SP13, settled at T0.5a in Chromium), so its inline scripts are refused; HTML blocks load `/frame/html` instead (§4.1), and T3.2 points moss's `IframeFrame` there. [S-ren §5.1, §0.13; router-core `ssr-server.js`]
 
 **Tailwind.** The content globs cover vendored renderer and shared code, `apps/web/src/**` and `packages/ui/**`. A CI test fails when any file that writes a `className` falls outside them. [L§4.1]
 
@@ -196,7 +200,7 @@ It starts from glyphdown's `do.ts` shape, not moss-collab's 3,511-line class, an
 4. A write that would push `stateBytes` past the cap (Limits, below) is refused with `doc-cap`, simulated only near the cap. A suggester's write is vetted on a mirror (M5). These refusals close 4409, and the client discards its optimistic state. [S-prior §7.5]
 5. Super applies the frame with `origin = connection`.
 
-**Acks.** After persisting, the DocDO unicasts `{t:'ack', sv}` to the originating connection, coalesced over 250 ms. This drives `data-sync-unacked`. [L§4.6 durability honesty]
+**Acks.** After persisting, the DocDO unicasts `{t:'ack', sv}` to the originating connection, coalesced over 250 ms. This drives `data-sync-unacked`. An editor's sync frame the doc already holds is acked too: a socket that drops inside the window loses its ack, and the reconnect's step 2 then changes nothing, so without that ack the edits would read as unsynced forever (T0.P). [L§4.6 durability honesty]
 
 **Projections.** The DO writes D1 directly; glyphdown's DO does not, but R3 forces it. [S-gd §2.10.9; S-prior §6.2] A `title` observer, throttled to 750 ms with a trailing flush and serialized on one chain, writes `docs.title = trim(text)` and `docs.filename = availableFilename(slug(title))`, unique among live docs in the folder (collisions get `-N`, never a 409). An empty title never projects: the column keeps its last value, so clearing and retyping a title cannot churn the filename. [L§4.4] Principal edits touch `docs.updated_at` at most every 5 s. Each change feeds SearchDO and publishes a meta event (§11). Origins `persistence` and `server-seed` never project.
 
@@ -257,7 +261,7 @@ Folder delete stamps `deleted_at` and one `trash_batch_id` across the whole subt
 
 **Principal resolution order:**
 1. `Bearer mm_sk_…`: a sha256 lookup that ignores revoked keys. The result is an agent acting with its owner's access.
-2. Any other bearer value, or a cookie: a session user.
+2. Any other bearer value, or a cookie: a session user. A request with a bearer is judged by it alone and never falls back to its cookie.
 3. A share token alone (`?share=` or `x-moss-share`): an anonymous principal, capped at viewer. [S-gd §3.1]
 
 **Sign-out.** The client posts JSON `{}`. The wrapper resolves the session first, lets better-auth delete it, then awaits `PrincipalDO.endSession` before responding. The client stops subscriptions synchronously on the gesture, through the single auth-state writer. [L§4.9; L§4.6 background work]
@@ -326,7 +330,7 @@ Folder delete stamps `deleted_at` and one `trash_batch_id` across the whole subt
 
 **Navigation** (`host/navigation.ts`) owns every programmatic navigation: route changes, sign-out, chunk reloads, invite and inbox links. Before navigating, it synchronously commits a refused or read-only input state. Mark-read requests use `keepalive`. [L§4.6 navigation mid-typing] Moss keeps its own back and forward history; the URL is updated with `replaceState`.
 
-**New note** [R2]. "+ Note" calls `notes.create`, which POSTs `/api/docs`: the D1 row is written and `DocDO.create` seeds the doc. Moss awaits that round trip with focus still on the button (`createAndActivateNote`, `App.tsx:2842`), and binds took up to 2.7 s on a warm stack, so the seam first blurs the trigger synchronously and arms a document-level guard that consumes printable keys, Space, Enter and Backspace and announces "Opening note…" in the refusal band until the title binds. No keystroke vanishes, and Space or Enter cannot create a second note. App then activates the note with `focusTarget:'title'` (the pin focuses the body). The pane binds, the title opens at first sync, and the pending focus lands. This is deviation 1 in §23. [S-ren §0.1; L§4.4]
+**New note** [R2]. "+ Note" calls `notes.create`, which POSTs `/api/docs`: the D1 row is written and `DocDO.create` seeds the doc. Moss awaits that round trip with focus still on the button (`createAndActivateNote`, `App.tsx:2842`), and binds took up to 2.7 s on a warm stack, so the seam first blurs the trigger synchronously and arms a document-level guard that consumes printable keys, Space, Enter and Backspace and announces "Opening note…" in the refusal band until a live field takes focus (until T1.4 that is the body; the notice is `[data-input-refusal]`, centered over the top bar until T1.3 builds the band). No keystroke vanishes, and Space or Enter cannot create a second note. App then activates the note with `focusTarget:'title'` (the pin focuses the body). The pane binds, the title opens at first sync, and the pending focus lands. This is deviation 1 in §23. [S-ren §0.1; L§4.4]
 
 ## 10. Collaboration binding
 
@@ -336,7 +340,7 @@ Folder delete stamps `deleted_at` and one `trash_batch_id` across the whole subt
 
 **One socket per open doc.** Moss's `openSplitTabAtom` and `splitNavigateToNoteAtom` refuse to show the active note in the split pane, but `splitGoBackAtom`, `splitGoForwardAtom` and left-pane navigation do not (`atoms.ts:716–835`). A seam makes moss's rule total: those paths skip or close the split instead. The doc-session registry also refuses a second session for a doc already open in the tab. Sharing one Y.Doc between panes is not an option, because a second binding cannot reconcile a populated doc [S-ren §3.6]. Each pane gets its own `<LexicalCollaboration>`, so split view never shares a binding context. [L§4.3 split-view crash]
 
-**Teardown order:** cursors, listeners, `setLocalState(null)`, disconnect (1000), `doc.destroy()`. [S-prior §3.1]
+**Teardown order:** cursors, listeners, `setLocalState(null)`, disconnect (1000), `doc.destroy()`. [S-prior §3.1] A pane released while its edits are unacked (typed while the socket was down) would destroy the only copy, so the session leaves presence and stays connected without its pane until the DocDO acks them, then tears down in this order; the doc stays held meanwhile, and a pane reopening it binds once the edits are on the server (§10.6). [T0.P; P:Collab "neither ever loses work"]
 
 ### 10.2 The plugin: official V1 with four seams
 
@@ -438,7 +442,7 @@ The body uses seam (a) and the title its own `UndoManager`. Server-origin writes
 
 - **Background writers** (ColorCodeConversion, CodeNodeNormalization, ChecklistSort, FileLink resolution, MathCalculation) skip updates tagged `COLLABORATION_TAG`, never run without edit rights, and run no initial sweep on a bound doc (ColorCodeConversion's sweep runs even read-only at the pin); the server importer normalizes instead. Two editors opening one doc can then never rewrite the same text twice (the "WORDWORD" family). [S-conv §4.5; L§4.3]
 - **Per-viewer overlays, not tree writes.** Executable formula results, stale flags and file-link resolution are computed per viewer. The DocDO recomputes formula results when it exports. [S-conv §4.3 option 1]
-- **Transient `__style` markers.** `--link-selection` and the formula draft chip move to CSS Custom Highlights or decorations. `--context-selection` stays unreachable while the AI action is hidden. [S-conv §4.4]
+- **Transient `__style` markers.** `--link-selection` (T0.P: `::highlight(link-selection)`) and the formula draft chip move to CSS Custom Highlights or decorations. `--context-selection` stays unreachable while the AI action is hidden. [S-conv §4.4]
 - **Decorator payloads use registers.** @lexical/yjs stores node properties as whole-value attributes that merge last-writer-wins, which loses one side of concurrent edits. Each such payload lives instead in `Y.Map('registers')` under a stable `__regId`, minted at creation and deterministically on import (Lexical keys differ across clients):
   - `Y.Text` for `code-block.__code`, `html-block.__rawHtml` and `formula.__formula` (T1.9), written through the title binding's minimal-diff and caret-remap code;
   - per-key `Y.Map`s for `chart.__config` and the sketch grid and labels (T3.3).
@@ -619,6 +623,7 @@ CRLF becomes LF at the boundary. [P:Tech; S-prior §8.2–8.3]
 - **Secrets.** Fail closed on a weak or missing secret. Test hooks are refused on non-loopback origins. `.dev.vars` never ships, and secrets are set with `wrangler secret put`. [L§4.9; L§4.17]
 - **OAuth.** Providers are registered and rendered only when configured; none are. [P:People]
 - **Trust boundary.** Client `x-moss-*` and `x-partykit-*` headers are stripped by prefix. Only the `doc-d-o` party is reachable. Internal DO calls are RPC. [S-gd §1.3; S-prior §7.6]
+- **Cross-origin cookies.** The browser attaches the session cookie to every request for the host, and a same-site page (another port on 127.0.0.1, a sibling subdomain) gets past SameSite=Lax. One gate (`worker/origin-gate.ts`): when the principal came from a cookie, a socket upgrade (`/parties`, `/api/workspace/ws`) or an unsafe `/api/*` method must carry Origin equal to `BETTER_AUTH_URL`'s, else REST gets 403 and the socket closes 4401 after the upgrade, before any doc lookup. Bearer tokens, agent keys and a share token alone are never ambient and pass; reads are not gated. better-auth checks `/api/auth/*` itself. [T0.12]
 - **Disclosure.** The 404 for missing, inaccessible, trashed, revoked or forged docs is byte-identical, and member emails go to owners only. [L§1.6; S-gd §5.3]
 - **Share tokens** are threaded through every doc, asset, list, metadata and socket path. The link role is a ceiling, and anonymous access is capped at viewer. [L§4.10]
 - **Revocation** goes through one kick path, persisted in the DocDO before the request returns. Sign-out severs every socket of the session. [§8; L§4.9]
@@ -680,7 +685,7 @@ S-test is the detailed design of record, but where it disagrees with this file o
   - Real severs use `routeWebSocket` and SIGSTOP. Hibernation is induced and then proven by an instance-id change. [S-test §3; L§7.1 #11–13]
 - **Local work.** `scripts/stack.mjs` is the same launcher CI uses. It allows at most 2 stacks machine-wide, reaps orphans, refuses translated Node, and records host state (a bb dev stack or Nightly running, load) with each run so local deaths are classed as infrastructure. `scripts/qa.mjs` drives bb Browser Automation (local headless Chrome for Testing) with per-principal contexts and 2× PNGs. The checker's pass is a change's one browser QA pass. No tests ever run locally. [S-test §4; owner rule; L§5.1]
 - **Parity.**
-  - The Ladle oracle is built in CI from moss@pin, with the `main.tsx` Prism and font preamble added. The default story id is `desktop-app--default`. Capturing it on CI's ubuntu Chromium changes L§1.1's owner-gated capture baseline, so it is put to the owner at the M0 hand-off.
+  - The Ladle oracle is built in CI from moss@pin, with the `main.tsx` Prism and font preamble added. The shell stories are `app--default` and `app--empty-notes`; with no deploy key (OA1) it is built from `moss-vendor.mjs pristine` (§22). Capturing it on CI's ubuntu Chromium changes L§1.1's owner-gated capture baseline, so it is put to the owner at the M0 hand-off.
   - A target passes with a pixel diff of at most 0.05%, a largest blob of at most 16 px², and the diff image read.
   - Targets grow with each milestone to every moss surface a seam changes and a story covers: the shell (M0), the top bar with peers present and the new note (M1), the trash view (M2), Settings (M3), the comment gutter and popover (M4). Only the web chrome's own rects are masked, never the whole slot, so displaced moss chrome still fails.
   - Node families use computed-style parity against an oracle-only Ladle story that renders the family corpus in pristine moss's MarkdownEditor, built in CI. No moss desktop is launched. [S-test §5; L§4.19]
@@ -710,7 +715,7 @@ S-test is the detailed design of record, but where it disagrees with this file o
 | SP10 | Comment paint: the CSS Custom Highlight API in WebKit, and geometry for moss's gutter and popover. | T4.0 | A pointer-transparent overlay with stable per-comment elements. |
 | SP11 | Suggester vetting on a mirror for tree deltas, with structural ops (checkbox, table row, list indent) as suggestion parts. | T5.0 | Ask the owner with options before refusing any structural op in suggest mode. |
 | SP12 | Port the identity-preserving reconcile to 0.48: restore, then push. | T6.1 | Block-level landing with verify-or-refuse (409), never a silent rebuild. |
-| SP13 | Does a `data:` iframe inherit the page CSP in Chromium and WebKit, blocking moss-html scripts? | T0.5a | Serve HTML blocks from a dedicated route whose response carries `content-security-policy: sandbox allow-scripts`, still opaque-origin. |
+| SP13 | Does a `data:` iframe inherit the page CSP in Chromium and WebKit, blocking moss-html scripts? **Yes in Chromium (T0.5a), so the default applies: `/frame/html`.** | T0.5a | Serve HTML blocks from a dedicated route whose response carries `content-security-policy: sandbox allow-scripts`, still opaque-origin. |
 | SP14 | How does hibernation behave on real Cloudflare (about 10 s idle with hibernatable sockets, wakes re-sending step 1, per-wake state rebuild)? | T1.10 | Treat every staging difference from workerd as a product defect in the wake path; keep j04's staging legs in the canary. |
 | SP15 | Does Linux WebKit navigate history on a bare Backspace, so the j02 leg can fail on the CI engine? | T0.9a | Run that leg on a macOS runner at milestone gates. |
 | OA1 | **Owner action.** A read-only deploy key on brsbl/moss, so CI can build the Ladle oracle. | T0.5a | Build the oracle from vendored pristine files plus moss's stories and `.ladle` (moss-vendor `pristine`), with a non-frozen install recorded. |
