@@ -77,7 +77,7 @@ test('j13-vaults: Ada creates a vault inline, switches, and creates a note that 
   await expect(ui.pane(ada, docId)).toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout: BIND_TIMEOUT });
   await expect(ui.pane(ada, docId), 'Ada owns the note in her vault').toHaveAttribute(ROLE_ATTR, 'owner');
   await expect(noteRow(ada, docId), 'the note is listed in the new vault').toBeVisible();
-  const made = await listing(ada);
+  const made = await listing(ada, `?doc=${docId}`);
   expect(made.vault.name, 'the server listing is the new vault').toBe(VAULT);
   expect(made.docs.map((doc) => doc.id), 'the note was created in the new vault').toContain(docId);
 
@@ -105,6 +105,14 @@ test('j13-vaults: Ada creates a vault inline, switches, and creates a note that 
   await expect(ada.page.getByRole('alert').filter({ hasText: /already have a vault/ }), 'a taken name reads as a sentence').toBeVisible();
   await input.press('Escape');
   expect((await listing(ada)).vaults.filter((vault) => vault.name.toLowerCase() === 'home')).toHaveLength(1);
+
+  // Nobody else discovers a vault that was never shared with them.
+  const ben = await openShell(actors, 'ben');
+  await actors.requireDistinct(2);
+  await switcher(ben, 'Home').click();
+  await expect(ben.page.getByRole('menuitem', { name: 'Home', exact: true })).toBeVisible();
+  await expect(ben.page.getByRole('menuitem', { name: new RegExp(VAULT) }), "Ada's unshared vault is not Ben's to see").toHaveCount(0);
+  await ben.page.keyboard.press('Escape');
   await actors.checkpoint('vault-created');
 });
 
@@ -115,7 +123,8 @@ test('j13-vaults: Ben, with a root grant, sees the vault with a role badge and n
   const docId = await ui.createNote(ada);
   await ui.typeTitle(ada, docId, NOTE_TITLE, { enter: true });
   await expect(ui.pane(ada, docId)).toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout: BIND_TIMEOUT });
-  const vaultId = (await listing(ada)).vault.id;
+  const vaultId = (await listing(ada, `?doc=${docId}`)).vault.id;
+  expect(vaultId, 'the note is in the new vault').not.toBe((await listing(ada, '?vault=none')).vault.id);
   await grantVault(ada, vaultId, benPrincipal, 'editor');
 
   // Ben finds it in his own switcher, badged with his role, and opens it.
