@@ -196,8 +196,9 @@ export function resolveAnchor(doc: Y.Doc, anchor: TreeAnchor, projection = proje
 
 /**
  * Items inserted after a fence that name a right origin, by that origin's client. Yjs's undo re-inserts a deleted item
- * as a copy whose right origin is the deleted item itself (UndoManager `redoItem`). Typing never does that, because
- * an insert steps over deleted items to its right, so typed text names the next live item instead.
+ * as a copy whose right origin is the deleted item itself (UndoManager `redoItem`). A peer that had seen the deletion
+ * never names it, because an insert steps over deleted items to its right; a peer that typed before it saw the
+ * deletion can, so a candidate copy must also carry the commented characters (`restoredId`, `validateAnchor`).
  */
 export type Restores = Map<number, Y.Item[]>;
 
@@ -235,8 +236,20 @@ function copyStart(doc: Y.Doc, item: Y.Item): number {
   }
 }
 
-/** The id that restored the deleted character `id`, or null when nothing after the fence restored it. */
-function restoredId(doc: Y.Doc, id: Y.ID, restores: Restores): Y.ID | null {
+/** The projected character at `id`: a text character, or BLOCK_CHAR for an embed. */
+function charAt(doc: Y.Doc, id: Y.ID): string | null {
+  const item = itemAt(doc, id);
+  if (!item || item.deleted) return null;
+  if (item.content instanceof Y.ContentString) return item.content.str[id.clock - item.id.clock] ?? null;
+  return item.content instanceof Y.ContentType || item.content instanceof Y.ContentEmbed ? BLOCK_CHAR : null;
+}
+
+/**
+ * The id that restored the deleted character `id`, or null when nothing after the fence restored it. The copy must
+ * hold `expected` (the commented character on that side), so text a peer typed in front of the deletion before it saw
+ * it, which names the same right origin, is not taken for a restore.
+ */
+function restoredId(doc: Y.Doc, id: Y.ID, restores: Restores, expected: string | undefined): Y.ID | null {
   for (const item of restores.get(id.client) ?? []) {
     const origin = item.rightOrigin!;
     // A restored copy names the deleted item it replaces; text typed before it names a character that was live.
@@ -244,18 +257,24 @@ function restoredId(doc: Y.Doc, id: Y.ID, restores: Restores): Y.ID | null {
     const start = copyStart(doc, item);
     const target = Y.createID(item.id.client, start + (id.clock - origin.clock));
     const copy = itemAt(doc, target);
-    if (copy && sameId(copy.rightOrigin, origin) && copyStart(doc, copy) === start) return target;
+    if (!copy || !sameId(copy.rightOrigin, origin) || copyStart(doc, copy) !== start) continue;
+    if (expected === undefined || charAt(doc, target) === expected) return target;
   }
   return null;
 }
 
 /** A position whose character was deleted moves to the character's restored copy, following repeated undos. */
-function followRestore(doc: Y.Doc, position: Y.RelativePosition, restores: Restores): { position: Y.RelativePosition; restored: boolean } {
+function followRestore(
+  doc: Y.Doc,
+  position: Y.RelativePosition,
+  restores: Restores,
+  expected: string | undefined,
+): { position: Y.RelativePosition; restored: boolean } {
   let id = position.item;
   let restored = false;
   for (let hop = 0; id && hop < 8; hop += 1) {
     if (!itemAt(doc, id)?.deleted) break;
-    const next = restoredId(doc, id, restores);
+    const next = restoredId(doc, id, restores, expected);
     if (!next) break;
     id = next;
     restored = true;
@@ -266,18 +285,19 @@ function followRestore(doc: Y.Doc, position: Y.RelativePosition, restores: Resto
 function resolveSides(doc: Y.Doc, anchor: TreeAnchor, projection: Projection, restores: Restores | null): { range: Range | null; restored: boolean } {
   if (!anchor.start || !anchor.end) return { range: null, restored: false };
   let restored = false;
-  const side = (value: string) => {
+  const side = (value: string, expected: string | undefined) => {
     let position = decodeRelPos(value);
     if (restores) {
-      const followed = followRestore(doc, position, restores);
+      const followed = followRestore(doc, position, restores, expected);
       position = followed.position;
       restored ||= followed.restored;
     }
     const absolute = Y.createAbsolutePositionFromRelativePosition(position, doc, false);
     return absolute && absolute.type instanceof Y.XmlText ? flatOf(projection, absolute.type, absolute.index) : null;
   };
-  const start = side(anchor.start);
-  const end = side(anchor.end);
+  const { exact } = anchor.quote;
+  const start = side(anchor.start, exact ? exact[0] : undefined);
+  const end = side(anchor.end, exact ? exact[exact.length - 1] : undefined);
   if (start === null || end === null || end < start) return { range: null, restored: false };
   return { range: { start, end }, restored };
 }
@@ -333,7 +353,8 @@ const fenceOf = (anchor: TreeAnchor) => (anchor.orphanedAt ? Y.decodeStateVector
 /**
  * Keeps an anchor whose positions still cover its quote, refreshing the quote to the text they now cover. A comment
  * never jumps: when its text or block is deleted it is orphaned with its positions kept, and it comes back only where
- * a later undo or restore re-inserts that same text (a copy whose right origin is the deleted item). The quote is
+ * a later undo or restore re-inserts that same text (a copy whose right origin is the deleted item and which reads
+ * exactly as the quote, so a peer's text that merely names the deleted item never takes its place). The quote is
  * searched only for an anchor that never had positions (an import, a paste, a quote-only REST comment). Pure:
  * `changed` says the anchor differs in anything but its hint, which is what the caller persists.
  */
@@ -363,6 +384,7 @@ export function validateAnchor(
     }
   }
   if (!covers(range)) return orphan();
+  if (restored && projection.text.slice(range.start, range.end) !== exact) return orphan();
   if (restored) return { anchor: mintAnchor(doc, range.start, range.end, projection), range, reanchored: true, changed: true };
   const quote = captureQuote(projection.text, range.start, range.end);
   const changed = anchor.status !== 'anchored' || !sameQuote(quote, anchor.quote);
@@ -372,21 +394,40 @@ export function validateAnchor(
   return { anchor: { ...kept, quote, hint: range.start, status: 'anchored' }, range, reanchored: false, changed };
 }
 
-/** Every anchored comment's range just before a frame applies, and the projection it was read from. */
+/**
+ * Every anchored comment's range just before a frame applies, the projection it was read from, the doc's state vector
+ * then (the fence for a restore inside the frame), and the text-node structure of each block holding a range's side.
+ */
 export interface FrameBefore {
   projection: Projection;
   ranges: Map<string, Range>;
+  vector: string;
+  shapes: Map<Y.XmlText, string>;
+}
+
+/** A block's text-node structure: the ids of its embeds (V1 text-node property maps, linebreaks, decorators). */
+function shapeOf(type: Y.XmlText): string {
+  const ids: string[] = [];
+  for (const { insert } of type.toDelta() as { insert: unknown }[]) {
+    if (insert instanceof Y.AbstractType && insert._item) ids.push(`${insert._item.id.client}:${insert._item.id.clock}`);
+  }
+  return ids.join(',');
 }
 
 export function anchorsBefore(doc: Y.Doc): FrameBefore {
   const projection = project(doc);
   const ranges = new Map<string, Range>();
+  const shapes = new Map<Y.XmlText, string>();
   for (const [id, record] of doc.getMap<{ anchor?: TreeAnchor }>('comments')) {
     if (record?.anchor?.status !== 'anchored') continue;
     const range = resolveAnchor(doc, record.anchor, projection);
-    if (range && range.end > range.start) ranges.set(id, range);
+    if (!range || range.end <= range.start) continue;
+    ranges.set(id, range);
+    for (const side of [sideAt(projection, range.start, 0), sideAt(projection, range.end, -1)]) {
+      if (side && !shapes.has(side.type)) shapes.set(side.type, shapeOf(side.type));
+    }
   }
-  return { projection, ranges };
+  return { projection, ranges, vector: toBase64(Y.encodeStateVector(doc)), shapes };
 }
 
 /** One side of a range as its XmlText and an offset into that type's own projected text. */
@@ -422,16 +463,22 @@ const typeText = (projection: Projection, type: Y.XmlText) =>
   (projection.byType.get(type) ?? []).map((run) => projection.text.slice(run.flat, run.flat + run.length)).join('');
 
 /**
- * A range carried through a frame that left the projected text of both its sides' blocks unchanged: a format split
- * rewrites a text node's Y items without changing a character, so the comment keeps the same offsets in those blocks.
+ * A range carried through a frame that split or merged text nodes in its blocks without changing their projected
+ * text: a format split rewrites a text node's Y items without changing a character, so the comment keeps the same
+ * offsets in those blocks. A frame that leaves the text nodes as they were (a delete and a retype of the same text)
+ * is no split, and the comment stays orphaned.
  */
-function mapThroughFrame(before: Projection, after: Projection, range: Range): Range | null {
+function mapThroughFrame(frame: FrameBefore, after: Projection, range: Range): Range | null {
+  const before = frame.projection;
   const start = sideAt(before, range.start, 0);
   const end = sideAt(before, range.end, -1);
   if (!start || !end) return null;
+  let split = false;
   for (const type of new Set([start.type, end.type])) {
     if (!after.byType.has(type) || typeText(before, type) !== typeText(after, type)) return null;
+    if (shapeOf(type) !== frame.shapes.get(type)) split = true;
   }
+  if (!split) return null;
   const from = flatAtLocal(after, start.type, start.local, 0);
   const to = flatAtLocal(after, end.type, end.local, -1);
   return from !== null && to !== null && to > from ? { start: from, end: to } : null;
@@ -454,7 +501,8 @@ function deletedBlock(before: Projection, range: Range): TreeAnchor['block'] {
  * Validates every anchor in `Y.Map('comments')` and rewrites, in one transaction under `origin`, the records whose
  * anchor changed. The DocDO calls it in the same synchronous step that applies a `root` frame, with `before` taken just
  * before that frame, so the refresh is persisted beside the frame and a restart never loses it (comments.md §3.4). A
- * newly orphaned anchor keeps its positions and records the fence (and deleted block) a restore must come after.
+ * newly orphaned anchor keeps its positions and records the fence (and deleted block) a restore must come after; the
+ * fence is the state before the frame, so an undo sent in the same frame as its deletion reattaches it at once.
  * Returns the ids it rewrote.
  */
 export function refreshAnchors(doc: Y.Doc, origin: unknown, before?: FrameBefore): string[] {
@@ -476,14 +524,16 @@ export function refreshAnchors(doc: Y.Doc, origin: unknown, before?: FrameBefore
     let { anchor: next, changed } = checked;
     const { range } = checked;
     const was = before?.ranges.get(id);
-    const mapped = was && before ? mapThroughFrame(before.projection, projection, was) : null;
+    const mapped = was && before ? mapThroughFrame(before, projection, was) : null;
     if (mapped && (range?.start !== mapped.start || range?.end !== mapped.end)) {
       next = mintAnchor(doc, mapped.start, mapped.end, projection);
       changed = true;
-    }
-    if (next.status === 'orphaned' && anchor.status !== 'orphaned') {
+    } else if (next.status === 'orphaned' && anchor.status !== 'orphaned') {
       const block = was && before ? deletedBlock(before.projection, was) : undefined;
-      next = { ...next, orphanedAt: toBase64(Y.encodeStateVector(doc)), ...(block ? { block } : {}) };
+      const fenced = { ...anchor, orphanedAt: before?.vector ?? toBase64(Y.encodeStateVector(doc)), ...(block ? { block } : {}) };
+      // Validated again behind the fence, so a restore in this same frame counts.
+      ({ anchor: next } = validateAnchor(doc, fenced, projection));
+      changed = true;
     }
     if (changed) rewritten.push([id, { ...record, anchor: next }]);
   }
