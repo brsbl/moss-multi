@@ -1,11 +1,11 @@
 # moss-multi progress
 
-**Overall: 43% done** (30 of 70 planned tasks verified)
+**Overall: 42% done** (31 of 73 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 17 / 17 | in progress |
-| M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 10 / 11 | in progress |
+| M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 11 / 13 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 3 / 9 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 0 / 9 | |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
@@ -48,6 +48,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-03 — T2.1 verified: while someone has a note open, a collaborator's new note, rename or trash shows up in their sidebar within 5 s without a reload, sorted by last update, without remounting the open editor; the workspace channel stops at once on sign-out.
 - 2026-10-03 — T1.9 verified: code, HTML and formula blocks now keep their text in shared registers, so two people typing in the same block merge live in both engines, drafts survive reloads and imports, and Cmd+Z inside a block undoes only that person's edits to it.
 - 2026-10-04 — T2.2 verified: anyone can create, rename and move folders and move notes between them from the web sidebar, editors included in a shared vault; deleting a folder sends its whole subtree to trash as one batch, and a peer with a note open inside it goes terminal in place.
+- 2026-10-04 — T1.9s verified: typing in a large note full of code blocks now refreshes only the block being edited instead of every block, and importing a note with tens of thousands of identical blocks assigns their ids in linear time.
 
 ## T1.1s identity audit
 
