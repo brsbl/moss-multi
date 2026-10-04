@@ -193,45 +193,48 @@ function payloadServer(state?: Uint8Array, { honorDeletes = true } = {}) {
   const touched = new Set<string>();
   const stats = { evaluated: 0, reclaimed: 0, revived: 0, deduped: 0 };
 
-  // The index of live elements by id, kept from root events: an added or deleted item's whole subtree, since a V1
-  // move or delete of a container or paragraph reports only the top item.
+  // The index of live elements by id, kept from each transaction's own structs: the elements it integrated and the
+  // ones it deleted, including every element inside a moved or deleted paragraph or container (Yjs deletes a subtree
+  // item by item, and V1 recreates one the same way). Work is proportional to the transaction.
   const index = (item: Y.Item, live: boolean, janitor: boolean) => {
-    if (!(item.content instanceof Y.ContentType)) return;
-    const type = item.content.type as Y.AbstractType<unknown>;
-    if (type instanceof Y.XmlElement) {
-      const attr = type.getAttribute('__blockId') as unknown;
-      const id = live ? (PAYLOAD_TYPES.has(String(type.getAttribute('__type'))) && typeof attr === 'string' ? attr : undefined) : ids.get(type);
-      if (id) {
-        let set = named.get(id);
-        if (!set) named.set(id, set = new Set());
-        const changed = live ? !set.has(type) : set.has(type);
-        if (live) { set.add(type); ids.set(type, id); } else set.delete(type);
-        if (changed && !janitor) touched.add(id);
-      }
-    }
-    for (let child = type._start; child; child = child.right) if (!live || !child.deleted) index(child, live, janitor);
+    if (!(item.content instanceof Y.ContentType) || !(item.content.type instanceof Y.XmlElement)) return;
+    const element = item.content.type;
+    const attr = element.getAttribute('__blockId') as unknown;
+    const id = live ? (PAYLOAD_TYPES.has(String(element.getAttribute('__type'))) && typeof attr === 'string' ? attr : undefined) : ids.get(element);
+    if (!id) return;
+    let set = named.get(id);
+    if (!set) named.set(id, set = new Set());
+    const changed = live ? !set.has(element) : set.has(element);
+    if (live) { set.add(element); ids.set(element, id); } else set.delete(element);
+    if (changed && !janitor) touched.add(id);
   };
-  root.observeDeep((events, transaction) => {
+  doc.on('afterTransaction', (transaction: Y.Transaction) => {
     const janitor = transaction.origin === JANITOR;
-    for (const event of events) {
-      for (const item of event.changes.added) index(item, true, janitor);
-      for (const item of event.changes.deleted) index(item, false, janitor);
-    }
+    transaction.afterState.forEach((after, client) => {
+      const before = transaction.beforeState.get(client) ?? 0;
+      if (after === before) return;
+      const structs = doc.store.clients.get(client) ?? [];
+      for (let i = Y.findIndexSS(structs, before); i < structs.length; i++) {
+        const struct = structs[i];
+        if (struct instanceof Y.Item && !struct.deleted) index(struct, true, janitor);
+      }
+    });
+    Y.iterateDeletedStructs(transaction, transaction.deleteSet, (struct) => { if (struct instanceof Y.Item) index(struct, false, janitor); });
   });
   registers.observeDeep((events, transaction) => {
     if (transaction.origin === JANITOR) return;
     for (const event of events) {
-      if (event.target === registers) for (const id of event.keysChanged) touched.add(id);
+      if (event.target === registers) for (const id of (event as Y.YMapEvent<Y.Text>).keysChanged) touched.add(id);
       else if (typeof event.target._item?.parentSub === 'string') touched.add(event.target._item.parentSub);
     }
   });
 
-  const order = (type: Y.AbstractType<unknown>, out: Y.XmlElement[]): Y.XmlElement[] => {
+  const order = (type: { _start: Y.Item | null }, out: Y.XmlElement[]): Y.XmlElement[] => {
     for (let item = type._start; item; item = item.right) {
       if (item.deleted || !(item.content instanceof Y.ContentType)) continue;
-      const child = item.content.type as Y.AbstractType<unknown>;
+      const child: unknown = item.content.type;
       if (child instanceof Y.XmlElement) out.push(child);
-      order(child, out);
+      order(child as { _start: Y.Item | null }, out);
     }
     return out;
   };
@@ -276,7 +279,7 @@ function payloadServer(state?: Uint8Array, { honorDeletes = true } = {}) {
   };
 
   /** J4: a peer's own deletion of characters the janitor had reclaimed is honored, so a revive never doubles them. */
-  const honor = (ds: Y.DeleteSet, senderState?: Map<number, number>) => {
+  const honor = (ds: ReturnType<typeof Y.createDeleteSet>, senderState?: Map<number, number>) => {
     for (const [id, pieces] of trash) {
       const kept: Piece[] = [];
       for (const piece of pieces) {

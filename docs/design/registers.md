@@ -1,97 +1,109 @@
 # Decorator payload lifecycle (T1.R design review)
 
-**Decision: move each decorator payload into its own block.** A code block's code, an HTML block's HTML and a formula's source become a `Y.Text` stored as an attribute of that block's own Yjs element, instead of an entry in the shared `Y.Map('registers')`. Deleting, restoring, copying and serving the block then carry the payload with it, through Yjs's own rules, with no lifecycle code of ours. `@lexical/yjs` already stores `__state` and `__slots` this way (`Utils.ts:55–100`), so this is the binding's native shape, not a workaround.
+**Decision: keep each payload in `Y.Map('registers')` under its block's stable id, let clients only create and edit it, and make the DocDO the one writer that deletes and restores payload text.** A code block's code, an HTML block's HTML and a formula's source stay a `Y.Text` keyed by `__regId`, as in M1, so a Lexical move (which V1 performs as delete plus recreate) never touches the text and nobody's typing is lost to a move. What changes is who removes text. No client ever deletes a payload. After every applied update, the DocDO's janitor checks only the ids that update touched:
+
+- text that no live block names moves into a private trash, out of the served state;
+- text whose block comes back (undo, redo, a raced move) returns to where it was;
+- when two blocks name one id, one of them is removed.
+
+The janitor is a single serial writer that sees every update, so it settles the races that no client can see at delete time.
 
 ## Owner summary
 
-- **What was wrong.** Code, HTML and formula text lived in a side table keyed by an id the block carries. A block and its text could therefore drift apart. Deleting a block left its text in the table, where later readers and duplicates still received it (the privacy P1). Deleting the text with the block broke moves, because a Lexical move deletes the block and recreates it under the same id, and another person's concurrent delete could not tell the two apart. T1.P tried to repair that race after the fact and failed three checks: lost text, doubled text, and revived deletions.
-- **What changes.** The text moves inside the block. Delete the block and its text goes with it, in the same step, so the server stops serving it at once; undo brings both back together. A move copies the text into the new block, as Lexical's collaboration binding already does for every paragraph. Nobody but the block's creator ever creates its text, so a person joining mid-edit cannot overwrite it.
-- **What you give up (stated plainly).** These are limits of Lexical's move model that every block type in the editor already has; none is new to code blocks:
-  1. Characters typed into a block by one person during the fraction of a second in which another person moves it are lost.
-  2. Text typed offline into a block someone else deleted is lost, as it would be in a deleted paragraph.
-  3. Two people moving the same block at the same moment get two copies of it.
-- **What stays the same.** Two people typing in one code block still merge character by character. Undo still removes only your own typing. Export bytes do not change.
-- **Cost.** Each edit touches one block. The full-map refresh that T1.9s is fixing disappears for payloads, because a payload edit names its block directly.
+- **What was wrong.** In M1, deleting a code, HTML or formula block left its text in the shared map, so later readers and duplicates still received it (the privacy P1). Deleting the text together with the block breaks moves. A move deletes the block and recreates it under the same id, and a client that deletes cannot see a move happening at the same moment elsewhere. T1.P tried to repair that race on the clients and failed three checks.
+- **What attempt 1 proposed, and why it was refuted.** It moved the text inside the block's own Yjs element. That fixed privacy, but a move then copied the text into a new element, so anything a peer typed into the old one during the move was lost, including all of a briefly offline peer's typing. M1 keeps those edits. Dropping them would change the PRODUCT contract ("neither ever loses work"), and that needs your decision. This design keeps them instead.
+- **What changes now.**
+  - Deleting a block takes its text out of what the server serves within the same message.
+  - The text waits in a server-only trash for 30 days, the same retention as deleted notes, and is never served or copied. Undo, redo, or a move that raced the delete brings it back exactly where it was, together with what the other people typed.
+  - When two people move the same block at the same moment, the server keeps one copy.
+  - Only the person who creates a block ever creates its text, so someone joining mid-draft cannot replace it.
+- **What stays the same.** People typing in one code block merge character by character, Cmd+Z undoes only your own typing, a move keeps every character, and export bytes do not change.
+- **What you give up (narrow; nothing is destroyed in any of these):**
+  1. Undoing the creation of a block that someone else typed into hides it, along with their typing. Redo brings all of it back. V1 already does this for paragraphs on m1. Fixing it for all blocks is an undo-policy question for the whole tree, not a payload question, so it is filed separately.
+  2. When a delete and a move of one block race, the move wins: the block survives, as a V1 paragraph does. If the deleter then undoes, the server removes the duplicate and keeps the copy that comes first in the note, so the block may return to its original position.
+  3. If a block is deleted and restored while someone is typing inside its text, their characters are kept but can land at the end of the restored stretch instead of in the middle. Yjs's own undo positions text the same way.
+  4. If text was typed in a block before it was deleted and restored, its author can no longer undo that typing, because the restored text counts as a server write. The block and its text are unaffected.
+  5. A property change made, at the same instant, to the duplicate the server removes (for example the code language) is lost.
+- **Cost.** The janitor reads only the ids an update touched (the spike counts one id per edit, delete or move in a 200-block note). The client side is T1.9s's per-id refresh, unchanged.
 
 ## Requirements and how each is met
 
-| Requirement | Map model (M1 head) | Element-owned payload |
-| --- | --- | --- |
-| (a) Deleted payload text is not served to later readers, viewers or duplicates | Fails: the map entry survives its block (spike `M1 map: a deleted block's payload…`, red in run 37194871289) | Deleting the element deletes its attribute types in the same transaction; the DocDO's doc runs with `gc: true` and no undo manager, so the text is collected before any later sync step 2 or snapshot copy (spike, two tests) |
-| (b) No loss or doubling under delete, move, undo | Cannot hold with a delete rule: the deleter cannot see a concurrent move that re-names the id (T1.P's three rounds) | Delete ∥ move: the mover's copy survives with the text once. The deleter's undo restores nothing the move kept. The mover's undo keeps a third peer's edit. Both merge orders are covered (spike) |
-| (c) A joining peer never loses the drafter's committed code | A payload can be created by any peer whose map lacks the key, and Y.Map then silently drops one of two concurrent `Y.Text`s | Only the element's creator attaches a payload, inside the transaction that creates the element; peers never create, replace or whole-value-write one (spike, every join point) |
-| (d) Cost proportional to the change | A refresh walks every node, or every register | A payload event's target is the payload, whose parent element names the Lexical key (`_collabNode._key`); exactly one node refreshes (spike asserts one key per event) |
+| Requirement | Map model (M1 head) | Element-owned payload (attempt 1) | Map + janitor (chosen) |
+| --- | --- | --- | --- |
+| (a) Deleted text is not served to later readers, viewers or duplicates | Fails: the entry outlives its block (`it.fails` below) | Met | Met. The janitor deletes unnamed text in the same DocDO handler, before anything is persisted or served; the doc has GC on and no undo manager, so the bytes go. Trash is server-only and is not part of the Yjs state, so duplicates, snapshots and joiners never see it |
+| (b) No loss or doubling under delete, move or undo | Moves fine; never deletes | Loses typing that races a move (refuted P1) | Moves never touch the text. Delete ∥ move, concurrent moves, concurrent undos, and multi-step undo all converge to one block with the text once (spike) |
+| (c) A joining peer never loses the drafter's committed code | Any peer whose map lacks the key could create a second `Y.Text` | Met | Only the minting client creates the payload, inside the transaction that creates its element. Peers never create, replace or whole-value-write one, and the janitor never mistakes a new block for an orphan (spike, every join point) |
+| (d) Cost proportional to the change | T1.9s fixed the walk | Met | Janitor work per update is the ids it touched, plus the subtree of an added or deleted container; client work is unchanged |
 
-## Why the map cannot be fixed in place
-
-The id outlives any one element: V1 has no move operation, so `syncChildrenFromLexical` deletes the old element and creates a new one for a moved key (`CollabElementNode.ts:583–606`). Whether a payload is still wanted is therefore a global question ("does any live element, anywhere, on any peer, still name this id?"), and no client can answer it at delete time.
-
-- **Client deletes the payload with the block (T1.P).** A concurrent move re-names the id after the delete, so the merged doc holds a live block with empty text. Repairing that afterwards needs the mover to re-insert text, which doubles it when the deleter also undoes, and revives a third peer's deletions.
-- **Server reclaims unnamed payloads.** The deleter's undo restores the block but cannot restore text a server-origin transaction removed, since server writes never enter a client undo manager (A§10.8). It also leaves deleted text served for the length of the reclamation delay.
-- **Never delete.** This violates (a).
-
-An element-owned payload has no id to outlive. Its lifetime is its element's lifetime, and every peer agrees on that by construction.
-
-## Alternatives considered
+## Why the alternatives fail
 
 | Option | Verdict |
 | --- | --- |
-| A. Map plus client delete and racing-move recovery (T1.P) | Rejected: three failed checks. Recovery is inherently a second writer for the same text. |
-| B. Payload as a `Y.Text` attribute of the block's element | **Chosen.** Native to V1 (`__state` and `__slots` precedent); delete, undo, GC, duplicate and snapshot semantics come from Yjs. |
-| C. Map plus server-authoritative reclamation | Rejected: it breaks the deleter's undo (server origins are not undoable) and serves deleted text until the pass runs. |
-| D. Lexical named slots (`@experimental`, 0.48): the payload as a nested Lexical node | Rejected for now: it rewrites moss's node model and views (a textarea over a slot editor), and the API is experimental. It has the same lifecycle as B, so B keeps this door open. |
-| E. glyphdown's model: the whole body is one `Y.Text` of markdown (S-gd §0) | Not applicable: a fenced block is plain characters there, so it has no payload lifecycle at all. Our V1 tree schema is fixed (A§10.2). |
-| Moss desktop at the pin | One writer and whole-value fields (`CodeBlockNode.tsx:535`, `FormulaNode.tsx:252–260`); no concurrency to manage. |
+| A. Map, with the client deleting the payload alongside the block and repairing racing moves (T1.P) | Rejected. Three failed checks. A client cannot see a concurrent move at delete time, and a client-side repair adds a second writer for the same text, so the text comes back doubled or lost. |
+| B. Payload as a `Y.Text` attribute of the block's own element (attempt 1) | Rejected. A V1 move copies the text into a new element, so a peer's typing during the move is lost, which M1 keeps. Undo also needed two rules. The checker refuted both of them: one missed blocks restored by an earlier undo, the other missed containers. |
+| C. Map plus a server pass that only deletes unnamed text | Rejected. It breaks the deleter's undo, because server writes never enter a client undo stack (A§10.8), and a raced move loses its text. C plus a trash with positional revival is the chosen design. |
+| D. Lexical named slots (`@experimental` in 0.48): the payload as a nested Lexical node | Rejected for now. It would rewrite moss's node model and views, and it has B's move problem. |
+| E. Glyphdown: the whole body is one `Y.Text` of markdown | Not applicable. A fenced block there is plain characters, so there is no payload lifecycle; our V1 tree schema is fixed (A§10.2). |
+| Moss desktop at the pin | One writer and whole-value fields (`CodeBlockNode.tsx:535`, `FormulaNode.tsx:252–260`), so it has no concurrency to manage. |
 
 ## Lifecycle rules
 
-1. **Create.** In the binding's own transaction (origin `binding`), right after `syncLexicalUpdateToYjs`, each register-type element *this transaction created* gets `element.setAttribute('<field>', new Y.Text(text))`. The text is the old element's live payload when the key had one before the sync (a move), else the node's cache (a new block or a paste). The attribute key is the excluded field name itself (`__code`, `__rawHtml`, `__formula`), as `__slots` reuses its field name, so the binding never syncs or restores it as a property.
-2. **Never create for another client's element.** Hydration, remote updates, undo and redo (collaboration or historic tags) never attach a payload. An element with no payload (legacy data before migration) reads its cache and refuses edits; it never invents text.
-3. **Read and write.** Resolve the payload through `binding.collabNodeMap.get(key)._xmlElem.getAttribute(field)` at the moment of use. Never hold a `Y.Text` across a move: the element, and so the payload, is new after one. Writes are minimal diffs under `REGISTER_LOCAL_ORIGIN`, from text read from the payload in the same tick.
-4. **Remote events.** The tree observer routes events whose target is a payload (`isPayload`: a non-`XmlText` `Y.Text` whose `_item.parentSub` is a register field) to a per-key cache refresh, and passes only the rest to `syncYjsChangesToLexical`. Unrouted, V1 raises "Expected text, element, or decorator event" (spike).
-5. **Delete.** Nothing to do: Yjs deletes the payload with its element.
-6. **Undo scope.** `[root]` only, since payloads are inside root. When an undo step would delete a block itself (undoing its creation, or the recreation half of a move) and the block's payload holds another client's live text, the undo manager's `deleteFilter` keeps every struct of that block: the element, its attributes, the payload and the undoer's own runs in it. This is T1.P's rule, now local to the block, so undoing a creation or a move never takes a peer's typing. Undoing one's own typing inside a shared payload is unaffected. The filter is called per struct, children first, so it resolves each struct to its containing block and checks that block against the step being popped. Two spike rounds showed both halves: filtering only the element still lost the peer's text, and filtering every run blocked an ordinary typing undo.
-7. **Undo identity check.** `__regId` stays as the block's identity (minted once, kept through Lexical moves, fresh on every copy). After an undo or redo transaction, the undoing client deletes, in an untracked follow-up transaction, any block that undo just created when another live block, not created by that undo, has the same id. A block a peer moved is then never resurrected beside its moved copy. Only the undoer acts, and only on elements it just created, so the check can never delete a peer's content.
-8. **Copy.** Clipboard, `$copyNode` and duplicate-block paths mint a fresh `__regId`; `afterCloneFrom` keeps it only for `getWritable` clones (same key). Duplicate-note copies the Yjs snapshot, payloads included, into a new doc.
-9. **Server.** The mirror uses the same binding hooks (create rule, event routing), so `serverWrite` imports carry payloads, and export reads through the node getters unchanged. The DocDO migrates persisted M1 docs once in `onLoad` (one serialized writer, so no race): each element without a payload gets one from its `registers` entry, or from a legacy string attribute, and then every `registers` entry is deleted. That deletion also removes the orphans the map has already stored.
+1. **Identity.** `__regId` is minted once by the client that creates the node. Property sync carries it through every V1 move, including a move of the paragraph or container around it. Every copy gets a fresh id: clipboard, `$copyNode`, duplicate block and import. `afterCloneFrom` keeps the id only for `getWritable` clones, which share the node's key.
+2. **Create.** A client creates `registers[id] = new Y.Text(text)` only for an id it minted, and only inside the binding transaction (origin `binding`) that syncs the node's element: `syncLexicalUpdateToYjs` and the creation run in one `doc.transact(…, binding)`. The client works from its own minted-ids list, not from dirty leaves, so a node inside a new paragraph or container is covered. No other path ever writes a payload: not the node transform, not hydration, not remote updates, undo, redo, refresh or migration. A node whose payload has not arrived reads its cache, refuses edits and never invents text.
+3. **Move.** Nothing to do. The text is keyed by id, and the recreated element carries the same id.
+4. **Delete.** The client deletes the element and leaves the payload alone. The janitor does the rest.
+5. **Undo.** The undo scope is `[root, registers]`, with the `binding` and `REGISTER_LOCAL_ORIGIN` origins tracked. `deleteFilter` returns `item.parent !== registers`, so an undo never deletes a payload entry. That is the only undo rule. Undoing a creation deletes the element and the undoer's own characters; the janitor reclaims whatever else is left, and redo brings the element back for the janitor to revive. Nothing depends on struct identity, so `followRedone` replacements and container deletions need no special case (attempt 1's P1-2 and P1-3).
+6. **Janitor (DocDO).** It runs after every applied update from any origin except its own, in the same handler, before the update is persisted or anything is served. Its writes use origin `janitor`, which no client manager tracks.
+   - **Index:** id → live elements. It is kept from root events, walking the whole subtree of each added or deleted item, because a moved or deleted paragraph or container reports only its top item. It is built once on load.
+   - **J1 reclaim:** an id with no live element and live text moves its runs to trash, as (client, clock, text), and then deletes the text. The runs' tombstones stay in place.
+   - **J2 revive:** an id with a live element and trash gets each run back. A new item is inserted directly before the run's own tombstone, which is split at the run's start, so a peer's insert made next to any character stays next to it. The trash entry is dropped.
+   - **J3 dedupe:** an id with two or more live elements keeps the first in document order and deletes the rest. Only the serial janitor does this, so the last copy is never deleted (attempt 1's P1-5).
+   - **J4 honor deletions:** characters in trash that a peer deleted concurrently are dropped from trash, so that peer's later undo restores them once. An incremental update carries only its sender's own deletions, so all of them are honored. A sync step 2 carries every deletion its sender knows, including the reclaim itself. So each reclaim also bumps a marker in `Y.Map('janitor')`, which advances the server's clock. Pieces the sender had already seen reclaimed, by its state vector, are kept.
+   - **J5 load pass:** index the doc and reclaim every unnamed payload. This also clears the orphans M1 has already stored, so persisted M1 docs need no other migration.
+7. **Trash.** A DocDO SQLite table `register_trash(reg_id, client, clock, text, seen_client, seen_clock, at)`, indexed by `reg_id` and by `client` for J4. Rows expire after 30 days and are deleted with the doc. They are never served, snapshotted, exported or copied.
+8. **Reads, writes and events.** Payload edits are events on `registers`, never on the V1 root, so the official observer is untouched (T1.9s's per-id refresh stays). Views resolve the payload at the moment of use and write minimal diffs under `REGISTER_LOCAL_ORIGIN` (T1.F4).
+9. **Mixed versions.** Nothing has shipped. Before staging carries real docs, the DocDO refuses clients whose bundle predates this design (by `bundleHash`), because an M1 client still creates payloads for ids it did not mint.
 
 ## Evidence
 
-Spike: `packages/sync/src/register-lifecycle.spike.test.ts` (unit lane). It runs a prototype on the real `@lexical/yjs` 0.48 V1 binding and `yjs` 13.6.31, with a server doc that has GC on and no undo manager, as the DocDO does.
+The spike is `packages/sync/src/register-lifecycle.spike.test.ts` (unit lane). It runs the client rules on the real `@lexical/yjs` 0.48 V1 binding with `yjs` 13.6.31, and the janitor on a server doc with GC on and no undo manager, as the DocDO has. Clients send one incremental update per transaction, as a connected provider does. A reconnecting client sends a sync step 2 with its state vector.
 
-- Privacy: the deleted text is absent from the bytes of the served state, a late reader and a duplicate copy; a positive control precedes the check.
-- The deleter's undo after the server collected the text restores block and payload in one step, including a peer's characters; a late reader sees them.
-- Move: one payload carries every character for peers and after reload.
-- Delete racing a move, in both merge orders, with three peers: one block, text once; the deleter's undo restores nothing extra; the mover's undo keeps the third peer's later edit. A control without rule 7 shows the V1 doubling.
-- Concurrent typing in one payload merges, undo is per client, and a remote edit names exactly one block.
-- Join: a peer that hydrates after every prefix of a drafter's update stream, and then touches the block, never costs the drafter a character.
-- The stated limits run as tests: typing that races a move, and offline typing into a deleted block, are lost and never served.
-- M1 comparison: the map's privacy failure is `it.fails`. The binding order is shown safe (the register precedes its element on the wire, and Yjs integrates one client's updates in clock order). A whole-value write of a stale field snapshot is shown to delete a peer's characters.
+- **Privacy:** after a delete, the text is absent from the served bytes, a late reader and a duplicate, with a positive control first. Offline typing into a deleted block is reclaimed as well.
+- **Deleter's undo:** block and text come back after the server reclaimed them, including a peer's characters and that peer's offline typing.
+- **Moves (attempt 1's P1-1 and P1-4):** typing that races a move is kept in both arrival orders, including a long offline stretch. A formula inside a moved paragraph and a block inside a moved container keep their text and the racing peer's typing. The spike asserts that V1 really recreated both elements.
+- **Delete racing a move:** both orders, three peers. The result is one block with the text once, including the mover's typing after the move. The deleter's undo restores nothing twice, and the mover's undo keeps a third peer's edit.
+- **Concurrent moves, then concurrent undos (P1-5):** exactly one block, in both orders.
+- **Multi-step undo (P1-2):** create, delete, undo, a peer types, then undo the creation. The block hides, nothing is served, and redo restores the peer's characters.
+- **Paragraph holding a formula (P1-3):** undoing its creation after a peer's formula edit hides both. Redo restores every character. A control shows V1 does the same to a paragraph's text on m1.
+- **Join:** a peer that joins after every prefix of a drafter's update stream and touches the block never costs the drafter a character. The janitor never reclaims a new block, and only the drafter creates the payload.
+- **J4:** a concurrent character deletion is honored, both through incremental updates and through a reconnect's sync step 2, and a control without the rule doubles the characters. A reconnecting peer that had seen the reclaim does not cancel it.
+- **J5:** the load pass reclaims an M1-style orphan and keeps live payloads.
+- **Cost:** in a 200-block note the janitor evaluates one id for an edit, one for a delete and one for a move.
+- **M1 comparison:** the map's privacy failure stays `it.fails`. Binding order is safe (the register precedes its element on the wire). A whole-value write of a stale field snapshot deletes a peer's characters, which T1.F4 removes.
 
-The tests-first run was red on the M1 privacy assertion: [37194871289](https://github.com/brsbl/moss-multi/actions/runs/37194871289).
+Runs: the tests-first run was red on attempt 1's privacy assertion: [37194871289](https://github.com/brsbl/moss-multi/actions/runs/37194871289). The checker's five findings, written as tests against attempt 1's prototype, were red before this design replaced it (see the T1.R commit history). The final green run is on the branch head.
 
-**P0 (c) reproduction.** Two local passes on m1 `8d2a388`, one on a warm DO and one after a stack restart, did not reproduce the loss. In both, Ada created a code block with "```js", drafted it, and Ben joined, opened the block and typed in it while Ada kept typing. The spike rules out binding order. Three mechanisms remain that fit "committed locally, gone after reload", and the design removes each:
+**P0 (c) reproduction.** Attempt 1 made two local passes on m1 `8d2a388`, warm and cold, and neither reproduced the loss. The spike rules out binding order. Three mechanisms remain that fit "committed locally, gone after reload", and this design removes the first. T1.F4 removes the other two.
 
-1. A second creator for one register key. Any path that calls `registers.set(id, …)` for an id the client did not mint makes Y.Map keep one `Y.Text` and drop the other's text without error: the node transform when `!registers.has(id)`, and `migrateRegisters`.
-2. A view that captured the payload `Y.Text` at mount, so it keeps showing text the doc no longer names (`useRegisterDraft`'s observer effect, keyed only by node key).
+1. A second creator for one id. The node transform calls `registers.set` whenever `!registers.has(id)`, and so does `migrateRegisters`. Y.Map then keeps one `Y.Text` and silently drops the other's text. Rule 2 removes both paths.
+2. A view that captured the payload `Y.Text` at mount (`useRegisterDraft`'s observer effect, keyed only by node key).
 3. Whole-value setter calls from view state that missed a peer's edit: `commitCode`, the double-Enter path's `textarea.value` and the Tab path's `localCode` in `CodeBlockNode.view.tsx`.
-
-T1.F4 must first reproduce the evidence pass's journey as a red j01 leg.
 
 ## Implementation brief
 
-**T1.F2: payload storage and lifecycle (data model; `packages/sync`, the plugin seams, the DocDO).**
+**T1.F2: payload creation, undo and the janitor (`packages/sync`, the plugin seams, the DocDO).**
 
-- Replace the map in `packages/sync/src/registers.ts` with the element-owned payload: `payloadOf(binding, key)`, the create hook (rule 1), `isPayload` routing (rule 4), and per-key cache refresh. Delete `bindRegisters`'s node transform, `$refreshRegisters`'s full walk and `migrateRegisters`'s map writes. Readers in the node seams (`readRegister` and `writeRegister`) resolve through the active editor's binding; keep `__regId` as identity only.
-- Wrap `syncLexicalUpdateToYjs` in one `doc.transact(…, binding)` with the create hook, in `vendor/lexical-react/shared/useYjsCollaboration.tsx` (seam plugin-b already wraps it through `syncUnderOrigin`) and in `server-doc.ts`'s mirror; route payload events in both observers.
-- Undo: scope `[root]`, the `deleteFilter` keep rule, and the post-undo identity check (rule 7), in `apps/web/src/host/collab/undo.ts`. Index live register blocks by `__regId` through Lexical mutation listeners rather than walking the root.
-- Copies mint fresh ids (rule 8). The DocDO migration (rule 9) ships with a test over a persisted M1 doc state that holds a register map, including an orphan.
-- Tests: port each spike case to the real moss nodes (code, HTML and formula, including a formula inside a paragraph that splits) through `serverWrite`, the DocDO harness and two live clients. Flip the M1 `it.fails` to `it`. Add a frame scan proving a deleted payload's text never appears in a later joiner's sync step 2. Export bytes stay identical. Run the j01 register legs in both engines.
-- A§10.10's "Decorator payloads use registers" bullet is rewritten in the same commit; deviation 21 is rechecked.
+- `packages/sync/src/registers.ts`: delete the node transform's `registers.set` and `migrateRegisters`'s map writes. Add `mintRegisterId(node)`, which records (editor, key) in a per-editor minted list, and `$createMintedPayloads(binding)`, which runs inside the binding transaction (rule 2). Readers and writers keep `__regId`. Nothing on a client calls `registers.delete`.
+- Wrap `syncLexicalUpdateToYjs` and the create step in one `doc.transact(…, binding)`: in `vendor/lexical-react/shared/useYjsCollaboration.tsx` (seam plugin-b already wraps it through `syncUnderOrigin`) and in `server-doc.ts`'s mirror for `serverWrite` imports.
+- `apps/web/src/host/collab/undo.ts`: add `deleteFilter: (item) => item.parent !== registers` (rule 5) and nothing else. T1.P's keep and recovery rules are not ported.
+- New `packages/sync/src/janitor.ts`, a Yjs-level module with no Lexical dependency: index, J1–J5 and the trash interface. The DocDO calls it after every `applyUpdate`, passing the message's update and, for a sync step 2, the sender's state vector, before persistence and fan-out. `serverWrite` imports, pushes and restores call it too. Trash goes into the DO's SQLite (rule 7). Revival builds `Y.Item`s directly (`Y.Item`, `Y.getItemCleanStart`, `Y.ContentString` are exported) and then clears the text's search marker, as the spike does.
+- Copies mint fresh ids (rule 1). The mixed-version gate (rule 9) goes into the DocDO's admission check.
+- Tests: port every spike case to the real moss nodes (code, HTML, formula, including a formula inside a paragraph that splits) through `serverWrite`, the DocDO harness and two live clients. Flip the M1 `it.fails` to `it`. Add a frame scan proving a deleted payload's text never appears in a later joiner's sync step 2 or a version snapshot. Export bytes stay identical, and the j01 register legs run in both engines. Include a restart test: the trash and revive work across DO hibernation, because tombstones persist in the doc and trash persists in SQLite.
+- Rewrite A§10.10's "Decorator payloads use registers" bullet in the same commit, so it states the janitor, trash and creator-only rules. Recheck deviation 21.
 
 **T1.F4: views, drafting and joining (`apps/web/src/host/collab/register-input.ts` and the three view seams).**
 
 - First, write a red j01 leg for the verified P0: Ada creates a code block from "```" and drafts; Ben joins the note mid-draft and opens the block; Ada commits; both reload. Vary the state: warm and cold stack, both engines, and Ben typing versus only opening the block.
-- `useRegisterDraft` resolves the payload through `payloadOf` on every write and re-subscribes when the key's element changes (a local move recreates it), never holding a `Y.Text` from mount.
-- Remove or convert every whole-value setter call from view state on a bound note: `commitCode`, the double-Enter and Tab paths, the HTML and formula commits. Edits go through the field's own minimal diff against the payload's current text, with a caret hint.
-- A remote move that remounts an open field closes it with a visible notice, never silently. A leg covers a peer moving a block while its field is open.
+- `useRegisterDraft` resolves the payload by id on every write and re-subscribes when the id's `Y.Text` changes, never holding one from mount.
+- Remove or convert every whole-value setter call from view state on a bound note: `commitCode`, the double-Enter and Tab paths, and the HTML and formula commits. Edits go through the field's own minimal diff against the payload's current text, with a caret hint.
+- A block whose payload has not yet arrived, or whose text the janitor is reviving, renders its cache read-only and accepts input only once the payload is present. A remote dedupe that removes an open field's block closes the field with a visible notice. A leg covers a peer moving a block while its field is open.
