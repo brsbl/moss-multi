@@ -1205,7 +1205,7 @@ function formulas(doc: Y.Doc): string[] {
       if (item.deleted || !(item.content instanceof Y.ContentType)) continue;
       const child = item.content.type as Y.AbstractType<unknown>;
       if (child instanceof Y.XmlElement && child.getAttribute('__type') === 'formula') out.push(String(child.getAttribute('__regId')));
-      walk(child);
+      walk(item.content.type as Y.AbstractType<unknown>);
     }
   };
   walk(doc.get('root', Y.XmlText) as unknown as Y.AbstractType<unknown>);
