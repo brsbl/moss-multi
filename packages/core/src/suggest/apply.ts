@@ -4,6 +4,7 @@
 // Lexical-free.
 import * as encoding from 'lib0/encoding';
 import { digest } from 'lib0/hash/sha256';
+import { encodeUtf8 } from 'lib0/string';
 import * as Y from 'yjs';
 
 export interface IdSpan {
@@ -110,10 +111,194 @@ const spansOf = (ds: { clients: Map<number, { clock: number; len: number }[]> })
  * mirror is spoiled; callers hydrate a fresh one. Nothing here touches the live doc.
  */
 export function applyRecord(mirror: Y.Doc, record: SuggestionRecord, options: ApplyOptions = {}): ApplyResult {
-  void mirror;
-  void record;
-  void options;
-  throw new Error('applyRecord: not implemented');
+  const fail = (reason: GateReason): ApplyResult => ({ ok: false, reason });
+  const clients = new Set(record.meta.clients);
+  const store = mirror.store;
+  const hydrated = Y.encodeStateVector(mirror);
+  const before = Y.decodeStateVector(hydrated);
+  const state = (client: number) => before.get(client) ?? 0;
+
+  // Each authoring step (an op, or a delete part) removes its own run of items; the record's own deletes are the
+  // union of its ops' delete sets.
+  const groups: IdSpan[][] = [];
+  const ownDeletes: IdSpan[] = [];
+  for (const op of record.ops) {
+    let spans: IdSpan[];
+    try {
+      spans = spansOf(Y.decodeUpdate(op).ds);
+    } catch {
+      return fail('unresolvable');
+    }
+    groups.push(spans);
+    ownDeletes.push(...spans);
+  }
+  for (const part of record.parts) {
+    if (!Array.isArray(part.targets) || !part.targets.every(validSpan)) return fail('unresolvable');
+    groups.push(part.targets);
+  }
+
+  // G5 (a) and (b) read the doc as it was before the record, so they run first and report after G1–G4.
+  const outdated = !groups.every((spans) => removesLiveRun(store, spans, state));
+  const registersBefore = liveEntries(mirror.getMap('registers'));
+
+  let transaction: Y.Transaction | null = null;
+  try {
+    mirror.transact((tr) => {
+      transaction = tr;
+      for (const op of record.ops) Y.applyUpdate(mirror, op);
+      for (const part of record.parts) Y.applyUpdate(mirror, deleteUpdate(part.targets));
+    }, APPLY);
+  } catch {
+    return fail('unresolvable');
+  }
+  const tr = transaction as Y.Transaction | null;
+  if (!tr) return fail('unresolvable');
+
+  // G1: nothing parked.
+  if (store.pendingStructs !== null || store.pendingDs !== null) return fail('unresolvable');
+
+  // G2: only the record's leased clients advanced.
+  const after = Y.decodeStateVector(Y.encodeStateVector(mirror));
+  const inserted = new Map<number, readonly [number, number]>();
+  for (const [client, clock] of after) {
+    if (clock <= state(client)) continue;
+    if (!clients.has(client)) return fail('foreign-client');
+    inserted.set(client, [state(client), clock]);
+  }
+
+  // G3: every changed type, including each deleted item's parent, lives under root or registers.
+  for (const type of tr.changed.keys()) {
+    const name = rootName(mirror, type);
+    if (name === null || !BODY_ROOTS.has(name)) return fail('outside-body');
+  }
+
+  // G4: registers are never aliased.
+  if (!registersUnaliased(mirror, registersBefore, inserted)) return fail('register-alias');
+
+  // G5 (c): every struct the record inserted and did not itself delete integrated as a live item.
+  if (outdated || !insertedLive(store, inserted, ownDeletes)) return fail('outdated');
+
+  // G7: Lexical can bind the result.
+  if (options.bindCheck && !options.bindCheck(mirror, inserted)) return fail('broken');
+
+  return { ok: true, hydrated, inserted };
+}
+
+const APPLY = 'suggest-apply';
+
+const validSpan = (span: IdSpan): boolean =>
+  !!span && [span.client, span.clock, span.len].every((n) => Number.isSafeInteger(n) && n >= 0) && span.len > 0;
+
+const covers = (spans: readonly IdSpan[], client: number, clock: number): boolean =>
+  spans.some((span) => span.client === client && span.clock <= clock && clock < span.clock + span.len);
+
+/** The structs of `client` overlapping [clock, end), in order. */
+function* structsIn(store: Y.Doc['store'], client: number, clock: number, end: number): Generator<Y.Item | Y.GC> {
+  const structs = store.clients.get(client) as (Y.Item | Y.GC)[] | undefined;
+  if (!structs || clock >= end) return;
+  for (let i = Y.findIndexSS(structs as never, clock); i < structs.length && structs[i].id.clock < end; i++) yield structs[i];
+}
+
+/**
+ * G5 (a) and (b) for one authoring step: every body item it removes is live, and within each parent sequence no live
+ * item it does not remove sits between two it does. The record's own items do not exist yet, so every item seen here
+ * is someone else's.
+ */
+function removesLiveRun(store: Y.Doc['store'], spans: readonly IdSpan[], state: (client: number) => number): boolean {
+  const parents = new Set<Y.AbstractType<unknown>>();
+  const body: IdSpan[] = [];
+  for (const span of spans) {
+    const end = Math.min(span.clock + span.len, state(span.client));
+    if (span.clock >= end) continue;
+    body.push({ client: span.client, clock: span.clock, len: end - span.clock });
+    for (const struct of structsIn(store, span.client, span.clock, end)) {
+      if (!(struct instanceof Y.Item) || struct.deleted) return false;
+      if (struct.parentSub === null) parents.add(struct.parent as Y.AbstractType<unknown>);
+    }
+  }
+  for (const parent of parents) {
+    let removedBefore = false;
+    let foreign = false;
+    for (let item = parent._start; item; item = item.right) {
+      for (let offset = 0; offset < item.length; offset++) {
+        if (covers(body, item.id.client, item.id.clock + offset)) {
+          if (foreign) return false;
+          removedBefore = true;
+        } else if (!item.deleted && removedBefore) {
+          foreign = true;
+        }
+      }
+    }
+  }
+  return true;
+}
+
+/** G5 (c). */
+function insertedLive(store: Y.Doc['store'], inserted: Inserted, ownDeletes: readonly IdSpan[]): boolean {
+  for (const [client, [from, to]] of inserted) {
+    for (const struct of structsIn(store, client, from, to)) {
+      if (struct instanceof Y.Item && !struct.deleted) continue;
+      const start = Math.max(struct.id.clock, from);
+      const end = Math.min(struct.id.clock + struct.length, to);
+      for (let clock = start; clock < end; clock++) if (!covers(ownDeletes, client, clock)) return false;
+    }
+  }
+  return true;
+}
+
+function rootName(doc: Y.Doc, type: Y.AbstractType<unknown>): string | null {
+  let top = type;
+  while (top._item !== null) {
+    const parent = top._item.parent;
+    if (!(parent instanceof Y.AbstractType)) return null;
+    top = parent;
+  }
+  for (const [name, shared] of doc.share) if (shared === top) return name;
+  return null;
+}
+
+function liveEntries(map: Y.Map<unknown>): Map<string, Y.Item> {
+  const entries = new Map<string, Y.Item>();
+  for (const [key, item] of map._map) if (!item.deleted) entries.set(key, item);
+  return entries;
+}
+
+const isInserted = (inserted: Inserted, id: Y.ID): boolean => {
+  const range = inserted.get(id.client);
+  return !!range && range[0] <= id.clock && id.clock < range[1];
+};
+
+/**
+ * G4. A `__regId` written by the record sits on a type the record created and names a registers entry the record
+ * created; an entry that existed before is never replaced, and is deleted only once nothing live names it; an entry
+ * the record created is named only by the record's own `__regId` writes.
+ */
+function registersUnaliased(doc: Y.Doc, before: ReadonlyMap<string, Y.Item>, inserted: Inserted): boolean {
+  const registers = doc.getMap('registers');
+  const refs = regRefs(doc);
+  for (const [key, item] of before) {
+    const now = registers._map.get(key);
+    if (now !== item) return false;
+    if (item.deleted && refs.has(key)) return false;
+  }
+  for (const [client, [from, to]] of inserted) {
+    for (const struct of structsIn(doc.store, client, from, to)) {
+      if (!(struct instanceof Y.Item) || struct.deleted || struct.parentSub !== '__regId') continue;
+      const holder = struct.parent as Y.AbstractType<unknown>;
+      if (!holder._item || !isInserted(inserted, holder._item.id)) return false;
+      const key = struct.content.getContent().at(-1);
+      const entry = typeof key === 'string' ? registers._map.get(key) : undefined;
+      if (!entry || entry.deleted || !isInserted(inserted, entry.id)) return false;
+    }
+  }
+  for (const [key, item] of registers._map) {
+    if (item.deleted || !isInserted(inserted, item.id)) continue;
+    for (const type of refs.get(key) ?? []) {
+      const named = type._map.get('__regId');
+      if (!named || !isInserted(inserted, named.id)) return false;
+    }
+  }
+  return true;
 }
 
 /** Stable JSON: object keys sorted. */
@@ -222,15 +407,14 @@ export function projectionDiff(before: Projection, after: Projection): Hunk[] {
 }
 
 const hex = (bytes: Uint8Array): string => Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
-const utf8 = new TextEncoder();
 
 export function previewHash(hunks: readonly Hunk[]): string {
-  return hex(digest(utf8.encode(canonical(hunks))));
+  return hex(digest(encodeUtf8(canonical(hunks))));
 }
 
 /** G0: binds an accept to the exact ops and parts the reviewer previewed. */
 export function recordDigest(record: SuggestionRecord): string {
-  const parts = utf8.encode(canonical({ id: record.meta.id, parts: record.parts, clients: record.meta.clients }));
+  const parts = encodeUtf8(canonical({ id: record.meta.id, parts: record.parts, clients: record.meta.clients }));
   let size = parts.length;
   for (const op of record.ops) size += op.length + 4;
   const all = new Uint8Array(size);
@@ -260,7 +444,7 @@ export function regRefs(doc: Y.Doc): Map<string, Y.AbstractType<unknown>[]> {
       if (!item.deleted && item.content instanceof Y.ContentType) visit(item.content.type);
     }
   };
-  visit(doc.get('root', Y.XmlText));
+  visit(doc.get('root', Y.XmlText) as unknown as Y.AbstractType<unknown>);
   return refs;
 }
 
