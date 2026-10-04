@@ -1,12 +1,12 @@
 # moss-multi progress
 
-**Overall: 42% done** (33 of 79 planned tasks verified)
+**Overall: 43% done** (34 of 79 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 17 / 17 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 13 / 18 | in progress |
-| M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 3 / 10 | in progress |
+| M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 4 / 10 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 0 / 9 | |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
@@ -51,6 +51,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-04 — T1.9s verified: typing in a large note full of code blocks now refreshes only the block being edited instead of every block, and importing a note with tens of thousands of identical blocks assigns their ids in linear time.
 - 2026-10-04 — T1.R verified: a reviewed design now exists for code, HTML and formula block text: each block's text lives in its own small document that the server hides once the block is deleted and shows again intact on undo or a raced move, proven by a spike test and split into the T1.F2 and T1.F4 build briefs.
 - 2026-10-04 — T1.F3 verified: an open Properties edit keeps what the person typed when a peer clears or changes that property, closing a tab while edits are still unsent asks before leaving, and pasting a 1 MB note goes through without a hang.
+- 2026-10-04 — T2.4 verified: an owner can share a note, a folder (from its context menu) or a whole vault (from the switcher) by email at viewer, commenter, editor or owner, see and revoke members, and create, copy and revoke share links; an unknown email becomes a pending invite indistinguishable from a known one, a link visitor signed out reads at viewer with a sign-in that returns to the same note, and revoked, forged and inaccessible links all get the same 404.
 
 ## T1.1s identity audit
 
