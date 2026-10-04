@@ -762,3 +762,79 @@ test('j02-title: @tierA shared property rename and order reach both panels witho
     expect(Object.keys(parseFrontmatter(readField(peer.doc, 'frontmatter')) ?? {})).toEqual(['third', 'renamed', 'second']);
   } finally { peer.close(); }
 });
+
+/** Removes a property through its label's delete button and the confirmation. */
+async function deleteProperty(actor: Actor, key: string): Promise<void> {
+  const label = `${key[0].toUpperCase()}${key.slice(1)}`;
+  await PROPERTIES(actor).locator('label').filter({ hasText: new RegExp(`^${label}$`) }).hover();
+  await PROPERTIES(actor).getByRole('button', { name: `Delete ${key} field`, exact: true }).click();
+  await actor.page.locator('[data-remote-web-surface-blocking-dialog="true"]').getByRole('button', { name: 'Remove', exact: true }).click();
+  await expect(PROPERTIES(actor).getByRole('textbox', { name: key, exact: true }), `${actor.label} removed ${key}`).toHaveCount(0);
+}
+
+test('j02-title: @tierA an open Properties draft survives a peer deleting its property, a peer editing another, and a peer joining mid-edit @p:tech-2 @p:col-1', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  const ben = await openShell(actors, 'ben');
+  const cy = await openShell(actors, 'cy');
+  await actors.requireDistinct(3);
+  const docId = await ui.createNote(ada);
+  for (const [key, value] of [['owner', 'ada'], ['status', 'draft'], ['due', 'soon']]) {
+    await (await addPropertyUpToValue(ada, key, value)).press('Enter');
+  }
+  await waitAcked(ada, docId);
+  await grantDoc(ada, docId, principalOf(ben));
+  await grantDoc(ada, docId, principalOf(cy));
+  await openDoc(ben, docId);
+  const benHeader = await openProperties(ben);
+  const draftValue = `ben-${token()}`;
+  await benHeader.getByRole('textbox', { name: 'owner', exact: true }).click();
+  const draft = benHeader.getByRole('textbox', { name: 'Edit owner', exact: true });
+  await draft.fill(draftValue);
+
+  // Cy joins while Ben's draft is open and deletes that property; Ada then edits another one.
+  await openDoc(cy, docId);
+  await openProperties(cy);
+  await deleteProperty(cy, 'owner');
+  await expect(PROPERTIES(ada).getByRole('textbox', { name: 'owner', exact: true }), 'the delete reached Ada').toHaveCount(0);
+  await PROPERTIES(ada).getByRole('textbox', { name: 'status', exact: true }).click();
+  await PROPERTIES(ada).getByRole('textbox', { name: 'Edit status', exact: true }).fill('review');
+  await PROPERTIES(ada).getByRole('textbox', { name: 'Edit status', exact: true }).press('Enter');
+  // Ada saw the delete before her edit, so Ben holding her edit means he holds the delete too.
+  await expect(benHeader.getByRole('textbox', { name: 'status', exact: true }), "Ada's edit reaches Ben").toHaveValue('review', { timeout: RENAME_MS });
+  await expect(draft, "Ben's draft is still open with his text").toHaveValue(draftValue);
+  await draft.press('Enter');
+  for (const actor of [ada, ben, cy]) {
+    await expect(PROPERTIES(actor).getByRole('textbox', { name: 'owner', exact: true }), `${actor.label}: Ben's committed draft`).toHaveValue(draftValue, { timeout: RENAME_MS });
+    await expect(PROPERTIES(actor).getByRole('textbox', { name: 'status', exact: true })).toHaveValue('review');
+  }
+
+  // Cancelling a draft whose property a peer deleted accepts the delete.
+  await benHeader.getByRole('textbox', { name: 'due', exact: true }).click();
+  await benHeader.getByRole('textbox', { name: 'Edit due', exact: true }).fill('never');
+  await deleteProperty(cy, 'due');
+  await expect(PROPERTIES(ada).getByRole('textbox', { name: 'due', exact: true })).toHaveCount(0);
+  await expect(benHeader.getByRole('textbox', { name: 'Edit due', exact: true })).toHaveValue('never');
+  await benHeader.getByRole('textbox', { name: 'Edit due', exact: true }).press('Escape');
+  await expect(benHeader.getByRole('textbox', { name: 'due', exact: true }), 'the cancelled row follows the delete').toHaveCount(0);
+
+  // An open Add field row survives a peer removing every property.
+  const reviewer = `rev-${token()}`;
+  const adding = await addPropertyUpToValue(ben, 'reviewer', reviewer);
+  await deleteProperty(cy, 'status');
+  await deleteProperty(cy, 'owner');
+  await expect(PROPERTIES(ada).getByText('No properties yet', { exact: true }), 'every property is gone for Ada').toBeVisible();
+  await expect(adding, "Ben's new field keeps its value").toHaveValue(reviewer);
+  await adding.press('Enter');
+  for (const actor of [ada, ben, cy]) {
+    await expect(PROPERTIES(actor).getByRole('textbox', { name: 'reviewer', exact: true })).toHaveValue(reviewer, { timeout: RENAME_MS });
+    await waitAcked(actor, docId);
+  }
+  for (const actor of [ada, ben, cy]) {
+    actor.observations.clear();
+    await actor.page.reload();
+    await ui.waitLive(actor, docId);
+    const header = await openProperties(actor);
+    await expect(header.getByRole('textbox', { name: 'reviewer', exact: true })).toHaveValue(reviewer);
+    await expect(header.locator('label')).toHaveText(['Reviewer']);
+  }
+});

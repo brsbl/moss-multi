@@ -40,3 +40,6 @@ export function waitForAllAcked(timeoutMs: number): Promise<boolean> {
     waiters.add(done);
   });
 }
+
+/** Tests-first stub. */
+export function allowUnload(): void {}

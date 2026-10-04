@@ -114,6 +114,43 @@ test('j01 registers: a synthetic code composition merges peer text on compositio
   expect(await field(ada).inputValue()).toBe(await field(ben).inputValue());
 });
 
+/** The code blocks' text as length, ends and a checksum, so a 1 MB register never crosses the protocol. */
+async function codeFingerprint(actor: Actor, id: string) {
+  return ui.body(actor, id).evaluate(element => {
+    const editor = (element as HTMLElement & { __lexicalEditor: LexicalEditor }).__lexicalEditor;
+    const codes = editor.read(() => [...editor.getEditorState()._nodeMap.values()]
+      .filter(n => n.getType() === 'code-block').map(n => (n as unknown as { getCode(): string }).getCode()));
+    return codes.map(code => {
+      let sum = 0;
+      for (let i = 0; i < code.length; i += 1) sum = (sum * 31 + code.charCodeAt(i)) >>> 0;
+      return { length: code.length, head: code.slice(0, 24), tail: code.slice(-24), sum };
+    });
+  });
+}
+
+test('j01 registers: a ~1 MB paste over a small selection in a code block reaches the peer and survives reload @p:col-1', async ({ actors, stack }) => {
+  test.setTimeout(180_000);
+  const { ada, ben, id } = await setup(actors, stack.baseUrl, '```\nseed\n```');
+  const line = 'const pasted = "a line of a large paste";\n';
+  const paste = line.repeat(Math.floor(1_000_000 / line.length));
+  const expected = `s${paste}ed`;
+  let sum = 0;
+  for (let i = 0; i < expected.length; i += 1) sum = (sum * 31 + expected.charCodeAt(i)) >>> 0;
+  const want = [{ length: expected.length, head: expected.slice(0, 24), tail: expected.slice(-24), sum }];
+
+  await ui.body(ada, id).locator('.moss-codeblock-pre').click();
+  const field = ui.body(ada, id).getByPlaceholder('Enter code...');
+  await expect(field).toHaveValue('seed');
+  await field.evaluate(input => (input as HTMLTextAreaElement).setSelectionRange(1, 2));
+  await ada.page.keyboard.insertText(paste);
+  await expect.poll(() => codeFingerprint(ada, id), { message: 'the paste is written to the register', timeout: 20_000 }).toEqual(want);
+  await expect.poll(() => codeFingerprint(ben, id), { message: 'the peer receives the paste', timeout: 30_000 }).toEqual(want);
+  await expect(ui.pane(ada, id), 'the DocDO acks the paste').toHaveAttribute('data-sync-unacked', '0', { timeout: 30_000 });
+  await ben.page.reload();
+  await ui.waitLive(ben, id); await ben.declareRemount(id);
+  await expect.poll(() => codeFingerprint(ben, id), { message: 'the paste survives a reload', timeout: 30_000 }).toEqual(want);
+});
+
 test('j01 registers: a formula popover receives peer edits and undo keeps them @p:col-1 @p:col-3', async ({ actors, stack }) => {
   const { ada, ben, id } = await setup(actors, stack.baseUrl, '{{2+3|5}}');
   const field = (actor: Actor) => actor.page.getByPlaceholder('Formula', { exact: true });

@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { readField, writeField } from '@moss-multi/core/doc-fields';
 import { frontmatterDirtySignalAtom, noteFrontmatterAtom } from '@moss/shared/state/note-atoms';
-import { bindFrontmatter, parseFrontmatter } from './frontmatter-binding.ts';
+import { bindFrontmatter, parseFrontmatter, setPropertyDraft } from './frontmatter-binding.ts';
 
 describe('frontmatter binding', () => {
   it('keeps moss date normalization and rejects malformed or non-mapping YAML', () => {
@@ -77,4 +77,72 @@ it('keeps the empty Add field form open until its first value commits', () => {
   expect(readField(doc, 'frontmatter')).toBe('first: value\n');
   stop();
   doc.destroy();
+});
+
+/** Ben's binding over a doc that receives every update Ada writes. */
+function peers(noteId: string, yaml: string) {
+  const ada = new Y.Doc();
+  const ben = new Y.Doc();
+  ada.on('update', (update: Uint8Array) => Y.applyUpdate(ben, update, 'remote'));
+  writeField(ada, 'frontmatter', yaml, 'seed');
+  const store = createStore();
+  const atom = noteFrontmatterAtom(noteId);
+  const commit = (next: Record<string, unknown>) => { store.set(atom, next); store.set(frontmatterDirtySignalAtom(noteId), (n) => n + 1); };
+  const stop = bindFrontmatter(store, noteId, ben, () => true);
+  const close = () => { setPropertyDraft(noteId, { key: null, adding: false }); stop(); ada.destroy(); ben.destroy(); };
+  return { ada, ben, store, atom, commit, close };
+}
+
+describe('an open Properties draft survives peer changes (A§10.4: except the key being edited)', () => {
+  it('a peer deleting the property being edited keeps its row until the draft commits, which writes it back', () => {
+    const { ada, ben, store, atom, commit, close } = peers('draft-commit', 'status: draft\nowner: ada\ndue: soon\n');
+    try {
+      setPropertyDraft('draft-commit', { key: 'status' });
+      writeField(ada, 'frontmatter', 'owner: ben\ndue: soon\n', 'seed');
+      expect(store.get(atom), 'the open field keeps its row and place; other keys follow the peer').toEqual({ status: 'draft', owner: 'ben', due: 'soon' });
+      expect(Object.keys(store.get(atom) ?? {})).toEqual(['status', 'owner', 'due']);
+      commit({ ...store.get(atom), status: 'done' });
+      setPropertyDraft('draft-commit', { key: null });
+      expect(parseFrontmatter(readField(ben, 'frontmatter'))).toEqual({ status: 'done', owner: 'ben', due: 'soon' });
+      expect(store.get(atom)).toEqual({ status: 'done', owner: 'ben', due: 'soon' });
+    } finally { close(); }
+  });
+
+  it("cancelling the draft, or committing another field while it is held, accepts the peer's delete", () => {
+    const { ada, ben, store, atom, commit, close } = peers('draft-cancel', 'status: draft\nowner: ada\n');
+    try {
+      setPropertyDraft('draft-cancel', { key: 'owner' });
+      writeField(ada, 'frontmatter', 'status: draft\n', 'seed');
+      expect(store.get(atom)).toEqual({ status: 'draft', owner: 'ada' });
+      setPropertyDraft('draft-cancel', { key: null });
+      expect(store.get(atom)).toEqual({ status: 'draft' });
+
+      writeField(ada, 'frontmatter', 'status: draft\nowner: ada\n', 'seed');
+      setPropertyDraft('draft-cancel', { key: 'owner' });
+      writeField(ada, 'frontmatter', 'status: review\n', 'seed');
+      // The held row rides along unchanged in another field's commit: it must not resurrect the deleted key.
+      commit({ ...store.get(atom), status: 'done' });
+      setPropertyDraft('draft-cancel', { key: null });
+      expect(parseFrontmatter(readField(ben, 'frontmatter'))).toEqual({ status: 'done' });
+      expect(store.get(atom)).toEqual({ status: 'done' });
+    } finally { close(); }
+  });
+
+  it('a peer removing the last property keeps an open Add field row until it commits or closes', () => {
+    const { ada, ben, store, atom, commit, close } = peers('draft-add', 'owner: ada\n');
+    try {
+      setPropertyDraft('draft-add', { adding: true });
+      writeField(ada, 'frontmatter', '', 'seed');
+      expect(store.get(atom), 'Properties stays open').toEqual({});
+      commit({ reviewer: 'ben' });
+      setPropertyDraft('draft-add', { adding: false });
+      expect(parseFrontmatter(readField(ben, 'frontmatter'))).toEqual({ reviewer: 'ben' });
+
+      setPropertyDraft('draft-add', { adding: true });
+      writeField(ada, 'frontmatter', '', 'seed');
+      expect(store.get(atom)).toEqual({});
+      setPropertyDraft('draft-add', { adding: false });
+      expect(store.get(atom), 'a closed form accepts the empty properties').toBeNull();
+    } finally { close(); }
+  });
 });

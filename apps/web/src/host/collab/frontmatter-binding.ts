@@ -34,3 +34,6 @@ export function bindFrontmatter(store: Store, noteId: string, doc: Doc, canWrite
   });
   return () => { stopSignal(); stopObserving(); };
 }
+
+/** Tests-first stub: the open Properties draft for a note. */
+export function setPropertyDraft(_noteId: string, _draft: { key?: string | null; adding?: boolean }): void {}
