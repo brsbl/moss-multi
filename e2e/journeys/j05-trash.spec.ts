@@ -59,22 +59,39 @@ async function trashFromSidebar(ada: Actor, docId: string): Promise<void> {
   await ada.page.getByRole('menuitem', { name: 'Trash', exact: true }).click();
 }
 
+/** Controls a read-only note may keep: they read the note and never change it. */
+const READ_ONLY_CONTROLS = ['Copy code'];
+
 /**
- * The attribute sweep: anything in the pane a person could still type into, focus or toggle. A terminal pane has
- * none, and its fields say why.
+ * The attribute sweep: anything in the pane a person could still type into, focus, toggle or press to change the
+ * note (buttons, role=button, menu items). A terminal pane has none, and its fields say why.
  */
 async function editableSurfaces(actor: Actor, docId: string): Promise<string[]> {
-  return actor.page.evaluate((selector) => {
+  return actor.page.evaluate(({ selector, allowed }) => {
     const pane = document.querySelector(selector);
     if (!pane) return ['no pane'];
     const found: string[] = [];
     for (const el of pane.querySelectorAll<HTMLElement>('*')) {
       const tag = el.tagName.toLowerCase();
+      const label = el.getAttribute('aria-label') ?? el.getAttribute('title') ?? el.textContent?.trim().slice(0, 40) ?? '';
       if (el.isContentEditable) found.push(`${tag}[contenteditable] ${el.textContent?.slice(0, 40) ?? ''}`);
       else if (el.matches('input, textarea, select') && !el.matches(':disabled') && !(el as HTMLInputElement).readOnly) found.push(`${tag} ${el.getAttribute('name') ?? ''}`);
+      else if (el.matches('button, [role="button"], [role^="menuitem"]') && !el.matches(':disabled, [aria-disabled="true"]') && !allowed.includes(label)) found.push(`${tag}[${el.getAttribute('role') ?? 'button'}] ${label}`);
     }
     return found;
-  }, `${paneSelector(docId)} [data-editor-canvas]`);
+  }, { selector: `${paneSelector(docId)} [data-editor-canvas]`, allowed: READ_ONLY_CONTROLS });
+}
+
+/** A code block's language picker in a read-only or terminal note: shown, disabled, and pressing it changes nothing. */
+async function expectLanguageFixed(actor: Actor, scope: Locator): Promise<void> {
+  const picker = scope.getByRole('button', { name: 'Select language', exact: true });
+  await expect(picker, `${actor.label}: the code block shows its language`).toContainText('JavaScript');
+  await expect(picker, `${actor.label}: the language cannot be changed`).toBeDisabled();
+  await expect(scope.getByRole('button', { name: 'Select theme', exact: true })).toBeDisabled();
+  await picker.click({ force: true });
+  await expect(actor.page.getByRole('menuitem', { name: 'Python', exact: true }), `${actor.label}: no language menu opens`).toHaveCount(0);
+  await actor.page.keyboard.press('Escape');
+  await expect(picker, `${actor.label}: the language is unchanged`).toContainText('JavaScript');
 }
 
 /** Keystrokes into a terminal note land nowhere: the title and the body read as before. */
@@ -225,4 +242,36 @@ test('j05-trash: a note dropped on the sidebar’s Trash button goes to Trash, a
   await expect(trashRow(ada, docId), '⌘2 shows it in Trash').toContainText('Dropped on Trash');
   await ada.page.keyboard.press('ControlOrMeta+1');
   await expect(ada.page.getByRole('button', { name: 'Trash', exact: true })).toBeVisible();
+});
+
+test('j05-trash: a code block and a body H1 survive the trash: no control in Ben\u2019s terminal note or Ada\u2019s Trash view changes them, and the Trash view keeps the body\u2019s leading heading @p:note-5', async ({ actors }) => {
+  const benPrincipal = await actors.principal('ben');
+  const ada = await openShell(actors, 'ada');
+  // The title is its own field; the body starts with its own H1 and holds a code block (declared setup).
+  const origin = new URL(ada.page.url()).origin;
+  const created = await ada.context.request.post(`${origin}/api/docs`, {
+    headers: { origin }, data: { title: 'Plan', markdown: '# Findings\n\nDetails here.\n\n```js\nconst x = 1;\n```' },
+  });
+  expect(created.status()).toBe(201);
+  const { doc: { id: docId } } = (await created.json()) as { doc: { id: string } };
+  await grantDoc(ada, docId, benPrincipal, 'editor');
+  const ben = await actors.open(benPrincipal, { path: `/d/${docId}` });
+  await ui.waitLive(ben, docId);
+  await actors.requireDistinct(2);
+  await expect(ui.body(ben, docId).getByRole('heading', { name: 'Findings' })).toBeVisible();
+
+  await expect(noteRow(ada, docId)).toBeVisible({ timeout: PEER_MS });
+  await trashFromSidebar(ada, docId);
+  await expectTerminalInPlace(ben, docId, /^Findings[\s\S]*Details here\./);
+  await expectLanguageFixed(ben, ui.pane(ben, docId));
+
+  await ada.page.getByRole('button', { name: 'Trash', exact: true }).click();
+  await trashRow(ada, docId).click();
+  ada.observations.delete(docId);
+  const noteBody = ui.pane(ada, docId).locator('[data-moss-note-editor-root="true"]');
+  await expect(noteBody.getByRole('heading', { name: 'Findings' }), 'the Trash view keeps the body\u2019s leading H1').toBeVisible({ timeout: BIND_TIMEOUT });
+  await expect(noteBody).toContainText('Details here.');
+  await expect(ui.title(ada, docId)).toHaveText('Plan');
+  expect(await editableSurfaces(ada, docId), 'nothing in the trash view changes the note').toEqual([]);
+  await expectLanguageFixed(ada, ui.pane(ada, docId));
 });
