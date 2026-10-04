@@ -250,10 +250,12 @@ describe('DELETE /api/folders/:id', () => {
 
 /**
  * A D1 whose writes to folders and docs wait until `arrivals` of them are pending (or a second passes), so two
- * requests both finish their reads before either writes: the interleaving a real race takes.
+ * requests both finish their reads before either writes: the interleaving a real race takes. With `batchFirst`, a
+ * batch (a trash) commits before the other writes go.
  */
-function racingEnv(arrivals: number): typeof env {
+function racingEnv(arrivals: number, { batchFirst = false } = {}): typeof env {
   let waiting: (() => void)[] = [];
+  let batchDone: Promise<unknown> = Promise.resolve();
   const gate = () => new Promise<void>((resolve) => {
     waiting.push(resolve);
     const release = () => { const all = waiting; waiting = []; for (const go of all) go(); };
@@ -267,7 +269,7 @@ function racingEnv(arrivals: number): typeof env {
       if (typeof value !== 'function') return value;
       if (key === 'bind') return (...args: unknown[]) => wrap(value.apply(target, args), sql);
       if (WRITE.test(sql) && ['run', 'all', 'first', 'raw'].includes(key as string)) {
-        return async (...args: unknown[]) => { await gate(); return value.apply(target, args); };
+        return async (...args: unknown[]) => { await gate(); await batchDone; return value.apply(target, args); };
       }
       return value.bind(target);
     },
@@ -275,7 +277,13 @@ function racingEnv(arrivals: number): typeof env {
   const DB = new Proxy(d1.db, {
     get(target, key) {
       if (key === 'prepare') return (sql: string) => wrap(target.prepare(sql), sql);
-      if (key === 'batch') return async (statements: D1PreparedStatement[]) => { await gate(); return target.batch(statements); };
+      if (key === 'batch') {
+        return (statements: D1PreparedStatement[]) => {
+          const done = gate().then(() => target.batch(statements));
+          if (batchFirst) batchDone = done.catch(() => undefined);
+          return done;
+        };
+      }
       const value = Reflect.get(target, key, target);
       return typeof value === 'function' ? value.bind(target) : value;
     },
@@ -320,7 +328,7 @@ describe('concurrent writes', () => {
 
   it('a folder created in a folder being trashed is trashed with it or refused, never left live under it', async () => {
     const doomed = await create(ada, ada.homeId, 'Doomed race');
-    const race = racingEnv(2);
+    const race = racingEnv(2, { batchFirst: true });
     const [trash, child] = await Promise.all([
       callIn(race, ada, 'DELETE', `/api/folders/${doomed}`),
       callIn(race, ada, 'POST', '/api/folders', { parentId: doomed, name: 'Late child' }),
@@ -333,7 +341,7 @@ describe('concurrent writes', () => {
   it('a note moved into a folder being trashed is trashed with it or refused, never left live under it', async () => {
     const doomed = await create(ada, ada.homeId, 'Doomed note race');
     const doc = await insertDoc(d1.db, ada);
-    const race = racingEnv(2);
+    const race = racingEnv(2, { batchFirst: true });
     const [trash, move] = await Promise.all([
       callIn(race, ada, 'DELETE', `/api/folders/${doomed}`),
       callIn(race, ada, 'PATCH', `/api/docs/${doc}`, { folderId: doomed }),
