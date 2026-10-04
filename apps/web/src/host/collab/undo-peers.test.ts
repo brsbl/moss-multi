@@ -187,8 +187,7 @@ describe('Cmd+Z undoes only your own edits and never removes a peer\'s character
           expect(actor.editor.getEditorState().read(() => textAt(1).getType()), 'the restored text node has its properties').toBe('text');
         }
         ada.undo.redo();
-        // The kept paragraph is not part of the redo step, so the paragraph case leaves it empty.
-        await expectBoth(ada, ben, text => expect(text, 'redo replays Ada\'s delete').toBe('Intro.\n\n'));
+        await expectBoth(ada, ben, text => expect(text, 'redo replays Ada\'s delete').toBe(deleted));
         ada.undo.undo();
         await expectBoth(ada, ben, text => expect(text, 'a second undo keeps Ben\'s text').toBe('Intro.\n\nBEN '));
       } finally { dispose(); }
