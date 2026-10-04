@@ -203,6 +203,39 @@ test('j06-folders: an editor on a shared vault creates a folder the owner sees l
   await actors.checkpoint('shared-vault-folder');
 });
 
+test("j06-folders: a folder shared into an editor's own Home offers no move of its notes @p:note-4", async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  const benPrincipal = await actors.principal('ben');
+  const origin = new URL(ada.page.url()).origin;
+  const post = (actor: Actor, path: string, data: object) =>
+    actor.context.request.post(`${origin}${path}`, { headers: { origin, 'content-type': 'application/json' }, data, timeout: 15_000 });
+  // Declared setup: Ada shares one folder (not her vault) with Ben as an editor, with a note inside it.
+  const { vault } = (await (await ada.context.request.get(`${origin}/api/workspace`)).json()) as { vault: { id: string } };
+  const made = await post(ada, '/api/folders', { parentId: vault.id, name: 'Shared plans' });
+  expect(made.status(), 'declared setup: the folder').toBe(201);
+  const folderId = ((await made.json()) as { folder: { id: string } }).folder.id;
+  expect((await post(ada, `/api/folders/${folderId}/members`, { email: benPrincipal.email, role: 'editor' })).status(),
+    'declared setup: Ben edits the folder').toBe(201);
+  const shared = await post(ada, '/api/docs', { folderId, title: 'Plan A' });
+  expect(shared.status(), "declared setup: Ada's note").toBe(201);
+  const sharedId = ((await shared.json()) as { doc: { id: string } }).doc.id;
+
+  // The folder lands in Ben's own Home, where he owns the vault, but Ada's note in it is not his to move.
+  const ben = await actors.open(benPrincipal);
+  await ben.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: BOOT_TIMEOUT });
+  const own = await post(ben, '/api/docs', { title: 'Ben own note' });
+  expect(own.status(), "declared setup: Ben's note").toBe(201);
+  const ownId = ((await own.json()) as { doc: { id: string } }).doc.id;
+  await ben.page.reload();
+  await ben.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: BOOT_TIMEOUT });
+  await expect(noteRow(ben, ownId).locator('[draggable="true"]'), 'Ben can drag his own note').toHaveCount(1, { timeout: PEER_SIDEBAR_MS });
+  await expandFolder(ben, 'Shared plans');
+  await expect(noteRow(ben, sharedId), "Ada's note shows in the shared folder").toBeVisible();
+  await expect(noteRow(ben, sharedId).locator('[draggable="true"]'), 'an editor cannot move a shared note').toHaveCount(0);
+  await expect(folderRow(ben, 'Shared plans'), 'nor the shared folder').toHaveAttribute('draggable', 'false');
+  await actors.requireDistinct(2);
+});
+
 test('j06-folders: a folder change refused by the server reads as a sentence, never a coded error or a bare "Failed" @p:note-4', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
   const benPrincipal = await actors.principal('ben');
