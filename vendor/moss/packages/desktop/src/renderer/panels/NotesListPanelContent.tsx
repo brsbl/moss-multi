@@ -259,7 +259,7 @@ const NoteListItemWithMenu = memo(function NoteListItemWithMenu({
   const isActive = useIsActiveNote(note.id);
   const [isContextMenuOpen, setIsContextMenuOpen] = useState(false);
   // moss-multi seam: shared-rows (A§11: a surfaced shared row offers no move); only the vault's owner moves (A§8)
-  const draggable = (options?.draggable ?? true) && !surfacedShared(note.id) && canMoveItems();
+  const draggable = (options?.draggable ?? true) && !surfacedShared(note.id) && canMoveItems(note.id);
   const showActiveState = options?.showActiveState ?? true;
   const isVisuallyActive = showActiveState && isActive;
   const cardRef = options?.isSelected
