@@ -175,3 +175,6 @@ Local browser verification remains assigned to the independent checker under the
 - PrincipalDO channel, access-filtered `publishMeta`, title/timestamp projections, targeted bridge updates and synchronous local sign-out shutdown replace the interim poll. Reconnect refreshes missed changes.
 - The T2.1-specific coordinator brief is absent; BUILDPLAN T2.1 and A§5.2/11 define scope. Trash removal is tested at the metadata/fanout boundary; T2.3 owns its API and UI lifecycle. Browser self-check is delegated to the independent checker per the implementer brief.
 - Validation in progress; no self-verdict.
+
+- T2.1 first Chromium workspace run passed: https://github.com/brsbl/moss-multi/actions/runs/37165101021 (`a9eeccf`). The push checks exposed two TS inference annotations (fixed) and the inherited closed-M1 assumption (missing R11/R15 and three staged M1 bridge methods).
+- CI deviation under the parallel-M2 brief: branch checks cap the inferred trace gate at `CI_CLOSED_MILESTONE` (repository variable, workflow default 0 while M1 remains open). Ready `m<k> → main` milestone exits still enforce all Mk rows. The coordinator must advance the variable when each milestone closes; this does not waive M1's missing work.

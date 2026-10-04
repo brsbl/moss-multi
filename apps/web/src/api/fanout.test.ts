@@ -29,3 +29,24 @@ it('fanout never leaks a sibling id to a direct grantee and retains trash recipi
   expect(sent.get(reader.id)).toEqual({ type: 'meta', docIds: [shared], folderIds: [] });
   expect(sent.get(owner.id)).toEqual({ type: 'meta', docIds: [shared, privateDoc], folderIds: [] });
 });
+
+it('workspace upgrades derive identity from auth, strip forged headers, and refuse foreign or absent credentials', async () => {
+  const { workspaceSocket } = await import('../worker/workspace.ts');
+  const forwarded: { id: string; request: Request }[] = [];
+  const env = { DB: d1.db, BETTER_AUTH_SECRET: SECRET, BETTER_AUTH_URL: BASE, PrincipalDO: {
+    idFromName: (id: string) => id,
+    get: (id: string) => ({ setName: async () => undefined, fetch: async (request: Request) => { forwarded.push({ id, request }); return new Response('accepted'); } }),
+  } } as unknown as import('../env.ts').AppEnv;
+  const upgrade = (headers: Record<string, string>) => new Request(`${BASE}/api/workspace/ws`, { headers: { upgrade: 'websocket', ...headers } });
+  const refuse = (code: number) => new Response(String(code));
+  const accepted = await workspaceSocket(upgrade({ origin: BASE, cookie: reader.cookie, 'x-moss-principal': owner.id, 'x-moss-session': 'forged', 'x-partykit-room': owner.id }), env, refuse);
+  expect(await accepted.text()).toBe('accepted');
+  expect(forwarded[0].id).toBe(reader.id);
+  expect(forwarded[0].request.headers.get('x-moss-principal')).toBe(reader.id);
+  expect(forwarded[0].request.headers.get('x-moss-session')).not.toBe('forged');
+  expect(forwarded[0].request.headers.has('x-partykit-room')).toBe(false);
+  for (const headers of [{ origin: 'https://evil.example', cookie: reader.cookie }, { origin: BASE }, { cookie: reader.cookie }]) {
+    expect(await (await workspaceSocket(upgrade(headers), env, refuse)).text()).toBe('4401');
+  }
+  expect(forwarded).toHaveLength(1);
+});

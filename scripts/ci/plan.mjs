@@ -134,13 +134,19 @@ function schedulePlan(journeys, headSha, lastNightlySha) {
 
 // Pure: the event name, its payload, the changed paths (null when unknown), CI_DEGRADED, the journey files and,
 // nightly, main's head and the last green nightly's head decide the lanes and shards.
-export function computePlan({ event, payload = {}, changedFiles = null, degraded = false, journeys = [], headSha = '', lastNightlySha = '' }) {
+export function computePlan({ event, payload = {}, changedFiles = null, degraded = false, journeys = [], headSha = '', lastNightlySha = '', closedMilestone = null }) {
   let plan;
   if (event === 'workflow_dispatch') plan = dispatchPlan(payload);
   else if (event === 'push') plan = pushPlan(payload, changedFiles);
   else if (event === 'pull_request') plan = pullRequestPlan(payload, changedFiles, degraded);
   else if (event === 'schedule') plan = schedulePlan(journeys, headSha, lastNightlySha);
   else plan = lanes({}, `unhandled event ${event}`);
+  if (closedMilestone !== null) {
+    if (!Number.isInteger(closedMilestone) || closedMilestone < 0) throw new Error('closed milestone must be a non-negative integer');
+    const pr = payload.pull_request;
+    const milestoneExit = event === 'pull_request' && !pr?.draft && pr?.base?.ref === 'main' && /^m\d+$/.test(pr?.head?.ref ?? '');
+    if (!milestoneExit && plan.traceMilestone !== null) plan.traceMilestone = Math.min(plan.traceMilestone, closedMilestone);
+  }
   return { ...plan, shards: shardsFor(plan, journeys) };
 }
 
@@ -227,6 +233,7 @@ function main(argv) {
     journeys: readJourneys(),
     headSha: process.env.GITHUB_SHA ?? '',
     lastNightlySha: process.env.LAST_NIGHTLY_SHA ?? '',
+    closedMilestone: process.env.CI_CLOSED_MILESTONE ? Number(process.env.CI_CLOSED_MILESTONE) : null,
   });
   process.stdout.write(toOutputs(plan));
   const shards = plan.shards.map((shard) => `${shard.browser}/${shard.group}`).join(' ') || 'none';

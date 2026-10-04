@@ -333,3 +333,30 @@ test('j01 workspace: another open document keeps its binding while peer creates 
   await waitAcked(ben, openId);
   await actors.checkpoint('workspace-metadata');
 });
+
+test('j01 workspace: sign-out closes the channel while the auth request is still pending @p:ppl-1', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  await actors.open(await actors.principal('ben'));
+  let opened = 0;
+  let closed = 0;
+  ada.page.on('websocket', (socket) => {
+    if (socket.url().includes('/api/workspace/ws')) {
+      opened += 1;
+      socket.on('close', () => { closed += 1; });
+    }
+  });
+  await ada.page.reload();
+  await expect.poll(() => opened).toBe(1);
+  let release: () => void = () => undefined;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let requested = false;
+  await ada.page.route('**/api/auth/sign-out', async (route) => { requested = true; await held; await route.continue(); });
+  try {
+    await ui.signOutThroughSettings(ada);
+    await expect.poll(() => requested).toBe(true);
+    await expect.poll(() => closed, { timeout: 1000 }).toBe(1);
+    await ada.page.waitForTimeout(1100);
+    expect(opened).toBe(1);
+  } finally { release(); }
+  await ui.waitForLoginCard(ada);
+});

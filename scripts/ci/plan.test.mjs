@@ -385,3 +385,12 @@ describe('ciOk', () => {
     expect(ciOk({ plan: { result: 'failure', outputs: {} } }).ok).toBe(false);
   });
 });
+
+
+it('parallel milestone branches gate the actual closed milestone, while ready milestone exits keep the full gate', () => {
+  expect(computePlan({ event: 'push', payload: { ref: 'refs/heads/t/T2.1' }, closedMilestone: 0 }).traceMilestone).toBe(0);
+  expect(computePlan({ event: 'workflow_dispatch', payload: { ref: 'refs/heads/m2', inputs: { lane: 'checks' } }, closedMilestone: 0 }).traceMilestone).toBe(0);
+  expect(computePlan({ event: 'push', payload: { ref: 'refs/heads/t/T2.1' }, closedMilestone: 1 }).traceMilestone).toBe(1);
+  expect(computePlan({ event: 'pull_request', payload: { pull_request: { head: { ref: 'm2' }, base: { ref: 'main' }, draft: false } }, closedMilestone: 0 }).traceMilestone).toBe(2);
+  expect(() => computePlan({ event: 'push', closedMilestone: Number.NaN })).toThrow(/closed milestone/);
+});

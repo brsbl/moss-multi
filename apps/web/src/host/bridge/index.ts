@@ -215,10 +215,10 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
         if (!response.ok) throw new Error(`GET /api/workspace: ${response.status}`);
         const data = await response.json() as WorkspaceListing;
         if (generation !== channelGeneration) break;
-        if (version !== loadVersion) { refreshAll = true; continue; }
+        if (version !== loadVersion) { await listing?.catch(() => undefined); refreshAll = true; continue; }
         const changedVaults = JSON.stringify([workspaceSnapshot.vault, workspaceSnapshot.vaults]) !== JSON.stringify([data.vault, data.vaults]);
-        const removed = new Set(full ? workspaceSnapshot.docs.map((doc) => doc.id) : ids);
-        const docs = [...(full ? [] : workspaceSnapshot.docs.filter((doc) => !removed.has(doc.id))), ...data.docs]
+        const removed: Set<string> = new Set(full ? workspaceSnapshot.docs.map((doc) => doc.id) : ids);
+        const docs: ApiDoc[] = [...(full ? [] : workspaceSnapshot.docs.filter((doc) => !removed.has(doc.id))), ...data.docs]
           .sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
         workspaceSnapshot = { ...data, docs };
         for (const id of removed) known.delete(id);
