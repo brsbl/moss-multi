@@ -74,15 +74,15 @@ function seeded(): Y.Doc {
 
 const all = (node: LexicalNode = $getRoot()): LexicalNode[] =>
   [node, ...($isElementNode(node) ? node.getChildren().flatMap((child) => all(child)) : [])];
-const firstText = (): TextNode => all().find((node): node is TextNode => $isTextNode(node))!;
+const texts = (): TextNode[] => all().filter((node): node is TextNode => $isTextNode(node));
 const listItem = (text: string): ListItemNode =>
   all().find((node): node is ListItemNode => $isListItemNode(node) && node.getTextContent() === text)!;
 const cell = (text: string): TableCellNode =>
   all().find((node): node is TableCellNode => $isTableCellNode(node) && node.getTextContent() === text)!;
 
-/** A collapsed or ranged selection inside the first paragraph's text. */
-function select(anchor: number, focus = anchor) {
-  const text = firstText();
+/** A collapsed or ranged selection inside the nth text node (the first paragraph's by default). */
+function select(anchor: number, focus = anchor, nth = 0) {
+  const text = texts()[nth];
   const selection = $createRangeSelection();
   selection.anchor.set(text.getKey(), anchor, 'text');
   selection.focus.set(text.getKey(), focus, 'text');
@@ -90,17 +90,26 @@ function select(anchor: number, focus = anchor) {
   return selection;
 }
 
-interface Case { name: string; op: () => void; verdict: 'allowed' | 'delete-original' | 'mutate-original' | 'outside-body' }
+type Expect = 'allowed' | 'split' | 'delete-original' | 'mutate-original';
+interface Case { name: string; op: () => void; verdict: Expect }
 
 const cases: Case[] = [
+  // Additive: lands as is and registers the author's insert parts.
   { name: 'typing inside an original word', op: () => select(6).insertText('big '), verdict: 'allowed' },
   { name: 'colliding prefix: "the " before "the cat"', op: () => select(16).insertText('the '), verdict: 'allowed' },
   { name: 'a sentence pasted before itself', op: () => select(0).insertText('Hello world and the cat. '), verdict: 'allowed' },
   { name: 'Enter at the end of a block', op: () => select(24).insertParagraph(), verdict: 'allowed' },
-  { name: 'a soft break mid-paragraph (the pending-split form)', op: () => select(5).insertLineBreak(), verdict: 'allowed' },
   { name: 'a new table row', op: () => { $insertTableRowAtNode(cell('1'), true); }, verdict: 'allowed' },
-  { name: 'Enter mid-paragraph moves original text', op: () => select(5).insertParagraph(), verdict: 'delete-original' },
-  { name: 'Backspace over an original character', op: () => select(5).deleteCharacter(true), verdict: 'delete-original' },
+  // Splits: @lexical/yjs deletes the original tail and re-inserts a copy; the vetter proves the copy and keeps it original.
+  { name: 'Enter mid-paragraph', op: () => select(5).insertParagraph(), verdict: 'split' },
+  { name: 'a soft break mid-paragraph', op: () => select(5).insertLineBreak(), verdict: 'split' },
+  {
+    name: 'typing bold text mid-word',
+    op: () => { const selection = select(8); selection.toggleFormat('bold'); selection.insertText('X'); },
+    verdict: 'split',
+  },
+  // Everything else touches original content: the client must send these as proposals, never as tree edits.
+  { name: 'deleting an original character', op: () => select(4, 5).removeText(), verdict: 'delete-original' },
   { name: 'deleting an original word', op: () => select(5, 11).removeText(), verdict: 'delete-original' },
   { name: 'bolding an original word', op: () => select(6, 11).formatText('bold'), verdict: 'delete-original' },
   { name: 'toggling an original checkbox', op: () => { listItem('task one').setChecked(true); }, verdict: 'mutate-original' },
@@ -131,9 +140,11 @@ describe('SP11 suggester vetting census @p:mean-2', () => {
       const update = suggester.frame(op);
       expect(update.byteLength, 'the operation must reach the wire').toBeGreaterThan(2);
       const result = vetSuggestFrame(server, update, []);
-      if (verdict === 'allowed') {
-        expect(result).toMatchObject({ ok: true });
-        expect(result.ok && result.inserts.length, 'an allowed insert registers a part').toBeGreaterThan(0);
+      if (verdict === 'allowed' || verdict === 'split') {
+        if (!result.ok) throw new Error(`refused: ${result.reason}`);
+        expect(result.inserts.length, 'an allowed insert registers a part').toBeGreaterThan(0);
+        if (verdict === 'split') expect(result.moved.length, 'the moved tail stays original').toBeGreaterThan(0);
+        else expect(result.moved).toEqual([]);
       } else {
         expect(result).toEqual({ ok: false, reason: verdict });
       }
@@ -147,16 +158,29 @@ describe('SP11 suggester vetting census @p:mean-2', () => {
       const own: IdSpan[] = [];
       const land = (update: Uint8Array) => {
         const result = vetSuggestFrame(server, update, own);
-        expect(result).toMatchObject({ ok: true });
-        if (result.ok) own.push(...result.inserts);
+        if (!result.ok) throw new Error(`refused: ${result.reason}`);
+        own.push(...result.inserts);
         Y.applyUpdate(server, update);
       };
       land(suggester.frame(() => select(24).insertText(' It sat.')));
       expect(own.length).toBeGreaterThan(0);
-      land(suggester.frame(() => select(32).deleteCharacter(true)));
+      land(suggester.frame(() => select(31, 32).removeText()));
       land(suggester.frame(() => select(25, 31).formatText('bold')));
       expect(vetSuggestFrame(server, suggester.frame(() => select(0, 5).removeText()), own))
         .toEqual({ ok: false, reason: 'delete-original' });
+    } finally { suggester.dispose(); server.destroy(); }
+  });
+
+  it('text a split moved stays original: the author cannot delete it', () => {
+    const server = seeded();
+    const suggester = client(server);
+    try {
+      const split = suggester.frame(() => select(5).insertParagraph());
+      const result = vetSuggestFrame(server, split, []);
+      if (!result.ok) throw new Error(`refused: ${result.reason}`);
+      Y.applyUpdate(server, split);
+      const deleteMoved = suggester.frame(() => select(1, 6, 1).removeText());
+      expect(vetSuggestFrame(server, deleteMoved, result.inserts, result.moved)).toEqual({ ok: false, reason: 'delete-original' });
     } finally { suggester.dispose(); server.destroy(); }
   });
 
@@ -167,8 +191,8 @@ describe('SP11 suggester vetting census @p:mean-2', () => {
       const own: IdSpan[] = [];
       const added = suggester.frame(() => { listItem('task two').insertAfter($createListItemNode(false)); });
       const first = vetSuggestFrame(server, added, own);
-      expect(first).toMatchObject({ ok: true });
-      if (first.ok) own.push(...first.inserts);
+      if (!first.ok) throw new Error(`refused: ${first.reason}`);
+      own.push(...first.inserts);
       Y.applyUpdate(server, added);
       const check = suggester.frame(() => { (listItem('task two').getNextSibling() as ListItemNode).setChecked(true); });
       expect(vetSuggestFrame(server, check, own)).toMatchObject({ ok: true });
@@ -186,5 +210,18 @@ describe('SP11 suggester vetting census @p:mean-2', () => {
       title.destroy();
       records.destroy();
     } finally { suggester.dispose(); server.destroy(); }
+  });
+
+  it('a forged text map that re-formats original text without moving it is refused', () => {
+    const server = seeded();
+    const forger = new Y.Doc();
+    try {
+      Y.applyUpdate(forger, Y.encodeStateAsUpdate(server));
+      const sv = Y.encodeStateVector(forger);
+      const paragraph = (forger.get('root', Y.XmlText).toDelta() as { insert: unknown }[])[0].insert as Y.XmlText;
+      const textMap = (paragraph.toDelta() as { insert: unknown }[])[0].insert as Y.Map<unknown>;
+      paragraph.insertEmbed(7, new Y.Map(Object.entries({ ...textMap.toJSON(), __format: 1 })));
+      expect(vetSuggestFrame(server, Y.encodeStateAsUpdate(forger, sv), [])).toEqual({ ok: false, reason: 'mutate-original' });
+    } finally { forger.destroy(); server.destroy(); }
   });
 });
