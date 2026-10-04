@@ -313,33 +313,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
          {/* Overflow menu */}
          <DropdownMenu open={moreActionsOpen} onOpenChange={setMoreActionsOpen}>
            <TooltipProvider>
-@@ -4663,6 +4712,8 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
-             </DropdownMenuItem>
-             <DropdownMenuSeparator />
-             {/* Export group */}
-+            {/* moss-multi seam: hide-registry (A§9) */}
-+            {hidden('save-as-pdf') ? null : (
-             <DropdownMenuItem
-               className="gap-2 text-xs"
-               onSelect={handleSaveAsPdf}
-@@ -4671,6 +4722,8 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
-               <FileDown aria-hidden className="h-3.5 w-3.5" />
-               Save as PDF
-             </DropdownMenuItem>
-+            )}
-+            {hidden('save-as-markdown') ? null : (
-             <DropdownMenuItem
-               className="gap-2 text-xs"
-               onSelect={handleSaveAsMarkdown}
-@@ -4679,12 +4732,15 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
-               <FileCode aria-hidden className="h-3.5 w-3.5" />
-               {isSavingMarkdown ? 'Saving...' : 'Save as Markdown'}
-             </DropdownMenuItem>
--            <DropdownMenuSeparator />
-+            )}
-+            {hidden('save-as-pdf') && hidden('save-as-markdown') ? null : <DropdownMenuSeparator />}
-             {/* Stats */}
-             <DropdownMenuItem className="gap-2 text-xs" onSelect={() => { requestAnimationFrame(() => setShowNoteStats(true)); }}>
+@@ -4685,6 +4734,8 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
                <FileDigit aria-hidden className="h-3.5 w-3.5" />
                Note stats
              </DropdownMenuItem>
@@ -348,7 +322,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
              <DropdownMenuSeparator />
              {/* Danger group */}
              <DropdownMenuItem
-@@ -4699,6 +4755,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4699,6 +4750,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
                  <><Trash2 aria-hidden className="h-3.5 w-3.5" />Trash</>
                )}
              </DropdownMenuItem>
@@ -356,7 +330,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
            </DropdownMenuContent>
          </DropdownMenu>
          <CopyForAgentDialog
-@@ -4810,9 +4867,8 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4810,9 +4862,8 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
        </TopNavBar>
    );
  
@@ -368,7 +342,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
    const showContentSkeleton = skeletonLines > 0 && hasBodyContent;
    const showEmptySkeleton = skeletonLines > 0 && !hasBodyContent;
    const emptySkeletonLines = Math.max(3, Math.min(24, skeletonLines));
-@@ -4826,8 +4882,10 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4826,8 +4877,10 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
        className="relative flex h-full min-w-0 flex-1 flex-col bg-surface-canvas"
        onMouseDown={handleCanvasAreaMouseDown}
        onClick={handleCanvasAreaClick}
@@ -379,7 +353,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
        <CanvasArea
          className="relative min-w-0 flex-1"
          responsiveLayout
-@@ -4857,7 +4915,9 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4857,7 +4910,9 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
                {/* Contenteditable H1 title field */}
                <div
                  ref={titleRefCallback}
@@ -390,7 +364,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
                  suppressContentEditableWarning
                  role="textbox"
                  aria-label="Note title"
-@@ -4944,12 +5004,15 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4944,12 +4999,15 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
                    aria-hidden
                  >
                    <span className="min-w-0 truncate">{currentPlaceholder.title}</span>
@@ -406,7 +380,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
                  </div>
                ) : null}
                </div>
-@@ -4972,7 +5035,9 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4972,7 +5030,9 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
                    ))}
                  </div>
                ) : null}
@@ -416,7 +390,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
                  <MarkdownEditor
                    ref={markdownEditorRef}
                    key={`${note.id}-${editorVersion}`}
-@@ -4980,7 +5045,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4980,7 +5040,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
                    value={content}
                    layoutMetadata={lastKnownDiskLayoutMetadataRef.current[note.id]}
                    onChange={handleEditorChange}
@@ -425,7 +399,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
                    placeholder={isAgentActive && content === '' ? '' : currentPlaceholder.body}
                    onReady={handleEditorReady}
                    onNavigateToNote={onNavigateToNote}
-@@ -4996,8 +5061,11 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4996,8 +5056,11 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
                        ? editorRemountReasonRef.current[note.id]?.reason
                        : null
                    }
@@ -438,7 +412,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
                  <div className="agent-skeleton agent-skeleton--content pt-4">
                    {[100, 94, 88, 72, 96, 64].map((width, i) => (
                      <div
-@@ -5037,7 +5105,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -5037,7 +5100,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
              className="pointer-events-none absolute bottom-8 left-1/2 z-40 -translate-x-1/2"
              style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
            >
