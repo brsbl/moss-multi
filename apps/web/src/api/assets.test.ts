@@ -11,15 +11,19 @@ const SHOT = new Uint8Array([...PNG, 7, 7]);
 const VIDEO = new Uint8Array(Array.from({ length: 64 }, (_, i) => i));
 const SVG = new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"><script>alert(1)</script></svg>');
 
-/** The DocDO RPCs duplicate calls, over markdown each test sets. */
+/** The DocDO RPCs duplicate calls, over markdown each test sets; a snapshot carries its own markdown. */
 const exported = new Map<string, string>();
+const snapshotted = new Map<string, string>();
+const created = new Map<string, { renames?: Record<string, string> }>();
 const DocDO = {
   idFromName: (name: string) => ({ name, toString: () => name }),
   get: (id: { name: string }) => ({
     setName: async () => undefined,
     exportMarkdown: async () => exported.get(id.name) ?? '',
-    snapshotForDuplicate: async () => ({ title: 'Original', state: new Uint8Array([1]) }),
-    createFromSnapshot: async () => undefined,
+    snapshotForDuplicate: async () => ({ title: 'Original', state: new Uint8Array([1]), markdown: snapshotted.get(id.name) ?? exported.get(id.name) ?? '' }),
+    createFromSnapshot: async (_input: unknown, _state: Uint8Array, renames?: Record<string, string>) => {
+      created.set(id.name, { renames });
+    },
   }),
 };
 
@@ -124,6 +128,30 @@ describe('upload (A§16)', () => {
     const trashed = await insertDoc(d1.db, ada, { deleted: true });
     expect((await upload(ada.cookie, trashed, 'v.png', PNG, 'image/png')).status).toBe(404);
   });
+
+  it('takes an upload from a signed-in holder of an editor link', async () => {
+    const docId = await insertDoc(d1.db, ada);
+    const token = await insertLink(d1.db, { docId }, 'editor');
+    const sent = await call('POST', `/api/docs/${docId}/assets?filename=linked.png&share=${token}`, cy.cookie, { body: PNG, headers: { 'content-type': 'image/png' } });
+    expect((await uploaded(sent)).relativePath).toBe('assets/linked.png');
+  });
+
+  it("never stores an upload under moss desktop's derived-thumbnail name, which the web would not load", async () => {
+    const docId = await insertDoc(d1.db, ada);
+    const result = await uploaded(await upload(ada.cookie, docId, 'video-thumb-abc.png', PNG, 'image/png'));
+    expect(result.filename).not.toMatch(/^video-thumb-/);
+    expect((await call('GET', `/api/docs/${docId}/${result.relativePath}`, ada.cookie)).status).toBe(200);
+  });
+
+  it('reads back a suffixed long name as its own file, not the first', async () => {
+    const docId = await insertDoc(d1.db, ada);
+    const long = `${'x'.repeat(120)}.png`;
+    const first = await uploaded(await upload(ada.cookie, docId, long, PNG, 'image/png'));
+    const second = await uploaded(await upload(ada.cookie, docId, long, OTHER_PNG, 'image/png'));
+    expect(second.filename).not.toBe(first.filename);
+    expect(await bytesOf(await call('GET', `/api/docs/${docId}/assets/${second.filename}`, ada.cookie))).toEqual(OTHER_PNG);
+    expect(await bytesOf(await call('GET', `/api/docs/${docId}/assets/${first.filename}`, ada.cookie))).toEqual(PNG);
+  });
 });
 
 describe('serving (A§16)', () => {
@@ -224,6 +252,35 @@ describe('copies carry media (A§16)', () => {
     expect(kept.status).toBe(200);
     expect(await bytesOf(kept)).toEqual(PNG);
     expect((await call('GET', `/api/docs/${doc.id}/assets/unused.png`, ben.cookie)).status, 'only referenced media travels').toBe(404);
+  });
+
+  it("a duplicate into a Home that already has a different file under the name renames the copy's file and its references", async () => {
+    // A pasted clipboard image is always `image.png`, so most Homes already hold one.
+    await uploaded(await call('POST', `/api/folders/${cy.homeId}/assets?filename=image.png`, cy.cookie, { body: OTHER_PNG, headers: { 'content-type': 'image/png' } }));
+    const docId = await insertDoc(d1.db, ada);
+    await uploaded(await upload(ada.cookie, docId, 'image.png', PNG, 'image/png'));
+    exported.set(docId, '![Pasted](assets/image.png)\n');
+    await insertGrant(d1.db, { docId }, cy, 'editor');
+    const response = await call('POST', `/api/docs/${docId}/duplicate`, cy.cookie);
+    expect(response.status, await response.clone().text()).toBe(201);
+    const { doc } = (await response.json()) as { doc: { id: string; folderId: string } };
+    expect(doc.folderId).toBe(cy.homeId);
+    const renames = created.get(doc.id)?.renames ?? {};
+    expect(Object.keys(renames), "the copy's reference to image.png is renamed").toEqual(['image.png']);
+    expect(renames['image.png']).not.toBe('image.png');
+    expect(await bytesOf(await call('GET', `/api/docs/${doc.id}/assets/${renames['image.png']}`, cy.cookie)), "the copy shows the source's bytes").toEqual(PNG);
+    expect(await bytesOf(await call('GET', `/api/docs/${doc.id}/assets/image.png`, cy.cookie)), "Cy's own file is untouched").toEqual(OTHER_PNG);
+  });
+
+  it('copies the media of the snapshot it duplicates, not of a later export', async () => {
+    const docId = await insertDoc(d1.db, ada);
+    await uploaded(await upload(ada.cookie, docId, 'then.png', PNG, 'image/png'));
+    snapshotted.set(docId, '![Then](assets/then.png)\n');
+    exported.set(docId, 'A peer removed the image after the snapshot.\n');
+    await insertGrant(d1.db, { docId }, ben, 'editor');
+    const response = await call('POST', `/api/docs/${docId}/duplicate`, ben.cookie);
+    const { doc } = (await response.json()) as { doc: { id: string } };
+    expect((await call('GET', `/api/docs/${doc.id}/assets/then.png`, ben.cookie)).status).toBe(200);
   });
 });
 

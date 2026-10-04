@@ -224,6 +224,23 @@ describe('the T3.1 images bridge (A§9 images; A§16)', () => {
     expect(JSON.parse(String(init?.body))).toEqual({ sourceNoteId: 'd2', sourceRelativePath: 'assets/a.png' });
   });
 
+  it("carries the page's share link on an upload and a cross-note copy, as on every read", async () => {
+    vi.stubGlobal('location', { search: '?share=tok%2F1', origin: 'http://localhost', pathname: '/d/d1' });
+    try {
+      const { api, fetch } = uploadBridge(() => Response.json({ relativePath: 'assets/a.png', filename: 'a.png' }, { status: 201 }));
+      const saved = await api.images.save({ data: btoa('png'), filename: 'a.png', mimeType: 'image/png', noteId: 'd1' });
+      await api.images.copyFromNoteAsset({ sourceNoteId: 'd2', sourceRelativePath: 'assets/a.png', destinationNoteId: 'd1' });
+      const [upload, copy] = fetch.mock.calls.map(([url]) => new URL(String(url), 'http://localhost'));
+      expect(upload.pathname).toBe('/api/docs/d1/assets');
+      expect(upload.searchParams.get('share'), 'the upload carries the link').toBe('tok/1');
+      expect(copy.pathname).toBe('/api/docs/d1/assets/copy');
+      expect(copy.searchParams.get('share'), 'the copy carries the link').toBe('tok/1');
+      expect(new URL(saved.absolutePath, 'http://localhost').searchParams.get('share')).toBe('tok/1');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("carries the image context menu's Edit Alt Text… into moss's native command listener", async () => {
     const { api } = uploadBridge(() => Response.json({}));
     const commands: string[] = [];

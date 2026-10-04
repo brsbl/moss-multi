@@ -2,8 +2,9 @@
 // menu's /media → "From computer") one of every moss type into a note: png, jpg, gif, webp, svg, mp4, webm and mov;
 // each renders and survives a reload, and the export keeps moss's relative `assets/` paths. A viewer gets no upload
 // control and a raw upload gets 403; a PDF gets 415. A copied note keeps its media, in the same folder and in the
-// copier's own Home. A signed-in link reader sees the media, and so does an anonymous one, through the token the asset
-// URL carries. Video plays through 206 responses. Alt text edited from the image's context menu reaches the peer and
+// copier's own Home, even when that Home already holds a different file under the same name. A signed-in link reader
+// sees the media, and so does an anonymous one, through the token the asset URL carries; a signed-in editor-link
+// holder uploads. A video's poster is its first frame, and it plays through 206 responses. Alt text edited from the image's context menu reaches the peer and
 // the export.
 //
 // Grants are declared setup through the members API, and the share link through the loopback hook until T2.4's
@@ -35,6 +36,7 @@ const MEDIA: Fixture[] = [
   { name: 'clip.mov', type: 'video/quicktime', kind: 'video' },
 ];
 const PNG = MEDIA[0];
+const GIF = MEDIA[2];
 const WEBM = MEDIA[6];
 const IMAGES = MEDIA.filter((file) => file.kind === 'image').length;
 const VIDEOS = MEDIA.length - IMAGES;
@@ -73,6 +75,28 @@ async function expectImagesDecode(actor: Actor, docId: string, count: number): P
     }).toBe(true);
   }
   await expect(ui.body(actor, docId).getByText(/could not be found|isn.t available on the web/), `${actor.label}: no missing-media fallback`).toHaveCount(0);
+}
+
+/**
+ * The video's poster is its own first frame, decoded and painted with real content: never the blank box moss shows
+ * while a desktop-derived thumbnail is missing.
+ */
+async function expectPoster(actor: Actor, docId: string): Promise<void> {
+  const poster = videos(actor, docId).locator('video[data-video-thumbnail-state="frame"]');
+  await expect(poster, `${actor.label}: the video shows a frame as its poster`).toHaveCount(1, { timeout: UPLOAD_TIMEOUT });
+  await expect.poll(() => poster.evaluate((video: HTMLVideoElement) => {
+    if (video.readyState < 2 || !video.videoWidth) return 0;
+    const canvas = document.createElement('canvas');
+    canvas.width = 32;
+    canvas.height = 18;
+    const context = canvas.getContext('2d');
+    if (!context) return 0;
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    const colors = new Set<number>();
+    for (let i = 0; i < pixels.length; i += 4) colors.add(((pixels[i] >> 5) << 6) | ((pixels[i + 1] >> 5) << 3) | (pixels[i + 2] >> 5));
+    return colors.size;
+  }), { message: `${actor.label}: the poster paints the clip's first frame`, timeout: UPLOAD_TIMEOUT }).toBeGreaterThanOrEqual(4);
 }
 
 async function expectVideos(actor: Actor, docId: string, count: number): Promise<void> {
@@ -204,7 +228,7 @@ test('j11-media: drop, paste and /media → From computer upload every moss type
   expect(raw.status(), 'a raw upload by a viewer is forbidden').toBe(403);
 });
 
-test('j11-media: a copied note keeps its media in its folder and in the copier\'s Home; link readers see it; video plays through 206 @p:note-8', async ({ actors, stack }) => {
+test('j11-media: a copied note keeps its media in its folder and in the copier\'s Home; link readers see it; an editor link uploads; video plays through 206 @p:note-8', async ({ actors, stack, browserName }) => {
   const ada = await openShell(actors, 'ada');
   const benPrincipal = await actors.principal('ben');
   const docId = await newNote(ada, 'Media to copy');
@@ -214,15 +238,19 @@ test('j11-media: a copied note keeps its media in its folder and in the copier\'
   await waitAcked(ada, docId);
 
   // The video plays from the asset route, which answers the player's Range requests with 206.
+  await expectPoster(ada, docId);
   const partial: number[] = [];
   ada.page.on('response', (response) => {
-    if (response.url().includes(`/assets/${WEBM.name}`)) partial.push(response.status());
+    if (response.url().includes(`/assets/${WEBM.name}`) && response.request().resourceType() === 'media') partial.push(response.status());
   });
   await videos(ada, docId).click();
-  const player = ui.body(ada, docId).locator('video');
+  const player = ui.body(ada, docId).locator('video:not([data-video-thumbnail-state])');
   await expect.poll(() => player.evaluate((video: HTMLVideoElement) => video.readyState), { message: 'the video has frames', timeout: UPLOAD_TIMEOUT })
     .toBeGreaterThanOrEqual(2);
-  expect(partial.filter((status) => status > 0).every((status) => status === 200 || status === 206), 'the player read the video').toBe(true);
+  expect(partial.length, 'the player read the video from the asset route').toBeGreaterThan(0);
+  expect(partial.every((status) => status === 200 || status === 206), 'every media read succeeded').toBe(true);
+  // Chromium's player always reads in ranges; WebKit may read a small file whole.
+  if (browserName === 'chromium') expect(partial, "the player's reads are ranged").toContain(206);
   const ranged = await ada.page.evaluate(async (url) => {
     const response = await fetch(url, { headers: { range: 'bytes=0-99' } });
     return { status: response.status, range: response.headers.get('content-range'), length: (await response.arrayBuffer()).byteLength };
@@ -240,11 +268,18 @@ test('j11-media: a copied note keeps its media in its folder and in the copier\'
   await expectImagesDecode(ada, copyId, 1);
   await expectVideos(ada, copyId, 1);
 
-  // Ben edits only this note, so his copy lands in his own Home, and its media comes with it.
+  // Ben edits only this note, so his copy lands in his own Home, and its media comes with it. His Home already has
+  // a different pattern.png, as most Homes already hold a pasted `image.png`: the copy still shows Ada's file.
   await grantDoc(ada, docId, benPrincipal, 'editor');
   const ben = await openShell(actors, benPrincipal, `/d/${docId}`);
   await actors.requireDistinct(2);
   await ui.waitLive(ben, docId);
+  const { vault: benHome } = (await (await ben.context.request.get('/api/workspace')).json()) as { vault: { id: string } };
+  const benOwn = Buffer.concat([bytes(PNG.name), Buffer.from('his own file')]);
+  const occupied = await ben.context.request.post(`/api/folders/${benHome.id}/assets?filename=${PNG.name}`, {
+    headers: { origin: origin(ben), 'content-type': PNG.type }, data: benOwn,
+  });
+  expect(occupied.status(), "Ben's Home holds his own pattern.png").toBe(201);
   await ben.page.locator(`[${SIDEBAR_ROW_ATTR}][${NAMES.docId}="${docId}"]`).click({ button: 'right' });
   await ben.page.getByRole('menuitem', { name: 'Duplicate', exact: true }).click();
   const benCopy = ben.page.locator(`[${EDITOR_PANE_ATTR}]:not([${NAMES.docId}="${docId}"])`);
@@ -257,6 +292,8 @@ test('j11-media: a copied note keeps its media in its folder and in the copier\'
   expect(await folderOf(ben, benCopyId), "Ben's copy is in another folder").not.toBe(await folderOf(ada, docId));
   await expectImagesDecode(ben, benCopyId, 1);
   await expectVideos(ben, benCopyId, 1);
+  const shown = await images(ben, benCopyId).evaluate(async (img: HTMLImageElement) => (await (await fetch(img.currentSrc)).arrayBuffer()).byteLength);
+  expect(shown, "Ben's copy shows Ada's image, not the file his Home already had").toBe(bytes(PNG.name).byteLength);
   await actors.checkpoint('copied');
 
   // A signed-in reader with only a link sees the media through it.
@@ -281,6 +318,13 @@ test('j11-media: a copied note keeps its media in its folder and in the copier\'
   expect(webm.status(), 'an anonymous video read is a 206').toBe(206);
   expect((await anon.context.request.get(`/api/docs/${docId}/assets/${PNG.name}?share=forged`)).status()).toBe(404);
   expect((await anon.context.request.get(`/api/docs/${docId}/assets/${PNG.name}`)).status()).toBe(404);
+
+  // A signed-in holder of an editor link adds media as she types: the upload carries her link.
+  const editorToken = await stack.shareLink(docId, 'editor');
+  const dee = await openShell(actors, 'dee', `/d/${docId}?share=${encodeURIComponent(editorToken)}`);
+  await ui.waitLive(dee, docId);
+  expect(await drop(dee, docId, [GIF]), 'the editor takes the dropped file').toBe(true);
+  await expectImagesDecode(dee, docId, 2);
 });
 
 test("j11-media: alt text edited from the image's context menu reaches the peer and the export @p:note-8", async ({ actors }) => {

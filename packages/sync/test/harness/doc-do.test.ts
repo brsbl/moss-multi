@@ -152,6 +152,25 @@ describe('server writes', () => {
     expect(readFrontmatter(source.dobj.document)).toEqual({ tag: 'keep' });
   });
 
+  it("duplicates with the snapshot's own markdown and renames the media references a copy's folder gave new names", async () => {
+    const source = await start(openDoc());
+    const markdown = 'Intro\n\n![Pasted](assets/image.png)\n\n![A clip](assets/clip.webm)\n\n![Kept](assets/other.png)\n';
+    await source.dobj.create({ folderId: 'source', ownerId: 'owner', title: 'Media', markdown });
+    const snapshot = await source.dobj.snapshotForDuplicate();
+    expect(snapshot.markdown, 'the snapshot names its media from the same state').toBe(await source.dobj.exportMarkdown());
+    const target = await start(openDoc());
+    await target.dobj.createFromSnapshot({ folderId: 'home', ownerId: 'other', title: 'Media copy' }, snapshot.state,
+      { 'image.png': 'image-2.png', 'clip.webm': 'clip-2.webm' });
+    const copied = await target.dobj.exportMarkdown();
+    expect(copied).toContain('(assets/image-2.png)');
+    expect(copied).toContain('(assets/clip-2.webm)');
+    expect(copied).toContain('(assets/other.png)');
+    expect(copied).not.toContain('(assets/image.png)');
+    expect(await source.dobj.exportMarkdown(), 'the source keeps its names').toContain('(assets/image.png)');
+    const woken = await start(wake(target));
+    expect(await woken.dobj.exportMarkdown(), 'the renamed references persist').toBe(copied);
+  });
+
   it('replays legacy YAML into the map, persists its upgrade, and exports after a second wake', async () => {
     const legacy = await start(openDoc());
     await legacy.dobj.create({ folderId: 'folder', ownerId: 'owner', title: 'Old note', markdown: MARKDOWN });
