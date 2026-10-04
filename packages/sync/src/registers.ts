@@ -350,8 +350,8 @@ export class RegisterDraft {
       if (!known || known.length !== base.length || then.items.length !== base.length || now.items.length !== value.length) return;
       // A caller may put another key's array here (moss copies the first series into `data`); hint only the text's.
       if (!sameValue(value, JSON.parse(this.text.slice(now.start, now.end)))) return;
-      const opens = new Map(then.items.map((span, index) => [span.start, index]));
-      const closes = new Map(then.items.map((span, index) => [span.end - 1, index]));
+      const opens = new Map(then.items.map((span, index) => [span.start, index] as const));
+      const closes = new Map(then.items.map((span, index) => [span.end - 1, index] as const));
       let last = -1;
       const match = now.items.map((span) => {
         const opened = new Set<number>();
