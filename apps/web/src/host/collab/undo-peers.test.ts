@@ -89,6 +89,73 @@ describe('undo never removes a peer\'s text @p:col-3', () => {
       for (const actor of [ada, ben]) expect(actor.text()).toBe('Intro.\n\n Ben');
     } finally { ada.dispose(); ben.dispose(); seeder.dispose(); }
   });
+  it('an undo that skips a fully kept step still keeps the peer\'s text in the older step', async () => {
+    const seeder = seeded(() => $getRoot().append($createParagraphNode().append($createTextNode('Intro.'))));
+    const ada = peer(seeder.doc); const ben = peer(seeder.doc);
+    try {
+      await settle();
+      for (const step of [
+        () => $getRoot().append($createParagraphNode()),
+        () => ($getRoot().getLastChild() as ElementNode).append($createTextNode('One')),
+        () => $getRoot().append($createParagraphNode()),
+      ]) { ada.editor.update(step, { discrete: true }); ada.undo.stopCapturing(); }
+      await exchange(ada, ben);
+      ben.editor.update(() => {
+        const one = ($getRoot().getChildAtIndex(1) as ElementNode).getFirstChild() as TextNode;
+        one.setTextContent('One B1');
+        ($getRoot().getLastChild() as ElementNode).append($createTextNode('B2'));
+      }, { discrete: true });
+      await exchange(ada, ben);
+      for (const actor of [ada, ben]) expect(actor.text()).toBe('Intro.\n\nOne B1\n\nB2');
+      // The newest step (the paragraph Ben typed B2 into) is kept whole, so Yjs moves on to Ada's 'One'.
+      ada.undo.undo();
+      await exchange(ada, ben);
+      for (const actor of [ada, ben]) expect(actor.text(), 'Ada\'s Cmd+Z must leave Ben\'s text').toBe('Intro.\n\n B1\n\nB2');
+      const reopened = peer(ben.doc);
+      try { await settle(); expect(reopened.text()).toBe('Intro.\n\n B1\n\nB2'); } finally { reopened.dispose(); }
+    } finally { ada.dispose(); ben.dispose(); seeder.dispose(); }
+  });
+});
+
+const CODE_NOTE = 'Intro.\n\n```js\nconst kept = 1;\n```\n\nOutro.';
+const types = (actor: Peer) => actor.editor.getEditorState().read(() => $getRoot().getChildren().map(node => node.getType()));
+const codeBlock = () => $getRoot().getChildren().find(node => node.getType() === 'code-block')!;
+const moveCodeFirst = () => $getRoot().getFirstChild()!.insertBefore(codeBlock());
+
+describe('moving a register block', () => {
+  it('undoing a move leaves one block', async () => {
+    const seeder = seeded(() => $importNoteBody(CODE_NOTE));
+    const ben = peer(seeder.doc);
+    try {
+      await settle();
+      ben.editor.update(moveCodeFirst, { discrete: true });
+      await settle();
+      expect(types(ben)).toEqual(['code-block', 'paragraph', 'paragraph']);
+      ben.undo.undo();
+      await settle();
+      expect(types(ben), 'undo must not keep both copies').toEqual(['paragraph', 'code-block', 'paragraph']);
+      const reopened = peer(ben.doc);
+      try { await settle(); expect(types(reopened)).toEqual(['paragraph', 'code-block', 'paragraph']); } finally { reopened.dispose(); }
+    } finally { ben.dispose(); seeder.dispose(); }
+  });
+
+  it('a block one peer moves while another deletes it keeps its code', async () => {
+    const seeder = seeded(() => $importNoteBody(CODE_NOTE));
+    const ada = peer(seeder.doc); const ben = peer(seeder.doc);
+    try {
+      await settle();
+      ada.editor.update(() => codeBlock().remove(), { discrete: true });
+      ben.editor.update(moveCodeFirst, { discrete: true });
+      await settle();
+      await exchange(ada, ben);
+      for (const actor of [ada, ben]) {
+        expect(types(actor)).toEqual(['code-block', 'paragraph', 'paragraph']);
+        expect(exportMarkdown(actor.editor), 'the surviving block keeps its payload').toContain('const kept = 1;');
+      }
+      const reopened = peer(ada.doc);
+      try { await settle(); expect(exportMarkdown(reopened.editor)).toContain('const kept = 1;'); } finally { reopened.dispose(); }
+    } finally { ada.dispose(); ben.dispose(); seeder.dispose(); }
+  });
 });
 
 describe('a deleted block\'s register payload leaves the shared state', () => {
