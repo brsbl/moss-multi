@@ -3,8 +3,11 @@ import { createBinding, syncLexicalUpdateToYjs, type Provider } from '@lexical/y
 import { $getRoot, type LexicalEditor } from 'lexical';
 import * as Y from 'yjs';
 import { $importNoteBody, createConverterEditor, exportMarkdown, importMarkdown } from '../src/converter/index.ts';
+import { writeTitle } from '../src/server-doc.ts';
 
 let imported: LexicalEditor | null = null;
+/** The doc /title renames, as the DocDO's renameTitle does. */
+const titled = new Y.Doc();
 
 // A headless binding needs a provider; nothing here talks to one.
 const awareness = {
@@ -49,6 +52,13 @@ export default {
     if (pathname === '/state') {
       const markdown = await request.text();
       return Response.json({ markdownBytes: utf8(markdown), stateBytes: stateBytes(markdown) });
+    }
+    if (pathname === '/title') {
+      // The body is the new title, sent as a REST rename would send it.
+      const text = await request.text();
+      writeTitle(titled, text, 'measure-title');
+      const landed = titled.getText('title').toString() === text;
+      return landed ? Response.json({ chars: text.length }) : new Response('title did not land exactly', { status: 500 });
     }
     return new Response('not found', { status: 404 });
   },
