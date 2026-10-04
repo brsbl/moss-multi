@@ -146,7 +146,8 @@ async function share(db: Db, env: MembersEnv, target: MemberTarget, ownerUserId:
   // than SHARES_PER_HOUR (counted by the statement that inserts, so a burst can't pass), only for someone who is not
   // a member yet, and once per open email (a concurrent first share conflicts and becomes a repeat). A known account
   // is granted at its open invite's role, only when this share asks for no less (a refused lowering writes nothing).
-  // Repeats and raises only ever raise the stored role.
+  // Repeats and raises only ever raise the stored role. A known and an unknown email run the same statements (the
+  // grant ones match nothing without an account), so the time a share takes says nothing either.
   const statements = [
     env.DB.prepare(`INSERT INTO invites (token, email, target_type, target_id, role, invited_by, created_at)
       SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7
@@ -155,17 +156,13 @@ async function share(db: Db, env: MembersEnv, target: MemberTarget, ownerUserId:
       ON CONFLICT DO NOTHING`).bind(randomToken(), email, target.type, target.id, role, inviter, now, now - HOUR_MS, personId),
     env.DB.prepare(`UPDATE invites SET role = ?4 WHERE target_type = ?1 AND target_id = ?2 AND email = ?3
       AND accepted_at IS NULL AND revoked_at IS NULL AND ${rank('role')} < ${rank('?4')}`).bind(target.type, target.id, email, role),
+    env.DB.prepare(`INSERT INTO ${table} (${column}, principal_id, principal_type, role, added_by, created_at)
+      SELECT ?2, ?4, 'user', invites.role, ?6, ?7 FROM invites WHERE ?4 IS NOT NULL AND target_type = ?1 AND target_id = ?2
+        AND email = ?3 AND accepted_at IS NULL AND revoked_at IS NULL AND ${rank('invites.role')} <= ${rank('?5')}
+      ON CONFLICT DO NOTHING`).bind(target.type, target.id, email, personId, role, caller.id, now),
+    env.DB.prepare(`UPDATE ${table} SET role = ?2 WHERE ${column} = ?1 AND principal_id = ?3 AND ${rank('role')} < ${rank('?2')}`)
+      .bind(target.id, role, personId),
   ];
-  if (personId) {
-    statements.push(
-      env.DB.prepare(`INSERT INTO ${table} (${column}, principal_id, principal_type, role, added_by, created_at)
-        SELECT ?2, ?4, 'user', invites.role, ?6, ?7 FROM invites WHERE target_type = ?1 AND target_id = ?2
-          AND email = ?3 AND accepted_at IS NULL AND revoked_at IS NULL AND ${rank('invites.role')} <= ${rank('?5')}
-        ON CONFLICT DO NOTHING`).bind(target.type, target.id, email, personId, role, caller.id, now),
-      env.DB.prepare(`UPDATE ${table} SET role = ?2 WHERE ${column} = ?1 AND principal_id = ?3 AND ${rank('role')} < ${rank('?2')}`)
-        .bind(target.id, role, personId),
-    );
-  }
   const [admitted, , granted] = await env.DB.batch(statements);
   if (personId && changed(granted) && env.PrincipalDO) {
     // The grantee's open tabs refresh their vaults and shared items, off the response path so its timing says
@@ -177,7 +174,7 @@ async function share(db: Db, env: MembersEnv, target: MemberTarget, ownerUserId:
   if (changed(admitted)) return json({ shared: { email, role } }, 201, NO_STORE);
   // Not a new share: the person already has access here, or the owner is over the hourly limit.
   const [invite] = await db.select({ role: invites.role }).from(invites).where(openInvite(target, email)).limit(1);
-  const [grant] = personId ? await grantRows(db, target, personId) : [];
+  const [grant] = await grantRows(db, target, personId ?? '');
   const held = [invite?.role, grant?.role].filter((r): r is Role => r !== undefined).sort((a, b) => ROLES.indexOf(b) - ROLES.indexOf(a))[0];
   if (held === undefined) {
     return refuse(429, 'rate-limited', 'You’ve shared with a lot of people in the last hour. Try again later.', { 'retry-after': '3600' });
