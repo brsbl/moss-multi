@@ -276,6 +276,7 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
         listing = Promise.resolve(docs.map(toNoteMetadata));
         if (changedVaults) workspaceListeners.forEach((listener) => listener());
         diskListeners.forEach((listener) => listener(full ? [] : ids, []));
+        rereadBacklinks();
       }
     } catch {
       if (generation === channelGeneration) {
@@ -303,11 +304,13 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
   // and re-read whenever the workspace channel says a doc changed (a DocDO announces a change to its links).
   const backlinks = new Map<string, NoteLink[]>();
   const watched: string[] = [];
-  let backlinkTimer: ReturnType<typeof setTimeout> | null = null;
   const readBacklinks = async (id: string) => {
     try {
       const response = await request(`/api/docs/${encodeURIComponent(id)}/backlinks`);
-      if (!response.ok) return;
+      if (!response.ok) {
+        if (response.status === 404) unwatch(id);
+        return;
+      }
       const answer = await response.json() as { backlinks?: ApiDoc[] };
       if (!Array.isArray(answer.backlinks)) return;
       const links = answer.backlinks.map((row): NoteLink => {
@@ -324,6 +327,17 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
       diskListeners.forEach((listener) => listener([id], []));
     } catch { /* The next workspace event or note switch reads them again. */ }
   };
+  const unwatch = (id: string) => {
+    const at = watched.indexOf(id);
+    if (at !== -1) watched.splice(at, 1);
+  };
+  /** After the listing caught up with a workspace event: a watched note that left it (trashed, unshared) is dropped. */
+  const rereadBacklinks = () => {
+    for (const id of [...watched]) {
+      if (known.has(id)) void readBacklinks(id);
+      else unwatch(id);
+    }
+  };
   const watchBacklinks = (id: string) => {
     const at = watched.indexOf(id);
     if (at !== -1) watched.splice(at, 1);
@@ -336,12 +350,6 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
     if (event.type === 'vaults' || event.folderIds.length) refreshAll = true;
     if (event.type === 'meta') for (const id of event.docIds) pendingIds.add(id);
     requestWorkspaceRefresh();
-    if (watched.length && !backlinkTimer) {
-      backlinkTimer = setTimeout(() => {
-        backlinkTimer = null;
-        for (const id of watched) void readBacklinks(id);
-      }, 250);
-    }
   };
   const pins = () => readJson<Record<string, number>>(storage, PINS_KEY) ?? {};
   const withLocal = (listed: NoteMetadata): NoteMetadata => {
