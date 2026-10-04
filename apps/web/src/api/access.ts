@@ -1,6 +1,6 @@
 // The one access resolver (A§8): a principal's role on a doc is the MAX of ownership, its grant on the doc, its grants
 // on every folder up to the vault, and a presented share link, folded by protocol/roles.ts (the link is a ceiling).
-// Agents act with their owner's access, and a grant to the agent itself adds by MAX.
+// Agents act with their owner's access, and a grant to the agent itself adds by MAX, but never above editor.
 import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import { foldRole, type Role } from '@moss-multi/protocol/roles';
 import type { Principal } from '../auth/principal.ts';
@@ -104,7 +104,7 @@ export async function resolveDocAccess(db: Db, principal: Principal, docId: stri
   const chain = await folderChain(db, doc.folderId);
   const token = principal.type === 'anonymous' ? principal.shareToken : shareToken;
   const [grants, link] = await Promise.all([grantRoles(db, grantees(principal), chain, docId), linkRole(db, token, docId, chain)]);
-  const sources = { owner: actingUserId(principal) === doc.ownerUserId, grants, anonymous: principal.type === 'anonymous' };
+  const sources = { owner: actingUserId(principal) === doc.ownerUserId, grants, anonymous: principal.type === 'anonymous', agent: principal.type === 'agent' };
   const role = foldRole({ ...sources, link });
   if (role === null) return null;
   const linkOnly = foldRole({ ...sources, link: null }) === null;
@@ -125,7 +125,7 @@ export async function resolveFolderAccess(db: Db, principal: Principal, folderId
   const chain = await folderChain(db, folderId);
   const token = principal.type === 'anonymous' ? principal.shareToken : shareToken;
   const [grants, link] = await Promise.all([grantRoles(db, grantees(principal), chain, null), linkRole(db, token, null, chain)]);
-  const sources = { owner: actingUserId(principal) === folder.ownerUserId, grants, anonymous: principal.type === 'anonymous' };
+  const sources = { owner: actingUserId(principal) === folder.ownerUserId, grants, anonymous: principal.type === 'anonymous', agent: principal.type === 'agent' };
   const role = foldRole({ ...sources, link });
   if (role === null) return null;
   const linkOnly = foldRole({ ...sources, link: null }) === null;
@@ -152,7 +152,7 @@ export async function accessibleFolders(db: Db, principal: Principal) {
     if (root?.kind !== 'vault') return [];
     const role = foldRole({ owner: actingUserId(principal) === row.ownerUserId,
       grants: grants.filter((grant) => chain.includes(grant.folderId)).map((grant) => grant.role), link: null,
-      anonymous: principal.type === 'anonymous' });
+      anonymous: principal.type === 'anonymous', agent: principal.type === 'agent' });
     return role ? [{ ...row, role, vaultId: root.id }] : [];
   });
 }
@@ -173,7 +173,7 @@ export async function accessibleDocs(db: Db, principal: Principal, visibleFolder
     const folderRole = folders.find((folder) => folder.id === row.folderId)?.role;
     const role = foldRole({ owner: ownerId === row.ownerUserId,
       grants: [...grants.filter((grant) => grant.docId === row.id).map((grant) => grant.role), ...(folderRole ? [folderRole] : [])],
-      link: null, anonymous: principal.type === 'anonymous' });
+      link: null, anonymous: principal.type === 'anonymous', agent: principal.type === 'agent' });
     return role ? [{ ...row, role }] : [];
   });
 }
