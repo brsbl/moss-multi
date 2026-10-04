@@ -4,7 +4,7 @@ import { UNDO_COMMAND, REDO_COMMAND, type LexicalEditor } from 'lexical';
 import type { Binding } from '@lexical/yjs';
 import {
   ContentString, ContentType, Text as YText, UndoManager, XmlElement, XmlText, isDeleted,
-  type AbstractType, type Item, type Transaction,
+  type Item, type Transaction,
 } from 'yjs';
 
 import { REGISTER_LOCAL_ORIGIN } from '@moss-multi/sync/registers';
@@ -24,7 +24,7 @@ export function createBindingUndoManager(binding: Binding): UndoManager {
     transaction.afterState.forEach((clock, client) => { if ((transaction.beforeState.get(client) ?? 0) < clock) own.add(client); });
   };
   const foreign = (item: Item) => !item.deleted && !own.has(item.id.client);
-  const holdsForeign = <T,>(type: AbstractType<T>): boolean => {
+  const holdsForeign = (type: { _start: Item | null }): boolean => {
     for (let item = type._start; item; item = item.right) {
       if (foreign(item)) return true;
       if (!item.deleted && item.content instanceof ContentType && holdsForeign(item.content.type)) return true;
