@@ -213,7 +213,7 @@ Paint is derived and never mutates the tree (L§4.12), on the T4.0 paint layer (
 7. projectionDiff (`review.test.ts`): text-only, attribute-only and register-only records each have a hunk; a stale preview hash gets 409 `changed`.
 8. Cost (`packages/sync/src/doc/suggest.test.ts`): `suggest-ops` at the frame cap and the body-frame lease check, small doc against the 1.69 MB doc.
 
-Red: run [37220685257](https://github.com/brsbl/moss-multi/actions/runs/37220685257) on the tests-first commit (the role table failed on `reason: 'suggest'`, close 4409; everything else on the unimplemented spike). Green: see the T5.0 hand-off.
+Red: run [37220685257](https://github.com/brsbl/moss-multi/actions/runs/37220685257) on the tests-first commit (the role table failed on `reason: 'suggest'`, close 4409; everything else on the unimplemented spike). Green: run [37221610786](https://github.com/brsbl/moss-multi/actions/runs/37221610786), 912 of 912 tests. Measured there (test 8, medians, one ~200 KB frame of 20 000 structs at the cap): `suggest-ops` 23.7 ms on a 3 KB doc and 14.5 ms on the 1.77 MB doc; the lease check of a typing frame plus the cap frame 9.4 ms and 11.2 ms. Neither grows with the doc; both are the frame's own decode.
 
 ## 10. What it costs users (ruling 17)
 
