@@ -57,7 +57,7 @@ type IdRef = { client: number; clock: number };   // the block's (or decorator's
 - `TreeAnchor` is the comment anchor from T4.0 (two RelativePositions, assoc 0 and −1, plus a W3C quote over the tree projection). Proposals reuse it so re-anchoring, the quote and the drift guard are one implementation.
 - `AttrKey` is an allowlist: `__checked`, `__listType`, `blockType` (paragraph, heading level, quote), `__format` on elements (alignment), `__language` (code), `__level` (callout), and image and video alt text and width (T5.1 lists moss's property names). Any other property change of original content is refused loudly (§5.2).
 - Record size stays small: consecutive typing extends the last span (`register` in the spike), and a group ends on the glyphdown coalescing rule (30 s or more than one paragraph away; `suggest-session.ts`).
-- **Per-doc DO state outside the map** (SQLite, so it survives hibernation): `review_rev`, the counter every status change increments; and `yjs_clients(client_id, principal_id)`, the Yjs client ids each principal has written under (§4 rule 1). Per connection, the attachment holds `seenRev`, the review counter that connection last acknowledged.
+- **Per-doc DO state outside the map** (SQLite, so it survives hibernation): `review_rev`, the counter every status change increments; and `yjs_clients(client_id, principal_id)`, the Yjs client ids each principal has written under (§4 rule 1), recorded for every applied write of any role, so an editor who switches Suggest on keeps writing under their own id. Per connection, the attachment holds `seenRev`, the review counter that connection last acknowledged.
 
 ## 3. Operations
 
