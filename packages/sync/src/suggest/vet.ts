@@ -365,12 +365,13 @@ const NEXT_TYPING: ReadonlySet<string> = new Set(['__textFormat', '__textStyle']
 const ENTER_RESETS = ['__format', '__indent', '__style'] as const;
 type Attrs = Readonly<Record<string, unknown>>;
 
-const isDefault = (value: unknown) => value === undefined || value === null || value === 0 || value === '';
+const isDefault = (value: unknown) => value === undefined || value === null || value === 0 || value === '' || value === false;
 const sameValue = (a: unknown, b: unknown) => a === b || (a == null && b == null) || JSON.stringify(a) === JSON.stringify(b);
 
 /**
  * Whether Lexical's Enter in a block with `from`'s attributes makes a block with `to`'s (lexical 0.48:
- * ParagraphNode, HeadingNode and QuoteNode `insertNewAfter`; a list item is copied whole). A paragraph keeps
+ * ParagraphNode, HeadingNode, QuoteNode and ListItemNode `insertNewAfter`). A list item keeps everything but its
+ * number and starts unchecked. A paragraph keeps
  * everything but its indent, a heading keeps its tag and direction, and a quote becomes a paragraph with its
  * direction. Any other difference is a restyle, never a split.
  */
@@ -383,6 +384,8 @@ function enterMakes(from: Attrs, to: Attrs): boolean {
   };
   const resetOrKept = (keys: readonly string[]) => keys.every((key) => isDefault(to[key]) || sameValue(to[key], from[key]));
   if (from.__type === 'paragraph' && to.__type === 'paragraph') return equalExcept(['__indent']) && resetOrKept(['__indent']);
+  // The list's own transform renumbers `__value`, and a new item starts unchecked.
+  if (from.__type === 'listitem' && to.__type === 'listitem') return equalExcept(['__value', '__checked']) && resetOrKept(['__checked']);
   if (from.__type === 'heading' && to.__type === 'heading') return equalExcept(ENTER_RESETS) && resetOrKept(ENTER_RESETS);
   if (from.__type === 'quote' && to.__type === 'paragraph') {
     return sameValue(from.__dir, to.__dir) && ENTER_RESETS.every((key) => isDefault(to[key]));
@@ -657,7 +660,7 @@ function* children(type: Type, include: (item: Y.Item) => boolean): Generator<Y.
 }
 
 /** A map's entries as of the `include`d items: an entry the frame overwrote reads its previous value. */
-function mapJson(map: Y.Map<unknown>, include: (item: Y.Item) => boolean): Record<string, unknown> {
+function mapJson(map: Type, include: (item: Y.Item) => boolean): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [key, last] of map._map) {
     let item: Y.Item | null = last;
