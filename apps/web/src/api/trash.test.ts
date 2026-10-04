@@ -329,4 +329,28 @@ describe('the workspace listing', () => {
     const refreshed = (await (await call(ada, 'GET', `/api/workspace?vault=${ada.homeId}&ids=${doc}`)).json()) as { docs: { id: string; trashedAt?: number }[] };
     expect(refreshed.docs).toEqual([expect.objectContaining({ id: doc, trashedAt: expect.any(Number) })]);
   });
+
+  it('lists a note for a co-owner who trashed it, by a doc grant or a vault grant, so he can restore it from Trash', async () => {
+    type Listing = { docs: { id: string; trashedAt?: number | null; role: string }[] };
+    const list = async (user: TestUser, query = '') => ((await (await call(user, 'GET', `/api/workspace${query}`)).json()) as Listing).docs;
+    const byDoc = await insertDoc(d1.db, ada);
+    await insertGrant(d1.db, { docId: byDoc }, ben, 'owner');
+    const vault = await insertFolder(d1.db, ada, null);
+    const byVault = await insertDoc(d1.db, ada, { folderId: vault });
+    await insertGrant(d1.db, { folderId: vault }, ben, 'owner');
+    const editorOnly = await insertDoc(d1.db, ada);
+    await insertGrant(d1.db, { docId: editorOnly }, cy, 'editor');
+    expect((await call(ben, 'DELETE', `/api/docs/${byDoc}`)).status).toBe(200);
+    expect((await call(ben, 'DELETE', `/api/docs/${byVault}`)).status).toBe(200);
+    expect((await call(ada, 'DELETE', `/api/docs/${editorOnly}`)).status).toBe(200);
+
+    expect((await list(ben)).find((row) => row.id === byDoc)).toMatchObject({ trashedAt: expect.any(Number), role: 'owner' });
+    expect((await list(ben, `?vault=${vault}`)).find((row) => row.id === byVault)).toMatchObject({ trashedAt: expect.any(Number), role: 'owner' });
+    expect((await list(ben)).map((row) => row.id), 'a note in a vault he can see lists only in that vault').not.toContain(byVault);
+    expect((await list(cy)).map((row) => row.id), 'an editor never sees it in Trash').not.toContain(editorOnly);
+    expect((await list(ada)).find((row) => row.id === byDoc)).toMatchObject({ trashedAt: expect.any(Number) });
+
+    expect((await call(ben, 'POST', `/api/docs/${byDoc}/restore`)).status).toBe(200);
+    expect((await list(ben)).find((row) => row.id === byDoc)?.trashedAt ?? null).toBeNull();
+  });
 });
