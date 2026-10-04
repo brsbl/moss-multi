@@ -119,6 +119,23 @@ test('j08 folder: Ada shares a folder from its context menu and it reaches Ben\'
   await expect(ben.page.getByRole('menuitem', { name: 'Share…', exact: true }), 'only the owner is offered Share…').toHaveCount(0);
   await ben.page.keyboard.press('Escape');
   await actors.requireDistinct(2);
+
+  // A folder link lands a stranger on the folder (/f/$folderId): its notes and nothing else of Ada's.
+  await ui.folderRow(ada, name).click({ button: 'right' });
+  await ada.page.getByRole('menuitem', { name: 'Share…', exact: true }).click();
+  const url = await createLink(ada.page.getByRole('dialog', { name: 'Share folder' }), 'Can view');
+  expect(new URL(url).pathname).toBe(`/f/${folderId}`);
+  await ada.page.keyboard.press('Escape');
+  const stranger = await actors.anonymous(pathOf(url), { label: 'stranger' });
+  await stranger.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
+  await expect(stranger.page.getByRole('button', { name: `Vault: ${name}`, exact: true }), 'the folder is the workspace').toBeVisible();
+  const strangerRow = stranger.page.locator(`[data-sidebar-row][data-doc-id="${docId}"]`);
+  await expect(strangerRow, 'its note is listed').toBeVisible();
+  await expect(stranger.page.locator('[data-sidebar-row]'), 'and nothing else').toHaveCount(1);
+  await strangerRow.click();
+  await waitOpen(stranger, docId, 'readonly');
+  await expect(ui.pane(stranger, docId)).toHaveAttribute(ROLE_ATTR, 'viewer');
+  await actors.checkpoint('folder-link-landing');
 });
 
 test('j08 vault: Ada shares her vault from the switcher and Ben switches to it @p:ppl-2 @p:note-4 @evidence', async ({ actors }) => {
@@ -224,6 +241,7 @@ test('j08 denial: revoked, forged and inaccessible links get byte-identical 404s
   const otherUrl = await createLink(otherDialog, 'Can view');
   await ada.page.keyboard.press('Escape');
   await expect(otherDialog).toBeHidden();
+  ada.expectReconnects(1, docId); // Returning to the first note opens its session again.
   await ui.openNote(ada, docId);
   const dialog = await ui.openShare(ada, docId);
   const url = await createLink(dialog, 'Can view');
@@ -251,8 +269,14 @@ test('j08 denial: revoked, forged and inaccessible links get byte-identical 404s
   expect(answers[0].status).toBe(404);
   expect(answers[1], 'forged vs revoked').toEqual(answers[0]);
   expect(answers[2], 'a live link to another note vs revoked').toEqual(answers[0]);
+  // A signed-in stranger presenting them gets the same bytes.
+  const ben = await actors.session(await actors.principal('ben'));
+  for (const token of [revoked, forged, elsewhere]) {
+    expect(await fingerprint(ben, `/api/docs/${docId}?share=${token}`), 'signed in, the same 404').toEqual(answers[0]);
+  }
   // The positive control: the other note's live link opens the other note.
   expect((await stranger.context.request.get(`/api/docs/${otherId}?share=${elsewhere}`)).status()).toBe(200);
+  await actors.requireDistinct(2);
 });
 
 test('j08 privacy: an email with no account answers like one with an account, and non-owners see no emails @p:ppl-2', async ({ actors, stack }) => {

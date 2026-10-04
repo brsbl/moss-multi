@@ -116,7 +116,8 @@ export const inviteRow = (dialog: Locator, email: string): Locator => people(dia
 /** The read-only field holding a live link's URL, and its row. */
 export const linkField = (dialog: Locator, access: LinkAccess): Locator => dialog.getByRole('textbox', { name: `${access} link`, exact: true });
 export const linkRow = (dialog: Locator, access: LinkAccess): Locator =>
-  dialog.getByRole('list', { name: 'Share links' }).getByRole('listitem').filter({ has: linkField(dialog, access) });
+  dialog.getByRole('list', { name: 'Share links' }).getByRole('listitem')
+    .filter({ has: dialog.page().getByRole('textbox', { name: `${access} link`, exact: true }) });
 
 /** Adds `email` at `access` in an open Share dialog (note, folder or vault); the dialog stays open. */
 export async function shareInDialog(dialog: Locator, email: string, access: Access): Promise<void> {
