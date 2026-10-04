@@ -53,14 +53,14 @@ type IdRef = { client: number; clock: number };   // the block's (or decorator's
 ```
 
 - `TreeAnchor` is the comment anchor from T4.0 (two RelativePositions, assoc 0 and −1, plus a W3C quote over the tree projection). Proposals reuse it so re-anchoring, the quote and the drift guard are one implementation.
-- `AttrKey` is an allowlist: `__checked`, `__listType`, `blockType` (paragraph, heading level, quote), `__format` on elements (alignment), `__language` (code), `__level` (callout), and image and video alt text and width (T5.1 lists moss's property names). Anything else is not suggestible as an attribute (§5.4).
+- `AttrKey` is an allowlist: `__checked`, `__listType`, `blockType` (paragraph, heading level, quote), `__format` on elements (alignment), `__language` (code), `__level` (callout), and image and video alt text and width (T5.1 lists moss's property names). Any other property change of original content is refused loudly (§5.2).
 - Record size stays small: consecutive typing extends the last span (`register` in the spike), and a group ends on the glyphdown coalescing rule (30 s or more than one paragraph away; `suggest-session.ts`).
 
 ## 3. Operations
 
-The census rows are the spike's assertions; "client" is what the suggest-mode client sends.
+"Raw frame" is what the vetter returns if the client sent the editor's own Yjs change; "client sends" is what the suggest-mode client sends instead. The census asserts the raw-frame verdict for typing, the colliding prefix, a sentence pasted before itself, Enter at the end and mid-paragraph, a soft break, a formatted run mid-word, a new table row and list item, deleting a character and a word, bolding, a checkbox, a list indent, a code register edit, own content and moved text; the other rows follow from the same rules.
 
-| Operation | Census verdict on the raw frame | Client sends | Part | Paint | Accept | Reject or withdraw |
+| Operation | Raw frame | Client sends | Part | Paint | Accept | Reject or withdraw |
 |---|---|---|---|---|---|---|
 | Type, paste inline, colliding prefix, sentence before itself | allowed | the frame | `insert` | insert highlight | close | remove the ids |
 | Enter at a block end; new list item; new table row or column; new decorator | allowed | the frame | `insert` (the block's item covers its content) | insert highlight, ¶ marker for a new empty block | close | remove the ids |
@@ -213,7 +213,7 @@ Pending: the fresh architect and the Codex critic review this document; each fin
 **If something cannot be suggested.** If someone tries a change the app does not know how to turn into a suggestion, it says so plainly in the notice band, nothing they typed afterwards is lost, and the server refuses it anyway as a backstop. The test suite lists every moss editing action so that this stays rare.
 
 **Choices made for you** (each can be overturned):
-1. The title and note properties cannot be suggested; they stay read-only in Suggest mode, as in glyphdown.
+1. The title and note properties cannot be suggested; they stay read-only in Suggest mode.
 2. Editing the inside of an existing code block, chart, sketch or HTML block is suggested as one "replace this block" change, shown as a chip, rather than painted character by character.
 3. Exports contain the suggested additions as written (the note as it currently reads), with no markers; a "clean" export without pending additions exists for tools.
 4. A suggestion is accepted or rejected as a whole, not part by part, as in glyphdown.
