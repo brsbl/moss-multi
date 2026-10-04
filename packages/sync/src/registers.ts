@@ -10,7 +10,8 @@ export const REGISTER_FIELDS: Readonly<Record<string, string>> = {
 };
 
 type Fields = Record<string, unknown>;
-type Entries = ReadonlyMap<string, unknown>;
+/** What a codec reads: a `Map` of encoded keys, or the register's `Y.Map` itself. */
+interface Entries { get(key: string): unknown; has(key: string): boolean; keys(): IterableIterator<string>; entries(): IterableIterator<[string, unknown]> }
 /** A compound payload as one `Y.Map` of independent keys, so concurrent edits to different keys both land. */
 interface MapCodec { fields: readonly string[]; encode(fields: Fields): Map<string, unknown>; decode(entries: Entries): Fields }
 
@@ -102,7 +103,7 @@ const sketchCodec: MapCodec = {
     const size = typeof entries.get('#n') === 'number' ? entries.get('#n') as number : SKETCH_CELLS;
     const grid = new Array<boolean>(size).fill(false);
     const present: string[] = [];
-    for (const [key, value] of entries) {
+    for (const [key, value] of entries.entries()) {
       if (key.startsWith('c') && value === true) {
         const index = Number(key.slice(1));
         if (Number.isInteger(index) && index >= 0 && index < size) grid[index] = true;

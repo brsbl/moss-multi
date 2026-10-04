@@ -15,7 +15,7 @@ import { CROP, STORY_NOW, THEMES, type Theme } from './targets.ts';
 const OUT = join(import.meta.dirname, '../test-results/parity');
 const STORY = 'demo-note--default';
 const DEMO = readFileSync(new URL('../fixtures/demo-note.md', import.meta.url), 'utf8');
-const EDITOR = `${CROP} [data-lexical-editor="true"]`;
+const EDITOR = `${CROP} [data-moss-note-editor-root="true"]`;
 
 /** One selector per family (and per styled part of a compound family), matched inside the editor root. */
 export const FAMILY_SELECTORS: Record<string, string> = {
