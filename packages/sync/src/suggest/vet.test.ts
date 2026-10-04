@@ -16,7 +16,8 @@ import { excludedPropertiesFor } from '../excluded-properties.ts';
 import { bindRegisters } from '../registers.ts';
 import { importBody } from '../server-doc.ts';
 import {
-  carryIdentity, ownSpans, SEEN_GRACE_SECONDS, vetSuggestFrame, vetTransaction, type IdSpan, type OwnedRecord, type Verdict,
+  carryIdentity, ownSpans, rejectPlan, SEEN_GRACE_SECONDS, SuggestMirror, VET_LIMITS, vetSuggestFrame, vetTransaction,
+  type IdSpan, type OwnedRecord, type Verdict,
 } from './vet.ts';
 
 const SEED = [
@@ -686,5 +687,395 @@ describe('SP11 implicit deletes and governed text @p:mean-2', () => {
       expect(landed.ok && landed.moved.length, 'the re-inserted tail stays original').toBeGreaterThan(0);
       expect(blockText(server, 0)).toBe('Hello world and the cat.');
     } finally { suggester.dispose(); server.destroy(); }
+  });
+});
+
+/** The first top-level block of a doc, as its Yjs item and type. */
+function firstBlock(doc: Y.Doc): { item: Y.Item; type: Y.XmlText } {
+  const item = doc.get('root', Y.XmlText)._start!;
+  return { item, type: (item.content as Y.ContentType).type as Y.XmlText };
+}
+
+/** A copy of `server` with `update` applied: what Yjs does with the frame. */
+function applied(server: Y.Doc, update: Uint8Array): Y.Doc {
+  const copy = new Y.Doc();
+  Y.applyUpdate(copy, Y.encodeStateAsUpdate(server));
+  Y.applyUpdate(copy, update);
+  return copy;
+}
+
+/** Re-encodes decoded structs and a delete set as a V1 update, each client's structs from its first clock. */
+function encodeFrame(structs: readonly (Y.Item | Y.GC | Y.Skip)[], deletes: readonly IdSpan[]): Uint8Array {
+  const encoder = new Y.UpdateEncoderV1();
+  const byClient = new Map<number, (Y.Item | Y.GC | Y.Skip)[]>();
+  for (const struct of structs) byClient.set(struct.id.client, [...(byClient.get(struct.id.client) ?? []), struct]);
+  encoding.writeVarUint(encoder.restEncoder, byClient.size);
+  for (const [client, list] of [...byClient].sort((a, b) => b[0] - a[0])) {
+    list.sort((a, b) => a.id.clock - b.id.clock);
+    encoding.writeVarUint(encoder.restEncoder, list.length);
+    encoder.writeClient(client);
+    encoding.writeVarUint(encoder.restEncoder, list[0].id.clock);
+    for (const struct of list) struct.write(encoder, 0);
+  }
+  const ranges = new Map<number, IdSpan[]>();
+  for (const span of deletes) ranges.set(span.client, [...(ranges.get(span.client) ?? []), span]);
+  encoding.writeVarUint(encoder.restEncoder, ranges.size);
+  for (const [client, list] of ranges) {
+    encoding.writeVarUint(encoder.restEncoder, client);
+    encoding.writeVarUint(encoder.restEncoder, list.length);
+    for (const span of list.sort((a, b) => a.clock - b.clock)) {
+      encoding.writeVarUint(encoder.restEncoder, span.clock);
+      encoding.writeVarUint(encoder.restEncoder, span.len);
+    }
+  }
+  return encoder.toUint8Array();
+}
+
+/** A decoded update's delete set as id spans. */
+const deletesOf = (ds: { clients: Map<number, { clock: number; len: number }[]> }): IdSpan[] =>
+  [...ds.clients].flatMap(([client, list]) => list.map(({ clock, len }) => ({ client, clock, len })));
+
+const covers = (spans: readonly IdSpan[], client: number, clock: number) =>
+  spans.some((span) => span.client === client && span.clock <= clock && clock < span.clock + span.len);
+
+/** A map type's live entries as stable JSON (a type-valued entry by its item id). */
+function attrsOf(type: Y.AbstractType<unknown>): string {
+  const out: [string, unknown][] = [];
+  for (const [key, item] of [...type._map].sort((a, b) => (a[0] < b[0] ? -1 : 1))) {
+    if (item.deleted) continue;
+    const values = item.content.getContent();
+    const value = values[values.length - 1];
+    out.push([key, value instanceof Y.AbstractType ? `type ${item.id.client}:${item.id.clock}` : value]);
+  }
+  return JSON.stringify(out);
+}
+
+/**
+ * The test's oracle for the invariant: the document as it reads without the author's pending items. Every live
+ * character that is not the author's, with the text map governing it; every live embed that is not the author's, with
+ * its attributes, in document order; and every other root (registers, title, ...) entry by entry. A split's copies
+ * count as the text they copy, so characters are compared by character and format, not by id.
+ */
+function originalProjection(doc: Y.Doc, own: readonly IdSpan[]): string[] {
+  const out: string[] = [];
+  const mine = (client: number, clock: number) => covers(own, client, clock);
+  const walk = (type: Y.AbstractType<unknown>, depth: number) => {
+    let gov = '-';
+    for (let item = type._start; item; item = item.right) {
+      if (item.deleted) continue;
+      const { content, id } = item;
+      if (content instanceof Y.ContentString) {
+        for (let i = 0; i < content.str.length; i++) if (!mine(id.client, id.clock + i)) out.push(`${depth} c ${content.str[i]} ${gov}`);
+      } else if (content instanceof Y.ContentType) {
+        const attrs = attrsOf(content.type);
+        if (content.type instanceof Y.Map && content.type.get('__type') === 'text') {
+          gov = attrs;
+          continue;
+        }
+        gov = '-';
+        if (!mine(id.client, id.clock)) out.push(`${depth} e ${id.client}:${id.clock} ${attrs}`);
+        walk(content.type, depth + 1);
+      } else if (!(content instanceof Y.ContentDeleted)) {
+        gov = '-';
+        const values = content.getContent();
+        for (let i = 0; i < item.length; i++) {
+          if (!mine(id.client, id.clock + i)) out.push(`${depth} x ${id.client}:${id.clock + i} ${JSON.stringify(values[i] ?? null)}`);
+        }
+      }
+    }
+  };
+  const body = doc.share.get('root');
+  if (body) walk(body, 0);
+  for (const [name, type] of [...doc.share].sort((a, b) => (a[0] < b[0] ? -1 : 1))) {
+    if (name === 'root') continue;
+    for (const [key, item] of [...type._map].sort((a, b) => (a[0] < b[0] ? -1 : 1))) {
+      if (item.deleted || mine(item.id.client, item.id.clock)) continue;
+      const values = item.content.getContent();
+      const value = values[values.length - 1];
+      out.push(`${name}.${key} ${value instanceof Y.AbstractType ? `${item.id.client}:${item.id.clock} ${JSON.stringify(value.toJSON())}` : JSON.stringify(value)}`);
+    }
+    const seq: string[] = [];
+    for (let item = type._start; item; item = item.right) if (!item.deleted && !mine(item.id.client, item.id.clock)) seq.push(JSON.stringify(item.content.getContent()));
+    if (seq.length > 0) out.push(`${name} [${seq.join(',')}]`);
+  }
+  return out;
+}
+
+describe('SP11 round-3 findings: one invariant on the applied frame @p:mean-2', () => {
+  it('a same-value write the frame also deletes cannot remove an original attribute', () => {
+    const server = seeded();
+    const forger = new Y.Doc({ gc: false });
+    try {
+      Y.applyUpdate(forger, Y.encodeStateAsUpdate(server));
+      const sv = Y.encodeStateVector(forger);
+      const block = firstBlock(forger).type;
+      const value = block.getAttribute('__type');
+      forger.transact(() => {
+        block.setAttribute('__type', value);
+        block.removeAttribute('__type');
+      });
+      const forged = Y.encodeStateAsUpdate(forger, sv);
+      const copy = applied(server, forged);
+      expect(firstBlock(copy).type.getAttribute('__type'), 'Yjs removes the attribute').toBeUndefined();
+      copy.destroy();
+      expect(vetSuggestFrame(server, forged, { own: [], clients: new Set() })).toEqual({ ok: false, reason: 'mutate-original' });
+    } finally { forger.destroy(); server.destroy(); }
+  });
+
+  it('a same-value write ordered before the live value, with a delete of that value, cannot remove it', () => {
+    const server = seeded();
+    try {
+      const { item: blockItem, type } = firstBlock(server);
+      const live = type._map.get('__type')!;
+      expect(live.id.client, 'the forged client sorts before the live value').toBeGreaterThan(1);
+      const values = live.content.getContent();
+      const item = new Y.Item(
+        Y.createID(1, 0), null, live.origin, null, null, live.origin ? null : blockItem.id, live.origin ? null : '__type',
+        new Y.ContentAny([values[values.length - 1]]),
+      );
+      const forged = encodeFrame([item], [{ client: live.id.client, clock: live.id.clock, len: 1 }]);
+      const copy = applied(server, forged);
+      expect(firstBlock(copy).type.getAttribute('__type'), 'Yjs removes the attribute').toBeUndefined();
+      copy.destroy();
+      expect(vetSuggestFrame(server, forged, { own: [], clients: new Set() })).toEqual({ ok: false, reason: 'mutate-original' });
+    } finally { server.destroy(); }
+  });
+
+  it('a new text map cannot restyle original text through a new character between them', () => {
+    const server = seeded();
+    const forger = new Y.Doc();
+    try {
+      Y.applyUpdate(forger, Y.encodeStateAsUpdate(server));
+      const sv = Y.encodeStateVector(forger);
+      const paragraph = firstBlock(forger).type;
+      const textMap = (paragraph.toDelta() as { insert: unknown }[])[0].insert as Y.Map<unknown>;
+      forger.transact(() => {
+        paragraph.insert(8, 'X');
+        paragraph.insertEmbed(8, new Y.Map(Object.entries({ ...textMap.toJSON(), __format: 1 })));
+      });
+      const forged = Y.encodeStateAsUpdate(forger, sv);
+      const copy = applied(server, forged);
+      const delta = firstBlock(copy).type.toDelta() as { insert: unknown }[];
+      expect((delta[2].insert as Y.Map<unknown>).get('__format'), 'the new map governs the original suffix').toBe(1);
+      expect(delta[3].insert).toBe('Xorld and the cat.');
+      copy.destroy();
+      expect(vetSuggestFrame(server, forged, { own: [], clients: new Set() })).toEqual({ ok: false, reason: 'mutate-original' });
+    } finally { forger.destroy(); server.destroy(); }
+  });
+
+  it('a new text map with no right origin cannot restyle the original text after it', () => {
+    const server = seeded();
+    const forger = new Y.Doc();
+    try {
+      Y.applyUpdate(forger, Y.encodeStateAsUpdate(server));
+      forger.clientID = 1;
+      const sv = Y.encodeStateVector(forger);
+      const paragraph = firstBlock(forger).type;
+      const textMap = (paragraph.toDelta() as { insert: unknown }[])[0].insert as Y.Map<unknown>;
+      paragraph.insertEmbed(8, new Y.Map(Object.entries({ ...textMap.toJSON(), __format: 1 })));
+      const { structs, ds } = Y.decodeUpdate(Y.encodeStateAsUpdate(forger, sv));
+      const map = structs.find((struct): struct is Y.Item => struct instanceof Y.Item && struct.content instanceof Y.ContentType)!;
+      expect(map.rightOrigin, 'the editor op names the next character').not.toBeNull();
+      map.rightOrigin = null;
+      const forged = encodeFrame(structs, deletesOf(ds));
+      const copy = applied(server, forged);
+      const delta = firstBlock(copy).type.toDelta() as { insert: unknown }[];
+      expect((delta[2].insert as Y.Map<unknown>).get('__format'), 'the new map governs the original suffix').toBe(1);
+      expect(delta[3].insert).toBe('orld and the cat.');
+      copy.destroy();
+      expect(vetSuggestFrame(server, forged, { own: [], clients: new Set() })).toEqual({ ok: false, reason: 'mutate-original' });
+    } finally { forger.destroy(); server.destroy(); }
+  });
+
+  it("reject and withdraw keep a peer's words typed inside the suggester's new block", () => {
+    const setup = peerInsideOwn();
+    try {
+      const copy = applied(setup.server, rawUpdate([], rejectPlan(setup.server, setup.s.own)));
+      expect(blockText(copy, 1), "the block stays, holding only the peer's words").toBe(' theirs');
+      expect(originalProjection(copy, []), "the peer's words keep their format").toEqual(originalProjection(setup.server, setup.s.own));
+      copy.destroy();
+    } finally { setup.dispose(); }
+    const { server, suggester, s } = withOwnParagraph();
+    try {
+      const copy = applied(server, rawUpdate([], rejectPlan(server, s.own)));
+      expect(blocksOf(copy, suggester.doc.clientID), 'a wholly own block goes').toEqual([]);
+      expect(originalProjection(copy, [])).toEqual(originalProjection(server, s.own));
+      copy.destroy();
+    } finally { suggester.dispose(); server.destroy(); }
+  });
+});
+
+describe('SP11 per-frame cost and the mirror @p:mean-2', () => {
+  it('a frame above the per-frame struct cap is refused', () => {
+    const server = seeded();
+    const forger = new Y.Doc();
+    try {
+      Y.applyUpdate(forger, Y.encodeStateAsUpdate(server));
+      const sv = Y.encodeStateVector(forger);
+      const paragraph = firstBlock(forger).type;
+      // Each insert lands left of the one before, so no two structs merge.
+      forger.transact(() => { for (let i = 0; i <= VET_LIMITS.structs; i++) paragraph.insert(25, 'x'); });
+      const forged = Y.encodeStateAsUpdate(forger, sv);
+      expect(Y.decodeUpdate(forged).structs.length).toBeGreaterThan(VET_LIMITS.structs);
+      expect(vetSuggestFrame(server, forged, { own: [], clients: new Set() })).toEqual({ ok: false, reason: 'too-large' });
+    } finally { forger.destroy(); server.destroy(); }
+  });
+
+  it('a frame touching more types than the cap is refused', () => {
+    const server = seeded();
+    const forger = new Y.Doc();
+    try {
+      Y.applyUpdate(forger, Y.encodeStateAsUpdate(server));
+      const sv = Y.encodeStateVector(forger);
+      forger.transact(() => {
+        let n = 0;
+        for (let item = forger.get('root', Y.XmlText)._start; item && n < 4; item = item.right) {
+          if (item.content instanceof Y.ContentType && item.content.type instanceof Y.XmlText) {
+            item.content.type.insert(item.content.type.length, 'x');
+            n++;
+          }
+        }
+      });
+      const forged = Y.encodeStateAsUpdate(forger, sv);
+      expect(vetSuggestFrame(server, forged, { own: [], clients: new Set(), limits: { structs: VET_LIMITS.structs, types: 3 } }))
+        .toEqual({ ok: false, reason: 'too-large' });
+      expect(vetSuggestFrame(server, forged, { own: [], clients: new Set() })).toMatchObject({ ok: true });
+    } finally { forger.destroy(); server.destroy(); }
+  });
+
+  it('a refused frame never reaches the mirror the next frame is judged on', () => {
+    const server = seeded();
+    const suggester = client(server);
+    const mirror = new SuggestMirror(server);
+    let next: ReturnType<typeof client> | null = null;
+    try {
+      const clients = new Set([suggester.doc.clientID]);
+      expect(mirror.vet(suggester.frame(() => select(4, 5).removeText()), { own: [], clients })).toEqual({ ok: false, reason: 'delete-original' });
+      expect(Y.encodeStateVector(mirror.doc)).toEqual(Y.encodeStateVector(server));
+      expect(blockText(mirror.doc, 0)).toBe('Hello world and the cat.');
+      // The refused client rebinds from the server (A§10.5) and types on.
+      next = client(server);
+      const typed = next.frame(() => select(24).insertText('!'));
+      expect(mirror.vet(typed, { own: [], clients: new Set([next.doc.clientID]) })).toMatchObject({ ok: true });
+      Y.applyUpdate(server, typed);
+      expect(Y.encodeStateVector(mirror.doc), 'the mirror follows the live doc').toEqual(Y.encodeStateVector(server));
+      expect(blockText(mirror.doc, 0)).toBe('Hello world and the cat.!');
+    } finally { mirror.destroy(); next?.dispose(); suggester.dispose(); server.destroy(); }
+  });
+
+  it('measures the refusal path: rebuilding the mirror of a 1.5 MB doc', () => {
+    const server = new Y.Doc();
+    const body = server.get('root', Y.XmlText);
+    const line = 'lorem ipsum dolor sit amet '.repeat(20);
+    server.transact(() => {
+      for (let i = 0; i < 3000; i++) {
+        const block = new Y.XmlText();
+        block.insert(0, line);
+        body.insertEmbed(body.length, block);
+      }
+    });
+    const size = Y.encodeStateAsUpdate(server).byteLength;
+    expect(size).toBeGreaterThan(1_500_000);
+    const mirror = new SuggestMirror(server);
+    try {
+      const started = performance.now();
+      expect(mirror.doc).toBeTruthy();
+      const rebuild = performance.now() - started;
+      const forger = new Y.Doc();
+      Y.applyUpdate(forger, Y.encodeStateAsUpdate(server));
+      const sv = Y.encodeStateVector(forger);
+      firstBlock(forger).type.insert(3, 'x');
+      const typed = Y.encodeStateAsUpdate(forger, sv);
+      forger.destroy();
+      const vetStarted = performance.now();
+      expect(mirror.vet(typed, { own: [], clients: new Set() })).toMatchObject({ ok: true });
+      const vet = performance.now() - vetStarted;
+      console.log(`SP11 cost: ${(size / 1e6).toFixed(2)} MB doc, mirror rebuild ${rebuild.toFixed(0)} ms, one typing frame ${vet.toFixed(1)} ms`);
+      expect(rebuild).toBeLessThan(10_000);
+    } finally { mirror.destroy(); server.destroy(); }
+  });
+});
+
+/** mulberry32: a small seeded PRNG, so a failing fuzz round reproduces. */
+function prng(seed: number): () => number {
+  let state = seed;
+  return () => {
+    state = (state + 0x6d2b79f5) | 0;
+    let t = Math.imul(state ^ (state >>> 15), 1 | state);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+describe('SP11 struct-level fuzz of real frames @p:mean-2', () => {
+  it('whenever the vetter accepts a mutated frame, the original projection is unchanged', () => {
+    const server = seeded();
+    // Real frames from peers of the same server state, one per census operation.
+    const frames: Uint8Array[] = [];
+    for (const { op } of cases) {
+      const peer = client(server);
+      try { frames.push(peer.frame(op)); } finally { peer.dispose(); }
+    }
+    const items: Y.Item[] = [];
+    const containers: Y.Item[] = [];
+    for (const structs of server.store.clients.values()) {
+      for (const struct of structs) {
+        if (!(struct instanceof Y.Item)) continue;
+        items.push(struct);
+        if (struct.content instanceof Y.ContentType) containers.push(struct);
+      }
+    }
+    const before = originalProjection(server, []);
+    const random = prng(0x5eed);
+    const pick = <T,>(list: readonly T[]): T => list[Math.floor(random() * list.length)];
+    const anyId = (): Y.ID => {
+      const item = pick(items);
+      return Y.createID(item.id.client, item.id.clock + Math.floor(random() * item.length));
+    };
+    const keys = ['__type', '__format', '__checked', '__style', '__indent', 'x'];
+    let accepted = 0;
+    try {
+      for (let round = 0; round < 400; round++) {
+        const { structs, ds } = Y.decodeUpdate(pick(frames));
+        const deletes = deletesOf(ds);
+        const fresh = structs.filter((struct): struct is Y.Item => struct instanceof Y.Item);
+        const target = (): Y.ID => (random() < 0.3 && fresh.length > 0 ? pick(fresh).id : anyId());
+        const mutations = random() < 0.15 ? 0 : 1 + Math.floor(random() * 3);
+        for (let m = 0; m < mutations && fresh.length > 0; m++) {
+          const item = pick(fresh);
+          switch (Math.floor(random() * 5)) {
+            case 0: item.origin = target(); break;
+            case 1: item.rightOrigin = random() < 0.3 ? null : target(); break;
+            case 2: {
+              const len = item.length;
+              const swaps: Y.Item["content"][] = [new Y.ContentString('z'.repeat(len)), new Y.ContentDeleted(len), new Y.ContentAny(Array(len).fill(1))];
+              if (len === 1) swaps.push(new Y.ContentType(new Y.Map()), new Y.ContentType(new Y.XmlText()), new Y.ContentFormat('bold', true), new Y.ContentEmbed({ x: 1 }));
+              item.content = pick(swaps);
+              break;
+            }
+            case 3: {
+              const id = anyId();
+              deletes.push({ client: id.client, clock: id.clock, len: 1 + Math.floor(random() * 3) });
+              break;
+            }
+            default:
+              item.origin = null;
+              item.rightOrigin = null;
+              item.parent = pick(containers).id as never;
+              item.parentSub = pick(keys);
+          }
+          if (item.origin === null && item.rightOrigin === null && item.parent === null) item.parent = pick(containers).id as never;
+        }
+        const forged = encodeFrame(structs, deletes);
+        const verdict = vetSuggestFrame(server, forged, { own: [], clients: new Set(structs.map((struct) => struct.id.client)) });
+        if (!verdict.ok) continue;
+        accepted++;
+        const copy = applied(server, forged);
+        try {
+          expect(originalProjection(copy, verdict.inserts), `round ${round}`).toEqual(before);
+        } finally { copy.destroy(); }
+      }
+      expect(accepted, 'the fuzz exercises accepted frames').toBeGreaterThan(20);
+    } finally { server.destroy(); }
   });
 });

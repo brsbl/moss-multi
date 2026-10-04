@@ -13,7 +13,7 @@ export interface IdSpan {
   len: number;
 }
 
-export type VetReason = 'delete-original' | 'mutate-original' | 'outside-body' | 'unresolvable' | 'foreign-client';
+export type VetReason = 'delete-original' | 'mutate-original' | 'outside-body' | 'unresolvable' | 'foreign-client' | 'too-large';
 /** `inserts` are the author's new content; `moved` are copies of original text a split moved, still original. */
 export type Verdict = { ok: true; inserts: IdSpan[]; moved: IdSpan[] } | { ok: false; reason: VetReason };
 
@@ -24,6 +24,32 @@ export interface VetOptions {
   moved?: readonly IdSpan[];
   /** Yjs client ids this connection already wrote under; a fresh client id (no state yet) is claimed by the frame. */
   clients: ReadonlySet<number>;
+  /** Per-frame cost caps. */
+  limits?: VetLimits;
+}
+
+export interface VetLimits {
+  structs: number;
+  types: number;
+}
+export const VET_LIMITS: VetLimits = { structs: 20_000, types: 2_000 };
+
+/** Stub for the red run: the vetter does not keep a mirror yet. */
+export class SuggestMirror {
+  constructor(private readonly live: Y.Doc) {}
+  get doc(): Y.Doc {
+    return this.live;
+  }
+  vet(update: Uint8Array, options: VetOptions): Verdict {
+    return vetSuggestFrame(this.live, update, options);
+  }
+  destroy(): void {}
+}
+
+/** Stub for the red run: removes every inserted id. */
+export function rejectPlan(doc: Y.Doc, inserts: readonly IdSpan[]): IdSpan[] {
+  void doc;
+  return inserts.map((span) => ({ ...span }));
 }
 
 type DeleteSet = Y.Transaction['deleteSet'];
