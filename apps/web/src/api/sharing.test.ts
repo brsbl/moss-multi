@@ -11,7 +11,8 @@ const SHARES_PER_HOUR = 20;
 
 const DocDO = {
   idFromName: (name: string) => ({ name, toString: () => name }),
-  get: () => ({ setName: async () => undefined, create: async () => undefined }),
+  get: () => ({ setName: async () => undefined, create: async () => undefined,
+    snapshotForDuplicate: async () => ({ title: 'Plan', state: new Uint8Array() }), createFromSnapshot: async () => undefined }),
 };
 
 let d1: TestD1;

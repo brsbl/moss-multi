@@ -121,7 +121,7 @@ const randomToken = () => [...crypto.getRandomValues(new Uint8Array(24))].map((b
 /** SQL for a role's rank in ROLES order, so a write can only raise. */
 const rank = (expression: string) => `CASE ${expression} ${ROLES.map((role, i) => `WHEN '${role}' THEN ${i}`).join(' ')} END`;
 
-const grantTable = (target: MemberTarget) => (target.type === 'doc' ? ['doc_members', 'doc_id'] : ['folder_members', 'folder_id']) as const;
+const grantTable = (target: MemberTarget): [string, string] => (target.type === 'doc' ? ['doc_members', 'doc_id'] : ['folder_members', 'folder_id']);
 
 /**
  * Adds a person by email at a share role, or raises their role. Every new share is an open invite, which the owner
