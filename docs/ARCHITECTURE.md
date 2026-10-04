@@ -197,7 +197,7 @@ It starts from glyphdown's `do.ts` shape, not moss-collab's 3,511-line class, an
 1. Revoked session closes 4402; revoked token or principal closes 4403. String frames go to custom handlers. Awareness frames are validated (§10.7). Sync step 1 goes to super.
 2. A write from a role below suggester gets a unicast `__YPS:{t:'write-refused', reason:'role'}` and close 4403. A refusal is never silent. [P:Tech]
 3. Above 300 writes per 5 s on one connection, the frame is not applied and the DO closes 4420, a transient code; the client keeps its Y.Doc and reconnects with backoff, so its step 2 re-delivers everything and nothing is discarded.
-4. A write that would push `stateBytes` past the cap (Limits, below) is refused with `doc-cap`, simulated only near the cap. A suggester's write is vetted on a mirror (M5). These refusals close 4409, and the client discards its optimistic state. [S-prior §7.5]
+4. A write that would push `stateBytes` past the cap (Limits, below) is refused with `doc-cap`, simulated only near the cap. A suggest-mode write is vetted by item identity before it applies (M5, docs/design/suggestions.md §4). These refusals close 4409, and the client discards its optimistic state. [S-prior §7.5]
 5. Super applies the frame with `origin = connection`.
 
 **Acks.** After persisting, the DocDO unicasts `{t:'ack', sv, ds}` to the originating connection, coalesced over 250 ms. The additive optional `ds` field encodes the deletes carried by the acknowledged frames as a Yjs snapshot with an empty state vector; legacy vector-only acks can settle inserts but never pending deletes. Coalescing and rate counts are keyed by socket identity, not the client-provided connection id. Delete-only edits do not advance a state vector, so deletion coverage is required to avoid reporting an unsent deletion as durable. This drives `data-sync-unacked`. An editor's sync frame the doc already holds is acked too: a socket that drops inside the window loses its ack, and the reconnect's step 2 then changes nothing, so without that ack the edits would read as unsynced forever (T0.P). [L§4.6 durability honesty]
@@ -514,19 +514,14 @@ There is no polling and no per-doc watch socket. [S-prior §14.1] Bound docs ign
 
 ### Suggestions
 
-- **Records.** `Y.Map('suggestions')` maps id → `{author, status open|accepted|rejected|withdrawn, parts:[{kind insert|delete, anchor}]}`, written by the DO after a validated upsert. [S-gd §6.2]
-- **Live suggest mode** is a toggle in moss's floating toolbar; a role-locked suggester sees a "Suggesting" chip instead. [L§1.3] Inserts physically enter the tree and are registered as parts. Deletes are never applied: they become delete parts painted as a strike overlay. [L§4.12]
-- **Vetting** happens on a mirror before anything applies, so a violating edit never lands.
-  - Allowed: text inserts anywhere, which register as the author's insert parts (glyphdown's `checkSuggesterDelta` accepts every insertion; a stricter rule repeats the false-4403 family); any edit inside the author's own open insert ranges; attributes of nodes created there.
-  - Refused: deleting or formatting original content.
-  - Structural ops (checkbox toggle, table row, list indent) become suggestion parts with defined accept and reject semantics (T5.0, SP11). Refusing them is a fallback only after an owner ruling.
-  - A refusal sends `write-refused('suggest-policy')` and then 4409, and the client discards its state. [S-gd §2.10.4; L§4.12 DEF-1, false 4403s]
-- **Review UI.** Glyphdown's SuggestionsPanel interaction, rebuilt in the moss DS inside moss chrome, with accept and reject reachable from the painted suggestion. Moss's ActionsPanel stays the inert agent panel. [P:Agents; P intro]
-- **Lifecycle.**
-  - The baseline is taken only after first sync.
-  - Accept, reject and withdraw are DO range transactions through `serverWrite`: rejecting an insert or accepting a delete removes the range, and the other outcomes only close the record. A whole-tree reconcile is not needed. The quote ≥ 0.8 drift guard applies.
-  - Orphaned suggestions are auto-rejected.
-  - Live suggestions notify, not just pushed ones.
+Designed in [docs/design/suggestions.md](design/suggestions.md) (T5.0), which wins where this summary is shorter. [S-gd §6.2; L§4.12]
+
+- **Records.** `Y.Map('suggestions')` maps id → `{author, status open|accepted|rejected|withdrawn, parts, moved}`, written only by the DO. An `insert` part is a set of Yjs item ids the author created; `delete` and `format` parts carry a comment `TreeAnchor`; `attr`, `indent`, `join` and `replace` parts name a block or register. `moved` lists original text the author's splits moved. There is no baseline.
+- **Live suggest mode** is a toggle in moss's floating toolbar; a role-locked suggester sees a "Suggesting" chip instead. [L§1.3] Additive edits (typing, paste, Enter anywhere, new list items, rows and decorators) enter the tree and are registered as insert parts in the same transaction that applies them. Deleting, formatting or changing original content never touches the tree: the client sends a proposal part, painted as an overlay. Title and properties are read-only in suggest mode.
+- **Vetting** decodes each suggest-mode frame against the live doc before it applies, by item identity, never by re-diffing text: inserts anywhere in the body pass; deletes and attribute writes pass only on the author's own content; a frame that moves original text (a split) is proven on a mirror and its copy stays original; everything else is refused with `write-refused('suggest')` and 4409. The client runs the same rules on its own transactions first, closes to input and rebinds, so a refusal never loses later typing. [L§4.12 DEF-1, false 4403s]
+- **Structural ops are parts** (SP11): checkbox, block type and alignment are `attr` parts, list indent an `indent` part, Backspace at a block start a `join` part, a row or column delete a `delete` part, an original decorator payload edit a `replace` part. None is refused.
+- **Review UI.** A Suggestions button beside moss's `CommentsMenuButton` lists glyphdown's suggestion cards in the moss DS, and the painted suggestion opens the same card, each with Accept and Reject (editor and above) or Withdraw (the author). Moss's ActionsPanel stays the inert agent panel. [P:Agents; P intro]
+- **Lifecycle.** Accept, reject and withdraw are one `serverWrite` that applies each part with Lexical's own operations on the mirror, behind the quote ≥ 0.8 drift guard; outdated parts are reported, never applied. Orphaned suggestions are auto-rejected. Live suggestions notify the doc's owner, not just pushed ones. Export is the working text, with no markers.
 
 ## 14. History
 
@@ -715,7 +710,7 @@ S-test is the detailed design of record, but where it disagrees with this file o
 | SP8 | Registers for decorator payloads: a stable `__regId`, the host view wrapper, the undo scope, converter getters, and later the CLI merge and vetting. | T1.9, T3.3 | No pre-booked loss. If a payload cannot take a register, ask the owner with the data loss stated plainly. |
 | SP9 | Can video upload through the Worker under the body limit, with R2 Range reads? | T3.1 | Presigned R2 upload with a server-side finalize. |
 | SP10 | Comment paint: the CSS Custom Highlight API in WebKit, and geometry for moss's gutter and popover. | T4.0 | A pointer-transparent overlay with stable per-comment elements. |
-| SP11 | Suggester vetting on a mirror for tree deltas, with structural ops (checkbox, table row, list indent) as suggestion parts. | T5.0 | Ask the owner with options before refusing any structural op in suggest mode. |
+| SP11 | Suggester vetting on a mirror for tree deltas, with structural ops (checkbox, table row, list indent) as suggestion parts. **Answered (T5.0): vetting decodes frames by item identity, with a mirror only for splits; every structural op has a part (docs/design/suggestions.md §3–§4).** | T5.0 | Ask the owner with options before refusing any structural op in suggest mode. |
 | SP12 | Port the identity-preserving reconcile to 0.48: restore, then push. | T6.1 | Block-level landing with verify-or-refuse (409), never a silent rebuild. |
 | SP13 | Does a `data:` iframe inherit the page CSP in Chromium and WebKit, blocking moss-html scripts? **Yes in Chromium (T0.5a), so the default applies: `/frame/html`.** | T0.5a | Serve HTML blocks from a dedicated route whose response carries `content-security-policy: sandbox allow-scripts`, still opaque-origin. |
 | SP14 | How does hibernation behave on real Cloudflare (about 10 s idle with hibernatable sockets, wakes re-sending step 1, per-wake state rebuild)? | T1.10 | Treat every staging difference from workerd as a product defect in the wake path; keep j04's staging legs in the canary. |
