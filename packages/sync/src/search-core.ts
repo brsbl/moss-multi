@@ -7,7 +7,13 @@ import { slug } from '@moss-multi/core/filenames';
 export const SEARCH_DO_NAME = 'global';
 
 /** `[[Target]]`, `[[Target|noteId]]`, `[[Target#Heading]]`; never an embed (`![[img.png]]`) or a same-note `[[#H]]`. */
-export const WIKI_LINK_RE = /(?<!!)\[\[([^\]|#]+)/g;
+export const WIKI_LINK_RE = /(?<!!)\[\[([^\]]+)\]\]/g;
+
+/** moss's resolved-link suffix (markdown/transformers.ts at the pin): a UUID after the last pipe names the note. */
+const NOTE_ID_RE = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
+
+/** The key of a link that names its target by id; a doc is also matched by it, so a rename or a twin title can't move it. */
+export const idKey = (docId: string): string => `id:${docId.toLowerCase()}`;
 
 /**
  * The key a wiki target and a doc are matched by: the title's slug, which is also how a filename stem is made (R3),
@@ -15,11 +21,20 @@ export const WIKI_LINK_RE = /(?<!!)\[\[([^\]|#]+)/g;
  */
 export const wikiKey = (raw: string): string => slug(raw);
 
-/** The distinct wiki keys a markdown body links to. */
+/**
+ * The distinct wiki keys a markdown body links to: `[[title|noteId]]` by its id (moss resolved it), any other link by
+ * its title's slug. A non-UUID suffix is an alias, as in moss.
+ */
 export function extractWikiLinks(body: string): string[] {
   const out = new Set<string>();
   for (const match of body.matchAll(WIKI_LINK_RE)) {
-    const key = wikiKey(match[1]);
+    const content = match[1].trim();
+    const pipe = content.lastIndexOf('|');
+    const primary = pipe >= 0 ? content.slice(0, pipe) : content;
+    const suffix = pipe >= 0 ? content.slice(pipe + 1).trim() : '';
+    const title = primary.split(/(?<!\\)#/)[0].replace(/\\([#\\])/g, '$1').trim();
+    if (title === '') continue;
+    const key = NOTE_ID_RE.test(suffix) ? idKey(suffix) : wikiKey(title);
     if (key !== '') out.add(key);
   }
   return [...out];

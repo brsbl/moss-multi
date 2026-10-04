@@ -219,7 +219,9 @@ function resolveExternalSiblingByFilename(
  */
 function resolveNoteByTitleFromAtoms(
   noteTitle: string,
-  store: ReturnType<typeof useStore>
+  store: ReturnType<typeof useStore>,
+  // moss-multi seam: wiki-stem (A§15): the source note scopes the fallback to its vault.
+  sourceId?: string | null
 ): LinkResolutionCacheEntry {
   const normalizedTitle = noteTitle.trim().toLowerCase();
   const noteIds = store.get(noteIdsAtom);
@@ -240,7 +242,7 @@ function resolveNoteByTitleFromAtoms(
   }
 
   // moss-multi seam: wiki-stem (A§15)
-  const stemId = resolveWikiTarget(noteTitle);
+  const stemId = resolveWikiTarget(noteTitle, sourceId);
   const stemEntity = stemId && noteIds.has(stemId) ? store.get(noteEntityAtom(stemId)) : null;
   if (stemEntity) {
     return {
@@ -318,7 +320,7 @@ function resolveAndCache(
     result = resolvePathLikeExternalTarget(noteTitle, sourceEntity, store);
   } else {
     // Resolve via client-side atom lookup (synchronous, no IPC)
-    result = resolveNoteByTitleFromAtoms(noteTitle, store);
+    result = resolveNoteByTitleFromAtoms(noteTitle, store, sourceEntity?.id); // moss-multi seam: wiki-stem (A§15)
   }
 
   // Fallback: filename-based resolution for external sibling files

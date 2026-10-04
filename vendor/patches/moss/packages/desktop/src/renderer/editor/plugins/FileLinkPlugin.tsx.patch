@@ -13,12 +13,23 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FileLinkPlugin.tsx b/p
  import { useEffect, useCallback, useState, useRef } from 'react';
  import { createPortal } from 'react-dom';
  import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
-@@ -230,6 +238,19 @@ function resolveNoteByTitleFromAtoms(
+@@ -210,7 +218,9 @@ function resolveExternalSiblingByFilename(
+  */
+ function resolveNoteByTitleFromAtoms(
+   noteTitle: string,
+-  store: ReturnType<typeof useStore>
++  store: ReturnType<typeof useStore>,
++  // moss-multi seam: wiki-stem (A§15): the source note scopes the fallback to its vault.
++  sourceId?: string | null
+ ): LinkResolutionCacheEntry {
+   const normalizedTitle = noteTitle.trim().toLowerCase();
+   const noteIds = store.get(noteIdsAtom);
+@@ -230,6 +240,19 @@ function resolveNoteByTitleFromAtoms(
      }
    }
  
 +  // moss-multi seam: wiki-stem (A§15)
-+  const stemId = resolveWikiTarget(noteTitle);
++  const stemId = resolveWikiTarget(noteTitle, sourceId);
 +  const stemEntity = stemId && noteIds.has(stemId) ? store.get(noteEntityAtom(stemId)) : null;
 +  if (stemEntity) {
 +    return {
@@ -33,7 +44,16 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FileLinkPlugin.tsx b/p
    // Note not found
    return {
      noteId: null,
-@@ -396,11 +417,11 @@ function setFileLinkResolvedInEditor(
+@@ -296,7 +319,7 @@ function resolveAndCache(
+     result = resolvePathLikeExternalTarget(noteTitle, sourceEntity, store);
+   } else {
+     // Resolve via client-side atom lookup (synchronous, no IPC)
+-    result = resolveNoteByTitleFromAtoms(noteTitle, store);
++    result = resolveNoteByTitleFromAtoms(noteTitle, store, sourceEntity?.id); // moss-multi seam: wiki-stem (A§15)
+   }
+ 
+   // Fallback: filename-based resolution for external sibling files
+@@ -396,11 +419,11 @@ function setFileLinkResolvedInEditor(
    runIgnoredEditorUpdate(editor, () => {
      const node = $getNodeByKey(nodeKey);
      if ($isFileLinkNode(node)) {
@@ -48,7 +68,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FileLinkPlugin.tsx b/p
          }
        }
      }
-@@ -541,11 +562,11 @@ function handleFileLinkActivation(
+@@ -541,11 +564,11 @@ function handleFileLinkActivation(
        const currentNode = $getNodeByKey(nodeKey);
        if ($isFileLinkNode(currentNode)) {
          if (result.isResolved) {
@@ -64,7 +84,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FileLinkPlugin.tsx b/p
          }
        }
      });
-@@ -564,7 +585,7 @@ function handleFileLinkActivation(
+@@ -564,7 +587,7 @@ function handleFileLinkActivation(
        editor.update(() => {
          const currentNode = $getNodeByKey(nodeKey);
          if ($isFileLinkNode(currentNode)) {
@@ -73,7 +93,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FileLinkPlugin.tsx b/p
          }
        });
        // Update cache with new key
-@@ -963,6 +984,11 @@ export function FileLinkPlugin({ onNavigateToNote }: FileLinkPluginProps) {
+@@ -963,6 +986,11 @@ export function FileLinkPlugin({ onNavigateToNote }: FileLinkPluginProps) {
    const previewLoadGenerationRef = useRef(0);
    const pluginMountedRef = useRef(true);
    const previewTextCacheRef = useRef<Map<string, string>>(new Map());
@@ -85,7 +105,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FileLinkPlugin.tsx b/p
  
    const invalidatePreviewLoads = useCallback(() => {
      previewLoadGenerationRef.current += 1;
-@@ -1178,17 +1204,17 @@ export function FileLinkPlugin({ onNavigateToNote }: FileLinkPluginProps) {
+@@ -1178,17 +1206,17 @@ export function FileLinkPlugin({ onNavigateToNote }: FileLinkPluginProps) {
              const node = $getNodeByKey(nodeKey);
              if ($isFileLinkNode(node)) {
                if (result.isResolved) {
@@ -108,7 +128,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FileLinkPlugin.tsx b/p
                }
              }
            }, EDITOR_UPDATE_TAGS.ignored.skipDirty);
-@@ -1363,6 +1389,10 @@ export function FileLinkPlugin({ onNavigateToNote }: FileLinkPluginProps) {
+@@ -1363,6 +1391,10 @@ export function FileLinkPlugin({ onNavigateToNote }: FileLinkPluginProps) {
  
            const result = resolveAndCache(noteTitle, store, sourceEntity);
            if (!result.isResolved) {
@@ -119,7 +139,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FileLinkPlugin.tsx b/p
              return;
            }
  
-@@ -1398,16 +1428,16 @@ export function FileLinkPlugin({ onNavigateToNote }: FileLinkPluginProps) {
+@@ -1398,16 +1430,16 @@ export function FileLinkPlugin({ onNavigateToNote }: FileLinkPluginProps) {
          if (!$isFileLinkNode(node)) {
            continue;
          }
@@ -140,7 +160,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FileLinkPlugin.tsx b/p
  
    const handleHoverShow = useCallback(
      ({ element, nodeKey }: { element: HTMLElement; nodeKey: string }) => {
-@@ -1688,10 +1718,10 @@ export function FileLinkPlugin({ onNavigateToNote }: FileLinkPluginProps) {
+@@ -1688,10 +1720,10 @@ export function FileLinkPlugin({ onNavigateToNote }: FileLinkPluginProps) {
            if ($isFileLinkNode(node)) {
              const isHeadingValid = editorHeadings.has(headingText.trim().toLowerCase());
              if (isHeadingValid) {
@@ -154,7 +174,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FileLinkPlugin.tsx b/p
              }
            }
          }
-@@ -1751,3 +1781,16 @@ export const fileLinkPluginTestUtils = {
+@@ -1751,3 +1783,16 @@ export const fileLinkPluginTestUtils = {
    buildPreviewTextFromMarkdown,
    extractHeadingSectionMarkdown
  };

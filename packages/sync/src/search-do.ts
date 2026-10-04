@@ -6,8 +6,6 @@ export { SEARCH_DO_NAME } from './search-core.ts';
 
 export const SEARCH_DEFAULT_LIMIT = 20;
 export const SEARCH_MAX_LIMIT = 50;
-/** FTS candidates read before the permission filter. */
-const CANDIDATE_ROWS = 400;
 /** Allowed docs with no entry that one search reports, so the Worker can feed them. */
 const UNINDEXED_REPORT = 25;
 
@@ -98,16 +96,17 @@ export class SearchDO extends Server<SyncEnv> {
 
   async search({ query, allowedDocIds, limit }: SearchQuery): Promise<SearchAnswer> {
     await this.__unsafe_ensureInitialized();
-    const allowed = new Set(allowedDocIds);
-    const unindexed = this.#unindexed(allowed);
+    // The allowed ids go in as one JSON parameter (DO SQLite binds at most 100), read back with json_each.
+    const allowed = JSON.stringify([...new Set(allowedDocIds)]);
+    const unindexed = allowedDocIds.length ? this.#unindexed(allowed) : [];
     const tokens = tokenizeQuery(query);
-    if (tokens.length === 0 || allowed.size === 0) return { results: [], unindexed };
+    if (tokens.length === 0 || allowedDocIds.length === 0) return { results: [], unindexed };
     const max = clampLimit(limit);
     const results = this.#engine === 'fts5' ? this.#searchFts(query, allowed, max) : this.#searchLike(query, tokens, allowed, max);
     return { results, unindexed };
   }
 
-  /** The allowed docs whose bodies link to any of `keys` (a doc's title key and filename stem, A§5.3). */
+  /** The allowed docs whose bodies link to any of `keys` (a doc's title key, filename stem and id key, A§5.3). */
   async backlinks({ keys, allowedDocIds }: { keys: string[]; allowedDocIds: string[] }): Promise<string[]> {
     await this.__unsafe_ensureInitialized();
     const allowed = new Set(allowedDocIds);
@@ -119,40 +118,31 @@ export class SearchDO extends Server<SyncEnv> {
     return rows.map((row) => row.src_doc_id).filter((id) => allowed.has(id));
   }
 
-  #unindexed(allowed: Set<string>): string[] {
-    const ids = [...allowed];
-    const indexed = new Set<string>();
-    // DO SQLite binds at most 100 parameters per statement.
-    for (let i = 0; i < ids.length; i += 90) {
-      const chunk = ids.slice(i, i + 90);
-      for (const row of this.ctx.storage.sql.exec<{ doc_id: string }>(
-        `SELECT doc_id FROM entries WHERE doc_id IN (${chunk.map(() => '?').join(', ')})`, ...chunk,
-      ).toArray()) indexed.add(row.doc_id);
-    }
-    return ids.filter((id) => !indexed.has(id)).slice(0, UNINDEXED_REPORT);
+  #unindexed(allowed: string): string[] {
+    return this.ctx.storage.sql.exec<{ id: string }>(
+      `SELECT value AS id FROM json_each(?) WHERE value NOT IN (SELECT doc_id FROM entries) LIMIT ?`, allowed, UNINDEXED_REPORT,
+    ).toArray().map((row) => row.id);
   }
 
-  /** bm25 with the title weighted 5× the body, then the permission filter. */
-  #searchFts(query: string, allowed: Set<string>, limit: number): SearchHit[] {
+  /**
+   * bm25 with the title weighted 5× the body, over the allowed docs only: the permission filter runs inside the query,
+   * before ORDER BY and LIMIT, so docs the caller cannot open never take a place in the ranking.
+   */
+  #searchFts(query: string, allowed: string, limit: number): SearchHit[] {
     const match = buildFtsMatch(query);
     if (match === null) return [];
     const rows = this.ctx.storage.sql.exec<EntryRow & { rank: number }>(
       `SELECT doc_id, title, body, bm25(entries_fts, 0.0, 5.0, 1.0) AS rank FROM entries_fts
-        WHERE entries_fts MATCH ? ORDER BY rank LIMIT ?`, match, CANDIDATE_ROWS,
+        WHERE entries_fts MATCH ? AND doc_id IN (SELECT value FROM json_each(?)) ORDER BY rank LIMIT ?`, match, allowed, limit,
     ).toArray();
-    const results: SearchHit[] = [];
-    for (const row of rows) {
-      if (!allowed.has(row.doc_id)) continue;
-      results.push({ docId: row.doc_id, title: row.title, snippet: makeSnippet(row.body, query), score: -row.rank });
-      if (results.length >= limit) break;
-    }
-    return results;
+    return rows.map((row) => ({ docId: row.doc_id, title: row.title, snippet: makeSnippet(row.body, query), score: -row.rank }));
   }
 
-  #searchLike(query: string, tokens: string[], allowed: Set<string>, limit: number): SearchHit[] {
+  #searchLike(query: string, tokens: string[], allowed: string, limit: number): SearchHit[] {
     const hits: SearchHit[] = [];
-    for (const row of this.ctx.storage.sql.exec<EntryRow>('SELECT doc_id, title, body FROM entries').toArray()) {
-      if (!allowed.has(row.doc_id)) continue;
+    for (const row of this.ctx.storage.sql.exec<EntryRow>(
+      'SELECT doc_id, title, body FROM entries WHERE doc_id IN (SELECT value FROM json_each(?))', allowed,
+    ).toArray()) {
       const score = scoreEntry(row.title, row.body, tokens);
       if (score > 0) hits.push({ docId: row.doc_id, title: row.title, snippet: makeSnippet(row.body, query), score });
     }

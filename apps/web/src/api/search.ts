@@ -1,12 +1,12 @@
 // Search and links (A§15; glyphdown's api/search.ts): the index is the global SearchDO; this side reduces the caller to
 // the doc ids they may discover (A§8 accessibleDocs) before asking it, so nothing else can ever appear.
 //   GET /api/search?q=[&limit=][&vault=]   ranked hits with a text snippet
-//   GET /api/docs/:id/backlinks            docs in the doc's vault whose bodies wiki-link it by title or stem
+//   GET /api/docs/:id/backlinks            docs in the doc's vault whose bodies wiki-link it by title, stem or id
 //   GET /api/docs/:id/headings             h1–h4 of the DocDO's export, for `[[Note#` completion
 import { waitUntil } from 'cloudflare:workers';
 import { eq } from 'drizzle-orm';
 import { getServerByName } from 'partyserver';
-import { parseHeadings, SEARCH_DO_NAME, wikiKey } from '@moss-multi/sync/search';
+import { idKey, parseHeadings, SEARCH_DO_NAME, wikiKey } from '@moss-multi/sync/search';
 import type { AuthEnv } from '../auth/auth.ts';
 import { resolvePrincipal, shareTokenOf, type Principal } from '../auth/principal.ts';
 import { createDb, type Db } from '../db/client.ts';
@@ -35,6 +35,8 @@ export interface LinkedDoc {
 }
 
 const DOC_LINKS = /^\/api\/docs\/([^/]+)\/(backlinks|headings)$/;
+/** How long a search waits for the index to take in docs it has never been fed before answering. */
+const BACKFILL_WAIT_MS = 3_000;
 
 const unavailable = () => json({ error: 'unavailable', message: 'Search isn’t available right now. Try again.' }, 503, NO_STORE);
 
@@ -75,9 +77,16 @@ async function search(request: Request, env: SearchEnv): Promise<Response> {
   if (!query || allowed.size === 0) return json({ results: [] }, 200, NO_STORE);
   const stub = await index(env);
   if (!stub) return unavailable();
-  const answer = await stub.search({ query, allowedDocIds: [...allowed.keys()], limit });
-  // A doc the index has never been fed (created before search, or a feed that failed) feeds itself now.
-  if (answer.unindexed.length) waitUntil(backfill(env, answer.unindexed));
+  const ask = { query, allowedDocIds: [...allowed.keys()], limit };
+  let answer = await stub.search(ask);
+  // A doc the index has never been fed (created before search, or a feed that failed) feeds itself now, and the
+  // search waits briefly for it so a cold doc is found on this search, not only on a later one.
+  if (answer.unindexed.length) {
+    const fed = backfill(env, answer.unindexed);
+    waitUntil(fed);
+    const done = await Promise.race([fed.then(() => true), new Promise<false>((resolve) => setTimeout(resolve, BACKFILL_WAIT_MS, false))]);
+    if (done) answer = await stub.search(ask);
+  }
   // D1 names the doc: the index's copy of a title can trail a rename by a save.
   const results: SearchResultRow[] = answer.results.flatMap((hit) => {
     const row = allowed.get(hit.docId);
@@ -113,7 +122,7 @@ async function backlinks(request: Request, env: SearchEnv, docId: string): Promi
   const stub = await index(env);
   if (!stub) return unavailable();
   const stem = target.filename.startsWith('pending-') ? '' : target.filename.replace(/\.md$/, '');
-  const ids = await stub.backlinks({ keys: [wikiKey(target.title), wikiKey(stem)], allowedDocIds: allowed });
+  const ids = await stub.backlinks({ keys: [wikiKey(target.title), wikiKey(stem), idKey(docId)], allowedDocIds: allowed });
   const linked: LinkedDoc[] = ids.flatMap((id) => {
     const row = discovered.get(id);
     return row ? [{ id: row.id, title: row.title, folderId: row.folderId, updatedAt: row.updatedAt }] : [];
