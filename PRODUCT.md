@@ -71,6 +71,7 @@ The owner asked for a from-scratch restart that carries forward every past learn
 13. **Prior code is a reference, not a source tree.** brsbl/moss-collab and moss-collab-legacy are consulted for solved problems (patches, structural merge, schema, hardening). Code is written fresh against this doc.
 14. **Publish-to-web from the era-0 Shared Notes spec is out of scope.**
 15. **Deploy target:** staging only, on the owner's personal Cloudflare account, under new permanent names. Production stays undecided.
+16. **A comment never jumps to another occurrence** (owner-delegated ruling, 2026-10-04). When its anchored text or its block is deleted, the comment becomes orphaned: it stays in the thread list, marked as detached from text, and its stored positions are kept unchanged, so undo or a peer's restore reattaches it in place. Typing the same text again does not reattach it. The quote fallback applies only to an anchor that never had resolvable positions (import, paste, or a REST comment that carries only a quote).
 
 ## Undecided (owner rulings needed)
 
