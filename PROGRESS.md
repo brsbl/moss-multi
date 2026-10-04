@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 51% done** (40 of 79 planned tasks verified)
+**Overall: 52% done** (41 of 79 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 17 / 17 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 15 / 19 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 6 / 10 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 2 / 9 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 3 / 9 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
@@ -58,6 +58,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-04 — T1.F1 verified: Cmd+Z never removes a collaborator's characters typed into a paragraph or text node you created, through interleaved typing, splits and merges, reconnects and deletes, and restored text keeps its author and properties, in both engines.
 - 2026-10-04 — T3.5 verified: a vault owner can create a vault inline from the switcher, rename it and move it to trash behind a confirmation; a person granted the vault root sees it with a role badge, and a member is offered no vault actions.
 - 2026-10-04 — T3.4 verified: a person can search the body text of every note they can access and see snippets, never a note they cannot; a note shows its backlinks, and wiki links resolve by title or filename or show an honest unresolved state.
+- 2026-10-04 — T3.3 verified: every moss node family, including formulas, file links, charts and sketches, can be built in a shared note and edited by two people at once without either losing the other's work, even through undo; the j14 demo note renders like pristine moss in light and dark.
 
 ## T1.1s identity audit
 
