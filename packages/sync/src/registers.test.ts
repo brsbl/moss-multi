@@ -1,4 +1,5 @@
-import { $getRoot, $isElementNode, COLLABORATION_TAG, type LexicalNode } from 'lexical';
+import { readFileSync } from 'node:fs';
+import { $copyNode, $getRoot, $isElementNode, COLLABORATION_TAG, type LexicalNode } from 'lexical';
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { exportDocMarkdown, importBody, seedEmptyParagraph, serverWrite } from './server-doc.ts';
@@ -235,5 +236,163 @@ describe('L4 decorator registers @p:col-1 @p:col-3 @p:tech-1', () => {
       expect(Y.encodeStateAsUpdate(restored)).toEqual(bytes);
       expect(node.getAttribute('__code')).toBe('stored code');
     } finally { legacy.destroy(); restored.destroy(); }
+  });
+});
+
+// Chart and sketch payloads are per-key registers (A§10.10, SP8): concurrent edits to different keys both land,
+// and a write derived from a stale value changes only what it changed.
+type Fields = Record<string, unknown>;
+type Peer = ReturnType<typeof client>;
+const CHART = '```moss-chart\n{"type":"bar","title":"Seed","data":[{"label":"Mon","value":1}],"options":{"showLegend":true}}\n```';
+const SKETCH = '```moss-canvas\n[moss:grid:v2]\n[moss:labels:[{"id":"seed","text":"Seed","col":1,"row":1}]]\n.##.\n```';
+const call = (node: LexicalNode, method: string, ...args: unknown[]) =>
+  (node as unknown as Record<string, (...values: unknown[]) => unknown>)[method](...args);
+const chartOf = (peer: Peer) => peer.editor.read(() => call(find('chart')!, 'getConfig')) as Fields & { options?: Fields };
+const gridOf = (peer: Peer) => peer.editor.read(() => call(find('sketch')!, 'getGrid')) as boolean[];
+const labelsOf = (peer: Peer) => peer.editor.read(() => call(find('sketch')!, 'getLabels')) as { id: string; text: string }[];
+const cells = (grid: boolean[]) => grid.flatMap((on, index) => (on ? [index] : []));
+const exchange = (a: Peer, b: Peer) => {
+  Y.applyUpdate(a.doc, Y.encodeStateAsUpdate(b.doc));
+  Y.applyUpdate(b.doc, Y.encodeStateAsUpdate(a.doc));
+  for (const peer of [a, b]) peer.editor.update(noop, { discrete: true });
+};
+const withCells = (grid: boolean[], on: number[]) => grid.map((value, index) => value || on.includes(index));
+
+describe('L4/A8 chart and sketch registers @p:col-1 @p:col-3 @p:note-2', () => {
+  it('concurrent chart edits to different keys both survive, live, on the server and after persistence', () => {
+    const seed = new Y.Doc(); importBody(seed, CHART);
+    const a = client(seed); const b = client(seed);
+    try {
+      a.editor.update(() => call(find('chart')!, 'setConfig', { ...chartOf(a), title: 'Ada title' }), { discrete: true });
+      b.editor.update(() => {
+        const config = chartOf(b);
+        call(find('chart')!, 'setConfig', { ...config, options: { ...config.options, palette: 'cool' } });
+      }, { discrete: true });
+      exchange(a, b);
+      for (const peer of [a, b]) {
+        expect(chartOf(peer).title, 'Ada keeps her title').toBe('Ada title');
+        expect(chartOf(peer).options?.palette, 'Ben keeps his palette').toBe('cool');
+        expect(chartOf(peer).options?.showLegend, 'untouched keys stay').toBe(true);
+      }
+      const markdown = exportDocMarkdown(a.doc);
+      expect(markdown).toContain('"title": "Ada title"');
+      expect(markdown).toContain('"palette": "cool"');
+      expect(exportMarkdown(b.editor)).toBe(exportMarkdown(a.editor));
+      const restored = client(a.doc);
+      try { expect(chartOf(restored)).toEqual(chartOf(a)); } finally { restored.dispose(); }
+      a.undo.undo();
+      Y.applyUpdate(b.doc, Y.encodeStateAsUpdate(a.doc)); b.editor.update(noop, { discrete: true });
+      for (const peer of [a, b]) {
+        expect(chartOf(peer).title, "Ada's undo reverts only her title").toBe('Seed');
+        expect(chartOf(peer).options?.palette, "Ada's undo keeps Ben's palette").toBe('cool');
+      }
+    } finally { a.dispose(); b.dispose(); seed.destroy(); }
+  });
+
+  it('a chart write derived from a stale config changes only its own key', () => {
+    const seed = new Y.Doc(); importBody(seed, CHART);
+    const a = client(seed); const b = client(seed);
+    try {
+      const stale = chartOf(b);
+      a.editor.update(() => call(find('chart')!, 'setConfig', { ...chartOf(a), type: 'line' }), { discrete: true });
+      exchange(a, b);
+      // Ben's chart header still holds the config it rendered before Ada's change arrived.
+      b.editor.update(() => call(find('chart')!, 'setConfig', { ...stale, title: 'Ben title' }, stale), { discrete: true });
+      exchange(a, b);
+      for (const peer of [a, b]) expect(chartOf(peer)).toMatchObject({ type: 'line', title: 'Ben title' });
+    } finally { a.dispose(); b.dispose(); seed.destroy(); }
+  });
+
+  it('concurrent sketch strokes and labels union on both peers and the server, and undo keeps the peer', () => {
+    const seed = new Y.Doc(); importBody(seed, SKETCH);
+    const a = client(seed); const b = client(seed);
+    try {
+      const before = gridOf(a);
+      const last = before.length - 1;
+      a.editor.update(() => {
+        call(find('sketch')!, 'setGrid', withCells(gridOf(a), [500, 501]));
+        call(find('sketch')!, 'setLabels', [...labelsOf(a), { id: 'ada', text: 'Ada', col: 3, row: 3 }]);
+      }, { discrete: true });
+      b.editor.update(() => {
+        call(find('sketch')!, 'setGrid', withCells(gridOf(b), [last]));
+        call(find('sketch')!, 'setLabels', [...labelsOf(b), { id: 'ben', text: 'Ben', col: 5, row: 5 }]);
+      }, { discrete: true });
+      exchange(a, b);
+      for (const peer of [a, b]) {
+        expect(cells(gridOf(peer)), 'both strokes stay').toEqual([...cells(before), 500, 501, last].sort((x, y) => x - y));
+        expect(labelsOf(peer).map((label) => label.id).sort(), 'both labels stay').toEqual(['ada', 'ben', 'seed']);
+      }
+      expect(exportMarkdown(b.editor)).toBe(exportMarkdown(a.editor));
+      expect(exportDocMarkdown(a.doc)).toBe(exportMarkdown(a.editor));
+      a.undo.undo();
+      Y.applyUpdate(b.doc, Y.encodeStateAsUpdate(a.doc)); b.editor.update(noop, { discrete: true });
+      for (const peer of [a, b]) {
+        expect(cells(gridOf(peer)), "Ada's undo removes only her stroke").toEqual([...cells(before), last]);
+        expect(labelsOf(peer).map((label) => label.id).sort()).toEqual(['ben', 'seed']);
+      }
+    } finally { a.dispose(); b.dispose(); seed.destroy(); }
+  });
+
+  it('a stroke drawn from a stale grid keeps the strokes that arrived meanwhile', () => {
+    const seed = new Y.Doc(); importBody(seed, SKETCH);
+    const a = client(seed); const b = client(seed);
+    try {
+      const stale = gridOf(b);
+      a.editor.update(() => call(find('sketch')!, 'setGrid', withCells(gridOf(a), [900])), { discrete: true });
+      exchange(a, b);
+      b.editor.update(() => call(find('sketch')!, 'setGrid', withCells(stale, [901]), stale), { discrete: true });
+      exchange(a, b);
+      for (const peer of [a, b]) expect(cells(gridOf(peer))).toEqual(expect.arrayContaining([900, 901]));
+    } finally { a.dispose(); b.dispose(); seed.destroy(); }
+  });
+
+  it.each([
+    { name: 'charts.md', type: 'chart', fields: ['__config'] },
+    { name: 'canvas.md', type: 'sketch', fields: ['__grid', '__labels'] },
+  ])('$type keeps export bytes and moves its payload into per-key registers', ({ name, type, fields }) => {
+    const markdown = readFileSync(new URL(`./converter/fixtures/${name}`, import.meta.url), 'utf8');
+    const doc = new Y.Doc();
+    try {
+      importBody(doc, markdown);
+      expect(exportDocMarkdown(doc)).toBe(exportMarkdown(importMarkdown(markdown)));
+      for (const field of fields) expect(EXCLUDED_FIELDS[type]).toContain(field);
+      expect([...doc.getMap('registers').values()].filter((value) => value instanceof Y.Map).length).toBeGreaterThan(0);
+    } finally { doc.destroy(); }
+  });
+
+  it('upgrades a persisted chart attribute without changing its export', () => {
+    const legacy = new Y.Doc();
+    const root = legacy.get('root', Y.XmlText);
+    const chart = new Y.XmlElement('chart'); root.insertEmbed(0, chart);
+    chart.setAttribute('__type', 'chart'); chart.setAttribute('__config', { type: 'bar', title: 'Stored', data: [] } as never);
+    chart.setAttribute('__commentIds', [] as never);
+    const restored = new Y.Doc();
+    try {
+      Y.applyUpdate(restored, Y.encodeStateAsUpdate(legacy));
+      migrateRegisters(restored);
+      expect(exportDocMarkdown(restored)).toContain('"title": "Stored"');
+      expect([...restored.getMap('registers').values()].some((value) => value instanceof Y.Map)).toBe(true);
+    } finally { legacy.destroy(); restored.destroy(); }
+  });
+
+  it.each([
+    { type: 'code-block', markdown: '```js\nseed\n```', getter: 'getCode', setter: 'setCode', value: 'copy only' },
+    { type: 'html-block', markdown: '```moss-html\n<p>seed</p>\n```', getter: 'getRawHtml', setter: 'setRawHtml', value: '<p>copy only</p>' },
+    { type: 'formula', markdown: '{{2+3|5}}', getter: 'getFormula', setter: 'setFormula', value: '9+9' },
+    { type: 'chart', markdown: CHART, getter: 'getConfig', setter: 'setConfig', value: { type: 'line', data: [] } },
+  ])('$copyNode gives a copied $type its own register', ({ type, markdown, getter, setter, value }) => {
+    const seed = new Y.Doc(); importBody(seed, markdown);
+    const a = client(seed);
+    try {
+      a.editor.update(() => { const original = find(type)!; original.insertAfter($copyNode(original)); }, { discrete: true });
+      a.editor.update(() => call(findAll(type)[1], setter, value), { discrete: true });
+      a.editor.update(noop, { discrete: true });
+      const [original, copy] = a.editor.read(() =>
+        findAll(type).map((node) => ({ id: (node as unknown as { __regId?: string }).__regId, value: call(node, getter) })));
+      expect(copy.id, 'the copy mints a new identity').toBeTruthy();
+      expect(copy.id, 'the copy mints a new identity').not.toBe(original.id);
+      expect(copy.value).toEqual(value);
+      expect(original.value, 'editing the copy leaves the original').not.toEqual(value);
+    } finally { a.dispose(); seed.destroy(); }
   });
 });
