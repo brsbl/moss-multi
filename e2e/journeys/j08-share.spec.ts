@@ -175,7 +175,7 @@ test('j08 vault: Ada shares her vault from the switcher and Ben switches to it @
 test('j08 vault: a granted co-owner of Ada\'s vault can share it, but gets no create, rename or trash @p:ppl-2', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
   const cyPrincipal = await actors.principal('cy');
-  const cy = await openShell(actors, 'cy');
+  const cy = await actors.open(cyPrincipal);
 
   await ada.page.getByRole('button', { name: 'Vault: Home', exact: true }).click();
   await ada.page.getByRole('menuitem', { name: 'Share vault…', exact: true }).click();
