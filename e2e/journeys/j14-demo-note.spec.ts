@@ -70,6 +70,18 @@ async function slash(actor: Actor, id: string, marker: string, option: string): 
     if (!box) throw new Error(`${marker} is not laid out`);
     await text.click({ position: { x: box.width - 1, y: box.height / 2 } });
     expect(await page.evaluate(() => { const s = window.getSelection(); return `${s?.anchorNode?.textContent}@${s?.anchorOffset}`; })).toBe(`${marker}@${marker.length}`);
+    // Keys act on Lexical's selection, which follows the DOM's on selectionchange; wait until it has.
+    expect(await ui.body(actor, id).evaluate((element) => {
+      const editor = (element as HTMLElement & { __lexicalEditor: LexicalEditor }).__lexicalEditor;
+      const state = editor.getEditorState();
+      const anchor = (state._selection as { anchor?: { key: string; offset: number; type: string } } | null)?.anchor;
+      return state.read(() => {
+        const node = anchor && state._nodeMap.get(anchor.key) as unknown as { getTextContent(): string; getChildrenSize?(): number } | undefined;
+        if (!anchor || !node) return 'no selection';
+        const end = anchor.type === 'element' ? node.getChildrenSize?.() : node.getTextContent().length;
+        return `${node.getTextContent()}@${anchor.offset === end ? 'end' : anchor.offset}`;
+      });
+    })).toBe(`${marker}@end`);
   }).toPass({ timeout: 10_000 });
   // Character by character: Home and Shift+Home move differently across platforms and engines.
   for (let i = 0; i < marker.length; i += 1) await page.keyboard.press('Backspace');
