@@ -1,0 +1,2 @@
+UPDATE `invites` SET `revoked_at` = `created_at` WHERE `accepted_at` IS NULL AND `revoked_at` IS NULL AND rowid NOT IN (SELECT max(rowid) FROM `invites` WHERE `accepted_at` IS NULL AND `revoked_at` IS NULL GROUP BY `target_type`, `target_id`, `email`);--> statement-breakpoint
+CREATE UNIQUE INDEX `invites_open_idx` ON `invites` (`target_type`,`target_id`,`email`) WHERE accepted_at IS NULL AND revoked_at IS NULL;

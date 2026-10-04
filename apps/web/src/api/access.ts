@@ -15,13 +15,30 @@ export interface DocAccess {
   ownerUserId: string;
   folderId: string;
   deleted: boolean;
+  /** Only a presented share link opens it: no ownership and no grant. */
+  linkOnly: boolean;
 }
 
 export interface FolderAccess {
   role: Role;
   ownerUserId: string;
   kind: 'folder' | 'vault';
+  name: string;
+  parentId: string | null;
   deleted: boolean;
+  /** Only a presented folder link opens it: no ownership and no grant. */
+  linkOnly: boolean;
+}
+
+/** A live share link by its token, or null for a forged or revoked one. */
+export async function liveLink(db: Db, token: string | null) {
+  if (!token) return null;
+  const [link] = await db
+    .select({ targetType: shareLinks.targetType, targetId: shareLinks.targetId, role: shareLinks.role })
+    .from(shareLinks)
+    .where(and(eq(shareLinks.token, token), isNull(shareLinks.revokedAt)))
+    .limit(1);
+  return link ?? null;
 }
 
 /** The user whose access a principal exercises; null for a share token alone. */
@@ -64,14 +81,10 @@ async function grantRoles(db: Db, ids: string[], chain: string[], docId: string 
   return [...onDoc, ...onFolders].map((row) => row.role);
 }
 
-/** The role of a live link covering the doc (its own link, or one on any folder of its chain), else null. */
-async function linkRole(db: Db, token: string | null, docId: string, chain: string[]): Promise<Role | null> {
-  if (!token) return null;
-  const [link] = await db
-    .select({ targetType: shareLinks.targetType, targetId: shareLinks.targetId, role: shareLinks.role })
-    .from(shareLinks)
-    .where(and(eq(shareLinks.token, token), isNull(shareLinks.revokedAt)))
-    .limit(1);
+/** The role of a live link covering the doc (its own link, or one on any folder of its chain), else null. A folder
+ * (docId null) is covered only by a link on it or an ancestor. */
+async function linkRole(db: Db, token: string | null, docId: string | null, chain: string[]): Promise<Role | null> {
+  const link = await liveLink(db, token);
   if (!link) return null;
   const covers = link.targetType === 'doc' ? link.targetId === docId : chain.includes(link.targetId);
   return covers ? link.role : null;
@@ -91,23 +104,32 @@ export async function resolveDocAccess(db: Db, principal: Principal, docId: stri
   const chain = await folderChain(db, doc.folderId);
   const token = principal.type === 'anonymous' ? principal.shareToken : shareToken;
   const [grants, link] = await Promise.all([grantRoles(db, grantees(principal), chain, docId), linkRole(db, token, docId, chain)]);
-  const role = foldRole({ owner: actingUserId(principal) === doc.ownerUserId, grants, link, anonymous: principal.type === 'anonymous' });
+  const sources = { owner: actingUserId(principal) === doc.ownerUserId, grants, anonymous: principal.type === 'anonymous' };
+  const role = foldRole({ ...sources, link });
   if (role === null) return null;
-  return { role, ownerUserId: doc.ownerUserId, folderId: doc.folderId, deleted: doc.deletedAt !== null };
+  const linkOnly = foldRole({ ...sources, link: null }) === null;
+  return { role, ownerUserId: doc.ownerUserId, folderId: doc.folderId, deleted: doc.deletedAt !== null, linkOnly };
 }
 
-/** The caller's role on a folder or vault through ownership and grants on it and its ancestors; null without access. */
-export async function resolveFolderAccess(db: Db, principal: Principal, folderId: string): Promise<FolderAccess | null> {
+/**
+ * The caller's role on a folder or vault through ownership and grants on it and its ancestors, and a presented
+ * folder link on it or an ancestor (a ceiling, as for docs); null without access.
+ */
+export async function resolveFolderAccess(db: Db, principal: Principal, folderId: string, shareToken: string | null = null): Promise<FolderAccess | null> {
   const [folder] = await db
-    .select({ ownerUserId: folders.ownerUserId, kind: folders.kind, deletedAt: folders.deletedAt })
+    .select({ ownerUserId: folders.ownerUserId, kind: folders.kind, name: folders.name, parentId: folders.parentId, deletedAt: folders.deletedAt })
     .from(folders)
     .where(eq(folders.id, folderId))
     .limit(1);
   if (!folder) return null;
-  const grants = await grantRoles(db, grantees(principal), await folderChain(db, folderId), null);
-  const role = foldRole({ owner: actingUserId(principal) === folder.ownerUserId, grants, link: null, anonymous: principal.type === 'anonymous' });
+  const chain = await folderChain(db, folderId);
+  const token = principal.type === 'anonymous' ? principal.shareToken : shareToken;
+  const [grants, link] = await Promise.all([grantRoles(db, grantees(principal), chain, null), linkRole(db, token, null, chain)]);
+  const sources = { owner: actingUserId(principal) === folder.ownerUserId, grants, anonymous: principal.type === 'anonymous' };
+  const role = foldRole({ ...sources, link });
   if (role === null) return null;
-  return { role, ownerUserId: folder.ownerUserId, kind: folder.kind, deleted: folder.deletedAt !== null };
+  const linkOnly = foldRole({ ...sources, link: null }) === null;
+  return { role, ownerUserId: folder.ownerUserId, kind: folder.kind, name: folder.name, parentId: folder.parentId, deleted: folder.deletedAt !== null, linkOnly };
 }
 
 /** Batched folder closure for discovery; the same MAX fold and depth bound as individual reads. */

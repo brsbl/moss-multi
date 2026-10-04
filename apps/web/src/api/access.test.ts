@@ -44,7 +44,7 @@ async function nested(): Promise<{ vault: string; a: string; b: string; c: strin
 describe('resolveDocAccess', () => {
   it('makes the vault owner the owner, and gives anyone else with no grant nothing', async () => {
     const docId = await insertDoc(d1.db, ada);
-    expect(await resolveDocAccess(createDb(d1.db), user(ada), docId)).toEqual({ role: 'owner', ownerUserId: ada.id, folderId: ada.homeId, deleted: false });
+    expect(await resolveDocAccess(createDb(d1.db), user(ada), docId)).toEqual({ role: 'owner', ownerUserId: ada.id, folderId: ada.homeId, deleted: false, linkOnly: false });
     expect(await roleOn(user(ben), docId)).toBeNull();
     expect(await roleOn(user(ben), crypto.randomUUID())).toBeNull();
   });
@@ -132,7 +132,7 @@ describe('resolveDocAccess', () => {
 describe('resolveFolderAccess', () => {
   it('makes the owner the owner and reads grants on the folder and its ancestors', async () => {
     const tree = await nested();
-    expect(await resolveFolderAccess(createDb(d1.db), user(ada), tree.b)).toEqual({ role: 'owner', ownerUserId: ada.id, kind: 'folder', deleted: false });
+    expect(await resolveFolderAccess(createDb(d1.db), user(ada), tree.b)).toMatchObject({ role: 'owner', ownerUserId: ada.id, kind: 'folder', parentId: tree.a, deleted: false, linkOnly: false });
     await insertGrant(d1.db, { folderId: tree.vault }, ben, 'editor');
     expect((await resolveFolderAccess(createDb(d1.db), user(ben), tree.c))?.role).toBe('editor');
     expect((await resolveFolderAccess(createDb(d1.db), user(ben), tree.vault))).toMatchObject({ role: 'editor', kind: 'vault' });
