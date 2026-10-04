@@ -219,6 +219,21 @@ describe('serving (A§16)', () => {
     expect(new Set(bodies).size, 'the 404s are byte-identical').toBe(1);
   });
 
+  it("shows a trashed note's media to its owner's Trash view and gives a grant or link holder the one 404", async () => {
+    const docId = await insertDoc(d1.db, ada);
+    await uploaded(await upload(ada.cookie, docId, 'kept.png', PNG, 'image/png'));
+    await insertGrant(d1.db, { docId }, ben, 'editor');
+    const token = await insertLink(d1.db, { docId }, 'viewer');
+    await d1.db.prepare('UPDATE docs SET deleted_at = ? WHERE id = ?').bind(Date.now(), docId).run();
+    const path = `/api/docs/${docId}/assets/kept.png`;
+    const owner = await call('GET', path, ada.cookie);
+    expect(owner.status, 'the owner previews it in Trash').toBe(200);
+    expect(await bytesOf(owner)).toEqual(PNG);
+    const denied = [await call('GET', path, ben.cookie), await call('GET', `${path}?share=${token}`, null), await call('GET', `${path}?share=${token}`, cy.cookie)];
+    expect(denied.map((response) => response.status), 'a grant or link never reaches a trashed note').toEqual([404, 404, 404]);
+    expect((await upload(ada.cookie, docId, 'late.png', PNG, 'image/png')).status, 'nor does an upload, even the owner\'s').toBe(404);
+  });
+
   it("gives a reader of one note none of the media its folder's other notes reference", async () => {
     const reader = await signedUpUser(env, 'assets-note-reader', 'Reader');
     const secret = await insertDoc(d1.db, ada);
