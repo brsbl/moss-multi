@@ -248,10 +248,10 @@ describe('SP11 suggester vetting census @p:mean-2', () => {
       const typed = peer.frame(() => { select(4, 4, nodeWith('mine')).insertText(' theirs'); });
       Y.applyUpdate(server, typed);
       suggester.receive(typed);
-      expect(s.vet(suggester.frame(() => { select(4, 11, nodeWith('mine theirs')).removeText(); })))
+      // Their own word in the same block stays theirs to delete; the peer's stays the peer's.
+      s.land(suggester.frame(() => { select(0, 4, nodeWith('mine theirs')).removeText(); }));
+      expect(s.vet(suggester.frame(() => { select(0, 7, nodeWith(' theirs')).removeText(); })))
         .toEqual({ ok: false, reason: 'delete-original' });
-      // Their own word in the same block stays theirs to delete (the refused frame stayed local to this client).
-      expect(s.vet(suggester.frame(() => { select(0, 4, nodeWith('mine')).removeText(); }))).toMatchObject({ ok: true });
     } finally { peer?.dispose(); suggester.dispose(); server.destroy(); }
   });
 
@@ -630,15 +630,19 @@ describe('SP11 implicit deletes and governed text @p:mean-2', () => {
       own.s.land(own.suggester.frame(() => { select(0, 4, 1).formatText('bold'); }));
       own.s.land(own.suggester.frame(() => { texts()[1].getParentOrThrow<ParagraphNode>().setFormat('center'); }));
     } finally { own.suggester.dispose(); own.server.destroy(); }
-    const setup = peerInsideOwn();
-    try {
-      const bold = setup.suggester.frame(() => { select(0, 11, setup.nth()).formatText('bold'); });
-      expect(bold.byteLength).toBeGreaterThan(2);
-      expect(setup.s.vet(bold)).toEqual({ ok: false, reason: 'mutate-original' });
-      const centred = setup.suggester.frame(() => { texts()[setup.nth()].getParentOrThrow<ParagraphNode>().setFormat('center'); });
-      expect(centred.byteLength).toBeGreaterThan(2);
-      expect(setup.s.vet(centred)).toEqual({ ok: false, reason: 'mutate-original' });
-    } finally { setup.dispose(); }
+    // Each refused frame stays local to the client that made it, so each runs on its own setup.
+    const ops = [
+      (nth: number) => { select(0, 11, nth).formatText('bold'); },
+      (nth: number) => { texts()[nth].getParentOrThrow<ParagraphNode>().setFormat('center'); },
+    ];
+    for (const op of ops) {
+      const setup = peerInsideOwn();
+      try {
+        const update = setup.suggester.frame(() => op(setup.nth()));
+        expect(update.byteLength).toBeGreaterThan(2);
+        expect(setup.s.vet(update)).toEqual({ ok: false, reason: 'mutate-original' });
+      } finally { setup.dispose(); }
+    }
   });
 
   it("an editor's Backspace join keeps suggested text the suggestion's", () => {

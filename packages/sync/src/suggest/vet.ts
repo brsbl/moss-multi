@@ -507,7 +507,7 @@ function flatten(type: Y.AbstractType<unknown>, include: (item: Y.Item) => boole
       props = isText ? stableJson(mapJson(embedded as Y.Map<unknown>, include)) : null;
       gov = isText ? keyOf(item.id) : null;
       out.push({ client: item.id.client, clock: item.id.clock, char: null, props: null, gov: null, block, ancestors });
-      if (embedded instanceof Y.XmlText) flatten(embedded, include, out, [...ancestors, keyOf(item.id)]);
+      if (embedded instanceof Y.XmlText) flatten(embedded as unknown as Y.AbstractType<unknown>, include, out, [...ancestors, keyOf(item.id)]);
     }
   }
   return out;
@@ -570,7 +570,7 @@ function keyLiveBefore(view: View, key: string, isFreshId: (id: Y.ID) => boolean
 }
 
 const alive = (item: Y.Item) => !item.deleted;
-const bodyOf = (doc: Y.Doc) => doc.get(BODY, Y.XmlText) as Y.AbstractType<unknown>;
+const bodyOf = (doc: Y.Doc) => doc.get(BODY, Y.XmlText) as unknown as Y.AbstractType<unknown>;
 
 function serverView(doc: Y.Doc, update: Uint8Array): View {
   let mirror: Y.Doc | null = null;
