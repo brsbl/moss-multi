@@ -1,9 +1,12 @@
-import { $getEditor, $getNodeByKey, $getRoot, $isElementNode, COLLABORATION_TAG, type LexicalEditor, type LexicalNode } from 'lexical';
+import {
+  $getEditor, $getNodeByKey, $getRoot, $isElementNode, COLLABORATION_TAG, type EditorState, type LexicalEditor, type LexicalNode, type NodeKey,
+} from 'lexical';
 import * as Y from 'yjs';
 import { diffText } from '@moss-multi/core/text-diff';
 
 export const REGISTER_LOCAL_ORIGIN = Symbol('moss-multi:register-local');
 const REGISTER_INIT = Symbol('moss-multi:register-init');
+const REFRESH_TAG = 'moss-multi:register-refresh';
 /** Text payloads: one `Y.Text` per node (A§10.10). */
 export const REGISTER_FIELDS: Readonly<Record<string, string>> = {
   'code-block': '__code', 'html-block': '__rawHtml', formula: '__formula',
@@ -491,6 +494,27 @@ const bindings = new WeakMap<LexicalEditor, Y.Doc>();
 const nodeDocs = new WeakMap<LexicalNode, Y.Doc>();
 const serialized = new WeakSet<Y.Doc>();
 let bindingCount = 0;
+const payloads = new WeakMap<Y.Text, string>();
+const invalidated = new WeakSet<Y.Doc>();
+
+/**
+ * A register's text, cached between transactions: every Lexical commit reads each top-level node's text, so an
+ * uncached read stringifies every register per keystroke. A transaction's changes evict before its observers run,
+ * and reads while one is open or still cleaning up bypass the cache.
+ */
+function payload(text: Y.Text): string {
+  const doc = text.doc;
+  if (!doc || doc._transaction || doc._transactionCleanups.length) return text.toString();
+  if (!invalidated.has(doc)) {
+    invalidated.add(doc);
+    doc.on('beforeObserverCalls', (transaction: Y.Transaction) => {
+      for (const type of transaction.changed.keys()) if (type instanceof Y.Text) payloads.delete(type);
+    });
+  }
+  let value = payloads.get(text);
+  if (value === undefined) payloads.set(text, value = text.toString());
+  return value;
+}
 
 export const registerDoc = (editor: LexicalEditor): Y.Doc | undefined => bindings.get(editor);
 
@@ -538,15 +562,14 @@ function registerOf(node: LexicalNode): unknown {
 }
 export function readRegister(node: LexicalNode, fallback: string): string {
   const text = registerOf(node);
-  return text instanceof Y.Text ? text.toString() : fallback ?? '';
+  return text instanceof Y.Text ? payload(text) : fallback ?? '';
 }
 export function writeRegister(node: LexicalNode, next: string): boolean {
   const doc = currentDoc();
   const id = (node as RegisterNode).__regId;
   const text = id && doc?.getMap('registers').get(id);
-  if (doc && text instanceof Y.Text && text.toString() !== next) {
-    doc.transact(() => text.applyDelta(diffText(text.toString(), next)), REGISTER_LOCAL_ORIGIN);
-  }
+  const current = doc && text instanceof Y.Text ? payload(text) : next;
+  if (current !== next) doc!.transact(() => (text as Y.Text).applyDelta(diffText(current, next)), REGISTER_LOCAL_ORIGIN);
   return text instanceof Y.Text;
 }
 
@@ -624,6 +647,8 @@ export function $assignRegisterIds(): void {
   const doc = currentDoc();
   const unique = doc !== undefined && !serialized.has(doc);
   const used = new Set(doc?.getMap('registers').keys());
+  // Ordinals only grow per prefix, so N identical blocks cost O(N), not O(N^2).
+  const next = new Map<string, number>();
   const walk = (node: LexicalNode) => {
     const registered = REGISTER_FIELDS[node.getType()] || MAP_REGISTERS[node.getType()];
     if (registered && unique) {
@@ -634,8 +659,9 @@ export function $assignRegisterIds(): void {
       let hash = 2166136261;
       for (let i = 0; i < seed.length; i++) hash = Math.imul(hash ^ seed.charCodeAt(i), 16777619);
       const prefix = `import:${node.getType()}:${(hash >>> 0).toString(16)}`;
-      let ordinal = 0;
+      let ordinal = next.get(prefix) ?? 0;
       while (used.has(`${prefix}:${ordinal}`)) ordinal++;
+      next.set(prefix, ordinal + 1);
       const id = `${prefix}:${ordinal}`;
       used.add(id);
       (target.getWritable() as RegisterNode).__regId = id;
@@ -645,30 +671,31 @@ export function $assignRegisterIds(): void {
   walk($getRoot());
 }
 
-/** Copies a register's value into the node's excluded render cache, writing only what differs. */
-function $syncCache(node: RegisterNode, value: unknown): void {
+/** Copies a register's value into one node's excluded render cache, writing only what differs. Never writes to the shared tree. */
+function $refreshNode(node: LexicalNode | null, registers: Y.Map<unknown>): void {
+  if (!node) return;
+  const target = node as RegisterNode;
+  const value = registers.get(target.__regId);
   const field = REGISTER_FIELDS[node.getType()];
   if (field) {
-    if (value instanceof Y.Text && node[field] !== value.toString()) node.getWritable()[field] = value.toString();
+    if (value instanceof Y.Text && target[field] !== payload(value)) target.getWritable()[field] = payload(value);
     return;
   }
   const codec = MAP_REGISTERS[node.getType()];
   if (!codec || !(value instanceof Y.Map)) return;
   const decoded = codec.decode(value as Y.Map<unknown>);
   for (const name of codec.fields) {
-    if (!sameValue(node[name], decoded[name])) node.getWritable()[name] = decoded[name];
+    if (!sameValue(target[name], decoded[name])) target.getWritable()[name] = decoded[name];
   }
 }
 
-/** Copy shared payloads into Lexical's excluded render cache. Never writes to the shared tree. */
+const isRegisterType = (type: string): boolean => !!REGISTER_FIELDS[type] || !!MAP_REGISTERS[type];
+
+/** Fill every register node's cache once; a hydrated mirror needs it before its first read. */
 export function $refreshRegisters(editor: LexicalEditor, doc: Y.Doc): void {
-  const registers = doc.getMap('registers');
+  const registers = doc.getMap<unknown>('registers');
   for (const snapshot of editor.getEditorState()._nodeMap.values()) {
-    const type = snapshot.getType();
-    if (!REGISTER_FIELDS[type] && !MAP_REGISTERS[type]) continue;
-    const node = $getNodeByKey(snapshot.getKey()) as RegisterNode | null;
-    if (!node) continue;
-    $syncCache(node, registers.get(node.__regId));
+    if (isRegisterType(snapshot.getType())) $refreshNode($getNodeByKey(snapshot.getKey()), registers);
   }
 }
 
@@ -691,27 +718,72 @@ export function bindRegisters(editor: LexicalEditor, doc: Y.Doc, { serializedImp
         const created = field ? new Y.Text(String(node[field] ?? '')) : new Y.Map(MAP_REGISTERS[type].encode(fieldsOf(node, MAP_REGISTERS[type])));
         doc.transact(() => registers.set(id, created), REGISTER_INIT);
       }
-      $syncCache(node, registers.get(id));
+      $refreshNode(node.getLatest(), registers);
     }));
   }
+  // Refreshes stay proportional to what changed: the nodes an update touched and the registers whose text moved.
+  const keysById = new Map<string, Set<NodeKey>>();
+  const idByKey = new Map<NodeKey, string>();
+  const dirtyKeys = new Set<NodeKey>();
+  const dirtyIds = new Set<string>();
+  const index = (key: NodeKey, state: EditorState) => {
+    const node = state._nodeMap.get(key) as RegisterNode | undefined;
+    const id = node && isRegisterType(node.getType()) ? node.__regId : undefined;
+    const previous = idByKey.get(key);
+    if (previous !== id) {
+      if (previous !== undefined) {
+        keysById.get(previous)?.delete(key);
+        if (!keysById.get(previous)?.size) keysById.delete(previous);
+      }
+      if (id === undefined) idByKey.delete(key);
+      else {
+        idByKey.set(key, id);
+        let keys = keysById.get(id);
+        if (!keys) keysById.set(id, keys = new Set());
+        keys.add(key);
+      }
+    }
+    if (id !== undefined) dirtyKeys.add(key);
+  };
   let stopped = false;
   let queued = false;
   const refresh = () => {
-    if (queued || stopped) return;
+    if (queued || stopped || (!dirtyKeys.size && !dirtyIds.size)) return;
     queued = true;
     queueMicrotask(() => {
       queued = false;
       // The commit listener retries after pending edits; tagging them would drop their Yjs writes.
       if (stopped || editor._pendingEditorState !== null) return;
       // Finish this cache-only update before any later authored update can join it.
-      editor.update(() => $refreshRegisters(editor, doc), { tag: COLLABORATION_TAG, skipTransforms: true, discrete: true });
+      editor.update(() => {
+        const keys = new Set(dirtyKeys);
+        for (const id of dirtyIds) for (const key of keysById.get(id) ?? []) keys.add(key);
+        dirtyKeys.clear();
+        dirtyIds.clear();
+        for (const key of keys) $refreshNode($getNodeByKey(key), registers);
+      }, { tag: [COLLABORATION_TAG, REFRESH_TAG], skipTransforms: true, discrete: true });
     });
   };
-  const observe = (_events: unknown, transaction: Y.Transaction) => {
-    if (transaction.origin !== REGISTER_INIT) refresh();
+  const observe = (events: Y.YEvent<Y.AbstractType<unknown>>[], transaction: Y.Transaction) => {
+    if (transaction.origin === REGISTER_INIT) return;
+    for (const event of events) {
+      if (event.target === registers) for (const id of (event as Y.YMapEvent<unknown>).keysChanged) dirtyIds.add(id);
+      else if (typeof event.target._item?.parentSub === 'string') dirtyIds.add(event.target._item.parentSub);
+    }
+    refresh();
   };
   registers.observeDeep(observe);
   // Hydration can skip transforms, and may deliver the tree after the registers.
-  stops.push(editor.registerUpdateListener(refresh));
+  stops.push(editor.registerUpdateListener(({ editorState, prevEditorState, dirtyElements, dirtyLeaves, tags }) => {
+    if (!tags.has(REFRESH_TAG)) {
+      // setEditorState marks only the root: re-index the whole state once.
+      const replaced = dirtyLeaves.size === 0 && dirtyElements.size === 1 && dirtyElements.has('root') && editorState !== prevEditorState;
+      const keys = replaced ? new Set([...idByKey.keys(), ...editorState._nodeMap.keys()]) : [...dirtyLeaves, ...dirtyElements.keys()];
+      for (const key of keys) index(key, editorState);
+    }
+    refresh();
+  }));
+  for (const key of editor.getEditorState()._nodeMap.keys()) index(key, editor.getEditorState());
+  refresh();
   return () => { stopped = true; stops.forEach(stop => stop()); registers.unobserveDeep(observe); bindings.delete(editor); bindingCount--; };
 }

@@ -1,5 +1,4 @@
 // /api/* (A§4.1 step 5). Unknown paths get a JSON 404; /api never answers with HTML.
-import { publishTo } from '@moss-multi/sync/fanout';
 import type { AppEnv } from '../env.ts';
 import type { AuthEnv } from '../auth/auth.ts';
 import { resolvePrincipal } from '../auth/principal.ts';
@@ -38,17 +37,7 @@ export async function handleApi(request: Request, env: ApiEnv): Promise<Response
   const searched = handleSearchRoutes(request, env);
   if (searched) return searched;
   if (pathname === '/api/vaults' || pathname.startsWith('/api/vaults/')) return handleVaults(request, env);
-  const isFolders = pathname === '/api/folders' || pathname.startsWith('/api/folders/');
-  if (pathname === '/api/docs' || pathname.startsWith('/api/docs/') || isFolders) {
-    const response = isFolders ? await handleFolderRoutes(request, env) : await handleDocs(request, env);
-    if (request.method === 'POST' && pathname.endsWith('/members') && response.ok && env.PrincipalDO) {
-      const body = await response.clone().json() as { member?: { principalId?: string } };
-      if (body.member?.principalId) {
-        try { await publishTo({ DB: env.DB, PrincipalDO: env.PrincipalDO }, body.member.principalId, { type: 'vaults' }); }
-        catch (error) { console.error('workspace share notification failed', error); }
-      }
-    }
-    return response;
-  }
+  if (pathname === '/api/docs' || pathname.startsWith('/api/docs/')) return handleDocs(request, env);
+  if (pathname === '/api/folders' || pathname.startsWith('/api/folders/')) return handleFolderRoutes(request, env);
   return json({ error: 'not-found' }, 404);
 }

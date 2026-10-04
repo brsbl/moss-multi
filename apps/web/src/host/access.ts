@@ -75,6 +75,23 @@ async function readDocAccess(docId: string, fetcher: typeof fetch): Promise<DocA
   }
 }
 
+/** `GET /api/folders/:id` for the folder landing (A§4.2): whether the caller, or the link it holds, opens the folder. */
+export async function askFolderAccess(folderId: string, fetcher: typeof fetch = (input, init) => fetch(input, init)): Promise<{ kind: 'open' | 'denied' | 'signed-out' | 'unavailable' }> {
+  const share = shareParam();
+  try {
+    const response = await fetcher(`/api/folders/${encodeURIComponent(folderId)}`, {
+      credentials: 'same-origin',
+      headers: { accept: 'application/json', ...(share ? { 'x-moss-share': share } : {}) },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (response.status === 404) return { kind: 'denied' };
+    if (response.status === 401) return { kind: 'signed-out' };
+    return { kind: response.ok ? 'open' : 'unavailable' };
+  } catch {
+    return { kind: 'unavailable' };
+  }
+}
+
 /** Waits between failed asks: 1 s, 2 s, 4 s, 8 s, then every 15 s. */
 const RETRY_MS = [1_000, 2_000, 4_000, 8_000, 15_000];
 

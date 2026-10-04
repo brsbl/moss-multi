@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { $copyNode, $getRoot, $isElementNode, COLLABORATION_TAG, type LexicalNode } from 'lexical';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import * as Y from 'yjs';
 import { exportDocMarkdown, importBody, seedEmptyParagraph, serverWrite } from './server-doc.ts';
 import { $importNoteBody, exportMarkdown, importMarkdown } from './converter/index.ts';
@@ -8,7 +8,9 @@ import { EXCLUDED_FIELDS } from './excluded-properties.ts';
 import { createBinding, syncLexicalUpdateToYjs, syncYjsChangesToLexical, type Provider } from '@lexical/yjs';
 import { createConverterEditor } from './converter/index.ts';
 import { excludedPropertiesFor } from './excluded-properties.ts';
-import { bindRegisters, migrateRegisters, readMapEntries, rebaseMapEntries, REGISTER_LOCAL_ORIGIN, RegisterDraft } from './registers.ts';
+import {
+  $assignRegisterIds, bindRegisters, migrateRegisters, readMapEntries, rebaseMapEntries, REGISTER_LOCAL_ORIGIN, RegisterDraft,
+} from './registers.ts';
 
 const noop = () => {};
 const provider = {
@@ -703,4 +705,114 @@ describe('L4/A8 chart and sketch registers @p:col-1 @p:col-3 @p:note-2', () => {
       expect(original.value, 'editing the copy leaves the original').not.toEqual(value);
     } finally { a.dispose(); seed.destroy(); }
   });
+});
+
+describe('register refresh cost @p:col-1 @p:tech-8', () => {
+  const blocks = 200;
+  const lines = 400;
+  // 200 distinct code blocks of about 10 KB each: a 2 MB note.
+  const body = (i: number) => Array.from({ length: lines }, (_, line) => `const v${i}_${line} = ${line};`).join('\n');
+  const markdown = `para\n\n${Array.from({ length: blocks }, (_, i) => `\`\`\`js\n${body(i)}\n\`\`\``).join('\n\n')}`;
+  const blockBytes = body(0).length;
+  /** Register bytes stringified while `run` runs; the shared tree's XmlText is not a register. */
+  async function stringified(run: () => Promise<void> | void): Promise<number> {
+    const original = Y.Text.prototype.toString;
+    let bytes = 0;
+    const spy = vi.spyOn(Y.Text.prototype as { toString(): string }, 'toString').mockImplementation(function (this: unknown) {
+      const value = original.call(this as Y.Text);
+      if (!(this instanceof Y.XmlText)) bytes += value.length;
+      return value;
+    });
+    try { await run(); } finally { spy.mockRestore(); }
+    return bytes;
+  }
+
+  it('a burst of small edits touches only the edited register, on the editing and the receiving client', async () => {
+    const seed = new Y.Doc(); importBody(seed, markdown);
+    const a = client(seed); const b = client(seed);
+    const settle = () => new Promise(resolve => setTimeout(resolve, 0));
+    const forward = (update: Uint8Array, origin: unknown) => { if (origin !== 'remote') Y.applyUpdate(b.doc, update, 'remote'); };
+    a.doc.on('update', forward);
+    const edits = 40;
+    try {
+      await settle();
+      const started = performance.now();
+      const paragraph = await stringified(async () => {
+        for (let i = 0; i < edits; i++) {
+          a.editor.update(() => {
+            const text = $getRoot().getFirstDescendant() as LexicalNode & { setTextContent(text: string): void };
+            text.setTextContent(`${text.getTextContent()}!`);
+          }, { discrete: true });
+          await settle();
+        }
+      });
+      const register = await stringified(async () => {
+        for (let i = 0; i < edits; i++) {
+          a.editor.update(() => {
+            const block = findAll('code-block')[blocks / 2] as unknown as { getCode(): string; setCode(code: string): void };
+            block.setCode(`${block.getCode()}x`);
+          }, { discrete: true });
+          await settle();
+        }
+      });
+      const elapsed = performance.now() - started;
+      // The old refresh stringified every register on both peers per edit: 2 x 2 MB each time.
+      expect(paragraph, 'paragraph typing reads no register').toBeLessThanOrEqual(blockBytes);
+      expect(register, 'register typing reads only the edited register').toBeLessThanOrEqual(edits * 8 * (blockBytes + edits));
+      expect(elapsed, 'the burst stays interactive').toBeLessThan(10_000);
+      for (const peer of [a, b]) {
+        expect(exportMarkdown(peer.editor)).toContain(`para${'!'.repeat(edits)}`);
+        expect(exportMarkdown(peer.editor)).toContain(`${body(blocks / 2)}${'x'.repeat(edits)}`);
+        peer.editor.read(() => {
+          const cached = (findAll('code-block')[blocks / 2] as unknown as { __code: string }).__code;
+          expect(cached, 'the render cache follows the register').toBe(`${body(blocks / 2)}${'x'.repeat(edits)}`);
+        });
+      }
+      while (a.undo.canUndo()) a.undo.undo();
+      await settle();
+      for (const peer of [a, b]) {
+        expect(exportMarkdown(peer.editor), 'undo restores the register').toContain(`${body(blocks / 2)}\n\`\`\``);
+        expect(exportMarkdown(peer.editor)).not.toContain('para!');
+      }
+    } finally { a.doc.off('update', forward); a.dispose(); b.dispose(); seed.destroy(); }
+  }, 120_000);
+
+  it('the DocDO mirror stringifies each register a bounded number of times per server write', async () => {
+    const live = new Y.Doc();
+    try {
+      importBody(live, markdown);
+      const total = [...live.getMap<Y.Text>('registers').values()].reduce((sum, text) => sum + text.length, 0);
+      const writes = 10;
+      const started = performance.now();
+      const bytes = await stringified(async () => {
+        for (let i = 0; i < writes; i++) {
+          serverWrite(live, 'burst', () => {
+            const text = $getRoot().getFirstDescendant() as LexicalNode & { setTextContent(text: string): void };
+            text.setTextContent(`${text.getTextContent()}!`);
+          });
+          await new Promise(resolve => setTimeout(resolve, 0));
+        }
+      });
+      expect(bytes, 'one hydration pass per write').toBeLessThanOrEqual(writes * 2 * total);
+      expect(performance.now() - started).toBeLessThan(30_000);
+      expect(exportDocMarkdown(live)).toContain(`para${'!'.repeat(writes)}`);
+    } finally { live.destroy(); }
+  }, 120_000);
+
+  it('assigns import identities to many identical blocks in linear time', () => {
+    const count = 30_000;
+    const editor = importMarkdown('```js\nsame\n```');
+    editor.update(() => {
+      const block = findAll('code-block')[0];
+      for (let i = 1; i < count; i++) $getRoot().append($copyNode(block));
+    }, { discrete: true });
+    const started = performance.now();
+    editor.update(() => $assignRegisterIds(), { discrete: true });
+    const elapsed = performance.now() - started;
+    const ids = editor.read(() => findAll('code-block').map(node => (node as unknown as { __regId: string }).__regId));
+    expect(new Set(ids).size).toBe(count);
+    expect(ids[0]).toMatch(/:0$/);
+    expect(ids[count - 1]).toMatch(new RegExp(`:${count - 1}$`));
+    expect(elapsed, 'quadratic ordinal probing takes tens of seconds here').toBeLessThan(3_000);
+  }, 180_000);
 });

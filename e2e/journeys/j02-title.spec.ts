@@ -8,7 +8,7 @@
 // Grants to the second and third principals are declared setup through the members API (BUILDPLAN conventions).
 import { randomBytes } from 'node:crypto';
 import { readField } from '../../packages/core/src/doc-fields.ts';
-import { parseFrontmatter } from '../../packages/core/src/frontmatter.ts';
+import { parseFrontmatter, writeFrontmatterKey } from '../../packages/core/src/frontmatter.ts';
 import { openDocClient } from '../lib/doc-client.ts';
 import type { Locator, Route } from '@playwright/test';
 import type { Actor, Actors } from '../lib/actors.ts';
@@ -761,4 +761,159 @@ test('j02-title: @tierA shared property rename and order reach both panels witho
     }
     expect(Object.keys(parseFrontmatter(readField(peer.doc, 'frontmatter')) ?? {})).toEqual(['third', 'renamed', 'second']);
   } finally { peer.close(); }
+});
+
+/** Removes a property through its label's delete button and the confirmation. */
+async function deleteProperty(actor: Actor, key: string): Promise<void> {
+  const label = `${key[0].toUpperCase()}${key.slice(1)}`;
+  await PROPERTIES(actor).locator('label').filter({ hasText: new RegExp(`^${label}$`) }).hover();
+  await PROPERTIES(actor).getByRole('button', { name: `Delete ${key} field`, exact: true }).click();
+  await actor.page.locator('[data-remote-web-surface-blocking-dialog="true"]').getByRole('button', { name: 'Remove', exact: true }).click();
+  await expect(PROPERTIES(actor).getByRole('textbox', { name: key, exact: true }), `${actor.label} removed ${key}`).toHaveCount(0);
+}
+
+test('j02-title: @tierA an open Properties draft survives a peer deleting its property, a peer editing another, and a peer joining mid-edit @p:tech-2 @p:col-1', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  const ben = await openShell(actors, 'ben');
+  const cy = await openShell(actors, 'cy');
+  await actors.requireDistinct(3);
+  const docId = await ui.createNote(ada);
+  for (const [key, value] of [['owner', 'ada'], ['status', 'draft'], ['due', 'soon']]) {
+    await (await addPropertyUpToValue(ada, key, value)).press('Enter');
+  }
+  await waitAcked(ada, docId);
+  await grantDoc(ada, docId, principalOf(ben));
+  await grantDoc(ada, docId, principalOf(cy));
+  await openDoc(ben, docId);
+  const benHeader = await openProperties(ben);
+  const draftValue = `ben-${token()}`;
+  await benHeader.getByRole('textbox', { name: 'owner', exact: true }).click();
+  const draft = benHeader.getByRole('textbox', { name: 'Edit owner', exact: true });
+  await draft.fill(draftValue);
+
+  // Cy joins while Ben's draft is open and deletes that property; Ada then edits another one.
+  await openDoc(cy, docId);
+  await openProperties(cy);
+  await deleteProperty(cy, 'owner');
+  await expect(PROPERTIES(ada).getByRole('textbox', { name: 'owner', exact: true }), 'the delete reached Ada').toHaveCount(0);
+  await PROPERTIES(ada).getByRole('textbox', { name: 'status', exact: true }).click();
+  await PROPERTIES(ada).getByRole('textbox', { name: 'Edit status', exact: true }).fill('review');
+  await PROPERTIES(ada).getByRole('textbox', { name: 'Edit status', exact: true }).press('Enter');
+  // Ada saw the delete before her edit, so Ben holding her edit means he holds the delete too.
+  await expect(benHeader.getByRole('textbox', { name: 'status', exact: true }), "Ada's edit reaches Ben").toHaveValue('review', { timeout: RENAME_MS });
+  await expect(draft, "Ben's draft is still open with his text").toHaveValue(draftValue);
+  await draft.press('Enter');
+  for (const actor of [ada, ben, cy]) {
+    await expect(PROPERTIES(actor).getByRole('textbox', { name: 'owner', exact: true }), `${actor.label}: Ben's committed draft`).toHaveValue(draftValue, { timeout: RENAME_MS });
+    await expect(PROPERTIES(actor).getByRole('textbox', { name: 'status', exact: true })).toHaveValue('review');
+  }
+
+  // A peer clearing the value being edited (Properties hides an empty status) keeps the draft open too.
+  const statusDraft = `ben-status-${token()}`;
+  await benHeader.getByRole('textbox', { name: 'status', exact: true }).click();
+  const benStatus = benHeader.getByRole('textbox', { name: 'Edit status', exact: true });
+  await benStatus.fill(statusDraft);
+  await PROPERTIES(ada).getByRole('textbox', { name: 'status', exact: true }).click();
+  await PROPERTIES(ada).getByRole('textbox', { name: 'Edit status', exact: true }).fill('');
+  await PROPERTIES(ada).getByRole('textbox', { name: 'Edit status', exact: true }).press('Enter');
+  await expect(PROPERTIES(cy).getByRole('textbox', { name: 'status', exact: true }), 'the clear reached Cy').toHaveCount(0, { timeout: RENAME_MS });
+  // Cy's edit after seeing the clear reaching Ben means the clear reached him first.
+  await PROPERTIES(cy).getByRole('textbox', { name: 'due', exact: true }).click();
+  await PROPERTIES(cy).getByRole('textbox', { name: 'Edit due', exact: true }).fill('later');
+  await PROPERTIES(cy).getByRole('textbox', { name: 'Edit due', exact: true }).press('Enter');
+  await expect(benHeader.getByRole('textbox', { name: 'due', exact: true }), 'Ben is synced past the clear').toHaveValue('later', { timeout: RENAME_MS });
+  await expect(benStatus, "Ben's status draft is still open with his text").toHaveValue(statusDraft);
+  await expect(benStatus).toBeFocused();
+  await benStatus.press('Enter');
+  for (const actor of [ada, ben, cy]) {
+    await expect(PROPERTIES(actor).getByRole('textbox', { name: 'status', exact: true }), `${actor.label}: Ben's committed status`).toHaveValue(statusDraft, { timeout: RENAME_MS });
+  }
+
+  // Cancelling a draft whose property a peer deleted accepts the delete.
+  await benHeader.getByRole('textbox', { name: 'due', exact: true }).click();
+  await benHeader.getByRole('textbox', { name: 'Edit due', exact: true }).fill('never');
+  await deleteProperty(cy, 'due');
+  await expect(PROPERTIES(ada).getByRole('textbox', { name: 'due', exact: true })).toHaveCount(0);
+  await expect(benHeader.getByRole('textbox', { name: 'Edit due', exact: true })).toHaveValue('never');
+  await benHeader.getByRole('textbox', { name: 'Edit due', exact: true }).press('Escape');
+  await expect(benHeader.getByRole('textbox', { name: 'due', exact: true }), 'the cancelled row follows the delete').toHaveCount(0);
+
+  // An open Add field row survives a peer removing every property.
+  const reviewer = `rev-${token()}`;
+  const adding = await addPropertyUpToValue(ben, 'reviewer', reviewer);
+  await deleteProperty(cy, 'status');
+  await deleteProperty(cy, 'owner');
+  await expect(PROPERTIES(ada).getByText('No properties yet', { exact: true }), 'every property is gone for Ada').toBeVisible();
+  await expect(adding, "Ben's new field keeps its value").toHaveValue(reviewer);
+  await adding.press('Enter');
+  for (const actor of [ada, ben, cy]) {
+    await expect(PROPERTIES(actor).getByRole('textbox', { name: 'reviewer', exact: true })).toHaveValue(reviewer, { timeout: RENAME_MS });
+    await waitAcked(actor, docId);
+  }
+  for (const actor of [ada, ben, cy]) {
+    actor.observations.clear();
+    await actor.page.reload();
+    await ui.waitLive(actor, docId);
+    const header = await openProperties(actor);
+    await expect(header.getByRole('textbox', { name: 'reviewer', exact: true })).toHaveValue(reviewer);
+    await expect(header.locator('label')).toHaveText(['Reviewer']);
+  }
+});
+
+test('j02-title: @tierA an open list-property draft survives a peer deleting it and adding it back as text @p:tech-2 @p:col-1', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  const ben = await openShell(actors, 'ben');
+  await actors.requireDistinct(2);
+  const docId = await ui.createNote(ada);
+  await (await addPropertyUpToValue(ada, 'owner', 'ada')).press('Enter');
+  await waitAcked(ada, docId);
+  const origin = new URL(ada.page.url()).origin;
+  const cookie = (await ada.context.cookies()).map(({ name, value }) => `${name}=${value}`).join('; ');
+  // Properties can only create text values, so a list property arrives the way an import would bring it.
+  const seeder = await openDocClient(origin, docId, cookie);
+  try {
+    await seeder.synced;
+    writeFrontmatterKey(seeder.doc, 'tags', ['alpha'], 'seed');
+    await seeder.acked();
+  } finally { seeder.close(); }
+  await grantDoc(ada, docId, principalOf(ben));
+  await openDoc(ben, docId);
+  const benHeader = await openProperties(ben);
+  const tagsCell = benHeader.locator('label', { hasText: /^Tags$/ }).locator('xpath=following-sibling::div[1]');
+  await expect(tagsCell).toContainText('alpha');
+  const box = await tagsCell.boundingBox();
+  if (!box) throw new Error("Ben's tags cell has no box");
+  await tagsCell.click({ position: { x: box.width - 4, y: box.height / 2 } });
+  const pills = benHeader.getByRole('textbox', { name: 'Edit tags', exact: true });
+  await pills.fill('beta');
+  await pills.press('Enter');
+  await pills.fill('gamma');
+  await expect(benHeader.getByRole('button', { name: 'Remove beta', exact: true })).toBeVisible();
+
+  // Ada deletes tags and adds it back as text while Ben's list draft is open.
+  await deleteProperty(ada, 'tags');
+  await (await addPropertyUpToValue(ada, 'tags', 'x')).press('Enter');
+  await expect(PROPERTIES(ada).getByRole('textbox', { name: 'tags', exact: true })).toHaveValue('x');
+  await PROPERTIES(ada).getByRole('textbox', { name: 'owner', exact: true }).click();
+  await PROPERTIES(ada).getByRole('textbox', { name: 'Edit owner', exact: true }).fill('ada-2');
+  await PROPERTIES(ada).getByRole('textbox', { name: 'Edit owner', exact: true }).press('Enter');
+  // Ada's later edit reaching Ben means her delete and re-add reached him first.
+  await expect(benHeader.getByRole('textbox', { name: 'owner', exact: true }), 'Ben is synced past the re-add').toHaveValue('ada-2', { timeout: RENAME_MS });
+  await expect(pills, "Ben's list draft is still open with his query").toHaveValue('gamma');
+  await expect(pills).toBeFocused();
+  for (const pill of ['alpha', 'beta']) await expect(benHeader.getByRole('button', { name: `Remove ${pill}`, exact: true }), `Ben's ${pill} pill`).toBeVisible();
+  await pills.press('Enter');
+  await pills.press('Enter');
+  for (const actor of [ada, ben]) {
+    const header = PROPERTIES(actor).locator('section[aria-label="Frontmatter properties"]');
+    await expect(header.getByRole('textbox', { name: 'tags', exact: true }), `${actor.label}: tags is a list again`).toHaveCount(0, { timeout: RENAME_MS });
+    for (const pill of ['alpha', 'beta', 'gamma']) await expect(header.getByText(pill, { exact: true }), `${actor.label} sees ${pill}`).toBeVisible();
+    await waitAcked(actor, docId);
+  }
+  // A cold reader sees Ben's list.
+  const reader = await openDocClient(origin, docId, cookie);
+  try {
+    await reader.synced;
+    expect(parseFrontmatter(readField(reader.doc, 'frontmatter'))).toEqual({ owner: 'ada-2', tags: ['alpha', 'beta', 'gamma'] });
+  } finally { reader.close(); }
 });
