@@ -234,6 +234,8 @@ Local browser verification remains assigned to the independent checker under the
 - Deviation: this is a test-gate repair, so the red proof is a deliberate same-generation DOM replacement in the real journey, not a product mutation. No M1 binding files were edited; current M1 changes arrived only through the required merge. No local tests, stack or browser were run.
 - P2 follow-ups remain scoped separately under the owner's review rule: T2.1 channel hardening (fetch deadline, visibility preserving the pong deadline, retries respecting vault-listing prerequisites); reconciliation after dropped notifications and targeted listing queries; T2.3 trash/restore publication and j05 delivery; T2.4/T2.5 agent grants/removals and session-ended. The coordinator still owns the inherited `CI_CLOSED_MILESTONE` policy.
 
+- T2.2 checker P2s: include doc and folder moves (nested docs too) in the awaited live-access recheck → T2.5; folder trash should wait for unacked edits (A§10.6) and offer a retry after a 503 from a DocDO close → T2.3; a refused drag-and-drop move only logs and snaps back, with no visible refusal → T2.2 follow-up in the vendored notes panel; j06 has no folder-subtree move leg (drag a folder into another and check the paths) → T2.2 follow-up.
+
 ### T1.9 — decorator text registers
 
 - Tests-first [checks 37170094056](https://github.com/brsbl/moss-multi/actions/runs/37170094056) reproduced lost concurrent edits for code, HTML and formula payloads; [Chromium 37170314835](https://github.com/brsbl/moss-multi/actions/runs/37170314835) reproduced the missing peer text in an open code field.

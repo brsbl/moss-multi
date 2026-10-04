@@ -73,12 +73,12 @@ export const INVENTORY: Record<string, InventoryEntry> = {
   'notes.onRequestFlush': stub('never fires: the Y.Doc persists every update'),
   'notes.flushComplete': stub('no-op'),
 
-  'folders.list': staged(2, 'the folders API (T2.2); [] until then'),
-  'folders.create': staged(2, 'the folders API (T2.2); refused until then', 'new-folder'),
-  'folders.rename': staged(2, 'the folders API (T2.2); unreachable with no folders'),
-  'folders.delete': staged(2, 'subtree to trash (T2.2); unreachable with no folders', 'trash'),
-  'folders.moveNotes': staged(2, 'the folders API (T2.2); unreachable with no folders'),
-  'folders.moveFolder': staged(2, 'the folders API (T2.2); unreachable with no folders'),
+  'folders.list': real("the listing's folders, mapped to Notes/... paths"),
+  'folders.create': real("POST /api/folders under the path's id (the refreshed id↔path map), then the listing again"),
+  'folders.rename': real('PATCH /api/folders/:id {name}'),
+  'folders.delete': real('DELETE /api/folders/:id: the subtree goes to Trash as one batch and its open docs close 4410'),
+  'folders.moveNotes': real('PATCH /api/docs/:id {folderId} for each note'),
+  'folders.moveFolder': real('PATCH /api/folders/:id {parentId}, within the vault'),
   'folders.showInFinder': hidden('reveal-in-finder', 'no Finder'),
 
   'agent.execute': hidden('ai-run-action', 'rejects: in-app agent execution is out of scope'),

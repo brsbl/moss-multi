@@ -130,6 +130,9 @@ Read this with PRODUCT.md, your BUILDPLAN entry and the A§ it cites, before wri
 
 ## Title, presence, connection
 
+- A host import into a vendored component can be shadowed by moss's own locals (`folderError` is a `useState` in NotesListPanelContent); name seam imports so they cannot collide, since vendor/ is neither linted nor typechecked from apps/web. [T2.2]
+- Folders (T2.2): moss names folders by `Notes/...` path, so every folder call maps the path through the listing's id↔path map and re-reads the listing after the change; moss renders a thrown `Error.message` as is, so the server sends a sentence on every refusal. A folder's subtree trashes as one `trash_batch_id`, D1 first, then `DocDO.trash()` closes each open doc 4410; an owner's retry re-closes the batch.
+
 - A row-menu Rename transfers focus in `onCloseAutoFocus`, cancelling the return to its trigger. The intent carries the target note id so an async selection cannot focus the old pane. The bound title consumes every autofocus intent, including repeat renames of the same note. The input-refusal region also renders on the empty canvas and collapses when empty. [T1.4]
 
 - The title has one writer, `Y.Text('title')`, with minimal character-diff writes. Never seed "Untitled" as text; nothing is focusable before bind (R2). WebKit navigates history on a bare Backspace with no editable focus. [L§4.4]

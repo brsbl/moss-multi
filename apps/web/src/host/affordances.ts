@@ -142,20 +142,9 @@ export const AFFORDANCES = [
   },
   // Staged: the entry points stay hidden until their backend lands, so no live control ever 404s.
   {
-    id: 'new-folder',
-    sites: [`${R}/panels/NotesListPanelContent.tsx`],
-    reason: 'The folders API lands in M2. With "Open..." also withheld, the folder actions menu has no item, so its trigger goes too.',
-    cite: 'T2.2',
-    staged: 2,
-    probes: [
-      { surface: 'folder-actions', selector: MENU_ITEM, text: 'New Folder' },
-      { surface: 'shell', selector: 'button[aria-label="Folder actions"]' },
-    ],
-  },
-  {
     id: 'trash',
     sites: [`${R}/panels/NotesPanelFooter.tsx`, `${R}/panels/NotesListPanelContent.tsx`, `${R}/panels/CanvasAreaContent.tsx`, `${R}/App.tsx`],
-    reason: 'Trash, restore and the trash list land in M2: the footer Trash view, the note and folder Trash items and ⌘2.',
+    reason: "Trash, restore and the trash list land in M2: the footer Trash view, the note Trash items and ⌘2. A folder's Trash Folder is real (T2.2).",
     cite: 'T2.3',
     staged: 2,
     probes: [
