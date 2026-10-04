@@ -1,11 +1,14 @@
 // T1.R spike (docs/design/registers.md): the decorator payload lifecycle under delete, move, undo, join and offline
-// peers. A prototype keeps each payload as a Y.Text attribute of its block's own V1 XmlElement (the way @lexical/yjs
-// keeps `__state` and `__slots`); the "map" cases characterize the M1 `Y.Map('registers')` model for comparison.
+// peers. A prototype keeps each payload where M1 keeps it, a Y.Text in Y.Map('registers') under the block's stable id,
+// so a V1 move (delete + recreate of the element) never touches it. Clients only create payloads (the creator, in the
+// element's own transaction) and edit them. The server's janitor alone deletes and restores payload text: it reclaims
+// text no live element names into a private trash, revives it when an element names it again, and keeps one element
+// per id. The "M1 map" cases at the end characterize the current model for comparison.
 import { createHeadlessEditor } from '@lexical/headless';
 import { createBinding, syncLexicalUpdateToYjs, syncYjsChangesToLexical, type Binding, type Provider } from '@lexical/yjs';
 import {
-  $createParagraphNode, $createTextNode, $getNodeByKey, $getRoot, $isElementNode, COLLABORATION_TAG, DecoratorNode,
-  type LexicalNode, type NodeKey, type SerializedLexicalNode,
+  $createParagraphNode, $createTextNode, $getNodeByKey, $getRoot, $isElementNode, $isParagraphNode, $isTextNode,
+  DecoratorNode, ElementNode, type LexicalNode, type NodeKey, type SerializedLexicalNode,
 } from 'lexical';
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
@@ -23,372 +26,652 @@ const contains = (doc: Y.Doc, text: string) => Buffer.from(Y.encodeStateAsUpdate
 /** Sends what `to` lacks from `from`, as one sync step 2. */
 const send = (from: Y.Doc, to: Y.Doc) => Y.applyUpdate(to, Y.encodeStateAsUpdate(from, Y.encodeStateVector(to)), 'remote');
 
-// ---------------------------------------------------------------- prototype: the payload lives in its block's element
+// ---------------------------------------------------------------- nodes: a block payload, an inline one, a container
 
-type SerializedBlock = SerializedLexicalNode & { code: string };
+type SerializedBlock = SerializedLexicalNode & { blockId: string };
 class SpikeBlock extends DecoratorNode<null> {
-  __code: string;
   __blockId: string;
   static getType(): string { return 'spike-block'; }
-  static clone(node: SpikeBlock): SpikeBlock { return new SpikeBlock(node.__code, node.__blockId, node.__key); }
-  static importJSON(json: SerializedBlock): SpikeBlock { return new SpikeBlock(json.code, crypto.randomUUID()); }
-  constructor(code = '', blockId = '', key?: NodeKey) { super(key); this.__code = code; this.__blockId = blockId; }
-  exportJSON(): SerializedBlock { return { ...super.exportJSON(), code: this.__code }; }
+  static clone(node: SpikeBlock): SpikeBlock { return new SpikeBlock(node.__blockId, node.__key); }
+  static importJSON(): SpikeBlock { return new SpikeBlock(crypto.randomUUID()); }
+  constructor(blockId = '', key?: NodeKey) { super(key); this.__blockId = blockId; }
+  exportJSON(): SerializedBlock { return { ...super.exportJSON(), blockId: this.__blockId }; }
   createDOM(): never { throw new Error('headless'); }
   updateDOM(): false { return false; }
   decorate(): null { return null; }
-  isInline(): false { return false; }
+  isInline(): boolean { return false; }
 }
-const isBlock = (node: LexicalNode | null | undefined): node is SpikeBlock => node instanceof SpikeBlock;
+/** A formula: an inline payload inside a paragraph. */
+class SpikeInline extends SpikeBlock {
+  static getType(): string { return 'spike-inline'; }
+  static clone(node: SpikeInline): SpikeInline { return new SpikeInline(node.__blockId, node.__key); }
+  static importJSON(): SpikeInline { return new SpikeInline(crypto.randomUUID()); }
+  isInline(): boolean { return true; }
+}
+/** A container (a list item, callout or table cell) holding a block payload. */
+class SpikeBox extends ElementNode {
+  static getType(): string { return 'spike-box'; }
+  static clone(node: SpikeBox): SpikeBox { return new SpikeBox(node.__key); }
+  static importJSON(): SpikeBox { return new SpikeBox(); }
+  createDOM(): never { throw new Error('headless'); }
+  updateDOM(): false { return false; }
+}
+const PAYLOAD_TYPES = new Set(['spike-block', 'spike-inline']);
+const isPayloadNode = (node: LexicalNode | null | undefined): node is SpikeBlock => node instanceof SpikeBlock;
 
-const PAYLOAD = '__code';
+// ---------------------------------------------------------------- the client: create, edit, undo; never delete
+
 const PAYLOAD_LOCAL = Symbol('payload-local');
-const DEDUPE = Symbol('dedupe');
-type CollabLike = { _xmlElem?: Y.XmlElement; _key?: NodeKey };
 
-function isPayload(type: unknown): type is Y.Text {
-  return type instanceof Y.Text && !(type instanceof Y.XmlText) && type._item?.parentSub === PAYLOAD;
-}
-
-function liveBlocks(root: Y.XmlText): { element: Y.XmlElement; index: number }[] {
-  const out: { element: Y.XmlElement; index: number }[] = [];
-  let index = 0;
-  for (const op of root.toDelta() as { insert: unknown }[]) {
-    if (op.insert instanceof Y.XmlElement && op.insert.getAttribute('__type') === 'spike-block') out.push({ element: op.insert, index });
-    index += typeof op.insert === 'string' ? op.insert.length : 1;
-  }
-  return out;
-}
-
-function payloadClient(state: Uint8Array, { filterPayloadEvents = true, dedupeUndo = true } = {}) {
+function payloadClient(state: Uint8Array) {
   const doc = new Y.Doc();
   const errors: unknown[] = [];
-  const editor = createHeadlessEditor({ nodes: [SpikeBlock], onError: (error) => { errors.push(error); } });
-  const binding = createBinding(editor, provider, 'root', doc, new Map([['root', doc]]), new Map([[SpikeBlock, new Set([PAYLOAD])]]));
+  const editor = createHeadlessEditor({ nodes: [SpikeBlock, SpikeInline, SpikeBox], onError: (error) => { errors.push(error); } });
+  const binding = createBinding(editor, provider, 'root', doc, new Map([['root', doc]]), new Map());
   const root = binding.root.getSharedType();
-  const elementOf = (key: NodeKey) => (binding.collabNodeMap.get(key) as CollabLike | undefined)?._xmlElem;
-  const payloadOf = (key: NodeKey) => {
-    const value = elementOf(key)?.getAttribute(PAYLOAD) as unknown;
-    return value instanceof Y.Text ? value : undefined;
-  };
-  const payloadEvents: string[] = [];
+  const registers = doc.getMap<Y.Text>('registers');
+  // What this client sends: one incremental update per local transaction, as the provider does while connected.
+  const outbox: Uint8Array[] = [];
+  const queue = (update: Uint8Array, origin: unknown) => { if (origin !== 'remote') outbox.push(update); };
+  doc.on('update', queue);
 
-  // The creator attaches a payload, in the binding's own transaction, to each block element it just created; a move
-  // (delete + recreate in V1) copies the live payload as it stood before the sync. Nobody else ever creates one.
+  // Rule 2: a payload is created only by the client that minted its id, inside the transaction that creates its
+  // element, so a peer never sees one without the other and never creates a second. Minting drives this, not dirty
+  // leaves, so a payload inside a new container or paragraph is covered.
+  const minted = new Map<NodeKey, string>();
+  const mint = <T extends SpikeBlock>(node: T, text: string): T => { minted.set(node.getKey(), text); return node; };
   const stopUpdates = editor.registerUpdateListener(({ prevEditorState, editorState, dirtyElements, dirtyLeaves, normalizedNodes, tags }) => {
-    const authored = !tags.has(COLLABORATION_TAG);
-    const before = new Map<NodeKey, string>();
-    if (authored) for (const key of dirtyLeaves) { const text = payloadOf(key); if (text) before.set(key, text.toString()); }
-    doc.transact((transaction) => {
+    doc.transact(() => {
       syncLexicalUpdateToYjs(binding, provider, prevEditorState, editorState, dirtyElements, dirtyLeaves, normalizedNodes, tags);
-      if (!authored) return;
-      const clock = transaction.beforeState.get(doc.clientID) ?? 0;
+      if (!minted.size) return;
       editorState.read(() => {
-        for (const key of dirtyLeaves) {
+        for (const [key, text] of minted) {
           const node = $getNodeByKey(key);
-          const element = elementOf(key);
-          const item = element?._item;
-          if (!isBlock(node) || !element || !item || item.id.client !== doc.clientID || item.id.clock < clock) continue;
-          if (!(element.getAttribute(PAYLOAD) as unknown instanceof Y.Text)) {
-            element.setAttribute(PAYLOAD, new Y.Text(before.get(key) ?? node.__code) as never);
-          }
+          if (!isPayloadNode(node) || !node.isAttached()) continue;
+          if (!registers.has(node.__blockId)) registers.set(node.__blockId, new Y.Text(text));
+          minted.delete(key);
         }
       });
     }, binding);
   });
 
-  // Payload edits are not tree events; @lexical/yjs's V1 observer only knows text, element and decorator events.
+  // Payload edits are events on `registers`, never on the V1 root, so the official observer is untouched.
   const observer: Parameters<Y.XmlText['observeDeep']>[0] = (events, transaction) => {
-    if (transaction.origin === binding) return;
-    const tree = filterPayloadEvents ? events.filter((event) => !isPayload(event.target)) : events;
-    for (const event of events) {
-      if (isPayload(event.target)) payloadEvents.push(((event.target.parent as unknown as { _collabNode?: CollabLike })._collabNode?._key) ?? '?');
-    }
-    if (tree.length) syncYjsChangesToLexical(binding, provider, tree as never, false, noop);
+    if (transaction.origin !== binding) syncYjsChangesToLexical(binding, provider, events as never, false, noop);
   };
   root.observeDeep(observer);
 
-  // T1.P's undo rule, which the element-owned payload makes local: an undo never deletes a block whose payload holds
-  // another client's live text (undoing a creation or a move a peer has since typed into).
-  // The filter sees each struct the undo would delete (the element, its attributes, the payload and its runs), so it
-  // decides for the block that contains the struct.
-  const blockOf = (item: Y.Item): Y.XmlElement | null => {
-    if (item.content instanceof Y.ContentType && item.content.type instanceof Y.XmlElement) return item.content.type;
-    let parent = item.parent as Y.AbstractType<unknown> | null;
-    while (parent && !(parent instanceof Y.XmlElement)) parent = (parent._item?.parent ?? null) as Y.AbstractType<unknown> | null;
-    return parent;
-  };
-  // Only when the undo deletes the block itself: undoing one's own typing inside a shared payload still works.
-  let undoing: ReturnType<typeof Y.createDeleteSet> | null = null;
-  const keepsBlock = (item: Y.Item) => {
-    const block = blockOf(item);
-    if (!block?._item || !undoing || !Y.isDeleted(undoing, block._item.id)) return false;
-    const payload = block.getAttribute(PAYLOAD) as unknown;
-    if (!(payload instanceof Y.Text)) return false;
-    for (let run = payload._start; run; run = run.right) if (!run.deleted && run.id.client !== doc.clientID) return true;
-    return false;
-  };
-  const manager = new Y.UndoManager([root], {
-    trackedOrigins: new Set<unknown>([binding, PAYLOAD_LOCAL]), captureTimeout: 0, deleteFilter: (item) => !keepsBlock(item),
+  // Rule 5: an undo never deletes a payload entry. Undoing a creation removes the element (and the undoer's own
+  // characters); the server reclaims the rest, and redo brings the element back for the server to revive.
+  const undo = new Y.UndoManager([root, registers], {
+    trackedOrigins: new Set<unknown>([binding, PAYLOAD_LOCAL]), captureTimeout: 0, deleteFilter: (item) => item.parent !== registers,
   });
-  // The product follows the step Yjs actually pops (T1.P: one undo() skips steps that change nothing); the spike's
-  // steps all change something, so the top of the stack is that step.
-  const undo = {
-    undo: () => { undoing = manager.undoStack.at(-1)?.insertions ?? null; try { manager.undo(); } finally { undoing = null; } },
-    stopCapturing: () => manager.stopCapturing(),
-  };
-  // An undo may restore a block that a peer has meanwhile moved (V1 recreated it under the same block id). Only the
-  // undoing client checks, only blocks its own undo just created, so a peer's live block is never touched.
-  const afterUndo = (transaction: Y.Transaction) => {
-    if (!dedupeUndo || !(transaction.origin instanceof Y.UndoManager)) return;
-    const clock = transaction.beforeState.get(doc.clientID) ?? 0;
-    const blocks = liveBlocks(root);
-    const restored = blocks.filter(({ element }) => element._item!.id.client === doc.clientID && element._item!.id.clock >= clock);
-    const doomed = restored.filter(({ element }) => blocks.some((other) => other.element !== element
-      && !restored.includes(other) && other.element.getAttribute('__blockId') === element.getAttribute('__blockId')));
-    if (doomed.length) doc.transact(() => { for (const { index } of doomed.reverse()) root.delete(index, 1); }, DEDUPE);
-  };
-  doc.on('afterTransaction', afterUndo);
 
   Y.applyUpdate(doc, state, 'remote');
   editor.update(noop, { discrete: true });
 
   const flush = () => {
     editor.update(noop, { discrete: true });
-    if (errors.length && filterPayloadEvents) throw errors[0];
+    if (errors.length) throw errors[0];
   };
   const read = <T>(fn: () => T): T => { flush(); return editor.getEditorState().read(fn); };
-  const blockKeys = () => read(() => $getRoot().getChildren().filter(isBlock).map((node) => node.getKey()));
+  const walk = (node: LexicalNode): SpikeBlock[] => isPayloadNode(node) ? [node] : $isElementNode(node) ? node.getChildren().flatMap(walk) : [];
+  const payloadKeys = () => read(() => walk($getRoot()).map((node) => node.getKey()));
+  const idOf = (key: NodeKey) => read(() => ($getNodeByKey(key) as SpikeBlock).__blockId);
+  const payloadOf = (index: number) => {
+    const text = registers.get(idOf(payloadKeys()[index]));
+    if (!text) throw new Error('no payload');
+    return text;
+  };
+  const update = (fn: () => void) => editor.update(fn, { discrete: true });
   return {
-    doc, editor, binding, undo, errors, payloadEvents,
-    /** Each block's payload text, in document order. */
-    texts: () => blockKeys().map((key) => payloadOf(key)?.toString() ?? '<no payload>'),
-    paragraphs: () => read(() => $getRoot().getChildren().filter((node) => !isBlock(node)).map((node) => node.getTextContent())),
-    insertBlock: (code: string) => editor.update(() => {
-      const block = new SpikeBlock(code, crypto.randomUUID());
-      $getRoot().getFirstChildOrThrow().insertAfter(block);
-    }, { discrete: true }),
-    /** Types into block `index`'s payload at `at` (a register write: diff ops under the local origin). */
+    doc, editor, binding, undo, errors, outbox,
+    /** Each payload node's text, in document order (containers and paragraphs included). */
+    texts: () => payloadKeys().map((key) => registers.get(idOf(key))?.toString() ?? '<none>'),
+    /** The Yjs element ids behind the payload nodes: a V1 move gives a node a new element. */
+    elements: () => payloadKeys().map((key) => {
+      const element = (binding.collabNodeMap.get(key) as { _xmlElem?: Y.XmlElement } | undefined)?._xmlElem;
+      return element?._item ? `${element._item.id.client}:${element._item.id.clock}` : '?';
+    }),
+    paragraphs: () => read(() => $getRoot().getChildren().filter($isParagraphNode).map((node) => node.getTextContent())),
+    insertBlock: (text: string) => update(() => { $getRoot().getFirstChildOrThrow().insertAfter(mint(new SpikeBlock(crypto.randomUUID()), text)); }),
+    insertInline: (text: string) => update(() => {
+      $getRoot().getFirstChildOrThrow().insertAfter($createParagraphNode().append($createTextNode('Formula: '), mint(new SpikeInline(crypto.randomUUID()), text)));
+    }),
+    insertBoxed: (text: string) => update(() => { $getRoot().getFirstChildOrThrow().insertAfter(new SpikeBox().append(mint(new SpikeBlock(crypto.randomUUID()), text))); }),
+    insertBlocks: (count: number) => update(() => {
+      for (let i = 0; i < count; i++) $getRoot().getLastChildOrThrow().insertBefore(mint(new SpikeBlock(crypto.randomUUID()), `block ${i};`));
+    }),
+    insertParagraph: (text: string) => update(() => { $getRoot().getFirstChildOrThrow().insertAfter($createParagraphNode().append($createTextNode(text))); }),
+    /** Appends to the paragraph whose text starts with `prefix` (ordinary V1 text, for the paragraph controls). */
+    appendToParagraph: (prefix: string, text: string) => update(() => {
+      const paragraph = $getRoot().getChildren().find((node) => $isParagraphNode(node) && node.getTextContent().startsWith(prefix));
+      const last = $isElementNode(paragraph) ? paragraph.getLastChild() : null;
+      if (!$isTextNode(last)) throw new Error(`no paragraph ${prefix}`);
+      last.spliceText(last.getTextContentSize(), 0, text);
+    }),
+    /** Types into payload `index` at `at` (a register write: minimal ops under the local origin). */
     type: (index: number, at: number, text: string) => {
-      const payload = payloadOf(blockKeys()[index]);
-      if (!payload) throw new Error('no payload');
+      const payload = payloadOf(index);
       doc.transact(() => payload.insert(Math.min(at, payload.length), text), PAYLOAD_LOCAL);
     },
-    remove: (index: number) => { const key = blockKeys()[index]; editor.update(() => { $getNodeByKey(key)!.remove(); }, { discrete: true }); },
-    /** Moves block `index` to the end of the root: V1 deletes its element and creates a new one. */
-    moveToEnd: (index: number) => { const key = blockKeys()[index]; editor.update(() => { $getRoot().getLastChildOrThrow().insertAfter($getNodeByKey(key)!); }, { discrete: true }); },
-    /** A local edit that touches the block without its payload (as a language or theme change does). */
-    touch: (index: number) => { const key = blockKeys()[index]; editor.update(() => { $getNodeByKey(key)!.getWritable(); }, { discrete: true }); },
-    dispose: () => { stopUpdates(); root.unobserveDeep(observer); doc.off('afterTransaction', afterUndo); manager.destroy(); doc.destroy(); },
+    erase: (index: number, at: number, length: number) => {
+      const payload = payloadOf(index);
+      doc.transact(() => payload.delete(at, length), PAYLOAD_LOCAL);
+    },
+    remove: (index: number) => { const key = payloadKeys()[index]; update(() => { $getNodeByKey(key)!.remove(); }); },
+    /** Moves the top-level block holding payload `index` to the end (V1 deletes its subtree and recreates it). */
+    moveToEnd: (index: number) => {
+      const key = payloadKeys()[index];
+      update(() => { $getRoot().getLastChildOrThrow().insertAfter($getNodeByKey(key)!.getTopLevelElementOrThrow()); });
+    },
+    moveToStart: (index: number) => {
+      const key = payloadKeys()[index];
+      update(() => { $getRoot().getFirstChildOrThrow().insertBefore($getNodeByKey(key)!.getTopLevelElementOrThrow()); });
+    },
+    /** A local edit that touches the node without its payload (as a language change does). */
+    touch: (index: number) => { const key = payloadKeys()[index]; update(() => { $getNodeByKey(key)!.getWritable(); }); },
+    dispose: () => { stopUpdates(); root.unobserveDeep(observer); doc.off('update', queue); undo.destroy(); doc.destroy(); },
   };
 }
 type PayloadClient = ReturnType<typeof payloadClient>;
 
-/** A server doc seeded with "Intro." and "Outro." paragraphs, as the DocDO would hold it (gc on, no undo manager). */
-function seededServer(): Y.Doc {
-  const server = new Y.Doc();
-  const seeder = payloadClient(Y.encodeStateAsUpdate(server));
+// ---------------------------------------------------------------- the server: the DocDO's doc (gc on, no undo) + janitor
+
+const JANITOR = Symbol('janitor');
+/** A run of payload text the janitor deleted, by the ids of its original characters. */
+type Piece = { client: number; clock: number; text: string; seen: { client: number; clock: number } };
+
+function payloadServer(state?: Uint8Array, { honorDeletes = true } = {}) {
+  const doc = new Y.Doc();
+  const root = doc.get('root', Y.XmlText);
+  const registers = doc.getMap<Y.Text>('registers');
+  const marker = doc.getMap<number>('janitor');
+  const named = new Map<string, Set<Y.XmlElement>>();
+  const ids = new WeakMap<Y.XmlElement, string>();
+  const trash = new Map<string, Piece[]>();
+  const touched = new Set<string>();
+  const stats = { evaluated: 0, reclaimed: 0, revived: 0, deduped: 0 };
+
+  // The index of live elements by id, kept from root events: an added or deleted item's whole subtree, since a V1
+  // move or delete of a container or paragraph reports only the top item.
+  const index = (item: Y.Item, live: boolean, janitor: boolean) => {
+    if (!(item.content instanceof Y.ContentType)) return;
+    const type = item.content.type as Y.AbstractType<unknown>;
+    if (type instanceof Y.XmlElement) {
+      const attr = type.getAttribute('__blockId') as unknown;
+      const id = live ? (PAYLOAD_TYPES.has(String(type.getAttribute('__type'))) && typeof attr === 'string' ? attr : undefined) : ids.get(type);
+      if (id) {
+        let set = named.get(id);
+        if (!set) named.set(id, set = new Set());
+        const changed = live ? !set.has(type) : set.has(type);
+        if (live) { set.add(type); ids.set(type, id); } else set.delete(type);
+        if (changed && !janitor) touched.add(id);
+      }
+    }
+    for (let child = type._start; child; child = child.right) if (!live || !child.deleted) index(child, live, janitor);
+  };
+  root.observeDeep((events, transaction) => {
+    const janitor = transaction.origin === JANITOR;
+    for (const event of events) {
+      for (const item of event.changes.added) index(item, true, janitor);
+      for (const item of event.changes.deleted) index(item, false, janitor);
+    }
+  });
+  registers.observeDeep((events, transaction) => {
+    if (transaction.origin === JANITOR) return;
+    for (const event of events) {
+      if (event.target === registers) for (const id of event.keysChanged) touched.add(id);
+      else if (typeof event.target._item?.parentSub === 'string') touched.add(event.target._item.parentSub);
+    }
+  });
+
+  const order = (type: Y.AbstractType<unknown>, out: Y.XmlElement[]): Y.XmlElement[] => {
+    for (let item = type._start; item; item = item.right) {
+      if (item.deleted || !(item.content instanceof Y.ContentType)) continue;
+      const child = item.content.type as Y.AbstractType<unknown>;
+      if (child instanceof Y.XmlElement) out.push(child);
+      order(child, out);
+    }
+    return out;
+  };
+
+  /** J1: no live element names the payload, so its text leaves the served state now and waits in private trash. */
+  const reclaim = (id: string, payload: Y.Text) => {
+    const pieces: Omit<Piece, 'seen'>[] = [];
+    for (let item = payload._start; item; item = item.right) {
+      if (!item.deleted && item.content instanceof Y.ContentString) pieces.push({ client: item.id.client, clock: item.id.clock, text: item.content.str });
+    }
+    if (!pieces.length) return;
+    // A marker advances the server's clock, so a later sync step 2 shows whether its sender had seen this reclaim.
+    marker.set('reclaims', (marker.get('reclaims') ?? 0) + 1);
+    const seen = { client: doc.clientID, clock: Y.getState(doc.store, doc.clientID) };
+    payload.delete(0, payload.length);
+    trash.set(id, [...(trash.get(id) ?? []), ...pieces.map((piece) => ({ ...piece, seen }))]);
+    stats.reclaimed++;
+  };
+
+  /** J2: an element names the payload again (an undo, a raced move): each run returns just before its own tombstone. */
+  const revive = (transaction: Y.Transaction, id: string, payload: Y.Text) => {
+    const pieces = trash.get(id);
+    if (!pieces) return;
+    trash.delete(id);
+    pieces.sort((a, b) => a.client - b.client || a.clock - b.clock);
+    for (let item = payload._start; item; item = item.right) {
+      if (!item.deleted) continue;
+      for (const piece of pieces) {
+        if (piece.client !== item.id.client) continue;
+        const from = Math.max(piece.clock, item.id.clock);
+        const to = Math.min(piece.clock + piece.text.length, item.id.clock + item.length);
+        if (from >= to) continue;
+        // Split the tombstone where this piece starts, so a peer's later insert next to any character stays next to it.
+        if (from > item.id.clock) item = Y.getItemCleanStart(transaction, Y.createID(item.id.client, from));
+        const left: Y.Item | null = item.left;
+        new Y.Item(Y.createID(doc.clientID, Y.getState(doc.store, doc.clientID)), left, left?.lastId ?? null, item, item.id, payload, null,
+          new Y.ContentString(piece.text.slice(from - piece.clock, to - piece.clock))).integrate(transaction, 0);
+      }
+    }
+    if (payload._searchMarker) payload._searchMarker.length = 0;
+    stats.revived++;
+  };
+
+  /** J4: a peer's own deletion of characters the janitor had reclaimed is honored, so a revive never doubles them. */
+  const honor = (ds: Y.DeleteSet, senderState?: Map<number, number>) => {
+    for (const [id, pieces] of trash) {
+      const kept: Piece[] = [];
+      for (const piece of pieces) {
+        // A sync step 2 carries every deletion its sender knows, including the reclaim itself once it has seen it.
+        if (senderState && (senderState.get(piece.seen.client) ?? 0) >= piece.seen.clock) { kept.push(piece); continue; }
+        let start = -1;
+        for (let i = 0; i <= piece.text.length; i++) {
+          const keep = i < piece.text.length && !Y.isDeleted(ds, Y.createID(piece.client, piece.clock + i));
+          if (keep && start < 0) start = i;
+          if (!keep && start >= 0) { kept.push({ ...piece, clock: piece.clock + start, text: piece.text.slice(start, i) }); start = -1; }
+        }
+      }
+      if (kept.length) trash.set(id, kept); else trash.delete(id);
+    }
+  };
+
+  const run = () => {
+    if (!touched.size) return;
+    const work = [...touched];
+    touched.clear();
+    doc.transact((transaction) => {
+      for (const id of work) {
+        stats.evaluated++;
+        const payload = registers.get(id);
+        if (!(payload instanceof Y.Text)) continue;
+        const live = named.get(id);
+        if (!live?.size) { reclaim(id, payload); continue; }
+        revive(transaction, id, payload);
+        // J3: concurrent moves or restores left two elements for one id; keep the first in document order.
+        if (live.size > 1) {
+          for (const element of order(root, []).filter((element) => live.has(element)).slice(1)) {
+            element._item!.delete(transaction);
+            const parent = element.parent as Y.XmlText;
+            if (parent._searchMarker) parent._searchMarker.length = 0;
+            stats.deduped++;
+          }
+        }
+      }
+    }, JANITOR);
+  };
+
+  // J5: the load pass indexes the doc once and reclaims what no element names (M1 docs hold such orphans).
+  if (state) {
+    Y.applyUpdate(doc, state, 'load');
+    for (const id of registers.keys()) touched.add(id);
+    run();
+  }
+  return {
+    doc, stats, trash,
+    /** One client message: an incremental update, or a sync step 2 with its sender's state vector. */
+    receive: (update: Uint8Array, senderState?: Map<number, number>) => {
+      Y.applyUpdate(doc, update, 'client');
+      if (honorDeletes) honor(Y.decodeUpdate(update).ds, senderState);
+      run();
+    },
+  };
+}
+type PayloadServer = ReturnType<typeof payloadServer>;
+
+const up = (server: PayloadServer, client: PayloadClient) => { for (const update of client.outbox.splice(0)) server.receive(update); };
+const down = (server: PayloadServer, client: PayloadClient) => send(server.doc, client.doc);
+const sync = (server: PayloadServer, ...clients: PayloadClient[]) => {
+  for (const client of clients) up(server, client);
+  for (const client of clients) down(server, client);
+};
+/** A reconnecting client: it sends a sync step 2 (all it has, every deletion it knows) instead of its queued updates. */
+const reconnect = (server: PayloadServer, client: PayloadClient) => {
+  client.outbox.length = 0;
+  server.receive(Y.encodeStateAsUpdate(client.doc, Y.encodeStateVector(server.doc)), Y.decodeStateVector(Y.encodeStateVector(client.doc)));
+  down(server, client);
+};
+const join = (server: PayloadServer) => payloadClient(Y.encodeStateAsUpdate(server.doc));
+
+/** A server seeded with "Intro." and "Outro." paragraphs. */
+function seededServer(): PayloadServer {
+  const server = payloadServer();
+  const seeder = payloadClient(Y.encodeStateAsUpdate(server.doc));
   seeder.editor.update(() => {
     $getRoot().append($createParagraphNode().append($createTextNode('Intro.')), $createParagraphNode().append($createTextNode('Outro.')));
   }, { discrete: true });
-  send(seeder.doc, server);
+  up(server, seeder);
   seeder.dispose();
   return server;
 }
-const roundTrip = (server: Y.Doc, ...clients: PayloadClient[]) => {
-  for (const client of clients) send(client.doc, server);
-  for (const client of clients) send(server, client.doc);
-};
-const reader = (server: Y.Doc) => payloadClient(Y.encodeStateAsUpdate(server));
+function lateReader(server: PayloadServer): string[] {
+  const late = join(server);
+  try { return late.texts(); } finally { late.dispose(); }
+}
 
-describe('T1.R spike: element-owned decorator payloads @p:col-1 @p:col-3', () => {
-  it('a deleted block takes its payload text out of the state served to later readers and duplicates', () => {
+describe('T1.R spike: payloads keyed by block id, deleted and restored only by the server @p:col-1 @p:col-3', () => {
+  it('a deleted block\'s text leaves the served state, late readers and duplicates at once', () => {
     const server = seededServer();
-    const ada = payloadClient(Y.encodeStateAsUpdate(server));
+    const ada = join(server);
     try {
       ada.insertBlock('SECRET-alpha');
-      roundTrip(server, ada);
-      expect(contains(server, 'SECRET-alpha'), 'positive control').toBe(true);
+      sync(server, ada);
+      expect(contains(server.doc, 'SECRET-alpha'), 'positive control').toBe(true);
       ada.remove(0);
-      roundTrip(server, ada);
-      expect(contains(server, 'SECRET-alpha')).toBe(false);
+      sync(server, ada);
+      expect(contains(server.doc, 'SECRET-alpha')).toBe(false);
+      expect(lateReader(server)).toEqual([]);
       const duplicate = new Y.Doc();
-      Y.applyUpdate(duplicate, Y.encodeStateAsUpdate(server));
+      Y.applyUpdate(duplicate, Y.encodeStateAsUpdate(server.doc));
       expect(contains(duplicate, 'SECRET-alpha')).toBe(false);
       duplicate.destroy();
     } finally { ada.dispose(); }
   });
 
-  it('the deleter undoes block and payload in one step after the server collected them; peers and readers see it', () => {
+  it('the deleter\'s undo brings back block and text, a peer\'s characters included, after the server reclaimed them', () => {
     const server = seededServer();
-    const ada = payloadClient(Y.encodeStateAsUpdate(server));
-    const ben = payloadClient(Y.encodeStateAsUpdate(server));
+    const ada = join(server);
+    const ben = join(server);
     try {
       ada.insertBlock('const kept = 1;');
-      roundTrip(server, ada, ben);
-      ben.undo.stopCapturing(); ben.type(0, 0, '/*ben*/'); roundTrip(server, ada, ben);
-      ada.undo.stopCapturing(); ada.remove(0); roundTrip(server, ada, ben);
+      sync(server, ada, ben);
+      ben.type(0, 0, '/*ben*/');
+      sync(server, ada, ben);
+      ada.remove(0);
+      sync(server, ada, ben);
       expect(ben.texts()).toEqual([]);
-      expect(contains(server, 'const kept')).toBe(false);
+      expect(contains(server.doc, 'const kept')).toBe(false);
       ada.undo.undo();
-      roundTrip(server, ada, ben);
+      sync(server, ada, ben);
       for (const peer of [ada, ben]) expect(peer.texts()).toEqual(['/*ben*/const kept = 1;']);
-      const late = reader(server);
-      expect(late.texts()).toEqual(['/*ben*/const kept = 1;']);
-      late.dispose();
+      expect(lateReader(server)).toEqual(['/*ben*/const kept = 1;']);
     } finally { ada.dispose(); ben.dispose(); }
   });
 
-  it('a move carries one payload with every character, for peers and after reload', () => {
+  it.each(['mover first', 'typist first'])('typing that races a move is kept, however long the typist was offline (%s)', (order) => {
     const server = seededServer();
-    const ada = payloadClient(Y.encodeStateAsUpdate(server));
-    const ben = payloadClient(Y.encodeStateAsUpdate(server));
+    const ada = join(server);
+    const ben = join(server);
     try {
-      ada.insertBlock('moved();');
-      roundTrip(server, ada, ben);
-      ben.type(0, 8, ' // ben'); roundTrip(server, ada, ben);
+      ada.insertBlock('base');
+      sync(server, ada, ben);
+      const before = ada.elements();
+      ben.type(0, 4, ' RACED-ben');
       ada.moveToEnd(0);
-      roundTrip(server, ada, ben);
-      for (const peer of [ada, ben]) expect(peer.texts()).toEqual(['moved(); // ben']);
+      ben.type(0, 99, ' still-offline');
+      ada.type(0, 0, 'A:');
+      if (order === 'mover first') sync(server, ada, ben); else sync(server, ben, ada);
+      expect(ada.elements(), 'the move recreated the element').not.toEqual(before);
+      for (const peer of [ada, ben]) expect(peer.texts()).toEqual(['A:base RACED-ben still-offline']);
       expect(ada.paragraphs()).toEqual(['Intro.', 'Outro.']);
-      ada.type(0, 0, 'A'); roundTrip(server, ada, ben);
-      expect(ben.texts()).toEqual(['Amoved(); // ben']);
-      const late = reader(server);
-      expect(late.texts()).toEqual(['Amoved(); // ben']);
-      late.dispose();
+      expect(lateReader(server)).toEqual(['A:base RACED-ben still-offline']);
     } finally { ada.dispose(); ben.dispose(); }
   });
 
-  it.each(['deleter first', 'mover first'])('a delete racing a move keeps one block with the text once (%s); either undo keeps one', (order) => {
+  it('a payload inside a moved paragraph or container keeps its text and a racing peer\'s typing', () => {
     const server = seededServer();
-    const ada = payloadClient(Y.encodeStateAsUpdate(server));
-    const ben = payloadClient(Y.encodeStateAsUpdate(server));
-    const cat = payloadClient(Y.encodeStateAsUpdate(server));
+    const ada = join(server);
+    const ben = join(server);
+    try {
+      ada.insertBoxed('boxed();');
+      ada.insertInline('f=1');
+      sync(server, ada, ben);
+      expect(ada.texts()).toEqual(['f=1', 'boxed();']);
+      const before = ada.elements();
+      ben.type(0, 3, '+ben');
+      ben.type(1, 8, ' // ben');
+      ada.moveToEnd(0);
+      ada.moveToEnd(0);
+      sync(server, ada, ben);
+      const after = ada.elements();
+      expect(after.every((element) => !before.includes(element)), 'both payload elements were recreated').toBe(true);
+      for (const peer of [ada, ben]) expect(peer.texts()).toEqual(['f=1+ben', 'boxed(); // ben']);
+      expect(lateReader(server)).toEqual(['f=1+ben', 'boxed(); // ben']);
+      expect(server.stats.reclaimed).toBe(0);
+    } finally { ada.dispose(); ben.dispose(); }
+  });
+
+  it.each(['deleter first', 'mover first'])('a delete racing a move keeps one block with the text once (%s); every undo keeps one', (order) => {
+    const server = seededServer();
+    const ada = join(server);
+    const ben = join(server);
+    const cat = join(server);
     try {
       ada.insertBlock('race();');
-      roundTrip(server, ada, ben, cat);
-      for (const peer of [ada, ben]) peer.undo.stopCapturing();
+      sync(server, ada, ben, cat);
       ben.remove(0);
       ada.moveToEnd(0);
-      if (order === 'deleter first') roundTrip(server, ben, ada, cat); else roundTrip(server, ada, ben, cat);
-      roundTrip(server, ada, ben, cat);
-      for (const peer of [ada, ben, cat]) expect(peer.texts()).toEqual(['race();']);
+      ada.type(0, 99, ' // ada');
+      if (order === 'deleter first') sync(server, ben, ada, cat); else sync(server, ada, ben, cat);
+      sync(server, ada, ben, cat);
+      for (const peer of [ada, ben, cat]) expect(peer.texts(), 'the move wins, as it does for a V1 paragraph').toEqual(['race(); // ada']);
       ben.undo.undo();
-      roundTrip(server, ada, ben, cat);
-      for (const peer of [ada, ben, cat]) expect(peer.texts(), "the deleter's undo restores nothing the move kept").toEqual(['race();']);
-      cat.type(0, 7, ' // cat'); roundTrip(server, ada, ben, cat);
+      sync(server, ada, ben, cat);
+      for (const peer of [ada, ben, cat]) expect(peer.texts(), "the deleter's undo restores nothing twice").toEqual(['race(); // ada']);
+      cat.type(0, 99, ' // cat');
+      sync(server, ada, ben, cat);
       ada.undo.undo();
-      roundTrip(server, ada, ben, cat);
-      for (const peer of [ada, ben, cat]) expect(peer.texts(), "the mover's undo puts it back, with the third peer's edit").toEqual(['race(); // cat']);
-      const late = reader(server);
-      expect(late.texts()).toEqual(['race(); // cat']);
-      late.dispose();
+      ada.undo.undo();
+      sync(server, ada, ben, cat);
+      for (const peer of [ada, ben, cat]) expect(peer.texts(), "the mover's undo keeps the third peer's edit").toEqual(['race(); // cat']);
+      expect(lateReader(server)).toEqual(['race(); // cat']);
     } finally { ada.dispose(); ben.dispose(); cat.dispose(); }
   });
 
-  it('without the undo check, the deleter\'s undo after a raced move doubles the block (the V1 move limit)', () => {
+  it.each(['ada first', 'ben first'])('two concurrent moves, then two concurrent undos, leave exactly one block (%s)', (order) => {
     const server = seededServer();
-    const ada = payloadClient(Y.encodeStateAsUpdate(server));
-    const ben = payloadClient(Y.encodeStateAsUpdate(server), { dedupeUndo: false });
+    const ada = join(server);
+    const ben = join(server);
     try {
-      ada.insertBlock('race();');
-      roundTrip(server, ada, ben);
-      ben.undo.stopCapturing(); ben.remove(0); ada.moveToEnd(0);
-      roundTrip(server, ada, ben); roundTrip(server, ada, ben);
+      ada.insertBlock('twin');
+      sync(server, ada, ben);
+      ada.moveToEnd(0);
+      ben.moveToStart(0);
+      if (order === 'ada first') sync(server, ada, ben); else sync(server, ben, ada);
+      sync(server, ada, ben);
+      for (const peer of [ada, ben]) expect(peer.texts()).toEqual(['twin']);
+      ada.undo.undo();
       ben.undo.undo();
-      roundTrip(server, ada, ben);
-      expect(ada.texts()).toEqual(['race();', 'race();']);
+      if (order === 'ada first') sync(server, ada, ben); else sync(server, ben, ada);
+      sync(server, ada, ben);
+      for (const peer of [ada, ben]) expect(peer.texts()).toEqual(['twin']);
+      expect(lateReader(server)).toEqual(['twin']);
     } finally { ada.dispose(); ben.dispose(); }
   });
 
-  it('two people typing in one payload merge, and undo removes only the undoer\'s text', () => {
+  it('undoing a creation after an undone delete removes the block without destroying a peer\'s typing; redo restores it', () => {
     const server = seededServer();
-    const ada = payloadClient(Y.encodeStateAsUpdate(server));
-    const ben = payloadClient(Y.encodeStateAsUpdate(server));
+    const ada = join(server);
+    const ben = join(server);
     try {
       ada.insertBlock('seed');
-      roundTrip(server, ada, ben);
-      ada.undo.stopCapturing();
-      ada.type(0, 0, 'Ada '); ben.type(0, 4, ' Ben');
-      roundTrip(server, ada, ben);
-      for (const peer of [ada, ben]) expect(peer.texts()).toEqual(['Ada seed Ben']);
+      sync(server, ada, ben);
+      ada.remove(0);
+      sync(server, ada, ben);
       ada.undo.undo();
-      roundTrip(server, ada, ben);
-      for (const peer of [ada, ben]) expect(peer.texts()).toEqual(['seed Ben']);
-      expect(ben.payloadEvents.length, 'a remote payload edit names its block directly').toBeGreaterThan(0);
-      expect(new Set(ben.payloadEvents).size).toBe(1);
+      sync(server, ada, ben);
+      ben.type(0, 4, ' ben');
+      sync(server, ada, ben);
+      for (const peer of [ada, ben]) expect(peer.texts()).toEqual(['seed ben']);
+      ada.undo.undo();
+      sync(server, ada, ben);
+      for (const peer of [ada, ben]) expect(peer.texts(), 'undoing a creation removes the block, as for a paragraph').toEqual([]);
+      expect(contains(server.doc, ' ben') || contains(server.doc, 'seed')).toBe(false);
+      ada.undo.redo();
+      sync(server, ada, ben);
+      for (const peer of [ada, ben]) expect(peer.texts()).toEqual(['seed ben']);
+      expect(lateReader(server)).toEqual(['seed ben']);
+    } finally { ada.dispose(); ben.dispose(); }
+  });
+
+  it('undoing the creation of a paragraph holding a formula a peer edited hides both; redo restores every character', () => {
+    const server = seededServer();
+    const ada = join(server);
+    const ben = join(server);
+    try {
+      ada.insertInline('f=1');
+      sync(server, ada, ben);
+      ben.type(0, 3, '+b');
+      sync(server, ada, ben);
+      ada.undo.undo();
+      sync(server, ada, ben);
+      for (const peer of [ada, ben]) expect(peer.texts()).toEqual([]);
+      expect(contains(server.doc, '+b')).toBe(false);
+      ada.undo.redo();
+      sync(server, ada, ben);
+      for (const peer of [ada, ben]) expect(peer.texts()).toEqual(['f=1+b']);
+      expect(ben.paragraphs()).toEqual(['Intro.', 'Formula: ', 'Outro.']);
+      expect(lateReader(server)).toEqual(['f=1+b']);
+    } finally { ada.dispose(); ben.dispose(); }
+  });
+
+  it('control: V1 already removes a peer\'s text in a paragraph whose creation is undone, and redo restores it', () => {
+    const server = seededServer();
+    const ada = join(server);
+    const ben = join(server);
+    try {
+      ada.insertParagraph('Ada para');
+      sync(server, ada, ben);
+      ben.appendToParagraph('Ada para', ' ben');
+      sync(server, ada, ben);
+      ada.undo.undo();
+      sync(server, ada, ben);
+      expect(ben.paragraphs()).toEqual(['Intro.', 'Outro.']);
+      ada.undo.redo();
+      sync(server, ada, ben);
+      expect(ben.paragraphs()).toEqual(['Intro.', 'Ada para ben', 'Outro.']);
     } finally { ada.dispose(); ben.dispose(); }
   });
 
   it('a peer that joins at any point of a new block\'s drafting, and touches the block, never costs the drafter a character', () => {
-    const server = seededServer();
-    const ada = payloadClient(Y.encodeStateAsUpdate(server));
-    const updates: Uint8Array[] = [];
-    const record = (update: Uint8Array) => { updates.push(update); };
-    ada.doc.on('update', record);
+    const seed = seededServer();
+    const ada = join(seed);
     try {
       ada.insertBlock('');
       for (const chunk of ['const ', 'ada', ' = 1;']) ada.type(0, 99, chunk);
-      ada.doc.off('update', record);
+      const updates = ada.outbox.splice(0);
       for (let prefix = 0; prefix <= updates.length; prefix++) {
-        const partial = new Y.Doc();
-        Y.applyUpdate(partial, Y.encodeStateAsUpdate(server));
-        for (const update of updates.slice(0, prefix)) Y.applyUpdate(partial, update);
-        const ben = payloadClient(Y.encodeStateAsUpdate(partial));
-        partial.destroy();
+        const server = payloadServer(Y.encodeStateAsUpdate(seed.doc));
+        for (const update of updates.slice(0, prefix)) server.receive(update);
+        const ben = join(server);
         try {
           if (ben.texts().length) ben.touch(0);
-          send(ada.doc, ben.doc); send(ben.doc, ada.doc);
-          const merged = new Y.Doc(); send(ada.doc, merged);
-          const late = payloadClient(Y.encodeStateAsUpdate(merged));
-          expect(late.texts(), `ben joined after ${prefix} of ${updates.length} updates`).toEqual(['const ada = 1;']);
-          late.dispose(); merged.destroy();
-        } finally { ben.dispose(); }
+          up(server, ben);
+          for (const update of updates.slice(prefix)) server.receive(update);
+          expect(lateReader(server), `ben joined after ${prefix} of ${updates.length} updates`).toEqual(['const ada = 1;']);
+          expect(server.stats.reclaimed, 'a new block is never mistaken for an orphan').toBe(0);
+          const entry = server.doc.getMap('registers')._map.values().next().value;
+          expect(entry?.id.client, 'only the drafter ever creates the payload').toBe(ada.doc.clientID);
+        } finally { ben.dispose(); server.doc.destroy(); }
       }
     } finally { ada.dispose(); }
   });
 
-  it('typing that races a move lands in the old element and is lost, as it is for any V1 block (the stated limit)', () => {
+  it('offline typing into a block someone deleted is never served, and the deleter\'s undo brings it back', () => {
     const server = seededServer();
-    const ada = payloadClient(Y.encodeStateAsUpdate(server));
-    const ben = payloadClient(Y.encodeStateAsUpdate(server));
-    try {
-      ada.insertBlock('base');
-      roundTrip(server, ada, ben);
-      ben.type(0, 4, ' RACED-ben');
-      ada.moveToEnd(0);
-      roundTrip(server, ada, ben);
-      for (const peer of [ada, ben]) expect(peer.texts()).toEqual(['base']);
-      expect(contains(server, 'RACED-ben')).toBe(false);
-    } finally { ada.dispose(); ben.dispose(); }
-  });
-
-  it('an offline edit to a block another peer deleted stays deleted and is never served', () => {
-    const server = seededServer();
-    const ada = payloadClient(Y.encodeStateAsUpdate(server));
-    const ben = payloadClient(Y.encodeStateAsUpdate(server));
+    const ada = join(server);
+    const ben = join(server);
     try {
       ada.insertBlock('shared');
-      roundTrip(server, ada, ben);
+      sync(server, ada, ben);
       ben.type(0, 6, ' OFFLINE-ben');
       ada.remove(0);
-      roundTrip(server, ada, ben);
+      sync(server, ada, ben);
       for (const peer of [ada, ben]) expect(peer.texts()).toEqual([]);
-      expect(contains(server, 'OFFLINE-ben')).toBe(false);
+      expect(contains(server.doc, 'OFFLINE-ben')).toBe(false);
+      ada.undo.undo();
+      sync(server, ada, ben);
+      for (const peer of [ada, ben]) expect(peer.texts()).toEqual(['shared OFFLINE-ben']);
     } finally { ada.dispose(); ben.dispose(); }
   });
 
-  it('@lexical/yjs V1 cannot take a payload event, so the observer must route them (the seam is required)', () => {
+  it.each([
+    ['an incremental update', false, true],
+    ['a reconnect (sync step 2)', true, true],
+    ['no honoring (control)', false, false],
+  ] as const)('a peer\'s concurrent deletion inside a reclaimed block is honored, so its undo never doubles (%s)', (_label, viaReconnect, honorDeletes) => {
     const server = seededServer();
-    const ada = payloadClient(Y.encodeStateAsUpdate(server));
-    const ben = payloadClient(Y.encodeStateAsUpdate(server), { filterPayloadEvents: false });
+    const restart = payloadServer(Y.encodeStateAsUpdate(server.doc), { honorDeletes });
+    const ada = join(restart);
+    const ben = join(restart);
     try {
-      ada.insertBlock('x');
-      roundTrip(server, ada, ben);
-      expect(ben.errors).toEqual([]);
-      ada.type(0, 1, 'y');
-      try { roundTrip(server, ada, ben); ben.texts(); } catch (error) { ben.errors.push(error); }
-      expect(ben.errors.length).toBeGreaterThan(0);
+      ada.insertBlock('keep-xy-keep');
+      sync(restart, ada, ben);
+      ada.erase(0, 5, 2);
+      ben.remove(0);
+      up(restart, ben);
+      if (viaReconnect) reconnect(restart, ada); else up(restart, ada);
+      sync(restart, ada, ben);
+      ben.undo.undo();
+      sync(restart, ada, ben);
+      if (honorDeletes) for (const peer of [ada, ben]) expect(peer.texts()).toEqual(['keep--keep']);
+      ada.undo.undo();
+      sync(restart, ada, ben);
+      const text = ada.texts()[0];
+      if (honorDeletes) expect(text).toBe('keep-xy-keep'); else expect(text.split('xy').length - 1, 'the doubling the rule prevents').toBe(2);
+    } finally { ada.dispose(); ben.dispose(); }
+  });
+
+  it('a reconnecting peer that had seen a reclaim does not cancel it', () => {
+    const server = seededServer();
+    const ada = join(server);
+    const ben = join(server);
+    try {
+      ada.insertBlock('kept');
+      sync(server, ada, ben);
+      ben.remove(0);
+      sync(server, ada, ben);
+      reconnect(server, ada);
+      ben.undo.undo();
+      sync(server, ada, ben);
+      for (const peer of [ada, ben]) expect(peer.texts()).toEqual(['kept']);
+    } finally { ada.dispose(); ben.dispose(); }
+  });
+
+  it('the load pass reclaims a payload no element names (the orphans M1 has already stored)', () => {
+    const seed = seededServer();
+    const ada = join(seed);
+    try {
+      ada.insertBlock('live();');
+      sync(seed, ada);
+      seed.doc.getMap<Y.Text>('registers').set('orphan', new Y.Text('ORPHAN-gamma'));
+      const loaded = payloadServer(Y.encodeStateAsUpdate(seed.doc));
+      expect(contains(loaded.doc, 'ORPHAN-gamma')).toBe(false);
+      expect(lateReader(loaded)).toEqual(['live();']);
+    } finally { ada.dispose(); }
+  });
+
+  it('the janitor evaluates only the ids an update touched', () => {
+    const server = seededServer();
+    const ada = join(server);
+    const ben = join(server);
+    try {
+      ada.insertBlocks(200);
+      sync(server, ada, ben);
+      for (const step of [() => ben.type(57, 0, 'x'), () => ada.remove(3), () => ada.moveToEnd(120)]) {
+        server.stats.evaluated = 0;
+        step();
+        sync(server, ada, ben);
+        expect(server.stats.evaluated).toBe(1);
+      }
+      expect(ada.texts()).toHaveLength(199);
     } finally { ada.dispose(); ben.dispose(); }
   });
 });
