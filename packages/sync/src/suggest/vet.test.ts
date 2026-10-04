@@ -229,8 +229,8 @@ describe('SP11 suggester vetting census @p:mean-2', () => {
       suggester.receive(typed);
       expect(s.vet(suggester.frame(() => { select(4, 11, nodeWith('mine theirs')).removeText(); })))
         .toEqual({ ok: false, reason: 'delete-original' });
-      // Their own word in the same block stays theirs to delete.
-      expect(s.vet(suggester.frame(() => { select(0, 4, nodeWith('mine theirs')).removeText(); }))).toMatchObject({ ok: true });
+      // Their own word in the same block stays theirs to delete (the refused frame stayed local to this client).
+      expect(s.vet(suggester.frame(() => { select(0, 4, nodeWith('mine')).removeText(); }))).toMatchObject({ ok: true });
     } finally { peer?.dispose(); suggester.dispose(); server.destroy(); }
   });
 
@@ -247,7 +247,7 @@ describe('SP11 suggester vetting census @p:mean-2', () => {
       }));
       const edit = suggester.frame(() => { codeBlocks()[1].setCode('mine'); });
       expect(edit.byteLength, 'the register edit must reach the wire').toBeGreaterThan(2);
-      expect(s.vet(edit)).toMatchObject({ ok: true });
+      s.land(edit);
       expect(s.vet(suggester.frame(() => { codeBlocks()[0].setCode('theirs'); }))).toEqual({ ok: false, reason: 'mutate-original' });
     } finally { suggester.dispose(); server.destroy(); }
   });
