@@ -321,6 +321,7 @@ test('j01 workspace: another open document keeps its binding while peer creates 
   ben.expectReconnects(1, openId);
   await ben.page.reload();
   await waitBodyLive(ben, openId);
+  await ben.observeEditor(openId);
   const peerId = await newNote(ada);
   await waitBodyLive(ada, peerId);
   const row = ben.page.locator(`[data-sidebar-row][data-doc-id="${peerId}"]`);
@@ -328,6 +329,35 @@ test('j01 workspace: another open document keeps its binding while peer creates 
   await expect.poll(() => received.some((frame) => frame.includes(peerId)), { timeout: 5_000, message: 'workspace channel delivers the new id' }).toBe(true);
   await ui.typeTitle(ada, peerId, 'Workspace peer rename');
   await expect(row).toContainText('Workspace peer rename', { timeout: 5_000 });
+
+  // Wait through the channel AND the bridge refresh for the id Ben actually has bound.
+  const delivery = await ben.page.evaluateHandle(() => {
+    const events: { ids: string[]; content: string[] }[] = [];
+    const { notes } = (window as unknown as { electronAPI: { notes: {
+      onDiskChange: (listener: (ids: string[], content: string[]) => void) => () => void;
+    } } }).electronAPI;
+    const stop = notes.onDiskChange((ids, content) => events.push({ ids, content }));
+    return { events, stop };
+  });
+  try {
+    received.length = 0;
+    ada.expectReconnects(1, openId);
+    await ada.page.locator(`[data-sidebar-row][data-doc-id="${openId}"]`).click();
+    await waitBodyLive(ada, openId);
+    await ui.typeTitle(ada, openId, 'Bound workspace rename');
+    await expect.poll(() => received.some((frame) => {
+      if (frame === 'pong') return false;
+      const event = JSON.parse(frame) as { type: string; docIds?: string[] };
+      return event.type === 'meta' && event.docIds?.includes(openId);
+    }), { timeout: 5_000, message: 'Ben receives metadata for his bound document' }).toBe(true);
+    await expect.poll(() => delivery.evaluate(({ events }, id) => events.filter((event) => event.ids.includes(id)), openId),
+      { timeout: 5_000, message: 'the bridge delivers the bound id as metadata only' })
+      .toContainEqual({ ids: expect.arrayContaining([openId]), content: [] });
+    await expect(ui.title(ben, openId)).toHaveText('Bound workspace rename');
+  } finally {
+    await delivery.evaluate(({ stop }) => stop());
+    await delivery.dispose();
+  }
   await expect(ui.pane(ben, openId)).toHaveAttribute(DOC_STATE_ATTR, 'live');
   await ui.typeBody(ben, openId, 'Still bound after metadata');
   await waitAcked(ben, openId);
