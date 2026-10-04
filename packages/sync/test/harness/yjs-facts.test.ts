@@ -70,11 +70,13 @@ describe('T4.0 pinned Yjs facts @p:tech-3', () => {
     block.delete(11, 5);
     const original = block._start!.right!.right!;
     expect(original.deleted).toBe(true);
+    const before = original.left!.lastId;
     undo.undo();
     expect(order(block)).toEqual(['[map]', 'The quick ', 'brown', '~5', ' fox']);
     const copy = block._start!.right!.right!;
     expect(same(copy.rightOrigin, original.id)).toBe(true);
-    expect(same(copy.origin, original.left!.lastId)).toBe(true);
+    expect(same(copy.origin, before)).toBe(true);
+    expect(original.left).toBe(copy);
   });
 
   it('F3: a block copy lands before its original with its children inside it, also across blocks', () => {

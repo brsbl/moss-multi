@@ -4,7 +4,35 @@
 // honest delete and retype always reach the server in different frames.
 import * as Y from 'yjs';
 
-/** Stub (the red-first run of T4.0): everything pending as one frame. */
+type Kind = 'insert' | 'delete' | 'mixed' | 'empty';
+
+function kindOf(update: Uint8Array): Kind {
+  const { structs, ds } = Y.decodeUpdate(update);
+  const inserts = structs.some((struct) => !(struct instanceof Y.Skip));
+  const deletes = [...ds.clients.values()].some((ranges) => ranges.some((range) => range.len > 0));
+  if (inserts && deletes) return 'mixed';
+  if (inserts) return 'insert';
+  return deletes ? 'delete' : 'empty';
+}
+
+/** The frames to send for `updates`, in order. */
 export function groupPending(updates: readonly Uint8Array[]): Uint8Array[] {
-  return updates.length ? [Y.mergeUpdates([...updates])] : [];
+  const frames: Uint8Array[] = [];
+  let run: Uint8Array[] = [];
+  let runKind: Kind | null = null;
+  const close = () => {
+    if (run.length) frames.push(run.length === 1 ? run[0] : Y.mergeUpdates(run));
+    run = [];
+    runKind = null;
+  };
+  for (const update of updates) {
+    const kind = kindOf(update);
+    if (kind === 'empty') continue;
+    if (kind === 'mixed' || kind !== runKind) close();
+    run.push(update);
+    runKind = kind === 'mixed' ? null : kind;
+    if (kind === 'mixed') close();
+  }
+  close();
+  return frames;
 }

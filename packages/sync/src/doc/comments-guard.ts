@@ -71,12 +71,21 @@ export class CommentsWriter {
     return this.checkDecoded(Y.decodeUpdate(update));
   }
 
-  /** Stub (the red-first run of T4.0): admits everything. */
-  checkDecoded(decoded: Decoded): GuardRefusal | null {
-    return decoded.structs.length < 0 ? 'r-struct' : null;
+  checkDecoded({ structs, ds }: Decoded): GuardRefusal | null {
+    const r = this.client;
+    for (const struct of structs) {
+      if (struct.id.client === r) return 'r-struct';
+      if (!(struct instanceof Y.Item)) continue;
+      if (struct.origin?.client === r || struct.rightOrigin?.client === r) return 'r-reference';
+      const parent = struct.parent as unknown;
+      if (parent instanceof Y.ID && parent.client === r) return 'r-reference';
+      if (typeof parent === 'string' && !CLIENT_ROOTS.has(parent)) return 'protected-root';
+    }
+    for (const { clock, len } of ds.clients.get(r) ?? []) if (this.#coversLive(clock, clock + len)) return 'r-delete';
+    return null;
   }
 
-  coversLive(from: number, to: number): boolean {
+  #coversLive(from: number, to: number): boolean {
     let lo = 0;
     let hi = this.#live.length;
     while (lo < hi) {
