@@ -10,7 +10,7 @@ The plan of record for M0–M8. It follows LEARNINGS §7.2, adapted to the surve
 **Conventions**
 
 - **Tasks.** `Tm.n` is one implementer agent's work, at most one working day including CI round trips. `[A·codex]` means lane A with a cross-vendor checker; `fresh` means a same-vendor independent checker.
-  - Different lanes touch disjoint files. The DocDO is split into modules with one owning lane per milestone (A§5.1). At most 3 lanes run at once, and at most 2 local stacks exist (`scripts/stack.mjs` enforces this).
+  - Different lanes touch disjoint files. The DocDO is split into modules with one owning lane per milestone (A§5.1). Up to about 6 tasks may run at once across milestones (owner asked to up the pace, 2026-10-04), and at most 5 local stacks exist (`scripts/stack.mjs` enforces this; `MOSS_MAX_STACKS` overrides).
 - **Tests first.** The named tests are written and pushed first. A CI dispatch must show them red on the named product assertion; infrastructure failures don't count.
 - **Done.** The evidence the checker re-derives. "Shots" are 2× PNGs from `scripts/qa.mjs` on a clean tree, decisive ones only. A surface moss lacks is done only with a glyphdown | ours | neighbouring-moss triptych the checker has read, using the T0.11 reference shots.
 - **Journeys.** One living Playwright suite under `e2e/journeys`, UI-only, with ≥ 2 distinct per-run `@example.invalid` principals, run in Chromium and WebKit in CI.
