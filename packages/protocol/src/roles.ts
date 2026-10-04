@@ -4,13 +4,20 @@
 export const ROLES = ['viewer', 'commenter', 'suggester', 'editor', 'owner'] as const;
 export type Role = (typeof ROLES)[number];
 
-/** Roles a grant or link row stores; the owner is never stored (A§6). */
+/** Roles a share-link row stores: a link never confers ownership (A§6). */
 export const MEMBER_ROLES = ['viewer', 'commenter', 'suggester', 'editor'] as const;
 export type MemberRole = (typeof MEMBER_ROLES)[number];
 
-/** What the share UI offers until suggestions ship (P:People); suggester stays in the schema only. */
-export const SHARE_ROLES = ['viewer', 'commenter', 'editor'] as const;
+/** Roles a grant or invite row stores. The vault owner is never stored; an `owner` grant makes a co-owner (P:People). */
+export const GRANT_ROLES = ROLES;
+
+/** What the share UI offers a person until suggestions ship (P:People); suggester stays in the schema only. */
+export const SHARE_ROLES = ['viewer', 'commenter', 'editor', 'owner'] as const;
 export type ShareRole = (typeof SHARE_ROLES)[number];
+
+/** What the share UI offers a link: up to editor, and anonymous visitors read at viewer whatever it says. */
+export const LINK_ROLES = ['viewer', 'commenter', 'editor'] as const;
+export type LinkRole = (typeof LINK_ROLES)[number];
 
 export const isRole = (value: unknown): value is Role => typeof value === 'string' && (ROLES as readonly string[]).includes(value);
 
@@ -50,15 +57,21 @@ export interface RoleSources {
   link: Role | null;
   /** No signed-in identity: a share token alone. */
   anonymous: boolean;
+  /** An agent key: it acts at most as an editor. */
+  agent?: boolean;
 }
+
+/** Owner access needs a signed-in person: a link or an agent key stops at editor (T2.4s). */
+const belowOwner = (role: Role | null): Role | null => (role === 'owner' ? 'editor' : role);
 
 /**
  * The effective role (A§8): the MAX of ownership, the grants and the link. The link is a ceiling: it lifts a
- * signed-in caller to its role and no further, and an anonymous caller to viewer at most.
+ * signed-in caller to its role and no further (never to owner), and an anonymous caller to viewer at most.
  */
-export function foldRole({ owner, grants, link, anonymous }: RoleSources): Role | null {
+export function foldRole({ owner, grants, link, anonymous, agent = false }: RoleSources): Role | null {
   if (anonymous) return link === null ? null : 'viewer';
   let role: Role | null = owner ? 'owner' : null;
   for (const grant of grants) role = maxRole(role, grant);
-  return maxRole(role, link);
+  role = maxRole(role, belowOwner(link));
+  return agent ? belowOwner(role) : role;
 }

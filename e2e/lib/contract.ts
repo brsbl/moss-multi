@@ -16,6 +16,7 @@ export const NAMES = {
   collabChrome: dom.COLLAB_CHROME_ATTR,
   overlay: dom.OVERLAY_SURFACE_ATTR,
   toolbar: dom.FLOATING_TOOLBAR_ATTR,
+  retentionNotice: dom.RETENTION_NOTICE_ATTR,
   remote: [dom.REMOTE_CARET_ATTR, dom.REMOTE_SELECTION_ATTR, dom.REMOTE_LABEL_ATTR],
   sidebarRow: dom.SIDEBAR_ROW_ATTR,
   lexical: dom.LEXICAL_EDITOR_SELECTOR,

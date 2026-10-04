@@ -25,20 +25,28 @@ export function diffText(current: string, target: string): TextOp[] {
   if (suffix > 0 && isLow(current.charCodeAt(current.length - suffix))) suffix -= 1;
   const a = current.slice(prefix, current.length - suffix);
   const b = target.slice(prefix, target.length - suffix);
+  // Ops are coalesced as they are appended: a large paste would otherwise build an op per code point, and
+  // spreading that many into one call throws past the engine's argument limit.
   const ops: TextOp[] = [];
   if (prefix > 0) ops.push({ retain: prefix });
-  ops.push(...middle(a, b));
-  return coalesce(ops);
+  middle(a, b, ops);
+  // A trailing retain changes nothing.
+  if (ops.length > 0 && 'retain' in ops[ops.length - 1]) ops.pop();
+  return ops;
 }
 
-function middle(a: string, b: string): TextOp[] {
-  if (!a) return b ? [{ insert: b }] : [];
-  if (!b) return [{ delete: a.length }];
+function middle(a: string, b: string, ops: TextOp[]): void {
+  if (!a || !b) {
+    if (a) append(ops, { delete: a.length });
+    if (b) append(ops, { insert: b });
+    return;
+  }
   const chars = [Array.from(a), Array.from(b)];
-  if ((chars[0].length + 1) * (chars[1].length + 1) <= LCS_CELL_BUDGET) return lcs(chars[0], chars[1]);
+  if ((chars[0].length + 1) * (chars[1].length + 1) <= LCS_CELL_BUDGET) return lcs(chars[0], chars[1], ops);
   const lines = [lineTokens(a), lineTokens(b)];
-  if ((lines[0].length + 1) * (lines[1].length + 1) <= LCS_CELL_BUDGET) return lcs(lines[0], lines[1]);
-  return [{ delete: a.length }, { insert: b }];
+  if ((lines[0].length + 1) * (lines[1].length + 1) <= LCS_CELL_BUDGET) return lcs(lines[0], lines[1], ops);
+  append(ops, { delete: a.length });
+  append(ops, { insert: b });
 }
 
 /** Each line with the newline that ends it, so the tokens join back to the text exactly. */
@@ -48,8 +56,8 @@ function lineTokens(text: string): string[] {
   return tokens;
 }
 
-/** The LCS alignment of two token lists, as ops sized in UTF-16 units. */
-function lcs(a: string[], b: string[]): TextOp[] {
+/** The LCS alignment of two token lists, appended to `ops` sized in UTF-16 units. */
+function lcs(a: string[], b: string[], ops: TextOp[]): void {
   const m = a.length;
   const n = b.length;
   const table = Array.from({ length: m + 1 }, () => new Uint32Array(n + 1));
@@ -58,39 +66,32 @@ function lcs(a: string[], b: string[]): TextOp[] {
     const below = table[i + 1];
     for (let j = n - 1; j >= 0; j -= 1) row[j] = a[i] === b[j] ? below[j + 1] + 1 : Math.max(below[j], row[j + 1]);
   }
-  const ops: TextOp[] = [];
   let i = 0;
   let j = 0;
   while (i < m && j < n) {
     if (a[i] === b[j]) {
-      ops.push({ retain: a[i].length });
+      append(ops, { retain: a[i].length });
       i += 1;
       j += 1;
     } else if (table[i + 1][j] >= table[i][j + 1]) {
-      ops.push({ delete: a[i].length });
+      append(ops, { delete: a[i].length });
       i += 1;
     } else {
-      ops.push({ insert: b[j] });
+      append(ops, { insert: b[j] });
       j += 1;
     }
   }
-  for (; i < m; i += 1) ops.push({ delete: a[i].length });
-  for (; j < n; j += 1) ops.push({ insert: b[j] });
-  return ops;
+  if (i < m) append(ops, { delete: a.slice(i).reduce((sum, token) => sum + token.length, 0) });
+  if (j < n) append(ops, { insert: b.slice(j).join('') });
 }
 
-function coalesce(ops: TextOp[]): TextOp[] {
-  const out: TextOp[] = [];
-  for (const op of ops) {
-    const last = out.at(-1);
-    if (last && 'retain' in last && 'retain' in op) last.retain += op.retain;
-    else if (last && 'delete' in last && 'delete' in op) last.delete += op.delete;
-    else if (last && 'insert' in last && 'insert' in op) last.insert += op.insert;
-    else out.push({ ...op });
-  }
-  // A trailing retain changes nothing.
-  if (out.length > 0 && 'retain' in out[out.length - 1]) out.pop();
-  return out;
+/** Appends `op`, merged into the last op when they are the same kind. */
+function append(ops: TextOp[], op: TextOp): void {
+  const last = ops[ops.length - 1];
+  if (last && 'retain' in last && 'retain' in op) last.retain += op.retain;
+  else if (last && 'delete' in last && 'delete' in op) last.delete += op.delete;
+  else if (last && 'insert' in last && 'insert' in op) last.insert += op.insert;
+  else ops.push({ ...op });
 }
 
 /** `ops` applied to `current`. */
