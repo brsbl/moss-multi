@@ -177,19 +177,25 @@ describe('Cmd+Z undoes only your own edits and never removes a peer\'s character
         ben.step(typeAt(1, 0, 'BEN '));
         await exchange(ada, ben);
         ada.edit(() => textAt(1).spliceText(9, 0, 'x'));
+        // Properties changed before the delete come back with the restored containers.
+        ada.edit(() => { textAt(1).setFormat('bold'); paragraph(1).setFormat('center'); });
         ada.edit(remove);
         const deleted = what === 'paragraph' ? 'Intro.' : 'Intro.\n\n';
         await expectBoth(ada, ben, text => expect(text).toBe(deleted));
         expect(ada.undo.undoStack, `creating the line and deleting its ${what} are one step`).toHaveLength(1);
-        ada.undo.undo();
-        await expectBoth(ada, ben, text => expect(text, 'Ada\'s Cmd+Z must leave Ben\'s text').toBe('Intro.\n\nBEN '));
-        for (const actor of [ada, ben]) {
-          expect(actor.editor.getEditorState().read(() => textAt(1).getType()), 'the restored text node has its properties').toBe('text');
+        const restored = (actor: Peer, when: string) => expect(actor.editor.getEditorState().read(() => ({
+          type: textAt(1).getType(), bold: textAt(1).hasFormat('bold'), align: paragraph(1).getFormatType(),
+        })), `${when}: the restored line keeps its latest properties`).toEqual({ type: 'text', bold: true, align: 'center' });
+        for (const round of ['undo', 'second undo']) {
+          ada.undo.undo();
+          await expectBoth(ada, ben, text => expect(text, `${round}: Ada's Cmd+Z must leave Ben's text`).toBe('Intro.\n\nBEN '));
+          const reopened = peer(ben.doc);
+          try { await settle(); for (const actor of [ada, ben, reopened]) restored(actor, round); } finally { reopened.dispose(); }
+          if (round === 'undo') {
+            ada.undo.redo();
+            await expectBoth(ada, ben, text => expect(text, 'redo replays Ada\'s delete').toBe(deleted));
+          }
         }
-        ada.undo.redo();
-        await expectBoth(ada, ben, text => expect(text, 'redo replays Ada\'s delete').toBe(deleted));
-        ada.undo.undo();
-        await expectBoth(ada, ben, text => expect(text, 'a second undo keeps Ben\'s text').toBe('Intro.\n\nBEN '));
       } finally { dispose(); }
     });
   }

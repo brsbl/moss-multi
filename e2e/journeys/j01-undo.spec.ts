@@ -265,33 +265,58 @@ test('j01 undo: Ada creates a line and deletes Ben\'s words from it within one u
   for (const actor of [ada, ben]) { await ui.waitLive(actor, id); expect(await docText(actor, id)).toBe(deleted); }
 });
 
-test('j01 undo: Ada creates a line and deletes the whole line holding Ben\'s words within one undo step; her Cmd+Z keeps them @p:col-3', async ({ actors, stack }) => {
-  const { ada, ben, id } = await setup(actors, stack.baseUrl, 'Intro line.');
-  if (!ben) throw new Error('no ben');
-  await caretAtEnd(ada, id, 'Intro line');
-  await ada.page.keyboard.press('Enter'); await ada.page.keyboard.type('Alpha');
-  // Ben types at the start of Ada's line while she keeps typing at its end within the capture window (1 s).
-  const benTypes = (async () => {
-    await expect(paragraph(ben, id, 'Alpha')).toBeVisible({ timeout: PEER_TIMEOUT });
-    await selectEnd(ben, id, 'Alpha', 'all', true); await ben.page.keyboard.type('BEN ');
-  })();
-  for (let i = 0; !(await docText(ada, id)).includes('BEN '); i++) {
-    expect(i, 'Ben\'s words reach Ada').toBeLessThan(80);
-    await ada.page.keyboard.type('x');
-    await ada.page.waitForTimeout(200);
-  }
-  await benTypes;
-  await ada.page.keyboard.type('x');
+/** Selects from the end of the paragraph starting with `from` through the end of the one starting with `to`, through the editor. */
+async function selectAcross(actor: Actor, id: string, from: string, to: string) {
+  await ui.body(actor, id).evaluate((element, { from, to }) => {
+    type Text = { getKey(): string; getTextContentSize(): number; select(a: number, b: number): { focus: { set(key: string, offset: number, type: 'text'): void } } };
+    const editor = (element as HTMLElement & { __lexicalEditor: LexicalEditor }).__lexicalEditor;
+    editor.update(() => {
+      const nodes = [...editor.getEditorState()._nodeMap.values()];
+      const last = (start: string) => {
+        const block = nodes.find(node => node.getType() === 'paragraph' && new RegExp(`^${start}`).test(node.getTextContent()));
+        const text = block && (block as unknown as { getLastDescendant(): Text | null }).getLastDescendant();
+        if (!text) throw new Error(`no paragraph "${start}"`);
+        return text;
+      };
+      const anchor = last(from); const focus = last(to);
+      anchor.select(anchor.getTextContentSize(), anchor.getTextContentSize()).focus.set(focus.getKey(), focus.getTextContentSize(), 'text');
+    }, { discrete: true });
+  }, { from, to });
+}
+
+for (const { what, select, deleted } of [
   // Selecting the whole line and pressing Backspace deletes Ada's text node, Ben's words in it included.
-  await selectEnd(ada, id, 'BEN Alpha', 'all');
-  await ada.page.keyboard.press('Backspace');
-  expect(await converged(ada, ben, id, 'deleted')).toBe('Intro line.\n\n');
-  await ada.page.waitForTimeout(NEW_STEP_MS);
-  const undone = await press(ada, ben, id, UNDO, 1, ['BEN']);
-  expect(undone, 'only Ada\'s line is undone').toBe('Intro line.\n\nBEN ');
-  expect(await press(ada, ben, id, REDO, 1, []), 'redo replays Ada\'s delete').toBe('Intro line.\n\n');
-  expect(await press(ada, ben, id, UNDO, 1, ['BEN'])).toBe(undone);
-  await expect(ui.pane(ada, id)).toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout: PEER_TIMEOUT });
-  await actors.reloadAll();
-  for (const actor of [ada, ben]) { await ui.waitLive(actor, id); expect(await docText(actor, id), 'Ben\'s words survive a reload').toBe(undone); }
-});
+  { what: 'text node', select: (ada: Actor, id: string) => selectEnd(ada, id, 'BEN Alpha', 'all'), deleted: 'Intro line.\n\n' },
+  // Selecting from the end of the line above through the end of hers deletes her paragraph, Ben's words in it included.
+  { what: 'paragraph', select: (ada: Actor, id: string) => selectAcross(ada, id, 'Intro line', 'BEN Alpha'), deleted: 'Intro line.' },
+]) {
+  test(`j01 undo: Ada creates a line and deletes the whole ${what} holding Ben's words within one undo step; her Cmd+Z keeps them @p:col-3`, async ({ actors, stack }) => {
+    const { ada, ben, id } = await setup(actors, stack.baseUrl, 'Intro line.');
+    if (!ben) throw new Error('no ben');
+    await caretAtEnd(ada, id, 'Intro line');
+    await ada.page.keyboard.press('Enter'); await ada.page.keyboard.type('Alpha');
+    // Ben types at the start of Ada's line while she keeps typing at its end within the capture window (1 s).
+    const benTypes = (async () => {
+      await expect(paragraph(ben, id, 'Alpha')).toBeVisible({ timeout: PEER_TIMEOUT });
+      await selectEnd(ben, id, 'Alpha', 'all', true); await ben.page.keyboard.type('BEN ');
+    })();
+    for (let i = 0; !(await docText(ada, id)).includes('BEN '); i++) {
+      expect(i, 'Ben\'s words reach Ada').toBeLessThan(80);
+      await ada.page.keyboard.type('x');
+      await ada.page.waitForTimeout(200);
+    }
+    await benTypes;
+    await ada.page.keyboard.type('x');
+    await select(ada, id);
+    await ada.page.keyboard.press('Backspace');
+    expect(await converged(ada, ben, id, 'deleted')).toBe(deleted);
+    await ada.page.waitForTimeout(NEW_STEP_MS);
+    const undone = await press(ada, ben, id, UNDO, 1, ['BEN']);
+    expect(undone, 'only Ada\'s line is undone').toBe('Intro line.\n\nBEN ');
+    expect(await press(ada, ben, id, REDO, 1, []), 'redo replays Ada\'s delete').toBe(deleted);
+    expect(await press(ada, ben, id, UNDO, 1, ['BEN']), 'a second undo keeps Ben\'s words').toBe(undone);
+    await expect(ui.pane(ada, id)).toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout: PEER_TIMEOUT });
+    await actors.reloadAll();
+    for (const actor of [ada, ben]) { await ui.waitLive(actor, id); expect(await docText(actor, id), 'Ben\'s words survive a reload').toBe(undone); }
+  });
+}
