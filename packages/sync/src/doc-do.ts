@@ -6,7 +6,10 @@ import { writeSyncStep1 } from 'y-protocols/sync';
 import { splitFrontmatter } from '@moss-desktop/common/markdown-layers';
 import { ACK_COALESCE_MS, AWARENESS_MAX_BYTES, MAX_CONNECTIONS, STATE_CAP_BYTES, WRITE_RATE } from '@moss-multi/protocol/limits';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
-import { bytesToBase64, CLOSE, type ServerEvent, type WriteRefusalReason } from '@moss-multi/protocol/sync';
+import {
+  bytesToBase64, CLOSE, encodePayloadFrame, PAYLOAD_STEP1, PAYLOAD_STEP2, PAYLOAD_UPDATE, type PayloadAck, type PayloadFrame,
+  type ServerEvent, type WriteRefusalReason,
+} from '@moss-multi/protocol/sync';
 import {
   attachmentFrom, classifySync, connectCode, parseFrame, revocationCode, stateBytesAfter, WriteRate, type Attachment, type DeleteSet,
 } from './doc/admission.ts';
@@ -16,8 +19,9 @@ import { d1Projections, Projections, type ProjectionTarget } from './doc/project
 import type { SyncEnv } from './env.ts';
 import { migrateFrontmatter } from '@moss-multi/core/frontmatter';
 import { writeField } from '@moss-multi/core/doc-fields';
-import { migrateRegisters } from './registers.ts';
-import { exportDocMarkdown, importBody, rootIsEmpty, SERVER_IMPORT, SERVER_SEED, seedEmptyParagraph } from './server-doc.ts';
+import { payloadText } from './payload-docs.ts';
+import { JANITOR, migratePayloads, PayloadStore, type PayloadWork } from './payloads.ts';
+import { attachPayloadSource, exportDocMarkdown, importBody, rootIsEmpty, SERVER_IMPORT, SERVER_SEED, seedEmptyParagraph } from './server-doc.ts';
 
 /** A title written by create() or a REST rename; both project. */
 export const SERVER_TITLE = 'server-title';
@@ -49,6 +53,19 @@ export class DocCapError extends Error {
 const isConnection = (origin: unknown): origin is Connection =>
   typeof origin === 'object' && origin !== null && typeof (origin as Connection).send === 'function' && 'id' in origin;
 
+/** Classifies frames for payload ids the store has never seen; never written. */
+const UNKNOWN_PAYLOAD = new Y.Doc();
+
+/** y-partyserver's guard: a socket that is closing or closed is skipped. */
+function send(connection: Connection, message: Uint8Array): void {
+  if (connection.readyState !== undefined && connection.readyState !== 0 && connection.readyState !== 1) return;
+  try {
+    connection.send(message);
+  } catch {
+    // closing; its close handler runs
+  }
+}
+
 /**
  * One per doc, addressed by idFromName(docId) at /parties/doc-d-o/<docId> (A§5.1). The Worker authenticates every
  * socket and sets the trusted headers; this class persists, seeds, gates writes and answers RPCs. Every RPC that
@@ -68,26 +85,53 @@ export class DocDO extends YServer<SyncEnv> {
 
   readonly instanceId = crypto.randomUUID();
   /** Payload work since the last reset, which the harness reads to bound it (A§10.10). */
-  readonly payloadWork = { evaluated: 0, revealed: 0, withheld: 0, deduped: 0, compared: 0 };
+  get payloadWork(): PayloadWork {
+    return this.#payloads?.work ?? { evaluated: 0, revealed: 0, withheld: 0, deduped: 0, compared: 0 };
+  }
   readonly constructedAt = Date.now();
 
   #store: DocStore | null = null;
+  #payloads: PayloadStore | null = null;
   #exported: string | null = null;
   #projections: Projections | null = null;
   readonly #limits = (this.constructor as typeof DocDO).limits;
   readonly #rate = new WriteRate(this.#limits.writeRate.max, this.#limits.writeRate.windowMs);
-  readonly #acks = new AckCoalescer<Connection>((connection, deletes) => this.#ack(connection, deletes), ACK_COALESCE_MS);
+  readonly #acks = new AckCoalescer<Connection>((connection, deletes, payloads) => this.#ack(connection, deletes, payloads), ACK_COALESCE_MS);
   /** The deletes of the sync frame being applied, which its ack names. */
   #frameDeletes: DeleteSet | undefined;
 
   /** Runs inside partyserver's blockConcurrencyWhile, so a woken DO replays before it sees any frame. */
   override async onLoad(): Promise<void> {
     const store = new DocStore(this.ctx.storage);
+    // The naming index is built by the replay itself, from each transaction's own structs.
+    const payloads = new PayloadStore(this.ctx.storage, this.document, {
+      broadcast: (id, update, origin) => this.#broadcastPayload(id, update, origin),
+      persisted: (_id, _update, origin) => {
+        this.#exported = null;
+        if (isConnection(origin)) this.#projections?.touch();
+      },
+      withheldCapBytes: this.#limits.stateCapBytes,
+    });
     store.load(this.document);
     this.#store = store;
+    this.#payloads = payloads;
     this.document.on('update', (update: Uint8Array, origin: unknown) => this.#persist(store, update, origin));
     migrateFrontmatter(this.document, 'frontmatter-migration');
-    migrateRegisters(this.document);
+    const migrated = migratePayloads(this.document, (id, text) => {
+      if (payloads.has(id)) return;
+      const doc = payloads.doc(id);
+      doc.transact(() => payloadText(doc).insert(0, text), JANITOR);
+    });
+    // The migrated text leaves the note's rows too.
+    if (migrated) store.compact(this.document);
+    payloads.loaded();
+    attachPayloadSource(this.document, {
+      read: (id) => payloads.read(id),
+      has: (id) => payloads.has(id),
+      write: (id, update) => payloads.write(id, update, SERVER_IMPORT),
+    });
+    // After every note update (a frame, a server write, a restore, a push): reveal and keep one element per id.
+    this.document.on('afterAllTransactions', () => payloads.settle(() => this.#connected()));
     this.#seed(store);
     const target = (this.constructor as typeof DocDO).projectionTarget(this.env);
     if (target) this.#project(new Projections(this.name, target));
@@ -140,6 +184,10 @@ export class DocDO extends YServer<SyncEnv> {
     }
     const frame = parseFrame(message);
     if (frame.kind === 'other') return;
+    if (frame.kind === 'payload') {
+      if (this.#payloads) this.#payloadFrame(connection, attachment, store, this.#payloads, frame.payload);
+      return;
+    }
     if (frame.kind === 'awareness') {
       if (!awarenessTooLarge(frame.bytes, this.#limits.awarenessMaxBytes)) receivePresence(this.document.awareness, connection, message, [...this.getConnections()]);
       return;
@@ -148,7 +196,7 @@ export class DocDO extends YServer<SyncEnv> {
     if (frame.kind === 'sync') {
       const { changes, deletes } = classifySync(this.document, frame.update);
       if (changes) {
-        if (this.#refused(connection, attachment, store, frame.update)) return;
+        if (this.#refused(connection, attachment, () => this.#overCap(store, frame.update))) return;
       } else if (roleAtLeast(attachment.role, 'editor')) {
         // The doc already holds it, so nothing persists to ack it: an editor's reconnect step 2 after its ack was lost
         // with the old socket. Acked too, so the client learns its edits are on the server (A§10.6).
@@ -186,7 +234,7 @@ export class DocDO extends YServer<SyncEnv> {
       const parts = splitFrontmatter(input.markdown);
       const hasFrontmatter = parts.hasFrontmatter && !parts.error;
       const frontmatter = hasFrontmatter ? input.markdown.slice(0, input.markdown.length - parts.body.length) : undefined;
-      importBody(this.document, hasFrontmatter ? parts.body : input.markdown, (diff) => this.#admitServerWrite(store, diff), frontmatter);
+      importBody(this.document, hasFrontmatter ? parts.body : input.markdown, (diff, payloads) => this.#admitServerWrite(store, diff, payloads), frontmatter);
     }
     const title = input.title?.trim();
     // POST /api/docs wrote a provisional row; the title and its filename arrive through the projection.
@@ -210,16 +258,22 @@ export class DocDO extends YServer<SyncEnv> {
   }
 
   /** Internal RPC: preserves Yjs item identity, including relative anchors, without a markdown round trip. */
+  /** Payloads go too, but only the ones an element names: a withheld payload never reaches a copy. */
   async snapshotForDuplicate(): Promise<{ title: string; state: Uint8Array; payloads: [string, Uint8Array][] }> {
     await this.#ready();
-    return { title: this.document.getText('title').toString(), state: Y.encodeStateAsUpdate(this.document), payloads: [] };
+    return {
+      title: this.document.getText('title').toString(),
+      state: Y.encodeStateAsUpdate(this.document),
+      payloads: this.#payloads?.namedStates() ?? [],
+    };
   }
 
   async createFromSnapshot(input: Omit<CreateDocInput, 'markdown'>, state: Uint8Array, payloads: [string, Uint8Array][] = []): Promise<void> {
-    void payloads;
     const store = await this.#ready();
     if (store.meta('created') !== null) return;
-    if (state.byteLength > this.#limits.stateCapBytes) throw new DocCapError();
+    const bytes = payloads.reduce((sum, [, payload]) => sum + payload.byteLength, state.byteLength);
+    if (bytes > this.#limits.stateCapBytes) throw new DocCapError();
+    for (const [id, payload] of payloads) this.#payloads?.write(id, payload, SERVER_IMPORT);
     this.document.transact(() => {
       // Drop only this new doc's seed, then apply the independent source snapshot.
       const root = this.document.get('root', Y.XmlText);
@@ -284,18 +338,68 @@ export class DocDO extends YServer<SyncEnv> {
     });
   }
 
-  /** Simulated only near the cap, since the copy costs a full encode. */
-  #overCap(store: DocStore, update: Uint8Array): boolean {
+  /**
+   * The note plus its named payloads against the cap (A§5.1 Limits); `extra` is bytes a server write adds to payloads.
+   * Simulated only near the cap, since the copy costs a full encode.
+   */
+  #overCap(store: DocStore, update: Uint8Array, extra = 0): boolean {
     const cap = this.#limits.stateCapBytes;
-    return store.stateBytes + update.byteLength > cap && stateBytesAfter(this.document, update) > cap;
+    const named = (this.#payloads?.namedBytes ?? 0) + extra;
+    return store.stateBytes + named + update.byteLength > cap && stateBytesAfter(this.document, update) + named > cap;
   }
 
-  #admitServerWrite(store: DocStore, diff: Uint8Array): void {
-    if (this.#overCap(store, diff)) throw new DocCapError();
+  /** A write to a named payload counts against the cap; a withheld one against the withheld cap, oldest dropped. */
+  #payloadOverCap(store: DocStore, payloads: PayloadStore, id: string, doc: Y.Doc, update: Uint8Array): boolean {
+    if (!payloads.named(id)) return false;
+    const cap = this.#limits.stateCapBytes;
+    const base = store.stateBytes + payloads.namedBytes;
+    return base + update.byteLength > cap && base - payloads.bytesOf(id) + stateBytesAfter(doc, update) > cap;
+  }
+
+  #admitServerWrite(store: DocStore, diff: Uint8Array, payloads: [string, Uint8Array][]): void {
+    if (this.#overCap(store, diff, payloads.reduce((sum, [, update]) => sum + update.byteLength, 0))) throw new DocCapError();
+  }
+
+  #connected(): boolean {
+    return !this.getConnections()[Symbol.iterator]().next().done;
+  }
+
+  /**
+   * A payload's frame (A§10.10): through the same role, rate and size gates as the note's, classified against its own
+   * doc. A step 1 is answered only while an element names the payload; a write is applied, stored and acked, and the
+   * store fans it out only while named.
+   */
+  #payloadFrame(connection: Connection, attachment: Attachment, store: DocStore, payloads: PayloadStore, frame: PayloadFrame): void {
+    const { id, step, data } = frame;
+    try {
+      if (step === PAYLOAD_STEP1) {
+        if (payloads.named(id)) send(connection, encodePayloadFrame(id, PAYLOAD_STEP2, Y.encodeStateAsUpdate(payloads.doc(id), data)));
+        return;
+      }
+      // An id the store has never seen stays unloaded unless the frame writes to it.
+      const { changes, deletes } = classifySync(payloads.has(id) ? payloads.doc(id) : UNKNOWN_PAYLOAD, data);
+      if (!changes) {
+        // An editor's resend of what is already stored: acked, since the ack that covered it may have been lost.
+        if (roleAtLeast(attachment.role, 'editor')) this.#acks.schedule(connection, deletes, id);
+        return;
+      }
+      const doc = payloads.doc(id);
+      if (this.#refused(connection, attachment, () => this.#payloadOverCap(store, payloads, id, doc, data))) return;
+      Y.applyUpdate(doc, data, connection);
+      this.#acks.schedule(connection, deletes, id);
+    } catch {
+      // A frame that does not decode is dropped like an unknown one.
+    }
+  }
+
+  /** A named payload's update to every socket but the one it came from. */
+  #broadcastPayload(id: string, update: Uint8Array, origin: unknown): void {
+    const frame = encodePayloadFrame(id, PAYLOAD_UPDATE, update);
+    for (const connection of this.getConnections()) if (connection !== origin) send(connection, frame);
   }
 
   /** True when the write was refused and the socket closed; a refusal is never silent. */
-  #refused(connection: Connection, attachment: Attachment, store: DocStore, update: Uint8Array): boolean {
+  #refused(connection: Connection, attachment: Attachment, overCap: () => boolean): boolean {
     if (!roleAtLeast(attachment.role, 'suggester')) return this.#refuse(connection, 'role', CLOSE.revoked);
     // A suggester's writes are vetted on a mirror (M5); until then they are refused, never applied unvetted.
     if (!roleAtLeast(attachment.role, 'editor')) return this.#refuse(connection, 'suggest', CLOSE.writeRefused);
@@ -304,7 +408,7 @@ export class DocDO extends YServer<SyncEnv> {
       connection.close(CLOSE.writeRate, 'write rate');
       return true;
     }
-    if (this.#overCap(store, update)) return this.#refuse(connection, 'doc-cap', CLOSE.writeRefused);
+    if (overCap()) return this.#refuse(connection, 'doc-cap', CLOSE.writeRefused);
     return false;
   }
 
@@ -315,12 +419,22 @@ export class DocDO extends YServer<SyncEnv> {
     return true;
   }
 
-  #ack(connection: Connection, deletes: DeleteSet): void {
-    const event: ServerEvent = {
+  #ack(connection: Connection, deletes: DeleteSet, payloads: Map<string, DeleteSet>): void {
+    const event: Extract<ServerEvent, { t: 'ack' }> = {
       t: 'ack',
       sv: bytesToBase64(Y.encodeStateVector(this.document)),
       ds: bytesToBase64(Y.encodeSnapshot(Y.createSnapshot(deletes, new Map()))),
     };
+    if (payloads.size && this.#payloads) {
+      const acked: Record<string, PayloadAck> = {};
+      for (const [id, payloadDeletes] of payloads) {
+        acked[id] = {
+          sv: bytesToBase64(Y.encodeStateVector(this.#payloads.doc(id))),
+          ds: bytesToBase64(Y.encodeSnapshot(Y.createSnapshot(payloadDeletes, new Map()))),
+        };
+      }
+      event.p = acked;
+    }
     // sendCustomMessage skips a socket that has closed.
     this.sendCustomMessage(connection, JSON.stringify(event));
   }

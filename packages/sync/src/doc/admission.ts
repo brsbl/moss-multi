@@ -4,7 +4,9 @@ import * as decoding from 'lib0/decoding';
 import * as Y from 'yjs';
 import { NAME_MAX_CHARS } from '@moss-multi/protocol/limits';
 import { isRole, type Role } from '@moss-multi/protocol/roles';
-import { CLOSE, decodePartyPrincipal, TRUSTED, type PrincipalKind } from '@moss-multi/protocol/sync';
+import {
+  CLOSE, decodePartyPrincipal, decodePayloadFrame, PAYLOAD_MESSAGE, TRUSTED, type PayloadFrame, type PrincipalKind,
+} from '@moss-multi/protocol/sync';
 import type { Revoked } from './persistence.ts';
 
 /** What a socket carries through hibernation (connection.setState). */
@@ -65,15 +67,21 @@ export type Frame =
   | { kind: 'step1' }
   /** A step 2 or an update: a write only if it would change the doc. */
   | { kind: 'sync'; update: Uint8Array }
+  /** A decorator payload's own sync (A§10.10). */
+  | { kind: 'payload'; payload: PayloadFrame }
   | { kind: 'other' };
 
-/** The y-protocols envelope: message type 0 is sync (step 1, step 2, update), 1 is awareness. */
+/** The y-protocols envelope: message type 0 is sync (step 1, step 2, update), 1 is awareness; 7 is a payload's sync. */
 export function parseFrame(message: ArrayBuffer | ArrayBufferView): Frame {
   const bytes = message instanceof ArrayBuffer ? new Uint8Array(message) : new Uint8Array(message.buffer, message.byteOffset, message.byteLength);
   try {
     const decoder = decoding.createDecoder(bytes);
     const type = decoding.readVarUint(decoder);
     if (type === 1) return { kind: 'awareness', bytes: bytes.byteLength };
+    if (type === PAYLOAD_MESSAGE) {
+      const payload = decodePayloadFrame(bytes);
+      return payload ? { kind: 'payload', payload } : { kind: 'other' };
+    }
     if (type !== 0) return { kind: 'other' };
     const step = decoding.readVarUint(decoder);
     if (step === 0) return { kind: 'step1' };

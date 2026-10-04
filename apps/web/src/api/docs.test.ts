@@ -30,7 +30,7 @@ const DocDO = {
       renamed.push({ docId: id.name, title });
       await d1Projections(d1.db).title(id.name, title);
     },
-    snapshotForDuplicate: async () => ({ title: 'Original', state: new Uint8Array([1, 2]) }),
+    snapshotForDuplicate: async () => ({ title: 'Original', state: new Uint8Array([1, 2]), payloads: [] }),
     createFromSnapshot: async (input: unknown) => {
       created.push({ docId: id.name, input });
       await d1Projections(d1.db).title(id.name, (input as { title?: string }).title ?? '');

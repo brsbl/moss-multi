@@ -12,8 +12,9 @@ import {
 } from 'lexical';
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
-import { createConverterEditor, exportMarkdown } from './converter/index.ts';
+import { createConverterEditor } from './converter/index.ts';
 import { excludedPropertiesFor } from './excluded-properties.ts';
+import { payloadDocsFor } from './payload-docs.ts';
 import { bindRegisters } from './registers.ts';
 import { exportDocMarkdown, importBody } from './server-doc.ts';
 
@@ -870,9 +871,18 @@ describe('T1.R regressions: the attempt-2 checker findings @p:col-1 @p:col-3', (
   });
 });
 
-// ---------------------------------------------------------------- the M1 model: Y.Map('registers') keyed by __regId
+// ---------------------------------------------------------------- the M1 model, and what T1.F2 changed
 
-function mapClient(state: Uint8Array) {
+/** The note's update and every payload doc's (T1.F2 keeps payloads beside the note). */
+const sendAll = (from: Y.Doc, to: Y.Doc) => {
+  send(from, to);
+  for (const [id, doc] of payloadDocsFor(from).docs) {
+    const held = payloadDocsFor(to).hold(id);
+    Y.applyUpdate(held, Y.encodeStateAsUpdate(doc, Y.encodeStateVector(held)), 'remote');
+  }
+};
+
+function mapClient(from: Y.Doc) {
   const doc = new Y.Doc(); const editor = createConverterEditor();
   const binding: Binding = createBinding(editor, provider, 'root', doc, new Map([['root', doc]]), excludedPropertiesFor(editor));
   const stopRegisters = bindRegisters(editor, doc);
@@ -884,21 +894,22 @@ function mapClient(state: Uint8Array) {
     if (transaction.origin !== binding) syncYjsChangesToLexical(binding, provider, events as never, false, noop);
   };
   root.observeDeep(observer);
-  Y.applyUpdate(doc, state);
+  sendAll(from, doc);
   editor.update(noop, { discrete: true });
-  return { doc, editor, dispose: () => { stop(); stopRegisters(); root.unobserveDeep(observer); doc.destroy(); } };
+  return { doc, editor, dispose: () => { stop(); stopRegisters(); root.unobserveDeep(observer); payloadDocsFor(doc).destroy(); doc.destroy(); } };
 }
 function codeBlocks(): (LexicalNode & { getCode(): string; setCode(code: string): void })[] {
   const walk = (node: LexicalNode): LexicalNode[] => node.getType() === 'code-block' ? [node] : $isElementNode(node) ? node.getChildren().flatMap(walk) : [];
   return walk($getRoot()) as never;
 }
 
+// The M1 map's join case (a second creator for one map slot) is gone with the map; payloads.test.ts covers joins.
 describe('T1.R spike: the M1 register map, for comparison @p:col-1', () => {
   // Red on the M1 map (an `it.fails` until T1.F2 moved payloads out of the note's doc).
   it('M1 map, fixed by T1.F2: a deleted block\'s payload is no longer served to later readers and duplicates (privacy P1)', () => {
     const server = new Y.Doc();
     importBody(server, 'Intro.\n\n```js\nSECRET-beta\n```');
-    const ada = mapClient(Y.encodeStateAsUpdate(server));
+    const ada = mapClient(server);
     try {
       ada.editor.update(() => { codeBlocks()[0].remove(); }, { discrete: true });
       send(ada.doc, server);
@@ -907,58 +918,17 @@ describe('T1.R spike: the M1 register map, for comparison @p:col-1', () => {
     } finally { ada.dispose(); server.destroy(); }
   });
 
-  it('M1 map: a peer joining at any point of a new code block\'s drafting does not lose it in the binding', () => {
-    const server = new Y.Doc();
-    importBody(server, 'Intro.');
-    const ada = mapClient(Y.encodeStateAsUpdate(server));
-    const updates: Uint8Array[] = [];
-    const record = (update: Uint8Array) => { updates.push(update); };
-    ada.doc.on('update', record);
-    try {
-      ada.editor.update(() => {
-        const klass = ada.editor._nodes.get('code-block')!.klass as unknown as new (code: string) => LexicalNode;
-        $getRoot().getFirstChildOrThrow().insertAfter(new klass(''));
-      }, { discrete: true });
-      for (const text of ['const ', 'const ada', 'const ada = 1;']) {
-        ada.editor.update(() => { codeBlocks()[0].setCode(text); }, { discrete: true });
-      }
-      ada.doc.off('update', record);
-      const kinds = updates.map((update) => {
-        const probe = new Y.Doc(); Y.applyUpdate(probe, Y.encodeStateAsUpdate(server)); Y.applyUpdate(probe, update);
-        const kind = probe.getMap('registers').size > 0 ? 'register' : 'tree'; probe.destroy(); return kind;
-      });
-      expect(kinds[0], "a new block's register is created before its element reaches the wire").toBe('register');
-      for (let prefix = 0; prefix <= updates.length; prefix++) {
-        const partial = new Y.Doc();
-        Y.applyUpdate(partial, Y.encodeStateAsUpdate(server));
-        for (const update of updates.slice(0, prefix)) Y.applyUpdate(partial, update);
-        const ben = mapClient(Y.encodeStateAsUpdate(partial));
-        partial.destroy();
-        try {
-          ben.editor.update(() => {
-            for (const block of codeBlocks()) (block.getWritable() as unknown as { __language: string }).__language = 'rust';
-          }, { discrete: true });
-          send(ada.doc, ben.doc); send(ben.doc, ada.doc);
-          const merged = new Y.Doc(); send(ada.doc, merged);
-          expect(exportDocMarkdown(merged), `ben joined after ${prefix} of ${updates.length} updates`).toContain('const ada = 1;');
-          merged.destroy();
-        } finally { ben.dispose(); }
-      }
-      expect(exportMarkdown(ada.editor)).toContain('const ada = 1;');
-    } finally { ada.dispose(); server.destroy(); }
-  });
-
-  it('M1 map: a whole-value write of a field snapshot that missed a peer\'s edit deletes those characters', () => {
+  it('a whole-value write of a field snapshot that missed a peer\'s edit deletes those characters (T1.F4)', () => {
     const server = new Y.Doc();
     importBody(server, '```js\nseed\n```');
-    const ada = mapClient(Y.encodeStateAsUpdate(server));
-    const ben = mapClient(Y.encodeStateAsUpdate(server));
+    const ada = mapClient(server);
+    const ben = mapClient(server);
     try {
       ada.editor.update(() => { codeBlocks()[0].setCode('seed // ada'); }, { discrete: true });
-      send(ada.doc, ben.doc);
+      sendAll(ada.doc, ben.doc);
       // Ben's field still holds "seed" plus his keystroke when a whole-value path (commit, double Enter) writes it.
       ben.editor.update(() => { codeBlocks()[0].setCode('seed!'); }, { discrete: true });
-      send(ben.doc, ada.doc);
+      sendAll(ben.doc, ada.doc);
       ada.editor.update(noop, { discrete: true });
       expect(ada.editor.getEditorState().read(() => codeBlocks()[0].getCode())).toBe('seed!');
     } finally { ada.dispose(); ben.dispose(); server.destroy(); }

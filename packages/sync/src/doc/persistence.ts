@@ -117,30 +117,38 @@ export class DocStore {
 }
 
 /**
- * One ack per socket per window, sent when the window closes, naming the deletes the acked frames carried. Keyed by
- * the socket itself: a client may reuse its connection id while the DO still holds the old socket, whose close must
- * never cancel the new one's ack. In memory: a wake simply sends none.
+ * One ack per socket per window, sent when the window closes, naming the deletes the acked frames carried, the note's
+ * and each payload's. Keyed by the socket itself: a client may reuse its connection id while the DO still holds the
+ * old socket, whose close must never cancel the new one's ack. In memory: a wake simply sends none.
  */
 export class AckCoalescer<Socket extends object> {
-  private readonly pending = new Map<Socket, { timer: ReturnType<typeof setTimeout>; deletes: DeleteSet[] }>();
+  private readonly pending = new Map<Socket, { timer: ReturnType<typeof setTimeout>; deletes: DeleteSet[]; payloads: Map<string, DeleteSet[]> }>();
 
   constructor(
-    private readonly send: (socket: Socket, deletes: DeleteSet) => void,
+    private readonly send: (socket: Socket, deletes: DeleteSet, payloads: Map<string, DeleteSet>) => void,
     private readonly windowMs: number,
   ) {}
 
-  schedule(socket: Socket, deletes?: DeleteSet): void {
-    const entry = this.pending.get(socket);
-    if (entry) {
+  /** `payload` names the payload doc the acked frame wrote; the note's otherwise. */
+  schedule(socket: Socket, deletes?: DeleteSet, payload?: string): void {
+    let entry = this.pending.get(socket);
+    if (!entry) {
+      const timer = setTimeout(() => {
+        const due = this.pending.get(socket);
+        this.pending.delete(socket);
+        const payloads = new Map([...(due?.payloads ?? [])].map(([id, sets]) => [id, Y.mergeDeleteSets(sets)] as const));
+        this.send(socket, Y.mergeDeleteSets(due?.deletes ?? []), payloads);
+      }, this.windowMs);
+      entry = { timer, deletes: [], payloads: new Map() };
+      this.pending.set(socket, entry);
+    }
+    if (payload === undefined) {
       if (deletes) entry.deletes.push(deletes);
       return;
     }
-    const timer = setTimeout(() => {
-      const due = this.pending.get(socket);
-      this.pending.delete(socket);
-      this.send(socket, Y.mergeDeleteSets(due?.deletes ?? []));
-    }, this.windowMs);
-    this.pending.set(socket, { timer, deletes: deletes ? [deletes] : [] });
+    let sets = entry.payloads.get(payload);
+    if (!sets) entry.payloads.set(payload, (sets = []));
+    if (deletes) sets.push(deletes);
   }
 
   cancel(socket: Socket): void {

@@ -8,6 +8,11 @@ import {
   decodePayloadFrame, encodePayloadFrame, PAYLOAD_STEP1, PAYLOAD_STEP2, PAYLOAD_UPDATE,
 } from '@moss-multi/protocol/sync';
 
+/** The register fields, by node type (A§10.10). */
+export const REGISTER_FIELDS: Readonly<Record<string, string>> = {
+  'code-block': '__code', 'html-block': '__rawHtml', formula: '__formula',
+};
+
 /** The payload's one shared type. */
 export const PAYLOAD_TEXT = 'payload';
 
@@ -151,18 +156,36 @@ export class PayloadSync {
 type StackEvent = 'stack-item-added' | 'stack-item-popped' | 'stack-cleared' | 'stack-item-updated';
 
 /**
+ * The action an edit belongs to: the Lexical update in flight, or the state it is committing (its update listeners,
+ * where the binding writes the note). Outside an update an edit is its own step.
+ */
+export const lexicalAction = (editor: { _updating: boolean; _pendingEditorState: unknown; _editorState: unknown }) => (): unknown =>
+  editor._updating ? (editor._pendingEditorState ?? editor._editorState) : null;
+
+/** One Cmd+Z step: the managers that took the edits of one action (a Lexical update), in order. */
+interface Step {
+  managers: Y.UndoManager[];
+  stamp: unknown;
+}
+
+/**
  * The body's one Cmd+Z stack (A§10.8): the note's UndoManager and one per held payload doc, since a Y.UndoManager
- * spans one doc. Each new tracked edit records which manager took it, and undo and redo replay that order. A new edit
- * ends every redo chain and closes every other manager's capture window, so steps never merge across managers. It
- * stands in for the root UndoManager where the plugin expects one (undo, redo, the stacks' lengths, the events).
+ * spans one doc. Each new tracked edit records which manager took it, and undo and redo replay that order; edits one
+ * action made in several docs (a setter and an attribute in one Lexical update, same `stamp`) are one step. A new
+ * step ends every redo chain and closes every other manager's capture window, so steps never merge across managers.
+ * It stands in for the root UndoManager where the plugin expects one (undo, redo, the stacks' lengths, the events).
  */
 export class BodyUndo extends Observable<StackEvent> {
   readonly managers: Y.UndoManager[] = [];
-  readonly undone: Y.UndoManager[] = [];
-  readonly redone: Y.UndoManager[] = [];
+  readonly undone: Step[] = [];
+  readonly redone: Step[] = [];
   #replaying = false;
 
-  constructor(readonly root: Y.UndoManager) {
+  constructor(
+    readonly root: Y.UndoManager,
+    /** Identifies the action an edit belongs to; null when every edit is its own step. */
+    private readonly stamp: () => unknown = () => null,
+  ) {
     super();
     this.track(root);
   }
@@ -177,26 +200,31 @@ export class BodyUndo extends Observable<StackEvent> {
   track(manager: Y.UndoManager): void {
     this.managers.push(manager);
     manager.on('stack-item-added', (event: { type: 'undo' | 'redo' }) => {
-      if (!this.#replaying && event.type === 'undo') {
-        this.undone.push(manager);
-        this.redone.length = 0;
-        for (const other of this.managers) {
-          if (other === manager) continue;
-          other.stopCapturing();
-          if (other.redoStack.length) other.clear(false, true);
-        }
-      }
+      if (!this.#replaying && event.type === 'undo') this.#added(manager);
       this.emit('stack-item-added', [event, this]);
     });
     manager.on('stack-item-updated', (event: unknown) => this.emit('stack-item-updated', [event, this]));
     manager.on('stack-item-popped', (event: unknown) => this.emit('stack-item-popped', [event, this]));
   }
 
-  get undoStack(): readonly Y.UndoManager[] {
+  #added(manager: Y.UndoManager): void {
+    const stamp = this.stamp();
+    const last = this.undone.at(-1);
+    this.redone.length = 0;
+    if (stamp !== null && last?.stamp === stamp) {
+      last.managers.push(manager);
+    } else {
+      this.undone.push({ managers: [manager], stamp });
+      for (const other of this.managers) if (other !== manager) other.stopCapturing();
+    }
+    for (const other of this.managers) if (other !== manager && other.redoStack.length) other.clear(false, true);
+  }
+
+  get undoStack(): readonly Step[] {
     return this.undone;
   }
 
-  get redoStack(): readonly Y.UndoManager[] {
+  get redoStack(): readonly Step[] {
     return this.redone;
   }
 
@@ -209,11 +237,11 @@ export class BodyUndo extends Observable<StackEvent> {
   }
 
   undo(): unknown {
-    return this.#step(this.undone, this.redone, (manager) => manager.undo());
+    return this.#step(this.undone, this.redone, (managers) => [...managers].reverse().map((manager) => manager.undo()));
   }
 
   redo(): unknown {
-    return this.#step(this.redone, this.undone, (manager) => manager.redo());
+    return this.#step(this.redone, this.undone, (managers) => managers.map((manager) => manager.redo()));
   }
 
   stopCapturing(): void {
@@ -233,16 +261,16 @@ export class BodyUndo extends Observable<StackEvent> {
     super.destroy();
   }
 
-  /** Pops managers until one has a step to replay (a peer may have emptied another's). */
-  #step(from: Y.UndoManager[], to: Y.UndoManager[], run: (manager: Y.UndoManager) => unknown): unknown {
+  /** Pops steps until one has something to replay (a peer may have emptied another's). */
+  #step(from: Step[], to: Step[], run: (managers: Y.UndoManager[]) => unknown[]): unknown {
     this.#replaying = true;
     try {
       while (from.length) {
-        const manager = from.pop()!;
-        const item = run(manager);
-        if (item !== null) {
-          to.push(manager);
-          return item;
+        const step = from.pop()!;
+        const items = run(step.managers).filter((item) => item !== null);
+        if (items.length) {
+          to.push(step);
+          return items[0];
         }
       }
       return null;

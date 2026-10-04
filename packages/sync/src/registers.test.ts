@@ -7,13 +7,37 @@ import { EXCLUDED_FIELDS } from './excluded-properties.ts';
 import { createBinding, syncLexicalUpdateToYjs, syncYjsChangesToLexical, type Provider } from '@lexical/yjs';
 import { createConverterEditor } from './converter/index.ts';
 import { excludedPropertiesFor } from './excluded-properties.ts';
-import { $assignRegisterIds, bindRegisters, migrateRegisters, REGISTER_LOCAL_ORIGIN } from './registers.ts';
+import { $assignRegisterIds, bindRegisters, REGISTER_LOCAL_ORIGIN } from './registers.ts';
+import { BodyUndo, lexicalAction, payloadDocsFor, payloadText } from './payload-docs.ts';
+import { migratePayloads } from './payloads.ts';
 
 const noop = () => {};
 const provider = {
   awareness: { getLocalState: () => null, getStates: () => new Map(), on: noop, off: noop, setLocalState: noop, setLocalStateField: noop },
   connect: noop, disconnect: noop, on: noop, off: noop,
 } as unknown as Provider;
+/** One direction of a network: the note's update and every payload's, as a client would receive them. */
+function share(from: Y.Doc, to: Y.Doc) {
+  Y.applyUpdate(to, Y.encodeStateAsUpdate(from, Y.encodeStateVector(to)), 'remote');
+  const target = payloadDocsFor(to);
+  for (const [id, doc] of payloadDocsFor(from).docs) {
+    const held = target.hold(id);
+    Y.applyUpdate(held, Y.encodeStateAsUpdate(doc, Y.encodeStateVector(held)), 'remote');
+  }
+}
+/** Forwards every later local write of `from` (note and payloads) to `to`; returns the unlinker. */
+function link(from: Y.Doc, to: Y.Doc): () => void {
+  const stops: (() => void)[] = [];
+  const forward = (target: () => Y.Doc) => (update: Uint8Array, origin: unknown) => { if (origin !== 'remote') Y.applyUpdate(target(), update, 'remote'); };
+  const watch = (doc: Y.Doc, target: () => Y.Doc) => { const handler = forward(target); doc.on('update', handler); stops.push(() => doc.off('update', handler)); };
+  watch(from, () => to);
+  const host = payloadDocsFor(from);
+  for (const [id, doc] of host.docs) watch(doc, () => payloadDocsFor(to).hold(id));
+  stops.push(host.onHold((id, doc) => watch(doc, () => payloadDocsFor(to).hold(id))));
+  return () => stops.forEach(stop => stop());
+}
+const payloadsOf = (doc: Y.Doc) => [...payloadDocsFor(doc).docs.values()].map(payload => payloadText(payload).toString());
+
 function client(seed: Y.Doc) {
   const doc = new Y.Doc(); const editor = createConverterEditor();
   const binding = createBinding(editor, provider, 'root', doc, new Map([['root', doc]]), excludedPropertiesFor(editor));
@@ -26,10 +50,12 @@ function client(seed: Y.Doc) {
     if (transaction.origin !== binding) syncYjsChangesToLexical(binding, provider, events as never, false, noop);
   };
   root.observeDeep(observer);
-  Y.applyUpdate(doc, Y.encodeStateAsUpdate(seed));
+  const undo = new BodyUndo(new Y.UndoManager(root, { trackedOrigins: new Set([binding]) }), lexicalAction(editor));
+  const host = payloadDocsFor(doc);
+  const stopHold = host.onHold((_id, payload) => { undo.trackPayload(payload, REGISTER_LOCAL_ORIGIN, 500); });
+  share(seed, doc);
   editor.update(noop, { discrete: true });
-  const undo = new Y.UndoManager([root, doc.getMap('registers')], { trackedOrigins: new Set([binding, REGISTER_LOCAL_ORIGIN]) });
-  return { doc, editor, undo, dispose: () => { undo.destroy(); stop(); stopRegisters(); root.unobserveDeep(observer); doc.destroy(); } };
+  return { doc, editor, undo, dispose: () => { stopHold(); undo.destroy(); stop(); stopRegisters(); root.unobserveDeep(observer); host.destroy(); doc.destroy(); } };
 }
 
 const cases = [
@@ -65,7 +91,7 @@ describe('L4 decorator registers @p:col-1 @p:col-3 @p:tech-1', () => {
         (node.getWritable() as unknown as Record<string, unknown>)[fixture.attribute] = fixture.authored;
       });
       await settle();
-      Y.applyUpdate(b.doc, Y.encodeStateAsUpdate(a.doc));
+      share(a.doc, b.doc);
       await settle();
       expect(read(a)).toBe(fixture.authored);
       expect(read(b), 'the companion attribute must reach the peer with the register edit').toBe(fixture.authored);
@@ -74,7 +100,7 @@ describe('L4 decorator registers @p:col-1 @p:col-3 @p:tech-1', () => {
       finally { restored.dispose(); }
       a.undo.undo();
       await settle();
-      Y.applyUpdate(b.doc, Y.encodeStateAsUpdate(a.doc));
+      share(a.doc, b.doc);
       await settle();
       for (const peer of [a, b]) {
         expect(read(peer), 'one undo restores both authored fields').toBe(fixture.original);
@@ -91,8 +117,8 @@ describe('L4 decorator registers @p:col-1 @p:col-3 @p:tech-1', () => {
     const stop = a.editor.registerUpdateListener(({ tags }) => { commits.push(new Set(tags)); });
     try {
       await settle();
-      const text = [...a.doc.getMap<Y.Text>('registers').values()][0];
-      a.doc.transact(() => text.insert(0, 'peer '), 'remote');
+      const payload = [...payloadDocsFor(a.doc).docs.values()][0];
+      payload.transact(() => payloadText(payload).insert(0, 'peer '), 'remote');
       commits.length = 0;
       // Like a background writer's microtask, this starts before the queued refresh commits.
       queueMicrotask(() => a.editor.update(() => {
@@ -102,7 +128,7 @@ describe('L4 decorator registers @p:col-1 @p:col-3 @p:tech-1', () => {
       const authored = commits.find(tags => tags.has('authored-follow-up'));
       expect(authored).toBeDefined();
       expect(authored!.has(COLLABORATION_TAG), 'background writers must see the authored commit').toBe(false);
-      Y.applyUpdate(b.doc, Y.encodeStateAsUpdate(a.doc));
+      share(a.doc, b.doc);
       await settle();
       expect(exportMarkdown(b.editor)).toContain('```rust');
     } finally { stop(); a.dispose(); b.dispose(); seed.destroy(); }
@@ -116,14 +142,14 @@ describe('L4 decorator registers @p:col-1 @p:col-3 @p:tech-1', () => {
         const node = find(fixture.type) as unknown as Record<string, (text: string) => void>;
         node[fixture.setter](value);
       }, { discrete: true });
-      Y.applyUpdate(a.doc, Y.encodeStateAsUpdate(b.doc));
-      Y.applyUpdate(b.doc, Y.encodeStateAsUpdate(a.doc));
+      share(b.doc, a.doc);
+      share(a.doc, b.doc);
       for (const peer of [a, b]) {
         peer.editor.update(noop, { discrete: true });
         expect(exportMarkdown(peer.editor)).toContain(fixture.merged);
       }
       a.undo.undo();
-      Y.applyUpdate(b.doc, Y.encodeStateAsUpdate(a.doc));
+      share(a.doc, b.doc);
       for (const peer of [a, b]) {
         peer.editor.update(noop, { discrete: true });
         expect(exportMarkdown(peer.editor)).toContain(fixture.b);
@@ -137,7 +163,7 @@ describe('L4 decorator registers @p:col-1 @p:col-3 @p:tech-1', () => {
     const a = new Y.Doc(); const b = new Y.Doc(); const restored = new Y.Doc();
     try {
       importBody(a, fixture.markdown);
-      Y.applyUpdate(b, Y.encodeStateAsUpdate(a));
+      share(a, b);
       for (const [doc, value] of [[a, fixture.a], [b, fixture.b]] as const) {
         serverWrite(doc, 'local', () => {
           const node = find(fixture.type) as unknown as Record<string, (text: string) => void>;
@@ -145,13 +171,13 @@ describe('L4 decorator registers @p:col-1 @p:col-3 @p:tech-1', () => {
           node[fixture.setter](value);
         });
       }
-      Y.applyUpdate(a, Y.encodeStateAsUpdate(b));
-      Y.applyUpdate(b, Y.encodeStateAsUpdate(a));
+      share(b, a);
+      share(a, b);
       expect(exportDocMarkdown(a)).toContain(fixture.merged);
       expect(exportDocMarkdown(b)).toBe(exportDocMarkdown(a));
-      Y.applyUpdate(restored, Y.encodeStateAsUpdate(a));
+      share(a, restored);
       expect(exportDocMarkdown(restored)).toBe(exportDocMarkdown(a));
-      expect([...a.getMap('registers').values()].some((value) => value instanceof Y.Text && value.toString() === fixture.merged)).toBe(true);
+      expect(payloadsOf(a)).toContain(fixture.merged);
     } finally { a.destroy(); b.destroy(); restored.destroy(); }
   });
 
@@ -161,10 +187,8 @@ describe('L4 decorator registers @p:col-1 @p:col-3 @p:tech-1', () => {
       importBody(doc, fixture.markdown);
       expect(exportDocMarkdown(doc)).toBe(exportMarkdown(importMarkdown(fixture.markdown)));
       expect(EXCLUDED_FIELDS[fixture.type]).toContain(fixture.field);
-      const registers = [...doc.getMap('registers').values()];
-      expect(registers).toHaveLength(1);
-      expect(registers[0]).toBeInstanceOf(Y.Text);
-      expect((registers[0] as Y.Text).toString()).toBe(fixture.before);
+      expect(payloadsOf(doc)).toEqual([fixture.before]);
+      expect(Buffer.from(Y.encodeStateAsUpdate(doc)).includes(fixture.before), "the note's own state carries no payload text").toBe(false);
     } finally { doc.destroy(); }
   });
 
@@ -173,11 +197,11 @@ describe('L4 decorator registers @p:col-1 @p:col-3 @p:tech-1', () => {
     const a = new Y.Doc(); const b = new Y.Doc();
     try {
       importBody(a, markdown); importBody(b, markdown);
-      expect([...a.getMap('registers').keys()]).toEqual([...b.getMap('registers').keys()]);
-      expect(a.getMap('registers').size).toBe(6);
+      expect([...payloadDocsFor(a).docs.keys()]).toEqual([...payloadDocsFor(b).docs.keys()]);
+      expect(payloadDocsFor(a).docs.size).toBe(6);
       const before = exportDocMarkdown(b);
-      const text = [...a.getMap<Y.Text>('registers').values()].find(value => value.toString() === 'seed')!;
-      a.transact(() => text.insert(0, 'changed '), 'peer');
+      const payload = [...payloadDocsFor(a).docs.values()].find(value => payloadText(value).toString() === 'seed')!;
+      payload.transact(() => payloadText(payload).insert(0, 'changed '), 'peer');
       expect(exportDocMarkdown(a).match(/changed seed/g)).toHaveLength(1);
       expect(exportDocMarkdown(b)).toBe(before);
     } finally { a.destroy(); b.destroy(); }
@@ -195,8 +219,8 @@ describe('L4 decorator registers @p:col-1 @p:col-3 @p:tech-1', () => {
       for (const [peer, value] of [[a, fixture.a], [b, fixture.b]] as const) peer.editor.update(() => {
         (find(fixture.type) as unknown as Record<string, (text: string) => void>)[fixture.setter](value);
       }, { discrete: true });
-      Y.applyUpdate(a.doc, Y.encodeStateAsUpdate(b.doc));
-      Y.applyUpdate(b.doc, Y.encodeStateAsUpdate(a.doc));
+      share(b.doc, a.doc);
+      share(a.doc, b.doc);
       for (const peer of [a, b]) {
         peer.editor.update(noop, { discrete: true });
         const ids = peer.editor.read(() => blocks().map(block => block.__regId));
@@ -208,13 +232,13 @@ describe('L4 decorator registers @p:col-1 @p:col-3 @p:tech-1', () => {
         const node = blocks().find(block => block[getter]() === fixture.a) as unknown as Record<string, (text: string) => void>;
         node[fixture.setter](`${fixture.a}!`);
       }, { discrete: true });
-      Y.applyUpdate(b.doc, Y.encodeStateAsUpdate(a.doc));
+      share(a.doc, b.doc);
       b.editor.update(noop, { discrete: true });
       expect(texts(b), 'editing one block leaves the other').toEqual([`${fixture.a}!`, fixture.b].sort());
     } finally { a.dispose(); b.dispose(); seed.destroy(); }
   });
 
-  it('upgrades persisted attributes without replacing nodes or changing export bytes', () => {
+  it('moves a pre-register attribute into a payload doc without replacing the node or changing export bytes', () => {
     const legacy = new Y.Doc();
     const root = legacy.get('root', Y.XmlText);
     const block = new Y.XmlElement('code-block');
@@ -226,14 +250,17 @@ describe('L4 decorator registers @p:col-1 @p:col-3 @p:tech-1', () => {
     const restored = new Y.Doc();
     try {
       Y.applyUpdate(restored, Y.encodeStateAsUpdate(legacy));
-      migrateRegisters(restored);
+      const host = payloadDocsFor(restored);
+      const write = (id: string, text: string) => { const doc = host.hold(id); payloadText(doc).insert(0, text); };
+      expect(migratePayloads(restored, write)).toBe(true);
       expect(exportDocMarkdown(restored)).toContain('stored code');
       const node = restored.get('root', Y.XmlText).toDelta()[0].insert as Y.XmlElement;
       expect(node._item!.id).toEqual(identity);
       const bytes = Y.encodeStateAsUpdate(restored);
-      migrateRegisters(restored);
+      expect(migratePayloads(restored, write)).toBe(false);
       expect(Y.encodeStateAsUpdate(restored)).toEqual(bytes);
-      expect(node.getAttribute('__code')).toBe('stored code');
+      expect(node.getAttribute('__code'), 'the note keeps no payload text').toBeUndefined();
+      expect(Buffer.from(bytes).includes('stored code')).toBe(false);
     } finally { legacy.destroy(); restored.destroy(); }
   });
 });
@@ -262,8 +289,7 @@ describe('register refresh cost @p:col-1 @p:tech-8', () => {
     const seed = new Y.Doc(); importBody(seed, markdown);
     const a = client(seed); const b = client(seed);
     const settle = () => new Promise(resolve => setTimeout(resolve, 0));
-    const forward = (update: Uint8Array, origin: unknown) => { if (origin !== 'remote') Y.applyUpdate(b.doc, update, 'remote'); };
-    a.doc.on('update', forward);
+    const unlink = link(a.doc, b.doc);
     const edits = 40;
     try {
       await settle();
@@ -305,7 +331,7 @@ describe('register refresh cost @p:col-1 @p:tech-8', () => {
         expect(exportMarkdown(peer.editor), 'undo restores the register').toContain(`${body(blocks / 2)}\n\`\`\``);
         expect(exportMarkdown(peer.editor)).not.toContain('para!');
       }
-    } finally { a.doc.off('update', forward); a.dispose(); b.dispose(); seed.destroy(); }
+    } finally { unlink(); a.dispose(); b.dispose(); seed.destroy(); }
   }, 120_000);
 
   it('a burst of root-level commits and same-node state replacements re-indexes and refreshes no payload', async () => {
@@ -341,7 +367,7 @@ describe('register refresh cost @p:col-1 @p:tech-8', () => {
     const live = new Y.Doc();
     try {
       importBody(live, markdown);
-      const total = [...live.getMap<Y.Text>('registers').values()].reduce((sum, text) => sum + text.length, 0);
+      const total = payloadsOf(live).reduce((sum, text) => sum + text.length, 0);
       const writes = 10;
       const started = performance.now();
       const bytes = await stringified(async () => {

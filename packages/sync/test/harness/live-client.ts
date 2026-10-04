@@ -9,7 +9,7 @@ import {
 import * as Y from 'yjs';
 import { createConverterEditor } from '../../src/converter/index.ts';
 import { excludedPropertiesFor } from '../../src/excluded-properties.ts';
-import { BodyUndo, PayloadSync, payloadDocsFor, payloadText, type PayloadDocs } from '../../src/payload-docs.ts';
+import { BodyUndo, lexicalAction, PayloadSync, payloadDocsFor, payloadText, type PayloadDocs } from '../../src/payload-docs.ts';
 import { bindRegisters, REGISTER_LOCAL_ORIGIN } from '../../src/registers.ts';
 import { connect, step1, type Opened, type TestClient, type Who } from './do-harness.ts';
 
@@ -60,7 +60,7 @@ export class LiveClient {
     };
     root.observeDeep(observer);
     this.#stops.push(() => root.unobserveDeep(observer));
-    this.undo = new BodyUndo(new Y.UndoManager(root, { trackedOrigins: new Set([this.binding]), captureTimeout: 0 }));
+    this.undo = new BodyUndo(new Y.UndoManager(root, { trackedOrigins: new Set([this.binding]), captureTimeout: 0 }), lexicalAction(this.editor));
     for (const doc of this.payloads.docs.values()) this.undo.trackPayload(doc, REGISTER_LOCAL_ORIGIN, 0);
     this.#stops.push(this.payloads.onHold((_id, doc) => { this.undo.trackPayload(doc, REGISTER_LOCAL_ORIGIN, 0); }));
   }
@@ -163,8 +163,10 @@ export class LiveClient {
     });
   }
 
+  /** Each top-level paragraph's own text, without the inline payloads it holds. */
   paragraphs(): string[] {
-    return this.#read(() => $getRoot().getChildren().filter($isParagraphNode).map((node) => node.getTextContent()));
+    return this.#read(() => $getRoot().getChildren().filter($isParagraphNode)
+      .map((node) => node.getChildren().filter($isTextNode).map((text) => text.getTextContent()).join('')));
   }
 
   /** The held payload doc behind payload node `index`. */

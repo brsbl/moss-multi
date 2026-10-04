@@ -98,7 +98,7 @@ async function duplicateDoc(request: Request, env: DocsEnv, docId: string): Prom
   const doc = await insertDoc(db, { folderId, ownerUserId: folder.ownerUserId, createdBy: principal.id, title });
   try {
     const target = await getServerByName(env.DocDO, doc.id);
-    await target.createFromSnapshot({ folderId, ownerId: folder.ownerUserId, title }, snapshot.state);
+    await target.createFromSnapshot({ folderId, ownerId: folder.ownerUserId, title }, snapshot.state, snapshot.payloads);
   } catch (error) {
     await db.delete(docs).where(eq(docs.id, doc.id));
     if (error instanceof Error && error.message === 'doc-cap') return json({ error: 'doc-cap' }, 413, NO_STORE);
