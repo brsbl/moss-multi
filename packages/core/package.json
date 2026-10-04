@@ -7,7 +7,8 @@
     "./doc-fields": "./src/doc-fields.ts",
     "./filenames": "./src/filenames.ts",
     "./frontmatter": "./src/frontmatter.ts",
-    "./text-diff": "./src/text-diff.ts"
+    "./text-diff": "./src/text-diff.ts",
+    "./tree-anchor": "./src/tree-anchor.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json"
