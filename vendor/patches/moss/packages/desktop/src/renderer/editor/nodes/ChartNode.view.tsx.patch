@@ -21,16 +21,18 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
  import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
  import { useLexicalNodeSelection } from '@lexical/react/useLexicalNodeSelection';
  import { Code2, Check, X, AlertCircle, ChevronDown, StickyNote } from 'lucide-react';
-@@ -23,6 +11,8 @@ import {
+@@ -23,6 +11,10 @@ import {
    DropdownMenuItem
  } from '@moss/shared/components/ui/dropdown-menu';
  import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@moss/shared/components/ui/tooltip';
 +// moss-multi seam: hide-registry (A§9)
 +import { hidden } from '@moss-multi/host/affordances';
++// moss-multi seam: register payloads (A§10.10)
++import { RegisterDraft } from '@moss-multi/host/collab/registers';
  import type { ChartConfig, ChartPalette, ChartType } from '../utils/chartDefaults';
  import {
    BLOCK_HEADER_CLASSNAME,
-@@ -30,30 +20,18 @@ import {
+@@ -30,30 +22,18 @@ import {
    BlockNodeShell
  } from '../components/block-node-primitives';
  import { insertParagraphAdjacentToBlock } from '../utils/block-node-insertion';
@@ -69,7 +71,40 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
  
  // Lazy import the chart component to avoid loading recharts until needed
  const ChartRenderer = React.lazy(() => import('../components/ChartRenderer'));
-@@ -333,13 +311,16 @@ function ChartWrapper({
+@@ -88,6 +68,8 @@ function ChartEditView({
+ }): JSX.Element {
+   const [editor] = useLexicalComposerContext();
+   const [jsonText, setJsonText] = useState(() => serializeChartConfig(initialConfig));
++  // moss-multi seam: register payloads (A§10.10): the draft follows its edits so a save keeps each data point's identity.
++  const [draft] = useState(() => new RegisterDraft(initialConfig, serializeChartConfig(initialConfig)));
+   const [validation, setValidation] = useState<{ isValid: boolean; error?: string }>({ isValid: true });
+   const textareaRef = useRef<HTMLTextAreaElement>(null);
+ 
+@@ -106,9 +88,10 @@ function ChartEditView({
+   const handleDone = useCallback(() => {
+     const result = parseChartConfig(jsonText);
+     if (result.valid && result.config) {
++      draft.identify(result.config);
+       onDone(result.config);
+     }
+-  }, [jsonText, onDone]);
++  }, [jsonText, onDone, draft]);
+ 
+   useEffect(() => {
+     const flushDraft = () => {
+@@ -182,7 +165,10 @@ function ChartEditView({
+       <textarea
+         ref={textareaRef}
+         value={jsonText}
+-        onChange={(e) => setJsonText(e.target.value)}
++        onChange={(e) => {
++          draft.edit(e.target.value, e.target.selectionEnd);
++          setJsonText(e.target.value);
++        }}
+         onKeyDown={handleKeyDown}
+         className="w-full resize-y rounded-md border border-surface-panel bg-surface-raised-control p-canvas-surface-pad font-mono text-sm text-ink-default focus:border-ink-default/20 focus:outline-none focus:ring-1 focus:ring-ink-default/20"
+         rows={12}
+@@ -333,13 +319,16 @@ function ChartWrapper({
      [isSelected, setSelected, clearSelection]
    );
  
@@ -87,7 +122,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
    );
  
    const handleTypeChange = useCallback(
-@@ -359,7 +340,8 @@ function ChartWrapper({
+@@ -359,7 +348,8 @@ function ChartWrapper({
              type: newType,
              title: newTitle
            };
@@ -97,7 +132,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
          }
        });
      },
-@@ -378,7 +360,8 @@ function ChartWrapper({
+@@ -378,7 +368,8 @@ function ChartWrapper({
                palette: newPalette
              }
            };
@@ -107,7 +142,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
          }
        });
      },
-@@ -394,7 +377,8 @@ function ChartWrapper({
+@@ -394,7 +385,8 @@ function ChartWrapper({
              ...config,
              title: newTitle
            };
@@ -117,7 +152,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
          }
        });
      },
-@@ -406,7 +390,7 @@ function ChartWrapper({
+@@ -406,7 +398,7 @@ function ChartWrapper({
        editor.update(() => {
          const node = $getNodeByKey(nodeKey);
          if (node && $isChartNode(node)) {
@@ -126,7 +161,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
          }
        });
        setIsEditing(false);
-@@ -566,6 +550,8 @@ function ChartWrapper({
+@@ -566,6 +558,8 @@ function ChartWrapper({
                  <TooltipContent side="bottom"><p>Edit chart data</p></TooltipContent>
                </Tooltip>
              </TooltipProvider>
@@ -135,7 +170,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
              <TooltipProvider delayDuration={200}>
                <Tooltip>
                  <TooltipTrigger asChild>
-@@ -583,6 +569,7 @@ function ChartWrapper({
+@@ -583,6 +577,7 @@ function ChartWrapper({
                  <TooltipContent side="bottom"><p>Add comment</p></TooltipContent>
                </Tooltip>
              </TooltipProvider>
@@ -143,7 +178,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
            </div>
          </div>
  
-@@ -597,151 +584,7 @@ function ChartWrapper({
+@@ -597,151 +592,7 @@ function ChartWrapper({
    );
  }
  

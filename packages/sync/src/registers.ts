@@ -34,31 +34,97 @@ export function sameValue(a: unknown, b: unknown): boolean {
 const segment = (key: string) => key.replace(/~/g, '~0').replace(/\//g, '~1');
 const unsegment = (seg: string) => seg.replace(/~1/g, '/').replace(/~0/g, '~');
 
-/**
- * For each element of `next`, the index of the element of `prev` it continues, or -1 for a new one: equal elements
- * pair by longest common subsequence, then the elements left between two pairs pair in order (edited in place).
- */
-export function alignElements(prev: readonly unknown[], next: readonly unknown[]): number[] {
-  const n = prev.length;
-  const m = next.length;
+/** Order-preserving pairs of equal elements of `prev[i0, i1)` and `next[j0, j1)`, by longest common subsequence. */
+function equalPairs(prev: readonly unknown[], next: readonly unknown[], i0: number, i1: number, j0: number, j1: number): [number, number][] {
+  const head: [number, number][] = [];
+  const tail: [number, number][] = [];
+  while (i0 < i1 && j0 < j1 && sameValue(prev[i0], next[j0])) head.push([i0++, j0++]);
+  while (i0 < i1 && j0 < j1 && sameValue(prev[i1 - 1], next[j1 - 1])) tail.unshift([--i1, --j1]);
+  const n = i1 - i0;
+  const m = j1 - j0;
+  // A rewrite too large to compare cell by cell keeps only its unchanged ends.
+  if (n * m > ALIGN_LIMIT) return [...head, ...tail];
   const lcs = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
   for (let i = n - 1; i >= 0; i--) {
     for (let j = m - 1; j >= 0; j--) {
-      lcs[i][j] = sameValue(prev[i], next[j]) ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+      lcs[i][j] = sameValue(prev[i0 + i], next[j0 + j]) ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
     }
   }
   const pairs: [number, number][] = [];
   for (let i = 0, j = 0; i < n && j < m;) {
-    if (sameValue(prev[i], next[j]) && lcs[i][j] === lcs[i + 1][j + 1] + 1) pairs.push([i++, j++]);
+    if (lcs[i][j] === lcs[i + 1][j + 1] + 1 && sameValue(prev[i0 + i], next[j0 + j])) pairs.push([i0 + i++, j0 + j++]);
     else if (lcs[i + 1][j] >= lcs[i][j + 1]) i++;
     else j++;
   }
-  const match = new Array<number>(m).fill(-1);
+  return [...head, ...pairs, ...tail];
+}
+const ALIGN_LIMIT = 100_000;
+
+/** Fills `match` (next index -> prev index, -1 unmatched) with equal pairs inside each gap its existing pairs leave. */
+function matchEqualInGaps(prev: readonly unknown[], next: readonly unknown[], match: number[]): void {
   let i0 = 0;
   let j0 = 0;
-  for (const [i1, j1] of [...pairs, [n, m] as [number, number]]) {
-    for (let k = 0; k < Math.min(i1 - i0, j1 - j0); k++) match[j0 + k] = i0 + k;
-    if (i1 < n) match[j1] = i1;
+  for (let j = 0; j <= next.length; j++) {
+    if (j < next.length && match[j] < 0) continue;
+    const i1 = j < next.length ? match[j] : prev.length;
+    if (j > j0 && i1 > i0) for (const [i, k] of equalPairs(prev, next, i0, i1, j0, j)) match[k] = i;
+    i0 = i1 + 1;
+    j0 = j + 1;
+  }
+}
+
+function leaves(value: unknown, path = '', out = new Map<string, unknown>()): Map<string, unknown> {
+  if (Array.isArray(value)) value.forEach((element, index) => leaves(element, `${path}/${index}`, out));
+  else if (isPlainObject(value)) for (const key of Object.keys(value)) leaves(value[key], `${path}/${segment(key)}`, out);
+  else out.set(path, value);
+  return out;
+}
+
+/**
+ * Pairs a gap's elements by what they still share: in order when the gap kept its length (edited in place),
+ * otherwise by the most equal leaves, so a deleted element never hands its identity to an edited neighbour.
+ */
+function pairGap(prev: readonly unknown[], next: readonly unknown[], i0: number, i1: number, j0: number, j1: number, match: number[]): void {
+  const n = i1 - i0;
+  const m = j1 - j0;
+  if (n === m) {
+    for (let k = 0; k < n; k++) match[j0 + k] = i0 + k;
+    return;
+  }
+  if (!n || !m || n * m > ALIGN_LIMIT) return;
+  const prevLeaves = prev.slice(i0, i1).map(value => leaves(value));
+  const nextLeaves = next.slice(j0, j1).map(value => leaves(value));
+  const shared = (i: number, j: number) => {
+    let count = 0;
+    for (const [path, leaf] of nextLeaves[j]) if (prevLeaves[i].has(path) && sameValue(prevLeaves[i].get(path), leaf)) count++;
+    return count;
+  };
+  const best = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
+  const score: number[][] = Array.from({ length: n }, (_, i) => Array.from({ length: m }, (_, j) => shared(i, j)));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      best[i][j] = Math.max(best[i + 1][j], best[i][j + 1], score[i][j] > 0 ? best[i + 1][j + 1] + score[i][j] : 0);
+    }
+  }
+  for (let i = 0, j = 0; i < n && j < m;) {
+    if (score[i][j] > 0 && best[i][j] === best[i + 1][j + 1] + score[i][j]) match[j0 + j++] = i0 + i++;
+    else if (best[i + 1][j] >= best[i][j + 1]) i++;
+    else j++;
+  }
+}
+
+/**
+ * For each element of `next`, the index of the element of `prev` it continues, or -1 for a new one: equal elements
+ * pair first, then the elements between two pairs by `pairGap`.
+ */
+export function alignElements(prev: readonly unknown[], next: readonly unknown[]): number[] {
+  const match = new Array<number>(next.length).fill(-1);
+  const pairs = equalPairs(prev, next, 0, prev.length, 0, next.length);
+  for (const [i, j] of pairs) match[j] = i;
+  let i0 = 0;
+  let j0 = 0;
+  for (const [i1, j1] of [...pairs, [prev.length, next.length] as [number, number]]) {
+    pairGap(prev, next, i0, i1, j0, j1, match);
     i0 = i1 + 1;
     j0 = j1 + 1;
   }
@@ -75,6 +141,8 @@ const chartCodec: MapCodec = {
   fields: ['__config'],
   encode(fields, ref) {
     const out = new Map<string, unknown>();
+    let refIndex: ChartIndex | undefined;
+    const indexOfRef = () => (refIndex ??= chartIndex(ref!));
     const walk = (value: unknown, path: string) => {
       if (isPlainObject(value)) {
         const keys = Object.keys(value).filter(key => value[key] !== undefined);
@@ -82,7 +150,7 @@ const chartCodec: MapCodec = {
         for (const key of keys) walk(value[key], `${path}/${segment(key)}`);
       } else if (Array.isArray(value)) {
         out.set(`#a${path}`, true);
-        const slots = elementSlots(value, path, ref);
+        const slots = elementSlots(value, path, ref, indexOfRef);
         value.forEach((element, index) => {
           out.set(`@${path}/${slots[index].id}`, slots[index].at);
           walk(element, `${path}/${slots[index].id}`);
@@ -131,17 +199,40 @@ function chartValue(entries: Entries, index: ChartIndex, path: string): unknown 
     for (const seg of order) object[unsegment(seg)] = chartValue(entries, index, `${path}/${seg}`);
     return object;
   }
-  if (entries.has(`#a${path}`)) return chartElements(entries, index, path).map(({ id }) => chartValue(entries, index, `${path}/${id}`));
+  if (entries.has(`#a${path}`)) {
+    const slots = chartElements(entries, index, path);
+    return remember(slots.map(({ id }) => chartValue(entries, index, `${path}/${id}`)), path, slots);
+  }
   return clone(entries.get(`=${path}`));
 }
-/** Ids and positions for `value`'s elements: one continuing an element of `ref`'s array keeps its id and position. */
-function elementSlots(value: readonly unknown[], path: string, ref?: Entries): Slot[] {
-  if (!ref?.has(`#a${path}`)) return value.map((_, index) => ({ id: `i${index}`, at: index }));
-  const refIndex = chartIndex(ref);
-  const prev = chartElements(ref, refIndex, path);
-  const match = alignElements(prev.map(({ id }) => chartValue(ref, refIndex, `${path}/${id}`)), value);
-  const slots = match.map(j => (j >= 0 ? prev[j] : null));
-  // A run of new elements spreads between its neighbours' positions.
+/**
+ * The slots of the arrays a decode built, by path, so a write derived from them keeps each element's identity instead
+ * of inferring it; a `RegisterDraft` records the same for the arrays its text parses to (null: a new element).
+ */
+const knownSlots = new WeakMap<readonly unknown[], Map<string, readonly (Slot | null)[]>>();
+function remember<T extends readonly unknown[]>(array: T, path: string, slots: readonly (Slot | null)[]): T {
+  const byPath = knownSlots.get(array) ?? new Map<string, readonly (Slot | null)[]>();
+  knownSlots.set(array, byPath.set(path, slots));
+  return array;
+}
+
+/**
+ * Ids and positions for `value`'s elements. Known slots win; otherwise an element continuing one of `ref`'s array
+ * keeps its id and position. Without `ref` (a register's first encoding) ids are repeatable; a live write that creates
+ * an array, or adds elements, mints unique ones so a peer doing the same at once never shares them.
+ */
+function elementSlots(value: readonly unknown[], path: string, ref: Entries | undefined, refIndex: () => ChartIndex): Slot[] {
+  const known = knownSlots.get(value)?.get(path);
+  let slots: (Slot | null)[];
+  if (known?.length === value.length) slots = [...known];
+  else if (!ref) return value.map((_, index) => ({ id: `i${index}`, at: index }));
+  else if (!ref.has(`#a${path}`)) slots = value.map(() => null);
+  else {
+    const prev = chartElements(ref, refIndex(), path);
+    slots = alignElements(prev.map(({ id }) => chartValue(ref, refIndex(), `${path}/${id}`)), value).map(j => (j >= 0 ? prev[j] : null));
+  }
+  // A run of new elements spreads between its neighbours' positions, each at a random point of its own share, so
+  // concurrent runs at one spot interleave without tying and a later insert between two of them has room.
   for (let start = 0; start < slots.length; start++) {
     if (slots[start]) continue;
     let end = start;
@@ -150,13 +241,144 @@ function elementSlots(value: readonly unknown[], path: string, ref?: Entries): S
     const high = end < slots.length ? slots[end]!.at : undefined;
     const count = end - start + 1;
     for (let k = 1; k < count; k++) {
-      const at = low !== undefined && high !== undefined ? low + ((high - low) * k) / count
-        : low !== undefined ? low + k : high !== undefined ? high - count + k : k - 1;
+      const share = k - 0.5 + Math.random();
+      const at = low !== undefined && high !== undefined ? low + ((high - low) * share) / count
+        : low !== undefined ? low + share : high !== undefined ? high - count + share : share - 1;
       slots[start + k - 1] = { id: `n${crypto.randomUUID().slice(0, 13)}`, at };
     }
     start = end;
   }
   return slots as Slot[];
+}
+
+/** Where a JSON text puts each value: arrays list their items' spans, objects their fields'. */
+interface Span { start: number; end: number; items?: Span[]; fields?: Map<string, Span> }
+const JSON_STRING = /"(?:[^"\\]|\\.)*"/y;
+const JSON_SCALAR = /-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null/y;
+function jsonSpans(text: string): Span | undefined {
+  let at = 0;
+  const space = () => { while (at < text.length && /\s/.test(text[at])) at++; };
+  const token = (pattern: RegExp) => {
+    pattern.lastIndex = at;
+    const found = pattern.exec(text);
+    if (!found) throw new SyntaxError('not JSON');
+    at += found[0].length;
+    return found[0];
+  };
+  const value = (): Span => {
+    space();
+    const start = at;
+    const open = text[at];
+    if (open !== '{' && open !== '[') {
+      token(open === '"' ? JSON_STRING : JSON_SCALAR);
+      return { start, end: at };
+    }
+    at++;
+    const close = open === '{' ? '}' : ']';
+    const items: Span[] = [];
+    const fields = new Map<string, Span>();
+    space();
+    if (text[at] === close) at++;
+    else {
+      for (;;) {
+        if (open === '{') {
+          space();
+          const key = JSON.parse(token(JSON_STRING)) as string;
+          space();
+          if (text[at++] !== ':') throw new SyntaxError('not JSON');
+          fields.set(key, value());
+        } else items.push(value());
+        space();
+        const next = text[at++];
+        if (next === close) break;
+        if (next !== ',') throw new SyntaxError('not JSON');
+      }
+    }
+    return open === '{' ? { start, end: at, fields } : { start, end: at, items };
+  };
+  try {
+    const root = value();
+    space();
+    return at === text.length ? root : undefined;
+  } catch { return undefined; }
+}
+
+/**
+ * A text draft of a register value (the chart's JSON editor). It follows each edit to know which characters of the
+ * opening text survive, so a save keeps the identity of every array element whose opening and closing characters
+ * both survive inside one element, however much the person changed inside it. An element whose text was deleted or
+ * retyped is new; only an equal element (an undone deletion) can take an unmatched one's place.
+ */
+export class RegisterDraft {
+  private readonly base: unknown;
+  private readonly baseText: string;
+  private text: string;
+  private origin: Int32Array;
+  constructor(base: unknown, baseText: string) {
+    this.base = base;
+    this.baseText = baseText;
+    this.text = baseText;
+    this.origin = Int32Array.from({ length: baseText.length }, (_, index) => index);
+  }
+
+  /** `next` is the draft after one edit; `caret` (the selection end after it) places the edit exactly. */
+  edit(next: string, caret?: number): void {
+    const prev = this.text;
+    let tail = 0;
+    const after = caret === undefined || caret < 0 ? undefined : next.slice(caret);
+    if (after !== undefined && after.length <= prev.length && prev.endsWith(after)) tail = after.length;
+    else while (tail < prev.length && tail < next.length && prev[prev.length - 1 - tail] === next[next.length - 1 - tail]) tail++;
+    let head = 0;
+    while (head < prev.length - tail && head < next.length - tail && prev[head] === next[head]) head++;
+    const origin = new Int32Array(next.length).fill(-1);
+    origin.set(this.origin.subarray(0, head));
+    origin.set(this.origin.subarray(prev.length - tail), next.length - tail);
+    this.origin = origin;
+    this.text = next;
+  }
+
+  /** Records element identity on `value`: the draft's current text, as its caller parsed and validated it. */
+  identify(value: unknown): void {
+    const now = jsonSpans(this.text);
+    const then = jsonSpans(this.baseText);
+    if (now && then) this.walk(value, now, this.base, then, '');
+  }
+
+  private walk(value: unknown, now: Span, base: unknown, then: Span, path: string): void {
+    if (Array.isArray(value) && Array.isArray(base) && now.items && then.items) {
+      const known = knownSlots.get(base)?.get(path);
+      if (!known || known.length !== base.length || then.items.length !== base.length || now.items.length !== value.length) return;
+      // A caller may put another key's array here (moss copies the first series into `data`); hint only the text's.
+      if (!sameValue(value, JSON.parse(this.text.slice(now.start, now.end)))) return;
+      const opens = new Map(then.items.map((span, index) => [span.start, index]));
+      const closes = new Map(then.items.map((span, index) => [span.end - 1, index]));
+      let last = -1;
+      const match = now.items.map((span) => {
+        const opened = new Set<number>();
+        for (let at = span.start; at < span.end; at++) {
+          const from = this.origin[at];
+          if (from < 0) continue;
+          const open = opens.get(from);
+          if (open !== undefined) opened.add(open);
+          const close = closes.get(from);
+          if (close !== undefined && close > last && opened.has(close)) return (last = close);
+        }
+        return -1;
+      });
+      matchEqualInGaps(base, value, match);
+      remember(value, path, match.map(j => (j >= 0 ? known[j] : null)));
+      match.forEach((j, k) => {
+        const slot = j >= 0 ? known[j] : null;
+        if (slot) this.walk(value[k], now.items![k], base[j], then.items![j], `${path}/${slot.id}`);
+      });
+    } else if (isPlainObject(value) && isPlainObject(base) && now.fields && then.fields) {
+      for (const key of Object.keys(value)) {
+        const field = now.fields.get(key);
+        const was = then.fields.get(key);
+        if (field && was && key in base) this.walk(value[key], field, base[key], was, `${path}/${segment(key)}`);
+      }
+    }
+  }
 }
 
 interface Label { id?: unknown; [key: string]: unknown }

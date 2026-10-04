@@ -10,7 +10,7 @@ Every node family moss renders, in one note. A paragraph with **bold**, *italic*
 
 - A bullet
 - Another bullet
-  - A nested bullet
+    - A nested bullet
 
 1. First step
 2. Second step

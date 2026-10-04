@@ -20,6 +20,7 @@ const FAMILIES: { family: string; selector: string; pasted: number; slash?: stri
   { family: 'heading 3', selector: 'h3', pasted: 1 },
   { family: 'heading 4', selector: 'h4', pasted: 1 },
   { family: 'bulleted list', selector: 'ul.list-disc', pasted: 2 },
+  { family: 'nested list', selector: 'li > ul, li > ol', pasted: 1 },
   { family: 'numbered list', selector: 'ol', pasted: 1 },
   { family: 'checklist item', selector: 'li[role="checkbox"]', pasted: 2 },
   { family: 'bold', selector: 'strong', pasted: 2 },

@@ -1,16 +1,51 @@
 diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx
 --- a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx
 +++ b/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx
-@@ -11,6 +11,8 @@ import {
+@@ -11,6 +11,10 @@ import {
    DropdownMenuItem
  } from '@moss/shared/components/ui/dropdown-menu';
  import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@moss/shared/components/ui/tooltip';
 +// moss-multi seam: hide-registry (A§9)
 +import { hidden } from '@moss-multi/host/affordances';
++// moss-multi seam: register payloads (A§10.10)
++import { RegisterDraft } from '@moss-multi/host/collab/registers';
  import type { ChartConfig, ChartPalette, ChartType } from '../utils/chartDefaults';
  import {
    BLOCK_HEADER_CLASSNAME,
-@@ -309,13 +311,16 @@ function ChartWrapper({
+@@ -64,6 +68,8 @@ function ChartEditView({
+ }): JSX.Element {
+   const [editor] = useLexicalComposerContext();
+   const [jsonText, setJsonText] = useState(() => serializeChartConfig(initialConfig));
++  // moss-multi seam: register payloads (A§10.10): the draft follows its edits so a save keeps each data point's identity.
++  const [draft] = useState(() => new RegisterDraft(initialConfig, serializeChartConfig(initialConfig)));
+   const [validation, setValidation] = useState<{ isValid: boolean; error?: string }>({ isValid: true });
+   const textareaRef = useRef<HTMLTextAreaElement>(null);
+ 
+@@ -82,9 +88,10 @@ function ChartEditView({
+   const handleDone = useCallback(() => {
+     const result = parseChartConfig(jsonText);
+     if (result.valid && result.config) {
++      draft.identify(result.config);
+       onDone(result.config);
+     }
+-  }, [jsonText, onDone]);
++  }, [jsonText, onDone, draft]);
+ 
+   useEffect(() => {
+     const flushDraft = () => {
+@@ -158,7 +165,10 @@ function ChartEditView({
+       <textarea
+         ref={textareaRef}
+         value={jsonText}
+-        onChange={(e) => setJsonText(e.target.value)}
++        onChange={(e) => {
++          draft.edit(e.target.value, e.target.selectionEnd);
++          setJsonText(e.target.value);
++        }}
+         onKeyDown={handleKeyDown}
+         className="w-full resize-y rounded-md border border-surface-panel bg-surface-raised-control p-canvas-surface-pad font-mono text-sm text-ink-default focus:border-ink-default/20 focus:outline-none focus:ring-1 focus:ring-ink-default/20"
+         rows={12}
+@@ -309,13 +319,16 @@ function ChartWrapper({
      [isSelected, setSelected, clearSelection]
    );
  
@@ -28,7 +63,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
    );
  
    const handleTypeChange = useCallback(
-@@ -335,7 +340,8 @@ function ChartWrapper({
+@@ -335,7 +348,8 @@ function ChartWrapper({
              type: newType,
              title: newTitle
            };
@@ -38,7 +73,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
          }
        });
      },
-@@ -354,7 +360,8 @@ function ChartWrapper({
+@@ -354,7 +368,8 @@ function ChartWrapper({
                palette: newPalette
              }
            };
@@ -48,7 +83,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
          }
        });
      },
-@@ -370,7 +377,8 @@ function ChartWrapper({
+@@ -370,7 +385,8 @@ function ChartWrapper({
              ...config,
              title: newTitle
            };
@@ -58,7 +93,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
          }
        });
      },
-@@ -382,7 +390,7 @@ function ChartWrapper({
+@@ -382,7 +398,7 @@ function ChartWrapper({
        editor.update(() => {
          const node = $getNodeByKey(nodeKey);
          if (node && $isChartNode(node)) {
@@ -67,7 +102,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
          }
        });
        setIsEditing(false);
-@@ -542,6 +550,8 @@ function ChartWrapper({
+@@ -542,6 +558,8 @@ function ChartWrapper({
                  <TooltipContent side="bottom"><p>Edit chart data</p></TooltipContent>
                </Tooltip>
              </TooltipProvider>
@@ -76,7 +111,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
              <TooltipProvider delayDuration={200}>
                <Tooltip>
                  <TooltipTrigger asChild>
-@@ -559,6 +569,7 @@ function ChartWrapper({
+@@ -559,6 +577,7 @@ function ChartWrapper({
                  <TooltipContent side="bottom"><p>Add comment</p></TooltipContent>
                </Tooltip>
              </TooltipProvider>
@@ -84,7 +119,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
            </div>
          </div>
  
-@@ -575,5 +586,5 @@ function ChartWrapper({
+@@ -575,5 +594,5 @@ function ChartWrapper({
  
  // moss-multi seam: node-views (A§12)
  registerNodeView(ChartNode.getType(), function decorate(this: ChartNode): JSX.Element {
