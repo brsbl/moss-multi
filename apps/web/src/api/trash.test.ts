@@ -9,30 +9,69 @@ import { handleApi } from './router.ts';
 
 const trashed: string[] = [];
 const restored: string[] = [];
-/** Every DocDO trash and restore in order, with the trash batch it names. */
-const calls: [op: 'trash' | 'restore', doc: string, batch: unknown][] = [];
+/** Every DocDO trash (a hold) and settle in order, with the hold it names and whether D1 had the note trashed then. */
+const calls: [op: 'trash' | 'settle', doc: string, hold: string | undefined, trashedInD1: boolean][] = [];
+/** The DocDO as A§5.1 models it: a note admits sockets only with no hold and a live row at its last settle. */
+const model = new Map<string, { holds: Set<string>; deleted: boolean }>();
 let closeFails = 0;
-/** While set, a DocDO trash waits for it after being called. */
-let trashGate: Promise<void> | null = null;
+let settleFails = 0;
+/** While set, a settle that names a hold waits for it. */
+let settleGate: Promise<void> | null = null;
+/** While set, the next D1 statement matching it fails, as a D1 outage would. */
+let failSql: RegExp | null = null;
 const published = new Map<string, { type: string; docIds?: string[]; folderIds?: string[] }[]>();
+
+const docState = (doc: string) => model.get(doc) ?? model.set(doc, { holds: new Set(), deleted: false }).get(doc)!;
+const trashedInD1 = async (doc: string) => (await d1.db.prepare('SELECT deleted_at FROM docs WHERE id = ?').bind(doc).first<{ deleted_at: number | null }>())?.deleted_at != null;
+/** Whether the DocDO admits a socket to the note. */
+const admits = (doc: string) => docState(doc).holds.size === 0 && !docState(doc).deleted;
 
 const DocDO = {
   idFromName: (name: string) => ({ name, toString: () => name }),
   get: (id: { name: string }) => ({
     setName: async () => undefined,
-    trash: async (batch?: unknown) => {
-      calls.push(['trash', id.name, batch]);
-      await trashGate;
+    trash: async (hold: string) => {
+      calls.push(['trash', id.name, hold, await trashedInD1(id.name)]);
       if (closeFails > 0) {
         closeFails -= 1;
         throw new Error('DocDO unavailable');
       }
+      docState(id.name).holds.add(hold);
       trashed.push(id.name);
     },
-    restore: async (batch?: unknown) => { calls.push(['restore', id.name, batch]); restored.push(id.name); },
+    settle: async (hold?: string) => {
+      if (hold) await settleGate;
+      const deleted = await trashedInD1(id.name);
+      calls.push(['settle', id.name, hold, deleted]);
+      if (settleFails > 0) {
+        settleFails -= 1;
+        throw new Error('DocDO unavailable');
+      }
+      const state = docState(id.name);
+      if (hold) state.holds.delete(hold);
+      if (state.deleted && !deleted) restored.push(id.name);
+      state.deleted = deleted;
+      return { deleted };
+    },
     exportMarkdown: async () => `Body of ${id.name}\n`,
   }),
 };
+
+/** D1 as the routes see it: the test's D1, except a statement matching failSql fails once. */
+function flakyDb(db: D1Database): D1Database {
+  return new Proxy(db, {
+    get(target, key) {
+      if (key !== 'prepare') return Reflect.get(target, key, target);
+      return (sql: string) => {
+        if (!failSql?.test(sql)) return target.prepare(sql);
+        failSql = null;
+        const refuse = async () => { throw new Error('D1_ERROR: storage unavailable'); };
+        const failing = { bind: () => failing, run: refuse, all: refuse, raw: refuse, first: refuse };
+        return failing;
+      };
+    },
+  });
+}
 
 const PrincipalDO = {
   idFromName: (name: string) => ({ name, toString: () => name }),
@@ -50,7 +89,7 @@ let cy: TestUser;
 
 beforeAll(async () => {
   d1 = await migratedD1();
-  env = { DB: d1.db, BETTER_AUTH_SECRET: SECRET, BETTER_AUTH_URL: BASE, DocDO: DocDO as never, PrincipalDO: PrincipalDO as never };
+  env = { DB: flakyDb(d1.db), BETTER_AUTH_SECRET: SECRET, BETTER_AUTH_URL: BASE, DocDO: DocDO as never, PrincipalDO: PrincipalDO as never };
   ada = await signedUpUser(env, 'trash-ada');
   ben = await signedUpUser(env, 'trash-ben', 'Ben');
   cy = await signedUpUser(env, 'trash-cy', 'Cy');
@@ -60,8 +99,11 @@ beforeEach(() => {
   trashed.length = 0;
   restored.length = 0;
   calls.length = 0;
-  trashGate = null;
+  model.clear();
+  settleGate = null;
+  failSql = null;
   closeFails = 0;
+  settleFails = 0;
   published.clear();
 });
 
@@ -120,16 +162,46 @@ describe('DELETE /api/docs/:id', () => {
     expect(trashed).toEqual([]);
   });
 
-  it('answers 503 in words when an open doc did not close, and the owner’s retry closes it', async () => {
+  it('closes the note on its DocDO before the row commits, and settles it from the committed row', async () => {
+    const doc = await insertDoc(d1.db, ada);
+    expect((await call(ada, 'DELETE', `/api/docs/${doc}`)).status).toBe(200);
+    const { trash_batch_id: batch } = (await docRow(doc)) as { trash_batch_id: string };
+    expect(calls).toEqual([['trash', doc, batch, false], ['settle', doc, batch, true]]);
+    expect(admits(doc)).toBe(false);
+  });
+
+  it('a DocDO that cannot close the note fails the trash before anything commits, in words, and the owner’s retry trashes it', async () => {
     const doc = await insertDoc(d1.db, ada);
     closeFails = 1;
     await expectSentence(await call(ada, 'DELETE', `/api/docs/${doc}`), 503);
-    expect((await docRow(doc))?.deleted_at, 'the note is in Trash all the same').not.toBeNull();
+    expect((await docRow(doc))?.deleted_at, 'nothing committed').toBeNull();
+    expect(admits(doc), 'and the note stays open').toBe(true);
     const retry = await call(ada, 'DELETE', `/api/docs/${doc}`);
     expect(retry.status).toBe(200);
     expect(await retry.json()).toMatchObject({ action: 'trashed', retentionDays: 30 });
     expect(trashed).toEqual([doc]);
+    expect(admits(doc)).toBe(false);
     expect((await call(ben, 'DELETE', `/api/docs/${doc}`)).status, 'nobody else learns it exists').toBe(404);
+  });
+
+  it('a D1 failure after the note closed reopens it from the row, in words, and nothing is trashed', async () => {
+    const doc = await insertDoc(d1.db, ada);
+    failSql = /^update "docs"/i;
+    await expectSentence(await call(ada, 'DELETE', `/api/docs/${doc}`), 503);
+    expect((await docRow(doc))?.deleted_at).toBeNull();
+    expect(calls.map(([op, , , inD1]) => [op, inD1])).toEqual([['trash', false], ['settle', false]]);
+    expect(admits(doc), 'the states agree: live').toBe(true);
+  });
+
+  it('a settle that fails after the commit leaves the note held closed: the trash stands and no write lands', async () => {
+    const doc = await insertDoc(d1.db, ada);
+    settleFails = 1;
+    expect((await call(ada, 'DELETE', `/api/docs/${doc}`)).status).toBe(200);
+    expect((await docRow(doc))?.deleted_at).not.toBeNull();
+    expect(admits(doc)).toBe(false);
+    // The owner's repeat settles it from the row.
+    expect((await call(ada, 'DELETE', `/api/docs/${doc}`)).status).toBe(200);
+    expect(calls.at(-1)).toEqual(['settle', doc, undefined, true]);
   });
 
   it('a trashed note gets the byte-identical 404 on a fresh load, for its owner too, and refuses changes', async () => {
@@ -195,31 +267,40 @@ describe('POST /api/docs/:id/restore', () => {
     expect(row?.filename).not.toBe('plans.md');
   });
 
-  it('a restore that lands while the trash is still closing the doc names that trash’s batch, so the late close is stale and the note stays live', async () => {
+  it('restore commits the row before the doc reopens, so the doc never admits a socket the row refuses', async () => {
     const doc = await insertDoc(d1.db, ada);
-    let release!: () => void;
-    trashGate = new Promise((resolve) => { release = resolve; });
-    const trashing = call(ada, 'DELETE', `/api/docs/${doc}`);
-    await vi.waitFor(() => expect(calls).toHaveLength(1));
-    const { trash_batch_id: batch } = (await docRow(doc)) as { trash_batch_id: string };
+    expect((await call(ada, 'DELETE', `/api/docs/${doc}`)).status).toBe(200);
+    calls.length = 0;
     expect((await call(ada, 'POST', `/api/docs/${doc}/restore`)).status).toBe(200);
-    release();
-    expect((await trashing).status).toBe(200);
-    expect(typeof batch).toBe('string');
-    // The DocDO orders the two by the batch: a trash of a batch already restored changes nothing.
-    expect(calls).toEqual([['trash', doc, batch], ['restore', doc, batch]]);
-    expect(await docRow(doc)).toMatchObject({ deleted_at: null, trash_batch_id: null });
+    expect(calls).toEqual([['settle', doc, undefined, false]]);
+    expect(admits(doc)).toBe(true);
   });
 
-  it('a second restore of an older batch never reopens a newer trash', async () => {
+  it('a D1 failure in restore never reopens the doc: it answers in words and the note stays in Trash, closed', async () => {
     const doc = await insertDoc(d1.db, ada);
     expect((await call(ada, 'DELETE', `/api/docs/${doc}`)).status).toBe(200);
+    calls.length = 0;
+    failSql = /^update "docs"/i;
+    await expectSentence(await call(ada, 'POST', `/api/docs/${doc}/restore`), 503);
+    expect((await docRow(doc))?.deleted_at).not.toBeNull();
+    expect(calls).toEqual([]);
+    expect(admits(doc)).toBe(false);
+    expect((await call(ada, 'POST', `/api/docs/${doc}/restore`)).status, 'the retry restores it').toBe(200);
+    expect(admits(doc)).toBe(true);
+  });
+
+  it('a restore that lands while the trash is still settling converges: the row is live and the doc admits again', async () => {
+    const doc = await insertDoc(d1.db, ada);
+    let release!: () => void;
+    settleGate = new Promise((resolve) => { release = resolve; });
+    const trashing = call(ada, 'DELETE', `/api/docs/${doc}`);
+    await vi.waitFor(async () => expect(await trashedInD1(doc)).toBe(true));
     expect((await call(ada, 'POST', `/api/docs/${doc}/restore`)).status).toBe(200);
-    expect((await call(ada, 'DELETE', `/api/docs/${doc}`)).status).toBe(200);
-    const [[, , first], [, , restoredBatch], [, , second]] = calls;
-    expect(restoredBatch).toBe(first);
-    expect(second, 'each trash is its own batch').not.toBe(first);
-    expect((await docRow(doc))?.trash_batch_id).toBe(second);
+    expect(admits(doc), 'the trash still holds it').toBe(false);
+    release();
+    expect((await trashing).status).toBe(200);
+    expect(await docRow(doc)).toMatchObject({ deleted_at: null, trash_batch_id: null });
+    expect(admits(doc), 'the states agree: live').toBe(true);
   });
 
   it('refuses everyone but the owner: an editor in words, a stranger with the one 404', async () => {
