@@ -47,10 +47,22 @@ export interface WorkspaceListing {
   docs: ApiDoc[];
 }
 
+type SessionStore = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
+
 /** The browser behind the bridge; injected in unit tests. */
 export interface BrowserHooks {
   origin: string;
+  /** A new tab with no opener. */
   open(url: string): void;
+  /** A new tab that keeps this one as its opener; false when the browser blocked it. */
+  openWindow(url: string): boolean;
+  /** Saves `body` through the browser's downloads. */
+  download(filename: string, body: Blob): void;
+  /** This tab's session storage, and its opener's when an opener of this origin exists. */
+  session: SessionStore | null;
+  openerSession(): Pick<Storage, 'getItem'> | null;
+  /** The page's `?share=` token. */
+  share(): string | null;
   replacePath(path: string): void;
   onPopState(listener: () => void): () => void;
   copy(text: string, html: string): Promise<void>;
@@ -87,6 +99,15 @@ const NOTE_INTELLIGENCE_KEY = 'moss-multi:note-intelligence';
 const VAULT_KEY = 'moss-multi:active-vault';
 const layoutKey = (id: string) => `moss-multi:layout:${id}`;
 const collapsedKey = (id: string) => `moss-multi:collapsed-headings:${id}`;
+/** The one PDF export session a tab holds: the next Save as PDF replaces it, so session storage never accumulates. */
+const PDF_SESSION_KEY = 'moss-multi:pdf-export';
+
+/** moss's save-dialog file name (main/ipc-handlers.ts sanitizeFilename): no path separators or reserved characters. */
+export function markdownFileName(title: string): string {
+  const name = Array.from(title.normalize('NFKC').trim(), (char) => (char < ' ' || '<>:"/\\|?*'.includes(char) ? '-' : char))
+    .join('').replace(/^\.+/, '');
+  return `${name || UNTITLED}.md`;
+}
 
 type Method<R> = (...args: unknown[]) => Promise<R>;
 
@@ -154,9 +175,14 @@ function writeJson(storage: BridgeOptions['storage'], key: string, value: unknow
   else storage?.setItem(key, JSON.stringify(value));
 }
 
-const inertBrowser: BrowserHooks = {
+export const inertBrowser: BrowserHooks = {
   origin: 'http://localhost',
   open: noop,
+  openWindow: () => false,
+  download: noop,
+  session: null,
+  openerSession: () => null,
+  share: () => null,
   replacePath: noop,
   onPopState: () => noop,
   copy: async () => undefined,
@@ -311,6 +337,9 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
     return stored === 'light' || stored === 'dark' ? stored : 'system';
   };
   const docUrl = (id: string) => new URL(`/d/${encodeURIComponent(id)}`, browser.origin).href;
+  /** moss's preview window id: any number for an opened tab, null when the browser blocked it. */
+  const pdfTab = (sessionId: string): number | null =>
+    browser.openWindow(`/pdf-export?pdfExportSessionId=${encodeURIComponent(sessionId)}`) ? 1 : null;
 
   // Folders (A§9): moss names a folder by its `Notes/...` path; the refreshed id↔path map turns it into a server id.
   const idForPath = (path: string): string | null => {
@@ -476,12 +505,37 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
         }
       },
       showInFinder: none,
-      getPdfExportSession: nothing,
-      createPdfExportSession: nothing,
-      openPdfExportPreview: nothing,
-      openPdfExportRenderSurface: nothing,
+      // Save as PDF is browser print (R4): the session reaches the /pdf-export tab through session storage, which a tab
+      // opened with an opener copies; that tab prints once moss's PdfExportApp is ready (host/pdf-print.ts).
+      getPdfExportSession: async (sessionId: string) => {
+        for (const store of [browser.session, browser.openerSession()]) {
+          const held = readJson<{ id: string; payload: unknown }>(store as BridgeOptions['storage'], PDF_SESSION_KEY);
+          if (held?.id === sessionId) return held.payload;
+        }
+        return null;
+      },
+      createPdfExportSession: async (noteId: string, input: Record<string, unknown> = {}) => {
+        // PdfExportApp renders the serialized state and never reads renderedHtml, the largest field.
+        const payload: Record<string, unknown> = { noteId, ...input };
+        delete payload.renderedHtml;
+        const id = crypto.randomUUID();
+        writeJson(browser.session, PDF_SESSION_KEY, { id, payload });
+        return id;
+      },
+      openPdfExportPreview: async (sessionId: string) => pdfTab(sessionId),
+      openPdfExportRenderSurface: async (sessionId: string) => pdfTab(sessionId),
       exportPdf: unavailable('Exporting a PDF file'),
-      exportMarkdown: async () => ({ canceled: true }),
+      // Save as Markdown downloads the server's export (A§12, one converter): content extensions stay and no comment
+      // or layout marker is in it. moss's client-side markdown is not used.
+      exportMarkdown: async (id: string, input: { title?: string } = {}) => {
+        const share = browser.share();
+        const response = await request(`/api/docs/${encodeURIComponent(id)}/content`, {
+          headers: { accept: 'text/markdown', ...(share ? { 'x-moss-share': share } : {}) },
+        });
+        if (!response.ok) throw new Error('The note couldn’t export right now. Try again.');
+        browser.download(markdownFileName(input.title ?? ''), new Blob([await response.arrayBuffer()], { type: 'text/markdown' }));
+        return { canceled: false };
+      },
       onExternalFileOpen: silent,
       onInternalFileOpen: (callback?: Listener<[string]>) =>
         browser.onPopState(() => {
@@ -578,7 +632,10 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
       setImageAltTextMenuEnabled: none,
       // Open in New Window is a browser tab (R4).
       createWindow: async (input: { noteId?: string | null } = {}) => {
-        browser.open(input.noteId ? docUrl(input.noteId) : new URL('/', browser.origin).href);
+        const url = new URL(input.noteId ? docUrl(input.noteId) : new URL('/', browser.origin).href);
+        const share = browser.share();
+        if (share) url.searchParams.set('share', share);
+        browser.open(url.href);
         return { action: 'created' as const, windowId: -1 };
       },
       getWindowContext: async () => ({ windowId: 1, initialNoteId: docIdFromPath(pathname()), launchReason: 'initial-launch' as const, openedFromWindowId: null }),
@@ -651,12 +708,40 @@ function localStorageOrNull(): Storage | null {
   }
 }
 
+function sessionStorageOrNull(): Storage | null {
+  try {
+    return window.sessionStorage;
+  } catch {
+    return null;
+  }
+}
+
 function windowBrowser(): BrowserHooks {
   return {
     origin: window.location.origin,
     open: (url) => {
       window.open(url, '_blank', 'noopener');
     },
+    openWindow: (url) => window.open(url, '_blank') !== null,
+    download: (filename, body) => {
+      const href = URL.createObjectURL(body);
+      const link = Object.assign(document.createElement('a'), { href, download: filename });
+      link.style.display = 'none';
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(href), 60_000);
+    },
+    session: sessionStorageOrNull(),
+    openerSession: () => {
+      try {
+        const opener = window.opener as Window | null;
+        return opener && opener.location.origin === window.location.origin ? opener.sessionStorage : null;
+      } catch {
+        return null; // an opener on another origin
+      }
+    },
+    share: () => new URLSearchParams(window.location.search).get('share'),
     // Moss keeps its own back and forward (A§9 navigation), so the address changes without the router: TanStack wraps
     // window.history.replaceState, and the route change it reports would remount moss's whole App.
     replacePath: (path) => History.prototype.replaceState.call(window.history, window.history.state, '', path),

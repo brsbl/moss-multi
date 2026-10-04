@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as PdfExportRouteImport } from './routes/pdf-export'
 import { Route as DDocIdRouteImport } from './routes/d.$docId'
 
 const IndexRoute = IndexRouteImport.update({
@@ -23,6 +24,11 @@ const LoginRoute = LoginRouteImport.update({
   path: '/login',
   getParentRoute: () => rootRouteImport,
 } as any)
+const PdfExportRoute = PdfExportRouteImport.update({
+  id: '/pdf-export',
+  path: '/pdf-export',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const DDocIdRoute = DDocIdRouteImport.update({
   id: '/d/$docId',
   path: '/d/$docId',
@@ -32,30 +38,34 @@ const DDocIdRoute = DDocIdRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
+  '/pdf-export': typeof PdfExportRoute
   '/d/$docId': typeof DDocIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
+  '/pdf-export': typeof PdfExportRoute
   '/d/$docId': typeof DDocIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
+  '/pdf-export': typeof PdfExportRoute
   '/d/$docId': typeof DDocIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/login' | '/d/$docId'
+  fullPaths: '/' | '/login' | '/pdf-export' | '/d/$docId'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/login' | '/d/$docId'
-  id: '__root__' | '/' | '/login' | '/d/$docId'
+  to: '/' | '/login' | '/pdf-export' | '/d/$docId'
+  id: '__root__' | '/' | '/login' | '/pdf-export' | '/d/$docId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   LoginRoute: typeof LoginRoute
+  PdfExportRoute: typeof PdfExportRoute
   DDocIdRoute: typeof DDocIdRoute
 }
 
@@ -75,6 +85,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LoginRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/pdf-export': {
+      id: '/pdf-export'
+      path: '/pdf-export'
+      fullPath: '/pdf-export'
+      preLoaderRoute: typeof PdfExportRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/d/$docId': {
       id: '/d/$docId'
       path: '/d/$docId'
@@ -88,6 +105,7 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   LoginRoute: LoginRoute,
+  PdfExportRoute: PdfExportRoute,
   DDocIdRoute: DDocIdRoute,
 }
 export const routeTree = rootRouteImport

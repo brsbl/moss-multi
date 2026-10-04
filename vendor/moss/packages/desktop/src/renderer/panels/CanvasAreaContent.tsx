@@ -4708,8 +4708,6 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             {/* Export group */}
-            {/* moss-multi seam: hide-registry (A§9) */}
-            {hidden('save-as-pdf') ? null : (
             <DropdownMenuItem
               className="gap-2 text-xs"
               onSelect={handleSaveAsPdf}
@@ -4718,8 +4716,6 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
               <FileDown aria-hidden className="h-3.5 w-3.5" />
               Save as PDF
             </DropdownMenuItem>
-            )}
-            {hidden('save-as-markdown') ? null : (
             <DropdownMenuItem
               className="gap-2 text-xs"
               onSelect={handleSaveAsMarkdown}
@@ -4728,8 +4724,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
               <FileCode aria-hidden className="h-3.5 w-3.5" />
               {isSavingMarkdown ? 'Saving...' : 'Save as Markdown'}
             </DropdownMenuItem>
-            )}
-            {hidden('save-as-pdf') && hidden('save-as-markdown') ? null : <DropdownMenuSeparator />}
+            <DropdownMenuSeparator />
             {/* Stats */}
             <DropdownMenuItem className="gap-2 text-xs" onSelect={() => { requestAnimationFrame(() => setShowNoteStats(true)); }}>
               <FileDigit aria-hidden className="h-3.5 w-3.5" />

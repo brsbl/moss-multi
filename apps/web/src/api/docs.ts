@@ -1,7 +1,7 @@
 // /api/docs. POST writes the D1 row in a folder the caller may edit, then DocDO.create seeds the doc (A§9 "+ Note").
 // GET /api/docs/:id is the doc and the caller's role on it; /members is the members API (members.ts); GET
-// /api/docs/:id/instance is the owner-only DO probe (A§19), which reads nothing from the doc. A missing doc and one the
-// caller cannot open get the same 404 on every route (A§8).
+// /api/docs/:id/instance is the owner-only DO probe (A§19), which reads nothing from the doc; GET /api/docs/:id/content is
+// the doc's markdown export. A missing doc and one the caller cannot open get the same 404 on every route (A§8).
 import { eq } from 'drizzle-orm';
 import { getServerByName } from 'partyserver';
 import { MARKDOWN_CAP_BYTES } from '@moss-multi/protocol/limits';
@@ -23,6 +23,7 @@ export type DocsEnv = AuthEnv & Pick<AppEnv, 'DocDO'> & Partial<Pick<AppEnv, 'Pr
 const DOC = /^\/api\/docs\/([^/]+)$/;
 const MEMBERS = /^\/api\/docs\/([^/]+)\/members$/;
 const INSTANCE = /^\/api\/docs\/([^/]+)\/instance$/;
+const CONTENT = /^\/api\/docs\/([^/]+)\/content$/;
 
 export interface DocRecord {
   id: string;
@@ -155,6 +156,16 @@ async function renameDoc(request: Request, env: DocsEnv, docId: string, body: Re
   }
 }
 
+/** GET /api/docs/:id/content: the doc as a `.md` file through the one converter (A§12), for any reader (T3.7). */
+async function readContent(request: Request, env: DocsEnv, docId: string): Promise<Response> {
+  const principal = await resolvePrincipal(request, env);
+  if (!principal) return unauthenticated();
+  const access = await resolveDocAccess(createDb(env.DB), principal, docId, shareTokenOf(request));
+  if (!access || access.deleted) return notFound();
+  const markdown = await (await getServerByName(env.DocDO, docId)).exportMarkdown();
+  return new Response(markdown, { status: 200, headers: { 'content-type': 'text/markdown; charset=utf-8', ...NO_STORE } });
+}
+
 async function docInstance(request: Request, env: DocsEnv, docId: string): Promise<Response> {
   const principal = await resolvePrincipal(request, env);
   const access = principal ? await resolveDocAccess(createDb(env.DB), principal, docId) : null;
@@ -185,6 +196,8 @@ export async function handleDocs(request: Request, env: DocsEnv): Promise<Respon
     return access ? json({ role: access.role, deleted: access.deleted }, 200, NO_STORE) : notFound();
   }
 
+  const content = CONTENT.exec(pathname);
+  if (content) return only('GET', request, () => readContent(request, env, content[1]));
   const instance = INSTANCE.exec(pathname);
   if (instance) return only('GET', request, () => docInstance(request, env, instance[1]));
   return notFound();

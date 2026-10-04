@@ -175,22 +175,6 @@ export const AFFORDANCES = [
     staged: 3,
     probes: [{ surface: 'slash-menu', selector: SLASH_ITEM, text: 'Media' }],
   },
-  {
-    id: 'save-as-pdf',
-    sites: [`${R}/panels/CanvasAreaContent.tsx`],
-    reason: 'Browser print through /pdf-export lands in M3.',
-    cite: 'T3.7',
-    staged: 3,
-    probes: [{ surface: 'note-more-menu', selector: MENU_ITEM, text: 'Save as PDF' }],
-  },
-  {
-    id: 'save-as-markdown',
-    sites: [`${R}/panels/CanvasAreaContent.tsx`],
-    reason: 'The export download lands in M3.',
-    cite: 'T3.7',
-    staged: 3,
-    probes: [{ surface: 'note-more-menu', selector: MENU_ITEM, text: 'Save as Markdown' }],
-  },
 ] as const satisfies readonly Affordance[];
 
 export type AffordanceId = (typeof AFFORDANCES)[number]['id'];
