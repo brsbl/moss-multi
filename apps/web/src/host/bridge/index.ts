@@ -9,6 +9,7 @@ import {
 } from '@moss-desktop/renderer/editor/utils/note-link-clipboard';
 import { displayTitle, liveTitle, writeLiveTitle } from '../collab/title-binding.ts';
 import { askDocAccess, rememberRole } from '../access.ts';
+import { setWikiCandidates } from '../wiki-links.ts';
 
 /** moss's NoteMetadataRecord: timestamps in seconds, folders as `Notes/...` paths. */
 export interface NoteMetadata {
@@ -21,6 +22,26 @@ export interface NoteMetadata {
   trashedAt: number | null;
   pinned?: boolean;
   pinnedAt?: number | null;
+  /** Backlinks (A§15), on a doc whose backlinks this tab has read. */
+  incomingLinks?: NoteLink[];
+}
+
+/** moss's NoteLink: one row of LinksSection. */
+export interface NoteLink {
+  noteId: string;
+  title: string;
+  folderPath?: string;
+  updatedAt?: number;
+}
+
+/** moss's NoteSearchResult. */
+export interface NoteSearchResult {
+  id: string;
+  title: string;
+  folderPath?: string;
+  updatedAt?: number;
+  snippet?: string;
+  matchType: 'title' | 'content';
 }
 
 /** A doc as the API returns it (A§6): timestamps in epoch ms, and the caller's role where the API says it. */
@@ -32,6 +53,8 @@ export interface ApiDoc {
   role?: string;
   folderPath?: string;
   surfaced?: boolean;
+  /** The projected `<slug>.md` (A§5.1); wiki links resolve against its stem (A§15). */
+  filename?: string;
 }
 
 /** Host-only controller, kept outside the ElectronAPI namespace inventory. */
@@ -85,6 +108,8 @@ const THEME_KEY = 'moss_theme';
 const PINS_KEY = 'moss-multi:pins';
 const NOTE_INTELLIGENCE_KEY = 'moss-multi:note-intelligence';
 const VAULT_KEY = 'moss-multi:active-vault';
+/** Notes whose backlinks this tab keeps current: the ones it opened most recently. */
+const BACKLINK_WATCH = 4;
 const layoutKey = (id: string) => `moss-multi:layout:${id}`;
 const collapsedKey = (id: string) => `moss-multi:collapsed-headings:${id}`;
 
@@ -251,6 +276,7 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
         listing = Promise.resolve(docs.map(toNoteMetadata));
         if (changedVaults) workspaceListeners.forEach((listener) => listener());
         diskListeners.forEach((listener) => listener(full ? [] : ids, []));
+        rereadBacklinks();
       }
     } catch {
       if (generation === channelGeneration) {
@@ -274,6 +300,54 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
       }, 1000);
     });
   };
+  // Backlinks (A§15) for the notes this tab opened most recently, carried on their records as moss's incomingLinks
+  // and re-read whenever the workspace channel says a doc changed (a DocDO announces a change to its links).
+  const backlinks = new Map<string, NoteLink[]>();
+  const watched: string[] = [];
+  const readBacklinks = async (id: string) => {
+    try {
+      const response = await request(`/api/docs/${encodeURIComponent(id)}/backlinks`);
+      if (!response.ok) {
+        if (response.status === 404) unwatch(id);
+        return;
+      }
+      const answer = await response.json() as { backlinks?: ApiDoc[] };
+      if (!Array.isArray(answer.backlinks)) return;
+      const links = answer.backlinks.map((row): NoteLink => {
+        const live = liveTitle(row.id);
+        return { noteId: row.id, title: live === null ? toNoteMetadata(row).title : displayTitle(live),
+          folderPath: known.get(row.id)?.folderPath ?? ROOT_FOLDER, updatedAt: seconds(row.updatedAt) };
+      });
+      if (JSON.stringify(links) === JSON.stringify(backlinks.get(id) ?? [])) {
+        if (!backlinks.has(id)) backlinks.set(id, links);
+        return;
+      }
+      backlinks.set(id, links);
+      // A metadata-only change: moss re-reads this note's record, which now carries the links.
+      diskListeners.forEach((listener) => listener([id], []));
+    } catch { /* The next workspace event or note switch reads them again. */ }
+  };
+  const unwatch = (id: string) => {
+    const at = watched.indexOf(id);
+    if (at !== -1) watched.splice(at, 1);
+  };
+  /** After the listing caught up with a workspace event: a watched note that left it (trashed, unshared) is dropped. */
+  const rereadBacklinks = () => {
+    for (const id of [...watched]) {
+      if (inListing(id)) void readBacklinks(id);
+      else unwatch(id);
+    }
+  };
+  // Only listed notes: moss records links for them, and one that left the listing (trashed, unshared) would 404.
+  const inListing = (id: string) => workspaceSnapshot?.docs.some((doc) => doc.id === id) ?? false;
+  const watchBacklinks = (id: string) => {
+    if (!inListing(id)) return;
+    const at = watched.indexOf(id);
+    if (at !== -1) watched.splice(at, 1);
+    watched.unshift(id);
+    watched.splice(BACKLINK_WATCH);
+    void readBacklinks(id);
+  };
   const receiveWorkspace = (event: WorkspaceEvent) => {
     if (event.type !== 'meta' && event.type !== 'vaults') return;
     if (event.type === 'vaults' || event.folderIds.length) refreshAll = true;
@@ -284,9 +358,33 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
   const withLocal = (listed: NoteMetadata): NoteMetadata => {
     // A doc this tab binds is named by its live Y.Text title, never by a listing read before a rename (A§9).
     const live = liveTitle(listed.id);
-    const note = live === null ? listed : { ...listed, title: displayTitle(live) };
+    let note = live === null ? listed : { ...listed, title: displayTitle(live) };
+    const links = backlinks.get(note.id);
+    if (links) note = { ...note, incomingLinks: links };
     const pinnedAt = pins()[note.id];
     return pinnedAt ? { ...note, pinned: true, pinnedAt } : note;
+  };
+  /** moss's notes:search: title matches over the listing first, then the index's hits across every doc the caller can discover. */
+  const search = async ({ query, limit = 20, excludeNoteId, searchTrashed }: { query: string; limit?: number; excludeNoteId?: string; searchTrashed?: boolean }) => {
+    const needle = query.trim().toLowerCase();
+    if (searchTrashed || !needle) return [];
+    const listed = (await notes()).filter((note) => note.id !== excludeNoteId);
+    const rank = (title: string) => (title === needle ? 0 : title.startsWith(needle) ? 1 : 2);
+    const titled: NoteSearchResult[] = listed
+      .filter((note) => note.title.toLowerCase().includes(needle))
+      .sort((a, b) => rank(a.title.toLowerCase()) - rank(b.title.toLowerCase()) || b.updatedAt - a.updatedAt)
+      .map((note) => ({ id: note.id, title: note.title, folderPath: note.folderPath, updatedAt: note.updatedAt, matchType: 'title' }));
+    const response = await request(`/api/search?${new URLSearchParams({ q: query.trim(), limit: String(limit) })}`);
+    if (!response.ok) throw new Error(`GET /api/search: ${response.status}`);
+    const { results } = await response.json() as { results: (ApiDoc & { snippet: string })[] };
+    const seen = new Set(titled.map((hit) => hit.id));
+    const indexed: NoteSearchResult[] = results.filter((hit) => hit.id !== excludeNoteId && !seen.has(hit.id)).map((hit) => {
+      const listedNote = listed.find((note) => note.id === hit.id);
+      const title = listedNote?.title ?? toNoteMetadata(hit).title;
+      return { id: hit.id, title, folderPath: listedNote?.folderPath ?? ROOT_FOLDER, updatedAt: listedNote?.updatedAt ?? seconds(hit.updatedAt),
+        ...(title.toLowerCase().includes(needle) ? { matchType: 'title' as const } : { snippet: hit.snippet, matchType: 'content' as const }) };
+    });
+    return [...titled, ...indexed].slice(0, limit);
   };
   const notes = () => {
     return (listing ?? load(workspaceSnapshot?.vault.id ?? storedVault(), workspaceSnapshot ? null : docIdFromPath(pathname()))).then((docs) => docs.map(withLocal));
@@ -398,12 +496,18 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
       getMetadataByIds: async (ids: string[]) => (await notes()).filter((note) => ids.includes(note.id)),
       getById: async (id: string) => {
         const note = await byId(id);
+        if (note) watchBacklinks(id);
         // A doc that will bind gets no content from REST: the binding fills it (A§9).
         return note ? { ...record(note), content: '', layoutMetadata: readJson(storage, layoutKey(id)) } : undefined;
       },
       getContent: async (id: string) => ((await byId(id)) ? { id, content: '', version: 1 } : undefined),
       getFrontmatterSuggestions: async () => ({}),
-      getHeadings: empty,
+      getHeadings: async (id: string) => {
+        const response = await request(`/api/docs/${encodeURIComponent(id)}/headings`);
+        if (!response.ok) return [];
+        const { headings } = await response.json() as { headings?: { level: 1 | 2 | 3 | 4; text: string }[] };
+        return Array.isArray(headings) ? headings : [];
+      },
       create: async (title: string, folderPath: string = ROOT_FOLDER) => {
         // moss creates in the active folder; before the first listing the server picks the caller's Home.
         const target = folderPath !== ROOT_FOLDER || workspaceSnapshot ? await folderId(folderPath) : null;
@@ -454,15 +558,7 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
       },
       delete: later('Trash', 2),
       restore: later('Restoring from Trash', 2),
-      search: async ({ query, limit, searchTrashed }: { query: string; limit?: number; searchTrashed?: boolean }) => {
-        // Title matches over the listing until search lands in M3.
-        const needle = query.trim().toLowerCase();
-        if (searchTrashed || !needle) return [];
-        return (await notes())
-          .filter((note) => note.title.toLowerCase().includes(needle))
-          .slice(0, limit ?? 50)
-          .map((note) => ({ id: note.id, title: note.title, folderPath: note.folderPath, updatedAt: note.updatedAt, matchType: 'title' as const }));
-      },
+      search,
       getFilesystemPath: async (id: string) => docUrl(id),
       setOpenFileWatchTargets: none,
       copyLinkToClipboard: async (id: string, input: { noteTitle?: string } = {}) => {
@@ -584,6 +680,7 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
       getWindowContext: async () => ({ windowId: 1, initialNoteId: docIdFromPath(pathname()), launchReason: 'initial-launch' as const, openedFromWindowId: null }),
       // The address follows the focused note, so a reload or a copied URL reopens it (A§4.2).
       setFocusedNoteId: async (id: string | null) => {
+        if (id) watchBacklinks(id);
         if (id && docIdFromPath(pathname()) !== id) {
           browser.replacePath(`/d/${encodeURIComponent(id)}`);
           await refreshForNavigation(id);
@@ -690,6 +787,7 @@ export function installBridge(authStore: import('../auth-state.ts').AuthStore): 
     }, receive),
   });
   installedBridge = bridge;
+  setWikiCandidates(() => bridge[WORKSPACE].getSnapshot()?.docs ?? []);
   (window as unknown as { electronAPI: Bridge }).electronAPI = bridge;
   return bridge;
 }
