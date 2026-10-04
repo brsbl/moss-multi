@@ -176,13 +176,33 @@ describe('server writes', () => {
     const markdown = 'Intro\n\n![Pasted](assets/image.png)\n\n![A clip](./assets/clip.webm)\n\n[elsewhere](https://example.invalid/assets/x.png)\n';
     await doc.dobj.create({ folderId: 'source', ownerId: 'owner', title: 'Media', markdown });
     expect((await doc.dobj.referencedAssets()).sort()).toEqual(['clip.webm', 'image.png']);
-    await doc.dobj.renameAssets({ 'image.png': 'image-2.png' });
+    await doc.dobj.renameAssets({ 'image.png': 'image-2.png' }, ['image.png', 'clip.webm']);
     const moved = await doc.dobj.exportMarkdown();
     expect(moved).toContain('(assets/image-2.png)');
     expect(moved).not.toContain('(assets/image.png)');
-    expect((await doc.dobj.referencedAssets()).sort(), 'the renamed name is what readers may now load').toEqual(['clip.webm', 'image-2.png']);
+    expect((await doc.dobj.referencedAssets()).sort()).toEqual(['clip.webm', 'image-2.png']);
     const woken = await start(wake(doc));
     expect(await woken.dobj.exportMarkdown(), 'the rename persists').toBe(moved);
+  });
+
+  it('records the media placed in it apart from what its text references, through a move, a duplicate and a wake', async () => {
+    const doc = await start(openDoc());
+    await doc.dobj.create({ folderId: 'source', ownerId: 'owner', title: 'Media', markdown: 'Typed: ![x](assets/secret.png)\n' });
+    expect(await doc.dobj.placesMedia('secret.png'), 'a reference written into the text places nothing').toBe(false);
+    await doc.dobj.placeMedia(['image.png', 'clip.webm', 'gone.png']);
+    expect(await doc.dobj.placesMedia('image.png')).toBe(true);
+    // A move carries image.png (renamed) and clip.webm; gone.png, no longer referenced, stays behind.
+    await doc.dobj.renameAssets({ 'image.png': 'image-2.png' }, ['image.png', 'clip.webm', 'secret.png']);
+    const after = await Promise.all(['image-2.png', 'clip.webm', 'image.png', 'gone.png', 'secret.png'].map((name) => doc.dobj.placesMedia(name)));
+    expect(after).toEqual([true, true, false, false, false]);
+    const woken = await start(wake(doc));
+    expect(await woken.dobj.placesMedia('image-2.png'), 'the record persists').toBe(true);
+    const snapshot = await woken.dobj.snapshotForDuplicate();
+    expect(snapshot.media.sort()).toEqual(['clip.webm', 'image-2.png']);
+    const copy = await start(openDoc());
+    await copy.dobj.createFromSnapshot({ folderId: 'home', ownerId: 'other', title: 'Copy' }, snapshot.state, {}, ['clip-2.webm']);
+    expect(await copy.dobj.placesMedia('clip-2.webm')).toBe(true);
+    expect(await copy.dobj.placesMedia('image-2.png'), 'a copy holds only what was carried into it').toBe(false);
   });
 
   it('replays legacy YAML into the map, persists its upgrade, and exports after a second wake', async () => {

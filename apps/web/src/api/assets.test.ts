@@ -13,26 +13,35 @@ const SVG = new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg" wi
 
 /**
  * The DocDO RPCs duplicate, move and serve call, over markdown and media references each test sets; a snapshot
- * carries its own markdown.
+ * carries its own markdown. `placed` mirrors the DocDO's record of the files an upload, copy or carry placed in a doc.
  */
 const exported = new Map<string, string>();
 const snapshotted = new Map<string, string>();
 const created = new Map<string, { renames?: Record<string, string> }>();
 const referenced = new Map<string, string[]>();
 const renamed = new Map<string, Record<string, string>>();
+const placed = new Map<string, Set<string>>();
+const placedIn = (doc: string) => placed.get(doc) ?? placed.set(doc, new Set()).get(doc)!;
 const DocDO = {
   idFromName: (name: string) => ({ name, toString: () => name }),
   get: (id: { name: string }) => ({
     setName: async () => undefined,
     referencedAssets: async () => referenced.get(id.name) ?? [],
-    renameAssets: async (renames: Record<string, string>) => {
+    placeMedia: async (names: string[]) => {
+      for (const name of names) placedIn(id.name).add(name);
+    },
+    placesMedia: async (name: string) => placedIn(id.name).has(name),
+    renameAssets: async (renames: Record<string, string>, carried: string[]) => {
       renamed.set(id.name, renames);
       referenced.set(id.name, (referenced.get(id.name) ?? []).map((name) => renames[name] ?? name));
+      placed.set(id.name, new Set([...placedIn(id.name)].filter((name) => carried.includes(name)).map((name) => renames[name] ?? name)));
     },
     exportMarkdown: async () => exported.get(id.name) ?? '',
-    snapshotForDuplicate: async () => ({ title: 'Original', state: new Uint8Array([1]), markdown: snapshotted.get(id.name) ?? exported.get(id.name) ?? '' }),
-    createFromSnapshot: async (_input: unknown, _state: Uint8Array, renames?: Record<string, string>) => {
+    snapshotForDuplicate: async () => ({ title: 'Original', state: new Uint8Array([1]),
+      markdown: snapshotted.get(id.name) ?? exported.get(id.name) ?? '', media: [...placedIn(id.name)] }),
+    createFromSnapshot: async (_input: unknown, _state: Uint8Array, renames?: Record<string, string>, media: string[] = []) => {
       created.set(id.name, { renames });
+      placed.set(id.name, new Set(media));
     },
   }),
 };
@@ -248,21 +257,44 @@ describe('serving (A§16)', () => {
     const missing = await call('GET', `/api/docs/${shared}/assets/missing.png`, reader.cookie);
     expect(tries.map((response) => response.status), 'a doc grant or link is not folder-wide media').toEqual([404, 404, 404, 404]);
     expect(await tries[0].text(), 'the refusal is the one 404').toBe(await missing.text());
-    // Once the shared note references the file, its readers load it; the folder's owner always does.
+    // Writing a reference to the file into the note, which any editor of it can, reaches it no better.
     referenced.set(shared, ['secret.png']);
-    expect((await call('GET', path, reader.cookie)).status).toBe(200);
-    expect((await call('GET', `${path}?share=${token}`, null)).status).toBe(200);
-    referenced.set(shared, []);
+    exported.set(shared, '![x](assets/secret.png)\n');
+    expect((await call('GET', path, reader.cookie)).status, "a reference the note's editor wrote").toBe(404);
+    expect((await call('GET', `${path}?share=${token}`, null)).status).toBe(404);
     expect((await call('GET', path, ada.cookie)).status, 'the folder owner reads every file in it').toBe(200);
+    // What was uploaded into the shared note is its readers' to load.
+    await uploaded(await upload(ada.cookie, shared, 'given.png', OTHER_PNG, 'image/png'));
+    expect(await bytesOf(await call('GET', `/api/docs/${shared}/assets/given.png`, reader.cookie))).toEqual(OTHER_PNG);
+    expect((await call('GET', `/api/docs/${shared}/assets/given.png?share=${token}`, null)).status).toBe(200);
   });
 
-  it("refuses a cross-note copy of a file the readable source note doesn't reference", async () => {
+  it('gives a doc-only editor neither a copy nor a duplicate of a folder file they wrote a reference to', async () => {
+    const editor = await signedUpUser(env, 'assets-note-editor', 'Editor');
+    const secret = await insertDoc(d1.db, ada);
+    await uploaded(await upload(ada.cookie, secret, 'private.png', PNG, 'image/png'));
+    const shared = await insertDoc(d1.db, ada);
+    await insertGrant(d1.db, { docId: shared }, editor, 'editor');
+    referenced.set(shared, ['private.png']);
+    exported.set(shared, '![x](assets/private.png)\n');
+    expect((await call('GET', `/api/docs/${shared}/assets/private.png`, editor.cookie)).status).toBe(404);
+    const body = JSON.stringify({ sourceNoteId: shared, sourceRelativePath: 'assets/private.png' });
+    const copied = await call('POST', `/api/docs/${shared}/assets/copy`, editor.cookie, { body, headers: { 'content-type': 'application/json' } });
+    expect(copied.status, 'a copy into the same note').toBe(404);
+    const response = await call('POST', `/api/docs/${shared}/duplicate`, editor.cookie);
+    expect(response.status, await response.clone().text()).toBe(201);
+    const { doc } = (await response.json()) as { doc: { id: string; folderId: string } };
+    expect(doc.folderId).toBe(editor.homeId);
+    expect((await call('GET', `/api/docs/${doc.id}/assets/private.png`, editor.cookie)).status, 'a duplicate carries none of it').toBe(404);
+  });
+
+  it('refuses a cross-note copy of a file never placed in the readable source note, even one it references', async () => {
     const reader = await signedUpUser(env, 'assets-copy-reader', 'Reader');
     const secret = await insertDoc(d1.db, ada);
     await uploaded(await upload(ada.cookie, secret, 'hidden.png', PNG, 'image/png'));
     referenced.set(secret, ['hidden.png']);
     const shared = await insertDoc(d1.db, ada);
-    referenced.set(shared, []);
+    referenced.set(shared, ['hidden.png']);
     await insertGrant(d1.db, { docId: shared }, reader, 'viewer');
     const own = await insertDoc(d1.db, reader);
     const body = JSON.stringify({ sourceNoteId: shared, sourceRelativePath: 'assets/hidden.png' });
@@ -300,6 +332,11 @@ describe('a moved note keeps its media (A§16)', () => {
     expect(Object.keys(renames)).toEqual(['image.png']);
     expect(await bytesOf(await call('GET', `/api/docs/${docId}/assets/${renames['image.png']}`, ada.cookie)), 'the note still shows its own image').toEqual(PNG);
     expect(await bytesOf(await call('GET', `/api/docs/${docId}/assets/image.png`, ada.cookie)), "the folder's own file is untouched").toEqual(OTHER_PNG);
+    // A reader of only the note loads its own file under the new name, and never the folder's.
+    const reader = await signedUpUser(env, 'assets-move-reader', 'Reader');
+    await insertGrant(d1.db, { docId }, reader, 'viewer');
+    expect(await bytesOf(await call('GET', `/api/docs/${docId}/assets/${renames['image.png']}`, reader.cookie))).toEqual(PNG);
+    expect((await call('GET', `/api/docs/${docId}/assets/image.png`, reader.cookie)).status).toBe(404);
   });
 });
 

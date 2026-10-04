@@ -4,9 +4,9 @@
 // control and a raw upload gets 403; a PDF gets 415. A copied note keeps its media, in the same folder and in the
 // copier's own Home, even when that Home already holds a different file under the same name. A signed-in link reader
 // sees the media, and so does an anonymous one, through the token the asset URL carries; a signed-in editor-link
-// holder uploads, and a grant on the note reaches only the media it references. A moved note keeps its media. A
-// video's poster is its first frame, and it seeks and plays through 206 responses. Alt text edited from the image's
-// context menu reaches the peer and the export.
+// holder uploads, and a grant or link on the note reaches only the media placed in it, even after an editor writes a
+// folder file's name into it. A moved note keeps its media. A video's poster is its first frame, and it seeks and
+// plays through 206 responses. Alt text edited from the image's context menu reaches the peer and the export.
 //
 // Grants are declared setup through the members API, and the share link through the loopback hook until T2.4's
 // links API lands; sharing is not this journey's promise. Files reach the editor as browsers deliver them: a
@@ -322,7 +322,7 @@ test('j11-media: a copied or moved note keeps its media; link readers see only t
   expect(shown, "Ben's copy shows Ada's image, not the file his Home already had").toBe(bytes(PNG.name).byteLength);
   await actors.checkpoint('copied');
 
-  // A grant on this note reaches only the media it references, not every file in Ada's folder.
+  // A grant on this note reaches only the media placed in it, not every file in Ada's folder.
   const adaFolder = await folderOf(ada, docId);
   const secret = await ada.context.request.post(`/api/folders/${adaFolder}/assets?filename=secret.png`, {
     headers: { origin: origin(ada), 'content-type': PNG.type }, data: Buffer.concat([bytes(PNG.name), Buffer.from('another note')]),
@@ -396,6 +396,24 @@ test('j11-media: a copied or moved note keeps its media; link readers see only t
     `/api/docs/${docId}/assets/${WEBM.name}?share=${encodeURIComponent(editorToken)}`);
   expect(clip, 'the moved clip still answers Range').toBe(206);
   await actors.checkpoint('moved');
+
+  // Writing a reference to a file of the folder into the note does not reach it: Dee, holding only an editor link,
+  // pastes the text of a reference to the folder's own pattern.png, which the note never placed.
+  const folderFile = `/api/docs/${docId}/assets/${PNG.name}`;
+  const deeRead = () => dee.page.evaluate(async (url) => (await fetch(url)).status, `${folderFile}?share=${encodeURIComponent(editorToken)}`);
+  expect(await deeRead(), 'before the edit').toBe(404);
+  await caretAfterFirstLine(dee, docId);
+  await ui.body(dee, docId).evaluate((root, text) => {
+    const data = new DataTransfer();
+    data.setData('text/plain', text);
+    root.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+  }, ` ![x](assets/${PNG.name})`);
+  await waitAcked(dee, docId);
+  await expect.poll(async () => (await ada.context.request.get(`/api/docs/${docId}/export`)).text(), { message: 'the export names the folder file' })
+    .toContain(`assets/${PNG.name}`);
+  expect(await deeRead(), 'the reference the editor wrote reaches nothing').toBe(404);
+  expect((await ben.context.request.get(folderFile)).status(), "nor through Ben's grant").toBe(404);
+  expect((await ada.context.request.get(folderFile)).status(), 'the folder owner reads it').toBe(200);
 });
 
 test("j11-media: alt text edited from the image's context menu reaches the peer and the export @p:note-8", async ({ actors }) => {
