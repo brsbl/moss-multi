@@ -3,7 +3,7 @@
 import { UNDO_COMMAND, REDO_COMMAND, type LexicalEditor } from 'lexical';
 import type { Binding } from '@lexical/yjs';
 import {
-  ContentString, ContentType, Item, Map as YMap, UndoManager, XmlText, findIndexSS, getItem, type AbstractType, type Transaction,
+  ContentString, ContentType, Item, Map as YMap, UndoManager, XmlText, findIndexSS, getItem, isDeleted, type AbstractType, type Transaction,
 } from 'yjs';
 
 import { REGISTER_LOCAL_ORIGIN } from '@moss-multi/sync/registers';
@@ -18,7 +18,9 @@ type StackItem = UndoManager['undoStack'][number];
  * the characters after it up to the next embed (deleting the map left them dangling, and the binding then deleted
  * them for everyone). So undo keeps a container while it holds a peer's live characters, together with the
  * properties it was created with; only this client's own characters go. Undoing a delete restores the deleted items
- * as copies under this client's id (yjs redoItem), so a copy keeps the author of the item it restores.
+ * as copies under this client's id (yjs redoItem), so a copy keeps the author of the item it restores. Yjs never
+ * restores what a step both created and deleted, so a peer's characters deleted in the step that created their line
+ * would come back without their paragraph or text node; those containers are restored with them.
  */
 export function createBindingUndoManager(binding: Binding): UndoManager {
   const { doc } = binding;
@@ -47,7 +49,16 @@ export function createBindingUndoManager(binding: Binding): UndoManager {
     return found;
   };
   const byPeer = (item: Item) => authorsOf(item.id.client, item.id.clock, item.length).some(({ author }) => !own.has(author));
-  const isPeers = (item: Item) => !item.deleted && byPeer(item);
+  // The step being undone or redone. One undo() pops past steps that change nothing, so this follows the stack.
+  let stack: StackItem[] | null = null;
+  let popped: StackItem[] = [];
+  const current = () => (stack ? popped[stack.length] : undefined);
+  // Characters the step inserted are deleted by it whoever wrote them, so they do not keep a container.
+  const doomed = (item: Item) => {
+    const step = current();
+    return !!step && !(item.content instanceof ContentType) && isDeleted(step.insertions, item.id);
+  };
+  const isPeers = (item: Item) => !item.deleted && !doomed(item) && byPeer(item);
   // Every item overlapping a delete set's ranges, read without splitting.
   const eachItem = (set: StackItem['deletions'], visit: (item: Item) => void) => set.clients.forEach((ranges, client) => {
     const structs = doc.store.clients.get(client);
@@ -106,9 +117,6 @@ export function createBindingUndoManager(binding: Binding): UndoManager {
     }
     return holdsPeers(type);
   };
-  // The step being undone or redone. One undo() pops past steps that change nothing, so this follows the stack.
-  let stack: StackItem[] | null = null;
-  let popped: StackItem[] = [];
   const prepared = new Map<StackItem, Set<Item>>();
   // Yjs restores a step's deletions before it filters its insertions, so authorship of the copies is known first.
   const prepare = (step: StackItem) => {
@@ -117,12 +125,44 @@ export function createBindingUndoManager(binding: Binding): UndoManager {
     return created;
   };
   const deleteFilter = (item: Item): boolean => {
-    const step = stack ? popped[stack.length] : undefined;
+    const step = current();
     const created = step ? prepare(step) : null;
     if (item.parentSub === null) return !keeps(item);
     // A property goes with its container: kept while the container the step created is kept.
     const owner = (item.parent as AbstractType<unknown>)._item;
     return !(owner && created?.has(owner) && keeps(owner));
+  };
+  // Run as yjs pops a step, before it restores the step's deletions. A peer's deleted item needs the containers it
+  // sat in and, for characters, the text node's property map in front of them, with their latest properties. Those
+  // the step created and deleted leave its insertions, so yjs restores them along with the peer's item.
+  const restoreStructure = (step: StackItem) => {
+    const { insertions } = step;
+    const restore = new Set<Item>();
+    const need = (item: Item | null) => {
+      if (!item || restore.has(item) || !item.deleted || !(item.content instanceof ContentType) || !isDeleted(insertions, item.id)) return;
+      restore.add(item);
+      for (const value of (item.content.type as AbstractType<unknown>)._map.values()) if (isDeleted(insertions, value.id)) restore.add(value);
+      need((item.parent as AbstractType<unknown>)._item);
+    };
+    eachItem(step.deletions, item => {
+      if (item.parentSub !== null || isDeleted(insertions, item.id) || !byPeer(item)) return;
+      need((item.parent as AbstractType<unknown>)._item);
+      if (!(item.content instanceof ContentString)) return;
+      let left = item.left;
+      while (left?.content instanceof ContentString) left = left.left;
+      if (left?.content instanceof ContentType && left.content.type instanceof YMap) need(left);
+    });
+    for (const item of restore) {
+      const ranges = insertions.clients.get(item.id.client);
+      if (!ranges) continue;
+      const from = item.id.clock; const to = from + item.length;
+      const kept = ranges.flatMap(range => {
+        const end = range.clock + range.len;
+        if (end <= from || range.clock >= to) return [range];
+        return [{ clock: range.clock, len: from - range.clock }, { clock: to, len: end - to }].filter(part => part.len > 0);
+      });
+      if (kept.length) insertions.clients.set(item.id.client, kept as typeof ranges); else insertions.clients.delete(item.id.client);
+    }
   };
   const undo = new UndoManager([binding.root.getSharedType(), doc.getMap('registers')], {
     trackedOrigins,
@@ -130,8 +170,13 @@ export function createBindingUndoManager(binding: Binding): UndoManager {
     deleteFilter,
   });
   const following = (read: () => StackItem[], run: () => StackItem | null) => () => {
-    stack = read(); popped = stack.slice();
-    try { return run(); } finally { for (const step of popped.slice(stack.length)) prepare(step); stack = null; popped = []; prepared.clear(); }
+    const steps = stack = read(); popped = stack.slice();
+    steps.pop = () => { const step = Array.prototype.pop.call(steps) as StackItem | undefined; if (step) restoreStructure(step); return step; };
+    try { return run(); } finally {
+      Reflect.deleteProperty(steps, 'pop');
+      for (const step of popped.slice(steps.length)) prepare(step);
+      stack = null; popped = []; prepared.clear();
+    }
   };
   undo.undo = following(() => undo.undoStack, undo.undo.bind(undo));
   undo.redo = following(() => undo.redoStack, undo.redo.bind(undo));
