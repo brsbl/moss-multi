@@ -260,3 +260,4 @@ Local browser verification remains assigned to the independent checker under the
 - `$assignRegisterIds` now mints `crypto.randomUUID()` in a live editor. Only the DocDO mirror (`bindRegisters(..., { serializedImports: true })`, one serialized writer) and unbound converters keep repeatable import ids (A§10.10).
 - T2.2s verified: moving a note or folder is the vault owner's alone; editors (by grant or share link) can still create and rename but are refused a move and are not offered a drag.
 - 2026-10-04 — M3 started on branch m3 (stacked on m2) in parallel with M2, at the owner's request to up the pace; the local stack cap rose from 2 to 5. Claude builds, Codex reviews.
+- 2026-10-04 — M4 started on branch m4 (stacked on m3) with the comments (T4.0) and suggestions (T5.0) design reviews, run early to use the Claude week before its Sunday reset.
