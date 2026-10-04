@@ -149,7 +149,7 @@ function VaultMenu({ bridge }: { bridge: Bridge }) {
       {owned && !renaming && (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <button type="button" aria-label="Vault actions" disabled={pending}
+            <button data-collab-chrome="" type="button" aria-label="Vault actions" disabled={pending}
               className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-ink-faint transition-colors hover:bg-surface-note-hover/40 hover:text-ink-muted focus-visible:outline-none">
               <MoreHorizontal className="h-4 w-4" strokeWidth={1.5} aria-hidden />
             </button>
