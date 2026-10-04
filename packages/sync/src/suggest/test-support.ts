@@ -135,6 +135,7 @@ export const CENSUS: CensusOp[] = [
 ];
 
 let uuid = 0;
+let draws = 0;
 /** Register ids and other minted uuids repeat per run, so the fork and the oracle mint the same ones. */
 export function deterministicIds(): () => void {
   uuid = 0;
@@ -142,10 +143,20 @@ export function deterministicIds(): () => void {
     uuid += 1;
     return `00000000-0000-4000-8000-${uuid.toString(16).padStart(12, '0')}` as `${string}-${string}-${string}-${string}-${string}`;
   });
-  return () => spy.mockRestore();
+  // A sketch inking's key tag comes from Math.random (registers.ts), so the fork and the oracle draw the same tags.
+  draws = 0;
+  const random = vi.spyOn(Math, 'random').mockImplementation(() => {
+    draws += 1;
+    return (draws * 0.6180339887498949) % 1;
+  });
+  return () => {
+    spy.mockRestore();
+    random.mockRestore();
+  };
 }
 export const resetIds = () => {
   uuid = 0;
+  draws = 0;
 };
 
 /** The oracle: an editor bound to a copy of `body` makes the steps directly. */
