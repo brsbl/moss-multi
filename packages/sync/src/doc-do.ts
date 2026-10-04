@@ -106,8 +106,9 @@ export class DocDO extends YServer<SyncEnv> {
     this.#seed(store);
     const target = (this.constructor as typeof DocDO).projectionTarget(this.env);
     if (target) this.#project(new Projections(this.name, target));
-    // Re-fed once on every wake (L§4.14), once onStart has served the waiting frames.
-    setTimeout(() => void this.#feedSearch(), WAKE_FEED_MS);
+    // Re-fed once on every wake (L§4.14), once onStart has served the waiting frames; a doc being created is fed by
+    // the save its content triggers.
+    if (store.meta('created') !== null) setTimeout(() => void this.#feedSearch(), WAKE_FEED_MS);
   }
 
   /** Debounced by y-partyserver (2 s, at most 10 s). */
