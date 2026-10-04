@@ -78,6 +78,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
 
+- T1.8 workspace follow-up implemented in T2.1: push events replace listing polling, changed document ids refresh metadata, and unchanged vault choices do not notify the switcher; awaiting CI and independent verification.
 - T1.6 checker: prune deleted layout identities, avoid unchanged localStorage writes and restrict ordinal migration to stores without identity metadata → local-layout follow-up. These need lifecycle and persisted-state regressions beyond this P1 repair.
 - T1.6 checker: bound link activation and preview must consume locally resolved note identity, not only its displayed title/state → T3.3 links.
 - T1.6 checker: route empty-prompt undo from a split pane's title to that pane's body; AI and Cmd+K remain hidden → command-palette unstaging.
@@ -187,3 +188,40 @@ Local browser verification remains assigned to the independent checker under the
 - Deviations: the server-half-open regression uses the real DocDO harness with no first-socket close rather than changing the shared sever proxy. `bb browser-automation --help` reports an unknown command, so the brief assigns local browser QA to the independent checker. No stack or browser was started; no tests ran locally. Final green-head evidence is recorded in `.codex-result.json`.
 - [Checks 37156943686](https://github.com/brsbl/moss-multi/actions/runs/37156943686) passed all 714 units, typecheck, lint, build and viewer acceptance. [Chromium 37156943652](https://github.com/brsbl/moss-multi/actions/runs/37156943652) passed drop/reconnect, same-principal undo, spoof rejection, process restart and the 95 s idle/wake leg. The strengthened selection-color locator matched both the fill and caret; narrowed it to the fill and reran only that affected journey plus final-head push CI.
 - 2026-10-03 — M2 started on branch m2 (stacked on m1) in parallel with M1's last tasks (T1.4–T1.9), at the owner's request to pick up the pace; m2 merges m1 as M1 tasks land.
+
+### T2.1 — workspace channel implementation
+
+- Tests-first red: https://github.com/brsbl/moss-multi/actions/runs/37164910495 (`c891194`), failed on the missing new-doc metadata event.
+- PrincipalDO channel, access-filtered `publishMeta`, title/timestamp projections, targeted bridge updates and synchronous local sign-out shutdown replace the interim poll. Reconnect refreshes missed changes.
+- The T2.1-specific coordinator brief is absent; BUILDPLAN T2.1 and A§5.2/11 define scope. Trash removal is tested at the metadata/fanout boundary; T2.3 owns its API and UI lifecycle. Browser self-check is delegated to the independent checker per the implementer brief.
+- Validation in progress; no self-verdict.
+
+- T2.1 first Chromium workspace run passed: https://github.com/brsbl/moss-multi/actions/runs/37165101021 (`a9eeccf`). The push checks exposed two TS inference annotations (fixed) and the inherited closed-M1 assumption (missing R11/R15 and three staged M1 bridge methods).
+- CI deviation under the parallel-M2 brief: branch checks cap the inferred trace gate at `CI_CLOSED_MILESTONE` (repository variable, workflow default 0 while M1 remains open). Ready `m<k> → main` milestone exits still enforce all Mk rows. The coordinator must advance the variable when each milestone closes; this does not waive M1's missing work.
+
+- T2.1 second Chromium run found the missing server close reply at the pinned workerd compatibility date: client sign-out stopped callbacks/timers but the close handshake remained pending. PrincipalDO now acknowledges close; the cold-DO harness asserts it. Run: https://github.com/brsbl/moss-multi/actions/runs/37165316896. The only remaining typecheck error was a test header-union annotation (fixed).
+
+- All push checks, build and viewer passed on `0195ce4`. The sign-out transport assertions passed in Chromium; its final login check raced the old page's ready attribute, so the leg now waits for the login document before testing readiness. Evidence: https://github.com/brsbl/moss-multi/actions/runs/37165490345 and https://github.com/brsbl/moss-multi/actions/runs/37165498051.
+
+### T2.1 — notification and channel lifecycle repairs
+
+- Attempt 2 adds tests first for committed create/rename/duplicate and timestamp writes surviving notification failure, committed shares surviving RPC failure, sign-out during a vault switch, events arriving during a failed listing, and terminal workspace refusals across visibility/online events. Remote red proof precedes implementation; no local tests run.
+- Current `origin/m1` and `origin/m2` are already ancestors of the task branch. This repair preserves the existing API and wire contracts and does not edit the M1 collaboration bindings.
+
+- Tests-first [37166820380](https://github.com/brsbl/moss-multi/actions/runs/37166820380) at `d5b9085` reproduced all 12 targeted failures (721 other tests passed): failed notifications rejected create/duplicate, rename returned 503, share rejected after committing, the sign-out race made six extra requests, failed boot stranded metadata, and both terminal close codes reconnected on visibility.
+- Notification errors are logged separately from D1 write failures. The bridge checks its generation after a vault-switch wait and retries a failed prerequisite listing while retaining pending ids. Workspace refusals remain terminal across visibility/online/auth callbacks and pause pending refreshes.
+- Reference comparison: glyphdown uses best-effort side effects (`glyphdown-backend` §2.3); Moss at the pin has local disk-change subscriptions (`moss-renderer` §2.1), with no principal channel. Our metadata push must therefore preserve the committed mutation outcome while retaining Moss's metadata-only callback contract.
+- Deferred to their owners: T2.3 must publish trash/restore and cover real sidebar delivery in j05; T2.4/T2.5 must cover grantees' agents and member removal in fanout; the coordinator owns the inherited `CI_CLOSED_MILESTONE` policy and closure updates. This repair adds no CI policy changes.
+- Local browser self-check is omitted under the implementer brief, which assigns the available browser driver and decisive PR screenshots to the independent checker. No local tests, typechecks, lint, stacks or browsers were run.
+
+- [Chromium workspace journeys](https://github.com/brsbl/moss-multi/actions/runs/37167038946) passed at `3a5a726`. All 12 regression assertions passed in [push CI](https://github.com/brsbl/moss-multi/actions/runs/37167038647); the now-successful empty-create regression occupied `untitled.md` for an older shared-fixture test, so the new regression now uses its own principal. Product code is unchanged by that test isolation. Final-head push CI is recorded in `.codex-result.json`.
+
+### T2.1 — arm the bound-editor metadata gate
+
+- Attempt 3 merges current M1 while preserving the verified-task union (25/70). The tests-first change adds a same-generation body replacement positive control to the actual workspace journey: invariant 4 must report it, then the original body is restored. This must fail while Ben's observation remains unarmed. No product behavior or public contracts change.
+- The P1 repair will observe Ben after the intentional reload and await a peer-originated bound-id metadata event and its bridge delivery before checking invariants. The checker owns local browser QA under the implementer brief.
+
+- Tests-first [37168433232](https://github.com/brsbl/moss-multi/actions/runs/37168433232) on `cdb6be4` failed exactly at the new remount positive control (no invariant-4 findings); 43 tests passed. Its [push checks/build/viewer](https://github.com/brsbl/moss-multi/actions/runs/37168432768) passed.
+- The repaired journey observes Ben immediately after reload, makes Ada rename Ben's bound document, verifies its received `meta` frame and completed metadata-only bridge delivery, and checks all invariants before injecting the positive-control replacement. The replacement preserves the generation, is required to trigger invariant 4, and is restored before teardown.
+- Deviation: this is a test-gate repair, so the red proof is a deliberate same-generation DOM replacement in the real journey, not a product mutation. No M1 binding files were edited; current M1 changes arrived only through the required merge. No local tests, stack or browser were run.
+- P2 follow-ups remain scoped separately under the owner's review rule: T2.1 channel hardening (fetch deadline, visibility preserving the pong deadline, retries respecting vault-listing prerequisites); reconciliation after dropped notifications and targeted listing queries; T2.3 trash/restore publication and j05 delivery; T2.4/T2.5 agent grants/removals and session-ended. The coordinator still owns the inherited `CI_CLOSED_MILESTONE` policy.

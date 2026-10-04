@@ -155,32 +155,7 @@ it('keeps the last successful vault after a failed switch', async () => {
   expect((await api.notes.getAll()).map((note) => note.id)).toEqual(['d1']);
 });
 
-it('refreshes peer-created metadata only when it changes and stops polling when the last subscriber leaves', async () => {
-  vi.useFakeTimers();
-  try {
-    let listing = LISTING;
-    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json(listing));
-    const api = createBridge({ pathname: () => '/', fetch });
-    await api.notes.getAll();
-    const changed = vi.fn();
-    const stop = api.notes.onDiskChange(changed);
-    await vi.advanceTimersByTimeAsync(3_000);
-    expect(changed).not.toHaveBeenCalled();
-    listing = { ...LISTING, docs: [...LISTING.docs, { ...LISTING.docs[0], id: 'copy' }] };
-    await vi.advanceTimersByTimeAsync(3_000);
-    expect(changed).toHaveBeenCalledExactlyOnceWith([], []);
-    expect((await api.notes.getAll()).map((doc) => doc.id)).toEqual(['d1', 'copy']);
-    stop();
-    const requests = fetch.mock.calls.length;
-    await vi.advanceTimersByTimeAsync(6_000);
-    expect(fetch).toHaveBeenCalledTimes(requests);
-  } finally {
-    vi.clearAllTimers();
-    vi.useRealTimers();
-  }
-});
-
-it.each(['switch', 'navigation'] as const)('a listing poll never overrides an in-flight vault %s', async (action) => {
+it.each(['switch', 'navigation'] as const)('a workspace event never overrides an in-flight vault %s', async (action) => {
   vi.useFakeTimers();
   const values = new Map<string, string>();
   const storage = { getItem: (key: string) => values.get(key) ?? null,
@@ -192,11 +167,13 @@ it.each(['switch', 'navigation'] as const)('a listing poll never overrides an in
     const url = String(input);
     return url.includes('vault=v2') || url.includes('doc=d2') ? (await held).clone() : Response.json(LISTING);
   });
-  const api = createBridge({ pathname: () => '/', fetch, storage });
+  let receive: (event: { type: 'vaults' }) => void = () => undefined;
+  const api = createBridge({ pathname: () => '/', fetch, storage, subscribeWorkspace: (cb) => { receive = cb; return () => undefined; } });
   const stop = api.notes.onDiskChange(vi.fn());
   try {
     await api.notes.getAll();
     const navigate = action === 'switch' ? api[WORKSPACE].switchVault('v2') : api.system.setFocusedNoteId('d2');
+    receive({ type: 'vaults' });
     await vi.advanceTimersByTimeAsync(3_000);
     resolve(Response.json(target));
     await navigate;

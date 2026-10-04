@@ -6,7 +6,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { Actor, Actors } from '../lib/actors.ts';
 import {
-  APP_STATE_ATTR, BODY_BINDING_ATTR, DOC_SOCKET_PATH, DOC_STATE_ATTR, EDITOR_PANE_ATTR, ROLE_ATTR, SYNC_UNACKED_ATTR, paneSelector,
+  APP_STATE_ATTR, BODY_BINDING_ATTR, DOC_SOCKET_PATH, DOC_STATE_ATTR, EDITOR_PANE_ATTR, NAMES, ROLE_ATTR, SYNC_UNACKED_ATTR, paneSelector,
 } from '../lib/contract.ts';
 import { cookieHeader, openDocClient } from '../lib/doc-client.ts';
 import { signIn } from '../lib/principals.ts';
@@ -300,4 +300,112 @@ test('j01 duplicate: the note menu makes a content-preserving copy visible to bo
   await ben.page.reload();
   await waitBodyLive(ben, copyId);
   expect(await ui.fieldText(ben, copyId, 'body')).toBe(text + copyEdit);
+});
+
+test('j01 workspace: another open document keeps its binding while peer creates and renames arrive within five seconds @p:note-4 @p:col-5', async ({ actors, stack }) => {
+  const ada = await openShell(actors, 'ada');
+  const benPrincipal = await actors.principal('ben');
+  const openId = await newNote(ada);
+  await waitBodyLive(ada, openId);
+  const { vault } = await (await ada.context.request.get('/api/workspace')).json();
+  expect((await ada.context.request.post(`/api/folders/${vault.id}/members`, {
+    headers: { origin: stack.baseUrl }, data: { email: benPrincipal.email, role: 'editor' },
+  })).status()).toBe(201);
+  const ben = await actors.open(benPrincipal, { path: `/d/${openId}` });
+  await waitBodyLive(ben, openId);
+  // Socket readiness is witnessed by the actual browser WebSocket, including its received events.
+  const received: string[] = [];
+  ben.page.on('websocket', (socket) => {
+    if (socket.url().includes('/api/workspace/ws')) socket.on('framereceived', (frame) => received.push(String(frame.payload)));
+  });
+  ben.expectReconnects(1, openId);
+  await ben.page.reload();
+  await waitBodyLive(ben, openId);
+  await ben.observeEditor(openId);
+  const peerId = await newNote(ada);
+  await waitBodyLive(ada, peerId);
+  const row = ben.page.locator(`[data-sidebar-row][data-doc-id="${peerId}"]`);
+  await expect(row).toBeVisible({ timeout: 5_000 });
+  await expect.poll(() => received.some((frame) => frame.includes(peerId)), { timeout: 5_000, message: 'workspace channel delivers the new id' }).toBe(true);
+  await ui.typeTitle(ada, peerId, 'Workspace peer rename');
+  await expect(row).toContainText('Workspace peer rename', { timeout: 5_000 });
+
+  // Wait through the channel AND the bridge refresh for the id Ben actually has bound.
+  const delivery = await ben.page.evaluateHandle(() => {
+    const events: { ids: string[]; content: string[] }[] = [];
+    const { notes } = (window as unknown as { electronAPI: { notes: {
+      onDiskChange: (listener: (ids: string[], content: string[]) => void) => () => void;
+    } } }).electronAPI;
+    const stop = notes.onDiskChange((ids, content) => events.push({ ids, content }));
+    return { events, stop };
+  });
+  try {
+    received.length = 0;
+    ada.expectReconnects(1, openId);
+    await ada.page.locator(`[data-sidebar-row][data-doc-id="${openId}"]`).click();
+    await waitBodyLive(ada, openId);
+    await ui.typeTitle(ada, openId, 'Bound workspace rename');
+    await expect.poll(() => received.some((frame) => {
+      if (frame === 'pong') return false;
+      const event = JSON.parse(frame) as { type: string; docIds?: string[] };
+      return event.type === 'meta' && event.docIds?.includes(openId);
+    }), { timeout: 5_000, message: 'Ben receives metadata for his bound document' }).toBe(true);
+    await expect.poll(() => delivery.evaluate(({ events }, id) => events.filter((event) => event.ids.includes(id)), openId),
+      { timeout: 5_000, message: 'the bridge delivers the bound id as metadata only' })
+      .toContainEqual({ ids: expect.arrayContaining([openId]), content: [] });
+    await expect(ui.title(ben, openId)).toHaveText('Bound workspace rename');
+  } finally {
+    await delivery.evaluate(({ stop }) => stop());
+    await delivery.dispose();
+  }
+  await expect(ui.pane(ben, openId)).toHaveAttribute(DOC_STATE_ATTR, 'live');
+  await ui.typeBody(ben, openId, 'Still bound after metadata');
+  await waitAcked(ben, openId);
+  await actors.checkpoint('workspace-metadata');
+  await actors.assertInvariants();
+
+  // Prove this journey armed invariant 4, even when a remount reuses the same session generation.
+  const original = await ui.pane(ben, openId).locator(`[${NAMES.generation}]`).evaluateHandle((root, observe) => {
+    const replacement = root.cloneNode(true) as Element;
+    replacement.removeAttribute(observe);
+    root.replaceWith(replacement);
+    return root;
+  }, NAMES.observe);
+  try {
+    expect((await actors.findings()).filter((finding) => finding.actor === ben.label && finding.invariant === 4),
+      'the workspace journey detects a replaced bound body at the same generation').not.toHaveLength(0);
+  } finally {
+    await original.evaluate((root, { pane, generation }) => {
+      document.querySelector(`${pane} [${generation}]`)!.replaceWith(root);
+    }, { pane: paneSelector(openId), generation: NAMES.generation });
+    await original.dispose();
+  }
+});
+
+test('j01 workspace: sign-out closes the channel while the auth request is still pending @p:ppl-1', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  await actors.open(await actors.principal('ben'));
+  let opened = 0;
+  let closed = 0;
+  ada.page.on('websocket', (socket) => {
+    if (socket.url().includes('/api/workspace/ws')) {
+      opened += 1;
+      socket.on('close', () => { closed += 1; });
+    }
+  });
+  await ada.page.reload();
+  await expect.poll(() => opened).toBe(1);
+  let release: () => void = () => undefined;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let requested = false;
+  await ada.page.route('**/api/auth/sign-out', async (route) => { requested = true; await held; await route.continue(); });
+  try {
+    await ui.signOutThroughSettings(ada);
+    await expect.poll(() => requested).toBe(true);
+    await expect.poll(() => closed, { timeout: 1000 }).toBe(1);
+    await ada.page.waitForTimeout(1100);
+    expect(opened).toBe(1);
+  } finally { release(); }
+  await ada.page.waitForURL('**/login', { waitUntil: 'domcontentloaded' });
+  await ui.waitForLoginCard(ada);
 });

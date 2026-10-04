@@ -20,6 +20,7 @@ Read this with PRODUCT.md, your BUILDPLAN entry and the A§ it cites, before wri
 - e2e runs one shard per engine and journey group, each on its own stack: `GROUPS` in `scripts/ci/journeys.mjs` maps journey ids to groups, and `E2E_GROUP` narrows the journey projects to one group's files. A new journey goes into a group in the same commit: the plan fails on a journey in no group, and a group shard that plans no journey fails. A grep dispatch runs one `all` shard per engine. A shard's job timeout is its budget: 13 minutes, 25 with `repeat_each` > 1 or `@slow` legs.
 - Tag 60 s holds, soaks and idles `@slow` in the test title. They run at a milestone gate (ready `m<k>` → `main`), nightly and on `-f slow=true`; every other run passes `--grep-invert @slow`, so a grep for a `@slow` leg needs `-f slow=true`.
 - A newer push cancels the branch's running push run. Let a red run you need as evidence finish before pushing the fix.
+- With parallel milestones, `vars.CI_CLOSED_MILESTONE` records the last closed milestone (default 0 until M1 closes); advance it at closure. Branch gates are capped there, while ready milestone exits keep their full trace gate. [T2.1]
 - Tag every leg `@p:<id>` with the BUILDPLAN trace rows it proves. Branches of milestone k gate the rows due by M(k-1); the ready `m<k>` → `main` PR gates Mk. A tag naming no row always fails.
 - `lexical`, every `@lexical/*` and `yjs` must each resolve to one version equal to its pnpm override. Overrides have no wildcard, so a new `@lexical/*` package needs its own override line. [L§4.2]
 - Repo lint rules: no raw colors in `packages/ui`; no `.first()`/`.last()`/`.nth()` on a `contenteditable` locator in `e2e`; no `HISTORIC_TAG` or `'historic'` in apps, packages or vendor (inline disables are ignored under `vendor/`).
@@ -36,6 +37,7 @@ Read this with PRODUCT.md, your BUILDPLAN entry and the A§ it cites, before wri
 - TanStack Start: the root route uses `shellComponent`; the Worker exports `createServerEntry({fetch})`; parents need `<Outlet/>`. [L§4.18]
 - Global CSS is imported in `__root`; a lazy import ships an unstyled production build while dev stays green. Tailwind globs cover every file that writes a `className`. [L§4.1]
 - Prism is installed first in the client entry and in workerd; a chunk-order shift crashed the deployed app. [L§4.1]
+- Hibernatable sockets must reply with `connection.close()` in `onClose` at the pinned 2025 compatibility date; otherwise the client remains CLOSING after sign-out. [T2.1]
 - `new Request(request, {headers})` drops the WebSocket upgrade headers; clone without init, then set headers. [L§4.7]
 - One launcher kills by process group; a "vite dev" pattern never matched "vite.js dev" and three rounds tested stale code. Check `/api/version` before any gate. [L§4.18]
 - `wrangler dev` needs `--inspector-port P+1000` (9229 collides across stacks); `vite preview` binds only `[::1]`. [L§5.3; L§4.18]

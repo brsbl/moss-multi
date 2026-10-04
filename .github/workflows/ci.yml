@@ -91,6 +91,8 @@ jobs:
         run: node scripts/ci/plan.mjs >> "$GITHUB_OUTPUT"
         env:
           CI_DEGRADED: ${{ vars.CI_DEGRADED }}
+          # M2 is being built while M1 is still open. Advance this variable when a milestone closes.
+          CI_CLOSED_MILESTONE: ${{ vars.CI_CLOSED_MILESTONE || '0' }}
           LAST_NIGHTLY_SHA: ${{ steps.nightly.outputs.sha }}
 
   checks:
