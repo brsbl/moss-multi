@@ -37,6 +37,20 @@ describe('the T0.5a bridge', () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
+  it('drops a listing in flight when the page leaves instead of failing it', async () => {
+    const controller = new AbortController();
+    const fetch = vi.fn<typeof globalThis.fetch>((_input, init) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+    }));
+    const api = createBridge({ pathname: () => '/', fetch, leaving: () => controller.signal });
+    const settled = vi.fn();
+    void api.notes.getAll().then(settled, settled);
+    controller.abort();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(fetch.mock.calls[0]?.[1]?.signal).toBe(controller.signal);
+    expect(settled).not.toHaveBeenCalled();
+  });
+
   it('keeps every subscription callable', () => {
     const { api } = bridge();
     for (const subscribe of [api.notes.onDiskChange, api.notes.onRequestFlush, api.agent.onStream, api.update.onReady]) {

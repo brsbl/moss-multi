@@ -65,6 +65,8 @@ export interface BridgeOptions {
   fetch?: typeof fetch;
   storage?: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> | null;
   browser?: BrowserHooks;
+  /** Aborts when the page starts to leave; workspace reads in flight are dropped rather than cancelled by the navigation. */
+  leaving?: () => AbortSignal;
 }
 
 type ThemeChoice = 'system' | 'light' | 'dark';
@@ -149,13 +151,18 @@ const inertBrowser: BrowserHooks = {
   copy: async () => undefined,
 };
 
-export function createBridge({ pathname, share = () => null, fetch: fetcher = fetch.bind(globalThis), storage = null, browser = inertBrowser, subscribeWorkspace: subscribe }: BridgeOptions) {
+export function createBridge({ pathname, share = () => null, fetch: fetcher = fetch.bind(globalThis), storage = null, browser = inertBrowser, subscribeWorkspace: subscribe, leaving }: BridgeOptions) {
   const request = (path: string, init: RequestInit = {}) =>
     fetcher(path, { credentials: 'same-origin', ...init, headers: { accept: 'application/json', ...init.headers } });
-  /** Workspace reads carry the tab's share token, so a link holder's listing is the link's (T2.4). */
-  const listingRequest = (path: string) => {
+  /** Workspace reads carry the tab's share token, so a link holder's listing is the link's (T2.4). WebKit logs a
+   * fetch cancelled by navigation as an access-control page error, so a read in flight is aborted as the page leaves
+   * and never settles. */
+  const listingRequest = (path: string): Promise<Response> => {
     const token = share();
-    return request(path, token ? { headers: { 'x-moss-share': token } } : {});
+    const signal = leaving?.();
+    if (signal?.aborted) return new Promise(() => undefined);
+    return request(path, { ...(token ? { headers: { 'x-moss-share': token } } : {}), ...(signal ? { signal } : {}) })
+      .catch((error: unknown) => (signal?.aborted ? new Promise<Response>(() => undefined) : Promise.reject(error)));
   };
   /** A path in this tab keeps its share token, so a reload or a reconnect still presents it. */
   const withShare = (path: string) => {
@@ -592,10 +599,20 @@ function windowBrowser(): BrowserHooks {
   };
 }
 
+/** Aborts on `beforeunload`, before WebKit stops the page's loads for the navigation; a page restored from the
+ * back-forward cache gets a fresh signal. */
+function leavingSignal(): () => AbortSignal {
+  let controller = new AbortController();
+  window.addEventListener('beforeunload', () => controller.abort());
+  window.addEventListener('pageshow', (event) => { if (event.persisted) controller = new AbortController(); });
+  return () => controller.signal;
+}
+
 /** Installs the bridge on `window` before App's module evaluates (A§4.3). */
 export function installBridge(authStore: import('../auth-state.ts').AuthStore): Bridge {
   const bridge = createBridge({ pathname: () => window.location.pathname, storage: localStorageOrNull(), browser: windowBrowser(),
     share: () => new URLSearchParams(window.location.search).get('share'),
+    leaving: leavingSignal(),
     subscribeWorkspace: (receive, pause) => subscribeWorkspace({
       onPause: pause,
       auth: authStore,
