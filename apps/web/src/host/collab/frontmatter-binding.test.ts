@@ -79,11 +79,12 @@ it('keeps the empty Add field form open until its first value commits', () => {
   doc.destroy();
 });
 
-/** Ben's binding over a doc that receives every update Ada writes. */
+/** Ben's binding over a doc synced with Ada's. */
 function peers(noteId: string, yaml: string) {
   const ada = new Y.Doc();
   const ben = new Y.Doc();
-  ada.on('update', (update: Uint8Array) => Y.applyUpdate(ben, update, 'remote'));
+  ada.on('update', (update: Uint8Array, origin: unknown) => { if (origin !== 'remote') Y.applyUpdate(ben, update, 'remote'); });
+  ben.on('update', (update: Uint8Array, origin: unknown) => { if (origin !== 'remote') Y.applyUpdate(ada, update, 'remote'); });
   writeField(ada, 'frontmatter', yaml, 'seed');
   const store = createStore();
   const atom = noteFrontmatterAtom(noteId);
