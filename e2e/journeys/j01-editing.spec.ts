@@ -55,6 +55,32 @@ async function tabs(actor: Actor, id: string) {
   });
 }
 
+test('j01 registers: simultaneous code typing merges live and undo keeps the peer @p:col-1 @p:col-3 @evidence', async ({ actors, stack }) => {
+  const { ada, ben, id } = await setup(actors, stack.baseUrl, '```js\nseed\n```');
+  for (const actor of [ada, ben]) await ui.body(actor, id).locator('.moss-codeblock-pre').click();
+  const field = (actor: Actor) => ui.body(actor, id).getByPlaceholder('Enter code...');
+  await Promise.all([ada.page.keyboard.type('AAAA', { delay: 60 }), ben.page.keyboard.type('BBBB', { delay: 60 })]);
+  for (const actor of [ada, ben]) {
+    await expect.poll(async () => (await field(actor).inputValue()).replace(/[^A]/g, '')).toBe('AAAA');
+    await expect.poll(async () => (await field(actor).inputValue()).replace(/[^B]/g, '')).toBe('BBBB');
+  }
+  expect(await field(ada).inputValue()).toBe(await field(ben).inputValue());
+  await actors.checkpoint('concurrent-code');
+  await ada.page.keyboard.press('ControlOrMeta+z');
+  for (const actor of [ada, ben]) await expect(field(actor)).toHaveValue('seedBBBB');
+  await ada.page.keyboard.press('ControlOrMeta+Shift+z');
+  for (const actor of [ada, ben]) {
+    await expect.poll(async () => (await field(actor).inputValue()).replace(/[^A]/g, '')).toBe('AAAA');
+    await actor.page.keyboard.press('ControlOrMeta+Enter');
+  }
+  const expected = await ui.body(ada, id).locator('.moss-codeblock-code').innerText();
+  for (const actor of [ada, ben]) {
+    await actor.page.reload();
+    await ui.waitLive(actor, id); await actor.declareRemount(id);
+    await expect(ui.body(actor, id).locator('.moss-codeblock-code')).toHaveText(expected);
+  }
+});
+
 test('j01 editing: concurrent typing, local undo and paste retain both authors @p:col-1 @p:col-3', async ({ actors, stack }) => {
   const { ada, ben, id } = await setup(actors, stack.baseUrl, 'Shared paragraph.');
   await Promise.all([paragraphEnd(ada, id), paragraphEnd(ben, id)]);
@@ -198,4 +224,3 @@ test('j01 editing: formula drafts and background conversions stay out of shared 
   await actors.reloadAll();
   for (const actor of [ada, ben]) { await ui.waitLive(actor, id); await expect(ui.body(actor, id).locator('[data-formula-id]')).toHaveCount(1); await expect(ui.body(actor, id).locator('[data-color-value="#aabbcc"]')).toHaveCount(1); }
 });
-
