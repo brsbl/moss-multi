@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { knownRole } from '../access.ts';
-import { createBridge, docIdFromPath, WORKSPACE } from './index.ts';
+import { createBridge, docIdFromPath, inertBrowser, WORKSPACE, type BrowserHooks } from './index.ts';
 
 const LISTING = {
   vault: { id: 'v1', name: 'Home' },
@@ -187,4 +187,74 @@ it.each(['switch', 'navigation'] as const)('a workspace event never overrides an
     vi.clearAllTimers();
     vi.useRealTimers();
   }
+});
+
+describe('the T3.7 bridge: tab, print and download (R4; A§9 Export)', () => {
+  const memory = (seed: Map<string, string> = new Map()) => {
+    const values = new Map(seed);
+    return { values, getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value); }, removeItem: (key: string) => { values.delete(key); } };
+  };
+  const hooks = (overrides: Partial<BrowserHooks> = {}): BrowserHooks => ({ ...inertBrowser, origin: 'https://moss.example', ...overrides });
+  const quiet = () => vi.fn<typeof globalThis.fetch>(async () => Response.json(LISTING));
+
+  it('opens a note in a new browser tab at /d/<id>, keeping a share link', async () => {
+    const open = vi.fn();
+    const api = createBridge({ pathname: () => '/', fetch: quiet(), browser: hooks({ open }) });
+    expect(await api.system.createWindow({ noteId: 'd1' })).toEqual({ action: 'created', windowId: -1 });
+    expect(open).toHaveBeenLastCalledWith('https://moss.example/d/d1');
+    const shared = createBridge({ pathname: () => '/d/d1', fetch: quiet(), browser: hooks({ open, share: () => 'tok en' }) });
+    await shared.system.createWindow({ noteId: 'd1' });
+    expect(open).toHaveBeenLastCalledWith('https://moss.example/d/d1?share=tok+en');
+  });
+
+  it('hands a PDF session to the /pdf-export tab it opens, and only that session', async () => {
+    const session = memory();
+    const openWindow = vi.fn(() => true);
+    const api = createBridge({ pathname: () => '/d/d1', fetch: quiet(), browser: hooks({ openWindow, session }) });
+    const input = { title: 'Plans', markdown: 'Body', renderedHtml: '<p>Body</p>', serializedEditorState: { root: {} }, tabGroupActiveIndices: [1] };
+    const id = await api.notes.createPdfExportSession('d1', input);
+    expect(id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(await api.notes.openPdfExportPreview(id)).not.toBeNull();
+    expect(openWindow).toHaveBeenCalledWith(`/pdf-export?pdfExportSessionId=${id}`);
+
+    // The print tab reads the session from its own copy of the opener's session storage, or from the opener's.
+    // PdfExportApp never reads renderedHtml, so it is not stored.
+    const expected = { noteId: 'd1', title: 'Plans', markdown: 'Body', serializedEditorState: { root: {} }, tabGroupActiveIndices: [1] };
+    const child = createBridge({ pathname: () => '/pdf-export', fetch: quiet(), browser: hooks({ session: memory(session.values) }) });
+    expect(await child.notes.getPdfExportSession(id)).toEqual(expected);
+    const viaOpener = createBridge({ pathname: () => '/pdf-export', fetch: quiet(), browser: hooks({ session: memory(), openerSession: () => session }) });
+    expect(await viaOpener.notes.getPdfExportSession(id)).toEqual(expected);
+    expect(await child.notes.getPdfExportSession('another'), 'an unknown session is none').toBeNull();
+  });
+
+  it('reports a blocked print tab as a failed open', async () => {
+    const api = createBridge({ pathname: () => '/', fetch: quiet(), browser: hooks({ openWindow: () => false, session: memory() }) });
+    const id = await api.notes.createPdfExportSession('d1', { title: 'Plans', markdown: '' });
+    expect(await api.notes.openPdfExportPreview(id)).toBeNull();
+  });
+
+  it("downloads the server's export of the doc, named by its title, ignoring moss's client markdown", async () => {
+    const download = vi.fn();
+    const exported = 'Totals {{2+2|4}} and [[Launch Plan]].\n';
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input) => String(input) === '/api/docs/d1/content'
+      ? new Response(exported, { headers: { 'content-type': 'text/markdown; charset=utf-8' } })
+      : Response.json(LISTING));
+    const api = createBridge({ pathname: () => '/d/d1', fetch, browser: hooks({ download, share: () => 'tok' }) });
+    expect(await api.notes.exportMarkdown('d1', { title: ' Q4 / plan: draft? ', markdown: 'Totals 4 and Launch Plan.' })).toEqual({ canceled: false });
+    expect(fetch).toHaveBeenCalledWith('/api/docs/d1/content', expect.objectContaining({ headers: expect.objectContaining({ 'x-moss-share': 'tok' }) }));
+    const [name, blob] = download.mock.calls[0] as [string, Blob];
+    expect(name).toBe('Q4 - plan- draft-.md');
+    expect(await blob.text()).toBe(exported);
+    await api.notes.exportMarkdown('d1', { title: '   ', markdown: '' });
+    expect(download.mock.calls[1][0]).toBe('Untitled.md');
+  });
+
+  it('fails Save as Markdown loudly when the export is refused, and downloads nothing', async () => {
+    const download = vi.fn();
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json({ error: 'not-found' }, { status: 404 }));
+    const api = createBridge({ pathname: () => '/d/d1', fetch, browser: hooks({ download }) });
+    await expect(api.notes.exportMarkdown('d1', { title: 'Plans', markdown: '' })).rejects.toThrow(/couldn’t export/i);
+    expect(download).not.toHaveBeenCalled();
+  });
 });

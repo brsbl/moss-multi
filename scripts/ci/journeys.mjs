@@ -19,8 +19,8 @@ export const GROUPS = {
   editing: ['j00-import', 'j00-roundtrip', 'j00-persist', 'j01', 'j02'],
   // A doc's connection: drops, stalls, limits, hibernation. Split from editing so WebKit stays within 13 min.
   session: ['j03', 'j04'],
-  // Trash, folders, media, search, vaults, the demo note.
-  workspace: ['j05', 'j06', 'j11', 'j12', 'j13', 'j14'],
+  // Trash, folders, media, search, vaults, the demo note, tab/print/download (T3.7's export journey).
+  workspace: ['j05', 'j06', 'j11', 'j12', 'j13', 'j14', 'export'],
   // Comments, suggestions, history, agents.
   meaning: ['j15', 'j16', 'j17', 'j18'],
 };
