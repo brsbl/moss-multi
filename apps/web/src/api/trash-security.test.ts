@@ -243,6 +243,46 @@ describe('a restore that relocates the note is a move', () => {
   });
 });
 
+describe('a restore never leaves the note live under a trashed folder', () => {
+  const trashFolder = (folder: string) => async () => expect((await call(ada, 'DELETE', `/api/folders/${folder}`)).status).toBe(200);
+
+  it('when the note’s folder goes to Trash while the restore is under way, the note returns to the vault’s root', async () => {
+    const vault = await insertFolder(d1.db, ada, null);
+    const folder = await insertFolder(d1.db, ada, vault);
+    const doc = await insertDoc(d1.db, ada, { folderId: folder });
+    await insertGrant(d1.db, { folderId: vault }, ben, 'owner');
+    expect((await call(ada, 'DELETE', `/api/docs/${doc}`)).status).toBe(200);
+    before = { sql: /UPDATE "docs" SET deleted_at = NULL/i, run: trashFolder(folder) };
+    const restored = await call(ben, 'POST', `/api/docs/${doc}/restore`);
+    expect(restored.status).toBe(200);
+    expect(await restored.json()).toMatchObject({ doc: { folderId: vault } });
+    expect(await deletedAt(doc)).toBeNull();
+  });
+
+  it('a co-owner of just that folder is then refused in words, and the note stays in Trash', async () => {
+    const folder = await insertFolder(d1.db, ada, ada.homeId);
+    const doc = await insertDoc(d1.db, ada, { folderId: folder });
+    await insertGrant(d1.db, { folderId: folder }, ben, 'owner');
+    expect((await call(ada, 'DELETE', `/api/docs/${doc}`)).status).toBe(200);
+    before = { sql: /UPDATE "docs" SET deleted_at = NULL/i, run: trashFolder(folder) };
+    await expectSentence(await call(ben, 'POST', `/api/docs/${doc}/restore`), 403);
+    expect(await deletedAt(doc)).not.toBeNull();
+  });
+
+  it('a relocating restore whose edit grant on the vault is removed before it commits is refused, and the note stays in Trash', async () => {
+    const vault = await insertFolder(d1.db, ada, null);
+    const folder = await insertFolder(d1.db, ada, vault);
+    const doc = await insertDoc(d1.db, ada, { folderId: folder });
+    await insertGrant(d1.db, { folderId: folder }, ben, 'owner');
+    await insertGrant(d1.db, { folderId: vault }, ben, 'editor');
+    expect((await call(ada, 'DELETE', `/api/folders/${folder}`)).status).toBe(200);
+    before = { sql: /UPDATE "docs" SET deleted_at = NULL/i,
+      run: () => d1.db.prepare('DELETE FROM folder_members WHERE folder_id = ? AND principal_id = ?').bind(vault, ben.id).run() };
+    await expectSentence(await call(ben, 'POST', `/api/docs/${doc}/restore`), 403);
+    expect(await deletedAt(doc)).not.toBeNull();
+  });
+});
+
 describe('a revocation that lands while a trash or restore is under way wins', () => {
   it('a co-owner whose grant is removed before the trash commits trashes nothing, and the note reopens', async () => {
     const doc = await insertDoc(d1.db, ada);
