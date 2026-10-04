@@ -219,7 +219,7 @@ export function useMediaNodeActions(nodeKey: NodeKey): {
     [editor, nodeKey]
   );
 
-  // moss-multi seam: read-only-media: a read-only render offers no insert-paragraph gaps, which are focusable.
+  // moss-multi seam: read-only-media (A§19 invariant 9): a read-only render offers no insert-paragraph gaps.
   return { handleDelete, handleGapClick: editable ? handleGapClick : undefined };
 }
 
