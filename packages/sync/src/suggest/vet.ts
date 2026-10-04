@@ -1,7 +1,8 @@
 // SP11 spike (T5.0, docs/design/suggestions.md §4): vets a suggest-mode sync frame without applying it, by Yjs
 // identity rather than by text offsets. Inserts anywhere in the body land and are registered as the author's parts;
-// deletes land only on the author's own items, and attribute writes only on the author's own containers; a split that
-// moves original text is proven on the state after the frame; every other write is refused. The same rules run on the
+// deletes land only on the author's own items (with everything Yjs deletes along with them), and attribute writes only
+// on the author's own containers that govern no one else's text; text a split, join or undo moves is proven on the
+// state after the frame; every other write is refused. The same rules run on the
 // server against the live doc (vetSuggestFrame) and on the client in afterTransaction (vetTransaction).
 import * as Y from 'yjs';
 
@@ -37,19 +38,17 @@ class Refusal extends Error {
 }
 
 /**
- * What the vetter reads: the doc before the frame (`state`, `get`, `liveBefore`, `before`) and after it (`after`).
- * The server reads the live doc before the frame applies and builds a mirror only when a split needs the after state;
- * the client reads its doc in afterTransaction, where the transaction's structs are integrated and its deletes marked
- * but not yet collected, so the before state is the store minus the transaction.
+ * What the vetter reads: the doc before the frame (`state`, `get`, `liveBefore`, `body(false)`) and after it
+ * (`body(true)`). The server reads the live doc before the frame applies and builds a mirror only when the after state
+ * is needed; the client reads its doc in afterTransaction, where the transaction's structs are integrated and its
+ * deletes marked but not yet collected, so the before state is the store minus the transaction.
  */
 interface View {
   state(client: number): number;
   get(id: Y.ID): Y.Item | Y.GC;
   liveBefore(item: Y.Item): boolean;
-  /** A block's content before the frame. */
-  before(block: Y.Item): Elem[];
-  /** A block's content after the frame, plus the fresh blocks right after it when `siblings`; null if deleted. */
-  after(block: Y.Item, siblings: boolean, isFresh: (id: Y.ID) => boolean): Elem[] | null;
+  /** The body's content in document order, nested blocks included, before or after the frame. */
+  body(after: boolean): Elem[];
   /** The registers map (after the frame on the client, before it on the server). */
   registers(): Y.Map<unknown> | undefined;
   dispose(): void;
@@ -166,16 +165,16 @@ function vet(view: View, structs: (Y.Item | Y.GC | Y.Skip)[], ds: DeleteSet, opt
     return at.dead ? null : at.rootKey;
   };
 
-  /** Original blocks whose text the frame removed or re-governed: proven against the after state below. */
-  const affected = new Set<Y.Item>();
+  /** Blocks whose text the frame removed or re-governed (by key): proven against the after state below. */
+  const affected = new Set<string>();
   const touchBlock = (typeItem: Y.Item | null): void => {
     if (!typeItem || !(typeItem.content instanceof Y.ContentType) || !(typeItem.content.type instanceof Y.XmlText)) {
       throw new Refusal('delete-original');
     }
     if (rootOf(typeItem) !== BODY) throw new Refusal('delete-original');
-    affected.add(typeItem);
+    affected.add(keyOf(typeItem.id));
   };
-  /** Own containers the frame writes attributes on: checked for moved content once the splits are known. */
+  /** Own containers the frame writes attributes on: checked for text that is not the author's once splits are known. */
   const attributed = new Set<Y.Item>();
   /**
    * Lexical rewrites every property of a node it marks dirty whose value is not `===` the previous one, so inserting
@@ -184,7 +183,9 @@ function vet(view: View, structs: (Y.Item | Y.GC | Y.Skip)[], ds: DeleteSet, opt
    */
   const unchanged = new Set<string>();
   const sameAsBefore = (container: Y.Item, sub: string, item: Y.Item): boolean => {
-    if (!(container.content instanceof Y.ContentType) || item.content instanceof Y.ContentType) return false;
+    if (!(container.content instanceof Y.ContentType) || item.content instanceof Y.ContentType || item.content instanceof Y.ContentDeleted) {
+      return false;
+    }
     let previous: Y.Item | null | undefined = container.content.type._map.get(sub);
     while (previous && isFreshId(previous.id)) previous = previous.left;
     if (!previous || !view.liveBefore(previous) || previous.content instanceof Y.ContentType || previous.content instanceof Y.ContentDeleted) {
@@ -194,20 +195,24 @@ function vet(view: View, structs: (Y.Item | Y.GC | Y.Skip)[], ds: DeleteSet, opt
     return last(previous.content.getContent()) === last(item.content.getContent());
   };
 
-  // Inserts: sequence inserts anywhere in the body; attribute and map writes only on the author's own containers.
+  // Inserts: sequence inserts anywhere in the body; attribute and map writes only on the author's own containers. A
+  // tombstone (ContentDeleted) is judged like any write: placed as a map's newest value, Yjs deletes the value before it.
   const candidates: Y.Item[] = [];
   for (const items of fresh.values()) {
     for (const item of items) {
       if (!(item instanceof Y.Item)) continue;
       // Every reference must resolve now, so Yjs cannot park the item.
       for (const ref of [item.origin, item.rightOrigin, item.parent instanceof Y.ID ? item.parent : null]) if (ref) lookup(ref);
-      if (item.content instanceof Y.ContentDeleted) continue;
+      const tomb = item.content instanceof Y.ContentDeleted;
       const at = place(item, true);
       if (at.dead) continue;
       const root = at.typeItem ? rootOf(at.typeItem) : at.rootKey;
       if (root === null) continue;
       if (at.sub === null) {
         if (root === BODY) {
+          // V1 never writes formatting marks; Yjs's format cleanup deletes marks around a new one.
+          if (item.content instanceof Y.ContentFormat) throw new Refusal('mutate-original');
+          if (tomb) continue;
           candidates.push(item);
           // An embed landing before original text takes that text over (V1 text runs follow their map): check it.
           const right = item.rightOrigin ? lookup(item.rightOrigin) : null;
@@ -217,34 +222,50 @@ function vet(view: View, structs: (Y.Item | Y.GC | Y.Skip)[], ds: DeleteSet, opt
           continue;
         }
         if (root === REGISTERS && at.typeItem && isOwnId(at.typeItem.id)) {
-          candidates.push(item);
+          if (!tomb) candidates.push(item);
           continue;
         }
         throw new Refusal(root === REGISTERS ? 'mutate-original' : 'outside-body');
       }
       if (at.typeItem) {
-        if ((root === BODY || root === REGISTERS) && isOwnId(at.typeItem.id)) {
-          attributed.add(at.typeItem);
-          candidates.push(item);
-          continue;
-        }
         if (root === BODY && sameAsBefore(at.typeItem, at.sub, item)) {
           unchanged.add(`${keyOf(at.typeItem.id)}|${at.sub}`);
+          continue;
+        }
+        if ((root === BODY || root === REGISTERS) && isOwnId(at.typeItem.id)) {
+          attributed.add(at.typeItem);
+          if (!tomb) candidates.push(item);
           continue;
         }
         throw new Refusal(root === BODY || root === REGISTERS ? 'mutate-original' : 'outside-body');
       }
       // A new key in the registers map belongs to a new decorator; overwriting a live one mutates the original.
       if (at.rootKey === REGISTERS && !keyLiveBefore(view, at.sub, isFreshId)) {
-        candidates.push(item);
+        if (!tomb) candidates.push(item);
         continue;
       }
       throw new Refusal(at.rootKey === REGISTERS || at.rootKey === BODY ? 'mutate-original' : 'outside-body');
     }
   }
 
-  // Deletes: a sequence item only when it is the author's own; an attribute value only on the author's own container.
-  // Original text removed from a block is allowed only as half of a split, proven below.
+  // Deletes. Yjs deletes a container's live content with it, whatever the delete set names, so the frame's deletes are
+  // closed over descendants before they are judged. A sequence item goes only when it is the author's own; original
+  // text only as half of a split, proven below. A map value goes with its container, and otherwise only from the
+  // author's own container.
+  const gone: { item: Y.Item; from: number; to: number }[] = [];
+  const goneContainers = new Set<Y.Item>();
+  const descend = (item: Y.Item): void => {
+    if (!(item.content instanceof Y.ContentType) || goneContainers.has(item)) return;
+    goneContainers.add(item);
+    const type = item.content.type;
+    const children: Y.Item[] = [...type._map.values()];
+    for (let child = type._start; child; child = child.right) children.push(child);
+    for (const child of children) {
+      if (isFreshId(child.id) || !view.liveBefore(child)) continue;
+      gone.push({ item: child, from: child.id.clock, to: child.id.clock + child.length });
+      descend(child);
+    }
+  };
   for (const [client, ranges] of ds.clients) {
     for (const { clock, len } of ranges) {
       for (let at = clock; at < clock + len;) {
@@ -252,33 +273,47 @@ function vet(view: View, structs: (Y.Item | Y.GC | Y.Skip)[], ds: DeleteSet, opt
         const stop = Math.min(clock + len, found.end);
         const item = found.item;
         if (item && !found.fresh && view.liveBefore(item)) {
-          const holder = place(item, false);
-          if (holder.sub !== null) {
-            const kept = holder.typeItem !== null && unchanged.has(`${keyOf(holder.typeItem.id)}|${holder.sub}`);
-            if (!kept && (holder.typeItem ? !isOwnId(holder.typeItem.id) : !isOwnId(item.id))) throw new Refusal('mutate-original');
-            if (holder.typeItem && !kept) attributed.add(holder.typeItem);
-          } else if (isMoved(client, at, stop) || !covered(client, at, stop)) {
-            if (!(item.content instanceof Y.ContentString)) throw new Refusal('delete-original');
-            touchBlock(holder.typeItem);
-          }
+          gone.push({ item, from: at, to: stop });
+          descend(item);
         }
         at = Math.max(stop, at + 1);
       }
     }
   }
+  for (const { item, from, to } of gone) {
+    const holder = place(item, false);
+    if (holder.sub !== null) {
+      if (holder.typeItem && goneContainers.has(holder.typeItem)) continue;
+      const kept = holder.typeItem !== null && unchanged.has(`${keyOf(holder.typeItem.id)}|${holder.sub}`);
+      if (!kept && (holder.typeItem ? !isOwnId(holder.typeItem.id) : !isOwnId(item.id))) throw new Refusal('mutate-original');
+      if (holder.typeItem && !kept) attributed.add(holder.typeItem);
+      continue;
+    }
+    const own = !isMoved(item.id.client, from, to) && covered(item.id.client, from, to);
+    if (item.content instanceof Y.ContentString) {
+      if (!own) touchBlock(holder.typeItem);
+    } else if (isTextMap(item)) {
+      // The characters it governed fall to the map before them: their properties are proven below.
+      touchBlock(holder.typeItem);
+    } else if (!own) {
+      throw new Refusal('delete-original');
+    }
+  }
 
-  // Splits: @lexical/yjs moves the tail of a split text node into a new node, and Enter moves it into a new block, by
-  // deleting the original characters and inserting copies. After the frame, every element of an affected block that
-  // is not the author's must survive in order, by identity or as a fresh copy with the same character and text
-  // properties, in the block or the fresh blocks right after it. Copies, and the fresh text maps governing them, stay
-  // original: they are never the author's inserts.
-  for (const block of affected) {
-    const pre = view.before(block);
-    const post = view.after(block, true, isFreshId);
-    if (!post) throw new Refusal('delete-original');
-    const matched = align(pre, post, isFreshId, (o, p) => o.char !== null && p.char === o.char && p.props === o.props);
+  // Splits, joins and undone splits: @lexical/yjs moves text by deleting the characters and inserting copies (the
+  // tail of a split text node into a new node, Enter's tail into a new block, an undo's tail back into the block it
+  // came from). After the frame, every character of an affected block that is not the author's must survive in
+  // document order, by identity or as a fresh copy with the same character and text properties, wherever in the body
+  // that is. Copies, and the fresh text maps governing them, stay original: they are never the author's inserts.
+  let afterBody: Elem[] | null = null;
+  const after = () => (afterBody ??= view.body(true));
+  const isOwnElem = (e: Elem) => isOwnId(Y.createID(e.client, e.clock));
+  if (affected.size > 0) {
+    const pre = view.body(false);
+    const wanted = (o: Elem) => o.char !== null && o.block !== null && affected.has(o.block) && !isOwnElem(o);
+    const matched = align(pre, after(), isFreshId, wanted, (o, p) => p.char === o.char && p.props === o.props);
     for (const o of pre) {
-      if (isOwnId(Y.createID(o.client, o.clock))) continue;
+      if (!wanted(o)) continue;
       const p = matched.get(keyOf(o));
       if (!p) throw new Refusal('delete-original');
       if (p.props !== o.props) throw new Refusal('mutate-original');
@@ -289,16 +324,21 @@ function vet(view: View, structs: (Y.Item | Y.GC | Y.Skip)[], ds: DeleteSet, opt
     }
   }
 
-  // An attribute write on an own container is still a change to original content when the container is moved text's
-  // map, or a block that holds moved text. A block new in this frame carries its initial attributes: they are part of
-  // the author's insert, which reject removes, and the moved text's own properties were proven above.
-  for (const container of attributed) {
-    if (isFreshId(container.id)) continue;
-    if (isMoved(container.id.client, container.id.clock, container.id.clock + 1)) throw new Refusal('mutate-original');
-    const content = container.content instanceof Y.ContentType ? container.content.type : null;
-    if (content instanceof Y.XmlText) {
-      const children = view.after(container, false, isFreshId);
-      if (children?.some((e) => isMoved(e.client, e.clock, e.clock + 1))) throw new Refusal('mutate-original');
+  // An attribute write on an own container still changes text that is not the author's when the container is moved
+  // text's map, or governs (a text map) or holds (a block) a character the author does not own after the frame: moved
+  // text, or a peer's typing. A container new in this frame carries its initial attributes: they are part of the
+  // author's insert, which reject removes, and copied text's own properties were proven above.
+  const pending = [...attributed].filter((container) => !isFreshId(container.id) && rootOf(container) === BODY);
+  if (pending.length > 0) {
+    const notOwn = new Set<string>();
+    for (const e of after()) {
+      if (e.char === null || isOwnElem(e)) continue;
+      if (e.gov) notOwn.add(e.gov);
+      for (const ancestor of e.ancestors) notOwn.add(ancestor);
+    }
+    for (const container of pending) {
+      if (isMoved(container.id.client, container.id.clock, container.id.clock + 1)) throw new Refusal('mutate-original');
+      if (notOwn.has(keyOf(container.id))) throw new Refusal('mutate-original');
     }
   }
 
@@ -327,35 +367,42 @@ export function carryIdentity(doc: Y.Doc, update: Uint8Array, spans: readonly Id
   }
   const isFreshId = (id: Y.ID) => freshKeys.has(`${id.client}:${id.clock}`);
   const tracked = (client: number, clock: number) => coveredBy(spans, client, clock, clock + 1);
-  const blocks = new Set<Y.Item>();
+  // Tracked characters the frame deletes, directly or with a block it deletes (a join deletes the joined block).
+  const gone = new Set<string>();
+  const visit = (item: Y.Item, from: number, to: number): void => {
+    if (item.deleted) return;
+    if (item.content instanceof Y.ContentString) {
+      for (let clock = from; clock < to; clock++) if (tracked(item.id.client, clock)) gone.add(`${item.id.client}:${clock}`);
+    } else if (item.content instanceof Y.ContentType) {
+      for (let child = item.content.type._start; child; child = child.right) visit(child, child.id.clock, child.id.clock + child.length);
+    }
+  };
   for (const [client, ranges] of ds.clients) {
     for (const { clock, len } of ranges) {
-      for (let at = clock; at < clock + len; at++) {
-        if (!tracked(client, at) || at >= Y.getState(doc.store, client)) continue;
+      for (let at = clock; at < Math.min(clock + len, Y.getState(doc.store, client));) {
         const item = Y.getItem(doc.store, Y.createID(client, at));
-        if (!(item instanceof Y.Item) || item.deleted || item.parentSub !== null) continue;
-        const parent = (item.parent as Y.AbstractType<unknown>)._item;
-        if (parent) blocks.add(parent);
+        const stop = Math.min(clock + len, item.id.clock + item.length);
+        if (item instanceof Y.Item) visit(item, at, stop);
+        at = Math.max(stop, at + 1);
       }
     }
   }
   const out = spans.map((span) => ({ ...span }));
-  if (blocks.size === 0) return out;
+  if (gone.size === 0) return out;
   const view = serverView(doc, update);
   try {
     const added = new Set<string>();
-    for (const block of blocks) {
-      const pre = view.before(block);
-      const post = view.after(block, true, isFreshId);
-      if (!post) continue;
-      // Characters only: an editor's bold re-inserts the run with new text properties, and it is still the same text.
-      const matched = align(pre, post, isFreshId, (o, p) => o.char !== null && p.char === o.char);
-      for (const o of pre) {
-        const p = matched.get(keyOf(o));
-        if (!p || keyOf(p) === keyOf(o) || !tracked(o.client, o.clock)) continue;
-        added.add(keyOf(p));
-        if (p.gov && isFreshId(idOf(p.gov))) added.add(p.gov);
-      }
+    // The same document-order alignment as the vetter's proof, so a copy is found wherever the writer put it: the
+    // block itself, a new block after it, or the block before it after a join. Characters only: an editor's bold
+    // re-inserts the run with new text properties, and it is still the same text.
+    const pre = view.body(false);
+    const wanted = (o: Elem) => gone.has(keyOf(o));
+    const matched = align(pre, view.body(true), isFreshId, wanted, (o, p) => p.char === o.char);
+    for (const o of pre) {
+      const p = wanted(o) ? matched.get(keyOf(o)) : undefined;
+      if (!p) continue;
+      added.add(keyOf(p));
+      if (p.gov && isFreshId(idOf(p.gov))) added.add(p.gov);
     }
     for (const span of spansOf(added)) out.push(span);
     return out;
@@ -418,6 +465,10 @@ interface Elem {
   props: string | null;
   /** The key of a character's governing text map. */
   gov: string | null;
+  /** The key of the block (nested or top-level) the element sits in; null at the root. */
+  block: string | null;
+  /** The keys of every block the element sits in, outermost first. */
+  ancestors: readonly string[];
 }
 const keyOf = (e: { client: number; clock: number }) => `${e.client}:${e.clock}`;
 const idOf = (key: string) => {
@@ -425,8 +476,22 @@ const idOf = (key: string) => {
   return Y.createID(client, clock);
 };
 
-/** A V1 block's content in order, counting only `include`d items: each character with the text map before it. */
-function sequence(type: Y.AbstractType<unknown>, include: (item: Y.Item) => boolean, out: Elem[] = []): Elem[] {
+/** Whether an item is a V1 text node's map. */
+function isTextMap(item: Y.Item): boolean {
+  const type = item.content instanceof Y.ContentType ? item.content.type : null;
+  if (!(type instanceof Y.Map)) return false;
+  const entry = type._map.get('__type');
+  if (!entry || entry.content instanceof Y.ContentDeleted) return false;
+  const values = entry.content.getContent();
+  return values[values.length - 1] === 'text';
+}
+
+/**
+ * A V1 subtree's content in document order, counting only `include`d items: each character with the text map before
+ * it, each embed, and the content of each nested block right after the block's own embed.
+ */
+function flatten(type: Y.AbstractType<unknown>, include: (item: Y.Item) => boolean, out: Elem[] = [], ancestors: readonly string[] = []): Elem[] {
+  const block = ancestors.length > 0 ? ancestors[ancestors.length - 1] : null;
   let props: string | null = null;
   let gov: string | null = null;
   for (let item = type._start; item; item = item.right) {
@@ -434,14 +499,15 @@ function sequence(type: Y.AbstractType<unknown>, include: (item: Y.Item) => bool
     const content = item.content;
     if (content instanceof Y.ContentString) {
       for (let i = 0; i < content.str.length; i++) {
-        out.push({ client: item.id.client, clock: item.id.clock + i, char: content.str[i], props, gov });
+        out.push({ client: item.id.client, clock: item.id.clock + i, char: content.str[i], props, gov, block, ancestors });
       }
-    } else if (!(content instanceof Y.ContentFormat)) {
+    } else if (!(content instanceof Y.ContentFormat) && !(content instanceof Y.ContentDeleted)) {
       const embedded = content instanceof Y.ContentType ? content.type : null;
-      const isTextMap = embedded instanceof Y.Map && mapJson(embedded, include).__type === 'text';
-      props = isTextMap ? stableJson(mapJson(embedded as Y.Map<unknown>, include)) : null;
-      gov = isTextMap ? keyOf(item.id) : null;
-      out.push({ client: item.id.client, clock: item.id.clock, char: null, props: null, gov: null });
+      const isText = embedded instanceof Y.Map && mapJson(embedded, include).__type === 'text';
+      props = isText ? stableJson(mapJson(embedded as Y.Map<unknown>, include)) : null;
+      gov = isText ? keyOf(item.id) : null;
+      out.push({ client: item.id.client, clock: item.id.clock, char: null, props: null, gov: null, block, ancestors });
+      if (embedded instanceof Y.XmlText) flatten(embedded, include, out, [...ancestors, keyOf(item.id)]);
     }
   }
   return out;
@@ -465,16 +531,19 @@ const stableJson = (value: Record<string, unknown>) =>
   JSON.stringify(Object.keys(value).sort().map((key) => [key, value[key]]));
 
 /**
- * Pairs each element before the frame with the same element after it, or with the fresh element that `same` accepts
- * as its copy. Elements that existed before keep their relative order in a Yjs sequence, so a scan that meets an older
- * element first knows the one it seeks is gone.
+ * Pairs each element before the frame with the same element after it, or, for a `wanted` element the frame deleted,
+ * with the fresh element that `same` accepts as its copy. Elements that existed before keep their document order (Yjs
+ * never moves an item), so a scan that meets an older element first knows the one it seeks is gone.
  */
-function align(pre: Elem[], post: Elem[], isFreshId: (id: Y.ID) => boolean, same: (o: Elem, p: Elem) => boolean): Map<string, Elem> {
+function align(
+  pre: Elem[], post: Elem[], isFreshId: (id: Y.ID) => boolean, wanted: (o: Elem) => boolean, same: (o: Elem, p: Elem) => boolean,
+): Map<string, Elem> {
   const live = new Set(post.map(keyOf));
   const matched = new Map<string, Elem>();
   let j = 0;
   for (const o of pre) {
     const kept = live.has(keyOf(o));
+    if (!kept && !wanted(o)) continue;
     for (let k = j; k < post.length; k++) {
       const p = post[k];
       if (keyOf(p) === keyOf(o)) {
@@ -500,21 +569,23 @@ function keyLiveBefore(view: View, key: string, isFreshId: (id: Y.ID) => boolean
   return !!entry && view.liveBefore(entry);
 }
 
+const alive = (item: Y.Item) => !item.deleted;
+const bodyOf = (doc: Y.Doc) => doc.get(BODY, Y.XmlText) as Y.AbstractType<unknown>;
+
 function serverView(doc: Y.Doc, update: Uint8Array): View {
   let mirror: Y.Doc | null = null;
-  const live = (item: Y.Item) => !item.deleted;
   return {
     state: (client) => Y.getState(doc.store, client),
     get: (id) => Y.getItem(doc.store, id),
-    liveBefore: live,
-    before: (block) => sequence((block.content as Y.ContentType).type, live),
-    after: (block, siblings, isFreshId) => {
+    liveBefore: alive,
+    body: (after) => {
+      if (!after) return flatten(bodyOf(doc), alive);
       if (!mirror) {
         mirror = new Y.Doc();
         Y.applyUpdate(mirror, Y.encodeStateAsUpdate(doc));
         Y.applyUpdate(mirror, update);
       }
-      return afterIn(mirror, block, siblings, isFreshId);
+      return flatten(bodyOf(mirror), alive);
     },
     registers: () => doc.share.get(REGISTERS) as Y.Map<unknown> | undefined,
     dispose: () => mirror?.destroy(),
@@ -530,24 +601,10 @@ function clientView(transaction: Y.Transaction): View {
     state,
     get: (id) => Y.getItem(doc.store, id),
     liveBefore,
-    before: (block) => sequence((block.content as Y.ContentType).type, existedLive),
-    after: (block, siblings, isFreshId) => afterIn(doc, block, siblings, isFreshId),
+    body: (after) => flatten(bodyOf(doc), after ? alive : existedLive),
     registers: () => doc.share.get(REGISTERS) as Y.Map<unknown> | undefined,
     dispose: () => {},
   };
-}
-
-function afterIn(doc: Y.Doc, block: Y.Item, siblings: boolean, isFreshId: (id: Y.ID) => boolean): Elem[] | null {
-  const live = (item: Y.Item) => !item.deleted;
-  const after = Y.getItem(doc.store, block.id);
-  if (!(after instanceof Y.Item) || after.deleted) return null;
-  const out = sequence((after.content as Y.ContentType).type, live);
-  if (siblings) {
-    for (let sibling = after.right; sibling && isFreshId(sibling.id); sibling = sibling.right) {
-      if (!sibling.deleted && sibling.content instanceof Y.ContentType) sequence(sibling.content.type, live, out);
-    }
-  }
-  return out;
 }
 
 function coveredBy(spans: readonly IdSpan[], client: number, from: number, to: number): boolean {
