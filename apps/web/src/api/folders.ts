@@ -218,13 +218,14 @@ async function closeDocs(env: FoldersEnv, docIds: string[]): Promise<boolean> {
   return failed.length === 0;
 }
 
-async function trashFolder(request: Request, env: FoldersEnv, id: string): Promise<Response> {
+/** DELETE /api/folders/:id, and DELETE /api/vaults/:id with `kind` vault: the subtree goes to Trash as one batch. */
+export async function trashFolder(request: Request, env: FoldersEnv, id: string, kind: 'folder' | 'vault' = 'folder'): Promise<Response> {
   const principal = await signedIn(request, env);
   if (!principal) return unauthenticated();
   const db = createDb(env.DB);
   const folder = await resolveFolderAccess(db, principal, id);
   if (!folder) return folderNotFound();
-  if (folder.kind === 'vault') return refuse(409, 'vault', 'A vault can’t be moved to Trash from here.');
+  if (folder.kind !== kind) return kind === 'vault' ? folderNotFound() : refuse(409, 'vault', 'A vault can’t be moved to Trash from here.');
   const [row] = await db.select({ batch: folders.trashBatchId }).from(folders).where(eq(folders.id, id));
   // A retry by the owner re-closes the batch's docs; anyone else, or a folder trashed inside a larger batch, gets 404.
   if (folder.deleted && (folder.role !== 'owner' || !row?.batch)) return folderNotFound();
