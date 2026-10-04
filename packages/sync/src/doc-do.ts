@@ -23,6 +23,8 @@ import { exportDocMarkdown, importBody, rootIsEmpty, SERVER_IMPORT, SERVER_SEED,
 
 /** How long after a wake the doc re-feeds search. */
 const WAKE_FEED_MS = 1_000;
+/** The `search-fed` meta while the index holds this doc's content; bump it when an index entry's shape changes. */
+const SEARCH_FEED_VERSION = '2';
 
 /** A title written by create() or a REST rename; both project. */
 export const SERVER_TITLE = 'server-title';
@@ -89,6 +91,10 @@ export class DocDO extends YServer<SyncEnv> {
   #projections: Projections | null = null;
   /** The title and body this instance last fed to search. */
   #fed: string | null = null;
+  /** Doc edits since load; a feed marks the doc fed only if none landed while it ran. */
+  #edits = 0;
+  /** Whether the stored `search-fed` meta is cleared (an edit the index may lack). */
+  #searchStale = false;
   readonly #limits = (this.constructor as typeof DocDO).limits;
   readonly #rate = new WriteRate(this.#limits.writeRate.max, this.#limits.writeRate.windowMs);
   readonly #acks = new AckCoalescer<Connection>((connection, deletes) => this.#ack(connection, deletes), ACK_COALESCE_MS);
@@ -106,9 +112,10 @@ export class DocDO extends YServer<SyncEnv> {
     this.#seed(store);
     const target = (this.constructor as typeof DocDO).projectionTarget(this.env);
     if (target) this.#project(new Projections(this.name, target));
-    // Re-fed once on every wake (L§4.14), once onStart has served the waiting frames; a doc being created is fed by
-    // the save its content triggers.
-    if (store.meta('created') !== null) setTimeout(() => void this.#feedSearch(), WAKE_FEED_MS);
+    // A wake re-feeds only a doc the index may lack (L§4.14): an edit whose feed never landed, or an older entry
+    // shape; once onStart has served the waiting frames. A doc being created is fed by the save its content triggers.
+    this.#searchStale = store.meta('search-fed') !== SEARCH_FEED_VERSION;
+    if (this.#searchStale && store.meta('created') !== null) setTimeout(() => void this.#feedSearch(), WAKE_FEED_MS);
   }
 
   /** Debounced by y-partyserver (2 s, at most 10 s). */
@@ -310,10 +317,16 @@ export class DocDO extends YServer<SyncEnv> {
       const markdown = this.#exported;
       const entry: IndexEntry = { docId: this.name, title: this.document.getText('title').toString(), body: splitFrontmatter(markdown).body };
       const signature = `${entry.title}\u0000${entry.body}`;
-      if (signature === this.#fed) return;
-      const { linksChanged } = await feed.index(entry);
-      this.#fed = signature;
-      if (linksChanged && this.env?.DB && this.env.PrincipalDO) await publishMeta(this.env, [this.name]);
+      const edits = this.#edits;
+      if (signature !== this.#fed) {
+        const { linksChanged } = await feed.index(entry);
+        this.#fed = signature;
+        if (linksChanged && this.env?.DB && this.env.PrincipalDO) await publishMeta(this.env, [this.name]);
+      }
+      if (this.#searchStale && edits === this.#edits) {
+        this.#store?.setMeta('search-fed', SEARCH_FEED_VERSION);
+        this.#searchStale = false;
+      }
     } catch (error) {
       console.error(`search feed for ${this.name} failed`, error);
     }
@@ -329,6 +342,11 @@ export class DocDO extends YServer<SyncEnv> {
     this.#exported = null;
     if (origin === PERSISTENCE) return;
     store.record(update, this.document);
+    this.#edits += 1;
+    if (!this.#searchStale) {
+      store.setMeta('search-fed', '');
+      this.#searchStale = true;
+    }
     if (isConnection(origin)) {
       this.#acks.schedule(origin, this.#frameDeletes);
       this.#projections?.touch();

@@ -58,7 +58,7 @@ describe('the DocDO feed', () => {
     vi.useRealTimers();
   });
 
-  it('feeds the markdown export, so a wiki link and its backlink survive an edit, and re-feeds on wake', async () => {
+  it('feeds the markdown export, so a wiki link and its backlink survive an edit, and skips the feed on wake when nothing changed', async () => {
     const index = await searchIndex();
     const fed: IndexEntry[] = [];
     class FedDoc extends DocDO {
@@ -87,7 +87,42 @@ describe('the DocDO feed', () => {
     expect(fed, 'an unchanged doc is not fed again').toHaveLength(count);
     const woken = await start(wake(opened));
     await vi.advanceTimersByTimeAsync(1_500);
-    expect(fed, 'a wake re-feeds once').toHaveLength(count + 1);
+    expect(fed, 'a wake does not re-feed a doc the index holds').toHaveLength(count);
     expect(woken.dobj.document.getText('title').toString()).toBe('Kickoff');
+  });
+
+  it('re-feeds on wake only a doc whose last edit never reached the index', async () => {
+    const index = await searchIndex();
+    const fed: IndexEntry[] = [];
+    let failing = false;
+    class FedDoc extends DocDO {
+      static override searchFeed = (): SearchFeed => ({
+        index: async (entry) => {
+          if (failing) throw new Error('index down');
+          fed.push(entry);
+          return index.index(entry);
+        },
+      });
+    }
+    const opened = await start(openDoc(new Backing('flaky-doc'), FedDoc as never));
+    await opened.dobj.create({ folderId: 'f', ownerId: 'o', title: 'Flaky', markdown: 'First words.' });
+    await opened.dobj.onSave();
+    failing = true;
+    serverWrite(opened.dobj.document, 'author-edit', () => {
+      const paragraph = $getRoot().getFirstChild();
+      if (!$isElementNode(paragraph)) throw new Error('no paragraph');
+      paragraph.append($createTextNode(' Lost words.'));
+    });
+    await opened.dobj.onSave();
+    failing = false;
+    const count = fed.length;
+    await start(wake(opened));
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(fed, 'the wake feeds the edit the index missed').toHaveLength(count + 1);
+    expect(fed.at(-1)!.body).toContain('Lost words.');
+    const again = await start(wake(opened));
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(fed, 'and the next wake does not').toHaveLength(count + 1);
+    expect(again.dobj.document.getText('title').toString()).toBe('Flaky');
   });
 });
