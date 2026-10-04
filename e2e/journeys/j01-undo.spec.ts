@@ -190,9 +190,9 @@ test('j01 undo: Ada deletes Ben\'s words, undoes that, then undoes her line; his
   // Undoing the delete restores Ben's words as copies made by Ada's client; they are still his.
   expect(await press(ada, ben, id, UNDO, 1, ['BEN']), 'undoing the delete restores Ben\'s words').toBe('Intro line.\n\nAlpha BEN');
   expect(await press(ada, ben, id, UNDO, 2, ['BEN']), 'only Ada\'s line is undone').toBe('Intro line.\n\n BEN');
-  // A second round restores copies of the copies the first one restored.
-  expect(await press(ada, ben, id, REDO, 3, ['BEN']), 'redo replays Ada\'s delete last').toBe('Intro line.\n\nAlpha');
+  // Redo replays Ada's own delete of Ben's words last; a second round restores copies of the copies.
+  expect(await press(ada, ben, id, REDO, 3, []), 'redo replays Ada\'s delete last').toBe('Intro line.\n\nAlpha');
   expect(await press(ada, ben, id, UNDO, 3, ['BEN'])).toBe('Intro line.\n\n BEN');
-  await press(ada, ben, id, REDO, 3, ['BEN']);
+  await press(ada, ben, id, REDO, 3, []);
   expect(await converged(ada, ben, id, 'redone again')).toBe('Intro line.\n\nAlpha');
 });
