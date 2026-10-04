@@ -9,6 +9,7 @@ import {
 } from '@moss-desktop/renderer/editor/utils/note-link-clipboard';
 import { displayTitle, liveTitle, writeLiveTitle } from '../collab/title-binding.ts';
 import { askDocAccess, rememberRole } from '../access.ts';
+import { waitForAllAcked } from '../collab/unacked.ts';
 import { setWikiCandidates } from '../wiki-links.ts';
 import type { TrashGuard } from '../trash-guard.ts';
 
@@ -73,10 +74,20 @@ export interface WorkspaceListing {
   docs: ApiDoc[];
 }
 
+type SessionStore = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
+
 /** The browser behind the bridge; injected in unit tests. */
 export interface BrowserHooks {
   origin: string;
+  /** A new tab with no opener. */
   open(url: string): void;
+  /** A new tab that keeps this one as its opener; false when the browser blocked it. */
+  openWindow(url: string): boolean;
+  /** Saves `body` through the browser's downloads. */
+  download(filename: string, body: Blob): void;
+  /** This tab's session storage, and its opener's when an opener of this origin exists. */
+  session: SessionStore | null;
+  openerSession(): Pick<Storage, 'getItem'> | null;
   replacePath(path: string): void;
   onPopState(listener: () => void): () => void;
   copy(text: string, html: string): Promise<void>;
@@ -124,6 +135,17 @@ const VAULT_KEY = 'moss-multi:active-vault';
 const BACKLINK_WATCH = 4;
 const layoutKey = (id: string) => `moss-multi:layout:${id}`;
 const collapsedKey = (id: string) => `moss-multi:collapsed-headings:${id}`;
+/** The one PDF export session a tab holds: the next Save as PDF replaces it, so session storage never accumulates. */
+const PDF_SESSION_KEY = 'moss-multi:pdf-export';
+/** How long Save as Markdown waits for unacked edits before refusing. */
+export const EXPORT_ACK_WAIT_MS = 8_000;
+
+/** moss's save-dialog file name (main/ipc-handlers.ts sanitizeFilename): no path separators or reserved characters. */
+export function markdownFileName(title: string): string {
+  const name = Array.from(title.normalize('NFKC').trim(), (char) => (char < ' ' || '<>:"/\\|?*'.includes(char) ? '-' : char))
+    .join('').replace(/^\.+/, '');
+  return `${name || UNTITLED}.md`;
+}
 
 type Method<R> = (...args: unknown[]) => Promise<R>;
 
@@ -207,9 +229,13 @@ function writeJson(storage: BridgeOptions['storage'], key: string, value: unknow
   else storage?.setItem(key, JSON.stringify(value));
 }
 
-const inertBrowser: BrowserHooks = {
+export const inertBrowser: BrowserHooks = {
   origin: 'http://localhost',
   open: noop,
+  openWindow: () => false,
+  download: noop,
+  session: null,
+  openerSession: () => null,
   replacePath: noop,
   onPopState: () => noop,
   copy: async () => undefined,
@@ -472,6 +498,9 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
     return stored === 'light' || stored === 'dark' ? stored : 'system';
   };
   const docUrl = (id: string) => new URL(withShare(`/d/${encodeURIComponent(id)}`), browser.origin).href;
+  /** moss's preview window id: any number for an opened tab, null when the browser blocked it. */
+  const pdfTab = (sessionId: string): number | null =>
+    browser.openWindow(`/pdf-export?pdfExportSessionId=${encodeURIComponent(sessionId)}`) ? 1 : null;
 
   // Folders (A§9): moss names a folder by its `Notes/...` path; the refreshed id↔path map turns it into a server id.
   const idForPath = (path: string): string | null => {
@@ -701,12 +730,38 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
         }
       },
       showInFinder: none,
-      getPdfExportSession: nothing,
-      createPdfExportSession: nothing,
-      openPdfExportPreview: nothing,
-      openPdfExportRenderSurface: nothing,
+      // Save as PDF is browser print (R4): the session reaches the /pdf-export tab through session storage, which a tab
+      // opened with an opener copies; that tab prints once moss's PdfExportApp is ready (host/pdf-print.ts).
+      getPdfExportSession: async (sessionId: string) => {
+        for (const store of [browser.session, browser.openerSession()]) {
+          const held = readJson<{ id: string; payload: unknown }>(store as BridgeOptions['storage'], PDF_SESSION_KEY);
+          if (held?.id === sessionId) return held.payload;
+        }
+        return null;
+      },
+      createPdfExportSession: async (noteId: string, input: Record<string, unknown> = {}) => {
+        // PdfExportApp renders the serialized state and never reads renderedHtml, the largest field.
+        const payload: Record<string, unknown> = { noteId, ...input };
+        delete payload.renderedHtml;
+        const id = crypto.randomUUID();
+        writeJson(browser.session, PDF_SESSION_KEY, { id, payload });
+        return id;
+      },
+      openPdfExportPreview: async (sessionId: string) => pdfTab(sessionId),
+      openPdfExportRenderSurface: async (sessionId: string) => pdfTab(sessionId),
       exportPdf: unavailable('Exporting a PDF file'),
-      exportMarkdown: async () => ({ canceled: true }),
+      // Save as Markdown downloads the server's export (A§12, one converter): content extensions stay and no comment
+      // or layout marker is in it. moss's client-side markdown is not used. The server only has what it acked, so the
+      // export waits for this tab's edits to be acked and refuses rather than download a file that misses them (A§10.6).
+      exportMarkdown: async (id: string, input: { title?: string; markdown?: string } = {}) => {
+        if (!(await waitForAllAcked(EXPORT_ACK_WAIT_MS))) {
+          throw new Error('Your latest edits haven’t synced yet, so the export would miss them. Try again once they sync.');
+        }
+        const response = await request(`/api/docs/${encodeURIComponent(id)}/content`, { headers: { accept: 'text/markdown' } });
+        if (!response.ok) throw new Error('The note couldn’t export right now. Try again.');
+        browser.download(markdownFileName(input.title ?? ''), new Blob([await response.arrayBuffer()], { type: 'text/markdown' }));
+        return { canceled: false };
+      },
       onExternalFileOpen: silent,
       onInternalFileOpen: (callback?: Listener<[string]>) =>
         browser.onPopState(() => {
@@ -814,7 +869,7 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
       setImageAltTextMenuEnabled: none,
       // Open in New Window is a browser tab (R4).
       createWindow: async (input: { noteId?: string | null } = {}) => {
-        browser.open(input.noteId ? docUrl(input.noteId) : new URL('/', browser.origin).href);
+        browser.open(input.noteId ? docUrl(input.noteId) : new URL(withShare('/'), browser.origin).href);
         return { action: 'created' as const, windowId: -1 };
       },
       getWindowContext: async () => ({ windowId: 1, initialNoteId: docIdFromPath(pathname()), launchReason: 'initial-launch' as const, openedFromWindowId: null }),
@@ -889,11 +944,38 @@ function localStorageOrNull(): Storage | null {
   }
 }
 
+function sessionStorageOrNull(): Storage | null {
+  try {
+    return window.sessionStorage;
+  } catch {
+    return null;
+  }
+}
+
 function windowBrowser(): BrowserHooks {
   return {
     origin: window.location.origin,
     open: (url) => {
       window.open(url, '_blank', 'noopener');
+    },
+    openWindow: (url) => window.open(url, '_blank') !== null,
+    download: (filename, body) => {
+      const href = URL.createObjectURL(body);
+      const link = Object.assign(document.createElement('a'), { href, download: filename });
+      link.style.display = 'none';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(href), 60_000);
+    },
+    session: sessionStorageOrNull(),
+    openerSession: () => {
+      try {
+        const opener = window.opener as Window | null;
+        return opener && opener.location.origin === window.location.origin ? opener.sessionStorage : null;
+      } catch {
+        return null; // an opener on another origin
+      }
     },
     // Moss keeps its own back and forward (A§9 navigation), so the address changes without the router: TanStack wraps
     // window.history.replaceState, and the route change it reports would remount moss's whole App.
@@ -956,7 +1038,8 @@ export function installBridge(authStore: import('../auth-state.ts').AuthStore, t
     }, receive),
   });
   installedBridge = bridge;
-  setWikiCandidates(() => bridge[WORKSPACE].getSnapshot()?.docs ?? []);
+  // A trashed note is no wiki-link target (A§15).
+  setWikiCandidates(() => (bridge[WORKSPACE].getSnapshot()?.docs ?? []).filter((doc) => doc.trashedAt == null));
   (window as unknown as { electronAPI: Bridge }).electronAPI = bridge;
   return bridge;
 }
