@@ -45,7 +45,7 @@ function find(type: string, node: LexicalNode = $getRoot()): LexicalNode | undef
 
 describe('L4 decorator registers @p:col-1 @p:col-3 @p:tech-1', () => {
   it.each([
-    { ...cases[0], attribute: '__language', original: 'js', authored: 'rust' },
+    { ...cases[0], attribute: '__language', original: 'javascript', authored: 'rust' },
     { ...cases[2], attribute: '__result', original: '5', authored: '6' },
   ])('$type keeps a non-discrete payload and authored attribute in sync and undo', async (fixture) => {
     const seed = new Y.Doc(); importBody(seed, fixture.markdown);
@@ -87,7 +87,8 @@ describe('L4 decorator registers @p:col-1 @p:col-3 @p:tech-1', () => {
     const stop = a.editor.registerUpdateListener(({ tags }) => { commits.push(new Set(tags)); });
     try {
       await settle();
-      a.editor.update(() => { find('code-block')!.getWritable(); }, { discrete: true });
+      const text = [...a.doc.getMap<Y.Text>('registers').values()][0];
+      a.doc.transact(() => text.insert(0, 'peer '), 'remote');
       commits.length = 0;
       // Like a background writer's microtask, this starts before the queued refresh commits.
       queueMicrotask(() => a.editor.update(() => {
