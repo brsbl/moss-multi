@@ -258,6 +258,7 @@ const exchange = (a: Peer, b: Peer) => {
   for (const peer of [a, b]) peer.editor.update(noop, { discrete: true });
 };
 type Point = { label: string; value: number };
+const seriesOf = (peer: Peer) => ((chartOf(peer) as { series?: { name: string }[] }).series ?? []).map((entry) => entry.name);
 const pointsOf = (peer: Peer) => (chartOf(peer) as { data: Point[] }).data.map((point) => [point.label, point.value]);
 const withCells = (grid: boolean[], on: number[]) => grid.map((value, index) => value || on.includes(index));
 
@@ -470,6 +471,60 @@ describe('L4/A8 chart and sketch registers @p:col-1 @p:col-3 @p:note-2', () => {
         for (const peer of [a, b]) expect(pointsOf(peer).slice(3).map(([name]) => name)).toEqual([first, 'Mid', second]);
       } finally { a.dispose(); b.dispose(); seed.destroy(); }
     }
+  });
+
+  it('undoing your own new array keeps the elements a peer added to it later', () => {
+    const seed = new Y.Doc(); importBody(seed, CHART);
+    const a = client(seed); const b = client(seed);
+    try {
+      const write = (peer: Peer, next: (config: Fields & { series?: { name: string }[] }) => Fields) => peer.editor.update(() => {
+        const base = chartOf(peer) as Fields & { series?: { name: string }[] };
+        call(find('chart')!, 'setConfig', next(structuredClone(base)), base);
+      }, { discrete: true });
+      write(a, (config) => ({ ...config, type: 'line', series: [{ name: 'Ada' }] }));
+      exchange(a, b);
+      write(b, (config) => ({ ...config, series: [...config.series!, { name: 'Ben' }] }));
+      exchange(a, b);
+      for (const peer of [a, b]) expect(seriesOf(peer)).toEqual(['Ada', 'Ben']);
+      a.undo.undo();
+      exchange(a, b);
+      for (const peer of [a, b]) {
+        expect(seriesOf(peer), "Ada's undo removes only her series").toEqual(['Ben']);
+        expect(chartOf(peer).type, "Ada's undo restores her type").toBe('bar');
+      }
+      const restored = client(a.doc);
+      try { expect(chartOf(restored), 'after a reload').toEqual(chartOf(a)); } finally { restored.dispose(); }
+      expect(exportDocMarkdown(a.doc)).toContain('"name": "Ben"');
+      expect(exportDocMarkdown(a.doc)).toBe(exportMarkdown(a.editor));
+      expect(exportMarkdown(b.editor)).toBe(exportMarkdown(a.editor));
+      write(b, (config) => ({ ...config, series: [] }));
+      exchange(a, b);
+      for (const peer of [a, b]) expect(chartOf(peer).series, 'an emptied array stays an array').toEqual([]);
+    } finally { a.dispose(); b.dispose(); seed.destroy(); }
+  });
+
+  it.each(['Ada', 'Ben'] as const)('undoing one of two concurrent new arrays keeps the other (%s undoes)', (undoer) => {
+    const seed = new Y.Doc(); importBody(seed, CHART);
+    const a = client(seed); const b = client(seed);
+    try {
+      for (const [peer, name] of [[a, 'Ada'], [b, 'Ben']] as const) {
+        peer.editor.update(() => {
+          const base = chartOf(peer);
+          call(find('chart')!, 'setConfig', { ...base, series: [{ name }] }, base);
+        }, { discrete: true });
+      }
+      exchange(a, b);
+      for (const peer of [a, b]) expect(seriesOf(peer).sort()).toEqual(['Ada', 'Ben']);
+      (undoer === 'Ada' ? a : b).undo.undo();
+      exchange(a, b);
+      const other = undoer === 'Ada' ? 'Ben' : 'Ada';
+      for (const peer of [a, b]) expect(seriesOf(peer), `${undoer}'s undo keeps ${other}'s series`).toEqual([other]);
+      const restored = client(a.doc);
+      try { expect(chartOf(restored), 'after a reload').toEqual(chartOf(a)); } finally { restored.dispose(); }
+      expect(exportDocMarkdown(a.doc)).toContain(`"name": "${other}"`);
+      expect(exportDocMarkdown(a.doc)).toBe(exportMarkdown(a.editor));
+      expect(exportMarkdown(b.editor)).toBe(exportMarkdown(a.editor));
+    } finally { a.dispose(); b.dispose(); seed.destroy(); }
   });
 
   it('a read-only editor writes nothing to a chart or sketch register', () => {
