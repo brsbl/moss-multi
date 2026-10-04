@@ -81,6 +81,8 @@ export interface Who {
   role?: string;
   session?: string | null;
   share?: string | null;
+  /** When the Worker resolved the role (the trusted header); defaults to now. */
+  resolvedAt?: number;
 }
 
 let connections = 0;
@@ -98,6 +100,7 @@ export async function connect(opened: Opened, who: Who = {}, doc?: Y.Doc, pk?: s
   headers.set(TRUSTED.role, who.role ?? 'editor');
   if (who.session !== null) headers.set(TRUSTED.session, who.session ?? `session-${connections}`);
   if (who.share) headers.set(TRUSTED.share, who.share);
+  headers.set(TRUSTED.resolvedAt, String(who.resolvedAt ?? Date.now()));
   const made = serverEnds.length;
   const url = `https://doc.test/parties/doc-d-o/${opened.backing.docId}?_pk=${pk ?? `conn-${connections}`}`;
   const response = await opened.dobj.fetch(new Request(url, { headers }));
