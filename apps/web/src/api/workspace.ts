@@ -1,10 +1,10 @@
-// The active vault's tree, plus directly shared items whose parents are inaccessible, plus the caller's own trashed
-// notes in it for the Trash view, each with `trashedAt` (A§11). A share link scopes a
+// The active vault's tree, plus directly shared items whose parents are inaccessible, plus the trashed
+// notes in it the caller manages (owner or co-owner) for the Trash view, each with `trashedAt` (A§11). A share link scopes a
 // listing of its own (T2.4): an anonymous holder sees only the linked doc, or the linked folder as the root of a
 // one-vault workspace; a signed-in holder of a folder link they cannot otherwise see is offered that folder beside
 // their vaults. Link listings never name the owner's vault or the folders around the link.
 import { and, eq, inArray, isNull } from 'drizzle-orm';
-import { maxRole, type Role } from '@moss-multi/protocol/roles';
+import { can, maxRole, type Role } from '@moss-multi/protocol/roles';
 import type { AuthEnv } from '../auth/auth.ts';
 import { resolvePrincipal, shareTokenOf, type Principal } from '../auth/principal.ts';
 import { createDb, type Db } from '../db/client.ts';
@@ -19,16 +19,29 @@ interface FolderRow { id: string; name: string; path: string; role: Role; surfac
 interface DocRow { id: string; title: string; filename: string; createdAt: number; updatedAt: number; role: Role; folderPath: string; surfaced: boolean; trashedAt?: number }
 interface TrashedRow { id: string; title: string; filename: string; folderId: string; createdAt: number; updatedAt: number; trashedAt: number }
 
-/** The owner's trashed notes whose folder chain ends at `vaultId`, trashed folders included. */
-async function trashedIn(db: D1Database, ownerId: string, vaultId: string): Promise<TrashedRow[]> {
-  const rows = await db.prepare(`WITH RECURSIVE up(doc_id, id, parent_id, kind, depth) AS (
+/**
+ * Trashed notes the caller may manage, each with the vault its folder chain ends at, trashed folders included. Rows
+ * come from ownership, doc grants and folder grants; resolveDocAccess then keeps those the caller manages, the same
+ * check trash and restore make, so a co-owner who trashes a note finds it in Trash.
+ */
+async function managedTrash(db: D1Database, drizzle: Db, principal: Principal): Promise<(TrashedRow & { vaultId: string })[]> {
+  const rows = await db.prepare(`WITH RECURSIVE granted(id, depth) AS (
+      SELECT folder_id, 1 FROM folder_members WHERE principal_id = ?1
+      UNION SELECT f.id, granted.depth + 1 FROM folders f JOIN granted ON f.parent_id = granted.id WHERE granted.depth < ${MAX_FOLDER_DEPTH}
+    ), up(doc_id, id, parent_id, kind, depth) AS (
       SELECT d.id, f.id, f.parent_id, f.kind, 1 FROM docs d JOIN folders f ON f.id = d.folder_id
-        WHERE d.owner_user_id = ?1 AND d.deleted_at IS NOT NULL
+        WHERE d.deleted_at IS NOT NULL AND (d.owner_user_id = ?1 OR d.folder_id IN (SELECT id FROM granted)
+          OR d.id IN (SELECT doc_id FROM doc_members WHERE principal_id = ?1))
       UNION ALL SELECT up.doc_id, f.id, f.parent_id, f.kind, up.depth + 1 FROM folders f JOIN up ON f.id = up.parent_id
         WHERE up.depth < ${MAX_FOLDER_DEPTH}
-    ) SELECT id, title, filename, folder_id AS folderId, created_at AS createdAt, updated_at AS updatedAt, deleted_at AS trashedAt
-      FROM docs WHERE id IN (SELECT doc_id FROM up WHERE id = ?2 AND kind = 'vault')`).bind(ownerId, vaultId).all<TrashedRow>();
-  return rows.results;
+    ) SELECT d.id, d.title, d.filename, d.folder_id AS folderId, d.created_at AS createdAt, d.updated_at AS updatedAt,
+        d.deleted_at AS trashedAt, up.id AS vaultId
+      FROM docs d JOIN up ON up.doc_id = d.id AND up.kind = 'vault'`).bind(principal.id).all<TrashedRow & { vaultId: string }>();
+  const managed = await Promise.all(rows.results.map(async (row) => {
+    const access = await resolveDocAccess(drizzle, principal, row.id);
+    return access?.deleted && can(access.role, 'manage') ? [row] : [];
+  }));
+  return managed.flat();
 }
 
 const byUpdated = (a: DocRow, b: DocRow) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id);
@@ -194,7 +207,9 @@ export async function workspace(request: Request, env: AuthEnv): Promise<Respons
       role: lift(doc.role, doc.id, doc.folderId), folderPath, surfaced }] : [];
   });
   // A trashed note shows under its folder while that folder is live, else at the root it would be restored to.
-  const trashed = (await trashedIn(env.DB, principal.id, vault.id)).map((doc): DocRow => ({ id: doc.id, title: doc.title,
+  // A note in a vault the caller cannot see surfaces in every vault, as a live one does.
+  const trashed = (await managedTrash(env.DB, db, principal)).filter((doc) => doc.vaultId === vault.id || !byId.has(doc.vaultId))
+    .map((doc): DocRow => ({ id: doc.id, title: doc.title,
     filename: doc.filename, createdAt: doc.createdAt, updatedAt: doc.updatedAt, role: 'owner', folderPath: pathFor(doc.folderId) ?? 'Notes',
     surfaced: false, trashedAt: doc.trashedAt }));
   rows.push(...trashed);
