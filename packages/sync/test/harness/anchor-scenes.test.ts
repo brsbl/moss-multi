@@ -5,6 +5,7 @@
 import { BOLD_STAR, registerMarkdownShortcuts } from '@lexical/markdown';
 import { $getSelection, $isRangeSelection } from 'lexical';
 import { describe, expect, it } from 'vitest';
+import { liveUnits, mintAnchor } from '@moss-multi/core/anchor-frame';
 import { MARKDOWN_EDITOR_TRANSFORMERS } from '../../src/converter/index.ts';
 import type { FrameVerdict } from '../../src/doc/comments-host.ts';
 import { $block, $caret, $select, scene, type Scene } from './comments-scene.ts';
@@ -13,6 +14,13 @@ const accepted = (verdicts: FrameVerdict[]) => expect(verdicts.map((verdict) => 
 const on = (s: Scene, text: string, id = 'c1') => {
   expect(s.status(id), `${id} is anchored`).toBe('anchored');
   expect(s.text(id)).toBe(text);
+};
+/** Comment `id` sits on the live units at `from` in the server's text, not on another copy of its quote. */
+const placed = (s: Scene, id: string, from: number, quote: string) => {
+  const { text, units } = liveUnits(s.server);
+  expect(text.slice(from, from + quote.length)).toBe(quote);
+  const want = mintAnchor(units[from], units[from + quote.length - 1]);
+  expect([s.host.anchor(id)?.start, s.host.anchor(id)?.end], `${id} is at ${from}`).toEqual([want.start, want.end]);
 };
 const orphaned = (s: Scene, id = 'c1') => {
   expect(s.status(id), `${id} is orphaned`).toBe('orphaned');
@@ -128,6 +136,35 @@ describe('T4.0 supported liveness: a comment keeps its exact characters @p:tech-
       }
     }));
   }
+
+  // Lexical keeps 'The quick ' and @lexical/yjs deletes the rest of the old node, so the lost text holds the commented
+  // passage twice: once wrapped in the delimiters and once in the untouched text after it.
+  it('markdown-wrap-keeps-first-of-two-identical-passages', () => scene((s) => {
+    const a = s.peer();
+    const stop = registerMarkdownShortcuts(a.editor, MARKDOWN_EDITOR_TRANSFORMERS);
+    const type = (text: string) => a.edit(() => {
+      const selection = $getSelection();
+      if ($isRangeSelection(selection)) selection.insertText(text);
+    });
+    try {
+      s.comment('c1', 'brown fox');
+      s.comment('c2', 'brown fox', 1);
+      a.edit(() => $caret('brown'));
+      type('**');
+      accepted(a.send());
+      a.edit(() => $caret('fox', 0, 'end'));
+      type('*');
+      type('*');
+      accepted(a.send());
+      expect(a.text(), 'the shortcut fired').toBe('The quick brown fox brown fox jumps.');
+      on(s, 'brown fox');
+      on(s, 'brown fox', 'c2');
+      placed(s, 'c1', 10, 'brown fox');
+      placed(s, 'c2', 20, 'brown fox');
+    } finally {
+      stop();
+    }
+  }, 'The quick brown fox brown fox jumps.'));
 });
 
 describe('T4.0 supported liveness: orphan on deletion, reattach on undo and redo @p:tech-3 @p:R18', () => {
