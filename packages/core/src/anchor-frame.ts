@@ -280,34 +280,47 @@ function signature(tokens: Tok[]): string {
   return [...bytes.subarray(0, 16)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-/** How often `part` occurs in `hay`, counting to 2 (KMP over token strings), and where the first occurrence starts. */
-function occurrences(hay: Tok[], part: string[]): { count: number; at: number } {
+/** Where `part` starts in `hay`, every occurrence (KMP over token strings). */
+function occurrences(hay: Tok[], part: string[]): number[] {
   const fail = new Array<number>(part.length).fill(0);
   for (let i = 1, k = 0; i < part.length; i += 1) {
     while (k > 0 && part[i] !== part[k]) k = fail[k - 1];
     if (part[i] === part[k]) k += 1;
     fail[i] = k;
   }
-  let count = 0;
-  let at = -1;
+  const starts: number[] = [];
   for (let i = 0, k = 0; i < hay.length; i += 1) {
     while (k > 0 && hay[i].t !== part[k]) k = fail[k - 1];
     if (hay[i].t === part[k]) k += 1;
     if (k === part.length) {
-      count += 1;
-      if (count > 1) return { count, at };
-      at = i - part.length + 1;
+      starts.push(i - part.length + 1);
       k = fail[k - 1];
     }
   }
-  return { count, at };
+  return starts;
 }
 
-/** Whether `sub` is `sup` with some tokens removed: every token of `sub` appears in `sup`, in order. */
-function removedOnly(sub: Tok[], sup: Tok[]): boolean {
-  let j = 0;
-  for (let i = 0; i < sup.length && j < sub.length; i += 1) if (sup[i].t === sub[j].t) j += 1;
-  return j === sub.length;
+/**
+ * The wrap rule: where the comment's part D[i0, i0 + n) sits in I when the frame only removed tokens from the gap's
+ * text. A reading of I as D with tokens removed may keep the part as the run I[j, j + n) when I's tokens before j fit
+ * in order into D before i0 and those after it fit into D after the part. The answer is the one such j, and only if
+ * no other occurrence of the part in D could be that same run in a reading. Otherwise null: never a guess.
+ */
+function wrapRun(deleted: Tok[], inserted: Tok[], i0: number, part: string[]): number | null {
+  const n = part.length;
+  // head[x]: the shortest prefix of D that holds I[0, x) in order. tail[y]: the latest start of a suffix of D that
+  // holds I[y, |I|) in order.
+  const head = new Array<number>(inserted.length + 1).fill(Number.POSITIVE_INFINITY);
+  head[0] = 0;
+  for (let i = 0, x = 0; i < deleted.length && x < inserted.length; i += 1) if (deleted[i].t === inserted[x].t) head[++x] = i + 1;
+  const tail = new Array<number>(inserted.length + 1).fill(Number.NEGATIVE_INFINITY);
+  tail[inserted.length] = deleted.length;
+  for (let i = deleted.length - 1, y = inserted.length; i >= 0 && y > 0; i -= 1) if (deleted[i].t === inserted[y - 1].t) tail[--y] = i;
+  const fits = (k: number, j: number) => head[j] <= k && tail[j + n] >= k + n;
+  const runs = occurrences(inserted, part).filter((j) => fits(i0, j));
+  if (runs.length !== 1) return null;
+  const j = runs[0];
+  return occurrences(deleted, part).filter((k) => fits(k, j)).length === 1 ? j : null;
 }
 
 /** Disjoint clock spans per client, each naming the comments indexed on it. */
@@ -796,7 +809,7 @@ function rehome(inner: Inner, match: Match): LostPlace | null {
   return { v: 1, segs: [{ list: idOf(listItem.id), left, right }], members: [], pre: inner.pre, ...(inner.inner ? { inner: inner.inner } : {}) };
 }
 
-/** I4's candidate maps for one gap: D == I by offset, else a unique part in the common prefix or suffix, or in a wrap. */
+/** I4's candidate maps for one gap: D == I by offset, else a unique part in the common prefix or suffix, else a wrap run. */
 function mapIn(view: View, items: Y.Item[], s: Unit | null, e: Unit | null): [Unit | null, Unit | null] | null {
   const deleted: Tok[] = [];
   const inserted: Tok[] = [];
@@ -814,19 +827,20 @@ function mapIn(view: View, items: Y.Item[], s: Unit | null, e: Unit | null): [Un
     map = (i) => i;
   } else {
     const part = deleted.slice(i0, i1 + 1).map((tok) => tok.t);
-    const there = occurrences(inserted, part);
-    if (occurrences(deleted, part).count !== 1 || there.count !== 1) return null;
+    const unique = occurrences(deleted, part).length === 1 && occurrences(inserted, part).length === 1;
     const most = Math.min(deleted.length, inserted.length);
     let p = 0;
     while (p < most && deleted[p].t === inserted[p].t) p += 1;
     let q = 0;
     while (q < most - p && deleted[deleted.length - 1 - q].t === inserted[inserted.length - 1 - q].t) q += 1;
-    if (i1 < p) map = (i) => i;
-    else if (i0 >= deleted.length - q) map = (i) => i - deleted.length + inserted.length;
-    // A wrap: the frame only removed tokens (a markdown shortcut's delimiters) from the gap's text, so the comment's
-    // part maps onto its one occurrence in the inserted text.
-    else if (removedOnly(inserted, deleted)) map = (i) => i - i0 + there.at;
-    else return null;
+    if (unique && i1 < p) map = (i) => i;
+    else if (unique && i0 >= deleted.length - q) map = (i) => i - deleted.length + inserted.length;
+    else {
+      // A wrap: a markdown shortcut deletes the text with its delimiters and reinserts it, so I is D minus tokens.
+      const j = wrapRun(deleted, inserted, i0, part);
+      if (j === null) return null;
+      map = (i) => i - i0 + j;
+    }
   }
   const at = (i: number): Unit | null => {
     const tok = inserted[map!(i)];
