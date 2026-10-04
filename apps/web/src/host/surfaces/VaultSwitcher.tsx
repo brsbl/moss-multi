@@ -1,6 +1,6 @@
 // Glyphdown's owned-first vault menu, composed from moss's DS in the notes-panel header (A§11). On a vault the caller
-// owns, the menu ends with an inline "New vault" row and an always-visible actions button beside it offers Rename and
-// Move to Trash (T3.5), and its owner can share the active vault from it (T2.4); members get no vault actions.
+// owns, the menu ends with "Share vault…" (T2.4) and an inline "New vault" row, and an always-visible actions button
+// beside it offers Rename and Move to Trash (T3.5); members get no vault actions.
 import { useRef, useState, useSyncExternalStore, type ComponentProps, type ComponentType, type ReactNode } from 'react';
 import { getDefaultStore } from 'jotai';
 import { activeFolderPathAtom } from '@moss/shared/state/atoms';
@@ -132,6 +132,10 @@ function VaultMenu({ bridge }: { bridge: Bridge }) {
               {owned && (
                 <>
                   <div role="separator" className="-mx-1 my-1 h-px bg-border-subtle" />
+                  <DropdownMenuItem onSelect={() => openShare({ type: 'folder', id: active.id, name: active.name, vault: true })}>
+                    <UserPlus className="h-3.5 w-3.5 shrink-0 text-ink-faint" aria-hidden />
+                    <span className="min-w-0 flex-1 truncate">Share vault…</span>
+                  </DropdownMenuItem>
                   {creating ? (
                     <NewVaultRow onCreate={create} onCancel={() => setCreating(false)} />
                   ) : (

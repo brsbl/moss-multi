@@ -55,7 +55,7 @@ export const INVENTORY: Record<string, InventoryEntry> = {
   },
   'notes.delete': real('DELETE /api/docs/:id after the doc closes to writes and acks (A§10.6); the owner only'),
   'notes.restore': real('POST /api/docs/:id/restore; the owner only'),
-  'notes.search': real('title matches over the listing, then GET /api/search over every doc the caller can discover (A§15); the Trash view matches trashed titles'),
+  'notes.search': real('title matches over the listing, then GET /api/search over every doc the caller can discover (A§15)'),
   'notes.getFilesystemPath': real('the doc URL'),
   'notes.setOpenFileWatchTargets': stub('a hint; the workspace channel needs no per-doc watch'),
   'notes.copyLinkToClipboard': real("text/plain doc URL plus moss's HTML note-link payload"),

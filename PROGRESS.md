@@ -48,8 +48,6 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-03 — T2.1 verified: while someone has a note open, a collaborator's new note, rename or trash shows up in their sidebar within 5 s without a reload, sorted by last update, without remounting the open editor; the workspace channel stops at once on sign-out.
 - 2026-10-03 — T1.9 verified: code, HTML and formula blocks now keep their text in shared registers, so two people typing in the same block merge live in both engines, drafts survive reloads and imports, and Cmd+Z inside a block undoes only that person's edits to it.
 - 2026-10-04 — T2.2 verified: anyone can create, rename and move folders and move notes between them from the web sidebar, editors included in a shared vault; deleting a folder sends its whole subtree to trash as one batch, and a peer with a note open inside it goes terminal in place.
-- 2026-10-04 — T3.5 verified: a vault owner can create a vault inline from the switcher, rename it and move it to trash behind a confirmation; a person granted the vault root sees it with a role badge, and a member is offered no vault actions.
-- 2026-10-04 — T3.4 verified: a person can search the body text of every note they can access and see snippets, never a note they cannot; a note shows its backlinks, and wiki links resolve by title or filename or show an honest unresolved state.
 - 2026-10-04 — T1.9s verified: typing in a large note full of code blocks now refreshes only the block being edited instead of every block, and importing a note with tens of thousands of identical blocks assigns their ids in linear time.
 - 2026-10-04 — T1.R verified: a reviewed design now exists for code, HTML and formula block text: each block's text lives in its own small document that the server hides once the block is deleted and shows again intact on undo or a raced move, proven by a spike test and split into the T1.F2 and T1.F4 build briefs.
 - 2026-10-04 — T1.F3 verified: an open Properties edit keeps what the person typed when a peer clears or changes that property, closing a tab while edits are still unsent asks before leaving, and pasting a 1 MB note goes through without a hang.
@@ -58,6 +56,8 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-04 — T2.4s verified: sharing by email answers and behaves the same for a known and an unknown address, a co-owner cannot lower, remove or replace the vault owner, owner access never comes from a share link or an agent key, and two simultaneous shares to one person end as one invite at the higher role.
 - 2026-10-04 — T1.F3s verified: renaming a note through the API or creating one with a huge or adversarial title now stays within 20 ms of server CPU, and each identity's REST writes are rate-limited with a 429 that a server restart cannot reset.
 - 2026-10-04 — T1.F1 verified: Cmd+Z never removes a collaborator's characters typed into a paragraph or text node you created, through interleaved typing, splits and merges, reconnects and deletes, and restored text keeps its author and properties, in both engines.
+- 2026-10-04 — T3.5 verified: a vault owner can create a vault inline from the switcher, rename it and move it to trash behind a confirmation; a person granted the vault root sees it with a role badge, and a member is offered no vault actions.
+- 2026-10-04 — T3.4 verified: a person can search the body text of every note they can access and see snippets, never a note they cannot; a note shows its backlinks, and wiki links resolve by title or filename or show an honest unresolved state.
 
 ## T1.1s identity audit
 
@@ -92,13 +92,13 @@ A task counts only after an independent checker passes it on green CI. Each mile
 Parked from the M0 checker and critic passes, each with the task that owns it.
 
 - T1.8 workspace follow-up implemented in T2.1: push events replace listing polling, changed document ids refresh metadata, and unchanged vault choices do not notify the switcher; awaiting CI and independent verification.
-- T1.9 checker P2: `$copyNode` must mint a new register identity for duplicated code, HTML and formula nodes before T3.3 uses that path; current clipboard copies serialize without the identity → T3.3 register extension.
+- T1.9 checker P2: `$copyNode` must mint a new register identity for duplicated code, HTML and formula nodes before T3.3 uses that path; current clipboard copies serialize without the identity → closed in T3.3 (`resetOnCopyNodeFrom` on every register node).
 - T1.9 checker P2: rebind open field observers when a register map entry is replaced (live imports now mint unique ids; server imports are serialized) → register/import follow-up.
 - T1.9 checker P2: register writes diff by value without a caret hint, so typing inside a run of identical characters can land at the wrong position (seen after a peer's undo); FormulaPlugin's remote repaint diffs strings instead of using the event delta → register caret follow-up.
 - T1.9 checker P2: replace the full node-map refresh after every editor commit with targeted invalidation → register performance follow-up.
 
 - T1.6 checker: prune deleted layout identities, avoid unchanged localStorage writes and restrict ordinal migration to stores without identity metadata → local-layout follow-up. These need lifecycle and persisted-state regressions beyond this P1 repair.
-- T1.6 checker: bound link activation and preview must consume locally resolved note identity, not only its displayed title/state → T3.3 links.
+- T1.6 checker: bound link activation and preview must consume locally resolved note identity, not only its displayed title/state → closed in T3.3 (FileLinkNode's `getNoteId`/`isResolved` read the local view).
 - T1.6 checker: route empty-prompt undo from a split pane's title to that pane's body; AI and Cmd+K remain hidden → command-palette unstaging.
 - T1.6 checker: replace model-only width assertions with rendered dimensions and a real resize drag → editing-journey follow-up; the checker already confirmed the rendered behavior manually.
 

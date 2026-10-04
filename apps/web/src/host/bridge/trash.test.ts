@@ -157,6 +157,8 @@ it('a restored note opens live at once, even when the listing after the restore 
 it('searches trashed notes only in the trash view', async () => {
   const server = fakeServer();
   const bridge = createBridge({ pathname: () => '/', fetch: server.fetch });
+  // The index holds live docs only (T3.4); the live search's title matches skip the trashed note.
+  server.state.answers.set('GET /api/search', [() => Response.json({ results: [] })]);
   expect((await bridge.notes.search({ query: 'plan' })).map((hit) => hit.id)).toEqual([]);
   expect((await bridge.notes.search({ query: 'plan', searchTrashed: true })).map((hit) => hit.id)).toEqual(['old']);
 });
