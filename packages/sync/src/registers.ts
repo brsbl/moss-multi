@@ -4,6 +4,8 @@ import { diffText } from '@moss-multi/core/text-diff';
 
 export const REGISTER_LOCAL_ORIGIN = Symbol('moss-multi:register-local');
 const REGISTER_INIT = Symbol('moss-multi:register-init');
+/** register id -> true, set by each transaction that empties a deleted block's payload. */
+const REGISTER_DELETES = 'registerDeletes';
 export const REGISTER_FIELDS: Readonly<Record<string, string>> = {
   'code-block': '__code', 'html-block': '__rawHtml', formula: '__formula',
 };
@@ -107,14 +109,18 @@ function deletedRegisterIds(transaction: Y.Transaction): Set<string> {
  * block a peer moved meanwhile, and any view bound to it, keep the same shared text (`restoreRacedPayloads`).
  */
 export function deleteDestroyedRegisters(editor: LexicalEditor, transaction: Y.Transaction): void {
-  const registers = bindings.get(editor)?.getMap('registers');
-  if (!registers?.size) return;
+  const doc = bindings.get(editor);
+  const registers = doc?.getMap('registers');
+  if (!doc || !registers?.size) return;
   const gone = deletedRegisterIds(transaction);
   if (!gone.size) return;
   for (const node of editor.getEditorState()._nodeMap.values()) gone.delete((node as RegisterNode).__regId);
   for (const id of gone) {
     const text = registers.get(id);
-    if (text instanceof Y.Text && text.length) text.delete(0, text.length);
+    if (!(text instanceof Y.Text) || !text.length) continue;
+    text.delete(0, text.length);
+    // A mover may already have deleted the old block itself, so it learns of this delete from the marker.
+    doc.getMap(REGISTER_DELETES).set(id, true);
   }
 }
 
@@ -140,10 +146,10 @@ export const namesRegister = (type: Container, id: string, except?: unknown): bo
  * their positions, into the same Y.Text, so bound views stay live and other peers' concurrent edits merge. Only the
  * mover restores, so no second copy appears.
  */
-function restoreRacedPayloads(doc: Y.Doc, transaction: Y.Transaction): void {
+function restoreRacedPayloads(doc: Y.Doc, transaction: Y.Transaction, ids: Iterable<string>): void {
   const registers = doc.getMap<Y.Text>('registers');
   const root = doc.get('root', Y.XmlText);
-  for (const id of deletedRegisterIds(transaction)) {
+  for (const id of ids) {
     const text = registers.get(id);
     if (!(text instanceof Y.Text) || !findNamer(root, id, block => block._item?.id.client === doc.clientID)) continue;
     const pieces: [number, string][] = [];
@@ -206,12 +212,18 @@ export function bindRegisters(editor: LexicalEditor, doc: Y.Doc, { serializedImp
     });
   };
   const observe: Parameters<typeof registers.observeDeep>[0] = (_events, transaction) => {
-    if (transaction.origin === REGISTER_INIT) return;
-    if (!transaction.local && editor.isEditable()) restoreRacedPayloads(doc, transaction);
-    refresh();
+    if (transaction.origin !== REGISTER_INIT) refresh();
   };
   registers.observeDeep(observe);
+  const deletes = doc.getMap(REGISTER_DELETES);
+  const restore = (event: Y.YMapEvent<unknown>, transaction: Y.Transaction) => {
+    if (!transaction.local && editor.isEditable()) restoreRacedPayloads(doc, transaction, event.keysChanged);
+  };
+  deletes.observe(restore);
   // Hydration can skip transforms, and may deliver the tree after the registers.
   stops.push(editor.registerUpdateListener(refresh));
-  return () => { stopped = true; stops.forEach(stop => stop()); registers.unobserveDeep(observe); bindings.delete(editor); bindingCount--; };
+  return () => {
+    stopped = true; stops.forEach(stop => stop()); registers.unobserveDeep(observe); deletes.unobserve(restore);
+    bindings.delete(editor); bindingCount--;
+  };
 }
