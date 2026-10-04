@@ -88,14 +88,8 @@ export function $assignRegisterIds(): void {
   walk($getRoot());
 }
 
-/**
- * Inside the binding's sync transaction: delete the payloads of register blocks that transaction deleted, unless a
- * live node still names them (a move re-inserts the block). One undo step then restores block and payload together,
- * and a deleted payload never reaches a later reader or a duplicate.
- */
-export function deleteDestroyedRegisters(editor: LexicalEditor, transaction: Y.Transaction): void {
-  const registers = bindings.get(editor)?.getMap('registers');
-  if (!registers?.size) return;
+/** Register ids named by the blocks a transaction deleted. */
+function deletedRegisterIds(transaction: Y.Transaction): Set<string> {
   const gone = new Set<string>();
   Y.iterateDeletedStructs(transaction, transaction.deleteSet, (struct) => {
     if (!(struct instanceof Y.Item) || !(struct.content instanceof Y.ContentType)) return;
@@ -103,40 +97,64 @@ export function deleteDestroyedRegisters(editor: LexicalEditor, transaction: Y.T
     const id = struct.content.type._map.get('__regId')?.content.getContent()[0];
     if (typeof id === 'string') gone.add(id);
   });
-  if (!gone.size) return;
-  for (const node of editor.getEditorState()._nodeMap.values()) gone.delete((node as RegisterNode).__regId);
-  for (const id of gone) registers.delete(id);
+  return gone;
 }
 
-/** Whether a live container under `type`, other than `except`, names register `id`. */
-export function namesRegister(type: { _start: Y.Item | null; _map: Map<string, Y.Item> }, id: string, except?: unknown): boolean {
+/**
+ * Inside the binding's sync transaction: empty the payloads of register blocks that transaction deleted, unless a
+ * live node still names them (a move re-inserts the block). One undo step then restores block and payload together,
+ * and deleted text never reaches a later reader or a duplicate. The emptied Y.Text stays as a small tombstone, so a
+ * block a peer moved meanwhile, and any view bound to it, keep the same shared text (`restoreRacedPayloads`).
+ */
+export function deleteDestroyedRegisters(editor: LexicalEditor, transaction: Y.Transaction): void {
+  const registers = bindings.get(editor)?.getMap('registers');
+  if (!registers?.size) return;
+  const gone = deletedRegisterIds(transaction);
+  if (!gone.size) return;
+  for (const node of editor.getEditorState()._nodeMap.values()) gone.delete((node as RegisterNode).__regId);
+  for (const id of gone) {
+    const text = registers.get(id);
+    if (text instanceof Y.Text && text.length) text.delete(0, text.length);
+  }
+}
+
+type Container = { _start: Y.Item | null; _map: Map<string, Y.Item> };
+function findNamer(type: Container, id: string, match: (block: Y.XmlText | Y.XmlElement) => boolean): boolean {
   const visit = (item: Y.Item | null): boolean => {
     if (!item || item.deleted || !(item.content instanceof Y.ContentType)) return false;
     const child = item.content.type;
-    if (child !== except && (child instanceof Y.XmlText || child instanceof Y.XmlElement) && child.getAttribute('__regId') === id) return true;
-    return namesRegister(child, id, except);
+    if ((child instanceof Y.XmlText || child instanceof Y.XmlElement) && child.getAttribute('__regId') === id && match(child)) return true;
+    return findNamer(child, id, match);
   };
   for (let item = type._start; item; item = item.right) if (visit(item)) return true;
   for (const item of type._map.values()) if (visit(item)) return true;
   return false;
 }
 
+/** Whether a live container under `type`, other than `except`, names register `id`. */
+export const namesRegister = (type: Container, id: string, except?: unknown): boolean => findNamer(type, id, block => block !== except);
+
 /**
- * A peer deleted a payload that a block here still names: it deleted the block while this client moved it. Write the
- * payload back from this editor's cache; a set made after the delete survives it.
+ * A remote transaction deleted a block and emptied its payload while a live block this client created still names it:
+ * this client moved the block as the peer deleted it. Re-insert exactly the characters that transaction deleted, at
+ * their positions, into the same Y.Text, so bound views stay live and other peers' concurrent edits merge. Only the
+ * mover restores, so no second copy appears.
  */
-function restoreNamedRegisters(editor: LexicalEditor, doc: Y.Doc, keys: Iterable<string>): void {
+function restoreRacedPayloads(doc: Y.Doc, transaction: Y.Transaction): void {
   const registers = doc.getMap<Y.Text>('registers');
   const root = doc.get('root', Y.XmlText);
-  for (const id of keys) {
-    if (registers.has(id) || !namesRegister(root, id)) continue;
-    for (const node of editor.getEditorState()._nodeMap.values()) {
-      const field = REGISTER_FIELDS[node.getType()];
-      const value = field && (node as RegisterNode).__regId === id ? (node as RegisterNode)[field] : undefined;
-      if (typeof value !== 'string') continue;
-      doc.transact(() => registers.set(id, new Y.Text(value)), REGISTER_INIT);
-      break;
+  for (const id of deletedRegisterIds(transaction)) {
+    const text = registers.get(id);
+    if (!(text instanceof Y.Text) || !findNamer(root, id, block => block._item?.id.client === doc.clientID)) continue;
+    const pieces: [number, string][] = [];
+    let index = 0;
+    for (let item = text._start; item; item = item.right) {
+      if (item.deleted && item.content instanceof Y.ContentString && Y.isDeleted(transaction.deleteSet, item.id)) {
+        pieces.push([index, item.content.str]);
+        index += item.length;
+      } else if (!item.deleted && item.countable) index += item.length;
     }
+    if (pieces.length) doc.transact(() => { for (const [at, str] of pieces) text.insert(at, str); }, REGISTER_INIT);
   }
 }
 
@@ -187,11 +205,9 @@ export function bindRegisters(editor: LexicalEditor, doc: Y.Doc, { serializedImp
       editor.update(() => $refreshRegisters(editor, doc), { tag: COLLABORATION_TAG, skipTransforms: true, discrete: true });
     });
   };
-  const observe: Parameters<typeof registers.observeDeep>[0] = (events, transaction) => {
+  const observe: Parameters<typeof registers.observeDeep>[0] = (_events, transaction) => {
     if (transaction.origin === REGISTER_INIT) return;
-    if (!transaction.local && editor.isEditable()) {
-      for (const event of events) if (event instanceof Y.YMapEvent) restoreNamedRegisters(editor, doc, event.keysChanged);
-    }
+    if (!transaction.local && editor.isEditable()) restoreRacedPayloads(doc, transaction);
     refresh();
   };
   registers.observeDeep(observe);
