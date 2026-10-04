@@ -4,13 +4,20 @@
 export const ROLES = ['viewer', 'commenter', 'suggester', 'editor', 'owner'] as const;
 export type Role = (typeof ROLES)[number];
 
-/** Roles a grant or link row stores; the owner is never stored (A§6). */
+/** Roles a share-link row stores: a link never confers ownership (A§6). */
 export const MEMBER_ROLES = ['viewer', 'commenter', 'suggester', 'editor'] as const;
 export type MemberRole = (typeof MEMBER_ROLES)[number];
 
-/** What the share UI offers until suggestions ship (P:People); suggester stays in the schema only. */
-export const SHARE_ROLES = ['viewer', 'commenter', 'editor'] as const;
+/** Roles a grant or invite row stores. The vault owner is never stored; an `owner` grant makes a co-owner (P:People). */
+export const GRANT_ROLES = ROLES;
+
+/** What the share UI offers a person until suggestions ship (P:People); suggester stays in the schema only. */
+export const SHARE_ROLES = ['viewer', 'commenter', 'editor', 'owner'] as const;
 export type ShareRole = (typeof SHARE_ROLES)[number];
+
+/** What the share UI offers a link: up to editor, and anonymous visitors read at viewer whatever it says. */
+export const LINK_ROLES = ['viewer', 'commenter', 'editor'] as const;
+export type LinkRole = (typeof LINK_ROLES)[number];
 
 export const isRole = (value: unknown): value is Role => typeof value === 'string' && (ROLES as readonly string[]).includes(value);
 
