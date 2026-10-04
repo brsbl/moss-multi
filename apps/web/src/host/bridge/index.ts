@@ -334,11 +334,14 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
   /** After the listing caught up with a workspace event: a watched note that left it (trashed, unshared) is dropped. */
   const rereadBacklinks = () => {
     for (const id of [...watched]) {
-      if (known.has(id)) void readBacklinks(id);
+      if (inListing(id)) void readBacklinks(id);
       else unwatch(id);
     }
   };
+  // Only listed notes: moss records links for them, and one that left the listing (trashed, unshared) would 404.
+  const inListing = (id: string) => workspaceSnapshot?.docs.some((doc) => doc.id === id) ?? false;
   const watchBacklinks = (id: string) => {
+    if (!inListing(id)) return;
     const at = watched.indexOf(id);
     if (at !== -1) watched.splice(at, 1);
     watched.unshift(id);
