@@ -456,6 +456,11 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
     - `accepted_record_continuation_preserves_occupied_id`: with two principals, another principal's open record holds the continuation id; a delete-only frame and an ops frame aimed at the accepted record both leave that record's author, status, ops and parts unchanged, and long ids that share a 48-character prefix never collide;
     - `accepted_suggestion_text_is_valid_body_delete_target`: after an editor accepts Alice's insert, another principal's suggest-delete over those characters is accepted as a part, while targets still under a pending lease stay refused `target`;
     - `fixed_frame_ingest_cost_independent_of_closed_record_count_and_continuation_depth`: one fixed `suggest-ops` frame costs the same with 5 and with thousands of closed records, and at continuation depth 1 and at the maximum.
+    - **Lease and record authorization** (push security review of `packages/sync/src/doc/suggest.ts` on t/T5.0, 2026-10-04):
+      - `leases_are_bounded_and_bound`: a principal holds at most a small fixed number of live leases (the request cannot raise it), each lease is bound to the connection that asked for it and expires when that connection closes or idles, and another connection of the same principal cannot write with it;
+      - `record_ids_are_server_minted`: the server mints record ids, and a client-chosen id can neither create a record nor squat a peer's future id;
+      - `live_role_on_every_suggest_frame`: demoting a suggester to viewer refuses their next `suggest-ops`, `suggest-delete`, `suggest-merge` and `suggest-lease` at once, with no stale role taken from connection state;
+      - `overlapping_clocks_refused`: a `suggest-ops` update whose structs start below the lease's acknowledged clock is refused, so a record can never hold two versions of one id.
   - **Done:** green.
 - **T5.3 Review, accept, reject, withdraw, notify** `[B·codex]`
   - **Scope:**
