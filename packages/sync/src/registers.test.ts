@@ -1,4 +1,4 @@
-import { $getRoot, $isElementNode, type LexicalNode } from 'lexical';
+import { $getRoot, $isElementNode, COLLABORATION_TAG, type LexicalNode } from 'lexical';
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { exportDocMarkdown, importBody, serverWrite } from './server-doc.ts';
@@ -44,6 +44,65 @@ function find(type: string, node: LexicalNode = $getRoot()): LexicalNode | undef
 }
 
 describe('L4 decorator registers @p:col-1 @p:col-3 @p:tech-1', () => {
+  it.each([
+    { ...cases[0], attribute: '__language', original: 'js', authored: 'rust' },
+    { ...cases[2], attribute: '__result', original: '5', authored: '6' },
+  ])('$type keeps a non-discrete payload and authored attribute in sync and undo', async (fixture) => {
+    const seed = new Y.Doc(); importBody(seed, fixture.markdown);
+    const a = client(seed); const b = client(seed);
+    const settle = () => new Promise(resolve => setTimeout(resolve, 0));
+    const read = (peer: ReturnType<typeof client>) => peer.editor.getEditorState().read(() =>
+      (find(fixture.type) as unknown as Record<string, unknown>)[fixture.attribute]);
+    try {
+      await settle();
+      a.editor.update(() => {
+        const node = find(fixture.type)!;
+        (node as unknown as Record<string, (text: string) => void>)[fixture.setter](fixture.a);
+        (node.getWritable() as unknown as Record<string, unknown>)[fixture.attribute] = fixture.authored;
+      });
+      await settle();
+      Y.applyUpdate(b.doc, Y.encodeStateAsUpdate(a.doc));
+      await settle();
+      expect(read(a)).toBe(fixture.authored);
+      expect(read(b), 'the companion attribute must reach the peer with the register edit').toBe(fixture.authored);
+      const restored = client(a.doc);
+      try { await settle(); expect(read(restored), 'persisted tree').toBe(fixture.authored); }
+      finally { restored.dispose(); }
+      a.undo.undo();
+      await settle();
+      Y.applyUpdate(b.doc, Y.encodeStateAsUpdate(a.doc));
+      await settle();
+      for (const peer of [a, b]) {
+        expect(read(peer), 'one undo restores both authored fields').toBe(fixture.original);
+        expect(exportMarkdown(peer.editor)).toContain(fixture.before);
+      }
+    } finally { a.dispose(); b.dispose(); seed.destroy(); }
+  });
+
+  it('keeps a follow-up authored update eligible for background conversion', async () => {
+    const seed = new Y.Doc(); importBody(seed, cases[0].markdown);
+    const a = client(seed); const b = client(seed);
+    const settle = () => new Promise(resolve => setTimeout(resolve, 0));
+    const commits: Set<string>[] = [];
+    const stop = a.editor.registerUpdateListener(({ tags }) => { commits.push(new Set(tags)); });
+    try {
+      await settle();
+      a.editor.update(() => { find('code-block')!.getWritable(); }, { discrete: true });
+      commits.length = 0;
+      // Like a background writer's microtask, this starts before the queued refresh commits.
+      queueMicrotask(() => a.editor.update(() => {
+        (find('code-block')!.getWritable() as unknown as { __language: string }).__language = 'rust';
+      }, { tag: 'authored-follow-up' }));
+      await settle();
+      const authored = commits.find(tags => tags.has('authored-follow-up'));
+      expect(authored).toBeDefined();
+      expect(authored!.has(COLLABORATION_TAG), 'background writers must see the authored commit').toBe(false);
+      Y.applyUpdate(b.doc, Y.encodeStateAsUpdate(a.doc));
+      await settle();
+      expect(exportMarkdown(b.editor)).toContain('```rust');
+    } finally { stop(); a.dispose(); b.dispose(); seed.destroy(); }
+  });
+
   it.each(cases)('$type replicates between live V1 editors and undo preserves peer writes', (fixture) => {
     const seed = new Y.Doc(); importBody(seed, fixture.markdown);
     const a = client(seed); const b = client(seed);
