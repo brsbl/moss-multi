@@ -13,6 +13,7 @@ import {
 import { attach, attachmentOf, awarenessTooLarge, awarenessFrame, receivePresence, leavePresence } from './doc/awareness.ts';
 import { AckCoalescer, DocStore, PERSISTENCE } from './doc/persistence.ts';
 import { d1Projections, Projections, type ProjectionTarget } from './doc/projections.ts';
+import { publishMeta } from './fanout.ts';
 import type { SyncEnv } from './env.ts';
 import { migrateFrontmatter } from '@moss-multi/core/frontmatter';
 import { writeField } from '@moss-multi/core/doc-fields';
@@ -63,7 +64,7 @@ export class DocDO extends YServer<SyncEnv> {
     awarenessMaxBytes: AWARENESS_MAX_BYTES,
   };
   /** Where the title, filename and updated_at projections land (A§5.1). */
-  static projectionTarget: (env: SyncEnv) => ProjectionTarget | null = (env) => (env?.DB ? d1Projections(env.DB) : null);
+  static projectionTarget: (env: SyncEnv) => ProjectionTarget | null = (env) => (env?.DB ? d1Projections(env.DB, (id) => publishMeta(env, [id])) : null);
 
   readonly instanceId = crypto.randomUUID();
   readonly constructedAt = Date.now();

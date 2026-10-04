@@ -10,7 +10,7 @@ import { installBridge } from './bridge/index.ts';
 import { installBackspaceGuard } from './opening-guard.ts';
 
 export async function bootMoss(): Promise<{ default: ComponentType }> {
-  installBridge();
+  installBridge(auth);
   const analytics = await import('@moss-desktop/renderer/error-analytics');
   analytics.installRendererErrorAnalytics();
   if (new URLSearchParams(window.location.search).get('mossMode') === 'pdf-export') {

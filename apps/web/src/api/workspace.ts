@@ -56,5 +56,6 @@ export async function workspace(request: Request, env: AuthEnv): Promise<Respons
     return folderPath ? [{ id: doc.id, title: doc.title, filename: doc.filename, createdAt: doc.createdAt, updatedAt: doc.updatedAt,
       role: doc.role, folderPath, surfaced }] : [];
   }).sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
-  return json({ vault, vaults, docs: rows, folders }, 200, NO_STORE);
+  const ids = params.has('ids') ? new Set(params.getAll('ids')) : null;
+  return json({ vault, vaults, docs: ids ? rows.filter((row) => ids.has(row.id)) : rows, folders }, 200, NO_STORE);
 }

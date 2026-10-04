@@ -8,7 +8,10 @@ it('workspace pushes create, rename, trash and updated_at as targeted metadata, 
   vi.useFakeTimers();
   let receive: (event: Event) => void = () => undefined;
   let rows = [{ id: 'bound', title: 'Open elsewhere', createdAt: 1000, updatedAt: 1000 }];
-  const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json({ vault: { id: 'home', name: 'Home' }, docs: rows }));
+  const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+    const ids = new URL(String(input), 'http://localhost').searchParams.getAll('ids');
+    return Response.json({ vault: { id: 'home', name: 'Home' }, docs: ids.length ? rows.filter((row) => ids.includes(row.id)) : rows });
+  });
   const options: BridgeOptions & { subscribeWorkspace: (cb: typeof receive) => () => void } = {
     pathname: () => '/d/bound', fetch,
     subscribeWorkspace: (cb) => { receive = cb; return () => undefined; },

@@ -66,7 +66,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
 
-- T1.8 checker: replace the interim listing poll/full metadata hydrate with A§11's workspace channel, including avoiding unchanged vault-switcher notifications → T2.1 (deviation 16).
+- T1.8 workspace follow-up implemented in T2.1: push events replace listing polling, changed document ids refresh metadata, and unchanged vault choices do not notify the switcher; awaiting CI and independent verification.
 - T1.8 checker: large explicit-markdown pastes bypass chunking to preserve nested blocks; measure responsiveness and retain nesting in any future chunker. G1 covers empty-note explicit paste, not the complete plain-text paste path → editor follow-up (deviation 14).
 - T1.8 checker: confirm snapshot duplicate's metadata policy before comments and suggestions ship; it currently retains frontmatter and anchor maps, unlike Moss's fresh-metadata duplicate → T4.0/T5.0 (deviation 15).
 - T1.8 checker: distinguish native assets awaiting web delivery from truly missing images; the current image fallback says the file could not be found → T3.1.
@@ -168,3 +168,10 @@ Local browser verification remains assigned to the independent checker under the
 - Deviations: the server-half-open regression uses the real DocDO harness with no first-socket close rather than changing the shared sever proxy. `bb browser-automation --help` reports an unknown command, so the brief assigns local browser QA to the independent checker. No stack or browser was started; no tests ran locally. Final green-head evidence is recorded in `.codex-result.json`.
 - [Checks 37156943686](https://github.com/brsbl/moss-multi/actions/runs/37156943686) passed all 714 units, typecheck, lint, build and viewer acceptance. [Chromium 37156943652](https://github.com/brsbl/moss-multi/actions/runs/37156943652) passed drop/reconnect, same-principal undo, spoof rejection, process restart and the 95 s idle/wake leg. The strengthened selection-color locator matched both the fill and caret; narrowed it to the fill and reran only that affected journey plus final-head push CI.
 - 2026-10-03 — M2 started on branch m2 (stacked on m1) in parallel with M1's last tasks (T1.4–T1.9), at the owner's request to pick up the pace; m2 merges m1 as M1 tasks land.
+
+### T2.1 — workspace channel implementation
+
+- Tests-first red: https://github.com/brsbl/moss-multi/actions/runs/37164910495 (`c891194`), failed on the missing new-doc metadata event.
+- PrincipalDO channel, access-filtered `publishMeta`, title/timestamp projections, targeted bridge updates and synchronous local sign-out shutdown replace the interim poll. Reconnect refreshes missed changes.
+- The T2.1-specific coordinator brief is absent; BUILDPLAN T2.1 and A§5.2/11 define scope. Trash removal is tested at the metadata/fanout boundary; T2.3 owns its API and UI lifecycle. Browser self-check is delegated to the independent checker per the implementer brief.
+- Validation in progress; no self-verdict.

@@ -8,7 +8,8 @@ import { handleAuthRoute } from './auth/route.ts';
 import { asAppEnv } from './env.ts';
 import { BUILD } from './provenance.ts';
 import { mintNonce, withCsp } from './worker/csp.ts';
-import { stubHandlers, testHooksAllowed } from './worker/handlers.ts';
+import { testHooksAllowed } from './worker/handlers.ts';
+import { workspaceSocket } from './worker/workspace.ts';
 import { authenticateParty } from './worker/party.ts';
 import { routeRequest } from './worker/route.ts';
 import { handleTestHook } from './worker/test-hooks.ts';
@@ -32,7 +33,7 @@ export default createServerEntry({
     if (refusal) return refusal;
     try {
       return await routeRequest(request, {
-        ...stubHandlers,
+        handleWorkspaceSocket: (req) => workspaceSocket(req, appEnv, refuseSocket),
         handleAuth: (req) => handleAuthRoute(req, appEnv),
         handleApi: (req) => handleApi(req, appEnv),
         build: BUILD,

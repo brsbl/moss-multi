@@ -86,7 +86,7 @@ export class Projections {
 const FILENAME_ATTEMPTS = 5;
 
 /** The projections as D1 writes. */
-export function d1Projections(db: D1Database): ProjectionTarget {
+export function d1Projections(db: D1Database, publish: (docId: string) => Promise<void> = async () => undefined): ProjectionTarget {
   return {
     async title(docId, title) {
       for (let attempt = 1; ; attempt += 1) {
@@ -103,6 +103,7 @@ export function d1Projections(db: D1Database): ProjectionTarget {
         const filename = keep ? self.filename : filenameFor(title, occupied);
         try {
           await db.prepare('UPDATE docs SET title = ?, filename = ? WHERE id = ?').bind(title, filename, docId).run();
+          await publish(docId);
           return;
         } catch (error) {
           const unique = /UNIQUE/i.test(`${error} ${(error as { cause?: unknown }).cause ?? ''}`);
@@ -112,6 +113,7 @@ export function d1Projections(db: D1Database): ProjectionTarget {
     },
     async touch(docId, at) {
       await db.prepare('UPDATE docs SET updated_at = MAX(updated_at, ?) WHERE id = ?').bind(at, docId).run();
+      await publish(docId);
     },
   };
 }

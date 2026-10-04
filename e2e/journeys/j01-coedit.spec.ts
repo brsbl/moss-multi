@@ -313,7 +313,6 @@ test('j01 workspace: another open document keeps its binding while peer creates 
   })).status()).toBe(201);
   const ben = await actors.open(benPrincipal, { path: `/d/${openId}` });
   await waitBodyLive(ben, openId);
-  const sockets = await ben.page.evaluate(() => performance.getEntriesByType('resource').filter((entry) => entry.name.includes('/api/workspace/ws')).length);
   // Socket readiness is witnessed by the actual browser WebSocket, including its received events.
   const received: string[] = [];
   ben.page.on('websocket', (socket) => {
@@ -333,5 +332,4 @@ test('j01 workspace: another open document keeps its binding while peer creates 
   await ui.typeBody(ben, openId, 'Still bound after metadata');
   await waitAcked(ben, openId);
   await actors.checkpoint('workspace-metadata');
-  void sockets;
 });

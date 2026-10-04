@@ -1,3 +1,5 @@
+import type { WorkspaceEvent } from '@moss-multi/protocol/workspace';
+import { subscribeWorkspace } from '../workspace-channel.ts';
 // The web window.electronAPI (A§9), installed whole before moss's App module evaluates: every namespace and
 // subscription exists, because moss calls some unconditionally. inventory.ts says how each method is treated;
 // a staged method is minimally real until its milestone, and its entry points are hidden through the registry.
@@ -57,6 +59,7 @@ export interface BrowserHooks {
 export interface BridgeOptions {
   /** The current path; `/d/$docId` names moss's window-context startup note (A§4.2). */
   pathname: () => string;
+  subscribeWorkspace?: (receive: (event: WorkspaceEvent) => void, pause: () => void) => () => void;
   fetch?: typeof fetch;
   storage?: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> | null;
   browser?: BrowserHooks;
@@ -139,7 +142,7 @@ const inertBrowser: BrowserHooks = {
   copy: async () => undefined,
 };
 
-export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis), storage = null, browser = inertBrowser }: BridgeOptions) {
+export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis), storage = null, browser = inertBrowser, subscribeWorkspace: subscribe }: BridgeOptions) {
   const request = (path: string, init: RequestInit = {}) =>
     fetcher(path, { credentials: 'same-origin', ...init, headers: { accept: 'application/json', ...init.headers } });
 
@@ -150,12 +153,21 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
   const workspaceListeners = new Set<() => void>();
   const diskListeners = new Set<Listener<[string[], string[]]>>();
   let loadVersion = 0;
-  let loadsInFlight = 0;
-  let poll: ReturnType<typeof setInterval> | null = null;
-  let polling = false;
+  let stopWorkspace: (() => void) | null = null;
+  let channelGeneration = 0;
+  let refreshing = false;
+  let refreshRetry: ReturnType<typeof setTimeout> | null = null;
+  const pauseWorkspace = () => {
+    channelGeneration += 1;
+    pendingIds.clear();
+    refreshAll = false;
+    if (refreshRetry) clearTimeout(refreshRetry);
+    refreshRetry = null;
+  };
+  let refreshAll = false;
+  const pendingIds = new Set<string>();
   const load = (vaultId: string | null, docId: string | null = null): Promise<NoteMetadata[]> => {
     const version = ++loadVersion;
-    loadsInFlight += 1;
     const query = new URLSearchParams();
     if (vaultId) query.set('vault', vaultId);
     if (docId) query.set('doc', docId);
@@ -163,14 +175,15 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
       if (!response.ok) throw new Error(`GET /api/workspace: ${response.status}`);
       const data = (await response.json()) as WorkspaceListing;
       if (version !== loadVersion) return listing ?? [];
+      const vaultsChanged = JSON.stringify([workspaceSnapshot?.vault, workspaceSnapshot?.vaults]) !== JSON.stringify([data.vault, data.vaults]);
       workspaceSnapshot = data;
       try { storage?.setItem(VAULT_KEY, data.vault.id); } catch { /* An in-memory choice still works. */ }
       for (const row of data.docs) rememberRole(row.id, row.role);
       const docs = data.docs.map(toNoteMetadata);
       for (const doc of docs) known.set(doc.id, doc);
-      workspaceListeners.forEach((listener) => listener());
+      if (vaultsChanged) workspaceListeners.forEach((listener) => listener());
       return docs;
-    }).finally(() => { loadsInFlight -= 1; });
+    });
     listing = pending;
     void pending.catch(() => { if (listing === pending) listing = null; });
     return pending;
@@ -181,6 +194,54 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
   const refreshForNavigation = async (id: string) => {
     await load(workspaceSnapshot?.vault.id ?? storedVault(), id);
     diskListeners.forEach((listener) => listener([], []));
+  };
+  const refreshWorkspace = async () => {
+    if (refreshing || !workspaceSnapshot) return;
+    if (refreshRetry) clearTimeout(refreshRetry);
+    refreshRetry = null;
+    refreshing = true;
+    const generation = channelGeneration;
+    try {
+      while (generation === channelGeneration && (refreshAll || pendingIds.size)) {
+        const ids = [...pendingIds];
+        const full = refreshAll;
+        pendingIds.clear();
+        refreshAll = false;
+        const version = loadVersion;
+        const vault = workspaceSnapshot.vault.id;
+        const query = new URLSearchParams({ vault });
+        if (!full) for (const id of ids) query.append('ids', id);
+        const response = await request(`/api/workspace?${query}`);
+        if (!response.ok) throw new Error(`GET /api/workspace: ${response.status}`);
+        const data = await response.json() as WorkspaceListing;
+        if (generation !== channelGeneration) break;
+        if (version !== loadVersion) { refreshAll = true; continue; }
+        const changedVaults = JSON.stringify([workspaceSnapshot.vault, workspaceSnapshot.vaults]) !== JSON.stringify([data.vault, data.vaults]);
+        const removed = new Set(full ? workspaceSnapshot.docs.map((doc) => doc.id) : ids);
+        const docs = [...(full ? [] : workspaceSnapshot.docs.filter((doc) => !removed.has(doc.id))), ...data.docs]
+          .sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
+        workspaceSnapshot = { ...data, docs };
+        for (const id of removed) known.delete(id);
+        for (const doc of data.docs) { known.set(doc.id, toNoteMetadata(doc)); rememberRole(doc.id, doc.role); }
+        listing = Promise.resolve(docs.map(toNoteMetadata));
+        if (changedVaults) workspaceListeners.forEach((listener) => listener());
+        diskListeners.forEach((listener) => listener(full ? [] : ids, []));
+      }
+    } catch {
+      if (generation === channelGeneration) {
+        refreshAll = true;
+        refreshRetry = setTimeout(() => { void refreshWorkspace(); }, 1000);
+      }
+    } finally {
+      refreshing = false;
+      if (generation !== channelGeneration && (refreshAll || pendingIds.size)) void refreshWorkspace();
+    }
+  };
+  const receiveWorkspace = (event: WorkspaceEvent) => {
+    if (event.type !== 'meta' && event.type !== 'vaults') return;
+    if (event.type === 'vaults' || event.folderIds.length) refreshAll = true;
+    if (event.type === 'meta') for (const id of event.docIds) pendingIds.add(id);
+    void (listing ?? notes()).then(refreshWorkspace).catch(() => undefined);
   };
   const pins = () => readJson<Record<string, number>>(storage, PINS_KEY) ?? {};
   const withLocal = (listed: NoteMetadata): NoteMetadata => {
@@ -339,19 +400,14 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
         }),
       onDiskChange: (callback?: Listener<[string[], string[]]>) => {
         if (callback) diskListeners.add(callback);
-        if (!poll && diskListeners.size) poll = setInterval(async () => {
-          if (polling || loadsInFlight || !workspaceSnapshot) return;
-          polling = true;
-          const before = JSON.stringify(workspaceSnapshot);
-          try {
-            await load(workspaceSnapshot.vault.id);
-            if (JSON.stringify(workspaceSnapshot) !== before) diskListeners.forEach((listener) => listener([], []));
-          } catch { /* Keep the last listing during a transient failure. */ }
-          finally { polling = false; }
-        }, 3_000);
+        if (!stopWorkspace && diskListeners.size && subscribe) stopWorkspace = subscribe(receiveWorkspace, pauseWorkspace);
         return () => {
           if (callback) diskListeners.delete(callback);
-          if (!diskListeners.size && poll) { clearInterval(poll); poll = null; }
+          if (!diskListeners.size) {
+            stopWorkspace?.();
+            stopWorkspace = null;
+            pauseWorkspace();
+          }
         };
       },
       onMetadataReindexed: silent,
@@ -494,8 +550,21 @@ function windowBrowser(): BrowserHooks {
 }
 
 /** Installs the bridge on `window` before App's module evaluates (A§4.3). */
-export function installBridge(): Bridge {
-  const bridge = createBridge({ pathname: () => window.location.pathname, storage: localStorageOrNull(), browser: windowBrowser() });
+export function installBridge(authStore: import('../auth-state.ts').AuthStore): Bridge {
+  const bridge = createBridge({ pathname: () => window.location.pathname, storage: localStorageOrNull(), browser: windowBrowser(),
+    subscribeWorkspace: (receive, pause) => subscribeWorkspace({
+      onPause: pause,
+      auth: authStore,
+      socket: () => new WebSocket(`${window.location.origin.replace(/^http/, 'ws')}/api/workspace/ws`),
+      visible: () => document.visibilityState === 'visible',
+      onVisible: (callback) => {
+        const visible = () => { if (document.visibilityState === 'visible') callback(); };
+        document.addEventListener('visibilitychange', visible);
+        window.addEventListener('online', visible);
+        return () => { document.removeEventListener('visibilitychange', visible); window.removeEventListener('online', visible); };
+      },
+    }, receive),
+  });
   installedBridge = bridge;
   (window as unknown as { electronAPI: Bridge }).electronAPI = bridge;
   return bridge;
