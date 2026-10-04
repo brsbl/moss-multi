@@ -5,10 +5,11 @@
 // a first sync later than 8 s reads `retrying`. Edits the DocDO has not acked live only in this Y.Doc, so a session
 // released with unacked edits stays connected without its pane until they are acked, or until the doc ends.
 import type { ConnectionState, TerminalReason } from '@moss-multi/protocol/dom-contract';
-import { isRole, roleAtLeast } from '@moss-multi/protocol/roles';
+import { isRole, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import { CLOSE, closeAction, type ServerEvent, type WriteRefusalReason } from '@moss-multi/protocol/sync';
 import YProvider from 'y-partyserver/provider';
 import * as Y from 'yjs';
+import { rememberRole } from '../access.ts';
 import { leaveTo } from '../navigation.ts';
 import { refuseInput } from '../refusal.ts';
 import { AckLedger } from './acks.ts';
@@ -148,7 +149,7 @@ function closeNormally(provider: YProvider, held: () => boolean): void {
 const shareToken = (): string | null => new URLSearchParams(window.location.search).get('share');
 
 type AccessAnswer =
-  | { kind: 'role'; canWrite: boolean }
+  | { kind: 'role'; role: Role; canWrite: boolean }
   | { kind: 'deleted' }
   | { kind: 'gone' }
   | { kind: 'signed-out' }
@@ -170,7 +171,7 @@ async function askAccess(docId: string): Promise<AccessAnswer> {
     if (!response.ok) return { kind: 'unknown' };
     const body = (await response.json()) as { role?: unknown; deleted?: unknown };
     if (body.deleted === true) return { kind: 'deleted' };
-    return isRole(body.role) ? { kind: 'role', canWrite: roleAtLeast(body.role, 'editor') } : { kind: 'unknown' };
+    return isRole(body.role) ? { kind: 'role', role: body.role, canWrite: roleAtLeast(body.role, 'editor') } : { kind: 'unknown' };
   } catch {
     return { kind: 'unknown' };
   }
@@ -510,6 +511,8 @@ export class DocSession {
         this.end('deleted');
         return;
       case 'role':
+        // The pane's role, its top bar and its menus follow the answer (a demotion lowers them in place).
+        rememberRole(this.docId, answer.role);
         if (!answer.canWrite) {
           refuseInput(VIEW_ONLY);
           this.#ended = true;

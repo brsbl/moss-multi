@@ -3,7 +3,7 @@
 // 4401 with no credential or a cookie from another origin, 4404 for a missing or inaccessible doc or a forged or
 // revoked link, 4410 for a trashed one the caller could otherwise open.
 import { CLOSE, encodePartyPrincipal, TRUSTED, type PartyPrincipal } from '@moss-multi/protocol/sync';
-import { resolveDocAccess } from '../api/access.ts';
+import { liveLink, resolveDocAccess } from '../api/access.ts';
 import { acceptShares } from '../api/members.ts';
 import type { AuthEnv } from '../auth/auth.ts';
 import { resolvePrincipal, shareTokenOf } from '../auth/principal.ts';
@@ -12,6 +12,8 @@ import { crossOriginCookie } from './origin-gate.ts';
 import type { PartyAuth } from './route.ts';
 
 export async function authenticateParty(request: Request, docId: string, env: AuthEnv): Promise<PartyAuth> {
+  // Before anything is read: a revocation committed after this instant outdates the role resolved below (A§8).
+  const resolvedAt = Date.now();
   const principal = await resolvePrincipal(request, env);
   // Before the doc is looked up, so the close says nothing about whether it exists.
   if (!principal || crossOriginCookie(request, principal, env)) return { ok: false, code: CLOSE.noPrincipal };
@@ -26,8 +28,10 @@ export async function authenticateParty(request: Request, docId: string, env: Au
     [TRUSTED.principal]: encodePartyPrincipal(party),
     [TRUSTED.role]: access.role,
     [TRUSTED.presence]: principal.type !== 'anonymous' && (!share || await resolveDocAccess(db, principal, docId)) ? '1' : '0',
+    [TRUSTED.resolvedAt]: String(resolvedAt),
   };
   if (principal.type === 'user') headers[TRUSTED.session] = principal.sessionId;
-  if (share) headers[TRUSTED.share] = share;
+  // Only a live link marks the socket: one already revoked lifted nothing, and would close it again on every recheck.
+  if (share && (principal.type === 'anonymous' || await liveLink(db, share))) headers[TRUSTED.share] = share;
   return { ok: true, headers };
 }

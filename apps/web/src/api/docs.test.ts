@@ -23,6 +23,7 @@ const DocDO = {
   idFromName: (name: string) => ({ name, toString: () => name }),
   get: (id: { name: string }) => ({
     setName: async () => undefined,
+    recheck: async () => ({ closed: 0 }),
     create: async (input: unknown) => {
       created.push({ docId: id.name, input });
       await d1Projections(d1.db, publish).title(id.name, (input as { title?: string }).title ?? '');

@@ -27,3 +27,9 @@ export const ACK_COALESCE_MS = 250;
 
 /** REST writes (a rename now, a push later) per principal per window, counted by its PrincipalDO (A§5.2); 429 past it. */
 export const REST_WRITE_RATE = { max: 60, windowMs: 60_000 } as const;
+
+/**
+ * How long a PrincipalDO remembers an ended session and a session's doc sockets (A§5.2): better-auth's default session
+ * lifetime, 7 days, which no in-flight upgrade outlives.
+ */
+export const SESSION_MAX_MS = 7 * 24 * 60 * 60 * 1000;

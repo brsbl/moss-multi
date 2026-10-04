@@ -1,9 +1,11 @@
 // Share links (T2.4, A§8): an owner creates, lists and revokes revocable tokenized links to a doc, folder or vault at
 // viewer, commenter or editor. The link role is a ceiling (roles.ts foldRole): anonymous holders read at viewer and
-// signing in lifts them to it. A revoked token answers like a forged one everywhere; closing the connections that
-// presented it is the one kick path's (T2.5).
+// signing in lifts them to it. A revoked token answers like a forged one everywhere, and revoking it closes every
+// connection that presented it, signed in or not, through the one kick path (T2.5) before the call answers.
 import { and, desc, eq, isNull } from 'drizzle-orm';
 import { LINK_ROLES, type LinkRole } from '@moss-multi/protocol/roles';
+import { docsOf, kick, KickFailed } from '@moss-multi/sync/fanout';
+import type { AppEnv } from '../env.ts';
 import type { AuthEnv } from '../auth/auth.ts';
 import { resolvePrincipal } from '../auth/principal.ts';
 import { createDb, type Db } from '../db/client.ts';
@@ -35,7 +37,11 @@ async function listLinks(db: Db, target: MemberTarget): Promise<ShareLink[]> {
 }
 
 /** `/api/{docs,folders}/:id/links` (GET, POST) and `/api/{docs,folders}/:id/links/:token` (DELETE). */
-export async function handleLinks(request: Request, env: AuthEnv, target: MemberTarget, token: string | null): Promise<Response> {
+export type LinksEnv = AuthEnv & Partial<Pick<AppEnv, 'DocDO'>>;
+
+const KICK_FAILED = 'The link is revoked, but some open windows haven’t closed yet. Try again.';
+
+export async function handleLinks(request: Request, env: LinksEnv, target: MemberTarget, token: string | null): Promise<Response> {
   const allowed = token === null ? ['GET', 'POST'] : ['DELETE'];
   if (!allowed.includes(request.method)) return json({ error: 'method-not-allowed' }, 405, { allow: allowed.join(', ') });
   const principal = await resolvePrincipal(request, env);
@@ -50,8 +56,19 @@ export async function handleLinks(request: Request, env: AuthEnv, target: Member
   }
   if (request.method === 'GET') return json({ links: await listLinks(db, target) }, 200, NO_STORE);
   if (request.method === 'DELETE') {
-    const result = await db.update(shareLinks).set({ revokedAt: Date.now() }).where(and(ofTarget(target), eq(shareLinks.token, token ?? '')));
-    return result.meta.changes > 0 ? json({ revoked: true }, 200, NO_STORE) : notFound();
+    const tokenOf = and(eq(shareLinks.targetType, target.type), eq(shareLinks.targetId, target.id), eq(shareLinks.token, token ?? ''));
+    await db.update(shareLinks).set({ revokedAt: Date.now() }).where(and(tokenOf, isNull(shareLinks.revokedAt)));
+    // A retry after a failed kick finds the link already revoked and kicks again.
+    const [row] = await db.select({ token: shareLinks.token }).from(shareLinks).where(tokenOf).limit(1);
+    if (!row) return notFound();
+    if (!env.DocDO) return json({ error: 'unavailable', message: KICK_FAILED }, 503, NO_STORE);
+    try {
+      await kick({ DB: env.DB, DocDO: env.DocDO }, await docsOf(env.DB, target), { tokens: [row.token] });
+    } catch (error) {
+      if (!(error instanceof KickFailed)) throw error;
+      return json({ error: 'unavailable', message: KICK_FAILED }, 503, NO_STORE);
+    }
+    return json({ revoked: true }, 200, NO_STORE);
   }
   const body = await readJsonObject(request);
   if (!body || !isLinkRole(body.role)) {

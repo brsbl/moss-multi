@@ -30,6 +30,7 @@ const DocDO = {
     create: async () => undefined,
     createFromSnapshot: async () => undefined,
     snapshotForDuplicate: async () => ({ title: 'Source', state: new Uint8Array() }),
+    recheck: async () => ({ closed: 0 }),
   }),
 };
 

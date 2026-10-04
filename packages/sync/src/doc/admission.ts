@@ -16,6 +16,8 @@ export interface Attachment {
   sessionId: string | null;
   shareToken: string | null;
   presenceAllowed?: boolean;
+  /** When the Worker resolved `role` (epoch ms); 0 when unknown, which any principal revocation outdates. */
+  resolvedAt?: number;
 }
 
 /** The Worker's trusted headers, or null with no principal or no known role. */
@@ -31,13 +33,18 @@ export function attachmentFrom(headers: Headers): Attachment | null {
     sessionId: headers.get(TRUSTED.session) || null,
     shareToken: headers.get(TRUSTED.share) || null,
     presenceAllowed: headers.get(TRUSTED.presence) === '1' || (headers.get(TRUSTED.presence) === null && principal.kind !== 'anonymous' && !headers.get(TRUSTED.share)),
+    resolvedAt: Number(headers.get(TRUSTED.resolvedAt)) || 0,
   };
 }
 
-/** 4402 for an ended session; 4403 for a revoked principal or share token. */
+/**
+ * 4402 for an ended session; 4403 for a revoked share token, or for a principal whose role was resolved no later than
+ * its revocation (a role resolved afterwards read the change, so a demoted or re-added member reconnects).
+ */
 export function revocationCode(attachment: Attachment, revoked: Revoked): number | null {
   if (attachment.sessionId !== null && revoked.session.has(attachment.sessionId)) return CLOSE.sessionEnded;
-  if (revoked.principal.has(attachment.principalId)) return CLOSE.revoked;
+  const principalAt = revoked.principal.get(attachment.principalId);
+  if (principalAt !== undefined && (attachment.resolvedAt ?? 0) <= principalAt) return CLOSE.revoked;
   if (attachment.shareToken !== null && revoked.token.has(attachment.shareToken)) return CLOSE.revoked;
   return null;
 }

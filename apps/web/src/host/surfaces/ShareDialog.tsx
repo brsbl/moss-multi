@@ -3,13 +3,17 @@
 // revokes links. Moss has no sharing, so the layout follows glyphdown's ShareDialog
 // (docs/design/glyphdown-reference.md), built from moss's own parts: Settings' ModalShell, section labels and cards,
 // its segmented choice for access levels, and the DS Input and Button. The note's top bar (ShareControl), a folder's
-// context menu (FolderMenuItems) and the vault switcher open it through `openShare`. Changing or removing a person's
-// access comes with the one kick path (T2.5).
+// context menu (FolderMenuItems) and the vault switcher open it through `openShare`. Each person's (and invite's)
+// access opens a moss dropdown, as glyphdown's role select does, to change or remove it; lowering or removing someone
+// closes their open windows through the one kick path (T2.5).
 import { ModalShell } from '@moss-desktop/renderer/components/ModalShell';
 import { Button } from '@moss/shared/components/ui/button';
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
+} from '@moss/shared/components/ui/dropdown-menu';
 import { Input } from '@moss/shared/components/ui/input';
 import { LINK_ROLES, SHARE_ROLES, type LinkRole, type Role, type ShareRole } from '@moss-multi/protocol/roles';
-import { UserPlus } from 'lucide-react';
+import { Check, ChevronDown, UserPlus } from 'lucide-react';
 import { useCallback, useEffect, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react';
 import { useDocRole } from '../access.ts';
 
@@ -33,6 +37,8 @@ interface Member {
   name: string;
   email?: string;
   role: Role;
+  /** The vault's owner holds no grant, so their access cannot be changed. */
+  vaultOwner?: true;
 }
 
 interface PendingInvite {
@@ -46,7 +52,8 @@ interface ShareLink {
   createdAt: number;
 }
 
-type Status = { tone: 'error' | 'done'; text: string; where: 'people' | 'links' } | null;
+type Where = 'people' | 'members' | 'links';
+type Status = { tone: 'error' | 'done'; text: string; where: Where } | null;
 
 const SECTION_LABEL = 'text-micro font-medium uppercase tracking-wider text-ink-faint';
 const CARD = 'rounded-lg border border-border-subtle bg-surface-raised-card p-3';
@@ -81,12 +88,46 @@ function AccessChoice<R extends Role>({ label, roles, value, onChange, disabled 
   );
 }
 
-function StatusLine({ status, where }: { status: Status; where: 'people' | 'links' }): ReactNode {
+function StatusLine({ status, where }: { status: Status; where: Where }): ReactNode {
   if (!status || status.where !== where) return null;
   return (
     <p role={status.tone === 'error' ? 'alert' : 'status'} className={status.tone === 'error' ? 'text-xs text-accent-terracotta' : 'text-xs text-ink-muted'}>
       {status.text}
     </p>
+  );
+}
+
+/** One person's or invite's access: moss's dropdown with the share roles and "Remove access". */
+function AccessMenu({ who, role, disabled, onChoose }: {
+  who: string; role: Role; disabled: boolean; onChoose: (choice: ShareRole | 'remove') => void;
+}): ReactNode {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          aria-label={`Access for ${who}`}
+          disabled={disabled}
+          className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md px-2 text-xs text-ink-faint transition-colors hover:bg-surface-raised-control hover:text-ink-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ink-default/15 disabled:opacity-60 data-[state=open]:bg-surface-raised-control data-[state=open]:text-ink-muted"
+        >
+          {ACCESS_LABEL[role]}
+          <ChevronDown aria-hidden className="h-3 w-3" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" side="bottom" sideOffset={4} className="min-w-0 w-max">
+        {SHARE_ROLES.map((choice) => (
+          <DropdownMenuItem key={choice} className="gap-2 text-xs" onSelect={() => onChoose(choice)}>
+            <Check aria-hidden className={choice === role ? 'h-3.5 w-3.5' : 'h-3.5 w-3.5 opacity-0'} />
+            {ACCESS_LABEL[choice]}
+          </DropdownMenuItem>
+        ))}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem className="gap-2 text-xs text-accent-terracotta" onSelect={() => onChoose('remove')}>
+          <span aria-hidden className="h-3.5 w-3.5" />
+          Remove access
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -152,7 +193,7 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
 
   /** One request at a time; a failure says why, in the section that asked. A change is confirmed as soon as the
    * server takes it, and then the lists are read again. */
-  async function run(where: 'people' | 'links', work: () => Promise<string | null>, reload = true): Promise<void> {
+  async function run(where: Where, work: () => Promise<string | null>, reload = true): Promise<void> {
     if (pending) return;
     setPending(true);
     setStatus(null);
@@ -185,6 +226,18 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
       if (!answer.ok || !answer.body?.shared) throw refused(answer.body, 'Sharing didn’t work. Try again.');
       setEmail('');
       return `Shared with ${answer.body.shared.email}.`;
+    });
+  }
+
+  /** Changes or removes a member (by id) or an invite (by email); the server closes their windows on a lowering. */
+  function changeAccess(who: { principalId: string } | { email: string }, label: string, choice: ShareRole | 'remove'): void {
+    void run('members', async () => {
+      const answer = await call(`${base}/members`, {
+        method: choice === 'remove' ? 'DELETE' : 'PATCH',
+        body: JSON.stringify(choice === 'remove' ? who : { ...who, role: choice }),
+      }).catch(() => { throw new Error(UNREACHABLE); });
+      if (!answer.ok) throw refused(answer.body, 'That change didn’t save. Try again.');
+      return choice === 'remove' ? `Removed ${label}.` : `${label} now has “${ACCESS_LABEL[choice]}” access.`;
     });
   }
 
@@ -257,7 +310,12 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
                     <p className="truncate text-sm text-ink-default">{member.name}</p>
                     {member.email ? <p className="truncate font-mono text-xs text-ink-muted">{member.email}</p> : null}
                   </div>
-                  <span className="shrink-0 text-xs text-ink-faint">{ACCESS_LABEL[member.role]}</span>
+                  {member.vaultOwner ? (
+                    <span className="shrink-0 px-2 text-xs text-ink-faint">{ACCESS_LABEL[member.role]}</span>
+                  ) : (
+                    <AccessMenu who={member.name} role={member.role} disabled={pending}
+                      onChoose={(choice) => changeAccess({ principalId: member.principalId }, member.name, choice)} />
+                  )}
                 </li>
               ))}
               {invites.map((invite) => (
@@ -266,12 +324,14 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
                     <p className="truncate font-mono text-xs text-ink-muted">{invite.email}</p>
                     <p className="text-micro text-ink-faint">Invited</p>
                   </div>
-                  <span className="shrink-0 text-xs text-ink-faint">{ACCESS_LABEL[invite.role]}</span>
+                  <AccessMenu who={invite.email} role={invite.role} disabled={pending}
+                    onChoose={(choice) => changeAccess({ email: invite.email }, invite.email, choice)} />
                 </li>
               ))}
             </ul>
           )}
         </div>
+        <StatusLine status={status} where="members" />
       </div>
       <div className="space-y-2">
         <span className={SECTION_LABEL}>Share links</span>

@@ -77,15 +77,16 @@ const kicked = (docId: string) => rechecks.filter((r) => r.docId === docId);
 
 describe('members: lowering and removing access kicks @p:ppl-2', () => {
   it('lowers a member through PATCH and rechecks the doc for them and their agents before answering', async () => {
+    const fay = await signedUpUser(env, 'kick-fay', 'Fay');
     const docId = await insertDoc(d1.db, ada);
-    await insertGrant(d1.db, { docId }, ben, 'editor');
-    const agent = await insertAgent(d1.db, ben);
+    await insertGrant(d1.db, { docId }, fay, 'editor');
+    const agent = await insertAgent(d1.db, fay);
     const before = Date.now();
-    const response = await call('PATCH', `/api/docs/${docId}/members`, ada.cookie, { principalId: ben.id, role: 'viewer' });
+    const response = await call('PATCH', `/api/docs/${docId}/members`, ada.cookie, { principalId: fay.id, role: 'viewer' });
     expect(response.status).toBe(200);
-    expect(await roleOf('doc_members', 'doc_id', docId, ben.id)).toBe('viewer');
+    expect(await roleOf('doc_members', 'doc_id', docId, fay.id)).toBe('viewer');
     expect(kicked(docId)).toHaveLength(1);
-    expect([...(kicked(docId)[0].input.principalIds ?? [])].sort()).toEqual([agent.id, ben.id].sort());
+    expect([...(kicked(docId)[0].input.principalIds ?? [])].sort()).toEqual([agent.id, fay.id].sort());
     expect(kicked(docId)[0].input.at).toBeGreaterThanOrEqual(before);
   });
 

@@ -1,4 +1,4 @@
-import type { Connection, ConnectionContext, WSMessage } from 'partyserver';
+import { getServerByName, type Connection, type ConnectionContext, type WSMessage } from 'partyserver';
 import { YServer } from 'y-partyserver';
 import * as Y from 'yjs';
 import * as encoding from 'lib0/encoding';
@@ -38,6 +38,21 @@ export interface CreateDocInput {
   /** A body to import through the one converter instead of the seed's empty paragraph. */
   markdown?: string;
 }
+
+/** What a recheck revokes (A§5.1, A§8): principals and share tokens close 4403, sessions 4402. */
+export interface RecheckInput {
+  principalIds?: string[];
+  tokens?: string[];
+  sessions?: string[];
+  /** When the change committed (epoch ms); a principal's socket resolved no later than this is refused. */
+  at?: number;
+}
+
+/**
+ * The PrincipalDO's sign-out registry (A§5.2): records that a session (or, for an agent, the principal itself, with a
+ * null session) has a socket on a doc, and answers `ended` when that session already ended.
+ */
+export type SocketRegistry = (principalId: string, sessionId: string | null, docId: string) => Promise<'ok' | 'ended'>;
 
 /** Whether D1 has the doc in Trash (or has no row for it); throws when D1 cannot answer. */
 export type TrashedInD1 = (docId: string) => Promise<boolean>;
@@ -86,6 +101,10 @@ export class DocDO extends YServer<SyncEnv> {
       const row = await env.DB.prepare('SELECT deleted_at FROM docs WHERE id = ?').bind(docId).first<{ deleted_at: number | null }>();
       return !row || row.deleted_at !== null;
     }
+    : null);
+  /** Where a socket registers for sign-out and agent-key revocation (A§5.2). */
+  static registry: (env: SyncEnv) => SocketRegistry | null = (env) => (env?.PrincipalDO
+    ? async (principalId, sessionId, docId) => (await getServerByName(env.PrincipalDO, principalId)).registerDocSocket(sessionId, docId)
     : null);
 
   readonly instanceId = crypto.randomUUID();
@@ -146,7 +165,7 @@ export class DocDO extends YServer<SyncEnv> {
       return;
     }
     attach(connection, attachment);
-    // Registering the socket in the PrincipalDO's sign-out registry lands with that registry (A§5.2, M2).
+    this.#register(connection, attachment, store);
     const encoder = encoding.createEncoder();
     encoding.writeVarUint(encoder, 0);
     writeSyncStep1(encoder, this.document);
@@ -286,6 +305,28 @@ export class DocDO extends YServer<SyncEnv> {
     await this.#schedule(holdsOf(store));
   }
 
+  /**
+   * The one kick path's landing (A§8): persists the revocations before closing anything, so a woken DO and a socket
+   * already on its way in meet them too, then closes every socket they name: 4403 for a principal or a share token
+   * (the client asks REST and rebinds read-only or ends `revoked`), 4402 for an ended session. Idempotent.
+   */
+  async recheck(input: RecheckInput): Promise<{ closed: number }> {
+    const store = await this.#ready();
+    const at = input.at ?? Date.now();
+    for (const id of input.principalIds ?? []) store.revoke('principal', id, at);
+    for (const id of input.tokens ?? []) store.revoke('token', id, at);
+    for (const id of input.sessions ?? []) store.revoke('session', id, at);
+    let closed = 0;
+    for (const connection of this.getConnections()) {
+      const attachment = attachmentOf(connection);
+      const code = attachment ? revocationCode(attachment, store.revoked) : null;
+      if (code === null) continue;
+      connection.close(code, code === CLOSE.sessionEnded ? 'session ended' : 'revoked');
+      closed += 1;
+    }
+    return { closed };
+  }
+
   /** Internal RPC: preserves Yjs item identity, including relative anchors, without a markdown round trip. */
   async snapshotForDuplicate(): Promise<{ title: string; state: Uint8Array }> {
     await this.#ready();
@@ -326,6 +367,23 @@ export class DocDO extends YServer<SyncEnv> {
   /** The reset test hook (A§19): drops this instance; the call that ends it rejects. */
   abortInstance(): void {
     this.ctx.abort('qa-reset');
+  }
+
+  /**
+   * Off the upgrade path (A§5.1 onConnect): a signed-in socket registers under its session and an agent's under the
+   * agent, so sign-out and key revocation can find it. A session that ended before this socket registered (its upgrade
+   * was resolved before the sign-out) is remembered and the socket closes 4402.
+   */
+  #register(connection: Connection, attachment: Attachment, store: DocStore): void {
+    const register = (this.constructor as typeof DocDO).registry(this.env);
+    const sessionId = attachment.sessionId;
+    if (!register || (sessionId === null && attachment.kind !== 'agent')) return;
+    void register(attachment.principalId, sessionId, this.name).then((answer) => {
+      if (answer !== 'ended') return;
+      if (sessionId !== null) store.revoke('session', sessionId, Date.now());
+      else store.revoke('principal', attachment.principalId, Date.now());
+      connection.close(sessionId !== null ? CLOSE.sessionEnded : CLOSE.revoked, sessionId !== null ? 'session ended' : 'revoked');
+    }).catch((error: unknown) => console.error('DocDO socket registration failed', error));
   }
 
   #liveness(): TrashedInD1 | null {

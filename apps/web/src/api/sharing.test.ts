@@ -12,7 +12,8 @@ const SHARES_PER_HOUR = 20;
 const DocDO = {
   idFromName: (name: string) => ({ name, toString: () => name }),
   get: () => ({ setName: async () => undefined, create: async () => undefined,
-    snapshotForDuplicate: async () => ({ title: 'Plan', state: new Uint8Array() }), createFromSnapshot: async () => undefined }),
+    snapshotForDuplicate: async () => ({ title: 'Plan', state: new Uint8Array() }), createFromSnapshot: async () => undefined,
+    recheck: async () => ({ closed: 0 }) }),
 };
 
 let d1: TestD1;
@@ -215,7 +216,9 @@ describe('share links', () => {
     const forged = 'f'.repeat(48);
     expect(await fingerprint(await call('GET', `/api/docs/${docId}?share=${viewer.token}`, null)))
       .toEqual(await fingerprint(await call('GET', `/api/docs/${docId}?share=${forged}`, null)));
-    expect((await call('DELETE', `/api/docs/${docId}/links/${viewer.token}`, ada.cookie)).status, 'already revoked').toBe(404);
+    expect((await call('DELETE', `/api/docs/${docId}/links/${viewer.token}`, ada.cookie)).status, 'a retry kicks again and changes nothing').toBe(200);
+    expect(await fingerprint(await call('GET', `/api/docs/${docId}?share=${viewer.token}`, null)), 'still revoked')
+      .toEqual(await fingerprint(await call('GET', `/api/docs/${docId}?share=${forged}`, null)));
     const other = await insertDoc(d1.db, ada);
     expect((await call('DELETE', `/api/docs/${other}/links/${made[1].token}`, ada.cookie)).status, "another doc's link").toBe(404);
     expect(await roleOf(null, docId, made[1].token)).toBe('viewer');
@@ -289,6 +292,9 @@ describe('a link-scoped workspace', () => {
     expect(docListing.docs).toEqual([expect.objectContaining({ id: inside, folderPath: 'Notes', role: 'viewer' })]);
     expect(docListing.folders).toEqual([]);
     expect(JSON.stringify(docListing), 'no folder or vault of the owner is named').not.toMatch(new RegExp(`${folderId}|${childId}|${ada.homeId}`));
+    const read = await call('GET', `/api/docs/${inside}`, null, undefined, { 'x-moss-share': docLink.token });
+    expect(read.status).toBe(200);
+    expect(await read.text(), 'nor by the note itself (T2.5 follow-up)').not.toMatch(new RegExp(`${folderId}|${childId}|${ada.homeId}`));
 
     const { link } = (await (await call('POST', `/api/folders/${folderId}/links`, ada.cookie, { role: 'viewer' })).json()) as { link: Link };
     const listing = (await (await call('GET', `/api/workspace?share=${link.token}`, null)).json()) as Listing;

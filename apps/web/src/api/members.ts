@@ -2,11 +2,12 @@
 // email. Only an owner shares, and emails and pending invites reach owners alone. Sharing is no account-enumeration
 // oracle: an email with no account becomes a pending invite (redeemed through T2.8's /invite/$token), the answer is
 // the same as for an email with one, and the owner sees both by email as pending until the grantee opens the item;
-// each owner may make SHARES_PER_HOUR new shares an hour. Lowering or
-// removing access waits for the one kick path (T2.5), so a share here only adds or raises.
+// each owner may make SHARES_PER_HOUR new shares an hour. A share only adds or raises; PATCH changes a member's or an
+// invite's access and DELETE removes it, and lowering or removing a member goes through the one kick path (T2.5): every
+// DocDO the grant reached closes that person's sockets before the call answers.
 import { waitUntil } from 'cloudflare:workers';
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
-import { publishTo } from '@moss-multi/sync/fanout';
+import { docsOf, kick, KickFailed, publishTo, withAgents } from '@moss-multi/sync/fanout';
 import { ROLES, SHARE_ROLES, type Role, type ShareRole } from '@moss-multi/protocol/roles';
 import type { AppEnv } from '../env.ts';
 import type { AuthEnv } from '../auth/auth.ts';
@@ -18,7 +19,7 @@ import { actingUserId, MAX_FOLDER_DEPTH, resolveDocAccess, resolveFolderAccess }
 import { NO_STORE, notFound, readJsonObject, unauthenticated } from './respond.ts';
 
 export type MemberTarget = { type: 'doc' | 'folder'; id: string };
-export type MembersEnv = AuthEnv & Partial<Pick<AppEnv, 'PrincipalDO'>>;
+export type MembersEnv = AuthEnv & Partial<Pick<AppEnv, 'PrincipalDO' | 'DocDO'>>;
 
 export interface Member {
   principalId: string;
@@ -27,6 +28,8 @@ export interface Member {
   /** The owner's view only. */
   email?: string;
   role: Role;
+  /** The vault's owner, who holds no grant: nobody can change or remove them. */
+  vaultOwner?: true;
 }
 
 /** An email shared with before anyone signed up with it; the owner's view only. */
@@ -90,7 +93,7 @@ async function listMembers(db: Db, target: MemberTarget, ownerUserId: string, wi
   };
   const members: Member[] = [];
   const owner = person(ownerUserId, 'owner');
-  if (owner) members.push(owner);
+  if (owner) members.push({ ...owner, vaultOwner: true });
   for (const grant of grants) {
     if (grant.principalType === 'user') {
       if (pending.has(people.get(grant.principalId)?.email.toLowerCase() ?? '')) continue;
@@ -180,7 +183,7 @@ async function share(db: Db, env: MembersEnv, target: MemberTarget, ownerUserId:
     return refuse(429, 'rate-limited', 'You’ve shared with a lot of people in the last hour. Try again later.', { 'retry-after': '3600' });
   }
   if (lower(role, held)) {
-    return refuse(409, 'demotion-unavailable', `${email} already has more access. Lowering access isn’t available yet.`);
+    return refuse(409, 'demotion-unavailable', `${email} already has more access. To lower it, change it under People with access.`);
   }
   return json({ shared: { email, role } }, 200, NO_STORE);
 }
@@ -205,9 +208,91 @@ export async function acceptShares(db: D1Database, principal: Principal, docId: 
     .bind(docId, Date.now(), principal.id, principal.email.toLowerCase()).run();
 }
 
-/** GET and POST `/api/{docs,folders}/:id/members`. */
+const KICK_FAILED = 'The change is saved, but some open windows haven’t closed yet. Try again.';
+
+/**
+ * Closes `principalIds` (with their agents) on every doc the target reaches, after the change committed. A DocDO that
+ * does not acknowledge answers 503 so the owner retries; a retry kicks again.
+ */
+async function kickFrom(db: D1Database, env: MembersEnv, target: MemberTarget, principalIds: string[], at: number): Promise<Response | null> {
+  if (!env.DocDO) return refuse(503, 'unavailable', KICK_FAILED);
+  try {
+    await kick({ DB: db, DocDO: env.DocDO }, await docsOf(db, target), { principalIds: await withAgents(db, principalIds) }, at);
+  } catch (error) {
+    if (!(error instanceof KickFailed)) throw error;
+    return refuse(503, 'unavailable', KICK_FAILED);
+  }
+  // Their sidebar drops what they can no longer open, without a reload.
+  const event = target.type === 'doc' ? { type: 'meta' as const, docIds: [target.id], folderIds: [] } : { type: 'vaults' as const };
+  const principalDO = env.PrincipalDO;
+  if (principalDO) {
+    for (const id of principalIds) {
+      waitUntil(publishTo({ DB: db, PrincipalDO: principalDO }, id, event).catch((error: unknown) => console.error('workspace kick notification failed', error)));
+    }
+  }
+  return null;
+}
+
+/**
+ * PATCH `{principalId | email, role}` changes access and DELETE `{principalId | email}` removes it. A member is named by
+ * id: lowering or removing them kicks them (a raise waits for their reload, A§8). An invite still pending is named by
+ * email and runs the same statements whether or not the email has an account; its grantee has opened nothing yet
+ * (opening redeems the invite), so there is nobody to kick.
+ */
+async function change(db: Db, env: MembersEnv, target: MemberTarget, ownerUserId: string, body: Record<string, unknown>, remove: boolean): Promise<Response> {
+  const role = body.role;
+  if (!remove && !isShareRole(role)) return refuse(400, 'bad-request', 'Choose view, comment, edit or owner access.');
+  const [table, column] = grantTable(target);
+  if (typeof body.email === 'string') {
+    const email = body.email.trim().toLowerCase();
+    if (!EMAIL.test(email)) return refuse(400, 'bad-request', 'Enter an email address.');
+    const [person] = await db.select({ id: user.id }).from(user).where(sql`lower(${user.email}) = ${email}`).limit(1);
+    const personId = person?.id ?? null;
+    const open = `target_type = ?1 AND target_id = ?2 AND email = ?3 AND accepted_at IS NULL AND revoked_at IS NULL`;
+    const pendingGrant = `${column} = ?2 AND principal_id = ?4 AND EXISTS (SELECT 1 FROM invites WHERE ${open})`;
+    // The grant statement first, while the invite it checks is still open; both match nothing for an unknown email.
+    const [, changedInvite] = await env.DB.batch(remove
+      ? [
+          env.DB.prepare(`DELETE FROM ${table} WHERE ${pendingGrant}`).bind(target.type, target.id, email, personId),
+          env.DB.prepare(`UPDATE invites SET revoked_at = ?4 WHERE ${open}`).bind(target.type, target.id, email, Date.now()),
+        ]
+      : [
+          env.DB.prepare(`UPDATE ${table} SET role = ?5 WHERE ${pendingGrant}`).bind(target.type, target.id, email, personId, role),
+          env.DB.prepare(`UPDATE invites SET role = ?4 WHERE ${open}`).bind(target.type, target.id, email, role),
+        ]);
+    if (!changed(changedInvite)) return refuse(404, 'not-found', 'That invite is no longer open.');
+    return json(remove ? { removed: { email } } : { changed: { email, role } }, 200, NO_STORE);
+  }
+  const principalId = typeof body.principalId === 'string' ? body.principalId : '';
+  const [grant] = principalId ? await grantRows(db, target, principalId) : [];
+  if (!grant) {
+    // A retry of a removal whose kick failed: the grant is gone, so kick again (never the vault's owner).
+    if (!remove || !principalId || principalId === ownerUserId) return refuse(404, 'not-found', 'That person no longer has access here.');
+    return (await kickFrom(env.DB, env, target, [principalId], Date.now())) ?? json({ removed: { principalId } }, 200, NO_STORE);
+  }
+  if (remove) {
+    const [person] = grant.principalType === 'user'
+      ? await db.select({ email: user.email }).from(user).where(eq(user.id, principalId)).limit(1) : [];
+    // An open invite to them would grant again when redeemed.
+    await env.DB.batch([
+      env.DB.prepare(`DELETE FROM ${table} WHERE ${column} = ?1 AND principal_id = ?2`).bind(target.id, principalId),
+      env.DB.prepare(`UPDATE invites SET revoked_at = ?4 WHERE target_type = ?1 AND target_id = ?2 AND email = ?3
+        AND accepted_at IS NULL AND revoked_at IS NULL`).bind(target.type, target.id, person?.email.toLowerCase() ?? '', Date.now()),
+    ]);
+  } else {
+    await env.DB.prepare(`UPDATE ${table} SET role = ?3 WHERE ${column} = ?1 AND principal_id = ?2`).bind(target.id, principalId, role).run();
+  }
+  const raise = !remove && lower(grant.role, role as Role);
+  if (!raise) {
+    const failed = await kickFrom(env.DB, env, target, [principalId], Date.now());
+    if (failed) return failed;
+  }
+  return json(remove ? { removed: { principalId } } : { changed: { principalId, role } }, 200, NO_STORE);
+}
+
+/** GET and POST `/api/{docs,folders}/:id/members`; PATCH and DELETE change and remove access. */
 export async function handleMembers(request: Request, env: MembersEnv, target: MemberTarget): Promise<Response> {
-  if (request.method !== 'GET' && request.method !== 'POST') return json({ error: 'method-not-allowed' }, 405, { allow: 'GET, POST' });
+  if (!['GET', 'POST', 'PATCH', 'DELETE'].includes(request.method)) return json({ error: 'method-not-allowed' }, 405, { allow: 'GET, POST, PATCH, DELETE' });
   const principal = await resolvePrincipal(request, env);
   if (!principal) return unauthenticated();
   // Link-only visitors may read content, never the identities of its collaborators.
@@ -224,5 +309,6 @@ export async function handleMembers(request: Request, env: MembersEnv, target: M
   if (!owner) return refuse(403, 'forbidden', `Only the owner can share this ${noun(target)}.`);
   const body = await readJsonObject(request);
   if (!body) return refuse(400, 'bad-request', 'The request body must be a JSON object.');
-  return share(db, env, target, access.ownerUserId, principal, body);
+  if (request.method === 'POST') return share(db, env, target, access.ownerUserId, principal, body);
+  return change(db, env, target, access.ownerUserId, body, request.method === 'DELETE');
 }

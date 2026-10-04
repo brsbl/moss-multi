@@ -5,7 +5,7 @@
 // only the owner (A§8 manage) moves, on ownership alone, never on a grant or a share link; only the owner trashes. Every refusal carries a sentence, because moss
 // shows the message it gets. Writes that depend on the tree re-check it in the same statement, so concurrent moves
 // can't build a cycle or leave something live under a trashed folder. A moved or trashed folder changes who can open
-// its docs; the live kick for that is T2.5's one path. GET /api/folders/:id is a folder or vault and the caller's
+// its docs: a move kicks whoever lost a grant or a link on a moved doc through the one kick path (T2.5). GET /api/folders/:id is a folder or vault and the caller's
 // role on it (the `/f/$folderId` landing, T2.4), which a folder link opens; /members and /links are the sharing APIs.
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { getServerByName } from 'partyserver';
@@ -13,7 +13,9 @@ import { filenameFor } from '@moss-multi/core/filenames';
 import { TRASHED_ACTION } from '@moss-multi/protocol/retention';
 import { can, roleAtLeast } from '@moss-multi/protocol/roles';
 import type { DocDO } from '@moss-multi/sync';
-import { collectRecipients, publishRecipients, type FanoutEnv, type Recipients } from '@moss-multi/sync/fanout';
+import {
+  collectRecipients, docsOf, kickLosses, KickFailed, publishRecipients, reachOf, type DocReach, type FanoutEnv, type Recipients,
+} from '@moss-multi/sync/fanout';
 import type { AuthEnv } from '../auth/auth.ts';
 import { resolvePrincipal, shareTokenOf, type Principal } from '../auth/principal.ts';
 import { createDb, type Db } from '../db/client.ts';
@@ -50,6 +52,17 @@ function folderName(value: unknown): { name: string } | { problem: string } {
 
 /** A move changes who can open what, so it needs the manage capability (A§8). */
 const ownerMoves = (what: 'folders' | 'notes') => refuse(403, 'forbidden', `Only the vault’s owner can move ${what}, because a move changes who can open them.`);
+
+/** After a committed move, whoever lost a grant or link on a moved doc is kicked from it (A§8); null when all went. */
+async function kickMoved(env: FoldersEnv, before: Map<string, DocReach>): Promise<Response | null> {
+  try {
+    await kickLosses({ DB: env.DB, DocDO: env.DocDO }, before);
+    return null;
+  } catch (error) {
+    if (!(error instanceof KickFailed)) throw error;
+    return refuse(503, 'unavailable', 'The move is saved, but some open windows haven’t closed yet. Try again.');
+  }
+}
 
 const exists = (name: string) => refuse(409, 'folder-exists', `A folder named “${name}” already exists here.`);
 const tooDeep = () => refuse(409, 'too-deep', `Folders can be nested at most ${MAX_FOLDER_DEPTH - 1} deep.`);
@@ -160,6 +173,7 @@ async function updateFolder(request: Request, env: FoldersEnv, id: string): Prom
   }
   let parentId = current.parentId as string;
   let vault: string | undefined;
+  let reach = new Map<string, DocReach>();
   const recipients: Recipients = new Map();
   if ('parentId' in body && body.parentId !== current.parentId) {
     if (!can(folder.role, 'manage')) return ownerMoves('folders');
@@ -177,6 +191,7 @@ async function updateFolder(request: Request, env: FoldersEnv, id: string): Prom
     parentId = body.parentId as string;
     // Whoever loses sight of the subtree hears about it too.
     await collectRecipients(env.DB, { folderIds: moved.map((row) => row.id) }, recipients);
+    reach = await reachOf(env.DB, await docsOf(env.DB, { type: 'folder', id }));
   }
   const moving = parentId !== current.parentId;
   // Only a sent name is written, so a move can't undo a rename that lands between its read and its write.
@@ -205,6 +220,8 @@ async function updateFolder(request: Request, env: FoldersEnv, id: string): Prom
   }
   const touched = moving ? (await subtree(env.DB, id)).map((row) => row.id) : [id];
   await notify(env, await collectRecipients(env.DB, { folderIds: touched }, recipients));
+  const unkicked = moving ? await kickMoved(env, reach) : null;
+  if (unkicked) return unkicked;
   return json({ folder: await folderRecord(db, id) }, 200, NO_STORE);
 }
 
@@ -308,6 +325,7 @@ export async function moveDoc(request: Request, env: FoldersEnv, docId: string, 
     return refuse(409, 'other-vault', 'Notes can only move within their own vault.');
   }
   const recipients = await collectRecipients(env.DB, { docIds: [docId] });
+  const reach = await reachOf(env.DB, [docId]);
   if (access.folderId !== folderId) {
     for (let attempt = 1; ; attempt += 1) {
       const [doc] = await db.select({ title: docs.title, filename: docs.filename }).from(docs).where(eq(docs.id, docId));
@@ -329,6 +347,10 @@ export async function moveDoc(request: Request, env: FoldersEnv, docId: string, 
     }
   }
   await notify(env, await collectRecipients(env.DB, { docIds: [docId] }, recipients));
+  if (access.folderId !== folderId) {
+    const unkicked = await kickMoved(env, reach);
+    if (unkicked) return unkicked;
+  }
   const [doc] = await db
     .select({ id: docs.id, folderId: docs.folderId, title: docs.title, filename: docs.filename, createdAt: docs.createdAt, updatedAt: docs.updatedAt })
     .from(docs).where(eq(docs.id, docId));
