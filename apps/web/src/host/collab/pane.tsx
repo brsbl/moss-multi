@@ -21,6 +21,7 @@ import type { Doc } from 'yjs';
 import { can, type Role } from '@moss-multi/protocol/roles';
 import { knownRole, useDocRole } from '../access.ts';
 import { TopBarCollab } from '../slots.tsx';
+import { getBridge, WORKSPACE } from '../bridge/index.ts';
 import {
   docOwner, openDocSession, subscribeDocOwners, type DocSession, type SessionState,
 } from './doc-session.ts';
@@ -334,11 +335,15 @@ export interface MossMultiPane {
   readOnly: boolean;
 }
 
-/** Whether the pane shows `docId` as the Trash view: decided when the note opens, and left when it is restored. */
-function useTrashView(docId: string | null, trashed: boolean): { trashView: boolean; restored: boolean } {
+/**
+ * Whether the pane shows `docId` as the Trash view. A trashed note is shown that way unless this pane already shows
+ * its synced content, which then stays in place, terminal; a restore leaves the view for a fresh binding.
+ */
+function useTrashView(docId: string | null, trashed: boolean, synced: boolean): { trashView: boolean; restored: boolean } {
   const mode = useRef({ docId, trashView: trashed, restored: false });
   if (mode.current.docId !== docId) mode.current = { docId, trashView: trashed, restored: false };
   else if (mode.current.trashView && !trashed) mode.current = { docId, trashView: false, restored: true };
+  else if (!mode.current.trashView && trashed && !synced) mode.current = { docId, trashView: true, restored: false };
   return mode.current;
 }
 
@@ -347,12 +352,17 @@ export function useMossMultiPane(note: { id: string; trashedAt?: number | null }
   const store = useStore();
   const [fields] = useState(() => new DocFields(store));
   const role = useDocRole(docId);
-  const { trashView, restored } = useTrashView(docId, note?.trashedAt != null);
+  // The bridge learns of a trash before moss's note record does, so a pane opening that note never binds it.
+  const trashed = note?.trashedAt != null || (docId !== null && getBridge()?.[WORKSPACE].isTrashed(docId) === true);
+  const synced = useRef<{ docId: string | null; synced: boolean }>({ docId, synced: false });
+  if (synced.current.docId !== docId) synced.current = { docId, synced: false };
+  const { trashView, restored } = useTrashView(docId, trashed, synced.current.synced);
   // A fresh binding for every doc the pane shows, none for the Trash view.
   const binding = useMemo(() => (docId && !trashView ? new PaneBinding(docId, restored) : null), [docId, trashView, restored]);
-  useLayoutEffect(() => { binding?.trash(note?.trashedAt != null); }, [binding, note?.trashedAt]);
+  useLayoutEffect(() => { binding?.trash(trashed); }, [binding, trashed]);
   useLayoutEffect(() => binding?.setRole(role), [binding, role]);
   const state = usePaneState(binding);
+  if (state.bodyVisible) synced.current.synced = true;
   const terminal = useTerminal(docId);
   const collaboration = useMemo(
     () => (docId && binding ? { plugin: <DocBinding key={docId} docId={docId} binding={binding} /> } : null),

@@ -182,9 +182,11 @@ test('j05-trash: a fresh load of a trashed note is the one 404; Ada reads it rea
   await expect(trashRow(ada, docId), 'the note is in Trash').toContainText(TITLE);
   await expect(trashRow(ada, docId)).toContainText(/Deleted (Just now|1 min ago)/);
   await trashRow(ada, docId).click();
-  const pane = ui.pane(ada, docId);
-  await expect(pane.locator('[data-lexical-editor="true"]'), 'the content shows').toHaveText(BODY, { timeout: BIND_TIMEOUT });
-  await expect(pane.locator('[data-lexical-editor="true"]'), 'read-only').toHaveAttribute('contenteditable', 'false');
+  // The Trash view is a different editor from the one Ada typed into.
+  ada.observations.delete(docId);
+  const noteBody = ui.pane(ada, docId).locator('[data-moss-note-editor-root="true"]');
+  await expect(noteBody, 'the content shows').toHaveText(BODY, { timeout: BIND_TIMEOUT });
+  await expect(noteBody, 'read-only').toHaveAttribute('contenteditable', 'false');
   await expect(ui.title(ada, docId)).toHaveText(TITLE);
   expect(await editableSurfaces(ada, docId), 'nothing in the trash view is editable').toEqual([]);
   const notice = ada.page.getByText(TRASH_COPY.trashedNote, { exact: true });
@@ -192,6 +194,7 @@ test('j05-trash: a fresh load of a trashed note is the one 404; Ada reads it rea
   await expect(ada.page.getByText(/will be deleted|deleted in|forever/i), 'never a countdown or "forever"').toHaveCount(0);
 
   // Restore from the trash row's menu: the note is live for Ada and returns to Ben's sidebar.
+  ada.expectReconnects(1, docId);
   await trashRow(ada, docId).click({ button: 'right' });
   await ada.page.getByRole('menuitem', { name: 'Restore', exact: true }).click();
   await expect(ada.page.getByRole('button', { name: 'Trash', exact: true }), 'moss returns to the notes').toBeVisible();

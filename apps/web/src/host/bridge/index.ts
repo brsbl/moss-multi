@@ -417,6 +417,8 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
         await load(id);
         diskListeners.forEach((listener) => listener([], []));
       },
+      /** The owner trashed this note, as far as this tab knows. */
+      isTrashed: (id: string) => known.get(id)?.trashedAt != null,
       surfacedShared: (id: string) => workspaceSnapshot?.docs.some((doc) => doc.id === id && doc.surfaced) ?? false,
       surfacedFolder: (path: string) => workspaceSnapshot?.folders?.some((folder) => folder.surfaced &&
         (path === folder.path || path.startsWith(`${folder.path}/`))) ?? false,
