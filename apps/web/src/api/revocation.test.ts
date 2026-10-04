@@ -183,14 +183,6 @@ describe('members: lowering and removing access kicks @p:ppl-2', () => {
     const after = (await (await call('GET', `/api/docs/${docId}/members`, ada.cookie)).json()) as { invites: unknown[] };
     expect(after.invites).toEqual([]);
   });
-
-  it('marks the vault owner in the member list, so the dialog offers no controls on that row', async () => {
-    const docId = await insertDoc(d1.db, ada);
-    await insertGrant(d1.db, { docId }, ben, 'owner');
-    const { members } = (await (await call('GET', `/api/docs/${docId}/members`, ada.cookie)).json()) as { members: { principalId: string; vaultOwner?: boolean }[] };
-    expect(members.find((m) => m.principalId === ada.id)?.vaultOwner).toBe(true);
-    expect(members.find((m) => m.principalId === ben.id)?.vaultOwner).toBeUndefined();
-  });
 });
 
 describe('links: revoking one kicks every connection that presented it @p:ppl-2', () => {
@@ -236,9 +228,10 @@ describe('moves: losing a grant or link through a move kicks @p:ppl-2', () => {
     const shared = await insertFolder(d1.db, ada, ada.homeId);
     const moving = await insertFolder(d1.db, ada, shared);
     const docId = await insertDoc(d1.db, ada, { folderId: moving });
-    await insertGrant(d1.db, { folderId: shared }, cy, 'viewer');
+    const gus = await signedUpUser(env, 'kick-gus', 'Gus');
+    await insertGrant(d1.db, { folderId: shared }, gus, 'viewer');
     expect((await call('PATCH', `/api/folders/${moving}`, ada.cookie, { parentId: ada.homeId })).status).toBe(200);
-    expect(kicked(docId).flatMap((r) => r.input.principalIds ?? [])).toEqual([cy.id]);
+    expect(kicked(docId).flatMap((r) => r.input.principalIds ?? [])).toEqual([gus.id]);
   });
 });
 

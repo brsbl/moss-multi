@@ -37,8 +37,6 @@ interface Member {
   name: string;
   email?: string;
   role: Role;
-  /** The vault's owner holds no grant, so their access cannot be changed. */
-  vaultOwner?: true;
 }
 
 interface PendingInvite {
@@ -304,13 +302,14 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
             <p className="text-xs text-ink-faint">Loading…</p>
           ) : (
             <ul aria-label="People with access" className="space-y-2">
-              {members.map((member) => (
+              {members.map((member, index) => (
                 <li key={member.principalId} className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
                     <p className="truncate text-sm text-ink-default">{member.name}</p>
                     {member.email ? <p className="truncate font-mono text-xs text-ink-muted">{member.email}</p> : null}
                   </div>
-                  {member.vaultOwner ? (
+                  {/* The API lists the vault's owner first; they hold no grant, so their access cannot change. */}
+                  {index === 0 ? (
                     <span className="shrink-0 px-2 text-xs text-ink-faint">{ACCESS_LABEL[member.role]}</span>
                   ) : (
                     <AccessMenu who={member.name} role={member.role} disabled={pending}

@@ -28,8 +28,6 @@ export interface Member {
   /** The owner's view only. */
   email?: string;
   role: Role;
-  /** The vault's owner, who holds no grant: nobody can change or remove them. */
-  vaultOwner?: true;
 }
 
 /** An email shared with before anyone signed up with it; the owner's view only. */
@@ -93,7 +91,7 @@ async function listMembers(db: Db, target: MemberTarget, ownerUserId: string, wi
   };
   const members: Member[] = [];
   const owner = person(ownerUserId, 'owner');
-  if (owner) members.push({ ...owner, vaultOwner: true });
+  if (owner) members.push(owner);
   for (const grant of grants) {
     if (grant.principalType === 'user') {
       if (pending.has(people.get(grant.principalId)?.email.toLowerCase() ?? '')) continue;

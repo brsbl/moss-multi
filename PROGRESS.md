@@ -114,8 +114,8 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - Switching to "Create an account" leaves focus on the toggle link → T0.10
 - A wrong password logs a browser console error → T0.10 (only if the zero-console-error invariant should cover the auth error path)
 - Sidebar search matches titles only; body search belongs to M3. Live title matching is bound in T1.4.
-- Sign-out leaves the session's other live doc sockets reading and writing → T2.5
-- T2.4 checker: `GET /api/docs/:id` returns the owner's real `folderId` to a link holder, unlike `/api/workspace`'s synthetic root (METHOD: never the owner's vault or folder ids) → T2.5/T2.6 access follow-up
+- Sign-out leaves the session's other live doc sockets reading and writing → closed by T2.5 (sign-out ends the session's doc and workspace sockets; j09 sign-out leg)
+- T2.4 checker: `GET /api/docs/:id` returns the owner's real `folderId` to a link holder, unlike `/api/workspace`'s synthetic root (METHOD: never the owner's vault or folder ids) → closed by T2.5 (a doc link's holder gets the note as its own root; `sharing.test.ts`)
 - T2.4 checker: a share counts as redeemed on any doc load or socket admission, so a grantee idling on an empty workspace auto-opens the new share and the owner sees their name within seconds → count only an explicit open (T2.8 invites)
 - A signed-out share-link visitor (and any viewer of the active vault) is offered "+ Note", which fails with "Could not create note. Try again." → T2.6 (capability helper)
 - The wrangler ProxyWorker patch replays non-idempotent requests after an ambiguous failure → T0.9b follow-up (stack infra)

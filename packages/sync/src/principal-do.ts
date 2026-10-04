@@ -66,7 +66,7 @@ export class PrincipalDO extends Server<SyncEnv> {
   static options = { hibernate: true };
   /** Where endSession's rechecks go; the Node harness swaps it. */
   static rechecker: (env: SyncEnv) => Rechecker | null = (env) => (env?.DocDO
-    ? async (docId, input) => (await getServerByName(env.DocDO as DurableObjectNamespace<DocDO>, docId)).recheck(input)
+    ? async (docId, input) => (await getServerByName(env.DocDO as unknown as DurableObjectNamespace<DocDO>, docId)).recheck(input)
     : null);
   #writes: RateWindow | null = null;
   #registryReady = false;
