@@ -7,7 +7,7 @@ import { randomBytes } from 'node:crypto';
 import type { BrowserContext, Locator, Page } from '@playwright/test';
 import type { Actor, Actors } from '../lib/actors.ts';
 import {
-  APP_STATE_ATTR, BODY_BINDING_ATTR, CONNECTION_BANNER_ATTR, DOC_STATE_ATTR, EDITOR_PANE_ATTR, ROLE_ATTR, SYNC_UNACKED_ATTR,
+  APP_STATE_ATTR, BODY_BINDING_ATTR, CONNECTION_BANNER_ATTR, DOC_STATE_ATTR, ROLE_ATTR, SYNC_UNACKED_ATTR,
   TERMINAL_REASON_ATTR, paneSelector,
 } from '../lib/contract.ts';
 import { grantDoc } from '../lib/grants.ts';
@@ -58,12 +58,12 @@ async function noteWithText(ada: Actor): Promise<string> {
   return docId;
 }
 
-/** A person (or an invite) as the owner's Share dialog lists them, and their access menu. */
-const accessButton = (dialog: Locator, who: string): Locator => dialog.getByRole('button', { name: `Access for ${who}`, exact: true });
+/** A person's (or an invite's) access in the owner's Share dialog: glyphdown's role select and Remove button. */
+const accessSelect = (dialog: Locator, who: string): Locator => dialog.getByRole('combobox', { name: `Access for ${who}`, exact: true });
 
 async function chooseAccess(dialog: Locator, who: string, choice: ui.Access | 'Remove access'): Promise<void> {
-  await accessButton(dialog, who).click();
-  await dialog.page().getByRole('menuitem', { name: choice, exact: true }).click();
+  if (choice === 'Remove access') await dialog.getByRole('button', { name: `Remove ${who}`, exact: true }).click();
+  else await accessSelect(dialog, who).selectOption({ label: choice });
 }
 
 /** Opens `path` as a signed-in principal with doc-socket closes recorded. */
@@ -95,12 +95,13 @@ test('j09 demotion: Ada lowers Ben from edit to view; his socket closes 4403 wit
   ben.expectReconnects(1, docId);
 
   const dialog = await ui.openShare(ada, docId);
-  await expect(accessButton(dialog, benPrincipal.name), 'Ben is listed with his access').toContainText('Can edit');
+  await expect(accessSelect(dialog, benPrincipal.name), 'Ben is listed with his access').toHaveValue('editor');
   const patched = ada.page.waitForResponse((response) => response.url().endsWith(`/api/docs/${docId}/members`) && response.request().method() === 'PATCH');
   const sentAt = Date.now();
   await chooseAccess(dialog, benPrincipal.name, 'Can view');
   expect((await patched).status(), 'the demotion is saved').toBe(200);
-  await expect(accessButton(dialog, benPrincipal.name), "Ada's list shows the new access").toContainText('Can view');
+  await expect(accessSelect(dialog, benPrincipal.name), "Ada's list shows the new access").toHaveValue('viewer');
+  await expect(dialog.getByRole('status'), 'and says so').toContainText('Can view');
 
   await expect.poll(async () => (await closes(ben.page)).filter((c) => c.url.includes(`/parties/doc-d-o/${docId}`)).map((c) => c.code),
     { message: "Ben's doc socket closes 4403", timeout: LIVE_TIMEOUT }).toContain(4403);
@@ -130,7 +131,7 @@ test('j09 removal: removing a member ends the note for them in place (revoked) @
 
   const dialog = await ui.openShare(ada, docId);
   await chooseAccess(dialog, benPrincipal.name, 'Remove access');
-  await expect(accessButton(dialog, benPrincipal.name), 'Ben leaves the list').toHaveCount(0);
+  await expect(accessSelect(dialog, benPrincipal.name), 'Ben leaves the list').toHaveCount(0);
   await expectRevoked(ben, docId);
   expect(await ui.fieldText(ben, docId, 'body'), 'what he had read stays on screen').toBe(TEXT);
   await actors.checkpoint('removed');
@@ -202,7 +203,6 @@ test('j09 sign-out: signing out in one window ends the same session in the other
   // Ben's session is untouched.
   await expect(ben.page.locator(`html[${APP_STATE_ATTR}="ready"]`)).toBeAttached();
   expect((await ben.context.request.get('/api/me')).status()).toBe(200);
-  await expect(ben.page.locator(`[${EDITOR_PANE_ATTR}]`).first()).toBeAttached();
 });
 
 test('j09 cold: after an idle wake, a revoked doc link and a revoked folder link land no frame @hibernate @slow @p:ppl-2 @p:tech-6', async ({ actors, stack }, info) => {

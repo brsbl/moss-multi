@@ -4,16 +4,13 @@
 // (docs/design/glyphdown-reference.md), built from moss's own parts: Settings' ModalShell, section labels and cards,
 // its segmented choice for access levels, and the DS Input and Button. The note's top bar (ShareControl), a folder's
 // context menu (FolderMenuItems) and the vault switcher open it through `openShare`. Each person's (and invite's)
-// access opens a moss dropdown, as glyphdown's role select does, to change or remove it; lowering or removing someone
-// closes their open windows through the one kick path (T2.5).
+// access has glyphdown's role select and Remove button; lowering or removing someone closes their open windows through
+// the one kick path (T2.5).
 import { ModalShell } from '@moss-desktop/renderer/components/ModalShell';
 import { Button } from '@moss/shared/components/ui/button';
-import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
-} from '@moss/shared/components/ui/dropdown-menu';
 import { Input } from '@moss/shared/components/ui/input';
 import { LINK_ROLES, SHARE_ROLES, type LinkRole, type Role, type ShareRole } from '@moss-multi/protocol/roles';
-import { Check, ChevronDown, UserPlus } from 'lucide-react';
+import { UserPlus, X } from 'lucide-react';
 import { useCallback, useEffect, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react';
 import { useDocRole } from '../access.ts';
 
@@ -95,37 +92,36 @@ function StatusLine({ status, where }: { status: Status; where: Where }): ReactN
   );
 }
 
-/** One person's or invite's access: moss's dropdown with the share roles and "Remove access". */
-function AccessMenu({ who, role, disabled, onChoose }: {
+/**
+ * One person's or invite's access, as glyphdown's ShareDialog offers it: a select of the share roles and a Remove
+ * button. A native select, because moss's dropdown menu renders beneath a modal (its positioner is z-50, the dialog 130).
+ */
+function AccessControls({ who, role, disabled, onChoose }: {
   who: string; role: Role; disabled: boolean; onChoose: (choice: ShareRole | 'remove') => void;
 }): ReactNode {
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          aria-label={`Access for ${who}`}
-          disabled={disabled}
-          className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md px-2 text-xs text-ink-faint transition-colors hover:bg-surface-raised-control hover:text-ink-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ink-default/15 disabled:opacity-60 data-[state=open]:bg-surface-raised-control data-[state=open]:text-ink-muted"
-        >
-          {ACCESS_LABEL[role]}
-          <ChevronDown aria-hidden className="h-3 w-3" />
-        </button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" side="bottom" sideOffset={4} className="min-w-0 w-max">
-        {SHARE_ROLES.map((choice) => (
-          <DropdownMenuItem key={choice} className="gap-2 text-xs" onSelect={() => onChoose(choice)}>
-            <Check aria-hidden className={choice === role ? 'h-3.5 w-3.5' : 'h-3.5 w-3.5 opacity-0'} />
-            {ACCESS_LABEL[choice]}
-          </DropdownMenuItem>
-        ))}
-        <DropdownMenuSeparator />
-        <DropdownMenuItem className="gap-2 text-xs text-accent-terracotta" onSelect={() => onChoose('remove')}>
-          <span aria-hidden className="h-3.5 w-3.5" />
-          Remove access
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <div className="flex shrink-0 items-center gap-1">
+      <select
+        aria-label={`Access for ${who}`}
+        value={role}
+        disabled={disabled}
+        onChange={(event) => onChoose(event.target.value as ShareRole)}
+        className="h-7 rounded-md border border-border-default bg-surface-raised-card px-1.5 text-xs text-ink-default focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ink-default/15 disabled:opacity-60"
+      >
+        {(SHARE_ROLES as readonly Role[]).includes(role) ? null : <option value={role}>{ACCESS_LABEL[role]}</option>}
+        {SHARE_ROLES.map((choice) => <option key={choice} value={choice}>{ACCESS_LABEL[choice]}</option>)}
+      </select>
+      <button
+        type="button"
+        aria-label={`Remove ${who}`}
+        title="Remove access"
+        disabled={disabled}
+        onClick={() => onChoose('remove')}
+        className="flex h-7 w-7 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-surface-raised-control hover:text-ink-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ink-default/15 disabled:opacity-60"
+      >
+        <X aria-hidden className="h-3.5 w-3.5" />
+      </button>
+    </div>
   );
 }
 
@@ -312,7 +308,7 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
                   {index === 0 ? (
                     <span className="shrink-0 px-2 text-xs text-ink-faint">{ACCESS_LABEL[member.role]}</span>
                   ) : (
-                    <AccessMenu who={member.name} role={member.role} disabled={pending}
+                    <AccessControls who={member.name} role={member.role} disabled={pending}
                       onChoose={(choice) => changeAccess({ principalId: member.principalId }, member.name, choice)} />
                   )}
                 </li>
@@ -323,7 +319,7 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
                     <p className="truncate font-mono text-xs text-ink-muted">{invite.email}</p>
                     <p className="text-micro text-ink-faint">Invited</p>
                   </div>
-                  <AccessMenu who={invite.email} role={invite.role} disabled={pending}
+                  <AccessControls who={invite.email} role={invite.role} disabled={pending}
                     onChoose={(choice) => changeAccess({ email: invite.email }, invite.email, choice)} />
                 </li>
               ))}
