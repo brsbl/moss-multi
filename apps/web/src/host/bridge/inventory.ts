@@ -141,7 +141,7 @@ export const INVENTORY: Record<string, InventoryEntry> = {
   'system.getGlobalShortcut': stub('quick capture is never enabled'),
   'system.setGlobalShortcut': stub('false'),
   'system.setGlobalShortcutEnabled': stub('no-op'),
-  'system.setImageAltTextMenuEnabled': real("enables the image context menu's Edit Alt Text… (deviation 5)"),
+  'system.setImageAltTextMenuEnabled': stub("no-op: the image context menu offers Edit Alt Text… on any image in an editable note"),
   'system.createWindow': real('opens the doc in a browser tab (R4)'),
   'system.getWindowContext': real('the startup note from /d/$docId'),
   'system.setFocusedNoteId': real('history.replaceState to /d/$docId'),

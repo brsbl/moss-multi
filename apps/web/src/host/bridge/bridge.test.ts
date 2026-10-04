@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { knownRole } from '../access.ts';
-import { altTextMenuEnabled, runNativeMenuCommand } from '../media/image-menu.ts';
+import { runNativeMenuCommand } from '../media/image-menu.ts';
 import { refusalMessage } from '../refusal.ts';
 import { createBridge, docIdFromPath, WORKSPACE } from './index.ts';
 
@@ -224,16 +224,12 @@ describe('the T3.1 images bridge (A§9 images; A§16)', () => {
     expect(JSON.parse(String(init?.body))).toEqual({ sourceNoteId: 'd2', sourceRelativePath: 'assets/a.png' });
   });
 
-  it("drives the image context menu's Edit Alt Text… from moss's availability and fires moss's native command", async () => {
+  it("carries the image context menu's Edit Alt Text… into moss's native command listener", async () => {
     const { api } = uploadBridge(() => Response.json({}));
     const commands: string[] = [];
     const stop = api.system.onNativeMenuCommand((command: string) => commands.push(command));
-    await api.system.setImageAltTextMenuEnabled(true);
-    expect(altTextMenuEnabled()).toBe(true);
     runNativeMenuCommand('edit-image-alt-text');
     expect(commands).toEqual(['edit-image-alt-text']);
-    await api.system.setImageAltTextMenuEnabled(false);
-    expect(altTextMenuEnabled()).toBe(false);
     stop();
     runNativeMenuCommand('edit-image-alt-text');
     expect(commands).toHaveLength(1);

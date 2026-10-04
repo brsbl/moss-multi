@@ -22,9 +22,13 @@ function substitutes(): Plugin {
   return {
     name: 'moss-multi-substitutes',
     enforce: 'pre',
-    load(id) {
-      const file = SUBSTITUTES[id];
-      return file ? readFileSync(file, 'utf8') : null;
+    load: {
+      // Filtered in the bundler, so the hook never runs for the rest of the graph.
+      filter: { id: /\/editor\/utils\/(?:asset-url|media-server-url)\.ts$/ },
+      handler(id) {
+        const file = SUBSTITUTES[id];
+        return file ? readFileSync(file, 'utf8') : null;
+      },
     },
   };
 }

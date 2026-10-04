@@ -9,7 +9,7 @@ import {
 } from '@moss-desktop/renderer/editor/utils/note-link-clipboard';
 import { displayTitle, liveTitle, writeLiveTitle } from '../collab/title-binding.ts';
 import { askDocAccess, rememberRole } from '../access.ts';
-import { onNativeMenuCommand, setAltTextMenuEnabled } from '../media/image-menu.ts';
+import { onNativeMenuCommand } from '../media/image-menu.ts';
 import { chooseFilesInBrowser, createImagesApi } from '../media/uploads.ts';
 
 /** moss's NoteMetadataRecord: timestamps in seconds, folders as `Notes/...` paths. */
@@ -578,8 +578,8 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
       getGlobalShortcut: async () => ({ quickCapture: '', enabled: false }),
       setGlobalShortcut: async () => false,
       setGlobalShortcutEnabled: none,
-      // moss's native Edit → "Edit Alt Text…" is the image context menu on the web (deviation 5; ImageContextMenu).
-      setImageAltTextMenuEnabled: async (enabled: boolean) => setAltTextMenuEnabled(enabled),
+      // The image context menu offers Edit Alt Text… on any image in an editable note (deviation 5; ImageContextMenu).
+      setImageAltTextMenuEnabled: none,
       // Open in New Window is a browser tab (R4).
       createWindow: async (input: { noteId?: string | null } = {}) => {
         browser.open(input.noteId ? docUrl(input.noteId) : new URL('/', browser.origin).href);
