@@ -278,9 +278,9 @@ export async function moveDoc(request: Request, env: FoldersEnv, docId: string, 
   // The note's media moves with it (moss moves the note's bundle): the files it references are named in the new folder
   // first, so it never lands without them, and its references follow any file the folder named differently.
   const stub = access.folderId !== folderId && env.ASSETS ? await getServerByName(env.DocDO, docId) : null;
-  const renames = stub && env.ASSETS
-    ? await carryAssets({ ...env, ASSETS: env.ASSETS }, access.folderId, folderId as string, await stub.referencedAssets(), principal.id)
-    : {};
+  const carry = stub && env.ASSETS
+    ? await carryAssets({ ...env, ASSETS: env.ASSETS }, principal, { docId, folderId: access.folderId }, folderId as string, await stub.referencedAssets())
+    : null;
   if (access.folderId !== folderId) {
     for (let attempt = 1; ; attempt += 1) {
       const [doc] = await db.select({ title: docs.title, filename: docs.filename }).from(docs).where(eq(docs.id, docId));
@@ -300,7 +300,8 @@ export async function moveDoc(request: Request, env: FoldersEnv, docId: string, 
         if (!isUnique(error) || attempt >= 5) throw error;
       }
     }
-    if (stub && Object.keys(renames).length > 0) await stub.renameAssets(renames);
+    // The files placed in the note follow it under their new names; one left behind is no longer the note's.
+    if (stub && carry) await stub.renameAssets(carry.renames, carry.carried);
   }
   await notify(env, await collectRecipients(env.DB, { docIds: [docId] }, recipients));
   const [doc] = await db

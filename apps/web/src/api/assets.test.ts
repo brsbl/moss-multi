@@ -318,7 +318,7 @@ describe('a moved note keeps its media (A§16)', () => {
     expect(moved.status, await moved.clone().text()).toBe(200);
     expect(await bytesOf(await call('GET', `/api/docs/${docId}/assets/travels.png`, ada.cookie))).toEqual(PNG);
     expect(await bytesOf(await call('GET', `/api/docs/${docId}/assets/travels.webm`, ada.cookie))).toEqual(VIDEO);
-    expect(renamed.has(docId), 'nothing to rename').toBe(false);
+    expect(renamed.get(docId), 'nothing to rename').toEqual({});
   });
 
   it("renames a file the new folder already gives other bytes, and the note's references with it", async () => {

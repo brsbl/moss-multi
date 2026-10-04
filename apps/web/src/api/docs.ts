@@ -103,17 +103,21 @@ async function duplicateDoc(request: Request, env: DocsEnv, docId: string): Prom
   if (!folder || folder.deleted || !roleAtLeast(folder.role, 'editor')) return notFound();
   const original = await getServerByName(env.DocDO, docId);
   const snapshot = await original.snapshotForDuplicate();
-  // A copy made outside the source's folder brings the media the snapshot references (A§16), renamed where that
-  // folder already uses a name for other bytes.
-  const renames = env.ASSETS && folderId !== source.folderId
-    ? await carryAssets({ ...env, ASSETS: env.ASSETS }, source.folderId, folderId, assetNamesIn(snapshot.markdown), principal.id)
-    : {};
+  // A copy made outside the source's folder brings the media the snapshot references that the caller may read
+  // (A§16), renamed where that folder already uses a name for other bytes. Of the files placed in the source, those
+  // that came along are placed in the copy.
+  const carry = env.ASSETS && folderId !== source.folderId
+    ? await carryAssets({ ...env, ASSETS: env.ASSETS }, principal, { docId, folderId: source.folderId }, folderId, assetNamesIn(snapshot.markdown))
+    : null;
+  const renames = carry?.renames ?? {};
+  const media = folderId === source.folderId ? snapshot.media
+    : snapshot.media.filter((name) => carry?.carried.includes(name)).map((name) => renames[name] ?? name);
   const title = `${snapshot.title.trim() || 'Untitled'} copy`;
   const doc = await insertDoc(env, db, { folderId, ownerUserId: folder.ownerUserId, createdBy: principal.id });
   if (!doc) return folderNotFound();
   try {
     const target = await getServerByName(env.DocDO, doc.id);
-    await target.createFromSnapshot({ folderId, ownerId: folder.ownerUserId, title }, snapshot.state, renames);
+    await target.createFromSnapshot({ folderId, ownerId: folder.ownerUserId, title }, snapshot.state, renames, media);
   } catch (error) {
     await db.delete(docs).where(eq(docs.id, doc.id));
     if (error instanceof Error && error.message === 'doc-cap') return json({ error: 'doc-cap' }, 413, NO_STORE);

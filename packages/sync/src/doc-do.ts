@@ -257,14 +257,19 @@ export class DocDO extends YServer<SyncEnv> {
    * Internal RPC: preserves Yjs item identity, including relative anchors, without a markdown round trip. The
    * markdown is the same state's export, so the copy's media list names exactly what the state references.
    */
-  async snapshotForDuplicate(): Promise<{ title: string; state: Uint8Array; markdown: string }> {
-    await this.#ready();
+  async snapshotForDuplicate(): Promise<{ title: string; state: Uint8Array; markdown: string; media: string[] }> {
+    const store = await this.#ready();
     this.#exported ??= exportDocMarkdown(this.document, this.name);
-    return { title: this.document.getText('title').toString(), state: Y.encodeStateAsUpdate(this.document), markdown: this.#exported };
+    return { title: this.document.getText('title').toString(), state: Y.encodeStateAsUpdate(this.document), markdown: this.#exported,
+      media: store.media() };
   }
 
-  /** `renames` (old stored media name → new) points the copy at the files its folder named differently (A§16). */
-  async createFromSnapshot(input: Omit<CreateDocInput, 'markdown'>, state: Uint8Array, renames: Readonly<Record<string, string>> = {}): Promise<void> {
+  /**
+   * `renames` (old stored media name → new) points the copy at the files its folder named differently, and `media`
+   * names the files placed in the copy (A§16).
+   */
+  async createFromSnapshot(input: Omit<CreateDocInput, 'markdown'>, state: Uint8Array, renames: Readonly<Record<string, string>> = {},
+    media: readonly string[] = []): Promise<void> {
     const store = await this.#ready();
     if (store.meta('created') !== null) return;
     if (state.byteLength > this.#limits.stateCapBytes) throw new DocCapError();
@@ -280,6 +285,7 @@ export class DocDO extends YServer<SyncEnv> {
     }, SERVER_IMPORT);
     store.setMeta('folder', input.folderId);
     store.setMeta('owner', input.ownerId);
+    store.replaceMedia(media);
     await this.#projections?.flush();
     store.setMeta('created', '1');
   }
@@ -292,17 +298,34 @@ export class DocDO extends YServer<SyncEnv> {
   }
 
   /**
-   * The stored names of the uploaded files the doc references (A§16): what a reader holding only this doc's grant or
-   * link may load from its folder. Read from the export, so media nested in any node family counts.
+   * The stored names of the uploaded files the doc's text references, media nested in any node family included: what
+   * a move or duplicate carries. Anyone who edits the doc controls this list, so it never decides who reads a file.
    */
   async referencedAssets(): Promise<string[]> {
     return [...assetNamesIn(await this.exportMarkdown())];
   }
 
-  /** A moved doc's references to files its new folder named differently (old stored name → new), for every client. */
-  async renameAssets(renames: Readonly<Record<string, string>>): Promise<void> {
-    await this.#ready();
+  /**
+   * Records folder files an authorized upload, copy or carry placed in the doc (A§16): what a reader holding only
+   * this doc's grant or link may load from its folder.
+   */
+  async placeMedia(filenames: readonly string[]): Promise<void> {
+    (await this.#ready()).addMedia(filenames);
+  }
+
+  async placesMedia(filename: string): Promise<boolean> {
+    return (await this.#ready()).hasMedia(filename);
+  }
+
+  /**
+   * A moved doc: its references to files its new folder named differently (old stored name → new) change for every
+   * client, and of the files placed in it only those `carried` stay, under their new names.
+   */
+  async renameAssets(renames: Readonly<Record<string, string>>, carried: readonly string[]): Promise<void> {
+    const store = await this.#ready();
     renameAssetReferences(this.document, renames, SERVER_MEDIA);
+    const kept = new Set(carried);
+    store.replaceMedia(store.media().filter((name) => kept.has(name)).map((name) => renames[name] ?? name));
   }
 
   /** Feeds search now, even with nothing changed: the Worker's backfill for a doc the index lacks. */

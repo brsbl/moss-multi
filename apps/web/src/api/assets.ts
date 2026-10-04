@@ -3,10 +3,11 @@
 //   POST /api/docs/:id/assets?filename=     raw body into the doc's folder; editor and above on the doc
 //   POST /api/folders/:id/assets?filename=  raw body into the folder; editor and above on the folder
 //   POST /api/docs/:id/assets/copy          {sourceNoteId, sourceRelativePath}: moss's cross-note paste
-//   GET|HEAD /api/docs/:id/assets/:file     any reader of the doc, a share link included, for a file the doc references
+//   GET|HEAD /api/docs/:id/assets/:file     any reader of the doc, a share link included, for a file placed in the doc
 // Markdown keeps moss's `assets/<file>`, resolved in the doc's folder, so a note's media follows it into any copy in
 // that folder; a copy made, or a note moved, elsewhere carries what it references (carryAssets). Sharing is per doc,
-// so a reader of the folder reads any file in it, and a reader of one doc only the files that doc references.
+// so a reader of the folder reads any file in it, and a reader of one doc only the files an upload, copy or carry
+// placed in it (the DocDO keeps that record): the text names files too, but any editor of the doc writes the text.
 import { and, eq, inArray } from 'drizzle-orm';
 import { getServerByName } from 'partyserver';
 import { MEDIA_CAP_BYTES, isDesktopDerived, mediaFilename, mediaTypeOf, suffixedFilename, ASSET_DIR } from '@moss-multi/protocol/media';
@@ -17,7 +18,7 @@ import { createDb, type Db } from '../db/client.ts';
 import { assets, assetVersions } from '../db/schema.ts';
 import type { AppEnv } from '../env.ts';
 import { json } from '../worker/route.ts';
-import { resolveDocAccess, resolveFolderAccess, type DocAccess } from './access.ts';
+import { resolveDocAccess, resolveFolderAccess } from './access.ts';
 import { NO_STORE, notFound, readJsonObject } from './respond.ts';
 
 export type AssetsEnv = AuthEnv & Pick<AppEnv, 'ASSETS' | 'DocDO'>;
@@ -102,8 +103,13 @@ const placed = (asset: { id: string; filename: string; versionId: string; size: 
   json({ relativePath: `${ASSET_DIR}${asset.filename}`, filename: asset.filename,
     asset: { id: asset.id, versionId: asset.versionId, size: asset.size } }, 201, NO_STORE);
 
-/** The raw body into `folderId`, after the caller's right to write there was checked. */
-async function store(request: Request, env: AssetsEnv, folderId: string, createdBy: string): Promise<Response> {
+/** Records files an authorized upload, copy or carry placed in `docId`, which its doc-only readers then load. */
+async function placeIn(env: AssetsEnv, docId: string, filenames: string[]): Promise<void> {
+  if (filenames.length > 0) await (await getServerByName(env.DocDO, docId)).placeMedia(filenames);
+}
+
+/** The raw body into `folderId`, after the caller's right to write there was checked; placed in `docId` when given. */
+async function store(request: Request, env: AssetsEnv, folderId: string, createdBy: string, docId?: string): Promise<Response> {
   const raw = new URL(request.url).searchParams.get('filename') ?? '';
   const named = storedName(raw);
   // The web never loads a name moss desktop reserves for its derived thumbnails.
@@ -123,7 +129,9 @@ async function store(request: Request, env: AssetsEnv, folderId: string, created
     await env.ASSETS.put(blobKey(hash), bytes, { httpMetadata: { contentType: type.contentType } });
   }
   const asset = await placeAsset(env, folderId, filename, { hash, size: bytes.byteLength, contentType: type.contentType }, createdBy);
-  return asset ? placed(asset) : refuse(409, 'name-taken', 'Too many files share that name here. Rename the file and try again.');
+  if (!asset) return refuse(409, 'name-taken', 'Too many files share that name here. Rename the file and try again.');
+  if (docId) await placeIn(env, docId, [asset.filename]);
+  return placed(asset);
 }
 
 async function uploadToDoc(request: Request, env: AssetsEnv, docId: string): Promise<Response> {
@@ -132,7 +140,7 @@ async function uploadToDoc(request: Request, env: AssetsEnv, docId: string): Pro
   const access = await resolveDocAccess(createDb(env.DB), principal, docId, shareTokenOf(request));
   if (!access || access.deleted) return notFound();
   if (!roleAtLeast(access.role, 'editor')) return refuse(403, 'forbidden', 'You can view this note but not add media to it.');
-  return store(request, env, access.folderId, principal.id);
+  return store(request, env, access.folderId, principal.id, docId);
 }
 
 async function uploadToFolder(request: Request, env: AssetsEnv, folderId: string): Promise<Response> {
@@ -146,14 +154,13 @@ async function uploadToFolder(request: Request, env: AssetsEnv, folderId: string
 
 /**
  * Whether a reader of `docId` may load `asset` from the doc's folder: anyone who reads the folder (every note in it),
- * its uploader (whose image renders before the doc's update reaches the server), or a reader of the doc that
- * references it. A grant or link on one doc never reaches the files only its sibling notes use.
+ * its uploader, or a reader of the doc an upload, copy or carry placed it in. What the doc's text references never
+ * counts, since anyone who edits the doc writes that: a grant or link on one doc never reaches its sibling notes' files.
  */
-async function mayRead(env: AssetsEnv, db: Db, principal: Principal, docId: string, access: DocAccess, asset: Current): Promise<boolean> {
+async function mayRead(env: AssetsEnv, db: Db, principal: Principal, docId: string, folderId: string, asset: Pick<Current, 'filename' | 'createdBy'>): Promise<boolean> {
   if (principal.type !== 'anonymous' && asset.createdBy === principal.id) return true;
-  if (principal.type !== 'anonymous' && (await resolveFolderAccess(db, principal, access.folderId))) return true;
-  const references = await (await getServerByName(env.DocDO, docId)).referencedAssets();
-  return references.includes(asset.filename);
+  if (principal.type !== 'anonymous' && (await resolveFolderAccess(db, principal, folderId))) return true;
+  return (await getServerByName(env.DocDO, docId)).placesMedia(asset.filename);
 }
 
 /** moss's copyFromNoteAsset: the source's file, named in the target's folder (the same asset when they share one). */
@@ -170,9 +177,11 @@ async function copyFromNote(request: Request, env: AssetsEnv, docId: string): Pr
   if (!target || target.deleted || !source || source.deleted) return notFound();
   if (!roleAtLeast(target.role, 'editor')) return refuse(403, 'forbidden', 'You can view this note but not add media to it.');
   const found = await currentAsset(db, source.folderId, filename);
-  if (!found || !(await mayRead(env, db, principal, sourceId, source, found))) return notFound();
+  if (!found || !(await mayRead(env, db, principal, sourceId, source.folderId, found))) return notFound();
   const asset = await placeAsset(env, target.folderId, filename, { hash: found.contentHash, size: found.size, contentType: found.contentType }, principal.id);
-  return asset ? placed(asset) : refuse(409, 'name-taken', 'Too many files share that name here. Rename the file and try again.');
+  if (!asset) return refuse(409, 'name-taken', 'Too many files share that name here. Rename the file and try again.');
+  await placeIn(env, docId, [asset.filename]);
+  return placed(asset);
 }
 
 /** `bytes=a-b`, `bytes=a-` or `bytes=-n` against `size`; null when absent or not one range, 'unsatisfiable' past the end. */
@@ -203,7 +212,7 @@ async function serve(request: Request, env: AssetsEnv, docId: string, rawName: s
     return notFound();
   }
   const current = filename ? await currentAsset(db, access.folderId, filename) : null;
-  if (!current || !(await mayRead(env, db, principal, docId, access, current))) return notFound();
+  if (!current || !(await mayRead(env, db, principal, docId, access.folderId, current))) return notFound();
   const versionId = new URL(request.url).searchParams.get('version');
   let version = { hash: current.contentHash, size: current.size, etag: current.etag };
   if (versionId) {
@@ -237,29 +246,37 @@ async function serve(request: Request, env: AssetsEnv, docId: string, rawName: s
 }
 
 /**
- * A note copied or moved out of its folder (A§16 "a copied note carries its media"): every file in `fromFolderId`
- * named in `names` is named in `toFolderId` too. Where the target already gives the name other bytes, the note's file
- * takes the next free name; the returned map (old stored name → new) renames the note's references.
+ * A note copied or moved out of its folder (A§16 "a copied note carries its media"): every file in the source doc's
+ * folder named in `names` that `principal` may read through that doc is named in `toFolderId` too. Where the target
+ * already gives the name other bytes, the note's file takes the next free name; `renames` (old stored name → new)
+ * renames the note's references, and `carried` lists the source names that came along.
  */
-export async function carryAssets(env: AssetsEnv, fromFolderId: string, toFolderId: string, names: Iterable<string>, createdBy: string): Promise<Record<string, string>> {
+export async function carryAssets(env: AssetsEnv, principal: Principal, source: { docId: string; folderId: string }, toFolderId: string,
+  names: Iterable<string>): Promise<{ renames: Record<string, string>; carried: string[] }> {
   const renames: Record<string, string> = {};
+  const carried: string[] = [];
   const wanted = [...new Set(names)];
-  if (fromFolderId === toFolderId || wanted.length === 0) return renames;
+  if (source.folderId === toFolderId || wanted.length === 0 || principal.type === 'anonymous') return { renames, carried };
   const db = createDb(env.DB);
   const rows: { filename: string }[] = [];
   // D1 binds at most 100 parameters per statement.
   for (let i = 0; i < wanted.length; i += 50) {
     rows.push(...await db.select({ filename: assets.filename }).from(assets)
-      .where(and(eq(assets.folderId, fromFolderId), inArray(assets.filename, wanted.slice(i, i + 50)))));
+      .where(and(eq(assets.folderId, source.folderId), inArray(assets.filename, wanted.slice(i, i + 50)))));
   }
+  // The names come from text any editor of the doc writes, so each file is carried only for a caller who may read it.
+  const readsFolder = !!(await resolveFolderAccess(db, principal, source.folderId));
+  const stub = readsFolder ? null : await getServerByName(env.DocDO, source.docId);
   for (const { filename } of rows) {
-    const found = await currentAsset(db, fromFolderId, filename);
+    const found = await currentAsset(db, source.folderId, filename);
     if (!found) continue;
-    const copy = await placeAsset(env, toFolderId, filename, { hash: found.contentHash, size: found.size, contentType: found.contentType }, createdBy);
+    if (stub && found.createdBy !== principal.id && !(await stub.placesMedia(filename))) continue;
+    const copy = await placeAsset(env, toFolderId, filename, { hash: found.contentHash, size: found.size, contentType: found.contentType }, principal.id);
     if (!copy) throw new Error(`no free name for ${filename}`);
+    carried.push(filename);
     if (copy.filename !== filename) renames[filename] = copy.filename;
   }
-  return renames;
+  return { renames, carried };
 }
 
 export async function handleAssets(request: Request, env: AssetsEnv): Promise<Response> {

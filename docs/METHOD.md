@@ -92,6 +92,7 @@ Read this with PRODUCT.md, your BUILDPLAN entry and the A§ it cites, before wri
 - Media fixtures for journeys live in `e2e/fixtures/media`. Chromium (Playwright's open build) has no H.264, so a playback leg uses the webm; every engine's `<video>` reads through Range (206). [T3.1]
 - Moss's video poster is a desktop-derived `assets/video-thumb-<hash>.png` the web never has, so VideoNode's `web-assets` seam paints the clip's own first frame (`video[data-video-thumbnail-state="frame"]`, muted, `preload=metadata`); a player locator excludes it. Uploads may not take a `video-thumb-` name. [T3.1]
 - A duplicate into another folder copies the media its snapshot's markdown names (`snapshotForDuplicate` returns both from one state); a name the target folder already gives other bytes gets the next free name, and `createFromSnapshot`'s renames rewrite the copy's `assets/<file>` attributes. Uploads and cross-note copies carry the page's `?share=` like every read. [T3.1]
+- Who reads a file through one doc is the DocDO's `media` table (`placeMedia`/`placesMedia`), written by uploads, cross-note copies and carries, never derived from the export: an editor-link holder could otherwise type `assets/<sibling file>` into the note and read it. A duplicate or move carries a referenced file only for a caller who may read it, and only placed files stay placed. Asset reads are `stale-while-revalidate`, so a journey re-reading a URL its page already loaded fetches with `cache: 'no-store'`. [T3.1]
 
 ## Search and links (T3.4)
 
