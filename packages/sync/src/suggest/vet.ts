@@ -1,9 +1,10 @@
-// SP11 spike (T5.0, docs/design/suggestions.md §4): vets a suggest-mode sync frame without applying it, by Yjs
-// identity rather than by text offsets. Inserts anywhere in the body land and are registered as the author's parts;
-// deletes land only on the author's own items (with everything Yjs deletes along with them), and attribute writes only
-// on the author's own containers that govern no one else's text; text a split, join or undo moves is proven on the
-// state after the frame; every other write is refused. The same rules run on the
-// server against the live doc (vetSuggestFrame) and on the client in afterTransaction (vetTransaction).
+// SP11 (T5.0, docs/design/suggestions.md §4): vets a suggest-mode frame on what Yjs actually applied, by one
+// invariant. The frame is applied to a mirror (the server) or judged in afterTransaction (the client self-check), and
+// the vetter compares the ORIGINAL PROJECTION of every type the transaction touched before and after it: every
+// character with its effective format, every embed and every map value that is not the author's pending insert. The
+// only differences allowed are the author's new items where suggesting is allowed, deletions of the author's own
+// pending items, and text a split moved, re-proven as copies with the same character and format in document order.
+// Anything else refuses the whole frame, whatever struct shape produced it.
 import * as Y from 'yjs';
 
 /** A run of one client's consecutive clocks: an id set, by Yjs identity. */
@@ -24,38 +25,20 @@ export interface VetOptions {
   moved?: readonly IdSpan[];
   /** Yjs client ids this connection already wrote under; a fresh client id (no state yet) is claimed by the frame. */
   clients: ReadonlySet<number>;
-  /** Per-frame cost caps. */
+  /** Per-frame cost caps (VET_LIMITS by default). */
   limits?: VetLimits;
 }
 
+/** A frame integrating or deleting more structs, or touching more types, than this is refused before it is judged. */
 export interface VetLimits {
   structs: number;
   types: number;
 }
 export const VET_LIMITS: VetLimits = { structs: 20_000, types: 2_000 };
 
-/** Stub for the red run: the vetter does not keep a mirror yet. */
-export class SuggestMirror {
-  constructor(private readonly live: Y.Doc) {}
-  get doc(): Y.Doc {
-    return this.live;
-  }
-  vet(update: Uint8Array, options: VetOptions): Verdict {
-    return vetSuggestFrame(this.live, update, options);
-  }
-  destroy(): void {}
-}
-
-/** Stub for the red run: removes every inserted id. */
-export function rejectPlan(doc: Y.Doc, inserts: readonly IdSpan[]): IdSpan[] {
-  void doc;
-  return inserts.map((span) => ({ ...span }));
-}
-
-type DeleteSet = Y.Transaction['deleteSet'];
-
 const BODY = 'root';
 const REGISTERS = 'registers';
+const VET_ORIGIN = Symbol('suggest-vet');
 
 class Refusal extends Error {
   constructor(readonly reason: VetReason) {
@@ -63,313 +46,282 @@ class Refusal extends Error {
   }
 }
 
+type Type = Y.AbstractType<unknown>;
+
 /**
- * What the vetter reads: the doc before the frame (`state`, `get`, `liveBefore`, `body(false)`) and after it
- * (`body(true)`). The server reads the live doc before the frame applies and builds a mirror only when the after state
- * is needed; the client reads its doc in afterTransaction, where the transaction's structs are integrated and its
- * deletes marked but not yet collected, so the before state is the store minus the transaction.
+ * The DocDO's mirror of the live doc. It follows every update the live doc applies. A suggest-mode frame is applied
+ * here first and judged in the mirror's afterTransaction, before Yjs collects anything. On a pass the DO applies the
+ * same frame to the live doc (which the mirror then sees as a no-op); on a refusal the mirror is dropped and rebuilt
+ * from the live doc for the next frame, so it never keeps what the live doc refused.
  */
-interface View {
-  state(client: number): number;
-  get(id: Y.ID): Y.Item | Y.GC;
-  liveBefore(item: Y.Item): boolean;
-  /** The body's content in document order, nested blocks included, before or after the frame. */
-  body(after: boolean): Elem[];
-  /** The registers map (after the frame on the client, before it on the server). */
-  registers(): Y.Map<unknown> | undefined;
-  dispose(): void;
+export class SuggestMirror {
+  readonly #live: Y.Doc;
+  #doc: Y.Doc | null = null;
+  readonly #follow = (update: Uint8Array) => {
+    if (this.#doc) Y.applyUpdate(this.#doc, update);
+  };
+
+  constructor(live: Y.Doc) {
+    this.#live = live;
+    live.on('update', this.#follow);
+  }
+
+  /** The mirror, rebuilt from the live doc after a refusal dropped it. */
+  get doc(): Y.Doc {
+    if (!this.#doc) {
+      const doc = new Y.Doc({ gc: this.#live.gc });
+      Y.applyUpdate(doc, Y.encodeStateAsUpdate(this.#live));
+      this.#doc = doc;
+    }
+    return this.#doc;
+  }
+
+  /** Applies `update` to the mirror and runs `inspect` on its transaction, in afterTransaction. */
+  apply<T>(update: Uint8Array, inspect: (transaction: Y.Transaction) => T): T | null {
+    const doc = this.doc;
+    const seen: { result: T | null } = { result: null };
+    const onTransaction = (transaction: Y.Transaction) => {
+      if (transaction.origin === VET_ORIGIN && seen.result === null) seen.result = inspect(transaction);
+    };
+    doc.on('afterTransaction', onTransaction);
+    try {
+      Y.applyUpdate(doc, update, VET_ORIGIN);
+    } finally {
+      doc.off('afterTransaction', onTransaction);
+    }
+    return seen.result;
+  }
+
+  vet(update: Uint8Array, options: VetOptions): Verdict {
+    let verdict: Verdict;
+    try {
+      verdict = this.apply(update, (transaction) => judge(transaction, options)) ?? { ok: true, inserts: [], moved: [] };
+    } catch {
+      verdict = { ok: false, reason: 'unresolvable' };
+    }
+    // Nothing parks: a struct or delete Yjs could not integrate now would land later, unvetted.
+    const store = this.doc.store;
+    if (verdict.ok && (store.pendingStructs !== null || store.pendingDs !== null)) verdict = { ok: false, reason: 'unresolvable' };
+    if (!verdict.ok) this.reset();
+    return verdict;
+  }
+
+  /** Drops the mirror; the next frame rebuilds it from the live doc. */
+  reset(): void {
+    this.#doc?.destroy();
+    this.#doc = null;
+  }
+
+  destroy(): void {
+    this.#live.off('update', this.#follow);
+    this.reset();
+  }
 }
 
+/** One frame against a throwaway mirror of `doc` (tests and one-off callers; the DO keeps a SuggestMirror). */
 export function vetSuggestFrame(doc: Y.Doc, update: Uint8Array, options: VetOptions): Verdict {
-  // Yjs integrates only what the doc lacks: an overlapping struct from its first unseen clock, with its origin then
-  // the struct before it. diffUpdate clips the frame exactly so; the delete set is kept whole.
-  const { structs, ds } = Y.decodeUpdate(Y.diffUpdate(update, Y.encodeStateVector(doc)));
-  return judge(serverView(doc, update), structs, ds, options);
-}
-
-/** The client self-check: the same rules on a local transaction, from afterTransaction. */
-export function vetTransaction(transaction: Y.Transaction, options: VetOptions): Verdict {
-  const doc = transaction.doc;
-  const { structs } = Y.decodeUpdate(Y.encodeStateAsUpdate(doc, Y.encodeStateVector(transaction.beforeState)));
-  return judge(clientView(transaction), structs, transaction.deleteSet, options);
-}
-
-function judge(view: View, structs: (Y.Item | Y.GC | Y.Skip)[], ds: DeleteSet, options: VetOptions): Verdict {
+  const mirror = new SuggestMirror(doc);
   try {
-    return { ok: true, ...vet(view, structs, ds, options) };
-  } catch (error) {
-    if (error instanceof Refusal) return { ok: false, reason: error.reason };
-    throw error;
+    return mirror.vet(update, options);
   } finally {
-    view.dispose();
+    mirror.destroy();
   }
 }
 
-function vet(view: View, structs: (Y.Item | Y.GC | Y.Skip)[], ds: DeleteSet, options: VetOptions): { inserts: IdSpan[]; moved: IdSpan[] } {
-  const own = options.own;
-  const movedBefore = options.moved ?? [];
+/** The client self-check: the same judgement on a local transaction, from afterTransaction. */
+export function vetTransaction(transaction: Y.Transaction, options: VetOptions): Verdict {
+  return judge(transaction, options);
+}
 
-  // Never parked: each client's structs start at the doc's state and are contiguous, so Yjs integrates all of them
-  // now. A client id the doc already holds must be one this connection wrote under, or the frame could take a peer's
-  // next clocks.
-  const fresh = new Map<number, (Y.Item | Y.GC)[]>();
-  for (const struct of structs) {
-    if (struct instanceof Y.Skip) throw new Refusal('unresolvable');
-    const list = fresh.get(struct.id.client) ?? [];
-    list.push(struct);
-    fresh.set(struct.id.client, list);
+function judge(transaction: Y.Transaction, options: VetOptions): Verdict {
+  try {
+    return { ok: true, ...vet(transaction, options) };
+  } catch (error) {
+    // Fail closed: a frame the vetter cannot judge is refused.
+    return { ok: false, reason: error instanceof Refusal ? error.reason : 'unresolvable' };
   }
-  for (const [client, list] of fresh) {
-    const state = view.state(client);
-    if (state > 0 && !options.clients.has(client)) throw new Refusal('foreign-client');
-    let next = state;
-    for (const struct of list.sort((a, b) => a.id.clock - b.id.clock)) {
-      if (struct.id.clock !== next) throw new Refusal('unresolvable');
-      next += struct.length;
+}
+
+/**
+ * What a transaction did, read in afterTransaction: its structs are integrated and its deletes marked, and nothing is
+ * collected yet. An item existed before when its clock is below `beforeState`, and was live before when it is not
+ * deleted now or this transaction deleted it. `deleted` holds every existing item the transaction deleted, the content
+ * Yjs deletes with a deleted container included.
+ */
+function frameOf(transaction: Y.Transaction, limits: VetLimits) {
+  const store = transaction.doc.store;
+  const before = (client: number) => transaction.beforeState.get(client) ?? 0;
+  const isFresh = (item: Y.Item) => item.id.clock >= before(item.id.client);
+  const liveBefore = (item: Y.Item) => !isFresh(item) && (!item.deleted || Y.isDeleted(transaction.deleteSet, item.id));
+  let structs = 0;
+  const count = () => {
+    if (++structs > limits.structs) throw new Refusal('too-large');
+  };
+  const fresh: Y.Item[] = [];
+  for (const [client, after] of transaction.afterState) {
+    const from = before(client);
+    if (after <= from) continue;
+    const list = store.clients.get(client) ?? [];
+    for (let i = Y.findIndexSS(list, from); i < list.length; i++) {
+      count();
+      const struct = list[i];
+      if (struct instanceof Y.Item) fresh.push(struct);
     }
   }
+  const deleted: Y.Item[] = [];
+  Y.iterateDeletedStructs(transaction, transaction.deleteSet, (struct) => {
+    count();
+    if (struct instanceof Y.Item && !isFresh(struct)) deleted.push(struct);
+  });
+  const changed = transaction.changed as unknown as Map<Type, Set<string | null>>;
+  const touched = new Set<Type>(changed.keys());
+  for (const item of deleted) touched.add(item.parent as Type);
+  if (touched.size > limits.types) throw new Refusal('too-large');
+  return { isFresh, liveBefore, fresh, deleted, touched, changed };
+}
 
-  const inFrame = (id: Y.ID): Y.Item | Y.GC | null => {
-    for (const struct of fresh.get(id.client) ?? []) {
-      if (struct.id.clock <= id.clock && id.clock < struct.id.clock + struct.length) return struct;
-    }
-    return null;
-  };
-  const isFreshId = (id: Y.ID) => inFrame(id) !== null;
-  /** The struct holding `id`, from the frame or the doc (item null when collected); refuses an unknown id. */
-  const lookup = (id: Y.ID): { item: Y.Item | null; fresh: boolean; end: number } => {
-    const inside = inFrame(id);
-    const found = inside ?? (id.clock < view.state(id.client) ? view.get(id) : null);
-    if (!found) throw new Refusal('unresolvable');
-    return { item: found instanceof Y.Item ? found : null, fresh: inside !== null, end: found.id.clock + found.length };
-  };
-  const covered = (client: number, from: number, to: number) => coveredBy(own, client, from, to);
-  /** Fresh copies of original text a split moved, and the fresh text maps governing them (filled by the proof). */
+function vet(transaction: Y.Transaction, options: VetOptions): { inserts: IdSpan[]; moved: IdSpan[] } {
+  // A client id the doc already held must be one this connection wrote under, or the frame could take a peer's next
+  // clocks (Yjs would then drop the peer's real edits at those clocks as duplicates). A new client id is claimed.
+  for (const [client, after] of transaction.afterState) {
+    const from = transaction.beforeState.get(client) ?? 0;
+    if (after > from && from > 0 && !options.clients.has(client)) throw new Refusal('foreign-client');
+  }
+  const { isFresh, liveBefore, fresh, deleted, touched, changed } = frameOf(transaction, options.limits ?? VET_LIMITS);
+
+  /** Fresh items that stay original: copies of moved text and the maps governing them (`copies`), same-value rewrites. */
   const copies = new Set<string>();
-  const isMoved = (client: number, from: number, to: number): boolean => {
-    if (movedBefore.some((span) => span.client === client && span.clock < to && from < span.clock + span.len)) return true;
-    for (let clock = from; clock < to && copies.size > 0; clock++) if (copies.has(`${client}:${clock}`)) return true;
-    return false;
+  const kept = new Set<string>();
+  const movedBefore = options.moved ?? [];
+  const isOwnClock = (item: Y.Item, clock: number): boolean => {
+    const client = item.id.client;
+    if (coveredBy(movedBefore, client, clock, clock + 1) || copies.has(`${client}:${clock}`)) return false;
+    return isFresh(item) || coveredBy(options.own, client, clock, clock + 1);
   };
-  /** The author's own item: new in this frame, or in their insert parts and not moved text. */
-  const isOwnId = (id: Y.ID) => !isMoved(id.client, id.clock, id.clock + 1) && (isFreshId(id) || covered(id.client, id.clock, id.clock + 1));
+  const isOwn = (item: Y.Item) => isOwnClock(item, item.id.clock);
 
-  const placeCache = new Map<Y.Item, Place>();
-  const place = (item: Y.Item, fromFrame: boolean): Place => {
-    const cached = placeCache.get(item);
-    if (cached) return cached;
-    let result: Place;
-    if (!fromFrame) {
-      const parent = item.parent as Y.AbstractType<unknown>;
-      result = parent._item
-        ? { typeItem: parent._item, rootKey: null, sub: item.parentSub, dead: false }
-        : { typeItem: null, rootKey: Y.findRootTypeKey(parent), sub: item.parentSub, dead: false };
-    } else if (typeof (item.parent as unknown) === 'string') {
-      result = { typeItem: null, rootKey: item.parent as unknown as string, sub: item.parentSub, dead: false };
-    } else if (item.parent instanceof Y.ID) {
-      const holder = lookup(item.parent).item;
-      result = holder ? { typeItem: holder, rootKey: null, sub: item.parentSub, dead: false } : DEAD;
-    } else {
-      // The encoder omits parent info, map key included, when an origin implies it: Yjs places the item beside its
-      // origin, in the origin's map key. Read the key from the place, never from a decoded item's parentSub.
-      const neighbour = item.origin ?? item.rightOrigin;
-      if (!neighbour) throw new Refusal('unresolvable');
-      const found = lookup(neighbour);
-      result = found.item ? place(found.item, found.fresh) : DEAD;
+  const rootCache = new Map<Type, string>();
+  const rootOf = (type: Type): string => {
+    let at = type;
+    for (let depth = 0; at._item; depth++) {
+      if (depth > 10_000) throw new Refusal('unresolvable');
+      at = at._item.parent as Type;
     }
-    placeCache.set(item, result);
-    return result;
+    let key = rootCache.get(at);
+    if (key === undefined) rootCache.set(at, (key = Y.findRootTypeKey(at)));
+    return key;
   };
-  const isFresh = (item: Y.Item) => inFrame(item.id) === item;
-  /** The root-level type an item lives under, or null when it lands in collected content. */
-  const rootOf = (item: Y.Item): string | null => {
-    let at = place(item, isFresh(item));
-    for (let depth = 0; at.typeItem; depth++) {
-      if (depth > 1000) throw new Refusal('unresolvable');
-      at = place(at.typeItem, isFresh(at.typeItem));
-    }
-    return at.dead ? null : at.rootKey;
+  const parentOf = (item: Y.Item): Type => {
+    if (!(item.parent instanceof Y.AbstractType)) throw new Refusal('unresolvable');
+    return item.parent as Type;
   };
 
-  /** Blocks whose text the frame removed or re-governed (by key): proven against the after state below. */
-  const affected = new Set<string>();
-  const touchBlock = (typeItem: Y.Item | null): void => {
-    if (!typeItem || !(typeItem.content instanceof Y.ContentType) || !(typeItem.content.type instanceof Y.XmlText)) {
-      throw new Refusal('delete-original');
+  // Where new items may go. Body sequences take inserts anywhere; their effect on original content is judged below.
+  // Registers take a new key (a new decorator's payload) and edits inside the author's own registers.
+  for (const item of fresh) {
+    const { content } = item;
+    if (content instanceof Y.ContentFormat) throw new Refusal('mutate-original'); // V1 never writes formatting marks
+    if (content instanceof Y.ContentDoc) throw new Refusal('outside-body');
+    const parent = parentOf(item);
+    const root = rootOf(parent);
+    if (root === BODY) continue;
+    if (root !== REGISTERS) throw new Refusal('outside-body');
+    if (!parent._item) {
+      if (item.parentSub === null) throw new Refusal('mutate-original');
+      continue; // a registers key: judged with every map value below
     }
-    if (rootOf(typeItem) !== BODY) throw new Refusal('delete-original');
-    affected.add(keyOf(typeItem.id));
-  };
-  /** Own containers the frame writes attributes on: checked for text that is not the author's once splits are known. */
-  const attributed = new Set<Y.Item>();
-  /**
-   * Lexical rewrites every property of a node it marks dirty whose value is not `===` the previous one, so inserting
-   * beside an original decorator re-sets its object-valued properties to equal values. A write that keeps the value
-   * changes nothing: it is allowed on any body container, with the delete of the value it replaces.
-   */
-  const unchanged = new Set<string>();
-  const sameAsBefore = (container: Y.Item, sub: string, item: Y.Item): boolean => {
-    if (!(container.content instanceof Y.ContentType) || item.content instanceof Y.ContentType || item.content instanceof Y.ContentDeleted) {
-      return false;
-    }
-    let previous: Y.Item | null | undefined = container.content.type._map.get(sub);
-    while (previous && isFreshId(previous.id)) previous = previous.left;
-    if (!previous || !view.liveBefore(previous) || previous.content instanceof Y.ContentType || previous.content instanceof Y.ContentDeleted) {
-      return false;
-    }
-    const last = (values: unknown[]) => JSON.stringify(values[values.length - 1]);
-    return last(previous.content.getContent()) === last(item.content.getContent());
-  };
+    if (!isOwn(parent._item)) throw new Refusal('mutate-original');
+  }
+  for (const item of deleted) {
+    const parent = parentOf(item);
+    const root = rootOf(parent);
+    if (root === BODY) continue;
+    if (root !== REGISTERS) throw new Refusal('outside-body');
+    if (parent._item && !isOwn(item)) throw new Refusal('mutate-original');
+  }
+  for (const type of touched) {
+    // Yjs rewrites a remote frame's formatting marks after the transaction, unjudged.
+    if ((type as unknown as { _hasFormatting?: boolean })._hasFormatting) throw new Refusal('mutate-original');
+  }
 
-  // Inserts: sequence inserts anywhere in the body; attribute and map writes only on the author's own containers. A
-  // tombstone (ContentDeleted) is judged like any write: placed as a map's newest value, Yjs deletes the value before it.
-  const candidates: Y.Item[] = [];
-  for (const items of fresh.values()) {
-    for (const item of items) {
-      if (!(item instanceof Y.Item)) continue;
-      // Every reference must resolve now, so Yjs cannot park the item.
-      for (const ref of [item.origin, item.rightOrigin, item.parent instanceof Y.ID ? item.parent : null]) if (ref) lookup(ref);
-      const tomb = item.content instanceof Y.ContentDeleted;
-      const at = place(item, true);
-      if (at.dead) continue;
-      const root = at.typeItem ? rootOf(at.typeItem) : at.rootKey;
-      if (root === null) continue;
-      if (at.sub === null) {
-        if (root === BODY) {
-          // V1 never writes formatting marks; Yjs's format cleanup deletes marks around a new one.
-          if (item.content instanceof Y.ContentFormat) throw new Refusal('mutate-original');
-          if (tomb) continue;
-          candidates.push(item);
-          // An embed landing before original text takes that text over (V1 text runs follow their map): check it.
-          const right = item.rightOrigin ? lookup(item.rightOrigin) : null;
-          if (!(item.content instanceof Y.ContentString) && right?.item && !right.fresh && right.item.content instanceof Y.ContentString) {
-            touchBlock(at.typeItem);
-          }
-          continue;
-        }
-        if (root === REGISTERS && at.typeItem && isOwnId(at.typeItem.id)) {
-          if (!tomb) candidates.push(item);
-          continue;
-        }
-        throw new Refusal(root === REGISTERS ? 'mutate-original' : 'outside-body');
-      }
-      if (at.typeItem) {
-        if (root === BODY && sameAsBefore(at.typeItem, at.sub, item)) {
-          unchanged.add(`${keyOf(at.typeItem.id)}|${at.sub}`);
-          continue;
-        }
-        if ((root === BODY || root === REGISTERS) && isOwnId(at.typeItem.id)) {
-          attributed.add(at.typeItem);
-          if (!tomb) candidates.push(item);
-          continue;
-        }
-        throw new Refusal(root === BODY || root === REGISTERS ? 'mutate-original' : 'outside-body');
-      }
-      // A new key in the registers map belongs to a new decorator; overwriting a live one mutates the original.
-      if (at.rootKey === REGISTERS && !keyLiveBefore(view, at.sub, isFreshId)) {
-        if (!tomb) candidates.push(item);
+  // Map values, on every touched container that existed before and is still there. A value another author wrote must
+  // read the same after the whole frame: the live value once Yjs has ordered the frame's items and applied its full
+  // delete set. A same-value rewrite of it stays theirs. Any other change is allowed only on the author's own container
+  // and only when it changes no one else's content: a block's attributes are part of the format of everything inside
+  // it (checked after the alignment), and a text map's are the format of the characters it governs (the alignment).
+  const deletedKeys = new Map<Type, Set<string>>();
+  for (const item of deleted) {
+    if (item.parentSub === null) continue;
+    const parent = item.parent as Type;
+    deletedKeys.set(parent, (deletedKeys.get(parent) ?? new Set<string>()).add(item.parentSub));
+  }
+  const ownBlocksChanged: Type[] = [];
+  for (const type of touched) {
+    const holder = type._item;
+    if (holder && (isFresh(holder) || holder.deleted)) continue; // new, or gone with its container: judged in its parent
+    const keys = new Set<string>(deletedKeys.get(type));
+    for (const key of changed.get(type) ?? []) if (key !== null) keys.add(key);
+    for (const key of keys) {
+      let previous: Y.Item | null = type._map.get(key) ?? null;
+      while (previous && !liveBefore(previous)) previous = previous.left;
+      const last = type._map.get(key);
+      const current = last && !last.deleted ? last : null;
+      if (valueOf(previous) === valueOf(current)) {
+        if (current && previous && current !== previous && !isOwn(previous)) kept.add(keyOf(current.id));
         continue;
       }
-      throw new Refusal(at.rootKey === REGISTERS || at.rootKey === BODY ? 'mutate-original' : 'outside-body');
+      if (previous && !isOwn(previous)) throw new Refusal('mutate-original');
+      if (!holder) {
+        if (rootOf(type) === REGISTERS && (current === null || isFresh(current))) continue;
+        throw new Refusal('mutate-original');
+      }
+      if (!isOwn(holder)) throw new Refusal('mutate-original');
+      if (!(type instanceof Y.Map)) ownBlocksChanged.push(type);
     }
   }
 
-  // Deletes. Yjs deletes a container's live content with it, whatever the delete set names, so the frame's deletes are
-  // closed over descendants before they are judged. A sequence item goes only when it is the author's own; original
-  // text only as half of a split, proven below. A map value goes with its container, and otherwise only from the
-  // author's own container.
-  const gone: { item: Y.Item; from: number; to: number }[] = [];
-  const goneContainers = new Set<Y.Item>();
-  const descend = (item: Y.Item): void => {
-    if (!(item.content instanceof Y.ContentType) || goneContainers.has(item)) return;
-    goneContainers.add(item);
-    const type = item.content.type;
-    const children: Y.Item[] = [...type._map.values()];
-    for (let child = type._start; child; child = child.right) children.push(child);
-    for (const child of children) {
-      if (isFreshId(child.id) || !view.liveBefore(child)) continue;
-      gone.push({ item: child, from: child.id.clock, to: child.id.clock + child.length });
-      descend(child);
+  // The body in document order, over the top-level blocks the frame touched. Before: every original unit (a character
+  // with the values of the text map governing it, or an embed) live before. After: the original units live after and
+  // every fresh unit. Each original must still be there, in order, with the same format; an original character may be
+  // deleted only as half of a split (Enter mid-paragraph, a soft break, a run formatted mid-word, or undoing one), by
+  // matching a fresh copy with the same character and format at its place in document order, and the copy stays
+  // original.
+  const body = transaction.doc.share.get(BODY) as Type | undefined;
+  if (body) {
+    const window = topLevel(body, [...fresh, ...deleted, ...[...touched].map((type) => type._item)]);
+    if (window.size > 0) {
+      const ownUnit = (unit: Unit) => !unit.fresh && isOwnClock(unit.item, unit.clock);
+      const { pre, post } = units(body, window, liveBefore, isFresh);
+      align(pre.filter((unit) => !ownUnit(unit)), post.filter((unit) => unit.fresh || !ownUnit(unit)), {
+        wanted: () => true,
+        same: (o, p) => p.char === o.char && p.fmt === o.fmt,
+        kept: (o, p) => {
+          if (p.fmt !== o.fmt) throw new Refusal('mutate-original');
+        },
+        matched: (_o, p) => {
+          copies.add(keyOf(p));
+          if (p.gov && isFresh(p.gov)) copies.add(keyOf(p.gov.id));
+        },
+        missing: () => {
+          throw new Refusal('delete-original');
+        },
+      });
+    }
+  }
+
+  // An own block whose attributes changed must hold nothing that is not the author's after the frame.
+  const walk = (parent: Type): void => {
+    for (let item = parent._start; item; item = item.right) {
+      if (item.deleted) continue;
+      for (let i = 0; i < item.length; i++) if (!isOwnClock(item, item.id.clock + i)) throw new Refusal('mutate-original');
+      if (item.content instanceof Y.ContentType) walk(item.content.type as Type);
     }
   };
-  for (const [client, ranges] of ds.clients) {
-    for (const { clock, len } of ranges) {
-      for (let at = clock; at < clock + len;) {
-        const found = lookup(Y.createID(client, at));
-        const stop = Math.min(clock + len, found.end);
-        const item = found.item;
-        if (item && !found.fresh && view.liveBefore(item)) {
-          gone.push({ item, from: at, to: stop });
-          descend(item);
-        }
-        at = Math.max(stop, at + 1);
-      }
-    }
-  }
-  for (const { item, from, to } of gone) {
-    const holder = place(item, false);
-    if (holder.sub !== null) {
-      if (holder.typeItem && goneContainers.has(holder.typeItem)) continue;
-      const kept = holder.typeItem !== null && unchanged.has(`${keyOf(holder.typeItem.id)}|${holder.sub}`);
-      if (!kept && (holder.typeItem ? !isOwnId(holder.typeItem.id) : !isOwnId(item.id))) throw new Refusal('mutate-original');
-      if (holder.typeItem && !kept) attributed.add(holder.typeItem);
-      continue;
-    }
-    const own = !isMoved(item.id.client, from, to) && covered(item.id.client, from, to);
-    if (item.content instanceof Y.ContentString) {
-      if (!own) touchBlock(holder.typeItem);
-    } else if (isTextMap(item)) {
-      // The characters it governed fall to the map before them: their properties are proven below.
-      touchBlock(holder.typeItem);
-    } else if (!own) {
-      throw new Refusal('delete-original');
-    }
-  }
-
-  // Splits, joins and undone splits: @lexical/yjs moves text by deleting the characters and inserting copies (the
-  // tail of a split text node into a new node, Enter's tail into a new block, an undo's tail back into the block it
-  // came from). After the frame, every character of an affected block that is not the author's must survive in
-  // document order, by identity or as a fresh copy with the same character and text properties, wherever in the body
-  // that is. Copies, and the fresh text maps governing them, stay original: they are never the author's inserts.
-  let afterBody: Elem[] | null = null;
-  const after = () => (afterBody ??= view.body(true));
-  const isOwnElem = (e: Elem) => isOwnId(Y.createID(e.client, e.clock));
-  if (affected.size > 0) {
-    const pre = view.body(false);
-    const wanted = (o: Elem) => o.char !== null && o.block !== null && affected.has(o.block) && !isOwnElem(o);
-    const matched = align(pre, after(), isFreshId, wanted, (o, p) => p.char === o.char && p.props === o.props);
-    for (const o of pre) {
-      if (!wanted(o)) continue;
-      const p = matched.get(keyOf(o));
-      if (!p) throw new Refusal('delete-original');
-      if (p.props !== o.props) throw new Refusal('mutate-original');
-      if (keyOf(p) !== keyOf(o)) {
-        copies.add(keyOf(p));
-        if (p.gov && isFreshId(idOf(p.gov))) copies.add(p.gov);
-      }
-    }
-  }
-
-  // An attribute write on an own container still changes text that is not the author's when the container is moved
-  // text's map, or governs (a text map) or holds (a block) a character the author does not own after the frame: moved
-  // text, or a peer's typing. A container new in this frame carries its initial attributes: they are part of the
-  // author's insert, which reject removes, and copied text's own properties were proven above.
-  const pending = [...attributed].filter((container) => !isFreshId(container.id) && rootOf(container) === BODY);
-  if (pending.length > 0) {
-    const notOwn = new Set<string>();
-    for (const e of after()) {
-      if (e.char === null || isOwnElem(e)) continue;
-      if (e.gov) notOwn.add(e.gov);
-      for (const ancestor of e.ancestors) notOwn.add(ancestor);
-    }
-    for (const container of pending) {
-      if (isMoved(container.id.client, container.id.clock, container.id.clock + 1)) throw new Refusal('mutate-original');
-      if (notOwn.has(keyOf(container.id))) throw new Refusal('mutate-original');
-    }
-  }
+  for (const type of ownBlocksChanged) walk(type);
 
   const inserts: IdSpan[] = [];
-  for (const item of candidates) {
+  for (const item of fresh) {
+    if (item.deleted || kept.has(keyOf(item.id))) continue;
     for (let i = 0; i < item.length; i++) {
       const clock = item.id.clock + i;
       if (!copies.has(`${item.id.client}:${clock}`)) register(inserts, item.id.client, clock);
@@ -378,64 +330,133 @@ function vet(view: View, structs: (Y.Item | Y.GC | Y.Skip)[], ds: DeleteSet, opt
   return { inserts, moved: spansOf(copies) };
 }
 
+/** A map entry's value as comparable text: a type-valued entry by its item's identity, an absent one as null. */
+function valueOf(item: Y.Item | null): string | null {
+  if (!item || item.content instanceof Y.ContentDeleted) return null;
+  if (item.content instanceof Y.ContentType) return `type ${keyOf(item.id)}`;
+  const values = item.content.getContent();
+  return JSON.stringify(values[values.length - 1]);
+}
+
+/** The top-level blocks holding `items` (null entries and items outside the body are ignored). */
+function topLevel(body: Type, items: Iterable<Y.Item | null>): Set<Y.Item> {
+  const out = new Set<Y.Item>();
+  for (const item of items) {
+    let at: Y.Item | null = item;
+    for (let depth = 0; at && at.parent !== body; depth++) at = depth > 10_000 ? null : ((at.parent as Type)._item ?? null);
+    if (at) out.add(at);
+  }
+  return out;
+}
+
+/** The units of the `window` blocks, in document order, before and after the transaction. */
+function units(body: Type, window: ReadonlySet<Y.Item>, liveBefore: (item: Y.Item) => boolean, isFresh: (item: Y.Item) => boolean) {
+  const pre: Unit[] = [];
+  const post: Unit[] = [];
+  const liveAfter = (item: Y.Item) => !item.deleted;
+  for (let top = body._start; top; top = top.right) {
+    if (!window.has(top)) continue;
+    if (liveBefore(top)) flatten([top], liveBefore, isFresh, pre);
+    if (liveAfter(top)) flatten([top], liveAfter, isFresh, post);
+  }
+  return { pre, post };
+}
+
 /**
  * Identity carry: a frame from any writer (an editor's Enter or bold, another suggester's split, a review, an undo)
- * that deletes characters of `spans` and re-inserts copies gives those copies new ids. The DocDO runs this on the live
- * doc before applying each frame that deletes a tracked id, and writes the result into the record in the same
- * transaction, so a suggestion's text keeps its paint, its reject target and its clean-export exclusion.
+ * that deletes characters of `spans` and re-inserts copies gives those copies new ids. The DocDO runs this on the
+ * mirror for each frame that deletes a tracked id, and writes the result into the record in the transaction that
+ * applies the frame, so a suggestion's text keeps its paint, its reject target and its clean-export exclusion.
  */
 export function carryIdentity(doc: Y.Doc, update: Uint8Array, spans: readonly IdSpan[]): IdSpan[] {
-  const { structs, ds } = Y.decodeUpdate(Y.diffUpdate(update, Y.encodeStateVector(doc)));
-  const freshKeys = new Set<string>();
-  for (const struct of structs) {
-    if (struct instanceof Y.Skip) continue;
-    for (let i = 0; i < struct.length; i++) freshKeys.add(`${struct.id.client}:${struct.id.clock + i}`);
-  }
-  const isFreshId = (id: Y.ID) => freshKeys.has(`${id.client}:${id.clock}`);
-  const tracked = (client: number, clock: number) => coveredBy(spans, client, clock, clock + 1);
-  // Tracked characters the frame deletes, directly or with a block it deletes (a join deletes the joined block).
-  const gone = new Set<string>();
-  const visit = (item: Y.Item, from: number, to: number): void => {
-    if (item.deleted) return;
-    if (item.content instanceof Y.ContentString) {
-      for (let clock = from; clock < to; clock++) if (tracked(item.id.client, clock)) gone.add(`${item.id.client}:${clock}`);
-    } else if (item.content instanceof Y.ContentType) {
-      for (let child = item.content.type._start; child; child = child.right) visit(child, child.id.clock, child.id.clock + child.length);
-    }
-  };
-  for (const [client, ranges] of ds.clients) {
-    for (const { clock, len } of ranges) {
-      for (let at = clock; at < Math.min(clock + len, Y.getState(doc.store, client));) {
-        const item = Y.getItem(doc.store, Y.createID(client, at));
-        const stop = Math.min(clock + len, item.id.clock + item.length);
-        if (item instanceof Y.Item) visit(item, at, stop);
-        at = Math.max(stop, at + 1);
-      }
-    }
-  }
-  const out = spans.map((span) => ({ ...span }));
-  if (gone.size === 0) return out;
-  const view = serverView(doc, update);
+  const mirror = new SuggestMirror(doc);
   try {
-    const added = new Set<string>();
-    // The same document-order alignment as the vetter's proof, so a copy is found wherever the writer put it: the
-    // block itself, a new block after it, or the block before it after a join. Characters only: an editor's bold
-    // re-inserts the run with new text properties, and it is still the same text.
-    const pre = view.body(false);
-    const wanted = (o: Elem) => gone.has(keyOf(o));
-    const matched = align(pre, view.body(true), isFreshId, wanted, (o, p) => p.char === o.char);
-    for (const o of pre) {
-      const p = wanted(o) ? matched.get(keyOf(o)) : undefined;
-      if (!p) continue;
-      added.add(keyOf(p));
-      if (p.gov && isFreshId(idOf(p.gov))) added.add(p.gov);
-    }
-    for (const span of spansOf(added)) out.push(span);
-    return out;
+    return mirror.apply(update, (transaction) => carryTransaction(transaction, spans)) ?? spans.map((span) => ({ ...span }));
   } finally {
-    view.dispose();
+    mirror.destroy();
   }
 }
+
+/** The carry on an applied transaction, from afterTransaction. */
+export function carryTransaction(transaction: Y.Transaction, spans: readonly IdSpan[]): IdSpan[] {
+  const out = spans.map((span) => ({ ...span }));
+  const { isFresh, liveBefore, fresh, deleted } = frameOf(transaction, { structs: Infinity, types: Infinity });
+  const tracked = (client: number, clock: number) => coveredBy(spans, client, clock, clock + 1);
+  const hit = deleted.some((item) => {
+    if (!(item.content instanceof Y.ContentString)) return false;
+    for (let i = 0; i < item.length; i++) if (tracked(item.id.client, item.id.clock + i)) return true;
+    return false;
+  });
+  const body = transaction.doc.share.get(BODY) as Type | undefined;
+  if (!hit || !body) return out;
+  const { pre, post } = units(body, topLevel(body, [...fresh, ...deleted]), liveBefore, isFresh);
+  // Characters only: an editor's bold re-inserts the run with new text properties, and it is still the same text.
+  const added = new Set<string>();
+  align(pre, post, {
+    wanted: (o) => o.char !== null && tracked(o.client, o.clock),
+    same: (o, p) => p.char === o.char,
+    kept: () => {},
+    matched: (_o, p) => {
+      added.add(keyOf(p));
+      if (p.gov && isFresh(p.gov)) added.add(keyOf(p.gov.id));
+    },
+    missing: () => {},
+  });
+  for (const span of spansOf(added)) out.push(span);
+  return out;
+}
+
+/**
+ * What reject or withdraw removes (owner ruling, docs/design/suggestions.md D2b): only the author's own items. An own
+ * container (a block, list item or table row) goes only when nothing live inside it is someone else's; otherwise it
+ * stays as an ordinary block and only the author's items inside it go. An own text map that governs someone else's
+ * characters stays too, so their format does not change. T5.3 applies this with Lexical's own operations.
+ */
+export function rejectPlan(doc: Y.Doc, inserts: readonly IdSpan[]): IdSpan[] {
+  const remove = new Set<string>();
+  const own = (id: { client: number; clock: number }) => coveredBy(inserts, id.client, id.clock, id.clock + 1);
+  /** Marks the author's items under `type`; returns whether anything live there is someone else's. */
+  const visit = (type: Type): boolean => {
+    let foreign = false;
+    const gov: { map: Y.Item | null; foreign: boolean } = { map: null, foreign: false };
+    const closeMap = () => {
+      if (gov.map && own(gov.map.id) && !gov.foreign) remove.add(keyOf(gov.map.id));
+      gov.map = null;
+      gov.foreign = false;
+    };
+    for (let item = type._start; item; item = item.right) {
+      if (item.deleted) continue;
+      const { content, id } = item;
+      if (content instanceof Y.ContentString) {
+        for (let i = 0; i < item.length; i++) {
+          const clock = { client: id.client, clock: id.clock + i };
+          if (own(clock)) remove.add(keyOf(clock));
+          else foreign = gov.foreign = true;
+        }
+        continue;
+      }
+      closeMap();
+      if (content instanceof Y.ContentType && isTextMapType(content.type, () => true)) {
+        gov.map = item;
+        continue;
+      }
+      const inner = content instanceof Y.ContentType ? visit(content.type as Type) : false;
+      if (!own(id)) foreign = true;
+      else if (!inner) remove.add(keyOf(id));
+      if (inner) foreign = true;
+    }
+    closeMap();
+    return foreign;
+  };
+  const body = rootType(doc, BODY);
+  if (body) visit(body);
+  for (const item of rootType(doc, REGISTERS)?._map.values() ?? []) {
+    if (!item.deleted && own(item.id)) remove.add(keyOf(item.id));
+  }
+  return spansOf(remove);
+}
+
+const rootType = (doc: Y.Doc, name: string) => doc.share.get(name) as Type | undefined;
 
 /**
  * Seconds an accepted record's ids stay the author's after the accept while the author's client has not yet
@@ -470,76 +491,59 @@ export function ownSpans(records: readonly OwnedRecord[], author: string, basis:
   return { own, moved };
 }
 
-/** Where an item sits: its parent type (a nested type's item, or a root-level type by name) and its map key. */
-interface Place {
-  /** The item holding the parent type, or null for a root-level type. */
-  typeItem: Y.Item | null;
-  /** The root-level type's name when typeItem is null. */
-  rootKey: string | null;
-  sub: string | null;
-  /** The parent was garbage collected: the write has no visible effect. */
-  dead: boolean;
-}
-const DEAD: Place = { typeItem: null, rootKey: null, sub: null, dead: true };
-
-interface Elem {
+/** One clock of the body in document order: a character, or an embed (a block, line break, decorator). */
+interface Unit {
   client: number;
   clock: number;
-  /** Null for an embed: a text node's map, a line break, a decorator or a nested block. */
+  item: Y.Item;
+  fresh: boolean;
+  /** Null for an embed. */
   char: string | null;
-  /** A character's text properties: its governing text map, as stable JSON. */
-  props: string | null;
-  /** The key of a character's governing text map. */
-  gov: string | null;
-  /** The key of the block (nested or top-level) the element sits in; null at the root. */
-  block: string | null;
-  /** The keys of every block the element sits in, outermost first. */
-  ancestors: readonly string[];
+  /** A character's effective format: the values of the text map governing it, as stable JSON. */
+  fmt: string | null;
+  /** The text map governing a character. */
+  gov: Y.Item | null;
 }
 const keyOf = (e: { client: number; clock: number }) => `${e.client}:${e.clock}`;
-const idOf = (key: string) => {
-  const [client, clock] = key.split(':').map(Number);
-  return Y.createID(client, clock);
-};
 
-/** Whether an item is a V1 text node's map. */
-function isTextMap(item: Y.Item): boolean {
-  const type = item.content instanceof Y.ContentType ? item.content.type : null;
-  if (!(type instanceof Y.Map)) return false;
-  const entry = type._map.get('__type');
-  if (!entry || entry.content instanceof Y.ContentDeleted) return false;
-  const values = entry.content.getContent();
-  return values[values.length - 1] === 'text';
+/** Whether a type is a V1 text node's map, as of the `include`d entries. */
+function isTextMapType(type: unknown, include: (item: Y.Item) => boolean): type is Y.Map<unknown> {
+  return type instanceof Y.Map && mapJson(type, include).__type === 'text';
 }
 
 /**
- * A V1 subtree's content in document order, counting only `include`d items: each character with the text map before
- * it, each embed, and the content of each nested block right after the block's own embed.
+ * The units of `items` and their nested content in document order, counting only `include`d items. A text map is not
+ * a unit: it is the format of the characters after it, up to the next embed. Formatting marks and tombstones carry
+ * nothing a V1 body shows.
  */
-function flatten(type: Y.AbstractType<unknown>, include: (item: Y.Item) => boolean, out: Elem[] = [], ancestors: readonly string[] = []): Elem[] {
-  const block = ancestors.length > 0 ? ancestors[ancestors.length - 1] : null;
-  let props: string | null = null;
-  let gov: string | null = null;
-  for (let item = type._start; item; item = item.right) {
-    if (!include(item)) continue;
-    const content = item.content;
+function flatten(items: Iterable<Y.Item>, include: (item: Y.Item) => boolean, isFresh: (item: Y.Item) => boolean, out: Unit[]): void {
+  let fmt: string | null = null;
+  let gov: Y.Item | null = null;
+  for (const item of items) {
+    const { content, id } = item;
+    if (content instanceof Y.ContentFormat || content instanceof Y.ContentDeleted) continue;
+    const fresh = isFresh(item);
     if (content instanceof Y.ContentString) {
-      for (let i = 0; i < content.str.length; i++) {
-        out.push({ client: item.id.client, clock: item.id.clock + i, char: content.str[i], props, gov, block, ancestors });
-      }
-    } else if (!(content instanceof Y.ContentFormat) && !(content instanceof Y.ContentDeleted)) {
-      const embedded = content instanceof Y.ContentType ? content.type : null;
-      const isText = embedded instanceof Y.Map && mapJson(embedded, include).__type === 'text';
-      props = isText ? stableJson(mapJson(embedded as Y.Map<unknown>, include)) : null;
-      gov = isText ? keyOf(item.id) : null;
-      out.push({ client: item.id.client, clock: item.id.clock, char: null, props: null, gov: null, block, ancestors });
-      if (embedded instanceof Y.XmlText) flatten(embedded as unknown as Y.AbstractType<unknown>, include, out, [...ancestors, keyOf(item.id)]);
+      for (let i = 0; i < content.str.length; i++) out.push({ client: id.client, clock: id.clock + i, item, fresh, char: content.str[i], fmt, gov });
+      continue;
     }
+    if (content instanceof Y.ContentType && isTextMapType(content.type, include)) {
+      fmt = stableJson(mapJson(content.type, include));
+      gov = item;
+      continue;
+    }
+    fmt = null;
+    gov = null;
+    for (let i = 0; i < item.length; i++) out.push({ client: id.client, clock: id.clock + i, item, fresh, char: null, fmt: null, gov: null });
+    if (content instanceof Y.ContentType) flatten(children(content.type as Type, include), include, isFresh, out);
   }
-  return out;
 }
 
-/** A map's entries as of the `include`d items: an entry overwritten in the frame reads its previous value. */
+function* children(type: Type, include: (item: Y.Item) => boolean): Generator<Y.Item> {
+  for (let item = type._start; item; item = item.right) if (include(item)) yield item;
+}
+
+/** A map's entries as of the `include`d items: an entry the frame overwrote reads its previous value. */
 function mapJson(map: Y.Map<unknown>, include: (item: Y.Item) => boolean): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [key, last] of map._map) {
@@ -554,83 +558,41 @@ function mapJson(map: Y.Map<unknown>, include: (item: Y.Item) => boolean): Recor
 }
 
 const stableJson = (value: Record<string, unknown>) =>
-  JSON.stringify(Object.keys(value).sort().map((key) => [key, value[key]]));
+  JSON.stringify(Object.keys(value).sort().map((key) => [key, value[key] instanceof Y.AbstractType ? 'type' : value[key]]));
 
 /**
- * Pairs each element before the frame with the same element after it, or, for a `wanted` element the frame deleted,
- * with the fresh element that `same` accepts as its copy. Elements that existed before keep their document order (Yjs
- * never moves an item), so a scan that meets an older element first knows the one it seeks is gone.
+ * Pairs each unit before the frame with the same unit after it, or, for a `wanted` unit the frame deleted, with the
+ * next fresh unit `same` accepts as its copy. Units that existed before keep their document order (Yjs never moves an
+ * item), so the scan for a copy stops at the first unit that is not fresh.
  */
 function align(
-  pre: Elem[], post: Elem[], isFreshId: (id: Y.ID) => boolean, wanted: (o: Elem) => boolean, same: (o: Elem, p: Elem) => boolean,
-): Map<string, Elem> {
-  const live = new Set(post.map(keyOf));
-  const matched = new Map<string, Elem>();
+  pre: readonly Unit[], post: readonly Unit[],
+  on: { wanted: (o: Unit) => boolean; same: (o: Unit, p: Unit) => boolean; kept: (o: Unit, p: Unit) => void; matched: (o: Unit, p: Unit) => void; missing: (o: Unit) => void },
+): void {
+  const live = new Set(post.filter((p) => !p.fresh).map(keyOf));
   let j = 0;
   for (const o of pre) {
-    const kept = live.has(keyOf(o));
-    if (!kept && !wanted(o)) continue;
-    for (let k = j; k < post.length; k++) {
-      const p = post[k];
-      if (keyOf(p) === keyOf(o)) {
-        matched.set(keyOf(o), p);
-        j = k + 1;
-        break;
-      }
-      if (!isFreshId(Y.createID(p.client, p.clock))) break;
-      if (!kept && same(o, p)) {
-        matched.set(keyOf(o), p);
-        j = k + 1;
+    if (live.has(keyOf(o))) {
+      while (j < post.length && keyOf(post[j]) !== keyOf(o)) j++;
+      on.kept(o, post[j]);
+      j++;
+      continue;
+    }
+    if (!on.wanted(o)) continue;
+    let found = -1;
+    for (let k = j; k < post.length && post[k].fresh; k++) {
+      if (on.same(o, post[k])) {
+        found = k;
         break;
       }
     }
+    if (found < 0) {
+      on.missing(o);
+      continue;
+    }
+    on.matched(o, post[found]);
+    j = found + 1;
   }
-  return matched;
-}
-
-/** Whether a registers key held a live value before the frame. */
-function keyLiveBefore(view: View, key: string, isFreshId: (id: Y.ID) => boolean): boolean {
-  let entry: Y.Item | null | undefined = view.registers()?._map.get(key);
-  while (entry && isFreshId(entry.id)) entry = entry.left;
-  return !!entry && view.liveBefore(entry);
-}
-
-const alive = (item: Y.Item) => !item.deleted;
-const bodyOf = (doc: Y.Doc) => doc.get(BODY, Y.XmlText) as unknown as Y.AbstractType<unknown>;
-
-function serverView(doc: Y.Doc, update: Uint8Array): View {
-  let mirror: Y.Doc | null = null;
-  return {
-    state: (client) => Y.getState(doc.store, client),
-    get: (id) => Y.getItem(doc.store, id),
-    liveBefore: alive,
-    body: (after) => {
-      if (!after) return flatten(bodyOf(doc), alive);
-      if (!mirror) {
-        mirror = new Y.Doc();
-        Y.applyUpdate(mirror, Y.encodeStateAsUpdate(doc));
-        Y.applyUpdate(mirror, update);
-      }
-      return flatten(bodyOf(mirror), alive);
-    },
-    registers: () => doc.share.get(REGISTERS) as Y.Map<unknown> | undefined,
-    dispose: () => mirror?.destroy(),
-  };
-}
-
-function clientView(transaction: Y.Transaction): View {
-  const doc = transaction.doc;
-  const state = (client: number) => transaction.beforeState.get(client) ?? 0;
-  const liveBefore = (item: Y.Item) => !item.deleted || Y.isDeleted(transaction.deleteSet, item.id);
-  const existedLive = (item: Y.Item) => item.id.clock < state(item.id.client) && liveBefore(item);
-  return {
-    state,
-    get: (id) => Y.getItem(doc.store, id),
-    liveBefore,
-    body: (after) => flatten(bodyOf(doc), after ? alive : existedLive),
-    registers: () => doc.share.get(REGISTERS) as Y.Map<unknown> | undefined,
-    dispose: () => {},
-  };
 }
 
 function coveredBy(spans: readonly IdSpan[], client: number, from: number, to: number): boolean {

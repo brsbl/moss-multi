@@ -892,14 +892,14 @@ describe('SP11 round-3 findings: one invariant on the applied frame @p:mean-2', 
     try {
       const copy = applied(setup.server, rawUpdate([], rejectPlan(setup.server, setup.s.own)));
       expect(blockText(copy, 1), "the block stays, holding only the peer's words").toBe(' theirs');
-      expect(originalProjection(copy, []), "the peer's words keep their format").toEqual(originalProjection(setup.server, setup.s.own));
+      expect(originalProjection(copy, setup.s.own), "the peer's words keep their format").toEqual(originalProjection(setup.server, setup.s.own));
       copy.destroy();
     } finally { setup.dispose(); }
     const { server, suggester, s } = withOwnParagraph();
     try {
       const copy = applied(server, rawUpdate([], rejectPlan(server, s.own)));
       expect(blocksOf(copy, suggester.doc.clientID), 'a wholly own block goes').toEqual([]);
-      expect(originalProjection(copy, [])).toEqual(originalProjection(server, s.own));
+      expect(originalProjection(copy, s.own)).toEqual(originalProjection(server, s.own));
       copy.destroy();
     } finally { suggester.dispose(); server.destroy(); }
   });
