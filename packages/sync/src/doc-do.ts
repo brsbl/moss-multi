@@ -234,7 +234,7 @@ export class DocDO extends YServer<SyncEnv> {
   /** The doc as a `.md` file, memoized until the next update. */
   async exportMarkdown(): Promise<string> {
     await this.#ready();
-    this.#exported ??= exportDocMarkdown(this.document);
+    this.#exported ??= exportDocMarkdown(this.document, this.name);
     return this.#exported;
   }
 

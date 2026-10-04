@@ -67,13 +67,18 @@ async function audit(page: Page, theme: Theme, side: string): Promise<void> {
   }
 }
 
-async function capture(page: Page): Promise<Buffer> {
+async function capture(page: Page, target: Target): Promise<Buffer> {
   await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
   await page.keyboard.press('Escape');
   await page.evaluate(() => {
     (document.activeElement as HTMLElement | null)?.blur();
     window.getSelection()?.removeAllRanges();
   });
+  if (target.focusEditor) {
+    const body = page.locator(`${CROP} [data-lexical-editor="true"][contenteditable="true"]`);
+    await body.focus();
+    await expect(body).toBeFocused();
+  }
   await page.mouse.move(VIEWPORT.width - 2, VIEWPORT.height - 2);
   await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
   return page.locator(CROP).screenshot({ animations: 'disabled', caret: 'hide', scale: 'device' });
@@ -122,7 +127,7 @@ async function captureOracle(browser: Browser, target: Target, theme: Theme): Pr
       (window as unknown as { electronAPI: { notes: { getAll: () => Promise<NoteListing[]> } } }).electronAPI.notes.getAll(),
     );
     const withheld = await withholdAffordances(page);
-    return { png: await capture(page), listing, openTitle: await openTitle(page), withheld };
+    return { png: await capture(page, target), listing, openTitle: await openTitle(page), withheld };
   } finally {
     await page.context().close();
   }
@@ -168,7 +173,7 @@ async function captureCandidate(browser: Browser, target: Target, theme: Theme, 
     }
     await audit(page, theme, 'candidate');
     const masks = await maskRects(page, target.masks);
-    return { png: await capture(page), masks };
+    return { png: await capture(page, target), masks };
   } finally {
     await page.context().close();
   }

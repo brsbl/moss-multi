@@ -140,3 +140,12 @@ declare module '@moss/shared/components/ui/confirmation-dialog' {
     variant?: 'default' | 'danger'; cancelAutoFocus?: boolean;
   }>;
 }
+
+declare module '@moss-desktop/renderer/editor/markdown/transformers' {
+  export interface LocalLayoutMetadata {
+    version: 1; tableCount: number; tables: { columnWidths?: number[] }[];
+    tabGroupCount?: number; tabGroups?: { panelLabels: string[]; tabWidths?: (number | null)[] }[];
+  }
+  export function $collectTableLayoutMetadata(): LocalLayoutMetadata;
+  export function $collectTabGroupLayoutMetadata(): Pick<LocalLayoutMetadata, 'tabGroupCount' | 'tabGroups'>;
+}

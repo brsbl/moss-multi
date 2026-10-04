@@ -44,6 +44,26 @@ describe('title binding', () => {
     } finally { close(); }
   });
 
+  it('title undo removes only local typing, redo restores it, and closed titles cannot undo', () => {
+    const doc = new Y.Doc();
+    writeField(doc, 'title', 'Plan', 'seed');
+    const { el, field, close } = mount(doc);
+    const undo = (shiftKey = false) => el.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'z', metaKey: true, shiftKey, bubbles: true, cancelable: true,
+    }));
+    try {
+      el.textContent = 'Plans'; field.write('Plans');
+      doc.getText('title').insert(0, 'Peer ');
+      undo();
+      expect(readField(doc, 'title')).toBe('Peer Plan');
+      expect(el.textContent).toBe('Peer Plan');
+      undo(true);
+      expect(el.textContent).toBe('Peer Plans');
+      field.setOpen(false); undo();
+      expect(readField(doc, 'title')).toBe('Peer Plans');
+    } finally { close(); }
+  });
+
   it('renders a literal Untitled without treating it as a placeholder', () => {
     const doc = new Y.Doc();
     writeField(doc, 'title', 'Untitled', 'seed');
