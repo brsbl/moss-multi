@@ -350,7 +350,7 @@ describe('L4/A8 chart and sketch registers @p:col-1 @p:col-3 @p:note-2', () => {
     { name: 'charts.md', type: 'chart', fields: ['__config'] },
     { name: 'canvas.md', type: 'sketch', fields: ['__grid', '__labels'] },
   ])('$type keeps export bytes and moves its payload into per-key registers', ({ name, type, fields }) => {
-    const markdown = readFileSync(new URL(`./converter/fixtures/${name}`, import.meta.url), 'utf8');
+    const markdown = readFileSync(`${new URL('.', import.meta.url).pathname}converter/fixtures/${name}`, 'utf8');
     const doc = new Y.Doc();
     try {
       importBody(doc, markdown);
@@ -380,7 +380,7 @@ describe('L4/A8 chart and sketch registers @p:col-1 @p:col-3 @p:note-2', () => {
     { type: 'html-block', markdown: '```moss-html\n<p>seed</p>\n```', getter: 'getRawHtml', setter: 'setRawHtml', value: '<p>copy only</p>' },
     { type: 'formula', markdown: '{{2+3|5}}', getter: 'getFormula', setter: 'setFormula', value: '9+9' },
     { type: 'chart', markdown: CHART, getter: 'getConfig', setter: 'setConfig', value: { type: 'line', data: [] } },
-  ])('$copyNode gives a copied $type its own register', ({ type, markdown, getter, setter, value }) => {
+  ])('copying a $type node through copyNode mints its own register', ({ type, markdown, getter, setter, value }) => {
     const seed = new Y.Doc(); importBody(seed, markdown);
     const a = client(seed);
     try {

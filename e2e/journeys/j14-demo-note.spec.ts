@@ -61,13 +61,23 @@ async function paste(actor: Actor, id: string, markdown: string): Promise<void> 
 /** Replaces a marker paragraph with a slash command's block, as a person typing "/" on an empty line does. */
 async function slash(actor: Actor, id: string, marker: string, option: string): Promise<void> {
   const page = actor.page;
-  await ui.body(actor, id).locator('p').filter({ hasText: new RegExp(`^${marker}$`) }).click();
-  await page.keyboard.press('End');
-  await page.keyboard.press('Shift+Home');
-  await page.keyboard.press('Backspace');
-  await page.keyboard.type(`/${option.toLowerCase().split(' ')[0]}`);
+  const line = ui.body(actor, id).locator('p').filter({ hasText: new RegExp(`^${marker}$`) });
+  const text = line.locator('[data-lexical-text]');
+  // A block that took focus (a code block's editor) gives up the caret on the first click, so click until the caret
+  // sits at the end of the marker line.
+  await expect(async () => {
+    const box = await text.boundingBox();
+    if (!box) throw new Error(`${marker} is not laid out`);
+    await text.click({ position: { x: box.width - 1, y: box.height / 2 } });
+    expect(await page.evaluate(() => { const s = window.getSelection(); return `${s?.anchorNode?.textContent}@${s?.anchorOffset}`; })).toBe(`${marker}@${marker.length}`);
+  }).toPass({ timeout: 10_000 });
+  // Character by character: Home and Shift+Home move differently across platforms and engines.
+  for (let i = 0; i < marker.length; i += 1) await page.keyboard.press('Backspace');
+  await expect(line, 'the marker line is empty').toHaveCount(0);
+  const query = `/${option.toLowerCase().split(' ')[0]}`;
+  await page.keyboard.type(query);
   await page.locator('button[data-index]').filter({ hasText: new RegExp(`^${option}`) }).first().click();
-  await expect(ui.body(actor, id).locator('p').filter({ hasText: new RegExp(`^${marker}$`) }), `${option} replaces its line`).toHaveCount(0);
+  await expect(ui.body(actor, id).locator('p').filter({ hasText: query }), `${option} replaces its line`).toHaveCount(0);
 }
 
 const markerOf = (family: string) => `slash-${family.replace(/\W+/g, '-')}`;

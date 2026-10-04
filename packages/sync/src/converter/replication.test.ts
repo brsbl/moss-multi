@@ -6,11 +6,11 @@ import { $normalizeFormatWhitespace } from '@moss-desktop/renderer/editor/markdo
 import { $getRoot, $isElementNode, $isTextNode, TextNode, type LexicalNode } from 'lexical';
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
-import { $importNoteBody, createConverterEditor, exportMarkdown } from './converter/index.ts';
-import { FIXTURES, stringify } from './converter/fixtures.ts';
-import { EXCLUDED_FIELDS, excludedPropertiesFor } from './excluded-properties.ts';
-import { bindRegisters } from './registers.ts';
-import { exportDocMarkdown, importBody } from './server-doc.ts';
+import { $importNoteBody, createConverterEditor, exportMarkdown } from './index.ts';
+import { FIXTURES, stringify } from './fixtures.ts';
+import { EXCLUDED_FIELDS, excludedPropertiesFor } from '../excluded-properties.ts';
+import { bindRegisters } from '../registers.ts';
+import { exportDocMarkdown, importBody } from '../server-doc.ts';
 
 const noop = () => {};
 const provider = {
@@ -37,7 +37,29 @@ function client(seed?: Y.Doc) {
   return { doc, editor, dispose: () => { stops.forEach(stop => stop()); root.unobserveDeep(observer); doc.destroy(); } };
 }
 type Peer = ReturnType<typeof client>;
-const tree = (peer: Peer) => stringify(peer.editor.getEditorState().toJSON());
+/**
+ * The tree without per-viewer fields (S-conv §5.3, A§10.9), which a peer holds at their defaults. `$.mdListMarker`
+ * (the markdown list marker as NodeState) is also dropped: the importing editor serializes its default as absent and
+ * the hydrated one as "-", and both export the same marker, which the export assertions check.
+ */
+const PER_VIEWER = new Set(['resolutionState', 'colWidths', 'activeIndex', 'tabWidths']);
+function normalize(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(normalize);
+  if (typeof value !== 'object' || value === null) return value;
+  const out: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value)) {
+    if (PER_VIEWER.has(key)) continue;
+    if (key === '$') {
+      const state = { ...(child as Record<string, unknown>) };
+      delete state.mdListMarker;
+      if (Object.keys(state).length > 0) out[key] = normalize(state);
+      continue;
+    }
+    out[key] = normalize(child);
+  }
+  return out;
+}
+const tree = (peer: Peer) => stringify(normalize(peer.editor.getEditorState().toJSON()));
 const settle = () => new Promise(resolve => setTimeout(resolve, 0));
 
 /** Every attribute key on every element of the shared tree, depth first. */
