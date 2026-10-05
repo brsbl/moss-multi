@@ -21,9 +21,9 @@ export class AckLedger {
     this.#pending.push(update);
   }
 
-  /** Replay only unacknowledged writes if a channel recovers without reconnecting. */
-  pendingUpdate(): Uint8Array | null {
-    return this.#pending.length ? Y.mergeUpdates(this.#pending) : null;
+  /** The unacknowledged writes, one update per local transaction, in order: what a replay sends (replay.ts). */
+  pending(): readonly Uint8Array[] {
+    return this.#pending;
   }
 
   /** Reads an ack; true when it settles every pending write. */

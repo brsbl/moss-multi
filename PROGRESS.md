@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 63% done** (53 of 84 planned tasks verified)
+**Overall: 64% done** (54 of 84 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -8,7 +8,7 @@
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 15 / 19 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 7 / 11 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 10 / 12 | in progress |
-| M4 Comments | Moss's full comment experience as CRDT data | 2 / 5 | in progress |
+| M4 Comments | Moss's full comment experience as CRDT data | 3 / 5 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 2 / 5 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
@@ -70,6 +70,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-05 — T3.8 verified: the read-only viewer package (`@moss-multi/viewer` 1.0.0) shows every M3 node family, media with Range-served video, live sandboxed HTML and theme-following embeds through injected services, with no mutating controls, and CI packs it as the `moss-viewer` release artifact with a checksum and source commit.
 - 2026-10-05 — T3.2s verified: uploads, remote-image imports, cross-note copies and duplicates carrying media all pass the same 60/min upload window (429) and vault quota (413), and the outbound-fetch validator refuses non-443 ports, single-label hosts, Teredo, IPv4-translated and IDN or fullwidth forms of blocked hosts on every redirect hop.
 - 2026-10-05 — T4.1 verified: comments now exist as records inside the note, written only by the server under a reserved writer id that no client frame can touch; the comment API creates comments with a server-computed quote within per-note and per-person caps, imports Moss comment markers and exports clean Markdown, and a duplicate drops its comment records as Moss does.
+- 2026-10-05 — T4.2 verified: a comment now follows its text through every edit, from any client or the server, orphans instead of jumping when its text is lost, and reattaches only when undo or reconnect restores that exact text, with per-frame cost bounded by the frame and offline edits replayed before a reconnecting client can write.
 - 2026-10-05 — T5.2 verified: the server refuses any body write from a suggester loudly by role, and stores what they send as suggestion records under a per-connection lease that only that live connection can extend, so a suggester can never change the note body.
 
 ## T1.1s identity audit
@@ -156,8 +157,8 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T2.4 checker: `GET /api/docs/:id` returns the owner's real `folderId` to a link holder, unlike `/api/workspace`'s synthetic root (METHOD: never the owner's vault or folder ids) → T2.5/T2.6 access follow-up
 - T2.4 checker: a share counts as redeemed on any doc load or socket admission, so a grantee idling on an empty workspace auto-opens the new share and the owner sees their name within seconds → count only an explicit open (T2.8 invites)
 - A signed-out share-link visitor (and any viewer of the active vault) is offered "+ Note", which fails with "Could not create note. Try again." → T2.6 (capability helper)
-- T4.0 checker P2: keystrokes in a block whose right origin is a deleted commented paragraph now run the exact reattach check per orphan group (bounded, no jump); the owner summary's "a keystroke does no comment work" overstates this.
-- T4.0 checker P2: comments.md §5.3 "Why an honest retype cannot reattach" reads as unconditional; it should name the coalesced-frame exception (text and paragraph deleted in one frame, paragraph restored, exact retype reattaches) already covered by §8 and P2 #2.
+- ~~T4.0 checker P2: keystrokes in a block whose right origin is a deleted commented paragraph now run the exact reattach check per orphan group (bounded, no jump); the owner summary's "a keystroke does no comment work" overstates this.~~ → closed in T4.2: the summary names the one grouped check, and §5.6 measures it.
+- ~~T4.0 checker P2: comments.md §5.3 "Why an honest retype cannot reattach" reads as unconditional; it should name the coalesced-frame exception (text and paragraph deleted in one frame, paragraph restored, exact retype reattaches) already covered by §8 and P2 #2.~~ → closed in T4.2: §5.3 names the exception.
 - T4.1 checker P2: five guard cases (history tail splice, fully held struct, missing rightOrigin, cycles, mid-apply throw) run only in the Node DocDO harness (`packages/sync/test/harness/comments-docdo.test.ts`), not in workerd; j15-comments-guard covers the rest in workerd and both engines.
 - T4.1 checker P2: a comment request authorized while the note was live can still land after trash has settled: `DocDO.createComment` checks only the active trash hold, not the persisted deleted flag.
 - T4.1 checker P2: only the comment route reads the body after access resolves; rename (`api/docs.ts`) and the asset routes still read the body first and do not check the trash hold at the DocDO write.

@@ -1,10 +1,10 @@
-// T4.0 never-jump and integrity scenes (docs/design/comments.md §0 I3-I5): each comment stays orphaned or stays on
-// its own text. Equal text is a different occurrence unless it lies inside the comment's own gap or lost place.
+// T4.0 never-jump and integrity scenes against the real DocDO (T4.2; docs/design/comments.md §0 I3-I5): each comment
+// stays orphaned or on its own text. Equal text is a different occurrence unless it lies inside the comment's own gap
+// or lost place.
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { liveUnits } from '@moss-multi/core/anchor-frame';
-import type { FrameVerdict } from '../../src/doc/comments-host.ts';
-import { $block, $caret, $select, scene, type Scene } from './comments-scene.ts';
+import { $block, $caret, $select, scene, type FrameVerdict, type Scene } from './comments-scene.ts';
 import { forged, raw } from './raw-frames.ts';
 
 const TWINS = 'TODO: fix this\n\nTODO: fix this\n\nTail.';
@@ -24,65 +24,65 @@ function idsOf(s: Scene, quote: string, nth = 0): { before: Y.ID; first: Y.ID; l
 }
 
 describe('T4.0 never-jump: a comment stays orphaned or on its own text @p:tech-3 @p:R18', () => {
-  it('two identical lines: deleting the commented one never moves the comment to the other', () => scene((s) => {
+  it('two identical lines: deleting the commented one never moves the comment to the other', () => scene(async (s) => {
     const a = s.peer();
-    s.comment('c1', 'TODO: fix this', 1);
+    await s.comment('c1', 'TODO: fix this', 1);
     a.edit(() => $block(1).remove());
-    accepted(a.send());
+    accepted(await a.send());
     orphaned(s);
     a.edit(() => $caret('Tail').insertText('More. '));
-    accepted(a.send());
+    accepted(await a.send());
     orphaned(s);
   }, TWINS));
 
-  it('forged edge copies around new text leave it orphaned', () => scene((s) => {
+  it('forged edge copies around new text leave it orphaned', () => scene(async (s) => {
     const a = s.peer();
-    s.comment('c1', 'brown fox');
+    await s.comment('c1', 'brown fox');
     const { before, first, last } = idsOf(s, 'brown fox');
     a.edit(() => $select('brown fox').removeText());
-    accepted(a.send());
+    accepted(await a.send());
     orphaned(s);
     const frame = raw([
       forged(Y.createID(4242, 0), { origin: before, right: first }, new Y.ContentString('b')),
       forged(Y.createID(4242, 1), { origin: Y.createID(4242, 0), right: first }, new Y.ContentString('EVIL')),
       forged(Y.createID(4242, 5), { origin: Y.createID(4242, 4), right: last }, new Y.ContentString('x')),
     ]);
-    accepted([s.deliver(frame)]);
+    accepted([await s.deliver(frame)]);
     orphaned(s);
   }));
 
-  it('a forged item whose origin is a distant live item and whose right origin is the deleted character leaves it orphaned', () => scene((s) => {
+  it('a forged item whose origin is a distant live item and whose right origin is the deleted character leaves it orphaned', () => scene(async (s) => {
     const a = s.peer();
-    s.comment('c1', 'brown fox');
+    await s.comment('c1', 'brown fox');
     const { first } = idsOf(s, 'brown fox');
     const far = idsOf(s, 'Second').first;
     a.edit(() => $select('brown fox').removeText());
-    accepted(a.send());
+    accepted(await a.send());
     const frame = raw([forged(Y.createID(4242, 0), { origin: far, right: first }, new Y.ContentString('brown fox'))]);
-    accepted([s.deliver(frame)]);
+    accepted([await s.deliver(frame)]);
     orphaned(s);
   }));
 
-  it('a stale peer typing inside the deleted span keeps it orphaned, even after the deleter undoes', () => scene((s) => {
+  it('a stale peer typing inside the deleted span keeps it orphaned, even after the deleter undoes', () => scene(async (s) => {
     const a = s.peer();
     const b = s.peer();
-    s.comment('c1', 'brown fox');
+    await s.comment('c1', 'brown fox');
     s.offline(b);
     a.edit(() => $select('brown fox').removeText());
-    accepted(a.send());
+    accepted(await a.send());
     orphaned(s);
     b.edit(() => $caret('own').insertText('X'));
     s.online(b);
-    accepted(b.send());
+    accepted(await b.send());
     orphaned(s);
     a.undo();
-    accepted(a.send());
+    accepted(await a.send());
     expect(a.text()).toContain('brXown fox');
     orphaned(s);
   }));
 
-  it('a decorator swapped for a different one in the same place orphans its block comment', () => scene((s) => {
-    s.comment('c1', '￼', 0, 'block');
+  it('a decorator swapped for a different one in the same place orphans its block comment', () => scene(async (s) => {
+    await s.comment('c1', '￼', 0, 'block');
     const client = new Y.Doc();
     Y.applyUpdate(client, Y.encodeStateAsUpdate(s.server));
     const found = (function find(type: Y.XmlText): [Y.XmlText, number, Y.XmlElement] | null {
@@ -106,25 +106,25 @@ describe('T4.0 never-jump: a comment stays orphaned or on its own text @p:tech-3
       parent.delete(index, 1);
       parent.insertEmbed(index, swap);
     });
-    accepted([s.deliver(Y.encodeStateAsUpdate(client, Y.encodeStateVector(s.server)))]);
+    accepted([await s.deliver(Y.encodeStateAsUpdate(client, Y.encodeStateVector(s.server)))]);
     orphaned(s);
     client.destroy();
   }, 'Before.\n\n![one](one.png)\n\nAfter.'));
 
-  it('an identical paste over a different occurrence never takes the deleted comment', () => scene((s) => {
+  it('an identical paste over a different occurrence never takes the deleted comment', () => scene(async (s) => {
     const a = s.peer();
-    s.comment('c1', 'TODO: fix this', 1);
+    await s.comment('c1', 'TODO: fix this', 1);
     a.edit(() => $select('TODO: fix this', 1).removeText());
-    accepted(a.send());
+    accepted(await a.send());
     orphaned(s);
     a.edit(() => $select('TODO: fix this', 0).insertText('TODO: fix this'));
-    accepted(a.send());
+    accepted(await a.send());
     orphaned(s);
   }, TWINS));
 
-  it('a frame that keeps one of two identical passages never picks one for the comment', () => scene((s) => {
-    s.comment('c1', 'brown fox');
-    s.comment('c2', 'brown fox', 1);
+  it('a frame that keeps one of two identical passages never picks one for the comment', () => scene(async (s) => {
+    await s.comment('c1', 'brown fox');
+    await s.comment('c2', 'brown fox', 1);
     const client = new Y.Doc();
     Y.applyUpdate(client, Y.encodeStateAsUpdate(s.server));
     const paragraph = client.get('root', Y.XmlText).toDelta()[0].insert as Y.XmlText;
@@ -141,7 +141,7 @@ describe('T4.0 never-jump: a comment stays orphaned or on its own text @p:tech-3
       paragraph.delete(index, 'brown fox brown fox'.length);
       paragraph.insert(index, 'brown fox');
     });
-    accepted([s.deliver(Y.encodeStateAsUpdate(client, Y.encodeStateVector(s.server)))]);
+    accepted([await s.deliver(Y.encodeStateAsUpdate(client, Y.encodeStateVector(s.server)))]);
     orphaned(s, 'c1');
     orphaned(s, 'c2');
     client.destroy();
