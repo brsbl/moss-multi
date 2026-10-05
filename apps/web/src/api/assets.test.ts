@@ -2,6 +2,8 @@
 // sandboxed SVG; editors upload, readers (a share link included) read. A doc's media are its own record, mapping each
 // `assets/<file>` it uses to the exact version placed in it: never a filename looked up in its folder.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { MEDIA_CAP_BYTES } from '@moss-multi/protocol/media';
+import { UPLOAD_RATE, VAULT_MEDIA_QUOTA_BYTES } from '@moss-multi/protocol/limits';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
 import { BASE, insertDoc, insertFolder, insertGrant, insertLink, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
 import { handleApi } from './router.ts';
@@ -27,10 +29,21 @@ const DocDO = {
   }),
 };
 
-/** Workspace notifications and REST write tokens, which these tests never count. */
+/** Workspace notifications and REST write tokens, which these tests never count; upload tokens counted per window name
+ * (the PrincipalDO's persisted window is tested in packages/sync's harness). */
+const uploadsTaken = new Map<string, number>();
 const PrincipalDO = {
   idFromName: (name: string) => ({ name, toString: () => name }),
-  get: () => ({ setName: async () => undefined, publish: async () => undefined, takeWriteToken: async () => true }),
+  get: (id: { name: string }) => ({
+    setName: async () => undefined,
+    publish: async () => undefined,
+    takeWriteToken: async () => true,
+    takeUploadToken: async () => {
+      const taken = (uploadsTaken.get(id.name) ?? 0) + 1;
+      uploadsTaken.set(id.name, taken);
+      return taken <= UPLOAD_RATE.max;
+    },
+  }),
 };
 
 let d1: TestD1;
@@ -58,9 +71,9 @@ function call(method: string, path: string, cookie: string | null, init: { body?
   } as RequestInit), env);
 }
 
-const upload = (cookie: string | null, docId: string, filename: string, bytes: Uint8Array<ArrayBuffer>, contentType = '') =>
+const upload = (cookie: string | null, docId: string, filename: string, bytes: Uint8Array<ArrayBuffer>, contentType = '', headers: Record<string, string> = {}) =>
   call('POST', `/api/docs/${docId}/assets?filename=${encodeURIComponent(filename)}`, cookie, {
-    body: bytes, headers: contentType ? { 'content-type': contentType } : {},
+    body: bytes, headers: { ...(contentType ? { 'content-type': contentType } : {}), ...headers },
   });
 
 interface Uploaded { relativePath: string; filename: string; asset: { id: string; versionId: string; size: number } }
@@ -153,6 +166,78 @@ describe('upload (A§16)', () => {
     expect(second.filename).not.toBe(first.filename);
     expect(await bytesOf(await call('GET', `/api/docs/${docId}/assets/${second.filename}`, ada.cookie))).toEqual(OTHER_PNG);
     expect(await bytesOf(await call('GET', `/api/docs/${docId}/assets/${first.filename}`, ada.cookie))).toEqual(PNG);
+  });
+});
+
+describe('upload bounds (T3.1s)', () => {
+  it('refuses a chunked upload past the cap with 413 as the stream passes it, never reading the rest', async () => {
+    const docId = await insertDoc(d1.db, ada);
+    const CHUNK = 1024 * 1024;
+    const total = 40 * CHUNK;
+    let pulled = 0;
+    // No Content-Length: the body is a stream that would deliver four times the image cap.
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (pulled >= total) {
+          controller.close();
+          return;
+        }
+        pulled += CHUNK;
+        controller.enqueue(new Uint8Array(CHUNK));
+      },
+    });
+    const sent = await call('POST', `/api/docs/${docId}/assets?filename=chunked.png`, ada.cookie, { body, headers: { 'content-type': 'image/png' } });
+    expect(sent.status, await sent.clone().text()).toBe(413);
+    expect(pulled, 'the body is read no further than the cap').toBeLessThanOrEqual(MEDIA_CAP_BYTES.image + 3 * CHUNK);
+  });
+
+  it('refuses an invalid Content-Length with 400', async () => {
+    const docId = await insertDoc(d1.db, ada);
+    const sent = await upload(ada.cookie, docId, 'bad-length.png', PNG, 'image/png', { 'content-length': 'abc' });
+    expect(sent.status, await sent.clone().text()).toBe(400);
+  });
+
+  it('refuses the upload past the per-identity window with 429 and a sentence', async () => {
+    const dee = await signedUpUser(env, 'assets-rate-dee', 'Dee');
+    const docId = await insertDoc(d1.db, dee);
+    for (let i = 0; i < UPLOAD_RATE.max; i += 1) {
+      expect((await upload(dee.cookie, docId, 'burst.png', PNG, 'image/png')).status, `upload ${i + 1}`).toBe(201);
+    }
+    const refused = await upload(dee.cookie, docId, 'burst.png', PNG, 'image/png');
+    expect(refused.status).toBe(429);
+    expect(refused.headers.get('retry-after')).toBe(String(UPLOAD_RATE.windowMs / 1000));
+    expect(((await refused.json()) as { message: string }).message).toMatch(/too many uploads/i);
+    const copy = JSON.stringify({ sourceNoteId: docId, sourceRelativePath: 'assets/burst.png' });
+    const copied = await call('POST', `/api/docs/${docId}/assets/copy`, dee.cookie, { body: copy, headers: { 'content-type': 'application/json' } });
+    expect(copied.status, 'a cross-note copy counts as an upload').toBe(429);
+  });
+
+  it('counts holders of a link under the link and their IP, whichever account they use', async () => {
+    const docId = await insertDoc(d1.db, ada);
+    const token = await insertLink(d1.db, { docId }, 'editor');
+    const [eve, fay] = [await signedUpUser(env, 'assets-rate-eve', 'Eve'), await signedUpUser(env, 'assets-rate-fay', 'Fay')];
+    const viaLink = (who: TestUser, ip: string) => call('POST', `/api/docs/${docId}/assets?filename=linked-burst.png&share=${token}`, who.cookie, {
+      body: PNG, headers: { 'content-type': 'image/png', 'cf-connecting-ip': ip },
+    });
+    for (let i = 0; i < UPLOAD_RATE.max; i += 1) expect((await viaLink(eve, '203.0.113.7')).status, `upload ${i + 1}`).toBe(201);
+    expect((await viaLink(fay, '203.0.113.7')).status, 'another account on the same link and IP').toBe(429);
+    expect((await viaLink(fay, '203.0.113.8')).status, 'the same link from another IP').toBe(201);
+  });
+
+  it('enforces a per-vault media quota with 413, over every folder in the vault', async () => {
+    const gil = await signedUpUser(env, 'assets-quota-gil', 'Gil');
+    const nested = await insertFolder(d1.db, gil, gil.homeId);
+    const docId = await insertDoc(d1.db, gil, { folderId: nested });
+    await uploaded(await upload(gil.cookie, docId, 'fits.png', PNG, 'image/png'));
+    // Fill the vault to within a few bytes of its quota with an asset in its root folder.
+    await d1.db.prepare("INSERT INTO assets (id, folder_id, filename, kind, content_type, size, current_version_id, created_by, created_at) VALUES (?1, ?2, 'filler.mp4', 'video', 'video/mp4', ?3, NULL, ?4, ?5)")
+      .bind(crypto.randomUUID(), gil.homeId, VAULT_MEDIA_QUOTA_BYTES - PNG.byteLength - 4, gil.id, Date.now()).run();
+    const refused = await upload(gil.cookie, docId, 'over.png', OTHER_PNG, 'image/png');
+    expect(refused.status).toBe(413);
+    expect(((await refused.json()) as { message: string }).message).toMatch(/storage/i);
+    // Another person's vault is untouched.
+    const own = await insertDoc(d1.db, ada);
+    expect((await upload(ada.cookie, own, 'over.png', OTHER_PNG, 'image/png')).status).toBe(201);
   });
 });
 
