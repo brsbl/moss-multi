@@ -7,7 +7,7 @@ import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import { recordDigest, type DeletePart, type RecordMeta } from '@moss-multi/core/suggest/apply';
 import { SuggestIngest } from '../doc/suggest.ts';
 import { ForkShim } from './fork-shim.ts';
-import { createRecord, opsOf, partsOf, readMeta, readRecord, SUGGESTIONS_ORIGIN } from './records.ts';
+import { createRecord, opsOf, partsOf, readMeta, readRecord, writeSuggestions } from './records.ts';
 import { acceptRecord, nodeRegistry, previewRecord, rejectRecord, withdrawRecord } from './review.ts';
 import {
   bodyOf, changedRoots, codeBlock, deterministicIds, editorEdits, EDITOR, insertBlock, listItem, OTHER_SUGGESTER, select, seededBody, spansOfText,
@@ -22,26 +22,40 @@ afterEach(() => restore());
 
 function setup() {
   const live = seededBody();
-  const ingest = new SuggestIngest(live, { stateCap: STATE_CAP_BYTES, registry: nodeRegistry() });
+  /** The record ids the next leases are minted with, so tests can name them. */
+  const named: string[] = [];
+  let minted = 0;
+  const ingest = new SuggestIngest(live, { stateCap: STATE_CAP_BYTES, registry: nodeRegistry(), mintId: () => named.shift() ?? `minted-${(minted += 1)}` });
   const forks: ForkShim[] = [];
+  const actor = (who: typeof SUGGESTER) => ({ ...who, role: 'suggester', connection: `connection-${who.id}-${forks.length}` });
+  /** A lease for `who`, minted with record id `id` unless that record exists already. */
+  const lease = (id: string, who = SUGGESTER) => {
+    if (!readMeta(live, id)) named.push(id);
+    const leased = ingest.lease(actor(who), [], 1);
+    if (!leased.ok) throw new Error(`lease refused: ${leased.reason}`);
+    return { who: actor(who), client: leased.leases[0].client };
+  };
   /** A suggester's fork makes `steps` into record `id`. */
   const suggest = (id: string, steps: (() => void)[], who = SUGGESTER) => {
-    const [lease] = ingest.lease(who.id);
-    const fork = new ForkShim(live, lease);
+    const leased = lease(id, who);
+    const fork = new ForkShim(live, leased.client);
     forks.push(fork);
     for (const step of steps) fork.act(step);
     for (const update of fork.sent) {
-      const result = ingest.ops(who, 'suggester', id, update);
+      const result = ingest.ops(leased.who, id, update);
       if (!result.ok) throw new Error(`ingest refused: ${result.reason}`);
     }
     return fork;
   };
+  /** A delete part into record `id`, as `who`. */
+  const proposeDelete = (id: string, part: { id: string; targets: { client: number; clock: number; len: number }[] }, who = SUGGESTER) =>
+    ingest.delete(lease(id, who).who, id, part);
   const accept = (id: string, hash?: string) => {
     const record = readRecord(live, id)!;
     const preview = previewRecord(live, id);
     return acceptRecord(live, id, { previewHash: hash ?? (preview.ok ? preview.hash : 'none'), digest: recordDigest(record) }, EDITOR);
   };
-  return { live, ingest, suggest, accept, dispose: () => forks.forEach((fork) => fork.dispose()) };
+  return { live, ingest, suggest, proposeDelete, accept, dispose: () => forks.forEach((fork) => fork.dispose()) };
 }
 
 const LEASED = 0x7fff1234;
@@ -51,11 +65,11 @@ function forgeRecord(live: Y.Doc, id: string, clients: number[], ops: Uint8Array
   const meta: RecordMeta = {
     v: 2, id, author: SUGGESTER.id, authorName: SUGGESTER.name, source: 'live', createdAt: 1, updatedAt: 1, status: 'open', clients,
   };
-  live.transact(() => {
+  writeSuggestions(live, () => {
     createRecord(live, meta);
     opsOf(live, id).push(ops);
     partsOf(live, id).push(parts);
-  }, SUGGESTIONS_ORIGIN);
+  });
 }
 
 /** The updates `write`'s transactions emit on a copy of `live` under `client`, as a fork's provider sends them. */
@@ -103,10 +117,10 @@ function paragraphNaming(doc: Y.Doc, key: string): void {
 
 describe('T5.0 reject and withdraw never write the body @p:mean-2 @p:R16', () => {
   it.each(['reject', 'withdraw'] as const)('%s leaves the body byte-identical; only meta, ops and parts change', (how) => {
-    const { live, ingest, suggest, dispose } = setup();
+    const { live, suggest, proposeDelete, dispose } = setup();
     try {
       suggest('r1', [() => select('Hello', 24).insertText(' More.')]);
-      expect(ingest.delete(SUGGESTER, 'suggester', 'r1', { id: 'd1', targets: spansOfText(live, 'world') })).toMatchObject({ ok: true });
+      expect(proposeDelete('r1', { id: 'd1', targets: spansOfText(live, 'world') })).toMatchObject({ ok: true });
       const body = bodyOf(live);
       const watch = changedRoots(live);
       const result = how === 'reject' ? rejectRecord(live, 'r1', EDITOR) : withdrawRecord(live, 'r1', { id: SUGGESTER.id, role: 'suggester' });
@@ -276,9 +290,9 @@ describe('T5.0 G5: a record whose context changed is outdated @p:mean-2', () => 
   });
 
   it('an editor deletes a delete-part target', () => {
-    const { live, ingest, accept, dispose } = setup();
+    const { live, proposeDelete, accept, dispose } = setup();
     try {
-      expect(ingest.delete(SUGGESTER, 'suggester', 'r1', { id: 'd1', targets: spansOfText(live, 'world') })).toMatchObject({ ok: true });
+      expect(proposeDelete('r1', { id: 'd1', targets: spansOfText(live, 'world') })).toMatchObject({ ok: true });
       editorEdits(live, () => select('Hello', 6, 11).removeText());
       outdated(live, () => accept('r1'), 'r1');
     } finally {

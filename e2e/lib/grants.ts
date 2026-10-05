@@ -3,7 +3,7 @@
 import type { Actor } from './actors.ts';
 import type { Principal } from './principals.ts';
 
-export type GrantRole = 'viewer' | 'commenter' | 'editor';
+export type GrantRole = 'viewer' | 'commenter' | 'suggester' | 'editor';
 
 /** `owner` grants `member` a role on the doc through `POST /api/docs/:id/members`. */
 export async function grantDoc(owner: Actor, docId: string, member: Principal, role: GrantRole = 'editor'): Promise<void> {

@@ -1,27 +1,160 @@
-// Suggest-mode ingest in the DocDO (docs/design/suggestions.md §3): bookkeeping, not authorization. Leases, the
-// `suggest-ops` append and `suggest-delete` validation, each O(frame). Nothing here writes the body: a record's ops
-// reach it only through an editor's accept. The spike keeps leases in memory; T5.2 persists them in
-// `suggest_leases` and wires the doc-socket frames.
+// Suggest-mode ingest in the DocDO (docs/design/suggestions.md §3): bookkeeping, not authorization. Leases, record
+// ids, `suggest-ops`, `suggest-delete`, merge, undelete and withdraw, each O(frame): no call reads more than the
+// records and leases it names, so cost never grows with the doc, its closed records or a continuation chain. Nothing
+// here writes the body: a record's ops reach it only through an editor's accept (T5.3).
 import * as Y from 'yjs';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
-import { BODY_ROOTS, type IdSpan, type RecordMeta } from '@moss-multi/core/suggest/apply';
-import { createRecord, opsOf, partsOf, patchMeta, readMeta, readRecord, recordIds, SUGGESTIONS_ORIGIN } from '../suggest/records.ts';
+import { SUGGEST_LIMITS, type IdSpan, type LeaseGrant, type SuggestReply, type SuggestRefusal, type SuggestRequest } from '@moss-multi/protocol/suggest';
+import { base64ToBytes } from '@moss-multi/protocol/sync';
+import { BODY_ROOTS, type DeletePart, type RecordMeta } from '@moss-multi/core/suggest/apply';
+import {
+  closeRecord, createRecord, onRecordClosed, opsOf, partsOf, patchMeta, readMeta, readRecord, recordIds, suggestionsWriter, writeSuggestions,
+} from '../suggest/records.ts';
 
-export interface SuggestPrincipal {
+/** Who sends a suggest frame: the principal, its live role, and the connection (a server-minted nonce). */
+export interface Suggester {
   id: string;
   name: string;
+  role: string;
+  connection: string;
 }
 
 export interface Lease {
   client: number;
   principal: string;
+  /** The connection that may write with it. */
+  connection: string;
+  /** The record id minted with it. */
+  reserved: string;
+  /** The record it last wrote to; null until its first frame. */
   record: string | null;
+  /** The next clock it may send: everything below is acknowledged. */
   nextClock: number;
+  /** Its record was accepted: its body items are ordinary body text (design §4.3). */
   spent: boolean;
+  /** Its connection closed. */
+  expired: boolean;
+  usedAt: number;
+}
+
+/** Where leases live: DO SQLite in the DocDO (`suggest_leases`), memory in unit tests. */
+export interface LeaseStore {
+  get(client: number): Lease | undefined;
+  put(lease: Lease): void;
+  reservedFor(record: string): Lease | undefined;
+  /** Unspent, unexpired leases used since `since`. */
+  live(principal: string, since: number): number;
+  expireConnection(connection: string): void;
+  spend(record: string): void;
+  rebind(from: string, into: string): void;
+}
+
+export class MemoryLeases implements LeaseStore {
+  readonly #byClient = new Map<number, Lease>();
+  readonly #byReserved = new Map<string, Lease>();
+
+  get(client: number): Lease | undefined {
+    const lease = this.#byClient.get(client);
+    return lease && { ...lease };
+  }
+
+  put(lease: Lease): void {
+    this.#byClient.set(lease.client, { ...lease });
+    this.#byReserved.set(lease.reserved, this.#byClient.get(lease.client)!);
+  }
+
+  reservedFor(record: string): Lease | undefined {
+    const lease = this.#byReserved.get(record);
+    return lease && { ...lease };
+  }
+
+  live(principal: string, since: number): number {
+    let count = 0;
+    for (const lease of this.#byClient.values()) if (lease.principal === principal && !lease.spent && !lease.expired && lease.usedAt >= since) count += 1;
+    return count;
+  }
+
+  expireConnection(connection: string): void {
+    for (const lease of this.#byClient.values()) if (lease.connection === connection) lease.expired = true;
+  }
+
+  spend(record: string): void {
+    for (const lease of this.#byClient.values()) if (lease.record === record) lease.spent = true;
+  }
+
+  rebind(from: string, into: string): void {
+    for (const lease of this.#byClient.values()) if (lease.record === from) lease.record = into;
+  }
+}
+
+type Row = Record<string, ArrayBuffer | string | number | null>;
+
+export class SqlLeases implements LeaseStore {
+  constructor(private readonly sql: SqlStorage) {
+    sql.exec(`CREATE TABLE IF NOT EXISTS suggest_leases (client_id INTEGER PRIMARY KEY, principal_id TEXT NOT NULL,
+      connection_id TEXT NOT NULL, reserved_id TEXT NOT NULL UNIQUE, record_id TEXT, next_clock INTEGER NOT NULL,
+      spent INTEGER NOT NULL, expired INTEGER NOT NULL, used_at INTEGER NOT NULL)`);
+    sql.exec('CREATE INDEX IF NOT EXISTS suggest_leases_principal ON suggest_leases (principal_id, spent, expired)');
+    sql.exec('CREATE INDEX IF NOT EXISTS suggest_leases_record ON suggest_leases (record_id)');
+    sql.exec('CREATE INDEX IF NOT EXISTS suggest_leases_connection ON suggest_leases (connection_id)');
+  }
+
+  #one(query: string, ...bindings: (string | number)[]): Lease | undefined {
+    const row = this.sql.exec<Row>(query, ...bindings).toArray()[0];
+    if (!row) return undefined;
+    return {
+      client: Number(row.client_id),
+      principal: String(row.principal_id),
+      connection: String(row.connection_id),
+      reserved: String(row.reserved_id),
+      record: row.record_id === null ? null : String(row.record_id),
+      nextClock: Number(row.next_clock),
+      spent: Number(row.spent) === 1,
+      expired: Number(row.expired) === 1,
+      usedAt: Number(row.used_at),
+    };
+  }
+
+  get(client: number): Lease | undefined {
+    return this.#one('SELECT * FROM suggest_leases WHERE client_id = ?', client);
+  }
+
+  put(lease: Lease): void {
+    this.sql.exec(
+      `INSERT INTO suggest_leases (client_id, principal_id, connection_id, reserved_id, record_id, next_clock, spent, expired, used_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(client_id) DO UPDATE SET connection_id = excluded.connection_id,
+        record_id = excluded.record_id, next_clock = excluded.next_clock, spent = excluded.spent, expired = excluded.expired,
+        used_at = excluded.used_at`,
+      lease.client, lease.principal, lease.connection, lease.reserved, lease.record, lease.nextClock, lease.spent ? 1 : 0, lease.expired ? 1 : 0, lease.usedAt,
+    );
+  }
+
+  reservedFor(record: string): Lease | undefined {
+    return this.#one('SELECT * FROM suggest_leases WHERE reserved_id = ?', record);
+  }
+
+  live(principal: string, since: number): number {
+    const row = this.sql.exec<Row>(
+      'SELECT COUNT(*) AS n FROM suggest_leases WHERE principal_id = ? AND spent = 0 AND expired = 0 AND used_at >= ?', principal, since,
+    ).toArray()[0];
+    return Number(row?.n ?? 0);
+  }
+
+  expireConnection(connection: string): void {
+    this.sql.exec('UPDATE suggest_leases SET expired = 1 WHERE connection_id = ?', connection);
+  }
+
+  spend(record: string): void {
+    this.sql.exec('UPDATE suggest_leases SET spent = 1 WHERE record_id = ?', record);
+  }
+
+  rebind(from: string, into: string): void {
+    this.sql.exec('UPDATE suggest_leases SET record_id = ? WHERE record_id = ?', into, from);
+  }
 }
 
 export const SUGGEST_CAPS = {
-  /** Bytes of ops per record. */
+  /** Bytes of ops (and delete parts) per record. */
   recordOpsBytes: 256 * 1024,
   openPerPrincipal: 20,
   /** All open records' ops, as a share of the state cap. */
@@ -31,60 +164,96 @@ export const SUGGEST_CAPS = {
   partItems: 20_000,
 } as const;
 
-export type IngestRefusal =
-  | 'role'
-  | 'malformed'
-  | 'not-author'
-  | 'record-closed'
-  | 'lease'
-  | 'clock-gap'
-  | 'record-cap'
-  | 'open-cap'
-  | 'ops-cap'
-  | 'node-type'
-  | 'target';
-
-export type IngestResult = { ok: true; record: string; clocks: Record<number, number> } | { ok: false; reason: IngestRefusal };
+export type IngestResult =
+  | { ok: true; record: string; requested: string; sv: Record<string, number>; parts: string[] }
+  | { ok: false; reason: SuggestRefusal };
 
 export interface IngestOptions {
   stateCap: number;
   /** Registered Lexical node types (`__type` values). */
   registry: ReadonlySet<string>;
   now?: () => number;
+  leases?: LeaseStore;
+  /** The doc's encoded state now, for the projected state cap. */
+  stateBytes?: () => number;
+  /** Record ids; a random UUID unless a test pins them. */
+  mintId?: () => string;
 }
 
 const RECORD_ID = /^[A-Za-z0-9_-]{1,64}$/;
+const refused = (reason: SuggestRefusal): { ok: false; reason: SuggestRefusal } => ({ ok: false, reason });
+
+interface Info {
+  author: string;
+  /** Bytes of ops and parts while open. */
+  bytes: number;
+  open: boolean;
+}
+
+type Target = { ok: true; id: string; create: boolean; continues?: string; base: string } | { ok: false; reason: SuggestRefusal };
+
+const partBytes = (part: DeletePart) => part.id.length + part.quote.length * 2 + part.targets.length * 24 + 16;
 
 export class SuggestIngest {
-  readonly leases = new Map<number, Lease>();
-  /** Bytes of ops per open record, so the caps never re-read the doc. */
-  readonly #bytes = new Map<string, number>();
+  readonly leases: LeaseStore;
+  /** Every record, so a frame never reads another record's meta. */
+  readonly #info = new Map<string, Info>();
+  /** A closed record's successor: its continuation, or the record it merged into. Path-compressed on read. */
+  readonly #next = new Map<string, string>();
+  readonly #open = new Map<string, Set<string>>();
+  #openBytes = 0;
 
   constructor(
     readonly doc: Y.Doc,
     readonly options: IngestOptions,
   ) {
+    this.leases = options.leases ?? new MemoryLeases();
     for (const id of recordIds(doc)) {
       const record = readRecord(doc, id);
-      if (record?.meta.status === 'open') this.#bytes.set(id, record.ops.reduce((sum, op) => sum + op.byteLength, 0));
+      if (!record) continue;
+      const open = record.meta.status === 'open';
+      const bytes = open ? record.ops.reduce((sum, op) => sum + op.byteLength, 0) + record.parts.reduce((sum, part) => sum + partBytes(part), 0) : 0;
+      this.#track(id, record.meta.author, bytes, open);
+      const next = record.meta.mergedInto ?? record.meta.continuedBy;
+      if (next) this.#next.set(id, next);
     }
+    onRecordClosed(doc, (id, meta) => this.#closed(id, meta));
   }
 
-  /** Fresh client ids, absent from the body's state vector and from every other lease. */
-  lease(principal: string, count = 2): number[] {
-    const out: number[] = [];
-    while (out.length < count) {
-      const client = crypto.getRandomValues(new Uint32Array(1))[0];
-      if (client === 0 || this.leases.has(client) || this.doc.store.clients.has(client)) continue;
-      this.leases.set(client, { client, principal, record: null, nextClock: 0, spent: false });
-      out.push(client);
+  /**
+   * Fresh leases for `who`'s connection, at most `SUGGEST_LIMITS.leaseBatch` and never past `liveLeases` live ones;
+   * or `resume` of `who`'s leases whose connection closed or idled, rebound to this one with their acknowledged clock.
+   */
+  lease(who: Suggester, resume: readonly number[] = [], count: number = SUGGEST_LIMITS.leaseBatch): { ok: true; leases: LeaseGrant[] } | { ok: false; reason: SuggestRefusal } {
+    if (!roleAtLeast(who.role, 'suggester')) return refused('role');
+    if (!Array.isArray(resume) || resume.length > SUGGEST_LIMITS.liveLeases) return refused('malformed');
+    const now = this.#now();
+    const since = now - SUGGEST_LIMITS.leaseIdleMs;
+    const grants: LeaseGrant[] = [];
+    for (const client of resume) {
+      const lease = typeof client === 'number' ? this.leases.get(client) : undefined;
+      if (!lease || lease.principal !== who.id) return refused('lease');
+      const held = !lease.expired && lease.usedAt >= since;
+      if (held && lease.connection !== who.connection) return refused('lease');
+      if (!held && !lease.spent && this.leases.live(who.id, since) >= SUGGEST_LIMITS.liveLeases) return refused('lease-cap');
+      this.leases.put({ ...lease, connection: who.connection, expired: false, usedAt: now });
+      grants.push({ client, record: lease.record === null ? lease.reserved : this.#head(lease.record), clock: lease.nextClock });
     }
-    return out;
+    const fresh = Math.min(Math.max(0, Math.floor(count)), SUGGEST_LIMITS.leaseBatch, SUGGEST_LIMITS.liveLeases - this.leases.live(who.id, since));
+    const writer = suggestionsWriter(this.doc)?.client;
+    for (let i = 0; i < fresh; i += 1) {
+      let client = 0;
+      while (client === 0 || client === writer || this.doc.store.clients.has(client) || this.leases.get(client)) client = crypto.getRandomValues(new Uint32Array(1))[0];
+      const reserved = this.#mint();
+      this.leases.put({ client, principal: who.id, connection: who.connection, reserved, record: null, nextClock: 0, spent: false, expired: false, usedAt: now });
+      grants.push({ client, record: reserved, clock: 0 });
+    }
+    return grants.length ? { ok: true, leases: grants } : refused('lease-cap');
   }
 
-  ops(principal: SuggestPrincipal, role: string, record: string, update: Uint8Array): IngestResult {
-    if (!roleAtLeast(role, 'suggester')) return { ok: false, reason: 'role' };
-    const target = this.#target(principal, record);
+  ops(who: Suggester, record: string, update: Uint8Array): IngestResult {
+    if (!roleAtLeast(who.role, 'suggester')) return refused('role');
+    const target = this.#target(who, record);
     if (!target.ok) return target;
     let meta: { from: Map<number, number>; to: Map<number, number> };
     let structs: (Y.Item | Y.GC | Y.Skip)[];
@@ -92,132 +261,261 @@ export class SuggestIngest {
       meta = Y.parseUpdateMeta(update);
       structs = Y.decodeUpdate(update).structs;
     } catch {
-      return { ok: false, reason: 'malformed' };
+      return refused('malformed');
     }
-    const chain = this.#chain(target.id);
+    const now = this.#now();
+    const leases: Lease[] = [];
     for (const [client, from] of meta.from) {
       const lease = this.leases.get(client);
-      if (!lease || lease.principal !== principal.id || (lease.record !== null && !chain.has(lease.record))) return { ok: false, reason: 'lease' };
-      if (from > lease.nextClock) return { ok: false, reason: 'clock-gap' };
+      if (!lease || lease.principal !== who.id || lease.connection !== who.connection || lease.expired || lease.usedAt < now - SUGGEST_LIMITS.leaseIdleMs) {
+        return refused('lease');
+      }
+      if (lease.record !== null && this.#head(lease.record) !== target.base) return refused('lease');
+      if (from > lease.nextClock) return refused('clock-gap');
+      // A record never holds two versions of one id.
+      if (from < lease.nextClock) return refused('clock-overlap');
+      leases.push(lease);
     }
     // An early, O(frame) reject of node types Lexical would not bind; G7 is the full check at accept.
     for (const struct of structs) {
       if (!(struct instanceof Y.Item) || struct.parentSub !== '__type') continue;
       const value = struct.content.getContent().at(-1);
-      if (typeof value !== 'string' || !this.options.registry.has(value)) return { ok: false, reason: 'node-type' };
+      if (typeof value !== 'string' || !this.options.registry.has(value)) return refused('node-type');
     }
-    const bytes = (this.#bytes.get(target.id) ?? 0) + update.byteLength;
-    if (bytes > SUGGEST_CAPS.recordOpsBytes) return { ok: false, reason: 'record-cap' };
-    if (this.#openBytes() + update.byteLength > this.options.stateCap * SUGGEST_CAPS.openOpsShare) return { ok: false, reason: 'ops-cap' };
-    if (target.create && this.#openCount(principal.id) >= SUGGEST_CAPS.openPerPrincipal) return { ok: false, reason: 'open-cap' };
+    const cap = this.#caps(who, target, update.byteLength);
+    if (cap) return refused(cap);
 
-    const now = this.options.now?.() ?? Date.now();
-    this.doc.transact(() => {
-      if (target.create) this.#create(principal, target.id, now, target.continues);
+    writeSuggestions(this.doc, () => {
+      if (target.create) this.#create(who, target.id, now, target.continues);
       opsOf(this.doc, target.id).push([update]);
       const current = readMeta(this.doc, target.id)!;
       patchMeta(this.doc, target.id, { updatedAt: now, clients: [...new Set([...current.clients, ...meta.from.keys()])] });
-    }, SUGGESTIONS_ORIGIN);
-    this.#bytes.set(target.id, bytes);
-    const clocks: Record<number, number> = {};
-    for (const [client, to] of meta.to) {
-      const lease = this.leases.get(client)!;
-      lease.record = target.id;
-      lease.nextClock = Math.max(lease.nextClock, to);
-      clocks[client] = lease.nextClock;
+    });
+    this.#grow(target.id, update.byteLength);
+    for (const lease of leases) {
+      this.leases.put({ ...lease, record: target.id, nextClock: meta.to.get(lease.client) ?? lease.nextClock, usedAt: now });
     }
-    return { ok: true, record: target.id, clocks };
+    return { ok: true, record: target.id, requested: record, sv: this.#sv(target.id), parts: [] };
   }
 
-  delete(principal: SuggestPrincipal, role: string, record: string, part: { id: string; targets: IdSpan[] }): IngestResult {
-    if (!roleAtLeast(role, 'suggester')) return { ok: false, reason: 'role' };
-    if (typeof part?.id !== 'string' || !RECORD_ID.test(part.id) || !Array.isArray(part.targets)) return { ok: false, reason: 'malformed' };
-    if (part.targets.length === 0 || part.targets.length > SUGGEST_CAPS.partSpans) return { ok: false, reason: 'target' };
-    const target = this.#target(principal, record);
+  delete(who: Suggester, record: string, part: { id: string; targets: IdSpan[] }): IngestResult {
+    if (!roleAtLeast(who.role, 'suggester')) return refused('role');
+    if (typeof part?.id !== 'string' || !RECORD_ID.test(part.id) || !Array.isArray(part.targets)) return refused('malformed');
+    if (part.targets.length === 0 || part.targets.length > SUGGEST_CAPS.partSpans) return refused('target');
+    const target = this.#target(who, record);
     if (!target.ok) return target;
     const quote = this.#quote(part.targets);
-    if (quote === null) return { ok: false, reason: 'target' };
-    if (target.create && this.#openCount(principal.id) >= SUGGEST_CAPS.openPerPrincipal) return { ok: false, reason: 'open-cap' };
-    const now = this.options.now?.() ?? Date.now();
-    const targets = part.targets.map(({ client, clock, len }) => ({ client, clock, len }));
-    this.doc.transact(() => {
-      if (target.create) this.#create(principal, target.id, now, target.continues);
-      partsOf(this.doc, target.id).push([{ id: part.id, kind: 'delete', targets, quote }]);
+    if (quote === null) return refused('target');
+    const stored: DeletePart = { id: part.id, kind: 'delete', targets: part.targets.map(({ client, clock, len }) => ({ client, clock, len })), quote };
+    const bytes = partBytes(stored);
+    const cap = this.#caps(who, target, bytes);
+    if (cap) return refused(cap);
+    const now = this.#now();
+    writeSuggestions(this.doc, () => {
+      if (target.create) this.#create(who, target.id, now, target.continues);
+      partsOf(this.doc, target.id).push([stored]);
       patchMeta(this.doc, target.id, { updatedAt: now });
-    }, SUGGESTIONS_ORIGIN);
-    this.#bytes.set(target.id, this.#bytes.get(target.id) ?? 0);
-    return { ok: true, record: target.id, clocks: {} };
+    });
+    this.#grow(target.id, bytes);
+    return { ok: true, record: target.id, requested: record, sv: this.#sv(target.id), parts: [part.id] };
   }
 
-  /** An editor's body frame naming a leased client id is refused `protected-type` (T5.2). O(frame). */
+  /** Takes back one delete part of an open record the author holds. */
+  undelete(who: Suggester, record: string, partId: string): IngestResult {
+    if (!roleAtLeast(who.role, 'suggester')) return refused('role');
+    if (typeof partId !== 'string') return refused('malformed');
+    const target = this.#target(who, record);
+    if (!target.ok) return target;
+    if (target.create) return refused('record');
+    const parts = partsOf(this.doc, target.id);
+    const index = parts.toArray().findIndex((part) => part.id === partId);
+    if (index < 0) return refused('target');
+    const bytes = partBytes(parts.get(index));
+    writeSuggestions(this.doc, () => {
+      parts.delete(index, 1);
+      patchMeta(this.doc, target.id, { updatedAt: this.#now() });
+    });
+    this.#grow(target.id, -bytes);
+    return { ok: true, record: target.id, requested: record, sv: this.#sv(target.id), parts: [] };
+  }
+
+  /** Moves `from`'s ops, parts and leases into `into`; both are the author's open records. Writes no body. */
+  merge(who: Suggester, into: string, from: string): IngestResult {
+    if (!roleAtLeast(who.role, 'suggester')) return refused('role');
+    const a = this.#target(who, into);
+    const b = this.#target(who, from);
+    if (!a.ok) return a;
+    if (!b.ok) return b;
+    if (a.create || b.create || a.continues || b.continues) return refused('record');
+    if (a.id === b.id) return { ok: true, record: a.id, requested: into, sv: this.#sv(a.id), parts: [] };
+    const moved = this.#info.get(b.id)!.bytes;
+    if (this.#info.get(a.id)!.bytes + moved > SUGGEST_CAPS.recordOpsBytes) return refused('record-cap');
+    const now = this.#now();
+    const source = readRecord(this.doc, b.id)!;
+    writeSuggestions(this.doc, () => {
+      opsOf(this.doc, a.id).push(source.ops);
+      partsOf(this.doc, a.id).push(source.parts);
+      const current = readMeta(this.doc, a.id)!;
+      patchMeta(this.doc, a.id, { updatedAt: now, clients: [...new Set([...current.clients, ...source.meta.clients])] });
+      patchMeta(this.doc, b.id, { status: 'withdrawn', mergedInto: a.id, resolvedBy: who.id, resolvedAt: now });
+      const ops = opsOf(this.doc, b.id);
+      const parts = partsOf(this.doc, b.id);
+      ops.delete(0, ops.length);
+      parts.delete(0, parts.length);
+    });
+    this.#next.set(b.id, a.id);
+    this.leases.rebind(b.id, a.id);
+    this.#closed(b.id, null);
+    this.#grow(a.id, moved);
+    return { ok: true, record: a.id, requested: into, sv: this.#sv(a.id), parts: [] };
+  }
+
+  /** The author closes an open record: status only, the body is never written (I4). */
+  withdraw(who: Suggester, record: string): IngestResult {
+    if (!roleAtLeast(who.role, 'suggester')) return refused('role');
+    const target = this.#target(who, record);
+    if (!target.ok) return target;
+    if (target.create || target.continues) return refused('record');
+    closeRecord(this.doc, target.id, { status: 'withdrawn', resolvedBy: who.id, resolvedAt: this.#now() });
+    return { ok: true, record: target.id, requested: record, sv: {}, parts: [] };
+  }
+
+  /** The connection closed: its leases can no longer write until a `resume`. */
+  expireConnection(connection: string): void {
+    this.leases.expireConnection(connection);
+  }
+
+  /**
+   * True when a body frame carries new structs under a leased client id, which only a record may hold; O(frame).
+   * Structs the doc already holds (an accepted record's text echoed in a step 2) do not count.
+   */
   namesLease(update: Uint8Array): boolean {
-    for (const client of Y.parseUpdateMeta(update).from.keys()) if (this.leases.has(client)) return true;
+    let meta: { to: Map<number, number> };
+    try {
+      meta = Y.parseUpdateMeta(update);
+    } catch {
+      return false;
+    }
+    for (const [client, to] of meta.to) if (to > Y.getState(this.doc.store, client) && this.leases.get(client)) return true;
     return false;
   }
 
+  #now(): number {
+    return this.options.now?.() ?? Date.now();
+  }
+
+  #mint(): string {
+    for (;;) {
+      const id = this.options.mintId?.() ?? crypto.randomUUID();
+      if (RECORD_ID.test(id) && !this.#info.has(id) && !this.leases.reservedFor(id)) return id;
+    }
+  }
+
+  /** The record a chain of continuations and merges ends at. */
+  #head(id: string): string {
+    let head = id;
+    const path: string[] = [];
+    for (let next = this.#next.get(head); next !== undefined; next = this.#next.get(head)) {
+      path.push(head);
+      head = next;
+    }
+    for (const step of path) this.#next.set(step, head);
+    return head;
+  }
+
   /**
-   * Where a frame for `record` lands: the open record itself, a new record for an unused id, or a continuation of an
-   * accepted one. A rejected or withdrawn record refuses `record-closed`.
+   * Where a frame for `record` lands: the open head of its chain, a new record for an id minted to this principal,
+   * or a continuation of an accepted head (whatever the frame holds, delete-only included). A rejected or withdrawn
+   * head refuses `record-closed`. Ids nobody minted to this principal refuse `record`.
    */
-  #target(principal: SuggestPrincipal, record: string): { ok: true; id: string; create: boolean; continues?: string } | { ok: false; reason: IngestRefusal } {
-    if (typeof record !== 'string' || !RECORD_ID.test(record)) return { ok: false, reason: 'malformed' };
-    let id = record;
-    for (let hops = 0; hops < 64; hops++) {
-      const meta = readMeta(this.doc, id);
-      if (!meta) return { ok: true, id, create: true, continues: id === record ? undefined : record };
-      if (meta.author !== principal.id) return { ok: false, reason: 'not-author' };
-      if (meta.status === 'open') return { ok: true, id, create: false };
-      if (meta.status !== 'accepted') return { ok: false, reason: 'record-closed' };
-      if (meta.continuedBy) {
-        id = meta.continuedBy;
-        continue;
-      }
-      const next = `${record.slice(0, 48)}-c${hops + 1}`;
-      return { ok: true, id: next, create: true, continues: id };
+  #target(who: Suggester, record: string): Target {
+    if (typeof record !== 'string' || !RECORD_ID.test(record)) return refused('malformed');
+    const info = this.#info.get(record);
+    if (!info) {
+      const lease = this.leases.reservedFor(record);
+      if (!lease || lease.principal !== who.id) return refused('record');
+      return { ok: true, id: record, create: true, base: record };
     }
-    return { ok: false, reason: 'record-closed' };
+    if (info.author !== who.id) return refused('not-author');
+    const head = this.#head(record);
+    const meta = readMeta(this.doc, head);
+    if (!meta || meta.author !== who.id) return refused('not-author');
+    if (meta.status === 'open') return { ok: true, id: head, create: false, base: head };
+    if (meta.status === 'accepted') return { ok: true, id: this.#mint(), create: true, continues: head, base: head };
+    return refused('record-closed');
   }
 
-  /** The record and every record it continues: a lease bound to any of them may write here. */
-  #chain(id: string): Set<string> {
-    const chain = new Set([id]);
-    for (let meta = readMeta(this.doc, id); meta?.continues && !chain.has(meta.continues); meta = readMeta(this.doc, meta.continues)) {
-      chain.add(meta.continues);
-    }
-    return chain;
+  #caps(who: Suggester, target: Extract<Target, { ok: true }>, bytes: number): SuggestRefusal | null {
+    const recordBytes = (target.create ? 0 : (this.#info.get(target.id)?.bytes ?? 0)) + bytes;
+    if (recordBytes > SUGGEST_CAPS.recordOpsBytes) return 'record-cap';
+    if (this.#openBytes + bytes > this.options.stateCap * SUGGEST_CAPS.openOpsShare) return 'ops-cap';
+    if (this.options.stateBytes && this.options.stateBytes() + bytes > this.options.stateCap) return 'doc-cap';
+    if (target.create && (this.#open.get(who.id)?.size ?? 0) >= SUGGEST_CAPS.openPerPrincipal) return 'open-cap';
+    return null;
   }
 
-  #create(principal: SuggestPrincipal, id: string, now: number, continues?: string): void {
+  #create(who: Suggester, id: string, now: number, continues?: string): void {
     const meta: RecordMeta = {
-      v: 2, id, author: principal.id, authorName: principal.name, source: 'live', createdAt: now, updatedAt: now, status: 'open', clients: [],
+      v: 2, id, author: who.id, authorName: who.name, source: 'live', createdAt: now, updatedAt: now, status: 'open', clients: [],
       ...(continues ? { continues } : {}),
     };
     createRecord(this.doc, meta);
-    if (continues && readMeta(this.doc, continues)) patchMeta(this.doc, continues, { continuedBy: id });
+    if (continues) {
+      patchMeta(this.doc, continues, { continuedBy: id });
+      this.#next.set(continues, id);
+    }
+    this.#track(id, who.id, 0, true);
   }
 
-  #openCount(principal: string): number {
-    let count = 0;
-    for (const id of this.#bytes.keys()) if (readMeta(this.doc, id)?.author === principal && readMeta(this.doc, id)?.status === 'open') count++;
-    return count;
+  #track(id: string, author: string, bytes: number, open: boolean): void {
+    this.#info.set(id, { author, bytes, open });
+    if (!open) return;
+    const set = this.#open.get(author) ?? new Set<string>();
+    set.add(id);
+    this.#open.set(author, set);
+    this.#openBytes += bytes;
   }
 
-  #openBytes(): number {
-    let total = 0;
-    for (const [id, bytes] of this.#bytes) if (readMeta(this.doc, id)?.status === 'open') total += bytes;
-    return total;
+  #grow(id: string, bytes: number): void {
+    const info = this.#info.get(id)!;
+    info.bytes += bytes;
+    this.#openBytes += bytes;
+  }
+
+  /** Closed by accept, reject, withdraw or merge: the caps forget it; an accept spends its leases. */
+  #closed(id: string, meta: RecordMeta | null): void {
+    const info = this.#info.get(id);
+    if (info?.open) {
+      info.open = false;
+      this.#openBytes -= info.bytes;
+      info.bytes = 0;
+      this.#open.get(info.author)?.delete(id);
+    }
+    if (meta?.status === 'accepted') this.leases.spend(id);
+  }
+
+  /** Each of the record's leases' acknowledged clock. */
+  #sv(id: string): Record<string, number> {
+    const sv: Record<string, number> = {};
+    for (const client of readMeta(this.doc, id)?.clients ?? []) {
+      const lease = this.leases.get(client);
+      if (lease) sv[client] = lease.nextClock;
+    }
+    return sv;
   }
 
   /**
-   * Every target is a live item in `root` or `registers` whose client is not leased: O(spans × log n) lookups plus
-   * the items named, capped. Returns the quote, or null when a target fails.
+   * Every target is a live item in `root` or `registers` that no pending lease wrote (an accepted record's leases
+   * are spent, so its text is ordinary body text): O(spans × log n) lookups plus the items named, capped. Returns
+   * the quote, or null when a target fails.
    */
   #quote(targets: readonly IdSpan[]): string | null {
     let quote = '';
     let items = 0;
     for (const span of targets) {
       if (![span?.client, span?.clock, span?.len].every((n) => Number.isSafeInteger(n) && n >= 0) || span.len === 0) return null;
-      if (this.leases.has(span.client)) return null;
+      const lease = this.leases.get(span.client);
+      if (lease && !lease.spent) return null;
       const structs = this.doc.store.clients.get(span.client);
       const end = span.clock + span.len;
       if (!structs || Y.getState(this.doc.store, span.client) < end) return null;
@@ -245,4 +543,50 @@ function inBody(doc: Y.Doc, item: Y.Item): boolean {
     parent = parent._item.parent;
   }
   return false;
+}
+
+/** One doc-socket suggest request, validated and run; the reply is unicast to its sender. */
+export function handleSuggest(ingest: SuggestIngest, who: Suggester, request: SuggestRequest): SuggestReply {
+  const refuse = (record: unknown, reason: SuggestRefusal): SuggestReply => ({ t: 'suggest-refused', record: typeof record === 'string' ? record : null, reason });
+  let result: IngestResult;
+  let requested: unknown;
+  switch (request.t) {
+    case 'suggest-lease': {
+      const leased = ingest.lease(who, request.resume ?? []);
+      return leased.ok ? { t: 'suggest-leased', leases: leased.leases } : refuse(null, leased.reason);
+    }
+    case 'suggest-ops': {
+      requested = request.record;
+      let update: Uint8Array;
+      try {
+        if (typeof request.update !== 'string') throw new Error('no update');
+        update = base64ToBytes(request.update);
+      } catch {
+        return refuse(requested, 'malformed');
+      }
+      result = ingest.ops(who, request.record, update);
+      break;
+    }
+    case 'suggest-delete':
+      requested = request.record;
+      result = ingest.delete(who, request.record, request.part);
+      break;
+    case 'suggest-undelete':
+      requested = request.record;
+      result = ingest.undelete(who, request.record, request.partId);
+      break;
+    case 'suggest-merge':
+      requested = request.into;
+      result = ingest.merge(who, request.into, request.from);
+      break;
+    case 'suggest-withdraw':
+      requested = request.record;
+      result = ingest.withdraw(who, request.record);
+      break;
+    default:
+      return refuse(null, 'malformed');
+  }
+  return result.ok
+    ? { t: 'suggest-ack', record: result.record, requested: result.requested, sv: result.sv, parts: result.parts }
+    : refuse(requested, result.reason);
 }

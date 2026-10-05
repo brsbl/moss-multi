@@ -6,6 +6,7 @@
 // released with unacked edits stays connected without its pane until they are acked, or until the doc ends.
 import type { ConnectionState, TerminalReason } from '@moss-multi/protocol/dom-contract';
 import { isRole, roleAtLeast } from '@moss-multi/protocol/roles';
+import type { SuggestReply, SuggestRequest } from '@moss-multi/protocol/suggest';
 import { CLOSE, closeAction, type ServerEvent, type WriteRefusalReason } from '@moss-multi/protocol/sync';
 import YProvider from 'y-partyserver/provider';
 import * as Y from 'yjs';
@@ -17,6 +18,7 @@ import {
   SILENCE_LIMIT_MS, startLink, type Link, type LinkEvent,
 } from './connection.ts';
 import { clearTerminal, setTerminal, terminalOf } from './terminal.ts';
+import { isSuggestReply, SuggestLedger } from './suggest-acks.ts';
 import { markSession, markUnacked } from './unacked.ts';
 
 const PARTY = 'doc-d-o';
@@ -46,6 +48,7 @@ export const WRITE_REFUSED: Record<WriteRefusalReason, string> = {
   'doc-cap': 'This note is at its size limit, so your last change was not saved.',
   suggest: "Suggestions aren't available yet, so your change was not saved.",
   unresolved: 'Your last change could not be saved. Reconnecting to the saved note.',
+  'protected-type': 'Your last change could not be saved. Reconnecting to the saved note.',
 };
 export const HALTED_REFUSED = 'Your last change could not be saved. Reconnecting to the saved note.';
 const VIEW_ONLY = 'You can view this note but can no longer edit it.';
@@ -263,6 +266,8 @@ export class DocSession {
   /** Terminal or halted: this session's edits can no longer land. */
   #ended = false;
   readonly #ledger = new AckLedger();
+  readonly #suggest = new SuggestLedger();
+  readonly #suggestListeners = new Set<(reply: SuggestReply) => void>();
   #link: Link;
   #socketOpen = false;
   #lastResync = 0;
@@ -363,6 +368,31 @@ export class DocSession {
     if (!this.provider.shouldConnect && !this.#ended) void this.provider.connect();
   }
 
+  /** Sends a suggest-mode request (the fork, T5.1); `data-sync-unacked` holds until the DocDO replies. */
+  sendSuggest(request: SuggestRequest): void {
+    const ws = this.provider.ws;
+    if (ws?.readyState === WebSocket.OPEN && !this.#ended) {
+      this.provider.sendMessage(JSON.stringify(request));
+      this.#suggest.sent(request);
+    } else {
+      this.#suggest.held(request);
+    }
+    if (!this.#state.unacked) this.#set({ unacked: true });
+  }
+
+  /** Every suggest reply, in order; returns the unsubscriber. */
+  onSuggestReply(listener: (reply: SuggestReply) => void): () => void {
+    this.#suggestListeners.add(listener);
+    return () => this.#suggestListeners.delete(listener);
+  }
+
+  /** Requests that never got a reply, for the fork to resend once it has resumed its leases. */
+  takeUnsentSuggest(): SuggestRequest[] {
+    const taken = this.#suggest.takeUnsent();
+    this.#settleUnacked();
+    return taken;
+  }
+
   /** The doc is over for this session (A§10.6): no reconnect, every surface goes inert, a lingering session lets go. */
   end(reason: TerminalReason): void {
     if (this.#disposed) return;
@@ -460,6 +490,7 @@ export class DocSession {
     if (this.#disposed) return;
     const opened = this.#socketOpen;
     this.#socketOpen = false;
+    this.#suggest.dropped();
     // Each socket gets its own partyserver connection id (`_pk`, read at every reconnect): the DocDO keys acks by
     // socket, but a fresh id keeps any lookup by id unambiguous.
     this.provider.id = crypto.randomUUID();
@@ -586,6 +617,11 @@ export class DocSession {
     this.#onVisibility();
   };
 
+  /** Unacked clears only once body writes and suggest requests are both settled. */
+  #settleUnacked(): void {
+    if (this.#state.unacked && !this.#ledger.unacked && !this.#suggest.unacked) this.#set({ unacked: false });
+  }
+
   #wrote(update: Uint8Array): void {
     this.#ledger.wrote(update);
     if (!this.#state.unacked) this.#set({ unacked: true });
@@ -599,7 +635,11 @@ export class DocSession {
       return;
     }
     if (event.t === 'ack') {
-      if (this.#state.unacked && this.#ledger.acked(event)) this.#set({ unacked: false });
+      if (this.#state.unacked && this.#ledger.acked(event)) this.#settleUnacked();
+    } else if (isSuggestReply(event)) {
+      this.#suggest.replied();
+      for (const listener of [...this.#suggestListeners]) listener(event);
+      this.#settleUnacked();
     } else if (event.t === 'write-refused') {
       this.#refusedMessage = WRITE_REFUSED[event.reason] ?? WRITE_REFUSED.role;
       refuseInput(this.#refusedMessage);

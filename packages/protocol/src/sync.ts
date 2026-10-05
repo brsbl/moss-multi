@@ -1,6 +1,7 @@
 // The doc socket's wire vocabulary (A§4.1, A§5.1, A§10.5): close codes and what a client does on each, the server's
 // unicast events and the trusted headers the Worker sets on a party request.
 import type { TerminalReason } from './dom-contract.ts';
+import type { SuggestReply } from './suggest.ts';
 
 /** Close codes, defined once. 1001, 1006, 1011-1013, 4408 and 4420 are transient; the 44xx below are designed. */
 export const CLOSE = {
@@ -55,7 +56,8 @@ export function closeAction(code: number): CloseAction {
 /** Unicast events travel as `__YPS:<json>`, the envelope the provider delivers as `custom-message`. */
 export const CUSTOM_PREFIX = '__YPS:';
 
-export type WriteRefusalReason = 'role' | 'doc-cap' | 'suggest' | 'unresolved';
+/** `protected-type`: the frame writes `suggestions` or a leased suggestion client id (A§5.1 steps 2b and 4). */
+export type WriteRefusalReason = 'role' | 'doc-cap' | 'suggest' | 'unresolved' | 'protected-type';
 
 export type ServerEvent =
   /** A write that did not land; the close follows. */
@@ -66,7 +68,8 @@ export type ServerEvent =
    * vector, so `sv` alone cannot say a delete has landed.
    */
   | { t: 'ack'; sv: string; ds?: string }
-  | { t: 'doc-deleted' };
+  | { t: 'doc-deleted' }
+  | SuggestReply;
 
 /** Headers the Worker sets after stripping every client `x-moss-*` and `x-partykit-*` header. */
 export const TRUSTED = {

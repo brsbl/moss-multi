@@ -22,6 +22,8 @@ export interface Sever {
   /** Until the next reset or restore, no DocDO ack reaches the page (acks lost in flight); everything else crosses. */
   loseAcks(): void;
   census(): { connections: number; dropped: { out: number; in: number }; acksLost: number };
+  /** Sends a raw frame to the server on the page's open doc socket, as a client that ignores its binding would. */
+  inject(frame: Buffer): void;
 }
 
 const isAck = (message: string | Buffer): boolean => {
@@ -110,5 +112,10 @@ export async function makeSeverable(context: BrowserContext, census?: SocketCens
       ctl.losingAcks = true;
     },
     census: () => ({ connections: ctl.conns.length, dropped: { ...ctl.dropped }, acksLost: ctl.acksLost }),
+    inject(frame) {
+      const conn = ctl.conns.filter((c) => !c.closed && c.server).at(-1);
+      if (!conn?.server) throw new Error('no open doc socket to inject into');
+      conn.server.send(frame);
+    },
   };
 }
