@@ -63,6 +63,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-05 — T1.S1 verified: the workspace and member listings now load completely for a person with hundreds of shared notes and folders, and for a note with hundreds of members, using a fixed number of database parameters.
 - 2026-10-05 — T2.7 verified: a stranger on a 390 px phone can open a share link, read the note, sign up through the card and land back on the same note; the notes panel overlays the canvas below 640 px, Share becomes an icon with an overflow menu, revoked and forged links show the denial page, and every control stays reachable.
 - 2026-10-05 — T2.8 verified: sharing by email now sends a personal invite link that grants access only when a signed-in account with that email opens it, a signed-in person with another email can switch accounts from the invite page, and the bell shows share invites with an unread count and Mark all read, rechecking access on every read.
+- 2026-10-05 — T1.S1 verified again with its unload fix: reloading or leaving the page while the workspace list is loading now cancels that request quietly instead of showing a load failure or a browser access-control error.
 
 ## T1.1s identity audit
 
@@ -113,6 +114,9 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T2.8 checker P2: "Sign in with another email" (InviteForAnotherEmail.switchAccount) ignores a failed sign-out and bypasses auth-state signOut(), so a failed sign-out loops back to the same denial page with no error → reuse signOut() with a return destination.
 - T2.8 checker P2: CI has no bell triptych artifact against glyphdown; the checker compared the open bell by hand with the glyphdown light reference (structure matches) → add the bell to the parity artifact.
 - T1.S1 checker P2 flake: j03-connection "a refused write rebinds fresh and a deleted doc locks in place" failed once in Chromium (console error 'WebSocket is already in CLOSING or CLOSED state'), green on rerun.
+- T1.S1 checker P2: a cancelled unload (answering Stay on the unacked-edits prompt) or a back-forward-cache restore keeps the aborted listing pending for 10 s, skipping the 3 s poll and handing notes() a promise that later rejects.
+- T1.S1 checker P2: other fetches (host/access.ts, collab/doc-session.ts, ShareDialog, the bridge's create, duplicate and rename) have no leave-abort, so a reload overlapping one could still log WebKit's access-control error.
+- T1.S1 checker P2 flakes: Chromium j01-registers formula popover leg failed once with 'e is not iterable' (cloneCommentIds via FormulaNode.clone during register refresh getWritable, packages/sync/src/registers.ts:176); j01-undo WebKit sync-timing assertion failed once (run 37346941618).
 - ~~T1.9 checker P2: replace the full node-map refresh after every editor commit with targeted invalidation~~ closed by T1.9s and T1.F2: root-only commits and same-node state replacements refresh no payload.
 - T1.F2 checker P2, **blocks T1.10 carrying real docs**: rule 10 of docs/design/registers.md, the DocDO refusing clients whose bundle predates payload docs (an M1 bundle can still write `Y.Map('registers')` through note updates, past the payload gate) → T1.10.
 - T1.F2 checker P2: each connection's set of withheld ids it writes (at most 64) lives in memory, so a DocDO wake resets it; the per-principal withheld bytes are durable and bound the total → payload follow-up.

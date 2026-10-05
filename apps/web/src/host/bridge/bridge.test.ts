@@ -241,3 +241,13 @@ it.each(['switch', 'navigation'] as const)('a workspace event never overrides an
     vi.useRealTimers();
   }
 });
+
+// m1's unload fix (T1.S1) is met on m2 by the `leaving` signal above, which also re-sends a read if the page stays.
+it('still rejects a failed listing at once when the page is not leaving', async () => {
+  let fail: (error: Error) => void = () => undefined;
+  const fetch = vi.fn<typeof globalThis.fetch>(() => new Promise<Response>((_resolve, reject) => { fail = reject; }));
+  const api = createBridge({ pathname: () => '/', fetch });
+  const listed = api.notes.getAll();
+  fail(new TypeError('Load failed'));
+  await expect(listed).rejects.toThrow('Load failed');
+});
