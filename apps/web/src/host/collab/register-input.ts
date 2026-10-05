@@ -3,7 +3,7 @@ import { COLLABORATION_TAG, REDO_COMMAND, UNDO_COMMAND, type Klass, type Lexical
 import * as Y from 'yjs';
 import { onRegisterChange, payloadTextOf, registerDoc, registerState, REGISTER_LOCAL_ORIGIN, writeRegisterEdit } from '@moss-multi/sync/registers';
 import { payloadText } from '@moss-multi/sync/payload-docs';
-import { diffText } from '@moss-multi/core/text-diff';
+import { applyOps, diffText, rebaseOps } from '@moss-multi/core/text-diff';
 import { remapCaret } from '@moss-multi/core/doc-fields';
 import { refuseInput } from '../refusal.ts';
 
@@ -234,6 +234,18 @@ export function useFollowRegister(editor: LexicalEditor, key: string | null, mov
       refuseInput(FIELD_REMOVED);
     }, { skipInitialization: true });
   }, [editor, key]);
+}
+
+/**
+ * A peer's change to a field's payload, `base` to `next`, merged into what the field shows, which may hold text it has
+ * not written (an unfinished formula): the field keeps its own characters and its caret. Returns the merged text.
+ */
+export function mergeIntoField(input: Input | null, base: string, next: string): string {
+  if (!input) return next;
+  const delta = rebaseOps(base, diffText(base, next), input.value);
+  const merged = applyOps(input.value, delta);
+  repaint(input, merged, delta);
+  return merged;
 }
 
 export function repaint(input: Input, next: string, delta: Y.YTextEvent['delta'] | null): void {

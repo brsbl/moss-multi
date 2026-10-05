@@ -1,9 +1,8 @@
 // ported-from: packages/desktop/src/renderer/editor/plugins/FormulaPlugin.tsx @ 762abb777
 // moss-multi seam: local-view (A§10): edit-session identity stays in the existing local map.
 // moss-multi seam: register drafts merge while the formula popover stays open.
-import { nodeRegister, repaint, useFollowRegister, useRegisterWritable } from '@moss-multi/host/collab/register-input';
+import { mergeIntoField, nodeRegister, useFollowRegister, useRegisterWritable } from '@moss-multi/host/collab/register-input';
 import { registerDoc, registerState, REGISTER_LOCAL_ORIGIN, writeRegisterEdit } from '@moss-multi/host/collab/registers';
-import { diffText } from '@moss-multi/host/collab/registers';
 import { $isBoundEditor } from '@moss-multi/host/collab/view-state';
 /**
  * FormulaPlugin - Keyboard navigation for formula nodes
@@ -451,20 +450,26 @@ function FormulaEditPopover({
     setDraftState(draft);
   }, [readCurrentDraft, setDraftState]);
 
+  // The payload's text as the field last saw it, so a peer's change merges into text the field has not written.
+  const syncedRef = useRef('');
   useEffect(() => {
     const text = nodeRegister(editor, editingFormula.nodeKey);
     if (!text) return;
     let stopped = false;
     const changed = (_event: unknown, transaction: { origin: unknown }) => {
-      if (transaction.origin === REGISTER_LOCAL_ORIGIN) return;
+      const local = transaction.origin === REGISTER_LOCAL_ORIGIN;
       queueMicrotask(() => {
         if (stopped) return;
         const draft = readCurrentDraft();
         if (!draft) return;
-        const input = editingFormula.sourceMode === 'symbolic' ? nameInputRef.current : expressionInputRef.current;
-        const next = editingFormula.sourceMode === 'symbolic' ? draft.name : draft.expression;
-        if (input) repaint(input, next, diffText(input.value, next));
-        setDraftState(draft);
+        const symbolic = editingFormula.sourceMode === 'symbolic';
+        const next = symbolic ? draft.name : draft.expression;
+        const base = syncedRef.current;
+        syncedRef.current = next;
+        if (local) return;
+        const merged = mergeIntoField(symbolic ? nameInputRef.current : expressionInputRef.current, base, next);
+        const kept = latestDraftRef.current;
+        setDraftState(symbolic ? { name: merged, expression: kept.expression } : { name: kept.name, expression: merged });
       });
     };
     text.observe(changed);
@@ -476,6 +481,7 @@ function FormulaEditPopover({
   sessionDraftRef.current = editingFormula;
   useEffect(() => {
     const opened = sessionDraftRef.current;
+    syncedRef.current = opened.sourceMode === 'symbolic' ? opened.name : opened.expression;
     setDraftState({ name: opened.name, expression: opened.expression });
   }, [editingFormula.session, setDraftState]);
 
