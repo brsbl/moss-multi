@@ -276,9 +276,32 @@ describe('the editor writes what Moss desktop writes', () => {
         expect(plan.write.ops.at(-1)?.file).toBe('meta');
       }
 
-      expect(editorVolume.snapshot('/Moss')).toEqual(desktopVolume.snapshot('/Moss'));
+      if (scenario.caseInsensitive) {
+        expect(markdownEntryCase(editorVolume.snapshot('/Moss'))).toEqual(markdownEntryCase(desktopVolume.snapshot('/Moss')));
+      } else {
+        expect(editorVolume.snapshot('/Moss')).toEqual(desktopVolume.snapshot('/Moss'));
+      }
     });
   }
+});
+
+// API 1's MossNoteWrite step 4 has the host respell a same-inode markdown entry to exactly `<folderName>.md`, while
+// desktop's rename of a temp over the path keeps the entry's old spelling on APFS. The bytes and every other name
+// are the same; on a case-insensitive volume only the letter case of that one entry may differ.
+const markdownEntryCase = (snapshot: Record<string, string>) =>
+  Object.fromEntries(Object.entries(snapshot).map(([path, text]) => [path.endsWith('.md') ? path.replace(/[^/]+$/, (name) => name.toLowerCase()) : path, text]));
+
+describe('the fixture host follows API 1 on a case-insensitive volume', () => {
+  it('a case-only retitle respells the markdown entry to <folderName>.md', async () => {
+    const scenario = SCENARIOS.find((candidate) => candidate.name === 'a case-only retitle on a case-insensitive volume')!;
+    const volume = seedVolume(scenario);
+    const host = new MemoryHost({ volume });
+    const read = await editorRead(host);
+    const plan = planSave(read, snapshotOf(scenario.edit({ content: read.content, commentMetadata: read.commentMetadata, layoutMetadata: read.layoutMetadata, commentColors: read.commentColors })), { now: NOW });
+    if (plan.kind !== 'write') throw new Error('expected a write');
+    await expect(host.write(ID, plan.write)).resolves.toMatchObject({ kind: 'saved', location: { folderName: 'plan', markdownName: 'plan.md' } });
+    expect(Object.keys(volume.snapshot('/Moss')).filter((path) => path.endsWith('.md'))).toEqual(['/Moss/Notes/Projects/plan/plan.md']);
+  });
 });
 
 describe('golden fixtures prove something', () => {

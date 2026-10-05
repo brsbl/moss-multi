@@ -184,8 +184,7 @@ export class MemoryVolume {
 const tagged = (code, message) => Object.assign(new Error(message), { code });
 
 /**
- * The bridge. `opened` limits `copyFromNote` sources to notes the user has open (security review item 1); by
- * default every resolvable note counts. `onApply(file)` runs before each op lands, so a test can race a writer.
+ * The bridge. `onApply(file)` runs before each op lands, so a test can race a writer.
  */
 export class MemoryHost {
   constructor({ volume = new MemoryVolume(), api = 1, features = [], unsupported = false } = {}) {
@@ -198,7 +197,6 @@ export class MemoryHost {
     this.own = new Map();
     this.locks = new Map();
     this.onApply = null;
-    this.opened = null;
     this.urls = new Map();
     this.pendingNotify = null;
     volume.listeners.add(() => this.scheduleNotify());
@@ -488,7 +486,6 @@ export class MemoryHost {
   async assetCopy(noteId, copy) {
     this.calls.push({ op: 'assetCopy', noteId, sourceNoteId: copy.sourceNoteId, sourceRef: copy.sourceRef, name: copy.name });
     if (!isMossAssetName(copy.name)) return { kind: 'refused', reason: 'name' };
-    if (this.opened && !this.opened.has(noteIdKey(copy.sourceNoteId))) return { kind: 'notFound' };
     const source = this.index().get(noteIdKey(copy.sourceNoteId)) ?? [];
     if (source.length !== 1) return { kind: 'notFound' };
     const sourcePath = this.companionPath(source[0], copy.sourceRef);

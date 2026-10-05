@@ -30,6 +30,7 @@ class FakeSurface implements SessionSurface {
   editable = false;
   live = { title: '', body: '', comments: {} as RendererSnapshot['commentMetadata'] };
   views: unknown[] = [];
+  commit?: () => void;
 
   load(content: EditorContent, options: { keepView: boolean }) {
     this.loaded = content;
@@ -315,6 +316,103 @@ describe('flush and unmount', () => {
     expect(session.status).toBe('unmounted');
     await expect(session.unmount()).resolves.toBe(gone);
   });
+
+  it('an unmount while the first load renders leaves nothing running', async () => {
+    const gate: { release?: () => void } = {};
+    const load = surface.load.bind(surface);
+    surface.load = async (content, options) => {
+      load(content, options);
+      await new Promise<void>((resolve) => (gate.release = resolve));
+    };
+    const session = mount();
+    for (let i = 0; i < 20 && !gate.release; i += 1) await drain(5);
+    expect(gate.release).toBeDefined();
+    await expect(session.unmount()).resolves.toMatchObject({ kind: 'unmounted' });
+    gate.release!();
+    await expect(session.ready).rejects.toMatchObject({ code: 'unmounted' });
+    expect(session.status).toBe('unmounted');
+    expect(surface.editable).toBe(false);
+    volume.writeFile(`${DIR}/Plan.md`, '# Plan\n\nChanged in Moss\n');
+    await settle(250);
+    expect(surface.loads).toHaveLength(1);
+  });
+});
+
+describe('reloads never take an edit typed meanwhile', () => {
+  it('an edit typed while a host reload reads the disk refuses the reload and is saved', async () => {
+    const session = mount();
+    await session.ready;
+    let reading = false;
+    const gate: { release?: () => void } = {};
+    const read = host.read.bind(host);
+    host.read = async (noteId) => {
+      reading = true;
+      await new Promise<void>((resolve) => (gate.release = resolve));
+      return read(noteId);
+    };
+    const reloading = session.reload();
+    for (let i = 0; i < 50 && !gate.release; i += 1) await Promise.resolve();
+    expect(reading).toBe(true);
+    type(session, 'Typed meanwhile\n');
+    gate.release!();
+    host.read = read;
+    await expect(reloading).resolves.toEqual({ kind: 'refused', reason: 'dirty' });
+    expect(kinds()).not.toContain('reloaded');
+    await settle(1_500);
+    expect(markdownOnDisk()).toBe('# Plan\n\nTyped meanwhile\n');
+  });
+
+  it('the editor is not editable while a reload loads into it', async () => {
+    const session = mount();
+    await session.ready;
+    const editableDuringLoad: boolean[] = [];
+    const load = surface.load.bind(surface);
+    surface.load = (content, options) => {
+      editableDuringLoad.push(surface.editable);
+      load(content, options);
+    };
+    volume.writeFile(`${DIR}/Plan.md`, '# Plan\n\nChanged in Moss\n');
+    await settle(250);
+    expect(kinds()).toContain('reloaded');
+    expect(editableDuringLoad).toEqual([false]);
+    expect(surface.editable).toBe(true);
+  });
+
+  it('an edit the surface has not committed yet (a focused title) turns an external change into a conflict', async () => {
+    const session = mount();
+    await session.ready;
+    let pending = true;
+    surface.commit = () => {
+      if (!pending) return;
+      pending = false;
+      surface.live.title = 'Mine';
+      session.markEdited();
+    };
+    volume.writeFile(`${DIR}/Plan.md`, '# Q3\n\nBody\n');
+    await settle(250);
+    expect(kinds()).not.toContain('reloaded');
+    expect(session.status).toBe('conflict');
+    expect(markdownOnDisk()).toBe('# Q3\n\nBody\n');
+  });
+});
+
+describe('the fixture host', () => {
+  it('a raced write rolls back only files that still hold its own bytes', async () => {
+    const session = mount();
+    await session.ready;
+    host.onApply = (file) => {
+      if (file !== 'meta') return;
+      host.onApply = null;
+      volume.silently(() => {
+        volume.writeFile(`${DIR}/Plan.md`, '# Plan\n\nMoss meanwhile\n');
+        volume.writeFile(`${DIR}/meta.json`, JSON.stringify({ ...META, updatedAt: 1_780_000_200 }, null, 2));
+      });
+    };
+    type(session, 'bb\n');
+    await settle(1_500);
+    expect(markdownOnDisk()).toBe('# Plan\n\nMoss meanwhile\n');
+    expect(session.status).toBe('conflict');
+  });
 });
 
 describe('drafts and receipts', () => {
@@ -393,7 +491,7 @@ describe('confinement (security review of the contract)', () => {
     expect(isNoteRelativeCompanionPath('assets/landing-mockup.html')).toBe(true);
   });
 
-  it('the fixture host reads and serves nothing outside the note folder, and copies only from notes the user opened', async () => {
+  it('the fixture host reads and serves nothing outside the note folder, and refuses an unsafe asset name', async () => {
     seedNote(volume, ['Notes', 'Projects', 'Other'], {
       markdown: '# Other\n',
       meta: { ...META, id: '7a6b5c4d-3e2f-4a1b-8c9d-0e1f2a3b4c5d', title: 'Other' },
@@ -403,8 +501,6 @@ describe('confinement (security review of the contract)', () => {
       await expect(host.readCompanion(ID, path)).resolves.toMatchObject({ kind: 'absent' });
       expect(host.assets.url(ID, path, 'image')).toBeNull();
     }
-    host.opened = new Set([ID]);
-    await expect(host.assets.copyFromNote(ID, { sourceNoteId: '7a6b5c4d-3e2f-4a1b-8c9d-0e1f2a3b4c5d', sourceRef: 'assets/secret.png', name: 'copy-1-abcdef12.png' })).resolves.toEqual({ kind: 'notFound' });
     await expect(host.assets.put(ID, { name: '../escape.png', data: new Blob(['x']), mimeType: 'image/png', purpose: 'body' })).resolves.toEqual({ kind: 'refused', reason: 'name' });
   });
 });

@@ -122,8 +122,16 @@ const MOSS_HTML_SHELL =
 const LIVE_EDITOR: Record<string, [string, string][]> = {
   'text-formats': [['Mixed **bold with *nested italic* inside** text.', 'Mixed **bold with** ***nested italic*** **inside** text.']],
 };
-const mintedIds = (markdown: string, source: string) =>
-  markdown.replace(/\bid=([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/g, (match, id: string) => (source.includes(id) ? match : 'id=<minted>'));
+// Only an anonymous formula's id (`{{expr|display|id=<uuid>}}`, no name) that the source did not carry, each distinct
+// id to its own token in order of appearance, so a duplicated or swapped minted id still fails.
+const mintedIds = (markdown: string, source: string) => {
+  const tokens = new Map<string, string>();
+  return markdown.replace(/(\{\{[^{}]*?\|id=)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\}\}/g, (match, head: string, id: string) => {
+    if (source.includes(id)) return match;
+    if (!tokens.has(id)) tokens.set(id, `<minted-${tokens.size + 1}>`);
+    return `${head}${tokens.get(id)}}}`;
+  });
+};
 
 const shellBodies = (markdown: string) => markdown.replace(MOSS_HTML_SHELL, (_match, fence: string, body: string) => `${fence}moss-html\n${body}\n${fence}`);
 
@@ -221,6 +229,61 @@ test.describe('embeddable editor', () => {
     await banner.getByRole('button', { name: 'Overwrite' }).click();
     await expect(page.locator('[data-moss-editor][data-moss-editor-status="clean"]')).toBeVisible();
     expect((await files(page))['/Moss/Notes/Plan/Plan.md']).toMatch(/^# Plan\n\nChanged in the Mac app plus bb\n?$/);
+    expect(seen.errors).toEqual([]);
+  });
+
+  test('an in-place reload keeps a body that starts with its own H1, and the next save writes it', async ({ page }) => {
+    const seen = await open(page);
+    await mountNote(page, '# Plan\n\nIntro\n');
+    await page.evaluate(() => window.editorFixture.externalWrite('/Moss/Notes/Plan/Plan.md', '# Plan\n\n# Section\n\nBody\n'));
+    await expect(body(page).getByText('Body', { exact: true })).toBeVisible();
+    await expect(body(page).locator('h1')).toHaveText('Section');
+    await body(page).getByText('Body', { exact: true }).click();
+    await page.keyboard.press('End');
+    await page.keyboard.type(' more');
+    expect(await page.evaluate(() => window.editorFixture.flush())).toMatchObject({ kind: 'saved' });
+    expect((await files(page))['/Moss/Notes/Plan/Plan.md']).toMatch(/^# Plan\n\n# Section\n\nBody more\n?$/);
+    expect(seen.errors).toEqual([]);
+  });
+
+  test("a focused, unedited title takes the Mac app's rename, and blurring it writes nothing", async ({ page }) => {
+    const seen = await open(page);
+    await mountNote(page, '# Plan\n\nIntro\n');
+    await title(page).click();
+    await page.evaluate((renamed) => {
+      window.editorFixture.silentWrite('/Moss/Notes/Plan/meta.json', JSON.stringify(renamed, null, 2));
+      window.editorFixture.externalWrite('/Moss/Notes/Plan/Plan.md', '# Q3\n\nIntro\n');
+    }, meta('Q3'));
+    await expect(title(page)).toHaveText('Q3');
+    await body(page).getByText('Intro', { exact: true }).click();
+    await page.waitForTimeout(2_500);
+    const written = await files(page);
+    expect(written['/Moss/Notes/Plan/Plan.md']).toBe('# Q3\n\nIntro\n');
+    expect(JSON.parse(written['/Moss/Notes/Plan/meta.json']).title).toBe('Q3');
+    expect(await page.evaluate(() => window.editorFixture.events().map((event) => event.kind))).not.toContain('saving');
+    expect(await page.evaluate(() => window.editorFixture.status())).toBe('clean');
+    expect(seen.errors).toEqual([]);
+  });
+
+  test('a remount shows the disk version, never a cached editor state', async ({ page }) => {
+    const seen = await open(page);
+    await mountNote(page, '# Plan\n\nFirst line\n');
+    await body(page).getByText('First line', { exact: true }).click();
+    await page.keyboard.press('End');
+    await page.keyboard.type(' mine');
+    expect(await page.evaluate(() => window.editorFixture.flush())).toMatchObject({ kind: 'saved' });
+    await page.evaluate(() => window.editorFixture.externalWrite('/Moss/Notes/Plan/Plan.md', '# Plan\n\nTheirs from Mac\n'));
+    await expect(body(page).getByText('Theirs from Mac')).toBeVisible();
+    expect(await page.evaluate(() => window.editorFixture.unmount())).toEqual({ kind: 'unmounted', flush: 'clean' });
+    await page.evaluate(() => window.editorFixture.silentWrite('/Moss/Notes/Plan/Plan.md', '# Plan\n\nFirst line\n'));
+    expect(await page.evaluate((id) => window.editorFixture.mount(id), ID)).toEqual({ ok: true, status: 'clean' });
+    await expect(body(page).getByText('First line', { exact: true })).toBeVisible();
+    expect(await body(page).innerText()).not.toContain('mine');
+    await body(page).getByText('First line', { exact: true }).click();
+    await page.keyboard.press('End');
+    await page.keyboard.type('!');
+    expect(await page.evaluate(() => window.editorFixture.flush())).toMatchObject({ kind: 'saved' });
+    expect((await files(page))['/Moss/Notes/Plan/Plan.md']).toMatch(/^# Plan\n\nFirst line!\n?$/);
     expect(seen.errors).toEqual([]);
   });
 

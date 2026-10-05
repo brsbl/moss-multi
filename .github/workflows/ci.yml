@@ -394,7 +394,7 @@ jobs:
     needs: plan
     if: needs.plan.outputs.viewer == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     container:
       image: mcr.microsoft.com/playwright:v1.61.1-noble
       options: --ipc=host --init
@@ -417,7 +417,9 @@ jobs:
       - run: cat packages/editor/dist/editor.json
       - name: Acceptance fixture and shots, Chromium and WebKit
         working-directory: e2e
-        run: pnpm exec playwright test --project=editor-chromium --project=editor-webkit
+        env:
+          REPEAT: ${{ needs.plan.outputs.repeat }}
+        run: pnpm exec playwright test --project=editor-chromium --project=editor-webkit --repeat-each="${REPEAT:-1}"
       - name: Pack the release
         run: node scripts/ci/editor-pack.mjs packages/editor/release
       - uses: actions/upload-artifact@v7

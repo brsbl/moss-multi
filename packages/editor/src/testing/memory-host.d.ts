@@ -41,7 +41,6 @@ export class MemoryHost implements MossEditorBridge {
   readonly api: 1;
   readonly features: readonly MossEditorFeature[];
   calls: MemoryCall[];
-  opened: Set<string> | null;
   onApply: ((file: string, dir: string) => void | Promise<void>) | null;
   read: MossEditorBridge['read'];
   readCompanion: MossEditorBridge['readCompanion'];
