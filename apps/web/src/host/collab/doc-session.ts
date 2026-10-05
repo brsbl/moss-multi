@@ -12,7 +12,7 @@ import * as Y from 'yjs';
 import { leaveTo } from '../navigation.ts';
 import { refuseInput } from '../refusal.ts';
 import { AckLedger } from './acks.ts';
-import { readStep1, Replay } from './replay.ts';
+import { ownUpdate, readStep1, Replay } from './replay.ts';
 import {
   connectionOf, FIRST_SYNC_DEADLINE_MS, HANDSHAKE_FAILURES, HEARTBEAT_CHECK_MS, publishConnection, reduceLink, RESYNC_MS,
   SILENCE_LIMIT_MS, startLink, type Link, type LinkEvent,
@@ -311,11 +311,13 @@ export class DocSession {
     });
     // The frame discipline (comments.md §6): with writes unacked, the server's step 1 is answered only after they are
     // replayed as their own frames, and the step 2 it then gets arrives inert. Writes made meanwhile wait their turn.
+    // The step 2 carries only this client's own writes (ownUpdate), never a comment record the server wrote meanwhile.
     const answerSync = this.provider.messageHandlers[0];
     this.provider.messageHandlers[0] = (encoder, decoder, provider, emitSynced, type) => {
-      const sv = this.#ledger.unacked && !this.#ended ? readStep1(decoder) : null;
-      if (sv) this.#replayThenAnswer(sv);
-      else answerSync(encoder, decoder, provider, emitSynced, type);
+      const sv = this.#ended ? null : readStep1(decoder);
+      if (!sv) answerSync(encoder, decoder, provider, emitSynced, type);
+      else if (this.#ledger.unacked) this.#replay.start(this.#ledger.pending(), () => this.#answerStep1(sv));
+      else this.#answerStep1(sv);
     };
     const sendLive = this.provider._updateHandler;
     this.doc.off('update', sendLive);
@@ -473,12 +475,10 @@ export class DocSession {
     this.#failedHandshakes = 0;
   }
 
-  /** Replays the unacked writes, then answers the server's step 1 with the step 2 it asked for. */
-  #replayThenAnswer(sv: Uint8Array): void {
-    this.#replay.start(this.#ledger.pending(), () => {
-      const ws = this.provider.ws;
-      if (ws?.readyState === WebSocket.OPEN && !this.#ended) ws.send(syncFrame(1, Y.encodeStateAsUpdate(this.doc, sv)));
-    });
+  /** Answers the server's step 1 with the step 2 it asked for, holding only this client's writes. */
+  #answerStep1(sv: Uint8Array): void {
+    const ws = this.provider.ws;
+    if (ws?.readyState === WebSocket.OPEN && !this.#ended) ws.send(syncFrame(1, ownUpdate(this.doc, sv)));
   }
 
   #synced(): void {

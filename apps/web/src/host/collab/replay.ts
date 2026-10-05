@@ -3,6 +3,7 @@
 // only runs of insert-only or of delete-only updates are merged (groupPending), so the DocDO never receives a
 // deletion merged with another update's inserts, which would make a delete-and-retype read as an undo (ruling 18).
 // Frames are paced, and updates made meanwhile wait behind them, so the DocDO receives every update in order.
+import * as Y from 'yjs';
 import { groupPending } from '@moss-multi/core/group-pending';
 
 /** At most 40 replay frames a second, below the DocDO's write rate of 300 frames per 5 s. */
@@ -68,6 +69,18 @@ export class Replay {
     }
     this.#timer = setTimeout(this.#step, GAP_MS);
   };
+}
+
+/**
+ * The step 2 answering a server step 1 with state vector `sv`: this client's own structs the server lacks, and the
+ * delete set. Every other client's struct came from the server, which has it; and one the server wrote after `sv`
+ * (a comment record under its reserved writer, while a replay ran) must never be echoed, since gate 2b refuses any
+ * frame carrying one (comments.md §3).
+ */
+export function ownUpdate(doc: Y.Doc, sv: Uint8Array): Uint8Array {
+  const target = Y.decodeStateVector(Y.encodeStateVector(doc));
+  target.set(doc.clientID, Y.decodeStateVector(sv).get(doc.clientID) ?? 0);
+  return Y.encodeStateAsUpdate(doc, Y.encodeStateVector(target));
 }
 
 /** A lib0 decoder positioned after a sync message's leading type. */

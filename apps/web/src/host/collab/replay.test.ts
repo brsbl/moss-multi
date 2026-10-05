@@ -3,7 +3,7 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import * as syncProtocol from 'y-protocols/sync';
 import * as Y from 'yjs';
-import { readStep1, Replay, REPLAY_FRAMES_PER_SECOND } from './replay.ts';
+import { ownUpdate, readStep1, Replay, REPLAY_FRAMES_PER_SECOND } from './replay.ts';
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -72,6 +72,26 @@ it('a socket that can no longer send ends the replay without answering', () => {
   vi.advanceTimersByTime(1_000);
   expect(done).not.toHaveBeenCalled();
   expect(replay.active).toBe(false);
+});
+
+it('the step 2 holds only this client\'s writes, never a comment record the server wrote after its step 1', () => {
+  const server = new Y.Doc();
+  server.getText('root').insert(0, 'The quick brown fox');
+  const client = new Y.Doc();
+  Y.applyUpdate(client, Y.encodeStateAsUpdate(server));
+  client.getText('root').insert(4, 'X');
+  client.getText('root').delete(10, 5);
+  const sv = Y.encodeStateVector(server);
+  // While a replay runs, the server writes a comment record under its own writer, and the client receives it.
+  const r = new Y.Doc();
+  Y.applyUpdate(r, Y.encodeStateAsUpdate(server));
+  r.getMap('comments').set('a:c1', { status: 'orphaned' });
+  Y.applyUpdate(client, Y.encodeStateAsUpdate(r, sv));
+  const step2 = ownUpdate(client, sv);
+  expect(Y.decodeUpdate(step2).structs.map((struct) => struct.id.client)).toEqual([client.clientID]);
+  Y.applyUpdate(server, step2);
+  expect(server.getText('root').toString()).toBe(client.getText('root').toString());
+  expect(server.getMap('comments').size).toBe(0);
 });
 
 /** A y-protocols sync message body: its type, then a length-prefixed payload (lengths here stay under 128). */

@@ -234,7 +234,7 @@ The last is output-proportional and bounded by the 2,000-record cap; before the 
 **Frame discipline** (honest-client transport; `groupPending` in `packages/core/src/group-pending.ts`, sent by `Replay` in `apps/web/src/host/collab/replay.ts`; the doc session wraps its provider's sync handler and update handler, so the package needs no patch):
 - Each local Yjs transaction's update is kept separately, as `AckLedger.#pending` already does.
 - On recovery or reconnect, before answering step 1, the client replays pending updates as separate frames, coalescing only runs of insert-only updates or runs of delete-only updates. An update that both inserts and deletes goes alone. A deleting update is never merged with another update's inserts.
-- The client then sends step 2, which arrives inert.
+- The client then sends step 2, which arrives inert. It holds only the client's own structs and the delete set: the DocDO may have written comment records under R while the replay ran, and a step 2 echoing them would be refused by the guard (a).
 - Replay is paced to at most 40 frames per second, below the 300-per-5-s rate limit.
 
 The discipline matters only for honest users and ruling 18. Safety (I1–I8) never depends on it: a client that ignores it can at most keep a comment on identical text in the identical place.

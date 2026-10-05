@@ -155,7 +155,7 @@ Read this with PRODUCT.md, your BUILDPLAN entry and the A§ it cites, before wri
 
 ## Comments
 
-- A session with unacked writes answers the DocDO's sync step 1 only after `Replay` (`host/collab/replay.ts`) sends them as `groupPending` frames, at most 40 a second, with writes made meanwhile held behind them; resync replays the same way. y-partyserver's own step 2 merges everything, so an offline delete and retype reached the DocDO as one frame and re-minted the comment. [T4.2]
+- A session with unacked writes answers the DocDO's sync step 1 only after `Replay` (`host/collab/replay.ts`) sends them as `groupPending` frames, at most 40 a second, with writes made meanwhile held behind them; resync replays the same way. y-partyserver's own step 2 merges everything, so an offline delete and retype reached the DocDO as one frame and re-minted the comment. The step 2 that follows holds only the client's own structs (`ownUpdate`): a full diff against the server's step-1 vector echoed the comment records the DocDO wrote during the replay, and gate 2b refused it 4409. [T4.2]
 - Comment-anchor frame budgets (T4.2; `measure-converter.mjs` applies pre-encoded frames to the DocDO's comments module in workerd, from its own bundle, `measure/anchors-worker.ts`, since `tsconfig.converter.json` lacks the Workers types the DocDO needs). On a note with 2,000 comments and 240 long orphans:
 
   | Frame | workerd CPU per frame | Budget |
