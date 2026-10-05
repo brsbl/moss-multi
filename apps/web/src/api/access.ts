@@ -49,7 +49,7 @@ export function actingUserId(principal: Principal): string | null {
 }
 
 /** The ids a grant row may name for this principal: the user, or the agent and the user it acts for. */
-function grantees(principal: Principal): string[] {
+export function grantees(principal: Principal): string[] {
   return principal.type === 'user' ? [principal.id] : principal.type === 'agent' ? [principal.id, principal.ownerUserId] : [];
 }
 
