@@ -2,6 +2,7 @@
 // `content_objects` refcounts and `asset_versions`.
 //   POST /api/docs/:id/assets?filename=     raw body into the doc; editor and above on the doc
 //   POST /api/docs/:id/assets/copy          {sourceNoteId, sourceRelativePath}: moss's cross-note paste
+//   POST /api/docs/:id/assets/from-url      {url, filename?}: a pasted remote image, fetched through the SSRF guard
 //   GET|HEAD /api/docs/:id/assets/:file     any reader of the doc, a share link included
 // A doc's media are its own record (`doc_media`): each `assets/<file>` it uses, bound to the exact bytes an upload into
 // it, a copy from a doc the copier reads, or a duplicate placed there. A read resolves only through that record, never
@@ -17,14 +18,17 @@ import { assets, assetVersions, docMedia } from '../db/schema.ts';
 import type { AppEnv } from '../env.ts';
 import { json } from '../worker/route.ts';
 import { resolveDocAccess } from './access.ts';
+import { readCapped, remoteFetch, REMOTE_TIMEOUT_MS, takeFetchToken } from './remote.ts';
 import { NO_STORE, notFound, readJsonObject } from './respond.ts';
+import { assertPublicUrl, safeFetch, SsrfBlockedError } from './ssrf.ts';
 import { ownerOfTrashed } from './trash.ts';
 
-export type AssetsEnv = AuthEnv & Pick<AppEnv, 'ASSETS' | 'DocDO'>;
+export type AssetsEnv = AuthEnv & Pick<AppEnv, 'ASSETS' | 'DocDO'> & Partial<Pick<AppEnv, 'PrincipalDO'>>;
 
 export const ASSET_ROUTE = /^\/api\/docs\/[^/]+\/assets(?:\/.*)?$/;
 const UPLOAD = /^\/api\/docs\/([^/]+)\/assets$/;
 const COPY = /^\/api\/docs\/([^/]+)\/assets\/copy$/;
+const FROM_URL = /^\/api\/docs\/([^/]+)\/assets\/from-url$/;
 const FILE = /^\/api\/docs\/([^/]+)\/assets\/([^/]+)$/;
 
 const CURRENT_CACHE = 'private, max-age=0, stale-while-revalidate=86400';
@@ -114,19 +118,31 @@ const placed = (media: Placed) =>
   json({ relativePath: `${ASSET_DIR}${media.filename}`, filename: media.filename,
     asset: { id: media.assetId, versionId: media.versionId, size: media.size } }, 201, NO_STORE);
 
-/** The raw body into `docId`, after the caller's right to edit it was checked. */
-async function store(request: Request, env: AssetsEnv, docId: string, folderId: string, createdBy: string): Promise<Response> {
-  const raw = new URL(request.url).searchParams.get('filename') ?? '';
+type MediaType = NonNullable<ReturnType<typeof mediaTypeOf>>;
+
+/** The stored name and type an upload named `raw` takes, or null when it is not moss media. */
+function uploadTarget(raw: string): { filename: string; type: MediaType } | null {
   const named = storedName(raw);
   // The web never loads a name moss desktop reserves for its derived thumbnails.
   const filename = named && isDesktopDerived(named) ? mediaFilename(`upload-${named}`) : named;
   const type = filename ? mediaTypeOf(filename) : null;
-  if (!filename || !type) return unsupported();
+  return filename && type ? { filename, type } : null;
+}
+
+/** The raw body into `docId`, after the caller's right to edit it was checked. */
+async function store(request: Request, env: AssetsEnv, docId: string, folderId: string, createdBy: string): Promise<Response> {
+  const target = uploadTarget(new URL(request.url).searchParams.get('filename') ?? '');
+  if (!target) return unsupported();
   const declared = (request.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase();
-  if (declared && declared !== 'application/octet-stream' && declared !== type.contentType) return unsupported();
+  if (declared && declared !== 'application/octet-stream' && declared !== target.type.contentType) return unsupported();
+  if (Number(request.headers.get('content-length') ?? 0) > MEDIA_CAP_BYTES[target.type.kind]) return tooLarge(target.type.kind);
+  return storeBytes(env, docId, folderId, createdBy, target.filename, target.type, new Uint8Array(await request.arrayBuffer()));
+}
+
+/** `bytes` into `docId` under `filename`, or the first `-n` name free there. */
+async function storeBytes(env: AssetsEnv, docId: string, folderId: string, createdBy: string, filename: string, type: MediaType,
+  bytes: Uint8Array<ArrayBuffer>): Promise<Response> {
   const cap = MEDIA_CAP_BYTES[type.kind];
-  if (Number(request.headers.get('content-length') ?? 0) > cap) return tooLarge(type.kind);
-  const bytes = new Uint8Array(await request.arrayBuffer());
   if (bytes.byteLength === 0) return refuse(400, 'empty', 'The file is empty.');
   if (bytes.byteLength > cap) return tooLarge(type.kind);
   const hash = await sha256Hex(bytes);
@@ -185,6 +201,60 @@ async function copyFromNote(request: Request, env: AssetsEnv, docId: string): Pr
   if (!found) return notFound();
   const media = await bind(env, docId, filename, found, principal.id, async () => ({ bytes: found, statements: [] }));
   return media ? placed(media) : nameTaken();
+}
+
+/**
+ * moss's images.persistUrl: a pasted remote image, fetched through the SSRF guard (A§18) and stored as the note's
+ * own media, named from the hint or the URL with the extension its served type gives.
+ */
+async function fromUrl(request: Request, env: AssetsEnv, docId: string): Promise<Response> {
+  const principal = await resolvePrincipal(request, env);
+  if (!principal) return notFound();
+  const access = await resolveDocAccess(createDb(env.DB), principal, docId, shareTokenOf(request));
+  if (!access || access.deleted) return notFound();
+  if (!roleAtLeast(access.role, 'editor')) return refuse(403, 'forbidden', 'You can view this note but not add media to it.');
+  const body = await readJsonObject(request);
+  const raw = typeof body?.url === 'string' ? body.url : '';
+  if (!raw) return refuse(400, 'bad-request', 'Name the image to save.');
+  const blocked = () => refuse(422, 'blocked-url', 'That address can’t be saved.');
+  try {
+    assertPublicUrl(raw);
+  } catch {
+    return blocked();
+  }
+  const throttled = await takeFetchToken(env, principal);
+  if (throttled) return throttled;
+  const failed = () => refuse(502, 'fetch-failed', 'The image couldn’t be downloaded.');
+  let fetched: { response: Response; url: string };
+  try {
+    fetched = await safeFetch(raw, remoteFetch(), { headers: { accept: 'image/*' }, signal: AbortSignal.timeout(REMOTE_TIMEOUT_MS) });
+  } catch (error) {
+    return error instanceof SsrfBlockedError ? blocked() : failed();
+  }
+  const { response } = fetched;
+  if (!response.ok) {
+    await response.body?.cancel();
+    return failed();
+  }
+  const served = (response.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase();
+  const [extension] = Object.entries(MEDIA_TYPES).find(([, type]) => type.kind === 'image' && type.contentType === served) ?? [];
+  if (!extension) {
+    await response.body?.cancel();
+    return unsupported();
+  }
+  const bytes = await readCapped(response, MEDIA_CAP_BYTES.image);
+  if (!bytes) return tooLarge('image');
+  const segment = new URL(fetched.url).pathname.split('/').pop() ?? '';
+  let hint = typeof body?.filename === 'string' && body.filename.trim() ? body.filename : segment;
+  try {
+    hint = hint === segment ? decodeURIComponent(segment) : hint;
+  } catch {
+    // a malformed escape stays as it is and folds like any other character
+  }
+  const stem = hint.replace(/\.[^./\\]*$/, '') || 'image';
+  const target = uploadTarget(`${stem}.${extension}`);
+  if (!target) return unsupported();
+  return storeBytes(env, docId, access.folderId, principal.id, target.filename, target.type, bytes);
 }
 
 /** A duplicate's media (A§16): the source's whole record, bound to the same bytes under the same names. */
@@ -258,6 +328,8 @@ export async function handleAssets(request: Request, env: AssetsEnv): Promise<Re
     request.method === 'POST' ? run() : Promise.resolve(json({ error: 'method-not-allowed' }, 405, { allow: 'POST' }));
   const copy = COPY.exec(pathname);
   if (copy) return post(() => copyFromNote(request, env, copy[1]));
+  const remote = FROM_URL.exec(pathname);
+  if (remote) return post(() => fromUrl(request, env, remote[1]));
   const doc = UPLOAD.exec(pathname);
   if (doc) return post(() => upload(request, env, doc[1]));
   const file = FILE.exec(pathname);

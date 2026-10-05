@@ -53,7 +53,7 @@ async function paste(actor: Actor, docId: string, markdown: string): Promise<voi
 }
 
 /** Ada's new note holding `markdown` (`prepare` runs first), and Ben, an editor by declared setup, with it open. */
-async function sharedNote(actors: Actors, title: string, markdown: string, prepare?: (ada: Actor) => Promise<void>): Promise<{ ada: Actor; ben: Actor; docId: string }> {
+async function sharedNote(actors: Actors, title: string, markdown: string, prepare?: (ada: Actor) => Promise<unknown>): Promise<{ ada: Actor; ben: Actor; docId: string }> {
   const ada = await openShell(actors, 'ada');
   const benPrincipal = await actors.principal('ben');
   await prepare?.(ada);

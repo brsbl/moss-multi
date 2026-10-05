@@ -35,6 +35,50 @@ declare module '@moss-desktop/renderer/editor/utils/note-link-clipboard' {
   export function buildMossNoteLinkClipboardHtml(payload: MossNoteLinkClipboardPayload): string;
 }
 
+declare module '@moss-desktop/common/embed-iframe-policy' {
+  export type EmbedIframeRiskProfile = 'local-html-preview' | 'remote-oembed-preview' | 'remote-social-embed' | 'remote-video' | 'remote-webpage';
+  export function getEmbedIframePolicy(riskProfile: EmbedIframeRiskProfile): {
+    riskProfile: EmbedIframeRiskProfile;
+    sandbox: string;
+    referrerPolicy?: import('react').HTMLAttributeReferrerPolicy;
+    loading?: 'lazy' | 'eager';
+    allow?: string;
+    allowFullScreen?: boolean;
+  };
+}
+
+declare module '@moss-desktop/common/web-embed-url' {
+  export function resolveRemoteWebSurfaceUrl(text: string): string;
+}
+
+declare module '@moss-desktop/common/web-embed-preview' {
+  export type WebEmbedPreviewMetadata = Record<string, string | number | boolean | null>;
+  export interface WebEmbedPreviewDescriptor { normalizedUrl: string; urlHash: string; cacheKey: string }
+  export interface WebEmbedPreviewResult {
+    kind: 'web-embed-preview';
+    sourceKey: string;
+    sourceSignature: string;
+    cacheKey: string;
+    status: 'resolved' | 'fallback' | 'failed';
+    assetRelativePath?: string;
+    html?: string;
+    metadata?: WebEmbedPreviewMetadata;
+    generatedAt?: string;
+    expiresAt?: string;
+    errorCode?: string;
+  }
+  export function getWebEmbedPreviewDescriptor(url: string): WebEmbedPreviewDescriptor | null;
+  export function createWebEmbedFallbackMetadata(normalizedUrl: string, extras?: WebEmbedPreviewMetadata): WebEmbedPreviewMetadata;
+  export function createWebEmbedPreviewResult(input: {
+    descriptor: WebEmbedPreviewDescriptor;
+    status: WebEmbedPreviewResult['status'];
+    assetRelativePath?: string;
+    metadata?: WebEmbedPreviewMetadata;
+    generatedAt?: string;
+    expiresAt?: string;
+  }): WebEmbedPreviewResult;
+}
+
 declare module '@moss-desktop/renderer/editor/utils/editorUpdateTags' {
   export const DIRTY_TRACKER_DERIVED_TAGS: ReadonlySet<string>;
 }
