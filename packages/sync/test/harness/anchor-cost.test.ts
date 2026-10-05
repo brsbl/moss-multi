@@ -69,7 +69,8 @@ describe('T4.0 per-frame anchor cost is bounded by the frame @p:tech-3', () => {
       expect(send(() => paragraph(client, p).insert(3, 'z')).refused).toBeNull();
       expect(host.engine.stats.comments).toBe(0);
       expect(host.engine.stats.structs).toBe(0);
-      expect(host.engine.stats.lookups).toBeLessThanOrEqual(2);
+      // Its origin, its right origin, and its paragraph's right origin (§5.4).
+      expect(host.engine.stats.lookups).toBeLessThanOrEqual(3);
     }
   });
 

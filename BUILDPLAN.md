@@ -372,7 +372,7 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
   - **Scope:**
     - `anchor-frame.ts` wired into the DocDO's pre-GC afterTransaction hook for client and serverWrite origins, flushed through writeComments in the same turn;
     - EP, MI and AI indexes rebuilt at onStart;
-    - gap map (including the wrap rule of comments.md §5.2), survivor shrink, lost place with per-list segments over full member subtrees (inside a block, members extend over the frame's adjacent deletions, comments.md §5.3), exact full-mode reattach triggered by an origin or rightOrigin in MI (or, for a re-homed place in an empty restored block, a frame-new list item with neither under that block), lift at depth ≤ 3;
+    - gap map (including the wrap rule of comments.md §5.2), survivor shrink, lost place with per-list segments over full member subtrees (inside a block, members extend over the frame's adjacent deletions, comments.md §5.3), exact full-mode reattach triggered by an origin or rightOrigin in MI (or, for a re-homed place in an empty restored block, a frame-new list item with neither under that block; or a frame-new item whose enclosing block's rightOrigin is in MI, an undo copy of a member block, comments.md §5.4), lift at depth ≤ 3;
     - orphans with an identical segment set share one walk (decision §4.4): MI is keyed by segment-set group, so a recheck costs one walk and one signature compare per group, and I7's fan-out bound is restated per group;
     - decorator fingerprints, with attribute history reads inside the walk budget;
     - `groupPending` in acks.ts plus the patched provider: replay before step 2, paced at most 40 frames/s; a deleting update is never merged with another update's inserts.

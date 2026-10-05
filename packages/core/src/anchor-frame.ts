@@ -526,7 +526,10 @@ export class AnchorEngine {
 
     // §5.4: a frame-new item whose origin or right origin names a lost member or a re-homed bound, or that its writer
     // placed into an empty list (no origin and no right origin), looked up by that list's block.
+    // Also its enclosing blocks' right origins: an undo copy of a deleted block names the original (F3), so text an
+    // undo puts back inside a restored member block reaches that member even when the text's own origins are copies.
     const candidates = new Set<string>();
+    const blocks = new Set<Y.Item>();
     for (const [client, after] of txn.afterState) {
       const before = txn.beforeState.get(client) ?? 0;
       const structs = store.clients.get(client);
@@ -543,6 +546,12 @@ export class AnchorEngine {
         if (!struct.origin && !struct.rightOrigin && struct.parentSub === null && block) {
           this.stats.lookups += 1;
           this.#mi.query(block.id.client, block.id.clock, block.id.clock + 1, candidates);
+        }
+        for (let up = block, depth = 0; up && depth < 32 && !blocks.has(up); up = parentOf(up)._item, depth += 1) {
+          blocks.add(up);
+          if (!up.rightOrigin) continue;
+          this.stats.lookups += 1;
+          this.#mi.query(up.rightOrigin.client, up.rightOrigin.clock, up.rightOrigin.clock + 1, candidates);
         }
       }
     }
