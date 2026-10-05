@@ -54,7 +54,9 @@ import { hidden } from '@moss-multi/host/affordances';
 import { canDuplicateNote } from '@moss-multi/host/duplicate';
 import { FolderMenuItems, surfacedShared, surfacedFolder } from '@moss-multi/host/slots';
 // moss-multi seam: folders (T2.2): folder controls follow the caller's role; a refusal reads as the server's sentence.
-import { canCreateFolder, canEditFolder, canMoveItems, canTrashFolder, folderRefusal } from '@moss-multi/host/folders';
+import { canCreateFolder, canCreateNote, canEditFolder, canMoveItems, canTrashFolder, folderRefusal } from '@moss-multi/host/folders';
+// moss-multi seam: capabilities (T2.6): every note action follows the caller's role; an unknown role gets none.
+import { noteCan } from '@moss-multi/host/capabilities';
 // moss-multi seam: trash (T2.3): only the owner trashes a note; trash copy comes from the one module
 import { TRASH_COPY } from '@moss-multi/host/retention';
 import { canTrashNote } from '@moss-multi/host/trash';
@@ -166,11 +168,14 @@ function NoteContextMenuItems({
         <span>Open in Split Tab</span>
       </ContextMenuItem>
       <ContextMenuSeparator />
+      {/* moss-multi seam: capabilities (T2.6) */}
+      {noteCan(noteId, 'view') && (
       <ContextMenuItem onSelect={() => handleTogglePin(noteId)}>
         <Pin className="h-3.5 w-3.5 text-ink-muted" />
         <span>{pinned ? 'Unpin' : 'Pin'}</span>
       </ContextMenuItem>
-      {onRenameNote && !externalFilePath && (
+      )}
+      {onRenameNote && !externalFilePath && noteCan(noteId, 'edit') /* moss-multi seam: capabilities (T2.6) */ && (
         <ContextMenuItem onSelect={() => { renameOnClose.current = true; }}>
           <Pencil className="h-3.5 w-3.5 text-ink-muted" />
           <span>Rename</span>
@@ -1690,7 +1695,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
         <NotesListPanel
           ref={panelRef}
           className="flex h-full min-w-0 w-full"
-          onCreateNote={onCreateNote}
+          onCreateNote={canCreateNote() ? onCreateNote : undefined /* moss-multi seam: capabilities (T2.6) */}
           onCollapse={onCollapse}
           showTitle={false}
           sortContent={sortDropdown}
