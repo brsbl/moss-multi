@@ -2,7 +2,7 @@
 // within the vault, DELETE /api/folders/:id sends the subtree to Trash as one batch, and moveDoc moves a note
 // between folders (PATCH /api/docs/:id {folderId}). Editors create and rename; the vault's owner owns what an
 // editor creates (created_by records who). Access inherits through the folder chain, so a move is a sharing decision:
-// only the owner (A§8 manage) moves, on ownership alone, never on a grant or a share link; only the owner trashes. Every refusal carries a sentence, because moss
+// only a manager (A§8: the vault owner or a co-owner by grant, never a share link or an agent key) moves or trashes. Every refusal carries a sentence, because moss
 // shows the message it gets. Writes that depend on the tree re-check it in the same statement, so concurrent moves
 // can't build a cycle or leave something live under a trashed folder. A moved or trashed folder changes who can open
 // its docs; the live kick for that is T2.5's one path. GET /api/folders/:id is a folder or vault and the caller's

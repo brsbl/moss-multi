@@ -158,7 +158,17 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
      },
      [handleSelectNote]
    );
-@@ -3788,7 +3767,8 @@ export function App() {
+@@ -3159,7 +3138,8 @@ export function App() {
+             noteId,
+             error
+           });
+-          showOperationFailure('Could not restore note. Try again.');
++          // moss-multi seam: a refused restore shows the server's sentence (T2.3s).
++          showOperationFailure(error instanceof Error && error.message ? error.message : 'Could not restore note. Try again.');
+           await reconcileNotesFromDisk('restore-error', noteId);
+           return;
+         }
+@@ -3788,7 +3768,8 @@ export function App() {
  
        const key = e.key.toLowerCase();
  
@@ -168,7 +178,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
          e.preventDefault();
          if (showCommandPalette) {
            // Already open - just focus the input
-@@ -3947,7 +3927,8 @@ export function App() {
+@@ -3947,7 +3928,8 @@ export function App() {
      onExpandActionsPanel: () => { zenModeActive ? toggleZenMode() : setActionsPanelHidden(false); },
      isAgentStreaming: hasActiveStreaming,
      onCanvasClick: handlePromptClose,
@@ -178,7 +188,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
    };
  
    const actionsPanelContent = (
-@@ -4047,7 +4028,7 @@ export function App() {
+@@ -4047,7 +4029,7 @@ export function App() {
        searchBarAutoFocus={searchBarAutoFocus}
        onCloseSearch={handleCloseSearch}
        onOpenSearch={() => { setSearchQuery(''); setSearchBarAutoFocus(true); }}
@@ -187,7 +197,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
        onLeftTitleFocusComplete={handleTitleFocusComplete}
        leftAutoFocusBody={shouldFocusBody}
        onLeftBodyFocusComplete={handleBodyFocusComplete}
-@@ -4063,6 +4044,7 @@ export function App() {
+@@ -4063,6 +4045,7 @@ export function App() {
        feedbackTooltipOpen={feedbackTooltipFixtureOpen}
        mode={appMode}
        onModeChange={handlePanelViewChange}
@@ -195,7 +205,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
        onOpenFeedback={() => setFeedbackDialogOpen(true)}
        onOpenSettings={async () => {
          handleCloseSearch();
-@@ -4093,6 +4075,7 @@ export function App() {
+@@ -4093,6 +4076,7 @@ export function App() {
          onSelectNote={handleSelectNote}
          onCreateNote={handleCreateNote}
          onDeleteNote={handleNoteDeleted}
