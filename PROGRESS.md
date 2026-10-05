@@ -243,3 +243,13 @@ Local browser verification remains assigned to the independent checker under the
 
 - The checker reproduced two editors pasting the same markdown into one empty note: both minted the deterministic `import:` id, Y.Map kept one `Y.Text`, and the two blocks stayed linked. [Checks 37176278081](https://github.com/brsbl/moss-multi/actions/runs/37176278081) proved it red for all three registers.
 - `$assignRegisterIds` now mints `crypto.randomUUID()` in a live editor. Only the DocDO mirror (`bindRegisters(..., { serializedImports: true })`, one serialized writer) and unbound converters keep repeatable import ids (A§10.10).
+
+### From M1's Slop Cop review (PR #2 @ ff9570f, 2026-10-05)
+- REST rename and create's initial title skip the document size cap (packages/sync/src/doc-do.ts:263-265 (create), 277-281 (renameTitle)). Build the title change on a mirror doc, admit the resulting state plus payload bytes, and only then apply it. Return the existing doc-cap refusal.
+- A failed D1 title projection is never retried or reconciled (packages/sync/src/doc/projections.ts:61-80). Keep pending title work separate from touch errors. Retry with backoff, and reconcile after wake.
+- Concurrent share raises can lower a just-granted higher role (apps/web/src/api/members.ts:115-123). Make the UPDATE conditional on the stored role being lower than the new role, for example WHERE role is in the lower roles. Re-read the stored role to build the response.
+- Folder discovery reads every folder from every tenant on each workspace poll (apps/web/src/api/access.ts:114-134 (accessibleFolders)). Start from the caller's owned folders and grant targets, then walk only the relevant descendants and the ancestors needed for each.
+- A payload over 256 KiB is fully re-compacted on every later edit (packages/sync/src/payloads.ts:442-460). Count bytes written since the last compaction separately from the snapshot size, and reset that count after compacting.
+- Layout persistence walks the whole tree and writes localStorage on every editor update (apps/web/src/host/collab/layout-local.ts:39-76). Skip updates that do not touch tables or tabs, write only values that changed, and batch writes into one, flushing on teardown.
+- The ack ledger keeps acknowledged writes during a continuous editing stream (apps/web/src/host/collab/acks.ts:48-57). On each ack, drop the writes it fully covers, and keep only those still outstanding.
+- Expanding YAML aliases in imported frontmatter is unbounded (packages/sync/src/doc-do.ts:257). Before normalizing, detect aliases and cycles or count expanded nodes against a budget, and refuse import when the budget is exceeded.
