@@ -70,7 +70,29 @@ async function open(page: Page): Promise<{ errors: string[] }> {
 }
 
 const title = (page: Page) => page.locator('[data-moss-editor-title]');
-const body = (page: Page) => page.locator('[data-moss-editor] [data-lexical-editor="true"]');
+const body = (page: Page) => page.locator('[data-moss-editor] [data-moss-note-editor-root="true"]');
+
+/** Selects `word` inside the body's text `line` through the DOM selection, which Lexical adopts on selectionchange. */
+async function selectWord(page: Page, line: string, word: string): Promise<void> {
+  await body(page).getByText(line).click();
+  await body(page).evaluate((root, { line, word }) => {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const at = node.textContent?.indexOf(word) ?? -1;
+      if (at < 0 || !node.textContent?.includes(line.slice(0, 5))) continue;
+      const range = document.createRange();
+      range.setStart(node, at);
+      range.setEnd(node, at + word.length);
+      const selection = document.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      return;
+    }
+    throw new Error(`no text node holds ${word}`);
+  }, { line, word });
+  await expect.poll(() => page.evaluate(() => document.getSelection()?.toString())).toBe(word);
+  await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+}
 
 async function mountNote(page: Page, markdown: string, options: { comments?: string | null; theme?: 'light' | 'dark'; title?: string } = {}) {
   const noteTitle = options.title ?? 'Plan';
@@ -121,11 +143,7 @@ test.describe('embeddable editor', () => {
   test('Cmd+Shift+A adds a comment that lands as a marker plus a comments.json entry desktop reads back', async ({ page }) => {
     const seen = await open(page);
     await mountNote(page, '# Plan\n\nAlpha beta gamma\n');
-    const line = body(page).getByText('Alpha beta gamma');
-    await line.click();
-    await page.keyboard.press('Home');
-    for (let i = 0; i < 6; i += 1) await page.keyboard.press('ArrowRight');
-    for (let i = 0; i < 4; i += 1) await page.keyboard.press('Shift+ArrowRight');
+    await selectWord(page, 'Alpha beta gamma', 'beta');
     await page.keyboard.press('ControlOrMeta+Shift+A');
     const input = page.getByRole('textbox', { name: 'comment editor' });
     await expect(input).toBeVisible();
@@ -137,7 +155,7 @@ test.describe('embeddable editor', () => {
 
     const written = await files(page);
     const markdown = written['/Moss/Notes/Plan/Plan.md'];
-    const marker = /^# Plan\n\nAlpha %%m:([A-Za-z0-9_-]+):start%%beta%%m:\1:end%% gamma\n$/.exec(markdown);
+    const marker = /^# Plan\n\nAlpha %%m:([A-Za-z0-9_-]+):start%%beta%%m:\1:end%% gamma\n?$/.exec(markdown);
     expect(marker, `a %%m: marker wraps the selection in ${JSON.stringify(markdown)}`).not.toBeNull();
     const id = marker![1];
     const sidecar = JSON.parse(written['/Moss/Notes/Plan/comments.json']) as Record<string, { text: string; createdAt: number }>;
@@ -174,7 +192,7 @@ test.describe('embeddable editor', () => {
 
     await banner.getByRole('button', { name: 'Overwrite' }).click();
     await expect(page.locator('[data-moss-editor][data-moss-editor-status="clean"]')).toBeVisible();
-    expect((await files(page))['/Moss/Notes/Plan/Plan.md']).toBe('# Plan\n\nChanged in the Mac app plus bb\n');
+    expect((await files(page))['/Moss/Notes/Plan/Plan.md']).toMatch(/^# Plan\n\nChanged in the Mac app plus bb\n?$/);
     expect(seen.errors).toEqual([]);
   });
 

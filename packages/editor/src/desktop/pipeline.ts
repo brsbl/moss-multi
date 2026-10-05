@@ -53,8 +53,6 @@ import {
 
 export type { CommentMetadataMap, NoteLayoutMetadata, NoteMetadataFile };
 
-// Tests first: the save plan is stubbed until the implementation lands.
-const TESTS_FIRST_STUB = true as boolean;
 
 /** One `bridge.read` result. */
 export interface DiskNote {
@@ -187,7 +185,6 @@ export interface PlanOptions {
  * the first H1 changed. Asset lifecycle (trashing unreferenced media) is not done (design §7).
  */
 export function planSave(read: NoteRead, snapshot: RendererSnapshot, options: PlanOptions): SavePlan {
-  if (TESTS_FIRST_STUB) return { kind: 'skip' };
   const pendingContent = snapshot.content;
   const currentCommentSignature = buildCommentMetadataSignature(snapshot.commentMetadata);
   const currentLayoutComparison = buildLayoutMetadataComparison(snapshot.layoutMetadata);
@@ -203,7 +200,6 @@ export function planSave(read: NoteRead, snapshot: RendererSnapshot, options: Pl
 
   // CanvasAreaContent.tsx:2588-2607: layout is sent only when this editor changed it; otherwise the baseline rides
   // as `expectedLayoutMetadata` when it has widths, which lets main preserve and rebase it.
-  const baselineLayoutMetadata = read.layoutMetadata;
   const hasLocalLayoutChanges = currentLayoutComparison !== read.diskLayoutComparison;
   const layoutMetadataForWrite = hasLocalLayoutChanges ? snapshot.layoutMetadata : undefined;
   const sendsExpectedLayout = hasLocalLayoutChanges || read.diskLayoutComparison !== '';

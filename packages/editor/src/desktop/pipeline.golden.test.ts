@@ -26,7 +26,7 @@ const meta = (title: string, extra: Record<string, unknown> = {}, id = ID) => ({
   ...extra,
 });
 
-const comment = (text: string, at = 1_780_000_300) => ({ text, createdAt: at, updatedAt: at, source: 'user' });
+const comment = (text: string, at = 1_780_000_300) => ({ text, createdAt: at, updatedAt: at, source: 'user' as const });
 
 interface Seed {
   segments: string[];

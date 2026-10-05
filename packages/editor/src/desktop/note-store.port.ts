@@ -6,7 +6,7 @@
 //     1161-1191, 2532-2545
 // The pure steps Moss desktop's main process applies to a note's files on read and on save. They live in Electron
 // main-process modules that cannot be imported into a browser bundle, so the function bodies are copied verbatim.
-// The only changes: types are loosened to plain records; `currentUnixSeconds()` reads `clock` (so tests can pin
+// The only changes: types are loosened to plain records; a rest destructuring that drops keys becomes `delete`; `currentUnixSeconds()` reads `clock` (so tests can pin
 // it); `agentSessionRegistry` is empty (a bb frame runs no Moss agent); file reads become text parameters; and
 // `Buffer` byte work goes through TextEncoder/TextDecoder, which decode a cut sequence to U+FFFD as Buffer does.
 /* eslint-disable @typescript-eslint/no-explicit-any -- verbatim ports over moss's own loose JSON shapes */
@@ -31,7 +31,7 @@ export const clock = { now: (): number => Math.floor(Date.now() / 1000) };
 const currentUnixSeconds = (): number => clock.now();
 
 // A bb frame runs no Moss agent, so no sticky tab has a live session (note-store.ts:1127).
-const agentSessionRegistry = { has: (_id: string): boolean => false };
+const agentSessionRegistry: ReadonlySet<string> = new Set();
 
 export const NOTES_FOLDER_NAME = 'Notes';
 export const TRASH_FOLDER_NAME = 'Trash';
@@ -244,7 +244,7 @@ export const classifyNoteContentType = (content: string): string => {
     .replace(/\[\[[^\]]+\]\]/g, ' ')
     .replace(/`[^`]+`/g, ' ')
     .replace(/\[[^\]]*\]\((?:[^()\n]|\\\(|\\\))*\)/g, ' ')
-    .replace(/[>#*_\-]+/g, ' ')
+    .replace(/[>#*_-]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 
@@ -266,18 +266,19 @@ export const classifyNoteContentType = (content: string): string => {
 };
 
 // note-store.ts:909-1033
-const stripMigrationManagedMetadataFields = (metadata: NoteMetadataFile): NoteMetadataFile => {
-  const {
-    stickyTabs: _stickyTabs,
-    frontmatterMeta: _frontmatterMeta,
-    frontmatterInference: _frontmatterInference,
-    noteHierarchyCache: _noteHierarchyCache,
-    nextCommentColorIndex: _nextCommentColorIndex,
-    commentColors: _commentColors,
-    collapsedHeadings: _collapsedHeadings,
-    ...base
-  } = metadata;
+const MIGRATION_MANAGED_METADATA_FIELDS = [
+  'stickyTabs',
+  'frontmatterMeta',
+  'frontmatterInference',
+  'noteHierarchyCache',
+  'nextCommentColorIndex',
+  'commentColors',
+  'collapsedHeadings'
+];
 
+const stripMigrationManagedMetadataFields = (metadata: NoteMetadataFile): NoteMetadataFile => {
+  const base: Record<string, unknown> = { ...metadata };
+  for (const key of MIGRATION_MANAGED_METADATA_FIELDS) delete base[key];
   return base as NoteMetadataFile;
 };
 
@@ -1278,14 +1279,14 @@ export const ensureMetadataFolderPath = (
 
 /** `writeMetadata`'s bytes (4020-4031). */
 export const serializeMetadata = (metadata: NoteMetadataFile, resolvedFolderPath: string): string => {
-  const normalizedMetadata = ensureMetadataFolderPath(metadata, resolvedFolderPath);
-  const { cacheHydrationState: _cacheHydrationState, ...persistedMetadata } = normalizedMetadata;
+  const persistedMetadata: Record<string, unknown> = { ...ensureMetadataFolderPath(metadata, resolvedFolderPath) };
+  delete persistedMetadata.cacheHydrationState;
   return JSON.stringify(persistedMetadata, null, 2);
 };
 
 // ipc-handlers.ts:1161-1191, 2532-2545
 export const ALLOWED_COPY_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.mp4', '.webm', '.mov'];
-const FILENAME_UNICODE_WHITESPACE = /[   -   　]/g;
+const FILENAME_UNICODE_WHITESPACE = /[\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000]/g;
 
 export const getImageExtension = (mimeType: string): string => {
   const mimeToExt: Record<string, string> = {

@@ -206,8 +206,8 @@ export function createDesktopSave(volume: Volume, workspaceRoot = '/Moss') {
   };
 
   const writeMetadata = async (metaPath: string, metadata: NoteMetadataFile, dirPath: string): Promise<void> => {
-    const normalizedMetadata = ensureMetadataFolderPath(metadata, ref.resolveFolderPathForDirectory(dirPath));
-    const { cacheHydrationState: _cacheHydrationState, ...persistedMetadata } = normalizedMetadata;
+    const persistedMetadata: Record<string, unknown> = { ...ensureMetadataFolderPath(metadata, ref.resolveFolderPathForDirectory(dirPath)) };
+    delete persistedMetadata.cacheHydrationState;
     await persistFile(metaPath, JSON.stringify(persistedMetadata, null, 2));
   };
 
@@ -390,23 +390,15 @@ export function createDesktopSave(volume: Volume, workspaceRoot = '/Moss') {
         : {})
     });
 
-    let currentDiskContent: string | undefined;
     let currentLayoutMetadataForPreserve: NoteLayoutMetadata | undefined;
     const internalRead = await readInternalMarkdownContent(normalizedNoteId, dirPath, folderName);
-    currentDiskContent = internalRead.content;
+    const currentDiskContent = internalRead.content;
     if (currentDiskContent === undefined) {
       throw new Error('Unable to verify note content on disk before saving. Reload and try again.');
     }
-    if (typeof input.expectedDiskContent === 'string' && currentDiskContent !== input.expectedDiskContent) {
-      throw new Error('Note content changed on disk. Reload and merge before saving.');
-    }
-    const currentDiskCommentMetadata = await readPersistedCommentMetadata(dirPath, currentDiskContent);
-    if (
-      input.expectedCommentMetadata !== undefined &&
-      buildCommentMetadataSignature(currentDiskCommentMetadata) !== buildCommentMetadataSignature(coerceCommentMetadataMap(input.expectedCommentMetadata))
-    ) {
-      throw new Error('Note content changed on disk. Reload and merge before saving.');
-    }
+    // The expectedDiskContent and expectedCommentMetadata checks (10604-10633) are conflict detection, which the
+    // host's version check replaces; they change no bytes. (With a legacy footer on disk desktop's renderer first
+    // conflicts on the stripped content, re-reads and retries; the bytes it then writes are these.)
 
     if ('expectedLayoutMetadata' in input) {
       const currentLayoutMetadata = await readLayoutMetadata(dirPath, currentDiskContent);

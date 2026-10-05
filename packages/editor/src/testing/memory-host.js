@@ -202,12 +202,11 @@ export class MemoryHost {
     this.urls = new Map();
     this.pendingNotify = null;
     volume.listeners.add(() => this.scheduleNotify());
-    const host = this;
     this.assets = {
-      put: (noteId, asset) => host.assetPut(noteId, asset),
-      copyFromNote: (noteId, copy) => host.assetCopy(noteId, copy),
-      url: (noteId, ref, kind) => host.assetUrl(noteId, ref, kind),
-      parseUrl: (url) => host.parseAssetUrl(url),
+      put: (noteId, asset) => this.assetPut(noteId, asset),
+      copyFromNote: (noteId, copy) => this.assetCopy(noteId, copy),
+      url: (noteId, ref, kind) => this.assetUrl(noteId, ref, kind),
+      parseUrl: (url) => this.parseAssetUrl(url),
     };
   }
 

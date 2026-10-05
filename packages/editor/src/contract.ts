@@ -937,8 +937,10 @@ export interface MossEditorBridge {
    * common/legacy-mockup-migration.ts:207-229). Same rules as desktop's
    * `readNoteRelativeCompanionFile` (note-store.ts:3047-3069): resolve
    * `relativePath` against the note folder, realpath both, and return
-   * `absent` if the target is outside the note folder or does not exist.
-   * Other I/O errors reject. The editor calls this only while reading, and
+   * `absent` if the target is outside the note folder or does not exist,
+   * without reading it: `..`, an absolute path, NUL, `~`, and a symlink or
+   * hard link that escapes are all outside. The editor itself never asks for
+   * such a path. Other I/O errors reject. The editor calls this only while reading, and
    * sends each returned version back in `MossNoteWrite.companions`.
    */
   readCompanion(noteId: MossNoteId, relativePath: string): Promise<MossCompanionRead>;
@@ -1014,7 +1016,10 @@ export interface MossCompanionExpectation {
  *    (`renamex_np(RENAME_EXCL)` or `renameat2(RENAME_NOREPLACE)`); on EEXIST,
  *    re-list siblings and allocate once more, then return `raced`. The
  *    folder rename is never rolled back. All later paths are in the new
- *    folder.
+ *    folder. The host re-validates `desiredName` with `isMossFolderName`
+ *    before any change (it never trusts the editor's string), renames only
+ *    within the note folder's parent, and writes only the four note files
+ *    inside the note folder.
  * 4. Apply the ops in order markdown, comments, layout, meta, each as a
  *    verified replacement. Temp and holding names come from
  *    `sidecarFileName`. Fsync each temp before it is moved and the folder
@@ -1037,9 +1042,10 @@ export interface MossCompanionExpectation {
  *      in step 2, the old file and the target are the same file (a case-only
  *      retitle or a case-variant name on a case-insensitive volume): treat
  *      the target as present in E, exchange onto it, and delete nothing.
- *      After the exchange, if the directory entry's spelling differs from
- *      `<folderName>.md` only in case, rename(2) the entry to that exact
- *      spelling (a same-inode case-only rename replaces no other file).
+ *      The entry keeps its existing spelling: desktop's `persistFile` renames
+ *      a temp over the path, and on APFS a rename over `plan.md` named
+ *      `Plan.md` leaves the entry spelled `plan.md` (checked on APFS), so
+ *      respelling it would diverge from desktop.
  *      Only if the old file is a different file from the target does the
  *      host delete it afterwards, as a verified delete. Desktop reaches the
  *      same result by re-resolving after the folder rename and comparing
@@ -1111,9 +1117,10 @@ export interface MossNoteWrite {
  *
  * Case-only example on APFS: "Plan" → "plan". The folder is renamed
  * `Plan` → `plan` with rename(2). `plan/plan.md` resolves to the same inode
- * as the old `Plan.md`, so the put exchanges onto it, the entry is renamed
- * to the spelling `plan.md`, and nothing is deleted. Location:
- * `{folderName:'plan', markdownName:'plan.md'}`.
+ * as the old `Plan.md`, so the put exchanges onto it, the entry keeps the
+ * spelling `Plan.md` (as desktop leaves it), and nothing is deleted.
+ * Location: `{folderName:'plan', markdownName:'plan.md'}`, the name desktop
+ * probes, which resolves to that entry.
  */
 export interface MossFolderRename {
   kind: 'renameFolder';
@@ -1247,17 +1254,21 @@ export interface MossAssetBridge {
    * `-mockup`. The host must not rename it. It must create the file
    * exclusively: a temp file, then `link(2)` (or `RENAME_EXCL`) to the
    * target. If the name is taken, return `exists`; the editor generates a
-   * new name once and retries.
+   * new name once and retries. The host re-validates `name` with
+   * `isMossAssetName` and never trusts the editor's string (`refused`,
+   * `name`), and refuses bytes whose sniffed type does not match the
+   * extension (`refused`, `type`).
    */
   put(noteId: MossNoteId, asset: MossAssetPut): Promise<MossAssetPutResult>;
   /**
    * Copies an asset from another note into this note's `assets/`, as Moss
    * desktop's `images.copyFromNoteAsset` does for a cross-note paste. The
-   * source is confined to the source note's folder (realpath), and the target
-   * is created exclusively under `name`, as in `put`. The source note may be
-   * any note the host can resolve, editable or not. If the copy fails, the
-   * editor removes the unresolved reference from the pasted content, as
-   * desktop does.
+   * target is created exclusively under `name`, as in `put`. The source note
+   * must be a note the user has open in the host (editable or viewable); for
+   * any other id the host returns `notFound` and reads nothing. `sourceRef` is
+   * confined to the source note's folder exactly as `url`'s `ref` is. If the
+   * copy fails, the editor removes the unresolved reference from the pasted
+   * content, as desktop does.
    */
   copyFromNote(noteId: MossNoteId, copy: MossAssetCopy): Promise<MossAssetPutResult>;
   /**
@@ -1266,6 +1277,17 @@ export interface MossAssetBridge {
    * missing-media state. Must be synchronous, because moss resolves media
    * while rendering. Same semantics as the viewer's `assetUrl`, scoped to a
    * note. URLs must stay valid across a folder rename (key them by note id).
+   *
+   * `ref` comes from note content, so the host resolves a local `ref` against
+   * this note's folder only: it realpaths both sides and returns null for
+   * anything outside the folder (`..`, an absolute path, NUL, `~`, a symlink or
+   * hard link that escapes) without reading it. It serves every asset with
+   * `X-Content-Type-Options: nosniff` and the exact `Content-Type` of its
+   * extension, from an origin that is neither the editor's nor the plugin
+   * frame's; SVG (and any type a browser can run as a document) also gets
+   * `Content-Security-Policy: sandbox; default-src 'none'` and, where
+   * possible, `Content-Disposition: attachment`. The editor shows images only
+   * through `<img>` and video through `<video>`, never inline.
    */
   url(noteId: MossNoteId, ref: string, kind: MossAssetKind): string | null;
   /**

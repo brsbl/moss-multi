@@ -384,8 +384,8 @@ describe('ciOk', () => {
 
   it('requires the viewer job when planned', () => {
     const branch = { ...checksOnly, build: true, viewer: true };
-    expect(ciOk(needs(branch, { checks: 'success', build: 'success' })).problems).toEqual(['viewer: skipped (planned to run)']);
-    expect(ciOk(needs(branch, { checks: 'success', build: 'success', viewer: 'failure' })).problems).toEqual(['viewer: failure (planned to run)']);
+    expect(ciOk(needs(branch, { checks: 'success', build: 'success' })).problems).toEqual(['viewer: skipped (planned to run)', 'editor: skipped (planned to run)']);
+    expect(ciOk(needs(branch, { checks: 'success', build: 'success', viewer: 'failure', editor: 'success' })).problems).toEqual(['viewer: failure (planned to run)']);
     expect(ciOk(needs(branch, { checks: 'success', build: 'success', viewer: 'success' })).ok).toBe(true);
   });
 

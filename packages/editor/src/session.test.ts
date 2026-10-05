@@ -6,6 +6,7 @@ import type { MossEditorEvent } from './contract';
 import { MemoryHost, MemoryVolume, seedNote } from './testing/memory-host.js';
 import { isMossAssetName } from './host/moss-editor-host.js';
 import { assembleContent, type EditorContent, type RendererSnapshot } from './desktop/pipeline';
+import { isNoteRelativeCompanionPath } from './desktop/note-store.port';
 import { EditorSession, type SessionSurface } from './session';
 
 const ID = '3f0c2a1b-4d5e-4f60-8a7b-9c0d1e2f3a4b';
@@ -80,8 +81,22 @@ function type(session: EditorSession, body: string) {
   session.markEdited();
 }
 
+/** Lets I/O (crypto.subtle in the host's version tokens) complete, one loop turn at a time. */
+async function drain() {
+  for (let i = 0; i < 10; i += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+    await vi.advanceTimersByTimeAsync(0);
+  }
+}
+
+/** Advances the fake clock by `ms` in small steps, letting I/O finish between them. */
 async function settle(ms = 0) {
-  await vi.advanceTimersByTimeAsync(ms);
+  const end = Date.now() + ms;
+  await drain();
+  while (Date.now() < end) {
+    await vi.advanceTimersByTimeAsync(Math.min(25, end - Date.now()));
+    await drain();
+  }
 }
 
 beforeEach(() => {
@@ -328,8 +343,8 @@ describe('drafts and receipts', () => {
     const first = mount();
     await first.ready;
     type(first, 'Draft body\n');
+    // The host keeps the draft, as after a frame that closed before its save; the first editor never saves.
     const draft = first.draft();
-    await first.unmount({ discardUnsaved: true });
     expect(markdownOnDisk()).toBe('# Plan\n\nBody\n');
     const second = mount({ restoreDraft: draft });
     await second.ready;
@@ -367,5 +382,27 @@ describe('assets', () => {
     };
     const stored = await session.putAsset({ data: new Blob(['x']), filename: '../evil..name.tiff', mimeType: 'image/tiff', purpose: 'comment' });
     expect(stored.relativePath).toMatch(/^assets\/image-\d+-[0-9a-f]{8}\.png$/);
+  });
+});
+
+describe('confinement (security review of the contract)', () => {
+  it('the editor only ever asks for companion paths inside the note folder', () => {
+    for (const path of ['../Other/meta.json', '/etc/passwd', 'assets/../../x', 'a\0b', '', '..']) expect(isNoteRelativeCompanionPath(path), path).toBe(false);
+    expect(isNoteRelativeCompanionPath('assets/landing-mockup.html')).toBe(true);
+  });
+
+  it('the fixture host reads and serves nothing outside the note folder, and copies only from notes the user opened', async () => {
+    seedNote(volume, ['Notes', 'Projects', 'Other'], {
+      markdown: '# Other\n',
+      meta: { ...META, id: '7a6b5c4d-3e2f-4a1b-8c9d-0e1f2a3b4c5d', title: 'Other' },
+      assets: { 'secret.png': 'png' },
+    });
+    for (const path of ['../Other/assets/secret.png', '~/secret', '/Moss/Notes/Projects/Other/assets/secret.png']) {
+      await expect(host.readCompanion(ID, path)).resolves.toMatchObject({ kind: 'absent' });
+      expect(host.assets.url(ID, path, 'image')).toBeNull();
+    }
+    host.opened = new Set([ID]);
+    await expect(host.assets.copyFromNote(ID, { sourceNoteId: '7a6b5c4d-3e2f-4a1b-8c9d-0e1f2a3b4c5d', sourceRef: 'assets/secret.png', name: 'copy-1-abcdef12.png' })).resolves.toEqual({ kind: 'notFound' });
+    await expect(host.assets.put(ID, { name: '../escape.png', data: new Blob(['x']), mimeType: 'image/png', purpose: 'body' })).resolves.toEqual({ kind: 'refused', reason: 'name' });
   });
 });

@@ -230,7 +230,7 @@ export class EditorSession {
     let status: MossEditorStatus = 'clean';
     const draft = this.restore;
     if (draft && noteIdKey(draft.noteId) !== noteIdKey(this.noteId)) {
-      this.emit({ kind: 'error', noteId: this.noteId, status: 'clean', op: 'read', message: 'restoreDraft names another note; it was ignored', error: null, failure: null, willRetry: false });
+      this.emit({ kind: 'error', noteId: this.noteId, status: 'error', op: 'read', message: 'restoreDraft names another note; it was ignored', error: null, failure: null, willRetry: false });
     } else if (draft) {
       const disk = result.read.disk.files;
       const onDisk = disk.markdown === draft.files.markdown && disk.comments === draft.files.comments && disk.layout === draft.files.layout;
