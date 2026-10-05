@@ -23,7 +23,8 @@
   },
   "include": [
     "src",
-    "test/harness"
+    "test/harness",
+    "measure/doc-worker.ts"
   ],
   "exclude": [
     "src/converter"
