@@ -129,6 +129,8 @@ test('accepts no input: nothing is editable and typing, Enter, Backspace and a c
   const body = viewer.locator('[data-moss-note-editor-root]');
   await expect(body).toHaveAttribute('contenteditable', 'false');
   await expect(viewer.locator('[contenteditable="true"]')).toHaveCount(0);
+  // HTML previews settle asynchronously; compare text once they have.
+  await settleHtmlBlocks(page);
   const before = await body.innerText();
 
   await body.getByText('Nothing in this note is real.').click();
