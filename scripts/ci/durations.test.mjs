@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fileMinutesIn, percentile, summarize } from './durations.mjs';
+import { fileMinutesIn, percentile, recordProblems, summarize } from './durations.mjs';
 
 const leg = (projectName, duration) => ({ projectName, results: [{ duration }] });
 
@@ -26,5 +26,12 @@ describe('durations', () => {
       perLeg: { chromium: 0.5, webkit: 0.75 },
       journeys: { 'j01-undo.spec.ts': { legs: 4, chromium: 2, webkit: 3 } },
     });
+  });
+
+  it('refuses to write a record from incomplete samples', () => {
+    const sample = (engine) => ({ engine, jobMinutes: 3, files: { 'j01-undo.spec.ts': 1 }, legs: { 'j01-undo.spec.ts': 4 } });
+    expect(recordProblems(summarize([sample('chromium'), sample('webkit')]), [])).toEqual([]);
+    expect(recordProblems(summarize([sample('chromium'), sample('webkit')]), ['run 1 webkit/editing: no artifact'])).toEqual(['run 1 webkit/editing: no artifact']);
+    expect(recordProblems(summarize([]), [])).toEqual(['no setup minutes for chromium', 'no setup minutes for webkit', 'no per-leg rate for chromium', 'no per-leg rate for webkit', 'no journey minutes']);
   });
 });

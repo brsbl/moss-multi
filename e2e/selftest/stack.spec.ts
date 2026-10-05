@@ -82,27 +82,32 @@ test('the stack keeps answering writes while the runner disk flushes a backlog @
   const actors = new Actors(browser, testInfo, { stack, runToken: `selftest-disk-${Date.now().toString(36)}` });
   const ballast = testInfo.outputPath('ballast.bin');
   mkdirSync(dirname(ballast), { recursive: true });
-  const writer = spawn('dd', ['if=/dev/zero', `of=${ballast}`, 'bs=1M', 'count=2048', 'conv=fsync'], { stdio: 'ignore' });
-  const flushed = new Promise((resolve) => writer.on('exit', resolve));
   try {
+    // Signed in first, so every counted write is a POST that started and finished while dd was still flushing.
     const actor = await actors.session(await actors.principal('writer'));
-    const slow: string[] = [];
-    let writes = 0;
-    const until = Date.now() + 30_000;
-    while (Date.now() < until && (writer.exitCode === null || writes < 10)) {
-      const started = Date.now();
-      const response = await actor.context.request.post('/api/docs', { headers: { origin: stack.baseUrl }, data: {}, timeout: 15_000 });
-      const ms = Date.now() - started;
-      expect(response.status()).toBe(201);
-      writes += 1;
-      if (ms > 2_000) slow.push(`POST /api/docs ${ms} ms`);
+    const writer = spawn('dd', ['if=/dev/zero', `of=${ballast}`, 'bs=1M', 'count=2048', 'conv=fsync'], { stdio: 'ignore' });
+    const flushed = new Promise<number | null>((resolve) => writer.on('exit', (code) => resolve(code)));
+    try {
+      const slow: string[] = [];
+      let overlapped = 0;
+      const until = Date.now() + 120_000;
+      while (Date.now() < until && writer.exitCode === null) {
+        const started = Date.now();
+        const response = await actor.context.request.post('/api/docs', { headers: { origin: stack.baseUrl }, data: {}, timeout: 15_000 });
+        const ms = Date.now() - started;
+        expect(response.status()).toBe(201);
+        if (ms > 2_000) slow.push(`POST /api/docs ${ms} ms`);
+        if (writer.exitCode === null) overlapped += 1;
+      }
+      expect(writer.exitCode, 'dd wrote and synced the whole backlog').toBe(0);
+      expect(overlapped, 'writes landed while the disk flushed').toBeGreaterThanOrEqual(10);
+      expect(slow).toEqual([]);
+    } finally {
+      if (writer.exitCode === null) writer.kill();
+      await flushed;
+      rmSync(ballast, { force: true });
     }
-    expect(writes, 'writes landed while the disk flushed').toBeGreaterThanOrEqual(10);
-    expect(slow).toEqual([]);
   } finally {
-    writer.kill();
-    await flushed;
-    rmSync(ballast, { force: true });
     await actors.dispose();
   }
 });

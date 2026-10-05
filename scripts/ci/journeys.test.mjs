@@ -136,6 +136,13 @@ describe('shard budget', () => {
     expect(budgetProblems([journey('j00-shell.spec.ts', 4)], minutes, 5)).toEqual([]);
   });
 
+  it('fails a record whose minutes are missing instead of counting them as zero', () => {
+    const broken = { ...minutes, setup: { ...minutes.setup, webkit: null } };
+    expect(budgetProblems([journey('j00-shell.spec.ts', 4)], broken, 5)).toEqual([
+      'webkit/shell has no recorded minutes: refresh scripts/ci/journey-minutes.json with scripts/ci/durations.mjs --write',
+    ]);
+  });
+
   it(`keeps every group of this checkout within ${SHARD_BUDGET_MINUTES} minutes in both engines`, () => {
     expect(budgetProblems(readJourneys(), readMinutes())).toEqual([]);
   });
