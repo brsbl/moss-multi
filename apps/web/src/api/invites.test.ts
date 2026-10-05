@@ -284,27 +284,29 @@ describe('who an invite admits', { timeout: 30_000 }, () => {
   for (const on of ['doc', 'folder'] as const) {
     for (const how of ['demoted and promoted again', 'removed and re-added'] as const) {
       it(`never revives a co-owner’s invite when they are ${how} on the ${on}`, async () => {
-        const folderId = await insertFolder(d1.db, ada, ada.homeId);
-        const docId = await titled(ada, `Regained ${on} ${how}`, { folderId });
+        // Its own vault owner, so these shares spend nobody else's share-by-email budget.
+        const vaultOwner = await signedUpUser(env, `t2s1-owner-${on}-${how.slice(0, 4)}`, 'Una');
+        const folderId = await insertFolder(d1.db, vaultOwner, vaultOwner.homeId);
+        const docId = await titled(vaultOwner, `Regained ${on} ${how}`, { folderId });
         const grantPath = on === 'doc' ? `/api/docs/${docId}` : `/api/folders/${folderId}`;
         const coOwner = await signedUpUser(env, `t2s1-${on}-${how.slice(0, 4)}`, 'Rae');
-        await share(ada, grantPath, coOwner.email, 'owner');
-        await redeem(env, ada, grantPath, coOwner);
+        await share(vaultOwner, grantPath, coOwner.email, 'owner');
+        await redeem(env, vaultOwner, grantPath, coOwner);
         const ghost = unknownEmail(`regrant-${on}`);
         await share(coOwner, `/api/docs/${docId}`, ghost, 'owner');
         const token = tokenOf(await inviteLink(coOwner, `/api/docs/${docId}`, ghost));
 
         if (how === 'demoted and promoted again') {
-          const set = (role: string) => call('PATCH', `${grantPath}/members`, ada.cookie, { principalId: coOwner.id, role });
+          const set = (role: string) => call('PATCH', `${grantPath}/members`, vaultOwner.cookie, { principalId: coOwner.id, role });
           expect((await set('editor')).status, 'demoted').toBe(200);
           expect((await set('owner')).status, 'promoted again').toBe(200);
         } else {
-          expect((await call('DELETE', `${grantPath}/members`, ada.cookie, { principalId: coOwner.id })).status, 'removed').toBe(200);
-          await share(ada, grantPath, coOwner.email, 'owner');
-          await redeem(env, ada, grantPath, coOwner);
+          expect((await call('DELETE', `${grantPath}/members`, vaultOwner.cookie, { principalId: coOwner.id })).status, 'removed').toBe(200);
+          await share(vaultOwner, grantPath, coOwner.email, 'owner');
+          await redeem(env, vaultOwner, grantPath, coOwner);
         }
         expect(await roleOf(coOwner.cookie, docId), 'Rae manages the note again').toBe('owner');
-        expect((await membersOf(ada, `/api/docs/${docId}`)).invites, 'her old invite is not listed again').toEqual([]);
+        expect((await membersOf(vaultOwner, `/api/docs/${docId}`)).invites, 'her old invite is not listed again').toEqual([]);
         const guest = await signedUpUser(env, `t2s1-guest-${on}-${how.slice(0, 4)}`, 'Sol', ghost);
         const answer = await accept(guest.cookie, token);
         expect(answer.status, 'the old link stays closed').toBe(404);
