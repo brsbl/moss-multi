@@ -85,7 +85,7 @@ export const managesDoc = (doc: Arg, user: Arg) => `(EXISTS (SELECT 1 FROM docs 
 
 /** SQL that holds while user `?{user}` manages folder `?{folder}`: it owns the vault, or holds an `owner` grant on the
  * folder or one above it (managesDoc's folder half). */
-const managesFolder = (folder: Arg, user: Arg) => `(EXISTS (SELECT 1 FROM folders WHERE id = ${arg(folder)} AND owner_user_id = ${arg(user)})
+export const managesFolder = (folder: Arg, user: Arg) => `(EXISTS (SELECT 1 FROM folders WHERE id = ${arg(folder)} AND owner_user_id = ${arg(user)})
   OR EXISTS (WITH RECURSIVE chain(id, parent_id, depth) AS (
       SELECT id, parent_id, 1 FROM folders WHERE id = ${arg(folder)}
       UNION ALL SELECT f.id, f.parent_id, chain.depth + 1 FROM folders f JOIN chain ON f.id = chain.parent_id
@@ -112,15 +112,6 @@ export async function managesLive(db: D1Database, type: 'doc' | 'folder', id: st
   const row = await db.prepare(`SELECT (${liveAndManaged(type, 1, 2)}) AS ok`).bind(id, userId).first<{ ok: number }>();
   return row?.ok === 1;
 }
-
-/** SQL that holds while user `?{user}` manages folder `?{folder}`: it owns the vault, or holds an `owner` grant on the
- * folder or an ancestor. The folder counterpart of `managesDoc`. */
-export const managesFolder = (folder: number, user: number) => `(EXISTS (SELECT 1 FROM folders WHERE id = ?${folder} AND owner_user_id = ?${user})
-  OR EXISTS (WITH RECURSIVE chain(id, parent_id, depth) AS (
-      SELECT id, parent_id, 1 FROM folders WHERE id = ?${folder}
-      UNION ALL SELECT f.id, f.parent_id, chain.depth + 1 FROM folders f JOIN chain ON f.id = chain.parent_id
-        WHERE chain.depth < ${MAX_FOLDER_DEPTH}
-    ) SELECT 1 FROM folder_members m JOIN chain ON m.folder_id = chain.id WHERE m.principal_id = ?${user} AND m.role = 'owner'))`;
 
 /** SQL that holds while user `?{user}` may edit in folder `?{folder}`: it owns the vault, or holds an `editor` or
  * `owner` grant on the folder or an ancestor. A move re-checks its destination with it in the same statement. */
