@@ -14,7 +14,7 @@ import {
 } from 'lexical';
 import type * as Y from 'yjs';
 import { bindingOf } from '../binding-registry.ts';
-import { sharedItem, textIds, toSpans } from './chars.ts';
+import { charAround, sharedItem, textIds, toSpans } from './chars.ts';
 
 type Routed = 'none' | 'struck' | 'own' | 'skip';
 
@@ -168,18 +168,22 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
         if (!ids) return false;
         const at = backward ? offset - 1 : offset;
         if (at >= 0 && at < ids.length) {
+          // A whole character: both halves of a surrogate pair, and a grapheme's combining marks.
+          const content = text.getTextContent();
+          const [from, to] = content.length === ids.length ? charAround(content, at) : [at, at + 1];
           const id = ids[at];
           if (fork.isStruck(id)) {
-            offset = backward ? at : at + 1;
+            offset = backward ? from : to;
             continue;
           }
           if (own.has(id.client)) {
-            const caret = backward ? at + 1 : at;
+            const caret = backward ? to : from;
             text.select(caret, caret);
             return false;
           }
-          strike([id]);
-          const caret = backward ? at : at + 1;
+          const body = ids.slice(from, to).filter((unit) => !own.has(unit.client) && !fork.isStruck(unit));
+          strike(body);
+          const caret = backward ? from : to;
           text.select(caret, caret);
           return true;
         }

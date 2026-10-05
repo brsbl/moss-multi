@@ -349,7 +349,9 @@ export class SuggestFork {
       this.begin();
       return;
     }
-    const resume = [...new Set([...this.#leases.map((lease) => lease.client), ...this.#openMine().keys()])];
+    // Only this fork's leases: another window of the author holds its own, and naming one would refuse the resume.
+    const open = this.#openMine();
+    const resume = [...new Set([...this.#leases.map((lease) => lease.client), ...[...this.#used].filter((client) => open.has(client))])];
     this.#waiting.unshift(...replay.filter((entry) => entry.request.t !== 'suggest-lease'));
     this.#resuming = true;
     this.#send({ request: { t: 'suggest-lease', resume, fork: this.#id } });
@@ -550,10 +552,11 @@ export class SuggestFork {
     return open;
   }
 
-  /** A frame for `from` landed in `to` (a continuation, or a record it merged into). */
+  /** A frame for `from` landed in `to` (a continuation, or a record it merged into): its leases and parts move too. */
   #follow(from: string, to: string): void {
     for (const lease of this.#leases) if (lease.record === from) lease.record = to;
     for (const [client, record] of this.#mine) if (record === from) this.#mine.set(client, to);
+    for (const part of this.#parts.values()) if (part.record === from) part.record = to;
   }
 
   #maybeRotate(): void {
@@ -629,14 +632,21 @@ export class SuggestFork {
     if (!this.#ready || this.#disposed) return;
     Y.applyUpdate(this.doc, update, SHIM_BODY_APPLY);
     let changed = false;
-    for (const record of new Set(this.#mine.values())) {
+    const queue = [...new Set([...this.#mine.values(), ...[...this.#parts.values()].map((part) => part.record)])];
+    for (let i = 0; i < queue.length; i += 1) {
+      const record = queue[i];
       if (this.#closedSeen.has(record)) continue;
       const meta = readMeta(this.body, record);
       if (!meta || meta.status === 'open') continue;
       this.#closedSeen.add(record);
       changed = true;
+      if (meta.mergedInto) {
+        // The server moved its ops and parts into the record it merged into; they stay pending there.
+        this.#follow(record, meta.mergedInto);
+        queue.push(meta.mergedInto);
+        continue;
+      }
       for (const [id, part] of this.#parts) if (part.record === record) this.#parts.delete(id);
-      if (meta.mergedInto) continue;
       this.#emit({ type: 'closed', record, status: meta.status, clients: meta.clients });
       if (meta.status === 'accepted') {
         // Accepted text is body text now; the next edit writes a fresh group.

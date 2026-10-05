@@ -64,6 +64,19 @@ export function charIndex(binding: Binding): Map<string, CharPlace> {
   return index;
 }
 
+const graphemes = typeof Intl !== 'undefined' && 'Segmenter' in Intl ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null;
+
+/** The UTF-16 range [from, to) of the character (grapheme) holding code unit `at`; never splits a surrogate pair. */
+export function charAround(text: string, at: number): [number, number] {
+  const segment = graphemes?.segment(text).containing(at);
+  if (segment) return [segment.index, segment.index + segment.segment.length];
+  const high = (i: number) => i >= 0 && i < text.length && (text.charCodeAt(i) & 0xfc00) === 0xd800;
+  const low = (i: number) => i >= 0 && i < text.length && (text.charCodeAt(i) & 0xfc00) === 0xdc00;
+  if (high(at) && low(at + 1)) return [at, at + 2];
+  if (low(at) && high(at - 1)) return [at - 1, at + 1];
+  return [at, at + 1];
+}
+
 /** Consecutive ids folded into spans. */
 export function toSpans(ids: readonly Y.ID[]): IdSpan[] {
   const spans: IdSpan[] = [];
