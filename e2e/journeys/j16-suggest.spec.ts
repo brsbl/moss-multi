@@ -3,7 +3,8 @@
 // shared as suggester through the dialog opens locked to the "Suggesting" chip; on a cold load a suggester's first
 // delete leaves the text on the server and paints it struck, and a viewer opens in Review and sees it; explicit
 // deletes strike exactly the original characters (past an inline link, over mixed own and original text) and undo
-// takes a strike back; suggestions typed offline reach the server after the suggester navigates away; and every
+// takes a strike back; two windows of one suggester show each other's suggestions live; an IME composition in a code
+// register is recorded; suggestions typed offline reach the server after the suggester navigates away; and every
 // census operation, made through the real UI, is recorded with no refusal.
 import type { Locator } from '@playwright/test';
 import type { Actor } from '../lib/actors.ts';
@@ -315,7 +316,53 @@ test('j16-suggest routed deletes: Backspace and Delete strike a whole emoji, nev
   expect(await content(ada, docId), 'no suggestion wrote the body').toBe(before);
 });
 
-test('j16-suggest offline: suggestions typed offline reach the server after the suggester navigates away @p:mean-2 @p:tech-7 @p:R17', async ({ actors }) => {
+test('j16-suggest two windows: each window of a suggester shows the other window\'s suggestions live @p:mean-2 @p:R17', async ({ actors }) => {
+  actors.solo('the owner only seeds the note; one suggester edits in two windows');
+  const { ada, ben, docId, before } = await sharedNote(actors, 'First window line.\n\nSecond window line.');
+  await openIn(ben, docId);
+  await ben.observeEditor(docId);
+  const ben2 = await actors.sameAs(ben);
+  await openIn(ben2, docId);
+  await ben2.observeEditor(docId);
+
+  await caret(ben, docId, 'First window line.', 18);
+  await ben.page.keyboard.type(' Typed in one.');
+  await settled(ben, docId, 'the first window');
+  await expect(ui.body(ben2, docId), "the second window shows the first window's suggestion").toContainText('First window line. Typed in one.', { timeout: BIND_TIMEOUT });
+
+  await caret(ben2, docId, 'Second window line.', 19);
+  await ben2.page.keyboard.type(' Typed in two.');
+  await settled(ben2, docId, 'the second window');
+  await expect(ui.body(ben, docId), "the first window shows the second window's suggestion").toContainText('Second window line. Typed in two.', { timeout: BIND_TIMEOUT });
+
+  await caret(ben, docId, 'window line.', 1);
+  await ben.page.keyboard.press('Backspace');
+  await settled(ben, docId, 'the strike');
+  await expect.poll(() => painted(ben2, 'suggest-delete'), { message: "the second window paints the first window's strike", timeout: BIND_TIMEOUT }).toEqual(['w']);
+  await settled(ben2, docId, 'the second window, after');
+  expect(await content(ada, docId), 'no suggestion wrote the body').toBe(before);
+});
+
+test('j16-suggest IME: a composition in an original code block while suggesting is recorded with no refusal @p:mean-2 @p:R17', async ({ actors }) => {
+  actors.solo('the owner only seeds the note; one suggester makes every edit');
+  const { ada, ben, docId, before } = await sharedNote(actors, 'Code below.\n\n```js\nseed\n```');
+  await openIn(ben, docId);
+  await ben.observeEditor(docId);
+  const body = ui.body(ben, docId);
+  await body.locator('.moss-codeblock-pre').click();
+  const field = body.getByPlaceholder('Enter code...');
+  await expect(field).toBeVisible();
+  const sent = await sentCount(ben, docId);
+  await field.evaluate((input) => input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true })));
+  await field.fill('seed漢');
+  await field.evaluate((input) => input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '漢' })));
+  await expect.poll(() => sentCount(ben, docId), { message: 'the composition reaches the wire', timeout: BIND_TIMEOUT }).toBeGreaterThan(sent);
+  await settled(ben, docId, 'the composition');
+  await expect(field).toHaveValue('seed漢');
+  expect(await content(ada, docId), 'no suggestion wrote the body').toBe(before);
+});
+
+test('j16-suggest offline:suggestions typed offline reach the server after the suggester navigates away @p:mean-2 @p:tech-7 @p:R17', async ({ actors }) => {
   const { ada, ben, docId, before } = await sharedNote(actors, 'Draft line one.\n\nDraft line two.', { severable: true });
   // His own note, to navigate to while the suggestion is still unsent.
   await ben.goto('/');

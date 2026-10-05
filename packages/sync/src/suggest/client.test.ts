@@ -4,6 +4,7 @@
 // falls back to the body when binding C throws; a record closed under the author offers back every unacked block,
 // and typing after the remount lands.
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { $getRoot } from 'lexical';
 import * as Y from 'yjs';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import type { SuggestReply, SuggestRequest } from '@moss-multi/protocol/suggest';
@@ -372,6 +373,46 @@ describe('T5.1 copy-back, reconnect and undelete @p:mean-2 @p:tech-7 @p:R17', ()
       expect(first.replies.filter((reply) => reply.t === 'suggest-refused'), "the first window's lease was not taken").toEqual([]);
     } finally {
       b?.dispose();
+      a.dispose();
+    }
+  });
+
+  it('every window of the author shows every record of the author live: text and strikes either window makes after both mounted', () => {
+    const live = seededBody();
+    const first = wire(live, 'c1');
+    const a = mount(live, first);
+    const second = wire(live, 'c2', first.ingest);
+    const b = mount(live, second);
+    const text = (m: typeof a) => m.bound.editor.getEditorState().read(() => $getRoot().getTextContent());
+    try {
+      a.act(() => select('Hello', 24).insertText(' One.'));
+      first.deliver(a.fork);
+      expect(exported(b.fork.doc), "the second window's F holds the first window's later text").toContain('One.');
+      b.act(() => {});
+      expect(text(b), "the second window's editor shows it").toContain('One.');
+      b.act(() => select('Go to', 0).insertText('Then '));
+      second.deliver(b.fork);
+      a.act(() => {});
+      expect(text(a), "the first window shows the second window's text").toContain('Then Go to');
+      const targets = spansOfText(a.fork.doc, 'world');
+      const part = a.fork.proposeDelete(targets);
+      first.deliver(a.fork);
+      expect(b.fork.isStruck(targets[0]), "the second window paints the first window's strike").toBe(true);
+      a.fork.withdrawPart(part!);
+      first.deliver(a.fork);
+      expect(b.fork.isStruck(targets[0]), 'and drops it once it is taken back').toBe(false);
+      // Each window keeps writing under its own lease, with no refusal, and the two forks converge.
+      b.act(() => select('Then', 5).insertText('soon '));
+      second.deliver(b.fork);
+      a.act(() => select('Hello', 29).insertText(' Two.'));
+      first.deliver(a.fork);
+      for (const link of [first, second]) expect(link.replies.filter((reply) => reply.t === 'suggest-refused')).toEqual([]);
+      expect(refusalsOf(a.events)).toEqual([]);
+      expect(refusalsOf(b.events)).toEqual([]);
+      expect(exported(b.fork.doc)).toContain('Two.');
+      expect(exported(a.fork.doc), 'both windows converge').toBe(exported(b.fork.doc));
+    } finally {
+      b.dispose();
       a.dispose();
     }
   });
