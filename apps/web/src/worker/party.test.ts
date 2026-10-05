@@ -146,20 +146,14 @@ describe('the origin gate (A§18)', () => {
 });
 
 describe('opening a shared note', () => {
-  it("redeems the grantee's pending email share on the note or a folder above it, and nobody else's", async () => {
+  it("redeems no pending email share on a socket admission: moss may open a note nobody chose (T2.8)", async () => {
     const folderId = await insertFolder(d1.db, ada, ada.homeId);
     const docId = await insertDoc(d1.db, ada, { folderId });
-    const other = await insertDoc(d1.db, ada);
     await insertGrant(d1.db, { folderId }, ben, 'viewer');
-    const invite = (token: string, type: string, id: string) => d1.db.prepare(`INSERT INTO invites (token, email, target_type, target_id, role, invited_by, created_at)
-      VALUES (?, ?, ?, ?, 'viewer', ?, ?)`).bind(token, ben.email, type, id, ada.id, Date.now()).run();
-    await invite('t-folder', 'folder', folderId);
-    await invite('t-other', 'doc', other);
-    const accepted = async (token: string) => (await d1.db.prepare('SELECT accepted_by FROM invites WHERE token = ?').bind(token).first<{ accepted_by: string | null }>())?.accepted_by;
-    expect((await authenticateParty(upgrade(docId, { cookie: ada.cookie }), docId, env)).ok).toBe(true);
-    expect(await accepted('t-folder'), 'the owner opening it redeems nothing').toBeNull();
+    await d1.db.prepare(`INSERT INTO invites (token, email, target_type, target_id, role, invited_by, created_at)
+      VALUES ('t-folder', ?, 'folder', ?, 'viewer', ?, ?)`).bind(ben.email, folderId, ada.id, Date.now()).run();
+    const accepted = async () => (await d1.db.prepare("SELECT accepted_by FROM invites WHERE token = 't-folder'").first<{ accepted_by: string | null }>())?.accepted_by;
     expect((await authenticateParty(upgrade(docId, { cookie: ben.cookie }), docId, env)).ok).toBe(true);
-    expect(await accepted('t-folder')).toBe(ben.id);
-    expect(await accepted('t-other'), 'a share Ben has not opened, and holds no grant for, waits').toBeNull();
+    expect(await accepted(), 'the share waits for an explicit open').toBeNull();
   });
 });

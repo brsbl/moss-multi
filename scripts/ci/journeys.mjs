@@ -14,7 +14,7 @@ export const ALL = 'all';
 /** @type {Record<string, string[]>} */
 export const GROUPS = {
   // Chrome, auth, sharing and access.
-  shell: ['j00-shell', 'j07', 'j08', 'j09', 'j10'],
+  shell: ['j00-shell', 'j07', 'j08', 'j09', 'j10', 'j19'],
   // A doc's content: import, persistence, co-editing, presence.
   editing: ['j00-import', 'j00-roundtrip', 'j00-persist', 'j01'],
   // Titles and properties. Split from editing so WebKit stays within 13 min (it reached 12.2 min at T1.9s).
