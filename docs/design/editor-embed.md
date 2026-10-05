@@ -267,7 +267,7 @@ script-src 'self';
 style-src 'self' 'unsafe-inline';
 font-src 'self';
 img-src 'self' data: blob: https: <asset-origin>;
-media-src 'self' blob: <asset-origin>;
+media-src 'self' data: blob: <asset-origin>;
 frame-src data: https: <html-frame-origin>;
 connect-src 'none';
 worker-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'
