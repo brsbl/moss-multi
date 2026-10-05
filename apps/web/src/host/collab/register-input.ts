@@ -115,7 +115,11 @@ export function useRegisterDraft(
       if (field && field.value !== next) repaint(field, next, delta ?? diffText(field.value, next));
       display(next);
     };
+    // The payload replaces what the field showed before it arrived: a caret at the end of that stays at the end.
+    const field = element.current;
+    const atEnd = !!field && field.ownerDocument.activeElement === field && field.selectionStart === field.value.length && field.selectionEnd === field.value.length;
     show(null);
+    if (field && atEnd) field.setSelectionRange(field.value.length, field.value.length);
     const changed = (event: Y.YTextEvent, transaction: Y.Transaction) => {
       if (composing.current) return;
       // A local edit is already in the field; a rebased one is repainted by its difference.
