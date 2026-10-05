@@ -25,6 +25,8 @@ export interface Probe {
   selector: string;
   /** Narrows `selector` to elements whose text is exactly this. */
   text?: string;
+  /** The product leaves a same-size placeholder in its place, so the parity oracle hides it keeping its box. */
+  inPlace?: boolean;
 }
 
 export interface Affordance {
@@ -151,7 +153,7 @@ export const AFFORDANCES = [
     staged: 4,
     probes: [
       { surface: 'comment-popover', selector: '.moss-comment-popover button[aria-label="Delete thread"]' },
-      { surface: 'comment-popover', selector: '.moss-comment-popover button[aria-label^="Comment actions for "]' },
+      { surface: 'comment-popover', selector: '.moss-comment-popover button[aria-label^="Comment actions for "]', inPlace: true },
     ],
   },
   {

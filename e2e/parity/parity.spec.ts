@@ -114,13 +114,19 @@ async function maskRects(page: Page, selectors: string[], crop = CROP): Promise<
  */
 async function withholdAffordances(page: Page): Promise<string[]> {
   const probes = AFFORDANCES.flatMap((entry) =>
-    (entry.probes as readonly { selector: string; text?: string }[]).map((probe) => ({ id: entry.id, selector: probe.selector, text: probe.text ?? null })),
+    (entry.probes as readonly { selector: string; text?: string; inPlace?: boolean }[]).map((probe) => ({ id: entry.id, selector: probe.selector, text: probe.text ?? null, inPlace: probe.inPlace ?? false })),
   );
   return page.evaluate((list) => {
     const withheld: string[] = [];
-    for (const { id, selector, text } of list) {
+    for (const { id, selector, text, inPlace } of list) {
       for (const el of document.querySelectorAll<HTMLElement>(selector)) {
         if (text !== null && (el.textContent ?? '').trim() !== text) continue;
+        // The product leaves a same-size placeholder for some withheld controls; those keep their box here too.
+        if (inPlace) {
+          el.style.setProperty('visibility', 'hidden', 'important');
+          withheld.push(id);
+          continue;
+        }
         el.hidden = true;
         el.style.setProperty('display', 'none', 'important');
         withheld.push(id);
