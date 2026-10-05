@@ -1,0 +1,118 @@
+// Inside the composer: per mount, routed deletes (Suggest), insert and strike paint (Suggest and Review), Edit-mode
+// marks over the body, dropping undo steps of a closed record, and the caret put back after a mode switch
+// (docs/design/suggestions.md §5, §7).
+import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
+import type { EditMode } from '@moss-multi/protocol/dom-contract';
+import { Composite, openRecords, type Built } from '@moss-multi/sync/suggest/client';
+import { useEffect, useSyncExternalStore } from 'react';
+import type * as Y from 'yjs';
+import { bindingOf } from '../binding-registry.ts';
+import { restoreCaret, type CaretMark } from './caret.ts';
+import { rangesWhere } from './chars.ts';
+import { ReviewMount, SuggestMount } from './mounts.ts';
+import { clearPaint, drawMarks, editMarks, paintBound, paintRanges, partTargets } from './paint.ts';
+import { registerSuggestRouting } from './routing.ts';
+
+export interface SuggestPane {
+  readonly mode: EditMode;
+  readonly mount: SuggestMount | ReviewMount | null;
+  /** B, the session's doc, while one is attached. */
+  readonly body: Y.Doc | null;
+  /** The body is bound and showing (live or read-only). */
+  readonly bodyOpen: boolean;
+  takeCaret(): CaretMark | null;
+  keepCaret(mark: CaretMark): void;
+  subscribeMount(listener: () => void): () => void;
+}
+
+const covers = (spans: readonly { client: number; clock: number; len: number }[], id: Y.ID) =>
+  spans.some((span) => span.client === id.client && span.clock <= id.clock && id.clock < span.clock + span.len);
+
+/** A pointer-transparent layer over the editor for Edit-mode marks. */
+function overlayFor(root: HTMLElement | null): HTMLElement | null {
+  const host = root?.parentElement;
+  if (!host) return null;
+  let overlay = host.querySelector<HTMLElement>(':scope > [data-suggest-overlay]');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.dataset.suggestOverlay = '';
+    overlay.className = 'moss-suggest-overlay';
+    if (getComputedStyle(host).position === 'static') host.style.position = 'relative';
+    host.appendChild(overlay);
+  }
+  return overlay;
+}
+
+export function SuggestPlugin({ pane }: { pane: SuggestPane }): null {
+  const [editor] = useLexicalComposerContext();
+  const mount = useSyncExternalStore(pane.subscribeMount, () => pane.mount);
+  const body = useSyncExternalStore(pane.subscribeMount, () => pane.body);
+  const mode = pane.mode;
+
+  useEffect(() => {
+    const owner = {};
+    const stops: (() => void)[] = [];
+    let frame = 0;
+    let built: Built | null = null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const overlay = mode === 'edit' ? overlayFor(editor.getRootElement()) : null;
+
+    const paint = () => {
+      frame = 0;
+      const binding = bindingOf(editor);
+      if (!binding) return;
+      const caret = pane.takeCaret();
+      if (caret && pane.bodyOpen && !restoreCaret(editor, caret)) pane.keepCaret(caret);
+      if (mount instanceof SuggestMount) {
+        paintBound(owner, editor, binding, mount.fork.ownClients(), mount.fork.struck());
+      } else if (mount instanceof ReviewMount) {
+        paintBound(owner, editor, binding, new Set(mount.clients.keys()), body ? partTargets(body, new Set(mount.valid)) : []);
+      } else if (built && body) {
+        const struck = partTargets(body, new Set(built.valid));
+        paintRanges(owner, [], struck.length ? rangesWhere(editor, binding, (id) => covers(struck, id)) : []);
+        if (overlay) drawMarks(editor, overlay, editMarks(body, built, binding));
+      } else {
+        clearPaint(owner);
+        overlay?.replaceChildren();
+      }
+    };
+    const repaint = () => {
+      if (!frame) frame = requestAnimationFrame(paint);
+    };
+    stops.push(editor.registerUpdateListener(repaint));
+    stops.push(pane.subscribeMount(repaint));
+    window.addEventListener('resize', repaint);
+    stops.push(() => window.removeEventListener('resize', repaint));
+
+    if (mount instanceof SuggestMount) {
+      mount.editor = editor;
+      stops.push(registerSuggestRouting(editor, mount.fork));
+    }
+    if (mode === 'edit' && body) {
+      // Edit mode: C is rebuilt from B's records, debounced, only while any record is open.
+      const composite = new Composite(body);
+      const rebuild = () => {
+        built?.doc.destroy();
+        built = openRecords(body).length ? composite.build() : null;
+        repaint();
+      };
+      const onUpdate = () => {
+        clearTimeout(timer);
+        timer = setTimeout(rebuild, 200);
+      };
+      body.on('update', onUpdate);
+      stops.push(() => body.off('update', onUpdate));
+      rebuild();
+    }
+    repaint();
+    return () => {
+      for (const stop of stops) stop();
+      clearTimeout(timer);
+      if (frame) cancelAnimationFrame(frame);
+      built?.doc.destroy();
+      clearPaint(owner);
+      overlay?.remove();
+    };
+  }, [body, editor, mode, mount, pane]);
+  return null;
+}

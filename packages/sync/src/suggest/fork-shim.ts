@@ -1,7 +1,7 @@
 // The suggest-mode fork (docs/design/suggestions.md §5), headless: a moss editor bound V1 to F, a private copy of the
 // body plus the author's own records, written under the active lease. Every F transaction whose origin is not one of
 // the shim's own is forwarded as `suggest-ops`, so the binding, register writers and the UndoManager are all
-// recorded without an allowlist. Test-only until T5.1 builds the client on it.
+// recorded without an allowlist. The spike's headless harness; the client's fork is client.ts.
 import { createBinding, syncLexicalUpdateToYjs, syncYjsChangesToLexical, type Binding, type Provider } from '@lexical/yjs';
 import { registerList } from '@lexical/list';
 import { $normalizeFormatWhitespace } from '@moss-desktop/renderer/editor/markdown/format-whitespace';
@@ -11,9 +11,9 @@ import type { SuggestionRecord } from '@moss-multi/core/suggest/apply';
 import { createConverterEditor } from '../converter/index.ts';
 import { excludedPropertiesFor } from '../excluded-properties.ts';
 import { bindRegisters } from '../registers.ts';
+import { SHIM_BODY_APPLY, SHIM_RECORD_APPLY } from './client.ts';
 
-export const SHIM_BODY_APPLY = 'shim-body-apply';
-export const SHIM_RECORD_APPLY = 'shim-record-apply';
+export { SHIM_BODY_APPLY, SHIM_RECORD_APPLY };
 
 const noop = () => {};
 const provider = {

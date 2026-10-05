@@ -183,6 +183,14 @@ async function askAccess(docId: string): Promise<AccessAnswer> {
 /** The tab's sessions by doc id with the pane holding each, and by provider for the plugin's teardown. */
 const held = new Map<string, { session: DocSession; owner: object }>();
 const byProvider = new WeakMap<object, DocSession>();
+/** Providers the plugin binds in place of a session's own (Suggest and Review), with the doc they bind. */
+const aliases = new WeakMap<object, { doc: Y.Doc; release: () => void }>();
+
+/** The plugin binds `provider` and `doc` for `session` (Suggest's fork, Review's composite); `release` runs at teardown. */
+export function aliasProvider(provider: object, session: DocSession, doc: Y.Doc, release: () => void): void {
+  byProvider.set(provider, session);
+  aliases.set(provider, { doc, release });
+}
 const ownerListeners = new Set<() => void>();
 /** Every live session of the tab, lingering ones included: the per-tab socket registry (A§10.1). */
 const sessions = new Set<DocSession>();
@@ -671,6 +679,8 @@ export function openDocSession(docId: string, owner: object, canWrite = true): D
 export function releaseProvider(docId: string, provider: object | undefined, docMap: Map<string, Y.Doc>): void {
   const session = provider && byProvider.get(provider);
   if (!session) return;
-  if (docMap.get(docId) === session.doc) docMap.delete(docId);
+  const alias = aliases.get(provider);
+  if (docMap.get(docId) === session.doc || (alias && docMap.get(docId) === alias.doc)) docMap.delete(docId);
+  alias?.release();
   session.release();
 }

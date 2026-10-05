@@ -1,6 +1,8 @@
 // ported-from: packages/desktop/src/renderer/editor/MarkdownEditor.tsx @ 762abb777
 // moss-multi seam: bound editors do not normalize hydration or expose an unfocused toolbar.
 import { isBoundEditor } from '@moss-multi/host/collab/view-state';
+// moss-multi seam: suggest-toggle (T5.1): the docked toolbar's Suggest toggle
+import { ToolbarCollab } from '@moss-multi/host/collab/suggest/SuggestChrome';
 import type { ReactNode } from 'react';
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -3709,6 +3711,7 @@ function FloatingSelectionTools({
                       {insertButton}
                       {commentButton}
                       {actionsButton}
+                      <ToolbarCollab noteId={noteId} />{/* moss-multi seam: suggest-toggle (T5.1) */}
                     </div>
                   </>
                 )}
