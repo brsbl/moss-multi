@@ -868,6 +868,74 @@ describe('T1.F2 checker regressions @p:col-1 @p:tech-8', () => {
     expect(again.closed?.code, 'a wake does not reset her withheld bytes').toBe(CLOSE.writeRefused);
   });
 
+  it('revealing and then deleting a payload counts its withheld bytes against its writer again', async () => {
+    class SmallDoc extends DocDO {
+      static override limits = { ...DocDO.limits, withheldBytesPerIdentity: 4 * 1024 };
+    }
+    const first = await start(openDoc(new Backing(), SmallDoc as never));
+    await first.dobj.create({ folderId: 'folder', ownerId: 'owner', markdown: SEED });
+    const minted = (text: string) => {
+      const doc = new Y.Doc();
+      doc.getText('payload').insert(0, text);
+      return Y.encodeStateAsUpdate(doc);
+    };
+    const eve = await connect(first, { id: 'eve', role: 'editor' });
+    await eve.hello();
+    await eve.deliver(encodePayloadFrame('eve-0', PAYLOAD_UPDATE, minted('x'.repeat(3 * 1024))));
+    expect(eve.closed, 'within her withheld bytes').toBeNull();
+    // Eve names the payload (it is served), then deletes her element (it is withheld again).
+    const forger = await LiveClient.open(first, { id: 'eve', role: 'editor' });
+    try {
+      forger.forge('eve-0');
+      await forger.sync();
+      expect(first.dobj.payloadWork.renamed, 'her element serves it').toBe(0);
+      forger.remove(0);
+      await forger.sync();
+      expect(forger.socket.closed).toBeNull();
+    } finally { forger.dispose(); }
+    const again = await connect(first, { id: 'eve', role: 'editor' });
+    await again.hello();
+    await again.deliver(encodePayloadFrame('eve-0', PAYLOAD_UPDATE, minted('y'.repeat(3 * 1024))));
+    expect(again.closed?.code, 'a reveal does not reset her withheld bytes').toBe(CLOSE.writeRefused);
+    const woken = await start(wake(first));
+    const later = await connect(woken, { id: 'eve', role: 'editor' });
+    await later.hello();
+    await later.deliver(encodePayloadFrame('eve-0', PAYLOAD_UPDATE, minted('z'.repeat(3 * 1024))));
+    expect(later.closed?.code, 'nor does a wake after it').toBe(CLOSE.writeRefused);
+  });
+
+  it('an element that loses its __regId or its payload type no longer serves the payload', async () => {
+    const opened = await seeded();
+    const ada = await LiveClient.open(opened, { id: 'ada', role: 'editor' });
+    try {
+      ada.insert(kind, 'first');
+      ada.insert(kind, 'second');
+      await ada.sync();
+      const ids = ada.ids();
+      expect(ids.length).toBe(2);
+      const eve = await connect(opened, { id: 'eve', role: 'editor' });
+      await eve.hello();
+      const elements = new Map<string, Y.XmlElement>();
+      const visit = (type: Y.XmlText | Y.XmlElement) => {
+        const id: unknown = type.getAttribute('__regId');
+        if (type instanceof Y.XmlElement && typeof id === 'string') elements.set(id, type);
+        const children = type instanceof Y.XmlText ? type.toDelta().map((op: { insert?: unknown }) => op.insert) : type.toArray();
+        for (const child of children) if (child instanceof Y.XmlText || child instanceof Y.XmlElement) visit(child);
+      };
+      visit(eve.doc.get('root', Y.XmlText));
+      elements.get(ids[0])!.removeAttribute('__regId');
+      elements.get(ids[1])!.setAttribute('__type', 'paragraph');
+      await eve.flush();
+      expect(eve.closed).toBeNull();
+      const ben = await connect(opened, { id: 'ben', role: 'editor' });
+      await ben.hello();
+      const before = ben.others.length;
+      for (const id of ids) await ben.deliver(encodePayloadFrame(id, PAYLOAD_STEP1, Y.encodeStateVector(new Y.Doc())));
+      await ben.pump();
+      expect(ben.others.length - before, 'no step 1 is answered for either id').toBe(0);
+    } finally { ada.dispose(); }
+  });
+
   it('the creator of an empty block keeps typing that lands after a peer opened and deleted it', async () => {
     const opened = await seeded();
     const ada = await LiveClient.open(opened, { id: 'ada', role: 'editor' });
