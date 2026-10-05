@@ -11,6 +11,7 @@ import { resolvePrincipal } from '../auth/principal.ts';
 import { createDb, type Db } from '../db/client.ts';
 import { shareLinks } from '../db/schema.ts';
 import { json } from '../worker/route.ts';
+import { managesDoc, managesFolder } from './access.ts';
 import { accessTo, type MemberTarget } from './members.ts';
 import { NO_STORE, notFound, readJsonObject, unauthenticated } from './respond.ts';
 
@@ -75,6 +76,15 @@ export async function handleLinks(request: Request, env: LinksEnv, target: Membe
     return json({ error: 'bad-request', message: 'Choose view, comment or edit access for the link.' }, 400, NO_STORE);
   }
   const link: ShareLink = { token: newToken(), role: body.role, createdAt: Date.now() };
-  await db.insert(shareLinks).values({ ...link, targetType: target.type, targetId: target.id, createdBy: principal.id });
+  // The caller must still manage the target when the link is written, so an owner demoted or removed while this
+  // request was under way cannot hand themselves access back through a link (A§8).
+  const manages = target.type === 'doc' ? managesDoc(3, 5) : managesFolder(3, 5);
+  const inserted = await env.DB.prepare(`INSERT INTO share_links (token, target_type, target_id, role, created_by, created_at)
+    SELECT ?1, ?2, ?3, ?4, ?5, ?6 WHERE ${manages}`).bind(link.token, target.type, target.id, link.role, principal.id, link.createdAt).run();
+  if ((inserted.meta?.changes ?? 0) === 0) {
+    const now = await accessTo(db, principal, target);
+    if (!now) return notFound();
+    return json({ error: 'forbidden', message: `Only the owner can manage links to this ${target.type === 'doc' ? 'note' : 'folder'}.` }, 403, NO_STORE);
+  }
   return json({ link }, 201, NO_STORE);
 }

@@ -2,12 +2,14 @@ import { createStartHandler, defaultStreamHandler } from '@tanstack/react-start/
 import { createServerEntry } from '@tanstack/react-start/server-entry';
 import { env, waitUntil } from 'cloudflare:workers';
 import { routePartykitRequest } from 'partyserver';
+import { DocDO } from '@moss-multi/sync';
 import { handleApi } from './api/router.ts';
 import { refusalFor } from './auth/config.ts';
 import { handleAuthRoute } from './auth/route.ts';
 import { asAppEnv } from './env.ts';
 import { BUILD } from './provenance.ts';
 import { mintNonce, withCsp } from './worker/csp.ts';
+import { docAccessCheck } from './worker/doc-access.ts';
 import { testHooksAllowed } from './worker/handlers.ts';
 import { workspaceSocket } from './worker/workspace.ts';
 import { authenticateParty } from './worker/party.ts';
@@ -15,6 +17,9 @@ import { routeRequest } from './worker/route.ts';
 import { handleTestHook } from './worker/test-hooks.ts';
 
 export { DocDO, PrincipalDO, SearchDO } from '@moss-multi/sync';
+
+// Every DocDO re-validates its sockets through the one resolver before applying a frame (A§8 pull validation).
+DocDO.access = (doEnv) => (doEnv?.DB ? docAccessCheck(doEnv) : null);
 
 const startFetch = createStartHandler(defaultStreamHandler);
 

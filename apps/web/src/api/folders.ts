@@ -22,7 +22,9 @@ import { createDb, type Db } from '../db/client.ts';
 import { docs, folders } from '../db/schema.ts';
 import type { AppEnv } from '../env.ts';
 import { json } from '../worker/route.ts';
-import { folderChain, MAX_FOLDER_DEPTH, resolveDocAccess, resolveFolderAccess, type FolderAccess } from './access.ts';
+import {
+  editsFolder, folderChain, managesDoc, managesFolder, MAX_FOLDER_DEPTH, resolveDocAccess, resolveFolderAccess, type FolderAccess,
+} from './access.ts';
 import { handleLinks } from './links.ts';
 import { handleMembers } from './members.ts';
 import { NO_STORE, notFound, readJsonObject, unauthenticated } from './respond.ts';
@@ -218,8 +220,8 @@ async function updateFolder(request: Request, env: FoldersEnv, id: string): Prom
     if (!moving) {
       if (newName !== null) await db.update(folders).set({ name: newName }).where(and(eq(folders.id, id), isNull(folders.deletedAt)));
     } else {
-      // The target's live ancestry, the cycle check and the depth bound hold at the moment of the write, and the
-      // parent is still the one `reach` was read under.
+      // The target's live ancestry, the cycle check and the depth bound hold at the moment of the write, the parent is
+      // still the one `reach` was read under, and the caller still manages the folder and may edit the destination.
       const move = (from: string) => env.DB.prepare(`WITH RECURSIVE ${upFrom(1)},
         sub(id, depth) AS (
           SELECT id, 1 FROM folders WHERE id = ?2
@@ -229,8 +231,9 @@ async function updateFolder(request: Request, env: FoldersEnv, id: string): Prom
         UPDATE folders SET name = coalesce(?3, name), parent_id = ?1
         WHERE id = ?2 AND deleted_at IS NULL AND ${liveIn(4)} AND parent_id = ?5
           AND NOT EXISTS (SELECT 1 FROM up WHERE id = ?2)
-          AND (SELECT count(*) FROM up) + (SELECT max(depth) FROM sub) <= ${MAX_FOLDER_DEPTH}`)
-        .bind(parentId, id, newName, vault, from).run();
+          AND (SELECT count(*) FROM up) + (SELECT max(depth) FROM sub) <= ${MAX_FOLDER_DEPTH}
+          AND ${managesFolder(2, 6)} AND ${editsFolder(1, 6)}`)
+        .bind(parentId, id, newName, vault, from, principal.id).run();
       let updated = await move(current.parentId as string);
       if (!changed(updated)) {
         const [now] = await db.select({ parentId: folders.parentId }).from(folders).where(eq(folders.id, id));
@@ -254,9 +257,13 @@ async function updateFolder(request: Request, env: FoldersEnv, id: string): Prom
   return json({ folder: await folderRecord(db, id) }, 200, NO_STORE);
 }
 
-/** Why a move whose checks passed changed nothing: the tree moved under it between the read and the write. */
+/** Why a move whose checks passed changed nothing: the tree or the caller's access changed between the read and the write. */
 async function refuseStaleMove(db: Db, principal: Principal, id: string, parentId: string): Promise<Response> {
-  if (!(await liveFolder(db, principal, id)) || !(await liveFolder(db, principal, parentId))) return folderNotFound();
+  const folder = await liveFolder(db, principal, id);
+  const target = await liveFolder(db, principal, parentId);
+  if (!folder || !target) return folderNotFound();
+  if (!can(folder.role, 'manage')) return ownerMoves('folders');
+  if (!roleAtLeast(target.role, 'editor')) return refuse(403, 'forbidden', 'You can view that folder but not move folders into it.');
   if ((await folderChain(db, parentId)).includes(id)) return refuse(409, 'cycle', 'A folder can’t move inside itself.');
   return tooDeep();
 }
@@ -305,14 +312,15 @@ async function trashFolder(request: Request, env: FoldersEnv, id: string): Promi
     }
     const now = Date.now();
     // The subtree is read inside the write, so a folder created or a note moved in just before is in the batch.
+    let stamped: D1Result;
     try {
-      await env.DB.batch([
+      [stamped] = await env.DB.batch([
         env.DB.prepare(`WITH RECURSIVE sub(id, depth) AS (
             SELECT id, 1 FROM folders WHERE id = ?3 AND deleted_at IS NULL
             UNION ALL SELECT f.id, s.depth + 1 FROM folders f JOIN sub s ON f.parent_id = s.id
               WHERE f.deleted_at IS NULL AND s.depth <= ${MAX_FOLDER_DEPTH}
-          ) UPDATE folders SET deleted_at = ?1, trash_batch_id = ?2 WHERE id IN (SELECT id FROM sub)`)
-          .bind(now, batch, id),
+          ) UPDATE folders SET deleted_at = ?1, trash_batch_id = ?2 WHERE id IN (SELECT id FROM sub) AND ${managesFolder(3, 4)}`)
+          .bind(now, batch, id, principal.id),
         env.DB.prepare('UPDATE docs SET deleted_at = ?1, trash_batch_id = ?2 WHERE folder_id IN (SELECT id FROM folders WHERE trash_batch_id = ?2) AND deleted_at IS NULL')
           .bind(now, batch),
       ]);
@@ -320,6 +328,12 @@ async function trashFolder(request: Request, env: FoldersEnv, id: string): Promi
       console.error('folder trash write failed', error);
       await eachDoc(env, held, 'settle', (stub) => stub.settle(batch));
       return cannot();
+    }
+    // The caller stopped managing the folder before the write (a demotion that committed first wins).
+    if (!changed(stamped)) {
+      await eachDoc(env, held, 'settle', (stub) => stub.settle(batch));
+      const now = await resolveFolderAccess(db, principal, id);
+      return now && !now.deleted ? refuse(403, 'forbidden', 'Only the owner can move this folder to Trash.') : folderNotFound();
     }
   }
   const [docIds, folderIds] = await Promise.all([
@@ -370,10 +384,18 @@ export async function moveDoc(request: Request, env: FoldersEnv, docId: string, 
       try {
         // The destination must still be live in the vault when the note lands (a trash may be under way), and the
         // note must still be where this request last saw it.
+        // The caller must still manage the note and may still edit the destination, so a move authorized before a
+        // demotion that commits first changes nothing.
         const moved = await env.DB.prepare(`WITH RECURSIVE ${upFrom(1)}
-          UPDATE docs SET folder_id = ?1, filename = ?2 WHERE id = ?3 AND deleted_at IS NULL AND ${liveIn(4)} AND folder_id = ?5`)
-          .bind(folderId, filename, docId, vault, from).run();
+          UPDATE docs SET folder_id = ?1, filename = ?2 WHERE id = ?3 AND deleted_at IS NULL AND ${liveIn(4)} AND folder_id = ?5
+            AND ${managesDoc(3, 6)} AND ${editsFolder(1, 6)}`)
+          .bind(folderId, filename, docId, vault, from, principal.id).run();
         if (changed(moved)) break;
+        const still = await resolveDocAccess(db, principal, docId);
+        if (!still || !can(still.role, 'manage')) return ownerMoves('notes');
+        const into = await liveFolder(db, principal, folderId);
+        if (!into) return folderNotFound();
+        if (!roleAtLeast(into.role, 'editor')) return refuse(403, 'forbidden', 'You can view that folder but not move notes into it.');
         const [now] = await db.select({ folderId: docs.folderId, deletedAt: docs.deletedAt }).from(docs).where(eq(docs.id, docId));
         if (!now || now.deletedAt !== null || now.folderId === from || attempt >= 5) return folderNotFound();
         raced = true;

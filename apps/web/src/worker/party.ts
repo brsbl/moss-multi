@@ -3,6 +3,7 @@
 // 4401 with no credential or a cookie from another origin, 4404 for a missing or inaccessible doc or a forged or
 // revoked link, 4410 for a trashed one the caller could otherwise open.
 import { CLOSE, encodePartyPrincipal, TRUSTED, type PartyPrincipal } from '@moss-multi/protocol/sync';
+import { epochKey } from '@moss-multi/sync/access-epoch';
 import { resolveDocAccess } from '../api/access.ts';
 import { acceptShares } from '../api/members.ts';
 import type { AuthEnv } from '../auth/auth.ts';
@@ -19,6 +20,8 @@ export async function authenticateParty(request: Request, docId: string, env: Au
   if (!principal || crossOriginCookie(request, principal, env)) return { ok: false, code: CLOSE.noPrincipal };
   const share = shareTokenOf(request);
   const db = createDb(env.DB);
+  // Read before the role, so a change that commits while it is resolved leaves the DocDO a newer epoch to re-check.
+  const epoch = await epochKey(env.DB, docId);
   const access = await resolveDocAccess(db, principal, docId, share);
   if (!access) return { ok: false, code: CLOSE.unavailable };
   if (access.deleted) return { ok: false, code: CLOSE.deleted };
@@ -29,6 +32,7 @@ export async function authenticateParty(request: Request, docId: string, env: Au
     [TRUSTED.role]: access.role,
     [TRUSTED.presence]: principal.type !== 'anonymous' && !access.linkOnly ? '1' : '0',
     [TRUSTED.resolvedAt]: String(resolvedAt),
+    [TRUSTED.epoch]: epoch,
   };
   if (principal.type === 'user') headers[TRUSTED.session] = principal.sessionId;
   // The role and the link's mark come from one read: a socket the link lifted carries it, so revoking the link closes

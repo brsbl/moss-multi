@@ -1,12 +1,21 @@
 import { getServerByName, Server, type Connection, type ConnectionContext, type WSMessage } from 'partyserver';
 import { CLOSE, TRUSTED } from '@moss-multi/protocol/sync';
 import type { WorkspaceEvent } from '@moss-multi/protocol/workspace';
-import { REST_WRITE_RATE, SESSION_MAX_MS } from '@moss-multi/protocol/limits';
+import { ACCESS_TICK_MS, REST_WRITE_RATE, SESSION_MAX_MS } from '@moss-multi/protocol/limits';
+import { liveCredentials } from './access-epoch.ts';
 import type { DocDO, RecheckInput } from './doc-do.ts';
 import type { SyncEnv } from './env.ts';
 
 /** Runs an awaited recheck on one doc's DocDO (A§8); throws when the DO does not acknowledge. */
 export type Rechecker = (docId: string, input: RecheckInput) => Promise<unknown>;
+
+/** Which of the sessions and agent keys are still live; throws when D1 cannot answer. */
+export type CredentialCheck = (sessions: string[], agents: string[]) => Promise<{ sessions: Set<string>; agents: Set<string> }>;
+
+/** Close code for a validation D1 could not answer: the client retries (RFC 6455 "try again later"). */
+const TRY_AGAIN = 1013;
+
+type ChannelState = { sessionId?: string | null };
 
 /** The registry key of an agent's sockets, which belong to the principal rather than a session. */
 const PRINCIPAL_KEY = '';
@@ -68,10 +77,17 @@ export class PrincipalDO extends Server<SyncEnv> {
   static rechecker: (env: SyncEnv) => Rechecker | null = (env) => (env?.DocDO
     ? async (docId, input) => (await getServerByName(env.DocDO as unknown as DurableObjectNamespace<DocDO>, docId)).recheck(input)
     : null);
+  /**
+   * Where the workspace channel reads whether its sockets' sessions and keys are live (A§8 pull validation): before
+   * every event it sends, on every ping, at admission and on a tick. With no D1 (the Node harness), nothing is read.
+   */
+  static credentials: (env: SyncEnv) => CredentialCheck | null = (env) => (env?.DB ? (sessions, agents) => liveCredentials(env.DB, sessions, agents) : null);
   #writes: RateWindow | null = null;
   #registryReady = false;
+  /** When the next access tick is due; null when nothing happened since the last one. */
+  #tickAt: number | null = null;
 
-  override onConnect(connection: Connection, context: ConnectionContext): void {
+  override async onConnect(connection: Connection, context: ConnectionContext): Promise<void> {
     const principal = context.request.headers.get(TRUSTED.principal);
     if (principal !== this.name) {
       connection.close(4401, 'refused');
@@ -89,11 +105,61 @@ export class PrincipalDO extends Server<SyncEnv> {
       return;
     }
     connection.setState({ sessionId });
+    // Registered first, so a sign-out by any path that commits after this read is seen by the next event, ping or tick.
+    if ((await this.#validate([connection])).length === 0) return;
+    await this.#armTick();
   }
 
-  override onMessage(connection: Connection, message: WSMessage): void {
+  override async onMessage(connection: Connection, message: WSMessage): Promise<void> {
     // Clients can keep the channel alive, but can never publish workspace events.
-    if (message === 'ping') connection.send('pong');
+    if (message !== 'ping') return;
+    if ((await this.#validate([connection])).length === 0) return;
+    connection.send('pong');
+    await this.#armTick();
+  }
+
+  override async onAlarm(): Promise<void> {
+    this.#tickAt = null;
+    await this.#validate([...this.getConnections()]);
+  }
+
+  /**
+   * Pull validation (A§8): closes each socket whose session ended (4402, after telling it) or whose agent key was
+   * revoked (4401), and returns the ones still live. A socket D1 could not vouch for closes 1013 and reconnects.
+   */
+  async #validate(connections: Connection[]): Promise<Connection[]> {
+    const check = (this.constructor as typeof PrincipalDO).credentials(this.env);
+    if (!check || connections.length === 0) return connections;
+    const sessionOf = (connection: Connection) => (connection as Connection<ChannelState>).state?.sessionId ?? null;
+    const sessions = [...new Set(connections.map(sessionOf).filter((id): id is string => id !== null))];
+    const agent = connections.some((connection) => sessionOf(connection) === null);
+    let live: { sessions: Set<string>; agents: Set<string> };
+    try {
+      live = await check(sessions, agent ? [this.name] : []);
+    } catch (error) {
+      console.error('PrincipalDO could not validate its sockets', error);
+      for (const connection of connections) connection.close(TRY_AGAIN, 'unvalidated');
+      return [];
+    }
+    return connections.filter((connection) => {
+      const sessionId = sessionOf(connection);
+      if (sessionId === null ? live.agents.has(this.name) : live.sessions.has(sessionId)) return true;
+      if (sessionId !== null) {
+        try {
+          connection.send(JSON.stringify({ type: 'session-ended', sessionId } satisfies WorkspaceEvent));
+        } catch {
+          // already closing
+        }
+      }
+      connection.close(sessionId === null ? CLOSE.noPrincipal : CLOSE.sessionEnded, sessionId === null ? 'revoked' : 'session ended');
+      return false;
+    });
+  }
+
+  async #armTick(): Promise<void> {
+    if (this.#tickAt !== null || !(this.constructor as typeof PrincipalDO).credentials(this.env)) return;
+    this.#tickAt = Date.now() + ACCESS_TICK_MS;
+    await this.ctx.storage.setAlarm(this.#tickAt);
   }
 
   override onClose(connection: Connection): void {
@@ -101,9 +167,18 @@ export class PrincipalDO extends Server<SyncEnv> {
     connection.close(1000, 'closed');
   }
 
+  /** Sent only to sockets whose session or key D1 still vouches for, read after the event was asked for. */
   async publish(event: WorkspaceEvent): Promise<void> {
     await this.__unsafe_ensureInitialized();
-    this.broadcast(JSON.stringify(event));
+    const message = JSON.stringify(event);
+    for (const connection of await this.#validate([...this.getConnections()])) {
+      try {
+        connection.send(message);
+      } catch {
+        // closing; its close handler runs
+      }
+    }
+    await this.#armTick();
   }
 
   /**

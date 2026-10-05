@@ -4,8 +4,10 @@ import * as Y from 'yjs';
 import * as encoding from 'lib0/encoding';
 import { writeSyncStep1 } from 'y-protocols/sync';
 import { splitFrontmatter } from '@moss-desktop/common/markdown-layers';
-import { ACK_COALESCE_MS, AWARENESS_MAX_BYTES, DOC_SOCKET_MAX_MS, MAX_CONNECTIONS, STATE_CAP_BYTES, WRITE_RATE } from '@moss-multi/protocol/limits';
-import { roleAtLeast } from '@moss-multi/protocol/roles';
+import {
+  ACCESS_TICK_MS, ACK_COALESCE_MS, AWARENESS_MAX_BYTES, DOC_SOCKET_MAX_MS, MAX_CONNECTIONS, STATE_CAP_BYTES, WRITE_RATE,
+} from '@moss-multi/protocol/limits';
+import { ROLES, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import {
   bytesToBase64, CLOSE, encodePayloadFrame, PAYLOAD_STEP1, PAYLOAD_STEP2, PAYLOAD_UPDATE, type PayloadAck, type PayloadFrame,
   type ServerEvent, type WriteRefusalReason,
@@ -16,6 +18,7 @@ import {
 import { attach, attachmentOf, awarenessTooLarge, awarenessFrame, receivePresence, leavePresence } from './doc/awareness.ts';
 import { AckCoalescer, DocStore, PERSISTENCE } from './doc/persistence.ts';
 import { d1Projections, Projections, type ProjectionTarget } from './doc/projections.ts';
+import type { Stamp } from './access-epoch.ts';
 import { publishMeta } from './fanout.ts';
 import type { SyncEnv } from './env.ts';
 import { migrateFrontmatter } from '@moss-multi/core/frontmatter';
@@ -64,6 +67,19 @@ export interface RecheckInput {
  */
 export type SocketRegistry = (principalId: string, sessionId: string | null, docId: string) => Promise<'ok' | 'ended'>;
 
+/** Who a socket is, as a re-resolution needs it. */
+export type SocketIdentity = Pick<Attachment, 'principalId' | 'kind' | 'sessionId' | 'shareToken'>;
+
+/**
+ * Pull validation (A§8): `stamp` reads the doc's access epoch and which of the sockets' sessions and agent keys are
+ * live; `resolve` re-resolves one socket's role on the doc ('deleted' for a doc in Trash, null without access). Both
+ * throw when D1 cannot answer.
+ */
+export interface AccessCheck {
+  stamp(docId: string, sessions: string[], agents: string[]): Promise<Stamp>;
+  resolve(docId: string, socket: SocketIdentity): Promise<Role | 'deleted' | null>;
+}
+
 /** Whether D1 has the doc in Trash (or has no row for it); throws when D1 cannot answer. */
 export type TrashedInD1 = (docId: string) => Promise<boolean>;
 
@@ -89,6 +105,9 @@ function holdsOf(store: DocStore): Map<string, number> {
   const raw = store.meta('holds');
   return new Map(raw ? Object.entries(JSON.parse(raw) as Record<string, number>) : []);
 }
+
+/** A socket the DO may still send to and read from. */
+const isOpen = (connection: Connection) => connection.readyState === undefined || connection.readyState === 1;
 
 const isConnection = (origin: unknown): origin is Connection =>
   typeof origin === 'object' && origin !== null && typeof (origin as Connection).send === 'function' && 'id' in origin;
@@ -151,6 +170,11 @@ export class DocDO extends YServer<SyncEnv> {
   static registry: (env: SyncEnv) => SocketRegistry | null = (env) => (env?.PrincipalDO
     ? async (principalId, sessionId, docId) => (await getServerByName(env.PrincipalDO, principalId)).registerDocSocket(sessionId, docId)
     : null);
+  /**
+   * How sockets are re-validated before each frame (A§8 pull validation). The Worker installs the one resolver
+   * (apps/web/src/server.ts); with none, frames apply as they arrive (the Node harness).
+   */
+  static access: (env: SyncEnv) => AccessCheck | null = () => null;
 
   readonly instanceId = crypto.randomUUID();
   /** Payload work since the last reset, which the harness reads to bound it (A§10.10). */
@@ -172,6 +196,14 @@ export class DocDO extends YServer<SyncEnv> {
   #settling: Promise<unknown> = Promise.resolve();
   /** Withheld payload ids each connection has written, bounded per connection. In memory: a wake starts at none. */
   readonly #withheldWrites = new WeakMap<Connection, Set<string>>();
+  /** Frames waiting for the validation that starts after they arrived. */
+  readonly #inbox: [Connection, WSMessage][] = [];
+  /** A flush that has not started yet; a frame arriving now joins it. */
+  #pendingFlush: Promise<void> | null = null;
+  /** Validations, admissions and frame batches run one at a time, in arrival order. */
+  #gate: Promise<unknown> = Promise.resolve();
+  /** When the next access tick is due; null when no frame came since the last one. In memory: a wake starts idle. */
+  #tickAt: number | null = null;
 
   /** Runs inside partyserver's blockConcurrencyWhile, so a woken DO replays before it sees any frame. */
   override async onLoad(): Promise<void> {
@@ -242,6 +274,20 @@ export class DocDO extends YServer<SyncEnv> {
     }
     attach(connection, { ...attachment, admittedAt: Date.now() });
     this.#register(connection, attachment, store);
+    // Admission re-checks once the socket is registered, so a revocation that commits while the Worker resolved the
+    // role, or after, is seen here or by the socket's first frame (A§8 pull validation).
+    const check = this.#accessCheck();
+    if (check) {
+      try {
+        await this.#serial(() => this.#validate(check, [connection]));
+      } catch (error) {
+        console.error('DocDO admission could not validate access', error);
+        connection.close(TRY_AGAIN, 'unvalidated');
+        return;
+      }
+      if (!isOpen(connection)) return;
+      this.#tickAt ??= Date.now() + ACCESS_TICK_MS;
+    }
     const encoder = encoding.createEncoder();
     encoding.writeVarUint(encoder, 0);
     writeSyncStep1(encoder, this.document);
@@ -252,7 +298,53 @@ export class DocDO extends YServer<SyncEnv> {
     await this.#schedule(holdsOf(store));
   }
 
-  override onMessage(connection: Connection, message: WSMessage): void {
+  /**
+   * With an access check, a frame waits for a validation that starts after it arrived (A§8 pull validation): a
+   * revocation committed before then closes the socket it outdates, and the frame never applies. Frames arriving
+   * while one validation is in flight share the next.
+   */
+  override onMessage(connection: Connection, message: WSMessage): void | Promise<void> {
+    if (!this.#accessCheck()) {
+      this.#handle(connection, message);
+      return;
+    }
+    this.#inbox.push([connection, message]);
+    if (this.#pendingFlush) return this.#pendingFlush;
+    const flush = this.#serial(() => this.#flush());
+    this.#pendingFlush = flush;
+    return flush;
+  }
+
+  async #flush(): Promise<void> {
+    this.#pendingFlush = null;
+    const batch = this.#inbox.splice(0);
+    const check = this.#accessCheck();
+    if (check) {
+      try {
+        await this.#validate(check);
+      } catch (error) {
+        // Fail closed: nothing applies unvalidated. The clients reconnect and resend.
+        console.error('DocDO could not validate access; refusing frames', error);
+        for (const [connection] of batch) connection.close(TRY_AGAIN, 'unvalidated');
+        return;
+      }
+    }
+    for (const [connection, message] of batch) {
+      if (!isOpen(connection)) continue;
+      try {
+        this.#handle(connection, message);
+      } catch (error) {
+        console.error('DocDO frame failed', error);
+      }
+    }
+    if (check && this.#tickAt === null && this.#connected()) {
+      this.#tickAt = Date.now() + ACCESS_TICK_MS;
+      const store = this.#store;
+      if (store) await this.#schedule(holdsOf(store));
+    }
+  }
+
+  #handle(connection: Connection, message: WSMessage): void {
     const attachment = attachmentOf(connection);
     const store = this.#store;
     if (!attachment || !store) {
@@ -342,6 +434,9 @@ export class DocDO extends YServer<SyncEnv> {
    */
   async renameTitle(text: string): Promise<void> {
     await this.#ready();
+    // Every open socket hears the rename, so each must still have access (A§8 pull validation).
+    const check = this.#accessCheck();
+    if (check) await this.#serial(() => this.#validate(check));
     writeTitle(this.document, text, SERVER_TITLE);
     this.#projections?.touch();
     await this.#projections?.flush();
@@ -377,6 +472,18 @@ export class DocDO extends YServer<SyncEnv> {
   override async onAlarm(): Promise<void> {
     const store = await this.#ready();
     const now = Date.now();
+    // The access tick (A§8): a socket that sends nothing still closes once its access is gone. Any alarm runs it, since
+    // a woken DO does not know whether this one was a tick.
+    const check = this.#accessCheck();
+    if (this.#tickAt !== null && this.#tickAt <= now) this.#tickAt = null;
+    if (check && this.#connected()) {
+      try {
+        await this.#serial(() => this.#validate(check));
+      } catch (error) {
+        console.error('DocDO access tick could not validate; retrying', error);
+        this.#tickAt = now + ACCESS_TICK_MS;
+      }
+    }
     // A socket at DOC_SOCKET_MAX_MS reconnects, so the sign-out registry never outlives a socket it should name.
     for (const connection of this.getConnections()) {
       const attachment = attachmentOf(connection);
@@ -489,6 +596,59 @@ export class DocDO extends YServer<SyncEnv> {
     this.ctx.waitUntil(registered);
   }
 
+  #accessCheck(): AccessCheck | null {
+    return (this.constructor as typeof DocDO).access(this.env);
+  }
+
+  #serial<T>(run: () => Promise<T>): Promise<T> {
+    const next = this.#gate.then(run);
+    this.#gate = next.catch(() => undefined);
+    return next;
+  }
+
+  /**
+   * Pull validation (A§8): reads the doc's access epoch and the sockets' credentials, then closes every socket whose
+   * session ended (4402) or key was revoked (4403), and re-resolves each socket admitted under an older epoch, closing
+   * it on a lowered or lost role (4403) or a doc in Trash (4410). A socket that keeps its role takes the new epoch.
+   * Throws, closing nothing, when D1 cannot answer.
+   */
+  async #validate(check: AccessCheck, only?: Connection[]): Promise<void> {
+    const sockets = (only ?? [...this.getConnections()]).flatMap((connection) => {
+      const attachment = attachmentOf(connection);
+      return attachment && isOpen(connection) ? [{ connection, attachment }] : [];
+    });
+    if (sockets.length === 0) return;
+    const unique = (ids: (string | null)[]) => [...new Set(ids.filter((id): id is string => id !== null))];
+    const stamp = await check.stamp(
+      this.name,
+      unique(sockets.map(({ attachment }) => (attachment.kind === 'user' ? attachment.sessionId : null))),
+      unique(sockets.map(({ attachment }) => (attachment.kind === 'agent' ? attachment.principalId : null))),
+    );
+    const resolved = new Map<string, Promise<Role | 'deleted' | null>>();
+    const verdicts = await Promise.all(sockets.map(async ({ attachment }) => {
+      if (attachment.kind === 'user' && attachment.sessionId !== null && !stamp.sessions.has(attachment.sessionId)) return CLOSE.sessionEnded;
+      if (attachment.kind === 'agent' && !stamp.agents.has(attachment.principalId)) return CLOSE.revoked;
+      if (stamp.key && attachment.epoch === stamp.key) return null;
+      const who = [attachment.kind, attachment.principalId, attachment.sessionId, attachment.shareToken].join('|');
+      let role = resolved.get(who);
+      if (!role) resolved.set(who, (role = check.resolve(this.name, attachment)));
+      const now = await role;
+      if (now === 'deleted') return CLOSE.deleted;
+      if (now === null || ROLES.indexOf(now) < ROLES.indexOf(attachment.role)) return CLOSE.revoked;
+      return 'kept' as const;
+    }));
+    for (const [i, { connection, attachment }] of sockets.entries()) {
+      const code = verdicts[i];
+      if (code === null || !isOpen(connection)) continue;
+      if (code === 'kept') {
+        attach(connection, { ...attachment, epoch: stamp.key });
+        continue;
+      }
+      if (code === CLOSE.deleted) this.sendCustomMessage(connection, JSON.stringify({ t: 'doc-deleted' } satisfies ServerEvent));
+      connection.close(code, code === CLOSE.sessionEnded ? 'session ended' : code === CLOSE.deleted ? 'deleted' : 'revoked');
+    }
+  }
+
   #liveness(): TrashedInD1 | null {
     return (this.constructor as typeof DocDO).liveness(this.env);
   }
@@ -516,6 +676,7 @@ export class DocDO extends YServer<SyncEnv> {
   /** The alarm goes off when the oldest hold has waited HOLD_MS, or the oldest socket reaches DOC_SOCKET_MAX_MS. */
   async #schedule(holds: Map<string, number>): Promise<void> {
     const due = [...holds.values()];
+    if (this.#tickAt !== null) due.push(this.#tickAt);
     for (const connection of this.getConnections()) {
       const attachment = attachmentOf(connection);
       if (attachment) due.push(agesAt(attachment));

@@ -22,6 +22,8 @@ export interface Attachment {
   resolvedAt?: number;
   /** When this DocDO admitted the socket (its own clock); DOC_SOCKET_MAX_MS later the socket closes 1013. */
   admittedAt?: number;
+  /** The access epoch `role` was resolved under (A§8 pull validation); '' when unknown, which re-resolves it. */
+  epoch?: string;
 }
 
 /** The Worker's trusted headers, or null with no principal or no known role. */
@@ -38,6 +40,7 @@ export function attachmentFrom(headers: Headers): Attachment | null {
     shareToken: headers.get(TRUSTED.share) || null,
     presenceAllowed: headers.get(TRUSTED.presence) === '1' || (headers.get(TRUSTED.presence) === null && principal.kind !== 'anonymous' && !headers.get(TRUSTED.share)),
     resolvedAt: Number(headers.get(TRUSTED.resolvedAt)) || 0,
+    epoch: headers.get(TRUSTED.epoch) ?? '',
   };
 }
 
