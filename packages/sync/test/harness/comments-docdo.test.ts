@@ -192,10 +192,11 @@ describe('T4.1 gate 2b in the DocDO: no client frame lands a write in comments @
     const doc = opened.dobj.document;
     const rState = Y.getState(doc.store, r);
     await expectRefused(opened, raw([forged(Y.createID(r, rState - 1), { origin: rootStart(doc) }, new Y.ContentAny([{ text: 'plain' }, { text: 'FORGED' }]))]), 'protected-type');
-    // The DocDO's own latest write is never a comment: the tail lands beside it, outside comments.
-    const s = doc.clientID;
+    // The server's latest non-comment write (the import's) is never a comment: the tail lands beside it, outside comments.
+    const s = rootStart(doc).client;
     const sState = Y.getState(doc.store, s);
-    expect(sState, 'the import wrote as the DocDO').toBeGreaterThan(0);
+    expect(s).not.toBe(r);
+    expect(sState, 'the import wrote the body').toBeGreaterThan(0);
     const before = json(opened);
     const client = await editorOn(opened);
     await client.deliver(syncFrame(2, raw([forged(Y.createID(s, sState - 1), { parent: 'frontmatter', sub: 'k' }, new Y.ContentAny(['e', 'x']))])));
@@ -208,8 +209,9 @@ describe('T4.1 gate 2b in the DocDO: no client frame lands a write in comments @
   it('history fixtures: a fully held struct with a forged missing origin parks the tail and is purged', async () => {
     const { opened, r } = await seeded();
     const doc = opened.dobj.document;
-    const s = doc.clientID;
+    const s = rootStart(doc).client;
     const sState = Y.getState(doc.store, s);
+    expect(sState, 'the import wrote the body').toBeGreaterThan(0);
     await expectRefused(opened, raw([
       forged(Y.createID(s, sState - 1), { origin: Y.createID(5150, 0) }, new Y.ContentString('e')),
       forged(Y.createID(s, sState), { origin: rootStart(doc) }, new Y.ContentAny(['tail'])),
