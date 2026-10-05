@@ -10,11 +10,8 @@ import { useEffect } from 'react';
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
 import { objectKlassEquals } from '@lexical/utils';
 import {
-  $createRangeSelection,
-  $getNodeByKey,
   $getSelection,
   $isRangeSelection,
-  $setSelection,
   COMMAND_PRIORITY_NORMAL,
   PASTE_COMMAND,
   type LexicalEditor
@@ -25,40 +22,18 @@ import { $createVideoNode } from '../nodes/VideoNode';
 import { isYouTubeUrl } from '../utils/video-url';
 import { useCurrentNoteId } from '../CurrentNoteIdContext';
 import { imagesApi } from '../../api/electron';
+// moss-multi seam: held-insertion (A§16)
+import { $holdInsertionPoint, type HeldInsertionPoint } from '@moss-multi/host/media/held-insertion';
 
 const VIDEO_MIME_TYPES = ['video/mp4', 'video/webm', 'video/quicktime'];
 
-type SavedSelection = {
-  anchorKey: string;
-  anchorOffset: number;
-  anchorType: 'text' | 'element';
-  focusKey: string;
-  focusOffset: number;
-  focusType: 'text' | 'element';
-};
-
-function captureSelection(): SavedSelection | null {
-  const selection = $getSelection();
-  if (!$isRangeSelection(selection)) return null;
-  return {
-    anchorKey: selection.anchor.key,
-    anchorOffset: selection.anchor.offset,
-    anchorType: selection.anchor.type,
-    focusKey: selection.focus.key,
-    focusOffset: selection.focus.offset,
-    focusType: selection.focus.type
-  };
+// moss-multi seam: held-insertion (A§16): a replayed range deleted text typed during the upload; a held point follows it
+function captureSelection(): HeldInsertionPoint | null {
+  return $holdInsertionPoint();
 }
 
-function restoreSelection(saved: SavedSelection): boolean {
-  const anchorNode = $getNodeByKey(saved.anchorKey);
-  const focusNode = $getNodeByKey(saved.focusKey);
-  if (!anchorNode || !focusNode) return false;
-  const selection = $createRangeSelection();
-  selection.anchor.set(saved.anchorKey, saved.anchorOffset, saved.anchorType);
-  selection.focus.set(saved.focusKey, saved.focusOffset, saved.focusType);
-  $setSelection(selection);
-  return true;
+function restoreSelection(saved: HeldInsertionPoint): boolean {
+  return saved.$restore();
 }
 
 function collectClipboardFiles(clipboardData: DataTransfer): File[] {
@@ -140,7 +115,7 @@ export function registerVideoPaste(editor: LexicalEditor, noteId: string | null)
               });
             }).catch((err) => {
               console.warn('[VideoPastePlugin] Failed to save pasted video:', err);
-            });
+            }).finally(() => pastedAt.release());
             return true;
           }
 
@@ -161,7 +136,7 @@ export function registerVideoPaste(editor: LexicalEditor, noteId: string | null)
             });
           }).catch((err) => {
             console.warn('[VideoPastePlugin] Failed to copy video file:', err);
-          });
+          }).finally(() => insertionPoint.release());
 
           return true;
         }
@@ -178,7 +153,8 @@ export function registerVideoPaste(editor: LexicalEditor, noteId: string | null)
           void readFileAsBase64(imageFile).then((base64Data) => {
             if (!base64Data) return;
 
-            void imagesApi.save.invoke({
+            // moss-multi seam: held-insertion (A§16): the chain waits for the upload, so the point is held until it lands
+            return imagesApi.save.invoke({
               data: base64Data,
               filename: imageFile.name || 'screenshot.png',
               mimeType: imageFile.type || 'image/png',
@@ -197,7 +173,7 @@ export function registerVideoPaste(editor: LexicalEditor, noteId: string | null)
             });
           }).catch((err) => {
             console.warn('[VideoPastePlugin] Failed to read pasted image:', err);
-          });
+          }).finally(() => insertionPoint.release());
 
           return true;
         }

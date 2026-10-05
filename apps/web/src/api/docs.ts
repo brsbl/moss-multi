@@ -141,16 +141,6 @@ async function readDoc(request: Request, env: DocsEnv, docId: string): Promise<R
   return json({ doc, role: access.role }, 200, NO_STORE);
 }
 
-/** The DocDO's markdown export (A§12) for any reader of the doc; T3.7's download serves the same bytes. */
-async function exportDoc(request: Request, env: DocsEnv, docId: string): Promise<Response> {
-  const principal = await resolvePrincipal(request, env);
-  if (!principal) return notFound();
-  const access = await resolveDocAccess(createDb(env.DB), principal, docId, shareTokenOf(request));
-  if (!access || access.deleted) return notFound();
-  const markdown = await (await getServerByName(env.DocDO, docId)).exportMarkdown();
-  return new Response(markdown, { status: 200, headers: { 'content-type': 'text/markdown; charset=utf-8', ...NO_STORE } });
-}
-
 /** PATCH /api/docs/:id: `{title}` renames through the DocDO; `{folderId}` moves the note (folders.ts). */
 async function patchDoc(request: Request, env: DocsEnv, docId: string): Promise<Response> {
   const body = await readJsonObject(request);
@@ -228,10 +218,6 @@ export async function handleDocs(request: Request, env: DocsEnv): Promise<Respon
   }
   const content = CONTENT.exec(pathname);
   if (content) return only('GET', request, () => readContent(request, env, content[1]));
-
-  const exportMatch = /^\/api\/docs\/([^/]+)\/export$/.exec(pathname);
-  if (exportMatch) return only('GET', request, () => exportDoc(request, env, exportMatch[1]));
-
   const instance = INSTANCE.exec(pathname);
   if (instance) return only('GET', request, () => docInstance(request, env, instance[1]));
   return notFound();

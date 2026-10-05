@@ -9,9 +9,9 @@ import {
 } from '@moss-desktop/renderer/editor/utils/note-link-clipboard';
 import { displayTitle, liveTitle, writeLiveTitle } from '../collab/title-binding.ts';
 import { askDocAccess, rememberRole } from '../access.ts';
-import { waitForAllAcked } from '../collab/unacked.ts';
 import { onNativeMenuCommand } from '../media/image-menu.ts';
 import { chooseFilesInBrowser, createImagesApi } from '../media/uploads.ts';
+import { waitForAllAcked } from '../collab/unacked.ts';
 import { setWikiCandidates } from '../wiki-links.ts';
 import type { TrashGuard } from '../trash-guard.ts';
 

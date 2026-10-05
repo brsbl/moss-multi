@@ -7,7 +7,8 @@
 // through the link and sees them too; a signed-in editor-link holder uploads; a grant or link on the note reaches only
 // the media placed in it, even after an editor writes another note's file name into it. A video's poster is its first
 // frame, and it seeks and plays through 206 responses. Alt text edited from the image's context menu reaches the peer
-// and the export.
+// and the export. A paste over a selection replaces it at once, and while its upload is held both peers' typing
+// survives and the media lands between the same characters.
 //
 // Grants and links are declared setup through the members and links APIs; sharing is not this journey's promise.
 // Files reach the editor as browsers deliver them: a DataTransfer on drop and paste, and the file chooser for
@@ -217,7 +218,7 @@ test('j11-media: drop, paste and /media → From computer upload every moss type
   await actors.checkpoint('uploaded');
 
   // The export keeps moss's relative form; identical bytes under one name are one asset.
-  const exported = await (await ada.context.request.get(`/api/docs/${docId}/export`)).text();
+  const exported = await (await ada.context.request.get(`/api/docs/${docId}/content`)).text();
   for (const file of MEDIA) expect(exported, `the export references ${file.name}`).toContain(`(assets/${file.name})`);
   expect(exported).not.toContain('/api/docs/');
   const svg = await ada.context.request.get(`/api/docs/${docId}/assets/pattern.svg`);
@@ -395,7 +396,7 @@ test('j11-media: a copied or moved note keeps its media; link readers see only t
   });
   expect(moved.status(), 'the note moves').toBe(200);
   expect(await folderOf(ada, docId)).toBe(destination);
-  const after = await (await ada.context.request.get(`/api/docs/${docId}/export`)).text();
+  const after = await (await ada.context.request.get(`/api/docs/${docId}/content`)).text();
   expect(after, 'the moved note keeps its reference').toContain(`(assets/${PNG.name})`);
   expect(after, 'no reference is renamed').not.toContain('pattern-2');
   const ownImage = ui.body(dee, docId).locator(`img[src*="/assets/${PNG.name}"]`);
@@ -427,7 +428,7 @@ test('j11-media: a copied or moved note keeps its media; link readers see only t
     root.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
   }, ' ![x](assets/private.png)');
   await waitAcked(dee, docId);
-  await expect.poll(async () => (await ada.context.request.get(`/api/docs/${docId}/export`)).text(), { message: 'the export names the folder file' })
+  await expect.poll(async () => (await ada.context.request.get(`/api/docs/${docId}/content`)).text(), { message: 'the export names the folder file' })
     .toContain('assets/private.png');
   expect(await deeRead(), 'the reference the editor wrote reaches nothing').toBe(404);
   expect((await ben.context.request.get(folderFile)).status(), "nor through Ben's grant").toBe(404);
@@ -459,10 +460,68 @@ test("j11-media: alt text edited from the image's context menu reaches the peer 
   await expect(images(ada, docId)).toHaveAttribute('alt', ALT);
   await expect(images(ben, docId), 'the peer sees the new alt text').toHaveAttribute('alt', ALT, { timeout: PEER_TIMEOUT });
   await waitAcked(ada, docId);
-  await expect.poll(async () => (await ada.context.request.get(`/api/docs/${docId}/export`)).text(), { message: 'the export carries the alt text' })
+  await expect.poll(async () => (await ada.context.request.get(`/api/docs/${docId}/content`)).text(), { message: 'the export carries the alt text' })
     .toContain(`![${ALT}](assets/${PNG.name})`);
 
   // A plain right-click elsewhere in the note keeps the browser's own menu.
   await ui.body(ada, docId).getByText('Uploads', { exact: true }).click({ button: 'right' });
   await expect(ada.page.getByRole('menuitem', { name: 'Edit Alt Text…' })).toHaveCount(0);
+});
+
+test('j11-media: a paste over a selection replaces it at once, and the held upload lands between the same characters while both peers type @p:note-8', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  const benPrincipal = await actors.principal('ben');
+  const docId = await newNote(ada, 'Held paste');
+  await waitAcked(ada, docId);
+  await grantDoc(ada, docId, benPrincipal, 'editor');
+  const ben = await openShell(actors, benPrincipal, `/d/${docId}`);
+  await actors.requireDistinct(2);
+  await ui.waitLive(ben, docId);
+
+  // Ada's upload is held until both peers have typed.
+  let release = () => {};
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  await ada.page.route((url) => url.pathname === `/api/docs/${docId}/assets`, async (route) => {
+    await held;
+    await route.continue();
+  });
+
+  // Ada selects "pl" in "Uploads" and pastes an image over it.
+  const line = (actor: Actor) => ui.body(actor, docId).locator('p').filter({ hasText: /^(123)?U(pl)?oads!?$/ });
+  await line(ada).click();
+  await ada.page.keyboard.press('Home');
+  await ada.page.keyboard.press('ArrowRight');
+  await ada.page.keyboard.press('Shift+ArrowRight');
+  await ada.page.keyboard.press('Shift+ArrowRight');
+  await expect.poll(() => ada.page.evaluate(() => document.getSelection()?.toString()), { message: 'Ada selects "pl"' }).toBe('pl');
+  await ada.page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+  expect(await paste(ada, docId, PNG, false), 'the editor takes the pasted image').toBe(true);
+  // The paste replaces "pl" by design, so invariant 7 no longer expects the typed "Uploads" whole.
+  const typedLine = actors.typed.findIndex((entry) => entry.docId === docId && entry.text === 'Uploads');
+  if (typedLine >= 0) actors.typed.splice(typedLine, 1);
+
+  // While it uploads, Ben types at the line's start and Ada at its end.
+  await line(ben).click();
+  await ben.page.keyboard.press('Home');
+  await ben.page.keyboard.type('123');
+  await expect(line(ada), "Ben's text reaches Ada").toHaveText(/^123U/, { timeout: PEER_TIMEOUT });
+  await line(ada).click();
+  await ada.page.keyboard.press('End');
+  await ada.page.keyboard.type('!');
+  await expect(line(ben), "Ada's text reaches Ben").toHaveText(/!$/, { timeout: PEER_TIMEOUT });
+  await expect(images(ada, docId), 'nothing lands while the upload is held').toHaveCount(0);
+
+  release();
+  await expectImagesDecode(ada, docId, 1);
+  await expectImagesDecode(ben, docId, 1);
+  await waitAcked(ada, docId);
+  await waitAcked(ben, docId);
+  const placed = `123U\n\n![${PNG.name}](assets/${PNG.name})\n\noads!`;
+  await expect.poll(async () => (await ada.context.request.get(`/api/docs/${docId}/content`)).text(), {
+    message: "the image replaces Ada's selection and deletes none of the text either peer typed", timeout: PEER_TIMEOUT,
+  }).toContain(placed);
+  for (const actor of [ada, ben]) {
+    await expect(ui.body(actor, docId), `${actor.label}: both lines keep every character`).toContainText('123U');
+    await expect(ui.body(actor, docId)).toContainText('oads!');
+  }
 });
