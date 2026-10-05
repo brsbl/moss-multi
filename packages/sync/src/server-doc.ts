@@ -198,7 +198,7 @@ function $stripCommentMarks(): ImportedMarks {
 export function importBody(live: Y.Doc, markdown: string, admit?: (diff: Uint8Array) => void, frontmatter?: string, comments?: Record<string, unknown>): ImportedMarks {
   let marks: ImportedMarks = { ranges: new Map(), text: '' };
   serverWrite(live, SERVER_IMPORT, (doc) => {
-    $importNoteBody(markdown, { comments: comments ?? {} });
+    $importNoteBody(markdown, { comments: (comments ?? {}) as never });
     marks = $stripCommentMarks();
     if (frontmatter !== undefined) {
       importFrontmatter(doc, frontmatter, SERVER_IMPORT);

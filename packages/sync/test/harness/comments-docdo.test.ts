@@ -206,7 +206,8 @@ describe('T4.1 gate 2b in the DocDO: no client frame lands a write in comments @
             const clock = next.get(client) ?? Y.getState(doc.store, client) + spec.skip;
             const content = spec.kind === 'string' ? new Y.ContentString('x') : spec.kind === 'any' ? new Y.ContentAny(['x']) : new Y.ContentType(new Y.Map());
             next.set(client, clock + content.getLength());
-            const parent = typeof spec.parent === 'string' ? spec.parent : id(spec.parent);
+            // An item with neither origin nor right origin must carry a parent to be encodable.
+            const parent = typeof spec.parent === 'string' ? spec.parent : id(spec.parent) ?? (spec.origin || spec.right ? undefined : 'root');
             return forged(Y.createID(client, clock), { origin: id(spec.origin), right: id(spec.right), parent, sub: spec.sub }, content);
           });
           // Structs of one client in clock order, as an encoder writes them.
