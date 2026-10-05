@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 55% done** (44 of 80 planned tasks verified)
+**Overall: 56% done** (45 of 80 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -8,7 +8,7 @@
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 15 / 19 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 6 / 10 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 5 / 9 | in progress |
-| M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
+| M4 Comments | Moss's full comment experience as CRDT data | 1 / 5 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 1 / 5 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
@@ -62,6 +62,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-04 — T3.3 verified: every moss node family, including formulas, file links, charts and sketches, can be built in a shared note and edited by two people at once without either losing the other's work, even through undo; the j14 demo note renders like pristine moss in light and dark.
 - 2026-10-04 — T3.7 verified: on the web a person can open a note in a new tab with a share link, print it to PDF through the browser, and download it as clean Markdown that waits for their unsaved edits and refuses a stale export.
 - 2026-10-04 — T3.1 verified: a person can add images and video to a note by upload, paste, drop or /media, and everyone with access, including an anonymous link visitor, sees them after reload and in a copied note; video plays and seeks through Range responses, and images offer Edit Alt Text….
+- 2026-10-04 — T4.0 verified: a reviewed comments design now exists (`docs/design/comments.md`): comment records live in the note under a reserved writer no client frame can touch, and an anchor follows its text through edits, orphans rather than jumps when its text is lost, and reattaches only on an exact restore, proven by a spike on CI.
 
 ## T1.1s identity audit
 
@@ -131,6 +132,8 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T2.4 checker: `GET /api/docs/:id` returns the owner's real `folderId` to a link holder, unlike `/api/workspace`'s synthetic root (METHOD: never the owner's vault or folder ids) → T2.5/T2.6 access follow-up
 - T2.4 checker: a share counts as redeemed on any doc load or socket admission, so a grantee idling on an empty workspace auto-opens the new share and the owner sees their name within seconds → count only an explicit open (T2.8 invites)
 - A signed-out share-link visitor (and any viewer of the active vault) is offered "+ Note", which fails with "Could not create note. Try again." → T2.6 (capability helper)
+- T4.0 checker P2: keystrokes in a block whose right origin is a deleted commented paragraph now run the exact reattach check per orphan group (bounded, no jump); the owner summary's "a keystroke does no comment work" overstates this.
+- T4.0 checker P2: comments.md §5.3 "Why an honest retype cannot reattach" reads as unconditional; it should name the coalesced-frame exception (text and paragraph deleted in one frame, paragraph restored, exact retype reattaches) already covered by §8 and P2 #2.
 - The wrangler ProxyWorker patch replays non-idempotent requests after an ambiguous failure → T0.9b follow-up (stack infra)
 - `qa.mjs close` forgets the session even when closing it failed → tooling follow-up
 - T4.0 checker: typing `==marked==` then a space in the real app drops the word instead of highlighting it (moss's `==` inline shortcut over the bound editor; the comment engine is not involved) → T3.3 follow-up (inline markdown shortcuts), with a j-editing leg that types each moss inline shortcut and asserts the text survives
