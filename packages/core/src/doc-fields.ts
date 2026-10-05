@@ -1,6 +1,6 @@
 // Title text and the canonical YAML boundary for structured properties (A§10.4).
 import * as Y from 'yjs';
-import { diffText } from './text-diff.ts';
+import { diffText, mapOffset } from './text-diff.ts';
 import { frontmatterYaml, importFrontmatter, observeFrontmatter } from './frontmatter.ts';
 
 export type DocField = 'title' | 'frontmatter';
@@ -51,16 +51,5 @@ export function observeField(doc: Y.Doc, field: DocField, listener: (text: strin
  * the caret leaves it in front, so a peer typing at your caret never drags it along.
  */
 export function remapCaret(offset: number, delta: FieldChange['delta']): number {
-  let at = 0;
-  let shift = 0;
-  for (const op of delta) {
-    if (at >= offset) break;
-    if (op.retain !== undefined) at += op.retain;
-    else if (op.insert !== undefined) shift += typeof op.insert === 'string' ? op.insert.length : 1;
-    else if (op.delete !== undefined) {
-      shift -= Math.min(op.delete, offset - at);
-      at += op.delete;
-    }
-  }
-  return Math.max(0, offset + shift);
+  return mapOffset(offset, delta);
 }

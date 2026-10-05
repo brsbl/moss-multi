@@ -17,6 +17,8 @@ export const GROUPS = {
   shell: ['j00-shell', 'j07', 'j08', 'j09', 'j10'],
   // A doc's content: import, persistence, co-editing, presence.
   editing: ['j00-import', 'j00-roundtrip', 'j00-persist', 'j01'],
+  // Code, HTML and formula fields across joins, moves and removals. Split from editing for its 13 min.
+  registers: ['j01-registers'],
   // Titles and properties. Split from editing so WebKit stays within 13 min (it reached 12.2 min at T1.9s).
   title: ['j02'],
   // A doc's connection: drops, stalls, limits, hibernation. Split from editing so WebKit stays within 13 min.
