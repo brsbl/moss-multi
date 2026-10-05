@@ -3,14 +3,14 @@
 // Trash view). They follow the rule moves follow (A§8): `manage` resolved without a share link, which a signed-in
 // person holds as the vault's owner or by an `owner` grant on the note or a folder above it, never through an editor
 // grant, a link or an agent key; a link only decides whether a refusal may say so. Each write re-checks `manage` in
-// its own statement, so a revocation that commits first wins. A restore that relocates the note is a move. D1 is the one source of truth, and the DocDO fails closed (A§8): a trash
+// its own statement, so a revocation that commits first wins. A restore that relocates the note is a move, and its write also needs the destination still live, so it never lands under a folder trashed meanwhile. D1 is the one source of truth, and the DocDO fails closed (A§8): a trash
 // holds the doc closed (every socket 4410) before the row is stamped, then settles the doc from the row; a restore
 // clears the row before the doc settles open. A step that fails leaves the doc closed or the row unchanged, never a
 // live doc behind a trashed row. Everyone who could see the note hears about either change.
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { getServerByName } from 'partyserver';
 import { availableFilename } from '@moss-multi/core/filenames';
-import { can, roleAtLeast } from '@moss-multi/protocol/roles';
+import { can, GRANT_ROLES, roleAtLeast } from '@moss-multi/protocol/roles';
 import { TRASHED_ACTION } from '@moss-multi/protocol/retention';
 import { collectRecipients, publishRecipients, type FanoutEnv } from '@moss-multi/sync/fanout';
 import { resolvePrincipal, shareTokenOf, type Principal } from '../auth/principal.ts';
@@ -18,7 +18,7 @@ import { createDb, type Db } from '../db/client.ts';
 import { docs, folders } from '../db/schema.ts';
 import { json } from '../worker/route.ts';
 import { folderChain, managesDoc, resolveDocAccess, resolveFolderAccess, type DocAccess } from './access.ts';
-import type { FoldersEnv } from './folders.ts';
+import { liveIn, upFrom, type FoldersEnv } from './folders.ts';
 import { NO_STORE, notFound, unauthenticated } from './respond.ts';
 
 const refuse = (status: number, error: string, message: string) => json({ error, message }, status, NO_STORE);
@@ -110,15 +110,16 @@ export async function trashDoc(request: Request, env: FoldersEnv, docId: string)
   return json({ doc: { id: docId, trashedAt: row?.deletedAt ?? null }, ...TRASHED_ACTION }, 200, NO_STORE);
 }
 
-/** The live folder a restored note returns to: its own when it is live in its vault, else the vault's root. */
-async function homeFor(db: Db, folderId: string): Promise<string | null> {
+/** Where a restored note returns: its own folder when that is live in its vault, else the vault's root; null when
+ * the vault itself is gone. */
+async function homeFor(db: Db, folderId: string): Promise<{ folderId: string; vaultId: string } | null> {
   const chain = await folderChain(db, folderId);
   const rows = await db.select({ id: folders.id, kind: folders.kind, deletedAt: folders.deletedAt }).from(folders)
     .where(sql`${folders.id} IN (${sql.join(chain.map((id) => sql`${id}`), sql`, `)})`);
   const byId = new Map(rows.map((row) => [row.id, row]));
   const vault = byId.get(chain.at(-1) ?? '');
   if (vault?.kind !== 'vault' || vault.deletedAt !== null) return null;
-  return chain.every((id) => byId.get(id)?.deletedAt === null) ? folderId : vault.id;
+  return { folderId: chain.every((id) => byId.get(id)?.deletedAt === null) ? folderId : vault.id, vaultId: vault.id };
 }
 
 const isUnique = (error: unknown) => /UNIQUE/i.test(`${error} ${(error as { cause?: unknown })?.cause ?? ''}`);
@@ -126,10 +127,25 @@ const isUnique = (error: unknown) => /UNIQUE/i.test(`${error} ${(error as { caus
 const cannotReturn = () => refuse(403, 'forbidden',
   'This note’s folder is in Trash, so it would return to the top of its vault, where you can’t add notes. Ask the vault’s owner to restore it.');
 
+const EDIT_ROLES = GRANT_ROLES.filter((role) => roleAtLeast(role, 'editor')).map((role) => `'${role}'`).join(', ');
+
+/**
+ * The restore write (?1 destination, ?2 filename, ?3 doc, ?4 user, ?5 vault). It lands only while the caller still
+ * manages the note, the destination is still live in its vault, and a relocation still goes to a folder the caller
+ * can edit, so a folder trash or a revocation that commits first wins.
+ */
+const RESTORE = `WITH RECURSIVE ${upFrom(1)}
+  UPDATE "docs" SET deleted_at = NULL, trash_batch_id = NULL, folder_id = ?1, filename = ?2
+  WHERE id = ?3 AND deleted_at IS NOT NULL AND ${managesDoc(3, 4)} AND ${liveIn(5)}
+    AND (folder_id = ?1 OR EXISTS (SELECT 1 FROM folders WHERE id = ?1 AND owner_user_id = ?4)
+      OR EXISTS (SELECT 1 FROM folder_members m JOIN up ON m.folder_id = up.id WHERE m.principal_id = ?4 AND m.role IN (${EDIT_ROLES})))`;
+
+const RESTORE_ATTEMPTS = 5;
+
 /**
  * POST /api/docs/:id/restore: a note its manager restores comes back where it can live, under a free filename. Its
  * own folder keeps it under that folder's sharing; a relocation to the vault's root only narrows who can read it, and
- * is a move, so it needs edit there as a move does.
+ * is a move, so it needs edit there as a move does. When the tree changes under the write, the home is chosen again.
  */
 export async function restoreDoc(request: Request, env: FoldersEnv, docId: string): Promise<Response> {
   const principal = await signedIn(request, env);
@@ -138,32 +154,37 @@ export async function restoreDoc(request: Request, env: FoldersEnv, docId: strin
   const access = await resolveDocAccess(db, principal, docId);
   if (!access || !can(access.role, 'manage') || principal.type !== 'user') return notFound();
   if (access.deleted) {
-    const folderId = await homeFor(db, access.folderId);
-    if (!folderId) return notFound();
-    if (folderId !== access.folderId) {
-      const destination = await resolveFolderAccess(db, principal, folderId);
-      if (!destination || destination.deleted || !roleAtLeast(destination.role, 'editor')) return cannotReturn();
-    }
     for (let attempt = 1; ; attempt += 1) {
-      const [doc] = await db.select({ filename: docs.filename }).from(docs).where(eq(docs.id, docId));
+      const [doc] = await db.select({ folderId: docs.folderId, filename: docs.filename, deletedAt: docs.deletedAt }).from(docs).where(eq(docs.id, docId));
+      if (!doc) return notFound();
+      if (doc.deletedAt === null) break;
+      const home = await homeFor(db, doc.folderId);
+      if (!home) return notFound();
+      if (home.folderId !== doc.folderId) {
+        const destination = await resolveFolderAccess(db, principal, home.folderId);
+        if (!destination || destination.deleted || !roleAtLeast(destination.role, 'editor')) return cannotReturn();
+      }
       const taken = await db.select({ filename: docs.filename }).from(docs)
-        .where(and(eq(docs.folderId, folderId), isNull(docs.deletedAt), sql`${docs.id} <> ${docId}`));
+        .where(and(eq(docs.folderId, home.folderId), isNull(docs.deletedAt), sql`${docs.id} <> ${docId}`));
       const occupied = new Set(taken.map((row) => row.filename));
       const filename = occupied.has(doc.filename) ? availableFilename(doc.filename.replace(/\.md$/, ''), occupied) : doc.filename;
+      let restored: D1Result | null = null;
       try {
-        const restored = await env.DB.prepare(`UPDATE "docs" SET deleted_at = NULL, trash_batch_id = NULL, folder_id = ?1, filename = ?2
-          WHERE id = ?3 AND deleted_at IS NOT NULL AND ${managesDoc(3, 4)}`).bind(folderId, filename, docId, principal.id).run();
-        if (!changed(restored)) {
-          // Restored already, or manage went away before the write; either way this request writes nothing.
-          const now = await resolveDocAccess(db, principal, docId);
-          if (!now || !can(now.role, 'manage')) return notFound();
-          if (now.deleted) return unavailable('The note couldn’t be restored right now. Try again.');
-        }
-        break;
+        restored = await env.DB.prepare(RESTORE).bind(home.folderId, filename, docId, principal.id, home.vaultId).run();
       } catch (error) {
-        if (isUnique(error) && attempt < 5) continue;
-        console.error('restore write failed', error);
-        return unavailable('The note couldn’t be restored right now. Try again.');
+        if (!isUnique(error) || attempt >= RESTORE_ATTEMPTS) {
+          console.error('restore write failed', error);
+          return unavailable('The note couldn’t be restored right now. Try again.');
+        }
+      }
+      if (restored && changed(restored)) break;
+      if (restored) {
+        // Nothing written: restored already, manage went away, or the tree changed under the write. Answer as the
+        // caller now stands, or choose the home again.
+        const now = await resolveDocAccess(db, principal, docId);
+        if (!now || !can(now.role, 'manage')) return notFound();
+        if (!now.deleted) break;
+        if (attempt >= RESTORE_ATTEMPTS) return unavailable('The note couldn’t be restored right now. Try again.');
       }
     }
     await notify(env, docId);
