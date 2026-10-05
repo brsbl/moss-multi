@@ -42,3 +42,17 @@ A photo of the drawer label lives here.
 
 - [x] Label the drawers
 - [ ] Order envelopes
+
+## Previews
+
+```moss-html
+<div style="width:640px;height:360px;display:grid;place-items:center;background:#f4efe1;font:600 32px system-ui">Seed swap poster</div>
+```
+
+```moss-html
+<div style="width:640px;height:300px;display:grid;place-items:center;background:#e4f1e0;font:600 28px system-ui">Planting chart</div>
+```
+
+```moss-html
+<div style="width:640px;height:240px;display:grid;place-items:center;background:#e1ecf4;font:600 28px system-ui">Drawer label draft</div>
+```
