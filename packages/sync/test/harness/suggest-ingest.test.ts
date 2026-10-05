@@ -10,7 +10,7 @@ import { bytesToBase64, CLOSE, CUSTOM_PREFIX, type ServerEvent } from '@moss-mul
 import { DocDO } from '../../src/doc-do.ts';
 import { ForkShim } from '../../src/suggest/fork-shim.ts';
 import { opsOf, readMeta, readRecord, SUGGESTIONS } from '../../src/suggest/records.ts';
-import { acceptRecord, previewRecord } from '../../src/suggest/review.ts';
+import { acceptRecord, previewRecord, rejectRecord } from '../../src/suggest/review.ts';
 import { CENSUS, EDITOR, OTHER_SUGGESTER, select, SEED, spansOfText, SUGGESTER } from '../../src/suggest/test-support.ts';
 import { connect, openDoc, start, syncFrame, wake, type Opened, type TestClient, type Who } from './do-harness.ts';
 
@@ -218,6 +218,63 @@ describe('T5.2 suggest-ops through the doc socket @p:mean-2 @p:R17', () => {
   });
 });
 
+describe('T5.2 checker regressions: duplicates and lease cycles @p:mean-2', () => {
+  it('duplicate_then_rewrite_refused: no role writes a copied note\'s suggestions map through the source\'s tombstones', async () => {
+    const source = await seeded();
+    const sam = await on(source, SAM);
+    const [grant] = await leases(sam);
+    expect(await send(sam, opsRequest(grant.record, forge(source.dobj.document, (d) => firstBlock(d).insert(0, 'A '), grant.client)))).toMatchObject({ t: 'suggest-ack' });
+    expect(await send(sam, { t: 'suggest-delete', record: grant.record, part: { id: 'd1', targets: spansOfText(source.dobj.document, 'world') } })).toMatchObject({ t: 'suggest-ack' });
+    const snapshot = await source.dobj.snapshotForDuplicate();
+    const writes: [string, (doc: Y.Doc) => void][] = [
+      ['the copied record id set again', (doc) => doc.getMap(SUGGESTIONS).set(grant.record, 'FORGED')],
+      ['a fresh record id', (doc) => doc.getMap(SUGGESTIONS).set('fresh', 'FORGED')],
+    ];
+    for (const role of ['editor', 'owner']) {
+      for (const [name, write] of writes) {
+        const copy = await start(openDoc());
+        await copy.dobj.createFromSnapshot({ folderId: 'folder-2', ownerId: 'owner-1', title: 'Copy' }, snapshot.state);
+        const doc = copy.dobj.document;
+        expect(doc.getMap(SUGGESTIONS).size).toBe(0);
+        const client = await on(copy, { role, id: `${role}-x@example.invalid` });
+        await client.deliver(syncFrame(2, forge(doc, write)));
+        await client.pump();
+        const label = `${role}: ${name}`;
+        expect(client.events, label).toContainEqual({ t: 'write-refused', reason: 'protected-type' });
+        expect(doc.getMap(SUGGESTIONS).size, label).toBe(0);
+        // The copy's own records still work.
+        const copySam = await on(copy, SAM);
+        const [own] = await leases(copySam);
+        expect(await send(copySam, opsRequest(own.record, forge(doc, (d) => firstBlock(d).insert(0, 'B '), own.client))), label).toMatchObject({ t: 'suggest-ack' });
+        expect(readMeta(doc, own.record), label).toMatchObject({ status: 'open', author: SUGGESTER.id });
+      }
+    }
+  });
+
+  it('close_and_start_cycles_on_one_socket: open suggestions past the lease cap, then withdraw and reject cycles, never refused', async () => {
+    const opened = await seeded();
+    const doc = opened.dobj.document;
+    const sam = await on(opened, SAM);
+    const pool: LeaseGrant[] = [];
+    // An honest client uses its spare before it asks again.
+    const next = async () => {
+      if (pool.length === 0) pool.push(...(await leases(sam)));
+      return pool.shift()!;
+    };
+    const write = async (grant: LeaseGrant, text: string) =>
+      expect(await send(sam, opsRequest(grant.record, forge(doc, (d) => firstBlock(d).insert(0, text), grant.client))), text).toMatchObject({ t: 'suggest-ack', record: grant.record });
+    for (let i = 0; i < 6; i += 1) await write(await next(), `open-${i} `);
+    for (let i = 0; i < 10; i += 1) {
+      const grant = await next();
+      await write(grant, `cycle-${i} `);
+      if (i % 2 === 0) expect(await send(sam, { t: 'suggest-withdraw', record: grant.record })).toMatchObject({ t: 'suggest-ack' });
+      else expect(rejectRecord(doc, grant.record, EDITOR)).toEqual({ ok: true });
+    }
+    expect(sam.events.filter((e) => e.t === 'suggest-refused' || e.t === 'write-refused')).toEqual([]);
+    expect(sam.closed).toBeNull();
+  });
+});
+
 describe('T5.2 continuations after accept @p:mean-2', () => {
   it('a delete-only frame after accept opens a continuation record: a delete part, and a delete-only op', async () => {
     for (const kind of ['part', 'op'] as const) {
@@ -365,14 +422,14 @@ describe('T5.2 lease and record authorization @p:mean-2', () => {
 });
 
 describe('T5.2 loud refusal, rate and cooldown @p:mean-2 @p:tech-7', () => {
-  it('more than three refusals a minute close every socket of the principal 4429, and a reconnect is refused for 60 s', async () => {
+  it('three refusals a minute close every socket of the principal 4429, and a reconnect is refused for 60 s', async () => {
     const opened = await seeded();
     const sam = await on(opened, SAM);
     const second = await on(opened, SAM);
     const sky = await on(opened, SKY);
-    for (let i = 0; i < 3; i += 1) expect(await send(sam, { t: 'suggest-withdraw', record: `nope-${i}` })).toMatchObject({ t: 'suggest-refused' });
+    for (let i = 0; i < 2; i += 1) expect(await send(sam, { t: 'suggest-withdraw', record: `nope-${i}` })).toMatchObject({ t: 'suggest-refused' });
     expect(sam.closed).toBeNull();
-    expect(await send(sam, { t: 'suggest-withdraw', record: 'nope-3' })).toMatchObject({ t: 'suggest-refused' });
+    expect(await send(sam, { t: 'suggest-withdraw', record: 'nope-2' })).toMatchObject({ t: 'suggest-refused' });
     expect(sam.closed?.code).toBe(CLOSE.connectionLimit);
     expect(second.closed?.code).toBe(CLOSE.connectionLimit);
     expect(sky.closed, 'another principal is untouched').toBeNull();
@@ -382,6 +439,20 @@ describe('T5.2 loud refusal, rate and cooldown @p:mean-2 @p:tech-7', () => {
     const back = await on(opened, SAM);
     expect(back.closed).toBeNull();
     expect(await leases(back)).toHaveLength(2);
+  });
+
+  it('role refusals of body frames count toward the cooldown', async () => {
+    const opened = await seeded();
+    const body = bodyState(opened.dobj.document);
+    for (let i = 0; i < 3; i += 1) {
+      const sam = await on(opened, SAM);
+      await sam.deliver(syncFrame(2, forge(opened.dobj.document, (doc) => firstBlock(doc).insert(0, `X${i} `))));
+      await sam.pump();
+      expect(sam.events, `frame ${i}`).toContainEqual({ t: 'write-refused', reason: 'role' });
+    }
+    const refused = await connect(opened, SAM);
+    expect(refused.closed?.code).toBe(CLOSE.connectionLimit);
+    expect(bodyState(opened.dobj.document)).toBe(body);
   });
 
   it('suggest frames count toward the write rate (4420)', async () => {

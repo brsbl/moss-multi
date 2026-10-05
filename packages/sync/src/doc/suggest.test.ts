@@ -272,6 +272,49 @@ describe('T5.2 record ids, continuations and delete targets @p:mean-2', () => {
     const last = leaseOne(counted, sam('c-last'));
     expect(counted.delete(sam('c-last'), last.record, { id: 'd', targets: spansOfText(many, 'world') })).toEqual({ ok: false, reason: 'open-cap' });
   });
+
+  it('projected_state_cap_counts_the_record_write: the record and meta the server writes count, not only the op bytes', () => {
+    const live = seededBody();
+    let state = 0;
+    const ingest = ingestOn(live, { stateBytes: () => state });
+    const a = leaseOne(ingest, sam());
+    const update = frame(live, a.client, (doc) => append(doc, paragraph('x')));
+    // The op fits exactly; the record created around it does not.
+    state = STATE_CAP_BYTES - update.byteLength;
+    expect(ingest.ops(sam(), a.record, update)).toEqual({ ok: false, reason: 'doc-cap' });
+    const targets = spansOfText(live, 'world');
+    state = STATE_CAP_BYTES - 200;
+    expect(ingest.delete(sam(), a.record, { id: 'd1', targets })).toEqual({ ok: false, reason: 'doc-cap' });
+    // A merge copies the moved ops: it is projected too.
+    state = 0;
+    const b = leaseOne(ingest, sam());
+    expect(ingest.ops(sam(), a.record, update)).toMatchObject({ ok: true });
+    expect(ingest.ops(sam(), b.record, frame(live, b.client, (doc) => append(doc, paragraph('y'))))).toMatchObject({ ok: true });
+    state = STATE_CAP_BYTES - 10;
+    expect(ingest.merge(sam(), a.record, b.record)).toEqual({ ok: false, reason: 'doc-cap' });
+    expect(readMeta(live, b.record)).toMatchObject({ status: 'open' });
+  });
+});
+
+describe('T5.2 leases never run out in ordinary suggesting @p:mean-2', () => {
+  it('lease_cap_counts_only_unused_leases: open records past the lease cap, then withdraw and reject cycles, on one connection', () => {
+    const live = seededBody();
+    const ingest = ingestOn(live);
+    const write = (grant: { client: number; record: string }, text: string) =>
+      expect(ingest.ops(sam(), grant.record, frame(live, grant.client, (doc) => firstBlock(doc).insert(0, text))), text).toMatchObject({ ok: true });
+    // Six suggestions open at once, each with its own lease, as the client starts a group after 30 s idle.
+    for (let i = 0; i < 6; i += 1) write(leaseOne(ingest, sam()), `open-${i} `);
+    // Then many suggestions closed one after another; none frees a slot it never held.
+    for (let i = 0; i < 10; i += 1) {
+      const grant = leaseOne(ingest, sam());
+      write(grant, `cycle-${i} `);
+      if (i % 2 === 0) expect(ingest.withdraw(sam(), grant.record)).toMatchObject({ ok: true });
+      else expect(rejectRecord(live, grant.record, EDITOR)).toEqual({ ok: true });
+    }
+    // Unused leases are still capped: a client cannot hoard ids.
+    const hoard = [ingest.lease(sam()), ingest.lease(sam()), ingest.lease(sam())];
+    expect(hoard.at(-1)).toEqual({ ok: false, reason: 'lease-cap' });
+  });
 });
 
 /** A doc of `paragraphs` paragraphs: 3 000 make the 1.69 MB census doc. */
