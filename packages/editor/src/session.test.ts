@@ -83,8 +83,10 @@ function type(session: EditorSession, body: string) {
 }
 
 /** Lets I/O (crypto.subtle in the host's version tokens) complete, one real loop turn at a time. */
-async function drain(turns = 40) {
-  for (let i = 0; i < turns; i += 1) {
+async function drain(turns = 40, minMs = 15) {
+  // crypto.subtle runs on the thread pool, so a busy CI machine needs real time, not just loop turns.
+  const until = performance.now() + minMs;
+  for (let i = 0; i < turns || performance.now() < until; i += 1) {
     await new Promise((resolve) => setImmediate(resolve));
     await vi.advanceTimersByTimeAsync(0);
   }
