@@ -111,6 +111,14 @@ declare module '@moss/shared/components/ui/context-menu' {
   export const ContextMenuItem: ComponentType<HTMLAttributes<HTMLDivElement> & { onSelect?: () => void }>;
 }
 
+declare module '@moss/shared/components/ui/context-menu' {
+  import type { ComponentType, ForwardRefExoticComponent, HTMLAttributes, ReactElement, ReactNode, RefAttributes } from 'react';
+  export const ContextMenu: ComponentType<{ children: ReactNode }>;
+  export const ContextMenuTrigger: ForwardRefExoticComponent<{ render?: ReactElement } & RefAttributes<HTMLElement>>;
+  export const ContextMenuContent: ComponentType<HTMLAttributes<HTMLDivElement> & { onCloseAutoFocus?: (event: Event) => void }>;
+  export const ContextMenuItem: ComponentType<HTMLAttributes<HTMLDivElement> & { disabled?: boolean; onSelect?: (event: Event) => void }>;
+}
+
 declare module '@moss/shared/components/ui/input' {
   import type { ComponentProps, ForwardRefExoticComponent } from 'react';
   export const Input: ForwardRefExoticComponent<ComponentProps<'input'>>;
@@ -156,6 +164,14 @@ declare module '@moss-desktop/renderer/editor/markdown/transformers' {
   }
   export function $collectTableLayoutMetadata(): LocalLayoutMetadata;
   export function $collectTabGroupLayoutMetadata(): Pick<LocalLayoutMetadata, 'tabGroupCount' | 'tabGroups'>;
+}
+
+// The module a substitute replaces, at the pin (A§2.1; vite.config.ts `substitutes`).
+declare module '@moss-pristine/asset-url' {
+  export const REMOTE_URL_PATTERN: RegExp;
+  export function normalizeLocalAssetPathForDisplay(src: string): string;
+  export function toDisplaySrc(src: string, noteId?: string | null): string;
+  export function fromDisplaySrc(src: string, currentNoteId?: string | null): string;
 }
 
 declare module '@moss-desktop/renderer/panels/notesPanelUtils' {

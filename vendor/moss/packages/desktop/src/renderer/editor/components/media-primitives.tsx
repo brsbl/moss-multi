@@ -185,9 +185,11 @@ type MediaNodeHeaderProps = {
  */
 export function useMediaNodeActions(nodeKey: NodeKey): {
   handleDelete: () => void;
-  handleGapClick: (position: 'before' | 'after') => (e: React.MouseEvent) => void;
+  // moss-multi seam: read-only-media (A§19 invariant 9): no gap insert while read-only
+  handleGapClick: ((position: 'before' | 'after') => (e: React.MouseEvent) => void) | undefined;
 } {
   const [editor] = useLexicalComposerContext();
+  const editable = useIsEditorEditable();
 
   const handleDelete = useCallback(() => {
     // Re-guard: Lexical applies editor.update() even when not editable, so a
@@ -217,7 +219,8 @@ export function useMediaNodeActions(nodeKey: NodeKey): {
     [editor, nodeKey]
   );
 
-  return { handleDelete, handleGapClick };
+  // moss-multi seam: read-only-media (A§19 invariant 9): a read-only render offers no insert-paragraph gaps.
+  return { handleDelete, handleGapClick: editable ? handleGapClick : undefined };
 }
 
 // ---------------------------------------------------------------------------
@@ -386,6 +389,10 @@ export function MediaNodeHeader({
   children,
 }: MediaNodeHeaderProps): JSX.Element {
   const [editor] = useLexicalComposerContext();
+  // moss-multi seam: read-only-media (A§19 invariant 9): node views never pass `editable`, so a read-only render
+  // offered Delete; nothing in a read-only body takes focus.
+  const editorEditable = useIsEditorEditable();
+  editable = editable && editorEditable;
 
   return (
     <div

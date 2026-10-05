@@ -155,14 +155,6 @@ export const AFFORDANCES = [
       { surface: 'block-toolbar', selector: '[data-lexical-decorator] button:has(svg.lucide-sticky-note)' },
     ],
   },
-  {
-    id: 'media-upload',
-    sites: [`${R}/editor/slash-commands/registry.ts`, `${R}/editor/plugins/VideoPastePlugin.tsx`, `${R}/editor/plugins/MediaDropPlugin.tsx`],
-    reason: 'Asset upload and remote-image storage land in M3: /media goes, and a pasted or dropped image or video is refused visibly.',
-    cite: 'T3.1',
-    staged: 3,
-    probes: [{ surface: 'slash-menu', selector: SLASH_ITEM, text: 'Media' }],
-  },
 ] as const satisfies readonly Affordance[];
 
 export type AffordanceId = (typeof AFFORDANCES)[number]['id'];

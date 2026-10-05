@@ -14,6 +14,7 @@ import { docs } from '../db/schema.ts';
 import type { AppEnv } from '../env.ts';
 import { json } from '../worker/route.ts';
 import { resolveDocAccess, resolveFolderAccess } from './access.ts';
+import { copyMedia } from './assets.ts';
 import { folderNotFound, liveIn, moveDoc, upFrom, vaultOf } from './folders.ts';
 import { handleLinks } from './links.ts';
 import { acceptShares, handleMembers, type MembersEnv } from './members.ts';
@@ -21,7 +22,7 @@ import { restoreDoc, trashDoc } from './trash.ts';
 import { NO_STORE, notFound, readJsonObject, unauthenticated } from './respond.ts';
 import { ensureDefaultVault } from './vaults.ts';
 
-export type DocsEnv = AuthEnv & Pick<AppEnv, 'DocDO' | 'PrincipalDO'> & MembersEnv;
+export type DocsEnv = AuthEnv & Pick<AppEnv, 'DocDO' | 'PrincipalDO'> & MembersEnv & Partial<Pick<AppEnv, 'ASSETS'>>;
 
 const DOC = /^\/api\/docs\/([^/]+)$/;
 const MEMBERS = /^\/api\/docs\/([^/]+)\/members$/;
@@ -110,6 +111,8 @@ async function duplicateDoc(request: Request, env: DocsEnv, docId: string): Prom
   const doc = await insertDoc(env, db, { folderId, ownerUserId: folder.ownerUserId, createdBy: principal.id });
   if (!doc) return folderNotFound();
   try {
+    // The copy's media are the source's own record, so it shows the same files wherever it lands (A§16).
+    await copyMedia(env.DB, docId, doc.id);
     const target = await getServerByName(env.DocDO, doc.id);
     await target.createFromSnapshot({ folderId, ownerId: folder.ownerUserId, title }, snapshot.state);
   } catch (error) {
