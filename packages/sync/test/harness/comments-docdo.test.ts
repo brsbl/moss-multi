@@ -604,6 +604,13 @@ describe('T4.1 createComment RPC @p:tech-3', () => {
     await expectTypeable(opened);
   });
 
+  it('a trash hold refuses a comment that reaches the DocDO after the trash began', async () => {
+    const opened = await body();
+    await opened.dobj.trash('hold-1');
+    expect(await opened.dobj.createComment({ author: 'ada', id: 'late', text: 't', anchor: positions(opened.dobj.document, 'quick') })).toEqual({ ok: false, status: 404, error: 'trashed' });
+    expect(json(opened)).toEqual({});
+  });
+
   it('runs one quote search for a position-less anchor: a unique match, an ambiguous one, and none', async () => {
     const opened = await body();
     expect(await opened.dobj.createComment({ author: 'ada', id: 'q1', text: 't', anchor: { quote: 'jumps over the lazy' } })).toEqual({ ok: true, id: 'q1', quote: 'jumps over the lazy' });
