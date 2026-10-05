@@ -118,18 +118,21 @@ export function editMarks(body: Y.Doc, built: Built, binding: Binding): Mark[] {
       else marks.set(key, { kind: 'insert', place, after: !!left && place.offset >= 0 && left.content instanceof Y.ContentString, text, record });
     }
   }
-  // A block whose own attributes a record changed.
-  const root = built.doc.get('root', Y.XmlText);
-  for (const { insert } of root.toDelta() as { insert: unknown }[]) {
-    if (!(insert instanceof Y.XmlText) || !insert._item) continue;
-    const id = insert._item.id;
-    if (id.clock >= Y.getState(body.store, id.client)) continue;
-    const before = Y.getItem(body.store, id);
-    const was = before instanceof Y.Item && before.content instanceof Y.ContentType ? (before.content.type as Y.XmlText) : null;
-    if (!was || JSON.stringify(was.getAttributes()) === JSON.stringify(insert.getAttributes())) continue;
-    const place = index.get(idKey(id));
-    if (place) marks.set(`attr:${place.key}`, { kind: 'attribute', place, after: false, text: '', record: '' });
-  }
+  // A block whose own attributes a record changed, nested ones (a checked list item) included.
+  const visit = (parent: Y.XmlText) => {
+    for (const { insert } of parent.toDelta() as { insert: unknown }[]) {
+      if (!(insert instanceof Y.XmlText) || !insert._item) continue;
+      visit(insert);
+      const id = insert._item.id;
+      if (id.clock >= Y.getState(body.store, id.client)) continue;
+      const before = Y.getItem(body.store, id);
+      const was = before instanceof Y.Item && before.content instanceof Y.ContentType ? (before.content.type as Y.XmlText) : null;
+      if (!was || JSON.stringify(was.getAttributes()) === JSON.stringify(insert.getAttributes())) continue;
+      const place = index.get(idKey(id));
+      if (place) marks.set(`attr:${place.key}`, { kind: 'attribute', place, after: false, text: '', record: '' });
+    }
+  };
+  visit(built.doc.get('root', Y.XmlText));
   return [...marks.values()];
 }
 

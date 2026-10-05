@@ -293,6 +293,9 @@ export class SuggestFork {
   #lastEdit = 0;
   #lastBlock = -1;
   #caretBlock = -1;
+  /** When resumes were refused in the last minute, and the pending retry. */
+  #resumeRefusals: number[] = [];
+  #retry: ReturnType<typeof setTimeout> | undefined;
 
   constructor(
     readonly body: Y.Doc,
@@ -350,7 +353,23 @@ export class SuggestFork {
     const resume = [...new Set([...this.#leases.map((lease) => lease.client), ...this.#openMine().keys()])];
     this.#waiting.unshift(...replay.filter((entry) => entry.request.t !== 'suggest-lease'));
     this.#resuming = true;
+    clearTimeout(this.#retry);
     this.#send({ request: { t: 'suggest-lease', resume } });
+  }
+
+  /** Requests are made that the server has not stored yet, sent or waiting to be: the session stays unacked. */
+  get owes(): boolean {
+    return !this.#closed && (this.#resuming || this.#waiting.length > 0 || this.#inflight.length > 0);
+  }
+
+  #retryResume(resume: number[]): void {
+    const now = this.#now();
+    this.#resumeRefusals = [...this.#resumeRefusals.filter((at) => now - at < 60_000), now];
+    const wait = this.#resumeRefusals.length < 2 ? 2_000 : 61_000 - (now - this.#resumeRefusals[0]);
+    clearTimeout(this.#retry);
+    this.#retry = setTimeout(() => {
+      if (!this.#disposed && !this.#closed && this.#resuming && this.#inflight.length === 0) this.#send({ request: { t: 'suggest-lease', resume } });
+    }, wait);
   }
 
   receive(reply: SuggestReply): void {
@@ -386,6 +405,13 @@ export class SuggestFork {
     }
     // Taking back a part the record no longer holds changes nothing.
     if (request?.t === 'suggest-undelete' && reply.reason === 'target') return;
+    if (request?.t === 'suggest-lease' && request.resume && this.#resuming && reply.reason === 'lease') {
+      // The DocDO has not yet seen the old socket close, so it still holds the leases there: ask again, never more
+      // than twice a minute, so the refusal cooldown never starts. Everything owed waits behind the resume.
+      this.#leasing = false;
+      this.#retryResume(request.resume);
+      return;
+    }
     if (request?.t === 'suggest-lease' && this.#ready && !this.#resuming && reply.reason === 'lease-cap') {
       // No spare: the active group continues.
       this.#leasing = false;
@@ -458,6 +484,7 @@ export class SuggestFork {
     if (this.#disposed) return;
     this.#disposed = true;
     this.#closed = true;
+    clearTimeout(this.#retry);
     this.body.off('update', this.#fromBody);
     this.doc.off('beforeTransaction', this.#before);
     this.doc.off('update', this.#forward);

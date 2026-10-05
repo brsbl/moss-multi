@@ -395,6 +395,14 @@ export class DocSession {
     return () => this.#suggestListeners.delete(listener);
   }
 
+  /** The fork holds requests back that it still owes the DocDO: the session stays unacked (and a released one lingers). */
+  oweSuggest(owed: boolean): void {
+    if (this.#disposed) return;
+    this.#suggest.owed = owed;
+    if (owed && !this.#state.unacked) this.#set({ unacked: true });
+    else this.#settleUnacked();
+  }
+
   /** Calls `listener` once when the session is torn down (now, if it already was); returns the unsubscriber. */
   onDisposed(listener: () => void): () => void {
     if (this.#disposed) {

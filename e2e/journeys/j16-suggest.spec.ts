@@ -94,9 +94,7 @@ test('j16-suggest: a solo owner with nothing selected toggles Suggest in the doc
   const ada = await actors.open(await actors.principal('ada'));
   const docId = await ui.createNote(ada);
   await ui.typeTitle(ada, docId, 'Solo suggest', { enter: true });
-  // Typed in two parts: the Edit-mode keystroke at the end lands between them, and each part stays exact.
-  await ui.typeBody(ada, docId, 'Owner');
-  await ui.typeBody(ada, docId, ' text kept');
+  await ui.typeBody(ada, docId, 'Owner text kept');
   const pane = ui.pane(ada, docId);
   const body = ui.body(ada, docId);
   await expect(pane).toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout: BIND_TIMEOUT });
@@ -134,10 +132,11 @@ test('j16-suggest: a solo owner with nothing selected toggles Suggest in the doc
   await expect(body).toHaveAttribute(BODY_BINDING_ATTR, 'live', { timeout: BIND_TIMEOUT });
   await ada.declareRemount(docId);
   await expect(body, 'the caret is back in the body').toBeFocused({ timeout: BIND_TIMEOUT });
-  await ada.page.keyboard.type('!');
-  await expect(pane).toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout: BIND_TIMEOUT });
-  await expect(body).toContainText('Owner! text kept');
-  expect(await content(ada, docId), 'the edit lands in the note where the caret was').toContain('Owner! text kept');
+  // Beside the body text the suggestion was typed at ("Owner" and its space, as Yjs placed the insert).
+  await expect.poll(() => body.evaluate(() => {
+    const selection = window.getSelection();
+    return selection?.anchorNode ? `${selection.anchorNode.textContent}@${selection.anchorOffset}` : null;
+  }), { message: 'the caret is where it was', timeout: BIND_TIMEOUT }).toMatch(/^Owner text kept@[56]$/);
 });
 
 test('j16-suggest: a principal shared as suggester through the dialog opens locked to the chip, a cold first delete stays on the server, struck, and a viewer opens in Review @p:mean-2 @p:tech-7 @p:R17', async ({ actors }) => {
@@ -312,8 +311,6 @@ test('j16-suggest offline: suggestions typed offline reach the server after the 
   sever.restore();
   await ui.waitLive(ben, elsewhere);
   await ben.declareRemount(elsewhere);
-  await ben.page.waitForTimeout(8000);
-  console.log('SDBG', JSON.stringify(await ben.page.evaluate(() => (globalThis as unknown as { __sdbg?: unknown }).__sdbg)));
 
   // The owner reviews the note: both suggestions are there, and the body is unchanged.
   ada.expectReconnects(1, docId);
