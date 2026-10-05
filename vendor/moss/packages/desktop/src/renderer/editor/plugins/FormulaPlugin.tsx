@@ -452,6 +452,8 @@ function FormulaEditPopover({
 
   // The payload's text as the field last saw it, so a peer's change merges into text the field has not written.
   const syncedRef = useRef('');
+  // Whether the field holds a merge no keystroke has written since, so accepting writes it again after the peer's edit.
+  const mergedRef = useRef(false);
   useEffect(() => {
     const text = nodeRegister(editor, editingFormula.nodeKey);
     if (!text) return;
@@ -472,7 +474,10 @@ function FormulaEditPopover({
         const mergedDraft = symbolic ? { name: merged, expression: kept.expression } : { name: kept.name, expression: merged };
         setDraftState(mergedDraft);
         // The field's own characters, once the peer's change makes them valid, are written as a keystroke would.
-        if (merged !== next) onDraftChange(mergedDraft);
+        if (merged !== next) {
+          mergedRef.current = true;
+          onDraftChange(mergedDraft);
+        }
       });
     };
     text.observe(changed);
@@ -485,6 +490,7 @@ function FormulaEditPopover({
   useEffect(() => {
     const opened = sessionDraftRef.current;
     syncedRef.current = opened.sourceMode === 'symbolic' ? opened.name : opened.expression;
+    mergedRef.current = false;
     setDraftState({ name: opened.name, expression: opened.expression });
   }, [editingFormula.session, setDraftState]);
 
@@ -506,6 +512,7 @@ function FormulaEditPopover({
     (nextName: string) => {
       const nextDraft = { name: nextName, expression };
       latestDraftRef.current = nextDraft;
+      mergedRef.current = false;
       setName(nextName);
       onDraftChange({ name: nextName, expression });
     },
@@ -516,6 +523,7 @@ function FormulaEditPopover({
     (nextExpression: string, selectionStart: number | null) => {
       const nextDraft = { name, expression: nextExpression };
       latestDraftRef.current = nextDraft;
+      mergedRef.current = false;
       setExpression(nextExpression);
       const caret = selectionStart ?? nextExpression.length;
       onDraftChange(nextDraft, { selectionStart: caret });
@@ -586,8 +594,9 @@ function FormulaEditPopover({
     if (!isDraftValid({ name, expression })) {
       return;
     }
+    if (mergedRef.current) onDraftChange({ name, expression });
     onClose({ restoreFocus: true });
-  }, [expression, isDraftValid, name, onClose]);
+  }, [expression, isDraftValid, name, onClose, onDraftChange]);
 
   const handleInputKeyDown = useCallback(
     (event: ReactKeyboardEvent<HTMLInputElement>) => {

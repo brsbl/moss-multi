@@ -264,6 +264,7 @@ for (const accept of ['Enter', 'Apply'] as const) {
     await ben.page.keyboard.type('1');
     await expect(formulaInput(ada), "Ben's edit makes Ada's draft valid").toHaveValue('1*2+3', { timeout: PEER_TIMEOUT });
     await ben.page.keyboard.press('Escape');
+    await expect.poll(async () => (await formulas(ben, id)).map(([formula]) => formula), { message: "Ben receives Ada's merged formula", timeout: PEER_TIMEOUT }).toEqual(['1*2+3']);
     if (accept === 'Enter') await ada.page.keyboard.press('Enter');
     else await popover(ada).getByRole('button', { name: 'Apply formula changes' }).click();
     await expect(popover(ada)).toHaveCount(0);
