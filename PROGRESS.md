@@ -1,11 +1,11 @@
 # moss-multi progress
 
-**Overall: 54% done** (46 of 85 planned tasks verified)
+**Overall: 55% done** (47 of 86 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 18 / 18 | in progress |
-| M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 18 / 19 | in progress |
+| M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 19 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 10 / 11 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 0 / 9 | |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
@@ -65,6 +65,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-05 — T2.8 verified: sharing by email now sends a personal invite link that grants access only when a signed-in account with that email opens it, a signed-in person with another email can switch accounts from the invite page, and the bell shows share invites with an unread count and Mark all read, rechecking access on every read.
 - 2026-10-05 — T1.S1 verified again with its unload fix: reloading or leaving the page while the workspace list is loading now cancels that request quietly instead of showing a load failure or a browser access-control error.
 - 2026-10-05 — T2.5 verified: lowering or removing someone's access, revoking a link, moving a note or folder out from under a share, or signing out closes the affected open editors within a second, the note turns read-only or ends in place with a message, and their sidebar drops what they can no longer open; the owner can change or remove a person's or an open invite's access from the Share dialog.
+- 2026-10-05 — T1.S2 verified: a code, HTML or formula block whose updates were lost on a dropped connection now catches up on its own, without a reload, so both people see the same text and can keep typing in it.
 
 ## T1.1s identity audit
 

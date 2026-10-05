@@ -2,6 +2,7 @@
 // payload as it is now. A peer joining mid-draft never costs the drafter a character; a field stays open while a peer
 // moves its block, closes with a notice when a peer removes it, and stays read-only until its text has arrived. The
 // formula popover does the same for its formula.
+import type { Locator } from '@playwright/test';
 import type { LexicalEditor } from 'lexical';
 import type { Actor, Actors } from '../lib/actors.ts';
 import { SYNC_UNACKED_ATTR } from '../lib/contract.ts';
@@ -232,5 +233,79 @@ for (const kind of ['variable', 'formula'] as const) {
     await ben.page.keyboard.type(kind === 'variable' ? ' soon' : '+1');
     const want = kind === 'variable' ? [['status', 'pending soon']] : [['2+3+1', '6']];
     for (const actor of [ada, ben]) await expect.poll(() => formulas(actor, id), { message: `${actor.label}: the edit is written as a ${kind}`, timeout: PEER_TIMEOUT }).toEqual(want);
+  });
+}
+
+/** One payload-backed block kind: its markdown, how the editor reads its text, and how a user opens its field. */
+interface PayloadKind {
+  markdown: string; type: string; getter: string; seed: string;
+  open(actor: Actor, id: string): Promise<void>;
+  input(actor: Actor, id: string): Locator;
+}
+
+const PAYLOAD_KINDS: Record<string, PayloadKind> = {
+  code: {
+    markdown: 'Intro.\n\n```js\nseed\n```', type: 'code-block', getter: 'getCode', seed: 'seed',
+    open: openBlock, input: field,
+  },
+  HTML: {
+    markdown: 'Intro.\n\n```moss-html\n<p>seed</p>\n```', type: 'html-block', getter: 'getRawHtml', seed: '<p>seed</p>',
+    // A double-click opens the editor whatever the preview shows (its error overlay covers the Edit button); the
+    // bottom corner is clear of the header and the overlay's Retry button.
+    open: async (actor, id) => {
+      const viewport = ui.body(actor, id).locator('[data-moss-html-preview-viewport]');
+      const box = await viewport.boundingBox();
+      if (!box) throw new Error('the HTML preview has no box');
+      await viewport.dblclick({ position: { x: 8, y: box.height - 8 } });
+    },
+    input: (actor, id) => ui.body(actor, id).locator('textarea.moss-codeblock-textarea'),
+  },
+  formula: {
+    markdown: 'Intro.\n\nTotal {{2+3|5}} here.', type: 'formula', getter: 'getFormula', seed: '2+3',
+    open: openFormula, input: (actor) => formulaInput(actor),
+  },
+};
+
+/** The text of every attached node of `type`, read through `getter`. */
+const payloadTexts = (actor: Actor, id: string, type: string, getter: string) => ui.body(actor, id).evaluate((element, [type, getter]) => {
+  const editor = (element as HTMLElement & { __lexicalEditor: LexicalEditor }).__lexicalEditor;
+  return editor.read(() => [...editor.getEditorState()._nodeMap.values()]
+    .filter(n => n.getType() === type && n.isAttached())
+    .map(n => (n as unknown as Record<string, () => string>)[getter]()));
+}, [type, getter] as const);
+
+for (const [kind, spec] of Object.entries(PAYLOAD_KINDS)) {
+  test(`j01 registers: after Ben's doc socket black-holes while Ada types into a ${kind} block, his copy catches up without a reload and his field takes typing @p:col-4`, async ({ actors, stack }) => {
+    const { ada, ben: principal, id } = await note(actors, stack.baseUrl, spec.markdown);
+    const ben = await actors.session(principal, { severable: true });
+    await join(ben, id);
+    const texts = (actor: Actor) => payloadTexts(actor, id, spec.type, spec.getter);
+    const typeAtEnd = async (actor: Actor, text: string) => {
+      await spec.input(actor, id).evaluate(input => { const i = input as HTMLTextAreaElement; i.setSelectionRange(i.value.length, i.value.length); });
+      await actor.page.keyboard.type(text);
+    };
+    await expect.poll(() => texts(ben), { message: 'Ben holds the seed', timeout: PEER_TIMEOUT }).toEqual([spec.seed]);
+    await spec.open(ada, id);
+    await expect(spec.input(ada, id)).toHaveValue(spec.seed, { timeout: PEER_TIMEOUT });
+    await expect(spec.input(ada, id)).toHaveJSProperty('readOnly', false, { timeout: PEER_TIMEOUT });
+    await expect(spec.input(ada, id)).toBeFocused();
+
+    // Shorter than the 12 s silence limit, so Ben's socket survives and only the frames are lost.
+    ben.sever!.blackhole();
+    await typeAtEnd(ada, '+1');
+    await settled([ada], id);
+    expect(ben.sever!.census().dropped.in, "Ada's edit was lost on Ben's socket").toBeGreaterThan(0);
+    ben.sever!.restore();
+
+    await typeAtEnd(ada, '+2');
+    await expect.poll(() => texts(ben), { message: 'Ben catches up without a reload', timeout: PEER_TIMEOUT }).toEqual([`${spec.seed}+1+2`]);
+    await typeAtEnd(ada, '+3');
+    await expect.poll(() => texts(ben), { message: "Ada's later edits keep arriving", timeout: PEER_TIMEOUT }).toEqual([`${spec.seed}+1+2+3`]);
+
+    await spec.open(ben, id);
+    await expect(spec.input(ben, id), "Ben's field opens on the caught-up text").toHaveValue(`${spec.seed}+1+2+3`, { timeout: PEER_TIMEOUT });
+    await expect(spec.input(ben, id), "Ben's field is writable").toHaveJSProperty('readOnly', false, { timeout: PEER_TIMEOUT });
+    await typeAtEnd(ben, '+4');
+    for (const actor of [ada, ben]) await expect.poll(() => texts(actor), { message: `${actor.label} converges`, timeout: PEER_TIMEOUT }).toEqual([`${spec.seed}+1+2+3+4`]);
   });
 }

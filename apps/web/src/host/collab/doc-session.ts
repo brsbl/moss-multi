@@ -609,7 +609,8 @@ export class DocSession {
       if (state !== null && !this.#ended && !this.#lingering) awareness.setLocalState(state);
       const pending = this.#ledger.pendingUpdate();
       if (pending && !this.#ended) ws.send(syncFrame(2, pending));
-      if (!this.#ended) for (const id of this.#ledger.pendingPayloads()) this.#payloadSync.resend(id, this.#ledger.pendingUpdate(id));
+      // Each held payload asks again too, so one whose frames were lost on this socket catches up (A§10.10).
+      this.#payloadSync.connected((id) => (this.#ended ? null : this.#ledger.pendingUpdate(id)));
     } catch {
       // closing; the close path takes over
     }
