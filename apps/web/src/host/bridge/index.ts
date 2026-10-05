@@ -245,6 +245,8 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
   };
   let refreshAll = false;
   const pendingIds = new Set<string>();
+  /** Docs a push named, offered to `reopenDocs` once a refresh has read them. */
+  const reopenIds = new Set<string>();
   const load = (vaultId: string | null, docId: string | null = null, folderId: string | null = null): Promise<NoteMetadata[]> => {
     const version = ++loadVersion;
     const query = new URLSearchParams();
@@ -282,6 +284,7 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
     try {
       while (generation === channelGeneration && (refreshAll || pendingIds.size)) {
         const ids = [...pendingIds];
+        const pushed = [...reopenIds];
         const full = refreshAll;
         pendingIds.clear();
         refreshAll = false;
@@ -302,11 +305,17 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
         const docs: ApiDoc[] = [...(full ? [] : workspaceSnapshot.docs.filter((doc) => !removed.has(doc.id))), ...data.docs]
           .sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
         workspaceSnapshot = { ...data, docs };
+        const wasTrashed = new Set(pushed.filter((id) => known.get(id)?.trashedAt != null));
         for (const id of removed) known.delete(id);
         for (const doc of data.docs) { known.set(doc.id, toNoteMetadata(doc)); rememberRole(doc.id, doc.role); }
         listing = Promise.resolve(docs.map(toNoteMetadata));
         if (changedVaults) workspaceListeners.forEach((listener) => listener());
         diskListeners.forEach((listener) => listener(full ? [] : ids, []));
+        // A pane terminal on a note that is live after all re-asks (A§8). A note this tab saw in Trash is left to the
+        // restore, which remounts its pane with a fresh session.
+        for (const id of pushed) reopenIds.delete(id);
+        const reopen = pushed.filter((id) => !wasTrashed.has(id) && known.get(id)?.trashedAt == null);
+        if (reopen.length) reopenDocs?.(reopen);
       }
     } catch {
       if (generation === channelGeneration) {
@@ -334,9 +343,7 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
     if (event.type !== 'meta' && event.type !== 'vaults') return;
     if (event.type === 'vaults' || event.folderIds.length) refreshAll = true;
     if (event.type === 'meta') for (const id of event.docIds) pendingIds.add(id);
-    // A note this tab knows is in Trash comes back through the restore, which remounts its pane: not reopened here.
-    const reopen = event.type === 'meta' ? event.docIds.filter((id) => known.get(id)?.trashedAt == null) : [];
-    if (reopen.length) reopenDocs?.(reopen);
+    if (event.type === 'meta') for (const id of event.docIds) reopenIds.add(id);
     requestWorkspaceRefresh();
   };
   const pins = () => readJson<Record<string, number>>(storage, PINS_KEY) ?? {};
