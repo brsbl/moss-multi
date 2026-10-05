@@ -46,7 +46,7 @@ export interface Target {
 /** moss's thread popover. */
 const COMMENT_POPOVER = '.moss-comment-popover';
 /** The fixture's commented paragraph, its first block. */
-const COMMENTED_LINE = '[data-moss-app-shell] [data-lexical-editor="true"] > :first-child';
+const COMMENTED_LINE = '[data-moss-app-shell] [data-lexical-editor="true"] p:first-of-type';
 
 export const TARGETS: Target[] = [
   // Compare the default shell with editing controls visible; j01 separately gates deviation 10 on blur.

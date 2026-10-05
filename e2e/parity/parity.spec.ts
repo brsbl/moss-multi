@@ -8,7 +8,7 @@ import { PNG } from 'pngjs';
 import { AFFORDANCES } from '../../apps/web/src/host/affordances.ts';
 import { APP_STATE_ATTR, DOC_STATE_ATTR, EDITOR_PANE_ATTR } from '../lib/contract.ts';
 import { InfraBlocked } from '../lib/infra.ts';
-import { mintPrincipal, signIn, type Principal } from '../lib/principals.ts';
+import { mintPrincipal, signIn } from '../lib/principals.ts';
 import { Stack } from '../lib/stack.ts';
 import { compare, type Rect } from './compare.ts';
 import { serveStatic, type StaticServer } from './serve-static.ts';
@@ -24,7 +24,19 @@ let oracle: StaticServer;
 let stack: Stack;
 let stories: Set<string>;
 let principals = 0;
-let fixturePrincipal: Principal | null = null;
+let fixtureCookies: Awaited<ReturnType<typeof signIn>> | null = null;
+
+/** Retries an auth call the stack's rate limit answered 429, for up to a minute. */
+async function limited<T>(call: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await call();
+    } catch (error) {
+      if (attempt >= 6 || !/: 429 /.test((error as Error).message)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 10_000));
+    }
+  }
+}
 
 test.beforeAll(async () => {
   const dir = process.env.ORACLE_DIR;
@@ -207,14 +219,17 @@ async function captureCandidate(browser: Browser, target: Target, theme: Theme, 
   const { listing } = oracleState;
   const page = await newPage(browser, theme);
   try {
-    // Sign-up is rate limited per stack: the fixture targets, whose workspace listing is the story's, share one.
-    let principal = target.fixture ? fixturePrincipal : null;
-    if (!principal) {
+    // Sign-up and sign-in are rate limited per stack: the fixture targets, whose workspace listing is the story's,
+    // share one session, and a 429 waits out its window.
+    let cookies = target.fixture ? fixtureCookies : null;
+    if (!cookies) {
       principals += 1;
-      principal = await mintPrincipal(stack.baseUrl, `parity-${process.env.RUN_ID ?? 'local'}-${Date.now().toString(36)}`, target.fixture ? 'fixtures' : target.id, principals);
-      if (target.fixture) fixturePrincipal = principal;
+      const label = target.fixture ? 'fixtures' : target.id;
+      const principal = await limited(() => mintPrincipal(stack.baseUrl, `parity-${process.env.RUN_ID ?? 'local'}-${Date.now().toString(36)}`, label, principals));
+      cookies = await limited(() => signIn(stack.baseUrl, principal));
+      if (target.fixture) fixtureCookies = cookies;
     }
-    await page.context().addCookies(await signIn(stack.baseUrl, principal));
+    await page.context().addCookies(cookies);
     let path = '/';
     if (target.seed === 'story-listing') {
       if (listing.length === 0) throw new InfraBlocked(`${target.story} listed no notes`);
