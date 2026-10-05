@@ -230,7 +230,7 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
       } catch {
         throw new Error('Couldn’t copy. Select the invite link and copy it instead.');
       }
-      return `Copied the invite link for ${invite.email}. It works once, for whoever signs in with that email.`;
+      return `Copied the invite link for ${invite.email}. Send it only to them: the first person who opens it signed in gets its access.`;
     }, false);
   }
 
@@ -305,6 +305,11 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
               ))}
             </ul>
           )}
+          {invites.length > 0 ? (
+            <p className="mt-3 text-xs text-ink-muted">
+              An invite link gives its access to the first person who opens it signed in, whatever their email. Send each one only to the person it names.
+            </p>
+          ) : null}
         </div>
       </div>
       <div className="space-y-2">

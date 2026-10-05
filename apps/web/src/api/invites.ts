@@ -84,7 +84,8 @@ export async function acceptInvite(request: Request, env: InvitesEnv, token: str
   const [table, column] = grantTable(invite.type);
   // One batch, each statement seeing the last: the invite is spent only while it is open, its target live and its
   // inviter still managing it (so a trash or a revocation that commits first wins), and the grant and the inviter's
-  // notice follow only the spending this request did. A grant only ever rises.
+  // notice follow only a spending by this account. A grant only ever rises, and the notice's id is the invite's, so
+  // two redemptions by one account at once write one notice.
   const [spent] = await env.DB.batch([
     env.DB.prepare(`UPDATE invites SET accepted_at = ?2, accepted_by = ?3
       WHERE token = ?1 AND accepted_at IS NULL AND revoked_at IS NULL AND target_id = ?4 AND invited_by = ?5
@@ -96,14 +97,24 @@ export async function acceptInvite(request: Request, env: InvitesEnv, token: str
       .bind(token, now, principal.id),
     env.DB.prepare(`INSERT INTO notifications (id, user_id, type, payload_json, created_at)
       SELECT ?4, invited_by, 'invite-accepted', json_object('targetType', target_type, 'targetId', target_id, 'by', ?3, 'invitedEmail', email), ?2
-      FROM invites WHERE token = ?1 AND accepted_by = ?3 AND accepted_at = ?2`)
-      .bind(token, now, principal.id, crypto.randomUUID()),
+      FROM invites WHERE token = ?1 AND accepted_by = ?3 AND accepted_at = ?2 ON CONFLICT (id) DO NOTHING`)
+      .bind(token, now, principal.id, await noticeId(token)),
   ]);
-  if (!spent?.meta?.changes) return closed(); // dead, trashed, spent or withdrawn in the meantime
+  if (!spent?.meta?.changes) {
+    // This account's own redemption that committed first leads it there too; anything else is closed.
+    const row = await env.DB.prepare('SELECT accepted_by AS acceptedBy FROM invites WHERE token = ?').bind(token).first<{ acceptedBy: string | null }>();
+    return row?.acceptedBy === principal.id ? json({ target }, 200, NO_STORE) : closed();
+  }
   // The redeemer's tab goes to the item itself; a push to their other tabs would have an idle shell open the note
   // on its own (a T2.4 follow-up), so those list it on their next read.
   notify(env, invite.inviter, 'notifications');
   return json({ target }, 200, NO_STORE);
+}
+
+/** The id of an invite's accepted notice, derived from its token without revealing it. */
+async function noticeId(token: string): Promise<string> {
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`invite-accepted:${token}`)));
+  return [...digest.slice(0, 16)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 const ACCEPT = /^\/api\/invites\/([0-9a-f]{1,128})\/accept$/;
