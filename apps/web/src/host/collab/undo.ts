@@ -145,9 +145,11 @@ function createRootUndoManager(binding: Binding): UndoManager {
     const owner = (item.parent as AbstractType<unknown>)._item;
     if (owner && created?.has(owner)) return !keeps(owner);
     // A first assignment goes: the key was absent before the step (an optional property such as a callout's level).
+    // Yjs links a key's next value after its tombstone, so a value undone earlier does not count: the key held a
+    // value only if the item before the step's is still live or the step itself deleted it.
     let before = item.left;
     while (before && step && isDeleted(step.insertions, before.id)) before = before.left;
-    if (!before) return true;
+    if (!before || (before.deleted && !(step && isDeleted(step.deletions, before.id)))) return true;
     // Yjs has already restored the value the step replaced, where it could. When a peer rewrote the key meanwhile it
     // cannot, and deleting the step's value would leave the key empty: Lexical hands every peer `undefined` for a
     // property its node never allows to be unset (a formula's `__commentIds`, which Lexical rewrites on every clone).

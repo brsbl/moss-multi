@@ -70,6 +70,15 @@ export function summarize(samples) {
   return { setup, perLeg, journeys };
 }
 
+/** Why a summary may not replace the record: a shard whose report could not be read, or minutes it lacks. */
+export function recordProblems(minutes, failures) {
+  const problems = [...failures];
+  for (const engine of ENGINES) if (!Number.isFinite(minutes.setup[engine])) problems.push(`no setup minutes for ${engine}`);
+  for (const engine of ENGINES) if (!Number.isFinite(minutes.perLeg[engine])) problems.push(`no per-leg rate for ${engine}`);
+  if (Object.keys(minutes.journeys).length === 0) problems.push('no journey minutes');
+  return problems;
+}
+
 function gh(args, options = {}) {
   return execFileSync('gh', args, { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'], ...options });
 }
@@ -85,6 +94,7 @@ function legsAt(sha, file) {
 function collect(repo, runIds) {
   const samples = [];
   const shards = [];
+  const failures = [];
   for (const id of runIds) {
     const run = JSON.parse(gh(['api', `repos/${repo}/actions/runs/${id}`]));
     const jobs = JSON.parse(gh(['api', `repos/${repo}/actions/runs/${id}/attempts/1/jobs?per_page=100`])).jobs;
@@ -98,18 +108,21 @@ function collect(repo, runIds) {
       try {
         gh(['run', 'download', String(id), '--repo', repo, '-n', `e2e-${engine}-${group}-1`, '-D', dir]);
         const path = join(dir, 'e2e/test-results/results.json');
-        if (!existsSync(path)) continue;
+        if (!existsSync(path)) {
+          failures.push(`run ${id} ${engine}/${group}: no results.json`);
+          continue;
+        }
         const files = fileMinutesIn(JSON.parse(readFileSync(path, 'utf8')));
         const legs = Object.fromEntries(Object.keys(files).map((file) => [file, legsAt(run.head_sha, file)]));
         samples.push({ engine, group, jobMinutes, files, legs });
       } catch (error) {
-        console.error(`run ${id} ${engine}/${group}: ${String(error).split('\n')[0]}`);
+        failures.push(`run ${id} ${engine}/${group}: ${String(error).split('\n')[0]}`);
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
     }
   }
-  return { samples, shards };
+  return { samples, shards, failures };
 }
 
 function main(argv) {
@@ -121,7 +134,7 @@ function main(argv) {
     console.error('usage: node scripts/ci/durations.mjs [--write] [--repo owner/name] <run id>...');
     return 2;
   }
-  const { samples, shards } = collect(repo, runIds);
+  const { samples, shards, failures } = collect(repo, runIds);
   const minutes = summarize(samples);
   console.log('| Journey file | legs | Chromium p95 | WebKit p95 |\n| --- | --- | --- | --- |');
   for (const [file, entry] of Object.entries(minutes.journeys)) console.log(`| ${file} | ${entry.legs} | ${entry.chromium} | ${entry.webkit} |`);
@@ -134,6 +147,12 @@ function main(argv) {
   }
   console.log(`\n| Estimated shard (this checkout's groups) | minutes | budget ${SHARD_BUDGET_MINUTES} |\n| --- | --- | --- |`);
   for (const shard of shardEstimates(readJourneys(), minutes)) console.log(`| ${shard.engine}/${shard.group} | ${shard.minutes} | ${shard.minutes <= SHARD_BUDGET_MINUTES ? 'fits' : 'OVER'} |`);
+  const problems = recordProblems(minutes, failures);
+  for (const problem of problems) console.error(problem);
+  if (write && problems.length) {
+    console.error('not written: every sampled shard needs its report (artifacts expire after 7 days)');
+    return 1;
+  }
   if (write) writeFileSync(MINUTES_FILE, `${JSON.stringify({ runs: runIds.map(Number), ...minutes }, null, 2)}\n`);
   return 0;
 }

@@ -151,9 +151,16 @@ export function shardEstimates(journeys, minutes) {
  * @returns {string[]}
  */
 export function budgetProblems(journeys, minutes, budget = SHARD_BUDGET_MINUTES) {
-  return shardEstimates(journeys, minutes)
-    .filter((shard) => shard.minutes > budget)
-    .map((shard) => `${shard.engine}/${shard.group} is estimated at ${shard.minutes} min, over its ${budget}: split ${shard.files.join(', ')} across groups in scripts/ci/journeys.mjs`);
+  // A null in the record would count as zero minutes and pass any budget.
+  const recorded = (shard) => Number.isFinite(minutes.setup?.[shard.engine]) && shard.files.every((file) => {
+    const entry = minutes.journeys?.[file];
+    return entry ? Number.isFinite(entry[shard.engine]) : Number.isFinite(minutes.perLeg?.[shard.engine]);
+  });
+  return shardEstimates(journeys, minutes).flatMap((shard) => {
+    if (!recorded(shard)) return [`${shard.engine}/${shard.group} has no recorded minutes: refresh scripts/ci/journey-minutes.json with scripts/ci/durations.mjs --write`];
+    if (shard.minutes > budget) return [`${shard.engine}/${shard.group} is estimated at ${shard.minutes} min, over its ${budget}: split ${shard.files.join(', ')} across groups in scripts/ci/journeys.mjs`];
+    return [];
+  });
 }
 
 /**
