@@ -14,10 +14,10 @@ export const ALL = 'all';
 /** @type {Record<string, string[]>} */
 // Every group's estimate must fit the shard budget below (`plan.mjs budget`); split a group when it does not.
 export const GROUPS = {
-  // Chrome and auth.
-  shell: ['j00-shell', 'j07', 'j10'],
-  // Sharing, live access changes and invites.
-  share: ['j08', 'j09', 'j19'],
+  // Chrome, auth and invites.
+  shell: ['j00-shell', 'j07', 'j10', 'j19'],
+  // Sharing and live access changes.
+  share: ['j08', 'j09'],
   // Server import against UI paste, and the protocol round trip.
   import: ['j00-import', 'j00-roundtrip'],
   // Persistence and co-editing; also any new j01 journey until it is placed.
