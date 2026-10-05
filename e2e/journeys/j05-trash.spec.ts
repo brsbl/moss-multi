@@ -378,4 +378,5 @@ test('j05-trash: a restore the server refuses shows the server’s sentence, and
   await expect(ben.page.getByText(/folder is in Trash, so it would return to the top of its vault, where you can.t add notes/), 'the server’s sentence').toBeVisible();
   await expect(ben.page.getByText(/Try again/), 'never "Try again" for a refusal a retry can’t change').toHaveCount(0);
   await expect(trashRow(ben, docId), 'the note stays in Trash').toBeVisible();
+  await expect(ben.page.getByText(/folder is in Trash, so it would return/), 'moss’s notice dismisses itself').toBeHidden({ timeout: 10_000 });
 });
