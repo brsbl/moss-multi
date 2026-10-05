@@ -1,11 +1,11 @@
-// j19-invites (T2.8): invites and the bell. Ada shares a note with Ben while he is typing in his own. The share is an
-// invite bound to his email, so it opens nothing for him until he redeems it; his bell shows it without a reload, and
-// clicking the notice mid-sentence redeems it and opens her note in place. No key is lost across the click: the keys
-// typed before it are held in flight (the server has none of them) and still reach his note after the switch and a
-// reload, and every key typed straight on through the switch either lands in a live field or is refused visibly.
-// An invite to an email with no account gives Ada a copyable link that redeems after the guest signs up on the card
-// and lands on the note, once; anyone else who follows it hears only that it is for another email. The oracle rules
-// (A§8) are proven over REST in invite-oracle.test.ts and invites.test.ts.
+// j19-invites (T2.8; PRODUCT ruling 19: an email is a label, never an authority). Ada shares a note with Ben by email:
+// that is an invite link she sends him, and it opens nothing for his account until he follows it. He follows it while
+// Ada is typing in another note; her bell shows "Ben accepted your invite" without a reload, and clicking the notice
+// mid-sentence opens the note in place. No key is lost across the click: the keys typed before it are held in flight
+// (the server has none of them) and still reach her note after the switch and a reload, and every key typed straight
+// on through the switch either lands in a live field or is refused visibly. An invite to an email with no account
+// redeems after the guest signs up through it, once; a spent link shows the one closed-invite page to anyone else.
+// The oracle and squatter rules (A§8) are proven over REST in invite-oracle.test.ts and invites.test.ts.
 import type { Locator } from '@playwright/test';
 import type { Actor } from '../lib/actors.ts';
 import { openDocClient } from '../lib/doc-client.ts';
@@ -69,100 +69,105 @@ async function recordKeys(actor: Actor): Promise<void> {
 
 const keyFates = (actor: Actor): Promise<KeyFate[]> => actor.page.evaluate(() => (window as unknown as { j19Keys: KeyFate[] }).j19Keys);
 
-test('j19 bell: a share reaches Ben\'s bell without a reload, and its notice redeems it and opens the note mid-sentence with no key lost @p:ppl-3 @evidence', async ({ actors, stack }) => {
+test('j19 bell: an accepted invite reaches Ada\'s bell without a reload, and its notice opens the note mid-sentence with no key lost @p:ppl-3 @evidence', async ({ actors }) => {
   const adaPrincipal = await actors.principal('ada');
   const benPrincipal = await actors.principal('ben');
-  const ada = await actors.open(adaPrincipal);
+  // Ada's doc sockets run through a proxy that can hold her keys in flight.
+  const ada = await actors.open(adaPrincipal, { severable: true });
   const title = `Bell target ${Date.now() % 10_000}`;
   const target = await sharedNote(ada, title, 'Shared through the bell');
-
-  // Ben's doc sockets run through a proxy that can hold his keys in flight.
-  const ben = await actors.open(benPrincipal, { severable: true });
-  const own = await ui.createNote(ben);
-  await expect(bell(ben, own), 'Ben has nothing unread').toHaveAccessibleName('Notifications');
-  // A marker only this document holds: a page load would drop it.
-  await ben.page.evaluate(() => { (window as unknown as { j19Document: boolean }).j19Document = true; });
-
   const dialog = await ui.shareWith(ada, target, benPrincipal, 'Can edit');
+  const invite = await ui.inviteLink(dialog, benPrincipal.email);
   await ada.page.keyboard.press('Escape');
   await expect(dialog).toBeHidden();
-  await expect(bell(ben, own), 'the notice is pushed to Ben\'s open tab').toHaveAccessibleName('Notifications, 1 unread', { timeout: PUSH_TIMEOUT });
-  // The share is an invite to his email, not a grant to his account: until he redeems it, the note is as absent to
-  // him as one that does not exist.
+
+  // The share is an invite, not a grant to the account with that email: Ben's account has nothing until he follows it.
+  const ben = await actors.open(benPrincipal);
   const before = await ben.context.request.get(`/api/docs/${target}`);
-  expect(before.status(), 'the share alone opens nothing').toBe(404);
+  expect(before.status(), 'the email alone opens nothing').toBe(404);
   expect(await before.text()).toBe(await (await ben.context.request.get(`/api/docs/${crypto.randomUUID()}`)).text());
+
+  // Ada moves on to a note of her own; a marker only this document holds would vanish on a page load.
+  const own = await ui.createNote(ada);
+  await expect(bell(ada, own), 'Ada has nothing unread').toHaveAccessibleName('Notifications');
+  await ada.page.evaluate(() => { (window as unknown as { j19Document: boolean }).j19Document = true; });
+
+  // Ben follows the link Ada sent him and lands on the note.
+  await ben.goto(pathOf(invite));
+  await expect(ben.page, 'the invite leads to the note').toHaveURL(new RegExp(`/d/${target}$`), { timeout: 30_000 });
+  await ui.waitLive(ben, target);
+  await expect(ui.pane(ben, target), 'at the invite\'s role').toHaveAttribute(ROLE_ATTR, 'editor');
+
+  await expect(bell(ada, own), 'the notice is pushed to Ada\'s open tab').toHaveAccessibleName('Notifications, 1 unread', { timeout: PUSH_TIMEOUT });
   await actors.checkpoint('bell-unread');
-  await bell(ben, own).click();
-  const notice = ben.page.getByRole('menuitem', { name: new RegExp(`shared “${title}” with you`) });
-  await expect(notice, 'the inbox lists the share').toBeVisible();
+  await bell(ada, own).click();
+  const notice = ada.page.getByRole('menuitem', { name: new RegExp(`accepted your invite to “${title}”`) });
+  await expect(notice, 'the inbox lists the acceptance').toBeVisible();
   await actors.checkpoint('bell-open');
-  await ben.page.keyboard.press('Escape');
+  await ada.page.keyboard.press('Escape');
   await expect(notice).toBeHidden();
 
-  // Mid-sentence: the server has none of the first half when Ben clicks the notice, and he types the rest straight on.
+  // Mid-sentence: the server has none of the first half when Ada clicks the notice, and she types the rest straight on.
   const firstHalf = 'Typing right up to the bell';
   const rest = 'and straight on';
-  ben.sever!.hold(own);
-  await ui.typeBody(ben, own, firstHalf);
-  await expect(ui.pane(ben, own), 'the keys are still in flight at the click').toHaveAttribute(SYNC_UNACKED_ATTR, '1');
-  await bell(ben, own).click();
+  ada.sever!.hold(own);
+  await ui.typeBody(ada, own, firstHalf);
+  await expect(ui.pane(ada, own), 'the keys are still in flight at the click').toHaveAttribute(SYNC_UNACKED_ATTR, '1');
+  await bell(ada, own).click();
   await expect(notice).toBeVisible();
-  await recordKeys(ben);
+  await recordKeys(ada);
+  ada.expectReconnects(1, target); // Returning to the shared note opens its session again.
   await notice.click();
-  await ben.page.keyboard.type(rest);
+  await ada.page.keyboard.type(rest);
 
-  await ui.waitLive(ben, target);
-  await ben.declareRemount(target);
-  expect(await ben.page.evaluate(() => (window as unknown as { j19Document?: boolean }).j19Document), 'the note opened in place, without a page load').toBe(true);
-  await expect(ben.page).toHaveURL(new RegExp(`/d/${target}$`));
+  await ui.waitLive(ada, target);
+  await ada.declareRemount(target);
+  expect(await ada.page.evaluate(() => (window as unknown as { j19Document?: boolean }).j19Document), 'the note opened in place, without a page load').toBe(true);
+  await expect(ada.page).toHaveURL(new RegExp(`/d/${target}$`));
 
   // Every key typed through the switch landed in a live field or was refused with a visible notice; none vanished.
-  await expect.poll(async () => (await keyFates(ben)).length, { message: 'every key reached the page' }).toBe(rest.length);
-  const fates = await keyFates(ben);
+  await expect.poll(async () => (await keyFates(ada)).length, { message: 'every key reached the page' }).toBe(rest.length);
+  const fates = await keyFates(ada);
   expect(fates.filter((fate) => fate.landedIn === null && !fate.refused).map((fate) => fate.key), 'no key aimed at nothing went unrefused').toEqual([]);
   for (const fate of fates.filter((f) => f.refused)) expect(fate.notice, `"${fate.key}" was refused visibly`).toMatch(/Opening/);
-  expect(fates.filter((fate) => fate.landedIn === own).map((f) => f.key), 'nothing typed after the click lands in the note he left').toEqual([]);
+  expect(fates.filter((fate) => fate.landedIn === own).map((f) => f.key), 'nothing typed after the click lands in the note she left').toEqual([]);
   const landed = fates.filter((fate) => fate.landedIn === target).map((fate) => fate.key).join('');
-  if (landed.trim()) await expect(ui.body(ben, target), 'what landed in Ada\'s note is there').toContainText(landed.trim());
+  if (landed.trim()) await expect(ui.body(ada, target), 'what landed in the opened note is there').toContainText(landed.trim());
 
-  // The note Ben left still holds the first half after the switch, and delivers it once the network lets it through.
-  const cookie = (await ben.context.cookies()).map(({ name, value }) => `${name}=${value}`).join('; ');
-  const server = await openDocClient(stack.baseUrl, own, cookie);
+  // The note Ada left still holds the first half after the switch, and delivers it once the network lets it through.
+  const cookie = (await ada.context.cookies()).map(({ name, value }) => `${name}=${value}`).join('; ');
+  const server = await openDocClient(new URL(ada.page.url()).origin, own, cookie);
   try {
     await server.synced;
-    expect(ben.sever!.census().held, 'the keys are held in flight').toBeGreaterThan(0);
+    expect(ada.sever!.census().held, 'the keys are held in flight').toBeGreaterThan(0);
     expect(server.text(), 'the server has not seen them yet').not.toContain(firstHalf);
-    ben.sever!.deliverHeld();
+    ada.sever!.deliverHeld();
     await expect.poll(() => server.text(), { timeout: LIVE_TIMEOUT, message: 'every key typed before the click reaches the server' }).toContain(firstHalf);
   } finally {
     server.close();
   }
 
-  await expect(ui.body(ben, target)).toContainText('Shared through the bell');
-  await expect(ui.pane(ben, target), 'redeemed at the invite\'s role').toHaveAttribute(ROLE_ATTR, 'editor');
-  await expect(bell(ben, target), 'opening the notice marks it read').toHaveAccessibleName('Notifications');
-
+  await expect(ui.body(ada, target)).toContainText('Shared through the bell');
+  await expect(bell(ada, target), 'opening the notice marks it read').toHaveAccessibleName('Notifications');
   await ui.typeBody(ben, target, ' and Ben replies');
   await expect(ui.body(ada, target), 'Ada sees Ben type').toContainText('and Ben replies', { timeout: LIVE_TIMEOUT });
 
-  // Back in his own note, every key typed before the click is there.
-  ben.expectReconnects(1, own);
-  await ui.openNote(ben, own);
-  expect(await ui.fieldText(ben, own, 'body')).toContain(firstHalf);
-
-  // Redeemed from the bell: Ada sees Ben by name.
+  // Redeemed, Ben is a member by name.
   const members = await ui.openShare(ada, target);
   await expect(ui.accessRow(members, benPrincipal), 'redeemed, Ben is listed by name').toContainText(benPrincipal.email);
   await ada.page.keyboard.press('Escape');
-  await expect(bell(ben, own), 'and the read state survives a reload').toHaveAccessibleName('Notifications');
-  ben.expectReconnects(1, own);
-  await ben.page.reload();
-  await ben.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
-  await ui.waitLive(ben, own);
-  await ben.declareRemount(own);
-  await expect(bell(ben, own)).toHaveAccessibleName('Notifications');
-  expect(await ui.fieldText(ben, own, 'body'), 'and the sentence survives the reload').toContain(firstHalf);
+
+  // Back in her own note, every key typed before the click is there, and it and the read state survive a reload.
+  ada.expectReconnects(1, own);
+  await ui.openNote(ada, own);
+  expect(await ui.fieldText(ada, own, 'body')).toContain(firstHalf);
+  ada.expectReconnects(1, own);
+  await ada.page.reload();
+  await ada.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
+  await ui.waitLive(ada, own);
+  await ada.declareRemount(own);
+  await expect(bell(ada, own)).toHaveAccessibleName('Notifications');
+  expect(await ui.fieldText(ada, own, 'body'), 'and the sentence survives the reload').toContain(firstHalf);
 });
 
 test('j19 invite: an invite to an unknown email gives a copyable link that redeems after sign-up, once @p:ppl-1 @evidence', async ({ actors, stack }) => {
@@ -201,10 +206,10 @@ test('j19 invite: an invite to an unknown email gives a copyable link that redee
   await expect(members.getByRole('textbox', { name: `Invite link for ${guest.email}`, exact: true }), 'and the invite is spent').toHaveCount(0);
   await ada.page.keyboard.press('Escape');
 
-  // Anyone else who follows it hears only that it is for another email.
+  // The link is spent: anyone else who follows it gets the one closed-invite page.
   const cy = await actors.open(await actors.principal('cy'), { path: pathOf(url) });
   cy.expectHttp(404, /^\/api\/invites\/[0-9a-f]+\/accept$/);
-  await expect(cy.page.getByRole('heading', { name: /This invite is for another email/i })).toBeVisible();
+  await expect(cy.page.getByRole('heading', { name: /already been used or is no longer open/i })).toBeVisible();
   expect((await cy.context.request.get(`/api/docs/${target}`)).status(), 'and no access').toBe(404);
   cy.expectHttp(404, `/api/docs/${target}`);
 });

@@ -214,11 +214,13 @@ describe('(c) grant raises are atomic', () => {
       await redeem(env, owner, `/api/docs/${docId}`, cy); // Cy redeems it, so she is a member.
       const statuses = await Promise.all(['viewer', 'editor', 'viewer', 'commenter'].map((role) =>
         call('POST', `/api/docs/${docId}/members`, owner.cookie, { email: cy.email, role }).then((r) => r.status)));
-      // A lowering is refused; the repeat at commenter is refused only if the raise landed first.
-      expect([statuses[0], statuses[1], statuses[2]], `round ${round}`).toEqual([409, 200, 409]);
-      expect([200, 409], `round ${round}`).toContain(statuses[3]);
+      for (const status of statuses) expect([200, 201, 409], `round ${round}`).toContain(status);
+      expect(statuses[1], `round ${round}: the editor share is taken`).toBeLessThan(300);
       const grants = await d1.db.prepare('SELECT role FROM doc_members WHERE doc_id = ?1').bind(docId).all();
-      expect(grants.results, `round ${round}`).toEqual([{ role: 'editor' }]);
+      expect(grants.results, `round ${round}: shares never touch a grant`).toEqual([{ role: 'commenter' }]);
+      await redeem(env, owner, `/api/docs/${docId}`, cy);
+      const raised = await d1.db.prepare('SELECT role FROM doc_members WHERE doc_id = ?1').bind(docId).all();
+      expect(raised.results, `round ${round}: the open invite settled on the highest`).toEqual([{ role: 'editor' }]);
     }
   }, 60_000);
 });

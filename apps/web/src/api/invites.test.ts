@@ -1,8 +1,8 @@
-// T2.8 over REST: copy-link invites and the bell's notifications. Every share by email is an invite bound to the email
-// and a random token, never to an account (A§8): it grants nothing until its invitee, signed in with that email,
-// redeems it, from its link or from its notice in their bell. Only the owner reads the link; the bell derives an
-// invite's notice from the invite itself, for the account whose email it names; an invite dies when its inviter
-// stops managing the item or the item goes to Trash.
+// T2.8 over REST under PRODUCT ruling 19: copy-link invites and the bell. An email is a label, never an authority:
+// every share by email is an invite, a personal link only the owner reads, and it grants nothing until someone redeems
+// it while signed in; it then binds to that account. Owning the address grants nothing and tells its account nothing.
+// An invite dies when its inviter stops managing the item or the item goes to Trash. The bell tells an inviter their
+// invite was accepted, pushed to their tabs and re-checked against the live grant whenever it is read.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
 import { redeem } from '../test/invites.ts';
@@ -78,8 +78,6 @@ interface Notice {
   read: boolean;
   by: string;
   target: { type: string; id: string; title: string; kind: string };
-  /** A share's invite token, for the account whose email it names. */
-  invite?: string;
 }
 
 async function bell(user: TestUser): Promise<Notice[]> {
@@ -139,7 +137,7 @@ describe('copy-link invites', () => {
     expect(await roleOf(cy.cookie, docId)).toBeNull();
   });
 
-  it('refuses forged, revoked, trashed and other accounts’ invites with one answer, and lets the owner follow a link without spending it', async () => {
+  it('refuses forged, revoked, spent and trashed invites with one answer, and lets the owner follow a link without spending it', async () => {
     const docId = await titled(ada, 'Guarded');
     const path = `/api/docs/${docId}`;
     const ghost = unknownEmail('guarded');
@@ -148,9 +146,7 @@ describe('copy-link invites', () => {
     const forged = await accept(cy.cookie, 'f'.repeat(48));
     expect(forged.status).toBe(404);
     const refusal = await forged.text();
-    expect(JSON.parse(refusal), 'the redeemer only hears the invite is for another email').toMatchObject({ error: 'invite-unavailable', message: expect.stringMatching(/another email/) });
-    const wrong = await accept(cy.cookie, token);
-    expect(await wrong.text(), 'another account: the same answer').toBe(refusal);
+    expect(JSON.parse(refusal)).toMatchObject({ error: 'invite-unavailable', message: expect.stringMatching(/no longer open/) });
     const owner = await accept(ada.cookie, token);
     expect(owner.status).toBe(200);
     expect((await membersOf(ada, path)).invites.map((i) => i.email), 'the owner’s own click leaves it pending').toEqual([ghost]);
@@ -180,28 +176,22 @@ describe('copy-link invites', () => {
 });
 
 describe('who an invite admits', { timeout: 30_000 }, () => {
-  it('redeems only for its own email, so following a link never tells the owner whether the email had an account', async () => {
+  it('binds to whoever redeems the link: the account with the email gets nothing by it', async () => {
     const docId = await titled(ada, 'No oracle');
     const path = `/api/docs/${docId}`;
     const kim = await signedUpUser(env, 't28-kim', 'Kim');
-    const ghost = unknownEmail('oracle');
     await share(ada, path, kim.email);
-    await share(ada, path, ghost);
-    expect(await roleOf(kim.cookie, docId), 'an account is granted nothing until it redeems').toBeNull();
-    const before = await membersOf(ada, path);
-    // Ada's second account (Cy) follows both links.
-    const known = await accept(cy.cookie, tokenOf(await inviteLink(ada, path, kim.email)));
-    const unknown = await accept(cy.cookie, tokenOf(await inviteLink(ada, path, ghost)));
-    expect([known.status, unknown.status], 'neither link admits another account').toEqual([404, 404]);
-    expect(await known.text()).toBe(await unknown.text());
-    expect(await roleOf(cy.cookie, docId)).toBeNull();
+    expect(await roleOf(kim.cookie, docId), 'an account is granted nothing by its email').toBeNull();
+    expect((await membersOf(ada, path)).members.map((m) => m.name)).toEqual(['Ada']);
+    // Ada sends the link to Cy instead; Cy redeems it and the invite binds to Cy.
+    const token = tokenOf(await inviteLink(ada, path, kim.email));
+    expect((await accept(cy.cookie, token)).status).toBe(200);
+    expect(await roleOf(cy.cookie, docId)).toBe('editor');
+    expect((await accept(kim.cookie, token)).status, 'spent, it admits nobody else').toBe(404);
+    expect(await roleOf(kim.cookie, docId)).toBeNull();
     const after = await membersOf(ada, path);
-    expect(after, 'the member list is unchanged and names nobody').toEqual(before);
-    expect(after.members.map((m) => m.name)).toEqual(['Ada']);
-    expect(after.invites.map((i) => i.email)).toEqual([kim.email, ghost]);
-
-    expect((await accept(kim.cookie, tokenOf(await inviteLink(ada, path, kim.email)))).status, 'its own account redeems it').toBe(200);
-    expect((await membersOf(ada, path)).members.map((m) => m.name)).toEqual(['Ada', 'Kim']);
+    expect(after.members.map((m) => m.name)).toEqual(['Ada', 'Cy']);
+    expect(after.invites).toEqual([]);
   });
 
   it('refuses an invite once its inviter no longer manages the target: revocation wins', async () => {
@@ -253,83 +243,63 @@ describe('who an invite admits', { timeout: 30_000 }, () => {
 });
 
 describe('the bell', { timeout: 30_000 }, () => {
-  it('derives a share’s notice from its invite for the account with that email, and pushes it to their tabs', async () => {
+  it('tells nobody about a share before its link is redeemed, then tells the inviter who accepted it', async () => {
     const dee = await signedUpUser(env, 't28-dee', 'Dee');
     const docId = await titled(ada, 'Roadmap');
+    const path = `/api/docs/${docId}`;
     published.length = 0;
-    await share(ada, `/api/docs/${docId}`, dee.email);
-    const ghost = unknownEmail('nobody');
-    await share(ada, `/api/docs/${docId}`, ghost);
-    const notices = await bell(dee);
-    expect(notices).toHaveLength(1);
-    expect(notices[0]).toMatchObject({ type: 'share-invite', read: false, by: 'Ada', target: { type: 'doc', id: docId, title: 'Roadmap', kind: 'doc' } });
-    expect(notices[0].invite, 'the notice carries its invite').toBe(tokenOf(await inviteLink(ada, `/api/docs/${docId}`, dee.email)));
-    await expect.poll(() => published, { message: 'pushed after the answer' }).toContainEqual({ id: dee.id, event: { type: 'notifications' } });
-    expect((await bell(ada)).filter((n) => n.target.id === docId), 'the owner hears nothing about her own share').toEqual([]);
+    await share(ada, path, dee.email);
+    expect(await bell(dee), 'the address’s account hears nothing').toEqual([]);
+    expect(published, 'and no tab is pushed').toEqual([]);
+    expect((await bell(ada)).filter((n) => n.target.id === docId), 'nor the owner, yet').toEqual([]);
 
-    await share(ada, `/api/docs/${docId}`, dee.email);
-    expect(await bell(dee), 'a repeat is not a new notice').toHaveLength(1);
-    const vault = await signedUpUser(env, 't28-vault', 'Vee');
-    await share(ada, `/api/folders/${ada.homeId}`, vault.email, 'viewer');
-    expect((await bell(vault))[0]).toMatchObject({ type: 'share-invite', target: { type: 'folder', id: ada.homeId, kind: 'vault' } });
-
-    // An email that signs up after the share finds its invite in the bell too.
-    const late = await signedUpUser(env, 't28-late', 'Lou', ghost);
-    expect((await bell(late)).map((n) => [n.type, n.target.id])).toEqual([['share-invite', docId]]);
+    expect((await accept(dee.cookie, tokenOf(await inviteLink(ada, path, dee.email)))).status).toBe(200);
+    await expect.poll(() => published, { message: 'the inviter’s tabs are pushed' }).toContainEqual({ id: ada.id, event: { type: 'notifications' } });
+    const [notice] = (await bell(ada)).filter((n) => n.target.id === docId);
+    expect(notice).toMatchObject({ type: 'invite-accepted', read: false, by: 'Dee', target: { type: 'doc', id: docId, title: 'Roadmap', kind: 'doc' } });
   });
 
-  it('opens a notice’s invite from the bell: following it redeems the share, once', async () => {
+  it('marks notices read for their owner only, and reading redeems nothing', async () => {
     const fay = await signedUpUser(env, 't28-fay', 'Fay');
     const docId = await titled(ada, 'Read me');
     const path = `/api/docs/${docId}`;
     await share(ada, path, fay.email);
-    const [notice] = await bell(fay);
-    expect((await membersOf(ada, path)).invites.map((i) => i.email), 'pending until Fay redeems it').toEqual([fay.email]);
-    expect(await roleOf(fay.cookie, docId)).toBeNull();
-
-    expect((await call('POST', '/api/notifications/read', ada.cookie, { ids: [notice.id] })).status).toBe(200);
-    expect((await bell(fay))[0].read, 'someone else cannot mark it').toBe(false);
-    published.length = 0;
+    await share(ada, path, unknownEmail('read'), 'viewer');
+    expect((await accept(fay.cookie, tokenOf(await inviteLink(ada, path, fay.email)))).status).toBe(200);
+    const [notice] = (await bell(ada)).filter((n) => n.target.id === docId);
     expect((await call('POST', '/api/notifications/read', fay.cookie, { ids: [notice.id] })).status).toBe(200);
-    expect((await bell(fay))[0].read).toBe(true);
-    await expect.poll(() => published, { message: 'her other tabs hear it' }).toContainEqual({ id: fay.id, event: { type: 'notifications' } });
-    expect(await roleOf(fay.cookie, docId), 'reading a notice redeems nothing').toBeNull();
-
-    expect((await accept(fay.cookie, notice.invite!)).status).toBe(200);
-    expect(await roleOf(fay.cookie, docId)).toBe('editor');
-    const after = await membersOf(ada, path);
-    expect(after.members.map((m) => m.name), 'redeemed, Fay is a member by name').toEqual(['Ada', 'Fay']);
-    expect(after.invites).toEqual([]);
-    expect((await bell(fay)).map((n) => n.target.id), 'the redeemed notice stays while she can open the note').toEqual([docId]);
+    expect((await bell(ada)).find((n) => n.id === notice.id)?.read, 'someone else cannot mark it').toBe(false);
+    published.length = 0;
+    expect((await call('POST', '/api/notifications/read', ada.cookie, { ids: [notice.id] })).status).toBe(200);
+    expect((await bell(ada)).find((n) => n.id === notice.id)?.read).toBe(true);
+    await expect.poll(() => published, { message: 'her other tabs hear it' }).toContainEqual({ id: ada.id, event: { type: 'notifications' } });
+    expect((await membersOf(ada, path)).invites, 'the other invite is still pending').toHaveLength(1);
 
     expect((await call('GET', '/api/notifications', null)).status).toBe(401);
-    expect((await call('POST', '/api/notifications/read', fay.cookie, { ids: 'all' })).status).toBe(400);
+    expect((await call('POST', '/api/notifications/read', ada.cookie, { ids: 'all' })).status).toBe(400);
   });
 
-  it('omits a notice whose grant was revoked, whose note was trashed or whose inviter lost manage, and shows it again once it is live', async () => {
-    const eve = await signedUpUser(env, 't28-eve', 'Eve');
-    const revoked = await titled(ada, 'Revoked');
-    const trashed = await titled(ada, 'Trashed');
-    const folderId = await insertFolder(d1.db, ada, ada.homeId);
-    const orphaned = await titled(ada, 'Orphaned', { folderId });
+  it('omits a notice once its reader can no longer open the item, title and all, and shows it again when they can', async () => {
     const joe = await signedUpUser(env, 't28-joe2', 'Joe');
+    const eve = await signedUpUser(env, 't28-eve', 'Eve');
+    const folderId = await insertFolder(d1.db, ada, ada.homeId);
+    const docId = await titled(ada, 'Revocable', { folderId });
     await d1.db.prepare("INSERT INTO folder_members (folder_id, principal_id, principal_type, role, added_by, created_at) VALUES (?, ?, 'user', 'owner', ?, 1)")
       .bind(folderId, joe.id, ada.id).run();
-    await share(ada, `/api/docs/${revoked}`, eve.email);
-    await share(ada, `/api/docs/${trashed}`, eve.email);
-    await share(joe, `/api/docs/${orphaned}`, eve.email);
-    expect((await bell(eve)).map((n) => n.target.title).sort()).toEqual(['Orphaned', 'Revoked', 'Trashed']);
-    const redeemNotice = (await bell(eve)).find((n) => n.target.id === revoked)!;
-    expect((await accept(eve.cookie, redeemNotice.invite!)).status).toBe(200);
+    // Joe, a co-owner by the folder, invites Eve; she accepts, and Joe hears it.
+    await share(joe, `/api/docs/${docId}`, eve.email);
+    expect((await accept(eve.cookie, tokenOf(await inviteLink(joe, `/api/docs/${docId}`, eve.email)))).status).toBe(200);
+    expect((await bell(joe)).map((n) => n.target.title)).toEqual(['Revocable']);
 
-    await d1.db.prepare('DELETE FROM doc_members WHERE doc_id = ? AND principal_id = ?').bind(revoked, eve.id).run();
-    await d1.db.prepare('UPDATE docs SET deleted_at = ? WHERE id = ?').bind(Date.now(), trashed).run();
-    await d1.db.prepare('UPDATE docs SET folder_id = ? WHERE id = ?').bind(ada.homeId, orphaned).run();
-    const text = await (await call('GET', '/api/notifications', eve.cookie)).text();
+    await d1.db.prepare('DELETE FROM folder_members WHERE folder_id = ? AND principal_id = ?').bind(folderId, joe.id).run();
+    const text = await (await call('GET', '/api/notifications', joe.cookie)).text();
     expect(JSON.parse(text)).toEqual({ notifications: [] });
-    for (const title of ['Revoked', 'Trashed', 'Orphaned']) expect(text, `not even the title ${title} leaks`).not.toContain(title);
-
-    await d1.db.prepare('UPDATE docs SET deleted_at = NULL WHERE id = ?').bind(trashed).run();
-    expect((await bell(eve)).map((n) => n.target.title)).toEqual(['Trashed']);
+    expect(text, 'not even the title leaks').not.toContain('Revocable');
+    await d1.db.prepare("INSERT INTO folder_members (folder_id, principal_id, principal_type, role, added_by, created_at) VALUES (?, ?, 'user', 'owner', ?, 1)")
+      .bind(folderId, joe.id, ada.id).run();
+    await d1.db.prepare('UPDATE docs SET deleted_at = ? WHERE id = ?').bind(Date.now(), docId).run();
+    expect(await bell(joe), 'nor a trashed one').toEqual([]);
+    await d1.db.prepare('UPDATE docs SET deleted_at = NULL WHERE id = ?').bind(docId).run();
+    expect((await bell(joe)).map((n) => n.target.title)).toEqual(['Revocable']);
   });
 });

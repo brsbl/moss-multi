@@ -118,9 +118,8 @@ describe('share-by-email is not an enumeration oracle', () => {
     const after = (await (await call('GET', `/api/docs/${docId}/members`, ada.cookie)).json()) as { members: { name: string; role: string }[]; invites: unknown[] };
     expect(after.members.map((m) => [m.name, m.role]), 'redeemed, Dee is a member').toEqual([['Ada', 'owner'], ['Cy', 'viewer'], ['Dee', 'editor']]);
     expect(after.invites).toEqual([{ email: ghost, role: 'editor' }]);
-    expect((await call('POST', `/api/docs/${docId}/members`, ada.cookie, { email: dee.email, role: 'editor' })).status, 'a repeat').toBe(200);
-    expect(((await (await call('GET', `/api/docs/${docId}/members`, ada.cookie)).json()) as { invites: unknown[] }).invites, 'a member is not invited again')
-      .toEqual([{ email: ghost, role: 'editor' }]);
+    // The email is a label: sharing with it again is a new invite, whoever redeemed the last one (ruling 19).
+    expect((await call('POST', `/api/docs/${docId}/members`, ada.cookie, { email: dee.email, role: 'editor' })).status, 'a re-share').toBe(201);
 
     // A folder invite, redeemed, reaches a note anywhere inside it.
     const folderId = await insertFolder(d1.db, ada, ada.homeId);
@@ -165,9 +164,11 @@ describe('share-by-email is not an enumeration oracle', () => {
     const after = (await (await call('GET', `/api/docs/${other}/members`, ada.cookie)).json()) as { members: { name: string; role: string }[]; invites: unknown[] };
     expect(after.members.map((m) => [m.name, m.role])).toEqual([['Ada', 'owner'], ['Hal', 'editor']]);
     expect(after.invites).toEqual([]);
-    expect((await call('POST', `/api/docs/${other}/members`, ada.cookie, { email: ghost, role: 'owner' })).status, 'a member’s raise').toBe(200);
-    expect(await roleOf(hal.cookie, other), 'a member who redeemed is raised in place').toBe('owner');
-    expect((await call('POST', `/api/docs/${other}/members`, ada.cookie, { email: ghost, role: 'viewer' })).status, 'and never lowered').toBe(409);
+    expect((await call('POST', `/api/docs/${other}/members`, ada.cookie, { email: ghost, role: 'owner' })).status, 'a re-share is a new invite').toBe(201);
+    expect(await roleOf(hal.cookie, other), 'which grants nothing by itself').toBe('editor');
+    expect((await call('POST', `/api/docs/${other}/members`, ada.cookie, { email: ghost, role: 'viewer' })).status, 'and is never lowered').toBe(409);
+    await redeem(env, ada, `/api/docs/${other}`, hal);
+    expect(await roleOf(hal.cookie, other)).toBe('owner');
   });
 
   it(`limits each owner to ${SHARES_PER_HOUR} new shares an hour, refusing known and unknown emails alike`, async () => {
@@ -198,7 +199,10 @@ describe('the owner role', () => {
     expect(list.members.map((m) => [m.email, m.role])).toEqual([[ada.email, 'owner'], [cy.email, 'owner']]);
     expect((list as unknown as { invites: unknown[] }).invites, 'Ben has not redeemed it yet').toEqual([{ email: ben.email, role: 'viewer' }]);
     expect((await call('POST', `/api/docs/${docId}/links`, cy.cookie, { role: 'viewer' })).status).toBe(201);
-    expect((await call('POST', `/api/docs/${docId}/members`, ada.cookie, { email: cy.email, role: 'editor' })).status).toBe(409);
+    // A lower re-share is only a new invite; redeeming one never lowers a grant.
+    expect((await call('POST', `/api/docs/${docId}/members`, ada.cookie, { email: cy.email, role: 'editor' })).status).toBe(201);
+    await redeem(env, ada, `/api/docs/${docId}`, cy);
+    expect(await roleOf(cy.cookie, docId), 'Cy stays a co-owner').toBe('owner');
   });
 });
 

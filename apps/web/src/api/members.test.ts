@@ -154,9 +154,14 @@ describe('POST /api/docs/:id/members', () => {
     expect((await share(ada.cookie, docId, { email: ben.email, role: 'editor' })).status).toBe(200);
     await redeem(env, ada, `/api/docs/${docId}`, ben);
     expect(await roleOf(ben.cookie, docId)).toBe('editor');
-    const lower = await share(ada.cookie, docId, { email: ben.email, role: 'viewer' });
-    expect(lower.status).toBe(409);
-    expect(await lower.json()).toMatchObject({ error: 'demotion-unavailable', message: expect.stringMatching(/\S/) });
+    // Redeemed, the email is a label again: a lower share is a new invite, and redeeming it lowers nothing.
+    expect((await share(ada.cookie, docId, { email: ben.email, role: 'viewer' })).status).toBe(201);
+    const lower = await share(ada.cookie, docId, { email: ben.email, role: 'commenter' });
+    expect(lower.status, 'a raise of the open invite').toBe(200);
+    const below = await share(ada.cookie, docId, { email: ben.email, role: 'viewer' });
+    expect(below.status, 'a lowering of an open invite').toBe(409);
+    expect(await below.json()).toMatchObject({ error: 'demotion-unavailable', message: expect.stringMatching(/\S/) });
+    await redeem(env, ada, `/api/docs/${docId}`, ben);
     expect(await roleOf(ben.cookie, docId)).toBe('editor');
   });
 });
