@@ -10,6 +10,23 @@ export interface Stamp {
   agents: Set<string>;
 }
 
+/**
+ * A validation's deadline (L§4.7): `run` passes each D1 read through `race`, which rejects once `ms` have passed, so a
+ * read that hangs fails closed instead of holding the frames and sockets waiting on it.
+ */
+export async function withDeadline<T>(ms: number, run: (race: <R>(read: Promise<R>) => Promise<R>) => Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error('access validation passed its deadline')), ms);
+  });
+  expired.catch(() => undefined);
+  try {
+    return await run((read) => Promise.race([read, expired]));
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 const placeholders = (n: number) => Array.from({ length: n }, () => '?').join(', ');
 
 /** The doc's epoch key, read before a role is resolved, so a change that commits after it is seen as a new key. */

@@ -1,8 +1,8 @@
 import { getServerByName, Server, type Connection, type ConnectionContext, type WSMessage } from 'partyserver';
 import { CLOSE, TRUSTED } from '@moss-multi/protocol/sync';
 import type { WorkspaceEvent } from '@moss-multi/protocol/workspace';
-import { ACCESS_TICK_MS, REST_WRITE_RATE, SESSION_MAX_MS } from '@moss-multi/protocol/limits';
-import { liveCredentials } from './access-epoch.ts';
+import { ACCESS_DEADLINE_MS, ACCESS_TICK_MS, REST_WRITE_RATE, SESSION_MAX_MS } from '@moss-multi/protocol/limits';
+import { liveCredentials, withDeadline } from './access-epoch.ts';
 import type { DocDO, RecheckInput } from './doc-do.ts';
 import type { SyncEnv } from './env.ts';
 
@@ -135,7 +135,7 @@ export class PrincipalDO extends Server<SyncEnv> {
     const agent = connections.some((connection) => sessionOf(connection) === null);
     let live: { sessions: Set<string>; agents: Set<string> };
     try {
-      live = await check(sessions, agent ? [this.name] : []);
+      live = await withDeadline(ACCESS_DEADLINE_MS, (race) => race(check(sessions, agent ? [this.name] : [])));
     } catch (error) {
       console.error('PrincipalDO could not validate its sockets', error);
       for (const connection of connections) connection.close(TRY_AGAIN, 'unvalidated');

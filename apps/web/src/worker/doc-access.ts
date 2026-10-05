@@ -31,7 +31,9 @@ export function docAccessCheck(env: { DB: D1Database }): AccessCheck {
       // A signed-in socket carries a link only when the link lifted its role, so it is re-resolved with that link.
       const access = await resolveDocAccess(db, principal, docId, principal.type === 'anonymous' ? null : socket.shareToken);
       if (!access) return null;
-      return access.deleted ? 'deleted' : access.role;
+      if (access.deleted) return 'deleted';
+      // Presence as authenticateParty sets it: a link alone shows nobody who else is here.
+      return { role: access.role, presence: principal.type !== 'anonymous' && !access.linkOnly };
     },
   };
 }

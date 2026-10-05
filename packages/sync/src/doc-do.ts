@@ -5,7 +5,7 @@ import * as encoding from 'lib0/encoding';
 import { writeSyncStep1 } from 'y-protocols/sync';
 import { splitFrontmatter } from '@moss-desktop/common/markdown-layers';
 import {
-  ACCESS_TICK_MS, ACK_COALESCE_MS, AWARENESS_MAX_BYTES, DOC_SOCKET_MAX_MS, MAX_CONNECTIONS, STATE_CAP_BYTES, WRITE_RATE,
+  ACCESS_DEADLINE_MS, ACCESS_TICK_MS, ACK_COALESCE_MS, AWARENESS_MAX_BYTES, DOC_SOCKET_MAX_MS, MAX_CONNECTIONS, STATE_CAP_BYTES, WRITE_RATE,
 } from '@moss-multi/protocol/limits';
 import { ROLES, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import {
@@ -18,7 +18,7 @@ import {
 import { attach, attachmentOf, awarenessTooLarge, awarenessFrame, receivePresence, leavePresence } from './doc/awareness.ts';
 import { AckCoalescer, DocStore, PERSISTENCE } from './doc/persistence.ts';
 import { d1Projections, Projections, type ProjectionTarget } from './doc/projections.ts';
-import type { Stamp } from './access-epoch.ts';
+import { withDeadline, type Stamp } from './access-epoch.ts';
 import { publishMeta } from './fanout.ts';
 import type { SyncEnv } from './env.ts';
 import { migrateFrontmatter } from '@moss-multi/core/frontmatter';
@@ -39,6 +39,12 @@ export interface DocLimits {
   withheldIdsPerConnection: number;
   /** Bytes one principal may write into withheld payloads, so nobody crowds out another's (A§10.10). */
   withheldBytesPerIdentity: number;
+  /** Frames and bytes one socket may have waiting for a validation, and all sockets together; past it the socket closes 1013. */
+  inboxFramesPerConnection: number;
+  inboxBytesPerConnection: number;
+  inboxBytes: number;
+  /** How long a validation waits for D1 before failing closed (L§4.7). */
+  accessDeadlineMs: number;
 }
 
 export interface CreateDocInput {
@@ -70,14 +76,20 @@ export type SocketRegistry = (principalId: string, sessionId: string | null, doc
 /** Who a socket is, as a re-resolution needs it. */
 export type SocketIdentity = Pick<Attachment, 'principalId' | 'kind' | 'sessionId' | 'shareToken'>;
 
+/** A socket's access as a fresh admission would resolve it: its role and whether it may see who else is here. */
+export interface Resolved {
+  role: Role;
+  presence: boolean;
+}
+
 /**
  * Pull validation (A§8): `stamp` reads the doc's access epoch and which of the sockets' sessions and agent keys are
- * live; `resolve` re-resolves one socket's role on the doc ('deleted' for a doc in Trash, null without access). Both
+ * live; `resolve` re-resolves one socket's access to the doc ('deleted' for a doc in Trash, null without access). Both
  * throw when D1 cannot answer.
  */
 export interface AccessCheck {
   stamp(docId: string, sessions: string[], agents: string[]): Promise<Stamp>;
-  resolve(docId: string, socket: SocketIdentity): Promise<Role | 'deleted' | null>;
+  resolve(docId: string, socket: SocketIdentity): Promise<Resolved | 'deleted' | null>;
 }
 
 /** Whether D1 has the doc in Trash (or has no row for it); throws when D1 cannot answer. */
@@ -108,6 +120,8 @@ function holdsOf(store: DocStore): Map<string, number> {
 
 /** A socket the DO may still send to and read from. */
 const isOpen = (connection: Connection) => connection.readyState === undefined || connection.readyState === 1;
+
+const sizeOf = (message: WSMessage) => (typeof message === 'string' ? message.length : message.byteLength);
 
 const isConnection = (origin: unknown): origin is Connection =>
   typeof origin === 'object' && origin !== null && typeof (origin as Connection).send === 'function' && 'id' in origin;
@@ -156,6 +170,11 @@ export class DocDO extends YServer<SyncEnv> {
     awarenessMaxBytes: AWARENESS_MAX_BYTES,
     withheldIdsPerConnection: 64,
     withheldBytesPerIdentity: Math.floor(STATE_CAP_BYTES / 4),
+    inboxFramesPerConnection: 256,
+    // A workerd frame is at most 1 MiB, so one socket may always have its largest frame waiting.
+    inboxBytesPerConnection: 2 * 1024 * 1024,
+    inboxBytes: 8 * 1024 * 1024,
+    accessDeadlineMs: ACCESS_DEADLINE_MS,
   };
   /** Where the title, filename and updated_at projections land (A§5.1). */
   static projectionTarget: (env: SyncEnv) => ProjectionTarget | null = (env) => (env?.DB ? d1Projections(env.DB, (id) => publishMeta(env, [id])) : null);
@@ -197,7 +216,10 @@ export class DocDO extends YServer<SyncEnv> {
   /** Withheld payload ids each connection has written, bounded per connection. In memory: a wake starts at none. */
   readonly #withheldWrites = new WeakMap<Connection, Set<string>>();
   /** Frames waiting for the validation that starts after they arrived. */
-  readonly #inbox: [Connection, WSMessage][] = [];
+  #inbox: [Connection, WSMessage][] = [];
+  /** Frames and bytes each socket has waiting, from arrival until applied or dropped, and their total bytes. */
+  readonly #waiting = new Map<Connection, { frames: number; bytes: number }>();
+  #waitingBytes = 0;
   /** A flush that has not started yet; a frame arriving now joins it. */
   #pendingFlush: Promise<void> | null = null;
   /** Validations, admissions and frame batches run one at a time, in arrival order. */
@@ -311,8 +333,40 @@ export class DocDO extends YServer<SyncEnv> {
       this.#handle(connection, message);
       return;
     }
+    if (!isOpen(connection)) return;
+    // Bounded before it waits: a socket that queues past its share, or past the DO's, closes 1013 and resends later.
+    const bytes = sizeOf(message);
+    const waiting = this.#waiting.get(connection) ?? { frames: 0, bytes: 0 };
+    if (waiting.frames + 1 > this.#limits.inboxFramesPerConnection || waiting.bytes + bytes > this.#limits.inboxBytesPerConnection
+      || this.#waitingBytes + bytes > this.#limits.inboxBytes) {
+      this.#dropWaiting(connection);
+      connection.close(TRY_AGAIN, 'inbox full');
+      return;
+    }
+    this.#waiting.set(connection, { frames: waiting.frames + 1, bytes: waiting.bytes + bytes });
+    this.#waitingBytes += bytes;
     this.#inbox.push([connection, message]);
     return this.#drain();
+  }
+
+  /** A waiting frame leaves the bound's accounting: applied, dropped or refused. */
+  #taken(connection: Connection, message: WSMessage): void {
+    const bytes = sizeOf(message);
+    this.#waitingBytes = Math.max(0, this.#waitingBytes - bytes);
+    const waiting = this.#waiting.get(connection);
+    if (!waiting) return;
+    if (waiting.frames <= 1) this.#waiting.delete(connection);
+    else this.#waiting.set(connection, { frames: waiting.frames - 1, bytes: Math.max(0, waiting.bytes - bytes) });
+  }
+
+  /** Drops the frames a closing socket has waiting in the inbox (a batch being validated skips them itself). */
+  #dropWaiting(connection: Connection): void {
+    if (!this.#waiting.has(connection)) return;
+    this.#inbox = this.#inbox.filter(([queued, message]) => {
+      if (queued !== connection) return true;
+      this.#taken(queued, message);
+      return false;
+    });
   }
 
   #drain(): Promise<void> {
@@ -345,19 +399,23 @@ export class DocDO extends YServer<SyncEnv> {
       } catch (error) {
         // Fail closed: nothing applies unvalidated. The clients reconnect and resend.
         console.error('DocDO could not validate access; refusing frames', error);
-        for (const [connection] of batch) connection.close(TRY_AGAIN, 'unvalidated');
+        for (const [connection, message] of batch) {
+          this.#taken(connection, message);
+          connection.close(TRY_AGAIN, 'unvalidated');
+        }
         return;
       }
     }
     const deferred: [Connection, WSMessage][] = [];
     for (const [connection, message] of batch) {
-      if (!isOpen(connection)) continue;
       const attachment = attachmentOf(connection);
       // Still being admitted: its frames wait for its own validation, which drains them.
-      if (!attachment || attachment.pending) {
+      if (isOpen(connection) && (!attachment || attachment.pending)) {
         deferred.push([connection, message]);
         continue;
       }
+      this.#taken(connection, message);
+      if (!isOpen(connection)) continue;
       try {
         this.#handle(connection, message);
       } catch (error) {
@@ -428,6 +486,7 @@ export class DocDO extends YServer<SyncEnv> {
 
   override onClose(connection: Connection): void {
     leavePresence(this.document.awareness, connection, this.getConnections());
+    this.#dropWaiting(connection);
     this.#rate.forget(connection);
     this.#acks.cancel(connection);
   }
@@ -646,36 +705,54 @@ export class DocDO extends YServer<SyncEnv> {
       return attachment && isOpen(connection) ? [{ connection, attachment }] : [];
     });
     if (sockets.length === 0) return;
+    const { stamp, verdicts } = await withDeadline(this.#limits.accessDeadlineMs, (race) => this.#verdicts(check, sockets, race));
+    for (const [i, { connection, attachment }] of sockets.entries()) {
+      const verdict = verdicts[i];
+      if (!isOpen(connection)) continue;
+      if (verdict === null) {
+        // Read fresh: a validation that ran meanwhile may have admitted it already.
+        if (attachmentOf(connection)?.pending) attach(connection, { ...attachment, pending: false });
+        continue;
+      }
+      if (typeof verdict === 'object') {
+        attach(connection, { ...attachment, epoch: stamp.key, presenceAllowed: verdict.presence, pending: false });
+        continue;
+      }
+      if (verdict === CLOSE.deleted) this.sendCustomMessage(connection, JSON.stringify({ t: 'doc-deleted' } satisfies ServerEvent));
+      connection.close(verdict, verdict === CLOSE.sessionEnded ? 'session ended' : verdict === CLOSE.deleted ? 'deleted' : 'revoked');
+    }
+  }
+
+  /**
+   * Each socket's verdict: null to keep it as admitted, its access when re-resolved and kept, or the code that closes
+   * it. Every D1 read goes through `race`, the validation's deadline.
+   */
+  async #verdicts(
+    check: AccessCheck,
+    sockets: { attachment: Attachment }[],
+    race: <R>(read: Promise<R>) => Promise<R>,
+  ): Promise<{ stamp: Stamp; verdicts: (number | Resolved | null)[] }> {
     const unique = (ids: (string | null)[]) => [...new Set(ids.filter((id): id is string => id !== null))];
-    const stamp = await check.stamp(
+    const stamp = await race(check.stamp(
       this.name,
       unique(sockets.map(({ attachment }) => (attachment.kind === 'user' ? attachment.sessionId : null))),
       unique(sockets.map(({ attachment }) => (attachment.kind === 'agent' ? attachment.principalId : null))),
-    );
-    const resolved = new Map<string, Promise<Role | 'deleted' | null>>();
-    const verdicts = await Promise.all(sockets.map(async ({ attachment }) => {
+    ));
+    const resolved = new Map<string, Promise<Resolved | 'deleted' | null>>();
+    const verdicts = await race(Promise.all(sockets.map(async ({ attachment }): Promise<number | Resolved | null> => {
       if (attachment.kind === 'user' && attachment.sessionId !== null && !stamp.sessions.has(attachment.sessionId)) return CLOSE.sessionEnded;
       if (attachment.kind === 'agent' && !stamp.agents.has(attachment.principalId)) return CLOSE.revoked;
       if (stamp.key && attachment.epoch === stamp.key) return null;
       const who = [attachment.kind, attachment.principalId, attachment.sessionId, attachment.shareToken].join('|');
-      let role = resolved.get(who);
-      if (!role) resolved.set(who, (role = check.resolve(this.name, attachment)));
-      const now = await role;
+      let access = resolved.get(who);
+      if (!access) resolved.set(who, (access = check.resolve(this.name, attachment)));
+      const now = await access;
       if (now === 'deleted') return CLOSE.deleted;
-      if (now === null || ROLES.indexOf(now) < ROLES.indexOf(attachment.role)) return CLOSE.revoked;
-      return 'kept' as const;
-    }));
-    for (const [i, { connection, attachment }] of sockets.entries()) {
-      const code = verdicts[i];
-      if (!isOpen(connection)) continue;
-      if (code === null || code === 'kept') {
-        // Read fresh: a validation that ran meanwhile may have admitted it already.
-        if (code === 'kept' || attachmentOf(connection)?.pending) attach(connection, { ...attachment, epoch: code === 'kept' ? stamp.key : attachment.epoch, pending: false });
-        continue;
-      }
-      if (code === CLOSE.deleted) this.sendCustomMessage(connection, JSON.stringify({ t: 'doc-deleted' } satisfies ServerEvent));
-      connection.close(code, code === CLOSE.sessionEnded ? 'session ended' : code === CLOSE.deleted ? 'deleted' : 'revoked');
-    }
+      if (now === null || ROLES.indexOf(now.role) < ROLES.indexOf(attachment.role)) return CLOSE.revoked;
+      // Kept, with presence as a fresh admission would allow it: a socket only a link still lifts no longer sees who is here.
+      return { role: attachment.role, presence: now.presence };
+    })));
+    return { stamp, verdicts };
   }
 
   #liveness(): TrashedInD1 | null {
