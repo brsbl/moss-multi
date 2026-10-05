@@ -1,9 +1,9 @@
-// T0.9d diagnostic probe (temporary): does a fetch in flight across a reload log WebKit's "Fetch API cannot load
-// ... due to access control checks", and does aborting it at pagehide or beforeunload prevent that?
+// T0.9d diagnostic probe (temporary): which fetches log WebKit's "Fetch API cannot load ... due to access control
+// checks" across a reload, and does stopping new requests at beforeunload or pagehide prevent it?
 import { test } from '../lib/test.ts';
 
-for (const mode of ['none', 'pagehide', 'beforeunload']) {
-  test(`probe: fetch across a reload, abort on ${mode}`, async ({ actors }) => {
+for (const mode of ['inflight', 'polling', 'polling-beforeunload', 'polling-pagehide']) {
+  test(`probe: fetch across a reload, ${mode}`, async ({ actors }) => {
     actors.solo('diagnostic probe');
     const actor = await actors.open(await actors.principal('probe'));
     const errors: string[] = [];
@@ -12,10 +12,14 @@ for (const mode of ['none', 'pagehide', 'beforeunload']) {
     actor.page.on('console', (message) => { if (message.type() === 'error') consoleErrors.push(message.text()); });
     for (let i = 0; i < 15; i++) {
       await actor.page.evaluate((mode) => {
-        const controller = new AbortController();
-        if (mode !== 'none') addEventListener(mode, () => controller.abort(), { once: true });
-        for (let n = 0; n < 8; n++) fetch(`/api/workspace?probe=${n}`, { signal: controller.signal }).catch(() => undefined);
+        let stopped = false;
+        if (mode.endsWith('beforeunload')) addEventListener('beforeunload', () => { stopped = true; });
+        if (mode.endsWith('pagehide')) addEventListener('pagehide', () => { stopped = true; });
+        const go = () => { if (!stopped) void fetch(`/api/workspace?probe=${Math.random()}`).catch(() => undefined); };
+        if (mode === 'inflight') for (let n = 0; n < 8; n++) go();
+        else setInterval(go, 5);
       }, mode);
+      await actor.page.waitForTimeout(50);
       await actor.page.reload();
       await actor.page.locator('html[data-app-state="ready"]').waitFor({ state: 'attached' });
     }
