@@ -13,7 +13,8 @@ import { handleApi } from './router.ts';
 
 const DocDO = {
   idFromName: (name: string) => ({ name, toString: () => name }),
-  get: () => ({ setName: async () => undefined, create: async () => undefined, trash: async () => undefined, settle: async () => ({}) }),
+  get: () => ({ setName: async () => undefined, create: async () => undefined, trash: async () => undefined, settle: async () => ({}),
+    recheck: async () => ({ closed: 0 }) }),
 };
 
 let d1: TestD1;

@@ -39,8 +39,9 @@ const docs = namespace((name) => openDoc(new Backing(name), TrashDocDO as never)
 const docNs = { ...docs.ns, get: (id: { name: string }) => docs.get(id.name).dobj };
 const principals = namespace((name) => new PrincipalDO(new FakeState(new Backing(name)) as never, {} as never));
 
-/** While set, runs once just before the first statement matching it: a request landing in between. */
+/** While set, runs once just before the first statement matching it (alone or in a batch): a request landing in between. */
 let race: { sql: RegExp; run: () => Promise<unknown> } | null = null;
+const RACED = Symbol('raced');
 const racing = (db: D1Database): D1Database => new Proxy(db, {
   get(target, prop) {
     if (prop === 'prepare') {
@@ -54,9 +55,20 @@ const racing = (db: D1Database): D1Database => new Proxy(db, {
             const bound = target.prepare(query).bind(...args) as unknown as Record<string, (...a: unknown[]) => unknown>;
             return bound[method](...rest);
           };
-          return { bind: (...more: unknown[]) => statement([...args, ...more]), run: run('run'), all: run('all'), raw: run('raw'), first: run('first') };
+          const raced = async () => {
+            await hook.run();
+            return target.prepare(query).bind(...args);
+          };
+          return { bind: (...more: unknown[]) => statement([...args, ...more]), run: run('run'), all: run('all'), raw: run('raw'), first: run('first'), [RACED]: raced };
         };
         return statement([]);
+      };
+    }
+    if (prop === 'batch') {
+      return async (statements: (D1PreparedStatement & { [RACED]?: () => Promise<D1PreparedStatement> })[]) => {
+        const real: D1PreparedStatement[] = [];
+        for (const statement of statements) real.push(statement[RACED] ? await statement[RACED]() : statement);
+        return target.batch(real);
       };
     }
     const value = Reflect.get(target, prop, target) as unknown;
