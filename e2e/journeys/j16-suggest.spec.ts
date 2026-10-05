@@ -304,7 +304,6 @@ test('j16-suggest routed deletes: Backspace and Delete strike a whole emoji, nev
   await expect(body, 'the caret sat before the emoji, not inside it').toContainText('Smile AZ\u{1F600}B here.');
 
   // Delete before an original emoji strikes it whole too, and the caret lands after it.
-  // After a colon, not a space: WebKit's forward-delete range would start before a space.
   await caret(ben, docId, 'Next:', 5);
   await keyboard.press('Delete');
   await settled(ben, docId, 'the Delete over the emoji');

@@ -68,8 +68,13 @@ const graphemes = typeof Intl !== 'undefined' && 'Segmenter' in Intl ? new Intl.
 
 /** The UTF-16 range [from, to) of the character (grapheme) holding code unit `at`; never splits a surrogate pair. */
 export function charAround(text: string, at: number): [number, number] {
-  const segment = graphemes?.segment(text).containing(at);
-  if (segment) return [segment.index, segment.index + segment.segment.length];
+  // Iterated, not containing(): JavaScriptCore's containing() at a boundary returns the segment before it too.
+  if (graphemes) {
+    for (const { index, segment } of graphemes.segment(text)) {
+      if (index > at) break;
+      if (at < index + segment.length) return [index, index + segment.length];
+    }
+  }
   const high = (i: number) => i >= 0 && i < text.length && (text.charCodeAt(i) & 0xfc00) === 0xd800;
   const low = (i: number) => i >= 0 && i < text.length && (text.charCodeAt(i) & 0xfc00) === 0xdc00;
   if (high(at) && low(at + 1)) return [at, at + 2];
