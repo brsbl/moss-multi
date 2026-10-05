@@ -9,7 +9,11 @@ import {
 } from '@moss-desktop/renderer/editor/utils/note-link-clipboard';
 import { displayTitle, liveTitle, writeLiveTitle } from '../collab/title-binding.ts';
 import { askDocAccess, rememberRole } from '../access.ts';
+import { onNativeMenuCommand } from '../media/image-menu.ts';
+import { chooseFilesInBrowser, createImagesApi } from '../media/uploads.ts';
+import { waitForAllAcked } from '../collab/unacked.ts';
 import { setWikiCandidates } from '../wiki-links.ts';
+import type { TrashGuard } from '../trash-guard.ts';
 
 /** moss's NoteMetadataRecord: timestamps in seconds, folders as `Notes/...` paths. */
 export interface NoteMetadata {
@@ -55,6 +59,8 @@ export interface ApiDoc {
   surfaced?: boolean;
   /** The projected `<slug>.md` (A§5.1); wiki links resolve against its stem (A§15). */
   filename?: string;
+  /** The owner's trashed notes only (A§11), in epoch ms. */
+  trashedAt?: number | null;
 }
 
 /** Host-only controller, kept outside the ElectronAPI namespace inventory. */
@@ -70,23 +76,44 @@ export interface WorkspaceListing {
   docs: ApiDoc[];
 }
 
+type SessionStore = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
+
 /** The browser behind the bridge; injected in unit tests. */
 export interface BrowserHooks {
   origin: string;
+  /** A new tab with no opener. */
   open(url: string): void;
+  /** A new tab that keeps this one as its opener; false when the browser blocked it. */
+  openWindow(url: string): boolean;
+  /** Saves `body` through the browser's downloads. */
+  download(filename: string, body: Blob): void;
+  /** This tab's session storage, and its opener's when an opener of this origin exists. */
+  session: SessionStore | null;
+  openerSession(): Pick<Storage, 'getItem'> | null;
   replacePath(path: string): void;
   onPopState(listener: () => void): () => void;
   copy(text: string, html: string): Promise<void>;
+  /** The file chooser behind "/media → From computer"; `[]` when dismissed. */
+  chooseFiles(accept: string): Promise<File[]>;
 }
 
 export interface BridgeOptions {
-  /** The current path; `/d/$docId` names moss's window-context startup note (A§4.2). */
+  /** The current path; `/d/$docId` names moss's window-context startup note, `/f/$folderId` the folder to reveal (A§4.2). */
   pathname: () => string;
+  /** The share token this tab was opened with (`?share=`), threaded through every read (A§18). */
+  share?: () => string | null;
   subscribeWorkspace?: (receive: (event: WorkspaceEvent) => void, pause: () => void) => () => void;
   fetch?: typeof fetch;
   storage?: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> | null;
   browser?: BrowserHooks;
+  /** Closes docs to writes and waits for their acks before a trash (A§10.6); boot.tsx wires the doc sessions in. */
+  trashGuard?: TrashGuard;
+  /** The page's current leave: `signal` aborts as the page starts to leave, and `stayed` resolves if it is still
+   * running afterwards (a cancelled navigation), so workspace reads are held, never cancelled by a navigation. */
+  leaving?: () => Leave;
 }
+
+export interface Leave { signal: AbortSignal; stayed: Promise<void> }
 
 type ThemeChoice = 'system' | 'light' | 'dark';
 type Listener<T extends unknown[]> = (...args: T) => void;
@@ -112,6 +139,17 @@ const VAULT_KEY = 'moss-multi:active-vault';
 const BACKLINK_WATCH = 4;
 const layoutKey = (id: string) => `moss-multi:layout:${id}`;
 const collapsedKey = (id: string) => `moss-multi:collapsed-headings:${id}`;
+/** The one PDF export session a tab holds: the next Save as PDF replaces it, so session storage never accumulates. */
+const PDF_SESSION_KEY = 'moss-multi:pdf-export';
+/** How long Save as Markdown waits for unacked edits before refusing. */
+export const EXPORT_ACK_WAIT_MS = 8_000;
+
+/** moss's save-dialog file name (main/ipc-handlers.ts sanitizeFilename): no path separators or reserved characters. */
+export function markdownFileName(title: string): string {
+  const name = Array.from(title.normalize('NFKC').trim(), (char) => (char < ' ' || '<>:"/\\|?*'.includes(char) ? '-' : char))
+    .join('').replace(/^\.+/, '');
+  return `${name || UNTITLED}.md`;
+}
 
 type Method<R> = (...args: unknown[]) => Promise<R>;
 
@@ -137,19 +175,35 @@ const FOLDER_REFUSALS: Record<number, string> = {
 };
 const FOLDER_UNAVAILABLE = 'The server couldn’t change the folder right now. Try again.';
 const FOLDER_GONE = 'That folder is no longer here. It may have been moved or sent to Trash.';
+const NOTE_REFUSALS: Record<number, string> = {
+  401: 'You’re signed out. Sign in again to change this note.',
+  403: 'Only the note’s owner can do that.',
+  404: 'That note is no longer available, or you don’t have access to it.',
+};
+const NOTE_UNAVAILABLE = 'The server couldn’t change the note right now. Try again.';
+const UNREACHABLE = 'The server couldn’t be reached. Check your connection and try again.';
+/** A trash whose DocDO did not close answers 503; the owner's retry closes it (A§5.1 trash). */
+const TRASH_ATTEMPTS = 3;
+const TRASH_RETRY_MS = 500;
+const openGuard: TrashGuard = { prepare: async () => true, release: () => undefined };
 
 /** The server's own sentence for a refused change, else one chosen by status; moss renders `error.message` as is. */
-async function refusalOf(response: Response): Promise<Error> {
+async function refusalOf(response: Response, fallbacks = FOLDER_REFUSALS, unavailable = FOLDER_UNAVAILABLE): Promise<Error> {
   let message = '';
   try {
     const body = (await response.json()) as { message?: unknown };
     if (typeof body.message === 'string') message = body.message.trim();
   } catch { /* not JSON: fall back below */ }
-  return new Error(message || FOLDER_REFUSALS[response.status] || FOLDER_UNAVAILABLE);
+  return new Error(message || fallbacks[response.status] || unavailable);
 }
 
 export function docIdFromPath(pathname: string): string | null {
   const match = /^\/d\/([^/]+)\/?$/.exec(pathname);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+export function folderIdFromPath(pathname: string): string | null {
+  const match = /^\/f\/([^/]+)\/?$/.exec(pathname);
   return match ? decodeURIComponent(match[1]) : null;
 }
 
@@ -161,7 +215,7 @@ export function toNoteMetadata(doc: ApiDoc): NoteMetadata {
     updatedAt: seconds(doc.updatedAt),
     folderPath: doc.folderPath ?? ROOT_FOLDER,
     lastOpenedAt: null,
-    trashedAt: null,
+    trashedAt: doc.trashedAt != null ? seconds(doc.trashedAt) : null,
   };
 }
 
@@ -179,17 +233,51 @@ function writeJson(storage: BridgeOptions['storage'], key: string, value: unknow
   else storage?.setItem(key, JSON.stringify(value));
 }
 
-const inertBrowser: BrowserHooks = {
+export const inertBrowser: BrowserHooks = {
   origin: 'http://localhost',
   open: noop,
+  openWindow: () => false,
+  download: noop,
+  session: null,
+  openerSession: () => null,
   replacePath: noop,
   onPopState: () => noop,
   copy: async () => undefined,
+  chooseFiles: async () => [],
 };
 
-export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis), storage = null, browser = inertBrowser, subscribeWorkspace: subscribe }: BridgeOptions) {
-  const request = (path: string, init: RequestInit = {}) =>
-    fetcher(path, { credentials: 'same-origin', ...init, headers: { accept: 'application/json', ...init.headers } });
+export function createBridge({ pathname, share = () => null, fetch: fetcher = fetch.bind(globalThis), storage = null, browser = inertBrowser, subscribeWorkspace: subscribe, leaving, trashGuard = openGuard }: BridgeOptions) {
+  /** Every API call carries the tab's share token, so a link holder reads and edits through the link (T2.4). */
+  const request = (path: string, init: RequestInit = {}) => {
+    const token = share();
+    return fetcher(path, { credentials: 'same-origin', ...init,
+      headers: { accept: 'application/json', ...(token ? { 'x-moss-share': token } : {}), ...init.headers } });
+  };
+  /** WebKit logs a fetch cancelled by navigation as an access-control page error, so a workspace read in flight (its
+   * body included) is aborted as the page leaves and held; if the page stays (the navigation was cancelled), it is
+   * sent again. */
+  const listingRequest = async (path: string): Promise<WorkspaceListing> => {
+    for (;;) {
+      const leave = leaving?.();
+      if (leave?.signal.aborted) {
+        await leave.stayed;
+        continue;
+      }
+      try {
+        const response = await request(path, leave ? { signal: leave.signal } : {});
+        if (!response.ok) throw new Error(`GET /api/workspace: ${response.status}`);
+        return (await response.json()) as WorkspaceListing;
+      } catch (error) {
+        if (!leave?.signal.aborted) throw error;
+        await leave.stayed;
+      }
+    }
+  };
+  /** A path in this tab keeps its share token, so a reload or a reconnect still presents it. */
+  const withShare = (path: string) => {
+    const token = share();
+    return token ? `${path}?share=${encodeURIComponent(token)}` : path;
+  };
 
   // Every doc this tab has seen, from the listing or from a create; the listing promise is the boot read.
   const known = new Map<string, NoteMetadata>();
@@ -211,14 +299,13 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
   };
   let refreshAll = false;
   const pendingIds = new Set<string>();
-  const load = (vaultId: string | null, docId: string | null = null): Promise<NoteMetadata[]> => {
+  const load = (vaultId: string | null, docId: string | null = null, folderId: string | null = null): Promise<NoteMetadata[]> => {
     const version = ++loadVersion;
     const query = new URLSearchParams();
     if (vaultId) query.set('vault', vaultId);
     if (docId) query.set('doc', docId);
-    const pending: Promise<NoteMetadata[]> = request(`/api/workspace${query.size ? `?${query}` : ''}`).then(async (response) => {
-      if (!response.ok) throw new Error(`GET /api/workspace: ${response.status}`);
-      const data = (await response.json()) as WorkspaceListing;
+    if (folderId) query.set('folder', folderId);
+    const pending: Promise<NoteMetadata[]> = listingRequest(`/api/workspace${query.size ? `?${query}` : ''}`).then((data) => {
       if (version !== loadVersion) return listing ?? [];
       const vaultsChanged = JSON.stringify([workspaceSnapshot?.vault, workspaceSnapshot?.vaults]) !== JSON.stringify([data.vault, data.vaults]);
       workspaceSnapshot = data;
@@ -256,9 +343,7 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
         const vault = workspaceSnapshot.vault.id;
         const query = new URLSearchParams({ vault });
         if (!full) for (const id of ids) query.append('ids', id);
-        const response = await request(`/api/workspace?${query}`);
-        if (!response.ok) throw new Error(`GET /api/workspace: ${response.status}`);
-        const data = await response.json() as WorkspaceListing;
+        const data = await listingRequest(`/api/workspace?${query}`);
         if (generation !== channelGeneration) break;
         if (version !== loadVersion) {
           await listing?.catch(() => undefined);
@@ -338,8 +423,8 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
       else unwatch(id);
     }
   };
-  // Only listed notes: moss records links for them, and one that left the listing (trashed, unshared) would 404.
-  const inListing = (id: string) => workspaceSnapshot?.docs.some((doc) => doc.id === id) ?? false;
+  // Only live listed notes: moss records links for them, and a trashed or unshared one would 404.
+  const inListing = (id: string) => workspaceSnapshot?.docs.some((doc) => doc.id === id && doc.trashedAt == null) ?? false;
   const watchBacklinks = (id: string) => {
     if (!inListing(id)) return;
     const at = watched.indexOf(id);
@@ -367,8 +452,15 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
   /** moss's notes:search: title matches over the listing first, then the index's hits across every doc the caller can discover. */
   const search = async ({ query, limit = 20, excludeNoteId, searchTrashed }: { query: string; limit?: number; excludeNoteId?: string; searchTrashed?: boolean }) => {
     const needle = query.trim().toLowerCase();
-    if (searchTrashed || !needle) return [];
-    const listed = (await notes()).filter((note) => note.id !== excludeNoteId);
+    if (!needle) return [];
+    if (searchTrashed) {
+      // The Trash view searches only the owner's trashed notes, by title; the index holds live docs.
+      return (await notes())
+        .filter((note) => note.trashedAt != null && note.title.toLowerCase().includes(needle))
+        .slice(0, limit)
+        .map((note) => ({ id: note.id, title: note.title, folderPath: note.folderPath, updatedAt: note.updatedAt, matchType: 'title' as const }));
+    }
+    const listed = (await notes()).filter((note) => note.id !== excludeNoteId && note.trashedAt == null);
     const rank = (title: string) => (title === needle ? 0 : title.startsWith(needle) ? 1 : 2);
     const titled: NoteSearchResult[] = listed
       .filter((note) => note.title.toLowerCase().includes(needle))
@@ -387,7 +479,9 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
     return [...titled, ...indexed].slice(0, limit);
   };
   const notes = () => {
-    return (listing ?? load(workspaceSnapshot?.vault.id ?? storedVault(), workspaceSnapshot ? null : docIdFromPath(pathname()))).then((docs) => docs.map(withLocal));
+    const first = !workspaceSnapshot;
+    return (listing ?? load(workspaceSnapshot?.vault.id ?? storedVault(), first ? docIdFromPath(pathname()) : null, first ? folderIdFromPath(pathname()) : null))
+      .then((docs) => docs.map(withLocal));
   };
   const byId = async (id: string): Promise<NoteMetadata | undefined> => {
     if (!known.has(id)) await notes();
@@ -408,7 +502,10 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
     const stored = storage?.getItem(THEME_KEY);
     return stored === 'light' || stored === 'dark' ? stored : 'system';
   };
-  const docUrl = (id: string) => new URL(`/d/${encodeURIComponent(id)}`, browser.origin).href;
+  const docUrl = (id: string) => new URL(withShare(`/d/${encodeURIComponent(id)}`), browser.origin).href;
+  /** moss's preview window id: any number for an opened tab, null when the browser blocked it. */
+  const pdfTab = (sessionId: string): number | null =>
+    browser.openWindow(`/pdf-export?pdfExportSessionId=${encodeURIComponent(sessionId)}`) ? 1 : null;
 
   // Folders (A§9): moss names a folder by its `Notes/...` path; the refreshed id↔path map turns it into a server id.
   const idForPath = (path: string): string | null => {
@@ -451,6 +548,24 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
     const folder = workspaceSnapshot?.folders?.find((candidate) => candidate.id === id);
     return folder ? folderEntry(folder) : { ...fallback, noteCount: 0, createdAt: seconds(Date.now()) };
   };
+  /** The trash DELETE, repeated while a DocDO has not closed (503); a refusal is the server's sentence. */
+  const sendTrash = async (path: string, fallbacks: Record<number, string>, unavailable: string): Promise<void> => {
+    for (let attempt = 1; ; attempt += 1) {
+      let response: Response;
+      try {
+        response = await request(path, { method: 'DELETE' });
+      } catch {
+        throw new Error(UNREACHABLE);
+      }
+      if (response.ok) return;
+      if (response.status !== 503 || attempt >= TRASH_ATTEMPTS) throw await refusalOf(response, fallbacks, unavailable);
+      await new Promise((resolve) => setTimeout(resolve, TRASH_RETRY_MS));
+    }
+  };
+  /** Notes in a folder's subtree that this tab may hold open. */
+  const notesUnder = (path: string) => (workspaceSnapshot?.docs ?? [])
+    .filter((doc) => doc.trashedAt == null && (doc.folderPath === path || doc.folderPath?.startsWith(`${path}/`)))
+    .map((doc) => doc.id);
   const moveNotes = async (noteIds: string[], targetFolderPath: string) => {
     const target = await folderId(targetFolderPath);
     for (const id of noteIds) await changeFolders(`/api/docs/${encodeURIComponent(id)}`, { method: 'PATCH', json: { folderId: target } });
@@ -481,9 +596,17 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
         await load(id);
         diskListeners.forEach((listener) => listener([], []));
       },
+      /** The owner trashed this note, as far as this tab knows. */
+      isTrashed: (id: string) => known.get(id)?.trashedAt != null,
       surfacedShared: (id: string) => workspaceSnapshot?.docs.some((doc) => doc.id === id && doc.surfaced) ?? false,
       surfacedFolder: (path: string) => workspaceSnapshot?.folders?.some((folder) => folder.surfaced &&
         (path === folder.path || path.startsWith(`${folder.path}/`))) ?? false,
+      /** The listed folder at a moss path, with the caller's role on it. */
+      folderAt: (path: string) => workspaceSnapshot?.folders?.find((folder) => folder.path === path) ?? null,
+      /** The listed folder with this id; the active vault itself is `Notes`. */
+      folderById: (id: string) => (workspaceSnapshot?.vault.id === id
+        ? { id, name: workspaceSnapshot.vault.name, path: ROOT_FOLDER }
+        : workspaceSnapshot?.folders?.find((folder) => folder.id === id) ?? null),
       /** The caller's role on a sidebar folder (`Notes` is the active vault), or null for a path the map lacks. */
       folderRole: (path: string): string | null => {
         if (!workspaceSnapshot) return null;
@@ -496,7 +619,14 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
       getMetadataByIds: async (ids: string[]) => (await notes()).filter((note) => ids.includes(note.id)),
       getById: async (id: string) => {
         const note = await byId(id);
-        if (note) watchBacklinks(id);
+        if (note && note.trashedAt == null) watchBacklinks(id);
+        if (note?.trashedAt != null) {
+          // The owner's Trash view reads a trashed note on its one read path, read-only (A§8).
+          const response = await request(`/api/trash/${encodeURIComponent(id)}`);
+          if (!response.ok) return undefined;
+          const { markdown } = (await response.json()) as { markdown: string };
+          return { ...record(note), content: markdown };
+        }
         // A doc that will bind gets no content from REST: the binding fills it (A§9).
         return note ? { ...record(note), content: '', layoutMetadata: readJson(storage, layoutKey(id)) } : undefined;
       },
@@ -556,8 +686,41 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
         if ('collapsedHeadings' in input) writeJson(storage, collapsedKey(id), input.collapsedHeadings);
         return record(withLocal(note));
       },
-      delete: later('Trash', 2),
-      restore: later('Restoring from Trash', 2),
+      // Trash (A§10.6): closed to writes and acked first, then the owner's DELETE; moss marks the note trashed.
+      delete: async (id: string) => {
+        const ready = await trashGuard.prepare([id]);
+        let trashed = false;
+        try {
+          if (!ready) return false;
+          await sendTrash(`/api/docs/${encodeURIComponent(id)}`, NOTE_REFUSALS, NOTE_UNAVAILABLE);
+          trashed = true;
+        } finally {
+          trashGuard.release([id], trashed);
+        }
+        const note = known.get(id);
+        if (note) known.set(id, { ...note, trashedAt: seconds(Date.now()) });
+        await load(workspaceSnapshot?.vault.id ?? storedVault()).catch(() => undefined);
+        return true;
+      },
+      restore: async (id: string) => {
+        let response: Response;
+        try {
+          response = await request(`/api/docs/${encodeURIComponent(id)}/restore`, { method: 'POST' });
+        } catch {
+          throw new Error(UNREACHABLE);
+        }
+        if (!response.ok) throw await refusalOf(response, NOTE_REFUSALS, NOTE_UNAVAILABLE);
+        // Live at once: a listing that lands later, or a refresh that supersedes this one, must not reopen the Trash view.
+        const restored = () => {
+          const note = known.get(id);
+          if (note?.trashedAt != null) known.set(id, { ...note, trashedAt: null });
+          return known.get(id);
+        };
+        restored();
+        await load(workspaceSnapshot?.vault.id ?? storedVault()).catch(() => undefined);
+        const note = restored();
+        return note ? record(withLocal(note)) : undefined;
+      },
       search,
       getFilesystemPath: async (id: string) => docUrl(id),
       setOpenFileWatchTargets: none,
@@ -572,12 +735,38 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
         }
       },
       showInFinder: none,
-      getPdfExportSession: nothing,
-      createPdfExportSession: nothing,
-      openPdfExportPreview: nothing,
-      openPdfExportRenderSurface: nothing,
+      // Save as PDF is browser print (R4): the session reaches the /pdf-export tab through session storage, which a tab
+      // opened with an opener copies; that tab prints once moss's PdfExportApp is ready (host/pdf-print.ts).
+      getPdfExportSession: async (sessionId: string) => {
+        for (const store of [browser.session, browser.openerSession()]) {
+          const held = readJson<{ id: string; payload: unknown }>(store as BridgeOptions['storage'], PDF_SESSION_KEY);
+          if (held?.id === sessionId) return held.payload;
+        }
+        return null;
+      },
+      createPdfExportSession: async (noteId: string, input: Record<string, unknown> = {}) => {
+        // PdfExportApp renders the serialized state and never reads renderedHtml, the largest field.
+        const payload: Record<string, unknown> = { noteId, ...input };
+        delete payload.renderedHtml;
+        const id = crypto.randomUUID();
+        writeJson(browser.session, PDF_SESSION_KEY, { id, payload });
+        return id;
+      },
+      openPdfExportPreview: async (sessionId: string) => pdfTab(sessionId),
+      openPdfExportRenderSurface: async (sessionId: string) => pdfTab(sessionId),
       exportPdf: unavailable('Exporting a PDF file'),
-      exportMarkdown: async () => ({ canceled: true }),
+      // Save as Markdown downloads the server's export (A§12, one converter): content extensions stay and no comment
+      // or layout marker is in it. moss's client-side markdown is not used. The server only has what it acked, so the
+      // export waits for this tab's edits to be acked and refuses rather than download a file that misses them (A§10.6).
+      exportMarkdown: async (id: string, input: { title?: string; markdown?: string } = {}) => {
+        if (!(await waitForAllAcked(EXPORT_ACK_WAIT_MS))) {
+          throw new Error('Your latest edits haven’t synced yet, so the export would miss them. Try again once they sync.');
+        }
+        const response = await request(`/api/docs/${encodeURIComponent(id)}/content`, { headers: { accept: 'text/markdown' } });
+        if (!response.ok) throw new Error('The note couldn’t export right now. Try again.');
+        browser.download(markdownFileName(input.title ?? ''), new Blob([await response.arrayBuffer()], { type: 'text/markdown' }));
+        return { canceled: false };
+      },
       onExternalFileOpen: silent,
       onInternalFileOpen: (callback?: Listener<[string]>) =>
         browser.onPopState(() => {
@@ -624,10 +813,21 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
         const renamed = answer.folder?.name ?? newName;
         return entryFor(id, { name: renamed, path: `${currentPath.split('/').slice(0, -1).join('/')}/${renamed}` });
       },
-      // moss's one caller trashes the subtree; the server keeps it as one batch for restore (A§6).
+      // moss's one caller trashes the subtree; the server keeps it as one batch for restore (A§6). Its open notes
+      // close to writes and ack first, as a note's trash does (A§10.6).
       delete: async ({ path }: { path: string; moveNotesTo?: 'root' | 'trash' }) => {
         const id = await folderId(path);
-        await changeFolders(`/api/folders/${encodeURIComponent(id)}`, { method: 'DELETE' });
+        const open = notesUnder(path);
+        const ready = await trashGuard.prepare(open);
+        let trashed = false;
+        try {
+          if (!ready) return false;
+          await sendTrash(`/api/folders/${encodeURIComponent(id)}`, FOLDER_REFUSALS, FOLDER_UNAVAILABLE);
+          trashed = true;
+        } finally {
+          trashGuard.release(open, trashed);
+        }
+        await load(workspaceSnapshot?.vault.id ?? storedVault()).catch(() => undefined);
         announceFolders();
         return true;
       },
@@ -656,11 +856,9 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
     checkpoints: { getAll: empty },
     files: { search: empty, listDirectory: empty, open: empty },
     images: {
-      save: later('Uploading media', 3),
-      pick: later('Uploading media', 3),
+      ...createImagesApi({ request, chooseFiles: (accept) => browser.chooseFiles(accept) }),
       persistUrl: later('Saving a remote image', 3),
       copyFromPath: unavailable('Copying a local file'),
-      copyFromNoteAsset: later('Copying media between notes', 3),
     },
     htmlPreview: { ensure: nothing, onMaterialized: silent, onFailed: silent },
     webEmbedPreview: { ensure: nothing, subscribe: silent },
@@ -671,18 +869,20 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
       getGlobalShortcut: async () => ({ quickCapture: '', enabled: false }),
       setGlobalShortcut: async () => false,
       setGlobalShortcutEnabled: none,
+      // The image context menu offers Edit Alt Text… on any image in an editable note (deviation 5; ImageContextMenu).
       setImageAltTextMenuEnabled: none,
       // Open in New Window is a browser tab (R4).
       createWindow: async (input: { noteId?: string | null } = {}) => {
-        browser.open(input.noteId ? docUrl(input.noteId) : new URL('/', browser.origin).href);
+        browser.open(input.noteId ? docUrl(input.noteId) : new URL(withShare('/'), browser.origin).href);
         return { action: 'created' as const, windowId: -1 };
       },
       getWindowContext: async () => ({ windowId: 1, initialNoteId: docIdFromPath(pathname()), launchReason: 'initial-launch' as const, openedFromWindowId: null }),
       // The address follows the focused note, so a reload or a copied URL reopens it (A§4.2).
       setFocusedNoteId: async (id: string | null) => {
-        if (id) watchBacklinks(id);
-        if (id && docIdFromPath(pathname()) !== id) {
-          browser.replacePath(`/d/${encodeURIComponent(id)}`);
+        if (id && known.get(id)?.trashedAt == null) watchBacklinks(id);
+        // A trashed note has no address: a fresh load of it is the one 404 (A§8).
+        if (id && known.get(id)?.trashedAt == null && docIdFromPath(pathname()) !== id) {
+          browser.replacePath(withShare(`/d/${encodeURIComponent(id)}`));
           await refreshForNavigation(id);
         }
       },
@@ -690,7 +890,7 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
       moveWindowDrag: none,
       endWindowDrag: none,
       onGlobalShortcutActivated: silent,
-      onNativeMenuCommand: silent,
+      onNativeMenuCommand,
       waitForReady: async () => {
         await notes().catch(() => undefined);
       },
@@ -748,11 +948,38 @@ function localStorageOrNull(): Storage | null {
   }
 }
 
+function sessionStorageOrNull(): Storage | null {
+  try {
+    return window.sessionStorage;
+  } catch {
+    return null;
+  }
+}
+
 function windowBrowser(): BrowserHooks {
   return {
     origin: window.location.origin,
     open: (url) => {
       window.open(url, '_blank', 'noopener');
+    },
+    openWindow: (url) => window.open(url, '_blank') !== null,
+    download: (filename, body) => {
+      const href = URL.createObjectURL(body);
+      const link = Object.assign(document.createElement('a'), { href, download: filename });
+      link.style.display = 'none';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(href), 60_000);
+    },
+    session: sessionStorageOrNull(),
+    openerSession: () => {
+      try {
+        const opener = window.opener as Window | null;
+        return opener && opener.location.origin === window.location.origin ? opener.sessionStorage : null;
+      } catch {
+        return null; // an opener on another origin
+      }
     },
     // Moss keeps its own back and forward (A§9 navigation), so the address changes without the router: TanStack wraps
     // window.history.replaceState, and the route change it reports would remount moss's whole App.
@@ -767,12 +994,41 @@ function windowBrowser(): BrowserHooks {
         new ClipboardItem({ 'text/plain': new Blob([text], { type: 'text/plain' }), 'text/html': new Blob([html], { type: 'text/html' }) }),
       ]);
     },
+    chooseFiles: chooseFilesInBrowser,
   };
 }
 
+/** A page still running this long after `beforeunload` stayed: its navigation was cancelled (a prompt, a download). */
+const STAYED_MS = 5_000;
+
+/** Aborts on `beforeunload`, before WebKit stops the page's loads for the navigation. The leave ends, releasing the
+ * held reads, when the page is still here after STAYED_MS or comes back from the back-forward cache. */
+function leavingSignal(): () => Leave {
+  const arm = () => {
+    let end = () => undefined as void;
+    const stayed = new Promise<void>((resolve) => { end = resolve; });
+    return { controller: new AbortController(), stayed, end };
+  };
+  let current = arm();
+  const stay = () => {
+    if (!current.controller.signal.aborted) return;
+    const left = current;
+    current = arm();
+    left.end();
+  };
+  window.addEventListener('beforeunload', () => {
+    current.controller.abort();
+    setTimeout(stay, STAYED_MS);
+  });
+  window.addEventListener('pageshow', (event) => { if (event.persisted) stay(); });
+  return () => ({ signal: current.controller.signal, stayed: current.stayed });
+}
+
 /** Installs the bridge on `window` before App's module evaluates (A§4.3). */
-export function installBridge(authStore: import('../auth-state.ts').AuthStore): Bridge {
-  const bridge = createBridge({ pathname: () => window.location.pathname, storage: localStorageOrNull(), browser: windowBrowser(),
+export function installBridge(authStore: import('../auth-state.ts').AuthStore, trashGuard?: TrashGuard): Bridge {
+  const bridge = createBridge({ pathname: () => window.location.pathname, storage: localStorageOrNull(), browser: windowBrowser(), trashGuard,
+    share: () => new URLSearchParams(window.location.search).get('share'),
+    leaving: leavingSignal(),
     subscribeWorkspace: (receive, pause) => subscribeWorkspace({
       onPause: pause,
       auth: authStore,
@@ -787,7 +1043,8 @@ export function installBridge(authStore: import('../auth-state.ts').AuthStore): 
     }, receive),
   });
   installedBridge = bridge;
-  setWikiCandidates(() => bridge[WORKSPACE].getSnapshot()?.docs ?? []);
+  // A trashed note is no wiki-link target (A§15).
+  setWikiCandidates(() => (bridge[WORKSPACE].getSnapshot()?.docs ?? []).filter((doc) => doc.trashedAt == null));
   (window as unknown as { electronAPI: Bridge }).electronAPI = bridge;
   return bridge;
 }

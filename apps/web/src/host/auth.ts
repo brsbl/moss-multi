@@ -45,3 +45,9 @@ export async function requireSession({ location }: { location: ParsedLocation })
   leaveTo(`${LOGIN_PATH}?next=${encodeURIComponent(location.href)}`);
   return new Promise<never>(() => undefined); // the document is being replaced
 }
+
+/** `beforeLoad` for routes a share link opens (`/d`, `/f`): a `?share=` URL needs no session (A§4.2, A§7). */
+export async function requireSessionOrLink({ location }: { location: ParsedLocation }): Promise<{ user: SessionUser | null }> {
+  if (!new URL(location.href, 'http://moss.invalid').searchParams.get('share')) return requireSession({ location });
+  return { user: await auth.resolve() };
+}

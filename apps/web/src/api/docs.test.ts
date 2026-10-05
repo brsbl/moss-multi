@@ -13,6 +13,7 @@ interface Created {
 
 const created: Created[] = [];
 const probed: string[] = [];
+const exported: string[] = [];
 const renamed: { docId: string; title: string }[] = [];
 let renameFails = false;
 let notificationFails = false;
@@ -32,14 +33,33 @@ const DocDO = {
       renamed.push({ docId: id.name, title });
       await d1Projections(d1.db, publish).title(id.name, title);
     },
-    snapshotForDuplicate: async () => ({ title: 'Original', state: new Uint8Array([1, 2]) }),
+    snapshotForDuplicate: async () => ({ title: 'Original', state: new Uint8Array([1, 2]), markdown: '', media: [] }),
     createFromSnapshot: async (input: unknown) => {
       created.push({ docId: id.name, input });
       await d1Projections(d1.db, publish).title(id.name, (input as { title?: string }).title ?? '');
     },
+    exportMarkdown: async () => {
+      exported.push(id.name);
+      return `Exported ${id.name} {{2+2|4}}\n`;
+    },
     probeInstance: async () => {
       probed.push(id.name);
       return { instanceId: `instance-${id.name}`, constructedAt: 1 };
+    },
+  }),
+};
+
+/** A PrincipalDO namespace: grants REST write tokens until `writeTokens` runs out, recording whose DO was asked. */
+const tokenAsks: string[] = [];
+let writeTokens = Infinity;
+const PrincipalDO = {
+  idFromName: (name: string) => ({ name, toString: () => name }),
+  get: (id: { name: string }) => ({
+    setName: async () => undefined,
+    takeWriteToken: async () => {
+      tokenAsks.push(id.name);
+      writeTokens -= 1;
+      return writeTokens >= 0;
     },
   }),
 };
@@ -51,7 +71,7 @@ let ben: TestUser;
 
 beforeAll(async () => {
   d1 = await migratedD1();
-  env = { DB: d1.db, BETTER_AUTH_SECRET: SECRET, BETTER_AUTH_URL: BASE, DocDO: DocDO as never };
+  env = { DB: d1.db, BETTER_AUTH_SECRET: SECRET, BETTER_AUTH_URL: BASE, DocDO: DocDO as never, PrincipalDO: PrincipalDO as never };
   ada = await signedUpUser(env, 'docs-ada');
   ben = await signedUpUser(env, 'docs-ben', 'Ben');
 }, 60_000);
@@ -59,9 +79,12 @@ afterAll(() => d1?.dispose());
 beforeEach(() => {
   created.length = 0;
   probed.length = 0;
+  exported.length = 0;
   renamed.length = 0;
   renameFails = false;
   notificationFails = false;
+  tokenAsks.length = 0;
+  writeTokens = Infinity;
 });
 
 const create = (cookie: string | null, body: unknown = {}, headers: Record<string, string> = {}) =>
@@ -208,6 +231,24 @@ describe('PATCH /api/docs/:id', () => {
     expect(renamed).toEqual([]);
   });
 
+  it("refuses a rename past the caller's own write rate with 429 before it reaches the DocDO @p:tech-8", async () => {
+    const id = await insertDoc(d1.db, ada);
+    writeTokens = 1;
+    expect((await rename(id, ada.cookie, 'Within the rate')).status).toBe(200);
+    const limited = await rename(id, ada.cookie, 'Past the rate');
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get('retry-after')).toBe('60');
+    expect(await limited.json()).toEqual({ error: 'rate-limited' });
+    expect(renamed).toEqual([{ docId: id, title: 'Within the rate' }]);
+    expect(tokenAsks).toEqual([ada.id, ada.id]);
+  });
+
+  it('spends no write token on a rename it refuses for access', async () => {
+    const id = await insertDoc(d1.db, ada);
+    expect((await rename(id, ben.cookie, 'Forbidden')).status).toBe(404);
+    expect(tokenAsks).toEqual([]);
+  });
+
   it('reports a failed DocDO write as 503', async () => {
     const id = await insertDoc(d1.db, ada);
     renameFails = true;
@@ -271,5 +312,36 @@ describe('GET /api/docs/:id/access', () => {
       expect(response.status).toBe(200);
       expect(await response.json()).toMatchObject({ role: 'viewer' });
     }
+  });
+});
+
+describe('GET /api/docs/:id/content (T3.7 Save as Markdown)', () => {
+  const content = (docId: string, cookie: string | null, init: RequestInit = {}, query = '') =>
+    handleApi(new Request(`${BASE}/api/docs/${docId}/content${query}`, { ...init, headers: { ...(cookie ? { cookie } : {}), ...init.headers } }), env);
+
+  it("answers any reader with the DocDO's export as text/markdown, uncached", async () => {
+    const docId = await insertDoc(d1.db, ada);
+    const response = await content(docId, ada.cookie);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toBe('text/markdown; charset=utf-8');
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(await response.text()).toBe(`Exported ${docId} {{2+2|4}}\n`);
+    const share = await insertLink(d1.db, { docId }, 'viewer');
+    const viaLink = await content(docId, null, {}, `?share=${share}`);
+    expect(viaLink.status, 'an anonymous link reader').toBe(200);
+    expect(exported).toEqual([docId, docId]);
+  });
+
+  it('gives a caller who cannot read the doc the same 404 as a missing doc, without waking the DO', async () => {
+    const docId = await insertDoc(d1.db, ada);
+    const trashed = await insertDoc(d1.db, ada, { deleted: true });
+    const denied = await content(docId, ben.cookie);
+    const missing = await content(crypto.randomUUID(), ben.cookie);
+    expect(denied.status).toBe(404);
+    expect(await denied.text()).toBe(await missing.text());
+    expect((await content(trashed, ada.cookie)).status).toBe(404);
+    expect((await content(docId, null)).status).toBe(401);
+    expect((await content(docId, ada.cookie, { method: 'POST', headers: { origin: BASE } })).status).toBe(405);
+    expect(exported).toEqual([]);
   });
 });

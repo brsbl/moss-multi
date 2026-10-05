@@ -14,6 +14,8 @@ import {
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@moss/shared/components/ui/tooltip';
 // moss-multi seam: hide-registry (A§9)
 import { hidden } from '@moss-multi/host/affordances';
+// moss-multi seam: register payloads (A§10.10)
+import { RegisterDraft } from '@moss-multi/host/collab/registers';
 import type { ChartConfig, ChartPalette, ChartType } from '../utils/chartDefaults';
 import {
   BLOCK_HEADER_CLASSNAME,
@@ -21,6 +23,8 @@ import {
   BlockNodeShell
 } from '../components/block-node-primitives';
 import { insertParagraphAdjacentToBlock } from '../utils/block-node-insertion';
+// moss-multi seam: read-only-decorators (T2.3)
+import { useIsEditorEditable } from '../components/media-primitives';
 // moss-multi seam: converter-split (A§12; S-conv §2.3)
 import { OPEN_BLOCK_COMMENT_COMMAND } from '../commands';
 import { serializeChartConfig, parseChartConfig, CHART_PALETTES, DISPLAY_PALETTES, CHART_TYPES, CHART_TYPE_LABELS, getSafePalette } from '../utils/chartDefaults';
@@ -67,6 +71,8 @@ function ChartEditView({
 }): JSX.Element {
   const [editor] = useLexicalComposerContext();
   const [jsonText, setJsonText] = useState(() => serializeChartConfig(initialConfig));
+  // moss-multi seam: register payloads (A§10.10): the draft follows its edits so a save keeps each data point's identity.
+  const [draft] = useState(() => new RegisterDraft(initialConfig, serializeChartConfig(initialConfig)));
   const [validation, setValidation] = useState<{ isValid: boolean; error?: string }>({ isValid: true });
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -85,9 +91,10 @@ function ChartEditView({
   const handleDone = useCallback(() => {
     const result = parseChartConfig(jsonText);
     if (result.valid && result.config) {
+      draft.identify(result.config);
       onDone(result.config);
     }
-  }, [jsonText, onDone]);
+  }, [jsonText, onDone, draft]);
 
   useEffect(() => {
     const flushDraft = () => {
@@ -161,7 +168,10 @@ function ChartEditView({
       <textarea
         ref={textareaRef}
         value={jsonText}
-        onChange={(e) => setJsonText(e.target.value)}
+        onChange={(e) => {
+          draft.edit(e.target.value, e.target.selectionEnd);
+          setJsonText(e.target.value);
+        }}
         onKeyDown={handleKeyDown}
         className="w-full resize-y rounded-md border border-surface-panel bg-surface-raised-control p-canvas-surface-pad font-mono text-sm text-ink-default focus:border-ink-default/20 focus:outline-none focus:ring-1 focus:ring-ink-default/20"
         rows={12}
@@ -176,10 +186,13 @@ function ChartEditView({
  */
 function EditableTitle({
   title,
-  onSave
+  onSave,
+  readOnly = false
 }: {
   title: string;
   onSave: (newTitle: string) => void;
+  /** moss-multi seam: read-only-decorators (T2.3): a read-only editor shows the title and opens no field */
+  readOnly?: boolean;
 }): JSX.Element {
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [editValue, setEditValue] = useState(title);
@@ -195,9 +208,10 @@ function EditableTitle({
   const handleClick = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    if (readOnly) return; // moss-multi seam: read-only-decorators (T2.3)
     setEditValue(title);
     setIsEditingTitle(true);
-  }, [title]);
+  }, [title, readOnly]);
 
   const handleSave = useCallback(() => {
     const trimmed = editValue.trim();
@@ -218,7 +232,7 @@ function EditableTitle({
     }
   }, [handleSave]);
 
-  if (isEditingTitle) {
+  if (isEditingTitle && !readOnly /* moss-multi seam: read-only-decorators (T2.3) */) {
     return (
       <input
         ref={inputRef}
@@ -237,7 +251,7 @@ function EditableTitle({
     <span
       onClick={handleClick}
       className="min-w-0 flex-1 cursor-text truncate font-mono text-xs text-ink-muted hover:text-ink-default"
-      title="Click to edit title"
+      title={readOnly ? undefined : 'Click to edit title' /* moss-multi seam: read-only-decorators (T2.3) */}
     >
       {title}
     </span>
@@ -248,14 +262,18 @@ function EditableTitle({
  * Styled dropdown trigger button for chart controls
  */
 function ChartDropdownTrigger({
-  children
+  children,
+  disabled = false
 }: {
   children: React.ReactNode;
+  /** moss-multi seam: read-only-decorators (T2.3) */
+  disabled?: boolean;
 }): JSX.Element {
   return (
     <DropdownMenuTrigger asChild>
       <button
         type="button"
+        disabled={disabled}
         className="flex items-center gap-1 rounded-md border border-surface-panel bg-surface-raised-control px-2 py-1 text-xs text-ink-muted shadow-sm hover:bg-surface-canvas focus:border-accent-success focus:outline-none focus:ring-1 focus:ring-accent-success/30"
         onClick={(e) => e.stopPropagation()}
       >
@@ -278,6 +296,24 @@ function ChartWrapper({
   const [editor] = useLexicalComposerContext();
   const [isSelected, setSelected, clearSelection] = useLexicalNodeSelection(nodeKey);
   const [isEditing, setIsEditing] = useState(false);
+  // moss-multi seam: read-only-decorators (T2.3): a closed body takes no chart edit; an edit left open closes without writing
+  const editable = useIsEditorEditable();
+  useEffect(() => {
+    if (!editable) setIsEditing(false);
+  }, [editable]);
+  // Nothing under a closed body takes focus (invariant 9): the chart library's focusable svg and layers lose their tabindex.
+  const chartBodyRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const root = chartBodyRef.current;
+    if (editable || !root) return;
+    const strip = () => {
+      for (const el of root.querySelectorAll('[tabindex]')) el.removeAttribute('tabindex');
+    };
+    strip();
+    const observer = new MutationObserver(strip);
+    observer.observe(root, { subtree: true, childList: true, attributes: true, attributeFilter: ['tabindex'] });
+    return () => observer.disconnect();
+  }, [editable]);
   const [isTypeDropdownOpen, setIsTypeDropdownOpen] = useState(false);
   const [isPaletteDropdownOpen, setIsPaletteDropdownOpen] = useState(false);
   const currentPalette = getSafePalette(config.options?.palette);
@@ -285,6 +321,7 @@ function ChartWrapper({
 
   // Handle deletion of error-state chart
   const handleDelete = useCallback(() => {
+    if (!editor.isEditable()) return; // moss-multi seam: read-only-decorators (T2.3)
     editor.update(() => {
       const node = $getNodeByKey(nodeKey);
       if (node) {
@@ -312,17 +349,22 @@ function ChartWrapper({
     [isSelected, setSelected, clearSelection]
   );
 
+  // moss-multi seam: register payloads (A§10.10): the JSON draft writes only what changed since it opened.
+  const editBaseRef = useRef(config);
   const handleEditClick = useCallback(
     (e: React.MouseEvent) => {
       e.preventDefault();
       e.stopPropagation();
+      if (!editor.isEditable()) return; // moss-multi seam: read-only-decorators (T2.3)
+      editBaseRef.current = config;
       setIsEditing(true);
     },
-    []
+    [config, editor]
   );
 
   const handleTypeChange = useCallback(
     (newType: ChartType) => {
+      if (!editor.isEditable()) return; // moss-multi seam: read-only-decorators (T2.3)
       editor.update(() => {
         const node = $getNodeByKey(nodeKey);
         if (node && $isChartNode(node)) {
@@ -338,7 +380,8 @@ function ChartWrapper({
             type: newType,
             title: newTitle
           };
-          node.setConfig(updatedConfig);
+          // moss-multi seam: register payloads (A§10.10): write only what this control changed.
+          node.setConfig(updatedConfig, config);
         }
       });
     },
@@ -347,6 +390,7 @@ function ChartWrapper({
 
   const handlePaletteChange = useCallback(
     (newPalette: ChartPalette) => {
+      if (!editor.isEditable()) return; // moss-multi seam: read-only-decorators (T2.3)
       editor.update(() => {
         const node = $getNodeByKey(nodeKey);
         if (node && $isChartNode(node)) {
@@ -357,7 +401,8 @@ function ChartWrapper({
               palette: newPalette
             }
           };
-          node.setConfig(updatedConfig);
+          // moss-multi seam: register payloads (A§10.10): write only what this control changed.
+          node.setConfig(updatedConfig, config);
         }
       });
     },
@@ -366,6 +411,7 @@ function ChartWrapper({
 
   const handleTitleChange = useCallback(
     (newTitle: string) => {
+      if (!editor.isEditable()) return; // moss-multi seam: read-only-decorators (T2.3)
       editor.update(() => {
         const node = $getNodeByKey(nodeKey);
         if (node && $isChartNode(node)) {
@@ -373,7 +419,8 @@ function ChartWrapper({
             ...config,
             title: newTitle
           };
-          node.setConfig(updatedConfig);
+          // moss-multi seam: register payloads (A§10.10): write only what this control changed.
+          node.setConfig(updatedConfig, config);
         }
       });
     },
@@ -382,10 +429,11 @@ function ChartWrapper({
 
   const handleDone = useCallback(
     (newConfig: ChartConfig) => {
+      if (!editor.isEditable()) return; // moss-multi seam: read-only-decorators (T2.3)
       editor.update(() => {
         const node = $getNodeByKey(nodeKey);
         if (node && $isChartNode(node)) {
-          node.setConfig(newConfig);
+          node.setConfig(newConfig, editBaseRef.current);
         }
       });
       setIsEditing(false);
@@ -401,6 +449,7 @@ function ChartWrapper({
     (position: 'before' | 'after') => (e: React.MouseEvent) => {
       e.preventDefault();
       e.stopPropagation();
+      if (!editor.isEditable()) return; // moss-multi seam: read-only-decorators (T2.3)
       editor.update(() => {
         const node = $getNodeByKey(nodeKey);
         if (!node) return;
@@ -418,7 +467,7 @@ function ChartWrapper({
         selected={isSelected}
         beforeLabel="Insert paragraph before chart"
         afterLabel="Insert paragraph after chart"
-        onGapClick={handleGapClick}
+        onGapClick={editable ? handleGapClick : undefined /* moss-multi seam: read-only-decorators (T2.3) */}
         className="my-6"
         data-block-decorator-key={nodeKey}
       >
@@ -433,6 +482,7 @@ function ChartWrapper({
               </pre>
             )}
           </div>
+          {editable ? ( /* moss-multi seam: read-only-decorators (T2.3) */
           <button
             type="button"
             onClick={handleDelete}
@@ -441,19 +491,20 @@ function ChartWrapper({
           >
             <X className="h-4 w-4" />
           </button>
+          ) : null}
         </div>
       </BlockNodeShell>
     );
   }
 
   // Edit mode view
-  if (isEditing) {
+  if (isEditing && editable /* moss-multi seam: read-only-decorators (T2.3) */) {
     return (
       <BlockNodeShell
         selected={isSelected}
         beforeLabel="Insert paragraph before chart"
         afterLabel="Insert paragraph after chart"
-        onGapClick={handleGapClick}
+        onGapClick={editable ? handleGapClick : undefined /* moss-multi seam: read-only-decorators (T2.3) */}
         className="my-6"
         data-block-decorator-key={nodeKey}
       >
@@ -473,11 +524,11 @@ function ChartWrapper({
       selected={isSelected}
       beforeLabel="Insert paragraph before chart"
       afterLabel="Insert paragraph after chart"
-      onGapClick={handleGapClick}
+      onGapClick={editable ? handleGapClick : undefined /* moss-multi seam: read-only-decorators (T2.3) */}
       className="my-6 outline-none transition-colors"
       data-block-decorator-key={nodeKey}
       onClick={handleContainerClick}
-      tabIndex={-1}
+      tabIndex={editable ? -1 : undefined /* moss-multi seam: read-only-decorators (T2.3) */}
     >
       <div className={BLOCK_SURFACE_CLASSNAME}>
         {/* Header */}
@@ -486,7 +537,7 @@ function ChartWrapper({
           onClick={(e) => e.stopPropagation()}
         >
           <div className="min-w-0">
-            <EditableTitle title={config.title || 'Chart'} onSave={handleTitleChange} />
+            <EditableTitle title={config.title || 'Chart'} onSave={handleTitleChange} readOnly={!editable /* moss-multi seam: read-only-decorators (T2.3) */} />
           </div>
 
           {/* Controls - show on hover or when dropdown is open */}
@@ -495,7 +546,7 @@ function ChartWrapper({
           }`}>
             {/* Chart type dropdown */}
             <DropdownMenu open={isTypeDropdownOpen} onOpenChange={setIsTypeDropdownOpen}>
-              <ChartDropdownTrigger>
+              <ChartDropdownTrigger disabled={!editable /* moss-multi seam: read-only-decorators (T2.3) */}>
                 {CHART_TYPE_LABELS[config.type]}
               </ChartDropdownTrigger>
               <DropdownMenuContent align="end">
@@ -513,7 +564,7 @@ function ChartWrapper({
 
             {/* Palette dropdown */}
             <DropdownMenu open={isPaletteDropdownOpen} onOpenChange={setIsPaletteDropdownOpen}>
-              <ChartDropdownTrigger>
+              <ChartDropdownTrigger disabled={!editable /* moss-multi seam: read-only-decorators (T2.3) */}>
                 {CHART_PALETTES[currentPalette].name}
               </ChartDropdownTrigger>
               <DropdownMenuContent align="end">
@@ -530,6 +581,8 @@ function ChartWrapper({
             </DropdownMenu>
 
             {/* Edit JSON button */}
+            {/* moss-multi seam: read-only-decorators (T2.3): a closed body opens no chart editor */}
+            {editable ? (
             <TooltipProvider delayDuration={200}>
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -545,6 +598,7 @@ function ChartWrapper({
                 <TooltipContent side="bottom"><p>Edit chart data</p></TooltipContent>
               </Tooltip>
             </TooltipProvider>
+            ) : null}
             {/* moss-multi seam: hide-registry (A§9) */}
             {hidden('comments') ? null : (
             <TooltipProvider delayDuration={200}>
@@ -569,7 +623,8 @@ function ChartWrapper({
         </div>
 
         {/* Chart body */}
-        <div className="bg-surface-canvas p-canvas-surface-pad">
+        {/* moss-multi seam: read-only-decorators (T2.3): keyed so a reopened body gets the chart's own tabindexes back */}
+        <div key={editable ? 'live' : 'closed'} ref={chartBodyRef} className="bg-surface-canvas p-canvas-surface-pad">
           <Suspense fallback={<ChartSkeleton />}>
             <ChartRenderer config={config} nodeKey={nodeKey} showTitle={false} />
           </Suspense>
@@ -581,5 +636,5 @@ function ChartWrapper({
 
 // moss-multi seam: node-views (A§12)
 registerNodeView(ChartNode.getType(), function decorate(this: ChartNode): JSX.Element {
-    return <ChartWrapper config={this.__config} nodeKey={this.__key} commentIds={this.__commentIds} />;
+    return <ChartWrapper config={this.getConfig()} nodeKey={this.__key} commentIds={this.__commentIds} />;
   });

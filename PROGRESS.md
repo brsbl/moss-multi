@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 42% done** (33 of 79 planned tasks verified)
+**Overall: 55% done** (44 of 80 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 17 / 17 | in progress |
-| M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 10 / 11 | in progress |
-| M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 3 / 9 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 2 / 9 | in progress |
+| M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 15 / 19 | in progress |
+| M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 6 / 10 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 5 / 9 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 1 / 5 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
@@ -48,9 +48,20 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-03 — T2.1 verified: while someone has a note open, a collaborator's new note, rename or trash shows up in their sidebar within 5 s without a reload, sorted by last update, without remounting the open editor; the workspace channel stops at once on sign-out.
 - 2026-10-03 — T1.9 verified: code, HTML and formula blocks now keep their text in shared registers, so two people typing in the same block merge live in both engines, drafts survive reloads and imports, and Cmd+Z inside a block undoes only that person's edits to it.
 - 2026-10-04 — T2.2 verified: anyone can create, rename and move folders and move notes between them from the web sidebar, editors included in a shared vault; deleting a folder sends its whole subtree to trash as one batch, and a peer with a note open inside it goes terminal in place.
+- 2026-10-04 — T1.9s verified: typing in a large note full of code blocks now refreshes only the block being edited instead of every block, and importing a note with tens of thousands of identical blocks assigns their ids in linear time.
+- 2026-10-04 — T1.R verified: a reviewed design now exists for code, HTML and formula block text: each block's text lives in its own small document that the server hides once the block is deleted and shows again intact on undo or a raced move, proven by a spike test and split into the T1.F2 and T1.F4 build briefs.
+- 2026-10-04 — T1.F3 verified: an open Properties edit keeps what the person typed when a peer clears or changes that property, closing a tab while edits are still unsent asks before leaving, and pasting a 1 MB note goes through without a hang.
+- 2026-10-04 — T2.4 verified: an owner can share a note, a folder (from its context menu) or a whole vault (from the switcher) by email at viewer, commenter, editor or owner, see and revoke members, and create, copy and revoke share links; an unknown email becomes a pending invite indistinguishable from a known one, a link visitor signed out reads at viewer with a sign-in that returns to the same note, and revoked, forged and inaccessible links all get the same 404.
+- 2026-10-04 — T2.3 verified: an owner can trash a note (including by dropping it on the sidebar Trash button) and restore it; anyone else with it open goes read-only in place on every surface with no reconnects, a fresh load gets a 404, and the owner can read a trashed note in a read-only Trash view that says it is kept for 30 days.
+- 2026-10-04 — T2.4s verified: sharing by email answers and behaves the same for a known and an unknown address, a co-owner cannot lower, remove or replace the vault owner, owner access never comes from a share link or an agent key, and two simultaneous shares to one person end as one invite at the higher role.
+- 2026-10-04 — T1.F3s verified: renaming a note through the API or creating one with a huge or adversarial title now stays within 20 ms of server CPU, and each identity's REST writes are rate-limited with a 429 that a server restart cannot reset.
+- 2026-10-04 — T1.F1 verified: Cmd+Z never removes a collaborator's characters typed into a paragraph or text node you created, through interleaved typing, splits and merges, reconnects and deletes, and restored text keeps its author and properties, in both engines.
 - 2026-10-04 — T3.5 verified: a vault owner can create a vault inline from the switcher, rename it and move it to trash behind a confirmation; a person granted the vault root sees it with a role badge, and a member is offered no vault actions.
 - 2026-10-04 — T3.4 verified: a person can search the body text of every note they can access and see snippets, never a note they cannot; a note shows its backlinks, and wiki links resolve by title or filename or show an honest unresolved state.
 - 2026-10-04 — T5.0 verified: the suggestions design exists on the records model: a suggester never writes the note body, a suggestion is a record of exact ops from their fork, accept is an editor action behind gates G0–G8, and reject or withdraw leave the body byte-identical; a spike proves each on CI.
+- 2026-10-04 — T3.3 verified: every moss node family, including formulas, file links, charts and sketches, can be built in a shared note and edited by two people at once without either losing the other's work, even through undo; the j14 demo note renders like pristine moss in light and dark.
+- 2026-10-04 — T3.7 verified: on the web a person can open a note in a new tab with a share link, print it to PDF through the browser, and download it as clean Markdown that waits for their unsaved edits and refuses a stale export.
+- 2026-10-04 — T3.1 verified: a person can add images and video to a note by upload, paste, drop or /media, and everyone with access, including an anonymous link visitor, sees them after reload and in a copied note; video plays and seeks through Range responses, and images offer Edit Alt Text….
 
 ## T1.1s identity audit
 
@@ -85,13 +96,13 @@ A task counts only after an independent checker passes it on green CI. Each mile
 Parked from the M0 checker and critic passes, each with the task that owns it.
 
 - T1.8 workspace follow-up implemented in T2.1: push events replace listing polling, changed document ids refresh metadata, and unchanged vault choices do not notify the switcher; awaiting CI and independent verification.
-- T1.9 checker P2: `$copyNode` must mint a new register identity for duplicated code, HTML and formula nodes before T3.3 uses that path; current clipboard copies serialize without the identity → T3.3 register extension.
+- T1.9 checker P2: `$copyNode` must mint a new register identity for duplicated code, HTML and formula nodes before T3.3 uses that path; current clipboard copies serialize without the identity → closed in T3.3 (`resetOnCopyNodeFrom` on every register node).
 - T1.9 checker P2: rebind open field observers when a register map entry is replaced (live imports now mint unique ids; server imports are serialized) → register/import follow-up.
 - T1.9 checker P2: register writes diff by value without a caret hint, so typing inside a run of identical characters can land at the wrong position (seen after a peer's undo); FormulaPlugin's remote repaint diffs strings instead of using the event delta → register caret follow-up.
 - T1.9 checker P2: replace the full node-map refresh after every editor commit with targeted invalidation → register performance follow-up.
 
 - T1.6 checker: prune deleted layout identities, avoid unchanged localStorage writes and restrict ordinal migration to stores without identity metadata → local-layout follow-up. These need lifecycle and persisted-state regressions beyond this P1 repair.
-- T1.6 checker: bound link activation and preview must consume locally resolved note identity, not only its displayed title/state → T3.3 links.
+- T1.6 checker: bound link activation and preview must consume locally resolved note identity, not only its displayed title/state → closed in T3.3 (FileLinkNode's `getNoteId`/`isResolved` read the local view).
 - T1.6 checker: route empty-prompt undo from a split pane's title to that pane's body; AI and Cmd+K remain hidden → command-palette unstaging.
 - T1.6 checker: replace model-only width assertions with rendered dimensions and a real resize drag → editing-journey follow-up; the checker already confirmed the rendered behavior manually.
 
@@ -99,7 +110,13 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T1.8 checker: replace the interim listing poll/full metadata hydrate with A§11's workspace channel, including avoiding unchanged vault-switcher notifications → T2.1 (deviation 16).
 - T1.8 checker: large explicit-markdown pastes bypass chunking to preserve nested blocks; measure responsiveness and retain nesting in any future chunker. G1 covers empty-note explicit paste, not the complete plain-text paste path → editor follow-up (deviation 14).
 - T1.8 checker: confirm snapshot duplicate's metadata policy before comments and suggestions ship; it currently retains frontmatter and anchor maps, unlike Moss's fresh-metadata duplicate → T4.0/T5.0 (deviation 15).
-- T1.8 checker: distinguish native assets awaiting web delivery from truly missing images; the current image fallback says the file could not be found → T3.1.
+- ~~T1.8 checker: distinguish native assets awaiting web delivery from truly missing images~~ → closed in T3.1: uploaded media loads from the asset route (a miss there is truly "could not be found"), and a desktop-only path reads "is a desktop file that isn't available on the web".
+- ~~T3.1: j11's link legs use the `/__test/docs/:id/link` hook~~ → closed in T3.1: they use T2.4's links API, an anonymous visitor opens `/d/<id>?share=` and sees the image and the video's poster, and the hook is gone. SP9's 95 MB video upload buffers in the isolate (`request.arrayBuffer()`); measure it on staging (T1.10) before raising the cap or streaming.
+- ~~T3.1 checker P2: a move's media remap is not serialized with the folder change~~ → closed in T3.1: a doc's media are its own record (A§16 ruling), so a move remaps nothing. j11 proves WebKit plays and seeks the clip and that the route answers Range, but in WebKit it observes none of the player's own reads, so it does not show the player read through 206 → T3.8's WebKit video leg.
+- T3.1 checker P2: a cross-note paste from a note the user reads only through its link sends the destination page's token alone, so the copy is refused (404, announced). Nothing leaks; a legitimate paste is blocked → carry the source note's token once the client knows it (media follow-up).
+- ~~T3.1 checker P2s: the owner's Trash view could not load a trashed note's media; the first-frame poster requested `moss-asset://` for a desktop-only path~~ → closed in T3.1: owner media reads of a trashed note go through `ownerOfTrashed`, and the poster skips a desktop-only path.
+- T3.1 checker P2: asset responses (`private, max-age=0, stale-while-revalidate=86400`) carry no Vary or identity in the URL, so a second account in the same browser profile could get the first account's cached bytes once while revalidating; bytes per path never change → media follow-up (partition by identity if shared profiles matter).
+- T3.1 checker P2: j11's all-types leg checks mp4 and mov videos only for count and no error state, not that their posters decode (CI Chromium lacks H.264; only webm asserts a decoded poster frame) → media follow-up.
 - T1.8 checker: calibrate the duplicate leg's 30 s WebKit setup-ack allowance against the standard 10 s allowance → test-infra follow-up; this is setup readiness, not a claimed latency budget.
 - T1.6 integration: the [full lane on `ee2488a`](https://github.com/brsbl/moss-multi/actions/runs/37167459553) (tree identical to T1.6's green head) went green only on its third rerun of the WebKit editing shard; each attempt failed different single legs: Chromium j01 duplicate `GET /api/workspace` socket hang up; WebKit j01 presence spoofed-name leg twice (an "access control checks" page error on `/api/workspace`, then a missing peer chip), j00-roundtrip "hibernation not induced" (instance constructed 2.3 s after restart), and j00-persist offline-switch (`hydrateNotesAtom` "Load failed"). A [5× WebKit j01 presence probe](https://github.com/brsbl/moss-multi/actions/runs/37169366494) passed → test-infra follow-up on WebKit editing-shard stability. It recurred on m1's head (j07-auth) and on m2's T2.1 integration (j01 discovery after `reload()`): a `/api/workspace?vault=` fetch cancelled by navigation surfaces as an uncaught WebKit page error; the [m2 full lane](https://github.com/brsbl/moss-multi/actions/runs/37171338601) went green on rerun.
 - T1.9 integration: the [full lane on `1cfebf0`](https://github.com/brsbl/moss-multi/actions/runs/37178515882) went green on the third attempt of the WebKit editing shard; attempt 1 failed j02 empty-title projection (5 s poll), attempt 2 the j02 concurrent-Properties leg on the same `/api/workspace` "access control checks" page error → same WebKit editing-shard follow-up.
@@ -111,6 +128,9 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - Sidebar search matches titles only; body search belongs to M3. Live title matching is bound in T1.4. Closed by T3.4: body search through the SearchDO.
 - T3.4 checker P2s left open: backlinks reach only notes in the listing (a note opened by URL outside it gets none) and have no backfill for docs the index lacks → search follow-up; `notes.search` with `searchTrashed` returns [] → T2.3's trash surface.
 - Sign-out leaves the session's other live doc sockets reading and writing → T2.5
+- T2.4 checker: `GET /api/docs/:id` returns the owner's real `folderId` to a link holder, unlike `/api/workspace`'s synthetic root (METHOD: never the owner's vault or folder ids) → T2.5/T2.6 access follow-up
+- T2.4 checker: a share counts as redeemed on any doc load or socket admission, so a grantee idling on an empty workspace auto-opens the new share and the owner sees their name within seconds → count only an explicit open (T2.8 invites)
+- A signed-out share-link visitor (and any viewer of the active vault) is offered "+ Note", which fails with "Could not create note. Try again." → T2.6 (capability helper)
 - The wrangler ProxyWorker patch replays non-idempotent requests after an ambiguous failure → T0.9b follow-up (stack infra)
 - `qa.mjs close` forgets the session even when closing it failed → tooling follow-up
 - `stack.mjs` puts `BETTER_AUTH_SECRET` and the test-hook secret on wrangler's command line → tooling follow-up

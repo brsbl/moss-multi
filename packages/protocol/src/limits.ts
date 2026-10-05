@@ -24,3 +24,6 @@ export const NAME_MAX_CHARS = 80;
 
 /** Acks to one connection coalesce over this window. */
 export const ACK_COALESCE_MS = 250;
+
+/** REST writes (a rename now, a push later) per principal per window, counted by its PrincipalDO (A§5.2); 429 past it. */
+export const REST_WRITE_RATE = { max: 60, windowMs: 60_000 } as const;

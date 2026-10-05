@@ -142,18 +142,6 @@ export const AFFORDANCES = [
   },
   // Staged: the entry points stay hidden until their backend lands, so no live control ever 404s.
   {
-    id: 'trash',
-    sites: [`${R}/panels/NotesPanelFooter.tsx`, `${R}/panels/NotesListPanelContent.tsx`, `${R}/panels/CanvasAreaContent.tsx`, `${R}/App.tsx`],
-    reason: "Trash, restore and the trash list land in M2: the footer Trash view, the note Trash items and ⌘2. A folder's Trash Folder is real (T2.2).",
-    cite: 'T2.3',
-    staged: 2,
-    probes: [
-      { surface: 'shell', selector: 'button[aria-label="Trash"]' },
-      { surface: 'note-menu', selector: MENU_ITEM, text: 'Trash' },
-      { surface: 'note-more-menu', selector: MENU_ITEM, text: 'Trash' },
-    ],
-  },
-  {
     id: 'comments',
     sites: [
       `${R}/editor/MarkdownEditor.tsx`, `${R}/editor/nodes/CodeBlockNode.view.tsx`, `${R}/editor/nodes/ChartNode.view.tsx`,
@@ -166,30 +154,6 @@ export const AFFORDANCES = [
       { surface: 'editor-toolbar', selector: 'button[aria-label="Add comment"]' },
       { surface: 'block-toolbar', selector: '[data-lexical-decorator] button:has(svg.lucide-sticky-note)' },
     ],
-  },
-  {
-    id: 'media-upload',
-    sites: [`${R}/editor/slash-commands/registry.ts`, `${R}/editor/plugins/VideoPastePlugin.tsx`, `${R}/editor/plugins/MediaDropPlugin.tsx`],
-    reason: 'Asset upload and remote-image storage land in M3: /media goes, and a pasted or dropped image or video is refused visibly.',
-    cite: 'T3.1',
-    staged: 3,
-    probes: [{ surface: 'slash-menu', selector: SLASH_ITEM, text: 'Media' }],
-  },
-  {
-    id: 'save-as-pdf',
-    sites: [`${R}/panels/CanvasAreaContent.tsx`],
-    reason: 'Browser print through /pdf-export lands in M3.',
-    cite: 'T3.7',
-    staged: 3,
-    probes: [{ surface: 'note-more-menu', selector: MENU_ITEM, text: 'Save as PDF' }],
-  },
-  {
-    id: 'save-as-markdown',
-    sites: [`${R}/panels/CanvasAreaContent.tsx`],
-    reason: 'The export download lands in M3.',
-    cite: 'T3.7',
-    staged: 3,
-    probes: [{ surface: 'note-more-menu', selector: MENU_ITEM, text: 'Save as Markdown' }],
   },
 ] as const satisfies readonly Affordance[];
 

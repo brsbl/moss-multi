@@ -1,4 +1,5 @@
 import { CONNECTION_ATTR, CONNECTION_BANNER_ATTR, NOTICE_BAND_ATTR, type TerminalReason } from '@moss-multi/protocol/dom-contract';
+import { TRASH_COPY } from '@moss-multi/protocol/retention';
 import { Banner } from '../../../../../packages/ui/src/Banner.tsx';
 import { RefusalAnnouncer } from '../surfaces/RefusalAnnouncer.tsx';
 import { leaveTo } from '../navigation.ts';
@@ -7,7 +8,7 @@ import { retryDoc } from './doc-session.ts';
 import { useTerminal } from './terminal.ts';
 
 const terminalCopy: Record<TerminalReason, string> = {
-  deleted: 'This note was deleted.',
+  deleted: TRASH_COPY.peerTrashed,
   revoked: 'Your access to this note has ended.',
   'session-ended': 'Your session has ended. Sign in again to continue.',
   unavailable: 'This note is unavailable.',

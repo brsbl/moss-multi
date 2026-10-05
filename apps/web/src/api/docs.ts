@@ -1,10 +1,11 @@
 // /api/docs. POST writes the D1 row in a folder the caller may edit, then DocDO.create seeds the doc (A§9 "+ Note").
-// GET /api/docs/:id is the doc and the caller's role on it; /members is the members API (members.ts); GET
-// /api/docs/:id/instance is the owner-only DO probe (A§19), which reads nothing from the doc. A missing doc and one the
-// caller cannot open get the same 404 on every route (A§8).
+// GET /api/docs/:id is the doc and the caller's role on it; DELETE and POST /restore are trash.ts; /members is the
+// members API (members.ts) and /links the share links (links.ts); GET /api/docs/:id/instance is the owner-only DO probe
+// (A§19), which reads nothing from the doc; GET /api/docs/:id/content is the doc's markdown export. A missing doc and
+// one the caller cannot open get the same 404 on every route (A§8).
 import { eq } from 'drizzle-orm';
 import { getServerByName } from 'partyserver';
-import { MARKDOWN_CAP_BYTES } from '@moss-multi/protocol/limits';
+import { MARKDOWN_CAP_BYTES, REST_WRITE_RATE } from '@moss-multi/protocol/limits';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
 import type { AuthEnv } from '../auth/auth.ts';
 import { resolvePrincipal, shareTokenOf } from '../auth/principal.ts';
@@ -13,16 +14,21 @@ import { docs } from '../db/schema.ts';
 import type { AppEnv } from '../env.ts';
 import { json } from '../worker/route.ts';
 import { resolveDocAccess, resolveFolderAccess } from './access.ts';
+import { copyMedia } from './assets.ts';
 import { folderNotFound, liveIn, moveDoc, upFrom, vaultOf } from './folders.ts';
-import { handleMembers } from './members.ts';
+import { handleLinks } from './links.ts';
+import { acceptShares, handleMembers, type MembersEnv } from './members.ts';
+import { restoreDoc, trashDoc } from './trash.ts';
 import { NO_STORE, notFound, readJsonObject, unauthenticated } from './respond.ts';
 import { ensureDefaultVault } from './vaults.ts';
 
-export type DocsEnv = AuthEnv & Pick<AppEnv, 'DocDO'> & Partial<Pick<AppEnv, 'PrincipalDO'>>;
+export type DocsEnv = AuthEnv & Pick<AppEnv, 'DocDO' | 'PrincipalDO'> & MembersEnv & Partial<Pick<AppEnv, 'ASSETS'>>;
 
 const DOC = /^\/api\/docs\/([^/]+)$/;
 const MEMBERS = /^\/api\/docs\/([^/]+)\/members$/;
+const LINKS = /^\/api\/docs\/([^/]+)\/links(?:\/([^/]+))?$/;
 const INSTANCE = /^\/api\/docs\/([^/]+)\/instance$/;
+const CONTENT = /^\/api\/docs\/([^/]+)\/content$/;
 
 export interface DocRecord {
   id: string;
@@ -59,7 +65,7 @@ async function createDoc(request: Request, env: DocsEnv): Promise<Response> {
   const db = createDb(env.DB);
   const folderId = typeof body.folderId === 'string' ? body.folderId : await ensureDefaultVault(db, userId);
   // Editors create in a shared folder or vault; the vault's owner owns the doc and created_by records who made it.
-  const folder = await resolveFolderAccess(db, principal, folderId);
+  const folder = await resolveFolderAccess(db, principal, folderId, shareTokenOf(request));
   if (!folder || folder.deleted) return notFound();
   if (!roleAtLeast(folder.role, 'editor')) {
     return json({ error: 'forbidden', message: 'You can view this folder but not add notes to it.' }, 403, NO_STORE);
@@ -92,7 +98,7 @@ async function duplicateDoc(request: Request, env: DocsEnv, docId: string): Prom
   if (!source) return notFound();
   const userId = principal.type === 'agent' ? principal.ownerUserId : principal.id;
   let folderId = source.folderId;
-  let folder = await resolveFolderAccess(db, principal, folderId);
+  let folder = await resolveFolderAccess(db, principal, folderId, shareTokenOf(request));
   // A direct document grant gives no right to create siblings in someone else's folder.
   if (!folder || folder.deleted || !roleAtLeast(folder.role, 'editor')) {
     folderId = await ensureDefaultVault(db, userId);
@@ -105,6 +111,8 @@ async function duplicateDoc(request: Request, env: DocsEnv, docId: string): Prom
   const doc = await insertDoc(env, db, { folderId, ownerUserId: folder.ownerUserId, createdBy: principal.id });
   if (!doc) return folderNotFound();
   try {
+    // The copy's media are the source's own record, so it shows the same files wherever it lands (A§16).
+    await copyMedia(env.DB, docId, doc.id);
     const target = await getServerByName(env.DocDO, doc.id);
     await target.createFromSnapshot({ folderId, ownerId: folder.ownerUserId, title }, snapshot.state);
   } catch (error) {
@@ -129,6 +137,7 @@ async function readDoc(request: Request, env: DocsEnv, docId: string): Promise<R
     .where(eq(docs.id, docId))
     .limit(1);
   if (!doc) return notFound();
+  await acceptShares(env.DB, principal, docId, access);
   return json({ doc, role: access.role }, 200, NO_STORE);
 }
 
@@ -147,12 +156,27 @@ async function renameDoc(request: Request, env: DocsEnv, docId: string, body: Re
   if (!roleAtLeast(access.role, 'editor')) return json({ error: 'forbidden' }, 403, NO_STORE);
   if (!body || typeof body.title !== 'string') return json({ error: 'bad-request' }, 400, NO_STORE);
   try {
+    // Per identity, not per doc: a rename diffs caller text, so one principal cannot spread a flood across docs.
+    const principalDO = await getServerByName(env.PrincipalDO, principal.id);
+    if (!(await principalDO.takeWriteToken())) {
+      return json({ error: 'rate-limited' }, 429, { ...NO_STORE, 'retry-after': String(REST_WRITE_RATE.windowMs / 1000) });
+    }
     const stub = await getServerByName(env.DocDO, docId);
     await stub.renameTitle(body.title);
     return readDoc(request, env, docId);
   } catch {
     return json({ error: 'unavailable' }, 503, NO_STORE);
   }
+}
+
+/** GET /api/docs/:id/content: the doc as a `.md` file through the one converter (A§12), for any reader (T3.7). */
+async function readContent(request: Request, env: DocsEnv, docId: string): Promise<Response> {
+  const principal = await resolvePrincipal(request, env);
+  if (!principal) return unauthenticated();
+  const access = await resolveDocAccess(createDb(env.DB), principal, docId, shareTokenOf(request));
+  if (!access || access.deleted) return notFound();
+  const markdown = await (await getServerByName(env.DocDO, docId)).exportMarkdown();
+  return new Response(markdown, { status: 200, headers: { 'content-type': 'text/markdown; charset=utf-8', ...NO_STORE } });
 }
 
 async function docInstance(request: Request, env: DocsEnv, docId: string): Promise<Response> {
@@ -172,10 +196,18 @@ export async function handleDocs(request: Request, env: DocsEnv): Promise<Respon
   if (pathname === '/api/docs') return only('POST', request, () => createDoc(request, env));
   const duplicate = /^\/api\/docs\/([^/]+)\/duplicate$/.exec(pathname);
   if (duplicate) return only('POST', request, () => duplicateDoc(request, env, duplicate[1]));
+  const restore = /^\/api\/docs\/([^/]+)\/restore$/.exec(pathname);
+  if (restore) return only('POST', request, () => restoreDoc(request, env, restore[1]));
   const doc = DOC.exec(pathname);
-  if (doc) return request.method === 'PATCH' ? patchDoc(request, env, doc[1]) : only('GET', request, () => readDoc(request, env, doc[1]));
+  if (doc) {
+    if (request.method === 'PATCH') return patchDoc(request, env, doc[1]);
+    if (request.method === 'DELETE') return trashDoc(request, env, doc[1]);
+    return request.method === 'GET' ? readDoc(request, env, doc[1]) : json({ error: 'method-not-allowed' }, 405, { allow: 'GET, PATCH, DELETE' });
+  }
   const members = MEMBERS.exec(pathname);
   if (members) return handleMembers(request, env, { type: 'doc', id: members[1] });
+  const links = LINKS.exec(pathname);
+  if (links) return handleLinks(request, env, { type: 'doc', id: links[1] }, links[2] ?? null);
   const accessMatch = /^\/api\/docs\/([^/]+)\/access$/.exec(pathname);
   if (accessMatch) {
     if (request.method !== 'GET') return json({ error: 'method-not-allowed' }, 405, { allow: 'GET' });
@@ -184,7 +216,8 @@ export async function handleDocs(request: Request, env: DocsEnv): Promise<Respon
     const access = await resolveDocAccess(createDb(env.DB), principal, accessMatch[1], shareTokenOf(request));
     return access ? json({ role: access.role, deleted: access.deleted }, 200, NO_STORE) : notFound();
   }
-
+  const content = CONTENT.exec(pathname);
+  if (content) return only('GET', request, () => readContent(request, env, content[1]));
   const instance = INSTANCE.exec(pathname);
   if (instance) return only('GET', request, () => docInstance(request, env, instance[1]));
   return notFound();

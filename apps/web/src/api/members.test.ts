@@ -29,7 +29,7 @@ let cy: TestUser;
 
 beforeAll(async () => {
   d1 = await migratedD1();
-  env = { DB: d1.db, BETTER_AUTH_SECRET: SECRET, BETTER_AUTH_URL: BASE, DocDO: DocDO as never };
+  env = { DB: d1.db, BETTER_AUTH_SECRET: SECRET, BETTER_AUTH_URL: BASE, DocDO: DocDO as never, PrincipalDO: {} as never };
   ada = await signedUpUser(env, 'members-ada', 'Ada');
   ben = await signedUpUser(env, 'members-ben', 'Ben');
   cy = await signedUpUser(env, 'members-cy', 'Cy');
@@ -103,7 +103,7 @@ describe('POST /api/docs/:id/members', () => {
     const docId = await insertDoc(d1.db, ada);
     const response = await share(ada.cookie, docId, { email: `  ${ben.email.toUpperCase()} `, role: 'editor' });
     expect(response.status).toBe(201);
-    expect(await response.json()).toEqual({ member: { principalId: ben.id, principalType: 'user', name: 'Ben', email: ben.email, role: 'editor' } });
+    expect(await response.json()).toEqual({ shared: { email: ben.email, role: 'editor' } });
     expect(await roleOf(ben.cookie, docId)).toBe('editor');
     expect(await roleOf(cy.cookie, docId), 'nobody else').toBeNull();
     const rows = await d1.db.prepare('SELECT principal_id, principal_type, role, added_by FROM doc_members WHERE doc_id = ?').bind(docId).all();
@@ -121,9 +121,9 @@ describe('POST /api/docs/:id/members', () => {
     expect(await roleOf(cy.cookie, docId)).toBeNull();
   });
 
-  it('offers viewer, commenter and editor only, and refuses anything else with 400', async () => {
+  it('offers viewer, commenter, editor and owner only, and refuses anything else with 400', async () => {
     const docId = await insertDoc(d1.db, ada);
-    for (const role of ['owner', 'suggester', 'admin', '', null, undefined]) {
+    for (const role of ['suggester', 'admin', '', null, undefined]) {
       expect((await share(ada.cookie, docId, { email: ben.email, role })).status, `role ${String(role)}`).toBe(400);
     }
     for (const email of ['', 'not-an-email', 42, null]) {
@@ -132,11 +132,13 @@ describe('POST /api/docs/:id/members', () => {
     expect(await roleOf(ben.cookie, docId)).toBeNull();
   });
 
-  it('says plainly when no account has the email, or the email is the owner\'s own', async () => {
+  it('answers an email with no account exactly as one with an account, and refuses the owner\'s own email', async () => {
     const docId = await insertDoc(d1.db, ada);
-    const unknown = await share(ada.cookie, docId, { email: 'nobody-here@example.invalid', role: 'viewer' });
-    expect(unknown.status).toBe(422);
-    expect(await unknown.json()).toMatchObject({ error: 'no-account', message: expect.stringMatching(/\S/) });
+    const known = await share(ada.cookie, docId, { email: ben.email, role: 'viewer' });
+    const unknown = await share(ada.cookie, docId, { email: 'Nobody-Here@example.invalid', role: 'viewer' });
+    expect(unknown.status).toBe(known.status);
+    expect(await unknown.json()).toEqual({ shared: { email: 'nobody-here@example.invalid', role: 'viewer' } });
+    expect(await known.json()).toEqual({ shared: { email: ben.email, role: 'viewer' } });
     const self = await share(ada.cookie, docId, { email: ada.email, role: 'viewer' });
     expect(self.status).toBe(409);
     expect(await self.json()).toMatchObject({ error: 'already-owner' });
@@ -160,6 +162,8 @@ describe('GET /api/docs/:id/members', () => {
     const docId = await insertDoc(d1.db, ada);
     await share(ada.cookie, docId, { email: ben.email, role: 'editor' });
     await share(ada.cookie, docId, { email: cy.email, role: 'viewer' });
+    // A person shared with by email is listed by name once they open the note (T2.4).
+    expect([await roleOf(ben.cookie, docId), await roleOf(cy.cookie, docId)]).toEqual(['editor', 'viewer']);
     expect(await members(ada.cookie, `/api/docs/${docId}/members`)).toEqual([
       { principalId: ada.id, principalType: 'user', name: 'Ada', email: ada.email, role: 'owner' },
       { principalId: ben.id, principalType: 'user', name: 'Ben', email: ben.email, role: 'editor' },
@@ -227,7 +231,7 @@ describe.each(['query', 'header'] as const)('signed-in link-only member privacy 
     expect(await owner.json()).toEqual({ members: [
       { principalId: ada.id, principalType: 'user', name: 'Ada', email: ada.email, role: 'owner' },
       { principalId: ben.id, principalType: 'user', name: 'Ben', email: ben.email, role: 'viewer' },
-    ] });
+    ], invites: [] });
     const grant = { email: cy.email, role: 'editor' };
     expect((await withLink('POST', path, cy.cookie, grant)).status).toBe(404);
     expect((await withLink('POST', path, ben.cookie, grant)).status).toBe(403);
@@ -242,6 +246,7 @@ describe('folder and vault grants', () => {
     expect((await shareFolder(ada.cookie, ada.homeId, { email: cy.email, role: 'editor' })).status).toBe(201);
     expect(await roleOf(ben.cookie, docId)).toBe('viewer');
     expect((await shareFolder(ben.cookie, ada.homeId, { email: cy.email, role: 'viewer' })).status, 'a member shares nothing').toBe(403);
+    expect(await roleOf(cy.cookie, docId)).toBe('editor');
     expect((await members(ada.cookie, `/api/folders/${ada.homeId}/members`)).map((m) => [m.name, m.role])).toEqual([['Ada', 'owner'], ['Ben', 'viewer'], ['Cy', 'editor']]);
 
     // A viewer's write over REST: a note in the vault is refused and nothing is written.

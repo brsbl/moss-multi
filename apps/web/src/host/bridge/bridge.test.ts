@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { knownRole } from '../access.ts';
-import { createBridge, docIdFromPath, WORKSPACE } from './index.ts';
+import { markUnacked } from '../collab/unacked.ts';
+import { runNativeMenuCommand } from '../media/image-menu.ts';
+import { refusalMessage } from '../refusal.ts';
+import { createBridge, docIdFromPath, EXPORT_ACK_WAIT_MS, inertBrowser, WORKSPACE, type BrowserHooks } from './index.ts';
 
 const LISTING = {
   vault: { id: 'v1', name: 'Home' },
@@ -34,6 +37,59 @@ describe('the T0.5a bridge', () => {
     const { api, fetch } = bridge('/', new Response('{}', { status: 503 }));
     await expect(api.notes.getAll()).rejects.toThrow(/503/);
     await expect(api.notes.getAll()).rejects.toThrow(/503/);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('holds a listing in flight while the page leaves, and sends it again if the page stays', async () => {
+    const controller = new AbortController();
+    let stay = () => undefined as void;
+    const stayed = new Promise<void>((resolve) => { stay = resolve; });
+    let calls = 0;
+    const fetch = vi.fn<typeof globalThis.fetch>((_input, init) => ++calls > 1
+      ? Promise.resolve(Response.json(LISTING))
+      : new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+      }));
+    let leave = { signal: controller.signal, stayed };
+    const api = createBridge({ pathname: () => '/', fetch, leaving: () => leave });
+    const settled = vi.fn();
+    const listed = api.notes.getAll();
+    void listed.then(settled, settled);
+    controller.abort();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(fetch.mock.calls[0]?.[1]?.signal).toBe(controller.signal);
+    expect(settled, 'a leave never fails the read').not.toHaveBeenCalled();
+    leave = { signal: new AbortController().signal, stayed: new Promise(() => undefined) };
+    stay();
+    expect((await listed).map((note) => note.id), 'the page stayed, so the read is sent again').toEqual(['d1']);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('holds a listing whose body is still arriving when the page leaves, and sends it again if the page stays', async () => {
+    const controller = new AbortController();
+    let stay = () => undefined as void;
+    const stayed = new Promise<void>((resolve) => { stay = resolve; });
+    let calls = 0;
+    const fetch = vi.fn<typeof globalThis.fetch>((_input, init) => {
+      if (++calls > 1) return Promise.resolve(Response.json(LISTING));
+      // The headers are in; the body fails when the navigation aborts the read.
+      const body = new ReadableStream<Uint8Array>({ start(stream) {
+        init?.signal?.addEventListener('abort', () => stream.error(new DOMException('aborted', 'AbortError')));
+      } });
+      return Promise.resolve(new Response(body, { headers: { 'content-type': 'application/json' } }));
+    });
+    let leave = { signal: controller.signal, stayed };
+    const api = createBridge({ pathname: () => '/', fetch, leaving: () => leave });
+    const settled = vi.fn();
+    const listed = api.notes.getAll();
+    void listed.then(settled, settled);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    controller.abort();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(settled, 'a leave never fails the read').not.toHaveBeenCalled();
+    leave = { signal: new AbortController().signal, stayed: new Promise(() => undefined) };
+    stay();
+    expect((await listed).map((note) => note.id), 'the page stayed, so the read is sent again').toEqual(['d1']);
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
@@ -187,6 +243,178 @@ it.each(['switch', 'navigation'] as const)('a workspace event never overrides an
     vi.clearAllTimers();
     vi.useRealTimers();
   }
+});
+
+describe('the T3.1 images bridge (A§9 images; A§16)', () => {
+  const uploadBridge = (answer: (url: string, init?: RequestInit) => Response) => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => answer(String(input), init));
+    return { fetch, api: createBridge({ pathname: () => '/d/d1', fetch }) };
+  };
+
+  it("uploads a saved file's raw bytes to its note's asset route and returns moss's relative path", async () => {
+    const { api, fetch } = uploadBridge(() => Response.json({ relativePath: 'assets/shot.png', filename: 'shot.png' }, { status: 201 }));
+    const result = await api.images.save({ data: btoa('png-bytes'), filename: 'shot.png', mimeType: 'image/png', noteId: 'd1' });
+    expect(result).toEqual({ relativePath: 'assets/shot.png', absolutePath: '/api/docs/d1/assets/shot.png', filename: 'shot.png' });
+    const [url, init] = fetch.mock.calls[0];
+    expect(url).toBe('/api/docs/d1/assets?filename=shot.png');
+    expect(init?.method).toBe('POST');
+    expect(new Headers(init?.headers).get('content-type')).toBe('image/png');
+    expect(new TextDecoder().decode(init?.body as Uint8Array)).toBe('png-bytes');
+  });
+
+  it("refuses a failed upload visibly with the server's sentence, never silently", async () => {
+    const message = 'That file is larger than this note accepts.';
+    const { api } = uploadBridge(() => Response.json({ error: 'too-large', message }, { status: 413 }));
+    await expect(api.images.save({ data: btoa('x'), filename: 'big.png', mimeType: 'image/png', noteId: 'd1' })).rejects.toThrow(message);
+    expect(refusalMessage()).toBe(message);
+  });
+
+  it('copies an asset from another note on the server', async () => {
+    const { api, fetch } = uploadBridge(() => Response.json({ relativePath: 'assets/a.png', filename: 'a.png' }, { status: 201 }));
+    const result = await api.images.copyFromNoteAsset({ sourceNoteId: 'd2', sourceRelativePath: 'assets/a.png', destinationNoteId: 'd1' });
+    expect(result.relativePath).toBe('assets/a.png');
+    const [url, init] = fetch.mock.calls[0];
+    expect(url).toBe('/api/docs/d1/assets/copy');
+    expect(JSON.parse(String(init?.body))).toEqual({ sourceNoteId: 'd2', sourceRelativePath: 'assets/a.png' });
+  });
+
+  it("carries the page's share link on an upload and a cross-note copy, as on every read", async () => {
+    vi.stubGlobal('location', { search: '?share=tok%2F1', origin: 'http://localhost', pathname: '/d/d1' });
+    try {
+      const { api, fetch } = uploadBridge(() => Response.json({ relativePath: 'assets/a.png', filename: 'a.png' }, { status: 201 }));
+      const saved = await api.images.save({ data: btoa('png'), filename: 'a.png', mimeType: 'image/png', noteId: 'd1' });
+      await api.images.copyFromNoteAsset({ sourceNoteId: 'd2', sourceRelativePath: 'assets/a.png', destinationNoteId: 'd1' });
+      const [upload, copy] = fetch.mock.calls.map(([url]) => new URL(String(url), 'http://localhost'));
+      expect(upload.pathname).toBe('/api/docs/d1/assets');
+      expect(upload.searchParams.get('share'), 'the upload carries the link').toBe('tok/1');
+      expect(copy.pathname).toBe('/api/docs/d1/assets/copy');
+      expect(copy.searchParams.get('share'), 'the copy carries the link').toBe('tok/1');
+      expect(new URL(saved.absolutePath, 'http://localhost').searchParams.get('share')).toBe('tok/1');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("carries the image context menu's Edit Alt Text… into moss's native command listener", async () => {
+    const { api } = uploadBridge(() => Response.json({}));
+    const commands: string[] = [];
+    const stop = api.system.onNativeMenuCommand((command: string) => commands.push(command));
+    runNativeMenuCommand('edit-image-alt-text');
+    expect(commands).toEqual(['edit-image-alt-text']);
+    stop();
+    runNativeMenuCommand('edit-image-alt-text');
+    expect(commands).toHaveLength(1);
+  });
+});
+
+describe('the T3.7 bridge: tab, print and download (R4; A§9 Export)', () => {
+  const memory = (seed: Map<string, string> = new Map()) => {
+    const values = new Map(seed);
+    return { values, getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value); }, removeItem: (key: string) => { values.delete(key); } };
+  };
+  const hooks = (overrides: Partial<BrowserHooks> = {}): BrowserHooks => ({ ...inertBrowser, origin: 'https://moss.example', ...overrides });
+  const quiet = () => vi.fn<typeof globalThis.fetch>(async () => Response.json(LISTING));
+
+  it('opens a note in a new browser tab at /d/<id>, keeping a share link', async () => {
+    const open = vi.fn();
+    const api = createBridge({ pathname: () => '/', fetch: quiet(), browser: hooks({ open }) });
+    expect(await api.system.createWindow({ noteId: 'd1' })).toEqual({ action: 'created', windowId: -1 });
+    expect(open).toHaveBeenLastCalledWith('https://moss.example/d/d1');
+    const shared = createBridge({ pathname: () => '/d/d1', fetch: quiet(), share: () => 'tok en', browser: hooks({ open }) });
+    await shared.system.createWindow({ noteId: 'd1' });
+    expect(open).toHaveBeenLastCalledWith('https://moss.example/d/d1?share=tok%20en');
+  });
+
+  it('hands a PDF session to the /pdf-export tab it opens, and only that session', async () => {
+    const session = memory();
+    const openWindow = vi.fn(() => true);
+    const api = createBridge({ pathname: () => '/d/d1', fetch: quiet(), browser: hooks({ openWindow, session }) });
+    const input = { title: 'Plans', markdown: 'Body', renderedHtml: '<p>Body</p>', serializedEditorState: { root: {} }, tabGroupActiveIndices: [1] };
+    const id = await api.notes.createPdfExportSession('d1', input);
+    expect(id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(await api.notes.openPdfExportPreview(id)).not.toBeNull();
+    expect(openWindow).toHaveBeenCalledWith(`/pdf-export?pdfExportSessionId=${id}`);
+
+    // The print tab reads the session from its own copy of the opener's session storage, or from the opener's.
+    // PdfExportApp never reads renderedHtml, so it is not stored.
+    const expected = { noteId: 'd1', title: 'Plans', markdown: 'Body', serializedEditorState: { root: {} }, tabGroupActiveIndices: [1] };
+    const child = createBridge({ pathname: () => '/pdf-export', fetch: quiet(), browser: hooks({ session: memory(session.values) }) });
+    expect(await child.notes.getPdfExportSession(id)).toEqual(expected);
+    const viaOpener = createBridge({ pathname: () => '/pdf-export', fetch: quiet(), browser: hooks({ session: memory(), openerSession: () => session }) });
+    expect(await viaOpener.notes.getPdfExportSession(id)).toEqual(expected);
+    expect(await child.notes.getPdfExportSession('another'), 'an unknown session is none').toBeNull();
+  });
+
+  it('reports a blocked print tab as a failed open', async () => {
+    const api = createBridge({ pathname: () => '/', fetch: quiet(), browser: hooks({ openWindow: () => false, session: memory() }) });
+    const id = await api.notes.createPdfExportSession('d1', { title: 'Plans', markdown: '' });
+    expect(await api.notes.openPdfExportPreview(id)).toBeNull();
+  });
+
+  it("downloads the server's export of the doc, named by its title, ignoring moss's client markdown", async () => {
+    const download = vi.fn();
+    const exported = 'Totals {{2+2|4}} and [[Launch Plan]].\n';
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input) => String(input) === '/api/docs/d1/content'
+      ? new Response(exported, { headers: { 'content-type': 'text/markdown; charset=utf-8' } })
+      : Response.json(LISTING));
+    const api = createBridge({ pathname: () => '/d/d1', fetch, share: () => 'tok', browser: hooks({ download }) });
+    expect(await api.notes.exportMarkdown('d1', { title: ' Q4 / plan: draft? ', markdown: 'Totals 4 and Launch Plan.' })).toEqual({ canceled: false });
+    expect(fetch).toHaveBeenCalledWith('/api/docs/d1/content', expect.objectContaining({ headers: expect.objectContaining({ 'x-moss-share': 'tok' }) }));
+    const [name, blob] = download.mock.calls[0] as [string, Blob];
+    expect(name).toBe('Q4 - plan- draft-.md');
+    expect(await blob.text()).toBe(exported);
+    await api.notes.exportMarkdown('d1', { title: '   ', markdown: '' });
+    expect(download.mock.calls[1][0]).toBe('Untitled.md');
+  });
+
+  it('fails Save as Markdown loudly when the export is refused, and downloads nothing', async () => {
+    const download = vi.fn();
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json({ error: 'not-found' }, { status: 404 }));
+    const api = createBridge({ pathname: () => '/d/d1', fetch, browser: hooks({ download }) });
+    await expect(api.notes.exportMarkdown('d1', { title: 'Plans', markdown: '' })).rejects.toThrow(/couldn’t export/i);
+    expect(download).not.toHaveBeenCalled();
+  });
+
+  it("waits for this tab's unacked edits before reading the export, so the file holds them", async () => {
+    const download = vi.fn();
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input) => String(input) === '/api/docs/d1/content'
+      ? new Response('typed', { headers: { 'content-type': 'text/markdown' } })
+      : Response.json(LISTING));
+    const api = createBridge({ pathname: () => '/d/d1', fetch, browser: hooks({ download }) });
+    const session = {};
+    markUnacked(session, true);
+    try {
+      const saved = api.notes.exportMarkdown('d1', { title: 'Plans', markdown: '' });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(fetch.mock.calls.map(([input]) => String(input)), 'no export read while an edit is unacked').not.toContain('/api/docs/d1/content');
+      markUnacked(session, false);
+      expect(await saved).toEqual({ canceled: false });
+      expect(fetch.mock.calls.map(([input]) => String(input))).toContain('/api/docs/d1/content');
+      expect(download).toHaveBeenCalledTimes(1);
+    } finally {
+      markUnacked(session, false);
+    }
+  });
+
+  it('refuses Save as Markdown loudly when the edits stay unacked, and downloads nothing', async () => {
+    vi.useFakeTimers();
+    const download = vi.fn();
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response('stale', { headers: { 'content-type': 'text/markdown' } }));
+    const api = createBridge({ pathname: () => '/d/d1', fetch, browser: hooks({ download }) });
+    const session = {};
+    markUnacked(session, true);
+    try {
+      const saved = expect(api.notes.exportMarkdown('d1', { title: 'Plans', markdown: '' })).rejects.toThrow(/haven’t synced/i);
+      await vi.advanceTimersByTimeAsync(EXPORT_ACK_WAIT_MS + 1);
+      await saved;
+      expect(fetch.mock.calls.map(([input]) => String(input))).not.toContain('/api/docs/d1/content');
+      expect(download).not.toHaveBeenCalled();
+    } finally {
+      markUnacked(session, false);
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe('the T3.4 bridge', () => {

@@ -4,8 +4,9 @@ import { sql } from 'drizzle-orm';
 import {
   check, index, integer, primaryKey, sqliteTable, text, uniqueIndex, type AnySQLiteColumn,
 } from 'drizzle-orm/sqlite-core';
-// Grantable roles, from the one roles module; the owner is never stored, it derives from owner_user_id.
-import { MEMBER_ROLES } from '@moss-multi/protocol/roles';
+// Roles from the one roles module: links stop at editor; a grant or invite may make a co-owner (the vault owner
+// itself is never stored, it derives from owner_user_id).
+import { GRANT_ROLES, MEMBER_ROLES } from '@moss-multi/protocol/roles';
 
 const now = () => new Date();
 
@@ -171,7 +172,7 @@ export const docMembers = sqliteTable(
     docId: text('doc_id').notNull().references(() => docs.id, { onDelete: 'cascade' }),
     principalId: text('principal_id').notNull(),
     principalType: text('principal_type', { enum: PRINCIPAL_TYPES }).notNull(),
-    role: text('role', { enum: MEMBER_ROLES }).notNull(),
+    role: text('role', { enum: GRANT_ROLES }).notNull(),
     addedBy: text('added_by').notNull(),
     createdAt: integer('created_at').notNull(),
   },
@@ -185,7 +186,7 @@ export const folderMembers = sqliteTable(
     folderId: text('folder_id').notNull().references(() => folders.id, { onDelete: 'cascade' }),
     principalId: text('principal_id').notNull(),
     principalType: text('principal_type', { enum: PRINCIPAL_TYPES }).notNull(),
-    role: text('role', { enum: MEMBER_ROLES }).notNull(),
+    role: text('role', { enum: GRANT_ROLES }).notNull(),
     addedBy: text('added_by').notNull(),
     createdAt: integer('created_at').notNull(),
   },
@@ -215,7 +216,7 @@ export const invites = sqliteTable(
     email: text('email').notNull(),
     targetType: text('target_type', { enum: TARGET_TYPES }).notNull(),
     targetId: text('target_id').notNull(),
-    role: text('role', { enum: MEMBER_ROLES }).notNull(),
+    role: text('role', { enum: GRANT_ROLES }).notNull(),
     invitedBy: text('invited_by').notNull(),
     createdAt: integer('created_at').notNull(),
     acceptedAt: integer('accepted_at'),
@@ -226,6 +227,8 @@ export const invites = sqliteTable(
     index('invites_email_idx').on(t.email),
     index('invites_target_idx').on(t.targetType, t.targetId),
     index('invites_inviter_idx').on(t.invitedBy, t.createdAt),
+    // One open invite per email and target, so two shares of one email at once leave one row (T2.4).
+    uniqueIndex('invites_open_idx').on(t.targetType, t.targetId, t.email).where(sql`accepted_at IS NULL AND revoked_at IS NULL`),
   ],
 );
 
@@ -281,6 +284,26 @@ export const assetVersions = sqliteTable(
     message: text('message'),
   },
   (t) => [index('asset_versions_asset_idx').on(t.assetId), index('asset_versions_content_hash_idx').on(t.contentHash)],
+);
+
+/**
+ * A doc's media (A§16): each `assets/<filename>` the doc uses, bound to the immutable bytes an upload into it, a copy
+ * from a doc the copier reads, or a duplicate placed there. Reads resolve only through this record, never by filename
+ * in a folder; a move keeps it as it is.
+ */
+export const docMedia = sqliteTable(
+  'doc_media',
+  {
+    docId: text('doc_id').notNull().references(() => docs.id, { onDelete: 'cascade' }),
+    filename: text('filename').notNull(),
+    versionId: text('version_id').references(() => assetVersions.id, { onDelete: 'set null' }),
+    contentHash: text('content_hash').notNull().references(() => contentObjects.hash),
+    contentType: text('content_type').notNull(),
+    size: integer('size').notNull(),
+    createdBy: text('created_by').notNull(),
+    createdAt: integer('created_at').notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.docId, t.filename] })],
 );
 
 export const userPrefs = sqliteTable('user_prefs', {

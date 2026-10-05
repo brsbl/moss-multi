@@ -7,6 +7,9 @@ import { BASE, insertDoc, insertFolder, insertGrant, insertLink, SECRET, signedU
 import { handleApi } from './router.ts';
 
 const trashed: string[] = [];
+/** Each DocDO hold, with the doc's deleted_at when it was taken, and each settle, with the hold it releases. */
+const holds: [doc: string, hold: string, deletedAt: unknown][] = [];
+const settled: [doc: string, hold: string | undefined, deleted: boolean][] = [];
 let trashFails = false;
 const published = new Map<string, { type: string; docIds?: string[]; folderIds?: string[] }[]>();
 
@@ -14,13 +17,19 @@ const DocDO = {
   idFromName: (name: string) => ({ name, toString: () => name }),
   get: (id: { name: string }) => ({
     setName: async () => undefined,
-    trash: async () => {
+    trash: async (hold: string) => {
       if (trashFails) throw new Error('DocDO unavailable');
+      holds.push([id.name, hold, (await docRow(id.name))?.deleted_at ?? null]);
       trashed.push(id.name);
+    },
+    settle: async (hold?: string) => {
+      const deleted = (await docRow(id.name))?.deleted_at != null;
+      settled.push([id.name, hold, deleted]);
+      return { deleted };
     },
     create: async () => undefined,
     createFromSnapshot: async () => undefined,
-    snapshotForDuplicate: async () => ({ title: 'Source', state: new Uint8Array() }),
+    snapshotForDuplicate: async () => ({ title: 'Source', state: new Uint8Array(), markdown: '', media: [] }),
   }),
 };
 
@@ -48,6 +57,8 @@ beforeAll(async () => {
 afterAll(() => d1?.dispose());
 beforeEach(() => {
   trashed.length = 0;
+  holds.length = 0;
+  settled.length = 0;
   trashFails = false;
   published.clear();
 });
@@ -286,6 +297,8 @@ describe('DELETE /api/folders/:id', () => {
     expect((await docRow(already))?.trash_batch_id, 'an already-trashed note keeps its own batch').not.toBe(a?.trash_batch_id);
     expect(await docRow(survivor)).toMatchObject({ deleted_at: null });
     expect(trashed.sort()).toEqual([inTop, inSub].sort());
+    expect(holds.every(([, hold, deletedAt]) => hold === a?.trash_batch_id && deletedAt === null), 'each doc closes before the batch commits').toBe(true);
+    expect(settled.map(([doc, hold, deleted]) => [doc, hold, deleted]).sort()).toEqual([[inSub, a?.trash_batch_id, true], [inTop, a?.trash_batch_id, true]].sort());
     expect(published.get(cy.id), "a grantee inside the subtree hears about their note, and nothing else").toEqual([
       { type: 'meta', docIds: [inSub], folderIds: [] },
     ]);
@@ -306,11 +319,13 @@ describe('DELETE /api/folders/:id', () => {
     expect(trashed).toEqual([]);
   });
 
-  it('answers 503 when a doc does not close, and a retry closes it', async () => {
+  it('answers 503 before anything commits when a doc does not close, and a retry trashes it', async () => {
     const folder = await create(ada, ada.homeId, 'Retry');
     const doc = await insertDoc(d1.db, ada, { folderId: folder });
     trashFails = true;
     expect((await call(ada, 'DELETE', `/api/folders/${folder}`)).status).toBe(503);
+    expect(await row(folder), 'the folder is not in Trash').toMatchObject({ deleted_at: null });
+    expect(await docRow(doc)).toMatchObject({ deleted_at: null });
     trashFails = false;
     expect((await call(ada, 'DELETE', `/api/folders/${folder}`)).status).toBe(200);
     expect(trashed).toEqual([doc]);
