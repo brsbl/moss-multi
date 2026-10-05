@@ -80,8 +80,9 @@ export class DocCapError extends Error {
   }
 }
 
-/** A socket whose role was resolved DOC_SOCKET_MAX_MS ago or more. */
-const aged = (attachment: Attachment, now: number) => (attachment.resolvedAt ?? 0) + DOC_SOCKET_MAX_MS <= now;
+/** When a socket reaches DOC_SOCKET_MAX_MS from its admission here. */
+const agesAt = (attachment: Attachment) => (attachment.admittedAt ?? 0) + DOC_SOCKET_MAX_MS;
+const aged = (attachment: Attachment, now: number) => agesAt(attachment) <= now;
 
 /** The trashes holding the doc closed, each with when the alarm may settle it. */
 function holdsOf(store: DocStore): Map<string, number> {
@@ -239,7 +240,7 @@ export class DocDO extends YServer<SyncEnv> {
       connection.close(code ?? CLOSE.noPrincipal, 'refused');
       return;
     }
-    attach(connection, attachment);
+    attach(connection, { ...attachment, admittedAt: Date.now() });
     this.#register(connection, attachment, store);
     const encoder = encoding.createEncoder();
     encoding.writeVarUint(encoder, 0);
@@ -517,7 +518,7 @@ export class DocDO extends YServer<SyncEnv> {
     const due = [...holds.values()];
     for (const connection of this.getConnections()) {
       const attachment = attachmentOf(connection);
-      if (attachment) due.push((attachment.resolvedAt ?? 0) + DOC_SOCKET_MAX_MS);
+      if (attachment) due.push(agesAt(attachment));
     }
     if (due.length === 0) return;
     await this.ctx.storage.setAlarm(Math.min(...due));

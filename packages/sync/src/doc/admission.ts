@@ -20,6 +20,8 @@ export interface Attachment {
   presenceAllowed?: boolean;
   /** When the Worker resolved `role` (epoch ms); 0 when unknown, which any principal revocation outdates. */
   resolvedAt?: number;
+  /** When this DocDO admitted the socket (its own clock); DOC_SOCKET_MAX_MS later the socket closes 1013. */
+  admittedAt?: number;
 }
 
 /** The Worker's trusted headers, or null with no principal or no known role. */

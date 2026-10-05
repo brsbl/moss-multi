@@ -356,10 +356,7 @@ export async function handleMembers(request: Request, env: MembersEnv, target: M
   if (!owner) return refuse(403, 'forbidden', `Only the owner can share this ${noun(target)}.`);
   const body = await readJsonObject(request);
   if (!body) return refuse(400, 'bad-request', 'The request body must be a JSON object.');
-  // Every write below re-checks manage in its own statement; reading again after the body only narrows the window.
-  const current = await accessTo(db, principal, target);
-  if (!current) return notFound();
-  if (current.role !== 'owner') return refuse(403, 'forbidden', `Only the owner can share this ${noun(target)}.`);
+  // Every write below re-checks manage in its own statement, so a demotion that lands while the body arrives wins.
   if (request.method === 'POST') return share(db, env, target, access.ownerUserId, principal, body);
   return change(db, env, target, access.ownerUserId, principal, body, request.method === 'DELETE');
 }

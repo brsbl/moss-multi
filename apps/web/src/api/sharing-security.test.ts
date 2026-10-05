@@ -102,6 +102,7 @@ describe('(a) no account enumeration beyond the rate limit', () => {
 });
 
 describe('(b) the vault owner stays the owner', () => {
+  // About 30 requests, each resolving access over D1.
   it("lets a co-owner neither lower nor remove the vault's owner, nor take the vault", async () => {
     // Its own co-owner: a grant on Ada's Home reaches every note of Ada's the later tests make.
     const co = await signedUpUser(env, 't24s-co', 'Co');
@@ -146,7 +147,7 @@ describe('(b) the vault owner stays the owner', () => {
     // Even a grant row naming the vault owner at a lower role (none can be written) lowers nothing.
     await insertGrant(d1.db, { docId }, ada, 'viewer');
     expect(await roleOf({ cookie: ada.cookie }, docId)).toBe('owner');
-  });
+  }, 30_000);
 
   it('never gives owner access through a share link, even one a row says is an owner link', async () => {
     const folderId = await insertFolder(d1.db, ada, ada.homeId);
