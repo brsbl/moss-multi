@@ -19,7 +19,7 @@ interface Listing {
   vault: { id: string };
   vaults: { id: string; role: string; owned: boolean }[];
   docs: { id: string; folderPath: string; surfaced: boolean; role: string }[];
-  folders: { id: string; path: string; surfaced: boolean }[];
+  folders: { id: string; path: string; surfaced: boolean; role: string }[];
 }
 async function list(query = ''): Promise<Listing> {
   const response = await workspace(new Request(`${BASE}/api/workspace${query}`, { headers: { cookie: ben.cookie } }), env);
@@ -78,7 +78,7 @@ it('lists 150 shared notes and 150 folders, owned and granted, with a fixed numb
   const listAs = async (db: D1Database) => {
     const response = await workspace(new Request(`${BASE}/api/workspace`, { headers: { cookie: cal.cookie } }), { ...env, DB: db });
     expect(response.status).toBe(200);
-    return (await response.json()) as Listing & { folders: { id: string; role: string }[] };
+    return (await response.json()) as Listing;
   };
   await listAs(d1.db);
   const small = countingBinds(d1.db);
