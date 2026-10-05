@@ -94,7 +94,9 @@ test('j16-suggest: a solo owner with nothing selected toggles Suggest in the doc
   const ada = await actors.open(await actors.principal('ada'));
   const docId = await ui.createNote(ada);
   await ui.typeTitle(ada, docId, 'Solo suggest', { enter: true });
-  await ui.typeBody(ada, docId, 'Owner text kept');
+  // Typed in two parts: the Edit-mode keystroke at the end lands between them, and each part stays exact.
+  await ui.typeBody(ada, docId, 'Owner');
+  await ui.typeBody(ada, docId, ' text kept');
   const pane = ui.pane(ada, docId);
   const body = ui.body(ada, docId);
   await expect(pane).toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout: BIND_TIMEOUT });
@@ -119,7 +121,8 @@ test('j16-suggest: a solo owner with nothing selected toggles Suggest in the doc
   await ada.page.keyboard.type(' plus');
   await settled(ada, docId, 'the suggestion');
   await expect(body).toContainText('Owner plus text kept');
-  await expect.poll(() => painted(ada, 'suggest-insert'), { message: 'the suggestion paints as an insert', timeout: BIND_TIMEOUT }).toContain(' plus');
+  // Yjs's text diff may take the space on either side of the insert.
+  await expect.poll(async () => (await painted(ada, 'suggest-insert')).map((text) => text.trim()), { message: 'the suggestion paints as an insert', timeout: BIND_TIMEOUT }).toContain('plus');
   const exported = await content(ada, docId);
   expect(exported).toContain('Owner text kept');
   expect(exported, 'a pending suggestion is not in the note').not.toContain('plus');
@@ -308,8 +311,10 @@ test('j16-suggest offline: suggestions typed offline reach the server after the 
   sever.reset();
   sever.restore();
   await ui.waitLive(ben, elsewhere);
+  await ben.declareRemount(elsewhere);
 
   // The owner reviews the note: both suggestions are there, and the body is unchanged.
+  ada.expectReconnects(1, docId);
   await openIn(ada, docId, 'edit');
   await ada.page.getByRole(REVIEW.role, { name: REVIEW.name }).click();
   await expect(ui.pane(ada, docId)).toHaveAttribute(EDIT_MODE_ATTR, 'review', { timeout: BIND_TIMEOUT });

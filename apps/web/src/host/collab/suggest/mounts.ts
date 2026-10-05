@@ -89,25 +89,25 @@ export class SuggestMount {
       else if (event.type === 'closed') this.#hooks.closed(event);
       else this.#hooks.change();
     }));
+    // After a drop, the fork resumes once the new socket has synced: the DocDO answers a suggest frame only on a
+    // connection it has finished admitting, and one sent at open could be dropped unanswered.
     const onSync = (synced: boolean) => {
-      if (synced) this.#begin();
+      if (!synced) return;
+      if (this.#dropped) {
+        this.#dropped = false;
+        // Requests the dropped socket never answered come back to the fork, which resumes its leases first.
+        session.resendSuggest(() => this.fork.reconnected());
+      }
+      this.#begin();
     };
     const onClose = () => {
       this.#dropped = true;
     };
-    const onStatus = ({ status }: { status: string }) => {
-      if (status !== 'connected' || !this.#dropped) return;
-      this.#dropped = false;
-      // Requests the dropped socket never answered come back to the fork, which resumes its leases first.
-      session.resendSuggest(() => this.fork.reconnected());
-    };
     session.provider.on('sync', onSync);
     session.provider.on('connection-close', onClose);
-    session.provider.on('status', onStatus);
     this.#stops.push(() => {
       session.provider.off('sync', onSync);
       session.provider.off('connection-close', onClose);
-      session.provider.off('status', onStatus);
     });
   }
 
