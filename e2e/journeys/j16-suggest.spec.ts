@@ -199,7 +199,14 @@ test('j16-suggest census: inline edits through the real UI are recorded with no 
       await caret(ben, docId, 'items.', 6); await keyboard.type(' It sat.');
       await caret(ben, docId, 'items. It', 0, 9); await keyboard.press(`${mod}+b`);
     }],
-    ['undo of a split', async () => { await caret(ben, docId, 'join tail', 4); await keyboard.press('Enter'); await keyboard.press(`${mod}+z`); }],
+    ['undo of a split', async () => {
+      // Undo captures edits within 1 s as one step; end the step so only the split is undone.
+      await ui.body(ben, docId).evaluate((root) => {
+        const editor = (root as unknown as { __lexicalEditor?: Record<symbol, { stopCapturing(): void } | undefined> }).__lexicalEditor;
+        editor?.[Symbol.for('@lexical/yjs/UndoManager')]?.stopCapturing();
+      });
+      await caret(ben, docId, 'join tail', 4); await keyboard.press('Enter'); await keyboard.press(`${mod}+z`);
+    }],
     ['join', async () => { await caret(ben, docId, 'join tail', 0); await keyboard.press('Backspace'); }],
   ];
   for (const [name, step] of steps) {
