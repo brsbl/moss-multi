@@ -330,6 +330,7 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
     - assets go only through the host;
     - CI builds a versioned `moss-editor` artifact with provenance, as the viewer does.
   - **Done:** green in both engines, with shots, and the coordinator publishes `editor-v<version>` and notifies thr_6fabbskqcf.
+- **T3.9a Editor host helpers (`moss-editor-host.js`)** `[B·fresh]`, ahead of T3.9, requested by thr_w89wd6n29c: the contract's pure host helpers as one self-contained ES2022 module with no imports in `packages/editor/src/host/`, held by golden parity tests to Moss desktop's own code at the pin over a table of tricky names, plus a `moss-editor-host` CI artifact (`moss-editor-host.js`, `contract.d.ts`, `editor-host.json` at 0.0.1, API 1, LICENSE); no frame editor.
 
 **Journeys added:** j11-media, j12-search, j13-vaults, j14-demo-note.
 

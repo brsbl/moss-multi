@@ -333,11 +333,17 @@ describe('ciOk', () => {
       oracle: { result: results.oracle ?? 'skipped' },
       parity: { result: results.parity ?? 'skipped' },
       viewer: { result: results.viewer ?? 'skipped' },
+      'editor-host': { result: results['editor-host'] ?? results.checks ?? 'skipped' },
     };
   }
 
   const checksOnly = { checks: true, build: false, browsers: [] };
   const everything = { checks: true, build: true, browsers: BOTH };
+
+  it('fails when the editor-host artifact job failed or was skipped beside the checks', () => {
+    expect(ciOk(needs(checksOnly, { checks: 'success', 'editor-host': 'failure' })).problems).toEqual(['editor-host: failure (planned to run)']);
+    expect(ciOk(needs(checksOnly, { checks: 'success', 'editor-host': 'skipped' })).problems).toEqual(['editor-host: skipped (planned to run)']);
+  });
 
   it('passes when every planned job passed and the rest were skipped', () => {
     expect(ciOk(needs(checksOnly, { checks: 'success' }))).toEqual({ ok: true, problems: [] });

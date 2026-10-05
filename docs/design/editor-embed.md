@@ -5,7 +5,7 @@
    - resolve each one against its own note's folder;
    - realpath both sides and refuse anything outside that folder: symlinks, hard-linked escapes, `..`, absolute paths, NUL, and `~`;
    - for `copyFromNote`, require that the source note is itself an editable or viewable note the user opened in bb, never an arbitrary id. Refusals are typed results, never a read.
-2. **Path traversal on writes.** Asset `name`, `desiredName` and every write target must pass Moss desktop's own filename sanitizer at the pin (no separators, no `..`, no leading dot, no reserved names, byte-length limits). The host re-validates them; it never trusts the editor's string. Writes stay inside the note folder, and renames inside its parent.
+2. **Path traversal on writes.** Asset `name`, `desiredName` and every write target must pass Moss desktop's own filename sanitizer at the pin (no separators, no `..`, no leading dot, no reserved names, byte-length limits). The host re-validates them with `isMossFolderName` and `isMossAssetName` from `moss-editor-host.js` (T3.9a); it never trusts the editor's string. Writes stay inside the note folder, and renames inside its parent.
 3. **Stored XSS through served assets.** SVG (and any type a browser can render as active content) must never be same-origin with the editor or plugin frame. The host serves assets with `X-Content-Type-Options: nosniff`, an exact `Content-Type`, and for SVG `Content-Security-Policy: sandbox; default-src 'none'`, with `Content-Disposition` where possible. The editor shows SVG only through `<img>`, never inline. A sniffed or mislabeled upload is refused.
 
 The latest review (Codex) returned FAIL. These findings are open and must be resolved before the contract is settled:
@@ -16,7 +16,7 @@ The latest review (Codex) returned FAIL. These findings are open and must be res
 - Rollback and failure paths are underspecified and conflict with the plan feedback
 - Layout sidecar rule misstates desktop's conditional write and can delete a sidecar desktop keeps
 - Retitle into an existing distinct <newName>.md diverges from desktop and leaves the host step ambiguous
-- Editability gate admits notes whose meta.json desktop rejects
+- Editability gate admits notes whose meta.json desktop rejects (fixed in `noteEditability`, T3.9a: a truthy `id` and `title` are required)
 
 # Embeddable editor: file-backed `mountMossEditor` (T3.9)
 
@@ -111,7 +111,7 @@ Recommendation: one whole-note content version, one meta version, and per-compan
 | `metaVersion` | meta.json's bytes, and the note's `folderPath` as UTF-8 | everything else |
 | companion version (one per file) | The bytes of one companion file the read migrations consumed (for example `assets/<name>-mockup.html`), with a present/absent tag | — |
 
-- Recommended formula (`versionToken` in `moss-editor-host.js`): `sha256:` + hex of `sha256(for each part: role ‖ 0x00 ‖ (absent ? "-" : decimal byteLength ‖ 0x00 ‖ bytes) ‖ 0x00)`. Any deterministic opaque string is allowed.
+- Recommended formula (`versionToken` in `moss-editor-host.js`, asynchronous because it uses `crypto.subtle`): `sha256:` + hex of `sha256(for each part: role ‖ 0x00 ‖ (absent ? "-" : decimal byteLength ‖ 0x00 ‖ bytes) ‖ 0x00)`. Any deterministic opaque string is allowed.
 - The presence tag matters: desktop deletes empty sidecars, so absent and empty must differ.
 - The markdown's name is not in `version`; a rename by Moss with identical bytes is not a content conflict.
 - `folderPath` is in `metaVersion` because desktop derives meta.json `folderPath` from the folder's real location; a Finder move needs new meta.json bytes.
@@ -251,7 +251,7 @@ Moss's locks (`mutationQueues`, `casLocks`, `runWithNoteLock`, note-store.ts:206
 - Package: `@moss-multi/editor` in `packages/editor`, a sibling of `packages/viewer`. Not on npm; installed by release URL.
 - Entries:
   - `moss-editor.js` and `moss-editor.css`: the frame bundle.
-  - `moss-editor-host.js`: pure helpers for the host process: `isMossNoteId`, `noteIdKey`, `markdownCandidates`, `pickMarkdownFallback`, `allocateFolderName`, `folderPathFor`, `sidecarFileName`, `versionToken`, `noteEditability`, `MOSS_NOTE_FILES`, `MOSS_EDITOR_INFO`.
+  - `moss-editor-host.js`: pure helpers for the host process: `isMossNoteId`, `noteIdKey`, `markdownCandidates`, `pickMarkdownFallback`, `allocateFolderName`, `folderPathFor`, `sidecarFileName`, `versionToken`, `noteEditability`, `isMossFolderName`, `isMossAssetName`, `MOSS_NOTE_FILES`, `MOSS_EDITOR_INFO`. One ES2022 module with no imports (globals: `TextEncoder`, `crypto.subtle`), built ahead of the frame editor by T3.9a and shipped as the `moss-editor-host` CI artifact with `contract.d.ts` and `editor-host.json`.
   - `moss-html-frame.html`: the moss-html frame document (§9).
 - Release: GitHub Release `editor-v0.1.0` on brsbl/moss-multi with `moss-editor-0.1.0.tgz` (unpacks to `moss-editor/`), `SHA256SUMS` and `editor.json`. CI on the integrated head runs `pnpm pack` (T3.8's packing), uploads the `moss-editor` artifact and records the run. The coordinator publishes the release and notifies thr_6fabbskqcf.
 - `editor.json` has `viewer.json`'s fields plus `features`, `hostEntry`, `htmlFrame {file, policy}`, `build.run`, `editableScopes: ['internal']` and `csp`.
