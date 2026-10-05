@@ -249,8 +249,14 @@ const PAYLOAD_KINDS: Record<string, PayloadKind> = {
   },
   HTML: {
     markdown: 'Intro.\n\n```moss-html\n<p>seed</p>\n```', type: 'html-block', getter: 'getRawHtml', seed: '<p>seed</p>',
-    // A double-click opens the editor whatever the preview shows (its error overlay covers the Edit button).
-    open: (actor, id) => ui.body(actor, id).locator('[data-moss-html-preview-viewport]').dblclick({ position: { x: 8, y: 8 } }),
+    // A double-click opens the editor whatever the preview shows (its error overlay covers the Edit button); the
+    // bottom corner is clear of the header and the overlay's Retry button.
+    open: async (actor, id) => {
+      const viewport = ui.body(actor, id).locator('[data-moss-html-preview-viewport]');
+      const box = await viewport.boundingBox();
+      if (!box) throw new Error('the HTML preview has no box');
+      await viewport.dblclick({ position: { x: 8, y: box.height - 8 } });
+    },
     input: (actor, id) => ui.body(actor, id).locator('textarea.moss-codeblock-textarea'),
   },
   formula: {
