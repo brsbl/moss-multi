@@ -452,6 +452,8 @@ function FormulaEditPopover({
 
   // The payload's text as the field last saw it, so a peer's change merges into text the field has not written.
   const syncedRef = useRef('');
+  // The other field as the node last held it: the draft keeps its own value there only once the person has changed it.
+  const syncedOtherRef = useRef('');
   // Whether the field holds a merge no keystroke has written since, so accepting writes it again after the peer's edit.
   const mergedRef = useRef(false);
   useEffect(() => {
@@ -468,10 +470,15 @@ function FormulaEditPopover({
         const next = symbolic ? draft.name : draft.expression;
         const base = syncedRef.current;
         syncedRef.current = next;
+        const nodeOther = symbolic ? draft.expression : draft.name;
+        const baseOther = syncedOtherRef.current;
+        syncedOtherRef.current = nodeOther;
         if (local) return;
         const merged = mergeIntoField(symbolic ? nameInputRef.current : expressionInputRef.current, base, next);
         const kept = latestDraftRef.current;
-        const mergedDraft = symbolic ? { name: merged, expression: kept.expression } : { name: kept.name, expression: merged };
+        const keptOther = symbolic ? kept.expression : kept.name;
+        const other = keptOther === baseOther ? nodeOther : keptOther;
+        const mergedDraft = symbolic ? { name: merged, expression: other } : { name: other, expression: merged };
         setDraftState(mergedDraft);
         // The field's own characters, once the peer's change makes them valid, are written as a keystroke would.
         if (merged !== next) {
@@ -490,6 +497,7 @@ function FormulaEditPopover({
   useEffect(() => {
     const opened = sessionDraftRef.current;
     syncedRef.current = opened.sourceMode === 'symbolic' ? opened.name : opened.expression;
+    syncedOtherRef.current = opened.sourceMode === 'symbolic' ? opened.expression : opened.name;
     mergedRef.current = false;
     setDraftState({ name: opened.name, expression: opened.expression });
   }, [editingFormula.session, setDraftState]);
