@@ -148,6 +148,7 @@ Read this with PRODUCT.md, your BUILDPLAN entry and the A§ it cites, before wri
 ## Title, presence, connection
 
 - A host import into a vendored component can be shadowed by moss's own locals (`folderError` is a `useState` in NotesListPanelContent); name seam imports so they cannot collide, since vendor/ is neither linted nor typechecked from apps/web. [T2.2]
+- A write that rests on an authority check re-checks it in the same statement (`managesDoc` in `api/access.ts`), so a revocation that commits while the request awaits a DocDO wins; the trash, restore and Trash view share the move rule (A§8 the manage rule). [T2.3s]
 - Folders (T2.2): moss names folders by `Notes/...` path, so every folder call maps the path through the listing's id↔path map and re-reads the listing after the change; moss renders a thrown `Error.message` as is, so the server sends a sentence on every refusal. A folder's subtree trashes as one `trash_batch_id`, D1 first, then `DocDO.trash()` closes each open doc 4410; an owner's retry re-closes the batch.
 
 - A row-menu Rename transfers focus in `onCloseAutoFocus`, cancelling the return to its trigger. The intent carries the target note id so an async selection cannot focus the old pane. The bound title consumes every autofocus intent, including repeat renames of the same note. The input-refusal region also renders on the empty canvas and collapses when empty. [T1.4]

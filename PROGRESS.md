@@ -1,12 +1,12 @@
 # moss-multi progress
 
-**Overall: 54% done** (43 of 79 planned tasks verified)
+**Overall: 55% done** (44 of 80 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 17 / 17 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 15 / 19 | in progress |
-| M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 6 / 10 | in progress |
+| M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 7 / 11 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 5 / 9 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
@@ -61,6 +61,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-04 — T3.3 verified: every moss node family, including formulas, file links, charts and sketches, can be built in a shared note and edited by two people at once without either losing the other's work, even through undo; the j14 demo note renders like pristine moss in light and dark.
 - 2026-10-04 — T3.7 verified: on the web a person can open a note in a new tab with a share link, print it to PDF through the browser, and download it as clean Markdown that waits for their unsaved edits and refuses a stale export.
 - 2026-10-04 — T3.1 verified: a person can add images and video to a note by upload, paste, drop or /media, and everyone with access, including an anonymous link visitor, sees them after reload and in a copied note; video plays and seeks through Range responses, and images offer Edit Alt Text….
+- 2026-10-04 — T2.3s verified: only the vault owner or a co-owner (by an owner grant on the note or a folder above it) can trash, restore or read a trashed note in Trash, never an editor, a link holder or an agent key; a restore into another folder needs edit there and never lands under a folder trashed meanwhile, a refused restore shows the server's sentence, everyone else meets the one 404 on a trashed note, and a revocation landing mid-trash or mid-restore wins.
 
 ## T1.1s identity audit
 
@@ -94,6 +95,9 @@ A task counts only after an independent checker passes it on green CI. Each mile
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
 
+- T2.3s checker P2 (downgraded from Codex P1): a restore can act on an older view of the note after another manager restores, moves and re-trashes it; RESTORE in `api/trash.ts` does not check the note's current folder or `trash_batch_id` still match what it read. No authority is gained (the UPDATE re-checks manage on the current chain and edit on the destination) → trash follow-up: compare-and-set on folder and batch.
+- T2.3s checker P2 (downgraded from Codex P1): a signed-out share-link holder gets 401, not 404, from trash, restore and the Trash read; nothing is disclosed (the 401 is identical for a missing note) and it predates T2.3s; A§8 confines the 401 exception to a credential-less CLI → align to 404 in an access follow-up.
+- T2.3s checker P2: the revocation tests in `trash-security.test.ts` use stub DocDO and PrincipalDO, so they do not prove open editors recover (or that a terminal editor on a live note is kicked) → T2.5.
 - T1.8 workspace follow-up implemented in T2.1: push events replace listing polling, changed document ids refresh metadata, and unchanged vault choices do not notify the switcher; awaiting CI and independent verification.
 - T1.9 checker P2: `$copyNode` must mint a new register identity for duplicated code, HTML and formula nodes before T3.3 uses that path; current clipboard copies serialize without the identity → closed in T3.3 (`resetOnCopyNodeFrom` on every register node).
 - T1.9 checker P2: rebind open field observers when a register map entry is replaced (live imports now mint unique ids; server imports are serialized) → register/import follow-up.
