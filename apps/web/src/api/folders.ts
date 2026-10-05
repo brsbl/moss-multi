@@ -14,7 +14,7 @@ import { TRASHED_ACTION } from '@moss-multi/protocol/retention';
 import { can, roleAtLeast } from '@moss-multi/protocol/roles';
 import type { DocDO } from '@moss-multi/sync';
 import {
-  collectRecipients, docsOf, kickLosses, KickFailed, publishRecipients, reachOf, type DocReach, type FanoutEnv, type Recipients,
+  collectRecipients, docsOf, kick, kickLosses, KickFailed, publishRecipients, reachOf, type DocReach, type FanoutEnv, type Recipients,
 } from '@moss-multi/sync/fanout';
 import type { AuthEnv } from '../auth/auth.ts';
 import { resolvePrincipal, shareTokenOf, type Principal } from '../auth/principal.ts';
@@ -53,6 +53,8 @@ function folderName(value: unknown): { name: string } | { problem: string } {
 /** A move changes who can open what, so it needs the manage capability (A§8). */
 const ownerMoves = (what: 'folders' | 'notes') => refuse(403, 'forbidden', `Only the vault’s owner can move ${what}, because a move changes who can open them.`);
 
+const KICK_FAILED = 'The move is saved, but some open windows haven’t closed yet. Try again.';
+
 /** After a committed move, whoever lost a grant or link on a moved doc is kicked from it (A§8); null when all went. */
 async function kickMoved(env: FoldersEnv, before: Map<string, DocReach>): Promise<Response | null> {
   try {
@@ -60,7 +62,21 @@ async function kickMoved(env: FoldersEnv, before: Map<string, DocReach>): Promis
     return null;
   } catch (error) {
     if (!(error instanceof KickFailed)) throw error;
-    return refuse(503, 'unavailable', 'The move is saved, but some open windows haven’t closed yet. Try again.');
+    return refuse(503, 'unavailable', KICK_FAILED);
+  }
+}
+
+/**
+ * A move to where the item already is may retry one whose kick failed, and who lost access then is no longer known:
+ * every socket on the docs re-asks REST and reconnects at its current role (A§8). Null when all went.
+ */
+async function kickRetried(env: FoldersEnv, docIds: string[]): Promise<Response | null> {
+  try {
+    await kick({ DB: env.DB, DocDO: env.DocDO }, docIds, { everyone: true });
+    return null;
+  } catch (error) {
+    if (!(error instanceof KickFailed)) throw error;
+    return refuse(503, 'unavailable', KICK_FAILED);
   }
 }
 
@@ -220,7 +236,8 @@ async function updateFolder(request: Request, env: FoldersEnv, id: string): Prom
   }
   const touched = moving ? (await subtree(env.DB, id)).map((row) => row.id) : [id];
   await notify(env, await collectRecipients(env.DB, { folderIds: touched }, recipients));
-  const unkicked = moving ? await kickMoved(env, reach) : null;
+  const retried = !moving && 'parentId' in body && can(folder.role, 'manage');
+  const unkicked = moving ? await kickMoved(env, reach) : retried ? await kickRetried(env, await docsOf(env.DB, { type: 'folder', id })) : null;
   if (unkicked) return unkicked;
   return json({ folder: await folderRecord(db, id) }, 200, NO_STORE);
 }
@@ -347,10 +364,8 @@ export async function moveDoc(request: Request, env: FoldersEnv, docId: string, 
     }
   }
   await notify(env, await collectRecipients(env.DB, { docIds: [docId] }, recipients));
-  if (access.folderId !== folderId) {
-    const unkicked = await kickMoved(env, reach);
-    if (unkicked) return unkicked;
-  }
+  const unkicked = access.folderId !== folderId ? await kickMoved(env, reach) : await kickRetried(env, [docId]);
+  if (unkicked) return unkicked;
   const [doc] = await db
     .select({ id: docs.id, folderId: docs.folderId, title: docs.title, filename: docs.filename, createdAt: docs.createdAt, updatedAt: docs.updatedAt })
     .from(docs).where(eq(docs.id, docId));

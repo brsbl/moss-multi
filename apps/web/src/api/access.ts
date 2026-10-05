@@ -17,6 +17,8 @@ export interface DocAccess {
   deleted: boolean;
   /** Only a presented share link opens it: no ownership and no grant. */
   linkOnly: boolean;
+  /** The presented link raised the role above what ownership and grants give. */
+  viaLink: boolean;
 }
 
 export interface FolderAccess {
@@ -120,8 +122,11 @@ export async function resolveDocAccess(db: Db, principal: Principal, docId: stri
   const sources = { owner: actingUserId(principal) === doc.ownerUserId, grants, anonymous: principal.type === 'anonymous', agent: principal.type === 'agent' };
   const role = foldRole({ ...sources, link });
   if (role === null) return null;
-  const linkOnly = foldRole({ ...sources, link: null }) === null;
-  return { role, ownerUserId: doc.ownerUserId, folderId: doc.folderId, deleted: doc.deletedAt !== null, linkOnly };
+  const withoutLink = foldRole({ ...sources, link: null });
+  return {
+    role, ownerUserId: doc.ownerUserId, folderId: doc.folderId, deleted: doc.deletedAt !== null,
+    linkOnly: withoutLink === null, viaLink: withoutLink !== role,
+  };
 }
 
 /**

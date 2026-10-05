@@ -37,15 +37,19 @@ export function attachmentFrom(headers: Headers): Attachment | null {
   };
 }
 
+/** The principal id a recheck for everyone revokes: every socket resolved no later than it closes. */
+export const EVERYONE = '*';
+
 /**
- * 4402 for an ended session; 4403 for a revoked share token, or for a principal whose role was resolved no later than
- * its revocation (a role resolved afterwards read the change, so a demoted or re-added member reconnects).
+ * 4402 for an ended session; 4403 for a principal, a share token or everyone revoked no earlier than the socket's role
+ * was resolved. A role resolved afterwards read the change, so a demoted or re-added member reconnects, and a link
+ * that reaches the note again (a note moved back under it) opens it again.
  */
 export function revocationCode(attachment: Attachment, revoked: Revoked): number | null {
   if (attachment.sessionId !== null && revoked.session.has(attachment.sessionId)) return CLOSE.sessionEnded;
-  const principalAt = revoked.principal.get(attachment.principalId);
-  if (principalAt !== undefined && (attachment.resolvedAt ?? 0) <= principalAt) return CLOSE.revoked;
-  if (attachment.shareToken !== null && revoked.token.has(attachment.shareToken)) return CLOSE.revoked;
+  const outdated = (at: number | undefined) => at !== undefined && (attachment.resolvedAt ?? 0) <= at;
+  if (outdated(revoked.principal.get(attachment.principalId)) || outdated(revoked.principal.get(EVERYONE))) return CLOSE.revoked;
+  if (attachment.shareToken !== null && outdated(revoked.token.get(attachment.shareToken))) return CLOSE.revoked;
   return null;
 }
 

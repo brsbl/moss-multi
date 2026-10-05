@@ -212,7 +212,9 @@ const KICK_FAILED = 'The change is saved, but some open windows haven’t closed
  * Closes `principalIds` (with their agents) on every doc the target reaches, after the change committed. A DocDO that
  * does not acknowledge answers 503 so the owner retries; a retry kicks again.
  */
-async function kickFrom(db: D1Database, env: MembersEnv, target: MemberTarget, principalIds: string[], at: number): Promise<Response | null> {
+async function kickFrom(
+  db: D1Database, env: MembersEnv, target: MemberTarget, principalIds: string[], at: number, notified = principalIds,
+): Promise<Response | null> {
   if (!env.DocDO) return refuse(503, 'unavailable', KICK_FAILED);
   try {
     await kick({ DB: db, DocDO: env.DocDO }, await docsOf(db, target), { principalIds: await withAgents(db, principalIds) }, at);
@@ -224,7 +226,7 @@ async function kickFrom(db: D1Database, env: MembersEnv, target: MemberTarget, p
   const event = target.type === 'doc' ? { type: 'meta' as const, docIds: [target.id], folderIds: [] } : { type: 'vaults' as const };
   const principalDO = env.PrincipalDO;
   if (principalDO) {
-    for (const id of principalIds) {
+    for (const id of notified) {
       waitUntil(publishTo({ DB: db, PrincipalDO: principalDO }, id, event).catch((error: unknown) => console.error('workspace kick notification failed', error)));
     }
   }
@@ -234,8 +236,9 @@ async function kickFrom(db: D1Database, env: MembersEnv, target: MemberTarget, p
 /**
  * PATCH `{principalId | email, role}` changes access and DELETE `{principalId | email}` removes it. A member is named by
  * id: lowering or removing them kicks them (a raise waits for their reload, A§8). An invite still pending is named by
- * email and runs the same statements whether or not the email has an account; its grantee has opened nothing yet
- * (opening redeems the invite), so there is nobody to kick.
+ * email and runs the same statements whether or not the email has an account. A known account was granted at once and
+ * may be opening the note as the invite changes, so every change by email kicks; an unknown one kicks a fresh id, so
+ * the work and the answer are the same.
  */
 async function change(db: Db, env: MembersEnv, target: MemberTarget, ownerUserId: string, body: Record<string, unknown>, remove: boolean): Promise<Response> {
   const role = body.role;
@@ -259,6 +262,8 @@ async function change(db: Db, env: MembersEnv, target: MemberTarget, ownerUserId
           env.DB.prepare(`UPDATE invites SET role = ?4 WHERE ${open}`).bind(target.type, target.id, email, role),
         ]);
     if (!changed(changedInvite)) return refuse(404, 'not-found', 'That invite is no longer open.');
+    const failed = await kickFrom(env.DB, env, target, [personId ?? crypto.randomUUID()], Date.now(), personId ? [personId] : []);
+    if (failed) return failed;
     return json(remove ? { removed: { email } } : { changed: { email, role } }, 200, NO_STORE);
   }
   const principalId = typeof body.principalId === 'string' ? body.principalId : '';

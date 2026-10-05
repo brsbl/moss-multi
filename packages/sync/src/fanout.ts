@@ -124,7 +124,7 @@ export async function withAgents(db: D1Database, principalIds: string[]): Promis
  * role was resolved before the commit is refused. Throws KickFailed naming the docs that did not acknowledge.
  */
 export async function kick(env: KickEnv, docIds: string[], revocation: Omit<RecheckInput, 'at'>, at = Date.now()): Promise<void> {
-  const empty = !revocation.principalIds?.length && !revocation.tokens?.length && !revocation.sessions?.length;
+  const empty = !revocation.everyone && !revocation.principalIds?.length && !revocation.tokens?.length && !revocation.sessions?.length;
   if (empty || docIds.length === 0) return;
   const unique = [...new Set(docIds)];
   const results = await Promise.allSettled(unique.map(async (docId) => {

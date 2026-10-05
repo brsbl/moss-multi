@@ -13,6 +13,7 @@ import { LINK_ROLES, SHARE_ROLES, type LinkRole, type Role, type ShareRole } fro
 import { UserPlus, X } from 'lucide-react';
 import { useCallback, useEffect, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react';
 import { useDocRole } from '../access.ts';
+import { useTerminal } from '../collab/terminal.ts';
 
 export type ShareTarget =
   | { type: 'doc'; id: string }
@@ -397,7 +398,9 @@ export function ShareDialogHost(): ReactNode {
 /** The top bar's Share button; only an owner shares (A§8), so nobody else is offered it. */
 export function ShareControl({ docId }: { docId: string }): ReactNode {
   const role = useDocRole(docId);
-  if (role !== 'owner') return null;
+  // A window whose session ended (or whose note went away) can no longer share it.
+  const terminal = useTerminal(docId);
+  if (role !== 'owner' || (terminal !== null && terminal !== 'conn-limit')) return null;
   return (
     <button
       type="button"

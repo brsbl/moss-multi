@@ -8,7 +8,7 @@ import { ACK_COALESCE_MS, AWARENESS_MAX_BYTES, MAX_CONNECTIONS, STATE_CAP_BYTES,
 import { roleAtLeast } from '@moss-multi/protocol/roles';
 import { bytesToBase64, CLOSE, type ServerEvent, type WriteRefusalReason } from '@moss-multi/protocol/sync';
 import {
-  attachmentFrom, classifySync, connectCode, parseFrame, revocationCode, stateBytesAfter, WriteRate, type Attachment, type DeleteSet,
+  attachmentFrom, classifySync, connectCode, EVERYONE, parseFrame, revocationCode, stateBytesAfter, WriteRate, type Attachment, type DeleteSet,
 } from './doc/admission.ts';
 import { attach, attachmentOf, awarenessTooLarge, awarenessFrame, receivePresence, leavePresence } from './doc/awareness.ts';
 import { AckCoalescer, DocStore, PERSISTENCE } from './doc/persistence.ts';
@@ -44,6 +44,8 @@ export interface RecheckInput {
   principalIds?: string[];
   tokens?: string[];
   sessions?: string[];
+  /** Every socket resolved no later than `at` (a retried move, whose losses are no longer known); each re-asks REST. */
+  everyone?: boolean;
   /** When the change committed (epoch ms); a principal's socket resolved no later than this is refused. */
   at?: number;
 }
@@ -316,6 +318,7 @@ export class DocDO extends YServer<SyncEnv> {
     for (const id of input.principalIds ?? []) store.revoke('principal', id, at);
     for (const id of input.tokens ?? []) store.revoke('token', id, at);
     for (const id of input.sessions ?? []) store.revoke('session', id, at);
+    if (input.everyone) store.revoke('principal', EVERYONE, at);
     let closed = 0;
     for (const connection of this.getConnections()) {
       const attachment = attachmentOf(connection);
@@ -378,12 +381,17 @@ export class DocDO extends YServer<SyncEnv> {
     const register = (this.constructor as typeof DocDO).registry(this.env);
     const sessionId = attachment.sessionId;
     if (!register || (sessionId === null && attachment.kind !== 'agent')) return;
-    void register(attachment.principalId, sessionId, this.name).then((answer) => {
+    const registered = register(attachment.principalId, sessionId, this.name).then((answer) => {
       if (answer !== 'ended') return;
       if (sessionId !== null) store.revoke('session', sessionId, Date.now());
       else store.revoke('principal', attachment.principalId, Date.now());
       connection.close(sessionId !== null ? CLOSE.sessionEnded : CLOSE.revoked, sessionId !== null ? 'session ended' : 'revoked');
-    }).catch((error: unknown) => console.error('DocDO socket registration failed', error));
+    }, (error: unknown) => {
+      // Fail closed: an unregistered socket would outlive a sign-out. The client reconnects and registers again.
+      console.error('DocDO socket registration failed', error);
+      connection.close(TRY_AGAIN, 'unregistered');
+    });
+    this.ctx.waitUntil(registered);
   }
 
   #liveness(): TrashedInD1 | null {

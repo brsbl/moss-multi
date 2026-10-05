@@ -77,7 +77,17 @@ export class PrincipalDO extends Server<SyncEnv> {
       connection.close(4401, 'refused');
       return;
     }
-    const sessionId = context.request.headers.get(TRUSTED.session);
+    const sessionId = context.request.headers.get(TRUSTED.session) || null;
+    // An upgrade resolved before its sign-out (or its agent key's revocation) that arrives afterwards (A§5.2).
+    if (this.#ended(sessionId ?? PRINCIPAL_KEY)) {
+      if (sessionId === null) {
+        connection.close(CLOSE.noPrincipal, 'revoked');
+        return;
+      }
+      connection.send(JSON.stringify({ type: 'session-ended', sessionId } satisfies WorkspaceEvent));
+      connection.close(CLOSE.sessionEnded, 'session ended');
+      return;
+    }
     connection.setState({ sessionId });
   }
 
@@ -105,7 +115,7 @@ export class PrincipalDO extends Server<SyncEnv> {
     const sql = this.#registry();
     const key = sessionId ?? PRINCIPAL_KEY;
     const now = Date.now();
-    if (sql.exec('SELECT 1 FROM ended_sessions WHERE session_id = ?', key).toArray().length > 0) return 'ended';
+    if (this.#ended(key)) return 'ended';
     sql.exec(
       'INSERT INTO doc_sockets (session_id, doc_id, at) VALUES (?, ?, ?) ON CONFLICT(session_id, doc_id) DO UPDATE SET at = excluded.at',
       key,
@@ -153,6 +163,10 @@ export class PrincipalDO extends Server<SyncEnv> {
     }));
     const failed = results.filter((result) => result.status === 'rejected');
     if (failed.length > 0) throw new Error(`${failed.length} of ${docIds.length} docs did not acknowledge the recheck`);
+  }
+
+  #ended(key: string): boolean {
+    return this.#registry().exec('SELECT 1 FROM ended_sessions WHERE session_id = ?', key).toArray().length > 0;
   }
 
   #registry(): SqlStorage {

@@ -3,7 +3,7 @@
 // 4401 with no credential or a cookie from another origin, 4404 for a missing or inaccessible doc or a forged or
 // revoked link, 4410 for a trashed one the caller could otherwise open.
 import { CLOSE, encodePartyPrincipal, TRUSTED, type PartyPrincipal } from '@moss-multi/protocol/sync';
-import { liveLink, resolveDocAccess } from '../api/access.ts';
+import { resolveDocAccess } from '../api/access.ts';
 import { acceptShares } from '../api/members.ts';
 import type { AuthEnv } from '../auth/auth.ts';
 import { resolvePrincipal, shareTokenOf } from '../auth/principal.ts';
@@ -27,11 +27,12 @@ export async function authenticateParty(request: Request, docId: string, env: Au
   const headers: Record<string, string> = {
     [TRUSTED.principal]: encodePartyPrincipal(party),
     [TRUSTED.role]: access.role,
-    [TRUSTED.presence]: principal.type !== 'anonymous' && (!share || await resolveDocAccess(db, principal, docId)) ? '1' : '0',
+    [TRUSTED.presence]: principal.type !== 'anonymous' && !access.linkOnly ? '1' : '0',
     [TRUSTED.resolvedAt]: String(resolvedAt),
   };
   if (principal.type === 'user') headers[TRUSTED.session] = principal.sessionId;
-  // Only a live link marks the socket: one already revoked lifted nothing, and would close it again on every recheck.
-  if (share && (principal.type === 'anonymous' || await liveLink(db, share))) headers[TRUSTED.share] = share;
+  // The role and the link's mark come from one read: a socket the link lifted carries it, so revoking the link closes
+  // it even when the revocation lands mid-admission; one the link did not lift is not closed by a dead link.
+  if (share && (principal.type === 'anonymous' || access.viaLink)) headers[TRUSTED.share] = share;
   return { ok: true, headers };
 }
