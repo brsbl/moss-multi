@@ -152,7 +152,8 @@ export function shardEstimates(journeys, minutes) {
  */
 export function budgetProblems(journeys, minutes, budget = SHARD_BUDGET_MINUTES) {
   // A null in the record would count as zero minutes and pass any budget.
-  const recorded = (shard) => Number.isFinite(minutes.setup?.[shard.engine]) && shard.files.every((file) => {
+  /** @param {{ engine: string, files: string[] }} shard */
+  const recorded = (shard) => Number.isFinite(minutes.setup?.[shard.engine]) && shard.files.every((/** @type {string} */ file) => {
     const entry = minutes.journeys?.[file];
     return entry ? Number.isFinite(entry[shard.engine]) : Number.isFinite(minutes.perLeg?.[shard.engine]);
   });
