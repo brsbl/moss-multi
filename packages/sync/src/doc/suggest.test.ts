@@ -4,10 +4,11 @@
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
-import { deleteUpdate, recordDigest } from '@moss-multi/core/suggest/apply';
+import { recordDigest } from '@moss-multi/core/suggest/apply';
 import { closeRecord, readMeta, readRecord } from '../suggest/records.ts';
 import { acceptRecord, nodeRegistry, previewRecord, rejectRecord } from '../suggest/review.ts';
-import { EDITOR, OTHER_SUGGESTER, seededBody, spansOfText, SUGGESTER } from '../suggest/test-support.ts';
+import { ForkShim } from '../suggest/fork-shim.ts';
+import { EDITOR, OTHER_SUGGESTER, seededBody, select, spansOfText, SUGGESTER } from '../suggest/test-support.ts';
 import { SUGGEST_CAPS, SuggestIngest, type IngestOptions, type Suggester } from './suggest.ts';
 
 const sam = (connection = 'c-sam', role = 'suggester'): Suggester => ({ ...SUGGESTER, role, connection });
@@ -146,48 +147,56 @@ describe('T5.2 record ids, continuations and delete targets @p:mean-2', () => {
   it('accepted_record_continuation_preserves_occupied_id: a continuation never takes an id another record holds, and long ids never collide', () => {
     const live = seededBody();
     const long = (tail: string) => `${'a'.repeat(48)}-${tail}`;
-    const queue = [long('one'), long('two'), 'peer-record', 'peer-record', long('one'), long('two'), 'cont-1', 'cont-2'];
+    const queue = [long('one'), long('two'), 'peer-record', 'peer-record', long('one'), long('two'), 'cont-1', 'peer-record', 'cont-2'];
     const ingest = ingestOn(live, { mintId: () => queue.shift() ?? crypto.randomUUID() });
     // Sam's two records share a 48-character prefix; Sky's open record holds the id minted next.
     const one = leaseOne(ingest, sam());
     const two = leaseOne(ingest, sam());
     const peer = leaseOne(ingest, sky());
     expect([one.record, two.record, peer.record]).toEqual([long('one'), long('two'), 'peer-record']);
-    const insert = (client: number, text: string) => frame(live, client, (doc) => firstBlock(doc).insert(0, text));
-    for (const [who, grant, text] of [[sam(), one, 'One '], [sam(), two, 'Two '], [sky(), peer, 'Peer ']] as const) {
-      expect(ingest.ops(who, grant.record, insert(grant.client, text))).toMatchObject({ ok: true, record: grant.record });
+    const forks = [new ForkShim(live, one.client), new ForkShim(live, two.client), new ForkShim(live, peer.client)];
+    try {
+      const steps = [() => select('Hello', 24).insertText(' One'), () => select('join tail', 0).insertText('Two '), () => select('Indented', 0).insertText('Peer ')];
+      for (const [i, [who, grant]] of ([[sam(), one], [sam(), two], [sky(), peer]] as const).entries()) {
+        for (const update of forks[i].act(steps[i])) expect(ingest.ops(who, grant.record, update)).toMatchObject({ ok: true, record: grant.record });
+      }
+      const peerBefore = readRecord(live, 'peer-record');
+      expect(accept(live, one.record)).toEqual({ ok: true });
+      expect(accept(live, two.record)).toEqual({ ok: true });
+      // The minter offers taken ids first: they are skipped.
+      const deleted = ingest.delete(sam(), one.record, { id: 'd1', targets: spansOfText(live, 'world') });
+      const typed = forks[1].act(() => select('Two', 4).insertText('more ')).map((update) => ingest.ops(sam(), two.record, update));
+      expect(deleted).toMatchObject({ ok: true, requested: one.record, record: 'cont-1' });
+      expect(typed.length).toBeGreaterThan(0);
+      for (const result of typed) expect(result).toMatchObject({ ok: true, requested: two.record, record: 'cont-2' });
+      expect(readMeta(live, 'cont-1')).toMatchObject({ author: SUGGESTER.id, continues: one.record, status: 'open' });
+      expect(readMeta(live, 'cont-2')).toMatchObject({ author: SUGGESTER.id, continues: two.record, status: 'open' });
+      expect(readRecord(live, 'peer-record')).toEqual(peerBefore);
+      expect(readMeta(live, 'peer-record')).toMatchObject({ author: OTHER_SUGGESTER.id, status: 'open' });
+    } finally {
+      for (const fork of forks) fork.dispose();
     }
-    const peerBefore = readRecord(live, 'peer-record');
-    expect(accept(live, one.record)).toEqual({ ok: true });
-    expect(accept(live, two.record)).toEqual({ ok: true });
-    // The minter offers taken ids first: they are skipped.
-    const deleted = ingest.delete(sam(), one.record, { id: 'd1', targets: spansOfText(live, 'world') });
-    const typed = ingest.ops(sam(), two.record, frame(live, two.client, (doc) => {
-      const block = firstBlock(doc);
-      block.insert(block.length, '!');
-    }));
-    expect(deleted).toMatchObject({ ok: true, requested: one.record, record: 'cont-1' });
-    expect(typed).toMatchObject({ ok: true, requested: two.record, record: 'cont-2' });
-    expect(readMeta(live, 'cont-1')).toMatchObject({ author: SUGGESTER.id, continues: one.record, status: 'open' });
-    expect(readMeta(live, 'cont-2')).toMatchObject({ author: SUGGESTER.id, continues: two.record, status: 'open' });
-    expect(readRecord(live, 'peer-record')).toEqual(peerBefore);
-    expect(readMeta(live, 'peer-record')).toMatchObject({ author: OTHER_SUGGESTER.id, status: 'open' });
   });
 
   it('accepted_suggestion_text_is_valid_body_delete_target: accepted text is ordinary body text; items under a pending lease stay refused', () => {
     const live = seededBody();
     const ingest = ingestOn(live);
     const alice = leaseOne(ingest, sam());
-    expect(ingest.ops(sam(), alice.record, frame(live, alice.client, (doc) => firstBlock(doc).insert(0, 'Accepted ')))).toMatchObject({ ok: true });
     const pending = leaseOne(ingest, sam());
-    const pendingUpdate = frame(live, pending.client, (doc) => firstBlock(doc).insert(0, 'Pending '));
-    expect(ingest.ops(sam(), pending.record, pendingUpdate)).toMatchObject({ ok: true });
-    expect(accept(live, alice.record)).toEqual({ ok: true });
-    // Pending items reach the body only by accept; were they there under a live lease, they still are no target.
-    Y.applyUpdate(live, pendingUpdate);
-    const bob = leaseOne(ingest, sky());
-    expect(ingest.delete(sky(), bob.record, { id: 'd1', targets: spansOfText(live, 'Accepted') })).toMatchObject({ ok: true, parts: ['d1'] });
-    expect(ingest.delete(sky(), bob.record, { id: 'd2', targets: spansOfText(live, 'Pending') })).toEqual({ ok: false, reason: 'target' });
+    const forks = [new ForkShim(live, alice.client), new ForkShim(live, pending.client)];
+    try {
+      for (const update of forks[0].act(() => select('Hello', 24).insertText(' Accepted'))) expect(ingest.ops(sam(), alice.record, update)).toMatchObject({ ok: true });
+      const pendingUpdates = forks[1].act(() => select('join tail', 0).insertText('Pending '));
+      for (const update of pendingUpdates) expect(ingest.ops(sam(), pending.record, update)).toMatchObject({ ok: true });
+      expect(accept(live, alice.record)).toEqual({ ok: true });
+      // Pending items reach the body only by accept; were they there under a live lease, they still are no target.
+      for (const update of pendingUpdates) Y.applyUpdate(live, update);
+      const bob = leaseOne(ingest, sky());
+      expect(ingest.delete(sky(), bob.record, { id: 'd1', targets: spansOfText(live, 'Accepted') })).toMatchObject({ ok: true, parts: ['d1'] });
+      expect(ingest.delete(sky(), bob.record, { id: 'd2', targets: spansOfText(live, 'Pending') })).toEqual({ ok: false, reason: 'target' });
+    } finally {
+      for (const fork of forks) fork.dispose();
+    }
   });
 
   it('a rejected record answers record-closed; withdraw writes only the record', () => {
