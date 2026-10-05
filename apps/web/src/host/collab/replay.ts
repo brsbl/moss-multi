@@ -22,8 +22,17 @@ export class Replay {
    */
   constructor(private readonly send: (update: Uint8Array) => boolean) {}
 
+  #armed = false;
+
+  /** A replay is sending, or a socket opened with writes unacked and its step 1 is not in yet: writes are held. */
   get active(): boolean {
-    return this.#timer !== null;
+    return this.#armed || this.#timer !== null;
+  }
+
+  /** Holds local writes until the next `start`, which replays them after the backlog, or `cancel`. */
+  arm(): void {
+    this.cancel();
+    this.#armed = true;
   }
 
   /**
@@ -45,6 +54,7 @@ export class Replay {
   cancel(): void {
     if (this.#timer !== null) clearTimeout(this.#timer);
     this.#timer = null;
+    this.#armed = false;
     this.#queue = [];
     this.#held = [];
     this.#done = null;

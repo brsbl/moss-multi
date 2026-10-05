@@ -159,11 +159,17 @@ export function encodePosition(unit: Unit, assoc: 0 | -1): string {
 
 /**
  * A type's attributes as one sorted string, each key read at its value under `live` (pre-frame or post-frame). Each
- * historical value stepped over is a counted visit of `walk`, so a long attribute history fails safe at its budget.
+ * key (Yjs keeps removed ones) and each historical value stepped over is a counted visit of `walk`, so a long
+ * attribute history fails safe at its budget, before any sort.
  */
 function attrs(type: { _map: Map<string, Y.Item> }, live: Live, walk: Walk): string {
   const out: string[] = [];
-  for (const key of [...type._map.keys()].sort()) {
+  const keys: string[] = [];
+  for (const key of type._map.keys()) {
+    walk.tick();
+    keys.push(key);
+  }
+  for (const key of keys.sort()) {
     let at: Y.Item | null = type._map.get(key) ?? null;
     while (at && !live(at)) {
       walk.tick();

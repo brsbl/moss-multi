@@ -78,8 +78,11 @@ function buildLarge(): Built {
   return { state: Y.encodeStateAsUpdate(doc), r: host.writer.client };
 }
 
-/** One paragraph of LIFT_COMMENTS commented words between two short ones. */
-function buildLift(): Built {
+/**
+ * One paragraph of LIFT_COMMENTS commented words between two short ones. `orphaned`: its text is then deleted, so the
+ * comments are orphans whose shared lost place is inside it, which a frame deleting the paragraph lifts.
+ */
+function buildLift(orphaned: boolean): Built {
   const doc = new Y.Doc();
   const root = doc.get('root', Y.XmlText);
   doc.transact(() => {
@@ -90,6 +93,14 @@ function buildLift(): Built {
   const host = new CommentsHost(doc);
   const text = liveUnits(doc).text;
   for (let n = 0; n < LIFT_COMMENTS; n += 1) host.create(`w${n}`, minted(doc, text.indexOf(word(n)), 6));
+  if (orphaned) {
+    const client = new Y.Doc();
+    Y.applyUpdate(client, Y.encodeStateAsUpdate(doc));
+    const sv = Y.encodeStateVector(doc);
+    const paragraph = blocks(client)[1];
+    client.transact(() => paragraph.delete(1, paragraph.length - 1));
+    host.receive(Y.encodeStateAsUpdate(client, sv));
+  }
   return { state: Y.encodeStateAsUpdate(doc), r: host.writer.client };
 }
 
@@ -140,12 +151,13 @@ function forgedFrame(clock: number, origin: Y.ID, right: Y.ID): Uint8Array {
 
 const status = (t: Target, id: string) => t.doc.getMap<Anchor>('comments').get(`a:${id}`)?.status;
 
-let targets: { keys: Target; shared: Target; forged: Target; lift: Target[] } | null = null;
+let targets: { keys: Target; shared: Target; forged: Target; lift: Target[]; lifted: Target[] } | null = null;
 
 /** Builds every doc and encodes every frame; not held to a budget. */
 export function setup(): { records: number; orphaned: number } {
   const large = buildLarge();
-  const lift = buildLift();
+  const lift = buildLift(false);
+  const lifted = buildLift(true);
   const keys = target(large, (client) => {
     const paragraphs = blocks(client);
     for (let i = 0; i < KEY_FRAMES / 2; i += 1) {
@@ -181,6 +193,7 @@ export function setup(): { records: number; orphaned: number } {
     shared,
     forged,
     lift: Array.from({ length: LIFT_DOCS }, () => target(lift, (client) => client.get('root', Y.XmlText).delete(1, 1))),
+    lifted: Array.from({ length: LIFT_DOCS }, () => target(lifted, (client) => client.get('root', Y.XmlText).delete(1, 1))),
   };
   const anchors = [...keys.doc.getMap<Anchor>('comments').entries()].filter(([key]) => key.startsWith('a:'));
   return { records: anchors.length, orphaned: anchors.filter(([, anchor]) => anchor.status === 'orphaned').length };
@@ -228,4 +241,19 @@ export function lift(): { frames: number; orphaned: number } {
     for (let n = 0; n < LIFT_COMMENTS; n += 1) if (status(t, `w${n}`) === 'orphaned') orphaned += 1;
   }
   return { frames, orphaned };
+}
+
+/** One frame per doc deleting the paragraph that holds LIFT_COMMENTS orphans' lost place: each is lifted out of it. */
+export function lifted(): { frames: number; lifted: number } {
+  let frames = 0;
+  let count = 0;
+  for (const t of ready().lifted) {
+    frames += applyAll(t);
+    const comments = t.doc.getMap<Anchor>('comments');
+    for (let n = 0; n < LIFT_COMMENTS; n += 1) {
+      const anchor = comments.get(`a:w${n}`);
+      if (anchor?.status === 'orphaned' && anchor.lost?.inner) count += 1;
+    }
+  }
+  return { frames, lifted: count };
 }

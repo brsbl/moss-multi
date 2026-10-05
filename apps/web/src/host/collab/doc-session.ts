@@ -317,7 +317,10 @@ export class DocSession {
       const sv = this.#ended ? null : readStep1(decoder);
       if (!sv) answerSync(encoder, decoder, provider, emitSynced, type);
       else if (this.#ledger.unacked) this.#replay.start(this.#ledger.pending(), () => this.#answerStep1(sv));
-      else this.#answerStep1(sv);
+      else {
+        this.#replay.cancel();
+        this.#answerStep1(sv);
+      }
     };
     const sendLive = this.provider._updateHandler;
     this.doc.off('update', sendLive);
@@ -473,6 +476,8 @@ export class DocSession {
     // The provider sends a step 1 on open.
     this.#lastResync = Date.now();
     this.#failedHandshakes = 0;
+    // A write made before the server's step 1 arrives must not overtake the backlog replayed then (comments.md §6).
+    if (this.#ledger.unacked && !this.#ended) this.#replay.arm();
   }
 
   /** Answers the server's step 1 with the step 2 it asked for, holding only this client's writes. */

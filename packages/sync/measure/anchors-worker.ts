@@ -2,7 +2,7 @@
 // scripts/measure-converter.mjs. Its own bundle, since the DocDO's modules are typechecked against the Workers types.
 import * as anchors from './anchors.ts';
 
-const steps: Record<string, () => unknown> = { setup: anchors.setup, keys: anchors.keys, shared: anchors.shared, forged: anchors.forged, lift: anchors.lift };
+const steps: Record<string, () => unknown> = { setup: anchors.setup, keys: anchors.keys, shared: anchors.shared, forged: anchors.forged, lift: anchors.lift, lifted: anchors.lifted };
 
 export default {
   async fetch(request: Request): Promise<Response> {

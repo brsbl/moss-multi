@@ -305,8 +305,9 @@ const ANCHOR_STEPS = [
   { name: 'shared', label: 'a frame deleting and retyping a character 32 comments share (31 re-minted)', budgetMs: 10 },
   { name: 'forged', label: 'a forged one-item frame inside a long orphan\'s lost place', budgetMs: 1 },
   { name: 'lift', label: 'a frame deleting a paragraph that holds 500 comments (500 orphan records written)', budgetMs: 100 },
+  { name: 'lifted', label: 'a frame deleting a paragraph that holds 500 orphans\' lost place (500 lifted records written)', budgetMs: 100 },
 ];
-const ANCHOR_EXPECT = { setup: { records: 2_000, orphaned: 240 }, shared: { anchored: 31 }, forged: { orphaned: 240 }, lift: { orphaned: 2_500 } };
+const ANCHOR_EXPECT = { setup: { records: 2_000, orphaned: 240 }, shared: { anchored: 31 }, forged: { orphaned: 240 }, lift: { orphaned: 2_500 }, lifted: { lifted: 2_500 } };
 
 async function measureAnchors(port) {
   await bundle('anchors', join(REPO, 'packages/sync/measure/anchors-worker.ts'));
