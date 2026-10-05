@@ -243,6 +243,8 @@ The discipline matters only for honest users and ruling 18. Safety (I1–I8) nev
    - a frame that leaves one of two identical passages: never-jump "a frame that keeps one of two identical passages never picks one for the comment".
 
    The same shapes keep the comment when the text is unambiguous: `link-label-not-in-url-keeps-the-comment`, the wrapping-shortcut scenes, and `markdown-wrap-keeps-first-of-two-identical-passages`, where position in the node decides.
+10. Importing a moss sidecar drops a comment's `imageUrl` and `imageUrls`: the text and thread import, the attached images do not (T4.1 check P2). Carrying them needs the media admission of T3.2s for each URL.
+11. A quote-only create compares at most 32 characters of the caller's prefix and suffix, and a quote that occurs more than 1,000 times is ambiguous (`MAX_QUOTE_MATCHES`), so one search stays bounded (T4.1 check P1).
 
 None of these moves a comment to different text or to another occurrence.
 
