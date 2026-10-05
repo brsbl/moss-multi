@@ -33,6 +33,16 @@ describe('rebaseOps', () => {
     expect(applyOps('aPbQc', rebaseOps('abc', ops, 'aPbQc'))).toBe('aPXQc');
   });
 
+  it('keeps a peer insert strictly inside the replaced range', () => {
+    // The user selected "bc" in "abcd" and deleted it while a peer's "X" landed between "b" and "c".
+    const ops = diffAtCaret('abcd', 'ad', 1);
+    expect(applyOps('abXcd', rebaseOps('abcd', ops, 'abXcd'))).toBe('aXd');
+    // A replacement keeps it too, with the user's text where the range began.
+    expect(applyOps('abXcd', rebaseOps('abcd', diffAtCaret('abcd', 'aZd', 2), 'abXcd'))).toBe('aZXd');
+    // The peer replaced "c" with "X": the rest of the range still goes, and the peer's text stays.
+    expect(applyOps('abXd', rebaseOps('abcd', diffAtCaret('abcd', 'ad', 1), 'abXd'))).toBe('aXd');
+  });
+
   it('converges with the peer when both apply to one Y.Text', () => {
     const ada = new Y.Doc();
     const ben = new Y.Doc();

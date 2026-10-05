@@ -27,6 +27,8 @@ async function join(actor: Actor, id: string) {
 
 const field = (actor: Actor, id: string) => ui.body(actor, id).getByPlaceholder('Enter code...');
 const openBlock = (actor: Actor, id: string) => ui.body(actor, id).locator('.moss-codeblock-pre').click();
+/** The field takes typing only once its payload has arrived; until then it is read-only by design. */
+const writable = (actor: Actor, id: string) => expect(field(actor, id), `${actor.label}: the field is writable`).toHaveJSProperty('readOnly', false, { timeout: PEER_TIMEOUT });
 
 /** Every code block's text as the editor holds it. */
 const codes = (actor: Actor, id: string) => ui.body(actor, id).evaluate(element => {
@@ -75,6 +77,7 @@ for (const stackState of ['warm', 'cold'] as const) {
       await join(joiner, id);
       await openBlock(joiner, id);
       await expect(field(joiner, id), 'Ben sees the draft so far').toHaveValue('const ada = 1;\ndraft();', { timeout: PEER_TIMEOUT });
+      await writable(joiner, id);
       const typing = [ada.page.keyboard.type('\nlater();', { delay: 40 })];
       if (ben === 'types') {
         await field(joiner, id).evaluate(input => (input as HTMLTextAreaElement).setSelectionRange(0, 0));
@@ -102,6 +105,9 @@ for (const change of ['move-block', 'move-above'] as const) {
     const ben = await actors.session(principal);
     await join(ben, id);
     await openBlock(ben, id);
+    await expect(field(ben, id)).toHaveValue('seed', { timeout: PEER_TIMEOUT });
+    await writable(ben, id);
+    await expect(field(ben, id)).toBeFocused();
     await ben.page.keyboard.type('B1');
     await expect.poll(() => codes(ada, id), { timeout: PEER_TIMEOUT }).toEqual(['seedB1']);
     await restructure(ada, id, change);
