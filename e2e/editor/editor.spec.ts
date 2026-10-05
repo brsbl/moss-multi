@@ -213,7 +213,7 @@ test.describe('embeddable editor', () => {
     await mountNote(page, '# Plan\n\nFirst line\n');
     await page.evaluate(() => window.editorFixture.externalWrite('/Moss/Notes/Plan/Plan.md', '# Plan\n\nChanged in the Mac app\n'));
     await expect(body(page).getByText('Changed in the Mac app')).toBeVisible();
-    expect(await page.evaluate(() => window.editorFixture.events().map((event) => `${event.kind}:${event.cause ?? ''}`))).toContain('reloaded:external');
+    await expect.poll(() => page.evaluate(() => window.editorFixture.events().map((event) => `${event.kind}:${event.cause ?? ''}`))).toContain('reloaded:external');
 
     // Moss saves again, and bb's next write is based on the version before it.
     await page.evaluate(() => window.editorFixture.silentWrite('/Moss/Notes/Plan/Plan.md', '# Plan\n\nMoss saved this\n'));
@@ -238,6 +238,7 @@ test.describe('embeddable editor', () => {
     await page.evaluate(() => window.editorFixture.externalWrite('/Moss/Notes/Plan/Plan.md', '# Plan\n\n# Section\n\nBody\n'));
     await expect(body(page).getByText('Body', { exact: true })).toBeVisible();
     await expect(body(page).locator('h1')).toHaveText('Section');
+    await expect.poll(() => page.evaluate(() => window.editorFixture.events().map((event) => event.kind))).toContain('reloaded');
     await body(page).getByText('Body', { exact: true }).click();
     await page.keyboard.press('End');
     await page.keyboard.type(' more');

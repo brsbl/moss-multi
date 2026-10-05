@@ -195,6 +195,7 @@ export class MemoryHost {
     this.calls = [];
     this.watchers = new Map();
     this.own = new Map();
+    this.lastRead = new Map();
     this.locks = new Map();
     this.onApply = null;
     this.urls = new Map();
@@ -323,6 +324,7 @@ export class MemoryHost {
     const resolved = this.resolve(noteId);
     if (resolved.kind !== 'note') return resolved;
     const state = await this.state(resolved.dir);
+    this.lastRead.set(noteIdKey(noteId), { version: state.version, metaVersion: state.metaVersion });
     return { kind: 'note', ...state };
   }
 
@@ -444,9 +446,9 @@ export class MemoryHost {
     const set = this.watchers.get(key) ?? new Set();
     set.add(listener);
     this.watchers.set(key, set);
-    void this.read(noteId).then((result) => {
-      if (result.kind === 'note' && !this.own.has(key)) this.own.set(key, { version: result.version, metaVersion: result.metaVersion });
-    }, () => undefined);
+    // The baseline is the version the editor last read, so a change between that read and this call is reported.
+    const read = this.lastRead.get(key);
+    if (read && !this.own.has(key)) this.own.set(key, read);
     return () => set.delete(listener);
   }
 
