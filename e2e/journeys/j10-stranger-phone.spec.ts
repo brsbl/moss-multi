@@ -7,6 +7,7 @@ import { randomBytes } from 'node:crypto';
 import type { Locator } from '@playwright/test';
 import type { Actor, Viewport } from '../lib/actors.ts';
 import { APP_STATE_ATTR, BODY_BINDING_ATTR, DOC_STATE_ATTR, EDITOR_PANE_ATTR, ROLE_ATTR, paneSelector } from '../lib/contract.ts';
+import { acceptInvite } from '../lib/grants.ts';
 import type { Principal } from '../lib/principals.ts';
 import { layoutFit, unreachableControls } from '../lib/reach.js';
 import { expect, test, ui } from '../lib/test.ts';
@@ -132,7 +133,8 @@ for (const size of TIER_A) {
     // 2 others: Ben, an editor by grant (declared setup), joins.
     const benPrincipal = await actors.principal('ben');
     const granted = await ada2.context.request.post(`/api/docs/${docId}/members`, { headers: { origin: stack.baseUrl }, data: { email: benPrincipal.email, role: 'editor' } });
-    expect(granted.status(), 'declared setup: Ben can edit').toBe(201);
+    expect(granted.status(), 'declared setup: Ben is invited to edit').toBe(201);
+    await acceptInvite(ada2, { docId }, benPrincipal);
     const ben = await actors.open(benPrincipal, { viewport: size, path: `/d/${docId}` });
     await waitOpen(ben, docId, 'live');
     await expect(ada2.page.locator('[data-top-bar] [data-presence-client]'), 'Ada sees Ben in her face pile').not.toHaveCount(0, { timeout: BIND_TIMEOUT });
