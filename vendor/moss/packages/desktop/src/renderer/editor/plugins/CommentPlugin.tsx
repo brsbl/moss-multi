@@ -205,8 +205,9 @@ export function CommentPlugin({ noteId }: CommentPluginProps) {
     return editor.registerCommand(
       CREATE_COMMENT_COMMAND,
       (payload) => {
-        // moss-multi seam: comments (comments.md §12): a comment is a server record on minted positions, never a mark
-        return createFromCommand(editor, payload);
+        // moss-multi seam: comments (comments.md §12): on a bound note a comment is a server record, never a mark
+        const sent = createFromCommand(editor, payload);
+        if (sent !== null) return sent;
         if (!editor.isEditable()) return false;
 
         const commentId = crypto.randomUUID();

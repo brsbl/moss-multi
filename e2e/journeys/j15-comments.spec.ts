@@ -131,13 +131,13 @@ test('j15-comments: A comments, then both type anywhere in both directions; the 
   await ben.page.locator(paneSelector(id)).click();
   await select(ben, id, 'The quick', 0);
   await ben.page.keyboard.type('Ben first ');
-  ben.typed({ docId: id, field: 'body', text: 'Ben first ', ordered: true });
+  ben.typed({ docId: id, field: 'body', text: 'Ben first ', ordered: false });
   await select(ada, id, 'A second line', 2);
   await ada.page.keyboard.type('Ada-inside ');
-  ada.typed({ docId: id, field: 'body', text: 'Ada-inside ', ordered: true });
+  ada.typed({ docId: id, field: 'body', text: 'Ada-inside ', ordered: false });
   await select(ben, id, 'lazy dog', 4);
   await ben.page.keyboard.type(' sleepy');
-  ben.typed({ docId: id, field: 'body', text: ' sleepy', ordered: true });
+  ben.typed({ docId: id, field: 'body', text: ' sleepy', ordered: false });
   await waitAcked(ada, id);
   await waitAcked(ben, id);
   await expect.poll(async () => (await bodyText(ben, id)) === (await bodyText(ada, id)), { message: 'both bodies converge', timeout: PEER_TIMEOUT }).toBe(true);

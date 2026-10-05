@@ -24,11 +24,13 @@ export function stashCommentSelection(editor: LexicalEditor): void {
 
 /**
  * CREATE_COMMENT_COMMAND (CommentPlugin's seam), inside the command's update: a block comment on `nodeKey`, or a
- * text comment on the selection minted at open (else the current one). True when the comment was sent.
+ * text comment on the selection minted at open (else the current one). True when the comment was sent; null for an
+ * editor with no binding (moss's own path then runs).
  */
-export function createFromCommand(editor: LexicalEditor, payload: { text: string; nodeKey?: string }): boolean {
+export function createFromCommand(editor: LexicalEditor, payload: { text: string; nodeKey?: string }): boolean | null {
   const painter = painterOf(editor);
-  if (!painter || !payload.text.trim()) return false;
+  if (!painter) return null;
+  if (!payload.text.trim()) return false;
   const minted = payload.nodeKey ? $mintNode(painter.binding, payload.nodeKey) : (stashed.get(editor) ?? mintCurrent(editor, painter.binding));
   stashed.delete(editor);
   if (!minted) return false;

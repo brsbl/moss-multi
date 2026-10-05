@@ -100,7 +100,7 @@ export function CommentOnlyTools({ noteId }: { noteId: string }): ReactNode {
         open={composer !== null}
         onOpenChange={close}
         anchorRect={composer}
-        onCreate={(text: string) => createFromCommand(editor, { text })}
+        onCreate={(text: string) => createFromCommand(editor, { text }) === true}
         noteId={noteId}
         collisionBoundary={editor.getRootElement()?.closest('.canvas-scroll') ?? null}
       />
