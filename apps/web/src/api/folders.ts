@@ -21,6 +21,7 @@ import { docs, folders } from '../db/schema.ts';
 import type { AppEnv } from '../env.ts';
 import { json } from '../worker/route.ts';
 import { folderChain, MAX_FOLDER_DEPTH, resolveDocAccess, resolveFolderAccess, type FolderAccess } from './access.ts';
+import { handleInviteLinks } from './invites.ts';
 import { handleLinks } from './links.ts';
 import { handleMembers } from './members.ts';
 import { NO_STORE, notFound, readJsonObject, unauthenticated } from './respond.ts';
@@ -337,6 +338,7 @@ export async function moveDoc(request: Request, env: FoldersEnv, docId: string, 
 
 const FOLDER = /^\/api\/folders\/([^/]+)$/;
 const MEMBERS = /^\/api\/folders\/([^/]+)\/members$/;
+const INVITES = /^\/api\/folders\/([^/]+)\/invites$/;
 const LINKS = /^\/api\/folders\/([^/]+)\/links(?:\/([^/]+))?$/;
 
 /** GET /api/folders/:id: the folder, and the vault around it unless the caller holds only a link to it. */
@@ -366,6 +368,8 @@ export function handleFolderRoutes(request: Request, env: FoldersEnv): Promise<R
   }
   const members = MEMBERS.exec(pathname);
   if (members) return handleMembers(request, env, { type: 'folder', id: members[1] });
+  const pending = INVITES.exec(pathname);
+  if (pending) return handleInviteLinks(request, env, { type: 'folder', id: pending[1] });
   const links = LINKS.exec(pathname);
   if (links) return handleLinks(request, env, { type: 'folder', id: links[1] }, links[2] ?? null);
   return Promise.resolve(json({ error: 'not-found' }, 404));

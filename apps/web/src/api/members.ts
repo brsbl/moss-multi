@@ -162,14 +162,21 @@ async function share(db: Db, env: MembersEnv, target: MemberTarget, ownerUserId:
       ON CONFLICT DO NOTHING`).bind(target.type, target.id, email, personId, role, caller.id, now),
     env.DB.prepare(`UPDATE ${table} SET role = ?2 WHERE ${column} = ?1 AND principal_id = ?3 AND ${rank('role')} < ${rank('?2')}`)
       .bind(target.id, role, personId),
+    // The bell (T2.8): a notice only for a grant this batch made; with no account there is no grant to match.
+    env.DB.prepare(`INSERT INTO notifications (id, user_id, type, payload_json, created_at)
+      SELECT ?1, principal_id, 'share-invite', json_object('targetType', ?2, 'targetId', ?3, 'by', ?4), ?5 FROM ${table}
+      WHERE ${column} = ?3 AND principal_id = ?6 AND added_by = ?7 AND created_at = ?5`)
+      .bind(crypto.randomUUID(), target.type, target.id, inviter, now, personId, caller.id),
   ];
   const [admitted, , granted] = await env.DB.batch(statements);
-  if (personId && changed(granted) && env.PrincipalDO) {
-    // The grantee's open tabs refresh their vaults and shared items, off the response path so its timing says
+  const principals = env.PrincipalDO;
+  if (personId && changed(granted) && principals) {
+    // The grantee's open tabs refresh their vaults, shared items and bell, off the response path so its timing says
     // nothing about whether the email has an account; the committed share stands if this fails.
-    const notify = publishTo({ DB: env.DB, PrincipalDO: env.PrincipalDO }, personId, { type: 'vaults' })
+    const push = Promise.all((['vaults', 'notifications'] as const).map((type) =>
+      publishTo({ DB: env.DB, PrincipalDO: principals }, personId, { type })))
       .catch((error: unknown) => console.error('workspace share notification failed', error));
-    waitUntil(notify);
+    waitUntil(push);
   }
   if (changed(admitted)) return json({ shared: { email, role } }, 201, NO_STORE);
   // Not a new share: the person already has access here, or the owner is over the hourly limit.
@@ -186,9 +193,10 @@ async function share(db: Db, env: MembersEnv, target: MemberTarget, ownerUserId:
 }
 
 /**
- * Redeems a signed-in user's pending email shares on a doc and on every folder above it when they open it; from then
- * the owner sees them by name. Only a share they hold a grant for is redeemed: an invite to an email that had no
- * account waits for its own link (T2.8).
+ * Redeems a signed-in user's pending email shares on a doc and on every folder above it when they open it by its URL;
+ * from then the owner sees them by name. Only a share they hold a grant for is redeemed: an invite to an email that
+ * had no account waits for its own link (T2.8). A socket admission redeems nothing, since moss may open a note on its
+ * own; the bell's notices redeem through invites.ts.
  */
 export async function acceptShares(db: D1Database, principal: Principal, docId: string, access: { ownerUserId: string; linkOnly: boolean }): Promise<void> {
   if (principal.type !== 'user' || access.linkOnly || access.ownerUserId === principal.id) return;

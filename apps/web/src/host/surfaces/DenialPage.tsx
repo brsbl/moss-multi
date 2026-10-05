@@ -10,7 +10,7 @@ import { leaveTo } from '../navigation.ts';
 const ACTION =
   'mt-4 rounded-md bg-border-subtle px-3 py-1.5 text-xs font-medium text-ink-default shadow-sm transition-colors hover:bg-border-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-default/20';
 
-export function DenialPage({ signedIn, what = 'note' }: { signedIn: boolean; what?: 'note' | 'folder' }): ReactNode {
+export function DenialPage({ signedIn, what = 'note' }: { signedIn: boolean; what?: 'note' | 'folder' | 'invite' }): ReactNode {
   useEffect(() => setAppState('ready'), []);
   const here = typeof window === 'undefined' ? '/' : `${window.location.pathname}${window.location.search}`;
   return (

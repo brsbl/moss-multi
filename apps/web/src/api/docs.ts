@@ -15,6 +15,7 @@ import type { AppEnv } from '../env.ts';
 import { json } from '../worker/route.ts';
 import { resolveDocAccess, resolveFolderAccess } from './access.ts';
 import { folderNotFound, liveIn, moveDoc, upFrom, vaultOf } from './folders.ts';
+import { handleInviteLinks } from './invites.ts';
 import { handleLinks } from './links.ts';
 import { acceptShares, handleMembers, type MembersEnv } from './members.ts';
 import { restoreDoc, trashDoc } from './trash.ts';
@@ -25,6 +26,7 @@ export type DocsEnv = AuthEnv & Pick<AppEnv, 'DocDO' | 'PrincipalDO'> & MembersE
 
 const DOC = /^\/api\/docs\/([^/]+)$/;
 const MEMBERS = /^\/api\/docs\/([^/]+)\/members$/;
+const INVITES = /^\/api\/docs\/([^/]+)\/invites$/;
 const LINKS = /^\/api\/docs\/([^/]+)\/links(?:\/([^/]+))?$/;
 const INSTANCE = /^\/api\/docs\/([^/]+)\/instance$/;
 
@@ -192,6 +194,8 @@ export async function handleDocs(request: Request, env: DocsEnv): Promise<Respon
   }
   const members = MEMBERS.exec(pathname);
   if (members) return handleMembers(request, env, { type: 'doc', id: members[1] });
+  const pending = INVITES.exec(pathname);
+  if (pending) return handleInviteLinks(request, env, { type: 'doc', id: pending[1] });
   const links = LINKS.exec(pathname);
   if (links) return handleLinks(request, env, { type: 'doc', id: links[1] }, links[2] ?? null);
   const accessMatch = /^\/api\/docs\/([^/]+)\/access$/.exec(pathname);
