@@ -42,7 +42,8 @@ interface Fixture {
   files(under?: string): Record<string, string>;
   externalWrite(path: string, text: string): void;
   silentWrite(path: string, text: string): void;
-  calls(): { op: string; name?: string; ops?: string[] }[];
+  calls(): { op: string; name?: string; ops?: string[]; sourceNoteId?: string; sourceRef?: string }[];
+  assetUrl(noteId: string, ref: string): string | null;
 }
 
 declare global {
@@ -107,6 +108,17 @@ async function mountNote(page: Page, markdown: string, options: { comments?: str
   expect(result, 'the note mounts').toEqual({ ok: true, status: 'clean' });
   await expect(page.locator('[data-moss-editor][data-moss-editor-status="clean"]')).toBeVisible();
 }
+
+/** The scroll offset of the canvas the editor scrolls in. */
+const scrollTop = (page: Page) =>
+  body(page).evaluate((root) => {
+    for (let el = root.parentElement; el; el = el.parentElement) {
+      if (el.scrollHeight > el.clientHeight + 1 && /(auto|scroll)/.test(getComputedStyle(el).overflowY)) return el.scrollTop;
+    }
+    return document.scrollingElement?.scrollTop ?? 0;
+  });
+
+const frames = (page: Page) => page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
 
 const files = (page: Page) => page.evaluate(() => window.editorFixture.files());
 
@@ -247,6 +259,31 @@ test.describe('embeddable editor', () => {
     expect(seen.errors).toEqual([]);
   });
 
+  test('an in-place reload keeps the caret and the scroll, so the next keystroke lands where it was', async ({ page }) => {
+    const seen = await open(page);
+    const lines = Array.from({ length: 40 }, (_, i) => `Line ${i + 1}`);
+    await mountNote(page, `# Plan\n\n${lines.join('\n\n')}\n`);
+    const target = body(page).getByText('Line 30', { exact: true });
+    await target.scrollIntoViewIfNeeded();
+    await target.click();
+    await page.keyboard.press('End');
+    await frames(page);
+    const before = await scrollTop(page);
+    expect(before, 'the note scrolls').toBeGreaterThan(0);
+    const changed = lines.map((line) => (line === 'Line 5' ? 'Line 5 changed in Moss' : line));
+    await page.evaluate((markdown) => window.editorFixture.externalWrite('/Moss/Notes/Plan/Plan.md', markdown), `# Plan\n\n${changed.join('\n\n')}\n`);
+    await expect.poll(() => page.evaluate(() => window.editorFixture.events().map((event) => `${event.kind}:${event.cause ?? ''}`))).toContain('reloaded:external');
+    await expect(body(page).getByText('Line 5 changed in Moss')).toBeAttached();
+    await frames(page);
+    await page.keyboard.type('XYZ');
+    await frames(page);
+    expect(Math.abs((await scrollTop(page)) - before), 'the view stays where it was').toBeLessThan(40);
+    expect(await page.evaluate(() => window.editorFixture.flush())).toMatchObject({ kind: 'saved' });
+    const written = (await files(page))['/Moss/Notes/Plan/Plan.md'];
+    expect(written).toBe(`# Plan\n\n${changed.map((line) => (line === 'Line 30' ? 'Line 30XYZ' : line)).join('\n\n')}\n`);
+    expect(seen.errors).toEqual([]);
+  });
+
   test("a focused, unedited title takes the Mac app's rename, and blurring it writes nothing", async ({ page }) => {
     const seen = await open(page);
     await mountNote(page, '# Plan\n\nIntro\n');
@@ -317,6 +354,50 @@ test.describe('embeddable editor', () => {
     // Nothing left the page except the bundle, the fixture and blob: media.
     const outside = requests.filter((url) => !url.startsWith('blob:') && !url.startsWith('data:') && !/^http:\/\/127\.0\.0\.1:\d+\/(editor|fixture|src)\//.test(url));
     expect(outside).toEqual([]);
+    expect(seen.errors).toEqual([]);
+    expect(await page.evaluate(() => window.editorFixture.violations)).toEqual([]);
+  });
+
+  test("media pasted from an editor frame is copied or mapped back through the host, never saved as the host's URL", async ({ page }) => {
+    const seen = await open(page);
+    const OTHER = '7a6b5c4d-3e2f-4a1b-8c9d-0e1f2a3b4c5d';
+    const png = readFileSync(join(MEDIA, 'pattern.png')).toString('base64');
+    const result = await page.evaluate(
+      ({ id, plan, source, png }) => {
+        window.editorFixture.reset();
+        const dir = window.editorFixture.seed(['Notes', 'Plan'], { markdown: '# Plan\n\nPaste here\n', meta: plan });
+        const sourceDir = window.editorFixture.seed(['Notes', 'Source'], { markdown: '# Source\n\n![pattern](assets/pattern.png)\n', meta: source });
+        window.editorFixture.seedAsset(dir, 'own.png', png);
+        window.editorFixture.seedAsset(sourceDir, 'pattern.png', png);
+        return window.editorFixture.mount(id);
+      },
+      { id: ID, plan: meta('Plan'), source: { ...meta('Source'), id: OTHER }, png },
+    );
+    expect(result).toEqual({ ok: true, status: 'clean' });
+    const urls = await page.evaluate(({ id, other }) => ({ own: window.editorFixture.assetUrl(id, 'assets/own.png'), other: window.editorFixture.assetUrl(other, 'assets/pattern.png') }), { id: ID, other: OTHER });
+    expect(urls.own).toMatch(/^blob:/);
+    expect(urls.other).toMatch(/^blob:/);
+    await body(page).getByText('Paste here', { exact: true }).click();
+    await page.keyboard.press('End');
+    await frames(page);
+    await body(page).evaluate((root, { own, other }) => {
+      const data = new DataTransfer();
+      data.setData('text/html', `<p><img src="${other}" alt="pattern"></p><p><img src="${own}" alt="own"></p>`);
+      data.setData('text/plain', '');
+      root.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+    }, urls);
+    await expect(body(page).locator('img')).toHaveCount(2, { timeout: 10_000 });
+    expect(await page.evaluate(() => window.editorFixture.flush())).toMatchObject({ kind: 'saved' });
+    const copies = (await page.evaluate(() => window.editorFixture.calls())).filter((call) => call.op === 'assetCopy');
+    expect(copies).toHaveLength(1);
+    expect(copies[0]).toMatchObject({ sourceNoteId: OTHER, sourceRef: 'assets/pattern.png' });
+    expect(copies[0].name).toMatch(/^pattern-\d+-[0-9a-f]{8}\.png$/);
+    const written = await files(page);
+    const markdown = written['/Moss/Notes/Plan/Plan.md'];
+    expect(markdown).not.toContain('blob:');
+    expect(markdown).toContain(`(assets/${copies[0].name})`);
+    expect(markdown).toContain('(assets/own.png)');
+    expect(written[`/Moss/Notes/Plan/assets/${copies[0].name}`]).toMatch(/^bytes:\d+$/);
     expect(seen.errors).toEqual([]);
     expect(await page.evaluate(() => window.editorFixture.violations)).toEqual([]);
   });

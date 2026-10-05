@@ -32,12 +32,23 @@ class FakeSurface implements SessionSurface {
   editable = false;
   live = { title: '', body: '', comments: {} as RendererSnapshot['commentMetadata'] };
   views: unknown[] = [];
+  colors: Record<string, number> = {};
   commit?: () => void;
 
   load(content: EditorContent, options: { keepView: boolean }) {
     this.loaded = content;
     this.loads.push(options);
     this.live = { title: content.title, body: content.body, comments: content.commentMetadata };
+    this.colors = { ...(content.commentColors ?? {}) };
+  }
+
+  /** As the real surface: a color the user did not change takes the new baseline's. */
+  adoptCommentColors(previous: Record<string, number> | undefined, next: Record<string, number> | undefined) {
+    for (const id of new Set([...Object.keys(previous ?? {}), ...Object.keys(next ?? {})])) {
+      if (this.colors[id] !== previous?.[id]) continue;
+      if (next?.[id] === undefined) delete this.colors[id];
+      else this.colors[id] = next[id];
+    }
   }
 
   snapshot(): RendererSnapshot {
@@ -46,7 +57,7 @@ class FakeSurface implements SessionSurface {
       content: assembleContent(this.loaded, { title: this.live.title, body: this.live.body }),
       commentMetadata: this.live.comments,
       layoutMetadata: { version: 1, tableCount: 0, tables: [] },
-      intents: { frontmatterMetaUpdates: {}, commentColors: {} },
+      intents: { frontmatterMetaUpdates: {}, commentColors: { ...this.colors } },
     };
   }
 
@@ -282,6 +293,30 @@ describe('conflicts with the Mac app', () => {
     expect(session.status).toBe('clean');
   });
 
+  it('a meta-only change to comment colors is kept by the next body save', async () => {
+    volume.silently(() => volume.writeFile(`${DIR}/meta.json`, JSON.stringify({ ...META, commentColors: { a: 1 } }, null, 2)));
+    const session = mount();
+    await session.ready;
+    volume.writeFile(`${DIR}/meta.json`, JSON.stringify({ ...META, commentColors: { a: 3 } }, null, 2));
+    await settle(250);
+    type(session, 'Edited\n');
+    await settle(1_500);
+    expect(markdownOnDisk()).toBe('# Plan\n\nEdited\n');
+    expect(JSON.parse(volume.readFile(`${DIR}/meta.json`)).commentColors).toEqual({ a: 3 });
+  });
+
+  it('a comment color changed in meta.json during a save is kept by the silent meta retry', async () => {
+    volume.silently(() => volume.writeFile(`${DIR}/meta.json`, JSON.stringify({ ...META, commentColors: { a: 1 } }, null, 2)));
+    const session = mount();
+    await session.ready;
+    volume.silently(() => volume.writeFile(`${DIR}/meta.json`, JSON.stringify({ ...META, commentColors: { a: 3 } }, null, 2)));
+    type(session, 'Edited\n');
+    await settle(1_500);
+    expect(markdownOnDisk()).toBe('# Plan\n\nEdited\n');
+    expect(JSON.parse(volume.readFile(`${DIR}/meta.json`)).commentColors).toEqual({ a: 3 });
+    expect(session.status).toBe('clean');
+  });
+
   it('a removed note makes the editor read-only and keeps the edits as a draft', async () => {
     const session = mount();
     await session.ready;
@@ -366,6 +401,34 @@ describe('reloads never take an edit typed meanwhile', () => {
     expect(markdownOnDisk()).toBe('# Plan\n\nTyped meanwhile\n');
   });
 
+  it('a host reload whose read a local save superseded shows the saved version, not the older read', async () => {
+    const session = mount();
+    await session.ready;
+    const gate: { release?: () => void } = {};
+    const read = host.read.bind(host);
+    host.read = async (noteId) => {
+      host.read = read;
+      const stale = await read(noteId);
+      await new Promise<void>((resolve) => (gate.release = resolve));
+      return stale;
+    };
+    const reloading = session.reload();
+    for (let i = 0; i < 20 && !gate.release; i += 1) await drain(5);
+    expect(gate.release).toBeDefined();
+    type(session, 'Saved meanwhile\n');
+    await expect(session.flush()).resolves.toMatchObject({ kind: 'saved' });
+    gate.release!();
+    await reloading;
+    await settle(0);
+    expect(markdownOnDisk()).toBe('# Plan\n\nSaved meanwhile\n');
+    expect(surface.live.body).toBe('Saved meanwhile\n');
+    expect(session.status).toBe('clean');
+    type(session, 'Saved meanwhile, then more\n');
+    await settle(1_500);
+    expect(markdownOnDisk()).toBe('# Plan\n\nSaved meanwhile, then more\n');
+    expect(kinds()).not.toContain('conflict');
+  });
+
   it('the editor is not editable while a reload loads into it', async () => {
     const session = mount();
     await session.ready;
@@ -415,6 +478,24 @@ describe('the fixture host', () => {
     type(session, 'bb\n');
     await settle(1_500);
     expect(markdownOnDisk()).toBe('# Plan\n\nMoss meanwhile\n');
+    expect(session.status).toBe('conflict');
+  });
+});
+
+describe('the fixture host, step 6', () => {
+  it('a file another writer replaces after its own op is caught by the final re-read', async () => {
+    const session = mount();
+    await session.ready;
+    host.onApply = (file) => {
+      if (file !== 'meta') return;
+      host.onApply = null;
+      volume.silently(() => volume.writeFile(`${DIR}/Plan.md`, '# Plan\n\nMoss after bb\n'));
+    };
+    type(session, 'bb\n');
+    await settle(1_500);
+    expect(markdownOnDisk()).toBe('# Plan\n\nMoss after bb\n');
+    const write = events.find((event) => event.kind === 'saved');
+    expect(write, 'no saved event for a write another writer replaced').toBeUndefined();
     expect(session.status).toBe('conflict');
   });
 });

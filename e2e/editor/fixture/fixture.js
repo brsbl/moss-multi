@@ -71,6 +71,10 @@ window.editorFixture = {
   silentWrite(path, text) {
     state.volume.silently(() => state.volume.writeFile(path, text));
   },
+  /** The URL the host issues for a note's asset, as a frame showing that note would load it. */
+  assetUrl(noteId, ref) {
+    return state.host.assets.url(noteId, ref, 'image');
+  },
   calls() {
     return state.host.calls.map(({ write, ...call }) => (write ? { ...call, ops: write.ops.map((op) => `${op.kind}:${op.file}`) } : call));
   },
