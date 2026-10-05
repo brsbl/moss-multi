@@ -1,11 +1,11 @@
 # moss-multi progress
 
-**Overall: 41% done** (36 of 87 planned tasks verified)
+**Overall: 42% done** (37 of 89 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 18 / 18 | in progress |
-| M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 18 / 19 | in progress |
+| M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 19 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 0 / 9 | |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 0 / 9 | |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
@@ -56,6 +56,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-05 — T1.F4 verified: an open code, HTML or formula editor keeps working when a peer moves its block, closes with a notice when a peer removes it, and picks up the block's text once it arrives; typing inside a code or HTML block lands at the caret even after a peer's edit or undo.
 - 2026-10-05 — T1.S1 verified: the workspace and member listings now load completely for a person with hundreds of shared notes and folders, and for a note with hundreds of members, using a fixed number of database parameters.
 - 2026-10-05 — T1.S1 verified again with its unload fix: reloading or leaving the page while the workspace list is loading now cancels that request quietly instead of showing a load failure or a browser access-control error.
+- 2026-10-05 — T1.S2 verified: a code, HTML or formula block whose updates were lost on a dropped connection now catches up on its own, without a reload, so both people see the same text and can keep typing in it.
 
 ## T1.1s identity audit
 
@@ -102,6 +103,7 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T1.S1 checker P2: a cancelled unload (answering Stay on the unacked-edits prompt) or a back-forward-cache restore keeps the aborted listing pending for 10 s, skipping the 3 s poll and handing notes() a promise that later rejects.
 - T1.S1 checker P2: other fetches (host/access.ts, collab/doc-session.ts, ShareDialog, the bridge's create, duplicate and rename) have no leave-abort, so a reload overlapping one could still log WebKit's access-control error.
 - T1.S1 checker P2 flakes: Chromium j01-registers formula popover leg failed once with 'e is not iterable' (cloneCommentIds via FormulaNode.clone during register refresh getWritable, packages/sync/src/registers.ts:176); j01-undo WebKit sync-timing assertion failed once (run 37346941618).
+- T1.S1 integration: the [full lane on `213ec9f`](https://github.com/brsbl/moss-multi/actions/runs/37355733461) went green on attempt 2; attempt 1 failed WebKit j03 black-holed socket (an `/api/workspace` "access control checks" page error while offline, which the leave-abort does not cover), j00 G1 import POST timeout, j00-roundtrip "hibernation not induced" and j01 presence spoofed-name → same WebKit shard follow-up.
 - ~~T1.9 checker P2: replace the full node-map refresh after every editor commit with targeted invalidation~~ closed by T1.9s and T1.F2: root-only commits and same-node state replacements refresh no payload.
 - T1.F2 checker P2, **blocks T1.10 carrying real docs**: rule 10 of docs/design/registers.md, the DocDO refusing clients whose bundle predates payload docs (an M1 bundle can still write `Y.Map('registers')` through note updates, past the payload gate) → T1.10.
 - T1.F2 checker P2: each connection's set of withheld ids it writes (at most 64) lives in memory, so a DocDO wake resets it; the per-principal withheld bytes are durable and bound the total → payload follow-up.
