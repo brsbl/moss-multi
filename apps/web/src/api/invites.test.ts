@@ -8,7 +8,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
 import { redeem } from '../test/invites.ts';
 import { BASE, insertDoc, insertFolder, insertGrant, insertLink, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
-import { INVITE_OTHER_EMAIL } from './invites.ts';
+import { INVITE_CLOSED, INVITE_OTHER_EMAIL } from './invites.ts';
 import { handleApi } from './router.ts';
 
 const DocDO = {
@@ -279,6 +279,50 @@ describe('who an invite admits', { timeout: 30_000 }, () => {
     expect((await accept(cy.cookie, token)).status).toBe(404);
     expect((await call('GET', `/api/folders/${inner}`, cy.cookie)).status).not.toBe(200);
   });
+
+  // T2.S1: a grant change that takes manage away kills that co-owner's open invites for good (A§8).
+  for (const on of ['doc', 'folder'] as const) {
+    for (const how of ['demoted and promoted again', 'removed and re-added'] as const) {
+      it(`never revives a co-owner’s invite when they are ${how} on the ${on}`, async () => {
+        // Its own vault owner, so these shares spend nobody else's share-by-email budget.
+        const vaultOwner = await signedUpUser(env, `t2s1-owner-${on}-${how.slice(0, 4)}`, 'Una');
+        const folderId = await insertFolder(d1.db, vaultOwner, vaultOwner.homeId);
+        const docId = await titled(vaultOwner, `Regained ${on} ${how}`, { folderId });
+        const grantPath = on === 'doc' ? `/api/docs/${docId}` : `/api/folders/${folderId}`;
+        const coOwner = await signedUpUser(env, `t2s1-${on}-${how.slice(0, 4)}`, 'Rae');
+        await share(vaultOwner, grantPath, coOwner.email, 'owner');
+        await redeem(env, vaultOwner, grantPath, coOwner);
+        const ghost = unknownEmail(`regrant-${on}`);
+        await share(coOwner, `/api/docs/${docId}`, ghost, 'owner');
+        const token = tokenOf(await inviteLink(coOwner, `/api/docs/${docId}`, ghost));
+
+        if (how === 'demoted and promoted again') {
+          const set = (role: string) => call('PATCH', `${grantPath}/members`, vaultOwner.cookie, { principalId: coOwner.id, role });
+          expect((await set('editor')).status, 'demoted').toBe(200);
+          expect((await set('owner')).status, 'promoted again').toBe(200);
+        } else {
+          expect((await call('DELETE', `${grantPath}/members`, vaultOwner.cookie, { principalId: coOwner.id })).status, 'removed').toBe(200);
+          await share(vaultOwner, grantPath, coOwner.email, 'owner');
+          await redeem(env, vaultOwner, grantPath, coOwner);
+        }
+        expect(await roleOf(coOwner.cookie, docId), 'Rae manages the note again').toBe('owner');
+        expect((await membersOf(vaultOwner, `/api/docs/${docId}`)).invites, 'her old invite is not listed again').toEqual([]);
+        const guest = await signedUpUser(env, `t2s1-guest-${on}-${how.slice(0, 4)}`, 'Sol', ghost);
+        const answer = await accept(guest.cookie, token);
+        expect(answer.status, 'the old link stays closed').toBe(404);
+        expect(await answer.json()).toEqual({ error: 'invite-unavailable', message: INVITE_CLOSED });
+        expect(await roleOf(guest.cookie, docId), 'and grants nothing').toBeNull();
+
+        // A fresh invite from the co-owner, after they regained manage, works.
+        const other = unknownEmail(`fresh-${on}`);
+        await share(coOwner, `/api/docs/${docId}`, other, 'viewer');
+        const fresh = tokenOf(await inviteLink(coOwner, `/api/docs/${docId}`, other));
+        const invitee = await signedUpUser(env, `t2s1-fresh-${on}-${how.slice(0, 4)}`, 'Tam', other);
+        expect((await accept(invitee.cookie, fresh)).status).toBe(200);
+        expect(await roleOf(invitee.cookie, docId)).toBe('viewer');
+      });
+    }
+  }
 
   it('lets a re-share by a current owner take over an invite whose inviter lost access, with a fresh link', async () => {
     const folderId = await insertFolder(d1.db, ada, ada.homeId);

@@ -1,12 +1,12 @@
 # moss-multi progress
 
-**Overall: 68% done** (59 of 87 planned tasks verified)
+**Overall: 68% done** (60 of 88 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 19 / 20 | in progress |
-| M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 11 / 11 | in progress |
+| M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 12 / 12 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 10 / 13 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
@@ -78,6 +78,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-05 — T1.S2 verified: a code, HTML or formula block whose updates were lost on a dropped connection now catches up on its own, without a reload, so both people see the same text and can keep typing in it.
 - 2026-10-05 — T0.9d verified: CI journey shards are split by recorded per-engine minutes (`durations.mjs` writes them, `plan.mjs budget` keeps every shard's p95 within 9 of its 13 min), and the root causes of the WebKit editing-shard flakes are fixed, with the duration table in METHOD.md.
 - 2026-10-05 — T2.6 verified: a viewer or commenter is no longer offered controls they cannot use: menus grow with their role, "+ Note", Rename, slash commands and block edit, fullscreen and delete buttons are hidden, checkboxes and gap cursors in a read-only body are inert and send nothing, and an unknown role gets no actions.
+- 2026-10-05 — T2.S1 verified: a co-owner who is demoted or removed loses their open invites for good, so regaining manage later never revives an invite they sent before.
 
 ## T1.1s identity audit
 
@@ -347,3 +348,22 @@ Local browser verification remains assigned to the independent checker under the
 - `$assignRegisterIds` now mints `crypto.randomUUID()` in a live editor. Only the DocDO mirror (`bindRegisters(..., { serializedImports: true })`, one serialized writer) and unbound converters keep repeatable import ids (A§10.10).
 - T2.2s verified: moving a note or folder is the vault owner's alone; editors (by grant or share link) can still create and rename but are refused a move and are not offered a drag.
 - 2026-10-04 — M3 started on branch m3 (stacked on m2) in parallel with M2, at the owner's request to up the pace; the local stack cap rose from 2 to 5. Claude builds, Codex reviews.
+
+### From M2's Slop Cop review (PR #4 @ af17d0a, 2026-10-05)
+- Re-check current authority inside editor and manager REST writes (folder create/rename, note insert, link revoke) (apps/web/src/api/folders.ts:162-166 (createFolder INSERT), folders.ts:222-223 (rename-only). Add a current-authority predicate to each write. Preserve user, agent-owner, direct-grant, inherited-grant and presented-editor-link authority, since editsFolder alone covers only users. Treat zero changed rows as a fres
+- Send the initial presence snapshot only if the validated attachment allows presence (packages/sync/src/doc-do.ts:318-319 (onConnect)). Read attachmentOf(connection)?.presenceAllowed after validation, or send the snapshot through the existing presence sender.
+- Folder rename response reveals a parent outside the link's scope (apps/web/src/api/folders.ts:141-144, 260 (folderRecord returned by updateFolder)). When the caller's access is linkOnly and the parent is outside their link, omit parentId or rewrite it relative to the link scope.
+- A move can overwrite a newer filename from the title projection (apps/web/src/api/folders.ts:395-410 (moveDoc)). Add filename = <read value> to the UPDATE's WHERE clause and re-read and recompute on a conflict. Alternatively, write filename only when the move actually has to rename around a collision, and compare it there.
+- Per-note serial reach reads on folder moves (packages/sync/src/fanout.ts:162-185, called from folders.ts:214 and from kickLosses). Compute reach for the whole subtree with set-based queries keyed by doc ID (json_each), and keep the before/after comparison.
+- Refreshes filtered by ids still do full-workspace work (apps/web/src/api/workspace.ts:165-166, 225-235). Add an ids-aware path that narrows doc and Trash queries before building rows, and compute counts in one pass.
+- reapDeadInvites re-checks every open invite in the database (apps/web/src/api/access.ts:105-108). Scope the reaper to the affected targets and subtree, or to the affected inviter for grant changes, while keeping death synchronous and permanent.
+
+### From M1's Slop Cop review (PR #2 @ ff9570f, 2026-10-05)
+- REST rename and create's initial title skip the document size cap (packages/sync/src/doc-do.ts:263-265 (create), 277-281 (renameTitle)). Build the title change on a mirror doc, admit the resulting state plus payload bytes, and only then apply it. Return the existing doc-cap refusal.
+- A failed D1 title projection is never retried or reconciled (packages/sync/src/doc/projections.ts:61-80). Keep pending title work separate from touch errors. Retry with backoff, and reconcile after wake.
+- Concurrent share raises can lower a just-granted higher role (apps/web/src/api/members.ts:115-123). Make the UPDATE conditional on the stored role being lower than the new role, for example WHERE role is in the lower roles. Re-read the stored role to build the response.
+- Folder discovery reads every folder from every tenant on each workspace poll (apps/web/src/api/access.ts:114-134 (accessibleFolders)). Start from the caller's owned folders and grant targets, then walk only the relevant descendants and the ancestors needed for each.
+- A payload over 256 KiB is fully re-compacted on every later edit (packages/sync/src/payloads.ts:442-460). Count bytes written since the last compaction separately from the snapshot size, and reset that count after compacting.
+- Layout persistence walks the whole tree and writes localStorage on every editor update (apps/web/src/host/collab/layout-local.ts:39-76). Skip updates that do not touch tables or tabs, write only values that changed, and batch writes into one, flushing on teardown.
+- The ack ledger keeps acknowledged writes during a continuous editing stream (apps/web/src/host/collab/acks.ts:48-57). On each ack, drop the writes it fully covers, and keep only those still outstanding.
+- Expanding YAML aliases in imported frontmatter is unbounded (packages/sync/src/doc-do.ts:257). Before normalizing, detect aliases and cycles or count expanded nodes against a budget, and refuse import when the budget is exceeded.

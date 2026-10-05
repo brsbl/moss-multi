@@ -271,6 +271,7 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
   - **Scope:** copy-link-only invites, including pending invites for unknown emails (`/invite/$token`); the notifications API, re-checked against the live grant when read; DS InboxItem and the bell in the top-bar collab slot, pushed through PrincipalDO; mark-read with `keepalive`; the navigation module (A§9).
   - **Tests first:** inviting B makes B's bell show it without a reload, and clicking it opens the doc; clicking a notice mid-sentence drops no keystroke; an invite to an unknown email gives a copyable link that redeems after sign-up; a notice whose grant was revoked is omitted.
   - **Done:** the legs are green, with a triptych against the glyphdown bell.
+- **T2.S1 A lost grant kills its invites** `[B·security]` (Slop Cop P1, PR #4): the member remove batch and role-change write end with `reapDeadInvites`, so a co-owner demoted or removed loses their open invites for good and regaining manage never revives them (A§8); tests first in `apps/web/src/api/invites.test.ts`.
 
 **Journeys added:** j05-trash, j06-folders, j07 (sign-out severs another window), j08-share, j09-revoke-live, j10-stranger-phone.
 
