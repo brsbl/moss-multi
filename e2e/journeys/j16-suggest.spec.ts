@@ -286,6 +286,35 @@ test('j16-suggest routed deletes: past an inline link, over own and original tex
   expect(await content(ada, docId), 'no suggestion wrote the body').toBe(before);
 });
 
+test('j16-suggest routed deletes: Backspace and Delete strike a whole emoji, never half of it @p:mean-2 @p:R17', async ({ actors }) => {
+  actors.solo('the owner only seeds the note; one suggester makes every edit');
+  const { ada, ben, docId, before } = await sharedNote(actors, 'Smile A\u{1F600}B here.\n\nNext \u{1F600} line.');
+  await openIn(ben, docId);
+  await ben.observeEditor(docId);
+  const { keyboard } = ben.page;
+  const body = ui.body(ben, docId);
+
+  // Backspace after an original emoji strikes both of its UTF-16 units, and the caret lands before it.
+  await caret(ben, docId, 'B here.', 0);
+  await keyboard.press('Backspace');
+  await settled(ben, docId, 'the Backspace over the emoji');
+  await expect.poll(() => painted(ben, 'suggest-delete'), { message: 'the whole emoji is struck', timeout: BIND_TIMEOUT }).toEqual(['\u{1F600}']);
+  await keyboard.type('Z');
+  await settled(ben, docId, 'typing after the strike');
+  await expect(body, 'the caret sat before the emoji, not inside it').toContainText('Smile AZ\u{1F600}B here.');
+
+  // Delete before an original emoji strikes it whole too, and the caret lands after it.
+  await caret(ben, docId, 'Next ', 5);
+  await keyboard.press('Delete');
+  await settled(ben, docId, 'the Delete over the emoji');
+  await expect.poll(() => painted(ben, 'suggest-delete'), { message: 'both emoji are struck whole', timeout: BIND_TIMEOUT }).toEqual(['\u{1F600}', '\u{1F600}']);
+  await keyboard.type('Y');
+  await settled(ben, docId, 'typing after the second strike');
+  await expect(body, 'the caret sat after the emoji').toContainText('Next \u{1F600}Y line.');
+  await expect(body).not.toContainText('\u{FFFD}');
+  expect(await content(ada, docId), 'no suggestion wrote the body').toBe(before);
+});
+
 test('j16-suggest offline: suggestions typed offline reach the server after the suggester navigates away @p:mean-2 @p:tech-7 @p:R17', async ({ actors }) => {
   const { ada, ben, docId, before } = await sharedNote(actors, 'Draft line one.\n\nDraft line two.', { severable: true });
   // His own note, to navigate to while the suggestion is still unsent.

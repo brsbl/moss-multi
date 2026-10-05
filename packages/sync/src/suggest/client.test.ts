@@ -22,8 +22,7 @@ beforeEach(() => {
 afterEach(() => restore());
 
 /** The doc socket between one fork and the DocDO's ingest: requests queue until `deliver` answers them in order. */
-function wire(live: Y.Doc, connection = 'c1') {
-  const ingest = new SuggestIngest(live, { stateCap: STATE_CAP_BYTES, registry: nodeRegistry() });
+function wire(live: Y.Doc, connection = 'c1', ingest = new SuggestIngest(live, { stateCap: STATE_CAP_BYTES, registry: nodeRegistry() })) {
   const outbox: SuggestRequest[] = [];
   const replies: SuggestReply[] = [];
   const who = { ...SUGGESTER, role: 'suggester', connection };
@@ -44,9 +43,9 @@ function wire(live: Y.Doc, connection = 'c1') {
 }
 
 /** A fork with a moss editor bound to F before F fills, as the pane's plugin binds it. */
-function mount(live: Y.Doc, link: ReturnType<typeof wire>) {
+function mount(live: Y.Doc, link: ReturnType<typeof wire>, now?: () => number) {
   const events: ForkEvent[] = [];
-  const fork = new SuggestFork(live, { me: SUGGESTER.id, name: SUGGESTER.name, send: link.send });
+  const fork = new SuggestFork(live, { me: SUGGESTER.id, name: SUGGESTER.name, send: link.send, now });
   fork.on((event) => events.push(event));
   const bound = bindEditor(fork.doc);
   fork.begin();
@@ -337,6 +336,72 @@ describe('T5.1 copy-back, reconnect and undelete @p:mean-2 @p:tech-7 @p:R17', ()
       expect(readRecord(live, record)?.ops.length, 'the offline edit lands in the active record').toBe(2);
       expect(m.fork.owes).toBe(false);
       expect(link.replies.filter((reply) => reply.t === 'suggest-refused'), 'the fork itself is never refused').toEqual([]);
+    } finally {
+      m.dispose();
+    }
+  });
+
+  it("a second window of the same author resumes only its own leases, never the first window's, and keeps its offline edit", () => {
+    const live = seededBody();
+    const first = wire(live, 'c1');
+    const a = mount(live, first);
+    const second = wire(live, 'c2', first.ingest);
+    let b: ReturnType<typeof mount> | null = null;
+    try {
+      a.act(() => select('Hello', 24).insertText(' One.'));
+      first.deliver(a.fork);
+      // The second window opens after the first wrote: it shows the first window's record.
+      b = mount(live, second);
+      b.act(() => select('Go to', 0).insertText('Then '));
+      second.deliver(b.fork);
+      expect(recordIds(live)).toHaveLength(2);
+      // The second window's socket drops half-open; an edit is made offline, then a new socket resumes.
+      b.act(() => select('Then', 5).insertText('soon '));
+      second.outbox.length = 0;
+      second.who.connection = 'c3';
+      b.fork.reconnected();
+      second.deliver(b.fork);
+      expect(second.replies.filter((reply) => reply.t === 'suggest-refused'), 'the resume is never refused').toEqual([]);
+      expect(refusalsOf(b.events), 'input stays open').toEqual([]);
+      expect(b.fork.closed).toBe(false);
+      expect(b.fork.owes).toBe(false);
+      expect(recordIds(live).map((id) => readRecord(live, id)!.ops.length).sort(), 'the offline edit lands in its own record').toEqual([1, 2]);
+      // The first window still writes under its own lease.
+      a.act(() => select('Hello', 29).insertText(' Two.'));
+      first.deliver(a.fork);
+      expect(first.replies.filter((reply) => reply.t === 'suggest-refused'), "the first window's lease was not taken").toEqual([]);
+    } finally {
+      b?.dispose();
+      a.dispose();
+    }
+  });
+
+  it('a merged record keeps its strikes: they move with the merge, paint struck, and undo takes them back from the merged record', () => {
+    const live = seededBody();
+    const link = wire(live);
+    let clock = 1_000_000;
+    const m = mount(live, link, () => clock);
+    try {
+      m.act(() => select('Hello', 24).insertText(' One.'));
+      const targets = spansOfText(m.fork.doc, 'world');
+      const part = m.fork.proposeDelete(targets);
+      link.deliver(m.fork);
+      const [first] = recordIds(live);
+      expect(readRecord(live, first)?.parts.map((p) => p.quote)).toEqual(['world']);
+      // A new group after the idle gap, built on the first group's text: the first record merges into the second.
+      clock += 31_000;
+      m.act(() => select('Hello', 29).insertText(' Two.'));
+      link.deliver(m.fork);
+      expect(link.replies.filter((reply) => reply.t === 'suggest-refused')).toEqual([]);
+      expect(readMeta(live, first)?.mergedInto, 'the first record merged').toBeTruthy();
+      const into = readMeta(live, first)!.mergedInto!;
+      expect(readRecord(live, into)?.parts.map((p) => p.quote), 'the server keeps the delete pending').toEqual(['world']);
+      expect(m.fork.isStruck(targets[0]), 'the author still sees it struck').toBe(true);
+      expect(m.fork.withdrawPart(String(part)), 'undo reaches the merged record').toBe(true);
+      link.deliver(m.fork);
+      expect(link.replies.filter((reply) => reply.t === 'suggest-refused')).toEqual([]);
+      expect(readRecord(live, into)?.parts, 'suggest-undelete took it back from the merged record').toEqual([]);
+      expect(m.fork.isStruck(targets[0])).toBe(false);
     } finally {
       m.dispose();
     }

@@ -294,7 +294,7 @@ export class SuggestFork {
   #lastBlock = -1;
   #caretBlock = -1;
   /** Names this fork to the DocDO, so it can resume its leases from a new socket while the old one looks open there. */
-  readonly #id = `f${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`;
+  readonly #id = `f${[...crypto.getRandomValues(new Uint32Array(3))].map((n) => n.toString(36)).join('')}`;
 
   constructor(
     readonly body: Y.Doc,
