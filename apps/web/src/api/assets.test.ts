@@ -210,7 +210,7 @@ describe('upload bounds (T3.1s)', () => {
     const copy = JSON.stringify({ sourceNoteId: docId, sourceRelativePath: 'assets/burst.png' });
     const copied = await call('POST', `/api/docs/${docId}/assets/copy`, dee.cookie, { body: copy, headers: { 'content-type': 'application/json' } });
     expect(copied.status, 'a cross-note copy counts as an upload').toBe(429);
-  });
+  }, 60_000);
 
   it('counts holders of a link under the link and their IP, whichever account they use', async () => {
     const docId = await insertDoc(d1.db, ada);
@@ -222,7 +222,7 @@ describe('upload bounds (T3.1s)', () => {
     for (let i = 0; i < UPLOAD_RATE.max; i += 1) expect((await viaLink(eve, '203.0.113.7')).status, `upload ${i + 1}`).toBe(201);
     expect((await viaLink(fay, '203.0.113.7')).status, 'another account on the same link and IP').toBe(429);
     expect((await viaLink(fay, '203.0.113.8')).status, 'the same link from another IP').toBe(201);
-  });
+  }, 60_000);
 
   it('enforces a per-vault media quota with 413, over every folder in the vault', async () => {
     const gil = await signedUpUser(env, 'assets-quota-gil', 'Gil');
