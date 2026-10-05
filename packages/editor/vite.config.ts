@@ -33,7 +33,8 @@ const CSP: Record<string, string[]> = {
   'style-src': ["'self'", "'unsafe-inline'"],
   'font-src': ["'self'"],
   'img-src': ["'self'", 'data:', 'blob:', 'https:', '<asset-origin>'],
-  'media-src': ["'self'", 'blob:', '<asset-origin>'],
+  // data: is the empty URL an unresolved video reference gets (registry.ts NO_MEDIA), so it shows moss's missing state.
+  'media-src': ["'self'", 'data:', 'blob:', '<asset-origin>'],
   'frame-src': ['data:', 'https:', '<html-frame-origin>'],
   'connect-src': ["'none'"],
   'worker-src': ["'none'"],

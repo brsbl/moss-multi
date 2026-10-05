@@ -435,7 +435,7 @@ export class MemoryHost {
     this.watchers.set(key, set);
     void this.read(noteId).then((result) => {
       if (result.kind === 'note' && !this.own.has(key)) this.own.set(key, { version: result.version, metaVersion: result.metaVersion });
-    });
+    }, () => undefined);
     return () => set.delete(listener);
   }
 

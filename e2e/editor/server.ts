@@ -40,7 +40,7 @@ export const EDITOR_CSP = [
   "style-src 'self' 'unsafe-inline'",
   "font-src 'self'",
   "img-src 'self' data: blob: https:",
-  "media-src 'self' blob:",
+  "media-src 'self' data: blob:",
   "frame-src data: https: 'self'",
   "connect-src 'none'",
   "worker-src 'none'",
