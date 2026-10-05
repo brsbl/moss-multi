@@ -101,7 +101,7 @@
     {"path":"packages/desktop/src/renderer/editor/hooks/index.ts","pin":"762abb777","upstreamSha256":"67e7233eb7de2996d27b09045d7c4aa7f075b944f398ce9480d44618774a6379","mode":"verbatim"},
     {"path":"packages/desktop/src/renderer/editor/hooks/useDecoratorBackspace.ts","pin":"762abb777","upstreamSha256":"4d5ca7b08c99ac00b6bfb9df9000fcac7d1f52abda06745c9fb1e3524d893182","mode":"verbatim"},
     {"path":"packages/desktop/src/renderer/editor/hooks/useScrollDismiss.ts","pin":"762abb777","upstreamSha256":"2cfb6337070490dd39d71000001f489ba5ad255ede4bbc76457880db8e03759d","mode":"verbatim"},
-    {"path":"packages/desktop/src/renderer/editor/iframe/IframeFrame.tsx","pin":"762abb777","upstreamSha256":"495c9876c9f56006b923840beb0d4a43abf180222e4f1df2244d26b316df6e6b","mode":"verbatim"},
+    {"path":"packages/desktop/src/renderer/editor/iframe/IframeFrame.tsx","pin":"762abb777","upstreamSha256":"495c9876c9f56006b923840beb0d4a43abf180222e4f1df2244d26b316df6e6b","mode":"patched","patch":"patches/moss/packages/desktop/src/renderer/editor/iframe/IframeFrame.tsx.patch"},
     {"path":"packages/desktop/src/renderer/editor/iframe/iframe-model.ts","pin":"762abb777","upstreamSha256":"fea02cd22e20432604971ab34511549cafffec546ee2a1e41e132c2c3e4d0b46","mode":"verbatim"},
     {"path":"packages/desktop/src/renderer/editor/markdown/fixes.ts","pin":"762abb777","mode":"extracted","template":"markdown/fixes.ts","generatedSha256":"ff74440e1153115e55dc16cbb3d326f11aece98eda792703e3681d5220b96772"},
     {"path":"packages/desktop/src/renderer/editor/markdown/format-whitespace.ts","pin":"762abb777","mode":"extracted","template":"markdown/format-whitespace.ts","generatedSha256":"c5506e3808ecc8e0f71fa2f53fed26197ac81c1bf242c568d420781c3fde7adc"},

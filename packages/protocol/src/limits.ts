@@ -27,3 +27,6 @@ export const ACK_COALESCE_MS = 250;
 
 /** REST writes (a rename now, a push later) per principal per window, counted by its PrincipalDO (A§5.2); 429 past it. */
 export const REST_WRITE_RATE = { max: 60, windowMs: 60_000 } as const;
+
+/** Server fetches of caller-supplied URLs (unfurls, remote images) per identity per window; 429 past it (A§18). */
+export const REMOTE_FETCH_RATE = { max: 30, windowMs: 60_000 } as const;

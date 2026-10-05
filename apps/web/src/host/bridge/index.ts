@@ -11,6 +11,7 @@ import { displayTitle, liveTitle, writeLiveTitle } from '../collab/title-binding
 import { askDocAccess, rememberRole } from '../access.ts';
 import { onNativeMenuCommand } from '../media/image-menu.ts';
 import { chooseFilesInBrowser, createImagesApi } from '../media/uploads.ts';
+import { createWebEmbedPreviewApi } from '../embeds/web-embed-preview.ts';
 import { waitForAllAcked } from '../collab/unacked.ts';
 import { setWikiCandidates } from '../wiki-links.ts';
 import type { TrashGuard } from '../trash-guard.ts';
@@ -163,7 +164,6 @@ const nothing: Method<null> = async () => null;
 const refuse = (what: string): Method<never> => async () => {
   throw new Error(`moss-multi: ${what}`);
 };
-const later = (what: string, milestone: number) => refuse(`${what} is not available on the web until M${milestone}`);
 const unavailable = (what: string) => refuse(`${what} is not available on the web`);
 
 /** What moss shows when the server refused a folder change without saying why: always a sentence. */
@@ -857,11 +857,11 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
     files: { search: empty, listDirectory: empty, open: empty },
     images: {
       ...createImagesApi({ request, chooseFiles: (accept) => browser.chooseFiles(accept) }),
-      persistUrl: later('Saving a remote image', 3),
       copyFromPath: unavailable('Copying a local file'),
     },
+    // No screenshots: an HTML block's preview is its live sandboxed frame (host/html-frame.ts).
     htmlPreview: { ensure: nothing, onMaterialized: silent, onFailed: silent },
-    webEmbedPreview: { ensure: nothing, subscribe: silent },
+    webEmbedPreview: createWebEmbedPreviewApi(request),
     videoThumbnail: { ensure: nothing, onMaterialized: silent },
     system: {
       showEmojiPanel: none,
