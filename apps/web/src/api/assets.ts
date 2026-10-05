@@ -26,6 +26,7 @@ import { assertPublicUrl, safeFetch, SsrfBlockedError } from './ssrf.ts';
 import { ownerOfTrashed } from './trash.ts';
 
 export type AssetsEnv = AuthEnv & Pick<AppEnv, 'ASSETS' | 'DocDO' | 'PrincipalDO'>;
+type AdmitEnv = AuthEnv & Pick<AppEnv, 'PrincipalDO'>;
 
 export const ASSET_ROUTE = /^\/api\/docs\/[^/]+\/assets(?:\/.*)?$/;
 const UPLOAD = /^\/api\/docs\/([^/]+)\/assets$/;
@@ -96,10 +97,13 @@ async function vaultMediaBytes(env: AuthEnv, folderId: string): Promise<number> 
 const OVER_QUOTA = /NOT NULL constraint failed: assets\.folder_id/;
 
 /**
- * One upload or copy against the caller's window, and, for a caller a share link makes an editor, also against the
- * link's window from their IP, so a link holder's accounts share one limit. A refusal answers 429.
+ * The one admission for every route that places media into a doc (upload, from-url, copy, duplicate): one call against
+ * the caller's upload window and, for a caller a share link makes an editor of `docId`, also against the link's window
+ * from their IP, so a link holder's accounts share one limit (429); then `incoming` bytes against the media quota of
+ * the vault holding `folderId` (413). A copy adds no stored bytes, but a full vault takes no more media of any kind.
  */
-async function admitUpload(request: Request, env: AssetsEnv, principal: Principal, docId: string): Promise<Response | null> {
+export async function admitMedia(request: Request, env: AdmitEnv, principal: Principal, docId: string, folderId: string,
+  incoming: number): Promise<Response | null> {
   const names = [principal.id];
   const token = shareTokenOf(request);
   // The link counts whenever it is what makes the caller an editor, a weaker grant of their own notwithstanding.
@@ -108,9 +112,19 @@ async function admitUpload(request: Request, env: AssetsEnv, principal: Principa
     names.push(`link:${await sha256Hex(new TextEncoder().encode(token))}:${ip}`);
   }
   const granted = await Promise.all(names.map(async (name) => (await getServerByName(env.PrincipalDO, name)).takeUploadToken()));
-  if (granted.every(Boolean)) return null;
-  return json({ error: 'rate-limited', message: 'Too many uploads. Wait a minute and try again.' }, 429,
-    { ...NO_STORE, 'retry-after': String(UPLOAD_RATE.windowMs / 1000) });
+  if (!granted.every(Boolean)) {
+    return json({ error: 'rate-limited', message: 'Too many uploads. Wait a minute and try again.' }, 429,
+      { ...NO_STORE, 'retry-after': String(UPLOAD_RATE.windowMs / 1000) });
+  }
+  return (await vaultMediaBytes(env, folderId)) + incoming > VAULT_MEDIA_QUOTA_BYTES ? overQuota() : null;
+}
+
+/** A duplicate's admission: its source's media, when it has any, enter the folder the copy lands in. */
+export async function admitDuplicateMedia(request: Request, env: AdmitEnv, principal: Principal, sourceDocId: string,
+  folderId: string): Promise<Response | null> {
+  const row = await env.DB.prepare('SELECT COUNT(*) AS files, COALESCE(SUM(size), 0) AS bytes FROM doc_media WHERE doc_id = ?1')
+    .bind(sourceDocId).first<{ files: number; bytes: number }>();
+  return row?.files ? admitMedia(request, env, principal, sourceDocId, folderId, row.bytes) : null;
 }
 
 /** The filename a `?filename=` or `assets/<file>` path names, decoded and folded to a stored name. */
@@ -193,7 +207,7 @@ function uploadTarget(raw: string): { filename: string; type: MediaType } | null
 }
 
 /** The raw body into `docId`, after the caller's right to edit it was checked. */
-async function store(request: Request, env: AssetsEnv, docId: string, folderId: string, createdBy: string): Promise<Response> {
+async function store(request: Request, env: AssetsEnv, principal: Principal, docId: string, folderId: string): Promise<Response> {
   const target = uploadTarget(new URL(request.url).searchParams.get('filename') ?? '');
   if (!target) return unsupported();
   const { filename, type } = target;
@@ -206,11 +220,12 @@ async function store(request: Request, env: AssetsEnv, docId: string, folderId: 
   const size = Number(length);
   if (size > MEDIA_CAP_BYTES[type.kind]) return tooLarge(type.kind);
   if (size === 0) return refuse(400, 'empty', 'The file is empty.');
-  if ((await vaultMediaBytes(env, folderId)) + size > VAULT_MEDIA_QUOTA_BYTES) return overQuota();
+  const refused = await admitMedia(request, env, principal, docId, folderId, size);
+  if (refused) return refused;
   const bytes = await readDeclared(request, size);
   if (bytes === 'too-long') return refuse(413, 'too-large', 'The upload is longer than its Content-Length.');
   if (bytes === 'too-short') return refuse(400, 'bad-length', 'The upload ended before its Content-Length.');
-  return storeBytes(env, docId, folderId, createdBy, filename, type, bytes);
+  return storeBytes(env, docId, folderId, principal.id, filename, type, bytes);
 }
 
 /** `bytes` into `docId` under `filename`, or the first `-n` name free there, within the vault's media quota. */
@@ -263,9 +278,7 @@ async function upload(request: Request, env: AssetsEnv, docId: string): Promise<
   const access = await resolveDocAccess(createDb(env.DB), principal, docId, shareTokenOf(request));
   if (!access || access.deleted) return notFound();
   if (!roleAtLeast(access.role, 'editor')) return refuse(403, 'forbidden', 'You can view this note but not add media to it.');
-  const limited = await admitUpload(request, env, principal, docId);
-  if (limited) return limited;
-  return store(request, env, docId, access.folderId, principal.id);
+  return store(request, env, principal, docId, access.folderId);
 }
 
 /** moss's copyFromNoteAsset: the bytes the source's record binds the path to, bound in the target's record. */
@@ -281,10 +294,10 @@ async function copyFromNote(request: Request, env: AssetsEnv, docId: string): Pr
   const [target, source] = await Promise.all([resolveDocAccess(db, principal, docId, token), resolveDocAccess(db, principal, sourceId, token)]);
   if (!target || target.deleted || !source || source.deleted) return notFound();
   if (!roleAtLeast(target.role, 'editor')) return refuse(403, 'forbidden', 'You can view this note but not add media to it.');
-  const limited = await admitUpload(request, env, principal, docId);
-  if (limited) return limited;
   const found = await mediaOf(db, sourceId, filename);
   if (!found) return notFound();
+  const refused = await admitMedia(request, env, principal, docId, target.folderId, found.size);
+  if (refused) return refused;
   const media = await bind(env, docId, filename, found, principal.id, async () => ({ bytes: found, statements: [] }));
   return media ? placed(media) : nameTaken();
 }
@@ -308,6 +321,9 @@ async function fromUrl(request: Request, env: AssetsEnv, docId: string): Promise
   } catch {
     return blocked();
   }
+  // Admitted before anything is fetched, against a vault with room; the stored size is checked again in storeBytes.
+  const refused = await admitMedia(request, env, principal, docId, access.folderId, 0);
+  if (refused) return refused;
   const throttled = await takeFetchToken(env, principal);
   if (throttled) return throttled;
   const failed = () => refuse(502, 'fetch-failed', 'The image couldn’t be downloaded.');

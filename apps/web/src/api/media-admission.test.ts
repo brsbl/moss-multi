@@ -58,10 +58,9 @@ afterAll(() => {
 beforeEach(() => uploadsTaken.clear());
 
 function call(path: string, cookie: string, init: { body?: BodyInit; headers?: Record<string, string> } = {}) {
-  const length = init.body instanceof Uint8Array ? { 'content-length': String(init.body.byteLength) } : {};
-  return handleApi(new Request(`${BASE}${path}`, {
-    method: 'POST', headers: { origin: BASE, cookie, ...length, ...init.headers }, body: init.body,
-  }), env);
+  const headers: Record<string, string> = { origin: BASE, cookie, ...init.headers };
+  if (init.body instanceof Uint8Array) headers['content-length'] = String(init.body.byteLength);
+  return handleApi(new Request(`${BASE}${path}`, { method: 'POST', headers, body: init.body }), env);
 }
 const jsonBody = (value: unknown) => ({ body: JSON.stringify(value), headers: { 'content-type': 'application/json' } });
 
