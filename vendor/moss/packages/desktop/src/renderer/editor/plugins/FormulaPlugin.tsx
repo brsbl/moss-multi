@@ -1094,13 +1094,15 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
         const instances = $nodesOfType(FormulaNode).filter(
           (candidate) => candidate.getFormulaId() === instanceId
         );
+        // Linked instances take the same edit, each rebased onto its own payload.
+        const before = editStoredRef.current ?? targetNode.getFormula();
         const writeFormula = (node: FormulaNode, next: string) => {
-          if (!registerDoc(editor) || node.getKey() !== target.nodeKey) {
+          if (!registerDoc(editor)) {
             node.setFormula(next);
             return;
           }
-          const written = writeRegisterEdit(editor, node.getKey(), editStoredRef.current ?? node.getFormula(), next);
-          if (written !== null) editStoredRef.current = written;
+          const written = writeRegisterEdit(editor, node.getKey(), before, next);
+          if (written !== null && node.getKey() === target.nodeKey) editStoredRef.current = written;
         };
 
         if (target.sourceMode === 'symbolic') {

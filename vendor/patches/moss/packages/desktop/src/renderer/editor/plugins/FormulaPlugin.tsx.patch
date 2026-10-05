@@ -88,17 +88,19 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FormulaPlugin.tsx b/pa
        const result = node.getResult();
        const sourceMode = classifyFormulaSource(formula, { storedDisplay: result });
        draft = {
-@@ -1059,11 +1093,19 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
+@@ -1059,11 +1093,21 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
          const instances = $nodesOfType(FormulaNode).filter(
            (candidate) => candidate.getFormulaId() === instanceId
          );
++        // Linked instances take the same edit, each rebased onto its own payload.
++        const before = editStoredRef.current ?? targetNode.getFormula();
 +        const writeFormula = (node: FormulaNode, next: string) => {
-+          if (!registerDoc(editor) || node.getKey() !== target.nodeKey) {
++          if (!registerDoc(editor)) {
 +            node.setFormula(next);
 +            return;
 +          }
-+          const written = writeRegisterEdit(editor, node.getKey(), editStoredRef.current ?? node.getFormula(), next);
-+          if (written !== null) editStoredRef.current = written;
++          const written = writeRegisterEdit(editor, node.getKey(), before, next);
++          if (written !== null && node.getKey() === target.nodeKey) editStoredRef.current = written;
 +        };
  
          if (target.sourceMode === 'symbolic') {
@@ -109,7 +111,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FormulaPlugin.tsx b/pa
                changed = true;
              }
              if (node.getName() !== null) {
-@@ -1085,7 +1127,7 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
+@@ -1085,7 +1129,7 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
          const normalizedName = nextName.length > 0 ? nextName : null;
          for (const node of instances) {
            if (node.getFormula() !== nextExpression) {
@@ -118,7 +120,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FormulaPlugin.tsx b/pa
              changed = true;
            }
            if (node.getName() !== normalizedName) {
-@@ -1170,6 +1212,10 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
+@@ -1170,6 +1214,10 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
  
    const handleHistoryShortcut = useCallback(
      (direction: 'undo' | 'redo'): FormulaDraft | null => {
@@ -129,7 +131,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FormulaPlugin.tsx b/pa
        const originalDraft = editOriginalDraftRef.current;
        const currentDraft = readCurrentDraft();
        const currentFormulaId = readCurrentFormulaId();
-@@ -1228,7 +1274,7 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
+@@ -1228,7 +1276,7 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
      onConvert: (targetNode, textNode) => {
        const formulaId = targetNode.getFormulaId();
        registerEditedFormulaId(textNode.getKey(), formulaId);
@@ -138,7 +140,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FormulaPlugin.tsx b/pa
      }
    });
  
-@@ -1259,6 +1305,7 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
+@@ -1259,6 +1307,7 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
              editRedoDraftRef.current = null;
              editReferenceBindingsRef.current = [];
              editExpressionRef.current = '';
