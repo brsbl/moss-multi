@@ -3,8 +3,8 @@
 // folder or vault grant reaches every doc below it, and a missing doc and an inaccessible one get byte-identical
 // 404s on every doc route (A§8 non-disclosure).
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { migratedD1, type TestD1 } from '../test/d1.ts';
-import { BASE, insertDoc, insertFolder, insertGrant, insertLink, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
+import { countingBinds, D1_MAX_PARAMS, migratedD1, type TestD1 } from '../test/d1.ts';
+import { BASE, insertAgent, insertDoc, insertFolder, insertGrant, insertLink, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
 import { handleApi } from './router.ts';
 
 const created: string[] = [];
@@ -175,6 +175,27 @@ describe('GET /api/docs/:id/members', () => {
     expect(text, 'no email reaches a non-owner').not.toContain('@');
     expect((JSON.parse(text) as { members: Member[] }).members.map((m) => [m.name, m.role])).toEqual([['Ada', 'owner'], ['Ben', 'editor'], ['Cy', 'viewer']]);
   });
+
+  it('lists 150 people and 150 agents in grant order', async () => {
+    const docId = await insertDoc(d1.db, ada);
+    const now = Date.now();
+    const expected: [string, string][] = [[ada.id, 'owner']];
+    for (let i = 0; i < 150; i++) {
+      const id = crypto.randomUUID();
+      await d1.db.prepare('INSERT INTO user (id, name, email, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
+        .bind(id, `P${i}`, `many-${id}@example.invalid`, now, now).run();
+      await insertGrant(d1.db, { docId }, { id }, 'viewer');
+      expected.push([id, 'viewer']);
+      const agent = await insertAgent(d1.db, ada);
+      await insertGrant(d1.db, { docId }, { id: agent.id, type: 'agent' }, 'editor');
+      expected.push([agent.id, 'editor']);
+    }
+    expect((await members(ada.cookie, `/api/docs/${docId}/members`)).map((m) => [m.principalId, m.role])).toEqual(expected);
+    const counted = countingBinds(d1.db);
+    const response = await handleApi(new Request(`${BASE}/api/docs/${docId}/members`, { headers: { cookie: ada.cookie } }), { ...env, DB: counted.db });
+    expect(response.status).toBe(200);
+    expect(Math.max(...counted.binds), 'bound parameters per statement').toBeLessThanOrEqual(D1_MAX_PARAMS);
+  }, 120_000);
 });
 
 describe('anonymous member-list privacy', () => {

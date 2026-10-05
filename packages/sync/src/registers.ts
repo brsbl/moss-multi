@@ -6,7 +6,7 @@ import {
   $getEditor, $getNodeByKey, $getRoot, $isElementNode, COLLABORATION_TAG, type EditorState, type LexicalEditor, type LexicalNode, type NodeKey,
 } from 'lexical';
 import * as Y from 'yjs';
-import { diffText, SERVER_CELL_BUDGET } from '@moss-multi/core/text-diff';
+import { diffAtCaret, diffText, rebaseOps, SERVER_CELL_BUDGET } from '@moss-multi/core/text-diff';
 import { newPayloadId, payloadDocsFor, payloadText, REGISTER_FIELDS, type PayloadDocs } from './payload-docs.ts';
 
 export { REGISTER_FIELDS };
@@ -25,6 +25,8 @@ interface Registry {
   minted: Map<NodeKey, string>;
   pending: Set<string>;
   keysById: Map<string, Set<NodeKey>>;
+  /** Field views waiting for a payload to be held, written first or arrive. */
+  changed: Set<() => void>;
 }
 
 const registries = new WeakMap<LexicalEditor, Registry>();
@@ -127,6 +129,42 @@ export function $assignRegisterIds(): void {
   walk($getRoot());
 }
 
+/**
+ * Node `key`'s payload id, and whether its field may write: its first text is written and its state has arrived. A
+ * field that may not write shows the node's render cache, read-only. Holds nothing.
+ */
+export function registerState(editor: LexicalEditor, key: NodeKey): { id: string; ready: boolean } | undefined {
+  const registry = registries.get(editor);
+  const id = (editor.getEditorState()._nodeMap.get(key) as RegisterNode | undefined)?.__regId;
+  if (!registry || !id) return undefined;
+  return { id, ready: !registry.pending.has(id) && registry.host.get(id) !== undefined && !registry.host.awaiting(id) };
+}
+
+/** Calls `listener` when a payload is held, written first or arrives; editor updates are the caller's to watch. */
+export function onRegisterChange(editor: LexicalEditor, listener: () => void): () => void {
+  const registry = registries.get(editor);
+  if (!registry) return () => {};
+  registry.changed.add(listener);
+  return () => registry.changed.delete(listener);
+}
+
+/**
+ * A user's edit through a field (docs/design/registers.md, T1.F4): the field went from `before` to `after`, with the
+ * caret at `caret` after it. The edit is applied to node `key`'s payload as it is now, resolved by id at this moment
+ * and rebased past edits the field had not shown, so it removes only what its user saw. Never a whole-value write.
+ * Returns the payload's text after, or null when the field may not write (no payload yet, or not arrived).
+ */
+export function writeRegisterEdit(editor: LexicalEditor, key: NodeKey, before: string, after: string, caret?: number): string | null {
+  const state = registerState(editor, key);
+  const registry = registries.get(editor);
+  if (!state?.ready || !registry) return null;
+  const text = payloadText(registry.host.hold(state.id));
+  const ops = caret === undefined ? diffText(before, after) : diffAtCaret(before, after, caret);
+  const rebased = rebaseOps(before, ops, text.toString());
+  if (rebased.length) text.doc!.transact(() => text.applyDelta(rebased), REGISTER_LOCAL_ORIGIN);
+  return text.toString();
+}
+
 /** Copy the payload into one node's excluded render cache. Never writes to the shared tree. */
 function $refreshNode(registry: Registry, node: LexicalNode | null): void {
   const field = node && REGISTER_FIELDS[node.getType()];
@@ -147,7 +185,7 @@ export interface BindRegistersOptions {
 
 /** Installed before V1 hydration on the client and the DocDO mirror. */
 export function bindRegisters(editor: LexicalEditor, doc: Y.Doc, { serializedImports = false, payloads: host = payloadDocsFor(doc) }: BindRegistersOptions = {}): () => void {
-  const registry: Registry = { root: doc, host, mirror: serializedImports, minted: new Map(), pending: new Set(), keysById: new Map() };
+  const registry: Registry = { root: doc, host, mirror: serializedImports, minted: new Map(), pending: new Set(), keysById: new Map(), changed: new Set() };
   registries.set(editor, registry);
   bindingCount++;
   // A client holds every payload its tree names, so it asks for each; the mirror reads on demand.
@@ -237,6 +275,8 @@ export function bindRegisters(editor: LexicalEditor, doc: Y.Doc, { serializedImp
   };
   for (const [id, held] of host.docs) watch(id, held);
   stops.push(host.onHold(watch));
+  const notify = () => { for (const listener of [...registry.changed]) listener(); };
+  stops.push(host.onHold(notify), host.onArrive(notify));
   /**
    * The minter's first texts, once their nodes are committed and attached; outside every undo manager. A client writes
    * them after the commit's own note frame, so a payload's first frame names an id the server already knows.
@@ -255,6 +295,7 @@ export function bindRegisters(editor: LexicalEditor, doc: Y.Doc, { serializedImp
         if (text) held.transact(() => payloadText(held).insert(0, text), REGISTER_MINT);
       }
     }, { editor });
+    notify();
   };
   stops.push(editor.registerUpdateListener(({ editorState, prevEditorState, dirtyElements, dirtyLeaves, tags }) => {
     if (registry.minted.size && registry.mirror) writeFirstTexts(editorState);

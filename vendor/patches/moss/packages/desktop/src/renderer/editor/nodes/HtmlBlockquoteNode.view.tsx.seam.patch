@@ -3,19 +3,21 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
 +++ b/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.tsx
 @@ -1,3 +1,6 @@
 +// moss-multi seam: publish decorator drafts as register edits.
-+import { useRegisterDraft } from '@moss-multi/host/collab/register-input';
++import { resumeField, useRegisterDraft } from '@moss-multi/host/collab/register-input';
 +import { registerDoc } from '@moss-multi/host/collab/registers';
  import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
  import type { JSX } from 'react';
  import { $createNodeSelection, $getNodeByKey, $setSelection, type NodeKey } from 'lexical';
-@@ -197,9 +200,9 @@ function RawHtmlBlockquoteComponent({
+@@ -196,10 +199,10 @@ function RawHtmlBlockquoteComponent({
+   const [editor] = useLexicalComposerContext();
    const [isSelected, setSelected, clearSelection] = useLexicalNodeSelection(nodeKey);
    const { handleDelete, handleGapClick } = useMediaNodeActions(nodeKey);
-   const [isEditing, setIsEditing] = useState(false);
+-  const [isEditing, setIsEditing] = useState(false);
 -  const [localRawHtml, setLocalRawHtml] = useState(rawHtml);
++  const [isEditing, setIsEditing] = useState(() => resumeField(editor, nodeKey));
    const [hasTextSelection, setHasTextSelection] = useState(false);
    const textareaRef = useRef<HTMLTextAreaElement>(null);
-+  const [localRawHtml, setLocalRawHtml] = useRegisterDraft(editor, nodeKey, rawHtml, 'setRawHtml', textareaRef, isEditing);
++  const [localRawHtml, setLocalRawHtml, writable] = useRegisterDraft(editor, nodeKey, rawHtml, textareaRef, isEditing);
    const highlightedPreRef = useRef<HTMLPreElement>(null);
    const previewContent = useMemo(
      () => parseHtmlBlockquotePreviewContent(rawHtml),
@@ -59,7 +61,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
                    </pre>
                    <textarea
                      ref={textareaRef}
-+                    readOnly={!editor.isEditable()}
++                    readOnly={!editor.isEditable() || !writable}
                      value={localRawHtml}
                      onChange={(e) => {
                        setLocalRawHtml(e.target.value);
@@ -77,16 +79,18 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
                  </div>
                </div>
              </div>
-@@ -496,11 +500,11 @@ function MossHtmlPreviewComponent({
+@@ -495,12 +499,12 @@ function MossHtmlPreviewComponent({
+   const noteId = useCurrentNoteId();
    const [isSelected, setSelected, clearSelection] = useLexicalNodeSelection(nodeKey);
    const { handleDelete, handleGapClick } = useMediaNodeActions(nodeKey);
-   const [isEditing, setIsEditing] = useState(false);
+-  const [isEditing, setIsEditing] = useState(false);
 -  const [localRawHtml, setLocalRawHtml] = useState(rawHtml);
++  const [isEditing, setIsEditing] = useState(() => resumeField(editor, nodeKey));
    const [hasTextSelection, setHasTextSelection] = useState(false);
    const [isInteractive, setIsInteractive] = useState(false);
    const { isFullscreen, enterFullscreen, exitFullscreen } = useMediaFullscreen();
    const textareaRef = useRef<HTMLTextAreaElement>(null);
-+  const [localRawHtml, setLocalRawHtml] = useRegisterDraft(editor, nodeKey, rawHtml, 'setRawHtml', textareaRef, isEditing);
++  const [localRawHtml, setLocalRawHtml, writable] = useRegisterDraft(editor, nodeKey, rawHtml, textareaRef, isEditing);
    const highlightedPreRef = useRef<HTMLPreElement>(null);
  
    const [interactivePreviewReady, setInteractivePreviewReady] = useState(false);
@@ -130,7 +134,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
          </pre>
          <textarea
            ref={textareaRef}
-+          readOnly={!editor.isEditable()}
++          readOnly={!editor.isEditable() || !writable}
            value={localRawHtml}
            onChange={(e) => {
              setLocalRawHtml(e.target.value);

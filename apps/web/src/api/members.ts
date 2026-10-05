@@ -5,13 +5,13 @@
 // each owner may make SHARES_PER_HOUR new shares an hour. Lowering or
 // removing access waits for the one kick path (T2.5), so a share here only adds or raises.
 import { waitUntil } from 'cloudflare:workers';
-import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import { publishTo } from '@moss-multi/sync/fanout';
 import { ROLES, SHARE_ROLES, type Role, type ShareRole } from '@moss-multi/protocol/roles';
 import type { AppEnv } from '../env.ts';
 import type { AuthEnv } from '../auth/auth.ts';
 import { resolvePrincipal, type Principal } from '../auth/principal.ts';
-import { createDb, type Db } from '../db/client.ts';
+import { createDb, inJson, type Db } from '../db/client.ts';
 import { agents, docMembers, folderMembers, invites, user } from '../db/schema.ts';
 import { json } from '../worker/route.ts';
 import { actingUserId, MAX_FOLDER_DEPTH, resolveDocAccess, resolveFolderAccess } from './access.ts';
@@ -78,8 +78,8 @@ async function listMembers(db: Db, target: MemberTarget, ownerUserId: string, wi
   const userIds = [ownerUserId, ...grants.filter((g) => g.principalType === 'user').map((g) => g.principalId)];
   const agentIds = grants.filter((g) => g.principalType === 'agent').map((g) => g.principalId);
   const [users, agentRows] = await Promise.all([
-    db.select({ id: user.id, name: user.name, email: user.email }).from(user).where(inArray(user.id, userIds)),
-    agentIds.length > 0 ? db.select({ id: agents.id, name: agents.name }).from(agents).where(inArray(agents.id, agentIds)) : [],
+    db.select({ id: user.id, name: user.name, email: user.email }).from(user).where(inJson(user.id, userIds)),
+    agentIds.length > 0 ? db.select({ id: agents.id, name: agents.name }).from(agents).where(inJson(agents.id, agentIds)) : [],
   ]);
   const people = new Map(users.map((u) => [u.id, u]));
   const bots = new Map(agentRows.map((a) => [a.id, a]));
