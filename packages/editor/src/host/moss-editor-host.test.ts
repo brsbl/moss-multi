@@ -30,7 +30,7 @@ const NAMES: readonly string[] = [
   'PLAN',
   'Q3 Plan',
   'Café',
-  'Café',
+  'Cafe\u0301',
   '日本語のノート',
   '📝 Notes',
   'Straße',
@@ -57,12 +57,12 @@ const NAMES: readonly string[] = [
   '__pycache__',
   'bower_components',
   '<>:"|?*',
-  'fullwidth．dot',
-  '．leading',
-  ' nbsp',
-  '﻿bom',
+  'fullwidth\uFF0Edot',
+  '\uFF0Eleading',
+  '\u00A0nbsp',
+  '\uFEFFbom',
   'lone\uD800surrogate',
-  'ends with �',
+  'ends with \uFFFD',
   '',
   ' ',
   'Untitled',
@@ -82,7 +82,7 @@ const NAMES: readonly string[] = [
 ];
 
 // A directory listing can only hold names without a separator or NUL.
-const LISTABLE = NAMES.filter((name) => !/[/\u0000]/.test(name) && name !== '' && name !== '.' && name !== '..');
+const LISTABLE = NAMES.filter((name) => !name.includes('/') && !name.includes('\u0000') && name !== '' && name !== '.' && name !== '..');
 
 const IDS: readonly unknown[] = [
   '0f8fad5b-d9cb-469f-a165-70867728950e',
@@ -168,13 +168,14 @@ describe('moss-editor-host.js is one self-contained module', () => {
 });
 
 describe('note ids', () => {
-  it.each(IDS.map((id) => [JSON.stringify(id), id]))('%s: isMossNoteId and noteIdKey match assertValidNoteId', (_label, id) => {
-    let expected: string | null = null;
-    try {
-      expected = assertValidNoteId(id);
-    } catch {
-      expected = null;
-    }
+  it.each(IDS.map((id): [string, unknown] => [JSON.stringify(id), id]))('%s: isMossNoteId and noteIdKey match assertValidNoteId', (_label, id) => {
+    const expected = (() => {
+      try {
+        return assertValidNoteId(id);
+      } catch {
+        return null;
+      }
+    })();
     expect(typed.isMossNoteId(id as string)).toBe(expected !== null);
     if (expected !== null) expect(typed.noteIdKey(id as string)).toBe(expected);
   });
@@ -211,12 +212,12 @@ describe('markdown resolution', () => {
     { label: 'directories are not markdown', folder: 'Plan', files: [['z.txt', 1]], dirs: ['dir.md'] },
     { label: 'nothing', folder: 'Plan', files: [] },
     { label: 'trimmed folder name', folder: ' Plan ', files: [['Plan.md', 1], ['Zed.md', 4]] },
-    { label: 'NFD file in an NFC folder', folder: 'Café', files: [['Café.md', 1], ['Other.md', 4]] },
+    { label: 'NFD file in an NFC folder', folder: 'Café', files: [['Cafe\u0301.md', 1], ['Other.md', 4]] },
     { label: 'unicode', folder: '日本語のノート', files: [['日本語のノート.md', 1]] },
   ];
 
   for (const ci of [false, true]) {
-    it.each(SCENARIOS.map((scenario) => [scenario.label, scenario]))(`${ci ? 'case-insensitive' : 'case-sensitive'}: %s`, async (_label, scenario) => {
+    it.each(SCENARIOS.map((scenario): [string, (typeof SCENARIOS)[number]] => [scenario.label, scenario]))(`${ci ? 'case-insensitive' : 'case-sensitive'}: %s`, async (_label, scenario) => {
       const fs = memoryFs(ci);
       const folderDir = `${NOTES}/${scenario.folder}`;
       fs.dir(folderDir);
@@ -247,7 +248,14 @@ describe('markdown resolution', () => {
 });
 
 describe('allocateFolderName', () => {
-  const desiredNames = [...new Set(NAMES.map((title) => toFolderBaseName(title)))].filter((name) => typed.isMossFolderName(name));
+  const passes = (name: string) => {
+    try {
+      return typed.isMossFolderName(name);
+    } catch {
+      return false;
+    }
+  };
+  const desiredNames = [...new Set(NAMES.map((title) => toFolderBaseName(title)))].filter(passes);
 
   it('the table yields a spread of valid desired names', () => {
     expect(desiredNames.length).toBeGreaterThan(20);
@@ -314,7 +322,7 @@ describe('folderPathFor', () => {
     ['Notes'],
     ['Plan'],
   ];
-  it.each(cases.map((segments) => [segments.join('/'), segments]))('%s matches resolveFolderPathForDirectory', (_label, segments) => {
+  it.each(cases.map((segments): [string, string[]] => [segments.join('/'), segments]))('%s matches resolveFolderPathForDirectory', (_label, segments) => {
     const ref = createDesktopRef(memoryFs(false), { workspaceRoot: ROOT, activeNotesRoot: NOTES });
     expect(typed.folderPathFor(segments)).toBe(ref.resolveFolderPathForDirectory(join(ROOT, ...segments)));
   });
@@ -390,7 +398,7 @@ describe('noteEditability', () => {
     ['padded id', ['Notes', 'Plan'], meta(` ${ID}`, 'Plan'), true, 'unadopted'],
     ['numeric id', ['Notes', 'Plan'], JSON.stringify({ id: 7, title: 'Plan' }), true, 'unadopted'],
     ['not JSON', ['Notes', 'Plan'], '{', true, 'unreadableMeta'],
-    ['BOM before JSON', ['Notes', 'Plan'], `﻿${ok}`, true, 'unreadableMeta'],
+    ['BOM before JSON', ['Notes', 'Plan'], `\uFEFF${ok}`, true, 'unreadableMeta'],
     ['JSON null', ['Notes', 'Plan'], 'null', true, 'unreadableMeta'],
     ['JSON array', ['Notes', 'Plan'], '[]', true, 'unreadableMeta'],
     ['no markdown', ['Notes', 'Plan'], ok, false, 'noMarkdown'],
@@ -422,7 +430,7 @@ describe('filename sanitizer', () => {
     for (const name of ['', '.', '..', '.hidden', 'a/b', 'a\\b', 'a\u0000b', 'node_modules', 'Plan ', 'x'.repeat(253), '日'.repeat(85)]) {
       expect(typed.isMossFolderName(name)).toBe(false);
     }
-    for (const name of ['Plan', 'Wait...', 'a..b', 'CON', 'Untitled', '日'.repeat(84), 'Café']) {
+    for (const name of ['Plan', 'Wait...', 'a..b', 'CON', 'Untitled', '日'.repeat(84), 'Cafe\u0301']) {
       expect(typed.isMossFolderName(name)).toBe(true);
     }
   });
@@ -439,7 +447,7 @@ describe('filename sanitizer', () => {
   });
 
   it('refuses asset names Moss would never make', () => {
-    for (const name of ['', '.png', '..png', '.x-1-abcdef12.png', 'a/b.png', 'a\\b.png', '../a.png', 'a..b.png', 'a\u0000b.png', 'a.exe', 'a.PNG', 'a.html', 'a b c.png', 'a?.png', `${'x'.repeat(252)}.png`, 'Café.png']) {
+    for (const name of ['', '.png', '..png', '.x-1-abcdef12.png', 'a/b.png', 'a\\b.png', '../a.png', 'a..b.png', 'a\u0000b.png', 'a.exe', 'a.PNG', 'a.html', 'a b\u00A0c.png', 'a?.png', `${'x'.repeat(252)}.png`, 'Cafe\u0301.png']) {
       expect({ name, ok: typed.isMossAssetName(name) }).toEqual({ name, ok: false });
     }
     for (const name of ['image-1730000000000-1b9d6bcd.png', 'Café-1-abcdef12.webp', 'x-mockup.html'.replace('.html', '.svg'), '日本語.mov']) {

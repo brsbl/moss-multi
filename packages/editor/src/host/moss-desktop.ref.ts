@@ -13,6 +13,7 @@ import { basename, dirname, extname, join, relative, resolve, sep } from 'node:p
 
 export const NOTE_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// eslint-disable-next-line no-control-regex -- Moss strips control characters
 const INVALID_PATH_CHARACTERS = /[<>:"/\\|?*\u0000-\u001F]/g;
 const MAX_FOLDER_ALLOCATION_ATTEMPTS = 1000;
 const NOTE_FILENAME = 'note.md';
@@ -81,7 +82,7 @@ export const truncateToByteLimit = (value: string, maxBytes: number): string => 
   // Slice bytes and decode back — may produce a partial multi-byte char at the end
   const sliced = encoded.subarray(0, maxBytes).toString('utf8');
   // Drop any replacement character from a truncated multi-byte sequence
-  return sliced.replace(/�+$/, '').trimEnd();
+  return sliced.replace(/\uFFFD+$/, '').trimEnd();
 };
 
 export const toFolderBaseName = (value: string): string => {
@@ -290,13 +291,14 @@ export const persistFileTempName = (filePath: string, uuid: string): string => {
 // ipc-handlers.ts
 export const ALLOWED_IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'];
 export const ALLOWED_VIDEO_EXTENSIONS = ['.mp4', '.webm', '.mov'];
-const FILENAME_UNICODE_WHITESPACE = /[   -   　]/g;
+const FILENAME_UNICODE_WHITESPACE = /[\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000]/g;
 
 export const sanitizeFilename = (name: string): string => {
   // Remove path separators and other problematic characters
   const normalizedWhitespace = name
     .normalize('NFKC')
     .replace(FILENAME_UNICODE_WHITESPACE, ' ');
+  // eslint-disable-next-line no-control-regex -- Moss strips control characters
   return normalizedWhitespace.replace(/[<>:"/\\|?*\u0000-\u001F]/g, '-').replace(/^\.+/, '');
 };
 
