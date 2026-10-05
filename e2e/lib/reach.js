@@ -4,8 +4,7 @@
 /**
  * Every visible control inside `scope` (the whole page when null) whose centre, once scrolled into view through the
  * scroll containers a person can scroll, lies outside the viewport or is covered by something else
- * (`elementFromPoint`, so a visible control that ignores pointer events counts as covered). Inert, aria-hidden, disabled,
- * invisible, fully transparent and sub-3px controls are skipped.
+ * (`elementFromPoint`). Inert, aria-hidden, pointer-transparent and sub-3px controls are skipped.
  * @param {{ scope: string | null }} arg
  * @returns {string[]}
  */
@@ -26,11 +25,6 @@ export function unreachableControls({ scope }) {
     const overflow = axis === 'y' ? style.overflowY : style.overflowX;
     const room = axis === 'y' ? el.scrollHeight - el.clientHeight : el.scrollWidth - el.clientWidth;
     return /auto|scroll/.test(overflow) && room > 1;
-  };
-  /** Fully transparent, by itself or through an ancestor: not something a person sees. */
-  const faded = (/** @type {Element} */ el) => {
-    for (let at = /** @type {Element | null} */ (el); at; at = at.parentElement) if (getComputedStyle(at).opacity === '0') return true;
-    return false;
   };
   /** Brings `el` to the middle of each ancestor a person can scroll; never scrolls an overflow:hidden clip. */
   const reveal = (/** @type {Element} */ el) => {
@@ -58,8 +52,9 @@ export function unreachableControls({ scope }) {
     for (const el of candidates) {
       if (seen.has(el)) continue;
       seen.add(el);
-      if (el.closest('[inert], [aria-hidden="true"]') || el.matches(':disabled, [aria-disabled="true"]')) continue;
-      if (getComputedStyle(el).visibility === 'hidden' || el.getClientRects().length === 0 || faded(el)) continue;
+      if (el.closest('[inert], [aria-hidden="true"]')) continue;
+      const style = getComputedStyle(el);
+      if (style.visibility === 'hidden' || style.pointerEvents === 'none' || el.getClientRects().length === 0) continue;
       const before = el.getBoundingClientRect();
       if (before.width < 3 || before.height < 3) continue;
       reveal(el);
