@@ -52,6 +52,8 @@ export interface BrowserHooks {
   replacePath(path: string): void;
   onPopState(listener: () => void): () => void;
   copy(text: string, html: string): Promise<void>;
+  /** Calls `listener` when the page starts to unload; returns the unsubscribe. */
+  onLeave?(listener: () => void): () => void;
 }
 
 export interface BridgeOptions {
@@ -89,6 +91,7 @@ type Method<R> = (...args: unknown[]) => Promise<R>;
 
 const seconds = (ms: number) => Math.floor(ms / 1000);
 const noop = () => undefined;
+const LEAVE_HOLD_MS = 10_000;
 /** A subscription that never fires; it must still return an unsubscriber. */
 const silent: (callback?: unknown) => () => void = () => noop;
 const none: Method<void> = async () => undefined;
@@ -159,6 +162,10 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
     const query = new URLSearchParams();
     if (vaultId) query.set('vault', vaultId);
     if (docId) query.set('doc', docId);
+    // A reload cancels this fetch, and WebKit rejects it as an "access control checks" TypeError. While the page
+    // leaves, the failure is held back so no caller reports it; a page that stays still gets it, later.
+    let leaving = false;
+    const unwatch = browser.onLeave?.(() => { leaving = true; }) ?? noop;
     const pending: Promise<NoteMetadata[]> = request(`/api/workspace${query.size ? `?${query}` : ''}`).then(async (response) => {
       if (!response.ok) throw new Error(`GET /api/workspace: ${response.status}`);
       const data = (await response.json()) as WorkspaceListing;
@@ -170,7 +177,9 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
       for (const doc of docs) known.set(doc.id, doc);
       workspaceListeners.forEach((listener) => listener());
       return docs;
-    }).finally(() => { loadsInFlight -= 1; });
+    }).catch((error: unknown) =>
+      leaving ? new Promise<never>((_resolve, reject) => { setTimeout(() => reject(error), LEAVE_HOLD_MS); }) : Promise.reject(error),
+    ).finally(() => { loadsInFlight -= 1; unwatch(); });
     listing = pending;
     void pending.catch(() => { if (listing === pending) listing = null; });
     return pending;
@@ -483,6 +492,15 @@ function windowBrowser(): BrowserHooks {
     onPopState: (listener) => {
       window.addEventListener('popstate', listener);
       return () => window.removeEventListener('popstate', listener);
+    },
+    onLeave: (listener) => {
+      // Only while a listing is in flight: a beforeunload listener keeps a page out of the back-forward cache.
+      window.addEventListener('beforeunload', listener);
+      window.addEventListener('pagehide', listener);
+      return () => {
+        window.removeEventListener('beforeunload', listener);
+        window.removeEventListener('pagehide', listener);
+      };
     },
     copy: async (text, html) => {
       if (typeof ClipboardItem === 'undefined' || !navigator.clipboard?.write) return navigator.clipboard.writeText(text);
