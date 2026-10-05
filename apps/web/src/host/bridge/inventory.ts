@@ -30,7 +30,7 @@ const hidden = (affordance: string, note: string): InventoryEntry => ({ treatmen
 const staged = (milestone: number, note: string, affordance?: string): InventoryEntry => ({ treatment: 'staged', milestone, note, ...(affordance ? { affordance } : {}) });
 const absent = (note: string): InventoryEntry => ({ treatment: 'absent', note });
 
-const REMOTE_WEB_SURFACE = 'left undefined: RemoteWebSurface is substituted with a sandboxed iframe (R4, T3.2)';
+const REMOTE_WEB_SURFACE = 'left undefined: RemoteWebSurface is substituted with a sandboxed iframe (R4)';
 
 export const INVENTORY: Record<string, InventoryEntry> = {
   'notes.getAll': real('GET /api/workspace, mapped to NoteMetadataRecord in seconds under Notes; opened notes carry backlinks'),
@@ -105,13 +105,13 @@ export const INVENTORY: Record<string, InventoryEntry> = {
 
   'images.save': real("the bytes to POST /api/docs/:id/assets in the note's folder (A§16); a refusal is announced"),
   'images.pick': real('<input type=file multiple>, then each file uploads as save does'),
-  'images.persistUrl': staged(3, 'SSRF-safe fetch-and-store (T3.2); refused loudly until then'),
+  'images.persistUrl': real("POST /api/docs/:id/assets/from-url: the server fetches through the SSRF guard (A§18) and stores the note's own media"),
   'images.copyFromPath': stub('rejects: browsers have no file paths'),
   'images.copyFromNoteAsset': real("POST /api/docs/:id/assets/copy: the bytes the source's media record names, bound in the target's"),
-  'htmlPreview.ensure': staged(3, 'null; the preview decision renders the live sandboxed iframe (T3.2)'),
+  'htmlPreview.ensure': stub('null: an HTML block previews as its live sandboxed frame, never a screenshot'),
   'htmlPreview.onMaterialized': stub('silent'),
   'htmlPreview.onFailed': stub('silent'),
-  'webEmbedPreview.ensure': staged(3, 'POST /api/unfurl (T3.2); null until then'),
+  'webEmbedPreview.ensure': real('POST /api/unfurl: the OpenGraph card, through the SSRF guard; null when refused, so moss shows its URL card'),
   'webEmbedPreview.subscribe': stub('silent'),
   'videoThumbnail.ensure': stub('null: <video> streams from R2'),
   'videoThumbnail.onMaterialized': stub('silent'),

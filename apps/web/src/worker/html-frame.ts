@@ -3,12 +3,9 @@
 // policy is only `sandbox allow-scripts`, so it is an opaque origin with no access to the app, and it writes the
 // block's HTML that the embedding page posts to it.
 
-export const HTML_FRAME_PATH = '/frame/html';
-export const HTML_FRAME_POLICY = 'sandbox allow-scripts';
+import { HTML_FRAME_CONTENT, HTML_FRAME_PATH, HTML_FRAME_POLICY, HTML_FRAME_READY } from '@moss-multi/protocol/html-frame';
 
-/** Messages between the page and the frame. */
-export const HTML_FRAME_READY = 'moss-html-frame-ready';
-export const HTML_FRAME_CONTENT = 'moss-html-frame-content';
+export { HTML_FRAME_PATH };
 
 const BOOTSTRAP = `<!doctype html><meta charset="utf-8"><script>
 addEventListener('message', function onContent(event) {

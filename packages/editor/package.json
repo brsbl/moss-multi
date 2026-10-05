@@ -1,0 +1,14 @@
+{
+  "name": "@moss-multi/editor",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "build:host": "tsc -p tsconfig.contract.json && node scripts/build-host.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3",
+    "typescript": "5.9.3"
+  }
+}

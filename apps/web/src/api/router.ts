@@ -11,6 +11,7 @@ import { handleFolderRoutes } from './folders.ts';
 import { handleSearchRoutes } from './search.ts';
 import { handleVaults } from './vault-routes.ts';
 import { handleTrash } from './trash.ts';
+import { handleUnfurl } from './unfurl.ts';
 import { workspace } from './workspace.ts';
 
 const NO_STORE = { 'cache-control': 'no-store' };
@@ -36,6 +37,7 @@ export async function handleApi(request: Request, env: ApiEnv): Promise<Response
   if (pathname === '/api/me') return me(request, env);
   if (pathname === '/api/workspace') return workspace(request, env);
   if (pathname === '/api/feedback') return feedback(request, env);
+  if (pathname === '/api/unfurl') return handleUnfurl(request, env);
   if (ASSET_ROUTE.test(pathname)) {
     return env.ASSETS ? handleAssets(request, { ...env, ASSETS: env.ASSETS }) : json({ error: 'unavailable' }, 503, NO_STORE);
   }

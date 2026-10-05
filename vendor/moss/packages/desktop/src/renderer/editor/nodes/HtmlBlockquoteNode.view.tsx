@@ -539,6 +539,7 @@ function MossHtmlPreviewComponent({
     [availableNoteWidth, previewImageIntrinsicSize, previewRawHtml, renderedContentSize, viewportSize]
   );
   const {
+    livePreview,
     previewImageUrl,
     preloadImageUrl,
     previewImageFailed,
@@ -873,6 +874,25 @@ function MossHtmlPreviewComponent({
     <div
       className={`moss-html-preview-scroll absolute inset-0 overflow-auto bg-ink-inverse ${stablePreviewLayerVisibilityClass}`}
     >
+      {/* moss-multi seam: html-preview (A§16): no screenshot on the web; the static preview is the live sandboxed
+          frame, inert until the block is activated, sized as moss sizes its screenshot: the default viewport grown to
+          what renders. */}
+      {livePreview ? (
+        <div className="pointer-events-none absolute inset-0" data-moss-html-live-preview="static">
+          <HtmlPreviewIframe
+            srcDoc={previewSrcDoc}
+            title="HTML preview"
+            viewportWidth={htmlDisplayIntrinsicSize.width}
+            viewportHeight={htmlDisplayIntrinsicSize.height}
+            displayScale={noteDisplayScale}
+            dimensionReportId={nodeKey}
+            className="h-full w-full"
+            mode={noteIframeMode}
+            onRenderedSize={htmlIntrinsicSize.heightSource === 'default' ? setPreviewImageIntrinsicSize : undefined}
+          />
+        </div>
+      ) : null}
+
       {shouldRenderPreviewImage ? (
         <img
           src={previewImageUrl}
