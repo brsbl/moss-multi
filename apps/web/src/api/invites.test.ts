@@ -5,6 +5,7 @@
 // stops managing the item or the item goes to Trash.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
+import { redeem } from '../test/invites.ts';
 import { BASE, insertDoc, insertFolder, insertLink, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
 import { handleApi } from './router.ts';
 
@@ -208,6 +209,7 @@ describe('who an invite admits', { timeout: 30_000 }, () => {
     const docId = await titled(ada, 'Moved out', { folderId });
     const coOwner = await signedUpUser(env, 't28-joe', 'Joe');
     await share(ada, `/api/folders/${folderId}`, coOwner.email, 'owner');
+    await redeem(env, ada, `/api/folders/${folderId}`, coOwner);
     const ghost = unknownEmail('regain');
     await share(coOwner, `/api/docs/${docId}`, ghost, 'owner');
     const token = tokenOf(await inviteLink(coOwner, `/api/docs/${docId}`, ghost));
@@ -234,6 +236,7 @@ describe('who an invite admits', { timeout: 30_000 }, () => {
     const docId = await titled(ada, 'Taken over', { folderId });
     const coOwner = await signedUpUser(env, 't28-max', 'Max');
     await share(ada, `/api/folders/${folderId}`, coOwner.email, 'owner');
+    await redeem(env, ada, `/api/folders/${folderId}`, coOwner);
     const ghost = unknownEmail('takeover');
     await share(coOwner, `/api/docs/${docId}`, ghost, 'owner');
     const dead = tokenOf(await inviteLink(coOwner, `/api/docs/${docId}`, ghost));

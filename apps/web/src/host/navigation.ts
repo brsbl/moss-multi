@@ -86,7 +86,7 @@ export const INVITE_UNREACHABLE = 'Couldn’t open the invite. Check your connec
  */
 export async function openInvite(token: string, target: { type: 'doc' | 'folder'; id: string }): Promise<void> {
   const guard = armOpeningGuard();
-  let status = 0;
+  let status: number;
   try {
     const response = await fetch(`/api/invites/${encodeURIComponent(token)}/accept`, {
       method: 'POST',
