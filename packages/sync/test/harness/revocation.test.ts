@@ -4,6 +4,7 @@
 // registry lists the docs a session opened, endSession rechecks each before closing the session's workspace sockets,
 // and a doc socket that registers after its session ended closes 4402.
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { SESSION_MAX_MS } from '@moss-multi/protocol/limits';
 import { CLOSE, TRUSTED } from '@moss-multi/protocol/sync';
 import { DocDO } from '../../src/doc-do.ts';
 import { PrincipalDO } from '../../src/principal-do.ts';
@@ -176,6 +177,26 @@ describe('PrincipalDO sign-out registry @p:ppl-2', () => {
     expect(await open().dobj.registerDocSocket('sess-live', 'doc-9')).toBe('ok');
   });
 
+  it('closes the session\'s workspace sockets at once, without waiting for its doc rechecks', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const original = PrincipalDO.rechecker;
+    PrincipalDO.rechecker = () => async () => { await gate; };
+    onTestFinished(() => { PrincipalDO.rechecker = original; });
+    const { open } = principal('ada');
+    const { dobj } = open();
+    await dobj.setName('ada');
+    await dobj.registerDocSocket('sess-a', 'doc-1');
+    const windowB = await workspaceSocket(dobj, 'ada', 'sess-a');
+    let done = false;
+    const ending = dobj.endSession('sess-a').then(() => { done = true; });
+    await flushAsync();
+    expect(windowB.closed?.code).toBe(CLOSE.sessionEnded);
+    expect(done, 'sign-out still waits for the doc rechecks').toBe(false);
+    release();
+    await ending;
+  });
+
   it('fails the sign-out when a doc does not acknowledge, and a retry rechecks it again', async () => {
     const fail = new Set(['doc-2']);
     const calls = recordRechecks(fail);
@@ -267,5 +288,35 @@ describe('DocDO registers sockets in the sign-out registry @p:ppl-2', () => {
     answers.answer = 'ok';
     const woken = await start(wake(opened));
     expect((await connect(woken, { id: 'ada', session: 'sess-gone' })).closed?.code).toBe(CLOSE.sessionEnded);
+  });
+});
+
+describe('no doc socket outlives its sign-out registry row @p:ppl-2', () => {
+  it('a doc socket closes 1013 before SESSION_MAX_MS from its admission, on the alarm, and the younger one stays', async () => {
+    const opened = await start(openDoc());
+    const old = await connect(opened, { id: 'ada', session: 'sess-a' });
+    const due = opened.backing.alarm;
+    expect(due, 'admission schedules the close').not.toBeNull();
+    expect(due!).toBeLessThan(Date.now() + SESSION_MAX_MS);
+    vi.setSystemTime(Date.now() + SESSION_MAX_MS / 2);
+    const young = await connect(opened, { id: 'ada', session: 'sess-a' });
+    expect(opened.backing.alarm, 'a younger socket does not push the close later').toBe(due);
+    vi.setSystemTime(due!);
+    const woken = await start(wake(opened));
+    old.opened = woken;
+    young.opened = woken;
+    await woken.dobj.alarm();
+    expect(old.closed?.code, 'it reconnects and registers afresh').toBe(1013);
+    expect(young.closed).toBeNull();
+    expect(woken.backing.alarm, 'the younger socket\'s close is scheduled next').toBeGreaterThan(Date.now());
+    expect(woken.backing.alarm!).toBeLessThan(Date.now() + SESSION_MAX_MS);
+  });
+
+  it('an agent socket, which no session bounds, closes the same way', async () => {
+    const opened = await start(openDoc());
+    const agent = await connect(opened, { kind: 'agent', id: 'agent-1', session: null });
+    vi.setSystemTime(opened.backing.alarm!);
+    await opened.dobj.alarm();
+    expect(agent.closed?.code).toBe(1013);
   });
 });

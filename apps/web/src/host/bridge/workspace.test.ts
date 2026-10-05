@@ -107,3 +107,16 @@ it('retries metadata received during a failed initial listing without another ev
     expect(fetch).toHaveBeenCalledTimes(calls);
   } finally { off(); }
 });
+
+it('hands the doc ids of every metadata push to the reopen hook, so a doc left terminal on a live note can recover', async () => {
+  let receive: (event: Event) => void = () => undefined;
+  const reopenDocs = vi.fn();
+  const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json({ vault: { id: 'home', name: 'Home' }, docs: [] }));
+  const bridge = createBridge({ pathname: () => '/', fetch, subscribeWorkspace: (cb) => { receive = cb; return () => undefined; }, reopenDocs } as BridgeOptions);
+  const off = bridge.notes.onDiskChange(() => undefined);
+  await bridge.notes.getAll();
+  try {
+    receive({ type: 'meta', docIds: ['kept'], folderIds: [] });
+    expect(reopenDocs).toHaveBeenCalledWith(['kept']);
+  } finally { off(); }
+});

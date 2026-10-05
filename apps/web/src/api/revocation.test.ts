@@ -50,7 +50,7 @@ let cy: TestUser;
 
 beforeAll(async () => {
   d1 = await migratedD1();
-  env = { DB: d1.db, BETTER_AUTH_SECRET: SECRET, BETTER_AUTH_URL: BASE, DocDO: DocDO as never, PrincipalDO: PrincipalDO as never };
+  env = { DB: racingDb(d1.db), BETTER_AUTH_SECRET: SECRET, BETTER_AUTH_URL: BASE, DocDO: DocDO as never, PrincipalDO: PrincipalDO as never };
   ada = await signedUpUser(env, 'kick-ada', 'Ada');
   ben = await signedUpUser(env, 'kick-ben', 'Ben');
   cy = await signedUpUser(env, 'kick-cy', 'Cy');
@@ -61,7 +61,51 @@ beforeEach(() => {
   failing.clear();
   ended.length = 0;
   endFails = false;
+  race = null;
 });
+
+/** While set, runs once just before the first statement (or batch holding one) matching `sql`: a request landing then. */
+let race: { sql: RegExp; run: () => Promise<unknown> } | null = null;
+const REAL = Symbol('real');
+const QUERY = Symbol('query');
+
+/** D1 as the routes see it, with `race` run ahead of the statement it matches. */
+function racingDb(db: D1Database): D1Database {
+  const claim = async (query: string) => {
+    const hook = race;
+    if (!hook?.sql.test(query)) return;
+    race = null;
+    await hook.run();
+  };
+  const wrap = (statement: D1PreparedStatement, query: string): D1PreparedStatement => new Proxy(statement, {
+    get(target, prop) {
+      if (prop === REAL) return target;
+      if (prop === QUERY) return query;
+      if (prop === 'bind') return (...args: unknown[]) => wrap(target.bind(...args), query);
+      const value = Reflect.get(target, prop, target) as unknown;
+      if (typeof value !== 'function') return value;
+      if (prop !== 'all' && prop !== 'raw' && prop !== 'first' && prop !== 'run') return value.bind(target);
+      return async (...args: unknown[]) => {
+        await claim(query);
+        return value.apply(target, args);
+      };
+    },
+  });
+  type Wrapped = D1PreparedStatement & { [REAL]: D1PreparedStatement; [QUERY]: string };
+  return new Proxy(db, {
+    get(target, prop) {
+      if (prop === 'prepare') return (query: string) => wrap(target.prepare(query), query);
+      if (prop === 'batch') {
+        return async (statements: Wrapped[]) => {
+          for (const statement of statements) await claim(statement[QUERY]);
+          return target.batch(statements.map((statement) => statement[REAL]));
+        };
+      }
+      const value = Reflect.get(target, prop, target) as unknown;
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+}
 
 const call = (method: string, path: string, cookie: string | null, body?: unknown) =>
   handleApi(new Request(`${BASE}${path}`, {
@@ -185,6 +229,65 @@ describe('members: lowering and removing access kicks @p:ppl-2', () => {
   });
 });
 
+describe('a change of access rests on the caller still managing the target, in the same statement @p:ppl-2', () => {
+  it('a co-owner demoted while their PATCH is in flight cannot restore their own owner role', async () => {
+    const docId = await insertDoc(d1.db, ada);
+    await insertGrant(d1.db, { docId }, cy, 'owner');
+    race = { sql: /UPDATE doc_members SET role/i, run: () => d1.db.prepare("UPDATE doc_members SET role = 'editor' WHERE doc_id = ? AND principal_id = ?").bind(docId, cy.id).run() };
+    const response = await call('PATCH', `/api/docs/${docId}/members`, cy.cookie, { principalId: cy.id, role: 'owner' });
+    expect(race, 'the demotion landed before the write').toBeNull();
+    expect(response.status).toBe(403);
+    expect(await roleOf('doc_members', 'doc_id', docId, cy.id)).toBe('editor');
+  });
+
+  it('a co-owner whose folder grant is removed mid-request changes and removes nobody', async () => {
+    const folder = await insertFolder(d1.db, ada, ada.homeId);
+    await insertGrant(d1.db, { folderId: folder }, cy, 'owner');
+    await insertGrant(d1.db, { folderId: folder }, ben, 'editor');
+    const demote = () => d1.db.prepare('DELETE FROM folder_members WHERE folder_id = ? AND principal_id = ?').bind(folder, cy.id).run();
+    race = { sql: /DELETE FROM folder_members/i, run: demote };
+    const removal = await call('DELETE', `/api/folders/${folder}/members`, cy.cookie, { principalId: ben.id });
+    expect(race).toBeNull();
+    expect(removal.status).toBe(404);
+    expect(await roleOf('folder_members', 'folder_id', folder, ben.id)).toBe('editor');
+  });
+});
+
+describe('a lowering decided from a stale read still kicks @p:ppl-2', () => {
+  it('a PATCH that read viewer, landing after another raised to editor, lowers editor to commenter and kicks', async () => {
+    const docId = await insertDoc(d1.db, ada);
+    await insertGrant(d1.db, { docId }, ben, 'viewer');
+    race = { sql: /UPDATE doc_members SET role/i, run: () => d1.db.prepare("UPDATE doc_members SET role = 'editor' WHERE doc_id = ? AND principal_id = ?").bind(docId, ben.id).run() };
+    const response = await call('PATCH', `/api/docs/${docId}/members`, ada.cookie, { principalId: ben.id, role: 'commenter' });
+    expect(race).toBeNull();
+    expect(response.status).toBe(200);
+    expect(await roleOf('doc_members', 'doc_id', docId, ben.id)).toBe('commenter');
+    expect(kicked(docId).flatMap((r) => r.input.principalIds ?? [])).toContain(ben.id);
+  });
+});
+
+describe('pending invites: a removal by email whose kick failed can be retried @p:ppl-2', () => {
+  it('kicks again on the retry and answers alike for a known and an unknown address', async () => {
+    const ida = await signedUpUser(env, 'kick-ida', 'Ida');
+    const unknown = `nobody-retry-${Date.now()}@example.invalid`;
+    const docId = await insertDoc(d1.db, ada);
+    const answers: [number, string][] = [];
+    for (const email of [ida.email, unknown]) {
+      expect((await call('POST', `/api/docs/${docId}/members`, ada.cookie, { email, role: 'editor' })).status).toBe(201);
+      failing.add(docId);
+      expect((await call('DELETE', `/api/docs/${docId}/members`, ada.cookie, { email })).status).toBe(503);
+      failing.clear();
+      rechecks.length = 0;
+      const retried = await call('DELETE', `/api/docs/${docId}/members`, ada.cookie, { email });
+      answers.push([retried.status, (await retried.text()).replace(email, '<email>')]);
+      expect(kicked(docId), `the retry for ${email === unknown ? 'the unknown' : 'the known'} email kicks`).toHaveLength(1);
+      if (email === ida.email) expect(kicked(docId)[0].input.principalIds).toContain(ida.id);
+    }
+    expect(answers[0][0]).toBe(200);
+    expect(answers[1]).toEqual(answers[0]);
+  });
+});
+
 describe('pending invites: lowering or removing one by email kicks whoever it already granted @p:ppl-2', () => {
   it('kicks the person on a lowering and on a removal, as the member path does', async () => {
     const hal = await signedUpUser(env, 'kick-hal', 'Hal');
@@ -262,6 +365,33 @@ describe('moves: losing a grant or link through a move kicks @p:ppl-2', () => {
     expect((await call('PATCH', `/api/folders/${moving}`, ada.cookie, { parentId: ada.homeId })).status).toBe(200);
     const retry = kicked(docId).map((r) => r.input);
     expect(retry.some((input) => input.everyone === true || input.principalIds?.includes(ben.id))).toBe(true);
+  });
+
+  it('a note moved by two racing requests kicks whoever the one in between let in', async () => {
+    const start = await insertFolder(d1.db, ada, ada.homeId);
+    const between = await insertFolder(d1.db, ada, ada.homeId);
+    const end = await insertFolder(d1.db, ada, ada.homeId);
+    const docId = await insertDoc(d1.db, ada, { folderId: start });
+    await insertGrant(d1.db, { folderId: between }, ben, 'editor');
+    const token = await insertLink(d1.db, { folderId: between }, 'editor');
+    race = { sql: /UPDATE docs SET folder_id/i, run: () => d1.db.prepare('UPDATE docs SET folder_id = ? WHERE id = ?').bind(between, docId).run() };
+    expect((await call('PATCH', `/api/docs/${docId}`, ada.cookie, { folderId: end })).status).toBe(200);
+    expect(race).toBeNull();
+    const inputs = kicked(docId).map((r) => r.input);
+    expect(inputs.some((i) => i.everyone === true || i.principalIds?.includes(ben.id)), 'the grantee on the folder in between').toBe(true);
+    expect(inputs.some((i) => i.everyone === true || i.tokens?.includes(token)), 'the link on the folder in between').toBe(true);
+  });
+
+  it('a folder moved by two racing requests kicks whoever the one in between let in', async () => {
+    const between = await insertFolder(d1.db, ada, ada.homeId);
+    const end = await insertFolder(d1.db, ada, ada.homeId);
+    const moving = await insertFolder(d1.db, ada, ada.homeId);
+    const docId = await insertDoc(d1.db, ada, { folderId: moving });
+    await insertGrant(d1.db, { folderId: between }, ben, 'editor');
+    race = { sql: /UPDATE folders SET name = coalesce/i, run: () => d1.db.prepare('UPDATE folders SET parent_id = ? WHERE id = ?').bind(between, moving).run() };
+    expect((await call('PATCH', `/api/folders/${moving}`, ada.cookie, { parentId: end })).status).toBe(200);
+    expect(race).toBeNull();
+    expect(kicked(docId).some((r) => r.input.everyone === true || r.input.principalIds?.includes(ben.id))).toBe(true);
   });
 
   it('a folder moved out from under a grant kicks its docs for that grantee', async () => {
