@@ -120,3 +120,20 @@ it('hands the doc ids of every metadata push to the reopen hook, so a doc left t
     expect(reopenDocs).toHaveBeenCalledWith(['kept']);
   } finally { off(); }
 });
+
+it('leaves a doc this tab knows is in Trash to the restore, which remounts its pane, out of the reopen hook', async () => {
+  let receive: (event: Event) => void = () => undefined;
+  const reopenDocs = vi.fn();
+  const doc = (id: string, trashedAt: number | null) => ({ id, title: id, createdAt: 1, updatedAt: 1, folderPath: 'Notes', lastOpenedAt: null, trashedAt });
+  const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json({ vault: { id: 'home', name: 'Home' }, docs: [doc('kept', null), doc('gone', 5)] }));
+  const bridge = createBridge({ pathname: () => '/', fetch, subscribeWorkspace: (cb) => { receive = cb; return () => undefined; }, reopenDocs } as BridgeOptions);
+  const off = bridge.notes.onDiskChange(() => undefined);
+  await bridge.notes.getAll();
+  try {
+    expect(bridge[WORKSPACE].isTrashed('gone')).toBe(true);
+    receive({ type: 'meta', docIds: ['gone', 'kept'], folderIds: [] });
+    expect(reopenDocs).toHaveBeenCalledWith(['kept']);
+    receive({ type: 'meta', docIds: ['gone'], folderIds: [] });
+    expect(reopenDocs).toHaveBeenCalledTimes(1);
+  } finally { off(); }
+});
