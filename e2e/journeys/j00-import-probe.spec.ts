@@ -1,30 +1,44 @@
-// T0.9d diagnostic probe (temporary): which fetches log WebKit's "Fetch API cannot load ... due to access control
-// checks" across a reload, and does stopping new requests at beforeunload or pagehide prevent it?
-import { test } from '../lib/test.ts';
+// T0.9d diagnostic probe (temporary): what keeps WebKit's web process busy on a settled note with charts and HTML.
+import { readFileSync } from 'node:fs';
+import { test, ui } from '../lib/test.ts';
 
-for (const mode of ['inflight', 'polling', 'polling-beforeunload', 'polling-pagehide']) {
-  test(`probe: fetch across a reload, ${mode}`, async ({ actors }) => {
+const fixtures = new URL('../../packages/sync/src/converter/fixtures/', import.meta.url);
+
+for (const name of ['charts.md', 'composition.md', 'onboarding-getting-started.md', 'paragraphs.md']) {
+  test(`probe: busy work on a settled ${name}`, async ({ actors, stack }) => {
     actors.solo('diagnostic probe');
-    const actor = await actors.open(await actors.principal('probe'));
-    const errors: string[] = [];
-    actor.page.on('pageerror', (error) => errors.push(error.message));
-    const consoleErrors: string[] = [];
-    actor.page.on('console', (message) => { if (message.type() === 'error') consoleErrors.push(message.text()); });
-    for (let i = 0; i < 15; i++) {
-      await actor.page.evaluate((mode) => {
-        let stopped = false;
-        if (mode.endsWith('beforeunload')) addEventListener('beforeunload', () => { stopped = true; });
-        if (mode.endsWith('pagehide')) addEventListener('pagehide', () => { stopped = true; });
-        const go = () => { if (!stopped) void fetch(`/api/workspace?probe=${Math.random()}`).catch(() => undefined); };
-        if (mode === 'inflight') for (let n = 0; n < 8; n++) go();
-        else setInterval(go, 5);
-      }, mode);
-      await actor.page.waitForTimeout(50);
-      await actor.page.reload();
-      await actor.page.locator('html[data-app-state="ready"]').waitFor({ state: 'attached' });
-    }
-    test.info().annotations.push({ type: 'probe', description: `mode=${mode} pageerrors=${errors.length} consoleErrors=${consoleErrors.length} ${JSON.stringify(errors.slice(0, 2))} ${JSON.stringify(consoleErrors.slice(0, 2))}` });
-    // The census is a diagnostic here; clear what this probe induced so the run reports its numbers.
-    for (const a of actors.list) { a.telemetry.pageErrors.length = 0; a.telemetry.console.length = 0; a.telemetry.failed.length = 0; }
+    const actor = await actors.session(await actors.principal('probe'));
+    await actor.page.addInitScript(() => {
+      const counts = { raf: 0, resize: 0, mutation: 0, timeouts: 0 };
+      (window as unknown as { __probe: typeof counts }).__probe = counts;
+      const raf = window.requestAnimationFrame.bind(window);
+      window.requestAnimationFrame = (callback) => raf((time) => { counts.raf++; callback(time); });
+      const RO = window.ResizeObserver;
+      window.ResizeObserver = class extends RO { constructor(callback: ResizeObserverCallback) { super((entries, observer) => { counts.resize++; callback(entries, observer); }); } };
+      const st = window.setTimeout.bind(window);
+      window.setTimeout = ((handler: TimerHandler, ms?: number, ...args: unknown[]) => { counts.timeouts++; return st(handler, ms, ...args); }) as typeof window.setTimeout;
+    });
+    await actor.page.route('https://**/*', (route) => route.fulfill({ status: 200, contentType: 'text/html', body: '' }));
+    const markdown = readFileSync(new URL(name, fixtures), 'utf8');
+    const response = await actor.context.request.post('/api/docs', { headers: { origin: stack.baseUrl }, data: { title: name, markdown } });
+    const { doc } = await response.json();
+    await actor.goto(`/d/${doc.id}`);
+    await ui.waitLive(actor, doc.id);
+    await actor.page.waitForTimeout(5_000);
+    const sample = async () => {
+      const before = await actor.page.evaluate(() => ({ ...(window as unknown as { __probe: Record<string, number> }).__probe }));
+      await actor.page.waitForTimeout(3_000);
+      const after = await actor.page.evaluate(() => ({ ...(window as unknown as { __probe: Record<string, number> }).__probe }));
+      return Object.fromEntries(Object.keys(after).map((key) => [key, after[key] - before[key]]));
+    };
+    const rates = await sample();
+    const animations = await actor.page.evaluate(() => document.getAnimations().filter((a) => a.playState === 'running').map((a) => {
+      const target = (a.effect as KeyframeEffect | null)?.target as Element | null;
+      const name = (a as CSSAnimation).animationName ?? (a as CSSTransition).transitionProperty ?? a.id;
+      return `${a.constructor.name}:${name} on ${target?.tagName.toLowerCase()}.${String(target?.className ?? '').slice(0, 60)} [${(target?.closest('[data-lexical-decorator], iframe, [class*="chart"]') as HTMLElement | null)?.className?.toString().slice(0, 40) ?? ''}]`;
+    }));
+    const iframes = await actor.page.evaluate(() => [...document.querySelectorAll('iframe')].map((f) => f.src.slice(0, 60)));
+    test.info().annotations.push({ type: 'probe', description: `${name} per3s=${JSON.stringify(rates)} animations=${animations.length} ${JSON.stringify(animations.slice(0, 12))} iframes=${JSON.stringify(iframes)}` });
+    for (const a of actors.list) { a.telemetry.pageErrors.length = 0; a.telemetry.console.length = 0; a.telemetry.failed.length = 0; a.telemetry.http.length = 0; }
   });
 }

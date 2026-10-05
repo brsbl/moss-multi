@@ -180,6 +180,31 @@ it('refreshes peer-created metadata only when it changes and stops polling when 
   }
 });
 
+it('starts no listing poll once the page begins to navigate away, and resumes if it stays', async () => {
+  vi.useFakeTimers();
+  try {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json(LISTING));
+    let leave = () => {};
+    const browser = { origin: 'http://localhost', open: () => {}, replacePath: () => {}, onPopState: () => () => {}, copy: async () => {},
+      onLeaving: (listener: () => void) => { leave = listener; return () => {}; } };
+    const api = createBridge({ pathname: () => '/', fetch, browser });
+    await api.notes.getAll();
+    const stop = api.notes.onDiskChange(vi.fn());
+    await vi.advanceTimersByTimeAsync(3_000);
+    const polled = fetch.mock.calls.length;
+    expect(polled).toBe(2);
+    leave();
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(fetch, 'no request starts while the page is leaving').toHaveBeenCalledTimes(polled);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(fetch, 'a cancelled navigation resumes the poll').toHaveBeenCalledTimes(polled + 1);
+    stop();
+  } finally {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  }
+});
+
 it.each(['switch', 'navigation'] as const)('a listing poll never overrides an in-flight vault %s', async (action) => {
   vi.useFakeTimers();
   const values = new Map<string, string>();
