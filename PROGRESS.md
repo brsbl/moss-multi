@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 62% done** (52 of 84 planned tasks verified)
+**Overall: 63% done** (53 of 84 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -8,7 +8,7 @@
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 15 / 19 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 7 / 11 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 10 / 12 | in progress |
-| M4 Comments | Moss's full comment experience as CRDT data | 2 / 5 | in progress |
+| M4 Comments | Moss's full comment experience as CRDT data | 3 / 5 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 1 / 5 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
@@ -70,6 +70,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-05 — T3.8 verified: the read-only viewer package (`@moss-multi/viewer` 1.0.0) shows every M3 node family, media with Range-served video, live sandboxed HTML and theme-following embeds through injected services, with no mutating controls, and CI packs it as the `moss-viewer` release artifact with a checksum and source commit.
 - 2026-10-05 — T3.2s verified: uploads, remote-image imports, cross-note copies and duplicates carrying media all pass the same 60/min upload window (429) and vault quota (413), and the outbound-fetch validator refuses non-443 ports, single-label hosts, Teredo, IPv4-translated and IDN or fullwidth forms of blocked hosts on every redirect hop.
 - 2026-10-05 — T4.1 verified: comments now exist as records inside the note, written only by the server under a reserved writer id that no client frame can touch; the comment API creates comments with a server-computed quote within per-note and per-person caps, imports Moss comment markers and exports clean Markdown, and a duplicate drops its comment records as Moss does.
+- 2026-10-05 — T4.2 verified: a comment now follows its text through every edit, from any client or the server, orphans instead of jumping when its text is lost, and reattaches only when undo or reconnect restores that exact text, with per-frame cost bounded by the frame and offline edits replayed before a reconnecting client can write.
 
 ## T1.1s identity audit
 
