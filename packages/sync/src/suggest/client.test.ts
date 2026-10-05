@@ -54,6 +54,8 @@ function mount(live: Y.Doc, link: ReturnType<typeof wire>, now?: () => number) {
   // The fill reconciles into Lexical in a collaboration update; commit it before the first input.
   bound.editor.update(() => {}, { discrete: true });
   const act = (step: Step) => {
+    // Commit any reconcile of F first: an input batched with a collaboration update would never reach F.
+    bound.editor.update(() => {}, { discrete: true });
     if (step === 'undo') bound.undo.undo();
     else bound.editor.update(step, { discrete: true });
     bound.editor.update(() => {}, { discrete: true });
