@@ -171,8 +171,9 @@ export function mapOffset(offset: number, delta: Delta, behind = false): number 
 }
 
 /**
- * `ops`, an edit of `before`, rebased onto `current` (which a peer's edits moved on from `before`): each replaced
- * range moves with the peer's edits, so the edit removes only what its author saw and a peer's text is kept.
+ * `ops`, an edit of `before`, rebased onto `current` (which a peer's edits moved on from `before`): the edit deletes
+ * only the characters of `before` it removed that are still in `current`, and inserts where its range now starts, so it
+ * removes only what its author saw and a peer's text, even inside the range, is kept.
  */
 export function rebaseOps(before: string, ops: readonly TextOp[], current: string): TextOp[] {
   if (before === current) return ops.slice();
@@ -189,16 +190,31 @@ export function rebaseOps(before: string, ops: readonly TextOp[], current: strin
     }
   }
   const moved = diffText(before, current);
+  // Where each unit of `before` is in `current`, or -1 where the peer deleted it.
+  const where = new Int32Array(before.length);
+  let from = 0;
+  let to = 0;
+  for (const op of moved) {
+    if ('retain' in op) for (let k = 0; k < op.retain; k += 1) where[from++] = to++;
+    else if ('delete' in op) for (let k = 0; k < op.delete; k += 1) where[from++] = -1;
+    else to += op.insert.length;
+  }
+  while (from < before.length) where[from++] = to++;
   const out: TextOp[] = [];
   let cursor = 0;
   for (const edit of edits) {
-    // A replaced range starts behind a peer's insert at its start and ends in front of one at its end, so it never covers them.
-    const from = Math.max(cursor, mapOffset(edit.at, moved, edit.remove > 0));
-    const to = Math.max(from, mapOffset(edit.at + edit.remove, moved));
-    if (from > cursor) append(out, { retain: from - cursor });
-    if (to > from) append(out, { delete: to - from });
+    // The insert goes behind a peer's insert at the start of a replaced range, never inside the peer's text.
+    const start = Math.max(cursor, mapOffset(edit.at, moved, edit.remove > 0));
+    if (start > cursor) append(out, { retain: start - cursor });
+    cursor = start;
     if (edit.insert) append(out, { insert: edit.insert });
-    cursor = to;
+    for (let i = edit.at; i < edit.at + edit.remove; i += 1) {
+      const p = where[i];
+      if (p < cursor) continue;
+      if (p > cursor) append(out, { retain: p - cursor });
+      append(out, { delete: 1 });
+      cursor = p + 1;
+    }
   }
   return out;
 }
