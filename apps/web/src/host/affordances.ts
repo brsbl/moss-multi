@@ -61,6 +61,7 @@ export const AFFORDANCES = [
     probes: [
       { surface: 'editor-toolbar', selector: 'button[aria-label="Open command palette"]' },
       { surface: 'browser-split', selector: '[data-browser-actions-cluster] button[aria-label^="Send page to Agent"]' },
+      { surface: 'comment-popover', selector: '.moss-comment-popover button[aria-label="Send thread to agent"]' },
     ],
   },
   {
@@ -148,7 +149,10 @@ export const AFFORDANCES = [
     reason: 'Editing and deleting a comment must be the author\'s alone, and a root delete must promote its oldest reply; that server rule lands with T4.4, so the thread\'s Edit and Delete controls wait for it.',
     cite: 'T4.4; comments.md §12',
     staged: 4,
-    probes: [{ surface: 'comment-popover', selector: '.moss-comment-popover button[aria-label="Delete thread"]' }],
+    probes: [
+      { surface: 'comment-popover', selector: '.moss-comment-popover button[aria-label="Delete thread"]' },
+      { surface: 'comment-popover', selector: '.moss-comment-popover button[aria-label^="Comment actions for "]' },
+    ],
   },
   {
     id: 'comment-images',
