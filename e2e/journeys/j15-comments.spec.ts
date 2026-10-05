@@ -192,6 +192,30 @@ test('j15-comments: A comments, then both type anywhere in both directions; the 
   }
 });
 
+test('j15-comments: typing straight after Cmd+Enter keeps the commented words and their highlight @p:mean-1 @p:tech-3', async ({ actors, stack }) => {
+  const note = await sharedNote(actors, stack.baseUrl);
+  const { ada, id } = note;
+  const { actor: ben } = await peer(actors, note, 'ben', 'editor');
+  await select(ada, id, 'quick brown');
+  await comment(ada, 'Then I keep typing');
+  // No click and no caret key: the body takes focus back and the next keystrokes land wherever the caret is.
+  await expect.poll(() => ui.body(ada, id).evaluate((root) => root.contains(document.activeElement)), { message: 'the body takes focus back' }).toBe(true);
+  await ada.page.keyboard.type(' and more');
+  ada.typed({ docId: id, field: 'body', text: ' and more', ordered: false });
+  await waitAcked(ada, id);
+  await expect.poll(() => bodyText(ada, id), { message: 'the typing lands after the commented words, replacing nothing' }).toContain('The quick brown and more fox jumps');
+  await expect.poll(() => bodyText(ben, id), { timeout: PEER_TIMEOUT }).toContain('The quick brown and more fox jumps');
+  await expectPainted(ada, id, 'quick brown', 'the comment keeps its words');
+  await expectPainted(ben, id, 'quick brown', 'the peer still paints it');
+  // A declared reload: the remount detector restarts on the fresh page.
+  ben.observations.clear();
+  await ben.page.reload();
+  await expect(ui.pane(ben, id)).toHaveAttribute(DOC_STATE_ATTR, 'live', { timeout: BIND_TIMEOUT });
+  await ben.observeEditor(id);
+  await expectPainted(ben, id, 'quick brown', 'a fresh load paints it too');
+  expect(await painted(ben, id), 'and on nothing else').toEqual(['quick brown']);
+});
+
 test('j15-comments: two comments in one paragraph both paint, for both people @p:mean-1 @p:tech-3', async ({ actors, stack }) => {
   const note = await sharedNote(actors, stack.baseUrl);
   const { ada, id } = note;
