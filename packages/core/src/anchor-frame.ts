@@ -1160,8 +1160,20 @@ function mapIn(gap: Gap, s: Unit | null, e: Unit | null): [Unit | null, Unit | n
   return [first, last];
 }
 
-/** I3b: a deleted endpoint moves inward to the nearest surviving unit of the comment's own pre-frame range. */
+/** A surviving unit that is more than whitespace: a decorator, an embed, or a character that prints. */
+function printable(item: Y.Item, from: number, to: number): boolean {
+  const content = item.content;
+  return !(content instanceof Y.ContentString) || content.str.slice(from, to + 1).trim() !== '';
+}
+
+/**
+ * I3b: a deleted endpoint moves inward to the nearest surviving unit of the comment's own pre-frame range. Whitespace
+ * alone is not the comment's text: when only spaces it covered survive (a text diff keeps a separator's identity,
+ * such as the space between two words deleted together across a bold), the comment takes the lost path, so the
+ * deletion detaches it and its undo can bring it back.
+ */
 function shrink(view: View, entries: Entry[], s: Unit, e: Unit): [Unit, Unit] | null {
+  if (!entries.some(({ item, from, to }) => view.survivor(item) && isUnit(item) && printable(item, from, to))) return null;
   let first: Unit | null = s.item.deleted ? null : s;
   let last: Unit | null = e.item.deleted ? null : e;
   if (!first) {

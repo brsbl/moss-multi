@@ -1,6 +1,6 @@
-// Comment paint (SP10; docs/design/comments.md §11): derived, never in the doc. After every editor update, comments
-// change and filter change, one animation frame resolves each anchored root's positions to Lexical points, then to a
-// DOM Range, and replaces the ranges of the named CSS Custom Highlights (`moss-comment-<color>`, and the `-hover-` and
+// Comment paint (SP10; docs/design/comments.md §11): derived, never in the doc. In the same task as every editor
+// update that moves text, and one animation frame after a comments or filter change, a pass resolves each anchored
+// root's positions to Lexical points, then to a DOM Range, and replaces the ranges of the named CSS Custom Highlights (`moss-comment-<color>`, and the `-hover-` and
 // `-active-` underlines). A live Range collapses when Lexical rewrites a text node, so ranges are rebuilt, never kept.
 // `CSS.highlights` is global, so one registry merges every pane's ranges into each name. Decorators take moss's
 // classes on their `[data-block-decorator-key]` wrapper instead. No MarkNode and no `__commentIds` reach the tree.
@@ -176,9 +176,13 @@ export function bindCommentPaint(editor: LexicalEditor, binding: Binding): () =>
   const painter = new Painter(editor, binding);
   painters.set(editor, painter);
   const stops = [
-    // A selection-only update moves no text.
+    // An update that moved text repaints at once, after the binding's own listener synced it to Yjs and before the
+    // browser renders: Lexical rewrites a text node's data, which collapses the ranges painted on it, so a deferred
+    // pass would leave a frame without the highlight. A selection-only update moves no text.
     editor.registerUpdateListener(({ dirtyElements, dirtyLeaves }) => {
-      if (dirtyElements.size > 0 || dirtyLeaves.size > 0) painter.schedule();
+      if (dirtyElements.size === 0 && dirtyLeaves.size === 0) return;
+      painter.cancel();
+      painter.paint();
     }),
     painter.model.subscribe(painter.schedule),
     getDefaultStore().sub(commentThreadFilterAtom(binding.id), painter.schedule),

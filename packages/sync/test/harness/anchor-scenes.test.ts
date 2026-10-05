@@ -249,7 +249,8 @@ describe('T4.0 supported liveness: orphan on deletion, reattach on undo and redo
     on(s, 'lazy dog', 'c2');
   }));
 
-  // T4.3 check P1: a bold across one edge leaves a surviving format map between the comment's two text nodes.
+  // T4.3 check P1: a bold across one edge leaves a surviving property map between the comment's two text nodes, and
+  // the text diff can keep the space between the deleted words (across the start here), which alone must not keep it.
   for (const [label, bold] of [['end', 'brown fox'], ['start', 'The quick'], ['both edges', 'e quick brown f']] as const) {
     it(`bold across its ${label}, then delete all of it, then undo`, () => scene(async (s) => {
       const a = s.peer();
@@ -259,12 +260,9 @@ describe('T4.0 supported liveness: orphan on deletion, reattach on undo and redo
       on(s, 'quick brown');
       a.edit(() => $select('quick brown').removeText());
       accepted(await a.send());
-      const state = () => JSON.stringify({ status: s.status('c1'), text: s.text('c1'), server: liveUnits(s.server).text, peer: a.text() });
-      expect(s.status('c1'), state()).toBe('orphaned');
       orphaned(s);
       a.undo();
       accepted(await a.send());
-      expect(s.status('c1'), state()).toBe('anchored');
       on(s, 'quick brown');
       placed(s, 'c1', 4, 'quick brown');
     }));
