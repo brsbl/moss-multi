@@ -3,7 +3,7 @@
 // markdown shortcuts, orphans when its text goes, and reattaches on undo or redo, including offline replays under
 // the frame discipline.
 import { BOLD_STAR, registerMarkdownShortcuts } from '@lexical/markdown';
-import { $getSelection, $isRangeSelection } from 'lexical';
+import { $getSelection, $isRangeSelection, type ElementNode } from 'lexical';
 import { describe, expect, it } from 'vitest';
 import { liveUnits, mintAnchor } from '@moss-multi/core/anchor-frame';
 import { MARKDOWN_EDITOR_TRANSFORMERS } from '../../src/converter/index.ts';
@@ -361,6 +361,23 @@ describe('T4.0 supported liveness: orphan on deletion, reattach on undo and redo
     accepted(verdicts);
     on(s, 'brXown');
   }));
+
+  it("a paragraph's whole text deleted, then retyped into the empty paragraph, stays orphaned", () => scene((s) => {
+    // §5.3's member extension takes the text node's property map too; the retype still lands after the tombstone run.
+    const a = s.peer();
+    s.comment('c1', 'unique passage');
+    a.edit(() => $select('unique passage').removeText());
+    accepted(a.send());
+    orphaned(s);
+    a.edit(() => {
+      ($block(0) as ElementNode).selectStart();
+      const selection = $getSelection();
+      if ($isRangeSelection(selection)) selection.insertText('unique passage');
+    });
+    accepted(a.send());
+    expect(a.text()).toContain('unique passage');
+    orphaned(s);
+  }, 'unique passage\n\nTail.'));
 
   it('offline: delete it, then retype it identically; replayed under the discipline it stays orphaned', () => scene((s) => {
     const a = s.peer();

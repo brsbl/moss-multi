@@ -19,8 +19,8 @@ export const OVERLAP_CAP = 32;
 /** Tokens one range, place or signature walk may produce. */
 export const TOKEN_BUDGET = 65_536;
 const RANGE_BUDGET = WALK_BUDGET + 4 * MAX_QUOTE;
-/** Structs one hit comment may visit: two gap walks, two range walks, the loss emission and one check. */
-export const COMMENT_BUDGET = 2 * WALK_BUDGET + 4 * RANGE_BUDGET;
+/** Structs one hit comment may visit: two gap walks, the member extension, two range walks, the loss emission and one check. */
+export const COMMENT_BUDGET = 3 * WALK_BUDGET + 4 * RANGE_BUDGET;
 
 export type ItemId = [client: number, clock: number];
 
@@ -634,7 +634,8 @@ export class AnchorEngine {
     }
     if (tops.length === 0) return detached(anchor, quote);
     // §5.3: inside a block, the members extend over the siblings this frame deleted next to them (the text node's
-    // property map, uncommented text deleted with it), so a lifted place holds everything a later undo refills.
+    // property map, uncommented text deleted with it), so a lifted place holds everything a later undo refills. One
+    // 4,096-struct walk covers every list; over it, the comment is detached.
     const firstOf = new Map<Y.AbstractType<unknown>, Y.Item>();
     const lastOf = new Map<Y.AbstractType<unknown>, Y.Item>();
     for (const top of tops) {
@@ -643,20 +644,20 @@ export class AnchorEngine {
     }
     const before = new Map<Y.Item, Y.Item[]>();
     const after = new Map<Y.Item, Y.Item[]>();
+    const extend = new Walk(WALK_BUDGET, this.stats);
     for (const [list, first] of firstOf) {
       if (!list._item) continue;
-      const walk = new Walk(WALK_BUDGET, this.stats);
       const lefts: Y.Item[] = [];
       for (let at = first.left; at && !seen.has(at) && view.pre(at) && view.deletedNow(at); at = at.left) {
-        walk.tick();
-        lefts.unshift(at);
+        extend.tick();
+        lefts.push(at);
       }
       const rights: Y.Item[] = [];
       for (let at = lastOf.get(list)!.right; at && !seen.has(at) && view.pre(at) && view.deletedNow(at); at = at.right) {
-        walk.tick();
+        extend.tick();
         rights.push(at);
       }
-      before.set(first, lefts);
+      before.set(first, lefts.reverse());
       after.set(lastOf.get(list)!, rights);
     }
     const all: Y.Item[] = [];
