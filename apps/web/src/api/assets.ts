@@ -192,11 +192,11 @@ async function store(request: Request, env: AssetsEnv, docId: string, folderId: 
   const length = request.headers.get('content-length');
   if (length === null) return refuse(411, 'length-required', 'The upload needs a Content-Length.');
   if (!/^\d+$/.test(length.trim())) return refuse(400, 'bad-length', 'The upload has an invalid Content-Length.');
-  const declared = Number(length);
-  if (declared > cap) return tooLarge(type.kind);
-  if (declared === 0) return refuse(400, 'empty', 'The file is empty.');
-  if ((await vaultMediaBytes(env, folderId)) + declared > VAULT_MEDIA_QUOTA_BYTES) return overQuota();
-  const bytes = await readDeclared(request, declared);
+  const size = Number(length);
+  if (size > cap) return tooLarge(type.kind);
+  if (size === 0) return refuse(400, 'empty', 'The file is empty.');
+  if ((await vaultMediaBytes(env, folderId)) + size > VAULT_MEDIA_QUOTA_BYTES) return overQuota();
+  const bytes = await readDeclared(request, size);
   if (bytes === 'too-long') return refuse(413, 'too-large', 'The upload is longer than its Content-Length.');
   if (bytes === 'too-short') return refuse(400, 'bad-length', 'The upload ended before its Content-Length.');
   // Checked again before the bytes are stored; the asset insert below holds it against concurrent uploads.
