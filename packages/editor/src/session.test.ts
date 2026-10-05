@@ -7,7 +7,7 @@ import { MemoryHost, MemoryVolume, seedNote } from './testing/memory-host.js';
 import { isMossAssetName } from './host/moss-editor-host.js';
 import { assembleContent, type EditorContent, type RendererSnapshot } from './desktop/pipeline';
 import { isNoteRelativeCompanionPath } from './desktop/note-store.port';
-import { EditorSession, type SessionSurface } from './session';
+import { EditorSession, TIMING, type SessionSurface } from './session';
 
 vi.setConfig({ testTimeout: 20_000 });
 
@@ -34,6 +34,11 @@ class FakeSurface implements SessionSurface {
   views: unknown[] = [];
   colors: Record<string, number> = {};
   commit?: () => void;
+  frozen = false;
+
+  freeze(frozen: boolean) {
+    this.frozen = frozen;
+  }
 
   load(content: EditorContent, options: { keepView: boolean }) {
     this.loaded = content;
@@ -356,6 +361,30 @@ describe('flush and unmount', () => {
     await expect(session.unmount()).resolves.toBe(gone);
   });
 
+  it('an edit that lands while unmount waits for its final write is saved before teardown, and the editor is frozen meanwhile', async () => {
+    const session = mount();
+    await session.ready;
+    type(session, 'Typed\n');
+    const write = host.write.bind(host);
+    let late = true;
+    const frozenDuringWrite: boolean[] = [];
+    host.write = async (noteId, request) => {
+      frozenDuringWrite.push(surface.frozen);
+      if (late) {
+        late = false;
+        // A comment reply moss's UI accepts while the write is pending.
+        type(session, 'Typed\n\nReply\n');
+      }
+      return write(noteId, request);
+    };
+    const result = await session.unmount();
+    expect(result.kind).toBe('unmounted');
+    expect(markdownOnDisk()).toBe('# Plan\n\nTyped\n\nReply\n');
+    if (result.kind === 'unmounted' && result.flush.kind === 'saved') expect(result.flush.receipt.files.markdown).toBe('# Plan\n\nTyped\n\nReply\n');
+    else throw new Error(`expected a saved flush, got ${result.flush.kind}`);
+    expect(frozenDuringWrite[0]).toBe(true);
+  });
+
   it('an unmount while the first load renders leaves nothing running', async () => {
     const gate: { release?: () => void } = {};
     const load = surface.load.bind(surface);
@@ -575,6 +604,35 @@ describe('drafts and receipts', () => {
     await settle(0);
     expect(markdownOnDisk()).toBe('# Plan\n\nMine and more\n');
     expect(third.status).toBe('clean');
+  });
+
+  it('a Reload whose read fails keeps a restored draft in conflict: no retry or flush writes it over the newer disk', async () => {
+    const first = mount();
+    await first.ready;
+    type(first, 'Mine\n');
+    const draft = first.draft();
+    await first.unmount({ discardUnsaved: true });
+    volume.writeFile(`${DIR}/Plan.md`, '# Plan\n\nMoss moved on\n');
+
+    events = [];
+    const second = mount({ restoreDraft: draft });
+    await second.ready;
+    expect(second.status).toBe('conflict');
+    const read = host.read.bind(host);
+    let broken = true;
+    host.read = async (noteId) => {
+      if (broken) throw new Error('the disk is busy');
+      return read(noteId);
+    };
+    await second.resolveConflict('reload');
+    expect(second.status).toBe('conflict');
+    broken = false;
+    await settle(TIMING.errorRetryMs + 1_000);
+    const flushed = await second.flush();
+    expect(flushed.kind).toBe('conflict');
+    if (flushed.kind === 'conflict') expect(flushed.draft.baseVersion).toBe(draft.baseVersion);
+    expect(markdownOnDisk()).toBe('# Plan\n\nMoss moved on\n');
+    expect(kinds()).not.toContain('saved');
   });
 
   it('Reload resolves a restored draft conflict: the editor then drafts on the disk version', async () => {
