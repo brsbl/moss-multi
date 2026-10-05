@@ -1,9 +1,11 @@
-// SP2 measurement Worker (A§22): the converter alone in workerd, driven by scripts/measure-converter.mjs.
+// SP2 measurement Worker (A§22): the converter alone in workerd, and the DocDO's comment-anchor frame work (T4.2),
+// driven by scripts/measure-converter.mjs.
 import { createBinding, syncLexicalUpdateToYjs, type Provider } from '@lexical/yjs';
 import { $getRoot, type LexicalEditor } from 'lexical';
 import * as Y from 'yjs';
 import { $importNoteBody, createConverterEditor, exportMarkdown, importMarkdown } from '../src/converter/index.ts';
 import { writeTitle } from '../src/server-title.ts';
+import * as anchors from './anchors.ts';
 
 let imported: LexicalEditor | null = null;
 /** The doc /title renames, as the DocDO's renameTitle does; made in a handler, since a Y.Doc draws a random id. */
@@ -60,6 +62,12 @@ export default {
       writeTitle(titled, text, 'measure-title');
       const landed = titled.getText('title').toString() === text;
       return landed ? Response.json({ chars: text.length }) : new Response('title did not land exactly', { status: 500 });
+    }
+    if (pathname.startsWith('/anchors/')) {
+      // T4.2: comment-anchor frames on a 2,000-comment note (measure/anchors.ts).
+      const steps: Record<string, () => unknown> = { setup: anchors.setup, keys: anchors.keys, shared: anchors.shared, forged: anchors.forged, lift: anchors.lift };
+      const step = steps[pathname.slice('/anchors/'.length)];
+      return step ? Response.json(step()) : new Response('not found', { status: 404 });
     }
     return new Response('not found', { status: 404 });
   },
