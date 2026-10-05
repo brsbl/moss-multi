@@ -94,3 +94,29 @@ it('a step whose payload edit a peer emptied is skipped, never an older payload 
     expect([root.toString(), text.toString()]).toEqual(['body', 'old']);
   } finally { undo.destroy(); payloads.destroy(); doc.destroy(); }
 });
+
+it('undoing a property a peer rewrote concurrently keeps a value, never leaves the key empty', () => {
+  const server = new Y.Doc();
+  server.transact(() => {
+    const formula = new Y.XmlElement('formula');
+    server.get('root', Y.XmlText).insertEmbed(0, formula);
+    formula.setAttribute('__commentIds', [] as unknown as string);
+  }, 'server');
+  const ada = new Y.Doc(); ada.clientID = 2;
+  const ben = new Y.Doc(); ben.clientID = 1;
+  for (const doc of [ada, ben]) Y.applyUpdate(doc, Y.encodeStateAsUpdate(server));
+  const root = ada.get('root', Y.XmlText);
+  const binding = { doc: ada, root: { getSharedType: () => root } } as unknown as Binding;
+  const undo = createBindingUndoManager(binding);
+  const element = (doc: Y.Doc) => doc.get('root', Y.XmlText).toDelta()[0].insert as Y.XmlElement;
+  try {
+    // Lexical rewrites an array property on every clone; Ada's and Ben's rewrites cross, and Ada's id wins.
+    ada.transact(() => element(ada).setAttribute('__commentIds', [] as unknown as string), binding);
+    ben.transact(() => element(ben).setAttribute('__commentIds', [] as unknown as string), 'peer');
+    Y.applyUpdate(ada, Y.encodeStateAsUpdate(ben), 'peer');
+    Y.applyUpdate(ben, Y.encodeStateAsUpdate(ada), 'peer');
+    undo.undo();
+    Y.applyUpdate(ben, Y.encodeStateAsUpdate(ada), 'peer');
+    for (const doc of [ada, ben]) expect(element(doc).getAttribute('__commentIds')).toEqual([]);
+  } finally { undo.destroy(); for (const doc of [server, ada, ben]) doc.destroy(); }
+});
