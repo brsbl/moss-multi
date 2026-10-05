@@ -361,7 +361,7 @@ export class DocSession {
    */
   release(): void {
     if (this.#disposed || this.#lingering) return;
-    if (!this.#state.unacked || (this.#ended && terminalOf(this.docId) !== 'conn-limit')) {
+    if (this.docId || !this.#state.unacked || (this.#ended && terminalOf(this.docId) !== 'conn-limit')) {
       this.dispose();
       return;
     }
