@@ -454,7 +454,7 @@ describe('T5.2 cost: ingest and the lease check are O(frame) @p:mean-2', () => {
 
   it('fixed_frame_ingest_cost_independent_of_closed_record_count_and_continuation_depth', () => {
     /** Ingest of one fixed `suggest-ops` frame after `closed` closed records, aimed at a chain `depth` accepts deep. */
-    const run = (closed: number, depth: number): number => {
+    const run = (closed: number, depth: number): { first: number; median: number } => {
       const live = seededBody();
       // As in the DocDO: records are written under S, so a close drops S clocks.
       new SuggestionsWriter(live, newSuggestionsClient(live));

@@ -194,7 +194,8 @@ interface Info {
   open: boolean;
 }
 
-type Target = { ok: true; id: string; create: boolean; continues?: string; base: string } | { ok: false; reason: SuggestRefusal };
+/** `reserved`: the lease whose minted id a new record takes; the record binds it, whatever the frame holds. */
+type Target = { ok: true; id: string; create: boolean; continues?: string; base: string; reserved?: Lease } | { ok: false; reason: SuggestRefusal };
 
 const partBytes = (part: DeletePart) => part.id.length + part.quote.length * 2 + part.targets.length * 24 + 16;
 
@@ -271,9 +272,7 @@ export class SuggestIngest {
     const leases: Lease[] = [];
     for (const [client, from] of meta.from) {
       const lease = this.leases.get(client);
-      if (!lease || lease.principal !== who.id || lease.connection !== who.connection || lease.expired || lease.usedAt < now - SUGGEST_LIMITS.leaseIdleMs) {
-        return refused('lease');
-      }
+      if (!lease || !this.#holds(who, lease)) return refused('lease');
       if (lease.record !== null && this.#head(lease.record) !== target.base) return refused('lease');
       if (from > lease.nextClock) return refused('clock-gap');
       // A record never holds two versions of one id.
@@ -296,6 +295,7 @@ export class SuggestIngest {
       patchMeta(this.doc, target.id, { updatedAt: now, clients: [...new Set([...current.clients, ...meta.from.keys()])] });
     });
     this.#grow(target.id, update.byteLength);
+    this.#bind(target, now);
     for (const lease of leases) {
       this.leases.put({ ...lease, record: target.id, nextClock: meta.to.get(lease.client) ?? lease.nextClock, usedAt: now });
     }
@@ -321,6 +321,7 @@ export class SuggestIngest {
       patchMeta(this.doc, target.id, { updatedAt: now });
     });
     this.#grow(target.id, bytes);
+    this.#bind(target, now);
     return { ok: true, record: target.id, requested: record, sv: this.#sv(target.id), parts: [part.id] };
   }
 
@@ -405,6 +406,16 @@ export class SuggestIngest {
     return false;
   }
 
+  /** `who` writes with `lease` now: its principal, its connection, neither closed nor idle. */
+  #holds(who: Suggester, lease: Lease): boolean {
+    return lease.principal === who.id && lease.connection === who.connection && !lease.expired && lease.usedAt >= this.#now() - SUGGEST_LIMITS.leaseIdleMs;
+  }
+
+  /** A new record on a reserved id binds that lease, so it no longer counts as an unused one toward the cap. */
+  #bind(target: Extract<Target, { ok: true }>, now: number): void {
+    if (target.reserved && target.reserved.record === null) this.leases.put({ ...target.reserved, record: target.id, usedAt: now });
+  }
+
   #now(): number {
     return this.options.now?.() ?? Date.now();
   }
@@ -439,7 +450,8 @@ export class SuggestIngest {
     if (!info) {
       const lease = this.leases.reservedFor(record);
       if (!lease || lease.principal !== who.id) return refused('record');
-      return { ok: true, id: record, create: true, base: record };
+      if (!this.#holds(who, lease)) return refused('lease');
+      return { ok: true, id: record, create: true, base: record, reserved: lease };
     }
     if (info.author !== who.id) return refused('not-author');
     const head = this.#head(record);
