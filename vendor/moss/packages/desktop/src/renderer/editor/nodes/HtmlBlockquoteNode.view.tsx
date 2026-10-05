@@ -1,6 +1,6 @@
 // ported-from: packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.tsx @ 762abb777
 // moss-multi seam: publish decorator drafts as register edits.
-import { useRegisterDraft } from '@moss-multi/host/collab/register-input';
+import { resumeField, useRegisterDraft } from '@moss-multi/host/collab/register-input';
 import { registerDoc } from '@moss-multi/host/collab/registers';
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { JSX } from 'react';
@@ -200,10 +200,10 @@ function RawHtmlBlockquoteComponent({
   const [editor] = useLexicalComposerContext();
   const [isSelected, setSelected, clearSelection] = useLexicalNodeSelection(nodeKey);
   const { handleDelete, handleGapClick } = useMediaNodeActions(nodeKey);
-  const [isEditing, setIsEditing] = useState(false);
+  const [isEditing, setIsEditing] = useState(() => resumeField(editor, nodeKey));
   const [hasTextSelection, setHasTextSelection] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const [localRawHtml, setLocalRawHtml] = useRegisterDraft(editor, nodeKey, rawHtml, 'setRawHtml', textareaRef, isEditing);
+  const [localRawHtml, setLocalRawHtml, writable] = useRegisterDraft(editor, nodeKey, rawHtml, textareaRef, isEditing);
   const highlightedPreRef = useRef<HTMLPreElement>(null);
   const previewContent = useMemo(
     () => parseHtmlBlockquotePreviewContent(rawHtml),
@@ -400,7 +400,7 @@ function RawHtmlBlockquoteComponent({
                   </pre>
                   <textarea
                     ref={textareaRef}
-                    readOnly={!editor.isEditable()}
+                    readOnly={!editor.isEditable() || !writable}
                     value={localRawHtml}
                     onChange={(e) => {
                       setLocalRawHtml(e.target.value);
@@ -500,12 +500,12 @@ function MossHtmlPreviewComponent({
   const noteId = useCurrentNoteId();
   const [isSelected, setSelected, clearSelection] = useLexicalNodeSelection(nodeKey);
   const { handleDelete, handleGapClick } = useMediaNodeActions(nodeKey);
-  const [isEditing, setIsEditing] = useState(false);
+  const [isEditing, setIsEditing] = useState(() => resumeField(editor, nodeKey));
   const [hasTextSelection, setHasTextSelection] = useState(false);
   const [isInteractive, setIsInteractive] = useState(false);
   const { isFullscreen, enterFullscreen, exitFullscreen } = useMediaFullscreen();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const [localRawHtml, setLocalRawHtml] = useRegisterDraft(editor, nodeKey, rawHtml, 'setRawHtml', textareaRef, isEditing);
+  const [localRawHtml, setLocalRawHtml, writable] = useRegisterDraft(editor, nodeKey, rawHtml, textareaRef, isEditing);
   const highlightedPreRef = useRef<HTMLPreElement>(null);
 
   const [interactivePreviewReady, setInteractivePreviewReady] = useState(false);
@@ -832,7 +832,7 @@ function MossHtmlPreviewComponent({
         </pre>
         <textarea
           ref={textareaRef}
-          readOnly={!editor.isEditable()}
+          readOnly={!editor.isEditable() || !writable}
           value={localRawHtml}
           onChange={(e) => {
             setLocalRawHtml(e.target.value);
