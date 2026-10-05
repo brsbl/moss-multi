@@ -1,0 +1,488 @@
+// mountMossEditor: moss's own MarkdownEditor, editable, under a contenteditable title, on the canvas moss paints a
+// note on, with moss's comment UI. Each editor has its own Jotai store. The surface below is what the session
+// (session.ts) drives: it loads a note's layers into moss, and on each save hands back what moss's renderer would
+// send (`buildMarkdownForSave`, the pruned comment metadata, the layout widths), read straight from the editor.
+import { StrictMode, useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { createRoot } from 'react-dom/client';
+import { Provider, createStore } from 'jotai';
+import type { LexicalEditor } from 'lexical';
+import { $convertToMarkdownString } from '@lexical/markdown';
+import {
+  $collectTabGroupLayoutMetadata,
+  $collectTableLayoutMetadata,
+  MARKDOWN_EDITOR_TRANSFORMERS,
+  MarkdownEditor,
+  unescapeHtmlEntities,
+  type MarkdownEditorHandle,
+} from '@moss-desktop/renderer/editor/MarkdownEditor';
+import { CanvasArea } from '@moss/shared/components/layout/CanvasArea';
+import { commentDirtySignalAtom, noteCommentsMapAtom, noteEntityAtom, noteIdsAtom } from '@moss/shared/state/note-atoms';
+import { browserSplitTargetAtom, mapNoteMetadataToNoteEntity, splitTabNoteIdAtom, webEmbedLightboxTargetAtom } from '@moss/shared/state/atoms';
+import { collectReachableCommentThreadIds, extractCommentAnchorIds, hasLegacyCommentFooter, parseCommentFooter } from '@moss-desktop/common/markdown-layers';
+import { stripTableColumnWidthComments } from '@moss-desktop/renderer/editor/utils/markdown-export';
+import { buildCommentMetadata } from '@moss-desktop/renderer/editor/utils/comment-export';
+import { hydrateComments } from '@moss-desktop/renderer/editor/utils/comment-import';
+import { flushDecoratorDrafts } from '@moss-desktop/renderer/editor/utils/decoratorDraftRegistry';
+import {
+  DIRTY_TRACKER_CONTENT_TAGS,
+  DIRTY_TRACKER_IGNORED_TAGS,
+  hasTrackedEditorUpdateTag,
+} from '@moss-desktop/renderer/editor/utils/editorUpdateTags';
+import { setEmbedTheme } from '@moss-multi/host/embed-theme.ts';
+import type { MossEditorHandle, MossEditorNote, MossEditorOptions, MossEditorServices, MossEditorTheme } from './contract';
+import { assembleContent, type EditorContent, type RendererSnapshot } from './desktop/pipeline';
+import { noteIdKey } from './host/moss-editor-host.js';
+import { installEditorElectronApi } from './electron-api';
+import { installEditorHooks } from './hooks';
+import { MOSS_EDITOR_INFO } from './info';
+import { markActive, registerEditor } from './registry';
+import { EditorSession, type SessionSurface, type SessionView } from './session';
+
+type Store = ReturnType<typeof createStore>;
+
+const nextFrame = () =>
+  new Promise<void>((done) => {
+    const timer = setTimeout(done, 120);
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        clearTimeout(timer);
+        done();
+      }),
+    );
+  });
+
+interface PaneState {
+  content: EditorContent | null;
+  /** Bumped to remount moss's editor on a first load. */
+  version: number;
+  view: SessionView;
+  editable: boolean;
+}
+
+/** The session's surface: moss's editor behind a small external store the pane renders from. */
+class FrameSurface implements SessionSurface {
+  editor: LexicalEditor | null = null;
+  handle: MarkdownEditorHandle | null = null;
+  title: HTMLDivElement | null = null;
+  scroller: HTMLDivElement | null = null;
+  session: EditorSession | null = null;
+  private committedTitle = '';
+  /** Changes from a load, moss's own post-mount transforms included, are not the user's edits. */
+  private settling = true;
+  private pendingReady: (() => void) | null = null;
+  private stopUpdates: (() => void) | null = null;
+  private stopComments: (() => void) | null = null;
+  private state: PaneState = { content: null, version: 0, view: { status: 'loading', conflict: null, overwritten: false, error: null, removed: null }, editable: false };
+  private listeners = new Set<() => void>();
+
+  constructor(
+    private readonly store: Store,
+    private readonly noteId: string,
+    private readonly host: HTMLElement,
+  ) {
+    this.stopComments = store.sub(commentDirtySignalAtom(noteId), () => this.edited());
+  }
+
+  subscribe = (listener: () => void) => {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  };
+
+  getState = () => this.state;
+
+  private set(next: Partial<PaneState>) {
+    this.state = { ...this.state, ...next };
+    for (const listener of this.listeners) listener();
+  }
+
+  private edited() {
+    if (!this.settling) this.session?.markEdited();
+  }
+
+  private hydrateComments(content: EditorContent) {
+    this.store.set(noteCommentsMapAtom(this.noteId), hydrateComments(content.commentMetadata, content.commentColors));
+  }
+
+  async load(content: EditorContent, options: { keepView: boolean }): Promise<void> {
+    this.settling = true;
+    this.committedTitle = content.title;
+    this.hydrateComments(content);
+    if (this.title && (!options.keepView || document.activeElement !== this.title)) this.title.textContent = content.title;
+    if (options.keepView && this.handle && this.editor) {
+      const result = this.handle.updateContentFromMarkdown(content.body, {
+        scrollContainer: this.scroller,
+        commentMetadata: content.commentMetadata,
+        ...(content.layoutMetadata ? { layoutMetadata: content.layoutMetadata } : {}),
+      });
+      this.set({ content });
+      if (result.success) {
+        this.hydrateComments(content);
+        await nextFrame();
+        this.settling = false;
+        return;
+      }
+    }
+    // A first load, or an in-place update moss refused: mount moss's editor on the note.
+    const ready = new Promise<void>((resolve) => {
+      this.pendingReady = resolve;
+    });
+    this.set({ content, version: this.state.version + 1 });
+    await ready;
+  }
+
+  attach = (editor: LexicalEditor) => {
+    this.stopUpdates?.();
+    this.editor = editor;
+    editor.setEditable(this.state.editable);
+    let skippedBootstrapUpdate = false;
+    // CanvasAreaContent.tsx:4122-4153, desktop's dirty tracking.
+    this.stopUpdates = editor.registerUpdateListener(({ dirtyElements, dirtyLeaves, tags }) => {
+      const hasDirtyMutations = dirtyElements.size > 0 || dirtyLeaves.size > 0;
+      const hasContentUpdateTag = hasTrackedEditorUpdateTag(tags, DIRTY_TRACKER_CONTENT_TAGS);
+      if (!skippedBootstrapUpdate) {
+        skippedBootstrapUpdate = true;
+        if (!hasDirtyMutations && !hasContentUpdateTag) return;
+      }
+      if (hasTrackedEditorUpdateTag(tags, DIRTY_TRACKER_IGNORED_TAGS)) return;
+      if (hasDirtyMutations || hasContentUpdateTag) this.edited();
+    });
+    void nextFrame().then(() => {
+      this.settling = false;
+      const resolve = this.pendingReady;
+      this.pendingReady = null;
+      resolve?.();
+    });
+  };
+
+  /** The title commits on blur, Enter and Tab, as desktop's does (CanvasAreaContent.tsx:4240-4258). */
+  commitTitle = () => {
+    const live = this.title?.textContent ?? this.committedTitle;
+    if (live === this.committedTitle) return;
+    this.committedTitle = live;
+    this.session?.markEdited();
+  };
+
+  async commit(): Promise<void> {
+    this.commitTitle();
+    flushDecoratorDrafts();
+    // Lexical commits the drafts' updates in a microtask; the update listener then counts them.
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  snapshot(): RendererSnapshot | null {
+    const content = this.state.content;
+    if (!this.editor || !content) return null;
+    this.commitTitle();
+    // getEditorBodyMarkdown (CanvasAreaContent.tsx:1967-2015).
+    let markdownBody = content.body;
+    let layoutMetadata: RendererSnapshot['layoutMetadata'] = { version: 1, tableCount: 0, tables: [] };
+    this.editor.getEditorState().read(
+      () => {
+        markdownBody = unescapeHtmlEntities($convertToMarkdownString(MARKDOWN_EDITOR_TRANSFORMERS));
+        layoutMetadata = { ...$collectTableLayoutMetadata(), ...$collectTabGroupLayoutMetadata() };
+      },
+      { editor: this.editor },
+    );
+    if (hasLegacyCommentFooter(markdownBody)) markdownBody = parseCommentFooter(markdownBody).strippedContent;
+    markdownBody = stripTableColumnWidthComments(markdownBody);
+    // pruneCommentsWithoutAnchors (2027-2067): replies survive with their root's anchor.
+    const commentsMap = this.store.get(noteCommentsMapAtom(this.noteId));
+    const anchorIds = extractCommentAnchorIds(markdownBody);
+    const surviving = Object.keys(commentsMap).length === 0 || anchorIds.size === 0 ? new Set<string>() : collectReachableCommentThreadIds(anchorIds, commentsMap);
+    const currentCommentsMap = Object.fromEntries(Object.entries(commentsMap).filter(([id]) => surviving.has(id)));
+    const commentColors = Object.fromEntries(
+      Object.entries(currentCommentsMap)
+        .filter(([, comment]) => comment.color !== undefined)
+        .map(([id, comment]) => [id, comment.color as number]),
+    );
+    return {
+      content: assembleContent(content, { title: this.committedTitle, body: markdownBody }),
+      commentMetadata: buildCommentMetadata(currentCommentsMap),
+      layoutMetadata,
+      intents: { frontmatterMetaUpdates: {}, commentColors },
+    };
+  }
+
+  setEditable(editable: boolean): void {
+    this.editor?.setEditable(editable);
+    this.set({ editable });
+  }
+
+  view(view: SessionView): void {
+    this.host.dataset.mossEditorStatus = view.status;
+    this.set({ view });
+  }
+
+  dispose() {
+    this.stopUpdates?.();
+    this.stopComments?.();
+  }
+}
+
+function setNotes(store: Store, notes: readonly MossEditorNote[]): void {
+  for (const note of notes) {
+    store.set(
+      noteEntityAtom(note.id),
+      mapNoteMetadataToNoteEntity({ id: note.id, title: note.title, createdAt: note.updatedAt ?? 0, updatedAt: note.updatedAt ?? 0, folderPath: note.folderPath ?? 'Notes' }),
+    );
+  }
+  store.set(noteIdsAtom, new Set(notes.map((note) => note.id)));
+}
+
+/** Moss opens web links in its browser split or lightbox, and notes in a split; an editor hands each to its host. */
+function routeNavigation(store: Store, noteId: string, services: MossEditorServices): () => void {
+  const toUrl = (target: typeof browserSplitTargetAtom | typeof webEmbedLightboxTargetAtom) =>
+    store.sub(target, () => {
+      const request = store.get(target);
+      if (!request) return;
+      store.set(target, null);
+      services.navigate?.({ kind: 'url', url: request.url, title: request.title });
+    });
+  const stops = [
+    toUrl(browserSplitTargetAtom),
+    toUrl(webEmbedLightboxTargetAtom),
+    store.sub(splitTabNoteIdAtom, () => {
+      const target = store.get(splitTabNoteIdAtom);
+      if (!target) return;
+      store.set(splitTabNoteIdAtom, null);
+      if (target !== noteId) services.navigate?.({ kind: 'note', noteId: target, heading: null });
+    }),
+  ];
+  return () => stops.forEach((stop) => stop());
+}
+
+const BUTTON = 'rounded-md px-2.5 py-1 text-small font-medium transition-colors';
+
+function Banner({ view, session }: { view: SessionView; session: EditorSession }): ReactNode {
+  const [kept, setKept] = useState(false);
+  useEffect(() => {
+    if (!view.conflict) setKept(false);
+  }, [view.conflict]);
+  if (view.conflict) {
+    return (
+      <div data-moss-editor-conflict="" role="alert" className="sticky top-0 z-30 mx-auto mb-3 flex w-full max-w-canvas-prose flex-wrap items-center gap-2 rounded-lg border border-border-subtle bg-surface-floating px-3 py-2 text-small text-ink-default shadow-sm">
+        <span className="font-semibold">Changed in Moss</span>
+        <span className="text-ink-muted">{kept ? 'Your edits are not saved yet.' : 'This note changed on disk while you were editing. Your edits are not saved.'}</span>
+        {view.conflict.preserved.length > 0 ? (
+          <span className="w-full text-caption text-ink-muted">Moss&apos;s bytes were kept in {view.conflict.preserved.join(', ')}</span>
+        ) : null}
+        <span className="ml-auto flex gap-1.5">
+          <button type="button" className={`${BUTTON} text-ink-default hover:bg-surface-hover`} onClick={() => void session.resolveConflict('reload')}>
+            Reload
+          </button>
+          {kept ? null : (
+            <button type="button" className={`${BUTTON} text-ink-default hover:bg-surface-hover`} onClick={() => setKept(true)}>
+              Keep editing
+            </button>
+          )}
+          <button type="button" className={`${BUTTON} bg-action-primary text-ink-inverse hover:bg-action-primary-hover`} onClick={() => void session.resolveConflict('overwrite')}>
+            Overwrite
+          </button>
+        </span>
+      </div>
+    );
+  }
+  if (view.removed) {
+    return (
+      <div data-moss-editor-removed="" role="alert" className="sticky top-0 z-30 mx-auto mb-3 w-full max-w-canvas-prose rounded-lg border border-border-subtle bg-surface-floating px-3 py-2 text-small text-ink-default shadow-sm">
+        This note was moved, deleted or can no longer be edited here. Unsaved edits are kept until you close it.
+      </div>
+    );
+  }
+  if (view.error) {
+    return (
+      <div data-moss-editor-error="" role="alert" className="sticky top-0 z-30 mx-auto mb-3 w-full max-w-canvas-prose rounded-lg border border-status-error-border bg-status-error-surface px-3 py-2 text-small text-status-error-text">
+        Couldn&apos;t save: {view.error.message}. Your edits are kept and will be retried.
+        {view.error.preserved.length > 0 ? <span className="block text-caption">Moss&apos;s bytes were kept in {view.error.preserved.join(', ')}</span> : null}
+      </div>
+    );
+  }
+  if (view.overwritten) {
+    return (
+      <div data-moss-editor-notice="overwritten" role="status" className="sticky top-0 z-30 mx-auto mb-3 flex w-full max-w-canvas-prose items-center gap-2 rounded-lg border border-border-subtle bg-surface-floating px-3 py-2 text-small text-ink-default shadow-sm">
+        <span>Moss replaced your last save.</span>
+        <span className="ml-auto flex gap-1.5">
+          <button type="button" className={`${BUTTON} text-ink-default hover:bg-surface-hover`} onClick={() => session.dismissNotice()}>
+            Dismiss
+          </button>
+          <button type="button" className={`${BUTTON} bg-action-primary text-ink-inverse hover:bg-action-primary-hover`} onClick={() => void session.restoreOverwritten()}>
+            Restore
+          </button>
+        </span>
+      </div>
+    );
+  }
+  return null;
+}
+
+function EditorPane({ surface, session, noteId, onNavigateToNote }: {
+  surface: FrameSurface;
+  session: EditorSession;
+  noteId: string;
+  onNavigateToNote: (noteId: string, heading?: string | null) => void;
+}): ReactNode {
+  const state = useSyncExternalStore(surface.subscribe, surface.getState);
+  const editorRef = useRef<MarkdownEditorHandle | null>(null);
+  const scrollerRef = useRef<HTMLDivElement | null>(null);
+  const titleRef = useCallback(
+    (el: HTMLDivElement | null) => {
+      surface.title = el;
+      if (el && state.content && el.textContent === '') el.textContent = state.content.title;
+    },
+    [surface, state.content],
+  );
+  useEffect(() => {
+    surface.handle = editorRef.current;
+    surface.scroller = scrollerRef.current;
+  });
+  const focusBody = () => surface.editor?.focus();
+  const { content, view } = state;
+  return (
+    <div className="relative flex h-full min-w-0 flex-1 flex-col bg-surface-canvas" data-moss-editor-root="">
+      <CanvasArea className="relative min-w-0 flex-1" responsiveLayout innerClassName="flex w-full flex-col gap-1" contentClassName="mx-auto max-w-canvas-blocks" scrollContainerRef={scrollerRef}>
+        <Banner view={view} session={session} />
+        {view.status === 'notLoaded' ? (
+          <div data-moss-editor-unavailable="" className="mx-auto w-full max-w-canvas-prose rounded-md border border-status-error-border bg-status-error-surface p-4 text-small text-status-error-text">
+            This note can&apos;t be opened for editing.
+          </div>
+        ) : content ? (
+          <div className="relative">
+            <div className="relative mx-auto w-full max-w-canvas-prose">
+              <div
+                ref={titleRef}
+                data-moss-editor-title=""
+                contentEditable={state.editable}
+                suppressContentEditableWarning
+                role="textbox"
+                aria-label="Note title"
+                data-placeholder="What if…"
+                className="mb-1 min-h-12 w-full text-left text-h1 font-semibold tracking-title text-ink-default outline-none empty:before:block empty:before:text-ink-faint/40 empty:before:content-[attr(data-placeholder)]"
+                onBlur={surface.commitTitle}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === 'Tab') {
+                    event.preventDefault();
+                    surface.commitTitle();
+                    focusBody();
+                  }
+                  if (event.key === 'ArrowDown') focusBody();
+                }}
+                onPaste={(event) => {
+                  event.preventDefault();
+                  const text = event.clipboardData.getData('text/plain').replace(/\n/g, ' ');
+                  const selection = window.getSelection();
+                  if (selection && selection.rangeCount > 0) {
+                    const range = selection.getRangeAt(0);
+                    range.deleteContents();
+                    range.insertNode(document.createTextNode(text));
+                    range.collapse(false);
+                  }
+                }}
+              />
+            </div>
+            <MarkdownEditor
+              ref={editorRef}
+              key={`${noteId}-${state.version}`}
+              noteId={noteId}
+              value={content.body}
+              layoutMetadata={content.layoutMetadata}
+              onChange={() => undefined}
+              placeholder="Type '/' for commands"
+              onReady={(editor) => {
+                surface.handle = editorRef.current;
+                surface.attach(editor);
+              }}
+              onNavigateToNote={onNavigateToNote}
+              editorMountVersion={state.version}
+            />
+          </div>
+        ) : (
+          <div className="agent-skeleton agent-skeleton--content pt-4" data-moss-editor-loading="">
+            {[100, 94, 88, 72].map((width, i) => (
+              <div key={`editor-loading-${i}`} className="agent-skeleton-line" style={{ width: `${width}%` }} />
+            ))}
+          </div>
+        )}
+      </CanvasArea>
+    </div>
+  );
+}
+
+export function mountMossEditor(element: HTMLElement, options: MossEditorOptions): MossEditorHandle {
+  installEditorElectronApi();
+  installEditorHooks();
+  const noteId = noteIdKey(options.noteId);
+  const services = options.services ?? {};
+  const store = createStore();
+  const host = document.createElement('div');
+  host.className = 'h-full';
+  host.dataset.mossEditor = '';
+  host.dataset.mossEditorStatus = 'loading';
+  const theme: MossEditorTheme = options.theme ?? 'light';
+  host.dataset.theme = theme;
+  setEmbedTheme(noteId, theme);
+  const activate = () => markActive(noteId);
+  host.addEventListener('pointerdown', activate, true);
+  element.append(host);
+
+  const surface = new FrameSurface(store, noteId, host);
+  const session = new EditorSession({ noteId: options.noteId, bridge: options.bridge, surface, onEvent: options.onEvent, restoreDraft: options.restoreDraft });
+  surface.session = session;
+  const unregister = registerEditor({ noteId, bridge: options.bridge, services, htmlFrameUrl: options.htmlFrameUrl ?? null, session });
+  let live = true;
+  const own: MossEditorNote = { id: noteId, title: '' };
+  setNotes(store, [own]);
+  void Promise.resolve(services.notes?.() ?? [])
+    .then((notes) => {
+      if (live) setNotes(store, [own, ...notes.filter((note) => note.id !== noteId)]);
+    })
+    .catch((error: unknown) => console.warn('[moss-editor] services.notes failed:', error));
+  const stopNavigation = routeNavigation(store, noteId, services);
+  const onNavigateToNote = (target: string, heading?: string | null) => {
+    if (target !== noteId) services.navigate?.({ kind: 'note', noteId: target, heading: heading ?? null });
+  };
+
+  const root = createRoot(host);
+  root.render(
+    <StrictMode>
+      <Provider store={store}>
+        <EditorPane surface={surface} session={session} noteId={noteId} onNavigateToNote={onNavigateToNote} />
+      </Provider>
+    </StrictMode>,
+  );
+
+  const teardown = () => {
+    if (!live) return;
+    live = false;
+    root.unmount();
+    surface.dispose();
+    host.removeEventListener('pointerdown', activate, true);
+    setEmbedTheme(noteId, null);
+    host.remove();
+    stopNavigation();
+    unregister();
+  };
+
+  return {
+    info: MOSS_EDITOR_INFO,
+    noteId: options.noteId,
+    get status() {
+      return session.status;
+    },
+    get location() {
+      return session.location;
+    },
+    ready: session.ready,
+    setTheme(next: MossEditorTheme) {
+      host.dataset.theme = next;
+      setEmbedTheme(noteId, next);
+    },
+    flush: () => session.flush(),
+    reload: (reloadOptions) => session.reload(reloadOptions),
+    async unmount(unmountOptions) {
+      const result = await session.unmount(unmountOptions);
+      if (result.kind === 'unmounted') teardown();
+      return result;
+    },
+  };
+}
