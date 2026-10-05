@@ -308,6 +308,7 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
   - **Red first (T3.1 checker P2):** in WebKit, assert that the video player's own reads of the clip are Range requests answered 206 (j11 checks this in Chromium only).
   - **Done:** green in both engines, with shots of the fixture and the demo note, and a release note listing whether moss-html and both consumer-reported gaps are fixed. After publishing, the coordinator tells thr_6fabbskqcf (bb-plugins coordinator; PR #241 is blocked on this release) the version, the release URL and that list.
 - **T3.9 Embeddable editor, file-backed (`mountMossEditor`)** `[B·fresh]`, after T3.8. Requested by the owner for the bb Moss plugin, relayed by thr_6fabbskqcf on 2026-10-04. bb ships no Moss renderer or editor of its own, so this package is the only path.
+  - Contract (DRAFT, review findings still open): packages/editor/src/contract.ts and docs/design/editor-embed.md (reviewed by Codex, 2026-10-04); the bb host thread thr_w89wd6n29c codes against it.
   - **Scope:**
     - A sibling of `packages/viewer` that mounts moss's own editor, editable, with moss's keyboard shortcuts, slash menu, formatting, every M3 node family and moss's desktop comment UI. Comments are stored as moss desktop stores them, as `%%m:` markers plus the comments sidecar, so files stay byte-compatible with the Moss Mac app.
     - The host implements a small file bridge, the subset of moss desktop's ElectronAPI that file editing needs (the T0.5b bridge already maps the full surface):
