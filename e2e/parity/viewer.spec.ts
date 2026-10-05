@@ -7,7 +7,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { expect, test, type Browser, type Page } from '@playwright/test';
 import { APP_STATE_ATTR, DOC_ID_ATTR, DOC_STATE_ATTR, EDITOR_PANE_ATTR, ROLE_ATTR } from '../lib/contract.ts';
-import { mintPrincipal, signIn, type Principal } from '../lib/principals.ts';
+import { mintPrincipal, signIn, type SessionCookie } from '../lib/principals.ts';
 import { Stack } from '../lib/stack.ts';
 import { FIXTURE_DIR, serveViewer, type ViewerServer } from '../viewer/server.ts';
 import { PROPERTIES, READ_ONLY_FAMILY_SELECTORS } from './families.ts';
@@ -90,8 +90,22 @@ async function api(page: Page, method: 'GET' | 'POST', path: string, data?: unkn
 }
 
 interface Seeded {
-  reader: Principal;
+  readerCookies: SessionCookie[];
   docs: Record<string, string>;
+}
+
+/**
+ * The parity stack keeps the production auth limits (10 sign-ups and 10 sign-ins a minute per address), and the
+ * shell parity legs before this file use most of the minute: a 429 waits out the window once.
+ */
+async function pastAuthLimit<T>(attempt: () => Promise<T>): Promise<T> {
+  try {
+    return await attempt();
+  } catch (error) {
+    if (!/: 429 /.test(String(error))) throw error;
+    await new Promise((resolve) => setTimeout(resolve, 61_000));
+    return attempt();
+  }
 }
 
 let seeded: Promise<Seeded> | null = null;
@@ -99,26 +113,26 @@ let seeded: Promise<Seeded> | null = null;
 /** The owner's notes, and a reader holding viewer on the owner's vault; once for both themes (sign-up is rate limited). */
 async function seed(browser: Browser): Promise<Seeded> {
   const run = `parity-${process.env.RUN_ID ?? 'local'}-${Date.now().toString(36)}`;
-  const owner = await mintPrincipal(stack.baseUrl, run, 'viewer-owner', 1);
-  const reader = await mintPrincipal(stack.baseUrl, run, 'viewer-reader', 2);
+  const owner = await pastAuthLimit(() => mintPrincipal(stack.baseUrl, run, 'viewer-owner', 1));
+  const reader = await pastAuthLimit(() => mintPrincipal(stack.baseUrl, run, 'viewer-reader', 2));
   const page = await newPage(browser, 'light');
   try {
-    await page.context().addCookies(await signIn(stack.baseUrl, owner));
+    await page.context().addCookies(await pastAuthLimit(() => signIn(stack.baseUrl, owner)));
     for (const title of TARGETS) await api(page, 'POST', '/api/docs', { title, markdown: `${title}, a wiki link's target.` });
     const docs: Record<string, string> = {};
     for (const note of NOTES) docs[note.id] = ((await api(page, 'POST', '/api/docs', { title: note.title, markdown: note.markdown })).doc as { id: string }).id;
     const vault = ((await api(page, 'GET', `/api/workspace?doc=${encodeURIComponent(docs.demo)}`)).vault as { id: string }).id;
     await api(page, 'POST', `/api/folders/${encodeURIComponent(vault)}/members`, { email: reader.email, role: 'viewer' });
-    return { reader, docs };
+    return { readerCookies: await pastAuthLimit(() => signIn(stack.baseUrl, reader)), docs };
   } finally {
     await page.context().close();
   }
 }
 
-async function editorStyles(browser: Browser, theme: Theme, reader: Principal, docId: string, families: readonly string[]): Promise<Styles> {
+async function editorStyles(browser: Browser, theme: Theme, readerCookies: SessionCookie[], docId: string, families: readonly string[]): Promise<Styles> {
   const page = await newPage(browser, theme);
   try {
-    await page.context().addCookies(await signIn(stack.baseUrl, reader));
+    await page.context().addCookies(readerCookies);
     await page.goto(new URL(`/d/${encodeURIComponent(docId)}`, stack.baseUrl).href);
     await page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
     const pane = `[${EDITOR_PANE_ATTR}][${DOC_ID_ATTR}="${docId}"]`;
@@ -146,12 +160,13 @@ async function viewerStyles(browser: Browser, theme: Theme, note: (typeof NOTES)
 
 for (const theme of THEMES) {
   test(`viewer ${theme}: every family and the title compute the styles the editor's read-only view does`, async ({ browser }) => {
+    test.setTimeout(240_000);
     seeded ??= seed(browser);
-    const { reader, docs } = await seeded;
+    const { readerCookies, docs } = await seeded;
     const differences: string[] = [];
     mkdirSync(OUT, { recursive: true });
     for (const note of NOTES) {
-      const expected = await editorStyles(browser, theme, reader, docs[note.id], note.families);
+      const expected = await editorStyles(browser, theme, readerCookies, docs[note.id], note.families);
       const actual = await viewerStyles(browser, theme, note);
       for (const family of ['title', ...note.families]) {
         for (const name of PROPERTIES) {
