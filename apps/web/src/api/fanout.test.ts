@@ -64,6 +64,6 @@ it('returns the committed share even when its notification RPC fails', async () 
   } as never });
   expect(response.status).toBe(201);
   expect(await response.json()).toEqual({ shared: { email: reader.email, role: 'editor' } });
-  expect(await d1.db.prepare('SELECT role FROM doc_members WHERE doc_id = ? AND principal_id = ?')
-    .bind(id, reader.id).first()).toEqual({ role: 'editor' });
+  expect(await d1.db.prepare('SELECT role FROM invites WHERE target_id = ? AND email = ? AND accepted_at IS NULL')
+    .bind(id, reader.email).first(), 'the invite stands; a share grants nothing until it is redeemed').toEqual({ role: 'editor' });
 });

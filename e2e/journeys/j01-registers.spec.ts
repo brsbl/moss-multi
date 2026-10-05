@@ -5,6 +5,7 @@
 import type { LexicalEditor } from 'lexical';
 import type { Actor, Actors } from '../lib/actors.ts';
 import { SYNC_UNACKED_ATTR } from '../lib/contract.ts';
+import { grantDoc } from '../lib/grants.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
 const PEER_TIMEOUT = 10_000;
@@ -15,7 +16,7 @@ async function note(actors: Actors, baseUrl: string, markdown: string) {
   expect(result.status()).toBe(201);
   const { doc: { id } } = await result.json() as { doc: { id: string } };
   const ben = await actors.principal('ben');
-  expect((await ada.context.request.post(`/api/docs/${id}/members`, { headers: { origin: baseUrl }, data: { email: ben.email, role: 'editor' } })).status()).toBe(201);
+  await grantDoc(ada, id, ben);
   await ada.goto(`/d/${id}`);
   await ui.waitLive(ada, id); await ada.observeEditor(id);
   return { ada, ben, id };

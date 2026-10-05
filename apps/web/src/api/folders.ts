@@ -20,7 +20,8 @@ import { createDb, type Db } from '../db/client.ts';
 import { docs, folders } from '../db/schema.ts';
 import type { AppEnv } from '../env.ts';
 import { json } from '../worker/route.ts';
-import { folderChain, MAX_FOLDER_DEPTH, resolveDocAccess, resolveFolderAccess, type FolderAccess } from './access.ts';
+import { folderChain, MAX_FOLDER_DEPTH, reapDeadInvites, resolveDocAccess, resolveFolderAccess, type FolderAccess } from './access.ts';
+import { handleInviteLinks } from './invites.ts';
 import { handleLinks } from './links.ts';
 import { handleMembers } from './members.ts';
 import { NO_STORE, notFound, readJsonObject, unauthenticated } from './respond.ts';
@@ -186,7 +187,8 @@ async function updateFolder(request: Request, env: FoldersEnv, id: string): Prom
       if (newName !== null) await db.update(folders).set({ name: newName }).where(and(eq(folders.id, id), isNull(folders.deletedAt)));
     } else {
       // The target's live ancestry, the cycle check and the depth bound hold at the moment of the write.
-      const updated = await env.DB.prepare(`WITH RECURSIVE ${upFrom(1)},
+      // Whoever managed the subtree only through its old ancestors loses manage, and their open invites die (A§8).
+      const [updated] = await env.DB.batch([env.DB.prepare(`WITH RECURSIVE ${upFrom(1)},
         sub(id, depth) AS (
           SELECT id, 1 FROM folders WHERE id = ?2
           UNION ALL SELECT f.id, s.depth + 1 FROM folders f JOIN sub s ON f.parent_id = s.id
@@ -196,7 +198,7 @@ async function updateFolder(request: Request, env: FoldersEnv, id: string): Prom
         WHERE id = ?2 AND deleted_at IS NULL AND ${liveIn(4)}
           AND NOT EXISTS (SELECT 1 FROM up WHERE id = ?2)
           AND (SELECT count(*) FROM up) + (SELECT max(depth) FROM sub) <= ${MAX_FOLDER_DEPTH}`)
-        .bind(parentId, id, newName, vault).run();
+        .bind(parentId, id, newName, vault), reapDeadInvites(env.DB, Date.now())]);
       if (!changed(updated)) return refuseStaleMove(db, principal, id, parentId);
     }
   } catch (error) {
@@ -269,6 +271,7 @@ async function trashFolder(request: Request, env: FoldersEnv, id: string): Promi
           .bind(now, batch, id),
         env.DB.prepare('UPDATE docs SET deleted_at = ?1, trash_batch_id = ?2 WHERE folder_id IN (SELECT id FROM folders WHERE trash_batch_id = ?2) AND deleted_at IS NULL')
           .bind(now, batch),
+        reapDeadInvites(env.DB, now),
       ]);
     } catch (error) {
       console.error('folder trash write failed', error);
@@ -318,9 +321,10 @@ export async function moveDoc(request: Request, env: FoldersEnv, docId: string, 
       const filename = occupied.has(doc.filename) ? filenameFor(doc.title, occupied) : doc.filename;
       try {
         // The destination must still be live in the vault when the note lands (a trash may be under way).
-        const moved = await env.DB.prepare(`WITH RECURSIVE ${upFrom(1)}
+        // Whoever managed the note only through its old folder loses manage, and their open invites die (A§8).
+        const [moved] = await env.DB.batch([env.DB.prepare(`WITH RECURSIVE ${upFrom(1)}
           UPDATE docs SET folder_id = ?1, filename = ?2 WHERE id = ?3 AND deleted_at IS NULL AND ${liveIn(4)}`)
-          .bind(folderId, filename, docId, vault).run();
+          .bind(folderId, filename, docId, vault), reapDeadInvites(env.DB, Date.now())]);
         if (!changed(moved)) return folderNotFound();
         break;
       } catch (error) {
@@ -337,6 +341,7 @@ export async function moveDoc(request: Request, env: FoldersEnv, docId: string, 
 
 const FOLDER = /^\/api\/folders\/([^/]+)$/;
 const MEMBERS = /^\/api\/folders\/([^/]+)\/members$/;
+const INVITES = /^\/api\/folders\/([^/]+)\/invites$/;
 const LINKS = /^\/api\/folders\/([^/]+)\/links(?:\/([^/]+))?$/;
 
 /** GET /api/folders/:id: the folder, and the vault around it unless the caller holds only a link to it. */
@@ -366,6 +371,8 @@ export function handleFolderRoutes(request: Request, env: FoldersEnv): Promise<R
   }
   const members = MEMBERS.exec(pathname);
   if (members) return handleMembers(request, env, { type: 'folder', id: members[1] });
+  const pending = INVITES.exec(pathname);
+  if (pending) return handleInviteLinks(request, env, { type: 'folder', id: pending[1] });
   const links = LINKS.exec(pathname);
   if (links) return handleLinks(request, env, { type: 'folder', id: links[1] }, links[2] ?? null);
   return Promise.resolve(json({ error: 'not-found' }, 404));

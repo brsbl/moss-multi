@@ -1,5 +1,5 @@
 // T2.4s, the security follow-up to full sharing: (a) a share by email does the same database work and answers alike
-// whether or not the email has an account, so neither timing nor the owner's member list says which; (b) a granted
+// whether or not the email has an account (T2.8: it looks no account up at all; invite-oracle.test.ts), so neither timing nor the owner's member list says which; (b) a granted
 // owner (a co-owner) can neither lower, remove nor replace the vault's owner, and owner access never comes from a
 // share link or an agent key; (c) concurrent shares of one person settle on the highest role, in one invite and one
 // grant row.
@@ -8,6 +8,7 @@ import { migratedD1, type TestD1 } from '../test/d1.ts';
 import {
   agentKey, BASE, insertAgent, insertDoc, insertFolder, insertGrant, insertLink, SECRET, signedUpUser, type AuthTestEnv, type TestUser,
 } from '../test/principals.ts';
+import { redeem } from '../test/invites.ts';
 import { handleApi } from './router.ts';
 
 const DocDO = {
@@ -86,7 +87,7 @@ describe('(a) no account enumeration beyond the rate limit', () => {
       expect(b.body, role).toBe(a.body);
       expect(b.log, `${role}: the statements an unknown email runs`).toEqual(a.log);
     }
-    expect(await roleOf({ cookie: ben.cookie }, known), 'the known account is granted all the same').toBe('editor');
+    expect(await roleOf({ cookie: ben.cookie }, known), 'an account is granted nothing until it redeems its invite (T2.8)').toBeNull();
   });
 
   it("shows the owner the same member list after sharing with a known or an unknown email", async () => {
@@ -199,7 +200,8 @@ describe('(c) grant raises are atomic', () => {
       const rows = await d1.db.prepare(`SELECT
           (SELECT group_concat(role) FROM invites WHERE target_id = ?1 AND accepted_at IS NULL) AS invites,
           (SELECT group_concat(role) FROM doc_members WHERE doc_id = ?1) AS grants`).bind(docId).first();
-      expect(rows, `round ${round}`).toEqual({ invites: 'owner', grants: 'owner' });
+      expect(rows, `round ${round}: one open invite, and no grant before it is redeemed`).toEqual({ invites: 'owner', grants: null });
+      await redeem(env, owner, `/api/docs/${docId}`, cy);
       expect(await roleOf({ cookie: cy.cookie }, docId)).toBe('owner');
     }
   }, 60_000);
@@ -209,14 +211,16 @@ describe('(c) grant raises are atomic', () => {
     for (let round = 0; round < 4; round += 1) {
       const docId = await insertDoc(d1.db, owner);
       expect((await call('POST', `/api/docs/${docId}/members`, owner.cookie, { email: cy.email, role: 'commenter' })).status).toBe(201);
-      await roleOf({ cookie: cy.cookie }, docId); // Cy opens it, so the share is no longer pending.
+      await redeem(env, owner, `/api/docs/${docId}`, cy); // Cy redeems it, so she is a member.
       const statuses = await Promise.all(['viewer', 'editor', 'viewer', 'commenter'].map((role) =>
         call('POST', `/api/docs/${docId}/members`, owner.cookie, { email: cy.email, role }).then((r) => r.status)));
-      // A lowering is refused; the repeat at commenter is refused only if the raise landed first.
-      expect([statuses[0], statuses[1], statuses[2]], `round ${round}`).toEqual([409, 200, 409]);
-      expect([200, 409], `round ${round}`).toContain(statuses[3]);
+      for (const status of statuses) expect([200, 201, 409], `round ${round}`).toContain(status);
+      expect(statuses[1], `round ${round}: the editor share is taken`).toBeLessThan(300);
       const grants = await d1.db.prepare('SELECT role FROM doc_members WHERE doc_id = ?1').bind(docId).all();
-      expect(grants.results, `round ${round}`).toEqual([{ role: 'editor' }]);
+      expect(grants.results, `round ${round}: shares never touch a grant`).toEqual([{ role: 'commenter' }]);
+      await redeem(env, owner, `/api/docs/${docId}`, cy);
+      const raised = await d1.db.prepare('SELECT role FROM doc_members WHERE doc_id = ?1').bind(docId).all();
+      expect(raised.results, `round ${round}: the open invite settled on the highest`).toEqual([{ role: 'editor' }]);
     }
   }, 60_000);
 });

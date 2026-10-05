@@ -11,6 +11,7 @@ import {
   APP_STATE_ATTR, BODY_BINDING_ATTR, CONNECTION_BANNER_ATTR, EDITOR_PANE_ATTR, ROLE_ATTR, SIDEBAR_ROW_ATTR, SYNC_UNACKED_ATTR,
   TERMINAL_REASON_ATTR, NAMES,
 } from '../lib/contract.ts';
+import { acceptInvite } from '../lib/grants.ts';
 import type { Principal } from '../lib/principals.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
@@ -64,7 +65,8 @@ async function grantVault(owner: Actor, member: Principal, role: 'viewer' | 'edi
   const response = await owner.context.request.post(`${origin}/api/folders/${vault.id}/members`, {
     headers: { origin, 'content-type': 'application/json' }, data: { email: member.email, role }, timeout: 15_000,
   });
-  expect(response.status(), `declared setup: ${member.label} is a vault ${role}`).toBe(201);
+  expect(response.status(), `declared setup: ${member.label} is invited to the vault at ${role}`).toBe(201);
+  await acceptInvite(owner, { folderId: vault.id }, member);
   return vault.id;
 }
 
@@ -215,7 +217,8 @@ test("j06-folders: a folder shared into an editor's own Home offers no move of i
   expect(made.status(), 'declared setup: the folder').toBe(201);
   const folderId = ((await made.json()) as { folder: { id: string } }).folder.id;
   expect((await post(ada, `/api/folders/${folderId}/members`, { email: benPrincipal.email, role: 'editor' })).status(),
-    'declared setup: Ben edits the folder').toBe(201);
+    'declared setup: Ben is invited to edit the folder').toBe(201);
+  await acceptInvite(ada, { folderId }, benPrincipal);
   const shared = await post(ada, '/api/docs', { folderId, title: 'Plan A' });
   expect(shared.status(), "declared setup: Ada's note").toBe(201);
   const sharedId = ((await shared.json()) as { doc: { id: string } }).doc.id;

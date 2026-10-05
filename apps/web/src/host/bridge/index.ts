@@ -9,6 +9,7 @@ import {
 } from '@moss-desktop/renderer/editor/utils/note-link-clipboard';
 import { displayTitle, liveTitle, writeLiveTitle } from '../collab/title-binding.ts';
 import { askDocAccess, rememberRole } from '../access.ts';
+import { registerDocOpener } from '../navigation.ts';
 import type { TrashGuard } from '../trash-guard.ts';
 
 /** moss's NoteMetadataRecord: timestamps in seconds, folders as `Notes/...` paths. */
@@ -605,14 +606,19 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
       exportPdf: unavailable('Exporting a PDF file'),
       exportMarkdown: async () => ({ canceled: true }),
       onExternalFileOpen: silent,
-      onInternalFileOpen: (callback?: Listener<[string]>) =>
-        browser.onPopState(() => {
+      onInternalFileOpen: (callback?: Listener<[string]>) => {
+        const open = (id: string) => {
+          void refreshForNavigation(id);
+          callback?.(id);
+        };
+        const offPop = browser.onPopState(() => {
           const id = docIdFromPath(pathname());
-          if (id && callback) {
-            void refreshForNavigation(id);
-            callback(id);
-          }
-        }),
+          if (id && callback) open(id);
+        });
+        // The bell's notices open a note through moss's own switch (navigation.ts, A§9).
+        const offOpen = callback ? registerDocOpener(open) : noop;
+        return () => { offPop(); offOpen(); };
+      },
       onDiskChange: (callback?: Listener<[string[], string[]]>) => {
         if (callback) diskListeners.add(callback);
         if (!stopWorkspace && diskListeners.size && subscribe) stopWorkspace = subscribe(receiveWorkspace, pauseWorkspace);
@@ -834,7 +840,7 @@ function leavingSignal(): () => Leave {
 }
 
 /** Installs the bridge on `window` before App's module evaluates (A§4.3). */
-export function installBridge(authStore: import('../auth-state.ts').AuthStore, trashGuard?: TrashGuard): Bridge {
+export function installBridge(authStore: import('../auth-state.ts').AuthStore, trashGuard?: TrashGuard, onWorkspaceEvent?: (event: WorkspaceEvent) => void): Bridge {
   const bridge = createBridge({ pathname: () => window.location.pathname, storage: localStorageOrNull(), browser: windowBrowser(), trashGuard,
     share: () => new URLSearchParams(window.location.search).get('share'),
     leaving: leavingSignal(),
@@ -849,7 +855,10 @@ export function installBridge(authStore: import('../auth-state.ts').AuthStore, t
         window.addEventListener('online', visible);
         return () => { document.removeEventListener('visibilitychange', visible); window.removeEventListener('online', visible); };
       },
-    }, receive),
+    }, (event) => {
+      receive(event);
+      onWorkspaceEvent?.(event);
+    }),
   });
   installedBridge = bridge;
   (window as unknown as { electronAPI: Bridge }).electronAPI = bridge;

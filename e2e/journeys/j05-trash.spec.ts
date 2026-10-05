@@ -12,7 +12,7 @@ import {
   APP_STATE_ATTR, BODY_BINDING_ATTR, CONNECTION_BANNER_ATTR, DOC_STATE_ATTR, EDITOR_PANE_ATTR, INPUT_REFUSAL_ATTR, NAMES, SIDEBAR_ROW_ATTR,
   SYNC_UNACKED_ATTR, TERMINAL_REASON_ATTR, TITLE_BINDING_ATTR, TRASH_ROW_ATTR, paneSelector,
 } from '../lib/contract.ts';
-import { grantDoc } from '../lib/grants.ts';
+import { acceptInvite, grantDoc } from '../lib/grants.ts';
 import type { Principal } from '../lib/principals.ts';
 import { expect, test, ui } from '../lib/test.ts';
 import { TRASH_COPY } from '../../packages/protocol/src/retention.ts';
@@ -362,6 +362,7 @@ test('j05-trash: a restore the server refuses shows the server’s sentence, and
   expect(made.status(), 'declared setup: the folder').toBe(201);
   const folderId = ((await made.json()) as { folder: { id: string } }).folder.id;
   expect((await send('post', `/api/folders/${folderId}/members`, { email: benPrincipal.email, role: 'owner' })).status()).toBe(201);
+  await acceptInvite(ada, { folderId }, benPrincipal);
   const note = await send('post', '/api/docs', { folderId, title: 'Folder plan' });
   expect(note.status(), 'declared setup: the note').toBe(201);
   const docId = ((await note.json()) as { doc: { id: string } }).doc.id;

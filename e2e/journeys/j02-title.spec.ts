@@ -930,7 +930,7 @@ test('j02-title: REST renames past 60 a minute get 429 and never reach the doc, 
   const { doc: { id: docId } } = await created.json() as { doc: { id: string } };
   const benPrincipal = await actors.principal('ben');
   const ben = await actors.session(benPrincipal);
-  expect((await ada.context.request.post(`/api/docs/${docId}/members`, { headers, data: { email: benPrincipal.email, role: 'editor' } })).status()).toBe(201);
+  await grantDoc(ada, docId, benPrincipal);
   await actors.requireDistinct(2);
 
   const rename = (actor: Actor, title: string) => actor.context.request.patch(`/api/docs/${docId}`, { headers, data: { title }, timeout: 15_000 });

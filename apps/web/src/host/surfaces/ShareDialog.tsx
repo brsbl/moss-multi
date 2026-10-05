@@ -10,7 +10,7 @@ import { Button } from '@moss/shared/components/ui/button';
 import { Input } from '@moss/shared/components/ui/input';
 import { LINK_ROLES, SHARE_ROLES, type LinkRole, type Role, type ShareRole } from '@moss-multi/protocol/roles';
 import { UserPlus } from 'lucide-react';
-import { useCallback, useEffect, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react';
 import { useDocRole } from '../access.ts';
 
 export type ShareTarget =
@@ -38,6 +38,8 @@ interface Member {
 interface PendingInvite {
   email: string;
   role: Role;
+  /** The copyable /invite link (T2.8); invites are copy-link only, and no email is sent. */
+  url?: string;
 }
 
 interface ShareLink {
@@ -128,19 +130,24 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
   const base = apiBase(target);
   const { title, description } = titles(target);
 
+  // Reads overlap when shares follow each other quickly; only the newest may paint, or an older read would drop a row.
+  const reads = useRef(0);
   const load = useCallback(async () => {
+    const read = ++reads.current;
     try {
-      const [people, live] = await Promise.all([
+      const [people, live, pendingLinks] = await Promise.all([
         call<{ members: Member[]; invites?: PendingInvite[] }>(`${base}/members`),
         call<{ links: ShareLink[] }>(`${base}/links`),
+        call<{ invites: PendingInvite[] }>(`${base}/invites`),
       ]);
-      if (!people.ok || !people.body || !live.ok || !live.body) throw new Error(String(people.status));
+      if (read !== reads.current) return;
+      if (!people.ok || !people.body || !live.ok || !live.body || !pendingLinks.ok || !pendingLinks.body) throw new Error(String(people.status));
       setMembers(people.body.members);
-      setInvites(people.body.invites ?? []);
+      setInvites(pendingLinks.body.invites);
       setLinks(live.body.links);
       setLoadError(null);
     } catch {
-      setLoadError('Couldn’t load who has access. Close and open Share to try again.');
+      if (read === reads.current) setLoadError('Couldn’t load who has access. Close and open Share to try again.');
     }
   }, [base]);
 
@@ -216,6 +223,17 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
     }, false);
   }
 
+  function copyInvite(invite: PendingInvite): void {
+    void run('people', async () => {
+      try {
+        await copy(invite.url ?? '');
+      } catch {
+        throw new Error('Couldn’t copy. Select the invite link and copy it instead.');
+      }
+      return `Copied the invite link for ${invite.email}. It works only when they sign in with that email.`;
+    }, false);
+  }
+
   return (
     <ModalShell open={open} onOpenChange={onOpenChange} title={title} description={description}>
       <div className="space-y-2">
@@ -261,16 +279,37 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
                 </li>
               ))}
               {invites.map((invite) => (
-                <li key={`invite:${invite.email}`} className="flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="truncate font-mono text-xs text-ink-muted">{invite.email}</p>
-                    <p className="text-micro text-ink-faint">Invited</p>
+                <li key={`invite:${invite.email}`} className="space-y-1.5">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="truncate font-mono text-xs text-ink-muted">{invite.email}</p>
+                      <p className="text-micro text-ink-faint">Invited</p>
+                    </div>
+                    <span className="shrink-0 text-xs text-ink-faint">{ACCESS_LABEL[invite.role]}</span>
                   </div>
-                  <span className="shrink-0 text-xs text-ink-faint">{ACCESS_LABEL[invite.role]}</span>
+                  {invite.url ? (
+                    <div className="flex items-center gap-2">
+                      <Input
+                        readOnly
+                        aria-label={`Invite link for ${invite.email}`}
+                        value={invite.url}
+                        onFocus={(event) => event.currentTarget.select()}
+                        className="h-7 min-w-0 flex-1 border-border-default font-mono text-xs"
+                      />
+                      <Button type="button" size="sm" variant="ghost" disabled={pending} onClick={() => copyInvite(invite)}>
+                        Copy
+                      </Button>
+                    </div>
+                  ) : null}
                 </li>
               ))}
             </ul>
           )}
+          {invites.length > 0 ? (
+            <p className="mt-3 text-xs text-ink-muted">
+              An invite link works only for someone signed in with the email it names. Copy it and send it to them.
+            </p>
+          ) : null}
         </div>
       </div>
       <div className="space-y-2">

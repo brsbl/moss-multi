@@ -1,5 +1,6 @@
 // j08-share (T2.4): sharing a vault, a folder or a note, with a person at a role or with a revocable link. Ada shares
-// a folder from its context menu and her vault from the switcher, and Ben finds both without a URL. A viewer link
+// a folder from its context menu and her vault from the switcher, and Ben finds each through the invite link she
+// hands him (an invite binds to the email, never to an account, until its holder redeems it; T2.8). A viewer link
 // opened signed out reads at viewer and offers "Sign in to do more", which comes back to the same note. An editor
 // link is viewer signed out, editor signed in, and the max of link and grant with a grant. Revoked, forged and
 // inaccessible links all get the same 404 and the same denial page, an email shared with nobody's account answers
@@ -8,6 +9,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import type { Locator } from '@playwright/test';
 import type { Actor, Actors } from '../lib/actors.ts';
 import { APP_STATE_ATTR, BODY_BINDING_ATTR, DOC_STATE_ATTR, EDITOR_PANE_ATTR, ROLE_ATTR, SYNC_UNACKED_ATTR, paneSelector } from '../lib/contract.ts';
+import { acceptInvite } from '../lib/grants.ts';
 import type { Principal } from '../lib/principals.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
@@ -102,15 +104,21 @@ test('j08 folder: Ada shares a folder from its context menu and it reaches Ben\'
   await expect(dialog, 'the folder share dialog opens').toBeVisible();
   await expect(dialog).toContainText(name);
   await ui.shareInDialog(dialog, benPrincipal.email, 'Can view');
-  await expect(ui.inviteRow(dialog, benPrincipal.email), 'Ben waits at view, by email, until he opens it').toContainText('Can view');
+  await expect(ui.inviteRow(dialog, benPrincipal.email), 'Ben waits at view, by email, until he redeems it').toContainText('Can view');
   await expect(ui.inviteRow(dialog, benPrincipal.email)).toContainText('Invited');
+  const invite = await ui.inviteLink(dialog, benPrincipal.email);
   await actors.checkpoint('folder-shared');
   await ada.page.keyboard.press('Escape');
   await expect(dialog).toBeHidden();
 
-  await expect(benFolder, 'the folder reaches Ben without a reload').toBeVisible({ timeout: LIVE_TIMEOUT });
-  await benFolder.click();
+  // Ben follows the invite link Ada hands him, signed in as the email it was sent to, and lands on the folder.
+  await ben.goto(pathOf(invite));
+  await expect(ben.page, 'the invite leads to the folder').toHaveURL(new RegExp(`/f/${folderId}$`), { timeout: 30_000 });
+  await ben.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
+  await expect(benFolder, 'the folder is in Ben\'s sidebar').toBeVisible({ timeout: LIVE_TIMEOUT });
   const row = ben.page.locator(`[data-sidebar-row][data-doc-id="${docId}"]`);
+  // The landing reveals the folder; expand it if it is not open yet.
+  if (!(await row.waitFor({ state: 'visible', timeout: 3_000 }).then(() => true, () => false))) await benFolder.click();
   await expect(row, 'its note is inside').toBeVisible();
   await row.click();
   await waitOpen(ben, docId, 'readonly');
@@ -150,8 +158,13 @@ test('j08 vault: Ada shares her vault from the switcher and Ben switches to it @
   await expect(dialog, 'the vault share dialog opens').toBeVisible();
   await ui.shareInDialog(dialog, benPrincipal.email, 'Can edit');
   await expect(ui.inviteRow(dialog, benPrincipal.email)).toContainText('Can edit');
+  const invite = await ui.inviteLink(dialog, benPrincipal.email);
   await ada.page.keyboard.press('Escape');
   await expect(dialog).toBeHidden();
+  const { vault } = (await (await ada.context.request.get('/api/workspace')).json()) as { vault: { id: string } };
+  await ben.goto(pathOf(invite));
+  await expect(ben.page, 'the invite leads to the vault').toHaveURL(new RegExp(`/f/${vault.id}$`), { timeout: 30_000 });
+  await ben.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
 
   await ben.page.getByRole('button', { name: 'Vault: Home', exact: true }).click();
   const shared = ben.page.getByRole('menuitem', { name: 'Home editor', exact: true });
@@ -217,6 +230,7 @@ test('j08 link: an editor link is viewer signed out, editor signed in without a 
   await ui.shareInDialog(dialog, cyPrincipal.email, 'Owner');
   await expect(ui.inviteRow(dialog, cyPrincipal.email), 'Cy is invited as a co-owner').toContainText('Owner');
   await ada.page.keyboard.press('Escape');
+  await acceptInvite(ada, { docId }, cyPrincipal);
 
   const stranger = await actors.anonymous(pathOf(url), { label: 'stranger' });
   await waitOpen(stranger, docId, 'readonly');
@@ -252,6 +266,7 @@ test('j08 link: an editor folder link lifts a viewer grant to editor, and lands 
   const benPrincipal = await actors.principal('ben');
   const shared = await ada.context.request.post(`/api/folders/${folderId}/members`, { headers, data: { email: benPrincipal.email, role: 'viewer' } });
   expect(shared.status(), 'declared setup: Ben at view').toBe(201);
+  await acceptInvite(ada, { folderId }, benPrincipal);
   const linked = await ada.context.request.post(`/api/folders/${folderId}/links`, { headers, data: { role: 'editor' } });
   expect(linked.status(), 'declared setup: an editor link').toBe(201);
   const { token } = ((await linked.json()) as { link: { token: string } }).link;
@@ -344,18 +359,20 @@ test('j08 privacy: an email with no account answers like one with an account, an
   expect(answers[0].status).toBe(201);
   expect(answers[1].status, 'an unknown email gets the same status').toBe(answers[0].status);
   expect(answers[1].body, 'and the same body, but for the email').toEqual(JSON.parse(JSON.stringify(answers[0].body).replaceAll(benPrincipal.email, ghost.email)));
-  // Until Ben opens the note, an email with an account and one without look the same to the owner.
+  // Until Ben redeems his invite, an email with an account and one without look the same to the owner.
   for (const email of [benPrincipal.email, ghost.email]) {
     await expect(ui.inviteRow(dialog, email), `${email} waits as a pending invite`).toContainText('Invited');
     await expect(ui.inviteRow(dialog, email)).toContainText('Can edit');
   }
-  await expect(ui.accessRow(dialog, benPrincipal), "Ben's name is not shown before he opens it").toHaveCount(0);
+  await expect(ui.accessRow(dialog, benPrincipal), "Ben's name is not shown before he redeems it").toHaveCount(0);
+  const invite = await ui.inviteLink(dialog, benPrincipal.email);
   await ada.page.keyboard.press('Escape');
   const linkDialog = await ui.openShare(ada, docId);
   const url = await createLink(linkDialog, 'Can view');
   await ada.page.keyboard.press('Escape');
 
-  const ben = await actors.open(benPrincipal, { path: `/d/${docId}` });
+  const ben = await actors.open(benPrincipal, { path: pathOf(invite) });
+  await expect(ben.page, 'the invite leads to the note').toHaveURL(new RegExp(`/d/${docId}$`), { timeout: 30_000 });
   await waitOpen(ben, docId, 'live');
   const asMember = await ben.context.request.get(`/api/docs/${docId}/members`);
   expect(asMember.status()).toBe(200);
@@ -365,7 +382,7 @@ test('j08 privacy: an email with no account answers like one with an account, an
   expect((await ben.context.request.post(`/api/docs/${docId}/links`, { headers: { origin: stack.baseUrl }, data: { role: 'viewer' } })).status()).toBe(403);
   await expect(ui.pane(ben, docId).getByRole('button', { name: 'Share', exact: true })).toHaveCount(0);
   const reopened = await ui.openShare(ada, docId);
-  await expect(ui.accessRow(reopened, benPrincipal), 'opened, Ben is listed by name').toContainText(benPrincipal.email);
+  await expect(ui.accessRow(reopened, benPrincipal), 'redeemed, Ben is listed by name').toContainText(benPrincipal.email);
   await expect(ui.inviteRow(reopened, ghost.email)).toContainText('Invited');
   await ada.page.keyboard.press('Escape');
 
