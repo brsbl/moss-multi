@@ -2,10 +2,19 @@
 // note on, with moss's comment UI. Each editor has its own Jotai store. The surface below is what the session
 // (session.ts) drives: it loads a note's layers into moss, and on each save hands back what moss's renderer would
 // send (`buildMarkdownForSave`, the pruned comment metadata, the layout widths), read straight from the editor.
-import { StrictMode, useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { StrictMode, useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode, type SyntheticEvent } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Provider, createStore } from 'jotai';
-import { $addUpdateTag, $getRoot, $getSelection, $setSelection, SKIP_DOM_SELECTION_TAG, SKIP_SCROLL_INTO_VIEW_TAG, type LexicalEditor } from 'lexical';
+import {
+  $addUpdateTag,
+  $getRoot,
+  $getSelection,
+  $setSelection,
+  CLEAR_HISTORY_COMMAND,
+  SKIP_DOM_SELECTION_TAG,
+  SKIP_SCROLL_INTO_VIEW_TAG,
+  type LexicalEditor,
+} from 'lexical';
 import { $convertFromMarkdownString, $convertToMarkdownString } from '@lexical/markdown';
 import {
   $collectTabGroupLayoutMetadata,
@@ -169,6 +178,8 @@ class FrameSurface implements SessionSurface {
         },
         { tag: 'agent-content-update' },
       );
+      // As desktop's applyDiskUpdate (clearHistory: true): Undo must not bring back the text the disk replaced.
+      editor.dispatchCommand(CLEAR_HISTORY_COMMAND, undefined);
       release();
       // Lexical places the DOM selection only while editable, so the caret comes back in setEditable(true).
       this.restore = selection ? { selection, focused } : null;
@@ -259,7 +270,14 @@ class FrameSurface implements SessionSurface {
     return Boolean(root && document.activeElement && root.contains(document.activeElement));
   }
 
+  /** The element in this editor's React tree, portals included, that last took focus. */
+  focusTarget: HTMLElement | null = null;
+
   freeze(frozen: boolean): void {
+    // inert covers the root; moss's popovers (the comment composer, replies, menus) portal into document.body, so
+    // the pane also swallows their input (EditorPane), and whatever of it holds focus lets go.
+    const active = document.activeElement;
+    if (frozen && active instanceof HTMLElement && (active === this.focusTarget || this.host.contains(active))) active.blur();
     this.set({ frozen });
   }
 
@@ -439,8 +457,43 @@ function EditorPane({ surface, session, noteId, onNavigateToNote }: {
   );
   const focusBody = () => surface.editor?.focus();
   const { content, view } = state;
+  // React events bubble through portals, so these capture handlers see input in moss's portalled popovers too.
+  const swallow = (event: SyntheticEvent) => {
+    if (!surface.getState().frozen) return;
+    event.preventDefault();
+    event.stopPropagation();
+  };
   return (
-    <div className="relative flex h-full min-w-0 flex-1 flex-col bg-surface-canvas" data-moss-editor-root="" inert={state.frozen}>
+    <div
+      className="relative flex h-full min-w-0 flex-1 flex-col bg-surface-canvas"
+      data-moss-editor-root=""
+      inert={state.frozen}
+      onFocusCapture={(event) => {
+        if (surface.getState().frozen) {
+          (event.target as HTMLElement).blur?.();
+          return;
+        }
+        surface.focusTarget = event.target as HTMLElement;
+      }}
+      onKeyDownCapture={swallow}
+      onKeyPressCapture={swallow}
+      onKeyUpCapture={swallow}
+      onBeforeInputCapture={swallow}
+      onInputCapture={swallow}
+      onCompositionStartCapture={swallow}
+      onPasteCapture={swallow}
+      onCutCapture={swallow}
+      onDropCapture={swallow}
+      onPointerDownCapture={swallow}
+      onMouseDownCapture={swallow}
+      onPointerUpCapture={swallow}
+      onMouseUpCapture={swallow}
+      onClickCapture={swallow}
+      onDoubleClickCapture={swallow}
+      onContextMenuCapture={swallow}
+      onTouchStartCapture={swallow}
+      onSubmitCapture={swallow}
+    >
       <CanvasArea className="relative min-w-0 flex-1" responsiveLayout innerClassName="flex w-full flex-col gap-1" contentClassName="mx-auto max-w-canvas-blocks" scrollContainerRef={scrollerRef}>
         <Banner view={view} session={session} />
         {view.status === 'notLoaded' ? (

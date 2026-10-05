@@ -249,6 +249,8 @@ export class EditorSession {
           this.intentsOverride = draft.intents;
           this.forceWrite = true;
           status = 'dirty';
+          // The live comments carry the receipt's colors, which the save takes over the disk's.
+          content = { ...content, commentColors: draft.intents.commentColors };
         }
       } else {
         content = editorContentOfFiles(draft.files, draft.intents.commentColors, result.read.metaTitle);
@@ -596,7 +598,7 @@ export class EditorSession {
   }
 
   private remove(reason: 'notFound' | MossNotEditableReason): void {
-    if (this.status === 'removed') return;
+    if (this.status === 'removed' || this.status === 'unmounted') return;
     this.clearIdle();
     this.removedReason = reason;
     const hadUnsavedEdits = this.dirty;
@@ -654,6 +656,8 @@ export class EditorSession {
   }
 
   private async applyRead(fresh: NoteRead, cause: 'external' | 'host' | 'conflict', overwrittenSave: MossDraft | null): Promise<void> {
+    // A read that finishes after teardown changes nothing.
+    if (this.status === 'unmounted') return;
     this.read = fresh;
     this.draftBase = null;
     this.location = fresh.disk.location;
@@ -666,6 +670,7 @@ export class EditorSession {
     this.clearIdle();
     this.overwrittenDraft = overwrittenSave;
     await this.loadInPlace(editorContentOfRead(fresh));
+    if ((this.status as MossEditorStatus) === 'unmounted') return;
     // The editor's own change listener may have counted the load as an edit; nothing else could, as it was read-only.
     this.savedRevision = this.revision;
     this.setStatus('clean');
@@ -691,9 +696,10 @@ export class EditorSession {
       return;
     }
     const fresh = await this.tryRead();
-    if (!fresh) return;
+    if (!fresh || (this.status as MossEditorStatus) !== 'conflict') return;
     if (choice === 'reload') {
       await this.applyRead(fresh, 'conflict', null);
+      if ((this.status as MossEditorStatus) === 'unmounted') return;
       this.emit({ kind: 'conflictResolved', noteId: this.noteId, status: 'clean', resolution: 'reloaded' });
       return;
     }
@@ -808,8 +814,10 @@ export class EditorSession {
         if (!(await this.superseded(base))) read = fresh.read;
         else if (attempt >= 3) return { kind: 'error', error: new Error('the note kept changing while it was read') };
       }
+      if (this.status === 'unmounted') return { kind: 'error', error: editorError('unmounted', 'the editor was unmounted while the note was read') };
       const wasConflict = this.status === 'conflict';
       await this.applyRead(read, 'host', null);
+      if ((this.status as MossEditorStatus) === 'unmounted') return { kind: 'error', error: editorError('unmounted', 'the editor was unmounted while the note loaded') };
       if (wasConflict) this.emit({ kind: 'conflictResolved', noteId: this.noteId, status: 'clean', resolution: 'reloaded' });
       return { kind: 'reloaded', version: read.disk.version };
     } catch (error) {
