@@ -409,7 +409,14 @@ describe('T5.1 copy-back, reconnect and undelete @p:mean-2 @p:tech-7 @p:R17', ()
       for (const link of [first, second]) expect(link.replies.filter((reply) => reply.t === 'suggest-refused')).toEqual([]);
       expect(refusalsOf(a.events)).toEqual([]);
       expect(refusalsOf(b.events)).toEqual([]);
-      expect(exported(b.fork.doc)).toContain('Two.');
+      const diag = JSON.stringify({
+        a: exported(a.fork.doc).slice(0, 120),
+        b: exported(b.fork.doc).slice(0, 120),
+        records: recordIds(live).map((id) => { const r = readRecord(live, id)!; return [id, r.meta.status, r.meta.mergedInto, r.ops.length, r.meta.clients]; }),
+        aRecord: a.fork.record, bRecord: b.fork.record, bEvents: b.events.map((e) => e.type),
+      });
+      expect(exported(a.fork.doc), diag).toContain('Two.');
+      expect(exported(b.fork.doc), diag).toContain('Two.');
       expect(exported(a.fork.doc), 'both windows converge').toBe(exported(b.fork.doc));
     } finally {
       b.dispose();
