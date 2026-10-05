@@ -150,6 +150,7 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
   - **Moss-file compatibility:** a leading `# Title` H1 becomes the title through the A§12 moss-interchange path; legacy `[[Title|note-id]]` links resolve through the injected note lookup; the `layout.json` sidecar applies; `%%m:` comment markers never render.
   - **Tests first:** a read-only acceptance fixture modeled on a real moss note with tabs, tables and tweet embeds (synthetic content, never the owner's own notes); assertions that the mounted viewer opens no socket, sends no write, accepts no input, renders the title once, hides markers, and resolves assets and links only through the injected services. A CI job builds the bundle and screenshots the fixture in Chromium and WebKit.
   - **Done:** the bundle and manifest are CI artifacts, the fixture shots are read, and the consumer thread has the entry API.
+- **T0.13b Viewer HTML previews from moss's cached screenshots** `[B·fresh]`, after T0.13, owner-approved via thr_6fabbskqcf: until T3.8, `packages/viewer` 0.2.0 shows a HTML block's screenshot from moss's cache (`assets/.moss-cache/html-preview/html-preview-<moss hash>.png`, then the legacy `assets/html-preview-<hash>.png`) through `services.assetUrl`, else the unavailable state; nothing runs the HTML, API v1 unchanged; tests first: hash parity with moss at the pin for every cacheVersion branch, and the fixture's cached, legacy and missing blocks in the Chromium and WebKit shots.
 
 **Order:** T0.1 alone (the pilot), then T0.2, then T0.3; lanes open once the pilot's verdicts converge. Then T0.4 ∥ T0.6 ∥ T0.9a, then T0.5a ∥ T0.7 ∥ T0.11, then T0.5b ∥ T0.10 ∥ T0.9b, then T0.8, then T0.13, then the polish task. T0.12 (Origin gate) runs alongside.
 
@@ -253,6 +254,7 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
 - **T2.6 Role-gated affordances** `[B·codex]`
   - **Scope:** one capability helper for every moss menu and control. This includes media decorator headers (hover Delete and other mutating controls) in every read-only view, including the T0.13 viewer. Viewer and commenter are truly read-only, decorator controls included (checkbox, slash, tab add).
   - **Tests first:** j08 legs: menus grow with rank; a viewer's checkbox and slash commands send no frame; an unknown role gets no actions.
+  - **Tests first (T0.13b checker):** hovering an HTML block in the T0.13 viewer shows no Edit, Fullscreen or Delete button (they appear today and do nothing).
   - **Done:** the legs are green.
 - **T2.7 A stranger on a phone (Tier A)** `[C·fresh]`, after T2.4
   - **Scope:** below 640 px the notes panel overlays the canvas, the chrome yields in a set order, Share becomes icon-only with an overflow menu, and the login card, denial page and share landing work at 390 px.
