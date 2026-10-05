@@ -149,6 +149,8 @@ export class EditorSession {
   private unmounted: MossUnmountResult | null = null;
   private abandoned = false;
   private lifecycle: (() => void) | null = null;
+  /** A stale restored draft's own base, kept for every export until the user reloads or overwrites. */
+  private draftBase: Pick<MossDraft, 'baseVersion' | 'companions'> | null = null;
 
   constructor(options: SessionOptions) {
     this.noteId = options.noteId;
@@ -254,6 +256,7 @@ export class EditorSession {
         } else {
           status = 'conflict';
           this.conflict = { cause: 'external', preserved: [] };
+          this.draftBase = { baseVersion: draft.baseVersion, companions: draft.companions };
         }
         this.revision += 1;
       }
@@ -642,6 +645,7 @@ export class EditorSession {
 
   private async applyRead(fresh: NoteRead, cause: 'external' | 'host' | 'conflict', overwrittenSave: MossDraft | null): Promise<void> {
     this.read = fresh;
+    this.draftBase = null;
     this.location = fresh.disk.location;
     this.intentsOverride = null;
     this.forceWrite = false;
@@ -685,6 +689,7 @@ export class EditorSession {
     }
     // Overwrite: the local version, saved on top of what is on disk now.
     this.read = fresh;
+    this.draftBase = null;
     this.location = fresh.disk.location;
     this.conflict = null;
     this.setStatus('saving');
@@ -724,7 +729,8 @@ export class EditorSession {
       if (plan.kind === 'write') files = { markdown: plan.files.markdown, comments: plan.files.comments, layout: plan.files.layout };
       intents = snapshot.intents;
     }
-    return { noteId: this.noteId, baseVersion: read.disk.version, companions: read.companions, files, intents, at: Date.now() };
+    const base = this.draftBase ?? { baseVersion: read.disk.version, companions: read.companions };
+    return { noteId: this.noteId, baseVersion: base.baseVersion, companions: base.companions, files, intents, at: Date.now() };
   }
 
   private failureResult(): MossFlushFailure {
