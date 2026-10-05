@@ -293,7 +293,7 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
                     aria-label={`${ACCESS_LABEL[link.role]} link`}
                     value={linkUrl(target, link.token)}
                     onFocus={(event) => event.currentTarget.select()}
-                    className="h-7 min-w-0 flex-1 border-border-default font-mono text-xs"
+                    className="h-7 min-w-0 flex-1 basis-40 border-border-default font-mono text-xs"
                   />
                   <Button type="button" size="sm" variant="ghost" disabled={pending} onClick={() => copyLink(link)}>
                     Copy
@@ -348,11 +348,12 @@ export function ShareControl({ docId }: { docId: string }): ReactNode {
       type="button"
       data-collab-chrome=""
       aria-haspopup="dialog"
+      aria-label="Share"
       onClick={() => openShare({ type: 'doc', id: docId })}
       className="flex h-7 shrink-0 cursor-pointer items-center gap-1.5 rounded px-2 text-xs font-medium text-ink-faint transition-colors hover:bg-surface-note-hover/40 hover:text-ink-muted focus-visible:outline-none"
     >
       <UserPlus aria-hidden className="h-3.5 w-3.5" />
-      Share
+      <span className="hidden sm:inline">Share</span>
     </button>
   );
 }

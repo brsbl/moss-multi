@@ -4486,7 +4486,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
       >
       <div className="relative flex h-8 min-w-0 items-center justify-between">
       {/* Left: traffic light clearance + panel toggle + nav */}
-      {isNotesPanelHidden && paneId !== 'right' && <div className="w-[60px] shrink-0" />}
+      {isNotesPanelHidden && paneId !== 'right' && <div className="hidden w-[60px] shrink-0 sm:block" /* moss-multi seam: phone-shell (T2.7): no traffic lights to clear */ />}
       <div className="flex shrink-0 items-center gap-1" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
         {isNotesPanelHidden && paneId !== 'right' && onExpandNotesPanel ? (
           <>
@@ -4610,7 +4610,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
                 <button
                   type="button"
                   onClick={onOpenSearch}
-                  className="flex h-7 w-7 cursor-pointer items-center justify-center rounded text-ink-faint transition-colors hover:text-ink-muted hover:bg-surface-note-hover/40 focus-visible:outline-none"
+                  className="hidden h-7 w-7 cursor-pointer items-center justify-center rounded text-ink-faint transition-colors hover:text-ink-muted hover:bg-surface-note-hover/40 focus-visible:outline-none sm:flex" // moss-multi seam: phone-shell (T2.7): folds into More actions below 640 px
                   aria-label="Search in note"
                 >
                   <Search aria-hidden className="h-3.5 w-3.5" />
@@ -4630,7 +4630,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
             <div className="mx-0.5 h-5 w-px bg-border-subtle" />
           </>
         ) : null}
-        {!showFocusedSearchBar && <div className="mx-0.5 h-5 w-px bg-border-subtle" />}
+        {!showFocusedSearchBar && <div className="mx-0.5 hidden h-5 w-px bg-border-subtle sm:block" /* moss-multi seam: phone-shell (T2.7) */ />}
         {/* Copy note link */}
         <TooltipProvider>
           <Tooltip>
@@ -4639,7 +4639,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
                 type="button"
                 onMouseDown={preserveEditorSelectionOnMouseDown}
                 onClick={() => { void handleCopyNoteLink(); }}
-                className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-md text-ink-faint transition-colors hover:text-ink-muted hover:bg-surface-note-hover/40 focus-visible:outline-none"
+                className="hidden h-7 w-7 cursor-pointer items-center justify-center rounded-md text-ink-faint transition-colors hover:text-ink-muted hover:bg-surface-note-hover/40 focus-visible:outline-none sm:flex" // moss-multi seam: phone-shell (T2.7): folds into More actions below 640 px
                 aria-label="Copy note link"
               >
                 <Link aria-hidden className="h-3.5 w-3.5" />
@@ -4706,6 +4706,18 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
             </Tooltip>
           </TooltipProvider>
           <DropdownMenuContent align="end" side="bottom" sideOffset={6} className="min-w-0 w-max">
+            {/* moss-multi seam: phone-shell (T2.7): below 640 px, search and copy link live here */}
+            {!showFocusedSearchBar && onOpenSearch ? (
+              <DropdownMenuItem className="gap-2 text-xs sm:hidden" onSelect={onOpenSearch}>
+                <Search aria-hidden className="h-3.5 w-3.5" />
+                Search in note
+              </DropdownMenuItem>
+            ) : null}
+            <DropdownMenuItem className="gap-2 text-xs sm:hidden" onSelect={() => { void handleCopyNoteLink(); }}>
+              <Link aria-hidden className="h-3.5 w-3.5" />
+              Copy note link
+            </DropdownMenuItem>
+            <DropdownMenuSeparator className="sm:hidden" />
             {/* Copy */}
             <DropdownMenuItem className="gap-2 text-xs" onSelect={handleCopyMarkdown}>
               <FileText aria-hidden className="h-3.5 w-3.5" />
@@ -4836,14 +4848,15 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
         </Dialog.Root>
         {canShowActionsPanelToggle ? (
           <>
-            <div className="mx-0.5 h-5 w-px bg-border-subtle" />
+            {/* moss-multi seam: phone-shell (T2.7): ActionsPanelWrapper renders only from md up, so neither does its toggle */}
+            <div className="mx-0.5 hidden h-5 w-px bg-border-subtle md:block" />
             <TooltipProvider>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <button
                     type="button"
                     onClick={onExpandActionsPanel}
-                    className="relative flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded text-ink-faint transition-colors hover:text-ink-muted hover:bg-surface-note-hover/40 focus-visible:outline-none"
+                    className="relative hidden h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded text-ink-faint transition-colors hover:text-ink-muted hover:bg-surface-note-hover/40 focus-visible:outline-none md:flex"
                     aria-label="Show actions panel"
                   >
                     <PanelRight className="h-4 w-4" strokeWidth={1.5} aria-hidden />

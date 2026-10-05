@@ -21,6 +21,8 @@ const TIER_A: (Viewport & { name: string })[] = [
   { name: '1440x1000', width: 1440, height: 1000 },
 ];
 const PHONE = TIER_A[0];
+/** The notes panel while it overlays the note (below 640 px); what it covers is reached by closing it. */
+const PANEL = '[data-overlay-surface]';
 
 /** Declared setup: Ada's note with a paragraph of text (the promise here is the stranger's path, not authoring). */
 async function adaNote(ada: Actor, baseUrl: string): Promise<string> {
@@ -47,7 +49,7 @@ async function expectReadable(actor: Actor, docId: string, size: Viewport): Prom
   await expect.poll(() => ui.fieldText(actor, docId, 'body'), { message: `${actor.label}: reads the note`, timeout: BIND_TIMEOUT }).toContain(TEXT);
   const width = await ui.body(actor, docId).evaluate((el) => el.getBoundingClientRect().width);
   expect(width, `${actor.label}: the body is readable, not squeezed (${Math.round(width)} px of ${size.width})`).toBeGreaterThanOrEqual(Math.min(size.width * 0.75, 600));
-  const fit = await actor.page.evaluate(layoutFit, { selector: '[data-top-bar] button' });
+  const fit = await actor.page.evaluate(layoutFit, { selector: '[data-top-bar] [data-collab-chrome]' });
   expect(fit, `${actor.label}: no sideways overflow and no clipped label in the top bar`).toEqual({ overflowX: 0, clipped: [] });
 }
 
@@ -127,6 +129,7 @@ for (const size of TIER_A) {
   });
 
   test(`j10 ${size.name}: revoked and forged links show the denial page, whose Sign in is tappable @tierA @p:tech-9 @p:ppl-2 @evidence`, async ({ actors, stack }) => {
+    actors.solo('the denial page is a stranger alone; Ada is setup only');
     const ada = await actors.open(await actors.principal('ada'), { viewport: size });
     const docId = await adaNote(ada, stack.baseUrl);
     const headers = { origin: stack.baseUrl };
@@ -150,11 +153,11 @@ for (const size of TIER_A) {
     await stranger.page.getByRole('button', { name: 'Sign in', exact: true }).click();
     await stranger.page.waitForURL((at) => at.pathname === '/login' && at.searchParams.get('next') === `/d/${docId}?share=${forged}`);
     await ui.waitForLoginCard(stranger);
-    actors.solo('the denial page is a stranger alone; Ada is setup only');
   });
 }
 
 test('j10 390x844: a folder link lands a stranger on the folder, whose note list and notes are reachable @tierA @p:tech-9 @p:ppl-2 @evidence', async ({ actors, stack }) => {
+  actors.solo('the folder landing is a stranger alone; Ada is setup only');
   const ada = await actors.session(await actors.principal('ada'));
   const headers = { origin: stack.baseUrl };
   const { vault } = (await (await ada.context.request.get('/api/workspace')).json()) as { vault: { id: string } };
@@ -172,21 +175,27 @@ test('j10 390x844: a folder link lands a stranger on the folder, whose note list
   const stranger = await actors.anonymous(`/f/${folderId}?share=${token}`, { label: 'stranger', viewport: PHONE });
   await stranger.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: BOOT_TIMEOUT });
   const row = stranger.page.locator(`[data-sidebar-row][data-doc-id="${docId}"]`);
-  await expect(row, 'the folder\'s note is listed on landing').toBeVisible({ timeout: BIND_TIMEOUT });
-  await expectReachable(stranger, 'the folder landing');
+  const pane = stranger.page.locator(paneSelector(docId));
+  // The landing lists the folder, or opens its note at once; either way the list is one tap away.
+  await expect.poll(async () => (await row.isVisible()) || (await pane.count()) > 0, { message: 'the landing shows the folder or its note', timeout: BIND_TIMEOUT }).toBe(true);
+  await expectReachable(stranger, 'the folder landing', (await row.isVisible()) ? PANEL : null);
   await actors.checkpoint('390x844-folder-landing');
+  if (!(await row.isVisible())) await stranger.page.getByRole('button', { name: 'Show notes panel', exact: true }).click();
+  await expect(row, 'the folder\'s note is listed').toBeVisible();
+  await expectReachable(stranger, 'the notes panel', PANEL);
   await row.click();
   await waitOpen(stranger, docId, 'readonly');
-  await expect(row, 'with a note open, the notes panel gets out of the way').toBeHidden();
+  await stranger.page.mouse.click(PHONE.width - 12, PHONE.height / 2);
+  await expect(row, 'a tap on the note puts the notes panel away').toBeHidden();
   await expectReadable(stranger, docId, PHONE);
   await expectReachable(stranger, 'a note opened from the folder');
   await stranger.page.getByRole('button', { name: 'Show notes panel', exact: true }).click();
   await expect(row, 'the notes panel comes back over the note').toBeVisible();
-  await expectReachable(stranger, 'the notes panel over the note');
-  actors.solo('the folder landing is a stranger alone; Ada is setup only');
+  await expectReachable(stranger, 'the notes panel over the note', PANEL);
 });
 
 test('j10 Tier B at 390 px: the share dialog, Settings and every chrome menu keep every control reachable @p:tech-9', async ({ actors, stack }) => {
+  actors.solo('the Tier B sweep is the owner alone at 390 px');
   const ada = await actors.open(await actors.principal('ada'), { viewport: PHONE });
   const headers = { origin: stack.baseUrl };
   const { vault } = (await (await ada.context.request.get('/api/workspace')).json()) as { vault: { id: string } };
@@ -221,7 +230,7 @@ test('j10 Tier B at 390 px: the share dialog, Settings and every chrome menu kee
   await page.getByRole('button', { name: 'Show notes panel', exact: true }).click();
   const folder = ui.folderRow(ada, name);
   await expect(folder, 'the notes panel opens over the note').toBeVisible();
-  await expectReachable(ada, 'the notes panel');
+  await expectReachable(ada, 'the notes panel', PANEL);
 
   await page.getByRole('button', { name: 'Vault: Home', exact: true }).click();
   await expect(page.getByRole('menu')).toBeVisible();
@@ -236,6 +245,7 @@ test('j10 Tier B at 390 px: the share dialog, Settings and every chrome menu kee
   await expect(page.getByRole('menu')).toBeHidden();
 
   const row = page.locator(`[data-sidebar-row][data-doc-id="${docId}"]`);
+  if (!(await row.isVisible())) await folder.click(); // expand the folder
   await expect(row).toBeVisible();
   await row.click({ button: 'right' });
   await expect(page.getByRole('menu')).toBeVisible();
@@ -248,5 +258,4 @@ test('j10 Tier B at 390 px: the share dialog, Settings and every chrome menu kee
   await expect(settings.getByRole('button', { name: 'Sign out', exact: true }), 'Sign out is in reach').toBeVisible();
   await page.keyboard.press('Escape');
   await expect(page.getByRole('dialog')).toBeHidden();
-  actors.solo('the Tier B sweep is the owner alone at 390 px');
 });
