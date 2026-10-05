@@ -924,6 +924,12 @@ html[data-moss-comment-ui-open="true"] .editor-block-gap-cursor-line {
   opacity: 0 !important;
 }
 
+/* moss-multi seam: read-only-decorators (T3.8): a read-only body offers no insert-paragraph gaps (DecoratorBlockPlugin
+   ignores them too). */
+[data-moss-note-editor-root][contenteditable="false"] [data-block-gap-cursor] {
+  display: none;
+}
+
 html[data-moss-comment-ui-open="true"] .comment-highlight-active .editor-block-gap-cursor-line {
   opacity: 1 !important;
   background-color: var(--comment-color, theme('colors.accent-brand')) !important;

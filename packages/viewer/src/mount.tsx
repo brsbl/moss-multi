@@ -8,7 +8,9 @@ import { MarkdownEditor } from '@moss-desktop/renderer/editor/MarkdownEditor';
 import { CanvasArea } from '@moss/shared/components/layout/CanvasArea';
 import { noteEntityAtom, noteIdsAtom } from '@moss/shared/state/note-atoms';
 import { browserSplitTargetAtom, mapNoteMetadataToNoteEntity, splitTabNoteIdAtom, webEmbedLightboxTargetAtom } from '@moss/shared/state/atoms';
+import { setEmbedTheme } from '@moss-multi/host/embed-theme.ts';
 import { installViewerElectronApi } from './electron-api.ts';
+import { installViewerHooks } from './hooks.ts';
 import { readMossNote, type MossNoteContent } from './moss-file.ts';
 import { markActive, registerViewer, type ViewerRecord } from './registry.ts';
 import type { MossViewerHandle, MossViewerNote, MossViewerOptions, MossViewerServices, MossViewerTheme } from './types.ts';
@@ -58,6 +60,21 @@ function routeNavigation(store: Store, viewerNoteId: string, ownNoteId: string |
   return () => stops.forEach((stop) => stop());
 }
 
+/**
+ * A viewer never edits a note's HTML: a double-click on a HTML block opens no source. Without a frame document it never
+ * runs the HTML either, so a press does not start moss's live preview.
+ */
+function holdHtmlBlocks(event: Event, live: boolean): void {
+  if (live && event.type === 'click') return;
+  const target = event.target instanceof Element ? event.target : null;
+  const block = target?.closest('[data-block-decorator-key]');
+  // The HTML block's own frame, not a tab group or callout that holds one.
+  if (!block || block.querySelector('[data-moss-html-preview-viewport]')?.closest('[data-block-decorator-key]') !== block) return;
+  // Retry only asks for the cached screenshot again.
+  if (target?.closest('button[aria-label="Retry preview"]')) return;
+  event.stopImmediatePropagation();
+}
+
 function MossViewer({ noteId, note, onReady, onNavigateToNote }: {
   noteId: string;
   note: MossNoteContent;
@@ -96,6 +113,7 @@ function MossViewer({ noteId, note, onReady, onNavigateToNote }: {
 export function mountMossViewer(el: HTMLElement, options: MossViewerOptions): MossViewerHandle {
   const note = readMossNote(options);
   installViewerElectronApi();
+  installViewerHooks();
   const noteId = `moss-viewer-${(sequence += 1)}`;
   const services = options.services ?? {};
   const record: ViewerRecord = { services, notes: [] };
@@ -117,9 +135,17 @@ export function mountMossViewer(el: HTMLElement, options: MossViewerOptions): Mo
   const host = document.createElement('div');
   host.className = 'h-full';
   host.dataset.mossViewer = '';
-  host.dataset.theme = options.theme ?? 'light';
+  const theme = options.theme ?? 'light';
+  host.dataset.theme = theme;
+  // X posts load in the viewer's theme (the embed-theme seam).
+  setEmbedTheme(noteId, theme);
+  const live = Boolean(services.htmlFrameUrl);
+  host.dataset.mossViewerHtml = live ? 'live' : 'screenshot';
   const activate = () => markActive(noteId);
   host.addEventListener('pointerdown', activate, true);
+  // Registered before React's root listeners on this element, so moss's handlers never see a held press.
+  const hold = (event: Event) => holdHtmlBlocks(event, live);
+  for (const type of ['click', 'dblclick']) host.addEventListener(type, hold, true);
   el.append(host);
 
   let settle: (value: void) => void = noop;
@@ -151,12 +177,15 @@ export function mountMossViewer(el: HTMLElement, options: MossViewerOptions): Mo
     ready,
     setTheme(theme: MossViewerTheme) {
       host.dataset.theme = theme;
+      setEmbedTheme(noteId, theme);
     },
     unmount() {
       if (!mounted) return;
       mounted = false;
       root.unmount();
       host.removeEventListener('pointerdown', activate, true);
+      for (const type of ['click', 'dblclick']) host.removeEventListener(type, hold, true);
+      setEmbedTheme(noteId, null);
       host.remove();
       stopNavigation();
       unregister();

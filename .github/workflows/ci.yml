@@ -337,8 +337,8 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-  # The read-only viewer bundle (T0.13): build packages/viewer, keep dist/ (bundle, stylesheet, fonts, viewer.json)
-  # as the moss-viewer artifact, then run its acceptance fixture and shots in both engines (e2e/viewer).
+  # The read-only viewer bundle (T0.13, T3.8): build packages/viewer, run its acceptance fixture and shots in both
+  # engines (e2e/viewer), then pack the release into the moss-viewer artifact.
   viewer:
     needs: plan
     if: needs.plan.outputs.viewer == 'true'
@@ -365,14 +365,17 @@ jobs:
         env:
           MOSS_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       - run: cat packages/viewer/dist/viewer.json
-      - uses: actions/upload-artifact@v7
-        with:
-          name: moss-viewer
-          path: packages/viewer/dist
-          retention-days: 30
       - name: Acceptance fixture and shots, Chromium and WebKit
         working-directory: e2e
         run: pnpm exec playwright test --project=viewer-chromium --project=viewer-webkit
+      # The release artifact (T3.8): the packed tarball, its SHA-256, viewer.json and release.json (source commit).
+      - name: Pack the release
+        run: node scripts/ci/viewer-pack.mjs packages/viewer/release
+      - uses: actions/upload-artifact@v7
+        with:
+          name: moss-viewer
+          path: packages/viewer/release
+          retention-days: 30
       - name: Upload results and shots
         if: always()
         uses: actions/upload-artifact@v7
@@ -483,6 +486,11 @@ jobs:
           node scripts/stack.mjs start --run-id "$RUN_ID" --prebuilt .local-stack/prebuilt/dist
           --expect-commit "${{ needs.build.outputs.commit }}" --expect-bundle "${{ needs.build.outputs.bundleHash }}"
       - run: echo "STACK_STATE=$PWD/.local-stack/runs/$RUN_ID/state.json" >> "$GITHUB_ENV"
+      # The viewer's parity with the editor's read-only view (e2e/parity/viewer.spec.ts) mounts the built bundle.
+      - name: Build the viewer bundle
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          pnpm --filter @moss-multi/viewer build
       - name: Shell parity
         working-directory: e2e
         env:

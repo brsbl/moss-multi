@@ -98,6 +98,15 @@ declare module '@moss-desktop/common/web-embed-preview' {
   }): object;
 }
 
+declare module '@moss-desktop/common/moss-html-runtime' {
+  export const MOSS_HTML_PREVIEW_CACHE_VERSION: string;
+  export function computeMossHtmlPreviewHash(rawHtml: string, options?: { cacheVersion?: string }): string;
+  export function describeMossHtmlPreview(
+    rawHtml: string,
+    options?: { cacheVersion?: string },
+  ): { cacheVersion: string; contentHash: string; filename: string; relativePath: string };
+}
+
 // moss's own asset-url module, which the viewer's substitute wraps (vite.config.ts).
 declare module '@moss-pristine/asset-url' {
   export const REMOTE_URL_PATTERN: RegExp;
