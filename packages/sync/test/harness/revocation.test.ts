@@ -62,7 +62,7 @@ describe('DocDO.recheck @p:ppl-2', () => {
     const woken = await start(wake(opened));
     expect((await connect(woken, { id: 'ben', resolvedAt: resolvedBefore })).closed?.code, 'an upgrade resolved before the demotion').toBe(CLOSE.revoked);
     expect((await connect(woken, { id: 'ben', resolvedAt: Date.now() + 1 })).closed, 'a fresh resolution after it').toBeNull();
-    expect((await connect(woken, { kind: 'anonymous', id: 'anonymous', role: 'viewer', session: null, share: 'tok-1' })).closed?.code).toBe(CLOSE.revoked);
+    expect((await connect(woken, { kind: 'anonymous', id: 'anonymous', role: 'viewer', session: null, share: 'tok-1', resolvedAt: resolvedBefore })).closed?.code).toBe(CLOSE.revoked);
     expect((await connect(woken, { id: 'ada', session: 'sess-a' })).closed?.code).toBe(CLOSE.sessionEnded);
   });
 
