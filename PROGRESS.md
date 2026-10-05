@@ -55,7 +55,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-04 — T2.3 verified: an owner can trash a note (including by dropping it on the sidebar Trash button) and restore it; anyone else with it open goes read-only in place on every surface with no reconnects, a fresh load gets a 404, and the owner can read a trashed note in a read-only Trash view that says it is kept for 30 days.
 - 2026-10-04 — T2.4s verified: sharing by email answers and behaves the same for a known and an unknown address, a co-owner cannot lower, remove or replace the vault owner, owner access never comes from a share link or an agent key, and two simultaneous shares to one person end as one invite at the higher role.
 - 2026-10-04 — T1.F3s verified: renaming a note through the API or creating one with a huge or adversarial title now stays within 20 ms of server CPU, and each identity's REST writes are rate-limited with a 429 that a server restart cannot reset.
-- 2026-10-04 — T1.F1 verified: Cmd+Z never removes a collaborator's characters typed into a paragraph or text node you created, through interleaved typing, splits and merges, reconnects and deletes, and restored text keeps its author and properties, in both engines.
+- 2026-10-04 — T1.F1 verified: Cmd+Z never removes a collaborator's characters typed into a paragraph or text node you created, through interleaved typing, splits and merges, reconnects and deletes, and restored text keeps its author and properties, in both engines; redo after a collaborator typed into a line the undo restored keeps their words (re-verified at 950b435).
 
 ## T1.1s identity audit
 
