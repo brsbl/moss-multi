@@ -282,6 +282,19 @@ async function eachDoc(env: FoldersEnv, docIds: string[], what: string, call: (s
   return failed;
 }
 
+/**
+ * A folder trash that did not commit: its held docs settle open again from D1, and everyone who could open them hears
+ * they changed, so a pane the hold left terminal re-asks REST and reopens without a reload (T2.3s).
+ */
+async function release(env: FoldersEnv, held: string[], batch: string): Promise<void> {
+  await eachDoc(env, held, 'settle', (stub) => stub.settle(batch));
+  try {
+    await notify(env, await collectRecipients(env.DB, { docIds: held }));
+  } catch (error) {
+    console.error('workspace folder notification failed', error);
+  }
+}
+
 async function trashFolder(request: Request, env: FoldersEnv, id: string): Promise<Response> {
   const principal = await signedIn(request, env);
   if (!principal) return unauthenticated();
@@ -307,7 +320,7 @@ async function trashFolder(request: Request, env: FoldersEnv, id: string): Promi
     const unheld = await eachDoc(env, held, 'trash', (stub) => stub.trash(batch));
     const cannot = () => refuse(503, 'unavailable', 'The folder couldn’t be moved to Trash right now. Try again.');
     if (unheld.length > 0) {
-      await eachDoc(env, held, 'settle', (stub) => stub.settle(batch));
+      await release(env, held, batch);
       return cannot();
     }
     const now = Date.now();
@@ -326,12 +339,12 @@ async function trashFolder(request: Request, env: FoldersEnv, id: string): Promi
       ]);
     } catch (error) {
       console.error('folder trash write failed', error);
-      await eachDoc(env, held, 'settle', (stub) => stub.settle(batch));
+      await release(env, held, batch);
       return cannot();
     }
     // The caller stopped managing the folder before the write (a demotion that committed first wins).
     if (!changed(stamped)) {
-      await eachDoc(env, held, 'settle', (stub) => stub.settle(batch));
+      await release(env, held, batch);
       const now = await resolveFolderAccess(db, principal, id);
       return now && !now.deleted ? refuse(403, 'forbidden', 'Only the owner can move this folder to Trash.') : folderNotFound();
     }

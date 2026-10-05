@@ -265,18 +265,19 @@ export class DocDO extends YServer<SyncEnv> {
     const code = connectCode(attachment, {
       revoked: store.revoked,
       deleted,
-      connections: [...this.getConnections()].length,
+      connections: [...this.#all()].length,
       maxConnections: this.#limits.maxConnections,
     });
     if (code !== null || !attachment) {
       connection.close(code ?? CLOSE.noPrincipal, 'refused');
       return;
     }
-    attach(connection, { ...attachment, admittedAt: Date.now() });
+    const check = this.#accessCheck();
+    // Pending until validated: no broadcast reaches it and none of its frames apply before then (A§8).
+    attach(connection, { ...attachment, admittedAt: Date.now(), pending: check !== null });
     this.#register(connection, attachment, store);
     // Admission re-checks once the socket is registered, so a revocation that commits while the Worker resolved the
     // role, or after, is seen here or by the socket's first frame (A§8 pull validation).
-    const check = this.#accessCheck();
     if (check) {
       try {
         await this.#serial(() => this.#validate(check, [connection]));
@@ -296,6 +297,8 @@ export class DocDO extends YServer<SyncEnv> {
       connection.send(awarenessFrame(this.document.awareness, [...this.document.awareness.getStates().keys()]));
     }
     await this.#schedule(holdsOf(store));
+    // Frames it sent while pending waited in the inbox.
+    if (check && this.#inbox.length > 0) await this.#drain();
   }
 
   /**
@@ -309,10 +312,27 @@ export class DocDO extends YServer<SyncEnv> {
       return;
     }
     this.#inbox.push([connection, message]);
+    return this.#drain();
+  }
+
+  #drain(): Promise<void> {
     if (this.#pendingFlush) return this.#pendingFlush;
     const flush = this.#serial(() => this.#flush());
     this.#pendingFlush = flush;
     return flush;
+  }
+
+  /** Only validated sockets: y-partyserver's update and awareness broadcasts and every relay here go through this. */
+  override *getConnections<TState = unknown>(tag?: string): Iterable<Connection<TState>> {
+    for (const connection of super.getConnections<TState>(tag)) {
+      const attachment = attachmentOf(connection);
+      if (attachment && !attachment.pending) yield connection;
+    }
+  }
+
+  /** Every accepted socket, validated or not: what closes, counts and schedules. */
+  #all(): Iterable<Connection> {
+    return super.getConnections();
   }
 
   async #flush(): Promise<void> {
@@ -329,14 +349,22 @@ export class DocDO extends YServer<SyncEnv> {
         return;
       }
     }
+    const deferred: [Connection, WSMessage][] = [];
     for (const [connection, message] of batch) {
       if (!isOpen(connection)) continue;
+      const attachment = attachmentOf(connection);
+      // Still being admitted: its frames wait for its own validation, which drains them.
+      if (!attachment || attachment.pending) {
+        deferred.push([connection, message]);
+        continue;
+      }
       try {
         this.#handle(connection, message);
       } catch (error) {
         console.error('DocDO frame failed', error);
       }
     }
+    this.#inbox.unshift(...deferred);
     if (check && this.#tickAt === null && this.#connected()) {
       this.#tickAt = Date.now() + ACCESS_TICK_MS;
       const store = this.#store;
@@ -485,7 +513,7 @@ export class DocDO extends YServer<SyncEnv> {
       }
     }
     // A socket at DOC_SOCKET_MAX_MS reconnects, so the sign-out registry never outlives a socket it should name.
-    for (const connection of this.getConnections()) {
+    for (const connection of this.#all()) {
       const attachment = attachmentOf(connection);
       if (attachment && aged(attachment, now)) connection.close(TRY_AGAIN, 'aged');
     }
@@ -515,7 +543,7 @@ export class DocDO extends YServer<SyncEnv> {
     for (const id of input.sessions ?? []) store.revoke('session', id, at);
     if (input.everyone) store.revoke('principal', EVERYONE, at);
     let closed = 0;
-    for (const connection of this.getConnections()) {
+    for (const connection of this.#all()) {
       const attachment = attachmentOf(connection);
       const code = attachment ? revocationCode(attachment, store.revoked) : null;
       if (code === null) continue;
@@ -613,7 +641,7 @@ export class DocDO extends YServer<SyncEnv> {
    * Throws, closing nothing, when D1 cannot answer.
    */
   async #validate(check: AccessCheck, only?: Connection[]): Promise<void> {
-    const sockets = (only ?? [...this.getConnections()]).flatMap((connection) => {
+    const sockets = (only ?? [...this.#all()]).flatMap((connection) => {
       const attachment = attachmentOf(connection);
       return attachment && isOpen(connection) ? [{ connection, attachment }] : [];
     });
@@ -639,9 +667,10 @@ export class DocDO extends YServer<SyncEnv> {
     }));
     for (const [i, { connection, attachment }] of sockets.entries()) {
       const code = verdicts[i];
-      if (code === null || !isOpen(connection)) continue;
-      if (code === 'kept') {
-        attach(connection, { ...attachment, epoch: stamp.key });
+      if (!isOpen(connection)) continue;
+      if (code === null || code === 'kept') {
+        // Read fresh: a validation that ran meanwhile may have admitted it already.
+        if (code === 'kept' || attachmentOf(connection)?.pending) attach(connection, { ...attachment, epoch: code === 'kept' ? stamp.key : attachment.epoch, pending: false });
         continue;
       }
       if (code === CLOSE.deleted) this.sendCustomMessage(connection, JSON.stringify({ t: 'doc-deleted' } satisfies ServerEvent));
@@ -677,7 +706,7 @@ export class DocDO extends YServer<SyncEnv> {
   async #schedule(holds: Map<string, number>): Promise<void> {
     const due = [...holds.values()];
     if (this.#tickAt !== null) due.push(this.#tickAt);
-    for (const connection of this.getConnections()) {
+    for (const connection of this.#all()) {
       const attachment = attachmentOf(connection);
       if (attachment) due.push(agesAt(attachment));
     }
@@ -688,7 +717,7 @@ export class DocDO extends YServer<SyncEnv> {
   /** Every open socket hears the doc is gone, then closes 4410. */
   #closeAll(except?: Connection): void {
     const event: ServerEvent = { t: 'doc-deleted' };
-    for (const connection of this.getConnections()) {
+    for (const connection of this.#all()) {
       if (connection.id === except?.id) continue;
       this.sendCustomMessage(connection, JSON.stringify(event));
       connection.close(CLOSE.deleted, 'deleted');
@@ -748,7 +777,7 @@ export class DocDO extends YServer<SyncEnv> {
   }
 
   #connected(): boolean {
-    return !this.getConnections()[Symbol.iterator]().next().done;
+    return !this.#all()[Symbol.iterator]().next().done;
   }
 
   /**

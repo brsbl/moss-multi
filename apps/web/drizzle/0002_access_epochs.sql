@@ -3,7 +3,7 @@ CREATE TABLE `access_epochs` (
 	`epoch` integer DEFAULT 0 NOT NULL
 );--> statement-breakpoint
 -- Every write that can lower access in a vault owner's vaults bumps that owner's epoch in the same statement (A§8).
-CREATE TRIGGER `doc_members_epoch_update` AFTER UPDATE OF role ON doc_members BEGIN
+CREATE TRIGGER `doc_members_epoch_update` AFTER UPDATE OF role, principal_id, doc_id ON doc_members BEGIN
   INSERT OR IGNORE INTO access_epochs (owner_user_id, epoch) SELECT (SELECT owner_user_id FROM docs WHERE id = OLD.doc_id), 0 WHERE (SELECT owner_user_id FROM docs WHERE id = OLD.doc_id) IS NOT NULL;
   UPDATE access_epochs SET epoch = epoch + 1 WHERE owner_user_id = (SELECT owner_user_id FROM docs WHERE id = OLD.doc_id);
 END;
@@ -13,7 +13,7 @@ CREATE TRIGGER `doc_members_epoch_delete` AFTER DELETE ON doc_members BEGIN
   UPDATE access_epochs SET epoch = epoch + 1 WHERE owner_user_id = (SELECT owner_user_id FROM docs WHERE id = OLD.doc_id);
 END;
 --> statement-breakpoint
-CREATE TRIGGER `folder_members_epoch_update` AFTER UPDATE OF role ON folder_members BEGIN
+CREATE TRIGGER `folder_members_epoch_update` AFTER UPDATE OF role, principal_id, folder_id ON folder_members BEGIN
   INSERT OR IGNORE INTO access_epochs (owner_user_id, epoch) SELECT (SELECT owner_user_id FROM folders WHERE id = OLD.folder_id), 0 WHERE (SELECT owner_user_id FROM folders WHERE id = OLD.folder_id) IS NOT NULL;
   UPDATE access_epochs SET epoch = epoch + 1 WHERE owner_user_id = (SELECT owner_user_id FROM folders WHERE id = OLD.folder_id);
 END;

@@ -24,6 +24,8 @@ export interface Attachment {
   admittedAt?: number;
   /** The access epoch `role` was resolved under (A§8 pull validation); '' when unknown, which re-resolves it. */
   epoch?: string;
+  /** Not yet validated by the DocDO (A§8): it hears no broadcast and none of its frames apply until it is. */
+  pending?: boolean;
 }
 
 /** The Worker's trusted headers, or null with no principal or no known role. */
