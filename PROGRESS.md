@@ -1,11 +1,11 @@
 # moss-multi progress
 
-**Overall: 43% done** (34 of 79 planned tasks verified)
+**Overall: 44% done** (35 of 79 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 18 / 18 | in progress |
-| M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 16 / 19 | in progress |
+| M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 17 / 19 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 0 / 9 | |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 0 / 9 | |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
@@ -53,6 +53,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-04 — T1.F1 verified: Cmd+Z never removes a collaborator's characters typed into a paragraph or text node you created, through interleaved typing, splits and merges, reconnects and deletes, and restored text keeps its author and properties, in both engines; redo after a collaborator typed into a line the undo restored keeps their words (re-verified at 950b435).
 - 2026-10-04 — T0.13b verified: the read-only viewer (`packages/viewer` 0.2.0) shows an HTML block as moss's cached screenshot, falling back to the legacy cache path and then to "Preview unavailable", without ever running the HTML; the fixture's cached, legacy and missing blocks are shot in Chromium and WebKit.
 - 2026-10-04 — T1.F2 verified: each code, HTML and formula block's text now lives in its own small document that the server hides while no block names it and restores intact when one does, a copied block gets its own text, and one Cmd+Z undoes body and block edits together.
+- 2026-10-05 — T1.F4 verified: an open code, HTML or formula editor keeps working when a peer moves its block, closes with a notice when a peer removes it, and picks up the block's text once it arrives; typing inside a code or HTML block lands at the caret even after a peer's edit or undo.
 
 ## T1.1s identity audit
 
