@@ -222,6 +222,22 @@ export class DocDO extends YServer<SyncEnv> {
     } finally {
       this.#frameDeletes = undefined;
     }
+    if (frame.kind === 'sync') this.#afterFrame(connection, store);
+  }
+
+  /**
+   * After a client frame applies: nothing it carried may wait in Yjs's pending queues to integrate after a later
+   * write, so a parked struct or delete is dropped and the frame refused (comments.md §3, I2); only then may the log
+   * compact, so a snapshot never holds parked structs.
+   */
+  #afterFrame(connection: Connection, store: DocStore): void {
+    const yStore = this.document.store;
+    if (yStore.pendingStructs !== null || yStore.pendingDs !== null) {
+      yStore.pendingStructs = null;
+      yStore.pendingDs = null;
+      this.#refuse(connection, 'unresolved', CLOSE.writeRefused);
+    }
+    store.compactIfDue(this.document);
   }
 
   /** Defense in depth: below editor, y-partyserver never applies a step 2 or update, inert or not. */
@@ -445,7 +461,7 @@ export class DocDO extends YServer<SyncEnv> {
   #persist(store: DocStore, update: Uint8Array, origin: unknown): void {
     this.#exported = null;
     if (origin === PERSISTENCE) return;
-    store.record(update, this.document);
+    store.record(update);
     this.#edits += 1;
     if (!this.#searchStale) {
       store.setMeta('search-fed', '');
@@ -454,6 +470,9 @@ export class DocDO extends YServer<SyncEnv> {
     if (isConnection(origin)) {
       this.#acks.schedule(origin, this.#frameDeletes);
       this.#projections?.touch();
+    } else {
+      // Server writes run with nothing parked: every client frame's leftovers were purged when it applied.
+      store.compactIfDue(this.document);
     }
   }
 

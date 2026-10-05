@@ -142,7 +142,13 @@ export function deterministicIds(): () => void {
     uuid += 1;
     return `00000000-0000-4000-8000-${uuid.toString(16).padStart(12, '0')}` as `${string}-${string}-${string}-${string}-${string}`;
   });
-  return () => spy.mockRestore();
+  // A sketch inking's key tag comes from Math.random (registers.ts); the fork and the oracle encode a different number
+  // of times, so every draw is the same and a new inking gets the same tag on both sides.
+  const random = vi.spyOn(Math, 'random').mockReturnValue(0.5);
+  return () => {
+    spy.mockRestore();
+    random.mockRestore();
+  };
 }
 export const resetIds = () => {
   uuid = 0;

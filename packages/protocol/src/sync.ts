@@ -55,7 +55,7 @@ export function closeAction(code: number): CloseAction {
 /** Unicast events travel as `__YPS:<json>`, the envelope the provider delivers as `custom-message`. */
 export const CUSTOM_PREFIX = '__YPS:';
 
-export type WriteRefusalReason = 'role' | 'doc-cap' | 'suggest';
+export type WriteRefusalReason = 'role' | 'doc-cap' | 'suggest' | 'unresolved';
 
 export type ServerEvent =
   /** A write that did not land; the close follows. */

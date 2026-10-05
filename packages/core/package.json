@@ -8,6 +8,9 @@
     "./filenames": "./src/filenames.ts",
     "./frontmatter": "./src/frontmatter.ts",
     "./text-diff": "./src/text-diff.ts",
+    "./anchor-frame": "./src/anchor-frame.ts",
+    "./group-pending": "./src/group-pending.ts",
+    "./tree-anchor": "./src/tree-anchor.ts",
     "./suggest/apply": "./src/suggest/apply.ts"
   },
   "scripts": {

@@ -45,6 +45,7 @@ export const WRITE_REFUSED: Record<WriteRefusalReason, string> = {
   role: "You can't edit this note.",
   'doc-cap': 'This note is at its size limit, so your last change was not saved.',
   suggest: "Suggestions aren't available yet, so your change was not saved.",
+  unresolved: 'Your last change could not be saved. Reconnecting to the saved note.',
 };
 export const HALTED_REFUSED = 'Your last change could not be saved. Reconnecting to the saved note.';
 const VIEW_ONLY = 'You can view this note but can no longer edit it.';

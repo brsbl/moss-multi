@@ -80,6 +80,7 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
 | R15 | Staging only, personal account, permanent names | T1.10; T8.2 | 1, 8 |
 | R16 | Rejecting or withdrawing a suggestion keeps other people's words | T5.0 reject and withdraw legs; T5.3 | 5 |
 | R17 | A pending suggestion lives beside the body until an editor accepts it | T5.0 spike legs; j16 | 5 |
+| R18 | A comment never jumps to other text; retyping the same text does not reattach it | T4.0 never-jump and undo scenes; T4.2 | 4 |
 
 ---
 
@@ -339,27 +340,99 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
 **A person can newly** comment on text and blocks with moss's gutter, highlights and popovers; reply, react, @mention, resolve, and edit or delete their own comments; get mention and reply notifications; and keep typing right after commenting without losing anything.
 
 - **T4.0 Design review** `[—·codex]`
-  - **Scope:** `docs/design/comments.md` resolves A§13 for this milestone: anchor minting, the SP7 classifier, SP10 paint, an adapter for moss's 8 call sites, the API, and import/export. A fresh architect and a codex critic review it; the owner gets a one-page summary.
-  - **Done:** merged, with every finding dispositioned.
-- **T4.1 The comment data plane** `[A·codex]`
-  - **Scope:** DocDO writes to the comments map; anchors with a quote fallback; client writes to the maps refused; marker import in the converter; clean export.
-  - **Per-frame cost bound (security review of the T4.0 spike, 2026-10-04):** `refreshAnchors` runs synchronously in the DocDO on every `root` frame, so its work must be bounded by the frame, not by the document or by how many comments exist. In the spike, every frame re-projects the whole doc. It runs a `similarity` LCS (up to the 4M-cell text-diff budget) for every comment. `restoresAfter` walks every struct in the store once per distinct orphan fence. `findQuote` rescans the whole text for every position-less anchor. A commenter who adds many long or orphaned comments can therefore stall the DO on each keystroke. Required:
-    - revalidate only anchors whose start or end type, or recorded block, is among the frame's touched types (reuse `touchedTypes`);
-    - build the restore index from the frame's own new structs only, never the whole store;
-    - compare quotes by equality first, then a bounded check (a small cell budget or a length cap on the stored quote), never the full LCS budget;
-    - run the quote search for a position-less anchor once, at creation or import, never per frame;
-    - cap comments per doc and comment creation per identity.
-    Test: a large note with hundreds of long and orphaned comments plus a burst of single-key frames stays within a stated per-frame CPU budget in workerd, and the result is recorded in METHOD.md. Correct the cost section of comments.md to match.
-  - **Restore integrity (security review of t/T4.0 fe3c2f8, 2026-10-04):** the spike accepts a restore whose two sides are one client's undo copies without checking the quote. Nothing proves those copies came from an undo, so any editor can forge two copies whose right origins are the deleted ends, with arbitrary text between them. That attaches another person's comment to text they never commented on. Required: a reattached range is accepted only if every live character in it is a restored copy of an item that lay inside the anchor's span when it was orphaned. Deleted items keep their place in the list, so check each copy's right origin against the original start..end span. Otherwise the copies must read exactly as the quote. Test: a forged frame of two edge copies around new text leaves the comment orphaned, while a real `Y.UndoManager` undo of a deletion batched with in-range typing reattaches. Fix comments.md and A§13 to match.
-  - **Tests first:** fast-check: anchors survive random concurrent edits. A client frame touching `comments` gets 4409. Importing the onboarding note and its sidecar yields 4 anchored threads. Export contains zero `%%m:` or `{%c:`. **Done:** green.
-- **T4.2 Paint and moss's comment UI** `[B·codex]`
-  - **Scope:** highlight paint; the adapter; the `CREATE_COMMENT_COMMAND` seam, unstaging `comments`; gutter, popover, threads, replies and resolve; Cmd+Shift+A; the reply composer autofocuses.
-  - **Tests first:** journey **j15-comments**: A comments, then both type anywhere in both directions; two comments in one paragraph; the peer sees the highlight; a commenter can comment but not edit; no `%m:` in the DOM.
-  - **Done:** j15 is green, with shots and parity targets for the gutter and popover.
-- **T4.3 Reactions, mentions, edit and delete, notifications** `[B·fresh]`
-  - **Tests first:** j15 legs: reactions toggle per principal; an @mention reaches B's bell; a reply reaches the root author's bell; a non-author sees no Edit or Delete, and a raw delete gets 403. **Done:** green, with a reactions triptych.
+  - **Scope:** `docs/design/comments.md` per the 2026-10-04 design panel: invariants I1-I8, the supported-liveness list, pinned Yjs facts F1-F5, the reserved-writer guard, the frame-scoped anchor engine (gap re-mint, survivor shrink, lost place, exact reattach, lift), the client frame discipline, and the P2 limitation register. The spike proves only the load-bearing properties: guard, pending, F1-F4, bound-editor scenes, never-jump scenes, counted cost. A fresh architect and a codex critic review under the panel's checker rule. The owner gets a one-page summary.
+  - **Done:** merged, with red and green CI run ids, and every finding from the six-round history and the panel review dispositioned to an invariant, the P2 register, or a named T4.1-T4.4 test.
+- **T4.1 Comment data plane and write isolation** `[A·codex]`
+  - **Scope:**
+    - `Y.Map('comments')` with `c:<id>` and `a:<id>` records (JSON only);
+    - `writeComments` under the persisted reserved client id R (regenerated on collision; the DO's clientID is never R);
+    - gate 2b checks (a)-(d) on every sync frame, inert or not, before apply, with no attacker-driven walk;
+    - post-apply pending purge plus 4409;
+    - compaction moved out of the `update` handler and run only after the purge;
+    - the REST comment RPC (create with server-computed quote and 409 anchor-pending / anchor-gone / too-many-overlapping; quote-only create runs one search with the A§13 thresholds and the round-1 similarity fix, needs a unique best match, never runs per frame);
+    - marker import writing records through writeComments in the import's turn;
+    - clean export;
+    - caps: 2,000 records per doc, 60 comment ops per principal per minute, quote at most 10,000 characters, 32 comments covering any one character.
+  - **Security requirements carried from the review history:**
+    - no client frame lands a write in `comments`: the tail splice, fully held structs, a missing rightOrigin, cycles and unknown roots are each a raw-frame regression;
+    - no struct or delete integrates after its frame, and nothing parked is persisted; a frame Yjs throws on mid-apply is purged and refused like a parked one (the spike host does this; the DocDO must too);
+    - the guard costs O(frame·log) with no reference walks;
+    - anchor and record changes persist in the frame's turn, and indexes are rebuilt at onStart (A§5.1).
+    - From m4's T4.1 security reviews (2026-10-04): "cap comments per doc and comment creation per identity" and "run the quote search for a position-less anchor once, at creation or import" are kept above; "reuse `touchedTypes`" is moot by construction (I1 needs no classifier: the guard checks each struct against R).
+  - **Tests first:**
+    - the T4.0 guard suite against the real DocDO in workerd, plus an inert step 2 carrying an R struct, refused 4409;
+    - fast-check: every item in the comments subtree has client R;
+    - park, then compact, then restart: no pending state survives;
+    - mixed-pending-frame-compacts-only-after-purge: one frame that integrates a valid edit, parks a struct and a delete, and crosses COMPACT_MAX_ROWS, followed at once by a restart; and the same with an integrated update larger than STATE_CHUNK_BYTES (the oversized path). The integrated edit survives; nothing parked persists or is released by a later frame (T4.0 check, 2026-10-04);
+    - restart between a deletion and its undo: the comment still reattaches;
+    - the onboarding note plus sidecar imports as 4 anchored threads;
+    - export contains zero `%%m:` or `{%c:`.
+  - **Done:** green.
+- **T4.2 Anchor engine and client frame discipline** `[A·codex]`
+  - **Scope:**
+    - `anchor-frame.ts` wired into the DocDO's pre-GC afterTransaction hook for client and serverWrite origins, flushed through writeComments in the same turn;
+    - EP, MI and AI indexes rebuilt at onStart;
+    - gap map (including the wrap rule of comments.md §5.2), survivor shrink, lost place with per-list segments over full member subtrees (inside a block, members extend over the frame's adjacent deletions, comments.md §5.3), exact full-mode reattach triggered by an origin or rightOrigin in MI (or, for a re-homed place in an empty restored block, a frame-new list item with neither under that block; or a frame-new item whose enclosing block's rightOrigin is in MI, an undo copy of a member block, comments.md §5.4), lift at depth ≤ 3;
+    - orphans with an identical segment set share one walk (decision §4.4): MI is keyed by segment-set group, so a recheck costs one walk and one signature compare per group, and I7's fan-out bound is restated per group;
+    - decorator fingerprints, with attribute history reads inside the walk budget;
+    - `groupPending` in acks.ts plus the patched provider: replay before step 2, paced at most 40 frames/s; a deleting update is never merged with another update's inserts.
+  - **Integrity requirements carried from the review history:**
+    - no positioned anchor is ever searched or similarity-scored;
+    - no reattach based on undo-copy identity or rightOrigin chains (the fe3c2f8 bypass must stay impossible);
+    - a late concurrent insert, a forged far-placed copy, forged edge copies around new text, and a decorator swap each leave the comment orphaned;
+    - delete and undo in one frame, DURDU, a batched in-range edit plus deletion then undo, and block and cross-block undo all reattach.
+    - m4's T4.1 restore-integrity requirement (security review of t/T4.0 fe3c2f8) is kept as I5 and the forged-edge-copy test; its "check each copy's right origin against the original span" rule is moot by construction, because reattach never reads right origins, only what reads in the lost place.
+  - **Per-frame cost (security review, 2026-10-04):**
+    - no whole-doc projection, LCS, store scan, container scan or findQuote per frame;
+    - work only for comments whose endpoint the frame deletes, whose lost member or re-homed bound a new item's origin or rightOrigin names, or whose empty re-homed block gets a new item with neither;
+    - walks within the 4,096-struct budget, failing safe to orphaned;
+    - writes only on a re-mint or a status change.
+    - m4's T4.1 per-frame cost bound is kept here and in the workerd test below; its "restore index from the frame's own new structs" and "bounded quote compare" bullets are moot by construction (I7: no restore index over the store, no quote compare on positioned anchors).
+  - **Tests first:**
+    - every supported-liveness scene and every never-jump scene from T4.0, against the real DocDO;
+    - an offline journey: type inside a comment, delete it, reconnect, undo → reattached; delete then retype offline → stays detached;
+    - fast-check: random concurrent edits never leave an anchored comment on text outside its lineage;
+    - workerd budget: a large note with 2,000 comments (hundreds long and orphaned) plus a burst of single-key frames, a frame deleting a char shared by 32 comments, and forged 1-item frames naming lost members, each within a stated per-frame CPU budget recorded in METHOD.md; it also measures the lift and loss writes of a frame that orphans many comments under one deleted block (output-proportional, bounded by the 2,000-record cap);
+    - anchor-cost: 500 disjoint comments orphaned by one deleted run, and 500 by one deleted paragraph; a forged one-item frame naming the shared member does one segment walk and work independent of orphan count (T4.0 check, 2026-10-04);
+    - anchor-attribute-history-obeys-walk-budget: grow a decorator's historical deleted attributes while keeping the deleting frame fixed; fingerprint work stays bounded and counted (T4.0 check);
+    - anchor-index-maintenance-is-frame-bounded: hold the edit and the affected anchor constant while adding unrelated later spans of the same client; index-maintenance work (SpanIndex updates after the flush) is counted with the tree visits and stays constant (T4.0 check).
+  - **Done:** green, with the cost section of comments.md updated to the measurements.
+- **T4.3 Paint and moss's comment UI** `[B·codex]`
+  - **Scope:**
+    - highlight paint (SP10) from server `a:` records, plus the read-only overlay of the engine's gap map (comments.md §5.2) on every applied transaction so a bold never blinks;
+    - the adapter for moss's 8 call sites;
+    - the `CREATE_COMMENT_COMMAND` seam, unstaging `comments`;
+    - gutter, popover, threads, replies, resolve;
+    - detached threads listed with their quote;
+    - Cmd+Shift+A;
+    - the reply composer autofocuses;
+    - composer minting with anchor-pending retry.
+  - **Tests first:** journey **j15-comments**:
+    - A comments, then both type anywhere in both directions;
+    - two comments in one paragraph;
+    - the peer sees the highlight;
+    - bold across the commented text keeps the highlight with no blink frame;
+    - delete then Cmd+Z restores the highlight;
+    - a commenter can comment but not edit;
+    - no `%m:` in the DOM.
+  - **Done:** j15 green, with shots and parity targets for the gutter, the popover and the detached thread.
+- **T4.4 Reactions, mentions, edit and delete, notifications** `[B·fresh]`
+  - **Scope:**
+    - reactions per principal;
+    - @mentions;
+    - edit and delete restricted to the author;
+    - root delete promotes the oldest reply in one writeComments call, taking the anchor and resolution;
+    - notification rows only for user principals re-checked against the live grant (a mentioned agent gets no row).
+  - **Tests first:** j15 legs:
+    - reactions toggle per principal;
+    - an @mention reaches B's bell;
+    - a reply reaches the root author's bell;
+    - mentioning an agent writes no notification row;
+    - deleting a root with replies keeps the thread anchored under the promoted reply;
+    - a non-author sees no Edit or Delete, and a raw delete gets 403.
+  - **Done:** green, with a reactions triptych.
 
-**Exit criteria:** typing anywhere after a comment replicates exactly; there are no markers in the DOM or any export; the author identity comes from the server principal.
+**Exit criteria:** typing anywhere after a comment replicates exactly; there are no markers in the DOM or any export; the author identity comes from the server principal; a comment never lands on text other than its own.
 
 ## M5 Suggestions
 
