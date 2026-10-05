@@ -1,5 +1,13 @@
 ## Status: DRAFT, review findings still open
 
+**Security review of 0aba043 (2026-10-05): three contract gaps, required before API 1 is final. T3.9 fixes the contract text and tests each one; the host must enforce each one too:**
+1. **Arbitrary file read.** Every host read takes a path or ref that came from note content or the editor: `readCompanion`, `assets.url`, `copyFromNote`'s `sourceNoteId` and `sourceRef`. The host must:
+   - resolve each one against its own note's folder;
+   - realpath both sides and refuse anything outside that folder: symlinks, hard-linked escapes, `..`, absolute paths, NUL, and `~`;
+   - for `copyFromNote`, require that the source note is itself an editable or viewable note the user opened in bb, never an arbitrary id. Refusals are typed results, never a read.
+2. **Path traversal on writes.** Asset `name`, `desiredName` and every write target must pass Moss desktop's own filename sanitizer at the pin (no separators, no `..`, no leading dot, no reserved names, byte-length limits). The host re-validates them; it never trusts the editor's string. Writes stay inside the note folder, and renames inside its parent.
+3. **Stored XSS through served assets.** SVG (and any type a browser can render as active content) must never be same-origin with the editor or plugin frame. The host serves assets with `X-Content-Type-Options: nosniff`, an exact `Content-Type`, and for SVG `Content-Security-Policy: sandbox; default-src 'none'`, with `Content-Disposition` where possible. The editor shows SVG only through `<img>`, never inline. A sniffed or mislabeled upload is refused.
+
 The latest review (Codex) returned FAIL. These findings are open and must be resolved before the contract is settled:
 
 - Meta-only changes and meta retries can revert commentColors changed in Moss
