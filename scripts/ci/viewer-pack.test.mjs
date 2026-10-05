@@ -23,8 +23,8 @@ describe('packages/viewer/package.json', () => {
     expect(pkg.license).toBe('MIT');
   });
 
-  it('packs only the built bundle, and exports its entry, stylesheet, frame document and manifest', () => {
-    expect(pkg.files).toEqual(['dist']);
+  it('packs the built bundle and its release notes, and exports its entry, stylesheet, frame document and manifest', () => {
+    expect(pkg.files).toEqual(['dist', 'CHANGELOG.md']);
     expect(pkg.exports).toEqual({
       '.': './dist/moss-viewer.js',
       './moss-viewer.css': './dist/moss-viewer.css',

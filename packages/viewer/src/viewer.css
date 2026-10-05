@@ -16,3 +16,9 @@
 [data-moss-viewer][data-moss-viewer-html='screenshot'] [data-moss-html-preview-viewport] {
   cursor: default;
 }
+
+/* An X post loads in the viewer's theme but declares no color-scheme, so in a dark viewer the browser paints an
+   opaque white canvas behind the post's rounded corners; a matching scheme on the frame keeps it transparent. */
+[data-moss-viewer] iframe[src^='https://platform.twitter.com/'] {
+  color-scheme: normal;
+}
