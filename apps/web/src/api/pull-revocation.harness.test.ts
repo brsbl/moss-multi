@@ -19,6 +19,9 @@ import { handleApi } from './router.ts';
 
 let d1: TestD1;
 
+/** While set, runs once inside the DocDO's next validation, after its D1 read: something arriving while it is in flight. */
+let duringStamp: (() => Promise<unknown>) | null = null;
+
 /** The real DocDO with the Worker's access check, reading D1 for liveness; no projections or sign-out registry. */
 class PullDocDO extends DocDO {
   static override projectionTarget = () => null;
@@ -27,7 +30,19 @@ class PullDocDO extends DocDO {
     const row = await d1.db.prepare('SELECT deleted_at FROM docs WHERE id = ?').bind(docId).first<{ deleted_at: number | null }>();
     return !row || row.deleted_at !== null;
   };
-  static override access = () => docAccessCheck({ DB: d1.db });
+  static override access = () => {
+    const check = docAccessCheck({ DB: d1.db });
+    return {
+      ...check,
+      stamp: async (...args: Parameters<typeof check.stamp>) => {
+        const stamp = await check.stamp(...args);
+        const hook = duringStamp;
+        duringStamp = null;
+        if (hook) await hook();
+        return stamp;
+      },
+    };
+  };
 }
 
 /** The real PrincipalDO reading D1 for its sockets' credentials; its sign-out rechecks are kicks, so they are dropped. */
@@ -136,7 +151,13 @@ afterAll(() => d1?.dispose());
 beforeEach(() => {
   dropKicks = true;
   race = null;
+  duringStamp = null;
 });
+
+/** Lets every pending task run, as other requests do while an await is in flight. */
+const settleTasks = async () => {
+  for (let i = 0; i < 20; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+};
 
 const call = (method: string, path: string, cookie: string | null, body?: unknown) =>
   handleApi(new Request(`${BASE}${path}`, {
@@ -297,6 +318,45 @@ describe('a dropped kick is caught by the next frame @p:ppl-2', () => {
     await refusedAfter(opened, client, CLOSE.revoked, 'after-unrecipiented-removal');
   });
 
+  it('a socket still being admitted hears nothing another socket’s frame applies before its own validation', async () => {
+    const docId = await insertDoc(d1.db, ada);
+    await insertGrant(d1.db, { docId }, ben, 'viewer');
+    const owner = await join(docId, ada.cookie);
+    // The Worker admitted Ben before his grant was removed; the removal's kick is dropped.
+    const admitted = await authenticateParty(upgrade(docId, ben.cookie), docId, env);
+    if (!admitted.ok) throw new Error('refused');
+    await d1.db.prepare('DELETE FROM doc_members WHERE doc_id = ? AND principal_id = ?').bind(docId, ben.id).run();
+    // Ada's frame is validating when Ben's socket reaches the DocDO and is attached.
+    const late: { client?: Promise<TestClient> } = {};
+    duringStamp = async () => {
+      late.client = connect(owner.opened, { headers: admitted.headers });
+      await settleTasks();
+    };
+    await write(owner.client, 'secret-mid-admission');
+    expect(duringStamp, 'Ben arrived while Ada’s frame was validating').toBeNull();
+    expect(title(owner.opened)).toContain('secret-mid-admission');
+    expect(late.client).toBeDefined();
+    const client = await late.client!;
+    expect(client.closed?.code, 'his own validation closes him').toBe(CLOSE.revoked);
+    await client.pump();
+    expect(client.doc.getText('title').toString(), 'nothing applied before his validation reached him').not.toContain('secret-mid-admission');
+  });
+
+  it('a grant moved to someone else by a raw write closes the socket it stood for', async () => {
+    const docId = await insertDoc(d1.db, ada);
+    await insertGrant(d1.db, { docId }, ben, 'editor');
+    const { opened, client } = await join(docId, ben.cookie);
+    await d1.db.prepare('UPDATE doc_members SET principal_id = ? WHERE doc_id = ? AND principal_id = ?').bind(cy.id, docId, ben.id).run();
+    await refusedAfter(opened, client, CLOSE.revoked, 'after-reassignment');
+
+    const folder = await insertFolder(d1.db, ada, ada.homeId);
+    const inFolder = await insertDoc(d1.db, ada, { folderId: folder });
+    await insertGrant(d1.db, { folderId: folder }, ben, 'editor');
+    const second = await join(inFolder, ben.cookie);
+    await d1.db.prepare('UPDATE folder_members SET principal_id = ? WHERE folder_id = ? AND principal_id = ?').bind(cy.id, folder, ben.id).run();
+    await refusedAfter(second.opened, second.client, CLOSE.revoked, 'after-folder-reassignment');
+  });
+
   it('moving a note out of a linked folder and back reopens it to the link’s holder', async () => {
     dropKicks = false;
     const linked = await insertFolder(d1.db, ada, ada.homeId);
@@ -423,6 +483,45 @@ describe('a manager being removed cannot act on the access they are losing @p:pp
     expect(race).toBeNull();
     expect(trash.status).toBe(403);
     expect((await d1.db.prepare('SELECT deleted_at FROM folders WHERE id = ?').bind(shared).first<{ deleted_at: number | null }>())?.deleted_at).toBeNull();
+  });
+});
+
+const heard = (socket: FakeSocket) =>
+  socket.sent.filter((frame): frame is string => typeof frame === 'string' && frame.startsWith('{')).map((frame) => JSON.parse(frame) as { type: string; docIds?: string[] });
+
+describe('a folder trash that does not commit reopens the notes it closed @p:ppl-2', () => {
+  it('a co-owner demoted mid-trash: the editor it closed hears the note changed and reopens', async () => {
+    const folder = await insertFolder(d1.db, ada, ada.homeId);
+    await insertGrant(d1.db, { folderId: folder }, cy, 'owner');
+    const docId = await insertDoc(d1.db, ada, { folderId: folder });
+    await insertGrant(d1.db, { docId }, ben, 'editor');
+    const { opened, client, headers } = await join(docId, ben.cookie);
+    const channel = await workspace(ben.id, headers[TRUSTED.session]);
+    race = { sql: /UPDATE folders SET deleted_at/i, run: () => d1.db.prepare("UPDATE folder_members SET role = 'editor' WHERE folder_id = ? AND principal_id = ?").bind(folder, cy.id).run() };
+    const response = await call('DELETE', `/api/folders/${folder}`, cy.cookie);
+    expect(race).toBeNull();
+    expect(response.status).toBe(403);
+    expect(client.closed?.code, 'the hold closed the editor before D1 decided').toBe(CLOSE.deleted);
+    expect(heard(channel).some((event) => event.type === 'meta' && event.docIds?.includes(docId)),
+      'Ben’s workspace channel names the note, so his terminal pane re-asks and reopens').toBe(true);
+    const back = await join(docId, ben.cookie);
+    expect(back.client.closed, 'the note is live again').toBeNull();
+    await write(back.client, 'still-editable');
+    expect(title(opened)).toContain('still-editable');
+  });
+
+  it('a trash whose D1 write fails: the editor it closed hears the note changed', async () => {
+    const folder = await insertFolder(d1.db, ada, ada.homeId);
+    const docId = await insertDoc(d1.db, ada, { folderId: folder });
+    await insertGrant(d1.db, { docId }, ben, 'editor');
+    const { client, headers } = await join(docId, ben.cookie);
+    const channel = await workspace(ben.id, headers[TRUSTED.session]);
+    race = { sql: /UPDATE folders SET deleted_at/i, run: () => Promise.reject(new Error('D1 unavailable')) };
+    const response = await call('DELETE', `/api/folders/${folder}`, ada.cookie);
+    expect(race).toBeNull();
+    expect(response.status).toBe(503);
+    expect(client.closed?.code).toBe(CLOSE.deleted);
+    expect(heard(channel).some((event) => event.type === 'meta' && event.docIds?.includes(docId))).toBe(true);
   });
 });
 
