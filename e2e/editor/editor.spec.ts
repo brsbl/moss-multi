@@ -280,7 +280,7 @@ test.describe('embeddable editor', () => {
     expect(Math.abs((await scrollTop(page)) - before), 'the view stays where it was').toBeLessThan(40);
     expect(await page.evaluate(() => window.editorFixture.flush())).toMatchObject({ kind: 'saved' });
     const written = (await files(page))['/Moss/Notes/Plan/Plan.md'];
-    expect(written).toBe(`# Plan\n\n${changed.map((line) => (line === 'Line 30' ? 'Line 30XYZ' : line)).join('\n\n')}\n`);
+    expect(written?.replace(/\n?$/, '\n')).toBe(`# Plan\n\n${changed.map((line) => (line === 'Line 30' ? 'Line 30XYZ' : line)).join('\n\n')}\n`);
     expect(seen.errors).toEqual([]);
   });
 

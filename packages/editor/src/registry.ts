@@ -47,7 +47,7 @@ export const assetKind = (ref: string): MossAssetKind => (/\.(mp4|webm|mov)(?:[?
  */
 export function hostAsset(url: string): { noteId: string; ref: `assets/${string}` } | null {
   for (const bridge of new Set([...editors.values()].map((record) => record.bridge))) {
-    let parsed: ReturnType<MossEditorBridge['assets']['parseUrl']> = null;
+    let parsed: ReturnType<MossEditorBridge['assets']['parseUrl']>;
     try {
       parsed = bridge.assets.parseUrl(url);
     } catch {
