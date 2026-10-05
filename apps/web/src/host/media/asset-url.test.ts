@@ -56,3 +56,25 @@ describe('web asset URLs in clipboard HTML', () => {
     ]);
   });
 });
+
+describe('the share token never leaves the asset route (T3.1s)', () => {
+  it('rides only the same-origin /api/docs/:id/assets route, never a URL a note names', () => {
+    vi.stubGlobal('location', { search: '?share=secret-token', origin: 'http://127.0.0.1:8850' });
+    expect(toDisplaySrc('assets/pattern.png', 'd1')).toBe('/api/docs/d1/assets/pattern.png?share=secret-token');
+    const named = [
+      'https://evil.example/a.png',
+      'http://evil.example/assets/a.png',
+      '//evil.example/assets/a.png',
+      'https://evil.example/api/docs/d1/assets/a.png',
+      'https://evil.example/?next=assets/a.png',
+      'assets/../../evil.png',
+      'assets/sub/a.png',
+      '/api/docs/d1/assets/a.png',
+      'data:image/png;base64,AA',
+    ];
+    for (const src of named) {
+      expect(toDisplaySrc(src, 'd1'), src).not.toContain('secret-token');
+      expect(buildMediaServerUrl(src, 'd1') ?? '', src).not.toContain('secret-token');
+    }
+  });
+});

@@ -48,6 +48,15 @@ export interface MossViewerServices {
   /** The reader followed a wiki link or a web link. */
   navigate?(target: MossViewerTarget): void;
   unfurl?(url: string): Promise<MossViewerUnfurl | null>;
+  /**
+   * The URL of the bundle's `moss-viewer-frame.html`, served by the host with the policy
+   * `sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:`
+   * (loosen `img-src`, `font-src` or `connect-src` only for what notes' HTML may load), and allowed by the page's
+   * `frame-src`. With it, HTML blocks run live in `<iframe sandbox="allow-scripts">` loading that URL, an opaque origin
+   * that cannot reach the page; without it they show moss's cached screenshot through `assetUrl`, else "Preview
+   * unavailable".
+   */
+  htmlFrameUrl?: string;
 }
 
 export interface MossViewerOptions {

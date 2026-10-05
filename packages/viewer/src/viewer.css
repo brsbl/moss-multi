@@ -7,3 +7,18 @@
 @import '@fontsource/jetbrains-mono/latin-500.css';
 @import 'charter-webfont/charter.css';
 @import '../../../vendor/moss/packages/desktop/src/renderer/styles.css';
+
+/* Without a frame document a viewer never runs a note's HTML (mount.tsx), so a HTML block offers no Live control and
+   no pointer. */
+[data-moss-viewer][data-moss-viewer-html='screenshot'] [data-moss-html-activation] {
+  display: none;
+}
+[data-moss-viewer][data-moss-viewer-html='screenshot'] [data-moss-html-preview-viewport] {
+  cursor: default;
+}
+
+/* An X post loads in the viewer's theme but declares no color-scheme, so in a dark viewer the browser paints an
+   opaque white canvas behind the post's rounded corners; a matching scheme on the frame keeps it transparent. */
+[data-moss-viewer] iframe[src^='https://platform.twitter.com/'] {
+  color-scheme: normal;
+}

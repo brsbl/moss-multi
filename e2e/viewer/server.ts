@@ -1,8 +1,10 @@
 // The viewer acceptance server on 127.0.0.1: /viewer/ is the built bundle (packages/viewer/dist), /fixture/ the
 // host page, and /svc/ the media the fixture's assetUrl service hands out, with HTTP Range support as a host's
-// video URLs need. Every /svc/ request is recorded with its Range header and status.
+// video URLs need. Every /svc/ request is recorded with its Range header and status. The bundle's HTML frame document
+// is served with the policy a host gives it (FRAME_POLICY), and a path in `slow` streams at about 5 KB/s, so a player
+// that seeks ahead of the download has to ask for a byte range.
 import { createReadStream, existsSync, statSync } from 'node:fs';
-import { createServer, type Server } from 'node:http';
+import { createServer, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -37,11 +39,30 @@ export interface MediaRequest {
 export interface ViewerServer {
   url: string;
   media: MediaRequest[];
+  /** /svc/ paths streamed slowly. */
+  slow: Set<string>;
   close: () => Promise<void>;
+}
+
+/** What a host serves the viewer's frame document with: sandboxed, scripts and styles inline, no network. */
+export const FRAME_POLICY = "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:";
+const FRAME_FILE = 'moss-viewer-frame.html';
+
+/** Pipes `start..end` of `file` in 512-byte steps, one every 100 ms. */
+function trickle(file: string, start: number, end: number, response: ServerResponse) {
+  const stream = createReadStream(file, { start, end, highWaterMark: 512 });
+  stream.on('data', (chunk) => {
+    stream.pause();
+    response.write(chunk);
+    setTimeout(() => stream.resume(), 100);
+  });
+  stream.on('end', () => response.end());
+  response.on('close', () => stream.destroy());
 }
 
 export async function serveViewer(): Promise<ViewerServer> {
   const media: MediaRequest[] = [];
+  const slow = new Set<string>();
   const server: Server = createServer((request, response) => {
     const pathname = decodeURIComponent(new URL(request.url ?? '/', 'http://viewer').pathname);
     const prefix = Object.keys(ROOTS).find((root) => pathname.startsWith(root));
@@ -61,7 +82,10 @@ export async function serveViewer(): Promise<ViewerServer> {
       return;
     }
     const size = statSync(file).size;
-    const headers = { 'content-type': TYPES[extname(file)] ?? 'application/octet-stream', 'cache-control': 'no-store', 'accept-ranges': 'bytes' };
+    const headers: Record<string, string> = { 'content-type': TYPES[extname(file)] ?? 'application/octet-stream', 'cache-control': 'no-store', 'accept-ranges': 'bytes' };
+    if (prefix === '/viewer/' && pathname === `/viewer/${FRAME_FILE}`) headers['content-security-policy'] = FRAME_POLICY;
+    const send = (start: number, end: number) =>
+      slow.has(pathname) ? trickle(file, start, end, response) : createReadStream(file, { start, end }).pipe(response);
     const range = /^bytes=(\d*)-(\d*)$/.exec(request.headers.range ?? '');
     if (prefix === '/svc/' && range) {
       const start = range[1] ? Number(range[1]) : Math.max(0, size - Number(range[2]));
@@ -73,18 +97,20 @@ export async function serveViewer(): Promise<ViewerServer> {
       }
       record(206);
       response.writeHead(206, { ...headers, 'content-range': `bytes ${start}-${end}/${size}`, 'content-length': String(end - start + 1) });
-      createReadStream(file, { start, end }).pipe(response);
+      send(start, end);
       return;
     }
     record(200);
     response.writeHead(200, { ...headers, 'content-length': String(size) });
-    createReadStream(file).pipe(response);
+    if (size > 0) send(0, size - 1);
+    else response.end();
   });
   await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
   const { port } = server.address() as AddressInfo;
   return {
     url: `http://127.0.0.1:${port}`,
     media,
+    slow,
     close: () =>
       new Promise((done) => {
         server.closeAllConnections();

@@ -320,3 +320,31 @@ for (const { what, select, deleted } of [
     for (const actor of [ada, ben]) { await ui.waitLive(actor, id); expect(await docText(actor, id), 'Ben\'s words survive a reload').toBe(undone); }
   });
 }
+
+for (const { what, select, deleted } of [
+  { what: 'text node', select: (ada: Actor, id: string) => selectEnd(ada, id, 'Ben line', 'all'), deleted: 'Intro line.\n\n' },
+  { what: 'paragraph', select: (ada: Actor, id: string) => selectAcross(ada, id, 'Intro line', 'Ben line'), deleted: 'Intro line.' },
+]) {
+  test(`j01 undo: Ben types into his ${what} after Ada undoes deleting it; her Cmd+Shift+Z keeps his new words @p:col-3`, async ({ actors, stack }) => {
+    const { ada, ben, id } = await setup(actors, stack.baseUrl, 'Intro line.');
+    if (!ben) throw new Error('no ben');
+    await caretAtEnd(ben, id, 'Intro line');
+    await ben.page.keyboard.press('Enter'); await ben.page.keyboard.type('Ben line');
+    await expect(paragraph(ada, id, 'Ben line')).toBeVisible({ timeout: PEER_TIMEOUT });
+    await caretAtEnd(ada, id, 'Ben line');
+    await select(ada, id);
+    await ada.page.keyboard.press('Backspace');
+    expect(await converged(ada, ben, id, 'deleted')).toBe(deleted);
+    await ada.page.waitForTimeout(NEW_STEP_MS);
+    expect(await press(ada, ben, id, UNDO, 1, ['Ben line']), 'undo restores Ben\'s line').toBe('Intro line.\n\nBen line');
+    await caretAtEnd(ben, id, 'Ben line'); await ben.page.keyboard.type(' NEW');
+    expect(await converged(ada, ben, id, 'Ben typed')).toBe('Intro line.\n\nBen line NEW');
+    const redone = await press(ada, ben, id, REDO, 1, ['NEW']);
+    expect(redone, 'redo deletes only the words Ada deleted').toBe('Intro line.\n\n NEW');
+    expect(await press(ada, ben, id, UNDO, 1, ['Ben line NEW'])).toBe('Intro line.\n\nBen line NEW');
+    expect(await press(ada, ben, id, REDO, 1, ['NEW'])).toBe(redone);
+    await expect(ui.pane(ada, id)).toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout: PEER_TIMEOUT });
+    await actors.reloadAll();
+    for (const actor of [ada, ben]) { await ui.waitLive(actor, id); expect(await docText(actor, id), 'Ben\'s new words survive a reload').toBe(redone); }
+  });
+}
