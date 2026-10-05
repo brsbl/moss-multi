@@ -1,6 +1,6 @@
 // ported-from: packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.tsx @ 762abb777
 // moss-multi seam: publish decorator drafts as register edits.
-import { useRegisterDraft } from '@moss-multi/host/collab/register-input';
+import { resumeField, useRegisterDraft } from '@moss-multi/host/collab/register-input';
 import { registerDoc } from '@moss-multi/host/collab/registers';
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { JSX } from 'react';
@@ -203,12 +203,12 @@ function RawHtmlBlockquoteComponent({
   const { handleDelete, handleGapClick } = useMediaNodeActions(nodeKey);
   // moss-multi seam: read-only-decorators (T3.8): a read-only HTML block opens no source editor and offers no Edit,
   // Delete or Fullscreen.
-  const [isEditing, setEditing] = useState(false);
+  const [isEditing, setEditing] = useState(() => resumeField(editor, nodeKey) && editor.isEditable());
   const editable = useIsEditorEditable();
   const setIsEditing = useCallback((next: boolean) => setEditing(next && editor.isEditable()), [editor]);
   const [hasTextSelection, setHasTextSelection] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const [localRawHtml, setLocalRawHtml] = useRegisterDraft(editor, nodeKey, rawHtml, 'setRawHtml', textareaRef, isEditing);
+  const [localRawHtml, setLocalRawHtml, writable] = useRegisterDraft(editor, nodeKey, rawHtml, textareaRef, isEditing);
   const highlightedPreRef = useRef<HTMLPreElement>(null);
   const previewContent = useMemo(
     () => parseHtmlBlockquotePreviewContent(rawHtml),
@@ -405,7 +405,7 @@ function RawHtmlBlockquoteComponent({
                   </pre>
                   <textarea
                     ref={textareaRef}
-                    readOnly={!editor.isEditable()}
+                    readOnly={!editor.isEditable() || !writable}
                     value={localRawHtml}
                     onChange={(e) => {
                       setLocalRawHtml(e.target.value);
@@ -511,14 +511,14 @@ function MossHtmlPreviewComponent({
   const { handleDelete, handleGapClick } = useMediaNodeActions(nodeKey);
   // moss-multi seam: read-only-decorators (T3.8): a read-only HTML block opens no source editor and offers no Edit,
   // Delete or Fullscreen.
-  const [isEditing, setEditing] = useState(false);
+  const [isEditing, setEditing] = useState(() => resumeField(editor, nodeKey) && editor.isEditable());
   const editable = useIsEditorEditable();
   const setIsEditing = useCallback((next: boolean) => setEditing(next && editor.isEditable()), [editor]);
   const [hasTextSelection, setHasTextSelection] = useState(false);
   const [isInteractive, setIsInteractive] = useState(false);
   const { isFullscreen, enterFullscreen, exitFullscreen } = useMediaFullscreen();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const [localRawHtml, setLocalRawHtml] = useRegisterDraft(editor, nodeKey, rawHtml, 'setRawHtml', textareaRef, isEditing);
+  const [localRawHtml, setLocalRawHtml, writable] = useRegisterDraft(editor, nodeKey, rawHtml, textareaRef, isEditing);
   const highlightedPreRef = useRef<HTMLPreElement>(null);
 
   const [interactivePreviewReady, setInteractivePreviewReady] = useState(false);
@@ -846,7 +846,7 @@ function MossHtmlPreviewComponent({
         </pre>
         <textarea
           ref={textareaRef}
-          readOnly={!editor.isEditable()}
+          readOnly={!editor.isEditable() || !writable}
           value={localRawHtml}
           onChange={(e) => {
             setLocalRawHtml(e.target.value);

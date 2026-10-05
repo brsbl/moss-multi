@@ -5,10 +5,12 @@
 // a first sync later than 8 s reads `retrying`. Edits the DocDO has not acked live only in this Y.Doc, so a session
 // released with unacked edits stays connected without its pane until they are acked, or until the doc ends.
 import type { ConnectionState, TerminalReason } from '@moss-multi/protocol/dom-contract';
-import { isRole, roleAtLeast } from '@moss-multi/protocol/roles';
-import { CLOSE, closeAction, type ServerEvent, type WriteRefusalReason } from '@moss-multi/protocol/sync';
+import { isRole, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
+import { CLOSE, closeAction, PAYLOAD_MESSAGE, type ServerEvent, type WriteRefusalReason } from '@moss-multi/protocol/sync';
+import { attachPayloadDocs, PayloadDocs, PayloadSync } from '@moss-multi/sync/payload-docs';
 import YProvider from 'y-partyserver/provider';
 import * as Y from 'yjs';
+import { rememberRole } from '../access.ts';
 import { leaveTo } from '../navigation.ts';
 import { refuseInput } from '../refusal.ts';
 import { AckLedger } from './acks.ts';
@@ -148,7 +150,7 @@ function closeNormally(provider: YProvider, held: () => boolean): void {
 const shareToken = (): string | null => new URLSearchParams(window.location.search).get('share');
 
 type AccessAnswer =
-  | { kind: 'role'; canWrite: boolean }
+  | { kind: 'role'; role: Role; canWrite: boolean }
   | { kind: 'deleted' }
   | { kind: 'gone' }
   | { kind: 'signed-out' }
@@ -170,7 +172,7 @@ async function askAccess(docId: string): Promise<AccessAnswer> {
     if (!response.ok) return { kind: 'unknown' };
     const body = (await response.json()) as { role?: unknown; deleted?: unknown };
     if (body.deleted === true) return { kind: 'deleted' };
-    return isRole(body.role) ? { kind: 'role', canWrite: roleAtLeast(body.role, 'editor') } : { kind: 'unknown' };
+    return isRole(body.role) ? { kind: 'role', role: body.role, canWrite: roleAtLeast(body.role, 'editor') } : { kind: 'unknown' };
   } catch {
     return { kind: 'unknown' };
   }
@@ -223,6 +225,14 @@ export function endTrashedDocs(docIds: string[]): void {
   for (const session of [...sessions]) if (docIds.includes(session.docId)) session.end('deleted');
 }
 
+/**
+ * The workspace channel says these docs changed (A§8): a session that went terminal `deleted` asks REST again, and
+ * reopens when the note is live after all (a trash that never committed closed it 4410 first).
+ */
+export function reopenDocs(docIds: string[]): void {
+  for (const session of [...sessions]) if (docIds.includes(session.docId)) void session.reopen();
+}
+
 /** Resolves true once no session of these docs holds an unacked edit, or false after `timeoutMs`. */
 export function waitDocsAcked(docIds: string[], timeoutMs: number): Promise<boolean> {
   const pending = () => [...sessions].some((session) => docIds.includes(session.docId) && session.state.unacked);
@@ -251,6 +261,9 @@ export function retryDoc(docId: string): void {
 
 export class DocSession {
   readonly doc = new Y.Doc();
+  /** The payload docs this tab holds beside the note (A§10.10), destroyed with it. */
+  readonly payloads = attachPayloadDocs(this.doc, new PayloadDocs());
+  readonly #payloadSync: PayloadSync;
   stopPresence?: () => void;
   readonly provider: YProvider;
   #state: SessionState = { synced: false, resync: false, unacked: false, retrying: false, connection: 'reconnecting', canWrite: true, writePaused: false, halted: null };
@@ -261,6 +274,7 @@ export class DocSession {
   #lingering = false;
   /** Terminal or halted: this session's edits can no longer land. */
   #ended = false;
+  #reopening = false;
   readonly #ledger = new AckLedger();
   #link: Link;
   #socketOpen = false;
@@ -310,6 +324,16 @@ export class DocSession {
     this.doc.on('update', (update: Uint8Array, origin: unknown) => {
       if (origin !== this.provider) this.#wrote(update);
     });
+    // Payload frames ride the doc socket under their own message type; the provider hands them over whole.
+    this.#payloadSync = new PayloadSync(this.payloads, {
+      send: (frame) => this.provider.ws?.send(frame),
+      open: () => this.provider.wsconnected && !this.#ended,
+      wrote: (id, update) => this.#wrote(update, id),
+      remote: this.provider,
+    });
+    this.provider.messageHandlers[PAYLOAD_MESSAGE] = (_encoder, decoder) => {
+      this.#payloadSync.receive(decoder.arr);
+    };
     this.#deadline = setTimeout(() => {
       if (!this.#state.synced) this.#set({ retrying: true });
     }, FIRST_SYNC_DEADLINE_MS);
@@ -377,6 +401,27 @@ export class DocSession {
     if (ws && ws.readyState <= WebSocket.OPEN) ws.close(CLOSE.normal, 'ended');
   }
 
+  /** After `deleted` on a note REST still has live: the terminal state clears and the socket reopens at the role REST
+   * gives, or the pane rebinds read-only. Anything else leaves it terminal. */
+  async reopen(): Promise<void> {
+    if (this.#disposed || this.#reopening || !this.#ended || terminalOf(this.docId) !== 'deleted') return;
+    this.#reopening = true;
+    const answer = await askAccess(this.docId).finally(() => { this.#reopening = false; });
+    if (this.#disposed || answer.kind !== 'role' || terminalOf(this.docId) !== 'deleted') return;
+    rememberRole(this.docId, answer.role);
+    this.#ended = false;
+    this.#failedHandshakes = 0;
+    clearTerminal(this.docId);
+    if (!answer.canWrite) {
+      if (this.#state.canWrite) refuseInput(VIEW_ONLY);
+      this.#ended = true;
+      this.#set({ canWrite: false, resync: true });
+      return;
+    }
+    this.provider.shouldConnect = true;
+    void this.provider.connect();
+  }
+
   /** Tries again after `conn-limit`: the terminal state clears and the socket reopens. */
   retry(): void {
     if (this.#disposed || this.#state.halted !== null) return;
@@ -416,7 +461,9 @@ export class DocSession {
     // A connect still resolving its params can never reopen the socket.
     Object.defineProperty(this.provider, 'shouldConnect', { get: () => false, set: () => undefined });
     awareness.destroy();
+    this.#payloadSync.destroy();
     this.doc.destroy();
+    this.payloads.destroy();
   }
 
   #set(patch: Partial<SessionState>): void {
@@ -442,9 +489,14 @@ export class DocSession {
 
   #opened(): void {
     this.#socketOpen = true;
-    // The provider sends a step 1 on open.
+    // The provider sends a step 1 on open; each held payload sends its own, and its unacked writes.
     this.#lastResync = Date.now();
     this.#failedHandshakes = 0;
+    // The note's unacked writes go first (the provider's own step 1 and step 2 follow this event): they hold the
+    // elements naming payloads made offline, so those payloads' resends never reach the DocDO as unnamed writes.
+    const pending = this.#ledger.pendingUpdate();
+    if (pending && !this.#ended) this.provider.ws?.send(syncFrame(2, pending));
+    this.#payloadSync.connected((id) => this.#ledger.pendingUpdate(id));
   }
 
   #synced(): void {
@@ -510,6 +562,8 @@ export class DocSession {
         this.end('deleted');
         return;
       case 'role':
+        // The pane's role, its top bar and its menus follow the answer (a demotion lowers them in place).
+        rememberRole(this.docId, answer.role);
         if (!answer.canWrite) {
           refuseInput(VIEW_ONLY);
           this.#ended = true;
@@ -555,6 +609,7 @@ export class DocSession {
       if (state !== null && !this.#ended && !this.#lingering) awareness.setLocalState(state);
       const pending = this.#ledger.pendingUpdate();
       if (pending && !this.#ended) ws.send(syncFrame(2, pending));
+      if (!this.#ended) for (const id of this.#ledger.pendingPayloads()) this.#payloadSync.resend(id, this.#ledger.pendingUpdate(id));
     } catch {
       // closing; the close path takes over
     }
@@ -585,8 +640,8 @@ export class DocSession {
     this.#onVisibility();
   };
 
-  #wrote(update: Uint8Array): void {
-    this.#ledger.wrote(update);
+  #wrote(update: Uint8Array, payload?: string): void {
+    this.#ledger.wrote(update, payload);
     if (!this.#state.unacked) this.#set({ unacked: true });
   }
 

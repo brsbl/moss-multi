@@ -38,3 +38,27 @@ export async function migratedD1(): Promise<TestD1> {
   }
   return { db, assets, dispose: () => mf.dispose() };
 }
+
+/** D1 allows at most this many bound parameters per statement. */
+export const D1_MAX_PARAMS = 100;
+
+/** `db` with every statement's bound-parameter count recorded in `binds`, in order. */
+export function countingBinds(db: D1Database): { db: D1Database; binds: number[] } {
+  const binds: number[] = [];
+  const wrapped = new Proxy(db, {
+    get(target, key) {
+      if (key !== 'prepare') return Reflect.get(target, key, target);
+      return (query: string) =>
+        new Proxy(target.prepare(query), {
+          get(statement, name) {
+            if (name !== 'bind') return Reflect.get(statement, name, statement);
+            return (...values: unknown[]) => {
+              binds.push(values.length);
+              return statement.bind(...values);
+            };
+          },
+        });
+    },
+  });
+  return { db: wrapped, binds };
+}

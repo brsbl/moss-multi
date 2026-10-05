@@ -4,7 +4,7 @@
 import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import { foldRole, type Role } from '@moss-multi/protocol/roles';
 import type { Principal } from '../auth/principal.ts';
-import type { Db } from '../db/client.ts';
+import { inJson, type Db } from '../db/client.ts';
 import { docMembers, docs, folderMembers, folders, shareLinks } from '../db/schema.ts';
 
 /** Folder levels from a doc's folder up to its vault that grants and links are read on (A§8). */
@@ -17,6 +17,8 @@ export interface DocAccess {
   deleted: boolean;
   /** Only a presented share link opens it: no ownership and no grant. */
   linkOnly: boolean;
+  /** The presented link raised the role above what ownership and grants give. */
+  viaLink: boolean;
 }
 
 export interface FolderAccess {
@@ -64,18 +66,61 @@ export async function folderChain(db: Db, folderId: string): Promise<string[]> {
   return rows.map((row) => row.id);
 }
 
+/** A statement parameter's index (`?N`), or an SQL expression such as an outer row's column. */
+type Arg = number | string;
+const arg = (value: Arg) => (typeof value === 'number' ? `?${value}` : value);
+
 /**
  * SQL that holds while user `?{user}` manages doc `?{doc}` (A§8): it owns the vault, or holds an `owner` grant on the
  * doc or a folder of its chain. It is `can(resolveDocAccess(user, doc).role, 'manage')` for a signed-in person, so a
  * write that conditions on it loses to a revocation that commits first.
  */
-export const managesDoc = (doc: number, user: number) => `(EXISTS (SELECT 1 FROM docs WHERE id = ?${doc} AND owner_user_id = ?${user})
-  OR EXISTS (SELECT 1 FROM doc_members WHERE doc_id = ?${doc} AND principal_id = ?${user} AND role = 'owner')
+export const managesDoc = (doc: Arg, user: Arg) => `(EXISTS (SELECT 1 FROM docs WHERE id = ${arg(doc)} AND owner_user_id = ${arg(user)})
+  OR EXISTS (SELECT 1 FROM doc_members WHERE doc_id = ${arg(doc)} AND principal_id = ${arg(user)} AND role = 'owner')
   OR EXISTS (WITH RECURSIVE chain(id, parent_id, depth) AS (
-      SELECT f.id, f.parent_id, 1 FROM folders f JOIN docs d ON d.folder_id = f.id WHERE d.id = ?${doc}
+      SELECT f.id, f.parent_id, 1 FROM folders f JOIN docs d ON d.folder_id = f.id WHERE d.id = ${arg(doc)}
       UNION ALL SELECT f.id, f.parent_id, chain.depth + 1 FROM folders f JOIN chain ON f.id = chain.parent_id
         WHERE chain.depth < ${MAX_FOLDER_DEPTH}
-    ) SELECT 1 FROM folder_members m JOIN chain ON m.folder_id = chain.id WHERE m.principal_id = ?${user} AND m.role = 'owner'))`;
+    ) SELECT 1 FROM folder_members m JOIN chain ON m.folder_id = chain.id WHERE m.principal_id = ${arg(user)} AND m.role = 'owner'))`;
+
+/** SQL that holds while user `?{user}` manages folder `?{folder}`: it owns the vault, or holds an `owner` grant on the
+ * folder or one above it (managesDoc's folder half). */
+export const managesFolder = (folder: Arg, user: Arg) => `(EXISTS (SELECT 1 FROM folders WHERE id = ${arg(folder)} AND owner_user_id = ${arg(user)})
+  OR EXISTS (WITH RECURSIVE chain(id, parent_id, depth) AS (
+      SELECT id, parent_id, 1 FROM folders WHERE id = ${arg(folder)}
+      UNION ALL SELECT f.id, f.parent_id, chain.depth + 1 FROM folders f JOIN chain ON f.id = chain.parent_id
+        WHERE chain.depth < ${MAX_FOLDER_DEPTH}
+    ) SELECT 1 FROM folder_members m JOIN chain ON m.folder_id = chain.id WHERE m.principal_id = ${arg(user)} AND m.role = 'owner'))`;
+
+/** SQL that holds while doc or folder `?{id}` is live and user `?{user}` manages it. */
+export const liveAndManaged = (type: 'doc' | 'folder', id: Arg, user: Arg) => type === 'doc'
+  ? `EXISTS (SELECT 1 FROM docs WHERE id = ${arg(id)} AND deleted_at IS NULL) AND ${managesDoc(id, user)}`
+  : `EXISTS (SELECT 1 FROM folders WHERE id = ${arg(id)} AND deleted_at IS NULL) AND ${managesFolder(id, user)}`;
+
+/**
+ * Withdraws, at ?1, every open invite that has died (A§8): its target is gone or in Trash, or its inviter no longer
+ * manages it. Each write that trashes, deletes or moves something, or takes a grant away, runs this in its own batch,
+ * so a death is recorded where it happens and a restore or a regained grant never brings an invite back.
+ */
+export const reapDeadInvites = (db: D1Database, now: number): D1PreparedStatement => db.prepare(`UPDATE invites SET revoked_at = ?1
+  WHERE accepted_at IS NULL AND revoked_at IS NULL AND NOT (CASE target_type
+    WHEN 'doc' THEN (${liveAndManaged('doc', 'invites.target_id', 'invites.invited_by')})
+    ELSE (${liveAndManaged('folder', 'invites.target_id', 'invites.invited_by')}) END)`).bind(now);
+
+/** Whether user `userId` manages the live doc or folder `id` now (liveAndManaged, read on its own). */
+export async function managesLive(db: D1Database, type: 'doc' | 'folder', id: string, userId: string): Promise<boolean> {
+  const row = await db.prepare(`SELECT (${liveAndManaged(type, 1, 2)}) AS ok`).bind(id, userId).first<{ ok: number }>();
+  return row?.ok === 1;
+}
+
+/** SQL that holds while user `?{user}` may edit in folder `?{folder}`: it owns the vault, or holds an `editor` or
+ * `owner` grant on the folder or an ancestor. A move re-checks its destination with it in the same statement. */
+export const editsFolder = (folder: number, user: number) => `(EXISTS (SELECT 1 FROM folders WHERE id = ?${folder} AND owner_user_id = ?${user})
+  OR EXISTS (WITH RECURSIVE chain(id, parent_id, depth) AS (
+      SELECT id, parent_id, 1 FROM folders WHERE id = ?${folder}
+      UNION ALL SELECT f.id, f.parent_id, chain.depth + 1 FROM folders f JOIN chain ON f.id = chain.parent_id
+        WHERE chain.depth < ${MAX_FOLDER_DEPTH}
+    ) SELECT 1 FROM folder_members m JOIN chain ON m.folder_id = chain.id WHERE m.principal_id = ?${user} AND m.role IN ('editor', 'owner')))`;
 
 /** Grants on the folders of `chain`, and on the doc when there is one. */
 async function grantRoles(db: Db, ids: string[], chain: string[], docId: string | null): Promise<Role[]> {
@@ -120,8 +165,11 @@ export async function resolveDocAccess(db: Db, principal: Principal, docId: stri
   const sources = { owner: actingUserId(principal) === doc.ownerUserId, grants, anonymous: principal.type === 'anonymous', agent: principal.type === 'agent' };
   const role = foldRole({ ...sources, link });
   if (role === null) return null;
-  const linkOnly = foldRole({ ...sources, link: null }) === null;
-  return { role, ownerUserId: doc.ownerUserId, folderId: doc.folderId, deleted: doc.deletedAt !== null, linkOnly };
+  const withoutLink = foldRole({ ...sources, link: null });
+  return {
+    role, ownerUserId: doc.ownerUserId, folderId: doc.folderId, deleted: doc.deletedAt !== null,
+    linkOnly: withoutLink === null, viaLink: withoutLink !== role,
+  };
 }
 
 /**
@@ -179,8 +227,8 @@ export async function accessibleDocs(db: Db, principal: Principal, visibleFolder
   const ownerId = actingUserId(principal);
   const rows = await db.select().from(docs).where(and(isNull(docs.deletedAt), or(
     ownerId ? eq(docs.ownerUserId, ownerId) : sql`0`,
-    grants.length ? inArray(docs.id, grants.map((grant) => grant.docId)) : sql`0`,
-    folderIds.length ? inArray(docs.folderId, folderIds) : sql`0`,
+    inJson(docs.id, grants.map((grant) => grant.docId)),
+    inJson(docs.folderId, folderIds),
   )));
   return rows.flatMap((row) => {
     const folderRole = folders.find((folder) => folder.id === row.folderId)?.role;

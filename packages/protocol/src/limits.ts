@@ -37,3 +37,29 @@ export const VAULT_MEDIA_QUOTA_BYTES = 2 * 1024 * 1024 * 1024;
 
 /** Server fetches of caller-supplied URLs (unfurls, remote images) per identity per window; 429 past it (A§18). */
 export const REMOTE_FETCH_RATE = { max: 30, windowMs: 60_000 } as const;
+
+/**
+ * How long a PrincipalDO remembers an ended session and a session's doc sockets (A§5.2): better-auth's default session
+ * lifetime, 7 days, which no in-flight upgrade outlives.
+ */
+export const SESSION_MAX_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * The longest a doc socket stays open (A§5.1): the DocDO closes it 1013 at this age, from when its role was resolved,
+ * and it reconnects and registers afresh. A day short of SESSION_MAX_MS, so the PrincipalDO never prunes a registry
+ * row whose socket is still open.
+ */
+export const DOC_SOCKET_MAX_MS = SESSION_MAX_MS - 24 * 60 * 60 * 1000;
+
+/**
+ * While frames flow, a DocDO or PrincipalDO re-validates its sockets' access at most this long after the last frame
+ * (A§8 pull validation), so a socket that sends nothing still closes once its access is gone. An idle DO stops ticking
+ * and hibernates; its next frame validates first.
+ */
+export const ACCESS_TICK_MS = 5_000;
+
+/**
+ * The longest a DocDO or PrincipalDO waits for D1 to answer a validation (A§8, L§4.7): past it the validation fails
+ * closed, and the sockets waiting on it close 1013 and reconnect.
+ */
+export const ACCESS_DEADLINE_MS = 5_000;

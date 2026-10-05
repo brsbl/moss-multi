@@ -337,5 +337,14 @@ export const feedback = sqliteTable(
   (t) => [index('feedback_created_idx').on(t.createdAt)],
 );
 
+/**
+ * Each vault owner's access epoch (A§8 pull validation): triggers in the migration bump it in the same statement as
+ * every write that can lower access in that owner's vaults, and a DocDO re-resolves sockets admitted under an older one.
+ */
+export const accessEpochs = sqliteTable('access_epochs', {
+  ownerUserId: text('owner_user_id').primaryKey(),
+  epoch: integer('epoch').notNull().default(0),
+});
+
 /** The models better-auth's drizzle adapter reads, keyed by its model names. */
 export const authSchema = { user, session, account, verification, deviceCode, rateLimit };

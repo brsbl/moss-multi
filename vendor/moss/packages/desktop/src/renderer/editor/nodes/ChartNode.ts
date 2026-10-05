@@ -1,6 +1,6 @@
 // ported-from: packages/desktop/src/renderer/editor/nodes/ChartNode.tsx @ 762abb777 (extracted)
 // moss-multi seam: register payloads (A§10.10): the config is a per-key register on a bound doc.
-import { readMapRegister, writeMapRegister, initRegisterNode, resetRegisterOnCopy } from '@moss-multi/host/collab/registers';
+import { readMapRegister, writeMapRegister, initRegisterNode } from '@moss-multi/host/collab/registers';
 import type { JSX } from 'react';
 import { $applyNodeReplacement, type DOMConversionMap, type DOMConversionOutput, type DOMExportOutput, DecoratorNode, type EditorConfig, type LexicalNode, type NodeKey, type SerializedLexicalNode, type Spread } from 'lexical';
 import { cloneCommentIds, exportCommentIds, importCommentIds, initCommentIds } from '../utils/commentable-node';
@@ -40,11 +40,6 @@ export class ChartNode extends DecoratorNode<JSX.Element> {
   afterCloneFrom(previous: this): void {
     super.afterCloneFrom(previous);
     this.__regId = previous.__regId;
-  }
-
-  resetOnCopyNodeFrom(original: this): void {
-    super.resetOnCopyNodeFrom(original);
-    resetRegisterOnCopy(this);
   }
 
   static getType(): string {

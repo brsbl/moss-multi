@@ -3,11 +3,11 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.ts b/packages/
 +++ b/packages/desktop/src/renderer/editor/nodes/ChartNode.ts
 @@ -1,3 +1,5 @@
 +// moss-multi seam: register payloads (A§10.10): the config is a per-key register on a bound doc.
-+import { readMapRegister, writeMapRegister, initRegisterNode, resetRegisterOnCopy } from '@moss-multi/host/collab/registers';
++import { readMapRegister, writeMapRegister, initRegisterNode } from '@moss-multi/host/collab/registers';
  import type { JSX } from 'react';
  import { $applyNodeReplacement, type DOMConversionMap, type DOMConversionOutput, type DOMExportOutput, DecoratorNode, type EditorConfig, type LexicalNode, type NodeKey, type SerializedLexicalNode, type Spread } from 'lexical';
  import { cloneCommentIds, exportCommentIds, importCommentIds, initCommentIds } from '../utils/commentable-node';
-@@ -30,9 +32,20 @@ function $convertChartElement(domNode: HTMLElement): DOMConversionOutput | null
+@@ -30,9 +32,15 @@ function $convertChartElement(domNode: HTMLElement): DOMConversionOutput | null
  }
  
  export class ChartNode extends DecoratorNode<JSX.Element> {
@@ -20,15 +20,10 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.ts b/packages/
 +    this.__regId = previous.__regId;
 +  }
 +
-+  resetOnCopyNodeFrom(original: this): void {
-+    super.resetOnCopyNodeFrom(original);
-+    resetRegisterOnCopy(this);
-+  }
-+
    static getType(): string {
      return 'chart';
    }
-@@ -57,7 +70,7 @@ export class ChartNode extends DecoratorNode<JSX.Element> {
+@@ -57,7 +65,7 @@ export class ChartNode extends DecoratorNode<JSX.Element> {
      return {
        type: 'chart',
        version: 1,
@@ -37,7 +32,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.ts b/packages/
        ...exportCommentIds(this.__commentIds)
      };
    }
-@@ -78,9 +91,10 @@ export class ChartNode extends DecoratorNode<JSX.Element> {
+@@ -78,9 +86,10 @@ export class ChartNode extends DecoratorNode<JSX.Element> {
  
    exportDOM(): DOMExportOutput {
      const element = document.createElement('div');
@@ -51,7 +46,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.ts b/packages/
      return { element };
    }
  
-@@ -99,10 +113,12 @@ export class ChartNode extends DecoratorNode<JSX.Element> {
+@@ -99,10 +108,12 @@ export class ChartNode extends DecoratorNode<JSX.Element> {
    }
  
    getConfig(): ChartConfig {
@@ -66,7 +61,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.ts b/packages/
      const writable = this.getWritable();
      writable.__config = config;
    }
-@@ -117,7 +133,7 @@ export class ChartNode extends DecoratorNode<JSX.Element> {
+@@ -117,7 +128,7 @@ export class ChartNode extends DecoratorNode<JSX.Element> {
    }
  
    getTextContent(): string {
