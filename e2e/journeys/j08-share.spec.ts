@@ -201,6 +201,9 @@ test('j08 vault: a granted co-owner of Ada\'s vault can share it, but gets no cr
   // The share is an invite (T2.8): Cy follows it before the vault is his.
   const vaultId = ((await (await ada.context.request.get('/api/workspace')).json()) as { vault: { id: string } }).vault.id;
   await acceptInvite(ada, { folderId: vaultId }, cyPrincipal);
+  // Redeemed in another session, as a followed link would be; Cy's open tab reads the listing again.
+  await cy.page.reload();
+  await cy.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
 
   await cy.page.getByRole('button', { name: 'Vault: Home', exact: true }).click();
   const shared = cy.page.getByRole('menuitem', { name: 'Home owner', exact: true });
