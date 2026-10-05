@@ -148,14 +148,15 @@ describe('copy-link invites', () => {
     expect(owner.status).toBe(200);
     expect((await membersOf(ada, path)).invites.map((i) => i.email), 'the owner’s own click leaves it pending').toEqual([ghost]);
 
+    const gil = await signedUpUser(env, 't28-gil', 'Gil', ghost);
     await d1.db.prepare('UPDATE docs SET deleted_at = ? WHERE id = ?').bind(Date.now(), docId).run();
-    const trashed = await accept(cy.cookie, token);
+    const trashed = await accept(gil.cookie, token);
     expect(trashed.status).toBe(404);
     expect(await trashed.text(), 'one refusal for every cause').toBe(refusal);
     await d1.db.prepare('UPDATE docs SET deleted_at = NULL WHERE id = ?').bind(docId).run();
     await d1.db.prepare('UPDATE invites SET revoked_at = ? WHERE token = ?').bind(Date.now(), token).run();
-    expect((await accept(cy.cookie, token)).status).toBe(404);
-    expect(await roleOf(cy.cookie, docId)).toBeNull();
+    expect((await accept(gil.cookie, token)).status).toBe(404);
+    expect(await roleOf(gil.cookie, docId)).toBeNull();
   });
 
   it('redeems a folder invite into the whole folder', async () => {
@@ -168,6 +169,57 @@ describe('copy-link invites', () => {
     const redeemed = await accept(hal.cookie, token);
     expect(await redeemed.json()).toEqual({ target: { type: 'folder', id: folderId } });
     expect(await roleOf(hal.cookie, inside)).toBe('viewer');
+  });
+});
+
+describe('who an invite admits', () => {
+  it('redeems only for its own email, so following a link never tells the owner whether the email had an account', async () => {
+    const docId = await titled(ada, 'No oracle');
+    const path = `/api/docs/${docId}`;
+    const kim = await signedUpUser(env, 't28-kim', 'Kim');
+    const ghost = unknownEmail('oracle');
+    await share(ada, path, kim.email);
+    await share(ada, path, ghost);
+    const before = await membersOf(ada, path);
+    // Ada's second account (Cy) follows both links.
+    const known = await accept(cy.cookie, tokenOf(await inviteLink(ada, path, kim.email)));
+    const unknown = await accept(cy.cookie, tokenOf(await inviteLink(ada, path, ghost)));
+    expect([known.status, unknown.status], 'neither link admits another account').toEqual([404, 404]);
+    expect(await known.text()).toBe(await unknown.text());
+    expect(await roleOf(cy.cookie, docId)).toBeNull();
+    const after = await membersOf(ada, path);
+    expect(after, 'the member list is unchanged and names nobody').toEqual(before);
+    expect(after.members.map((m) => m.name)).toEqual(['Ada']);
+    expect(after.invites.map((i) => i.email)).toEqual([kim.email, ghost]);
+
+    expect((await accept(kim.cookie, tokenOf(await inviteLink(ada, path, kim.email)))).status, 'its own account redeems it').toBe(200);
+    expect((await membersOf(ada, path)).members.map((m) => m.name)).toEqual(['Ada', 'Kim']);
+  });
+
+  it('refuses an invite once its inviter no longer manages the target: revocation wins', async () => {
+    const folderId = await insertFolder(d1.db, ada, ada.homeId);
+    const docId = await titled(ada, 'Moved out', { folderId });
+    const coOwner = await signedUpUser(env, 't28-joe', 'Joe');
+    await share(ada, `/api/folders/${folderId}`, coOwner.email, 'owner');
+    const ghost = unknownEmail('regain');
+    await share(coOwner, `/api/docs/${docId}`, ghost, 'owner');
+    const token = tokenOf(await inviteLink(coOwner, `/api/docs/${docId}`, ghost));
+
+    // Ada moves the note out of Joe's folder, which ends his access to it.
+    await d1.db.prepare('UPDATE docs SET folder_id = ? WHERE id = ?').bind(ada.homeId, docId).run();
+    expect(await roleOf(coOwner.cookie, docId)).toBeNull();
+    const ghostAccount = await signedUpUser(env, 't28-kit', 'Kit', ghost);
+    expect((await accept(ghostAccount.cookie, token)).status, 'the invite died with Joe’s authority').toBe(404);
+    expect(await roleOf(ghostAccount.cookie, docId)).toBeNull();
+
+    // A folder invite likewise needs its inviter to manage the folder still.
+    const other = unknownEmail('folder-regain');
+    await share(coOwner, `/api/folders/${folderId}`, other, 'owner');
+    const folderToken = tokenOf(await inviteLink(coOwner, `/api/folders/${folderId}`, other));
+    await d1.db.prepare('DELETE FROM folder_members WHERE folder_id = ? AND principal_id = ?').bind(folderId, coOwner.id).run();
+    const otherAccount = await signedUpUser(env, 't28-liv', 'Liv', other);
+    expect((await accept(otherAccount.cookie, folderToken)).status).toBe(404);
+    expect((await call('GET', `/api/folders/${folderId}`, otherAccount.cookie)).status).not.toBe(200);
   });
 });
 
