@@ -12,17 +12,28 @@ export const JOURNEY_DIR = fileURLToPath(new URL('../../e2e/journeys', import.me
 export const ALL = 'all';
 
 /** @type {Record<string, string[]>} */
+// Every group's estimate must fit the shard budget below (`plan.mjs budget`); split a group when it does not.
 export const GROUPS = {
-  // Chrome, auth, sharing and access.
-  shell: ['j00-shell', 'j07', 'j08', 'j09', 'j10'],
-  // A doc's content: import, persistence, co-editing, presence.
-  editing: ['j00-import', 'j00-roundtrip', 'j00-persist', 'j01'],
-  // Titles and properties. Split from editing so WebKit stays within 13 min (it reached 12.2 min at T1.9s).
+  // Chrome and auth.
+  shell: ['j00-shell', 'j07', 'j10'],
+  // Sharing and live access changes.
+  share: ['j08', 'j09'],
+  // Server import against UI paste, and the protocol round trip.
+  import: ['j00-import', 'j00-roundtrip'],
+  // Persistence and co-editing; also any new j01 journey until it is placed.
+  editing: ['j00-persist', 'j01'],
+  // Sharing a note, presence and undo between peers.
+  coedit: ['j01-coedit', 'j01-presence', 'j01-undo'],
+  // Code, HTML and formula fields across joins, moves and removals.
+  registers: ['j01-registers'],
+  // Titles and properties.
   title: ['j02'],
-  // A doc's connection: drops, stalls, limits, hibernation. Split from editing so WebKit stays within 13 min.
+  // A doc's connection: drops, stalls, limits, hibernation.
   session: ['j03', 'j04'],
-  // Trash, folders, media, search, vaults, the demo note.
-  workspace: ['j05', 'j06', 'j11', 'j12', 'j13', 'j14'],
+  // Trash, folders, search, vaults, export.
+  workspace: ['j05', 'j06', 'j12', 'j13', 'export'],
+  // Media, embeds and the demo note.
+  media: ['j11', 'j14'],
   // Comments, suggestions, history, agents.
   meaning: ['j15', 'j16', 'j17', 'j18'],
 };
@@ -92,7 +103,7 @@ export const ENGINES = ['chromium', 'webkit'];
 export const MINUTES_FILE = fileURLToPath(new URL('./journey-minutes.json', import.meta.url));
 
 /**
- * @typedef {{ legs: number, chromium: number, webkit: number }} FileMinutes
+ * @typedef {Record<string, number>} FileMinutes `legs` declared when measured, and p95 minutes per engine
  * @typedef {{ setup: Record<string, number>, perLeg: Record<string, number>, journeys: Record<string, FileMinutes> }} Minutes
  */
 

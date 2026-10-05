@@ -21,9 +21,14 @@ describe('groupOf', () => {
   it('puts each catalog journey in its group', () => {
     expect(groupOf('j00-shell.spec.ts')).toBe('shell');
     expect(groupOf('e2e/journeys/j07-auth.spec.ts')).toBe('shell');
-    expect(groupOf('j00-roundtrip.spec.ts')).toBe('editing');
+    expect(groupOf('j00-roundtrip.spec.ts')).toBe('import');
     expect(groupOf('j00-persist.spec.ts')).toBe('editing');
-    expect(groupOf('j01-coedit.spec.ts')).toBe('editing');
+    expect(groupOf('j01-editing.spec.ts')).toBe('editing');
+    expect(groupOf('j01-new.spec.ts')).toBe('editing');
+    expect(groupOf('j01-coedit.spec.ts')).toBe('coedit');
+    expect(groupOf('j01-registers.spec.ts')).toBe('registers');
+    expect(groupOf('j08-share.spec.ts')).toBe('share');
+    expect(groupOf('j11-media.spec.ts')).toBe('media');
     expect(groupOf('j04-hibernation.spec.ts')).toBe('session');
     expect(groupOf('j05-trash.spec.ts')).toBe('workspace');
     expect(groupOf('j18-agents.spec.ts')).toBe('meaning');
