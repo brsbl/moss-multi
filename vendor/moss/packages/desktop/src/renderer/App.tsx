@@ -4110,6 +4110,7 @@ export function App() {
         notesPanelOverlay ? 'absolute inset-y-0 left-0 z-40 border-r border-border-subtle/50 shadow-[0_8px_24px_var(--ink-shadow-soft)]' : '',
         notesPanelOverlay && notesPanelVisible ? 'translate-x-0 opacity-100' : '',
         notesPanelOverlay && !notesPanelVisible ? '-translate-x-full opacity-0 pointer-events-none' : '',
+        narrow && !notesPanelVisible ? 'invisible' : '', // moss-multi seam: phone-shell (T2.7): put away, not just transparent
         !notesPanelOverlay && !notesPanelVisible ? 'hidden' : ''
       ].join(' ')}
       style={{ width: notesPanelVisible || notesPanelOverlay ? `${notesPanelWidthPx}px` : undefined }}
