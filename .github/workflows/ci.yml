@@ -256,6 +256,11 @@ jobs:
           node scripts/stack.mjs start --run-id "$RUN_ID" --prebuilt .local-stack/prebuilt/dist --hooks
           --expect-commit "${{ needs.build.outputs.commit }}" --expect-bundle "${{ needs.build.outputs.bundleHash }}"
       - run: echo "STACK_STATE=$PWD/.local-stack/runs/$RUN_ID/state.json" >> "$GITHUB_ENV"
+      # T0.9d probe (temporary): CPU by process each ~0.4 s, keyed to the wrangler.log line count.
+      - name: Sample CPU
+        run: |
+          log="$PWD/.local-stack/runs/$RUN_ID/wrangler.log"
+          nohup setsid bash -c "while true; do echo \"== \$(date +%T.%N) L=\$(wc -l < $log)\"; top -b -n2 -d0.3 -w 200 | awk '/^top -/{n++} n==2' | sed -n '3p;8,15p'; done" > "$PWD/e2e/cpu.log" 2>&1 < /dev/null &
       - name: Selftests, then the group's journeys
         working-directory: e2e
         env:
@@ -290,6 +295,7 @@ jobs:
             e2e/test-results/
             e2e/calibration-results/
             e2e/playwright-report/
+            e2e/cpu.log
             .local-stack/runs/*/wrangler.log
             .local-stack/runs/*/state.json
           retention-days: 7
