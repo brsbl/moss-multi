@@ -1,0 +1,148 @@
+{
+  "runs": [
+    37291316246,
+    37290394565,
+    37289189841,
+    37288841581,
+    37288717303,
+    37287953858,
+    37287341475,
+    37286887340,
+    37286308750,
+    37285291193,
+    37284949438,
+    37284107799,
+    37283821703,
+    37283389980
+  ],
+  "setup": {
+    "chromium": 2.33,
+    "webkit": 2.63
+  },
+  "perLeg": {
+    "chromium": 0.42,
+    "webkit": 0.51
+  },
+  "journeys": {
+    "export.spec.ts": {
+      "legs": 4,
+      "chromium": 0.33,
+      "webkit": 0.51
+    },
+    "j00-import.spec.ts": {
+      "legs": 2,
+      "chromium": 2.46,
+      "webkit": 4.15
+    },
+    "j00-persist.spec.ts": {
+      "legs": 9,
+      "chromium": 1.79,
+      "webkit": 2.21
+    },
+    "j00-roundtrip.spec.ts": {
+      "legs": 2,
+      "chromium": 0.07,
+      "webkit": 0.1
+    },
+    "j00-shell.spec.ts": {
+      "legs": 13,
+      "chromium": 0.84,
+      "webkit": 1.57
+    },
+    "j01-coedit.spec.ts": {
+      "legs": 8,
+      "chromium": 0.8,
+      "webkit": 1.5
+    },
+    "j01-editing.spec.ts": {
+      "legs": 14,
+      "chromium": 2.1,
+      "webkit": 2.67
+    },
+    "j01-presence.spec.ts": {
+      "legs": 4,
+      "chromium": 0.63,
+      "webkit": 1.09
+    },
+    "j01-registers.spec.ts": {
+      "legs": 4,
+      "chromium": 0.68,
+      "webkit": 1.38
+    },
+    "j01-undo.spec.ts": {
+      "legs": 9,
+      "chromium": 1.44,
+      "webkit": 2.16
+    },
+    "j02-title.spec.ts": {
+      "legs": 17,
+      "chromium": 2.06,
+      "webkit": 4.58
+    },
+    "j03-connection.spec.ts": {
+      "legs": 11,
+      "chromium": 2.54,
+      "webkit": 3.87
+    },
+    "j04-hibernation.spec.ts": {
+      "legs": 2,
+      "chromium": 1.81,
+      "webkit": 2.06
+    },
+    "j05-trash.spec.ts": {
+      "legs": 7,
+      "chromium": 0.7,
+      "webkit": 1.23
+    },
+    "j06-folders.spec.ts": {
+      "legs": 4,
+      "chromium": 0.33,
+      "webkit": 0.83
+    },
+    "j07-auth.spec.ts": {
+      "legs": 8,
+      "chromium": 0.77,
+      "webkit": 1.29
+    },
+    "j08-share.spec.ts": {
+      "legs": 8,
+      "chromium": 0.7,
+      "webkit": 2.43
+    },
+    "j09-revoke-live.spec.ts": {
+      "legs": 5,
+      "chromium": 2.08,
+      "webkit": 2.55
+    },
+    "j10-stranger-phone.spec.ts": {
+      "legs": 4,
+      "chromium": 0.39,
+      "webkit": 1.06
+    },
+    "j11-embeds.spec.ts": {
+      "legs": 3,
+      "chromium": 0.21,
+      "webkit": 0.46
+    },
+    "j11-media.spec.ts": {
+      "legs": 4,
+      "chromium": 0.56,
+      "webkit": 1.47
+    },
+    "j12-search.spec.ts": {
+      "legs": 2,
+      "chromium": 0.29,
+      "webkit": 0.44
+    },
+    "j13-vaults.spec.ts": {
+      "legs": 2,
+      "chromium": 0.19,
+      "webkit": 0.63
+    },
+    "j14-demo-note.spec.ts": {
+      "legs": 2,
+      "chromium": 0.45,
+      "webkit": 0.96
+    }
+  }
+}
