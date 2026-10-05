@@ -12,6 +12,7 @@ import {
   EDITOR_PANE_ATTR, NAMES, NOTICE_BAND_ATTR, SYNC_UNACKED_ATTR, TERMINAL_REASON_ATTR, TOP_BAR_ATTR, paneSelector,
 } from '../lib/contract.ts';
 import { remountSince } from '../lib/detectors.js';
+import { acceptInvite } from '../lib/grants.ts';
 import { cookieHeader, holdDocSockets } from '../lib/doc-client.ts';
 import { signIn, type Principal } from '../lib/principals.ts';
 import type { SocketEntry } from '../lib/telemetry.ts';
@@ -148,6 +149,7 @@ async function sharedNote(actors: Actors, opening: string): Promise<Shared> {
   const peer = await actors.principal('ben');
   await ui.shareWith(ada, docId, peer, 'Can edit');
   await ada.page.keyboard.press('Escape');
+  await acceptInvite(ada, { docId }, peer);
   return { owner, peer, ada, docId };
 }
 

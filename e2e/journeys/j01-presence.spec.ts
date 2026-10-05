@@ -2,6 +2,7 @@ import YProvider from 'y-partyserver/provider';
 import * as Y from 'yjs';
 import WebSocket from 'ws';
 import { expect, test, ui } from '../lib/test.ts';
+import { grantDoc } from '../lib/grants.ts';
 import type { Actor, Actors } from '../lib/actors.ts';
 const chips = (actor: Actor) => actor.page.locator('[data-presence-client]');
 async function setup(actors: Actors, baseUrl: string, solo = false) {
@@ -14,7 +15,7 @@ async function setup(actors: Actors, baseUrl: string, solo = false) {
   await expect(ui.body(ada, id)).toHaveAttribute('data-body-binding', 'live');
   await expect(chips(ada)).toHaveCount(0);
   const second = solo ? principal : await actors.principal('ben');
-  if (!solo) expect((await ada.context.request.post(`/api/docs/${id}/members`, { headers: { Origin: baseUrl }, data: { email: second.email, role: 'editor' } })).ok()).toBe(true);
+  if (!solo) await grantDoc(ada, id, second);
   const ben = await actors.open(second, { label: 'ben', path: `/d/${id}`, severable: true });
   await expect(ui.body(ben, id)).toHaveAttribute('data-body-binding', 'live');
   await expect(chips(ada)).toHaveCount(1);
@@ -25,7 +26,7 @@ test('j01 presence: three clients have stable distinct colors, matching carets a
   const { ada, ben, id } = await setup(actors, stack.baseUrl);
   const benColor = await chips(ada).getAttribute('data-presence-color');
   const caraPrincipal = await actors.principal('cara');
-  expect((await ada.context.request.post(`/api/docs/${id}/members`, { headers: { Origin: stack.baseUrl }, data: { email: caraPrincipal.email, role: 'editor' } })).ok()).toBe(true);
+  await grantDoc(ada, id, caraPrincipal);
   const cara = await actors.open(caraPrincipal, { path: `/d/${id}` });
   for (const actor of [ada, ben, cara]) await expect(chips(actor)).toHaveCount(2);
   await actors.requireDistinct(3);

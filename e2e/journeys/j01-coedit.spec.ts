@@ -9,6 +9,7 @@ import {
   APP_STATE_ATTR, BODY_BINDING_ATTR, DOC_SOCKET_PATH, DOC_STATE_ATTR, EDITOR_PANE_ATTR, NAMES, ROLE_ATTR, SYNC_UNACKED_ATTR, paneSelector,
 } from '../lib/contract.ts';
 import { cookieHeader, openDocClient } from '../lib/doc-client.ts';
+import { acceptInvite } from '../lib/grants.ts';
 import { signIn } from '../lib/principals.ts';
 import { CLOSE } from '../../packages/protocol/src/sync.ts';
 import { expect, test, ui } from '../lib/test.ts';
@@ -58,12 +59,14 @@ test('j01 setup: Ada shares her note with Ben from the Share dialog, and Ben ope
   await waitAcked(ada, docId);
 
   const dialog = await ui.shareWith(ada, docId, benPrincipal, 'Can edit');
-  await expect(ui.inviteRow(dialog, benPrincipal.email), 'the owner sees the email she shared with, pending until Ben opens it').toContainText('Invited');
+  await expect(ui.inviteRow(dialog, benPrincipal.email), 'the owner sees the email she shared with, pending until Ben redeems it').toContainText('Invited');
   if (!ada.principal) throw new Error('ada has no principal');
   await expect(ui.accessRow(dialog, ada.principal), 'Ada is listed as the owner').toContainText('Owner');
   await actors.checkpoint('shared');
   await ada.page.keyboard.press('Escape');
   await expect(dialog).toBeHidden();
+  // Declared setup: Ben redeems the invite, as its link or his bell would (j19 covers both).
+  await acceptInvite(ada, { docId }, benPrincipal);
 
   const ben = await actors.open(benPrincipal, { path: `/d/${docId}` });
   await waitBodyLive(ben, docId);
@@ -164,6 +167,7 @@ test('j01 access: a viewer reads the shared note but cannot share, write through
   const dialog = await ui.shareWith(ada, docId, benPrincipal, 'Can view');
   await ada.page.keyboard.press('Escape');
   await expect(dialog).toBeHidden();
+  await acceptInvite(ada, { docId }, benPrincipal);
 
   const ben = await actors.open(benPrincipal, { path: `/d/${docId}` });
   await expect(ui.pane(ben, docId)).toHaveAttribute(ROLE_ATTR, 'viewer');
@@ -184,6 +188,7 @@ test('j01 access: a viewer reads the shared note but cannot share, write through
     headers, data: { email: benPrincipal.email, role: 'viewer' },
   });
   expect(grant.status()).toBe(201);
+  await acceptInvite(ada, { folderId: vault.id }, benPrincipal);
   const created = await ben.context.request.post('/api/docs', { headers, data: { folderId: vault.id } });
   expect(created.status()).toBe(403);
 
@@ -210,6 +215,7 @@ test('j01 discovery: Ben finds a directly shared note in Home without a URL or m
   await waitBodyLive(ada, docId);
   await ui.shareWith(ada, docId, benPrincipal, 'Can edit');
   await ada.page.keyboard.press('Escape');
+  await acceptInvite(ada, { docId }, benPrincipal);
   const ben = await actors.open(benPrincipal);
   const row = ben.page.locator(`[data-sidebar-row][data-doc-id="${docId}"]`);
   await expect(row).toBeVisible();
@@ -236,6 +242,7 @@ test('j01 discovery: Ben switches to a shared vault and back, with a role badge 
     headers: { origin: stack.baseUrl }, data: { email: benPrincipal.email, role: 'editor' },
   });
   expect(grant.status()).toBe(201);
+  await acceptInvite(ada, { folderId: vault.id }, benPrincipal);
   const ben = await actors.open(benPrincipal);
   const switcher = ben.page.getByRole('button', { name: 'Vault: Home', exact: true });
   await switcher.click();
@@ -273,6 +280,7 @@ test('j01 duplicate: the note menu makes a content-preserving copy visible to bo
   expect((await ada.context.request.post(`/api/folders/${vault.id}/members`, {
     headers: { origin: stack.baseUrl }, data: { email: benPrincipal.email, role: 'editor' },
   })).status()).toBe(201);
+  await acceptInvite(ada, { folderId: vault.id }, benPrincipal);
   const ben = await actors.open(benPrincipal, { path: `/d/${docId}` });
   await waitBodyLive(ben, docId);
   await ada.page.locator(`[data-sidebar-row][data-doc-id="${docId}"]`).click({ button: 'right' });
@@ -316,6 +324,7 @@ test('j01 workspace: another open document keeps its binding while peer creates 
   expect((await ada.context.request.post(`/api/folders/${vault.id}/members`, {
     headers: { origin: stack.baseUrl }, data: { email: benPrincipal.email, role: 'editor' },
   })).status()).toBe(201);
+  await acceptInvite(ada, { folderId: vault.id }, benPrincipal);
   const ben = await actors.open(benPrincipal, { path: `/d/${openId}` });
   await waitBodyLive(ben, openId);
   // Socket readiness is witnessed by the actual browser WebSocket, including its received events.

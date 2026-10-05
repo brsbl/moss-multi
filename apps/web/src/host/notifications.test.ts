@@ -27,12 +27,12 @@ it('marks a notice read at once and sends it with keepalive, never awaited', asy
   const { store, calls, pending } = harness([[notice('a'), notice('b')]]);
   await store.refresh();
   expect(store.unread()).toBe(2);
-  store.markRead(['a'], 'a');
+  store.markRead(['a']);
   expect(store.get().find((n) => n.id === 'a')?.read, 'read before the request answers').toBe(true);
   expect(store.unread()).toBe(1);
   const sent = calls.find((c) => c.url === '/api/notifications/read');
   expect(sent?.init).toMatchObject({ method: 'POST', keepalive: true, credentials: 'same-origin' });
-  expect(JSON.parse(String(sent?.init?.body))).toEqual({ ids: ['a'], open: 'a' });
+  expect(JSON.parse(String(sent?.init?.body)), 'reading a notice redeems nothing; its invite is followed separately').toEqual({ ids: ['a'] });
   expect(pending).toHaveLength(1);
 });
 

@@ -110,9 +110,18 @@ const people = (dialog: Locator): Locator => dialog.getByRole('list', { name: 'P
 /** A person's row in the open Share dialog's "People with access" list. */
 export const accessRow = (dialog: Locator, person: Principal): Locator => people(dialog).filter({ hasText: person.name });
 
-/** A row by email, as the owner sees it: an invite still pending (an email shared with nobody's account, or a person
- * who has not opened the item yet, T2.4) or a member. */
+/** A row by email, as the owner sees it: an invite still pending (no email's invite is redeemed until its holder
+ * follows it, T2.8) or a member. */
 export const inviteRow = (dialog: Locator, email: string): Locator => people(dialog).filter({ hasText: email });
+
+/** The copyable /invite link of a pending invite in the open Share dialog (T2.8), read from its field. */
+export async function inviteLink(dialog: Locator, email: string): Promise<string> {
+  const field = inviteRow(dialog, email).getByRole('textbox', { name: `Invite link for ${email}`, exact: true });
+  await expect(field, `${email}: the pending invite offers its link`).toHaveCount(1);
+  const url = await field.inputValue();
+  expect(url, 'an /invite link carrying its token').toMatch(/\/invite\/[0-9a-f]{48}$/);
+  return url;
+}
 
 /** The read-only field holding a live link's URL, and its row. */
 export const linkField = (dialog: Locator, access: LinkAccess): Locator => dialog.getByRole('textbox', { name: `${access} link`, exact: true });
@@ -129,7 +138,7 @@ export async function shareInDialog(dialog: Locator, email: string, access: Acce
 }
 
 /** Shares the note with `person` at `access` through the dialog, then waits for their row (by email: it stays a
- * pending invite until they open the note); the dialog stays open. */
+ * pending invite until they redeem it); the dialog stays open. */
 export async function shareWith(actor: Actor, docId: string, person: Principal, access: Access): Promise<Locator> {
   const dialog = await openShare(actor, docId);
   await shareInDialog(dialog, person.email, access);
