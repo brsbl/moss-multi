@@ -75,7 +75,7 @@ export function SuggestPlugin({ pane }: { pane: SuggestPane }): null {
         // Strikes: delete-part targets, and body items a record's own ops remove (a join, a split, a restyle).
         const struck = [...partTargets(body, new Set(built.valid)), ...removed];
         paintRanges(owner, [], struck.length ? rangesWhere(editor, binding, (id) => covers(struck, id)) : []);
-        if (overlay) drawMarks(editor, overlay, editMarks(body, built, binding));
+        if (overlay) drawMarks(editor, overlay, editMarks(body, built, binding, removed));
       } else {
         clearPaint(owner);
         overlay?.replaceChildren();

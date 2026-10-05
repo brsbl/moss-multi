@@ -81,12 +81,34 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
     return part;
   };
 
+  /** Whether the selection holds anything a delete would change: an unstruck body item or the author's own. */
+  const $live = (): boolean => {
+    const selection = $getSelection();
+    const binding = bindingOf(editor);
+    if (!$isRangeSelection(selection) || selection.isCollapsed() || !binding) return false;
+    const [start, end] = selection.isBackward() ? [selection.focus, selection.anchor] : [selection.anchor, selection.focus];
+    for (const node of selection.getNodes()) {
+      if ($isTextNode(node)) {
+        const ids = textIds(binding, node.getKey());
+        if (!ids) continue;
+        const from = start.type === 'text' && start.key === node.getKey() ? start.offset : 0;
+        const to = end.type === 'text' && end.key === node.getKey() ? end.offset : ids.length;
+        if (ids.slice(from, to).some((id) => !fork.isStruck(id))) return true;
+        continue;
+      }
+      if ($isElementNode(node)) continue;
+      const item = sharedItem(binding, node.getKey());
+      if (item && !fork.isStruck(item.id)) return true;
+    }
+    return false;
+  };
+
   /**
    * A non-collapsed selection: body items in it become one delete part, the author's own text in it is removed
-   * natively, and the caret goes to its end. `own`: only the author's own text, which deletes natively. `skip`:
-   * nothing left to strike; the caret still moves.
+   * natively, and the caret goes to its end (its start with `toStart`, for a backward word or line delete).
+   * `own`: only the author's own text, which deletes natively. `skip`: nothing left to strike; the caret still moves.
    */
-  const $routeRange = (): Routed => {
+  const $routeRange = (toStart = false): Routed => {
     const selection = $getSelection();
     const binding = bindingOf(editor);
     if (!$isRangeSelection(selection) || selection.isCollapsed() || !binding) return 'none';
@@ -125,10 +147,11 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
     const owned = mine.length + mineLeaves.length;
     if (body.length === 0 && owned > 0) return 'own';
     if (body.length > 0 && !strike(body, owned > 0)) return 'skip';
-    const caret = { key: end.key, offset: end.offset, type: end.type };
-    // His own characters go natively, last first so earlier offsets hold.
+    const at = toStart ? start : end;
+    const caret = { key: at.key, offset: at.offset, type: at.type };
+    // His own characters go natively, last first so earlier offsets hold (all of them sit after the start).
     for (const { node, from, to } of mine.reverse()) {
-      if (caret.type === 'text' && node.getKey() === caret.key) caret.offset -= to - from;
+      if (!toStart && caret.type === 'text' && node.getKey() === caret.key) caret.offset -= to - from;
       node.spliceText(from, to - from, '', false);
     }
     for (const leaf of mineLeaves) leaf.remove();
@@ -218,11 +241,24 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
     return false;
   };
 
+  /**
+   * Word or line delete: a collapsed caret extends by `granularity`, past words or lines already struck, and the
+   * caret ends beyond what it struck in the delete's direction, so the next one strikes onward.
+   */
   const $extended = (backward: boolean, granularity: 'word' | 'lineboundary'): boolean => {
     const selection = $getSelection();
     if (!$isRangeSelection(selection)) return false;
-    if (selection.isCollapsed()) selection.modify('extend', backward, granularity);
-    const routed = $routeRange();
+    if (selection.isCollapsed()) {
+      for (let guard = 0; guard < 1_000; guard += 1) {
+        const { key, offset, type } = selection.focus;
+        selection.modify('extend', backward, granularity);
+        const moved = selection.focus.key !== key || selection.focus.offset !== offset || selection.focus.type !== type;
+        if (!moved || $live()) break;
+        // Only struck text so far: go past it and extend again.
+        selection.anchor.set(selection.focus.key, selection.focus.offset, selection.focus.type);
+      }
+    }
+    const routed = $routeRange(backward);
     return routed === 'struck' || routed === 'skip';
   };
 

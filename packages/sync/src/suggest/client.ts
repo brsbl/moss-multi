@@ -4,7 +4,7 @@
 // writes B. A record enters F or C only after G1–G3 and the headless bind check pass on a scratch copy.
 import * as Y from 'yjs';
 import { BODY_ROOTS, hydrate, regRefs, type Inserted, type SuggestionRecord } from '@moss-multi/core/suggest/apply';
-import type { IdSpan, LeaseGrant, SuggestReply, SuggestRefusal, SuggestRequest } from '@moss-multi/protocol/suggest';
+import { SUGGEST_LIMITS, type IdSpan, type LeaseGrant, type SuggestReply, type SuggestRefusal, type SuggestRequest } from '@moss-multi/protocol/suggest';
 import { bytesToBase64 } from '@moss-multi/protocol/sync';
 import { readMeta, readRecord, recordIds } from './records.ts';
 import { bindCheck } from './review.ts';
@@ -15,6 +15,11 @@ const VIEW_APPLY = 'suggest-view';
 
 /** A new group starts after this long without an edit (§5 grouping). */
 export const GROUP_IDLE_MS = 30_000;
+/**
+ * The DocDO expires a lease no frame used for `leaseIdleMs`: an active lease untouched this long is resumed on the same
+ * connection before the next request.
+ */
+export const LEASE_RENEW_MS = SUGGEST_LIMITS.leaseIdleMs / 2;
 
 export type BindCheck = (doc: Y.Doc, inserted: Inserted) => boolean;
 
@@ -296,6 +301,8 @@ export class SuggestFork {
   #disposed = false;
   #sent = 0;
   #lastEdit = 0;
+  /** When each lease was last granted, resumed or written under. */
+  readonly #touched = new Map<number, number>();
   #lastBlock = -1;
   #caretBlock = -1;
   /** Names this fork to the DocDO, so it can resume its leases from a new socket while the old one looks open there. */
@@ -354,12 +361,17 @@ export class SuggestFork {
       this.begin();
       return;
     }
-    // Only this fork's leases: another window of the author holds its own, and naming one would refuse the resume.
-    const open = this.#openMine();
-    const resume = [...new Set([...this.#leases.map((lease) => lease.client), ...[...this.#used].filter((client) => open.has(client))])];
+    // Unanswered lease requests are not replayed: the resume mints spares.
     this.#waiting.unshift(...replay.filter((entry) => entry.request.t !== 'suggest-lease'));
+    this.#leasing = false;
     this.#resuming = true;
-    this.#send({ request: { t: 'suggest-lease', resume, fork: this.#id } });
+    this.#send({ request: { t: 'suggest-lease', resume: this.#resumable(), fork: this.#id } });
+  }
+
+  /** Only this fork's leases: another window of the author holds its own, and naming one would refuse the resume. */
+  #resumable(): number[] {
+    const open = this.#openMine();
+    return [...new Set([...this.#leases.map((lease) => lease.client), ...[...this.#used].filter((client) => open.has(client))])];
   }
 
   /** Requests are made that the server has not stored yet, sent or waiting to be: the session stays unacked. */
@@ -371,17 +383,25 @@ export class SuggestFork {
   receive(reply: SuggestReply): void {
     if (this.#disposed) return;
     const entry = this.#inflight.shift();
+    const resumed = entry?.request.t === 'suggest-lease' && entry.request.resume !== undefined;
     if (reply.t === 'suggest-leased') {
-      this.#leasing = false;
-      if (this.#resuming) {
+      if (resumed) {
         const fresh = new Map(reply.leases.map((lease) => [lease.client, lease]));
+        const known = new Set(this.#leases.map((lease) => lease.client));
         this.#leases = this.#leases.map((lease) => fresh.get(lease.client) ?? lease);
+        // A lease the resume minted beside the named ones is a spare, while F lacks one.
+        for (const lease of reply.leases) {
+          if (!known.has(lease.client) && !this.#used.has(lease.client) && this.#leases.length < 2) this.#leases.push(lease);
+        }
+        this.#touch(reply.leases);
         this.#resuming = false;
         this.#dropStored(new Map(reply.leases.map((lease) => [lease.client, lease.clock])));
         this.#flush();
         return;
       }
+      this.#leasing = false;
       this.#leases.push(...reply.leases);
+      this.#touch(reply.leases);
       if (!this.#ready) this.#start();
       return;
     }
@@ -401,7 +421,7 @@ export class SuggestFork {
     }
     // Taking back a part the record no longer holds changes nothing.
     if (request?.t === 'suggest-undelete' && reply.reason === 'target') return;
-    if (request?.t === 'suggest-lease' && this.#ready && !this.#resuming && reply.reason === 'lease-cap') {
+    if (request?.t === 'suggest-lease' && this.#ready && !resumed && reply.reason === 'lease-cap') {
       // No spare: the active group continues.
       this.#leasing = false;
       return;
@@ -496,9 +516,20 @@ export class SuggestFork {
   }
 
   #request(request: SuggestRequest, update?: Uint8Array): void {
+    const active = this.#leases[0];
+    if (request.t !== 'suggest-lease' && this.#ready && !this.#resuming && active && this.#now() - (this.#touched.get(active.client) ?? 0) >= LEASE_RENEW_MS) {
+      // The active lease may have idled out on the DocDO: resume the leases on this connection first.
+      this.#resuming = true;
+      this.#send({ request: { t: 'suggest-lease', resume: this.#resumable(), fork: this.#id } });
+    }
     const entry = { request, update };
     if (this.#resuming) this.#waiting.push(entry);
     else this.#send(entry);
+  }
+
+  #touch(leases: readonly { client: number }[]): void {
+    const now = this.#now();
+    for (const lease of leases) this.#touched.set(lease.client, now);
   }
 
   #flush(): void {
@@ -602,6 +633,7 @@ export class SuggestFork {
     this.#lastBlock = this.#caretBlock;
     this.#sent += 1;
     this.#request({ t: 'suggest-ops', record: active.record, update: bytesToBase64(update) }, update);
+    this.#touch([active]);
     // An edit that builds on another of the author's open records joins it, or accept would fail G1 (§5).
     for (const other of this.#named(update)) {
       if (other === active.record || this.#merged.has(other)) continue;

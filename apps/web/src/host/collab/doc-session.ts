@@ -276,6 +276,8 @@ export class DocSession {
   #ended = false;
   readonly #ledger = new AckLedger();
   readonly #suggest = new SuggestLedger();
+  /** The socket suggest requests may use: one that has synced. On a new socket the fork resumes its leases first. */
+  #suggestWs: WebSocket | null = null;
   readonly #suggestListeners = new Set<(reply: SuggestReply) => void>();
   readonly #disposeListeners = new Set<() => void>();
   readonly #replay: Replay;
@@ -408,7 +410,7 @@ export class DocSession {
   /** Sends a suggest-mode request (the fork, T5.1); `data-sync-unacked` holds until the DocDO replies. */
   sendSuggest(request: SuggestRequest): void {
     const ws = this.provider.ws;
-    if (ws?.readyState === WebSocket.OPEN && !this.#ended) {
+    if (ws && ws === this.#suggestWs && ws.readyState === WebSocket.OPEN && !this.#ended) {
       this.provider.sendMessage(JSON.stringify(request));
       this.#suggest.sent(request);
     } else {
@@ -447,6 +449,7 @@ export class DocSession {
    */
   resendSuggest(resend: () => void): void {
     this.#suggest.takeUnsent();
+    this.#suggestWs = this.provider.ws;
     resend();
     this.#settleUnacked();
   }
@@ -550,6 +553,7 @@ export class DocSession {
   }
 
   #synced(): void {
+    this.#suggestWs = this.provider.ws;
     this.#accessRetries = 0;
     this.#update({ type: 'synced' });
     if (this.#state.synced) return;
