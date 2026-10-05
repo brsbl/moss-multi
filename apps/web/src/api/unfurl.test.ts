@@ -74,6 +74,16 @@ const post = (path: string, cookie: string | null, body: unknown) =>
     body: JSON.stringify(body),
   }), env);
 
+/** A body that sends its first bytes, then resets. */
+const resetMidBody = (type: string, first: string) => () => new Response(new ReadableStream<Uint8Array>({
+  start(controller) {
+    controller.enqueue(new TextEncoder().encode(first));
+  },
+  pull(controller) {
+    controller.error(new TypeError('connection reset'));
+  },
+}), { headers: { 'content-type': type } });
+
 const html = (body: string, status = 200) => () => new Response(body, { status, headers: { 'content-type': 'text/html; charset=utf-8' } });
 
 describe('POST /api/unfurl', () => {
@@ -113,6 +123,15 @@ describe('POST /api/unfurl', () => {
       expect(response.status, url).toBe(200);
       expect(await response.json(), url).toEqual({ status: 'fallback', url });
     }
+  });
+
+  it('answers a fallback card when the page resets mid-body', async () => {
+    const docId = await insertDoc(d1.db, ada);
+    const url = 'https://site.example/reset';
+    routes[url] = resetMidBody('text/html', '<html><head><title>Half');
+    const response = await post('/api/unfurl', ada.cookie, { noteId: docId, url });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ status: 'fallback', url });
   });
 
   it('answers a fallback card for a host with no DNS answers, fetching nothing', async () => {
@@ -227,5 +246,11 @@ describe('POST /api/docs/:id/assets/from-url (images.persistUrl)', () => {
     const docId = await insertDoc(d1.db, ada);
     routes['https://img.example/gone.png'] = () => new Response('missing', { status: 404 });
     expect((await post(`/api/docs/${docId}/assets/from-url`, ada.cookie, { url: 'https://img.example/gone.png' })).status).toBe(502);
+  });
+
+  it('answers 502 when the image resets mid-body', async () => {
+    const docId = await insertDoc(d1.db, ada);
+    routes['https://img.example/reset.png'] = resetMidBody('image/png', 'PNG');
+    expect((await post(`/api/docs/${docId}/assets/from-url`, ada.cookie, { url: 'https://img.example/reset.png' })).status).toBe(502);
   });
 });

@@ -187,6 +187,11 @@ test('j11-embeds: a YouTube embed plays in its sandboxed frame @p:note-8 @eviden
   const frame = video.locator('iframe');
   await expect(frame, 'the player is an iframe').toHaveAttribute('src', `https://www.youtube.com/embed/${YOUTUBE_ID}?autoplay=1`, { timeout: LOAD_TIMEOUT });
   await expect(frame).toHaveAttribute('allow', /autoplay/);
+  // The sandbox names only flags this engine knows (WebKit has no allow-presentation) and never grants navigation.
+  const sandbox = await frame.evaluate((f: HTMLIFrameElement) => [...f.sandbox].map((token) => [token, f.sandbox.supports(token)] as const));
+  expect(sandbox.filter(([, supported]) => !supported), 'every sandbox flag is one the engine supports').toEqual([]);
+  expect(sandbox.map(([token]) => token)).toEqual(expect.arrayContaining(['allow-scripts', 'allow-same-origin']));
+  expect(sandbox.map(([token]) => token).filter((token) => token.startsWith('allow-top-navigation'))).toEqual([]);
   const player = video.frameLocator('iframe').locator('#player');
   await expect.poll(() => player.evaluate((v: HTMLVideoElement) => v.currentTime), { message: 'the clip plays', timeout: LOAD_TIMEOUT }).toBeGreaterThan(0.1);
   await actors.checkpoint('youtube');

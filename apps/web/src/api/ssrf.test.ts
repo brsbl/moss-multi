@@ -46,6 +46,11 @@ describe('assertPublicUrl: the syntactic gate', () => {
     ['benchmarking 198.18/15', 'https://198.18.0.1/'],
     ['multicast', 'https://224.0.0.1/'],
     ['broadcast', 'https://255.255.255.255/'],
+    ['IETF protocol assignments 192.0.0/24', 'https://192.0.0.8/'],
+    ['TEST-NET-1 192.0.2/24', 'https://192.0.2.1/'],
+    ['TEST-NET-2 198.51.100/24', 'https://198.51.100.7/'],
+    ['TEST-NET-3 203.0.113/24', 'https://203.0.113.9/'],
+    ['6to4 relay anycast 192.88.99/24', 'https://192.88.99.1/'],
   ])('refuses %s', (_label, url) => {
     expect(blocked(url), url).toBe(true);
   });
@@ -81,6 +86,9 @@ describe('assertPublicUrl: the syntactic gate', () => {
     ['IPv4-compatible loopback', 'https://[::127.0.0.1]/'],
     ['NAT64 loopback', 'https://[64:ff9b::7f00:1]/'],
     ['multicast', 'https://[ff02::1]/'],
+    ['local-use NAT64 64:ff9b:1::/48', 'https://[64:ff9b:1::a00:1]/'],
+    ['discard-only 100::/64', 'https://[100::1]/'],
+    ['benchmarking 2001:2::/48', 'https://[2001:2::1]/'],
   ])('refuses IPv6 %s', (_label, url) => {
     expect(blocked(url), url).toBe(true);
   });
@@ -99,6 +107,8 @@ describe('assertPublicUrl: the syntactic gate', () => {
     ['public IPv4', 'https://93.184.215.14/'],
     ['just past CGNAT', 'https://100.128.0.1/'],
     ['just past 172.16/12', 'https://172.32.0.1/'],
+    ['public 192.0/16 outside its reserved /24s', 'https://192.0.78.24/'],
+    ['public 2001::/16 outside 2001:2::/48', 'https://[2001:4860:4860::8888]/'],
     ['public IPv6', 'https://[2606:4700:4700::1111]/'],
     ['a hostname', 'https://www.example.com/'],
   ])('passes %s', (_label, url) => {
@@ -155,6 +165,17 @@ describe('hostResolvesPublic: DNS answers through DoH', () => {
     expect(ips.sort()).toEqual(['10.9.8.7', 'fd00::7']);
     const asked = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls.map(([url]) => new URL(String(url)));
     expect(asked.every((url) => url.protocol === 'https:' && url.searchParams.get('name') === 'rebind.example')).toBe(true);
+  });
+
+  it('passes the caller\'s deadline to every DoH lookup', async () => {
+    const signals: (AbortSignal | null | undefined)[] = [];
+    const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      signals.push(init?.signal);
+      return new Response(JSON.stringify({ Status: 0, Answer: [{ type: 1, data: '93.184.215.14' }] }));
+    }) as unknown as typeof fetch;
+    const deadline = AbortSignal.timeout(8_000);
+    await createDohResolver(fetchImpl)('example.com', deadline);
+    expect(signals).toEqual([deadline, deadline]);
   });
 
   it('fails closed on a DoH error reply', async () => {
@@ -232,5 +253,54 @@ describe('safeFetch: every redirect hop is checked again', () => {
     const fetchImpl = fetching({ 'https://a.example/x': () => new Response(null, { status: 302 }) });
     const { response } = await safeFetch('https://a.example/x', { fetch: fetchImpl as unknown as typeof fetch, resolve });
     expect(response.status).toBe(302);
+  });
+});
+
+describe('safeFetch through DoH: one failed address family refuses the whole fetch', () => {
+  type Reply = { status?: number; body?: Record<string, unknown> };
+  const OK_A: Reply = { body: { Status: 0, Answer: [{ type: 1, data: '93.184.215.14' }] } };
+  const OK_AAAA: Reply = { body: { Status: 0, Answer: [{ type: 28, data: '2606:2800:21f:cb07:6820:80da:af6b:8b2c' }] } };
+  const NODATA: Reply = { body: { Status: 0 } };
+  const doh = (replies: { A: Reply; AAAA: Reply }) => (async (input: RequestInfo | URL) => {
+    const reply = replies[new URL(String(input)).searchParams.get('type') as 'A' | 'AAAA'];
+    return new Response(JSON.stringify(reply.body ?? {}), { status: reply.status ?? 200 });
+  }) as unknown as typeof fetch;
+
+  it.each([
+    ['AAAA answers HTTP 503', { A: OK_A, AAAA: { status: 503 } }],
+    ['AAAA answers SERVFAIL', { A: OK_A, AAAA: { body: { Status: 2 } } }],
+    ['AAAA answers REFUSED', { A: OK_A, AAAA: { body: { Status: 5 } } }],
+    ['AAAA is truncated', { A: OK_A, AAAA: { body: { Status: 0, TC: true, Answer: [] } } }],
+    ['A answers HTTP 503', { A: { status: 503 }, AAAA: OK_AAAA }],
+    ['A answers SERVFAIL', { A: { body: { Status: 2 } }, AAAA: OK_AAAA }],
+    ['A is truncated', { A: { body: { Status: 0, TC: true, Answer: [{ type: 1, data: '93.184.215.14' }] } }, AAAA: OK_AAAA }],
+  ])('when %s, nothing is fetched', async (_label, replies) => {
+    const destination = vi.fn(async () => new Response('page'));
+    const failure = await safeFetch('https://split.example/', { fetch: destination as unknown as typeof fetch, resolve: createDohResolver(doh(replies)) })
+      .catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(SsrfBlockedError);
+    expect(destination).not.toHaveBeenCalled();
+  });
+
+  it('a NODATA reply for one family contributes nothing and the other family decides', async () => {
+    const destination = vi.fn(async () => new Response('page'));
+    const { response } = await safeFetch('https://v4only.example/', { fetch: destination as unknown as typeof fetch, resolve: createDohResolver(doh({ A: OK_A, AAAA: NODATA })) });
+    expect(await response.text()).toBe('page');
+    expect(destination).toHaveBeenCalledTimes(1);
+  });
+
+  it('an NXDOMAIN host is unresolved, fetching nothing', async () => {
+    const destination = vi.fn(async () => new Response('page'));
+    const failure = await safeFetch('https://gone.example/', { fetch: destination as unknown as typeof fetch, resolve: createDohResolver(doh({ A: { body: { Status: 3 } }, AAAA: { body: { Status: 3 } } })) })
+      .catch((error: unknown) => error);
+    expect((failure as SsrfBlockedError).reason).toBe('unresolved-host');
+    expect(destination).not.toHaveBeenCalled();
+  });
+
+  it("hands the request's deadline to the resolver", async () => {
+    const resolve = vi.fn<HostResolver>(async () => ['93.184.215.14']);
+    const signal = AbortSignal.timeout(8_000);
+    await safeFetch('https://a.example/', { fetch: (async () => new Response('ok')) as unknown as typeof fetch, resolve }, { signal });
+    expect(resolve).toHaveBeenCalledWith('a.example', signal);
   });
 });
