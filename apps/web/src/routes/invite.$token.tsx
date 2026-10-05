@@ -4,12 +4,12 @@ import { requireSession } from '../host/auth.ts';
 import { setAppState } from '../host/app-state.ts';
 import { BootFrame } from '../host/MossAppHost.tsx';
 import { leaveTo } from '../host/navigation.ts';
-import { InviteElsewhere } from '../host/surfaces/DenialPage.tsx';
+import { InviteClosed } from '../host/surfaces/DenialPage.tsx';
 import { DegradedFrame, SessionPending } from '../host/surfaces/SessionFrame.tsx';
 
 // /invite/$token (A§4.2; T2.8): redeems a copy-link invite, then goes to what it shares. Signed out it goes to the
-// login card, where a guest signs in or creates an account with the invite's email and comes straight back here. Every
-// other account hears only that the invite is for another email, whatever the cause (A§8).
+// login card, where a guest signs in or creates an account and comes straight back here; the invite binds to whoever
+// redeems it (PRODUCT ruling 19). A forged, spent, withdrawn or dead link gets the one closed-invite page.
 export const Route = createFileRoute('/invite/$token')({
   ssr: false,
   beforeLoad: requireSession,
@@ -55,6 +55,6 @@ function InviteRoute(): ReactNode {
       stopped = true;
     };
   }, [token, attempt]);
-  if (answer?.kind === 'denied') return <InviteElsewhere />;
+  if (answer?.kind === 'denied') return <InviteClosed />;
   return <div id="root">{answer?.kind === 'unavailable' ? <DegradedFrame onRetry={() => { setAnswer(null); setAttempt((n) => n + 1); }} /> : <BootFrame />}</div>;
 }

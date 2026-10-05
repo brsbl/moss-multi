@@ -1,10 +1,9 @@
-// Copy-link invites (T2.8; P:People "copy-link invites", no email is sent; A§8). Every share by email is an invite
-// bound to the email and a random token, never to an account (members.ts). Its owner reads the invite's link here
-// and hands it over; the invitee redeems it, from the link or from its notice in their bell, by following it signed
-// in (or signed up) with the invite's email, once, at its role, and the inviter hears who did. Anyone else who follows
-// it hears only that it is for another email, the same answer as for a forged, spent, withdrawn or dead invite, so a
-// link never tells its holder whether the email has an account. An invite dies when its inviter stops managing the
-// item or the item goes to Trash, checked inside the redeeming write.
+// Copy-link invites (T2.8; P:People "copy-link invites", no email is sent; A§8; PRODUCT ruling 19). Every share by
+// email is an invite: a personal link the owner reads here and sends, its email only a label. Whoever follows the link
+// while signed in (or after signing up through it) redeems it, once, at its role; the invite then binds to that
+// account and the inviter hears who did. Owning the email grants nothing, so registering someone's address gets a
+// squatter nothing without the link. A forged, spent, withdrawn or dead link gets one answer. An invite dies when its
+// inviter stops managing the item or the item goes to Trash, checked inside the redeeming write.
 import { waitUntil } from 'cloudflare:workers';
 import { publishTo } from '@moss-multi/sync/fanout';
 import type { AppEnv } from '../env.ts';
@@ -42,9 +41,9 @@ export async function handleInviteLinks(request: Request, env: AuthEnv, target: 
   return json({ invites: rows.map(({ email, role, token }) => ({ email, role, url: inviteUrl(env, request, token) })) }, 200, NO_STORE);
 }
 
-/** The one refusal every account but the invite's own hears, whatever the cause. */
-export const INVITE_ELSEWHERE = 'This invite is for another email. Sign in with the address it was sent to, or ask for a new link.';
-const elsewhere = () => json({ error: 'invite-unavailable', message: INVITE_ELSEWHERE }, 404, NO_STORE);
+/** The one refusal for a link that admits nobody, whatever the cause. */
+export const INVITE_CLOSED = 'This invite link has already been used or is no longer open. Ask the person who shared it for a new one.';
+const closed = () => json({ error: 'invite-unavailable', message: INVITE_CLOSED }, 404, NO_STORE);
 
 /** The live owner of an invite's target, or null when it is gone or trashed. */
 async function liveTarget(db: D1Database, type: MemberTarget['type'], id: string): Promise<string | null> {
@@ -56,34 +55,30 @@ async function liveTarget(db: D1Database, type: MemberTarget['type'], id: string
 interface InviteRow {
   type: MemberTarget['type'];
   id: string;
-  email: string;
   inviter: string;
   acceptedBy: string | null;
   revokedAt: number | null;
 }
 
 /**
- * POST `/api/invites/:token/accept`: the invited person, signed in with the invite's email, redeems it and learns
- * where it leads. Every other account does the same work and hears `elsewhere`, except the target's owner following
- * her own link, who is sent on without spending it (the owner is never a member).
+ * POST `/api/invites/:token/accept`: a signed-in person redeems the invite and learns where it leads; it binds to
+ * them. Following it again leads them there again; the target's owner is sent on without spending it (the owner is
+ * never a member). Every other case gets `closed`.
  */
 export async function acceptInvite(request: Request, env: InvitesEnv, token: string): Promise<Response> {
   if (request.method !== 'POST') return json({ error: 'method-not-allowed' }, 405, { allow: 'POST' });
   const principal = await resolvePrincipal(request, env);
   if (!principal || principal.type === 'anonymous') return unauthenticated();
-  if (principal.type !== 'user') return elsewhere();
-  const invite = await env.DB.prepare(`SELECT target_type AS type, target_id AS id, email, invited_by AS inviter,
+  if (principal.type !== 'user') return closed();
+  const invite = await env.DB.prepare(`SELECT target_type AS type, target_id AS id, invited_by AS inviter,
       accepted_by AS acceptedBy, revoked_at AS revokedAt FROM invites WHERE token = ?`)
     .bind(token).first<InviteRow>();
-  if (!invite) return elsewhere();
+  if (!invite || invite.revokedAt !== null) return closed();
   const target = { type: invite.type, id: invite.id };
-  if (principal.email.toLowerCase() !== invite.email) {
-    const owner = await liveTarget(env.DB, invite.type, invite.id);
-    return owner === principal.id && invite.revokedAt === null ? json({ target }, 200, NO_STORE) : elsewhere();
-  }
-  // From here the caller holds the invite's email: what it learns is about its own invite.
-  if (invite.acceptedBy === principal.id) return (await liveTarget(env.DB, invite.type, invite.id)) ? json({ target }, 200, NO_STORE) : elsewhere();
-  if (invite.acceptedBy !== null || invite.revokedAt !== null) return elsewhere();
+  const owner = await liveTarget(env.DB, invite.type, invite.id);
+  if (owner === null) return closed();
+  if (owner === principal.id || invite.acceptedBy === principal.id) return json({ target }, 200, NO_STORE);
+  if (invite.acceptedBy !== null) return closed();
 
   const now = Date.now();
   const [table, column] = grantTable(invite.type);
@@ -92,9 +87,9 @@ export async function acceptInvite(request: Request, env: InvitesEnv, token: str
   // notice follow only the spending this request did. A grant only ever rises.
   const [spent] = await env.DB.batch([
     env.DB.prepare(`UPDATE invites SET accepted_at = ?2, accepted_by = ?3
-      WHERE token = ?1 AND email = ?6 AND accepted_at IS NULL AND revoked_at IS NULL AND target_id = ?4 AND invited_by = ?5
+      WHERE token = ?1 AND accepted_at IS NULL AND revoked_at IS NULL AND target_id = ?4 AND invited_by = ?5
         AND ${liveAndManaged(invite.type, 4, 5)}`)
-      .bind(token, now, principal.id, invite.id, invite.inviter, invite.email),
+      .bind(token, now, principal.id, invite.id, invite.inviter),
     env.DB.prepare(`INSERT INTO ${table} (${column}, principal_id, principal_type, role, added_by, created_at)
       SELECT target_id, ?3, 'user', role, invited_by, ?2 FROM invites WHERE token = ?1 AND accepted_by = ?3 AND accepted_at = ?2
       ON CONFLICT (${column}, principal_id) DO UPDATE SET role = excluded.role WHERE ${rank('role')} < ${rank('excluded.role')}`)
@@ -104,7 +99,7 @@ export async function acceptInvite(request: Request, env: InvitesEnv, token: str
       FROM invites WHERE token = ?1 AND accepted_by = ?3 AND accepted_at = ?2`)
       .bind(token, now, principal.id, crypto.randomUUID()),
   ]);
-  if (!spent?.meta?.changes) return elsewhere(); // dead, trashed, spent or withdrawn in the meantime
+  if (!spent?.meta?.changes) return closed(); // dead, trashed, spent or withdrawn in the meantime
   notify(env, invite.inviter, 'notifications');
   notify(env, principal.id, 'vaults');
   return json({ target }, 200, NO_STORE);

@@ -1,13 +1,11 @@
 // The members API (T1.1, T2.4, T2.8; A§8): who has access to a doc, folder or vault, and sharing it with a person by
-// email. Only an owner shares, and emails and pending invites reach owners alone. Whether an email has an account is
-// never observable to anyone but that account's holder: a share is an invite bound to the email and a random token,
-// never to an account, and grants nothing until the invitee redeems it signed in with that email (invites.ts). The
-// inviter's path reads and writes only the invite and what earlier redemptions of it made, so its answer, the member
-// list and their timing are the same whether or not the email has an account. Each owner may make SHARES_PER_HOUR
-// new shares an hour. Lowering or removing access waits for the one kick path (T2.5), so a share only adds or raises.
-import { waitUntil } from 'cloudflare:workers';
+// email. Only an owner shares, and emails and pending invites reach owners alone. An email is a label, never an
+// authority (PRODUCT ruling 19): a share creates an invite, a personal link the owner sends, and grants nothing; access
+// comes only from redeeming the link while signed in, and the invite then binds to that account. The inviter's path
+// reads and writes only invites, never an account found by the email, so its answer, the member list and their timing
+// are the same whether or not the email has an account. Each owner may make SHARES_PER_HOUR new shares an hour.
+// Lowering or removing access waits for the one kick path (T2.5), so a share only adds or raises.
 import { eq, inArray, sql } from 'drizzle-orm';
-import { publishTo } from '@moss-multi/sync/fanout';
 import { ROLES, SHARE_ROLES, type Role, type ShareRole } from '@moss-multi/protocol/roles';
 import type { AppEnv } from '../env.ts';
 import type { AuthEnv } from '../auth/auth.ts';
@@ -127,25 +125,12 @@ export const rank = (expression: string) => `CASE ${expression} ${ROLES.map((rol
 export const grantTable = (type: MemberTarget['type']): [string, string] => (type === 'doc' ? ['doc_members', 'doc_id'] : ['folder_members', 'folder_id']);
 
 /**
- * Tells the open tabs of whoever holds `email`, if anyone, that their bell changed. It runs after the response is
- * sent (waitUntil) for every share alike, so nothing the inviter receives, nor when, depends on whether the email
- * has an account; a failure loses only the push (the bell reads the invite itself, notifications.ts).
- */
-function pushToInvitee(env: MembersEnv, email: string): void {
-  const principals = env.PrincipalDO;
-  if (!principals) return;
-  waitUntil((async () => {
-    const holder = await env.DB.prepare('SELECT id FROM "user" WHERE lower(email) = ?1').bind(email).first<{ id: string }>();
-    if (holder) await publishTo({ DB: env.DB, PrincipalDO: principals }, holder.id, { type: 'notifications' });
-  })().catch((error: unknown) => console.error('invite notification failed', error)));
-}
-
-/**
- * Invites a person by email at a share role, or raises their invite or, once they have redeemed one here, their
- * grant. Every answer and write derives from the email's invites on this target alone: a new share is a fresh open
- * invite (201), a repeat or raise answers 200, a lowering 409 and the hourly limit 429, for an email with an account
- * exactly as for one without. An open invite whose inviter no longer manages the target is withdrawn and replaced by
- * a fresh one at this share's role.
+ * Invites a person by email at a share role, or raises their open invite. The email is a label, never an authority
+ * (PRODUCT ruling 19): every answer and write derives from the open invite for this email on this target alone, never
+ * from an account or an earlier redemption, so a new share is a fresh invite (201), a repeat or raise answers 200, a
+ * lowering of an open invite 409 and the hourly limit 429, alike for any email. An open invite whose inviter no longer
+ * manages the target is withdrawn and replaced by a fresh one at this share's role. A share grants nothing: whoever
+ * redeems the invite's link while signed in is granted, and the invite binds to them (invites.ts).
  */
 async function share(env: MembersEnv, target: MemberTarget, ownerUserId: string, caller: Principal, body: Record<string, unknown>): Promise<Response> {
   const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
@@ -156,50 +141,36 @@ async function share(env: MembersEnv, target: MemberTarget, ownerUserId: string,
   // The vault owner is visible to every owner already; this reads that account by its id, never by the email.
   const owner = await env.DB.prepare('SELECT email FROM "user" WHERE id = ?1').bind(ownerUserId).first<{ email: string }>();
   if (owner && owner.email.toLowerCase() === email) return refuse(409, 'already-owner', `That person owns this ${noun(target)}.`);
-  const [table, column] = grantTable(target.type);
   const now = Date.now();
-  const open = await env.DB.prepare(`SELECT token, invited_by AS inviter FROM invites WHERE target_type = ?1 AND target_id = ?2
-      AND email = ?3 AND accepted_at IS NULL AND revoked_at IS NULL`)
-    .bind(target.type, target.id, email).first<{ token: string; inviter: string }>();
-  // Someone who redeemed an invite to this email here and still holds its grant: a member the owner already sees.
-  const redeemed = `SELECT g.role FROM invites i JOIN ${table} g ON g.${column} = i.target_id AND g.principal_id = i.accepted_by
-    WHERE i.target_type = ?1 AND i.target_id = ?2 AND i.email = ?3 AND i.accepted_by IS NOT NULL`;
+  const openInvite = `SELECT token, invited_by AS inviter, role FROM invites WHERE target_type = ?1 AND target_id = ?2
+    AND email = ?3 AND accepted_at IS NULL AND revoked_at IS NULL`;
+  const open = await env.DB.prepare(openInvite).bind(target.type, target.id, email).first<{ token: string; inviter: string }>();
 
   // One batch, each statement seeing the one before, the same statements for every email.
-  const [, , admitted, raisedInvite] = await env.DB.batch([
+  const [, admitted] = await env.DB.batch([
     // A dead open invite (its inviter no longer manages the target) is withdrawn, so this share replaces it.
     env.DB.prepare(`UPDATE invites SET revoked_at = ?3 WHERE token = ?1 AND invited_by = ?2 AND accepted_at IS NULL
         AND revoked_at IS NULL AND NOT (${liveAndManaged(target.type, 4, 2)})`)
       .bind(open?.token ?? '', open?.inviter ?? '', now, target.id),
-    // A member by a redeemed invite is raised in place, never lowered.
-    env.DB.prepare(`UPDATE ${table} SET role = ?4 WHERE ${column} = ?2 AND ${rank('role')} < ${rank('?4')}
-        AND principal_id IN (SELECT accepted_by FROM invites WHERE target_type = ?1 AND target_id = ?2 AND email = ?3)`)
-      .bind(target.type, target.id, email, role),
     // A new open invite, only while the inviter's last hour holds fewer than SHARES_PER_HOUR (counted by the statement
-    // that inserts, so a burst can't pass), for someone not a member yet, once per open email (a concurrent first
-    // share conflicts and becomes a repeat).
+    // that inserts, so a burst can't pass), once per open email (a concurrent first share conflicts and is a repeat).
     env.DB.prepare(`INSERT INTO invites (token, email, target_type, target_id, role, invited_by, created_at)
         SELECT ?5, ?3, ?1, ?2, ?4, ?6, ?7
         WHERE (SELECT count(*) FROM invites WHERE invited_by = ?6 AND created_at > ?8) < ${SHARES_PER_HOUR}
-          AND NOT EXISTS (${redeemed})
         ON CONFLICT DO NOTHING`)
       .bind(target.type, target.id, email, role, randomToken(), inviter, now, now - HOUR_MS),
     env.DB.prepare(`UPDATE invites SET role = ?4 WHERE target_type = ?1 AND target_id = ?2 AND email = ?3
         AND accepted_at IS NULL AND revoked_at IS NULL AND ${rank('role')} < ${rank('?4')}`)
       .bind(target.type, target.id, email, role),
   ]);
-  if (changed(admitted) || changed(raisedInvite)) pushToInvitee(env, email);
   if (changed(admitted)) return json({ shared: { email, role } }, 201, NO_STORE);
-  // Not a new invite: the email holds an open invite or is a member here, or the inviter is over the hourly limit.
-  const { results } = await env.DB.prepare(`SELECT role FROM invites WHERE target_type = ?1 AND target_id = ?2 AND email = ?3
-      AND accepted_at IS NULL AND revoked_at IS NULL UNION ALL ${redeemed}`)
-    .bind(target.type, target.id, email).all<{ role: Role }>();
-  const held = results.map((row) => row.role).sort((a, b) => ROLES.indexOf(b) - ROLES.indexOf(a))[0];
+  // Not a new invite: the email has an open invite here, or the inviter is over the hourly limit.
+  const held = (await env.DB.prepare(openInvite).bind(target.type, target.id, email).first<{ role: Role }>())?.role;
   if (held === undefined) {
     return refuse(429, 'rate-limited', 'You’ve shared with a lot of people in the last hour. Try again later.', { 'retry-after': '3600' });
   }
   if (lower(role, held)) {
-    return refuse(409, 'demotion-unavailable', `${email} already has more access. Lowering access isn’t available yet.`);
+    return refuse(409, 'demotion-unavailable', `${email} is already invited with more access. Lowering access isn’t available yet.`);
   }
   return json({ shared: { email, role } }, 200, NO_STORE);
 }

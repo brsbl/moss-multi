@@ -34,14 +34,14 @@ export function DenialPage({ signedIn, what = 'note' }: { signedIn: boolean; wha
   );
 }
 
-/** An invite followed by any account but its own, or one no longer open: one page whatever the cause (A§8). */
-export function InviteElsewhere(): ReactNode {
+/** An invite link that admits nobody (forged, spent, withdrawn or dead): one page whatever the cause (A§8). */
+export function InviteClosed(): ReactNode {
   useEffect(() => setAppState('ready'), []);
   return (
     <main className="flex h-full min-h-screen w-full items-center justify-center bg-surface-panel px-6">
       <div className="flex max-w-sm flex-col items-center gap-1.5 text-center">
-        <h1 className="text-sm font-medium text-ink-default">This invite is for another email</h1>
-        <p className="text-xs text-ink-muted">Sign in with the address it was sent to, or ask the person who shared it for a new link.</p>
+        <h1 className="text-sm font-medium text-ink-default">This invite link has already been used or is no longer open</h1>
+        <p className="text-xs text-ink-muted">Ask the person who shared it to send you a new link.</p>
         <button type="button" className={ACTION} onClick={() => leaveTo('/')}>
           Go to your notes
         </button>

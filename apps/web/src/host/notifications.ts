@@ -12,8 +12,6 @@ export interface Notice {
   by: string;
   target: { type: 'doc' | 'folder'; id: string; title: string; kind: 'doc' | 'folder' | 'vault' };
   invitedEmail?: string;
-  /** A share's invite token: opening the notice follows it (navigation.ts). */
-  invite?: string;
 }
 
 export interface NotificationsDeps {
@@ -60,7 +58,7 @@ export function createNotifications({ fetch: fetcher, signedIn }: NotificationsD
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
-    /** Marks `ids` read now. Reading redeems nothing: a share's notice follows its invite (navigation.ts). */
+    /** Marks `ids` read now; reading redeems nothing (an invite is redeemed only through its link, invites.ts). */
     markRead(ids: string[]): void {
       const marking = new Set(ids);
       if (!ids.length) return;
