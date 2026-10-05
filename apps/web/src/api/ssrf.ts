@@ -5,7 +5,7 @@
 // and refused unless every A and AAAA answer is public. Redirects are never followed by fetch: each hop is checked
 // again before it is requested, at most five of them. Every failure fails closed.
 
-export type SsrfReason = 'invalid-url' | 'unsupported-scheme' | 'blocked-host' | 'too-many-redirects';
+export type SsrfReason = 'invalid-url' | 'unsupported-scheme' | 'blocked-host' | 'unresolved-host' | 'too-many-redirects';
 
 export class SsrfBlockedError extends Error {
   constructor(readonly reason: SsrfReason, detail?: string) {
@@ -158,16 +158,22 @@ export function createDohResolver(fetchImpl: typeof fetch = (input, init) => fet
   };
 }
 
-/** True only when every answer for `hostname` is public; an IP literal was already vetted, and nothing fails closed. */
-export async function hostResolvesPublic(hostname: string, resolve: HostResolver): Promise<boolean> {
-  if (isIpLiteral(hostname)) return !isBlockedHost(hostname);
+/** 'public' only when every answer for `hostname` is public; a name with no answers (or no resolver) is 'unresolved'. */
+async function vetHost(hostname: string, resolve: HostResolver): Promise<'public' | 'blocked' | 'unresolved'> {
+  if (isIpLiteral(hostname)) return isBlockedHost(hostname) ? 'blocked' : 'public';
   let ips: string[];
   try {
     ips = await resolve(unbracket(hostname));
   } catch {
-    return false;
+    return 'unresolved';
   }
-  return ips.length > 0 && ips.every((ip) => !isBlockedHost(ip));
+  if (ips.length === 0) return 'unresolved';
+  return ips.every((ip) => !isBlockedHost(ip)) ? 'public' : 'blocked';
+}
+
+/** True only when every answer for `hostname` is public; an IP literal was already vetted, and nothing fails closed. */
+export async function hostResolvesPublic(hostname: string, resolve: HostResolver): Promise<boolean> {
+  return (await vetHost(hostname, resolve)) === 'public';
 }
 
 const REDIRECTS = new Set([301, 302, 303, 307, 308]);
@@ -179,7 +185,8 @@ const REDIRECTS = new Set([301, 302, 303, 307, 308]);
 export async function safeFetch(raw: string, remote: RemoteFetch, init: RequestInit = {}): Promise<{ response: Response; url: string }> {
   let url = assertPublicUrl(raw);
   for (let hop = 0; ; hop += 1) {
-    if (!(await hostResolvesPublic(url.hostname, remote.resolve))) throw new SsrfBlockedError('blocked-host', url.hostname);
+    const vetted = await vetHost(url.hostname, remote.resolve);
+    if (vetted !== 'public') throw new SsrfBlockedError(vetted === 'blocked' ? 'blocked-host' : 'unresolved-host', url.hostname);
     const response = await remote.fetch(url.href, { ...init, redirect: 'manual' });
     const location = REDIRECTS.has(response.status) ? response.headers.get('location') : null;
     if (!location) return { response, url: url.href };

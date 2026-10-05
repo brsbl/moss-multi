@@ -1,7 +1,8 @@
 // POST /api/unfurl {noteId, url} (A§16): the card behind moss's web embeds and pills, read from the page's OpenGraph
 // tags. Only a reader of the note may ask (a share link included), the fetch goes through the SSRF guard on every hop
-// (A§18), each identity is throttled with 429, and answers are cached for a day. A page that is not HTML or fails
-// gets a fallback card; a URL the guard refuses gets 422.
+// (A§18), each identity is throttled with 429, and answers are cached for a day. A page that is not HTML, fails or
+// names a host with no DNS answers gets a fallback card, fetching nothing in the last case; a URL the guard refuses
+// gets 422.
 import { resolvePrincipal, sha256Hex, shareTokenOf } from '../auth/principal.ts';
 import { createDb } from '../db/client.ts';
 import { json } from '../worker/route.ts';
@@ -103,7 +104,7 @@ async function unfurl(url: string): Promise<Unfurled> {
       signal: AbortSignal.timeout(REMOTE_TIMEOUT_MS),
     });
   } catch (error) {
-    if (error instanceof SsrfBlockedError) throw error;
+    if (error instanceof SsrfBlockedError && error.reason !== 'unresolved-host') throw error;
     return { status: 'fallback', url };
   }
   const { response } = fetched;

@@ -115,6 +115,15 @@ describe('POST /api/unfurl', () => {
     }
   });
 
+  it('answers a fallback card for a host with no DNS answers, fetching nothing', async () => {
+    const docId = await insertDoc(d1.db, ada);
+    const url = 'https://nowhere.invalid/guide';
+    const response = await post('/api/unfurl', ada.cookie, { noteId: docId, url });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ status: 'fallback', url });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['the metadata address', 'https://169.254.169.254/latest/meta-data/'],
     ['an obfuscated loopback', 'https://2130706433/'],

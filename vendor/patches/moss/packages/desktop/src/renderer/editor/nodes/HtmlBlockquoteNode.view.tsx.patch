@@ -238,7 +238,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
            value={localRawHtml}
            onChange={(e) => {
              setLocalRawHtml(e.target.value);
-@@ -911,19 +860,39 @@ function MossHtmlPreviewComponent({
+@@ -911,11 +860,11 @@ function MossHtmlPreviewComponent({
          <span className="inline-flex items-center gap-1 align-middle">
            <KeyboardShortcut keys={['⌘', '⏎']} size="compact" />
          </span>{' '}
@@ -252,22 +252,20 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
        </div>
      </div>
    );
- 
-+  const measureLivePreview = livePreview && htmlIntrinsicSize.heightSource === 'default' && !previewImageIntrinsicSize;
-   const previewStaticLayer = (
+@@ -924,6 +873,25 @@ function MossHtmlPreviewComponent({
      <div
        className={`moss-html-preview-scroll absolute inset-0 overflow-auto bg-ink-inverse ${stablePreviewLayerVisibilityClass}`}
      >
 +      {/* moss-multi seam: html-preview (A§16): no screenshot on the web; the static preview is the live sandboxed
-+          frame, inert until the block is activated, sized by what it renders as a screenshot would be. */}
++          frame, inert until the block is activated, sized as moss sizes its screenshot: the default viewport grown to
++          what renders. */}
 +      {livePreview ? (
 +        <div className="pointer-events-none absolute inset-0" data-moss-html-live-preview="static">
 +          <HtmlPreviewIframe
 +            srcDoc={previewSrcDoc}
 +            title="HTML preview"
 +            viewportWidth={htmlDisplayIntrinsicSize.width}
-+            // With no declared height, a 1px viewport first measures the content's own height.
-+            viewportHeight={measureLivePreview ? 1 : htmlDisplayIntrinsicSize.height}
++            viewportHeight={htmlDisplayIntrinsicSize.height}
 +            displayScale={noteDisplayScale}
 +            dimensionReportId={nodeKey}
 +            className="h-full w-full"
@@ -280,7 +278,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
        {shouldRenderPreviewImage ? (
          <img
            src={previewImageUrl}
-@@ -1074,7 +1043,7 @@ function MossHtmlPreviewComponent({
+@@ -1074,7 +1042,7 @@ function MossHtmlPreviewComponent({
          ? { children: editorPanel }
          : {
              viewportRef: notePreviewViewportRef,
@@ -289,7 +287,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
                !isInteractive ? 'cursor-pointer' : ''
              }`,
              viewportDataAttributes: { 'data-moss-html-preview-viewport': 'true' },
-@@ -1108,204 +1077,14 @@ function MossHtmlPreviewComponent({
+@@ -1108,204 +1076,14 @@ function MossHtmlPreviewComponent({
    );
  }
  
