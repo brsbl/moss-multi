@@ -18,10 +18,11 @@ const ID = /^[A-Za-z0-9_-]{1,64}$/;
 export async function createComment(request: Request, env: DocsEnv, docId: string): Promise<Response> {
   const principal = await resolvePrincipal(request, env);
   if (!principal || principal.type === 'anonymous') return json({ error: 'unauthenticated', message: 'Sign in to comment' }, 401, NO_STORE);
+  // The body is read before access resolves, so a stalled body cannot outlive a revocation or a trash.
+  const body: Record<string, unknown> = (await readJsonObject(request)) ?? {};
   const access = await resolveDocAccess(createDb(env.DB), principal, docId, shareTokenOf(request));
   if (!access || access.deleted) return notFound();
   if (!roleAtLeast(access.role, 'commenter')) return json({ error: 'forbidden', message: "You can't comment on this note." }, 403, NO_STORE);
-  const body: Record<string, unknown> = (await readJsonObject(request)) ?? {};
   const { id, text, parentId, anchor } = body;
   const bad = () => json({ error: 'bad-request' }, 400, NO_STORE);
   if (typeof id !== 'string' || !ID.test(id) || typeof text !== 'string') return bad();

@@ -1,6 +1,7 @@
 // The DocDO's comments (docs/design/comments.md §3, §4, §13; A§13): the reserved writer R persisted in meta, gate 2b,
 // the frame engine's changes flushed through writeComments in the same turn, the create RPC, and marker import.
 // Every write to Y.Map('comments') goes through #writer.
+import * as encoding from 'lib0/encoding';
 import * as Y from 'yjs';
 import { AnchorEngine, mintAnchor, MAX_QUOTE, OVERLAP_CAP, type Anchor, type Unit } from '@moss-multi/core/anchor-frame';
 import { idKey, maxCoverage, ordinalsOf, unitsAt, unitText } from '@moss-multi/core/comment-units';
@@ -23,6 +24,17 @@ export const MAX_IMPORT_SEARCHES = 100;
 export const COMMENT_STATE_SHARE = 0.8;
 /** Moss's marker ids: what `%%m:<id>:start%%` can carry. */
 const ID = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** An item's header in an update, past its key and value: info, ids, origins, parent; generous. */
+const ITEM_OVERHEAD = 48;
+
+/** What one `comments` entry adds to the encoded state: its key and value as Yjs encodes them, plus an item header. */
+export function entryBytes(key: string, value: unknown): number {
+  const encoder = encoding.createEncoder();
+  encoding.writeVarString(encoder, key);
+  encoding.writeAny(encoder, value as Parameters<typeof encoding.writeAny>[1]);
+  return encoding.length(encoder) + ITEM_OVERHEAD;
+}
 
 /** Origins the engine never reads: replay from storage, the seed, and comments writes themselves. */
 const SKIPPED: ReadonlySet<unknown> = new Set(['persistence', 'server-seed', COMMENT_ORIGIN]);
@@ -106,8 +118,11 @@ export class DocComments {
     for (const [id, anchor] of changes) this.#engine.set(id, anchor);
   }
 
-  /** The create RPC (comments.md §4): a reply, a positioned root, or a quote-only root searched once. */
-  create(input: CommentCreate, maxRecords = COMMENTS_PER_DOC): CommentResult {
+  /**
+   * The create RPC (comments.md §4): a reply, a positioned root, or a quote-only root searched once. `room` is the
+   * encoded bytes comment writes may still add; the record and anchor, quote included, must fit (413 doc-cap).
+   */
+  create(input: CommentCreate, maxRecords = COMMENTS_PER_DOC, room = Number.POSITIVE_INFINITY): CommentResult {
     if (!ID.test(input.id)) return refuse(400, 'bad-id');
     if (typeof input.text !== 'string' || !input.text.trim()) return refuse(400, 'bad-text');
     if (input.text.length > COMMENT_TEXT_MAX) return refuse(413, 'text-too-long');
@@ -126,12 +141,15 @@ export class DocComments {
     if (input.parentId !== undefined) {
       const parent = comments.get(`c:${input.parentId}`) as CommentRecord | undefined;
       if (!parent || parent.parentId !== undefined) return refuse(409, 'parent-missing');
-      this.#writer.write((map) => map.set(`c:${input.id}`, { ...record, parentId: input.parentId }));
+      const reply = { ...record, parentId: input.parentId };
+      if (entryBytes(`c:${input.id}`, reply) > room) return refuse(413, 'doc-cap');
+      this.#writer.write((map) => map.set(`c:${input.id}`, reply));
       return { ok: true, id: input.id, quote: null };
     }
     const placed = this.#place(input.anchor);
     if ('error' in placed) return placed.error;
     const anchor = placed.anchor;
+    if (entryBytes(`c:${input.id}`, record) + entryBytes(`a:${input.id}`, anchor) > room) return refuse(413, 'doc-cap');
     this.#writer.write((map) => {
       map.set(`c:${input.id}`, record);
       map.set(`a:${input.id}`, anchor);
@@ -144,42 +162,70 @@ export class DocComments {
    * Marker import (comments.md §13), right after the import's tree diff in the same turn: each sidecar root whose
    * markers were found gets one anchor from its first marker to its last, a root without markers but with a `quote`
    * gets one search, and replies follow only an anchored root, as moss prunes them.
+   *
+   * Cost is bounded per import, not per entry: one projection, at most MAX_IMPORT_SEARCHES searches, one ordinal
+   * walk and one unit walk. Records are admitted earliest first while their bytes, quotes included, fit `room`.
    */
-  importSidecar(sidecar: Record<string, unknown>, marks: ImportedMarks, author: string, maxRecords = COMMENTS_PER_DOC): void {
+  importSidecar(sidecar: Record<string, unknown>, marks: ImportedMarks, author: string, maxRecords = COMMENTS_PER_DOC, room = Number.POSITIVE_INFINITY): void {
     const entries = coerceSidecar(sidecar);
     const aligned = marks.ranges.size > 0 && unitText(this.doc) === marks.text;
     if (marks.ranges.size > 0 && !aligned) console.error('comment import: the imported tree does not match the live units; markers dropped');
-    const ordinals = [...marks.ranges.values()].flatMap(({ first, last }) => [first, last]);
-    const units = aligned ? unitsAt(this.doc, ordinals) : new Map<number, Unit>();
+    const byTime = [...entries].sort((a, b) => a[1].createdAt - b[1].createdAt);
+    const spans = new Map<string, { first: number; last: number; block: boolean }>();
+    const quoted: [string, Y.ID, Y.ID][] = [];
+    let projection: ReturnType<typeof project> | null = null;
+    let searches = 0;
+    for (const [id, entry] of byTime) {
+      if (entry.parentId !== undefined) continue;
+      const range = marks.ranges.get(id);
+      if (range) {
+        if (aligned) spans.set(id, { first: range.first, last: range.last, block: Boolean(range.block) && range.first === range.last });
+        continue;
+      }
+      if (!entry.quote || searches >= MAX_IMPORT_SEARCHES) continue;
+      searches += 1;
+      projection ??= project(this.doc);
+      const found = findQuote(projection.text, { exact: entry.quote, prefix: '', suffix: '' });
+      if (!found.range) continue;
+      const s = positionAt(projection, found.range.start, 0)?.item;
+      const e = positionAt(projection, found.range.end, -1)?.item;
+      if (s && e) quoted.push([id, s, e]);
+    }
+    if (quoted.length) {
+      const ordinals = ordinalsOf(this.doc, quoted.flatMap(([, s, e]) => [s, e]));
+      for (const [id, s, e] of quoted) {
+        const first = ordinals.get(idKey(s));
+        const last = ordinals.get(idKey(e));
+        if (first !== undefined && last !== undefined && first <= last) spans.set(id, { first, last, block: false });
+      }
+    }
+    const units = spans.size ? unitsAt(this.doc, [...spans.values()].flatMap(({ first, last }) => [first, last])) : new Map<number, Unit>();
     const intervals: [number, number][] = [];
     const roots = new Map<string, Anchor>();
     const records = new Map<string, CommentRecord>();
-    const byTime = [...entries].sort((a, b) => a[1].createdAt - b[1].createdAt);
+    let left = room;
     for (const [id, entry] of byTime) {
-      if (entry.parentId !== undefined || records.size >= maxRecords) continue;
-      let anchor: Anchor | null = null;
-      const range = marks.ranges.get(id);
-      if (range) {
-        const first = units.get(range.first);
-        const last = units.get(range.last);
-        if (first && last && range.last - range.first < MAX_QUOTE && maxCoverage(intervals, range.first, range.last) < OVERLAP_CAP) {
-          anchor = mintAnchor(first, last, range.block && range.first === range.last ? 'block' : 'text');
-          intervals.push([range.first, range.last]);
-        }
-      } else if (entry.quote) {
-        const placed = this.#place({ quote: entry.quote }, intervals);
-        if ('anchor' in placed) {
-          anchor = placed.anchor;
-          intervals.push(placed.span);
-        }
-      }
-      if (!anchor) continue;
+      const span = spans.get(id);
+      if (!span || records.size >= maxRecords) continue;
+      const first = units.get(span.first);
+      const last = units.get(span.last);
+      if (!first || !last || span.last - span.first >= MAX_QUOTE || maxCoverage(intervals, span.first, span.last) >= OVERLAP_CAP) continue;
+      const anchor = mintAnchor(first, last, span.block ? 'block' : 'text');
+      const record = toRecord(entry, author);
+      const bytes = entryBytes(`c:${id}`, record) + entryBytes(`a:${id}`, anchor);
+      if (bytes > left) continue;
+      left -= bytes;
+      intervals.push([span.first, span.last]);
       roots.set(id, anchor);
-      records.set(id, toRecord(entry, author));
+      records.set(id, record);
     }
     for (const [id, entry] of byTime) {
       if (entry.parentId === undefined || !roots.has(entry.parentId) || records.size >= maxRecords) continue;
-      records.set(id, { ...toRecord(entry, author), parentId: entry.parentId });
+      const record = { ...toRecord(entry, author), parentId: entry.parentId };
+      const bytes = entryBytes(`c:${id}`, record);
+      if (bytes > left) continue;
+      left -= bytes;
+      records.set(id, record);
     }
     if (!records.size) return;
     this.#writer.write((map) => {
@@ -237,10 +283,7 @@ export class DocComments {
   }
 
   /** Validates and mints a root's anchor from positions, or from one quote search when it has none (I6). */
-  #place(
-    request: CommentCreate['anchor'],
-    imported?: [number, number][],
-  ): { anchor: Anchor; span: [number, number] } | { error: CommentResult } {
+  #place(request: CommentCreate['anchor']): { anchor: Anchor } | { error: CommentResult } {
     if (!request || typeof request !== 'object') return { error: refuse(400, 'bad-anchor') };
     let { start, end } = request;
     const quote = typeof request.quote === 'string' ? { exact: request.quote, prefix: '', suffix: '' } : request.quote;
@@ -277,7 +320,7 @@ export class DocComments {
     const to = ordinals.get(idKey(e));
     if (from === undefined || to === undefined || from > to) return { error: refuse(409, 'anchor-gone') };
     if (to - from + 1 > MAX_QUOTE) return { error: refuse(413, 'quote-too-long') };
-    const intervals: [number, number][] = imported ? [...imported] : [];
+    const intervals: [number, number][] = [];
     for (let i = 0; i < ends.length; i += 2) {
       const a = ends[i] && ordinals.get(idKey(ends[i]!));
       const b = ends[i + 1] && ordinals.get(idKey(ends[i + 1]!));
@@ -290,7 +333,7 @@ export class DocComments {
     if (!first || !last) return { error: refuse(409, 'anchor-gone') };
     const block = request.kind === 'block';
     if (block && (from !== to || !(first.item.content instanceof Y.ContentType))) return { error: refuse(400, 'bad-anchor') };
-    return { anchor: mintAnchor(first, last, block ? 'block' : 'text'), span: [from, to] };
+    return { anchor: mintAnchor(first, last, block ? 'block' : 'text') };
   }
 }
 

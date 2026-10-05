@@ -12,7 +12,7 @@ import {
 } from './doc/admission.ts';
 import { attach, attachmentOf, awarenessTooLarge, awarenessFrame, receivePresence, leavePresence } from './doc/awareness.ts';
 import { AckCoalescer, DocStore, PERSISTENCE } from './doc/persistence.ts';
-import { coerceSidecar, COMMENTS_PER_DOC, DocComments, type CommentCreate, type CommentResult } from './doc/comments.ts';
+import { coerceSidecar, COMMENT_STATE_SHARE, COMMENTS_PER_DOC, DocComments, type CommentCreate, type CommentResult } from './doc/comments.ts';
 import { d1Projections, Projections, type ProjectionTarget } from './doc/projections.ts';
 import { publishMeta } from './fanout.ts';
 import type { SyncEnv } from './env.ts';
@@ -297,7 +297,11 @@ export class DocDO extends YServer<SyncEnv> {
       const sidecar = input.comments ? Object.fromEntries(coerceSidecar(input.comments)) : undefined;
       const marks = importBody(this.document, hasFrontmatter ? parts.body : input.markdown, (diff) => this.#admitServerWrite(store, diff), frontmatter, sidecar);
       // Right after the tree diff, in the same turn (comments.md §13).
-      if (sidecar) this.#comments?.importSidecar(sidecar, marks, input.author ?? input.ownerId, this.#limits.maxComments);
+      // The import's diff may be past a log row and not yet counted in stateBytes, so the room is measured.
+      if (sidecar) {
+        const room = this.#commentRoom(Y.encodeStateAsUpdate(this.document).byteLength);
+        this.#comments?.importSidecar(sidecar, marks, input.author ?? input.ownerId, this.#limits.maxComments, room);
+      }
     }
     const title = input.title?.trim();
     // POST /api/docs wrote a provisional row; the title and its filename arrive through the projection.
@@ -330,9 +334,10 @@ export class DocDO extends YServer<SyncEnv> {
     const store = await this.#ready();
     const comments = this.#comments;
     if (!comments) throw new Error('DocDO started without comments');
-    // A record's bytes count against the doc like any write (A§5.1 Limits).
-    if (store.stateBytes + 3 * String(input.text ?? '').length + 4096 > this.#limits.stateCapBytes) return { ok: false, status: 413, error: 'doc-cap' };
-    const result = comments.create(input, this.#limits.maxComments);
+    // A trash holds the doc closed to every write (A§8), whatever the Worker resolved before the body arrived.
+    if (holdsOf(store).size > 0) return { ok: false, status: 404, error: 'trashed' };
+    // The record and anchor bytes, quote included, count against the comments' share of the cap (A§5.1 Limits).
+    const result = comments.create(input, this.#limits.maxComments, this.#commentRoom(store.stateBytes));
     comments.flush();
     return result;
   }
@@ -543,6 +548,11 @@ export class DocDO extends YServer<SyncEnv> {
   #overCap(store: DocStore, update: Uint8Array): boolean {
     const cap = this.#limits.stateCapBytes;
     return store.stateBytes + update.byteLength > cap && stateBytesAfter(this.document, update) > cap;
+  }
+
+  /** The bytes comment writes may still add to a state of `stateBytes`. */
+  #commentRoom(stateBytes: number): number {
+    return Math.floor(this.#limits.stateCapBytes * COMMENT_STATE_SHARE) - stateBytes;
   }
 
   #admitServerWrite(store: DocStore, diff: Uint8Array): void {
