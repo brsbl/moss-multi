@@ -19,6 +19,8 @@ let settleFails = 0;
 let settleGate: Promise<void> | null = null;
 /** While set, the next D1 statement matching it fails, as a D1 outage would. */
 let failSql: RegExp | null = null;
+/** D1 statements the routes prepared. */
+let statements = 0;
 const published = new Map<string, { type: string; docIds?: string[]; folderIds?: string[] }[]>();
 
 const docState = (doc: string) => model.get(doc) ?? model.set(doc, { holds: new Set(), deleted: false }).get(doc)!;
@@ -63,6 +65,7 @@ function flakyDb(db: D1Database): D1Database {
     get(target, key) {
       if (key !== 'prepare') return Reflect.get(target, key, target);
       return (sql: string) => {
+        statements += 1;
         if (!failSql?.test(sql)) return target.prepare(sql);
         failSql = null;
         const refuse = async () => { throw new Error('D1_ERROR: storage unavailable'); };
@@ -329,4 +332,59 @@ describe('the workspace listing', () => {
     const refreshed = (await (await call(ada, 'GET', `/api/workspace?vault=${ada.homeId}&ids=${doc}`)).json()) as { docs: { id: string; trashedAt?: number }[] };
     expect(refreshed.docs).toEqual([expect.objectContaining({ id: doc, trashedAt: expect.any(Number) })]);
   });
+
+  it('lists a note for a co-owner who trashed it, by a doc grant or a vault grant, so he can restore it from Trash', async () => {
+    type Listing = { docs: { id: string; trashedAt?: number | null; role: string }[] };
+    const list = async (user: TestUser, query = '') => ((await (await call(user, 'GET', `/api/workspace${query}`)).json()) as Listing).docs;
+    const byDoc = await insertDoc(d1.db, ada);
+    await insertGrant(d1.db, { docId: byDoc }, ben, 'owner');
+    const vault = await insertFolder(d1.db, ada, null);
+    const byVault = await insertDoc(d1.db, ada, { folderId: vault });
+    await insertGrant(d1.db, { folderId: vault }, ben, 'owner');
+    const editorOnly = await insertDoc(d1.db, ada);
+    await insertGrant(d1.db, { docId: editorOnly }, cy, 'editor');
+    expect((await call(ben, 'DELETE', `/api/docs/${byDoc}`)).status).toBe(200);
+    expect((await call(ben, 'DELETE', `/api/docs/${byVault}`)).status).toBe(200);
+    expect((await call(ada, 'DELETE', `/api/docs/${editorOnly}`)).status).toBe(200);
+
+    expect((await list(ben)).find((row) => row.id === byDoc)).toMatchObject({ trashedAt: expect.any(Number), role: 'owner' });
+    expect((await list(ben, `?vault=${vault}`)).find((row) => row.id === byVault)).toMatchObject({ trashedAt: expect.any(Number), role: 'owner' });
+    expect((await list(ben)).map((row) => row.id), 'a note in a vault he can see lists only in that vault').not.toContain(byVault);
+    expect((await list(cy)).map((row) => row.id), 'an editor never sees it in Trash').not.toContain(editorOnly);
+    expect((await list(ada)).find((row) => row.id === byDoc)).toMatchObject({ trashedAt: expect.any(Number) });
+
+    expect((await call(ben, 'POST', `/api/docs/${byDoc}/restore`)).status).toBe(200);
+    const live = (await list(ben)).find((row) => row.id === byDoc);
+    expect(live).toMatchObject({ id: byDoc, role: 'owner' });
+    expect(live?.trashedAt ?? null).toBeNull();
+  });
+
+  it('authorizes Trash in a bounded number of queries, however many trashed notes the caller reaches, and lists them all', async () => {
+    const vault = await insertFolder(d1.db, ada, null);
+    const folder = await insertFolder(d1.db, ada, vault);
+    await insertGrant(d1.db, { folderId: vault }, ben, 'owner');
+    const shown = await insertFolder(d1.db, ada, null);
+    await insertGrant(d1.db, { folderId: shown }, cy, 'editor');
+    const insert = d1.db.prepare(`INSERT INTO docs (id, owner_user_id, created_by, folder_id, title, filename, created_at, updated_at, deleted_at)
+      VALUES (?1, ?2, ?2, ?3, '', ?1 || '.md', ?4, ?4, ?4)`);
+    const trash = (count: number) => d1.db.batch(Array.from({ length: count }, () => [folder, shown]).flat()
+      .map((folderId) => insert.bind(crypto.randomUUID(), ada.id, folderId, Date.now())));
+    const listing = async (user: TestUser, query: string) => {
+      statements = 0;
+      const response = await call(user, 'GET', `/api/workspace${query}`);
+      expect(response.status).toBe(200);
+      const docs = ((await response.json()) as { docs: { trashedAt?: number }[] }).docs.filter((row) => row.trashedAt);
+      return { statements, trashed: docs.length };
+    };
+    await trash(1);
+    const few = await listing(ben, `?vault=${vault}`);
+    const fewCy = await listing(cy, `?vault=${shown}`);
+    await trash(60);
+    const many = await listing(ben, `?vault=${vault}`);
+    expect(many.trashed, 'every trashed note is listed, none truncated').toBe(61);
+    expect(many.statements, 'the query count does not grow with Trash').toBe(few.statements);
+    const manyCy = await listing(cy, `?vault=${shown}`);
+    expect(manyCy.trashed, 'an editor still sees none').toBe(0);
+    expect(manyCy.statements, 'nor does an editor pay per trashed note').toBe(fewCy.statements);
+  }, 30_000);
 });
