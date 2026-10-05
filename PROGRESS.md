@@ -98,7 +98,7 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 
 - T2.3s checker P2 (downgraded from Codex P1): a restore can act on an older view of the note after another manager restores, moves and re-trashes it; RESTORE in `api/trash.ts` does not check the note's current folder or `trash_batch_id` still match what it read. No authority is gained (the UPDATE re-checks manage on the current chain and edit on the destination) → trash follow-up: compare-and-set on folder and batch.
 - T2.3s checker P2 (downgraded from Codex P1): a signed-out share-link holder gets 401, not 404, from trash, restore and the Trash read; nothing is disclosed (the 401 is identical for a missing note) and it predates T2.3s; A§8 confines the 401 exception to a credential-less CLI → align to 404 in an access follow-up.
-- T2.3s checker P2: the revocation tests in `trash-security.test.ts` use stub DocDO and PrincipalDO, so they do not prove open editors recover (or that a terminal editor on a live note is kicked) → T2.5.
+- T2.3s checker P2: the revocation tests in `trash-security.test.ts` use stub DocDO and PrincipalDO, so they do not prove open editors recover (or that a terminal editor on a live note is kicked) → T2.5 → closed by T2.5 (`mid-trash.harness.test.ts` over the real DocDO and PrincipalDO; a reverted trash pushes `meta` and a pane terminal on `deleted` re-asks and reopens).
 - T1.8 workspace follow-up implemented in T2.1: push events replace listing polling, changed document ids refresh metadata, and unchanged vault choices do not notify the switcher; awaiting CI and independent verification.
 - T0.13b checker P2: The settle helper only waits for the loading placeholder to disappear, not for a final state; `settleHtmlBlocks` in e2e/viewer/viewer.spec.ts should wait for the image to load or for "Preview unavailable" → viewer test follow-up.
 - T0.13b checker P2: The Edit, Fullscreen and Delete buttons still appear on hover over viewer HTML blocks, but do nothing → T2.6.
@@ -139,8 +139,8 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - Switching to "Create an account" leaves focus on the toggle link → T0.10
 - A wrong password logs a browser console error → T0.10 (only if the zero-console-error invariant should cover the auth error path)
 - Sidebar search matches titles only; body search belongs to M3. Live title matching is bound in T1.4.
-- Sign-out leaves the session's other live doc sockets reading and writing → T2.5
-- T2.4 checker: `GET /api/docs/:id` returns the owner's real `folderId` to a link holder, unlike `/api/workspace`'s synthetic root (METHOD: never the owner's vault or folder ids) → T2.5/T2.6 access follow-up
+- Sign-out leaves the session's other live doc sockets reading and writing → closed by T2.5 (sign-out ends the session's doc and workspace sockets; j09 sign-out leg)
+- T2.4 checker: `GET /api/docs/:id` returns the owner's real `folderId` to a link holder, unlike `/api/workspace`'s synthetic root (METHOD: never the owner's vault or folder ids) → closed by T2.5 (a doc link's holder gets the note as its own root; `sharing.test.ts`)
 - ~~T2.4 checker: a share counts as redeemed on any doc load or socket admission, so a grantee idling on an empty workspace auto-opens the new share and the owner sees their name within seconds → count only an explicit open (T2.8 invites)~~ closed by T2.8: a grant comes only from a signed-in account redeeming the invite link.
 - A signed-out share-link visitor (and any viewer of the active vault) is offered "+ Note", which fails with "Could not create note. Try again." → T2.6 (capability helper)
 - The wrangler ProxyWorker patch replays non-idempotent requests after an ambiguous failure → T0.9b follow-up (stack infra)

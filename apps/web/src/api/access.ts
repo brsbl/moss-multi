@@ -17,6 +17,8 @@ export interface DocAccess {
   deleted: boolean;
   /** Only a presented share link opens it: no ownership and no grant. */
   linkOnly: boolean;
+  /** The presented link raised the role above what ownership and grants give. */
+  viaLink: boolean;
 }
 
 export interface FolderAccess {
@@ -111,6 +113,24 @@ export async function managesLive(db: D1Database, type: 'doc' | 'folder', id: st
   return row?.ok === 1;
 }
 
+/** SQL that holds while user `?{user}` manages folder `?{folder}`: it owns the vault, or holds an `owner` grant on the
+ * folder or an ancestor. The folder counterpart of `managesDoc`. */
+export const managesFolder = (folder: number, user: number) => `(EXISTS (SELECT 1 FROM folders WHERE id = ?${folder} AND owner_user_id = ?${user})
+  OR EXISTS (WITH RECURSIVE chain(id, parent_id, depth) AS (
+      SELECT id, parent_id, 1 FROM folders WHERE id = ?${folder}
+      UNION ALL SELECT f.id, f.parent_id, chain.depth + 1 FROM folders f JOIN chain ON f.id = chain.parent_id
+        WHERE chain.depth < ${MAX_FOLDER_DEPTH}
+    ) SELECT 1 FROM folder_members m JOIN chain ON m.folder_id = chain.id WHERE m.principal_id = ?${user} AND m.role = 'owner'))`;
+
+/** SQL that holds while user `?{user}` may edit in folder `?{folder}`: it owns the vault, or holds an `editor` or
+ * `owner` grant on the folder or an ancestor. A move re-checks its destination with it in the same statement. */
+export const editsFolder = (folder: number, user: number) => `(EXISTS (SELECT 1 FROM folders WHERE id = ?${folder} AND owner_user_id = ?${user})
+  OR EXISTS (WITH RECURSIVE chain(id, parent_id, depth) AS (
+      SELECT id, parent_id, 1 FROM folders WHERE id = ?${folder}
+      UNION ALL SELECT f.id, f.parent_id, chain.depth + 1 FROM folders f JOIN chain ON f.id = chain.parent_id
+        WHERE chain.depth < ${MAX_FOLDER_DEPTH}
+    ) SELECT 1 FROM folder_members m JOIN chain ON m.folder_id = chain.id WHERE m.principal_id = ?${user} AND m.role IN ('editor', 'owner')))`;
+
 /** Grants on the folders of `chain`, and on the doc when there is one. */
 async function grantRoles(db: Db, ids: string[], chain: string[], docId: string | null): Promise<Role[]> {
   if (ids.length === 0) return [];
@@ -154,8 +174,11 @@ export async function resolveDocAccess(db: Db, principal: Principal, docId: stri
   const sources = { owner: actingUserId(principal) === doc.ownerUserId, grants, anonymous: principal.type === 'anonymous', agent: principal.type === 'agent' };
   const role = foldRole({ ...sources, link });
   if (role === null) return null;
-  const linkOnly = foldRole({ ...sources, link: null }) === null;
-  return { role, ownerUserId: doc.ownerUserId, folderId: doc.folderId, deleted: doc.deletedAt !== null, linkOnly };
+  const withoutLink = foldRole({ ...sources, link: null });
+  return {
+    role, ownerUserId: doc.ownerUserId, folderId: doc.folderId, deleted: doc.deletedAt !== null,
+    linkOnly: withoutLink === null, viaLink: withoutLink !== role,
+  };
 }
 
 /**

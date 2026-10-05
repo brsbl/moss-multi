@@ -44,7 +44,7 @@ async function nested(): Promise<{ vault: string; a: string; b: string; c: strin
 describe('resolveDocAccess', () => {
   it('makes the vault owner the owner, and gives anyone else with no grant nothing', async () => {
     const docId = await insertDoc(d1.db, ada);
-    expect(await resolveDocAccess(createDb(d1.db), user(ada), docId)).toEqual({ role: 'owner', ownerUserId: ada.id, folderId: ada.homeId, deleted: false, linkOnly: false });
+    expect(await resolveDocAccess(createDb(d1.db), user(ada), docId)).toEqual({ role: 'owner', ownerUserId: ada.id, folderId: ada.homeId, deleted: false, linkOnly: false, viaLink: false });
     expect(await roleOn(user(ben), docId)).toBeNull();
     expect(await roleOn(user(ben), crypto.randomUUID())).toBeNull();
   });

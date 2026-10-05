@@ -103,6 +103,7 @@ describe('(a) no account enumeration beyond the rate limit', () => {
 });
 
 describe('(b) the vault owner stays the owner', () => {
+  // About 30 requests, each resolving access over D1.
   it("lets a co-owner neither lower nor remove the vault's owner, nor take the vault", async () => {
     // Its own co-owner: a grant on Ada's Home reaches every note of Ada's the later tests make.
     const co = await signedUpUser(env, 't24s-co', 'Co');
@@ -118,9 +119,13 @@ describe('(b) the vault owner stays the owner', () => {
         expect(lowered.status, `${type} ${email}`).toBe(409);
         expect(await lowered.json()).toMatchObject({ error: 'already-owner' });
       }
-      for (const method of ['DELETE', 'PATCH', 'PUT']) {
-        expect((await call(method, path, co.cookie, { email: ada.email, role: 'viewer' })).status, `${method} ${path}`).toBe(405);
+      // T2.5 added changing and removing access: the vault owner is neither an invite nor a member to name.
+      for (const method of ['DELETE', 'PATCH']) {
+        for (const who of [{ email: ada.email }, { principalId: ada.id }]) {
+          expect((await call(method, path, co.cookie, { ...who, role: 'viewer' })).status, `${method} ${path} ${JSON.stringify(who)}`).toBe(404);
+        }
       }
+      expect((await call('PUT', path, co.cookie, { email: ada.email, role: 'viewer' })).status, `PUT ${path}`).toBe(405);
     }
     const written = await d1.db.prepare(`SELECT
         (SELECT count(*) FROM invites WHERE lower(email) = lower(?1)) AS invites,
@@ -143,7 +148,7 @@ describe('(b) the vault owner stays the owner', () => {
     // Even a grant row naming the vault owner at a lower role (none can be written) lowers nothing.
     await insertGrant(d1.db, { docId }, ada, 'viewer');
     expect(await roleOf({ cookie: ada.cookie }, docId)).toBe('owner');
-  });
+  }, 30_000);
 
   it('never gives owner access through a share link, even one a row says is an owner link', async () => {
     const folderId = await insertFolder(d1.db, ada, ada.homeId);

@@ -18,7 +18,10 @@ class FakeSocket extends EventTarget {
   ended(code: number) { this.readyState = 3; this.dispatchEvent(new CloseEvent('close', { code })); }
 }
 vi.stubGlobal('WebSocket', FakeSocket);
-const { DocSession, severDocSessions } = await import('./doc-session.ts');
+const sessionModule = await import('./doc-session.ts');
+const { DocSession, severDocSessions } = sessionModule;
+/** T2.5's recovery hook, looked up so the rest of the file runs while it is missing. */
+const reopenDocs = (docIds: string[]) => (sessionModule as { reopenDocs?: (ids: string[]) => void }).reopenDocs?.(docIds);
 const { terminalOf, clearTerminal } = await import('./terminal.ts');
 const { hasUnacked } = await import('./unacked.ts');
 let session: InstanceType<typeof DocSession>;
@@ -217,4 +220,33 @@ it.each(['cleared', 'ended', 'released'] as const)('pageshow never revives %s pr
   if (reason === 'released') { session.doc.getText('title').insert(0, 'pending'); session.release(); }
   window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
   expect(session.provider.awareness.getLocalState()).toBeNull();
+});
+
+it('a doc left terminal deleted by a trash that never committed reopens editable when its workspace says it changed', async () => {
+  const access = vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ role: 'editor' }));
+  latest().open(); session.provider.synced = true;
+  latest().ended(4410);
+  expect(terminalOf('doc')).toBe('deleted');
+  reopenDocs(['doc']);
+  await vi.advanceTimersByTimeAsync(300);
+  expect(access, 'it asks REST whether the note is live').toHaveBeenCalledTimes(1);
+  expect(terminalOf('doc')).toBeNull();
+  expect(session.provider.shouldConnect).toBe(true);
+  expect(sockets).toHaveLength(2);
+  latest().open();
+  session.doc.getText('title').insert(0, 'typed after');
+  expect(session.state).toMatchObject({ canWrite: true, unacked: true });
+});
+
+it('a doc REST still has in Trash stays terminal, and a live session is left alone', async () => {
+  const access = vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ deleted: true }));
+  reopenDocs(['doc']);
+  await vi.advanceTimersByTimeAsync(300);
+  expect(access, 'a live session asks nothing').not.toHaveBeenCalled();
+  latest().open(); latest().ended(4410);
+  reopenDocs(['doc']);
+  await vi.advanceTimersByTimeAsync(20_000);
+  expect(access).toHaveBeenCalledTimes(1);
+  expect(terminalOf('doc')).toBe('deleted');
+  expect(sockets).toHaveLength(1);
 });

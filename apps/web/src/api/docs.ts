@@ -13,7 +13,7 @@ import { createDb, type Db } from '../db/client.ts';
 import { docs } from '../db/schema.ts';
 import type { AppEnv } from '../env.ts';
 import { json } from '../worker/route.ts';
-import { resolveDocAccess, resolveFolderAccess } from './access.ts';
+import { liveLink, resolveDocAccess, resolveFolderAccess } from './access.ts';
 import { folderNotFound, liveIn, moveDoc, upFrom, vaultOf } from './folders.ts';
 import { handleInviteLinks } from './invites.ts';
 import { handleLinks } from './links.ts';
@@ -135,6 +135,9 @@ async function readDoc(request: Request, env: DocsEnv, docId: string): Promise<R
     .where(eq(docs.id, docId))
     .limit(1);
   if (!doc) return notFound();
+  // A doc link's holder sees the note as its own root, as /api/workspace lists it, never the owner's folder id.
+  const link = access.linkOnly ? await liveLink(db, shareTokenOf(request) ?? (principal.type === 'anonymous' ? principal.shareToken : null)) : null;
+  if (link?.targetType === 'doc') doc.folderId = doc.id;
   return json({ doc, role: access.role }, 200, NO_STORE);
 }
 

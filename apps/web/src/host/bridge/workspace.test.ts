@@ -107,3 +107,39 @@ it('retries metadata received during a failed initial listing without another ev
     expect(fetch).toHaveBeenCalledTimes(calls);
   } finally { off(); }
 });
+
+/** A bridge over a listing the test edits, with the workspace push and the reopen hook in hand. */
+async function reopenBridge(docs: { id: string; trashedAt: number | null }[]) {
+  let receive: (event: Event) => void = () => undefined;
+  const reopenDocs = vi.fn();
+  const listed = () => docs.map((doc) => ({ ...doc, title: doc.id, createdAt: 1, updatedAt: 1, folderPath: 'Notes', lastOpenedAt: null }));
+  const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json({ vault: { id: 'home', name: 'Home' }, docs: listed() }));
+  const bridge = createBridge({ pathname: () => '/', fetch, subscribeWorkspace: (cb) => { receive = cb; return () => undefined; }, reopenDocs } as BridgeOptions);
+  const off = bridge.notes.onDiskChange(() => undefined);
+  await bridge.notes.getAll();
+  const push = (docIds: string[]) => receive({ type: 'meta', docIds, folderIds: [] });
+  return { bridge, reopenDocs, push, off };
+}
+
+it('offers the docs a metadata push named to the reopen hook once a refresh reads them live, so a doc left terminal on a live note can recover', async () => {
+  const { reopenDocs, push, off } = await reopenBridge([{ id: 'kept', trashedAt: null }]);
+  try {
+    push(['kept']);
+    await vi.waitFor(() => expect(reopenDocs).toHaveBeenCalledWith(['kept']));
+  } finally { off(); }
+});
+
+it('reopens nothing for a push that announces a trash, or a restore of a note this tab saw in Trash (its pane remounts)', async () => {
+  const docs: { id: string; trashedAt: number | null }[] = [{ id: 'note', trashedAt: null }];
+  const { bridge, reopenDocs, push, off } = await reopenBridge(docs);
+  try {
+    docs[0].trashedAt = 5;
+    push(['note']);
+    await vi.waitFor(() => expect(bridge[WORKSPACE].isTrashed('note')).toBe(true));
+    docs[0].trashedAt = null;
+    push(['note']);
+    await vi.waitFor(() => expect(bridge[WORKSPACE].isTrashed('note')).toBe(false));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(reopenDocs).not.toHaveBeenCalled();
+  } finally { off(); }
+});

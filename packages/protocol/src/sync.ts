@@ -155,6 +155,10 @@ export const TRUSTED = {
   session: 'x-moss-session',
   share: 'x-moss-share',
   presence: 'x-moss-presence',
+  /** Epoch ms taken before the role was resolved: a DocDO refuses a socket resolved before a principal's revocation. */
+  resolvedAt: 'x-moss-resolved-at',
+  /** The doc's access epoch, read before the role was resolved: a DocDO re-resolves a socket admitted under an older one. */
+  epoch: 'x-moss-epoch',
 } as const;
 
 export const PRINCIPAL_KINDS = ['user', 'agent', 'anonymous'] as const;

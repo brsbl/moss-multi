@@ -1,12 +1,15 @@
-// The members API (T1.1, T2.4, T2.8; A§8): who has access to a doc, folder or vault, and sharing it with a person by
-// email. Only an owner shares, and emails and pending invites reach owners alone. An email alone grants nothing
+// The members API (T1.1, T2.4, T2.5, T2.8; A§8): who has access to a doc, folder or vault, and sharing it with a person
+// by email. Only an owner shares, and emails and pending invites reach owners alone. An email alone grants nothing
 // (PRODUCT ruling 19): a share creates an invite bound to the email, a personal link the owner sends; access comes
 // only when an account with that email redeems the link while signed in, and the invite then binds to it. The
 // inviter's path reads and writes only invites, never an account found by the email, so its answer, the member list
 // and their timing are the same whether or not the email has an account. Each owner may make SHARES_PER_HOUR new
-// shares an hour.
-// Lowering or removing access waits for the one kick path (T2.5), so a share only adds or raises.
-import { eq, sql } from 'drizzle-orm';
+// shares an hour. A share only adds or raises; PATCH changes a member's or an invite's access and DELETE removes it,
+// and lowering or removing a member goes through the one kick path (T2.5): every DocDO the grant reached closes that
+// person's sockets before the call answers.
+import { waitUntil } from 'cloudflare:workers';
+import { and, eq, sql } from 'drizzle-orm';
+import { docsOf, kick, KickFailed, publishTo, withAgents } from '@moss-multi/sync/fanout';
 import { ROLES, SHARE_ROLES, type Role, type ShareRole } from '@moss-multi/protocol/roles';
 import type { AppEnv } from '../env.ts';
 import type { AuthEnv } from '../auth/auth.ts';
@@ -14,11 +17,11 @@ import { resolvePrincipal, type Principal } from '../auth/principal.ts';
 import { createDb, inJson, type Db } from '../db/client.ts';
 import { agents, docMembers, folderMembers, user } from '../db/schema.ts';
 import { json } from '../worker/route.ts';
-import { actingUserId, liveAndManaged, managesLive, resolveDocAccess, resolveFolderAccess } from './access.ts';
+import { actingUserId, liveAndManaged, managesDoc, managesFolder, managesLive, resolveDocAccess, resolveFolderAccess } from './access.ts';
 import { NO_STORE, notFound, readJsonObject, unauthenticated } from './respond.ts';
 
 export type MemberTarget = { type: 'doc' | 'folder'; id: string };
-export type MembersEnv = AuthEnv & Partial<Pick<AppEnv, 'PrincipalDO'>>;
+export type MembersEnv = AuthEnv & Partial<Pick<AppEnv, 'PrincipalDO' | 'DocDO'>>;
 
 export interface Member {
   principalId: string;
@@ -57,18 +60,18 @@ export async function accessTo(db: Db, principal: Principal, target: MemberTarge
 }
 
 /** The target's grants in the order they were made (rowid is insertion order). */
-async function grantRows(db: Db, target: MemberTarget) {
+async function grantRows(db: Db, target: MemberTarget, principalId?: string) {
   if (target.type === 'doc') {
     return db
       .select({ principalId: docMembers.principalId, principalType: docMembers.principalType, role: docMembers.role })
       .from(docMembers)
-      .where(eq(docMembers.docId, target.id))
+      .where(and(eq(docMembers.docId, target.id), principalId === undefined ? undefined : eq(docMembers.principalId, principalId)))
       .orderBy(sql`rowid`);
   }
   return db
     .select({ principalId: folderMembers.principalId, principalType: folderMembers.principalType, role: folderMembers.role })
     .from(folderMembers)
-    .where(eq(folderMembers.folderId, target.id))
+    .where(and(eq(folderMembers.folderId, target.id), principalId === undefined ? undefined : eq(folderMembers.principalId, principalId)))
     .orderBy(sql`rowid`);
 }
 
@@ -125,6 +128,18 @@ export const rank = (expression: string) => `CASE ${expression} ${ROLES.map((rol
 
 export const grantTable = (type: MemberTarget['type']): [string, string] => (type === 'doc' ? ['doc_members', 'doc_id'] : ['folder_members', 'folder_id']);
 
+/** SQL that holds while user `?{user}` still manages the target `?{id}`, so a change loses to a demotion that commits
+ * while the request is under way (docs/METHOD.md). Only a signed-in person manages. */
+const manages = (target: MemberTarget, id: number, user: number) => (target.type === 'doc' ? managesDoc(id, user) : managesFolder(id, user));
+const managerId = (caller: Principal) => (caller.type === 'user' ? caller.id : '');
+
+/** After a write that changed nothing: the refusal when the caller no longer manages the target, else null. */
+async function lostManage(db: Db, caller: Principal, target: MemberTarget): Promise<Response | null> {
+  const access = await accessTo(db, caller, target);
+  if (!access) return notFound();
+  return access.role === 'owner' ? null : refuse(403, 'forbidden', `Only the owner can share this ${noun(target)}.`);
+}
+
 /**
  * Invites a person by email at a share role, or raises their open invite. The email alone grants nothing
  * (PRODUCT ruling 19): every answer and write derives from the open invite for this email on this target alone, never
@@ -177,14 +192,112 @@ async function share(env: MembersEnv, target: MemberTarget, ownerUserId: string,
     return refuse(429, 'rate-limited', 'You’ve shared with a lot of people in the last hour. Try again later.', { 'retry-after': '3600' });
   }
   if (lower(role, held)) {
-    return refuse(409, 'demotion-unavailable', `${email} is already invited with more access. Lowering access isn’t available yet.`);
+    return refuse(409, 'demotion-unavailable', `${email} is already invited with more access. To lower it, change it under People with access.`);
   }
   return json({ shared: { email, role } }, 200, NO_STORE);
 }
 
-/** GET and POST `/api/{docs,folders}/:id/members`. */
+const KICK_FAILED = 'The change is saved, but some open windows haven’t closed yet. Try again.';
+
+/**
+ * Closes `principalIds` (with their agents) on every doc the target reaches, after the change committed. A DocDO that
+ * does not acknowledge answers 503 so the owner retries; a retry kicks again.
+ */
+async function kickFrom(
+  db: D1Database, env: MembersEnv, target: MemberTarget, principalIds: string[], at: number, notified = principalIds,
+): Promise<Response | null> {
+  if (!env.DocDO) return refuse(503, 'unavailable', KICK_FAILED);
+  try {
+    await kick({ DB: db, DocDO: env.DocDO }, await docsOf(db, target), { principalIds: await withAgents(db, principalIds) }, at);
+  } catch (error) {
+    if (!(error instanceof KickFailed)) throw error;
+    return refuse(503, 'unavailable', KICK_FAILED);
+  }
+  // Their sidebar drops what they can no longer open, without a reload.
+  const event = target.type === 'doc' ? { type: 'meta' as const, docIds: [target.id], folderIds: [] } : { type: 'vaults' as const };
+  const principalDO = env.PrincipalDO;
+  if (principalDO) {
+    for (const id of notified) {
+      waitUntil(publishTo({ DB: db, PrincipalDO: principalDO }, id, event).catch((error: unknown) => console.error('workspace kick notification failed', error)));
+    }
+  }
+  return null;
+}
+
+/**
+ * PATCH `{principalId | email, role}` changes access and DELETE `{principalId | email}` removes it. A member is named by
+ * id: lowering or removing them kicks them (a raise waits for their reload, A§8). An invite still open is named by
+ * email; it has granted nothing, so changing it kicks nobody.
+ */
+async function change(
+  db: Db, env: MembersEnv, target: MemberTarget, ownerUserId: string, caller: Principal, body: Record<string, unknown>, remove: boolean,
+): Promise<Response> {
+  const role = body.role;
+  if (!remove && !isShareRole(role)) return refuse(400, 'bad-request', 'Choose view, comment, edit or owner access.');
+  const [table, column] = grantTable(target.type);
+  const callerId = managerId(caller);
+  if (typeof body.email === 'string') {
+    const email = body.email.trim().toLowerCase();
+    if (!EMAIL.test(email)) return refuse(400, 'bad-request', 'Enter an email address.');
+    // An open invite grants nothing until it is redeemed (PRODUCT ruling 19), so this writes the invite alone and kicks
+    // nobody, and never reads an account by the email. An invite redeemed first is a member now, changed by id.
+    const open = `target_type = ?1 AND target_id = ?2 AND email = ?3 AND accepted_at IS NULL AND revoked_at IS NULL`;
+    const written = remove
+      ? env.DB.prepare(`UPDATE invites SET revoked_at = ?4 WHERE ${open} AND ${manages(target, 2, 5)}`).bind(target.type, target.id, email, Date.now(), callerId)
+      : env.DB.prepare(`UPDATE invites SET role = ?4 WHERE ${open} AND ${manages(target, 2, 5)}`).bind(target.type, target.id, email, role, callerId);
+    if (!changed(await written.run())) {
+      const lost = await lostManage(db, caller, target);
+      if (lost) return lost;
+      return refuse(404, 'not-found', 'That invite is no longer open.');
+    }
+    return json(remove ? { removed: { email } } : { changed: { email, role } }, 200, NO_STORE);
+  }
+  const principalId = typeof body.principalId === 'string' ? body.principalId : '';
+  // Compare-and-set on the role read, so whether this is a raise (which kicks nobody) is decided from the role it
+  // replaced; a change that lands in between sends it round again.
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const [grant] = principalId ? await grantRows(db, target, principalId) : [];
+    if (!grant) {
+      const lost = await lostManage(db, caller, target);
+      if (lost) return lost;
+      // A retry of a removal whose kick failed: the grant is gone, so kick again (never the vault's owner).
+      if (!remove || !principalId || principalId === ownerUserId) return refuse(404, 'not-found', 'That person no longer has access here.');
+      return (await kickFrom(env.DB, env, target, [principalId], Date.now())) ?? json({ removed: { principalId } }, 200, NO_STORE);
+    }
+    let done: boolean;
+    if (remove) {
+      const [person] = grant.principalType === 'user'
+        ? await db.select({ email: user.email }).from(user).where(eq(user.id, principalId)).limit(1) : [];
+      // An open invite to them would grant again when redeemed; revoked first, while the caller's manage still holds.
+      const [, deleted] = await env.DB.batch([
+        env.DB.prepare(`UPDATE invites SET revoked_at = ?4 WHERE target_type = ?1 AND target_id = ?2 AND email = ?3
+          AND accepted_at IS NULL AND revoked_at IS NULL AND ${manages(target, 2, 5)}`)
+          .bind(target.type, target.id, person?.email.toLowerCase() ?? '', Date.now(), callerId),
+        env.DB.prepare(`DELETE FROM ${table} WHERE ${column} = ?1 AND principal_id = ?2 AND ${manages(target, 1, 3)}`).bind(target.id, principalId, callerId),
+      ]);
+      done = changed(deleted);
+    } else {
+      done = changed(await env.DB.prepare(`UPDATE ${table} SET role = ?3 WHERE ${column} = ?1 AND principal_id = ?2 AND role = ?4
+        AND ${manages(target, 1, 5)}`).bind(target.id, principalId, role, grant.role, callerId).run());
+    }
+    if (!done) {
+      const lost = await lostManage(db, caller, target);
+      if (lost) return lost;
+      continue;
+    }
+    const raise = !remove && lower(grant.role, role as Role);
+    if (!raise) {
+      const failed = await kickFrom(env.DB, env, target, [principalId], Date.now());
+      if (failed) return failed;
+    }
+    return json(remove ? { removed: { principalId } } : { changed: { principalId, role } }, 200, NO_STORE);
+  }
+  return refuse(409, 'conflict', 'Their access changed while this was saving. Try again.');
+}
+
+/** GET and POST `/api/{docs,folders}/:id/members`; PATCH and DELETE change and remove access. */
 export async function handleMembers(request: Request, env: MembersEnv, target: MemberTarget): Promise<Response> {
-  if (request.method !== 'GET' && request.method !== 'POST') return json({ error: 'method-not-allowed' }, 405, { allow: 'GET, POST' });
+  if (!['GET', 'POST', 'PATCH', 'DELETE'].includes(request.method)) return json({ error: 'method-not-allowed' }, 405, { allow: 'GET, POST, PATCH, DELETE' });
   const principal = await resolvePrincipal(request, env);
   if (!principal) return unauthenticated();
   // Link-only visitors may read content, never the identities of its collaborators.
@@ -202,6 +315,8 @@ export async function handleMembers(request: Request, env: MembersEnv, target: M
   if (!owner) return refuse(403, 'forbidden', `Only the owner can share this ${noun(target)}.`);
   const body = await readJsonObject(request);
   if (!body) return refuse(400, 'bad-request', 'The request body must be a JSON object.');
-  return share(env, target, access.ownerUserId, principal, body);
+  // Every write below re-checks manage in its own statement, so a demotion that lands while the body arrives wins.
+  if (request.method === 'POST') return share(env, target, access.ownerUserId, principal, body);
+  return change(db, env, target, access.ownerUserId, principal, body, request.method === 'DELETE');
 }
 

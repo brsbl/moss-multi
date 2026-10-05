@@ -12,7 +12,8 @@ export const COMPACT_MAX_BYTES = 1024 * 1024;
 export const STATE_CHUNK_BYTES = 1.5 * 1024 * 1024;
 
 export type RevocationKind = 'token' | 'session' | 'principal';
-export type Revoked = Record<RevocationKind, Set<string>>;
+/** Each revoked id with when it was revoked (epoch ms). */
+export type Revoked = Record<RevocationKind, Map<string, number>>;
 
 /** workerd binds BLOBs from an ArrayBuffer of exactly the value's bytes. */
 function blob(bytes: Uint8Array): ArrayBuffer {
@@ -37,7 +38,7 @@ export class DocStore {
   private bytes = 0;
   /** The encoded doc state: exact at load and at each compaction, plus each update's bytes in between. */
   stateBytes = 0;
-  readonly revoked: Revoked = { token: new Set(), session: new Set(), principal: new Set() };
+  readonly revoked: Revoked = { token: new Map(), session: new Map(), principal: new Map() };
 
   constructor(private readonly storage: DurableObjectStorage) {
     this.sql = storage.sql;
@@ -62,9 +63,20 @@ export class DocStore {
     this.rows = updates.length;
     this.stateBytes = Y.encodeStateAsUpdate(doc).byteLength;
     if (this.meta('stateBytes') !== String(this.stateBytes)) this.setMeta('stateBytes', String(this.stateBytes));
-    for (const row of this.sql.exec<{ kind: string; id: string }>('SELECT kind, id FROM revocations').toArray()) {
-      if (row.kind in this.revoked) this.revoked[row.kind as RevocationKind].add(row.id);
+    for (const row of this.sql.exec<{ kind: string; id: string; at: number }>('SELECT kind, id, at FROM revocations').toArray()) {
+      if (row.kind in this.revoked) this.revoked[row.kind as RevocationKind].set(row.id, Number(row.at));
     }
+  }
+
+  /** Persists a revocation before anyone acts on it; a principal keeps its latest time (A§8). */
+  revoke(kind: RevocationKind, id: string, at: number): void {
+    this.sql.exec(
+      'INSERT INTO revocations (kind, id, at) VALUES (?, ?, ?) ON CONFLICT(kind, id) DO UPDATE SET at = max(at, excluded.at)',
+      kind,
+      id,
+      at,
+    );
+    this.revoked[kind].set(id, Math.max(at, this.revoked[kind].get(id) ?? at));
   }
 
   /**

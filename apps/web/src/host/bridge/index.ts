@@ -71,6 +71,8 @@ export interface BridgeOptions {
   browser?: BrowserHooks;
   /** Closes docs to writes and waits for their acks before a trash (A§10.6); boot.tsx wires the doc sessions in. */
   trashGuard?: TrashGuard;
+  /** Docs a workspace push named, so a session left terminal on a note that is live after all re-asks (A§8). */
+  reopenDocs?: (docIds: string[]) => void;
   /** The page's current leave: `signal` aborts as the page starts to leave, and `stayed` resolves if it is still
    * running afterwards (a cancelled navigation), so workspace reads are held, never cancelled by a navigation. */
   leaving?: () => Leave;
@@ -191,7 +193,7 @@ const inertBrowser: BrowserHooks = {
   copy: async () => undefined,
 };
 
-export function createBridge({ pathname, share = () => null, fetch: fetcher = fetch.bind(globalThis), storage = null, browser = inertBrowser, subscribeWorkspace: subscribe, leaving, trashGuard = openGuard }: BridgeOptions) {
+export function createBridge({ pathname, share = () => null, fetch: fetcher = fetch.bind(globalThis), storage = null, browser = inertBrowser, subscribeWorkspace: subscribe, leaving, trashGuard = openGuard, reopenDocs }: BridgeOptions) {
   /** Every API call carries the tab's share token, so a link holder reads and edits through the link (T2.4). */
   const request = (path: string, init: RequestInit = {}) => {
     const token = share();
@@ -244,6 +246,8 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
   };
   let refreshAll = false;
   const pendingIds = new Set<string>();
+  /** Docs a push named, offered to `reopenDocs` once a refresh has read them. */
+  const reopenIds = new Set<string>();
   const load = (vaultId: string | null, docId: string | null = null, folderId: string | null = null): Promise<NoteMetadata[]> => {
     const version = ++loadVersion;
     const query = new URLSearchParams();
@@ -281,6 +285,7 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
     try {
       while (generation === channelGeneration && (refreshAll || pendingIds.size)) {
         const ids = [...pendingIds];
+        const pushed = [...reopenIds];
         const full = refreshAll;
         pendingIds.clear();
         refreshAll = false;
@@ -301,11 +306,17 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
         const docs: ApiDoc[] = [...(full ? [] : workspaceSnapshot.docs.filter((doc) => !removed.has(doc.id))), ...data.docs]
           .sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
         workspaceSnapshot = { ...data, docs };
+        const wasTrashed = new Set(pushed.filter((id) => known.get(id)?.trashedAt != null));
         for (const id of removed) known.delete(id);
         for (const doc of data.docs) { known.set(doc.id, toNoteMetadata(doc)); rememberRole(doc.id, doc.role); }
         listing = Promise.resolve(docs.map(toNoteMetadata));
         if (changedVaults) workspaceListeners.forEach((listener) => listener());
         diskListeners.forEach((listener) => listener(full ? [] : ids, []));
+        // A pane terminal on a note that is live after all re-asks (A§8). A note this tab saw in Trash is left to the
+        // restore, which remounts its pane with a fresh session.
+        for (const id of pushed) reopenIds.delete(id);
+        const reopen = pushed.filter((id) => !wasTrashed.has(id) && known.get(id)?.trashedAt == null);
+        if (reopen.length) reopenDocs?.(reopen);
       }
     } catch {
       if (generation === channelGeneration) {
@@ -333,6 +344,7 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
     if (event.type !== 'meta' && event.type !== 'vaults') return;
     if (event.type === 'vaults' || event.folderIds.length) refreshAll = true;
     if (event.type === 'meta') for (const id of event.docIds) pendingIds.add(id);
+    if (event.type === 'meta') for (const id of event.docIds) reopenIds.add(id);
     requestWorkspaceRefresh();
   };
   const pins = () => readJson<Record<string, number>>(storage, PINS_KEY) ?? {};
@@ -840,8 +852,13 @@ function leavingSignal(): () => Leave {
 }
 
 /** Installs the bridge on `window` before App's module evaluates (A§4.3). */
-export function installBridge(authStore: import('../auth-state.ts').AuthStore, trashGuard?: TrashGuard, onWorkspaceEvent?: (event: WorkspaceEvent) => void): Bridge {
-  const bridge = createBridge({ pathname: () => window.location.pathname, storage: localStorageOrNull(), browser: windowBrowser(), trashGuard,
+export function installBridge(
+  authStore: import('../auth-state.ts').AuthStore,
+  trashGuard?: TrashGuard,
+  onWorkspaceEvent?: (event: WorkspaceEvent) => void,
+  reopenDocs?: (docIds: string[]) => void,
+): Bridge {
+  const bridge = createBridge({ pathname: () => window.location.pathname, storage: localStorageOrNull(), browser: windowBrowser(), trashGuard, reopenDocs,
     share: () => new URLSearchParams(window.location.search).get('share'),
     leaving: leavingSignal(),
     subscribeWorkspace: (receive, pause) => subscribeWorkspace({

@@ -10,6 +10,7 @@
     "./payload-docs": "./src/payload-docs.ts",
     "./projections": "./src/doc/projections.ts",
     "./fanout": "./src/fanout.ts",
+    "./access-epoch": "./src/access-epoch.ts",
     "./registers": "./src/registers.ts"
   },
   "scripts": {

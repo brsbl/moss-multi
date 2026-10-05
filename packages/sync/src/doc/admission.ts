@@ -18,6 +18,14 @@ export interface Attachment {
   sessionId: string | null;
   shareToken: string | null;
   presenceAllowed?: boolean;
+  /** When the Worker resolved `role` (epoch ms); 0 when unknown, which any principal revocation outdates. */
+  resolvedAt?: number;
+  /** When this DocDO admitted the socket (its own clock); DOC_SOCKET_MAX_MS later the socket closes 1013. */
+  admittedAt?: number;
+  /** The access epoch `role` was resolved under (A§8 pull validation); '' when unknown, which re-resolves it. */
+  epoch?: string;
+  /** Not yet validated by the DocDO (A§8): it hears no broadcast and none of its frames apply until it is. */
+  pending?: boolean;
 }
 
 /** The Worker's trusted headers, or null with no principal or no known role. */
@@ -33,14 +41,24 @@ export function attachmentFrom(headers: Headers): Attachment | null {
     sessionId: headers.get(TRUSTED.session) || null,
     shareToken: headers.get(TRUSTED.share) || null,
     presenceAllowed: headers.get(TRUSTED.presence) === '1' || (headers.get(TRUSTED.presence) === null && principal.kind !== 'anonymous' && !headers.get(TRUSTED.share)),
+    resolvedAt: Number(headers.get(TRUSTED.resolvedAt)) || 0,
+    epoch: headers.get(TRUSTED.epoch) ?? '',
   };
 }
 
-/** 4402 for an ended session; 4403 for a revoked principal or share token. */
+/** The principal id a recheck for everyone revokes: every socket resolved no later than it closes. */
+export const EVERYONE = '*';
+
+/**
+ * 4402 for an ended session; 4403 for a principal, a share token or everyone revoked no earlier than the socket's role
+ * was resolved. A role resolved afterwards read the change, so a demoted or re-added member reconnects, and a link
+ * that reaches the note again (a note moved back under it) opens it again.
+ */
 export function revocationCode(attachment: Attachment, revoked: Revoked): number | null {
   if (attachment.sessionId !== null && revoked.session.has(attachment.sessionId)) return CLOSE.sessionEnded;
-  if (revoked.principal.has(attachment.principalId)) return CLOSE.revoked;
-  if (attachment.shareToken !== null && revoked.token.has(attachment.shareToken)) return CLOSE.revoked;
+  const outdated = (at: number | undefined) => at !== undefined && (attachment.resolvedAt ?? 0) <= at;
+  if (outdated(revoked.principal.get(attachment.principalId)) || outdated(revoked.principal.get(EVERYONE))) return CLOSE.revoked;
+  if (attachment.shareToken !== null && outdated(revoked.token.get(attachment.shareToken))) return CLOSE.revoked;
   return null;
 }
 
