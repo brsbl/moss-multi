@@ -239,7 +239,7 @@ export class SuggestIngest {
       const lease = typeof client === 'number' ? this.leases.get(client) : undefined;
       if (!lease || lease.principal !== who.id) return refused('lease');
       const held = !lease.expired && lease.usedAt >= since;
-      if (held && lease.connection !== who.connection) return refused('lease');
+      if (held && lease.connection !== who.connection) { console.log('SDBG resume-held', client, lease.connection, who.connection, lease.expired, Date.now()); return refused('lease'); }
       if (!held && lease.record === null && this.leases.live(who.id, since) >= SUGGEST_LIMITS.liveLeases) return refused('lease-cap');
       this.leases.put({ ...lease, connection: who.connection, expired: false, usedAt: now });
       grants.push({ client, record: lease.record === null ? lease.reserved : this.#head(lease.record), clock: lease.nextClock });

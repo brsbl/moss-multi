@@ -213,6 +213,7 @@ export class DocDO extends YServer<SyncEnv> {
       return;
     }
     attach(connection, { ...attachment, nonce: crypto.randomUUID() });
+    console.log('SDBG connect', attachmentOf(connection)?.nonce, attachment.principalId, Date.now());
     // Registering the socket in the PrincipalDO's sign-out registry lands with that registry (A§5.2, M2).
     const encoder = encoding.createEncoder();
     encoding.writeVarUint(encoder, 0);
@@ -351,6 +352,7 @@ export class DocDO extends YServer<SyncEnv> {
 
   override onClose(connection: Connection): void {
     const nonce = attachmentOf(connection)?.nonce;
+    console.log('SDBG close', nonce, Date.now());
     if (nonce) this.#ingest?.expireConnection(nonce);
     leavePresence(this.document.awareness, connection, this.getConnections());
     this.#rate.forget(connection);
