@@ -15,7 +15,7 @@ import { resolvePrincipal } from '../auth/principal.ts';
 import { createDb } from '../db/client.ts';
 import { invites } from '../db/schema.ts';
 import { json } from '../worker/route.ts';
-import { managesDoc, MAX_FOLDER_DEPTH } from './access.ts';
+import { liveAndManaged } from './access.ts';
 import { accessTo, type MemberTarget } from './members.ts';
 import { NO_STORE, notFound, unauthenticated } from './respond.ts';
 
@@ -52,20 +52,6 @@ export async function handleInviteLinks(request: Request, env: AuthEnv, target: 
     .orderBy(sql`rowid`);
   return json({ invites: rows.map(({ email, role, token }) => ({ email, role, url: inviteUrl(env, request, token) })) }, 200, NO_STORE);
 }
-
-/** SQL that holds while user `?{user}` manages folder `?{folder}`: it owns the vault, or holds an `owner` grant on the
- * folder or one above it (managesDoc's folder half). */
-const managesFolder = (folder: number, user: number) => `(EXISTS (SELECT 1 FROM folders WHERE id = ?${folder} AND owner_user_id = ?${user})
-  OR EXISTS (WITH RECURSIVE chain(id, parent_id, depth) AS (
-      SELECT id, parent_id, 1 FROM folders WHERE id = ?${folder}
-      UNION ALL SELECT f.id, f.parent_id, chain.depth + 1 FROM folders f JOIN chain ON f.id = chain.parent_id
-        WHERE chain.depth < ${MAX_FOLDER_DEPTH}
-    ) SELECT 1 FROM folder_members m JOIN chain ON m.folder_id = chain.id WHERE m.principal_id = ?${user} AND m.role = 'owner'))`;
-
-/** SQL that holds while target `?{id}` is live and user `?{user}` still manages it. */
-const liveAndManaged = (type: MemberTarget['type'], id: number, user: number) => type === 'doc'
-  ? `EXISTS (SELECT 1 FROM docs WHERE id = ?${id} AND deleted_at IS NULL) AND ${managesDoc(id, user)}`
-  : `EXISTS (SELECT 1 FROM folders WHERE id = ?${id} AND deleted_at IS NULL) AND ${managesFolder(id, user)}`;
 
 /** The live owner of an invite's target, or null when it is gone or trashed. */
 async function liveTarget(db: D1Database, type: MemberTarget['type'], id: string): Promise<string | null> {

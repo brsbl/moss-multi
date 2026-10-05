@@ -77,6 +77,20 @@ export const managesDoc = (doc: number, user: number) => `(EXISTS (SELECT 1 FROM
         WHERE chain.depth < ${MAX_FOLDER_DEPTH}
     ) SELECT 1 FROM folder_members m JOIN chain ON m.folder_id = chain.id WHERE m.principal_id = ?${user} AND m.role = 'owner'))`;
 
+/** SQL that holds while user `?{user}` manages folder `?{folder}`: it owns the vault, or holds an `owner` grant on the
+ * folder or one above it (managesDoc's folder half). */
+const managesFolder = (folder: number, user: number) => `(EXISTS (SELECT 1 FROM folders WHERE id = ?${folder} AND owner_user_id = ?${user})
+  OR EXISTS (WITH RECURSIVE chain(id, parent_id, depth) AS (
+      SELECT id, parent_id, 1 FROM folders WHERE id = ?${folder}
+      UNION ALL SELECT f.id, f.parent_id, chain.depth + 1 FROM folders f JOIN chain ON f.id = chain.parent_id
+        WHERE chain.depth < ${MAX_FOLDER_DEPTH}
+    ) SELECT 1 FROM folder_members m JOIN chain ON m.folder_id = chain.id WHERE m.principal_id = ?${user} AND m.role = 'owner'))`;
+
+/** SQL that holds while doc or folder `?{id}` is live and user `?{user}` manages it. */
+export const liveAndManaged = (type: 'doc' | 'folder', id: number, user: number) => type === 'doc'
+  ? `EXISTS (SELECT 1 FROM docs WHERE id = ?${id} AND deleted_at IS NULL) AND ${managesDoc(id, user)}`
+  : `EXISTS (SELECT 1 FROM folders WHERE id = ?${id} AND deleted_at IS NULL) AND ${managesFolder(id, user)}`;
+
 /** Grants on the folders of `chain`, and on the doc when there is one. */
 async function grantRoles(db: Db, ids: string[], chain: string[], docId: string | null): Promise<Role[]> {
   if (ids.length === 0) return [];

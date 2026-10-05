@@ -14,7 +14,7 @@ import { resolvePrincipal, type Principal } from '../auth/principal.ts';
 import { createDb, type Db } from '../db/client.ts';
 import { agents, docMembers, folderMembers, invites, user } from '../db/schema.ts';
 import { json } from '../worker/route.ts';
-import { actingUserId, MAX_FOLDER_DEPTH, resolveDocAccess, resolveFolderAccess } from './access.ts';
+import { actingUserId, liveAndManaged, MAX_FOLDER_DEPTH, resolveDocAccess, resolveFolderAccess } from './access.ts';
 import { NO_STORE, notFound, readJsonObject, unauthenticated } from './respond.ts';
 
 export type MemberTarget = { type: 'doc' | 'folder'; id: string };
@@ -141,6 +141,17 @@ async function share(db: Db, env: MembersEnv, target: MemberTarget, ownerUserId:
   const personId = person?.id ?? null;
   const [table, column] = grantTable(target);
   const now = Date.now();
+
+  // An open invite whose inviter no longer manages the item can never be redeemed; this share takes it over with a
+  // fresh link and its own role. Run for every email alike, so it says nothing about accounts.
+  const stale = await env.DB.prepare(`SELECT token, invited_by AS inviter FROM invites WHERE target_type = ?1 AND target_id = ?2
+      AND email = ?3 AND accepted_at IS NULL AND revoked_at IS NULL AND invited_by <> ?4`)
+    .bind(target.type, target.id, email, inviter).first<{ token: string; inviter: string }>();
+  if (stale) {
+    await env.DB.prepare(`UPDATE invites SET invited_by = ?3, token = ?4, role = ?5 WHERE token = ?1 AND invited_by = ?2
+        AND accepted_at IS NULL AND revoked_at IS NULL AND NOT (${liveAndManaged(target.type, 6, 2)})`)
+      .bind(stale.token, stale.inviter, inviter, randomToken(), role, target.id).run();
+  }
 
   // One batch, each statement seeing the one before. The invite goes in only while the owner's last hour holds fewer
   // than SHARES_PER_HOUR (counted by the statement that inserts, so a burst can't pass), only for someone who is not
