@@ -14,8 +14,8 @@ export class SsrfBlockedError extends Error {
   }
 }
 
-/** A hostname's A and AAAA answers. */
-export type HostResolver = (hostname: string) => Promise<string[]>;
+/** A hostname's A and AAAA answers; throws when either lookup failed. */
+export type HostResolver = (hostname: string, signal?: AbortSignal) => Promise<string[]>;
 
 export interface RemoteFetch {
   fetch: typeof fetch;
@@ -59,7 +59,7 @@ export function isIpLiteral(hostname: string): boolean {
 
 type V4 = [number, number, number, number];
 
-function isBlockedV4([a, b]: V4): boolean {
+function isBlockedV4([a, b, c]: V4): boolean {
   return a === 0 // this network
     || a === 10 // RFC 1918
     || a === 127 // loopback
@@ -67,7 +67,10 @@ function isBlockedV4([a, b]: V4): boolean {
     || (a === 169 && b === 254) // link-local, cloud metadata
     || (a === 172 && b >= 16 && b <= 31) // RFC 1918
     || (a === 192 && b === 168) // RFC 1918
-    || (a === 192 && b === 0) // IETF protocol assignments, TEST-NET-1
+    || (a === 192 && b === 0 && (c === 0 || c === 2)) // IETF protocol assignments, TEST-NET-1
+    || (a === 192 && b === 88 && c === 99) // 6to4 relay anycast
+    || (a === 198 && b === 51 && c === 100) // TEST-NET-2
+    || (a === 203 && b === 0 && c === 113) // TEST-NET-3
     || (a === 198 && (b === 18 || b === 19)) // benchmarking
     || a >= 224; // multicast, reserved, broadcast
 }
@@ -103,6 +106,9 @@ function isBlockedV6(host: string): boolean {
   if ((first & 0xffc0) === 0xfec0) return true; // site-local fec0::/10
   if ((first & 0xff00) === 0xff00) return true; // multicast
   if (first === 0x2001 && words[1] === 0x0db8) return true; // documentation
+  if (first === 0x2001 && words[1] === 0x0002 && words[2] === 0) return true; // benchmarking 2001:2::/48
+  if (first === 0x0100 && words.slice(1, 4).every((w) => w === 0)) return true; // discard-only 100::/64
+  if (first === 0x64 && words[1] === 0xff9b && words[2] === 1) return true; // local-use NAT64 64:ff9b:1::/48
   const embedded = (hi: number, lo: number): V4 => [hi >> 8, hi & 0xff, lo >> 8, lo & 0xff];
   // IPv4-mapped ::ffff:a.b.c.d and NAT64 64:ff9b::a.b.c.d reach the embedded IPv4 address.
   if (words.slice(0, 5).every((w) => w === 0) && words[5] === 0xffff) return isBlockedV4(embedded(words[6], words[7]));
@@ -140,16 +146,24 @@ function parseIpv6(host: string): number[] | null {
 
 const DOH = 'https://cloudflare-dns.com/dns-query';
 
-/** A and AAAA answers over Cloudflare's DNS-over-HTTPS JSON API; an error reply contributes nothing. */
+/** DNS RCODEs a lookup may end with: NOERROR (an empty one is NODATA) and NXDOMAIN. Anything else is a failure. */
+const ANSWERED = new Set([0, 3]);
+
+/**
+ * A and AAAA answers over Cloudflare's DNS-over-HTTPS JSON API. A NODATA or NXDOMAIN reply contributes nothing; an
+ * HTTP error, a failed RCODE or a truncated reply throws, so a family that was never vetted never lets a fetch through.
+ */
 export function createDohResolver(fetchImpl: typeof fetch = (input, init) => fetch(input, init)): HostResolver {
-  return async (hostname) => {
+  return async (hostname, signal) => {
     const answers = await Promise.all((['A', 'AAAA'] as const).map(async (type) => {
       const url = new URL(DOH);
       url.searchParams.set('name', hostname);
       url.searchParams.set('type', type);
-      const response = await fetchImpl(url.href, { headers: { accept: 'application/dns-json' } });
-      if (!response.ok) return [];
-      const body = (await response.json()) as { Answer?: { type?: number; data?: unknown }[] };
+      const response = await fetchImpl(url.href, { headers: { accept: 'application/dns-json' }, signal });
+      if (!response.ok) throw new Error(`doh ${type}: http ${response.status}`);
+      const body = (await response.json()) as { Status?: unknown; TC?: unknown; Answer?: { type?: number; data?: unknown }[] };
+      if (typeof body.Status !== 'number' || !ANSWERED.has(body.Status)) throw new Error(`doh ${type}: status ${String(body.Status)}`);
+      if (body.TC === true) throw new Error(`doh ${type}: truncated`);
       return (body.Answer ?? [])
         .filter((answer) => (answer.type === 1 || answer.type === 28) && typeof answer.data === 'string')
         .map((answer) => answer.data as string);
@@ -158,12 +172,12 @@ export function createDohResolver(fetchImpl: typeof fetch = (input, init) => fet
   };
 }
 
-/** 'public' only when every answer for `hostname` is public; a name with no answers (or no resolver) is 'unresolved'. */
-async function vetHost(hostname: string, resolve: HostResolver): Promise<'public' | 'blocked' | 'unresolved'> {
+/** 'public' only when every answer for `hostname` is public; a name with no answers or a failed lookup is 'unresolved'. */
+async function vetHost(hostname: string, resolve: HostResolver, signal?: AbortSignal): Promise<'public' | 'blocked' | 'unresolved'> {
   if (isIpLiteral(hostname)) return isBlockedHost(hostname) ? 'blocked' : 'public';
   let ips: string[];
   try {
-    ips = await resolve(unbracket(hostname));
+    ips = await resolve(unbracket(hostname), signal);
   } catch {
     return 'unresolved';
   }
@@ -185,7 +199,7 @@ const REDIRECTS = new Set([301, 302, 303, 307, 308]);
 export async function safeFetch(raw: string, remote: RemoteFetch, init: RequestInit = {}): Promise<{ response: Response; url: string }> {
   let url = assertPublicUrl(raw);
   for (let hop = 0; ; hop += 1) {
-    const vetted = await vetHost(url.hostname, remote.resolve);
+    const vetted = await vetHost(url.hostname, remote.resolve, init.signal ?? undefined);
     if (vetted !== 'public') throw new SsrfBlockedError(vetted === 'blocked' ? 'blocked-host' : 'unresolved-host', url.hostname);
     const response = await remote.fetch(url.href, { ...init, redirect: 'manual' });
     const location = REDIRECTS.has(response.status) ? response.headers.get('location') : null;

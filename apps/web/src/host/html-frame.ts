@@ -16,6 +16,20 @@ export const htmlFrameSrc = (): string | null => frameSrc;
 
 export const HTML_FRAME_IFRAME_SANDBOX = HTML_FRAME_SANDBOX;
 
+let sandboxProbe: DOMTokenList | null = null;
+
+/**
+ * `sandbox` without the flags this engine does not know (WebKit rejects moss's `allow-presentation` with a console
+ * error). Dropping a flag only takes a permission away, never grants one.
+ */
+export function supportedSandbox(sandbox: string): string {
+  if (typeof document === 'undefined') return sandbox;
+  sandboxProbe ??= document.createElement('iframe').sandbox;
+  const probe = sandboxProbe;
+  if (typeof probe.supports !== 'function') return sandbox;
+  return sandbox.split(/\s+/).filter((token) => token && probe.supports(token)).join(' ');
+}
+
 /** Sends `html` into `iframe` once its frame document announces itself; returns the listener's cleanup. */
 export function feedHtmlFrame(iframe: HTMLIFrameElement, html: string): () => void {
   const onMessage = (event: MessageEvent) => {

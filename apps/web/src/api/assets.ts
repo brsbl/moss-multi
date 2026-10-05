@@ -242,7 +242,12 @@ async function fromUrl(request: Request, env: AssetsEnv, docId: string): Promise
     await response.body?.cancel();
     return unsupported();
   }
-  const bytes = await readCapped(response, MEDIA_CAP_BYTES.image);
+  let bytes: Uint8Array<ArrayBuffer> | null;
+  try {
+    bytes = await readCapped(response, MEDIA_CAP_BYTES.image);
+  } catch {
+    return failed();
+  }
   if (!bytes) return tooLarge('image');
   const segment = new URL(fetched.url).pathname.split('/').pop() ?? '';
   let hint = typeof body?.filename === 'string' && body.filename.trim() ? body.filename : segment;

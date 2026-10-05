@@ -113,7 +113,12 @@ async function unfurl(url: string): Promise<Unfurled> {
     await response.body?.cancel();
     return { status: 'fallback', url };
   }
-  const html = new TextDecoder().decode(await readPrefix(response, PAGE_PREFIX_BYTES));
+  let html: string;
+  try {
+    html = new TextDecoder().decode(await readPrefix(response, PAGE_PREFIX_BYTES));
+  } catch {
+    return { status: 'fallback', url };
+  }
   const card = parseCard(html, fetched.url);
   if (!card.title && !card.description && !card.image) return { status: 'fallback', url };
   return { status: 'resolved', url, ...card };

@@ -14,7 +14,8 @@ import { forwardRef, useCallback, useLayoutEffect, useMemo, useRef } from 'react
 import type { CSSProperties, JSX } from 'react';
 // moss-multi seam: html-frame (A§16; SP13): a data: iframe inherits the page CSP, so srcDoc sources load the host's
 // sandboxed frame document, which takes the HTML by postMessage, and are never same-origin with it.
-import { feedHtmlFrame, HTML_FRAME_IFRAME_SANDBOX, htmlFrameSrc } from '@moss-multi/host/html-frame';
+// Every sandbox keeps only the flags the engine supports, so WebKit logs no invalid-flag error.
+import { feedHtmlFrame, HTML_FRAME_IFRAME_SANDBOX, htmlFrameSrc, supportedSandbox } from '@moss-multi/host/html-frame';
 
 import type { IframeModel } from './iframe-model';
 
@@ -61,7 +62,7 @@ export const IframeFrame = forwardRef<HTMLIFrameElement, IframeFrameProps>(
         ref={setRef}
         src={src}
         title={model.title}
-        sandbox={frameSrc ? HTML_FRAME_IFRAME_SANDBOX : model.sandbox}
+        sandbox={supportedSandbox(frameSrc ? HTML_FRAME_IFRAME_SANDBOX : model.sandbox)}
         referrerPolicy={model.referrerPolicy}
         loading={model.loading}
         allow={model.allow}
