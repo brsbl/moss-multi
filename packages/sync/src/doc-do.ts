@@ -12,6 +12,7 @@ import {
 } from './doc/admission.ts';
 import { attach, attachmentOf, awarenessTooLarge, awarenessFrame, receivePresence, leavePresence } from './doc/awareness.ts';
 import { AckCoalescer, DocStore, PERSISTENCE } from './doc/persistence.ts';
+import { coerceSidecar, COMMENTS_PER_DOC, DocComments, type CommentCreate, type CommentResult } from './doc/comments.ts';
 import { d1Projections, Projections, type ProjectionTarget } from './doc/projections.ts';
 import { publishMeta } from './fanout.ts';
 import type { SyncEnv } from './env.ts';
@@ -34,6 +35,8 @@ export interface DocLimits {
   maxConnections: number;
   writeRate: { max: number; windowMs: number };
   awarenessMaxBytes: number;
+  /** Comment and reply records per doc (comments.md §4). */
+  maxComments: number;
 }
 
 export interface CreateDocInput {
@@ -43,6 +46,9 @@ export interface CreateDocInput {
   title?: string;
   /** A body to import through the one converter instead of the seed's empty paragraph. */
   markdown?: string;
+  /** Moss's comments.json for `markdown`'s `%%m:` markers (moss interchange); records are authored by `author`. */
+  comments?: Record<string, unknown>;
+  author?: string;
 }
 
 /** Whether D1 has the doc in Trash (or has no row for it); throws when D1 cannot answer. */
@@ -88,6 +94,7 @@ export class DocDO extends YServer<SyncEnv> {
     maxConnections: MAX_CONNECTIONS,
     writeRate: WRITE_RATE,
     awarenessMaxBytes: AWARENESS_MAX_BYTES,
+    maxComments: COMMENTS_PER_DOC,
   };
   /** Where the title, filename and updated_at projections land (A§5.1). */
   static projectionTarget: (env: SyncEnv) => ProjectionTarget | null = (env) => (env?.DB ? d1Projections(env.DB, (id) => publishMeta(env, [id])) : null);
@@ -108,6 +115,7 @@ export class DocDO extends YServer<SyncEnv> {
   readonly constructedAt = Date.now();
 
   #store: DocStore | null = null;
+  #comments: DocComments | null = null;
   #exported: string | null = null;
   #projections: Projections | null = null;
   /** The title and body this instance last fed to search. */
@@ -130,9 +138,12 @@ export class DocDO extends YServer<SyncEnv> {
     store.load(this.document);
     this.#store = store;
     this.document.on('update', (update: Uint8Array, origin: unknown) => this.#persist(store, update, origin));
+    // R from meta and the anchor indexes from the `a:` records (comments.md §3, I8).
+    this.#comments = new DocComments(this.document, store);
     migrateFrontmatter(this.document, 'frontmatter-migration');
     migrateRegisters(this.document);
     this.#seed(store);
+    this.#comments.flush();
     const target = (this.constructor as typeof DocDO).projectionTarget(this.env);
     if (target) this.#project(new Projections(this.name, target));
     // A wake re-feeds only a doc the index may lack (L§4.14): an edit whose feed never landed, or an older entry
@@ -207,36 +218,58 @@ export class DocDO extends YServer<SyncEnv> {
     }
     // Inert frames (every step 2 answering a step 1) pass whatever the role; writes meet the gates.
     if (frame.kind === 'sync') {
-      const { changes, deletes } = classifySync(this.document, frame.update);
-      if (changes) {
-        if (this.#refused(connection, attachment, store, frame.update)) return;
-      } else if (roleAtLeast(attachment.role, 'editor')) {
+      let decoded: ReturnType<typeof Y.decodeUpdate>;
+      try {
+        decoded = Y.decodeUpdate(frame.update);
+      } catch {
+        this.#refuse(connection, 'unresolved', CLOSE.writeRefused);
+        return;
+      }
+      const { changes, deletes } = classifySync(this.document, frame.update, decoded);
+      if (changes && this.#refused(connection, attachment, store, frame.update)) return;
+      // Gate 2b on every step 2 or update, inert or not, whatever the role: no client frame reaches `comments`
+      // (comments.md §3, I1). O(frame · log); it follows no references.
+      if (this.#comments?.check(decoded)) {
+        this.#refuse(connection, 'protected-type', CLOSE.writeRefused);
+        return;
+      }
+      if (!changes && roleAtLeast(attachment.role, 'editor')) {
         // The doc already holds it, so nothing persists to ack it: an editor's reconnect step 2 after its ack was lost
         // with the old socket. Acked too, so the client learns its edits are on the server (A§10.6).
         this.#acks.schedule(connection, deletes);
       }
       this.#frameDeletes = deletes;
     }
+    // y-partyserver catches what Yjs throws mid-apply and emits it as the doc's 'error'.
+    let threw = false;
+    const onError = () => {
+      threw = true;
+    };
+    const events = this.document as unknown as { on(name: 'error', f: () => void): void; off(name: 'error', f: () => void): void };
+    events.on('error', onError);
     try {
       super.onMessage(connection, message);
     } finally {
       this.#frameDeletes = undefined;
+      events.off('error', onError);
     }
-    if (frame.kind === 'sync') this.#afterFrame(connection, store);
+    if (frame.kind === 'sync') this.#afterFrame(connection, store, threw);
   }
 
   /**
    * After a client frame applies: nothing it carried may wait in Yjs's pending queues to integrate after a later
-   * write, so a parked struct or delete is dropped and the frame refused (comments.md §3, I2); only then may the log
-   * compact, so a snapshot never holds parked structs.
+   * write, so a parked struct or delete is dropped and the frame refused, as is a frame Yjs threw on (comments.md §3,
+   * I2). Then the anchor changes it caused are written through writeComments in this turn (I8), and only then may the
+   * log compact, so a snapshot never holds parked structs.
    */
-  #afterFrame(connection: Connection, store: DocStore): void {
+  #afterFrame(connection: Connection, store: DocStore, threw: boolean): void {
     const yStore = this.document.store;
-    if (yStore.pendingStructs !== null || yStore.pendingDs !== null) {
+    if (threw || yStore.pendingStructs !== null || yStore.pendingDs !== null) {
       yStore.pendingStructs = null;
       yStore.pendingDs = null;
       this.#refuse(connection, 'unresolved', CLOSE.writeRefused);
     }
+    this.#comments?.flush();
     store.compactIfDue(this.document);
   }
 
@@ -263,11 +296,15 @@ export class DocDO extends YServer<SyncEnv> {
       const parts = splitFrontmatter(input.markdown);
       const hasFrontmatter = parts.hasFrontmatter && !parts.error;
       const frontmatter = hasFrontmatter ? input.markdown.slice(0, input.markdown.length - parts.body.length) : undefined;
-      importBody(this.document, hasFrontmatter ? parts.body : input.markdown, (diff) => this.#admitServerWrite(store, diff), frontmatter);
+      const sidecar = input.comments ? Object.fromEntries(coerceSidecar(input.comments)) : undefined;
+      const marks = importBody(this.document, hasFrontmatter ? parts.body : input.markdown, (diff) => this.#admitServerWrite(store, diff), frontmatter, sidecar);
+      // Right after the tree diff, in the same turn (comments.md §13).
+      if (sidecar) this.#comments?.importSidecar(sidecar, marks, input.author ?? input.ownerId, this.#limits.maxComments);
     }
     const title = input.title?.trim();
     // POST /api/docs wrote a provisional row; the title and its filename arrive through the projection.
     if (title) writeTitle(this.document, title, SERVER_TITLE);
+    this.#comments?.flush();
     store.setMeta('folder', input.folderId);
     store.setMeta('owner', input.ownerId);
     if (!title) await this.#projections?.initializeEmpty();
@@ -282,8 +319,24 @@ export class DocDO extends YServer<SyncEnv> {
   async renameTitle(text: string): Promise<void> {
     await this.#ready();
     writeTitle(this.document, text, SERVER_TITLE);
+    this.#comments?.flush();
     this.#projections?.touch();
     await this.#projections?.flush();
+  }
+
+  /**
+   * A comment or reply from REST (comments.md §4): `author` is the server principal the Worker resolved, and the
+   * Worker has checked commenter access and the per-principal rate. Records persist in this turn.
+   */
+  async createComment(input: CommentCreate): Promise<CommentResult> {
+    const store = await this.#ready();
+    const comments = this.#comments;
+    if (!comments) throw new Error('DocDO started without comments');
+    // A record's bytes count against the doc like any write (A§5.1 Limits).
+    if (store.stateBytes + 3 * String(input.text ?? '').length + 4096 > this.#limits.stateCapBytes) return { ok: false, status: 413, error: 'doc-cap' };
+    const result = comments.create(input, this.#limits.maxComments);
+    comments.flush();
+    return result;
   }
 
   /**
@@ -348,6 +401,8 @@ export class DocDO extends YServer<SyncEnv> {
       title.delete(0, title.length);
       title.insert(0, input.title ?? '');
     }, SERVER_IMPORT);
+    this.#comments?.dropCopied();
+    this.#comments?.flush();
     store.setMeta('folder', input.folderId);
     store.setMeta('owner', input.ownerId);
     await this.#projections?.flush();

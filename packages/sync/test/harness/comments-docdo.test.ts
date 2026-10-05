@@ -2,6 +2,7 @@
 // every sync frame, the pending purge before compaction, R persisted across restarts, records written through
 // writeComments in the frame's or import's turn, marker import, clean export and the create RPC.
 import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { $createMarkNode } from '@lexical/mark';
 import fc from 'fast-check';
@@ -24,8 +25,8 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-const fixtures = new URL('../../src/converter/fixtures/', import.meta.url);
-const fixture = (name: string) => readFileSync(fileURLToPath(new URL(name, fixtures)), 'utf8');
+const fixtures = join(dirname(fileURLToPath(import.meta.url)), '../../src/converter/fixtures');
+const fixture = (name: string) => readFileSync(join(fixtures, name), 'utf8');
 
 const SEED = 'The %%m:c1:start%%quick brown%%m:c1:end%% fox jumps over the %%m:c2:start%%lazy dog%%m:c2:end%%.';
 const SIDECAR = {
@@ -163,7 +164,8 @@ describe('T4.1 gate 2b in the DocDO: no client frame lands a write in comments @
     expect(Number.isInteger(r) && r > 0).toBe(true);
     expect(opened.dobj.document.clientID).not.toBe(r);
     for (const struct of opened.dobj.document.store.clients.get(r) ?? []) {
-      let type = struct instanceof Y.Item ? (struct.parent as Y.AbstractType<unknown>) : null;
+      if (!(struct instanceof Y.Item)) continue;
+      let type = struct.parent as Y.AbstractType<unknown> | null;
       while (type?._item) type = type._item.parent as Y.AbstractType<unknown>;
       expect(type, 'every R struct is in comments').toBe(opened.dobj.document.getMap('comments'));
     }
@@ -210,7 +212,7 @@ describe('T4.1 gate 2b in the DocDO: no client frame lands a write in comments @
           // Structs of one client in clock order, as an encoder writes them.
           structs.sort((a, b) => a.id.client - b.id.client || a.id.clock - b.id.clock);
           const client = await editorOn(opened);
-          await client.deliver(syncFrame(step, raw(structs, deletes.map(([who, clock, len]) => [clients[who], clock, len]))));
+          await client.deliver(syncFrame(step, raw(structs, deletes.map(([who, clock, len]): [number, number, number] => [clients[who], clock, len]))));
           await client.pump();
           expect(doc.store.pendingStructs).toBeNull();
           expect(doc.store.pendingDs).toBeNull();

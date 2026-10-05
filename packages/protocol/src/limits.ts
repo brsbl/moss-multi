@@ -30,3 +30,6 @@ export const REST_WRITE_RATE = { max: 60, windowMs: 60_000 } as const;
 
 /** Server fetches of caller-supplied URLs (unfurls, remote images) per identity per window; 429 past it (A§18). */
 export const REMOTE_FETCH_RATE = { max: 30, windowMs: 60_000 } as const;
+
+/** Comment operations (create, reply, later edit, resolve, react) per principal per window, counted by its PrincipalDO; 429 past it. */
+export const COMMENT_OP_RATE = { max: 60, windowMs: 60_000 } as const;

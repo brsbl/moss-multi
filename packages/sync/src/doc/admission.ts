@@ -95,9 +95,12 @@ export function wouldChange(doc: Y.Doc, update: Uint8Array): boolean {
 /** yjs does not export its DeleteSet type by name. */
 export type DeleteSet = ReturnType<typeof Y.createDeleteSet>;
 
-/** The classifier's verdict, and the deletes the frame carries (its ack names them, A§5.1 Acks). */
-export function classifySync(doc: Y.Doc, update: Uint8Array): { changes: boolean; deletes: DeleteSet } {
-  const { structs, ds } = Y.decodeUpdate(update);
+/**
+ * The classifier's verdict, and the deletes the frame carries (its ack names them, A§5.1 Acks). `decoded` lets the
+ * caller share one decode with gate 2b.
+ */
+export function classifySync(doc: Y.Doc, update: Uint8Array, decoded = Y.decodeUpdate(update)): { changes: boolean; deletes: DeleteSet } {
+  const { structs, ds } = decoded;
   return { changes: changes(doc, structs, ds), deletes: ds };
 }
 
