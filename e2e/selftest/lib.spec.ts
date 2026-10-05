@@ -1,12 +1,13 @@
 // The rest of e2e/lib proven able to fail: exact-bytes helpers, the allowlist expiry, the principal guard
 // (invariant 8), the hibernation proof, infra classification, phase-clock budgets and percentiles, the shard guard,
-// the sever and the UI verbs.
+// the sever, the reach sweep and the UI verbs.
 import { ALLOWLIST, expiredEntries, isAllowed, type AllowEntry } from '../lib/allowlist.ts';
 import { inductionProblems } from '../lib/hibernate.ts';
 import { classifyInfra, InfraBlocked, isInfraBlocked } from '../lib/infra.ts';
 import { budgetProblem, latencyRows, Measure, percentile } from '../lib/measure.ts';
 import { assertTestEmail, parseSetCookie, principalProblems } from '../lib/principals.ts';
 import MossReporter, { emptyShardProblem } from '../lib/reporter.ts';
+import { unreachableControls } from '../lib/reach.js';
 import { makeSeverable } from '../lib/sever.ts';
 import { typedProblems, type Typed } from '../lib/text.ts';
 import * as ui from '../lib/ui.ts';
@@ -249,5 +250,24 @@ test.describe('sever', () => {
     await expect.poll(received, { message: 'a reset ends the loss' }).toEqual([ack('third')]);
     expect(sever.census().acksLost).toBe(2);
     await context.close();
+  });
+});
+
+test.describe('reach', () => {
+  test('a visible control that ignores taps is unreachable; disabled and invisible ones are skipped', async ({ browser }) => {
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    await page.setContent(`<body style="margin:0;overflow:hidden">
+      <button style="margin:20px">Tappable</button>
+      <button style="margin:20px;pointer-events:none">Untappable</button>
+      <button style="margin:20px;pointer-events:none" disabled>Disabled</button>
+      <button style="margin:20px;pointer-events:none;opacity:0">Faded out</button>
+      <div style="opacity:0"><button style="margin:20px;pointer-events:none">Inside a faded group</button></div>
+      <button style="position:absolute;left:420px;top:20px">Off to the side</button>
+    </body>`);
+    const found = await page.evaluate(unreachableControls, { scope: null });
+    expect(found).toHaveLength(2);
+    expect(found[0]).toContain('"Untappable"');
+    expect(found[1]).toContain('"Off to the side"');
+    await page.close();
   });
 });

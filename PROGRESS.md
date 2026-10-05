@@ -142,7 +142,7 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - Several negative assertions cannot fail
 - The persistence legs check flattened text, and the M0 "restart and still see it" promise has no UI leg
 - Two j07 claims are proven more weakly than their titles say
-- At 390×844, signing in lands on an unreadable doc: the editor is squeezed to one character per line → T2.7 (deviation 11: below 640 px the notes panel overlays the canvas)
+- T2.7 closes the 390×844 squeezed-editor follow-up: below 640 px the notes panel overlays the canvas (deviation 11); j10 asserts the body's readable width after sign-up.
 - At M0 a link's "Open in Split View" opens an in-app browser that loads forever, and an HTML block's "Preview unavailable" Retry cannot succeed → T3.2 (RemoteWebSurface and the live iframe), or stage both now if the M0 critic counts them as dead
 
 - T1.4 checker P2 follow-ups (deferred under the owner's P0/P1-only review rule): cap and principal validation for REST title writes; retry/reconcile failed D1 title projections and serialize empty initialization; add independent negative controls for j02's monotonic, filename, merge and Properties assertions; remove Properties unstaging residue, avoid a placeholder flash before binding, and investigate the unconfirmed bridge-cache issue.

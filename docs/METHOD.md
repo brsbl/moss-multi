@@ -87,6 +87,7 @@ Read this with PRODUCT.md, your BUILDPLAN entry and the A§ it cites, before wri
 - Side panels `shrink-0`, the editor `flex-1 min-w-0`; a dropdown inside a dialog at the same z-index paints behind it. [L§4.1]
 - A browser never loads `moss-asset://`, and the page CSP logs each try as a console error, so `useHtmlPreviewImage` never requests a cached HTML preview screenshot that resolves there; the block reads "Preview unavailable" until T3.2's live iframe. [T0.P]
 - A pasted or dropped image or video is refused visibly while `media-upload` is staged (seams in VideoPastePlugin and MediaDropPlugin); moss's own paths only `console.warn` a failed upload. Refusals go through `refuseInput` (`host/refusal.ts`), which shows `[data-input-refusal]`. [T0.P]
+- The phone shell (T2.7, deviation 11): below 640 px (`host/viewport.ts`, Tailwind's `sm`) the notes panel overlays the canvas as a `data-overlay-surface`, open while no note is active and put away by a tap outside it; search and copy link fold into More actions, Share is icon-only and the canvas gutter is 1.5rem. moss renders the actions panel only from `md`, so its toggle hides below `md` too. `e2e/lib/reach.js` hit-tests every visible control's centre with `elementFromPoint` after scrolling only what a person can scroll; scope a sweep to an overlay while it covers the page.
 
 ## Local editing state (T1.6)
 
