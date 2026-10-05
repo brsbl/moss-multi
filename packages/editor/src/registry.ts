@@ -2,6 +2,7 @@
 // embed previews, HTML frames); each call reaches the bridge and services of the editor that owns that note.
 import type { MossAssetKind, MossEditorBridge, MossEditorServices } from './contract';
 import type { EditorSession } from './session';
+import { noteIdKey } from './host/moss-editor-host.js';
 
 export interface EditorRecord {
   noteId: string;
@@ -39,6 +40,26 @@ export function activeEditor(): EditorRecord | undefined {
 }
 
 export const assetKind = (ref: string): MossAssetKind => (/\.(mp4|webm|mov)(?:[?#].*)?$/i.test(ref) ? 'video' : 'image');
+
+/**
+ * A URL a mounted editor's host issued for a note's asset (`assets.parseUrl`), read back to the note and reference,
+ * for media pasted from an editor or viewer frame. Null for any other URL.
+ */
+export function hostAsset(url: string): { noteId: string; ref: `assets/${string}` } | null {
+  for (const bridge of new Set([...editors.values()].map((record) => record.bridge))) {
+    let parsed: ReturnType<MossEditorBridge['assets']['parseUrl']> = null;
+    try {
+      parsed = bridge.assets.parseUrl(url);
+    } catch {
+      parsed = null;
+    }
+    const ref = parsed?.ref;
+    if (parsed && typeof ref === 'string' && /^assets\/[^\\]+$/.test(ref) && !ref.split('/').some((part) => part === '' || part === '.' || part === '..')) {
+      return { noteId: noteIdKey(parsed.noteId), ref };
+    }
+  }
+  return null;
+}
 
 /** The URL an editor's note loads for a media reference; undefined when no editor renders `noteId`. */
 export function editorAssetUrl(ref: string, noteId: string | null | undefined): string | undefined {

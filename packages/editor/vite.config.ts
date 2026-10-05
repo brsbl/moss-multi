@@ -24,6 +24,7 @@ const SUBSTITUTES: Record<string, string> = {
   [`${editorUtils}/asset-url.ts`]: `${here}src/substitutes/asset-url.ts`,
   [`${editorUtils}/media-server-url.ts`]: `${here}src/substitutes/media-server-url.ts`,
   [`${repoRoot}apps/web/src/host/affordances.ts`]: `${here}src/substitutes/affordances.ts`,
+  [`${repoRoot}apps/web/src/host/media/web-asset-url.ts`]: `${here}src/substitutes/web-asset-url.ts`,
 };
 
 /** The frame's CSP requirements (docs/design/editor-embed.md §9); CI's e2e runs the editor under exactly this. */
@@ -117,6 +118,7 @@ export default defineConfig({
       { find: /^@moss-multi\/host\/(.*)$/, replacement: `${repoRoot}apps/web/src/host/$1` },
       { find: /^@moss-editor\/(.*)$/, replacement: `${here}src/$1.ts` },
       { find: /^@moss-pristine\/(.*)$/, replacement: `${editorUtils}/$1.ts?pristine` },
+      { find: /^@moss-web-pristine\/(.*)$/, replacement: `${repoRoot}apps/web/src/host/$1.ts?pristine` },
     ],
     dedupe: ['react', 'react-dom', 'jotai', 'jotai-family', 'lexical', 'yjs', 'prismjs'],
   },

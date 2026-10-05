@@ -436,6 +436,14 @@ export class MemoryHost {
         }
       }
     }
+    // Step 6: re-read every file; one another writer replaced after its own op makes this write `raced`, no rollback.
+    const produced = { ...expected };
+    for (const op of write.ops) produced[op.file] = op.kind === 'put' ? op.text : null;
+    for (const file of Object.keys(targets)) {
+      if (this.readText(targets[file]) !== produced[file]) {
+        return conflict('raced', applied.filter((name) => this.readText(targets[name]) === produced[name]), []);
+      }
+    }
     const after = await this.state(dir);
     this.own.set(noteIdKey(noteId), { version: after.version, metaVersion: after.metaVersion });
     return { kind: 'saved', version: after.version, metaVersion: after.metaVersion, location: after.location };

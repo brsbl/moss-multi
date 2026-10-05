@@ -67,6 +67,8 @@ export interface SessionSurface {
   snapshot(): RendererSnapshot | null;
   setEditable(editable: boolean): void;
   view(view: SessionView): void;
+  /** meta.json's comment colors changed on disk: each color the user has not changed takes `next`'s. */
+  adoptCommentColors?(previous: Record<string, number> | undefined, next: Record<string, number> | undefined): void;
 }
 
 export interface SessionOptions {
@@ -86,6 +88,9 @@ export interface AssetInput {
 
 const KNOWN_WRITE_KINDS = new Set(['saved', 'conflict', 'failed', 'notFound', 'notEditable']);
 const EMPTY_INTENTS: MossMetaIntents = { frontmatterMetaUpdates: {}, commentColors: {} };
+
+const sameColors = (a: Record<string, number> | undefined, b: Record<string, number> | undefined) =>
+  JSON.stringify(Object.entries(a ?? {}).sort()) === JSON.stringify(Object.entries(b ?? {}).sort());
 
 function editorError(code: MossEditorError['code'], message: string, extra: { reason?: MossNotEditableReason; cause?: unknown } = {}): MossEditorError {
   const error = new Error(message, extra.cause === undefined ? undefined : { cause: extra.cause }) as Error & {
@@ -375,7 +380,7 @@ export class EditorSession {
       this.unsavedStartedAt = null;
       return;
     }
-    const snapshot = this.snapshot();
+    let snapshot = this.snapshot();
     if (!snapshot) return;
     const revision = this.revision;
 
@@ -434,7 +439,7 @@ export class EditorSession {
           if (!this.adoptIfOwn(fresh)) return this.enterConflict('refused', []);
           continue;
         }
-        this.read = { ...read, disk: { ...read.disk, files: { ...read.disk.files, meta: fresh.disk.files.meta }, location: fresh.disk.location, metaVersion: fresh.disk.metaVersion } };
+        if (this.refreshMeta(fresh)) snapshot = this.snapshot() ?? snapshot;
         if (metaRetries > TIMING.metaConflictRetries) {
           this.fail(new Error('meta.json kept changing; the save will be retried'), null);
           return;
@@ -528,7 +533,7 @@ export class EditorSession {
     const fresh = await this.tryRead();
     if (!fresh) return false;
     if (fresh.disk.version === this.read!.disk.version) {
-      this.read = { ...this.read!, disk: { ...this.read!.disk, files: { ...this.read!.disk.files, meta: fresh.disk.files.meta }, metaVersion: fresh.disk.metaVersion, location: fresh.disk.location } };
+      this.refreshMeta(fresh);
       this.needsReread = false;
       return true;
     }
@@ -539,6 +544,24 @@ export class EditorSession {
     this.needsReread = false;
     this.enterConflict('refused', []);
     return false;
+  }
+
+  /**
+   * meta.json or the location changed, the content files did not: take the new meta baseline, and hand changed
+   * comment colors to the surface so the next save does not write the old ones back. True when colors changed.
+   */
+  private refreshMeta(fresh: NoteRead): boolean {
+    const read = this.read!;
+    this.read = {
+      ...read,
+      disk: { ...read.disk, files: { ...read.disk.files, meta: fresh.disk.files.meta }, metaVersion: fresh.disk.metaVersion, location: fresh.disk.location },
+      commentColors: fresh.commentColors,
+      metaTitle: fresh.metaTitle,
+    };
+    this.location = fresh.disk.location;
+    if (sameColors(read.commentColors, fresh.commentColors)) return false;
+    this.surface.adoptCommentColors?.(read.commentColors, fresh.commentColors);
+    return true;
   }
 
   private fail(error: unknown, failure: MossWriteFailed | null): void {
@@ -588,24 +611,33 @@ export class EditorSession {
       return;
     }
     if (change.version === this.read.disk.version && change.metaVersion === this.read.disk.metaVersion) return;
+    const base = this.read;
     const fresh = await this.tryRead();
     if (!fresh) return;
+    // A save that landed while the disk was read makes this read older than the editor: read again.
+    if (await this.superseded(base)) return this.handleExternal(change);
     if (fresh.disk.version === this.read.disk.version) {
       // meta.json or the location only: refresh the meta baseline.
-      this.read = { ...this.read, disk: { ...this.read.disk, files: { ...this.read.disk.files, meta: fresh.disk.files.meta }, metaVersion: fresh.disk.metaVersion, location: fresh.disk.location } };
-      this.location = fresh.disk.location;
+      this.refreshMeta(fresh);
       return;
     }
     // A focused title or a decorator draft is an edit not yet reported: commit it so it counts below.
     await this.surface.commit?.();
     const after = this.status as MossEditorStatus; // the commit awaited, so an unmount or removal may have landed
     if (after === 'unmounted' || after === 'removed') return;
+    if (!this.dirty && (await this.superseded(base))) return this.handleExternal(change);
     if (this.dirty || this.status === 'conflict') {
       if (this.status !== 'conflict') this.enterConflict('external', []);
       return;
     }
     const recent = this.lastSave && Date.now() - this.lastSave.at < TIMING.recentSaveGuardMs ? this.lastSave.receipt : null;
     await this.applyRead(fresh, 'external', recent);
+  }
+
+  /** Whether the editor's baseline moved (a save landed) since `base`, after any write still in flight. */
+  private async superseded(base: NoteRead | null): Promise<boolean> {
+    if (this.inFlight) await this.inFlight.catch(() => undefined);
+    return this.read !== base && this.status !== 'unmounted' && this.status !== 'removed';
   }
 
   private async applyRead(fresh: NoteRead, cause: 'external' | 'host' | 'conflict', overwrittenSave: MossDraft | null): Promise<void> {
@@ -745,18 +777,25 @@ export class EditorSession {
     };
     if (await refuse()) return { kind: 'refused', reason: 'dirty' };
     try {
-      const fresh = await this.readDisk();
-      if (fresh.kind !== 'note') {
-        const reason = fresh.kind === 'notFound' ? 'notFound' : fresh.reason;
-        this.remove(reason);
-        return { kind: 'removed', reason };
+      let read: NoteRead | null = null;
+      for (let attempt = 0; read === null; attempt += 1) {
+        const base = this.read;
+        const fresh = await this.readDisk();
+        if (fresh.kind !== 'note') {
+          const reason = fresh.kind === 'notFound' ? 'notFound' : fresh.reason;
+          this.remove(reason);
+          return { kind: 'removed', reason };
+        }
+        // An edit typed while the disk was read is kept: the reload is refused instead.
+        if (await refuse()) return { kind: 'refused', reason: 'dirty' };
+        // A save that landed meanwhile makes this read older than the editor: read again.
+        if (!(await this.superseded(base))) read = fresh.read;
+        else if (attempt >= 3) return { kind: 'error', error: new Error('the note kept changing while it was read') };
       }
-      // An edit typed while the disk was read is kept: the reload is refused instead.
-      if (await refuse()) return { kind: 'refused', reason: 'dirty' };
       const wasConflict = this.status === 'conflict';
-      await this.applyRead(fresh.read, 'host', null);
+      await this.applyRead(read, 'host', null);
       if (wasConflict) this.emit({ kind: 'conflictResolved', noteId: this.noteId, status: 'clean', resolution: 'reloaded' });
-      return { kind: 'reloaded', version: fresh.read.disk.version };
+      return { kind: 'reloaded', version: read.disk.version };
     } catch (error) {
       return { kind: 'error', error };
     }

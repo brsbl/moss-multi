@@ -10,7 +10,7 @@
 
 The latest review (Codex) returned FAIL. These findings are open and must be resolved before the contract is settled:
 
-- Meta-only changes and meta retries can revert commentColors changed in Moss
+- Meta-only changes and meta retries can revert commentColors changed in Moss (fixed in T3.9: a meta refresh hands changed colors to the editor, and each color the user has not changed takes the new one)
 - Receipt guarantee has no mandatory delivery path for autosaves
 - Receipts do not restore media that Moss trashes after replacing a bb save
 - Rollback and failure paths are underspecified and conflict with the plan feedback

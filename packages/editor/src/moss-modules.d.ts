@@ -204,6 +204,13 @@ declare module '@moss-desktop/common/web-embed-preview' {
   }): object;
 }
 
+// apps/web's web-asset-url module, which the editor's substitute wraps (vite.config.ts).
+declare module '@moss-web-pristine/media/web-asset-url' {
+  export function shareToken(): string | null;
+  export function uploadedFilename(src: string): string | null;
+  export function webAssetUrl(noteId: string, filename: string): string;
+}
+
 // moss's own asset-url module, which the editor's substitute wraps (vite.config.ts).
 declare module '@moss-pristine/asset-url' {
   export const REMOTE_URL_PATTERN: RegExp;

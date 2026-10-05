@@ -39,6 +39,7 @@ import { installEditorElectronApi } from './electron-api';
 import { installEditorHooks } from './hooks';
 import { MOSS_EDITOR_INFO } from './info';
 import { markActive, registerEditor } from './registry';
+import { $holdSelection, $restoreSelection, type HeldSelection } from './selection-map';
 import { EditorSession, type SessionSurface, type SessionView } from './session';
 
 type Store = ReturnType<typeof createStore>;
@@ -75,6 +76,10 @@ class FrameSurface implements SessionSurface {
   private pendingReady: (() => void) | null = null;
   private stopUpdates: (() => void) | null = null;
   private stopComments: (() => void) | null = null;
+  /** The caret and focus when the editor last went read-only, which an in-place load carries over. */
+  private held: { selection: HeldSelection | null; focused: boolean } | null = null;
+  /** What to select once the editor is editable again after an in-place load. */
+  private restore: { selection: HeldSelection; focused: boolean } | null = null;
   private state: PaneState = { content: null, version: 0, view: { status: 'loading', conflict: null, overwritten: false, error: null, removed: null }, editable: false };
   private listeners = new Set<() => void>();
 
@@ -135,6 +140,8 @@ class FrameSurface implements SessionSurface {
    * that handle strips frontmatter, a footer and a leading H1 again, which would drop a body's own first heading.
    */
   private replaceBody(editor: LexicalEditor, content: EditorContent): boolean {
+    const selection = this.held ? this.held.selection : editor.getEditorState().read($holdSelection, { editor });
+    const focused = this.held ? this.held.focused : this.focused(editor);
     const scroller = this.scroller;
     const top = scroller?.scrollTop ?? 0;
     const lock = () => {
@@ -161,6 +168,8 @@ class FrameSurface implements SessionSurface {
         { tag: 'agent-content-update' },
       );
       release();
+      // Lexical places the DOM selection only while editable, so the caret comes back in setEditable(true).
+      this.restore = selection ? { selection, focused } : null;
       return true;
     } catch (error) {
       scroller?.removeEventListener('scroll', lock);
@@ -243,9 +252,47 @@ class FrameSurface implements SessionSurface {
     };
   }
 
+  private focused(editor: LexicalEditor): boolean {
+    const root = editor.getRootElement();
+    return Boolean(root && document.activeElement && root.contains(document.activeElement));
+  }
+
   setEditable(editable: boolean): void {
-    this.editor?.setEditable(editable);
+    const editor = this.editor;
+    if (!editable && editor && editor.isEditable() && !this.held) {
+      this.held = { selection: editor.getEditorState().read($holdSelection, { editor }), focused: this.focused(editor) };
+    }
+    editor?.setEditable(editable);
     this.set({ editable });
+    if (!editable) return;
+    const restore = this.restore;
+    this.held = null;
+    this.restore = null;
+    // The caret goes back on the same text, only when the body had focus, so a focused title or the host keeps it.
+    if (!editor || !restore?.focused) return;
+    editor.getRootElement()?.focus({ preventScroll: true });
+    editor.update(() => {
+      $addUpdateTag(SKIP_SCROLL_INTO_VIEW_TAG);
+      $restoreSelection(restore.selection);
+    });
+  }
+
+  /** meta.json's colors changed on disk: a comment whose color the user has not changed takes the new one. */
+  adoptCommentColors(previous: Record<string, number> | undefined, next: Record<string, number> | undefined): void {
+    const atom = noteCommentsMapAtom(this.noteId);
+    const current = this.store.get(atom);
+    let changed = false;
+    const updated = Object.fromEntries(
+      Object.entries(current).map(([id, comment]) => {
+        const color = next?.[id];
+        if (comment.color !== previous?.[id] || comment.color === color) return [id, comment];
+        changed = true;
+        const recolored = { ...comment, color };
+        if (color === undefined) delete recolored.color;
+        return [id, recolored];
+      }),
+    );
+    if (changed) this.store.set(atom, updated);
   }
 
   view(view: SessionView): void {
