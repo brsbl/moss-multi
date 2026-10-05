@@ -4,7 +4,7 @@ import * as Y from 'yjs';
 import * as encoding from 'lib0/encoding';
 import { writeSyncStep1 } from 'y-protocols/sync';
 import { splitFrontmatter } from '@moss-desktop/common/markdown-layers';
-import { ACK_COALESCE_MS, AWARENESS_MAX_BYTES, MAX_CONNECTIONS, STATE_CAP_BYTES, WRITE_RATE } from '@moss-multi/protocol/limits';
+import { ACK_COALESCE_MS, AWARENESS_MAX_BYTES, DOC_SOCKET_MAX_MS, MAX_CONNECTIONS, STATE_CAP_BYTES, WRITE_RATE } from '@moss-multi/protocol/limits';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
 import {
   bytesToBase64, CLOSE, encodePayloadFrame, PAYLOAD_STEP1, PAYLOAD_STEP2, PAYLOAD_UPDATE, type PayloadAck, type PayloadFrame,
@@ -79,6 +79,9 @@ export class DocCapError extends Error {
     this.name = 'DocCapError';
   }
 }
+
+/** A socket whose role was resolved DOC_SOCKET_MAX_MS ago or more. */
+const aged = (attachment: Attachment, now: number) => (attachment.resolvedAt ?? 0) + DOC_SOCKET_MAX_MS <= now;
 
 /** The trashes holding the doc closed, each with when the alarm may settle it. */
 function holdsOf(store: DocStore): Map<string, number> {
@@ -245,6 +248,7 @@ export class DocDO extends YServer<SyncEnv> {
     if (attachment.presenceAllowed && this.document.awareness.getStates().size) {
       connection.send(awarenessFrame(this.document.awareness, [...this.document.awareness.getStates().keys()]));
     }
+    await this.#schedule(holdsOf(store));
   }
 
   override onMessage(connection: Connection, message: WSMessage): void {
@@ -257,6 +261,10 @@ export class DocDO extends YServer<SyncEnv> {
     const revoked = revocationCode(attachment, store.revoked);
     if (revoked !== null) {
       connection.close(revoked, 'revoked');
+      return;
+    }
+    if (aged(attachment, Date.now())) {
+      connection.close(TRY_AGAIN, 'aged');
       return;
     }
     if (typeof message === 'string') {
@@ -368,6 +376,11 @@ export class DocDO extends YServer<SyncEnv> {
   override async onAlarm(): Promise<void> {
     const store = await this.#ready();
     const now = Date.now();
+    // A socket at DOC_SOCKET_MAX_MS reconnects, so the sign-out registry never outlives a socket it should name.
+    for (const connection of this.getConnections()) {
+      const attachment = attachmentOf(connection);
+      if (attachment && aged(attachment, now)) connection.close(TRY_AGAIN, 'aged');
+    }
     const expired = [...holdsOf(store)].filter(([, until]) => until <= now).map(([hold]) => hold);
     if (expired.length > 0) {
       try {
@@ -499,10 +512,15 @@ export class DocDO extends YServer<SyncEnv> {
     return { deleted };
   }
 
-  /** The alarm goes off when the oldest hold has waited HOLD_MS. */
+  /** The alarm goes off when the oldest hold has waited HOLD_MS, or the oldest socket reaches DOC_SOCKET_MAX_MS. */
   async #schedule(holds: Map<string, number>): Promise<void> {
-    if (holds.size === 0) return;
-    await this.ctx.storage.setAlarm(Math.min(...holds.values()));
+    const due = [...holds.values()];
+    for (const connection of this.getConnections()) {
+      const attachment = attachmentOf(connection);
+      if (attachment) due.push((attachment.resolvedAt ?? 0) + DOC_SOCKET_MAX_MS);
+    }
+    if (due.length === 0) return;
+    await this.ctx.storage.setAlarm(Math.min(...due));
   }
 
   /** Every open socket hears the doc is gone, then closes 4410. */

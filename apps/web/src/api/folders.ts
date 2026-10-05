@@ -212,22 +212,33 @@ async function updateFolder(request: Request, env: FoldersEnv, id: string): Prom
   const moving = parentId !== current.parentId;
   // Only a sent name is written, so a move can't undo a rename that lands between its read and its write.
   const newName = 'name' in body ? name : null;
+  // Another move of this folder landing after the read: who it let in is not in `reach`, so everyone re-asks.
+  let raced = false;
   try {
     if (!moving) {
       if (newName !== null) await db.update(folders).set({ name: newName }).where(and(eq(folders.id, id), isNull(folders.deletedAt)));
     } else {
-      // The target's live ancestry, the cycle check and the depth bound hold at the moment of the write.
-      const updated = await env.DB.prepare(`WITH RECURSIVE ${upFrom(1)},
+      // The target's live ancestry, the cycle check and the depth bound hold at the moment of the write, and the
+      // parent is still the one `reach` was read under.
+      const move = (from: string) => env.DB.prepare(`WITH RECURSIVE ${upFrom(1)},
         sub(id, depth) AS (
           SELECT id, 1 FROM folders WHERE id = ?2
           UNION ALL SELECT f.id, s.depth + 1 FROM folders f JOIN sub s ON f.parent_id = s.id
             WHERE f.deleted_at IS NULL AND s.depth <= ${MAX_FOLDER_DEPTH}
         )
         UPDATE folders SET name = coalesce(?3, name), parent_id = ?1
-        WHERE id = ?2 AND deleted_at IS NULL AND ${liveIn(4)}
+        WHERE id = ?2 AND deleted_at IS NULL AND ${liveIn(4)} AND parent_id = ?5
           AND NOT EXISTS (SELECT 1 FROM up WHERE id = ?2)
           AND (SELECT count(*) FROM up) + (SELECT max(depth) FROM sub) <= ${MAX_FOLDER_DEPTH}`)
-        .bind(parentId, id, newName, vault).run();
+        .bind(parentId, id, newName, vault, from).run();
+      let updated = await move(current.parentId as string);
+      if (!changed(updated)) {
+        const [now] = await db.select({ parentId: folders.parentId }).from(folders).where(eq(folders.id, id));
+        if (now && now.parentId !== current.parentId) {
+          raced = true;
+          updated = await move(now.parentId as string);
+        }
+      }
       if (!changed(updated)) return refuseStaleMove(db, principal, id, parentId);
     }
   } catch (error) {
@@ -237,7 +248,8 @@ async function updateFolder(request: Request, env: FoldersEnv, id: string): Prom
   const touched = moving ? (await subtree(env.DB, id)).map((row) => row.id) : [id];
   await notify(env, await collectRecipients(env.DB, { folderIds: touched }, recipients));
   const retried = !moving && 'parentId' in body && can(folder.role, 'manage');
-  const unkicked = moving ? await kickMoved(env, reach) : retried ? await kickRetried(env, await docsOf(env.DB, { type: 'folder', id })) : null;
+  const unkicked = moving && !raced ? await kickMoved(env, reach)
+    : raced || retried ? await kickRetried(env, await docsOf(env.DB, { type: 'folder', id })) : null;
   if (unkicked) return unkicked;
   return json({ folder: await folderRecord(db, id) }, 200, NO_STORE);
 }
@@ -342,8 +354,12 @@ export async function moveDoc(request: Request, env: FoldersEnv, docId: string, 
     return refuse(409, 'other-vault', 'Notes can only move within their own vault.');
   }
   const recipients = await collectRecipients(env.DB, { docIds: [docId] });
+  // Read after `access`, so the folder the move expects to leave is the one `reach` saw or an older one.
   const reach = await reachOf(env.DB, [docId]);
+  // Another move landing after the read: who it let in is not in `reach`, so everyone on the note re-asks.
+  let raced = false;
   if (access.folderId !== folderId) {
+    let from = access.folderId;
     for (let attempt = 1; ; attempt += 1) {
       const [doc] = await db.select({ title: docs.title, filename: docs.filename }).from(docs).where(eq(docs.id, docId));
       const taken = await db.select({ filename: docs.filename }).from(docs)
@@ -352,19 +368,23 @@ export async function moveDoc(request: Request, env: FoldersEnv, docId: string, 
       // The title projection owns filenames; a move only steps aside from a name the folder already holds.
       const filename = occupied.has(doc.filename) ? filenameFor(doc.title, occupied) : doc.filename;
       try {
-        // The destination must still be live in the vault when the note lands (a trash may be under way).
+        // The destination must still be live in the vault when the note lands (a trash may be under way), and the
+        // note must still be where this request last saw it.
         const moved = await env.DB.prepare(`WITH RECURSIVE ${upFrom(1)}
-          UPDATE docs SET folder_id = ?1, filename = ?2 WHERE id = ?3 AND deleted_at IS NULL AND ${liveIn(4)}`)
-          .bind(folderId, filename, docId, vault).run();
-        if (!changed(moved)) return folderNotFound();
-        break;
+          UPDATE docs SET folder_id = ?1, filename = ?2 WHERE id = ?3 AND deleted_at IS NULL AND ${liveIn(4)} AND folder_id = ?5`)
+          .bind(folderId, filename, docId, vault, from).run();
+        if (changed(moved)) break;
+        const [now] = await db.select({ folderId: docs.folderId, deletedAt: docs.deletedAt }).from(docs).where(eq(docs.id, docId));
+        if (!now || now.deletedAt !== null || now.folderId === from || attempt >= 5) return folderNotFound();
+        raced = true;
+        from = now.folderId;
       } catch (error) {
         if (!isUnique(error) || attempt >= 5) throw error;
       }
     }
   }
   await notify(env, await collectRecipients(env.DB, { docIds: [docId] }, recipients));
-  const unkicked = access.folderId !== folderId ? await kickMoved(env, reach) : await kickRetried(env, [docId]);
+  const unkicked = access.folderId !== folderId && !raced ? await kickMoved(env, reach) : await kickRetried(env, [docId]);
   if (unkicked) return unkicked;
   const [doc] = await db
     .select({ id: docs.id, folderId: docs.folderId, title: docs.title, filename: docs.filename, createdAt: docs.createdAt, updatedAt: docs.updatedAt })

@@ -4,7 +4,7 @@
 import { useEffect, type ComponentType } from 'react';
 import { readyWhenShellRenders } from './app-state.ts';
 import { auth } from './auth.ts';
-import { closeDocsToWrites, endTrashedDocs, pauseDocWrites, severDocSessions, waitDocsAcked } from './collab/doc-session.ts';
+import { closeDocsToWrites, endTrashedDocs, pauseDocWrites, reopenDocs, severDocSessions, waitDocsAcked } from './collab/doc-session.ts';
 import { SignOutConfirmation } from './surfaces/SignOutConfirmation.tsx';
 import { TrashConfirmation } from './surfaces/TrashConfirmation.tsx';
 import { folderIdFromPath, installBridge, WORKSPACE, type Bridge } from './bridge/index.ts';
@@ -24,7 +24,7 @@ async function revealLandingFolder(bridge: Bridge): Promise<void> {
 }
 
 export async function bootMoss(): Promise<{ default: ComponentType }> {
-  const bridge = installBridge(auth, createTrashGuard({ close: closeDocsToWrites, waitAcked: waitDocsAcked, confirm: askTrashConfirmation, end: endTrashedDocs }));
+  const bridge = installBridge(auth, createTrashGuard({ close: closeDocsToWrites, waitAcked: waitDocsAcked, confirm: askTrashConfirmation, end: endTrashedDocs }), reopenDocs);
   const analytics = await import('@moss-desktop/renderer/error-analytics');
   analytics.installRendererErrorAnalytics();
   if (new URLSearchParams(window.location.search).get('mossMode') === 'pdf-export') {

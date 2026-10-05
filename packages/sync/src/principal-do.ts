@@ -122,38 +122,46 @@ export class PrincipalDO extends Server<SyncEnv> {
       docId,
       now,
     );
-    // A session that expired without a sign-out leaves its rows; they go once no session could still use them.
+    // A session that expired without a sign-out leaves its rows; they go once no session could still use them. No
+    // socket outlives its row: a DocDO closes each at DOC_SOCKET_MAX_MS, and its reconnect registers again.
     sql.exec('DELETE FROM doc_sockets WHERE at < ?', now - SESSION_MAX_MS);
     return 'ok';
   }
 
   /**
-   * Sign-out (A§5.2, A§7): remembers the session as ended, so a socket that registers later closes 4402, then runs an
-   * awaited recheck on every doc the session opened, then tells and closes the session's workspace sockets. Throws
-   * when a doc does not acknowledge; a retry rechecks the docs still listed.
+   * Sign-out (A§5.2, A§7): remembers the session as ended, so a socket that registers later closes 4402, tells and
+   * closes the session's workspace sockets at once, then runs an awaited recheck on every doc the session opened.
+   * Throws when a doc does not acknowledge; a retry rechecks the docs still listed.
    */
   async endSession(sessionId: string): Promise<void> {
-    await this.#end(sessionId, { sessions: [sessionId] });
+    await this.#remember(sessionId);
     const event: WorkspaceEvent = { type: 'session-ended', sessionId };
     for (const connection of this.getConnections<{ sessionId?: string | null }>()) {
       if (connection.state?.sessionId !== sessionId) continue;
       connection.send(JSON.stringify(event));
       connection.close(CLOSE.sessionEnded, 'session ended');
     }
+    await this.#recheck(sessionId, { sessions: [sessionId] });
   }
 
   /** An agent key's revocation (A§8): every doc the agent opened closes its sockets, and later ones are refused. */
   async revokePrincipal(): Promise<void> {
-    await this.#end(PRINCIPAL_KEY, { principalIds: [this.name] });
+    await this.#remember(PRINCIPAL_KEY);
     for (const connection of this.getConnections()) connection.close(CLOSE.noPrincipal, 'revoked');
+    await this.#recheck(PRINCIPAL_KEY, { principalIds: [this.name] });
   }
 
-  async #end(key: string, revocation: Omit<RecheckInput, 'at'>): Promise<void> {
+  async #remember(key: string): Promise<void> {
     await this.__unsafe_ensureInitialized();
     const sql = this.#registry();
     const now = Date.now();
     sql.exec('INSERT OR IGNORE INTO ended_sessions (session_id, at) VALUES (?, ?)', key, now);
     sql.exec('DELETE FROM ended_sessions WHERE at < ?', now - SESSION_MAX_MS);
+  }
+
+  async #recheck(key: string, revocation: Omit<RecheckInput, 'at'>): Promise<void> {
+    const sql = this.#registry();
+    const now = Date.now();
     const docIds = sql.exec<{ doc_id: string }>('SELECT doc_id FROM doc_sockets WHERE session_id = ?', key).toArray().map((row) => row.doc_id);
     const recheck = (this.constructor as typeof PrincipalDO).rechecker(this.env);
     if (!recheck) throw new Error('PrincipalDO has no DocDO binding to recheck');

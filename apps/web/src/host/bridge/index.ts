@@ -70,6 +70,8 @@ export interface BridgeOptions {
   browser?: BrowserHooks;
   /** Closes docs to writes and waits for their acks before a trash (A§10.6); boot.tsx wires the doc sessions in. */
   trashGuard?: TrashGuard;
+  /** Docs a workspace push named, so a session left terminal on a note that is live after all re-asks (A§8). */
+  reopenDocs?: (docIds: string[]) => void;
   /** The page's current leave: `signal` aborts as the page starts to leave, and `stayed` resolves if it is still
    * running afterwards (a cancelled navigation), so workspace reads are held, never cancelled by a navigation. */
   leaving?: () => Leave;
@@ -190,7 +192,7 @@ const inertBrowser: BrowserHooks = {
   copy: async () => undefined,
 };
 
-export function createBridge({ pathname, share = () => null, fetch: fetcher = fetch.bind(globalThis), storage = null, browser = inertBrowser, subscribeWorkspace: subscribe, leaving, trashGuard = openGuard }: BridgeOptions) {
+export function createBridge({ pathname, share = () => null, fetch: fetcher = fetch.bind(globalThis), storage = null, browser = inertBrowser, subscribeWorkspace: subscribe, leaving, trashGuard = openGuard, reopenDocs }: BridgeOptions) {
   /** Every API call carries the tab's share token, so a link holder reads and edits through the link (T2.4). */
   const request = (path: string, init: RequestInit = {}) => {
     const token = share();
@@ -332,6 +334,7 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
     if (event.type !== 'meta' && event.type !== 'vaults') return;
     if (event.type === 'vaults' || event.folderIds.length) refreshAll = true;
     if (event.type === 'meta') for (const id of event.docIds) pendingIds.add(id);
+    if (event.type === 'meta' && event.docIds.length) reopenDocs?.(event.docIds);
     requestWorkspaceRefresh();
   };
   const pins = () => readJson<Record<string, number>>(storage, PINS_KEY) ?? {};
@@ -834,8 +837,8 @@ function leavingSignal(): () => Leave {
 }
 
 /** Installs the bridge on `window` before App's module evaluates (A§4.3). */
-export function installBridge(authStore: import('../auth-state.ts').AuthStore, trashGuard?: TrashGuard): Bridge {
-  const bridge = createBridge({ pathname: () => window.location.pathname, storage: localStorageOrNull(), browser: windowBrowser(), trashGuard,
+export function installBridge(authStore: import('../auth-state.ts').AuthStore, trashGuard?: TrashGuard, reopenDocs?: (docIds: string[]) => void): Bridge {
+  const bridge = createBridge({ pathname: () => window.location.pathname, storage: localStorageOrNull(), browser: windowBrowser(), trashGuard, reopenDocs,
     share: () => new URLSearchParams(window.location.search).get('share'),
     leaving: leavingSignal(),
     subscribeWorkspace: (receive, pause) => subscribeWorkspace({

@@ -218,7 +218,7 @@ This is a new DO and a deliberate divergence from glyphdown, forced by three req
 
 **Workspace channel.** It holds the hibernatable sockets of that user's tabs (`/api/workspace/ws`). JSON events are `meta {docIds, folderIds}`, `notifications`, `vaults` and `session-ended {sessionId}`. The client sends a ping every 25 s while visible. The `publish(event)` RPC is called by the Worker and by DocDOs.
 
-**Sign-out registry.** The table `doc_sockets(session_id, doc_id)` is maintained by DocDOs. `endSession(sessionId)` runs an awaited `DocDO.recheck({sessions})` on every listed doc, then closes that session's workspace sockets. It also records the session as ended for the session's maximum lifetime, so a socket whose registration arrives after the sign-out gets `ended` and is closed 4402 (the B0 race). This replaces a D1 `live_collab_sockets` table. [S-prior §13; L§4.9]
+**Sign-out registry.** The table `doc_sockets(session_id, doc_id)` is maintained by DocDOs. `endSession(sessionId)` records the session as ended for the session's maximum lifetime, so a socket whose registration arrives after the sign-out gets `ended` and is closed 4402 (the B0 race); it then closes that session's workspace sockets and runs an awaited `DocDO.recheck({sessions})` on every listed doc. Rows are pruned a session's maximum lifetime after registration, and a DocDO closes every doc socket 1013 a day before that age (an alarm), so a pruned row never names an open socket; the reconnect registers again. This replaces a D1 `live_collab_sockets` table. [S-prior §13; L§4.9]
 
 **Push limit.** A sliding window of 60 pushes per minute per identity. Denied attempts count. The DO is single-threaded, so the count is exact.
 
@@ -404,7 +404,7 @@ The plugin is passed as MarkdownEditor's `collaboration` prop in place of `<Hist
 | 4403 | Access revoked or lowered | REST re-ask, then a read-only rebind or terminal `revoked` |
 | 4404 | Doc unavailable: missing, no access, forged or revoked link (§4.1) | terminal `unavailable`; the DenialPage on next load |
 | 4409 | Write refused; the reason arrives in the unicast just before | discard the local Y.Doc, rebind fresh, announce the refusal |
-| 4410 | Doc deleted | terminal `deleted` |
+| 4410 | Doc deleted | terminal `deleted`; a workspace `meta` push naming the doc makes it re-ask REST and reopen if the note is live (a trash that never committed) |
 | 4429 | Connection limit | terminal `conn-limit`, with a retry action |
 
 ### 10.6 Terminal states and durability honesty

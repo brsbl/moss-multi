@@ -225,6 +225,14 @@ export function endTrashedDocs(docIds: string[]): void {
   for (const session of [...sessions]) if (docIds.includes(session.docId)) session.end('deleted');
 }
 
+/**
+ * The workspace channel says these docs changed (A§8): a session that went terminal `deleted` asks REST again, and
+ * reopens when the note is live after all (a trash that never committed closed it 4410 first).
+ */
+export function reopenDocs(docIds: string[]): void {
+  for (const session of [...sessions]) if (docIds.includes(session.docId)) void session.reopen();
+}
+
 /** Resolves true once no session of these docs holds an unacked edit, or false after `timeoutMs`. */
 export function waitDocsAcked(docIds: string[], timeoutMs: number): Promise<boolean> {
   const pending = () => [...sessions].some((session) => docIds.includes(session.docId) && session.state.unacked);
@@ -266,6 +274,7 @@ export class DocSession {
   #lingering = false;
   /** Terminal or halted: this session's edits can no longer land. */
   #ended = false;
+  #reopening = false;
   readonly #ledger = new AckLedger();
   #link: Link;
   #socketOpen = false;
@@ -390,6 +399,27 @@ export class DocSession {
     }
     const ws = this.provider.ws;
     if (ws && ws.readyState <= WebSocket.OPEN) ws.close(CLOSE.normal, 'ended');
+  }
+
+  /** After `deleted` on a note REST still has live: the terminal state clears and the socket reopens at the role REST
+   * gives, or the pane rebinds read-only. Anything else leaves it terminal. */
+  async reopen(): Promise<void> {
+    if (this.#disposed || this.#reopening || !this.#ended || terminalOf(this.docId) !== 'deleted') return;
+    this.#reopening = true;
+    const answer = await askAccess(this.docId).finally(() => { this.#reopening = false; });
+    if (this.#disposed || answer.kind !== 'role' || terminalOf(this.docId) !== 'deleted') return;
+    rememberRole(this.docId, answer.role);
+    this.#ended = false;
+    this.#failedHandshakes = 0;
+    clearTerminal(this.docId);
+    if (!answer.canWrite) {
+      if (this.#state.canWrite) refuseInput(VIEW_ONLY);
+      this.#ended = true;
+      this.#set({ canWrite: false, resync: true });
+      return;
+    }
+    this.provider.shouldConnect = true;
+    void this.provider.connect();
   }
 
   /** Tries again after `conn-limit`: the terminal state clears and the socket reopens. */

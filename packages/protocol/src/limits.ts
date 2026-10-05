@@ -33,3 +33,10 @@ export const REST_WRITE_RATE = { max: 60, windowMs: 60_000 } as const;
  * lifetime, 7 days, which no in-flight upgrade outlives.
  */
 export const SESSION_MAX_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * The longest a doc socket stays open (A§5.1): the DocDO closes it 1013 at this age, from when its role was resolved,
+ * and it reconnects and registers afresh. A day short of SESSION_MAX_MS, so the PrincipalDO never prunes a registry
+ * row whose socket is still open.
+ */
+export const DOC_SOCKET_MAX_MS = SESSION_MAX_MS - 24 * 60 * 60 * 1000;
