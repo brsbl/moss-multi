@@ -83,6 +83,8 @@ export interface Who {
   share?: string | null;
   /** When the Worker resolved the role (the trusted header); defaults to now. */
   resolvedAt?: number;
+  /** The Worker's trusted headers as authenticateParty set them; replaces every field above. */
+  headers?: Record<string, string>;
 }
 
 let connections = 0;
@@ -101,6 +103,10 @@ export async function connect(opened: Opened, who: Who = {}, doc?: Y.Doc, pk?: s
   if (who.session !== null) headers.set(TRUSTED.session, who.session ?? `session-${connections}`);
   if (who.share) headers.set(TRUSTED.share, who.share);
   headers.set(TRUSTED.resolvedAt, String(who.resolvedAt ?? Date.now()));
+  if (who.headers) {
+    for (const name of [...headers.keys()]) if (name !== 'upgrade') headers.delete(name);
+    for (const [name, value] of Object.entries(who.headers)) headers.set(name, value);
+  }
   const made = serverEnds.length;
   const url = `https://doc.test/parties/doc-d-o/${opened.backing.docId}?_pk=${pk ?? `conn-${connections}`}`;
   const response = await opened.dobj.fetch(new Request(url, { headers }));

@@ -40,3 +40,10 @@ export const SESSION_MAX_MS = 7 * 24 * 60 * 60 * 1000;
  * row whose socket is still open.
  */
 export const DOC_SOCKET_MAX_MS = SESSION_MAX_MS - 24 * 60 * 60 * 1000;
+
+/**
+ * While frames flow, a DocDO or PrincipalDO re-validates its sockets' access at most this long after the last frame
+ * (A§8 pull validation), so a socket that sends nothing still closes once its access is gone. An idle DO stops ticking
+ * and hibernates; its next frame validates first.
+ */
+export const ACCESS_TICK_MS = 5_000;
