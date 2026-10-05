@@ -200,8 +200,9 @@ async function captureCandidate(browser: Browser, target: Target, theme: Theme, 
     }
     if (target.prepare === 'trash-open-note') await trashOpenNote(page);
     await audit(page, theme, 'candidate');
-    const masks = await maskRects(page, target.masks);
-    return { png: await capture(page, target), masks };
+    const png = await capture(page, target);
+    // Measured in the captured state: the docked toolbar's chrome shows only once the editor is focused.
+    return { png, masks: await maskRects(page, target.masks) };
   } finally {
     await page.context().close();
   }
