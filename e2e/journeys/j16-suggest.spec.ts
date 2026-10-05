@@ -288,7 +288,7 @@ test('j16-suggest routed deletes: past an inline link, over own and original tex
 
 test('j16-suggest routed deletes: Backspace and Delete strike a whole emoji, never half of it @p:mean-2 @p:R17', async ({ actors }) => {
   actors.solo('the owner only seeds the note; one suggester makes every edit');
-  const { ada, ben, docId, before } = await sharedNote(actors, 'Smile A\u{1F600}B here.\n\nNext \u{1F600} line.');
+  const { ada, ben, docId, before } = await sharedNote(actors, 'Smile A\u{1F600}B here.\n\nNext:\u{1F600} line.');
   await openIn(ben, docId);
   await ben.observeEditor(docId);
   const { keyboard } = ben.page;
@@ -304,13 +304,14 @@ test('j16-suggest routed deletes: Backspace and Delete strike a whole emoji, nev
   await expect(body, 'the caret sat before the emoji, not inside it').toContainText('Smile AZ\u{1F600}B here.');
 
   // Delete before an original emoji strikes it whole too, and the caret lands after it.
-  await caret(ben, docId, 'Next ', 5);
+  // After a colon, not a space: WebKit's forward-delete range would start before a space.
+  await caret(ben, docId, 'Next:', 5);
   await keyboard.press('Delete');
   await settled(ben, docId, 'the Delete over the emoji');
   await expect.poll(() => painted(ben, 'suggest-delete'), { message: 'both emoji are struck whole', timeout: BIND_TIMEOUT }).toEqual(['\u{1F600}', '\u{1F600}']);
   await keyboard.type('Y');
   await settled(ben, docId, 'typing after the second strike');
-  await expect(body, 'the caret sat after the emoji').toContainText('Next \u{1F600}Y line.');
+  await expect(body, 'the caret sat after the emoji').toContainText('Next:\u{1F600}Y line.');
   await expect(body).not.toContainText('\u{FFFD}');
   expect(await content(ada, docId), 'no suggestion wrote the body').toBe(before);
 });
