@@ -1,9 +1,10 @@
 // The members API (T1.1, T2.4, T2.8; A§8): who has access to a doc, folder or vault, and sharing it with a person by
-// email. Only an owner shares, and emails and pending invites reach owners alone. An email is a label, never an
-// authority (PRODUCT ruling 19): a share creates an invite, a personal link the owner sends, and grants nothing; access
-// comes only from redeeming the link while signed in, and the invite then binds to that account. The inviter's path
-// reads and writes only invites, never an account found by the email, so its answer, the member list and their timing
-// are the same whether or not the email has an account. Each owner may make SHARES_PER_HOUR new shares an hour.
+// email. Only an owner shares, and emails and pending invites reach owners alone. An email alone grants nothing
+// (PRODUCT ruling 19): a share creates an invite bound to the email, a personal link the owner sends; access comes
+// only when an account with that email redeems the link while signed in, and the invite then binds to it. The
+// inviter's path reads and writes only invites, never an account found by the email, so its answer, the member list
+// and their timing are the same whether or not the email has an account. Each owner may make SHARES_PER_HOUR new
+// shares an hour.
 // Lowering or removing access waits for the one kick path (T2.5), so a share only adds or raises.
 import { eq, sql } from 'drizzle-orm';
 import { ROLES, SHARE_ROLES, type Role, type ShareRole } from '@moss-multi/protocol/roles';
@@ -125,12 +126,13 @@ export const rank = (expression: string) => `CASE ${expression} ${ROLES.map((rol
 export const grantTable = (type: MemberTarget['type']): [string, string] => (type === 'doc' ? ['doc_members', 'doc_id'] : ['folder_members', 'folder_id']);
 
 /**
- * Invites a person by email at a share role, or raises their open invite. The email is a label, never an authority
+ * Invites a person by email at a share role, or raises their open invite. The email alone grants nothing
  * (PRODUCT ruling 19): every answer and write derives from the open invite for this email on this target alone, never
  * from an account or an earlier redemption, so a new share is a fresh invite (201), a repeat or raise answers 200, a
  * lowering of an open invite 409 and the hourly limit 429, alike for any email. An open invite whose inviter no longer
- * manages the target is withdrawn and replaced by a fresh one at this share's role. A share grants nothing: whoever
- * redeems the invite's link while signed in is granted, and the invite binds to them (invites.ts).
+ * manages the target is withdrawn and replaced by a fresh one at this share's role. A caller who lost the target
+ * meanwhile gets 404 and writes nothing. A share grants nothing: an account with the email redeems the invite's link
+ * while signed in, and the invite binds to it (invites.ts).
  */
 async function share(env: MembersEnv, target: MemberTarget, ownerUserId: string, caller: Principal, body: Record<string, unknown>): Promise<Response> {
   const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
@@ -154,16 +156,21 @@ async function share(env: MembersEnv, target: MemberTarget, ownerUserId: string,
       .bind(open?.token ?? '', open?.inviter ?? '', now, target.id),
     // A new open invite, only while the inviter's last hour holds fewer than SHARES_PER_HOUR (counted by the statement
     // that inserts, so a burst can't pass), once per open email (a concurrent first share conflicts and is a repeat).
+    // It and the raise below re-check that the caller still manages the live target, so a move, trash or revocation
+    // that committed after the access check wins (A§8) and a dead invite is never written back.
     env.DB.prepare(`INSERT INTO invites (token, email, target_type, target_id, role, invited_by, created_at)
         SELECT ?5, ?3, ?1, ?2, ?4, ?6, ?7
         WHERE (SELECT count(*) FROM invites WHERE invited_by = ?6 AND created_at > ?8) < ${SHARES_PER_HOUR}
+          AND ${liveAndManaged(target.type, 2, 6)}
         ON CONFLICT DO NOTHING`)
       .bind(target.type, target.id, email, role, randomToken(), inviter, now, now - HOUR_MS),
     env.DB.prepare(`UPDATE invites SET role = ?4 WHERE target_type = ?1 AND target_id = ?2 AND email = ?3
-        AND accepted_at IS NULL AND revoked_at IS NULL AND ${rank('role')} < ${rank('?4')}`)
-      .bind(target.type, target.id, email, role),
+        AND accepted_at IS NULL AND revoked_at IS NULL AND ${rank('role')} < ${rank('?4')} AND ${liveAndManaged(target.type, 2, 5)}`)
+      .bind(target.type, target.id, email, role, inviter),
   ]);
   if (changed(admitted)) return json({ shared: { email, role } }, 201, NO_STORE);
+  // The caller lost the target meanwhile: the answer an absent target gets, whatever the email.
+  if (!await managesLive(env.DB, target.type, target.id, inviter)) return notFound();
   // Not a new invite: the email has an open invite here, or the inviter is over the hourly limit.
   const held = (await env.DB.prepare(openInvite).bind(target.type, target.id, email).first<{ role: Role }>())?.role;
   if (held === undefined) {

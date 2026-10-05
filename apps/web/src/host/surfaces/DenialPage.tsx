@@ -2,9 +2,9 @@
 // theirs, so the page says no more than the API's identical 404 does. Signed out, it offers Sign in back to the same
 // URL. Route chunks carry it, so it uses moss's tokens directly rather than moss's Button (which pulls in the whole
 // primitives barrel).
-import { useEffect, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { setAppState } from '../app-state.ts';
-import { LOGIN_PATH } from '../auth-state.ts';
+import { LOGIN_PATH, SIGN_OUT_PATH } from '../auth-state.ts';
 import { leaveTo } from '../navigation.ts';
 
 const ACTION =
@@ -45,6 +45,38 @@ export function InviteClosed(): ReactNode {
         <button type="button" className={ACTION} onClick={() => leaveTo('/')}>
           Go to your notes
         </button>
+      </div>
+    </main>
+  );
+}
+
+/**
+ * A live invite followed by a signed-in account whose email is not the invite's (PRODUCT ruling 19): it names no email,
+ * and offers to sign out and come back here as the right account.
+ */
+export function InviteForAnotherEmail(): ReactNode {
+  useEffect(() => setAppState('ready'), []);
+  const [leaving, setLeaving] = useState(false);
+  async function switchAccount(): Promise<void> {
+    setLeaving(true);
+    const here = `${window.location.pathname}${window.location.search}`;
+    await fetch(SIGN_OUT_PATH, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: '{}' })
+      .catch(() => undefined);
+    leaveTo(`${LOGIN_PATH}?next=${encodeURIComponent(here)}`);
+  }
+  return (
+    <main className="flex h-full min-h-screen w-full items-center justify-center bg-surface-panel px-6">
+      <div className="flex max-w-sm flex-col items-center gap-1.5 text-center">
+        <h1 className="text-sm font-medium text-ink-default">This invite is for another email</h1>
+        <p className="text-xs text-ink-muted">Sign in with the email it was sent to, or ask the person who shared it for a new link.</p>
+        <div className="flex items-center gap-2">
+          <button type="button" className={ACTION} disabled={leaving} onClick={() => void switchAccount()}>
+            Sign in with another email
+          </button>
+          <button type="button" className={ACTION} disabled={leaving} onClick={() => leaveTo('/')}>
+            Go to your notes
+          </button>
+        </div>
       </div>
     </main>
   );
