@@ -51,6 +51,8 @@ function mount(live: Y.Doc, link: ReturnType<typeof wire>) {
   const bound = bindEditor(fork.doc);
   fork.begin();
   link.deliver(fork);
+  // The fill reconciles into Lexical in a collaboration update; commit it before the first input.
+  bound.editor.update(() => {}, { discrete: true });
   const act = (step: Step) => {
     if (step === 'undo') bound.undo.undo();
     else bound.editor.update(step, { discrete: true });

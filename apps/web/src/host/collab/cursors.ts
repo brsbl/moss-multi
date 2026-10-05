@@ -46,7 +46,7 @@ export function cursorController(editor: LexicalEditor) {
   const sync: SyncCursorPositionsFn = (next, source) => {
     binding = next as Binding; provider = source;
     // In Suggest and Review the bound doc writes under its own client id; this tab's caret is its awareness id.
-    binding.clientID = source.awareness.clientID;
+    binding.clientID = (source.awareness as unknown as { clientID: number }).clientID;
     syncCursorPositions(next, source); queue();
   };
   const start = (source: YProvider) => {

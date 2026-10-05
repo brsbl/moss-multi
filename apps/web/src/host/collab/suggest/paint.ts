@@ -63,7 +63,7 @@ interface Mark {
 
 function plain(type: Y.AbstractType<unknown>): string {
   if (type instanceof Y.XmlText) {
-    return (type.toDelta() as { insert: unknown }[]).map(({ insert }) => (typeof insert === 'string' ? insert : insert instanceof Y.XmlText ? plain(insert) : '')).join('');
+    return (type.toDelta() as { insert: unknown }[]).map(({ insert }) => (typeof insert === 'string' ? insert : insert instanceof Y.XmlText ? plain(insert as unknown as Y.AbstractType<unknown>) : '')).join('');
   }
   return '';
 }
