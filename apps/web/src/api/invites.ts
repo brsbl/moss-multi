@@ -100,8 +100,9 @@ export async function acceptInvite(request: Request, env: InvitesEnv, token: str
       .bind(token, now, principal.id, crypto.randomUUID()),
   ]);
   if (!spent?.meta?.changes) return closed(); // dead, trashed, spent or withdrawn in the meantime
+  // The redeemer's tab goes to the item itself; a push to their other tabs would have an idle shell open the note
+  // on its own (a T2.4 follow-up), so those list it on their next read.
   notify(env, invite.inviter, 'notifications');
-  notify(env, principal.id, 'vaults');
   return json({ target }, 200, NO_STORE);
 }
 
