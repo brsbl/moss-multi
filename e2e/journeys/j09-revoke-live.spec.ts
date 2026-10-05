@@ -239,7 +239,8 @@ test('j09 cold: after an idle wake, a revoked doc link and a revoked folder link
   await actors.requireDistinct(2);
 
   const baseline = await Promise.all(holders.map((h) => stack.docInstance(h.docId)));
-  for (const holder of holders) await visibility(holder.actor, true);
+  // Every window goes quiet, Ada's too: her home may hold a note open, and a visible tab's resync keeps its DO awake.
+  for (const actor of [ada, ...holders.map((h) => h.actor)]) await visibility(actor, true);
   await new Promise((resolve) => setTimeout(resolve, IDLE_MS));
 
   const decisiveAt = Date.now();
