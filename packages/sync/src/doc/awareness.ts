@@ -56,7 +56,7 @@ export function sendPresence(connections: Iterable<Connection>, frame: Uint8Arra
 /** One awareness id per socket, persisted across hibernation; malformed or forged frames have no effect. */
 export function receivePresence(awareness: Awareness, connection: Connection, message: ArrayBuffer | ArrayBufferView, connections: Connection[]): void {
   const identity = attachmentOf(connection);
-  const probe = (why: string) => console.log(`PRESENCE-PROBE ${why} owned=${clientId(connection)} principal=${identity?.principalId} conns=${connections.length}`);
+  const probe = (why: string) => console.warn(`PRESENCE-PROBE ${why} owned=${clientId(connection)} principal=${identity?.principalId} conns=${connections.length}`);
   if (!identity?.presenceAllowed || superseded(connection)) { probe(`drop:allowed=${identity?.presenceAllowed} superseded=${superseded(connection)}`); return; }
   try {
     const bytes = message instanceof ArrayBuffer ? new Uint8Array(message) : new Uint8Array(message.buffer, message.byteOffset, message.byteLength);
