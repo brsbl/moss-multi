@@ -136,7 +136,8 @@ async function viewerStyles(browser: Browser, theme: Theme, note: (typeof NOTES)
     await page.goto(`${viewer.url}/fixture/`);
     await expect(page.locator('html[data-fixture="ready"]')).toHaveCount(1);
     // The fixture's file has its title as a leading H1; the viewer lifts it, so the web note is imported with it too.
-    await page.evaluate((options) => (window as unknown as Fixture).viewerFixture.mount(options), { markdown: note.markdown, title: note.title, theme, noteId: `note-${note.id}`, live: true });
+    await page.evaluate((options) => void (window as unknown as Fixture).viewerFixture.mount(options), { markdown: note.markdown, title: note.title, theme, noteId: `note-${note.id}`, live: true });
+    await page.locator('[data-moss-viewer][data-moss-viewer-state="ready"]').waitFor({ timeout: 30_000 });
     return await readStyles(page, theme, '[data-moss-viewer] [data-moss-note-editor-root]', '[data-moss-viewer-title]', note.families);
   } finally {
     await page.context().close();
