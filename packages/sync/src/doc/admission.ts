@@ -103,10 +103,9 @@ export type Decoded = ReturnType<typeof Y.decodeUpdate>;
  * The classifier's verdict, the deletes the frame carries (its ack names them, A§5.1 Acks) and the decoded frame.
  * `budget` bounds the store items the delete scan visits; past it the frame reads as inert. Pass one only for a
  * connection that may not write (below editor), whose frame is never applied either way (`isReadOnly`): its refusal
- * then costs O(frame), never O(doc).
+ * then costs O(frame), never O(doc). `decoded` lets the caller share one decode with gate 2b.
  */
-export function classifySync(doc: Y.Doc, update: Uint8Array, budget = Infinity): { changes: boolean; deletes: DeleteSet; decoded: Decoded } {
-  const decoded = Y.decodeUpdate(update);
+export function classifySync(doc: Y.Doc, update: Uint8Array, budget = Infinity, decoded: Decoded = Y.decodeUpdate(update)): { changes: boolean; deletes: DeleteSet; decoded: Decoded } {
   return { changes: changes(doc, decoded.structs, decoded.ds, budget), deletes: decoded.ds, decoded };
 }
 

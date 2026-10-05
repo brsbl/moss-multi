@@ -27,3 +27,16 @@ export const ACK_COALESCE_MS = 250;
 
 /** REST writes (a rename now, a push later) per principal per window, counted by its PrincipalDO (A§5.2); 429 past it. */
 export const REST_WRITE_RATE = { max: 60, windowMs: 60_000 } as const;
+
+/** Media uploads (and cross-note copies) per identity per window, counted by a PrincipalDO (A§16); 429 past it. A
+ * signed-in holder of a link is also counted under the link and their IP, whichever account they use. */
+export const UPLOAD_RATE = { max: 60, windowMs: 60_000 } as const;
+
+/** Uploaded media bytes a vault can hold, summed over the assets uploaded into its folders; 413 past it. */
+export const VAULT_MEDIA_QUOTA_BYTES = 2 * 1024 * 1024 * 1024;
+
+/** Server fetches of caller-supplied URLs (unfurls, remote images) per identity per window; 429 past it (A§18). */
+export const REMOTE_FETCH_RATE = { max: 30, windowMs: 60_000 } as const;
+
+/** Comment operations (create, reply, later edit, resolve, react) per principal per window, counted by its PrincipalDO; 429 past it. */
+export const COMMENT_OP_RATE = { max: 60, windowMs: 60_000 } as const;

@@ -99,6 +99,19 @@ export function createImagesApi({ request, chooseFiles, share = shareToken }: Up
       }
       return results;
     },
+    /**
+     * A pasted remote image stored as the note's own media, fetched by the server through its SSRF guard (A§18).
+     * moss keeps the remote URL when this fails, so a refusal is not announced.
+     */
+    persistUrl: async (input: { noteId: string; url: string; filename?: string }): Promise<SavedMedia> => {
+      const body = JSON.stringify({ url: input.url, ...(input.filename ? { filename: input.filename } : {}) });
+      const response = await request(`${assetPath(input.noteId)}/from-url${withShare(new URLSearchParams())}`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body,
+      });
+      if (!response.ok) throw new Error(await sentenceOf(response));
+      const { relativePath, filename } = (await response.json()) as { relativePath: string; filename: string };
+      return { relativePath, absolutePath: webAssetUrl(input.noteId, filename), filename };
+    },
     copyFromNoteAsset: async (input: { sourceNoteId: string; sourceRelativePath: string; destinationNoteId: string }): Promise<SavedMedia> => {
       const body = JSON.stringify({ sourceNoteId: input.sourceNoteId, sourceRelativePath: input.sourceRelativePath });
       const response = await send(`${assetPath(input.destinationNoteId)}/copy${withShare(new URLSearchParams())}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body });

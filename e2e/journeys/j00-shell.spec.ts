@@ -443,6 +443,9 @@ test('the slash menu offers no hidden command: no Emoji (no OS panel), while Med
 test("the in-app browser offers no back, forward, find or agent action, which a cross-origin page can't serve @p:agt-3", async ({ actors }) => {
   const [ada] = await twoShells(actors);
   const { page } = ada;
+  // The browser frames the page (T3.2); a stand-in answers it, since WebKit logs an unresolvable frame as a console error.
+  await ada.context.route('https://example.invalid/guide', (route) =>
+    route.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html><title>Guide</title><h1>Guide</h1>' }));
   const docId = await openNewNote(ada);
   await ui.typeBody(ada, docId, 'Read the guide');
   for (let i = 0; i < 'guide'.length; i += 1) await page.keyboard.press('Shift+ArrowLeft');
@@ -456,6 +459,7 @@ test("the in-app browser offers no back, forward, find or agent action, which a 
   await page.getByRole('button', { name: 'Open in Split View', exact: true }).click();
   const close = page.getByRole('button', { name: 'Close browser split tab', exact: true });
   await expect(close, "the in-app browser's header renders").toBeVisible();
+  await expect(page.frameLocator('iframe[src="https://example.invalid/guide"]').locator('h1'), 'the browser frames the page').toHaveText('Guide');
   expect(await probeHits(page, 'browser-split'), "the in-app browser's header").toEqual([]);
   // Positive control: every probe's scope renders with a shown control in it, so an empty result means absence.
   const scopes = new Set(

@@ -2,7 +2,7 @@
 // within the vault, DELETE /api/folders/:id sends the subtree to Trash as one batch, and moveDoc moves a note
 // between folders (PATCH /api/docs/:id {folderId}). Editors create and rename; the vault's owner owns what an
 // editor creates (created_by records who). Access inherits through the folder chain, so a move is a sharing decision:
-// only the owner (A§8 manage) moves, on ownership alone, never on a grant or a share link; only the owner trashes. Every refusal carries a sentence, because moss
+// only a manager (A§8: the vault owner or a co-owner by grant, never a share link or an agent key) moves or trashes. Every refusal carries a sentence, because moss
 // shows the message it gets. Writes that depend on the tree re-check it in the same statement, so concurrent moves
 // can't build a cycle or leave something live under a trashed folder. A moved or trashed folder changes who can open
 // its docs; the live kick for that is T2.5's one path. GET /api/folders/:id is a folder or vault and the caller's
@@ -83,12 +83,15 @@ const changed = (result: D1Result) => (result.meta?.changes ?? 0) > 0;
 /** The vault a folder is in (the last of its chain). */
 export const vaultOf = async (db: Db, folderId: string) => (await folderChain(db, folderId)).at(-1);
 
-/** The live folders under `id`, `id` first, each with its depth below `id` (1 for `id`). */
-async function subtree(db: D1Database, id: string): Promise<{ id: string; depth: number }[]> {
+/**
+ * The live folders under `id`, `id` first, each with its depth below `id` (1 for `id`); with `trashed`, the trashed
+ * ones too, which a move carries along and which must stay within the depth bound (the media quota counts them there).
+ */
+async function subtree(db: D1Database, id: string, trashed = false): Promise<{ id: string; depth: number }[]> {
   const rows = await db.prepare(`WITH RECURSIVE sub(id, depth) AS (
     SELECT id, 1 FROM folders WHERE id = ?1
     UNION ALL SELECT f.id, s.depth + 1 FROM folders f JOIN sub s ON f.parent_id = s.id
-      WHERE f.deleted_at IS NULL AND s.depth <= ?2
+      WHERE ${trashed ? '' : 'f.deleted_at IS NULL AND '}s.depth <= ?2
   ) SELECT id, depth FROM sub`).bind(id, MAX_FOLDER_DEPTH).all<{ id: string; depth: number }>();
   return rows.results;
 }
@@ -172,7 +175,7 @@ async function updateFolder(request: Request, env: FoldersEnv, id: string): Prom
     }
     const moved = await subtree(env.DB, id);
     if (moved.some((row) => row.id === body.parentId)) return refuse(409, 'cycle', 'A folder can’t move inside itself.');
-    const height = Math.max(...moved.map((row) => row.depth));
+    const height = Math.max(...(await subtree(env.DB, id, true)).map((row) => row.depth));
     if ((await folderChain(db, body.parentId as string)).length + height > MAX_FOLDER_DEPTH) return tooDeep();
     parentId = body.parentId as string;
     // Whoever loses sight of the subtree hears about it too.
@@ -185,12 +188,13 @@ async function updateFolder(request: Request, env: FoldersEnv, id: string): Prom
     if (!moving) {
       if (newName !== null) await db.update(folders).set({ name: newName }).where(and(eq(folders.id, id), isNull(folders.deletedAt)));
     } else {
-      // The target's live ancestry, the cycle check and the depth bound hold at the moment of the write.
+      // The target's live ancestry, the cycle check and the depth bound (trashed descendants included) hold at the
+      // moment of the write.
       const updated = await env.DB.prepare(`WITH RECURSIVE ${upFrom(1)},
         sub(id, depth) AS (
           SELECT id, 1 FROM folders WHERE id = ?2
           UNION ALL SELECT f.id, s.depth + 1 FROM folders f JOIN sub s ON f.parent_id = s.id
-            WHERE f.deleted_at IS NULL AND s.depth <= ${MAX_FOLDER_DEPTH}
+            WHERE s.depth <= ${MAX_FOLDER_DEPTH}
         )
         UPDATE folders SET name = coalesce(?3, name), parent_id = ?1
         WHERE id = ?2 AND deleted_at IS NULL AND ${liveIn(4)}

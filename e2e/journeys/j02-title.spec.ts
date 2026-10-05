@@ -917,3 +917,50 @@ test('j02-title: @tierA an open list-property draft survives a peer deleting it 
     expect(parseFrontmatter(readField(reader.doc, 'frontmatter'))).toEqual({ owner: 'ada-2', tags: ['alpha', 'beta', 'gamma'] });
   } finally { reader.close(); }
 });
+
+/** A§5.2: REST writes per identity per minute (protocol/limits REST_WRITE_RATE). */
+const REST_WRITES = 60;
+const REST_WINDOW_MS = 60_000;
+
+test('j02-title: REST renames past 60 a minute get 429 and never reach the doc, per identity, across a restart @p:col-5 @p:tech-8', async ({ actors, stack }) => {
+  const headers = { origin: stack.baseUrl };
+  const ada = await actors.session(await actors.principal('ada'));
+  const created = await ada.context.request.post('/api/docs', { headers, data: { title: 'Rate' } });
+  expect(created.status()).toBe(201);
+  const { doc: { id: docId } } = await created.json() as { doc: { id: string } };
+  const benPrincipal = await actors.principal('ben');
+  const ben = await actors.session(benPrincipal);
+  expect((await ada.context.request.post(`/api/docs/${docId}/members`, { headers, data: { email: benPrincipal.email, role: 'editor' } })).status()).toBe(201);
+  await actors.requireDistinct(2);
+
+  const rename = (actor: Actor, title: string) => actor.context.request.patch(`/api/docs/${docId}`, { headers, data: { title }, timeout: 15_000 });
+  const title = async () => {
+    const response = await ada.context.request.get(`/api/docs/${docId}`, { timeout: 15_000 });
+    expect(response.status()).toBe(200);
+    return ((await response.json()) as { doc: { title: string } }).doc.title;
+  };
+
+  const start = Date.now();
+  const statuses: number[] = [];
+  for (let n = 1; n <= REST_WRITES; n += 1) statuses.push((await rename(ada, `Rate ${n}`)).status());
+  expect(statuses.filter((status) => status !== 200), 'the first 60 renames in a minute are granted').toEqual([]);
+  const refused = await rename(ada, 'Refused');
+  expect(refused.status(), 'the 61st rename in a minute is refused').toBe(429);
+  expect(await refused.json()).toEqual({ error: 'rate-limited' });
+  expect(refused.headers()['retry-after']).toBe('60');
+  // Past the projection throttle, so a refused rename that did land would show.
+  await new Promise((done) => setTimeout(done, PROJECTION_SETTLED_MS));
+  await expect.poll(title, { message: 'a refused rename never reaches the doc' }).toBe(`Rate ${REST_WRITES}`);
+
+  // Another identity on the same doc has its own window.
+  expect((await rename(ben, 'Ben renamed')).status(), "Ada's limit does not refuse Ben").toBe(200);
+  await expect.poll(title, { timeout: RENAME_MS }).toBe('Ben renamed');
+
+  // A restart rebuilds every PrincipalDO; the window Ada's reads back must still hold her attempts (A§5.1).
+  await stack.restart();
+  const sentAt = Date.now();
+  const afterRestart = await rename(ada, 'After restart');
+  if (sentAt - start >= REST_WINDOW_MS) throw new Error(`the restart ended ${sentAt - start} ms in, past the ${REST_WINDOW_MS} ms window, so this leg proves nothing`);
+  expect(afterRestart.status(), 'an exhausted identity stays refused after its PrincipalDO is rebuilt').toBe(429);
+  expect((await rename(ben, 'Ben again')).status(), 'Ben is still granted after the restart').toBe(200);
+});

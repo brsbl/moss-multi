@@ -376,6 +376,10 @@ export function DecoratorBlockPlugin(): null {
       if (isCommentUiOpen()) {
         return null;
       }
+      // moss-multi seam: read-only-decorators (T3.8): a read-only body inserts no paragraph from a gap.
+      if (!editor.isEditable()) {
+        return null;
+      }
 
       if (!(target instanceof HTMLElement)) {
         return null;
