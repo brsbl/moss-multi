@@ -273,6 +273,19 @@ test("HTML blocks show moss's cached screenshot through assetUrl, else Preview u
   expect(seen.pageErrors).toEqual([]);
 });
 
+test('a hovered HTML or media block offers no Edit, Fullscreen or Delete in the read-only view (T2.6)', async ({ page }) => {
+  await mount(page);
+  const blocks = await settleHtmlBlocks(page);
+  const viewer = page.locator('[data-moss-viewer]');
+  const mutating = viewer.locator('button[aria-label="Edit HTML"], button[aria-label="Fullscreen"], button[aria-label="Delete"], button[aria-label="Delete HTML block"]');
+  // moss keeps a block's header buttons in the DOM, faded out until a hover, so the count covers both states. The
+  // positive control (an owner's hover finds them) is j08's read-only leg.
+  for (const block of await blocks.all()) {
+    await block.hover();
+    await expect(mutating, 'no mutating block control on hover').toHaveCount(0);
+  }
+});
+
 for (const theme of ['light', 'dark'] as const) {
   test(`fixture shot, ${theme}`, async ({ page, browserName }, testInfo) => {
     await mount(page, theme);

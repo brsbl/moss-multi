@@ -8,8 +8,8 @@
 import { createHash, randomBytes } from 'node:crypto';
 import type { Locator } from '@playwright/test';
 import type { Actor, Actors } from '../lib/actors.ts';
-import { APP_STATE_ATTR, BODY_BINDING_ATTR, DOC_STATE_ATTR, EDITOR_PANE_ATTR, ROLE_ATTR, SYNC_UNACKED_ATTR, paneSelector } from '../lib/contract.ts';
-import { acceptInvite } from '../lib/grants.ts';
+import { APP_STATE_ATTR, BODY_BINDING_ATTR, DOC_SOCKET_PATH, DOC_STATE_ATTR, EDITOR_PANE_ATTR, ROLE_ATTR, SYNC_UNACKED_ATTR, paneSelector } from '../lib/contract.ts';
+import { acceptInvite, grantDoc } from '../lib/grants.ts';
 import type { Principal } from '../lib/principals.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
@@ -205,6 +205,7 @@ test('j08 link: a viewer link opened signed out reads at viewer and offers sign-
   await expect(ui.pane(stranger, docId), 'the link opens at viewer').toHaveAttribute(ROLE_ATTR, 'viewer');
   expect(await ui.fieldText(stranger, docId, 'body'), 'the stranger reads the note').toBe(TEXT);
   await expect(ui.pane(stranger, docId).getByRole('button', { name: 'Share', exact: true }), 'no Share for a link visitor').toHaveCount(0);
+  await expect(stranger.page.getByRole(ui.NEW_NOTE.role, { name: ui.NEW_NOTE.name }), 'no "+ Note" for a viewer link (T2.6)').toHaveCount(0);
   const signIn = stranger.page.getByRole('button', { name: 'Sign in to do more', exact: true });
   await expect(signIn, 'the stranger is offered sign-in').toBeVisible();
   await actors.checkpoint('read-signed-out');
@@ -393,4 +394,170 @@ test('j08 privacy: an email with no account answers like one with an account, an
   expect(asLink.status(), 'a link holder gets no member list').toBe(404);
   expect(await asLink.text()).not.toContain('@');
   expect((await stranger.context.request.get(`/api/docs/${docId}/links?share=${token}`)).status()).toBe(404);
+});
+
+// T2.6: one capability helper gates every moss menu and control on the caller's role (A§8 capabilities).
+const RANK_FIXTURE = 'Ranked paragraph.\n\n- [ ] ranked task\n\n```js\nconst ranked = 1;\n```\n\n<blockquote class="html-block">\n<p>ranked html</p>\n</blockquote>\n\nRanked end.';
+const MUTATING = ['Rename', 'Duplicate', 'Trash', 'Pin', 'Unpin'];
+const HTML_CONTROLS = 'button[aria-label="Edit HTML"], button[aria-label="Delete HTML block"], button[aria-label="Fullscreen"], button[aria-label="Delete"]';
+
+async function rankedNote(ada: Actor, baseUrl: string): Promise<string> {
+  const made = await ada.context.request.post('/api/docs', { headers: { origin: baseUrl }, data: { title: 'Ranked', markdown: RANK_FIXTURE } });
+  expect(made.status(), 'declared setup: a note with a checklist, code and an HTML block').toBe(201);
+  return ((await made.json()) as { doc: { id: string } }).doc.id;
+}
+
+const menuItems = (actor: Actor): Promise<string[]> =>
+  actor.page.getByRole('menu').getByRole('menuitem').evaluateAll((items) => items.map((item) => item.textContent?.trim() ?? ''));
+
+/** Every action the caller is offered on the note: its sidebar row's menu, the top bar's More actions and Share. */
+async function offered(actor: Actor, docId: string): Promise<string[]> {
+  await actor.page.locator(`[data-sidebar-row][data-doc-id="${docId}"]`).click({ button: 'right' });
+  await expect(actor.page.getByRole('menuitem', { name: 'Copy Link', exact: true }), `${actor.label}: the row menu opens`).toBeVisible();
+  const row = (await menuItems(actor)).map((item) => `row:${item}`);
+  await actor.page.keyboard.press('Escape');
+  await expect(actor.page.getByRole('menu')).toHaveCount(0);
+  await ui.pane(actor, docId).getByRole('button', { name: 'More actions', exact: true }).click();
+  await expect(actor.page.getByRole('menuitem', { name: 'Copy markdown', exact: true }), `${actor.label}: More actions opens`).toBeVisible();
+  const more = (await menuItems(actor)).map((item) => `more:${item}`);
+  await actor.page.keyboard.press('Escape');
+  await expect(actor.page.getByRole('menu')).toHaveCount(0);
+  const share = (await ui.pane(actor, docId).getByRole('button', { name: 'Share', exact: true }).count()) > 0 ? ['share'] : [];
+  return [...row, ...more, ...share].sort();
+}
+
+test('j08 ranks: menus grow with rank from viewer to owner, and only the owner trashes or shares @p:ppl-2', async ({ actors, stack }) => {
+  const ada = await actors.session(await actors.principal('ada'));
+  const docId = await rankedNote(ada, stack.baseUrl);
+  const ranks = [['ben', 'viewer'], ['cy', 'commenter'], ['dee', 'editor']] as const;
+  const members: Actor[] = [];
+  for (const [label, role] of ranks) {
+    const principal = await actors.principal(label);
+    await grantDoc(ada, docId, principal, role);
+    members.push(await actors.open(principal, { path: `/d/${docId}` }));
+  }
+  await ada.goto(`/d/${docId}`);
+  const roles = [...ranks.map(([, role]) => role), 'owner'];
+  const sets: string[][] = [];
+  for (const [index, actor] of [...members, ada].entries()) {
+    await expect(ui.pane(actor, docId), `${actor.label}: the pane goes live`).toHaveAttribute(DOC_STATE_ATTR, 'live', { timeout: BIND_TIMEOUT });
+    await expect(ui.pane(actor, docId)).toHaveAttribute(ROLE_ATTR, roles[index]);
+    sets.push(await offered(actor, docId));
+  }
+  const [viewer, commenter, editor, owner] = sets;
+  for (let i = 1; i < sets.length; i += 1) {
+    expect(sets[i], `${roles[i]} is offered everything ${roles[i - 1]} is`).toEqual(expect.arrayContaining(sets[i - 1]));
+  }
+  for (const below of [viewer, commenter]) {
+    expect(below.filter((item) => ['row:Rename', 'row:Duplicate', 'row:Trash', 'more:Trash', 'share'].includes(item)), 'below editor: no edit or manage action').toEqual([]);
+  }
+  expect(editor, 'an editor renames and duplicates').toEqual(expect.arrayContaining(['row:Rename', 'row:Duplicate']));
+  expect(editor.filter((item) => item.endsWith(':Trash') || item === 'share'), 'an editor neither trashes nor shares').toEqual([]);
+  expect(owner, 'the owner trashes and shares').toEqual(expect.arrayContaining(['row:Trash', 'more:Trash', 'share']));
+  await actors.requireDistinct(4);
+});
+
+/** Doc-sync frames that carry state (y-protocols sync step 2 or update) the page sends on its doc sockets. */
+function writeFrames(actor: Actor): { count: () => number } {
+  let writes = 0;
+  actor.page.on('websocket', (socket) => {
+    if (!new URL(socket.url()).pathname.startsWith(DOC_SOCKET_PATH)) return;
+    socket.on('framesent', ({ payload }) => {
+      if (typeof payload !== 'string' && payload[0] === 0 && (payload[1] === 1 || payload[1] === 2)) writes += 1;
+    });
+  });
+  return { count: () => writes };
+}
+
+test('j08 read-only: a viewer\'s and a commenter\'s checkbox, slash and block controls are inert and send no frame @p:ppl-2', async ({ actors, stack }) => {
+  const ada = await actors.session(await actors.principal('ada'));
+  const docId = await rankedNote(ada, stack.baseUrl);
+  const box = (actor: Actor) => ui.body(actor, docId).locator('li[role="checkbox"]').filter({ hasText: 'ranked task' });
+  const html = (actor: Actor) => ui.body(actor, docId).locator('[data-block-decorator-key]').filter({ hasText: 'ranked html' });
+  const slashOptions = (actor: Actor) => actor.page.locator('button[data-index]');
+  const clickBox = async (actor: Actor) => {
+    const at = await box(actor).boundingBox();
+    if (!at) throw new Error(`${actor.label}: no checkbox`);
+    await actor.page.mouse.click(at.x + 4, at.y + at.height / 2);
+  };
+
+  // Positive controls: the owner's hover finds the HTML block's controls; an editor's checkbox toggles and sends a
+  // write, and its "/" opens the slash menu.
+  await ada.goto(`/d/${docId}`);
+  await expect(ui.pane(ada, docId)).toHaveAttribute(DOC_STATE_ATTR, 'live', { timeout: BIND_TIMEOUT });
+  await html(ada).hover();
+  await expect(ui.pane(ada, docId).locator(HTML_CONTROLS).first(), 'the owner is offered the HTML block controls').toBeAttached();
+  const deePrincipal = await actors.principal('dee');
+  await grantDoc(ada, docId, deePrincipal, 'editor');
+  const dee = await actors.session(deePrincipal);
+  const deeFrames = writeFrames(dee);
+  await dee.goto(`/d/${docId}`);
+  await waitOpen(dee, docId, 'live');
+  const deeBefore = deeFrames.count();
+  await clickBox(dee);
+  await expect(box(dee), 'an editor toggles the checkbox').toHaveAttribute('aria-checked', 'true');
+  await expect.poll(() => deeFrames.count(), { message: 'and the toggle is a write' }).toBeGreaterThan(deeBefore);
+  await expect(box(ada), 'which reaches the owner').toHaveAttribute('aria-checked', 'true', { timeout: LIVE_TIMEOUT });
+  await ui.body(dee, docId).locator('p').filter({ hasText: 'Ranked end.' }).click();
+  await dee.page.keyboard.press('End');
+  await dee.page.keyboard.press('Enter');
+  await dee.page.keyboard.type('/');
+  await expect(slashOptions(dee).first(), 'an editor\'s "/" opens the slash menu').toBeVisible();
+  await dee.page.keyboard.press('Escape');
+  await dee.page.keyboard.press('Backspace');
+  await dee.page.keyboard.press('Backspace');
+  await expect(ui.pane(dee, docId)).toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout: LIVE_TIMEOUT });
+  await expect.poll(() => ui.fieldText(ada, docId, 'body'), { timeout: LIVE_TIMEOUT }).toBe(await ui.fieldText(dee, docId, 'body'));
+  const settled = await ui.fieldText(ada, docId, 'body');
+
+  for (const [label, role] of [['ben', 'viewer'], ['cy', 'commenter']] as const) {
+    const principal = await actors.principal(label);
+    await grantDoc(ada, docId, principal, role);
+    const reader = await actors.session(principal);
+    const frames = writeFrames(reader);
+    await reader.goto(`/d/${docId}`);
+    await waitOpen(reader, docId, 'readonly');
+    await expect(ui.pane(reader, docId)).toHaveAttribute(ROLE_ATTR, role);
+    await expect.poll(() => ui.fieldText(reader, docId, 'body'), { timeout: LIVE_TIMEOUT }).toBe(settled);
+    const before = frames.count();
+
+    await clickBox(reader);
+    await ui.body(reader, docId).locator('p').filter({ hasText: 'Ranked paragraph.' }).click();
+    await reader.page.keyboard.press('End');
+    await reader.page.keyboard.press('Enter');
+    await reader.page.keyboard.type('/');
+    await html(reader).hover();
+    await reader.page.waitForTimeout(500); // a slash menu or block header would render well inside this
+    await expect(box(reader), `${role}: the checkbox does not toggle`).toHaveAttribute('aria-checked', 'true');
+    await expect(slashOptions(reader), `${role}: "/" opens no slash menu`).toHaveCount(0);
+    await expect(ui.pane(reader, docId).locator(HTML_CONTROLS), `${role}: the HTML block offers no Edit, Fullscreen or Delete`).toHaveCount(0);
+    await reader.page.keyboard.press('Escape');
+    await reader.page.waitForTimeout(1_000);
+    expect(frames.count() - before, `${role}: no write frame leaves the page`).toBe(0);
+    expect(await ui.fieldText(ada, docId, 'body'), `${role}: the owner's note is unchanged`).toBe(settled);
+  }
+  await actors.requireDistinct(4);
+});
+
+test('j08 unknown role: a role the client does not know gets no actions @p:ppl-2', async ({ actors, stack }) => {
+  const ada = await actors.session(await actors.principal('ada'));
+  const docId = await rankedNote(ada, stack.baseUrl);
+  const benPrincipal = await actors.principal('ben');
+  await grantDoc(ada, docId, benPrincipal, 'editor');
+  const ben = await actors.session(benPrincipal);
+  // Every role the workspace listing names becomes one this client has never heard of.
+  await ben.page.route('**/api/workspace**', async (route) => {
+    const response = await route.fetch();
+    await route.fulfill({ response, body: (await response.text()).replace(/"role":"[a-z]+"/g, '"role":"superuser"') });
+  });
+  await ben.goto('/');
+  await ben.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
+  const row = ben.page.locator(`[data-sidebar-row][data-doc-id="${docId}"]`);
+  await expect(row, 'the note is listed').toBeVisible({ timeout: LIVE_TIMEOUT });
+  await row.click({ button: 'right' });
+  await expect(ben.page.getByRole('menuitem', { name: 'Copy Link', exact: true }), 'the row menu opens').toBeVisible();
+  expect((await menuItems(ben)).filter((item) => MUTATING.includes(item)), 'no action on an unknown role').toEqual([]);
+  await ben.page.keyboard.press('Escape');
+  await expect(ben.page.getByRole(ui.NEW_NOTE.role, { name: ui.NEW_NOTE.name }), 'no "+ Note" in a vault at an unknown role').toHaveCount(0);
+  await actors.requireDistinct(2);
 });

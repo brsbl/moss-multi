@@ -1,22 +1,49 @@
 diff --git a/packages/desktop/src/renderer/editor/components/media-primitives.tsx b/packages/desktop/src/renderer/editor/components/media-primitives.tsx
 --- a/packages/desktop/src/renderer/editor/components/media-primitives.tsx
 +++ b/packages/desktop/src/renderer/editor/components/media-primitives.tsx
-@@ -9,6 +9,8 @@ import {
+@@ -9,6 +9,10 @@ import {
  } from 'lexical';
  import { OPEN_BLOCK_COMMENT_COMMAND } from '../plugins/CommentPlugin';
  import { insertParagraphAdjacentToBlock } from '../utils/block-node-insertion';
 +// moss-multi seam: hide-registry (A§9)
 +import { hidden } from '@moss-multi/host/affordances';
++// moss-multi seam: capabilities (T2.6): a block's writing controls follow the editor's editability, live.
++import { useBlockCanEdit } from '@moss-multi/host/capabilities';
  export {
    GapCursor,
    BlockNodeShell,
-@@ -392,7 +394,8 @@ export function MediaNodeHeader({
+@@ -383,6 +387,7 @@ export function MediaNodeHeader({
+   children,
+ }: MediaNodeHeaderProps): JSX.Element {
+   const [editor] = useLexicalComposerContext();
++  const canEdit = useBlockCanEdit() && editable; // moss-multi seam: capabilities (T2.6)
+ 
+   return (
+     <div
+@@ -392,7 +397,8 @@ export function MediaNodeHeader({
      >
        <div className="flex items-center gap-1">
          {children}
 -        {editable && (
 +        {/* moss-multi seam: hide-registry (A§9) */}
-+        {editable && !hidden('comments') && (
++        {canEdit && !hidden('comments') && (
            <MediaHeaderButton
              icon={StickyNote}
              title="Add comment"
+@@ -403,14 +409,14 @@ export function MediaNodeHeader({
+             }}
+           />
+         )}
+-        {editable && onFullscreen && (
++        {canEdit && onFullscreen && (
+           <MediaHeaderButton
+             icon={Maximize2}
+             title="Fullscreen"
+             onClick={onFullscreen}
+           />
+         )}
+-        {editable && (
++        {canEdit && (
+           <MediaHeaderButton
+             icon={Trash2}
+             title="Delete"

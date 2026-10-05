@@ -193,10 +193,21 @@ class PaneBinding {
   }
 }
 
+/** Lexical gives every checklist item tabindex=-1 on each render; a closed body offers no checkbox (T2.6, R2). */
+const CHECK_ITEM = 'li[role="checkbox"]';
+
+function gateCheckItems(root: HTMLElement, live: boolean): void {
+  for (const item of root.querySelectorAll(CHECK_ITEM)) {
+    if (live) item.setAttribute('tabindex', '-1');
+    else item.removeAttribute('tabindex');
+  }
+}
+
 /** Closed until live: `@lexical/react` gives a non-editable root tabindex=-1, which would let it take focus (R2). */
 function closeRoot(root: HTMLElement | null, state: BindingState): void {
   if (!root) return;
   root.setAttribute(BODY_BINDING_ATTR, state);
+  gateCheckItems(root, state === 'live');
   if (state === 'live') {
     root.removeAttribute('aria-disabled');
     return;
@@ -230,7 +241,11 @@ function BindingGate({ binding }: { binding: PaneBinding }): null {
       closeRoot(root, binding.bodyState);
     });
     const unbind = binding.bindEditor(editor);
-    const stopText = editor.registerUpdateListener(({ editorState }) => binding.set({ hasText: hasText(editorState) }));
+    const stopText = editor.registerUpdateListener(({ editorState }) => {
+      binding.set({ hasText: hasText(editorState) });
+      const root = editor.getRootElement();
+      if (root && binding.bodyState !== 'live') gateCheckItems(root, false);
+    });
     return () => {
       stopText();
       unbind();
