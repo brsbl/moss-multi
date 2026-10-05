@@ -598,7 +598,8 @@ export class EditorSession {
     }
     // A focused title or a decorator draft is an edit not yet reported: commit it so it counts below.
     await this.surface.commit?.();
-    if (this.status === 'unmounted' || this.status === 'removed') return;
+    const after = this.status as MossEditorStatus; // the commit awaited, so an unmount or removal may have landed
+    if (after === 'unmounted' || after === 'removed') return;
     if (this.dirty || this.status === 'conflict') {
       if (this.status !== 'conflict') this.enterConflict('external', []);
       return;
