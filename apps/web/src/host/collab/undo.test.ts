@@ -67,3 +67,30 @@ it('the outer derived origin wins over the binding transaction and is skipped on
     expect(isOwnOrigin('peer', binding)).toBe(false);
   } finally { doc.destroy(); }
 });
+
+it('a step whose payload edit a peer emptied is skipped, never an older payload edit in its place', () => {
+  const doc = new Y.Doc();
+  const root = doc.get('root', Y.XmlText);
+  const binding = { doc, root: { getSharedType: () => root } } as unknown as Binding;
+  const payloads = payloadDocsFor(doc);
+  const code = payloads.hold('code');
+  const text = payloadText(code);
+  const undo = createBindingUndoManager(binding);
+  try {
+    code.transact(() => text.insert(0, 'old'), REGISTER_LOCAL_ORIGIN);
+    undo.stopCapturing();
+    doc.transact(() => root.insert(0, 'body'), binding);
+    undo.stopCapturing();
+    code.transact(() => text.insert(3, 'new'), REGISTER_LOCAL_ORIGIN);
+    // A peer deletes the newest local payload edit, so its step has nothing left to undo.
+    code.transact(() => text.delete(3, 3), 'peer');
+    undo.undo();
+    expect([root.toString(), text.toString()], 'the next step down is the body edit').toEqual(['', 'old']);
+    undo.undo();
+    expect([root.toString(), text.toString()]).toEqual(['', '']);
+    undo.redo();
+    expect([root.toString(), text.toString()]).toEqual(['', 'old']);
+    undo.redo();
+    expect([root.toString(), text.toString()]).toEqual(['body', 'old']);
+  } finally { undo.destroy(); payloads.destroy(); doc.destroy(); }
+});
