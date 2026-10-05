@@ -1,12 +1,12 @@
 # moss-multi progress
 
-**Overall: 48% done** (38 of 79 planned tasks verified)
+**Overall: 49% done** (39 of 80 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 17 / 17 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 15 / 19 | in progress |
-| M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 6 / 10 | in progress |
+| M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 7 / 11 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 0 / 9 | |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
@@ -56,6 +56,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-04 — T2.4s verified: sharing by email answers and behaves the same for a known and an unknown address, a co-owner cannot lower, remove or replace the vault owner, owner access never comes from a share link or an agent key, and two simultaneous shares to one person end as one invite at the higher role.
 - 2026-10-04 — T1.F3s verified: renaming a note through the API or creating one with a huge or adversarial title now stays within 20 ms of server CPU, and each identity's REST writes are rate-limited with a 429 that a server restart cannot reset; an exhausted identity stays refused after its PrincipalDO is evicted and woken (re-verified at d7f63a7).
 - 2026-10-04 — T1.F1 verified: Cmd+Z never removes a collaborator's characters typed into a paragraph or text node you created, through interleaved typing, splits and merges, reconnects and deletes, and restored text keeps its author and properties, in both engines; redo after a collaborator typed into a line the undo restored keeps their words (re-verified at 950b435).
+- 2026-10-04 — T2.3s verified: only the vault owner or a co-owner (by an owner grant on the note or a folder above it) can trash, restore or read a trashed note in Trash, never an editor, a link holder or an agent key; a restore into another folder needs edit there and never lands under a folder trashed meanwhile, a refused restore shows the server's sentence, everyone else meets the one 404 on a trashed note, and a revocation landing mid-trash or mid-restore wins.
 
 ## T1.1s identity audit
 
@@ -89,6 +90,9 @@ A task counts only after an independent checker passes it on green CI. Each mile
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
 
+- T2.3s checker P2 (downgraded from Codex P1): a restore can act on an older view of the note after another manager restores, moves and re-trashes it; RESTORE in `api/trash.ts` does not check the note's current folder or `trash_batch_id` still match what it read. No authority is gained (the UPDATE re-checks manage on the current chain and edit on the destination) → trash follow-up: compare-and-set on folder and batch.
+- T2.3s checker P2 (downgraded from Codex P1): a signed-out share-link holder gets 401, not 404, from trash, restore and the Trash read; nothing is disclosed (the 401 is identical for a missing note) and it predates T2.3s; A§8 confines the 401 exception to a credential-less CLI → align to 404 in an access follow-up.
+- T2.3s checker P2: the revocation tests in `trash-security.test.ts` use stub DocDO and PrincipalDO, so they do not prove open editors recover (or that a terminal editor on a live note is kicked) → T2.5.
 - T1.8 workspace follow-up implemented in T2.1: push events replace listing polling, changed document ids refresh metadata, and unchanged vault choices do not notify the switcher; awaiting CI and independent verification.
 - T1.9 checker P2: `$copyNode` must mint a new register identity for duplicated code, HTML and formula nodes before T3.3 uses that path; current clipboard copies serialize without the identity → T3.3 register extension.
 - T1.9 checker P2: rebind open field observers when a register map entry is replaced (live imports now mint unique ids; server imports are serialized) → register/import follow-up.
