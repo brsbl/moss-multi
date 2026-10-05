@@ -10,12 +10,46 @@ import { readField } from '@moss-multi/core/doc-fields';
 import { composeFrontmatter, importFrontmatter } from '@moss-multi/core/frontmatter';
 import { $importNoteBody, createConverterEditor, exportMarkdown } from './converter/index.ts';
 import { $recomputeExportFormulas } from './formula-export.ts';
-import { bindRegisters, $refreshRegisters, migrateRegisters } from './registers.ts';
+import { bindRegisters } from './registers.ts';
 import { excludedPropertiesFor } from './excluded-properties.ts';
+import { PAYLOAD_LOADED, PayloadDocs, payloadDocsFor } from './payload-docs.ts';
 
 export const SERVER_SEED = 'server-seed';
 export const SERVER_IMPORT = 'server-import';
 const HYDRATE = Symbol('hydrate');
+
+/**
+ * Where a note's payloads live for its server-side readers and writers (A§10.10): the DocDO's store, which reads only
+ * payloads an element names; or, for a doc outside a DocDO, its payload docs in memory.
+ */
+export interface PayloadSource {
+  /** A named payload's state, or null. */
+  read(id: string): Uint8Array | null;
+  /** Any id the note knows, withheld ones included. */
+  has(id: string): boolean;
+  /** A server write to payload `id`. */
+  write(id: string, update: Uint8Array): void;
+}
+
+const sources = new WeakMap<Y.Doc, PayloadSource>();
+
+export function attachPayloadSource(live: Y.Doc, source: PayloadSource): void {
+  sources.set(live, source);
+}
+
+function sourceOf(live: Y.Doc): PayloadSource {
+  const attached = sources.get(live);
+  if (attached) return attached;
+  const host = payloadDocsFor(live);
+  return {
+    read: (id) => {
+      const doc = host.get(id);
+      return doc ? Y.encodeStateAsUpdate(doc) : null;
+    },
+    has: (id) => host.has(id),
+    write: (id, update) => Y.applyUpdate(host.hold(id), update, SERVER_IMPORT),
+  };
+}
 
 const noop = () => {};
 /** Server bindings need the provider's shape, not a network: no cursor sync, no mutation listeners (A§12). */
@@ -30,12 +64,27 @@ const provider = {
 interface Mirror {
   doc: Y.Doc;
   editor: LexicalEditor;
+  /** Each payload the mutation wrote, as one update. */
+  written: () => [string, Uint8Array][];
   dispose: () => void;
 }
 
-/** A headless editor bound to a fresh Y.Doc that holds `live`'s state, with the hydration committed. */
+/**
+ * A headless editor bound to a fresh Y.Doc that holds `live`'s state, with the hydration committed. Payloads load on
+ * first read, from the named ones only.
+ */
 function mirrorOf(live: Y.Doc): Mirror {
   const doc = new Y.Doc();
+  const source = sourceOf(live);
+  const payloads = new PayloadDocs((id) => source.read(id), (id) => source.has(id));
+  const writes = new Map<string, Uint8Array[]>();
+  payloads.onHold((id, held) => {
+    held.on('update', (update: Uint8Array, origin: unknown) => {
+      if (origin === PAYLOAD_LOADED) return;
+      const list = writes.get(id);
+      if (list) list.push(update); else writes.set(id, [update]);
+    });
+  });
   const editor = createConverterEditor();
   // Moss's live editor runs these transforms on imports before its binding writes them.
   const stopLists = registerList(editor);
@@ -45,51 +94,57 @@ function mirrorOf(live: Y.Doc): Mirror {
   const stopUpdates = editor.registerUpdateListener(({ prevEditorState, editorState, dirtyElements, dirtyLeaves, normalizedNodes, tags }) => {
     syncLexicalUpdateToYjs(binding, provider, prevEditorState, editorState, dirtyElements, dirtyLeaves, normalizedNodes, tags);
   });
-  const stopRegisters = bindRegisters(editor, doc, { serializedImports: true });
+  const stopRegisters = bindRegisters(editor, doc, { serializedImports: true, payloads });
   const root = binding.root.getSharedType();
   const observer: Parameters<Y.XmlText['observeDeep']>[0] = (events, transaction) => {
     if (transaction.origin !== binding) syncYjsChangesToLexical(binding, provider, events as never, false, noop);
   };
   root.observeDeep(observer);
   Y.applyUpdate(doc, Y.encodeStateAsUpdate(live), HYDRATE);
-  migrateRegisters(doc);
   // The hydration commits on its own, under the collaboration tag, before any mutation runs.
-  editor.update(() => $refreshRegisters(editor, doc), { discrete: true, skipTransforms: true });
+  editor.update(noop, { discrete: true, skipTransforms: true });
   return {
     doc,
     editor,
+    written: () => [...writes].map(([id, updates]) => [id, Y.mergeUpdates(updates)]),
     dispose: () => {
       stopRegisters();
       stopUpdates();
       stopWhitespace();
       stopLists();
       root.unobserveDeep(observer);
+      payloads.destroy();
       doc.destroy();
     },
   };
 }
 
-/** What `mutate` changes, as an update against `live`'s state. */
-function mirrorDiff(live: Y.Doc, mutate: (doc: Y.Doc) => void): Uint8Array {
+/** What `mutate` changes: an update against `live`'s state, and each payload it wrote. */
+function mirrorDiff(live: Y.Doc, mutate: (doc: Y.Doc) => void): { diff: Uint8Array; payloads: [string, Uint8Array][] } {
   const mirror = mirrorOf(live);
   try {
     const hydrated = Y.encodeStateVector(mirror.doc);
     mirror.editor.update(() => mutate(mirror.doc), { discrete: true });
-    return Y.encodeStateAsUpdate(mirror.doc, hydrated);
+    return { diff: Y.encodeStateAsUpdate(mirror.doc, hydrated), payloads: mirror.written() };
   } finally {
     mirror.dispose();
   }
 }
 
+/** Admission for a server write: the note's diff and each payload's; throws to refuse. */
+export type Admit = (diff: Uint8Array, payloads: [string, Uint8Array][]) => void;
+
 /**
  * The one server-side content writer (seed and import now; push, restore and accept later): run `mutate` inside a
- * headless update on a hydrated mirror, hand the mirror's diff to `admit` (which throws to refuse it), then apply
- * the diff to the live doc under `origin`. The mirror is released before returning. Returns whether the live doc
- * changed.
+ * headless update on a hydrated mirror, hand the mirror's diffs to `admit` (which throws to refuse them), then write
+ * the payloads it changed and apply the note's diff to the live doc under `origin`. The mirror is released before
+ * returning. Returns whether the live doc changed.
  */
-export function serverWrite(live: Y.Doc, origin: unknown, mutate: (doc: Y.Doc) => void, admit: (diff: Uint8Array) => void = noop): boolean {
-  const diff = mirrorDiff(live, mutate);
-  admit(diff);
+export function serverWrite(live: Y.Doc, origin: unknown, mutate: (doc: Y.Doc) => void, admit: Admit = noop): boolean {
+  const { diff, payloads } = mirrorDiff(live, mutate);
+  admit(diff, payloads);
+  const source = sourceOf(live);
+  for (const [id, update] of payloads) source.write(id, update);
   let changed = false;
   const onUpdate = () => {
     changed = true;
@@ -115,7 +170,7 @@ export function seedEmptyParagraph(live: Y.Doc): boolean {
 }
 
 /** Replaces the body with `markdown` through the one converter (A§12), which imports with no selection (SP2). */
-export function importBody(live: Y.Doc, markdown: string, admit?: (diff: Uint8Array) => void, frontmatter?: string): boolean {
+export function importBody(live: Y.Doc, markdown: string, admit?: Admit, frontmatter?: string): boolean {
   return serverWrite(live, SERVER_IMPORT, (doc) => {
     $importNoteBody(markdown, { comments: {} });
     if (frontmatter !== undefined) {

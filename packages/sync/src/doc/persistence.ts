@@ -129,30 +129,43 @@ export class DocStore {
 }
 
 /**
- * One ack per socket per window, sent when the window closes, naming the deletes the acked frames carried. Keyed by
- * the socket itself: a client may reuse its connection id while the DO still holds the old socket, whose close must
- * never cancel the new one's ack. In memory: a wake simply sends none.
+ * One ack per socket per window, sent when the window closes, naming the deletes the acked frames carried, the note's
+ * and each payload's. A payload's coverage is the clock ranges of the acked frames themselves, as far as the server
+ * holds them, so an ack tells a client nothing it did not send. Keyed by the socket itself: a client may
+ * reuse its connection id while the DO still holds the old socket, whose close must never cancel the new one's ack.
+ * In memory: a wake simply sends none.
  */
 export class AckCoalescer<Socket extends object> {
-  private readonly pending = new Map<Socket, { timer: ReturnType<typeof setTimeout>; deletes: DeleteSet[] }>();
+  private readonly pending = new Map<Socket, { timer: ReturnType<typeof setTimeout>; deletes: DeleteSet[]; payloads: Map<string, { sv: Map<number, number>; deletes: DeleteSet[] }> }>();
 
   constructor(
-    private readonly send: (socket: Socket, deletes: DeleteSet) => void,
+    private readonly send: (socket: Socket, deletes: DeleteSet, payloads: Map<string, { sv: Map<number, number>; deletes: DeleteSet }>) => void,
     private readonly windowMs: number,
   ) {}
 
-  schedule(socket: Socket, deletes?: DeleteSet): void {
-    const entry = this.pending.get(socket);
-    if (entry) {
+  /** `payload` names the payload doc the acked frame wrote, and `covered` the clocks the frame put there; the note's otherwise. */
+  schedule(socket: Socket, deletes?: DeleteSet, payload?: string, covered?: Map<number, number>): void {
+    let entry = this.pending.get(socket);
+    if (!entry) {
+      const timer = setTimeout(() => {
+        const due = this.pending.get(socket);
+        this.pending.delete(socket);
+        const payloads = new Map([...(due?.payloads ?? [])].map(([id, { sv, deletes: sets }]) => [id, { sv, deletes: Y.mergeDeleteSets(sets) }] as const));
+        this.send(socket, Y.mergeDeleteSets(due?.deletes ?? []), payloads);
+      }, this.windowMs);
+      entry = { timer, deletes: [], payloads: new Map() };
+      this.pending.set(socket, entry);
+    }
+    if (payload === undefined) {
       if (deletes) entry.deletes.push(deletes);
       return;
     }
-    const timer = setTimeout(() => {
-      const due = this.pending.get(socket);
-      this.pending.delete(socket);
-      this.send(socket, Y.mergeDeleteSets(due?.deletes ?? []));
-    }, this.windowMs);
-    this.pending.set(socket, { timer, deletes: deletes ? [deletes] : [] });
+    let acked = entry.payloads.get(payload);
+    if (!acked) entry.payloads.set(payload, (acked = { sv: new Map(), deletes: [] }));
+    if (deletes) acked.deletes.push(deletes);
+    for (const [client, clock] of covered ?? []) {
+      if ((acked.sv.get(client) ?? 0) < clock) acked.sv.set(client, clock);
+    }
   }
 
   cancel(socket: Socket): void {
