@@ -1,10 +1,11 @@
-// j19-invites (T2.8; PRODUCT ruling 19: an email is a label, never an authority). Ada shares a note with Ben by email:
-// that is an invite link she sends him, and it opens nothing for his account until he follows it. He follows it while
+// j19-invites (T2.8; PRODUCT ruling 19: an email alone grants nothing). Ada shares a note with Ben by email: that is
+// an invite link she sends him, and it opens nothing for his account until he follows it. He follows it while
 // Ada is typing in another note; her bell shows "Ben accepted your invite" without a reload, and clicking the notice
 // mid-sentence opens the note in place. No key is lost across the click: the keys typed before it are held in flight
 // (the server has none of them) and still reach her note after the switch and a reload, and every key typed straight
 // on through the switch either lands in a live field or is refused visibly. An invite to an email with no account
-// redeems after the guest signs up through it, once; a spent link shows the one closed-invite page to anyone else.
+// redeems after the guest signs up through it, once; someone signed in with another email is told the link is for
+// another email, and a spent link shows them the one closed-invite page.
 // The oracle and squatter rules (A§8) are proven over REST in invite-oracle.test.ts and invites.test.ts.
 import type { Locator } from '@playwright/test';
 import type { Actor } from '../lib/actors.ts';
@@ -183,11 +184,19 @@ test('j19 invite: an invite to an unknown email gives a copyable link that redee
   await expect(row).toContainText('Invited');
   const url = await ui.inviteLink(dialog, guest.email);
   await expect(row.getByRole('button', { name: 'Copy', exact: true })).toBeVisible();
-  // The link is a bearer capability (PRODUCT ruling 19), and the dialog says so rather than promising an email check.
-  await expect(dialog.getByText(/gives its access to the first person who opens it signed in/), 'the owner is told who the link admits').toBeVisible();
-  await expect(dialog, 'and never that the email restricts it').not.toContainText(/whoever signs in with that email/);
+  // The link admits only an account with the invite's email (PRODUCT ruling 19), and the dialog says so.
+  await expect(dialog.getByText(/works only for someone signed in with the email it names/), 'the owner is told who the link admits').toBeVisible();
+  await expect(dialog, 'and never that anyone who opens it gets in').not.toContainText(/first person who opens it/);
   await actors.checkpoint('invite-link');
   await ada.page.keyboard.press('Escape');
+
+  // Someone signed in with another email who follows the link is told so, and it stays open for the guest.
+  const cy = await actors.open(await actors.principal('cy'), { path: pathOf(url) });
+  cy.expectHttp(403, /^\/api\/invites\/[0-9a-f]+\/accept$/);
+  await expect(cy.page.getByRole('heading', { name: 'This invite is for another email' })).toBeVisible();
+  await actors.checkpoint('invite-other-email');
+  expect((await cy.context.request.get(`/api/docs/${target}`)).status(), 'and no access').toBe(404);
+  cy.expectHttp(404, `/api/docs/${target}`);
 
   const visitor = await actors.anonymous(pathOf(url), { label: 'guest' });
   await expect(visitor.page, 'signed out, the link asks for an account').toHaveURL(/\/login\?next=/);
@@ -210,9 +219,8 @@ test('j19 invite: an invite to an unknown email gives a copyable link that redee
   await ada.page.keyboard.press('Escape');
 
   // The link is spent: anyone else who follows it gets the one closed-invite page.
-  const cy = await actors.open(await actors.principal('cy'), { path: pathOf(url) });
   cy.expectHttp(404, /^\/api\/invites\/[0-9a-f]+\/accept$/);
+  await cy.goto(pathOf(url));
   await expect(cy.page.getByRole('heading', { name: /already been used or is no longer open/i })).toBeVisible();
-  expect((await cy.context.request.get(`/api/docs/${target}`)).status(), 'and no access').toBe(404);
-  cy.expectHttp(404, `/api/docs/${target}`);
+  expect((await cy.context.request.get(`/api/docs/${target}`)).status(), 'and still no access').toBe(404);
 });

@@ -1,12 +1,14 @@
-// T2.8 over REST under PRODUCT ruling 19: copy-link invites and the bell. An email is a label, never an authority:
-// every share by email is an invite, a personal link only the owner reads, and it grants nothing until someone redeems
-// it while signed in; it then binds to that account. Owning the address grants nothing and tells its account nothing.
-// An invite dies when its inviter stops managing the item or the item goes to Trash. The bell tells an inviter their
-// invite was accepted, pushed to their tabs and re-checked against the live grant whenever it is read.
+// T2.8 over REST under PRODUCT ruling 19: copy-link invites and the bell. Every share by email is an invite bound to
+// the email and a random token, a personal link only the owner reads, and it grants nothing until an account with that
+// email redeems it while signed in; anyone else is told it is for another email. Owning the address alone grants
+// nothing and tells its account nothing. An invite dies when its inviter stops managing the item or the item goes to
+// Trash, also when that lands while a share is in flight. The bell tells an inviter their invite was accepted, pushed
+// to their tabs and re-checked against the live grant whenever it is read.
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
 import { redeem } from '../test/invites.ts';
-import { BASE, insertDoc, insertFolder, insertLink, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
+import { BASE, insertDoc, insertFolder, insertGrant, insertLink, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
+import { INVITE_OTHER_EMAIL } from './invites.ts';
 import { handleApi } from './router.ts';
 
 const DocDO = {
@@ -191,21 +193,25 @@ describe('copy-link invites', () => {
 });
 
 describe('who an invite admits', { timeout: 30_000 }, () => {
-  it('binds to whoever redeems the link: the account with the email gets nothing by it', async () => {
-    const docId = await titled(ada, 'No oracle');
+  it('admits only an account with the invite’s email: anyone else is told it is for another email and it stays open', async () => {
+    const docId = await titled(ada, 'For Kim');
     const path = `/api/docs/${docId}`;
     const kim = await signedUpUser(env, 't28-kim', 'Kim');
     await share(ada, path, kim.email);
-    expect(await roleOf(kim.cookie, docId), 'an account is granted nothing by its email').toBeNull();
+    expect(await roleOf(kim.cookie, docId), 'an account is granted nothing by its email alone').toBeNull();
     expect((await membersOf(ada, path)).members.map((m) => m.name)).toEqual(['Ada']);
-    // Ada sends the link to Cy instead; Cy redeems it and the invite binds to Cy.
+    // Ada's link reaches Cy instead: it admits nobody but Kim.
     const token = tokenOf(await inviteLink(ada, path, kim.email));
-    expect((await accept(cy.cookie, token)).status).toBe(200);
-    expect(await roleOf(cy.cookie, docId)).toBe('editor');
-    expect((await accept(kim.cookie, token)).status, 'spent, it admits nobody else').toBe(404);
-    expect(await roleOf(kim.cookie, docId)).toBeNull();
+    const other = await accept(cy.cookie, token);
+    expect(other.status).toBe(403);
+    expect(await other.json()).toEqual({ error: 'invite-for-another-email', message: INVITE_OTHER_EMAIL });
+    expect(await roleOf(cy.cookie, docId)).toBeNull();
+    expect((await membersOf(ada, path)).invites.map((i) => i.email), 'still open for Kim').toEqual([kim.email]);
+    expect((await accept(kim.cookie, token)).status).toBe(200);
+    expect(await roleOf(kim.cookie, docId)).toBe('editor');
+    expect((await accept(cy.cookie, token)).status, 'spent, it admits nobody else').toBe(404);
     const after = await membersOf(ada, path);
-    expect(after.members.map((m) => m.name)).toEqual(['Ada', 'Cy']);
+    expect(after.members.map((m) => m.name)).toEqual(['Ada', 'Kim']);
     expect(after.invites).toEqual([]);
   });
 
@@ -291,6 +297,75 @@ describe('who an invite admits', { timeout: 30_000 }, () => {
     expect((await accept(guest.cookie, dead)).status, 'the old link stays dead').toBe(404);
     expect((await accept(guest.cookie, fresh)).status, 'the new link redeems').toBe(200);
     expect(await roleOf(guest.cookie, docId), 'at the role the current owner chose').toBe('commenter');
+  });
+});
+
+/** `env` whose next D1 batch waits at the gate: `arrived` resolves when it gets there, `open()` lets it run. */
+function gatedBatch() {
+  let arrive: () => void = () => undefined;
+  let open: () => void = () => undefined;
+  const arrived = new Promise<void>((resolve) => { arrive = resolve; });
+  const gate = new Promise<void>((resolve) => { open = resolve; });
+  const DB = new Proxy(d1.db, {
+    get(target, key) {
+      if (key !== 'batch') {
+        const value = Reflect.get(target, key, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      }
+      return async (statements: D1PreparedStatement[]) => {
+        arrive();
+        await gate;
+        return target.batch(statements);
+      };
+    },
+  });
+  return { env: { ...env, DB }, arrived, open };
+}
+
+const openInvites = async (docId: string) => (await d1.db.prepare(`SELECT email, role, invited_by AS inviter FROM invites
+    WHERE target_id = ? AND accepted_at IS NULL AND revoked_at IS NULL ORDER BY rowid`).bind(docId).all()).results;
+
+const sharing = (cookie: string, docId: string, email: string, role: string, over: typeof env) =>
+  handleApi(new Request(`${BASE}/api/docs/${docId}/members`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin: BASE, cookie },
+    body: JSON.stringify({ email, role }),
+  }), over);
+
+describe('a share in flight across a revocation (A§8: the write that commits first wins)', { timeout: 30_000 }, () => {
+  it('cannot raise another inviter’s invite once the note moved out of the sharer’s folder', async () => {
+    const folderId = await insertFolder(d1.db, ada, ada.homeId);
+    const docId = await titled(ada, 'Stalled raise', { folderId });
+    const joe = await signedUpUser(env, 't28-joe-raise', 'Joe');
+    await insertGrant(d1.db, { folderId }, joe, 'owner');
+    const ghost = unknownEmail('stalled-raise');
+    await share(ada, `/api/docs/${docId}`, ghost, 'viewer');
+
+    // Joe's share at owner has passed its access check when Ada moves the note out of his folder.
+    const gated = gatedBatch();
+    const raising = sharing(joe.cookie, docId, ghost, 'owner', gated.env);
+    await gated.arrived;
+    expect((await call('PATCH', `/api/docs/${docId}`, ada.cookie, { folderId: ada.homeId })).status).toBe(200);
+    gated.open();
+    expect((await raising).status, 'Joe no longer manages the note').toBe(404);
+    expect(await openInvites(docId), 'Ada’s invite keeps its role').toEqual([{ email: ghost, role: 'viewer', inviter: ada.id }]);
+    const guest = await signedUpUser(env, 't28-gia', 'Gia', ghost);
+    expect((await accept(guest.cookie, tokenOf(await inviteLink(ada, `/api/docs/${docId}`, ghost)))).status).toBe(200);
+    expect(await roleOf(guest.cookie, docId), 'the link grants what Ada chose').toBe('viewer');
+  });
+
+  it('leaves no open invite after a trash lands mid-share and the note is restored', async () => {
+    const docId = await titled(ada, 'Stalled trash');
+    const ghost = unknownEmail('stalled-trash');
+    const gated = gatedBatch();
+    const pending = sharing(ada.cookie, docId, ghost, 'editor', gated.env);
+    await gated.arrived;
+    expect((await call('DELETE', `/api/docs/${docId}`, ada.cookie)).status, 'Ada sends the note to Trash').toBe(200);
+    gated.open();
+    expect((await pending).status, 'the share of a trashed note is refused').toBe(404);
+    expect((await call('POST', `/api/docs/${docId}/restore`, ada.cookie)).status).toBe(200);
+    expect(await openInvites(docId), 'no invite came back with the restore').toEqual([]);
+    expect((await membersOf(ada, `/api/docs/${docId}`)).invites).toEqual([]);
   });
 });
 

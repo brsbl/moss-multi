@@ -1,9 +1,10 @@
-// T2.8 under PRODUCT ruling 19 (A§6, A§8): an email is a label, never an authority, and whether it has an account is
-// never observable to anyone but that account's holder. A share is an invite bound to a random token, never to an
-// account, until someone redeems its link while signed in. This file runs every flow an owner (or the owner's second
-// account) can see twice, for an email with an account and for one without, and asserts byte-identical answers and
-// member lists, and that a share never uses the email to look anything up but invites. It carries the regression for
-// each oracle the T2.8 checkers found, and the squatter case behind ruling 19.
+// T2.8 under PRODUCT ruling 19 (A§6, A§8): whether an email has an account is never observable to anyone but that
+// account's holder. A share is an invite bound to the email and a random token, never to an account, until an account
+// with that email redeems its link while signed in; anyone else is told only that it is for another email. This file
+// runs every flow an owner (or the owner's second account) can see twice, for an email with an account and for one
+// without, and asserts byte-identical answers and member lists, and that a share never uses the email to look anything
+// up but invites. It carries the regression for each oracle the T2.8 checkers found, and the squatter case behind
+// ruling 19.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
 import { inviteToken } from '../test/invites.ts';
@@ -94,25 +95,28 @@ describe('every owner-visible flow answers alike for an email with an account an
       .toBe(await (await call('GET', `/api/docs/${crypto.randomUUID()}`, kim.cookie)).text());
   });
 
-  it("admits the owner's second account alike when it redeems the link, so the member list names it alike (check #1 P1)", async () => {
+  it("tells the owner's second account alike that the link is for another email, and lists nobody new (check #1 P1)", async () => {
     const lia = await signedUpUser(env, 't28o-lia', 'Lia');
     const known = await world(lia.email);
     const unknown = await world(unknownEmail('second'));
     await alike(known, unknown, 'share', (w) => share(w, 'editor'));
     const tokens = new Map<World, string>();
     for (const w of [known, unknown]) tokens.set(w, await inviteToken(env, ada, `/api/docs/${w.docId}`, w.email));
-    await alike(known, unknown, 'the second account redeems the link', (w) => follow(tokens.get(w)!, alt.cookie));
+    await alike(known, unknown, 'the second account follows the link', (w) => follow(tokens.get(w)!, alt.cookie));
     await alike(known, unknown, 'and follows it again', (w) => follow(tokens.get(w)!, alt.cookie));
     await alike(known, unknown, 'members after', (w) => members(w));
     await alike(known, unknown, 'invite links after', (w) => links(w));
     for (const w of [known, unknown]) {
-      const listed = (await (await members(w)).json()) as { members: { name: string; role: string }[] };
-      expect(listed.members.map((m) => [m.name, m.role]), 'the link binds to whoever redeems it').toEqual([['Ada', 'owner'], ['Alt', 'editor']]);
+      expect((await follow(tokens.get(w)!, alt.cookie)).status, 'another email redeems nothing').toBe(403);
+      const listed = (await (await members(w)).json()) as { members: { name: string; role: string }[]; invites: { email: string }[] };
+      expect(listed.members.map((m) => [m.name, m.role]), 'nobody is admitted').toEqual([['Ada', 'owner']]);
+      expect(listed.invites.map((i) => i.email), 'and the invite stays open').toEqual([w.email]);
     }
-    expect(await (await call('GET', `/api/docs/${known.docId}`, lia.cookie)).text(), 'the email’s own account was granted nothing')
+    expect(await (await call('GET', `/api/docs/${known.docId}`, lia.cookie)).text(), 'the email’s own account was granted nothing by the share')
       .toBe(await (await call('GET', `/api/docs/${crypto.randomUUID()}`, lia.cookie)).text());
-    // A spent link answers anyone else as a forged one does.
-    expect(await seen(known, await follow(tokens.get(known)!, lia.cookie))).toBe(await seen(known, await follow('f'.repeat(48), lia.cookie)));
+    // The email's holder redeems it; spent, it then answers anyone else as a forged one does.
+    expect((await follow(tokens.get(known)!, lia.cookie)).status).toBe(200);
+    expect(await seen(known, await follow(tokens.get(known)!, alt.cookie))).toBe(await seen(known, await follow('f'.repeat(48), alt.cookie)));
   });
 
   it('gives a squatter who registered the invitee’s email nothing until they hold the link (ruling 19)', async () => {
@@ -127,7 +131,7 @@ describe('every owner-visible flow answers alike for an email with an account an
     const workspace = await (await call('GET', '/api/workspace', squatter.cookie)).text();
     expect(workspace, 'nothing listed by the address').not.toContain(w.docId);
     expect(workspace).not.toContain(w.folderId);
-    // Only the link admits, and then whoever holds it.
+    // Only the link admits, and then only an account with its email.
     expect((await follow(await inviteToken(env, ada, `/api/docs/${w.docId}`, victim), squatter.cookie)).status).toBe(200);
   });
 
