@@ -66,7 +66,7 @@ async function createLink(dialog: Locator, access: ui.LinkAccess): Promise<strin
 for (const size of TIER_A) {
   test(`j10 ${size.name}: a stranger opens the link, reads, signs up on the card and lands on the same note, with 0, 1 and 2 others there @tierA @p:tech-9 @p:ppl-2 @p:ppl-1 @evidence`, async ({ actors, stack }) => {
     const adaPrincipal = await actors.principal('ada');
-    const ada = await actors.open(adaPrincipal, { viewport: size });
+    const ada = await actors.session(adaPrincipal, { viewport: size });
     const docId = await adaNote(ada, stack.baseUrl);
     await ada.goto(`/d/${docId}`);
     await waitOpen(ada, docId, 'live');
@@ -130,7 +130,7 @@ for (const size of TIER_A) {
 
   test(`j10 ${size.name}: revoked and forged links show the denial page, whose Sign in is tappable @tierA @p:tech-9 @p:ppl-2 @evidence`, async ({ actors, stack }) => {
     actors.solo('the denial page is a stranger alone; Ada is setup only');
-    const ada = await actors.open(await actors.principal('ada'), { viewport: size });
+    const ada = await actors.session(await actors.principal('ada'));
     const docId = await adaNote(ada, stack.baseUrl);
     const headers = { origin: stack.baseUrl };
     const made = await ada.context.request.post(`/api/docs/${docId}/links`, { headers, data: { role: 'viewer' } });
@@ -175,12 +175,13 @@ test('j10 390x844: a folder link lands a stranger on the folder, whose note list
   const stranger = await actors.anonymous(`/f/${folderId}?share=${token}`, { label: 'stranger', viewport: PHONE });
   await stranger.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: BOOT_TIMEOUT });
   const row = stranger.page.locator(`[data-sidebar-row][data-doc-id="${docId}"]`);
-  const pane = stranger.page.locator(paneSelector(docId));
-  // The landing lists the folder, or opens its note at once; either way the list is one tap away.
-  await expect.poll(async () => (await row.isVisible()) || (await pane.count()) > 0, { message: 'the landing shows the folder or its note', timeout: BIND_TIMEOUT }).toBe(true);
-  await expectReachable(stranger, 'the folder landing', (await row.isVisible()) ? PANEL : null);
+  // The landing opens the folder's note, with the notes panel put away until asked for.
+  await waitOpen(stranger, docId, 'readonly');
+  await expect(row, 'the notes panel stays out of the note\'s way').toBeHidden();
+  await expectReadable(stranger, docId, PHONE);
+  await expectReachable(stranger, 'the folder landing');
   await actors.checkpoint('390x844-folder-landing');
-  if (!(await row.isVisible())) await stranger.page.getByRole('button', { name: 'Show notes panel', exact: true }).click();
+  await stranger.page.getByRole('button', { name: 'Show notes panel', exact: true }).click();
   await expect(row, 'the folder\'s note is listed').toBeVisible();
   await expectReachable(stranger, 'the notes panel', PANEL);
   await row.click();
@@ -196,7 +197,7 @@ test('j10 390x844: a folder link lands a stranger on the folder, whose note list
 
 test('j10 Tier B at 390 px: the share dialog, Settings and every chrome menu keep every control reachable @p:tech-9', async ({ actors, stack }) => {
   actors.solo('the Tier B sweep is the owner alone at 390 px');
-  const ada = await actors.open(await actors.principal('ada'), { viewport: PHONE });
+  const ada = await actors.session(await actors.principal('ada'), { viewport: PHONE });
   const headers = { origin: stack.baseUrl };
   const { vault } = (await (await ada.context.request.get('/api/workspace')).json()) as { vault: { id: string } };
   const name = `Notes ${randomBytes(2).toString('hex')}`;
