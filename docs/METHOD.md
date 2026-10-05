@@ -166,6 +166,7 @@ Read this with PRODUCT.md, your BUILDPLAN entry and the A§ it cites, before wri
   | deleting a paragraph that holds 500 comments (500 orphan records written) | 12–18 ms | 100 ms |
   | deleting the paragraph that holds 500 orphans' lost place (500 lifted records written) | 8 ms | 100 ms |
 
+- Comment UI (T4.3): moss's comment sites read `host/comments/adapter.ts` through `comments` seams; paint lives in `host/comments/paint.ts` (bound per editor from the collaboration plugin's binding) and runs the same frame engine as a read-only overlay, so a bold or Enter repaints from the new anchor in its own frame. Lexical skips keydown on a non-editable root, so read-only commenting has its own bar and Cmd+Shift+A (`CommentOnlyTools`). These host modules also land in the viewer bundle and in sync's converter typecheck, so they never import the auth store or the doc sessions; the pane injects both (`setMyPrincipalId`, `setAckWaiter`). A journey reads paint from `CSS.highlights` (`moss-comment-<color>`) and each paint pass from the `moss-comment-paint` window event. [T4.3]
 - The anchor engine caches gap and lost-place work per frame (the doc does not change while a frame is read); without it, 500 comments in one deleted paragraph each re-walked it, 228 ms per frame. [T4.2]
 
 ## Title, presence, connection
