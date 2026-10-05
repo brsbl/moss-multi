@@ -7,6 +7,7 @@
     ".": "./src/index.ts",
     "./converter": "./src/converter/index.ts",
     "./excluded-properties": "./src/excluded-properties.ts",
+    "./payload-docs": "./src/payload-docs.ts",
     "./projections": "./src/doc/projections.ts",
     "./fanout": "./src/fanout.ts",
     "./registers": "./src/registers.ts"

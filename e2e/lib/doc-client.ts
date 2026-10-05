@@ -9,7 +9,7 @@ import WebSocket from 'ws';
 import YProvider from 'y-partyserver/provider';
 import * as Y from 'yjs';
 import { DOC_SOCKET_PATH } from '../../packages/protocol/src/dom-contract.ts';
-import { base64ToBytes, type ServerEvent } from '../../packages/protocol/src/sync.ts';
+import { base64ToBytes, PAYLOAD_MESSAGE, type ServerEvent } from '../../packages/protocol/src/sync.ts';
 import type { SessionCookie } from './principals.ts';
 
 export const cookieHeader = (cookies: SessionCookie[]): string => cookies.map((c) => `${c.name}=${c.value}`).join('; ');
@@ -81,6 +81,8 @@ export async function openDocClient(baseUrl: string, docId: string, cookie: stri
     disableBc: true,
     WebSocketPolyfill: socketWith(baseUrl, cookie) as unknown as typeof globalThis.WebSocket,
   });
+  // This client holds no decorator payloads (A§10.10); their frames ride the same socket and are ignored here.
+  provider.messageHandlers[PAYLOAD_MESSAGE] = () => {};
   const events: ServerEvent[] = [];
   provider.on('custom-message', (message: string) => events.push(JSON.parse(message) as ServerEvent));
   const synced = new Promise<void>((resolve) => {

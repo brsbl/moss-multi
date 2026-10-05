@@ -6,7 +6,8 @@
 // released with unacked edits stays connected without its pane until they are acked, or until the doc ends.
 import type { ConnectionState, TerminalReason } from '@moss-multi/protocol/dom-contract';
 import { isRole, roleAtLeast } from '@moss-multi/protocol/roles';
-import { CLOSE, closeAction, type ServerEvent, type WriteRefusalReason } from '@moss-multi/protocol/sync';
+import { CLOSE, closeAction, PAYLOAD_MESSAGE, type ServerEvent, type WriteRefusalReason } from '@moss-multi/protocol/sync';
+import { attachPayloadDocs, PayloadDocs, PayloadSync } from '@moss-multi/sync/payload-docs';
 import YProvider from 'y-partyserver/provider';
 import * as Y from 'yjs';
 import { leaveTo } from '../navigation.ts';
@@ -251,6 +252,9 @@ export function retryDoc(docId: string): void {
 
 export class DocSession {
   readonly doc = new Y.Doc();
+  /** The payload docs this tab holds beside the note (A§10.10), destroyed with it. */
+  readonly payloads = attachPayloadDocs(this.doc, new PayloadDocs());
+  readonly #payloadSync: PayloadSync;
   stopPresence?: () => void;
   readonly provider: YProvider;
   #state: SessionState = { synced: false, resync: false, unacked: false, retrying: false, connection: 'reconnecting', canWrite: true, writePaused: false, halted: null };
@@ -310,6 +314,16 @@ export class DocSession {
     this.doc.on('update', (update: Uint8Array, origin: unknown) => {
       if (origin !== this.provider) this.#wrote(update);
     });
+    // Payload frames ride the doc socket under their own message type; the provider hands them over whole.
+    this.#payloadSync = new PayloadSync(this.payloads, {
+      send: (frame) => this.provider.ws?.send(frame),
+      open: () => this.provider.wsconnected && !this.#ended,
+      wrote: (id, update) => this.#wrote(update, id),
+      remote: this.provider,
+    });
+    this.provider.messageHandlers[PAYLOAD_MESSAGE] = (_encoder, decoder) => {
+      this.#payloadSync.receive(decoder.arr);
+    };
     this.#deadline = setTimeout(() => {
       if (!this.#state.synced) this.#set({ retrying: true });
     }, FIRST_SYNC_DEADLINE_MS);
@@ -416,7 +430,9 @@ export class DocSession {
     // A connect still resolving its params can never reopen the socket.
     Object.defineProperty(this.provider, 'shouldConnect', { get: () => false, set: () => undefined });
     awareness.destroy();
+    this.#payloadSync.destroy();
     this.doc.destroy();
+    this.payloads.destroy();
   }
 
   #set(patch: Partial<SessionState>): void {
@@ -442,9 +458,14 @@ export class DocSession {
 
   #opened(): void {
     this.#socketOpen = true;
-    // The provider sends a step 1 on open.
+    // The provider sends a step 1 on open; each held payload sends its own, and its unacked writes.
     this.#lastResync = Date.now();
     this.#failedHandshakes = 0;
+    // The note's unacked writes go first (the provider's own step 1 and step 2 follow this event): they hold the
+    // elements naming payloads made offline, so those payloads' resends never reach the DocDO as unnamed writes.
+    const pending = this.#ledger.pendingUpdate();
+    if (pending && !this.#ended) this.provider.ws?.send(syncFrame(2, pending));
+    this.#payloadSync.connected((id) => this.#ledger.pendingUpdate(id));
   }
 
   #synced(): void {
@@ -555,6 +576,7 @@ export class DocSession {
       if (state !== null && !this.#ended && !this.#lingering) awareness.setLocalState(state);
       const pending = this.#ledger.pendingUpdate();
       if (pending && !this.#ended) ws.send(syncFrame(2, pending));
+      if (!this.#ended) for (const id of this.#ledger.pendingPayloads()) this.#payloadSync.resend(id, this.#ledger.pendingUpdate(id));
     } catch {
       // closing; the close path takes over
     }
@@ -585,8 +607,8 @@ export class DocSession {
     this.#onVisibility();
   };
 
-  #wrote(update: Uint8Array): void {
-    this.#ledger.wrote(update);
+  #wrote(update: Uint8Array, payload?: string): void {
+    this.#ledger.wrote(update, payload);
     if (!this.#state.unacked) this.#set({ unacked: true });
   }
 
