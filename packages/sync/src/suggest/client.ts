@@ -278,6 +278,11 @@ export class SuggestFork {
   readonly #used = new Set<number>();
   /** Delete parts of the author's open records, proposed or acknowledged, by part id. */
   readonly #parts = new Map<string, { record: string; targets: IdSpan[] }>();
+  /** Parts this fork proposed, and those it took back (the body holds a taken-back part until its undelete lands). */
+  readonly #proposed = new Set<string>();
+  readonly #withdrawn = new Set<string>();
+  /** How many of each author record's ops F holds: another window's later ops enter F as they arrive. */
+  readonly #applied = new Map<string, number>();
   #inflight: Pending[] = [];
   #waiting: Pending[] = [];
   readonly #listeners = new Set<(event: ForkEvent) => void>();
@@ -417,6 +422,7 @@ export class SuggestFork {
     if (!active) return null;
     const id = partId();
     this.#parts.set(id, { record: active.record, targets });
+    this.#proposed.add(id);
     this.#used.add(active.client);
     this.#mine.set(active.client, active.record);
     this.#lastEdit = this.#now();
@@ -431,6 +437,7 @@ export class SuggestFork {
     const known = this.#parts.get(part);
     if (!known || !this.#ready || this.#closed) return false;
     this.#parts.delete(part);
+    this.#withdrawn.add(part);
     this.#request({ t: 'suggest-undelete', record: known.record, partId: part });
     this.#emit({ type: 'change' });
     return true;
@@ -535,6 +542,7 @@ export class SuggestFork {
     for (const record of openRecords(this.body, this.options.me)) {
       if (!valid.has(record.meta.id)) continue;
       for (const op of record.ops) Y.applyUpdate(this.doc, op, SHIM_RECORD_APPLY);
+      this.#applied.set(record.meta.id, record.ops.length);
       for (const client of record.meta.clients) this.#mine.set(client, record.meta.id);
       for (const part of record.parts) this.#parts.set(part.id, { record: record.meta.id, targets: part.targets });
     }
@@ -658,8 +666,73 @@ export class SuggestFork {
       if (owes) this.#halt('record-closed');
       else if (!this.#closed) this.#emit({ type: 'rebuild' });
     }
+    if (!this.#closed && this.#absorb()) changed = true;
     if (changed) this.#emit({ type: 'change' });
   };
+
+  /**
+   * Every open record of the author, from any of the author's windows, as it grows: ops F lacks enter F once they pass
+   * G1–G3 and the bind check on a scratch copy, and the record's parts paint. A record that does not pass yet is
+   * retried on the next update.
+   */
+  #absorb(): boolean {
+    let changed = false;
+    for (const record of openRecords(this.body, this.options.me)) {
+      const id = record.meta.id;
+      const known = this.#applied.get(id);
+      if (known === undefined || record.ops.length > known) {
+        const fresh = record.ops.slice(known ?? 0).filter((op) => this.#adds(op));
+        if (fresh.length > 0) {
+          const scratch = applyForView(this.doc, { ...record, ops: fresh }, this.options.check);
+          if (!scratch) continue;
+          scratch.destroy();
+          for (const op of fresh) Y.applyUpdate(this.doc, op, SHIM_RECORD_APPLY);
+          changed = true;
+        }
+        this.#applied.set(id, record.ops.length);
+      }
+      for (const client of record.meta.clients) if (!this.#mine.has(client)) this.#mine.set(client, id);
+      const held = new Set(record.parts.map((part) => part.id));
+      for (const part of record.parts) {
+        if (this.#parts.has(part.id) || this.#withdrawn.has(part.id)) continue;
+        this.#parts.set(part.id, { record: id, targets: part.targets });
+        changed = true;
+      }
+      // Another window took a part back.
+      for (const [part, entry] of this.#parts) {
+        if (entry.record === id && !held.has(part) && !this.#proposed.has(part)) {
+          this.#parts.delete(part);
+          changed = true;
+        }
+      }
+    }
+    return changed;
+  }
+
+  /** Whether `op` inserts an item F lacks or deletes one F still shows. */
+  #adds(op: Uint8Array): boolean {
+    let decoded: ReturnType<typeof Y.decodeUpdate>;
+    try {
+      decoded = Y.decodeUpdate(op);
+    } catch {
+      return true;
+    }
+    const store = this.doc.store;
+    for (const struct of decoded.structs) {
+      if (!(struct instanceof Y.Skip) && struct.id.clock + struct.length > Y.getState(store, struct.id.client)) return true;
+    }
+    for (const [client, ranges] of decoded.ds.clients) {
+      for (const { clock, len } of ranges) {
+        for (let at = clock; at < clock + len; ) {
+          if (at >= Y.getState(store, client)) return true;
+          const item = Y.getItem(store, Y.createID(client, at));
+          if (!item.deleted) return true;
+          at = item.id.clock + item.length;
+        }
+      }
+    }
+    return false;
+  }
 
   /**
    * Closes input in this tick and offers back every block holding a change the server never acknowledged: the

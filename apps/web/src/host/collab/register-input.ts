@@ -18,7 +18,7 @@ export function useRegisterDraft(
   element: RefObject<HTMLTextAreaElement | null>, editing: boolean,
 ): [string, (text: string) => void] {
   const [value, display] = useState(initial);
-  const composing = useRef<{ doc: Y.Doc; base: Uint8Array; id: string } | null>(null);
+  const composing = useRef<{ doc: Y.Doc; id: string } | null>(null);
   const write = useCallback((next: string) => {
     if (!registerDoc(editor)) { display(next); return; }
     if (!editor.isEditable()) return;
@@ -65,13 +65,21 @@ export function useRegisterDraft(
       if (!editor.isEditable()) return;
       const draft = new Y.Doc(); Y.applyUpdate(draft, Y.encodeStateAsUpdate(doc));
       const id = (editor.getEditorState()._nodeMap.get(key) as unknown as { __regId: string }).__regId;
-      composing.current = { doc: draft, base: Y.encodeStateVector(draft), id };
+      composing.current = { doc: draft, id };
     };
     const end = () => {
       const draft = composing.current;
       if (!draft) return;
       write(input.value);
-      if (editor.isEditable()) Y.applyUpdate(doc, Y.encodeStateAsUpdate(draft.doc, draft.base), REGISTER_LOCAL_ORIGIN);
+      if (editor.isEditable()) {
+        // The composition merges with what arrived meanwhile, then lands as an edit under the bound doc's own client:
+        // the draft's client is unleased in Suggest mode, where the bound doc is the fork.
+        Y.applyUpdate(draft.doc, Y.encodeStateAsUpdate(doc, Y.encodeStateVector(draft.doc)));
+        const merged = draft.doc.getMap<Y.Text>('registers').get(draft.id)?.toString();
+        if (merged !== undefined && merged !== text.toString()) {
+          doc.transact(() => text.applyDelta(diffText(text.toString(), merged)), REGISTER_LOCAL_ORIGIN);
+        }
+      }
       composing.current = null;
       draft.doc.destroy();
       const next = text.toString(); repaint(input, next, diffText(input.value, next)); display(next);
