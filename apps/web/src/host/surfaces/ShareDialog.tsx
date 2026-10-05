@@ -230,7 +230,7 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
       } catch {
         throw new Error('Couldn’t copy. Select the invite link and copy it instead.');
       }
-      return `Copied the invite link for ${invite.email}. Send it to them; it works once.`;
+      return `Copied the invite link for ${invite.email}. It works once, for whoever signs in with that email.`;
     }, false);
   }
 

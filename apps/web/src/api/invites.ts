@@ -1,8 +1,10 @@
 // Copy-link invites (T2.8; P:People "copy-link invites", no email is sent). Every share by email is an open invite
 // (members.ts); its owner reads the invite's link here and hands it over. Following the link while signed in redeems
-// it: possessing the token is the authority, as in glyphdown, so whoever signs in with it gets the invite's role,
-// once, and the inviter hears who did. A share is also redeemed when its grantee explicitly opens the item: its URL
-// (docs.ts) or its notice in the bell (notifications.ts), never a socket a background open made (T2.4 follow-up).
+// it for the account with the invite's email, once, at its role, and the inviter hears who did. The token alone
+// admits nobody else: a link followed by another account (the owner's second one, say) would otherwise tell the
+// owner whether the email had an account (T2.4s). The inviter must still manage the target when it is spent (A§8).
+// A share is also redeemed when its grantee explicitly opens the item: its URL (docs.ts) or its notice in the bell
+// (notifications.ts), never a socket a background open made (T2.4 follow-up).
 import { waitUntil } from 'cloudflare:workers';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { publishTo } from '@moss-multi/sync/fanout';
@@ -13,6 +15,7 @@ import { resolvePrincipal } from '../auth/principal.ts';
 import { createDb } from '../db/client.ts';
 import { invites } from '../db/schema.ts';
 import { json } from '../worker/route.ts';
+import { managesDoc, MAX_FOLDER_DEPTH } from './access.ts';
 import { accessTo, type MemberTarget } from './members.ts';
 import { NO_STORE, notFound, unauthenticated } from './respond.ts';
 
@@ -50,6 +53,20 @@ export async function handleInviteLinks(request: Request, env: AuthEnv, target: 
   return json({ invites: rows.map(({ email, role, token }) => ({ email, role, url: inviteUrl(env, request, token) })) }, 200, NO_STORE);
 }
 
+/** SQL that holds while user `?{user}` manages folder `?{folder}`: it owns the vault, or holds an `owner` grant on the
+ * folder or one above it (managesDoc's folder half). */
+const managesFolder = (folder: number, user: number) => `(EXISTS (SELECT 1 FROM folders WHERE id = ?${folder} AND owner_user_id = ?${user})
+  OR EXISTS (WITH RECURSIVE chain(id, parent_id, depth) AS (
+      SELECT id, parent_id, 1 FROM folders WHERE id = ?${folder}
+      UNION ALL SELECT f.id, f.parent_id, chain.depth + 1 FROM folders f JOIN chain ON f.id = chain.parent_id
+        WHERE chain.depth < ${MAX_FOLDER_DEPTH}
+    ) SELECT 1 FROM folder_members m JOIN chain ON m.folder_id = chain.id WHERE m.principal_id = ?${user} AND m.role = 'owner'))`;
+
+/** SQL that holds while target `?{id}` is live and user `?{user}` still manages it. */
+const liveAndManaged = (type: MemberTarget['type'], id: number, user: number) => type === 'doc'
+  ? `EXISTS (SELECT 1 FROM docs WHERE id = ?${id} AND deleted_at IS NULL) AND ${managesDoc(id, user)}`
+  : `EXISTS (SELECT 1 FROM folders WHERE id = ?${id} AND deleted_at IS NULL) AND ${managesFolder(id, user)}`;
+
 /** The live owner of an invite's target, or null when it is gone or trashed. */
 async function liveTarget(db: D1Database, type: MemberTarget['type'], id: string): Promise<string | null> {
   const table = type === 'doc' ? 'docs' : 'folders';
@@ -58,31 +75,36 @@ async function liveTarget(db: D1Database, type: MemberTarget['type'], id: string
 }
 
 /**
- * POST `/api/invites/:token/accept`: a signed-in person redeems the invite and learns where it leads. A forged,
- * revoked or spent token, and one whose item is gone, all get the one 404. The target's owner following the link
- * is sent on without spending it, since the owner is never a member.
+ * POST `/api/invites/:token/accept`: the invited person, signed in with the invite's email, redeems it and learns
+ * where it leads. A forged, revoked or spent token, another account's invite, one whose item is gone and one whose
+ * inviter no longer manages the item all get the one 404. The target's owner following the link is sent on without
+ * spending it, since the owner is never a member.
  */
 export async function acceptInvite(request: Request, env: InvitesEnv, token: string): Promise<Response> {
   if (request.method !== 'POST') return json({ error: 'method-not-allowed' }, 405, { allow: 'POST' });
   const principal = await resolvePrincipal(request, env);
   if (!principal || principal.type === 'anonymous') return unauthenticated();
   if (principal.type !== 'user') return notFound();
-  const invite = await env.DB.prepare(`SELECT target_type AS type, target_id AS id, invited_by AS inviter, accepted_by AS acceptedBy
+  const invite = await env.DB.prepare(`SELECT target_type AS type, target_id AS id, email, invited_by AS inviter, accepted_by AS acceptedBy
       FROM invites WHERE token = ? AND revoked_at IS NULL`).bind(token)
-    .first<{ type: MemberTarget['type']; id: string; inviter: string; acceptedBy: string | null }>();
+    .first<{ type: MemberTarget['type']; id: string; email: string; inviter: string; acceptedBy: string | null }>();
   if (!invite || (invite.acceptedBy !== null && invite.acceptedBy !== principal.id)) return notFound();
   const owner = await liveTarget(env.DB, invite.type, invite.id);
   if (owner === null) return notFound();
   const target = { type: invite.type, id: invite.id };
   if (invite.acceptedBy !== null || owner === principal.id) return json({ target }, 200, NO_STORE);
+  if (principal.email.toLowerCase() !== invite.email.toLowerCase()) return notFound();
 
   const now = Date.now();
   const [table, column] = grantTable(invite.type);
-  // One batch, each statement seeing the last: the invite is spent only if still open, and the grant and the
-  // inviter's notice follow only the spending this request did.
+  // One batch, each statement seeing the last: the invite is spent only while it is open, its target live and its
+  // inviter still managing it (so a trash or a revocation that commits first wins), and the grant and the inviter's
+  // notice follow only the spending this request did.
   const [spent] = await env.DB.batch([
-    env.DB.prepare('UPDATE invites SET accepted_at = ?2, accepted_by = ?3 WHERE token = ?1 AND accepted_at IS NULL AND revoked_at IS NULL')
-      .bind(token, now, principal.id),
+    env.DB.prepare(`UPDATE invites SET accepted_at = ?2, accepted_by = ?3
+      WHERE token = ?1 AND accepted_at IS NULL AND revoked_at IS NULL AND target_id = ?4 AND invited_by = ?5
+        AND ${liveAndManaged(invite.type, 4, 5)}`)
+      .bind(token, now, principal.id, invite.id, invite.inviter),
     env.DB.prepare(`INSERT INTO ${table} (${column}, principal_id, principal_type, role, added_by, created_at)
       SELECT target_id, ?3, 'user', role, invited_by, ?2 FROM invites WHERE token = ?1 AND accepted_by = ?3 AND accepted_at = ?2
       ON CONFLICT (${column}, principal_id) DO UPDATE SET role = excluded.role WHERE ${rank('role')} < ${rank('excluded.role')}`)
@@ -92,7 +114,7 @@ export async function acceptInvite(request: Request, env: InvitesEnv, token: str
       FROM invites WHERE token = ?1 AND accepted_by = ?3 AND accepted_at = ?2`)
       .bind(token, now, principal.id, crypto.randomUUID()),
   ]);
-  if (!spent?.meta?.changes) return notFound(); // someone else spent it in the meantime
+  if (!spent?.meta?.changes) return notFound(); // spent, trashed or revoked in the meantime
   notify(env, invite.inviter, 'notifications');
   notify(env, principal.id, 'vaults');
   return json({ target }, 200, NO_STORE);
