@@ -5,6 +5,7 @@
 import { BOLD_STAR, registerMarkdownShortcuts } from '@lexical/markdown';
 import { $getSelection, $isRangeSelection } from 'lexical';
 import { describe, expect, it } from 'vitest';
+import * as Y from 'yjs';
 import { liveUnits, mintAnchor } from '@moss-multi/core/anchor-frame';
 import { MARKDOWN_EDITOR_TRANSFORMERS } from '../../src/converter/index.ts';
 import type { FrameVerdict } from '../../src/doc/comments-host.ts';
@@ -297,18 +298,34 @@ describe('T4.0 supported liveness: orphan on deletion, reattach on undo and redo
     // The whole paragraph's text goes, then the empty paragraph: the first undo restores an empty block, so the
     // re-homed place has no live bound and the second undo's copies have neither origin nor right origin.
     const a = s.peer();
+    const dump = (label: string) => {
+      const lines: string[] = [];
+      const idS = (id: Y.ID | null) => (id ? `${id.client}:${id.clock}` : '-');
+      const walk = (type: Y.AbstractType<unknown>, depth: number) => {
+        for (let at = type._start; at; at = at.right) {
+          const c = at.content;
+          const kind = c instanceof Y.ContentString ? JSON.stringify(c.str) : c.constructor.name + (c instanceof Y.ContentType ? `:${c.type.constructor.name}` : '');
+          lines.push(`${'  '.repeat(depth)}${idS(at.id)} len=${at.length} del=${at.deleted} o=${idS(at.origin)} ro=${idS(at.rightOrigin)} redone=${idS(at.redone)} ${kind}`);
+          if (c instanceof Y.ContentType && c.type instanceof Y.XmlText) walk(c.type, depth + 1);
+        }
+      };
+      walk(s.server.get('root', Y.XmlText), 0);
+      console.log(`DIAG ${label} text=${JSON.stringify(a.text())} anchor=${JSON.stringify(s.host.anchor('c1'))}\n${lines.join('\n')}`);
+    };
     s.comment('c1', 'unique passage');
+    dump('start');
     a.edit(() => $select('unique passage').removeText());
     accepted(a.send());
-    orphaned(s);
+    dump('after text delete');
     a.edit(() => $block(0).remove());
     accepted(a.send());
-    orphaned(s);
+    dump('after block delete');
     a.undo();
     accepted(a.send());
-    orphaned(s);
+    dump('after undo 1');
     a.undo();
     accepted(a.send());
+    dump('after undo 2');
     on(s, 'unique passage');
   }, 'unique passage\n\nTail.'));
 
