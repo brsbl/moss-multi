@@ -75,6 +75,22 @@ window.editorFixture = {
   assetUrl(noteId, ref) {
     return state.host.assets.url(noteId, ref, 'image');
   },
+  /** Makes the host's note reads reject until turned off, as a busy disk would. */
+  failReads(on) {
+    const host = state.host;
+    host.read = on ? async () => Promise.reject(new Error('the disk is busy')) : MemoryHost.prototype.read.bind(host);
+  },
+  /** Holds each host write for `ms` before it runs, so an edit can land while one is pending. */
+  delayWrites(ms) {
+    const host = state.host;
+    const write = MemoryHost.prototype.write.bind(host);
+    host.write = ms ? async (noteId, request) => (await new Promise((done) => setTimeout(done, ms)), write(noteId, request)) : write;
+  },
+  /** The last unmount's result, with the receipt's markdown. */
+  async unmountDetail(options) {
+    const result = await state.handle.unmount(options);
+    return plain({ kind: result.kind, flush: result.flush.kind, markdown: result.flush.receipt?.files.markdown ?? result.flush.draft?.files.markdown ?? null });
+  },
   calls() {
     return state.host.calls.map(({ write, ...call }) => (write ? { ...call, ops: write.ops.map((op) => `${op.kind}:${op.file}`) } : call));
   },

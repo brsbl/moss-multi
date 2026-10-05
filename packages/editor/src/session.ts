@@ -516,8 +516,9 @@ export class EditorSession {
       return fresh.read;
     } catch (error) {
       if (this.status === 'conflict') {
-        // The conflict stays unresolved: only the user's next choice (Reload, Overwrite) may move it.
-        this.emit({ kind: 'error', noteId: this.noteId, status: 'conflict', op: 'read', message: messageOf(error), error, failure: null, willRetry: false });
+        // The conflict stays unresolved: only the user's next choice (Reload, Overwrite) may move it. The event's
+        // status is 'error' as API 1 types it (as for asset errors); the editor's own status stays 'conflict'.
+        this.emit({ kind: 'error', noteId: this.noteId, status: 'error', op: 'read', message: messageOf(error), error, failure: null, willRetry: false });
         return null;
       }
       this.needsReread = true;
