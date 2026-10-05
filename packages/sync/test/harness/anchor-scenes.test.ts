@@ -293,6 +293,25 @@ describe('T4.0 supported liveness: orphan on deletion, reattach on undo and redo
     on(s, 'brown');
   }));
 
+  it('lift-empty-paragraph-undo-restores-comment', () => scene((s) => {
+    // The whole paragraph's text goes, then the empty paragraph: the first undo restores an empty block, so the
+    // re-homed place has no live bound and the second undo's copies have neither origin nor right origin.
+    const a = s.peer();
+    s.comment('c1', 'unique passage');
+    a.edit(() => $select('unique passage').removeText());
+    accepted(a.send());
+    orphaned(s);
+    a.edit(() => $block(0).remove());
+    accepted(a.send());
+    orphaned(s);
+    a.undo();
+    accepted(a.send());
+    orphaned(s);
+    a.undo();
+    accepted(a.send());
+    on(s, 'unique passage');
+  }, 'unique passage\n\nTail.'));
+
   it('offline: type inside it, delete all of it, undo the deletion; replayed under the discipline it reattaches whole', () => scene((s) => {
     const a = s.peer();
     s.comment('c1', 'brown');
