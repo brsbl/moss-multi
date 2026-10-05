@@ -3,7 +3,7 @@
 // operation is recorded with no refusal; a record that fails the bind check is broken and left out of C, and Review
 // falls back to the body when binding C throws; a record closed under the author offers back every unacked block,
 // and typing after the remount lands.
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import type { SuggestReply, SuggestRequest } from '@moss-multi/protocol/suggest';
@@ -314,34 +314,31 @@ describe('T5.1 copy-back, reconnect and undelete @p:mean-2 @p:tech-7 @p:R17', ()
     }
   });
 
-  it('a resume the DocDO refuses because the old socket has not closed there yet is asked again, and nothing is lost', () => {
-    vi.useFakeTimers();
+  it('the same fork on a new socket resumes its leases while the DocDO still holds the old socket open; no other connection can', () => {
     const live = seededBody();
     const link = wire(live);
     const m = mount(live, link);
     try {
       m.act(() => select('Hello', 24).insertText(' One.'));
       link.deliver(m.fork);
-      // The socket drops; an edit is made offline; the new socket resumes before the DocDO sees the old one close.
+      const leased = link.replies.find((reply): reply is Extract<SuggestReply, { t: 'suggest-leased' }> => reply.t === 'suggest-leased')!;
+      // The socket drops half-open: the DocDO never sees it close. An edit is made offline, then a new socket resumes.
       m.act(() => select('Hello', 29).insertText(' Two.'));
       link.outbox.length = 0;
+      // Another connection of the author, without this fork's name, cannot take the leases.
+      const stranger = handleSuggest(link.ingest, { ...link.who, connection: 'c3' }, { t: 'suggest-lease', resume: [leased.leases[0].client], fork: 'another-fork-1' });
+      expect(stranger).toMatchObject({ t: 'suggest-refused', reason: 'lease' });
       link.who.connection = 'c2';
       m.fork.reconnected();
       link.deliver(m.fork);
-      expect(link.replies.at(-1)).toMatchObject({ t: 'suggest-refused', reason: 'lease' });
       expect(refusalsOf(m.events), 'input stays open').toEqual([]);
       expect(m.fork.closed).toBe(false);
-      expect(m.fork.owes, 'the offline edit is still owed').toBe(true);
-      link.ingest.expireConnection('c1');
-      vi.advanceTimersByTime(2_000);
-      link.deliver(m.fork);
       const [record] = recordIds(live);
       expect(readRecord(live, record)?.ops.length, 'the offline edit lands in the active record').toBe(2);
       expect(m.fork.owes).toBe(false);
-      expect(link.replies.filter((reply) => reply.t === 'suggest-refused'), 'one refusal, so no cooldown').toHaveLength(1);
+      expect(link.replies.filter((reply) => reply.t === 'suggest-refused'), 'the fork itself is never refused').toEqual([]);
     } finally {
       m.dispose();
-      vi.useRealTimers();
     }
   });
 

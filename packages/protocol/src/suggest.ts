@@ -8,8 +8,12 @@ export interface IdSpan {
 }
 
 export type SuggestRequest =
-  /** Fresh leases for this connection, or `resume` of this principal's leases whose connection closed or idled. */
-  | { t: 'suggest-lease'; resume?: number[] }
+  /**
+   * Fresh leases for this connection, or `resume` of this principal's leases whose connection closed or idled.
+   * `fork` names the client fork asking (random per fork): the same fork on a new socket may resume its leases while
+   * the DocDO still holds the old socket open (a half-open drop), and no other connection may.
+   */
+  | { t: 'suggest-lease'; resume?: number[]; fork?: string }
   /** One fork transaction's V1 update, base64. */
   | { t: 'suggest-ops'; record: string; update: string }
   | { t: 'suggest-delete'; record: string; part: { id: string; targets: IdSpan[] } }

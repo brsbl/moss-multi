@@ -35,6 +35,8 @@ export interface Lease {
   /** Its connection closed. */
   expired: boolean;
   usedAt: number;
+  /** The client fork it was granted to: that fork may resume it from a new socket while the old one is still open. */
+  fork?: string | null;
 }
 
 /** Where leases live: DO SQLite in the DocDO (`suggest_leases`), memory in unit tests. */
@@ -93,7 +95,13 @@ export class SqlLeases implements LeaseStore {
   constructor(private readonly sql: SqlStorage) {
     sql.exec(`CREATE TABLE IF NOT EXISTS suggest_leases (client_id INTEGER PRIMARY KEY, principal_id TEXT NOT NULL,
       connection_id TEXT NOT NULL, reserved_id TEXT NOT NULL UNIQUE, record_id TEXT, next_clock INTEGER NOT NULL,
-      spent INTEGER NOT NULL, expired INTEGER NOT NULL, used_at INTEGER NOT NULL)`);
+      spent INTEGER NOT NULL, expired INTEGER NOT NULL, used_at INTEGER NOT NULL, fork_id TEXT)`);
+    try {
+      // A table made before the column existed.
+      sql.exec('ALTER TABLE suggest_leases ADD COLUMN fork_id TEXT');
+    } catch {
+      // already there
+    }
     sql.exec('CREATE INDEX IF NOT EXISTS suggest_leases_principal ON suggest_leases (principal_id, spent, expired)');
     sql.exec('CREATE INDEX IF NOT EXISTS suggest_leases_record ON suggest_leases (record_id)');
     sql.exec('CREATE INDEX IF NOT EXISTS suggest_leases_connection ON suggest_leases (connection_id)');
@@ -112,6 +120,7 @@ export class SqlLeases implements LeaseStore {
       spent: Number(row.spent) === 1,
       expired: Number(row.expired) === 1,
       usedAt: Number(row.used_at),
+      fork: row.fork_id === null || row.fork_id === undefined ? null : String(row.fork_id),
     };
   }
 
@@ -121,11 +130,11 @@ export class SqlLeases implements LeaseStore {
 
   put(lease: Lease): void {
     this.sql.exec(
-      `INSERT INTO suggest_leases (client_id, principal_id, connection_id, reserved_id, record_id, next_clock, spent, expired, used_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(client_id) DO UPDATE SET connection_id = excluded.connection_id,
+      `INSERT INTO suggest_leases (client_id, principal_id, connection_id, reserved_id, record_id, next_clock, spent, expired, used_at, fork_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(client_id) DO UPDATE SET connection_id = excluded.connection_id,
         record_id = excluded.record_id, next_clock = excluded.next_clock, spent = excluded.spent, expired = excluded.expired,
-        used_at = excluded.used_at`,
-      lease.client, lease.principal, lease.connection, lease.reserved, lease.record, lease.nextClock, lease.spent ? 1 : 0, lease.expired ? 1 : 0, lease.usedAt,
+        used_at = excluded.used_at, fork_id = excluded.fork_id`,
+      lease.client, lease.principal, lease.connection, lease.reserved, lease.record, lease.nextClock, lease.spent ? 1 : 0, lease.expired ? 1 : 0, lease.usedAt, lease.fork ?? null,
     );
   }
 
@@ -185,6 +194,7 @@ const RESUME_MAX = 64;
 /** Item headers and keys a meta write adds, beyond the JSON itself. */
 const META_SLACK = 64;
 const RECORD_ID = /^[A-Za-z0-9_-]{1,64}$/;
+const FORK_ID = /^[A-Za-z0-9_-]{8,64}$/;
 const refused = (reason: SuggestRefusal): { ok: false; reason: SuggestRefusal } => ({ ok: false, reason });
 
 interface Info {
@@ -229,7 +239,7 @@ export class SuggestIngest {
    * Fresh leases for `who`'s connection, at most `SUGGEST_LIMITS.leaseBatch` and never past `liveLeases` live ones;
    * or `resume` of `who`'s leases whose connection closed or idled, rebound to this one with their acknowledged clock.
    */
-  lease(who: Suggester, resume: readonly number[] = [], count: number = SUGGEST_LIMITS.leaseBatch): { ok: true; leases: LeaseGrant[] } | { ok: false; reason: SuggestRefusal } {
+  lease(who: Suggester, resume: readonly number[] = [], count: number = SUGGEST_LIMITS.leaseBatch, fork: string | null = null): { ok: true; leases: LeaseGrant[] } | { ok: false; reason: SuggestRefusal } {
     if (!roleAtLeast(who.role, 'suggester')) return refused('role');
     if (!Array.isArray(resume) || resume.length > RESUME_MAX) return refused('malformed');
     const now = this.#now();
@@ -239,9 +249,11 @@ export class SuggestIngest {
       const lease = typeof client === 'number' ? this.leases.get(client) : undefined;
       if (!lease || lease.principal !== who.id) return refused('lease');
       const held = !lease.expired && lease.usedAt >= since;
-      if (held && lease.connection !== who.connection) { console.warn('SDBG resume-held', client, lease.connection, who.connection, lease.expired, Date.now()); return refused('lease'); }
+      // Held by another open connection: only the fork it was granted to may take it over (its old socket is dead
+      // to it, though the DocDO has not seen it close).
+      if (held && lease.connection !== who.connection && !(fork !== null && lease.fork === fork)) return refused('lease');
       if (!held && lease.record === null && this.leases.live(who.id, since) >= SUGGEST_LIMITS.liveLeases) return refused('lease-cap');
-      this.leases.put({ ...lease, connection: who.connection, expired: false, usedAt: now });
+      this.leases.put({ ...lease, connection: who.connection, expired: false, usedAt: now, fork: fork ?? lease.fork ?? null });
       grants.push({ client, record: lease.record === null ? lease.reserved : this.#head(lease.record), clock: lease.nextClock });
     }
     const fresh = Math.min(Math.max(0, Math.floor(count)), SUGGEST_LIMITS.leaseBatch, SUGGEST_LIMITS.liveLeases - this.leases.live(who.id, since));
@@ -250,7 +262,7 @@ export class SuggestIngest {
       let client = 0;
       while (client === 0 || client === writer || this.doc.store.clients.has(client) || this.leases.get(client)) client = crypto.getRandomValues(new Uint32Array(1))[0];
       const reserved = this.#mint();
-      this.leases.put({ client, principal: who.id, connection: who.connection, reserved, record: null, nextClock: 0, spent: false, expired: false, usedAt: now });
+      this.leases.put({ client, principal: who.id, connection: who.connection, reserved, record: null, nextClock: 0, spent: false, expired: false, usedAt: now, fork });
       grants.push({ client, record: reserved, clock: 0 });
     }
     return grants.length ? { ok: true, leases: grants } : refused('lease-cap');
@@ -584,7 +596,8 @@ export function handleSuggest(ingest: SuggestIngest, who: Suggester, request: Su
   let requested: unknown;
   switch (request.t) {
     case 'suggest-lease': {
-      const leased = ingest.lease(who, request.resume ?? []);
+      const fork = typeof request.fork === 'string' && FORK_ID.test(request.fork) ? request.fork : null;
+      const leased = ingest.lease(who, request.resume ?? [], SUGGEST_LIMITS.leaseBatch, fork);
       return leased.ok ? { t: 'suggest-leased', leases: leased.leases } : refuse(null, leased.reason);
     }
     case 'suggest-ops': {
