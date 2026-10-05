@@ -204,12 +204,13 @@ test('j03-connection: a black-holed socket shows the banner within 14 s while th
   await expect(ui.pane(bea, docId)).toHaveAttribute(SYNC_UNACKED_ATTR, '1');
   await actors.checkpoint('black-hole-banner');
   await bea.page.setViewportSize({ width: 390, height: 844 });
-  await bea.page.getByRole('button', { name: 'Hide notes panel', exact: true }).click();
+  // Below 640 px the notes panel overlays the canvas and is put away while a note is open (deviation 11).
+  await expect(bea.page.locator('[data-overlay-surface]'), 'the notes panel is out of the way').toHaveCount(0);
   await expect(indicator(bea, docId)).toBeInViewport();
   await expect(banner(bea, docId)).toBeInViewport();
   await actors.checkpoint('black-hole-mobile');
   await bea.page.setViewportSize({ width: 1440, height: 1000 });
-  await bea.page.getByRole('button', { name: 'Show notes panel', exact: true }).click();
+  await expect(bea.page.getByRole('button', { name: 'Hide notes panel', exact: true }), 'back at 1440 the notes panel sits beside the note').toBeVisible();
   // The first socket, its heartbeat reconnect into the black hole, and at most one more before the restore.
   bea.expectReconnects(2, docId);
   sever.restore();

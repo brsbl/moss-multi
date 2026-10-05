@@ -7,3 +7,11 @@
 @import '@fontsource/jetbrains-mono/latin-500.css';
 @import 'charter-webfont/charter.css';
 @import '../../../vendor/moss/packages/desktop/src/renderer/styles.css';
+
+/* The phone shell (T2.7, deviation 11): below 640 px the note keeps its width for text, not moss's 4rem gutter. */
+@media (max-width: 639.98px) {
+  [data-editor-canvas] .px-canvas-gutter {
+    padding-left: 1.5rem;
+    padding-right: 1.5rem;
+  }
+}
