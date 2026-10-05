@@ -53,6 +53,39 @@ async function expectReadable(actor: Actor, docId: string, size: Viewport): Prom
   expect(fit, `${actor.label}: no sideways overflow and no clipped label in the top bar`).toEqual({ overflowX: 0, clipped: [] });
 }
 
+/**
+ * Search in note, as a person on this screen finds it (folded into More actions below 640 px): type, step through
+ * the matches and close it by tapping, with every control on screen reachable and nothing pushed off the side.
+ */
+async function searchesTheNote(actor: Actor, docId: string, size: Viewport): Promise<void> {
+  const page = actor.page;
+  const more = page.getByRole('button', { name: 'More actions', exact: true });
+  if (size.width < 640) {
+    await more.click();
+    await page.getByRole('menu').getByRole('menuitem', { name: 'Search in note', exact: true }).click();
+  } else {
+    await page.getByRole('button', { name: 'Search in note', exact: true }).click();
+  }
+  const box = page.getByRole('searchbox', { name: 'Find in note', exact: true });
+  await expect(box, `${actor.label}: the search field opens`).toBeVisible();
+  await box.fill('a s');
+  const counter = page.locator('[data-top-bar]').getByText(/^\d+ of \d+$/);
+  await expect(counter, `${actor.label}: both matches are counted`).toHaveText('1 of 2');
+  await expectReachable(actor, 'searching the note');
+  const fit = await page.evaluate(layoutFit, { selector: null });
+  expect(fit.overflowX, `${actor.label}: the open search does not push the page sideways`).toBe(0);
+  const bodyLeft = await ui.body(actor, docId).evaluate((el) => el.getBoundingClientRect().left);
+  expect(bodyLeft, `${actor.label}: the note's left edge stays on screen while searching`).toBeGreaterThanOrEqual(0);
+  await page.getByRole('button', { name: 'Next match', exact: true }).click();
+  await expect(counter, `${actor.label}: Next match steps on`).toHaveText('2 of 2');
+  await page.getByRole('button', { name: 'Previous match', exact: true }).click();
+  await expect(counter, `${actor.label}: Previous match steps back`).toHaveText('1 of 2');
+  await page.getByRole('button', { name: 'Close search', exact: true }).click();
+  await expect(box, `${actor.label}: a tap closes the search`).toBeHidden();
+  await expect(more, `${actor.label}: More actions is back in reach`).toBeVisible();
+  await expectReachable(actor, 'the search closed');
+}
+
 /** Creates a link at `access` in the open dialog and returns its path, read from the dialog. */
 async function createLink(dialog: Locator, access: ui.LinkAccess): Promise<string> {
   await dialog.getByRole('radiogroup', { name: 'Link access', exact: true }).getByRole('radio', { name: access, exact: true }).click();
@@ -87,6 +120,7 @@ for (const size of TIER_A) {
     const signIn = stranger.page.getByRole('button', { name: 'Sign in to do more', exact: true });
     await expect(signIn, 'the stranger is offered sign-in, label and all').toBeVisible();
     await actors.checkpoint(`${size.name}-stranger-alone`);
+    await searchesTheNote(stranger, docId, size);
 
     // 1 other: Ada comes back to the note.
     const ada2 = await actors.open(adaPrincipal, { label: 'ada-2', viewport: size, path: `/d/${docId}` });
@@ -222,6 +256,7 @@ test('j10 Tier B at 390 px: the share dialog, Settings and every chrome menu kee
   await expectReachable(ada, 'More actions', menu);
   await page.keyboard.press('Escape');
   await expect(page.getByRole('menu')).toBeHidden();
+  await searchesTheNote(ada, docId, PHONE);
 
   await ui.openShare(ada, docId);
   await expectReachable(ada, 'Share', dialog);
