@@ -1,10 +1,10 @@
 # moss-multi progress
 
-**Overall: 42% done** (37 of 89 planned tasks verified)
+**Overall: 43% done** (38 of 89 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
-| M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 18 / 18 | in progress |
+| M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 19 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 0 / 9 | |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 0 / 9 | |
@@ -57,6 +57,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-05 — T1.S1 verified: the workspace and member listings now load completely for a person with hundreds of shared notes and folders, and for a note with hundreds of members, using a fixed number of database parameters.
 - 2026-10-05 — T1.S1 verified again with its unload fix: reloading or leaving the page while the workspace list is loading now cancels that request quietly instead of showing a load failure or a browser access-control error.
 - 2026-10-05 — T1.S2 verified: a code, HTML or formula block whose updates were lost on a dropped connection now catches up on its own, without a reload, so both people see the same text and can keep typing in it.
+- 2026-10-05 — T0.9d verified: CI journey shards are split by recorded per-engine minutes (`durations.mjs` writes them, `plan.mjs budget` keeps every shard's p95 within 9 of its 13 min), and the root causes of the WebKit editing-shard flakes are fixed, with the duration table in METHOD.md.
 
 ## T1.1s identity audit
 
@@ -110,6 +111,7 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T1.F2 checker P2 (attempt 3): an offline session that made more than 64 blocks and deleted them again before reconnecting still resends their payloads as unnamed writes, and the 65th closes 4409; the client could skip resending payloads its tree no longer names → payload follow-up.
 - ~~T1.F2 checker P2 (attempt 3 review): `BodyUndo` records which payload managers a step touched, not their exact stack items, so when a peer makes the newest local payload item a no-op, Cmd+Z can undo an older payload edit before a newer body edit (no data lost)~~ closed by T1.F4: each step replays its own stack items (undo unit test).
 - T1.F2 P2: text written into a payload while it was served is not charged to its writer when its block is deleted, so a deleted block's payload still holds its served bytes against the state cap for the 30-day TTL; it was visible to every reader while served → payload follow-up.
+- T0.9d checker P2: `durations.mjs --write` ignores cancelled or timed-out shards (scripts/ci/durations.mjs:103), so a partly cancelled lane can pass `recordProblems()` and overwrite journey-minutes.json, dropping files missing an engine; `plan.mjs budget` then falls back to per-leg estimates for them.
 
 - T1.6 checker: prune deleted layout identities, avoid unchanged localStorage writes and restrict ordinal migration to stores without identity metadata → local-layout follow-up. These need lifecycle and persisted-state regressions beyond this P1 repair.
 - T1.6 checker: bound link activation and preview must consume locally resolved note identity, not only its displayed title/state → T3.3 links.
