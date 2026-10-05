@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 60% done** (50 of 83 planned tasks verified)
+**Overall: 60% done** (51 of 85 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 17 / 17 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 15 / 19 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 7 / 11 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 9 / 11 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 10 / 12 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 1 / 5 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 1 / 5 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
@@ -68,6 +68,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-05 — T3.9a verified: a host such as the bb Moss plugin can use `moss-editor-host.js`, a self-contained module whose note-naming and path helpers match Moss desktop at the pin over a table of tricky names, downloadable from CI as the `moss-editor-host` artifact with its contract types and manifest.
 - 2026-10-05 — T3.1s verified: media uploads are bounded: an upload must declare a size within the cap, each person (and each share link and IP) gets 60 uploads a minute, and a vault stops accepting media at its 2 GB quota with a clear 413, even under concurrent uploads.
 - 2026-10-05 — T3.8 verified: the read-only viewer package (`@moss-multi/viewer` 1.0.0) shows every M3 node family, media with Range-served video, live sandboxed HTML and theme-following embeds through injected services, with no mutating controls, and CI packs it as the `moss-viewer` release artifact with a checksum and source commit.
+- 2026-10-05 — T3.2s verified: uploads, remote-image imports, cross-note copies and duplicates carrying media all pass the same 60/min upload window (429) and vault quota (413), and the outbound-fetch validator refuses non-443 ports, single-label hosts, Teredo, IPv4-translated and IDN or fullwidth forms of blocked hosts on every redirect hop.
 
 ## T1.1s identity audit
 
@@ -137,6 +138,8 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T3.8 checker P2: the Chromium demo-note shots capture the HTML block before it renders; `settleHtmlBlocks` (`e2e/viewer/viewer.spec.ts`) treats an attached iframe as settled and the full-page capture shows the frame empty (WebKit shows it); a capture problem, the live-HTML test already asserts the frame's content → viewer e2e follow-up: wait for frame content before the shot.
 - T3.8 checker P2: the WebKit Range/206 leg was never shown red (it already passed in tests-first run 37277991178) and had no negative control, and the browser's first read `bytes=0-` gets 206 without a seek → viewer e2e follow-up: a negative control and a seek-driven range read.
 - T3.8 checker P2: the full lane ran on 70e9fcf, not on the final head 1c60f20 (later changes touch no viewer code) → coordinator: run the full lane on the integrated m3 head before publishing viewer-v1.0.0.
+- T3.2s checker P2: duplicate admission reads the source media separately from the copy: `admitDuplicateMedia` counts the source's doc_media before `duplicateDoc` awaits the DO snapshot and doc insert, then `copyMedia` reads the rows again, so media added to the source in that gap is uncounted (an empty source skips admission yet carries the new media); narrow, and the racing upload or copy is itself admitted → assets follow-up.
+- T3.2s checker P2: from-url still fetches when the vault is exactly full: `fromUrl` calls `admitMedia` with incoming=0 and the test is used+incoming > quota, so a vault at exactly 2 GB passes admission and downloads the image before `storeBytes` returns 413 (nothing is over-stored; `storeBytes` keeps its atomic check) → assets follow-up.
 - T1.8 checker: calibrate the duplicate leg's 30 s WebKit setup-ack allowance against the standard 10 s allowance → test-infra follow-up; this is setup readiness, not a claimed latency budget.
 - T1.6 integration: the [full lane on `ee2488a`](https://github.com/brsbl/moss-multi/actions/runs/37167459553) (tree identical to T1.6's green head) went green only on its third rerun of the WebKit editing shard; each attempt failed different single legs: Chromium j01 duplicate `GET /api/workspace` socket hang up; WebKit j01 presence spoofed-name leg twice (an "access control checks" page error on `/api/workspace`, then a missing peer chip), j00-roundtrip "hibernation not induced" (instance constructed 2.3 s after restart), and j00-persist offline-switch (`hydrateNotesAtom` "Load failed"). A [5× WebKit j01 presence probe](https://github.com/brsbl/moss-multi/actions/runs/37169366494) passed → test-infra follow-up on WebKit editing-shard stability. It recurred on m1's head (j07-auth) and on m2's T2.1 integration (j01 discovery after `reload()`): a `/api/workspace?vault=` fetch cancelled by navigation surfaces as an uncaught WebKit page error; the [m2 full lane](https://github.com/brsbl/moss-multi/actions/runs/37171338601) went green on rerun.
 - T1.9 integration: the [full lane on `1cfebf0`](https://github.com/brsbl/moss-multi/actions/runs/37178515882) went green on the third attempt of the WebKit editing shard; attempt 1 failed j02 empty-title projection (5 s poll), attempt 2 the j02 concurrent-Properties leg on the same `/api/workspace` "access control checks" page error → same WebKit editing-shard follow-up.

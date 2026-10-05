@@ -14,7 +14,7 @@ import { docs } from '../db/schema.ts';
 import type { AppEnv } from '../env.ts';
 import { json } from '../worker/route.ts';
 import { resolveDocAccess, resolveFolderAccess } from './access.ts';
-import { copyMedia } from './assets.ts';
+import { admitDuplicateMedia, copyMedia } from './assets.ts';
 import { createComment } from './comments.ts';
 import { folderNotFound, liveIn, moveDoc, upFrom, vaultOf } from './folders.ts';
 import { handleLinks } from './links.ts';
@@ -114,6 +114,9 @@ async function duplicateDoc(request: Request, env: DocsEnv, docId: string): Prom
     folder = await resolveFolderAccess(db, principal, folderId);
   }
   if (!folder || folder.deleted || !roleAtLeast(folder.role, 'editor')) return notFound();
+  // The copy's media enter the target vault through the same admission as an upload (A§16).
+  const refused = await admitDuplicateMedia(request, env, principal, docId, folderId);
+  if (refused) return refused;
   const original = await getServerByName(env.DocDO, docId);
   const snapshot = await original.snapshotForDuplicate();
   const title = `${snapshot.title.trim() || 'Untitled'} copy`;

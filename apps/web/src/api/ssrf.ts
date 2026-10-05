@@ -1,9 +1,10 @@
 // SSRF guard (A§18) for every server fetch of a caller-supplied URL: the unfurl behind web embeds and the remote-image
-// store behind moss's paste. HTTPS only. A host written as an IP literal, in any encoding a URL parser or resolver
-// would still route (decimal, octal, hex, short forms, IPv4-mapped or NAT64 IPv6), is refused when it lands in a
-// loopback, private, link-local, CGNAT, ULA, multicast or other non-public range; a hostname is resolved through DoH
-// and refused unless every A and AAAA answer is public. Redirects are never followed by fetch: each hop is checked
-// again before it is requested, at most five of them. Every failure fails closed.
+// store behind moss's paste. HTTPS on its default port only, with no userinfo. A host written as an IP literal, in any
+// encoding a URL parser or resolver would still route (decimal, octal, hex, short forms, IPv4-mapped, -translated or
+// NAT64 IPv6, 6to4), is refused when it lands in a loopback, private, link-local, CGNAT, ULA, multicast or other
+// non-public range, and Teredo is refused outright. A single-label name is refused; a dotted one is resolved through
+// DoH and refused unless every A and AAAA answer is a public address. Redirects are never followed by fetch: each hop
+// is checked again before it is requested, at most five of them. Every failure fails closed.
 
 export type SsrfReason = 'invalid-url' | 'unsupported-scheme' | 'blocked-host' | 'unresolved-host' | 'too-many-redirects';
 
@@ -34,26 +35,40 @@ export function assertPublicUrl(raw: string): URL {
   }
   if (url.protocol !== 'https:') throw new SsrfBlockedError('unsupported-scheme', url.protocol);
   if (url.username || url.password) throw new SsrfBlockedError('invalid-url', 'credentials');
+  // The parser drops an explicit :443, so any port left is another service on the host.
+  if (url.port) throw new SsrfBlockedError('blocked-host', `port ${url.port}`);
   if (isBlockedHost(url.hostname)) throw new SsrfBlockedError('blocked-host', url.hostname);
   return url;
 }
 
-const unbracket = (host: string) => host.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
+const unbracket = (host: string) => host.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.+$/, '');
 
-/** True for localhost, internal zones, and IP literals outside public unicast space. */
-export function isBlockedHost(hostname: string): boolean {
+/** A bare host as the URL parser would route it: IDN and fullwidth forms folded (UTS 46); null when it cannot parse. */
+function normalized(hostname: string): string | null {
   const host = unbracket(hostname);
+  if (host.includes(':') || /^[\x21-\x7e]*$/.test(host)) return host;
+  try {
+    return unbracket(new URL(`https://${host}/`).hostname);
+  } catch {
+    return null;
+  }
+}
+
+/** True for localhost, internal zones, single-label names, and IP literals outside public unicast space. */
+export function isBlockedHost(hostname: string): boolean {
+  const host = normalized(hostname);
   if (!host) return true;
   if (host === 'localhost' || host.endsWith('.localhost')) return true;
   if (host.endsWith('.local') || host.endsWith('.internal') || host.endsWith('.home.arpa')) return true;
   const v4 = parseIpv4(host);
   if (v4) return isBlockedV4(v4);
   if (host.includes(':')) return isBlockedV6(host);
-  return false;
+  // A name with no dot resolves through search domains or an internal resolver (`metadata`, `intranet`).
+  return !host.includes('.');
 }
 
 export function isIpLiteral(hostname: string): boolean {
-  const host = unbracket(hostname);
+  const host = normalized(hostname) ?? '';
   return parseIpv4(host) !== null || host.includes(':');
 }
 
@@ -109,9 +124,11 @@ function isBlockedV6(host: string): boolean {
   if (first === 0x2001 && words[1] === 0x0002 && words[2] === 0) return true; // benchmarking 2001:2::/48
   if (first === 0x0100 && words.slice(1, 4).every((w) => w === 0)) return true; // discard-only 100::/64
   if (first === 0x64 && words[1] === 0xff9b && words[2] === 1) return true; // local-use NAT64 64:ff9b:1::/48
+  if (first === 0x2001 && words[1] === 0) return true; // Teredo 2001::/32 tunnels to an embedded, obfuscated IPv4
   const embedded = (hi: number, lo: number): V4 => [hi >> 8, hi & 0xff, lo >> 8, lo & 0xff];
-  // IPv4-mapped ::ffff:a.b.c.d and NAT64 64:ff9b::a.b.c.d reach the embedded IPv4 address.
+  // IPv4-mapped ::ffff:a.b.c.d, IPv4-translated ::ffff:0:a.b.c.d and NAT64 64:ff9b::a.b.c.d reach the embedded IPv4.
   if (words.slice(0, 5).every((w) => w === 0) && words[5] === 0xffff) return isBlockedV4(embedded(words[6], words[7]));
+  if (words.slice(0, 4).every((w) => w === 0) && words[4] === 0xffff && words[5] === 0) return isBlockedV4(embedded(words[6], words[7]));
   if (first === 0x64 && words[1] === 0xff9b && words.slice(2, 6).every((w) => w === 0)) return isBlockedV4(embedded(words[6], words[7]));
   if (first === 0x2002) return isBlockedV4(embedded(words[1], words[2])); // 6to4
   return false;
@@ -121,7 +138,8 @@ function parseIpv6(host: string): number[] | null {
   let text = host;
   if (text.includes('.')) {
     const at = text.lastIndexOf(':');
-    const v4 = /^\d{1,3}(\.\d{1,3}){3}$/.test(text.slice(at + 1)) ? parseIpv4(text.slice(at + 1)) : null;
+    // Strict dotted decimal, as inet_pton reads it: a leading zero is refused, never taken for octal.
+    const v4 = /^(0|[1-9]\d{0,2})(\.(0|[1-9]\d{0,2})){3}$/.test(text.slice(at + 1)) ? parseIpv4(text.slice(at + 1)) : null;
     if (!v4) return null;
     text = `${text.slice(0, at + 1)}${((v4[0] << 8) | v4[1]).toString(16)}:${((v4[2] << 8) | v4[3]).toString(16)}`;
   }
@@ -182,7 +200,7 @@ async function vetHost(hostname: string, resolve: HostResolver, signal?: AbortSi
     return 'unresolved';
   }
   if (ips.length === 0) return 'unresolved';
-  return ips.every((ip) => !isBlockedHost(ip)) ? 'public' : 'blocked';
+  return ips.every((ip) => isIpLiteral(ip) && !isBlockedHost(ip)) ? 'public' : 'blocked';
 }
 
 /** True only when every answer for `hostname` is public; an IP literal was already vetted, and nothing fails closed. */

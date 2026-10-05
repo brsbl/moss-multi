@@ -41,6 +41,7 @@ const PrincipalDO = {
     publish: async () => undefined,
     takeWriteToken: async () => true,
     takeFetchToken: async () => fetchTokens,
+    takeUploadToken: async () => true,
   }),
 };
 const DocDO = { idFromName: (name: string) => ({ name, toString: () => name }), get: () => ({ setName: async () => undefined }) };
