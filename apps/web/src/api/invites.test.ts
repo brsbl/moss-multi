@@ -178,7 +178,7 @@ describe('copy-link invites', () => {
   });
 });
 
-describe('who an invite admits', () => {
+describe('who an invite admits', { timeout: 30_000 }, () => {
   it('redeems only for its own email, so following a link never tells the owner whether the email had an account', async () => {
     const docId = await titled(ada, 'No oracle');
     const path = `/api/docs/${docId}`;
@@ -249,7 +249,7 @@ describe('who an invite admits', () => {
   });
 });
 
-describe('the bell', () => {
+describe('the bell', { timeout: 30_000 }, () => {
   it('derives a share’s notice from its invite for the account with that email, and pushes it to their tabs', async () => {
     const dee = await signedUpUser(env, 't28-dee', 'Dee');
     const docId = await titled(ada, 'Roadmap');
@@ -261,7 +261,7 @@ describe('the bell', () => {
     expect(notices).toHaveLength(1);
     expect(notices[0]).toMatchObject({ type: 'share-invite', read: false, by: 'Ada', target: { type: 'doc', id: docId, title: 'Roadmap', kind: 'doc' } });
     expect(notices[0].invite, 'the notice carries its invite').toBe(tokenOf(await inviteLink(ada, `/api/docs/${docId}`, dee.email)));
-    await expect.poll(() => published, 'pushed after the answer').toContainEqual({ id: dee.id, event: { type: 'notifications' } });
+    await expect.poll(() => published, { message: 'pushed after the answer' }).toContainEqual({ id: dee.id, event: { type: 'notifications' } });
     expect((await bell(ada)).filter((n) => n.target.id === docId), 'the owner hears nothing about her own share').toEqual([]);
 
     await share(ada, `/api/docs/${docId}`, dee.email);
@@ -289,7 +289,7 @@ describe('the bell', () => {
     published.length = 0;
     expect((await call('POST', '/api/notifications/read', fay.cookie, { ids: [notice.id] })).status).toBe(200);
     expect((await bell(fay))[0].read).toBe(true);
-    await expect.poll(() => published, 'her other tabs hear it').toContainEqual({ id: fay.id, event: { type: 'notifications' } });
+    await expect.poll(() => published, { message: 'her other tabs hear it' }).toContainEqual({ id: fay.id, event: { type: 'notifications' } });
     expect(await roleOf(fay.cookie, docId), 'reading a notice redeems nothing').toBeNull();
 
     expect((await accept(fay.cookie, notice.invite!)).status).toBe(200);

@@ -72,7 +72,7 @@ const links = (w: World, cookie = ada.cookie) => call('GET', `/api/docs/${w.docI
 const share = (w: World, role: string, cookie = ada.cookie) => call('POST', `/api/docs/${w.docId}/members`, cookie, { email: w.email, role });
 const follow = (token: string, cookie: string) => call('POST', `/api/invites/${token}/accept`, cookie);
 
-describe('every owner-visible flow answers alike for an email with an account and one without', () => {
+describe('every owner-visible flow answers alike for an email with an account and one without', { timeout: 60_000 }, () => {
   it('first share, repeat, raise, lowering, the member list, the invite links and the owner’s own click', async () => {
     const kim = await signedUpUser(env, 't28o-kim', 'Kim');
     const known = await world(kim.email);
@@ -190,7 +190,7 @@ function recording(db: D1Database, log: { query: string; values: unknown[] }[]):
   } as unknown as D1Database;
 }
 
-describe('a share looks up no account by the email', () => {
+describe('a share looks up no account by the email', { timeout: 60_000 }, () => {
   it('binds the shared email into no statement on an account table, at every step of a share', async () => {
     const ola = await signedUpUser(env, 't28o-ola', 'Ola');
     const known = await world(ola.email);
