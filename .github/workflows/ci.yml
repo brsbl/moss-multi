@@ -116,6 +116,10 @@ jobs:
         run: node scripts/ci/trace.mjs
         env:
           TRACE_MILESTONE: ${{ needs.plan.outputs.trace_milestone }}
+      # Every journey group's recorded p95 fits the 9-minute shard budget (scripts/ci/journey-minutes.json).
+      - name: Shard budget
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: node scripts/ci/plan.mjs budget
       - name: Vendor drift
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: node scripts/moss-vendor.mjs drift
@@ -249,7 +253,7 @@ jobs:
       - run: mkdir -p .local-stack/prebuilt && tar -xzf web-dist.tgz -C .local-stack/prebuilt
       - name: Boot the Worker stack on the built bytes
         run: >
-          node scripts/stack.mjs start --run-id "$RUN_ID" --prebuilt .local-stack/prebuilt/dist --hooks
+          node scripts/stack.mjs start --run-id "$RUN_ID" --prebuilt .local-stack/prebuilt/dist --hooks --state-dir /dev/shm/moss-stack
           --expect-commit "${{ needs.build.outputs.commit }}" --expect-bundle "${{ needs.build.outputs.bundleHash }}"
       - run: echo "STACK_STATE=$PWD/.local-stack/runs/$RUN_ID/state.json" >> "$GITHUB_ENV"
       - name: Selftests, then the group's journeys
@@ -267,7 +271,9 @@ jobs:
             exclude) args+=(--grep-invert @slow) ;;
             only) args+=(--grep @slow) ;;
           esac
-          pnpm exec playwright test "${args[@]}"
+          # The browsers yield the CPU to the stack: WebKit's web processes can hold every core, and a starved workerd
+          # answered requests 10+ s late (T0.9d).
+          nice -n 10 pnpm exec playwright test "${args[@]}"
       - name: Calibrate idle eviction (SP4)
         if: ${{ !cancelled() && matrix.browser == 'chromium' && (github.event_name == 'schedule' && matrix.group == 'editing' || contains(needs.plan.outputs.grep, 'calibration')) }}
         working-directory: e2e
@@ -454,7 +460,7 @@ jobs:
           path: .oracle
       - name: Boot the Worker stack on the built bytes
         run: >
-          node scripts/stack.mjs start --run-id "$RUN_ID" --prebuilt .local-stack/prebuilt/dist
+          node scripts/stack.mjs start --run-id "$RUN_ID" --prebuilt .local-stack/prebuilt/dist --state-dir /dev/shm/moss-stack
           --expect-commit "${{ needs.build.outputs.commit }}" --expect-bundle "${{ needs.build.outputs.bundleHash }}"
       - run: echo "STACK_STATE=$PWD/.local-stack/runs/$RUN_ID/state.json" >> "$GITHUB_ENV"
       - name: Shell parity

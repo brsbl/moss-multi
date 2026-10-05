@@ -1,5 +1,6 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { judgeGroup, parseArgs, parseEtime, parsePs } from './stack.mjs';
+import { judgeGroup, parseArgs, parseEtime, parsePs, persistDirFor } from './stack.mjs';
 
 const RUN = '/repo/.local-stack/runs/r1';
 const WRANGLER = `/usr/bin/node /repo/apps/web/node_modules/wrangler/bin/wrangler.js dev --persist-to ${RUN}/state --port 8850`;
@@ -61,5 +62,23 @@ describe('parseArgs', () => {
       command: 'start',
       opts: { 'run-id': 'r1', port: '8851', hooks: true, json: true },
     });
+  });
+});
+
+// T0.9d: workerd syncs each storage commit on its one thread, so on the runner's shared disk a sync queued behind
+// other dirty pages stalled every request for 10 s and more. The CI stacks journeys and parity use keep it in memory.
+describe('stack storage', () => {
+  it('lives under the run by default and under --state-dir when given', () => {
+    expect(persistDirFor(RUN, 'r1')).toBe(`${RUN}/state`);
+    expect(persistDirFor(RUN, 'r1', '/dev/shm/moss-stack')).toBe('/dev/shm/moss-stack/r1');
+  });
+
+  it('is memory-backed for the e2e and parity jobs', () => {
+    const workflow = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+    const jobs = Object.fromEntries(workflow.split(/^(?= {2}[a-z0-9-]+:\s*$)/m).map((block) => [block.match(/^ {2}([a-z0-9-]+):/)?.[1], block]));
+    for (const job of ['e2e', 'parity']) {
+      const start = /stack\.mjs start[^\n]*\n[^\n]*/.exec(jobs[job] ?? '')?.[0] ?? '';
+      expect(start, job).toContain('--state-dir /dev/shm/');
+    }
   });
 });

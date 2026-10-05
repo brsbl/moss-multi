@@ -1,10 +1,10 @@
 # moss-multi progress
 
-**Overall: 42% done** (37 of 89 planned tasks verified)
+**Overall: 43% done** (38 of 89 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
-| M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 18 / 18 | in progress |
+| M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 19 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 0 / 9 | |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 0 / 9 | |
@@ -57,6 +57,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-05 — T1.S1 verified: the workspace and member listings now load completely for a person with hundreds of shared notes and folders, and for a note with hundreds of members, using a fixed number of database parameters.
 - 2026-10-05 — T1.S1 verified again with its unload fix: reloading or leaving the page while the workspace list is loading now cancels that request quietly instead of showing a load failure or a browser access-control error.
 - 2026-10-05 — T1.S2 verified: a code, HTML or formula block whose updates were lost on a dropped connection now catches up on its own, without a reload, so both people see the same text and can keep typing in it.
+- 2026-10-05 — T0.9d verified: CI journey shards are split by recorded per-engine minutes (`durations.mjs` writes them, `plan.mjs budget` keeps every shard's p95 within 9 of its 13 min), and the root causes of the WebKit editing-shard flakes are fixed, with the duration table in METHOD.md.
 
 ## T1.1s identity audit
 
@@ -97,7 +98,7 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T1.9 checker P2: register writes diff by value without a caret hint, so typing inside a run of identical characters can land at the wrong position (seen after a peer's undo); FormulaPlugin's remote repaint diffs strings instead of using the event delta → register caret follow-up. T1.F4 closed it for code and HTML fields (caret-placed edits rebased onto the payload); the formula popover still writes and repaints without a caret, since its stored formula is a rebound, trimmed form of the input.
 - ~~T1.F4 checker P2: the formula popover keeps its node key for the session, so a peer's move leaves it read-only on a stale key and a peer's removal leaves it open with no notice~~ closed by T1.F4 attempt 3: the popover follows its payload id (`useFollowRegister`) and reads its mode and references again when its payload arrives (j01-registers formula legs).
 - T1.F4 checker P2: a peer's move unmounts a code or HTML field mid-IME-composition and its private composition draft is destroyed; committed text is kept, the uncommitted preedit is lost. Commit the draft on unmount.
-- T1.F4 integration flake: j01-registers "a variable popover opened before its payload arrives ... edits it as a variable" failed once in WebKit on m1 (written as `n`, not `pending soon`; run 37313760604, green on rerun); j00 G1 import POST timeout and a j02-title workspace access-control page error flaked in the same run.
+- ~~T1.F4 integration flake: j01-registers "a variable popover opened before its payload arrives ... edits it as a variable" failed once in WebKit on m1 (written as `n`, not `pending soon`; run 37313760604, green on rerun); j00 G1 import POST timeout and a j02-title workspace access-control page error flaked in the same run.~~ closed by T0.9d: the popover's late focus retry selected the value mid-typing (METHOD, WebKit editing-shard flakes (5)); the import stall and the access-control page error are (4) and (1).
 - T1.S1 checker P2: accessibleFolders (apps/web/src/api/access.ts) reads the whole folders table on every /api/workspace call and bridge poll; its parameter count is fixed, but its cost grows with the table.
 - T1.S1 checker P2 flake: j03-connection "a refused write rebinds fresh and a deleted doc locks in place" failed once in Chromium (console error 'WebSocket is already in CLOSING or CLOSED state'), green on rerun.
 - T1.S1 checker P2: a cancelled unload (answering Stay on the unacked-edits prompt) or a back-forward-cache restore keeps the aborted listing pending for 10 s, skipping the 3 s poll and handing notes() a promise that later rejects.
@@ -110,6 +111,7 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T1.F2 checker P2 (attempt 3): an offline session that made more than 64 blocks and deleted them again before reconnecting still resends their payloads as unnamed writes, and the 65th closes 4409; the client could skip resending payloads its tree no longer names → payload follow-up.
 - ~~T1.F2 checker P2 (attempt 3 review): `BodyUndo` records which payload managers a step touched, not their exact stack items, so when a peer makes the newest local payload item a no-op, Cmd+Z can undo an older payload edit before a newer body edit (no data lost)~~ closed by T1.F4: each step replays its own stack items (undo unit test).
 - T1.F2 P2: text written into a payload while it was served is not charged to its writer when its block is deleted, so a deleted block's payload still holds its served bytes against the state cap for the 30-day TTL; it was visible to every reader while served → payload follow-up.
+- T0.9d checker P2: `durations.mjs --write` ignores cancelled or timed-out shards (scripts/ci/durations.mjs:103), so a partly cancelled lane can pass `recordProblems()` and overwrite journey-minutes.json, dropping files missing an engine; `plan.mjs budget` then falls back to per-leg estimates for them.
 
 - T1.6 checker: prune deleted layout identities, avoid unchanged localStorage writes and restrict ordinal migration to stores without identity metadata → local-layout follow-up. These need lifecycle and persisted-state regressions beyond this P1 repair.
 - T1.6 checker: bound link activation and preview must consume locally resolved note identity, not only its displayed title/state → T3.3 links.

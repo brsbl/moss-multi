@@ -38,6 +38,9 @@ function validIdentity(connection: Connection, identity: Attachment, user: Recor
 function clientId(connection: Connection): number | undefined {
   return (connection.state as { presenceClientId?: number } | null)?.presenceClientId;
 }
+function admittedClock(connection: Connection): number {
+  return (connection.state as { presenceClock?: number } | null)?.presenceClock ?? -1;
+}
 function superseded(connection: Connection): boolean {
   return (connection.state as { presenceSuperseded?: boolean } | null)?.presenceSuperseded === true;
 }
@@ -66,7 +69,7 @@ export function receivePresence(awareness: Awareness, connection: Connection, me
     const decoder = decoding.createDecoder(payload);
     if (decoding.readVarUint(decoder) !== 1) return;
     const id = decoding.readVarUint(decoder);
-    decoding.readVarUint(decoder);
+    const clock = decoding.readVarUint(decoder);
     const state = JSON.parse(decoding.readVarString(decoder));
     if (decoding.hasContent(decoder)) return;
     const owned = clientId(connection);
@@ -80,10 +83,16 @@ export function receivePresence(awareness: Awareness, connection: Connection, me
       const previous = attachmentOf(peer);
       return previous?.principalId !== identity.principalId || previous.kind !== identity.kind;
     })) return;
+    // A replacement socket advances the clock it held; an echo of the state this server relayed does not. A second
+    // window of the same person relays the first's frames (y-partyserver rebroadcasts remote changes), and taking
+    // those as a reconnect retired the first window's presence and pinned the second to the first's id.
+    // The admitted clock lives on the owning socket too, since a DO wake clears awareness.meta.
+    const held = Math.max(awareness.meta.get(id)?.clock ?? -1, ...previousOwners.map(peer => admittedClock(peer)));
+    if (previousOwners.length > 0 && clock <= held) return;
     // Reconnects retain the Y.Doc clientID, even while the old socket is half-open. Persist retirement so late
     // frames or closes from that socket cannot erase or reclaim the replacement's presence after a DO wake.
     for (const peer of previousOwners) (peer as unknown as Connection<State>).setState(previous => ({ ...previous, presenceSuperseded: true }));
-    if (owned === undefined) (connection as unknown as Connection<State>).setState(previous => ({ ...previous, presenceClientId: id }));
+    (connection as unknown as Connection<State>).setState(previous => ({ ...previous, presenceClientId: id, presenceClock: clock }));
     applyAwarenessUpdate(awareness, payload, connection);
     sendPresence(connections, awarenessFrame(awareness, [id]));
   } catch {

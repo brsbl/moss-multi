@@ -512,7 +512,11 @@ function FormulaEditPopover({
       input.setSelectionRange(0, input.value.length);
     };
     focusValueInput();
-    const frame = requestAnimationFrame(focusValueInput);
+    // moss-multi: the retry only takes focus back. A frame can come late (WebKit under load), after the user placed
+    // the caret and typed; selecting the value again then let the next keystroke replace it.
+    const frame = requestAnimationFrame(() => {
+      if (expressionInputRef.current?.ownerDocument.activeElement !== expressionInputRef.current) focusValueInput();
+    });
     return () => cancelAnimationFrame(frame);
   }, [editingFormula.session]);
 

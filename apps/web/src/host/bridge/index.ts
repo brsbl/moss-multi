@@ -51,6 +51,8 @@ export interface BrowserHooks {
   open(url: string): void;
   replacePath(path: string): void;
   onPopState(listener: () => void): () => void;
+  /** The page starts to navigate away (`beforeunload`). */
+  onLeaving?(listener: () => void): () => void;
   copy(text: string, html: string): Promise<void>;
   /** Calls `listener` when the page starts to unload; returns the unsubscribe. */
   onLeave?(listener: () => void): () => void;
@@ -134,6 +136,8 @@ function writeJson(storage: BridgeOptions['storage'], key: string, value: unknow
   else storage?.setItem(key, JSON.stringify(value));
 }
 
+const LEAVING_PAUSE_MS = 5_000;
+
 const inertBrowser: BrowserHooks = {
   origin: 'http://localhost',
   open: noop,
@@ -156,6 +160,10 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
   let loadsInFlight = 0;
   let poll: ReturnType<typeof setInterval> | null = null;
   let polling = false;
+  // WebKit fails a fetch started after a navigation begins and reports it as a page error, so the poll pauses from
+  // beforeunload; if the navigation is cancelled, it resumes after a beat.
+  let leavingAt = Number.NEGATIVE_INFINITY;
+  browser.onLeaving?.(() => { leavingAt = Date.now(); });
   const load = (vaultId: string | null, docId: string | null = null): Promise<NoteMetadata[]> => {
     const version = ++loadVersion;
     loadsInFlight += 1;
@@ -350,7 +358,7 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
       onDiskChange: (callback?: Listener<[string[], string[]]>) => {
         if (callback) diskListeners.add(callback);
         if (!poll && diskListeners.size) poll = setInterval(async () => {
-          if (polling || loadsInFlight || !workspaceSnapshot) return;
+          if (polling || loadsInFlight || !workspaceSnapshot || Date.now() - leavingAt < LEAVING_PAUSE_MS) return;
           polling = true;
           const before = JSON.stringify(workspaceSnapshot);
           try {
@@ -493,6 +501,10 @@ function windowBrowser(): BrowserHooks {
     onPopState: (listener) => {
       window.addEventListener('popstate', listener);
       return () => window.removeEventListener('popstate', listener);
+    },
+    onLeaving: (listener) => {
+      window.addEventListener('beforeunload', listener);
+      return () => window.removeEventListener('beforeunload', listener);
     },
     onLeave: (listener) => {
       // Only while a listing is in flight: a beforeunload listener keeps a page out of the back-forward cache.
