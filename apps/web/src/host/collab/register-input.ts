@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type RefObject } from 'react';
-import { COLLABORATION_TAG, REDO_COMMAND, UNDO_COMMAND, type LexicalEditor } from 'lexical';
+import { COLLABORATION_TAG, REDO_COMMAND, UNDO_COMMAND, type Klass, type LexicalEditor, type LexicalNode } from 'lexical';
 import * as Y from 'yjs';
 import { onRegisterChange, payloadTextOf, registerDoc, registerState, REGISTER_LOCAL_ORIGIN, writeRegisterEdit } from '@moss-multi/sync/registers';
 import { payloadText } from '@moss-multi/sync/payload-docs';
@@ -183,11 +183,13 @@ function useOpenField(editor: LexicalEditor, key: string, id: string | undefined
     const track = () => { field.start = input.selectionStart; field.end = input.selectionEnd; };
     const events = ['select', 'input', 'keyup', 'mouseup'] as const;
     for (const name of events) input.addEventListener(name, track);
-    // Whether the update that removed the node was a peer's; the user's own removal (an undo) needs no notice.
+    // Whether the update that removed the node was a peer's; the user's own removal (an undo) needs no notice. Mutation
+    // listeners run before the decorator re-render that unmounts this field.
     let byPeer = false;
-    const stopUpdates = editor.registerUpdateListener(({ editorState, tags }) => {
-      if (!editorState._nodeMap.has(key)) byPeer = tags.has(COLLABORATION_TAG);
-    });
+    const klass = editor.getEditorState()._nodeMap.get(key)?.constructor as Klass<LexicalNode> | undefined;
+    const stopUpdates = klass ? editor.registerMutationListener(klass, (mutations, { updateTags }) => {
+      if (mutations.get(key) === 'destroyed') byPeer = updateTags.has(COLLABORATION_TAG);
+    }, { skipInitialization: true }) : () => {};
     return () => {
       stopUpdates();
       for (const name of events) input.removeEventListener(name, track);
