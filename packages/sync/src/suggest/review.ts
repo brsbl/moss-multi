@@ -12,7 +12,7 @@ import {
 } from '@moss-multi/core/suggest/apply';
 import { createConverterEditor } from '../converter/index.ts';
 import { mirrorOf } from '../server-doc.ts';
-import { closeRecord, patchMeta, readRecord, SUGGEST_ACCEPT, SUGGESTIONS_ORIGIN } from './records.ts';
+import { closeRecord, patchMeta, readRecord, SUGGEST_ACCEPT, writeSuggestions } from './records.ts';
 
 export interface Reviewer {
   id: string;
@@ -127,9 +127,9 @@ export function previewRecord(live: Y.Doc, id: string): Preview {
 /** Outdated and broken records are badged on the record, so every reader sees why accept refused. */
 function badge(live: Y.Doc, id: string, reason: GateReason): void {
   if (reason !== 'outdated' && reason !== 'broken') return;
-  live.transact(() => {
+  writeSuggestions(live, () => {
     patchMeta(live, id, reason === 'outdated' ? { outdated: ['outdated'] } : { broken: 'broken' });
-  }, SUGGESTIONS_ORIGIN);
+  });
 }
 
 /**

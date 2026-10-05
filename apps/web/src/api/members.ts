@@ -40,7 +40,9 @@ export const SHARES_PER_HOUR = 20;
 const HOUR_MS = 3_600_000;
 
 const EMAIL = /^[^\s@]+@[^\s@]+$/;
-const isShareRole = (value: unknown): value is ShareRole => typeof value === 'string' && (SHARE_ROLES as readonly string[]).includes(value);
+/** The dialog's roles, plus suggester: the DocDO takes suggestions from M5 (T5.2) before the dialog offers it (T5.1). */
+const MEMBER_API_ROLES: readonly Role[] = [...SHARE_ROLES, 'suggester'];
+const isShareRole = (value: unknown): value is ShareRole | 'suggester' => typeof value === 'string' && (MEMBER_API_ROLES as readonly string[]).includes(value);
 const lower = (a: Role, b: Role) => ROLES.indexOf(a) < ROLES.indexOf(b);
 
 const refuse = (status: number, error: string, message: string, headers: Record<string, string> = {}) =>
@@ -132,7 +134,7 @@ const grantTable = (target: MemberTarget): [string, string] => (target.type === 
 async function share(db: Db, env: MembersEnv, target: MemberTarget, ownerUserId: string, caller: Principal, body: Record<string, unknown>): Promise<Response> {
   const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
   if (!EMAIL.test(email)) return refuse(400, 'bad-request', 'Enter an email address.');
-  if (!isShareRole(body.role)) return refuse(400, 'bad-request', 'Choose view, comment, edit or owner access.');
+  if (!isShareRole(body.role)) return refuse(400, 'bad-request', 'Choose view, comment, suggest, edit or owner access.');
   const role = body.role;
   const inviter = actingUserId(caller) ?? caller.id;
   const [owner] = await db.select({ email: user.email }).from(user).where(eq(user.id, ownerUserId)).limit(1);

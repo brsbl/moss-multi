@@ -110,6 +110,13 @@ describe('POST /api/docs/:id/members', () => {
     expect(rows.results).toEqual([{ principal_id: ben.id, principal_type: 'user', role: 'editor', added_by: ada.id }]);
   });
 
+  it('shares at suggester through the API, which the DocDO takes from M5', async () => {
+    const docId = await insertDoc(d1.db, ada);
+    const response = await share(ada.cookie, docId, { email: ben.email, role: 'suggester' });
+    expect(response.status).toBe(201);
+    expect(await roleOf(ben.cookie, docId)).toBe('suggester');
+  });
+
   it('refuses a member who is not the owner (403) and a stranger (404), and writes nothing', async () => {
     const docId = await insertDoc(d1.db, ada);
     await insertGrant(d1.db, { docId }, ben, 'editor');
@@ -121,9 +128,9 @@ describe('POST /api/docs/:id/members', () => {
     expect(await roleOf(cy.cookie, docId)).toBeNull();
   });
 
-  it('offers viewer, commenter, editor and owner only, and refuses anything else with 400', async () => {
+  it('takes viewer, commenter, suggester, editor and owner only, and refuses anything else with 400', async () => {
     const docId = await insertDoc(d1.db, ada);
-    for (const role of ['suggester', 'admin', '', null, undefined]) {
+    for (const role of ['admin', 'Suggester', '', null, undefined]) {
       expect((await share(ada.cookie, docId, { email: ben.email, role })).status, `role ${String(role)}`).toBe(400);
     }
     for (const email of ['', 'not-an-email', 42, null]) {

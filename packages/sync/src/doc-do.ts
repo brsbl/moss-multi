@@ -5,14 +5,18 @@ import * as encoding from 'lib0/encoding';
 import { writeSyncStep1 } from 'y-protocols/sync';
 import { splitFrontmatter } from '@moss-desktop/common/markdown-layers';
 import { ACK_COALESCE_MS, AWARENESS_MAX_BYTES, MAX_CONNECTIONS, STATE_CAP_BYTES, WRITE_RATE } from '@moss-multi/protocol/limits';
-import { roleAtLeast } from '@moss-multi/protocol/roles';
+import { roleAtLeast, type Role } from '@moss-multi/protocol/roles';
+import { SUGGEST_LIMITS, type SuggestReply, type SuggestRequest } from '@moss-multi/protocol/suggest';
 import { bytesToBase64, CLOSE, type ServerEvent, type WriteRefusalReason } from '@moss-multi/protocol/sync';
 import {
-  attachmentFrom, classifySync, connectCode, parseFrame, revocationCode, stateBytesAfter, WriteRate, type Attachment, type DeleteSet,
+  attachmentFrom, classifySync, connectCode, parseFrame, revocationCode, stateBytesAfter, WriteRate, type Attachment, type Decoded, type DeleteSet,
 } from './doc/admission.ts';
 import { attach, attachmentOf, awarenessTooLarge, awarenessFrame, receivePresence, leavePresence } from './doc/awareness.ts';
 import { AckCoalescer, DocStore, PERSISTENCE } from './doc/persistence.ts';
 import { d1Projections, Projections, type ProjectionTarget } from './doc/projections.ts';
+import { handleSuggest, SqlLeases, SuggestIngest, type Suggester } from './doc/suggest.ts';
+import { newSuggestionsClient, SUGGESTIONS, SuggestionsWriter } from './suggest/records.ts';
+import { nodeRegistry } from './suggest/review.ts';
 import { publishMeta } from './fanout.ts';
 import type { SyncEnv } from './env.ts';
 import { migrateFrontmatter } from '@moss-multi/core/frontmatter';
@@ -47,6 +51,9 @@ export interface CreateDocInput {
 
 /** Whether D1 has the doc in Trash (or has no row for it); throws when D1 cannot answer. */
 export type TrashedInD1 = (docId: string) => Promise<boolean>;
+
+/** Store items a sub-editor's delete set may make the classifier visit per frame byte (its frame never applies). */
+const CLASSIFY_BUDGET_PER_BYTE = 8;
 
 /** How long a trash's hold waits for its settle before the alarm settles it from D1. */
 export const HOLD_MS = 60_000;
@@ -123,6 +130,12 @@ export class DocDO extends YServer<SyncEnv> {
   #frameDeletes: DeleteSet | undefined;
   /** Settles run one at a time, so the last one applies the newest D1 read. */
   #settling: Promise<unknown> = Promise.resolve();
+  /** The one writer of `suggestions` (reserved client S) and the suggestion ingest (docs/design/suggestions.md). */
+  #suggestions: SuggestionsWriter | null = null;
+  #ingest: SuggestIngest | null = null;
+  /** Suggest refusals per principal in the last window, and principals cooling down (until when). In memory. */
+  readonly #refusals = new Map<string, number[]>();
+  readonly #cooldowns = new Map<string, number>();
 
   /** Runs inside partyserver's blockConcurrencyWhile, so a woken DO replays before it sees any frame. */
   override async onLoad(): Promise<void> {
@@ -133,6 +146,18 @@ export class DocDO extends YServer<SyncEnv> {
     migrateFrontmatter(this.document, 'frontmatter-migration');
     migrateRegisters(this.document);
     this.#seed(store);
+    let client = Number(store.meta('suggestions-client'));
+    if (!client) {
+      client = newSuggestionsClient(this.document);
+      store.setMeta('suggestions-client', String(client));
+    }
+    this.#suggestions = new SuggestionsWriter(this.document, client);
+    this.#ingest = new SuggestIngest(this.document, {
+      stateCap: this.#limits.stateCapBytes,
+      registry: nodeRegistry(),
+      leases: new SqlLeases(this.ctx.storage.sql),
+      stateBytes: () => store.stateBytes,
+    });
     const target = (this.constructor as typeof DocDO).projectionTarget(this.env);
     if (target) this.#project(new Projections(this.name, target));
     // A wake re-feeds only a doc the index may lack (L§4.14): an edit whose feed never landed, or an older entry
@@ -172,7 +197,11 @@ export class DocDO extends YServer<SyncEnv> {
       connection.close(code ?? CLOSE.noPrincipal, 'refused');
       return;
     }
-    attach(connection, attachment);
+    if (this.#coolingDown(attachment.principalId)) {
+      connection.close(CLOSE.connectionLimit, 'suggest-cooldown');
+      return;
+    }
+    attach(connection, { ...attachment, nonce: crypto.randomUUID() });
     // Registering the socket in the PrincipalDO's sign-out registry lands with that registry (A§5.2, M2).
     const encoder = encoding.createEncoder();
     encoding.writeVarUint(encoder, 0);
@@ -207,10 +236,12 @@ export class DocDO extends YServer<SyncEnv> {
     }
     // Inert frames (every step 2 answering a step 1) pass whatever the role; writes meet the gates.
     if (frame.kind === 'sync') {
-      const { changes, deletes } = classifySync(this.document, frame.update);
+      const writer = roleAtLeast(attachment.role, 'editor');
+      const budget = writer ? Infinity : frame.update.byteLength * CLASSIFY_BUDGET_PER_BYTE + 1024;
+      const { changes, deletes, decoded } = classifySync(this.document, frame.update, budget);
       if (changes) {
-        if (this.#refused(connection, attachment, store, frame.update)) return;
-      } else if (roleAtLeast(attachment.role, 'editor')) {
+        if (this.#refused(connection, attachment, store, frame.update, decoded)) return;
+      } else if (writer) {
         // The doc already holds it, so nothing persists to ack it: an editor's reconnect step 2 after its ack was lost
         // with the old socket. Acked too, so the client learns its edits are on the server (A§10.6).
         this.#acks.schedule(connection, deletes);
@@ -245,7 +276,51 @@ export class DocDO extends YServer<SyncEnv> {
     return !roleAtLeast(attachmentOf(connection)?.role, 'editor');
   }
 
+  /** Suggest-mode frames (docs/design/suggestions.md §2): the live role on every frame, one reply each. */
+  override onCustomMessage(connection: Connection, message: string): void {
+    const attachment = attachmentOf(connection);
+    const ingest = this.#ingest;
+    if (!attachment || !ingest) return;
+    if (this.#coolingDown(attachment.principalId)) {
+      connection.close(CLOSE.connectionLimit, 'suggest-cooldown');
+      return;
+    }
+    let request: SuggestRequest | null = null;
+    if (message.length <= SUGGEST_LIMITS.frameChars) {
+      try {
+        request = JSON.parse(message) as SuggestRequest;
+      } catch {
+        request = null;
+      }
+    }
+    if (request !== null && (typeof request !== 'object' || typeof request.t !== 'string' || !request.t.startsWith('suggest-'))) return;
+    if (request?.t !== 'suggest-lease' && !this.#rate.allow(connection)) {
+      connection.close(CLOSE.writeRate, 'write rate');
+      return;
+    }
+    const who: Suggester = { id: attachment.principalId, name: attachment.name, role: attachment.role, connection: attachment.nonce ?? connection.id };
+    const reply: SuggestReply = request ? handleSuggest(ingest, who, request) : { t: 'suggest-refused', record: null, reason: 'malformed' };
+    this.sendCustomMessage(connection, JSON.stringify(reply));
+    if (reply.t === 'suggest-refused') this.#countRefusal(attachment.principalId);
+  }
+
+  /**
+   * A principal's role on this doc changed (the kick path, A§8): every open connection of theirs reads the new role
+   * on its next frame; no role at all closes them 4403, so their client asks REST.
+   */
+  async recheckRole(principalId: string, role: Role | null): Promise<void> {
+    await this.#ready();
+    for (const connection of this.getConnections()) {
+      const attachment = attachmentOf(connection);
+      if (attachment?.principalId !== principalId) continue;
+      if (role === null) connection.close(CLOSE.revoked, 'revoked');
+      else attach(connection, { ...attachment, role });
+    }
+  }
+
   override onClose(connection: Connection): void {
+    const nonce = attachmentOf(connection)?.nonce;
+    if (nonce) this.#ingest?.expireConnection(nonce);
     leavePresence(this.document.awareness, connection, this.getConnections());
     this.#rate.forget(connection);
     this.#acks.cancel(connection);
@@ -348,6 +423,8 @@ export class DocDO extends YServer<SyncEnv> {
       title.delete(0, title.length);
       title.insert(0, input.title ?? '');
     }, SERVER_IMPORT);
+    // A copy has no pending suggestions: the source's records were written under the source's reserved client (I2).
+    this.#suggestions?.write(() => this.document.getMap(SUGGESTIONS).clear());
     store.setMeta('folder', input.folderId);
     store.setMeta('owner', input.ownerId);
     await this.#projections?.flush();
@@ -496,14 +573,47 @@ export class DocDO extends YServer<SyncEnv> {
     if (this.#overCap(store, diff)) throw new DocCapError();
   }
 
+  #coolingDown(principalId: string): boolean {
+    const until = this.#cooldowns.get(principalId);
+    if (until === undefined) return false;
+    if (until > Date.now()) return true;
+    this.#cooldowns.delete(principalId);
+    return false;
+  }
+
+  /** `SUGGEST_LIMITS.refusals.max` refusals a window: every socket of the principal closes 4429 a while. */
+  #countRefusal(principalId: string): void {
+    const now = Date.now();
+    const { max, windowMs } = SUGGEST_LIMITS.refusals;
+    const recent = (this.#refusals.get(principalId) ?? []).filter((at) => now - at < windowMs);
+    recent.push(now);
+    this.#refusals.set(principalId, recent);
+    if (recent.length < max) return;
+    this.#refusals.delete(principalId);
+    this.#cooldowns.set(principalId, now + SUGGEST_LIMITS.cooldownMs);
+    for (const connection of this.getConnections()) {
+      if (attachmentOf(connection)?.principalId === principalId) connection.close(CLOSE.connectionLimit, 'suggest-cooldown');
+    }
+  }
+
   /** True when the write was refused and the socket closed; a refusal is never silent. */
-  #refused(connection: Connection, attachment: Attachment, store: DocStore, update: Uint8Array): boolean {
+  #refused(connection: Connection, attachment: Attachment, store: DocStore, update: Uint8Array, decoded: Decoded): boolean {
     // Suggesters never write the body: their changes travel as suggestion records (docs/design/suggestions.md I1).
     // The role decides, never the frame's contents.
-    if (!roleAtLeast(attachment.role, 'editor')) return this.#refuse(connection, 'role', CLOSE.revoked);
+    if (!roleAtLeast(attachment.role, 'editor')) {
+      this.#refuse(connection, 'role', CLOSE.revoked);
+      this.#countRefusal(attachment.principalId);
+      return true;
+    }
     if (!this.#rate.allow(connection)) {
       // Transient: the client keeps its Y.Doc and its next step 2 re-delivers everything.
       connection.close(CLOSE.writeRate, 'write rate');
+      return true;
+    }
+    // Only the DocDO writes `suggestions` (I2), and a leased client id only ever writes a record (A§5.1 step 4).
+    if (this.#suggestions?.touches(decoded) || this.#ingest?.namesLease(update)) {
+      this.#refuse(connection, 'protected-type', CLOSE.writeRefused);
+      this.#countRefusal(attachment.principalId);
       return true;
     }
     if (this.#overCap(store, update)) return this.#refuse(connection, 'doc-cap', CLOSE.writeRefused);
