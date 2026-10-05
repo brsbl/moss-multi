@@ -202,6 +202,61 @@ describe('T4.2 anchor cost: decorator fingerprints read attribute history inside
   });
 });
 
+/** A decorator's key map that counts the keys read out of it. */
+class CountedKeys extends Map<string, Y.Item> {
+  read = 0;
+  keys(): ReturnType<Map<string, Y.Item>['keys']> {
+    const inner = super.keys();
+    const next = (): IteratorResult<string> => {
+      const step = inner.next();
+      if (!step.done) this.read += 1;
+      return step;
+    };
+    return Object.assign(inner, { next });
+  }
+}
+
+/**
+ * A block comment on a decorator that earlier frames gave `keys` distinct attributes and then removed them all (Yjs
+ * keeps a removed key in the map); the fixed frame deletes the decorator. Returns its work and the keys it read.
+ */
+function decoratorWithKeys(keys: number): { stats: FrameStats; status: string | undefined; read: number } {
+  const server = new Y.Doc();
+  const root = server.get('root', Y.XmlText);
+  let image!: Y.XmlElement;
+  server.transact(() => {
+    addParagraph(root, 0, 'Before.');
+    image = new Y.XmlElement('image');
+    root.insertEmbed(1, image);
+    image.setAttribute('src', 'one.png');
+    addParagraph(root, 2, 'After.');
+  });
+  server.transact(() => {
+    for (let k = 0; k < keys; k += 1) image.setAttribute(`k${k}`, '1');
+  });
+  server.transact(() => {
+    for (let k = 0; k < keys; k += 1) image.removeAttribute(`k${k}`);
+  });
+  const { host, client, send } = hosted(server);
+  const { text, units } = liveUnits(server);
+  const at = text.indexOf('￼');
+  host.create('c1', mintAnchor(units[at], units[at], 'block'));
+  const typed = image as unknown as { _map: Map<string, Y.Item> };
+  const counter = new CountedKeys(typed._map);
+  typed._map = counter;
+  expect(send(() => client.get('root', Y.XmlText).delete(1, 1)).refused).toBeNull();
+  return { stats: counted(host), status: host.anchor('c1')?.status, read: counter.read };
+}
+
+describe('T4.2 anchor cost: a decorator\'s removed attribute keys are read inside the walk budget @p:tech-3', () => {
+  it('anchor-attribute-keys-obey-walk-budget', () => {
+    const huge = decoratorWithKeys(100_000);
+    expect(huge.read, 'every key read is a counted visit').toBeLessThanOrEqual(huge.stats.structs + 8);
+    expect(huge.stats.structs, 'the walk stops at its budget').toBeLessThanOrEqual(COMMENT_BUDGET);
+    expect(huge.status, 'over budget fails safe').toBe('orphaned');
+  });
+});
+
 /**
  * A comment on 'beta', written by one client, then `unrelated` later word comments on that same client's text; the
  * fixed frame deletes and retypes 'beta' (a gap re-mint onto that client's newest clocks). Returns its work, the index

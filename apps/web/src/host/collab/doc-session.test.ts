@@ -200,3 +200,69 @@ it.each(['cleared', 'ended', 'released'] as const)('pageshow never revives %s pr
   window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
   expect(session.provider.awareness.getLocalState()).toBeNull();
 });
+
+/** The Yjs updates a socket sent after its first `from` frames: sync updates (step 2) and step 2 replies (step 1). */
+function syncSent(socket: FakeSocket, from = 0): { step: number; update: Uint8Array }[] {
+  const out: { step: number; update: Uint8Array }[] = [];
+  for (const sent of socket.sent.slice(from)) {
+    if (!ArrayBuffer.isView(sent)) continue;
+    const frame = new Uint8Array(sent.buffer, sent.byteOffset, sent.byteLength);
+    if (frame[0] !== 0 || frame[1] === 0) continue;
+    let pos = 2;
+    let length = 0;
+    for (let scale = 1; ; scale *= 128) {
+      const byte = frame[pos++];
+      length += (byte & 0x7f) * scale;
+      if (byte < 0x80) break;
+    }
+    out.push({ step: frame[1], update: frame.subarray(pos, pos + length) });
+  }
+  return out;
+}
+const serverStep1 = (socket: FakeSocket, vector: Uint8Array) =>
+  socket.dispatchEvent(new MessageEvent('message', { data: new Uint8Array([0, 0, vector.length, ...vector]).buffer }));
+
+it('after a reconnect, a write made before the server\'s step 1 waits behind the backlog, also after a cut-off replay', async () => {
+  // The DocDO: it refuses a frame whose structs Yjs would park (comments.md §6), so none may arrive ahead of its origin.
+  const server = new Y.Doc();
+  const deliver = (socket: FakeSocket) => {
+    for (const { update } of syncSent(socket)) {
+      Y.applyUpdate(server, update);
+      expect(server.store.pendingStructs, 'an honest frame never parks').toBeNull();
+    }
+  };
+  const title = session.doc.getText('title');
+  const first = latest();
+  first.open(); session.provider.synced = true;
+  title.insert(0, 'quick brown');
+  title.delete(0, 6);
+  title.insert(0, 'slow ');
+  // Lost in flight: the server never got the first socket's frames.
+  first.ended(1006);
+  await vi.advanceTimersByTimeAsync(1_000);
+  const second = latest();
+  expect(second).not.toBe(first);
+  second.open();
+  // Typed between the socket's open and the server's step 1.
+  title.insert(title.length, '!');
+  expect(syncSent(second), 'nothing goes ahead of the backlog').toEqual([]);
+  serverStep1(second, Y.encodeStateVector(server));
+  deliver(second);
+  // The replay is cut off after its first frame; the next socket starts over.
+  second.ended(1006);
+  await vi.advanceTimersByTimeAsync(1_000);
+  const third = latest();
+  expect(third).not.toBe(second);
+  third.open();
+  title.insert(0, '>');
+  expect(syncSent(third), 'nothing goes ahead of the backlog').toEqual([]);
+  serverStep1(third, Y.encodeStateVector(server));
+  await vi.advanceTimersByTimeAsync(1_000);
+  deliver(third);
+  expect(server.getText('title').toString()).toBe(title.toString());
+  expect(syncSent(third).at(-1)?.step, 'the step 2 comes after the backlog').toBe(1);
+  // Released: a write now goes live.
+  const sent = syncSent(third).length;
+  title.insert(0, '#');
+  expect(syncSent(third)).toHaveLength(sent + 1);
+});
