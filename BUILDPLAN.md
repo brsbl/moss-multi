@@ -272,6 +272,7 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
   - **Tests first:** inviting B makes B's bell show it without a reload, and clicking it opens the doc; clicking a notice mid-sentence drops no keystroke; an invite to an unknown email gives a copyable link that redeems after sign-up; a notice whose grant was revoked is omitted.
   - **Done:** the legs are green, with a triptych against the glyphdown bell.
 - **T2.S1 A lost grant kills its invites** `[B·security]` (Slop Cop P1, PR #4): the member remove batch and role-change write end with `reapDeadInvites`, so a co-owner demoted or removed loses their open invites for good and regaining manage never revives them (A§8); tests first in `apps/web/src/api/invites.test.ts`.
+- **T2.S2 Folder-link listing at a fixed cost** `[B·claude]` (M2 review P1): a folder link's workspace listing runs a fixed number of queries with a fixed number of D1 parameters however large the subtree, keeping the link's ceiling, scope, trash filtering and role folding; proven by a folder link over 150 subfolders and 600 notes listing completely at the right roles for an anonymous and a signed-in holder, with a constant statement and parameter count.
 
 **Journeys added:** j05-trash, j06-folders, j07 (sign-out severs another window), j08-share, j09-revoke-live, j10-stranger-phone.
 

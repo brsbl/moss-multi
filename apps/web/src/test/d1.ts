@@ -38,14 +38,16 @@ export async function migratedD1(): Promise<TestD1> {
 /** D1 allows at most this many bound parameters per statement. */
 export const D1_MAX_PARAMS = 100;
 
-/** `db` with every statement's bound-parameter count recorded in `binds`, in order. */
-export function countingBinds(db: D1Database): { db: D1Database; binds: number[] } {
+/** `db` with every statement's bound-parameter count recorded in `binds`, in order, and every prepared statement counted. */
+export function countingBinds(db: D1Database): { db: D1Database; binds: number[]; prepared: () => number } {
   const binds: number[] = [];
+  let prepared = 0;
   const wrapped = new Proxy(db, {
     get(target, key) {
       if (key !== 'prepare') return Reflect.get(target, key, target);
-      return (query: string) =>
-        new Proxy(target.prepare(query), {
+      return (query: string) => {
+        prepared += 1;
+        return new Proxy(target.prepare(query), {
           get(statement, name) {
             if (name !== 'bind') return Reflect.get(statement, name, statement);
             return (...values: unknown[]) => {
@@ -54,7 +56,8 @@ export function countingBinds(db: D1Database): { db: D1Database; binds: number[]
             };
           },
         });
+      };
     },
   });
-  return { db: wrapped, binds };
+  return { db: wrapped, binds, prepared: () => prepared };
 }
