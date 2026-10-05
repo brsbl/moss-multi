@@ -1,12 +1,12 @@
 # moss-multi progress
 
-**Overall: 56% done** (49 of 87 planned tasks verified)
+**Overall: 54% done** (50 of 92 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 19 / 20 | in progress |
-| M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 11 / 11 | in progress |
+| M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 12 / 12 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 0 / 9 | |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
@@ -68,6 +68,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-05 — T1.S2 verified: a code, HTML or formula block whose updates were lost on a dropped connection now catches up on its own, without a reload, so both people see the same text and can keep typing in it.
 - 2026-10-05 — T0.9d verified: CI journey shards are split by recorded per-engine minutes (`durations.mjs` writes them, `plan.mjs budget` keeps every shard's p95 within 9 of its 13 min), and the root causes of the WebKit editing-shard flakes are fixed, with the duration table in METHOD.md.
 - 2026-10-05 — T2.6 verified: a viewer or commenter is no longer offered controls they cannot use: menus grow with their role, "+ Note", Rename, slash commands and block edit, fullscreen and delete buttons are hidden, checkboxes and gap cursors in a read-only body are inert and send nothing, and an unknown role gets no actions.
+- 2026-10-05 — T2.S1 verified: a co-owner who is demoted or removed loses their open invites for good, so regaining manage later never revives an invite they sent before.
 
 ## T1.1s identity audit
 
