@@ -217,6 +217,8 @@ export class DocDO extends YServer<SyncEnv> {
       return;
     }
     // Inert frames (every step 2 answering a step 1) pass whatever the role; writes meet the gates.
+    /** A frame Yjs will apply: an editor's write. */
+    let applying: ReturnType<typeof Y.decodeUpdate> | null = null;
     if (frame.kind === 'sync') {
       let decoded: ReturnType<typeof Y.decodeUpdate>;
       try {
@@ -239,21 +241,14 @@ export class DocDO extends YServer<SyncEnv> {
         this.#acks.schedule(connection, deletes);
       }
       this.#frameDeletes = deletes;
+      if (changes && !this.isReadOnly(connection)) applying = decoded;
     }
-    // y-partyserver catches what Yjs throws mid-apply and emits it as the doc's 'error'.
-    let threw = false;
-    const onError = () => {
-      threw = true;
-    };
-    const events = this.document as unknown as { on(name: 'error', f: () => void): void; off(name: 'error', f: () => void): void };
-    events.on('error', onError);
     try {
       super.onMessage(connection, message);
     } finally {
       this.#frameDeletes = undefined;
-      events.off('error', onError);
     }
-    if (frame.kind === 'sync') this.#afterFrame(connection, store, threw);
+    if (frame.kind === 'sync') this.#afterFrame(connection, store, applying ? applying.structs : []);
   }
 
   /**
@@ -262,8 +257,11 @@ export class DocDO extends YServer<SyncEnv> {
    * I2). Then the anchor changes it caused are written through writeComments in this turn (I8), and only then may the
    * log compact, so a snapshot never holds parked structs.
    */
-  #afterFrame(connection: Connection, store: DocStore, threw: boolean): void {
+  #afterFrame(connection: Connection, store: DocStore, applied: ReturnType<typeof Y.decodeUpdate>['structs']): void {
     const yStore = this.document.store;
+    // y-protocols swallows what Yjs throws mid-apply, so a throw shows only as a struct that is neither integrated
+    // nor parked.
+    const threw = applied.some((struct) => !(struct instanceof Y.Skip) && struct.id.clock + struct.length > Y.getState(yStore, struct.id.client));
     if (threw || yStore.pendingStructs !== null || yStore.pendingDs !== null) {
       yStore.pendingStructs = null;
       yStore.pendingDs = null;

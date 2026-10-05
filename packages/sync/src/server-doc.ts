@@ -169,7 +169,7 @@ function $stripCommentMarks(): ImportedMarks {
       const own = isCommentable(node) ? node.getCommentIds() : [];
       note(ids, at, at, false);
       note(own.filter((id) => !ids.includes(id)), at, at, true);
-      if (own.length) node.setCommentIds([]);
+      if (own.length && isCommentable(node)) node.setCommentIds([]);
       parts.push(BLOCK_CHAR);
       at += 1;
       return;
