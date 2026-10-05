@@ -76,6 +76,7 @@ export class SuggestMount {
     });
     this.provider = new ShimProvider(session.provider, () => this.#begin());
     this.#stops.push(session.onSuggestReply((reply) => {
+      ((globalThis as unknown as { __sdbg?: unknown[] }).__sdbg ??= []).push(['reply', reply.t, (reply as { reason?: string }).reason, Date.now()]);
       if (reply.t === 'suggest-refused') this.refusals += 1;
       this.fork.receive(reply);
       if (reply.t === 'suggest-refused') this.#hooks.change();
@@ -92,6 +93,7 @@ export class SuggestMount {
     // After a drop, the fork resumes once the new socket has synced: the DocDO answers a suggest frame only on a
     // connection it has finished admitting, and one sent at open could be dropped unanswered.
     const onSync = (synced: boolean) => {
+      ((globalThis as unknown as { __sdbg?: unknown[] }).__sdbg ??= []).push(['sync', synced, this.#dropped, this.#disposed, Date.now()]);
       if (!synced) return;
       if (this.#dropped) {
         this.#dropped = false;
@@ -101,6 +103,7 @@ export class SuggestMount {
       this.#begin();
     };
     const onClose = () => {
+      ((globalThis as unknown as { __sdbg?: unknown[] }).__sdbg ??= []).push(['close', Date.now()]);
       this.#dropped = true;
     };
     session.provider.on('sync', onSync);
@@ -125,6 +128,7 @@ export class SuggestMount {
    * and a refusal meanwhile still offers the unsaved text back through `refused`.
    */
   retire(refused: (unsaved: string[]) => void): void {
+    ((globalThis as unknown as { __sdbg?: unknown[] }).__sdbg ??= []).push(['retire', this.session.state.unacked, Date.now()]);
     this.editor = null;
     if (!this.session.state.unacked) {
       this.dispose();

@@ -312,6 +312,8 @@ test('j16-suggest offline: suggestions typed offline reach the server after the 
   sever.restore();
   await ui.waitLive(ben, elsewhere);
   await ben.declareRemount(elsewhere);
+  await ben.page.waitForTimeout(8000);
+  console.log('SDBG', JSON.stringify(await ben.page.evaluate(() => (globalThis as unknown as { __sdbg?: unknown }).__sdbg)));
 
   // The owner reviews the note: both suggestions are there, and the body is unchanged.
   ada.expectReconnects(1, docId);
