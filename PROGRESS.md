@@ -1,11 +1,11 @@
 # moss-multi progress
 
-**Overall: 53% done** (43 of 81 planned tasks verified)
+**Overall: 54% done** (44 of 81 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 18 / 18 | in progress |
-| M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 17 / 19 | in progress |
+| M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 18 / 19 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 8 / 11 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 0 / 9 | |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
@@ -61,6 +61,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-04 — T1.F2 verified: each code, HTML and formula block's text now lives in its own small document that the server hides while no block names it and restores intact when one does, a copied block gets its own text, and one Cmd+Z undoes body and block edits together.
 - 2026-10-05 — T2.7 verified: a stranger on a 390 px phone can open a share link, read the note, sign up through the card and land back on the same note; the notes panel overlays the canvas below 640 px, Share becomes an icon with an overflow menu, revoked and forged links show the denial page, and every control stays reachable.
 - 2026-10-05 — T1.F4 verified: an open code, HTML or formula editor keeps working when a peer moves its block, closes with a notice when a peer removes it, and picks up the block's text once it arrives; typing inside a code or HTML block lands at the caret even after a peer's edit or undo.
+- 2026-10-05 — T1.S1 verified: the workspace and member listings now load completely for a person with hundreds of shared notes and folders, and for a note with hundreds of members, using a fixed number of database parameters.
 
 ## T1.1s identity audit
 
@@ -106,6 +107,8 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - ~~T1.F4 checker P2: the formula popover keeps its node key for the session, so a peer's move leaves it read-only on a stale key and a peer's removal leaves it open with no notice~~ closed by T1.F4 attempt 3: the popover follows its payload id (`useFollowRegister`) and reads its mode and references again when its payload arrives (j01-registers formula legs).
 - T1.F4 checker P2: a peer's move unmounts a code or HTML field mid-IME-composition and its private composition draft is destroyed; committed text is kept, the uncommitted preedit is lost. Commit the draft on unmount.
 - T1.F4 integration flake: j01-registers "a variable popover opened before its payload arrives ... edits it as a variable" failed once in WebKit on m1 (written as `n`, not `pending soon`; run 37313760604, green on rerun); j00 G1 import POST timeout and a j02-title workspace access-control page error flaked in the same run.
+- T1.S1 checker P2: accessibleFolders (apps/web/src/api/access.ts) reads the whole folders table on every /api/workspace call and bridge poll; its parameter count is fixed, but its cost grows with the table.
+- T1.S1 checker P2 flake: j03-connection "a refused write rebinds fresh and a deleted doc locks in place" failed once in Chromium (console error 'WebSocket is already in CLOSING or CLOSED state'), green on rerun.
 - ~~T1.9 checker P2: replace the full node-map refresh after every editor commit with targeted invalidation~~ closed by T1.9s and T1.F2: root-only commits and same-node state replacements refresh no payload.
 - T1.F2 checker P2, **blocks T1.10 carrying real docs**: rule 10 of docs/design/registers.md, the DocDO refusing clients whose bundle predates payload docs (an M1 bundle can still write `Y.Map('registers')` through note updates, past the payload gate) → T1.10.
 - T1.F2 checker P2: each connection's set of withheld ids it writes (at most 64) lives in memory, so a DocDO wake resets it; the per-principal withheld bytes are durable and bound the total → payload follow-up.

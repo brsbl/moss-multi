@@ -5,12 +5,12 @@
 // reads and writes only invites, never an account found by the email, so its answer, the member list and their timing
 // are the same whether or not the email has an account. Each owner may make SHARES_PER_HOUR new shares an hour.
 // Lowering or removing access waits for the one kick path (T2.5), so a share only adds or raises.
-import { eq, inArray, sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { ROLES, SHARE_ROLES, type Role, type ShareRole } from '@moss-multi/protocol/roles';
 import type { AppEnv } from '../env.ts';
 import type { AuthEnv } from '../auth/auth.ts';
 import { resolvePrincipal, type Principal } from '../auth/principal.ts';
-import { createDb, type Db } from '../db/client.ts';
+import { createDb, inJson, type Db } from '../db/client.ts';
 import { agents, docMembers, folderMembers, user } from '../db/schema.ts';
 import { json } from '../worker/route.ts';
 import { actingUserId, liveAndManaged, managesLive, resolveDocAccess, resolveFolderAccess } from './access.ts';
@@ -77,8 +77,8 @@ async function listMembers(db: Db, target: MemberTarget, ownerUserId: string, wi
   const userIds = [ownerUserId, ...grants.filter((g) => g.principalType === 'user').map((g) => g.principalId)];
   const agentIds = grants.filter((g) => g.principalType === 'agent').map((g) => g.principalId);
   const [users, agentRows] = await Promise.all([
-    db.select({ id: user.id, name: user.name, email: user.email }).from(user).where(inArray(user.id, userIds)),
-    agentIds.length > 0 ? db.select({ id: agents.id, name: agents.name }).from(agents).where(inArray(agents.id, agentIds)) : [],
+    db.select({ id: user.id, name: user.name, email: user.email }).from(user).where(inJson(user.id, userIds)),
+    agentIds.length > 0 ? db.select({ id: agents.id, name: agents.name }).from(agents).where(inJson(agents.id, agentIds)) : [],
   ]);
   const people = new Map(users.map((u) => [u.id, u]));
   const bots = new Map(agentRows.map((a) => [a.id, a]));

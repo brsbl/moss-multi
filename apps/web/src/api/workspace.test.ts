@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, it } from 'vitest';
-import { migratedD1, type TestD1 } from '../test/d1.ts';
+import { countingBinds, D1_MAX_PARAMS, migratedD1, type TestD1 } from '../test/d1.ts';
 import { BASE, SECRET, insertDoc, insertFolder, insertGrant, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
 import { workspace } from './workspace.ts';
 
@@ -19,7 +19,7 @@ interface Listing {
   vault: { id: string };
   vaults: { id: string; role: string; owned: boolean }[];
   docs: { id: string; folderPath: string; surfaced: boolean; role: string }[];
-  folders: { id: string; path: string; surfaced: boolean }[];
+  folders: { id: string; path: string; surfaced: boolean; role: string }[];
 }
 async function list(query = ''): Promise<Listing> {
   const response = await workspace(new Request(`${BASE}/api/workspace${query}`, { headers: { cookie: ben.cookie } }), env);
@@ -72,3 +72,47 @@ it('orders owned vaults first, follows a visible doc vault, and honors an explic
   expect(revoked.vault.id).toBe(ben.homeId);
   expect(revoked.docs.map((row) => row.id)).not.toContain(doc);
 });
+
+it('lists 150 shared notes and 150 folders, owned and granted, with a fixed number of bound parameters', async () => {
+  const cal = await signedUpUser(env, 'discovery-cal');
+  const listAs = async (db: D1Database) => {
+    const response = await workspace(new Request(`${BASE}/api/workspace`, { headers: { cookie: cal.cookie } }), { ...env, DB: db });
+    expect(response.status).toBe(200);
+    return (await response.json()) as Listing;
+  };
+  await listAs(d1.db);
+  const small = countingBinds(d1.db);
+  await listAs(small.db);
+
+  const roles = ['viewer', 'commenter', 'editor'] as const;
+  const sharedDocs: Record<string, string> = {};
+  for (let i = 0; i < 150; i++) {
+    const doc = await insertDoc(d1.db, ada);
+    await insertGrant(d1.db, { docId: doc }, cal, roles[i % 3]);
+    sharedDocs[doc] = roles[i % 3];
+  }
+  const owned: string[] = [];
+  for (let i = 0; i < 75; i++) owned.push(await insertFolder(d1.db, cal, cal.homeId));
+  const granted: Record<string, string> = {};
+  for (let i = 0; i < 75; i++) {
+    const folder = await insertFolder(d1.db, ada, ada.homeId);
+    await insertGrant(d1.db, { folderId: folder }, cal, roles[i % 3]);
+    granted[folder] = roles[i % 3];
+  }
+  const [lastGranted, lastRole] = Object.entries(granted).at(-1)!;
+  const inGranted = await insertDoc(d1.db, ada, { folderId: lastGranted });
+  const inOwned = await insertDoc(d1.db, cal, { folderId: owned.at(-1) });
+
+  const large = countingBinds(d1.db);
+  const result = await listAs(large.db);
+  const docRoles = Object.fromEntries(result.docs.map((row) => [row.id, row.role]));
+  expect(Object.keys(sharedDocs).filter((id) => docRoles[id] !== sharedDocs[id]), 'every shared note at its role').toEqual([]);
+  expect(docRoles[inGranted]).toBe(lastRole);
+  expect(docRoles[inOwned]).toBe('owner');
+  const folderRoles = Object.fromEntries(result.folders.map((row) => [row.id, row.role]));
+  expect(owned.filter((id) => folderRoles[id] !== 'owner'), 'every owned folder').toEqual([]);
+  expect(Object.keys(granted).filter((id) => folderRoles[id] !== granted[id]), 'every granted folder at its role').toEqual([]);
+
+  expect(large.binds, 'bound parameters per statement do not grow with the listing').toEqual(small.binds);
+  expect(Math.max(...large.binds)).toBeLessThanOrEqual(D1_MAX_PARAMS);
+}, 120_000);
