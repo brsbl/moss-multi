@@ -62,9 +62,11 @@ beforeAll(async () => {
 afterAll(() => d1?.dispose());
 
 function call(method: string, path: string, cookie: string | null, init: { body?: BodyInit; headers?: Record<string, string> } = {}) {
+  // A fixed-size body carries its Content-Length, as a browser's and the Workers runtime's do.
+  const length = init.body instanceof Uint8Array ? { 'content-length': String(init.body.byteLength) } : {};
   return handleApi(new Request(`${BASE}${path}`, {
     method,
-    headers: { origin: BASE, ...(cookie ? { cookie } : {}), ...init.headers },
+    headers: { origin: BASE, ...(cookie ? { cookie } : {}), ...length, ...init.headers },
     body: init.body,
     // A streamed body, which a test holds open.
     ...(init.body instanceof ReadableStream ? { duplex: 'half' } : {}),
@@ -170,25 +172,65 @@ describe('upload (A§16)', () => {
 });
 
 describe('upload bounds (T3.1s)', () => {
-  it('refuses a chunked upload past the cap with 413 as the stream passes it, never reading the rest', async () => {
+  it('refuses a body with no Content-Length with 411, never reading it', async () => {
     const docId = await insertDoc(d1.db, ada);
     const CHUNK = 1024 * 1024;
-    const total = 40 * CHUNK;
     let pulled = 0;
-    // No Content-Length: the body is a stream that would deliver four times the image cap.
     const body = new ReadableStream<Uint8Array>({
       pull(controller) {
-        if (pulled >= total) {
-          controller.close();
-          return;
-        }
+        if (pulled >= 40 * CHUNK) return controller.close();
         pulled += CHUNK;
         controller.enqueue(new Uint8Array(CHUNK));
       },
-    });
+    }, { highWaterMark: 0 });
     const sent = await call('POST', `/api/docs/${docId}/assets?filename=chunked.png`, ada.cookie, { body, headers: { 'content-type': 'image/png' } });
+    expect(sent.status, await sent.clone().text()).toBe(411);
+    expect(pulled, 'the body is never read').toBe(0);
+  });
+
+  it('refuses a stream that outruns its Content-Length with 413 as it passes it, never reading the rest', async () => {
+    const docId = await insertDoc(d1.db, ada);
+    const CHUNK = 1024 * 1024;
+    let pulled = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (pulled >= 40 * CHUNK) return controller.close();
+        pulled += CHUNK;
+        controller.enqueue(new Uint8Array(CHUNK));
+      },
+    }, { highWaterMark: 0 });
+    const sent = await call('POST', `/api/docs/${docId}/assets?filename=understated.png`, ada.cookie, {
+      body, headers: { 'content-type': 'image/png', 'content-length': String(CHUNK) },
+    });
     expect(sent.status, await sent.clone().text()).toBe(413);
-    expect(pulled, 'the body is read no further than the cap').toBeLessThanOrEqual(MEDIA_CAP_BYTES.image + 3 * CHUNK);
+    expect(pulled, 'the body is read no further than its declared length').toBeLessThanOrEqual(2 * CHUNK);
+  });
+
+  it('copies each chunk into one buffer of the declared length as it arrives, never holding the chunks', async () => {
+    const docId = await insertDoc(d1.db, ada);
+    const half = 2048;
+    const first = new Uint8Array(half).fill(1);
+    let pulls = 0;
+    // The stream reuses its first chunk's memory once it is read: an upload that kept chunks would store the reuse.
+    const body = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        pulls += 1;
+        if (pulls === 1) return controller.enqueue(first);
+        if (pulls === 2) {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          first.fill(2);
+          return controller.enqueue(new Uint8Array(half).fill(3));
+        }
+        controller.close();
+      },
+    }, { highWaterMark: 0 });
+    const result = await uploaded(await call('POST', `/api/docs/${docId}/assets?filename=streamed.png`, ada.cookie, {
+      body, headers: { 'content-type': 'image/png', 'content-length': String(2 * half) },
+    }));
+    const stored = await bytesOf(await call('GET', `/api/docs/${docId}/assets/${result.filename}`, ada.cookie));
+    expect(stored.byteLength).toBe(2 * half);
+    expect(stored.slice(0, half).every((b) => b === 1), 'the first chunk as it arrived').toBe(true);
+    expect(stored.slice(half).every((b) => b === 3)).toBe(true);
   });
 
   it('refuses an invalid Content-Length with 400', async () => {
@@ -224,6 +266,19 @@ describe('upload bounds (T3.1s)', () => {
     expect((await viaLink(fay, '203.0.113.8')).status, 'the same link from another IP').toBe(201);
   }, 60_000);
 
+  it('counts a holder whose own grant is weaker than the link under the link and their IP too', async () => {
+    const docId = await insertDoc(d1.db, ada);
+    const token = await insertLink(d1.db, { docId }, 'editor');
+    const [ivy, jon] = [await signedUpUser(env, 'assets-rate-ivy', 'Ivy'), await signedUpUser(env, 'assets-rate-jon', 'Jon')];
+    await insertGrant(d1.db, { docId }, ivy, 'viewer');
+    await insertGrant(d1.db, { docId }, jon, 'viewer');
+    const viaLink = (who: TestUser) => call('POST', `/api/docs/${docId}/assets?filename=weak-grant.png&share=${token}`, who.cookie, {
+      body: PNG, headers: { 'content-type': 'image/png', 'cf-connecting-ip': '203.0.113.9' },
+    });
+    for (let i = 0; i < UPLOAD_RATE.max; i += 1) expect((await viaLink(ivy)).status, `upload ${i + 1}`).toBe(201);
+    expect((await viaLink(jon)).status, 'another viewer on the same link and IP').toBe(429);
+  }, 60_000);
+
   it('enforces a per-vault media quota with 413, over every folder in the vault', async () => {
     const gil = await signedUpUser(env, 'assets-quota-gil', 'Gil');
     const nested = await insertFolder(d1.db, gil, gil.homeId);
@@ -239,6 +294,41 @@ describe('upload bounds (T3.1s)', () => {
     const own = await insertDoc(d1.db, ada);
     expect((await upload(ada.cookie, own, 'over.png', OTHER_PNG, 'image/png')).status).toBe(201);
   });
+
+  it('holds the quota against uploads running at the same time', async () => {
+    const kim = await signedUpUser(env, 'assets-quota-kim', 'Kim');
+    const docId = await insertDoc(d1.db, kim);
+    const size = 4096;
+    // Room for exactly one more upload.
+    await d1.db.prepare("INSERT INTO assets (id, folder_id, filename, kind, content_type, size, current_version_id, created_by, created_at) VALUES (?1, ?2, 'filler.mp4', 'video', 'video/mp4', ?3, NULL, ?4, ?5)")
+      .bind(crypto.randomUUID(), kim.homeId, VAULT_MEDIA_QUOTA_BYTES - size, kim.id, Date.now()).run();
+    const N = 4;
+    let reading = 0;
+    let open = () => {};
+    const gate = new Promise<void>((resolve) => {
+      open = resolve;
+      setTimeout(resolve, 3000);
+    });
+    // Each body is held until every upload is reading its body, past any check made before it.
+    const sends = Array.from({ length: N }, (_, i) => {
+      const body = new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          reading += 1;
+          if (reading === N) open();
+          await gate;
+          controller.enqueue(new Uint8Array(size).fill(i + 1));
+          controller.close();
+        },
+      }, { highWaterMark: 0 });
+      return call('POST', `/api/docs/${docId}/assets?filename=race-${i}.png`, kim.cookie, {
+        body, headers: { 'content-type': 'image/png', 'content-length': String(size) },
+      });
+    });
+    const statuses = (await Promise.all(sends)).map((response) => response.status).sort();
+    expect(statuses).toEqual([201, ...Array<number>(N - 1).fill(413)]);
+    const used = await d1.db.prepare('SELECT SUM(size) AS used FROM assets WHERE folder_id = ?1').bind(kim.homeId).first<{ used: number }>();
+    expect(used?.used).toBeLessThanOrEqual(VAULT_MEDIA_QUOTA_BYTES);
+  }, 60_000);
 });
 
 describe('serving (A§16)', () => {
