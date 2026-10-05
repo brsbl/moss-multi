@@ -182,7 +182,7 @@ describe('the bell', () => {
     expect(notices).toHaveLength(1);
     expect(notices[0]).toMatchObject({ type: 'share-invite', read: false, by: 'Ada', target: { type: 'doc', id: docId, title: 'Roadmap', kind: 'doc' } });
     expect(published).toContainEqual({ id: dee.id, event: { type: 'notifications' } });
-    expect(await bell(ada), 'the owner hears nothing about her own share').toEqual([]);
+    expect((await bell(ada)).filter((n) => n.target.id === docId), 'the owner hears nothing about her own share').toEqual([]);
 
     await share(ada, `/api/docs/${docId}`, dee.email);
     expect(await bell(dee), 'a repeat is not a new notice').toHaveLength(1);

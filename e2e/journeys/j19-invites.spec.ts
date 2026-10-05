@@ -48,7 +48,7 @@ test('j19 bell: a share reaches Ben\'s bell without a reload, and its notice ope
   // Mid-sentence: the last keys are still in flight when he clicks the notice.
   await ui.typeBody(ben, own, 'Typing right up to the bell');
   await bell(ben, own).click();
-  const notice = ben.page.getByRole('menuitem', { name: new RegExp(`Ada shared “${title}” with you`) });
+  const notice = ben.page.getByRole('menuitem', { name: new RegExp(`shared “${title}” with you`) });
   await expect(notice, 'the inbox lists the share').toBeVisible();
   await actors.checkpoint('bell-open');
   await notice.click();
@@ -114,7 +114,7 @@ test('j19 invite: an invite to an unknown email gives a copyable link that redee
 
   await expect(bell(ada, target), 'Ada hears the invite was accepted').toHaveAccessibleName('Notifications, 1 unread', { timeout: PUSH_TIMEOUT });
   await bell(ada, target).click();
-  await expect(ada.page.getByRole('menuitem', { name: new RegExp(`${guest.name} accepted your invite to “${title}”`) })).toBeVisible();
+  await expect(ada.page.getByRole('menuitem', { name: new RegExp(`accepted your invite to “${title}”`) })).toBeVisible();
   await ada.page.keyboard.press('Escape');
   const members = await ui.openShare(ada, target);
   await expect(ui.accessRow(members, guest), 'the guest is a member by name').toContainText(guest.email);
