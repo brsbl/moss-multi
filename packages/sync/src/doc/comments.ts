@@ -14,6 +14,13 @@ export const COMMENTS_CLIENT_META = 'commentsClient';
 export const COMMENT_TEXT_MAX = 10_000;
 /** Comment and reply records per doc. */
 export const COMMENTS_PER_DOC = 2_000;
+/** Quote-only searches one sidecar import runs; later position-less entries are dropped. */
+export const MAX_IMPORT_SEARCHES = 100;
+/**
+ * The share of the state cap comment writes may fill. The rest is the typing headroom STATE_CAP_BYTES builds in, so
+ * comments, which copy their quote, never leave a doc too full to edit.
+ */
+export const COMMENT_STATE_SHARE = 0.8;
 /** Moss's marker ids: what `%%m:<id>:start%%` can carry. */
 const ID = /^[A-Za-z0-9_-]{1,64}$/;
 

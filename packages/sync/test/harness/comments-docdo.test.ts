@@ -13,6 +13,7 @@ import { anchorText, encodePosition, liveUnits, type Anchor } from '@moss-multi/
 import { BLOCK_CHAR } from '@moss-multi/core/tree-anchor';
 import { CLOSE } from '@moss-multi/protocol/sync';
 import { DocDO } from '../../src/doc-do.ts';
+import { COMMENT_STATE_SHARE, MAX_IMPORT_SEARCHES } from '../../src/doc/comments.ts';
 import { COMPACT_MAX_ROWS, STATE_CHUNK_BYTES } from '../../src/doc/persistence.ts';
 import { bindLexical, connect, counts, openDoc, start, syncFrame, wake, type Opened, type TestClient } from './do-harness.ts';
 import { forged, gcStruct, raw, skipStruct } from './raw-frames.ts';
@@ -115,6 +116,25 @@ async function expectServerWriteIsolated(opened: Opened, r: number): Promise<voi
       if (type === comments) expect(struct.id.client).toBe(r);
     }
   }
+}
+
+/** An editor's one-character edit after the comment writes: the doc still has room to type (A§5.1 Limits). */
+async function expectTypeable(opened: Opened): Promise<void> {
+  const client = await editorOn(opened);
+  const paragraph = paragraphOf(client.doc);
+  client.doc.transact(() => paragraph.insert(paragraph.length, '!'));
+  await client.flush();
+  expect(client.closed, 'the next body edit is admitted').toBeNull();
+  expect(client.events).not.toContainEqual(expect.objectContaining({ t: 'write-refused' }));
+}
+
+/** Changes DocDO.limits for the rest of the test. */
+function withLimits(change: Partial<typeof DocDO.limits>): void {
+  const limits = DocDO.limits;
+  DocDO.limits = { ...limits, ...change } as typeof limits;
+  onTestFinished(() => {
+    DocDO.limits = limits;
+  });
 }
 
 type Fixture = [name: string, make: (doc: Y.Doc, r: number) => Uint8Array];
@@ -446,6 +466,49 @@ describe('T4.1 marker import and clean export @p:tech-3 @p:mean-1', () => {
     expect(exported).not.toContain('%%m:');
     expect(exported).not.toContain('{%c:');
   });
+
+  it('import-search-is-bounded: a large body with many failing sidecar quotes costs one projection and a capped number of searches', async () => {
+    vi.useRealTimers();
+    const sentence = 'The quick brown fox jumps over the lazy dog. ';
+    const paragraphs = Array.from({ length: 220 }, () => sentence.repeat(20).trim());
+    const markdown = `${paragraphs.join('\n\n')}\n\nA unique closing sentence ends the note.`;
+    const sidecar: Record<string, unknown> = {
+      honest: { text: 'found', createdAt: 0, updatedAt: 0, source: 'user', quote: 'unique closing sentence' },
+    };
+    for (let i = 1; i <= 1_000; i += 1) sidecar[`miss${i}`] = { text: 't', createdAt: i, updatedAt: i, source: 'user', quote: 'e' };
+    sidecar.late = { text: 'late', createdAt: 5_000, updatedAt: 5_000, source: 'user', quote: 'ends the note' };
+
+    const plain = await start(openDoc());
+    let began = performance.now();
+    await plain.dobj.create({ folderId: 'folder', ownerId: 'owner', markdown } as never);
+    const base = performance.now() - began;
+    const opened = await start(openDoc());
+    began = performance.now();
+    await opened.dobj.create({ folderId: 'folder', ownerId: 'owner', author: 'importer', markdown, comments: sidecar } as never);
+    const extra = performance.now() - began - base;
+
+    expect(anchorText(opened.dobj.document, anchorOf(opened, 'honest')!)).toBe('unique closing sentence');
+    expect(anchorOf(opened, 'miss1')).toBeUndefined();
+    expect(anchorOf(opened, 'late'), `searches stop at ${MAX_IMPORT_SEARCHES} per import`).toBeUndefined();
+    expect(extra, `1,000 failing quotes added ${Math.round(extra)} ms to a ${Math.round(base)} ms import`).toBeLessThan(1_500);
+  });
+
+  it('import admits quote bytes: 32 long overlapping comments stop at the comment room and the doc stays typeable', async () => {
+    const cap = 100_000;
+    withLimits({ stateCapBytes: cap });
+    const ids = Array.from({ length: 32 }, (_, i) => `k${i}`);
+    const text = 'abcdefghij'.repeat(500);
+    const markdown = `${ids.map((id) => `%%m:${id}:start%%`).join('')}${text}${ids.map((id) => `%%m:${id}:end%%`).reverse().join('')}`;
+    const sidecar = Object.fromEntries(ids.map((id, i) => [id, { text: 't', createdAt: i, updatedAt: i, source: 'user' }]));
+    const opened = await start(openDoc());
+    await opened.dobj.create({ folderId: 'folder', ownerId: 'owner', author: 'importer', markdown, comments: sidecar } as never);
+    const anchored = ids.filter((id) => anchorOf(opened, id)?.status === 'anchored');
+    expect(anchored.length, 'some fit').toBeGreaterThan(0);
+    expect(anchored.length, 'not all 32 quotes fit').toBeLessThan(32);
+    expect(anchored, 'earliest first').toEqual(ids.slice(0, anchored.length));
+    expect(Y.encodeStateAsUpdate(opened.dobj.document).byteLength).toBeLessThanOrEqual(cap * COMMENT_STATE_SHARE);
+    await expectTypeable(opened);
+  });
 });
 
 describe('T4.1 createComment RPC @p:tech-3', () => {
@@ -519,6 +582,26 @@ describe('T4.1 createComment RPC @p:tech-3', () => {
     expect(await capped.dobj.createComment({ author: 'ada', id: 'a', text: 't', anchor: positions(capped.dobj.document, 'quick') })).toMatchObject({ ok: true });
     expect(await capped.dobj.createComment({ author: 'ada', id: 'b', text: 't', parentId: 'a' })).toMatchObject({ ok: true });
     expect(await capped.dobj.createComment({ author: 'ada', id: 'c', text: 't', anchor: positions(capped.dobj.document, 'lazy') })).toMatchObject({ ok: false, status: 409, error: 'comment-cap' });
+  });
+
+  it('create admits quote bytes: long overlapping comments are refused doc-cap before the cap and the doc stays typeable', async () => {
+    const cap = 120_000;
+    withLimits({ stateCapBytes: cap });
+    const whole = 'abcdefghij'.repeat(900);
+    const opened = await body(whole);
+    let refused: unknown = null;
+    let made = 0;
+    for (let i = 0; i < 32 && !refused; i += 1) {
+      const result = await opened.dobj.createComment({ author: 'ben', id: `long${i}`, text: 't', anchor: positions(opened.dobj.document, whole) });
+      if (result.ok) made += 1;
+      else refused = result;
+    }
+    expect(made).toBeGreaterThan(0);
+    expect(refused).toEqual({ ok: false, status: 413, error: 'doc-cap' });
+    expect(Y.encodeStateAsUpdate(opened.dobj.document).byteLength).toBeLessThanOrEqual(cap * COMMENT_STATE_SHARE);
+    const reply = await opened.dobj.createComment({ author: 'ben', id: 'reply', text: 'x'.repeat(10_000), parentId: 'long0' });
+    expect(reply, 'a reply counts its bytes too').toMatchObject({ ok: false, status: 413, error: 'doc-cap' });
+    await expectTypeable(opened);
   });
 
   it('runs one quote search for a position-less anchor: a unique match, an ambiguous one, and none', async () => {
