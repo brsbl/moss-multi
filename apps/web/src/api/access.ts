@@ -64,6 +64,19 @@ export async function folderChain(db: Db, folderId: string): Promise<string[]> {
   return rows.map((row) => row.id);
 }
 
+/**
+ * SQL that holds while user `?{user}` manages doc `?{doc}` (A§8): it owns the vault, or holds an `owner` grant on the
+ * doc or a folder of its chain. It is `can(resolveDocAccess(user, doc).role, 'manage')` for a signed-in person, so a
+ * write that conditions on it loses to a revocation that commits first.
+ */
+export const managesDoc = (doc: number, user: number) => `(EXISTS (SELECT 1 FROM docs WHERE id = ?${doc} AND owner_user_id = ?${user})
+  OR EXISTS (SELECT 1 FROM doc_members WHERE doc_id = ?${doc} AND principal_id = ?${user} AND role = 'owner')
+  OR EXISTS (WITH RECURSIVE chain(id, parent_id, depth) AS (
+      SELECT f.id, f.parent_id, 1 FROM folders f JOIN docs d ON d.folder_id = f.id WHERE d.id = ?${doc}
+      UNION ALL SELECT f.id, f.parent_id, chain.depth + 1 FROM folders f JOIN chain ON f.id = chain.parent_id
+        WHERE chain.depth < ${MAX_FOLDER_DEPTH}
+    ) SELECT 1 FROM folder_members m JOIN chain ON m.folder_id = chain.id WHERE m.principal_id = ?${user} AND m.role = 'owner'))`;
+
 /** Grants on the folders of `chain`, and on the doc when there is one. */
 async function grantRoles(db: Db, ids: string[], chain: string[], docId: string | null): Promise<Role[]> {
   if (ids.length === 0) return [];
