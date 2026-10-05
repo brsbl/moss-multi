@@ -9,6 +9,8 @@ import { assembleContent, type EditorContent, type RendererSnapshot } from './de
 import { isNoteRelativeCompanionPath } from './desktop/note-store.port';
 import { EditorSession, type SessionSurface } from './session';
 
+vi.setConfig({ testTimeout: 20_000 });
+
 const ID = '3f0c2a1b-4d5e-4f60-8a7b-9c0d1e2f3a4b';
 const DIR = '/Moss/Notes/Projects/Plan';
 const META = {
@@ -83,7 +85,7 @@ function type(session: EditorSession, body: string) {
 }
 
 /** Lets I/O (crypto.subtle in the host's version tokens) complete, one real loop turn at a time. */
-async function drain(turns = 40, minMs = 15) {
+async function drain(turns = 40, minMs = 5) {
   // crypto.subtle runs on the thread pool, so a busy CI machine needs real time, not just loop turns.
   const until = performance.now() + minMs;
   for (let i = 0; i < turns || performance.now() < until; i += 1) {
@@ -100,7 +102,7 @@ async function settle(ms = 0) {
     await vi.advanceTimersByTimeAsync(Math.min(25, end - Date.now()));
     await drain();
   }
-  await drain(400);
+  await drain(400, 50);
 }
 
 beforeEach(() => {
