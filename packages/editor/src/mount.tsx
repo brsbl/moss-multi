@@ -272,12 +272,45 @@ class FrameSurface implements SessionSurface {
 
   /** The element in this editor's React tree, portals included, that last took focus. */
   focusTarget: HTMLElement | null = null;
+  /** Body-level containers of moss's portalled popovers that this editor's React tree has used. */
+  private readonly portals = new Set<HTMLElement>();
+  private unfreeze: (() => void) | null = null;
+
+  /** Records the body-level container of an event target outside the root (React events bubble through portals). */
+  notePortal(target: EventTarget | null): void {
+    for (const portal of this.portals) if (!portal.isConnected) this.portals.delete(portal);
+    if (!(target instanceof Node) || this.host.contains(target)) return;
+    let el: HTMLElement | null = target instanceof HTMLElement ? target : target.parentElement;
+    while (el?.parentElement && el.parentElement !== document.body) el = el.parentElement;
+    if (el?.parentElement === document.body && !el.contains(this.host)) this.portals.add(el);
+  }
 
   freeze(frozen: boolean): void {
-    // inert covers the root; moss's popovers (the comment composer, replies, menus) portal into document.body, so
-    // the pane also swallows their input (EditorPane), and whatever of it holds focus lets go.
-    const active = document.activeElement;
-    if (frozen && active instanceof HTMLElement && (active === this.focusTarget || this.host.contains(active))) active.blur();
+    this.unfreeze?.();
+    this.unfreeze = null;
+    if (frozen) {
+      // inert covers the root and the containers of moss's popovers (the comment composer, replies, menus), which
+      // portal into document.body; native capture listeners cancel any input still aimed at either, and whatever of
+      // them holds focus lets go. EditorPane's capture handlers also catch a popover not seen before.
+      const owned = (node: EventTarget | null) =>
+        node instanceof Node && (this.host.contains(node) || node === this.focusTarget || [...this.portals].some((portal) => portal.contains(node)));
+      const active = document.activeElement;
+      if (active instanceof HTMLElement && owned(active)) active.blur();
+      const inerted = [...this.portals].filter((portal) => portal.isConnected && !portal.inert);
+      for (const portal of inerted) portal.inert = true;
+      const block = (event: Event) => {
+        if (!owned(event.target)) return;
+        if (event.type === 'focusin') (event.target as HTMLElement).blur?.();
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      };
+      const types = ['keydown', 'keypress', 'keyup', 'beforeinput', 'input', 'textInput', 'compositionstart', 'paste', 'cut', 'drop', 'pointerdown', 'mousedown', 'click', 'submit', 'focusin'];
+      for (const type of types) window.addEventListener(type, block, true);
+      this.unfreeze = () => {
+        for (const type of types) window.removeEventListener(type, block, true);
+        for (const portal of inerted) portal.inert = false;
+      };
+    }
     this.set({ frozen });
   }
 
@@ -325,6 +358,8 @@ class FrameSurface implements SessionSurface {
   }
 
   dispose() {
+    this.unfreeze?.();
+    this.unfreeze = null;
     this.stopUpdates?.();
     this.stopComments?.();
   }
@@ -469,6 +504,7 @@ function EditorPane({ surface, session, noteId, onNavigateToNote }: {
       data-moss-editor-root=""
       inert={state.frozen}
       onFocusCapture={(event) => {
+        surface.notePortal(event.target);
         if (surface.getState().frozen) {
           (event.target as HTMLElement).blur?.();
           return;
@@ -484,7 +520,10 @@ function EditorPane({ surface, session, noteId, onNavigateToNote }: {
       onPasteCapture={swallow}
       onCutCapture={swallow}
       onDropCapture={swallow}
-      onPointerDownCapture={swallow}
+      onPointerDownCapture={(event) => {
+        surface.notePortal(event.target);
+        swallow(event);
+      }}
       onMouseDownCapture={swallow}
       onPointerUpCapture={swallow}
       onMouseUpCapture={swallow}
