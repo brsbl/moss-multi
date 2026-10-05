@@ -273,6 +273,29 @@ describe('T5.2 checker regressions: duplicates and lease cycles @p:mean-2', () =
     expect(sam.events.filter((e) => e.t === 'suggest-refused' || e.t === 'write-refused')).toEqual([]);
     expect(sam.closed).toBeNull();
   });
+
+  it('delete_only_cycles_on_one_socket: delete-only suggestions opened then withdrawn or rejected, never refused', async () => {
+    const opened = await seeded();
+    const doc = opened.dobj.document;
+    const sam = await on(opened, SAM);
+    const pool: LeaseGrant[] = [];
+    const next = async () => {
+      if (pool.length === 0) pool.push(...(await leases(sam)));
+      return pool.shift()!;
+    };
+    for (let i = 0; i < 12; i += 1) {
+      const grant = await next();
+      const targets = spansOfText(doc, 'world');
+      const request: SuggestRequest = i % 3 === 2
+        ? opsRequest(grant.record, deleteUpdate(targets))
+        : { t: 'suggest-delete', record: grant.record, part: { id: `d${i}`, targets } };
+      expect(await send(sam, request), `cycle ${i}`).toMatchObject({ t: 'suggest-ack', record: grant.record });
+      if (i % 2 === 0) expect(await send(sam, { t: 'suggest-withdraw', record: grant.record })).toMatchObject({ t: 'suggest-ack' });
+      else expect(rejectRecord(doc, grant.record, EDITOR)).toEqual({ ok: true });
+    }
+    expect(sam.events.filter((e) => e.t === 'suggest-refused' || e.t === 'write-refused')).toEqual([]);
+    expect(sam.closed).toBeNull();
+  });
 });
 
 describe('T5.2 continuations after accept @p:mean-2', () => {

@@ -4,8 +4,8 @@
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
-import { recordDigest } from '@moss-multi/core/suggest/apply';
-import { closeRecord, readMeta, readRecord } from '../suggest/records.ts';
+import { deleteUpdate, recordDigest } from '@moss-multi/core/suggest/apply';
+import { closeRecord, newSuggestionsClient, readMeta, readRecord, SuggestionsWriter } from '../suggest/records.ts';
 import { acceptRecord, nodeRegistry, previewRecord, rejectRecord } from '../suggest/review.ts';
 import { ForkShim } from '../suggest/fork-shim.ts';
 import { EDITOR, OTHER_SUGGESTER, seededBody, select, spansOfText, SUGGESTER } from '../suggest/test-support.ts';
@@ -316,6 +316,40 @@ describe('T5.2 leases never run out in ordinary suggesting @p:mean-2', () => {
     const hoard = [ingest.lease(sam()), ingest.lease(sam()), ingest.lease(sam())];
     expect(hoard.at(-1)).toEqual({ ok: false, reason: 'lease-cap' });
   });
+
+  it('delete_only_records_bind_their_lease: delete parts and struct-free ops, opened and closed on one connection, never hit lease-cap', () => {
+    const live = seededBody();
+    const ingest = ingestOn(live);
+    for (let i = 0; i < 12; i += 1) {
+      const grant = leaseOne(ingest, sam());
+      const result = i % 3 === 2
+        ? ingest.ops(sam(), grant.record, deleteUpdate(spansOfText(live, 'world')))
+        : ingest.delete(sam(), grant.record, { id: `d${i}`, targets: spansOfText(live, 'world') });
+      expect(result, `cycle ${i}`).toMatchObject({ ok: true, record: grant.record });
+      if (i % 2 === 0) expect(ingest.withdraw(sam(), grant.record)).toMatchObject({ ok: true });
+      else expect(rejectRecord(live, grant.record, EDITOR)).toEqual({ ok: true });
+    }
+    // The bound lease writes on into its record (an existing record id, not a fresh reservation).
+    const open = leaseOne(ingest, sam());
+    expect(ingest.delete(sam(), open.record, { id: 'a', targets: spansOfText(live, 'world') })).toMatchObject({ ok: true, record: open.record });
+    expect(ingest.ops(sam(), open.record, frame(live, open.client, (doc) => firstBlock(doc).insert(0, 'x')))).toMatchObject({ ok: true, record: open.record });
+    expect([ingest.lease(sam()), ingest.lease(sam()), ingest.lease(sam())].at(-1)).toEqual({ ok: false, reason: 'lease-cap' });
+  });
+
+  it('a reserved id opens a record only from the connection its lease is bound to', () => {
+    const live = seededBody();
+    const ingest = ingestOn(live);
+    const grant = leaseOne(ingest, sam('c-one'));
+    const part = { id: 'd', targets: spansOfText(live, 'world') };
+    expect(ingest.delete(sam('c-two'), grant.record, part)).toEqual({ ok: false, reason: 'lease' });
+    expect(ingest.ops(sam('c-two'), grant.record, deleteUpdate(spansOfText(live, 'world')))).toEqual({ ok: false, reason: 'lease' });
+    ingest.expireConnection('c-one');
+    expect(ingest.delete(sam('c-one'), grant.record, part)).toEqual({ ok: false, reason: 'lease' });
+    // Resumed onto a new connection, it opens the record there.
+    expect(ingest.lease(sam('c-two'), [grant.client], 0)).toMatchObject({ ok: true });
+    expect(ingest.delete(sam('c-two'), grant.record, part)).toMatchObject({ ok: true, record: grant.record });
+    expect(readMeta(live, grant.record)).toMatchObject({ status: 'open', author: SUGGESTER.id });
+  });
 });
 
 /** A doc of `paragraphs` paragraphs: 3 000 make the 1.69 MB census doc. */
@@ -422,6 +456,8 @@ describe('T5.2 cost: ingest and the lease check are O(frame) @p:mean-2', () => {
     /** Ingest of one fixed `suggest-ops` frame after `closed` closed records, aimed at a chain `depth` accepts deep. */
     const run = (closed: number, depth: number): number => {
       const live = seededBody();
+      // As in the DocDO: records are written under S, so a close drops S clocks.
+      new SuggestionsWriter(live, newSuggestionsClient(live));
       let n = 0;
       const ingest = ingestOn(live);
       /** Each record gets its own connection's lease, expired once used, so the live-lease cap never bites. */
@@ -460,15 +496,21 @@ describe('T5.2 cost: ingest and the lease check are O(frame) @p:mean-2', () => {
           acceptAsIs(live, result.record);
         });
       }
-      return median(times);
+      // The first frame walks the whole chain (as after a wake); later ones ride the compressed path.
+      return { first: times[0], median: median(times) };
     };
     run(5, 1);
     const few = run(5, 1);
     const many = run(3_000, 1);
     const deep = run(5, 2_000);
-    console.log(`T5.2 fixed frame: ${few.toFixed(3)} ms (5 closed, depth 1); ${many.toFixed(3)} ms (3000 closed); ${deep.toFixed(3)} ms (depth 2000)`);
-    expect(many).toBeLessThan(few * 3 + 1);
-    expect(deep).toBeLessThan(few * 3 + 1);
+    console.log(
+      `T5.2 fixed frame: ${few.median.toFixed(3)} ms (5 closed, depth 1); ${many.median.toFixed(3)} ms (3000 closed); ${deep.median.toFixed(3)} ms (depth 2000); ` +
+        `first frame ${few.first.toFixed(3)} / ${many.first.toFixed(3)} / ${deep.first.toFixed(3)} ms`,
+    );
+    expect(many.median).toBeLessThan(few.median * 3 + 1);
+    expect(deep.median).toBeLessThan(few.median * 3 + 1);
+    expect(many.first).toBeLessThan(few.first * 3 + 5);
+    expect(deep.first).toBeLessThan(few.first * 3 + 5);
   });
 });
 
