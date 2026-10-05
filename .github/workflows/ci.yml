@@ -116,6 +116,10 @@ jobs:
         run: node scripts/ci/trace.mjs
         env:
           TRACE_MILESTONE: ${{ needs.plan.outputs.trace_milestone }}
+      # Every journey group's recorded p95 fits the 9-minute shard budget (scripts/ci/journey-minutes.json).
+      - name: Shard budget
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: node scripts/ci/plan.mjs budget
       - name: Vendor drift
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: node scripts/moss-vendor.mjs drift
@@ -252,6 +256,11 @@ jobs:
           node scripts/stack.mjs start --run-id "$RUN_ID" --prebuilt .local-stack/prebuilt/dist --hooks
           --expect-commit "${{ needs.build.outputs.commit }}" --expect-bundle "${{ needs.build.outputs.bundleHash }}"
       - run: echo "STACK_STATE=$PWD/.local-stack/runs/$RUN_ID/state.json" >> "$GITHUB_ENV"
+      # T0.9d probe (temporary): CPU by process every 2 s while the journeys run.
+      - name: Sample CPU
+        run: |
+          mkdir -p e2e/test-results
+          nohup setsid bash -c 'while true; do echo "== $(date +%T.%N)"; top -b -n1 -w 220 | head -22; sleep 2; done' > e2e/cpu.log 2>&1 < /dev/null &
       - name: Selftests, then the group's journeys
         working-directory: e2e
         env:
@@ -284,6 +293,7 @@ jobs:
             e2e/test-results/
             e2e/calibration-results/
             e2e/playwright-report/
+            e2e/cpu.log
             .local-stack/runs/*/wrangler.log
             .local-stack/runs/*/state.json
           retention-days: 7
