@@ -301,16 +301,14 @@ describe('no doc socket outlives its sign-out registry row @p:ppl-2', () => {
     vi.setSystemTime(Date.now() + SESSION_MAX_MS / 2);
     const young = await connect(opened, { id: 'ada', session: 'sess-a' });
     expect(opened.backing.alarm, 'a younger socket does not push the close later').toBe(due);
-    vi.setSystemTime(due!);
-    const clock = [Date.now(), vi.isFakeTimers()];
     const woken = await start(wake(opened));
-    clock.push(Date.now(), vi.isFakeTimers());
+    // wake() clears the fake timers, which also resets the fake clock, so the alarm's time is set after it.
+    vi.setSystemTime(due!);
     old.opened = woken;
     young.opened = woken;
     await woken.dobj.alarm();
-    clock.push(Date.now(), vi.isFakeTimers());
     expect(old.closed?.code, 'it reconnects and registers afresh').toBe(1013);
-    expect(young.closed, JSON.stringify({ clock, due, states: woken.state.getWebSockets().map((ws) => (ws as unknown as { deserializeAttachment(): unknown }).deserializeAttachment()) })).toBeNull();
+    expect(young.closed).toBeNull();
     expect(woken.backing.alarm, 'the younger socket\'s close is scheduled next').toBeGreaterThan(Date.now());
     expect(woken.backing.alarm!).toBeLessThan(Date.now() + SESSION_MAX_MS);
   });
