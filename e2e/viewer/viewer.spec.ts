@@ -222,6 +222,55 @@ test('reaches the network only through the injected services: media, links and e
   expect(seen.pageErrors).toEqual([]);
 });
 
+// moss's cached screenshots of the fixture's three HTML blocks: one in moss's cache, one where older moss wrote it
+// (moss's ensure still reads it), and one never captured.
+const CACHED = 'assets/.moss-cache/html-preview/html-preview-f6f3e7c49f7eab85.png';
+const LEGACY = 'assets/html-preview-cc4467ed46ca7e18.png';
+const UNCAPTURED = ['assets/.moss-cache/html-preview/html-preview-7110f0621789a24b.png', 'assets/html-preview-7110f0621789a24b.png'];
+
+const htmlBlocks = (page: Page) => page.locator('[data-moss-viewer] [data-block-decorator-key]:has([data-moss-html-preview-viewport])');
+
+/** Brings each HTML block into view (its screenshot loads lazily) and waits until it settles. */
+async function settleHtmlBlocks(page: Page) {
+  const blocks = htmlBlocks(page);
+  await expect(blocks).toHaveCount(3);
+  for (const block of await blocks.all()) {
+    await block.scrollIntoViewIfNeeded();
+    await expect(block.locator('[data-testid="html-preview-loading"]')).toHaveCount(0);
+  }
+  return blocks;
+}
+
+test("HTML blocks show moss's cached screenshot through assetUrl, else Preview unavailable; nothing runs the HTML", async ({ page }) => {
+  const seen = watch(page);
+  await mount(page);
+  const blocks = await settleHtmlBlocks(page);
+  const shown = (index: number) => blocks.nth(index).locator('img[alt="HTML preview"]');
+
+  await expect(shown(0)).toHaveAttribute('src', `/svc/${CACHED}?v=0`);
+  await expect.poll(() => shown(0).evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(1280);
+  await expect(shown(1)).toHaveAttribute('src', new RegExp(`^/svc/${LEGACY.replace(/[.]/g, '\\.')}\\?v=\\d+$`));
+  await expect.poll(() => shown(1).evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(1280);
+  for (const index of [0, 1]) await expect(blocks.nth(index).getByText('Preview unavailable')).toHaveCount(0);
+  await expect(blocks.nth(2).getByText('Preview unavailable')).toBeVisible();
+  await expect(shown(2)).toHaveCount(0);
+
+  // Pressing a preview neither runs the HTML in a frame nor opens its source.
+  await blocks.nth(0).click();
+  await blocks.nth(1).dblclick();
+  await expect(page.locator('iframe[title^="HTML preview"]')).toHaveCount(0);
+  await expect(page.locator('[data-moss-viewer] textarea')).toHaveCount(0);
+
+  // Each screenshot was named by moss's hash and fetched from the URL assetUrl returned for it, and nothing else.
+  const recorded = await calls(page);
+  const refs = new Set(recorded.assetUrl.map((call) => call.ref));
+  for (const ref of [CACHED, LEGACY, ...UNCAPTURED]) expect(refs).toContain(ref);
+  const previews = server.media.filter((request) => request.path.includes('html-preview-')).map((request) => request.path);
+  expect(new Set(previews)).toEqual(new Set([CACHED, `assets/.moss-cache/html-preview/html-preview-cc4467ed46ca7e18.png`, LEGACY, ...UNCAPTURED].map((ref) => `/svc/${ref}`)));
+  expect(seen.requests.filter(({ url }) => url.includes('html-preview-') && !new URL(url).pathname.startsWith('/svc/assets/'))).toEqual([]);
+  expect(seen.pageErrors).toEqual([]);
+});
+
 for (const theme of ['light', 'dark'] as const) {
   test(`fixture shot, ${theme}`, async ({ page, browserName }, testInfo) => {
     await mount(page, theme);
@@ -229,6 +278,9 @@ for (const theme of ['light', 'dark'] as const) {
     const frames = page.locator(`iframe[src^="${PROVIDER}/embed/Tweet.html"]`);
     // Post frames load lazily; bring each into view once so the shot shows them.
     for (const frame of await frames.all()) await frame.scrollIntoViewIfNeeded();
+    const blocks = await settleHtmlBlocks(page);
+    await expect(blocks.nth(0).locator('img[alt="HTML preview"]')).toHaveAttribute('src', `/svc/${CACHED}?v=0`);
+    await expect(blocks.nth(2).getByText('Preview unavailable')).toBeVisible();
     await page.evaluate(() => window.scrollTo(0, 0));
     await page.evaluate(() => document.fonts.ready.then(() => undefined));
     await expect(page.locator('[data-moss-viewer]')).toHaveAttribute('data-theme', theme);
