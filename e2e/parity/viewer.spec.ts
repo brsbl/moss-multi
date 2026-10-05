@@ -89,12 +89,19 @@ async function api(page: Page, method: 'GET' | 'POST', path: string, data?: unkn
   return response.json() as Promise<Record<string, unknown>>;
 }
 
-/** The owner's notes, and a reader holding viewer on the owner's vault. */
-async function seed(browser: Browser, theme: Theme): Promise<{ reader: Principal; docs: Record<string, string> }> {
+interface Seeded {
+  reader: Principal;
+  docs: Record<string, string>;
+}
+
+let seeded: Promise<Seeded> | null = null;
+
+/** The owner's notes, and a reader holding viewer on the owner's vault; once for both themes (sign-up is rate limited). */
+async function seed(browser: Browser): Promise<Seeded> {
   const run = `parity-${process.env.RUN_ID ?? 'local'}-${Date.now().toString(36)}`;
-  const owner = await mintPrincipal(stack.baseUrl, run, `viewer-owner-${theme}`, 1);
-  const reader = await mintPrincipal(stack.baseUrl, run, `viewer-reader-${theme}`, 2);
-  const page = await newPage(browser, theme);
+  const owner = await mintPrincipal(stack.baseUrl, run, 'viewer-owner', 1);
+  const reader = await mintPrincipal(stack.baseUrl, run, 'viewer-reader', 2);
+  const page = await newPage(browser, 'light');
   try {
     await page.context().addCookies(await signIn(stack.baseUrl, owner));
     for (const title of TARGETS) await api(page, 'POST', '/api/docs', { title, markdown: `${title}, a wiki link's target.` });
@@ -138,7 +145,8 @@ async function viewerStyles(browser: Browser, theme: Theme, note: (typeof NOTES)
 
 for (const theme of THEMES) {
   test(`viewer ${theme}: every family and the title compute the styles the editor's read-only view does`, async ({ browser }) => {
-    const { reader, docs } = await seed(browser, theme);
+    seeded ??= seed(browser);
+    const { reader, docs } = await seeded;
     const differences: string[] = [];
     mkdirSync(OUT, { recursive: true });
     for (const note of NOTES) {

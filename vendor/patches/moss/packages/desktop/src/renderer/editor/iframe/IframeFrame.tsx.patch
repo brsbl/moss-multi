@@ -1,7 +1,7 @@
 diff --git a/packages/desktop/src/renderer/editor/iframe/IframeFrame.tsx b/packages/desktop/src/renderer/editor/iframe/IframeFrame.tsx
 --- a/packages/desktop/src/renderer/editor/iframe/IframeFrame.tsx
 +++ b/packages/desktop/src/renderer/editor/iframe/IframeFrame.tsx
-@@ -9,8 +9,12 @@
+@@ -9,8 +9,14 @@
   * a `data:` document keeps an opaque (cross-app) origin that still loads. This
   * preserves the existing `HtmlPreviewIframe` behavior exactly.
   */
@@ -12,14 +12,17 @@ diff --git a/packages/desktop/src/renderer/editor/iframe/IframeFrame.tsx b/packa
 +// sandboxed frame document, which takes the HTML by postMessage, and are never same-origin with it.
 +// Every sandbox keeps only the flags the engine supports, so WebKit logs no invalid-flag error.
 +import { feedHtmlFrame, HTML_FRAME_IFRAME_SANDBOX, htmlFrameSrc, supportedSandbox } from '@moss-multi/host/html-frame';
++// The note's own frame document where its host serves one per note (the viewer).
++import { useCurrentNoteId } from '../CurrentNoteIdContext';
  
  import type { IframeModel } from './iframe-model';
  
-@@ -34,17 +38,30 @@ export const IframeFrame = forwardRef<HTMLIFrameElement, IframeFrameProps>(
+@@ -34,17 +40,31 @@ export const IframeFrame = forwardRef<HTMLIFrameElement, IframeFrameProps>(
    ): JSX.Element {
      const sourceValue =
        model.source.kind === 'remote' ? model.source.src : model.source.srcDoc;
-+    const frameSrc = model.source.kind === 'srcDoc' ? htmlFrameSrc() : null;
++    const noteId = useCurrentNoteId();
++    const frameSrc = model.source.kind === 'srcDoc' ? htmlFrameSrc(noteId) : null;
      const src = useMemo(
 -      () => (model.source.kind === 'remote' ? sourceValue : toIframeDataUrl(sourceValue)),
 -      [model.source.kind, sourceValue]

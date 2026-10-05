@@ -19,6 +19,7 @@ import {
   BlockNodeShell,
   MediaHeaderButton,
   MediaNodeHeader,
+  useIsEditorEditable,
   useMediaFullscreen,
   useMediaNodeActions
 } from '../components/media-primitives';
@@ -200,7 +201,11 @@ function RawHtmlBlockquoteComponent({
   const [editor] = useLexicalComposerContext();
   const [isSelected, setSelected, clearSelection] = useLexicalNodeSelection(nodeKey);
   const { handleDelete, handleGapClick } = useMediaNodeActions(nodeKey);
-  const [isEditing, setIsEditing] = useState(false);
+  // moss-multi seam: read-only-decorators (T3.8): a read-only HTML block opens no source editor and offers no Edit,
+  // Delete or Fullscreen.
+  const [isEditing, setEditing] = useState(false);
+  const editable = useIsEditorEditable();
+  const setIsEditing = useCallback((next: boolean) => setEditing(next && editor.isEditable()), [editor]);
   const [hasTextSelection, setHasTextSelection] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [localRawHtml, setLocalRawHtml] = useRegisterDraft(editor, nodeKey, rawHtml, 'setRawHtml', textareaRef, isEditing);
@@ -445,16 +450,20 @@ function RawHtmlBlockquoteComponent({
                 className="absolute right-2 top-2 z-10 flex items-center gap-1 opacity-0 transition-opacity group-hover/decorator:opacity-100 group-focus-within/decorator:opacity-100"
                 onClick={(e) => e.stopPropagation()}
               >
-                <MediaHeaderButton
-                  icon={Pencil}
-                  title="Edit HTML"
-                  onClick={() => setIsEditing(true)}
-                />
-                <MediaHeaderButton
-                  icon={Trash2}
-                  title="Delete HTML block"
-                  onClick={handleDelete}
-                />
+                {editable ? (
+                  <>
+                    <MediaHeaderButton
+                      icon={Pencil}
+                      title="Edit HTML"
+                      onClick={() => setIsEditing(true)}
+                    />
+                    <MediaHeaderButton
+                      icon={Trash2}
+                      title="Delete HTML block"
+                      onClick={handleDelete}
+                    />
+                  </>
+                ) : null}
               </div>
               <blockquote className="border-l-2 border-border-default pl-4 pr-10">
                 <div className="space-y-3 text-body text-ink-default">
@@ -500,7 +509,11 @@ function MossHtmlPreviewComponent({
   const noteId = useCurrentNoteId();
   const [isSelected, setSelected, clearSelection] = useLexicalNodeSelection(nodeKey);
   const { handleDelete, handleGapClick } = useMediaNodeActions(nodeKey);
-  const [isEditing, setIsEditing] = useState(false);
+  // moss-multi seam: read-only-decorators (T3.8): a read-only HTML block opens no source editor and offers no Edit,
+  // Delete or Fullscreen.
+  const [isEditing, setEditing] = useState(false);
+  const editable = useIsEditorEditable();
+  const setIsEditing = useCallback((next: boolean) => setEditing(next && editor.isEditable()), [editor]);
   const [hasTextSelection, setHasTextSelection] = useState(false);
   const [isInteractive, setIsInteractive] = useState(false);
   const { isFullscreen, enterFullscreen, exitFullscreen } = useMediaFullscreen();
@@ -990,7 +1003,7 @@ function MossHtmlPreviewComponent({
 
   const previewOverlay = (
     <>
-      {isInteractive ? (
+      {isInteractive && editable ? (
         <div
           className="pointer-events-none absolute left-0 right-0 top-0 z-20 flex items-center justify-end px-2 py-1.5 opacity-0 transition-opacity group-hover/decorator:pointer-events-auto group-hover/decorator:opacity-100 group-focus-within/decorator:pointer-events-auto group-focus-within/decorator:opacity-100"
           onClick={(e) => e.stopPropagation()}
@@ -1053,11 +1066,13 @@ function MossHtmlPreviewComponent({
                 onDelete={handleDelete}
                 onFullscreen={enterFullscreen}
               >
-                <MediaHeaderButton
-                  icon={Pencil}
-                  title="Edit HTML"
-                  onClick={() => setIsEditing(true)}
-                />
+                {editable ? (
+                  <MediaHeaderButton
+                    icon={Pencil}
+                    title="Edit HTML"
+                    onClick={() => setIsEditing(true)}
+                  />
+                ) : null}
               </MediaNodeHeader>
             ) : null,
             activationBadge: !isInteractive ? (

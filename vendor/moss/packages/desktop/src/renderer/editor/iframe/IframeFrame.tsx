@@ -16,6 +16,8 @@ import type { CSSProperties, JSX } from 'react';
 // sandboxed frame document, which takes the HTML by postMessage, and are never same-origin with it.
 // Every sandbox keeps only the flags the engine supports, so WebKit logs no invalid-flag error.
 import { feedHtmlFrame, HTML_FRAME_IFRAME_SANDBOX, htmlFrameSrc, supportedSandbox } from '@moss-multi/host/html-frame';
+// The note's own frame document where its host serves one per note (the viewer).
+import { useCurrentNoteId } from '../CurrentNoteIdContext';
 
 import type { IframeModel } from './iframe-model';
 
@@ -39,7 +41,8 @@ export const IframeFrame = forwardRef<HTMLIFrameElement, IframeFrameProps>(
   ): JSX.Element {
     const sourceValue =
       model.source.kind === 'remote' ? model.source.src : model.source.srcDoc;
-    const frameSrc = model.source.kind === 'srcDoc' ? htmlFrameSrc() : null;
+    const noteId = useCurrentNoteId();
+    const frameSrc = model.source.kind === 'srcDoc' ? htmlFrameSrc(noteId) : null;
     const src = useMemo(
       () => (model.source.kind === 'remote' ? sourceValue : frameSrc ?? toIframeDataUrl(sourceValue)),
       [frameSrc, model.source.kind, sourceValue]

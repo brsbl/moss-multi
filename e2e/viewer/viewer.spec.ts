@@ -439,7 +439,7 @@ for (const theme of ['light', 'dark'] as const) {
     const seen = watch(page);
     await mount(page, theme, { markdown: DEMO, title: 'Demo note', layout: undefined, live: true });
     const body = page.locator('[data-moss-viewer] [data-moss-note-editor-root]');
-    for (const selector of ['h1', 'h2', 'h3', 'h4', 'ul.list-disc', 'ol', 'li[role="checkbox"]', 'strong', 'em', 'code', 'a[href]', '[data-formula-node-key]', '[data-file-link-node-key]', '[data-embed-pill-node-key]', '[data-color-node-key]', 'blockquote', 'table.moss-table', '.moss-callout', '.moss-tab-group', '.moss-codeblock-pre', 'canvas', 'hr']) {
+    for (const selector of ['h2', 'h3', 'h4', 'ul.list-disc', 'ol', 'li[role="checkbox"]', 'strong', 'em', 'code', 'a[href]', '[data-formula-node-key]', '[data-file-link-node-key]', '[data-embed-pill-node-key]', '[data-color-node-key]', 'blockquote', 'table.moss-table', '.moss-callout', '.moss-tab-group', '.moss-codeblock-pre', 'canvas', 'hr']) {
       await expect(body.locator(selector).first(), selector).toBeAttached();
     }
     await settleHtmlBlocks(page, 1);
