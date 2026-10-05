@@ -1,7 +1,10 @@
 // The principal plumbing against the real Worker: per-run @example.invalid principals sign up through the auth
 // API, each context carries its own session, and /api/me tells them apart (invariant 8 with real ids). And the
 // stack's own proxy answers every request it is handed.
+import { spawn } from 'node:child_process';
+import { mkdirSync, rmSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
+import { dirname } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { Actors } from '../lib/actors.ts';
 import { Stack } from '../lib/stack.ts';
@@ -65,4 +68,41 @@ test('every request handed to the stack as its pooled connections idle out is an
     }
   }
   expect(lost).toEqual([]);
+});
+
+// workerd runs the Worker, its Durable Objects and the asset server on one thread, and each D1 or DO storage commit
+// syncs to disk on it. On the runner's shared disk that sync waited behind gigabytes of other dirty pages for 10 s
+// and more, and every request, static assets included, waited with it (T0.9d: j00-import's POST /api/docs
+// timeouts). So writes keep landing while a 2 GB file flushes to the disk the workspace lives on.
+test('the stack keeps answering writes while the runner disk flushes a backlog @slow', async ({ browser }, testInfo) => {
+  test.skip(!process.env.STACK_STATE, 'needs a stack: node scripts/stack.mjs start --hooks');
+  test.skip(process.env.SLOW === 'exclude', '@slow: milestone gates, nightly and -f slow=true');
+  test.setTimeout(180_000);
+  const stack = Stack.fromState();
+  const actors = new Actors(browser, testInfo, { stack, runToken: `selftest-disk-${Date.now().toString(36)}` });
+  const ballast = testInfo.outputPath('ballast.bin');
+  mkdirSync(dirname(ballast), { recursive: true });
+  const writer = spawn('dd', ['if=/dev/zero', `of=${ballast}`, 'bs=1M', 'count=2048', 'conv=fsync'], { stdio: 'ignore' });
+  const flushed = new Promise((resolve) => writer.on('exit', resolve));
+  try {
+    const actor = await actors.session(await actors.principal('writer'));
+    const slow: string[] = [];
+    let writes = 0;
+    const until = Date.now() + 30_000;
+    while (Date.now() < until && (writer.exitCode === null || writes < 10)) {
+      const started = Date.now();
+      const response = await actor.context.request.post('/api/docs', { headers: { origin: stack.baseUrl }, data: {}, timeout: 15_000 });
+      const ms = Date.now() - started;
+      expect(response.status()).toBe(201);
+      writes += 1;
+      if (ms > 2_000) slow.push(`POST /api/docs ${ms} ms`);
+    }
+    expect(writes, 'writes landed while the disk flushed').toBeGreaterThanOrEqual(10);
+    expect(slow).toEqual([]);
+  } finally {
+    writer.kill();
+    await flushed;
+    rmSync(ballast, { force: true });
+    await actors.dispose();
+  }
 });
