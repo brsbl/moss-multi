@@ -334,7 +334,9 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
     if (event.type !== 'meta' && event.type !== 'vaults') return;
     if (event.type === 'vaults' || event.folderIds.length) refreshAll = true;
     if (event.type === 'meta') for (const id of event.docIds) pendingIds.add(id);
-    if (event.type === 'meta' && event.docIds.length) reopenDocs?.(event.docIds);
+    // A note this tab knows is in Trash comes back through the restore, which remounts its pane: not reopened here.
+    const reopen = event.type === 'meta' ? event.docIds.filter((id) => known.get(id)?.trashedAt == null) : [];
+    if (reopen.length) reopenDocs?.(reopen);
     requestWorkspaceRefresh();
   };
   const pins = () => readJson<Record<string, number>>(storage, PINS_KEY) ?? {};
