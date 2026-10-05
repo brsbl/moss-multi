@@ -58,6 +58,16 @@ function routeNavigation(store: Store, viewerNoteId: string, ownNoteId: string |
   return () => stops.forEach((stop) => stop());
 }
 
+function holdHtmlBlocks(event: Event): void {
+  const target = event.target instanceof Element ? event.target : null;
+  const block = target?.closest('[data-block-decorator-key]');
+  // The HTML block's own frame, not a tab group or callout that holds one.
+  if (!block || block.querySelector('[data-moss-html-preview-viewport]')?.closest('[data-block-decorator-key]') !== block) return;
+  // Retry only asks for the cached screenshot again.
+  if (target?.closest('button[aria-label="Retry preview"]')) return;
+  event.stopImmediatePropagation();
+}
+
 function MossViewer({ noteId, note, onReady, onNavigateToNote }: {
   noteId: string;
   note: MossNoteContent;
@@ -120,6 +130,9 @@ export function mountMossViewer(el: HTMLElement, options: MossViewerOptions): Mo
   host.dataset.theme = options.theme ?? 'light';
   const activate = () => markActive(noteId);
   host.addEventListener('pointerdown', activate, true);
+  // A viewer never runs a note's HTML: a press on a HTML block neither starts moss's live preview nor opens its
+  // source. Registered before React's root listeners on this element, so moss's handlers never see it.
+  for (const type of ['click', 'dblclick']) host.addEventListener(type, holdHtmlBlocks, true);
   el.append(host);
 
   let settle: (value: void) => void = noop;
@@ -157,6 +170,7 @@ export function mountMossViewer(el: HTMLElement, options: MossViewerOptions): Mo
       mounted = false;
       root.unmount();
       host.removeEventListener('pointerdown', activate, true);
+      for (const type of ['click', 'dblclick']) host.removeEventListener(type, holdHtmlBlocks, true);
       host.remove();
       stopNavigation();
       unregister();

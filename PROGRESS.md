@@ -1,11 +1,11 @@
 # moss-multi progress
 
-**Overall: 49% done** (39 of 80 planned tasks verified)
+**Overall: 51% done** (41 of 81 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
-| M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 17 / 17 | in progress |
-| M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 15 / 19 | in progress |
+| M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 18 / 18 | in progress |
+| M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 16 / 19 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 7 / 11 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 0 / 9 | |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
@@ -57,6 +57,8 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-04 — T1.F3s verified: renaming a note through the API or creating one with a huge or adversarial title now stays within 20 ms of server CPU, and each identity's REST writes are rate-limited with a 429 that a server restart cannot reset; an exhausted identity stays refused after its PrincipalDO is evicted and woken (re-verified at d7f63a7).
 - 2026-10-04 — T1.F1 verified: Cmd+Z never removes a collaborator's characters typed into a paragraph or text node you created, through interleaved typing, splits and merges, reconnects and deletes, and restored text keeps its author and properties, in both engines; redo after a collaborator typed into a line the undo restored keeps their words (re-verified at 950b435).
 - 2026-10-04 — T2.3s verified: only the vault owner or a co-owner (by an owner grant on the note or a folder above it) can trash, restore or read a trashed note in Trash, never an editor, a link holder or an agent key; a restore into another folder needs edit there and never lands under a folder trashed meanwhile, a refused restore shows the server's sentence, everyone else meets the one 404 on a trashed note, and a revocation landing mid-trash or mid-restore wins.
+- 2026-10-04 — T0.13b verified: the read-only viewer (`packages/viewer` 0.2.0) shows an HTML block as moss's cached screenshot, falling back to the legacy cache path and then to "Preview unavailable", without ever running the HTML; the fixture's cached, legacy and missing blocks are shot in Chromium and WebKit.
+- 2026-10-04 — T1.F2 verified: each code, HTML and formula block's text now lives in its own small document that the server hides while no block names it and restores intact when one does, a copied block gets its own text, and one Cmd+Z undoes body and block edits together.
 
 ## T1.1s identity audit
 
@@ -94,10 +96,17 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T2.3s checker P2 (downgraded from Codex P1): a signed-out share-link holder gets 401, not 404, from trash, restore and the Trash read; nothing is disclosed (the 401 is identical for a missing note) and it predates T2.3s; A§8 confines the 401 exception to a credential-less CLI → align to 404 in an access follow-up.
 - T2.3s checker P2: the revocation tests in `trash-security.test.ts` use stub DocDO and PrincipalDO, so they do not prove open editors recover (or that a terminal editor on a live note is kicked) → T2.5.
 - T1.8 workspace follow-up implemented in T2.1: push events replace listing polling, changed document ids refresh metadata, and unchanged vault choices do not notify the switcher; awaiting CI and independent verification.
-- T1.9 checker P2: `$copyNode` must mint a new register identity for duplicated code, HTML and formula nodes before T3.3 uses that path; current clipboard copies serialize without the identity → T3.3 register extension.
-- T1.9 checker P2: rebind open field observers when a register map entry is replaced (live imports now mint unique ids; server imports are serialized) → register/import follow-up.
+- T0.13b checker P2: The settle helper only waits for the loading placeholder to disappear, not for a final state; `settleHtmlBlocks` in e2e/viewer/viewer.spec.ts should wait for the image to load or for "Preview unavailable" → viewer test follow-up.
+- T0.13b checker P2: The Edit, Fullscreen and Delete buttons still appear on hover over viewer HTML blocks, but do nothing → T2.6.
+- ~~T1.9 checker P2: `$copyNode` must mint a new register identity for duplicated code, HTML and formula nodes~~ closed by T1.F2: a copy mints its own id seeded with its source's text (registers unit test).
+- ~~T1.9 checker P2: rebind open field observers when a register map entry is replaced~~ closed by T1.F2: the map is gone and a payload doc is never replaced; resolving the doc on every write stays with T1.F4.
 - T1.9 checker P2: register writes diff by value without a caret hint, so typing inside a run of identical characters can land at the wrong position (seen after a peer's undo); FormulaPlugin's remote repaint diffs strings instead of using the event delta → register caret follow-up.
-- T1.9 checker P2: replace the full node-map refresh after every editor commit with targeted invalidation → register performance follow-up.
+- ~~T1.9 checker P2: replace the full node-map refresh after every editor commit with targeted invalidation~~ closed by T1.9s and T1.F2: root-only commits and same-node state replacements refresh no payload.
+- T1.F2 checker P2, **blocks T1.10 carrying real docs**: rule 10 of docs/design/registers.md, the DocDO refusing clients whose bundle predates payload docs (an M1 bundle can still write `Y.Map('registers')` through note updates, past the payload gate) → T1.10.
+- T1.F2 checker P2: each connection's set of withheld ids it writes (at most 64) lives in memory, so a DocDO wake resets it; the per-principal withheld bytes are durable and bound the total → payload follow-up.
+- T1.F2 checker P2 (attempt 3): an offline session that made more than 64 blocks and deleted them again before reconnecting still resends their payloads as unnamed writes, and the 65th closes 4409; the client could skip resending payloads its tree no longer names → payload follow-up.
+- T1.F2 checker P2 (attempt 3 review): `BodyUndo` records which payload managers a step touched, not their exact stack items, so when a peer makes the newest local payload item a no-op, Cmd+Z can undo an older payload edit before a newer body edit (no data lost) → T1.F4.
+- T1.F2 P2: text written into a payload while it was served is not charged to its writer when its block is deleted, so a deleted block's payload still holds its served bytes against the state cap for the 30-day TTL; it was visible to every reader while served → payload follow-up.
 
 - T1.6 checker: prune deleted layout identities, avoid unchanged localStorage writes and restrict ordinal migration to stores without identity metadata → local-layout follow-up. These need lifecycle and persisted-state regressions beyond this P1 repair.
 - T1.6 checker: bound link activation and preview must consume locally resolved note identity, not only its displayed title/state → T3.3 links.

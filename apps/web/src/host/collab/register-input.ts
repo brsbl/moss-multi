@@ -1,15 +1,15 @@
 import { useCallback, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import { $getNodeByKey, REDO_COMMAND, UNDO_COMMAND, type LexicalEditor } from 'lexical';
 import * as Y from 'yjs';
-import { registerDoc, REGISTER_LOCAL_ORIGIN } from '@moss-multi/sync/registers';
+import { payloadTextOf, registerDoc, REGISTER_LOCAL_ORIGIN } from '@moss-multi/sync/registers';
+import { payloadText } from '@moss-multi/sync/payload-docs';
 import { diffText } from '@moss-multi/core/text-diff';
 import { remapCaret } from '@moss-multi/core/doc-fields';
 
 type Input = HTMLInputElement | HTMLTextAreaElement;
+/** The payload text behind a node: its own payload doc's (A§10.10). */
 export function nodeRegister(editor: LexicalEditor, key: string): Y.Text | undefined {
-  const node = editor.getEditorState()._nodeMap.get(key) as unknown as { __regId?: string } | undefined;
-  const text = node?.__regId && registerDoc(editor)?.getMap('registers').get(node.__regId);
-  return text instanceof Y.Text ? text : undefined;
+  return payloadTextOf(editor, key);
 }
 
 /** Moss keeps its field and keyboard behavior; shared text replaces its local-only draft. */
@@ -18,14 +18,14 @@ export function useRegisterDraft(
   element: RefObject<HTMLTextAreaElement | null>, editing: boolean,
 ): [string, (text: string) => void] {
   const [value, display] = useState(initial);
-  const composing = useRef<{ doc: Y.Doc; base: Uint8Array; id: string } | null>(null);
+  const composing = useRef<{ doc: Y.Doc; base: Uint8Array } | null>(null);
   const write = useCallback((next: string) => {
     if (!registerDoc(editor)) { display(next); return; }
     if (!editor.isEditable()) return;
     display(next);
     const draft = composing.current;
     if (draft) {
-      const text = draft.doc.getMap<Y.Text>('registers').get(draft.id)!;
+      const text = payloadText(draft.doc);
       draft.doc.transact(() => text.applyDelta(diffText(text.toString(), next)), REGISTER_LOCAL_ORIGIN);
       return;
     }
@@ -52,8 +52,8 @@ export function useRegisterDraft(
   }, [editor, key, element]);
   useLayoutEffect(() => {
     const input = element.current;
-    const doc = registerDoc(editor);
-    const text = nodeRegister(editor, key);
+    const text = registerDoc(editor) ? nodeRegister(editor, key) : undefined;
+    const doc = text?.doc;
     if (!editing || !input || !doc || !text) return;
     const keyboard = (event: KeyboardEvent) => {
       const key = event.key.toLowerCase();
@@ -64,8 +64,7 @@ export function useRegisterDraft(
     const start = () => {
       if (!editor.isEditable()) return;
       const draft = new Y.Doc(); Y.applyUpdate(draft, Y.encodeStateAsUpdate(doc));
-      const id = (editor.getEditorState()._nodeMap.get(key) as unknown as { __regId: string }).__regId;
-      composing.current = { doc: draft, base: Y.encodeStateVector(draft), id };
+      composing.current = { doc: draft, base: Y.encodeStateVector(draft) };
     };
     const end = () => {
       const draft = composing.current;
