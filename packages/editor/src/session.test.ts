@@ -537,6 +537,63 @@ describe('drafts and receipts', () => {
     await second.flush();
     expect(markdownOnDisk()).toBe('# Plan\n\nDraft body\n');
   });
+
+  it('a stale draft restored in conflict is exported on its own base, so restoring the export opens in conflict again', async () => {
+    const first = mount();
+    await first.ready;
+    type(first, 'Mine\n');
+    const draft = first.draft();
+    await first.unmount({ discardUnsaved: true });
+    volume.writeFile(`${DIR}/Plan.md`, '# Plan\n\nMoss moved on\n');
+
+    const second = mount({ restoreDraft: draft });
+    await second.ready;
+    expect(second.status).toBe('conflict');
+    // Keep editing stays in conflict and keeps the base the edits were made on.
+    await second.resolveConflict('keep');
+    type(second, 'Mine and more\n');
+    const flushed = await second.flush();
+    if (flushed.kind !== 'conflict') throw new Error(`expected conflict, got ${flushed.kind}`);
+    expect(flushed.draft.baseVersion).toBe(draft.baseVersion);
+    expect(flushed.draft.companions).toEqual(draft.companions);
+    const kept = await second.unmount();
+    if (kept.kind !== 'kept' || kept.flush.kind !== 'conflict') throw new Error('expected a kept conflict');
+    expect(kept.flush.draft.baseVersion).toBe(draft.baseVersion);
+    const exported = kept.flush.draft;
+    await second.unmount({ discardUnsaved: true });
+
+    events = [];
+    const third = mount({ restoreDraft: exported });
+    await third.ready;
+    expect(third.status).toBe('conflict');
+    await settle(5_000);
+    expect(markdownOnDisk()).toBe('# Plan\n\nMoss moved on\n');
+    expect(kinds()).not.toContain('saved');
+
+    // Overwrite is the explicit choice: it saves on top, and the next export is on the new version.
+    await third.resolveConflict('overwrite');
+    await settle(0);
+    expect(markdownOnDisk()).toBe('# Plan\n\nMine and more\n');
+    expect(third.status).toBe('clean');
+  });
+
+  it('Reload resolves a restored draft conflict: the editor then drafts on the disk version', async () => {
+    const first = mount();
+    await first.ready;
+    type(first, 'Mine\n');
+    const draft = first.draft();
+    await first.unmount({ discardUnsaved: true });
+    volume.writeFile(`${DIR}/Plan.md`, '# Plan\n\nMoss moved on\n');
+
+    const second = mount({ restoreDraft: draft });
+    await second.ready;
+    await second.resolveConflict('reload');
+    expect(second.status).toBe('clean');
+    expect(second.draft().baseVersion).not.toBe(draft.baseVersion);
+    type(second, 'After reload\n');
+    await second.flush();
+    expect(markdownOnDisk()).toBe('# Plan\n\nAfter reload\n');
+  });
 });
 
 describe('assets', () => {
