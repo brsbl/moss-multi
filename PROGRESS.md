@@ -1,12 +1,12 @@
 # moss-multi progress
 
-**Overall: 52% done** (44 of 85 planned tasks verified)
+**Overall: 53% done** (45 of 85 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 18 / 18 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 18 / 19 | in progress |
-| M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 8 / 11 | in progress |
+| M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 9 / 11 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 0 / 9 | |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
@@ -62,6 +62,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-05 — T1.F4 verified: an open code, HTML or formula editor keeps working when a peer moves its block, closes with a notice when a peer removes it, and picks up the block's text once it arrives; typing inside a code or HTML block lands at the caret even after a peer's edit or undo.
 - 2026-10-05 — T1.S1 verified: the workspace and member listings now load completely for a person with hundreds of shared notes and folders, and for a note with hundreds of members, using a fixed number of database parameters.
 - 2026-10-05 — T2.7 verified: a stranger on a 390 px phone can open a share link, read the note, sign up through the card and land back on the same note; the notes panel overlays the canvas below 640 px, Share becomes an icon with an overflow menu, revoked and forged links show the denial page, and every control stays reachable.
+- 2026-10-05 — T2.8 verified: sharing by email now sends a personal invite link that grants access only when a signed-in account with that email opens it, a signed-in person with another email can switch accounts from the invite page, and the bell shows share invites with an unread count and Mark all read, rechecking access on every read.
 
 ## T1.1s identity audit
 
@@ -108,6 +109,9 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T1.F4 checker P2: a peer's move unmounts a code or HTML field mid-IME-composition and its private composition draft is destroyed; committed text is kept, the uncommitted preedit is lost. Commit the draft on unmount.
 - T1.F4 integration flake: j01-registers "a variable popover opened before its payload arrives ... edits it as a variable" failed once in WebKit on m1 (written as `n`, not `pending soon`; run 37313760604, green on rerun); j00 G1 import POST timeout and a j02-title workspace access-control page error flaked in the same run.
 - T1.S1 checker P2: accessibleFolders (apps/web/src/api/access.ts) reads the whole folders table on every /api/workspace call and bridge poll; its parameter count is fixed, but its cost grows with the table.
+- T2.8 checker P2: the bell keeps a cached notice after a move or trash removes the inviter's access; the client store refreshes only on 'notifications' and 'vaults' workspace events, so the stale title and unread badge stay until a reload (the server re-checks every read) → refresh the store on an access-changing 'meta' event.
+- T2.8 checker P2: "Sign in with another email" (InviteForAnotherEmail.switchAccount) ignores a failed sign-out and bypasses auth-state signOut(), so a failed sign-out loops back to the same denial page with no error → reuse signOut() with a return destination.
+- T2.8 checker P2: CI has no bell triptych artifact against glyphdown; the checker compared the open bell by hand with the glyphdown light reference (structure matches) → add the bell to the parity artifact.
 - T1.S1 checker P2 flake: j03-connection "a refused write rebinds fresh and a deleted doc locks in place" failed once in Chromium (console error 'WebSocket is already in CLOSING or CLOSED state'), green on rerun.
 - ~~T1.9 checker P2: replace the full node-map refresh after every editor commit with targeted invalidation~~ closed by T1.9s and T1.F2: root-only commits and same-node state replacements refresh no payload.
 - T1.F2 checker P2, **blocks T1.10 carrying real docs**: rule 10 of docs/design/registers.md, the DocDO refusing clients whose bundle predates payload docs (an M1 bundle can still write `Y.Map('registers')` through note updates, past the payload gate) → T1.10.
@@ -137,7 +141,7 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - Sidebar search matches titles only; body search belongs to M3. Live title matching is bound in T1.4.
 - Sign-out leaves the session's other live doc sockets reading and writing → T2.5
 - T2.4 checker: `GET /api/docs/:id` returns the owner's real `folderId` to a link holder, unlike `/api/workspace`'s synthetic root (METHOD: never the owner's vault or folder ids) → T2.5/T2.6 access follow-up
-- T2.4 checker: a share counts as redeemed on any doc load or socket admission, so a grantee idling on an empty workspace auto-opens the new share and the owner sees their name within seconds → count only an explicit open (T2.8 invites)
+- ~~T2.4 checker: a share counts as redeemed on any doc load or socket admission, so a grantee idling on an empty workspace auto-opens the new share and the owner sees their name within seconds → count only an explicit open (T2.8 invites)~~ closed by T2.8: a grant comes only from a signed-in account redeeming the invite link.
 - A signed-out share-link visitor (and any viewer of the active vault) is offered "+ Note", which fails with "Could not create note. Try again." → T2.6 (capability helper)
 - The wrangler ProxyWorker patch replays non-idempotent requests after an ambiguous failure → T0.9b follow-up (stack infra)
 - `qa.mjs close` forgets the session even when closing it failed → tooling follow-up
