@@ -120,3 +120,23 @@ it('undoing a property a peer rewrote concurrently keeps a value, never leaves t
     for (const doc of [ada, ben]) expect(element(doc).getAttribute('__commentIds')).toEqual([]);
   } finally { undo.destroy(); for (const doc of [server, ada, ben]) doc.destroy(); }
 });
+
+it('undoing the first assignment of an optional property removes it again, on both peers', () => {
+  const server = new Y.Doc();
+  server.transact(() => server.get('root', Y.XmlText).insertEmbed(0, new Y.XmlElement('callout')), 'server');
+  const ada = new Y.Doc(); ada.clientID = 2;
+  const ben = new Y.Doc(); ben.clientID = 1;
+  for (const doc of [ada, ben]) Y.applyUpdate(doc, Y.encodeStateAsUpdate(server));
+  const root = ada.get('root', Y.XmlText);
+  const binding = { doc: ada, root: { getSharedType: () => root } } as unknown as Binding;
+  const undo = createBindingUndoManager(binding);
+  const element = (doc: Y.Doc) => doc.get('root', Y.XmlText).toDelta()[0].insert as Y.XmlElement;
+  try {
+    // A callout's level is optional; @lexical/yjs writes no key while it is unset, so choosing one is a first write.
+    ada.transact(() => element(ada).setAttribute('__level', 'warning'), binding);
+    Y.applyUpdate(ben, Y.encodeStateAsUpdate(ada), 'peer');
+    undo.undo();
+    Y.applyUpdate(ben, Y.encodeStateAsUpdate(ada), 'peer');
+    for (const doc of [ada, ben]) expect(element(doc).getAttribute('__level')).toBeUndefined();
+  } finally { undo.destroy(); for (const doc of [server, ada, ben]) doc.destroy(); }
+});

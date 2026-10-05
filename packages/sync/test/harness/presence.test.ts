@@ -90,12 +90,14 @@ it.each([false, true])('a replacement socket takes over half-open presence, incl
   expect(opened.dobj.document.awareness.getStates().has(42)).toBe(false);
 });
 
-it("a second window relaying the first window's state keeps both presences", async () => {
-  const opened = await start(openDoc());
+it.each([false, true])("a second window relaying the first window's state keeps both presences, across wake=%s", async (hibernate) => {
+  let opened = await start(openDoc());
   const first = await connect(opened, { id: 'ada', name: 'Ada' }, undefined, 'first-window');
   const second = await connect(opened, { id: 'ada', name: 'Ada' }, undefined, 'second-window');
   const peer = await connect(opened, { id: 'ben', name: 'Ben' });
   await first.deliver(frame(42, { ...state(), tag: 'first' }, 3));
+  // A wake clears awareness.meta; the clock the server admitted must survive it.
+  if (hibernate) { opened = await start(wake(opened)); first.opened = second.opened = peer.opened = opened; }
   // y-partyserver rebroadcasts remote changes: the second window echoes the first's state at its clock.
   await second.deliver(frame(42, { ...state(), tag: 'first' }, 3));
   await second.deliver(frame(43, { ...state(), tag: 'second' }));
