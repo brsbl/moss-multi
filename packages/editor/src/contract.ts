@@ -4,7 +4,8 @@
  * This file holds types only. The runtime values it describes
  * (`MOSS_EDITOR_API`, `MOSS_EDITOR_INFO`, `mountMossEditor` and the pure host
  * helpers) are exported by `src/index.ts` (frame entry `moss-editor.js`) and
- * `src/host.ts` (host entry `moss-editor-host.js`). The rationale is in
+ * `src/host/moss-editor-host.js` (host entry `moss-editor-host.js`, one
+ * self-contained module with no imports). The rationale is in
  * docs/design/editor-embed.md. Line references are to brsbl/moss@762abb777,
  * `packages/desktop/src`.
  *
@@ -98,12 +99,15 @@ export interface MossEditorModule {
 }
 
 /**
- * Exports of the host entry `moss-editor-host.js`. It has no DOM, CSS or
- * Lexical dependencies and runs in any ES2022 runtime (Node, Bun, a JSC
- * context). These pure functions encode Moss desktop's file rules at the pin,
- * so the host does not reimplement them. None of them touches the
- * filesystem: where desktop asks the filesystem, the host does the probing
- * and the helper supplies the order and the rules.
+ * Exports of the host entry `moss-editor-host.js`: one ES2022 module with no
+ * imports, whose only globals are `TextEncoder` and `crypto.subtle`. It runs
+ * in any ES2022 runtime (Node, Bun, a JSC context). These pure functions
+ * encode Moss desktop's file rules at the pin, so the host does not
+ * reimplement them; CI holds each one to desktop's own code. None of them
+ * touches the filesystem: where desktop asks the filesystem, the host does
+ * the probing and the helper supplies the order and the rules. It ships as
+ * the `moss-editor-host` artifact (`editor-host.json` records its version,
+ * API, source commit and per-file SHA-256).
  */
 export interface MossEditorHostModule {
   readonly MOSS_EDITOR_API: MossEditorApiVersion;
@@ -130,7 +134,7 @@ export interface MossEditorHostModule {
    * Step 1 of Moss's markdown-file resolution (`getContentPathCandidates`,
    * note-store.ts:688-701): the candidate names, in order and de-duplicated:
    * `<trimmed folderName or 'Untitled'>.md`, then `<trimmed noteId>.md`, then
-   * `note.md`.
+   * `note.md`. The id candidate appears only when `isMossNoteId(noteId)`.
    *
    * The host probes each candidate in order with `stat` on the note folder
    * (desktop's `pathExists`, note-store.ts:669-677: ENOENT means absent,
@@ -156,10 +160,13 @@ export interface MossEditorHostModule {
   pickMarkdownFallback(entries: readonly MossFolderEntry[]): string | null;
   /**
    * Moss's unique-folder-name allocation (`allocateFolder` with `noteId`,
-   * note-store.ts:4955-4990, and `buildFolderName`'s ` (n)` suffixes within
-   * the 252-byte folder limit). Returns the name to rename to. It equals
-   * `currentName` when no rename is needed. See `MossFolderRename` for how
-   * the host applies it.
+   * note-store.ts:4943-4985, and `buildFolderName`'s ` (n)` suffixes within
+   * the 252-byte folder limit, 4898-4911). Truncation is by UTF-8 bytes, and
+   * a character cut in half (U+FFFD) and trailing whitespace are dropped
+   * before the suffix, as `truncateToByteLimit` does. Returns the name to
+   * rename to. It equals `currentName` when no rename is needed. Throws a
+   * RangeError if `desiredName` fails `isMossFolderName`. See
+   * `MossFolderRename` for how the host applies it.
    */
   allocateFolderName(input: MossAllocateFolderNameInput): string;
   /**
@@ -176,17 +183,19 @@ export interface MossEditorHostModule {
    * `targetName` truncated by UTF-8 bytes so that the whole name fits in 255
    * bytes, with a trailing partial multibyte sequence (U+FFFD) and trailing
    * whitespace removed, as `truncateToByteLimit` does (note-store.ts:653-660).
-   * An empty base becomes `note`. Hosts must use this; a naive
+   * An empty base becomes `note`. `uuid` must be a UUID
+   * (`crypto.randomUUID()`); anything else throws a RangeError. Hosts must use this; a naive
    * `.<name>.<uuid>.tmp` overflows the 255-byte limit for valid 252-byte
    * folder names and fails every save with ENAMETOOLONG.
    */
   sidecarFileName(targetName: string, uuid: string, suffix: 'tmp' | 'displaced'): string;
   /**
-   * The recommended version token over the given byte states (see
+   * The recommended version token over the given byte states, computed with
+   * `crypto.subtle` and therefore asynchronous (see
    * `MossNoteVersion`, `MossMetaVersion` and `MossCompanionVersion` for which
    * states go in). Hosts may use any other deterministic token.
    */
-  versionToken(parts: readonly MossVersionPart[]): string;
+  versionToken(parts: readonly MossVersionPart[]): Promise<string>;
   /**
    * Whether API 1 may edit a note under the v0 scope rules. The host must call
    * this before mounting, and `read`, `write` and `assets.put` must apply the
@@ -194,6 +203,29 @@ export interface MossEditorHostModule {
    * `hostUnsupported` itself.
    */
   noteEditability(input: MossEditabilityInput): MossEditability;
+  /**
+   * The filename check every `MossFolderRename.desiredName` must pass; the
+   * host re-validates and never trusts the editor's string. True exactly when
+   * `name` is a fixed point of desktop's `toFolderBaseName`
+   * (`sanitizeFolderComponent`, note-store.ts:635-667): no `/`, `\`, NUL,
+   * control or `<>:"|?*` character, not `.` or `..`, no leading, trailing or
+   * repeated whitespace, at most 252 UTF-8 bytes. It also refuses a leading
+   * dot and `node_modules`, `__pycache__` and `bower_components`, which
+   * desktop would create but its own scanner then skips (4376-4380).
+   */
+  isMossFolderName(name: string): boolean;
+  /**
+   * The filename check every asset `name` (`MossAssetPut`, `MossAssetCopy`)
+   * must pass; the host re-validates. True exactly when `name` is
+   * `<base><ext>` with `ext` a `MossAssetExtension`, `base` a fixed point of
+   * desktop's `sanitizeFilename` (ipc-handlers.ts:1185-1191: NFKC, no
+   * separator, NUL, control, `<>:"|?*` or Unicode space, no leading dot) with
+   * non-blank content, no `..` anywhere (the renderer's `isSafeFilename`) and
+   * at most 255 UTF-8 bytes. Every name `buildImageFilename` produces passes,
+   * except one whose original base contains `..` or that overflows 255 bytes;
+   * for those the editor names the file from the base `image`.
+   */
+  isMossAssetName(name: string): boolean;
 }
 
 export interface MossNoteFileNames {
@@ -236,11 +268,12 @@ export interface MossAllocateFolderNameInput {
   /** Every other entry in the note folder's parent, excluding the note's own folder. */
   siblingNames: readonly string[];
   /**
-   * Whether the parent's volume compares names case-insensitively (default
-   * APFS and HFS+ do). When true, a sibling that differs only in case is
-   * taken, and a desired name that differs from `currentName` only in case is
-   * returned as is (a case-only rename), as desktop's `pathExists` plus
-   * same-id check produce.
+   * Whether the parent's volume compares names case- and
+   * normalization-insensitively (default APFS and HFS+ do). When true, names
+   * compare by `normalize('NFD').toLowerCase()`: a sibling that differs only
+   * in case or Unicode normalization is taken, and a desired name that
+   * differs from `currentName` only that way is returned as is (a case-only
+   * rename), as desktop's `pathExists` plus same-id check produce.
    */
   caseInsensitive: boolean;
 }
@@ -277,17 +310,21 @@ export type MossEditability =
  *   split between the source folder and the mirror folder, and markdown image
  *   refs are delocalized on save. Gated behind a future `'scope.external'`
  *   feature.
- * - `unadopted`: no meta.json, or meta.json `id` fails `isMossNoteId`. Moss
- *   would adopt the note on open, which rewrites its frontmatter. bb must not
- *   do that.
+ * - `unadopted`: no meta.json; or meta.json lacks a truthy `id` or `title`,
+ *   which desktop's `readMetadata` rejects (note-store.ts:1003-1005); or `id`
+ *   fails `isMossNoteId` or has surrounding whitespace (desktop compares the
+ *   raw `id` with the trimmed key, so it cannot find or rename such a note).
+ *   Moss would adopt the note on open, which rewrites its frontmatter. bb
+ *   must not do that.
  * - `trashed`: the folder is under `~/Moss/Trash` (`workspaceSegments[0]` is
- *   `'Trash'`), or meta.json `trashedAt` is non-null. A user folder named
+ *   `'Trash'`), or meta.json `trashedAt` is truthy, as desktop tests it. A user folder named
  *   `Notes/Trash` is an ordinary folder and is editable.
  * - `noMarkdown`: the folder has no resolvable markdown file.
  * - `outsideNotes`: not under `~/Moss/Notes`, for example a loose `.md`
  *   anywhere else, or `workspaceSegments` is null. It is also returned for the
  *   `Notes` root itself and for folder containers, which Moss never adopts.
- * - `unreadableMeta`: meta.json exists but is not a JSON object.
+ * - `unreadableMeta`: meta.json exists but is not a JSON object (including a
+ *   leading BOM, which `JSON.parse` rejects as desktop's read does).
  * - `duplicateId`: (host) two folders carry the same `noteIdKey`.
  * - `hostUnsupported`: (host) the host cannot perform the verified
  *   replacement `MossNoteWrite` requires (an atomic exchange of two paths and
@@ -1083,7 +1120,9 @@ export interface MossFolderRename {
   /**
    * Desktop's `toFolderBaseName(title)` for the new H1 title: the sanitized
    * folder name truncated to 252 UTF-8 bytes, or `Untitled`, before
-   * uniqueness allocation.
+   * uniqueness allocation. It must pass `isMossFolderName`; the host checks
+   * it before any change and otherwise returns `failed` with code `EINVAL`,
+   * writing nothing.
    */
   desiredName: string;
 }
@@ -1240,7 +1279,7 @@ export interface MossAssetBridge {
 }
 
 export interface MossAssetPut {
-  /** Final file name, without a directory, ending in a `MossAssetExtension`. */
+  /** Final file name, without a directory; must pass `isMossAssetName`. */
   name: string;
   data: Blob;
   /** The MIME type the editor inferred, for example `image/png`. */
@@ -1252,7 +1291,7 @@ export interface MossAssetPut {
 export interface MossAssetCopy {
   sourceNoteId: MossNoteId;
   sourceRef: MossAssetRef;
-  /** Final file name in the destination, chosen as in `put`. */
+  /** Final file name in the destination, chosen as in `put`; must pass `isMossAssetName`. */
   name: string;
 }
 
@@ -1264,7 +1303,8 @@ export type MossAssetPutResult =
    * editor sets none either. A host limit is the host's own policy, and the
    * editor shows it as an inline media error.
    */
-  | { kind: 'refused'; reason: 'tooLarge' | 'type' | 'noSpace'; maxBytes?: number }
+  /** `name`: the name fails `isMossAssetName`; nothing was created. */
+  | { kind: 'refused'; reason: 'tooLarge' | 'type' | 'noSpace' | 'name'; maxBytes?: number }
   /** The destination note, or for `copyFromNote` the source asset, does not exist. */
   | { kind: 'notFound' }
   | { kind: 'notEditable'; reason: MossNotEditableReason };

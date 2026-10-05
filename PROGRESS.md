@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 56% done** (45 of 80 planned tasks verified)
+**Overall: 55% done** (46 of 84 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 17 / 17 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 15 / 19 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 7 / 11 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 6 / 9 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 7 / 10 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
@@ -63,6 +63,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-04 — T3.7 verified: on the web a person can open a note in a new tab with a share link, print it to PDF through the browser, and download it as clean Markdown that waits for their unsaved edits and refuses a stale export.
 - 2026-10-04 — T3.1 verified: a person can add images and video to a note by upload, paste, drop or /media, and everyone with access, including an anonymous link visitor, sees them after reload and in a copied note; video plays and seeks through Range responses, and images offer Edit Alt Text….
 - 2026-10-04 — T3.2 verified: an HTML block runs live in a sandboxed frame that cannot read the page cookie, a web embed card shows the page unfurled through an SSRF-guarded fetch, a YouTube embed plays, remote images persist into the note, and a link's "Open in Split View" frames the page in-app with a working "Open in new tab".
+- 2026-10-05 — T3.9a verified: a host such as the bb Moss plugin can use `moss-editor-host.js`, a self-contained module whose note-naming and path helpers match Moss desktop at the pin over a table of tricky names, downloadable from CI as the `moss-editor-host` artifact with its contract types and manifest.
 
 ## T1.1s identity audit
 
@@ -96,6 +97,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
 
+- T3.9a checker P2: `allocateFolderName`'s volume-equivalence model (`volumeKey` in `packages/editor/src/host/moss-editor-host.js`) is approximate: it lacks full Unicode case folding ('σ' vs sibling 'ς') and treats case-sensitive APFS as normalization-sensitive (NFC vs NFD 'Café'), so it can return an occupied name; the host's exclusive rename then fails with EEXIST and that title edit stays unsaved, with nothing lost or overwritten → editor host follow-up: fold case fully and normalize on case-sensitive volumes.
 - T2.3s checker P2 (downgraded from Codex P1): a restore can act on an older view of the note after another manager restores, moves and re-trashes it; RESTORE in `api/trash.ts` does not check the note's current folder or `trash_batch_id` still match what it read. No authority is gained (the UPDATE re-checks manage on the current chain and edit on the destination) → trash follow-up: compare-and-set on folder and batch.
 - T2.3s checker P2 (downgraded from Codex P1): a signed-out share-link holder gets 401, not 404, from trash, restore and the Trash read; nothing is disclosed (the 401 is identical for a missing note) and it predates T2.3s; A§8 confines the 401 exception to a credential-less CLI → align to 404 in an access follow-up.
 - T2.3s checker P2: the revocation tests in `trash-security.test.ts` use stub DocDO and PrincipalDO, so they do not prove open editors recover (or that a terminal editor on a live note is kicked) → T2.5.
