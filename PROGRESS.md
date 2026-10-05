@@ -1,12 +1,12 @@
 # moss-multi progress
 
-**Overall: 53% done** (45 of 85 planned tasks verified)
+**Overall: 54% done** (46 of 85 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 18 / 18 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 18 / 19 | in progress |
-| M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 9 / 11 | in progress |
+| M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 10 / 11 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 0 / 9 | |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
@@ -64,6 +64,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-05 — T2.7 verified: a stranger on a 390 px phone can open a share link, read the note, sign up through the card and land back on the same note; the notes panel overlays the canvas below 640 px, Share becomes an icon with an overflow menu, revoked and forged links show the denial page, and every control stays reachable.
 - 2026-10-05 — T2.8 verified: sharing by email now sends a personal invite link that grants access only when a signed-in account with that email opens it, a signed-in person with another email can switch accounts from the invite page, and the bell shows share invites with an unread count and Mark all read, rechecking access on every read.
 - 2026-10-05 — T1.S1 verified again with its unload fix: reloading or leaving the page while the workspace list is loading now cancels that request quietly instead of showing a load failure or a browser access-control error.
+- 2026-10-05 — T2.5 verified: lowering or removing someone's access, revoking a link, moving a note or folder out from under a share, or signing out closes the affected open editors within a second, the note turns read-only or ends in place with a message, and their sidebar drops what they can no longer open; the owner can change or remove a person's or an open invite's access from the Share dialog.
 
 ## T1.1s identity audit
 
@@ -116,6 +117,12 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T1.S1 checker P2 flake: j03-connection "a refused write rebinds fresh and a deleted doc locks in place" failed once in Chromium (console error 'WebSocket is already in CLOSING or CLOSED state'), green on rerun.
 - T1.S1 checker P2: a cancelled unload (answering Stay on the unacked-edits prompt) or a back-forward-cache restore keeps the aborted listing pending for 10 s, skipping the 3 s poll and handing notes() a promise that later rejects.
 - T1.S1 checker P2: other fetches (host/access.ts, collab/doc-session.ts, ShareDialog, the bridge's create, duplicate and rename) have no leave-abort, so a reload overlapping one could still log WebKit's access-control error.
+- T2.5 checker P2: the cold j09 legs never send a real stale frame to a woken DocDO (the link DELETE's recheck wakes the DO and closes the holders first); `revocation.test.ts` "wakes a hibernated DO..." and the `pull-revocation.harness.test.ts` dropped-kick suite cover the semantics → j09 cold-leg follow-up.
+- T2.5 checker P2: the admission awareness snapshot uses the attachment read before validation, so a socket whose grant is removed mid-admission but still lifted by a live editor link is sent collaborators' names → presence follow-up: send the snapshot from the validated attachment.
+- T2.5 checker P2: the 5 s validation deadline does not include time queued behind `#gate`, so a frame behind a hung validation can wait about two deadlines (9-10 s), not A§8's one; memory stays bounded.
+- T2.5 checker P2: link-only editors are not told to reopen after a folder trash that does not commit; `release()` notifies only `collectRecipients` (grants), never link holders.
+- T2.5 checker P2: a failed settle in `release()` is neither retried nor re-announced; the alarm later releases the hold but sends no recovery event, so the pane stays terminal until a reload.
+- T2.5 integration flakes: the [full lane on `0928c85`](https://github.com/brsbl/moss-multi/actions/runs/37357227715) went green on its third attempt; attempt 1 failed Chromium j02-title (`/api/me` socket hang up) and WebKit j07-auth (an `/api/notifications` fetch cancelled by navigation surfaced as an access-control page error, the T1.S1 leave-abort follow-up), attempt 2 WebKit j09 link (the Share dialog never listed the new "Can edit" link; passed on attempts 1 and 3).
 - T1.S1 checker P2 flakes: Chromium j01-registers formula popover leg failed once with 'e is not iterable' (cloneCommentIds via FormulaNode.clone during register refresh getWritable, packages/sync/src/registers.ts:176); j01-undo WebKit sync-timing assertion failed once (run 37346941618).
 - ~~T1.9 checker P2: replace the full node-map refresh after every editor commit with targeted invalidation~~ closed by T1.9s and T1.F2: root-only commits and same-node state replacements refresh no payload.
 - T1.F2 checker P2, **blocks T1.10 carrying real docs**: rule 10 of docs/design/registers.md, the DocDO refusing clients whose bundle predates payload docs (an M1 bundle can still write `Y.Map('registers')` through note updates, past the payload gate) → T1.10.
