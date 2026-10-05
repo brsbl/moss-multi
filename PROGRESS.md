@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 55% done** (44 of 80 planned tasks verified)
+**Overall: 56% done** (45 of 80 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 17 / 17 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 15 / 19 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 7 / 11 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 5 / 9 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 6 / 9 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
@@ -62,6 +62,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-04 — T3.3 verified: every moss node family, including formulas, file links, charts and sketches, can be built in a shared note and edited by two people at once without either losing the other's work, even through undo; the j14 demo note renders like pristine moss in light and dark.
 - 2026-10-04 — T3.7 verified: on the web a person can open a note in a new tab with a share link, print it to PDF through the browser, and download it as clean Markdown that waits for their unsaved edits and refuses a stale export.
 - 2026-10-04 — T3.1 verified: a person can add images and video to a note by upload, paste, drop or /media, and everyone with access, including an anonymous link visitor, sees them after reload and in a copied note; video plays and seeks through Range responses, and images offer Edit Alt Text….
+- 2026-10-04 — T3.2 verified: an HTML block runs live in a sandboxed frame that cannot read the page cookie, a web embed card shows the page unfurled through an SSRF-guarded fetch, a YouTube embed plays, remote images persist into the note, and a link's "Open in Split View" frames the page in-app with a working "Open in new tab".
 
 ## T1.1s identity audit
 
@@ -120,6 +121,9 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - ~~T3.1 checker P2s: the owner's Trash view could not load a trashed note's media; the first-frame poster requested `moss-asset://` for a desktop-only path~~ → closed in T3.1: owner media reads of a trashed note go through `ownerOfTrashed`, and the poster skips a desktop-only path.
 - T3.1 checker P2: asset responses (`private, max-age=0, stale-while-revalidate=86400`) carry no Vary or identity in the URL, so a second account in the same browser profile could get the first account's cached bytes once while revalidating; bytes per path never change → media follow-up (partition by identity if shared profiles matter).
 - T3.1 checker P2: j11's all-types leg checks mp4 and mov videos only for count and no error state, not that their posters decode (CI Chromium lacks H.264; only webm asserts a decoded poster frame) → media follow-up.
+- T3.2 checker P2 (downgraded from Codex P1): from-url can still bind media after editor access is revoked mid-download; `fromUrl` in `api/assets.ts` checks access once, then awaits the fetch (up to 8 s) and stores with that access, so a revocation or trash in that window can still write a doc_media row and an R2 blob. T3.1's upload route has the same check-then-act → assets follow-up: re-check access before `storeBytes` on both routes.
+- T3.2 checker P2: j11's YouTube leg proves our iframe URL, allow, sandbox tokens and playback against a stand-in player via `context.route`, not the real YouTube player (headless CI cannot rely on it; the real thumbnail loaded from i.ytimg.com in the checker's browser pass) → embeds follow-up.
+- T3.2 checker P2: a short HTML block leaves a lot of white space below its content, because the live preview keeps moss's 1200×900 minimum preview size → HTML block follow-up: size the frame to its content.
 - T1.8 checker: calibrate the duplicate leg's 30 s WebKit setup-ack allowance against the standard 10 s allowance → test-infra follow-up; this is setup readiness, not a claimed latency budget.
 - T1.6 integration: the [full lane on `ee2488a`](https://github.com/brsbl/moss-multi/actions/runs/37167459553) (tree identical to T1.6's green head) went green only on its third rerun of the WebKit editing shard; each attempt failed different single legs: Chromium j01 duplicate `GET /api/workspace` socket hang up; WebKit j01 presence spoofed-name leg twice (an "access control checks" page error on `/api/workspace`, then a missing peer chip), j00-roundtrip "hibernation not induced" (instance constructed 2.3 s after restart), and j00-persist offline-switch (`hydrateNotesAtom` "Load failed"). A [5× WebKit j01 presence probe](https://github.com/brsbl/moss-multi/actions/runs/37169366494) passed → test-infra follow-up on WebKit editing-shard stability. It recurred on m1's head (j07-auth) and on m2's T2.1 integration (j01 discovery after `reload()`): a `/api/workspace?vault=` fetch cancelled by navigation surfaces as an uncaught WebKit page error; the [m2 full lane](https://github.com/brsbl/moss-multi/actions/runs/37171338601) went green on rerun.
 - T1.9 integration: the [full lane on `1cfebf0`](https://github.com/brsbl/moss-multi/actions/runs/37178515882) went green on the third attempt of the WebKit editing shard; attempt 1 failed j02 empty-title projection (5 s poll), attempt 2 the j02 concurrent-Properties leg on the same `/api/workspace` "access control checks" page error → same WebKit editing-shard follow-up.
