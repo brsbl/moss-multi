@@ -36,10 +36,15 @@ declare module '@moss-desktop/renderer/editor/MarkdownEditor' {
       onNavigateToNote?: (noteId: string, heading?: string | null) => void;
       enableSearchPlugin?: boolean;
       editorMountVersion?: number;
+      /** null: import `value`, never moss's module-level editor-state cache. */
+      initialSerializedState?: null;
     } & RefAttributes<MarkdownEditorHandle>
   >;
   export const MARKDOWN_EDITOR_TRANSFORMERS: Transformer[];
   export function unescapeHtmlEntities(markdown: string): string;
+  export function escapeHtmlEntities(markdown: string): string;
+  export function normalizeMarkdownForImport(markdown: string): string;
+  export function $postImportNormalize(commentMetadata?: CommentMetadataMap, root?: undefined, options?: { layoutMetadata?: NoteLayoutMetadata }): void;
   export function $collectTableLayoutMetadata(): NoteLayoutMetadata;
   export function $collectTabGroupLayoutMetadata(): Pick<NoteLayoutMetadata, 'tabGroupCount' | 'tabGroups'>;
 }

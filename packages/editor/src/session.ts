@@ -254,6 +254,7 @@ export class EditorSession {
       }
     }
     await this.surface.load(content, { keepView: false });
+    if (this.abandoned) throw editorError('unmounted', 'unmounted before the note was shown');
     this.stopWatch = this.bridge.watch(this.noteId, (change) => this.onExternal(change));
     this.periodic = setInterval(() => {
       if (this.dirty && this.status === 'dirty') void this.save();
@@ -595,6 +596,9 @@ export class EditorSession {
       this.location = fresh.disk.location;
       return;
     }
+    // A focused title or a decorator draft is an edit not yet reported: commit it so it counts below.
+    await this.surface.commit?.();
+    if (this.status === 'unmounted' || this.status === 'removed') return;
     if (this.dirty || this.status === 'conflict') {
       if (this.status !== 'conflict') this.enterConflict('external', []);
       return;
@@ -614,11 +618,21 @@ export class EditorSession {
     this.unsavedStartedAt = null;
     this.clearIdle();
     this.overwrittenDraft = overwrittenSave;
-    await this.surface.load(editorContentOfRead(fresh), { keepView: true });
-    // The editor's own change listener may have counted the load as an edit.
+    await this.loadInPlace(editorContentOfRead(fresh));
+    // The editor's own change listener may have counted the load as an edit; nothing else could, as it was read-only.
     this.savedRevision = this.revision;
     this.setStatus('clean');
     this.emit({ kind: 'reloaded', noteId: this.noteId, status: 'clean', version: fresh.disk.version, cause, overwrittenSave });
+  }
+
+  /** Loads in place with the editor read-only, so nothing the user types can land while the load settles. */
+  private async loadInPlace(content: EditorContent): Promise<void> {
+    this.surface.setEditable(false);
+    try {
+      await this.surface.load(content, { keepView: true });
+    } finally {
+      if (this.status !== 'removed' && this.status !== 'unmounted') this.surface.setEditable(true);
+    }
   }
 
   // ---- the user's choices -------------------------------------------------------------------------------------
@@ -651,7 +665,7 @@ export class EditorSession {
     this.overwrittenDraft = null;
     if (!draft || !this.read) return this.render();
     const content = editorContentOfFiles(draft.files, draft.intents.commentColors, this.read.metaTitle);
-    await this.surface.load(content, { keepView: true });
+    await this.loadInPlace(content);
     this.intentsOverride = draft.intents;
     this.revision += 1;
     this.setStatus('dirty');
@@ -723,7 +737,12 @@ export class EditorSession {
     } catch {
       return { kind: 'notLoaded' };
     }
-    if (this.dirty && !options.discardUnsaved) return { kind: 'refused', reason: 'dirty' };
+    const refuse = async () => {
+      if (options.discardUnsaved) return false;
+      await this.surface.commit?.();
+      return this.dirty;
+    };
+    if (await refuse()) return { kind: 'refused', reason: 'dirty' };
     try {
       const fresh = await this.readDisk();
       if (fresh.kind !== 'note') {
@@ -731,6 +750,8 @@ export class EditorSession {
         this.remove(reason);
         return { kind: 'removed', reason };
       }
+      // An edit typed while the disk was read is kept: the reload is refused instead.
+      if (await refuse()) return { kind: 'refused', reason: 'dirty' };
       const wasConflict = this.status === 'conflict';
       await this.applyRead(fresh.read, 'host', null);
       if (wasConflict) this.emit({ kind: 'conflictResolved', noteId: this.noteId, status: 'clean', resolution: 'reloaded' });

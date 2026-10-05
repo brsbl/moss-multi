@@ -5,13 +5,16 @@
 import { StrictMode, useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Provider, createStore } from 'jotai';
-import type { LexicalEditor } from 'lexical';
-import { $convertToMarkdownString } from '@lexical/markdown';
+import { $addUpdateTag, $getRoot, $getSelection, $setSelection, SKIP_DOM_SELECTION_TAG, SKIP_SCROLL_INTO_VIEW_TAG, type LexicalEditor } from 'lexical';
+import { $convertFromMarkdownString, $convertToMarkdownString } from '@lexical/markdown';
 import {
   $collectTabGroupLayoutMetadata,
   $collectTableLayoutMetadata,
+  $postImportNormalize,
   MARKDOWN_EDITOR_TRANSFORMERS,
   MarkdownEditor,
+  escapeHtmlEntities,
+  normalizeMarkdownForImport,
   unescapeHtmlEntities,
   type MarkdownEditorHandle,
 } from '@moss-desktop/renderer/editor/MarkdownEditor';
@@ -107,15 +110,12 @@ class FrameSurface implements SessionSurface {
     this.settling = true;
     this.committedTitle = content.title;
     this.hydrateComments(content);
-    if (this.title && (!options.keepView || document.activeElement !== this.title)) this.title.textContent = content.title;
-    if (options.keepView && this.handle && this.editor) {
-      const result = this.handle.updateContentFromMarkdown(content.body, {
-        scrollContainer: this.scroller,
-        commentMetadata: content.commentMetadata,
-        ...(content.layoutMetadata ? { layoutMetadata: content.layoutMetadata } : {}),
-      });
+    // The session commits a focused title before it reloads, so the title shown is the one loaded, focused or not.
+    if (this.title && this.title.textContent !== content.title) this.title.textContent = content.title;
+    if (options.keepView && this.editor) {
+      const replaced = this.replaceBody(this.editor, content);
       this.set({ content });
-      if (result.success) {
+      if (replaced) {
         this.hydrateComments(content);
         await nextFrame();
         this.settling = false;
@@ -128,6 +128,45 @@ class FrameSurface implements SessionSurface {
     });
     this.set({ content, version: this.state.version + 1 });
     await ready;
+  }
+
+  /**
+   * MarkdownEditor's updateContentFromMarkdown (MarkdownEditor.tsx:4176-4265) on a body the pipeline already split:
+   * that handle strips frontmatter, a footer and a leading H1 again, which would drop a body's own first heading.
+   */
+  private replaceBody(editor: LexicalEditor, content: EditorContent): boolean {
+    const scroller = this.scroller;
+    const top = scroller?.scrollTop ?? 0;
+    const lock = () => {
+      if (scroller) scroller.scrollTop = top;
+    };
+    scroller?.addEventListener('scroll', lock);
+    const release = () =>
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => {
+          scroller?.removeEventListener('scroll', lock);
+          lock();
+        }),
+      );
+    try {
+      editor.update(
+        () => {
+          $addUpdateTag(SKIP_DOM_SELECTION_TAG);
+          $addUpdateTag(SKIP_SCROLL_INTO_VIEW_TAG);
+          if ($getSelection() !== null) $setSelection(null);
+          $getRoot().clear();
+          $convertFromMarkdownString(escapeHtmlEntities(normalizeMarkdownForImport(content.body)), MARKDOWN_EDITOR_TRANSFORMERS);
+          $postImportNormalize(content.commentMetadata, undefined, { layoutMetadata: content.layoutMetadata });
+        },
+        { tag: 'agent-content-update' },
+      );
+      release();
+      return true;
+    } catch (error) {
+      scroller?.removeEventListener('scroll', lock);
+      console.error('[moss-editor] in-place update failed:', error);
+      return false;
+    }
   }
 
   attach = (editor: LexicalEditor) => {
@@ -336,6 +375,15 @@ function EditorPane({ surface, session, noteId, onNavigateToNote }: {
     surface.handle = editorRef.current;
     surface.scroller = scrollerRef.current;
   });
+  // Stable, so moss calls it once per editor: a new function each render re-ran attach and re-stored moss's
+  // editor-state cache under the loaded content's key on every re-render.
+  const onReady = useCallback(
+    (editor: LexicalEditor) => {
+      surface.handle = editorRef.current;
+      surface.attach(editor);
+    },
+    [surface],
+  );
   const focusBody = () => surface.editor?.focus();
   const { content, view } = state;
   return (
@@ -388,10 +436,8 @@ function EditorPane({ surface, session, noteId, onNavigateToNote }: {
               layoutMetadata={content.layoutMetadata}
               onChange={() => undefined}
               placeholder="Type '/' for commands"
-              onReady={(editor) => {
-                surface.handle = editorRef.current;
-                surface.attach(editor);
-              }}
+              onReady={onReady}
+              initialSerializedState={null}
               onNavigateToNote={onNavigateToNote}
               editorMountVersion={state.version}
             />

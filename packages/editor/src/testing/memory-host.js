@@ -411,13 +411,26 @@ export class MemoryHost {
       }
       if (op.kind === 'put') this.volume.writeFile(path, op.text);
       else if (before !== null) this.volume.unlink(path);
-      undo.push(() => (before === null ? this.volume.isFile(path) && this.volume.unlink(path) : this.volume.writeFile(path, before)));
+      // Step 5: roll a file back only while it still holds this write's bytes; another writer's bytes stay.
+      const ours = op.kind === 'put' ? op.text : null;
+      undo.push(() => {
+        if (this.readText(path) !== ours) return;
+        if (before === null) this.volume.unlink(path);
+        else this.volume.writeFile(path, before);
+      });
       applied.push(op.file);
+      if (op.file === 'markdown' && sameEntry) {
+        // Step 4, markdown identity: the same entry is respelled to exactly `<folderName>.md`.
+        const spelled = this.volume.spelling(path);
+        if (spelled !== null && spelled !== path) this.volume.rename(spelled, path);
+      }
       if (op.file === 'markdown' && !sameEntry && this.volume.isFile(oldMarkdown)) {
         const old = this.volume.readFile(oldMarkdown);
         if (old === current.files.markdown) {
           this.volume.unlink(oldMarkdown);
-          undo.push(() => this.volume.writeFile(oldMarkdown, old));
+          undo.push(() => {
+            if (!this.volume.isFile(oldMarkdown)) this.volume.writeFile(oldMarkdown, old);
+          });
         }
       }
     }
