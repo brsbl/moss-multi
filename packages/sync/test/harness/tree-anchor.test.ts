@@ -8,14 +8,14 @@ import { decodeRelPos, findQuote, positionAt, project, similarity } from '@moss-
 import { scene } from './comments-scene.ts';
 
 describe('T4.0 projection, minting and the create-time quote search @p:tech-3', () => {
-  it('every replica and the server compute one projection', () => scene((s) => {
+  it('every replica and the server compute one projection', () => scene(async (s) => {
     const a = s.peer();
     expect(project(a.doc).text).toBe(project(s.server).text);
     expect(project(s.server).text).toBe('The quick brown fox jumps over the lazy dog.\nSecond paragraph here, a fox too.\nThird.');
     expect(liveUnits(s.server).text).toBe('The quick brown fox jumps over the lazy dog.Second paragraph here, a fox too.Third.');
   }));
 
-  it('a client mints the same positions from a Lexical point through its binding as from the projection', () => scene((s) => {
+  it('a client mints the same positions from a Lexical point through its binding as from the projection', () => scene(async (s) => {
     const a = s.peer();
     const projection = project(a.doc);
     const start = projection.text.indexOf('brown fox');
@@ -29,7 +29,7 @@ describe('T4.0 projection, minting and the create-time quote search @p:tech-3', 
       Y.encodeRelativePosition(Y.createRelativePositionFromTypeIndex(collab._parent._xmlText, collab.getOffset() + 1 + at, assoc));
     expect(fromPoint(offset, 0)).toEqual(fromProjection[0]);
     expect(fromPoint(offset + 9, -1)).toEqual(fromProjection[1]);
-    const comment = s.comment('c1', 'brown fox');
+    const comment = await s.comment('c1', 'brown fox');
     expect(decodeRelPos(comment.start).item).toEqual(Y.decodeRelativePosition(fromProjection[0]).item);
     expect(decodeRelPos(comment.end).item).toEqual(Y.decodeRelativePosition(fromProjection[1]).item);
   }));

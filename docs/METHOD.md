@@ -153,6 +153,21 @@ Read this with PRODUCT.md, your BUILDPLAN entry and the A§ it cites, before wri
 - Server code that diffs caller text (`writeTitle`, the DocDO mirror's register writes) passes `SERVER_CELL_BUDGET`: the 4M-cell client budget cost 160 ms of workerd CPU per crafted rename. `measure-converter.mjs` times worst-case renames against a per-request budget; a `new Y.Doc()` (a random client id) at a Worker's global scope stops workerd from starting. A per-identity rate window is not safe to reset inside its own window, so the PrincipalDO keeps its attempts in SQLite: an idle DO is evicted after ~10 s and wakes empty. [T1.F3s]
 - `data-sync-unacked` turns `1` in the tick of a local write and `0` on the DocDO ack that covers it; a journey waits for `0` before a reload. moss's bottom toolbar carries `data-floating-selection-toolbar` (a MarkdownEditor seam), so invariant 5 allows it as it does the selection bar. [T0.8]
 
+## Comments
+
+- A session with unacked writes answers the DocDO's sync step 1 only after `Replay` (`host/collab/replay.ts`) sends them as `groupPending` frames, at most 40 a second, with writes made meanwhile held behind them; resync replays the same way. y-partyserver's own step 2 merges everything, so an offline delete and retype reached the DocDO as one frame and re-minted the comment. The step 2 that follows holds only the client's own structs (`ownUpdate`): a full diff against the server's step-1 vector echoed the comment records the DocDO wrote during the replay, and gate 2b refused it 4409. The hold starts at the socket's open, not at the server's step 1: y-partyserver sends live as soon as the socket opens, so a keystroke between the open and the step 1 overtook the backlog, parked, and was refused 4409. [T4.2]
+- Comment-anchor frame budgets (T4.2; `measure-converter.mjs` applies pre-encoded frames to the DocDO's comments module in workerd, from its own bundle, `measure/anchors-worker.ts`, since `tsconfig.converter.json` lacks the Workers types the DocDO needs). On a note with 2,000 comments and 240 long orphans:
+
+  | Frame | workerd CPU per frame | Budget |
+  | --- | --- | --- |
+  | a single key, touching no endpoint | 0.07 ms | 0.5 ms |
+  | deleting and retyping a character 32 comments share (31 re-minted) | 1.4 ms | 10 ms |
+  | a forged one-item frame inside a long orphan's lost place | 0.1 ms | 1 ms |
+  | deleting a paragraph that holds 500 comments (500 orphan records written) | 12–18 ms | 100 ms |
+  | deleting the paragraph that holds 500 orphans' lost place (500 lifted records written) | 8 ms | 100 ms |
+
+- The anchor engine caches gap and lost-place work per frame (the doc does not change while a frame is read); without it, 500 comments in one deleted paragraph each re-walked it, 228 ms per frame. [T4.2]
+
 ## Title, presence, connection
 
 - A host import into a vendored component can be shadowed by moss's own locals (`folderError` is a `useState` in NotesListPanelContent); name seam imports so they cannot collide, since vendor/ is neither linted nor typechecked from apps/web. [T2.2]
