@@ -304,6 +304,30 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
   - **Tests first:** the T0.13 fixture plus j14's demo-note markdown render through the viewer with computed-style parity against the editor's read-only view; injected services are the only network path; video plays through 206 responses in WebKit.
   - **Red first (T3.1 checker P2):** in WebKit, assert that the video player's own reads of the clip are Range requests answered 206 (j11 checks this in Chromium only).
   - **Done:** green in both engines, with shots of the fixture and the demo note, and a release note listing whether moss-html and both consumer-reported gaps are fixed. After publishing, the coordinator tells thr_6fabbskqcf (bb-plugins coordinator; PR #241 is blocked on this release) the version, the release URL and that list.
+- **T3.9 Embeddable editor, file-backed (`mountMossEditor`)** `[B·fresh]`, after T3.8. Requested by the owner for the bb Moss plugin, relayed by thr_6fabbskqcf on 2026-10-04. bb ships no Moss renderer or editor of its own, so this package is the only path.
+  - **Scope:**
+    - A sibling of `packages/viewer` that mounts moss's own editor, editable, with moss's keyboard shortcuts, slash menu, formatting, every M3 node family and moss's desktop comment UI. Comments are stored as moss desktop stores them, as `%%m:` markers plus the comments sidecar, so files stay byte-compatible with the Moss Mac app.
+    - The host implements a small file bridge, the subset of moss desktop's ElectronAPI that file editing needs (the T0.5b bridge already maps the full surface):
+      - `read(noteId) -> {markdown, layout, comments, version}`;
+      - `write(noteId, files, baseVersion) -> {version} | {conflict}`, whole-file writes debounced as moss saves them;
+      - `assets.put(blob, name) -> relativePath` and `assets.url(relativePath)`;
+      - `onExternalChange(noteId)`.
+    - Events: dirty, saved, conflict and error, for the host's UI.
+    - No socket and no server: it never touches moss-multi's sync.
+  - **Conflicts with the Mac app:**
+    - Every write carries the `baseVersion` it read, and the host refuses a stale write, so the embed never overwrites the Mac app's save.
+    - On an external change, a clean editor reloads in place, keeping selection and scroll.
+    - A dirty editor shows "Changed in Moss" and offers to reload or keep editing. A write that is still refused stays unsaved, loudly. Nothing is silently clobbered.
+    - Merging both sides automatically arrives with M7's three-way merge (T7.x). Live co-editing with the Mac app needs both on moss-multi sync, which is out of scope here.
+  - **Tests first:**
+    - a fixture host with an in-memory file system;
+    - each node family round-trips byte-identically against T0.6's goldens;
+    - Cmd+Shift+A adds a comment that lands as a marker plus a sidecar entry the Mac app's converter reads;
+    - a stale write is refused, and an external change reloads a clean editor;
+    - assets go only through the host;
+    - CI builds a versioned `moss-editor` artifact with provenance, as the viewer does.
+  - **Done:** green in both engines, with shots, and the coordinator publishes `editor-v<version>` and notifies thr_6fabbskqcf.
+
 **Journeys added:** j11-media, j12-search, j13-vaults, j14-demo-note.
 
 **Exit criteria** [L§7.3 M3]: images and video render after reload, inside a copied note and through an anonymous link; the HTML preview runs in a sandboxed iframe; snippets show text and backlinks survive a save; the demo note shows every family styled, in light and dark, and concurrent decorator edits lose nothing; revoking a key kills its socket.
