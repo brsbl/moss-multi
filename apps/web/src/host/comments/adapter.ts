@@ -3,7 +3,7 @@
 // through a `moss-multi seam: comments` instead. Positions come from the painter's ranges, identities from the doc's
 // model, and every write goes through the REST API.
 import { can } from '@moss-multi/protocol/roles';
-import type { LexicalEditor } from 'lexical';
+import { $getSelection, $isRangeSelection, type LexicalEditor } from 'lexical';
 import { knownRole, useDocRole } from '../access.ts';
 import { terminalOf, useTerminal } from '../collab/terminal.ts';
 import { createComment, replyTo, resolveThread } from './api.ts';
@@ -36,7 +36,19 @@ export function createFromCommand(editor: LexicalEditor, payload: { text: string
   stashed.delete(editor);
   if (!minted) return false;
   createComment(painter.docId, painter.binding.doc, minted, payload.text);
+  if (!payload.nodeKey && editor.isEditable()) editor.update($collapseToFocus);
   return true;
+}
+
+/**
+ * Moss's mark wrap leaves the caret after a forward selection and before a backward one; a comment here adds no
+ * MarkNode, so collapse to the focus the same way, or the next keystroke replaces the commented words.
+ */
+function $collapseToFocus(): void {
+  const selection = $getSelection();
+  if (!$isRangeSelection(selection) || selection.isCollapsed()) return;
+  const { key, offset, type } = selection.focus;
+  selection.anchor.set(key, offset, type);
 }
 
 /** Roots with an anchor record, attached or detached: what moss's comment list counts (CommentAnchorTrackerPlugin). */
