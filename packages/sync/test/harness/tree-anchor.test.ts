@@ -46,4 +46,21 @@ describe('T4.0 projection, minting and the create-time quote search @p:tech-3', 
     expect(findQuote(text, { exact: 'TODO: fix this', prefix: 'TODO: fix this\n', suffix: '\nTail.' }).range).toEqual({ start: 15, end: 29 });
     expect(findQuote('a fox and a fox', { exact: 'fox', prefix: 'zzz ', suffix: '' }).range).toBeNull();
   });
+
+  it('quote-context-is-bounded: only QUOTE_CONTEXT characters of a caller prefix or suffix are compared', () => {
+    const near = 'abcdefghijklmnopqrstuvwxyz012345';
+    const junk = 'junk'.repeat(492);
+    // The first X has the quote's last 32 prefix characters; the second has the 1,968 before them.
+    const text = `${near}X ${junk}${'9'.repeat(32)}X`;
+    expect(findQuote(text, { exact: 'X', prefix: `${junk}${near}`, suffix: '' }).range).toEqual({ start: 32, end: 33 });
+    const after = `X${near}${'#'.repeat(2_000)}X${'9'.repeat(32)}${junk}`;
+    expect(findQuote(after, { exact: 'X', prefix: '', suffix: `${near}${junk}` }).range).toEqual({ start: 0, end: 1 });
+  });
+
+  it('quote-matches-are-bounded: past 1,000 occurrences the search stops and answers ambiguous', () => {
+    const text = `${'.X'.repeat(1_100)} unique-left X unique-right`;
+    expect(findQuote(text, { exact: 'X', prefix: ' unique-left ', suffix: ' unique-right' })).toEqual({ range: null, ambiguous: true });
+    const few = `${'.X'.repeat(900)} unique-left X unique-right`;
+    expect(findQuote(few, { exact: 'X', prefix: ' unique-left ', suffix: ' unique-right' }).range).toEqual({ start: 1_813, end: 1_814 });
+  });
 });

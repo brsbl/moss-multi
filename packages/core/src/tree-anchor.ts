@@ -2,13 +2,15 @@
 // projection of the V1 tree computed from Y types alone, RelativePosition encoding, the client's minting arithmetic,
 // and the quote search used once, at create or import, for an anchor that never had positions (I6).
 import * as Y from 'yjs';
-import { diffText } from './text-diff.ts';
+import { diffText, SERVER_CELL_BUDGET } from './text-diff.ts';
 
 /** Characters of context kept either side of a quote for the create-time search. */
 export const QUOTE_CONTEXT = 32;
 /** Below this length a quote is ambiguous, so a match also needs its prefix and suffix to match. */
 export const MIN_ANCHOR_CHARS = 8;
 export const CONTEXT_THRESHOLD = 0.8;
+/** Occurrences the create-time search scores; past this many the quote is ambiguous. */
+export const MAX_QUOTE_MATCHES = 1_000;
 /** A decorator (a V1 XmlElement embed) is one character of the projection. */
 export const BLOCK_CHAR = '￼';
 
@@ -137,33 +139,42 @@ export function captureQuote(text: string, start: number, end: number): TextQuot
 }
 
 /** Shared characters over total length, 0..1, from the same edit script the title binding uses. */
-export function similarity(a: string, b: string): number {
+export function similarity(a: string, b: string, budget?: number): number {
   if (a === b) return 1;
   if (!a.length || !b.length) return 0;
   // Every character of `a` is kept or deleted; the script leaves the common prefix and suffix as implicit retains.
   let equal = a.length;
-  for (const op of diffText(a, b)) if ('delete' in op) equal -= op.delete;
+  for (const op of diffText(a, b, budget)) if ('delete' in op) equal -= op.delete;
   return (2 * equal) / (a.length + b.length);
 }
 
-const contextMatch = (actual: string, expected: string) => (expected.length === 0 && actual.length === 0 ? 1 : similarity(actual, expected));
+// Server code scoring caller text: at most QUOTE_CONTEXT characters a side, under the server cell budget.
+const contextMatch = (actual: string, expected: string) => (expected.length === 0 && actual.length === 0 ? 1 : similarity(actual, expected, SERVER_CELL_BUDGET));
 
 /**
  * Create-time only (I6): where a never-positioned quote lives. It needs a unique best match: the exact occurrence
- * with the best context, and at under 8 characters a context match of at least 0.8 on both sides.
+ * with the best context, and at under 8 characters a context match of at least 0.8 on both sides. Only the
+ * QUOTE_CONTEXT characters next to the quote count, and a quote with more than MAX_QUOTE_MATCHES occurrences is
+ * ambiguous, so one search is bounded whatever the caller sends.
  */
 export function findQuote(text: string, quote: TextQuote): { range: Range | null; ambiguous: boolean } {
   const { exact } = quote;
   if (!exact.length) return { range: null, ambiguous: false };
+  const prefix = quote.prefix.slice(-QUOTE_CONTEXT);
+  const suffix = quote.suffix.slice(0, QUOTE_CONTEXT);
   const scored: { start: number; prefix: number; suffix: number }[] = [];
   for (let at = text.indexOf(exact); at !== -1; at = text.indexOf(exact, at + 1)) {
-    const prefix = contextMatch(text.slice(Math.max(0, at - quote.prefix.length), at), quote.prefix);
-    const suffix = contextMatch(text.slice(at + exact.length, at + exact.length + quote.suffix.length), quote.suffix);
-    scored.push({ start: at, prefix, suffix });
+    if (scored.length === MAX_QUOTE_MATCHES) return { range: null, ambiguous: true };
+    scored.push({
+      start: at,
+      prefix: contextMatch(text.slice(Math.max(0, at - prefix.length), at), prefix),
+      suffix: contextMatch(text.slice(at + exact.length, at + exact.length + suffix.length), suffix),
+    });
   }
   if (!scored.length) return { range: null, ambiguous: false };
   const score = (s: (typeof scored)[number]) => s.prefix + s.suffix;
-  const top = Math.max(...scored.map(score));
+  let top = -1;
+  for (const s of scored) top = Math.max(top, score(s));
   const best = scored.filter((s) => score(s) === top);
   if (best.length > 1) return { range: null, ambiguous: true };
   const [only] = best;

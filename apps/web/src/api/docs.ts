@@ -1,8 +1,8 @@
 // /api/docs. POST writes the D1 row in a folder the caller may edit, then DocDO.create seeds the doc (A§9 "+ Note").
 // GET /api/docs/:id is the doc and the caller's role on it; DELETE and POST /restore are trash.ts; /members is the
 // members API (members.ts) and /links the share links (links.ts); GET /api/docs/:id/instance is the owner-only DO probe
-// (A§19), which reads nothing from the doc; GET /api/docs/:id/content is the doc's markdown export. A missing doc and
-// one the caller cannot open get the same 404 on every route (A§8).
+// (A§19), which reads nothing from the doc; GET /api/docs/:id/content is the doc's markdown export; POST /comments is
+// comments.ts. A missing doc and one the caller cannot open get the same 404 on every route (A§8).
 import { eq } from 'drizzle-orm';
 import { getServerByName } from 'partyserver';
 import { MARKDOWN_CAP_BYTES, REST_WRITE_RATE } from '@moss-multi/protocol/limits';
@@ -15,6 +15,7 @@ import type { AppEnv } from '../env.ts';
 import { json } from '../worker/route.ts';
 import { resolveDocAccess, resolveFolderAccess } from './access.ts';
 import { admitDuplicateMedia, copyMedia } from './assets.ts';
+import { createComment } from './comments.ts';
 import { folderNotFound, liveIn, moveDoc, upFrom, vaultOf } from './folders.ts';
 import { handleLinks } from './links.ts';
 import { acceptShares, handleMembers, type MembersEnv } from './members.ts';
@@ -29,6 +30,7 @@ const MEMBERS = /^\/api\/docs\/([^/]+)\/members$/;
 const LINKS = /^\/api\/docs\/([^/]+)\/links(?:\/([^/]+))?$/;
 const INSTANCE = /^\/api\/docs\/([^/]+)\/instance$/;
 const CONTENT = /^\/api\/docs\/([^/]+)\/content$/;
+const COMMENTS = /^\/api\/docs\/([^/]+)\/comments$/;
 
 export interface DocRecord {
   id: string;
@@ -62,6 +64,12 @@ async function createDoc(request: Request, env: DocsEnv): Promise<Response> {
   if (typeof body.markdown === 'string' && new TextEncoder().encode(body.markdown).byteLength > MARKDOWN_CAP_BYTES) {
     return json({ error: 'doc-cap' }, 413, NO_STORE);
   }
+  // Moss interchange: a comments.json sidecar for the markdown's `%%m:` markers (comments.md §13).
+  const sidecar = body.comments;
+  if (sidecar !== undefined && (typeof sidecar !== 'object' || sidecar === null || Array.isArray(sidecar) || typeof body.markdown !== 'string')) {
+    return json({ error: 'bad-request' }, 400, NO_STORE);
+  }
+  if (sidecar !== undefined && new TextEncoder().encode(JSON.stringify(sidecar)).byteLength > MARKDOWN_CAP_BYTES) return json({ error: 'doc-cap' }, 413, NO_STORE);
   const db = createDb(env.DB);
   const folderId = typeof body.folderId === 'string' ? body.folderId : await ensureDefaultVault(db, userId);
   // Editors create in a shared folder or vault; the vault's owner owns the doc and created_by records who made it.
@@ -76,7 +84,8 @@ async function createDoc(request: Request, env: DocsEnv): Promise<Response> {
   const stub = await getServerByName(env.DocDO, doc.id);
   try {
     await stub.create({ folderId, ownerId: folder.ownerUserId, ...(title ? { title } : {}),
-      ...(typeof body.markdown === 'string' ? { markdown: body.markdown } : {}) });
+      ...(typeof body.markdown === 'string' ? { markdown: body.markdown } : {}),
+      ...(sidecar !== undefined ? { comments: sidecar as Record<string, unknown>, author: principal.id } : {}) });
   } catch (error) {
     await db.delete(docs).where(eq(docs.id, doc.id));
     if (error instanceof Error && error.message === 'doc-cap') return json({ error: 'doc-cap' }, 413, NO_STORE);
@@ -219,6 +228,8 @@ export async function handleDocs(request: Request, env: DocsEnv): Promise<Respon
     const access = await resolveDocAccess(createDb(env.DB), principal, accessMatch[1], shareTokenOf(request));
     return access ? json({ role: access.role, deleted: access.deleted }, 200, NO_STORE) : notFound();
   }
+  const comments = COMMENTS.exec(pathname);
+  if (comments) return only('POST', request, () => createComment(request, env, comments[1]));
   const content = CONTENT.exec(pathname);
   if (content) return only('GET', request, () => readContent(request, env, content[1]));
   const instance = INSTANCE.exec(pathname);
