@@ -244,7 +244,7 @@ export function createDesktopRef(fs: RefFs, roots: { workspaceRoot: string; acti
     options: { noteId?: string; targetRoot: string }
   ): Promise<{ folderName: string; dirPath: string }> => {
     const effectiveTargetRoot = options.targetRoot;
-    const { noteId } = options ?? {};
+    const { noteId } = options;
     let attempt = 0;
 
     while (attempt < MAX_FOLDER_ALLOCATION_ATTEMPTS) {
