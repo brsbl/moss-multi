@@ -1,12 +1,12 @@
 # moss-multi progress
 
-**Overall: 51% done** (41 of 81 planned tasks verified)
+**Overall: 52% done** (42 of 81 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 18 / 18 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 16 / 19 | in progress |
-| M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 7 / 11 | in progress |
+| M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 8 / 11 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 0 / 9 | |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
@@ -59,6 +59,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-04 — T2.3s verified: only the vault owner or a co-owner (by an owner grant on the note or a folder above it) can trash, restore or read a trashed note in Trash, never an editor, a link holder or an agent key; a restore into another folder needs edit there and never lands under a folder trashed meanwhile, a refused restore shows the server's sentence, everyone else meets the one 404 on a trashed note, and a revocation landing mid-trash or mid-restore wins.
 - 2026-10-04 — T0.13b verified: the read-only viewer (`packages/viewer` 0.2.0) shows an HTML block as moss's cached screenshot, falling back to the legacy cache path and then to "Preview unavailable", without ever running the HTML; the fixture's cached, legacy and missing blocks are shot in Chromium and WebKit.
 - 2026-10-04 — T1.F2 verified: each code, HTML and formula block's text now lives in its own small document that the server hides while no block names it and restores intact when one does, a copied block gets its own text, and one Cmd+Z undoes body and block edits together.
+- 2026-10-05 — T2.7 verified: a stranger on a 390 px phone can open a share link, read the note, sign up through the card and land back on the same note; the notes panel overlays the canvas below 640 px, Share becomes an icon with an overflow menu, revoked and forged links show the denial page, and every control stays reachable.
 
 ## T1.1s identity audit
 
