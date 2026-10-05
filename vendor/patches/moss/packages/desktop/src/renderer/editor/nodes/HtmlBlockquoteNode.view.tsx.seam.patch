@@ -90,7 +90,15 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
    const highlightedPreRef = useRef<HTMLPreElement>(null);
  
    const [interactivePreviewReady, setInteractivePreviewReady] = useState(false);
-@@ -658,7 +662,7 @@ function MossHtmlPreviewComponent({
+@@ -534,6 +538,7 @@ function MossHtmlPreviewComponent({
+     [availableNoteWidth, previewImageIntrinsicSize, previewRawHtml, renderedContentSize, viewportSize]
+   );
+   const {
++    livePreview,
+     previewImageUrl,
+     preloadImageUrl,
+     previewImageFailed,
+@@ -658,7 +663,7 @@ function MossHtmlPreviewComponent({
    }, [retryPreviewImage]);
  
    useEffect(() => {
@@ -99,7 +107,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
        setLocalRawHtml(rawHtml);
      }
    }, [rawHtml, isEditing]);
-@@ -744,7 +748,7 @@ function MossHtmlPreviewComponent({
+@@ -744,7 +749,7 @@ function MossHtmlPreviewComponent({
      editor.update(() => {
        const node = $getNodeByKey(nodeKey);
        if (node && $isHtmlBlockquoteNode(node)) {
@@ -108,7 +116,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
        }
      });
      setHasTextSelection(false);
-@@ -768,7 +772,7 @@ function MossHtmlPreviewComponent({
+@@ -768,7 +773,7 @@ function MossHtmlPreviewComponent({
    }, [commitRawHtml, editor._key, isEditing, nodeKey]);
  
    const cancelEdit = useCallback(() => {
@@ -117,7 +125,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
      setHasTextSelection(false);
      setIsEditing(false);
    }, [rawHtml]);
-@@ -798,7 +802,7 @@ function MossHtmlPreviewComponent({
+@@ -798,7 +803,7 @@ function MossHtmlPreviewComponent({
          <div className="flex items-center gap-1">
            <MediaHeaderButton
              icon={X}
@@ -126,7 +134,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
              onClick={() => cancelEdit()}
            />
            <MediaHeaderButton
-@@ -827,6 +831,7 @@ function MossHtmlPreviewComponent({
+@@ -827,6 +832,7 @@ function MossHtmlPreviewComponent({
          </pre>
          <textarea
            ref={textareaRef}
@@ -134,7 +142,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
            value={localRawHtml}
            onChange={(e) => {
              setLocalRawHtml(e.target.value);
-@@ -854,11 +859,11 @@ function MossHtmlPreviewComponent({
+@@ -854,11 +860,11 @@ function MossHtmlPreviewComponent({
          <span className="inline-flex items-center gap-1 align-middle">
            <KeyboardShortcut keys={['⌘', '⏎']} size="compact" />
          </span>{' '}
@@ -148,7 +156,33 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
        </div>
      </div>
    );
-@@ -1017,7 +1022,7 @@ function MossHtmlPreviewComponent({
+@@ -867,6 +873,25 @@ function MossHtmlPreviewComponent({
+     <div
+       className={`moss-html-preview-scroll absolute inset-0 overflow-auto bg-ink-inverse ${stablePreviewLayerVisibilityClass}`}
+     >
++      {/* moss-multi seam: html-preview (A§16): no screenshot on the web; the static preview is the live sandboxed
++          frame, inert until the block is activated, sized as moss sizes its screenshot: the default viewport grown to
++          what renders. */}
++      {livePreview ? (
++        <div className="pointer-events-none absolute inset-0" data-moss-html-live-preview="static">
++          <HtmlPreviewIframe
++            srcDoc={previewSrcDoc}
++            title="HTML preview"
++            viewportWidth={htmlDisplayIntrinsicSize.width}
++            viewportHeight={htmlDisplayIntrinsicSize.height}
++            displayScale={noteDisplayScale}
++            dimensionReportId={nodeKey}
++            className="h-full w-full"
++            mode={noteIframeMode}
++            onRenderedSize={htmlIntrinsicSize.heightSource === 'default' ? setPreviewImageIntrinsicSize : undefined}
++          />
++        </div>
++      ) : null}
++
+       {shouldRenderPreviewImage ? (
+         <img
+           src={previewImageUrl}
+@@ -1017,7 +1042,7 @@ function MossHtmlPreviewComponent({
          ? { children: editorPanel }
          : {
              viewportRef: notePreviewViewportRef,
@@ -157,7 +191,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
                !isInteractive ? 'cursor-pointer' : ''
              }`,
              viewportDataAttributes: { 'data-moss-html-preview-viewport': 'true' },
-@@ -1055,7 +1060,7 @@ function MossHtmlPreviewComponent({
+@@ -1055,7 +1080,7 @@ function MossHtmlPreviewComponent({
  registerNodeView(HtmlBlockquoteNode.getType(), function decorate(this: HtmlBlockquoteNode): JSX.Element {
      return (
        <HtmlBlockquoteComponent

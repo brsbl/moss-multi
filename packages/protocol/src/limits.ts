@@ -34,3 +34,6 @@ export const UPLOAD_RATE = { max: 60, windowMs: 60_000 } as const;
 
 /** Uploaded media bytes a vault can hold, summed over the assets uploaded into its folders; 413 past it. */
 export const VAULT_MEDIA_QUOTA_BYTES = 2 * 1024 * 1024 * 1024;
+
+/** Server fetches of caller-supplied URLs (unfurls, remote images) per identity per window; 429 past it (A§18). */
+export const REMOTE_FETCH_RATE = { max: 30, windowMs: 60_000 } as const;

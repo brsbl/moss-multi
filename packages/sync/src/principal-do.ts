@@ -1,7 +1,7 @@
 import { Server, type Connection, type ConnectionContext, type WSMessage } from 'partyserver';
 import { TRUSTED } from '@moss-multi/protocol/sync';
 import type { WorkspaceEvent } from '@moss-multi/protocol/workspace';
-import { REST_WRITE_RATE, UPLOAD_RATE } from '@moss-multi/protocol/limits';
+import { REMOTE_FETCH_RATE, REST_WRITE_RATE, UPLOAD_RATE } from '@moss-multi/protocol/limits';
 import type { SyncEnv } from './env.ts';
 
 /** Where a window keeps its attempts between wakes. */
@@ -60,6 +60,7 @@ export class PrincipalDO extends Server<SyncEnv> {
   static options = { hibernate: true };
   #writes: RateWindow | null = null;
   #uploads: RateWindow | null = null;
+  #fetches: RateWindow | null = null;
 
   override onConnect(connection: Connection, context: ConnectionContext): void {
     const principal = context.request.headers.get(TRUSTED.principal);
@@ -97,5 +98,11 @@ export class PrincipalDO extends Server<SyncEnv> {
   takeUploadToken(): boolean {
     this.#uploads ??= new RateWindow(UPLOAD_RATE.max, UPLOAD_RATE.windowMs, sqlAttempts(this.ctx.storage.sql, 'uploads'));
     return this.#uploads.take();
+  }
+
+  /** One server fetch of a caller-supplied URL (an unfurl, a remote image); false past REMOTE_FETCH_RATE. */
+  takeFetchToken(): boolean {
+    this.#fetches ??= new RateWindow(REMOTE_FETCH_RATE.max, REMOTE_FETCH_RATE.windowMs, sqlAttempts(this.ctx.storage.sql, 'remote-fetches'));
+    return this.#fetches.take();
   }
 }
