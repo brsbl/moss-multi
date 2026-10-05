@@ -7,10 +7,10 @@ import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { can, foldRole, maxRole, type Role } from '@moss-multi/protocol/roles';
 import type { AuthEnv } from '../auth/auth.ts';
 import { resolvePrincipal, shareTokenOf, type Principal } from '../auth/principal.ts';
-import { createDb, type Db } from '../db/client.ts';
-import { docs as docsTable, folders as foldersTable } from '../db/schema.ts';
+import { createDb, inJson, type Db } from '../db/client.ts';
+import { docMembers, docs as docsTable, folderMembers, folders as foldersTable } from '../db/schema.ts';
 import { json } from '../worker/route.ts';
-import { accessibleDocs, accessibleFolders, liveLink, MAX_FOLDER_DEPTH, resolveDocAccess, resolveFolderAccess } from './access.ts';
+import { accessibleDocs, accessibleFolders, actingUserId, folderChain, grantees, liveLink, MAX_FOLDER_DEPTH, resolveDocAccess, resolveFolderAccess } from './access.ts';
 import { NO_STORE, notFound, unauthenticated } from './respond.ts';
 import { ensureDefaultVault } from './vaults.ts';
 
@@ -103,25 +103,63 @@ async function subtree(db: Db, rootId: string, ownerUserId: string) {
   return found;
 }
 
-/** A folder link's workspace: the folder as the vault root, its subfolders and its docs, each at the caller's role. */
+/**
+ * A folder link's workspace: the folder as the vault root, its subfolders and its docs, each at the caller's role as
+ * resolveDocAccess and resolveFolderAccess fold it (ownership, grants up the chain, the link as a ceiling). At most six
+ * queries with a fixed number of parameters, however large the subtree.
+ */
 async function folderLinkListing(db: Db, principal: Principal, token: string, root: { id: string; name: string; ownerUserId: string; role: Role }) {
-  const below = await subtree(db, root.id, root.ownerUserId);
+  const ids = grantees(principal);
+  const [below, rootChain, link, folderGrants, docGrants] = await Promise.all([
+    subtree(db, root.id, root.ownerUserId),
+    folderChain(db, root.id),
+    liveLink(db, token),
+    ids.length ? db.select({ id: folderMembers.folderId, role: folderMembers.role }).from(folderMembers).where(inArray(folderMembers.principalId, ids)) : [],
+    ids.length ? db.select({ id: docMembers.docId, role: docMembers.role }).from(docMembers).where(inArray(docMembers.principalId, ids)) : [],
+  ]);
   const byId = new Map<string, TreeNode>([[root.id, { id: root.id, name: root.name, parentId: null, kind: 'vault' }], ...below.map((row): [string, TreeNode] => [row.id, row])]);
   const pathFor = pathMap(root.id, byId);
-  const rows = await db.select().from(docsTable).where(and(inArray(docsTable.folderId, [root.id, ...below.map((row) => row.id)]), isNull(docsTable.deletedAt)));
-  const docs = (await Promise.all(rows.map(async (doc): Promise<DocRow | null> => {
-    const access = await resolveDocAccess(db, principal, doc.id, token);
+  const rows = await db.select().from(docsTable).where(and(inJson(docsTable.folderId, [root.id, ...below.map((row) => row.id)]), isNull(docsTable.deletedAt)));
+
+  const rolesOn = (grants: { id: string; role: Role }[]) => {
+    const byTarget = new Map<string, Role[]>();
+    for (const grant of grants) byTarget.set(grant.id, [...(byTarget.get(grant.id) ?? []), grant.role]);
+    return (id: string) => byTarget.get(id) ?? [];
+  };
+  const onFolder = rolesOn(folderGrants);
+  const onDoc = rolesOn(docGrants);
+  // folderChain(folderId), walked in memory down here and read once above the root.
+  const chainOf = (folderId: string) => {
+    const chain: string[] = [];
+    let current: string | null = folderId;
+    while (current && current !== root.id && chain.length < MAX_FOLDER_DEPTH) {
+      chain.push(current);
+      current = byId.get(current)?.parentId ?? null;
+    }
+    if (current === root.id) chain.push(...rootChain);
+    return chain.slice(0, MAX_FOLDER_DEPTH);
+  };
+  const actor = actingUserId(principal);
+  const roleOf = (ownerUserId: string, docId: string | null, folderId: string) => {
+    const chain = chainOf(folderId);
+    const covers = link && (link.targetType === 'doc' ? link.targetId === docId : chain.includes(link.targetId));
+    return foldRole({ owner: actor === ownerUserId, grants: [...(docId === null ? [] : onDoc(docId)), ...chain.flatMap(onFolder)],
+      link: covers ? link.role : null, anonymous: principal.type === 'anonymous', agent: principal.type === 'agent' });
+  };
+
+  const docs = rows.flatMap((doc): DocRow[] => {
+    const role = roleOf(doc.ownerUserId, doc.id, doc.folderId);
     const folderPath = pathFor(doc.folderId);
-    return access && folderPath ? { id: doc.id, title: doc.title, filename: doc.filename, createdAt: doc.createdAt, updatedAt: doc.updatedAt,
-      role: access.role, folderPath, surfaced: true } : null;
-  }))).filter((row): row is DocRow => row !== null).sort(byUpdated);
+    return role && folderPath ? [{ id: doc.id, title: doc.title, filename: doc.filename, createdAt: doc.createdAt, updatedAt: doc.updatedAt,
+      role, folderPath, surfaced: true }] : [];
+  }).sort(byUpdated);
   // Each folder at the caller's own role, so a grant on a subfolder above the link's role shows.
-  const folders: FolderRow[] = (await Promise.all(below.map(async (folder): Promise<FolderRow | null> => {
+  const folders: FolderRow[] = below.flatMap((folder): FolderRow[] => {
     const path = pathFor(folder.id);
-    const role = (await resolveFolderAccess(db, principal, folder.id, token))?.role ?? root.role;
-    return path ? { id: folder.id, name: path.split('/').pop()!, path, role, surfaced: true, createdAt: folder.createdAt,
-      noteCount: docs.filter((doc) => doc.folderPath === path).length } : null;
-  }))).filter((row): row is FolderRow => row !== null);
+    const role = roleOf(folder.ownerUserId, null, folder.id) ?? root.role;
+    return path ? [{ id: folder.id, name: path.split('/').pop()!, path, role, surfaced: true, createdAt: folder.createdAt,
+      noteCount: docs.filter((doc) => doc.folderPath === path).length }] : [];
+  });
   return { docs, folders };
 }
 
