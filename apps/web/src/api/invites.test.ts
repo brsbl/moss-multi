@@ -3,7 +3,7 @@
 // it while signed in; it then binds to that account. Owning the address grants nothing and tells its account nothing.
 // An invite dies when its inviter stops managing the item or the item goes to Trash. The bell tells an inviter their
 // invite was accepted, pushed to their tabs and re-checked against the live grant whenever it is read.
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
 import { redeem } from '../test/invites.ts';
 import { BASE, insertDoc, insertFolder, insertLink, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
@@ -11,7 +11,7 @@ import { handleApi } from './router.ts';
 
 const DocDO = {
   idFromName: (name: string) => ({ name, toString: () => name }),
-  get: () => ({ setName: async () => undefined, create: async () => undefined }),
+  get: () => ({ setName: async () => undefined, create: async () => undefined, trash: async () => undefined, settle: async () => ({}) }),
 };
 
 let d1: TestD1;
@@ -152,14 +152,29 @@ describe('copy-link invites', () => {
     expect((await membersOf(ada, path)).invites.map((i) => i.email), 'the owner’s own click leaves it pending').toEqual([ghost]);
 
     const gil = await signedUpUser(env, 't28-gil', 'Gil', ghost);
-    await d1.db.prepare('UPDATE docs SET deleted_at = ? WHERE id = ?').bind(Date.now(), docId).run();
+    expect((await call('DELETE', path, ada.cookie)).status, 'Ada sends the note to Trash').toBe(200);
     const trashed = await accept(gil.cookie, token);
     expect(trashed.status).toBe(404);
     expect(await trashed.text(), 'one refusal for every cause').toBe(refusal);
-    await d1.db.prepare('UPDATE docs SET deleted_at = NULL WHERE id = ?').bind(docId).run();
-    await d1.db.prepare('UPDATE invites SET revoked_at = ? WHERE token = ?').bind(Date.now(), token).run();
-    expect(await (await accept(gil.cookie, token)).text()).toBe(refusal);
+    // A restore brings the note back, never the invite that died with the trash.
+    expect((await call('POST', `${path}/restore`, ada.cookie)).status).toBe(200);
+    expect(await (await accept(gil.cookie, token)).text(), 'the trashed invite stays dead after a restore').toBe(refusal);
     expect(await roleOf(gil.cookie, docId)).toBeNull();
+    expect((await membersOf(ada, path)).invites, 'and is not listed again').toEqual([]);
+  });
+
+  it('keeps an invite dead after a folder trash and a restore of its note', async () => {
+    const folderId = await insertFolder(d1.db, ada, ada.homeId);
+    const docId = await titled(ada, 'Folder trash', { folderId });
+    const path = `/api/docs/${docId}`;
+    const ghost = unknownEmail('folder-trash');
+    await share(ada, path, ghost);
+    const token = tokenOf(await inviteLink(ada, path, ghost));
+    expect((await call('DELETE', `/api/folders/${folderId}`, ada.cookie)).status).toBe(200);
+    expect((await call('POST', `${path}/restore`, ada.cookie)).status).toBe(200);
+    expect((await accept(cy.cookie, token)).status).toBe(404);
+    expect(await roleOf(cy.cookie, docId)).toBeNull();
+    expect((await membersOf(ada, path)).invites).toEqual([]);
   });
 
   it('redeems a folder invite into the whole folder', async () => {
@@ -221,6 +236,43 @@ describe('who an invite admits', { timeout: 30_000 }, () => {
     expect((await call('GET', `/api/folders/${folderId}`, otherAccount.cookie)).status).not.toBe(200);
   });
 
+  it('never revives an invite when its inviter gets manage back: the note moves out of their folder and back', async () => {
+    const folderId = await insertFolder(d1.db, ada, ada.homeId);
+    const docId = await titled(ada, 'Out and back', { folderId });
+    const coOwner = await signedUpUser(env, 't28-ola', 'Ola');
+    await share(ada, `/api/folders/${folderId}`, coOwner.email, 'owner');
+    await redeem(env, ada, `/api/folders/${folderId}`, coOwner);
+    const ghost = unknownEmail('out-and-back');
+    await share(coOwner, `/api/docs/${docId}`, ghost, 'editor');
+    const token = tokenOf(await inviteLink(coOwner, `/api/docs/${docId}`, ghost));
+
+    const move = (to: string) => call('PATCH', `/api/docs/${docId}`, ada.cookie, { folderId: to });
+    expect((await move(ada.homeId)).status, 'out of Ola’s folder').toBe(200);
+    expect(await roleOf(coOwner.cookie, docId)).toBeNull();
+    expect((await move(folderId)).status, 'and back in').toBe(200);
+    expect(await roleOf(coOwner.cookie, docId), 'Ola manages it again').toBe('owner');
+    expect((await accept(cy.cookie, token)).status, 'her old invite died when she lost manage').toBe(404);
+    expect(await roleOf(cy.cookie, docId)).toBeNull();
+    expect((await membersOf(ada, `/api/docs/${docId}`)).invites, 'and is not listed again').toEqual([]);
+  });
+
+  it('never revives a folder invite when its folder moves out of the inviter’s folder and back', async () => {
+    const outer = await insertFolder(d1.db, ada, ada.homeId);
+    const inner = await insertFolder(d1.db, ada, outer);
+    const coOwner = await signedUpUser(env, 't28-pia', 'Pia');
+    await share(ada, `/api/folders/${outer}`, coOwner.email, 'owner');
+    await redeem(env, ada, `/api/folders/${outer}`, coOwner);
+    const ghost = unknownEmail('folder-out-and-back');
+    await share(coOwner, `/api/folders/${inner}`, ghost, 'viewer');
+    const token = tokenOf(await inviteLink(coOwner, `/api/folders/${inner}`, ghost));
+
+    const move = (to: string) => call('PATCH', `/api/folders/${inner}`, ada.cookie, { parentId: to });
+    expect((await move(ada.homeId)).status).toBe(200);
+    expect((await move(outer)).status).toBe(200);
+    expect((await accept(cy.cookie, token)).status).toBe(404);
+    expect((await call('GET', `/api/folders/${inner}`, cy.cookie)).status).not.toBe(200);
+  });
+
   it('lets a re-share by a current owner take over an invite whose inviter lost access, with a fresh link', async () => {
     const folderId = await insertFolder(d1.db, ada, ada.homeId);
     const docId = await titled(ada, 'Taken over', { folderId });
@@ -243,6 +295,46 @@ describe('who an invite admits', { timeout: 30_000 }, () => {
 });
 
 describe('the bell', { timeout: 30_000 }, () => {
+  it('writes one notice when the same account redeems twice at once, in the same millisecond', async () => {
+    const docId = await titled(ada, 'Twice at once');
+    const path = `/api/docs/${docId}`;
+    const ghost = unknownEmail('twice');
+    await share(ada, path, ghost);
+    const token = tokenOf(await inviteLink(ada, path, ghost));
+    const rae = await signedUpUser(env, 't28-rae', 'Rae', ghost);
+    // Both requests read the open invite before either batch runs, and both batches run in one millisecond.
+    let arrived = 0;
+    let release: () => void = () => undefined;
+    const bothThere = new Promise<void>((resolve) => { release = resolve; });
+    const DB = new Proxy(d1.db, {
+      get(target, key) {
+        if (key !== 'batch') {
+          const value = Reflect.get(target, key, target);
+          return typeof value === 'function' ? value.bind(target) : value;
+        }
+        return async (statements: D1PreparedStatement[]) => {
+          arrived += 1;
+          if (arrived === 2) release();
+          await bothThere;
+          return target.batch(statements);
+        };
+      },
+    });
+    const raced = { ...env, DB };
+    const now = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+    try {
+      const answers = await Promise.all([0, 1].map(() => handleApi(new Request(`${BASE}/api/invites/${token}/accept`, {
+        method: 'POST', headers: { origin: BASE, cookie: rae.cookie },
+      }), raced)));
+      expect(answers.map((a) => a.status), 'both lead Rae to the note').toEqual([200, 200]);
+    } finally {
+      clock.mockRestore();
+    }
+    expect(await roleOf(rae.cookie, docId)).toBe('editor');
+    expect((await bell(ada)).filter((n) => n.target.id === docId), 'one notice').toHaveLength(1);
+  });
+
   it('tells nobody about a share before its link is redeemed, then tells the inviter who accepted it', async () => {
     const dee = await signedUpUser(env, 't28-dee', 'Dee');
     const docId = await titled(ada, 'Roadmap');

@@ -183,6 +183,9 @@ test('j19 invite: an invite to an unknown email gives a copyable link that redee
   await expect(row).toContainText('Invited');
   const url = await ui.inviteLink(dialog, guest.email);
   await expect(row.getByRole('button', { name: 'Copy', exact: true })).toBeVisible();
+  // The link is a bearer capability (PRODUCT ruling 19), and the dialog says so rather than promising an email check.
+  await expect(dialog.getByText(/first person who opens it signed in gets its access/), 'the owner is told who the link admits').toBeVisible();
+  await expect(dialog, 'and never that the email restricts it').not.toContainText(/whoever signs in with that email/);
   await actors.checkpoint('invite-link');
   await ada.page.keyboard.press('Escape');
 
