@@ -42,9 +42,10 @@ interface Change {
 }
 
 /**
- * id → the live elements naming it, from each transaction's own structs: the elements it integrated (and `__regId`
- * attributes it set) and the ones it deleted, including every element inside a deleted or recreated paragraph or
- * container (Yjs deletes a subtree item by item). `take()` returns the ids changed since the last call.
+ * id → the live elements naming it, from each transaction's own structs: the elements it integrated (and the `__regId`
+ * and `__type` attributes it set or removed) and the ones it deleted, including every element inside a deleted or
+ * recreated paragraph or container (Yjs deletes a subtree item by item). `take()` returns the ids changed since the
+ * last call.
  */
 export class NameIndex {
   readonly live = new Map<string, Set<Y.XmlElement>>();
@@ -77,14 +78,18 @@ export class NameIndex {
         if (!(struct instanceof Y.Item) || struct.deleted) continue;
         if (struct.content instanceof Y.ContentType && struct.content.type instanceof Y.XmlElement) {
           this.#set(struct.content.type, record, origin);
-        } else if (struct.parentSub === '__regId' && struct.parent instanceof Y.XmlElement && !struct.parent._item?.deleted) {
-          this.#set(struct.parent, record, origin);
+        } else if (naming(struct)) {
+          this.#set(struct.parent as Y.XmlElement, record, origin);
         }
       }
     });
     Y.iterateDeletedStructs(transaction, transaction.deleteSet, (struct) => {
-      if (struct instanceof Y.Item && struct.content instanceof Y.ContentType && struct.content.type instanceof Y.XmlElement) {
+      if (!(struct instanceof Y.Item)) return;
+      if (struct.content instanceof Y.ContentType && struct.content.type instanceof Y.XmlElement) {
         this.#drop(struct.content.type, record);
+      } else if (naming(struct)) {
+        // A removed `__regId` or `__type` (a replaced one is also re-filed above, to the same effect).
+        this.#set(struct.parent as Y.XmlElement, record, origin);
       }
     });
   }
@@ -123,6 +128,11 @@ export class NameIndex {
     this.#ids.delete(element);
     if (!set.size) this.live.delete(id!);
   }
+}
+
+/** An attribute item that decides what a live element names: its `__regId` or its `__type`. */
+function naming(struct: Y.Item): boolean {
+  return (struct.parentSub === '__regId' || struct.parentSub === '__type') && struct.parent instanceof Y.XmlElement && !struct.parent._item?.deleted;
 }
 
 interface Meta {
@@ -167,8 +177,9 @@ export class PayloadStore {
   /** Stored bytes of every payload, kept as they change. */
   #totalBytes = 0;
   /**
-   * Bytes each principal wrote into payloads while they were withheld, released when one is served or dropped. Kept in
-   * `payload_withheld` too, so a wake never resets anyone's allowance.
+   * Bytes each principal wrote into payloads while they were withheld, counted while the payload is withheld: a reveal
+   * stops counting them and withholding it again counts them again; a drop forgets them. Kept in `payload_withheld`
+   * too, so neither a wake nor a reveal resets anyone's allowance.
    */
   readonly #byIdentity = new Map<string, number>();
   readonly #attributed = new Map<string, Map<string, number>>();
@@ -189,13 +200,13 @@ export class PayloadStore {
     this.#sql.exec(
       'CREATE TABLE IF NOT EXISTS payload_withheld (reg_id TEXT NOT NULL, principal TEXT NOT NULL, bytes INTEGER NOT NULL, PRIMARY KEY (reg_id, principal))',
     );
-    for (const row of this.#sql.exec<{ reg_id: string; principal: string; bytes: number }>('SELECT reg_id, principal, bytes FROM payload_withheld').toArray()) {
-      this.#attribute(row.reg_id, row.principal, Number(row.bytes));
-    }
     for (const row of this.#sql.exec<{ reg_id: string; bytes: number; withheld_since: number | null }>('SELECT reg_id, bytes, withheld_since FROM payload_meta').toArray()) {
       const meta = { bytes: Number(row.bytes), withheldSince: row.withheld_since === null ? null : Number(row.withheld_since), rows: 0, rowBytes: 0 };
       this.#meta.set(row.reg_id, meta);
       this.#totalBytes += meta.bytes;
+    }
+    for (const row of this.#sql.exec<{ reg_id: string; principal: string; bytes: number }>('SELECT reg_id, principal, bytes FROM payload_withheld').toArray()) {
+      this.#attribute(row.reg_id, row.principal, Number(row.bytes));
     }
     this.names = new NameIndex(note, JANITOR);
   }
@@ -405,7 +416,12 @@ export class PayloadStore {
     let attributed = this.#attributed.get(id);
     if (!attributed) this.#attributed.set(id, (attributed = new Map()));
     attributed.set(principal, (attributed.get(principal) ?? 0) + bytes);
-    this.#byIdentity.set(principal, this.withheldBy(principal) + bytes);
+    if ((this.#meta.get(id)?.withheldSince ?? null) !== null) this.#byIdentity.set(principal, this.withheldBy(principal) + bytes);
+  }
+
+  /** Counts (or stops counting) a payload's attributed bytes against its writers. */
+  #count(id: string, sign: 1 | -1): void {
+    for (const [principal, bytes] of this.#attributed.get(id) ?? []) this.#byIdentity.set(principal, this.withheldBy(principal) + sign * bytes);
   }
 
   #persist(id: string, update: Uint8Array): void {
@@ -460,6 +476,7 @@ export class PayloadStore {
     if (meta.withheldSince !== null) return;
     meta.withheldSince = since;
     this.#writeMeta(id, meta);
+    this.#count(id, 1);
   }
 
   #serve(id: string): void {
@@ -467,21 +484,15 @@ export class PayloadStore {
     if (meta.withheldSince === null) return;
     meta.withheldSince = null;
     this.#writeMeta(id, meta);
-    this.#release(id);
-  }
-
-  /** Its writers' withheld bytes no longer count against them. */
-  #release(id: string): void {
-    const attributed = this.#attributed.get(id);
-    if (!attributed) return;
-    for (const [principal, bytes] of attributed) this.#byIdentity.set(principal, this.withheldBy(principal) - bytes);
-    this.#attributed.delete(id);
-    this.#sql.exec('DELETE FROM payload_withheld WHERE reg_id = ?', id);
+    this.#count(id, -1);
   }
 
   #drop(id: string): void {
-    this.#totalBytes -= this.#meta.get(id)?.bytes ?? 0;
-    this.#release(id);
+    const meta = this.#meta.get(id);
+    this.#totalBytes -= meta?.bytes ?? 0;
+    if (meta && meta.withheldSince !== null) this.#count(id, -1);
+    this.#attributed.delete(id);
+    this.#sql.exec('DELETE FROM payload_withheld WHERE reg_id = ?', id);
     this.#sql.exec('DELETE FROM payload_updates WHERE reg_id = ?', id);
     this.#sql.exec('DELETE FROM payload_meta WHERE reg_id = ?', id);
     this.#sql.exec('DELETE FROM payload_readers WHERE reg_id = ?', id);
