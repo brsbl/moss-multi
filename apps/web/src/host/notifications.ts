@@ -12,6 +12,8 @@ export interface Notice {
   by: string;
   target: { type: 'doc' | 'folder'; id: string; title: string; kind: 'doc' | 'folder' | 'vault' };
   invitedEmail?: string;
+  /** A share's invite token: opening the notice follows it (navigation.ts). */
+  invite?: string;
 }
 
 export interface NotificationsDeps {
@@ -58,8 +60,8 @@ export function createNotifications({ fetch: fetcher, signedIn }: NotificationsD
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
-    /** Marks `ids` read now; `open` names the notice the person opened, which redeems its share (invites.ts). */
-    markRead(ids: string[], open?: string): void {
+    /** Marks `ids` read now. Reading redeems nothing: a share's notice follows its invite (navigation.ts). */
+    markRead(ids: string[]): void {
       const marking = new Set(ids);
       if (!ids.length) return;
       // A read in flight answers with the old state; it must not bring the badge back.
@@ -70,7 +72,7 @@ export function createNotifications({ fetch: fetcher, signedIn }: NotificationsD
         keepalive: true,
         credentials: 'same-origin',
         headers: { 'content-type': 'application/json', accept: 'application/json' },
-        body: JSON.stringify(open ? { ids, open } : { ids }),
+        body: JSON.stringify({ ids }),
       }).catch(() => undefined);
     },
     /** The workspace channel (bridge): a push about notices, or a (re)connect that may have missed one. */

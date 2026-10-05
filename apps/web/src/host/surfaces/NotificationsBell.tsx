@@ -1,14 +1,15 @@
 // The bell (T2.8; A§11): in the note's top bar beside Share, the connection indicator and the face pile, so nothing
 // floats over the canvas (L§1.3). It follows glyphdown's NotificationsBell (an unread count, "Mark all read", newest
 // first) built from moss's DS menu and the InboxItem primitive, and it is pushed through the workspace channel rather
-// than polled. A notice opens its item in place through navigation.ts and is marked read with keepalive.
+// than polled. A notice opens its item in place through navigation.ts (a share by redeeming its invite) and is marked
+// read with keepalive.
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@moss/shared/components/ui/dropdown-menu';
 import { Bell } from 'lucide-react';
 import { useRef, useSyncExternalStore, type ReactNode } from 'react';
 import { InboxItem, UnreadBadge } from '../../../../../packages/ui/src/InboxItem.tsx';
 import { useAuthState } from '../auth.ts';
 import { inbox } from '../inbox.ts';
-import { departTo, openDoc } from '../navigation.ts';
+import { departTo, openDoc, openInvite } from '../navigation.ts';
 import type { Notice } from '../notifications.ts';
 
 /** How many notices the open inbox lists. */
@@ -50,8 +51,10 @@ export function NotificationsBell(): ReactNode {
 
   const open = (notice: Notice) => {
     opening.current = true;
-    inbox.markRead([notice.id], notice.type === 'share-invite' ? notice.id : undefined);
-    if (notice.target.type === 'doc') openDoc(notice.target.id);
+    inbox.markRead([notice.id]);
+    // A share opens by redeeming its invite first; anything else opens what it names.
+    if (notice.type === 'share-invite' && notice.invite) void openInvite(notice.invite, notice.target);
+    else if (notice.target.type === 'doc') openDoc(notice.target.id);
     else void departTo(`/f/${encodeURIComponent(notice.target.id)}`);
   };
 

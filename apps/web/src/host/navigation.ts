@@ -9,7 +9,7 @@
 // refused visibly rather than landing on the bell or vanishing.
 import { DOC_ID_ATTR, DOC_STATE_ATTR, EDITOR_PANE_ATTR } from '@moss-multi/protocol/dom-contract';
 import { allowUnload, waitForAllAcked } from './collab/unacked.ts';
-import { armOpeningGuard } from './opening-guard.ts';
+import { armOpeningGuard, type OpeningGuard } from './opening-guard.ts';
 import { refuseInput } from './refusal.ts';
 
 /** Replaces this history entry with `href`, so Back never returns to the page that was left. */
@@ -52,13 +52,15 @@ export function registerDocOpener(open: DocOpener): () => void {
 /** The longest keys stay refused while a note opens; past it the pane's own state says what is wrong (T1.3). */
 const MAX_OPENING_MS = 30_000;
 
-/** Opens a note in this tab, in place; without moss mounted, it is a page load like any other leave. */
-export function openDoc(docId: string): void {
+/** Opens a note in this tab, in place; without moss mounted, it is a page load like any other leave. `armed` is a
+ * guard the caller armed at the click, held until the note is live. */
+export function openDoc(docId: string, armed?: OpeningGuard): void {
   if (!opener) {
+    armed?.disarm();
     void departTo(`/d/${encodeURIComponent(docId)}`);
     return;
   }
-  const guard = armOpeningGuard();
+  const guard = armed ?? armOpeningGuard();
   const live = `[${EDITOR_PANE_ATTR}][${DOC_ID_ATTR}="${CSS.escape(docId)}"][${DOC_STATE_ATTR}="live"]`;
   const settle = () => {
     observer.disconnect();
@@ -72,4 +74,39 @@ export function openDoc(docId: string): void {
   observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: [DOC_STATE_ATTR, DOC_ID_ATTR] });
   opener(docId);
   if (document.querySelector(live)) settle();
+}
+
+export const INVITE_GONE = 'This invite is for another email or is no longer open.';
+export const INVITE_UNREACHABLE = 'Couldn’t open the invite. Check your connection and try again.';
+
+/**
+ * Opens a share's notice: follows its invite (redeeming it for this account, invites.ts), then opens what it shares.
+ * The guard is armed before the request, so a key typed while the invite is redeemed is refused visibly rather than
+ * lost, and a note opens in place as `openDoc` does.
+ */
+export async function openInvite(token: string, target: { type: 'doc' | 'folder'; id: string }): Promise<void> {
+  const guard = armOpeningGuard();
+  let status = 0;
+  try {
+    const response = await fetch(`/api/invites/${encodeURIComponent(token)}/accept`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { accept: 'application/json' },
+      signal: AbortSignal.timeout(10_000),
+    });
+    status = response.status;
+  } catch {
+    status = 0;
+  }
+  if (status !== 200) {
+    guard.disarm();
+    refuseInput(status === 404 ? INVITE_GONE : INVITE_UNREACHABLE);
+    return;
+  }
+  if (target.type === 'doc') {
+    openDoc(target.id, guard);
+    return;
+  }
+  guard.disarm();
+  await departTo(`/f/${encodeURIComponent(target.id)}`);
 }

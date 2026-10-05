@@ -10,7 +10,7 @@ import { leaveTo } from '../navigation.ts';
 const ACTION =
   'mt-4 rounded-md bg-border-subtle px-3 py-1.5 text-xs font-medium text-ink-default shadow-sm transition-colors hover:bg-border-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-default/20';
 
-export function DenialPage({ signedIn, what = 'note' }: { signedIn: boolean; what?: 'note' | 'folder' | 'invite' }): ReactNode {
+export function DenialPage({ signedIn, what = 'note' }: { signedIn: boolean; what?: 'note' | 'folder' }): ReactNode {
   useEffect(() => setAppState('ready'), []);
   const here = typeof window === 'undefined' ? '/' : `${window.location.pathname}${window.location.search}`;
   return (
@@ -29,6 +29,22 @@ export function DenialPage({ signedIn, what = 'note' }: { signedIn: boolean; wha
             Sign in
           </button>
         )}
+      </div>
+    </main>
+  );
+}
+
+/** An invite followed by any account but its own, or one no longer open: one page whatever the cause (A§8). */
+export function InviteElsewhere(): ReactNode {
+  useEffect(() => setAppState('ready'), []);
+  return (
+    <main className="flex h-full min-h-screen w-full items-center justify-center bg-surface-panel px-6">
+      <div className="flex max-w-sm flex-col items-center gap-1.5 text-center">
+        <h1 className="text-sm font-medium text-ink-default">This invite is for another email</h1>
+        <p className="text-xs text-ink-muted">Sign in with the address it was sent to, or ask the person who shared it for a new link.</p>
+        <button type="button" className={ACTION} onClick={() => leaveTo('/')}>
+          Go to your notes
+        </button>
       </div>
     </main>
   );

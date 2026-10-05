@@ -91,6 +91,12 @@ export const liveAndManaged = (type: 'doc' | 'folder', id: number, user: number)
   ? `EXISTS (SELECT 1 FROM docs WHERE id = ?${id} AND deleted_at IS NULL) AND ${managesDoc(id, user)}`
   : `EXISTS (SELECT 1 FROM folders WHERE id = ?${id} AND deleted_at IS NULL) AND ${managesFolder(id, user)}`;
 
+/** Whether user `userId` manages the live doc or folder `id` now (liveAndManaged, read on its own). */
+export async function managesLive(db: D1Database, type: 'doc' | 'folder', id: string, userId: string): Promise<boolean> {
+  const row = await db.prepare(`SELECT (${liveAndManaged(type, 1, 2)}) AS ok`).bind(id, userId).first<{ ok: number }>();
+  return row?.ok === 1;
+}
+
 /** Grants on the folders of `chain`, and on the doc when there is one. */
 async function grantRoles(db: Db, ids: string[], chain: string[], docId: string | null): Promise<Role[]> {
   if (ids.length === 0) return [];

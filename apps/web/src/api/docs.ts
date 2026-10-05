@@ -17,7 +17,7 @@ import { resolveDocAccess, resolveFolderAccess } from './access.ts';
 import { folderNotFound, liveIn, moveDoc, upFrom, vaultOf } from './folders.ts';
 import { handleInviteLinks } from './invites.ts';
 import { handleLinks } from './links.ts';
-import { acceptShares, handleMembers, type MembersEnv } from './members.ts';
+import { handleMembers, type MembersEnv } from './members.ts';
 import { restoreDoc, trashDoc } from './trash.ts';
 import { NO_STORE, notFound, readJsonObject, unauthenticated } from './respond.ts';
 import { ensureDefaultVault } from './vaults.ts';
@@ -135,7 +135,6 @@ async function readDoc(request: Request, env: DocsEnv, docId: string): Promise<R
     .where(eq(docs.id, docId))
     .limit(1);
   if (!doc) return notFound();
-  await acceptShares(env.DB, principal, docId, access);
   return json({ doc, role: access.role }, 200, NO_STORE);
 }
 
