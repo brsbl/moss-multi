@@ -20,6 +20,7 @@ const BIND_TIMEOUT = 15_000;
 const SUGGEST = { role: 'button', name: 'Suggest changes' } as const;
 const REVIEW = { role: 'button', name: 'Review suggestions' } as const;
 const mod = process.platform === 'darwin' ? 'Meta' : 'Control';
+const wordKey = process.platform === 'darwin' ? 'Alt' : 'Control';
 
 const content = async (actor: Actor, docId: string): Promise<string> => (await actor.context.request.get(`/api/docs/${docId}/content`)).text();
 
@@ -313,6 +314,61 @@ test('j16-suggest routed deletes: Backspace and Delete strike a whole emoji, nev
   await settled(ben, docId, 'typing after the second strike');
   await expect(body, 'the caret sat after the emoji').toContainText('Next:\u{1F600}Y line.');
   await expect(body).not.toContainText('\u{FFFD}');
+  expect(await content(ada, docId), 'no suggestion wrote the body').toBe(before);
+});
+
+test('j16-suggest routed deletes: repeated word deletes and a line delete strike onward, the caret moving past the struck text @p:mean-2 @p:R17', async ({ actors }) => {
+  actors.solo('the owner only seeds the note; one suggester makes every edit');
+  const { ada, ben, docId, before } = await sharedNote(actors, 'alpha beta gamma\n\nfirst line words');
+  await openIn(ben, docId);
+  await ben.observeEditor(docId);
+  const { keyboard } = ben.page;
+  const body = ui.body(ben, docId);
+
+  // Word delete backward, twice: each strikes the word before the caret, which moves to the struck word's start.
+  await caret(ben, docId, 'alpha beta gamma', 16);
+  await keyboard.press(`${wordKey}+Backspace`);
+  await settled(ben, docId, 'the first word delete');
+  await expect.poll(() => painted(ben, 'suggest-delete'), { message: 'the last word is struck', timeout: BIND_TIMEOUT }).toEqual(['gamma']);
+  await keyboard.press(`${wordKey}+Backspace`);
+  await settled(ben, docId, 'the second word delete');
+  await expect.poll(() => painted(ben, 'suggest-delete'), { message: 'the word before it is struck too', timeout: BIND_TIMEOUT }).toEqual(['beta gamma']);
+  await keyboard.type('X');
+  await settled(ben, docId, 'typing after the word deletes');
+  await expect(body, 'the caret sat before the struck words').toContainText('alpha Xbeta gamma');
+
+  // Line delete backward (the platform's soft-line delete): the line is struck and the caret goes to its start.
+  await caret(ben, docId, 'first line words', 16);
+  await body.evaluate((root) => root.dispatchEvent(new InputEvent('beforeinput', { inputType: 'deleteSoftLineBackward', bubbles: true, cancelable: true })));
+  await settled(ben, docId, 'the line delete');
+  await expect.poll(() => painted(ben, 'suggest-delete'), { message: 'the line is struck', timeout: BIND_TIMEOUT }).toEqual(['beta gamma', 'first line words']);
+  await keyboard.type('Y');
+  await settled(ben, docId, 'typing after the line delete');
+  await expect(body, 'the caret sat at the start of the struck line').toContainText('Yfirst line words');
+  expect(await content(ada, docId), 'no suggestion wrote the body').toBe(before);
+});
+
+test('j16-suggest Edit-mode marks: an editor sees a suggested edit of an original code block @p:mean-2 @p:R17', async ({ actors }) => {
+  const { ada, ben, docId, before } = await sharedNote(actors, 'Code below.\n\n```js\nseed\n```');
+  await openIn(ada, docId, 'edit');
+  await openIn(ben, docId);
+  await actors.requireDistinct(2);
+  await ben.observeEditor(docId);
+  const body = ui.body(ben, docId);
+  await body.locator('.moss-codeblock-pre').click();
+  const field = body.getByPlaceholder('Enter code...');
+  await expect(field).toBeVisible();
+  await field.press('End');
+  await field.pressSequentially('!');
+  await expect(field).toHaveValue('seed!');
+  await settled(ben, docId, 'the code edit');
+  // The owner, editing, sees a marker at the code block whose preview holds the suggested code.
+  const mark = ada.page.locator('[data-suggest-mark="insert"][aria-label*="seed!"]');
+  await expect(mark, 'a wedge marks the code block').toHaveCount(1, { timeout: BIND_TIMEOUT });
+  const code = await ui.body(ada, docId).locator('.moss-codeblock-pre').boundingBox();
+  const gutter = await ada.page.locator('[data-suggest-mark="gutter"]').evaluateAll((bars) => bars.map((bar) => bar.getBoundingClientRect()).map(({ top, bottom }) => ({ top, bottom })));
+  expect(code).not.toBeNull();
+  expect(gutter.some(({ top, bottom }) => top <= code!.y + code!.height / 2 && bottom >= code!.y + code!.height / 2), 'a gutter bar runs beside the code block').toBe(true);
   expect(await content(ada, docId), 'no suggestion wrote the body').toBe(before);
 });
 

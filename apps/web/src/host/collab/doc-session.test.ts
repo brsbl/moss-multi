@@ -268,3 +268,23 @@ it('after a reconnect, a write made before the server\'s step 1 waits behind the
   title.insert(0, '#');
   expect(syncSent(third)).toHaveLength(sent + 1);
 });
+it('a suggest request made on a reconnected socket before its sync waits for the fork\'s resume, never naming the old lease', async () => {
+  const suggestSent = (socket: FakeSocket) => socket.sent.filter((frame): frame is string => typeof frame === 'string' && frame.includes('"suggest-'));
+  const first = latest();
+  first.open(); session.provider.synced = true;
+  session.sendSuggest({ t: 'suggest-lease', fork: 'fork-0001' });
+  expect(suggestSent(first)).toHaveLength(1);
+  first.ended(1006);
+  await vi.advanceTimersByTimeAsync(1_000);
+  const second = latest();
+  expect(second).not.toBe(first);
+  second.open();
+  // Typed between the new socket's open and its sync: the leases still belong to the dropped connection.
+  session.sendSuggest({ t: 'suggest-ops', record: 'r1', update: 'AA==' });
+  expect(suggestSent(second), 'nothing goes out ahead of the resume').toEqual([]);
+  expect(session.state.unacked).toBe(true);
+  session.provider.synced = true;
+  session.resendSuggest(() => session.sendSuggest({ t: 'suggest-lease', resume: [7], fork: 'fork-0001' }));
+  expect(suggestSent(second), 'the resume goes first').toHaveLength(1);
+  expect(suggestSent(second)[0]).toContain('"resume"');
+});

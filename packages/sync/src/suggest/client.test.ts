@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { $getRoot } from 'lexical';
 import * as Y from 'yjs';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
-import type { SuggestReply, SuggestRequest } from '@moss-multi/protocol/suggest';
+import { SUGGEST_LIMITS, type SuggestReply, type SuggestRequest } from '@moss-multi/protocol/suggest';
 import type { RecordMeta } from '@moss-multi/core/suggest/apply';
 import { handleSuggest, SuggestIngest } from '../doc/suggest.ts';
 import { Composite, reviewDoc, SuggestFork, type ForkEvent } from './client.ts';
@@ -311,6 +311,39 @@ describe('T5.1 copy-back, reconnect and undelete @p:mean-2 @p:tech-7 @p:R17', ()
       expect(recordIds(live), 'the active record continues').toEqual([record]);
       expect(readRecord(live, record)?.ops.length).toBe(2);
       expect(link.replies.filter((reply) => reply.t === 'suggest-refused')).toEqual([]);
+    } finally {
+      m.dispose();
+    }
+  });
+
+  it('a pane left idle past the lease idle limit renews its leases first: the next edit and strike land with no refusal', () => {
+    let t = 1_000_000;
+    const now = () => t;
+    const live = seededBody();
+    const link = wire(live, 'c1', new SuggestIngest(live, { stateCap: STATE_CAP_BYTES, registry: nodeRegistry(), now }));
+    const m = mount(live, link, now);
+    const idle = () => {
+      t += SUGGEST_LIMITS.leaseIdleMs + 60_000;
+    };
+    try {
+      // Open, never typed in, for longer than a lease may idle.
+      idle();
+      m.act(() => select('Hello', 24).insertText(' One.'));
+      link.deliver(m.fork);
+      // Idle again after an edit: the next group takes the spare, which idled as long.
+      idle();
+      m.act(() => select('Hello', 29).insertText(' Two.'));
+      link.deliver(m.fork);
+      idle();
+      expect(m.fork.proposeDelete(spansOfText(m.fork.doc, 'world')), 'the strike is proposed').not.toBeNull();
+      link.deliver(m.fork);
+      expect(link.replies.filter((reply) => reply.t === 'suggest-refused'), 'no frame is refused').toEqual([]);
+      expect(refusalsOf(m.events)).toEqual([]);
+      expect(m.fork.closed, 'input stays open').toBe(false);
+      expect(m.fork.owes).toBe(false);
+      const records = recordIds(live).map((id) => readRecord(live, id)!);
+      expect(records.reduce((sum, record) => sum + record.ops.length, 0), 'both edits are stored').toBe(2);
+      expect(records.flatMap((record) => record.parts), 'the strike is stored').toHaveLength(1);
     } finally {
       m.dispose();
     }
