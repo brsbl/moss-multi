@@ -70,6 +70,7 @@ function sendRaw(baseUrl: string, docId: string, cookie: string, frame: Uint8Arr
 }
 
 test('j15-comments-guard: no client frame lands a write in comments, and nothing parked survives, in workerd @p:tech-3', async ({ actors, stack }) => {
+  actors.solo('one editor sends raw frames; the guard refuses by struct, never by who else is connected');
   const ada = await actors.principal('ada');
   const cookie = cookieHeader(await signIn(stack.baseUrl, ada));
   const response = await fetch(`${stack.baseUrl}/api/docs`, {
