@@ -107,7 +107,7 @@ describe('T5.1 the fork F @p:mean-2 @p:R17', () => {
     try {
       const targets = spansOfText(fork.doc, 'world');
       expect(targets.length).toBeGreaterThan(0);
-      expect(fork.proposeDelete(targets)).toBe(true);
+      expect(fork.proposeDelete(targets)).toBeTruthy();
       link.deliver(fork);
       expect(ops(link).map((reply) => reply.t)).toEqual(['suggest-ack']);
       const [record] = recordIds(live);

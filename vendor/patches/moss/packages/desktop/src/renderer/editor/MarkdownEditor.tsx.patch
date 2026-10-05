@@ -301,15 +301,14 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
    editorMountVersion?: number;
    editorRemountReason?: EditorRemountReason | null;
 +  /** moss-multi seam: collaboration (A§2.2, A§10.3): present when the note is bound to its doc; the plugin replaces the history plugin. */
-+  collaboration?: { plugin: ReactNode } | null;
++  collaboration?: { plugin: ReactNode; backgroundWriters?: boolean } | null;
  }
  
  export type MarkdownEditorHandle = {
-@@ -427,3097 +261,61 @@ const theme = {
-     string: 'token string',
+@@ -428,3096 +262,60 @@ const theme = {
      symbol: 'token symbol',
      tag: 'token tag',
--    url: 'token url',
+     url: 'token url',
 -    variable: 'token variable'
 -  },
 -  link: 'cursor-pointer text-action-primary underline underline-offset-2 transition-colors hover:text-action-primary-hover',
@@ -3171,7 +3170,6 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
 -    }
 -
 -    return false;
-+    url: 'token url',
 +    variable: 'token variable'
    },
 -  handleImportAfterStartMatch: ({ lines, startLineIndex, startMatch, rootNode }) => {
@@ -4324,7 +4322,12 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
  
    useImperativeHandle(
      ref,
-@@ -8050,7 +4293,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+@@ -8047,10 +4290,13 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+       updateContentFromMarkdown
+     ]
+   );
++  // moss-multi seam: background-writers (A§10.10, T5.1): off outside Edit mode, so Suggest records only the author's edits.
++  const backgroundWriters = !readOnly && collaboration?.backgroundWriters !== false;
  
    return (
      <CurrentNoteIdContext.Provider value={noteId}>
@@ -4334,7 +4337,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
        <CurrentNoteIdEditorPlugin />
        <div className="relative animate-[fadeIn_150ms_ease-out]" data-lexical-editor>
          <RichTextPlugin
-@@ -8073,7 +4317,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+@@ -8073,14 +4319,14 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
            placeholder={<Placeholder>{placeholder ?? 'Start typing...'}</Placeholder>}
            ErrorBoundary={LexicalErrorBoundary}
          />
@@ -4343,3 +4346,37 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
          {!readOnly && <SafePastePlugin />}
          {!readOnly && <UndoRedoPlugin />}
          <TableCellListNormalizationPlugin />
+         <ListPlugin hasStrictIndent />
+         <CheckListPlugin />
+         {!readOnly && <ChecklistPreservePlugin />}
+-        {!readOnly && <ChecklistSortPlugin />}
++        {backgroundWriters && <ChecklistSortPlugin />}
+         <HorizontalRulePlugin />
+         <TablePlugin hasCellMerge={false} hasHorizontalScroll />
+         <TableColumnLayoutPlugin />
+@@ -8088,14 +4334,14 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+         {!readOnly && <TableActionMenuPlugin noteId={noteId} />}
+         {!readOnly && <TableExitPlugin />}
+         <CodeHighlighterPlugin />
+-        {!readOnly && <CodeNodeNormalizationPlugin />}
++        {backgroundWriters && <CodeNodeNormalizationPlugin />}
+         {!readOnly && <AutoArrowPlugin />}
+         {!readOnly && <AutoDividerPlugin />}
+         <FormulaAwareMarkdownShortcutsPlugin enabled={!isFormulaDraftPillActive} />
+         {!readOnly && <TabIndentPlugin />}
+         {!readOnly && <ListHotkeyPlugin />}
+         {!readOnly && <DoubleEmptyListExitPlugin />}
+-        {!readOnly && (
++        {backgroundWriters && (
+           <MathCalculationPlugin
+             noteId={noteId}
+             onDraftPillActiveChange={setIsFormulaDraftPillActive}
+@@ -8132,7 +4378,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+         {!readOnly && <WebpageEmbedPastePlugin />}
+         {!readOnly && <EditorInputSamplingPlugin />}
+         {!readOnly && <FocusGuardPlugin />}
+-        <ColorCodeConversionPlugin />
++        {backgroundWriters && <ColorCodeConversionPlugin />}
+         {!readOnly && <ColorCodePlugin />}
+         <EmbedPillPlugin readOnly={readOnly} />
+         {!hasInitialSerializedStateProp && (

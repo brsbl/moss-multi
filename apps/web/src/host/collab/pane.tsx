@@ -173,6 +173,8 @@ class PaneBinding implements SuggestPane {
   }
 
   takeCaret(): CaretMark | null {
+    // The editor leaving is not the one the caret goes back into.
+    if (this.#switching) return null;
     const caret = this.#caret;
     this.#caret = null;
     return caret;
@@ -211,7 +213,10 @@ class PaneBinding implements SuggestPane {
     if (this.#switching) return;
     this.#switching = true;
     const go = () => {
-      if (this.#editor) this.#caret = captureCaret(this.#editor);
+      // Kept on body text, which every mode's doc holds: never on a pending insert.
+      const mount = this.#mount;
+      const pending = mount instanceof SuggestMount ? mount.fork.ownClients() : mount instanceof ReviewMount ? new Set(mount.clients.keys()) : new Set<number>();
+      if (this.#editor) this.#caret = captureCaret(this.#editor, pending) ?? this.#caret;
       this.#mode = this.#target;
       this.set({ resetting: true, mode: this.#mode });
     };
@@ -259,7 +264,10 @@ class PaneBinding implements SuggestPane {
         change: () => this.#mountChanged(),
       });
       mount.editor = this.#editor;
-      aliasProvider(mount.provider, session, mount.doc, () => mount.dispose());
+      // A pane letting go with suggestions unanswered leaves the mount delivering them (A§10.1).
+      aliasProvider(mount.provider, session, mount.doc, () => mount.retire((unsaved) => {
+        if (unsaved.length) offerUnsaved(this.docId, unsaved);
+      }));
       this.#mount = mount;
       return { doc: mount.doc, provider: mount.provider as unknown as Provider };
     }
@@ -500,8 +508,8 @@ export interface MossMultiPane {
   /** Every note the web opens is bound to its doc, so moss's REST content paths never run; a note opened from
    * Trash is the one exception, read-only. */
   bound: boolean;
-  /** MarkdownEditor's `collaboration` prop. */
-  collaboration: { plugin: ReactNode } | null;
+  /** MarkdownEditor's `collaboration` prop; `backgroundWriters` is false outside Edit mode. */
+  collaboration: { plugin: ReactNode; backgroundWriters: boolean } | null;
   /** The body is bound, synced and editable; moss's pending body focus waits for it. */
   bodyLive: boolean;
   /** Synced content stays visible when editing pauses or the session ends. */
@@ -552,10 +560,13 @@ export function useMossMultiPane(note: { id: string; trashedAt?: number | null }
   const state = usePaneState(binding);
   if (state.bodyVisible) synced.current.synced = true;
   const terminal = useTerminal(docId);
-  const collaboration = useMemo(
-    () => (docId && binding ? { plugin: <DocBinding key={`${docId}:${epoch}`} docId={docId} binding={binding} /> } : null),
+  const plugin = useMemo(
+    () => (docId && binding ? <DocBinding key={`${docId}:${epoch}`} docId={docId} binding={binding} /> : null),
     [binding, docId, epoch],
   );
+  // Moss's background writers (A§10.10) run only in Edit: in Suggest they would record their own rewrites (§5).
+  const backgroundWriters = state.mode === 'edit';
+  const collaboration = useMemo(() => (plugin ? { plugin, backgroundWriters } : null), [plugin, backgroundWriters]);
   const live = state.bodyState === 'live' && !terminal;
   // The title and Properties are the body's own fields: read-only while suggesting or reviewing (§5).
   const titleLive = live && state.mode === 'edit';

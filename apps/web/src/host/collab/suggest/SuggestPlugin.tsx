@@ -10,7 +10,7 @@ import { bindingOf } from '../binding-registry.ts';
 import { restoreCaret, type CaretMark } from './caret.ts';
 import { rangesWhere } from './chars.ts';
 import { ReviewMount, SuggestMount } from './mounts.ts';
-import { clearPaint, drawMarks, editMarks, paintBound, paintRanges, partTargets } from './paint.ts';
+import { clearPaint, drawMarks, editMarks, paintBound, paintRanges, partTargets, removedBodyItems } from './paint.ts';
 import { registerSuggestRouting } from './routing.ts';
 
 export interface SuggestPane {
@@ -54,6 +54,7 @@ export function SuggestPlugin({ pane }: { pane: SuggestPane }): null {
     const stops: (() => void)[] = [];
     let frame = 0;
     let built: Built | null = null;
+    let removed: { client: number; clock: number; len: number }[] = [];
     let timer: ReturnType<typeof setTimeout> | undefined;
     const overlay = mode === 'edit' ? overlayFor(editor.getRootElement()) : null;
 
@@ -61,14 +62,18 @@ export function SuggestPlugin({ pane }: { pane: SuggestPane }): null {
       frame = 0;
       const binding = bindingOf(editor);
       if (!binding) return;
-      const caret = pane.takeCaret();
-      if (caret && pane.bodyOpen && !restoreCaret(editor, caret)) pane.keepCaret(caret);
+      // The caret goes back once this mount is open for typing; a read-only Review keeps it for the next mode.
+      if (pane.bodyOpen && editor.isEditable()) {
+        const caret = pane.takeCaret();
+        if (caret && !restoreCaret(editor, caret)) pane.keepCaret(caret);
+      }
       if (mount instanceof SuggestMount) {
         paintBound(owner, editor, binding, mount.fork.ownClients(), mount.fork.struck());
       } else if (mount instanceof ReviewMount) {
         paintBound(owner, editor, binding, new Set(mount.clients.keys()), body ? partTargets(body, new Set(mount.valid)) : []);
       } else if (built && body) {
-        const struck = partTargets(body, new Set(built.valid));
+        // Strikes: delete-part targets, and body items a record's own ops remove (a join, a split, a restyle).
+        const struck = [...partTargets(body, new Set(built.valid)), ...removed];
         paintRanges(owner, [], struck.length ? rangesWhere(editor, binding, (id) => covers(struck, id)) : []);
         if (overlay) drawMarks(editor, overlay, editMarks(body, built, binding));
       } else {
@@ -80,6 +85,7 @@ export function SuggestPlugin({ pane }: { pane: SuggestPane }): null {
       if (!frame) frame = requestAnimationFrame(paint);
     };
     stops.push(editor.registerUpdateListener(repaint));
+    stops.push(editor.registerEditableListener(repaint));
     stops.push(pane.subscribeMount(repaint));
     window.addEventListener('resize', repaint);
     stops.push(() => window.removeEventListener('resize', repaint));
@@ -89,16 +95,21 @@ export function SuggestPlugin({ pane }: { pane: SuggestPane }): null {
       stops.push(registerSuggestRouting(editor, mount.fork));
     }
     if (mode === 'edit' && body) {
-      // Edit mode: C is rebuilt from B's records, debounced, only while any record is open.
+      // Edit mode: C is rebuilt from B's records, throttled, only while any record is open.
       const composite = new Composite(body);
       const rebuild = () => {
         built?.doc.destroy();
         built = openRecords(body).length ? composite.build() : null;
+        removed = built ? removedBodyItems(body, built) : [];
         repaint();
       };
+      // Throttled, so marks follow a peer who types without pause.
       const onUpdate = () => {
-        clearTimeout(timer);
-        timer = setTimeout(rebuild, 200);
+        if (timer !== undefined) return;
+        timer = setTimeout(() => {
+          timer = undefined;
+          rebuild();
+        }, 200);
       };
       body.on('update', onUpdate);
       stops.push(() => body.off('update', onUpdate));

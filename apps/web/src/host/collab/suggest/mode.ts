@@ -23,13 +23,17 @@ export function subscribeModes(listener: () => void): () => void {
 /** A suggester cannot leave Suggest except for Review. */
 export const lockedToSuggest = (role: Role | null): boolean => role === 'suggester';
 
-/** The mode a pane of `docId` should show for `role`. */
+/**
+ * The mode a pane of `docId` should show for `role`: Review by default for viewers and commenters (PRODUCT ruling
+ * 17), who may leave it for the plain body; Suggest for a suggester; Edit for editors and owners.
+ */
 export function modeFor(docId: string, role: Role | null): EditMode {
   const choice = chosen.get(docId);
   if (choice === 'review' && role !== null) return 'review';
   if (lockedToSuggest(role)) return 'suggest';
   if (roleAtLeast(role, 'editor')) return choice ?? 'edit';
-  return 'edit';
+  if (role === null) return 'edit';
+  return choice === 'edit' ? 'edit' : 'review';
 }
 
 export function requestMode(docId: string, mode: EditMode): void {

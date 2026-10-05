@@ -276,6 +276,7 @@ export class DocSession {
   readonly #ledger = new AckLedger();
   readonly #suggest = new SuggestLedger();
   readonly #suggestListeners = new Set<(reply: SuggestReply) => void>();
+  readonly #disposeListeners = new Set<() => void>();
   #link: Link;
   #socketOpen = false;
   #lastResync = 0;
@@ -394,11 +395,24 @@ export class DocSession {
     return () => this.#suggestListeners.delete(listener);
   }
 
-  /** Requests that never got a reply, for the fork to resend once it has resumed its leases. */
-  takeUnsentSuggest(): SuggestRequest[] {
-    const taken = this.#suggest.takeUnsent();
+  /** Calls `listener` once when the session is torn down (now, if it already was); returns the unsubscriber. */
+  onDisposed(listener: () => void): () => void {
+    if (this.#disposed) {
+      listener();
+      return () => {};
+    }
+    this.#disposeListeners.add(listener);
+    return () => this.#disposeListeners.delete(listener);
+  }
+
+  /**
+   * The fork resends what it still owes on a new socket: requests the old one never answered leave the ledger, then
+   * `resend` runs, and only then can `data-sync-unacked` settle. A lingering session never sees a false zero between.
+   */
+  resendSuggest(resend: () => void): void {
+    this.#suggest.takeUnsent();
+    resend();
     this.#settleUnacked();
-    return taken;
   }
 
   /** The doc is over for this session (A§10.6): no reconnect, every surface goes inert, a lingering session lets go. */
@@ -455,6 +469,10 @@ export class DocSession {
     // A connect still resolving its params can never reopen the socket.
     Object.defineProperty(this.provider, 'shouldConnect', { get: () => false, set: () => undefined });
     awareness.destroy();
+    // Before the doc goes: a suggest mount delivering for a released pane lets go of its fork first.
+    for (const listener of [...this.#disposeListeners]) listener();
+    this.#disposeListeners.clear();
+    this.#suggestListeners.clear();
     this.doc.destroy();
   }
 

@@ -28,7 +28,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
    editorMountVersion?: number;
    editorRemountReason?: EditorRemountReason | null;
 +  /** moss-multi seam: collaboration (A§2.2, A§10.3): present when the note is bound to its doc; the plugin replaces the history plugin. */
-+  collaboration?: { plugin: ReactNode } | null;
++  collaboration?: { plugin: ReactNode; backgroundWriters?: boolean } | null;
  }
  
  export type MarkdownEditorHandle = {
@@ -299,7 +299,12 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
  
    useImperativeHandle(
      ref,
-@@ -4237,7 +4293,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+@@ -4234,10 +4290,13 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+       updateContentFromMarkdown
+     ]
+   );
++  // moss-multi seam: background-writers (A§10.10, T5.1): off outside Edit mode, so Suggest records only the author's edits.
++  const backgroundWriters = !readOnly && collaboration?.backgroundWriters !== false;
  
    return (
      <CurrentNoteIdContext.Provider value={noteId}>
@@ -309,7 +314,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
        <CurrentNoteIdEditorPlugin />
        <div className="relative animate-[fadeIn_150ms_ease-out]" data-lexical-editor>
          <RichTextPlugin
-@@ -4260,7 +4317,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+@@ -4260,14 +4319,14 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
            placeholder={<Placeholder>{placeholder ?? 'Start typing...'}</Placeholder>}
            ErrorBoundary={LexicalErrorBoundary}
          />
@@ -318,3 +323,37 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
          {!readOnly && <SafePastePlugin />}
          {!readOnly && <UndoRedoPlugin />}
          <TableCellListNormalizationPlugin />
+         <ListPlugin hasStrictIndent />
+         <CheckListPlugin />
+         {!readOnly && <ChecklistPreservePlugin />}
+-        {!readOnly && <ChecklistSortPlugin />}
++        {backgroundWriters && <ChecklistSortPlugin />}
+         <HorizontalRulePlugin />
+         <TablePlugin hasCellMerge={false} hasHorizontalScroll />
+         <TableColumnLayoutPlugin />
+@@ -4275,14 +4334,14 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+         {!readOnly && <TableActionMenuPlugin noteId={noteId} />}
+         {!readOnly && <TableExitPlugin />}
+         <CodeHighlighterPlugin />
+-        {!readOnly && <CodeNodeNormalizationPlugin />}
++        {backgroundWriters && <CodeNodeNormalizationPlugin />}
+         {!readOnly && <AutoArrowPlugin />}
+         {!readOnly && <AutoDividerPlugin />}
+         <FormulaAwareMarkdownShortcutsPlugin enabled={!isFormulaDraftPillActive} />
+         {!readOnly && <TabIndentPlugin />}
+         {!readOnly && <ListHotkeyPlugin />}
+         {!readOnly && <DoubleEmptyListExitPlugin />}
+-        {!readOnly && (
++        {backgroundWriters && (
+           <MathCalculationPlugin
+             noteId={noteId}
+             onDraftPillActiveChange={setIsFormulaDraftPillActive}
+@@ -4319,7 +4378,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+         {!readOnly && <WebpageEmbedPastePlugin />}
+         {!readOnly && <EditorInputSamplingPlugin />}
+         {!readOnly && <FocusGuardPlugin />}
+-        <ColorCodeConversionPlugin />
++        {backgroundWriters && <ColorCodeConversionPlugin />}
+         {!readOnly && <ColorCodePlugin />}
+         <EmbedPillPlugin readOnly={readOnly} />
+         {!hasInitialSerializedStateProp && (

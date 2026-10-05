@@ -3,7 +3,7 @@
 // valid open record). F forwards every transaction whose origin is not one of its own as `suggest-ops`; it never
 // writes B. A record enters F or C only after G1–G3 and the headless bind check pass on a scratch copy.
 import * as Y from 'yjs';
-import { BODY_ROOTS, hydrate, type Inserted, type SuggestionRecord } from '@moss-multi/core/suggest/apply';
+import { BODY_ROOTS, hydrate, regRefs, type Inserted, type SuggestionRecord } from '@moss-multi/core/suggest/apply';
 import type { IdSpan, LeaseGrant, SuggestReply, SuggestRefusal, SuggestRequest } from '@moss-multi/protocol/suggest';
 import { bytesToBase64 } from '@moss-multi/protocol/sync';
 import { readMeta, readRecord, recordIds } from './records.ts';
@@ -155,13 +155,16 @@ export type ForkEvent =
   /** Input closed: `unsaved` is each block holding a change the server never acknowledged. */
   | { type: 'refused'; reason: SuggestRefusal; unsaved: string[] };
 
+/** A top-level block of the body: a paragraph-like element (XmlText) or a block decorator (XmlElement). */
+export type Block = Y.XmlText | Y.XmlElement;
+
 export interface ForkOptions {
   me: string;
   name?: string;
   send: (request: SuggestRequest) => void;
   now?: () => number;
-  /** The markdown of these top-level blocks of F; their plain text when absent. */
-  exportBlocks?: (blocks: Y.XmlText[]) => string[];
+  /** The markdown of these top-level blocks of F, or null for their plain text. */
+  exportBlocks?: (blocks: Block[]) => string[] | null;
   check?: BindCheck;
 }
 
@@ -176,34 +179,72 @@ const covers = (spans: readonly IdSpan[], client: number, clock: number) =>
   spans.some((span) => span.client === client && span.clock <= clock && clock < span.clock + span.len);
 
 /** The top-level block (a child of `root`) holding `type`, or null. */
-function blockOf(doc: Y.Doc, type: Y.AbstractType<unknown> | null): Y.XmlText | null {
+function blockOf(doc: Y.Doc, type: Y.AbstractType<unknown> | null): Block | null {
   const root = doc.get('root', Y.XmlText);
   let current = type;
   while (current && current._item) {
     const parent = current._item.parent as Y.AbstractType<unknown>;
-    if (parent === root) return current instanceof Y.XmlText ? current : null;
+    if (parent === root) return current instanceof Y.XmlText || current instanceof Y.XmlElement ? current : null;
     current = parent;
   }
   return null;
 }
 
-/** Plain text of a block, its embedded blocks included. */
-function plainText(block: Y.XmlText): string {
+/** The registers key an item sits under (an entry, or anything inside one), or null outside `registers`. */
+function registerKey(doc: Y.Doc, item: Y.Item): string | null {
+  const registers = doc.getMap('registers') as unknown as Y.AbstractType<unknown>;
+  for (let current: Y.Item | null = item; current; ) {
+    const parent = current.parent as Y.AbstractType<unknown>;
+    if (parent === registers) return current.parentSub;
+    current = parent._item;
+  }
+  return null;
+}
+
+/** A decorator's payload, read from the register its `__regId` names. */
+function registerText(doc: Y.Doc, type: Block): string {
+  const id = type.getAttribute('__regId');
+  const value = typeof id === 'string' ? doc.getMap('registers').get(id) : undefined;
+  if (value instanceof Y.Text) return value.toString();
+  if (value instanceof Y.AbstractType) return JSON.stringify(value.toJSON());
+  return typeof value === 'string' ? value : '';
+}
+
+/** Plain text of a block: its characters, nested blocks and decorator payloads. */
+export function blockText(doc: Y.Doc, block: Block): string {
+  if (block instanceof Y.XmlElement) return registerText(doc, block);
   return (block.toDelta() as { insert: unknown }[])
-    .map(({ insert }) => (typeof insert === 'string' ? insert : insert instanceof Y.XmlText && insert.getAttribute('__type') ? plainText(insert) : ''))
+    .map(({ insert }) => {
+      if (typeof insert === 'string') return insert;
+      if (insert instanceof Y.XmlElement) return registerText(doc, insert);
+      if (insert instanceof Y.XmlText) return insert.getAttribute('__regId') ? registerText(doc, insert) : blockText(doc, insert);
+      return '';
+    })
     .join('');
 }
 
-/** The top-level blocks of `doc` that `updates` insert into or delete from, in document order. */
-export function touchedBlocks(doc: Y.Doc, updates: readonly Uint8Array[]): Y.XmlText[] {
-  const found = new Set<Y.XmlText>();
+/**
+ * The top-level blocks of `doc` that `updates` insert into or delete from, or that hold a span of `spans`, in
+ * document order. An edit inside a register counts for every decorator naming it.
+ */
+export function touchedBlocks(doc: Y.Doc, updates: readonly Uint8Array[], spans: readonly IdSpan[] = []): Block[] {
+  const found = new Set<Block>();
+  let refs: Map<string, Y.AbstractType<unknown>[]> | null = null;
+  const add = (type: Y.AbstractType<unknown> | null) => {
+    const block = blockOf(doc, type);
+    if (block) found.add(block);
+  };
   const note = (id: Y.ID) => {
     if (id.clock >= Y.getState(doc.store, id.client)) return;
     const struct = Y.getItem(doc.store, id);
     if (!(struct instanceof Y.Item)) return;
-    const own = struct.content instanceof Y.ContentType ? blockOf(doc, struct.content.type as Y.AbstractType<unknown>) : null;
-    const block = own ?? blockOf(doc, struct.parent as Y.AbstractType<unknown>);
-    if (block) found.add(block);
+    const key = registerKey(doc, struct);
+    if (key !== null) {
+      refs ??= regRefs(doc);
+      for (const type of refs.get(key) ?? []) add(type);
+      return;
+    }
+    add(struct.content instanceof Y.ContentType ? (struct.content.type as Y.AbstractType<unknown>) : (struct.parent as Y.AbstractType<unknown>));
   };
   for (const update of updates) {
     let decoded: ReturnType<typeof Y.decodeUpdate>;
@@ -215,6 +256,7 @@ export function touchedBlocks(doc: Y.Doc, updates: readonly Uint8Array[]): Y.Xml
     for (const struct of decoded.structs) if (struct instanceof Y.Item) note(struct.id);
     for (const [client, ranges] of decoded.ds.clients) for (const { clock } of ranges) note(Y.createID(client, clock));
   }
+  for (const span of spans) note(Y.createID(span.client, span.clock));
   const order = (doc.get('root', Y.XmlText).toDelta() as { insert: unknown }[]).map(({ insert }) => insert);
   return [...found].sort((a, b) => order.indexOf(a) - order.indexOf(b));
 }
@@ -320,6 +362,7 @@ export class SuggestFork {
         const fresh = new Map(reply.leases.map((lease) => [lease.client, lease]));
         this.#leases = this.#leases.map((lease) => fresh.get(lease.client) ?? lease);
         this.#resuming = false;
+        this.#dropStored(new Map(reply.leases.map((lease) => [lease.client, lease.clock])));
         this.#flush();
         return;
       }
@@ -341,6 +384,8 @@ export class SuggestFork {
       this.#emit({ type: 'change' });
       return;
     }
+    // Taking back a part the record no longer holds changes nothing.
+    if (request?.t === 'suggest-undelete' && reply.reason === 'target') return;
     if (request?.t === 'suggest-lease' && this.#ready && !this.#resuming && reply.reason === 'lease-cap') {
       // No spare: the active group continues.
       this.#leasing = false;
@@ -348,18 +393,18 @@ export class SuggestFork {
     }
     if (this.#resuming) this.#resuming = false;
     this.#leasing = false;
-    this.#halt(reply.reason);
+    this.#halt(reply.reason, entry);
   }
 
   /**
    * Proposes deleting body items (never the author's own pending items, which delete natively). The text stays in F,
-   * painted struck, and the caret moves past it (the caller moves it).
+   * painted struck, and the caret moves past it (the caller moves it). Returns the part's id, or null.
    */
-  proposeDelete(targets: IdSpan[]): boolean {
-    if (!this.#ready || this.#closed || targets.length === 0) return false;
+  proposeDelete(targets: IdSpan[]): string | null {
+    if (!this.#ready || this.#closed || targets.length === 0) return null;
     this.#maybeRotate();
     const active = this.#leases[0];
-    if (!active) return false;
+    if (!active) return null;
     const id = partId();
     this.#parts.set(id, { record: active.record, targets });
     this.#used.add(active.client);
@@ -368,11 +413,22 @@ export class SuggestFork {
     this.#lastBlock = this.#caretBlock;
     this.#request({ t: 'suggest-delete', record: active.record, part: { id, targets } });
     this.#emit({ type: 'change' });
+    return id;
+  }
+
+  /** Takes back one of the author's delete parts (undo of a strike): `suggest-undelete`. */
+  withdrawPart(part: string): boolean {
+    const known = this.#parts.get(part);
+    if (!known || !this.#ready || this.#closed) return false;
+    this.#parts.delete(part);
+    this.#request({ t: 'suggest-undelete', record: known.record, partId: part });
+    this.#emit({ type: 'change' });
     return true;
   }
 
-  withdrawPart(_part: string): boolean {
-    return false;
+  /** The targets of one of the author's parts, while it stands. */
+  partTargets(part: string): IdSpan[] | null {
+    return this.#parts.get(part)?.targets ?? null;
   }
 
   isStruck(id: { client: number; clock: number }): boolean {
@@ -431,6 +487,30 @@ export class SuggestFork {
   #flush(): void {
     const waiting = this.#waiting.splice(0);
     for (const entry of waiting) this.#send(entry);
+  }
+
+  /**
+   * After a resume, drops replays the DocDO already stored (their ack was lost with the socket): an op whose every
+   * clock is below its lease's acknowledged clock, and a part the author's records already hold.
+   */
+  #dropStored(acked: ReadonlyMap<number, number>): void {
+    let parts: Set<string> | null = null;
+    this.#waiting = this.#waiting.filter(({ request, update }) => {
+      if (request.t === 'suggest-ops' && update) {
+        let to: Map<number, number>;
+        try {
+          to = Y.parseUpdateMeta(update).to;
+        } catch {
+          return true;
+        }
+        return to.size === 0 || [...to].some(([client, clock]) => clock > (acked.get(client) ?? 0));
+      }
+      if (request.t === 'suggest-delete') {
+        parts ??= new Set(openRecords(this.body, this.options.me).flatMap((record) => record.parts.map((part) => part.id)));
+        return !parts.has(request.part.id);
+      }
+      return true;
+    });
   }
 
   /** F: B, then the author's valid open records, then forwarding starts. */
@@ -563,13 +643,18 @@ export class SuggestFork {
     if (changed) this.#emit({ type: 'change' });
   };
 
-  /** Closes input in this tick and offers back every block holding a change the server never acknowledged. */
-  #halt(reason: SuggestRefusal): void {
+  /**
+   * Closes input in this tick and offers back every block holding a change the server never acknowledged: the
+   * refused request's own, and everything still in flight or waiting behind it.
+   */
+  #halt(reason: SuggestRefusal, refused?: Pending): void {
     if (this.#closed) return;
     this.#closed = true;
-    const updates = [...this.#inflight, ...this.#waiting].flatMap((entry) => (entry.update ? [entry.update] : []));
-    const blocks = touchedBlocks(this.doc, updates);
-    const unsaved = this.options.exportBlocks ? this.options.exportBlocks(blocks) : blocks.map(plainText);
+    const entries = [...(refused ? [refused] : []), ...this.#inflight, ...this.#waiting];
+    const updates = entries.flatMap((entry) => (entry.update ? [entry.update] : []));
+    const spans = entries.flatMap(({ request }) => (request.t === 'suggest-delete' ? request.part.targets : []));
+    const blocks = touchedBlocks(this.doc, updates, spans);
+    const unsaved = this.options.exportBlocks?.(blocks) ?? blocks.map((block) => blockText(this.doc, block));
     this.#emit({ type: 'refused', reason, unsaved: unsaved.filter((text) => text.trim().length > 0) });
   }
 }

@@ -199,6 +199,7 @@ const CENSUS_NOTE = [
   '',
   '- item a',
   '- item b',
+  '  - nested item',
   '',
   '| A | B |',
   '|---|---|',
@@ -333,8 +334,10 @@ test('j16-suggest census: inline edits through the real UI are each recorded wit
     ['Enter before an original link', async () => { await caret(ben, docId, 'Go to ', 6); await keyboard.press('Enter'); }],
     ['Enter before an original line break', async () => { await caret(ben, docId, 'First line', 10); await keyboard.press('Enter'); }],
     ['Enter before an inline formula', async () => { await caret(ben, docId, 'Total ', 6); await keyboard.press('Enter'); }],
-    ['Tab to indent a paragraph', async () => { await caret(ben, docId, 'Indented', 0); await keyboard.press('Tab'); }],
-    ['Enter in an indented paragraph', async () => { await caret(ben, docId, 'Indented', 9); await keyboard.press('Enter'); }],
+    // Moss never indents a plain paragraph (TabIndentPlugin indents list items only), so its indented block is a
+    // nested list item.
+    ['Enter in an indented block', async () => { await caret(ben, docId, 'nested item', 6); await keyboard.press('Enter'); }],
+    ['Enter in a plain paragraph', async () => { await caret(ben, docId, 'Indented', 9); await keyboard.press('Enter'); }],
     ['Enter in a quote', async () => { await caret(ben, docId, 'Quoted', 7); await keyboard.press('Enter'); }],
     ['Shift+Enter', async () => { await caret(ben, docId, 'Go to', 2); await keyboard.press('Shift+Enter'); }],
     ['typing own text', async () => { await caret(ben, docId, 'items.', 6); await keyboard.type(' It sat.'); },
