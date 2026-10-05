@@ -460,6 +460,8 @@ export class AnchorEngine {
       entry.mi.push(...anchor.lost.members);
       for (const seg of anchor.lost.segs) {
         if ('right' in seg) for (const bound of [seg.left, seg.right]) if (bound) entry.mi.push([bound[0], bound[1], 1]);
+        // A re-homed place in an empty restored block has no bound; its block is the trigger (§5.4).
+        if ('right' in seg && !seg.left && !seg.right && seg.list !== 'root') entry.mi.push([seg.list[0], seg.list[1], 1]);
         entry.ai.push(...this.#ancestors(seg.list));
       }
     }
@@ -522,7 +524,8 @@ export class AnchorEngine {
       }
     }
 
-    // §5.4: a frame-new item whose origin or right origin names a lost member or a re-homed bound.
+    // §5.4: a frame-new item whose origin or right origin names a lost member or a re-homed bound, or that its writer
+    // placed into an empty list (no origin and no right origin), looked up by that list's block.
     const candidates = new Set<string>();
     for (const [client, after] of txn.afterState) {
       const before = txn.beforeState.get(client) ?? 0;
@@ -535,6 +538,11 @@ export class AnchorEngine {
           if (!ref) continue;
           this.stats.lookups += 1;
           this.#mi.query(ref.client, ref.clock, ref.clock + 1, candidates);
+        }
+        const block = parentOf(struct)._item;
+        if (!struct.origin && !struct.rightOrigin && struct.parentSub === null && block) {
+          this.stats.lookups += 1;
+          this.#mi.query(block.id.client, block.id.clock, block.id.clock + 1, candidates);
         }
       }
     }

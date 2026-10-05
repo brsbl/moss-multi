@@ -372,7 +372,7 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
   - **Scope:**
     - `anchor-frame.ts` wired into the DocDO's pre-GC afterTransaction hook for client and serverWrite origins, flushed through writeComments in the same turn;
     - EP, MI and AI indexes rebuilt at onStart;
-    - gap map (including the wrap rule of comments.md §5.2), survivor shrink, lost place with per-list segments over full member subtrees, exact full-mode reattach triggered by a rightOrigin in MI, lift at depth ≤ 3;
+    - gap map (including the wrap rule of comments.md §5.2), survivor shrink, lost place with per-list segments over full member subtrees, exact full-mode reattach triggered by an origin or rightOrigin in MI (or, for a re-homed place in an empty restored block, a frame-new list item with neither under that block), lift at depth ≤ 3;
     - orphans with an identical segment set share one walk (decision §4.4): MI is keyed by segment-set group, so a recheck costs one walk and one signature compare per group, and I7's fan-out bound is restated per group;
     - decorator fingerprints, with attribute history reads inside the walk budget;
     - `groupPending` in acks.ts plus the patched provider: replay before step 2, paced at most 40 frames/s; a deleting update is never merged with another update's inserts.
@@ -384,7 +384,7 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
     - m4's T4.1 restore-integrity requirement (security review of t/T4.0 fe3c2f8) is kept as I5 and the forged-edge-copy test; its "check each copy's right origin against the original span" rule is moot by construction, because reattach never reads right origins, only what reads in the lost place.
   - **Per-frame cost (security review, 2026-10-04):**
     - no whole-doc projection, LCS, store scan, container scan or findQuote per frame;
-    - work only for comments whose endpoint the frame deletes or whose lost member a new item's rightOrigin names;
+    - work only for comments whose endpoint the frame deletes, whose lost member or re-homed bound a new item's origin or rightOrigin names, or whose empty re-homed block gets a new item with neither;
     - walks within the 4,096-struct budget, failing safe to orphaned;
     - writes only on a re-mint or a status change.
     - m4's T4.1 per-frame cost bound is kept here and in the workerd test below; its "restore index from the frame's own new structs" and "bounded quote compare" bullets are moot by construction (I7: no restore index over the store, no quote compare on positioned anchors).

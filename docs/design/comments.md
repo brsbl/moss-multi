@@ -52,7 +52,7 @@ It orphans on deletion of all its characters, including its block. It reattaches
 - a text deletion;
 - a block deletion;
 - a cross-block deletion;
-- a text deletion followed by deletion of its paragraph, with both undone;
+- a text deletion followed by deletion of its paragraph, with both undone, including when the text was the paragraph's whole text;
 - delete, undo, redo, undo;
 - each of the above made offline and replayed under the frame discipline (§6).
 
@@ -66,7 +66,7 @@ Each has a CI test in `packages/sync/test/harness/yjs-facts.test.ts`, on yjs 13.
 |---|---|---|---|
 | F1 | `afterTransaction` runs before `tryGcDeleteSet` and struct merging, so deleted content, parents and children are still readable in the hook. | yjs `src/utils/Transaction.js:313` emits it inside `callAll`; `:325` GCs and `:327` merges in the `finally` after it | F1 |
 | F2 | An `XmlText` insert (`insert`/`insertEmbed`, the only way V1 writes text, property maps, linebreaks and blocks) runs `minimizeAttributeChanges`, which skips deleted items. Any insert by a replica that has seen a deletion lands after the whole run of tombstones that follows the insert point. | yjs `src/types/YText.js:200` (`minimizeAttributeChanges` steps over `right.deleted`), called at `:262` (`insertText`) and `:291` | F2 |
-| F3 | `redoItem` for list items inserts the copy with `origin = item.left` (traced into the redone parent) and `rightOrigin = item`, so a copy lands before its original. A deleted parent is redone first, and children are placed inside the new parent between the copies of their old neighbours. | yjs `src/structs/Item.js:161-169` (parent first), `:174-206` (left and right traced), `:233-243` | F3 (text, block, cross-block, and the lifted case) |
+| F3 | `redoItem` for list items inserts the copy with `origin = item.left` (traced into the redone parent) and `rightOrigin = item`, so a copy lands before its original. A deleted parent is redone first, and children are placed inside the new parent between the copies of their old neighbours; a child none of whose neighbours has a copy there gets neither origin nor right origin. | yjs `src/structs/Item.js:161-169` (parent first), `:174-206` (left and right traced), `:233-243` | F3 (text, block, cross-block, and the lifted case); the empty-parent case by the scene `lift-empty-paragraph-undo-restores-comment` |
 | F4 | Every container type @lexical/yjs V1 creates for moss's node registry is an `XmlText`: decorators are `XmlElement` leaves, and text-node property maps and linebreaks are map embeds. The one nested type an attribute holds is a node's NodeState, a `__state` Y.Map of JSON values (the callout fixture has one), which tokens read like any attribute. No node at the pin declares slots, so no text lives outside the child lists. | @lexical/yjs `src/Utils.ts:301-352` (`$createCollabNodeFromLexicalNode`), `:605-646` (NodeState), `:270-298` (slots only for nodes that declare them) | F4: a registry scan plus the converter corpus |
 | F5 | Integrate takes a non-R item's parent only from its string parent, its ID parent, its left item (origin, or the held predecessor `(client, clock−1)` for a partly held struct), or its right item (rightOrigin). | yjs `src/structs/Item.js:372-416` (`getMissing`), `:419-426` (`integrate` with an offset) | Proved in §3; the guard suite and its fast-check exercise it |
 
@@ -151,7 +151,7 @@ It costs O(frame · log) and follows no references.
 ### 5.1 Indexes (in memory, rebuilt from records)
 
 - **EP.** Endpoint item id → anchored comment ids.
-- **MI.** Lost member runs, and the two bounds of a re-homed place, → orphan ids.
+- **MI.** Lost member runs, the two bounds of a re-homed place, and the block of a re-homed place with no live bound (an empty restored block), → orphan ids.
 - **AI.** The ancestor blocks of each orphan's segment lists → orphan ids (depth ≤ 32).
 
 EP and MI are disjoint clock spans per client, so a lookup is a binary search. The overlap cap bounds each item's fan-out in EP to 32. It does not bound MI: disjoint comments under one deleted run or block all name that same member. The decision's sharing rule (§5.4) bounds it instead, by group; T4.2 keys MI by segment-set group (the spike indexes orphans one by one).
@@ -185,7 +185,7 @@ Each delete range in `txn.deleteSet` is looked up in EP. Comments whose endpoint
 
 ### 5.4 Reattach (I5)
 
-**Trigger.** A frame-new item whose `origin` or `rightOrigin` falls in an MI run. F3 points undo copies' right origins at members and a lifted copy's origin at a re-homed bound; a stale peer's insert into the span points there too. Each orphan is checked at most once per frame. Orphans with an identical segment set share one walk, and their `pre` hashes are compared against it (decision §4.4). The spike checks each orphan on its own, so a forged frame naming a member shared by k orphans costs k short checks; T4.2 groups them (BUILDPLAN T4.2 "anchor-cost: 500 disjoint comments…").
+**Trigger.** A frame-new item whose `origin` or `rightOrigin` falls in an MI run, or a frame-new list item with neither, whose parent block is in MI. F3 points undo copies' right origins at members and a lifted copy's origin at a re-homed bound; a stale peer's insert into the span points there too. When the restored block is empty, the first copy into it has neither origin nor right origin (F3: no neighbour has a copy in the new parent), so the block itself is the trigger (§5.5). Each orphan is checked at most once per frame. Orphans with an identical segment set share one walk, and their `pre` hashes are compared against it (decision §4.4). The spike checks each orphan on its own, so a forged frame naming a member shared by k orphans costs k short checks; T4.2 groups them (BUILDPLAN T4.2 "anchor-cost: 500 disjoint comments…").
 
 **Check.** Walk each segment, plus the full subtrees of its live items, in full mode, with a budget of 4,096 + 4n structs, stopping as soon as the stream is longer than `pre.n`.
 - On an equal length and signature, re-mint the start and end on the live units at [a, b) and set `status: 'anchored'`.
@@ -199,7 +199,7 @@ AI is looked up for each deleted block in `txn.deleteSet`. While still pre-GC:
 - compute the outer lost place around the outermost deleted block (§5.3), shared by every orphan under it;
 - store the old `pre` as `inner = {at: k, list, pre}`, where k is the token offset of the old place inside the outer stream and `list` the token of its list's block-open.
 
-When the outer place matches (the block was restored), the inner place is re-homed in the restored copy: between the live children of the same list around offset k, splitting a merged character run if k falls inside it. Its MI trigger is those two bounds (F3: a later undo traces its copies' origin and right origin to them). Nesting is limited to depth 3, and only single-segment places lift; deeper or cross-block orphans become permanently detached.
+When the outer place matches (the block was restored), the inner place is re-homed in the restored copy: between the live children of the same list around offset k, splitting a merged character run if k falls inside it. Its MI trigger is those two bounds (F3: a later undo traces its copies' origin and right origin to them). If the restored list has no live children, both bounds are null and the place is the whole list; its trigger is the list's block, reached by a frame-new list item with no origin and no right origin under it. The check is unchanged: the list's live items must read exactly as `inner.pre`. Nesting is limited to depth 3, and only single-segment places lift; deeper or cross-block orphans become permanently detached.
 
 ### 5.6 Cost (I7), by mechanism
 
@@ -209,7 +209,7 @@ When the outer place matches (the block was restored), the inner place is re-hom
 | EP lookups | one binary search per delete range | `stats.lookups` |
 | Hit comment | ≤ two 4,096-struct gap walks + two range walks (≤ 4,096 + 4 × 10,000) + one loss emission + one check (`COMMENT_BUDGET`), × ≤ 32 comments per deleted endpoint | `stats.structs`, `stats.comments` |
 | Lift | one emission per deleted outer block, shared by every orphan under it; the writes are one per lifted orphan, bounded by the 2,000-record cap | `stats.structs` |
-| Reattach trigger | one MI search per frame-new struct's origin and right origin; one check per segment-set group, ≤ 4,096 + 4n structs, stopping past n tokens (T4.2; the spike checks per orphan) | `stats.structs`, `stats.comments` |
+| Reattach trigger | one MI search per frame-new struct's origin and right origin, and one for its parent block when it has neither; one check per segment-set group, ≤ 4,096 + 4n structs, stopping past n tokens (T4.2; the spike checks per orphan) | `stats.structs`, `stats.comments` |
 | Records | written only on a re-mint or a status change | — |
 
 Never per frame: a whole-doc projection, an LCS, a store scan, a container scan, or a mirror apply. The spike counts this deterministically (`anchor-cost.test.ts`): on a 2,000-comment, 500-orphan doc a single-key insert or delete visits zero structs and zero comments; a frame deleting one character shared by 32 comments visits 32 comments within 32 × 64 structs; a forged one-item frame naming a lost member visits one struct per orphan sharing that member, which T4.2's grouping makes one walk per group. Attribute history in decorator fingerprints and SpanIndex maintenance after the flush are not yet counted; T4.2 counts and bounds both. T4.2 measures CPU in workerd and records the budget in METHOD.md.
@@ -231,7 +231,7 @@ The discipline matters only for honest users and ruling 18. Safety (I1–I8) nev
 ## 7. Accepted limitations (P2 register)
 
 1. Live text that ends up inside a deleted span (a concurrent peer, or a mixed transaction) blocks reattachment until a later copy arrives after it is removed. In that state, typing exactly the deleted text in exactly that spot can reattach the comment.
-2. When a paragraph is deleted after its commented text and both are undone, an exact retype at the restored spot after the first undo can reattach the comment (the open bounds of a lift).
+2. When a paragraph is deleted after its commented text and both are undone, an exact retype at the restored spot after the first undo can reattach the comment (the open bounds of a lift). If the text was the paragraph's whole text, the restored paragraph is empty and that spot is the whole paragraph: typing the passage into it, with the same formats, reattaches the comment there.
 3. A forged frame that deletes and retypes identical text in one frame keeps the comment on identical text in the identical place.
 4. An undo of a partial trim does not regrow the highlight. The comment stays on its surviving text.
 5. Undoing an adjacent older deletion inside a segment, or anything over budget, leaves the comment detached.
