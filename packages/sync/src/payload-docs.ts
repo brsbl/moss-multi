@@ -157,7 +157,7 @@ export class PayloadSync {
     this.#stops.push(() => doc.off('update', onUpdate));
   }
 
-  /** On every connect and wake: a step 1 per held payload, and what is still unacked as a step 2. */
+  /** On every connect, wake and resync: a step 1 per held payload, and what is still unacked as a step 2. */
   connected(pending: (id: string) => Uint8Array | null): void {
     if (!this.options.open()) return;
     for (const [id, doc] of this.host.docs) {
@@ -166,7 +166,7 @@ export class PayloadSync {
     }
   }
 
-  /** Re-delivers unacked writes (the heartbeat's resync). */
+  /** Re-delivers a payload's unacked writes. */
   resend(id: string, update: Uint8Array | null): void {
     if (update && this.options.open()) this.options.send(encodePayloadFrame(id, PAYLOAD_STEP2, update));
   }

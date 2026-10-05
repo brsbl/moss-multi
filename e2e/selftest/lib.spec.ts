@@ -83,6 +83,11 @@ test.describe('hibernation proof', () => {
     expect(inductionProblems(base, { instanceId: 'b', constructedAt: 500 }, 100_000)).not.toEqual([]);
     expect(inductionProblems(base, { instanceId: 'b', constructedAt: 110_000 }, 100_000)).not.toEqual([]);
   });
+  test('a wake during a long decisive action is induced; one before it or after it ended is not', () => {
+    expect(inductionProblems(base, { instanceId: 'b', constructedAt: 109_000 }, 100_000, 110_000)).toEqual([]);
+    expect(inductionProblems(base, { instanceId: 'b', constructedAt: 99_000 }, 100_000, 110_000)).not.toEqual([]);
+    expect(inductionProblems(base, { instanceId: 'b', constructedAt: 110_500 }, 100_000, 110_000)).not.toEqual([]);
+  });
 });
 
 test.describe('infrastructure classification', () => {
