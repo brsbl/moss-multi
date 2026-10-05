@@ -404,19 +404,13 @@ describe('T5.1 copy-back, reconnect and undelete @p:mean-2 @p:tech-7 @p:R17', ()
       // Each window keeps writing under its own lease, with no refusal, and the two forks converge.
       b.act(() => select('Then', 5).insertText('soon '));
       second.deliver(b.fork);
-      a.act(() => select('Hello', 29).insertText(' Two.'));
+      a.act(() => select('First line', 10).insertText(' Two.'));
       first.deliver(a.fork);
       for (const link of [first, second]) expect(link.replies.filter((reply) => reply.t === 'suggest-refused')).toEqual([]);
       expect(refusalsOf(a.events)).toEqual([]);
       expect(refusalsOf(b.events)).toEqual([]);
-      const diag = JSON.stringify({
-        a: exported(a.fork.doc).slice(0, 120),
-        b: exported(b.fork.doc).slice(0, 120),
-        records: recordIds(live).map((id) => { const r = readRecord(live, id)!; return [id, r.meta.status, r.meta.mergedInto, r.ops.length, r.meta.clients]; }),
-        aRecord: a.fork.record, bRecord: b.fork.record, bEvents: b.events.map((e) => e.type),
-      });
-      expect(exported(a.fork.doc), diag).toContain('Two.');
-      expect(exported(b.fork.doc), diag).toContain('Two.');
+      expect(exported(a.fork.doc)).toContain('First line Two.');
+      expect(exported(b.fork.doc), "the second window shows the first window's next edit").toContain('First line Two.');
       expect(exported(a.fork.doc), 'both windows converge').toBe(exported(b.fork.doc));
     } finally {
       b.dispose();

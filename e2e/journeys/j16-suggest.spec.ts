@@ -321,7 +321,8 @@ test('j16-suggest two windows: each window of a suggester shows the other window
   const { ada, ben, docId, before } = await sharedNote(actors, 'First window line.\n\nSecond window line.');
   await openIn(ben, docId);
   await ben.observeEditor(docId);
-  const ben2 = await actors.sameAs(ben);
+  // The same person in a second window, opening the note directly (a landing on / could open it first).
+  const ben2 = await actors.session(ben.principal!, { label: 'ben-2' });
   await openIn(ben2, docId);
   await ben2.observeEditor(docId);
 
