@@ -140,3 +140,33 @@ it('undoing the first assignment of an optional property removes it again, on bo
     for (const doc of [ada, ben]) expect(element(doc).getAttribute('__level')).toBeUndefined();
   } finally { undo.destroy(); for (const doc of [server, ada, ben]) doc.destroy(); }
 });
+
+it('an optional property set, undone and set again (or redone) is removed again by the next undo, on both peers', () => {
+  const server = new Y.Doc();
+  server.transact(() => server.get('root', Y.XmlText).insertEmbed(0, new Y.XmlElement('callout')), 'server');
+  const ada = new Y.Doc(); ada.clientID = 2;
+  const ben = new Y.Doc(); ben.clientID = 1;
+  for (const doc of [ada, ben]) Y.applyUpdate(doc, Y.encodeStateAsUpdate(server));
+  const root = ada.get('root', Y.XmlText);
+  const binding = { doc: ada, root: { getSharedType: () => root } } as unknown as Binding;
+  const undo = createBindingUndoManager(binding);
+  const element = (doc: Y.Doc) => doc.get('root', Y.XmlText).toDelta()[0].insert as Y.XmlElement;
+  const levels = () => { Y.applyUpdate(ben, Y.encodeStateAsUpdate(ada), 'peer'); return [ada, ben].map(doc => element(doc).getAttribute('__level')); };
+  try {
+    // Yjs keeps the undone value as a tombstone and links the next value for the key after it.
+    ada.transact(() => element(ada).setAttribute('__level', 'high'), binding);
+    undo.stopCapturing();
+    undo.undo();
+    expect(levels()).toEqual([undefined, undefined]);
+    ada.transact(() => element(ada).setAttribute('__level', 'low'), binding);
+    undo.stopCapturing();
+    expect(levels()).toEqual(['low', 'low']);
+    undo.undo();
+    expect(levels(), 'set, undo, set, undo').toEqual([undefined, undefined]);
+    undo.redo();
+    expect(levels()).toEqual(['low', 'low']);
+    undo.stopCapturing();
+    undo.undo();
+    expect(levels(), 'set, undo, redo, undo').toEqual([undefined, undefined]);
+  } finally { undo.destroy(); for (const doc of [server, ada, ben]) doc.destroy(); }
+});
