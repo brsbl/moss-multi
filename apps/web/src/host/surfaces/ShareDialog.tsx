@@ -10,7 +10,7 @@ import { Button } from '@moss/shared/components/ui/button';
 import { Input } from '@moss/shared/components/ui/input';
 import { LINK_ROLES, SHARE_ROLES, type LinkRole, type Role, type ShareRole } from '@moss-multi/protocol/roles';
 import { UserPlus } from 'lucide-react';
-import { useCallback, useEffect, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react';
 import { useDocRole } from '../access.ts';
 
 export type ShareTarget =
@@ -130,20 +130,24 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
   const base = apiBase(target);
   const { title, description } = titles(target);
 
+  // Reads overlap when shares follow each other quickly; only the newest may paint, or an older read would drop a row.
+  const reads = useRef(0);
   const load = useCallback(async () => {
+    const read = ++reads.current;
     try {
       const [people, live, pendingLinks] = await Promise.all([
         call<{ members: Member[]; invites?: PendingInvite[] }>(`${base}/members`),
         call<{ links: ShareLink[] }>(`${base}/links`),
         call<{ invites: PendingInvite[] }>(`${base}/invites`),
       ]);
+      if (read !== reads.current) return;
       if (!people.ok || !people.body || !live.ok || !live.body || !pendingLinks.ok || !pendingLinks.body) throw new Error(String(people.status));
       setMembers(people.body.members);
       setInvites(pendingLinks.body.invites);
       setLinks(live.body.links);
       setLoadError(null);
     } catch {
-      setLoadError('Couldn’t load who has access. Close and open Share to try again.');
+      if (read === reads.current) setLoadError('Couldn’t load who has access. Close and open Share to try again.');
     }
   }, [base]);
 
