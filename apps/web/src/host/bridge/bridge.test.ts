@@ -211,3 +211,57 @@ it.each(['switch', 'navigation'] as const)('a listing poll never overrides an in
     vi.useRealTimers();
   }
 });
+
+describe('a listing the browser cancels as the page leaves', () => {
+  const failing = () => {
+    let fail: (error: Error) => void = () => undefined;
+    const signals: (AbortSignal | null | undefined)[] = [];
+    const fetch = vi.fn<typeof globalThis.fetch>((_input, init) => {
+      signals.push(init?.signal);
+      return new Promise<Response>((_resolve, reject) => { fail = reject; });
+    });
+    let leave: () => void = () => undefined;
+    const browser = {
+      origin: 'http://localhost', open: () => undefined, replacePath: () => undefined,
+      onPopState: () => () => undefined, copy: async () => undefined,
+      onLeave: (listener: () => void) => { leave = listener; return () => { leave = () => undefined; }; },
+    };
+    const api = createBridge({ pathname: () => '/', fetch, browser });
+    return { api, signals, fail: (error: Error) => fail(error), leave: () => leave() };
+  };
+
+  // WebKit logs a fetch the navigation cancels as "cannot load … due to access control checks", a console error
+  // Playwright reports as a page error whether or not the page catches it; a fetch the page aborts first logs nothing.
+  it('aborts the listing fetch itself as the page starts to leave', () => {
+    const { api, signals, leave } = failing();
+    void api.notes.getAll().catch(() => undefined);
+    expect(signals[0]?.aborted).toBe(false);
+    leave();
+    expect(signals[0]?.aborted).toBe(true);
+  });
+
+  it('does not reject while the page unloads (WebKit reports the cancel as an access-control error)', async () => {
+    vi.useFakeTimers();
+    try {
+      const { api, fail, leave } = failing();
+      const outcome = vi.fn();
+      api.notes.getAll().then(() => outcome('resolved'), () => outcome('rejected'));
+      leave();
+      fail(new TypeError('http://127.0.0.1:8850/api/workspace due to access control checks.'));
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(outcome).not.toHaveBeenCalled();
+      // A page that stayed (an unload prompt answered "Stay") still learns of the failure.
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(outcome).toHaveBeenCalledWith('rejected');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('still rejects at once when the page is not leaving', async () => {
+    const { api, fail } = failing();
+    const listed = api.notes.getAll();
+    fail(new TypeError('Load failed'));
+    await expect(listed).rejects.toThrow('Load failed');
+  });
+});
