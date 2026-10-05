@@ -304,3 +304,93 @@ describe('safeFetch through DoH: one failed address family refuses the whole fet
     expect(resolve).toHaveBeenCalledWith('a.example', signal);
   });
 });
+
+describe('the full SSRF matrix (T3.2s)', () => {
+  it.each([
+    ['6to4 embedding 10/8', 'https://[2002:a00:1::1]/'],
+    ['6to4 embedding loopback', 'https://[2002:7f00:1::]/'],
+    ['Teredo with a loopback server', 'https://[2001:0:7f00:1::1]/'],
+    ['Teredo with an obfuscated loopback client', 'https://[2001:0:5ef5:79fd:0:0:80ff:fffe]/'],
+    ['IPv4-compatible RFC 1918', 'https://[::10.0.0.1]/'],
+    ['IPv4-translated ::ffff:0:a.b.c.d loopback', 'https://[::ffff:0:127.0.0.1]/'],
+    ['IPv4-translated ::ffff:0:a.b.c.d RFC 1918', 'https://[::ffff:0:10.0.0.1]/'],
+    ['NAT64 64:ff9b::/96 RFC 1918', 'https://[64:ff9b::10.0.0.1]/'],
+    ['NAT64 64:ff9b:1::/48 RFC 1918', 'https://[64:ff9b:1::192.168.0.1]/'],
+    ['unspecified ::', 'https://[::]/'],
+    ['loopback ::1', 'https://[::1]/'],
+    ['link-local with a zone id', 'https://[fe80::1%25en0]/'],
+    ['site-local fec0::/10', 'https://[fec0::1]/'],
+    ['dotted octal with leading zeros', 'https://00177.0.0.01/'],
+    ['dotted decimal with leading zeros', 'https://127.000.000.001/'],
+    ['dotted hex with leading zeros', 'https://0x0000007f.0x00.0x0.0x01/'],
+    ['decimal integer', 'https://2130706433/'],
+    ['short dotted RFC 1918', 'https://10.1/'],
+    ['0.0.0.0/8', 'https://0.1.2.3/'],
+    ['bare zero', 'https://0/'],
+    ['trailing-dot localhost', 'https://localhost./'],
+    ['two trailing dots on localhost', 'https://localhost../'],
+    ['trailing-dot metadata host', 'https://metadata.google.internal./'],
+    ['a single-label host', 'https://metadata/'],
+    ['fullwidth localhost', 'https://ｌｏｃａｌｈｏｓｔ/'],
+    ['ideographic-stop loopback', 'https://127。0。0。1/'],
+    ['fullwidth-digit loopback', 'https://１２７.０.０.１/'],
+    ['uppercase localhost', 'https://LOCALHOST/'],
+    ['the userinfo trick', 'https://public@127.0.0.1/'],
+    ['userinfo before a public host', 'https://user:pass@example.com/'],
+    ['a port other than 443', 'https://example.com:8443/'],
+    ['an SSH port on a public IP', 'https://93.184.215.14:22/'],
+    ['port 80 over https', 'https://example.com:80/'],
+  ])('refuses %s', (_label, url) => {
+    expect(blocked(url), url).toBe(true);
+  });
+
+  it.each([
+    ['fe80::1%en0'], ['::'], ['::1'], ['fec0::1'], ['2001:0:7f00:1::1'], ['::ffff:0:10.0.0.1'], ['64:ff9b::a00:1'],
+    ['ｌｏｃａｌｈｏｓｔ'], ['localhost..'], ['metadata.google.internal.'], ['metadata'], ['::ffff:010.0.0.1'],
+  ])('classifies %s as blocked when handed a bare host', (host) => {
+    expect(isBlockedHost(host), host).toBe(true);
+  });
+
+  it.each([
+    ['a public hostname', 'https://www.example.com/'],
+    ['an explicit 443', 'https://example.com:443/'],
+    ['a public IPv4', 'https://93.184.215.14/'],
+    ['6to4 embedding a public IPv4', 'https://[2002:5db8:d70e::1]/'],
+    ['NAT64 embedding a public IPv4', 'https://[64:ff9b::5db8:d70e]/'],
+  ])('passes the positive control: %s', (_label, url) => {
+    expect(blocked(url), url).toBe(false);
+  });
+
+  it.each([
+    ['a Teredo AAAA answer', ['2001:0:7f00:1::1']],
+    ['an IPv4-translated private AAAA answer', ['::ffff:0:10.0.0.1']],
+    ['a 6to4 private AAAA answer', ['2002:c0a8:1::1']],
+    ['an answer that is not an address', ['public.example']],
+  ])('refuses a host whose DNS gives %s', async (_label, ips) => {
+    expect(await hostResolvesPublic('rebind.example', async () => ips)).toBe(false);
+  });
+
+  describe('every redirect hop goes through the same validator', () => {
+    const resolve: HostResolver = async (host) => (host === 'a.example' || host === 'b.example' ? ['93.184.215.14'] : []);
+    const hop = (location: string) => vi.fn(async (input: RequestInfo | URL) =>
+      String(input) === 'https://a.example/start' ? new Response(null, { status: 302, headers: { location } }) : new Response('reached'));
+
+    it.each([
+      ['a non-443 port', 'https://b.example:8443/'],
+      ['a Teredo literal', 'https://[2001:0:7f00:1::1]/'],
+      ['an IPv4-translated loopback', 'https://[::ffff:0:127.0.0.1]/'],
+      ['the userinfo trick', 'https://public@127.0.0.1/'],
+      ['a single-label host', 'https://metadata/computeMetadata/v1/'],
+      ['a 6to4 private literal', 'https://[2002:a9fe:a9fe::]/'],
+    ])('refuses a hop to %s without fetching it', async (_label, location) => {
+      const fetchImpl = hop(location);
+      await expect(safeFetch('https://a.example/start', { fetch: fetchImpl as unknown as typeof fetch, resolve })).rejects.toBeInstanceOf(SsrfBlockedError);
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    });
+
+    it('follows a hop to an ordinary public host', async () => {
+      const { response } = await safeFetch('https://a.example/start', { fetch: hop('https://b.example/end') as unknown as typeof fetch, resolve });
+      expect(await response.text()).toBe('reached');
+    });
+  });
+});
