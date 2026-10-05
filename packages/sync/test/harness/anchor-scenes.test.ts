@@ -362,6 +362,48 @@ describe('T4.0 supported liveness: orphan on deletion, reattach on undo and redo
     on(s, 'brXown');
   }));
 
+  it('offline-lift-empty-paragraph-coalesced-deletes-undo-restores-comment', () => scene((s) => {
+    // Both deletions are delete-only, so the replay sends them as one frame and the place is the whole paragraph.
+    // The first undo restores it empty; the second undo's copies sit inside that copy, whose right origin is the
+    // member paragraph (§5.4).
+    const a = s.peer();
+    s.comment('c1', 'unique passage');
+    s.offline(a);
+    a.edit(() => $select('unique passage').removeText());
+    a.edit(() => $block(0).remove());
+    s.online(a);
+    const verdicts = a.sendGrouped();
+    expect(verdicts).toHaveLength(1);
+    accepted(verdicts);
+    orphaned(s);
+    a.undo();
+    accepted(a.send());
+    orphaned(s);
+    a.undo();
+    accepted(a.send());
+    on(s, 'unique passage');
+  }, 'unique passage\n\nTail.'));
+
+  it('offline-lift-partial-text-coalesced-deletes-undo-restores-comment', () => scene((s) => {
+    const a = s.peer();
+    s.comment('c1', 'brown');
+    s.offline(a);
+    a.edit(() => $select('brown').removeText());
+    a.edit(() => $block(0).remove());
+    s.online(a);
+    const verdicts = a.sendGrouped();
+    expect(verdicts).toHaveLength(1);
+    accepted(verdicts);
+    orphaned(s);
+    a.undo();
+    accepted(a.send());
+    expect(a.text()).toContain('The quick  fox');
+    orphaned(s);
+    a.undo();
+    accepted(a.send());
+    on(s, 'brown');
+  }));
+
   it("a paragraph's whole text deleted, then retyped into the empty paragraph, stays orphaned", () => scene((s) => {
     // §5.3's member extension takes the text node's property map too; the retype still lands after the tombstone run.
     const a = s.peer();
