@@ -134,11 +134,11 @@ const EDIT_ROLES = GRANT_ROLES.filter((role) => roleAtLeast(role, 'editor')).map
  * manages the note, the destination is still live in its vault, and a relocation still goes to a folder the caller
  * can edit, so a folder trash or a revocation that commits first wins.
  */
-const RESTORE = `WITH RECURSIVE ${upFrom(1)}
-  UPDATE "docs" SET deleted_at = NULL, trash_batch_id = NULL, folder_id = ?1, filename = ?2
-  WHERE id = ?3 AND deleted_at IS NOT NULL AND ${managesDoc(3, 4)} AND ${liveIn(5)}
-    AND (folder_id = ?1 OR EXISTS (SELECT 1 FROM folders WHERE id = ?1 AND owner_user_id = ?4)
-      OR EXISTS (SELECT 1 FROM folder_members m JOIN up ON m.folder_id = up.id WHERE m.principal_id = ?4 AND m.role IN (${EDIT_ROLES})))`;
+const RESTORE = `UPDATE "docs" SET deleted_at = NULL, trash_batch_id = NULL, folder_id = ?1, filename = ?2
+  WHERE id = ?3 AND deleted_at IS NOT NULL AND ${managesDoc(3, 4)}
+    AND EXISTS (WITH RECURSIVE ${upFrom(1)} SELECT 1 WHERE ${liveIn(5)}
+      AND ("docs".folder_id = ?1 OR EXISTS (SELECT 1 FROM folders f WHERE f.id = ?1 AND f.owner_user_id = ?4)
+        OR EXISTS (SELECT 1 FROM folder_members m JOIN up ON m.folder_id = up.id WHERE m.principal_id = ?4 AND m.role IN (${EDIT_ROLES}))))`;
 
 const RESTORE_ATTEMPTS = 5;
 
