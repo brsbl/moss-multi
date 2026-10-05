@@ -71,6 +71,7 @@ The owner asked for a from-scratch restart that carries forward every past learn
 13. **Prior code is a reference, not a source tree.** brsbl/moss-collab and moss-collab-legacy are consulted for solved problems (patches, structural merge, schema, hardening). Code is written fresh against this doc.
 14. **Publish-to-web from the era-0 Shared Notes spec is out of scope.**
 15. **Deploy target:** staging only, on the owner's personal Cloudflare account, under new permanent names. Production stays undecided.
+19. **An email address is a label, never an authority** (coordinator ruling under the standing delegation, 2026-10-05, after a security review found account squatting; the owner can overturn it). Sign-up is open and nothing verifies an email (ruled above: no email sending, invites copy-link-only), so anyone can register any address. Sharing with a person by email therefore creates a personal invite link that the owner sends them. Access is granted only when someone redeems that link while signed in, and the invite then binds to that account. No share ever grants an existing account found by its email, and no flow looks an account up by email on the inviter's path. This also keeps account existence unobservable.
 
 ## Undecided (owner rulings needed)
 
