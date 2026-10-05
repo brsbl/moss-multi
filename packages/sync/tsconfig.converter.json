@@ -22,5 +22,7 @@
       "@moss-multi/host/*": ["../../apps/web/src/host/*"]
     }
   },
-  "include": ["src/converter/**/*.ts", "test/*.ts", "test/parity/**/*.ts", "test/views/**/*.ts", "test/workerd/**/*.ts", "measure/**/*.ts"]
+  "include": ["src/converter/**/*.ts", "test/*.ts", "test/parity/**/*.ts", "test/views/**/*.ts", "test/workerd/**/*.ts", "measure/**/*.ts"],
+  // The DocDO's measurement Worker needs the Workers types: tsconfig.json checks it.
+  "exclude": ["measure/doc-worker.ts"]
 }
