@@ -908,8 +908,8 @@ describe('T1.F2 checker regressions @p:col-1 @p:tech-8', () => {
     const opened = await seeded();
     const ada = await LiveClient.open(opened, { id: 'ada', role: 'editor' });
     try {
-      ada.insert(kind, 'first');
-      ada.insert(kind, 'second');
+      ada.insert('code-block', 'first');
+      ada.insert('html-block', 'second');
       await ada.sync();
       const ids = ada.ids();
       expect(ids.length).toBe(2);
