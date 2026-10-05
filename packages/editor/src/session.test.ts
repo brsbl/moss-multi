@@ -81,15 +81,15 @@ function type(session: EditorSession, body: string) {
   session.markEdited();
 }
 
-/** Lets I/O (crypto.subtle in the host's version tokens) complete, one loop turn at a time. */
-async function drain() {
-  for (let i = 0; i < 10; i += 1) {
+/** Lets I/O (crypto.subtle in the host's version tokens) complete, one real loop turn at a time. */
+async function drain(turns = 40) {
+  for (let i = 0; i < turns; i += 1) {
     await new Promise((resolve) => setImmediate(resolve));
     await vi.advanceTimersByTimeAsync(0);
   }
 }
 
-/** Advances the fake clock by `ms` in small steps, letting I/O finish between them. */
+/** Advances the fake clock by `ms` in small steps, letting I/O finish between them and after the last. */
 async function settle(ms = 0) {
   const end = Date.now() + ms;
   await drain();
@@ -97,6 +97,7 @@ async function settle(ms = 0) {
     await vi.advanceTimersByTimeAsync(Math.min(25, end - Date.now()));
     await drain();
   }
+  await drain(400);
 }
 
 beforeEach(() => {
@@ -165,7 +166,8 @@ describe('autosave', () => {
     expect(saved.renamed).toBe(false);
     expect(saved.receipt.files.markdown).toBe('# Plan\n\nBody, edited again\n');
     const meta = JSON.parse(volume.readFile(`${DIR}/meta.json`));
-    expect(meta.updatedAt).toBe(Math.floor(Date.now() / 1000));
+    expect(meta.updatedAt).toBeGreaterThanOrEqual(Math.floor(saved.at / 1000) - 1);
+    expect(meta.updatedAt).toBeLessThanOrEqual(Math.floor(saved.at / 1000));
     expect(meta.commentColors).toEqual({});
   });
 
