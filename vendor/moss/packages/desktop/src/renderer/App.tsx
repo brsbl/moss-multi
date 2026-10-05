@@ -3144,7 +3144,8 @@ export function App() {
             noteId,
             error
           });
-          showOperationFailure('Could not restore note. Try again.');
+          // moss-multi seam: a refused restore shows the server's sentence (T2.3s).
+          showOperationFailure(error instanceof Error && error.message ? error.message : 'Could not restore note. Try again.');
           await reconcileNotesFromDisk('restore-error', noteId);
           return;
         }

@@ -170,7 +170,17 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
      },
      [handleSelectNote]
    );
-@@ -3788,7 +3772,8 @@ export function App() {
+@@ -3159,7 +3143,8 @@ export function App() {
+             noteId,
+             error
+           });
+-          showOperationFailure('Could not restore note. Try again.');
++          // moss-multi seam: a refused restore shows the server's sentence (T2.3s).
++          showOperationFailure(error instanceof Error && error.message ? error.message : 'Could not restore note. Try again.');
+           await reconcileNotesFromDisk('restore-error', noteId);
+           return;
+         }
+@@ -3788,7 +3773,8 @@ export function App() {
  
        const key = e.key.toLowerCase();
  
@@ -180,7 +190,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
          e.preventDefault();
          if (showCommandPalette) {
            // Already open - just focus the input
-@@ -3914,8 +3899,21 @@ export function App() {
+@@ -3914,8 +3900,21 @@ export function App() {
    }, [store, activeNoteId]);
  
    const handleCollapseNotesPanel = useCallback(() => {
@@ -203,7 +213,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
  
    const handleOpenActionImages = useCallback((sources: string[], startIndex: number) => {
      if (!sources.length) return;
-@@ -3942,12 +3940,13 @@ export function App() {
+@@ -3942,12 +3941,13 @@ export function App() {
      onRestoreNote: handleNoteRestored,
      onNavigateToNote: handleSelectNote,
      isActionsPanelHidden: actionsPanelHidden,
@@ -220,7 +230,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
    };
  
    const actionsPanelContent = (
-@@ -4047,7 +4046,7 @@ export function App() {
+@@ -4047,7 +4047,7 @@ export function App() {
        searchBarAutoFocus={searchBarAutoFocus}
        onCloseSearch={handleCloseSearch}
        onOpenSearch={() => { setSearchQuery(''); setSearchBarAutoFocus(true); }}
@@ -229,7 +239,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
        onLeftTitleFocusComplete={handleTitleFocusComplete}
        leftAutoFocusBody={shouldFocusBody}
        onLeftBodyFocusComplete={handleBodyFocusComplete}
-@@ -4063,6 +4062,7 @@ export function App() {
+@@ -4063,6 +4063,7 @@ export function App() {
        feedbackTooltipOpen={feedbackTooltipFixtureOpen}
        mode={appMode}
        onModeChange={handlePanelViewChange}
@@ -237,7 +247,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
        onOpenFeedback={() => setFeedbackDialogOpen(true)}
        onOpenSettings={async () => {
          handleCloseSearch();
-@@ -4072,8 +4072,8 @@ export function App() {
+@@ -4072,8 +4073,8 @@ export function App() {
      />
    );
  
@@ -248,7 +258,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
    const notesPanelWidthPx = notesListWidth + NOTES_PANEL_RESIZER_WIDTH_PX;
  
    const notePanelContent =
-@@ -4093,6 +4093,7 @@ export function App() {
+@@ -4093,6 +4094,7 @@ export function App() {
          onSelectNote={handleSelectNote}
          onCreateNote={handleCreateNote}
          onDeleteNote={handleNoteDeleted}
@@ -256,7 +266,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
          onDuplicateNote={handleDuplicateNote}
          onRenameNote={handleRenameNote}
          onCollapse={handleCollapseNotesPanel}
-@@ -4108,11 +4109,13 @@ export function App() {
+@@ -4108,11 +4110,13 @@ export function App() {
          notesPanelOverlay ? 'absolute inset-y-0 left-0 z-40 border-r border-border-subtle/50 shadow-[0_8px_24px_var(--ink-shadow-soft)]' : '',
          notesPanelOverlay && notesPanelVisible ? 'translate-x-0 opacity-100' : '',
          notesPanelOverlay && !notesPanelVisible ? '-translate-x-full opacity-0 pointer-events-none' : '',
