@@ -8,7 +8,7 @@ import { PNG } from 'pngjs';
 import { AFFORDANCES } from '../../apps/web/src/host/affordances.ts';
 import { APP_STATE_ATTR, DOC_STATE_ATTR, EDITOR_PANE_ATTR } from '../lib/contract.ts';
 import { InfraBlocked } from '../lib/infra.ts';
-import { mintPrincipal, signIn } from '../lib/principals.ts';
+import { mintPrincipal, signIn, type Principal } from '../lib/principals.ts';
 import { Stack } from '../lib/stack.ts';
 import { compare, type Rect } from './compare.ts';
 import { serveStatic, type StaticServer } from './serve-static.ts';
@@ -24,6 +24,7 @@ let oracle: StaticServer;
 let stack: Stack;
 let stories: Set<string>;
 let principals = 0;
+let fixturePrincipal: Principal | null = null;
 
 test.beforeAll(async () => {
   const dir = process.env.ORACLE_DIR;
@@ -206,8 +207,13 @@ async function captureCandidate(browser: Browser, target: Target, theme: Theme, 
   const { listing } = oracleState;
   const page = await newPage(browser, theme);
   try {
-    principals += 1;
-    const principal = await mintPrincipal(stack.baseUrl, `parity-${process.env.RUN_ID ?? 'local'}-${Date.now().toString(36)}`, target.id, principals);
+    // Sign-up is rate limited per stack: the fixture targets, whose workspace listing is the story's, share one.
+    let principal = target.fixture ? fixturePrincipal : null;
+    if (!principal) {
+      principals += 1;
+      principal = await mintPrincipal(stack.baseUrl, `parity-${process.env.RUN_ID ?? 'local'}-${Date.now().toString(36)}`, target.fixture ? 'fixtures' : target.id, principals);
+      if (target.fixture) fixturePrincipal = principal;
+    }
     await page.context().addCookies(await signIn(stack.baseUrl, principal));
     let path = '/';
     if (target.seed === 'story-listing') {
@@ -256,7 +262,7 @@ async function captureCandidate(browser: Browser, target: Target, theme: Theme, 
     }
     await prepare(page, target, 'candidate');
     await audit(page, theme, 'candidate');
-    const masks = await maskRects(page, target.masks, target.crop);
+    const masks = await maskRects(page, [...target.masks, ...(theme === 'dark' ? (target.darkMasks ?? []) : [])], target.crop);
     return { png: await capture(page, target), masks };
   } finally {
     await page.context().close();

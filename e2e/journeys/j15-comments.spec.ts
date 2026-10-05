@@ -257,8 +257,11 @@ test("j15-comments: bold across the comment's end, then delete its text: it deta
   await waitAcked(ada, id);
   await expect.poll(() => painted(ada, id), { message: 'deleting its text leaves nothing painted' }).toEqual([]);
   await expect.poll(() => painted(ben, id), { message: 'for the peer too', timeout: PEER_TIMEOUT }).toEqual([]);
+  // A declared reload: the remount detector restarts on the fresh page.
+  ben.observations.clear();
   await ben.page.reload();
   await expect(ui.pane(ben, id)).toHaveAttribute(DOC_STATE_ATTR, 'live', { timeout: BIND_TIMEOUT });
+  await ben.observeEditor(id);
   await expect.poll(() => bodyText(ben, id)).toContain('The  fox jumps');
   await ben.page.waitForTimeout(500);
   expect(await painted(ben, id), 'a fresh load paints nothing either: the server detached it').toEqual([]);

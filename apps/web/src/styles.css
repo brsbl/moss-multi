@@ -13,6 +13,13 @@
 ::highlight(moss-comment-0) { background-color: var(--highlight-comment-user-light); }
 ::highlight(moss-comment-3) { background-color: var(--highlight-chalk-green-light); }
 ::highlight(moss-comment-4) { background-color: var(--highlight-chalk-grey-light); }
+/* moss's mark keeps the UA's black text in light mode and the paragraph ink in dark mode. */
+::highlight(moss-comment-0),
+::highlight(moss-comment-3),
+::highlight(moss-comment-4) { color: black; }
+[data-theme="dark"] ::highlight(moss-comment-0),
+[data-theme="dark"] ::highlight(moss-comment-3),
+[data-theme="dark"] ::highlight(moss-comment-4) { color: var(--ink-default); }
 ::highlight(moss-comment-hover-0),
 ::highlight(moss-comment-hover-3),
 ::highlight(moss-comment-hover-4),

@@ -21,6 +21,8 @@ export interface Target {
   focusEditor: boolean;
   /** Web chrome to paint out on both sides (sanctioned collab chrome only). */
   masks: string[];
+  /** Also painted out in the dark theme only (a sanctioned paint deviation that shows there alone). */
+  darkMasks?: string[];
   /** Largest diff share, in percent. */
   floor: number;
   /** Largest 8-connected diff blob, in device px. */
@@ -43,6 +45,8 @@ export interface Target {
 
 /** moss's thread popover. */
 const COMMENT_POPOVER = '.moss-comment-popover';
+/** The fixture's commented paragraph, its first block. */
+const COMMENTED_LINE = '[data-moss-app-shell] [data-lexical-editor="true"] > :first-child';
 
 export const TARGETS: Target[] = [
   // Compare the default shell with editing controls visible; j01 separately gates deviation 10 on blur.
@@ -53,7 +57,9 @@ export const TARGETS: Target[] = [
   // never counts days down), so only that pill is masked; it is wider than moss's and centred on the same point.
   { id: 'trash-view', story: 'app--default', seed: 'story-listing', focusEditor: false, masks: ['[data-collab-chrome]', `[${RETENTION_NOTICE_ATTR}]`], floor: 0.05, maxBlob: 16, prepare: 'trash-open-note' },
   // Comments (T4.3): a note with one thread. The highlight (moss's mark, our CSS Custom Highlight) and its gutter icon.
-  { id: 'comment-gutter', story: 'comment-note--default', seed: 'story-listing', fixture: 'comment-note', focusEditor: false, masks: ['[data-collab-chrome]'], floor: 0.05, maxBlob: 16, prepare: 'comment-gutter' },
+  // In dark mode moss pads its mark by 2px a side and rounds it, which moves the rest of the line; a highlight is paint
+  // only and cannot (deviation 23), so there the commented line is painted out and the gutter icon still compared.
+  { id: 'comment-gutter', story: 'comment-note--default', seed: 'story-listing', fixture: 'comment-note', focusEditor: true, masks: ['[data-collab-chrome]'], darkMasks: [COMMENTED_LINE], floor: 0.05, maxBlob: 16, prepare: 'comment-gutter' },
   // The thread its gutter icon opens, compared as the popover.
   { id: 'comment-popover', story: 'comment-note--default', seed: 'story-listing', fixture: 'comment-note', focusEditor: false, masks: [], floor: 0.05, maxBlob: 16, prepare: 'open-comment-thread', crop: COMMENT_POPOVER },
   // A detached thread opened from the Comments list reads as moss's thread does.
