@@ -1,19 +1,21 @@
 // Commenting from a read-only body (a commenter, or anyone while the body cannot take edits). moss's selection
 // toolbar and Cmd+Shift+A live in the editable editor's key handling, which Lexical skips when the root is not
 // editable, so this offers the same entry points: a one-button selection bar over a non-empty selection, and
-// Cmd+Shift+A, both opening moss's own composer on a selection minted at open (comments.md §4).
+// Cmd+Shift+A, both opening moss's own composer on a selection minted at open (comments.md §4). A terminal note offers
+// neither, and closes the editable editor's composer in place (A§10.6).
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
+import { commentInputStateAtom } from '@moss-desktop/renderer/editor/plugins/CommentPlugin';
 import { CommentInputPopover } from '@moss-desktop/renderer/editor/components/CommentInputPopover';
 import {
   SELECTION_TOOLBAR_BUTTON_BASE_CLASS, SELECTION_TOOLBAR_BUTTON_IDLE_CLASS, SelectionToolbarInner, SelectionToolbarShell,
 } from '@moss-desktop/renderer/editor/components/SelectionToolbarPrimitives';
 import { FLOATING_TOOLBAR_ATTR } from '@moss-multi/protocol/dom-contract';
-import { can } from '@moss-multi/protocol/roles';
+import { useStore } from 'jotai';
 import { StickyNote } from 'lucide-react';
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { useDocRole } from '../access.ts';
-import { createFromCommand, stashCommentSelection } from './adapter.ts';
+import { useTerminal } from '../collab/terminal.ts';
+import { createFromCommand, stashCommentSelection, useCanComment } from './adapter.ts';
 
 type Rect = { x: number; y: number; width: number; height: number };
 const SELECTION = 'comment-selection';
@@ -33,10 +35,20 @@ const rectOf = (range: Range): Rect => {
 
 export function CommentOnlyTools({ noteId }: { noteId: string }): ReactNode {
   const [editor] = useLexicalComposerContext();
-  const role = useDocRole(noteId);
-  const allowed = role !== null && can(role, 'comment');
+  const store = useStore();
+  const allowed = useCanComment(noteId);
+  const terminal = useTerminal(noteId) !== null;
   const [bar, setBar] = useState<Rect | null>(null);
   const [composer, setComposer] = useState<Rect | null>(null);
+
+  // A note that went terminal under an open composer: moss's (the editable editor's) and this one both close.
+  useEffect(() => {
+    if (!terminal) return;
+    store.set(commentInputStateAtom(noteId), { open: false, anchorRect: null });
+    if (typeof CSS !== 'undefined') CSS.highlights?.delete(SELECTION);
+    setComposer(null);
+    setBar(null);
+  }, [noteId, store, terminal]);
 
   const open = useCallback(() => {
     const range = selectionIn(editor.getRootElement());

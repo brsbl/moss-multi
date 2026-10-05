@@ -26,11 +26,23 @@ export interface Target {
   /** Largest 8-connected diff blob, in device px. */
   maxBlob: number;
   /**
-   * A gesture both sides make before capture. `trash-open-note`: the open note's sidebar row → Trash, then the
-   * footer's Trash view, which shows that note read-only.
+   * A gesture both sides make before capture.
+   * - `trash-open-note`: the open note's sidebar row → Trash, then the footer's Trash view, which shows that note
+   *   read-only.
+   * - `comment-gutter`: waits for the note's comment to paint with its gutter icon.
+   * - `open-comment-thread`: opens the thread from its gutter icon.
+   * - `open-detached-thread`: the candidate deletes the commented text, which detaches the thread, then both open it
+   *   from the Comments list. moss at the pin has no detached state, so its anchored thread is the oracle.
    */
-  prepare?: 'trash-open-note';
+  prepare?: 'trash-open-note' | 'comment-gutter' | 'open-comment-thread' | 'open-detached-thread';
+  /** `e2e/fixtures/<fixture>.md` and `.comments.json`: the story note's body and threads, imported as POST /api/docs. */
+  fixture?: string;
+  /** Capture this element instead of the shell: an overlay whose place follows its anchor, compared as itself. */
+  crop?: string;
 }
+
+/** moss's thread popover. */
+const COMMENT_POPOVER = '.moss-comment-popover';
 
 export const TARGETS: Target[] = [
   // Compare the default shell with editing controls visible; j01 separately gates deviation 10 on blur.
@@ -40,6 +52,12 @@ export const TARGETS: Target[] = [
   // The owner's trash view (T2.3). The retention notice's words differ by design (one module writes trash copy and
   // never counts days down), so only that pill is masked; it is wider than moss's and centred on the same point.
   { id: 'trash-view', story: 'app--default', seed: 'story-listing', focusEditor: false, masks: ['[data-collab-chrome]', `[${RETENTION_NOTICE_ATTR}]`], floor: 0.05, maxBlob: 16, prepare: 'trash-open-note' },
+  // Comments (T4.3): a note with one thread. The highlight (moss's mark, our CSS Custom Highlight) and its gutter icon.
+  { id: 'comment-gutter', story: 'comment-note--default', seed: 'story-listing', fixture: 'comment-note', focusEditor: false, masks: ['[data-collab-chrome]'], floor: 0.05, maxBlob: 16, prepare: 'comment-gutter' },
+  // The thread its gutter icon opens, compared as the popover.
+  { id: 'comment-popover', story: 'comment-note--default', seed: 'story-listing', fixture: 'comment-note', focusEditor: false, masks: [], floor: 0.05, maxBlob: 16, prepare: 'open-comment-thread', crop: COMMENT_POPOVER },
+  // A detached thread opened from the Comments list reads as moss's thread does.
+  { id: 'comment-detached', story: 'comment-note--default', seed: 'story-listing', fixture: 'comment-note', focusEditor: false, masks: [], floor: 0.05, maxBlob: 16, prepare: 'open-detached-thread', crop: COMMENT_POPOVER },
 ];
 
 export const THEMES: Theme[] = ['light', 'dark'];

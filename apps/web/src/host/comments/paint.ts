@@ -147,7 +147,10 @@ const painters = new Map<LexicalEditor, Painter>();
 function refreshHighlights(): void {
   if (!supported()) return;
   const sets = new Map<string, Range[]>();
-  const add = (name: string, ranges: Range[]) => sets.set(name, [...(sets.get(name) ?? []), ...ranges]);
+  const add = (name: string, ranges: Range[]) => {
+    const into = sets.get(name);
+    if (into) for (const range of ranges) into.push(range);
+  };
   for (const color of COLORS) for (const kind of ['', 'hover-', 'active-']) sets.set(`moss-comment-${kind}${color}`, []);
   for (const painter of painters.values()) {
     for (const [id, entry] of painter.painted) {

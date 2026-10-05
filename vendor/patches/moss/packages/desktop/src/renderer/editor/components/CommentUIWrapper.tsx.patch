@@ -6,12 +6,20 @@ diff --git a/packages/desktop/src/renderer/editor/components/CommentUIWrapper.ts
  import { $isTabPanelNode } from '../nodes/TabPanelNode';
  import { EDITOR_UPDATE_TAGS } from '../utils/editorUpdateTags';
 +// moss-multi seam: comments (comments.md §12): anchors, hits and writes go through the adapter
-+import { anchorTarget, canComment, commentsAtPoint, commentsOnDecorator, detachedRect, mutate, setActive } from '@moss-multi/host/comments/adapter';
++import { anchorTarget, commentsAtPoint, commentsOnDecorator, detachedRect, mutate, setActive, useCanComment } from '@moss-multi/host/comments/adapter';
 +import { hidden } from '@moss-multi/host/affordances';
  
  interface CommentUIWrapperProps {
    noteId: string;
-@@ -107,6 +110,7 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
+@@ -97,6 +100,7 @@ function scrollCommentAnchorIntoViewIfNeeded(anchor: HTMLElement): void {
+ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUIWrapperProps) => {
+   const [editor] = useLexicalComposerContext();
+   const store = useStore();
++  const commentable = useCanComment(noteId); // moss-multi seam: comments
+   const activeCommentState = useAtomValue(activeCommentAtom(noteId));
+   const setActiveComment = useSetAtom(activeCommentAtom(noteId));
+   // Subscribe so the popover re-derives its thread live when replies/edits land.
+@@ -107,6 +111,7 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
  
    // Highlight mark nodes for a comment in the editor
    const highlightComment = useCallback((commentId: string) => {
@@ -19,7 +27,7 @@ diff --git a/packages/desktop/src/renderer/editor/components/CommentUIWrapper.ts
      forEachCommentElement(editor, commentId, (el) => el.classList.add('comment-highlight-active'));
      editor.read(() => {
        const visit = (node: LexicalNode) => {
-@@ -151,6 +155,7 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
+@@ -151,6 +156,7 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
  
    // Remove all comment highlights
    const clearCommentHighlight = useCallback(() => {
@@ -27,7 +35,7 @@ diff --git a/packages/desktop/src/renderer/editor/components/CommentUIWrapper.ts
      const rootElement = editor.getRootElement();
      if (rootElement) {
        rootElement.querySelectorAll('.comment-highlight-active')
-@@ -238,6 +243,25 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
+@@ -238,6 +244,25 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
    }, [editor, getNewestRootComment, noteId, store]);
  
    const handleEditorCommentMouseOver = useCallback((event: MouseEvent) => {
@@ -53,7 +61,7 @@ diff --git a/packages/desktop/src/renderer/editor/components/CommentUIWrapper.ts
      const anchor = findCommentHoverAnchor(event.target);
      if (!anchor) return;
  
-@@ -248,9 +272,15 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
+@@ -248,9 +273,15 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
      clearCommentHoverState(editor);
      applyCommentHoverState(editor, comment.id, comment.color ?? 0);
      hoveredEditorCommentIdRef.current = comment.id;
@@ -70,7 +78,7 @@ diff --git a/packages/desktop/src/renderer/editor/components/CommentUIWrapper.ts
      const anchor = findCommentHoverAnchor(event.target);
      if (!anchor) return;
      const related = event.relatedTarget;
-@@ -261,6 +291,7 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
+@@ -261,6 +292,7 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
    }, [editor]);
  
    const findInlineCommentAnchor = useCallback((commentId: string) => {
@@ -78,7 +86,7 @@ diff --git a/packages/desktop/src/renderer/editor/components/CommentUIWrapper.ts
      let anchor: { element: HTMLElement; nodeKey: string } | null = null;
  
      editor.read(() => {
-@@ -354,7 +385,12 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
+@@ -354,7 +386,12 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
        }
  
        const inlineAnchor = findInlineCommentAnchor(comment.id);
@@ -92,7 +100,7 @@ diff --git a/packages/desktop/src/renderer/editor/components/CommentUIWrapper.ts
        const hiddenTabPanel = inlineAnchor.element.closest('[data-tab-panel]:not([data-active])');
        if (hiddenTabPanel) {
          if (!revealRequested.tab && !revealTabContainingNode(inlineAnchor.nodeKey)) return;
-@@ -454,7 +490,7 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
+@@ -454,7 +491,7 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
        }
  
        const commentsMap = store.get(noteCommentsMapAtom(noteId));
@@ -101,7 +109,7 @@ diff --git a/packages/desktop/src/renderer/editor/components/CommentUIWrapper.ts
          .map((id) => commentsMap[id])
          .filter((c): c is NoteComment => !!c)
          .filter((comment) => isCommentVisibleForStatus(commentsMap, comment.id, commentThreadFilter));
-@@ -486,9 +522,9 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
+@@ -486,9 +523,9 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
  
    useEffect(() => {
      return editor.registerRootListener((rootElement, previousRootElement) => {
@@ -113,7 +121,7 @@ diff --git a/packages/desktop/src/renderer/editor/components/CommentUIWrapper.ts
        rootElement?.addEventListener('mouseout', handleEditorCommentMouseOut);
      });
    }, [editor, handleEditorCommentMouseOut, handleEditorCommentMouseOver]);
-@@ -591,6 +627,7 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
+@@ -591,6 +628,7 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
      const trimmed = text.trim();
      const normalizedImageUrls = imageUrls?.filter((url) => url.trim().length > 0) ?? [];
      if (!trimmed && normalizedImageUrls.length === 0) return false;
@@ -121,7 +129,7 @@ diff --git a/packages/desktop/src/renderer/editor/components/CommentUIWrapper.ts
      const currentMap = store.get(noteCommentsMapAtom(noteId));
      const parent = currentMap[parentId];
      if (!parent) return false;
-@@ -616,6 +653,8 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
+@@ -616,6 +654,8 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
    }, [noteId, store]);
  
    const handleSetThreadResolved = useCallback((rootId: string, resolved: boolean) => {
@@ -130,7 +138,7 @@ diff --git a/packages/desktop/src/renderer/editor/components/CommentUIWrapper.ts
      const currentMap = store.get(noteCommentsMapAtom(noteId));
      const result = setCommentSubtreeResolvedState(currentMap, rootId, {
        resolved,
-@@ -758,10 +797,10 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
+@@ -758,10 +798,10 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
              collisionBoundary={editor.getRootElement()?.closest('.canvas-scroll') ?? null}
              onUpdate={handleUpdate}
              onDelete={handleDelete}
@@ -138,10 +146,10 @@ diff --git a/packages/desktop/src/renderer/editor/components/CommentUIWrapper.ts
 -            onSendToAgent={handleSendToAgent}
 -            onResolveThread={(rootId) => handleSetThreadResolved(rootId, true)}
 -            onUnresolveThread={(rootId) => handleSetThreadResolved(rootId, false)}
-+            onReply={canComment(noteId) ? handleReply : undefined /* moss-multi seam: comments: a viewer only reads */}
++            onReply={commentable ? handleReply : undefined /* moss-multi seam: comments: a viewer, or a terminal note, only reads */}
 +            onSendToAgent={hidden('ai-run-action') ? undefined : handleSendToAgent /* moss-multi seam: hide-registry (A§9) */}
-+            onResolveThread={canComment(noteId) ? (rootId) => handleSetThreadResolved(rootId, true) : undefined}
-+            onUnresolveThread={canComment(noteId) ? (rootId) => handleSetThreadResolved(rootId, false) : undefined}
++            onResolveThread={commentable ? (rootId) => handleSetThreadResolved(rootId, true) : undefined}
++            onUnresolveThread={commentable ? (rootId) => handleSetThreadResolved(rootId, false) : undefined}
              onNavigateToMention={handleNavigateToMention}
            />
        )}

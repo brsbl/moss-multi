@@ -46,7 +46,7 @@ import { $isTabGroupNode } from '../nodes/TabGroupNode';
 import { $isTabPanelNode } from '../nodes/TabPanelNode';
 import { EDITOR_UPDATE_TAGS } from '../utils/editorUpdateTags';
 // moss-multi seam: comments (comments.md §12): anchors, hits and writes go through the adapter
-import { anchorTarget, canComment, commentsAtPoint, commentsOnDecorator, detachedRect, mutate, setActive } from '@moss-multi/host/comments/adapter';
+import { anchorTarget, commentsAtPoint, commentsOnDecorator, detachedRect, mutate, setActive, useCanComment } from '@moss-multi/host/comments/adapter';
 import { hidden } from '@moss-multi/host/affordances';
 
 interface CommentUIWrapperProps {
@@ -101,6 +101,7 @@ function scrollCommentAnchorIntoViewIfNeeded(anchor: HTMLElement): void {
 export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUIWrapperProps) => {
   const [editor] = useLexicalComposerContext();
   const store = useStore();
+  const commentable = useCanComment(noteId); // moss-multi seam: comments
   const activeCommentState = useAtomValue(activeCommentAtom(noteId));
   const setActiveComment = useSetAtom(activeCommentAtom(noteId));
   // Subscribe so the popover re-derives its thread live when replies/edits land.
@@ -798,10 +799,10 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
             collisionBoundary={editor.getRootElement()?.closest('.canvas-scroll') ?? null}
             onUpdate={handleUpdate}
             onDelete={handleDelete}
-            onReply={canComment(noteId) ? handleReply : undefined /* moss-multi seam: comments: a viewer only reads */}
+            onReply={commentable ? handleReply : undefined /* moss-multi seam: comments: a viewer, or a terminal note, only reads */}
             onSendToAgent={hidden('ai-run-action') ? undefined : handleSendToAgent /* moss-multi seam: hide-registry (A§9) */}
-            onResolveThread={canComment(noteId) ? (rootId) => handleSetThreadResolved(rootId, true) : undefined}
-            onUnresolveThread={canComment(noteId) ? (rootId) => handleSetThreadResolved(rootId, false) : undefined}
+            onResolveThread={commentable ? (rootId) => handleSetThreadResolved(rootId, true) : undefined}
+            onUnresolveThread={commentable ? (rootId) => handleSetThreadResolved(rootId, false) : undefined}
             onNavigateToMention={handleNavigateToMention}
           />
       )}

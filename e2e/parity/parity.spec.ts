@@ -15,6 +15,7 @@ import { serveStatic, type StaticServer } from './serve-static.ts';
 import { CROP, FONT_FACES, STORY_NOW, TARGETS, THEMES, type Target, type Theme } from './targets.ts';
 
 const OUT = join(import.meta.dirname, '../test-results/parity');
+const FIXTURES = join(import.meta.dirname, '../fixtures');
 const VIEWPORT = { width: 1440, height: 1000 };
 
 interface NoteListing { id: string; title: string; createdAt: number; updatedAt: number }
@@ -69,11 +70,14 @@ async function audit(page: Page, theme: Theme, side: string): Promise<void> {
 
 async function capture(page: Page, target: Target): Promise<Buffer> {
   await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
-  await page.keyboard.press('Escape');
-  await page.evaluate(() => {
-    (document.activeElement as HTMLElement | null)?.blur();
-    window.getSelection()?.removeAllRanges();
-  });
+  // An overlay target keeps its overlay open and its focus where moss puts it (the reply composer autofocuses).
+  if (!target.crop) {
+    await page.keyboard.press('Escape');
+    await page.evaluate(() => {
+      (document.activeElement as HTMLElement | null)?.blur();
+      window.getSelection()?.removeAllRanges();
+    });
+  }
   if (target.focusEditor) {
     const body = page.locator(`${CROP} [data-lexical-editor="true"][contenteditable="true"]`);
     await body.focus();
@@ -81,11 +85,11 @@ async function capture(page: Page, target: Target): Promise<Buffer> {
   }
   await page.mouse.move(VIEWPORT.width - 2, VIEWPORT.height - 2);
   await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
-  return page.locator(CROP).screenshot({ animations: 'disabled', caret: 'hide', scale: 'device' });
+  return page.locator(target.crop ?? CROP).screenshot({ animations: 'disabled', caret: 'hide', scale: 'device' });
 }
 
-async function maskRects(page: Page, selectors: string[]): Promise<Rect[]> {
-  const origin = await page.locator(CROP).boundingBox();
+async function maskRects(page: Page, selectors: string[], crop = CROP): Promise<Rect[]> {
+  const origin = await page.locator(crop).boundingBox();
   if (!origin || selectors.length === 0) return [];
   const rects = await page.evaluate((list) => list.flatMap((s) => [...document.querySelectorAll(s)].map((el) => el.getBoundingClientRect().toJSON())), selectors);
   return rects.map((r: DOMRect) => ({ x: Math.floor((r.x - origin.x) * 2), y: Math.floor((r.y - origin.y) * 2), width: Math.ceil(r.width * 2), height: Math.ceil(r.height * 2) }));
@@ -130,6 +134,54 @@ async function trashOpenNote(page: Page): Promise<void> {
   await expect(crop.locator('[data-lexical-editor="true"][contenteditable="false"]')).toBeVisible({ timeout: 30_000 });
 }
 
+const gutterIcon = (page: Page) => page.locator(`${CROP} [data-comment-gutter-id]`).first();
+const commentPopover = (page: Page) => page.locator('.moss-comment-popover');
+
+/** The note's one comment has painted with its gutter icon. */
+async function showCommentGutter(page: Page): Promise<void> {
+  await expect(gutterIcon(page), 'the comment shows its gutter icon').toBeVisible({ timeout: 30_000 });
+}
+
+/** The thread its gutter icon opens. */
+async function openCommentThread(page: Page): Promise<void> {
+  await showCommentGutter(page);
+  await gutterIcon(page).click();
+  await expect(commentPopover(page), 'the gutter opens the thread').toBeVisible();
+}
+
+/**
+ * The thread opened from the Comments list. `detach` first deletes the commented text through the editor, which
+ * detaches the thread (the candidate only: moss at the pin has no detached state).
+ */
+async function openThreadFromList(page: Page, detach: boolean): Promise<void> {
+  await showCommentGutter(page);
+  if (detach) {
+    const body = page.locator(`${CROP} [data-lexical-editor="true"][contenteditable="true"]`);
+    await body.focus();
+    await body.evaluate((element, needle) => {
+      const editor = (element as HTMLElement & { __lexicalEditor: { update(fn: () => void, options: object): void; getEditorState(): { _nodeMap: Map<string, { getType(): string; getTextContent(): string; select(a: number, b: number): void }> } } }).__lexicalEditor;
+      editor.update(() => {
+        const node = [...editor.getEditorState()._nodeMap.values()].find((n) => n.getType() === 'text' && n.getTextContent().includes(needle));
+        if (!node) throw new Error(`no text node holds "${needle}"`);
+        const at = node.getTextContent().indexOf(needle);
+        node.select(at, at + needle.length);
+      }, { discrete: true });
+    }, 'brown fox');
+    await page.keyboard.press('Backspace');
+    await expect(gutterIcon(page), 'deleting its text detaches the thread').toHaveCount(0, { timeout: 15_000 });
+  }
+  await page.locator(CROP).getByRole('button', { name: /^Comments/ }).click();
+  await page.getByRole('button', { name: /Is the fox really brown/ }).click();
+  await expect(commentPopover(page), 'the list opens the thread').toBeVisible();
+}
+
+async function prepare(page: Page, target: Target, side: 'oracle' | 'candidate'): Promise<void> {
+  if (target.prepare === 'trash-open-note') await trashOpenNote(page);
+  if (target.prepare === 'comment-gutter') await showCommentGutter(page);
+  if (target.prepare === 'open-comment-thread') await openCommentThread(page);
+  if (target.prepare === 'open-detached-thread') await openThreadFromList(page, side === 'candidate');
+}
+
 /** The open note's title field (moss's title is the first textbox in the shell). */
 const openTitle = (page: Page) => page.evaluate((crop) => document.querySelector(`${crop} [role="textbox"]`)?.textContent ?? null, CROP);
 
@@ -142,7 +194,7 @@ async function captureOracle(browser: Browser, target: Target, theme: Theme): Pr
       (window as unknown as { electronAPI: { notes: { getAll: () => Promise<NoteListing[]> } } }).electronAPI.notes.getAll(),
     );
     const open = await openTitle(page);
-    if (target.prepare === 'trash-open-note') await trashOpenNote(page);
+    await prepare(page, target, 'oracle');
     const withheld = await withholdAffordances(page);
     return { png: await capture(page, target), listing, openTitle: open, withheld };
   } finally {
@@ -163,10 +215,14 @@ async function captureCandidate(browser: Browser, target: Target, theme: Theme, 
       // Each story note becomes a real doc, so its pane binds (A§10.3); the story's empty body is the seed's empty
       // paragraph. The bridge converts epoch ms to moss's seconds, so the story's seconds go out as ms.
       const ids = new Map<string, string>();
+      // A target's fixture is the story note's body and threads, imported as moss interchange (comments.md §13).
+      const content = target.fixture
+        ? { markdown: readFileSync(join(FIXTURES, `${target.fixture}.md`), 'utf8'), comments: JSON.parse(readFileSync(join(FIXTURES, `${target.fixture}.comments.json`), 'utf8')) as object }
+        : {};
       for (const note of listing) {
         // A cookie principal's mutation carries the app's Origin (T0.12's gate), as the page's own fetch would.
         const response = await page.request.post(new URL('/api/docs', stack.baseUrl).href, {
-          data: { title: note.title },
+          data: { title: note.title, ...content },
           headers: { origin: new URL(stack.baseUrl).origin },
         });
         if (response.status() !== 201) throw new Error(`POST /api/docs for "${note.title}": ${response.status()}`);
@@ -198,9 +254,9 @@ async function captureCandidate(browser: Browser, target: Target, theme: Theme, 
     if (target.seed === 'story-listing') {
       await page.locator(`[${EDITOR_PANE_ATTR}][${DOC_STATE_ATTR}="live"]`).waitFor({ timeout: 30_000 });
     }
-    if (target.prepare === 'trash-open-note') await trashOpenNote(page);
+    await prepare(page, target, 'candidate');
     await audit(page, theme, 'candidate');
-    const masks = await maskRects(page, target.masks);
+    const masks = await maskRects(page, target.masks, target.crop);
     return { png: await capture(page, target), masks };
   } finally {
     await page.context().close();

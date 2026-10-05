@@ -259,9 +259,12 @@ describe('T4.0 supported liveness: orphan on deletion, reattach on undo and redo
       on(s, 'quick brown');
       a.edit(() => $select('quick brown').removeText());
       accepted(await a.send());
+      const state = () => JSON.stringify({ status: s.status('c1'), text: s.text('c1'), server: liveUnits(s.server).text, peer: a.text() });
+      expect(s.status('c1'), state()).toBe('orphaned');
       orphaned(s);
       a.undo();
       accepted(await a.send());
+      expect(s.status('c1'), state()).toBe('anchored');
       on(s, 'quick brown');
       placed(s, 'c1', 4, 'quick brown');
     }));

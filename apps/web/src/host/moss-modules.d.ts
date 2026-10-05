@@ -123,6 +123,11 @@ declare module '@moss-desktop/renderer/editor/components/CommentInputPopover' {
   }): JSX.Element;
 }
 
+declare module '@moss-desktop/renderer/editor/plugins/CommentPlugin' {
+  import type { PrimitiveAtom } from 'jotai';
+  export function commentInputStateAtom(noteId: string): PrimitiveAtom<{ open: boolean; anchorRect: { x: number; y: number; width: number; height: number } | null }>;
+}
+
 declare module '@moss-desktop/renderer/editor/components/SelectionToolbarPrimitives' {
   import type { CSSProperties, ForwardRefExoticComponent, HTMLAttributes, JSX, RefAttributes } from 'react';
   export const SELECTION_TOOLBAR_BUTTON_BASE_CLASS: string;

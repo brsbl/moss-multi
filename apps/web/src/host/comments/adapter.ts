@@ -4,7 +4,8 @@
 // model, and every write goes through the REST API.
 import { can } from '@moss-multi/protocol/roles';
 import type { LexicalEditor } from 'lexical';
-import { knownRole } from '../access.ts';
+import { knownRole, useDocRole } from '../access.ts';
+import { terminalOf, useTerminal } from '../collab/terminal.ts';
 import { createComment, replyTo, resolveThread } from './api.ts';
 import { $mintNode, mintCurrent, type Minted } from './mint.ts';
 import { commentsAtPoint, painterOf, setActive, setHover, subscribePaint } from './paint.ts';
@@ -30,7 +31,7 @@ export function stashCommentSelection(editor: LexicalEditor): void {
 export function createFromCommand(editor: LexicalEditor, payload: { text: string; nodeKey?: string }): boolean | null {
   const painter = painterOf(editor);
   if (!painter) return null;
-  if (!payload.text.trim()) return false;
+  if (!payload.text.trim() || !canComment(painter.docId)) return false;
   const minted = payload.nodeKey ? $mintNode(painter.binding, payload.nodeKey) : (stashed.get(editor) ?? mintCurrent(editor, painter.binding));
   stashed.delete(editor);
   if (!minted) return false;
@@ -83,10 +84,20 @@ export function detachedRect(editor: LexicalEditor): { x: number; y: number; wid
   return { x: rect.right, y: Math.max(rect.top, 0), width: 0, height: 0 };
 }
 
-/** Whether this tab may reply to and resolve threads on `noteId`: a commenter or above. A viewer only reads them. */
+/**
+ * Whether this tab may comment on, reply to and resolve threads on `noteId`: a commenter or above, while the note is
+ * not terminal (A§10.6: a trashed or revoked note keeps its threads readable and nothing else). A viewer only reads.
+ */
 export function canComment(noteId: string): boolean {
   const role = knownRole(noteId);
-  return role !== null && can(role, 'comment');
+  return role !== null && can(role, 'comment') && terminalOf(noteId) === null;
+}
+
+/** canComment as React state: a role change or a terminal note re-renders the thread without its write controls. */
+export function useCanComment(noteId: string): boolean {
+  const role = useDocRole(noteId);
+  const terminal = useTerminal(noteId);
+  return role !== null && can(role, 'comment') && terminal === null;
 }
 
 /** The thread's writes: a reply, and resolve or reopen. Edit and delete arrive with T4.4. */
@@ -94,7 +105,7 @@ export type CommentMutation = { type: 'reply'; parentId: string; text: string } 
 
 export function mutate(editor: LexicalEditor, op: CommentMutation): boolean {
   const painter = painterOf(editor);
-  if (!painter) return false;
+  if (!painter || !canComment(painter.docId)) return false;
   if (op.type === 'reply') {
     if (!op.text.trim()) return false;
     replyTo(painter.docId, painter.binding.doc, op.parentId, op.text);
