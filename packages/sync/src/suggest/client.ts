@@ -371,6 +371,10 @@ export class SuggestFork {
     return true;
   }
 
+  withdrawPart(_part: string): boolean {
+    return false;
+  }
+
   isStruck(id: { client: number; clock: number }): boolean {
     for (const { targets } of this.#parts.values()) if (covers(targets, id.client, id.clock)) return true;
     return false;

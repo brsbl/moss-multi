@@ -13,7 +13,7 @@ import { Composite, reviewDoc, SuggestFork, type ForkEvent } from './client.ts';
 import { bindEditor } from './fork-shim.ts';
 import { createRecord, opsOf, readMeta, readRecord, recordIds, writeSuggestions } from './records.ts';
 import { nodeRegistry } from './review.ts';
-import { CENSUS, deterministicIds, exported, resetIds, seededBody, select, spansOfText, SUGGESTER, type Step } from './test-support.ts';
+import { CENSUS, codeBlock, deterministicIds, exported, insertBlock, resetIds, seededBody, select, spansOfText, SUGGESTER, type Step } from './test-support.ts';
 
 let restore: () => void = () => {};
 beforeEach(() => {
@@ -229,6 +229,109 @@ describe('T5.1 the refusal copy-back @p:mean-2 @p:tech-7 @p:R17', () => {
       expect(second.events.some((event) => event.type === 'refused')).toBe(false);
     } finally {
       second.dispose();
+    }
+  });
+});
+
+describe('T5.1 copy-back, reconnect and undelete @p:mean-2 @p:tech-7 @p:R17', () => {
+  const refusalsOf = (events: ForkEvent[]) => events.filter((event): event is Extract<ForkEvent, { type: 'refused' }> => event.type === 'refused');
+  const catchUp = (body: Y.Doc, live: Y.Doc) => Y.applyUpdate(body, Y.encodeStateAsUpdate(live, Y.encodeStateVector(body)));
+
+  it('a refusal that reaches the author before the close update still offers back the refused text', () => {
+    const live = seededBody();
+    // The author's B is a replica: the record's close reaches it after the refusal.
+    const body = new Y.Doc();
+    catchUp(body, live);
+    const link = wire(live);
+    const m = mount(body, link);
+    try {
+      m.act(() => select('Hello', 24).insertText(' One.'));
+      link.deliver(m.fork);
+      catchUp(body, live);
+      const [record] = recordIds(live);
+      expect(link.ingest.withdraw({ ...link.who, connection: 'c2' }, record)).toMatchObject({ ok: true });
+      m.act(() => select('Hello', 29).insertText(' Two.'));
+      link.deliver(m.fork);
+      const refused = refusalsOf(m.events);
+      expect(refused, 'one refusal').toHaveLength(1);
+      expect(refused[0].reason).toBe('record-closed');
+      expect(refused[0].unsaved.join('\n'), "the refused frame's own text is offered back").toContain('Two.');
+      expect(m.fork.closed).toBe(true);
+      catchUp(body, live);
+      expect(refusalsOf(m.events), 'the late close update offers nothing twice').toHaveLength(1);
+    } finally {
+      m.dispose();
+    }
+  });
+
+  it('a record closed under the author offers back register edits and new decorator blocks too', () => {
+    const live = seededBody();
+    const link = wire(live);
+    const m = mount(live, link);
+    try {
+      m.act(() => select('Hello', 24).insertText(' One.'));
+      link.deliver(m.fork);
+      const [record] = recordIds(live);
+      m.act(() => codeBlock().setCode('seed and more'));
+      m.act(insertBlock('```moss-chart\n{"type":"bar","data":[{"label":"Monday","value":1}]}\n```'));
+      expect(link.outbox.length).toBeGreaterThan(0);
+      expect(link.ingest.withdraw({ ...link.who, connection: 'c2' }, record)).toMatchObject({ ok: true });
+      link.deliver(m.fork);
+      const refused = refusalsOf(m.events);
+      expect(refused).toHaveLength(1);
+      const unsaved = refused[0].unsaved.join('\n');
+      expect(unsaved, 'the edited code register').toContain('seed and more');
+      expect(unsaved, 'the new chart block').toContain('Monday');
+    } finally {
+      m.dispose();
+    }
+  });
+
+  it('a reconnect after a lost ack resends only what the server never stored, and the active record continues', () => {
+    const live = seededBody();
+    const link = wire(live);
+    const m = mount(live, link);
+    try {
+      m.act(() => select('Hello', 24).insertText(' One.'));
+      // The DocDO stores the frame, and the socket drops before its ack arrives.
+      handleSuggest(link.ingest, link.who, link.outbox.shift()!);
+      link.ingest.expireConnection('c1');
+      link.who.connection = 'c2';
+      m.fork.reconnected();
+      link.deliver(m.fork);
+      expect(refusalsOf(m.events), 'no refusal').toEqual([]);
+      expect(link.replies.filter((reply) => reply.t === 'suggest-refused')).toEqual([]);
+      expect(m.fork.closed, 'input stays open').toBe(false);
+      const [record] = recordIds(live);
+      expect(readRecord(live, record)?.ops.length, 'the stored frame is not sent twice').toBe(1);
+      m.act(() => select('Hello', 29).insertText(' Two.'));
+      link.deliver(m.fork);
+      expect(recordIds(live), 'the active record continues').toEqual([record]);
+      expect(readRecord(live, record)?.ops.length).toBe(2);
+      expect(link.replies.filter((reply) => reply.t === 'suggest-refused')).toEqual([]);
+    } finally {
+      m.dispose();
+    }
+  });
+
+  it('taking back a delete part removes it from the record, and the text is no longer struck', () => {
+    const live = seededBody();
+    const link = wire(live);
+    const m = mount(live, link);
+    try {
+      const targets = spansOfText(m.fork.doc, 'world');
+      const part = m.fork.proposeDelete(targets);
+      link.deliver(m.fork);
+      expect(typeof part, 'the part id').toBe('string');
+      const [record] = recordIds(live);
+      expect(readRecord(live, record)?.parts).toHaveLength(1);
+      expect(m.fork.withdrawPart(String(part))).toBe(true);
+      link.deliver(m.fork);
+      expect(readRecord(live, record)?.parts, 'suggest-undelete took it back').toEqual([]);
+      expect(m.fork.isStruck(targets[0])).toBe(false);
+      expect(link.replies.filter((reply) => reply.t === 'suggest-refused')).toEqual([]);
+    } finally {
+      m.dispose();
     }
   });
 });
