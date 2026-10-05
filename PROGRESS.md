@@ -1,12 +1,12 @@
 # moss-multi progress
 
-**Overall: 54% done** (50 of 92 planned tasks verified)
+**Overall: 55% done** (51 of 92 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 19 / 20 | in progress |
-| M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 12 / 12 | in progress |
+| M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 0 / 9 | |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
@@ -69,6 +69,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-05 — T0.9d verified: CI journey shards are split by recorded per-engine minutes (`durations.mjs` writes them, `plan.mjs budget` keeps every shard's p95 within 9 of its 13 min), and the root causes of the WebKit editing-shard flakes are fixed, with the duration table in METHOD.md.
 - 2026-10-05 — T2.6 verified: a viewer or commenter is no longer offered controls they cannot use: menus grow with their role, "+ Note", Rename, slash commands and block edit, fullscreen and delete buttons are hidden, checkboxes and gap cursors in a read-only body are inert and send nothing, and an unknown role gets no actions.
 - 2026-10-05 — T2.S1 verified: a co-owner who is demoted or removed loses their open invites for good, so regaining manage later never revives an invite they sent before.
+- 2026-10-05 — T2.S2 verified: a folder link over a large subtree (150 subfolders, 600 notes) lists every note at the right role for anonymous and signed-in holders, in a fixed number of queries and D1 parameters.
 
 ## T1.1s identity audit
 
@@ -326,6 +327,7 @@ Local browser verification remains assigned to the independent checker under the
 - Per-note serial reach reads on folder moves (packages/sync/src/fanout.ts:162-185, called from folders.ts:214 and from kickLosses). Compute reach for the whole subtree with set-based queries keyed by doc ID (json_each), and keep the before/after comparison.
 - Refreshes filtered by ids still do full-workspace work (apps/web/src/api/workspace.ts:165-166, 225-235). Add an ids-aware path that narrows doc and Trash queries before building rows, and compute counts in one pass.
 - reapDeadInvites re-checks every open invite in the database (apps/web/src/api/access.ts:105-108). Scope the reaper to the affected targets and subtree, or to the affected inviter for grant changes, while keeping death synchronous and permanent.
+- T2.S2 (Folder-link listing at a fixed cost), checker: the folder-link listing authorizes docs against a folder tree read one query earlier (apps/web/src/api/workspace.ts:113-154), so a concurrent move of a subfolder out of the linked root could leak one listing's metadata for a note in it; read the subtree and docs in one statement or re-check the chain for docs whose folder changed.
 
 ### From M1's Slop Cop review (PR #2 @ ff9570f, 2026-10-05)
 - REST rename and create's initial title skip the document size cap (packages/sync/src/doc-do.ts:263-265 (create), 277-281 (renameTitle)). Build the title change on a mirror doc, admit the resulting state plus payload bytes, and only then apply it. Return the existing doc-cap refusal.
