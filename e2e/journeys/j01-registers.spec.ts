@@ -219,15 +219,31 @@ for (const kind of ['variable', 'formula'] as const) {
     const source = kind === 'variable' ? '{{status|pending}}' : '{{2+3|5}}';
     const { ada, ben: principal, id } = await note(actors, stack.baseUrl, `Intro.\n\nSee ${source} here.`);
     const ben = await actors.session(principal, { severable: true });
+    // Frames as late as WebKit gives them under load: the popover's focus retry after the payload arrives must not
+    // land on a caret the user has placed since (it selected the value, and typing replaced it).
+    await ben.context.addInitScript(() => {
+      const frames = new Map<number, ReturnType<typeof setTimeout>>();
+      let next = 1;
+      window.requestAnimationFrame = (callback) => {
+        const frame = next++;
+        frames.set(frame, setTimeout(() => { frames.delete(frame); callback(performance.now()); }, 500));
+        return frame;
+      };
+      window.cancelAnimationFrame = (frame) => { clearTimeout(frames.get(frame)); frames.delete(frame); };
+    });
     ben.sever!.holdPayloads();
     await join(ben, id);
     await openFormula(ben, id);
     await expect(formulaInput(ben), 'no text yet: the popover cannot be typed into').toHaveJSProperty('readOnly', true);
     ben.sever!.releasePayloads();
     await expect(popover(ben), 'the popover takes the arrived kind').toHaveAccessibleName(kind === 'variable' ? 'Edit variable' : 'Edit formula', { timeout: PEER_TIMEOUT });
-    await expect(formulaInput(ben)).toHaveValue(kind === 'variable' ? 'pending' : '2+3');
+    const value = kind === 'variable' ? 'pending' : '2+3';
+    await expect(formulaInput(ben)).toHaveValue(value);
     await expect(formulaInput(ben)).toHaveJSProperty('readOnly', false);
     await formulaInput(ben).press('End');
+    // Every frame requested before this one has run.
+    await ben.page.evaluate(() => new Promise((done) => requestAnimationFrame(done)));
+    await expect(formulaInput(ben), 'the caret stays where the user put it').toHaveJSProperty('selectionStart', value.length);
     await ben.page.keyboard.type(kind === 'variable' ? ' soon' : '+1');
     const want = kind === 'variable' ? [['status', 'pending soon']] : [['2+3+1', '6']];
     for (const actor of [ada, ben]) await expect.poll(() => formulas(actor, id), { message: `${actor.label}: the edit is written as a ${kind}`, timeout: PEER_TIMEOUT }).toEqual(want);
