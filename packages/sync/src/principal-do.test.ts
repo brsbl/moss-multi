@@ -16,4 +16,14 @@ describe('REST write window @p:tech-8', () => {
     expect(window.take(5_000)).toBe(false);
     expect(window.take(6_001)).toBe(true);
   });
+
+  it('resumes from its store after a wake, so an exhausted caller stays refused', () => {
+    let saved: number[] = [];
+    const store = { load: () => [...saved], save: (attempts: number[]) => { saved = [...attempts]; } };
+    const before = new RateWindow(2, 1_000, store);
+    expect([0, 10, 20].map((at) => before.take(at))).toEqual([true, true, false]);
+    const woken = new RateWindow(2, 1_000, store);
+    expect(woken.take(30)).toBe(false);
+    expect(woken.take(1_031)).toBe(true);
+  });
 });
