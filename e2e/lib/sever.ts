@@ -4,7 +4,15 @@ import type { BrowserContext, WebSocketRoute } from '@playwright/test';
 import { CUSTOM_PREFIX } from '../../packages/protocol/src/sync.ts';
 import { DOC_SOCKET_PATH } from './contract.ts';
 
-interface Conn { page: WebSocketRoute; server: WebSocketRoute | null; closed: boolean; census: { closed(): void } | null; lost: boolean }
+interface Conn {
+  page: WebSocketRoute;
+  server: WebSocketRoute | null;
+  closed: boolean;
+  census: { closed(): void } | null;
+  lost: boolean;
+  /** Frames the page sent while its doc was held, in order, not yet delivered. */
+  held: (string | Buffer)[] | null;
+}
 
 /** Reports each page socket the proxy sees, so telemetry counts the page's sockets rather than the proxy's legs. */
 export type SocketCensus = (url: string) => { closed(): void };
@@ -21,7 +29,15 @@ export interface Sever {
   restore(): void;
   /** Until the next reset or restore, no DocDO ack reaches the page (acks lost in flight); everything else crosses. */
   loseAcks(): void;
-  census(): { connections: number; dropped: { out: number; in: number }; acksLost: number };
+  /**
+   * Edits in flight: until `deliverHeld`, every frame the page sends on `docId`'s sockets (open now or later) waits
+   * here, undelivered and in order, while the server's frames still reach the page. A held socket that closes loses
+   * its frames, as a dropped connection would.
+   */
+  hold(docId: string): void;
+  /** Delivers the held frames in order and stops holding. */
+  deliverHeld(): void;
+  census(): { connections: number; dropped: { out: number; in: number }; acksLost: number; held: number };
 }
 
 const isAck = (message: string | Buffer): boolean => {
@@ -36,11 +52,22 @@ const isAck = (message: string | Buffer): boolean => {
 const DOC_SOCKET = new RegExp(DOC_SOCKET_PATH.replace(/\//g, '\\/'));
 
 export async function makeSeverable(context: BrowserContext, census?: SocketCensus): Promise<Sever> {
-  const ctl = { mode: 'up' as 'up' | 'blackhole', swallowCloses: false, conns: [] as Conn[], dropped: { out: 0, in: 0 }, losingAcks: false, acksLost: 0 };
+  const ctl = {
+    mode: 'up' as 'up' | 'blackhole', swallowCloses: false, conns: [] as Conn[], dropped: { out: 0, in: 0 }, losingAcks: false, acksLost: 0,
+    holding: null as string | null,
+  };
+  const heldDoc = (conn: Conn) => {
+    const path = new URL(conn.page.url()).pathname;
+    return ctl.holding !== null && decodeURIComponent(path.slice(DOC_SOCKET_PATH.length).split('/')[0]) === ctl.holding;
+  };
   const attach = (conn: Conn) => {
     const server = conn.page.connectToServer();
     conn.server = server;
-    conn.page.onMessage((message) => (ctl.mode === 'up' ? server.send(message) : ctl.dropped.out++));
+    conn.page.onMessage((message) => {
+      if (ctl.mode !== 'up') ctl.dropped.out++;
+      else if (conn.held) conn.held.push(message);
+      else server.send(message);
+    });
     server.onMessage((message) => {
       if (ctl.mode !== 'up') ctl.dropped.in++;
       else if (ctl.losingAcks && isAck(message)) ctl.acksLost += 1;
@@ -52,6 +79,7 @@ export async function makeSeverable(context: BrowserContext, census?: SocketCens
         return;
       }
       conn.closed = true;
+      conn.held = null;
       conn.census?.closed();
       conn.page.close({ code, reason });
     });
@@ -69,11 +97,13 @@ export async function makeSeverable(context: BrowserContext, census?: SocketCens
     };
   }, DOC_SOCKET_PATH);
   await context.routeWebSocket(DOC_SOCKET, (page) => {
-    const conn: Conn = { page, server: null, closed: false, census: census?.(page.url()) ?? null, lost: false };
+    const conn: Conn = { page, server: null, closed: false, census: census?.(page.url()) ?? null, lost: false, held: null };
+    if (heldDoc(conn)) conn.held = [];
     ctl.conns.push(conn);
     // A socket the page closes while severed never reaches the server.
     page.onClose((code, reason) => {
       conn.closed = true;
+      conn.held = null;
       conn.census?.closed();
       conn.server?.close({ code, reason });
     });
@@ -109,6 +139,21 @@ export async function makeSeverable(context: BrowserContext, census?: SocketCens
     loseAcks() {
       ctl.losingAcks = true;
     },
-    census: () => ({ connections: ctl.conns.length, dropped: { ...ctl.dropped }, acksLost: ctl.acksLost }),
+    hold(docId) {
+      ctl.holding = docId;
+      for (const conn of ctl.conns.filter((c) => !c.closed && !c.held && heldDoc(c))) conn.held = [];
+    },
+    deliverHeld() {
+      ctl.holding = null;
+      for (const conn of ctl.conns.filter((c) => c.held)) {
+        const frames = conn.held ?? [];
+        conn.held = null;
+        if (!conn.closed && conn.server) for (const frame of frames) conn.server.send(frame);
+      }
+    },
+    census: () => ({
+      connections: ctl.conns.length, dropped: { ...ctl.dropped }, acksLost: ctl.acksLost,
+      held: ctl.conns.reduce((n, c) => n + (c.held?.length ?? 0), 0),
+    }),
   };
 }

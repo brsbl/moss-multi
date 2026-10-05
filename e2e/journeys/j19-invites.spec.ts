@@ -1,9 +1,11 @@
 // j19-invites (T2.8): invites and the bell. Ada shares a note with Ben while he is typing in his own; his bell shows
-// it without a reload, and clicking the notice mid-sentence opens her note in place, with every key he typed kept.
+// it without a reload, and clicking the notice mid-sentence opens her note in place. His last keys are held in flight
+// at the click (the server has none of them), and still reach his note after the switch and survive a reload.
 // An invite to an email with no account gives Ada a copyable link that redeems after the guest signs up on the card
 // and lands on the note, once. Notices re-checked against a revoked grant are covered over REST (invites.test.ts).
 import type { Locator } from '@playwright/test';
 import type { Actor } from '../lib/actors.ts';
+import { openDocClient } from '../lib/doc-client.ts';
 import { APP_STATE_ATTR, BODY_BINDING_ATTR, ROLE_ATTR, SYNC_UNACKED_ATTR } from '../lib/contract.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
@@ -26,14 +28,15 @@ const pathOf = (url: string): string => {
   return `${parsed.pathname}${parsed.search}`;
 };
 
-test('j19 bell: a share reaches Ben\'s bell without a reload, and its notice opens the note mid-sentence with no key lost @p:ppl-3 @evidence', async ({ actors }) => {
+test('j19 bell: a share reaches Ben\'s bell without a reload, and its notice opens the note mid-sentence with no key lost @p:ppl-3 @evidence', async ({ actors, stack }) => {
   const adaPrincipal = await actors.principal('ada');
   const benPrincipal = await actors.principal('ben');
   const ada = await actors.open(adaPrincipal);
   const title = `Bell target ${Date.now() % 10_000}`;
   const target = await sharedNote(ada, title, 'Shared through the bell');
 
-  const ben = await actors.open(benPrincipal);
+  // Ben's doc sockets run through a proxy that can hold his keys in flight.
+  const ben = await actors.open(benPrincipal, { severable: true });
   const own = await ui.createNote(ben);
   await expect(bell(ben, own), 'Ben has nothing unread').toHaveAccessibleName('Notifications');
   // A marker only this document holds: a page load would drop it.
@@ -44,19 +47,39 @@ test('j19 bell: a share reaches Ben\'s bell without a reload, and its notice ope
   await expect(dialog).toBeHidden();
   await expect(bell(ben, own), 'the notice is pushed to Ben\'s open tab').toHaveAccessibleName('Notifications, 1 unread', { timeout: PUSH_TIMEOUT });
   await actors.checkpoint('bell-unread');
-
-  // Mid-sentence: the last keys are still in flight when he clicks the notice.
-  await ui.typeBody(ben, own, 'Typing right up to the bell');
   await bell(ben, own).click();
   const notice = ben.page.getByRole('menuitem', { name: new RegExp(`shared “${title}” with you`) });
   await expect(notice, 'the inbox lists the share').toBeVisible();
   await actors.checkpoint('bell-open');
+  await ben.page.keyboard.press('Escape');
+  await expect(notice).toBeHidden();
+
+  // Mid-sentence: the server has none of these keys when Ben clicks the notice.
+  const sentence = 'Typing right up to the bell';
+  ben.sever!.hold(own);
+  await ui.typeBody(ben, own, sentence);
+  await expect(ui.pane(ben, own), 'the keys are still in flight at the click').toHaveAttribute(SYNC_UNACKED_ATTR, '1');
+  await bell(ben, own).click();
   await notice.click();
 
   await ui.waitLive(ben, target);
   await ben.declareRemount(target);
   expect(await ben.page.evaluate(() => (window as unknown as { j19Document?: boolean }).j19Document), 'the note opened in place, without a page load').toBe(true);
   await expect(ben.page).toHaveURL(new RegExp(`/d/${target}$`));
+
+  // The note Ben left still holds the keys after the switch, and delivers them once the network lets them through.
+  const cookie = (await ben.context.cookies()).map(({ name, value }) => `${name}=${value}`).join('; ');
+  const server = await openDocClient(stack.baseUrl, own, cookie);
+  try {
+    await server.synced;
+    expect(ben.sever!.census().held, 'the keys are held in flight').toBeGreaterThan(0);
+    expect(server.text(), 'the server has not seen them yet').not.toContain(sentence);
+    ben.sever!.deliverHeld();
+    await expect.poll(() => server.text(), { timeout: LIVE_TIMEOUT, message: 'every key typed before the click reaches the server' }).toContain(sentence);
+  } finally {
+    server.close();
+  }
+
   await expect(ui.body(ben, target)).toContainText('Shared through the bell');
   await expect(ui.pane(ben, target)).toHaveAttribute(ROLE_ATTR, 'editor');
   await expect(bell(ben, target), 'opening the notice marks it read').toHaveAccessibleName('Notifications');
@@ -67,7 +90,7 @@ test('j19 bell: a share reaches Ben\'s bell without a reload, and its notice ope
   // Back in his own note, every key typed before the click is there.
   ben.expectReconnects(1, own);
   await ui.openNote(ben, own);
-  expect(await ui.fieldText(ben, own, 'body')).toContain('Typing right up to the bell');
+  expect(await ui.fieldText(ben, own, 'body')).toContain(sentence);
 
   // Opened from the bell, the share is redeemed: Ada sees Ben by name.
   const members = await ui.openShare(ada, target);
@@ -80,6 +103,7 @@ test('j19 bell: a share reaches Ben\'s bell without a reload, and its notice ope
   await ui.waitLive(ben, own);
   await ben.declareRemount(own);
   await expect(bell(ben, own)).toHaveAccessibleName('Notifications');
+  expect(await ui.fieldText(ben, own, 'body'), 'and the sentence survives the reload').toContain(sentence);
 });
 
 test('j19 invite: an invite to an unknown email gives a copyable link that redeems after sign-up, once @p:ppl-1 @evidence', async ({ actors, stack }) => {
