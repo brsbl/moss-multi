@@ -57,22 +57,35 @@ async function select(actor: Actor, id: string, needle: string, caret?: number):
   }, { needle, caret });
 }
 
-/** Selects `needle` the way a drag does: a DOM range over the rendered text, which a read-only body also allows. */
+/**
+ * Selects `needle` the way a drag does: a DOM range over the rendered text, which a read-only body also allows. The
+ * needle may cross text nodes inside one block (a bold in the middle of it).
+ */
 async function selectDom(actor: Actor, id: string, needle: string): Promise<void> {
   await ui.body(actor, id).evaluate((root, needle) => {
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-      const at = (node.textContent ?? '').indexOf(needle);
+    for (const block of root.children) {
+      const nodes: { node: Text; start: number }[] = [];
+      let text = '';
+      const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        nodes.push({ node: node as Text, start: text.length });
+        text += node.textContent ?? '';
+      }
+      const at = text.indexOf(needle);
       if (at < 0) continue;
+      const point = (offset: number, end: boolean): [Text, number] => {
+        const hit = nodes.find(({ node, start }) => (end ? offset > start && offset <= start + node.length : offset >= start && offset < start + node.length))!;
+        return [hit.node, offset - hit.start];
+      };
       const range = document.createRange();
-      range.setStart(node, at);
-      range.setEnd(node, at + needle.length);
+      range.setStart(...point(at, false));
+      range.setEnd(...point(at + needle.length, true));
       const selection = window.getSelection()!;
       selection.removeAllRanges();
       selection.addRange(range);
       return;
     }
-    throw new Error(`no rendered text holds "${needle}"`);
+    throw new Error(`no rendered block holds "${needle}"`);
   }, needle);
 }
 
@@ -107,6 +120,33 @@ async function comment(actor: Actor, text: string): Promise<void> {
 
 async function expectPainted(actor: Actor, id: string, text: string, message: string): Promise<void> {
   await expect.poll(() => painted(actor, id), { message, timeout: PEER_TIMEOUT }).toContain(text);
+}
+
+/** Samples the live comment highlights every animation frame, logging each frame that misses `text`. */
+async function startBlinkSampler(actor: Actor, text: string): Promise<void> {
+  await actor.page.evaluate((text) => {
+    const state = { frames: 0, blinks: [] as string[][], stop: false };
+    (window as unknown as { blinkSampler: typeof state }).blinkSampler = state;
+    const tick = () => {
+      if (state.stop) return;
+      const texts: string[] = [];
+      CSS.highlights.forEach((highlight, name) => {
+        if (/^moss-comment-\d+$/.test(name)) highlight.forEach((range) => texts.push((range as Range).toString()));
+      });
+      state.frames += 1;
+      if (!texts.includes(text)) state.blinks.push(texts);
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }, text);
+}
+
+async function stopBlinkSampler(actor: Actor): Promise<{ frames: number; blinks: string[][] }> {
+  return actor.page.evaluate(() => {
+    const state = (window as unknown as { blinkSampler: { frames: number; blinks: string[][]; stop: boolean } }).blinkSampler;
+    state.stop = true;
+    return { frames: state.frames, blinks: state.blinks };
+  });
 }
 
 const gutter = (actor: Actor) => actor.page.locator('[data-comment-gutter-id]');
@@ -177,22 +217,96 @@ test('j15-comments: bold across the commented text keeps the highlight with no b
   await expectPainted(ben, id, 'quick brown', 'the peer paints it');
   await waitAcked(ada, id);
 
-  // Every paint pass from here on: a pass that misses the comment's text is a blink frame.
-  await ada.page.evaluate(() => {
-    const log: string[][] = [];
-    (window as unknown as { paintLog: string[][] }).paintLog = log;
-    window.addEventListener('moss-comment-paint', (event) => log.push([...(event as CustomEvent<{ texts: string[] }>).detail.texts]));
-  });
+  // Every animation frame from here on, on both sides: a frame whose live highlights miss the comment's text is a
+  // blink, whether or not a paint pass ran in it (a Lexical rewrite collapses a kept Range before any repaint).
+  for (const actor of [ada, ben]) await startBlinkSampler(actor, 'quick brown');
+  await select(ada, id, 'brown fox');
+  await ada.page.keyboard.press('ControlOrMeta+b');
+  await expect(ui.body(ada, id).locator('strong, b, .font-bold, [class*="bold"]').filter({ hasText: 'brown fox' }).first(), 'the words are bold').toBeVisible();
+  await expect(ui.body(ben, id).locator('strong, b, .font-bold, [class*="bold"]').filter({ hasText: 'brown fox' }).first(), 'the peer sees the bold').toBeVisible({ timeout: PEER_TIMEOUT });
+  await waitAcked(ada, id);
+  await ada.page.waitForTimeout(1_000);
+  for (const actor of [ada, ben]) {
+    const { frames, blinks } = await stopBlinkSampler(actor);
+    expect(frames, `${actor.label}: frames were sampled through the bold`).toBeGreaterThan(10);
+    expect(blinks, `${actor.label}: no frame lost the highlight`).toEqual([]);
+  }
+  expect(await painted(ada, id)).toContain('quick brown');
+  await expectPainted(ben, id, 'quick brown', 'the peer keeps the highlight across the bold');
+});
+
+test("j15-comments: bold across the comment's end, then delete its text: it detaches everywhere, and Cmd+Z restores it @p:mean-1 @p:R18", async ({ actors, stack }) => {
+  const note = await sharedNote(actors, stack.baseUrl);
+  const { ada, id } = note;
+  const { actor: ben } = await peer(actors, note, 'ben', 'editor');
+  await select(ada, id, 'quick brown');
+  await comment(ada, 'Bold me, then delete me');
+  await expectPainted(ben, id, 'quick brown', 'the peer paints it');
+  await waitAcked(ada, id);
+
   await select(ada, id, 'brown fox');
   await ada.page.keyboard.press('ControlOrMeta+b');
   await expect(ui.body(ada, id).locator('strong, b, .font-bold, [class*="bold"]').filter({ hasText: 'brown fox' }).first(), 'the words are bold').toBeVisible();
   await waitAcked(ada, id);
-  await ada.page.waitForTimeout(1_000);
-  const log = await ada.page.evaluate(() => (window as unknown as { paintLog: string[][] }).paintLog);
-  expect(log.length, 'the bold repainted the comments').toBeGreaterThan(0);
-  expect(log.filter((texts) => !texts.includes('quick brown')), 'no paint pass lost the highlight').toEqual([]);
-  expect(await painted(ada, id)).toContain('quick brown');
-  await expectPainted(ben, id, 'quick brown', 'the peer keeps the highlight across the bold');
+  await expectPainted(ada, id, 'quick brown', 'the bold keeps the comment on its words');
+  await ada.page.waitForTimeout(1_500);
+
+  await selectDom(ada, id, 'quick brown');
+  await ada.page.keyboard.press('Backspace');
+  await expect.poll(() => bodyText(ada, id)).toContain('The  fox jumps');
+  await waitAcked(ada, id);
+  await expect.poll(() => painted(ada, id), { message: 'deleting its text leaves nothing painted' }).toEqual([]);
+  await expect.poll(() => painted(ben, id), { message: 'for the peer too', timeout: PEER_TIMEOUT }).toEqual([]);
+  await ben.page.reload();
+  await expect(ui.pane(ben, id)).toHaveAttribute(DOC_STATE_ATTR, 'live', { timeout: BIND_TIMEOUT });
+  await expect.poll(() => bodyText(ben, id)).toContain('The  fox jumps');
+  await ben.page.waitForTimeout(500);
+  expect(await painted(ben, id), 'a fresh load paints nothing either: the server detached it').toEqual([]);
+  await ui.pane(ben, id).getByRole('button', { name: /^Comments/ }).click();
+  await expect(ben.page.getByRole('button', { name: /Bold me, then delete me/ }), 'the list marks it detached').toContainText(/detached/i);
+  await ben.page.keyboard.press('Escape');
+
+  await ada.page.keyboard.press(UNDO);
+  await expect.poll(() => bodyText(ada, id)).toContain('The quick brown fox');
+  await expectPainted(ada, id, 'quick brown', 'Cmd+Z restores the highlight on its words');
+  await expectPainted(ben, id, 'quick brown', 'the peer sees it restored');
+  expect(await painted(ada, id), 'and on nothing else').toEqual(['quick brown']);
+});
+
+test('j15-comments: trashing the note while a peer has its thread open leaves no comment control live @p:mean-1 @p:note-5', async ({ actors, stack }) => {
+  const note = await sharedNote(actors, stack.baseUrl);
+  const { ada, id } = note;
+  const { actor: ben } = await peer(actors, note, 'ben', 'editor');
+  await select(ada, id, 'quick brown');
+  await comment(ada, 'Still here?');
+  await expectPainted(ben, id, 'quick brown', 'the peer paints it');
+
+  await gutter(ben).first().click();
+  const reply = thread(ben).locator('[data-comment-reply-composer] [contenteditable="true"]');
+  await expect(reply, 'the reply composer autofocuses').toBeFocused();
+  await ben.page.keyboard.type('Half a reply');
+  const posts: string[] = [];
+  ben.page.on('request', (request) => {
+    if (request.method() === 'POST' && /\/comments(\/|$)/.test(new URL(request.url()).pathname)) posts.push(request.url());
+  });
+
+  const trashed = await ada.context.request.delete(`/api/docs/${id}`, { headers: { origin: stack.baseUrl } });
+  expect(trashed.status()).toBe(200);
+  await expect(ui.pane(ben, id), 'the note goes terminal in place').toHaveAttribute(DOC_STATE_ATTR, 'terminal', { timeout: PEER_TIMEOUT });
+  await expect(thread(ben).getByText('Still here?'), 'the thread stays readable').toBeVisible();
+  await expect(thread(ben).locator('[contenteditable="true"]'), 'no reply composer is left editable').toHaveCount(0);
+  await expect(thread(ben).getByRole('button', { name: /^(Resolve|Reopen) thread$/ }), 'resolve is withdrawn').toHaveCount(0);
+  await ben.page.keyboard.type(' and more');
+  await ben.page.keyboard.press(SUBMIT);
+  await ben.page.keyboard.press('Escape');
+
+  // A selection in the terminal body offers no way to comment.
+  await selectDom(ben, id, 'lazy dog');
+  await ben.page.keyboard.press(COMMENT_KEY);
+  await expect(ben.page.locator('[data-floating-selection-toolbar] [aria-label="Add comment"]'), 'no comment bar is offered').toHaveCount(0);
+  await expect(ben.page.getByRole('dialog', { name: 'Add comment' }), 'no composer opens').toHaveCount(0);
+  await ben.page.waitForTimeout(500);
+  expect(posts, 'nothing tried to write a comment after the trash').toEqual([]);
 });
 
 test('j15-comments: delete the commented text, then Cmd+Z restores the highlight @p:mean-1 @p:R18', async ({ actors, stack }) => {
