@@ -59,7 +59,7 @@ export const SUGGEST_LIMITS = {
   leaseBatch: 2,
   /** A lease no frame used for this long expires, as it does when its connection closes. */
   leaseIdleMs: 30 * 60_000,
-  /** Refusals per principal per window; one more starts the 4429 cooldown. */
+  /** Refusals per principal per window that start the 4429 cooldown. */
   refusals: { max: 3, windowMs: 60_000 },
   cooldownMs: 60_000,
   /** A string frame larger than this is refused unparsed (base64 of a full record plus framing). */

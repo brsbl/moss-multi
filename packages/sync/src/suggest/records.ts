@@ -12,8 +12,8 @@ type Decoded = ReturnType<typeof Y.decodeUpdate>;
 
 /**
  * The one writer of `suggestions`. Every write runs under the reserved client S; a client frame is refused if it
- * carries an S struct, names S as an origin, right origin or parent, uses `suggestions` as a string parent, or deletes
- * a live S item. A non-S item can then never land in the map (the comments.md §2 argument), and the check is
+ * carries an S struct, names S as an origin, right origin or parent, names any item inside the map (tombstones included),
+ * uses `suggestions` as a string parent, or deletes a live S item. A non-S item can then never land in the map (the comments.md §2 argument), and the check is
  * O(frame · log n): the live S clocks are kept sorted.
  */
 export class SuggestionsWriter {
@@ -59,8 +59,26 @@ export class SuggestionsWriter {
       if (struct.origin?.client === s || struct.rightOrigin?.client === s) return true;
       const parent = struct.parent as unknown;
       if (parent === SUGGESTIONS || (parent instanceof Y.ID && parent.client === s)) return true;
+      // Yjs takes a parent from the origin or the parent item: any of them in the map, live or a tombstone another
+      // client wrote (a duplicate copies the source's), lands the item there.
+      if (this.#inMap(struct.origin) || this.#inMap(struct.rightOrigin) || (parent instanceof Y.ID && this.#inMap(parent))) return true;
     }
     for (const { clock, len } of ds.clients.get(s) ?? []) if (this.#coversLive(clock, clock + len)) return true;
+    return false;
+  }
+
+  /** True when `id` names a stored item inside `suggestions`, deleted or not; O(log n). */
+  #inMap(id: Y.ID | null): boolean {
+    if (!id || id.clock >= Y.getState(this.doc.store, id.client)) return false;
+    const item = Y.getItem(this.doc.store, id);
+    if (!(item instanceof Y.Item)) return false;
+    const map = this.doc.share.get(SUGGESTIONS);
+    // Only the server nests in the map, a few levels deep; a deeper chain is the body.
+    let type: unknown = item.parent;
+    for (let depth = 0; depth < 8 && type instanceof Y.AbstractType; depth += 1) {
+      if (type === map) return true;
+      type = type._item?.parent;
+    }
     return false;
   }
 
@@ -125,6 +143,12 @@ const recordMap = (doc: Y.Doc, id: string): Y.Map<unknown> | null => {
 export function readMeta(doc: Y.Doc, id: string): RecordMeta | null {
   const meta = recordMap(doc, id)?.get('meta');
   return typeof meta === 'string' ? (JSON.parse(meta) as RecordMeta) : null;
+}
+
+/** The length of a record's stored meta JSON; 0 when there is none. O(1). */
+export function metaBytes(doc: Y.Doc, id: string): number {
+  const meta = recordMap(doc, id)?.get('meta');
+  return typeof meta === 'string' ? meta.length : 0;
 }
 
 export function readRecord(doc: Y.Doc, id: string): SuggestionRecord | null {

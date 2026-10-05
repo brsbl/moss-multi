@@ -121,7 +121,8 @@ describe('T5.2 ingest: leases and suggest-ops @p:mean-2', () => {
     other.clientID = client;
     Y.applyUpdate(other, Y.encodeStateAsUpdate(live));
     append(other, paragraph('FORGED'));
-    expect(ingest.ops(sam(), record, Y.encodeStateAsUpdate(other, base))).toEqual({ ok: false, reason: 'clock-overlap' });
+    // Encoded against `live` now: it holds the record the first frame created, which `other` copied.
+    expect(ingest.ops(sam(), record, Y.encodeStateAsUpdate(other, Y.encodeStateVector(live)))).toEqual({ ok: false, reason: 'clock-overlap' });
     append(fork, paragraph('second'));
     const inside = Y.decodeStateVector(Y.encodeStateVector(live));
     inside.set(client, 2);

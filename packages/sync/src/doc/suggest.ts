@@ -8,7 +8,7 @@ import { SUGGEST_LIMITS, type IdSpan, type LeaseGrant, type SuggestReply, type S
 import { base64ToBytes } from '@moss-multi/protocol/sync';
 import { BODY_ROOTS, type DeletePart, type RecordMeta } from '@moss-multi/core/suggest/apply';
 import {
-  closeRecord, createRecord, onRecordClosed, opsOf, partsOf, patchMeta, readMeta, readRecord, recordIds, suggestionsWriter, writeSuggestions,
+  closeRecord, createRecord, metaBytes, onRecordClosed, opsOf, partsOf, patchMeta, readMeta, readRecord, recordIds, suggestionsWriter, writeSuggestions,
 } from '../suggest/records.ts';
 
 /** Who sends a suggest frame: the principal, its live role, and the connection (a server-minted nonce). */
@@ -42,7 +42,7 @@ export interface LeaseStore {
   get(client: number): Lease | undefined;
   put(lease: Lease): void;
   reservedFor(record: string): Lease | undefined;
-  /** Unspent, unexpired leases used since `since`. */
+  /** Unexpired leases used since `since` that hold no record yet: the ids a principal holds in reserve. */
   live(principal: string, since: number): number;
   expireConnection(connection: string): void;
   spend(record: string): void;
@@ -70,7 +70,7 @@ export class MemoryLeases implements LeaseStore {
 
   live(principal: string, since: number): number {
     let count = 0;
-    for (const lease of this.#byClient.values()) if (lease.principal === principal && !lease.spent && !lease.expired && lease.usedAt >= since) count += 1;
+    for (const lease of this.#byClient.values()) if (lease.principal === principal && lease.record === null && !lease.expired && lease.usedAt >= since) count += 1;
     return count;
   }
 
@@ -135,7 +135,7 @@ export class SqlLeases implements LeaseStore {
 
   live(principal: string, since: number): number {
     const row = this.sql.exec<Row>(
-      'SELECT COUNT(*) AS n FROM suggest_leases WHERE principal_id = ? AND spent = 0 AND expired = 0 AND used_at >= ?', principal, since,
+      'SELECT COUNT(*) AS n FROM suggest_leases WHERE principal_id = ? AND record_id IS NULL AND expired = 0 AND used_at >= ?', principal, since,
     ).toArray()[0];
     return Number(row?.n ?? 0);
   }
@@ -180,6 +180,10 @@ export interface IngestOptions {
   mintId?: () => string;
 }
 
+/** Leases one resume may name: a principal's open records may hold more than the unused-lease cap. */
+const RESUME_MAX = 64;
+/** Item headers and keys a meta write adds, beyond the JSON itself. */
+const META_SLACK = 64;
 const RECORD_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const refused = (reason: SuggestRefusal): { ok: false; reason: SuggestRefusal } => ({ ok: false, reason });
 
@@ -226,7 +230,7 @@ export class SuggestIngest {
    */
   lease(who: Suggester, resume: readonly number[] = [], count: number = SUGGEST_LIMITS.leaseBatch): { ok: true; leases: LeaseGrant[] } | { ok: false; reason: SuggestRefusal } {
     if (!roleAtLeast(who.role, 'suggester')) return refused('role');
-    if (!Array.isArray(resume) || resume.length > SUGGEST_LIMITS.liveLeases) return refused('malformed');
+    if (!Array.isArray(resume) || resume.length > RESUME_MAX) return refused('malformed');
     const now = this.#now();
     const since = now - SUGGEST_LIMITS.leaseIdleMs;
     const grants: LeaseGrant[] = [];
@@ -235,7 +239,7 @@ export class SuggestIngest {
       if (!lease || lease.principal !== who.id) return refused('lease');
       const held = !lease.expired && lease.usedAt >= since;
       if (held && lease.connection !== who.connection) return refused('lease');
-      if (!held && !lease.spent && this.leases.live(who.id, since) >= SUGGEST_LIMITS.liveLeases) return refused('lease-cap');
+      if (!held && lease.record === null && this.leases.live(who.id, since) >= SUGGEST_LIMITS.liveLeases) return refused('lease-cap');
       this.leases.put({ ...lease, connection: who.connection, expired: false, usedAt: now });
       grants.push({ client, record: lease.record === null ? lease.reserved : this.#head(lease.record), clock: lease.nextClock });
     }
@@ -282,7 +286,7 @@ export class SuggestIngest {
       const value = struct.content.getContent().at(-1);
       if (typeof value !== 'string' || !this.options.registry.has(value)) return refused('node-type');
     }
-    const cap = this.#caps(who, target, update.byteLength);
+    const cap = this.#caps(who, target, update.byteLength, meta.from.size);
     if (cap) return refused(cap);
 
     writeSuggestions(this.doc, () => {
@@ -308,7 +312,7 @@ export class SuggestIngest {
     if (quote === null) return refused('target');
     const stored: DeletePart = { id: part.id, kind: 'delete', targets: part.targets.map(({ client, clock, len }) => ({ client, clock, len })), quote };
     const bytes = partBytes(stored);
-    const cap = this.#caps(who, target, bytes);
+    const cap = this.#caps(who, target, bytes, 0);
     if (cap) return refused(cap);
     const now = this.#now();
     writeSuggestions(this.doc, () => {
@@ -350,6 +354,7 @@ export class SuggestIngest {
     if (a.id === b.id) return { ok: true, record: a.id, requested: into, sv: this.#sv(a.id), parts: [] };
     const moved = this.#info.get(b.id)!.bytes;
     if (this.#info.get(a.id)!.bytes + moved > SUGGEST_CAPS.recordOpsBytes) return refused('record-cap');
+    if (this.#overState(moved + this.#metaWrite(a.id, 0) + this.#metaWrite(b.id, 0))) return refused('doc-cap');
     const now = this.#now();
     const source = readRecord(this.doc, b.id)!;
     writeSuggestions(this.doc, () => {
@@ -445,11 +450,26 @@ export class SuggestIngest {
     return refused('record-closed');
   }
 
-  #caps(who: Suggester, target: Extract<Target, { ok: true }>, bytes: number): SuggestRefusal | null {
+  /** Bytes the server transaction adds to the encoded state besides the op or part: the record and meta it writes. */
+  #metaWrite(id: string, clients: number): number {
+    return metaBytes(this.doc, id) + clients * 12 + META_SLACK;
+  }
+
+  #overhead(who: Suggester, target: Extract<Target, { ok: true }>, clients: number): number {
+    if (!target.create) return this.#metaWrite(target.id, clients);
+    const meta = { v: 2, id: target.id, author: who.id, authorName: who.name, source: 'live', createdAt: 0, updatedAt: 0, status: 'open', continues: target.continues };
+    return JSON.stringify(meta).length * 2 + clients * 12 + 3 * META_SLACK + (target.continues ? this.#metaWrite(target.continues, 0) : 0);
+  }
+
+  #overState(bytes: number): boolean {
+    return this.options.stateBytes !== undefined && this.options.stateBytes() + bytes > this.options.stateCap;
+  }
+
+  #caps(who: Suggester, target: Extract<Target, { ok: true }>, bytes: number, clients: number): SuggestRefusal | null {
     const recordBytes = (target.create ? 0 : (this.#info.get(target.id)?.bytes ?? 0)) + bytes;
     if (recordBytes > SUGGEST_CAPS.recordOpsBytes) return 'record-cap';
     if (this.#openBytes + bytes > this.options.stateCap * SUGGEST_CAPS.openOpsShare) return 'ops-cap';
-    if (this.options.stateBytes && this.options.stateBytes() + bytes > this.options.stateCap) return 'doc-cap';
+    if (this.#overState(bytes + this.#overhead(who, target, clients))) return 'doc-cap';
     if (target.create && (this.#open.get(who.id)?.size ?? 0) >= SUGGEST_CAPS.openPerPrincipal) return 'open-cap';
     return null;
   }

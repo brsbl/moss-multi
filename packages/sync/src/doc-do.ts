@@ -581,14 +581,14 @@ export class DocDO extends YServer<SyncEnv> {
     return false;
   }
 
-  /** More than `SUGGEST_LIMITS.refusals.max` refusals a window: every socket of the principal closes 4429 a while. */
+  /** `SUGGEST_LIMITS.refusals.max` refusals a window: every socket of the principal closes 4429 a while. */
   #countRefusal(principalId: string): void {
     const now = Date.now();
     const { max, windowMs } = SUGGEST_LIMITS.refusals;
     const recent = (this.#refusals.get(principalId) ?? []).filter((at) => now - at < windowMs);
     recent.push(now);
     this.#refusals.set(principalId, recent);
-    if (recent.length <= max) return;
+    if (recent.length < max) return;
     this.#refusals.delete(principalId);
     this.#cooldowns.set(principalId, now + SUGGEST_LIMITS.cooldownMs);
     for (const connection of this.getConnections()) {
@@ -600,7 +600,11 @@ export class DocDO extends YServer<SyncEnv> {
   #refused(connection: Connection, attachment: Attachment, store: DocStore, update: Uint8Array, decoded: Decoded): boolean {
     // Suggesters never write the body: their changes travel as suggestion records (docs/design/suggestions.md I1).
     // The role decides, never the frame's contents.
-    if (!roleAtLeast(attachment.role, 'editor')) return this.#refuse(connection, 'role', CLOSE.revoked);
+    if (!roleAtLeast(attachment.role, 'editor')) {
+      this.#refuse(connection, 'role', CLOSE.revoked);
+      this.#countRefusal(attachment.principalId);
+      return true;
+    }
     if (!this.#rate.allow(connection)) {
       // Transient: the client keeps its Y.Doc and its next step 2 re-delivers everything.
       connection.close(CLOSE.writeRate, 'write rate');
