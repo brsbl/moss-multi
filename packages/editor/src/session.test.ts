@@ -385,6 +385,31 @@ describe('flush and unmount', () => {
     expect(frozenDuringWrite[0]).toBe(true);
   });
 
+  it('a host reload whose read finishes after unmount leaves the torn-down session alone', async () => {
+    const session = mount();
+    await session.ready;
+    const gate: { release?: () => void } = {};
+    const read = host.read.bind(host);
+    host.read = async (noteId) => {
+      const result = await read(noteId);
+      await new Promise<void>((resolve) => (gate.release = resolve));
+      return result;
+    };
+    volume.silently(() => volume.writeFile(`${DIR}/Plan.md`, '# Plan\n\nChanged in Moss\n'));
+    const reloading = session.reload();
+    for (let i = 0; i < 20 && !gate.release; i += 1) await drain(5);
+    expect(gate.release).toBeDefined();
+    host.read = read;
+    await expect(session.unmount()).resolves.toMatchObject({ kind: 'unmounted' });
+    const loads = surface.loads.length;
+    gate.release!();
+    const result = await reloading;
+    expect(result.kind).not.toBe('reloaded');
+    expect(session.status).toBe('unmounted');
+    expect(surface.loads).toHaveLength(loads);
+    expect(kinds()).not.toContain('reloaded');
+  });
+
   it('an unmount while the first load renders leaves nothing running', async () => {
     const gate: { release?: () => void } = {};
     const load = surface.load.bind(surface);
@@ -551,6 +576,22 @@ describe('drafts and receipts', () => {
     expect(stale.status).toBe('conflict');
     expect(surface.loaded?.body).toBe('Mine\n');
     expect(events.find((event) => event.kind === 'conflict')).toMatchObject({ cause: 'external' });
+  });
+
+  it("restoring a receipt whose files are already on disk writes the receipt's comment colors", async () => {
+    volume.silently(() => volume.writeFile(`${DIR}/meta.json`, JSON.stringify({ ...META, commentColors: { a: 1 } }, null, 2)));
+    const first = mount();
+    await first.ready;
+    type(first, 'Saved\n');
+    const saved = await first.flush();
+    if (saved.kind !== 'saved') throw new Error('expected saved');
+    await first.unmount();
+
+    const receipt = { ...saved.receipt, intents: { ...saved.receipt.intents, commentColors: { a: 4 } } };
+    const restored = mount({ restoreDraft: receipt });
+    await restored.ready;
+    await expect(restored.flush()).resolves.toMatchObject({ kind: 'saved' });
+    expect(JSON.parse(volume.readFile(`${DIR}/meta.json`)).commentColors).toEqual({ a: 4 });
   });
 
   it('a draft on the same base opens dirty and saves', async () => {

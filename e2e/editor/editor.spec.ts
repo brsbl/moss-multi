@@ -37,6 +37,8 @@ interface Fixture {
   setTheme(theme: 'light' | 'dark'): void;
   flush(): Promise<{ kind: string }>;
   unmount(options?: { discardUnsaved?: boolean }): Promise<{ kind: string; flush: string }>;
+  unmountDetail(options?: { discardUnsaved?: boolean }): Promise<{ kind: string; flush: string; markdown: string | null }>;
+  delayWrites(ms: number): void;
   status(): string | null;
   events(): { kind: string; cause?: string; status?: string }[];
   files(under?: string): Record<string, string>;
@@ -281,6 +283,59 @@ test.describe('embeddable editor', () => {
     expect(await page.evaluate(() => window.editorFixture.flush())).toMatchObject({ kind: 'saved' });
     const written = (await files(page))['/Moss/Notes/Plan/Plan.md'];
     expect(written?.replace(/\n?$/, '\n')).toBe(`# Plan\n\n${changed.map((line) => (line === 'Line 30' ? 'Line 30XYZ' : line)).join('\n\n')}\n`);
+    expect(seen.errors).toEqual([]);
+  });
+
+  test('Undo after an in-place reload does not bring back the text the Mac app replaced', async ({ page }) => {
+    const seen = await open(page);
+    await mountNote(page, '# Plan\n\nFirst line\n');
+    await body(page).getByText('First line').click();
+    await page.keyboard.press('End');
+    await page.keyboard.type(' bb edit');
+    expect(await page.evaluate(() => window.editorFixture.flush())).toMatchObject({ kind: 'saved' });
+    await page.evaluate(() => window.editorFixture.externalWrite('/Moss/Notes/Plan/Plan.md', '# Plan\n\nThe Mac app rewrote this\n'));
+    await expect.poll(() => page.evaluate(() => window.editorFixture.events().map((event) => `${event.kind}:${event.cause ?? ''}`))).toContain('reloaded:external');
+    await expect(body(page).getByText('The Mac app rewrote this')).toBeVisible();
+    await body(page).getByText('The Mac app rewrote this').click();
+    await page.keyboard.press('ControlOrMeta+Z');
+    await frames(page);
+    await expect(body(page)).toContainText('The Mac app rewrote this');
+    await expect(body(page)).not.toContainText('bb edit');
+    expect(await page.evaluate(() => window.editorFixture.flush())).toMatchObject({ kind: 'clean' });
+    expect((await files(page))['/Moss/Notes/Plan/Plan.md']).toBe('# Plan\n\nThe Mac app rewrote this\n');
+    expect(seen.errors).toEqual([]);
+  });
+
+  test("moss's comment composer takes no input while unmount waits for its final write", async ({ page }) => {
+    const seen = await open(page);
+    await mountNote(page, '# Plan\n\nAlpha beta gamma\n');
+    await body(page).getByText('Alpha beta gamma').click();
+    await page.keyboard.press('End');
+    await page.keyboard.type(' delta');
+    await selectWord(page, 'Alpha beta gamma delta', 'beta');
+    await page.keyboard.press('ControlOrMeta+Shift+A');
+    const input = page.getByRole('textbox', { name: 'comment editor' });
+    await expect(input).toBeVisible();
+    await input.click();
+    // The composer renders in a portal, outside the editor root.
+    expect(await input.evaluate((el) => el.closest('[data-moss-editor-root]') === null)).toBe(true);
+    await page.evaluate(() => window.editorFixture.delayWrites(4_000));
+    const unmounting = page.evaluate(() => window.editorFixture.unmountDetail());
+    await expect(page.locator('[data-moss-editor-root]')).toHaveAttribute('inert', '');
+    await input.click({ force: true, timeout: 1_000 }).catch(() => undefined);
+    await page.keyboard.type('Late comment');
+    const typed = await input.evaluate((el) => el.textContent ?? '', undefined, { timeout: 1_000 }).catch(() => '');
+    await page.getByRole('button', { name: 'Submit comment' }).click({ force: true, timeout: 1_000 }).catch(() => undefined);
+    await frames(page);
+    // A comment the UI takes now could never reach the note, so the UI must not take it.
+    const marks = await body(page).locator('mark').count();
+    const result = await unmounting;
+    expect(typed).not.toContain('Late comment');
+    expect(marks).toBe(0);
+    expect(result).toEqual({ kind: 'unmounted', flush: 'saved', markdown: '# Plan\n\nAlpha beta gamma delta' });
+    const written = await files(page);
+    expect(written['/Moss/Notes/Plan/Plan.md']).toBe('# Plan\n\nAlpha beta gamma delta');
+    expect(written['/Moss/Notes/Plan/comments.json']).toBeUndefined();
     expect(seen.errors).toEqual([]);
   });
 
