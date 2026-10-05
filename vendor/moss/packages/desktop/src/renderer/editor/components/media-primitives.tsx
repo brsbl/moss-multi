@@ -10,8 +10,6 @@ import {
 } from 'lexical';
 import { OPEN_BLOCK_COMMENT_COMMAND } from '../plugins/CommentPlugin';
 import { insertParagraphAdjacentToBlock } from '../utils/block-node-insertion';
-// moss-multi seam: hide-registry (A§9)
-import { hidden } from '@moss-multi/host/affordances';
 export {
   GapCursor,
   BlockNodeShell,
@@ -402,8 +400,7 @@ export function MediaNodeHeader({
     >
       <div className="flex items-center gap-1">
         {children}
-        {/* moss-multi seam: hide-registry (A§9) */}
-        {editable && !hidden('comments') && (
+        {editable && (
           <MediaHeaderButton
             icon={StickyNote}
             title="Add comment"

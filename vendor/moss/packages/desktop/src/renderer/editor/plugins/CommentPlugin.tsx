@@ -30,6 +30,8 @@ import { isCommentVisibleForStatus } from '../utils/comment-thread-count';
 // moss-multi seam: converter-split (A§12; S-conv §2.3)
 import { CREATE_COMMENT_COMMAND } from '../commands';
 export { CREATE_COMMENT_COMMAND, OPEN_BLOCK_COMMENT_COMMAND } from '../commands';
+// moss-multi seam: comments (comments.md §12)
+import { createFromCommand } from '@moss-multi/host/comments/adapter';
 
 // ---------------------------------------------------------------------------
 // Draft Comment Persistence
@@ -203,6 +205,8 @@ export function CommentPlugin({ noteId }: CommentPluginProps) {
     return editor.registerCommand(
       CREATE_COMMENT_COMMAND,
       (payload) => {
+        // moss-multi seam: comments (comments.md §12): a comment is a server record on minted positions, never a mark
+        return createFromCommand(editor, payload);
         if (!editor.isEditable()) return false;
 
         const commentId = crypto.randomUUID();

@@ -6,8 +6,6 @@ import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext
 import { useLexicalNodeSelection } from '@lexical/react/useLexicalNodeSelection';
 import { Undo2, Redo2, Eraser, Check, X, CopyPlus, Minus, Pen, Type, StickyNote } from 'lucide-react';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@moss/shared/components/ui/tooltip';
-// moss-multi seam: hide-registry (A§9)
-import { hidden } from '@moss-multi/host/affordances';
 // moss-multi seam: register payloads (A§10.10): peer strokes reach an open canvas; local writes carry their base.
 import { useSketchPeerSync, type Rebase } from '@moss-multi/host/collab/sketch-sync';
 // moss-multi seam: converter-split (A§12; S-conv §2.3)
@@ -1349,8 +1347,8 @@ function SketchWrapper({
                     </TooltipTrigger>
                     <TooltipContent side="bottom"><p>Edit canvas</p></TooltipContent>
                   </Tooltip>
-                  {/* moss-multi seam: hide-registry (A§9) */}
-                  {hidden('comments') ? null : (
+                  {/* moss-multi seam: read-only-decorators (T4.3): a read-only body offers no block comment */}
+                  {!editable ? null : (
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <button

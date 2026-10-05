@@ -575,7 +575,7 @@ function CommentsMenuButton({
                   </TooltipTrigger>
                   <TooltipContent side="bottom" sideOffset={6}>Search comments</TooltipContent>
                 </Tooltip>
-                {rootThreadCount > 0 && (
+                {rootThreadCount > 0 && !hidden('ai-run-action') /* moss-multi seam: hide-registry (A§9) */ && (
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <button
@@ -638,6 +638,12 @@ function CommentsMenuButton({
                             : <CommentTextContent text={item.text} mentionMaxLength={24} />
                           : 'No text'}
                       </p>
+                      {/* moss-multi seam: comments (comments.md §6): a detached thread shows the text it was left on */}
+                      {(commentsMap[item.rootId] as { detached?: boolean } | undefined)?.detached ? (
+                        <p className="mt-0.5 truncate text-micro text-ink-faint" data-comment-detached>
+                          Detached · “{(commentsMap[item.rootId] as { quote?: string }).quote ?? ''}”
+                        </p>
+                      ) : null}
                     </div>
                   </button>
                 ))

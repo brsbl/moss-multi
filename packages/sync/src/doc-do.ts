@@ -12,7 +12,7 @@ import {
 } from './doc/admission.ts';
 import { attach, attachmentOf, awarenessTooLarge, awarenessFrame, receivePresence, leavePresence } from './doc/awareness.ts';
 import { AckCoalescer, DocStore, PERSISTENCE } from './doc/persistence.ts';
-import { coerceSidecar, COMMENT_STATE_SHARE, COMMENTS_PER_DOC, DocComments, type CommentCreate, type CommentResult } from './doc/comments.ts';
+import { coerceSidecar, COMMENT_STATE_SHARE, COMMENTS_PER_DOC, DocComments, type CommentCreate, type CommentResult, type CommentSource } from './doc/comments.ts';
 import { d1Projections, Projections, type ProjectionTarget } from './doc/projections.ts';
 import { publishMeta } from './fanout.ts';
 import type { SyncEnv } from './env.ts';
@@ -340,6 +340,15 @@ export class DocDO extends YServer<SyncEnv> {
     const result = comments.create(input, this.#limits.maxComments, this.#commentRoom(store.stateBytes));
     comments.flush();
     return result;
+  }
+
+  /** Resolves or reopens a thread for a commenter or above the Worker resolved (comments.md §12). */
+  async resolveComment(input: { id: string; resolved: boolean; by: CommentSource }): Promise<CommentResult> {
+    const store = await this.#ready();
+    const comments = this.#comments;
+    if (!comments) throw new Error('DocDO started without comments');
+    if (holdsOf(store).size > 0) return { ok: false, status: 404, error: 'trashed' };
+    return comments.resolve(input.id, input.resolved, input.by);
   }
 
   /**

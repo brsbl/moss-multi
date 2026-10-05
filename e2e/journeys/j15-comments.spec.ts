@@ -224,7 +224,8 @@ test('j15-comments: a commenter can comment but not edit @p:mean-1 @p:ppl-2', as
   const { actor: cara } = await peer(actors, note, 'cara', 'commenter');
   const before = await bodyText(cara, id);
   const adaBefore = await bodyText(ada, id);
-  await ui.body(cara, id).click();
+  // The read-only body is aria-disabled, so the click is forced, as a person's click lands regardless.
+  await ui.body(cara, id).click({ force: true });
   await cara.page.keyboard.type('zzz');
   expect(await bodyText(cara, id), 'typing does not edit the body').toBe(before);
 

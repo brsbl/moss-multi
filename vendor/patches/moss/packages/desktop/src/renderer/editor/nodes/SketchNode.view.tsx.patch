@@ -1,7 +1,7 @@
 diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx
 --- a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx
 +++ b/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx
-@@ -1,56 +1,37 @@
+@@ -1,56 +1,35 @@
  import React, { useCallback, useEffect, useRef, useState } from 'react';
  import type { JSX } from 'react';
 -import {
@@ -25,8 +25,6 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/pa
  import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@moss/shared/components/ui/tooltip';
 -import { initCommentIds, cloneCommentIds, exportCommentIds, importCommentIds } from '../utils/commentable-node';
 -import { OPEN_BLOCK_COMMENT_COMMAND } from '../plugins/CommentPlugin';
-+// moss-multi seam: hide-registry (A§9)
-+import { hidden } from '@moss-multi/host/affordances';
 +// moss-multi seam: register payloads (A§10.10): peer strokes reach an open canvas; local writes carry their base.
 +import { useSketchPeerSync, type Rebase } from '@moss-multi/host/collab/sketch-sync';
 +// moss-multi seam: converter-split (A§12; S-conv §2.3)
@@ -72,7 +70,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/pa
  const CELL_PX = 5;
  const CANVAS_W = GRID_COLS * CELL_PX; // 600
  const CANVAS_H = GRID_ROWS * CELL_PX; // 300
-@@ -60,11 +41,7 @@ const GRID_LINE_DEVICE_PX = 1;
+@@ -60,11 +39,7 @@ const GRID_LINE_DEVICE_PX = 1;
  // Integer offset keeps fillRect edges pixel-aligned at common DPRs.
  const STROKE_PX = 3;
  const STROKE_OFFSET = (CELL_PX - STROKE_PX) / 2; // 1
@@ -85,7 +83,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/pa
  
  const FILL_COLOR = EDITOR_CHROME_COLORS.sketchFill;
  const GRID_LINE_COLOR = 'var(--ink-fn-rgba000003)';
-@@ -145,130 +122,6 @@ function drawGridLines(
+@@ -145,130 +120,6 @@ function drawGridLines(
    ctx.stroke();
  }
  
@@ -216,7 +214,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/pa
  function bresenhamLine(
    x0: number,
    y0: number,
-@@ -473,18 +326,6 @@ function renderFullCanvas(
+@@ -473,18 +324,6 @@ function renderFullCanvas(
    return rc;
  }
  
@@ -235,7 +233,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/pa
  // ---------------------------------------------------------------------------
  // SketchSurface -- canvas-based drawing surface
  // ---------------------------------------------------------------------------
-@@ -1142,6 +983,8 @@ function SketchWrapper({
+@@ -1142,6 +981,8 @@ function SketchWrapper({
    redoRef.current = redoStack;
  
    const isGridEmpty = grid.every((v) => !v);
@@ -244,7 +242,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/pa
  
    const handleEditClick = useCallback((e: React.MouseEvent) => {
      e.preventDefault();
-@@ -1170,11 +1013,29 @@ function SketchWrapper({
+@@ -1170,11 +1011,29 @@ function SketchWrapper({
      [isSelected, setSelected, clearSelection]
    );
  
@@ -277,7 +275,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/pa
    );
  
    const handleDone = useCallback(() => {
-@@ -1217,6 +1078,7 @@ function SketchWrapper({
+@@ -1217,6 +1076,7 @@ function SketchWrapper({
    }, [editor._key, handleDone, isEditing, nodeKey]);
  
    const handleCancel = useCallback(() => {
@@ -285,7 +283,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/pa
      const baselineGrid = editBaselineGridRef.current;
      const baselineLabels = editBaselineLabelsRef.current;
      setGrid(baselineGrid);
-@@ -1225,7 +1087,7 @@ function SketchWrapper({
+@@ -1225,7 +1085,7 @@ function SketchWrapper({
      labelsRef.current = baselineLabels;
      setUndoStack([]);
      setRedoStack([]);
@@ -294,7 +292,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/pa
      setIsEditing(false);
    }, [persistSketchDraft]);
  
-@@ -1235,40 +1097,44 @@ function SketchWrapper({
+@@ -1235,40 +1095,44 @@ function SketchWrapper({
    // depend on the toolbar Done path.
    // Undo/redo is grid-only — labels are not part of the undo history.
    const handleGridChange = useCallback((newGrid: boolean[]) => {
@@ -343,7 +341,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/pa
      },
      [persistSketchDraft]
    );
-@@ -1331,11 +1197,11 @@ function SketchWrapper({
+@@ -1331,11 +1195,11 @@ function SketchWrapper({
        selected={isSelected}
        beforeLabel="Insert paragraph before canvas"
        afterLabel="Insert paragraph after canvas"
@@ -357,7 +355,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/pa
      >
        <div
          className={`outline-none transition-colors ${BLOCK_SURFACE_CLASSNAME}`}
-@@ -1453,7 +1319,7 @@ function SketchWrapper({
+@@ -1453,7 +1317,7 @@ function SketchWrapper({
                    </Tooltip>
                  </div>
                </TooltipProvider>
@@ -366,16 +364,16 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/pa
                <TooltipProvider delayDuration={200}>
                  <div className="flex items-center gap-1">
                    <Tooltip>
-@@ -1482,6 +1348,8 @@ function SketchWrapper({
+@@ -1482,6 +1346,8 @@ function SketchWrapper({
                      </TooltipTrigger>
                      <TooltipContent side="bottom"><p>Edit canvas</p></TooltipContent>
                    </Tooltip>
-+                  {/* moss-multi seam: hide-registry (A§9) */}
-+                  {hidden('comments') ? null : (
++                  {/* moss-multi seam: read-only-decorators (T4.3): a read-only body offers no block comment */}
++                  {!editable ? null : (
                    <Tooltip>
                      <TooltipTrigger asChild>
                        <button
-@@ -1497,6 +1365,7 @@ function SketchWrapper({
+@@ -1497,6 +1363,7 @@ function SketchWrapper({
                      </TooltipTrigger>
                      <TooltipContent side="bottom"><p>Add comment</p></TooltipContent>
                    </Tooltip>
@@ -383,7 +381,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/pa
                  </div>
                </TooltipProvider>
              )}
-@@ -1521,175 +1390,12 @@ function SketchWrapper({
+@@ -1521,175 +1388,12 @@ function SketchWrapper({
    );
  }
  
@@ -561,7 +559,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/pa
  ): void {
    // Commit synchronously: note-switch cleanup saves immediately after flushing
    // decorator drafts. A non-discrete update can defer dirty notification until
-@@ -1698,10 +1404,15 @@ export function commitSketchDraftToNode(
+@@ -1698,10 +1402,15 @@ export function commitSketchDraftToNode(
      () => {
        const node = $getNodeByKey(nodeKey);
        if (node && $isSketchNode(node)) {

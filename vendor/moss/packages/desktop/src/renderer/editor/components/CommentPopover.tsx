@@ -55,6 +55,7 @@ import { lightboxSrcAtom, resolveCanvasLightboxScope } from './ImageLightbox';
 import { acquireCommentUiOpenFlag } from '../utils/comment-ui-open-flag';
 import { dispatchCommentThreadPlaced } from '../utils/comment-entry-point';
 import { resolveCanvasCollisionBoundary } from '../utils/canvas-collision-boundary';
+import { hidden } from '@moss-multi/host/affordances';
 
 const TOOLBAR_HEIGHT = 72;
 const COMMENT_THREAD_MAX_CANVAS_RATIO = 0.82;
@@ -366,7 +367,7 @@ function CommentMessage({
                     Cancel edit
                   </TooltipContent>
                 </Tooltip>
-              ) : !resolved ? (
+              ) : !resolved && !hidden('comment-edit-delete') /* moss-multi seam: hide-registry (A§9) */ ? (
                 <DropdownMenu modal={false}>
                   <DropdownMenuTrigger asChild>
                     <button
@@ -1076,6 +1077,7 @@ export function CommentPopover({
                       </TooltipContent>
                     </Tooltip>
                   )}
+                  {hidden('comment-edit-delete') ? null /* moss-multi seam: hide-registry (A§9) */ : (
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <button
@@ -1091,6 +1093,7 @@ export function CommentPopover({
                       Delete thread
                     </TooltipContent>
                   </Tooltip>
+                  )}
                 </div>
               </div>
             </TooltipProvider>

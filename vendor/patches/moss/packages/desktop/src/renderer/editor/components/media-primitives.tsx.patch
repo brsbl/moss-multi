@@ -1,16 +1,7 @@
 diff --git a/packages/desktop/src/renderer/editor/components/media-primitives.tsx b/packages/desktop/src/renderer/editor/components/media-primitives.tsx
 --- a/packages/desktop/src/renderer/editor/components/media-primitives.tsx
 +++ b/packages/desktop/src/renderer/editor/components/media-primitives.tsx
-@@ -9,6 +9,8 @@ import {
- } from 'lexical';
- import { OPEN_BLOCK_COMMENT_COMMAND } from '../plugins/CommentPlugin';
- import { insertParagraphAdjacentToBlock } from '../utils/block-node-insertion';
-+// moss-multi seam: hide-registry (A§9)
-+import { hidden } from '@moss-multi/host/affordances';
- export {
-   GapCursor,
-   BlockNodeShell,
-@@ -182,9 +184,11 @@ type MediaNodeHeaderProps = {
+@@ -182,9 +182,11 @@ type MediaNodeHeaderProps = {
   */
  export function useMediaNodeActions(nodeKey: NodeKey): {
    handleDelete: () => void;
@@ -23,7 +14,7 @@ diff --git a/packages/desktop/src/renderer/editor/components/media-primitives.ts
  
    const handleDelete = useCallback(() => {
      // Re-guard: Lexical applies editor.update() even when not editable, so a
-@@ -214,7 +218,8 @@ export function useMediaNodeActions(nodeKey: NodeKey): {
+@@ -214,7 +216,8 @@ export function useMediaNodeActions(nodeKey: NodeKey): {
      [editor, nodeKey]
    );
  
@@ -33,7 +24,7 @@ diff --git a/packages/desktop/src/renderer/editor/components/media-primitives.ts
  }
  
  // ---------------------------------------------------------------------------
-@@ -383,6 +388,10 @@ export function MediaNodeHeader({
+@@ -383,6 +386,10 @@ export function MediaNodeHeader({
    children,
  }: MediaNodeHeaderProps): JSX.Element {
    const [editor] = useLexicalComposerContext();
@@ -44,13 +35,3 @@ diff --git a/packages/desktop/src/renderer/editor/components/media-primitives.ts
  
    return (
      <div
-@@ -392,7 +401,8 @@ export function MediaNodeHeader({
-     >
-       <div className="flex items-center gap-1">
-         {children}
--        {editable && (
-+        {/* moss-multi seam: hide-registry (A§9) */}
-+        {editable && !hidden('comments') && (
-           <MediaHeaderButton
-             icon={StickyNote}
-             title="Add comment"

@@ -7,3 +7,23 @@
 @import '@fontsource/jetbrains-mono/latin-500.css';
 @import 'charter-webfont/charter.css';
 @import '../../../vendor/moss/packages/desktop/src/renderer/styles.css';
+
+/* Comment paint (T4.3; docs/design/comments.md §11): CSS Custom Highlights in moss's `.comment-mark` colors
+   (MarkdownEditor.css), slot 0 user, 3 agent, 4 external. Hover and the open thread underline the text. */
+::highlight(moss-comment-0) { background-color: var(--highlight-comment-user-light); }
+::highlight(moss-comment-3) { background-color: var(--highlight-chalk-green-light); }
+::highlight(moss-comment-4) { background-color: var(--highlight-chalk-grey-light); }
+::highlight(moss-comment-hover-0),
+::highlight(moss-comment-hover-3),
+::highlight(moss-comment-hover-4),
+::highlight(moss-comment-active-0),
+::highlight(moss-comment-active-3),
+::highlight(moss-comment-active-4) { text-decoration-line: underline; text-underline-offset: 2px; }
+::highlight(moss-comment-hover-0) { text-decoration-color: var(--highlight-chalk-yellow); }
+::highlight(moss-comment-active-0) { text-decoration-color: var(--highlight-comment-user); }
+::highlight(moss-comment-hover-3),
+::highlight(moss-comment-active-3) { text-decoration-color: var(--highlight-chalk-green); }
+::highlight(moss-comment-hover-4),
+::highlight(moss-comment-active-4) { text-decoration-color: var(--highlight-chalk-grey); }
+[data-theme="dark"] ::highlight(moss-comment-hover-0),
+[data-theme="dark"] ::highlight(moss-comment-active-0) { text-decoration-color: color-mix(in srgb, var(--highlight-chalk-yellow) 50%, var(--ink-default)); }
