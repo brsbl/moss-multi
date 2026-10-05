@@ -202,10 +202,6 @@ async function store(request: Request, env: AssetsEnv, docId: string, folderId: 
   // Checked again before the bytes are stored; the asset insert below holds it against concurrent uploads.
   if ((await vaultMediaBytes(env, folderId)) + bytes.byteLength > VAULT_MEDIA_QUOTA_BYTES) return overQuota();
   const hash = await sha256Hex(bytes);
-  // Bytes before rows: a blob no row names is harmless, a row naming no blob is a broken image.
-  if (!(await env.ASSETS.head(blobKey(hash)))) {
-    await env.ASSETS.put(blobKey(hash), bytes, { httpMetadata: { contentType: type.contentType } });
-  }
   const db = createDb(env.DB);
   const blob: Bytes = { contentHash: hash, contentType: type.contentType, size: bytes.byteLength, versionId: null };
   // The name is free in the doc's record and in its folder's namespace, or holds these same bytes there.
@@ -233,7 +229,13 @@ async function store(request: Request, env: AssetsEnv, docId: string, folderId: 
     throw error;
   });
   if (media === 'over-quota') return overQuota();
-  return media ? placed(media) : nameTaken();
+  if (!media) return nameTaken();
+  // Rows before bytes, so an upload that binds nothing (no free name, no room) stores nothing the quota misses. The
+  // caller references the file only after this 201; a failed put leaves a record that a retry of the upload fills.
+  if (!(await env.ASSETS.head(blobKey(hash)))) {
+    await env.ASSETS.put(blobKey(hash), bytes, { httpMetadata: { contentType: type.contentType } });
+  }
+  return placed(media);
 }
 
 async function upload(request: Request, env: AssetsEnv, docId: string): Promise<Response> {
