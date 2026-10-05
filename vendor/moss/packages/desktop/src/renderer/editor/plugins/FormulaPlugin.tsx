@@ -469,12 +469,15 @@ function FormulaEditPopover({
         if (local) return;
         const merged = mergeIntoField(symbolic ? nameInputRef.current : expressionInputRef.current, base, next);
         const kept = latestDraftRef.current;
-        setDraftState(symbolic ? { name: merged, expression: kept.expression } : { name: kept.name, expression: merged });
+        const mergedDraft = symbolic ? { name: merged, expression: kept.expression } : { name: kept.name, expression: merged };
+        setDraftState(mergedDraft);
+        // The field's own characters, once the peer's change makes them valid, are written as a keystroke would.
+        if (merged !== next) onDraftChange(mergedDraft);
       });
     };
     text.observe(changed);
     return () => { stopped = true; text.unobserve(changed); };
-  }, [editor, editingFormula, readCurrentDraft, setDraftState]);
+  }, [editor, editingFormula, onDraftChange, readCurrentDraft, setDraftState]);
 
   // Per session, so following the formula through a peer's move keeps what the inputs show.
   const sessionDraftRef = useRef(editingFormula);
