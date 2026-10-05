@@ -103,7 +103,7 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T2.3s checker P2: the revocation tests in `trash-security.test.ts` use stub DocDO and PrincipalDO, so they do not prove open editors recover (or that a terminal editor on a live note is kicked) → T2.5 → closed by T2.5 (`mid-trash.harness.test.ts` over the real DocDO and PrincipalDO; a reverted trash pushes `meta` and a pane terminal on `deleted` re-asks and reopens).
 - T1.8 workspace follow-up implemented in T2.1: push events replace listing polling, changed document ids refresh metadata, and unchanged vault choices do not notify the switcher; awaiting CI and independent verification.
 - T0.13b checker P2: The settle helper only waits for the loading placeholder to disappear, not for a final state; `settleHtmlBlocks` in e2e/viewer/viewer.spec.ts should wait for the image to load or for "Preview unavailable" → viewer test follow-up.
-- T0.13b checker P2: The Edit, Fullscreen and Delete buttons still appear on hover over viewer HTML blocks, but do nothing → T2.6.
+- ~~T0.13b checker P2: The Edit, Fullscreen and Delete buttons still appear on hover over viewer HTML blocks, but do nothing~~ closed by T2.6: block headers ask `useBlockCanEdit` (e2e/viewer hover leg).
 - ~~T1.9 checker P2: `$copyNode` must mint a new register identity for duplicated code, HTML and formula nodes~~ closed by T1.F2: a copy mints its own id seeded with its source's text (registers unit test).
 - ~~T1.9 checker P2: rebind open field observers when a register map entry is replaced~~ closed by T1.F2: the map is gone and a payload doc is never replaced; resolving the doc on every write stays with T1.F4.
 - T1.9 checker P2: register writes diff by value without a caret hint, so typing inside a run of identical characters can land at the wrong position (seen after a peer's undo); FormulaPlugin's remote repaint diffs strings instead of using the event delta → register caret follow-up. T1.F4 closed it for code and HTML fields (caret-placed edits rebased onto the payload); the formula popover still writes and repaints without a caret, since its stored formula is a rebound, trimmed form of the input.
@@ -154,7 +154,7 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - Sign-out leaves the session's other live doc sockets reading and writing → closed by T2.5 (sign-out ends the session's doc and workspace sockets; j09 sign-out leg)
 - T2.4 checker: `GET /api/docs/:id` returns the owner's real `folderId` to a link holder, unlike `/api/workspace`'s synthetic root (METHOD: never the owner's vault or folder ids) → closed by T2.5 (a doc link's holder gets the note as its own root; `sharing.test.ts`)
 - ~~T2.4 checker: a share counts as redeemed on any doc load or socket admission, so a grantee idling on an empty workspace auto-opens the new share and the owner sees their name within seconds → count only an explicit open (T2.8 invites)~~ closed by T2.8: a grant comes only from a signed-in account redeeming the invite link.
-- A signed-out share-link visitor (and any viewer of the active vault) is offered "+ Note", which fails with "Could not create note. Try again." → T2.6 (capability helper)
+- ~~A signed-out share-link visitor (and any viewer of the active vault) is offered "+ Note", which fails with "Could not create note. Try again."~~ closed by T2.6: "+ Note" needs edit on the active vault (j08 link and unknown-role legs).
 - The wrangler ProxyWorker patch replays non-idempotent requests after an ambiguous failure → T0.9b follow-up (stack infra)
 - `qa.mjs close` forgets the session even when closing it failed → tooling follow-up
 - `stack.mjs` puts `BETTER_AUTH_SECRET` and the test-hook secret on wrangler's command line → tooling follow-up
@@ -171,7 +171,7 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 
 - T1.4 checker P2 follow-ups (deferred under the owner's P0/P1-only review rule): cap and principal validation for REST title writes; retry/reconcile failed D1 title projections and serialize empty initialization; add independent negative controls for j02's monotonic, filename, merge and Properties assertions; remove Properties unstaging residue, avoid a placeholder flash before binding, and investigate the unconfirmed bridge-cache issue.
 
-- T1.4 remaining checker P2s: protect an in-progress property draft from a peer deletion; guard title Enter/ArrowDown during IME; retry/reconcile D1 title projection failures; use one refusal live region across split panes; add independent negative controls for the older j02 assertions. The macOS WebKit invariant-7 selftest flake belongs to tooling. Viewer Rename remains T2.6; title draft-client allocation and writeText identity guarding remain follow-ups.
+- T1.4 remaining checker P2s: protect an in-progress property draft from a peer deletion; guard title Enter/ArrowDown during IME; retry/reconcile D1 title projection failures; use one refusal live region across split panes; add independent negative controls for the older j02 assertions. The macOS WebKit invariant-7 selftest flake belongs to tooling. Viewer Rename was closed by T2.6 (j08 ranks leg); title draft-client allocation and writeText identity guarding remain follow-ups.
 
 ### T1.3 — implemented; local UI verification blocked
 
