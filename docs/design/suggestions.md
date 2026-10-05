@@ -40,7 +40,7 @@ type IdSpan = { client: number; clock: number; len: number };
 
 Doc-socket string frames; replies use the `__YPS:` envelope.
 
-- `suggest-lease` → `{clients}`. Entering Suggest pre-leases one active id and one spare.
+- `suggest-lease` → `{clients}`. Entering Suggest pre-leases one active id and one spare. The request names the client fork, so after a drop the same fork resumes its leases from its new socket even while the DocDO still holds the old one open (a half-open socket); no other connection can (T5.1).
 - `suggest-ops {record, update}`. The first frame for an unused record id creates the record.
 - `suggest-delete {record, part:{id, targets}}` and `suggest-undelete {record, partId}`.
 - `suggest-merge {into, from}` and `suggest-withdraw {record}`.
