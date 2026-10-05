@@ -66,6 +66,8 @@ export interface SessionSurface {
   /** What moss's renderer would save now. */
   snapshot(): RendererSnapshot | null;
   setEditable(editable: boolean): void;
+  /** Freezes every input, comment UI included, while unmount waits for its final write. */
+  freeze?(frozen: boolean): void;
   view(view: SessionView): void;
   /** meta.json's comment colors changed on disk: each color the user has not changed takes `next`'s. */
   adoptCommentColors?(previous: Record<string, number> | undefined, next: Record<string, number> | undefined): void;
@@ -375,6 +377,8 @@ export class EditorSession {
   private async writeOnce(options: { force?: boolean }): Promise<void> {
     if (!this.read) return;
     if (this.status === 'conflict' && !options.force) return;
+    // A stale restored draft writes only after an explicit Overwrite, which clears draftBase.
+    if (this.draftBase && !options.force) return;
     if (this.status === 'removed' || this.status === 'unmounted' || this.status === 'notLoaded') return;
     this.clearIdle();
     if (this.retryTimer) clearTimeout(this.retryTimer);
@@ -511,6 +515,11 @@ export class EditorSession {
       }
       return fresh.read;
     } catch (error) {
+      if (this.status === 'conflict') {
+        // The conflict stays unresolved: only the user's next choice (Reload, Overwrite) may move it.
+        this.emit({ kind: 'error', noteId: this.noteId, status: 'conflict', op: 'read', message: messageOf(error), error, failure: null, willRetry: false });
+        return null;
+      }
       this.needsReread = true;
       this.fail(error, null);
       return null;
@@ -822,8 +831,16 @@ export class EditorSession {
       return this.teardown({ kind: 'notLoaded' });
     }
     this.surface.setEditable(false);
-    const flush = await this.flush();
+    this.surface.freeze?.(true);
+    let flush = await this.flush();
+    // An edit that landed while the final write was pending is flushed too; teardown leaves nothing unsaved.
+    for (let round = 0; (flush.kind === 'clean' || flush.kind === 'saved') && this.dirty && round < 3; round += 1) {
+      const next = await this.flush();
+      flush = next.kind === 'clean' && flush.kind === 'saved' ? flush : next;
+    }
+    if ((flush.kind === 'clean' || flush.kind === 'saved') && this.dirty) flush = this.failureResult();
     if (flush.kind === 'clean' || flush.kind === 'saved' || flush.kind === 'notLoaded' || options.discardUnsaved) return this.teardown(flush);
+    this.surface.freeze?.(false);
     if (this.status !== 'removed') this.surface.setEditable(true);
     return { kind: 'kept', flush };
   }

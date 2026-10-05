@@ -61,6 +61,8 @@ interface PaneState {
   version: number;
   view: SessionView;
   editable: boolean;
+  /** Unmount is waiting for its final write: no input lands, comment replies included. */
+  frozen: boolean;
 }
 
 /** The session's surface: moss's editor behind a small external store the pane renders from. */
@@ -80,7 +82,7 @@ class FrameSurface implements SessionSurface {
   private held: { selection: HeldSelection | null; focused: boolean } | null = null;
   /** What to select once the editor is editable again after an in-place load. */
   private restore: { selection: HeldSelection; focused: boolean } | null = null;
-  private state: PaneState = { content: null, version: 0, view: { status: 'loading', conflict: null, overwritten: false, error: null, removed: null }, editable: false };
+  private state: PaneState = { content: null, version: 0, view: { status: 'loading', conflict: null, overwritten: false, error: null, removed: null }, editable: false, frozen: false };
   private listeners = new Set<() => void>();
 
   constructor(
@@ -255,6 +257,10 @@ class FrameSurface implements SessionSurface {
   private focused(editor: LexicalEditor): boolean {
     const root = editor.getRootElement();
     return Boolean(root && document.activeElement && root.contains(document.activeElement));
+  }
+
+  freeze(frozen: boolean): void {
+    this.set({ frozen });
   }
 
   setEditable(editable: boolean): void {
@@ -434,7 +440,7 @@ function EditorPane({ surface, session, noteId, onNavigateToNote }: {
   const focusBody = () => surface.editor?.focus();
   const { content, view } = state;
   return (
-    <div className="relative flex h-full min-w-0 flex-1 flex-col bg-surface-canvas" data-moss-editor-root="">
+    <div className="relative flex h-full min-w-0 flex-1 flex-col bg-surface-canvas" data-moss-editor-root="" inert={state.frozen}>
       <CanvasArea className="relative min-w-0 flex-1" responsiveLayout innerClassName="flex w-full flex-col gap-1" contentClassName="mx-auto max-w-canvas-blocks" scrollContainerRef={scrollerRef}>
         <Banner view={view} session={session} />
         {view.status === 'notLoaded' ? (
