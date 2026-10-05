@@ -212,6 +212,30 @@ function useOpenField(editor: LexicalEditor, key: string, id: string | undefined
   }, [editor, key, id, element, open]);
 }
 
+/**
+ * Follows an open field that lives outside its node's view (the formula popover) by payload id: when an update destroys
+ * node `key` and another node now holds its payload (a peer's move recreates it), `moved` gets that node's key; when
+ * none does and the update was a peer's, `removed` closes the field and the notice says why.
+ */
+export function useFollowRegister(editor: LexicalEditor, key: string | null, moved: (key: string) => void, removed: () => void): void {
+  const handlers = useRef({ moved, removed });
+  handlers.current = { moved, removed };
+  useEffect(() => {
+    const id = key && registerDoc(editor) ? registerState(editor, key)?.id : undefined;
+    const klass = key ? editor.getEditorState()._nodeMap.get(key)?.constructor as Klass<LexicalNode> | undefined : undefined;
+    if (!key || !id || !klass) return;
+    return editor.registerMutationListener(klass, (mutations, { updateTags }) => {
+      if (mutations.get(key) !== 'destroyed') return;
+      for (const [next, node] of editor.getEditorState()._nodeMap) {
+        if ((node as { __regId?: string }).__regId === id) { handlers.current.moved(next); return; }
+      }
+      if (!updateTags.has(COLLABORATION_TAG)) return;
+      handlers.current.removed();
+      refuseInput(FIELD_REMOVED);
+    }, { skipInitialization: true });
+  }, [editor, key]);
+}
+
 export function repaint(input: Input, next: string, delta: Y.YTextEvent['delta'] | null): void {
   const start = input.selectionStart ?? 0; const end = input.selectionEnd ?? start;
   input.value = next;
