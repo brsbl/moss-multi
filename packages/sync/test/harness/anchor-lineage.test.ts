@@ -36,7 +36,8 @@ function send(peer: Peer, mode: Mode): Promise<FrameVerdict[]> {
 }
 
 /** One editing op on a peer's own editor; an op its current text cannot take (no text point there) is skipped. */
-function edit(peer: Peer, op: Op & { at: number }, next: () => string): void {
+function edit(peer: Peer, op: Op, next: () => string): void {
+  if (!('at' in op)) return;
   const text = peer.editor.getEditorState().read($searchText);
   const at = op.at % (text.length + 1);
   try {

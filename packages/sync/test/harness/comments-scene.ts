@@ -173,7 +173,7 @@ export class Scene {
    * the DocDO's create RPC as REST creates one.
    */
   async comment(id: string, quote: string, nth = 0, kind: Anchor['kind'] = 'text'): Promise<Anchor> {
-    const { text, units } = liveUnits(this.server);
+    const { text } = liveUnits(this.server);
     let at = -1;
     for (let i = 0; i <= nth; i += 1) at = text.indexOf(quote, at + 1);
     if (at < 0) throw new Error(`"${quote}" is not in ${JSON.stringify(text)}`);

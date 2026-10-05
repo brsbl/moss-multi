@@ -12,6 +12,7 @@ import * as Y from 'yjs';
 import { leaveTo } from '../navigation.ts';
 import { refuseInput } from '../refusal.ts';
 import { AckLedger } from './acks.ts';
+import { readStep1, Replay } from './replay.ts';
 import {
   connectionOf, FIRST_SYNC_DEADLINE_MS, HANDSHAKE_FAILURES, HEARTBEAT_CHECK_MS, publishConnection, reduceLink, RESYNC_MS,
   SILENCE_LIMIT_MS, startLink, type Link, type LinkEvent,
@@ -264,6 +265,7 @@ export class DocSession {
   /** Terminal or halted: this session's edits can no longer land. */
   #ended = false;
   readonly #ledger = new AckLedger();
+  readonly #replay: Replay;
   #link: Link;
   #socketOpen = false;
   #lastResync = 0;
@@ -301,6 +303,27 @@ export class DocSession {
     });
     broadcastAwarenessOnUpdate(this.provider);
     closeNormally(this.provider, () => this.#lingering);
+    this.#replay = new Replay((frame) => {
+      const ws = this.provider.ws;
+      if (!ws || ws.readyState !== WebSocket.OPEN || this.#ended) return false;
+      ws.send(frame);
+      return true;
+    });
+    // The frame discipline (comments.md §6): with writes unacked, the server's step 1 is answered only after they are
+    // replayed as their own frames, and the step 2 it then gets arrives inert. Writes made meanwhile wait their turn.
+    const answerSync = this.provider.messageHandlers[0];
+    this.provider.messageHandlers[0] = (encoder, decoder, provider, emitSynced, type) => {
+      const sv = this.#ledger.unacked && !this.#ended ? readStep1(decoder) : null;
+      if (sv) this.#replayThenAnswer(sv);
+      else answerSync(encoder, decoder, provider, emitSynced, type);
+    };
+    const sendLive = this.provider._updateHandler;
+    this.doc.off('update', sendLive);
+    this.provider._updateHandler = (update, origin) => {
+      if (origin !== this.provider && this.#replay.active) this.#replay.hold(update);
+      else sendLive(update, origin);
+    };
+    this.doc.on('update', this.provider._updateHandler);
     this.provider.on('status', ({ status }: { status: string }) => {
       if (status === 'connected') this.#opened();
     });
@@ -395,6 +418,7 @@ export class DocSession {
     this.#pagePresence = null;
     this.stopPresence?.();
     this.#lingering = false;
+    this.#replay.cancel();
     clearTimeout(this.#accessRetry);
     clearInterval(this.#tick);
     clearTimeout(this.#deadline);
@@ -449,6 +473,14 @@ export class DocSession {
     this.#failedHandshakes = 0;
   }
 
+  /** Replays the unacked writes, then answers the server's step 1 with the step 2 it asked for. */
+  #replayThenAnswer(sv: Uint8Array): void {
+    this.#replay.start(this.#ledger.pending(), () => {
+      const ws = this.provider.ws;
+      if (ws?.readyState === WebSocket.OPEN && !this.#ended) ws.send(syncFrame(1, Y.encodeStateAsUpdate(this.doc, sv)));
+    });
+  }
+
   #synced(): void {
     this.#accessRetries = 0;
     this.#update({ type: 'synced' });
@@ -461,6 +493,8 @@ export class DocSession {
     if (this.#disposed) return;
     const opened = this.#socketOpen;
     this.#socketOpen = false;
+    // What it had not sent stays in the ledger; the next socket replays it.
+    this.#replay.cancel();
     // Each socket gets its own partyserver connection id (`_pk`, read at every reconnect): the DocDO keys acks by
     // socket, but a fresh id keeps any lookup by id unambiguous.
     this.provider.id = crypto.randomUUID();
@@ -555,8 +589,8 @@ export class DocSession {
       const awareness = this.provider.awareness;
       const state = awareness.getLocalState();
       if (state !== null && !this.#ended && !this.#lingering) awareness.setLocalState(state);
-      const pending = this.#ledger.pendingUpdate();
-      if (pending && !this.#ended) ws.send(syncFrame(2, pending));
+      // Unacked writes go again under the frame discipline (comments.md §6), unless a replay is already sending them.
+      if (this.#ledger.unacked && !this.#ended && !this.#replay.active) this.#replay.start(this.#ledger.pending());
     } catch {
       // closing; the close path takes over
     }
