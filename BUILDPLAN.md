@@ -250,6 +250,7 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
 - **T2.6 Role-gated affordances** `[B·codex]`
   - **Scope:** one capability helper for every moss menu and control. This includes media decorator headers (hover Delete and other mutating controls) in every read-only view, including the T0.13 viewer. Viewer and commenter are truly read-only, decorator controls included (checkbox, slash, tab add).
   - **Tests first:** j08 legs: menus grow with rank; a viewer's checkbox and slash commands send no frame; an unknown role gets no actions.
+  - **Tests first (T0.13b checker):** hovering an HTML block in the T0.13 viewer shows no Edit, Fullscreen or Delete button (they appear today and do nothing).
   - **Done:** the legs are green.
 - **T2.7 A stranger on a phone (Tier A)** `[C·fresh]`, after T2.4
   - **Scope:** below 640 px the notes panel overlays the canvas, the chrome yields in a set order, Share becomes icon-only with an overflow menu, and the login card, denial page and share landing work at 390 px.
