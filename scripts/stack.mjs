@@ -366,7 +366,7 @@ async function start(opts) {
   }
   const port = await choosePort(opts.port ? Number(opts.port) : null);
   const persistDir = persistDirFor(run.dir, runId, opts['state-dir']);
-  mkdirSync(persistDir, { recursive: true });
+  for (const dir of [run.dir, persistDir]) mkdirSync(dir, { recursive: true });
   const secretsPath = join(run.dir, 'secrets.json');
   if (!existsSync(secretsPath)) {
     writePrivate(secretsPath, { betterAuthSecret: randomBytes(32).toString('hex'), testHooksSecret: randomBytes(24).toString('hex') });
