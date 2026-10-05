@@ -330,6 +330,70 @@ describe('upload bounds (T3.1s)', () => {
   }, 60_000);
 });
 
+describe('upload storage bounds (T3.1s)', () => {
+  const hashOf = async (bytes: Uint8Array<ArrayBuffer>) =>
+    [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map((b) => b.toString(16).padStart(2, '0')).join('');
+  const traceOf = async (hash: string) => ({
+    blob: (await d1.assets.head(`asset-blobs/sha256/${hash}`)) !== null,
+    rows: await d1.db.prepare(`SELECT (SELECT count(*) FROM content_objects WHERE hash = ?1) + (SELECT count(*) FROM asset_versions WHERE content_hash = ?1)
+      + (SELECT count(*) FROM doc_media WHERE content_hash = ?1) AS n`).bind(hash).first<{ n: number }>().then((row) => row?.n),
+  });
+  const fill = (owner: TestUser, folderId: string, size: number) =>
+    d1.db.prepare("INSERT INTO assets (id, folder_id, filename, kind, content_type, size, current_version_id, created_by, created_at) VALUES (?1, ?2, ?3, 'video', 'video/mp4', ?4, NULL, ?5, ?6)")
+      .bind(crypto.randomUUID(), folderId, `filler-${crypto.randomUUID()}.mp4`, size, owner.id, Date.now());
+
+  it('stores no bytes for an upload that finds no free name', async () => {
+    const lea = await signedUpUser(env, 'assets-names-lea', 'Lea');
+    const docId = await insertDoc(d1.db, lea);
+    for (let i = 0; i < 50; i += 1) await uploaded(await upload(lea.cookie, docId, 'same.png', new Uint8Array([...PNG, i]), 'image/png'));
+    const big = new Uint8Array([...PNG, ...new Uint8Array(4096).fill(9)]);
+    const refused = await upload(lea.cookie, docId, 'same.png', big, 'image/png');
+    expect(refused.status, await refused.clone().text()).toBe(409);
+    expect(await traceOf(await hashOf(big)), 'an unbound upload leaves no blob and no rows').toEqual({ blob: false, rows: 0 });
+  }, 60_000);
+
+  it('refuses in the asset insert an upload whose room was taken after its checks, leaving no blob and no rows', async () => {
+    const max = await signedUpUser(env, 'assets-quota-max', 'Max');
+    const docId = await insertDoc(d1.db, max);
+    const body = new Uint8Array(4096).fill(5);
+    // Every check before the write sees room; another upload takes it just before the write commits.
+    const DB = new Proxy(d1.db, {
+      get(target, key) {
+        if (key === 'batch') {
+          return async (statements: D1PreparedStatement[]) => {
+            await fill(max, max.homeId, VAULT_MEDIA_QUOTA_BYTES - body.byteLength + 1).run();
+            return target.batch(statements);
+          };
+        }
+        const value = Reflect.get(target, key) as unknown;
+        return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+      },
+    });
+    const sent = await handleApi(new Request(`${BASE}/api/docs/${docId}/assets?filename=late.png`, {
+      method: 'POST', headers: { origin: BASE, cookie: max.cookie, 'content-type': 'image/png', 'content-length': String(body.byteLength) }, body,
+    }), { ...env, DB });
+    expect(sent.status, await sent.clone().text()).toBe(413);
+    expect(((await sent.json()) as { error: string }).error).toBe('over-quota');
+    expect(await traceOf(await hashOf(body))).toEqual({ blob: false, rows: 0 });
+  });
+
+  it('keeps counting media in a trashed folder after its parent moves: the move may not push it past the depth bound', async () => {
+    const ned = await signedUpUser(env, 'assets-depth-ned', 'Ned');
+    const a = await insertFolder(d1.db, ned, ned.homeId);
+    const b = await insertFolder(d1.db, ned, a);
+    await fill(ned, b, VAULT_MEDIA_QUOTA_BYTES - 8).run();
+    await d1.db.prepare('UPDATE folders SET deleted_at = ?1 WHERE id = ?2').bind(Date.now(), b).run();
+    // A live chain down to the deepest a folder may sit, the vault at depth 1.
+    let deep = ned.homeId;
+    for (let depth = 2; depth <= 10; depth += 1) deep = await insertFolder(d1.db, ned, deep);
+    const moved = await call('PATCH', `/api/folders/${a}`, ned.cookie, { body: JSON.stringify({ parentId: deep }), headers: { 'content-type': 'application/json' } });
+    expect(moved.status, await moved.clone().text()).toBe(409);
+    const docId = await insertDoc(d1.db, ned);
+    const refused = await upload(ned.cookie, docId, 'over.png', OTHER_PNG, 'image/png');
+    expect(refused.status, 'the trashed media still count').toBe(413);
+  });
+});
+
 describe('serving (A§16)', () => {
   it('serves the current version stale-while-revalidate with an ETag that answers 304, and a version immutably', async () => {
     const docId = await insertDoc(d1.db, ada);
