@@ -1,7 +1,7 @@
 import { Server, type Connection, type ConnectionContext, type WSMessage } from 'partyserver';
 import { TRUSTED } from '@moss-multi/protocol/sync';
 import type { WorkspaceEvent } from '@moss-multi/protocol/workspace';
-import { REMOTE_FETCH_RATE, REST_WRITE_RATE } from '@moss-multi/protocol/limits';
+import { REMOTE_FETCH_RATE, REST_WRITE_RATE, UPLOAD_RATE } from '@moss-multi/protocol/limits';
 import type { SyncEnv } from './env.ts';
 
 /** Where a window keeps its attempts between wakes. */
@@ -54,10 +54,12 @@ function sqlAttempts(sql: SqlStorage, name: string): AttemptStore {
 }
 
 // One per principal, named by its id: workspace channel (one authenticated socket per tab, hibernatable), sign-out
-// registry and the REST write limit (A§5.2).
+// registry, the REST write limit (A§5.2) and the upload limit (A§16). An upload window may also be named for a link
+// and an IP (`link:<hash>:<ip>`), which no principal is, so nothing connects to it.
 export class PrincipalDO extends Server<SyncEnv> {
   static options = { hibernate: true };
   #writes: RateWindow | null = null;
+  #uploads: RateWindow | null = null;
   #fetches: RateWindow | null = null;
 
   override onConnect(connection: Connection, context: ConnectionContext): void {
@@ -90,6 +92,12 @@ export class PrincipalDO extends Server<SyncEnv> {
     // Persisted: a PrincipalDO idle for ~10 s is evicted, and a wake must not hand out a fresh window.
     this.#writes ??= new RateWindow(REST_WRITE_RATE.max, REST_WRITE_RATE.windowMs, sqlAttempts(this.ctx.storage.sql, 'rest-writes'));
     return this.#writes.take();
+  }
+
+  /** One media upload or cross-note copy counted against this name; false past UPLOAD_RATE. Persisted, as above. */
+  takeUploadToken(): boolean {
+    this.#uploads ??= new RateWindow(UPLOAD_RATE.max, UPLOAD_RATE.windowMs, sqlAttempts(this.ctx.storage.sql, 'uploads'));
+    return this.#uploads.take();
   }
 
   /** One server fetch of a caller-supplied URL (an unfurl, a remote image); false past REMOTE_FETCH_RATE. */
