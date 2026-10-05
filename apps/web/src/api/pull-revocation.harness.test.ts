@@ -7,6 +7,7 @@ import { ACCESS_TICK_MS, REST_WRITE_RATE } from '@moss-multi/protocol/limits';
 import { CLOSE, TRUSTED } from '@moss-multi/protocol/sync';
 import { liveCredentials } from '../../../../packages/sync/src/access-epoch.ts';
 import { DocDO } from '../../../../packages/sync/src/doc-do.ts';
+import { attachmentOf } from '../../../../packages/sync/src/doc/awareness.ts';
 import { PrincipalDO } from '../../../../packages/sync/src/principal-do.ts';
 import { Backing, connect, openDoc, start, type Opened, type TestClient } from '../../../../packages/sync/test/harness/do-harness.ts';
 import { FakeState, serverEnds, type FakeSocket } from '../../../../packages/sync/test/harness/workerd.ts';
@@ -371,6 +372,21 @@ describe('a dropped kick is caught by the next frame @p:ppl-2', () => {
     expect(again.client.closed, 'the link reaches the note again').toBeNull();
     await write(again.client, 'back-in');
     expect(title(again.opened)).toContain('back-in');
+  });
+
+  it('a socket a link still lifts after its grant is removed keeps its role but stops seeing who else is here', async () => {
+    const docId = await insertDoc(d1.db, ada);
+    await insertGrant(d1.db, { docId }, ben, 'viewer');
+    const token = await insertLink(d1.db, { docId }, 'editor');
+    const { opened, client, headers } = await join(docId, ben.cookie, token);
+    expect(headers[TRUSTED.presence], 'a grantee sees presence').toBe('1');
+    await d1.db.prepare('DELETE FROM doc_members WHERE doc_id = ? AND principal_id = ?').bind(docId, ben.id).run();
+    await write(client, 'still-editing ');
+    expect(client.closed, 'the link keeps him an editor').toBeNull();
+    expect(title(opened)).toContain('still-editing');
+    const socket = [...opened.dobj.getConnections()].find((connection) => attachmentOf(connection)?.principalId === ben.id);
+    expect(socket).toBeDefined();
+    expect(attachmentOf(socket!)?.presenceAllowed, 'link-only now, as a fresh admission would be').toBe(false);
   });
 });
 

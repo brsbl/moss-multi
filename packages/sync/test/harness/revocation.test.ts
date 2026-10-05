@@ -4,11 +4,11 @@
 // registry lists the docs a session opened, endSession rechecks each before closing the session's workspace sockets,
 // and a doc socket that registers after its session ended closes 4402.
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
-import { SESSION_MAX_MS } from '@moss-multi/protocol/limits';
-import { CLOSE, TRUSTED } from '@moss-multi/protocol/sync';
+import { ACCESS_DEADLINE_MS, SESSION_MAX_MS } from '@moss-multi/protocol/limits';
+import { CLOSE, encodePartyPrincipal, TRUSTED } from '@moss-multi/protocol/sync';
 import { DocDO } from '../../src/doc-do.ts';
 import { PrincipalDO } from '../../src/principal-do.ts';
-import { connect, openDoc, start, wake, type Opened } from './do-harness.ts';
+import { connect, openDoc, start, wake, type Opened, type TestClient } from './do-harness.ts';
 import { Backing, FakeState, serverEnds } from './workerd.ts';
 
 beforeEach(() => {
@@ -319,5 +319,119 @@ describe('no doc socket outlives its sign-out registry row @p:ppl-2', () => {
     vi.setSystemTime(opened.backing.alarm!);
     await opened.dobj.alarm();
     expect(agent.closed?.code).toBe(1013);
+  });
+});
+
+describe('frames waiting for a validation are bounded, and the validation has a deadline @p:ppl-2', () => {
+  /** How the stamp answers: at once, never, or when the test releases it. */
+  let mode: 'live' | 'hang' | 'hold' = 'live';
+  let release: (() => void) | null = null;
+  const limits = { ...DocDO.limits, inboxFramesPerConnection: 8, inboxBytesPerConnection: 64 * 1024, inboxBytes: 128 * 1024, accessDeadlineMs: 2_000 };
+  class GatedDocDO extends DocDO {
+    static override limits = limits;
+    static override access = () => ({
+      stamp: (_docId: string, sessions: string[], agents: string[]) => {
+        const stamp = { key: 'owner:1', sessions: new Set(sessions), agents: new Set(agents) };
+        if (mode === 'hang') return new Promise<never>(() => undefined);
+        if (mode === 'hold') return new Promise<typeof stamp>((resolve) => { release = () => resolve(stamp); });
+        return Promise.resolve(stamp);
+      },
+      resolve: () => Promise.reject(new Error('every socket here is admitted under the current epoch')),
+    });
+  }
+  /** Admitted under the stamp's epoch, so only the stamp is read. */
+  const who = (id: string, role: string) => ({ headers: {
+    [TRUSTED.principal]: encodePartyPrincipal({ id, kind: 'user', name: id }),
+    [TRUSTED.role]: role, [TRUSTED.session]: `sess-${id}`, [TRUSTED.resolvedAt]: String(Date.now()), [TRUSTED.epoch]: 'owner:1',
+  } });
+  const titleFrames = (client: TestClient, text: string) => {
+    client.doc.getText('title').insert(client.doc.getText('title').length, text);
+    return client.drain();
+  };
+  /** A frame no gate applies (an awareness frame that does not decode), `bytes` long. */
+  const filler = (bytes: number) => {
+    const frame = new Uint8Array(bytes);
+    frame[0] = 1;
+    return frame;
+  };
+  const drainTasks = async () => {
+    for (let i = 0; i < 50; i += 1) await Promise.resolve();
+  };
+  const title = (opened: Opened) => opened.dobj.document.getText('title').toString();
+  beforeEach(() => {
+    mode = 'live';
+    release = null;
+  });
+
+  it('a validation D1 never answers closes the waiting sockets 1013 at the deadline, and nothing they sent applies', async () => {
+    const opened = await start(openDoc(new Backing(), GatedDocDO as never));
+    const ada = await connect(opened, who('ada', 'editor'));
+    mode = 'hang';
+    for (const frame of titleFrames(ada, 'never-validated')) void ada.deliver(frame);
+    await drainTasks();
+    expect(ada.closed, 'still waiting for D1').toBeNull();
+    await vi.advanceTimersByTimeAsync(limits.accessDeadlineMs);
+    expect(ada.closed?.code, 'the deadline fails closed; the client reconnects and resends').toBe(1013);
+    expect(title(opened)).not.toContain('never-validated');
+    // The gate is free again: the next socket is validated and its write applies.
+    mode = 'live';
+    const ben = await connect(opened, who('ben', 'editor'));
+    for (const frame of titleFrames(ben, 'after-deadline')) await ben.deliver(frame);
+    expect(title(opened)).toContain('after-deadline');
+  });
+
+  it('a socket queuing past its bound while D1 is slow closes 1013 at once, and the honest writer still applies', async () => {
+    const opened = await start(openDoc(new Backing(), GatedDocDO as never));
+    const ada = await connect(opened, who('ada', 'editor'));
+    const flooder = await connect(opened, who('flooder', 'viewer'));
+    const heavy = await connect(opened, who('heavy', 'viewer'));
+    mode = 'hold';
+    const delivered = titleFrames(ada, 'honest').map((frame) => ada.deliver(frame));
+    for (let i = 0; i <= limits.inboxFramesPerConnection; i += 1) void flooder.deliver(filler(16));
+    void heavy.deliver(filler(40 * 1024));
+    void heavy.deliver(filler(40 * 1024));
+    await drainTasks();
+    expect(flooder.closed?.code, 'past its frame bound, before D1 answers').toBe(1013);
+    expect(heavy.closed?.code, 'past its byte bound, before D1 answers').toBe(1013);
+    expect(ada.closed).toBeNull();
+    mode = 'live';
+    release!();
+    await Promise.all(delivered);
+    expect(ada.closed).toBeNull();
+    expect(title(opened)).toContain('honest');
+  });
+
+  it('frames from every socket together are bounded too', async () => {
+    const opened = await start(openDoc(new Backing(), GatedDocDO as never));
+    const sockets: TestClient[] = [];
+    for (const id of ['a', 'b', 'c']) sockets.push(await connect(opened, who(id, 'viewer')));
+    mode = 'hold';
+    for (const socket of sockets) void socket.deliver(filler(50 * 1024));
+    await drainTasks();
+    expect(sockets.map((socket) => socket.closed?.code ?? null), 'the frame that passes the total bound closes its socket').toEqual([null, null, 1013]);
+    mode = 'live';
+    release!();
+    await drainTasks();
+  });
+});
+
+describe('the workspace channel validates within the same deadline @p:ppl-2', () => {
+  it('a ping whose validation D1 never answers closes the workspace socket 1013 at the deadline', async () => {
+    let hang = false;
+    const original = PrincipalDO.credentials;
+    PrincipalDO.credentials = () => (sessions: string[], agents: string[]) => (hang
+      ? new Promise<never>(() => undefined)
+      : Promise.resolve({ sessions: new Set(sessions), agents: new Set(agents) }));
+    onTestFinished(() => { PrincipalDO.credentials = original; });
+    const { open } = principal('ada');
+    const { dobj } = open();
+    const socket = await workspaceSocket(dobj, 'ada', 'sess-a');
+    expect(socket.closed).toBeNull();
+    hang = true;
+    void dobj.webSocketMessage(socket as never, 'ping');
+    await flushAsync();
+    expect(socket.closed).toBeNull();
+    await vi.advanceTimersByTimeAsync(ACCESS_DEADLINE_MS);
+    expect(socket.closed?.code, 'fails closed; the client reconnects').toBe(1013);
   });
 });

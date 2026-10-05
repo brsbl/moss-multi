@@ -47,3 +47,9 @@ export const DOC_SOCKET_MAX_MS = SESSION_MAX_MS - 24 * 60 * 60 * 1000;
  * and hibernates; its next frame validates first.
  */
 export const ACCESS_TICK_MS = 5_000;
+
+/**
+ * The longest a DocDO or PrincipalDO waits for D1 to answer a validation (A§8, L§4.7): past it the validation fails
+ * closed, and the sockets waiting on it close 1013 and reconnect.
+ */
+export const ACCESS_DEADLINE_MS = 5_000;
