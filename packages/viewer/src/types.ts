@@ -48,6 +48,7 @@ export interface MossViewerServices {
   /** The reader followed a wiki link or a web link. */
   navigate?(target: MossViewerTarget): void;
   unfurl?(url: string): Promise<MossViewerUnfurl | null>;
+  htmlFrameUrl?: string;
 }
 
 export interface MossViewerOptions {

@@ -12,7 +12,7 @@ export function enableFrameDocument(src: string | null = HTML_FRAME_PATH): void 
 }
 
 /** The frame document srcDoc iframes load, or null to keep moss's data: URL. */
-export const htmlFrameSrc = (): string | null => frameSrc;
+export const htmlFrameSrc = (_noteId?: string | null): string | null => frameSrc;
 
 export const HTML_FRAME_IFRAME_SANDBOX = HTML_FRAME_SANDBOX;
 
