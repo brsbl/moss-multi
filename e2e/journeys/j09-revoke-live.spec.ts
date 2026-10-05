@@ -207,7 +207,9 @@ test('j09 sign-out: signing out in one window ends the same session in the other
 
 test('j09 cold: after an idle wake, a revoked doc link and a revoked folder link land no frame @hibernate @slow @p:ppl-2 @p:tech-6', async ({ actors, stack }, info) => {
   test.setTimeout(300_000);
-  const ada = await openShell(actors, 'ada');
+  // Ada works over the API only: an open shell shows the most recently edited note, so the holders' typing would
+  // switch her window between their notes and keep their DOs awake.
+  const ada = await actors.session(await actors.principal('ada'));
   const headers = { origin: stack.baseUrl };
   // Declared setup over the API: a note with an editor link, and a folder holding a subfolder note with an editor
   // folder link. The links' revocation is what this leg proves, so it is the decisive action.
@@ -235,12 +237,11 @@ test('j09 cold: after an idle wake, a revoked doc link and a revoked folder link
     await expect(ui.pane(holder.actor, holder.docId)).toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout: LIVE_TIMEOUT });
     holder.actor.expectHttp(404, ACCESS_ASK);
   }
-  await ada.page.goto('/');
   await actors.requireDistinct(2);
 
   const baseline = await Promise.all(holders.map((h) => stack.docInstance(h.docId)));
-  // Every window goes quiet, Ada's too: her home may hold a note open, and a visible tab's resync keeps its DO awake.
-  for (const actor of [ada, ...holders.map((h) => h.actor)]) await visibility(actor, true);
+  // Every window goes quiet: a visible tab's resync keeps its DO awake.
+  for (const holder of holders) await visibility(holder.actor, true);
   await new Promise((resolve) => setTimeout(resolve, IDLE_MS));
 
   const decisiveAt = Date.now();
