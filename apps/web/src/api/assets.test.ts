@@ -522,7 +522,7 @@ describe('a moved note keeps its media (A§16)', () => {
         };
       },
     });
-    const sending = call('POST', `/api/docs/${docId}/assets?filename=race.png`, ada.cookie, { body, headers: { 'content-type': 'image/png' } });
+    const sending = call('POST', `/api/docs/${docId}/assets?filename=race.png`, ada.cookie, { body, headers: { 'content-type': 'image/png', 'content-length': String(PNG.byteLength) } });
     // The upload resolves its note's access and then waits on the body while the owner moves the note.
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect((await move(ada, docId, folder)).status).toBe(200);
