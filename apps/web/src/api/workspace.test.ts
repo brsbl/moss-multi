@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import { countingBinds, D1_MAX_PARAMS, migratedD1, type TestD1 } from '../test/d1.ts';
-import { BASE, SECRET, insertDoc, insertFolder, insertGrant, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
+import { BASE, SECRET, insertDoc, insertFolder, insertGrant, insertLink, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
 import { workspace } from './workspace.ts';
 
 let d1: TestD1;
@@ -115,4 +115,95 @@ it('lists 150 shared notes and 150 folders, owned and granted, with a fixed numb
 
   expect(large.binds, 'bound parameters per statement do not grow with the listing').toEqual(small.binds);
   expect(Math.max(...large.binds)).toBeLessThanOrEqual(D1_MAX_PARAMS);
+}, 120_000);
+
+/** `count` folders under `parentId`, owned by `owner`, written in one batch. */
+async function folderBatch(owner: TestUser, parentIds: string[]): Promise<string[]> {
+  const ids = parentIds.map(() => crypto.randomUUID());
+  await d1.db.batch(ids.map((id, i) => d1.db
+    .prepare('INSERT INTO folders (id, owner_user_id, created_by, name, kind, parent_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .bind(id, owner.id, owner.id, `f-${id.slice(0, 8)}`, 'folder', parentIds[i], Date.now())));
+  return ids;
+}
+
+/** One note in each of `folderIds`, owned by `owner`, written in one batch. */
+async function docBatch(owner: TestUser, folderIds: string[]): Promise<string[]> {
+  const ids = folderIds.map(() => crypto.randomUUID());
+  const now = Date.now();
+  await d1.db.batch(ids.map((id, i) => d1.db
+    .prepare('INSERT INTO docs (id, owner_user_id, created_by, folder_id, title, filename, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+    .bind(id, owner.id, owner.id, folderIds[i], '', `${id}.md`, now, now)));
+  return ids;
+}
+
+it('lists a folder link over 150 subfolders and 600 notes completely, at fixed queries and parameters', async () => {
+  const dee = await signedUpUser(env, 'link-scale-dee');
+  const root = await insertFolder(d1.db, ada, ada.homeId);
+  const token = await insertLink(d1.db, { folderId: root }, 'commenter');
+  const listAs = async (db: D1Database, cookie: string | null, vault: string) => {
+    const headers: Record<string, string> = cookie ? { cookie } : {};
+    const response = await workspace(new Request(`${BASE}/api/workspace?vault=${vault}&share=${token}`, { headers }), { ...env, DB: db });
+    expect(response.status).toBe(200);
+    return (await response.json()) as Listing;
+  };
+  const measure = async (cookie: string | null) => {
+    const counted = countingBinds(d1.db);
+    const result = await listAs(counted.db, cookie, root);
+    return { result, binds: [...counted.binds].sort((a, b) => a - b), prepared: counted.prepared() };
+  };
+
+  const firstFolder = (await folderBatch(ada, [root]))[0];
+  await docBatch(ada, [firstFolder]);
+  await listAs(d1.db, dee.cookie, root);
+  const smallSignedIn = await measure(dee.cookie);
+  const smallAnonymous = await measure(null);
+  expect(smallSignedIn.result.vault.id).toBe(root);
+
+  // 29 more top-level subfolders, each with four children: 150 in all, and four notes in each.
+  const top = [firstFolder, ...(await folderBatch(ada, Array(29).fill(root)))];
+  const children = await folderBatch(ada, top.flatMap((id) => [id, id, id, id]));
+  const all = [...top, ...children];
+  const notes = [...(await docBatch(ada, all.slice(1).flatMap((id) => [id, id, id, id]))), ...(await docBatch(ada, [firstFolder, firstFolder, firstFolder]))];
+  const trashed = await insertDoc(d1.db, ada, { folderId: children[0], deleted: true });
+  const elsewhere = await insertDoc(d1.db, ada);
+  // Dee's own grants lift what they cover above the link's commenter; a viewer grant leaves the link's role.
+  const edited = children[5];
+  const editedParent = top[1];
+  await insertGrant(d1.db, { folderId: edited }, dee, 'editor');
+  await insertGrant(d1.db, { folderId: children[6] }, dee, 'viewer');
+  const owned = notes[0];
+  await insertGrant(d1.db, { docId: owned }, dee, 'owner');
+
+  const signedIn = await measure(dee.cookie);
+  const anonymous = await measure(null);
+  const folderIds = all.length;
+  const allNotes = notes.length + 1;
+  expect(folderIds).toBe(150);
+  expect(allNotes).toBe(600);
+
+  const signedInDocs = Object.fromEntries(signedIn.result.docs.map((row) => [row.id, row.role]));
+  const notesIn = await d1.db.prepare('SELECT id, folder_id AS folderId FROM docs WHERE folder_id = ?').bind(edited).all<{ id: string; folderId: string }>();
+  const expectedDoc = (id: string) => (id === owned ? 'owner' : notesIn.results.some((row) => row.id === id) ? 'editor' : 'commenter');
+  expect(signedIn.result.docs).toHaveLength(600);
+  expect(Object.keys(signedInDocs).filter((id) => signedInDocs[id] !== expectedDoc(id)), 'every note at the signed-in role').toEqual([]);
+  expect(signedInDocs[trashed]).toBeUndefined();
+  expect(signedInDocs[elsewhere]).toBeUndefined();
+  const signedInFolders = Object.fromEntries(signedIn.result.folders.map((row) => [row.id, row.role]));
+  expect(signedIn.result.folders).toHaveLength(150);
+  expect(all.filter((id) => signedInFolders[id] !== (id === edited ? 'editor' : 'commenter')), 'every subfolder at the signed-in role').toEqual([]);
+  expect(signedInFolders[editedParent]).toBe('commenter');
+
+  expect(anonymous.result.docs).toHaveLength(600);
+  expect(anonymous.result.docs.every((row) => row.role === 'viewer'), 'an anonymous holder reads at viewer').toBe(true);
+  expect(anonymous.result.folders).toHaveLength(150);
+  expect(anonymous.result.folders.every((row) => row.role === 'viewer')).toBe(true);
+  const paths = new Set(anonymous.result.folders.map((row) => row.path));
+  expect(anonymous.result.docs.every((row) => paths.has(row.folderPath)), 'every note sits in a listed folder').toBe(true);
+  expect(anonymous.result.folders.reduce((sum, row) => sum + (row as { noteCount?: number }).noteCount!, 0)).toBe(600);
+
+  expect(signedIn.prepared, 'statements do not grow with the link listing').toBe(smallSignedIn.prepared);
+  expect(signedIn.binds, 'bound parameters do not grow with the link listing').toEqual(smallSignedIn.binds);
+  expect(anonymous.prepared).toBe(smallAnonymous.prepared);
+  expect(anonymous.binds).toEqual(smallAnonymous.binds);
+  expect(Math.max(...signedIn.binds, ...anonymous.binds)).toBeLessThanOrEqual(D1_MAX_PARAMS);
 }, 120_000);
