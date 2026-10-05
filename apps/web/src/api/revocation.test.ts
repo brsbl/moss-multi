@@ -11,7 +11,7 @@ import { handleAuthRoute } from '../auth/route.ts';
 import { authenticateParty } from '../worker/party.ts';
 import { handleApi } from './router.ts';
 
-interface Recheck { principalIds?: string[]; tokens?: string[]; sessions?: string[]; at?: number }
+interface Recheck { principalIds?: string[]; tokens?: string[]; sessions?: string[]; everyone?: boolean; at?: number }
 
 const rechecks: { docId: string; input: Recheck }[] = [];
 const failing = new Set<string>();
@@ -185,6 +185,20 @@ describe('members: lowering and removing access kicks @p:ppl-2', () => {
   });
 });
 
+describe('pending invites: lowering or removing one by email kicks whoever it already granted @p:ppl-2', () => {
+  it('kicks the person on a lowering and on a removal, as the member path does', async () => {
+    const hal = await signedUpUser(env, 'kick-hal', 'Hal');
+    const docId = await insertDoc(d1.db, ada);
+    expect((await call('POST', `/api/docs/${docId}/members`, ada.cookie, { email: hal.email, role: 'editor' })).status).toBe(201);
+    rechecks.length = 0;
+    expect((await call('PATCH', `/api/docs/${docId}/members`, ada.cookie, { email: hal.email, role: 'viewer' })).status).toBe(200);
+    expect(kicked(docId).flatMap((r) => r.input.principalIds ?? [])).toContain(hal.id);
+    rechecks.length = 0;
+    expect((await call('DELETE', `/api/docs/${docId}/members`, ada.cookie, { email: hal.email })).status).toBe(200);
+    expect(kicked(docId).flatMap((r) => r.input.principalIds ?? [])).toContain(hal.id);
+  });
+});
+
 describe('links: revoking one kicks every connection that presented it @p:ppl-2', () => {
   it('rechecks the linked doc for the token', async () => {
     const docId = await insertDoc(d1.db, ada);
@@ -222,6 +236,32 @@ describe('moves: losing a grant or link through a move kicks @p:ppl-2', () => {
     const inputs = kicked(docId).map((r) => r.input);
     expect(inputs.flatMap((i) => i.principalIds ?? [])).toEqual([ben.id]);
     expect(inputs.flatMap((i) => i.tokens ?? [])).toEqual([token]);
+  });
+
+  it('a retried note move whose kick failed kicks again instead of answering a silent 200', async () => {
+    const shared = await insertFolder(d1.db, ada, ada.homeId);
+    const other = await insertFolder(d1.db, ada, ada.homeId);
+    const docId = await insertDoc(d1.db, ada, { folderId: shared });
+    await insertGrant(d1.db, { folderId: shared }, ben, 'editor');
+    failing.add(docId);
+    expect((await call('PATCH', `/api/docs/${docId}`, ada.cookie, { folderId: other })).status).toBe(503);
+    failing.clear();
+    expect((await call('PATCH', `/api/docs/${docId}`, ada.cookie, { folderId: other })).status).toBe(200);
+    const retry = kicked(docId).map((r) => r.input);
+    expect(retry.some((input) => input.everyone === true || input.principalIds?.includes(ben.id))).toBe(true);
+  });
+
+  it('a retried folder move whose kick failed kicks again', async () => {
+    const shared = await insertFolder(d1.db, ada, ada.homeId);
+    const moving = await insertFolder(d1.db, ada, shared);
+    const docId = await insertDoc(d1.db, ada, { folderId: moving });
+    await insertGrant(d1.db, { folderId: shared }, ben, 'editor');
+    failing.add(docId);
+    expect((await call('PATCH', `/api/folders/${moving}`, ada.cookie, { parentId: ada.homeId })).status).toBe(503);
+    failing.clear();
+    expect((await call('PATCH', `/api/folders/${moving}`, ada.cookie, { parentId: ada.homeId })).status).toBe(200);
+    const retry = kicked(docId).map((r) => r.input);
+    expect(retry.some((input) => input.everyone === true || input.principalIds?.includes(ben.id))).toBe(true);
   });
 
   it('a folder moved out from under a grant kicks its docs for that grantee', async () => {
@@ -279,6 +319,18 @@ describe('admission stamps what a recheck fences on @p:ppl-2', () => {
     expect(at).toBeLessThanOrEqual(Date.now());
   });
 
+  it('attaches the link to a socket whose role came from it, even when the link is revoked mid-admission', async () => {
+    const docId = await insertDoc(d1.db, ada);
+    const token = await insertLink(d1.db, { docId }, 'editor');
+    const racing = afterFirstLinkRead(d1.db, async () => {
+      await d1.db.prepare('UPDATE share_links SET revoked_at = ? WHERE token = ?').bind(Date.now(), token).run();
+    });
+    const verdict = await authenticateParty(upgrade(docId, cy.cookie, token), docId, { ...env, DB: racing });
+    if (!verdict.ok) throw new Error('refused');
+    expect(verdict.headers[TRUSTED.role]).toBe('editor');
+    expect(verdict.headers[TRUSTED.share]).toBe(token);
+  });
+
   it('forwards a share token only while its link is live, so a grantee is not kicked forever by a dead link', async () => {
     const docId = await insertDoc(d1.db, ada);
     await insertGrant(d1.db, { docId }, ben, 'viewer');
@@ -292,3 +344,31 @@ describe('admission stamps what a recheck fences on @p:ppl-2', () => {
     expect(withDead.headers[TRUSTED.role]).toBe('viewer');
   });
 });
+
+/** `db`, running `then` once right after the first statement that reads share_links answers (a revocation racing it). */
+function afterFirstLinkRead(db: D1Database, then: () => Promise<void>): D1Database {
+  let fired = false;
+  const wrap = (statement: D1PreparedStatement): D1PreparedStatement => new Proxy(statement, {
+    get(target, prop) {
+      const value = Reflect.get(target, prop, target) as unknown;
+      if (prop === 'bind') return (...args: unknown[]) => wrap(target.bind(...args));
+      if (typeof value !== 'function') return value;
+      if (prop !== 'all' && prop !== 'raw' && prop !== 'first' && prop !== 'run') return value.bind(target);
+      return async (...args: unknown[]) => {
+        const result: unknown = await value.apply(target, args);
+        if (!fired) {
+          fired = true;
+          await then();
+        }
+        return result;
+      };
+    },
+  });
+  return new Proxy(db, {
+    get(target, prop) {
+      const value = Reflect.get(target, prop, target) as unknown;
+      if (prop === 'prepare') return (query: string) => (/share_links/.test(query) ? wrap(target.prepare(query)) : target.prepare(query));
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+}

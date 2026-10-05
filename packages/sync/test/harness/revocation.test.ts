@@ -83,6 +83,28 @@ describe('DocDO.recheck @p:ppl-2', () => {
     expect(woken.dobj.document.getText('title').toString()).toBe(title);
   });
 
+  it('refuses a link only on sockets resolved before its revocation, so a note moved back under the link opens again', async () => {
+    const opened = await start(openDoc());
+    const resolvedBefore = Date.now() - 50;
+    await opened.dobj.recheck({ tokens: ['tok-1'], at: Date.now() });
+    expect((await connect(opened, { id: 'cy', share: 'tok-1', resolvedAt: resolvedBefore })).closed?.code).toBe(CLOSE.revoked);
+    vi.advanceTimersByTime(1_000);
+    expect((await connect(opened, { id: 'cy', share: 'tok-1' })).closed, 'resolved after the link reached the note again').toBeNull();
+    const woken = await start(wake(opened));
+    expect((await connect(woken, { kind: 'anonymous', id: 'anonymous', role: 'viewer', session: null, share: 'tok-1' })).closed).toBeNull();
+  });
+
+  it('a recheck for everyone closes every socket resolved before it and admits the ones resolved after', async () => {
+    const opened = await start(openDoc());
+    const owner = await connect(opened, { id: 'ada', role: 'owner' });
+    const rider = await connect(opened, { kind: 'anonymous', id: 'anonymous', role: 'viewer', session: null, share: 'tok-1' });
+    await opened.dobj.recheck({ everyone: true, at: Date.now() });
+    expect(owner.closed?.code).toBe(CLOSE.revoked);
+    expect(rider.closed?.code).toBe(CLOSE.revoked);
+    vi.advanceTimersByTime(1_000);
+    expect((await connect(opened, { id: 'ada', role: 'owner' })).closed).toBeNull();
+  });
+
   it('keeps the latest revocation time for a principal across rechecks', async () => {
     const opened = await start(openDoc());
     await opened.dobj.recheck({ principalIds: ['ben'], at: Date.now() });
@@ -169,6 +191,25 @@ describe('PrincipalDO sign-out registry @p:ppl-2', () => {
     expect(calls.map((c) => c.docId)).toContain('doc-2');
   });
 
+  it('closes 4402 a workspace socket that arrives after its session ended, and 4401 one from a revoked agent', async () => {
+    recordRechecks();
+    const ada = principal('ada');
+    const first = ada.open().dobj;
+    await first.setName('ada');
+    await first.endSession('sess-a');
+    const late = await workspaceSocket(ada.open().dobj, 'ada', 'sess-a');
+    expect(late.sent).toContain(JSON.stringify({ type: 'session-ended', sessionId: 'sess-a' }));
+    expect(late.closed?.code).toBe(CLOSE.sessionEnded);
+    expect((await workspaceSocket(ada.open().dobj, 'ada', 'sess-b')).closed).toBeNull();
+
+    const agent = principal('agent-2');
+    const revoked = agent.open().dobj;
+    await revoked.setName('agent-2');
+    await revoked.revokePrincipal();
+    const agentLate = await workspaceSocket(agent.open().dobj, 'agent-2', '');
+    expect(agentLate.closed?.code).toBe(CLOSE.noPrincipal);
+  });
+
   it('a revoked agent key rechecks every doc the agent opened and refuses its later registrations', async () => {
     const calls = recordRechecks();
     const { open } = principal('agent-1');
@@ -205,6 +246,16 @@ describe('DocDO registers sockets in the sign-out registry @p:ppl-2', () => {
       { principalId: 'agent-1', sessionId: null, docId: opened.backing.docId },
     ]);
     expect(user.closed).toBeNull();
+  });
+
+  it('closes a socket whose registration fails, so it reconnects and registers rather than outliving a sign-out', async () => {
+    const original = DocDO.registry;
+    DocDO.registry = () => async () => { throw new Error('PrincipalDO unavailable'); };
+    onTestFinished(() => { DocDO.registry = original; });
+    const opened = await start(openDoc());
+    const socket = await connect(opened, { id: 'ada', session: 'sess-a' });
+    await flushAsync();
+    expect(socket.closed?.code).toBe(1013);
   });
 
   it('closes 4402 a socket whose session ended before it registered, and remembers the session', async () => {
