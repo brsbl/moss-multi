@@ -1,11 +1,11 @@
 // The members API (T1.1, A§8): who has access to a doc, folder or vault, and sharing it with a person by email. Only
 // the owner shares, emails reach the owner alone, and a missing target answers like an inaccessible one. Lowering or
 // removing access waits for the one kick path (T2.5), so a grant here only adds or raises.
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { ROLES, SHARE_ROLES, type Role, type ShareRole } from '@moss-multi/protocol/roles';
 import type { AuthEnv } from '../auth/auth.ts';
 import { resolvePrincipal, type Principal } from '../auth/principal.ts';
-import { createDb, type Db } from '../db/client.ts';
+import { createDb, inJson, type Db } from '../db/client.ts';
 import { agents, docMembers, folderMembers, user } from '../db/schema.ts';
 import { json } from '../worker/route.ts';
 import { resolveDocAccess, resolveFolderAccess } from './access.ts';
@@ -57,8 +57,8 @@ async function listMembers(db: Db, target: MemberTarget, ownerUserId: string, wi
   const userIds = [ownerUserId, ...grants.filter((g) => g.principalType === 'user').map((g) => g.principalId)];
   const agentIds = grants.filter((g) => g.principalType === 'agent').map((g) => g.principalId);
   const [users, agentRows] = await Promise.all([
-    db.select({ id: user.id, name: user.name, email: user.email }).from(user).where(inArray(user.id, userIds)),
-    agentIds.length > 0 ? db.select({ id: agents.id, name: agents.name }).from(agents).where(inArray(agents.id, agentIds)) : [],
+    db.select({ id: user.id, name: user.name, email: user.email }).from(user).where(inJson(user.id, userIds)),
+    agentIds.length > 0 ? db.select({ id: agents.id, name: agents.name }).from(agents).where(inJson(agents.id, agentIds)) : [],
   ]);
   const people = new Map(users.map((u) => [u.id, u]));
   const bots = new Map(agentRows.map((a) => [a.id, a]));

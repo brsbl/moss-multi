@@ -4,7 +4,7 @@
 import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import { foldRole, type Role } from '@moss-multi/protocol/roles';
 import type { Principal } from '../auth/principal.ts';
-import type { Db } from '../db/client.ts';
+import { inJson, type Db } from '../db/client.ts';
 import { docMembers, docs, folderMembers, folders, shareLinks } from '../db/schema.ts';
 
 /** Folder levels from a doc's folder up to its vault that grants and links are read on (A§8). */
@@ -144,8 +144,8 @@ export async function accessibleDocs(db: Db, principal: Principal, visibleFolder
   const ownerId = actingUserId(principal);
   const rows = await db.select().from(docs).where(and(isNull(docs.deletedAt), or(
     ownerId ? eq(docs.ownerUserId, ownerId) : sql`0`,
-    grants.length ? inArray(docs.id, grants.map((grant) => grant.docId)) : sql`0`,
-    folderIds.length ? inArray(docs.folderId, folderIds) : sql`0`,
+    inJson(docs.id, grants.map((grant) => grant.docId)),
+    inJson(docs.folderId, folderIds),
   )));
   return rows.flatMap((row) => {
     const folderRole = folders.find((folder) => folder.id === row.folderId)?.role;
