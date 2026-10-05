@@ -799,7 +799,8 @@ describe('L4/A8 chart and sketch registers @p:col-1 @p:col-3 @p:note-2', () => {
       expect(markdown).toContain('"title": "Stored"');
       expect(markdown).toContain('From m3');
       expect([...host.docs.values()].filter((payload) => payloadMap(payload).size)).toHaveLength(2);
-      expect(chart.getAttribute('__config'), 'the note keeps no chart value').toBeUndefined();
+      const migrated = restored.get('root', Y.XmlText).toDelta()[0].insert as Y.XmlElement;
+      expect(migrated.getAttribute('__config'), 'the note keeps no chart value').toBeUndefined();
       expect(restored.getMap('registers').size).toBe(0);
       const bytes = Buffer.from(Y.encodeStateAsUpdate(restored));
       expect(bytes.includes('Stored') || bytes.includes('From m3')).toBe(false);
