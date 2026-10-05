@@ -2,7 +2,6 @@
 // sandboxed SVG; editors upload, readers (a share link included) read. A doc's media are its own record, mapping each
 // `assets/<file>` it uses to the exact version placed in it: never a filename looked up in its folder.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { MEDIA_CAP_BYTES } from '@moss-multi/protocol/media';
 import { UPLOAD_RATE, VAULT_MEDIA_QUOTA_BYTES } from '@moss-multi/protocol/limits';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
 import { BASE, insertDoc, insertFolder, insertGrant, insertLink, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
