@@ -70,8 +70,32 @@ export class PayloadDocs {
     return () => this.#listeners.delete(listener);
   }
 
+  readonly #awaited = new Set<string>();
+  readonly #arrivals = new Set<(id: string) => void>();
+
+  /** True while a synced payload's state has not arrived from the server yet; its field is read-only meanwhile. */
+  awaiting(id: string): boolean {
+    return this.#awaited.has(id);
+  }
+
+  /** Marks `id` as asked for (its sync sent a step 1). */
+  await(id: string): void {
+    this.#awaited.add(id);
+  }
+
+  /** `id`'s state arrived. */
+  arrived(id: string): void {
+    if (this.#awaited.delete(id)) for (const listener of [...this.#arrivals]) listener(id);
+  }
+
+  onArrive(listener: (id: string) => void): () => void {
+    this.#arrivals.add(listener);
+    return () => this.#arrivals.delete(listener);
+  }
+
   destroy(): void {
     this.#listeners.clear();
+    this.#arrivals.clear();
     for (const doc of this.docs.values()) doc.destroy();
     this.docs.clear();
   }
@@ -117,7 +141,9 @@ export class PayloadSync {
     for (const [id, doc] of host.docs) this.#watch(id, doc);
     this.#stops.push(host.onHold((id, doc, fresh) => {
       this.#watch(id, doc);
-      if (!fresh && options.open()) options.send(encodePayloadFrame(id, PAYLOAD_STEP1, Y.encodeStateVector(doc)));
+      if (fresh) return;
+      host.await(id);
+      if (options.open()) options.send(encodePayloadFrame(id, PAYLOAD_STEP1, Y.encodeStateVector(doc)));
     }));
   }
 
@@ -150,7 +176,11 @@ export class PayloadSync {
     const frame = decodePayloadFrame(bytes);
     if (!frame) return false;
     // The server never asks a client for a payload; its fan-out and reveals are updates.
-    if (frame.step !== PAYLOAD_STEP1) Y.applyUpdate(this.host.hold(frame.id), frame.data, this.options.remote);
+    if (frame.step === PAYLOAD_STEP1) return true;
+    const doc = this.host.hold(frame.id);
+    Y.applyUpdate(doc, frame.data, this.options.remote);
+    // A step 2 answers this client's step 1; an update that integrates whole is a reveal's state or a first text.
+    if (frame.step === PAYLOAD_STEP2 || (!doc.store.pendingStructs && !doc.store.pendingDs)) this.host.arrived(frame.id);
     return true;
   }
 
@@ -168,15 +198,18 @@ type StackEvent = 'stack-item-added' | 'stack-item-popped' | 'stack-cleared' | '
 export const lexicalAction = (editor: { _updating: boolean; _pendingEditorState: unknown; _editorState: unknown }) => (): unknown =>
   editor._updating ? (editor._pendingEditorState ?? editor._editorState) : null;
 
-/** One Cmd+Z step: the managers that took the edits of one action (a Lexical update), in order. */
+type StackItem = Y.UndoManager['undoStack'][number];
+
+/** One Cmd+Z step: the stack items one action (a Lexical update) added, with the managers that hold them, in order. */
 interface Step {
-  managers: Y.UndoManager[];
+  entries: { manager: Y.UndoManager; item: StackItem }[];
   stamp: unknown;
 }
 
 /**
  * The body's one Cmd+Z stack (A§10.8): the note's UndoManager and one per held payload doc, since a Y.UndoManager
- * spans one doc. Each new tracked edit records which manager took it, and undo and redo replay that order. As one
+ * spans one doc. Each new tracked edit records the stack item it added, and undo and redo replay exactly those items
+ * in that order: a step a peer emptied replays nothing rather than an older item of the same manager. As one
  * UndoManager over every doc would, edits within the root's capture window of the last one join its step, and so do
  * edits one action made in several docs (a setter and an attribute in one Lexical update, same `stamp`). A new edit
  * ends every redo chain. It stands in for the root UndoManager where the plugin expects one (undo, redo, the stacks'
@@ -187,6 +220,8 @@ export class BodyUndo extends Observable<StackEvent> {
   readonly undone: Step[] = [];
   readonly redone: Step[] = [];
   #replaying = false;
+  /** The items undo or redo adds to the opposite stacks while replaying a step. */
+  #replayed: Step['entries'] = [];
   /** When the last tracked edit landed, in any doc. */
   #lastChange = 0;
 
@@ -208,8 +243,9 @@ export class BodyUndo extends Observable<StackEvent> {
 
   track(manager: Y.UndoManager): void {
     this.managers.push(manager);
-    manager.on('stack-item-added', (event: { type: 'undo' | 'redo' }) => {
-      if (!this.#replaying && event.type === 'undo') this.#added(manager);
+    manager.on('stack-item-added', (event: { type: 'undo' | 'redo'; stackItem: StackItem }) => {
+      if (this.#replaying) this.#replayed.push({ manager, item: event.stackItem });
+      else if (event.type === 'undo') this.#added(manager, event.stackItem);
       this.emit('stack-item-added', [event, this]);
     });
     manager.on('stack-item-updated', (event: { type: 'undo' | 'redo' }) => {
@@ -219,16 +255,16 @@ export class BodyUndo extends Observable<StackEvent> {
     manager.on('stack-item-popped', (event: unknown) => this.emit('stack-item-popped', [event, this]));
   }
 
-  #added(manager: Y.UndoManager): void {
+  #added(manager: Y.UndoManager, item: StackItem): void {
     const now = Date.now();
     const stamp = this.stamp();
     const last = this.undone.at(-1);
     this.redone.length = 0;
     if (last && ((stamp !== null && last.stamp === stamp) || now - this.#lastChange < this.root.captureTimeout)) {
-      last.managers.push(manager);
+      last.entries.push({ manager, item });
       last.stamp = stamp;
     } else {
-      this.undone.push({ managers: [manager], stamp });
+      this.undone.push({ entries: [{ manager, item }], stamp });
       for (const other of this.managers) if (other !== manager) other.stopCapturing();
     }
     this.#lastChange = now;
@@ -252,11 +288,11 @@ export class BodyUndo extends Observable<StackEvent> {
   }
 
   undo(): unknown {
-    return this.#step(this.undone, this.redone, (managers) => [...managers].reverse().map((manager) => manager.undo()));
+    return this.#step(this.undone, this.redone, 'undo');
   }
 
   redo(): unknown {
-    return this.#step(this.redone, this.undone, (managers) => managers.map((manager) => manager.redo()));
+    return this.#step(this.redone, this.undone, 'redo');
   }
 
   stopCapturing(): void {
@@ -278,21 +314,48 @@ export class BodyUndo extends Observable<StackEvent> {
   }
 
   /** Pops steps until one has something to replay (a peer may have emptied another's). */
-  #step(from: Step[], to: Step[], run: (managers: Y.UndoManager[]) => unknown[]): unknown {
+  #step(from: Step[], to: Step[], kind: 'undo' | 'redo'): unknown {
     this.stopCapturing();
     this.#replaying = true;
     try {
       while (from.length) {
         const step = from.pop()!;
-        const items = run(step.managers).filter((item) => item !== null);
-        if (items.length) {
-          to.push(step);
-          return items[0];
+        this.#replayed = [];
+        let first: unknown = null;
+        for (const { manager, item } of kind === 'undo' ? [...step.entries].reverse() : step.entries) {
+          const done = replayOnly(manager, kind, item);
+          first ??= done;
+        }
+        if (this.#replayed.length) {
+          // Undo replays a step backwards, so the items it adds are in reverse; redo replays them forwards.
+          to.push({ entries: kind === 'undo' ? this.#replayed.reverse() : this.#replayed, stamp: step.stamp });
+          return first;
         }
       }
       return null;
     } finally {
       this.#replaying = false;
+      this.#replayed = [];
     }
+  }
+}
+
+/**
+ * Undoes or redoes `item` alone: Y.UndoManager pops past items that change nothing, which would replay an older item
+ * from another step, so the items around it are set aside while it runs.
+ */
+function replayOnly(manager: Y.UndoManager, kind: 'undo' | 'redo', item: StackItem): StackItem | null {
+  const name = kind === 'undo' ? 'undoStack' : 'redoStack';
+  const stack = manager[name];
+  const at = stack.lastIndexOf(item);
+  if (at < 0) return null;
+  const alone = [item];
+  manager[name] = alone;
+  try {
+    return kind === 'undo' ? manager.undo() : manager.redo();
+  } finally {
+    // Popped, whether or not it changed anything; otherwise it stays where it was.
+    if (!alone.length) stack.splice(at, 1);
+    manager[name] = stack;
   }
 }

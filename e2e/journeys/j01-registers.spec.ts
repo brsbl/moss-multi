@@ -35,6 +35,12 @@ const codes = (actor: Actor, id: string) => ui.body(actor, id).evaluate(element 
     .filter(n => n.getType() === 'code-block' && n.isAttached()).map(n => (n as unknown as { getCode(): string }).getCode()));
 });
 
+/** The body's top-level block types, in order. */
+const blocks = (actor: Actor, id: string) => ui.body(actor, id).evaluate(element => {
+  const editor = (element as HTMLElement & { __lexicalEditor: LexicalEditor }).__lexicalEditor;
+  return editor.read(() => (editor.getEditorState()._nodeMap.get('root') as unknown as { getChildren(): { getType(): string }[] }).getChildren().map(n => n.getType()));
+});
+
 /** A peer's structural edit, through the editor: moves the code block (or the paragraph above it) to the end, or removes it. */
 const restructure = (actor: Actor, id: string, change: 'move-block' | 'move-above' | 'remove') => ui.body(actor, id).evaluate((element, change) => {
   const editor = (element as HTMLElement & { __lexicalEditor: LexicalEditor }).__lexicalEditor;
@@ -99,7 +105,8 @@ for (const change of ['move-block', 'move-above'] as const) {
     await ben.page.keyboard.type('B1');
     await expect.poll(() => codes(ada, id), { timeout: PEER_TIMEOUT }).toEqual(['seedB1']);
     await restructure(ada, id, change);
-    await expect.poll(async () => (await ui.fieldText(ben, id, 'body')).startsWith(change === 'move-block' ? 'First para.' : 'Last para.'), { message: 'Ben receives the move', timeout: PEER_TIMEOUT }).toBe(true);
+    await expect.poll(() => blocks(ben, id), { message: 'Ben receives the move', timeout: PEER_TIMEOUT })
+      .toEqual(change === 'move-block' ? ['paragraph', 'paragraph', 'code-block'] : ['code-block', 'paragraph', 'paragraph']);
     await expect(field(ben, id), 'the field follows its block').toBeFocused();
     await expect(field(ben, id)).toHaveValue('seedB1');
     await ben.page.keyboard.type('B2');
