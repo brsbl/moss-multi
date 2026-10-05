@@ -98,6 +98,19 @@ export const TRASH_ROW_ATTR = 'data-trash-row';
 /** The retention notice on a note open in the Trash view; its words come from protocol/retention.ts. */
 export const RETENTION_NOTICE_ATTR = 'data-retention-notice';
 
+/** Suggest mode (docs/design/suggestions.md §5, §8): the pane's mode, the role-locked chip, the toolbar toggle, the
+ * band offering back text a closed suggestion could not keep, and painted suggestion markers. */
+export const EDIT_MODE_ATTR = 'data-edit-mode';
+export const EDIT_MODES = ['edit', 'suggest', 'review'] as const;
+export type EditMode = (typeof EDIT_MODES)[number];
+export const SUGGEST_CHIP_ATTR = 'data-suggest-chip';
+export const SUGGEST_TOGGLE_ATTR = 'data-suggest-toggle';
+export const SUGGEST_UNSAVED_ATTR = 'data-suggest-unsaved';
+export const SUGGEST_MARK_ATTR = 'data-suggest-mark';
+/** On the pane: suggest frames sent and refused by this pane's fork (test readouts). */
+export const SUGGEST_SENT_ATTR = 'data-suggest-sent';
+export const SUGGEST_REFUSED_ATTR = 'data-suggest-refused';
+
 /** The body editor root Lexical renders. */
 export const LEXICAL_EDITOR_SELECTOR = '[data-lexical-editor="true"]';
 
