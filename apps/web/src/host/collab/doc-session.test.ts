@@ -8,6 +8,8 @@ class FakeSocket extends EventTarget {
   static CONNECTING = 0;
   static CLOSED = 3;
   static CLOSING = 2;
+  // y-partyserver sends an update only while `ws.readyState === ws.OPEN`.
+  readonly OPEN = 1;
   readyState = 0;
   sent: unknown[] = [];
   closes: number[] = [];

@@ -207,8 +207,9 @@ class CountedKeys extends Map<string, Y.Item> {
   read = 0;
   keys(): ReturnType<Map<string, Y.Item>['keys']> {
     const inner = super.keys();
+    const advance = inner.next.bind(inner);
     const next = (): IteratorResult<string> => {
-      const step = inner.next();
+      const step = advance();
       if (!step.done) this.read += 1;
       return step;
     };
