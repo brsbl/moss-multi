@@ -17,7 +17,7 @@ import { resolvePrincipal, type Principal } from '../auth/principal.ts';
 import { createDb, inJson, type Db } from '../db/client.ts';
 import { agents, docMembers, folderMembers, user } from '../db/schema.ts';
 import { json } from '../worker/route.ts';
-import { actingUserId, liveAndManaged, managesDoc, managesFolder, managesLive, resolveDocAccess, resolveFolderAccess } from './access.ts';
+import { actingUserId, liveAndManaged, managesDoc, managesFolder, managesLive, reapDeadInvites, resolveDocAccess, resolveFolderAccess } from './access.ts';
 import { NO_STORE, notFound, readJsonObject, unauthenticated } from './respond.ts';
 
 export type MemberTarget = { type: 'doc' | 'folder'; id: string };
@@ -274,11 +274,17 @@ async function change(
           AND accepted_at IS NULL AND revoked_at IS NULL AND ${manages(target, 2, 5)}`)
           .bind(target.type, target.id, person?.email.toLowerCase() ?? '', Date.now(), callerId),
         env.DB.prepare(`DELETE FROM ${table} WHERE ${column} = ?1 AND principal_id = ?2 AND ${manages(target, 1, 3)}`).bind(target.id, principalId, callerId),
+        // Invites they sent die with their manage, for good (A§8).
+        reapDeadInvites(env.DB, Date.now()),
       ]);
       done = changed(deleted);
     } else {
-      done = changed(await env.DB.prepare(`UPDATE ${table} SET role = ?3 WHERE ${column} = ?1 AND principal_id = ?2 AND role = ?4
-        AND ${manages(target, 1, 5)}`).bind(target.id, principalId, role, grant.role, callerId).run());
+      const [updated] = await env.DB.batch([
+        env.DB.prepare(`UPDATE ${table} SET role = ?3 WHERE ${column} = ?1 AND principal_id = ?2 AND role = ?4
+          AND ${manages(target, 1, 5)}`).bind(target.id, principalId, role, grant.role, callerId),
+        reapDeadInvites(env.DB, Date.now()),
+      ]);
+      done = changed(updated);
     }
     if (!done) {
       const lost = await lostManage(db, caller, target);
