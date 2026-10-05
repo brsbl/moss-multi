@@ -15,8 +15,11 @@ export class Replay {
   #done: (() => void) | null = null;
   #timer: ReturnType<typeof setTimeout> | null = null;
 
-  /** `send` returns false when the socket can no longer take a frame, which ends the replay. */
-  constructor(private readonly send: (frame: Uint8Array) => boolean) {}
+  /**
+   * `send` gets each frame's Yjs update to send as a sync update message, and returns false when the socket can no
+   * longer take one, which ends the replay.
+   */
+  constructor(private readonly send: (update: Uint8Array) => boolean) {}
 
   get active(): boolean {
     return this.#timer !== null;

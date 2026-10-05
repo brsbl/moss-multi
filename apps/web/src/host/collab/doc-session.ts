@@ -303,10 +303,10 @@ export class DocSession {
     });
     broadcastAwarenessOnUpdate(this.provider);
     closeNormally(this.provider, () => this.#lingering);
-    this.#replay = new Replay((frame) => {
+    this.#replay = new Replay((update) => {
       const ws = this.provider.ws;
       if (!ws || ws.readyState !== WebSocket.OPEN || this.#ended) return false;
-      ws.send(frame);
+      ws.send(syncFrame(2, update));
       return true;
     });
     // The frame discipline (comments.md §6): with writes unacked, the server's step 1 is answered only after they are

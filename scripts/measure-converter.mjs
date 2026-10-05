@@ -301,15 +301,16 @@ const overTitleBudget = (t) => t.cpuMs > TITLE_WRITE_BUDGET_MS || t.maxCpuMs > T
 // pre-encoded frames; its CPU over its frame count is held to the step's budget, one /proc tick spread over the batch
 // allowed. The budgets are recorded in docs/METHOD.md.
 const ANCHOR_STEPS = [
-  { name: 'keys', label: 'single-key frames, none touching an endpoint', budgetMs: 1 },
-  { name: 'shared', label: 'a frame deleting and retyping a character 32 comments share (31 re-minted)', budgetMs: 20 },
-  { name: 'forged', label: 'a forged one-item frame inside a long orphan\'s lost place', budgetMs: 2 },
-  { name: 'lift', label: 'a frame deleting a paragraph that holds 500 comments (500 orphan records written)', budgetMs: 400 },
+  { name: 'keys', label: 'single-key frames, none touching an endpoint', budgetMs: 0.5 },
+  { name: 'shared', label: 'a frame deleting and retyping a character 32 comments share (31 re-minted)', budgetMs: 10 },
+  { name: 'forged', label: 'a forged one-item frame inside a long orphan\'s lost place', budgetMs: 1 },
+  { name: 'lift', label: 'a frame deleting a paragraph that holds 500 comments (500 orphan records written)', budgetMs: 100 },
 ];
 const ANCHOR_EXPECT = { setup: { records: 2_000, orphaned: 240 }, shared: { anchored: 31 }, forged: { orphaned: 240 }, lift: { orphaned: 2_500 } };
 
 async function measureAnchors(port) {
-  const server = await startWorker('converter', port);
+  await bundle('anchors', join(REPO, 'packages/sync/measure/anchors-worker.ts'));
+  const server = await startWorker('anchors', port);
   try {
     const setup = await timedRequest(server, '/anchors/setup', { method: 'POST' });
     const built = JSON.parse(setup.body);

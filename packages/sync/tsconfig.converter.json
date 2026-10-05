@@ -22,5 +22,7 @@
       "@moss-multi/host/*": ["../../apps/web/src/host/*"]
     }
   },
-  "include": ["src/converter/**/*.ts", "test/*.ts", "test/parity/**/*.ts", "test/views/**/*.ts", "test/workerd/**/*.ts", "measure/**/*.ts"]
+  "include": ["src/converter/**/*.ts", "test/*.ts", "test/parity/**/*.ts", "test/views/**/*.ts", "test/workerd/**/*.ts", "measure/**/*.ts"],
+  // The anchor measurement runs the DocDO's modules, which tsconfig.json checks against the Workers types.
+  "exclude": ["measure/anchors.ts", "measure/anchors-worker.ts"]
 }
