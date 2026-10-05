@@ -261,6 +261,8 @@ jobs:
         run: |
           log="$PWD/.local-stack/runs/$RUN_ID/wrangler.log"
           nohup setsid bash -c "while true; do echo \"== \$(date +%T.%N) L=\$(wc -l < $log)\"; top -b -n2 -d0.3 -w 200 | awk '/^top -/{n++} n==2' | sed -n '3p;8,15p'; done" > "$PWD/e2e/cpu.log" 2>&1 < /dev/null &
+          nohup setsid bash scripts/ci/probe/iosample.sh "$log" > "$PWD/e2e/io.log" 2>&1 < /dev/null &
+          df -h; mount | grep -E ' / | /__w|/tmp|shm' || true; nproc; free -m
       - name: Selftests, then the group's journeys
         working-directory: e2e
         env:
@@ -296,6 +298,7 @@ jobs:
             e2e/calibration-results/
             e2e/playwright-report/
             e2e/cpu.log
+            e2e/io.log
             .local-stack/runs/*/wrangler.log
             .local-stack/runs/*/state.json
           retention-days: 7
