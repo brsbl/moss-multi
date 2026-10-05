@@ -162,11 +162,12 @@ export function createBridge({ pathname, fetch: fetcher = fetch.bind(globalThis)
     const query = new URLSearchParams();
     if (vaultId) query.set('vault', vaultId);
     if (docId) query.set('doc', docId);
-    // A reload cancels this fetch, and WebKit rejects it as an "access control checks" TypeError. While the page
-    // leaves, the failure is held back so no caller reports it; a page that stays still gets it, later.
+    // WebKit logs a fetch a navigation cancels as an "access control checks" error, so a leaving page aborts the
+    // listing first and holds the failure back from callers; a page that stays still gets it, later.
     let leaving = false;
-    const unwatch = browser.onLeave?.(() => { leaving = true; }) ?? noop;
-    const pending: Promise<NoteMetadata[]> = request(`/api/workspace${query.size ? `?${query}` : ''}`).then(async (response) => {
+    const abort = new AbortController();
+    const unwatch = browser.onLeave?.(() => { leaving = true; abort.abort(); }) ?? noop;
+    const pending: Promise<NoteMetadata[]> = request(`/api/workspace${query.size ? `?${query}` : ''}`, { signal: abort.signal }).then(async (response) => {
       if (!response.ok) throw new Error(`GET /api/workspace: ${response.status}`);
       const data = (await response.json()) as WorkspaceListing;
       if (version !== loadVersion) return listing ?? [];
