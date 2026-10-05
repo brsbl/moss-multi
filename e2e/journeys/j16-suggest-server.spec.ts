@@ -68,6 +68,8 @@ test('j16-suggest-server: a forged raw frame from a suggester deleting original 
 
   const sever = ben.sever;
   if (!sever) throw new Error('ben is not severable');
+  // The 4403 sends the client to REST, which still says suggester: it rebinds read-only on a fresh socket (A§8).
+  ben.expectReconnects(1, docId);
   sever.inject(syncUpdate(forged));
 
   await expect(ben.page.locator(`[${INPUT_REFUSAL_ATTR}]`), 'the refusal shows in the band').toContainText(/can.t edit this note|can view this note/, { timeout: BIND_TIMEOUT });

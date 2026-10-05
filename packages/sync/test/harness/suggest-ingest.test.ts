@@ -455,6 +455,8 @@ function manyDeleteRanges(client: number, from: number, len: number, ranges: num
 
 describe('T5.2 a suggester body frame costs O(frame) @p:mean-2', () => {
   it('a maximum-size forged frame from a suggester costs the same on a small doc and the 1.69 MB doc', async () => {
+    // Fake timers freeze performance.now.
+    vi.useRealTimers();
     const measure = async (paragraphs: number, scattered: number) => {
       const opened = await start(openDoc());
       const source = bigDoc(paragraphs, scattered);
