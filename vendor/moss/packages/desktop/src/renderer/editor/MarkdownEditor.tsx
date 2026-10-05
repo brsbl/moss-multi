@@ -3697,6 +3697,7 @@ function FloatingSelectionTools({
             data-floating-selection-toolbar="true" // moss-multi seam: toolbar-contract (A§19): moss's own bottom toolbar
           >
             <div ref={portalRef} className="w-full max-w-lg empty:hidden" />
+            <ToolbarCollab noteId={noteId} />{/* moss-multi seam: suggest-toggle (T5.1): beside the docked bar, outside its layout */}
             <SelectionToolbarShell
               className="flex-col"
               style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
@@ -3711,7 +3712,6 @@ function FloatingSelectionTools({
                       {insertButton}
                       {commentButton}
                       {actionsButton}
-                      <ToolbarCollab noteId={noteId} />{/* moss-multi seam: suggest-toggle (T5.1) */}
                     </div>
                   </>
                 )}

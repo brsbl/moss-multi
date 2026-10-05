@@ -35,9 +35,19 @@ export function SuggestToggle({ docId }: { docId: string }): ReactNode {
   );
 }
 
-/** MarkdownEditor's suggest-toggle seam: the end of moss's docked bottom toolbar. */
+/**
+ * MarkdownEditor's suggest-toggle seam: a small shell docked at the right of moss's bottom toolbar, positioned out
+ * of its flow so moss's own bar keeps its layout.
+ */
 export function ToolbarCollab({ noteId }: { noteId: string }): ReactNode {
-  return <SuggestToggle docId={noteId} />;
+  const role = useDocRole(noteId);
+  const mode = useShownMode(noteId);
+  if (!can(role, 'edit') || mode === null || mode === 'review') return null;
+  return (
+    <div data-suggest-dock="" className="pointer-events-auto absolute bottom-0 left-full -ml-2 inline-flex rounded-lg border border-border-subtle bg-surface-panel px-1.5 py-1 shadow-sm">
+      <SuggestToggle docId={noteId} />
+    </div>
+  );
 }
 
 /** In the top bar: "Suggesting" while the pane suggests (locked for a suggester), and Review for any role. */

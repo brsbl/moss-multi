@@ -35,7 +35,7 @@ export interface Target {
 export const TARGETS: Target[] = [
   // Compare the default shell with editing controls visible; j01 separately gates deviation 10 on blur.
   // Mask only web controls: Share and connection in the top bar, and the vault selector in either shell.
-  { id: 'shell-default', story: 'app--default', seed: 'story-listing', focusEditor: true, masks: ['[data-collab-chrome]'], floor: 0.05, maxBlob: 16 },
+  { id: 'shell-default', story: 'app--default', seed: 'story-listing', focusEditor: true, masks: ['[data-collab-chrome]', '[data-suggest-dock]'], floor: 0.05, maxBlob: 16 },
   { id: 'shell-empty', story: 'app--empty-notes', seed: 'fresh', focusEditor: false, masks: ['[data-collab-chrome]'], floor: 0.05, maxBlob: 16 },
   // The owner's trash view (T2.3). The retention notice's words differ by design (one module writes trash copy and
   // never counts days down), so only that pill is masked; it is wider than moss's and centred on the same point.

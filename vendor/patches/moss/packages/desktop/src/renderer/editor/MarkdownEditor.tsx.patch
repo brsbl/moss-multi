@@ -4206,7 +4206,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
              data-floating-selection-toolbar="true"
            >
              <SelectionToolbarInner>
-@@ -7457,11 +3687,13 @@ function FloatingSelectionTools({
+@@ -7457,13 +3687,16 @@ function FloatingSelectionTools({
          </TooltipProvider>
        )}
        {/* Bottom bar — shown when NO text is selected (also hidden during scroll with active selection to prevent flash) */}
@@ -4220,15 +4220,10 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
 +            data-floating-selection-toolbar="true" // moss-multi seam: toolbar-contract (A§19): moss's own bottom toolbar
            >
              <div ref={portalRef} className="w-full max-w-lg empty:hidden" />
++            <ToolbarCollab noteId={noteId} />{/* moss-multi seam: suggest-toggle (T5.1): beside the docked bar, outside its layout */}
              <SelectionToolbarShell
-@@ -7478,6 +3710,7 @@ function FloatingSelectionTools({
-                       {insertButton}
-                       {commentButton}
-                       {actionsButton}
-+                      <ToolbarCollab noteId={noteId} />{/* moss-multi seam: suggest-toggle (T5.1) */}
-                     </div>
-                   </>
-                 )}
+               className="flex-col"
+               style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
 @@ -7573,11 +3806,14 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
        paneId,
        enableSearchPlugin = true,
