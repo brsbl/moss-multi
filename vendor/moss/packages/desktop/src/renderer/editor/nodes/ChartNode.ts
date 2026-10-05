@@ -7,6 +7,8 @@ import { cloneCommentIds, exportCommentIds, importCommentIds, initCommentIds } f
 import { type ChartConfig, serializeChartConfig, validateChartConfig } from '../utils/chartDefaults';
 import { renderNodeView } from './node-views';
 
+const PENDING_CONFIG: ChartConfig = { type: 'bar', data: [] };
+
 export type SerializedChartNode = Spread<
   {
     config: ChartConfig;
@@ -109,7 +111,8 @@ export class ChartNode extends DecoratorNode<JSX.Element> {
   }
 
   getConfig(): ChartConfig {
-    return (readMapRegister(this)?.__config as ChartConfig | undefined) ?? this.__config;
+    // A peer's node has no config until its payload arrives; it renders empty meanwhile.
+    return (readMapRegister(this)?.__config as ChartConfig | undefined) ?? this.__config ?? PENDING_CONFIG;
   }
 
   /** `base` is the config the caller derived `config` from; keys it left alone keep a peer's concurrent writes. */

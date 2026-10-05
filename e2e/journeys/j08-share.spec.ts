@@ -198,6 +198,9 @@ test('j08 vault: a granted co-owner of Ada\'s vault can share it, but gets no cr
   await ui.shareInDialog(dialog, cyPrincipal.email, 'Owner');
   await expect(ui.inviteRow(dialog, cyPrincipal.email), 'Cy is a co-owner of the vault').toContainText('Owner');
   await ada.page.keyboard.press('Escape');
+  // The share is an invite (T2.8): Cy follows it before the vault is his.
+  const vaultId = ((await (await ada.context.request.get('/api/workspace')).json()) as { vault: { id: string } }).vault.id;
+  await acceptInvite(ada, { folderId: vaultId }, cyPrincipal);
 
   await cy.page.getByRole('button', { name: 'Vault: Home', exact: true }).click();
   const shared = cy.page.getByRole('menuitem', { name: 'Home owner', exact: true });

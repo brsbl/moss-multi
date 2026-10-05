@@ -1,13 +1,21 @@
 diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.ts b/packages/desktop/src/renderer/editor/nodes/ChartNode.ts
 --- a/packages/desktop/src/renderer/editor/nodes/ChartNode.ts
 +++ b/packages/desktop/src/renderer/editor/nodes/ChartNode.ts
-@@ -1,3 +1,5 @@
+@@ -1,9 +1,13 @@
 +// moss-multi seam: register payloads (A§10.10): the config is a per-key register on a bound doc.
 +import { readMapRegister, writeMapRegister, initRegisterNode } from '@moss-multi/host/collab/registers';
  import type { JSX } from 'react';
  import { $applyNodeReplacement, type DOMConversionMap, type DOMConversionOutput, type DOMExportOutput, DecoratorNode, type EditorConfig, type LexicalNode, type NodeKey, type SerializedLexicalNode, type Spread } from 'lexical';
  import { cloneCommentIds, exportCommentIds, importCommentIds, initCommentIds } from '../utils/commentable-node';
-@@ -30,9 +32,15 @@ function $convertChartElement(domNode: HTMLElement): DOMConversionOutput | null
+ import { type ChartConfig, serializeChartConfig, validateChartConfig } from '../utils/chartDefaults';
+ import { renderNodeView } from './node-views';
+ 
++const PENDING_CONFIG: ChartConfig = { type: 'bar', data: [] };
++
+ export type SerializedChartNode = Spread<
+   {
+     config: ChartConfig;
+@@ -30,9 +34,15 @@ function $convertChartElement(domNode: HTMLElement): DOMConversionOutput | null
  }
  
  export class ChartNode extends DecoratorNode<JSX.Element> {
@@ -23,7 +31,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.ts b/packages/
    static getType(): string {
      return 'chart';
    }
-@@ -57,7 +65,7 @@ export class ChartNode extends DecoratorNode<JSX.Element> {
+@@ -57,7 +67,7 @@ export class ChartNode extends DecoratorNode<JSX.Element> {
      return {
        type: 'chart',
        version: 1,
@@ -32,7 +40,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.ts b/packages/
        ...exportCommentIds(this.__commentIds)
      };
    }
-@@ -78,9 +86,10 @@ export class ChartNode extends DecoratorNode<JSX.Element> {
+@@ -78,9 +88,10 @@ export class ChartNode extends DecoratorNode<JSX.Element> {
  
    exportDOM(): DOMExportOutput {
      const element = document.createElement('div');
@@ -46,12 +54,13 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.ts b/packages/
      return { element };
    }
  
-@@ -99,10 +108,12 @@ export class ChartNode extends DecoratorNode<JSX.Element> {
+@@ -99,10 +110,13 @@ export class ChartNode extends DecoratorNode<JSX.Element> {
    }
  
    getConfig(): ChartConfig {
 -    return this.__config;
-+    return (readMapRegister(this)?.__config as ChartConfig | undefined) ?? this.__config;
++    // A peer's node has no config until its payload arrives; it renders empty meanwhile.
++    return (readMapRegister(this)?.__config as ChartConfig | undefined) ?? this.__config ?? PENDING_CONFIG;
    }
  
 -  setConfig(config: ChartConfig): void {
@@ -61,7 +70,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.ts b/packages/
      const writable = this.getWritable();
      writable.__config = config;
    }
-@@ -117,7 +128,7 @@ export class ChartNode extends DecoratorNode<JSX.Element> {
+@@ -117,7 +131,7 @@ export class ChartNode extends DecoratorNode<JSX.Element> {
    }
  
    getTextContent(): string {
