@@ -89,6 +89,34 @@ async function expectRefused(opened: Opened, frame: Uint8Array, reason: string, 
   expect(json(opened)).toEqual(before);
 }
 
+/** A later frame that supplies what a purged frame was waiting on: it applies, and comments stay as they were. */
+async function release(opened: Opened, frame: Uint8Array): Promise<void> {
+  const before = json(opened);
+  const client = await editorOn(opened);
+  await client.deliver(syncFrame(2, frame));
+  await client.pump();
+  expect(opened.dobj.document.store.pendingStructs).toBeNull();
+  expect(opened.dobj.document.store.pendingDs).toBeNull();
+  expect(json(opened)).toEqual(before);
+}
+
+/** The server's next write lands exactly, and every item under comments is still R's (I1). */
+async function expectServerWriteIsolated(opened: Opened, r: number): Promise<void> {
+  const before = json(opened);
+  expect(await opened.dobj.createComment({ author: 'ada', id: 'after', text: 'server', parentId: 'c1' })).toMatchObject({ ok: true });
+  expect(Object.keys(json(opened)).sort()).toEqual([...Object.keys(before), 'c:after'].sort());
+  const doc = opened.dobj.document;
+  const comments = doc.getMap('comments');
+  for (const list of doc.store.clients.values()) {
+    for (const struct of list) {
+      if (!(struct instanceof Y.Item)) continue;
+      let type = struct.parent as Y.AbstractType<unknown> | null;
+      while (type && type._item && type._item.parent instanceof Y.AbstractType) type = type._item.parent as Y.AbstractType<unknown>;
+      if (type === comments) expect(struct.id.client).toBe(r);
+    }
+  }
+}
+
 type Fixture = [name: string, make: (doc: Y.Doc, r: number) => Uint8Array];
 
 const GUARD: Fixture[] = [
@@ -157,6 +185,64 @@ describe('T4.1 gate 2b in the DocDO: no client frame lands a write in comments @
   it('refuses a frame Yjs parks or throws on (a self-parented struct) as unresolved', async () => {
     const { opened } = await seeded();
     await expectRefused(opened, raw([forged(Y.createID(777, 0), { parent: Y.createID(777, 0) }, new Y.ContentType(new Y.Map()))]), 'unresolved');
+  });
+
+  it("history fixtures: tail splices at R's and the DocDO's latest clocks", async () => {
+    const { opened, r } = await seeded();
+    const doc = opened.dobj.document;
+    const rState = Y.getState(doc.store, r);
+    await expectRefused(opened, raw([forged(Y.createID(r, rState - 1), { origin: rootStart(doc) }, new Y.ContentAny([{ text: 'plain' }, { text: 'FORGED' }]))]), 'protected-type');
+    // The DocDO's own latest write is never a comment: the tail lands beside it, outside comments.
+    const s = doc.clientID;
+    const sState = Y.getState(doc.store, s);
+    expect(sState, 'the import wrote as the DocDO').toBeGreaterThan(0);
+    const before = json(opened);
+    const client = await editorOn(opened);
+    await client.deliver(syncFrame(2, raw([forged(Y.createID(s, sState - 1), { parent: 'frontmatter', sub: 'k' }, new Y.ContentAny(['e', 'x']))])));
+    await client.pump();
+    expect(client.events).not.toContainEqual({ t: 'write-refused', reason: 'protected-type' });
+    expect(json(opened)).toEqual(before);
+    await expectServerWriteIsolated(opened, r);
+  });
+
+  it('history fixtures: a fully held struct with a forged missing origin parks the tail and is purged', async () => {
+    const { opened, r } = await seeded();
+    const doc = opened.dobj.document;
+    const s = doc.clientID;
+    const sState = Y.getState(doc.store, s);
+    await expectRefused(opened, raw([
+      forged(Y.createID(s, sState - 1), { origin: Y.createID(5150, 0) }, new Y.ContentString('e')),
+      forged(Y.createID(s, sState), { origin: rootStart(doc) }, new Y.ContentAny(['tail'])),
+    ]), 'unresolved');
+    await release(opened, raw([forged(Y.createID(5150, 0), { parent: 'frontmatter', sub: 'z' }, new Y.ContentAny(['z']))]));
+    expect(doc.store.clients.get(s)?.some((struct) => struct.id.clock >= sState && struct instanceof Y.Item && struct.content instanceof Y.ContentAny), 'the parked tail never integrates').toBe(false);
+    await expectServerWriteIsolated(opened, r);
+  });
+
+  it('history fixtures: a missing right origin beside a held left origin', async () => {
+    const { opened, r } = await seeded();
+    const doc = opened.dobj.document;
+    await expectRefused(opened, raw([forged(Y.createID(777, 0), { origin: rootStart(doc), right: Y.createID(r, Y.getState(doc.store, r)) }, new Y.ContentString('x'))]), 'protected-type');
+    await expectRefused(opened, raw([forged(Y.createID(778, 0), { origin: rootStart(doc), right: Y.createID(6160, 0) }, new Y.ContentString('x'))]), 'unresolved');
+    await release(opened, raw([forged(Y.createID(6160, 0), { parent: 'frontmatter', sub: 'y' }, new Y.ContentAny(['y']))]));
+    expect(doc.store.clients.has(778), 'the parked struct never integrates').toBe(false);
+    await expectServerWriteIsolated(opened, r);
+  });
+
+  it('history fixtures: parent cycles and right origins that name each other are purged', async () => {
+    const { opened, r } = await seeded();
+    const doc = opened.dobj.document;
+    await expectRefused(opened, raw([forged(Y.createID(777, 0), { parent: Y.createID(777, 0) }, new Y.ContentType(new Y.Map()))]), 'unresolved');
+    await expectRefused(opened, raw([
+      forged(Y.createID(778, 0), { parent: Y.createID(778, 1) }, new Y.ContentType(new Y.Map())),
+      forged(Y.createID(778, 1), { parent: Y.createID(778, 0) }, new Y.ContentType(new Y.Map())),
+    ]), 'unresolved');
+    await expectRefused(opened, raw([
+      forged(Y.createID(779, 0), { origin: rootStart(doc), right: Y.createID(780, 0) }, new Y.ContentString('a')),
+      forged(Y.createID(780, 0), { origin: rootStart(doc), right: Y.createID(779, 0) }, new Y.ContentString('b')),
+    ]), 'unresolved');
+    for (const client of [777, 778, 779, 780]) expect(doc.store.clients.has(client), `client ${client} never integrates`).toBe(false);
+    await expectServerWriteIsolated(opened, r);
   });
 
   it('keeps R across a restart, and the DocDO never writes as R', async () => {
@@ -439,6 +525,24 @@ describe('T4.1 createComment RPC @p:tech-3', () => {
     expect(anchorText(opened.dobj.document, anchorOf(opened, 'q1')!)).toBe('jumps over the lazy');
     expect(await opened.dobj.createComment({ author: 'ada', id: 'q3', text: 't', anchor: { quote: 'fox' } })).toMatchObject({ ok: false, status: 409, error: 'quote-ambiguous' });
     expect(await opened.dobj.createComment({ author: 'ada', id: 'q4', text: 't', anchor: { quote: 'zebra crossing' } })).toMatchObject({ ok: false, status: 409, error: 'quote-not-found' });
+  });
+
+  it('quote-search-is-bounded: a one-character quote with 2,000-character context answers quickly', async () => {
+    vi.useRealTimers();
+    const opened = await start(openDoc());
+    await opened.dobj.create({ folderId: 'folder', ownerId: 'owner', markdown: fixture('onboarding-getting-started.md') });
+    const tries = [
+      { exact: 'e', prefix: 'z'.repeat(1_999), suffix: '' },
+      { exact: 'e', prefix: '', suffix: 'z'.repeat(1_999) },
+      { exact: 'Moss', prefix: 'z'.repeat(5_000), suffix: 'y'.repeat(5_000) },
+    ];
+    for (const [n, quote] of tries.entries()) {
+      const began = performance.now();
+      const result = await opened.dobj.createComment({ author: 'ben', id: `slow${n}`, text: 't', anchor: { quote } });
+      const took = performance.now() - began;
+      expect(result).toMatchObject({ ok: false, status: 409 });
+      expect(took, `quote ${n} took ${Math.round(took)} ms`).toBeLessThan(750);
+    }
   });
 
   it('a duplicate carries no comments and keeps R isolation for the copied tombstones', async () => {
