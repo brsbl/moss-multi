@@ -1,0 +1,21 @@
+diff --git a/packages/desktop/src/renderer/editor/components/block-node-primitives.tsx b/packages/desktop/src/renderer/editor/components/block-node-primitives.tsx
+--- a/packages/desktop/src/renderer/editor/components/block-node-primitives.tsx
++++ b/packages/desktop/src/renderer/editor/components/block-node-primitives.tsx
+@@ -1,5 +1,7 @@
+ import React from 'react';
+ import type { ComponentPropsWithoutRef, JSX, ReactNode } from 'react';
++// moss-multi seam: capabilities (T2.6): a gap cursor inserts a paragraph, so a read-only editor offers none.
++import { useBlockCanEdit } from '@moss-multi/host/capabilities';
+ 
+ export const BLOCK_SELECTED_FRAME_CLASSNAME = 'editor-block-selection-outline';
+ export const BLOCK_SELECTION_WRAPPER_CLASSNAME = 'editor-block-selection-frame';
+@@ -39,7 +41,8 @@ export function GapCursor({
+   label,
+   onClick,
+   heightClassName = BLOCK_GAP_CURSOR_HIT_AREA_CLASSNAME,
+-}: GapCursorProps): JSX.Element {
++}: GapCursorProps): JSX.Element | null {
++  if (!useBlockCanEdit()) return null; // moss-multi seam: capabilities (T2.6)
+   return (
+     <div
+       className={`${BLOCK_GAP_CURSOR_CLASSNAME} group/gap absolute left-0 right-0 z-20 flex ${heightClassName} cursor-text items-center justify-center ${

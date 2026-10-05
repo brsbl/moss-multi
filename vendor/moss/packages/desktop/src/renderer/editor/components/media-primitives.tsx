@@ -12,6 +12,8 @@ import { OPEN_BLOCK_COMMENT_COMMAND } from '../plugins/CommentPlugin';
 import { insertParagraphAdjacentToBlock } from '../utils/block-node-insertion';
 // moss-multi seam: hide-registry (A§9)
 import { hidden } from '@moss-multi/host/affordances';
+// moss-multi seam: capabilities (T2.6): a block's writing controls follow the editor's editability, live.
+import { useBlockCanEdit } from '@moss-multi/host/capabilities';
 export {
   GapCursor,
   BlockNodeShell,
@@ -393,6 +395,7 @@ export function MediaNodeHeader({
   // offered Delete; nothing in a read-only body takes focus.
   const editorEditable = useIsEditorEditable();
   editable = editable && editorEditable;
+  const canEdit = useBlockCanEdit() && editable; // moss-multi seam: capabilities (T2.6)
 
   return (
     <div
@@ -403,7 +406,7 @@ export function MediaNodeHeader({
       <div className="flex items-center gap-1">
         {children}
         {/* moss-multi seam: hide-registry (A§9) */}
-        {editable && !hidden('comments') && (
+        {canEdit && !hidden('comments') && (
           <MediaHeaderButton
             icon={StickyNote}
             title="Add comment"
@@ -414,14 +417,14 @@ export function MediaNodeHeader({
             }}
           />
         )}
-        {editable && onFullscreen && (
+        {canEdit && onFullscreen && (
           <MediaHeaderButton
             icon={Maximize2}
             title="Fullscreen"
             onClick={onFullscreen}
           />
         )}
-        {editable && (
+        {canEdit && (
           <MediaHeaderButton
             icon={Trash2}
             title="Delete"

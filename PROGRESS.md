@@ -1,12 +1,12 @@
 # moss-multi progress
 
-**Overall: 66% done** (56 of 85 planned tasks verified)
+**Overall: 68% done** (59 of 87 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
-| M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 18 / 18 | in progress |
-| M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 18 / 19 | in progress |
-| M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 10 / 11 | in progress |
+| M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
+| M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 19 / 20 | in progress |
+| M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 11 / 11 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 10 / 13 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
@@ -75,6 +75,9 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-05 — T2.8 verified: sharing by email now sends a personal invite link that grants access only when a signed-in account with that email opens it, a signed-in person with another email can switch accounts from the invite page, and the bell shows share invites with an unread count and Mark all read, rechecking access on every read.
 - 2026-10-05 — T1.S1 verified again with its unload fix: reloading or leaving the page while the workspace list is loading now cancels that request quietly instead of showing a load failure or a browser access-control error.
 - 2026-10-05 — T2.5 verified: lowering or removing someone's access, revoking a link, moving a note or folder out from under a share, or signing out closes the affected open editors within a second, the note turns read-only or ends in place with a message, and their sidebar drops what they can no longer open; the owner can change or remove a person's or an open invite's access from the Share dialog.
+- 2026-10-05 — T1.S2 verified: a code, HTML or formula block whose updates were lost on a dropped connection now catches up on its own, without a reload, so both people see the same text and can keep typing in it.
+- 2026-10-05 — T0.9d verified: CI journey shards are split by recorded per-engine minutes (`durations.mjs` writes them, `plan.mjs budget` keeps every shard's p95 within 9 of its 13 min), and the root causes of the WebKit editing-shard flakes are fixed, with the duration table in METHOD.md.
+- 2026-10-05 — T2.6 verified: a viewer or commenter is no longer offered controls they cannot use: menus grow with their role, "+ Note", Rename, slash commands and block edit, fullscreen and delete buttons are hidden, checkboxes and gap cursors in a read-only body are inert and send nothing, and an unknown role gets no actions.
 
 ## T1.1s identity audit
 
@@ -114,17 +117,22 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T2.3s checker P2: the revocation tests in `trash-security.test.ts` use stub DocDO and PrincipalDO, so they do not prove open editors recover (or that a terminal editor on a live note is kicked) → T2.5 → closed by T2.5 (`mid-trash.harness.test.ts` over the real DocDO and PrincipalDO; a reverted trash pushes `meta` and a pane terminal on `deleted` re-asks and reopens).
 - T1.8 workspace follow-up implemented in T2.1: push events replace listing polling, changed document ids refresh metadata, and unchanged vault choices do not notify the switcher; awaiting CI and independent verification.
 - T0.13b checker P2: The settle helper only waits for the loading placeholder to disappear, not for a final state; `settleHtmlBlocks` in e2e/viewer/viewer.spec.ts should wait for the image to load or for "Preview unavailable" → viewer test follow-up.
-- T0.13b checker P2: The Edit, Fullscreen and Delete buttons still appear on hover over viewer HTML blocks, but do nothing → T2.6.
+- ~~T0.13b checker P2: The Edit, Fullscreen and Delete buttons still appear on hover over viewer HTML blocks, but do nothing~~ closed by T2.6: block headers ask `useBlockCanEdit` (e2e/viewer hover leg).
 - ~~T1.9 checker P2: `$copyNode` must mint a new register identity for duplicated code, HTML and formula nodes~~ closed by T1.F2: a copy mints its own id seeded with its source's text (registers unit test).
 - ~~T1.9 checker P2: rebind open field observers when a register map entry is replaced~~ closed by T1.F2: the map is gone and a payload doc is never replaced; resolving the doc on every write stays with T1.F4.
 - T1.9 checker P2: register writes diff by value without a caret hint, so typing inside a run of identical characters can land at the wrong position (seen after a peer's undo); FormulaPlugin's remote repaint diffs strings instead of using the event delta → register caret follow-up. T1.F4 closed it for code and HTML fields (caret-placed edits rebased onto the payload); the formula popover still writes and repaints without a caret, since its stored formula is a rebound, trimmed form of the input.
 - ~~T1.F4 checker P2: the formula popover keeps its node key for the session, so a peer's move leaves it read-only on a stale key and a peer's removal leaves it open with no notice~~ closed by T1.F4 attempt 3: the popover follows its payload id (`useFollowRegister`) and reads its mode and references again when its payload arrives (j01-registers formula legs).
 - T1.F4 checker P2: a peer's move unmounts a code or HTML field mid-IME-composition and its private composition draft is destroyed; committed text is kept, the uncommitted preedit is lost. Commit the draft on unmount.
-- T1.F4 integration flake: j01-registers "a variable popover opened before its payload arrives ... edits it as a variable" failed once in WebKit on m1 (written as `n`, not `pending soon`; run 37313760604, green on rerun); j00 G1 import POST timeout and a j02-title workspace access-control page error flaked in the same run.
+- ~~T1.F4 integration flake: j01-registers "a variable popover opened before its payload arrives ... edits it as a variable" failed once in WebKit on m1 (written as `n`, not `pending soon`; run 37313760604, green on rerun); j00 G1 import POST timeout and a j02-title workspace access-control page error flaked in the same run.~~ closed by T0.9d: the popover's late focus retry selected the value mid-typing (METHOD, WebKit editing-shard flakes (5)); the import stall and the access-control page error are (4) and (1).
 - T1.S1 checker P2: accessibleFolders (apps/web/src/api/access.ts) reads the whole folders table on every /api/workspace call and bridge poll; its parameter count is fixed, but its cost grows with the table.
 - T2.8 checker P2: the bell keeps a cached notice after a move or trash removes the inviter's access; the client store refreshes only on 'notifications' and 'vaults' workspace events, so the stale title and unread badge stay until a reload (the server re-checks every read) → refresh the store on an access-changing 'meta' event.
 - T2.8 checker P2: "Sign in with another email" (InviteForAnotherEmail.switchAccount) ignores a failed sign-out and bypasses auth-state signOut(), so a failed sign-out loops back to the same denial page with no error → reuse signOut() with a return destination.
 - T2.8 checker P2: CI has no bell triptych artifact against glyphdown; the checker compared the open bell by hand with the glyphdown light reference (structure matches) → add the bell to the parity artifact.
+- T2.6 checker P2: "+ Note" is gated on the vault root, not on the folder it creates in (`canCreateNote` in apps/web/src/host/folders.ts vs `createAndActivateNote` using `activeFolderPath`): a vault viewer who edits a child folder loses "+ Note" there, a viewer-only folder in Home still offers it (the server refuses), and Cmd/Ctrl+N skips the gate → gate on the target folder's role.
+- T2.6 checker P2: TabGroupNode's and CalloutNode's own gap cursors (role=button) and the tab bar's tabs and resize separators stay focusable under `data-body-binding=readonly`; the j08 read-only fixture has no tabs or callouts → needs an invariant-9 ruling, then a read-only leg with tabs and callouts.
+- T2.6 checker P2: ImageNode's missing-image and desktop-asset fallback shows an ungated Remove button to a read-only reader (inert, its handler is guarded); neither new selector covers it → gate it with the block capability.
+- T2.6 checker P2: `canMoveItems` (apps/web/src/host/folders.ts) still requires manage on the vault root, so a child-folder owner by grant cannot drag a move the server allows (apps/web/src/api/folders.ts); predates T2.6 and is stricter than the server → gate on source manage and destination edit.
+- T2.6 checker P2: TabBarPlugin's Add tab and CodeBlockToolbar's language and theme pickers gate on editability directly rather than through capabilities.ts; behaviour is correct → route them through the capability helper.
 - T1.S1 checker P2 flake: j03-connection "a refused write rebinds fresh and a deleted doc locks in place" failed once in Chromium (console error 'WebSocket is already in CLOSING or CLOSED state'), green on rerun.
 - T1.S1 checker P2: a cancelled unload (answering Stay on the unacked-edits prompt) or a back-forward-cache restore keeps the aborted listing pending for 10 s, skipping the 3 s poll and handing notes() a promise that later rejects.
 - T1.S1 checker P2: other fetches (host/access.ts, collab/doc-session.ts, ShareDialog, the bridge's create, duplicate and rename) have no leave-abort, so a reload overlapping one could still log WebKit's access-control error.
@@ -142,6 +150,7 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T1.F2 checker P2 (attempt 3): an offline session that made more than 64 blocks and deleted them again before reconnecting still resends their payloads as unnamed writes, and the 65th closes 4409; the client could skip resending payloads its tree no longer names → payload follow-up.
 - ~~T1.F2 checker P2 (attempt 3 review): `BodyUndo` records which payload managers a step touched, not their exact stack items, so when a peer makes the newest local payload item a no-op, Cmd+Z can undo an older payload edit before a newer body edit (no data lost)~~ closed by T1.F4: each step replays its own stack items (undo unit test).
 - T1.F2 P2: text written into a payload while it was served is not charged to its writer when its block is deleted, so a deleted block's payload still holds its served bytes against the state cap for the 30-day TTL; it was visible to every reader while served → payload follow-up.
+- T0.9d checker P2: `durations.mjs --write` ignores cancelled or timed-out shards (scripts/ci/durations.mjs:103), so a partly cancelled lane can pass `recordProblems()` and overwrite journey-minutes.json, dropping files missing an engine; `plan.mjs budget` then falls back to per-leg estimates for them.
 
 - T1.6 checker: prune deleted layout identities, avoid unchanged localStorage writes and restrict ordinal migration to stores without identity metadata → local-layout follow-up. These need lifecycle and persisted-state regressions beyond this P1 repair.
 - T1.6 checker: bound link activation and preview must consume locally resolved note identity, not only its displayed title/state → closed in T3.3 (FileLinkNode's `getNoteId`/`isResolved` read the local view).
@@ -184,7 +193,7 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - Sign-out leaves the session's other live doc sockets reading and writing → closed by T2.5 (sign-out ends the session's doc and workspace sockets; j09 sign-out leg)
 - T2.4 checker: `GET /api/docs/:id` returns the owner's real `folderId` to a link holder, unlike `/api/workspace`'s synthetic root (METHOD: never the owner's vault or folder ids) → closed by T2.5 (a doc link's holder gets the note as its own root; `sharing.test.ts`)
 - ~~T2.4 checker: a share counts as redeemed on any doc load or socket admission, so a grantee idling on an empty workspace auto-opens the new share and the owner sees their name within seconds → count only an explicit open (T2.8 invites)~~ closed by T2.8: a grant comes only from a signed-in account redeeming the invite link.
-- A signed-out share-link visitor (and any viewer of the active vault) is offered "+ Note", which fails with "Could not create note. Try again." → T2.6 (capability helper)
+- ~~A signed-out share-link visitor (and any viewer of the active vault) is offered "+ Note", which fails with "Could not create note. Try again."~~ closed by T2.6: "+ Note" needs edit on the active vault (j08 link and unknown-role legs).
 - The wrangler ProxyWorker patch replays non-idempotent requests after an ambiguous failure → T0.9b follow-up (stack infra)
 - `qa.mjs close` forgets the session even when closing it failed → tooling follow-up
 - `stack.mjs` puts `BETTER_AUTH_SECRET` and the test-hook secret on wrangler's command line → tooling follow-up
@@ -201,7 +210,7 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 
 - T1.4 checker P2 follow-ups (deferred under the owner's P0/P1-only review rule): cap and principal validation for REST title writes; retry/reconcile failed D1 title projections and serialize empty initialization; add independent negative controls for j02's monotonic, filename, merge and Properties assertions; remove Properties unstaging residue, avoid a placeholder flash before binding, and investigate the unconfirmed bridge-cache issue.
 
-- T1.4 remaining checker P2s: protect an in-progress property draft from a peer deletion; guard title Enter/ArrowDown during IME; retry/reconcile D1 title projection failures; use one refusal live region across split panes; add independent negative controls for the older j02 assertions. The macOS WebKit invariant-7 selftest flake belongs to tooling. Viewer Rename remains T2.6; title draft-client allocation and writeText identity guarding remain follow-ups.
+- T1.4 remaining checker P2s: protect an in-progress property draft from a peer deletion; guard title Enter/ArrowDown during IME; retry/reconcile D1 title projection failures; use one refusal live region across split panes; add independent negative controls for the older j02 assertions. The macOS WebKit invariant-7 selftest flake belongs to tooling. Viewer Rename was closed by T2.6 (j08 ranks leg); title draft-client allocation and writeText identity guarding remain follow-ups.
 
 ### T1.3 — implemented; local UI verification blocked
 
