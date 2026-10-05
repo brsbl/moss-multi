@@ -165,7 +165,7 @@ describe('members: lowering and removing access kicks @p:ppl-2', () => {
     for (const email of [cy.email, unknown]) {
       expect((await call('POST', `/api/docs/${docId}/members`, ada.cookie, { email, role: 'editor' })).status).toBe(201);
     }
-    const answers = [];
+    const answers: [number, string][] = [];
     for (const email of [cy.email, unknown]) {
       const lowered = await call('PATCH', `/api/docs/${docId}/members`, ada.cookie, { email, role: 'viewer' });
       answers.push([lowered.status, await lowered.text()]);
