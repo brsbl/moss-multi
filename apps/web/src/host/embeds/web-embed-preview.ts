@@ -70,6 +70,6 @@ export function createWebEmbedPreviewApi(request: Send) {
       return pending;
     },
     /** Answers come back from `ensure`; nothing is pushed later. */
-    subscribe: (_callback?: unknown) => () => undefined,
+    subscribe: () => () => undefined,
   };
 }

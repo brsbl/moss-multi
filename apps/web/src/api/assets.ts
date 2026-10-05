@@ -9,7 +9,7 @@
 // by filename in the doc's folder, so writing a name into the note reaches nothing, and a move changes nothing. An
 // upload also names its version in the folder's `assets/` namespace, collision-safe, for export and sync.
 import { and, eq } from 'drizzle-orm';
-import { MEDIA_CAP_BYTES, isDesktopDerived, mediaFilename, mediaTypeOf, suffixedFilename, ASSET_DIR } from '@moss-multi/protocol/media';
+import { MEDIA_CAP_BYTES, MEDIA_TYPES, isDesktopDerived, mediaFilename, mediaTypeOf, suffixedFilename, ASSET_DIR } from '@moss-multi/protocol/media';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
 import type { AuthEnv } from '../auth/auth.ts';
 import { resolvePrincipal, shareTokenOf } from '../auth/principal.ts';
