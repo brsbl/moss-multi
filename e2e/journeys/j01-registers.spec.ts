@@ -248,6 +248,36 @@ test("j01 registers: Ben's edit to the formula merges into Ada's unfinished draf
   }
 });
 
+for (const accept of ['Enter', 'Apply'] as const) {
+  test(`j01 registers: when Ben's edit makes Ada's unfinished formula valid, accepting it with ${accept} writes her characters @p:col-1`, async ({ actors, stack }) => {
+    const { ada, ben: principal, id } = await note(actors, stack.baseUrl, 'Total {{2+3|5}} here.');
+    const ben = await actors.session(principal);
+    await join(ben, id);
+    await openFormula(ada, id);
+    await expect(formulaInput(ada)).toHaveJSProperty('readOnly', false, { timeout: PEER_TIMEOUT });
+    await formulaInput(ada).press('Home');
+    await ada.page.keyboard.type('*');
+    await expect(formulaInput(ada)).toHaveValue('*2+3');
+    await openFormula(ben, id);
+    await expect(formulaInput(ben)).toHaveJSProperty('readOnly', false, { timeout: PEER_TIMEOUT });
+    await formulaInput(ben).press('Home');
+    await ben.page.keyboard.type('1');
+    await expect(formulaInput(ada), "Ben's edit makes Ada's draft valid").toHaveValue('1*2+3', { timeout: PEER_TIMEOUT });
+    await ben.page.keyboard.press('Escape');
+    if (accept === 'Enter') await ada.page.keyboard.press('Enter');
+    else await popover(ada).getByRole('button', { name: 'Apply formula changes' }).click();
+    await expect(popover(ada)).toHaveCount(0);
+    const want = [['1*2+3', '5']];
+    for (const actor of [ada, ben]) await expect.poll(() => formulas(actor, id), { message: `${actor.label}: Ada's '*' is written`, timeout: PEER_TIMEOUT }).toEqual(want);
+    await settled([ada, ben], id);
+    for (const actor of [ada, ben]) {
+      await actor.page.reload();
+      await ui.waitLive(actor, id); await actor.declareRemount(id);
+      await expect.poll(() => formulas(actor, id), { message: `${actor.label}: the accepted formula survives the reload`, timeout: PEER_TIMEOUT }).toEqual(want);
+    }
+  });
+}
+
 for (const kind of ['variable', 'formula'] as const) {
   test(`j01 registers: a ${kind} popover opened before its payload arrives is read-only, then edits it as a ${kind} @p:col-1`, async ({ actors, stack }) => {
     const source = kind === 'variable' ? '{{status|pending}}' : '{{2+3|5}}';
