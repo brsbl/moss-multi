@@ -39,7 +39,9 @@ export async function handleApi(request: Request, env: ApiEnv): Promise<Response
   if (pathname === '/api/feedback') return feedback(request, env);
   if (pathname === '/api/unfurl') return handleUnfurl(request, env);
   if (ASSET_ROUTE.test(pathname)) {
-    return env.ASSETS ? handleAssets(request, { ...env, ASSETS: env.ASSETS }) : json({ error: 'unavailable' }, 503, NO_STORE);
+    return env.ASSETS && env.PrincipalDO
+      ? handleAssets(request, { ...env, ASSETS: env.ASSETS, PrincipalDO: env.PrincipalDO })
+      : json({ error: 'unavailable' }, 503, NO_STORE);
   }
   const searched = handleSearchRoutes(request, env);
   if (searched) return searched;

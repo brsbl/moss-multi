@@ -1,7 +1,7 @@
 // HTML blocks and srcDoc previews on the web (A§16, SP13): moss renders them as `data:` iframes, which inherit the
 // page's nonce CSP and so never run their scripts. apps/web points them at its /frame/html document instead, which
 // is sandboxed to `allow-scripts` alone (an opaque origin), and posts the HTML in once the frame says it is ready.
-// Hosts that serve no frame document (the viewer) leave it unset and keep moss's behavior.
+// Hosts that serve no frame document leave it unset and keep moss's behavior; the viewer resolves one per viewer.
 import { HTML_FRAME_CONTENT, HTML_FRAME_PATH, HTML_FRAME_READY, HTML_FRAME_SANDBOX } from '@moss-multi/protocol/html-frame';
 
 let frameSrc: string | null = null;
@@ -11,8 +11,19 @@ export function enableFrameDocument(src: string | null = HTML_FRAME_PATH): void 
   frameSrc = src;
 }
 
-/** The frame document srcDoc iframes load, or null to keep moss's data: URL. */
-export const htmlFrameSrc = (): string | null => frameSrc;
+type FrameResolver = (noteId: string) => string | null | undefined;
+let resolver: FrameResolver | null = null;
+
+/** A host that serves a frame document per note (the viewer, per mounted viewer); undefined falls back to the page's. */
+export function resolveFrameDocument(resolve: FrameResolver | null): void {
+  resolver = resolve;
+}
+
+/** The frame document a note's srcDoc iframes load, or null to keep moss's data: URL. */
+export function htmlFrameSrc(noteId?: string | null): string | null {
+  const own = noteId && resolver ? resolver(noteId) : undefined;
+  return own === undefined ? frameSrc : own;
+}
 
 export const HTML_FRAME_IFRAME_SANDBOX = HTML_FRAME_SANDBOX;
 

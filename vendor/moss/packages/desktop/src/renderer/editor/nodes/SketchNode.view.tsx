@@ -18,6 +18,8 @@ import {
   BLOCK_SURFACE_CLASSNAME,
   BlockNodeShell
 } from '../components/block-node-primitives';
+// moss-multi seam: read-only-decorators (T3.8)
+import { useIsEditorEditable } from '../components/media-primitives';
 import { insertParagraphAdjacentToBlock } from '../utils/block-node-insertion';
 import {
   registerDecoratorDraftFlusher,
@@ -982,6 +984,8 @@ function SketchWrapper({
   redoRef.current = redoStack;
 
   const isGridEmpty = grid.every((v) => !v);
+  // moss-multi seam: read-only-decorators (T3.8): a read-only canvas offers no Draw, Duplicate, comment or gap.
+  const editable = useIsEditorEditable();
 
   const handleEditClick = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -1194,11 +1198,11 @@ function SketchWrapper({
       selected={isSelected}
       beforeLabel="Insert paragraph before canvas"
       afterLabel="Insert paragraph after canvas"
-      onGapClick={handleGapClick}
+      onGapClick={editable ? handleGapClick : undefined /* moss-multi seam: read-only-decorators (T3.8) */}
       className="my-6 outline-none"
       data-block-decorator-key={nodeKey}
       onClick={handleContainerClick}
-      tabIndex={-1}
+      tabIndex={editable ? -1 : undefined /* moss-multi seam: read-only-decorators (T3.8) */}
     >
       <div
         className={`outline-none transition-colors ${BLOCK_SURFACE_CLASSNAME}`}
@@ -1316,7 +1320,7 @@ function SketchWrapper({
                   </Tooltip>
                 </div>
               </TooltipProvider>
-            ) : (
+            ) : !editable ? null /* moss-multi seam: read-only-decorators (T3.8) */ : (
               <TooltipProvider delayDuration={200}>
                 <div className="flex items-center gap-1">
                   <Tooltip>

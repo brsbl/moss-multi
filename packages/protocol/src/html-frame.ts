@@ -8,3 +8,15 @@ export const HTML_FRAME_POLICY = 'sandbox allow-scripts';
 export const HTML_FRAME_SANDBOX = 'allow-scripts';
 export const HTML_FRAME_READY = 'moss-html-frame-ready';
 export const HTML_FRAME_CONTENT = 'moss-html-frame-content';
+
+/** The frame document: it announces itself, then writes the first CONTENT its parent posts. */
+export const HTML_FRAME_DOCUMENT = `<!doctype html><meta charset="utf-8"><script>
+addEventListener('message', function onContent(event) {
+  if (event.source !== parent || !event.data || event.data.type !== '${HTML_FRAME_CONTENT}') return;
+  removeEventListener('message', onContent);
+  document.open();
+  document.write(String(event.data.html));
+  document.close();
+});
+parent.postMessage({ type: '${HTML_FRAME_READY}' }, '*');
+</script>`;

@@ -9,21 +9,23 @@
 // by filename in the doc's folder, so writing a name into the note reaches nothing, and a move changes nothing. An
 // upload also names its version in the folder's `assets/` namespace, collision-safe, for export and sync.
 import { and, eq } from 'drizzle-orm';
+import { getServerByName } from 'partyserver';
+import { UPLOAD_RATE, VAULT_MEDIA_QUOTA_BYTES } from '@moss-multi/protocol/limits';
 import { MEDIA_CAP_BYTES, MEDIA_TYPES, isDesktopDerived, mediaFilename, mediaTypeOf, suffixedFilename, ASSET_DIR } from '@moss-multi/protocol/media';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
 import type { AuthEnv } from '../auth/auth.ts';
-import { resolvePrincipal, shareTokenOf } from '../auth/principal.ts';
+import { resolvePrincipal, shareTokenOf, type Principal } from '../auth/principal.ts';
 import { createDb, type Db } from '../db/client.ts';
 import { assets, assetVersions, docMedia } from '../db/schema.ts';
 import type { AppEnv } from '../env.ts';
 import { json } from '../worker/route.ts';
-import { resolveDocAccess } from './access.ts';
+import { MAX_FOLDER_DEPTH, resolveDocAccess } from './access.ts';
 import { readCapped, remoteFetch, REMOTE_TIMEOUT_MS, takeFetchToken } from './remote.ts';
 import { NO_STORE, notFound, readJsonObject } from './respond.ts';
 import { assertPublicUrl, safeFetch, SsrfBlockedError } from './ssrf.ts';
 import { ownerOfTrashed } from './trash.ts';
 
-export type AssetsEnv = AuthEnv & Pick<AppEnv, 'ASSETS' | 'DocDO'> & Partial<Pick<AppEnv, 'PrincipalDO'>>;
+export type AssetsEnv = AuthEnv & Pick<AppEnv, 'ASSETS' | 'DocDO' | 'PrincipalDO'>;
 
 export const ASSET_ROUTE = /^\/api\/docs\/[^/]+\/assets(?:\/.*)?$/;
 const UPLOAD = /^\/api\/docs\/([^/]+)\/assets$/;
@@ -43,11 +45,72 @@ const tooLarge = (kind: 'image' | 'video') =>
   refuse(413, 'too-large', `${kind === 'image' ? 'Images' : 'Videos'} can be at most ${MEDIA_CAP_BYTES[kind] / (1024 * 1024)} MB.`);
 const unsupported = () =>
   refuse(415, 'unsupported-media', 'Only images (png, jpg, gif, webp, svg) and video (mp4, webm, mov) can be uploaded.');
+const overQuota = () =>
+  refuse(413, 'over-quota', `This vault is out of media storage (${VAULT_MEDIA_QUOTA_BYTES / (1024 * 1024 * 1024)} GB). Delete media from its notes and try again.`);
 const nameTaken = () => refuse(409, 'name-taken', 'Too many files share that name here. Rename the file and try again.');
 
 async function sha256Hex(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', bytes);
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * The body into one buffer of its declared `length`, each chunk copied in as it arrives and then dropped, so the upload
+ * holds at most `length` bytes plus a chunk. A body that runs past `length` stops there; one that ends short is refused.
+ */
+async function readDeclared(request: Request, length: number): Promise<Uint8Array<ArrayBuffer> | 'too-long' | 'too-short'> {
+  const bytes = new Uint8Array(length);
+  const reader = request.body?.getReader();
+  if (!reader) return length === 0 ? bytes : 'too-short';
+  let offset = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (offset + value.byteLength > length) {
+      await reader.cancel().catch(() => undefined);
+      return 'too-long';
+    }
+    bytes.set(value, offset);
+    offset += value.byteLength;
+  }
+  return offset === length ? bytes : 'too-short';
+}
+
+/** Media bytes uploaded into the vault holding the folder bound at `folder`, over all its folders (the quota). */
+const vaultUsage = (folder: string, depth: string) => `(
+    WITH RECURSIVE up(id, parent_id, depth) AS (
+      SELECT id, parent_id, 1 FROM folders WHERE id = ${folder}
+      UNION ALL SELECT folders.id, folders.parent_id, up.depth + 1 FROM folders JOIN up ON folders.id = up.parent_id WHERE up.depth < ${depth}
+    ), down(id, depth) AS (
+      SELECT id, 1 FROM up WHERE parent_id IS NULL
+      UNION ALL SELECT folders.id, down.depth + 1 FROM folders JOIN down ON folders.parent_id = down.id WHERE down.depth < ${depth}
+    )
+    SELECT COALESCE(SUM(size), 0) FROM assets WHERE folder_id IN (SELECT id FROM down))`;
+
+async function vaultMediaBytes(env: AuthEnv, folderId: string): Promise<number> {
+  const row = await env.DB.prepare(`SELECT ${vaultUsage('?1', '?2')} AS used`).bind(folderId, MAX_FOLDER_DEPTH).first<{ used: number }>();
+  return row?.used ?? 0;
+}
+
+/** An asset row names its folder only while the vault has room for it, so an upload past the quota fails its batch. */
+const OVER_QUOTA = /NOT NULL constraint failed: assets\.folder_id/;
+
+/**
+ * One upload or copy against the caller's window, and, for a caller a share link makes an editor, also against the
+ * link's window from their IP, so a link holder's accounts share one limit. A refusal answers 429.
+ */
+async function admitUpload(request: Request, env: AssetsEnv, principal: Principal, docId: string): Promise<Response | null> {
+  const names = [principal.id];
+  const token = shareTokenOf(request);
+  // The link counts whenever it is what makes the caller an editor, a weaker grant of their own notwithstanding.
+  if (token && !roleAtLeast((await resolveDocAccess(createDb(env.DB), principal, docId))?.role, 'editor')) {
+    const ip = request.headers.get('cf-connecting-ip') ?? 'unknown';
+    names.push(`link:${await sha256Hex(new TextEncoder().encode(token))}:${ip}`);
+  }
+  const granted = await Promise.all(names.map(async (name) => (await getServerByName(env.PrincipalDO, name)).takeUploadToken()));
+  if (granted.every(Boolean)) return null;
+  return json({ error: 'rate-limited', message: 'Too many uploads. Wait a minute and try again.' }, 429,
+    { ...NO_STORE, 'retry-after': String(UPLOAD_RATE.windowMs / 1000) });
 }
 
 /** The filename a `?filename=` or `assets/<file>` path names, decoded and folded to a stored name. */
@@ -133,23 +196,31 @@ function uploadTarget(raw: string): { filename: string; type: MediaType } | null
 async function store(request: Request, env: AssetsEnv, docId: string, folderId: string, createdBy: string): Promise<Response> {
   const target = uploadTarget(new URL(request.url).searchParams.get('filename') ?? '');
   if (!target) return unsupported();
+  const { filename, type } = target;
   const declared = (request.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase();
-  if (declared && declared !== 'application/octet-stream' && declared !== target.type.contentType) return unsupported();
-  if (Number(request.headers.get('content-length') ?? 0) > MEDIA_CAP_BYTES[target.type.kind]) return tooLarge(target.type.kind);
-  return storeBytes(env, docId, folderId, createdBy, target.filename, target.type, new Uint8Array(await request.arrayBuffer()));
+  if (declared && declared !== 'application/octet-stream' && declared !== type.contentType) return unsupported();
+  // The body is read into one buffer of its declared length, so the length is required and checked up front.
+  const length = request.headers.get('content-length');
+  if (length === null) return refuse(411, 'length-required', 'The upload needs a Content-Length.');
+  if (!/^\d+$/.test(length.trim())) return refuse(400, 'bad-length', 'The upload has an invalid Content-Length.');
+  const size = Number(length);
+  if (size > MEDIA_CAP_BYTES[type.kind]) return tooLarge(type.kind);
+  if (size === 0) return refuse(400, 'empty', 'The file is empty.');
+  if ((await vaultMediaBytes(env, folderId)) + size > VAULT_MEDIA_QUOTA_BYTES) return overQuota();
+  const bytes = await readDeclared(request, size);
+  if (bytes === 'too-long') return refuse(413, 'too-large', 'The upload is longer than its Content-Length.');
+  if (bytes === 'too-short') return refuse(400, 'bad-length', 'The upload ended before its Content-Length.');
+  return storeBytes(env, docId, folderId, createdBy, filename, type, bytes);
 }
 
-/** `bytes` into `docId` under `filename`, or the first `-n` name free there. */
+/** `bytes` into `docId` under `filename`, or the first `-n` name free there, within the vault's media quota. */
 async function storeBytes(env: AssetsEnv, docId: string, folderId: string, createdBy: string, filename: string, type: MediaType,
   bytes: Uint8Array<ArrayBuffer>): Promise<Response> {
-  const cap = MEDIA_CAP_BYTES[type.kind];
   if (bytes.byteLength === 0) return refuse(400, 'empty', 'The file is empty.');
-  if (bytes.byteLength > cap) return tooLarge(type.kind);
+  if (bytes.byteLength > MEDIA_CAP_BYTES[type.kind]) return tooLarge(type.kind);
+  // Checked again before the bytes are stored; the asset insert below holds it against concurrent uploads.
+  if ((await vaultMediaBytes(env, folderId)) + bytes.byteLength > VAULT_MEDIA_QUOTA_BYTES) return overQuota();
   const hash = await sha256Hex(bytes);
-  // Bytes before rows: a blob no row names is harmless, a row naming no blob is a broken image.
-  if (!(await env.ASSETS.head(blobKey(hash)))) {
-    await env.ASSETS.put(blobKey(hash), bytes, { httpMetadata: { contentType: type.contentType } });
-  }
   const db = createDb(env.DB);
   const blob: Bytes = { contentHash: hash, contentType: type.contentType, size: bytes.byteLength, versionId: null };
   // The name is free in the doc's record and in its folder's namespace, or holds these same bytes there.
@@ -164,15 +235,26 @@ async function storeBytes(env: AssetsEnv, docId: string, folderId: string, creat
       statements: [
         env.DB.prepare('INSERT INTO content_objects (hash, size, refcount) VALUES (?1, ?2, 1) ON CONFLICT(hash) DO UPDATE SET refcount = refcount + 1')
           .bind(hash, blob.size),
-        env.DB.prepare('INSERT INTO assets (id, folder_id, filename, kind, content_type, size, current_version_id, created_by, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8)')
-          .bind(id, folderId, name, type.kind, blob.contentType, blob.size, createdBy, now),
+        env.DB.prepare(`INSERT INTO assets (id, folder_id, filename, kind, content_type, size, current_version_id, created_by, created_at)
+          VALUES (?1, CASE WHEN ${vaultUsage('?2', '?9')} + ?6 <= ?10 THEN ?2 END, ?3, ?4, ?5, ?6, NULL, ?7, ?8)`)
+          .bind(id, folderId, name, type.kind, blob.contentType, blob.size, createdBy, now, MAX_FOLDER_DEPTH, VAULT_MEDIA_QUOTA_BYTES),
         env.DB.prepare('INSERT INTO asset_versions (id, asset_id, content_hash, size, etag, created_by, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)')
           .bind(versionId, id, hash, blob.size, etagOf(hash), createdBy, now),
         env.DB.prepare('UPDATE assets SET current_version_id = ?1 WHERE id = ?2').bind(versionId, id),
       ],
     };
+  }).catch((error: unknown) => {
+    if (OVER_QUOTA.test(`${error} ${(error as { cause?: unknown })?.cause ?? ''}`)) return 'over-quota' as const;
+    throw error;
   });
-  return media ? placed(media) : nameTaken();
+  if (media === 'over-quota') return overQuota();
+  if (!media) return nameTaken();
+  // Rows before bytes, so an upload that binds nothing (no free name, no room) stores nothing the quota misses. The
+  // caller references the file only after this 201; a failed put leaves a record that a retry of the upload fills.
+  if (!(await env.ASSETS.head(blobKey(hash)))) {
+    await env.ASSETS.put(blobKey(hash), bytes, { httpMetadata: { contentType: type.contentType } });
+  }
+  return placed(media);
 }
 
 async function upload(request: Request, env: AssetsEnv, docId: string): Promise<Response> {
@@ -181,6 +263,8 @@ async function upload(request: Request, env: AssetsEnv, docId: string): Promise<
   const access = await resolveDocAccess(createDb(env.DB), principal, docId, shareTokenOf(request));
   if (!access || access.deleted) return notFound();
   if (!roleAtLeast(access.role, 'editor')) return refuse(403, 'forbidden', 'You can view this note but not add media to it.');
+  const limited = await admitUpload(request, env, principal, docId);
+  if (limited) return limited;
   return store(request, env, docId, access.folderId, principal.id);
 }
 
@@ -197,6 +281,8 @@ async function copyFromNote(request: Request, env: AssetsEnv, docId: string): Pr
   const [target, source] = await Promise.all([resolveDocAccess(db, principal, docId, token), resolveDocAccess(db, principal, sourceId, token)]);
   if (!target || target.deleted || !source || source.deleted) return notFound();
   if (!roleAtLeast(target.role, 'editor')) return refuse(403, 'forbidden', 'You can view this note but not add media to it.');
+  const limited = await admitUpload(request, env, principal, docId);
+  if (limited) return limited;
   const found = await mediaOf(db, sourceId, filename);
   if (!found) return notFound();
   const media = await bind(env, docId, filename, found, principal.id, async () => ({ bytes: found, statements: [] }));
