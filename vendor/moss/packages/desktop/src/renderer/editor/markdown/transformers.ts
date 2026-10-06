@@ -40,6 +40,8 @@ import { $postImportNormalize, unescapeHtmlEntities } from './normalize';
 import { HIGHLIGHT_COLOR_VARIABLES, HIGHLIGHT_YELLOW_VALUE, HIGHLIGHT_YELLOW_VAR, SERIF_FONT_FAMILY_MARKDOWN_STYLE_PATTERN, getSerifFontFamilyMarkdownStyleAttribute, highlightColorNameFromStyle, isSerifFontFamilyValue, markdownStyleAttributeHasSerifFontFamily, setTextNodeFontFamily, unescapeInlineMarkdownText, wrapSerifFontFamilyMarkdownSpan } from './text-style';
 // moss-multi seam: formula-ids, line-loss, import-selection (A§12; S-conv B9, §1.2; SP2)
 import { $rejectLine, $selectEndOutsideDocumentImport, importFormulaId } from './fixes';
+// moss-multi seam: linear-match (A§12; SP2)
+import { withLinearRegExps } from './linear-match';
 
 // Custom transformer to preserve underlines in markdown
 const UNDERLINE_TRANSFORMER: TextMatchTransformer = {
@@ -2615,7 +2617,8 @@ const CHECK_LIST_WITH_OPTIONAL_TRAILING_SPACE: ElementTransformer = {
   regExp: /^(\s*)(?:[-*+]\s)?\s?(\[(\s|x)?\])(?:\s|$)/i
 };
 
-export const MARKDOWN_EDITOR_TRANSFORMERS: Transformer[] = [
+// moss-multi seam: linear-match (A§12; SP2)
+export const MARKDOWN_EDITOR_TRANSFORMERS: Transformer[] = withLinearRegExps([
   // Custom element transformers for block-level content
   // Obsidian embed must come before standard image so ![[ref]] is matched first
   OBSIDIAN_EMBED_TRANSFORMER,
@@ -2661,7 +2664,7 @@ export const MARKDOWN_EDITOR_TRANSFORMERS: Transformer[] = [
   HIGHLIGHT_TRANSFORMER,
   UNDERLINE_TRANSFORMER,
   FONT_FAMILY_TRANSFORMER
-];
+]); // moss-multi seam: linear-match (A§12; SP2)
 
 // Initialize circular reference after MARKDOWN_EDITOR_TRANSFORMERS is defined
 TABLE_TRANSFORMERS = MARKDOWN_EDITOR_TRANSFORMERS;

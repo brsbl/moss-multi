@@ -1,0 +1,304 @@
+import type { Transformer } from '@lexical/markdown';
+
+// Linear-time matching for the transformer regexes that backtrack super-linearly on runs of unclosed openers
+// (`[`, `[[`, `?[`, `![`, leading whitespace before a table pipe): a 2 MB note of them took minutes of workerd CPU.
+// Lexical runs `text.match(re)`, so each one is wrapped in a RegExp whose Symbol.match finds the same match: a
+// linear pre-scan yields only the starts where the regex matches, and the regex runs sticky at those (fully
+// anchored ones without groups need no run). Everything else about the RegExp is unchanged. Each scan is held to
+// its regex byte for byte by packages/sync/src/converter/linear-match.golden.test.ts.
+
+type Starts = (text: string) => Iterable<number>;
+
+class LinearRegExp extends RegExp {
+  readonly #starts: Starts;
+  readonly #sticky: RegExp;
+  // A fully anchored regex without capture groups matches the whole text or nothing.
+  readonly #whole: boolean;
+
+  constructor(original: RegExp, starts: Starts, whole: boolean) {
+    super(original.source, original.flags);
+    this.#starts = starts;
+    this.#sticky = new RegExp(original.source, `${original.flags}y`);
+    this.#whole = whole;
+  }
+
+  override [Symbol.match](text: string): RegExpMatchArray | null {
+    const input = String(text);
+    for (const start of this.#starts(input)) {
+      if (this.#whole) return Object.assign([input], { index: 0, input, groups: undefined }) as RegExpMatchArray;
+      this.#sticky.lastIndex = start;
+      const match = this.#sticky.exec(input);
+      if (match) return match;
+    }
+    return null;
+  }
+}
+
+// split() and matchAll() build plain copies.
+Object.defineProperty(LinearRegExp, Symbol.species, { get: () => RegExp });
+
+const isLineTerminator = (code: number) => code === 10 || code === 13 || code === 0x2028 || code === 0x2029;
+const WHITESPACE = /\s/;
+const isSpace = (text: string, index: number) => index < text.length && WHITESPACE.test(text[index]);
+
+/** The first line terminator at or after `from`, or the text's length. */
+function lineEnd(text: string, from: number): number {
+  for (let i = from; i < text.length; i += 1) if (isLineTerminator(text.charCodeAt(i))) return i;
+  return text.length;
+}
+
+/** Leading whitespace length and where the trailing whitespace starts. */
+function trim(text: string): { lead: number; trail: number } {
+  let lead = 0;
+  while (isSpace(text, lead)) lead += 1;
+  let trail = text.length;
+  while (trail > lead && isSpace(text, trail - 1)) trail -= 1;
+  return { lead, trail };
+}
+
+const hasLineTerminator = (text: string, from: number, to: number) => lineEnd(text, from) < to;
+
+/** Tests a sticky tail regex at `at`, returning where it ends (-1 when it does not match). */
+function tailEnd(tail: RegExp, text: string, at: number): number {
+  tail.lastIndex = at;
+  return tail.test(text) ? tail.lastIndex : -1;
+}
+
+// `(?:\\.|[^\]\\])*` from `from`: the body stops at an unescaped `]`, at a backslash before a line terminator or
+// the end, or at the end. Every `?[` body starts on a token boundary of any earlier body's scan (it follows a `[`),
+// so a body starting inside the last scan ends where that scan ended.
+function escapedBodies(text: string): (from: number) => number {
+  let start = -1;
+  let end = -1;
+  return (from) => {
+    if (from >= start && from <= end) return end;
+    let i = from;
+    while (i < text.length) {
+      const code = text.charCodeAt(i);
+      if (code === 92) {
+        if (i + 1 < text.length && !isLineTerminator(text.charCodeAt(i + 1))) i += 2;
+        else break;
+      } else if (code === 93) break;
+      else i += 1;
+    }
+    start = from;
+    end = i;
+    return end;
+  };
+}
+
+// `\(([^()\s]*(?:\([^()]*\)[^()\s]*)*)\)`, the destination of moss's pills.
+const PILL_DESTINATION = /\(([^()\s]*(?:\([^()]*\)[^()\s]*)*)\)/y;
+
+// Lexical's LINK: `[`, a lazy `.+?`, `]`, then its destination and optional title.
+function* lexicalLinkStarts(text: string): Iterable<number> {
+  const destination = /\((?:([^()\s]+)(?:\s"((?:[^"]*\\")*[^"]*)"\s*)?)\)/y;
+  let good = -1;
+  let scanned = 0;
+  let lineStop = -1;
+  for (let i = text.indexOf('['); i >= 0; i = text.indexOf('[', i + 1)) {
+    if (good < i + 2) {
+      good = -1;
+      for (let j = Math.max(scanned, i + 2); j < text.length; j += 1) {
+        if (text.charCodeAt(j) === 93 && tailEnd(destination, text, j + 1) >= 0) {
+          good = j;
+          break;
+        }
+      }
+      if (good < 0) return;
+      scanned = good + 1;
+    }
+    if (lineStop <= i) lineStop = lineEnd(text, i + 1);
+    if (good < lineStop) yield i;
+  }
+}
+
+// FILE_LINK: `[[`, then a body that cannot cross `]]`, then `]]`: it matches when the first `]]` after the opener
+// leaves the body at least one character.
+function* wikiLinkStarts(text: string): Iterable<number> {
+  let close = -1;
+  for (let i = text.indexOf('[['); i >= 0; i = text.indexOf('[[', i + 1)) {
+    if (close < i + 2) {
+      close = text.indexOf(']]', i + 2);
+      if (close < 0) return;
+    }
+    if (close >= i + 3) yield i;
+  }
+}
+
+// EMBED_PILL: `?[`, an escaped body, `]`, the destination.
+function* pillStarts(text: string): Iterable<number> {
+  const bodyEnd = escapedBodies(text);
+  for (let i = text.indexOf('?['); i >= 0; i = text.indexOf('?[', i + 1)) {
+    const end = bodyEnd(i + 2);
+    if (text.charCodeAt(end) === 93 && tailEnd(PILL_DESTINATION, text, end + 1) >= 0) yield i;
+  }
+}
+
+const EMPHASIS = ['~~***', '***~~', '~~**', '**~~', '~~*', '*~~', '***', '**', '~~', '*'];
+const opensEmphasis = (text: string, at: number) => text.charCodeAt(at) === 42 || text.startsWith('~~', at);
+
+// FORMATTED_EMBED_PILL: an emphasis run, then a pill or a raw http(s) URL, then an emphasis run.
+function* formattedPillStarts(text: string): Iterable<number> {
+  const bodyEnd = escapedBodies(text);
+  for (let i = 0; i < text.length; i += 1) {
+    if (!opensEmphasis(text, i)) continue;
+    const found = EMPHASIS.some((run) => {
+      if (!text.startsWith(run, i)) return false;
+      const at = i + run.length;
+      if (text.startsWith('http://', at) || text.startsWith('https://', at)) return true;
+      if (!text.startsWith('?[', at)) return false;
+      const end = bodyEnd(at + 2);
+      if (text.charCodeAt(end) !== 93) return false;
+      const after = tailEnd(PILL_DESTINATION, text, end + 1);
+      return after >= 0 && opensEmphasis(text, after);
+    });
+    if (found) yield i;
+  }
+}
+
+// The bracketed raw-URL pill: `[`, http(s)://, a run without `]` or whitespace, `]`, the destination.
+function* bracketedUrlStarts(text: string): Iterable<number> {
+  let runStart = -1;
+  let runEnd = -1;
+  for (let i = text.indexOf('['); i >= 0; i = text.indexOf('[', i + 1)) {
+    const scheme = text.startsWith('https://', i + 1) ? 8 : text.startsWith('http://', i + 1) ? 7 : 0;
+    if (scheme === 0) continue;
+    const from = i + 1 + scheme;
+    if (from < runStart || from > runEnd) {
+      let j = from;
+      while (j < text.length && text.charCodeAt(j) !== 93 && !isSpace(text, j)) j += 1;
+      runStart = from;
+      runEnd = j;
+    }
+    if (runEnd > from && text.charCodeAt(runEnd) === 93 && tailEnd(PILL_DESTINATION, text, runEnd + 1) >= 0) yield i;
+  }
+}
+
+// `^!\[.*\]\(.*\)` followed by `$` (the text-match form) or `\s*$` (the element form): one line from `![` to its
+// last `)`, holding a `](` with room for the `)`.
+function imageLineStarts(trailingSpace: boolean): Starts {
+  return function* (text) {
+    if (!text.startsWith('![')) return;
+    const close = trailingSpace ? trim(text).trail - 1 : text.length - 1;
+    if (close < 0 || text.charCodeAt(close) !== 41 || hasLineTerminator(text, 0, close)) return;
+    const middle = close >= 2 ? text.lastIndexOf('](', close - 2) : -1;
+    if (middle >= 2) yield 0;
+  };
+}
+
+// `^\s*\|.*\|?\s*$`: a pipe after the leading whitespace, and no line terminator before the trailing whitespace.
+function pipeRow(text: string): boolean {
+  const { lead, trail } = trim(text);
+  return text.charCodeAt(lead) === 124 && lineEnd(text, lead + 1) >= trail;
+}
+
+// `^\s*(?:.*\s\|\s.*)\s*$`: a whitespace-pipe-whitespace triple reachable without crossing a line terminator
+// from the end of the leading whitespace (or from inside it) and from which the trailing whitespace is reachable.
+function spacedPipeRow(text: string): boolean {
+  const { lead, trail } = trim(text);
+  const afterLead = lineEnd(text, lead);
+  let lastBeforeTrail = -1;
+  for (let i = trail - 1; i >= 0; i -= 1) {
+    if (isLineTerminator(text.charCodeAt(i))) {
+      lastBeforeTrail = i;
+      break;
+    }
+  }
+  for (let p = text.indexOf('|', 1) - 1; p >= 0; p = text.indexOf('|', p + 2) - 1) {
+    if (!isSpace(text, p) || !isSpace(text, p + 2)) continue;
+    if ((p <= lead || afterLead >= p) && lastBeforeTrail < p + 3) return true;
+  }
+  return false;
+}
+
+// `^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)+\|?\s*$`, a divider row, parsed without backtracking.
+function dividerRow(text: string): boolean {
+  let i = 0;
+  const spaces = () => {
+    while (isSpace(text, i)) i += 1;
+  };
+  const cell = () => {
+    if (text[i] === ':') i += 1;
+    if (text[i] !== '-') return false;
+    while (text[i] === '-') i += 1;
+    if (text[i] === ':') i += 1;
+    spaces();
+    return true;
+  };
+  spaces();
+  if (text[i] === '|') {
+    i += 1;
+    spaces();
+  }
+  if (!cell()) return false;
+  let cells = 0;
+  while (text[i] === '|') {
+    i += 1;
+    spaces();
+    if (i === text.length) break;
+    if (!cell()) return false;
+    cells += 1;
+  }
+  return cells > 0 && i === text.length;
+}
+
+const LINEAR: { source: string; flags: string; starts: Starts; whole?: boolean }[] = [
+  {
+    source: String.raw`(?:\[(.+?)\])(?:\((?:([^()\s]+)(?:\s"((?:[^"]*\\")*[^"]*)"\s*)?)\))`,
+    flags: '',
+    starts: lexicalLinkStarts,
+  },
+  { source: String.raw`\[\[((?:[^\]]|\](?!\]))+)\]\]`, flags: '', starts: wikiLinkStarts },
+  { source: String.raw`\?\[((?:\\.|[^\]\\])*)\]\(([^()\s]*(?:\([^()]*\)[^()\s]*)*)\)`, flags: '', starts: pillStarts },
+  {
+    source: String.raw`(~~\*\*\*|\*\*\*~~|~~\*\*|\*\*~~|~~\*|\*~~|\*\*\*|\*\*|~~|\*)(?:(\?\[((?:\\.|[^\]\\])*)\]\(([^()\s]*(?:\([^()]*\)[^()\s]*)*)\))|(https?:\/\/[^\s<>{}|\\^[\]` + '`' + String.raw`*~]+))(~~\*\*\*|\*\*\*~~|~~\*\*|\*\*~~|~~\*|\*~~|\*\*\*|\*\*|~~|\*)`,
+    flags: '',
+    starts: formattedPillStarts,
+  },
+  { source: String.raw`\[((?:https?:\/\/[^\]\s]+))\]\(([^()\s]*(?:\([^()]*\)[^()\s]*)*)\)`, flags: '', starts: bracketedUrlStarts },
+  { source: String.raw`^!\[.*\]\(.*\)$`, flags: '', starts: imageLineStarts(false), whole: true },
+  { source: String.raw`^!\[.*\]\(.*\)\s*$`, flags: '', starts: imageLineStarts(true), whole: true },
+  {
+    source: String.raw`^\s*(?:\|.*\|?|.*\s\|\s.*)\s*$`,
+    flags: '',
+    starts: function* (text) {
+      if (pipeRow(text) || spacedPipeRow(text)) yield 0;
+    },
+    whole: true,
+  },
+  {
+    source: String.raw`(?:^\s*\|.*\|?\s*$|^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)+\|?\s*$)`,
+    flags: '',
+    starts: function* (text) {
+      if (pipeRow(text) || dividerRow(text)) yield 0;
+    },
+    whole: true,
+  },
+];
+
+/** The regex sources (with flags) this module matches in linear time. */
+export const LINEAR_REGEXP_KEYS: readonly string[] = LINEAR.map(({ source, flags }) => `/${source}/${flags}`);
+
+/** `original` with linear matching when it is one of the known regexes, else `original` itself. */
+export function linearRegExp(original: RegExp): RegExp {
+  const known = LINEAR.find(({ source, flags }) => source === original.source && flags === original.flags);
+  return known ? new LinearRegExp(original, known.starts, known.whole ?? false) : original;
+}
+
+const FIELDS = ['importRegExp', 'regExp', 'regExpStart'] as const;
+
+/** The transformers, with each known regex field matched in linear time (copies; the originals are untouched). */
+export function withLinearRegExps(transformers: Transformer[]): Transformer[] {
+  return transformers.map((transformer) => {
+    const fields = transformer as unknown as Record<string, unknown>;
+    let copy: Record<string, unknown> | null = null;
+    for (const field of FIELDS) {
+      const value = fields[field];
+      if (!(value instanceof RegExp)) continue;
+      const linear = linearRegExp(value);
+      if (linear !== value) (copy ??= { ...fields })[field] = linear;
+    }
+    return (copy ?? transformer) as Transformer;
+  });
+}
