@@ -104,9 +104,10 @@ test('j01-autolink: ordinary URLs, schemeless URLs and emails still become the s
   await actor.goto(`/d/${docId}`);
   await ui.waitLive(actor, docId);
   await actor.observeEditor(docId);
-  await ui.typeBody(
-    actor,
-    docId,
+  // Typed directly: moss turns the public pages into pills, so the body's text is not the typed string.
+  await ui.body(actor, docId).click();
+  await actor.page.keyboard.press(process.platform === 'darwin' ? 'Meta+ArrowDown' : 'Control+End');
+  await actor.page.keyboard.type(
     ' Admin at http://192.168.1.20/admin and the picture example.com/cat.png or the archive https://example.com/report.zip, mail ada@example.invalid or "Ada L"@example.invalid; www.example.com and example.org/docs too. ',
   );
   // Public pages become moss's web pills, not links; everything else the matchers find is a link.
