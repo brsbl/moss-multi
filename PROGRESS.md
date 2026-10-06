@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 73% done** (65 of 89 planned tasks verified)
+**Overall: 74% done** (66 of 89 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -8,7 +8,7 @@
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 19 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 10 / 13 | in progress |
-| M4 Comments | Moss's full comment experience as CRDT data | 3 / 5 | in progress |
+| M4 Comments | Moss's full comment experience as CRDT data | 4 / 5 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 1 / 5 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
@@ -84,6 +84,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-05 — T2.6 verified: a viewer or commenter is no longer offered controls they cannot use: menus grow with their role, "+ Note", Rename, slash commands and block edit, fullscreen and delete buttons are hidden, checkboxes and gap cursors in a read-only body are inert and send nothing, and an unknown role gets no actions.
 - 2026-10-05 — T2.S1 verified: a co-owner who is demoted or removed loses their open invites for good, so regaining manage later never revives an invite they sent before.
 - 2026-10-05 — T2.S2 verified: a folder link over a large subtree (150 subfolders, 600 notes) lists every note at the right role for anonymous and signed-in holders, in a fixed number of queries and D1 parameters.
+- 2026-10-05 — T4.3 verified: in a shared note a person can select text and comment on it, reply, resolve and reopen threads, see each comment highlighted for everyone through edits and formatting without a blink, and find detached comments listed with their quote, all in moss's own gutter, popover and Cmd+Shift+A.
 
 ## T1.1s identity audit
 
@@ -207,6 +208,9 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T4.1 checker P2: only the comment route reads the body after access resolves; rename (`api/docs.ts`) and the asset routes still read the body first and do not check the trash hold at the DocDO write.
 - T4.3 checker P2: a commenter can comment on text but not on a code, chart, sketch or image block; moss's decorator "Add comment" entry points need an editable body, and `CommentOnlyTools` sends no `nodeKey` → comments follow-up: a block entry point for commenters.
 - T4.3 checker P2: the `comment-gutter` dark parity target masks the whole commented paragraph (`darkMasks` in `e2e/parity/targets.ts`, DEVIATIONS #23), so a missing dark highlight would still pass → parity follow-up: a narrower mask or an explicit dark paint assertion.
+- T4.3 checker P2 (A comment or reply that fails to save loses its typed text): the bound adapter returns true synchronously, so moss clears the draft and closes the composer before the REST call settles; on a network error or a refusal (anchor-gone, text-too-long, parent-missing) the notice shows but the text must be retyped.
+- T4.3 checker P2 (`__commentIds` is not in EXCLUDED_FIELDS as comments.md §11 says): `packages/sync/src/excluded-properties.ts` does not list it; defense in depth only (server import clears decorator ids, the bound adapter never writes them). Add the exclusion with a frame assertion.
+- T4.3 checker P2 (t/T4.3 did not include the current origin/m3): resolved at integration by merging origin/m3 into m4 first; separately, a WebKit j01 code-register leg flaked once (cancelled `/api/workspace` fetches) and passed on rerun.
 - The wrangler ProxyWorker patch replays non-idempotent requests after an ambiguous failure → T0.9b follow-up (stack infra)
 - `qa.mjs close` forgets the session even when closing it failed → tooling follow-up
 - T4.0 checker: typing `==marked==` then a space in the real app drops the word instead of highlighting it (moss's `==` inline shortcut over the bound editor; the comment engine is not involved) → T3.3 follow-up (inline markdown shortcuts), with a j-editing leg that types each moss inline shortcut and asserts the text survives
