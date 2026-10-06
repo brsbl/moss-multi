@@ -80,6 +80,7 @@ export const ORDINARY_NOTES: Record<string, () => string> = {
   'a paragraph of 2,000 links, each followed by bold': () => `${range(2_000).map((i) => `[p${i}](https://e.com/${i}) **x${i}**`).join(' ')}\n\nAfter para.`,
   'a palette paragraph of 250 colors': () => palette(250),
   'a palette paragraph of 2,000 colors': () => palette(2_000),
+  'a palette paragraph of 500 colors after a link and a code span': () => `See [the guide](https://e.com/guide) and \`tokens\`: ${range(500).map(hex).join(' ')}`,
   'a palette paragraph of 2,000 named hex, rgb and hsl colors': () =>
     range(2_000).map((i) => (i % 3 === 0 ? `${hex(i)} shade ${i},` : i % 3 === 1 ? `rgb(${i % 256}, 40, 80) tone,` : `hsl(${i % 360}, 50%, 50%) hue,`)).join(' '),
   'a paragraph of 1,000 wiki links': () => `See ${range(1_000).map((i) => `[[Note ${i}]]`).join(', ')}.`,

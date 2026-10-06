@@ -35,7 +35,6 @@ import { $createTabGroupNode, $isTabGroupNode, TabGroupNode } from '../nodes/Tab
 import { $createTabPanelNode, TabPanelNode } from '../nodes/TabPanelNode';
 import { $createColorCodeNode, $isColorCodeNode, ColorCodeNode } from '../nodes/ColorCodeNode';
 import { COLOR_TRANSFORMER_IMPORT_REGEXP, COLOR_TRANSFORMER_REGEXP, isInsideUnclosedDelimiter } from '../utils/color-codes';
-import { $isInsideColorSuppressedRawContext } from '../utils/colorPickerTriggers';
 import { $postImportNormalize, unescapeHtmlEntities } from './normalize';
 import { HIGHLIGHT_COLOR_VARIABLES, HIGHLIGHT_YELLOW_VALUE, HIGHLIGHT_YELLOW_VAR, SERIF_FONT_FAMILY_MARKDOWN_STYLE_PATTERN, getSerifFontFamilyMarkdownStyleAttribute, highlightColorNameFromStyle, isSerifFontFamilyValue, markdownStyleAttributeHasSerifFontFamily, setTextNodeFontFamily, unescapeInlineMarkdownText, wrapSerifFontFamilyMarkdownSpan } from './text-style';
 // moss-multi seam: formula-ids, line-loss, import-selection (A§12; S-conv B9, §1.2; SP2)
@@ -43,7 +42,7 @@ import { $rejectLine, $selectEndOutsideDocumentImport, importFormulaId } from '.
 // moss-multi seam: linear-match (A§12; SP2)
 import { linearRegExp, withLinearRegExps } from './linear-match';
 // moss-multi seam: linear-import (A§12; SP2)
-import { $convertFromMarkdownString, isAfterUnclosedBacktick, isInsideInlineCodeSpan } from './linear-import';
+import { $convertFromMarkdownString, $isInsideColorSuppressedRawContext, isAfterUnclosedBacktick, isInsideInlineCodeSpan } from './linear-import';
 
 // Custom transformer to preserve underlines in markdown
 const UNDERLINE_TRANSFORMER: TextMatchTransformer = {

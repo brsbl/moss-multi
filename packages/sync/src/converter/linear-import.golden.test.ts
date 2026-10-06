@@ -32,8 +32,13 @@ const TOKENS = [
   '.', ',', ':', '-', '"', "'", '!', '?', '\t', '\n', '# ', '- ', '> ', '1. ',
 ];
 
+const DENSE_TOKENS = [
+  '*', '**', '***', '_', '__', '~~', '`', '``', '\\', '\\*', '\\`', '[a](b)', '[a_b](c*d)', '[a`b](c)', 'a', 'b', ' ', '  ', 'x*y',
+  'x_y', '`a`', '**b**', '*c*', '_d_', '#fff', 'http://a.co ', '[[w]]', '(', ')', '.', '!',
+];
+
 // Deterministic pseudo-random strings of tokens, `count` of them, each up to `maxTokens` long.
-function* fuzz(count: number, seed: number, maxTokens: number): Generator<string> {
+function* fuzz(count: number, seed: number, maxTokens: number, tokens = TOKENS): Generator<string> {
   let state = seed >>> 0;
   const next = () => {
     state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
@@ -42,7 +47,7 @@ function* fuzz(count: number, seed: number, maxTokens: number): Generator<string
   for (let i = 0; i < count; i += 1) {
     const length = next() % maxTokens;
     let text = '';
-    for (let j = 0; j < length; j += 1) text += TOKENS[next() % TOKENS.length];
+    for (let j = 0; j < length; j += 1) text += tokens[next() % tokens.length];
     yield text;
   }
 }
@@ -54,6 +59,7 @@ describe('linear inline import @p:tech-4', () => {
     const limits = { ...LINEAR_IMPORT_LIMITS };
     beforeAll(() => {
       LINEAR_IMPORT_LIMITS.perChar = Number.POSITIVE_INFINITY;
+      LINEAR_IMPORT_LIMITS.perImport = Number.POSITIVE_INFINITY;
     });
     afterAll(() => {
       Object.assign(LINEAR_IMPORT_LIMITS, limits);
@@ -80,21 +86,45 @@ describe('linear inline import @p:tech-4', () => {
     it('builds the tree Lexical builds for long lines of random tokens', () => {
       expect(differing(fuzz(60, 11, 1_200))).toEqual([]);
     }, 300_000);
+
+    // Long lines dense in delimiters, backticks, escapes and matches: the format search reuses its answer across
+    // the parts of a line, and these are where a wrong reuse would show.
+    it('builds the tree Lexical builds for long lines dense in delimiters', () => {
+      expect(differing(fuzz(1_500, 3, 300, DENSE_TOKENS))).toEqual([]);
+    }, 300_000);
   });
 
-  // The budget is linear in each line's length and matches, so ordinary notes, however long, are never cut.
+  // A line's budget is linear in its length and matches, so ordinary notes use a small share of it (and of the
+  // import's), however long their lines; none is cut.
+  const shares = (run: () => void) => {
+    Object.assign(linearImportStats, { peakLineShare: 0, peakImportShare: 0 });
+    const before = linearImportStats.cut;
+    run();
+    return { cut: linearImportStats.cut - before, line: linearImportStats.peakLineShare, import: linearImportStats.peakImportShare };
+  };
+
   it.each(Object.entries(ORDINARY_NOTES))('cuts no line of an ordinary note and builds Lexical\'s tree: %s', (_name, body) => {
     const markdown = body();
-    const before = linearImportStats.cut;
-    const ours = tree($convertFromMarkdownString, markdown);
-    expect(linearImportStats.cut - before).toBe(0);
+    let ours = '';
+    const used = shares(() => {
+      ours = tree($convertFromMarkdownString, markdown);
+    });
+    expect(used.cut).toBe(0);
+    expect(used.line).toBeLessThan(0.25);
+    expect(used.import).toBeLessThan(0.25);
     expect(ours === tree($lexicalConvertFromMarkdownString, markdown)).toBe(true);
   }, 120_000);
 
-  it('cuts no line of the 2 MB scale note of mixed content', () => {
-    const before = linearImportStats.cut;
-    importMarkdown(scaleNote(Math.ceil((2 * 1024 * 1024) / SCALE_UNIT.length)));
-    expect(linearImportStats.cut - before).toBe(0);
+  it('cuts no line of the 2 MB scale note of mixed content, and builds Lexical\'s tree', () => {
+    const markdown = scaleNote(Math.ceil((2 * 1024 * 1024) / SCALE_UNIT.length));
+    let ours = '';
+    const used = shares(() => {
+      ours = tree($convertFromMarkdownString, markdown);
+    });
+    expect(used.cut).toBe(0);
+    expect(used.line).toBeLessThan(0.25);
+    expect(used.import).toBeLessThan(0.25);
+    expect(ours === tree($lexicalConvertFromMarkdownString, markdown)).toBe(true);
   }, 120_000);
 
   // A cut line keeps the rest of its text as literal text: every character survives, and the export writes it so
@@ -118,7 +148,7 @@ describe('linear inline import @p:tech-4', () => {
     it('keeps the text of lines past the import\'s budget', () => {
       const limits = { ...LINEAR_IMPORT_LIMITS };
       try {
-        Object.assign(LINEAR_IMPORT_LIMITS, { importBase: 0, perChar: 1, perMatch: 0 });
+        Object.assign(LINEAR_IMPORT_LIMITS, { perImport: 50_000 });
         const result = lossless(Array.from({ length: 200 }, (_, i) => `**a${i}** and *b${i}* then ~~c${i}~~ x`).join('\n\n'));
         expect(result.cut).toBeGreaterThan(100);
         expect(result).toMatchObject({ kept: true, literal: true });

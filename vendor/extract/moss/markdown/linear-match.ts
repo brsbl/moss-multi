@@ -263,7 +263,7 @@ function schemeUrlStart(text: string, end: number, lastExcluded: number): number
 }
 
 // The host form up to `end`, starting before `before`: the host is a run of host characters ending at `end` or at a
-// path character after which nothing is excluded.
+// path character after which nothing is excluded. One forward pass over the runs; each run's checks stay inside it.
 function hostUrlStart(text: string, end: number, lastExcluded: number, before: number): number {
   let a = 0;
   while (a < end && a < before) {
@@ -271,10 +271,23 @@ function hostUrlStart(text: string, end: number, lastExcluded: number, before: n
       a += 1;
       continue;
     }
+    // The run [a, b), with its last two colons, its last dot and its last dot before its last colon.
     let b = a;
-    while (b < end && HOST_CHAR.test(text[b])) b += 1;
+    let colon = -1;
+    let otherColon = -1;
+    let dot = -1;
+    let dotBeforeColon = -1;
+    for (; b < end && HOST_CHAR.test(text[b]); b += 1) {
+      if (text[b] === ':') {
+        otherColon = colon;
+        colon = b;
+        dotBeforeColon = dot;
+      } else if (text[b] === '.') {
+        dot = b;
+      }
+    }
     if (b === end || (PATH_START.test(text[b]) && b > lastExcluded)) {
-      const start = hostStart(text, a, b);
+      const start = hostStart(text, a, b, colon, otherColon, dot, dotBeforeColon);
       if (start >= 0) return start < before ? start : -1;
     }
     a = b + 1;
@@ -282,19 +295,19 @@ function hostUrlStart(text: string, end: number, lastExcluded: number, before: n
   return -1;
 }
 
-// The leftmost i in [a, b) where text[i, b) is labels, a top-level label and an optional `:` port.
-function hostStart(text: string, a: number, b: number): number {
-  const colon = text.lastIndexOf(':', b - 1);
-  if (colon < a) return domainStart(text, a, b);
-  const other = text.lastIndexOf(':', colon - 1);
-  const withPort = DIGITS.test(text.slice(colon + 1, b)) ? domainStart(text, Math.max(a, other + 1), colon) : -1;
-  return withPort >= 0 ? withPort : domainStart(text, colon + 1, b);
+// The leftmost i in [a, b) where text[i, b) is labels, a top-level label and an optional `:` port, given the run's
+// last colons and dots (-1 for none).
+function hostStart(text: string, a: number, b: number, colon: number, otherColon: number, dot: number, dotBeforeColon: number): number {
+  if (colon < 0) return domainStart(text, a, b, dot);
+  const lo = Math.max(a, otherColon + 1);
+  const withPort = DIGITS.test(text.slice(colon + 1, b)) ? domainStart(text, lo, colon, dotBeforeColon) : -1;
+  return withPort >= 0 ? withPort : domainStart(text, colon + 1, b, dot > colon ? dot : -1);
 }
 
 // The leftmost i in [lo, end) where text[i, end), of letters, digits, `-` and `.`, is one or more labels each
 // followed by a dot (alphanumeric at both ends), then a top-level label (a letter, then 1-23 of [a-zA-Z0-9-]).
-function domainStart(text: string, lo: number, end: number): number {
-  const lastDot = text.lastIndexOf('.', end - 1);
+// `lastDot` is the last dot before `end`, or -1.
+function domainStart(text: string, lo: number, end: number, lastDot: number): number {
   if (lastDot < lo) return -1;
   const top = end - lastDot - 1;
   if (top < 2 || top > 24 || !LETTER.test(text[lastDot + 1])) return -1;

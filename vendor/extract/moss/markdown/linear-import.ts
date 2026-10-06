@@ -11,6 +11,8 @@ import {
   isAfterUnclosedBacktick as isAfterUnclosedBacktickIn,
   isInsideInlineCodeSpan as isInsideInlineCodeSpanIn,
 } from '../utils/color-codes';
+import { $isInsideColorSuppressedRawContext as $isInsideColorSuppressedRawContextIn } from '../utils/colorPickerTriggers';
+import { SERIF_FONT_FAMILY_MARKDOWN_STYLE_PATTERN } from './text-style';
 
 // Lexical's markdown import with a linear inline pass (A§12; SP2). @lexical/markdown 0.48 imports each line's text
 // by finding the outermost format or text match over the whole text, splitting there and recursing on each part:
@@ -21,24 +23,39 @@ import {
 // same order, through the same transformer callbacks, so the tree is the one Lexical builds. What changes is cost:
 // a part after a match is a suffix of the text already scanned, so each text-match regex keeps its next match and is
 // rerun only once that match is passed; the format search decides from a short prefix when the rest cannot change
-// the answer, and reuses its answer when only text without delimiters was consumed; the split links the new nodes in
-// place. A line still over its work budget (LINEAR_IMPORT_LIMITS: pathological nesting, or replace callbacks that
-// scan the whole paragraph per match) keeps the rest of its text as written, unconverted.
+// the answer, and reuses its answer until the parts pass the emphasis or code span it found; the split links the new
+// nodes in place. The work is charged with what it costs, never with where in the line it happens, against budgets
+// (LINEAR_IMPORT_LIMITS) that ordinary notes use a small part of; a line past one keeps the rest of its text as
+// literal text.
 // linear-import.golden.test.ts holds this to Lexical's own import over the corpus and fuzz.
 
 /**
- * Work budgets, in rough character operations: per line, perChar × the line's length + base; per import (nested
- * imports, such as table cells, share their outer import's), perChar × the markdown's length + importBase.
+ * Work budgets, in units of about a nanosecond of work on a fast machine (a character scanned; an applied match,
+ * with its nodes, is APPLY_COST). Per line, perChar × the line's length + perMatch × the matches applied + base:
+ * linear in the line, so only work of ours that grows faster than the line runs out of it (deep nesting), and an
+ * ordinary line uses about a tenth of it. Per import (nested imports, such as table cells, share their outer
+ * import's), perImport: a whole note's inline work, moss's callbacks included, stays within SP2's import time (about
+ * a second here, two to three in CI's workerd); the 2 MB scale note uses a fifth of it. Work that pristine moss also
+ * does and that grows faster than the line (callbacks that read the whole paragraph per match) counts against the
+ * import's budget only.
  */
-export const LINEAR_IMPORT_LIMITS = { perChar: 256, base: 1 << 20, importBase: 1 << 22 };
-/** Lines whose budget ran out (left partly unconverted), over all imports. */
-export const linearImportStats = { cut: 0 };
+export const LINEAR_IMPORT_LIMITS = { perChar: 256, perMatch: 1 << 17, base: 1 << 20, perImport: 1 << 30 };
+/**
+ * Over all imports: lines whose budget ran out (left partly unconverted), the work charged, and the largest share
+ * of its budget a line, and an import, has used.
+ */
+export const linearImportStats = { cut: 0, spent: 0, peakLineShare: 0, peakImportShare: 0 };
 
-// Rough costs, in character operations, of Lexical node work.
+// Rough costs of Lexical node work: visiting a node, and applying a match (splitting the node, the transformer's
+// callback and the nodes it makes).
 const VISIT_COST = 32;
-const APPLY_COST = 1024;
-// Native regex and string scans run several characters per operation.
+const APPLY_COST = 12_288;
+// A read of the paragraph's text and children, per character.
+const PARAGRAPH_READ = 20;
+// Native regex and string scans run several characters per unit; the format search's scans take several units per
+// character.
 const NATIVE = 4;
+const FORMAT_SCAN = 4;
 // The first prefix the format search tries, grown fourfold.
 const FIRST_WINDOW = 64;
 
@@ -51,16 +68,20 @@ export function $convertFromMarkdownString(
   shouldMergeAdjacentLines = false,
 ): void {
   const outer = importBudget;
-  importBudget ??= new Budget(LINEAR_IMPORT_LIMITS.perChar * markdown.length + LINEAR_IMPORT_LIMITS.importBase);
+  importBudget ??= { left: LINEAR_IMPORT_LIMITS.perImport };
   try {
     $lexicalConvertFromMarkdownString(markdown, importTransformers(transformers), node, shouldPreserveNewLines, shouldMergeAdjacentLines);
   } finally {
+    if (!outer) {
+      const share = 1 - importBudget.left / LINEAR_IMPORT_LIMITS.perImport;
+      if (share > linearImportStats.peakImportShare) linearImportStats.peakImportShare = share;
+    }
     importBudget = outer;
   }
 }
 
-// The budget of the import running, if any.
-let importBudget: Budget | null = null;
+// What the import running, if any, has left of its budget.
+let importBudget: { left: number } | null = null;
 
 // moss's raw-URL and color callbacks call these once per match, on the text of the match's part. Neither can be
 // true without a backtick before the offset, so that is looked for first and the scan of the whole text skipped.
@@ -76,6 +97,37 @@ function backtickBefore(text: string, offset: number): boolean {
   const target = Math.max(0, Math.min(offset, text.length));
   return target > 0 && text.lastIndexOf('`', target - 1) >= 0;
 }
+
+// moss's color callback asks this once per color, and it reads the whole paragraph each time. Each of its checks
+// needs a backtick, a bracket or a brace in the paragraph's text; a line alone in its parent and free of them (and
+// of numeric entities, which unescape to them) stays free of them while it imports, since every node made from it
+// takes its text from the line. Then only the node's own checks can be true.
+const FORMULA_DRAFT_CHIP_STYLE_MARKER = '--formula-draft-chip: 1';
+const FORMULA_EDIT_ID_STYLE_MARKER = '--formula-edit-id:';
+
+export function $isInsideColorSuppressedRawContext(node: TextNode, offset: number): boolean {
+  const line = activeLine;
+  if (line?.plain && node.getParent()?.getKey() === line.parentKey) {
+    const style = node.getStyle();
+    return node.hasFormat('code') || style.includes(FORMULA_DRAFT_CHIP_STYLE_MARKER) || style.includes(FORMULA_EDIT_ID_STYLE_MARKER);
+  }
+  // About six scans of the paragraph, which holds the line's text and roughly one child per match so far: moss's own
+  // cost, which pristine moss pays too, so it counts against the import's budget only.
+  if (line) line.budget.chargeImport(PARAGRAPH_READ * (line.length + line.applied));
+  return $isInsideColorSuppressedRawContextIn(node, offset);
+}
+
+interface ActiveLine {
+  parentKey: string | undefined;
+  /** The line is its parent's only child and holds no backtick, bracket, brace or numeric entity. */
+  plain: boolean;
+  budget: Budget;
+  length: number;
+  applied: number;
+}
+
+// The line the inline pass is importing, if any.
+let activeLine: ActiveLine | null = null;
 
 const IMPORT_LISTS = new WeakMap<Transformer[], Transformer[]>();
 
@@ -106,19 +158,37 @@ function importTransformers(transformers: Transformer[]): Transformer[] {
 
 const OVER_BUDGET = Symbol('over budget');
 
+// A line's budget, and what its import has left when the line starts.
 class Budget {
   left: number;
-  constructor(total: number) {
+  allowance: number;
+  importLeft: number;
+  spent = 0;
+  constructor(total: number, importLeft: number) {
     this.left = total;
+    this.allowance = total;
+    this.importLeft = importLeft;
+  }
+  /** Adds to the line's budget (each applied match brings its share; the import's budget gets none). */
+  grant(amount: number): void {
+    this.left += amount;
+    this.allowance += amount;
+  }
+  /** Spends from the import's budget only. */
+  chargeImport(cost: number): void {
+    this.spent += cost;
+    linearImportStats.spent += cost;
   }
   /** Spends without stopping; the next check stops. */
   charge(cost: number): void {
     this.left -= cost;
+    this.spent += cost;
+    linearImportStats.spent += cost;
   }
-  /** Spends, and stops the line once the budget is gone. */
+  /** Spends, and stops the line once its budget or its import's is gone. */
   spend(cost: number): void {
-    this.left -= cost;
-    if (this.left < 0) throw OVER_BUDGET;
+    this.charge(cost);
+    if (this.left < 0 || this.spent > this.importLeft) throw OVER_BUDGET;
   }
 }
 
@@ -142,19 +212,29 @@ interface Split {
 // Lexical's outer call already unescapes the top node after the driver returns, so the top gets no unescape here.
 function $importInline(top: TextNode, index: FormatIndex, matchers: TextMatchTransformer[]): void {
   const lineLength = top.getTextContentSize();
-  const lineLimit = LINEAR_IMPORT_LIMITS.perChar * lineLength + LINEAR_IMPORT_LIMITS.base;
-  const budget = new Budget(importBudget ? Math.min(lineLimit, importBudget.left) : lineLimit);
-  const total = budget.left;
-  let applied = 0;
-  const replaceCost = (transformer: TextMatchTransformer, match: RegExpMatchArray) => {
+  const budget = new Budget(LINEAR_IMPORT_LIMITS.perChar * lineLength + LINEAR_IMPORT_LIMITS.base, importBudget?.left ?? Infinity);
+  const parent = top.getParent();
+  const line: ActiveLine = {
+    parentKey: parent?.getKey(),
+    plain: parent !== null && parent.getChildrenSize() === 1 && !/[`[\]{}]|&#/.test(top.getTextContent()),
+    budget,
+    length: lineLength,
+    applied: 0,
+  };
+  const outerLine = activeLine;
+  activeLine = line;
+  // What each replace callback reads besides its match, by the transformer's kind (REPLACE_READS). Reads of the
+  // part's text before the match add up to the line's length; reads of the whole text or paragraph per match are
+  // moss's own cost, which pristine moss pays too, so they count against the import's budget only.
+  const chargeReplace = (transformer: TextMatchTransformer, match: RegExpMatchArray) => {
     const start = match.index ?? 0;
     const input = match.input ?? '';
     const read = REPLACE_READS.get(transformer.importRegExp?.source ?? '');
-    if (read === 'match') return (start + match[0].length) / NATIVE;
-    // Two scans of the whole text, character by character.
-    if (read === 'backticks') return (start + match[0].length) / NATIVE + (backtickBefore(input, start) ? 4 * input.length : 0);
+    budget.charge(APPLY_COST + (read === 'match' ? match[0].length : start + match[0].length) / NATIVE + (read === 'color' ? start : 0));
+    // Past a backtick, the raw-URL and color callbacks scan the whole text twice.
+    if ((read === 'backticks' || read === 'color') && backtickBefore(input, start)) budget.chargeImport(3 * input.length);
     // Others may read the whole paragraph several times over: its text, and its children (about one per match so far).
-    return 8 * (lineLength + applied);
+    if (read === undefined) budget.chargeImport(PARAGRAPH_READ * (lineLength + line.applied));
   };
   const stack: Frame[] = [{ node: top, context: null, offset: 0, top: true }];
   try {
@@ -196,13 +276,15 @@ function $importInline(top: TextNode, index: FormatIndex, matchers: TextMatchTra
       let result: Split;
       let endIndex: number;
       if (foundFormat) {
-        applied += 1;
+        line.applied += 1;
+        budget.grant(LINEAR_IMPORT_LIMITS.perMatch);
         budget.charge(APPLY_COST);
         result = $importFormat(textNode, foundFormat);
         endIndex = foundFormat.endIndex;
       } else if (foundMatch) {
-        applied += 1;
-        budget.charge(APPLY_COST + replaceCost(foundMatch.transformer, foundMatch.match));
+        line.applied += 1;
+        budget.grant(LINEAR_IMPORT_LIMITS.perMatch);
+        chargeReplace(foundMatch.transformer, foundMatch.match);
         result = $importMatch(textNode, foundMatch);
         endIndex = foundMatch.endIndex;
       } else {
@@ -219,7 +301,10 @@ function $importInline(top: TextNode, index: FormatIndex, matchers: TextMatchTra
     if (error !== OVER_BUDGET) throw error;
     linearImportStats.cut += 1;
   } finally {
-    if (importBudget && Number.isFinite(total)) importBudget.left -= total - budget.left;
+    activeLine = outerLine;
+    if (importBudget) importBudget.left -= budget.spent;
+    const share = 1 - budget.left / budget.allowance;
+    if (share > linearImportStats.peakLineShare) linearImportStats.peakLineShare = share;
   }
 }
 
@@ -325,8 +410,11 @@ interface Context {
   base: string;
   matches: Map<TextMatchTransformer, CachedMatch>;
   scan?: ContextScan;
-  /** The last format search computed in full, by the offset it was computed at. */
-  format?: { at: number; result: FoundFormat | null; quietUntil: number };
+  /**
+   * The last format search computed, by the offset it was computed at, and `stable`: no emphasis and no code span
+   * starts in the base between `at` and it.
+   */
+  format?: { at: number; result: FoundFormat | null; stable: number };
 }
 
 interface ContextScan {
@@ -334,6 +422,8 @@ interface ContextScan {
   lastRelevant: number;
   /** Last index of an unescaped backtick run with a later run of the same length, or -1. */
   lastSpanOpener: number;
+  /** Per backtick run length, the index of the last run of that length. */
+  lastRunOfLength: Map<number, number>;
 }
 
 const newContext = (base: string): Context => ({ base, matches: new Map() });
@@ -426,8 +516,10 @@ interface RegExpKind {
 }
 
 const KINDS = new WeakMap<RegExp, RegExpKind>();
+// moss's serif span: its `^` follows `<span style="`, so it never matches.
+const SERIF_SPAN_SOURCE = new RegExp(`<span style="(${SERIF_FONT_FAMILY_MARKDOWN_STYLE_PATTERN})">([^<]+)<\\/span>`, 'i').source;
 // The color regex's `\b` follows its hex digits, so it never reads before the match.
-const SUFFIX_SAFE = new Set([COLOR_TRANSFORMER_IMPORT_REGEXP.source]);
+const SUFFIX_SAFE = new Set([COLOR_TRANSFORMER_IMPORT_REGEXP.source, SERIF_SPAN_SOURCE]);
 const SPECIAL = new Set([...'\\^$.|?*+()[]{}']);
 
 // Suffix-safe: no `^`, no `\b` or `\B`, no lookbehind, not global, sticky or multiline.
@@ -471,8 +563,9 @@ function regExpKind(re: RegExp): RegExpKind {
   return kind;
 }
 
-// What a replace callback reads besides the match: the text up to it ('match'), or also the whole text when a
-// backtick precedes the match ('backticks', the raw-URL callback). Others are charged a scan of the paragraph.
+// What a replace callback reads besides the match: nothing ('match'); the text before the match back to a backtick,
+// and the whole text past one ('backticks', the raw-URL callback); that and the text before the match ('color').
+// Others are charged scans of the paragraph.
 const READS_MATCH = [
   String.raw`<u(?:\s+style="([^"]*font-family\s*:[^"]*serif[^"]*)")?>([^<]+)<\/u>`,
   String.raw`<mark data-color="(\w+)"(?:\s+style="([^"]*font-family\s*:[^"]*serif[^"]*)")?>([^<]+)<\/mark>`,
@@ -487,9 +580,11 @@ const READS_MATCH = [
   String.raw`(?:\[([^[\]]+)\])(?:\(([^()\s]*(?:\([^()]*\)[^()\s]*)*)(?:\s"((?:[^"]*\\")*[^"]*)")?\))`,
   String.raw`(?:\[(.+?)\])(?:\((?:([^()\s]+)(?:\s"((?:[^"]*\\")*[^"]*)"\s*)?)\))`,
 ];
-const REPLACE_READS = new Map<string, 'match' | 'backticks'>([
+const REPLACE_READS = new Map<string, 'match' | 'backticks' | 'color'>([
   ...READS_MATCH.map((source) => [source, 'match'] as const),
+  [SERIF_SPAN_SOURCE, 'match'],
   [String.raw`https?:\/\/[^\s<>{}|\\^[\]` + '`' + ']+', 'backticks'],
+  [COLOR_TRANSFORMER_IMPORT_REGEXP.source, 'color'],
 ]);
 
 // ---- Formats (Lexical's findOutermostTextFormatTransformer) ----
@@ -550,35 +645,35 @@ interface Emphasis {
 const isRelevant = (index: FormatIndex, char: string) => char === '`' || index.delimiterChars.has(char);
 
 // The search on `text`, the base from `offset`, answered (in order) by: no delimiter or backtick left; the last
-// answer, when only text without delimiters, backticks or backslashes was consumed since; a prefix whose answer the
-// rest cannot change; the whole text.
+// answer, while no emphasis or code span it saw starts before `offset` and the cut at `offset` changes no delimiter
+// or backtick run; a prefix whose answer the rest cannot change; the whole text.
 function findFormat(text: string, context: Context, offset: number, index: FormatIndex, budget: Budget): FoundFormat | null {
   const scan = contextScan(context, index, budget);
   if (scan.lastRelevant < offset) return null;
   const last = context.format;
-  if (last && last.at <= offset && last.quietUntil >= offset && (offset === last.at || quietBoundary(context.base, offset, index))) {
+  if (last && last.at <= offset && offset <= last.stable && (offset === last.at || cleanCut(context.base, offset, index))) {
     return last.result && moved(last.result, -offset, text);
   }
-  let result: FoundFormat | null | undefined;
+  let result: Answer | undefined;
   for (let window = FIRST_WINDOW; result === undefined && window < text.length; window *= 4) {
     const cut = neutralCut(text, window, index, budget);
     if (cut > 0) result = fromPrefix(text, cut, scan, offset, index, budget);
   }
-  const found = result === undefined ? (fromPrefix(text, text.length, scan, offset, index, budget, true) ?? null) : result;
-  // Text up to the next delimiter, backtick or backslash can be consumed without changing the answer.
-  let quietUntil = offset;
-  const base = context.base;
-  const limit = found ? offset + found.startIndex : base.length;
-  while (quietUntil < limit && !isRelevant(index, base[quietUntil]) && base[quietUntil] !== '\\') quietUntil += 1;
-  budget.charge(quietUntil - offset);
-  context.format = { at: offset, result: found && moved(found, offset, base), quietUntil };
-  return found;
+  result ??= fromPrefix(text, text.length, scan, offset, index, budget, true)!;
+  context.format = { at: offset, result: result.found && moved(result.found, offset, context.base), stable: offset + result.stable };
+  return result.found;
 }
 
-// A delimiter run's flanking reads the character before it; at a part's start that is none, which reads like
-// whitespace. So a part may start on a delimiter only after whitespace.
-function quietBoundary(base: string, offset: number, index: FormatIndex): boolean {
-  return !index.delimiterChars.has(base[offset]) || /\s/.test(base[offset - 1]);
+// Whether the search on the base from `offset` sees the same delimiter and backtick runs, with the same flanking
+// and escapes, as the search from an earlier offset sees there. Delimiters dropped before it that took part in no
+// emphasis then change nothing after it: they paired with nothing, and nothing paired across them.
+function cleanCut(base: string, offset: number, index: FormatIndex): boolean {
+  const char = base[offset];
+  const before = base[offset - 1];
+  // A run's flanking reads the character before it; at a part's start that is none, which reads like whitespace.
+  if (WHITESPACE.test(before)) return true;
+  if (char === '`') return before !== '`' && before !== '\\';
+  return !index.delimiterChars.has(char) && char !== '\\';
 }
 
 // `found` with its indices shifted by `shift`, as a match on `input`.
@@ -606,10 +701,16 @@ function neutralCut(text: string, window: number, index: FormatIndex, budget: Bu
   return 0;
 }
 
+interface Answer {
+  found: FoundFormat | null;
+  /** No emphasis and no code span starts before this index of the text. */
+  stable: number;
+}
+
 // Lexical's search on text.slice(0, cut). With `whole` it is the answer; otherwise it is the whole text's answer
 // only when the rest cannot change it, else undefined. The rest can only add code spans from runs after the cut (or
-// pair a run before the cut that found no closer), and emphasis from closers after the cut, which pair with
-// openers still open at the cut or after it.
+// pair a run before the cut that found no closer with one after it), and emphasis from closers after the cut, which
+// pair with openers still open at the cut or after it.
 function fromPrefix(
   text: string,
   cut: number,
@@ -618,15 +719,15 @@ function fromPrefix(
   index: FormatIndex,
   budget: Budget,
   whole = false,
-): FoundFormat | null | undefined {
+): Answer | undefined {
   const prefix = cut === text.length ? text : text.slice(0, cut);
-  budget.spend(cut);
-  const { spans, unclosed } = index.code ? scanCodeSpans(prefix, budget) : { spans: [], unclosed: false };
+  budget.spend(FORMAT_SCAN * cut);
+  const { spans, unclosed } = index.code ? scanCodeSpans(prefix, budget) : { spans: [], unclosed: [] };
   const delimiters = scanDelimiters(prefix, index, spans);
   const emphasis = delimiters.length > 0 ? processEmphasis(prefix, delimiters, index, budget) : null;
   const code = spans[0];
   if (!whole) {
-    if (unclosed) return undefined;
+    for (const run of unclosed) if ((scan.lastRunOfLength.get(run.length) ?? -1) >= offset + cut) return undefined;
     let firstOpen = Infinity;
     for (const d of delimiters) if (d.active && d.canOpen && d.length > 0 && d.index < firstOpen) firstOpen = d.index;
     if (code) {
@@ -637,7 +738,9 @@ function fromPrefix(
       if (index.code && scan.lastSpanOpener >= offset + cut) return undefined;
     }
   }
-  return outermost(text, code, emphasis, index);
+  // Decided from a prefix with a code span and no emphasis, any emphasis starts after the first open delimiter,
+  // which is after the span.
+  return { found: outermost(text, code, emphasis, index), stable: Math.min(emphasis?.startIndex ?? Infinity, code?.startIndex ?? Infinity) };
 }
 
 function outermost(text: string, code: Span | undefined, emphasis: Emphasis | null, index: FormatIndex): FoundFormat | null {
@@ -679,8 +782,10 @@ function contextScan(context: Context, index: FormatIndex, budget: Budget): Cont
   let lastRelevant = base.length - 1;
   while (lastRelevant >= 0 && !isRelevant(index, base[lastRelevant])) lastRelevant -= 1;
   let lastSpanOpener = -1;
+  const lastRunOfLength = new Map<number, number>();
   if (index.code) {
     const runs = backtickRuns(base);
+    for (const run of runs) lastRunOfLength.set(run.length, run.index);
     const later = new Set<number>();
     for (let r = runs.length - 1; r >= 0; r -= 1) {
       const run = runs[r];
@@ -691,7 +796,7 @@ function contextScan(context: Context, index: FormatIndex, budget: Budget): Cont
       later.add(run.length);
     }
   }
-  context.scan = { lastRelevant, lastSpanOpener };
+  context.scan = { lastRelevant, lastSpanOpener, lastRunOfLength };
   return context.scan;
 }
 
@@ -712,8 +817,8 @@ function backtickRuns(text: string): { index: number; length: number }[] {
   return runs;
 }
 
-// Lexical's scanCodeSpans, each opener's closer found in one pass; also says whether an opener found no closer.
-function scanCodeSpans(text: string, budget: Budget): { spans: Span[]; unclosed: boolean } {
+// Lexical's scanCodeSpans, each opener's closer found in one pass; also the openers that found no closer.
+function scanCodeSpans(text: string, budget: Budget): { spans: Span[]; unclosed: { index: number; length: number }[] } {
   const runs = backtickRuns(text);
   budget.spend(runs.length);
   const closer = new Int32Array(runs.length);
@@ -723,7 +828,7 @@ function scanCodeSpans(text: string, budget: Budget): { spans: Span[]; unclosed:
     next.set(runs[r].length, r);
   }
   const spans: Span[] = [];
-  let unclosed = false;
+  const unclosed: { index: number; length: number }[] = [];
   let openIdx = 0;
   while (openIdx < runs.length) {
     const opener = runs[openIdx];
@@ -733,7 +838,7 @@ function scanCodeSpans(text: string, budget: Budget): { spans: Span[]; unclosed:
     }
     const closeIdx = closer[openIdx];
     if (closeIdx === -1) {
-      unclosed = true;
+      unclosed.push(opener);
       openIdx += 1;
       continue;
     }
@@ -780,6 +885,8 @@ function processEmphasis(text: string, delimiters: Delimiter[], index: FormatInd
   const openersBottom: Record<string, number> = {};
   let currentPos = 0;
   let result: Emphasis | null = null;
+  // Openers looked at, charged in batches.
+  let looked = 0;
   while (currentPos < delimiters.length) {
     const closer = delimiters[currentPos];
     if (!closer.active || !closer.canClose || closer.length === 0) {
@@ -790,7 +897,10 @@ function processEmphasis(text: string, delimiters: Delimiter[], index: FormatInd
     const bottom = openersBottom[bottomKey] ?? -1;
     let foundOpener = false;
     for (let openIdx = currentPos - 1; openIdx > bottom; openIdx -= 1) {
-      budget.spend(1);
+      if (++looked === 1024) {
+        budget.spend(FORMAT_SCAN * looked);
+        looked = 0;
+      }
       const opener = delimiters[openIdx];
       if (!opener.active || !opener.canOpen || opener.length === 0 || opener.char !== closer.char) continue;
       if (opener.canClose || closer.canOpen) {
@@ -830,6 +940,7 @@ function processEmphasis(text: string, delimiters: Delimiter[], index: FormatInd
       currentPos += 1;
     }
   }
+  budget.charge(FORMAT_SCAN * looked);
   return result;
 }
 

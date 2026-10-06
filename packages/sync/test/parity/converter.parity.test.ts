@@ -7,7 +7,7 @@ import type { Klass, LexicalNode } from 'lexical';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { exportMarkdown, importMarkdown, MARKDOWN_EDITOR_TRANSFORMERS, type NoteBodyImportOptions } from '../../src/converter/index.ts';
 import { linearImportStats } from '@moss-desktop/renderer/editor/markdown/linear-import';
-import { DEVIATING, FIXTURES, fixture, SCALE_UNIT, scaleNote, stringify, transformerSignature } from '../../src/converter/fixtures.ts';
+import { DEVIATING, FIXTURES, fixture, SCALE_FIXTURES, stringify, transformerSignature } from '../../src/converter/fixtures.ts';
 import { CONVERTER_CASES, converterBody, ORDINARY_NOTES } from '../../measure/converter-cases.ts';
 
 declare const __MOSS_PRISTINE__: string;
@@ -95,9 +95,12 @@ describe('L3 parity with moss at the pin @p:tech-4', () => {
     while (a[i] === b[i]) i += 1;
     return { at: i, ours: a.slice(Math.max(0, i - 80), i + 80), pristine: b.slice(Math.max(0, i - 80), i + 80) };
   };
+  // The scale note's fixtures less the deviating ones, repeated to 256 KB: moss's own pipeline takes minutes on the
+  // 2 MB scale note in jsdom (linear-import.golden.test.ts holds that one to Lexical's import).
+  const mixedUnit = SCALE_FIXTURES.filter((f) => !DEVIATING.has(f.name)).map((f) => f.markdown).join('\n\n');
   const ordinary: [string, () => string][] = [
     ...Object.entries(ORDINARY_NOTES),
-    ['the 2 MB scale note of mixed content', () => scaleNote(Math.ceil((2 * 1024 * 1024) / SCALE_UNIT.length))],
+    ['a 256 KB note of mixed content', () => Array.from({ length: Math.ceil((256 * 1024) / mixedUnit.length) }, () => mixedUnit).join('\n\n')],
   ];
 
   // The work budget (markdown/linear-import.ts) cuts none of these, so each converts as moss converts it.
