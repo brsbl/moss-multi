@@ -1,5 +1,26 @@
 # @moss-multi/editor
 
+## 0.3.0
+
+**API version 2. BREAKING:** a host built for API 1 (0.1.0, 0.2.0) must change before it mounts this bundle; an API 1
+host that mounts it gets `ready` rejected with `apiMismatch` and nothing is read or written. Approved by the owner on
+2026-10-06. Migration, item by item: docs/design/editor-embed.md section 13. 0.1.0 and 0.2.0 stay published unchanged.
+
+- **`MOSS_EDITOR_API` is 2**, as are `MOSS_EDITOR_INFO.api`, editor.json `api` and the host helpers'
+  (`moss-editor-host.js`, `editor-host.json`). `bridge.api` must be 2.
+- **The moss-html frame has no network.** editor.json `htmlFrame.policy` is now `sandbox allow-scripts;
+  default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; connect-src 'none';
+  frame-src 'none'; form-action 'none'; base-uri 'none'`. Blocks still run their inline scripts and styles.
+- **`assets.copyFromNote` copies only out of notes the user opened in the host**; any other source is
+  `{kind:'refused', reason:'sourceNotOpen'}`, and the editor drops the pasted reference.
+- **Host security obligations are normative in contract.ts:** read confinement with realpath, re-validation of every
+  write name, and the served-asset headers.
+- **A case-only retitle keeps the markdown entry's spelling**, as Moss desktop does on APFS: the host has no respell
+  step.
+- contract.ts states that `onEvent` is required for a host that retains save receipts, and the retitle step onto a
+  distinct existing `<folderName>.md` exactly.
+- `selection-1` and `share-with-agent-1` are unchanged.
+
 ## 0.2.0
 
 API version 1; additions only, listed in `MOSS_EDITOR_INFO.features` and editor.json `features`
