@@ -119,6 +119,8 @@ export const SUGGESTION_CARD_ATTR = 'data-suggestion-card';
 export const SUGGESTION_ID_ATTR = 'data-suggestion-id';
 export const SUGGESTION_STATUS_ATTR = 'data-suggestion-status';
 export const SUGGESTION_ACTIVE_ATTR = 'data-suggestion-active';
+/** Each row of a card: `insert`, `delete` or `change`. */
+export const SUGGESTION_ROW_ATTR = 'data-suggestion-row';
 
 /** The body editor root Lexical renders. */
 export const LEXICAL_EDITOR_SELECTOR = '[data-lexical-editor="true"]';

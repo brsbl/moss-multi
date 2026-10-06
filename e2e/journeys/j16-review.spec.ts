@@ -7,7 +7,7 @@ import type { Locator } from '@playwright/test';
 import type { Actor } from '../lib/actors.ts';
 import {
   APP_STATE_ATTR, BODY_BINDING_ATTR, EDIT_MODE_ATTR, SUGGEST_MARK_ATTR, SUGGEST_REFUSED_ATTR, SUGGESTION_ACTIVE_ATTR, SUGGESTION_CARD_ATTR,
-  SUGGESTION_ID_ATTR, SUGGESTION_STATUS_ATTR, SUGGESTIONS_BUTTON_ATTR, SUGGESTIONS_PANEL_ATTR, SYNC_UNACKED_ATTR,
+  SUGGESTION_ID_ATTR, SUGGESTION_ROW_ATTR, SUGGESTION_STATUS_ATTR, SUGGESTIONS_BUTTON_ATTR, SUGGESTIONS_PANEL_ATTR, SYNC_UNACKED_ATTR,
 } from '../lib/contract.ts';
 import { grantDoc } from '../lib/grants.ts';
 import { expect, test, ui } from '../lib/test.ts';
@@ -177,4 +177,39 @@ test('j16-review: withdraw removes the inserted text from every view while the n
   await expect(ada.page.locator(`[${SUGGEST_MARK_ATTR}="insert"]`), 'its mark leaves Edit mode').toHaveCount(0, { timeout: BIND_TIMEOUT });
   for (const actor of [ben, carl, ada]) await expect(ui.body(actor, docId)).toContainText('Keep every original word.');
   expect(await content(ada, docId), 'the note is byte-identical').toBe(before);
+});
+
+test("j16-review: a struck delete opens its card from the owner's body, and the card lists what it deletes @p:mean-2 @p:R17", async ({ actors }) => {
+  const { ada, ben, docId } = await sharedNote(actors);
+  await openIn(ben, docId, 'suggest');
+  await openIn(ada, docId, 'edit');
+  await actors.requireDistinct(2);
+
+  await caret(ben, docId, 'paragraph here', 14);
+  for (let i = 0; i < 4; i++) await ben.page.keyboard.press('Backspace');
+  const pane = ui.pane(ben, docId);
+  await expect(pane, 'acknowledged').toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout: BIND_TIMEOUT });
+  await expect(pane, 'never refused').toHaveAttribute(SUGGEST_REFUSED_ATTR, '0');
+  await expect(button(ada)).toHaveAttribute('aria-label', /1 open/, { timeout: BIND_TIMEOUT });
+
+  // The struck word in the owner's Edit-mode body is the way in to its card.
+  const active = panel(ada).locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_ACTIVE_ATTR}]`);
+  await expect(async () => {
+    const point = await ui.body(ada, docId).evaluate((root) => {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const at = (node.textContent ?? '').indexOf('here');
+        if (at < 0) continue;
+        const range = document.createRange();
+        range.setStart(node, at);
+        range.setEnd(node, at + 4);
+        const rect = range.getBoundingClientRect();
+        return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+      }
+      throw new Error('no struck word');
+    });
+    await ada.page.mouse.click(point.x, point.y);
+    await expect(active).toHaveCount(1, { timeout: 1_000 });
+  }).toPass({ timeout: BIND_TIMEOUT });
+  await expect(active.locator(`[${SUGGESTION_ROW_ATTR}="delete"]`), 'the card lists the deleted word').toContainText('here', { timeout: BIND_TIMEOUT });
 });
