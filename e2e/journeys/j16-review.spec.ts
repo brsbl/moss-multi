@@ -265,3 +265,43 @@ test('j16-review: struck text inside a link opens its card, not the link; a fail
   await expect(active.locator(`[${SUGGESTION_ROW_ATTR}="delete"]`), 'the retried preview lists the delete').toContainText('torial', { timeout: BIND_TIMEOUT });
   await expect(active.getByRole('button', { name: 'Accept' })).toBeEnabled({ timeout: BIND_TIMEOUT });
 });
+
+test('j16-review: a word replacement reads as the word removed and the word added; a long card shows every row before Accept @p:mean-2 @p:R17', async ({ actors }) => {
+  const { ada, ben, docId } = await sharedNote(actors, 'We keep the old importer.');
+  await openIn(ben, docId, 'suggest');
+  await openIn(ada, docId, 'edit');
+  await actors.requireDistinct(2);
+
+  // Ben removes "old" and types "legacy", then adds nine lines below, all in one suggestion.
+  await caret(ben, docId, 'old importer', 3);
+  for (let i = 0; i < 3; i++) await ben.page.keyboard.press('Backspace');
+  await ben.page.keyboard.type('legacy');
+  await caret(ben, docId, 'importer.', 9);
+  for (let i = 1; i <= 9; i++) {
+    await ben.page.keyboard.press('Enter');
+    await ben.page.keyboard.type(`Line ${i}`);
+  }
+  const pane = ui.pane(ben, docId);
+  await expect(pane, 'acknowledged').toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout: BIND_TIMEOUT });
+  await expect(pane, 'never refused').toHaveAttribute(SUGGEST_REFUSED_ATTR, '0');
+  await expect(button(ada)).toHaveAttribute('aria-label', /1 open/, { timeout: BIND_TIMEOUT });
+
+  const card = (await openPanel(ada)).locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_STATUS_ATTR}="open"]`);
+  const showAll = card.getByRole('button', { name: /Show all \d+ changes/ });
+  await expect(showAll, 'a long card collapses its rows').toBeVisible({ timeout: BIND_TIMEOUT });
+  await expect(card.locator(`[${SUGGESTION_ROW_ATTR}]`)).toHaveCount(8);
+  await expect(card.getByRole('button', { name: 'Accept' }), 'Accept waits until every row is shown').toBeDisabled();
+  await showAll.click();
+  await expect(card.getByRole('button', { name: 'Accept' })).toBeEnabled({ timeout: BIND_TIMEOUT });
+  const texts = (kind: string) => card.locator(`[${SUGGESTION_ROW_ATTR}="${kind}"] > span.min-w-0 > span:first-child`).allInnerTexts();
+  expect(await texts('delete'), 'the removed word is one row').toEqual(['old']);
+  const inserted = await texts('insert');
+  expect(inserted, 'the added word is one row').toContain('legacy');
+  expect(inserted.filter((text) => /^[legacy]+$/.test(text) && text !== 'legacy'), 'no letter of it is split off').toEqual([]);
+  for (let i = 1; i <= 9; i++) expect(inserted.join('\n')).toContain(`Line ${i}`);
+
+  await card.getByRole('button', { name: 'Accept' }).click();
+  await expect(cards(ada, 'accepted')).toHaveCount(1, { timeout: BIND_TIMEOUT });
+  await expect.poll(() => content(ada, docId), { timeout: BIND_TIMEOUT }).toContain('We keep the legacy importer.');
+  expect(await content(ada, docId)).toContain('Line 9');
+});

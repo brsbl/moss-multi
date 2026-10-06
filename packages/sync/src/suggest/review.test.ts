@@ -2,6 +2,7 @@
 // forged records meet each accept gate with nothing applied; a record whose context an editor changed is outdated; the
 // projection a reviewer sees covers text, attributes and payload docs, and binds the accept (T5.P).
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { ElementNode } from 'lexical';
 import * as Y from 'yjs';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import {
@@ -15,7 +16,7 @@ import { createRecord, opsOf, partsOf, readMeta, readRecord, writeSuggestions } 
 import { acceptRecord, exportWorkingMarkdown, nodeRegistry, previewRecord, rejectRecord, reviewPreview, withdrawRecord } from './review.ts';
 import {
   all, bodyOf, changedRoots, codeBlock, deterministicIds, editorEdits, EDITOR, exported, insertBlock, listItem, NOTE_ID, OTHER_SUGGESTER, payloadsInOrder,
-  select, seededBody, spansOfText, SUGGESTER,
+  select, seededBody, spansOfText, SUGGESTER, textNode,
 } from './test-support.ts';
 
 let restore: () => void = () => {};
@@ -718,8 +719,13 @@ describe('T5.3 the card shows every change accept commits to @p:mean-2 @p:R17', 
   });
 
   it('an indent change names the indent', () => {
+    const rows = rowsFor([() => { textNode('Indented').getParentOrThrow<ElementNode>().setIndent(2); }]);
+    expect(shown(rows)).toMatch(/indent: 1 → 2/);
+  });
+
+  it('a list item moved one level in is shown with its text', () => {
     const rows = rowsFor([() => { const item = listItem('item b'); item.setIndent(item.getIndent() + 1); }]);
-    expect(shown(rows)).toMatch(/indent/i);
+    expect(shown(rows)).toContain('item b');
   });
 
   it('every change is listed; none is folded into a count', () => {
