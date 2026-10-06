@@ -23,7 +23,10 @@
   },
   "include": [
     "src",
-    "test/harness"
+    "test/harness",
+    "measure/anchors.ts",
+    "measure/anchors-worker.ts",
+    "measure/doc-worker.ts"
   ],
   "exclude": [
     "src/converter"

@@ -10,7 +10,7 @@ This resolves A§13's comments sketch for M4 (BUILDPLAN T4.1–T4.4). It follows
 1. **Only the server writes comments, under its own reserved signature.** Every comment write carries a writer id that only the server uses. A browser's edit is refused, loudly, if it carries that id, points at it, aims at the comments directly, or deletes a comment. Reviewers spent six rounds finding ways around the old "predict what this edit will do" check; this rule doesn't predict anything, so there is nothing to outguess. A malformed edit that the database would hold back and apply later is dropped instead, and the note is never saved with one inside.
 2. **A comment stays on its own characters.** Bolding, Enter, line breaks, joining paragraphs and markdown shortcuts keep it on exactly the text you commented on; the server checks, in the same step, that the re-written text reads the same and sits between the same untouched neighbours. One rare case detaches instead: a shortcut that rewrites a stretch where the commented words appear twice, such as a link whose address also contains its label (`[example](https://example.invalid)` on a comment on "example"). The server cannot tell which copy is yours, so it detaches the comment rather than guess (limitation 9 in §7).
 3. **Deleting the text detaches the comment; undo brings it back.** The comment stays in the thread list marked as detached. It reattaches only when the restored text reappears in exactly the spot it was deleted from and reads exactly the same, which is what undo and redo do, online or offline. Typing the same words again lands just after that spot, so it does not reattach. Two rare cases look identical to an undo and are written into PRODUCT ruling 18 as a clarification: a collaborator who hadn't seen the deletion typing inside it, and a paragraph deleted after its text and then restored.
-4. **It stays fast with many comments.** The server only looks at comments whose first or last character an edit actually deletes, capped at 32 per character, so a keystroke in a note with 2,000 comments does no comment work at all. The tests count this.
+4. **It stays fast with many comments.** The server only looks at comments whose first or last character an edit actually deletes, capped at 32 per character, so a keystroke in a note with 2,000 comments does no comment work at all, unless it lands inside the place a detached comment's text was deleted from; there it costs one bounded check for all the detached comments that share that place. The tests count this, and T4.2 measured it in Cloudflare's runtime (§5.6).
 5. **Highlights are painted on top of the page, never into it**, proven in Chrome's and Safari's engines.
 
 **For you to confirm at the M4 hand-off.** The four decisions in §14, and the one accepted gap above: a comment whose words repeat inside a rewritten stretch detaches rather than risk landing on the wrong copy.
@@ -49,7 +49,7 @@ Nothing searches the document for a positioned anchor, scores similarity, or tru
 - the moss markdown inline shortcuts, including one that wraps the commented text, when that text occurs once in the span the shortcut rewrites. When it occurs more than once there (a repeat in the span, or a link label that also appears in its URL), the comment orphans by design: P2 #9 (coordinator amendment, 2026-10-04).
 
 It orphans on deletion of all its characters, including its block. It reattaches on undo or redo of:
-- a text deletion;
+- a text deletion, including one across a bold that split the comment over either edge;
 - a block deletion;
 - a cross-block deletion;
 - a text deletion followed by deletion of its paragraph, with both undone, including when the text was the paragraph's whole text;
@@ -74,7 +74,7 @@ Each has a CI test in `packages/sync/test/harness/yjs-facts.test.ts`, on yjs 13.
 
 `Y.Map('comments')` holds JSON values only, with no nested Y types:
 
-- `c:<id>` is the thread record (author principal id, text in moss's mention encoding, imageUrls, timestamps in seconds, `parentId` for replies, `resolvedAt`/`resolvedBy`, `reactions {emoji → principalIds}`, `source`). Root delete promotes the oldest reply (§12).
+- `c:<id>` is the thread record (author principal id, text in moss's mention encoding, imageUrls, timestamps in seconds, `parentId` for replies, `resolvedAt`/`resolvedBy`, `reactions {emoji → principalIds}`, `source`, `seq`: the DocDO's write order, which breaks a same-second `createdAt` tie). Root delete promotes the oldest reply by `createdAt` then `seq` (§12).
 - `a:<id>` is the anchor record of a root, kept separate so a re-mint rewrites about 200 bytes, not the thread:
 
 ```ts
@@ -113,10 +113,11 @@ It costs O(frame · log) and follows no references.
 **Proof of I1 (from F5).** By induction over integrations. Initially every comments item is R. A non-R item gets its parent from an allowlisted string (c), a non-R ID parent (b), a non-R origin (b), its own non-R held predecessor (a), or a non-R right item (b). By the induction hypothesis none of these is in `comments`, so the item does not land there. A map overwrite deletes the entry's previous item, which would have to be a comments item, so the overwriting item would itself need to be in `comments`. Merges are same-client only. A deletion of a live R item needs a delete range on client R, which (d) refuses. Nothing in the proof predicts where Yjs places a struct.
 
 **Pending purge and compaction (I2).**
+- **Missing dependency: 4420, before apply** (coordinator ruling, 2026-10-05). `classifySync` marks a frame `missing` when it needs a clock the DocDO lacks: a struct past the held clocks, an origin, right origin or parent the doc lacks, or a delete of clocks it lacks. The DocDO closes such a frame 4420 before apply, with no `write-refused` event. It is transient: the client keeps its Y.Doc and its next step 2 carries what the frame depended on. So such a frame never parks, and its other structs do not land either. 4409 is kept for guard violations: the comments root, R items, protected types. The guard runs first, so a frame that is both a guard violation and a missing dependency is refused 4409.
 - `DocStore.record` no longer compacts inside the `update` handler: Yjs's `encodeStateAsUpdate` includes `pendingStructs` and `pendingDs`, so a compaction there could snapshot structs a frame left parked.
-- After `super.onMessage` applies a client sync frame, if `store.pendingStructs` or `store.pendingDs` is non-null, the DO nulls both, unicasts `write-refused('unresolved')` and closes 4409.
+- After `super.onMessage` applies a client sync frame, if `store.pendingStructs` or `store.pendingDs` is non-null (defense in depth: the 4420 check above should leave nothing to park), the DO nulls both, unicasts `write-refused('unresolved')` and closes 4409.
 - Then it flushes anchor writes, then runs any due compaction (`compactIfDue`, which also covers an update too large for one row). Server writes compact in their own handler, since nothing is ever parked between frames.
-- Honest clients never park, because everything they hold arrived over the same ordered socket. A frame Yjs throws on mid-apply (a self-parented struct) is purged and refused the same way (T4.1 wires this into the DocDO; the spike host does it).
+- Honest clients never send a missing dependency, because everything they hold arrived over the same ordered socket. A frame Yjs throws on mid-apply (a self-parented struct) is purged and refused 4409 `unresolved` (T4.1 wires this into the DocDO; the spike host does it).
 
 **R lifecycle.** R is persisted as `meta.commentsClient`, regenerated at first write if any struct already has that client (`newCommentsClient`). `onStart` regenerates the DO's own clientID if it equals R. Marker import writes records through `writeComments` right after its tree diff, in the same turn.
 
@@ -140,7 +141,7 @@ It costs O(frame · log) and follows no references.
 
 ## 5. The anchor engine
 
-`packages/core/src/anchor-frame.ts` is pure; T4.2 wires it into the DocDO's pre-GC `afterTransaction` hook for client frames and serverWrite origins. It is read-only: it collects changes, and `writeComments` flushes them after apply returns (`CommentsHost` in the spike).
+`packages/core/src/anchor-frame.ts` is pure; the DocDO runs it in its pre-GC `afterTransaction` hook for client frames and serverWrite origins (`DocComments` in `packages/sync/src/doc/comments.ts`). It is read-only: it collects changes, and `writeComments` flushes them after apply returns. The supported-liveness and never-jump scenes run against the real DocDO in the Node harness (`anchor-scenes.test.ts`, `anchor-integrity.test.ts`), with a fast-check of random concurrent edits (`anchor-lineage.test.ts`).
 
 **Liveness predicates.** `preLive(x)`: `x.id.clock < beforeState[client]` and the item was live before this transaction (or deleted by it). `postLive(x)`: `!x.deleted`. A *survivor* is preLive and postLive. `frameNew(x)`: `x.id.clock ≥ beforeState[client]`.
 
@@ -154,7 +155,7 @@ It costs O(frame · log) and follows no references.
 - **MI.** Lost member runs, the two bounds of a re-homed place, and the block of a re-homed place with no live bound (an empty restored block), → orphan ids.
 - **AI.** The ancestor blocks of each orphan's segment lists → orphan ids (depth ≤ 32).
 
-EP and MI are disjoint clock spans per client, so a lookup is a binary search. The overlap cap bounds each item's fan-out in EP to 32. It does not bound MI: disjoint comments under one deleted run or block all name that same member. The decision's sharing rule (§5.4) bounds it instead, by group; T4.2 keys MI by segment-set group (the spike indexes orphans one by one).
+EP and MI are disjoint clock spans per client, so a lookup is a binary search. The overlap cap bounds each item's fan-out in EP to 32. It does not bound MI: disjoint comments under one deleted run or block all name that same member. The decision's sharing rule (§5.4) bounds it instead, by group: MI is keyed by group (orphans whose lost places have the same segments and members), so a struct shared by k orphans names one group. Each client's spans are a treap, so a record update costs O(log S) to find its place plus the spans it touches, and only the touched spans are counted (`stats.index`).
 
 ### 5.2 Anchored comments: only when the transaction deletes an endpoint
 
@@ -166,7 +167,7 @@ Each delete range in `txn.deleteSet` is looked up in EP. Comments whose endpoint
    - Accept the mapping only if the whole new range, in text mode, equals the pre-frame range. Then re-mint.
    - This carries V1 format split and join, Enter (the end may move into the new block), soft break, a join, and the markdown inline shortcuts. A shortcut that wraps the commented text (`**`, `_`, `~~`, `` ` ``, `==`, a `[text](url)` link) makes Lexical delete the text with its delimiters and reinsert it as a new node, so D is I plus the delimiters, and neither the prefix nor the suffix holds the comment. The wrap rule maps it, even when the commented text recurs later in the same text node, which Lexical then deletes and reinserts in the same gap. It adds no new target: the run is frame-new, between the same survivors, the only run the comment's text can be, and the comment's text the only passage that run can be. The whole-range check still applies. A frame that leaves one of two identical passages, with either one a valid reading, maps neither copy.
    - The coordinator amendment (2026-10-04) ratifies this rule as the amendment to decision §4.2. When the comment's text is ambiguous in the rewritten span, no run is the only reading and the comment orphans (P2 #9). The commonest honest case is a link whose URL contains its label: D holds the label twice, once in the brackets and once in the URL, and I holds it once.
-2. **Survivor shrink (I3b).** Otherwise, re-mint each deleted endpoint onto the nearest surviving unit inside the pre-frame range, walking inward. Replacement text typed at a deleted edge is not adopted.
+2. **Survivor shrink (I3b).** Otherwise, re-mint each deleted endpoint onto the nearest surviving unit inside the pre-frame range, walking inward. Replacement text typed at a deleted edge is not adopted. Whitespace alone does not count: when only spaces the comment covered survive (a text diff keeps the separator between two words deleted together across a bold), the comment takes the lost path instead (T4.3 check).
 3. **Lose (§5.3).** If no survivor exists, the comment takes the lost path. A walk over budget orphans it with no `lost`.
 
 ### 5.3 Losing the text
@@ -175,23 +176,23 @@ Each delete range in `txn.deleteSet` is looked up in EP. Comments whose endpoint
 
 **Segments.** For each list that holds top-level members, the segment is `(left, last]`: `left` is the item immediately left of that list's first member (or the list start), and `last` is the list's last member. Segments are in flattened order.
 
-**Signature.** `pre` is the full-mode tokens of the preLive items in the members' full subtrees, in flattened order, with [a, b) the comment's span inside it, hashed to 128 bits of SHA-256.
+**Signature.** `pre` is the full-mode tokens of the preLive items, with their full subtrees, from each list's first member to its last, in flattened order (so a survivor between two members, such as the property map of a text node a bold split off inside the comment, reads as the reattach walk reads it; T4.3 check), with [a, b) the comment's span inside it, hashed to 128 bits of SHA-256.
 
 **Outcome.** If the segments' live tokens already equal `pre` (a same-frame undo), reattach. Otherwise write `status: 'orphaned'`, `quote` = the pre-frame text, positions unchanged, and `lost`. Over budget, or more than 512 member runs, orphans with no `lost`: permanently detached, the safe failure.
 
-**Why an honest retype cannot reattach.** By F2, an insert by a replica that has seen the deletion lands after the tombstone run that ends at or after `last` (the extension above ends `last` at the run's end), so it is outside the segment. That includes text typed at the comment's old spot and new blocks inserted after a deleted block, which in flattened order come after its whole subtree.
+**Why an honest retype cannot reattach.** By F2, an insert by a replica that has seen the deletion lands after the tombstone run that ends at or after `last` (the extension above ends `last` at the run's end), so it is outside the segment. That includes text typed at the comment's old spot and new blocks inserted after a deleted block, which in flattened order come after its whole subtree. The exception is a place that a lift re-homed into a restored block (§5.5): when a text deletion and its paragraph's deletion reach the server as one frame and the paragraph alone is restored, typing the exact passage there reattaches the comment (P2 #2).
 
 **Why an undo does reattach.** By F3, an undo or redo copy lands between `item.left` and `item`, inside `(left, last]`. Redo chains behave the same way, and a restored block's children sit inside the restored block, which is itself inside the segment.
 
 ### 5.4 Reattach (I5)
 
-**Trigger.** A frame-new item whose `origin` or `rightOrigin` falls in an MI run, or a frame-new list item with neither, whose parent block is in MI. F3 points undo copies' right origins at members and a lifted copy's origin at a re-homed bound; a stale peer's insert into the span points there too. When the restored block is empty, the first copy into it has neither origin nor right origin (F3: no neighbour has a copy in the new parent), so the block itself is the trigger (§5.5). A frame-new item also triggers through its enclosing blocks: each block's right origin is looked up in MI, at most 32 blocks up and each block once per frame. An undo copy of a deleted block whose parent survives names the original as its right origin (F3), so text a later undo puts back inside a restored member block reaches the orphan even though its own origins name copies. This is the case when a text deletion and its paragraph's deletion reach the server as one delete-only frame (§6): the place is the whole paragraph, the first undo restores the paragraph without the text and fails the check, and the second undo refills it. Each orphan is checked at most once per frame. Orphans with an identical segment set share one walk, and their `pre` hashes are compared against it (decision §4.4). The spike checks each orphan on its own, so a forged frame naming a member shared by k orphans costs k short checks; T4.2 groups them (BUILDPLAN T4.2 "anchor-cost: 500 disjoint comments…").
+**Trigger.** A frame-new item whose `origin` or `rightOrigin` falls in an MI run, or a frame-new list item with neither, whose parent block is in MI. F3 points undo copies' right origins at members and a lifted copy's origin at a re-homed bound; a stale peer's insert into the span points there too. When the restored block is empty, the first copy into it has neither origin nor right origin (F3: no neighbour has a copy in the new parent), so the block itself is the trigger (§5.5). A frame-new item also triggers through its enclosing blocks: each block's right origin is looked up in MI, at most 32 blocks up and each block once per frame. An undo copy of a deleted block whose parent survives names the original as its right origin (F3), so text a later undo puts back inside a restored member block reaches the orphan even though its own origins name copies. This is the case when a text deletion and its paragraph's deletion reach the server as one delete-only frame (§6): the place is the whole paragraph, the first undo restores the paragraph without the text and fails the check, and the second undo refills it. Each group is checked at most once per frame. Orphans with an identical segment set share one walk, read up to the group's longest `pre`, and the walk's length and signature are looked up among the group's `pre` signatures (decision §4.4), so a forged frame naming a member shared by k orphans costs one short walk and no per-orphan work; only orphans whose signature matches are re-minted (`anchor-cost: 500 disjoint comments…`).
 
 **Check.** Walk each segment, plus the full subtrees of its live items, in full mode, with a budget of 4,096 + 4n structs, stopping as soon as the stream is longer than `pre.n`.
 - On an equal length and signature, re-mint the start and end on the live units at [a, b) and set `status: 'anchored'`.
 - A failed check writes nothing.
 
-The panel described a token-by-token comparison that stops at the first mismatch. A 128-bit signature cannot be compared token by token, so the spike stops at the stream length instead; the bound is the same (`4,096 + 4n`), and the forged one-item frame in the cost test stops after one struct per orphan. T4.2 may store a prefix-hash array if the measured cost needs it.
+The panel described a token-by-token comparison that stops at the first mismatch. A 128-bit signature cannot be compared token by token, so the spike stops at the stream length instead; the bound is the same (`4,096 + 4n`), and the forged one-item frame in the cost test stops after two structs for its whole group. The measured cost (§5.6) did not need a prefix-hash array.
 
 ### 5.5 Lift (an orphan's place inside a block this transaction deletes)
 
@@ -209,17 +210,34 @@ When the outer place matches (the block was restored), the inner place is re-hom
 | EP lookups | one binary search per delete range | `stats.lookups` |
 | Hit comment | ≤ two 4,096-struct gap walks + one 4,096-struct member extension (§5.3) + two range walks (≤ 4,096 + 4 × 10,000) + one loss emission + one check (`COMMENT_BUDGET`), × ≤ 32 comments per deleted endpoint | `stats.structs`, `stats.comments` |
 | Lift | one emission per deleted outer block, shared by every orphan under it; the writes are one per lifted orphan, bounded by the 2,000-record cap | `stats.structs` |
-| Reattach trigger | one MI search per frame-new struct's origin and right origin, one for its parent block when it has neither, and one per enclosing block's right origin (each block once per frame, ≤ 32 deep); one check per segment-set group, ≤ 4,096 + 4n structs, stopping past n tokens (T4.2; the spike checks per orphan) | `stats.structs`, `stats.comments` |
+| Reattach trigger | one MI search per frame-new struct's origin and right origin, one for its parent block when it has neither, and one per enclosing block's right origin (each block once per frame, ≤ 32 deep); one check per segment-set group, ≤ 4,096 + 4n structs, stopping past n tokens; a re-mint per orphan whose signature the walk matches | `stats.structs`, `stats.comments` |
+| Decorator fingerprints | each historical attribute value stepped over is a counted visit of the walk reading it, so a long history fails safe to orphaned at that walk's budget | `stats.structs` |
+| Index maintenance | per record written after the flush: O(log S) to find its spans (S the client's spans), plus the spans it touches | `stats.index`, also in `stats.structs` |
 | Records | written only on a re-mint or a status change | — |
 
-Never per frame: a whole-doc projection, an LCS, a store scan, a container scan, or a mirror apply. The spike counts this deterministically (`anchor-cost.test.ts`): on a 2,000-comment, 500-orphan doc a single-key insert or delete visits zero structs and zero comments; a frame deleting one character shared by 32 comments visits 32 comments within 32 × 64 structs; a forged one-item frame naming a lost member visits one struct per orphan sharing that member, which T4.2's grouping makes one walk per group. Attribute history in decorator fingerprints and SpanIndex maintenance after the flush are not yet counted; T4.2 counts and bounds both. T4.2 measures CPU in workerd and records the budget in METHOD.md.
+Never per frame: a whole-doc projection, an LCS, a store scan, a container scan, or a mirror apply. Within a frame, comments that share a gap or a lost place share its walk and tokens: the engine caches them per frame, since the doc does not change while a frame is read.
+
+The counters (`anchor-cost.test.ts`): on a 2,000-comment, 500-orphan doc a single-key insert or delete visits zero structs and zero comments; a frame deleting one character shared by 32 comments visits 32 comments within 32 × 64 structs; a forged one-item frame inside the place 500 orphans share (one deleted run, or one deleted paragraph) checks one group in at most 8 structs, with work identical to 5 orphans; a decorator's attribute history is counted and stops at the walk budget; and a re-mint's index updates touch the same spans whether its client has 10 or 1,900 other indexed spans.
+
+The workerd CPU per frame (T4.2; `scripts/measure-converter.mjs`, run by CI's "Converter in workerd" step on the DocDO's comments module, a note with 2,000 comments and 240 long orphans; budgets in METHOD.md):
+
+| Frame | CPU per frame | Budget |
+|---|---|---|
+| A single key, touching no endpoint (300 frames) | 0.07 ms | 0.5 ms |
+| Deleting and retyping a character 32 comments share, 31 re-minted (50 frames) | 1.4 ms | 10 ms |
+| A forged one-item frame inside a long orphan's lost place (100 frames) | 0.1 ms | 1 ms |
+| Deleting a paragraph that holds 500 comments, 500 orphan records written (5 frames) | 12–18 ms | 100 ms |
+| Deleting the paragraph that holds 500 orphans' lost place, 500 lifted records written (5 frames) | 8 ms | 100 ms |
+
+The last two are output-proportional and bounded by the 2,000-record cap; before the per-frame caches it was 228 ms, every orphan walking the paragraph's gap and lost place on its own.
 
 ## 6. Client
 
-**Frame discipline** (honest-client transport; `groupPending` in `packages/core/src/group-pending.ts`, wired into `acks.ts` and the patched provider by T4.2):
+**Frame discipline** (honest-client transport; `groupPending` in `packages/core/src/group-pending.ts`, sent by `Replay` in `apps/web/src/host/collab/replay.ts`; the doc session wraps its provider's sync handler and update handler, so the package needs no patch):
 - Each local Yjs transaction's update is kept separately, as `AckLedger.#pending` already does.
 - On recovery or reconnect, before answering step 1, the client replays pending updates as separate frames, coalescing only runs of insert-only updates or runs of delete-only updates. An update that both inserts and deletes goes alone. A deleting update is never merged with another update's inserts.
-- The client then sends step 2, which arrives inert.
+- The client then sends step 2, which arrives inert. It holds only the client's own structs and the delete set: the DocDO may have written comment records under R while the replay ran, and a step 2 echoing them would be refused by the guard (a).
+- From a socket's open until that step 2, local writes are held behind the replay, also on the socket after a replay cut off by a close: a write sent live before the server's step 1 is processed would reach the DocDO ahead of the backlog it depends on and be closed 4420 as a missing dependency.
 - Replay is paced to at most 40 frames per second, below the 300-per-5-s rate limit.
 
 The discipline matters only for honest users and ruling 18. Safety (I1–I8) never depends on it: a client that ignores it can at most keep a comment on identical text in the identical place.
@@ -243,6 +261,10 @@ The discipline matters only for honest users and ruling 18. Safety (I1–I8) nev
    - a frame that leaves one of two identical passages: never-jump "a frame that keeps one of two identical passages never picks one for the comment".
 
    The same shapes keep the comment when the text is unambiguous: `link-label-not-in-url-keeps-the-comment`, the wrapping-shortcut scenes, and `markdown-wrap-keeps-first-of-two-identical-passages`, where position in the node decides.
+10. Importing a moss sidecar drops a comment's `imageUrl` and `imageUrls`: the text and thread import, the attached images do not (T4.1 check P2). Carrying them needs the media admission of T3.2s for each URL.
+11. A quote-only create compares at most 32 characters of the caller's prefix and suffix, and a quote that occurs more than 1,000 times is ambiguous (`MAX_QUOTE_MATCHES`), so one search stays bounded (T4.1 check P1).
+12. A sidecar import runs at most 100 quote-only searches (`MAX_IMPORT_SEARCHES`) over one projection; later position-less entries are dropped, earliest `createdAt` first (T4.1 check P1, attempt 3).
+13. Comment writes may fill only 80% of the state cap (`COMMENT_STATE_SHARE`), counting each record and anchor as encoded, quote included; past it, create answers 413 `doc-cap` and import drops the later records. The remaining 20% is the typing headroom, so comments never make a note uneditable (T4.1 check P1, attempt 3).
 
 None of these moves a comment to different text or to another occurrence.
 
@@ -258,7 +280,7 @@ Every finding in `.panel/T4.0-review-history.md` (six rounds and two commit secu
 | R1 P1 | A stale quote plus a later format collapse orphans the comment | No quote fallback for positioned anchors (I6); format splits are gap maps (I4). Test: the bold scenes |
 | R1 P2 | Root delete strands replies | T4.4: root delete promotes the oldest reply, with the anchor and resolution, in one writeComments call. Test: T4.4 "deleting a root with replies keeps the thread anchored under the promoted reply" |
 | R1 P2 | Notifications for agent principals | T4.4: user principals only. Test: T4.4 "mentioning an agent writes no notification row" |
-| R2 P1 | A held left origin hid a missing right origin | (b) for R; any other parked frame is purged (I2). Test: "a missing right origin beside a held left origin" |
+| R2 P1 | A held left origin hid a missing right origin | (b) for R; any other missing dependency is closed 4420 before apply (I2). Test: "a missing right origin beside a held left origin" |
 | R2 P1 | Refreshed anchors lived in memory until the save tick | I8. Test: T4.1 "restart between a deletion and its undo: the comment still reattaches" |
 | R2 P2 | Stale evidence, empty log | This table and §10 |
 | R3 P1 | The quote fallback moved a comment to another occurrence | I6. Test: never-jump "two identical lines" |
@@ -270,12 +292,12 @@ Every finding in `.panel/T4.0-review-history.md` (six rounds and two commit secu
 | R5 P2 | A split elsewhere plus delete-and-retype in one frame re-mints | Separate frames under the discipline; a forged frame is P2 #3 |
 | R5 P2 | The restore candidate search does not backtrack | Not applicable: there is no candidate search |
 | R5 P2 | A stale peer typing the exact deleted text there reattaches | P2 #1, and the ruling 18 clarification |
-| R6 P1 | A fully held struct with a missing dependency parks and the classifier admits it | I2: purge after every applied frame. Test: "a fully held struct with a forged missing origin parks the tail and is purged" |
+| R6 P1 | A fully held struct with a missing dependency parks and the classifier admits it | I2: a missing dependency is closed 4420 before apply, and a purge follows every applied frame. Test: "a fully held struct with a forged missing origin is closed 4420 and nothing parks" |
 | R6 P1 | Delete, undo, redo, undo in one frame stays orphaned | Gap map over the frame's live copies. Test: "delete, undo, redo, undo: frame by frame, and as one frame" |
 | R6 P2 | The cost note understated per-frame work | §5.6, counted. T4.2 records the workerd CPU budget |
 | Security review | `refreshAnchors` does whole-doc work on every frame | I7. Test: `anchor-cost.test.ts`; T4.2 workerd budget |
 | Security review fe3c2f8 | Forged undo copies around new text attach another person's comment | I5. Test: never-jump "forged edge copies around new text" |
-| C1 §1 P2 | Compaction snapshots parked structs | I2: compaction after the purge. Test: "a frame that parks is closed 4409; a forced compaction and a restart leave nothing parked" |
+| C1 §1 P2 | Compaction snapshots parked structs | I2: compaction after the purge. Test: "a frame with a missing dependency is closed 4420 before apply; a forced compaction and a restart leave nothing parked" |
 | C1 P1 | A forged copy chain placed far from the lost text | Not adopted: no right-origin identity; placement decides. Test: never-jump "a forged item whose origin is a distant live item" |
 | C1 P1 | An index re-mint lands on surviving text | Not adopted: I4 targets only frame-new items. Test: never-jump "an identical paste over a different occurrence" |
 | C1 P1 | A batched format split plus a keystroke orphans | The gap is bounded by survivors, so a keystroke elsewhere is outside D and I; under the discipline the split travels alone. Test: T4.2 fast-check over random concurrent edits |
@@ -317,7 +339,7 @@ Every finding in `.panel/T4.0-review-history.md` (six rounds and two commit secu
 | Claim | Tests | Runs |
 |---|---|---|
 | Guard (a)–(d), the history's raw fixtures, an honest step 2 with R tombstones, and a 300-run fast-check that every comments item is R | `packages/sync/test/harness/comments-guard.test.ts` | Red (stubs): [37221588284](https://github.com/brsbl/moss-multi/actions/runs/37221588284). Green: [37222799391](https://github.com/brsbl/moss-multi/actions/runs/37222799391) at `38e3ac2`, and the final head |
-| Pending purge: 4409, then a forced compaction and a restart leave nothing parked, and a release frame integrates nothing | same file, against the DocDO harness | same |
+| Pending purge: a missing dependency closed 4420 before apply (4409 for guard violations), then a forced compaction and a restart leave nothing parked, and a release frame integrates nothing | same file, against the DocDO harness | same |
 | F1–F4 | `yjs-facts.test.ts` | same |
 | Supported liveness: bold and unbold before, inside, across and after; Enter before and inside; a soft break; a Backspace join; a markdown shortcut beside it, and one wrapping it for each of `**`, `_`, `~~`, `` ` ``, `==` and a link, and one wrapping the first of two identical passages; delete then undo in separate frames, one frame and DURDU; block, cross-block and lifted undo; the two offline replays | `anchor-scenes.test.ts` (real @lexical/yjs V1 editors with Y.UndoManager) | same. Round 2, the wrapping shortcuts: red [37236080357](https://github.com/brsbl/moss-multi/actions/runs/37236080357), green [37237010575](https://github.com/brsbl/moss-multi/actions/runs/37237010575). Round 3, the first of two identical passages: red [37238240291](https://github.com/brsbl/moss-multi/actions/runs/37238240291), green [37238542630](https://github.com/brsbl/moss-multi/actions/runs/37238542630) |
 | P2 #9, ambiguous text in a rewritten span: a link whose URL contains its label orphans the comment, and the same link with a URL that does not keeps it | `anchor-scenes.test.ts` (`link-label-in-url-orphans-the-comment`, `link-label-not-in-url-keeps-the-comment`); never-jump "a frame that keeps one of two identical passages" | Round 4: red [37239929915](https://github.com/brsbl/moss-multi/actions/runs/37239929915) at `ac3d7a6` (the scene written as a keep fails on "expected 'orphaned' to be 'anchored'", so the rule orphans it); green as an orphan, with the unambiguous link kept, in [37240230366](https://github.com/brsbl/moss-multi/actions/runs/37240230366) at `8c7ead5` |
@@ -333,7 +355,7 @@ The workerd CPU budget, the DocDO wiring of the guard and engine, REST, paint an
 ## 11. Paint (SP10)
 
 - **Highlights.** One `Highlight` per moss color, `moss-comment-0`, `-3` and `-4` (user, agent, external), plus `moss-comment-hover` and `moss-comment-active` for the underline states, styled in host CSS from the tokens in `MarkdownEditor.css:831–904`. A thread filtered out by `commentThreadFilterAtom` is not added.
-- **Rebuilt, never kept.** A requestAnimationFrame pass after each editor update, comments-map change and filter change resolves every anchor to Lexical points (`$getAnchorAndFocusForUserState`), then to DOM positions, and replaces the ranges. SP10 shows a live Range collapses when a text node's data is replaced, which is how Lexical writes text.
+- **Rebuilt, never kept.** A pass in the same task as each editor update that moves text (T4.3: a deferred pass left one frame painted on collapsed ranges), and a requestAnimationFrame pass after each comments-map change and filter change, resolves every anchor to Lexical points (`$getAnchorAndFocusForUserState`), then to DOM positions, and replaces the ranges. SP10 shows a live Range collapses when a text node's data is replaced, which is how Lexical writes text.
 - **One registry per document.** `CSS.highlights` is global, so a module-level registry merges every pane's ranges into each named highlight.
 - **Decorators** get `comment-highlight-active` and `comment-decorator-hover` on their `[data-block-decorator-key]` wrapper, a DOM class, not a tree write.
 - **Hit-testing.** `commentsAtPoint(x, y)` takes the caret position under the pointer and asks each painted range `isPointInRange`.

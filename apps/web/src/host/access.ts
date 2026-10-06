@@ -26,8 +26,11 @@ const listeners = new Set<() => void>();
 const asking = new Map<string, Promise<DocAnswer>>();
 
 export function rememberRole(docId: string, role: unknown): void {
-  if (!isRole(role) || roles.get(docId) === role) return;
-  roles.set(docId, role);
+  if (role === undefined || roles.get(docId) === role) return;
+  // A role this client does not know forgets the one it held: an unknown role gets no actions (A§8).
+  if (!isRole(role)) {
+    if (!roles.delete(docId)) return;
+  } else roles.set(docId, role);
   for (const listener of listeners) listener();
 }
 

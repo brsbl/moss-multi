@@ -5,11 +5,13 @@
 import { useEffect, type ComponentType } from 'react';
 import { readyWhenShellRenders } from './app-state.ts';
 import { auth } from './auth.ts';
-import { closeDocsToWrites, endTrashedDocs, pauseDocWrites, severDocSessions, waitDocsAcked } from './collab/doc-session.ts';
+import { closeDocsToWrites, endTrashedDocs, pauseDocWrites, reopenDocs, severDocSessions, waitDocsAcked } from './collab/doc-session.ts';
 import { ImageContextMenu } from './media/ImageContextMenu.tsx';
 import { SignOutConfirmation } from './surfaces/SignOutConfirmation.tsx';
 import { TrashConfirmation } from './surfaces/TrashConfirmation.tsx';
 import { folderIdFromPath, installBridge, WORKSPACE, type Bridge } from './bridge/index.ts';
+import { enableFrameDocument } from './html-frame.ts';
+import { inbox } from './inbox.ts';
 import { installBackspaceGuard } from './opening-guard.ts';
 import { printWhenReady } from './pdf-print.ts';
 import { askTrashConfirmation, createTrashGuard } from './trash-guard.ts';
@@ -27,7 +29,14 @@ async function revealLandingFolder(bridge: Bridge): Promise<void> {
 }
 
 export async function bootMoss(): Promise<{ default: ComponentType }> {
-  const bridge = installBridge(auth, createTrashGuard({ close: closeDocsToWrites, waitAcked: waitDocsAcked, confirm: askTrashConfirmation, end: endTrashedDocs }));
+  const bridge = installBridge(
+    auth,
+    createTrashGuard({ close: closeDocsToWrites, waitAcked: waitDocsAcked, confirm: askTrashConfirmation, end: endTrashedDocs }),
+    (event) => inbox.receive(event),
+    reopenDocs,
+  );
+  // HTML blocks run live in the Worker's sandboxed frame document (A§16).
+  enableFrameDocument();
   const analytics = await import('@moss-desktop/renderer/error-analytics');
   analytics.installRendererErrorAnalytics();
   if (window.location.pathname === '/pdf-export' || new URLSearchParams(window.location.search).get('mossMode') === 'pdf-export') {
@@ -43,6 +52,7 @@ export async function bootMoss(): Promise<{ default: ComponentType }> {
     useEffect(() => readyWhenShellRenders(), []);
     useEffect(() => installBackspaceGuard(), []);
     useEffect(() => { void revealLandingFolder(bridge); }, []);
+    useEffect(() => { void inbox.refresh(); }, []);
     useEffect(() => auth.subscribe((state) => {
       if (state.status === 'signed-out') severDocSessions();
       else pauseDocWrites(state.status === 'signing-out');

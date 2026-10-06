@@ -4,7 +4,9 @@ import * as decoding from 'lib0/decoding';
 import * as Y from 'yjs';
 import { NAME_MAX_CHARS } from '@moss-multi/protocol/limits';
 import { isRole, type Role } from '@moss-multi/protocol/roles';
-import { CLOSE, decodePartyPrincipal, TRUSTED, type PrincipalKind } from '@moss-multi/protocol/sync';
+import {
+  CLOSE, decodePartyPrincipal, decodePayloadFrame, PAYLOAD_MESSAGE, TRUSTED, type PayloadFrame, type PrincipalKind,
+} from '@moss-multi/protocol/sync';
 import type { Revoked } from './persistence.ts';
 
 /** What a socket carries through hibernation (connection.setState). */
@@ -18,6 +20,14 @@ export interface Attachment {
   presenceAllowed?: boolean;
   /** Minted at connect: suggestion leases bind to it, since a client may reuse its partyserver connection id. */
   nonce?: string;
+  /** When the Worker resolved `role` (epoch ms); 0 when unknown, which any principal revocation outdates. */
+  resolvedAt?: number;
+  /** When this DocDO admitted the socket (its own clock); DOC_SOCKET_MAX_MS later the socket closes 1013. */
+  admittedAt?: number;
+  /** The access epoch `role` was resolved under (A§8 pull validation); '' when unknown, which re-resolves it. */
+  epoch?: string;
+  /** Not yet validated by the DocDO (A§8): it hears no broadcast and none of its frames apply until it is. */
+  pending?: boolean;
 }
 
 /** The Worker's trusted headers, or null with no principal or no known role. */
@@ -33,14 +43,24 @@ export function attachmentFrom(headers: Headers): Attachment | null {
     sessionId: headers.get(TRUSTED.session) || null,
     shareToken: headers.get(TRUSTED.share) || null,
     presenceAllowed: headers.get(TRUSTED.presence) === '1' || (headers.get(TRUSTED.presence) === null && principal.kind !== 'anonymous' && !headers.get(TRUSTED.share)),
+    resolvedAt: Number(headers.get(TRUSTED.resolvedAt)) || 0,
+    epoch: headers.get(TRUSTED.epoch) ?? '',
   };
 }
 
-/** 4402 for an ended session; 4403 for a revoked principal or share token. */
+/** The principal id a recheck for everyone revokes: every socket resolved no later than it closes. */
+export const EVERYONE = '*';
+
+/**
+ * 4402 for an ended session; 4403 for a principal, a share token or everyone revoked no earlier than the socket's role
+ * was resolved. A role resolved afterwards read the change, so a demoted or re-added member reconnects, and a link
+ * that reaches the note again (a note moved back under it) opens it again.
+ */
 export function revocationCode(attachment: Attachment, revoked: Revoked): number | null {
   if (attachment.sessionId !== null && revoked.session.has(attachment.sessionId)) return CLOSE.sessionEnded;
-  if (revoked.principal.has(attachment.principalId)) return CLOSE.revoked;
-  if (attachment.shareToken !== null && revoked.token.has(attachment.shareToken)) return CLOSE.revoked;
+  const outdated = (at: number | undefined) => at !== undefined && (attachment.resolvedAt ?? 0) <= at;
+  if (outdated(revoked.principal.get(attachment.principalId)) || outdated(revoked.principal.get(EVERYONE))) return CLOSE.revoked;
+  if (attachment.shareToken !== null && outdated(revoked.token.get(attachment.shareToken))) return CLOSE.revoked;
   return null;
 }
 
@@ -67,15 +87,21 @@ export type Frame =
   | { kind: 'step1' }
   /** A step 2 or an update: a write only if it would change the doc. */
   | { kind: 'sync'; update: Uint8Array }
+  /** A decorator payload's own sync (A§10.10). */
+  | { kind: 'payload'; payload: PayloadFrame }
   | { kind: 'other' };
 
-/** The y-protocols envelope: message type 0 is sync (step 1, step 2, update), 1 is awareness. */
+/** The y-protocols envelope: message type 0 is sync (step 1, step 2, update), 1 is awareness; 7 is a payload's sync. */
 export function parseFrame(message: ArrayBuffer | ArrayBufferView): Frame {
   const bytes = message instanceof ArrayBuffer ? new Uint8Array(message) : new Uint8Array(message.buffer, message.byteOffset, message.byteLength);
   try {
     const decoder = decoding.createDecoder(bytes);
     const type = decoding.readVarUint(decoder);
     if (type === 1) return { kind: 'awareness', bytes: bytes.byteLength };
+    if (type === PAYLOAD_MESSAGE) {
+      const payload = decodePayloadFrame(bytes);
+      return payload ? { kind: 'payload', payload } : { kind: 'other' };
+    }
     if (type !== 0) return { kind: 'other' };
     const step = decoding.readVarUint(decoder);
     if (step === 0) return { kind: 'step1' };
@@ -86,30 +112,55 @@ export function parseFrame(message: ArrayBuffer | ArrayBufferView): Frame {
   return { kind: 'other' };
 }
 
+/** yjs does not export its DeleteSet type by name. */
+export type DeleteSet = ReturnType<typeof Y.createDeleteSet>;
+
+/**
+ * The classifier's verdict, the deletes the frame carries (its ack names them, A§5.1 Acks), and whether the frame
+ * needs a clock the doc lacks (`missing`). `decoded` lets the caller share one decode with gate 2b. `budget` bounds
+ * the store items the delete scan visits; past it the frame reads as inert. Pass one only for a connection that may
+ * not write (below editor), whose frame is never applied either way (`isReadOnly`): its refusal then costs O(frame),
+ * never O(doc).
+ */
+export function classifySync(
+  doc: Y.Doc,
+  update: Uint8Array,
+  decoded = Y.decodeUpdate(update),
+  budget = Infinity,
+): { changes: boolean; missing: boolean; deletes: DeleteSet } {
+  const { structs, ds } = decoded;
+  return { changes: changes(doc, structs, ds, budget), missing: missing(doc, structs, ds), deletes: ds };
+}
+
+/**
+ * True when part of the frame would wait in Yjs's pending structs or deletes: a struct past the clocks the doc and the
+ * frame hold, an origin or parent the doc lacks, or a delete of clocks it lacks. A pending struct integrates later,
+ * inside whichever transaction supplies its dependency, so it would be counted and credited to that transaction's
+ * sender. A client sends what it holds, and holds nothing the server lacks, so it never sends one.
+ */
+function missing(doc: Y.Doc, structs: (Y.Item | Y.GC | Y.Skip)[], ds: DeleteSet): boolean {
+  const held = new Map<number, number>();
+  const end = (client: number) => held.get(client) ?? Y.getState(doc.store, client);
+  for (const struct of structs) {
+    if (struct instanceof Y.Skip) continue;
+    const { client, clock } = struct.id;
+    if (clock > end(client)) return true;
+    held.set(client, Math.max(end(client), clock + struct.length));
+  }
+  const lacks = (id: unknown) => id instanceof Y.ID && id.clock >= end(id.client);
+  for (const struct of structs) {
+    if (struct instanceof Y.Item && (lacks(struct.origin) || lacks(struct.rightOrigin) || lacks(struct.parent))) return true;
+  }
+  for (const [client, deletes] of ds.clients) {
+    for (const { clock, len } of deletes) if (len > 0 && clock + len > end(client)) return true;
+  }
+  return false;
+}
+
 /**
  * The write classifier: a sync frame changes the doc only if it carries a struct the doc's state vector lacks or
  * deletes an item the doc has not deleted. Every step 2 that merely answers a step 1 is inert.
  */
-export function wouldChange(doc: Y.Doc, update: Uint8Array): boolean {
-  return classifySync(doc, update).changes;
-}
-
-/** yjs does not export its DeleteSet type by name. */
-export type DeleteSet = ReturnType<typeof Y.createDeleteSet>;
-
-export type Decoded = ReturnType<typeof Y.decodeUpdate>;
-
-/**
- * The classifier's verdict, the deletes the frame carries (its ack names them, A§5.1 Acks) and the decoded frame.
- * `budget` bounds the store items the delete scan visits; past it the frame reads as inert. Pass one only for a
- * connection that may not write (below editor), whose frame is never applied either way (`isReadOnly`): its refusal
- * then costs O(frame), never O(doc).
- */
-export function classifySync(doc: Y.Doc, update: Uint8Array, budget = Infinity): { changes: boolean; deletes: DeleteSet; decoded: Decoded } {
-  const decoded = Y.decodeUpdate(update);
-  return { changes: changes(doc, decoded.structs, decoded.ds, budget), deletes: decoded.ds, decoded };
-}
-
 function changes(doc: Y.Doc, structs: (Y.Item | Y.GC | Y.Skip)[], ds: DeleteSet, budget: number): boolean {
   for (const struct of structs) {
     if (struct instanceof Y.Skip) continue;
@@ -143,6 +194,13 @@ export function stateBytesAfter(doc: Y.Doc, update: Uint8Array): number {
   }
 }
 
+/** The attempts still inside the window ending at `now`, with this one appended (denied attempts count too). */
+export function windowed(attempts: readonly number[], now: number, windowMs: number): number[] {
+  const recent = attempts.filter((at) => now - at < windowMs);
+  recent.push(now);
+  return recent;
+}
+
 /**
  * Writes per socket in a sliding window, keyed by the socket itself: a client may reuse its connection id while the
  * DO still holds the old socket. In memory: a wake starts every count at zero.
@@ -157,8 +215,7 @@ export class WriteRate {
 
   /** Counts one write; false once the socket is past `max` in the window. */
   allow(socket: object, now = Date.now()): boolean {
-    const recent = (this.hits.get(socket) ?? []).filter((at) => now - at < this.windowMs);
-    recent.push(now);
+    const recent = windowed(this.hits.get(socket) ?? [], now, this.windowMs);
     this.hits.set(socket, recent);
     return recent.length <= this.max;
   }

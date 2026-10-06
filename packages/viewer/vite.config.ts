@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import viteReact from '@vitejs/plugin-react';
 import { defineConfig, type Plugin } from 'vite';
 import { readSource } from '../../apps/web/vite-provenance.ts';
+import { HTML_FRAME_DOCUMENT } from '../protocol/src/html-frame.ts';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
@@ -15,6 +16,8 @@ const editorUtils = `${vendor}/desktop/src/renderer/editor/utils`;
 const pkg = JSON.parse(readFileSync(`${here}package.json`, 'utf8')) as { name: string; version: string };
 
 const ENTRY = 'moss-viewer';
+/** HTML blocks' sandboxed frame document, which a host serves to run them live (services.htmlFrameUrl). */
+const FRAME = `${ENTRY}-frame.html`;
 const API = 1;
 const SUBSTITUTES: Record<string, string> = {
   [`${editorUtils}/asset-url.ts`]: `${here}src/substitutes/asset-url.ts`,
@@ -34,6 +37,16 @@ function substitutes(): Plugin {
 }
 
 const sha256 = (bytes: Uint8Array | string) => createHash('sha256').update(bytes).digest('hex');
+
+function frameDocument(): Plugin {
+  return {
+    name: 'moss-viewer-frame',
+    apply: 'build',
+    generateBundle() {
+      this.emitFile({ type: 'asset', fileName: FRAME, source: HTML_FRAME_DOCUMENT });
+    },
+  };
+}
 
 /** viewer.json: what was built, from which sources, and the hash of every emitted file. */
 function manifest(): Plugin {
@@ -57,6 +70,7 @@ function manifest(): Plugin {
         api: API,
         entry: `${ENTRY}.js`,
         css: `${ENTRY}.css`,
+        frame: FRAME,
         moss: { upstream: ported.upstream, pin: ported.pin, commit: ported.commit },
         source: { repo: 'brsbl/moss-multi', commit: source.commit, headSha: source.headSha, dirty: source.dirty, diffHash: source.diffHash },
         bundleHash: digest.digest('hex'),
@@ -68,7 +82,7 @@ function manifest(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [substitutes(), viteReact(), manifest()],
+  plugins: [substitutes(), viteReact(), frameDocument(), manifest()],
   // Asset URLs resolve against the bundle's own location, wherever the host serves dist/.
   base: './',
   resolve: {

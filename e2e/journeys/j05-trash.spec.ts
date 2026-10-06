@@ -12,7 +12,7 @@ import {
   APP_STATE_ATTR, BODY_BINDING_ATTR, CONNECTION_BANNER_ATTR, DOC_STATE_ATTR, EDITOR_PANE_ATTR, INPUT_REFUSAL_ATTR, NAMES, SIDEBAR_ROW_ATTR,
   SYNC_UNACKED_ATTR, TERMINAL_REASON_ATTR, TITLE_BINDING_ATTR, TRASH_ROW_ATTR, paneSelector,
 } from '../lib/contract.ts';
-import { grantDoc } from '../lib/grants.ts';
+import { grant, grantDoc } from '../lib/grants.ts';
 import type { Principal } from '../lib/principals.ts';
 import { expect, test, ui } from '../lib/test.ts';
 import { TRASH_COPY } from '../../packages/protocol/src/retention.ts';
@@ -348,4 +348,35 @@ test('j05-trash: a note trashed while open and then restored comes back live in 
   await expect(ui.pane(ada, docId)).toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout: BIND_TIMEOUT });
   expect(await ui.fieldText(ada, docId, 'body')).toBe(`${BODY} and after the restore`);
   await actors.checkpoint('restored-in-place');
+});
+
+test('j05-trash: a restore the server refuses shows the server’s sentence, and the note stays in Trash @p:note-5', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  const benPrincipal = await actors.principal('ben');
+  const origin = new URL(ada.page.url()).origin;
+  const send = (method: 'post' | 'delete', path: string, data?: object) =>
+    ada.context.request[method](`${origin}${path}`, { headers: { origin, 'content-type': 'application/json' }, data, timeout: 15_000 });
+  // Declared setup: Ben co-owns one folder of Ada's Home (not the Home itself), with a note in it; Ada trashes the folder.
+  const { vault } = (await (await ada.context.request.get(`${origin}/api/workspace`)).json()) as { vault: { id: string } };
+  const made = await send('post', '/api/folders', { parentId: vault.id, name: 'Ben co-owns' });
+  expect(made.status(), 'declared setup: the folder').toBe(201);
+  const folderId = ((await made.json()) as { folder: { id: string } }).folder.id;
+  await grant(ada, { folderId }, benPrincipal, 'owner');
+  const note = await send('post', '/api/docs', { folderId, title: 'Folder plan' });
+  expect(note.status(), 'declared setup: the note').toBe(201);
+  const docId = ((await note.json()) as { doc: { id: string } }).doc.id;
+  expect((await send('delete', `/api/folders/${folderId}`)).status(), 'declared setup: the folder goes to Trash').toBe(200);
+
+  // Restoring would put the note at the top of Ada's Home, where Ben can't add notes: moss shows why, not "Try again".
+  const ben = await actors.open(benPrincipal);
+  await ben.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: BOOT_TIMEOUT });
+  ben.expectHttp(403, `/api/docs/${docId}/restore`);
+  await ben.page.getByRole('button', { name: 'Trash', exact: true }).click();
+  await expect(trashRow(ben, docId), 'Ben finds the note he co-owns in Trash').toContainText('Folder plan', { timeout: PEER_MS });
+  await trashRow(ben, docId).click({ button: 'right' });
+  await ben.page.getByRole('menuitem', { name: 'Restore', exact: true }).click();
+  await expect(ben.page.getByText(/folder is in Trash, so it would return to the top of its vault, where you can.t add notes/), 'the server’s sentence').toBeVisible();
+  await expect(ben.page.getByText(/Try again/), 'never "Try again" for a refusal a retry can’t change').toHaveCount(0);
+  await expect(trashRow(ben, docId), 'the note stays in Trash').toBeVisible();
+  await expect(ben.page.getByText(/folder is in Trash, so it would return/), 'moss’s notice dismisses itself').toBeHidden({ timeout: 10_000 });
 });

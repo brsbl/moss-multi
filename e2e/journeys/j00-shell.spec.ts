@@ -355,21 +355,22 @@ test('no hidden or staged affordance renders on an open note: actions panel, top
 const composerOpens = (page: Page, windowMs = 1_000): Promise<boolean> =>
   page.getByRole('dialog', { name: 'Add comment' }).waitFor({ state: 'attached', timeout: windowMs }).then(() => true, () => false);
 
-test('an open note offers no comment until comments are shared data: no comment button, and ⌘⇧A opens nothing @p:agt-3', async ({ actors }) => {
+test("an open note's toolbars withhold nothing registered, and comments are live: the comment button and ⌘⇧A open the composer @p:agt-3", async ({ actors }) => {
   const [ada] = await twoShells(actors);
   const { page } = ada;
   const docId = await openNewNote(ada);
-  await ui.typeBody(ada, docId, 'A line no comment can hold yet');
+  await ui.typeBody(ada, docId, 'A line a comment can hold');
 
-  // A comment's thread text would live only in an atom that a bound note never saves, so it would vanish on reload.
   await expect(page.getByRole('button', { name: 'Insert slash command' }), "moss's bottom toolbar is on screen").toBeVisible();
   expect.soft(await probeHits(page, 'editor-toolbar'), 'the bottom toolbar').toEqual([]);
   await page.keyboard.press('ControlOrMeta+A');
   await expect(page.getByRole('button', { name: 'Add link' }), 'the selection toolbar is on screen').toBeVisible();
   expect.soft(await probeHits(page, 'editor-toolbar'), 'the selection toolbar').toEqual([]);
-  // Over a selection, moss's ⌘⇧A opens its comment composer.
+  // Comments are shared data since T4.3: the selection toolbar offers moss's comment button, and ⌘⇧A opens the composer.
+  await expect(page.getByRole('button', { name: 'Add comment' }), 'the comment button is on the selection toolbar').toBeVisible();
   await page.keyboard.press('ControlOrMeta+Shift+A');
-  expect.soft(await composerOpens(page), '⌘⇧A opens no comment composer').toBe(false);
+  expect(await composerOpens(page, 5_000), '⌘⇧A opens the comment composer').toBe(true);
+  await page.keyboard.press('Escape');
 });
 
 // Each block with the toolbar control that sits beside moss's comment button. A new canvas opens in its drawing mode,
@@ -383,7 +384,7 @@ const BLOCKS = [
   { query: 'html', option: 'HTML', control: 'Edit HTML', leave: null },
 ];
 
-test('no block toolbar offers a comment until comments are shared data: code, chart, canvas and HTML blocks @p:agt-3', async ({ actors }) => {
+test('no block toolbar offers a withheld affordance: code, chart, canvas and HTML blocks @p:agt-3', async ({ actors }) => {
   const [ada] = await twoShells(actors);
   const { page } = ada;
   const notes: string[] = [];
@@ -443,6 +444,9 @@ test('the slash menu offers no hidden command: no Emoji (no OS panel), while Med
 test("the in-app browser offers no back, forward, find or agent action, which a cross-origin page can't serve @p:agt-3", async ({ actors }) => {
   const [ada] = await twoShells(actors);
   const { page } = ada;
+  // The browser frames the page (T3.2); a stand-in answers it, since WebKit logs an unresolvable frame as a console error.
+  await ada.context.route('https://example.invalid/guide', (route) =>
+    route.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html><title>Guide</title><h1>Guide</h1>' }));
   const docId = await openNewNote(ada);
   await ui.typeBody(ada, docId, 'Read the guide');
   for (let i = 0; i < 'guide'.length; i += 1) await page.keyboard.press('Shift+ArrowLeft');
@@ -456,6 +460,7 @@ test("the in-app browser offers no back, forward, find or agent action, which a 
   await page.getByRole('button', { name: 'Open in Split View', exact: true }).click();
   const close = page.getByRole('button', { name: 'Close browser split tab', exact: true });
   await expect(close, "the in-app browser's header renders").toBeVisible();
+  await expect(page.frameLocator('iframe[src="https://example.invalid/guide"]').locator('h1'), 'the browser frames the page').toHaveText('Guide');
   expect(await probeHits(page, 'browser-split'), "the in-app browser's header").toEqual([]);
   // Positive control: every probe's scope renders with a shown control in it, so an empty result means absence.
   const scopes = new Set(

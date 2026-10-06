@@ -1,31 +1,45 @@
 {
   "name": "@moss-multi/viewer",
-  "version": "0.1.0",
-  "private": true,
+  "version": "1.0.0",
+  "description": "A moss note, read-only, in any page: moss's own editor in one self-contained browser bundle.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/brsbl/moss-multi.git",
+    "directory": "packages/viewer"
+  },
   "type": "module",
+  "files": [
+    "dist",
+    "CHANGELOG.md"
+  ],
+  "exports": {
+    ".": "./dist/moss-viewer.js",
+    "./moss-viewer.css": "./dist/moss-viewer.css",
+    "./moss-viewer-frame.html": "./dist/moss-viewer-frame.html",
+    "./viewer.json": "./dist/viewer.json"
+  },
   "scripts": {
     "build": "vite build",
     "typecheck": "tsc -p tsconfig.json"
   },
-  "dependencies": {
+  "devDependencies": {
     "@fontsource-variable/inter": "5.3.0",
     "@fontsource-variable/jetbrains-mono": "5.3.0",
     "@fontsource/jetbrains-mono": "5.3.0",
-    "charter-webfont": "4.1.0",
-    "jotai": "2.20.2",
-    "lexical": "0.48.0",
-    "prismjs": "1.30.0",
-    "react": "19.3.0",
-    "react-dom": "19.3.0"
-  },
-  "devDependencies": {
     "@types/node": "24.13.3",
     "@types/prismjs": "1.26.6",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "6.0.2",
     "autoprefixer": "10.5.4",
+    "charter-webfont": "4.1.0",
+    "jotai": "2.20.2",
+    "lexical": "0.48.0",
     "postcss": "8.5.25",
+    "prismjs": "1.30.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
     "tailwindcss": "3.4.19",
     "typescript": "5.9.3",
     "vite": "8.1.5"

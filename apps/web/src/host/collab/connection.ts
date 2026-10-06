@@ -57,8 +57,6 @@ export interface DocConnection {
   synced: boolean;
   /** The first sync is past its deadline. */
   retrying: boolean;
-  /** Why this session can no longer deliver edits, when a refused write or a lower role stopped it. */
-  halted: string | null;
 }
 
 const views = new Map<string, { owner: object; view: DocConnection }>();
@@ -78,7 +76,7 @@ export function publishConnection(docId: string, owner: object, view: DocConnect
 }
 
 const sameView = (a: DocConnection, b: DocConnection): boolean =>
-  a.connection === b.connection && a.synced === b.synced && a.retrying === b.retrying && a.halted === b.halted;
+  a.connection === b.connection && a.synced === b.synced && a.retrying === b.retrying;
 
 function subscribe(listener: () => void): () => void {
   listeners.add(listener);

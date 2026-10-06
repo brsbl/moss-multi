@@ -34,18 +34,19 @@ export default defineConfig({
           name: 'unit',
           environment: 'node',
           include: ['scripts/**/*.test.mjs', 'apps/*/src/**/*.test.ts', 'packages/*/src/**/*.test.ts'],
+          exclude: ['**/node_modules/**', '**/fixtures/**', '**/*.harness.test.ts'],
           server: { deps: { inline: ['partyserver'] } },
         },
       },
       {
         // The real DocDO class in Node (L§4.7): workerd's storage and hibernation socket API are faked in
-        // packages/sync/test/harness.
+        // packages/sync/test/harness. A `.harness.test.ts` under apps drives the real DOs through the REST routes.
         extends: true,
         resolve: { alias: workersStub },
         test: {
           name: 'sync-harness',
           environment: 'node',
-          include: ['packages/sync/test/harness/**/*.test.ts'],
+          include: ['packages/sync/test/harness/**/*.test.ts', 'apps/*/src/**/*.harness.test.ts'],
           setupFiles: ['packages/sync/test/harness/setup.ts'],
           server: { deps: { inline: ['partyserver', 'y-partyserver'] } },
           testTimeout: 60_000,

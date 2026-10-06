@@ -1,0 +1,177 @@
+// The comment REST API (docs/design/comments.md §4, §12), for a commenter or above: create and reply, resolve, edit,
+// delete and react. The author is the server principal, never the body; the PrincipalDO counts 60 comment operations a
+// minute per principal; the DocDO validates, enforces authorship and writes the records through writeComments.
+// After a create or reply the Worker writes the bell's rows: mentioned people and the thread's author on a reply, each
+// a user re-checked against their live access, never the actor and never an agent.
+import { getServerByName } from 'partyserver';
+import { COMMENT_OP_RATE } from '@moss-multi/protocol/limits';
+import type { CommentDeleteScope, CommentResult } from '@moss-multi/sync';
+import { roleAtLeast } from '@moss-multi/protocol/roles';
+import { resolvePrincipal, shareTokenOf, type Principal } from '../auth/principal.ts';
+import { createDb, inJson, type Db } from '../db/client.ts';
+import { user } from '../db/schema.ts';
+import { json } from '../worker/route.ts';
+import { resolveDocAccess } from './access.ts';
+import type { DocsEnv } from './docs.ts';
+import { notify } from './invites.ts';
+import { NO_STORE, notFound, readJsonObject } from './respond.ts';
+
+/** Moss's marker ids, which the client proposes so its composer can show the comment before the record arrives. */
+const ID = /^[A-Za-z0-9_-]{1,64}$/;
+/** Mentioned people notified per comment; more mentions are kept in the text but notify nobody. */
+export const MENTIONS_NOTIFIED = 20;
+/** A person mention in moss's comment encoding: U+2063 `@person:Name` U+2062 principal id U+2064 (comments.md §12). */
+const PERSON_MENTION = /⁣@person:[^⁢⁣⁤]*⁢([^⁢⁣⁤]+)⁤/g;
+
+type Actor = Exclude<Principal, { type: 'anonymous' }>;
+
+/** The principal ids a comment's text mentions, in order, once each. */
+export function mentionedIds(text: string): string[] {
+  return [...new Set([...text.matchAll(PERSON_MENTION)].map((match) => match[1]!.trim()).filter(Boolean))];
+}
+
+/** Resolves the caller as a commenter or above on `docId`, reads the body, and takes a comment-rate token. */
+async function admit(request: Request, env: DocsEnv, docId: string): Promise<{ principal: Actor; body: Record<string, unknown> } | Response> {
+  const principal = await resolvePrincipal(request, env);
+  if (!principal || principal.type === 'anonymous') return json({ error: 'unauthenticated', message: 'Sign in to comment' }, 401, NO_STORE);
+  // The body is read before access resolves, so a stalled body cannot outlive a revocation or a trash.
+  const body: Record<string, unknown> = request.method === 'DELETE' ? {} : ((await readJsonObject(request)) ?? {});
+  const access = await resolveDocAccess(createDb(env.DB), principal, docId, shareTokenOf(request));
+  if (!access || access.deleted) return notFound();
+  if (!roleAtLeast(access.role, 'commenter')) return json({ error: 'forbidden', message: "You can't comment on this note." }, 403, NO_STORE);
+  return { principal, body };
+}
+
+async function takeToken(env: DocsEnv, principal: Actor): Promise<Response | null> {
+  const principalDO = await getServerByName(env.PrincipalDO, principal.id);
+  if (await principalDO.takeCommentToken()) return null;
+  return json({ error: 'rate-limited' }, 429, { ...NO_STORE, 'retry-after': String(COMMENT_OP_RATE.windowMs / 1000) });
+}
+
+const bad = () => json({ error: 'bad-request' }, 400, NO_STORE);
+const refused = (result: Extract<CommentResult, { ok: false }>) => json({ error: result.error }, result.status, NO_STORE);
+const sourceOf = (principal: Actor) => (principal.type === 'agent' ? 'external' : 'user');
+
+export async function createComment(request: Request, env: DocsEnv, docId: string): Promise<Response> {
+  const admitted = await admit(request, env, docId);
+  if (admitted instanceof Response) return admitted;
+  const { principal, body } = admitted;
+  const { id, text, parentId, anchor } = body;
+  if (typeof id !== 'string' || !ID.test(id) || typeof text !== 'string') return bad();
+  if (parentId !== undefined && (typeof parentId !== 'string' || !ID.test(parentId))) return bad();
+  if (anchor !== undefined && (typeof anchor !== 'object' || anchor === null || Array.isArray(anchor))) return bad();
+  const limited = await takeToken(env, principal);
+  if (limited) return limited;
+  const stub = await getServerByName(env.DocDO, docId);
+  const result = (await stub.createComment({
+    author: principal.id,
+    source: sourceOf(principal),
+    id,
+    text,
+    ...(parentId !== undefined ? { parentId: parentId as string } : {}),
+    ...(anchor !== undefined ? { anchor: anchor as never } : {}),
+  })) as CommentResult;
+  if (!result.ok) return refused(result);
+  await notifyComment(env, docId, principal, { commentId: id, text, rootAuthor: result.rootAuthor });
+  return json({ comment: { id: result.id, quote: result.quote } }, 201, NO_STORE);
+}
+
+/**
+ * POST /api/docs/:id/comments/:commentId/resolve `{resolved}` (comments.md §12): a commenter or above resolves or
+ * reopens a thread; it counts against the same per-principal comment rate as a create.
+ */
+export async function resolveComment(request: Request, env: DocsEnv, docId: string, commentId: string): Promise<Response> {
+  const admitted = await admit(request, env, docId);
+  if (admitted instanceof Response) return admitted;
+  const { principal, body } = admitted;
+  const { resolved } = body;
+  if (!ID.test(commentId) || typeof resolved !== 'boolean') return bad();
+  const limited = await takeToken(env, principal);
+  if (limited) return limited;
+  const stub = await getServerByName(env.DocDO, docId);
+  const result = (await stub.resolveComment({ id: commentId, resolved, by: sourceOf(principal) })) as CommentResult;
+  if (!result.ok) return refused(result);
+  return json({ comment: { id: commentId, resolved } }, 200, NO_STORE);
+}
+
+/** PATCH /api/docs/:id/comments/:commentId `{text}`: the author edits their comment (403 for anyone else). */
+export async function editComment(request: Request, env: DocsEnv, docId: string, commentId: string): Promise<Response> {
+  const admitted = await admit(request, env, docId);
+  if (admitted instanceof Response) return admitted;
+  const { principal, body } = admitted;
+  const { text } = body;
+  if (!ID.test(commentId) || typeof text !== 'string') return bad();
+  const limited = await takeToken(env, principal);
+  if (limited) return limited;
+  const stub = await getServerByName(env.DocDO, docId);
+  const result = (await stub.editComment({ id: commentId, author: principal.id, text })) as CommentResult;
+  if (!result.ok) return refused(result);
+  return json({ comment: { id: commentId } }, 200, NO_STORE);
+}
+
+/**
+ * DELETE /api/docs/:id/comments/:commentId[?scope=thread]: the author deletes their comment; a thread delete is the
+ * root author's. Deleting a root with replies promotes the oldest reply (comments.md §12).
+ */
+export async function deleteComment(request: Request, env: DocsEnv, docId: string, commentId: string): Promise<Response> {
+  const admitted = await admit(request, env, docId);
+  if (admitted instanceof Response) return admitted;
+  const { principal } = admitted;
+  const scope = new URL(request.url).searchParams.get('scope') ?? 'comment';
+  if (!ID.test(commentId) || (scope !== 'comment' && scope !== 'thread')) return bad();
+  const limited = await takeToken(env, principal);
+  if (limited) return limited;
+  const stub = await getServerByName(env.DocDO, docId);
+  const result = (await stub.deleteComment({ id: commentId, author: principal.id, scope: scope as CommentDeleteScope })) as CommentResult;
+  if (!result.ok) return refused(result);
+  return json({ deleted: { id: commentId, ...(result.promoted ? { promoted: result.promoted } : {}) } }, 200, NO_STORE);
+}
+
+/** POST /api/docs/:id/comments/:commentId/reactions `{emoji, on}`: the caller's own reaction, added or removed. */
+export async function reactComment(request: Request, env: DocsEnv, docId: string, commentId: string): Promise<Response> {
+  const admitted = await admit(request, env, docId);
+  if (admitted instanceof Response) return admitted;
+  const { principal, body } = admitted;
+  const { emoji, on } = body;
+  if (!ID.test(commentId) || typeof emoji !== 'string' || typeof on !== 'boolean') return bad();
+  const limited = await takeToken(env, principal);
+  if (limited) return limited;
+  const stub = await getServerByName(env.DocDO, docId);
+  const result = (await stub.reactComment({ id: commentId, principal: principal.id, emoji, on })) as CommentResult;
+  if (!result.ok) return refused(result);
+  return json({ reaction: { id: commentId, emoji, on } }, 200, NO_STORE);
+}
+
+/** Whether `userId` can open the doc through ownership or a grant now (a link alone is not membership). */
+async function canOpen(db: Db, userId: string, docId: string): Promise<boolean> {
+  const reader: Principal = { type: 'user', id: userId, name: '', email: '', sessionId: '', credential: 'cookie' };
+  const access = await resolveDocAccess(db, reader, docId);
+  return access !== null && !access.deleted && !access.linkOnly;
+}
+
+/**
+ * The bell's rows for a new comment (comments.md §12): `mention` for each mentioned person and `comment-reply` for the
+ * thread's author on a reply, one row per person. Only user accounts get rows (an agent has no bell), each re-checked
+ * against the live grant, and never the actor. A failure here loses only the notices, never the comment.
+ */
+async function notifyComment(env: DocsEnv, docId: string, actor: Actor, comment: { commentId: string; text: string; rootAuthor?: string }): Promise<void> {
+  try {
+    const wanted = new Map<string, 'mention' | 'comment-reply'>();
+    for (const id of mentionedIds(comment.text).slice(0, MENTIONS_NOTIFIED)) wanted.set(id, 'mention');
+    if (comment.rootAuthor && !wanted.has(comment.rootAuthor)) wanted.set(comment.rootAuthor, 'comment-reply');
+    wanted.delete(actor.id);
+    if (!wanted.size) return;
+    const db = createDb(env.DB);
+    const people = await db.select({ id: user.id }).from(user).where(inJson(user.id, [...wanted.keys()]));
+    const recipients: string[] = [];
+    for (const { id } of people) if (await canOpen(db, id, docId)) recipients.push(id);
+    if (!recipients.length) return;
+    const now = Date.now();
+    const payload = JSON.stringify({ targetType: 'doc', targetId: docId, by: actor.id, commentId: comment.commentId });
+    await env.DB.batch(recipients.map((id) => env.DB.prepare(`INSERT INTO notifications (id, user_id, type, payload_json, created_at)
+      VALUES (?1, ?2, ?3, ?4, ?5)`).bind(crypto.randomUUID(), id, wanted.get(id)!, payload, now)));
+    for (const id of recipients) notify(env, id, 'notifications');
+  } catch (error) {
+    console.error('comment notifications failed', error);
+  }
+}

@@ -1,6 +1,6 @@
 // ported-from: packages/desktop/src/renderer/editor/nodes/FormulaNode.tsx @ 762abb777
 // moss-multi seam: register payloads (A§10.10).
-import { readRegister, writeRegister, initRegisterNode, resetRegisterOnCopy } from '@moss-multi/host/collab/registers';
+import { readRegister, writeRegister, initRegisterNode } from '@moss-multi/host/collab/registers';
 import type { JSX } from 'react';
 // moss-multi seam: local-view (A§10): computed values paint locally, outside the shared node.
 import { useNodeView } from '@moss-multi/host/collab/view-state';
@@ -143,11 +143,6 @@ export class FormulaNode extends DecoratorNode<JSX.Element> {
   afterCloneFrom(previous: this): void {
     super.afterCloneFrom(previous);
     this.__regId = previous.__regId;
-  }
-
-  resetOnCopyNodeFrom(original: this): void {
-    super.resetOnCopyNodeFrom(original);
-    resetRegisterOnCopy(this);
   }
 
   static getType(): string {

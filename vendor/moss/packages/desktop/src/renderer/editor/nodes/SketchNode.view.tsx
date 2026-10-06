@@ -6,10 +6,9 @@ import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext
 import { useLexicalNodeSelection } from '@lexical/react/useLexicalNodeSelection';
 import { Undo2, Redo2, Eraser, Check, X, CopyPlus, Minus, Pen, Type, StickyNote } from 'lucide-react';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@moss/shared/components/ui/tooltip';
-// moss-multi seam: hide-registry (A§9)
-import { hidden } from '@moss-multi/host/affordances';
 // moss-multi seam: register payloads (A§10.10): peer strokes reach an open canvas; local writes carry their base.
 import { useSketchPeerSync, type Rebase } from '@moss-multi/host/collab/sketch-sync';
+import { useMapRegisterWritable } from '@moss-multi/host/collab/register-input';
 // moss-multi seam: converter-split (A§12; S-conv §2.3)
 import { OPEN_BLOCK_COMMENT_COMMAND } from '../commands';
 import { EDITOR_CHROME_COLORS } from '../colors';
@@ -18,6 +17,8 @@ import {
   BLOCK_SURFACE_CLASSNAME,
   BlockNodeShell
 } from '../components/block-node-primitives';
+// moss-multi seam: read-only-decorators (T3.8)
+import { useIsEditorEditable } from '../components/media-primitives';
 import { insertParagraphAdjacentToBlock } from '../utils/block-node-insertion';
 import {
   registerDecoratorDraftFlusher,
@@ -961,8 +962,11 @@ function SketchWrapper({
 
   // Check if grid is empty to auto-enter edit mode
   const isInitialEmpty = initialGrid.every((v) => !v);
+  // moss-multi seam: register payloads (A§10.10): a canvas whose payload has not arrived only looks empty; it is
+  // read-only until then, as a text field is, so no stroke is drawn against nothing.
+  const payloadWritable = useMapRegisterWritable(editor, nodeKey);
 
-  const [isEditing, setIsEditing] = useState(isInitialEmpty);
+  const [isEditing, setIsEditing] = useState(isInitialEmpty && payloadWritable);
   const [grid, setGrid] = useState<boolean[]>(initialGrid);
   const [labels, setLabels] = useState<TextLabel[]>(initialLabels);
   const [undoStack, setUndoStack] = useState<SketchSnapshot[]>([]);
@@ -982,6 +986,8 @@ function SketchWrapper({
   redoRef.current = redoStack;
 
   const isGridEmpty = grid.every((v) => !v);
+  // moss-multi seam: read-only-decorators (T3.8): a read-only canvas offers no Draw, Duplicate, comment or gap.
+  const editable = useIsEditorEditable() && payloadWritable;
 
   const handleEditClick = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -1194,11 +1200,11 @@ function SketchWrapper({
       selected={isSelected}
       beforeLabel="Insert paragraph before canvas"
       afterLabel="Insert paragraph after canvas"
-      onGapClick={handleGapClick}
+      onGapClick={editable ? handleGapClick : undefined /* moss-multi seam: read-only-decorators (T3.8) */}
       className="my-6 outline-none"
       data-block-decorator-key={nodeKey}
       onClick={handleContainerClick}
-      tabIndex={-1}
+      tabIndex={editable ? -1 : undefined /* moss-multi seam: read-only-decorators (T3.8) */}
     >
       <div
         className={`outline-none transition-colors ${BLOCK_SURFACE_CLASSNAME}`}
@@ -1316,7 +1322,7 @@ function SketchWrapper({
                   </Tooltip>
                 </div>
               </TooltipProvider>
-            ) : (
+            ) : !editable ? null /* moss-multi seam: read-only-decorators (T3.8) */ : (
               <TooltipProvider delayDuration={200}>
                 <div className="flex items-center gap-1">
                   <Tooltip>
@@ -1345,8 +1351,8 @@ function SketchWrapper({
                     </TooltipTrigger>
                     <TooltipContent side="bottom"><p>Edit canvas</p></TooltipContent>
                   </Tooltip>
-                  {/* moss-multi seam: hide-registry (A§9) */}
-                  {hidden('comments') ? null : (
+                  {/* moss-multi seam: read-only-decorators (T4.3): a read-only body offers no block comment */}
+                  {!editable ? null : (
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <button

@@ -1,9 +1,34 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "4af5e83b-febd-43cb-9117-edc162cdf309",
+  "id": "7d93acb9-6e98-4f0d-914e-1df9baff0642",
   "prevId": "423c9a02-c3e7-45fb-a18a-5514dd4d1a03",
   "tables": {
+    "access_epochs": {
+      "name": "access_epochs",
+      "columns": {
+        "owner_user_id": {
+          "name": "owner_user_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "epoch": {
+          "name": "epoch",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
     "account": {
       "name": "account",
       "columns": {
@@ -548,120 +573,6 @@
       },
       "foreignKeys": {},
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
-    "doc_media": {
-      "name": "doc_media",
-      "columns": {
-        "doc_id": {
-          "name": "doc_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "filename": {
-          "name": "filename",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "version_id": {
-          "name": "version_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "content_hash": {
-          "name": "content_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "content_type": {
-          "name": "content_type",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "size": {
-          "name": "size",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "created_by": {
-          "name": "created_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "doc_media_doc_id_docs_id_fk": {
-          "name": "doc_media_doc_id_docs_id_fk",
-          "tableFrom": "doc_media",
-          "tableTo": "docs",
-          "columnsFrom": [
-            "doc_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "doc_media_version_id_asset_versions_id_fk": {
-          "name": "doc_media_version_id_asset_versions_id_fk",
-          "tableFrom": "doc_media",
-          "tableTo": "asset_versions",
-          "columnsFrom": [
-            "version_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "doc_media_content_hash_content_objects_hash_fk": {
-          "name": "doc_media_content_hash_content_objects_hash_fk",
-          "tableFrom": "doc_media",
-          "tableTo": "content_objects",
-          "columnsFrom": [
-            "content_hash"
-          ],
-          "columnsTo": [
-            "hash"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "doc_media_doc_id_filename_pk": {
-          "columns": [
-            "doc_id",
-            "filename"
-          ],
-          "name": "doc_media_doc_id_filename_pk"
-        }
-      },
       "uniqueConstraints": {},
       "checkConstraints": {}
     },

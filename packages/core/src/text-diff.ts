@@ -127,6 +127,99 @@ function append(ops: TextOp[], op: TextOp): void {
   else ops.push({ ...op });
 }
 
+/**
+ * The one edit a field's input made, read with the caret after it: everything after the caret is unchanged, so typing
+ * inside a run of equal characters lands where it was typed ("a|a" plus "a" is an insert at 1, not at the end).
+ */
+export function diffAtCaret(before: string, after: string, caret: number): TextOp[] {
+  if (before === after) return [];
+  const max = Math.min(before.length, after.length);
+  let suffix = 0;
+  const suffixMax = Math.min(max, Math.max(0, after.length - caret));
+  while (suffix < suffixMax && before.charCodeAt(before.length - 1 - suffix) === after.charCodeAt(after.length - 1 - suffix)) suffix += 1;
+  if (suffix > 0 && isLow(after.charCodeAt(after.length - suffix))) suffix -= 1;
+  let prefix = 0;
+  while (prefix < max - suffix && before.charCodeAt(prefix) === after.charCodeAt(prefix)) prefix += 1;
+  if (prefix > 0 && isHigh(after.charCodeAt(prefix - 1))) prefix -= 1;
+  const ops: TextOp[] = [];
+  if (prefix > 0) ops.push({ retain: prefix });
+  if (before.length - prefix - suffix > 0) ops.push({ delete: before.length - prefix - suffix });
+  if (after.length - prefix - suffix > 0) ops.push({ insert: after.slice(prefix, after.length - suffix) });
+  return ops;
+}
+
+/** A change in Yjs delta form; an embed counts one. */
+export type Delta = readonly { retain?: number; insert?: unknown; delete?: number }[];
+
+/**
+ * Where an offset belongs after `delta`, read from the change itself: a diff of the two texts cannot tell "aa" -> "aaa"
+ * at the start from the same edit at the end. Text inserted before it moves it right, text deleted before it moves it
+ * left (a cut spanning it leaves it at the cut), and an insert exactly at it leaves it in front, or behind with `behind`.
+ */
+export function mapOffset(offset: number, delta: Delta, behind = false): number {
+  let at = 0;
+  let shift = 0;
+  for (const op of delta) {
+    if (behind ? at > offset : at >= offset) break;
+    if (op.retain !== undefined) at += op.retain;
+    else if (op.insert !== undefined) shift += typeof op.insert === 'string' ? op.insert.length : 1;
+    else if (op.delete !== undefined) {
+      shift -= Math.min(op.delete, offset - at);
+      at += op.delete;
+    }
+  }
+  return Math.max(0, offset + shift);
+}
+
+/**
+ * `ops`, an edit of `before`, rebased onto `current` (which a peer's edits moved on from `before`): the edit deletes
+ * only the characters of `before` it removed that are still in `current`, and inserts where its range now starts, so it
+ * removes only what its author saw and a peer's text, even inside the range, is kept.
+ */
+export function rebaseOps(before: string, ops: readonly TextOp[], current: string): TextOp[] {
+  if (before === current) return ops.slice();
+  const edits: { at: number; remove: number; insert: string }[] = [];
+  let at = 0;
+  for (const op of ops) {
+    if ('retain' in op) at += op.retain;
+    else {
+      const last = edits.at(-1);
+      const open = last && last.at + last.remove === at && (last.insert === '' || 'insert' in op);
+      const edit = open ? last : { at, remove: 0, insert: '' };
+      if (!open) edits.push(edit);
+      if ('delete' in op) { edit.remove += op.delete; at += op.delete; } else edit.insert += op.insert;
+    }
+  }
+  const moved = diffText(before, current);
+  // Where each unit of `before` is in `current`, or -1 where the peer deleted it.
+  const where = new Int32Array(before.length);
+  let from = 0;
+  let to = 0;
+  for (const op of moved) {
+    if ('retain' in op) for (let k = 0; k < op.retain; k += 1) where[from++] = to++;
+    else if ('delete' in op) for (let k = 0; k < op.delete; k += 1) where[from++] = -1;
+    else to += op.insert.length;
+  }
+  while (from < before.length) where[from++] = to++;
+  const out: TextOp[] = [];
+  let cursor = 0;
+  for (const edit of edits) {
+    // The insert goes behind a peer's insert at the start of a replaced range, never inside the peer's text.
+    const start = Math.max(cursor, mapOffset(edit.at, moved, edit.remove > 0));
+    if (start > cursor) append(out, { retain: start - cursor });
+    cursor = start;
+    if (edit.insert) append(out, { insert: edit.insert });
+    for (let i = edit.at; i < edit.at + edit.remove; i += 1) {
+      const p = where[i];
+      if (p < cursor) continue;
+      if (p > cursor) append(out, { retain: p - cursor });
+      append(out, { delete: 1 });
+      cursor = p + 1;
+    }
+  }
+  return out;
+}
+
 /** `ops` applied to `current`. */
 export function applyOps(current: string, ops: readonly TextOp[]): string {
   let out = '';

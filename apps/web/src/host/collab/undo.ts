@@ -1,16 +1,27 @@
-// Seam (a) of the vendored plugin (A§10.2, A§10.8): the body's undo manager tracks only this client's binding, so
-// Cmd+Z never undoes a peer's or the server's writes, and one typing burst is one step.
+// Seam (a) of the vendored plugin (A§10.2, A§10.8): the body's one Cmd+Z stack over the note's UndoManager, which
+// tracks only this client's binding, and one UndoManager per held payload doc, which tracks this client's field
+// edits (A§10.10). Cmd+Z never undoes a peer's or the server's writes, and one typing burst is one step.
 import { UNDO_COMMAND, REDO_COMMAND, type LexicalEditor } from 'lexical';
 import type { Binding } from '@lexical/yjs';
 import {
   ContentString, ContentType, Item, Map as YMap, UndoManager, XmlText, findIndexSS, getItem, isDeleted, type AbstractType, type Transaction,
 } from 'yjs';
+import { BodyUndo, lexicalAction, payloadDocsFor } from '@moss-multi/sync/payload-docs';
 
 import { REGISTER_LOCAL_ORIGIN } from '@moss-multi/sync/registers';
-export { REGISTER_LOCAL_ORIGIN };
 
 export const UNDO_CAPTURE_TIMEOUT_MS = 1_000;
 type StackItem = UndoManager['undoStack'][number];
+
+/** The plugin drives it as it would the root UndoManager: undo, redo, clear, the stacks' lengths and their events. */
+export function createBindingUndoManager(binding: Binding): UndoManager {
+  // A setter and an attribute written in one Lexical update undo together.
+  const stack = new BodyUndo(createRootUndoManager(binding), binding.editor ? lexicalAction(binding.editor) : undefined);
+  const payloads = payloadDocsFor(binding.doc);
+  for (const doc of payloads.docs.values()) stack.trackPayload(doc, REGISTER_LOCAL_ORIGIN, UNDO_CAPTURE_TIMEOUT_MS);
+  payloads.onHold((_id, doc) => { stack.trackPayload(doc, REGISTER_LOCAL_ORIGIN, UNDO_CAPTURE_TIMEOUT_MS); });
+  return stack as unknown as UndoManager;
+}
 
 /**
  * Undo deletes only this client's items, but deleting a container deletes everything in it, and peers type into
@@ -22,10 +33,10 @@ type StackItem = UndoManager['undoStack'][number];
  * restores what a step both created and deleted, so a peer's characters deleted in the step that created their line
  * would come back without their paragraph or text node; those containers are restored with them.
  */
-export function createBindingUndoManager(binding: Binding): UndoManager {
+function createRootUndoManager(binding: Binding): UndoManager {
   const { doc } = binding;
-  const trackedOrigins = new Set<unknown>([binding, REGISTER_LOCAL_ORIGIN]);
-  // This client's ids: the doc's own, plus a draft doc's merged in under a tracked origin (register-input.ts).
+  const trackedOrigins = new Set<unknown>([binding]);
+  // This client's ids: the doc's own, plus any merged in under a tracked origin.
   const own = new Set([doc.clientID]);
   const noteOwn = (transaction: Transaction) => {
     if (!trackedOrigins.has(transaction.origin)) return;
@@ -103,9 +114,10 @@ export function createBindingUndoManager(binding: Binding): UndoManager {
     for (const item of type._map.values()) if (holdsNested(item)) return true;
     return false;
   };
-  // Only a container this client made is kept; redoing its delete of a peer's restored container still deletes it.
+  // Kept while it holds a peer's live characters, whoever wrote the container: redoing a delete of a peer's restored
+  // line removes only what the step restored, not what the peer typed into it since.
   const keeps = (item: Item): boolean => {
-    if (item.deleted || !(item.content instanceof ContentType) || byPeer(item)) return false;
+    if (item.deleted || !(item.content instanceof ContentType)) return false;
     const type = item.content.type as AbstractType<unknown>;
     if (item.parent instanceof XmlText && item.parentSub === null && type instanceof YMap) {
       for (let next = item.right; next; next = next.right) {
@@ -130,7 +142,19 @@ export function createBindingUndoManager(binding: Binding): UndoManager {
     if (item.parentSub === null) return !keeps(item);
     // A property goes with its container: kept while the container the step created is kept.
     const owner = (item.parent as AbstractType<unknown>)._item;
-    return !(owner && created?.has(owner) && keeps(owner));
+    if (owner && created?.has(owner)) return !keeps(owner);
+    // A first assignment goes: the key was absent before the step (an optional property such as a callout's level).
+    // Yjs links a key's next value after its tombstones, so a value undone earlier, or a peer's concurrent value,
+    // proves nothing: the step replaced a value only if it deleted one it did not write itself.
+    let replaced = false;
+    for (let left = item.left; left && step && !replaced; left = left.left) {
+      replaced = isDeleted(step.deletions, left.id) && !isDeleted(step.insertions, left.id);
+    }
+    if (!replaced) return true;
+    // Yjs has already restored the value the step replaced, where it could. When a peer rewrote the key meanwhile it
+    // cannot, and deleting the step's value would leave the key empty: Lexical hands every peer `undefined` for a
+    // property its node never allows to be unset (a formula's `__commentIds`, which Lexical rewrites on every clone).
+    return (item.parent as AbstractType<unknown>)._map.get(item.parentSub) !== item;
   };
   // Run as yjs pops a step, before it restores the step's deletions. A peer's deleted item needs the containers it
   // sat in and, for characters, the text node's property map in front of them, with their latest properties. Those
@@ -164,7 +188,7 @@ export function createBindingUndoManager(binding: Binding): UndoManager {
       if (kept.length) insertions.clients.set(item.id.client, kept as typeof ranges); else insertions.clients.delete(item.id.client);
     }
   };
-  const undo = new UndoManager([binding.root.getSharedType(), doc.getMap('registers')], {
+  const undo = new UndoManager(binding.root.getSharedType(), {
     trackedOrigins,
     captureTimeout: UNDO_CAPTURE_TIMEOUT_MS,
     deleteFilter,

@@ -1,0 +1,22 @@
+diff --git a/packages/desktop/src/renderer/editor/plugins/CommentPlugin.tsx b/packages/desktop/src/renderer/editor/plugins/CommentPlugin.tsx
+--- a/packages/desktop/src/renderer/editor/plugins/CommentPlugin.tsx
++++ b/packages/desktop/src/renderer/editor/plugins/CommentPlugin.tsx
+@@ -29,6 +29,8 @@ import { isCommentVisibleForStatus } from '../utils/comment-thread-count';
+ // moss-multi seam: converter-split (A§12; S-conv §2.3)
+ import { CREATE_COMMENT_COMMAND } from '../commands';
+ export { CREATE_COMMENT_COMMAND, OPEN_BLOCK_COMMENT_COMMAND } from '../commands';
++// moss-multi seam: comments (comments.md §12)
++import { createFromCommand } from '@moss-multi/host/comments/adapter';
+ 
+ // ---------------------------------------------------------------------------
+ // Draft Comment Persistence
+@@ -202,6 +204,9 @@ export function CommentPlugin({ noteId }: CommentPluginProps) {
+     return editor.registerCommand(
+       CREATE_COMMENT_COMMAND,
+       (payload) => {
++        // moss-multi seam: comments (comments.md §12): on a bound note a comment is a server record, never a mark
++        const sent = createFromCommand(editor, payload);
++        if (sent !== null) return sent;
+         if (!editor.isEditable()) return false;
+ 
+         const commentId = crypto.randomUUID();

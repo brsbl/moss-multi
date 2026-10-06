@@ -1,17 +1,19 @@
-// T5.2 (docs/design/suggestions.md §2, §3; A§5.1): suggest frames through the real DocDO's doc socket. Leases bound
-// to a connection and persisted, server-minted record ids, continuations after accept, the live role on every frame,
-// the protected `suggestions` map and leased ids for every role, loud refusals with a cooldown, and a suggester's body
-// frame costing O(frame) however large the doc.
+// T5.2 (docs/design/suggestions.md §2, §3, §14; A§5.1): suggest frames through the real DocDO's doc socket. Leases
+// bound to a connection and persisted, server-minted record ids, payload ops on the DO's served payloads,
+// continuations after accept, the live role on every frame, the protected `suggestions` map and leased ids for every
+// role and doc, loud refusals with a cooldown, a suggester's body frame costing O(frame) however large the doc, and
+// accept's state cap over every stored payload.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as Y from 'yjs';
-import { recordDigest, deleteUpdate } from '@moss-multi/core/suggest/apply';
+import { recordDigest, deleteUpdate, type RecordOp } from '@moss-multi/core/suggest/apply';
 import type { LeaseGrant, SuggestReply, SuggestRequest } from '@moss-multi/protocol/suggest';
-import { bytesToBase64, CLOSE, CUSTOM_PREFIX, type ServerEvent } from '@moss-multi/protocol/sync';
+import { bytesToBase64, CLOSE, CUSTOM_PREFIX, encodePayloadFrame, PAYLOAD_UPDATE, type ServerEvent } from '@moss-multi/protocol/sync';
 import { DocDO } from '../../src/doc-do.ts';
+import { payloadSourceOf } from '../../src/server-doc.ts';
 import { ForkShim } from '../../src/suggest/fork-shim.ts';
 import { opsOf, readMeta, readRecord, SUGGESTIONS } from '../../src/suggest/records.ts';
 import { acceptRecord, previewRecord, rejectRecord } from '../../src/suggest/review.ts';
-import { CENSUS, EDITOR, OTHER_SUGGESTER, select, SEED, spansOfText, SUGGESTER } from '../../src/suggest/test-support.ts';
+import { CENSUS, EDITOR, insertBlock, OTHER_SUGGESTER, select, SEED, spansOfText, SUGGESTER } from '../../src/suggest/test-support.ts';
 import { connect, openDoc, start, syncFrame, wake, type Opened, type TestClient, type Who } from './do-harness.ts';
 
 beforeEach(() => {
@@ -40,7 +42,8 @@ async function leases(client: TestClient, resume?: number[]): Promise<LeaseGrant
   return (reply as Extract<SuggestReply, { t: 'suggest-leased' }>).leases;
 }
 
-const opsRequest = (record: string, update: Uint8Array): SuggestRequest => ({ t: 'suggest-ops', record, update: bytesToBase64(update) });
+const opsRequest = (record: string, op: Uint8Array | RecordOp): SuggestRequest =>
+  op instanceof Uint8Array ? { t: 'suggest-ops', record, update: bytesToBase64(op) } : { t: 'suggest-ops', record, doc: op.doc, update: bytesToBase64(op.update) };
 
 async function seeded(): Promise<Opened> {
   const opened = await start(openDoc());
@@ -70,7 +73,7 @@ function forge(server: Y.Doc, write: (doc: Y.Doc) => void, client?: number): Uin
 }
 
 const firstBlock = (doc: Y.Doc) => (doc.get('root', Y.XmlText).toDelta() as { insert: unknown }[]).map((op) => op.insert).find((x) => x instanceof Y.XmlText) as Y.XmlText;
-const bodyState = (doc: Y.Doc) => JSON.stringify([doc.get('root', Y.XmlText).toJSON(), doc.getMap('registers').toJSON(), doc.getText('title').toString()]);
+const bodyState = (doc: Y.Doc) => JSON.stringify([doc.get('root', Y.XmlText).toJSON(), doc.getText('title').toString()]);
 const suggestions = (doc: Y.Doc) => JSON.stringify(doc.getMap(SUGGESTIONS).toJSON(), (_k, v: unknown) => (v instanceof Uint8Array ? bytesToBase64(v) : v));
 
 function accept(doc: Y.Doc, id: string) {
@@ -169,7 +172,7 @@ describe('T5.2 suggest-ops through the doc socket @p:mean-2 @p:R17', () => {
     const writes: [string, (doc: Y.Doc, id: string) => void][] = [
       ['a new top-level record', (doc) => doc.getMap(SUGGESTIONS).set('forged', 'accepted')],
       ["a record's meta overwritten", (doc, id) => (doc.getMap(SUGGESTIONS).get(id) as Y.Map<unknown>).set('meta', '{"status":"accepted"}')],
-      ['an op pushed into a record', (doc, id) => opsOf(doc, id).push([new Uint8Array([0, 0])])],
+      ['an op pushed into a record', (doc, id) => opsOf(doc, id).push([{ doc: 'body', update: new Uint8Array([0, 0]) }])],
       ['a record deleted', (doc, id) => doc.getMap(SUGGESTIONS).delete(id)],
       ["a record's ops cleared", (doc, id) => opsOf(doc, id).delete(0, 1)],
     ];
@@ -379,7 +382,7 @@ describe('T5.2 lease and record authorization @p:mean-2', () => {
     expect(nextClock).toBeGreaterThan(0);
     expect(await send(other, opsRequest(first[0].record, later))).toEqual({ t: 'suggest-refused', record: first[0].record, reason: 'lease' });
     const resumed = await leases(other, [first[0].client]);
-    expect(resumed[0]).toEqual({ client: first[0].client, record: first[0].record, clock: nextClock });
+    expect(resumed[0]).toEqual({ client: first[0].client, record: first[0].record, clock: nextClock, clocks: { body: nextClock } });
     // Fresh leases may be minted again, since the closed connection's no longer count.
     expect(resumed.length).toBeGreaterThan(1);
     expect(await send(other, opsRequest(first[0].record, later))).toMatchObject({ t: 'suggest-ack', record: first[0].record });
@@ -427,7 +430,11 @@ describe('T5.2 lease and record authorization @p:mean-2', () => {
     const [a, b] = await leases(sam);
     expect(await send(sam, opsRequest(a.record, forge(doc, (d) => firstBlock(d).insert(0, 'A '), a.client)))).toMatchObject({ t: 'suggest-ack' });
     expect(await send(sam, { t: 'suggest-delete', record: b.record, part: { id: 'd1', targets: spansOfText(doc, 'world') } })).toMatchObject({ t: 'suggest-ack' });
-    await opened.dobj.recheckRole(SUGGESTER.id, 'viewer');
+    // The one kick path (A§8): the demotion closes every socket of theirs 4403; the client reconnects at its new role.
+    await opened.dobj.recheck({ principalIds: [SUGGESTER.id], at: Date.now() });
+    expect(sam.closed?.code).toBe(CLOSE.revoked);
+    await vi.advanceTimersByTimeAsync(1);
+    const demoted = await on(opened, { ...SAM, role: 'viewer' });
     const frames: SuggestRequest[] = [
       opsRequest(a.record, forge(doc, (d) => firstBlock(d).insert(0, 'More '), a.client)),
       { t: 'suggest-delete', record: a.record, part: { id: 'd2', targets: spansOfText(doc, 'cat') } },
@@ -435,7 +442,7 @@ describe('T5.2 lease and record authorization @p:mean-2', () => {
       { t: 'suggest-lease' },
     ];
     for (const frame of frames) {
-      expect(await send(sam, frame), frame.t).toMatchObject({ t: 'suggest-refused', reason: 'role' });
+      expect(await send(demoted, frame), frame.t).toMatchObject({ t: 'suggest-refused', reason: 'role' });
       // Past the refusal window, so the cooldown is not what answers the next one.
       await vi.advanceTimersByTimeAsync(61_000);
     }
@@ -493,6 +500,113 @@ describe('T5.2 loud refusal, rate and cooldown @p:mean-2 @p:tech-7', () => {
       expect(readRecord(opened.dobj.document, grant.record)!.parts).toHaveLength(3);
     } finally {
       DocDO.limits = original;
+    }
+  });
+});
+
+/** The DO's stored text of payload `id`, or null when it holds none. */
+const payloadText = (opened: Opened, id: string): string | null => {
+  const state = payloadSourceOf(opened.dobj.document).read(id);
+  if (!state) return null;
+  const doc = new Y.Doc();
+  Y.applyUpdate(doc, state);
+  return doc.getText('payload').toString();
+};
+
+describe('T5.R suggestions on payload docs through the DocDO @p:mean-2', () => {
+  it("a new block's payload op lands in the record under the same lease, with its own clocks; the DO's payload is untouched", async () => {
+    const opened = await seeded();
+    const doc = opened.dobj.document;
+    const sam = await on(opened, SAM);
+    const [grant] = await leases(sam);
+    const fork = forkOf(sam, grant.client);
+    try {
+      fork.act(insertBlock('```js\nnew code\n```'));
+      const payloadOps = fork.sent.filter((op) => op.doc !== 'body');
+      expect(payloadOps.length, 'the new block travels with a payload op').toBeGreaterThan(0);
+      for (const op of fork.sent) {
+        expect(await send(sam, opsRequest(grant.record, op))).toMatchObject({ t: 'suggest-ack', record: grant.record, doc: op.doc });
+      }
+      const payload = payloadOps[0].doc;
+      expect(readRecord(doc, grant.record)!.ops.map((op) => op.doc)).toEqual(fork.sent.map((op) => op.doc));
+      expect(payloadText(opened, payload), 'ingest writes no payload').toBeNull();
+      await sam.drop();
+      const again = await on(opened, SAM);
+      const [resumed] = await leases(again, [grant.client]);
+      expect(resumed.clocks[payload], 'the payload doc keeps its own clock').toBeGreaterThan(0);
+      expect(resumed.clocks.body).toBe(resumed.clock);
+      expect(accept(doc, grant.record)).toEqual({ ok: true });
+      expect(payloadText(opened, payload), 'accept lands the payload').toContain('new code');
+    } finally {
+      fork.dispose();
+    }
+  });
+
+  it('a suggest-ops struct outside the channel table is refused channel, and nothing is stored', async () => {
+    const opened = await seeded();
+    const doc = opened.dobj.document;
+    const sam = await on(opened, SAM);
+    const [grant] = await leases(sam);
+    const update = forge(doc, (d) => firstBlock(d).format(0, 2, { bold: true }), grant.client);
+    expect(await send(sam, opsRequest(grant.record, update))).toEqual({ t: 'suggest-refused', record: grant.record, reason: 'channel' });
+    expect(readRecord(doc, grant.record)).toBeNull();
+  });
+
+  it("an editor's payload frame carrying a leased client id is refused protected-type, 4409", async () => {
+    const opened = await seeded();
+    const sam = await on(opened, SAM);
+    const [grant] = await leases(sam);
+    const editor = await on(opened, { role: 'editor' });
+    const minted = new Y.Doc();
+    minted.clientID = grant.client;
+    minted.getText('payload').insert(0, 'under a lease');
+    await editor.deliver(encodePayloadFrame('leased-payload', PAYLOAD_UPDATE, Y.encodeStateAsUpdate(minted)));
+    await editor.pump();
+    expect(editor.events).toContainEqual({ t: 'write-refused', reason: 'protected-type' });
+    expect(editor.closed?.code).toBe(CLOSE.writeRefused);
+  });
+
+  it('accept_counts_every_stored_payload: a near-cap note whose record touches one payload is refused when every stored payload, withheld included, passes the cap', async () => {
+    class RoomyDoc extends DocDO {
+      static override limits = { ...DocDO.limits, withheldBytesPerIdentity: 1024 * 1024 };
+    }
+    for (const withheld of [false, true]) {
+      const opened = await start(openDoc(undefined, RoomyDoc as never));
+      await opened.dobj.create({ folderId: 'folder-1', ownerId: 'owner-1', markdown: SEED });
+      const doc = opened.dobj.document;
+      const sam = await on(opened, SAM);
+      const [grant] = await leases(sam);
+      const fork = forkOf(sam, grant.client);
+      try {
+        fork.act(insertBlock('```js\nnew code\n```'));
+        expect(fork.sent.some((op) => op.doc !== 'body'), 'the record touches one payload').toBe(true);
+        for (const op of fork.sent) expect(await send(sam, opsRequest(grant.record, op))).toMatchObject({ t: 'suggest-ack' });
+      } finally {
+        fork.dispose();
+      }
+      if (withheld) {
+        // An editor mints a payload no element names: stored and withheld, counted toward the cap all the same.
+        const eve = await on(opened, { id: 'eve@example.invalid', role: 'editor' });
+        const big = new Y.Doc();
+        big.getText('payload').insert(0, 'w'.repeat(64 * 1024));
+        await eve.deliver(encodePayloadFrame('withheld-big', PAYLOAD_UPDATE, Y.encodeStateAsUpdate(big)));
+        await eve.pump();
+        expect(eve.closed, 'the withheld write is stored').toBeNull();
+        expect(opened.dobj.payloadWork.withheld).toBeGreaterThan(0);
+      }
+      // Near the cap for the note and the payloads the record writes; 64 KB short of every stored payload.
+      const cap = Y.encodeStateAsUpdate(doc).byteLength + 32 * 1024;
+      const before = bodyState(doc);
+      const preview = previewRecord(doc, grant.record);
+      if (!preview.ok) throw new Error(preview.reason);
+      const result = acceptRecord(doc, grant.record, { previewHash: preview.hash, digest: recordDigest(readRecord(doc, grant.record)!) }, EDITOR, { stateCap: cap });
+      if (withheld) {
+        expect(result).toEqual({ ok: false, status: 409, reason: 'doc-cap' });
+        expect(bodyState(doc)).toBe(before);
+        expect(readMeta(doc, grant.record)?.status).toBe('open');
+      } else {
+        expect(result, 'the control fits').toEqual({ ok: true });
+      }
     }
   });
 });

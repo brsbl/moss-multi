@@ -1,17 +1,20 @@
-// Share, v2 (T1.1, T2.4): one dialog for a note, a folder or a vault. An owner adds a person by email at view,
-// comment, edit or owner access, sees who has access (and emails waiting on an invite), and creates, copies and
+// Share, v2 (T1.1, T2.4, T3.6): one dialog for a note, a folder or a vault. An owner adds a person by email at view,
+// comment, edit or owner access, or one of their own agents by the id copied from Settings → Agents (at most edit;
+// PRODUCT ruling 20), sees who has access (and emails waiting on an invite), and creates, copies and
 // revokes links. Moss has no sharing, so the layout follows glyphdown's ShareDialog
 // (docs/design/glyphdown-reference.md), built from moss's own parts: Settings' ModalShell, section labels and cards,
 // its segmented choice for access levels, and the DS Input and Button. The note's top bar (ShareControl), a folder's
-// context menu (FolderMenuItems) and the vault switcher open it through `openShare`. Changing or removing a person's
-// access comes with the one kick path (T2.5).
+// context menu (FolderMenuItems) and the vault switcher open it through `openShare`. Each person's (and invite's)
+// access has glyphdown's role select and Remove button; lowering or removing someone closes their open windows through
+// the one kick path (T2.5).
 import { ModalShell } from '@moss-desktop/renderer/components/ModalShell';
 import { Button } from '@moss/shared/components/ui/button';
 import { Input } from '@moss/shared/components/ui/input';
 import { LINK_ROLES, SHARE_ROLES, type LinkRole, type Role, type ShareRole } from '@moss-multi/protocol/roles';
-import { UserPlus } from 'lucide-react';
-import { useCallback, useEffect, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react';
+import { UserPlus, X } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react';
 import { useDocRole } from '../access.ts';
+import { useTerminal } from '../collab/terminal.ts';
 
 export type ShareTarget =
   | { type: 'doc'; id: string }
@@ -38,6 +41,8 @@ interface Member {
 interface PendingInvite {
   email: string;
   role: Role;
+  /** The copyable /invite link (T2.8); invites are copy-link only, and no email is sent. */
+  url?: string;
 }
 
 interface ShareLink {
@@ -46,7 +51,8 @@ interface ShareLink {
   createdAt: number;
 }
 
-type Status = { tone: 'error' | 'done'; text: string; where: 'people' | 'links' } | null;
+type Where = 'people' | 'members' | 'links';
+type Status = { tone: 'error' | 'done'; text: string; where: Where } | null;
 
 const SECTION_LABEL = 'text-micro font-medium uppercase tracking-wider text-ink-faint';
 const CARD = 'rounded-lg border border-border-subtle bg-surface-raised-card p-3';
@@ -81,7 +87,7 @@ function AccessChoice<R extends Role>({ label, roles, value, onChange, disabled 
   );
 }
 
-function StatusLine({ status, where }: { status: Status; where: 'people' | 'links' }): ReactNode {
+function StatusLine({ status, where }: { status: Status; where: Where }): ReactNode {
   if (!status || status.where !== where) return null;
   return (
     <p role={status.tone === 'error' ? 'alert' : 'status'} className={status.tone === 'error' ? 'text-xs text-accent-terracotta' : 'text-xs text-ink-muted'}>
@@ -89,6 +95,42 @@ function StatusLine({ status, where }: { status: Status; where: 'people' | 'link
     </p>
   );
 }
+
+/**
+ * One person's or invite's access, as glyphdown's ShareDialog offers it: a select of the share roles and a Remove
+ * button. A native select, because moss's dropdown menu renders beneath a modal (its positioner is z-50, the dialog 130).
+ */
+function AccessControls({ who, role, roles = SHARE_ROLES, disabled, onChoose }: {
+  who: string; role: Role; roles?: readonly ShareRole[]; disabled: boolean; onChoose: (choice: ShareRole | 'remove') => void;
+}): ReactNode {
+  return (
+    <div className="flex shrink-0 items-center gap-1">
+      <select
+        aria-label={`Access for ${who}`}
+        value={role}
+        disabled={disabled}
+        onChange={(event) => onChoose(event.target.value as ShareRole)}
+        className="h-7 rounded-md border border-border-default bg-surface-raised-card px-1.5 text-xs text-ink-default focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ink-default/15 disabled:opacity-60"
+      >
+        {(roles as readonly Role[]).includes(role) ? null : <option value={role}>{ACCESS_LABEL[role]}</option>}
+        {roles.map((choice) => <option key={choice} value={choice}>{ACCESS_LABEL[choice]}</option>)}
+      </select>
+      <button
+        type="button"
+        aria-label={`Remove ${who}`}
+        title="Remove access"
+        disabled={disabled}
+        onClick={() => onChoose('remove')}
+        className="flex h-7 w-7 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-surface-raised-control hover:text-ink-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ink-default/15 disabled:opacity-60"
+      >
+        <X aria-hidden className="h-3.5 w-3.5" />
+      </button>
+    </div>
+  );
+}
+
+/** An agent acts at most as an editor (A§8), so its row offers no owner. */
+const AGENT_ROLES = SHARE_ROLES.filter((role) => role !== 'owner');
 
 const apiBase = (target: ShareTarget) => `/api/${target.type === 'doc' ? 'docs' : 'folders'}/${encodeURIComponent(target.id)}`;
 
@@ -110,7 +152,7 @@ function copy(text: string): Promise<void> {
 }
 
 function titles(target: ShareTarget): { title: string; description: string } {
-  if (target.type === 'doc') return { title: 'Share', description: 'Share this note with people by email, or with anyone who has a link.' };
+  if (target.type === 'doc') return { title: 'Share', description: 'Share this note with people by email, with one of your agents by its ID, or with anyone who has a link.' };
   if (target.vault) return { title: 'Share vault', description: `Share every note in “${target.name}” with people by email, or with anyone who has a link.` };
   return { title: 'Share folder', description: `Share every note in “${target.name}” with people by email, or with anyone who has a link.` };
 }
@@ -128,19 +170,24 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
   const base = apiBase(target);
   const { title, description } = titles(target);
 
+  // Reads overlap when shares follow each other quickly; only the newest may paint, or an older read would drop a row.
+  const reads = useRef(0);
   const load = useCallback(async () => {
+    const read = ++reads.current;
     try {
-      const [people, live] = await Promise.all([
+      const [people, live, pendingLinks] = await Promise.all([
         call<{ members: Member[]; invites?: PendingInvite[] }>(`${base}/members`),
         call<{ links: ShareLink[] }>(`${base}/links`),
+        call<{ invites: PendingInvite[] }>(`${base}/invites`),
       ]);
-      if (!people.ok || !people.body || !live.ok || !live.body) throw new Error(String(people.status));
+      if (read !== reads.current) return;
+      if (!people.ok || !people.body || !live.ok || !live.body || !pendingLinks.ok || !pendingLinks.body) throw new Error(String(people.status));
       setMembers(people.body.members);
-      setInvites(people.body.invites ?? []);
+      setInvites(pendingLinks.body.invites);
       setLinks(live.body.links);
       setLoadError(null);
     } catch {
-      setLoadError('Couldn’t load who has access. Close and open Share to try again.');
+      if (read === reads.current) setLoadError('Couldn’t load who has access. Close and open Share to try again.');
     }
   }, [base]);
 
@@ -152,7 +199,7 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
 
   /** One request at a time; a failure says why, in the section that asked. A change is confirmed as soon as the
    * server takes it, and then the lists are read again. */
-  async function run(where: 'people' | 'links', work: () => Promise<string | null>, reload = true): Promise<void> {
+  async function run(where: Where, work: () => Promise<string | null>, reload = true): Promise<void> {
     if (pending) return;
     setPending(true);
     setStatus(null);
@@ -176,7 +223,22 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
     event.preventDefault();
     const address = email.trim();
     if (!address) {
-      setStatus({ tone: 'error', text: 'Enter an email address.', where: 'people' });
+      setStatus({ tone: 'error', text: 'Enter an email address or an agent ID.', where: 'people' });
+      return;
+    }
+    // An email has an @; anything else is the id of one of the caller's agents, copied from Settings → Agents.
+    if (!address.includes('@')) {
+      if (access === 'owner') {
+        setStatus({ tone: 'error', text: 'An agent can have at most edit access.', where: 'people' });
+        return;
+      }
+      void run('people', async () => {
+        const answer = await call<{ shared?: { name: string } }>(`${base}/members`, { method: 'POST', body: JSON.stringify({ agentId: address, role: access }) })
+          .catch(() => { throw new Error(UNREACHABLE); });
+        if (!answer.ok || !answer.body?.shared) throw refused(answer.body, 'Sharing didn’t work. Try again.');
+        setEmail('');
+        return `Shared with ${answer.body.shared.name}.`;
+      });
       return;
     }
     void run('people', async () => {
@@ -185,6 +247,18 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
       if (!answer.ok || !answer.body?.shared) throw refused(answer.body, 'Sharing didn’t work. Try again.');
       setEmail('');
       return `Shared with ${answer.body.shared.email}.`;
+    });
+  }
+
+  /** Changes or removes a member (by id) or an invite (by email); the server closes their windows on a lowering. */
+  function changeAccess(who: { principalId: string } | { email: string }, label: string, choice: ShareRole | 'remove'): void {
+    void run('members', async () => {
+      const answer = await call(`${base}/members`, {
+        method: choice === 'remove' ? 'DELETE' : 'PATCH',
+        body: JSON.stringify(choice === 'remove' ? who : { ...who, role: choice }),
+      }).catch(() => { throw new Error(UNREACHABLE); });
+      if (!answer.ok) throw refused(answer.body, 'That change didn’t save. Try again.');
+      return choice === 'remove' ? `Removed ${label}.` : `${label} now has “${ACCESS_LABEL[choice]}” access.`;
     });
   }
 
@@ -216,15 +290,26 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
     }, false);
   }
 
+  function copyInvite(invite: PendingInvite): void {
+    void run('people', async () => {
+      try {
+        await copy(invite.url ?? '');
+      } catch {
+        throw new Error('Couldn’t copy. Select the invite link and copy it instead.');
+      }
+      return `Copied the invite link for ${invite.email}. It works only when they sign in with that email.`;
+    }, false);
+  }
+
   return (
     <ModalShell open={open} onOpenChange={onOpenChange} title={title} description={description}>
       <div className="space-y-2">
         <span className={SECTION_LABEL}>Invite people</span>
         <form aria-label="Share with a person" onSubmit={share} className={`${CARD} space-y-3`}>
           <Input
-            type="email"
-            aria-label="Email"
-            placeholder="name@example.com"
+            type="text"
+            aria-label="Email or agent ID"
+            placeholder="name@example.com or your agent’s ID"
             autoComplete="off"
             value={email}
             readOnly={pending}
@@ -251,27 +336,60 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
             <p className="text-xs text-ink-faint">Loading…</p>
           ) : (
             <ul aria-label="People with access" className="space-y-2">
-              {members.map((member) => (
+              {members.map((member, index) => (
                 <li key={member.principalId} className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
-                    <p className="truncate text-sm text-ink-default">{member.name}</p>
+                    <p className="truncate text-sm text-ink-default">
+                      {member.name}
+                      {member.principalType === 'agent' ? <span className="ml-1.5 text-xs text-ink-faint">agent</span> : null}
+                    </p>
                     {member.email ? <p className="truncate font-mono text-xs text-ink-muted">{member.email}</p> : null}
                   </div>
-                  <span className="shrink-0 text-xs text-ink-faint">{ACCESS_LABEL[member.role]}</span>
+                  {/* The API lists the vault's owner first; they hold no grant, so their access cannot change. */}
+                  {index === 0 ? (
+                    <span className="shrink-0 px-2 text-xs text-ink-faint">{ACCESS_LABEL[member.role]}</span>
+                  ) : (
+                    <AccessControls who={member.name} role={member.role} disabled={pending}
+                      roles={member.principalType === 'agent' ? AGENT_ROLES : SHARE_ROLES}
+                      onChoose={(choice) => changeAccess({ principalId: member.principalId }, member.name, choice)} />
+                  )}
                 </li>
               ))}
               {invites.map((invite) => (
-                <li key={`invite:${invite.email}`} className="flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="truncate font-mono text-xs text-ink-muted">{invite.email}</p>
-                    <p className="text-micro text-ink-faint">Invited</p>
+                <li key={`invite:${invite.email}`} className="space-y-1.5">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="truncate font-mono text-xs text-ink-muted">{invite.email}</p>
+                      <p className="text-micro text-ink-faint">Invited</p>
+                    </div>
+                    <AccessControls who={invite.email} role={invite.role} disabled={pending}
+                      onChoose={(choice) => changeAccess({ email: invite.email }, invite.email, choice)} />
                   </div>
-                  <span className="shrink-0 text-xs text-ink-faint">{ACCESS_LABEL[invite.role]}</span>
+                  {invite.url ? (
+                    <div className="flex items-center gap-2">
+                      <Input
+                        readOnly
+                        aria-label={`Invite link for ${invite.email}`}
+                        value={invite.url}
+                        onFocus={(event) => event.currentTarget.select()}
+                        className="h-7 min-w-0 flex-1 border-border-default font-mono text-xs"
+                      />
+                      <Button type="button" size="sm" variant="ghost" disabled={pending} onClick={() => copyInvite(invite)}>
+                        Copy
+                      </Button>
+                    </div>
+                  ) : null}
                 </li>
               ))}
             </ul>
           )}
+          {invites.length > 0 ? (
+            <p className="mt-3 text-xs text-ink-muted">
+              An invite link works only for someone signed in with the email it names. Copy it and send it to them.
+            </p>
+          ) : null}
         </div>
+        <StatusLine status={status} where="members" />
       </div>
       <div className="space-y-2">
         <span className={SECTION_LABEL}>Share links</span>
@@ -293,7 +411,7 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
                     aria-label={`${ACCESS_LABEL[link.role]} link`}
                     value={linkUrl(target, link.token)}
                     onFocus={(event) => event.currentTarget.select()}
-                    className="h-7 min-w-0 flex-1 border-border-default font-mono text-xs"
+                    className="h-7 min-w-0 flex-1 basis-40 border-border-default font-mono text-xs"
                   />
                   <Button type="button" size="sm" variant="ghost" disabled={pending} onClick={() => copyLink(link)}>
                     Copy
@@ -342,17 +460,20 @@ export function ShareDialogHost(): ReactNode {
 /** The top bar's Share button; only an owner shares (A§8), so nobody else is offered it. */
 export function ShareControl({ docId }: { docId: string }): ReactNode {
   const role = useDocRole(docId);
-  if (role !== 'owner') return null;
+  // A window whose session ended (or whose note went away) can no longer share it.
+  const terminal = useTerminal(docId);
+  if (role !== 'owner' || (terminal !== null && terminal !== 'conn-limit')) return null;
   return (
     <button
       type="button"
       data-collab-chrome=""
       aria-haspopup="dialog"
+      aria-label="Share"
       onClick={() => openShare({ type: 'doc', id: docId })}
       className="flex h-7 shrink-0 cursor-pointer items-center gap-1.5 rounded px-2 text-xs font-medium text-ink-faint transition-colors hover:bg-surface-note-hover/40 hover:text-ink-muted focus-visible:outline-none"
     >
       <UserPlus aria-hidden className="h-3.5 w-3.5" />
-      Share
+      <span className="hidden sm:inline">Share</span>
     </button>
   );
 }

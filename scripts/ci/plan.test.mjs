@@ -333,11 +333,24 @@ describe('ciOk', () => {
       oracle: { result: results.oracle ?? 'skipped' },
       parity: { result: results.parity ?? 'skipped' },
       viewer: { result: results.viewer ?? 'skipped' },
+      editor: { result: results.editor ?? results.viewer ?? 'skipped' },
+      'editor-host': { result: results['editor-host'] ?? results.checks ?? 'skipped' },
     };
   }
 
   const checksOnly = { checks: true, build: false, browsers: [] };
   const everything = { checks: true, build: true, browsers: BOTH };
+
+  it('fails when the editor-host artifact job failed or was skipped beside the checks', () => {
+    expect(ciOk(needs(checksOnly, { checks: 'success', 'editor-host': 'failure' })).problems).toEqual(['editor-host: failure (planned to run)']);
+    expect(ciOk(needs(checksOnly, { checks: 'success', 'editor-host': 'skipped' })).problems).toEqual(['editor-host: skipped (planned to run)']);
+  });
+
+  it('fails when the editor bundle job failed beside the viewer lane', () => {
+    const viewerLane = { checks: true, build: false, browsers: [], viewer: true };
+    expect(ciOk(needs(viewerLane, { checks: 'success', viewer: 'success', editor: 'failure' })).problems).toEqual(['editor: failure (planned to run)']);
+    expect(ciOk(needs(viewerLane, { checks: 'success', viewer: 'success' })).ok).toBe(true);
+  });
 
   it('passes when every planned job passed and the rest were skipped', () => {
     expect(ciOk(needs(checksOnly, { checks: 'success' }))).toEqual({ ok: true, problems: [] });
@@ -371,8 +384,8 @@ describe('ciOk', () => {
 
   it('requires the viewer job when planned', () => {
     const branch = { ...checksOnly, build: true, viewer: true };
-    expect(ciOk(needs(branch, { checks: 'success', build: 'success' })).problems).toEqual(['viewer: skipped (planned to run)']);
-    expect(ciOk(needs(branch, { checks: 'success', build: 'success', viewer: 'failure' })).problems).toEqual(['viewer: failure (planned to run)']);
+    expect(ciOk(needs(branch, { checks: 'success', build: 'success' })).problems).toEqual(['viewer: skipped (planned to run)', 'editor: skipped (planned to run)']);
+    expect(ciOk(needs(branch, { checks: 'success', build: 'success', viewer: 'failure', editor: 'success' })).problems).toEqual(['viewer: failure (planned to run)']);
     expect(ciOk(needs(branch, { checks: 'success', build: 'success', viewer: 'success' })).ok).toBe(true);
   });
 

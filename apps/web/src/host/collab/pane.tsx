@@ -23,9 +23,12 @@ import { knownRole, useDocRole } from '../access.ts';
 import { TopBarCollab } from '../slots.tsx';
 import { getBridge, WORKSPACE } from '../bridge/index.ts';
 import {
-  docOwner, openDocSession, subscribeDocOwners, type DocSession, type SessionState,
+  docOwner, openDocSession, subscribeDocOwners, waitDocsAcked, type DocSession, type SessionState,
 } from './doc-session.ts';
 import { bindFrontmatter } from './frontmatter-binding.ts';
+import { bindCommentAtoms } from '../comments/atoms.ts';
+import { setAckWaiter } from '../comments/api.ts';
+import { setMyPrincipalId } from '../comments/people.ts';
 import { displayTitle, TitleField } from './title-binding.ts';
 import { localIdentity, startPresence } from './presence.ts';
 import { cursorController } from './cursors.ts';
@@ -70,9 +73,12 @@ class DocFields {
     if (this.#frontmatter?.doc === doc) return;
     this.#frontmatter?.stop();
     const stop = bindFrontmatter(this.store, docId, doc, canWrite);
+    setMyPrincipalId(localIdentity().awarenessData.user?.principalId ?? null);
+    setAckWaiter(waitDocsAcked);
+    const stopComments = bindCommentAtoms(this.store, docId, doc);
     const updated = () => this.store.set(syncNoteEntityAtom, { noteId: docId, updates: { updatedAt: Math.floor(Date.now() / 1000) } });
     doc.on('update', updated);
-    this.#frontmatter = { doc, stop: () => { stop(); doc.off('update', updated); } };
+    this.#frontmatter = { doc, stop: () => { stop(); stopComments(); doc.off('update', updated); } };
   }
 
   unbind(doc: Doc | null): void {
@@ -178,7 +184,7 @@ class PaneBinding {
     if (!editor) return;
     const terminal = terminalOf(this.docId);
     this.canWrite = state.canWrite;
-    const bodyState: BindingState = terminal ? 'terminal' : !state.synced || state.resync || !this.#role ? 'unbound' : state.canWrite && can(this.#role, 'edit') && !state.halted && !state.writePaused ? 'live' : 'readonly';
+    const bodyState: BindingState = terminal ? 'terminal' : !state.synced || state.resync || !this.#role ? 'unbound' : state.canWrite && can(this.#role, 'edit') && !state.writePaused ? 'live' : 'readonly';
     editor.setEditable(bodyState === 'live');
     closeRoot(editor.getRootElement(), bodyState);
     editor.getRootElement()?.closest(`[${EDITOR_PANE_ATTR}]`)?.setAttribute(SYNC_UNACKED_ATTR, state.unacked ? '1' : '0');
@@ -193,10 +199,21 @@ class PaneBinding {
   }
 }
 
+/** Lexical gives every checklist item tabindex=-1 on each render; a closed body offers no checkbox (T2.6, R2). */
+const CHECK_ITEM = 'li[role="checkbox"]';
+
+function gateCheckItems(root: HTMLElement, live: boolean): void {
+  for (const item of root.querySelectorAll(CHECK_ITEM)) {
+    if (live) item.setAttribute('tabindex', '-1');
+    else item.removeAttribute('tabindex');
+  }
+}
+
 /** Closed until live: `@lexical/react` gives a non-editable root tabindex=-1, which would let it take focus (R2). */
 function closeRoot(root: HTMLElement | null, state: BindingState): void {
   if (!root) return;
   root.setAttribute(BODY_BINDING_ATTR, state);
+  gateCheckItems(root, state === 'live');
   if (state === 'live') {
     root.removeAttribute('aria-disabled');
     return;
@@ -230,7 +247,11 @@ function BindingGate({ binding }: { binding: PaneBinding }): null {
       closeRoot(root, binding.bodyState);
     });
     const unbind = binding.bindEditor(editor);
-    const stopText = editor.registerUpdateListener(({ editorState }) => binding.set({ hasText: hasText(editorState) }));
+    const stopText = editor.registerUpdateListener(({ editorState }) => {
+      binding.set({ hasText: hasText(editorState) });
+      const root = editor.getRootElement();
+      if (root && binding.bodyState !== 'live') gateCheckItems(root, false);
+    });
     return () => {
       stopText();
       unbind();

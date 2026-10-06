@@ -9,15 +9,16 @@ export const normalizeCommentMentionTitle = (value: string): string => {
 
 export const encodeCommentMention = (
   title: string,
-  type?: 'folder' | 'note',
+  type?: 'folder' | 'note' | 'person',
   id?: string
 ): string => {
   const normalized = normalizeCommentMentionTitle(title);
   if (!normalized) {
     return '';
   }
-  const prefix = type === 'folder' ? '@folder:' : '@';
-  const encodedId = id && id !== normalized ? `${COMMENT_MENTION_ID_SEPARATOR}${id}` : '';
+  // moss-multi seam: comments (comments.md §12): a person mention always carries its principal id
+  const prefix = type === 'person' ? '@person:' : type === 'folder' ? '@folder:' : '@';
+  const encodedId = id && (id !== normalized || type === 'person') ? `${COMMENT_MENTION_ID_SEPARATOR}${id}` : '';
   return `${COMMENT_MENTION_START}${prefix}${normalized}${encodedId}${COMMENT_MENTION_END}`;
 };
 
@@ -30,7 +31,7 @@ export const stripCommentMentionMarkers = (text: string): string => {
 
 export type CommentMentionSegment =
   | { type: 'text'; value: string }
-  | { type: 'mention'; value: string; mentionType: 'folder' | 'note'; mentionId?: string };
+  | { type: 'mention'; value: string; mentionType: 'folder' | 'note' | 'person'; mentionId?: string }; // moss-multi seam: comments
 
 export const splitCommentMentionSegments = (text: string): CommentMentionSegment[] => {
   if (!text.includes(COMMENT_MENTION_START)) {
@@ -75,11 +76,12 @@ export const splitCommentMentionSegments = (text: string): CommentMentionSegment
         : undefined;
     if (mentionContent.length > 0) {
       const isFolder = mentionContent.startsWith('@folder:');
-      const value = isFolder ? mentionContent.replace('@folder:', '@') : mentionContent;
+      const isPerson = mentionContent.startsWith('@person:'); // moss-multi seam: comments
+      const value = isPerson ? mentionContent.replace('@person:', '@') : isFolder ? mentionContent.replace('@folder:', '@') : mentionContent;
       segments.push({
         type: 'mention',
         value,
-        mentionType: isFolder ? 'folder' : 'note',
+        mentionType: isPerson ? 'person' : isFolder ? 'folder' : 'note',
         ...(mentionId ? { mentionId } : {})
       });
     }
@@ -155,12 +157,12 @@ function createMentionMarkdownTransformer(
         return `@${title}`;
       }
       const rawType = node.getMentionType();
-      const mentionType: 'folder' | 'note' =
+      const mentionType: 'folder' | 'note' | 'person' = rawType === 'person' ? 'person' : // moss-multi seam: comments
         rawType === 'directory' || rawType === 'folder' ? 'folder' : 'note';
       return encodeCommentMention(
         title,
         mentionType,
-        options?.preserveMentionIds ? node.getMentionId() : undefined
+        options?.preserveMentionIds || mentionType === 'person' ? node.getMentionId() : undefined
       );
     },
     // Mention insertion is owned by MentionPlugin. This transformer only gives
@@ -198,12 +200,12 @@ export function serializeCommentEditor(
           const title = node.getMentionTitle();
           const rawType = node.getMentionType();
           // Map directory → folder for comment encoding
-          const mentionType: 'folder' | 'note' =
+          const mentionType: 'folder' | 'note' | 'person' = rawType === 'person' ? 'person' : // moss-multi seam: comments
             rawType === 'directory' || rawType === 'folder' ? 'folder' : 'note';
           result += encodeCommentMention(
             title,
             mentionType,
-            options?.preserveMentionIds ? node.getMentionId() : undefined
+            options?.preserveMentionIds || mentionType === 'person' ? node.getMentionId() : undefined
           );
         } else if ($isTextNode(node)) {
           result += node.getTextContent();

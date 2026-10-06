@@ -1,12 +1,17 @@
-// Suggest-mode ingest in the DocDO (docs/design/suggestions.md §3): bookkeeping, not authorization. Leases, record
-// ids, `suggest-ops`, `suggest-delete`, merge, undelete and withdraw, each O(frame): no call reads more than the
-// records and leases it names, so cost never grows with the doc, its closed records or a continuation chain. Nothing
-// here writes the body: a record's ops reach it only through an editor's accept (T5.3).
+// Suggest-mode ingest in the DocDO (docs/design/suggestions.md §3, §14): bookkeeping, not authorization. Leases,
+// record ids, `suggest-ops` on the body or a payload doc, `suggest-delete`, merge, undelete and withdraw, each O(frame):
+// no call reads more than the records and leases it names, so cost never grows with the doc, its closed records or a
+// continuation chain. Structs are placed against the one channel table accept uses (packages/core/src/suggest).
+// Nothing here writes the body or a payload: a record's ops reach them only through an editor's accept (T5.3).
 import * as Y from 'yjs';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
 import { SUGGEST_LIMITS, type IdSpan, type LeaseGrant, type SuggestReply, type SuggestRefusal, type SuggestRequest } from '@moss-multi/protocol/suggest';
 import { base64ToBytes } from '@moss-multi/protocol/sync';
-import { BODY_ROOTS, type DeletePart, type RecordMeta } from '@moss-multi/core/suggest/apply';
+import {
+  BODY_DOC, channelAllows, checkStructs, contentKind, PAYLOAD_ID, placementOf, type DeletePart, type DocKind, type Placement, type RecordMeta,
+  type RecordOp,
+} from '@moss-multi/core/suggest/apply';
+import { payloadDocsFor } from '../payload-docs.ts';
 import {
   closeRecord, createRecord, metaBytes, onRecordClosed, opsOf, partsOf, patchMeta, readMeta, readRecord, recordIds, suggestionsWriter, writeSuggestions,
 } from '../suggest/records.ts';
@@ -28,8 +33,8 @@ export interface Lease {
   reserved: string;
   /** The record it last wrote to; null until its first frame. */
   record: string | null;
-  /** The next clock it may send: everything below is acknowledged. */
-  nextClock: number;
+  /** The next clock it may send in each doc it writes (`body`, or a payload id): everything below is acknowledged. */
+  clocks: Record<string, number>;
   /** Its record was accepted: its body items are ordinary body text (design §4.3). */
   spent: boolean;
   /** Its connection closed. */
@@ -55,17 +60,17 @@ export class MemoryLeases implements LeaseStore {
 
   get(client: number): Lease | undefined {
     const lease = this.#byClient.get(client);
-    return lease && { ...lease };
+    return lease && { ...lease, clocks: { ...lease.clocks } };
   }
 
   put(lease: Lease): void {
-    this.#byClient.set(lease.client, { ...lease });
+    this.#byClient.set(lease.client, { ...lease, clocks: { ...lease.clocks } });
     this.#byReserved.set(lease.reserved, this.#byClient.get(lease.client)!);
   }
 
   reservedFor(record: string): Lease | undefined {
     const lease = this.#byReserved.get(record);
-    return lease && { ...lease };
+    return lease && { ...lease, clocks: { ...lease.clocks } };
   }
 
   live(principal: string, since: number): number {
@@ -92,7 +97,7 @@ type Row = Record<string, ArrayBuffer | string | number | null>;
 export class SqlLeases implements LeaseStore {
   constructor(private readonly sql: SqlStorage) {
     sql.exec(`CREATE TABLE IF NOT EXISTS suggest_leases (client_id INTEGER PRIMARY KEY, principal_id TEXT NOT NULL,
-      connection_id TEXT NOT NULL, reserved_id TEXT NOT NULL UNIQUE, record_id TEXT, next_clock INTEGER NOT NULL,
+      connection_id TEXT NOT NULL, reserved_id TEXT NOT NULL UNIQUE, record_id TEXT, clocks TEXT NOT NULL,
       spent INTEGER NOT NULL, expired INTEGER NOT NULL, used_at INTEGER NOT NULL)`);
     sql.exec('CREATE INDEX IF NOT EXISTS suggest_leases_principal ON suggest_leases (principal_id, spent, expired)');
     sql.exec('CREATE INDEX IF NOT EXISTS suggest_leases_record ON suggest_leases (record_id)');
@@ -108,7 +113,7 @@ export class SqlLeases implements LeaseStore {
       connection: String(row.connection_id),
       reserved: String(row.reserved_id),
       record: row.record_id === null ? null : String(row.record_id),
-      nextClock: Number(row.next_clock),
+      clocks: JSON.parse(String(row.clocks)) as Record<string, number>,
       spent: Number(row.spent) === 1,
       expired: Number(row.expired) === 1,
       usedAt: Number(row.used_at),
@@ -121,11 +126,12 @@ export class SqlLeases implements LeaseStore {
 
   put(lease: Lease): void {
     this.sql.exec(
-      `INSERT INTO suggest_leases (client_id, principal_id, connection_id, reserved_id, record_id, next_clock, spent, expired, used_at)
+      `INSERT INTO suggest_leases (client_id, principal_id, connection_id, reserved_id, record_id, clocks, spent, expired, used_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(client_id) DO UPDATE SET connection_id = excluded.connection_id,
-        record_id = excluded.record_id, next_clock = excluded.next_clock, spent = excluded.spent, expired = excluded.expired,
+        record_id = excluded.record_id, clocks = excluded.clocks, spent = excluded.spent, expired = excluded.expired,
         used_at = excluded.used_at`,
-      lease.client, lease.principal, lease.connection, lease.reserved, lease.record, lease.nextClock, lease.spent ? 1 : 0, lease.expired ? 1 : 0, lease.usedAt,
+      lease.client, lease.principal, lease.connection, lease.reserved, lease.record, JSON.stringify(lease.clocks), lease.spent ? 1 : 0, lease.expired ? 1 : 0,
+      lease.usedAt,
     );
   }
 
@@ -164,8 +170,9 @@ export const SUGGEST_CAPS = {
   partItems: 20_000,
 } as const;
 
+/** `sv`: each of the record's leases' acknowledged clock in `doc`, the doc the frame wrote. */
 export type IngestResult =
-  | { ok: true; record: string; requested: string; sv: Record<string, number>; parts: string[] }
+  | { ok: true; record: string; requested: string; doc: string; sv: Record<string, number>; parts: string[] }
   | { ok: false; reason: SuggestRefusal };
 
 export interface IngestOptions {
@@ -178,7 +185,15 @@ export interface IngestOptions {
   stateBytes?: () => number;
   /** Record ids; a random UUID unless a test pins them. */
   mintId?: () => string;
+  /**
+   * The note's payload doc `id` as the DO serves it, to place a payload op's structs; undefined for an id it does not
+   * serve (unknown or withheld), whose structs are left to accept. The in-memory payload docs by default.
+   */
+  payloadDoc?: (id: string) => Y.Doc | undefined;
 }
+
+/** Where each struct of an open record's ops sits, per doc and client, clock-sorted, so a later op's structs can be placed. */
+type Placed = Map<string, Map<number, { clock: number; len: number; at: Placement }[]>>;
 
 /** Leases one resume may name: a principal's open records may hold more than the unused-lease cap. */
 const RESUME_MAX = 64;
@@ -207,6 +222,8 @@ export class SuggestIngest {
   readonly #next = new Map<string, string>();
   readonly #open = new Map<string, Set<string>>();
   #openBytes = 0;
+  /** Open records' placements; a record's entry goes when it closes. */
+  readonly #placed = new Map<string, Placed>();
 
   constructor(
     readonly doc: Y.Doc,
@@ -217,8 +234,17 @@ export class SuggestIngest {
       const record = readRecord(doc, id);
       if (!record) continue;
       const open = record.meta.status === 'open';
-      const bytes = open ? record.ops.reduce((sum, op) => sum + op.byteLength, 0) + record.parts.reduce((sum, part) => sum + partBytes(part), 0) : 0;
+      const bytes = open ? record.ops.reduce((sum, op) => sum + op.update.byteLength, 0) + record.parts.reduce((sum, part) => sum + partBytes(part), 0) : 0;
       this.#track(id, record.meta.author, bytes, open);
+      if (open) {
+        for (const op of record.ops) {
+          try {
+            this.#place(id, op.doc, Y.decodeUpdate(op.update))?.();
+          } catch {
+            // An undecodable stored op is accept's to refuse.
+          }
+        }
+      }
       const next = record.meta.mergedInto ?? record.meta.continuedBy;
       if (next) this.#next.set(id, next);
     }
@@ -242,7 +268,7 @@ export class SuggestIngest {
       if (held && lease.connection !== who.connection) return refused('lease');
       if (!held && lease.record === null && this.leases.live(who.id, since) >= SUGGEST_LIMITS.liveLeases) return refused('lease-cap');
       this.leases.put({ ...lease, connection: who.connection, expired: false, usedAt: now });
-      grants.push({ client, record: lease.record === null ? lease.reserved : this.#head(lease.record), clock: lease.nextClock });
+      grants.push({ client, record: lease.record === null ? lease.reserved : this.#head(lease.record), clock: lease.clocks[BODY_DOC] ?? 0, clocks: lease.clocks });
     }
     const fresh = Math.min(Math.max(0, Math.floor(count)), SUGGEST_LIMITS.leaseBatch, SUGGEST_LIMITS.liveLeases - this.leases.live(who.id, since));
     const writer = suggestionsWriter(this.doc)?.client;
@@ -250,56 +276,68 @@ export class SuggestIngest {
       let client = 0;
       while (client === 0 || client === writer || this.doc.store.clients.has(client) || this.leases.get(client)) client = crypto.getRandomValues(new Uint32Array(1))[0];
       const reserved = this.#mint();
-      this.leases.put({ client, principal: who.id, connection: who.connection, reserved, record: null, nextClock: 0, spent: false, expired: false, usedAt: now });
-      grants.push({ client, record: reserved, clock: 0 });
+      this.leases.put({ client, principal: who.id, connection: who.connection, reserved, record: null, clocks: {}, spent: false, expired: false, usedAt: now });
+      grants.push({ client, record: reserved, clock: 0, clocks: {} });
     }
     return grants.length ? { ok: true, leases: grants } : refused('lease-cap');
   }
 
-  ops(who: Suggester, record: string, update: Uint8Array): IngestResult {
+  /** One fork transaction: a body update, or `{doc, update}` in the body or a payload doc of the fork. */
+  ops(who: Suggester, record: string, op: Uint8Array | RecordOp): IngestResult {
     if (!roleAtLeast(who.role, 'suggester')) return refused('role');
+    const { doc, update } = op instanceof Uint8Array ? { doc: BODY_DOC, update: op } : ((op ?? {}) as Partial<RecordOp>);
+    if (typeof doc !== 'string' || (doc !== BODY_DOC && !PAYLOAD_ID.test(doc)) || !(update instanceof Uint8Array)) return refused('malformed');
     const target = this.#target(who, record);
     if (!target.ok) return target;
     let meta: { from: Map<number, number>; to: Map<number, number> };
-    let structs: (Y.Item | Y.GC | Y.Skip)[];
+    let decoded: ReturnType<typeof Y.decodeUpdate>;
     try {
       meta = Y.parseUpdateMeta(update);
-      structs = Y.decodeUpdate(update).structs;
+      decoded = Y.decodeUpdate(update);
     } catch {
       return refused('malformed');
     }
+    const held = this.#held(doc);
     const now = this.#now();
     const leases: Lease[] = [];
     for (const [client, from] of meta.from) {
       const lease = this.leases.get(client);
       if (!lease || !this.#holds(who, lease)) return refused('lease');
       if (lease.record !== null && this.#head(lease.record) !== target.base) return refused('lease');
-      if (from > lease.nextClock) return refused('clock-gap');
+      const next = lease.clocks[doc] ?? 0;
+      if (from > next) return refused('clock-gap');
       // A record never holds two versions of one id.
-      if (from < lease.nextClock) return refused('clock-overlap');
+      if (from < next) return refused('clock-overlap');
+      // The lease's first write to this doc: the doc must not hold its id already (minting checked only the body).
+      if (next === 0 && held && Y.getState(held.store, client) > 0) return refused('lease');
       leases.push(lease);
     }
+    // The caps first, so an oversized frame is never placed.
+    const cap = this.#caps(who, target, update.byteLength, meta.from.size);
+    if (cap) return refused(cap);
+    // Default-deny (suggestions.md §4.4): every struct sits in a channel of the table accept's G3 reads.
+    const placed = this.#place(target.id, doc, decoded);
+    if (!placed) return refused('channel');
     // An early, O(frame) reject of node types Lexical would not bind; G7 is the full check at accept.
-    for (const struct of structs) {
+    for (const struct of doc === BODY_DOC ? decoded.structs : []) {
       if (!(struct instanceof Y.Item) || struct.parentSub !== '__type') continue;
       const value = struct.content.getContent().at(-1);
       if (typeof value !== 'string' || !this.options.registry.has(value)) return refused('node-type');
     }
-    const cap = this.#caps(who, target, update.byteLength, meta.from.size);
-    if (cap) return refused(cap);
 
     writeSuggestions(this.doc, () => {
       if (target.create) this.#create(who, target.id, now, target.continues);
-      opsOf(this.doc, target.id).push([update]);
+      opsOf(this.doc, target.id).push([{ doc, update }]);
       const current = readMeta(this.doc, target.id)!;
       patchMeta(this.doc, target.id, { updatedAt: now, clients: [...new Set([...current.clients, ...meta.from.keys()])] });
     });
+    placed();
     this.#grow(target.id, update.byteLength);
     this.#bind(target, now);
     for (const lease of leases) {
-      this.leases.put({ ...lease, record: target.id, nextClock: meta.to.get(lease.client) ?? lease.nextClock, usedAt: now });
+      this.leases.put({ ...lease, record: target.id, clocks: { ...lease.clocks, [doc]: meta.to.get(lease.client) ?? lease.clocks[doc] ?? 0 }, usedAt: now });
     }
-    return { ok: true, record: target.id, requested: record, sv: this.#sv(target.id), parts: [] };
+    return { ok: true, record: target.id, requested: record, doc, sv: this.#sv(target.id, doc), parts: [] };
   }
 
   delete(who: Suggester, record: string, part: { id: string; targets: IdSpan[] }): IngestResult {
@@ -322,7 +360,7 @@ export class SuggestIngest {
     });
     this.#grow(target.id, bytes);
     this.#bind(target, now);
-    return { ok: true, record: target.id, requested: record, sv: this.#sv(target.id), parts: [part.id] };
+    return { ok: true, record: target.id, requested: record, doc: BODY_DOC, sv: this.#sv(target.id, BODY_DOC), parts: [part.id] };
   }
 
   /** Takes back one delete part of an open record the author holds. */
@@ -341,7 +379,7 @@ export class SuggestIngest {
       patchMeta(this.doc, target.id, { updatedAt: this.#now() });
     });
     this.#grow(target.id, -bytes);
-    return { ok: true, record: target.id, requested: record, sv: this.#sv(target.id), parts: [] };
+    return { ok: true, record: target.id, requested: record, doc: BODY_DOC, sv: this.#sv(target.id, BODY_DOC), parts: [] };
   }
 
   /** Moves `from`'s ops, parts and leases into `into`; both are the author's open records. Writes no body. */
@@ -352,7 +390,7 @@ export class SuggestIngest {
     if (!a.ok) return a;
     if (!b.ok) return b;
     if (a.create || b.create || a.continues || b.continues) return refused('record');
-    if (a.id === b.id) return { ok: true, record: a.id, requested: into, sv: this.#sv(a.id), parts: [] };
+    if (a.id === b.id) return { ok: true, record: a.id, requested: into, doc: BODY_DOC, sv: this.#sv(a.id, BODY_DOC), parts: [] };
     const moved = this.#info.get(b.id)!.bytes;
     if (this.#info.get(a.id)!.bytes + moved > SUGGEST_CAPS.recordOpsBytes) return refused('record-cap');
     if (this.#overState(moved + this.#metaWrite(a.id, 0) + this.#metaWrite(b.id, 0))) return refused('doc-cap');
@@ -371,9 +409,10 @@ export class SuggestIngest {
     });
     this.#next.set(b.id, a.id);
     this.leases.rebind(b.id, a.id);
+    this.#movePlaced(b.id, a.id);
     this.#closed(b.id, null);
     this.#grow(a.id, moved);
-    return { ok: true, record: a.id, requested: into, sv: this.#sv(a.id), parts: [] };
+    return { ok: true, record: a.id, requested: into, doc: BODY_DOC, sv: this.#sv(a.id, BODY_DOC), parts: [] };
   }
 
   /** The author closes an open record: status only, the body is never written (I4). */
@@ -383,7 +422,12 @@ export class SuggestIngest {
     if (!target.ok) return target;
     if (target.create || target.continues) return refused('record');
     closeRecord(this.doc, target.id, { status: 'withdrawn', resolvedBy: who.id, resolvedAt: this.#now() });
-    return { ok: true, record: target.id, requested: record, sv: {}, parts: [] };
+    return { ok: true, record: target.id, requested: record, doc: BODY_DOC, sv: {}, parts: [] };
+  }
+
+  /** Records holding placements: only open ones, so the index is bounded by the open-record caps. */
+  get placedRecords(): number {
+    return this.#placed.size;
   }
 
   /** The connection closed: its leases can no longer write until a `resume`. */
@@ -392,17 +436,18 @@ export class SuggestIngest {
   }
 
   /**
-   * True when a body frame carries new structs under a leased client id, which only a record may hold; O(frame).
-   * Structs the doc already holds (an accepted record's text echoed in a step 2) do not count.
+   * True when a frame for `held` (the body, or a payload doc) carries new structs under a leased client id, which only
+   * a record may hold; O(frame). Structs the doc already holds (an accepted record's text echoed in a step 2) do not
+   * count.
    */
-  namesLease(update: Uint8Array): boolean {
+  namesLease(update: Uint8Array, held: Y.Doc = this.doc): boolean {
     let meta: { to: Map<number, number> };
     try {
       meta = Y.parseUpdateMeta(update);
     } catch {
       return false;
     }
-    for (const [client, to] of meta.to) if (to > Y.getState(this.doc.store, client) && this.leases.get(client)) return true;
+    for (const [client, to] of meta.to) if (to > Y.getState(held.store, client) && this.leases.get(client)) return true;
     return false;
   }
 
@@ -523,27 +568,92 @@ export class SuggestIngest {
       info.bytes = 0;
       this.#open.get(info.author)?.delete(id);
     }
+    this.#placed.delete(id);
     if (meta?.status === 'accepted') this.leases.spend(id);
   }
 
-  /** Each of the record's leases' acknowledged clock. */
-  #sv(id: string): Record<string, number> {
+  /** The doc an op for `doc` is placed against: the body, or the payload doc as the DO serves it. */
+  #held(doc: string): Y.Doc | undefined {
+    if (doc === BODY_DOC) return this.doc;
+    return this.options.payloadDoc ? this.options.payloadDoc(doc) : payloadDocsFor(this.doc).get(doc);
+  }
+
+  /**
+   * Places `decoded`'s structs against the record's earlier ops and the note's docs through the channel table:
+   * O(structs × (log n + depth)), depth capped. Returns null when a struct is outside the table, else a commit that
+   * indexes the placements for the record's later ops.
+   */
+  #place(record: string, doc: string, decoded: ReturnType<typeof Y.decodeUpdate>): (() => void) | null {
+    const kind: DocKind = doc === BODY_DOC ? 'body' : 'payload';
+    const index = this.#placed.get(record)?.get(doc);
+    const held = this.#held(doc);
+    const seen = new Map<Y.Item, Placement | null>();
+    const lookup = (id: Y.ID): Placement | null => {
+      const hit = spanAt(index?.get(id.client) ?? [], id.clock);
+      if (hit) return hit.at;
+      if (!held || id.clock >= Y.getState(held.store, id.client)) return null;
+      const struct = Y.getItem(held.store, id);
+      if (!(struct instanceof Y.Item)) return null;
+      if (!seen.has(struct)) seen.set(struct, placementOf(kind, held, struct));
+      return seen.get(struct)!;
+    };
+    const placed = checkStructs(kind, decoded, lookup);
+    if (!placed) return null;
+    return () => {
+      let byDoc = this.#placed.get(record);
+      if (!byDoc) this.#placed.set(record, (byDoc = new Map()));
+      let byClient = byDoc.get(doc);
+      if (!byClient) byDoc.set(doc, (byClient = new Map()));
+      const unsorted = new Set<number>();
+      for (const { struct, at } of placed) {
+        const list = byClient.get(struct.id.client) ?? [];
+        if (list.length > 0 && list[list.length - 1].clock > struct.id.clock) unsorted.add(struct.id.client);
+        list.push({ clock: struct.id.clock, len: struct.length, at });
+        byClient.set(struct.id.client, list);
+      }
+      for (const client of unsorted) byClient.get(client)!.sort((a, b) => a.clock - b.clock);
+    };
+  }
+
+  /** A merged record's placements join the record it merged into. */
+  #movePlaced(from: string, into: string): void {
+    const moved = this.#placed.get(from);
+    if (!moved) return;
+    let byDoc = this.#placed.get(into);
+    if (!byDoc) this.#placed.set(into, (byDoc = new Map()));
+    for (const [doc, clients] of moved) {
+      let byClient = byDoc.get(doc);
+      if (!byClient) byDoc.set(doc, (byClient = new Map()));
+      for (const [client, list] of clients) byClient.set(client, [...(byClient.get(client) ?? []), ...list].sort((a, b) => a.clock - b.clock));
+    }
+    this.#placed.delete(from);
+  }
+
+  /** Each of the record's leases' acknowledged clock in `doc`. */
+  #sv(id: string, doc: string): Record<string, number> {
     const sv: Record<string, number> = {};
     for (const client of readMeta(this.doc, id)?.clients ?? []) {
       const lease = this.leases.get(client);
-      if (lease) sv[client] = lease.nextClock;
+      if (lease) sv[client] = lease.clocks[doc] ?? 0;
     }
     return sv;
   }
 
   /**
-   * Every target is a live item in `root` or `registers` that no pending lease wrote (an accepted record's leases
-   * are spent, so its text is ordinary body text): O(spans × log n) lookups plus the items named, capped. Returns
-   * the quote, or null when a target fails.
+   * Every target is a live body item in a channel of the table (the one accept's G3 removes against) that no pending
+   * lease wrote (an accepted record's leases are spent, so its text is ordinary body text): O(spans × log n) lookups
+   * plus the items named, capped, each sequence parent placed once. Returns the quote, or null when a target fails.
    */
   #quote(targets: readonly IdSpan[]): string | null {
     let quote = '';
     let items = 0;
+    const parents = new Map<unknown, Placement | null>();
+    const inTable = (item: Y.Item): boolean => {
+      const key = item.parentSub === null ? item.parent : item;
+      if (!parents.has(key)) parents.set(key, placementOf('body', this.doc, item));
+      const at = parents.get(key);
+      return !!at && channelAllows('body', at, contentKind(item.content));
+    };
     for (const span of targets) {
       if (![span?.client, span?.clock, span?.len].every((n) => Number.isSafeInteger(n) && n >= 0) || span.len === 0) return null;
       const lease = this.leases.get(span.client);
@@ -554,7 +664,7 @@ export class SuggestIngest {
       for (let i = Y.findIndexSS(structs, span.clock); i < structs.length && structs[i].id.clock < end; i++) {
         const struct = structs[i];
         if (++items > SUGGEST_CAPS.partItems) return null;
-        if (!(struct instanceof Y.Item) || struct.deleted || !inBody(this.doc, struct)) return null;
+        if (!(struct instanceof Y.Item) || struct.deleted || !inTable(struct)) return null;
         const from = Math.max(span.clock, struct.id.clock) - struct.id.clock;
         const to = Math.min(end, struct.id.clock + struct.length) - struct.id.clock;
         if (quote.length < 1024) quote += struct.content instanceof Y.ContentString ? struct.content.str.slice(from, to) : '￼';
@@ -564,17 +674,17 @@ export class SuggestIngest {
   }
 }
 
-function inBody(doc: Y.Doc, item: Y.Item): boolean {
-  let parent = item.parent;
-  for (let depth = 0; depth < 256; depth++) {
-    if (!(parent instanceof Y.AbstractType)) return false;
-    if (!parent._item) {
-      for (const [name, shared] of doc.share) if (shared === parent) return BODY_ROOTS.has(name);
-      return false;
-    }
-    parent = parent._item.parent;
+/** The entry of a clock-sorted list holding `clock`, by binary search. */
+function spanAt<T extends { clock: number; len: number }>(list: readonly T[], clock: number): T | undefined {
+  let lo = 0;
+  let hi = list.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (clock < list[mid].clock) hi = mid - 1;
+    else if (clock >= list[mid].clock + list[mid].len) lo = mid + 1;
+    else return list[mid];
   }
-  return false;
+  return undefined;
 }
 
 /** One doc-socket suggest request, validated and run; the reply is unicast to its sender. */
@@ -596,7 +706,7 @@ export function handleSuggest(ingest: SuggestIngest, who: Suggester, request: Su
       } catch {
         return refuse(requested, 'malformed');
       }
-      result = ingest.ops(who, request.record, update);
+      result = ingest.ops(who, request.record, { doc: request.doc ?? BODY_DOC, update });
       break;
     }
     case 'suggest-delete':
@@ -619,6 +729,6 @@ export function handleSuggest(ingest: SuggestIngest, who: Suggester, request: Su
       return refuse(null, 'malformed');
   }
   return result.ok
-    ? { t: 'suggest-ack', record: result.record, requested: result.requested, sv: result.sv, parts: result.parts }
+    ? { t: 'suggest-ack', record: result.record, requested: result.requested, doc: result.doc, sv: result.sv, parts: result.parts }
     : refuse(requested, result.reason);
 }

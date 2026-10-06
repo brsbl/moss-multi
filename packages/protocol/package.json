@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     "./dom-contract": "./src/dom-contract.ts",
+    "./html-frame": "./src/html-frame.ts",
     "./limits": "./src/limits.ts",
     "./media": "./src/media.ts",
     "./retention": "./src/retention.ts",

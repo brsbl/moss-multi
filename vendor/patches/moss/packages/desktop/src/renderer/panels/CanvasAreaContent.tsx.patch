@@ -15,7 +15,29 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
  
  const TRASH_RETENTION_DAYS = 30;
  const MS_IN_DAY = 24 * 60 * 60 * 1000;
-@@ -920,6 +927,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -567,7 +574,7 @@ function CommentsMenuButton({
+                   </TooltipTrigger>
+                   <TooltipContent side="bottom" sideOffset={6}>Search comments</TooltipContent>
+                 </Tooltip>
+-                {rootThreadCount > 0 && (
++                {rootThreadCount > 0 && !hidden('ai-run-action') /* moss-multi seam: hide-registry (A§9) */ && (
+                   <Tooltip>
+                     <TooltipTrigger asChild>
+                       <button
+@@ -630,6 +637,12 @@ function CommentsMenuButton({
+                             : <CommentTextContent text={item.text} mentionMaxLength={24} />
+                           : 'No text'}
+                       </p>
++                      {/* moss-multi seam: comments (comments.md §6): a detached thread shows the text it was left on */}
++                      {(commentsMap[item.rootId] as { detached?: boolean } | undefined)?.detached ? (
++                        <p className="mt-0.5 truncate text-micro text-ink-faint" data-comment-detached>
++                          Detached · “{(commentsMap[item.rootId] as { quote?: string }).quote ?? ''}”
++                        </p>
++                      ) : null}
+                     </div>
+                   </button>
+                 ))
+@@ -920,6 +933,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
    const overrideNote = useAtomValue(noteEntityAtom(noteIdOverride ?? NO_NOTE_SENTINEL));
    const note = noteIdOverride ? overrideNote : activeNote;
    const store = useStore();
@@ -23,7 +45,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
    const titleInputRef = useRef<HTMLDivElement>(null);
    const editorInstanceRef = useRef<LexicalEditor | null>(null);
    const markdownEditorRef = useRef<MarkdownEditorHandle>(null);
-@@ -940,7 +948,12 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -940,7 +954,12 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
      hasElectronBridge &&
      !(typeof navigator !== 'undefined' && /jsdom/i.test(navigator.userAgent));
  
@@ -37,7 +59,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
    const titleValueRef = useRef(titleValue);
    titleValueRef.current = titleValue;
    const commitTitleChangeRef = useRef<() => void>(() => {});
-@@ -1170,6 +1183,8 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -1170,6 +1189,8 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
      latestOnBodyFocusCompleteRef.current = onBodyFocusComplete;
    }, [onBodyFocusComplete]);
  
@@ -46,7 +68,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
    const getLiveTitleText = useCallback((): string => {
      return titleInputRef.current?.textContent ?? titleValueRef.current;
    }, []);
-@@ -1183,7 +1198,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -1183,7 +1204,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
      }
  
      if (titleValueRef.current !== display) {
@@ -55,7 +77,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
      }
    }, []);
  
-@@ -1326,7 +1341,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -1326,7 +1347,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
    }, [note?.id]);
  
    useLayoutEffect(() => {
@@ -64,7 +86,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
        return;
      }
  
-@@ -1366,9 +1381,10 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -1366,9 +1387,10 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
  
    useLayoutEffect(() => {
      const el = titleInputRef.current;
@@ -76,7 +98,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
  
      el.focus();
      const range = document.createRange();
-@@ -1380,14 +1396,15 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -1380,14 +1402,15 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
      titleFocusCompletedRef.current = true;
      latestOnTitleFocusCompleteRef.current?.();
      setPlaceholderIdx((i) => (i + 1) % PLACEHOLDER_PAIRS.length);
@@ -94,7 +116,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
      ) {
        return;
      }
-@@ -1402,6 +1419,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -1402,6 +1425,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
      contentHydratedForNoteId,
      editorReadyForFocusNoteId,
      focusEditorStart,
@@ -102,7 +124,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
      noteIdForAtoms,
      setPlaceholderIdx
    ]);
-@@ -1471,7 +1489,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -1471,7 +1495,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
      h1Title: string | null,
      opts?: { skipIfTitleFocused?: boolean }
    ): void => {
@@ -111,7 +133,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
      if (opts?.skipIfTitleFocused && document.activeElement === titleInputRef.current) return;
      const currentTitle = store.get(noteEntityAtom(noteId))?.title;
      if (h1Title === currentTitle) return;
-@@ -1524,7 +1542,9 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -1524,7 +1548,9 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
        return true;
      }
  
@@ -122,7 +144,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
      const diskCommentMetadata = result.commentMetadata ?? layers.comments;
      lastKnownDiskCommentMetadataRef.current[noteId] = diskCommentMetadata;
      lastKnownDiskCommentSignatureRef.current[noteId] = buildCommentMetadataSignature(diskCommentMetadata);
-@@ -1672,6 +1692,17 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -1672,6 +1698,17 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
      const noteIdChanged = prevNoteId !== note.id;
      previousNoteIdRef.current = note.id;
  
@@ -140,7 +162,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
      // Force a fresh hydration gate on note switches so the editor never mounts
      // with stale atom content from a previous visit while the new disk fetch is in flight.
      if (noteIdChanged) {
-@@ -2515,7 +2546,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -2515,7 +2552,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
  
    // Save both markdown (for export) and JSON state (canonical format)
    const saveContent = useCallback((options?: { force?: boolean; updatedAt?: number }): Promise<void> => {
@@ -149,7 +171,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
        return Promise.resolve();
      }
      const noteId = note.id;
-@@ -3202,7 +3233,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -3202,7 +3239,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
  
    // Autosave triggers: 30-min periodic safety net + comment dirty signal subscription
    useEffect(() => {
@@ -158,7 +180,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
        return;
      }
  
-@@ -3231,7 +3262,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -3231,7 +3268,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
    // If the user has unsaved edits (dirty), skip — user wins.
    // =========================================================================
    useEffect(() => {
@@ -167,7 +189,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
  
      const runPendingDiskRevalidation = () => {
        pendingDiskRevalidateOnFocusRef.current = false;
-@@ -3311,6 +3342,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -3311,6 +3348,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
  
    // Focus the title field and select all text
    const focusTitle = useCallback(() => {
@@ -175,7 +197,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
      if (titleInputRef.current) {
        titleInputRef.current.focus();
        const range = document.createRange();
-@@ -3504,7 +3536,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -3504,7 +3542,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
  
    const forceReloadFromDisk = useCallback(async (): Promise<boolean> => {
      const noteId = note?.id;
@@ -184,7 +206,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
      try {
        const result = await notesApi.getById.invoke(noteId, { skipAnalytics: true });
        if (!result) return false;
-@@ -3591,7 +3623,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -3591,7 +3629,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
    // Sync title contentEditable with external title changes (agent rename, file watcher)
    useEffect(() => {
      const el = titleInputRef.current;
@@ -193,7 +215,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
      if (shouldPreserveDirtyEditor(note.id)) return;
      // Don't overwrite while user is actively editing the title
      if (isTitleFocusedRef.current || document.activeElement === el) return;
-@@ -3600,7 +3632,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -3600,7 +3638,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
        el.textContent = display;
      }
      if (titleValueRef.current !== display) {
@@ -202,7 +224,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
      }
    }, [note, note?.title, shouldPreserveDirtyEditor]);
  
-@@ -3610,7 +3642,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -3610,7 +3648,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
    // Agent writes go to disk via SDK tools; the disk watcher picks them up.
    // =========================================================================
    useEffect(() => {
@@ -211,7 +233,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
  
      const unsub = agentApi.onStream((event) => {
        if (event.type === 'editor_update') {
-@@ -4088,6 +4120,12 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4088,6 +4126,12 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
      let skippedBootstrapUpdate = false;
      editorUpdateUnregisterRef.current = editor.registerUpdateListener(
        ({ dirtyElements, dirtyLeaves, tags }) => {
@@ -224,7 +246,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
          const hasDirtyMutations = dirtyElements.size > 0 || dirtyLeaves.size > 0;
          const hasContentUpdateTag = hasTrackedEditorUpdateTag(tags, DIRTY_TRACKER_CONTENT_TAGS);
  
-@@ -4116,7 +4154,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4116,7 +4160,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
      // After post-mount transforms (AutoArrow, FormatWhitespaceBoundary) settle,
      // sync lastEditorOutputRef and clear false dirty. Double rAF ensures all
      // Lexical reconciliation is complete before capturing the baseline.
@@ -233,7 +255,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
  
      // Restore scroll position if pending (from agent update)
      const pendingScrollTop = pendingScrollRestoreRef.current;
-@@ -4199,7 +4237,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4199,7 +4243,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
    }, [bumpEditorContentRevision, isTrashed, markDirty, note?.id, scheduleDebouncedAutosave, scheduleEditorSettlingBaselineCapture]);
  
    const commitTitleChange = useCallback(() => {
@@ -242,7 +264,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
  
      const nextTitleRaw = getLiveTitleText();
      if (titleValueRef.current !== nextTitleRaw) {
-@@ -4315,16 +4353,21 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4315,16 +4359,21 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
      />
    );
  
@@ -269,7 +291,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
  
    const canvasMouseDownFocusedEditorRef = useRef(false);
  
-@@ -4421,8 +4464,9 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4421,8 +4470,9 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
    // Hooks must be called unconditionally in the same order every render.
    if (!note) {
      return (
@@ -280,7 +302,14 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
          <CanvasArea className="min-w-0 flex-1" fullWidth innerClassName="flex h-full items-center justify-center">
            <p className="text-sm text-ink-muted">Create a new note to get started</p>
          </CanvasArea>
-@@ -4437,6 +4481,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4432,16 +4482,19 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+ 
+   // Static top bar: nav left, actions right — like Notion/Craft
+ 
++  // moss-multi seam: phone-shell (T2.7): below 640 px an open search takes the whole row
++  const offWhileSearching = showFocusedSearchBar ? 'max-sm:hidden' : undefined;
+   const staticTopBar = (
+       <TopNavBar
          tone={paneId ? (isPaneFocused ? 'focusedSplit' : 'inactiveSplit') : 'primary'}
          onClick={paneId && !isPaneFocused ? () => setFocusPane(paneId) : undefined}
          appRegion={paneId && !isPaneFocused ? 'no-drag' : 'drag'}
@@ -288,15 +317,97 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
        >
        <div className="relative flex h-8 min-w-0 items-center justify-between">
        {/* Left: traffic light clearance + panel toggle + nav */}
-@@ -4556,6 +4601,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+-      {isNotesPanelHidden && paneId !== 'right' && <div className="w-[60px] shrink-0" />}
+-      <div className="flex shrink-0 items-center gap-1" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
++      {isNotesPanelHidden && paneId !== 'right' && <div className="hidden w-[60px] shrink-0 sm:block" /* moss-multi seam: phone-shell (T2.7): no traffic lights to clear */ />}
++      <div className={cn('flex shrink-0 items-center gap-1', offWhileSearching)} style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+         {isNotesPanelHidden && paneId !== 'right' && onExpandNotesPanel ? (
+           <>
+             <TooltipProvider>
+@@ -4506,12 +4559,13 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+           </div>
+         )}
+       </div>
+-        {!hideNavButtons && <div className="w-3 shrink-0" />}
++        {!hideNavButtons && <div className={cn('w-3 shrink-0', offWhileSearching)} />}
+         {paneId ? (
+             <div
+               className={cn(
+                 'group/tab flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded px-2 text-left text-caption text-ink-faint transition-colors hover:bg-surface-note-hover/40 hover:text-ink-muted focus-visible:outline-none',
+-                isPaneFocused ? 'cursor-default' : 'cursor-pointer'
++                isPaneFocused ? 'cursor-default' : 'cursor-pointer',
++                offWhileSearching
+               )}
+               onClick={isPaneFocused ? undefined : () => setFocusPane(paneId)}
+               style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+@@ -4543,7 +4597,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+               )}
+             </div>
+           ) : (
+-            <div className="flex min-w-0 items-center overflow-hidden" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
++            <div className={cn('flex min-w-0 items-center overflow-hidden', offWhileSearching)} style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+               <NoteBreadcrumb note={note} onNavigate={isNotesPanelHidden ? onExpandNotesPanel : undefined} />
+               {note.folderPath === 'Notes' && note.title !== 'Untitled' && (
+                 <span className="cursor-default truncate text-xs text-ink-faint opacity-50">{note.title}</span>
+@@ -4551,11 +4605,12 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+             </div>
+           )}
+ 
+-      <div className={paneId ? 'w-2 shrink-0' : 'flex-1'} />
++      <div className={cn(paneId ? 'w-2 shrink-0' : 'flex-1', offWhileSearching)} />
+ 
        {/* Right: metadata toggle + find bar + copy + more + panel toggle */}
        {hideRightControls ? <div className="flex-1" /> : (
-       <div className="flex shrink-0 items-center gap-1.5" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-+        {mossMultiPane.topBarCollab /* moss-multi seam: bound-pane (A§2.2): Share, connection, face pile, bell */}
+-      <div className="flex shrink-0 items-center gap-1.5" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
++      <div className={cn('flex shrink-0 items-center gap-1.5', showFocusedSearchBar && 'max-sm:min-w-0 max-sm:flex-1')} style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
++        <div className={cn('contents', offWhileSearching)}>{mossMultiPane.topBarCollab /* moss-multi seam: bound-pane (A§2.2): Share, connection, face pile, bell */}</div>
          {!showFocusedSearchBar && onOpenSearch ? (
            <TooltipProvider>
              <Tooltip>
-@@ -4610,6 +4656,8 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4563,7 +4618,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+                 <button
+                   type="button"
+                   onClick={onOpenSearch}
+-                  className="flex h-7 w-7 cursor-pointer items-center justify-center rounded text-ink-faint transition-colors hover:text-ink-muted hover:bg-surface-note-hover/40 focus-visible:outline-none"
++                  className="hidden h-7 w-7 cursor-pointer items-center justify-center rounded text-ink-faint transition-colors hover:text-ink-muted hover:bg-surface-note-hover/40 focus-visible:outline-none sm:flex" // moss-multi seam: phone-shell (T2.7): folds into More actions below 640 px
+                   aria-label="Search in note"
+                 >
+                   <Search aria-hidden className="h-3.5 w-3.5" />
+@@ -4577,13 +4632,13 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+         ) : null}
+         {showFocusedSearchBar && onCloseSearch ? (
+           <>
+-            <div className="min-w-56 max-w-xs">
++            <div className="min-w-56 max-w-xs max-sm:flex max-sm:min-w-0 max-sm:max-w-none max-sm:flex-1" /* moss-multi seam: phone-shell (T2.7) */>
+               <NoteSearchInput onClose={onCloseSearch} autoFocus={searchBarAutoFocus} fullWidth={true} />
+             </div>
+-            <div className="mx-0.5 h-5 w-px bg-border-subtle" />
++            <div className="mx-0.5 hidden h-5 w-px bg-border-subtle sm:block" />
+           </>
+         ) : null}
+-        {!showFocusedSearchBar && <div className="mx-0.5 h-5 w-px bg-border-subtle" />}
++        {!showFocusedSearchBar && <div className="mx-0.5 hidden h-5 w-px bg-border-subtle sm:block" /* moss-multi seam: phone-shell (T2.7) */ />}
+         {/* Copy note link */}
+         <TooltipProvider>
+           <Tooltip>
+@@ -4592,7 +4647,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+                 type="button"
+                 onMouseDown={preserveEditorSelectionOnMouseDown}
+                 onClick={() => { void handleCopyNoteLink(); }}
+-                className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-md text-ink-faint transition-colors hover:text-ink-muted hover:bg-surface-note-hover/40 focus-visible:outline-none"
++                className="hidden h-7 w-7 cursor-pointer items-center justify-center rounded-md text-ink-faint transition-colors hover:text-ink-muted hover:bg-surface-note-hover/40 focus-visible:outline-none sm:flex" // moss-multi seam: phone-shell (T2.7): folds into More actions below 640 px
+                 aria-label="Copy note link"
+               >
+                 <Link aria-hidden className="h-3.5 w-3.5" />
+@@ -4601,6 +4656,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+             <TooltipContent side="bottom">Copy note link</TooltipContent>
+           </Tooltip>
+         </TooltipProvider>
++        <div className={cn('contents', offWhileSearching)} /* moss-multi seam: phone-shell (T2.7) */>
+         {/* Comments */}
+         {note?.id && (
+           <CommentsMenuButton
+@@ -4610,6 +4666,8 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
            />
          )}
          {/* Share with Agent */}
@@ -305,7 +416,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
          <TooltipProvider>
            <Tooltip>
              <TooltipTrigger asChild>
-@@ -4633,6 +4681,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4633,6 +4691,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
              )}
            </Tooltip>
          </TooltipProvider>
@@ -313,7 +424,26 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
          {/* Overflow menu */}
          <DropdownMenu open={moreActionsOpen} onOpenChange={setMoreActionsOpen}>
            <TooltipProvider>
-@@ -4685,6 +4734,8 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4656,6 +4715,18 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+             </Tooltip>
+           </TooltipProvider>
+           <DropdownMenuContent align="end" side="bottom" sideOffset={6} className="min-w-0 w-max">
++            {/* moss-multi seam: phone-shell (T2.7): below 640 px, search and copy link live here */}
++            {!showFocusedSearchBar && onOpenSearch ? (
++              <DropdownMenuItem className="gap-2 text-xs sm:hidden" onSelect={onOpenSearch}>
++                <Search aria-hidden className="h-3.5 w-3.5" />
++                Search in note
++              </DropdownMenuItem>
++            ) : null}
++            <DropdownMenuItem className="gap-2 text-xs sm:hidden" onSelect={() => { void handleCopyNoteLink(); }}>
++              <Link aria-hidden className="h-3.5 w-3.5" />
++              Copy note link
++            </DropdownMenuItem>
++            <DropdownMenuSeparator className="sm:hidden" />
+             {/* Copy */}
+             <DropdownMenuItem className="gap-2 text-xs" onSelect={handleCopyMarkdown}>
+               <FileText aria-hidden className="h-3.5 w-3.5" />
+@@ -4685,6 +4756,8 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
                <FileDigit aria-hidden className="h-3.5 w-3.5" />
                Note stats
              </DropdownMenuItem>
@@ -322,15 +452,36 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
              <DropdownMenuSeparator />
              {/* Danger group */}
              <DropdownMenuItem
-@@ -4699,6 +4750,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4699,8 +4772,10 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
                  <><Trash2 aria-hidden className="h-3.5 w-3.5" />Trash</>
                )}
              </DropdownMenuItem>
 +            </>)}
            </DropdownMenuContent>
          </DropdownMenu>
++        </div>
          <CopyForAgentDialog
-@@ -4810,9 +4862,8 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+           open={showCopyForAgentDialog}
+           onOpenChange={setShowCopyForAgentDialog}
+@@ -4778,14 +4853,15 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+         </Dialog.Root>
+         {canShowActionsPanelToggle ? (
+           <>
+-            <div className="mx-0.5 h-5 w-px bg-border-subtle" />
++            {/* moss-multi seam: phone-shell (T2.7): ActionsPanelWrapper renders only from md up, so neither does its toggle */}
++            <div className="mx-0.5 hidden h-5 w-px bg-border-subtle md:block" />
+             <TooltipProvider>
+               <Tooltip>
+                 <TooltipTrigger asChild>
+                   <button
+                     type="button"
+                     onClick={onExpandActionsPanel}
+-                    className="relative flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded text-ink-faint transition-colors hover:text-ink-muted hover:bg-surface-note-hover/40 focus-visible:outline-none"
++                    className="relative hidden h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded text-ink-faint transition-colors hover:text-ink-muted hover:bg-surface-note-hover/40 focus-visible:outline-none md:flex"
+                     aria-label="Show actions panel"
+                   >
+                     <PanelRight className="h-4 w-4" strokeWidth={1.5} aria-hidden />
+@@ -4810,9 +4886,8 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
        </TopNavBar>
    );
  
@@ -342,7 +493,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
    const showContentSkeleton = skeletonLines > 0 && hasBodyContent;
    const showEmptySkeleton = skeletonLines > 0 && !hasBodyContent;
    const emptySkeletonLines = Math.max(3, Math.min(24, skeletonLines));
-@@ -4826,8 +4877,10 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4826,8 +4901,10 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
        className="relative flex h-full min-w-0 flex-1 flex-col bg-surface-canvas"
        onMouseDown={handleCanvasAreaMouseDown}
        onClick={handleCanvasAreaClick}
@@ -353,7 +504,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
        <CanvasArea
          className="relative min-w-0 flex-1"
          responsiveLayout
-@@ -4857,7 +4910,9 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4857,7 +4934,9 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
                {/* Contenteditable H1 title field */}
                <div
                  ref={titleRefCallback}
@@ -364,7 +515,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
                  suppressContentEditableWarning
                  role="textbox"
                  aria-label="Note title"
-@@ -4944,12 +4999,15 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4944,12 +5023,15 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
                    aria-hidden
                  >
                    <span className="min-w-0 truncate">{currentPlaceholder.title}</span>
@@ -380,7 +531,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
                  </div>
                ) : null}
                </div>
-@@ -4972,7 +5030,9 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4972,7 +5054,9 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
                    ))}
                  </div>
                ) : null}
@@ -390,7 +541,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
                  <MarkdownEditor
                    ref={markdownEditorRef}
                    key={`${note.id}-${editorVersion}`}
-@@ -4980,7 +5040,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4980,7 +5064,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
                    value={content}
                    layoutMetadata={lastKnownDiskLayoutMetadataRef.current[note.id]}
                    onChange={handleEditorChange}
@@ -399,7 +550,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
                    placeholder={isAgentActive && content === '' ? '' : currentPlaceholder.body}
                    onReady={handleEditorReady}
                    onNavigateToNote={onNavigateToNote}
-@@ -4996,8 +5056,11 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4996,8 +5080,11 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
                        ? editorRemountReasonRef.current[note.id]?.reason
                        : null
                    }
@@ -412,7 +563,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
                  <div className="agent-skeleton agent-skeleton--content pt-4">
                    {[100, 94, 88, 72, 96, 64].map((width, i) => (
                      <div
-@@ -5037,7 +5100,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -5037,7 +5124,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
              className="pointer-events-none absolute bottom-8 left-1/2 z-40 -translate-x-1/2"
              style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
            >
