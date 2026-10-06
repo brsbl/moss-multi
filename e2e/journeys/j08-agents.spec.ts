@@ -25,19 +25,24 @@ const agentRow = (settings: Locator, name: string): Locator =>
 const me = (baseUrl: string, key: string) =>
   fetch(`${baseUrl}/api/me`, { headers: { authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(10_000) });
 
-/** A doc socket presenting an agent key, as the CLI's sync would; resolves once the upgrade completes. */
-function agentSocket(baseUrl: string, docId: string, key: string): Promise<{ closed: Promise<number>; socket: WebSocket }> {
+/**
+ * A doc socket presenting an agent key, as the CLI's sync would; resolves once the upgrade completes. `closeCode` is
+ * the code of the server's close frame once one arrived: ws emits `close` only when the TCP connection ends, which
+ * wrangler dev leaves to ws's 30 s close timeout, so the code is read as soon as the frame is in (ws's `_closeCode`).
+ */
+function agentSocket(baseUrl: string, docId: string, key: string): Promise<{ closeCode: () => number | null; socket: WebSocket }> {
   const url = `${baseUrl.replace(/^http/, 'ws')}${DOC_SOCKET_PATH}${encodeURIComponent(docId)}`;
   return new Promise((resolve, reject) => {
     const socket = new WebSocket(url, { headers: { authorization: `Bearer ${key}` } });
-    const closed = new Promise<number>((done) => socket.on('close', (code) => done(code)));
+    const closeCode = () => (socket.readyState === WebSocket.OPEN ? null : (socket as unknown as { _closeCode: number })._closeCode);
     const timer = setTimeout(() => reject(new Error(`${url}: no open within 15 s`)), 15_000);
     socket.on('error', () => undefined);
+    socket.on('close', (code) => reject(new Error(`${url}: closed ${code} before opening`)));
     socket.on('open', () => {
       clearTimeout(timer);
-      resolve({ closed, socket });
+      // A refused upgrade is accepted and then closed at once (A§4.1): give it a moment to say so.
+      setTimeout(() => (closeCode() === null ? resolve({ closeCode, socket }) : reject(new Error(`${url}: closed ${closeCode()} on admission`))), 500);
     });
-    void closed.then((code) => reject(new Error(`${url}: closed ${code} before opening`)));
   });
 }
 
@@ -77,9 +82,7 @@ test('j08-agents keys: a minted key is shown once; revoking it 401s a raw bearer
   await expect(agentRow(settings, 'Scribe'), 'the agent leaves the list').toHaveCount(0, { timeout: LIVE_TIMEOUT });
 
   expect((await me(stack.baseUrl, key)).status, 'a raw bearer request with the revoked key gets 401').toBe(401);
-  const code = await Promise.race([live.closed, new Promise<null>((done) => setTimeout(() => done(null), LIVE_TIMEOUT))]);
-  expect(code, 'the agent\'s live doc socket closes').not.toBeNull();
-  expect([4401, 4403], 'with a revocation code').toContain(code);
+  await expect.poll(live.closeCode, { message: 'the agent\'s live doc socket closes with a revocation code', timeout: LIVE_TIMEOUT }).toBe(4403);
   live.socket.terminate();
 });
 
