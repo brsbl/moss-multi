@@ -93,6 +93,20 @@ describe('sign-up limits', () => {
     expect(addressed.status, await addressed.clone().text()).toBe(200);
   });
 
+  it('exempts only a loopback request on the hook stack: the same stack reached at another host is still counted', { timeout: 60_000 }, async () => {
+    const hooks = { ...env, MOSS_TEST_HOOKS: '1' };
+    const local = await signUp(`mm-s3b-hook-${run}@hook-${run}.example.invalid`, null, hooks);
+    expect(local.status, await local.clone().text()).toBe(200);
+    const remote = handleAuthRoute(new Request('https://moss.example.invalid/api/auth/sign-up/email', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: BASE },
+      body: JSON.stringify({ email: `mm-s3b-hookx-${run}@hook-${run}.example.invalid`, password: 'correct horse battery', name: 'Ada' }),
+    }), hooks);
+    const refused = await remote;
+    expect(refused.status, await refused.clone().text()).toBe(403);
+    expect(await accounts(`mm-s3b-hookx-${run}@%`)).toBe(0);
+  });
+
   it('prunes closed windows a bounded batch at a time', { timeout: 60_000 }, async () => {
     const stale = Date.now() - 3 * SIGN_UP_ADDRESS_DAILY.window * 1000;
     await d1.db.prepare(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)

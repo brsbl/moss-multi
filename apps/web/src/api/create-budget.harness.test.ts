@@ -23,6 +23,7 @@ const DocDO = {
       create: async () => { seededDocs.push(id.name); },
       snapshotForDuplicate: async () => ({ title: 'Original', state: new Uint8Array([1]), payloads: [] }),
       createFromSnapshot: async () => { seededDocs.push(id.name); },
+      settle: async () => undefined,
     };
   },
 };
@@ -259,5 +260,66 @@ describe('live notes per acting user (T3.S3b)', () => {
     // A trash frees room for Lee.
     await d1.db.prepare('UPDATE docs SET deleted_at = 1 WHERE id = ?1').bind(`cap-a-${lee.id}-2`).run();
     expect((await create(lee, { title: 'After a trash' })).status).toBe(201);
+  }, 120_000);
+});
+
+describe('restoring from Trash under the live-note cap (T3.S3b)', () => {
+  /** `n` notes in `folder` owned by `owner` and made by `by`, live or trashed at `deleted`. */
+  const fill = (owner: TestUser, by: string, folder: string, prefix: string, n: number, deleted: number | null) => d1.db.prepare(`WITH RECURSIVE n(i) AS (
+      SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?2)
+    INSERT INTO docs (id, owner_user_id, created_by, folder_id, title, filename, created_at, updated_at, deleted_at)
+    SELECT ?1 || i, ?3, ?4, ?5, '', ?1 || i || '.md', 0, 0, ?6 FROM n`).bind(prefix, n, owner.id, by, folder, deleted).run();
+  const restore = (who: Who, docId: string) => call('POST', `/api/docs/${docId}/restore`, who);
+  const liveBy = (user: TestUser) => count(`SELECT COUNT(*) AS n FROM docs WHERE deleted_at IS NULL
+    AND created_by IN (SELECT ?1 UNION ALL SELECT id FROM agents WHERE owner_user_id = ?1)`, user.id);
+  const trashed = async (docId: string) =>
+    (await d1.db.prepare('SELECT deleted_at AS d FROM docs WHERE id = ?1').bind(docId).first<{ d: number | null }>())?.d !== null;
+
+  it('refuses a restore at the cap with 409 and leaves the note in Trash; a trash makes room for it', async () => {
+    const nia = await signedUpUser(env, 'restore-cap', 'Nia');
+    await fill(nia, nia.id, nia.homeId, `rc-l-${nia.id}-`, LIVE_NOTE_CAP, null);
+    await fill(nia, nia.id, nia.homeId, `rc-t-${nia.id}-`, 1, 1);
+    const target = `rc-t-${nia.id}-1`;
+    const refused = await restore(nia, target);
+    expect(refused.status, await refused.clone().text()).toBe(409);
+    expect(((await refused.json()) as { error: string }).error).toBe('note-cap');
+    expect(await trashed(target), 'still in Trash').toBe(true);
+    expect(await liveBy(nia)).toBe(LIVE_NOTE_CAP);
+
+    await d1.db.prepare('UPDATE docs SET deleted_at = 1 WHERE id = ?1').bind(`rc-l-${nia.id}-1`).run();
+    const restored = await restore(nia, target);
+    expect(restored.status, await restored.clone().text()).toBe(200);
+    expect(await liveBy(nia)).toBe(LIVE_NOTE_CAP);
+  }, 120_000);
+
+  it('a create racing a restore for the last slot: exactly one lands', async () => {
+    const oz = await signedUpUser(env, 'restore-race', 'Oz');
+    await fill(oz, oz.id, oz.homeId, `rr-l-${oz.id}-`, LIVE_NOTE_CAP - 1, null);
+    await fill(oz, oz.id, oz.homeId, `rr-t-${oz.id}-`, 1, 1);
+    const [made, restored] = await Promise.all([create(oz, { title: 'Racing' }), restore(oz, `rr-t-${oz.id}-1`)]);
+    const outcome = `${made.status}/${restored.status}`;
+    expect(['201/409', '409/200'], `${await made.clone().text()} ${await restored.clone().text()}`).toContain(outcome);
+    expect(await liveBy(oz), 'never past the cap').toBe(LIVE_NOTE_CAP);
+  }, 120_000);
+
+  it('charges a restore to the note’s creator: the owner cannot restore an editor’s note past the editor’s cap, and their own notes are unaffected', async () => {
+    const pat = await signedUpUser(env, 'restore-owner', 'Pat');
+    const quinn = await signedUpUser(env, 'restore-editor', 'Quinn');
+    await d1.db.prepare(`INSERT INTO folder_members (folder_id, principal_id, principal_type, role, added_by, created_at)
+      VALUES (?1, ?2, 'user', 'editor', ?3, ?4)`).bind(pat.homeId, quinn.id, pat.id, Date.now()).run();
+    const quinnAgent = await insertAgent(d1.db, quinn);
+    await fill(pat, quinn.id, pat.homeId, `ro-l-${quinn.id}-`, LIVE_NOTE_CAP, null);
+    await fill(pat, quinnAgent.id, pat.homeId, `ro-a-${quinn.id}-`, 1, 1);
+    await fill(pat, pat.id, pat.homeId, `ro-p-${pat.id}-`, 1, 1);
+
+    const theirs = await restore(pat, `ro-a-${quinn.id}-1`);
+    expect(theirs.status, await theirs.clone().text()).toBe(409);
+    expect(((await theirs.json()) as { error: string }).error).toBe('note-cap');
+    expect(await trashed(`ro-a-${quinn.id}-1`)).toBe(true);
+    expect(await liveBy(quinn), 'the editor stays at the cap').toBe(LIVE_NOTE_CAP);
+
+    const mine = await restore(pat, `ro-p-${pat.id}-1`);
+    expect(mine.status, await mine.clone().text()).toBe(200);
+    expect(await trashed(`ro-p-${pat.id}-1`)).toBe(false);
   }, 120_000);
 });
