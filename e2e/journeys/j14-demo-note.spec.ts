@@ -343,7 +343,7 @@ for (const action of ['Undo', 'Cancel'] as const) {
     // A later edit on Ben's socket: once Ada has it, she has his stroke too.
     await pick(ben, id, 'Classic', 'Accessible');
     await expect.poll(async () => (await payloads(ada, id)).palette, { message: "Ada has Ben's later edit", timeout: PEER_TIMEOUT }).toBe('accessible');
-    const block = ui.body(ada, id).locator('[data-block-decorator-key]').filter({ has: canvas(ada) });
+    const block = ui.body(ada, id).locator('[data-block-decorator-key]').filter({ has: ada.page.locator('canvas') });
     if (action === 'Undo') {
       await block.locator('button:has(svg.lucide-undo-2, svg.lucide-undo2)').click();
       await block.locator('button:has(svg.lucide-check)').click();
