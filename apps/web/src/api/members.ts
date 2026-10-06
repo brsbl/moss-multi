@@ -186,6 +186,42 @@ async function share(env: MembersEnv, target: MemberTarget, ownerUserId: string,
   return json({ shared: { email, role } }, 200, NO_STORE);
 }
 
+const AGENT_ROLE_CAP = 'An agent can have at most edit access.';
+
+/**
+ * Shares the target with an agent by its id (A§8): a direct grant, since the id is copied from the agent's row in its
+ * owner's Settings, never guessed from an address. An agent acts at most as an editor. A new grant answers 201, a
+ * repeat or raise 200, a lowering 409 (as for an invite), and an unknown or revoked id one 404. The write re-checks that
+ * the caller still manages the live target and that the agent is still live.
+ */
+async function shareAgent(env: MembersEnv, target: MemberTarget, caller: Principal, agentId: string, body: Record<string, unknown>): Promise<Response> {
+  if (!isShareRole(body.role)) return refuse(400, 'bad-request', 'Choose view, comment, edit or owner access.');
+  const role = body.role;
+  if (role === 'owner') return refuse(400, 'bad-request', AGENT_ROLE_CAP);
+  const agent = await env.DB.prepare('SELECT id, name FROM agents WHERE id = ?1 AND revoked_at IS NULL').bind(agentId).first<{ id: string; name: string }>();
+  if (!agent) return refuse(404, 'agent-not-found', 'No agent has that ID. Copy it from the agent’s row in Settings → Agents.');
+  const [table, column] = grantTable(target.type);
+  const callerId = managerId(caller);
+  const liveAgent = 'EXISTS (SELECT 1 FROM agents WHERE id = ?2 AND revoked_at IS NULL)';
+  const [inserted, raised] = await env.DB.batch([
+    env.DB.prepare(`INSERT INTO ${table} (${column}, principal_id, principal_type, role, added_by, created_at)
+        SELECT ?1, ?2, 'agent', ?3, ?4, ?5 WHERE ${liveAndManaged(target.type, 1, 4)} AND ${liveAgent}
+        ON CONFLICT DO NOTHING`).bind(target.id, agent.id, role, callerId, Date.now()),
+    env.DB.prepare(`UPDATE ${table} SET role = ?3 WHERE ${column} = ?1 AND principal_id = ?2 AND ${rank('role')} < ${rank('?3')}
+        AND ${liveAndManaged(target.type, 1, 4)} AND ${liveAgent}`).bind(target.id, agent.id, role, callerId),
+  ]);
+  const shared = { agentId: agent.id, name: agent.name, role };
+  if (changed(inserted)) return json({ shared }, 201, NO_STORE);
+  if (changed(raised)) return json({ shared }, 200, NO_STORE);
+  if (!await managesLive(env.DB, target.type, target.id, callerId)) return notFound();
+  const [grant] = await grantRows(createDb(env.DB), target, agent.id);
+  if (!grant) return refuse(404, 'agent-not-found', 'No agent has that ID. Copy it from the agent’s row in Settings → Agents.');
+  if (lower(role, grant.role)) {
+    return refuse(409, 'demotion-unavailable', `${agent.name} already has more access. To lower it, change it under People with access.`);
+  }
+  return json({ shared }, 200, NO_STORE);
+}
+
 const KICK_FAILED = 'The change is saved, but some open windows haven’t closed yet. Try again.';
 
 /**
@@ -253,6 +289,7 @@ async function change(
       if (!remove || !principalId || principalId === ownerUserId) return refuse(404, 'not-found', 'That person no longer has access here.');
       return (await kickFrom(env.DB, env, target, [principalId], Date.now())) ?? json({ removed: { principalId } }, 200, NO_STORE);
     }
+    if (!remove && grant.principalType === 'agent' && role === 'owner') return refuse(400, 'bad-request', AGENT_ROLE_CAP);
     let done: boolean;
     if (remove) {
       const [person] = grant.principalType === 'user'
@@ -311,7 +348,11 @@ export async function handleMembers(request: Request, env: MembersEnv, target: M
   const body = await readJsonObject(request);
   if (!body) return refuse(400, 'bad-request', 'The request body must be a JSON object.');
   // Every write below re-checks manage in its own statement, so a demotion that lands while the body arrives wins.
-  if (request.method === 'POST') return share(env, target, access.ownerUserId, principal, body);
+  if (request.method === 'POST') {
+    return typeof body.agentId === 'string'
+      ? shareAgent(env, target, principal, body.agentId, body)
+      : share(env, target, access.ownerUserId, principal, body);
+  }
   return change(db, env, target, access.ownerUserId, principal, body, request.method === 'DELETE');
 }
 

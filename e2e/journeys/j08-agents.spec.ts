@@ -70,8 +70,8 @@ test('j08-agents keys: a minted key is shown once; revoking it 401s a raw bearer
   const live = await agentSocket(stack.baseUrl, docId, key);
 
   await agentRow(settings, 'Scribe').getByRole('button', { name: 'Revoke Scribe', exact: true }).click();
-  const confirm = ada.page.getByRole('alertdialog');
-  await expect(confirm, 'revoking asks first').toContainText('Revoke');
+  const confirm = ada.page.getByRole('dialog', { name: 'Revoke Scribe’s key?', exact: true });
+  await expect(confirm, 'revoking asks first').toBeVisible();
   await confirm.getByRole('button', { name: 'Revoke key', exact: true }).click();
   await expect(agentRow(settings, 'Scribe'), 'the agent leaves the list').toHaveCount(0, { timeout: LIVE_TIMEOUT });
 

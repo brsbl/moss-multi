@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as DeviceRouteImport } from './routes/device'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as PdfExportRouteImport } from './routes/pdf-export'
 import { Route as DDocIdRouteImport } from './routes/d.$docId'
@@ -19,6 +20,11 @@ import { Route as InviteTokenRouteImport } from './routes/invite.$token'
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DeviceRoute = DeviceRouteImport.update({
+  id: '/device',
+  path: '/device',
   getParentRoute: () => rootRouteImport,
 } as any)
 const LoginRoute = LoginRouteImport.update({
@@ -49,6 +55,7 @@ const InviteTokenRoute = InviteTokenRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/device': typeof DeviceRoute
   '/login': typeof LoginRoute
   '/pdf-export': typeof PdfExportRoute
   '/d/$docId': typeof DDocIdRoute
@@ -57,6 +64,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/device': typeof DeviceRoute
   '/login': typeof LoginRoute
   '/pdf-export': typeof PdfExportRoute
   '/d/$docId': typeof DDocIdRoute
@@ -66,6 +74,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/device': typeof DeviceRoute
   '/login': typeof LoginRoute
   '/pdf-export': typeof PdfExportRoute
   '/d/$docId': typeof DDocIdRoute
@@ -76,6 +85,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/device'
     | '/login'
     | '/pdf-export'
     | '/d/$docId'
@@ -84,6 +94,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/device'
     | '/login'
     | '/pdf-export'
     | '/d/$docId'
@@ -92,6 +103,7 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/'
+    | '/device'
     | '/login'
     | '/pdf-export'
     | '/d/$docId'
@@ -101,6 +113,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  DeviceRoute: typeof DeviceRoute
   LoginRoute: typeof LoginRoute
   PdfExportRoute: typeof PdfExportRoute
   DDocIdRoute: typeof DDocIdRoute
@@ -115,6 +128,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/device': {
+      id: '/device'
+      path: '/device'
+      fullPath: '/device'
+      preLoaderRoute: typeof DeviceRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/login': {
@@ -157,6 +177,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  DeviceRoute: DeviceRoute,
   LoginRoute: LoginRoute,
   PdfExportRoute: PdfExportRoute,
   DDocIdRoute: DDocIdRoute,
