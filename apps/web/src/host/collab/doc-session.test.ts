@@ -20,7 +20,10 @@ class FakeSocket extends EventTarget {
   ended(code: number) { this.readyState = 3; this.dispatchEvent(new CloseEvent('close', { code })); }
 }
 vi.stubGlobal('WebSocket', FakeSocket);
-const { DocSession, severDocSessions } = await import('./doc-session.ts');
+const sessionModule = await import('./doc-session.ts');
+const { DocSession, severDocSessions } = sessionModule;
+/** T2.5's recovery hook, looked up so the rest of the file runs while it is missing. */
+const reopenDocs = (docIds: string[]) => (sessionModule as { reopenDocs?: (ids: string[]) => void }).reopenDocs?.(docIds);
 const { terminalOf, clearTerminal } = await import('./terminal.ts');
 const { hasUnacked } = await import('./unacked.ts');
 let session: InstanceType<typeof DocSession>;
@@ -64,6 +67,24 @@ it('a rate close keeps the doc and reconnects', async () => {
   expect(sockets).toHaveLength(2);
   expect(session.doc.getText('title').toString()).toBe('pending');
   expect(session.state.unacked).toBe(true);
+});
+it('a reconnect sends the note\'s unacked writes before any payload frame, so blocks made offline are named first', async () => {
+  const first = latest(); first.open(); session.provider.synced = true;
+  first.ended(1006);
+  // Offline: a note write (a new block's element) and its payload's first text.
+  session.doc.getText('title').insert(0, 'offline');
+  session.payloads.hold('minted', true).getText('payload').insert(0, 'code');
+  await vi.advanceTimersByTimeAsync(300);
+  const socket = latest();
+  expect(socket).not.toBe(first);
+  socket.open();
+  const kinds = socket.sent.map((frame) => {
+    const bytes = frame as Uint8Array;
+    return bytes[0] === 7 ? 'payload' : bytes[0] === 0 && bytes[1] !== 0 ? 'note write' : 'other';
+  });
+  const payload = kinds.indexOf('payload');
+  expect(payload, 'the payload is resent').toBeGreaterThan(-1);
+  expect(kinds.slice(0, payload), 'the note write goes first').toContain('note write');
 });
 it('three failed handshakes stop the ladder and ask REST before retrying', async () => {
   const request = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 404 }));
@@ -267,4 +288,33 @@ it('after a reconnect, a write made before the server\'s step 1 waits behind the
   const sent = syncSent(third).length;
   title.insert(0, '#');
   expect(syncSent(third)).toHaveLength(sent + 1);
+});
+
+it('a doc left terminal deleted by a trash that never committed reopens editable when its workspace says it changed', async () => {
+  const access = vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ role: 'editor' }));
+  latest().open(); session.provider.synced = true;
+  latest().ended(4410);
+  expect(terminalOf('doc')).toBe('deleted');
+  reopenDocs(['doc']);
+  await vi.advanceTimersByTimeAsync(300);
+  expect(access, 'it asks REST whether the note is live').toHaveBeenCalledTimes(1);
+  expect(terminalOf('doc')).toBeNull();
+  expect(session.provider.shouldConnect).toBe(true);
+  expect(sockets).toHaveLength(2);
+  latest().open();
+  session.doc.getText('title').insert(0, 'typed after');
+  expect(session.state).toMatchObject({ canWrite: true, unacked: true });
+});
+
+it('a doc REST still has in Trash stays terminal, and a live session is left alone', async () => {
+  const access = vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ deleted: true }));
+  reopenDocs(['doc']);
+  await vi.advanceTimersByTimeAsync(300);
+  expect(access, 'a live session asks nothing').not.toHaveBeenCalled();
+  latest().open(); latest().ended(4410);
+  reopenDocs(['doc']);
+  await vi.advanceTimersByTimeAsync(20_000);
+  expect(access).toHaveBeenCalledTimes(1);
+  expect(terminalOf('doc')).toBe('deleted');
+  expect(sockets).toHaveLength(1);
 });

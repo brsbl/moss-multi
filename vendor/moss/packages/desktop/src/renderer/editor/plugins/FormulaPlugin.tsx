@@ -1,8 +1,8 @@
 // ported-from: packages/desktop/src/renderer/editor/plugins/FormulaPlugin.tsx @ 762abb777
 // moss-multi seam: local-view (A§10): edit-session identity stays in the existing local map.
 // moss-multi seam: register drafts merge while the formula popover stays open.
-import { nodeRegister, repaint } from '@moss-multi/host/collab/register-input';
-import { registerDoc, REGISTER_LOCAL_ORIGIN } from '@moss-multi/host/collab/registers';
+import { nodeRegister, repaint, useFollowRegister, useRegisterWritable } from '@moss-multi/host/collab/register-input';
+import { registerDoc, registerState, REGISTER_LOCAL_ORIGIN, writeRegisterEdit } from '@moss-multi/host/collab/registers';
 import { diffText } from '@moss-multi/host/collab/registers';
 import { $isBoundEditor } from '@moss-multi/host/collab/view-state';
 /**
@@ -232,7 +232,13 @@ interface EditingFormula {
   sourceMode: FormulaSourceMode;
   /** Bound references tracked by their ranges in the humanized expression. */
   references: PositionedFormulaReference[];
+  /** Changes when the popover (re)reads its formula: on open and when its payload arrives, not when it follows a move. */
+  session: number;
+  /** Opened on a bound note before its payload arrived: the mode and draft are read again once it does. */
+  pending: boolean;
 }
+
+let formulaEditSessions = 0;
 
 interface FormulaDraft {
   name: string;
@@ -401,6 +407,7 @@ function FormulaEditPopover({
   getSuggestions: (query: string) => FormulaSuggestion[];
 }): JSX.Element | null {
   const [editor] = useLexicalComposerContext();
+  const writable = useRegisterWritable(editor, editingFormula.nodeKey);
   const [name, setName] = useState(editingFormula.name);
   const [expression, setExpression] = useState(editingFormula.expression);
   const [suggestionState, setSuggestionState] = useState<PopoverSuggestionState | null>(null);
@@ -464,9 +471,13 @@ function FormulaEditPopover({
     return () => { stopped = true; text.unobserve(changed); };
   }, [editor, editingFormula, readCurrentDraft, setDraftState]);
 
+  // Per session, so following the formula through a peer's move keeps what the inputs show.
+  const sessionDraftRef = useRef(editingFormula);
+  sessionDraftRef.current = editingFormula;
   useEffect(() => {
-    setDraftState({ name: editingFormula.name, expression: editingFormula.expression });
-  }, [editingFormula, setDraftState]);
+    const opened = sessionDraftRef.current;
+    setDraftState({ name: opened.name, expression: opened.expression });
+  }, [editingFormula.session, setDraftState]);
 
   useEffect(() => {
     const focusValueInput = () => {
@@ -478,9 +489,13 @@ function FormulaEditPopover({
       input.setSelectionRange(0, input.value.length);
     };
     focusValueInput();
-    const frame = requestAnimationFrame(focusValueInput);
+    // moss-multi: the retry only takes focus back. A frame can come late (WebKit under load), after the user placed
+    // the caret and typed; selecting the value again then let the next keystroke replace it.
+    const frame = requestAnimationFrame(() => {
+      if (expressionInputRef.current?.ownerDocument.activeElement !== expressionInputRef.current) focusValueInput();
+    });
     return () => cancelAnimationFrame(frame);
-  }, [editingFormula.nodeKey]);
+  }, [editingFormula.session]);
 
   const handleNameChange = useCallback(
     (nextName: string) => {
@@ -722,6 +737,7 @@ function FormulaEditPopover({
                 ref={nameInputRef}
                 aria-label="Formula name"
                 value={name}
+                readOnly={!writable}
                 onChange={(event) => handleNameChange(event.target.value)}
                 onKeyDown={handleInputKeyDown}
                 placeholder="Name"
@@ -732,6 +748,7 @@ function FormulaEditPopover({
                 ref={expressionInputRef}
                 aria-label={editingFormula.sourceMode === 'symbolic' ? 'Variable value' : 'Formula expression'}
                 value={expression}
+                readOnly={!writable}
                 onChange={(event) =>
                   handleExpressionChange(event.target.value, event.target.selectionStart)
                 }
@@ -779,7 +796,56 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
   const editRedoDraftRef = useRef<FormulaDraftSnapshot | null>(null);
   const editReferenceBindingsRef = useRef<PositionedFormulaReference[]>([]);
   const editExpressionRef = useRef('');
+  // The stored formula as the open popover last read it: a bound note writes each edit against it, rebased onto the
+  // payload as it is now, never the draft's whole value.
+  const editStoredRef = useRef<string | null>(null);
   const editingFormulaNodeKey = editingFormula?.nodeKey ?? null;
+
+  const readEditingFormula = useCallback(
+    (nodeKey: string, anchorRect: AnchorRect, collisionBoundary: Element | null): EditingFormula | null => {
+      let draft: EditingFormula | null = null;
+      editor.getEditorState().read(() => {
+        const node = $getNodeByKey(nodeKey);
+        if (!$isFormulaNode(node)) {
+          return;
+        }
+        const formula = node.getFormula();
+        const result = node.getResult();
+        const sourceMode = classifyFormulaSource(formula, { storedDisplay: result });
+        const editableFormula = humanizeFormulaExpressionWithReferences(formula);
+        draft = {
+          nodeKey,
+          noteId,
+          formulaId: node.getFormulaId(),
+          name: sourceMode === 'symbolic' ? formula : node.getName() ?? '',
+          expression: sourceMode === 'symbolic' ? result : editableFormula.expression,
+          result,
+          anchorRect,
+          collisionBoundary,
+          sourceMode,
+          references: sourceMode === 'symbolic' ? [] : editableFormula.references,
+          session: ++formulaEditSessions,
+          pending: !!registerDoc(editor) && !registerState(editor, nodeKey)?.ready
+        };
+      });
+      return draft;
+    },
+    [editor, noteId]
+  );
+
+  const startEditSession = useCallback((nextDraft: EditingFormula) => {
+    editHistoryPushedRef.current = false;
+    editOriginalDraftRef.current = {
+      draft: { name: nextDraft.name, expression: nextDraft.expression },
+      references: nextDraft.references,
+      formulaId: nextDraft.formulaId
+    };
+    editRedoDraftRef.current = null;
+    editReferenceBindingsRef.current = nextDraft.references;
+    editExpressionRef.current = nextDraft.expression;
+    editStoredRef.current = null;
+    setEditingFormula(nextDraft);
+  }, []);
 
   useLayoutEffect(() => {
     if (!editingFormulaNodeKey) {
@@ -908,31 +974,7 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
         return;
       }
 
-      let draft: EditingFormula | null = null;
-      editor.getEditorState().read(() => {
-        const node = $getNodeByKey(nodeKey);
-        if (!$isFormulaNode(node)) {
-          return;
-        }
-        const formula = node.getFormula();
-        const result = node.getResult();
-        const sourceMode = classifyFormulaSource(formula, { storedDisplay: result });
-        const editableFormula = humanizeFormulaExpressionWithReferences(formula);
-        draft = {
-          nodeKey,
-          noteId,
-          formulaId: node.getFormulaId(),
-          name: sourceMode === 'symbolic' ? formula : node.getName() ?? '',
-          expression: sourceMode === 'symbolic' ? result : editableFormula.expression,
-          result,
-          anchorRect: rectFromElement(formulaElement),
-          collisionBoundary: formulaElement.closest('.canvas-scroll'),
-          sourceMode,
-          references: sourceMode === 'symbolic' ? [] : editableFormula.references
-        };
-      });
-
-      const nextDraft = draft as EditingFormula | null;
+      const nextDraft = readEditingFormula(nodeKey, rectFromElement(formulaElement), formulaElement.closest('.canvas-scroll'));
       if (!nextDraft) {
         return;
       }
@@ -941,16 +983,7 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
       event.stopPropagation();
       clearTimeouts();
       setPreviewState(initialPreviewState);
-      editHistoryPushedRef.current = false;
-      editOriginalDraftRef.current = {
-        draft: { name: nextDraft.name, expression: nextDraft.expression },
-        references: nextDraft.references,
-        formulaId: nextDraft.formulaId
-      };
-      editRedoDraftRef.current = null;
-      editReferenceBindingsRef.current = nextDraft.references;
-      editExpressionRef.current = nextDraft.expression;
-      setEditingFormula(nextDraft);
+      startEditSession(nextDraft);
     };
 
     rootElement.addEventListener('mouseover', handleMouseOver);
@@ -965,7 +998,17 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
       rootElement.removeEventListener('click', handleClick);
       clearTimeouts();
     };
-  }, [clearTimeouts, editor, hidePreview, noteId, showPreview]);
+  }, [clearTimeouts, editor, hidePreview, noteId, readEditingFormula, showPreview, startEditSession]);
+
+  // A popover opened before its payload arrived reads its formula again when it does: the mode, references and draft
+  // it showed came from the empty payload.
+  const editingWritable = useRegisterWritable(editor, editingFormulaNodeKey ?? '');
+  useEffect(() => {
+    const target = editingFormula;
+    if (!target?.pending || !editingWritable) return;
+    const arrived = readEditingFormula(target.nodeKey, target.anchorRect, target.collisionBoundary);
+    if (arrived) startEditSession(arrived);
+  }, [editingFormula, editingWritable, readEditingFormula, startEditSession]);
 
   const readCurrentDraft = useCallback((): FormulaDraft | null => {
     const target = editingFormula;
@@ -980,6 +1023,7 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
         return;
       }
       const formula = node.getFormula();
+      editStoredRef.current = formula;
       const result = node.getResult();
       const sourceMode = classifyFormulaSource(formula, { storedDisplay: result });
       draft = {
@@ -1087,11 +1131,21 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
         const instances = $nodesOfType(FormulaNode).filter(
           (candidate) => candidate.getFormulaId() === instanceId
         );
+        // Linked instances take the same edit, each rebased onto its own payload.
+        const before = editStoredRef.current ?? targetNode.getFormula();
+        const writeFormula = (node: FormulaNode, next: string) => {
+          if (!registerDoc(editor)) {
+            node.setFormula(next);
+            return;
+          }
+          const written = writeRegisterEdit(editor, node.getKey(), before, next);
+          if (written !== null && node.getKey() === target.nodeKey) editStoredRef.current = written;
+        };
 
         if (target.sourceMode === 'symbolic') {
           for (const node of instances) {
             if (node.getFormula() !== nextName) {
-              node.setFormula(nextName);
+              writeFormula(node, nextName);
               changed = true;
             }
             if (node.getName() !== null) {
@@ -1113,7 +1167,7 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
         const normalizedName = nextName.length > 0 ? nextName : null;
         for (const node of instances) {
           if (node.getFormula() !== nextExpression) {
-            node.setFormula(nextExpression);
+            writeFormula(node, nextExpression);
             changed = true;
           }
           if (node.getName() !== normalizedName) {
@@ -1278,6 +1332,32 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
     [editingFormula, editor]
   );
 
+  const endEditSession = useCallback(() => {
+    editHistoryPushedRef.current = false;
+    editOriginalDraftRef.current = null;
+    editRedoDraftRef.current = null;
+    editReferenceBindingsRef.current = [];
+    editExpressionRef.current = '';
+    editStoredRef.current = null;
+    setEditingFormula(null);
+  }, []);
+
+  // A peer's move recreates the formula node: the popover follows it by payload id. A peer's removal closes it with a
+  // notice rather than leaving it open on nothing.
+  useFollowRegister(
+    editor,
+    editingFormulaNodeKey,
+    (nodeKey) => {
+      const element = editor.getElementByKey(nodeKey);
+      setEditingFormula((current) =>
+        current && current.nodeKey === editingFormulaNodeKey
+          ? { ...current, nodeKey, anchorRect: element ? rectFromElement(element) : current.anchorRect }
+          : current
+      );
+    },
+    endEditSession
+  );
+
   return (
     <>
       <FormulaPreview state={previewState} />
@@ -1286,12 +1366,7 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
           editingFormula={editingFormula}
           onClose={(options) => {
             const { nodeKey } = editingFormula;
-            editHistoryPushedRef.current = false;
-            editOriginalDraftRef.current = null;
-            editRedoDraftRef.current = null;
-            editReferenceBindingsRef.current = [];
-            editExpressionRef.current = '';
-            setEditingFormula(null);
+            endEditSession();
             // Opening the popover suppresses the pill's click so the editor
             // never takes focus. Deliberate closes (submit, escape, dismiss)
             // hand it back, otherwise the note has no selection and undo

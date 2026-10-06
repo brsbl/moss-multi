@@ -3,11 +3,11 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.ts b/packa
 +++ b/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.ts
 @@ -1,3 +1,5 @@
 +// moss-multi seam: register payloads (A§10.10).
-+import { readRegister, writeRegister, initRegisterNode, resetRegisterOnCopy } from '@moss-multi/host/collab/registers';
++import { readRegister, writeRegister, initRegisterNode } from '@moss-multi/host/collab/registers';
  import type { JSX } from 'react';
  import { $applyNodeReplacement, type DOMConversionMap, type DOMConversionOutput, type DOMExportOutput, DecoratorNode, type EditorConfig, type LexicalNode, type NodeKey, type SerializedLexicalNode, type Spread } from 'lexical';
  import { resolveLanguage } from '../plugins/code-block/languages';
-@@ -34,11 +36,22 @@ function $convertCodeElement(domNode: HTMLElement): DOMConversionOutput | null {
+@@ -34,11 +36,17 @@ function $convertCodeElement(domNode: HTMLElement): DOMConversionOutput | null {
  }
  
  export class CodeBlockNode extends DecoratorNode<JSX.Element> {
@@ -22,15 +22,10 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.ts b/packa
 +    this.__regId = previous.__regId;
 +  }
 +
-+  resetOnCopyNodeFrom(original: this): void {
-+    super.resetOnCopyNodeFrom(original);
-+    resetRegisterOnCopy(this);
-+  }
-+
    static getType(): string {
      return 'code-block';
    }
-@@ -70,7 +83,7 @@ export class CodeBlockNode extends DecoratorNode<JSX.Element> {
+@@ -70,7 +78,7 @@ export class CodeBlockNode extends DecoratorNode<JSX.Element> {
      return {
        type: 'code-block',
        version: 1,
@@ -39,7 +34,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.ts b/packa
        language: this.__language,
        ...(this.__theme !== DEFAULT_THEME ? { theme: this.__theme } : {}),
        ...(this.__commentIds.length > 0 ? { commentIds: this.__commentIds } : {})
-@@ -89,7 +102,7 @@ export class CodeBlockNode extends DecoratorNode<JSX.Element> {
+@@ -89,7 +97,7 @@ export class CodeBlockNode extends DecoratorNode<JSX.Element> {
    exportDOM(): DOMExportOutput {
      const element = document.createElement('pre');
      const codeElement = document.createElement('code');
@@ -48,7 +43,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.ts b/packa
      codeElement.setAttribute('data-language', this.__language);
      element.appendChild(codeElement);
      return { element };
-@@ -110,10 +123,11 @@ export class CodeBlockNode extends DecoratorNode<JSX.Element> {
+@@ -110,10 +118,11 @@ export class CodeBlockNode extends DecoratorNode<JSX.Element> {
    }
  
    getCode(): string {
@@ -61,7 +56,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.ts b/packa
      const writable = this.getWritable();
      writable.__code = code;
    }
-@@ -146,7 +160,7 @@ export class CodeBlockNode extends DecoratorNode<JSX.Element> {
+@@ -146,7 +155,7 @@ export class CodeBlockNode extends DecoratorNode<JSX.Element> {
    }
  
    getTextContent(): string {

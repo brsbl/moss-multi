@@ -1015,8 +1015,11 @@ function SketchWrapper({
   );
 
   // moss-multi seam: register payloads (A§10.10)
-  const applyPeerChange = useCallback((rebase: Rebase) => {
+  const openedEmpty = useRef(isInitialEmpty);
+  const applyPeerChange = useCallback((rebase: Rebase, first: boolean) => {
     const local = rebase({ grid: gridRef.current, labels: labelsRef.current });
+    // A canvas that mounted before its payload arrived opened for drawing as if new; untouched, it closes again.
+    if (first && openedEmpty.current && undoRef.current.length === 0 && (local.grid.some(Boolean) || local.labels.length > 0)) setIsEditing(false);
     gridRef.current = local.grid;
     labelsRef.current = local.labels;
     setGrid(local.grid);

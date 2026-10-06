@@ -123,7 +123,16 @@ async function seed(browser: Browser): Promise<Seeded> {
     for (const note of NOTES) docs[note.id] = ((await api(page, 'POST', '/api/docs', { title: note.title, markdown: note.markdown })).doc as { id: string }).id;
     const vault = ((await api(page, 'GET', `/api/workspace?doc=${encodeURIComponent(docs.demo)}`)).vault as { id: string }).id;
     await api(page, 'POST', `/api/folders/${encodeURIComponent(vault)}/members`, { email: reader.email, role: 'viewer' });
-    return { readerCookies: await pastAuthLimit(() => signIn(stack.baseUrl, reader)), docs };
+    // A share by email is an invite (T2.8): the reader redeems it, as following its link would.
+    const { invites } = (await api(page, 'GET', `/api/folders/${encodeURIComponent(vault)}/invites`)) as { invites: { email: string; url: string }[] };
+    const token = new URL(invites.find((invite) => invite.email === reader.email.toLowerCase())!.url).pathname.replace(/^\/invite\//, '');
+    const readerCookies = await pastAuthLimit(() => signIn(stack.baseUrl, reader));
+    const accepted = await fetch(new URL(`/api/invites/${token}/accept`, stack.baseUrl), {
+      method: 'POST',
+      headers: { origin: new URL(stack.baseUrl).origin, accept: 'application/json', cookie: readerCookies.map(({ name, value }) => `${name}=${value}`).join('; ') },
+    });
+    if (!accepted.ok) throw new Error(`the reader redeeming the vault invite: ${accepted.status}`);
+    return { readerCookies, docs };
   } finally {
     await page.context().close();
   }

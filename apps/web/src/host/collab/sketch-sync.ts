@@ -9,6 +9,8 @@ import { moveEntries, readMapEntries, rebaseMapEntries, sameValue } from '@moss-
 
 export interface SketchValue<L = unknown> { grid: boolean[]; labels: L[] }
 export type Rebase = <L>(local: SketchValue<L>) => SketchValue<L>;
+/** `first`: the payload has just arrived (a view can mount before its payload doc's state does). */
+export type ApplyPeerChange = (rebase: Rebase, first: boolean) => void;
 type Entries = Map<string, unknown>;
 
 const sameEntries = (a: Entries, b: Entries): boolean =>
@@ -20,7 +22,7 @@ export function rebaseSketch<L>(local: SketchValue<L>, from: Entries, to: Entrie
   return { grid: moved.__grid as boolean[], labels: moved.__labels as L[] };
 }
 
-export function useSketchPeerSync<L>(nodeKey: string, grid: boolean[], labels: L[], apply: (rebase: Rebase) => void): {
+export function useSketchPeerSync<L>(nodeKey: string, grid: boolean[], labels: L[], apply: ApplyPeerChange): {
   /** Runs the canvas's own register write, which is not a peer change. */
   write(commit: () => void): void;
 } {
@@ -41,8 +43,10 @@ export function useSketchPeerSync<L>(nodeKey: string, grid: boolean[], labels: L
     const from = synced.current;
     const to = read();
     synced.current = to;
-    if (!from || !to || sameEntries(from, to)) return;
-    applyRef.current((local) => rebaseSketch(local, from, to));
+    if (!to || (from && sameEntries(from, to))) return;
+    // The first arrival moves the view from nothing to the whole payload.
+    const start = from ?? new Map<string, unknown>();
+    applyRef.current((local) => rebaseSketch(local, start, to), !from);
   }, [read]);
 
   useEffect(() => { flush(); }, [grid, labels, flush]);

@@ -10,6 +10,7 @@ import type { Actor, Actors } from '../lib/actors.ts';
 import {
   APP_STATE_ATTR, BODY_BINDING_ATTR, CONNECTION_BANNER_ATTR, NAMES, ROLE_ATTR, SIDEBAR_ROW_ATTR, SYNC_UNACKED_ATTR, TERMINAL_REASON_ATTR,
 } from '../lib/contract.ts';
+import { grant } from '../lib/grants.ts';
 import type { Principal } from '../lib/principals.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
@@ -60,11 +61,8 @@ async function listing(actor: Actor, query = ''): Promise<{ vault: { id: string;
 
 /** Declared setup: the owner grants `member` a role on the vault. */
 async function grantVault(owner: Actor, vaultId: string, member: Principal, role: 'viewer' | 'editor'): Promise<void> {
-  const origin = new URL(owner.page.url()).origin;
-  const response = await owner.context.request.post(`${origin}/api/folders/${vaultId}/members`, {
-    headers: { origin, 'content-type': 'application/json' }, data: { email: member.email, role }, timeout: 15_000,
-  });
-  expect(response.status(), `declared setup: ${member.label} is a vault ${role}`).toBe(201);
+  // A share by email is an invite (T2.8); declared setup redeems it as following its link would.
+  await grant(owner, { folderId: vaultId }, member, role);
 }
 
 test('j13-vaults: Ada creates a vault inline, switches, and creates a note that stays in it @p:note-4 @evidence', async ({ actors }) => {

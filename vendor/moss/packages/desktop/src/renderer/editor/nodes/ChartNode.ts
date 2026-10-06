@@ -1,11 +1,13 @@
 // ported-from: packages/desktop/src/renderer/editor/nodes/ChartNode.tsx @ 762abb777 (extracted)
 // moss-multi seam: register payloads (A§10.10): the config is a per-key register on a bound doc.
-import { readMapRegister, writeMapRegister, initRegisterNode, resetRegisterOnCopy } from '@moss-multi/host/collab/registers';
+import { readMapRegister, writeMapRegister, initRegisterNode } from '@moss-multi/host/collab/registers';
 import type { JSX } from 'react';
 import { $applyNodeReplacement, type DOMConversionMap, type DOMConversionOutput, type DOMExportOutput, DecoratorNode, type EditorConfig, type LexicalNode, type NodeKey, type SerializedLexicalNode, type Spread } from 'lexical';
 import { cloneCommentIds, exportCommentIds, importCommentIds, initCommentIds } from '../utils/commentable-node';
 import { type ChartConfig, serializeChartConfig, validateChartConfig } from '../utils/chartDefaults';
 import { renderNodeView } from './node-views';
+
+const PENDING_CONFIG: ChartConfig = { type: 'bar', data: [] };
 
 export type SerializedChartNode = Spread<
   {
@@ -40,11 +42,6 @@ export class ChartNode extends DecoratorNode<JSX.Element> {
   afterCloneFrom(previous: this): void {
     super.afterCloneFrom(previous);
     this.__regId = previous.__regId;
-  }
-
-  resetOnCopyNodeFrom(original: this): void {
-    super.resetOnCopyNodeFrom(original);
-    resetRegisterOnCopy(this);
   }
 
   static getType(): string {
@@ -114,7 +111,8 @@ export class ChartNode extends DecoratorNode<JSX.Element> {
   }
 
   getConfig(): ChartConfig {
-    return (readMapRegister(this)?.__config as ChartConfig | undefined) ?? this.__config;
+    // A peer's node has no config until its payload arrives; it renders empty meanwhile.
+    return (readMapRegister(this)?.__config as ChartConfig | undefined) ?? this.__config ?? PENDING_CONFIG;
   }
 
   /** `base` is the config the caller derived `config` from; keys it left alone keep a peer's concurrent writes. */

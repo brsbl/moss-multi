@@ -13,12 +13,13 @@ import { createDb, type Db } from '../db/client.ts';
 import { docs } from '../db/schema.ts';
 import type { AppEnv } from '../env.ts';
 import { json } from '../worker/route.ts';
-import { resolveDocAccess, resolveFolderAccess } from './access.ts';
+import { liveLink, resolveDocAccess, resolveFolderAccess } from './access.ts';
 import { admitDuplicateMedia, copyMedia } from './assets.ts';
 import { createComment } from './comments.ts';
 import { folderNotFound, liveIn, moveDoc, upFrom, vaultOf } from './folders.ts';
+import { handleInviteLinks } from './invites.ts';
 import { handleLinks } from './links.ts';
-import { acceptShares, handleMembers, type MembersEnv } from './members.ts';
+import { handleMembers, type MembersEnv } from './members.ts';
 import { restoreDoc, trashDoc } from './trash.ts';
 import { NO_STORE, notFound, readJsonObject, unauthenticated } from './respond.ts';
 import { ensureDefaultVault } from './vaults.ts';
@@ -27,6 +28,7 @@ export type DocsEnv = AuthEnv & Pick<AppEnv, 'DocDO' | 'PrincipalDO'> & MembersE
 
 const DOC = /^\/api\/docs\/([^/]+)$/;
 const MEMBERS = /^\/api\/docs\/([^/]+)\/members$/;
+const INVITES = /^\/api\/docs\/([^/]+)\/invites$/;
 const LINKS = /^\/api\/docs\/([^/]+)\/links(?:\/([^/]+))?$/;
 const INSTANCE = /^\/api\/docs\/([^/]+)\/instance$/;
 const CONTENT = /^\/api\/docs\/([^/]+)\/content$/;
@@ -126,7 +128,7 @@ async function duplicateDoc(request: Request, env: DocsEnv, docId: string): Prom
     // The copy's media are the source's own record, so it shows the same files wherever it lands (A§16).
     await copyMedia(env.DB, docId, doc.id);
     const target = await getServerByName(env.DocDO, doc.id);
-    await target.createFromSnapshot({ folderId, ownerId: folder.ownerUserId, title }, snapshot.state);
+    await target.createFromSnapshot({ folderId, ownerId: folder.ownerUserId, title }, snapshot.state, snapshot.payloads);
   } catch (error) {
     await db.delete(docs).where(eq(docs.id, doc.id));
     if (error instanceof Error && error.message === 'doc-cap') return json({ error: 'doc-cap' }, 413, NO_STORE);
@@ -149,7 +151,9 @@ async function readDoc(request: Request, env: DocsEnv, docId: string): Promise<R
     .where(eq(docs.id, docId))
     .limit(1);
   if (!doc) return notFound();
-  await acceptShares(env.DB, principal, docId, access);
+  // A doc link's holder sees the note as its own root, as /api/workspace lists it, never the owner's folder id.
+  const link = access.linkOnly ? await liveLink(db, shareTokenOf(request) ?? (principal.type === 'anonymous' ? principal.shareToken : null)) : null;
+  if (link?.targetType === 'doc') doc.folderId = doc.id;
   return json({ doc, role: access.role }, 200, NO_STORE);
 }
 
@@ -218,6 +222,8 @@ export async function handleDocs(request: Request, env: DocsEnv): Promise<Respon
   }
   const members = MEMBERS.exec(pathname);
   if (members) return handleMembers(request, env, { type: 'doc', id: members[1] });
+  const pending = INVITES.exec(pathname);
+  if (pending) return handleInviteLinks(request, env, { type: 'doc', id: pending[1] });
   const links = LINKS.exec(pathname);
   if (links) return handleLinks(request, env, { type: 'doc', id: links[1] }, links[2] ?? null);
   const accessMatch = /^\/api\/docs\/([^/]+)\/access$/.exec(pathname);

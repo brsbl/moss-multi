@@ -1,5 +1,6 @@
 // T1.7: one shared natural-idle window, with constructor identity proving every cold path.
 import type { Actor, Actors } from '../lib/actors.ts';
+import { acceptInvite } from '../lib/grants.ts';
 import { BODY_BINDING_ATTR, DOC_ID_ATTR, EDITOR_PANE_ATTR, SYNC_UNACKED_ATTR } from '../lib/contract.ts';
 import { IDLE_MS, induce, inductionProblems } from '../lib/hibernate.ts';
 import { awarenessFrames, visibility } from '../lib/idle.ts';
@@ -31,6 +32,7 @@ async function note(actors: Actors, owner: Principal, peer: Principal, label: st
   await expect(pane).toHaveAttribute(SYNC_UNACKED_ATTR, '0');
   await ui.shareWith(actor, docId, peer, 'Can edit');
   await actor.page.keyboard.press('Escape');
+  await acceptInvite(actor, { docId }, peer);
   return { actor, docId, frames };
 }
 

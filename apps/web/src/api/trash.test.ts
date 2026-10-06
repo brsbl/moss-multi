@@ -59,17 +59,26 @@ const DocDO = {
   }),
 };
 
+const FAILING = Symbol('failing');
+
 /** D1 as the routes see it: the test's D1, except a statement matching failSql fails once. */
 function flakyDb(db: D1Database): D1Database {
   return new Proxy(db, {
     get(target, key) {
+      // A batch holding the failing statement fails whole, as D1's does.
+      if (key === 'batch') {
+        return async (batch: D1PreparedStatement[]) => {
+          if (batch.some((statement) => FAILING in statement)) throw new Error('D1_ERROR: storage unavailable');
+          return target.batch(batch);
+        };
+      }
       if (key !== 'prepare') return Reflect.get(target, key, target);
       return (sql: string) => {
         statements += 1;
         if (!failSql?.test(sql)) return target.prepare(sql);
         failSql = null;
         const refuse = async () => { throw new Error('D1_ERROR: storage unavailable'); };
-        const failing = { bind: () => failing, run: refuse, all: refuse, raw: refuse, first: refuse };
+        const failing = { bind: () => failing, run: refuse, all: refuse, raw: refuse, first: refuse, [FAILING]: true };
         return failing;
       };
     },

@@ -3,11 +3,11 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.ts b/packages
 +++ b/packages/desktop/src/renderer/editor/nodes/SketchNode.ts
 @@ -1,3 +1,5 @@
 +// moss-multi seam: register payloads (A§10.10): cells and labels are per-key registers on a bound doc.
-+import { readMapRegister, writeMapRegister, initRegisterNode, resetRegisterOnCopy } from '@moss-multi/host/collab/registers';
++import { readMapRegister, writeMapRegister, initRegisterNode } from '@moss-multi/host/collab/registers';
  import type { JSX } from 'react';
  import { $applyNodeReplacement, type DOMConversionMap, type DOMConversionOutput, type DOMExportOutput, DecoratorNode, type EditorConfig, type LexicalNode, type NodeKey, type SerializedLexicalNode, type Spread } from 'lexical';
  import { cloneCommentIds, exportCommentIds, importCommentIds, initCommentIds } from '../utils/commentable-node';
-@@ -190,10 +192,21 @@ function $convertSketchElement(domNode: HTMLElement): DOMConversionOutput | null
+@@ -190,10 +192,16 @@ function $convertSketchElement(domNode: HTMLElement): DOMConversionOutput | null
  // ---------------------------------------------------------------------------
  
  export class SketchNode extends DecoratorNode<JSX.Element> {
@@ -21,15 +21,10 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.ts b/packages
 +    this.__regId = previous.__regId;
 +  }
 +
-+  resetOnCopyNodeFrom(original: this): void {
-+    super.resetOnCopyNodeFrom(original);
-+    resetRegisterOnCopy(this);
-+  }
-+
    static getType(): string {
      return 'sketch';
    }
-@@ -225,7 +238,7 @@ export class SketchNode extends DecoratorNode<JSX.Element> {
+@@ -225,7 +233,7 @@ export class SketchNode extends DecoratorNode<JSX.Element> {
      return {
        type: 'sketch',
        version: 1,
@@ -38,7 +33,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.ts b/packages
        ...exportCommentIds(this.__commentIds)
      };
    }
-@@ -246,7 +259,7 @@ export class SketchNode extends DecoratorNode<JSX.Element> {
+@@ -246,7 +254,7 @@ export class SketchNode extends DecoratorNode<JSX.Element> {
  
    exportDOM(): DOMExportOutput {
      const element = document.createElement('pre');
@@ -47,7 +42,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.ts b/packages
      element.setAttribute('data-sketch-grid', text);
      element.textContent = text;
      return { element };
-@@ -267,19 +280,22 @@ export class SketchNode extends DecoratorNode<JSX.Element> {
+@@ -267,19 +275,22 @@ export class SketchNode extends DecoratorNode<JSX.Element> {
    }
  
    getGrid(): boolean[] {
@@ -74,7 +69,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.ts b/packages
      const writable = this.getWritable();
      writable.__labels = labels;
    }
-@@ -298,7 +314,7 @@ export class SketchNode extends DecoratorNode<JSX.Element> {
+@@ -298,7 +309,7 @@ export class SketchNode extends DecoratorNode<JSX.Element> {
        '```' +
        MOSS_CANVAS_FENCE_NAME +
        '\n' +

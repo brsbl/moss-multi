@@ -3,7 +3,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b
 +++ b/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx
 @@ -1,3 +1,6 @@
 +// moss-multi seam: publish decorator drafts as register edits.
-+import { useRegisterDraft } from '@moss-multi/host/collab/register-input';
++import { resumeField, useRegisterDraft } from '@moss-multi/host/collab/register-input';
 +import { registerDoc } from '@moss-multi/host/collab/registers';
  import React, { useCallback, useState, useRef, useEffect, useMemo } from 'react';
  import type { JSX } from 'react';
@@ -29,12 +29,13 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b
    const [editor] = useLexicalComposerContext();
 +  const editable = useIsEditorEditable(); // moss-multi seam: read-only-decorators (T2.3)
    const [isSelected, setSelected, clearSelection] = useLexicalNodeSelection(nodeKey);
-   const [isEditing, setIsEditing] = useState(() => consumeAutoEdit(nodeKey));
+-  const [isEditing, setIsEditing] = useState(() => consumeAutoEdit(nodeKey));
++  const [isEditing, setIsEditing] = useState(() => consumeAutoEdit(nodeKey) || resumeField(editor, nodeKey));
    const [isDropdownOpen, setIsDropdownOpen] = useState(false);
 -  const [localCode, setLocalCode] = useState(code);
    const [preHeight, setPreHeight] = useState<number>(0);
    const textareaRef = useRef<HTMLTextAreaElement>(null);
-+  const [localCode, setLocalCode] = useRegisterDraft(editor, nodeKey, code, 'setCode', textareaRef, isEditing);
++  const [localCode, setLocalCode, writable] = useRegisterDraft(editor, nodeKey, code, textareaRef, isEditing);
    const preRef = useRef<HTMLPreElement>(null);
    const enterTrackerRef = useRef(createBlockEndEnterTracker());
    const resolvedLanguage = resolveLanguage(language);
@@ -103,7 +104,29 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b
          setIsEditing(false);
          return;
        }
-@@ -252,6 +272,7 @@ function CodeBlockComponent({
+@@ -209,7 +229,8 @@ function CodeBlockComponent({
+           editor.update(() => {
+             const node = $getNodeByKey(nodeKey);
+             if (!node || !$isCodeBlockNode(node)) return;
+-            node.setCode(nextCode);
++            // A bound note already holds the typed text; a whole-value write would drop a peer's edits.
++            if (!registerDoc(editor)) node.setCode(nextCode);
+             insertParagraphAdjacentToBlock(node, 'after');
+           });
+           return;
+@@ -229,8 +250,9 @@ function CodeBlockComponent({
+         const start = textarea.selectionStart;
+         const end = textarea.selectionEnd;
+ 
+-        const newValue = localCode.substring(0, start) + '  ' + localCode.substring(end);
+-        setLocalCode(newValue);
++        // The field's own text and caret, so the write is the indent alone.
++        textarea.setRangeText('  ', start, end, 'end');
++        setLocalCode(textarea.value);
+ 
+         requestAnimationFrame(() => {
+           textarea.selectionStart = textarea.selectionEnd = start + 2;
+@@ -252,6 +274,7 @@ function CodeBlockComponent({
    // Handle language change
    const handleLanguageChange = useCallback(
      (newLanguage: string) => {
@@ -111,7 +134,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b
        editor.update(() => {
          const node = $getNodeByKey(nodeKey);
          if (node && $isCodeBlockNode(node)) {
-@@ -265,6 +286,7 @@ function CodeBlockComponent({
+@@ -265,6 +288,7 @@ function CodeBlockComponent({
    // Handle theme change
    const handleThemeChange = useCallback(
      (newTheme: string) => {
@@ -119,7 +142,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b
        editor.update(() => {
          const node = $getNodeByKey(nodeKey);
          if (node && $isCodeBlockNode(node)) {
-@@ -302,6 +324,7 @@ function CodeBlockComponent({
+@@ -302,6 +326,7 @@ function CodeBlockComponent({
      (position: 'before' | 'after') => (e: React.MouseEvent) => {
        e.preventDefault();
        e.stopPropagation();
@@ -127,7 +150,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b
        editor.update(() => {
          const node = $getNodeByKey(nodeKey);
          if (!node) return;
-@@ -323,7 +346,7 @@ function CodeBlockComponent({
+@@ -323,7 +348,7 @@ function CodeBlockComponent({
          selected={isSelected}
          beforeLabel="Insert paragraph before code block"
          afterLabel="Insert paragraph after code block"
@@ -136,7 +159,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b
          className="moss-codeblock transition-colors"
          style={themeColors}
        >
-@@ -345,7 +368,10 @@ function CodeBlockComponent({
+@@ -345,7 +370,10 @@ function CodeBlockComponent({
                  onThemeChange={handleThemeChange}
                  getCodeContent={getCodeContent}
                  onDropdownOpenChange={setIsDropdownOpen}
@@ -147,7 +170,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b
                <button
                  type="button"
                  onClick={(e) => {
-@@ -357,6 +383,7 @@ function CodeBlockComponent({
+@@ -357,6 +385,7 @@ function CodeBlockComponent({
                >
                  <StickyNote className="h-3 w-3" />
                </button>
@@ -155,15 +178,15 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b
              </div>
            </div>
  
-@@ -373,6 +400,7 @@ function CodeBlockComponent({
+@@ -373,6 +402,7 @@ function CodeBlockComponent({
              {isEditing ? (
                <textarea
                  ref={textareaRef}
-+                readOnly={!editable /* moss-multi seam: read-only-decorators (T2.3) */}
++                readOnly={!editable || !writable /* moss-multi seam: read-only-decorators (T2.3) */}
                  value={localCode}
                  onChange={(e) => setLocalCode(e.target.value)}
                  onKeyDown={handleTextareaKeyDown}
-@@ -404,11 +432,11 @@ function CodeBlockComponent({
+@@ -404,11 +434,11 @@ function CodeBlockComponent({
                <span className="inline-flex items-center gap-1 align-middle">
                  <KeyboardShortcut keys={['⌘', '⏎']} size="compact" />
                </span>{' '}
@@ -177,7 +200,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b
              </div>
            )}
          </div>
-@@ -421,7 +449,7 @@ function CodeBlockComponent({
+@@ -421,7 +451,7 @@ function CodeBlockComponent({
  registerNodeView(CodeBlockNode.getType(), function decorate(this: CodeBlockNode): JSX.Element {
      return (
        <CodeBlockComponent

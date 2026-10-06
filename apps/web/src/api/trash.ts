@@ -17,7 +17,7 @@ import { resolvePrincipal, shareTokenOf, type Principal } from '../auth/principa
 import { createDb, type Db } from '../db/client.ts';
 import { docs, folders } from '../db/schema.ts';
 import { json } from '../worker/route.ts';
-import { folderChain, managesDoc, resolveDocAccess, resolveFolderAccess, type DocAccess } from './access.ts';
+import { folderChain, managesDoc, reapDeadInvites, resolveDocAccess, resolveFolderAccess, type DocAccess } from './access.ts';
 import { liveIn, upFrom, type FoldersEnv } from './folders.ts';
 import { NO_STORE, notFound, unauthenticated } from './respond.ts';
 
@@ -81,22 +81,32 @@ export async function trashDoc(request: Request, env: FoldersEnv, docId: string)
     } catch (error) {
       console.error('DocDO trash failed', error);
       await settleQuietly(stub, batch);
+      await notify(env, docId);
       return unavailable('The note couldn’t be moved to Trash right now. Try again.');
     }
     let stamped: D1Result;
     try {
-      stamped = await env.DB.prepare(`UPDATE "docs" SET deleted_at = ?1, trash_batch_id = ?2
-        WHERE id = ?3 AND deleted_at IS NULL AND ${managesDoc(3, 4)}`).bind(Date.now(), batch, docId, principal.id).run();
+      const now = Date.now();
+      // The note's open invites die with the trash, in the same write, so a restore never revives them (A§8).
+      [stamped] = await env.DB.batch([
+        env.DB.prepare(`UPDATE "docs" SET deleted_at = ?1, trash_batch_id = ?2
+          WHERE id = ?3 AND deleted_at IS NULL AND ${managesDoc(3, 4)}`).bind(now, batch, docId, principal.id),
+        reapDeadInvites(env.DB, now),
+      ]);
     } catch (error) {
       console.error('trash write failed', error);
       await settleQuietly(stub, batch);
+      // The hold closed every editor 4410; if the note is still live, the change tells them to re-ask and reopen.
+      await notify(env, docId);
       return unavailable('The note couldn’t be moved to Trash right now. Try again.');
     }
     if (!changed(stamped)) {
       const [row] = await db.select({ deletedAt: docs.deletedAt }).from(docs).where(eq(docs.id, docId));
       if (row && row.deletedAt === null) {
         // Still live, so manage went away before the write: reopen the note and answer as the caller now stands.
+        // The hold closed every editor 4410, so the change tells each of them to re-ask REST and reopen.
         await settleQuietly(stub, batch);
+        await notify(env, docId);
         return (await resolveDocAccess(db, principal, docId, shareTokenOf(request))) ? ownerTrashes() : notFound();
       }
     }

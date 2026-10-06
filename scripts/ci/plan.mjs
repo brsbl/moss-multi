@@ -2,10 +2,11 @@
 // CI lane planner and the ci-ok aggregator. Dependency-free: the plan and ci-ok jobs skip install.
 //   node scripts/ci/plan.mjs          prints GITHUB_OUTPUT lines for this event
 //   node scripts/ci/plan.mjs ci-ok    fails unless every planned job passed (NEEDS_JSON = toJSON(needs))
+//   node scripts/ci/plan.mjs budget   fails when a journey group's recorded minutes exceed the shard budget
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { ALL, GROUPS, readJourneys } from './journeys.mjs';
+import { ALL, GROUPS, SHARD_BUDGET_MINUTES, budgetProblems, readJourneys, readMinutes, shardEstimates } from './journeys.mjs';
 
 export const BROWSERS = ['chromium', 'webkit'];
 // Minutes per e2e shard (the job timeout): a ready-PR shard must finish within 13; repeated and @slow runs get 25.
@@ -219,7 +220,17 @@ function changedFilesFor(event, payload) {
   return null;
 }
 
+function budget() {
+  const journeys = readJourneys();
+  const minutes = readMinutes();
+  for (const shard of shardEstimates(journeys, minutes)) console.log(`${shard.engine}/${shard.group}: ${shard.minutes} of ${SHARD_BUDGET_MINUTES} min`);
+  const problems = budgetProblems(journeys, minutes);
+  for (const problem of problems) console.log(`::error::${problem}`);
+  return problems.length ? 1 : 0;
+}
+
 function main(argv) {
+  if (argv[0] === 'budget') return budget();
   if (argv[0] === 'ci-ok') {
     const { ok, problems } = ciOk(JSON.parse(process.env.NEEDS_JSON ?? '{}'));
     console.log(ok ? 'ci-ok: every planned job passed' : `ci-ok: FAILED\n${problems.join('\n')}`);

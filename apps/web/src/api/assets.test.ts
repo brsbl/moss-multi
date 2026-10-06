@@ -21,7 +21,7 @@ const DocDO = {
   get: (id: { name: string }) => ({
     setName: async () => undefined,
     exportMarkdown: async () => exported.get(id.name) ?? '',
-    snapshotForDuplicate: async () => ({ title: 'Original', state: new Uint8Array([1]) }),
+    snapshotForDuplicate: async () => ({ title: 'Original', state: new Uint8Array([1]), payloads: [] }),
     createFromSnapshot: async (...args: unknown[]) => {
       created.set(id.name, args);
     },
@@ -649,7 +649,8 @@ describe('copies carry media (A§16)', () => {
     expect(response.status, await response.clone().text()).toBe(201);
     const { doc } = (await response.json()) as { doc: { id: string; folderId: string } };
     expect(doc.folderId).toBe(cy.homeId);
-    expect(created.get(doc.id), "the copy's references are the source's: nothing renames them").toHaveLength(2);
+    // The input, the source's state and its payloads, as the snapshot gave them: nothing renames a reference.
+    expect(created.get(doc.id)?.slice(1), "the copy's references are the source's: nothing renames them").toEqual([new Uint8Array([1]), []]);
     expect(await bytesOf(await call('GET', `/api/docs/${doc.id}/assets/image.png`, cy.cookie)), "the copy shows the source's bytes").toEqual(PNG);
     expect(await bytesOf(await call('GET', `/api/docs/${cyNote}/assets/image.png`, cy.cookie)), "Cy's own note keeps its file").toEqual(OTHER_PNG);
   });
