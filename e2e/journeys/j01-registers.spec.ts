@@ -434,6 +434,8 @@ test("j01 registers: Ben's reference to another note's formula keeps its identit
   await expect(popover(ada)).toHaveCount(0);
   await settled([ada, ben], id);
   for (const actor of [ada, ben]) {
+    // Off the pill, so its hover card does not open over the reloaded canvas.
+    await actor.page.mouse.move(1, 1);
     await actor.page.reload();
     await ui.waitLive(actor, id); await actor.declareRemount(id);
     await expect.poll(() => sources(actor), { message: `${actor.label}: the reference survives the reload`, timeout: PEER_TIMEOUT }).toEqual(want);
@@ -481,6 +483,8 @@ test("j01 registers: when two references share a name, Ben's merged edit keeps t
   await expect(popover(ada)).toHaveCount(0);
   await settled([ada, ben], id);
   for (const actor of [ada, ben]) {
+    // Off the pill, so its hover card does not open over the reloaded canvas.
+    await actor.page.mouse.move(1, 1);
     await actor.page.reload();
     await ui.waitLive(actor, id); await actor.declareRemount(id);
     await expect.poll(() => sources(actor), { message: `${actor.label}: the kept reference survives the reload`, timeout: PEER_TIMEOUT }).toEqual(want);

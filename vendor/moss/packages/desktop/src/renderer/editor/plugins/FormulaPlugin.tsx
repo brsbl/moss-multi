@@ -570,8 +570,13 @@ function FormulaEditPopover({
         const next = draft[payloadField];
         const base = payloadBaseRef.current;
         payloadBaseRef.current = next;
-        // A popover opened before its payload arrived reads it again as a new session instead.
-        if (local || pending) return;
+        if (local) return;
+        // A popover opened before its payload arrived holds no draft (it was read-only): it shows the arrival at once,
+        // and the new session that follows reads it again with its mode and references.
+        if (pending) {
+          setDraftState(draft);
+          return;
+        }
         // The merge writes nothing: the person's draft, with the peer's text and reference tokens, is written by their
         // next keystroke or on Enter or Apply.
         let merged: string;
