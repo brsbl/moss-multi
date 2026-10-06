@@ -8,7 +8,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
 +// moss-multi seam: formula-ids, line-loss, import-selection (A§12; S-conv B9, §1.2; SP2)
 +import { $rejectLine, $selectEndOutsideDocumentImport, importFormulaId } from './fixes';
 +// moss-multi seam: linear-match (A§12; SP2)
-+import { withLinearRegExps } from './linear-match';
++import { linearRegExp, withLinearRegExps } from './linear-match';
  
  // Custom transformer to preserve underlines in markdown
  const UNDERLINE_TRANSFORMER: TextMatchTransformer = {
@@ -31,7 +31,17 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
      }
    },
    trigger: ' ',
-@@ -1770,7 +1775,7 @@ const TABLE_TRANSFORMER: ElementTransformer = {
+@@ -775,7 +780,8 @@ const LINK_TRANSFORMER: TextMatchTransformer = {
+ // and imports GFM tables back into Lexical TableNode structure.
+ const TABLE_LEADING_PIPE_ROW_REG_EXP = /^\s*\|.*\|?\s*$/;
+ 
+-const TABLE_DIVIDER_ROW_REG_EXP = /^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)+\|?\s*$/;
++// moss-multi seam: linear-match (A§12; SP2)
++const TABLE_DIVIDER_ROW_REG_EXP = linearRegExp(/^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)+\|?\s*$/);
+ 
+ const TABLE_ROW_REG_EXP = new RegExp(
+   `(?:${TABLE_LEADING_PIPE_ROW_REG_EXP.source}|${TABLE_DIVIDER_ROW_REG_EXP.source})`
+@@ -1770,7 +1776,7 @@ const TABLE_TRANSFORMER: ElementTransformer = {
      return output.join('\n');
    },
    regExp: TABLE_ROW_REG_EXP,
@@ -40,7 +50,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
      // Handle divider row - marks previous row as header
      if (isTableDividerRow(match[0])) {
        const nextSibling = parentNode.getNextSibling();
-@@ -1780,12 +1785,12 @@ const TABLE_TRANSFORMER: ElementTransformer = {
+@@ -1780,12 +1786,12 @@ const TABLE_TRANSFORMER: ElementTransformer = {
        if (!table) {
          const previousText = getSingleParagraphTextChild(previousSibling);
          if (!previousText || !isTableBodyRowCandidate(previousText.getTextContent())) {
@@ -55,7 +65,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
          }
  
          table = $createTableNode();
-@@ -1823,14 +1828,14 @@ const TABLE_TRANSFORMER: ElementTransformer = {
+@@ -1823,14 +1829,14 @@ const TABLE_TRANSFORMER: ElementTransformer = {
          isTableDividerRow(nextSiblingText.getTextContent());
  
        if (!$isTableNode(previousSibling) && !nextIsDivider) {
@@ -72,7 +82,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
      }
  
      const immediatePrevious = parentNode.getPreviousSibling();
-@@ -1914,7 +1919,7 @@ const TABLE_TRANSFORMER: ElementTransformer = {
+@@ -1914,7 +1920,7 @@ const TABLE_TRANSFORMER: ElementTransformer = {
        parentNode.replace(table);
      }
  
@@ -81,7 +91,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
    },
    type: 'element'
  };
-@@ -2207,10 +2212,10 @@ const IMAGE_TRANSFORMER: ElementTransformer = {
+@@ -2207,10 +2213,10 @@ const IMAGE_TRANSFORMER: ElementTransformer = {
    // Match whole candidate markdown image lines and parse with a balanced parser.
    // Matching only `![` can truncate content before replace() runs.
    regExp: /^!\[.*\]\(.*\)\s*$/,
@@ -94,7 +104,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
      }
      parentNode.replace(mediaNode);
    },
-@@ -2611,7 +2616,8 @@ const CHECK_LIST_WITH_OPTIONAL_TRAILING_SPACE: ElementTransformer = {
+@@ -2611,7 +2617,8 @@ const CHECK_LIST_WITH_OPTIONAL_TRAILING_SPACE: ElementTransformer = {
    regExp: /^(\s*)(?:[-*+]\s)?\s?(\[(\s|x)?\])(?:\s|$)/i
  };
  
@@ -104,7 +114,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
    // Custom element transformers for block-level content
    // Obsidian embed must come before standard image so ![[ref]] is matched first
    OBSIDIAN_EMBED_TRANSFORMER,
-@@ -2657,7 +2663,7 @@ export const MARKDOWN_EDITOR_TRANSFORMERS: Transformer[] = [
+@@ -2657,7 +2664,7 @@ export const MARKDOWN_EDITOR_TRANSFORMERS: Transformer[] = [
    HIGHLIGHT_TRANSFORMER,
    UNDERLINE_TRANSFORMER,
    FONT_FAMILY_TRANSFORMER

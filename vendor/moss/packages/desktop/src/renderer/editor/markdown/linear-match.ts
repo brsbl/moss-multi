@@ -3,9 +3,9 @@ import type { Transformer } from '@lexical/markdown';
 
 // Linear-time matching for the transformer regexes that backtrack super-linearly on runs of unclosed openers
 // (`[`, `[[`, `?[`, `![`, leading whitespace before a table pipe): a 2 MB note of them took minutes of workerd CPU.
-// Lexical runs `text.match(re)`, so each one is wrapped in a RegExp whose Symbol.match finds the same match: a
-// linear pre-scan yields only the starts where the regex matches, and the regex runs sticky at those (fully
-// anchored ones without groups need no run). Everything else about the RegExp is unchanged. Each scan is held to
+// Lexical runs `text.match(re)` and moss `re.test(text)`, so each one is wrapped in a RegExp whose exec finds the
+// same match: a linear pre-scan yields only the starts where the regex matches, and the regex runs sticky at those
+// (fully anchored ones without groups need no run). Everything else about the RegExp is unchanged. Each scan is held to
 // its regex byte for byte by packages/sync/src/converter/linear-match.golden.test.ts.
 
 type Starts = (text: string) => Iterable<number>;
@@ -23,10 +23,11 @@ class LinearRegExp extends RegExp {
     this.#whole = whole;
   }
 
-  override [Symbol.match](text: string): RegExpMatchArray | null {
+  // match, test, replace and search all go through exec; none of the known regexes is global or sticky.
+  override exec(text: string): RegExpExecArray | null {
     const input = String(text);
     for (const start of this.#starts(input)) {
-      if (this.#whole) return Object.assign([input], { index: 0, input, groups: undefined }) as RegExpMatchArray;
+      if (this.#whole) return Object.assign([input], { index: 0, input, groups: undefined }) as RegExpExecArray;
       this.#sticky.lastIndex = start;
       const match = this.#sticky.exec(input);
       if (match) return match;
@@ -89,7 +90,23 @@ function escapedBodies(text: string): (from: number) => number {
 }
 
 // `\(([^()\s]*(?:\([^()]*\)[^()\s]*)*)\)`, the destination of moss's pills.
+// Its runs are split by parentheses, so it ends in one place or none; that end is kept per start, since many
+// openers can share one destination.
 const PILL_DESTINATION = /\(([^()\s]*(?:\([^()]*\)[^()\s]*)*)\)/y;
+function destinationEnds(text: string): (at: number) => number {
+  const ends = new Map<number, number>();
+  return (at) => {
+    let end = ends.get(at);
+    if (end === undefined) {
+      end = tailEnd(PILL_DESTINATION, text, at);
+      ends.set(at, end);
+    }
+    return end;
+  };
+}
+
+// The `$`-anchored forms (the typing shortcuts) must also end the text.
+const endsAt = (end: number, text: string, anchored: boolean) => end >= 0 && (!anchored || end === text.length);
 
 // Lexical's LINK: `[`, a lazy `.+?`, `]`, then its destination and optional title.
 function* lexicalLinkStarts(text: string): Iterable<number> {
@@ -116,64 +133,85 @@ function* lexicalLinkStarts(text: string): Iterable<number> {
 
 // FILE_LINK: `[[`, then a body that cannot cross `]]`, then `]]`: it matches when the first `]]` after the opener
 // leaves the body at least one character.
-function* wikiLinkStarts(text: string): Iterable<number> {
-  let close = -1;
-  for (let i = text.indexOf('[['); i >= 0; i = text.indexOf('[[', i + 1)) {
-    if (close < i + 2) {
-      close = text.indexOf(']]', i + 2);
-      if (close < 0) return;
+function wikiLinkStarts(anchored: boolean): Starts {
+  return function* (text) {
+    let close = -1;
+    for (let i = text.indexOf('[['); i >= 0; i = text.indexOf('[[', i + 1)) {
+      if (close < i + 2) {
+        close = text.indexOf(']]', i + 2);
+        if (close < 0) return;
+      }
+      if (close >= i + 3 && endsAt(close + 2, text, anchored)) yield i;
     }
-    if (close >= i + 3) yield i;
-  }
+  };
 }
 
 // EMBED_PILL: `?[`, an escaped body, `]`, the destination.
-function* pillStarts(text: string): Iterable<number> {
-  const bodyEnd = escapedBodies(text);
-  for (let i = text.indexOf('?['); i >= 0; i = text.indexOf('?[', i + 1)) {
-    const end = bodyEnd(i + 2);
-    if (text.charCodeAt(end) === 93 && tailEnd(PILL_DESTINATION, text, end + 1) >= 0) yield i;
-  }
+function pillStarts(anchored: boolean): Starts {
+  return function* (text) {
+    const bodyEnd = escapedBodies(text);
+    const destinationEnd = destinationEnds(text);
+    for (let i = text.indexOf('?['); i >= 0; i = text.indexOf('?[', i + 1)) {
+      const end = bodyEnd(i + 2);
+      if (text.charCodeAt(end) === 93 && endsAt(destinationEnd(end + 1), text, anchored)) yield i;
+    }
+  };
 }
 
 const EMPHASIS = ['~~***', '***~~', '~~**', '**~~', '~~*', '*~~', '***', '**', '~~', '*'];
 const opensEmphasis = (text: string, at: number) => text.charCodeAt(at) === 42 || text.startsWith('~~', at);
 
-// FORMATTED_EMBED_PILL: an emphasis run, then a pill or a raw http(s) URL, then an emphasis run.
-function* formattedPillStarts(text: string): Iterable<number> {
-  const bodyEnd = escapedBodies(text);
-  for (let i = 0; i < text.length; i += 1) {
-    if (!opensEmphasis(text, i)) continue;
-    const found = EMPHASIS.some((run) => {
-      if (!text.startsWith(run, i)) return false;
-      const at = i + run.length;
-      if (text.startsWith('http://', at) || text.startsWith('https://', at)) return true;
-      if (!text.startsWith('?[', at)) return false;
-      const end = bodyEnd(at + 2);
-      if (text.charCodeAt(end) !== 93) return false;
-      const after = tailEnd(PILL_DESTINATION, text, end + 1);
-      return after >= 0 && opensEmphasis(text, after);
-    });
-    if (found) yield i;
-  }
+// FORMATTED_EMBED_PILL: an emphasis run, then a pill or a raw http(s) URL, then an emphasis run. Anchored, the
+// closing run is the rest of the text, and a URL runs to its first excluded character, as every closing run
+// starts with one (`*` or `~`).
+const URL_EXCLUDED = /[\s<>{}|\\^[\]`*~]/;
+function formattedPillStarts(anchored: boolean): Starts {
+  return function* (text) {
+    const bodyEnd = escapedBodies(text);
+    const destinationEnd = destinationEnds(text);
+    const closes = (at: number) => (anchored ? text.length - at <= 5 && EMPHASIS.includes(text.slice(at)) : opensEmphasis(text, at));
+    for (let i = 0; i < text.length; i += 1) {
+      if (!opensEmphasis(text, i)) continue;
+      const found = EMPHASIS.some((run) => {
+        if (!text.startsWith(run, i)) return false;
+        const at = i + run.length;
+        const scheme = text.startsWith('https://', at) ? 8 : text.startsWith('http://', at) ? 7 : 0;
+        if (scheme > 0) {
+          if (!anchored) return true;
+          let end = at + scheme;
+          while (end < text.length && !URL_EXCLUDED.test(text[end])) end += 1;
+          return end > at + scheme && closes(end);
+        }
+        if (!text.startsWith('?[', at)) return false;
+        const end = bodyEnd(at + 2);
+        if (text.charCodeAt(end) !== 93) return false;
+        const after = destinationEnd(end + 1);
+        return after >= 0 && closes(after);
+      });
+      if (found) yield i;
+    }
+  };
 }
 
 // The bracketed raw-URL pill: `[`, http(s)://, a run without `]` or whitespace, `]`, the destination.
-function* bracketedUrlStarts(text: string): Iterable<number> {
-  let runStart = -1;
-  let runEnd = -1;
-  for (let i = text.indexOf('['); i >= 0; i = text.indexOf('[', i + 1)) {
-    const scheme = text.startsWith('https://', i + 1) ? 8 : text.startsWith('http://', i + 1) ? 7 : 0;
-    if (scheme === 0) continue;
-    const from = i + 1 + scheme;
-    if (from < runStart || from > runEnd) {
-      let j = from;
-      while (j < text.length && text.charCodeAt(j) !== 93 && !isSpace(text, j)) j += 1;
-      runStart = from;
-      runEnd = j;
+function bracketedUrlStarts(anchored: boolean): Starts {
+  return function* (text) {
+    const destinationEnd = destinationEnds(text);
+    let runStart = -1;
+    let runEnd = -1;
+    for (let i = text.indexOf('['); i >= 0; i = text.indexOf('[', i + 1)) {
+      const scheme = text.startsWith('https://', i + 1) ? 8 : text.startsWith('http://', i + 1) ? 7 : 0;
+      if (scheme === 0) continue;
+      const from = i + 1 + scheme;
+      if (from < runStart || from > runEnd) {
+        let j = from;
+        while (j < text.length && text.charCodeAt(j) !== 93 && !isSpace(text, j)) j += 1;
+        runStart = from;
+        runEnd = j;
+      }
+      if (runEnd > from && text.charCodeAt(runEnd) === 93 && endsAt(destinationEnd(runEnd + 1), text, anchored)) yield i;
     }
-    if (runEnd > from && text.charCodeAt(runEnd) === 93 && tailEnd(PILL_DESTINATION, text, runEnd + 1) >= 0) yield i;
-  }
+  };
 }
 
 // `^!\[.*\]\(.*\)` followed by `$` (the text-match form) or `\s*$` (the element form): one line from `![` to its
@@ -250,14 +288,24 @@ const LINEAR: { source: string; flags: string; starts: Starts; whole?: boolean }
     flags: '',
     starts: lexicalLinkStarts,
   },
-  { source: String.raw`\[\[((?:[^\]]|\](?!\]))+)\]\]`, flags: '', starts: wikiLinkStarts },
-  { source: String.raw`\?\[((?:\\.|[^\]\\])*)\]\(([^()\s]*(?:\([^()]*\)[^()\s]*)*)\)`, flags: '', starts: pillStarts },
-  {
-    source: String.raw`(~~\*\*\*|\*\*\*~~|~~\*\*|\*\*~~|~~\*|\*~~|\*\*\*|\*\*|~~|\*)(?:(\?\[((?:\\.|[^\]\\])*)\]\(([^()\s]*(?:\([^()]*\)[^()\s]*)*)\))|(https?:\/\/[^\s<>{}|\\^[\]` + '`' + String.raw`*~]+))(~~\*\*\*|\*\*\*~~|~~\*\*|\*\*~~|~~\*|\*~~|\*\*\*|\*\*|~~|\*)`,
-    flags: '',
-    starts: formattedPillStarts,
-  },
-  { source: String.raw`\[((?:https?:\/\/[^\]\s]+))\]\(([^()\s]*(?:\([^()]*\)[^()\s]*)*)\)`, flags: '', starts: bracketedUrlStarts },
+  // Each pill and wiki-link regex, as the import form and as the `$`-anchored typing-shortcut form.
+  ...[false, true].flatMap((anchored) => {
+    const end = anchored ? '$' : '';
+    return [
+      { source: String.raw`\[\[((?:[^\]]|\](?!\]))+)\]\]` + end, flags: '', starts: wikiLinkStarts(anchored) },
+      { source: String.raw`\?\[((?:\\.|[^\]\\])*)\]\(([^()\s]*(?:\([^()]*\)[^()\s]*)*)\)` + end, flags: '', starts: pillStarts(anchored) },
+      {
+        source:
+          String.raw`(~~\*\*\*|\*\*\*~~|~~\*\*|\*\*~~|~~\*|\*~~|\*\*\*|\*\*|~~|\*)(?:(\?\[((?:\\.|[^\]\\])*)\]\(([^()\s]*(?:\([^()]*\)[^()\s]*)*)\))|(https?:\/\/[^\s<>{}|\\^[\]` +
+          '`' +
+          String.raw`*~]+))(~~\*\*\*|\*\*\*~~|~~\*\*|\*\*~~|~~\*|\*~~|\*\*\*|\*\*|~~|\*)` +
+          end,
+        flags: '',
+        starts: formattedPillStarts(anchored),
+      },
+      { source: String.raw`\[((?:https?:\/\/[^\]\s]+))\]\(([^()\s]*(?:\([^()]*\)[^()\s]*)*)\)` + end, flags: '', starts: bracketedUrlStarts(anchored) },
+    ];
+  }),
   { source: String.raw`^!\[.*\]\(.*\)$`, flags: '', starts: imageLineStarts(false), whole: true },
   { source: String.raw`^!\[.*\]\(.*\)\s*$`, flags: '', starts: imageLineStarts(true), whole: true },
   {
@@ -265,6 +313,15 @@ const LINEAR: { source: string; flags: string; starts: Starts; whole?: boolean }
     flags: '',
     starts: function* (text) {
       if (pipeRow(text) || spacedPipeRow(text)) yield 0;
+    },
+    whole: true,
+  },
+  // TABLE_DIVIDER_ROW_REG_EXP, which isTableDividerRow tests.
+  {
+    source: String.raw`^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)+\|?\s*$`,
+    flags: '',
+    starts: function* (text) {
+      if (dividerRow(text)) yield 0;
     },
     whole: true,
   },

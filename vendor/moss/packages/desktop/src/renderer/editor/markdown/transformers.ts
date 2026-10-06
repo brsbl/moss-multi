@@ -41,7 +41,7 @@ import { HIGHLIGHT_COLOR_VARIABLES, HIGHLIGHT_YELLOW_VALUE, HIGHLIGHT_YELLOW_VAR
 // moss-multi seam: formula-ids, line-loss, import-selection (A§12; S-conv B9, §1.2; SP2)
 import { $rejectLine, $selectEndOutsideDocumentImport, importFormulaId } from './fixes';
 // moss-multi seam: linear-match (A§12; SP2)
-import { withLinearRegExps } from './linear-match';
+import { linearRegExp, withLinearRegExps } from './linear-match';
 
 // Custom transformer to preserve underlines in markdown
 const UNDERLINE_TRANSFORMER: TextMatchTransformer = {
@@ -781,7 +781,8 @@ const LINK_TRANSFORMER: TextMatchTransformer = {
 // and imports GFM tables back into Lexical TableNode structure.
 const TABLE_LEADING_PIPE_ROW_REG_EXP = /^\s*\|.*\|?\s*$/;
 
-const TABLE_DIVIDER_ROW_REG_EXP = /^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)+\|?\s*$/;
+// moss-multi seam: linear-match (A§12; SP2)
+const TABLE_DIVIDER_ROW_REG_EXP = linearRegExp(/^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)+\|?\s*$/);
 
 const TABLE_ROW_REG_EXP = new RegExp(
   `(?:${TABLE_LEADING_PIPE_ROW_REG_EXP.source}|${TABLE_DIVIDER_ROW_REG_EXP.source})`
