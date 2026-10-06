@@ -9,7 +9,8 @@
 // exits non-zero when a rename lands inexactly or averages more than TITLE_WRITE_BUDGET_MS of workerd CPU, or any
 // single rename exceeds it by more than one /proc tick. Last, it runs the real DocDO (packages/sync/measure/doc-worker.ts)
 // and sends many tiny payload frames over thousands of ids (T1.F2), exiting non-zero past the stated per-frame CPU,
-// memory, held-doc and scaling budgets.
+// memory, held-doc and scaling budgets, and feeds the real SearchDO bodies of unclosed openers, exiting non-zero past
+// the per-request CPU and linear-scaling budgets.
 import { spawn, spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -414,6 +415,76 @@ async function measurePayloadFrames(port) {
   }
 }
 
+// The search index (A§5.3): one global SearchDO indexes every doc and snippets every hit, so a body full of openers
+// with no closer (packages/sync/measure/search-cases.ts) must cost it linear work. Each case runs in a fresh worker; a
+// request past SEARCH_TIMEOUT_MS fails the case. The larger run must cost at most SEARCH_SCALING times the smaller.
+const SEARCH_SIZES = [200_000, 400_000];
+const SEARCH_RUNS = 3;
+// Workerd CPU per request (index, search with its snippet, headings) at every size.
+const SEARCH_BUDGET_MS = 100;
+const SEARCH_SCALING = 3;
+const SEARCH_TIMEOUT_MS = 10_000;
+// 10 ms CPU ticks: scaling compares against no less than this.
+const SEARCH_FLOOR_MS = 20;
+
+async function measureSearchCase(name, opener, port, searchBody) {
+  const server = await startWorker('search', port);
+  const request = (path, body) => timedRequest(server, path, { method: 'POST', body, signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS) });
+  const sizes = [];
+  try {
+    await request('/index?doc=warm', 'quokka [[Warm Up]] <b>warm</b>');
+    await request('/search?doc=warm&q=quokka');
+    for (const chars of SEARCH_SIZES) {
+      const body = searchBody(opener, chars);
+      const doc = `case-${chars}`;
+      const runs = { index: [], search: [], headings: [] };
+      for (let run = 0; run < SEARCH_RUNS; run += 1) {
+        runs.index.push((await request(`/index?doc=${doc}`, body)).cpuMs);
+        runs.search.push((await request(`/search?doc=${doc}&q=quokka`)).cpuMs);
+        runs.headings.push((await request('/headings', `# ${body}`)).cpuMs);
+      }
+      sizes.push({ chars, indexCpuMs: median(runs.index), searchCpuMs: median(runs.search), headingsCpuMs: median(runs.headings) });
+    }
+    return { name, sizes };
+  } catch (error) {
+    const reason = error.name === 'TimeoutError' || error.cause?.name === 'TimeoutError' ? `a request ran past ${SEARCH_TIMEOUT_MS / 1000} s` : String(error.message).split('\n')[0];
+    return { name, sizes, failed: reason };
+  } finally {
+    await stop(server.child);
+  }
+}
+
+async function measureSearch(port) {
+  const { SEARCH_CASES, searchBody } = await import('../packages/sync/measure/search-cases.ts');
+  const results = [];
+  for (const [name, opener] of Object.entries(SEARCH_CASES)) {
+    results.push(await measureSearchCase(name, opener, port, searchBody));
+    port += 1;
+  }
+  return results;
+}
+
+const SEARCH_OPS = ['indexCpuMs', 'searchCpuMs', 'headingsCpuMs'];
+
+/** Every way the search runs miss the stated budget (empty when they meet it). */
+function searchBudgetProblems(results) {
+  const problems = [];
+  for (const r of results) {
+    if (r.failed) {
+      problems.push(`${r.name}: ${r.failed}`);
+      continue;
+    }
+    for (const size of r.sizes) {
+      for (const op of SEARCH_OPS) if (size[op] > SEARCH_BUDGET_MS) problems.push(`${r.name}, ${size.chars} chars: ${op} ${size[op]} ms`);
+    }
+    const [small, large] = r.sizes;
+    for (const op of SEARCH_OPS) {
+      if (large[op] > SEARCH_SCALING * Math.max(small[op], SEARCH_FLOOR_MS)) problems.push(`${r.name}: ${op} grew from ${small[op]} ms to ${large[op]} ms`);
+    }
+  }
+  return problems;
+}
+
 const overTitleBudget = (t) => t.cpuMs > TITLE_WRITE_BUDGET_MS || t.maxCpuMs > TITLE_WRITE_BUDGET_MS + TICK_MS;
 
 async function main() {
@@ -426,6 +497,10 @@ async function main() {
     docdo: await bundle('docdo', join(REPO, 'packages/sync/measure/doc-worker.ts'), {
       durable_objects: { bindings: [{ name: 'DocDO', class_name: 'MeasuredDocDO' }] },
       migrations: [{ tag: 'v1', new_sqlite_classes: ['MeasuredDocDO'] }],
+    }),
+    search: await bundle('search', join(REPO, 'packages/sync/measure/search-worker.ts'), {
+      durable_objects: { bindings: [{ name: 'SearchDO', class_name: 'SearchDO' }] },
+      migrations: [{ tag: 'v1', new_sqlite_classes: ['SearchDO'] }],
     }),
   };
 
@@ -471,6 +546,7 @@ async function main() {
 
   const titles = await measureTitleWrites(port + 1);
   const payloads = await measurePayloadFrames(port + 2);
+  const searches = await measureSearch(port + 3);
 
   const coldOf = (name, key) => round(median(cold[name].map((sample) => sample[key])));
   const families = ratios.filter((r) => !r.name.startsWith('scale note'));
@@ -511,6 +587,13 @@ async function main() {
           (n) =>
             `| ${n.frames} tiny payload frames over ${n.blocks} ids, ${PAYLOAD_SOCKETS} editors, ${PAYLOAD_ROUNDS} rounds: workerd CPU per frame, mean | ${n.frameCpuMs} ms (budget ${PAYLOAD_FRAME_BUDGET_MS} ms); RSS growth ${n.rssMb} MB (budget ${PAYLOAD_RSS_BUDGET_MB} MB); payload docs held ${n.held} (at most ${PAYLOAD_DOCS_HELD}); widest ack ${n.widestAck} ids, ${n.foreign} not the socket's own |`,
         )),
+    ...searches.flatMap((r) => [
+      ...r.sizes.map(
+        (size) =>
+          `| Search, ${r.name} × ${size.chars} chars: workerd CPU per request (index / search and snippet / headings), median of ${SEARCH_RUNS} | ${size.indexCpuMs} / ${size.searchCpuMs} / ${size.headingsCpuMs} ms (budget ${SEARCH_BUDGET_MS} ms) |`,
+      ),
+      ...(r.failed ? [`| Search, ${r.name} | FAILED: ${r.failed} |`] : []),
+    ]),
     `| State-to-markdown ratio r, worst family | ${worst.ratio.toFixed(2)} (${worst.name}) |`,
     '',
     '| Fixture | Markdown B | Y.Doc state B | Ratio |',
@@ -537,6 +620,11 @@ async function main() {
   if (badTitles.length > 0) {
     const detail = badTitles.map((t) => (t.failed ? `${t.name}: ${t.failed}` : `${t.name} at ${t.cpuMs} ms mean, ${t.maxCpuMs} ms max`)).join(', ');
     console.error(`measure-converter: title rename failed or over the ${TITLE_WRITE_BUDGET_MS} ms workerd CPU budget: ${detail}`);
+    process.exitCode = 1;
+  }
+  const searchProblems = searchBudgetProblems(searches);
+  if (searchProblems.length > 0) {
+    console.error(`measure-converter: search over budget in workerd: ${searchProblems.join('; ')}`);
     process.exitCode = 1;
   }
   const payloadProblems = payloads.failed ? [payloads.failed] : payloadBudgetProblems(payloads.notes);
