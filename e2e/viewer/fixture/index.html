@@ -2,7 +2,8 @@
 <!-- A host page for the viewer, as a plugin frame would be: the bundle and stylesheet from /viewer/, and services that
      record every call. Media resolves to /svc/, which the test server answers with Range support. `live: true` passes
      the bundle's frame document as services.htmlFrameUrl, so HTML blocks run in its sandboxed frame; `share: true`
-     passes services.shareWithAgent, which records the selection it is handed. -->
+     passes services.shareWithAgent, which records the selection it is handed (`share: 'fail'`
+     also throws, then rejects). -->
 <html lang="en" data-theme="light">
   <head>
     <meta charset="utf-8" />
@@ -53,7 +54,17 @@
         mount({ live, share, ...options }) {
           document.documentElement.dataset.theme = options.theme ?? 'light';
           let own = live ? { ...services, htmlFrameUrl: '/viewer/moss-viewer-frame.html' } : services;
-          if (share) own = { ...own, shareWithAgent: (selection) => calls.share.push(JSON.parse(JSON.stringify(selection))) };
+          if (share) {
+            own = {
+              ...own,
+              shareWithAgent(selection) {
+                calls.share.push(JSON.parse(JSON.stringify(selection)));
+                if (share !== 'fail') return;
+                if (calls.share.length === 1) throw new Error('host threw');
+                return Promise.reject(new Error('host rejected'));
+              },
+            };
+          }
           const handle = mountMossViewer(document.getElementById('viewer'), { ...options, services: own });
           window.viewerFixture.handle = handle;
           return handle.ready.then(() => ({ title: handle.title, frontmatter: handle.frontmatter }));

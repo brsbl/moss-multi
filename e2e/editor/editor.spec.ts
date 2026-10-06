@@ -49,7 +49,7 @@ interface Fixture {
   reset(options?: { caseInsensitive?: boolean }): void;
   seed(segments: string[], note: { markdown: string; meta: object; comments?: string | null; layout?: string | null }): string;
   seedAsset(dir: string, name: string, base64: string): void;
-  mount(noteId: string, options?: { theme?: 'light' | 'dark'; share?: boolean }): Promise<{ ok: boolean; code?: string; status: string }>;
+  mount(noteId: string, options?: { theme?: 'light' | 'dark'; share?: boolean | 'fail' }): Promise<{ ok: boolean; code?: string; status: string }>;
   setTheme(theme: 'light' | 'dark'): void;
   flush(): Promise<{ kind: string }>;
   unmount(options?: { discardUnsaved?: boolean }): Promise<{ kind: string; flush: string }>;
@@ -113,7 +113,7 @@ async function selectWord(page: Page, line: string, word: string): Promise<void>
   await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
 }
 
-async function mountNote(page: Page, markdown: string, options: { comments?: string | null; theme?: 'light' | 'dark'; title?: string; share?: boolean } = {}) {
+async function mountNote(page: Page, markdown: string, options: { comments?: string | null; theme?: 'light' | 'dark'; title?: string; share?: boolean | 'fail' } = {}) {
   const noteTitle = options.title ?? 'Plan';
   const result = await page.evaluate(
     ({ id, markdown, meta, comments, theme, noteTitle, share }) => {
@@ -490,13 +490,13 @@ test.describe('embeddable editor', () => {
     expect(await page.evaluate(() => window.editorFixture.info)).toEqual({ api: 1, version: '0.2.0', features: ['selection-1', 'share-with-agent-1'] });
   });
 
-  for (const { name, from, to, within, expected } of SELECTION_CASES) {
+  for (const { name, from, to, within, nth, expected } of SELECTION_CASES) {
     test(`selection ${name}: exact text, markdown, lines and headings, the lines golden in the saved file`, async ({ page }) => {
       const seen = await open(page);
       await mountSelectionNote(page);
       if (within === 'code') {
         // Pressing a code block opens its source; the selection is the textarea's.
-        await body(page).locator('.moss-codeblock-pre').click();
+        await body(page).locator('.moss-codeblock-pre').nth(nth ?? 0).click();
         const source = body(page).locator('textarea.moss-codeblock-textarea');
         await expect(source).toBeFocused();
         await source.evaluate((el: HTMLTextAreaElement, { from, to }) => {
@@ -554,6 +554,66 @@ test.describe('embeddable editor', () => {
     expect(await page.evaluate(() => window.editorFixture.selection()), 'the title is not the body').toBeNull();
   });
 
+  test('a mouse drag across table cells is the selection after mouseup, and Share with Agent hands it over', async ({ page }) => {
+    const seen = await open(page);
+    await mountSelectionNote(page, { share: true });
+    const table = SELECTION_CASES.find((entry) => entry.name === 'inside a table')!;
+    const cell = (text: string) => body(page).locator('td, th').filter({ hasText: new RegExp(`^${text}$`) }).first();
+    const from = (await cell(table.from).boundingBox())!;
+    const to = (await cell(table.to).boundingBox())!;
+    await page.mouse.move(from.x + 8, from.y + from.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, { steps: 8 });
+    await page.mouse.up();
+    await frames(page);
+    expect(await page.evaluate(() => window.editorFixture.selection()), 'after mouseup').toEqual(table.expected);
+    await page.locator(SHARE).click();
+    await expect.poll(() => page.evaluate(() => window.editorFixture.shared())).toEqual([table.expected]);
+    expect(seen.errors).toEqual([]);
+  });
+
+  test('a selection in a code block being edited names the edited code, the lines it will be saved on', async ({ page }) => {
+    const seen = await open(page);
+    await mountSelectionNote(page, { share: true });
+    await body(page).locator('.moss-codeblock-pre').first().click();
+    const source = body(page).locator('textarea.moss-codeblock-textarea');
+    await expect(source).toBeFocused();
+    await source.evaluate((el: HTMLTextAreaElement) => el.setSelectionRange(el.value.length, el.value.length));
+    await page.keyboard.type('\n    # sown');
+    await source.evaluate((el: HTMLTextAreaElement) => {
+      const start = el.value.indexOf('return');
+      el.setSelectionRange(start, el.value.length);
+    });
+    const expected: MossSelection = {
+      text: 'return crop\n    # sown',
+      markdown: '    return crop\n    # sown',
+      lines: { start: 21, end: 22 },
+      headings: ['Planting'],
+      blocks: [{ type: 'code-block', line: 19, heading: 'Planting' }],
+    };
+    expect(await page.evaluate(() => window.editorFixture.selection())).toEqual(expected);
+    await page.locator(SHARE).click();
+    await expect.poll(() => page.evaluate(() => window.editorFixture.shared())).toEqual([expected]);
+    // Once the edit is committed and saved, those lines are the selection's markdown.
+    await source.evaluate((el: HTMLTextAreaElement) => el.blur());
+    expect(await page.evaluate(() => window.editorFixture.flush())).toMatchObject({ kind: 'saved' });
+    expectLinesIn((await files(page))[`/Moss/Notes/${SELECTION_TITLE}/${SELECTION_TITLE}.md`]!, expected);
+    expect(seen.errors).toEqual([]);
+  });
+
+  test('a shareWithAgent that throws or rejects stays the host\'s: no page error, and the button keeps working', async ({ page }) => {
+    const seen = await open(page);
+    await mountSelectionNote(page, { share: 'fail' });
+    const [first] = SELECTION_CASES;
+    await selectText(page, BODY, first!.from, first!.to);
+    const button = page.locator(SHARE);
+    await button.click();
+    await button.click();
+    await expect.poll(() => page.evaluate(() => window.editorFixture.shared())).toEqual([first!.expected, first!.expected]);
+    await page.evaluate(() => new Promise((done) => setTimeout(done, 100)));
+    expect(seen.errors).toEqual([]);
+  });
+
   test('Share with Agent shows only with services.shareWithAgent, and a press hands it the selection', async ({ page }) => {
     await open(page);
     await mountSelectionNote(page);
@@ -574,7 +634,7 @@ test.describe('embeddable editor', () => {
 const BODY = '[data-moss-editor] [data-moss-note-editor-root="true"]';
 const SHARE = 'button[aria-label="Share with Agent"]';
 
-function mountSelectionNote(page: Page, options: { share?: boolean } = {}) {
+function mountSelectionNote(page: Page, options: { share?: boolean | 'fail' } = {}) {
   return mountNote(page, SELECTION_NOTE, { title: SELECTION_TITLE, comments: SELECTION_COMMENTS, ...options });
 }
 

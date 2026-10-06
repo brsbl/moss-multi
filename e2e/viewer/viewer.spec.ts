@@ -99,8 +99,8 @@ interface MountOptions {
   title?: string;
   /** Pass the bundle's frame document as services.htmlFrameUrl. */
   live?: boolean;
-  /** Pass services.shareWithAgent. */
-  share?: boolean;
+  /** Pass services.shareWithAgent; 'fail' makes it throw on its first call and reject on later ones. */
+  share?: boolean | 'fail';
 }
 
 async function mount(page: Page, theme: Theme = 'light', options: Partial<MountOptions> = {}) {
@@ -515,11 +515,11 @@ test('advertises selection-1 and share-with-agent-1 in MOSS_VIEWER_INFO, as view
   expect(await page.evaluate(() => window.viewerFixture.info)).toEqual({ api: 1, version: '1.1.0', features: ['selection-1', 'share-with-agent-1'] });
 });
 
-for (const { name, from, to, within, expected } of SELECTION_CASES) {
+for (const { name, from, to, within, nth, expected } of SELECTION_CASES) {
   test(`selection ${name}: exact text, markdown, lines and headings, the lines golden in the loaded file`, async ({ page }) => {
     const seen = watch(page);
     await mount(page, 'light', { markdown: SELECTION_NOTE, layout: undefined, noteId: 'note-selection' });
-    await selectText(page, BODY, from, to, within);
+    await selectText(page, BODY, from, to, within, nth);
     const selection = await selectionOf(page);
     expect(selection).toEqual(expected);
     expectNoMarker(selection as MossSelection);
@@ -562,4 +562,17 @@ test('Share with Agent shows only with services.shareWithAgent, and a press hand
   await selectText(page, BODY, first!.from, first!.to);
   await button.click();
   await expect.poll(async () => (await calls(page)).share).toEqual([null, first!.expected]);
+});
+
+test('a shareWithAgent that throws or rejects stays the host\'s: no page error, and the button keeps working', async ({ page }) => {
+  const seen = watch(page);
+  await mount(page, 'light', { markdown: SELECTION_NOTE, layout: undefined, noteId: 'note-selection', share: 'fail' });
+  const [first] = SELECTION_CASES;
+  await selectText(page, BODY, first!.from, first!.to);
+  const button = page.locator(SHARE);
+  await button.click();
+  await button.click();
+  await expect.poll(async () => (await calls(page)).share).toEqual([first!.expected, first!.expected]);
+  await page.evaluate(() => new Promise((done) => setTimeout(done, 100)));
+  expect(seen.pageErrors).toEqual([]);
 });

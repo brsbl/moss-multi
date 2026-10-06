@@ -7,7 +7,10 @@ import { expect, type Page } from '@playwright/test';
 export const SELECTION_NOTE = readFileSync(new URL('../fixtures/selection-note.md', import.meta.url), 'utf8');
 export const SELECTION_TITLE = 'Field Notes';
 /** The note's comment thread, so the editor keeps the `%%m:c1` marker (desktop's compact serializer). */
-export const SELECTION_COMMENTS = JSON.stringify({ c1: { text: 'Check this', createdAt: 1_779_916_200, updatedAt: 1_779_916_200, source: 'user' } });
+export const SELECTION_COMMENTS = JSON.stringify({
+  c1: { text: 'Check this', createdAt: 1_779_916_200, updatedAt: 1_779_916_200, source: 'user' },
+  c2: { text: 'And this block', createdAt: 1_779_916_200, updatedAt: 1_779_916_200, source: 'user' },
+});
 
 export interface MossSelection {
   text: string;
@@ -24,6 +27,8 @@ export interface SelectionCase {
   to: string;
   /** Narrows the search to an element inside the body (a code block's `code`). */
   within?: string;
+  /** Which match of `within` (the editor: which code block), 0 by default. */
+  nth?: number;
   expected: MossSelection;
 }
 
@@ -93,6 +98,51 @@ export const SELECTION_CASES: SelectionCase[] = [
     },
   },
   {
+    name: 'from a list into a code block',
+    from: 'Third item',
+    to: 'sow(crop',
+    expected: {
+      text: 'Third item\nCrop\tWeeks\nBeans\t8\nPeas\t10\ndef sow(crop',
+      markdown: '- Third item\n\n| Crop | Weeks |\n| --- | --- |\n| Beans | 8 |\n| Peas | 10 |\n\n```python\ndef sow(crop):',
+      lines: { start: 12, end: 20 },
+      headings: ['Planting'],
+      blocks: [
+        { type: 'list', line: 9, heading: 'Planting' },
+        { type: 'table', line: 14, heading: 'Planting' },
+        { type: 'code-block', line: 19, heading: 'Planting' },
+      ],
+    },
+  },
+  {
+    name: 'from a code block into the heading after it',
+    from: 'return crop',
+    to: 'Harvest',
+    expected: {
+      text: 'return crop\nHarvest',
+      markdown: '    return crop\n```\n\n### Harvest',
+      lines: { start: 21, end: 24 },
+      headings: ['Planting'],
+      blocks: [
+        { type: 'code-block', line: 19, heading: 'Planting' },
+        { type: 'heading', line: 24, heading: 'Harvest' },
+      ],
+    },
+  },
+  {
+    name: 'inside a commented code block',
+    from: 'x = 1',
+    to: 'y = 2',
+    within: 'code',
+    nth: 1,
+    expected: {
+      text: 'x = 1;\nlet y = 2',
+      markdown: 'let x = 1;\nlet y = 2;',
+      lines: { start: 30, end: 31 },
+      headings: ['Planting', 'Harvest'],
+      blocks: [{ type: 'code-block', line: 28, heading: 'Harvest' }],
+    },
+  },
+  {
     name: 'under a nested heading',
     from: 'Pick',
     to: 'every',
@@ -107,11 +157,11 @@ export const SELECTION_CASES: SelectionCase[] = [
 ];
 
 /** Sets the DOM selection from `from`'s start to `to`'s end, searching the text under `root` (and `within`). */
-export async function selectText(page: Page, root: string, from: string, to: string, within?: string): Promise<void> {
+export async function selectText(page: Page, root: string, from: string, to: string, within?: string, nth = 0): Promise<void> {
   await page.evaluate(
-    ({ root, from, to, within }) => {
+    ({ root, from, to, within, nth }) => {
       const scope = document.querySelector(root);
-      const container = within ? scope?.querySelector(within) : scope;
+      const container = within ? scope?.querySelectorAll(within)[nth] : scope;
       if (!container) throw new Error(`no ${root} ${within ?? ''}`);
       const nodes: Text[] = [];
       const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
@@ -142,7 +192,7 @@ export async function selectText(page: Page, root: string, from: string, to: str
       selection?.removeAllRanges();
       selection?.addRange(range);
     },
-    { root, from, to, within },
+    { root, from, to, within, nth },
   );
   await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
 }

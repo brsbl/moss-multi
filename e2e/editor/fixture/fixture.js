@@ -11,6 +11,14 @@ document.addEventListener('securitypolicyviolation', (event) => {
 const state = { volume: null, host: null, handle: null, events: [], shared: [] };
 const plain = (value) => JSON.parse(JSON.stringify(value));
 
+/** Records what services.shareWithAgent is handed; `share: 'fail'` then throws on the first call, rejects on later ones. */
+function shareWith(share, selection) {
+  state.shared.push(plain(selection));
+  if (share !== 'fail') return undefined;
+  if (state.shared.length === 1) throw new Error('host threw');
+  return Promise.reject(new Error('host rejected'));
+}
+
 window.editorFixture = {
   api: MOSS_EDITOR_API,
   info: MOSS_EDITOR_INFO,
@@ -38,7 +46,7 @@ window.editorFixture = {
       bridge: state.host,
       theme,
       htmlFrameUrl: '/editor/moss-html-frame.html',
-      services: share ? { notes, shareWithAgent: (selection) => state.shared.push(plain(selection)) } : { notes },
+      services: share ? { notes, shareWithAgent: (selection) => shareWith(share, selection) } : { notes },
       onEvent: (event) => state.events.push(plain(event)),
       ...(restoreDraft ? { restoreDraft } : {}),
     });

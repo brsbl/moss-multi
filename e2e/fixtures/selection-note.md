@@ -24,3 +24,10 @@ def sow(crop):
 ### Harvest
 
 Pick every morning.
+
+%%m:c2:start%%
+```js
+let x = 1;
+let y = 2;
+```
+%%m:c2:end%%
