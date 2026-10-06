@@ -468,21 +468,82 @@ export function withLinearRegExps(transformers: Transformer[]): Transformer[] {
   });
 }
 
-// ---- moss's import normalization (markdown/normalize.ts). Tests-first stubs: the regexes themselves.
+// ---- moss's import normalization (markdown/normalize.ts), whose global regexes rescan to the end of the line or
+// the text from every start that fails. Each helper gives the regex's own result (linear-match.golden.test.ts).
 
+// ESCAPED_BLOCKQUOTE_BLOCK_RE, `&lt;blockquote\b[\s\S]*?&lt;\/blockquote&gt;` (gi), scans from each opener to the
+// first closer after it. Every match ends by the last closer, and an opener after it scans to the end and fails, so
+// the search can stop there; this is where it can end.
 export function escapedBlockquoteSearchEnd(md: string): number {
-  return md.length;
+  const closer = /&lt;\/blockquote&gt;/gi;
+  let end = 0;
+  for (let match = closer.exec(md); match; match = closer.exec(md)) end = closer.lastIndex;
+  return end;
 }
 
+// stripFormattingAroundIsolatedWikiLinks: `segment.replace(/(\*{1,2}|~~)\[\[((?:[^\]]|\](?!\]))+)\]\]\1/g, '[[$2]]')`.
+// The body runs to the first `]]` after the opener, which later openers share, so it is found once.
 export function stripWikiLinkDelimiters(segment: string): string {
-  return segment.replace(/(\*{1,2}|~~)\[\[((?:[^\]]|\](?!\]))+)\]\]\1/g, '[[$2]]');
+  let out = '';
+  let copied = 0;
+  let close = -1;
+  for (let i = 0; i < segment.length; i += 1) {
+    const char = segment[i];
+    const delimiter = char === '*' ? (segment[i + 1] === '*' ? '**' : '*') : char === '~' && segment[i + 1] === '~' ? '~~' : '';
+    if (!delimiter || !segment.startsWith('[[', i + delimiter.length)) continue;
+    const body = i + delimiter.length + 2;
+    if (close < body) {
+      close = segment.indexOf(']]', body);
+      if (close < 0) break;
+    }
+    if (close === body || !segment.startsWith(delimiter, close + 2)) continue;
+    out += `${segment.slice(copied, i)}[[${segment.slice(body, close)}]]`;
+    copied = close + 2 + delimiter.length;
+    i = copied - 1;
+  }
+  return copied === 0 ? segment : out + segment.slice(copied);
 }
 
+// normalizeFormattingAroundEmbedPillTargets: `value.replace(regExp, replacer)` for a delimiter's regex,
+// `<d>([^\n]*?(?:https?:\/\/|\?\[)[^\n]*?)<d>`, <d> the delimiter not touching another of its character. A match needs
+// a URL or `?[` after its opener and a delimiter after that, on one line, and an opener without them rescans the rest
+// of the line. So each line is matched only up to the first delimiter after its last such target (no match ends
+// later, and no opener later matches); a line without one is left alone.
 export function replaceFormattedTargets(
   value: string,
-  _delimiter: string,
+  delimiter: string,
   regExp: RegExp,
   replacer: (fullMatch: string, content: string) => string,
 ): string {
-  return value.replace(regExp, replacer);
+  const lines = value.split('\n');
+  const mark = delimiter[0];
+  for (let n = 0; n < lines.length; n += 1) {
+    const line = lines[n];
+    const isDelimiter = (q: number) => line.startsWith(delimiter, q) && line[q - 1] !== mark && line[q + delimiter.length] !== mark;
+    let lastDelimiter = -1;
+    for (let q = line.lastIndexOf(delimiter); q >= 0; q = q > 0 ? line.lastIndexOf(delimiter, q - 1) : -1) {
+      if (isDelimiter(q)) {
+        lastDelimiter = q;
+        break;
+      }
+    }
+    if (lastDelimiter < 0) continue;
+    // The last target ending before the last delimiter.
+    let target = -1;
+    let targetEnd = -1;
+    for (const token of ['http://', 'https://', '?[']) {
+      for (let t = line.indexOf(token); t >= 0 && t + token.length <= lastDelimiter; t = line.indexOf(token, t + 1)) {
+        if (t > target) {
+          target = t;
+          targetEnd = t + token.length;
+        }
+      }
+    }
+    if (target < 0) continue;
+    let close = targetEnd;
+    while (!isDelimiter(close)) close += 1;
+    const end = Math.min(line.length, close + delimiter.length + 1);
+    lines[n] = line.slice(0, end).replace(regExp, replacer) + line.slice(end);
+  }
+  return lines.join('\n');
 }
