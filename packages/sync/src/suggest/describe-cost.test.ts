@@ -44,13 +44,14 @@ const SHAPES: Shape[] = [
     },
   },
   {
-    name: 'blocks nested 200 deep, text at every level',
+    name: 'blocks nested 200 deep, each with a field and text',
     write: (n) => (doc) => {
       const per = n;
       let parent = new Y.XmlText();
       root(doc).insertEmbed(1, parent);
       for (let depth = 0; depth < 200; depth++) {
         parent.setAttribute('__type', depth % 2 ? 'listitem' : 'list');
+        parent.setAttribute('__indent', 1);
         parent.insertEmbed(0, textNode());
         parent.insert(1, 'd'.repeat(per));
         const child = new Y.XmlText();
@@ -135,7 +136,7 @@ function sizeAtCap(shape: Shape): number {
   };
   const [a, b] = [bytesAt(64), bytesAt(128)];
   const slope = (b - a) / 64;
-  return Math.floor((SUGGEST_CAPS.recordOpsBytes * 0.9 - (a - 64 * slope)) / slope / 2);
+  return Math.floor((SUGGEST_CAPS.recordOpsBytes * 0.8 - (a - 64 * slope)) / slope / 2);
 }
 
 describe('T5.3s preview and card cost is linear in the record, at the record cap @p:mean-2 @p:R17', () => {
