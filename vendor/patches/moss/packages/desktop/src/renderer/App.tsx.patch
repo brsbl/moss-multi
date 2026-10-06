@@ -258,15 +258,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
    const notesPanelWidthPx = notesListWidth + NOTES_PANEL_RESIZER_WIDTH_PX;
  
    const notePanelContent =
-@@ -4093,6 +4094,7 @@ export function App() {
-         onSelectNote={handleSelectNote}
-         onCreateNote={handleCreateNote}
-         onDeleteNote={handleNoteDeleted}
-+        // moss-multi seam: hide-registry (A§9)
-         onDuplicateNote={handleDuplicateNote}
-         onRenameNote={handleRenameNote}
-         onCollapse={handleCollapseNotesPanel}
-@@ -4108,11 +4110,13 @@ export function App() {
+@@ -4108,11 +4109,13 @@ export function App() {
          notesPanelOverlay ? 'absolute inset-y-0 left-0 z-40 border-r border-border-subtle/50 shadow-[0_8px_24px_var(--ink-shadow-soft)]' : '',
          notesPanelOverlay && notesPanelVisible ? 'translate-x-0 opacity-100' : '',
          notesPanelOverlay && !notesPanelVisible ? '-translate-x-full opacity-0 pointer-events-none' : '',

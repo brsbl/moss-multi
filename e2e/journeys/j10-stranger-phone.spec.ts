@@ -4,10 +4,9 @@
 // screen passes an elementFromPoint hit test at its centre (Tier A). A Tier B sweep opens the share dialog, Settings
 // and every chrome menu at 390 px and finds every control reachable.
 import { randomBytes } from 'node:crypto';
-import type { Locator } from '@playwright/test';
 import type { Actor, Viewport } from '../lib/actors.ts';
-import { APP_STATE_ATTR, BODY_BINDING_ATTR, DOC_STATE_ATTR, EDITOR_PANE_ATTR, ROLE_ATTR, paneSelector } from '../lib/contract.ts';
-import { acceptInvite } from '../lib/grants.ts';
+import { APP_STATE_ATTR, EDITOR_PANE_ATTR, ROLE_ATTR } from '../lib/contract.ts';
+import { grantDoc } from '../lib/grants.ts';
 import type { Principal } from '../lib/principals.ts';
 import { layoutFit, unreachableControls } from '../lib/reach.js';
 import { expect, test, ui } from '../lib/test.ts';
@@ -33,11 +32,6 @@ async function adaNote(ada: Actor, baseUrl: string): Promise<string> {
   });
   expect(made.status(), 'declared setup: a note').toBe(201);
   return ((await made.json()) as { doc: { id: string } }).doc.id;
-}
-
-async function waitOpen(actor: Actor, docId: string, binding: 'live' | 'readonly'): Promise<void> {
-  await expect(actor.page.locator(paneSelector(docId)), `${actor.label}: the pane goes live`).toHaveAttribute(DOC_STATE_ATTR, 'live', { timeout: BIND_TIMEOUT });
-  await expect(ui.body(actor, docId), `${actor.label}: the body binds ${binding}`).toHaveAttribute(BODY_BINDING_ATTR, binding, { timeout: BIND_TIMEOUT });
 }
 
 /** Every control on screen (or in `scope`) is on screen at its centre and nothing covers it. */
@@ -87,34 +81,24 @@ async function searchesTheNote(actor: Actor, docId: string, size: Viewport): Pro
   await expectReachable(actor, 'the search closed');
 }
 
-/** Creates a link at `access` in the open dialog and returns its path, read from the dialog. */
-async function createLink(dialog: Locator, access: ui.LinkAccess): Promise<string> {
-  await dialog.getByRole('radiogroup', { name: 'Link access', exact: true }).getByRole('radio', { name: access, exact: true }).click();
-  await dialog.getByRole('button', { name: 'Create link', exact: true }).click();
-  const field = ui.linkField(dialog, access);
-  await expect(field, `a ${access} link is listed`).toHaveCount(1);
-  const url = new URL(await field.inputValue());
-  return `${url.pathname}${url.search}`;
-}
-
 for (const size of TIER_A) {
   test(`j10 ${size.name}: a stranger opens the link, reads, signs up on the card and lands on the same note, with 0, 1 and 2 others there @tierA @p:tech-9 @p:ppl-2 @p:ppl-1 @evidence`, async ({ actors, stack }) => {
     const adaPrincipal = await actors.principal('ada');
     const ada = await actors.session(adaPrincipal, { viewport: size });
     const docId = await adaNote(ada, stack.baseUrl);
     await ada.goto(`/d/${docId}`);
-    await waitOpen(ada, docId, 'live');
+    await ui.waitOpen(ada, docId, 'live');
     await expectReachable(ada, 'the owner\'s note');
     const dialog = await ui.openShare(ada, docId);
     await expectReachable(ada, 'the share dialog', '[role=dialog]');
-    const link = await createLink(dialog, 'Can view');
+    const link = ui.pathOf(await ui.createLink(dialog, 'Can view'));
     expect(link, 'a link to this note').toMatch(new RegExp(`^/d/${docId}\\?share=[0-9a-f]{48}$`));
     await actors.checkpoint(`${size.name}-owner-share`);
     await ada.page.close(); // the stranger arrives alone
 
     // 0 others: the stranger opens the link.
     const stranger = await actors.anonymous(link, { label: 'stranger', viewport: size });
-    await waitOpen(stranger, docId, 'readonly');
+    await ui.waitOpen(stranger, docId, 'readonly');
     await expect(ui.pane(stranger, docId), 'the link opens at viewer').toHaveAttribute(ROLE_ATTR, 'viewer');
     await expectReadable(stranger, docId, size);
     await expectReachable(stranger, 'alone');
@@ -125,18 +109,16 @@ for (const size of TIER_A) {
 
     // 1 other: Ada comes back to the note.
     const ada2 = await actors.open(adaPrincipal, { label: 'ada-2', viewport: size, path: `/d/${docId}` });
-    await waitOpen(ada2, docId, 'live');
+    await ui.waitOpen(ada2, docId, 'live');
     await expectReadable(stranger, docId, size);
     await expectReachable(stranger, 'with Ada there');
     await expectReachable(ada2, 'the owner with a link reader there');
 
     // 2 others: Ben, an editor by grant (declared setup), joins.
     const benPrincipal = await actors.principal('ben');
-    const granted = await ada2.context.request.post(`/api/docs/${docId}/members`, { headers: { origin: stack.baseUrl }, data: { email: benPrincipal.email, role: 'editor' } });
-    expect(granted.status(), 'declared setup: Ben is invited to edit').toBe(201);
-    await acceptInvite(ada2, { docId }, benPrincipal);
+    await grantDoc(ada2, docId, benPrincipal, 'editor');
     const ben = await actors.open(benPrincipal, { viewport: size, path: `/d/${docId}` });
-    await waitOpen(ben, docId, 'live');
+    await ui.waitOpen(ben, docId, 'live');
     await expect(ada2.page.locator('[data-top-bar] [data-presence-client]'), 'Ada sees Ben in her face pile').not.toHaveCount(0, { timeout: BIND_TIMEOUT });
     await expectReadable(stranger, docId, size);
     await expectReachable(stranger, 'with Ada and Ben there');
@@ -152,7 +134,7 @@ for (const size of TIER_A) {
     const newcomer: Principal = actors.credentials('dee');
     await ui.signUpThroughCard(stranger, newcomer);
     await stranger.page.waitForURL((at) => `${at.pathname}${at.search}` === link, { timeout: BOOT_TIMEOUT });
-    await waitOpen(stranger, docId, 'readonly');
+    await ui.waitOpen(stranger, docId, 'readonly');
     await expect(ui.pane(stranger, docId), 'signed up, a viewer link is still a viewer link').toHaveAttribute(ROLE_ATTR, 'viewer');
     await expect(signIn, 'and no longer offers sign-in').toHaveCount(0);
     await expectReadable(stranger, docId, size);
@@ -212,7 +194,7 @@ test('j10 390x844: a folder link lands a stranger on the folder, whose note list
   await stranger.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: BOOT_TIMEOUT });
   const row = stranger.page.locator(`[data-sidebar-row][data-doc-id="${docId}"]`);
   // The landing opens the folder's note, with the notes panel put away until asked for.
-  await waitOpen(stranger, docId, 'readonly');
+  await ui.waitOpen(stranger, docId, 'readonly');
   await expect(row, 'the notes panel stays out of the note\'s way').toBeHidden();
   await expectReadable(stranger, docId, PHONE);
   await expectReachable(stranger, 'the folder landing');
@@ -221,7 +203,7 @@ test('j10 390x844: a folder link lands a stranger on the folder, whose note list
   await expect(row, 'the folder\'s note is listed').toBeVisible();
   await expectReachable(stranger, 'the notes panel', PANEL);
   await row.click();
-  await waitOpen(stranger, docId, 'readonly');
+  await ui.waitOpen(stranger, docId, 'readonly');
   await stranger.page.mouse.click(PHONE.width - 12, PHONE.height / 2);
   await expect(row, 'a tap on the note puts the notes panel away').toBeHidden();
   await expectReadable(stranger, docId, PHONE);
@@ -244,7 +226,7 @@ test('j10 Tier B at 390 px: the share dialog, Settings and every chrome menu kee
   expect(note.status(), 'declared setup: a note in it').toBe(201);
   const docId = ((await note.json()) as { doc: { id: string } }).doc.id;
   await ada.goto(`/d/${docId}`);
-  await waitOpen(ada, docId, 'live');
+  await ui.waitOpen(ada, docId, 'live');
   const page = ada.page;
   const menu = '[role=menu]';
   const dialog = '[role=dialog]';

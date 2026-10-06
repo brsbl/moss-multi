@@ -226,10 +226,6 @@ export class PayloadStore {
     }
   }
 
-  named(id: string): boolean {
-    return this.names.named(id);
-  }
-
   /** Named, and not withheld: its updates fan out and its step 1 is answered. */
   served(id: string): boolean {
     return this.names.named(id) && (this.#meta.get(id)?.withheldSince ?? null) === null;

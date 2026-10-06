@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 76% done** (68 of 90 planned tasks verified)
+**Overall: 76% done** (70 of 92 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
-| M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 19 / 20 | in progress |
+| M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 12 / 13 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 13 / 15 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 4 / 5 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 1 / 5 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
@@ -80,6 +80,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-05 — T1.S1 verified again with its unload fix: reloading or leaving the page while the workspace list is loading now cancels that request quietly instead of showing a load failure or a browser access-control error.
 - 2026-10-05 — T2.5 verified: lowering or removing someone's access, revoking a link, moving a note or folder out from under a share, or signing out closes the affected open editors within a second, the note turns read-only or ends in place with a message, and their sidebar drops what they can no longer open; the owner can change or remove a person's or an open invite's access from the Share dialog.
 - 2026-10-05 — T1.S2 verified: a code, HTML or formula block whose updates were lost on a dropped connection now catches up on its own, without a reload, so both people see the same text and can keep typing in it.
+- 2026-10-05 — T1.S3 verified: when a collaborator edits a formula while you have its popover open with unfinished text, your characters and caret stay and their change merges in, each reference kept whole; both converge after you commit and reload.
 - 2026-10-05 — T0.9d verified: CI journey shards are split by recorded per-engine minutes (`durations.mjs` writes them, `plan.mjs budget` keeps every shard's p95 within 9 of its 13 min), and the root causes of the WebKit editing-shard flakes are fixed, with the duration table in METHOD.md.
 - 2026-10-05 — T2.6 verified: a viewer or commenter is no longer offered controls they cannot use: menus grow with their role, "+ Note", Rename, slash commands and block edit, fullscreen and delete buttons are hidden, checkboxes and gap cursors in a read-only body are inert and send nothing, and an unknown role gets no actions.
 - 2026-10-05 — T2.S1 verified: a co-owner who is demoted or removed loses their open invites for good, so regaining manage later never revives an invite they sent before.
@@ -87,6 +88,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-05 — T3.R verified: m3 now sits on m2, with media in migration 0003 and chart and sketch data in their own payload documents; a chart or canvas stays read-only until its data arrives, two people can still edit one at once without losing each other's ink, and payload edits reach search.
 - 2026-10-05 — T3.9 verified: a host such as the bb Moss plugin can mount moss's own editor over its files with `mountMossEditor`, editing every node family and adding comments as markers plus the sidecar, with stale writes refused, a clean editor reloading on external change, assets going only through the host, and CI building the versioned `moss-editor` artifact.
 - 2026-10-05 — T4.3 verified: in a shared note a person can select text and comment on it, reply, resolve and reopen threads, see each comment highlighted for everyone through edits and formatting without a blink, and find detached comments listed with their quote, all in moss's own gutter, popover and Cmd+Shift+A.
+- 2026-10-06 — T3.R2 verified: m3 now sits on main with the slimmed M1 and M2, keeping all of M3's media, search, vaults, viewer and editor work; the viewer and editor artifacts still build.
 
 ## T1.1s identity audit
 
@@ -124,6 +126,7 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T3.9 checker P2: the comment-color unit tests rely on a fake surface that keeps stored colors (`FakeSurface.load` copies stored `commentColors`), while the real path derives them in `hydrateComments` → editor test follow-up.
 - T3.9 checker P2: the key-order negative control in `pipeline.golden.test.ts` ('a wrong meta.json key order is caught') changes a value as well as key order → editor test follow-up.
 - T3.9a checker P2: `allocateFolderName`'s volume-equivalence model (`volumeKey` in `packages/editor/src/host/moss-editor-host.js`) is approximate: it lacks full Unicode case folding ('σ' vs sibling 'ς') and treats case-sensitive APFS as normalization-sensitive (NFC vs NFD 'Café'), so it can return an occupied name; the host's exclusive rename then fails with EEXIST and that title edit stays unsaved, with nothing lost or overwritten → editor host follow-up: fold case fully and normalize on case-sensitive volumes.
+- T3.R2 (Restack m3 on main) checker P2: `readBacklinks` in `apps/web/src/host/bridge/index.ts` checks the note is still listed, then sends the backlinks request; a trash committing in that gap returns a 404 that j05-trash's no-4xx assertion counts (inherited from M3 at bbeb50e) → search follow-up: skip or cancel watched reads once the note's session goes terminal.
 - T2.3s checker P2 (downgraded from Codex P1): a restore can act on an older view of the note after another manager restores, moves and re-trashes it; RESTORE in `api/trash.ts` does not check the note's current folder or `trash_batch_id` still match what it read. No authority is gained (the UPDATE re-checks manage on the current chain and edit on the destination) → trash follow-up: compare-and-set on folder and batch.
 - T2.3s checker P2 (downgraded from Codex P1): a signed-out share-link holder gets 401, not 404, from trash, restore and the Trash read; nothing is disclosed (the 401 is identical for a missing note) and it predates T2.3s; A§8 confines the 401 exception to a credential-less CLI → align to 404 in an access follow-up.
 - T2.3s checker P2: the revocation tests in `trash-security.test.ts` use stub DocDO and PrincipalDO, so they do not prove open editors recover (or that a terminal editor on a live note is kicked) → T2.5 → closed by T2.5 (`mid-trash.harness.test.ts` over the real DocDO and PrincipalDO; a reverted trash pushes `meta` and a pane terminal on `deleted` re-asks and reopens).
@@ -162,6 +165,9 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T1.F2 checker P2 (attempt 3): an offline session that made more than 64 blocks and deleted them again before reconnecting still resends their payloads as unnamed writes, and the 65th closes 4409; the client could skip resending payloads its tree no longer names → payload follow-up.
 - ~~T1.F2 checker P2 (attempt 3 review): `BodyUndo` records which payload managers a step touched, not their exact stack items, so when a peer makes the newest local payload item a no-op, Cmd+Z can undo an older payload edit before a newer body edit (no data lost)~~ closed by T1.F4: each step replays its own stack items (undo unit test).
 - T1.F2 P2: text written into a payload while it was served is not charged to its writer when its block is deleted, so a deleted block's payload still holds its served bytes against the state cap for the 30-day TTL; it was visible to every reader while served → payload follow-up.
+- T1.S3 checker P2 (Codex P1, downgraded): a whole-draft diff can attribute an edit to the wrong one of several identical operands (mergePeerExpression in FormulaPlugin.tsx, mergeIntoField in register-input.ts; base `2+2`, draft `2*`, peer stores `2+3` gives `23*`, ideally `3*`) → register caret follow-up.
+- T1.S3 checker P2: a caret inside an unchanged reference name snaps to the end of the name on any peer edit (toStoredOffset maps inside offsets to span.rawEnd, FormulaPlugin.tsx:218) → register caret follow-up.
+- T1.S3 checker P2: the formula token codec alphabet is unbounded and not surrogate-safe (createTokenCodec, FormulaPlugin.tsx:176-184; the for...of decoder can read two assigned surrogates as one code point); needs a draft holding nearly every BMP code unit plus about a thousand references.
 - T0.9d checker P2: `durations.mjs --write` ignores cancelled or timed-out shards (scripts/ci/durations.mjs:103), so a partly cancelled lane can pass `recordProblems()` and overwrite journey-minutes.json, dropping files missing an engine; `plan.mjs budget` then falls back to per-leg estimates for them.
 
 - T1.6 checker: prune deleted layout identities, avoid unchanged localStorage writes and restrict ordinal migration to stores without identity metadata → local-layout follow-up. These need lifecycle and persisted-state regressions beyond this P1 repair.

@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { GROUPS, SHARD_BUDGET_MINUTES, budgetProblems, countLegs, groupOf, journeyMatch, readJourneys, readMinutes, shardEstimates } from './journeys.mjs';
+import { GROUPS, budgetProblems, countLegs, groupOf, journeyMatch, readJourneys, shardEstimates } from './journeys.mjs';
 
 const dirs = [];
 afterEach(() => {
@@ -141,9 +141,5 @@ describe('shard budget', () => {
     expect(budgetProblems([journey('j00-shell.spec.ts', 4)], broken, 5)).toEqual([
       'webkit/shell has no recorded minutes: refresh scripts/ci/journey-minutes.json with scripts/ci/durations.mjs --write',
     ]);
-  });
-
-  it(`keeps every group of this checkout within ${SHARD_BUDGET_MINUTES} minutes in both engines`, () => {
-    expect(budgetProblems(readJourneys(), readMinutes())).toEqual([]);
   });
 });

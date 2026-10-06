@@ -28,11 +28,3 @@ export async function redeem(env: ApiEnv, owner: { cookie: string }, path: strin
   const response = await call(env, 'POST', `/api/invites/${token}/accept`, user.cookie);
   if (response.status !== 200) throw new Error(`redeeming ${user.email} on ${path}: ${response.status} ${await response.text()}`);
 }
-
-/** `owner` shares `path` with `user` at `role` and `user` redeems it: the whole of giving a person access. */
-export async function shareAndRedeem(env: ApiEnv, owner: { cookie: string }, path: string, user: { cookie: string; email: string }, role: string): Promise<number> {
-  const response = await call(env, 'POST', `${path}/members`, owner.cookie, { email: user.email, role });
-  if (response.status >= 300) throw new Error(`sharing ${path} with ${user.email}: ${response.status} ${await response.text()}`);
-  await redeem(env, owner, path, user);
-  return response.status;
-}

@@ -29,13 +29,11 @@ import {
 import { handleInviteLinks } from './invites.ts';
 import { handleLinks } from './links.ts';
 import { handleMembers } from './members.ts';
-import { NO_STORE, notFound, readJsonObject, unauthenticated } from './respond.ts';
+import { changed, NO_STORE, notFound, readJsonObject, refuse, signedIn, unauthenticated } from './respond.ts';
 
 export type FoldersEnv = AuthEnv & Pick<AppEnv, 'DocDO'> & Partial<Pick<AppEnv, 'PrincipalDO'>>;
 
 export const FOLDER_NAME_MAX = 100;
-
-const refuse = (status: number, error: string, message: string) => json({ error, message }, status, NO_STORE);
 
 /** One answer for a missing, inaccessible or trashed folder, so none of them can be told apart. */
 export const folderNotFound = () =>
@@ -111,8 +109,6 @@ export const upFrom = (p: number) => `up(id, parent_id, deleted_at, kind, depth)
 export const liveIn = (vault: number) =>
   `NOT EXISTS (SELECT 1 FROM up WHERE deleted_at IS NOT NULL) AND EXISTS (SELECT 1 FROM up WHERE id = ?${vault} AND kind = 'vault')`;
 
-const changed = (result: D1Result) => (result.meta?.changes ?? 0) > 0;
-
 /** The vault a folder is in (the last of its chain). */
 export const vaultOf = async (db: Db, folderId: string) => (await folderChain(db, folderId)).at(-1);
 
@@ -127,11 +123,6 @@ async function subtree(db: D1Database, id: string, trashed = false): Promise<{ i
       WHERE ${trashed ? '' : 'f.deleted_at IS NULL AND '}s.depth <= ?2
   ) SELECT id, depth FROM sub`).bind(id, MAX_FOLDER_DEPTH).all<{ id: string; depth: number }>();
   return rows.results;
-}
-
-async function signedIn(request: Request, env: AuthEnv): Promise<Principal | null> {
-  const principal = await resolvePrincipal(request, env);
-  return principal && principal.type !== 'anonymous' ? principal : null;
 }
 
 /** `shareToken` is a link the caller presented, for creating and renaming under it; moves never take one. */

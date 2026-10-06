@@ -227,5 +227,16 @@ describe('(c) grant raises are atomic', () => {
       const raised = await d1.db.prepare('SELECT role FROM doc_members WHERE doc_id = ?1').bind(docId).all();
       expect(raised.results, `round ${round}: the open invite settled on the highest`).toEqual([{ role: 'editor' }]);
     }
+    // From an open viewer invite nobody has redeemed: an editor raise racing a commenter one is taken, and stands.
+    const pending = await signedUpUser(env, 't24s-pending', 'Pending');
+    for (let round = 0; round < 4; round += 1) {
+      const docId = await insertDoc(d1.db, pending);
+      expect((await call('POST', `/api/docs/${docId}/members`, pending.cookie, { email: cy.email, role: 'viewer' })).status).toBe(201);
+      const statuses = await Promise.all(['editor', 'commenter'].map((role) =>
+        call('POST', `/api/docs/${docId}/members`, pending.cookie, { email: cy.email, role }).then((r) => r.status)));
+      expect(statuses[0], `round ${round}: the editor raise is taken`).toBe(200);
+      await redeem(env, pending, `/api/docs/${docId}`, cy);
+      expect(await roleOf({ cookie: cy.cookie }, docId), `round ${round}: the higher raise stands`).toBe('editor');
+    }
   }, 60_000);
 });

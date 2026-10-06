@@ -110,14 +110,6 @@ export function parseFrame(message: ArrayBuffer | ArrayBufferView): Frame {
   return { kind: 'other' };
 }
 
-/**
- * The write classifier: a sync frame changes the doc only if it carries a struct the doc's state vector lacks or
- * deletes an item the doc has not deleted. Every step 2 that merely answers a step 1 is inert.
- */
-export function wouldChange(doc: Y.Doc, update: Uint8Array): boolean {
-  return classifySync(doc, update).changes;
-}
-
 /** yjs does not export its DeleteSet type by name. */
 export type DeleteSet = ReturnType<typeof Y.createDeleteSet>;
 
@@ -159,6 +151,10 @@ function missing(doc: Y.Doc, structs: (Y.Item | Y.GC | Y.Skip)[], ds: DeleteSet)
   return false;
 }
 
+/**
+ * The write classifier: a sync frame changes the doc only if it carries a struct the doc's state vector lacks or
+ * deletes an item the doc has not deleted. Every step 2 that merely answers a step 1 is inert.
+ */
 function changes(doc: Y.Doc, structs: (Y.Item | Y.GC | Y.Skip)[], ds: DeleteSet): boolean {
   for (const struct of structs) {
     if (struct instanceof Y.Skip) continue;
@@ -190,6 +186,13 @@ export function stateBytesAfter(doc: Y.Doc, update: Uint8Array): number {
   }
 }
 
+/** The attempts still inside the window ending at `now`, with this one appended (denied attempts count too). */
+export function windowed(attempts: readonly number[], now: number, windowMs: number): number[] {
+  const recent = attempts.filter((at) => now - at < windowMs);
+  recent.push(now);
+  return recent;
+}
+
 /**
  * Writes per socket in a sliding window, keyed by the socket itself: a client may reuse its connection id while the
  * DO still holds the old socket. In memory: a wake starts every count at zero.
@@ -204,8 +207,7 @@ export class WriteRate {
 
   /** Counts one write; false once the socket is past `max` in the window. */
   allow(socket: object, now = Date.now()): boolean {
-    const recent = (this.hits.get(socket) ?? []).filter((at) => now - at < this.windowMs);
-    recent.push(now);
+    const recent = windowed(this.hits.get(socket) ?? [], now, this.windowMs);
     this.hits.set(socket, recent);
     return recent.length <= this.max;
   }

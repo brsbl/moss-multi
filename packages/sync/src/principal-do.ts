@@ -4,7 +4,8 @@ import type { WorkspaceEvent } from '@moss-multi/protocol/workspace';
 import {
   ACCESS_DEADLINE_MS, ACCESS_TICK_MS, COMMENT_OP_RATE, REMOTE_FETCH_RATE, REST_WRITE_RATE, SESSION_MAX_MS, UPLOAD_RATE,
 } from '@moss-multi/protocol/limits';
-import { liveCredentials, withDeadline } from './access-epoch.ts';
+import { liveCredentials, TRY_AGAIN, withDeadline } from './access-epoch.ts';
+import { windowed } from './doc/admission.ts';
 import type { DocDO, RecheckInput } from './doc-do.ts';
 import type { SyncEnv } from './env.ts';
 
@@ -13,9 +14,6 @@ export type Rechecker = (docId: string, input: RecheckInput) => Promise<unknown>
 
 /** Which of the sessions and agent keys are still live; throws when D1 cannot answer. */
 export type CredentialCheck = (sessions: string[], agents: string[]) => Promise<{ sessions: Set<string>; agents: Set<string> }>;
-
-/** Close code for a validation D1 could not answer: the client retries (RFC 6455 "try again later"). */
-const TRY_AGAIN = 1013;
 
 type ChannelState = { sessionId?: string | null };
 
@@ -43,8 +41,7 @@ export class RateWindow {
 
   take(now = Date.now()): boolean {
     this.#attempts ??= this.store?.load() ?? [];
-    const recent = this.#attempts.filter((at) => now - at < this.windowMs);
-    recent.push(now);
+    const recent = windowed(this.#attempts, now, this.windowMs);
     // Only the newest `max` matter to the next decision, so a flood never grows the list.
     this.#attempts = recent.slice(-this.max);
     this.store?.save(this.#attempts);

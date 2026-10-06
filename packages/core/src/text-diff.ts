@@ -152,8 +152,9 @@ export function diffAtCaret(before: string, after: string, caret: number): TextO
 export type Delta = readonly { retain?: number; insert?: unknown; delete?: number }[];
 
 /**
- * Where an offset belongs after `delta`. Text inserted before it moves it right, text deleted before it moves it left
- * (a cut spanning it leaves it at the cut), and an insert exactly at it leaves it in front, or behind with `behind`.
+ * Where an offset belongs after `delta`, read from the change itself: a diff of the two texts cannot tell "aa" -> "aaa"
+ * at the start from the same edit at the end. Text inserted before it moves it right, text deleted before it moves it
+ * left (a cut spanning it leaves it at the cut), and an insert exactly at it leaves it in front, or behind with `behind`.
  */
 export function mapOffset(offset: number, delta: Delta, behind = false): number {
   let at = 0;

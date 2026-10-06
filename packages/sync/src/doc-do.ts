@@ -19,7 +19,7 @@ import { attach, attachmentOf, awarenessTooLarge, awarenessFrame, receivePresenc
 import { AckCoalescer, DocStore, PERSISTENCE } from './doc/persistence.ts';
 import { coerceSidecar, COMMENT_STATE_SHARE, COMMENTS_PER_DOC, DocComments, type CommentCreate, type CommentResult, type CommentSource } from './doc/comments.ts';
 import { d1Projections, Projections, type ProjectionTarget } from './doc/projections.ts';
-import { withDeadline, type Stamp } from './access-epoch.ts';
+import { TRY_AGAIN, withDeadline, type Stamp } from './access-epoch.ts';
 import { publishMeta } from './fanout.ts';
 import type { SyncEnv } from './env.ts';
 import { migrateFrontmatter } from '@moss-multi/core/frontmatter';
@@ -111,8 +111,16 @@ export type TrashedInD1 = (docId: string) => Promise<boolean>;
 
 /** How long a trash's hold waits for its settle before the alarm settles it from D1. */
 export const HOLD_MS = 60_000;
-/** Close code for an admission the DocDO cannot confirm: the client retries (RFC 6455 "try again later"). */
-const TRY_AGAIN = 1013;
+
+/** A queue that runs each job after the previous one settles; a rejection reaches its caller, not the next job. */
+const serializer = () => {
+  let gate: Promise<unknown> = Promise.resolve();
+  return <T>(run: () => Promise<T>): Promise<T> => {
+    const next = gate.then(run);
+    gate = next.catch(() => undefined);
+    return next;
+  };
+};
 
 /** A server write that would pass the state cap (A§5.1 Limits). */
 export class DocCapError extends Error {
@@ -246,7 +254,7 @@ export class DocDO extends YServer<SyncEnv> {
   /** The deletes of the sync frame being applied, which its ack names. */
   #frameDeletes: DeleteSet | undefined;
   /** Settles run one at a time, so the last one applies the newest D1 read. */
-  #settling: Promise<unknown> = Promise.resolve();
+  readonly #queue = serializer();
   /** Withheld payload ids each connection has written, bounded per connection. In memory: a wake starts at none. */
   readonly #withheldWrites = new WeakMap<Connection, Set<string>>();
   /** Frames waiting for the validation that starts after they arrived. */
@@ -257,7 +265,7 @@ export class DocDO extends YServer<SyncEnv> {
   /** A flush that has not started yet; a frame arriving now joins it. */
   #pendingFlush: Promise<void> | null = null;
   /** Validations, admissions and frame batches run one at a time, in arrival order. */
-  #gate: Promise<unknown> = Promise.resolve();
+  readonly #serial = serializer();
   /** When the next access tick is due; null when no frame came since the last one. In memory: a wake starts idle. */
   #tickAt: number | null = null;
 
@@ -814,12 +822,6 @@ export class DocDO extends YServer<SyncEnv> {
     return (this.constructor as typeof DocDO).access(this.env);
   }
 
-  #serial<T>(run: () => Promise<T>): Promise<T> {
-    const next = this.#gate.then(run);
-    this.#gate = next.catch(() => undefined);
-    return next;
-  }
-
   /**
    * Pull validation (A§8): reads the doc's access epoch and the sockets' credentials, then closes every socket whose
    * session ended (4402) or key was revoked (4403), and re-resolves each socket admitted under an older epoch, closing
@@ -884,12 +886,6 @@ export class DocDO extends YServer<SyncEnv> {
 
   #liveness(): TrashedInD1 | null {
     return (this.constructor as typeof DocDO).liveness(this.env);
-  }
-
-  #queue<T>(run: () => Promise<T>): Promise<T> {
-    const next = this.#settling.then(run);
-    this.#settling = next.catch(() => undefined);
-    return next;
   }
 
   /** `admitting`, a socket still in onConnect, is left for its own refusal. */
