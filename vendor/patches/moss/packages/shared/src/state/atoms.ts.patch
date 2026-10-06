@@ -1,7 +1,30 @@
 diff --git a/packages/shared/src/state/atoms.ts b/packages/shared/src/state/atoms.ts
 --- a/packages/shared/src/state/atoms.ts
 +++ b/packages/shared/src/state/atoms.ts
-@@ -385,6 +385,9 @@ export const activeNoteIdAtom = atom(
+@@ -229,7 +229,8 @@ export const hydrateNotesAtom = atom(null, async (get, set) => {
+ 
+     // Reconcile: remove atoms for notes no longer in backend
+     // This handles permanently deleted notes (30+ days in trash)
+-    const orphanedIds = [...existingIds].filter((id) => !freshIds.has(id));
++    // moss-multi seam: a vault switch replaces the sidebar, never an open editor.
++    const orphanedIds = [...existingIds].filter((id) => !freshIds.has(id) && id !== get(activeNoteIdAtom) && id !== get(splitTabNoteIdAtom));
+     if (orphanedIds.length > 0) {
+       await Promise.all(orphanedIds.map((id) => set(removeNoteEntityAtom, id)));
+     }
+@@ -368,10 +369,10 @@ const baseActiveNoteIdAtom = atom<string | null>(null);
+ export const activeNoteIdAtom = atom(
+   (get) => {
+     const storedId = get(baseActiveNoteIdAtom);
+-    const noteIds = get(noteIdsAtom);
+ 
+     // Check if stored ID exists (allow trashed notes - needed for trash view)
+-    if (storedId && noteIds.has(storedId)) {
++    // moss-multi seam: an open note may belong to a different vault than the sidebar.
++    if (storedId) {
+       const entity = get(noteEntityAtom(storedId));
+       if (entity) {
+         return storedId;
+@@ -385,6 +386,9 @@ export const activeNoteIdAtom = atom(
    (get, set, update: string | null | ((prev: string | null) => string | null)) => {
      const nextValue = typeof update === 'function' ? update(get(baseActiveNoteIdAtom)) : update;
      set(baseActiveNoteIdAtom, nextValue);
@@ -11,7 +34,7 @@ diff --git a/packages/shared/src/state/atoms.ts b/packages/shared/src/state/atom
  
      if (!nextValue) {
        return;
-@@ -808,6 +811,11 @@ export const splitGoBackAtom = atom(null, (get, set) => {
+@@ -808,6 +812,11 @@ export const splitGoBackAtom = atom(null, (get, set) => {
    const newIndex = hist.index - 1;
    const targetNoteId = hist.stack[newIndex];
    if (targetNoteId) {
@@ -23,7 +46,7 @@ diff --git a/packages/shared/src/state/atoms.ts b/packages/shared/src/state/atom
      if (hist.headings) {
        set(pendingScrollTargetAtom, {
          noteId: targetNoteId,
-@@ -826,6 +834,11 @@ export const splitGoForwardAtom = atom(null, (get, set) => {
+@@ -826,6 +835,11 @@ export const splitGoForwardAtom = atom(null, (get, set) => {
    const newIndex = hist.index + 1;
    const targetNoteId = hist.stack[newIndex];
    if (targetNoteId) {

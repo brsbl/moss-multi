@@ -160,7 +160,12 @@ test('the build stamps equal /api/version on every navigation', async ({ actors,
     await timedReload(actor, measure);
     await waitForShell(actor);
     expect(await stamps(actor.page), `${actor.label} / after reload`).toEqual(expected);
-    await actor.goto(`/d/${randomBytes(8).toString('hex')}`);
+    const created = await actor.context.request.post(`${stack.baseUrl}/api/docs`, {
+      headers: { origin: stack.baseUrl }, data: {},
+    });
+    expect(created.status(), 'declared setup: navigate to a real note').toBe(201);
+    const { doc } = (await created.json()) as { doc: { id: string } };
+    await actor.goto(`/d/${doc.id}`);
     await waitForShell(actor);
     expect(await stamps(actor.page), `${actor.label} /d/$docId`).toEqual(expected);
     await expectNoCspViolations(actor);
@@ -279,7 +284,7 @@ test('no hidden or staged affordance renders in the shell, its menus or Settings
     await expect(page.getByRole('button', { name: 'Create new note' }), `${actor.label}: "+ Note" stays`).toBeVisible();
     expect(await probeHits(page, 'shell'), `${actor.label}: the shell`).toEqual([]);
 
-    // Folder actions holds "Open..." (native-only) and "New Folder" (staged to M2); with both hidden the trigger goes too.
+    // Folder actions holds "Open..." (native-only, withheld) and "New Folder" (T2.2, offered to editors and the owner).
     const folderActions = page.getByRole('button', { name: 'Folder actions' });
     if ((await folderActions.count()) > 0) {
       await folderActions.click();
@@ -295,9 +300,10 @@ test('no hidden or staged affordance renders in the shell, its menus or Settings
     await page.keyboard.press('Escape');
     await expect(page.getByRole('dialog')).toBeHidden();
 
-    // ⌘2 is the trash view's other entry point (staged to M2).
+    // ⌘2 opens the trash view (T2.3) and ⌘1 comes back.
     await page.keyboard.press('ControlOrMeta+2');
-    await expect(page.getByRole('button', { name: 'Back to notes' }), `${actor.label}: ⌘2 opens no trash view`).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Back to notes' }), `${actor.label}: ⌘2 opens the trash view`).toBeVisible();
+    await page.keyboard.press('ControlOrMeta+1');
     await expect(page.getByRole('button', { name: 'Create new note' })).toBeVisible();
   }
 });
@@ -319,14 +325,12 @@ test('no hidden or staged affordance renders on an open note: actions panel, top
   const { page } = ada;
   const docId = await openNewNote(ada);
 
-  // Properties edits frontmatter, which a bound note cannot keep until T1.4, so the tab is staged rather than left
-  // to accept an edit that vanishes on reload.
+  // Properties edits the doc's Y.Map('frontmatter') (T1.4), so its tab is offered.
   await page.getByRole('button', { name: 'Show actions panel', exact: true }).click();
   const panel = page.locator('[data-actions-panel-wrapper]');
   await expect(panel.getByRole('tab', { name: 'Actions', exact: true }), 'the actions panel opens on its Actions tab').toBeVisible();
   expect(await probeHits(page, 'actions-panel'), 'the actions panel').toEqual([]);
-  await expect(panel.getByRole('tab', { name: 'Properties' }), 'no Properties tab').toHaveCount(0);
-  await expect(panel.getByRole('button', { name: 'Add field', includeHidden: true }), 'no frontmatter input, shown or not').toHaveCount(0);
+  await expect(panel.getByRole('tab', { name: 'Properties', exact: true }), 'the Properties tab').toBeVisible();
 
   expect(await probeHits(page, 'note-top-bar'), 'the note top bar').toEqual([]);
   expect(await probeHits(page, 'title'), 'the title').toEqual([]);
@@ -341,8 +345,8 @@ test('no hidden or staged affordance renders on an open note: actions panel, top
   await expect(page.getByRole('menu'), "the note's row menu opens").toBeVisible();
   await expect(page.getByRole('menuitem', { name: 'Pin', exact: true }), 'the row menu renders its items').toBeVisible();
   expect(await probeHits(page, 'note-menu'), "the note's row menu").toEqual([]);
-  // Rename would focus a title that stays closed until it binds (T1.4), taking the typed name nowhere.
-  await expect(page.getByRole('menuitem', { name: 'Rename', exact: true }), 'no Rename while the title cannot bind').toHaveCount(0);
+  // Rename focuses the bound title (T1.4; j02 types through it).
+  await expect(page.getByRole('menuitem', { name: 'Rename', exact: true }), 'Rename, now that the title binds').toBeVisible();
   await page.keyboard.press('Escape');
   await expect(page.getByRole('menu')).toBeHidden();
 });
@@ -387,7 +391,9 @@ test('no block toolbar offers a comment until comments are shared data: code, ch
     // One block per note: the slash command replaces the caret's empty line with its block.
     const docId = await openNewNote(ada, notes);
     notes.push(docId);
-    await expect(ui.body(ada, docId), '"+ Note" leaves the caret in the body').toBeFocused();
+    await expect(ui.title(ada, docId), '"+ Note" focuses the bound title (R2)').toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(ui.body(ada, docId), 'Enter moves from the title to the body').toBeFocused();
     await page.keyboard.type(`/${block.query}`);
     await page.locator('button[data-index]').filter({ hasText: new RegExp(`^${block.option}`) }).click();
     const decorator = page.locator('[data-lexical-decorator]');
@@ -406,7 +412,9 @@ test('the slash menu offers no hidden or staged command: no Emoji (no OS panel) 
   const [ada] = await twoShells(actors);
   const { page } = ada;
   const docId = await openNewNote(ada);
-  await expect(ui.body(ada, docId), '"+ Note" leaves the caret in the body').toBeFocused();
+  await expect(ui.title(ada, docId), '"+ Note" focuses the bound title (R2)').toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(ui.body(ada, docId), 'Enter moves from the title to the body').toBeFocused();
 
   // The whole menu, then each withheld command by name; a command that stays proves each query reached the menu.
   await page.keyboard.type('/');

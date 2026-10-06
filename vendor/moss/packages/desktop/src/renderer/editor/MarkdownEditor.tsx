@@ -1,4 +1,6 @@
 // ported-from: packages/desktop/src/renderer/editor/MarkdownEditor.tsx @ 762abb777
+// moss-multi seam: bound editors do not normalize hydration or expose an unfocused toolbar.
+import { isBoundEditor } from '@moss-multi/host/collab/view-state';
 import type { ReactNode } from 'react';
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -138,9 +140,12 @@ import {
 } from './components/SelectionToolbarPrimitives';
 import './MarkdownEditor.css';
 // moss-multi seam: hide-registry (A§9)
+import { $importNoteBody } from './markdown/pipeline';
 import { hidden } from '@moss-multi/host/affordances';
 // moss-multi seam: link-selection (A§10.10)
 import { clearLinkSelection, markLinkSelection } from '@moss-multi/host/link-highlight';
+// moss-multi seam: trash-copy (T2.3): one module says how long Trash keeps a note
+import { TRASH_COPY } from '@moss-multi/host/retention';
 // moss-multi seam: converter-split (A§12; S-conv §2.3)
 import { $convertMossCustomCodeNodes, $postImportNormalize, escapeHtmlEntities, normalizeMarkdownForImport, unescapeHtmlEntities } from './markdown/normalize';
 import { EDITOR_FONT_FAMILY_LABELS, type EditorSelectionFontFamily, HIGHLIGHT_COLOR_VARIABLES, HIGHLIGHT_YELLOW_VALUE, HIGHLIGHT_YELLOW_VAR, MARKDOWN_EDITOR_HTML_IMPORT, SERIF_FONT_FAMILY_STYLE, SERIF_FONT_FAMILY_VALUE, SERIF_OPTICAL_FONT_SIZE_ADJUST, STYLE_FONT_FAMILY_PROPERTY, STYLE_FONT_SIZE_ADJUST_PROPERTY, selectionFontFamilyFromStyleValue } from './markdown/text-style';
@@ -322,11 +327,12 @@ function CodeNodeNormalizationPlugin(): null {
   useEffect(() => {
     // Normalize any pre-existing CodeNodes (e.g. from older sessions/state)
     // so custom code block UI appears without requiring a reload.
-    editor.update(() => {
+    if (!isBoundEditor(editor) && editor.isEditable()) editor.update(() => {
       $convertMossCustomCodeNodes();
     }, { tag: 'skip-dirty' });
 
-    return editor.registerMutationListener(CodeNode, (mutations) => {
+    return editor.registerMutationListener(CodeNode, (mutations, { updateTags }) => {
+      if (!editor.isEditable() || updateTags.has('collaboration') || updateTags.has('registerMutationListener')) return;
       let hasNewCodeNode = false;
       for (const [, mutation] of mutations) {
         if (mutation === 'created') {
@@ -912,6 +918,15 @@ const insertMarkdownChunk = (
         return;
       }
 
+      // moss-multi seam: whole-note paste must not let insertion rewrite formatting boundaries.
+      const root = $getRoot();
+      const only = root.getFirstChild();
+      if (root.getChildrenSize() === 1 && $isParagraphNode(only) && only.isEmpty()) {
+        $importNoteBody(markdown, { comments: {} });
+        $getRoot().selectEnd();
+        return;
+      }
+
       // convertMarkdownPasteToNodes nulls the selection to prevent temp root
       // corruption, so we re-restore the saved selection after conversion.
       const nodesToInsert = convertMarkdownPasteToNodes(markdown);
@@ -1159,7 +1174,7 @@ export const registerPasteFormattingHandlers = (editor: LexicalEditor): (() => v
       if (hasExplicitMarkdownPayload || shouldImportMarkdownFromPaste(pastedMarkdownCandidate)) {
         event.preventDefault();
         event.stopPropagation();
-        if (shouldChunkMarkdownPaste(pastedMarkdownCandidate)) {
+        if (!hasExplicitMarkdownPayload && shouldChunkMarkdownPaste(pastedMarkdownCandidate)) {
           const savedSelection = captureSelectionForPaste(editor);
           if (!savedSelection) {
             return false;
@@ -1762,6 +1777,19 @@ function FloatingSelectionTools({
     };
   }, [onSelectedImageNodeKeyChange]);
   const floatingToolbarRef = useRef<HTMLDivElement | null>(null);
+  const [editorFocused, setEditorFocused] = useState(false);
+  useEffect(() => {
+    const update = () => {
+      const active = document.activeElement;
+      setEditorFocused(!!active && (!!editor.getRootElement()?.contains(active) || !!active.closest(`[data-toolbar-note="${noteId}"]`)));
+    };
+    const blur = () => queueMicrotask(update);
+    document.addEventListener('focusin', update);
+    document.addEventListener('focusout', blur);
+    update();
+    return () => { document.removeEventListener('focusin', update); document.removeEventListener('focusout', blur); };
+  }, [editor, noteId]);
+
   // Scroll tracking — hide floating bar while scrolling
   const [isScrolling, setIsScrolling] = useState(false);
   const scrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -3564,7 +3592,7 @@ function FloatingSelectionTools({
 
   const trashedToolbar = (
     <div className="px-3 py-2 text-sm text-ink-muted">
-      Note will be deleted in {trashCountdownDays} {trashCountdownDays === 1 ? 'day' : 'days'}
+      {TRASH_COPY.trashedNote /* moss-multi seam: trash-copy (T2.3) */}
     </div>
   );
 
@@ -3578,7 +3606,7 @@ function FloatingSelectionTools({
   const showFloatingBar = (
     hasActiveSelection
     || !!linkInputState?.open
-  ) && shouldRenderToolbarForPane && selectionRectRef.current !== null && !isPaletteOpen && !isTrashed && !isScrolling && !isMouseSelecting && !commentInputState.open;
+  ) && (editorFocused || !!linkInputState?.open || fontDropdownOpen || headingDropdownOpen || highlightDropdownOpen || listDropdownOpen) && shouldRenderToolbarForPane && selectionRectRef.current !== null && !isPaletteOpen && !isTrashed && !isScrolling && !isMouseSelecting && !commentInputState.open;
 
   // Calculate floating bar position from selection rect
   // Clamp below the topnav (~48px from viewport top) to avoid overlap
@@ -3627,6 +3655,7 @@ function FloatingSelectionTools({
           <SelectionToolbarShell
             ref={floatingToolbarRef}
             style={floatingBarStyle}
+            data-toolbar-note={noteId}
             data-floating-selection-toolbar="true"
           >
             <SelectionToolbarInner>
@@ -3657,11 +3686,12 @@ function FloatingSelectionTools({
         </TooltipProvider>
       )}
       {/* Bottom bar — shown when NO text is selected (also hidden during scroll with active selection to prevent flash) */}
-      {shouldRenderToolbarForPane && !showFloatingBar && !(selectionState.isActive && isScrolling) && (
+      {shouldRenderToolbarForPane && (editorFocused || fontDropdownOpen || headingDropdownOpen || highlightDropdownOpen || listDropdownOpen) && !showFloatingBar && !(selectionState.isActive && isScrolling) && (
         <TooltipProvider delayDuration={200}>
           <div
             className="pointer-events-none fixed bottom-6 z-50 -translate-x-1/2 flex flex-col items-center gap-2 px-4"
             style={bottomToolbarStyle}
+            data-toolbar-note={noteId}
             data-floating-selection-toolbar="true" // moss-multi seam: toolbar-contract (A§19): moss's own bottom toolbar
           >
             <div ref={portalRef} className="w-full max-w-lg empty:hidden" />
@@ -3887,7 +3917,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
         // Strip leading H1 from body — it lives in the dedicated title field
         let bodyForEditor = strippedContent;
         const h1Match = bodyForEditor.match(/^#(?!#)\s+(.*?)(?:\s*#*)?\s*(?:\n|$)/);
-        if (h1Match) {
+        if (h1Match && false /* moss-multi seam: body-h1 (T2.3): the title is its own field, so a leading H1 is body */) {
           bodyForEditor = bodyForEditor.slice(h1Match[0].length).replace(/^\n+/, '');
         }
 

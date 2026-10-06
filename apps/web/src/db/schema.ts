@@ -4,6 +4,9 @@ import { sql } from 'drizzle-orm';
 import {
   check, index, integer, primaryKey, sqliteTable, text, uniqueIndex, type AnySQLiteColumn,
 } from 'drizzle-orm/sqlite-core';
+// Roles from the one roles module: links stop at editor; a grant or invite may make a co-owner (the vault owner
+// itself is never stored, it derives from owner_user_id).
+import { GRANT_ROLES, MEMBER_ROLES } from '@moss-multi/protocol/roles';
 
 const now = () => new Date();
 
@@ -96,8 +99,6 @@ export const rateLimit = sqliteTable('rate_limit', {
 // ---------- moss-multi ----------
 
 const PRINCIPAL_TYPES = ['user', 'agent'] as const;
-/** Grantable roles. The owner is never stored; it derives from owner_user_id. */
-const MEMBER_ROLES = ['viewer', 'commenter', 'suggester', 'editor'] as const;
 const TARGET_TYPES = ['doc', 'folder'] as const;
 
 export const agents = sqliteTable(
@@ -171,7 +172,7 @@ export const docMembers = sqliteTable(
     docId: text('doc_id').notNull().references(() => docs.id, { onDelete: 'cascade' }),
     principalId: text('principal_id').notNull(),
     principalType: text('principal_type', { enum: PRINCIPAL_TYPES }).notNull(),
-    role: text('role', { enum: MEMBER_ROLES }).notNull(),
+    role: text('role', { enum: GRANT_ROLES }).notNull(),
     addedBy: text('added_by').notNull(),
     createdAt: integer('created_at').notNull(),
   },
@@ -185,7 +186,7 @@ export const folderMembers = sqliteTable(
     folderId: text('folder_id').notNull().references(() => folders.id, { onDelete: 'cascade' }),
     principalId: text('principal_id').notNull(),
     principalType: text('principal_type', { enum: PRINCIPAL_TYPES }).notNull(),
-    role: text('role', { enum: MEMBER_ROLES }).notNull(),
+    role: text('role', { enum: GRANT_ROLES }).notNull(),
     addedBy: text('added_by').notNull(),
     createdAt: integer('created_at').notNull(),
   },
@@ -215,7 +216,7 @@ export const invites = sqliteTable(
     email: text('email').notNull(),
     targetType: text('target_type', { enum: TARGET_TYPES }).notNull(),
     targetId: text('target_id').notNull(),
-    role: text('role', { enum: MEMBER_ROLES }).notNull(),
+    role: text('role', { enum: GRANT_ROLES }).notNull(),
     invitedBy: text('invited_by').notNull(),
     createdAt: integer('created_at').notNull(),
     acceptedAt: integer('accepted_at'),
@@ -226,6 +227,8 @@ export const invites = sqliteTable(
     index('invites_email_idx').on(t.email),
     index('invites_target_idx').on(t.targetType, t.targetId),
     index('invites_inviter_idx').on(t.invitedBy, t.createdAt),
+    // One open invite per email and target, so two shares of one email at once leave one row (T2.4).
+    uniqueIndex('invites_open_idx').on(t.targetType, t.targetId, t.email).where(sql`accepted_at IS NULL AND revoked_at IS NULL`),
   ],
 );
 
@@ -313,6 +316,15 @@ export const feedback = sqliteTable(
   },
   (t) => [index('feedback_created_idx').on(t.createdAt)],
 );
+
+/**
+ * Each vault owner's access epoch (A§8 pull validation): triggers in the migration bump it in the same statement as
+ * every write that can lower access in that owner's vaults, and a DocDO re-resolves sockets admitted under an older one.
+ */
+export const accessEpochs = sqliteTable('access_epochs', {
+  ownerUserId: text('owner_user_id').primaryKey(),
+  epoch: integer('epoch').notNull().default(0),
+});
 
 /** The models better-auth's drizzle adapter reads, keyed by its model names. */
 export const authSchema = { user, session, account, verification, deviceCode, rateLimit };

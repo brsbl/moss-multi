@@ -9,8 +9,6 @@ import { cn } from '@/lib/utils';
 import { actionsPanelActiveTabAtom } from '@/state/note-atoms';
 import type { ActionsPanelTab } from '@/state/note-atoms';
 import { commandPaletteDockPreviewAtom } from '@/state/atoms';
-// moss-multi seam: hide-registry (A§9)
-import { hidden } from '@moss-multi/host/affordances';
 
 export interface ActionsPanelWrapperProps {
   children: React.ReactNode;
@@ -57,8 +55,7 @@ export function ActionsPanelWrapper({
   // Global tab state — sticky across note switches
   const [activeTab, setActiveTab] = useAtom(actionsPanelActiveTabAtom);
   const isCommandPaletteDockPreviewing = useAtomValue(commandPaletteDockPreviewAtom);
-  // moss-multi seam: hide-registry (A§9): with Properties staged, Actions is the only tab
-  const displayedTab = isCommandPaletteDockPreviewing || hidden('note-properties') ? 'actions' : activeTab;
+  const displayedTab = isCommandPaletteDockPreviewing ? 'actions' : activeTab;
 
   const propertiesContentRef = React.useRef<HTMLDivElement>(null);
 
@@ -150,12 +147,9 @@ export function ActionsPanelWrapper({
                 <span className="ml-1 h-1 w-1 shrink-0 animate-pulse rounded-full bg-accent-terracotta" />
               )}
             </Tabs.Trigger>
-            {/* moss-multi seam: hide-registry (A§9) */}
-            {hidden('note-properties') ? null : (
             <Tabs.Trigger value="properties" className={triggerClass(displayedTab === 'properties')}>
               Properties
             </Tabs.Trigger>
-            )}
           </Tabs.List>
         </div>
 
@@ -170,14 +164,11 @@ export function ActionsPanelWrapper({
         </Tabs.Content>
 
         {/* Properties tab content */}
-        {/* moss-multi seam: hide-registry (A§9) */}
-        {hidden('note-properties') ? null : (
         <Tabs.Content value="properties" forceMount className={cn('min-h-0 flex-1 flex-col outline-none', displayedTab === 'properties' ? 'flex' : 'hidden')}>
           <div ref={propertiesContentRef} className="sidebar-scroll min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-panel-inset pt-panel-section-gap pb-3">
             {propertiesContent}
           </div>
         </Tabs.Content>
-        )}
         {linksSection}
       </Tabs.Root>
     </aside>

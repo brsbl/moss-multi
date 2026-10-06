@@ -104,6 +104,13 @@ export const AFFORDANCES = [
     cite: 'P:Agents; deviation 4',
     probes: [{ surface: 'shell', selector: 'button[aria-label="Create new note"] > span:has(kbd)' }],
   },
+  {
+    id: 'settings-note-intelligence',
+    sites: [`${R}/components/SettingsModal.tsx`],
+    reason: 'Automatic property inference and related-note suggestions require desktop background agents; manual Properties works independently.',
+    cite: 'P:Agents; T1.4',
+    probes: [{ surface: 'settings', selector: '[role="dialog"] span', text: 'Note Intelligence' }],
+  },
   // The same "cannot work on the web" rule.
   {
     id: 'title-shortcut-label',
@@ -134,53 +141,6 @@ export const AFFORDANCES = [
     probes: [{ surface: 'browser-split', selector: '[data-browser-actions-cluster] button[aria-label="Search in browser"]' }],
   },
   // Staged: the entry points stay hidden until their backend lands, so no live control ever 404s.
-  {
-    id: 'new-folder',
-    sites: [`${R}/panels/NotesListPanelContent.tsx`],
-    reason: 'The folders API lands in M2. With "Open..." also withheld, the folder actions menu has no item, so its trigger goes too.',
-    cite: 'T2.2',
-    staged: 2,
-    probes: [
-      { surface: 'folder-actions', selector: MENU_ITEM, text: 'New Folder' },
-      { surface: 'shell', selector: 'button[aria-label="Folder actions"]' },
-    ],
-  },
-  {
-    id: 'trash',
-    sites: [`${R}/panels/NotesPanelFooter.tsx`, `${R}/panels/NotesListPanelContent.tsx`, `${R}/panels/CanvasAreaContent.tsx`, `${R}/App.tsx`],
-    reason: 'Trash, restore and the trash list land in M2: the footer Trash view, the note and folder Trash items and ⌘2.',
-    cite: 'T2.3',
-    staged: 2,
-    probes: [
-      { surface: 'shell', selector: 'button[aria-label="Trash"]' },
-      { surface: 'note-menu', selector: MENU_ITEM, text: 'Trash' },
-      { surface: 'note-more-menu', selector: MENU_ITEM, text: 'Trash' },
-    ],
-  },
-  {
-    id: 'note-properties',
-    sites: ['shared/src/components/layout/ActionsPanelWrapper.tsx'],
-    reason: "Properties edits the note's frontmatter, which binds to Y.Text('frontmatter') in M1; a bound note has no save path, so an edit would vanish on reload.",
-    cite: 'T1.4; A§10.4',
-    staged: 1,
-    probes: [{ surface: 'actions-panel', selector: '[data-actions-panel-wrapper] [role="tab"]', text: 'Properties' }],
-  },
-  {
-    id: 'rename-note',
-    sites: [`${R}/App.tsx`],
-    reason: "Rename focuses the note's title, which stays closed until it binds to Y.Text('title') in M1, so the name typed after it would land nowhere.",
-    cite: 'T1.4; R2',
-    staged: 1,
-    probes: [{ surface: 'note-menu', selector: MENU_ITEM, text: 'Rename' }],
-  },
-  {
-    id: 'duplicate-note',
-    sites: [`${R}/App.tsx`],
-    reason: 'Duplicate goes through a server endpoint in M1; the bridge refuses content writes.',
-    cite: 'T1.8',
-    staged: 1,
-    probes: [{ surface: 'note-menu', selector: MENU_ITEM, text: 'Duplicate' }],
-  },
   {
     id: 'comments',
     sites: [

@@ -59,7 +59,17 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/VideoNode.view.tsx b/pac
  
  function VideoComponent({
    src,
-@@ -376,120 +356,8 @@ function VideoComponent({
+@@ -108,7 +88,8 @@ function VideoComponent({
+     isYouTube || useAssetFallback ? assetSrc : mediaServerSrc ?? assetSrc;
+   const thumbPath = `assets/video-thumb-${computeContentHash(src)}.png`;
+   const thumbBaseSrc = isYouTube ? null : toDisplaySrc(thumbPath, noteId);
+-  const thumbSrc = thumbBaseSrc
++  // moss-multi seam: no Electron thumbnail requests while local media is staged.
++  const thumbSrc = thumbBaseSrc && !thumbBaseSrc.startsWith('moss-asset:')
+     ? `${thumbBaseSrc}${thumbBaseSrc.includes('?') ? '&' : '?'}v=${thumbVersion}`
+     : null;
+ 
+@@ -376,120 +357,8 @@ function VideoComponent({
    );
  }
  
@@ -182,7 +192,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/VideoNode.view.tsx b/pac
      return (
        <VideoComponent
          src={this.__src}
-@@ -498,25 +366,4 @@ export class VideoNode extends DecoratorNode<JSX.Element> {
+@@ -498,25 +367,4 @@ export class VideoNode extends DecoratorNode<JSX.Element> {
          commentIds={this.__commentIds}
        />
      );

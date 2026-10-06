@@ -42,7 +42,11 @@ declare module '@moss-desktop/renderer/editor/utils/editorUpdateTags' {
 // Moss's note and split atoms, as the one-doc-per-tab unit test drives them (A§10.1).
 declare module '@moss/shared/state/atoms' {
   import type { WritableAtom } from 'jotai';
+  export const syncNoteEntityAtom: WritableAtom<null, [{ noteId: string; updates: { title?: string; updatedAt?: number } }], void>;
   export const activeNoteIdAtom: WritableAtom<string | null, [string | null], void>;
+  export const activeFolderPathAtom: WritableAtom<string, [string], void>;
+  export const revealFolderPathAtom: WritableAtom<null, [string | null | undefined], void>;
+  export const hydrateNotesAtom: WritableAtom<null, [], Promise<void>>;
   export const splitTabNoteIdAtom: WritableAtom<string | null, [string | null], void>;
   export const openSplitTabAtom: WritableAtom<null, [string], void>;
   export const splitNavigateToNoteAtom: WritableAtom<null, [string], void>;
@@ -53,12 +57,14 @@ declare module '@moss/shared/state/atoms' {
 declare module '@moss/shared/state/note-atoms' {
   import type { PrimitiveAtom } from 'jotai';
   export function noteEntityAtom(noteId: string): PrimitiveAtom<object | null>;
+  export function noteFrontmatterAtom(noteId: string): PrimitiveAtom<Record<string, unknown> | null>;
+  export function frontmatterDirtySignalAtom(noteId: string): PrimitiveAtom<number>;
   export const noteIdsAtom: PrimitiveAtom<Set<string>>;
 }
 
 // @lexical/react 0.48.0's collaboration plugin, vendored with moss-multi seams (A§10.2), through vite's alias.
 declare module '@moss-multi/lexical-react/LexicalCollaborationPlugin' {
-  import type { ExcludedProperties, Provider } from '@lexical/yjs';
+  import type { ExcludedProperties, Provider, SyncCursorPositionsFn } from '@lexical/yjs';
   import type { JSX, RefObject } from 'react';
   import type { Doc } from 'yjs';
   export function CollaborationPlugin(props: {
@@ -70,6 +76,7 @@ declare module '@moss-multi/lexical-react/LexicalCollaborationPlugin' {
     cursorsContainerRef?: RefObject<HTMLElement | null>;
     excludedProperties?: ExcludedProperties;
     awarenessData?: object;
+    syncCursorPositionsFn?: SyncCursorPositionsFn;
   }): JSX.Element;
 }
 
@@ -89,6 +96,21 @@ declare module '@moss/shared/components/ui/card' {
   export const Card: ForwardRefExoticComponent<HTMLAttributes<HTMLDivElement> & RefAttributes<HTMLDivElement>>;
 }
 
+declare module '@moss/shared/components/ui/dropdown-menu' {
+  import type { ComponentType, HTMLAttributes, ButtonHTMLAttributes, ReactNode } from 'react';
+  export const DropdownMenu: ComponentType<{ children: ReactNode }>;
+  export const DropdownMenuTrigger: ComponentType<ButtonHTMLAttributes<HTMLButtonElement> & { asChild?: boolean }>;
+  export const DropdownMenuContent: ComponentType<HTMLAttributes<HTMLDivElement> & { align?: 'start' | 'center' | 'end'; onCloseAutoFocus?: (event: Event) => void }>;
+  export const DropdownMenuItem: ComponentType<HTMLAttributes<HTMLDivElement> & { onSelect?: () => void }>;
+  export const DropdownMenuSeparator: ComponentType<HTMLAttributes<HTMLDivElement>>;
+}
+
+// The notes list's context-menu item, which the folder "Share…" slot renders (T2.4).
+declare module '@moss/shared/components/ui/context-menu' {
+  import type { ComponentType, HTMLAttributes } from 'react';
+  export const ContextMenuItem: ComponentType<HTMLAttributes<HTMLDivElement> & { onSelect?: () => void }>;
+}
+
 declare module '@moss/shared/components/ui/input' {
   import type { ComponentProps, ForwardRefExoticComponent } from 'react';
   export const Input: ForwardRefExoticComponent<ComponentProps<'input'>>;
@@ -97,4 +119,42 @@ declare module '@moss/shared/components/ui/input' {
 declare module '@moss/shared/components/ui/label' {
   import type { ForwardRefExoticComponent, LabelHTMLAttributes, RefAttributes } from 'react';
   export const Label: ForwardRefExoticComponent<LabelHTMLAttributes<HTMLLabelElement> & RefAttributes<HTMLLabelElement>>;
+}
+
+// moss's modal frame (Settings' shell), which the Share dialog (T1.1) is built in.
+declare module '@moss-desktop/renderer/components/ModalShell' {
+  import type { ComponentType, ReactNode } from 'react';
+  export const ModalShell: ComponentType<{
+    open: boolean;
+    onOpenChange: (open: boolean) => void;
+    title: string;
+    description: string;
+    footer?: ReactNode;
+    children: ReactNode;
+  }>;
+}
+
+declare module '@moss/shared/components/ui/confirmation-dialog' {
+  import type { ComponentType, ReactNode } from 'react';
+  export const ConfirmationDialog: ComponentType<{
+    open: boolean; onOpenChange: (open: boolean) => void;
+    title: ReactNode; description?: ReactNode;
+    confirmLabel?: string; cancelLabel?: string;
+    onConfirm: () => void; onCancel?: () => void;
+    variant?: 'default' | 'danger'; cancelAutoFocus?: boolean;
+  }>;
+}
+
+declare module '@moss-desktop/renderer/editor/markdown/transformers' {
+  export interface LocalLayoutMetadata {
+    version: 1; tableCount: number; tables: { columnWidths?: number[] }[];
+    tabGroupCount?: number; tabGroups?: { panelLabels: string[]; tabWidths?: (number | null)[] }[];
+  }
+  export function $collectTableLayoutMetadata(): LocalLayoutMetadata;
+  export function $collectTabGroupLayoutMetadata(): Pick<LocalLayoutMetadata, 'tabGroupCount' | 'tabGroups'>;
+}
+
+declare module '@moss-desktop/renderer/panels/notesPanelUtils' {
+  /** moss's sidebar time: `timestamp` in seconds. */
+  export function formatRelativeTime(timestamp: number): string;
 }

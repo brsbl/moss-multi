@@ -31,24 +31,31 @@ diff --git a/packages/desktop/src/renderer/components/SettingsModal.tsx b/packag
              <div className="space-y-2">
                <span className="text-micro font-medium uppercase tracking-wider text-ink-faint">Default Markdown Editor</span>
                <div className="rounded-lg border border-border-subtle bg-surface-raised-card p-3">
-@@ -230,6 +237,7 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
+@@ -230,8 +237,10 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
                  )}
                </div>
              </div>
 +            )}
  
-             {/* Note Intelligence */}
+-            {/* Note Intelligence */}
++            {/* moss-multi seam: no background inference service on the web */}
++            {hidden('settings-note-intelligence') ? null : (
              <div className="space-y-2">
-@@ -278,6 +286,8 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
+               <div className="flex items-center justify-between">
+                 <span className="text-micro font-medium uppercase tracking-wider text-ink-faint">Note Intelligence</span>
+@@ -277,7 +286,11 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
+               </div>
              </div>
  
++            )}
++
              {/* Connected Folders Section */}
 +            {/* moss-multi seam: hide-registry (A§9) */}
 +            {hidden('settings-connected-folders') ? null : (
              <div className="space-y-2">
                <div className="flex items-center justify-between">
                  <span className="text-micro font-medium uppercase tracking-wider text-ink-faint">Connected Folders</span>
-@@ -331,6 +341,9 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
+@@ -331,6 +344,9 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
                  )}
                </div>
              </div>

@@ -1,4 +1,6 @@
 // ported-from: packages/desktop/src/renderer/editor/plugins/FileLinkPlugin.tsx @ 762abb777
+// moss-multi seam: local-view (A§10): access-dependent resolution is local paint, never a tree write.
+import { $isBoundEditor, setNodeView } from '@moss-multi/host/collab/view-state';
 import { useEffect, useCallback, useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
@@ -397,11 +399,11 @@ function setFileLinkResolvedInEditor(
   runIgnoredEditorUpdate(editor, () => {
     const node = $getNodeByKey(nodeKey);
     if ($isFileLinkNode(node)) {
-      node.setResolved(resolved.noteId, resolved.isResolved);
+      $setLinkView(node, { noteId: resolved.noteId, isResolved: resolved.isResolved });
       if (resolved.isResolved) {
-        node.setResolutionState('note_resolved');
+        $setLinkView(node, { resolutionState: 'note_resolved' });
         if (resolved.noteTitle && node.getNoteTitle() !== resolved.noteTitle) {
-          node.setNoteTitle(resolved.noteTitle);
+          $setLinkView(node, { noteTitle: resolved.noteTitle });
         }
       }
     }
@@ -542,11 +544,11 @@ function handleFileLinkActivation(
       const currentNode = $getNodeByKey(nodeKey);
       if ($isFileLinkNode(currentNode)) {
         if (result.isResolved) {
-          currentNode.setResolved(result.noteId, result.isResolved);
-          currentNode.setResolutionState('note_resolved');
+          $setLinkView(currentNode, { noteId: result.noteId, isResolved: result.isResolved });
+          $setLinkView(currentNode, { resolutionState: 'note_resolved' });
         } else if (!isExternalSource) {
-          currentNode.setResolved(result.noteId, result.isResolved);
-          currentNode.setResolutionState('not_found');
+          $setLinkView(currentNode, { noteId: result.noteId, isResolved: result.isResolved });
+          $setLinkView(currentNode, { resolutionState: 'not_found' });
         }
       }
     });
@@ -565,7 +567,7 @@ function handleFileLinkActivation(
       editor.update(() => {
         const currentNode = $getNodeByKey(nodeKey);
         if ($isFileLinkNode(currentNode)) {
-          currentNode.setNoteTitle(newTitle);
+          $setLinkView(currentNode, { noteTitle: newTitle });
         }
       });
       // Update cache with new key
@@ -1179,17 +1181,17 @@ export function FileLinkPlugin({ onNavigateToNote }: FileLinkPluginProps) {
             const node = $getNodeByKey(nodeKey);
             if ($isFileLinkNode(node)) {
               if (result.isResolved) {
-                node.setResolved(result.noteId, result.isResolved);
-                node.setResolutionState('note_resolved');
+                $setLinkView(node, { noteId: result.noteId, isResolved: result.isResolved });
+                $setLinkView(node, { resolutionState: 'note_resolved' });
                 // Sync title if the target note was renamed
                 if (needsTitleSync) {
-                  node.setNoteTitle(result.noteTitle);
+                  $setLinkView(node, { noteTitle: result.noteTitle });
                 }
               } else if (!isExternalSource) {
                 // External siblings may still resolve on disk below — don't flash
                 // a broken state for them while the async lookup runs.
-                node.setResolved(result.noteId, result.isResolved);
-                node.setResolutionState('not_found');
+                $setLinkView(node, { noteId: result.noteId, isResolved: result.isResolved });
+                $setLinkView(node, { resolutionState: 'not_found' });
               }
             }
           }, EDITOR_UPDATE_TAGS.ignored.skipDirty);
@@ -1399,12 +1401,12 @@ export function FileLinkPlugin({ onNavigateToNote }: FileLinkPluginProps) {
         if (!$isFileLinkNode(node)) {
           continue;
         }
-        node.setResolved(update.noteId, update.isResolved);
+        $setLinkView(node, { noteId: update.noteId, isResolved: update.isResolved });
         if (update.noteTitle) {
-          node.setNoteTitle(update.noteTitle);
+          $setLinkView(node, { noteTitle: update.noteTitle });
         }
         if (update.resolutionState) {
-          node.setResolutionState(update.resolutionState);
+          $setLinkView(node, { resolutionState: update.resolutionState });
         }
       }
     }, EDITOR_UPDATE_TAGS.ignored.skipDirty);
@@ -1689,10 +1691,10 @@ export function FileLinkPlugin({ onNavigateToNote }: FileLinkPluginProps) {
           if ($isFileLinkNode(node)) {
             const isHeadingValid = editorHeadings.has(headingText.trim().toLowerCase());
             if (isHeadingValid) {
-              node.setResolutionState('fully_resolved');
-              node.setResolved(null, true);
+              $setLinkView(node, { resolutionState: 'fully_resolved' });
+              $setLinkView(node, { noteId: null, isResolved: true });
             } else {
-              node.setResolutionState('heading_not_found');
+              $setLinkView(node, { resolutionState: 'heading_not_found' });
             }
           }
         }
@@ -1752,3 +1754,16 @@ export const fileLinkPluginTestUtils = {
   buildPreviewTextFromMarkdown,
   extractHeadingSectionMarkdown
 };
+
+function $setLinkView(node: FileLinkNode, view: { noteId?: string | null; isResolved?: boolean; noteTitle?: string; resolutionState?: LinkResolutionState }): void {
+  if ($isBoundEditor()) {
+    setNodeView(node.getKey(), {
+      ...(view.noteTitle !== undefined ? { noteTitle: view.noteTitle } : {}),
+      ...(view.resolutionState !== undefined ? { resolutionState: view.resolutionState } : {}),
+    });
+    return;
+  }
+  if (view.isResolved !== undefined) node.setResolved(view.noteId ?? null, view.isResolved);
+  if (view.noteTitle !== undefined) node.setNoteTitle(view.noteTitle);
+  if (view.resolutionState !== undefined) node.setResolutionState(view.resolutionState);
+}

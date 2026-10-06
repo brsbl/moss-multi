@@ -35,14 +35,26 @@ export const EDITOR_GENERATION_ATTR = 'data-editor-generation';
 /** On the pane: `0` or `1`. */
 export const SYNC_UNACKED_ATTR = 'data-sync-unacked';
 
-/** On the connection indicator. */
+/** On the connection indicator, in the pane's top bar. */
 export const CONNECTION_ATTR = 'data-connection';
 export const CONNECTION_STATES = ['online', 'reconnecting', 'offline'] as const;
+export type ConnectionState = (typeof CONNECTION_STATES)[number];
 
 /** On the pane. */
 export const TERMINAL_REASON_ATTR = 'data-terminal-reason';
 export const TERMINAL_REASONS = ['deleted', 'revoked', 'session-ended', 'unavailable', 'conn-limit'] as const;
 export type TerminalReason = (typeof TERMINAL_REASONS)[number];
+
+/** The reserved notice band under each pane's top bar (A§10.5): in flow, empty and zero-height until it has news. */
+export const NOTICE_BAND_ATTR = 'data-notice-band';
+
+/**
+ * The banner in the notice band: `retrying` while a first sync is late, `offline` while a synced doc is not
+ * delivering, `halted` after a refused write stopped the doc, or the terminal reason.
+ */
+export const CONNECTION_BANNER_ATTR = 'data-connection-banner';
+export const CONNECTION_BANNERS = ['retrying', 'offline', 'halted', ...TERMINAL_REASONS] as const;
+export type ConnectionBanner = (typeof CONNECTION_BANNERS)[number];
 
 /** On the pane: the effective role. */
 export const ROLE_ATTR = 'data-role';
@@ -79,6 +91,12 @@ export const INPUT_REFUSAL_ATTR = 'data-input-refusal';
 /** Notes-list rows, with `data-doc-id` and `data-active`. */
 export const SIDEBAR_ROW_ATTR = 'data-sidebar-row';
 export const ACTIVE_ATTR = 'data-active';
+
+/** Trash-view rows, with `data-doc-id` (T2.3). */
+export const TRASH_ROW_ATTR = 'data-trash-row';
+
+/** The retention notice on a note open in the Trash view; its words come from protocol/retention.ts. */
+export const RETENTION_NOTICE_ATTR = 'data-retention-notice';
 
 /** The body editor root Lexical renders. */
 export const LEXICAL_EDITOR_SELECTOR = '[data-lexical-editor="true"]';

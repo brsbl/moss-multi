@@ -1,10 +1,12 @@
 // Doc-socket admission (A§4.1 step 6): the verdict the Worker closes with after the upgrade, and the trusted
-// headers it forwards. M0 knows owners only; grants and links arrive with the resolver's later rows (T1.1, M2).
+// headers it forwards, with the role the one resolver gives (A§8: ownership, grants, links as a ceiling).
 // A browser always sends Origin on an upgrade, so requests carry the app's unless a test says otherwise.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { CLOSE, decodePartyPrincipal, TRUSTED } from '@moss-multi/protocol/sync';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
-import { agentKey, BASE, insertDoc, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
+import {
+  agentKey, BASE, insertDoc, insertFolder, insertGrant, insertLink, SECRET, signedUpUser, type AuthTestEnv, type TestUser,
+} from '../test/principals.ts';
 import { authenticateParty } from './party.ts';
 
 let d1: TestD1;
@@ -59,6 +61,37 @@ describe('authenticateParty', () => {
     expect(await authenticateParty(upgrade(docId, { cookie: ada.cookie }), docId, env)).toEqual({ ok: false, code: CLOSE.deleted });
     expect(await authenticateParty(upgrade(docId, { cookie: ben.cookie }), docId, env)).toEqual({ ok: false, code: CLOSE.unavailable });
   });
+
+  it('admits a person the doc or its vault is shared with at the granted role, which the DO enforces', async () => {
+    const docId = await insertDoc(d1.db, ada);
+    await insertGrant(d1.db, { docId }, ben, 'editor');
+    const verdict = await authenticateParty(upgrade(docId, { cookie: ben.cookie }), docId, env);
+    expect(verdict.ok && decodePartyPrincipal(verdict.headers[TRUSTED.principal])?.id).toBe(ben.id);
+    expect(verdict.ok && verdict.headers[TRUSTED.role]).toBe('editor');
+
+    const viewed = await insertDoc(d1.db, ben);
+    await insertGrant(d1.db, { folderId: ben.homeId }, ada, 'viewer');
+    const viewer = await authenticateParty(upgrade(viewed, { cookie: ada.cookie }), viewed, env);
+    expect(viewer.ok && viewer.headers[TRUSTED.role], 'a vault grant at viewer').toBe('viewer');
+  });
+
+  it('admits a live link at its ceiling: viewer with the token alone, the link role signed in', async () => {
+    const docId = await insertDoc(d1.db, ada);
+    const token = await insertLink(d1.db, { docId }, 'editor');
+    const alone = await authenticateParty(upgrade(docId, {}, `?share=${token}`), docId, env);
+    expect(alone.ok && decodePartyPrincipal(alone.headers[TRUSTED.principal])?.kind).toBe('anonymous');
+    expect(alone.ok && alone.headers[TRUSTED.role]).toBe('viewer');
+    expect(alone.ok && alone.headers[TRUSTED.share]).toBe(token);
+    expect(alone.ok && alone.headers[TRUSTED.presence]).toBe('0');
+    const signedIn = await authenticateParty(upgrade(docId, { cookie: ben.cookie }, `?share=${token}`), docId, env);
+    expect(signedIn.ok && signedIn.headers[TRUSTED.role]).toBe('editor');
+    expect(signedIn.ok && signedIn.headers[TRUSTED.presence]).toBe('0');
+    await insertGrant(d1.db, { docId }, ben, 'viewer');
+    const granted = await authenticateParty(upgrade(docId, { cookie: ben.cookie }, `?share=${token}`), docId, env);
+    expect(granted.ok && granted.headers[TRUSTED.presence]).toBe('1');
+    const revoked = await insertLink(d1.db, { docId }, 'editor', { revoked: true });
+    expect(await authenticateParty(upgrade(docId, {}, `?share=${revoked}`), docId, env)).toEqual({ ok: false, code: CLOSE.unavailable });
+  });
 });
 
 describe('the origin gate (A§18)', () => {
@@ -86,7 +119,7 @@ describe('the origin gate (A§18)', () => {
       const bearer = await authenticateParty(upgrade(docId, { authorization: `Bearer ${ada.token}`, origin }), docId, env);
       expect(ownerOf(bearer), `session bearer, Origin ${origin}`).toEqual({ id: ada.id, role: 'owner' });
       const agent = await authenticateParty(upgrade(docId, { authorization: `Bearer ${key}`, origin }), docId, env);
-      expect(agent.ok && agent.headers[TRUSTED.role], `agent key, Origin ${origin}`).toBe('owner');
+      expect(agent.ok && agent.headers[TRUSTED.role], `agent key, Origin ${origin}: an agent acts at most as an editor`).toBe('editor');
     }
   });
 
@@ -107,7 +140,20 @@ describe('the origin gate (A§18)', () => {
     for (const origin of [...FOREIGN, undefined]) {
       expect(await authenticateParty(upgrade(docId, { origin }, '?share=link-token'), docId, env), `Origin ${origin}`).toEqual(fromApp);
     }
-    // M0 resolves no links yet (T1.1), so a token alone opens nothing; the gate never turns it into 4401.
+    // No link has this token, so it opens nothing; the gate never turns it into 4401.
     expect(fromApp).toEqual({ ok: false, code: CLOSE.unavailable });
+  });
+});
+
+describe('opening a shared note', () => {
+  it("redeems no pending email share on a socket admission: moss may open a note nobody chose (T2.8)", async () => {
+    const folderId = await insertFolder(d1.db, ada, ada.homeId);
+    const docId = await insertDoc(d1.db, ada, { folderId });
+    await insertGrant(d1.db, { folderId }, ben, 'viewer');
+    await d1.db.prepare(`INSERT INTO invites (token, email, target_type, target_id, role, invited_by, created_at)
+      VALUES ('t-folder', ?, 'folder', ?, 'viewer', ?, ?)`).bind(ben.email, folderId, ada.id, Date.now()).run();
+    const accepted = async () => (await d1.db.prepare("SELECT accepted_by FROM invites WHERE token = 't-folder'").first<{ accepted_by: string | null }>())?.accepted_by;
+    expect((await authenticateParty(upgrade(docId, { cookie: ben.cookie }), docId, env)).ok).toBe(true);
+    expect(await accepted(), 'the share waits for an explicit open').toBeNull();
   });
 });

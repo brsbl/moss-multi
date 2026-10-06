@@ -1,5 +1,9 @@
 // ported-from: packages/desktop/src/renderer/editor/nodes/FormulaNode.tsx @ 762abb777
+// moss-multi seam: register payloads (A§10.10).
+import { readRegister, writeRegister, initRegisterNode } from '@moss-multi/host/collab/registers';
 import type { JSX } from 'react';
+// moss-multi seam: local-view (A§10): computed values paint locally, outside the shared node.
+import { useNodeView } from '@moss-multi/host/collab/view-state';
 import {
   $applyNodeReplacement,
   DecoratorNode,
@@ -83,6 +87,9 @@ function FormulaComponent({
   stale: boolean;
   nodeKey: NodeKey;
 }): JSX.Element {
+  const view = useNodeView(nodeKey);
+  result = view?.result ?? result;
+  stale = view?.stale ?? stale;
   const sourceMode = classifyFormulaSource(formula, { storedDisplay: result });
   const isSymbolic = sourceMode === 'symbolic';
   const isStale = stale && !isSymbolic;
@@ -125,12 +132,18 @@ function $convertFormulaElement(domNode: HTMLElement): DOMConversionOutput | nul
 }
 
 export class FormulaNode extends DecoratorNode<JSX.Element> {
+  __regId = initRegisterNode(this);
   __formula: string;
   __result: string;
   __formulaId: string;
   __name: string | null;
   __stale: boolean;
   __commentIds: string[];
+
+  afterCloneFrom(previous: this): void {
+    super.afterCloneFrom(previous);
+    this.__regId = previous.__regId;
+  }
 
   static getType(): string {
     return 'formula';
@@ -178,7 +191,7 @@ export class FormulaNode extends DecoratorNode<JSX.Element> {
     return {
       type: 'formula',
       version: 1,
-      formula: this.__formula,
+      formula: this.getFormula(),
       result: this.__result,
       formulaId: this.__formulaId,
       name: this.__name,
@@ -203,7 +216,7 @@ export class FormulaNode extends DecoratorNode<JSX.Element> {
 
   exportDOM(): DOMExportOutput {
     const element = document.createElement('span');
-    element.setAttribute('data-formula', this.__formula);
+    element.setAttribute('data-formula', this.getFormula());
     element.setAttribute('data-result', this.__result);
     element.setAttribute('data-formula-id', this.__formulaId);
     if (this.__name) {
@@ -231,7 +244,7 @@ export class FormulaNode extends DecoratorNode<JSX.Element> {
   }
 
   getFormula(): string {
-    return this.__formula;
+    return readRegister(this, this.__formula);
   }
 
   getResult(): string {
@@ -256,6 +269,7 @@ export class FormulaNode extends DecoratorNode<JSX.Element> {
   }
 
   setFormula(formula: string): void {
+    if (writeRegister(this, formula)) return;
     const writable = this.getWritable();
     writable.__formula = formula;
   }
@@ -285,11 +299,11 @@ export class FormulaNode extends DecoratorNode<JSX.Element> {
   }
 
   getTextContent(): string {
-    const sourceMode = classifyFormulaSource(this.__formula, {
+    const sourceMode = classifyFormulaSource(this.getFormula(), {
       storedDisplay: this.__result
     });
     return `{{${serializeFormulaMarkdownPayload({
-      expression: this.__formula,
+      expression: this.getFormula(),
       result: this.__result,
       formulaId: this.__formulaId,
       name: sourceMode === 'symbolic' ? null : this.__name,
@@ -300,7 +314,7 @@ export class FormulaNode extends DecoratorNode<JSX.Element> {
   decorate(): JSX.Element {
     return (
       <FormulaComponent
-        formula={this.__formula}
+        formula={this.getFormula()}
         result={this.__result}
         formulaId={this.__formulaId}
         stale={this.__stale}

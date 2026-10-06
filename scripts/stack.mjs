@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // The one stack launcher, for local work and CI (A§20, S-test §4.1–4.2): `wrangler dev --local` on built bytes,
-// in its own process group, at most 2 live stacks per machine, orphans reaped. Every run records host state
+// in its own process group, at most MAX_STACKS (5; MOSS_MAX_STACKS overrides) live stacks per machine, orphans reaped. Every run records host state
 // (load, a bb dev stack or Nightly running) so a local death can be classed as infrastructure (L§5.1).
-//   start      [--run-id ID] [--port P] [--prebuilt DIST] [--hooks] [--expect-commit SHA] [--expect-bundle HASH] [--json]
+//   start      [--run-id ID] [--port P] [--prebuilt DIST] [--hooks] [--expect-commit SHA] [--expect-bundle HASH] [--state-dir DIR] [--json]
 //   restart    --run-id ID                same bytes, storage, secrets and port
 //   stop       --run-id ID [--purge]      --purge deletes state/ but never shots/
 //   pause|resume --run-id ID              SIGSTOP / SIGCONT the group
@@ -27,7 +27,7 @@ const WEB = join(REPO, 'apps/web');
 const RUNS = join(REPO, '.local-stack/runs');
 const BUILDS = join(REPO, '.local-stack/builds');
 const REGISTRY = process.env.MOSS_STACK_REGISTRY || join(os.homedir(), '.cache/moss-multi/stacks');
-const MAX_STACKS = 2;
+const MAX_STACKS = Number(process.env.MOSS_MAX_STACKS) || 5;
 const PORT_RANGE = [8850, 8869];
 const READY_MS = 60_000;
 const BLANK_VARS = ['GITHUB_CLIENT_ID', 'GITHUB_CLIENT_SECRET', 'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'RESEND_API_KEY',
@@ -63,6 +63,14 @@ export function parseEtime(text) {
   const parts = clock.split(':').map(Number);
   while (parts.length < 3) parts.unshift(0);
   return ((Number(days) * 24 + parts[0]) * 60 + parts[1]) * 60 + parts[2];
+}
+
+/**
+ * Where wrangler keeps D1 and Durable Object storage. workerd syncs every commit on its one thread, so on a busy shared
+ * disk one sync stalls every request; CI passes --state-dir on tmpfs (/dev/shm) to keep storage in memory (T0.9d).
+ */
+export function persistDirFor(runDir, runId, stateDir) {
+  return typeof stateDir === 'string' ? join(resolve(stateDir), runId) : join(runDir, 'state');
 }
 
 export function parsePs(text) {
@@ -357,14 +365,15 @@ async function start(opts) {
     if (opts[flag] && opts[flag] !== provenance[key]) fail(`--${flag} ${opts[flag]} but the build has ${key} ${provenance[key]}`);
   }
   const port = await choosePort(opts.port ? Number(opts.port) : null);
-  mkdirSync(join(run.dir, 'state'), { recursive: true });
+  const persistDir = persistDirFor(run.dir, runId, opts['state-dir']);
+  for (const dir of [run.dir, persistDir]) mkdirSync(dir, { recursive: true });
   const secretsPath = join(run.dir, 'secrets.json');
   if (!existsSync(secretsPath)) {
     writePrivate(secretsPath, { betterAuthSecret: randomBytes(32).toString('hex'), testHooksSecret: randomBytes(24).toString('hex') });
   }
   run.state = {
     runId, repo: REPO, status: 'new', port, baseUrl: `http://127.0.0.1:${port}`, buildDir, hooks: Boolean(opts.hooks),
-    expected: provenance, persistDir: join(run.dir, 'state'), logPath: join(run.dir, 'wrangler.log'), secretsPath,
+    expected: provenance, persistDir, logPath: join(run.dir, 'wrangler.log'), secretsPath,
     statePath: run.statePath,
   };
   migrate(run.state);

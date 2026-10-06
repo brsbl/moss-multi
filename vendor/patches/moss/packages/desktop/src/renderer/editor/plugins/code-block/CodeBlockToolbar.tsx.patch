@@ -1,0 +1,55 @@
+diff --git a/packages/desktop/src/renderer/editor/plugins/code-block/CodeBlockToolbar.tsx b/packages/desktop/src/renderer/editor/plugins/code-block/CodeBlockToolbar.tsx
+--- a/packages/desktop/src/renderer/editor/plugins/code-block/CodeBlockToolbar.tsx
++++ b/packages/desktop/src/renderer/editor/plugins/code-block/CodeBlockToolbar.tsx
+@@ -27,6 +27,8 @@ export interface CodeBlockToolbarProps {
+   onThemeChange: (theme: string) => void;
+   getCodeContent: () => string;
+   onDropdownOpenChange?: (open: boolean) => void;
++  /** moss-multi seam: read-only-decorators (T2.3): a read-only editor shows the language and theme, never changes them */
++  readOnly?: boolean;
+ }
+ 
+ export function CodeBlockToolbar({
+@@ -35,7 +37,8 @@ export function CodeBlockToolbar({
+   theme,
+   onThemeChange,
+   getCodeContent,
+-  onDropdownOpenChange
++  onDropdownOpenChange,
++  readOnly = false
+ }: CodeBlockToolbarProps): JSX.Element {
+   const [copySuccess, setCopySuccess] = useState(false);
+   const openCountRef = useRef(0);
+@@ -71,6 +74,7 @@ export function CodeBlockToolbar({
+                   type="button"
+                   className="moss-code-toolbar-btn moss-code-toolbar-language"
+                   aria-label="Select language"
++                  disabled={readOnly}
+                 >
+                   <span className="truncate">{currentLabel}</span>
+                   <ChevronDown size={12} aria-hidden />
+@@ -101,6 +105,7 @@ export function CodeBlockToolbar({
+                   type="button"
+                   className="moss-code-toolbar-btn moss-code-toolbar-language"
+                   aria-label="Select theme"
++                  disabled={readOnly}
+                 >
+                   <span className="truncate">{currentThemeLabel}</span>
+                   <ChevronDown size={12} aria-hidden />
+@@ -123,6 +128,8 @@ export function CodeBlockToolbar({
+         </DropdownMenu>
+ 
+         {/* Copy Button */}
++        {/* moss-multi seam: read-only-decorators (T2.3): nothing under a closed body takes focus (invariant 9); the code stays selectable */}
++        {readOnly ? null : (
+         <Tooltip>
+           <TooltipTrigger asChild>
+             <button
+@@ -140,6 +147,7 @@ export function CodeBlockToolbar({
+           </TooltipTrigger>
+           <TooltipContent side="bottom"><p>{copySuccess ? 'Copied!' : 'Copy code'}</p></TooltipContent>
+         </Tooltip>
++        )}
+       </div>
+     </TooltipProvider>
+   );

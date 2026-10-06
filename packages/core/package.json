@@ -1,0 +1,24 @@
+{
+  "name": "@moss-multi/core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./doc-fields": "./src/doc-fields.ts",
+    "./filenames": "./src/filenames.ts",
+    "./frontmatter": "./src/frontmatter.ts",
+    "./text-diff": "./src/text-diff.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "js-yaml": "4.3.0",
+    "yjs": "13.6.31"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "4.0.9",
+    "typescript": "5.9.3",
+    "vitest": "4.1.10"
+  }
+}

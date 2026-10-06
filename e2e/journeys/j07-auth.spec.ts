@@ -2,7 +2,8 @@
 // sign-out from Settings goes to the card, sign-in returns to the doc `next` names (and never off the site), a wrong
 // password says so, no OAuth button renders, the card works at both Tier A widths, and a session lookup that fails
 // or hangs degrades in place (R10).
-import { randomBytes } from 'node:crypto';
+import { cookieHeader } from '../lib/doc-client.ts';
+import { signIn, type Principal } from '../lib/principals.ts';
 import type { Page, Request, Route } from '@playwright/test';
 import type { Actor } from '../lib/actors.ts';
 import { APP_STATE_ATTR } from '../lib/contract.ts';
@@ -12,7 +13,17 @@ const SHELL = '[data-moss-app-shell]';
 const BOOT_TIMEOUT = 30_000;
 const SERVER_FNS = '**/_serverFn/**';
 
-const docPath = () => `/d/${randomBytes(8).toString('hex')}`;
+/** Declared setup: auth returns to a real note owned by the person signing in. */
+async function docPath(baseUrl: string, person: Principal): Promise<string> {
+  const response = await fetch(`${baseUrl}/api/docs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin: baseUrl, cookie: cookieHeader(await signIn(baseUrl, person)) },
+    body: '{}',
+    signal: AbortSignal.timeout(15_000),
+  });
+  expect(response.status, 'declared setup: create the return note').toBe(201);
+  return `/d/${((await response.json()) as { doc: { id: string } }).doc.id}`;
+}
 
 /** `/login?next=<path>`, however the router encodes it. */
 const atLogin = (next: string | null) => (url: URL) => url.pathname === '/login' && url.searchParams.get('next') === next;
@@ -121,7 +132,7 @@ test('sign-out from moss Settings posts JSON {} and goes to the login card, endi
 test('sign-in on the card returns to the doc next names; a wrong password shows a message @p:ppl-1', async ({ actors, stack }) => {
   const people = [await actors.principal('ada'), await actors.principal('ben')];
   for (const person of people) {
-    const path = docPath();
+    const path = await docPath(stack.baseUrl, person);
     const actor = await actors.anonymous(path, { label: person.label });
     await expect(actor.page, `${person.label}: a signed-out doc link goes to the card with next`).toHaveURL(atLogin(path));
     await ui.waitForLoginCard(actor);
@@ -142,9 +153,9 @@ test('sign-in on the card returns to the doc next names; a wrong password shows 
   }
 });
 
-test('after a wrong password the password field keeps focus, so the keyboard fixes it in place and signs in @p:ppl-1', async ({ actors }) => {
+test('after a wrong password the password field keeps focus, so the keyboard fixes it in place and signs in @p:ppl-1', async ({ actors, stack }) => {
   for (const person of [await actors.principal('ada'), await actors.principal('ben')]) {
-    const path = docPath();
+    const path = await docPath(stack.baseUrl, person);
     const actor = await actors.anonymous(path, { label: person.label });
     await ui.waitForLoginCard(actor);
     actor.expectHttp(401, '/api/auth/sign-in/email');
@@ -243,9 +254,10 @@ test('the login card works at 390x844 and 1440x1000 @p:tech-9 @tierA @evidence',
   }
 });
 
-test('a failed session lookup shows data-app-state=degraded and retries in place, never redirecting @p:R10', async ({ actors }) => {
+test('a failed session lookup shows data-app-state=degraded and retries in place, never redirecting @p:R10', async ({ actors, stack }) => {
   const ben = await actors.open(await actors.principal('ben'));
-  const ada = await actors.session(await actors.principal('ada'));
+  const adaPerson = await actors.principal('ada');
+  const ada = await actors.session(adaPerson);
   await actors.requireDistinct(2);
 
   // Each lookup fails a different way, in turn: a refused request (Start's fetcher throws), an error page served as
@@ -262,7 +274,7 @@ test('a failed session lookup shows data-app-state=degraded and retries in place
     failed += 1;
   });
   const navigations = recordNavigations(ada.page);
-  const path = docPath();
+  const path = await docPath(stack.baseUrl, adaPerson);
   await ada.goto(path);
 
   const html = ada.page.locator('html');
@@ -289,7 +301,7 @@ test('a failed session lookup shows data-app-state=degraded and retries in place
   await waitForShell(ben);
 });
 
-test('a session lookup that never answers degrades in place, asks again and boots the same doc @p:R10', async ({ actors }) => {
+test('a session lookup that never answers degrades in place, asks again and boots the same doc @p:R10', async ({ actors, stack }) => {
   const ben = await actors.open(await actors.principal('ben'));
   const adaPerson = await actors.principal('ada');
   const ada = await actors.session(adaPerson);
@@ -310,7 +322,7 @@ test('a session lookup that never answers degrades in place, asks again and boot
     else await route.continue();
   });
   const navigations = recordNavigations(ada.page);
-  const path = docPath();
+  const path = await docPath(stack.baseUrl, adaPerson);
   await ada.goto(path);
 
   const html = ada.page.locator('html');

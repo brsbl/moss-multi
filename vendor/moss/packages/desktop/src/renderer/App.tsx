@@ -1,5 +1,6 @@
 // ported-from: packages/desktop/src/renderer/App.tsx @ 762abb777
-import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import { recoverableLazy } from '@moss-multi/host/recoverable-lazy';
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
 import { useAtom, useAtomValue, useSetAtom, useStore } from 'jotai';
 import { useThemeEffect } from '@moss/shared/themes';
@@ -153,7 +154,8 @@ import type { TrashedNotesPanelContentHandle } from './panels/TrashedNotesPanelC
 import { PropertiesTabContent } from './panels/PropertiesTabContent';
 import { DefaultEditorPrompt } from './components/DefaultEditorPrompt';
 import type { MossWindowContext, UpdateReadyInfo } from '../types/electron-api';
-import { disassembleNote, assembleNote } from '../common/markdown-layers';
+// moss-multi seam: duplicate from the server's Yjs snapshot.
+import { duplicateNote } from '@moss-multi/host/duplicate';
 import { hydrateComments } from './editor/utils/comment-import';
 import { noteIntelligenceEnabledAtom, pendingAgentCommentContextAtom, promptDraftAtom } from '@moss/shared/state/atoms';
 import { connectedFolderEntriesAtom, contextPillsAtom, setMentionPillsAtom } from './state/granted-dirs-atoms';
@@ -172,6 +174,8 @@ import {
 import { hidden } from '@moss-multi/host/affordances';
 // moss-multi seam: new-note (A§9, R2)
 import { armOpeningGuard } from '@moss-multi/host/opening-guard';
+// moss-multi seam: phone-shell (T2.7, deviation 11): below 640 px the notes panel overlays the canvas
+import { useNarrow } from '@moss-multi/host/viewport';
 
 const nowInSeconds = (): number => Math.floor(Date.now() / 1000);
 const NOTE_LIST_SYNC_DEBOUNCE_MS = 150;
@@ -317,27 +321,28 @@ const mapRecordToMockNote = (record: NoteMetadataRecord): MockNote => {
   };
 };
 
-const LazyCommandPaletteOverlay = lazy(async () => {
+// moss-multi seam: optional imports fail in place without unmounting a bound editor.
+const LazyCommandPaletteOverlay = recoverableLazy(async () => {
   const module = await import('./prompt/CommandPaletteOverlay');
   return { default: module.CommandPaletteOverlay };
 }) as typeof import('./prompt/CommandPaletteOverlay').CommandPaletteOverlay;
 
-const LazySettingsModal = lazy(async () => {
+const LazySettingsModal = recoverableLazy(async () => {
   const module = await import('./components/SettingsModal');
   return { default: module.SettingsModal };
 });
 
-const LazyFeedbackDialog = lazy(async () => {
+const LazyFeedbackDialog = recoverableLazy(async () => {
   const module = await import('./components/FeedbackDialog');
   return { default: module.FeedbackDialog };
 });
 
-const LazyUpdateWidget = lazy(async () => {
+const LazyUpdateWidget = recoverableLazy(async () => {
   const module = await import('./components/UpdateWidget');
   return { default: module.UpdateWidget };
 });
 
-const LazyTrashedNotesPanelContent = lazy(async () => {
+const LazyTrashedNotesPanelContent = recoverableLazy(async () => {
   const module = await import('./panels/TrashedNotesPanelContent');
   return { default: module.TrashedNotesPanelContent };
 }) as typeof import('./panels/TrashedNotesPanelContent').TrashedNotesPanelContent;
@@ -1143,10 +1148,11 @@ export function App() {
   const didInitializeStartupSelectionRef = useRef(false);
   const commandPaletteRef = useRef<CommandPaletteOverlayHandle>(null);
 
-  const [shouldFocusTitle, setShouldFocusTitle] = useState(false);
+  // moss-multi seam: only the requested note may consume a title-focus intent.
+  const [titleFocusNoteId, setTitleFocusNoteId] = useState<string | null>(null);
   const [shouldFocusBody, setShouldFocusBody] = useState(false);
   const handleTitleFocusComplete = useCallback(() => {
-    setShouldFocusTitle(false);
+    setTitleFocusNoteId(null);
   }, []);
   const handleBodyFocusComplete = useCallback(() => {
     setShouldFocusBody(false);
@@ -1160,6 +1166,9 @@ export function App() {
   const toggleZenMode = useSetAtom(toggleZenModeAtom);
   const notesPanelWrapperRef = useRef<HTMLDivElement | null>(null);
   const [showZenNotesPanel, setShowZenNotesPanel] = useState(false);
+  const narrow = useNarrow(); // moss-multi seam: phone-shell (T2.7): opened by its toggle; open while no note is
+  const [narrowNotesOpen, setNarrowNotesOpen] = useState(false);
+  const narrowNotesVisible = narrow && (narrowNotesOpen || !activeNoteId);
   const [showZenTopBar, setShowZenTopBar] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<UpdateReadyInfo | null>(null);
   const [selectedContext, setSelectedContext] = useState<string | null>(null);
@@ -2864,7 +2873,7 @@ export function App() {
       }
       navigateToNote(note.id);
       if (focusTarget === 'title') {
-        setShouldFocusTitle(true);
+        setTitleFocusNoteId(note.id);
       } else {
         setShouldFocusBody(true);
       }
@@ -2930,7 +2939,7 @@ export function App() {
       opening.disarm();
       return;
     }
-    if (await createAndActivateNote({ focusTarget: 'body' })) opening.created();
+    if (await createAndActivateNote({ focusTarget: 'title' })) opening.created();
     else opening.disarm();
   }, [createAndActivateNote, flushBeforeNoteSwitch]);
 
@@ -2942,35 +2951,7 @@ export function App() {
     if (!entity) return;
 
     try {
-      // Read source content from disk
-      const contentResult = await notesApi.getContent.invoke(noteId);
-      if (!contentResult) {
-        showOperationFailure('Could not read note content.');
-        return;
-      }
-
-      // Strip frontmatter and comments — duplicate gets fresh metadata
-      const { body, h1Title } = disassembleNote(contentResult.content);
-
-      // Create new note in the same folder
-      const title = entity.title ? `${entity.title} copy` : 'Untitled copy';
-      const record = await notesApi.create.invoke(title, entity.folderPath);
-      if (!record) {
-        showOperationFailure('Could not create duplicate note.');
-        await reconcileNotesFromDisk('duplicate-empty-response');
-        return;
-      }
-
-      // Write the cleaned body to the new note
-      const cleanedContent = assembleNote({ h1Title: h1Title || title, body });
-      const updatedRecord = await notesApi.update.invoke(record.id, {
-        content: cleanedContent,
-        ...(contentResult.layoutMetadata ? { layoutMetadata: contentResult.layoutMetadata } : {}),
-        ...(entity.pinned ? { pinned: true, pinnedAt: Math.floor(Date.now() / 1000) } : {})
-      });
-
-      // Navigate to the duplicate
-      const persistedRecord = updatedRecord ?? record;
+      const persistedRecord = await duplicateNote(noteId);
       const note = mapRecordToMockNote(persistedRecord);
       insertNote(note);
       applyNoteRecordToStore(persistedRecord);
@@ -3137,14 +3118,8 @@ export function App() {
   const handleRenameNote = useCallback(
     (noteId: string) => {
       handleSelectNote(noteId);
-      // Race: 150ms delay heuristic for note switch + IPC hydration to complete.
-      // May fire too early under heavy load. Cleanup at line ~566 cancels on unmount.
-      // TODO: Replace with event-driven approach (e.g., contentHydrated callback).
-      if (renameTimerRef.current) clearTimeout(renameTimerRef.current);
-      renameTimerRef.current = setTimeout(() => {
-        canvasRef.current?.focusTitle();
-        renameTimerRef.current = null;
-      }, 150);
+      // moss-multi seam: the pane consumes this focus intent after first sync.
+      setTitleFocusNoteId(noteId);
     },
     [handleSelectNote]
   );
@@ -3169,7 +3144,8 @@ export function App() {
             noteId,
             error
           });
-          showOperationFailure('Could not restore note. Try again.');
+          // moss-multi seam: a refused restore shows the server's sentence (T2.3s).
+          showOperationFailure(error instanceof Error && error.message ? error.message : 'Could not restore note. Try again.');
           await reconcileNotesFromDisk('restore-error', noteId);
           return;
         }
@@ -3889,8 +3865,7 @@ export function App() {
       }
 
       // Switch to Trash tab: Cmd+2
-      // moss-multi seam: hide-registry (A§9)
-      if (key === '2' && !hidden('trash')) {
+      if (key === '2') {
         e.preventDefault();
         handlePanelViewChange('trash');
         return;
@@ -3926,8 +3901,21 @@ export function App() {
   }, [store, activeNoteId]);
 
   const handleCollapseNotesPanel = useCallback(() => {
+    if (narrow) { setNarrowNotesOpen(false); return; } // moss-multi seam: phone-shell (T2.7)
     setNotesPanelHidden(true);
-  }, [setNotesPanelHidden]);
+  }, [narrow, setNotesPanelHidden]);
+
+  // moss-multi seam: phone-shell (T2.7): a tap outside the overlaid notes panel closes it
+  useEffect(() => {
+    if (!narrowNotesVisible || !activeNoteId) return;
+    const close = (event: PointerEvent) => {
+      const target = event.target as Element | null;
+      if (!target || notesPanelWrapperRef.current?.contains(target) || target.closest('[data-overlay-surface]')) return;
+      setNarrowNotesOpen(false);
+    };
+    window.addEventListener('pointerdown', close, true);
+    return () => window.removeEventListener('pointerdown', close, true);
+  }, [narrowNotesVisible, activeNoteId]);
 
   const handleOpenActionImages = useCallback((sources: string[], startIndex: number) => {
     if (!sources.length) return;
@@ -3954,8 +3942,8 @@ export function App() {
     onRestoreNote: handleNoteRestored,
     onNavigateToNote: handleSelectNote,
     isActionsPanelHidden: actionsPanelHidden,
-    isNotesPanelHidden: notesPanelHidden,
-    onExpandNotesPanel: () => { zenModeActive ? toggleZenMode() : setNotesPanelHidden(false); },
+    isNotesPanelHidden: narrow ? !narrowNotesVisible : notesPanelHidden, // moss-multi seam: phone-shell (T2.7)
+    onExpandNotesPanel: () => { if (narrow) { setNarrowNotesOpen(true); return; } zenModeActive ? toggleZenMode() : setNotesPanelHidden(false); },
     onExpandActionsPanel: () => { zenModeActive ? toggleZenMode() : setActionsPanelHidden(false); },
     isAgentStreaming: hasActiveStreaming,
     onCanvasClick: handlePromptClose,
@@ -4060,7 +4048,7 @@ export function App() {
       searchBarAutoFocus={searchBarAutoFocus}
       onCloseSearch={handleCloseSearch}
       onOpenSearch={() => { setSearchQuery(''); setSearchBarAutoFocus(true); }}
-      leftAutoFocusTitle={shouldFocusTitle}
+      leftAutoFocusTitle={titleFocusNoteId !== null && titleFocusNoteId === activeNoteId}
       onLeftTitleFocusComplete={handleTitleFocusComplete}
       leftAutoFocusBody={shouldFocusBody}
       onLeftBodyFocusComplete={handleBodyFocusComplete}
@@ -4076,6 +4064,7 @@ export function App() {
       feedbackTooltipOpen={feedbackTooltipFixtureOpen}
       mode={appMode}
       onModeChange={handlePanelViewChange}
+      onTrashNote={handleNoteDeleted} // moss-multi seam: trash-drop (T2.3)
       onOpenFeedback={() => setFeedbackDialogOpen(true)}
       onOpenSettings={async () => {
         handleCloseSearch();
@@ -4085,8 +4074,8 @@ export function App() {
     />
   );
 
-  const notesPanelOverlay = zenModeActive && notesPanelHidden;
-  const notesPanelVisible = notesPanelOverlay ? showZenNotesPanel : !notesPanelHidden;
+  const notesPanelOverlay = narrow || (zenModeActive && notesPanelHidden); // moss-multi seam: phone-shell (T2.7)
+  const notesPanelVisible = narrow ? narrowNotesVisible : notesPanelOverlay ? showZenNotesPanel : !notesPanelHidden;
   const notesPanelWidthPx = notesListWidth + NOTES_PANEL_RESIZER_WIDTH_PX;
 
   const notePanelContent =
@@ -4106,9 +4095,8 @@ export function App() {
         onSelectNote={handleSelectNote}
         onCreateNote={handleCreateNote}
         onDeleteNote={handleNoteDeleted}
-        // moss-multi seam: hide-registry (A§9)
-        onDuplicateNote={hidden('duplicate-note') ? undefined : handleDuplicateNote}
-        onRenameNote={hidden('rename-note') ? undefined : handleRenameNote}
+        onDuplicateNote={handleDuplicateNote}
+        onRenameNote={handleRenameNote}
         onCollapse={handleCollapseNotesPanel}
         footerContent={panelFooter}
       />
@@ -4122,11 +4110,13 @@ export function App() {
         notesPanelOverlay ? 'absolute inset-y-0 left-0 z-40 border-r border-border-subtle/50 shadow-[0_8px_24px_var(--ink-shadow-soft)]' : '',
         notesPanelOverlay && notesPanelVisible ? 'translate-x-0 opacity-100' : '',
         notesPanelOverlay && !notesPanelVisible ? '-translate-x-full opacity-0 pointer-events-none' : '',
+        narrow && !notesPanelVisible ? 'invisible' : '', // moss-multi seam: phone-shell (T2.7): put away, not just transparent
         !notesPanelOverlay && !notesPanelVisible ? 'hidden' : ''
       ].join(' ')}
       style={{ width: notesPanelVisible || notesPanelOverlay ? `${notesPanelWidthPx}px` : undefined }}
       inert={!notesPanelVisible || undefined}
       aria-hidden={!notesPanelVisible}
+      data-overlay-surface={narrow && notesPanelVisible ? '' : undefined} // moss-multi seam: phone-shell (T2.7, A§19)
     >
       <div
         className="flex h-full min-w-0 shrink-0 overflow-hidden"

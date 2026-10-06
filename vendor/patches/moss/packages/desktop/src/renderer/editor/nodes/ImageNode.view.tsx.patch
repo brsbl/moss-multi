@@ -60,7 +60,36 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ImageNode.view.tsx b/pac
  
  /**
   * Navigation (arrow keys, enter, backspace, delete) is handled by DecoratorBlockPlugin
-@@ -319,148 +291,8 @@ function ImageComponent({
+@@ -186,7 +158,9 @@ function ImageComponent({
+ 
+   // Render error state — still selectable and removable: a missing asset must
+   // not leave an undeletable block in the note.
+-  if (hasError) {
++  // moss-multi seam: local asset delivery lands in M3; never request Electron's protocol in a browser.
++  const desktopAsset = displaySrc.startsWith('moss-asset:');
++  if (hasError || desktopAsset) {
+     const missingLabel = (obsidianRef || src).trim();
+     return (
+       <div
+@@ -196,7 +170,7 @@ function ImageComponent({
+       >
+         <span>{`"${missingLabel}" could not be found.`}</span>
+         <span className="ml-2 inline-flex items-center gap-2">
+-          <button
++          {!desktopAsset && <button
+             type="button"
+             className="text-xs text-ink-faint underline-offset-2 hover:text-ink-muted hover:underline focus-visible:outline-none"
+             onClick={(e) => {
+@@ -206,7 +180,7 @@ function ImageComponent({
+             }}
+           >
+             Retry
+-          </button>
++          </button>}
+           <button
+             type="button"
+             className="text-xs text-ink-faint underline-offset-2 hover:text-ink-muted hover:underline focus-visible:outline-none"
+@@ -319,148 +293,8 @@ function ImageComponent({
    );
  }
  
@@ -211,7 +240,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ImageNode.view.tsx b/pac
      return (
        <ImageComponent
          src={this.__src}
-@@ -470,29 +302,4 @@ export class ImageNode extends DecoratorNode<JSX.Element> {
+@@ -470,29 +304,4 @@ export class ImageNode extends DecoratorNode<JSX.Element> {
          commentIds={this.__commentIds}
        />
      );

@@ -2,10 +2,11 @@
 // CI lane planner and the ci-ok aggregator. Dependency-free: the plan and ci-ok jobs skip install.
 //   node scripts/ci/plan.mjs          prints GITHUB_OUTPUT lines for this event
 //   node scripts/ci/plan.mjs ci-ok    fails unless every planned job passed (NEEDS_JSON = toJSON(needs))
+//   node scripts/ci/plan.mjs budget   fails when a journey group's recorded minutes exceed the shard budget
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { ALL, GROUPS, readJourneys } from './journeys.mjs';
+import { ALL, GROUPS, SHARD_BUDGET_MINUTES, budgetProblems, readJourneys, readMinutes, shardEstimates } from './journeys.mjs';
 
 export const BROWSERS = ['chromium', 'webkit'];
 // Minutes per e2e shard (the job timeout): a ready-PR shard must finish within 13; repeated and @slow runs get 25.
@@ -134,13 +135,19 @@ function schedulePlan(journeys, headSha, lastNightlySha) {
 
 // Pure: the event name, its payload, the changed paths (null when unknown), CI_DEGRADED, the journey files and,
 // nightly, main's head and the last green nightly's head decide the lanes and shards.
-export function computePlan({ event, payload = {}, changedFiles = null, degraded = false, journeys = [], headSha = '', lastNightlySha = '' }) {
+export function computePlan({ event, payload = {}, changedFiles = null, degraded = false, journeys = [], headSha = '', lastNightlySha = '', closedMilestone = null }) {
   let plan;
   if (event === 'workflow_dispatch') plan = dispatchPlan(payload);
   else if (event === 'push') plan = pushPlan(payload, changedFiles);
   else if (event === 'pull_request') plan = pullRequestPlan(payload, changedFiles, degraded);
   else if (event === 'schedule') plan = schedulePlan(journeys, headSha, lastNightlySha);
   else plan = lanes({}, `unhandled event ${event}`);
+  if (closedMilestone !== null) {
+    if (!Number.isInteger(closedMilestone) || closedMilestone < 0) throw new Error('closed milestone must be a non-negative integer');
+    const pr = payload.pull_request;
+    const milestoneExit = event === 'pull_request' && !pr?.draft && pr?.base?.ref === 'main' && /^m\d+$/.test(pr?.head?.ref ?? '');
+    if (!milestoneExit && plan.traceMilestone !== null) plan.traceMilestone = Math.min(plan.traceMilestone, closedMilestone);
+  }
   return { ...plan, shards: shardsFor(plan, journeys) };
 }
 
@@ -211,7 +218,17 @@ function changedFilesFor(event, payload) {
   return null;
 }
 
+function budget() {
+  const journeys = readJourneys();
+  const minutes = readMinutes();
+  for (const shard of shardEstimates(journeys, minutes)) console.log(`${shard.engine}/${shard.group}: ${shard.minutes} of ${SHARD_BUDGET_MINUTES} min`);
+  const problems = budgetProblems(journeys, minutes);
+  for (const problem of problems) console.log(`::error::${problem}`);
+  return problems.length ? 1 : 0;
+}
+
 function main(argv) {
+  if (argv[0] === 'budget') return budget();
   if (argv[0] === 'ci-ok') {
     const { ok, problems } = ciOk(JSON.parse(process.env.NEEDS_JSON ?? '{}'));
     console.log(ok ? 'ci-ok: every planned job passed' : `ci-ok: FAILED\n${problems.join('\n')}`);
@@ -227,6 +244,7 @@ function main(argv) {
     journeys: readJourneys(),
     headSha: process.env.GITHUB_SHA ?? '',
     lastNightlySha: process.env.LAST_NIGHTLY_SHA ?? '',
+    closedMilestone: process.env.CI_CLOSED_MILESTONE ? Number(process.env.CI_CLOSED_MILESTONE) : null,
   });
   process.stdout.write(toOutputs(plan));
   const shards = plan.shards.map((shard) => `${shard.browser}/${shard.group}`).join(' ') || 'none';

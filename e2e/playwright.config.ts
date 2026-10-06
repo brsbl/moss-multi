@@ -42,6 +42,7 @@ export default defineConfig({
     actionTimeout: 10_000,
   },
   projects: [
+    { name: 'calibration', testDir: './calibration', use: { browserName: 'chromium' } },
     { name: 'selftest-chromium', testDir: './selftest', use: { browserName: 'chromium' } },
     { name: 'selftest-webkit', testDir: './selftest', use: { browserName: 'webkit' } },
     { name: 'chromium', testDir: './journeys', ...journeys, dependencies: ['selftest-chromium'], use: { browserName: 'chromium' } },

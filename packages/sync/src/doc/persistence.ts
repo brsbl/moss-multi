@@ -2,6 +2,7 @@
 // item identity, into ystate chunks under the 2 MB row cap; meta holds flags and stateBytes; revocations are
 // durable so a woken DO already knows them.
 import * as Y from 'yjs';
+import type { DeleteSet } from './admission.ts';
 
 /** The origin of everything replayed from storage; it is never persisted again. */
 export const PERSISTENCE = 'persistence';
@@ -11,7 +12,8 @@ export const COMPACT_MAX_BYTES = 1024 * 1024;
 export const STATE_CHUNK_BYTES = 1.5 * 1024 * 1024;
 
 export type RevocationKind = 'token' | 'session' | 'principal';
-export type Revoked = Record<RevocationKind, Set<string>>;
+/** Each revoked id with when it was revoked (epoch ms). */
+export type Revoked = Record<RevocationKind, Map<string, number>>;
 
 /** workerd binds BLOBs from an ArrayBuffer of exactly the value's bytes. */
 function blob(bytes: Uint8Array): ArrayBuffer {
@@ -36,7 +38,7 @@ export class DocStore {
   private bytes = 0;
   /** The encoded doc state: exact at load and at each compaction, plus each update's bytes in between. */
   stateBytes = 0;
-  readonly revoked: Revoked = { token: new Set(), session: new Set(), principal: new Set() };
+  readonly revoked: Revoked = { token: new Map(), session: new Map(), principal: new Map() };
 
   constructor(private readonly storage: DurableObjectStorage) {
     this.sql = storage.sql;
@@ -61,9 +63,20 @@ export class DocStore {
     this.rows = updates.length;
     this.stateBytes = Y.encodeStateAsUpdate(doc).byteLength;
     if (this.meta('stateBytes') !== String(this.stateBytes)) this.setMeta('stateBytes', String(this.stateBytes));
-    for (const row of this.sql.exec<{ kind: string; id: string }>('SELECT kind, id FROM revocations').toArray()) {
-      if (row.kind in this.revoked) this.revoked[row.kind as RevocationKind].add(row.id);
+    for (const row of this.sql.exec<{ kind: string; id: string; at: number }>('SELECT kind, id, at FROM revocations').toArray()) {
+      if (row.kind in this.revoked) this.revoked[row.kind as RevocationKind].set(row.id, Number(row.at));
     }
+  }
+
+  /** Persists a revocation before anyone acts on it; a principal keeps its latest time (A§8). */
+  revoke(kind: RevocationKind, id: string, at: number): void {
+    this.sql.exec(
+      'INSERT INTO revocations (kind, id, at) VALUES (?, ?, ?) ON CONFLICT(kind, id) DO UPDATE SET at = max(at, excluded.at)',
+      kind,
+      id,
+      at,
+    );
+    this.revoked[kind].set(id, Math.max(at, this.revoked[kind].get(id) ?? at));
   }
 
   /**
@@ -115,26 +128,49 @@ export class DocStore {
   }
 }
 
-/** One ack per connection per window, sent when the window closes. In memory: a wake simply sends none. */
-export class AckCoalescer {
-  private readonly pending = new Map<string, ReturnType<typeof setTimeout>>();
+/**
+ * One ack per socket per window, sent when the window closes, naming the deletes the acked frames carried, the note's
+ * and each payload's. A payload's coverage is the clock ranges of the acked frames themselves, as far as the server
+ * holds them, so an ack tells a client nothing it did not send. Keyed by the socket itself: a client may
+ * reuse its connection id while the DO still holds the old socket, whose close must never cancel the new one's ack.
+ * In memory: a wake simply sends none.
+ */
+export class AckCoalescer<Socket extends object> {
+  private readonly pending = new Map<Socket, { timer: ReturnType<typeof setTimeout>; deletes: DeleteSet[]; payloads: Map<string, { sv: Map<number, number>; deletes: DeleteSet[] }> }>();
 
   constructor(
-    private readonly send: (connectionId: string) => void,
+    private readonly send: (socket: Socket, deletes: DeleteSet, payloads: Map<string, { sv: Map<number, number>; deletes: DeleteSet }>) => void,
     private readonly windowMs: number,
   ) {}
 
-  schedule(connectionId: string): void {
-    if (this.pending.has(connectionId)) return;
-    const timer = setTimeout(() => {
-      this.pending.delete(connectionId);
-      this.send(connectionId);
-    }, this.windowMs);
-    this.pending.set(connectionId, timer);
+  /** `payload` names the payload doc the acked frame wrote, and `covered` the clocks the frame put there; the note's otherwise. */
+  schedule(socket: Socket, deletes?: DeleteSet, payload?: string, covered?: Map<number, number>): void {
+    let entry = this.pending.get(socket);
+    if (!entry) {
+      const timer = setTimeout(() => {
+        const due = this.pending.get(socket);
+        this.pending.delete(socket);
+        const payloads = new Map([...(due?.payloads ?? [])].map(([id, { sv, deletes: sets }]) => [id, { sv, deletes: Y.mergeDeleteSets(sets) }] as const));
+        this.send(socket, Y.mergeDeleteSets(due?.deletes ?? []), payloads);
+      }, this.windowMs);
+      entry = { timer, deletes: [], payloads: new Map() };
+      this.pending.set(socket, entry);
+    }
+    if (payload === undefined) {
+      if (deletes) entry.deletes.push(deletes);
+      return;
+    }
+    let acked = entry.payloads.get(payload);
+    if (!acked) entry.payloads.set(payload, (acked = { sv: new Map(), deletes: [] }));
+    if (deletes) acked.deletes.push(deletes);
+    for (const [client, clock] of covered ?? []) {
+      if ((acked.sv.get(client) ?? 0) < clock) acked.sv.set(client, clock);
+    }
   }
 
-  cancel(connectionId: string): void {
-    clearTimeout(this.pending.get(connectionId));
-    this.pending.delete(connectionId);
+  cancel(socket: Socket): void {
+    const entry = this.pending.get(socket);
+    if (entry) clearTimeout(entry.timer);
+    this.pending.delete(socket);
   }
 }

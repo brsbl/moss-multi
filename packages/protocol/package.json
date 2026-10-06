@@ -6,7 +6,9 @@
   "exports": {
     "./dom-contract": "./src/dom-contract.ts",
     "./limits": "./src/limits.ts",
+    "./retention": "./src/retention.ts",
     "./roles": "./src/roles.ts",
-    "./sync": "./src/sync.ts"
+    "./sync": "./src/sync.ts",
+    "./workspace": "./src/workspace.ts"
   }
 }

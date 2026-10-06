@@ -17,7 +17,7 @@ let env: Parameters<typeof handleApi>[1] & { MOSS_TEST_HOOKS?: string };
 beforeAll(async () => {
   d1 = await migratedD1();
   // /api/me never reaches a DO.
-  env = { DB: d1.db, BETTER_AUTH_SECRET: SECRET, BETTER_AUTH_URL: BASE, DocDO: {} as never };
+  env = { DB: d1.db, BETTER_AUTH_SECRET: SECRET, BETTER_AUTH_URL: BASE, DocDO: {} as never, PrincipalDO: {} as never };
 }, 60_000);
 afterAll(() => d1?.dispose());
 

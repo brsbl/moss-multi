@@ -1,4 +1,5 @@
 // ported-from: packages/desktop/src/renderer/panels/PropertiesTabContent.tsx @ 762abb777
+import { useFieldWritable } from '@moss-multi/host/collab/title-binding'; // moss-multi seam: shared-properties (A§10.4): same gate as the title
 import { useCallback } from 'react';
 import { useAtomValue, useSetAtom, useStore } from 'jotai';
 import { Plus } from 'lucide-react';
@@ -36,6 +37,7 @@ const stableStringifyUnknown = (value: unknown): string => {
 export function PropertiesTabContent() {
   const focusedNoteId = useAtomValue(focusedNoteIdAtom);
   const noteId = focusedNoteId ?? NO_NOTE_SENTINEL;
+  const writable = useFieldWritable(noteId);
   const noteEntity = useAtomValue(noteEntityAtom(noteId));
   const frontmatter = useAtomValue(noteFrontmatterAtom(noteId));
   const store = useStore();
@@ -60,7 +62,7 @@ export function PropertiesTabContent() {
 
   const handleFieldChange = useCallback(
     (field: string, value: unknown) => {
-      if (noteId === NO_NOTE_SENTINEL) return;
+      if (noteId === NO_NOTE_SENTINEL || !writable) return;
       if (noteEntity?.trashedAt != null) return;
 
       const current = store.get(noteFrontmatterAtom(noteId)) ?? {};
@@ -90,7 +92,7 @@ export function PropertiesTabContent() {
       // Signal CanvasAreaContent to schedule autosave
       bumpDirtySignal((c) => c + 1);
     },
-    [noteId, noteEntity, store, bumpDirtySignal]
+    [noteId, noteEntity, store, bumpDirtySignal, writable]
   );
 
   if (noteId === NO_NOTE_SENTINEL) {
@@ -103,7 +105,7 @@ export function PropertiesTabContent() {
     return (
       <div className="py-8 text-center">
         <p className="text-caption text-ink-faint">No properties yet</p>
-        {noteEntity?.trashedAt == null && (
+        {writable && noteEntity?.trashedAt == null && (
           <button
             type="button"
             onClick={() => {
@@ -122,11 +124,14 @@ export function PropertiesTabContent() {
   }
 
   return (
+    <fieldset disabled={!writable} className="min-w-0">
     <FrontmatterHeader
       noteId={noteId}
+      preserveOrder // moss-multi seam: structured-properties (A§10.4)
       onFieldChange={handleFieldChange}
       onTagClick={handleTagClick}
       onFieldSearchClick={handleFieldSearchClick}
     />
+    </fieldset>
   );
 }

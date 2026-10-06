@@ -1,0 +1,241 @@
+diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.tsx b/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.tsx
+--- a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.tsx
++++ b/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.tsx
+@@ -1,3 +1,8 @@
++// moss-multi seam: publish decorator drafts as register edits.
++import { resumeField, useRegisterDraft } from '@moss-multi/host/collab/register-input';
++import { registerDoc } from '@moss-multi/host/collab/registers';
++// moss-multi seam: capabilities (T2.6): Edit and Delete only while the editor may write.
++import { useBlockCanEdit } from '@moss-multi/host/capabilities';
+ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+ import type { JSX } from 'react';
+ import { $createNodeSelection, $getNodeByKey, $setSelection, type NodeKey } from 'lexical';
+@@ -194,12 +199,13 @@ function RawHtmlBlockquoteComponent({
+   nodeKey
+ }: HtmlBlockquoteComponentProps): JSX.Element {
+   const [editor] = useLexicalComposerContext();
++  const canEdit = useBlockCanEdit(); // moss-multi seam: capabilities (T2.6)
+   const [isSelected, setSelected, clearSelection] = useLexicalNodeSelection(nodeKey);
+   const { handleDelete, handleGapClick } = useMediaNodeActions(nodeKey);
+-  const [isEditing, setIsEditing] = useState(false);
+-  const [localRawHtml, setLocalRawHtml] = useState(rawHtml);
++  const [isEditing, setIsEditing] = useState(() => resumeField(editor, nodeKey));
+   const [hasTextSelection, setHasTextSelection] = useState(false);
+   const textareaRef = useRef<HTMLTextAreaElement>(null);
++  const [localRawHtml, setLocalRawHtml, writable] = useRegisterDraft(editor, nodeKey, rawHtml, textareaRef, isEditing);
+   const highlightedPreRef = useRef<HTMLPreElement>(null);
+   const previewContent = useMemo(
+     () => parseHtmlBlockquotePreviewContent(rawHtml),
+@@ -228,7 +234,7 @@ function RawHtmlBlockquoteComponent({
+   }, []);
+ 
+   useEffect(() => {
+-    if (!isEditing) {
++    if (!isEditing && !registerDoc(editor)) {
+       setLocalRawHtml(rawHtml);
+     }
+   }, [rawHtml, isEditing]);
+@@ -288,7 +294,7 @@ function RawHtmlBlockquoteComponent({
+     editor.update(() => {
+       const node = $getNodeByKey(nodeKey);
+       if (node && $isHtmlBlockquoteNode(node)) {
+-        node.setRawHtml(trimmed);
++        if (!registerDoc(editor)) node.setRawHtml(trimmed);
+       }
+     });
+     setHasTextSelection(false);
+@@ -312,7 +318,7 @@ function RawHtmlBlockquoteComponent({
+   }, [commitRawHtml, editor._key, isEditing, nodeKey]);
+ 
+   const cancelEdit = useCallback(() => {
+-    setLocalRawHtml(rawHtml);
++    if (!registerDoc(editor)) setLocalRawHtml(rawHtml);
+     setHasTextSelection(false);
+     setIsEditing(false);
+   }, [rawHtml]);
+@@ -344,7 +350,7 @@ function RawHtmlBlockquoteComponent({
+       className="group/decorator relative my-4"
+       data-block-decorator-key={nodeKey}
+       onClick={handleContainerClick}
+-      onDoubleClick={() => setIsEditing(true)}
++      onDoubleClick={() => { if (canEdit) setIsEditing(true); } /* moss-multi seam: capabilities (T2.6) */}
+     >
+       <div className="mx-auto w-full max-w-canvas-prose">
+         <BlockNodeShell
+@@ -367,7 +373,7 @@ function RawHtmlBlockquoteComponent({
+                   <div className="flex items-center gap-1">
+                     <MediaHeaderButton
+                       icon={X}
+-                      title="Cancel"
++                      title={registerDoc(editor) ? "Close" : "Cancel"}
+                       onClick={() => cancelEdit()}
+                     />
+                     <MediaHeaderButton
+@@ -396,6 +402,7 @@ function RawHtmlBlockquoteComponent({
+                   </pre>
+                   <textarea
+                     ref={textareaRef}
++                    readOnly={!editor.isEditable() || !writable}
+                     value={localRawHtml}
+                     onChange={(e) => {
+                       setLocalRawHtml(e.target.value);
+@@ -423,11 +430,11 @@ function RawHtmlBlockquoteComponent({
+                   <span className="inline-flex items-center gap-1 align-middle">
+                     <KeyboardShortcut keys={['⌘', '⏎']} size="compact" />
+                   </span>{' '}
+-                  to save &middot;{' '}
++                  {registerDoc(editor) ? 'to finish' : 'to save'} &middot;{' '}
+                   <span className="inline-flex items-center gap-1 align-middle">
+                     <KeyboardShortcut keys={['Esc']} size="compact" />
+                   </span>{' '}
+-                  to cancel
++                  {registerDoc(editor) ? 'to close' : 'to cancel'}
+                 </div>
+               </div>
+             </div>
+@@ -440,6 +447,9 @@ function RawHtmlBlockquoteComponent({
+                 className="absolute right-2 top-2 z-10 flex items-center gap-1 opacity-0 transition-opacity group-hover/decorator:opacity-100 group-focus-within/decorator:opacity-100"
+                 onClick={(e) => e.stopPropagation()}
+               >
++                {/* moss-multi seam: capabilities (T2.6) */}
++                {canEdit && (
++                <>
+                 <MediaHeaderButton
+                   icon={Pencil}
+                   title="Edit HTML"
+@@ -450,6 +460,8 @@ function RawHtmlBlockquoteComponent({
+                   title="Delete HTML block"
+                   onClick={handleDelete}
+                 />
++                </>
++                )}
+               </div>
+               <blockquote className="border-l-2 border-border-default pl-4 pr-10">
+                 <div className="space-y-3 text-body text-ink-default">
+@@ -492,15 +504,16 @@ function MossHtmlPreviewComponent({
+   nodeKey
+ }: HtmlBlockquoteComponentProps): JSX.Element {
+   const [editor] = useLexicalComposerContext();
++  const canEdit = useBlockCanEdit(); // moss-multi seam: capabilities (T2.6)
+   const noteId = useCurrentNoteId();
+   const [isSelected, setSelected, clearSelection] = useLexicalNodeSelection(nodeKey);
+   const { handleDelete, handleGapClick } = useMediaNodeActions(nodeKey);
+-  const [isEditing, setIsEditing] = useState(false);
+-  const [localRawHtml, setLocalRawHtml] = useState(rawHtml);
++  const [isEditing, setIsEditing] = useState(() => resumeField(editor, nodeKey));
+   const [hasTextSelection, setHasTextSelection] = useState(false);
+   const [isInteractive, setIsInteractive] = useState(false);
+   const { isFullscreen, enterFullscreen, exitFullscreen } = useMediaFullscreen();
+   const textareaRef = useRef<HTMLTextAreaElement>(null);
++  const [localRawHtml, setLocalRawHtml, writable] = useRegisterDraft(editor, nodeKey, rawHtml, textareaRef, isEditing);
+   const highlightedPreRef = useRef<HTMLPreElement>(null);
+ 
+   const [interactivePreviewReady, setInteractivePreviewReady] = useState(false);
+@@ -658,7 +671,7 @@ function MossHtmlPreviewComponent({
+   }, [retryPreviewImage]);
+ 
+   useEffect(() => {
+-    if (!isEditing) {
++    if (!isEditing && !registerDoc(editor)) {
+       setLocalRawHtml(rawHtml);
+     }
+   }, [rawHtml, isEditing]);
+@@ -709,8 +722,8 @@ function MossHtmlPreviewComponent({
+     e.preventDefault();
+     e.stopPropagation();
+     activatePreview();
+-    setIsEditing(true);
+-  }, [activatePreview]);
++    if (canEdit) setIsEditing(true); // moss-multi seam: capabilities (T2.6)
++  }, [activatePreview, canEdit]);
+ 
+   const selectNode = useCallback(() => {
+     clearSelection();
+@@ -744,7 +757,7 @@ function MossHtmlPreviewComponent({
+     editor.update(() => {
+       const node = $getNodeByKey(nodeKey);
+       if (node && $isHtmlBlockquoteNode(node)) {
+-        node.setRawHtml(trimmed);
++        if (!registerDoc(editor)) node.setRawHtml(trimmed);
+       }
+     });
+     setHasTextSelection(false);
+@@ -768,7 +781,7 @@ function MossHtmlPreviewComponent({
+   }, [commitRawHtml, editor._key, isEditing, nodeKey]);
+ 
+   const cancelEdit = useCallback(() => {
+-    setLocalRawHtml(rawHtml);
++    if (!registerDoc(editor)) setLocalRawHtml(rawHtml);
+     setHasTextSelection(false);
+     setIsEditing(false);
+   }, [rawHtml]);
+@@ -798,7 +811,7 @@ function MossHtmlPreviewComponent({
+         <div className="flex items-center gap-1">
+           <MediaHeaderButton
+             icon={X}
+-            title="Cancel"
++            title={registerDoc(editor) ? "Close" : "Cancel"}
+             onClick={() => cancelEdit()}
+           />
+           <MediaHeaderButton
+@@ -827,6 +840,7 @@ function MossHtmlPreviewComponent({
+         </pre>
+         <textarea
+           ref={textareaRef}
++          readOnly={!editor.isEditable() || !writable}
+           value={localRawHtml}
+           onChange={(e) => {
+             setLocalRawHtml(e.target.value);
+@@ -854,11 +868,11 @@ function MossHtmlPreviewComponent({
+         <span className="inline-flex items-center gap-1 align-middle">
+           <KeyboardShortcut keys={['⌘', '⏎']} size="compact" />
+         </span>{' '}
+-        to save &middot;{' '}
++        {registerDoc(editor) ? 'to finish' : 'to save'} &middot;{' '}
+         <span className="inline-flex items-center gap-1 align-middle">
+           <KeyboardShortcut keys={['Esc']} size="compact" />
+         </span>{' '}
+-        to cancel
++        {registerDoc(editor) ? 'to close' : 'to cancel'}
+       </div>
+     </div>
+   );
+@@ -1012,12 +1026,12 @@ function MossHtmlPreviewComponent({
+       hostRef={noteFrameHostRef}
+       rootClassName="my-4"
+       onRootClick={handleContainerClick}
+-      onRootDoubleClick={() => setIsEditing(true)}
++      onRootDoubleClick={() => { if (canEdit) setIsEditing(true); } /* moss-multi seam: capabilities (T2.6) */}
+       {...(isEditing
+         ? { children: editorPanel }
+         : {
+             viewportRef: notePreviewViewportRef,
+-            viewportClassName: `relative h-full overflow-hidden bg-ink-inverse ${
++            viewportClassName: `relative isolate h-full overflow-hidden bg-ink-inverse ${
+               !isInteractive ? 'cursor-pointer' : ''
+             }`,
+             viewportDataAttributes: { 'data-moss-html-preview-viewport': 'true' },
+@@ -1027,11 +1041,14 @@ function MossHtmlPreviewComponent({
+                 onDelete={handleDelete}
+                 onFullscreen={enterFullscreen}
+               >
++                {/* moss-multi seam: capabilities (T2.6) */}
++                {canEdit && (
+                 <MediaHeaderButton
+                   icon={Pencil}
+                   title="Edit HTML"
+                   onClick={() => setIsEditing(true)}
+                 />
++                )}
+               </MediaNodeHeader>
+             ) : null,
+             activationBadge: !isInteractive ? (
+@@ -1055,7 +1072,7 @@ function MossHtmlPreviewComponent({
+ registerNodeView(HtmlBlockquoteNode.getType(), function decorate(this: HtmlBlockquoteNode): JSX.Element {
+     return (
+       <HtmlBlockquoteComponent
+-        rawHtml={this.__rawHtml}
++        rawHtml={this.getRawHtml()}
+         source={this.__source}
+         commentIds={this.__commentIds}
+         nodeKey={this.__key}

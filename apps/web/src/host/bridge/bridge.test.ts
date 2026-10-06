@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createBridge, docIdFromPath } from './index.ts';
+import { knownRole } from '../access.ts';
+import { createBridge, docIdFromPath, WORKSPACE } from './index.ts';
 
 const LISTING = {
   vault: { id: 'v1', name: 'Home' },
@@ -33,6 +34,59 @@ describe('the T0.5a bridge', () => {
     const { api, fetch } = bridge('/', new Response('{}', { status: 503 }));
     await expect(api.notes.getAll()).rejects.toThrow(/503/);
     await expect(api.notes.getAll()).rejects.toThrow(/503/);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('holds a listing in flight while the page leaves, and sends it again if the page stays', async () => {
+    const controller = new AbortController();
+    let stay = () => undefined as void;
+    const stayed = new Promise<void>((resolve) => { stay = resolve; });
+    let calls = 0;
+    const fetch = vi.fn<typeof globalThis.fetch>((_input, init) => ++calls > 1
+      ? Promise.resolve(Response.json(LISTING))
+      : new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+      }));
+    let leave = { signal: controller.signal, stayed };
+    const api = createBridge({ pathname: () => '/', fetch, leaving: () => leave });
+    const settled = vi.fn();
+    const listed = api.notes.getAll();
+    void listed.then(settled, settled);
+    controller.abort();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(fetch.mock.calls[0]?.[1]?.signal).toBe(controller.signal);
+    expect(settled, 'a leave never fails the read').not.toHaveBeenCalled();
+    leave = { signal: new AbortController().signal, stayed: new Promise(() => undefined) };
+    stay();
+    expect((await listed).map((note) => note.id), 'the page stayed, so the read is sent again').toEqual(['d1']);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('holds a listing whose body is still arriving when the page leaves, and sends it again if the page stays', async () => {
+    const controller = new AbortController();
+    let stay = () => undefined as void;
+    const stayed = new Promise<void>((resolve) => { stay = resolve; });
+    let calls = 0;
+    const fetch = vi.fn<typeof globalThis.fetch>((_input, init) => {
+      if (++calls > 1) return Promise.resolve(Response.json(LISTING));
+      // The headers are in; the body fails when the navigation aborts the read.
+      const body = new ReadableStream<Uint8Array>({ start(stream) {
+        init?.signal?.addEventListener('abort', () => stream.error(new DOMException('aborted', 'AbortError')));
+      } });
+      return Promise.resolve(new Response(body, { headers: { 'content-type': 'application/json' } }));
+    });
+    let leave = { signal: controller.signal, stayed };
+    const api = createBridge({ pathname: () => '/', fetch, leaving: () => leave });
+    const settled = vi.fn();
+    const listed = api.notes.getAll();
+    void listed.then(settled, settled);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    controller.abort();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(settled, 'a leave never fails the read').not.toHaveBeenCalled();
+    leave = { signal: new AbortController().signal, stayed: new Promise(() => undefined) };
+    stay();
+    expect((await listed).map((note) => note.id), 'the page stayed, so the read is sent again').toEqual(['d1']);
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
@@ -71,4 +125,129 @@ describe('the T0.5b bridge', () => {
     const api = createBridge({ pathname: () => '/', fetch });
     await expect(api.notes.create('Untitled')).rejects.toThrow(/POST \/api\/docs: 404/);
   });
+});
+
+describe('the T1.1 bridge', () => {
+  it("reads a doc shared with the caller from GET /api/docs/:id when the listing lacks it, with the caller's role", async () => {
+    const shared = { doc: { id: 's1', folderId: 'v9', title: 'Their plans', createdAt: 1_700_000_300_000, updatedAt: 1_700_000_400_000 }, role: 'editor' };
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+      const url = String(input);
+      if (url === '/api/docs/s1') return Response.json(shared);
+      if (url.startsWith('/api/docs/')) return Response.json({ error: 'not-found' }, { status: 404 });
+      return Response.json(LISTING);
+    });
+    const api = createBridge({ pathname: () => '/d/s1', fetch });
+    expect(await api.notes.getById('s1')).toMatchObject({ id: 's1', title: 'Their plans', updatedAt: 1_700_000_400, folderPath: 'Notes', content: '' });
+    expect(knownRole('s1')).toBe('editor');
+    expect(await api.notes.getById('gone'), 'a doc the caller cannot open is no note at all').toBeUndefined();
+    expect(knownRole('gone')).toBeNull();
+  });
+
+  it('knows the caller owns every doc of its own listing and every doc it creates', async () => {
+    const created = { doc: { id: 'n1', folderId: 'v1', title: '', filename: 'untitled.md', createdAt: 1, updatedAt: 1 }, role: 'owner' };
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) =>
+      String(input) === '/api/docs' && init?.method === 'POST'
+        ? Response.json(created, { status: 201 })
+        : Response.json({ ...LISTING, docs: LISTING.docs.map((doc) => ({ ...doc, id: 'o1', role: 'owner' })) }),
+    );
+    const api = createBridge({ pathname: () => '/', fetch });
+    await api.notes.getAll();
+    expect(knownRole('o1')).toBe('owner');
+    await api.notes.create('Untitled');
+    expect(knownRole('n1')).toBe('owner');
+  });
+});
+
+
+describe('title rename through the bridge', () => {
+  it('returns the DocDO projection after an unbound rename', async () => {
+    const renamed = { ...LISTING.docs[0], title: 'Next plans' };
+    const fetch = vi.fn<typeof globalThis.fetch>(async (_input, init) =>
+      init?.method === 'PATCH' ? Response.json({ doc: renamed }) : Response.json(LISTING));
+    const api = createBridge({ pathname: () => '/', fetch });
+    expect(await api.notes.update('d1', { title: 'Next plans' })).toMatchObject({ title: 'Next plans' });
+    expect(await api.notes.getById('d1')).toMatchObject({ title: 'Next plans' });
+    expect(fetch).toHaveBeenCalledWith('/api/docs/d1', expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ title: 'Next plans' }) }));
+  });
+});
+
+it('switches the listing without losing an open note, persists the vault and creates in the selected vault', async () => {
+  const values = new Map<string, string>();
+  const storage = { getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => { values.set(key, value); }, removeItem: (key: string) => { values.delete(key); } };
+  const shared = { vault: { id: 'v2', name: 'Shared', role: 'editor', owned: false },
+    docs: [{ ...LISTING.docs[0], id: 's2', folderPath: 'Notes/Project' }],
+    folders: [{ id: 'f2', path: 'Notes/Project', name: 'Project', createdAt: 1_700_000_000_000, noteCount: 1, surfaced: false }] };
+  const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
+    if (init?.method === 'POST') return Response.json({ doc: { ...LISTING.docs[0], id: 'new' } });
+    return Response.json(String(input).includes('vault=v2') ? shared : LISTING);
+  });
+  const api = createBridge({ pathname: () => '/', fetch, storage });
+  await api.notes.getAll();
+  const changed = vi.fn();
+  api.notes.onDiskChange(changed);
+  await api[WORKSPACE].switchVault('v2');
+  expect(changed).toHaveBeenCalledWith([], []);
+  expect((await api.notes.getAll()).map((note) => note.id)).toEqual(['s2']);
+  expect(await api.notes.getById('d1')).toMatchObject({ id: 'd1' });
+  expect(await api.folders.list()).toContainEqual(expect.objectContaining({ path: 'Notes/Project', createdAt: 1_700_000_000 }));
+  await api.notes.create('Untitled');
+  const post = fetch.mock.calls.find(([, init]) => init?.method === 'POST');
+  expect(JSON.parse(String(post?.[1]?.body))).toEqual({ folderId: 'v2' });
+  const reopened = createBridge({ pathname: () => '/', fetch, storage });
+  expect((await reopened.notes.getAll()).map((note) => note.id)).toEqual(['s2']);
+});
+
+it('keeps the last successful vault after a failed switch', async () => {
+  const fetch = vi.fn<typeof globalThis.fetch>(async (input) => String(input).includes('vault=broken')
+    ? new Response('{}', { status: 503 }) : Response.json(LISTING));
+  const api = createBridge({ pathname: () => '/', fetch });
+  await api.notes.getAll();
+  await expect(api[WORKSPACE].switchVault('broken')).rejects.toThrow('503');
+  expect(api[WORKSPACE].getSnapshot()?.vault.id).toBe('v1');
+  expect((await api.notes.getAll()).map((note) => note.id)).toEqual(['d1']);
+});
+
+it.each(['switch', 'navigation'] as const)('a workspace event never overrides an in-flight vault %s', async (action) => {
+  vi.useFakeTimers();
+  const values = new Map<string, string>();
+  const storage = { getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => { values.set(key, value); }, removeItem: (key: string) => { values.delete(key); } };
+  const target = { vault: { id: 'v2', name: 'Other' }, docs: [{ ...LISTING.docs[0], id: 'd2' }] };
+  let resolve!: (response: Response) => void;
+  const held = new Promise<Response>((done) => { resolve = done; });
+  const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+    const url = String(input);
+    return url.includes('vault=v2') || url.includes('doc=d2') ? (await held).clone() : Response.json(LISTING);
+  });
+  let receive: (event: { type: 'vaults' }) => void = () => undefined;
+  const api = createBridge({ pathname: () => '/', fetch, storage, subscribeWorkspace: (cb) => { receive = cb; return () => undefined; } });
+  const stop = api.notes.onDiskChange(vi.fn());
+  try {
+    await api.notes.getAll();
+    const navigate = action === 'switch' ? api[WORKSPACE].switchVault('v2') : api.system.setFocusedNoteId('d2');
+    receive({ type: 'vaults' });
+    await vi.advanceTimersByTimeAsync(3_000);
+    resolve(Response.json(target));
+    await navigate;
+    expect(api[WORKSPACE].getSnapshot()?.vault.id).toBe('v2');
+    expect(values.get('moss-multi:active-vault')).toBe('v2');
+    expect((await api.notes.getAll()).map((doc) => doc.id)).toEqual(['d2']);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(api[WORKSPACE].getSnapshot()?.vault.id).toBe('v2');
+  } finally {
+    stop();
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  }
+});
+
+// m1's unload fix (T1.S1) is met on m2 by the `leaving` signal above, which also re-sends a read if the page stays.
+it('still rejects a failed listing at once when the page is not leaving', async () => {
+  let fail: (error: Error) => void = () => undefined;
+  const fetch = vi.fn<typeof globalThis.fetch>(() => new Promise<Response>((_resolve, reject) => { fail = reject; }));
+  const api = createBridge({ pathname: () => '/', fetch });
+  const listed = api.notes.getAll();
+  fail(new TypeError('Load failed'));
+  await expect(listed).rejects.toThrow('Load failed');
 });

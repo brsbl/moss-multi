@@ -6,7 +6,12 @@
   "exports": {
     ".": "./src/index.ts",
     "./converter": "./src/converter/index.ts",
-    "./excluded-properties": "./src/excluded-properties.ts"
+    "./excluded-properties": "./src/excluded-properties.ts",
+    "./payload-docs": "./src/payload-docs.ts",
+    "./projections": "./src/doc/projections.ts",
+    "./fanout": "./src/fanout.ts",
+    "./access-epoch": "./src/access-epoch.ts",
+    "./registers": "./src/registers.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.converter.json"
@@ -15,6 +20,7 @@
     "@lexical/headless": "0.48.0",
     "@lexical/markdown": "0.48.0",
     "@lexical/yjs": "0.48.0",
+    "@moss-multi/core": "workspace:*",
     "@moss-multi/protocol": "workspace:*",
     "lexical": "0.48.0",
     "lib0": "0.2.119",

@@ -1,11 +1,13 @@
 // The DocDO core in the Node harness (BUILDPLAN T0.7; A§5.1): replay, chunking, compaction identity, the seed,
 // admission, the write classifier with loud refusal, acks, limits and the RPC guard.
-import { $getRoot } from 'lexical';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { $createParagraphNode, $createTextNode, $getRoot, $isElementNode } from 'lexical';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import * as Y from 'yjs';
 import { base64ToBytes, CLOSE } from '@moss-multi/protocol/sync';
 import { exportMarkdown, importMarkdown } from '../../src/converter/index.ts';
 import { DocDO } from '../../src/doc-do.ts';
+import { readFrontmatter, writeFrontmatterKey } from '@moss-multi/core/frontmatter';
+import { serverWrite } from '../../src/server-doc.ts';
 import { Backing, bindLexical, blockTypes, connect, counts, openDoc, start, wake, type Opened, type TestClient } from './do-harness.ts';
 
 const CHUNK = 1.5 * 1024 * 1024;
@@ -17,6 +19,19 @@ afterEach(() => {
   vi.clearAllTimers();
   vi.useRealTimers();
 });
+
+/** D1's view of the doc for the DocDO's liveness reads: trashed or not, and whether it answers. */
+function liveness(): { deleted: boolean; fails: boolean; reads: number } {
+  const d1 = { deleted: false, fails: false, reads: 0 };
+  const original = DocDO.liveness;
+  DocDO.liveness = () => async () => {
+    d1.reads += 1;
+    if (d1.fails) throw new Error('D1 unavailable');
+    return d1.deleted;
+  };
+  onTestFinished(() => { DocDO.liveness = original; });
+  return d1;
+}
 
 async function editorOn(opened: Opened): Promise<TestClient> {
   const client = await connect(opened, { role: 'editor' });
@@ -34,7 +49,7 @@ describe('seed', () => {
     const first = await start(openDoc());
     expect(blockTypes(first.dobj.document)).toEqual(['paragraph']);
     expect(first.dobj.document.getText('title').toString()).toBe('');
-    expect(first.dobj.document.getText('frontmatter').toString()).toBe('');
+    expect(readFrontmatter(first.dobj.document)).toBeNull();
     const stored = counts(first.backing);
     expect(stored.updates + stored.state, 'the seed is persisted').toBeGreaterThan(0);
 
@@ -60,7 +75,45 @@ describe('seed', () => {
 });
 
 describe('server writes', () => {
+  it('exports current dependent formula results after an author edits the source and after wake', async () => {
+    const opened = await start(openDoc(new Backing('1d0c7f3b-5b65-4eb7-b510-8c3b2e170caa')));
+    const noteId = opened.state.id.name;
+    const priceId = '7bea9c0f-317a-48a1-83a7-9a1e4e7b36aa';
+    const doubleId = 'd787ef71-6050-45e0-8a24-dbb8190880dc';
+    await opened.dobj.create({ folderId: 'folder', ownerId: 'owner', markdown:
+      `{{2|2|id=${priceId};name=price}} and {{@(price#${noteId}#${priceId})*2|4|id=${doubleId};name=double}}` });
+    expect(await opened.dobj.exportMarkdown()).toContain(`)*2|4|id=${doubleId};name=double}}`);
+    serverWrite(opened.dobj.document, 'author-edit', () => {
+      const formula = $getRoot().getChildren().flatMap(node => $isElementNode(node) ? node.getChildren() : []).find(node => node.getType() === 'formula');
+      if (!formula) throw new Error('missing price formula');
+      const price = formula as typeof formula & { setFormula(value: string): void; setResult(value: string): void };
+      price.setFormula('3');
+      price.setResult('3');
+    });
+    const before = Y.encodeStateAsUpdate(opened.dobj.document);
+    expect(await opened.dobj.exportMarkdown()).toContain(`)*2|6|id=${doubleId};name=double}}`);
+    expect(Y.encodeStateAsUpdate(opened.dobj.document)).toEqual(before);
+    const reopened = await start(wake(opened));
+    expect(await reopened.dobj.exportMarkdown()).toContain(`)*2|6|id=${doubleId};name=double}}`);
+  });
+
   const MARKDOWN = '## Plan\n\nA *first* paragraph with a [link](https://example.invalid).\n\n- one\n- two\n';
+
+  it('hydrates the persisted tree before a server write without normalizing its formatting', () => {
+    const doc = new Y.Doc();
+    const lexical = bindLexical(doc);
+    lexical.editor.update(() => {
+      $getRoot().append($createParagraphNode().append($createTextNode(' padded ').toggleFormat('bold')));
+    }, { discrete: true });
+    const before = Y.encodeStateAsUpdate(doc);
+    let hydrated: { text: string; bold: boolean }[] = [];
+    serverWrite(doc, 'probe', () => {
+      hydrated = $getRoot().getAllTextNodes().map((node) => ({ text: node.getTextContent(), bold: node.hasFormat('bold') }));
+    });
+    expect(hydrated).toEqual([{ text: ' padded ', bold: true }]);
+    expect(Y.encodeStateAsUpdate(doc)).toEqual(before);
+    doc.destroy();
+  });
 
   it('imports a created body through the one converter, once', async () => {
     const opened = await start(openDoc());
@@ -79,6 +132,55 @@ describe('server writes', () => {
     expect(await opened.dobj.exportMarkdown()).toBe(exportMarkdown(reference));
   });
 
+  it('imports canonical frontmatter separately and keeps the leading H1 in the body', async () => {
+    const opened = await start(openDoc());
+    const frontmatter = '---\r\ntag: "keep these quotes"\r\n---\r\n';
+    await opened.dobj.create({ folderId: 'folder', ownerId: 'owner', title: 'File name', markdown: `${frontmatter}# Body heading\n\nText` });
+    expect(opened.dobj.document.getText('title').toString()).toBe('File name');
+    expect(readFrontmatter(opened.dobj.document)).toEqual({ tag: 'keep these quotes' });
+    expect(blockTypes(opened.dobj.document)).toEqual(['heading', 'paragraph']);
+    expect(await opened.dobj.exportMarkdown()).toBe('---\ntag: keep these quotes\n---\n# Body heading\n\nText');
+  });
+
+  it('duplicates a snapshot without a markdown round trip, keeps anchors, persists and remains independent', async () => {
+    const source = await start(openDoc());
+    await source.dobj.create({ folderId: 'source', ownerId: 'owner', title: 'Original', markdown: MARKDOWN });
+    writeFrontmatterKey(source.dobj.document, 'tag', 'keep', 'test');
+    const root = source.dobj.document.get('root', Y.XmlText);
+    const anchor = Y.createRelativePositionFromTypeIndex(root, 1);
+    source.dobj.document.getMap('comments').set('anchor', Y.encodeRelativePosition(anchor));
+    const snapshot = await source.dobj.snapshotForDuplicate();
+    const target = await start(openDoc());
+    await target.dobj.createFromSnapshot({ folderId: 'target', ownerId: 'other', title: 'Original copy' }, snapshot.state);
+    expect(await target.dobj.exportMarkdown()).toBe(await source.dobj.exportMarkdown());
+    expect(blockTypes(target.dobj.document)).toEqual(blockTypes(source.dobj.document));
+    expect(Y.createAbsolutePositionFromRelativePosition(anchor, target.dobj.document)?.index).toBe(1);
+    expect(target.dobj.document.getMap('comments').get('anchor')).toEqual(Y.encodeRelativePosition(anchor));
+    expect(source.dobj.document.getText('title').toString()).toBe('Original');
+    expect(target.dobj.document.getText('title').toString()).toBe('Original copy');
+    await target.dobj.createFromSnapshot({ folderId: 'target', ownerId: 'other' }, snapshot.state);
+    const woken = await start(wake(target));
+    expect(await woken.dobj.exportMarkdown()).toBe(await source.dobj.exportMarkdown());
+    writeFrontmatterKey(woken.dobj.document, 'tag', 'independent', 'test');
+    expect(readFrontmatter(source.dobj.document)).toEqual({ tag: 'keep' });
+  });
+
+  it('replays legacy YAML into the map, persists its upgrade, and exports after a second wake', async () => {
+    const legacy = await start(openDoc());
+    await legacy.dobj.create({ folderId: 'folder', ownerId: 'owner', title: 'Old note', markdown: MARKDOWN });
+    // The pre-map server's persisted wire shape, including its fenced YAML and CRLFs.
+    legacy.dobj.document.getText('frontmatter').insert(0, '---\r\nstatus: draft\r\ntags: [keep, both]\r\n---\r\n');
+    await legacy.dobj.onSave();
+    const restored = await start(wake(legacy));
+    expect(readFrontmatter(restored.dobj.document)).toEqual({ status: 'draft', tags: ['keep', 'both'] });
+    writeFrontmatterKey(restored.dobj.document, 'status', undefined, 'test');
+    await restored.dobj.onSave();
+    const again = await start(wake(restored));
+    expect(readFrontmatter(again.dobj.document)).toEqual({ tags: ['keep', 'both'] });
+    expect(await again.dobj.exportMarkdown()).toBe(`---\ntags:\n  - keep\n  - both\n---\n${exportMarkdown(importMarkdown(MARKDOWN))}`);
+    expect(again.dobj.document.getText('title').toString()).toBe('Old note');
+  });
+
   it('refuses an import past the state cap and keeps the seed', async () => {
     class SmallDoc extends DocDO {
       static override limits = { ...DocDO.limits, stateCapBytes: 4 * 1024 };
@@ -87,6 +189,17 @@ describe('server writes', () => {
     await expect(opened.dobj.create({ folderId: 'folder-1', ownerId: 'user-1', markdown: 'word '.repeat(4_000) })).rejects.toThrow('doc-cap');
     expect(blockTypes(opened.dobj.document)).toEqual(['paragraph']);
     expect((await opened.dobj.exportMarkdown()).trim()).toBe('');
+  });
+
+  it('counts imported frontmatter in admission and refuses the entire file together', async () => {
+    class SmallDoc extends DocDO {
+      static override limits = { ...DocDO.limits, stateCapBytes: 4 * 1024 };
+    }
+    const opened = await start(openDoc(new Backing(), SmallDoc as never));
+    const before = Y.encodeStateAsUpdate(opened.dobj.document);
+    const markdown = `---\nlarge: ${'x'.repeat(5_000)}\n---\n\nSmall body`;
+    await expect(opened.dobj.create({ folderId: 'folder', ownerId: 'owner', markdown })).rejects.toThrow('doc-cap');
+    expect(Y.encodeStateAsUpdate(opened.dobj.document)).toEqual(before);
   });
 });
 
@@ -238,6 +351,63 @@ describe('admission and the write classifier', () => {
     expect(counts(opened.backing), 'an inert step 2 writes nothing').toEqual(stored);
   });
 
+  it('names the deletes it applied in the ack, so a delete never reads as synced before it lands', async () => {
+    const { opened, editor } = await sharedDoc();
+    vi.advanceTimersByTime(250);
+    await editor.pump();
+    const local: Uint8Array[] = [];
+    editor.doc.on('update', (update: Uint8Array, origin: unknown) => {
+      if (typeof origin !== 'symbol') local.push(update);
+    });
+    editor.doc.getText('title').delete(0, 2);
+    const deletion = Y.mergeUpdates(local);
+    const before = editor.events.filter((e) => e.t === 'ack');
+    const earlier = before[before.length - 1];
+    if (earlier?.t !== 'ack') throw new Error('no earlier ack');
+    // The state vector cannot tell: the earlier ack already "covers" a delete the server has not seen.
+    expect(Y.snapshotContainsUpdate(Y.createSnapshot(Y.createDeleteSet(), Y.decodeStateVector(base64ToBytes(earlier.sv))), deletion)).toBe(false);
+
+    await editor.flush();
+    expect(opened.dobj.document.getText('title').toString()).toBe('ared');
+    vi.advanceTimersByTime(250);
+    await editor.pump();
+    const acks = editor.events.filter((e) => e.t === 'ack');
+    const ack = acks[acks.length - 1];
+    expect(acks.length, 'the delete is acked').toBe(before.length + 1);
+    if (ack?.t !== 'ack') throw new Error('no ack');
+    expect(ack.ds, 'the ack carries the deletes').toEqual(expect.any(String));
+    const deleted = Y.decodeSnapshot(base64ToBytes(ack.ds ?? '')).ds;
+    expect(Y.snapshotContainsUpdate(Y.createSnapshot(deleted, Y.decodeStateVector(base64ToBytes(ack.sv))), deletion), 'the ack covers the delete').toBe(true);
+  });
+
+  it("keeps a socket's ack when a stale socket with the same connection id closes", async () => {
+    const opened = await start(openDoc());
+    const stale = await connect(opened, { role: 'editor' }, undefined, 'reused-pk');
+    await stale.hello();
+    const fresh = await connect(opened, { role: 'editor' }, undefined, 'reused-pk');
+    await fresh.hello();
+    await typeTitle(fresh, 'kept');
+    // The stale socket's close finally lands inside the fresh socket's ack window.
+    await stale.drop();
+    vi.advanceTimersByTime(250);
+    await fresh.pump();
+    expect(fresh.events.filter((e) => e.t === 'ack'), "the stale close never cancels the fresh socket's ack").toHaveLength(1);
+    expect(stale.events.filter((e) => e.t === 'ack'), 'the ack goes to the socket that wrote').toHaveLength(0);
+  });
+
+  it('counts the write rate per socket, not per reused connection id', async () => {
+    const opened = await start(openDoc());
+    const stale = await connect(opened, { role: 'editor' }, undefined, 'reused-rate');
+    await stale.hello();
+    for (let i = 0; i < 300; i += 1) await typeTitle(stale, 'a');
+    expect(stale.closed).toBeNull();
+    const fresh = await connect(opened, { role: 'editor' }, undefined, 'reused-rate');
+    await fresh.hello();
+    await typeTitle(fresh, 'Z');
+    expect(fresh.closed, "another socket's writes never count against this one").toBeNull();
+    expect(opened.dobj.document.getText('title').toString()).toBe(`${'a'.repeat(300)}Z`);
+  });
+
   it("never acks a viewer's inert step 2", async () => {
     const { viewer } = await sharedDoc();
     await viewer.hello();
@@ -321,5 +491,95 @@ describe('RPC', () => {
     lexical.type(' and more');
     await client.flush();
     expect((await cold.dobj.exportMarkdown()).trim()).toBe('Persisted body and more');
+  });
+
+  it('trash(hold) tells every socket the doc is gone, closes them 4410 and refuses new ones, after a wake too, until the hold settles', async () => {
+    const opened = await start(openDoc());
+    const editor = await editorOn(opened);
+    const viewer = await connect(opened, { role: 'viewer' });
+    await viewer.hello();
+    await opened.dobj.trash('hold-1');
+    await editor.pump();
+    await viewer.pump();
+    for (const client of [editor, viewer]) {
+      expect(client.events).toContainEqual({ t: 'doc-deleted' });
+      expect(client.closed?.code).toBe(CLOSE.deleted);
+    }
+    await opened.dobj.trash('hold-1');
+    const woken = await start(wake(opened));
+    expect((await connect(woken, { role: 'editor' })).closed?.code, 'a woken doc remembers the hold').toBe(CLOSE.deleted);
+  });
+
+  it('settle(hold) applies D1: a committed trash stays closed after a wake, and a restore committed in D1 reopens with the content intact', async () => {
+    const d1 = liveness();
+    const opened = await start(openDoc());
+    const editor = await connect(opened, { role: 'editor' });
+    const lexical = bindLexical(editor.doc);
+    await editor.hello();
+    lexical.type('Kept through the trash');
+    await editor.flush();
+    await opened.dobj.trash('hold-1');
+    d1.deleted = true;
+    expect(await opened.dobj.settle('hold-1')).toEqual({ deleted: true });
+    const woken = await start(wake(opened));
+    expect((await connect(woken, { role: 'editor' })).closed?.code, 'a settled trash is remembered').toBe(CLOSE.deleted);
+    d1.deleted = false;
+    expect(await woken.dobj.settle()).toEqual({ deleted: false });
+    const back = await connect(await start(wake(woken)), { role: 'editor' });
+    await back.hello();
+    expect(back.closed, 'a restored doc admits its editors').toBeNull();
+    expect((await back.opened.dobj.exportMarkdown()).trim()).toBe('Kept through the trash');
+  });
+
+  it('a trash whose D1 write failed reopens when its hold settles against the live row; another trash’s hold keeps it closed', async () => {
+    const d1 = liveness();
+    const opened = await start(openDoc());
+    await opened.dobj.trash('hold-1');
+    await opened.dobj.trash('hold-2');
+    expect(await opened.dobj.settle('hold-1')).toEqual({ deleted: false });
+    expect((await connect(opened, { role: 'editor' })).closed?.code, 'hold-2 still closes it').toBe(CLOSE.deleted);
+    expect(await opened.dobj.settle(), 'a settle without its hold leaves it').toEqual({ deleted: false });
+    expect((await connect(opened, { role: 'editor' })).closed?.code).toBe(CLOSE.deleted);
+    await opened.dobj.settle('hold-2');
+    const live = await connect(opened, { role: 'editor' });
+    await live.hello();
+    expect(live.closed).toBeNull();
+    expect(d1.reads).toBeGreaterThan(0);
+  });
+
+  it('a missed settle heals on the next admission from D1, and fails closed when D1 cannot answer', async () => {
+    const d1 = liveness();
+    const opened = await start(openDoc());
+    await opened.dobj.trash('hold-1');
+    d1.deleted = true;
+    await opened.dobj.settle('hold-1');
+    // The restore committed in D1, but its settle never reached the doc.
+    d1.deleted = false;
+    d1.fails = true;
+    const woken = await start(wake(opened));
+    expect((await connect(woken, { role: 'editor' })).closed?.code, 'an unconfirmed doc admits nobody, and says try again').toBe(1013);
+    d1.fails = false;
+    const healed = await connect(woken, { role: 'editor' });
+    await healed.hello();
+    expect(healed.closed, 'D1 says live, so the doc reopens').toBeNull();
+  });
+
+  it('a hold left unsettled (its route died) settles on the alarm, and stays closed while D1 cannot answer', async () => {
+    const d1 = liveness();
+    const opened = await start(openDoc());
+    await opened.dobj.trash('hold-1');
+    expect(opened.backing.alarm, 'the hold schedules its own settle').not.toBeNull();
+    d1.fails = true;
+    vi.setSystemTime(opened.backing.alarm ?? 0);
+    const woken = await start(wake(opened));
+    await woken.dobj.alarm();
+    expect((await connect(woken, { role: 'editor' })).closed?.code, 'still held').toBe(CLOSE.deleted);
+    expect(woken.backing.alarm, 'and it tries again').toBeGreaterThan(Date.now());
+    d1.fails = false;
+    vi.setSystemTime(woken.backing.alarm ?? 0);
+    await woken.dobj.alarm();
+    const live = await connect(woken, { role: 'editor' });
+    await live.hello();
+    expect(live.closed, 'the trash never committed, so the doc reopens').toBeNull();
   });
 });

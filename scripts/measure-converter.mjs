@@ -4,7 +4,12 @@
 // 2 MB, the 2 MB import into a bound Y.Doc, memory growth and the Y.Doc state-to-markdown ratio over the family
 // corpus. Prints a markdown table (and appends it to $GITHUB_STEP_SUMMARY). Exits non-zero when the converter
 // fails to load or convert in workerd, including a note that imports to fewer blocks than its copies hold, and
-// when an import up to 2 MB takes more than IMPORT_BUDGET_MS of workerd CPU.
+// when an import up to 2 MB takes more than IMPORT_BUDGET_MS of workerd CPU. It also renames a doc's title back and
+// forth between worst-case caller texts (packages/sync/measure/title-cases.ts), the DocDO's REST rename path, and
+// exits non-zero when a rename lands inexactly or averages more than TITLE_WRITE_BUDGET_MS of workerd CPU, or any
+// single rename exceeds it by more than one /proc tick. Last, it runs the real DocDO (packages/sync/measure/doc-worker.ts)
+// and sends many tiny payload frames over thousands of ids (T1.F2), exiting non-zero past the stated per-frame CPU,
+// memory, held-doc and scaling budgets.
 import { spawn, spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -27,6 +32,11 @@ const SCALE_SIZES = [64 * 1024, 256 * 1024, 1024 * 1024, 2 * 1024 * 1024];
 const CPU_LIMIT_MS = 30_000;
 // T0.6b: a whole-document import at PRODUCT's 2 MB/doc limit stays well inside CPU_LIMIT_MS.
 const IMPORT_BUDGET_MS = 5_000;
+// A REST rename diffs two caller-supplied texts; one request may spend at most this much workerd CPU on it.
+const TITLE_WRITE_BUDGET_MS = 20;
+const TITLE_WRITES = 6;
+// /proc reports CPU in 10 ms ticks, so a single request's reading may sit one tick above its real cost.
+const TICK_MS = 10;
 
 const vendor = join(REPO, 'vendor/moss/packages');
 const ALIASES = [
@@ -34,13 +44,14 @@ const ALIASES = [
   [/^@moss\/shared\//, `${vendor}/shared/src/`],
   [/^@\//, `${vendor}/shared/src/`],
   [/^@moss-desktop\//, `${vendor}/desktop/src/`],
+  [/^@moss-multi\/host\//, `${REPO}/apps/web/src/host/`],
 ];
 
 // Moss's aliases as an esbuild plugin (wrangler's own `alias` matches whole specifiers only).
 const aliasPlugin = {
   name: 'moss-aliases',
   setup(build) {
-    build.onResolve({ filter: /^@(moss\/shared|moss-desktop\/|\/)/ }, async (args) => {
+    build.onResolve({ filter: /^@(moss\/shared|moss-desktop\/|moss-multi\/host\/|\/)/ }, async (args) => {
       for (const [pattern, target] of ALIASES) {
         if (!pattern.test(args.path)) continue;
         const path = args.path.replace(pattern, target);
@@ -52,7 +63,7 @@ const aliasPlugin = {
   },
 };
 
-async function bundle(name, entry) {
+async function bundle(name, entry, config = {}) {
   const outfile = join(OUT, name, 'worker.js');
   await esbuild.build({
     entryPoints: [entry],
@@ -70,7 +81,7 @@ async function bundle(name, entry) {
   });
   writeFileSync(
     join(OUT, name, 'wrangler.jsonc'),
-    JSON.stringify({ name: `converter-measure-${name}`, main: 'worker.js', compatibility_date: '2025-09-02', compatibility_flags: ['nodejs_compat'], no_bundle: true }),
+    JSON.stringify({ name: `converter-measure-${name}`, main: 'worker.js', compatibility_date: '2025-09-02', compatibility_flags: ['nodejs_compat'], no_bundle: true, ...config }),
   );
   const bytes = readFileSync(outfile);
   return { rawBytes: bytes.byteLength, gzipBytes: gzipSync(bytes, { level: 9 }).byteLength };
@@ -186,10 +197,18 @@ async function timedRequest(server, path, init) {
     peakRssKb = Math.max(peakRssKb, workerdStats(server.child.pid).rssKb);
   }, 20);
   const started = performance.now();
-  const response = await fetch(`${server.origin}${path}`, init);
-  const body = await response.text();
+  let response;
+  let body;
+  try {
+    response = await fetch(`${server.origin}${path}`, init);
+    body = await response.text();
+  } catch (error) {
+    throw new Error(`${path}: ${error.message} (${error.cause?.message ?? 'no cause'})\n${server.logs.value}`, { cause: error });
+  } finally {
+    // A live interval would keep the process from exiting after a failure.
+    clearInterval(sampler);
+  }
   const wallMs = performance.now() - started;
-  clearInterval(sampler);
   const after = workerdStats(server.child.pid);
   if (!response.ok) throw new Error(`${path}: HTTP ${response.status} ${body}\n${server.logs.value}`);
   return { wallMs, cpuMs: after.cpuMs - before.cpuMs, rssBeforeKb: before.rssKb, peakRssKb: Math.max(peakRssKb, after.rssKb), body };
@@ -253,6 +272,150 @@ async function measureSize(unit, units, port, bound) {
   }
 }
 
+// Renames the title A → B → A … per case, after one untimed write of A; the mean is held to the budget and each rename to the budget plus one tick.
+async function measureTitleWrites(port) {
+  const { TITLE_CASES } = await import('../packages/sync/measure/title-cases.ts');
+  const server = await startWorker('converter', port);
+  const results = [];
+  try {
+    for (const [name, [a, b]] of Object.entries(TITLE_CASES)) {
+      try {
+        await timedRequest(server, '/title', { method: 'POST', body: a });
+        const runs = [];
+        for (let run = 0; run < TITLE_WRITES; run += 1) runs.push(await timedRequest(server, '/title', { method: 'POST', body: run % 2 ? a : b }));
+        const mean = (key) => round(runs.reduce((sum, r) => sum + r[key], 0) / runs.length);
+        results.push({ name, chars: [a.length, b.length], cpuMs: mean('cpuMs'), maxCpuMs: Math.max(...runs.map((r) => r.cpuMs)), wallMs: mean('wallMs') });
+      } catch (error) {
+        results.push({ name, chars: [a.length, b.length], failed: String(error.message).split('\n')[0] });
+      }
+    }
+  } finally {
+    await stop(server.child);
+  }
+  return results;
+}
+
+// T1.F2 bounded work (A§10.10): many tiny payload frames over thousands of ids, sent over real sockets to the real
+// DocDO in workerd. Each id is touched once per round by one of PAYLOAD_SOCKETS editors, under the write rate, and a
+// round ends when every frame is acked. Per-frame CPU in the large note must stay within PAYLOAD_SCALING of the small
+// note's, so frame and ack work cannot grow with the payloads the note holds.
+const PAYLOAD_SOCKETS = 12;
+const PAYLOAD_ROUNDS = 2;
+const PAYLOAD_NOTES = { small: 300, large: 3_000 };
+// Mean workerd CPU per payload frame (parse, gates, load, apply, persist, fan-out to the other sockets, ack).
+const PAYLOAD_FRAME_BUDGET_MS = 3;
+// workerd RSS growth over the frame rounds; payload docs held in memory are bounded (PAYLOAD_DOCS_HELD).
+const PAYLOAD_RSS_BUDGET_MB = 64;
+const PAYLOAD_SCALING = 3;
+const PAYLOAD_DOCS_HELD = 256;
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function payloadSocket(server, docId, principal, prefix) {
+  const ws = new WebSocket(`${server.origin.replace(/^http/, 'ws')}/parties/doc-d-o/${docId}?_pk=${principal}&principal=${principal}`);
+  ws.binaryType = 'arraybuffer';
+  const socket = { ws, acked: new Set(), wrote: new Set(), foreign: 0, widestAck: 0, closed: null };
+  ws.addEventListener('message', (event) => {
+    if (typeof event.data !== 'string' || !event.data.startsWith(prefix)) return;
+    const message = JSON.parse(event.data.slice(prefix.length));
+    if (message.t !== 'ack') return;
+    const ids = Object.keys(message.p ?? {});
+    socket.widestAck = Math.max(socket.widestAck, ids.length);
+    for (const id of ids) {
+      if (!socket.wrote.has(id)) socket.foreign += 1;
+      socket.acked.add(id);
+    }
+  });
+  ws.addEventListener('close', (event) => {
+    socket.closed = `${event.code} ${event.reason}`;
+  });
+  await new Promise((resolve, reject) => {
+    ws.addEventListener('open', resolve, { once: true });
+    ws.addEventListener('error', () => reject(new Error(`socket ${principal} failed to open\n${server.logs.value}`)), { once: true });
+  });
+  return socket;
+}
+
+async function measurePayloadNote(server, blocks, Y, protocol) {
+  const docId = `payloads-${blocks}`;
+  const markdown = Array.from({ length: blocks }, (_, i) => `\`\`\`\nblock ${i}\n\`\`\``).join('\n\n');
+  const created = await fetch(`${server.origin}/create?doc=${docId}`, { method: 'POST', body: markdown });
+  if (!created.ok) throw new Error(`create: HTTP ${created.status} ${await created.text()}\n${server.logs.value}`);
+  const { ids } = await created.json();
+  if (ids.length !== blocks) throw new Error(`the note names ${ids.length} payloads, expected ${blocks}`);
+  const sockets = [];
+  for (let k = 0; k < PAYLOAD_SOCKETS; k += 1) sockets.push(await payloadSocket(server, docId, `measure-${blocks}-${k}`, protocol.CUSTOM_PREFIX));
+  const tiny = () => {
+    const doc = new Y.Doc();
+    doc.getText('payload').insert(0, 'x');
+    const update = Y.encodeStateAsUpdate(doc);
+    doc.destroy();
+    return update;
+  };
+  const per = Math.ceil(ids.length / PAYLOAD_SOCKETS);
+  const mine = (k) => ids.slice(k * per, (k + 1) * per);
+  const before = workerdStats(server.child.pid);
+  let peakRssKb = before.rssKb;
+  const sampler = setInterval(() => {
+    peakRssKb = Math.max(peakRssKb, workerdStats(server.child.pid).rssKb);
+  }, 20);
+  let cpuMs = 0;
+  let frames = 0;
+  try {
+    for (let pass = 0; pass < PAYLOAD_ROUNDS; pass += 1) {
+      // The write rate counts frames per socket per window: wait it out between rounds.
+      if (pass > 0) await sleep(5_200);
+      const start = workerdStats(server.child.pid).cpuMs;
+      sockets.forEach((socket, k) => {
+        socket.acked.clear();
+        for (const id of mine(k)) {
+          socket.wrote.add(id);
+          socket.ws.send(protocol.encodePayloadFrame(id, protocol.PAYLOAD_UPDATE, tiny()));
+          frames += 1;
+        }
+      });
+      const deadline = performance.now() + 120_000;
+      while (sockets.some((socket, k) => socket.acked.size < mine(k).length)) {
+        const closed = sockets.find((socket) => socket.closed);
+        if (closed) throw new Error(`a socket closed: ${closed.closed}\n${server.logs.value}`);
+        if (performance.now() > deadline) throw new Error(`round ${pass}: frames unacked after 120 s\n${server.logs.value}`);
+        await sleep(50);
+      }
+      cpuMs += workerdStats(server.child.pid).cpuMs - start;
+    }
+  } finally {
+    clearInterval(sampler);
+    for (const socket of sockets) socket.ws.close();
+  }
+  const work = await (await fetch(`${server.origin}/work?doc=${docId}`)).json();
+  return {
+    blocks,
+    frames,
+    frameCpuMs: Math.round((cpuMs / frames) * 100) / 100,
+    rssMb: round((peakRssKb - before.rssKb) / 1024),
+    held: work.held,
+    widestAck: Math.max(...sockets.map((socket) => socket.widestAck)),
+    foreign: sockets.reduce((sum, socket) => sum + socket.foreign, 0),
+  };
+}
+
+async function measurePayloadFrames(port) {
+  const Y = requireFromSync('yjs');
+  const protocol = await import('../packages/protocol/src/sync.ts');
+  const server = await startWorker('docdo', port);
+  try {
+    const notes = [];
+    for (const blocks of Object.values(PAYLOAD_NOTES)) notes.push(await measurePayloadNote(server, blocks, Y, protocol));
+    return { notes };
+  } catch (error) {
+    return { failed: String(error.message).split('\n').slice(0, 8).join(' / ') };
+  } finally {
+    await stop(server.child);
+  }
+}
+
+const overTitleBudget = (t) => t.cpuMs > TITLE_WRITE_BUDGET_MS || t.maxCpuMs > TITLE_WRITE_BUDGET_MS + TICK_MS;
+
 async function main() {
   rmSync(OUT, { recursive: true, force: true });
   mkdirSync(join(OUT, 'baseline'), { recursive: true });
@@ -260,6 +423,10 @@ async function main() {
   const sizes = {
     baseline: await bundle('baseline', join(OUT, 'baseline.ts')),
     converter: await bundle('converter', join(REPO, 'packages/sync/measure/worker.ts')),
+    docdo: await bundle('docdo', join(REPO, 'packages/sync/measure/doc-worker.ts'), {
+      durable_objects: { bindings: [{ name: 'DocDO', class_name: 'MeasuredDocDO' }] },
+      migrations: [{ tag: 'v1', new_sqlite_classes: ['MeasuredDocDO'] }],
+    }),
   };
 
   let port = 9410;
@@ -302,6 +469,9 @@ async function main() {
     await stop(server.child);
   }
 
+  const titles = await measureTitleWrites(port + 1);
+  const payloads = await measurePayloadFrames(port + 2);
+
   const coldOf = (name, key) => round(median(cold[name].map((sample) => sample[key])));
   const families = ratios.filter((r) => !r.name.startsWith('scale note'));
   const worst = families.reduce((a, b) => (b.ratio > a.ratio ? b : a));
@@ -330,6 +500,17 @@ async function main() {
         (c) =>
           `| ${kb(c.bytes)} scale note imported into a bound Y.Doc (the DocDO's serverWrite path): workerd CPU, one run | ${c.boundCpuMs} ms; Y.Doc state ${mb(c.stateBytes)}; RSS growth ${c.boundPeakMb} MB |`,
       ),
+    ...titles.map((t) =>
+      t.failed
+        ? `| Title rename, ${t.name} | FAILED: ${t.failed} |`
+        : `| Title rename, ${t.name} (${t.chars.join(' ↔ ')} chars): workerd CPU per request, mean (max) of ${TITLE_WRITES} | ${t.cpuMs} (${t.maxCpuMs}) ms${overTitleBudget(t) ? `, over the ${TITLE_WRITE_BUDGET_MS} ms budget` : ''} (wall ${t.wallMs} ms) |`,
+    ),
+    ...(payloads.failed
+      ? [`| Payload frames (T1.F2) | FAILED: ${payloads.failed} |`]
+      : payloads.notes.map(
+          (n) =>
+            `| ${n.frames} tiny payload frames over ${n.blocks} ids, ${PAYLOAD_SOCKETS} editors, ${PAYLOAD_ROUNDS} rounds: workerd CPU per frame, mean | ${n.frameCpuMs} ms (budget ${PAYLOAD_FRAME_BUDGET_MS} ms); RSS growth ${n.rssMb} MB (budget ${PAYLOAD_RSS_BUDGET_MB} MB); payload docs held ${n.held} (at most ${PAYLOAD_DOCS_HELD}); widest ack ${n.widestAck} ids, ${n.foreign} not the socket's own |`,
+        )),
     `| State-to-markdown ratio r, worst family | ${worst.ratio.toFixed(2)} (${worst.name}) |`,
     '',
     '| Fixture | Markdown B | Y.Doc state B | Ratio |',
@@ -352,6 +533,34 @@ async function main() {
     console.error(`measure-converter: import over the ${seconds(IMPORT_BUDGET_MS)} workerd CPU budget: ${sizes}`);
     process.exitCode = 1;
   }
+  const badTitles = titles.filter((t) => t.failed || overTitleBudget(t));
+  if (badTitles.length > 0) {
+    const detail = badTitles.map((t) => (t.failed ? `${t.name}: ${t.failed}` : `${t.name} at ${t.cpuMs} ms mean, ${t.maxCpuMs} ms max`)).join(', ');
+    console.error(`measure-converter: title rename failed or over the ${TITLE_WRITE_BUDGET_MS} ms workerd CPU budget: ${detail}`);
+    process.exitCode = 1;
+  }
+  const payloadProblems = payloads.failed ? [payloads.failed] : payloadBudgetProblems(payloads.notes);
+  if (payloadProblems.length > 0) {
+    console.error(`measure-converter: payload frames over budget in workerd: ${payloadProblems.join('; ')}`);
+    process.exitCode = 1;
+  }
+}
+
+/** Every way the payload-frame runs miss the stated budget (empty when they meet it). */
+function payloadBudgetProblems(notes) {
+  const problems = [];
+  for (const n of notes) {
+    if (n.frameCpuMs > PAYLOAD_FRAME_BUDGET_MS) problems.push(`${n.blocks} ids: ${n.frameCpuMs} ms of CPU per frame`);
+    if (n.rssMb > PAYLOAD_RSS_BUDGET_MB) problems.push(`${n.blocks} ids: RSS grew ${n.rssMb} MB`);
+    if (n.held > PAYLOAD_DOCS_HELD) problems.push(`${n.blocks} ids: ${n.held} payload docs held`);
+    if (n.foreign > 0) problems.push(`${n.blocks} ids: acks named ${n.foreign} ids the socket did not write`);
+  }
+  const [small, large] = notes;
+  // 10 ms CPU ticks: compare at no finer than 0.05 ms per frame.
+  if (large.frameCpuMs > PAYLOAD_SCALING * Math.max(small.frameCpuMs, 0.05)) {
+    problems.push(`per-frame CPU grew from ${small.frameCpuMs} ms (${small.blocks} ids) to ${large.frameCpuMs} ms (${large.blocks} ids)`);
+  }
+  return problems;
 }
 
 main().catch((error) => {

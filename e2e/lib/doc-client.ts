@@ -1,5 +1,7 @@
 // Protocol-level doc clients (j00-roundtrip): YProvider over a real WebSocket carrying a principal's session cookie,
-// bound to a headless V1 Lexical editor as a browser pane binds one (A§10.1-10.2), with no UI.
+// bound to a headless V1 Lexical editor as a browser pane binds one (A§10.1-10.2), with no UI. Also raw doc sockets
+// that only hold a connection slot (j03).
+import { randomUUID } from 'node:crypto';
 import { createHeadlessEditor } from '@lexical/headless';
 import { createBinding, syncLexicalUpdateToYjs, syncYjsChangesToLexical, type Provider } from '@lexical/yjs';
 import { $createParagraphNode, $createTextNode, $getRoot, type ElementNode } from 'lexical';
@@ -7,7 +9,7 @@ import WebSocket from 'ws';
 import YProvider from 'y-partyserver/provider';
 import * as Y from 'yjs';
 import { DOC_SOCKET_PATH } from '../../packages/protocol/src/dom-contract.ts';
-import { base64ToBytes, type ServerEvent } from '../../packages/protocol/src/sync.ts';
+import { base64ToBytes, PAYLOAD_MESSAGE, type ServerEvent } from '../../packages/protocol/src/sync.ts';
 import type { SessionCookie } from './principals.ts';
 
 export const cookieHeader = (cookies: SessionCookie[]): string => cookies.map((c) => `${c.name}=${c.value}`).join('; ');
@@ -79,6 +81,8 @@ export async function openDocClient(baseUrl: string, docId: string, cookie: stri
     disableBc: true,
     WebSocketPolyfill: socketWith(baseUrl, cookie) as unknown as typeof globalThis.WebSocket,
   });
+  // This client holds no decorator payloads (A§10.10); their frames ride the same socket and are ignored here.
+  provider.messageHandlers[PAYLOAD_MESSAGE] = () => {};
   const events: ServerEvent[] = [];
   provider.on('custom-message', (message: string) => events.push(JSON.parse(message) as ServerEvent));
   const synced = new Promise<void>((resolve) => {
@@ -154,4 +158,53 @@ export function probeSocket(baseUrl: string, docId: string, cookie: string | nul
       resolve({ opened, code });
     });
   });
+}
+
+export interface HeldSockets {
+  /** Sockets still open. */
+  open(): number;
+  /** Closes every socket with 1000 and waits for each close. */
+  close(): Promise<void>;
+}
+
+/**
+ * `n` doc sockets that complete the upgrade and stay open without speaking sync, so the DocDO counts them against
+ * its connection limit. Each carries its own `_pk`, as a provider does.
+ */
+export async function holdDocSockets(baseUrl: string, docId: string, cookie: string, n: number): Promise<HeldSockets> {
+  const url = `${baseUrl.replace(/^http/, 'ws')}${DOC_SOCKET_PATH}${encodeURIComponent(docId)}`;
+  const sockets: WebSocket[] = [];
+  const closed = new Set<WebSocket>();
+  const held: HeldSockets = {
+    open: () => sockets.length - closed.size,
+    close: async () => {
+      await Promise.all(
+        sockets
+          .filter((socket) => !closed.has(socket))
+          .map(
+            (socket) =>
+              new Promise<void>((done) => {
+                socket.once('close', () => done());
+                socket.close(1000, 'held socket released');
+              }),
+          ),
+      );
+    },
+  };
+  try {
+    for (let i = 0; i < n; i += 1) {
+      const socket = new WebSocket(`${url}?_pk=held-${i}-${randomUUID()}`, { headers: upgradeHeaders(baseUrl, cookie) });
+      socket.on('error', noop);
+      socket.on('close', () => closed.add(socket));
+      sockets.push(socket);
+      await new Promise<void>((resolve, reject) => {
+        socket.once('open', () => resolve());
+        socket.once('close', (code) => reject(new Error(`held socket ${i + 1} of ${n} closed ${code} before it opened`)));
+      });
+    }
+  } catch (error) {
+    await held.close();
+    throw error;
+  }
+  return held;
 }

@@ -21,7 +21,11 @@ export interface OpenOptions {
   severable?: boolean;
   /** Where to land; defaults to `/`. */
   path?: string;
+  /** A Tier A viewport (PRODUCT Viewports): CSS size at 2x, and a touch phone when `mobile`. */
+  viewport?: Viewport;
 }
+
+export interface Viewport { width: number; height: number; mobile?: boolean }
 
 export class Actor implements ActorView {
   readonly declaredHttp: DeclaredHttp[] = [];
@@ -117,7 +121,10 @@ export class Actors {
   }
 
   private async newActor(label: string, principal: Principal | null, options: OpenOptions): Promise<Actor> {
-    const context = await this.browser.newContext();
+    const size = options.viewport;
+    const context = await this.browser.newContext(
+      size ? { viewport: { width: size.width, height: size.height }, deviceScaleFactor: 2, isMobile: !!size.mobile, hasTouch: !!size.mobile } : {},
+    );
     let telemetry: Telemetry | null = null;
     // A routed page's doc sockets are counted by the proxy, which sees them open and close (Telemetry.install).
     const sever = options.severable
@@ -128,6 +135,7 @@ export class Actors {
       : null;
     const page = await context.newPage();
     telemetry = Telemetry.install(page, { routed: !!sever });
+    await telemetry.ready;
     const actor = new Actor(this, label, context, page, telemetry, principal, sever);
     this.list.push(actor);
     return actor;

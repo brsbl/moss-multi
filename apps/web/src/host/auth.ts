@@ -6,6 +6,7 @@ import { useSyncExternalStore } from 'react';
 import { lookupSession } from '../auth/session-fn.ts';
 import { setAppState } from './app-state.ts';
 import { createAuthStore, LOGIN_PATH, type AuthState, type SessionUser } from './auth-state.ts';
+import { prepareSignOut } from './sign-out-guard.ts';
 import { leaveTo } from './navigation.ts';
 
 export const auth = createAuthStore({
@@ -13,6 +14,7 @@ export const auth = createAuthStore({
   fetch: (input, init) => fetch(input, init),
   leave: leaveTo,
   setAppState,
+  beforeSignOut: prepareSignOut,
 });
 
 if (typeof window !== 'undefined') {
@@ -42,4 +44,10 @@ export async function requireSession({ location }: { location: ParsedLocation })
   if (user) return { user };
   leaveTo(`${LOGIN_PATH}?next=${encodeURIComponent(location.href)}`);
   return new Promise<never>(() => undefined); // the document is being replaced
+}
+
+/** `beforeLoad` for routes a share link opens (`/d`, `/f`): a `?share=` URL needs no session (A§4.2, A§7). */
+export async function requireSessionOrLink({ location }: { location: ParsedLocation }): Promise<{ user: SessionUser | null }> {
+  if (!new URL(location.href, 'http://moss.invalid').searchParams.get('share')) return requireSession({ location });
+  return { user: await auth.resolve() };
 }

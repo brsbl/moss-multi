@@ -1,0 +1,950 @@
+// j02-title (T1.4): the title and the frontmatter are shared state in the doc (A§10.4). A rename reaches every other
+// client's title, sidebar row and breadcrumb within 5 s with no keystroke there and no remount; renames from two
+// people reach a third in order with nothing stale flashing back; concurrent renames merge, and a title someone is
+// typing in is never clobbered; emptying a title and typing it again keeps its filename (an empty title never
+// projects); the title takes no focus or input before it binds and takes focus once it does; "+ Note" then typing at
+// once makes one note and every key lands or is refused visibly; Rename focuses the bound title; a bare Backspace
+// never navigates; and two people adding different properties at once both keep theirs, across a reload.
+// Grants to the second and third principals are declared setup through the members API (BUILDPLAN conventions).
+import { randomBytes } from 'node:crypto';
+import { readField } from '../../packages/core/src/doc-fields.ts';
+import { parseFrontmatter, writeFrontmatterKey } from '../../packages/core/src/frontmatter.ts';
+import { openDocClient } from '../lib/doc-client.ts';
+import type { Locator, Route } from '@playwright/test';
+import type { Actor, Actors } from '../lib/actors.ts';
+import {
+  APP_STATE_ATTR, DOC_ID_ATTR, DOC_STATE_ATTR, EDITOR_PANE_ATTR, INPUT_REFUSAL_ATTR, SIDEBAR_ROW_ATTR, TITLE_BINDING_ATTR,
+  TOP_BAR_ATTR,
+} from '../lib/contract.ts';
+import { grantDoc } from '../lib/grants.ts';
+import { expect, test, ui } from '../lib/test.ts';
+
+const BIND_TIMEOUT = 15_000;
+/** PRODUCT (Collaboration): a rename reaches the other person's title, sidebar row and breadcrumb within ~5 s. */
+const RENAME_MS = 5_000;
+/** The DocDO projects a title at most every 750 ms (A§5.1); this is well past it. */
+const PROJECTION_SETTLED_MS = 2_500;
+const UNTITLED = 'Untitled';
+
+const token = () => randomBytes(2).toString('hex');
+
+async function openShell(actors: Actors, label: string, { severable = false } = {}): Promise<Actor> {
+  const actor = await actors.session(await actors.principal(label), { severable });
+  await actor.goto('/');
+  await actor.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
+  return actor;
+}
+
+/** Opens the doc by its URL (declared setup: discovery is j01's) and waits for it to bind. */
+async function openDoc(actor: Actor, docId: string): Promise<void> {
+  actor.observations.clear();
+  await actor.goto(`/d/${docId}`);
+  await actor.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
+  await ui.waitLive(actor, docId);
+  await actor.observeEditor(docId);
+}
+
+const principalOf = (actor: Actor) => {
+  if (!actor.principal) throw new Error(`${actor.label} has no principal`);
+  return actor.principal;
+};
+
+const row = (actor: Actor, docId: string): Locator => actor.page.locator(`[${SIDEBAR_ROW_ATTR}][${DOC_ID_ATTR}="${docId}"]`);
+/** The title moss shows in the row (its `title` attribute holds the whole name, untruncated). */
+const rowTitle = async (actor: Actor, docId: string): Promise<string | null> =>
+  row(actor, docId).locator('span[title]').first().getAttribute('title', { timeout: 1_000 }).catch(() => null);
+/** The note's name in the pane's top bar: moss's breadcrumb for a note at the vault root. */
+const crumbText = async (actor: Actor, docId: string): Promise<string> =>
+  ((await ui.pane(actor, docId).locator(`[${TOP_BAR_ATTR}] span.cursor-default`).textContent()) ?? '').trim();
+
+/** The doc's D1 projection as the vault listing reports it. */
+async function listed(actor: Actor, docId: string): Promise<{ title: string; filename: string } | null> {
+  const origin = new URL(actor.page.url()).origin;
+  const response = await actor.context.request.get(`${origin}/api/workspace`, { timeout: 15_000 });
+  if (!response.ok()) throw new Error(`${actor.label}: GET /api/workspace ${response.status()}`);
+  const body = (await response.json()) as { docs: { id: string; title: string; filename?: string }[] };
+  const doc = body.docs.find((d) => d.id === docId);
+  return doc ? { title: doc.title, filename: doc.filename ?? '' } : null;
+}
+
+/** Selects the whole title and deletes it, as a person clearing the field does. */
+async function clearTitle(actor: Actor, docId: string): Promise<void> {
+  await ui.title(actor, docId).click();
+  await actor.page.keyboard.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A');
+  await actor.page.keyboard.press('Backspace');
+  await expect.poll(() => ui.fieldText(actor, docId, 'title'), { message: `${actor.label}: the title is empty` }).toBe('');
+}
+
+/** Starts clocks now and polls each named observation until it holds, recording every latency against `budgetMs`. */
+async function untilAll(
+  measure: { record(l: { name: string; ms: number; budgetMs: number | null }): void },
+  checks: Record<string, () => Promise<boolean>>,
+  budgetMs: number,
+  timeoutMs = 15_000,
+): Promise<void> {
+  const start = performance.now();
+  const pending = new Map(Object.entries(checks));
+  while (pending.size > 0) {
+    for (const [name, check] of pending) {
+      if (await check()) {
+        pending.delete(name);
+        measure.record({ name, ms: Math.round(performance.now() - start), budgetMs });
+      }
+    }
+    if (pending.size === 0) break;
+    if (performance.now() - start > timeoutMs) throw new Error(`not observed within ${timeoutMs} ms: ${[...pending.keys()].join(', ')}`);
+    await new Promise((done) => setTimeout(done, 25));
+  }
+}
+
+test('j02-title: @tierA a rename reaches the other person\'s title, sidebar row and breadcrumb within 5 s, with no keystroke or remount there @p:col-5 @p:tech-2 @evidence', async ({ actors, measure }) => {
+  const ada = await openShell(actors, 'ada');
+  const ben = await openShell(actors, 'ben');
+  await actors.requireDistinct(2);
+  const docId = await ui.createNote(ada);
+  await grantDoc(ada, docId, principalOf(ben));
+  await openDoc(ben, docId);
+  await expect(row(ben, docId), "the note Ben opened is in Ben's sidebar").toHaveCount(1);
+
+  const name = `Quarterly plan ${token()}`;
+  await ui.typeTitle(ada, docId, name);
+  await untilAll(measure, {
+    'rename to peer title': async () => (await ui.fieldText(ben, docId, 'title')) === name,
+    'rename to peer sidebar row': async () => (await rowTitle(ben, docId)) === name,
+    'rename to peer breadcrumb': async () => (await crumbText(ben, docId)).includes(name),
+  }, RENAME_MS);
+  await expect(ui.title(ben, docId), 'nothing moved focus into Ben\'s title').not.toBeFocused();
+  expect(await rowTitle(ada, docId), "Ada's own row follows her title").toBe(name);
+  await ui.waitAcked(ada, docId);
+  await ui.expectNoRemount(ada, docId, 'after renaming');
+  await ui.expectNoRemount(ben, docId, 'after a peer renamed');
+  await actors.checkpoint('renamed');
+});
+
+interface TitleLog { title: string[]; row: string[]; crumb: string[] }
+
+/** Records every distinct value the doc's title, sidebar row and top-bar name show, from now on. */
+const startTitleLog = (actor: Actor, docId: string) =>
+  actor.page.evaluate(({ docId, pane, title, row: rowAttr, docIdAttr, topBar }) => {
+    const log: TitleLog = { title: [], row: [], crumb: [] };
+    (window as unknown as { __mossTitleLog: TitleLog }).__mossTitleLog = log;
+    const read = () => {
+      const paneEl = document.querySelector(`[${pane}][${docIdAttr}="${docId}"]`);
+      const values = {
+        title: paneEl?.querySelector(`[${title}]`)?.textContent ?? null,
+        row: document.querySelector(`[${rowAttr}][${docIdAttr}="${docId}"] span[title]`)?.getAttribute('title') ?? null,
+        crumb: paneEl?.querySelector(`[${topBar}] span.cursor-default`)?.textContent?.trim() ?? null,
+      };
+      for (const key of ['title', 'row', 'crumb'] as const) {
+        const value = values[key];
+        const list = log[key];
+        if (value !== null && list[list.length - 1] !== value) list.push(value);
+      }
+    };
+    read();
+    new MutationObserver(read).observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true });
+  }, { docId, pane: EDITOR_PANE_ATTR, title: TITLE_BINDING_ATTR, row: SIDEBAR_ROW_ATTR, docIdAttr: DOC_ID_ATTR, topBar: TOP_BAR_ATTR });
+
+const titleLog = (actor: Actor) => actor.page.evaluate(() => (window as unknown as { __mossTitleLog: TitleLog }).__mossTitleLog);
+
+/**
+ * Every rename in the leg appends, so each value a surface shows must extend the one before it; a placeholder
+ * ("Untitled", or nothing) may show only before the first name.
+ */
+function nonMonotonic(values: string[]): string[] {
+  const problems: string[] = [];
+  let previous: string | null = null;
+  for (const raw of values) {
+    // contenteditable represents a trailing typed space as NBSP until the next character.
+    const value = raw.replace(/\u00a0/g, ' ');
+    const placeholder = value === '' || value === UNTITLED;
+    if (placeholder) {
+      if (previous !== null) problems.push(`"${value}" flashed back after "${previous}"`);
+      continue;
+    }
+    if (previous !== null && !value.startsWith(previous)) problems.push(`"${value}" after "${previous}" is not a continuation`);
+    previous = value;
+  }
+  return problems;
+}
+
+/** Pins the note from its sidebar row: a metadata change moss refreshes everywhere the note shows. */
+async function pinFromSidebar(actor: Actor, docId: string): Promise<void> {
+  await row(actor, docId).click({ button: 'right' });
+  await actor.page.getByRole('menuitem', { name: 'Pin', exact: true }).click();
+  await expect(actor.page.getByRole('menu')).toBeHidden();
+}
+
+test('j02-title: @tierA renames from Ada and then Ben reach Cy in order, with no stale name flashing back @p:col-5', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  const ben = await openShell(actors, 'ben');
+  const cy = await openShell(actors, 'cy');
+  await actors.requireDistinct(3);
+  const docId = await ui.createNote(ada);
+  await grantDoc(ada, docId, principalOf(ben));
+  await grantDoc(ada, docId, principalOf(cy));
+  await openDoc(ben, docId);
+  await openDoc(cy, docId);
+  await startTitleLog(cy, docId);
+
+  const tok = token();
+  const first = `Alpha ${tok}`;
+  await ui.typeTitle(ada, docId, first);
+  await expect.poll(() => ui.fieldText(cy, docId, 'title'), { message: "Ada's name reaches Cy", timeout: RENAME_MS }).toBe(first);
+  await expect.poll(() => ui.fieldText(ben, docId, 'title'), { message: "Ada's name reaches Ben", timeout: RENAME_MS }).toBe(first);
+  // A metadata refresh in Cy's tab mid-sequence must not bring back an older name.
+  await pinFromSidebar(cy, docId);
+
+  const second = ` beta ${tok}`;
+  await ui.typeTitle(ben, docId, second);
+  const final = `${first}${second}`;
+  await expect.poll(() => ui.fieldText(cy, docId, 'title'), { message: "Ben's rename reaches Cy", timeout: RENAME_MS }).toBe(final);
+  await expect.poll(() => rowTitle(cy, docId), { message: "Cy's row shows the final name", timeout: RENAME_MS }).toBe(final);
+  await expect.poll(() => crumbText(cy, docId), { message: "Cy's breadcrumb shows the final name", timeout: RENAME_MS }).toContain(final);
+  await expect.poll(() => ui.fieldText(ada, docId, 'title'), { message: "Ben's rename reaches Ada", timeout: RENAME_MS }).toBe(final);
+
+  const log = await titleLog(cy);
+  expect(log.title.at(-1)).toBe(final);
+  expect(nonMonotonic(log.title), `Cy's title went ${JSON.stringify(log.title)}`).toEqual([]);
+  expect(nonMonotonic(log.row), `Cy's sidebar row went ${JSON.stringify(log.row)}`).toEqual([]);
+  expect(nonMonotonic(log.crumb), `Cy's breadcrumb went ${JSON.stringify(log.crumb)}`).toEqual([]);
+  for (const actor of [ada, ben, cy]) await ui.expectNoRemount(actor, docId, 'after two renames');
+});
+
+/** The caret's offset in the field, or null when the selection is elsewhere. */
+const caretIn = (field: Locator) =>
+  field.evaluate((el) => {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0 || !el.contains(selection.anchorNode)) return null;
+    const range = document.createRange();
+    range.setStart(el, 0);
+    range.setEnd(selection.anchorNode as Node, selection.anchorOffset);
+    return range.toString().length;
+  });
+
+test('j02-title: @tierA concurrent renames merge character by character, and a title someone is typing in is never clobbered @p:col-5', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  const ben = await openShell(actors, 'ben');
+  await actors.requireDistinct(2);
+  const docId = await ui.createNote(ada);
+  const tok = token();
+  const base = `Roadmap ${tok}`;
+  await ui.typeTitle(ada, docId, base);
+  await grantDoc(ada, docId, principalOf(ben));
+  await openDoc(ben, docId);
+  await expect.poll(() => ui.fieldText(ben, docId, 'title'), { timeout: RENAME_MS }).toBe(base);
+
+  // Ada types at the end while Ben types at the start, interleaved key by key.
+  await ui.title(ada, docId).click();
+  await ada.page.keyboard.press('End');
+  await ui.title(ben, docId).click();
+  await ben.page.keyboard.press('Home');
+  const north = ` north ${tok}`;
+  const south = `south ${tok} `;
+  await Promise.all([ada.page.keyboard.type(north, { delay: 40 }), ben.page.keyboard.type(south, { delay: 40 })]);
+  ada.typed({ docId, field: 'title', text: north, ordered: true });
+  ben.typed({ docId, field: 'title', text: south, ordered: false });
+
+  const merged = `${south}${base}${north}`;
+  await expect.poll(() => ui.fieldText(ada, docId, 'title'), { message: 'both renames merge on Ada', timeout: RENAME_MS }).toBe(merged);
+  await expect.poll(() => ui.fieldText(ben, docId, 'title'), { message: 'both renames merge on Ben', timeout: RENAME_MS }).toBe(merged);
+  await expect(ui.title(ben, docId), "Ben's title keeps focus through Ada's edits").toBeFocused();
+  expect(await caretIn(ui.title(ben, docId)), "Ben's caret stays right after what Ben typed").toBe(south.length);
+  expect(await caretIn(ui.title(ada, docId)), "Ada's caret stays at the end").toBe(merged.length);
+  await ui.expectNoRemount(ada, docId, 'after concurrent renames');
+  await ui.expectNoRemount(ben, docId, 'after concurrent renames');
+});
+
+test('j02-title: @tierA emptying a title and typing it again keeps the filename; an empty title never projects @p:note-1 @p:R3', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  const ben = await openShell(actors, 'ben');
+  await actors.requireDistinct(2);
+  const docId = await ui.createNote(ada);
+  const tok = token();
+  // Typed without recording: the field is cleared below, and only the final name is the doc's (invariant 7).
+  await ada.page.keyboard.type(`Filename keeper ${tok}`);
+  const filename = `filename-keeper-${tok}.md`;
+  await expect.poll(() => listed(ada, docId), { message: 'the DocDO projects the title and its filename', timeout: RENAME_MS })
+    .toEqual({ title: `Filename keeper ${tok}`, filename });
+  await grantDoc(ada, docId, principalOf(ben));
+  await openDoc(ben, docId);
+
+  await clearTitle(ada, docId);
+  await ui.waitAcked(ada, docId);
+  await expect.poll(() => ui.fieldText(ben, docId, 'title'), { message: 'the empty title reaches Ben', timeout: RENAME_MS }).toBe('');
+  await expect.poll(() => rowTitle(ada, docId), { message: 'an empty title shows as Untitled' }).toBe(UNTITLED);
+  await ada.page.waitForTimeout(PROJECTION_SETTLED_MS);
+  expect(await listed(ada, docId), 'an empty title never projects: the D1 title and filename keep their values')
+    .toEqual({ title: `Filename keeper ${tok}`, filename });
+
+  // The same name with one capital: the projection runs (the title column changes) and keeps the filename.
+  const again = `Filename Keeper ${tok}`;
+  await ui.typeTitle(ada, docId, again);
+  await expect.poll(() => listed(ada, docId), { message: 'the retyped title projects', timeout: RENAME_MS }).toEqual({ title: again, filename });
+  await expect.poll(() => ui.fieldText(ben, docId, 'title'), { timeout: RENAME_MS }).toBe(again);
+});
+
+/** Init script: every moment a title that is not live is editable, focusable or focused. */
+function recordClosedTitles({ title }: { title: string }): void {
+  const record: { problems: string[]; titles: number } = { problems: [], titles: 0 };
+  (window as unknown as { __mossClosedTitles: typeof record }).__mossClosedTitles = record;
+  const seen = new WeakSet<Element>();
+  const check = (why: string) => {
+    for (const field of document.querySelectorAll(`[${title}]`)) {
+      if (!seen.has(field)) {
+        seen.add(field);
+        record.titles += 1;
+      }
+      const state = field.getAttribute(title);
+      if (state === 'live') continue;
+      const where = `${why}: a title with ${title}=${state}`;
+      if ((field as HTMLElement).isContentEditable) record.problems.push(`${where} is editable`);
+      if (field.hasAttribute('tabindex')) record.problems.push(`${where} has a tabindex`);
+      if (document.activeElement && field.contains(document.activeElement)) record.problems.push(`${where} holds focus`);
+    }
+  };
+  new MutationObserver(() => check('mutation')).observe(document, { subtree: true, childList: true, attributes: true });
+  document.addEventListener('focusin', () => check('focusin'), true);
+  document.addEventListener('beforeinput', () => check('beforeinput'), true);
+}
+
+const closedTitles = (actor: Actor) =>
+  actor.page.evaluate(() => (window as unknown as { __mossClosedTitles?: { problems: string[]; titles: number } }).__mossClosedTitles ?? null);
+
+const refusal = (actor: Actor): Locator => actor.page.locator(`[${INPUT_REFUSAL_ATTR}]`);
+
+async function newPane(actor: Actor, before: string[]): Promise<string> {
+  const fresh = async () => (await ui.paneIds(actor)).filter((id) => id !== '' && !before.includes(id));
+  await expect.poll(fresh, { message: `${actor.label}: the new note opens in a pane`, timeout: BIND_TIMEOUT }).toHaveLength(1);
+  const [docId] = await fresh();
+  return docId ?? '';
+}
+
+test('j02-title: @tierA the title takes no focus and no input before data-title-binding=live, and takes focus once it is @p:R2 @p:note-6 @p:col-6', async ({ actors }) => {
+  const ada = await actors.session(await actors.principal('ada'), { severable: true });
+  await ada.context.addInitScript(recordClosedTitles, { title: TITLE_BINDING_ATTR });
+  await ada.goto('/');
+  await ada.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
+  await openShell(actors, 'ben');
+  await actors.requireDistinct(2);
+  const sever = ada.sever;
+  if (!sever) throw new Error('ada is not severable');
+
+  // The recorder's control: a title that is open before it is live is flagged.
+  const flagged = await ada.page.evaluate(async (attr) => {
+    const record = (window as unknown as { __mossClosedTitles: { problems: string[] } }).__mossClosedTitles;
+    const from = record.problems.length;
+    const field = document.createElement('div');
+    field.setAttribute(attr, 'unbound');
+    field.contentEditable = 'true';
+    field.tabIndex = 0;
+    document.body.append(field);
+    field.focus();
+    await new Promise((done) => setTimeout(done, 0));
+    field.remove();
+    await new Promise((done) => setTimeout(done, 0));
+    return record.problems.slice(from);
+  }, TITLE_BINDING_ATTR);
+  for (const problem of ['is editable', 'has a tabindex', 'holds focus']) {
+    expect(flagged.some((p) => p.endsWith(problem)), `the control: the recorder flags a title that ${problem}`).toBe(true);
+  }
+
+  await ada.page.evaluate(() => {
+    (window as unknown as { __mossClosedTitles: { problems: string[] } }).__mossClosedTitles.problems.length = 0;
+  });
+
+  // The doc socket goes nowhere, so the new note cannot bind until the sever lifts.
+  sever.blackhole();
+  const before = await ui.paneIds(ada);
+  await ada.page.getByRole(ui.NEW_NOTE.role, { name: ui.NEW_NOTE.name }).click();
+  const docId = await newPane(ada, before);
+  const title = ui.title(ada, docId);
+  await expect(title, 'the title is closed while the doc binds').toHaveAttribute(TITLE_BINDING_ATTR, 'unbound');
+  await expect(ui.pane(ada, docId)).not.toHaveAttribute(DOC_STATE_ATTR, 'live');
+  const box = await title.boundingBox();
+  if (!box) throw new Error('the title has no box');
+  // The mouse directly: Playwright's click refuses an aria-disabled element.
+  await ada.page.mouse.click(box.x + 20, box.y + box.height / 2);
+  await expect(title, 'a click gives the closed title no focus').not.toBeFocused();
+  await ada.page.keyboard.type('early');
+  await expect(refusal(ada), 'keys typed before the bind are refused visibly').toContainText('Opening note');
+  expect(await ui.fieldText(ada, docId, 'title'), 'nothing typed before the bind lands').toBe('');
+
+  sever.restore();
+  await ui.waitLive(ada, docId);
+  await expect(title, 'the bound title takes focus (R2)').toBeFocused({ timeout: BIND_TIMEOUT });
+  const name = `Bound at last ${token()}`;
+  await ada.page.keyboard.type(name);
+  ada.typed({ docId, field: 'title', text: name, ordered: true });
+  await ui.waitAcked(ada, docId);
+  expect(await ui.fieldText(ada, docId, 'title')).toBe(name);
+  const closed = await closedTitles(ada);
+  expect(closed?.titles, 'the recorder saw the title').toBeGreaterThan(0);
+  expect(closed?.problems, 'no title took focus or input before it was live').toEqual([]);
+  await actors.checkpoint('title-live');
+});
+
+interface KeyEntry { key: string; prevented: boolean; intoLiveTitle: boolean; notice: string }
+
+/** Init script: each keydown, whether something consumed it, whether it reached a live title, and the notice then. */
+function recordKeys({ title, refusalAttr }: { title: string; refusalAttr: string }): void {
+  const log: KeyEntry[] = [];
+  (window as unknown as { __mossKeys: KeyEntry[] }).__mossKeys = log;
+  window.addEventListener(
+    'keydown',
+    (event) => {
+      const target = event.target;
+      setTimeout(() => {
+        log.push({
+          key: event.key,
+          prevented: event.defaultPrevented,
+          intoLiveTitle: target instanceof Element && target.closest(`[${title}="live"]`) !== null,
+          notice: document.querySelector(`[${refusalAttr}]`)?.textContent?.trim() ?? '',
+        });
+      }, 0);
+    },
+    true,
+  );
+}
+
+test('j02-title: @tierA on a warm stack, "+ Note" then "hello world" typed at once makes one note, and every key lands in its title or is refused visibly @p:note-6 @p:R2', async ({ actors }) => {
+  const ada = await actors.session(await actors.principal('ada'));
+  await ada.context.addInitScript(recordKeys, { title: TITLE_BINDING_ATTR, refusalAttr: INPUT_REFUSAL_ATTR });
+  await ada.goto('/');
+  await ada.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
+  await openShell(actors, 'ben');
+  await actors.requireDistinct(2);
+  // Warm: one note already created and bound in this tab.
+  await ui.createNote(ada);
+
+  let creates = 0;
+  await ada.page.route('**/api/docs', async (route: Route) => {
+    if (route.request().method() === 'POST') creates += 1;
+    await route.continue();
+  });
+  const rows = await ada.page.locator(`[${SIDEBAR_ROW_ATTR}]`).count();
+  const before = await ui.paneIds(ada);
+  await ada.page.evaluate(() => {
+    (window as unknown as { __mossKeys: KeyEntry[] }).__mossKeys.length = 0;
+  });
+  await ada.page.getByRole(ui.NEW_NOTE.role, { name: ui.NEW_NOTE.name }).click();
+  const typed = 'hello world';
+  await ada.page.keyboard.type(typed);
+
+  const docId = await newPane(ada, before);
+  await ui.waitLive(ada, docId);
+  await expect(ui.title(ada, docId)).toBeFocused({ timeout: BIND_TIMEOUT });
+  await expect.poll(async () => (await ada.page.evaluate(() => (window as unknown as { __mossKeys: KeyEntry[] }).__mossKeys)).length).toBe(typed.length);
+  const keys = await ada.page.evaluate(() => (window as unknown as { __mossKeys: KeyEntry[] }).__mossKeys);
+  for (const [i, entry] of keys.entries()) {
+    const landed = entry.intoLiveTitle && !entry.prevented;
+    const refused = entry.prevented && !entry.intoLiveTitle && entry.notice.includes('Opening note');
+    expect(landed || refused, `key ${i} "${entry.key}" either lands in the title or is refused visibly: ${JSON.stringify(entry)}`).toBe(true);
+  }
+  const landed = keys.filter((entry) => entry.intoLiveTitle && !entry.prevented).map((entry) => entry.key).join('');
+  expect(typed.endsWith(landed), `the keys that landed are the tail of what was typed ("${landed}")`).toBe(true);
+  if (landed) ada.typed({ docId, field: 'title', text: landed, ordered: true });
+  await expect.poll(() => ui.fieldText(ada, docId, 'title'), { message: 'the title holds exactly the keys that landed' }).toBe(landed);
+  expect(creates, 'Space created no second note').toBe(1);
+  await expect(ada.page.locator(`[${SIDEBAR_ROW_ATTR}]`), 'one new row').toHaveCount(rows + 1);
+});
+
+test('j02-title: @tierA Rename in a row menu focuses the bound title, and the name typed after it lands @p:R2 @p:col-5', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  await openShell(actors, 'ben');
+  await actors.requireDistinct(2);
+  const first = await ui.createNote(ada);
+  const second = await ui.createNote(ada);
+
+  // From the other note: Rename opens the note and focuses its title once it binds.
+  await row(ada, first).click({ button: 'right' });
+  await ada.page.getByRole('menuitem', { name: 'Rename', exact: true }).click();
+  await expect(ui.pane(ada, second)).toHaveCount(0, { timeout: BIND_TIMEOUT });
+  await ui.waitLive(ada, first);
+  ada.expectReconnects(1, first);
+  await ada.declareRemount(first);
+  await expect(ui.title(ada, first), 'Rename focuses the bound title').toBeFocused({ timeout: BIND_TIMEOUT });
+  const name = `Renamed ${token()}`;
+  await ada.page.keyboard.type(name);
+  ada.typed({ docId: first, field: 'title', text: name, ordered: true });
+  await expect.poll(() => rowTitle(ada, first), { message: 'the row takes the new name' }).toBe(name);
+  await ui.waitAcked(ada, first);
+  await expect.poll(() => listed(ada, first).then((doc) => doc?.title), { message: 'the DocDO projects it', timeout: RENAME_MS }).toBe(name);
+});
+
+for (const check of ['typing', 'navigation'] as const) {
+  test(`j02-title: @tierA Rename on the open note preserves ${check} focus @p:R2 @p:note-6`, async ({ actors }) => {
+    const ada = await openShell(actors, 'ada');
+    await openShell(actors, 'ben');
+    await actors.requireDistinct(2);
+    const other = await ui.createNote(ada);
+    await ui.typeTitle(ada, other, 'Other title');
+    await ui.waitAcked(ada, other);
+    const current = await ui.createNote(ada);
+    // This draft is deliberately replaced by Rename; only the final name is retained.
+    await ada.page.keyboard.type('Current title');
+    await ui.waitAcked(ada, current);
+    await row(ada, current).click({ button: 'right' });
+    await ada.page.getByRole('menuitem', { name: 'Rename', exact: true }).click();
+    await expect(ada.page.getByRole('menu')).toBeHidden();
+    if (check === 'typing') {
+      await expect(ui.title(ada, current), 'menu close leaves focus in the requested title').toBeFocused();
+      await ada.page.keyboard.type('Renamed');
+      ada.typed({ docId: current, field: 'title', text: 'Renamed', ordered: true });
+      await expect(ui.title(ada, current)).toHaveText('Renamed');
+      await ui.waitAcked(ada, current);
+    } else {
+      await row(ada, other).click();
+      await ui.waitLive(ada, other);
+      ada.expectReconnects(1, other);
+      await ada.declareRemount(other);
+      await expect(ui.title(ada, other), 'plain navigation must not inherit a Rename intent').not.toBeFocused();
+      await expect(ui.title(ada, other)).toHaveText('Other title');
+    }
+  });
+}
+
+test('j02-title: @tierA an empty refusal band preserves the note layout @p:note-6', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  await openShell(actors, 'ben');
+  await actors.requireDistinct(2);
+  await ui.createNote(ada);
+  await expect(refusal(ada)).toHaveText('');
+  expect(await refusal(ada).evaluate((element) => element.getBoundingClientRect().height),
+    'an empty band adds no space below the top bar').toBe(0);
+});
+
+test('j02-title: @tierA a bare Backspace with nothing focused keeps the URL, while the doc binds and once it is live @p:note-6 @macos', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada', { severable: true });
+  await openShell(actors, 'ben');
+  await actors.requireDistinct(2);
+  const sever = ada.sever;
+  if (!sever) throw new Error('ada is not severable');
+  const docId = await ui.createNote(ada);
+
+  ada.observations.clear();
+  // A second document load, so history has an entry to go back to; the doc stays binding behind the sever.
+  sever.blackhole();
+  await ada.goto(`/d/${docId}`);
+  await ada.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
+  await expect(ui.pane(ada, docId)).toHaveAttribute(DOC_STATE_ATTR, 'binding', { timeout: BIND_TIMEOUT });
+  const binding = await ui.bareBackspaceNavigates(ada);
+  expect(binding.navigated, `while the doc binds, Backspace moved to ${binding.to}`).toBe(false);
+
+  sever.restore();
+  await ui.waitLive(ada, docId);
+  const live = await ui.bareBackspaceNavigates(ada);
+  expect(live.navigated, `on a live doc, Backspace moved to ${live.to}`).toBe(false);
+  expect(new URL(ada.page.url()).pathname).toBe(`/d/${docId}`);
+});
+
+const PROPERTIES = (actor: Actor): Locator => actor.page.locator('[data-actions-panel-wrapper]');
+
+/** Opens the actions panel's Properties tab, and the add-field row, up to its value field. */
+async function addPropertyUpToValue(actor: Actor, key: string, value: string): Promise<Locator> {
+  const show = actor.page.getByRole('button', { name: 'Show actions panel', exact: true });
+  if (await show.isVisible()) await show.click();
+  await PROPERTIES(actor).getByRole('tab', { name: 'Properties', exact: true }).click();
+  const panel = PROPERTIES(actor);
+  const empty = panel.getByText('No properties yet', { exact: true });
+  if (await empty.isVisible()) await panel.getByRole('button', { name: 'Add field' }).click();
+  await panel.locator('section[aria-label="Frontmatter properties"]').getByRole('button', { name: 'Add field', exact: true }).click();
+  await panel.getByRole('textbox', { name: 'New field name' }).fill(key);
+  await panel.getByRole('textbox', { name: 'New field name' }).press('Enter');
+  const field = panel.getByRole('textbox', { name: 'New field value' });
+  await field.fill(value);
+  return field;
+}
+
+async function openProperties(actor: Actor): Promise<Locator> {
+  await actor.page.getByRole('button', { name: 'Show actions panel', exact: true }).click();
+  await PROPERTIES(actor).getByRole('tab', { name: 'Properties', exact: true }).click();
+  return PROPERTIES(actor).locator('section[aria-label="Frontmatter properties"]');
+}
+
+test('j02-title: @tierA two people add different properties at once, both keep theirs, and the header shows both after a reload @p:tech-2', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  const ben = await openShell(actors, 'ben');
+  await actors.requireDistinct(2);
+  const docId = await ui.createNote(ada);
+  await grantDoc(ada, docId, principalOf(ben));
+  await openDoc(ben, docId);
+
+  const tok = token();
+  const adaValue = `ada-${tok}`;
+  const benValue = `friday-${tok}`;
+  const adaField = await addPropertyUpToValue(ada, 'reviewer', adaValue);
+  const benField = await addPropertyUpToValue(ben, 'deadline', benValue);
+  await Promise.all([adaField.press('Enter'), benField.press('Enter')]);
+
+  for (const actor of [ada, ben]) {
+    const header = PROPERTIES(actor).locator('section[aria-label="Frontmatter properties"]');
+    await expect(header.getByRole('textbox', { name: 'reviewer', exact: true }), `${actor.label} sees Ada's property`).toHaveValue(adaValue, { timeout: RENAME_MS });
+    await expect(header.getByRole('textbox', { name: 'deadline', exact: true }), `${actor.label} sees Ben's property`).toHaveValue(benValue, { timeout: RENAME_MS });
+  }
+  await ui.waitAcked(ada, docId);
+  await ui.waitAcked(ben, docId);
+
+  for (const actor of [ada, ben]) {
+    actor.observations.clear();
+    await actor.page.reload();
+    await ui.waitLive(actor, docId);
+    const header = await openProperties(actor);
+    await expect(header.getByRole('textbox', { name: 'reviewer', exact: true }), `${actor.label}: after reload`).toHaveValue(adaValue);
+    await expect(header.getByRole('textbox', { name: 'deadline', exact: true }), `${actor.label}: after reload`).toHaveValue(benValue);
+  }
+});
+
+test('j02-title: @tierA disconnected additions of the same property converge and survive reload and later edits @evidence @p:tech-2 @p:col-1 @p:col-4', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada', { severable: true });
+  const ben = await openShell(actors, 'ben');
+  await actors.requireDistinct(2);
+  const docId = await ui.createNote(ada);
+  await (await addPropertyUpToValue(ada, 'status', 'done')).press('Enter');
+  await ui.waitAcked(ada, docId);
+  await grantDoc(ada, docId, principalOf(ben));
+  await openDoc(ben, docId);
+  const adaField = await addPropertyUpToValue(ada, 'owner', 'ada');
+  const benField = await addPropertyUpToValue(ben, 'owner', 'ben');
+  if (!ada.sever) throw new Error('Ada must be severable');
+  ada.sever.blackhole();
+  try {
+    await adaField.press('Enter');
+    await benField.press('Enter');
+    await expect(PROPERTIES(ada).getByRole('textbox', { name: 'owner', exact: true })).toHaveValue('ada');
+    await expect(PROPERTIES(ben).getByRole('textbox', { name: 'owner', exact: true })).toHaveValue('ben');
+    expect(ada.sever.census().dropped.out, 'the sever actually withheld a local write').toBeGreaterThan(0);
+  } finally {
+    // T1.3 owns half-open recovery; restore this race through a real reconnect and sync handshake.
+    ada.expectReconnects(1, docId);
+    ada.sever.reset();
+    ada.sever.restore();
+  }
+  const owner = (actor: Actor) => PROPERTIES(actor).getByRole('textbox', { name: 'owner', exact: true });
+  await expect.poll(async () => {
+    const values = [await owner(ada).inputValue(), await owner(ben).inputValue()];
+    return values[0] === values[1] && ['ada', 'ben'].includes(values[0]);
+  },
+    { message: 'same-key additions render the same winner in both windows', timeout: 15_000 })
+    .toBe(true);
+  const winner = await owner(ada).inputValue();
+  await ui.waitAcked(ada, docId);
+  await ui.waitAcked(ben, docId);
+  const reader = await openDocClient(new URL(ada.page.url()).origin, docId, (await ada.context.cookies()).map(({ name, value }) => `${name}=${value}`).join('; '));
+  try {
+    await reader.synced;
+    expect(readField(reader.doc, 'frontmatter').match(/^owner:/gm), 'serialized properties have exactly one owner key').toHaveLength(1);
+  } finally { reader.close(); }
+  await ui.waitAcked(ada, docId);
+  await ui.waitAcked(ben, docId);
+  for (const actor of [ada, ben]) {
+    actor.observations.clear();
+    await actor.page.reload();
+    await ui.waitLive(actor, docId);
+    const header = await openProperties(actor);
+    await expect(header.getByRole('textbox', { name: 'status', exact: true }), 'untouched properties survive the race and reload').toHaveValue('done');
+    await expect(owner(actor)).toHaveValue(winner);
+  }
+  await owner(ada).click();
+  const editOwner = PROPERTIES(ada).getByRole('textbox', { name: 'Edit owner', exact: true });
+  await editOwner.fill('repaired');
+  await editOwner.press('Enter');
+  await (await addPropertyUpToValue(ada, 'due', 'soon')).press('Enter');
+  await expect(owner(ben)).toHaveValue('repaired');
+  await expect(PROPERTIES(ben).getByRole('textbox', { name: 'due', exact: true })).toHaveValue('soon');
+  await ui.waitAcked(ada, docId);
+  ben.observations.clear();
+  await ben.page.reload();
+  await ui.waitLive(ben, docId);
+  const header = await openProperties(ben);
+  await expect(owner(ben)).toHaveValue('repaired');
+  await expect(header.getByRole('textbox', { name: 'status', exact: true })).toHaveValue('done');
+  await expect(header.getByRole('textbox', { name: 'due', exact: true })).toHaveValue('soon');
+  await actors.checkpoint('same-property-recovered');
+});
+
+test('j02-title: @tierA delete versus edit of one property preserves neighbouring fields after reconnect and reload @p:tech-2 @p:col-1 @p:col-4', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada', { severable: true });
+  const ben = await openShell(actors, 'ben');
+  await actors.requireDistinct(2);
+  const docId = await ui.createNote(ada);
+  for (const [key, value] of [['owner', 'ada'], ['status', 'done'], ['due', 'soon']]) {
+    await (await addPropertyUpToValue(ada, key, value)).press('Enter');
+  }
+  await ui.waitAcked(ada, docId);
+  await grantDoc(ada, docId, principalOf(ben));
+  await openDoc(ben, docId);
+  const benHeader = await openProperties(ben);
+  await benHeader.getByRole('textbox', { name: 'owner', exact: true }).click();
+  const draft = benHeader.getByRole('textbox', { name: 'Edit owner', exact: true });
+  await draft.fill('ben');
+  if (!ada.sever) throw new Error('Ada must be severable');
+  ada.sever.blackhole();
+  try {
+    await PROPERTIES(ada).locator('label').filter({ hasText: /^Owner$/ }).hover();
+    await PROPERTIES(ada).getByRole('button', { name: 'Delete owner field', exact: true }).click();
+    await ada.page.locator('[data-remote-web-surface-blocking-dialog="true"]').getByRole('button', { name: 'Remove', exact: true }).click();
+    await draft.press('Enter');
+    expect(ada.sever.census().dropped.out).toBeGreaterThan(0);
+  } finally {
+    ada.expectReconnects(1, docId);
+    ada.sever.reset();
+    ada.sever.restore();
+  }
+  for (const actor of [ada, ben]) {
+    await expect(PROPERTIES(actor).getByRole('textbox', { name: 'status', exact: true })).toHaveValue('done');
+    await expect(PROPERTIES(actor).getByRole('textbox', { name: 'due', exact: true })).toHaveValue('soon');
+    await ui.waitAcked(actor, docId);
+    actor.observations.clear();
+    await actor.page.reload();
+    await ui.waitLive(actor, docId);
+    const header = await openProperties(actor);
+    await expect(header.getByRole('textbox', { name: 'status', exact: true })).toHaveValue('done');
+    await expect(header.getByRole('textbox', { name: 'due', exact: true })).toHaveValue('soon');
+  }
+});
+
+test('j02-title: @tierA shared property rename and order reach both panels without changing values @p:tech-2 @p:col-1', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  const ben = await openShell(actors, 'ben');
+  await actors.requireDistinct(2);
+  const docId = await ui.createNote(ada);
+  for (const [key, value] of [['first', 'one'], ['second', 'two'], ['third', 'three']]) {
+    await (await addPropertyUpToValue(ada, key, value)).press('Enter');
+  }
+  await ui.waitAcked(ada, docId);
+  await grantDoc(ada, docId, principalOf(ben));
+  await openDoc(ben, docId);
+  await openProperties(ben);
+  // Moss has no key-rename or reorder control. Exercise that shared-state intent through an authenticated peer.
+  const peer = await openDocClient(new URL(ada.page.url()).origin, docId,
+    (await ada.context.cookies()).map(({ name, value }) => `${name}=${value}`).join('; '));
+  try {
+    await peer.synced;
+    peer.doc.transact(() => {
+      const map = peer.doc.getMap('frontmatter');
+      map.set('renamed', map.get('first'));
+      map.delete('first');
+      const order = peer.doc.getArray<string>('frontmatterOrder');
+      order.delete(0, order.length);
+      order.push(['third', 'renamed', 'second']);
+    }, 'property-intent');
+    await peer.acked();
+    for (const actor of [ada, ben]) {
+      const fields = PROPERTIES(actor).locator('section[aria-label="Frontmatter properties"]');
+      await expect(fields.getByRole('textbox', { name: 'renamed', exact: true })).toHaveValue('one');
+      await expect(fields.getByRole('textbox', { name: 'second', exact: true })).toHaveValue('two');
+      await expect(fields.getByRole('textbox', { name: 'third', exact: true })).toHaveValue('three');
+      await expect(fields.locator('label')).toHaveText(['Third', 'Renamed', 'Second']);
+      actor.observations.clear();
+      await actor.page.reload();
+      await ui.waitLive(actor, docId);
+      const reloaded = await openProperties(actor);
+      await expect(reloaded.locator('label')).toHaveText(['Third', 'Renamed', 'Second']);
+      await expect(reloaded.getByRole('textbox', { name: 'renamed', exact: true })).toHaveValue('one');
+    }
+    expect(Object.keys(parseFrontmatter(readField(peer.doc, 'frontmatter')) ?? {})).toEqual(['third', 'renamed', 'second']);
+  } finally { peer.close(); }
+});
+
+/** Removes a property through its label's delete button and the confirmation. */
+async function deleteProperty(actor: Actor, key: string): Promise<void> {
+  const label = `${key[0].toUpperCase()}${key.slice(1)}`;
+  await PROPERTIES(actor).locator('label').filter({ hasText: new RegExp(`^${label}$`) }).hover();
+  await PROPERTIES(actor).getByRole('button', { name: `Delete ${key} field`, exact: true }).click();
+  await actor.page.locator('[data-remote-web-surface-blocking-dialog="true"]').getByRole('button', { name: 'Remove', exact: true }).click();
+  await expect(PROPERTIES(actor).getByRole('textbox', { name: key, exact: true }), `${actor.label} removed ${key}`).toHaveCount(0);
+}
+
+test('j02-title: @tierA an open Properties draft survives a peer deleting its property, a peer editing another, and a peer joining mid-edit @p:tech-2 @p:col-1', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  const ben = await openShell(actors, 'ben');
+  const cy = await openShell(actors, 'cy');
+  await actors.requireDistinct(3);
+  const docId = await ui.createNote(ada);
+  for (const [key, value] of [['owner', 'ada'], ['status', 'draft'], ['due', 'soon']]) {
+    await (await addPropertyUpToValue(ada, key, value)).press('Enter');
+  }
+  await ui.waitAcked(ada, docId);
+  await grantDoc(ada, docId, principalOf(ben));
+  await grantDoc(ada, docId, principalOf(cy));
+  await openDoc(ben, docId);
+  const benHeader = await openProperties(ben);
+  const draftValue = `ben-${token()}`;
+  await benHeader.getByRole('textbox', { name: 'owner', exact: true }).click();
+  const draft = benHeader.getByRole('textbox', { name: 'Edit owner', exact: true });
+  await draft.fill(draftValue);
+
+  // Cy joins while Ben's draft is open and deletes that property; Ada then edits another one.
+  await openDoc(cy, docId);
+  await openProperties(cy);
+  await deleteProperty(cy, 'owner');
+  await expect(PROPERTIES(ada).getByRole('textbox', { name: 'owner', exact: true }), 'the delete reached Ada').toHaveCount(0);
+  await PROPERTIES(ada).getByRole('textbox', { name: 'status', exact: true }).click();
+  await PROPERTIES(ada).getByRole('textbox', { name: 'Edit status', exact: true }).fill('review');
+  await PROPERTIES(ada).getByRole('textbox', { name: 'Edit status', exact: true }).press('Enter');
+  // Ada saw the delete before her edit, so Ben holding her edit means he holds the delete too.
+  await expect(benHeader.getByRole('textbox', { name: 'status', exact: true }), "Ada's edit reaches Ben").toHaveValue('review', { timeout: RENAME_MS });
+  await expect(draft, "Ben's draft is still open with his text").toHaveValue(draftValue);
+  await draft.press('Enter');
+  for (const actor of [ada, ben, cy]) {
+    await expect(PROPERTIES(actor).getByRole('textbox', { name: 'owner', exact: true }), `${actor.label}: Ben's committed draft`).toHaveValue(draftValue, { timeout: RENAME_MS });
+    await expect(PROPERTIES(actor).getByRole('textbox', { name: 'status', exact: true })).toHaveValue('review');
+  }
+
+  // A peer clearing the value being edited (Properties hides an empty status) keeps the draft open too.
+  const statusDraft = `ben-status-${token()}`;
+  await benHeader.getByRole('textbox', { name: 'status', exact: true }).click();
+  const benStatus = benHeader.getByRole('textbox', { name: 'Edit status', exact: true });
+  await benStatus.fill(statusDraft);
+  await PROPERTIES(ada).getByRole('textbox', { name: 'status', exact: true }).click();
+  await PROPERTIES(ada).getByRole('textbox', { name: 'Edit status', exact: true }).fill('');
+  await PROPERTIES(ada).getByRole('textbox', { name: 'Edit status', exact: true }).press('Enter');
+  await expect(PROPERTIES(cy).getByRole('textbox', { name: 'status', exact: true }), 'the clear reached Cy').toHaveCount(0, { timeout: RENAME_MS });
+  // Cy's edit after seeing the clear reaching Ben means the clear reached him first.
+  await PROPERTIES(cy).getByRole('textbox', { name: 'due', exact: true }).click();
+  await PROPERTIES(cy).getByRole('textbox', { name: 'Edit due', exact: true }).fill('later');
+  await PROPERTIES(cy).getByRole('textbox', { name: 'Edit due', exact: true }).press('Enter');
+  await expect(benHeader.getByRole('textbox', { name: 'due', exact: true }), 'Ben is synced past the clear').toHaveValue('later', { timeout: RENAME_MS });
+  await expect(benStatus, "Ben's status draft is still open with his text").toHaveValue(statusDraft);
+  await expect(benStatus).toBeFocused();
+  await benStatus.press('Enter');
+  for (const actor of [ada, ben, cy]) {
+    await expect(PROPERTIES(actor).getByRole('textbox', { name: 'status', exact: true }), `${actor.label}: Ben's committed status`).toHaveValue(statusDraft, { timeout: RENAME_MS });
+  }
+
+  // Cancelling a draft whose property a peer deleted accepts the delete.
+  await benHeader.getByRole('textbox', { name: 'due', exact: true }).click();
+  await benHeader.getByRole('textbox', { name: 'Edit due', exact: true }).fill('never');
+  await deleteProperty(cy, 'due');
+  await expect(PROPERTIES(ada).getByRole('textbox', { name: 'due', exact: true })).toHaveCount(0);
+  await expect(benHeader.getByRole('textbox', { name: 'Edit due', exact: true })).toHaveValue('never');
+  await benHeader.getByRole('textbox', { name: 'Edit due', exact: true }).press('Escape');
+  await expect(benHeader.getByRole('textbox', { name: 'due', exact: true }), 'the cancelled row follows the delete').toHaveCount(0);
+
+  // An open Add field row survives a peer removing every property.
+  const reviewer = `rev-${token()}`;
+  const adding = await addPropertyUpToValue(ben, 'reviewer', reviewer);
+  await deleteProperty(cy, 'status');
+  await deleteProperty(cy, 'owner');
+  await expect(PROPERTIES(ada).getByText('No properties yet', { exact: true }), 'every property is gone for Ada').toBeVisible();
+  await expect(adding, "Ben's new field keeps its value").toHaveValue(reviewer);
+  await adding.press('Enter');
+  for (const actor of [ada, ben, cy]) {
+    await expect(PROPERTIES(actor).getByRole('textbox', { name: 'reviewer', exact: true })).toHaveValue(reviewer, { timeout: RENAME_MS });
+    await ui.waitAcked(actor, docId);
+  }
+  for (const actor of [ada, ben, cy]) {
+    actor.observations.clear();
+    await actor.page.reload();
+    await ui.waitLive(actor, docId);
+    const header = await openProperties(actor);
+    await expect(header.getByRole('textbox', { name: 'reviewer', exact: true })).toHaveValue(reviewer);
+    await expect(header.locator('label')).toHaveText(['Reviewer']);
+  }
+});
+
+test('j02-title: @tierA an open list-property draft survives a peer deleting it and adding it back as text @p:tech-2 @p:col-1', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  const ben = await openShell(actors, 'ben');
+  await actors.requireDistinct(2);
+  const docId = await ui.createNote(ada);
+  await (await addPropertyUpToValue(ada, 'owner', 'ada')).press('Enter');
+  await ui.waitAcked(ada, docId);
+  const origin = new URL(ada.page.url()).origin;
+  const cookie = (await ada.context.cookies()).map(({ name, value }) => `${name}=${value}`).join('; ');
+  // Properties can only create text values, so a list property arrives the way an import would bring it.
+  const seeder = await openDocClient(origin, docId, cookie);
+  try {
+    await seeder.synced;
+    writeFrontmatterKey(seeder.doc, 'tags', ['alpha'], 'seed');
+    await seeder.acked();
+  } finally { seeder.close(); }
+  await grantDoc(ada, docId, principalOf(ben));
+  await openDoc(ben, docId);
+  const benHeader = await openProperties(ben);
+  const tagsCell = benHeader.locator('label', { hasText: /^Tags$/ }).locator('xpath=following-sibling::div[1]');
+  await expect(tagsCell).toContainText('alpha');
+  const box = await tagsCell.boundingBox();
+  if (!box) throw new Error("Ben's tags cell has no box");
+  await tagsCell.click({ position: { x: box.width - 4, y: box.height / 2 } });
+  const pills = benHeader.getByRole('textbox', { name: 'Edit tags', exact: true });
+  await pills.fill('beta');
+  await pills.press('Enter');
+  await pills.fill('gamma');
+  await expect(benHeader.getByRole('button', { name: 'Remove beta', exact: true })).toBeVisible();
+
+  // Ada deletes tags and adds it back as text while Ben's list draft is open.
+  await deleteProperty(ada, 'tags');
+  await (await addPropertyUpToValue(ada, 'tags', 'x')).press('Enter');
+  await expect(PROPERTIES(ada).getByRole('textbox', { name: 'tags', exact: true })).toHaveValue('x');
+  await PROPERTIES(ada).getByRole('textbox', { name: 'owner', exact: true }).click();
+  await PROPERTIES(ada).getByRole('textbox', { name: 'Edit owner', exact: true }).fill('ada-2');
+  await PROPERTIES(ada).getByRole('textbox', { name: 'Edit owner', exact: true }).press('Enter');
+  // Ada's later edit reaching Ben means her delete and re-add reached him first.
+  await expect(benHeader.getByRole('textbox', { name: 'owner', exact: true }), 'Ben is synced past the re-add').toHaveValue('ada-2', { timeout: RENAME_MS });
+  await expect(pills, "Ben's list draft is still open with his query").toHaveValue('gamma');
+  await expect(pills).toBeFocused();
+  for (const pill of ['alpha', 'beta']) await expect(benHeader.getByRole('button', { name: `Remove ${pill}`, exact: true }), `Ben's ${pill} pill`).toBeVisible();
+  await pills.press('Enter');
+  await pills.press('Enter');
+  for (const actor of [ada, ben]) {
+    const header = PROPERTIES(actor).locator('section[aria-label="Frontmatter properties"]');
+    await expect(header.getByRole('textbox', { name: 'tags', exact: true }), `${actor.label}: tags is a list again`).toHaveCount(0, { timeout: RENAME_MS });
+    for (const pill of ['alpha', 'beta', 'gamma']) await expect(header.getByText(pill, { exact: true }), `${actor.label} sees ${pill}`).toBeVisible();
+    await ui.waitAcked(actor, docId);
+  }
+  // A cold reader sees Ben's list.
+  const reader = await openDocClient(origin, docId, cookie);
+  try {
+    await reader.synced;
+    expect(parseFrontmatter(readField(reader.doc, 'frontmatter'))).toEqual({ owner: 'ada-2', tags: ['alpha', 'beta', 'gamma'] });
+  } finally { reader.close(); }
+});
+
+/** A§5.2: REST writes per identity per minute (protocol/limits REST_WRITE_RATE). */
+const REST_WRITES = 60;
+const REST_WINDOW_MS = 60_000;
+
+test('j02-title: REST renames past 60 a minute get 429 and never reach the doc, per identity, across a restart @p:col-5 @p:tech-8', async ({ actors, stack }) => {
+  const headers = { origin: stack.baseUrl };
+  const ada = await actors.session(await actors.principal('ada'));
+  const created = await ada.context.request.post('/api/docs', { headers, data: { title: 'Rate' } });
+  expect(created.status()).toBe(201);
+  const { doc: { id: docId } } = await created.json() as { doc: { id: string } };
+  const benPrincipal = await actors.principal('ben');
+  const ben = await actors.session(benPrincipal);
+  await grantDoc(ada, docId, benPrincipal);
+  await actors.requireDistinct(2);
+
+  const rename = (actor: Actor, title: string) => actor.context.request.patch(`/api/docs/${docId}`, { headers, data: { title }, timeout: 15_000 });
+  const title = async () => {
+    const response = await ada.context.request.get(`/api/docs/${docId}`, { timeout: 15_000 });
+    expect(response.status()).toBe(200);
+    return ((await response.json()) as { doc: { title: string } }).doc.title;
+  };
+
+  const start = Date.now();
+  const statuses: number[] = [];
+  for (let n = 1; n <= REST_WRITES; n += 1) statuses.push((await rename(ada, `Rate ${n}`)).status());
+  expect(statuses.filter((status) => status !== 200), 'the first 60 renames in a minute are granted').toEqual([]);
+  const refused = await rename(ada, 'Refused');
+  expect(refused.status(), 'the 61st rename in a minute is refused').toBe(429);
+  expect(await refused.json()).toEqual({ error: 'rate-limited' });
+  expect(refused.headers()['retry-after']).toBe('60');
+  // Past the projection throttle, so a refused rename that did land would show.
+  await new Promise((done) => setTimeout(done, PROJECTION_SETTLED_MS));
+  await expect.poll(title, { message: 'a refused rename never reaches the doc' }).toBe(`Rate ${REST_WRITES}`);
+
+  // Another identity on the same doc has its own window.
+  expect((await rename(ben, 'Ben renamed')).status(), "Ada's limit does not refuse Ben").toBe(200);
+  await expect.poll(title, { timeout: RENAME_MS }).toBe('Ben renamed');
+
+  // A restart rebuilds every PrincipalDO; the window Ada's reads back must still hold her attempts (A§5.1).
+  await stack.restart();
+  const sentAt = Date.now();
+  const afterRestart = await rename(ada, 'After restart');
+  if (sentAt - start >= REST_WINDOW_MS) throw new Error(`the restart ended ${sentAt - start} ms in, past the ${REST_WINDOW_MS} ms window, so this leg proves nothing`);
+  expect(afterRestart.status(), 'an exhausted identity stays refused after its PrincipalDO is rebuilt').toBe(429);
+  expect((await rename(ben, 'Ben again')).status(), 'Ben is still granted after the restart').toBe(200);
+});

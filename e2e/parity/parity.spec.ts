@@ -67,13 +67,18 @@ async function audit(page: Page, theme: Theme, side: string): Promise<void> {
   }
 }
 
-async function capture(page: Page): Promise<Buffer> {
+async function capture(page: Page, target: Target): Promise<Buffer> {
   await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
   await page.keyboard.press('Escape');
   await page.evaluate(() => {
     (document.activeElement as HTMLElement | null)?.blur();
     window.getSelection()?.removeAllRanges();
   });
+  if (target.focusEditor) {
+    const body = page.locator(`${CROP} [data-lexical-editor="true"][contenteditable="true"]`);
+    await body.focus();
+    await expect(body).toBeFocused();
+  }
   await page.mouse.move(VIEWPORT.width - 2, VIEWPORT.height - 2);
   await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
   return page.locator(CROP).screenshot({ animations: 'disabled', caret: 'hide', scale: 'device' });
@@ -110,6 +115,21 @@ async function withholdAffordances(page: Page): Promise<string[]> {
 
 interface OracleCapture { png: Buffer; listing: NoteListing[]; openTitle: string | null; withheld: string[] }
 
+/** The open note's sidebar row → Trash, then the footer's Trash view, which opens that note read-only. */
+async function trashOpenNote(page: Page): Promise<void> {
+  const crop = page.locator(CROP);
+  const active = crop.locator('button[data-note-active]');
+  const title = (await active.textContent()) ?? '';
+  await active.click({ button: 'right' });
+  await page.getByRole('menuitem', { name: 'Trash', exact: true }).click();
+  // moss records the Trash view's selection only once the trash resolves, then selects the next note; the web's trash
+  // waits for acks and the server first, so the Trash button waits for that switch.
+  await expect(crop.locator('button[data-note-active]')).not.toHaveText(title, { timeout: 15_000 });
+  await crop.getByRole('button', { name: 'Trash', exact: true }).click();
+  await expect(crop.getByRole('button', { name: 'Back to notes', exact: true })).toBeVisible();
+  await expect(crop.locator('[data-lexical-editor="true"][contenteditable="false"]')).toBeVisible({ timeout: 30_000 });
+}
+
 /** The open note's title field (moss's title is the first textbox in the shell). */
 const openTitle = (page: Page) => page.evaluate((crop) => document.querySelector(`${crop} [role="textbox"]`)?.textContent ?? null, CROP);
 
@@ -121,8 +141,10 @@ async function captureOracle(browser: Browser, target: Target, theme: Theme): Pr
     const listing = await page.evaluate(() =>
       (window as unknown as { electronAPI: { notes: { getAll: () => Promise<NoteListing[]> } } }).electronAPI.notes.getAll(),
     );
+    const open = await openTitle(page);
+    if (target.prepare === 'trash-open-note') await trashOpenNote(page);
     const withheld = await withholdAffordances(page);
-    return { png: await capture(page), listing, openTitle: await openTitle(page), withheld };
+    return { png: await capture(page, target), listing, openTitle: open, withheld };
   } finally {
     await page.context().close();
   }
@@ -150,8 +172,18 @@ async function captureCandidate(browser: Browser, target: Target, theme: Theme, 
         if (response.status() !== 201) throw new Error(`POST /api/docs for "${note.title}": ${response.status()}`);
         ids.set(note.id, ((await response.json()) as { doc: { id: string } }).doc.id);
       }
-      const docs = listing.map((note) => ({ id: ids.get(note.id), title: note.title, createdAt: note.createdAt * 1000, updatedAt: note.updatedAt * 1000 }));
-      await page.route('**/api/workspace*', (route) => route.fulfill({ json: { vault: { id: 'parity-vault', name: 'Home' }, docs } }));
+      // A note trashed through the UI really is trashed; the listing says so as the API does, at the story's clock.
+      const trashed = new Set<string>();
+      await page.route('**/api/docs/*', async (route) => {
+        if (route.request().method() === 'DELETE') trashed.add(decodeURIComponent(new URL(route.request().url()).pathname.split('/').pop() ?? ''));
+        await route.fallback();
+      });
+      const docs = () => listing.map((note) => {
+        const id = ids.get(note.id) ?? '';
+        return { id, title: note.title, createdAt: note.createdAt * 1000, updatedAt: note.updatedAt * 1000, role: 'owner', ...(trashed.has(id) ? { trashedAt: Date.parse(STORY_NOW) } : {}) };
+      });
+      // The vault carries the caller's role as the API does, so owner controls (Folder actions, T2.2) match the oracle.
+      await page.route('**/api/workspace*', (route) => route.fulfill({ json: { vault: { id: 'parity-vault', name: 'Home', role: 'owner', owned: true }, folders: [], docs: docs() } }));
       path = `/d/${encodeURIComponent(ids.get(listing[0].id) ?? '')}`;
     }
     await page.goto(new URL(path, stack.baseUrl).href);
@@ -166,9 +198,10 @@ async function captureCandidate(browser: Browser, target: Target, theme: Theme, 
     if (target.seed === 'story-listing') {
       await page.locator(`[${EDITOR_PANE_ATTR}][${DOC_STATE_ATTR}="live"]`).waitFor({ timeout: 30_000 });
     }
+    if (target.prepare === 'trash-open-note') await trashOpenNote(page);
     await audit(page, theme, 'candidate');
     const masks = await maskRects(page, target.masks);
-    return { png: await capture(page), masks };
+    return { png: await capture(page, target), masks };
   } finally {
     await page.context().close();
   }

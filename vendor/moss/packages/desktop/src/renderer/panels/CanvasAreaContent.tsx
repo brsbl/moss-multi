@@ -167,6 +167,9 @@ import { isQuitProfilingEnabled } from '../utils/renderer-env';
 import { hidden } from '@moss-multi/host/affordances';
 // moss-multi seam: bound-pane (A§2.2, A§10.3): the one hook for the doc binding, its gate and the pane's attributes
 import { useMossMultiPane } from '@moss-multi/host/collab/pane';
+// moss-multi seam: trash (T2.3): only the owner trashes or restores; trash copy comes from the one module
+import { TRASH_COPY } from '@moss-multi/host/retention';
+import { canTrashNote } from '@moss-multi/host/trash';
 
 const TRASH_RETENTION_DAYS = 30;
 const MS_IN_DAY = 24 * 60 * 60 * 1000;
@@ -946,7 +949,12 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
     hasElectronBridge &&
     !(typeof navigator !== 'undefined' && /jsdom/i.test(navigator.userAgent));
 
-  const [titleValue, setTitleValue] = useState('');
+  const [titleValue, setTitleValueState] = useState('');
+  // moss-multi seam: all authored title paths write the shared field.
+  const setTitleValue = useCallback((text: string) => {
+    setTitleValueState(text);
+    mossMultiPane.title.write(text);
+  }, [mossMultiPane.title]);
   const titleValueRef = useRef(titleValue);
   titleValueRef.current = titleValue;
   const commitTitleChangeRef = useRef<() => void>(() => {});
@@ -1176,6 +1184,8 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
     latestOnBodyFocusCompleteRef.current = onBodyFocusComplete;
   }, [onBodyFocusComplete]);
 
+  mossMultiPane.title.connect(titleInputRef, setTitleValueState); // moss-multi seam: render shared title
+
   const getLiveTitleText = useCallback((): string => {
     return titleInputRef.current?.textContent ?? titleValueRef.current;
   }, []);
@@ -1189,7 +1199,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
     }
 
     if (titleValueRef.current !== display) {
-      setTitleValue(display);
+      setTitleValueState(display); // moss-multi seam: title-display (T2.3): an unbound pane shows the title, never writes it
     }
   }, []);
 
@@ -1332,7 +1342,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
   }, [note?.id]);
 
   useLayoutEffect(() => {
-    if (!note?.id || contentHydratedForNoteId !== noteIdForAtoms) {
+    if (mossMultiPane.bound || !note?.id || contentHydratedForNoteId !== noteIdForAtoms) {
       return;
     }
 
@@ -1372,7 +1382,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
 
   useLayoutEffect(() => {
     const el = titleInputRef.current;
-    if (!el || !autoFocusTitle || titleFocusCompletedRef.current || contentHydratedForNoteId !== noteIdForAtoms) {
+    if (!el || !autoFocusTitle || (!mossMultiPane.bound && titleFocusCompletedRef.current) || contentHydratedForNoteId !== noteIdForAtoms) {
       return;
     }
     if (!mossMultiPane.titleLive) return; // moss-multi seam: bound-pane (A§2.2): the title takes focus once bound (R2)
@@ -1533,7 +1543,9 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
       return true;
     }
 
-    const layers = disassembleNote(rawContent);
+    // moss-multi seam: body-h1 (T2.3): the title is its own field, so a leading H1 is body, never the title
+    const disassembled = disassembleNote(rawContent);
+    const layers = { ...disassembled, h1Title: null, body: parseCommentFooter(disassembled.bodyAfterFrontmatter).strippedContent };
     const diskCommentMetadata = result.commentMetadata ?? layers.comments;
     lastKnownDiskCommentMetadataRef.current[noteId] = diskCommentMetadata;
     lastKnownDiskCommentSignatureRef.current[noteId] = buildCommentMetadataSignature(diskCommentMetadata);
@@ -1684,7 +1696,11 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
     // moss-multi seam: bound-pane (A§2.2): a bound note's content is its doc. No REST read and no remount on updatedAt; the editor
     // mounts at once and its binding opens it at first sync (A§10.3).
     if (mossMultiPane.bound) {
-      if (noteIdChanged) setContentHydratedForNoteId(note.id);
+      if (noteIdChanged) {
+        // moss-multi seam: local heading identities must precede the first-sync restore.
+        try { store.set(noteCollapsedHeadingsAtom(note.id), JSON.parse(localStorage.getItem(`moss-multi:collapsed-headings:${note.id}`) ?? '[]')); } catch { /* unavailable storage */ }
+        setContentHydratedForNoteId(note.id);
+      }
       return;
     }
 
@@ -3327,6 +3343,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
 
   // Focus the title field and select all text
   const focusTitle = useCallback(() => {
+    if (mossMultiPane.title.deferFocus()) return; // moss-multi seam: focus only after bind
     if (titleInputRef.current) {
       titleInputRef.current.focus();
       const range = document.createRange();
@@ -3607,7 +3624,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
   // Sync title contentEditable with external title changes (agent rename, file watcher)
   useEffect(() => {
     const el = titleInputRef.current;
-    if (!el || !note) return;
+    if (!el || !note || mossMultiPane.bound) return; // moss-multi seam: the binding renders remote titles
     if (shouldPreserveDirtyEditor(note.id)) return;
     // Don't overwrite while user is actively editing the title
     if (isTitleFocusedRef.current || document.activeElement === el) return;
@@ -3616,7 +3633,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
       el.textContent = display;
     }
     if (titleValueRef.current !== display) {
-      setTitleValue(display);
+      setTitleValueState(display); // moss-multi seam: title-display (T2.3): an unbound pane shows the title, never writes it
     }
   }, [note, note?.title, shouldPreserveDirtyEditor]);
 
@@ -4221,7 +4238,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
   }, [bumpEditorContentRevision, isTrashed, markDirty, note?.id, scheduleDebouncedAutosave, scheduleEditorSettlingBaselineCapture]);
 
   const commitTitleChange = useCallback(() => {
-    if (!note || isTrashed) return;
+    if (!note || isTrashed || mossMultiPane.bound) return; // moss-multi seam: no second title writer
 
     const nextTitleRaw = getLiveTitleText();
     if (titleValueRef.current !== nextTitleRaw) {
@@ -4448,8 +4465,9 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
   // Hooks must be called unconditionally in the same order every render.
   if (!note) {
     return (
-      <div className="relative flex h-full min-w-0 flex-1 bg-surface-canvas">
+      <div className="relative flex h-full min-w-0 flex-1 flex-col bg-surface-canvas">
         {canvasTopDragStrip}
+        {mossMultiPane.noticeBand /* moss-multi seam: input refusals before the first note opens */}
         <CanvasArea className="min-w-0 flex-1" fullWidth innerClassName="flex h-full items-center justify-center">
           <p className="text-sm text-ink-muted">Create a new note to get started</p>
         </CanvasArea>
@@ -4459,6 +4477,8 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
 
   // Static top bar: nav left, actions right — like Notion/Craft
 
+  // moss-multi seam: phone-shell (T2.7): below 640 px an open search takes the whole row
+  const offWhileSearching = showFocusedSearchBar ? 'max-sm:hidden' : undefined;
   const staticTopBar = (
       <TopNavBar
         tone={paneId ? (isPaneFocused ? 'focusedSplit' : 'inactiveSplit') : 'primary'}
@@ -4468,8 +4488,8 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
       >
       <div className="relative flex h-8 min-w-0 items-center justify-between">
       {/* Left: traffic light clearance + panel toggle + nav */}
-      {isNotesPanelHidden && paneId !== 'right' && <div className="w-[60px] shrink-0" />}
-      <div className="flex shrink-0 items-center gap-1" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+      {isNotesPanelHidden && paneId !== 'right' && <div className="hidden w-[60px] shrink-0 sm:block" /* moss-multi seam: phone-shell (T2.7): no traffic lights to clear */ />}
+      <div className={cn('flex shrink-0 items-center gap-1', offWhileSearching)} style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
         {isNotesPanelHidden && paneId !== 'right' && onExpandNotesPanel ? (
           <>
             <TooltipProvider>
@@ -4534,12 +4554,13 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
           </div>
         )}
       </div>
-        {!hideNavButtons && <div className="w-3 shrink-0" />}
+        {!hideNavButtons && <div className={cn('w-3 shrink-0', offWhileSearching)} />}
         {paneId ? (
             <div
               className={cn(
                 'group/tab flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded px-2 text-left text-caption text-ink-faint transition-colors hover:bg-surface-note-hover/40 hover:text-ink-muted focus-visible:outline-none',
-                isPaneFocused ? 'cursor-default' : 'cursor-pointer'
+                isPaneFocused ? 'cursor-default' : 'cursor-pointer',
+                offWhileSearching
               )}
               onClick={isPaneFocused ? undefined : () => setFocusPane(paneId)}
               style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
@@ -4571,7 +4592,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
               )}
             </div>
           ) : (
-            <div className="flex min-w-0 items-center overflow-hidden" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+            <div className={cn('flex min-w-0 items-center overflow-hidden', offWhileSearching)} style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
               <NoteBreadcrumb note={note} onNavigate={isNotesPanelHidden ? onExpandNotesPanel : undefined} />
               {note.folderPath === 'Notes' && note.title !== 'Untitled' && (
                 <span className="cursor-default truncate text-xs text-ink-faint opacity-50">{note.title}</span>
@@ -4579,12 +4600,12 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
             </div>
           )}
 
-      <div className={paneId ? 'w-2 shrink-0' : 'flex-1'} />
+      <div className={cn(paneId ? 'w-2 shrink-0' : 'flex-1', offWhileSearching)} />
 
       {/* Right: metadata toggle + find bar + copy + more + panel toggle */}
       {hideRightControls ? <div className="flex-1" /> : (
-      <div className="flex shrink-0 items-center gap-1.5" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-        {mossMultiPane.topBarCollab /* moss-multi seam: bound-pane (A§2.2): Share, connection, face pile, bell */}
+      <div className={cn('flex shrink-0 items-center gap-1.5', showFocusedSearchBar && 'max-sm:min-w-0 max-sm:flex-1')} style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+        <div className={cn('contents', offWhileSearching)}>{mossMultiPane.topBarCollab /* moss-multi seam: bound-pane (A§2.2): Share, connection, face pile, bell */}</div>
         {!showFocusedSearchBar && onOpenSearch ? (
           <TooltipProvider>
             <Tooltip>
@@ -4592,7 +4613,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
                 <button
                   type="button"
                   onClick={onOpenSearch}
-                  className="flex h-7 w-7 cursor-pointer items-center justify-center rounded text-ink-faint transition-colors hover:text-ink-muted hover:bg-surface-note-hover/40 focus-visible:outline-none"
+                  className="hidden h-7 w-7 cursor-pointer items-center justify-center rounded text-ink-faint transition-colors hover:text-ink-muted hover:bg-surface-note-hover/40 focus-visible:outline-none sm:flex" // moss-multi seam: phone-shell (T2.7): folds into More actions below 640 px
                   aria-label="Search in note"
                 >
                   <Search aria-hidden className="h-3.5 w-3.5" />
@@ -4606,13 +4627,13 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
         ) : null}
         {showFocusedSearchBar && onCloseSearch ? (
           <>
-            <div className="min-w-56 max-w-xs">
+            <div className="min-w-56 max-w-xs max-sm:flex max-sm:min-w-0 max-sm:max-w-none max-sm:flex-1" /* moss-multi seam: phone-shell (T2.7) */>
               <NoteSearchInput onClose={onCloseSearch} autoFocus={searchBarAutoFocus} fullWidth={true} />
             </div>
-            <div className="mx-0.5 h-5 w-px bg-border-subtle" />
+            <div className="mx-0.5 hidden h-5 w-px bg-border-subtle sm:block" />
           </>
         ) : null}
-        {!showFocusedSearchBar && <div className="mx-0.5 h-5 w-px bg-border-subtle" />}
+        {!showFocusedSearchBar && <div className="mx-0.5 hidden h-5 w-px bg-border-subtle sm:block" /* moss-multi seam: phone-shell (T2.7) */ />}
         {/* Copy note link */}
         <TooltipProvider>
           <Tooltip>
@@ -4621,7 +4642,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
                 type="button"
                 onMouseDown={preserveEditorSelectionOnMouseDown}
                 onClick={() => { void handleCopyNoteLink(); }}
-                className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-md text-ink-faint transition-colors hover:text-ink-muted hover:bg-surface-note-hover/40 focus-visible:outline-none"
+                className="hidden h-7 w-7 cursor-pointer items-center justify-center rounded-md text-ink-faint transition-colors hover:text-ink-muted hover:bg-surface-note-hover/40 focus-visible:outline-none sm:flex" // moss-multi seam: phone-shell (T2.7): folds into More actions below 640 px
                 aria-label="Copy note link"
               >
                 <Link aria-hidden className="h-3.5 w-3.5" />
@@ -4630,6 +4651,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
             <TooltipContent side="bottom">Copy note link</TooltipContent>
           </Tooltip>
         </TooltipProvider>
+        <div className={cn('contents', offWhileSearching)} /* moss-multi seam: phone-shell (T2.7) */>
         {/* Comments */}
         {note?.id && (
           <CommentsMenuButton
@@ -4688,6 +4710,18 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
             </Tooltip>
           </TooltipProvider>
           <DropdownMenuContent align="end" side="bottom" sideOffset={6} className="min-w-0 w-max">
+            {/* moss-multi seam: phone-shell (T2.7): below 640 px, search and copy link live here */}
+            {!showFocusedSearchBar && onOpenSearch ? (
+              <DropdownMenuItem className="gap-2 text-xs sm:hidden" onSelect={onOpenSearch}>
+                <Search aria-hidden className="h-3.5 w-3.5" />
+                Search in note
+              </DropdownMenuItem>
+            ) : null}
+            <DropdownMenuItem className="gap-2 text-xs sm:hidden" onSelect={() => { void handleCopyNoteLink(); }}>
+              <Link aria-hidden className="h-3.5 w-3.5" />
+              Copy note link
+            </DropdownMenuItem>
+            <DropdownMenuSeparator className="sm:hidden" />
             {/* Copy */}
             <DropdownMenuItem className="gap-2 text-xs" onSelect={handleCopyMarkdown}>
               <FileText aria-hidden className="h-3.5 w-3.5" />
@@ -4722,8 +4756,8 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
               <FileDigit aria-hidden className="h-3.5 w-3.5" />
               Note stats
             </DropdownMenuItem>
-            {/* moss-multi seam: hide-registry (A§9) */}
-            {hidden('trash') && !isExternal ? null : (<>
+            {/* moss-multi seam: trash (T2.3): Trash and Restore note are the owner's (A§8) */}
+            {!isExternal && !canTrashNote(note?.id ?? '') ? null : (<>
             <DropdownMenuSeparator />
             {/* Danger group */}
             <DropdownMenuItem
@@ -4741,6 +4775,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
             </>)}
           </DropdownMenuContent>
         </DropdownMenu>
+        </div>
         <CopyForAgentDialog
           open={showCopyForAgentDialog}
           onOpenChange={setShowCopyForAgentDialog}
@@ -4818,14 +4853,15 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
         </Dialog.Root>
         {canShowActionsPanelToggle ? (
           <>
-            <div className="mx-0.5 h-5 w-px bg-border-subtle" />
+            {/* moss-multi seam: phone-shell (T2.7): ActionsPanelWrapper renders only from md up, so neither does its toggle */}
+            <div className="mx-0.5 hidden h-5 w-px bg-border-subtle md:block" />
             <TooltipProvider>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <button
                     type="button"
                     onClick={onExpandActionsPanel}
-                    className="relative flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded text-ink-faint transition-colors hover:text-ink-muted hover:bg-surface-note-hover/40 focus-visible:outline-none"
+                    className="relative hidden h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded text-ink-faint transition-colors hover:text-ink-muted hover:bg-surface-note-hover/40 focus-visible:outline-none md:flex"
                     aria-label="Show actions panel"
                   >
                     <PanelRight className="h-4 w-4" strokeWidth={1.5} aria-hidden />
@@ -4850,9 +4886,8 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
       </TopNavBar>
   );
 
-  const trashCountdownMessage = `Note will be deleted in ${trashCountdownDays} day${
-    trashCountdownDays === 1 ? '' : 's'
-  }.`;
+  // moss-multi seam: trash-copy (T2.3): a trash is restorable, never counted down
+  const trashCountdownMessage = TRASH_COPY.trashedNote;
   const showContentSkeleton = skeletonLines > 0 && hasBodyContent;
   const showEmptySkeleton = skeletonLines > 0 && !hasBodyContent;
   const emptySkeletonLines = Math.max(3, Math.min(24, skeletonLines));
@@ -4869,6 +4904,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
       {...mossMultiPane.paneProps /* moss-multi seam: bound-pane (A§2.2): data-editor-pane, data-doc-id, data-doc-state (A§19) */}
     >
       {!hideTopBar && staticTopBar}
+      {mossMultiPane.noticeBand /* moss-multi seam: connection notices in flow below the top bar */}
       <CanvasArea
         className="relative min-w-0 flex-1"
         responsiveLayout
@@ -5020,7 +5056,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
               ) : null}
               {/* moss-multi seam: bound-pane (A§2.2): the editor mounts at once and binds behind the skeleton until first sync (A§10.3) */}
               {shouldMountEditor ? (
-                <div className={mossMultiPane.bodyLive ? 'contents' : 'hidden'}>
+                <div className={mossMultiPane.bodyVisible ? 'contents' : 'hidden'}>
                 <MarkdownEditor
                   ref={markdownEditorRef}
                   key={`${note.id}-${editorVersion}`}
@@ -5028,7 +5064,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
                   value={content}
                   layoutMetadata={lastKnownDiskLayoutMetadataRef.current[note.id]}
                   onChange={handleEditorChange}
-                  readOnly={isTrashed}
+                  readOnly={isTrashed || mossMultiPane.readOnly}
                   placeholder={isAgentActive && content === '' ? '' : currentPlaceholder.body}
                   onReady={handleEditorReady}
                   onNavigateToNote={onNavigateToNote}
@@ -5048,7 +5084,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
                 />
                 </div>
               ) : null}
-              {shouldMountEditor && mossMultiPane.bodyLive ? null : (
+              {shouldMountEditor && mossMultiPane.bodyVisible ? null : (
                 <div className="agent-skeleton agent-skeleton--content pt-4">
                   {[100, 94, 88, 72, 96, 64].map((width, i) => (
                     <div
@@ -5088,7 +5124,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
             className="pointer-events-none absolute bottom-8 left-1/2 z-40 -translate-x-1/2"
             style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
           >
-            <div className="pointer-events-auto flex items-center gap-2 rounded-lg border border-border-subtle/50 bg-surface-raised-card px-4 py-2.5 shadow-floating backdrop-blur-sm">
+            <div data-retention-notice="" /* moss-multi seam: trash-copy (T2.3) */ className="pointer-events-auto flex items-center gap-2 rounded-lg border border-border-subtle/50 bg-surface-raised-card px-4 py-2.5 shadow-floating backdrop-blur-sm">
               <AlertTriangle aria-hidden className="h-4 w-4 shrink-0 text-accent-terracotta/80" />
               <span className="text-xs text-ink-muted">{trashCountdownMessage}</span>
             </div>

@@ -81,15 +81,19 @@ export interface Who {
   role?: string;
   session?: string | null;
   share?: string | null;
+  /** When the Worker resolved the role (the trusted header); defaults to now. */
+  resolvedAt?: number;
+  /** The Worker's trusted headers as authenticateParty set them; replaces every field above. */
+  headers?: Record<string, string>;
 }
 
 let connections = 0;
 
 /**
  * A WebSocket upgrade through the DO's own fetch, with the headers the Worker would set. Pass `doc` to reconnect a
- * provider that keeps its Y.Doc across sockets.
+ * provider that keeps its Y.Doc across sockets, and `pk` to reuse a partyserver connection id.
  */
-export async function connect(opened: Opened, who: Who = {}, doc?: Y.Doc): Promise<TestClient> {
+export async function connect(opened: Opened, who: Who = {}, doc?: Y.Doc, pk?: string): Promise<TestClient> {
   connections += 1;
   const headers = new Headers({ upgrade: 'websocket' });
   if (who.id !== null) {
@@ -98,8 +102,13 @@ export async function connect(opened: Opened, who: Who = {}, doc?: Y.Doc): Promi
   headers.set(TRUSTED.role, who.role ?? 'editor');
   if (who.session !== null) headers.set(TRUSTED.session, who.session ?? `session-${connections}`);
   if (who.share) headers.set(TRUSTED.share, who.share);
+  headers.set(TRUSTED.resolvedAt, String(who.resolvedAt ?? Date.now()));
+  if (who.headers) {
+    for (const name of [...headers.keys()]) if (name !== 'upgrade') headers.delete(name);
+    for (const [name, value] of Object.entries(who.headers)) headers.set(name, value);
+  }
   const made = serverEnds.length;
-  const url = `https://doc.test/parties/doc-d-o/${opened.backing.docId}?_pk=conn-${connections}`;
+  const url = `https://doc.test/parties/doc-d-o/${opened.backing.docId}?_pk=${pk ?? `conn-${connections}`}`;
   const response = await opened.dobj.fetch(new Request(url, { headers }));
   if (response.status !== 101) throw new Error(`upgrade answered ${response.status}: ${await response.text()}`);
   const socket = serverEnds[made];
@@ -110,6 +119,10 @@ export async function connect(opened: Opened, who: Who = {}, doc?: Y.Doc): Promi
 /** A provider's half of the sync protocol over one accepted socket. */
 export class TestClient {
   readonly events: ServerEvent[] = [];
+  /** Binary frames that are neither sync nor awareness (payload frames), as received. */
+  readonly others: Uint8Array[] = [];
+  /** Called for each of `others` as it is read. */
+  onOther: ((frame: Uint8Array) => void) | null = null;
   private read = 0;
   private readonly outbox: Uint8Array[] = [];
 
@@ -125,6 +138,16 @@ export class TestClient {
 
   get closed(): { code: number; reason: string } | null {
     return this.socket.closed;
+  }
+
+  /** Queues a frame behind this client's own updates, in order (a payload frame). */
+  queue(frame: Uint8Array): void {
+    this.outbox.push(frame);
+  }
+
+  /** Takes the queued frames without sending them. */
+  drain(): Uint8Array[] {
+    return this.outbox.splice(0);
   }
 
   /** One frame through the hibernation entry point, as workerd delivers it. */
@@ -155,7 +178,13 @@ export class TestClient {
         continue;
       }
       const decoder = decoding.createDecoder(frame);
-      if (decoding.readVarUint(decoder) !== 0) continue; // awareness
+      const type = decoding.readVarUint(decoder);
+      if (type === 1) continue; // awareness
+      if (type !== 0) {
+        this.others.push(frame);
+        this.onOther?.(frame);
+        continue;
+      }
       const encoder = encoding.createEncoder();
       encoding.writeVarUint(encoder, 0);
       syncProtocol.readSyncMessage(decoder, encoder, this.doc, FROM_SERVER);
@@ -165,11 +194,16 @@ export class TestClient {
 
   /** Sends this client's own updates, one frame each, then reads the replies. */
   async flush(): Promise<void> {
+    await this.push();
+    await this.pump();
+  }
+
+  /** Sends this client's queued frames, one each, in order. */
+  async push(): Promise<void> {
     for (const frame of this.outbox.splice(0)) {
       if (this.socket.readyState !== 1) break;
       await this.deliver(frame);
     }
-    await this.pump();
   }
 }
 
