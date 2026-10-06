@@ -8,8 +8,16 @@ document.addEventListener('securitypolicyviolation', (event) => {
   violations.push(`${event.violatedDirective} ${event.blockedURI}`);
 });
 
-const state = { volume: null, host: null, handle: null, events: [] };
+const state = { volume: null, host: null, handle: null, events: [], shared: [] };
 const plain = (value) => JSON.parse(JSON.stringify(value));
+
+/** Records what services.shareWithAgent is handed; `share: 'fail'` then throws on the first call, rejects on later ones. */
+function shareWith(share, selection) {
+  state.shared.push(plain(selection));
+  if (share !== 'fail') return undefined;
+  if (state.shared.length === 1) throw new Error('host threw');
+  return Promise.reject(new Error('host rejected'));
+}
 
 window.editorFixture = {
   api: MOSS_EDITOR_API,
@@ -28,15 +36,17 @@ window.editorFixture = {
     const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
     state.volume.silently(() => state.volume.writeFile(`${dir}/assets/${name}`, bytes));
   },
-  mount(noteId, { theme = 'light', restoreDraft } = {}) {
+  mount(noteId, { theme = 'light', restoreDraft, share = false } = {}) {
     document.documentElement.dataset.theme = theme;
     state.events = [];
+    state.shared = [];
+    const notes = () => [{ id: noteId, title: 'Plan', folderPath: 'Notes' }];
     state.handle = mountMossEditor(document.getElementById('editor'), {
       noteId,
       bridge: state.host,
       theme,
       htmlFrameUrl: '/editor/moss-html-frame.html',
-      services: { notes: () => [{ id: noteId, title: 'Plan', folderPath: 'Notes' }] },
+      services: share ? { notes, shareWithAgent: (selection) => shareWith(share, selection) } : { notes },
       onEvent: (event) => state.events.push(plain(event)),
       ...(restoreDraft ? { restoreDraft } : {}),
     });
@@ -55,6 +65,14 @@ window.editorFixture = {
   async unmount(options) {
     const result = await state.handle.unmount(options);
     return { kind: result.kind, flush: result.flush.kind };
+  },
+  /** The handle's selection, or 'unsupported' from an editor without `selection-1`. */
+  selection() {
+    return typeof state.handle?.selection === 'function' ? state.handle.selection() : 'unsupported';
+  },
+  /** What services.shareWithAgent was handed, in order. */
+  shared() {
+    return state.shared;
   },
   status() {
     return state.handle ? state.handle.status : null;
