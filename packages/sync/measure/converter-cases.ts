@@ -35,7 +35,8 @@ export const CONVERTER_CASES: Record<string, ConverterCase> = {
   'indent before a word': { run: ' ', before: '', after: 'x' },
   'divider then whitespace': { run: ' ', before: '|-|-', after: 'x' },
   'pill openers ?[ before one destination': { run: '?[', after: '](', tail: 'a' },
-  'formatted pill openers *?[ before one destination': { run: '*?[', after: '](', tail: 'a' },
+  // A space before each `*` keeps it from closing, so Lexical pairs no emphasis across the run.
+  'formatted pill openers *?[ before one destination': { run: ' *?[', after: '](', tail: 'a' },
   'URL labels [http:// before one destination': { run: '[http://', after: '](', tail: 'a' },
 };
 
