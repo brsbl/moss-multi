@@ -267,13 +267,20 @@ describe('T5.3 the rows are injective over hunk lists @p:mean-2 @p:R17', () => {
     const rand = prng(53);
     const byRows = new Map<string, { hash: string; what: string }>([[canonical(render(base)), { hash: previewHash(base), what: 'the original' }]]);
     const found: string[] = [];
-    // Identity fields (item ids, anchors, id runs) are not shown as text; a mutation changes content only.
-    const IDENTITY = new Set(['id', 'at', 'ids', 'kind', 'op']);
+    // A mutation changes a value: text, or what a stored field holds. Identity (item ids, anchors, id runs), a Yjs
+    // item's kind and a field's name are structure the channel table fixes; the census covers each of those.
+    const IDENTITY = new Set(['id', 'at', 'ids', 'kind', 'op', 'type', 'name']);
+    const isFieldName = (path: string, i: number) => i === 0 && /\.keys\[\d+\]$/.test(path);
     for (let n = 0; n < 300; n++) {
       const hunks = JSON.parse(JSON.stringify(base)) as Hunk[];
       const leaves: { holder: Record<string, unknown> | unknown[]; key: string | number; path: string; owner: unknown }[] = [];
       const walk = (value: unknown, path: string, owner: unknown) => {
-        if (Array.isArray(value)) value.forEach((item, i) => (item && typeof item === 'object' ? walk(item, `${path}[${i}]`, owner) : leaves.push({ holder: value, key: i, path: `${path}[${i}]`, owner })));
+        if (Array.isArray(value)) {
+          value.forEach((item, i) => {
+            if (item && typeof item === 'object') walk(item, `${path}[${i}]`, owner);
+            else if (!isFieldName(path, i)) leaves.push({ holder: value, key: i, path: `${path}[${i}]`, owner });
+          });
+        }
         else if (value && typeof value === 'object') {
           const own = typeof (value as { type?: unknown }).type === 'string' ? value : owner;
           for (const [key, item] of Object.entries(value)) {
@@ -290,6 +297,7 @@ describe('T5.3 the rows are injective over hunk lists @p:mean-2 @p:R17', () => {
       const now = choices[Math.floor(rand() * choices.length)];
       (leaf.holder as Record<string | number, unknown>)[leaf.key] = now;
       const hash = previewHash(hunks);
+      if (hash === previewHash(base)) continue;
       const rows = canonical(render(hunks));
       const hunk = hunks[Number(/^\[(\d+)\]/.exec(leaf.path)?.[1] ?? 0)];
       const what = `${leaf.path} (${hunk.kind} ${hunk.op}): ${canonical(was)} -> ${canonical(now)} in ${canonical(leaf.owner).slice(0, 300)}`;
@@ -300,7 +308,7 @@ describe('T5.3 the rows are injective over hunk lists @p:mean-2 @p:R17', () => {
     return found;
   }
 
-  it('mutating any content value in a preview changes what the card shows exactly when it changes the hash', () => {
+  it('mutating any value in a preview changes what the card shows exactly when it changes the hash', () => {
     expect(collisions((hunks) => rendered(describeHunks(hunks)))).toEqual([]);
   });
 

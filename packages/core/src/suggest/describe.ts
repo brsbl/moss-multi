@@ -177,7 +177,13 @@ function align(b: readonly Unit[], a: readonly Unit[]): Step[] {
   while (i < b.length || j < a.length) {
     if (i < b.length && (j >= a.length || !inA.has(b[i].id))) steps.push({ op: 'delete', b: b[i++] });
     else if (j < a.length && (i >= b.length || !inB.has(a[j].id))) steps.push({ op: 'insert', a: a[j++] });
-    else if (b[i].id === a[j].id) steps.push({ op: 'keep', b: b[i++], a: a[j++] });
+    else if (b[i].id === a[j].id) {
+      // One id holding two different characters (never so in Yjs, but hashed as such) is removed and added.
+      const x = b[i];
+      const y = a[j];
+      if (isChar(x) !== isChar(y) || (isChar(x) && isChar(y) && x.ch !== y.ch)) steps.push({ op: 'delete', b: b[i++] }, { op: 'insert', a: a[j++] });
+      else steps.push({ op: 'keep', b: b[i++], a: a[j++] });
+    }
     // Out of order (Yjs never moves an item): shown as removed here and added where it now sits.
     else steps.push({ op: 'delete', b: b[i++] });
   }
@@ -280,7 +286,9 @@ class Rows {
         this.whole(kind, `${path} ${map.id}`, map.node, chain, quiet);
         continue;
       }
-      const note = [...chain, ...(owner ? carried(owner.node) : [])];
+      // A text node of another Lexical type says so; its fields follow.
+      const lexical = owner ? typeName(owner.node) : 'text';
+      const note = [...chain, ...(lexical === 'text' ? [] : [lexical]), ...(owner ? carried(owner.node) : [])];
       if (quiet && note.length === 0) continue;
       this.push(kind, path, text, note.join('; ') || undefined, { ids: idRuns(run.map((u) => u.id)), node: map ? map.node : owner?.id ?? null });
     }
@@ -396,6 +404,8 @@ function payloadUnits(value: unknown): Unit[] {
     if (typeof part === 'string') for (let i = 0; i < part.length; i++) out.push({ id: `${client}:${clock + i}`, ch: part[i] });
     else out.push({ id: pair[0], node: part });
   });
+  // Text past what the id runs cover (never so in Yjs, but hashed as such) is still read.
+  if (typeof text === 'string') for (let i = at; i < text.length; i++) out.push({ id: `?:${i}`, ch: text[i] });
   return out;
 }
 
