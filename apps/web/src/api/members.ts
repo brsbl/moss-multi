@@ -18,7 +18,7 @@ import { createDb, inJson, type Db } from '../db/client.ts';
 import { agents, docMembers, folderMembers, user } from '../db/schema.ts';
 import { json } from '../worker/route.ts';
 import { actingUserId, liveAndManaged, managesDoc, managesFolder, managesLive, reapDeadInvites, resolveDocAccess, resolveFolderAccess } from './access.ts';
-import { NO_STORE, notFound, readJsonObject, unauthenticated } from './respond.ts';
+import { changed, NO_STORE, notFound, readJsonObject, refuse, unauthenticated } from './respond.ts';
 
 export type MemberTarget = { type: 'doc' | 'folder'; id: string };
 export type MembersEnv = AuthEnv & Partial<Pick<AppEnv, 'PrincipalDO' | 'DocDO'>>;
@@ -32,12 +32,6 @@ export interface Member {
   role: Role;
 }
 
-/** An email shared with and not yet redeemed; the owner's view only. */
-export interface PendingInvite {
-  email: string;
-  role: Role;
-}
-
 /** New shares (invites) one owner may make in an hour (A§18). */
 export const SHARES_PER_HOUR = 20;
 const HOUR_MS = 3_600_000;
@@ -45,9 +39,6 @@ const HOUR_MS = 3_600_000;
 const EMAIL = /^[^\s@]+@[^\s@]+$/;
 const isShareRole = (value: unknown): value is ShareRole => typeof value === 'string' && (SHARE_ROLES as readonly string[]).includes(value);
 const lower = (a: Role, b: Role) => ROLES.indexOf(a) < ROLES.indexOf(b);
-
-const refuse = (status: number, error: string, message: string, headers: Record<string, string> = {}) =>
-  json({ error, message }, status, { ...NO_STORE, ...headers });
 
 const noun = (target: MemberTarget) => (target.type === 'doc' ? 'note' : 'folder');
 
@@ -119,8 +110,6 @@ export async function liveInvites(db: D1Database, target: MemberTarget): Promise
   return results.filter((row) => managing.get(row.inviter)).map(({ email, role, token }) => ({ email, role, token }));
 }
 
-const changed = (result: D1Result | undefined) => (result?.meta?.changes ?? 0) > 0;
-
 export const randomToken = () => [...crypto.getRandomValues(new Uint8Array(24))].map((b) => b.toString(16).padStart(2, '0')).join('');
 
 /** SQL for a role's rank in ROLES order, so a write can only raise. */
@@ -130,7 +119,7 @@ export const grantTable = (type: MemberTarget['type']): [string, string] => (typ
 
 /** SQL that holds while user `?{user}` still manages the target `?{id}`, so a change loses to a demotion that commits
  * while the request is under way (docs/METHOD.md). Only a signed-in person manages. */
-const manages = (target: MemberTarget, id: number, user: number) => (target.type === 'doc' ? managesDoc(id, user) : managesFolder(id, user));
+export const manages = (target: MemberTarget, id: number, user: number) => (target.type === 'doc' ? managesDoc(id, user) : managesFolder(id, user));
 const managerId = (caller: Principal) => (caller.type === 'user' ? caller.id : '');
 
 /** After a write that changed nothing: the refusal when the caller no longer manages the target, else null. */

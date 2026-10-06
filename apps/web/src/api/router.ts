@@ -1,5 +1,4 @@
 // /api/* (A§4.1 step 5). Unknown paths get a JSON 404; /api never answers with HTML.
-import type { AppEnv } from '../env.ts';
 import type { AuthEnv } from '../auth/auth.ts';
 import { resolvePrincipal } from '../auth/principal.ts';
 import { crossOriginCookie, needsAppOrigin } from '../worker/origin-gate.ts';
@@ -24,7 +23,7 @@ async function me(request: Request, env: AuthEnv): Promise<Response> {
   return json({ principal: { type, id, name, email } }, 200, NO_STORE);
 }
 
-export type ApiEnv = DocsEnv & Partial<Pick<AppEnv, 'PrincipalDO'>>;
+export type ApiEnv = DocsEnv;
 
 export async function handleApi(request: Request, env: ApiEnv): Promise<Response> {
   // The origin gate (A§18) before any mutation; a read resolves no principal here.

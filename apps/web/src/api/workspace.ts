@@ -19,6 +19,13 @@ interface FolderRow { id: string; name: string; path: string; role: Role; surfac
 interface DocRow { id: string; title: string; filename: string; createdAt: number; updatedAt: number; role: Role; folderPath: string; surfaced: boolean; trashedAt?: number }
 interface TrashedRow { id: string; title: string; filename: string; folderId: string; createdAt: number; updatedAt: number; trashedAt: number }
 
+/** A lookup of the roles granted on each id among `rows`, empty for an id with none. */
+function rolesById(rows: { id: string; role: Role }[]): (id: string) => Role[] {
+  const byId = new Map<string, Role[]>();
+  for (const row of rows) byId.set(row.id, [...(byId.get(row.id) ?? []), row.role]);
+  return (id: string) => byId.get(id) ?? [];
+}
+
 /**
  * Trashed notes the signed-in caller may manage, each with the vault its folder chain ends at, trashed folders
  * included. Rows come from ownership, doc grants and folder grants, each with its folder chain; the caller's grants are
@@ -43,13 +50,8 @@ async function managedTrash(db: D1Database, userId: string): Promise<(TrashedRow
     db.prepare('SELECT folder_id AS id, role FROM folder_members WHERE principal_id = ?').bind(userId).all<{ id: string; role: Role }>(),
     db.prepare('SELECT doc_id AS id, role FROM doc_members WHERE principal_id = ?').bind(userId).all<{ id: string; role: Role }>(),
   ]);
-  const grantsOn = (rows: { id: string; role: Role }[]) => {
-    const byId = new Map<string, Role[]>();
-    for (const row of rows) byId.set(row.id, [...(byId.get(row.id) ?? []), row.role]);
-    return (id: string) => byId.get(id) ?? [];
-  };
-  const onFolder = grantsOn(folderGrants.results);
-  const onDoc = grantsOn(docGrants.results);
+  const onFolder = rolesById(folderGrants.results);
+  const onDoc = rolesById(docGrants.results);
   const byDoc = new Map<string, { row: TrashedRow & { ownerUserId: string }; grants: Role[]; vaultId: string | null }>();
   for (const { chainId, kind, ...row } of chains.results) {
     const entry = byDoc.get(row.id) ?? byDoc.set(row.id, { row, grants: [...onDoc(row.id)], vaultId: null }).get(row.id)!;
@@ -121,13 +123,8 @@ async function folderLinkListing(db: Db, principal: Principal, token: string, ro
   const pathFor = pathMap(root.id, byId);
   const rows = await db.select().from(docsTable).where(and(inJson(docsTable.folderId, [root.id, ...below.map((row) => row.id)]), isNull(docsTable.deletedAt)));
 
-  const rolesOn = (grants: { id: string; role: Role }[]) => {
-    const byTarget = new Map<string, Role[]>();
-    for (const grant of grants) byTarget.set(grant.id, [...(byTarget.get(grant.id) ?? []), grant.role]);
-    return (id: string) => byTarget.get(id) ?? [];
-  };
-  const onFolder = rolesOn(folderGrants);
-  const onDoc = rolesOn(docGrants);
+  const onFolder = rolesById(folderGrants);
+  const onDoc = rolesById(docGrants);
   // folderChain(folderId), walked in memory down here and read once above the root.
   const chainOf = (folderId: string) => {
     const chain: string[] = [];
