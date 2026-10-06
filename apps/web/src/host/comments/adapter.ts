@@ -6,9 +6,10 @@ import { can } from '@moss-multi/protocol/roles';
 import { $getSelection, $isRangeSelection, type LexicalEditor } from 'lexical';
 import { knownRole, useDocRole } from '../access.ts';
 import { terminalOf, useTerminal } from '../collab/terminal.ts';
-import { createComment, replyTo, resolveThread } from './api.ts';
+import { createComment, deleteComment, editComment, reactTo, replyTo, resolveThread } from './api.ts';
 import { $mintNode, mintCurrent, type Minted } from './mint.ts';
 import { commentsAtPoint, painterOf, setActive, setHover, subscribePaint } from './paint.ts';
+import { myPrincipalId } from './people.ts';
 
 export { commentsAtPoint, setActive, setHover, subscribePaint };
 
@@ -112,17 +113,44 @@ export function useCanComment(noteId: string): boolean {
   return role !== null && can(role, 'comment') && terminal === null;
 }
 
-/** The thread's writes: a reply, and resolve or reopen. Edit and delete arrive with T4.4. */
-export type CommentMutation = { type: 'reply'; parentId: string; text: string } | { type: 'resolve'; rootId: string; resolved: boolean };
+/** Whether this tab's principal wrote `comment` (moss's NoteComment as projected, which carries `author`). */
+export function isMine(comment: unknown): boolean {
+  const me = myPrincipalId();
+  return me !== null && (comment as { author?: unknown } | null)?.author === me;
+}
+
+/**
+ * The thread's writes: a reply, resolve or reopen, and the author's edit and delete (the server refuses anyone else's
+ * with 403; comments.md §12).
+ */
+export type CommentMutation =
+  | { type: 'reply'; parentId: string; text: string }
+  | { type: 'resolve'; rootId: string; resolved: boolean }
+  | { type: 'edit'; id: string; text: string }
+  | { type: 'delete'; id: string; scope: 'comment' | 'thread' };
 
 export function mutate(editor: LexicalEditor, op: CommentMutation): boolean {
   const painter = painterOf(editor);
   if (!painter || !canComment(painter.docId)) return false;
-  if (op.type === 'reply') {
-    if (!op.text.trim()) return false;
-    replyTo(painter.docId, painter.binding.doc, op.parentId, op.text);
-    return true;
+  switch (op.type) {
+    case 'reply':
+      if (!op.text.trim()) return false;
+      replyTo(painter.docId, painter.binding.doc, op.parentId, op.text);
+      return true;
+    case 'resolve':
+      void resolveThread(painter.docId, op.rootId, op.resolved);
+      return true;
+    case 'edit':
+      if (!op.text.trim()) return false;
+      void editComment(painter.docId, op.id, op.text);
+      return true;
+    case 'delete':
+      void deleteComment(painter.docId, op.id, op.scope);
+      return true;
   }
-  void resolveThread(painter.docId, op.rootId, op.resolved);
-  return true;
+}
+
+/** Adds or removes this tab's reaction on a comment of `noteId`. */
+export function react(noteId: string, commentId: string, emoji: string, on: boolean): void {
+  if (canComment(noteId)) void reactTo(noteId, commentId, emoji, on);
 }

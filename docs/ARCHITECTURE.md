@@ -522,7 +522,7 @@ There is no polling and no per-doc watch socket. [S-prior §14.1] Bound docs ign
 
 ### Comments
 
-- **Data.** `Y.Map('comments')` holds JSON records only: `c:<id>` threads `{text` (moss's mention encoding), `author` (server principal id), `createdAt`/`updatedAt` (seconds at the moss boundary), `source, parentId, imageUrls, resolvedAt, resolvedBy, reactions {emoji → principalIds}}`, and `a:<id>` anchors `{kind, start, end` (base64 RelativePositions on the first and last unit), `status anchored|orphaned, quote, lost?}`.
+- **Data.** `Y.Map('comments')` holds JSON records only: `c:<id>` threads `{text` (moss's mention encoding), `author` (server principal id), `createdAt`/`updatedAt` (seconds at the moss boundary), `seq` (the DocDO's write order, which orders records within one second), `source, parentId, imageUrls, resolvedAt, resolvedBy, reactions {emoji → principalIds}}`, and `a:<id>` anchors `{kind, start, end` (base64 RelativePositions on the first and last unit), `status anchored|orphaned, quote, lost?}`.
 - **Only the DocDO writes the map,** through `writeComments`, under a reserved Yjs client id R persisted in `meta.commentsClient`.
   - Clients call REST. The DO checks role ≥ commenter, takes authorship from the server principal, writes under `COMMENT_ORIGIN`, and returns the root author so the Worker can write notifications.
   - Commenters never get CRDT write access. Gate 2b (§5.1) refuses any client frame with an R struct, a reference to R, a string parent outside the client roots, or a delete of a live R item, which by induction over Yjs's integrate keeps every item in `comments` R's. [S-gd §12 option a; T4.0]

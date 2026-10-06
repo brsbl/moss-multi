@@ -144,18 +144,6 @@ export const AFFORDANCES = [
     cite: 'R4; deviation 7',
     probes: [{ surface: 'browser-split', selector: '[data-browser-actions-cluster] button[aria-label="Search in browser"]' }],
   },
-  // Staged: the entry points stay hidden until their backend lands, so no live control ever 404s.
-  {
-    id: 'comment-edit-delete',
-    sites: [`${R}/editor/components/CommentPopover.tsx`],
-    reason: 'Editing and deleting a comment must be the author\'s alone, and a root delete must promote its oldest reply; that server rule lands with T4.4, so the thread\'s Edit and Delete controls wait for it.',
-    cite: 'T4.4; comments.md §12',
-    staged: 4,
-    probes: [
-      { surface: 'comment-popover', selector: '.moss-comment-popover button[aria-label="Delete thread"]' },
-      { surface: 'comment-popover', selector: '.moss-comment-popover button[aria-label^="Comment actions for "]', inPlace: true },
-    ],
-  },
   {
     id: 'comment-images',
     sites: [`${R}/editor/components/CommentTextInput.tsx`],

@@ -17,7 +17,7 @@ import {
 } from './doc/admission.ts';
 import { attach, attachmentOf, awarenessTooLarge, awarenessFrame, receivePresence, leavePresence } from './doc/awareness.ts';
 import { AckCoalescer, DocStore, PERSISTENCE } from './doc/persistence.ts';
-import { coerceSidecar, COMMENT_STATE_SHARE, COMMENTS_PER_DOC, DocComments, type CommentCreate, type CommentResult, type CommentSource } from './doc/comments.ts';
+import { coerceSidecar, COMMENT_STATE_SHARE, COMMENTS_PER_DOC, DocComments, type CommentCreate, type CommentDeleteScope, type CommentResult, type CommentSource } from './doc/comments.ts';
 import { d1Projections, Projections, type ProjectionTarget } from './doc/projections.ts';
 import { TRY_AGAIN, withDeadline, type Stamp } from './access-epoch.ts';
 import { publishMeta } from './fanout.ts';
@@ -621,9 +621,7 @@ export class DocDO extends YServer<SyncEnv> {
    */
   async renameTitle(text: string): Promise<void> {
     await this.#ready();
-    // Every open socket hears the rename, so each must still have access (A§8 pull validation).
-    const check = this.#accessCheck();
-    if (check) await this.#serial(() => this.#validate(check));
+    await this.#validateAll();
     writeTitle(this.document, text, SERVER_TITLE);
     this.#comments?.flush();
     this.#projections?.touch();
@@ -638,6 +636,7 @@ export class DocDO extends YServer<SyncEnv> {
     const store = await this.#ready();
     const comments = this.#comments;
     if (!comments) throw new Error('DocDO started without comments');
+    await this.#validateAll();
     // A trash holds the doc closed to every write (A§8), whatever the Worker resolved before the body arrived.
     if (holdsOf(store).size > 0) return { ok: false, status: 404, error: 'trashed' };
     // The record and anchor bytes, quote included, count against the comments' share of the cap (A§5.1 Limits).
@@ -651,8 +650,39 @@ export class DocDO extends YServer<SyncEnv> {
     const store = await this.#ready();
     const comments = this.#comments;
     if (!comments) throw new Error('DocDO started without comments');
+    await this.#validateAll();
     if (holdsOf(store).size > 0) return { ok: false, status: 404, error: 'trashed' };
     return comments.resolve(input.id, input.resolved, input.by);
+  }
+
+  /** Edits a comment's text; `author` is the Worker's principal and must be the comment's author (comments.md §12). */
+  async editComment(input: { id: string; author: string; text: string }): Promise<CommentResult> {
+    const store = await this.#ready();
+    const comments = this.#comments;
+    if (!comments) throw new Error('DocDO started without comments');
+    await this.#validateAll();
+    if (holdsOf(store).size > 0) return { ok: false, status: 404, error: 'trashed' };
+    return comments.edit(input.id, input.author, input.text, this.#commentRoom(store.stateBytes));
+  }
+
+  /** Deletes a comment or a whole thread as its author; a root delete promotes the oldest reply (comments.md §12). */
+  async deleteComment(input: { id: string; author: string; scope: CommentDeleteScope }): Promise<CommentResult> {
+    const store = await this.#ready();
+    const comments = this.#comments;
+    if (!comments) throw new Error('DocDO started without comments');
+    await this.#validateAll();
+    if (holdsOf(store).size > 0) return { ok: false, status: 404, error: 'trashed' };
+    return comments.remove(input.id, input.author, input.scope);
+  }
+
+  /** Adds or removes the principal's reaction on a comment (comments.md §12). */
+  async reactComment(input: { id: string; principal: string; emoji: string; on: boolean }): Promise<CommentResult> {
+    const store = await this.#ready();
+    const comments = this.#comments;
+    if (!comments) throw new Error('DocDO started without comments');
+    await this.#validateAll();
+    if (holdsOf(store).size > 0) return { ok: false, status: 404, error: 'trashed' };
+    return comments.react(input.id, input.principal, input.emoji, input.on, this.#commentRoom(store.stateBytes));
   }
 
   /**
@@ -816,6 +846,15 @@ export class DocDO extends YServer<SyncEnv> {
       connection.close(TRY_AGAIN, 'unregistered');
     });
     this.ctx.waitUntil(registered);
+  }
+
+  /**
+   * A server write reaches every open socket, so each must still have access first (A§8 pull validation). Callers
+   * check the trash hold after it, since a trash may begin while it awaits D1.
+   */
+  async #validateAll(): Promise<void> {
+    const check = this.#accessCheck();
+    if (check) await this.#serial(() => this.#validate(check));
   }
 
   #accessCheck(): AccessCheck | null {

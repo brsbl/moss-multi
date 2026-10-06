@@ -22,6 +22,8 @@ export const MAX_IMPORT_SEARCHES = 100;
  * comments, which copy their quote, never leave a doc too full to edit.
  */
 export const COMMENT_STATE_SHARE = 0.8;
+/** Distinct reaction emoji on one comment (comments.md §12). */
+export const REACTIONS_PER_COMMENT = 20;
 /** Moss's marker ids: what `%%m:<id>:start%%` can carry. */
 const ID = /^[A-Za-z0-9_-]{1,64}$/;
 
@@ -47,6 +49,8 @@ export interface CommentRecord {
   text: string;
   createdAt: number;
   updatedAt: number;
+  /** The DocDO's write order: above every record's when written, so it orders records within one second. */
+  seq?: number;
   source: CommentSource;
   parentId?: string;
   resolvedAt?: number;
@@ -64,9 +68,22 @@ export interface CommentCreate {
   anchor?: { kind?: Anchor['kind']; start?: string; end?: string; quote?: string | TextQuote };
 }
 
-export type CommentResult = { ok: true; id: string; quote: string | null } | { ok: false; status: 400 | 404 | 409 | 413; error: string };
+/** A thread delete removes the root and every reply; a comment delete removes one message (comments.md §12). */
+export type CommentDeleteScope = 'comment' | 'thread';
 
-const refuse = (status: 400 | 404 | 409 | 413, error: string): CommentResult => ({ ok: false, status, error });
+export type CommentResult =
+  | {
+      ok: true;
+      id: string;
+      quote: string | null;
+      /** A reply's thread author, for the Worker's reply notification. */
+      rootAuthor?: string;
+      /** The reply a root delete promoted to root. */
+      promoted?: string;
+    }
+  | { ok: false; status: 400 | 403 | 404 | 409 | 413; error: string };
+
+const refuse = (status: 400 | 403 | 404 | 409 | 413, error: string): CommentResult => ({ ok: false, status, error });
 const nowSeconds = () => Math.floor(Date.now() / 1000);
 const isSource = (value: unknown): value is CommentSource => value === 'user' || value === 'agent' || value === 'external';
 
@@ -74,6 +91,7 @@ export class DocComments {
   #writer: CommentsWriter;
   #engine: AnchorEngine;
   #pending = new Map<string, Anchor>();
+  #seq = 0;
 
   constructor(
     readonly doc: Y.Doc,
@@ -87,6 +105,7 @@ export class DocComments {
     }
     this.#writer = this.#writerFor(r);
     this.#engine = this.#load();
+    for (const [key, value] of doc.getMap<unknown>('comments')) if (key.startsWith('c:')) this.#seq = Math.max(this.#seq, seqOf(value));
     doc.on('afterTransaction', (txn: Y.Transaction) => {
       if (SKIPPED.has(txn.origin)) return;
       try {
@@ -137,6 +156,7 @@ export class DocComments {
       updatedAt: now,
       source: isSource(input.source) ? input.source : 'user',
       reactions: {},
+      seq: this.#seq + 1,
     };
     if (input.parentId !== undefined) {
       const parent = comments.get(`c:${input.parentId}`) as CommentRecord | undefined;
@@ -144,7 +164,8 @@ export class DocComments {
       const reply = { ...record, parentId: input.parentId };
       if (entryBytes(`c:${input.id}`, reply) > room) return refuse(413, 'doc-cap');
       this.#writer.write((map) => map.set(`c:${input.id}`, reply));
-      return { ok: true, id: input.id, quote: null };
+      this.#seq += 1;
+      return { ok: true, id: input.id, quote: null, rootAuthor: parent.author };
     }
     const placed = this.#place(input.anchor);
     if ('error' in placed) return placed.error;
@@ -154,6 +175,7 @@ export class DocComments {
       map.set(`c:${input.id}`, record);
       map.set(`a:${input.id}`, anchor);
     });
+    this.#seq += 1;
     this.#engine.set(input.id, anchor);
     return { ok: true, id: input.id, quote: anchor.quote };
   }
@@ -174,6 +196,95 @@ export class DocComments {
     if (resolved) Object.assign(next, { resolvedAt: nowSeconds(), resolvedBy: by });
     this.#writer.write((map) => map.set(`c:${id}`, next));
     return { ok: true, id, quote: null };
+  }
+
+  /** Rewrites a comment's text; only its author may (comments.md §12). */
+  edit(id: string, actor: string, text: string, room = Number.POSITIVE_INFINITY): CommentResult {
+    if (!ID.test(id)) return refuse(400, 'bad-id');
+    if (typeof text !== 'string' || !text.trim()) return refuse(400, 'bad-text');
+    if (text.length > COMMENT_TEXT_MAX) return refuse(413, 'text-too-long');
+    const record = this.#record(id);
+    if (!record) return refuse(404, 'comment-missing');
+    if (record.author !== actor) return refuse(403, 'not-author');
+    if (record.text === text) return { ok: true, id, quote: null };
+    const next: CommentRecord = { ...record, text, updatedAt: nowSeconds() };
+    if (entryBytes(`c:${id}`, next) - entryBytes(`c:${id}`, record) > room) return refuse(413, 'doc-cap');
+    this.#writer.write((map) => map.set(`c:${id}`, next));
+    return { ok: true, id, quote: null };
+  }
+
+  /**
+   * Deletes a comment as its author (comments.md §12). A thread delete is the root author's and removes every reply.
+   * Deleting a root that has replies promotes the oldest reply in the same write: it takes the root's anchor (re-keyed
+   * to its id) and resolution, loses its parentId, and the other replies are re-parented to it.
+   */
+  remove(id: string, actor: string, scope: CommentDeleteScope): CommentResult {
+    if (!ID.test(id)) return refuse(400, 'bad-id');
+    const comments = this.doc.getMap<unknown>('comments');
+    const record = this.#record(id);
+    if (!record) return refuse(404, 'comment-missing');
+    if (record.author !== actor) return refuse(403, 'not-author');
+    if (record.parentId !== undefined) {
+      if (scope === 'thread') return refuse(409, 'not-a-thread');
+      this.#writer.write((map) => map.delete(`c:${id}`));
+      return { ok: true, id, quote: null };
+    }
+    const replies: [string, CommentRecord][] = [];
+    for (const [key, value] of comments) {
+      if (key.startsWith('c:') && (value as CommentRecord | undefined)?.parentId === id) replies.push([key.slice(2), value as CommentRecord]);
+    }
+    replies.sort(([a, x], [b, y]) => x.createdAt - y.createdAt || seqOf(x) - seqOf(y) || (a < b ? -1 : a > b ? 1 : 0));
+    const anchor = comments.get(`a:${id}`) as Anchor | undefined;
+    const promoted = scope === 'comment' ? replies[0] : undefined;
+    this.#writer.write((map) => {
+      map.delete(`c:${id}`);
+      map.delete(`a:${id}`);
+      if (!promoted) {
+        for (const [replyId] of replies) map.delete(`c:${replyId}`);
+        return;
+      }
+      const [newId, reply] = promoted;
+      const root: CommentRecord = { ...reply };
+      delete root.parentId;
+      delete root.resolvedAt;
+      delete root.resolvedBy;
+      if (record.resolvedAt !== undefined) root.resolvedAt = record.resolvedAt;
+      if (record.resolvedBy !== undefined) root.resolvedBy = record.resolvedBy;
+      map.set(`c:${newId}`, root);
+      if (anchor) map.set(`a:${newId}`, anchor);
+      for (const [replyId, other] of replies.slice(1)) map.set(`c:${replyId}`, { ...other, parentId: newId });
+    });
+    this.#engine.set(id, undefined);
+    if (promoted && anchor) this.#engine.set(promoted[0], anchor);
+    return { ok: true, id, quote: null, ...(promoted ? { promoted: promoted[0] } : {}) };
+  }
+
+  /** Adds or removes `actor`'s reaction `emoji` (one emoji grapheme) on a comment; at most 20 distinct per comment. */
+  react(id: string, actor: string, emoji: string, on: boolean, room = Number.POSITIVE_INFINITY): CommentResult {
+    if (!ID.test(id)) return refuse(400, 'bad-id');
+    if (!isEmoji(emoji)) return refuse(400, 'bad-emoji');
+    const record = this.#record(id);
+    if (!record) return refuse(404, 'comment-missing');
+    const reactions = coerceReactions(record.reactions);
+    const who = reactions[emoji] ?? [];
+    if (who.includes(actor) === on) return { ok: true, id, quote: null };
+    if (on) {
+      if (!reactions[emoji] && Object.keys(reactions).length >= REACTIONS_PER_COMMENT) return refuse(409, 'too-many-reactions');
+      reactions[emoji] = [...who, actor];
+    } else {
+      const rest = who.filter((principal) => principal !== actor);
+      if (rest.length) reactions[emoji] = rest;
+      else delete reactions[emoji];
+    }
+    const next: CommentRecord = { ...record, reactions };
+    if (on && entryBytes(`c:${id}`, next) - entryBytes(`c:${id}`, record) > room) return refuse(413, 'doc-cap');
+    this.#writer.write((map) => map.set(`c:${id}`, next));
+    return { ok: true, id, quote: null };
+  }
+
+  #record(id: string): CommentRecord | undefined {
+    const value = this.doc.getMap<unknown>('comments').get(`c:${id}`);
+    return value && typeof value === 'object' ? (value as CommentRecord) : undefined;
   }
 
   /**
@@ -222,6 +333,8 @@ export class DocComments {
     const roots = new Map<string, Anchor>();
     const records = new Map<string, CommentRecord>();
     let left = room;
+    // Each record's seq follows sidecar time, counted before its bytes are.
+    const seq = new Map(byTime.map(([id], i) => [id, this.#seq + i + 1]));
     for (const [id, entry] of byTime) {
       const span = spans.get(id);
       if (!span || records.size >= maxRecords) continue;
@@ -229,7 +342,7 @@ export class DocComments {
       const last = units.get(span.last);
       if (!first || !last || span.last - span.first >= MAX_QUOTE || maxCoverage(intervals, span.first, span.last) >= OVERLAP_CAP) continue;
       const anchor = mintAnchor(first, last, span.block ? 'block' : 'text');
-      const record = toRecord(entry, author);
+      const record = toRecord(entry, author, seq.get(id)!);
       const bytes = entryBytes(`c:${id}`, record) + entryBytes(`a:${id}`, anchor);
       if (bytes > left) continue;
       left -= bytes;
@@ -239,13 +352,14 @@ export class DocComments {
     }
     for (const [id, entry] of byTime) {
       if (entry.parentId === undefined || !roots.has(entry.parentId) || records.size >= maxRecords) continue;
-      const record = { ...toRecord(entry, author), parentId: entry.parentId };
+      const record = { ...toRecord(entry, author, seq.get(id)!), parentId: entry.parentId };
       const bytes = entryBytes(`c:${id}`, record);
       if (bytes > left) continue;
       left -= bytes;
       records.set(id, record);
     }
     if (!records.size) return;
+    this.#seq += byTime.length;
     this.#writer.write((map) => {
       for (const [id, record] of records) map.set(`c:${id}`, record);
       for (const [id, anchor] of roots) map.set(`a:${id}`, anchor);
@@ -355,6 +469,28 @@ export class DocComments {
   }
 }
 
+const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+
+/** One emoji grapheme: a reaction is never a word, a letter or a space. */
+export function isEmoji(value: unknown): value is string {
+  if (typeof value !== 'string' || !value || value.length > 32) return false;
+  return [...graphemes.segment(value)].length === 1 && /\p{Extended_Pictographic}|\p{Regional_Indicator}/u.test(value);
+}
+
+const seqOf = (record: unknown): number => {
+  const seq = (record as { seq?: unknown } | null)?.seq;
+  return typeof seq === 'number' && Number.isSafeInteger(seq) && seq > 0 ? seq : 0;
+};
+
+function coerceReactions(value: unknown): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return out;
+  for (const [emoji, who] of Object.entries(value as Record<string, unknown>)) {
+    if (Array.isArray(who)) out[emoji] = who.filter((principal): principal is string => typeof principal === 'string');
+  }
+  return out;
+}
+
 function safeItem(value: string): Y.ID | null {
   try {
     return value ? decodeRelPos(value).item : null;
@@ -404,7 +540,7 @@ export function coerceSidecar(value: unknown): [string, SidecarEntry][] {
   return out;
 }
 
-function toRecord(entry: SidecarEntry, author: string): CommentRecord {
+function toRecord(entry: SidecarEntry, author: string, seq: number): CommentRecord {
   return {
     author,
     text: entry.text,
@@ -414,5 +550,6 @@ function toRecord(entry: SidecarEntry, author: string): CommentRecord {
     ...(entry.resolvedAt !== undefined ? { resolvedAt: entry.resolvedAt } : {}),
     ...(entry.resolvedBy !== undefined ? { resolvedBy: entry.resolvedBy } : {}),
     reactions: {},
+    seq,
   };
 }

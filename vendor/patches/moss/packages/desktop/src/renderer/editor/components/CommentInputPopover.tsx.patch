@@ -1,0 +1,27 @@
+diff --git a/packages/desktop/src/renderer/editor/components/CommentInputPopover.tsx b/packages/desktop/src/renderer/editor/components/CommentInputPopover.tsx
+--- a/packages/desktop/src/renderer/editor/components/CommentInputPopover.tsx
++++ b/packages/desktop/src/renderer/editor/components/CommentInputPopover.tsx
+@@ -26,6 +26,7 @@ import {
+ import { imagesApi } from '../../api/electron';
+ import { acquireCommentUiOpenFlag } from '../utils/comment-ui-open-flag';
+ import { resolveCanvasCollisionBoundary } from '../utils/canvas-collision-boundary';
++import { MentionScope } from '@moss-multi/host/comments/mentions'; // moss-multi seam: comments (comments.md §12)
+ 
+ export interface CommentInputPopoverProps {
+   /** Whether the popover is open */
+@@ -241,6 +242,7 @@ export function CommentInputPopover({
+   );
+ 
+   return (
++    <MentionScope docId={noteId}>{/* moss-multi seam: comments: the composer's @ offers this note's people */}
+     <Popover.Root open={isVisible} onOpenChange={handleRootOpenChange}>
+       <Popover.Anchor virtualRef={virtualRef} />
+       <Popover.Portal>
+@@ -306,6 +308,7 @@ export function CommentInputPopover({
+         </Popover.Content>
+       </Popover.Portal>
+     </Popover.Root>
++    </MentionScope>
+   );
+ }
+ 

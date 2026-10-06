@@ -15,6 +15,8 @@ export interface CommentRecord {
   text: string;
   createdAt: number;
   updatedAt: number;
+  /** The DocDO's write order, which orders records within one second. */
+  seq?: number;
   source: CommentSource;
   parentId?: string;
   resolvedAt?: number;

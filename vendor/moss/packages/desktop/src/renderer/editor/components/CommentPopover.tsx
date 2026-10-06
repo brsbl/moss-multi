@@ -55,7 +55,10 @@ import { lightboxSrcAtom, resolveCanvasLightboxScope } from './ImageLightbox';
 import { acquireCommentUiOpenFlag } from '../utils/comment-ui-open-flag';
 import { dispatchCommentThreadPlaced } from '../utils/comment-entry-point';
 import { resolveCanvasCollisionBoundary } from '../utils/canvas-collision-boundary';
-import { hidden } from '@moss-multi/host/affordances';
+// moss-multi seam: comments (comments.md §12): edit and delete are the author's, reactions and @people are the web's
+import { isMine, useCanComment } from '@moss-multi/host/comments/adapter';
+import { CommentReactions, QuickReactions } from '@moss-multi/host/comments/Reactions';
+import { MentionScope } from '@moss-multi/host/comments/mentions';
 
 const TOOLBAR_HEIGHT = 72;
 const COMMENT_THREAD_MAX_CANVAS_RATIO = 0.82;
@@ -189,7 +192,8 @@ function CommentMessage({
   openViewLightbox
 }: CommentMessageProps) {
   const author = getCommentAuthorDisplay(comment);
-  const canEdit = author.source === 'user';
+  const commentable = useCanComment(noteId); // moss-multi seam: comments
+  const canEdit = commentable && isMine(comment);
   const timestampSeconds = comment.updatedAt ?? comment.createdAt;
   const relativeTime = formatRelativeTime(timestampSeconds);
   const absoluteTime = formatAbsoluteTime(timestampSeconds);
@@ -367,7 +371,7 @@ function CommentMessage({
                     Cancel edit
                   </TooltipContent>
                 </Tooltip>
-              ) : !resolved && !hidden('comment-edit-delete') /* moss-multi seam: hide-registry (A§9) */ ? (
+              ) : !resolved && commentable /* moss-multi seam: comments: a reader has no actions */ ? (
                 <DropdownMenu modal={false}>
                   <DropdownMenuTrigger asChild>
                     <button
@@ -379,6 +383,7 @@ function CommentMessage({
                     </button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end" sideOffset={4} className="min-w-32">
+                    <QuickReactions noteId={noteId} comment={comment} separated={canEdit || Boolean(onSendToAgent)} />{/* moss-multi seam: comments */}
                     {canEdit && (
                       <DropdownMenuItem
                         className="gap-2 text-xs"
@@ -399,6 +404,7 @@ function CommentMessage({
                         Send to Agent
                       </DropdownMenuItem>
                     )}
+                    {canEdit /* moss-multi seam: comments: delete is the author's */ && (
                     <DropdownMenuItem
                       className="gap-2 text-xs text-accent-terracotta focus:text-accent-terracotta data-[highlighted]:text-accent-terracotta"
                       aria-label={`Delete ${actionContext}`}
@@ -407,6 +413,7 @@ function CommentMessage({
                       <Trash2 className="h-3.5 w-3.5" strokeWidth={1.5} aria-hidden />
                       Delete
                     </DropdownMenuItem>
+                    )}
                   </DropdownMenuContent>
                 </DropdownMenu>
               ) : (
@@ -446,6 +453,7 @@ function CommentMessage({
                     onNavigateToMention={onNavigateToMention}
                   />
                 </p>
+                <CommentReactions noteId={noteId} comment={comment} />{/* moss-multi seam: comments */}
                 {viewDisplaySrcs.length > 0 && (
                   <div className="mt-1.5 flex flex-wrap gap-1.5">
                     {viewDisplaySrcs.map((src, index) => {
@@ -543,6 +551,7 @@ export function CommentPopover({
   }, [commentsMap, root.id]);
 
   const isResolvedThread = typeof root.resolvedAt === 'number';
+  const canDeleteThread = useCanComment(noteId) && isMine(root); // moss-multi seam: comments: the root author's
   const lastCommentId = replies.at(-1)?.id ?? root.id;
   const isEditingLastComment = editingId === lastCommentId;
 
@@ -937,7 +946,7 @@ export function CommentPopover({
   if (!anchorRect) return null;
 
   return (
-    <>
+    <MentionScope docId={noteId}>{/* moss-multi seam: comments */}
       <Popover.Root open={open} onOpenChange={handleOpenChange}>
         <Popover.Anchor virtualRef={virtualRef} />
         <Popover.Portal>
@@ -1077,7 +1086,7 @@ export function CommentPopover({
                       </TooltipContent>
                     </Tooltip>
                   )}
-                  {hidden('comment-edit-delete') ? null /* moss-multi seam: hide-registry (A§9) */ : (
+                  {!canDeleteThread ? null /* moss-multi seam: comments */ : (
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <button
@@ -1240,7 +1249,7 @@ export function CommentPopover({
         variant="danger"
         onConfirm={handleDeleteConfirm}
       />
-    </>
+    </MentionScope>
   );
 }
 

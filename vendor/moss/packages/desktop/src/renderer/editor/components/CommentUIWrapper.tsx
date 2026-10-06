@@ -569,8 +569,28 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
     }
   }, [activeCommentState.comment, commentThreadFilter, getNewestRootComment, handlePopoverOpenChange]);
 
+  // moss-multi seam: comments: the DocDO's write order (`seq` on the projected record) breaks a same-second tie
+  const writeOrder = (c: NoteComment) => (c as NoteComment & { seq?: number }).seq ?? 0;
+  // moss-multi seam: comments (comments.md §12): a peer's delete arrives as records; an open thread whose comment is
+  // gone follows its promoted reply (the oldest that is still here) or its root, and closes when the thread is gone.
+  const previousCommentsMapRef = useRef(commentsMap);
+  useEffect(() => {
+    const previous = previousCommentsMapRef.current;
+    previousCommentsMapRef.current = commentsMap;
+    const active = activeCommentState.comment;
+    if (!active || commentsMap[active.id] || !previous[active.id]) return;
+    const next = Object.values(previous)
+      .filter((c) => c.parentId === active.id && commentsMap[c.id])
+      .sort((a, b) => a.createdAt - b.createdAt || writeOrder(a) - writeOrder(b))
+      .map((c) => commentsMap[c.id])[0] ?? (active.parentId ? commentsMap[active.parentId] : undefined);
+    if (next) setActiveComment((state) => ({ ...state, comment: next }));
+    else handlePopoverOpenChange(false);
+  }, [activeCommentState.comment, commentsMap, handlePopoverOpenChange, setActiveComment]);
+
   // Handle comment update - update atom (persists on next content save)
   const handleUpdate = useCallback((commentId: string, text: string, imageUrls?: string[]) => {
+    mutate(editor, { type: 'edit', id: commentId, text }); // moss-multi seam: comments: the record arrives from the server
+    return;
     const currentMap = store.get(noteCommentsMapAtom(noteId));
     const existingComment = currentMap[commentId];
     if (!existingComment) return;
@@ -600,12 +620,27 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
     if (store.get(activeCommentAtom(noteId)).comment?.id === commentId) {
       setActiveComment(prev => ({ ...prev, comment: updatedComment }));
     }
-  }, [noteId, setActiveComment, store]);
+  }, [editor, noteId, setActiveComment, store]);
 
   // Row deletion removes one message and preserves the remaining thread. The
   // header's explicit thread action still cascades the root plus descendants.
   const handleDelete = useCallback((commentId: string, scope: CommentDeletionScope) => {
     const currentMap = store.get(noteCommentsMapAtom(noteId));
+    // moss-multi seam: comments (comments.md §12): the server deletes, and a root delete promotes the oldest reply
+    // under its own id, so an open thread follows that reply; the records arrive over the doc socket.
+    {
+      if (!mutate(editor, { type: 'delete', id: commentId, scope })) return;
+      const activeId = store.get(activeCommentAtom(noteId)).comment?.id;
+      if (activeId !== commentId) return;
+      const promoted = scope === 'comment' && !currentMap[commentId]?.parentId
+        ? Object.values(currentMap).filter((c) => c.parentId === commentId).sort((a, b) => a.createdAt - b.createdAt || writeOrder(a) - writeOrder(b))[0]
+        : undefined;
+      const parent = currentMap[commentId]?.parentId ? currentMap[currentMap[commentId].parentId!] : undefined;
+      const next = promoted ?? parent;
+      if (next) setActiveComment((previous) => ({ ...previous, comment: next }));
+      else setActiveComment({ comment: null, anchorRect: null, anchorPlacement: 'bottom-end' });
+      return;
+    }
     const deletion = applyCommentDeletion(currentMap, commentId, scope);
     if (!deletion.changed) return;
 
