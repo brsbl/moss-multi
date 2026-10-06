@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import { CHANNELS, canonical, previewHash, type Hunk, type RecordMeta, type RecordOp } from '@moss-multi/core/suggest/apply';
-import { describeHunks, type ReviewRow } from '@moss-multi/core/suggest/describe';
+import { describeHunks, rowSegments, type ReviewRow } from '@moss-multi/core/suggest/describe';
 import { SuggestIngest } from '../doc/suggest.ts';
 import { payloadDocsFor } from '../payload-docs.ts';
 import { ForkShim } from './fork-shim.ts';
@@ -258,11 +258,17 @@ describe('T5.3 the rows are injective over hunk lists @p:mean-2 @p:R17', () => {
     }
   });
 
-  it('mutating any value in a preview changes its rows exactly when it changes the hash', () => {
+  // What a reader sees of a row: its kind, its text as drawn (whitespace marked), and its note. Never `detail`.
+  const rendered = (rows: ReviewRow[]) => rows.map((row) => [row.kind, rowSegments(row.text), row.note ?? '']);
+
+  /** Collisions over 300 seeded mutations of content values: two hunk lists with different hashes that `render` reads the same. */
+  function collisions(render: (hunks: Hunk[]) => unknown): string[] {
     const base = suggestedRowsHunks();
     const rand = prng(53);
-    const original = canonical(describeHunks(base));
-    const byRows = new Map<string, string>([[original, previewHash(base)]]);
+    const byRows = new Map<string, string>([[canonical(render(base)), previewHash(base)]]);
+    const found: string[] = [];
+    // Identity fields (item ids, anchors, id runs) are not shown as text; a mutation changes content only.
+    const IDENTITY = new Set(['id', 'at', 'ids', 'kind', 'op']);
     for (let n = 0; n < 300; n++) {
       const hunks = JSON.parse(JSON.stringify(base)) as Hunk[];
       const leaves: { holder: Record<string, unknown> | unknown[]; key: string | number }[] = [];
@@ -270,6 +276,7 @@ describe('T5.3 the rows are injective over hunk lists @p:mean-2 @p:R17', () => {
         if (Array.isArray(value)) value.forEach((item, i) => (item && typeof item === 'object' ? walk(item) : leaves.push({ holder: value, key: i })));
         else if (value && typeof value === 'object') {
           for (const [key, item] of Object.entries(value)) {
+            if (IDENTITY.has(key)) continue;
             if (item && typeof item === 'object') walk(item);
             else leaves.push({ holder: value as Record<string, unknown>, key });
           }
@@ -278,13 +285,61 @@ describe('T5.3 the rows are injective over hunk lists @p:mean-2 @p:R17', () => {
       walk(hunks);
       const leaf = leaves[Math.floor(rand() * leaves.length)];
       const was = (leaf.holder as Record<string | number, unknown>)[leaf.key];
-      const choices: unknown[] = typeof was === 'string' ? [`${was}x`, was.slice(1), was.toUpperCase(), 'x'] : typeof was === 'number' ? [was + 1, was - 1, 0] : [true, false, null, 'x'];
+      const choices: unknown[] = typeof was === 'string' ? [`${was}x`, was.slice(1), was.toUpperCase(), 'x', `${was} `, ` ${was}`] : typeof was === 'number' ? [was + 1, was - 1, 0] : [true, false, null, 'x'];
       (leaf.holder as Record<string | number, unknown>)[leaf.key] = choices[Math.floor(rand() * choices.length)];
       const hash = previewHash(hunks);
-      const rows = canonical(describeHunks(hunks));
-      if (byRows.has(rows)) expect(byRows.get(rows), `mutation ${n} at ${String(leaf.key)} reads as another hunk list`).toBe(hash);
+      const rows = canonical(render(hunks));
+      if (byRows.has(rows) && byRows.get(rows) !== hash) found.push(`mutation ${n} at ${String(leaf.key)}: ${canonical(was)}`);
       byRows.set(rows, hash);
     }
+    return found;
+  }
+
+  it('mutating any content value in a preview changes what the card shows exactly when it changes the hash', () => {
+    expect(collisions((hunks) => rendered(describeHunks(hunks)))).toEqual([]);
+  });
+
+  it('the check catches a card that drops a change: a reading without the delete rows collides', () => {
+    expect(collisions((hunks) => rendered(describeHunks(hunks).filter((row) => row.kind !== 'delete'))).length).toBeGreaterThan(0);
+  });
+
+  it('the check catches a card that trims whitespace', () => {
+    expect(collisions((hunks) => describeHunks(hunks).map((row) => [row.kind, row.text.trim(), row.note ?? ''])).length).toBeGreaterThan(0);
+  });
+});
+
+describe('T5.3 a row keeps its exact characters; whitespace a reader cannot see is marked @p:mean-2 @p:R17', () => {
+  it('marks leading, trailing, repeated and non-space whitespace, and leaves a single space between words plain', () => {
+    expect(rowSegments('foo bar')).toEqual([{ text: 'foo bar' }]);
+    expect(rowSegments('    ')).toEqual([{ text: '····', space: '    ' }]);
+    expect(rowSegments(' ')).toEqual([{ text: '·', space: ' ' }]);
+    expect(rowSegments('quickly ')).toEqual([{ text: 'quickly' }, { text: '·', space: ' ' }]);
+    expect(rowSegments('    log()')).toEqual([{ text: '····', space: '    ' }, { text: 'log()' }]);
+    expect(rowSegments('a  b')).toEqual([{ text: 'a' }, { text: '··', space: '  ' }, { text: 'b' }]);
+    expect(rowSegments('a\tb')).toEqual([{ text: 'a' }, { text: '→', space: '\t' }, { text: 'b' }]);
+    expect(rowSegments('a\nb')).toEqual([{ text: 'a' }, { text: '↵', space: '\n' }, { text: 'b' }]);
+    expect(rowSegments('')).toEqual([]);
+  });
+
+  const SAMPLES = ['', ' ', '  ', '·', '··', '\t', '→', '\n', '↵', '\u00a0', '⍽', '\u200b', '\u2003', 'a b', 'a  b', 'a·b', 'a\u00a0b', 'a\tb', ' a', 'a ', '·a', 'a·', 'x\u200by', 'xy'];
+
+  it('is lossless: the raw characters of the segments are the text', () => {
+    for (const text of SAMPLES) expect(rowSegments(text).map((s) => s.space ?? s.text).join(''), JSON.stringify(text)).toBe(text);
+  });
+
+  it('is injective over what is drawn: two texts never draw the same glyphs with the same marks', () => {
+    const seen = new Map<string, string>();
+    for (const text of SAMPLES) {
+      const drawn = canonical(rowSegments(text).map((s) => [s.space === undefined ? 'text' : 'marked', s.text]));
+      expect(seen.get(drawn), `${JSON.stringify(text)} draws like ${JSON.stringify(seen.get(drawn))}`).toBeUndefined();
+      seen.set(drawn, text);
+    }
+  });
+
+  it("a new block's text keeps its leading and trailing whitespace", () => {
+    const block = (text: string) => ({ type: 'XmlText', seq: [{ id: '9:0', s: text }], keys: [['__type', { Any: ['paragraph'] }]] });
+    const rows = describeHunks([{ kind: 'block', id: '1:5', op: 'added', after: block('    log() '), at: '1:3' }]);
+    expect(rows.map((row) => row.text), shown(rows)).toContain('    log() ');
   });
 });
 

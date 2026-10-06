@@ -17,6 +17,7 @@ import * as Y from 'yjs';
 import { useDocRole } from '../../access.ts';
 import { useAuthState } from '../../auth.ts';
 import { timeAgo } from '../../surfaces/NotificationsBell.tsx';
+import { RowText } from './RowText.tsx';
 
 /** Reviewed cards listed under the open ones (glyphdown's cap). */
 const REVIEWED_SHOWN = 20;
@@ -220,7 +221,7 @@ function SuggestionCard({ docId, record, me, role, active }: { docId: string; re
             >
               <span aria-hidden className="shrink-0">{row.kind === 'insert' ? '+' : row.kind === 'delete' ? '−' : '~'}</span>
               <span className="min-w-0 whitespace-pre-wrap break-words">
-                <span className={row.kind === 'delete' ? 'line-through' : ''}>{row.text.trim() || '¶'}</span>
+                <RowText text={row.text} struck={row.kind === 'delete'} />
                 {row.note ? <span className="ml-1 text-micro text-ink-faint">{row.note}</span> : null}
               </span>
             </div>
