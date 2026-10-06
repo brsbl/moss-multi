@@ -1,6 +1,6 @@
 // Title text and the canonical YAML boundary for structured properties (A§10.4).
 import * as Y from 'yjs';
-import { diffText, mapOffset } from './text-diff.ts';
+import { diffText } from './text-diff.ts';
 import { frontmatterYaml, importFrontmatter, observeFrontmatter } from './frontmatter.ts';
 
 export type DocField = 'title' | 'frontmatter';
@@ -42,14 +42,4 @@ export function observeField(doc: Y.Doc, field: DocField, listener: (text: strin
   };
   text.observe(handler);
   return () => text.unobserve(handler);
-}
-
-/**
- * Where a caret at `offset` belongs after the change `delta`, read from the change itself: a diff of the two texts
- * cannot tell "aa" -> "aaa" at the start from the same edit at the end. Text inserted before the caret moves it
- * right, text deleted before it moves it left (a cut spanning it leaves it at the cut), and an insert exactly at
- * the caret leaves it in front, so a peer typing at your caret never drags it along.
- */
-export function remapCaret(offset: number, delta: FieldChange['delta']): number {
-  return mapOffset(offset, delta);
 }
