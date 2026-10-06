@@ -259,6 +259,57 @@ describe('sharing with an agent by id', () => {
     });
   }
 
+  // PRODUCT ruling 20 on a change of access: any manager may lower or remove an agent row, only its owner may raise it.
+  for (const kind of ['doc', 'folder'] as const) {
+    it(`lets only the agent’s owner raise its grant on a ${kind}; any manager lowers or removes it`, async () => {
+      const targetId = kind === 'doc' ? await insertDoc(d1.db, ben) : await insertFolder(d1.db, ben, ben.homeId);
+      const path = members(`${kind === 'doc' ? 'docs' : 'folders'}/${targetId}`);
+      const table = kind === 'doc' ? 'doc_members' : 'folder_members';
+      const column = kind === 'doc' ? 'doc_id' : 'folder_id';
+      const roleOf = async (id: string) => (await d1.db.prepare(`SELECT role FROM ${table} WHERE ${column} = ? AND principal_id = ?`)
+        .bind(targetId, id).first<{ role: string }>())?.role;
+      await insertGrant(d1.db, { folderId: ben.homeId }, { id: cy.id }, 'owner');
+      const cys = await mint(cy, 'Cys');
+      expect((await call('POST', path, { cookie: cy.cookie }, { agentId: cys.agent.id, role: 'commenter' })).status).toBe(201);
+      const foreign = await call('PATCH', path, { cookie: ben.cookie }, { principalId: cys.agent.id, role: 'editor' });
+      const unknown = await call('POST', path, { cookie: ben.cookie }, { agentId: crypto.randomUUID(), role: 'editor' });
+      expect(foreign.status).toBe(404);
+      expect(await foreign.text()).toBe(await unknown.text());
+      expect(await roleOf(cys.agent.id)).toBe('commenter');
+      expect((await call('PATCH', path, { cookie: cy.cookie }, { principalId: cys.agent.id, role: 'editor' })).status).toBe(200);
+      expect(await roleOf(cys.agent.id)).toBe('editor');
+      expect((await call('PATCH', path, { cookie: ben.cookie }, { principalId: cys.agent.id, role: 'viewer' })).status).toBe(200);
+      expect(await roleOf(cys.agent.id)).toBe('viewer');
+      // A revoked agent is raised by no one, its owner included.
+      await call('DELETE', `/api/agents/${cys.agent.id}`, { cookie: cy.cookie });
+      expect((await call('PATCH', path, { cookie: cy.cookie }, { principalId: cys.agent.id, role: 'commenter' })).status).toBe(404);
+      expect(await roleOf(cys.agent.id)).toBe('viewer');
+      expect((await call('DELETE', path, { cookie: ben.cookie }, { principalId: cys.agent.id })).status).toBe(200);
+      expect(await roleOf(cys.agent.id)).toBeUndefined();
+      await d1.db.prepare('DELETE FROM folder_members WHERE folder_id = ? AND principal_id = ?').bind(ben.homeId, cy.id).run();
+    });
+  }
+
+  it('refuses a raise in the guarded write when the agent changes hands between the read and the write', async () => {
+    const docId = await insertDoc(d1.db, ben);
+    const { agent } = await mint(ben, 'Raised');
+    expect((await call('POST', members(`docs/${docId}`), { cookie: ben.cookie }, { agentId: agent.id, role: 'viewer' })).status).toBe(201);
+    race = { sql: /^\s*UPDATE doc_members SET role/, run: () => d1.db.prepare('UPDATE agents SET owner_user_id = ? WHERE id = ?').bind(ada.id, agent.id).run() };
+    expect((await call('PATCH', members(`docs/${docId}`), { cookie: ben.cookie }, { principalId: agent.id, role: 'editor' })).status).toBe(404);
+    const row = await d1.db.prepare('SELECT role FROM doc_members WHERE doc_id = ? AND principal_id = ?').bind(docId, agent.id).first<{ role: string }>();
+    expect(row?.role).toBe('viewer');
+  });
+
+  it('answers a raise by POST with 404 when the key is revoked between the read and the write', async () => {
+    const docId = await insertDoc(d1.db, ben);
+    const { agent } = await mint(ben, 'Revoked');
+    expect((await call('POST', members(`docs/${docId}`), { cookie: ben.cookie }, { agentId: agent.id, role: 'viewer' })).status).toBe(201);
+    race = { sql: /^\s*INSERT INTO doc_members/, run: () => d1.db.prepare('UPDATE agents SET revoked_at = ? WHERE id = ?').bind(Date.now(), agent.id).run() };
+    expect((await call('POST', members(`docs/${docId}`), { cookie: ben.cookie }, { agentId: agent.id, role: 'editor' })).status).toBe(404);
+    const row = await d1.db.prepare('SELECT role FROM doc_members WHERE doc_id = ? AND principal_id = ?').bind(docId, agent.id).first<{ role: string }>();
+    expect(row?.role).toBe('viewer');
+  });
+
   it('refuses in the guarded write when the agent changes hands between the read and the write', async () => {
     const docId = await insertDoc(d1.db, ben);
     const { agent } = await mint(ben, 'Moved');
