@@ -93,9 +93,10 @@ describe('linear inline import @p:tech-4', () => {
   it.each([
     ['formatted pill openers before one destination', (n: number) => `x ${'*?['.repeat(n)}](${'a'.repeat(n)}`, 20_000],
     ['URL labels before one destination', (n: number) => `x ${'[http://a'.repeat(n)}](${'a'.repeat(4 * n)}`, 10_000],
-    ['raw URLs', (n: number) => 'http://a '.repeat(n), 20_000],
-    ['embeddable URLs', (n: number) => 'https://example.com '.repeat(n), 10_000],
-    ['emphasis spans', (n: number) => '*a* '.repeat(n), 20_000],
+    // A word first: a line that starts with a URL is moss's raw-URL block, not inline text.
+    ['raw URLs', (n: number) => `x ${'http://a '.repeat(n)}`, 20_000],
+    ['embeddable URLs', (n: number) => `x ${'https://example.com '.repeat(n)}`, 10_000],
+    ['emphasis spans', (n: number) => `x ${'*a* '.repeat(n)}`, 20_000],
   ] as const)('imports one paragraph of many matches in linear time: %s', (_name, body, n) => {
     const timed = (markdown: string) => {
       const started = performance.now();

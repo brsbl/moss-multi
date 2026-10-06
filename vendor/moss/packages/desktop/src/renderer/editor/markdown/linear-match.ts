@@ -214,6 +214,85 @@ function bracketedUrlStarts(anchored: boolean): Starts {
   };
 }
 
+// RAW_WEB_EMBED_URL_LIVE_RE, the raw-URL typing shortcut: a URL, then the one whitespace character that ends the
+// text. The URL is http(s):// and a run without excluded characters, or a host (dot-separated labels, a 2-24
+// character top-level label, an optional port) and an optional path. So only the text before that last character
+// can be the URL, and the leftmost start whose rest is one is found by checking each run of host characters once.
+const RAW_URL_EXCLUDED = /[\s<>{}|\\^[\]`]/;
+const HOST_CHAR = /[a-zA-Z0-9.:-]/;
+const ALNUM = /[a-zA-Z0-9]/;
+const LETTER = /[a-zA-Z]/;
+const DIGITS = /^[0-9]{1,5}$/;
+const PATH_START = /[/?#]/;
+
+function* rawUrlLiveStarts(text: string): Iterable<number> {
+  const end = text.length - 1;
+  if (end < 0 || !WHITESPACE.test(text[end])) return;
+  let lastExcluded = end - 1;
+  while (lastExcluded >= 0 && !RAW_URL_EXCLUDED.test(text[lastExcluded])) lastExcluded -= 1;
+  const scheme = schemeUrlStart(text, end, lastExcluded);
+  const host = hostUrlStart(text, end, lastExcluded, scheme < 0 ? end : scheme);
+  const start = host >= 0 ? host : scheme;
+  if (start >= 0) yield start;
+}
+
+// `https?:\/\/[^\s<>{}|\\^[\]`]+` up to `end`: after the last excluded character, with at least one more character.
+function schemeUrlStart(text: string, end: number, lastExcluded: number): number {
+  for (let i = text.indexOf('http', lastExcluded + 1); i >= 0 && i < end; i = text.indexOf('http', i + 1)) {
+    const scheme = text.startsWith('https://', i) ? 8 : text.startsWith('http://', i) ? 7 : 0;
+    if (scheme > 0 && i + scheme < end) return i;
+  }
+  return -1;
+}
+
+// The host form up to `end`, starting before `before`: the host is a run of host characters ending at `end` or at a
+// path character after which nothing is excluded.
+function hostUrlStart(text: string, end: number, lastExcluded: number, before: number): number {
+  let a = 0;
+  while (a < end && a < before) {
+    if (!HOST_CHAR.test(text[a])) {
+      a += 1;
+      continue;
+    }
+    let b = a;
+    while (b < end && HOST_CHAR.test(text[b])) b += 1;
+    if (b === end || (PATH_START.test(text[b]) && b > lastExcluded)) {
+      const start = hostStart(text, a, b);
+      if (start >= 0) return start < before ? start : -1;
+    }
+    a = b + 1;
+  }
+  return -1;
+}
+
+// The leftmost i in [a, b) where text[i, b) is labels, a top-level label and an optional `:` port.
+function hostStart(text: string, a: number, b: number): number {
+  const colon = text.lastIndexOf(':', b - 1);
+  if (colon < a) return domainStart(text, a, b);
+  const other = text.lastIndexOf(':', colon - 1);
+  const withPort = DIGITS.test(text.slice(colon + 1, b)) ? domainStart(text, Math.max(a, other + 1), colon) : -1;
+  return withPort >= 0 ? withPort : domainStart(text, colon + 1, b);
+}
+
+// The leftmost i in [lo, end) where text[i, end), of letters, digits, `-` and `.`, is one or more labels each
+// followed by a dot (alphanumeric at both ends), then a top-level label (a letter, then 1-23 of [a-zA-Z0-9-]).
+function domainStart(text: string, lo: number, end: number): number {
+  const lastDot = text.lastIndexOf('.', end - 1);
+  if (lastDot < lo) return -1;
+  const top = end - lastDot - 1;
+  if (top < 2 || top > 24 || !LETTER.test(text[lastDot + 1])) return -1;
+  // Every dot after the start needs an alphanumeric on each side.
+  let from = lo;
+  for (let p = lastDot; p >= lo; p -= 1) {
+    if (text[p] === '.' && (p === lo || !ALNUM.test(text[p - 1]) || !ALNUM.test(text[p + 1]))) {
+      from = p + 1;
+      break;
+    }
+  }
+  for (let i = from; i < lastDot; i += 1) if (ALNUM.test(text[i])) return i;
+  return -1;
+}
+
 // `^!\[.*\]\(.*\)` followed by `$` (the text-match form) or `\s*$` (the element form): one line from `![` to its
 // last `)`, holding a `](` with room for the `)`.
 function imageLineStarts(trailingSpace: boolean): Starts {
@@ -306,6 +385,16 @@ const LINEAR: { source: string; flags: string; starts: Starts; whole?: boolean }
       { source: String.raw`\[((?:https?:\/\/[^\]\s]+))\]\(([^()\s]*(?:\([^()]*\)[^()\s]*)*)\)` + end, flags: '', starts: bracketedUrlStarts(anchored) },
     ];
   }),
+  {
+    source:
+      String.raw`((?:https?:\/\/[^\s<>{}|\\^[\]` +
+      '`' +
+      String.raw`]+|(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z][a-zA-Z0-9-]{1,23}(?::\d{1,5})?(?:[/?#][^\s<>{}|\\^[\]` +
+      '`' +
+      String.raw`]*)?))(\s)$`,
+    flags: '',
+    starts: rawUrlLiveStarts,
+  },
   { source: String.raw`^!\[.*\]\(.*\)$`, flags: '', starts: imageLineStarts(false), whole: true },
   { source: String.raw`^!\[.*\]\(.*\)\s*$`, flags: '', starts: imageLineStarts(true), whole: true },
   {

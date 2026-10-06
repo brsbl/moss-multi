@@ -421,24 +421,30 @@ const SELF_REFERENTIAL_LINK_EMBED_PILL_TRANSFORMER: TextMatchTransformer = {
   type: 'text-match'
 };
 
+// moss-multi seam: linear-import (A§12; SP2): the same trim, counting each bracket once rather than per removed character
 const trimRawWebEmbedUrl = (value: string): string => {
-  let url = value.replace(/[.,;:!?]+$/, '');
-  while (/[)\]}>"']$/.test(url)) {
-    const trailing = url[url.length - 1];
+  let end = value.length;
+  while (end > 0 && '.,;:!?'.includes(value[end - 1])) end -= 1;
+  const counts = new Map<string, number>();
+  for (let i = 0; i < end; i += 1) {
+    if ('()[]{}<>"\''.includes(value[i])) counts.set(value[i], (counts.get(value[i]) ?? 0) + 1);
+  }
+  while (end > 0 && ')]}>"\''.includes(value[end - 1])) {
+    const trailing = value[end - 1];
     const opening =
       trailing === ')' ? '(' :
         trailing === ']' ? '[' :
           trailing === '}' ? '{' :
             trailing === '>' ? '<' :
               trailing;
-    const trailingCount = [...url].filter((char) => char === trailing).length;
-    const openingCount = [...url].filter((char) => char === opening).length;
-    if (opening !== trailing && trailingCount <= openingCount) {
+    const trailingCount = counts.get(trailing) ?? 0;
+    if (opening !== trailing && trailingCount <= (counts.get(opening) ?? 0)) {
       break;
     }
-    url = url.slice(0, -1);
+    counts.set(trailing, trailingCount - 1);
+    end -= 1;
   }
-  return url;
+  return value.slice(0, end);
 };
 
 const RAW_WEB_EMBED_URL_IMPORT_RE = /https?:\/\/[^\s<>{}|\\^[\]`]+/;

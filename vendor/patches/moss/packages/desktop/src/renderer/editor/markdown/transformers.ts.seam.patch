@@ -37,7 +37,46 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
        ...(parsed.name ? { name: parsed.name } : {}),
        ...(parsed.stale ? { stale: true } : {})
      });
-@@ -517,7 +524,7 @@ const RAW_WEB_EMBED_URL_TEXT_TRANSFORMER: TextMatchTransformer = {
+@@ -413,24 +420,30 @@ const SELF_REFERENTIAL_LINK_EMBED_PILL_TRANSFORMER: TextMatchTransformer = {
+   type: 'text-match'
+ };
+ 
++// moss-multi seam: linear-import (A§12; SP2): the same trim, counting each bracket once rather than per removed character
+ const trimRawWebEmbedUrl = (value: string): string => {
+-  let url = value.replace(/[.,;:!?]+$/, '');
+-  while (/[)\]}>"']$/.test(url)) {
+-    const trailing = url[url.length - 1];
++  let end = value.length;
++  while (end > 0 && '.,;:!?'.includes(value[end - 1])) end -= 1;
++  const counts = new Map<string, number>();
++  for (let i = 0; i < end; i += 1) {
++    if ('()[]{}<>"\''.includes(value[i])) counts.set(value[i], (counts.get(value[i]) ?? 0) + 1);
++  }
++  while (end > 0 && ')]}>"\''.includes(value[end - 1])) {
++    const trailing = value[end - 1];
+     const opening =
+       trailing === ')' ? '(' :
+         trailing === ']' ? '[' :
+           trailing === '}' ? '{' :
+             trailing === '>' ? '<' :
+               trailing;
+-    const trailingCount = [...url].filter((char) => char === trailing).length;
+-    const openingCount = [...url].filter((char) => char === opening).length;
+-    if (opening !== trailing && trailingCount <= openingCount) {
++    const trailingCount = counts.get(trailing) ?? 0;
++    if (opening !== trailing && trailingCount <= (counts.get(opening) ?? 0)) {
+       break;
+     }
+-    url = url.slice(0, -1);
++    counts.set(trailing, trailingCount - 1);
++    end -= 1;
+   }
+-  return url;
++  return value.slice(0, end);
+ };
+ 
+ const RAW_WEB_EMBED_URL_IMPORT_RE = /https?:\/\/[^\s<>{}|\\^[\]`]+/;
+@@ -517,7 +530,7 @@ const RAW_WEB_EMBED_URL_TEXT_TRANSFORMER: TextMatchTransformer = {
      if (suffix) {
        const suffixNode = copyTextNodeFormat(textNode, $createTextNode(suffix));
        pill.insertAfter(suffixNode);
@@ -46,7 +85,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
      }
    },
    trigger: ' ',
-@@ -775,7 +782,8 @@ const LINK_TRANSFORMER: TextMatchTransformer = {
+@@ -775,7 +788,8 @@ const LINK_TRANSFORMER: TextMatchTransformer = {
  // and imports GFM tables back into Lexical TableNode structure.
  const TABLE_LEADING_PIPE_ROW_REG_EXP = /^\s*\|.*\|?\s*$/;
  
@@ -56,7 +95,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
  
  const TABLE_ROW_REG_EXP = new RegExp(
    `(?:${TABLE_LEADING_PIPE_ROW_REG_EXP.source}|${TABLE_DIVIDER_ROW_REG_EXP.source})`
-@@ -1770,7 +1778,7 @@ const TABLE_TRANSFORMER: ElementTransformer = {
+@@ -1770,7 +1784,7 @@ const TABLE_TRANSFORMER: ElementTransformer = {
      return output.join('\n');
    },
    regExp: TABLE_ROW_REG_EXP,
@@ -65,7 +104,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
      // Handle divider row - marks previous row as header
      if (isTableDividerRow(match[0])) {
        const nextSibling = parentNode.getNextSibling();
-@@ -1780,12 +1788,12 @@ const TABLE_TRANSFORMER: ElementTransformer = {
+@@ -1780,12 +1794,12 @@ const TABLE_TRANSFORMER: ElementTransformer = {
        if (!table) {
          const previousText = getSingleParagraphTextChild(previousSibling);
          if (!previousText || !isTableBodyRowCandidate(previousText.getTextContent())) {
@@ -80,7 +119,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
          }
  
          table = $createTableNode();
-@@ -1823,14 +1831,14 @@ const TABLE_TRANSFORMER: ElementTransformer = {
+@@ -1823,14 +1837,14 @@ const TABLE_TRANSFORMER: ElementTransformer = {
          isTableDividerRow(nextSiblingText.getTextContent());
  
        if (!$isTableNode(previousSibling) && !nextIsDivider) {
@@ -97,7 +136,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
      }
  
      const immediatePrevious = parentNode.getPreviousSibling();
-@@ -1914,7 +1922,7 @@ const TABLE_TRANSFORMER: ElementTransformer = {
+@@ -1914,7 +1928,7 @@ const TABLE_TRANSFORMER: ElementTransformer = {
        parentNode.replace(table);
      }
  
@@ -106,7 +145,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
    },
    type: 'element'
  };
-@@ -2207,10 +2215,10 @@ const IMAGE_TRANSFORMER: ElementTransformer = {
+@@ -2207,10 +2221,10 @@ const IMAGE_TRANSFORMER: ElementTransformer = {
    // Match whole candidate markdown image lines and parse with a balanced parser.
    // Matching only `![` can truncate content before replace() runs.
    regExp: /^!\[.*\]\(.*\)\s*$/,
@@ -119,7 +158,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
      }
      parentNode.replace(mediaNode);
    },
-@@ -2611,7 +2619,8 @@ const CHECK_LIST_WITH_OPTIONAL_TRAILING_SPACE: ElementTransformer = {
+@@ -2611,7 +2625,8 @@ const CHECK_LIST_WITH_OPTIONAL_TRAILING_SPACE: ElementTransformer = {
    regExp: /^(\s*)(?:[-*+]\s)?\s?(\[(\s|x)?\])(?:\s|$)/i
  };
  
@@ -129,7 +168,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
    // Custom element transformers for block-level content
    // Obsidian embed must come before standard image so ![[ref]] is matched first
    OBSIDIAN_EMBED_TRANSFORMER,
-@@ -2657,7 +2666,7 @@ export const MARKDOWN_EDITOR_TRANSFORMERS: Transformer[] = [
+@@ -2657,7 +2672,7 @@ export const MARKDOWN_EDITOR_TRANSFORMERS: Transformer[] = [
    HIGHLIGHT_TRANSFORMER,
    UNDERLINE_TRANSFORMER,
    FONT_FAMILY_TRANSFORMER
