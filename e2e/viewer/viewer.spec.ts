@@ -5,10 +5,22 @@
 // provider frame; it is answered here by a stand-in at its origin so CI never depends on X.
 // T3.8 (viewer 1.0.0): no mutating control in any read-only block, X posts in the viewer's theme, HTML blocks live in
 // the bundle's sandboxed frame document when the host serves it, j14's demo note, and video through 206 in both engines.
+// T3.10 (viewer 1.1.0): `selection()` (feature `selection-1`) with lines golden-compared against the loaded file, and
+// moss's Share with Agent button only with services.shareWithAgent (feature `share-with-agent-1`).
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
 import { FIXTURE_DIR, FRAME_POLICY, serveViewer, type ViewerServer } from './server.ts';
+import {
+  SELECTION_CASES,
+  SELECTION_NOTE,
+  SELECTION_TITLE,
+  collapseIn,
+  expectLinesIn,
+  expectNoMarker,
+  selectText,
+  type MossSelection,
+} from '../lib/selection.ts';
 
 const MARKDOWN = readFileSync(join(FIXTURE_DIR, 'seed-library.md'), 'utf8');
 const DEMO = readFileSync(new URL('../fixtures/demo-note.md', import.meta.url), 'utf8');
@@ -26,13 +38,16 @@ interface Calls {
   notes: number;
   navigate: unknown[];
   unfurl: string[];
+  share: (MossSelection | null)[];
 }
 
 declare global {
   interface Window {
     viewerFixture: {
       api: number;
+      info: { api: number; version: string; features: string[] } | null;
       calls: Calls;
+      selection(): MossSelection | null | 'unsupported';
       mount(options: MountOptions): Promise<{ title: string; frontmatter: unknown }>;
       setTheme(theme: Theme): void;
       handle: { title: string; frontmatter: unknown; setTheme(theme: Theme): void };
@@ -84,6 +99,8 @@ interface MountOptions {
   title?: string;
   /** Pass the bundle's frame document as services.htmlFrameUrl. */
   live?: boolean;
+  /** Pass services.shareWithAgent. */
+  share?: boolean;
 }
 
 async function mount(page: Page, theme: Theme = 'light', options: Partial<MountOptions> = {}) {
@@ -487,3 +504,62 @@ for (const theme of ['light', 'dark'] as const) {
     await testInfo.attach(`viewer-${browserName}-${theme}`, { path, contentType: 'image/png' });
   });
 }
+
+const BODY = '[data-moss-viewer] [data-moss-note-editor-root]';
+const SHARE = 'button[aria-label="Share with Agent"]';
+const selectionOf = (page: Page) => page.evaluate(() => window.viewerFixture.selection());
+
+test('advertises selection-1 and share-with-agent-1 in MOSS_VIEWER_INFO, as viewer 1.1.0 of API 1', async ({ page }) => {
+  await page.goto(`${server.url}/fixture/`);
+  await expect(page.locator('html[data-fixture="ready"]')).toHaveCount(1);
+  expect(await page.evaluate(() => window.viewerFixture.info)).toEqual({ api: 1, version: '1.1.0', features: ['selection-1', 'share-with-agent-1'] });
+});
+
+for (const { name, from, to, within, expected } of SELECTION_CASES) {
+  test(`selection ${name}: exact text, markdown, lines and headings, the lines golden in the loaded file`, async ({ page }) => {
+    const seen = watch(page);
+    await mount(page, 'light', { markdown: SELECTION_NOTE, layout: undefined, noteId: 'note-selection' });
+    await selectText(page, BODY, from, to, within);
+    const selection = await selectionOf(page);
+    expect(selection).toEqual(expected);
+    expectNoMarker(selection as MossSelection);
+    expectLinesIn(SELECTION_NOTE, selection as MossSelection);
+    expect(seen.pageErrors).toEqual([]);
+  });
+}
+
+test('selection lines count the frontmatter and title lines of the loaded file', async ({ page }) => {
+  const file = `---\ntags:\n  - garden\n---\n${SELECTION_NOTE}`;
+  await mount(page, 'light', { markdown: file, layout: undefined, noteId: 'note-selection' });
+  const [first] = SELECTION_CASES;
+  await selectText(page, BODY, first!.from, first!.to);
+  const selection = (await selectionOf(page)) as MossSelection;
+  expect(selection.lines).toEqual({ start: first!.expected.lines.start + 4, end: first!.expected.lines.end + 4 });
+  expect(selection.blocks.map((block) => block.line)).toEqual(first!.expected.blocks.map((block) => block.line + 4));
+  expectLinesIn(file, selection);
+});
+
+test('selection is null when collapsed or outside the note body', async ({ page }) => {
+  await mount(page, 'light', { markdown: SELECTION_NOTE, layout: undefined, noteId: 'note-selection' });
+  await expect(page.locator('[data-moss-viewer-title]')).toHaveText(SELECTION_TITLE);
+  expect(await selectionOf(page), 'nothing selected').toBeNull();
+  await collapseIn(page, BODY, 'Sow the beans');
+  expect(await selectionOf(page), 'a caret').toBeNull();
+  await selectText(page, '[data-moss-viewer-title]', 'Field', 'Notes');
+  expect(await selectionOf(page), 'the title is not the body').toBeNull();
+});
+
+test('Share with Agent shows only with services.shareWithAgent, and a press hands it the selection', async ({ page }) => {
+  await mount(page, 'light', { markdown: SELECTION_NOTE, layout: undefined, noteId: 'note-selection' });
+  await expect(page.locator(SHARE), 'hidden without the service').toHaveCount(0);
+
+  await mount(page, 'light', { markdown: SELECTION_NOTE, layout: undefined, noteId: 'note-selection', share: true });
+  const button = page.locator(SHARE);
+  await expect(button).toBeVisible();
+  await expect(button).toHaveText('Share with Agent');
+  await button.click();
+  const [first] = SELECTION_CASES;
+  await selectText(page, BODY, first!.from, first!.to);
+  await button.click();
+  await expect.poll(async () => (await calls(page)).share).toEqual([null, first!.expected]);
+});
