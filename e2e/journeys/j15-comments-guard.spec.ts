@@ -1,7 +1,8 @@
 // j15-comments-guard (T4.1; docs/design/comments.md §3): gate 2b and the pending purge in the real DocDO in workerd.
 // A note imported with marker comments gets raw sync frames over a real doc socket: an R struct, a comments write, an
-// inert step 2 carrying R's structs, and a frame Yjs parks. Each is refused 4409, the comments map is unchanged, and
-// the parked struct is never released by the later frame that supplies what it waited on.
+// inert step 2 carrying R's structs, and a frame with a missing dependency. The guard violations are refused 4409; the
+// missing dependency is closed 4420 before apply (transient). The comments map is unchanged, and nothing parks: the
+// struct is never released by the later frame that supplies what it waited on.
 import { randomUUID } from 'node:crypto';
 import WebSocket from 'ws';
 import * as Y from 'yjs';
@@ -125,14 +126,14 @@ test('j15-comments-guard: no client frame lands a write in comments, and nothing
   }
   expect.soft(await sendRaw(stack.baseUrl, docId, cookie, syncMessage(1, Y.encodeStateAsUpdate(doc))), "an inert step 2 carrying R's structs").toBe(CLOSE.writeRefused);
 
-  // A frame whose struct waits on an item the server lacks parks, is purged and refused; the frame that later
-  // supplies the missing item lands alone.
+  // A frame whose struct waits on an item the server lacks is closed 4420 before apply, so nothing parks; the frame
+  // that later supplies the missing item lands alone.
   const held = copyOf(doc);
   held.getText('title').insert(0, 'a');
   const title = held.getText('title').toString();
   const later = copyOf(held);
   later.getText('title').insert(1, 'b');
-  expect.soft(await sendRaw(stack.baseUrl, docId, cookie, syncMessage(2, diff(later, held))), 'a frame Yjs parks').toBe(CLOSE.writeRefused);
+  expect.soft(await sendRaw(stack.baseUrl, docId, cookie, syncMessage(2, diff(later, held))), 'a frame with a missing dependency').toBe(CLOSE.writeRate);
   expect.soft(await sendRaw(stack.baseUrl, docId, cookie, syncMessage(2, diff(held, doc))), 'the frame it waited on is admitted').toBeNull();
 
   const reopened = await openDocClient(stack.baseUrl, docId, cookie);

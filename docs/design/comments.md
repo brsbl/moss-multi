@@ -113,10 +113,11 @@ It costs O(frame · log) and follows no references.
 **Proof of I1 (from F5).** By induction over integrations. Initially every comments item is R. A non-R item gets its parent from an allowlisted string (c), a non-R ID parent (b), a non-R origin (b), its own non-R held predecessor (a), or a non-R right item (b). By the induction hypothesis none of these is in `comments`, so the item does not land there. A map overwrite deletes the entry's previous item, which would have to be a comments item, so the overwriting item would itself need to be in `comments`. Merges are same-client only. A deletion of a live R item needs a delete range on client R, which (d) refuses. Nothing in the proof predicts where Yjs places a struct.
 
 **Pending purge and compaction (I2).**
+- **Missing dependency: 4420, before apply** (coordinator ruling, 2026-10-05). `classifySync` marks a frame `missing` when it needs a clock the DocDO lacks: a struct past the held clocks, an origin, right origin or parent the doc lacks, or a delete of clocks it lacks. The DocDO closes such a frame 4420 before apply, with no `write-refused` event. It is transient: the client keeps its Y.Doc and its next step 2 carries what the frame depended on. So such a frame never parks, and its other structs do not land either. 4409 is kept for guard violations: the comments root, R items, protected types.
 - `DocStore.record` no longer compacts inside the `update` handler: Yjs's `encodeStateAsUpdate` includes `pendingStructs` and `pendingDs`, so a compaction there could snapshot structs a frame left parked.
-- After `super.onMessage` applies a client sync frame, if `store.pendingStructs` or `store.pendingDs` is non-null, the DO nulls both, unicasts `write-refused('unresolved')` and closes 4409.
+- After `super.onMessage` applies a client sync frame, if `store.pendingStructs` or `store.pendingDs` is non-null (defense in depth: the 4420 check above should leave nothing to park), the DO nulls both, unicasts `write-refused('unresolved')` and closes 4409.
 - Then it flushes anchor writes, then runs any due compaction (`compactIfDue`, which also covers an update too large for one row). Server writes compact in their own handler, since nothing is ever parked between frames.
-- Honest clients never park, because everything they hold arrived over the same ordered socket. A frame Yjs throws on mid-apply (a self-parented struct) is purged and refused the same way (T4.1 wires this into the DocDO; the spike host does it).
+- Honest clients never send a missing dependency, because everything they hold arrived over the same ordered socket. A frame Yjs throws on mid-apply (a self-parented struct) is purged and refused 4409 `unresolved` (T4.1 wires this into the DocDO; the spike host does it).
 
 **R lifecycle.** R is persisted as `meta.commentsClient`, regenerated at first write if any struct already has that client (`newCommentsClient`). `onStart` regenerates the DO's own clientID if it equals R. Marker import writes records through `writeComments` right after its tree diff, in the same turn.
 
@@ -236,7 +237,7 @@ The last two are output-proportional and bounded by the 2,000-record cap; before
 - Each local Yjs transaction's update is kept separately, as `AckLedger.#pending` already does.
 - On recovery or reconnect, before answering step 1, the client replays pending updates as separate frames, coalescing only runs of insert-only updates or runs of delete-only updates. An update that both inserts and deletes goes alone. A deleting update is never merged with another update's inserts.
 - The client then sends step 2, which arrives inert. It holds only the client's own structs and the delete set: the DocDO may have written comment records under R while the replay ran, and a step 2 echoing them would be refused by the guard (a).
-- From a socket's open until that step 2, local writes are held behind the replay, also on the socket after a replay cut off by a close: a write sent live before the server's step 1 is processed would reach the DocDO ahead of the backlog it depends on, park, and be refused 4409.
+- From a socket's open until that step 2, local writes are held behind the replay, also on the socket after a replay cut off by a close: a write sent live before the server's step 1 is processed would reach the DocDO ahead of the backlog it depends on and be closed 4420 as a missing dependency.
 - Replay is paced to at most 40 frames per second, below the 300-per-5-s rate limit.
 
 The discipline matters only for honest users and ruling 18. Safety (I1–I8) never depends on it: a client that ignores it can at most keep a comment on identical text in the identical place.
@@ -279,7 +280,7 @@ Every finding in `.panel/T4.0-review-history.md` (six rounds and two commit secu
 | R1 P1 | A stale quote plus a later format collapse orphans the comment | No quote fallback for positioned anchors (I6); format splits are gap maps (I4). Test: the bold scenes |
 | R1 P2 | Root delete strands replies | T4.4: root delete promotes the oldest reply, with the anchor and resolution, in one writeComments call. Test: T4.4 "deleting a root with replies keeps the thread anchored under the promoted reply" |
 | R1 P2 | Notifications for agent principals | T4.4: user principals only. Test: T4.4 "mentioning an agent writes no notification row" |
-| R2 P1 | A held left origin hid a missing right origin | (b) for R; any other parked frame is purged (I2). Test: "a missing right origin beside a held left origin" |
+| R2 P1 | A held left origin hid a missing right origin | (b) for R; any other missing dependency is closed 4420 before apply (I2). Test: "a missing right origin beside a held left origin" |
 | R2 P1 | Refreshed anchors lived in memory until the save tick | I8. Test: T4.1 "restart between a deletion and its undo: the comment still reattaches" |
 | R2 P2 | Stale evidence, empty log | This table and §10 |
 | R3 P1 | The quote fallback moved a comment to another occurrence | I6. Test: never-jump "two identical lines" |
@@ -291,12 +292,12 @@ Every finding in `.panel/T4.0-review-history.md` (six rounds and two commit secu
 | R5 P2 | A split elsewhere plus delete-and-retype in one frame re-mints | Separate frames under the discipline; a forged frame is P2 #3 |
 | R5 P2 | The restore candidate search does not backtrack | Not applicable: there is no candidate search |
 | R5 P2 | A stale peer typing the exact deleted text there reattaches | P2 #1, and the ruling 18 clarification |
-| R6 P1 | A fully held struct with a missing dependency parks and the classifier admits it | I2: purge after every applied frame. Test: "a fully held struct with a forged missing origin parks the tail and is purged" |
+| R6 P1 | A fully held struct with a missing dependency parks and the classifier admits it | I2: a missing dependency is closed 4420 before apply, and a purge follows every applied frame. Test: "a fully held struct with a forged missing origin is closed 4420 and nothing parks" |
 | R6 P1 | Delete, undo, redo, undo in one frame stays orphaned | Gap map over the frame's live copies. Test: "delete, undo, redo, undo: frame by frame, and as one frame" |
 | R6 P2 | The cost note understated per-frame work | §5.6, counted. T4.2 records the workerd CPU budget |
 | Security review | `refreshAnchors` does whole-doc work on every frame | I7. Test: `anchor-cost.test.ts`; T4.2 workerd budget |
 | Security review fe3c2f8 | Forged undo copies around new text attach another person's comment | I5. Test: never-jump "forged edge copies around new text" |
-| C1 §1 P2 | Compaction snapshots parked structs | I2: compaction after the purge. Test: "a frame that parks is closed 4409; a forced compaction and a restart leave nothing parked" |
+| C1 §1 P2 | Compaction snapshots parked structs | I2: compaction after the purge. Test: "a frame with a missing dependency is closed 4420 before apply; a forced compaction and a restart leave nothing parked" |
 | C1 P1 | A forged copy chain placed far from the lost text | Not adopted: no right-origin identity; placement decides. Test: never-jump "a forged item whose origin is a distant live item" |
 | C1 P1 | An index re-mint lands on surviving text | Not adopted: I4 targets only frame-new items. Test: never-jump "an identical paste over a different occurrence" |
 | C1 P1 | A batched format split plus a keystroke orphans | The gap is bounded by survivors, so a keystroke elsewhere is outside D and I; under the discipline the split travels alone. Test: T4.2 fast-check over random concurrent edits |
@@ -338,7 +339,7 @@ Every finding in `.panel/T4.0-review-history.md` (six rounds and two commit secu
 | Claim | Tests | Runs |
 |---|---|---|
 | Guard (a)–(d), the history's raw fixtures, an honest step 2 with R tombstones, and a 300-run fast-check that every comments item is R | `packages/sync/test/harness/comments-guard.test.ts` | Red (stubs): [37221588284](https://github.com/brsbl/moss-multi/actions/runs/37221588284). Green: [37222799391](https://github.com/brsbl/moss-multi/actions/runs/37222799391) at `38e3ac2`, and the final head |
-| Pending purge: 4409, then a forced compaction and a restart leave nothing parked, and a release frame integrates nothing | same file, against the DocDO harness | same |
+| Pending purge: a missing dependency closed 4420 before apply (4409 for guard violations), then a forced compaction and a restart leave nothing parked, and a release frame integrates nothing | same file, against the DocDO harness | same |
 | F1–F4 | `yjs-facts.test.ts` | same |
 | Supported liveness: bold and unbold before, inside, across and after; Enter before and inside; a soft break; a Backspace join; a markdown shortcut beside it, and one wrapping it for each of `**`, `_`, `~~`, `` ` ``, `==` and a link, and one wrapping the first of two identical passages; delete then undo in separate frames, one frame and DURDU; block, cross-block and lifted undo; the two offline replays | `anchor-scenes.test.ts` (real @lexical/yjs V1 editors with Y.UndoManager) | same. Round 2, the wrapping shortcuts: red [37236080357](https://github.com/brsbl/moss-multi/actions/runs/37236080357), green [37237010575](https://github.com/brsbl/moss-multi/actions/runs/37237010575). Round 3, the first of two identical passages: red [37238240291](https://github.com/brsbl/moss-multi/actions/runs/37238240291), green [37238542630](https://github.com/brsbl/moss-multi/actions/runs/37238542630) |
 | P2 #9, ambiguous text in a rewritten span: a link whose URL contains its label orphans the comment, and the same link with a URL that does not keeps it | `anchor-scenes.test.ts` (`link-label-in-url-orphans-the-comment`, `link-label-not-in-url-keeps-the-comment`); never-jump "a frame that keeps one of two identical passages" | Round 4: red [37239929915](https://github.com/brsbl/moss-multi/actions/runs/37239929915) at `ac3d7a6` (the scene written as a keep fails on "expected 'orphaned' to be 'anchored'", so the rule orphans it); green as an orphan, with the unambiguous link kept, in [37240230366](https://github.com/brsbl/moss-multi/actions/runs/37240230366) at `8c7ead5` |

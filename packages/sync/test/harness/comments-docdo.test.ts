@@ -90,6 +90,24 @@ async function expectRefused(opened: Opened, frame: Uint8Array, reason: string, 
   expect(json(opened)).toEqual(before);
 }
 
+/**
+ * The frame needs a clock the DocDO lacks, so it is closed 4420 before apply (transient: an honest client resyncs);
+ * nothing parks, and neither comments nor the body change. 4409 is kept for guard violations (comments.md §3).
+ */
+async function expectTransient(opened: Opened, frame: Uint8Array): Promise<void> {
+  const before = json(opened);
+  const body = Y.encodeStateVector(opened.dobj.document);
+  const client = await editorOn(opened);
+  await client.deliver(syncFrame(2, frame));
+  await client.pump();
+  expect(client.events.filter((event) => event.t === 'write-refused')).toEqual([]);
+  expect(client.closed?.code).toBe(CLOSE.writeRate);
+  expect(opened.dobj.document.store.pendingStructs).toBeNull();
+  expect(opened.dobj.document.store.pendingDs).toBeNull();
+  expect(Y.encodeStateVector(opened.dobj.document)).toEqual(body);
+  expect(json(opened)).toEqual(before);
+}
+
 /** A later frame that supplies what a purged frame was waiting on: it applies, and comments stay as they were. */
 async function release(opened: Opened, frame: Uint8Array): Promise<void> {
   const before = json(opened);
@@ -226,16 +244,16 @@ describe('T4.1 gate 2b in the DocDO: no client frame lands a write in comments @
     await expectServerWriteIsolated(opened, r);
   });
 
-  it('history fixtures: a fully held struct with a forged missing origin parks the tail and is purged', async () => {
+  it('history fixtures: a fully held struct with a forged missing origin is closed 4420 and nothing parks', async () => {
     const { opened, r } = await seeded();
     const doc = opened.dobj.document;
     const s = rootStart(doc).client;
     const sState = Y.getState(doc.store, s);
     expect(sState, 'the import wrote the body').toBeGreaterThan(0);
-    await expectRefused(opened, raw([
+    await expectTransient(opened, raw([
       forged(Y.createID(s, sState - 1), { origin: Y.createID(5150, 0) }, new Y.ContentString('e')),
       forged(Y.createID(s, sState), { origin: rootStart(doc) }, new Y.ContentAny(['tail'])),
-    ]), 'unresolved');
+    ]));
     await release(opened, raw([forged(Y.createID(5150, 0), { parent: 'frontmatter', sub: 'z' }, new Y.ContentAny(['z']))]));
     expect(doc.store.clients.get(s)?.some((struct) => struct.id.clock >= sState && struct instanceof Y.Item && struct.content instanceof Y.ContentAny), 'the parked tail never integrates').toBe(false);
     await expectServerWriteIsolated(opened, r);
@@ -245,7 +263,7 @@ describe('T4.1 gate 2b in the DocDO: no client frame lands a write in comments @
     const { opened, r } = await seeded();
     const doc = opened.dobj.document;
     await expectRefused(opened, raw([forged(Y.createID(777, 0), { origin: rootStart(doc), right: Y.createID(r, Y.getState(doc.store, r)) }, new Y.ContentString('x'))]), 'protected-type');
-    await expectRefused(opened, raw([forged(Y.createID(778, 0), { origin: rootStart(doc), right: Y.createID(6160, 0) }, new Y.ContentString('x'))]), 'unresolved');
+    await expectTransient(opened, raw([forged(Y.createID(778, 0), { origin: rootStart(doc), right: Y.createID(6160, 0) }, new Y.ContentString('x'))]));
     await release(opened, raw([forged(Y.createID(6160, 0), { parent: 'frontmatter', sub: 'y' }, new Y.ContentAny(['y']))]));
     expect(doc.store.clients.has(778), 'the parked struct never integrates').toBe(false);
     await expectServerWriteIsolated(opened, r);
@@ -356,10 +374,18 @@ describe('T4.1 pending purge before compaction in the DocDO @p:tech-3', () => {
     forged(Y.createID(999, 0), { parent: 'frontmatter', sub: 'deleted' }, new Y.ContentAny([1, 2, 3, 4])),
   ]);
 
-  async function afterRestart(opened: Opened, kept: unknown): Promise<void> {
+  /** The whole frame is closed 4420 before apply: its valid edit is refused with it, and nothing parks (comments.md §3). */
+  function expectClosedWhole(editor: TestClient): void {
+    expect(editor.closed?.code).toBe(CLOSE.writeRate);
+    expect(editor.events.filter((event) => event.t === 'write-refused')).toEqual([]);
+  }
+
+  async function afterRestart(opened: Opened): Promise<void> {
+    expect(opened.dobj.document.store.pendingStructs).toBeNull();
+    expect(opened.dobj.document.store.pendingDs).toBeNull();
     const woken = await start(wake(opened));
     const doc = woken.dobj.document;
-    expect(doc.getMap('frontmatter').get('kept'), 'the integrated edit survives').toEqual(kept);
+    expect(doc.getMap('frontmatter').has('kept'), 'nothing from the refused frame lands').toBe(false);
     expect(doc.store.pendingStructs).toBeNull();
     expect(doc.store.pendingDs).toBeNull();
     const late = await editorOn(woken);
@@ -377,9 +403,15 @@ describe('T4.1 pending purge before compaction in the DocDO @p:tech-3', () => {
     const editor = await editorOn(opened);
     await editor.deliver(syncFrame(2, mixed('v')));
     await editor.pump();
-    expect(editor.events).toContainEqual({ t: 'write-refused', reason: 'unresolved' });
-    expect(counts(opened.backing).updates, 'the frame compacted the log').toBe(0);
-    await afterRestart(opened, 'v');
+    expectClosedWhole(editor);
+    expect(counts(opened.backing).updates, 'the refused frame wrote no row').toBe(COMPACT_MAX_ROWS);
+    // The next frame crosses COMPACT_MAX_ROWS and compacts a doc with nothing parked.
+    const honest = await editorOn(opened);
+    honest.doc.getMap('frontmatter').set('next', 'v');
+    await honest.flush();
+    expect(honest.closed).toBeNull();
+    expect(counts(opened.backing).updates, 'the next frame compacted the log').toBe(0);
+    await afterRestart(opened);
   });
 
   it('mixed-pending-frame-compacts-only-after-purge: an integrated update larger than STATE_CHUNK_BYTES', async () => {
@@ -388,9 +420,15 @@ describe('T4.1 pending purge before compaction in the DocDO @p:tech-3', () => {
     const editor = await editorOn(opened);
     await editor.deliver(syncFrame(2, mixed(big)));
     await editor.pump();
-    expect(editor.events).toContainEqual({ t: 'write-refused', reason: 'unresolved' });
+    expectClosedWhole(editor);
+    expect(counts(opened.backing).state, 'the refused frame wrote no snapshot').toBe(0);
+    // The oversized path: an honest editor's update this large compacts, and the snapshot holds nothing parked.
+    const honest = await editorOn(opened);
+    honest.doc.getMap('frontmatter').set('big', big);
+    await honest.flush();
+    expect(honest.closed).toBeNull();
     expect(counts(opened.backing).state, 'the oversized update compacted').toBeGreaterThan(1);
-    await afterRestart(opened, big);
+    await afterRestart(opened);
   });
 });
 

@@ -78,6 +78,9 @@ it('a reconnect sends the note\'s unacked writes before any payload frame, so bl
   const socket = latest();
   expect(socket).not.toBe(first);
   socket.open();
+  // The server speaks first (comments.md §6): the backlog is replayed on its step 1, then the payloads resend.
+  serverStep1(socket, Y.encodeStateVector(new Y.Doc()));
+  await vi.advanceTimersByTimeAsync(1_000);
   const kinds = socket.sent.map((frame) => {
     const bytes = frame as Uint8Array;
     return bytes[0] === 7 ? 'payload' : bytes[0] === 0 && bytes[1] !== 0 ? 'note write' : 'other';
