@@ -122,6 +122,12 @@ const serializer = () => {
   };
 };
 
+/** Who a REST comment write stands for, as the Worker resolved it: its principal, session or key, and share token. */
+export type CommentActor = SocketIdentity;
+
+/** A comment write whose authorization D1 could not confirm: refused, and the client may retry. */
+const UNCONFIRMED: CommentResult = { ok: false, status: 503, error: 'unconfirmed' };
+
 /** A server write that would pass the state cap (A§5.1 Limits). */
 export class DocCapError extends Error {
   constructor() {
@@ -632,57 +638,92 @@ export class DocDO extends YServer<SyncEnv> {
    * A comment or reply from REST (comments.md §4): `author` is the server principal the Worker resolved, and the
    * Worker has checked commenter access and the per-principal rate. Records persist in this turn.
    */
-  async createComment(input: CommentCreate): Promise<CommentResult> {
-    const store = await this.#ready();
-    const comments = this.#comments;
-    if (!comments) throw new Error('DocDO started without comments');
-    await this.#validateAll();
-    // A trash holds the doc closed to every write (A§8), whatever the Worker resolved before the body arrived.
-    if (holdsOf(store).size > 0) return { ok: false, status: 404, error: 'trashed' };
-    // The record and anchor bytes, quote included, count against the comments' share of the cap (A§5.1 Limits).
-    const result = comments.create(input, this.#limits.maxComments, this.#commentRoom(store.stateBytes));
-    comments.flush();
-    return result;
+  createComment(input: CommentCreate & { actor?: CommentActor }): Promise<CommentResult> {
+    const { actor, ...create } = input;
+    return this.#commentWrite(actor, (store, comments) => {
+      // The record and anchor bytes, quote included, count against the comments' share of the cap (A§5.1 Limits).
+      const result = comments.create(create, this.#limits.maxComments, this.#commentRoom(store.stateBytes));
+      comments.flush();
+      return result;
+    });
   }
 
-  /** Resolves or reopens a thread for a commenter or above the Worker resolved (comments.md §12). */
-  async resolveComment(input: { id: string; resolved: boolean; by: CommentSource }): Promise<CommentResult> {
-    const store = await this.#ready();
-    const comments = this.#comments;
-    if (!comments) throw new Error('DocDO started without comments');
-    await this.#validateAll();
-    if (holdsOf(store).size > 0) return { ok: false, status: 404, error: 'trashed' };
-    return comments.resolve(input.id, input.resolved, input.by);
+  /** Resolves or reopens a thread for a commenter or above (comments.md §12). */
+  resolveComment(input: { id: string; resolved: boolean; by: CommentSource; actor?: CommentActor }): Promise<CommentResult> {
+    return this.#commentWrite(input.actor, (_store, comments) => comments.resolve(input.id, input.resolved, input.by));
   }
 
   /** Edits a comment's text; `author` is the Worker's principal and must be the comment's author (comments.md §12). */
-  async editComment(input: { id: string; author: string; text: string }): Promise<CommentResult> {
-    const store = await this.#ready();
-    const comments = this.#comments;
-    if (!comments) throw new Error('DocDO started without comments');
-    await this.#validateAll();
-    if (holdsOf(store).size > 0) return { ok: false, status: 404, error: 'trashed' };
-    return comments.edit(input.id, input.author, input.text, this.#commentRoom(store.stateBytes));
+  editComment(input: { id: string; author: string; text: string; actor?: CommentActor }): Promise<CommentResult> {
+    return this.#commentWrite(input.actor, (store, comments) => comments.edit(input.id, input.author, input.text, this.#commentRoom(store.stateBytes)));
   }
 
   /** Deletes a comment or a whole thread as its author; a root delete promotes the oldest reply (comments.md §12). */
-  async deleteComment(input: { id: string; author: string; scope: CommentDeleteScope }): Promise<CommentResult> {
-    const store = await this.#ready();
-    const comments = this.#comments;
-    if (!comments) throw new Error('DocDO started without comments');
-    await this.#validateAll();
-    if (holdsOf(store).size > 0) return { ok: false, status: 404, error: 'trashed' };
-    return comments.remove(input.id, input.author, input.scope);
+  deleteComment(input: { id: string; author: string; scope: CommentDeleteScope; actor?: CommentActor }): Promise<CommentResult> {
+    return this.#commentWrite(input.actor, (_store, comments) => comments.remove(input.id, input.author, input.scope));
   }
 
   /** Adds or removes the principal's reaction on a comment (comments.md §12). */
-  async reactComment(input: { id: string; principal: string; emoji: string; on: boolean }): Promise<CommentResult> {
+  reactComment(input: { id: string; principal: string; emoji: string; on: boolean; actor?: CommentActor }): Promise<CommentResult> {
+    return this.#commentWrite(input.actor, (store, comments) => comments.react(input.id, input.principal, input.emoji, input.on, this.#commentRoom(store.stateBytes)));
+  }
+
+  /**
+   * Every comment write (A§8 pull validation, T2.5): in one serialized write the open sockets are validated, the actor
+   * is re-resolved through the same check whether or not it has a socket (a live session or key, at least commenter,
+   * a live doc), and the write runs right after with no await between. A check that cannot answer refuses. With no
+   * access check installed (the Node harness), writes apply as frames do.
+   */
+  async #commentWrite(actor: CommentActor | undefined, write: (store: DocStore, comments: DocComments) => CommentResult): Promise<CommentResult> {
     const store = await this.#ready();
     const comments = this.#comments;
     if (!comments) throw new Error('DocDO started without comments');
-    await this.#validateAll();
-    if (holdsOf(store).size > 0) return { ok: false, status: 404, error: 'trashed' };
-    return comments.react(input.id, input.principal, input.emoji, input.on, this.#commentRoom(store.stateBytes));
+    // A doc closed without a hold may have missed a restore's settle: D1 decides, as at admission.
+    if (store.meta('deleted') === '1' && holdsOf(store).size === 0 && this.#liveness()) {
+      try {
+        await this.#queue(() => this.#settle([]));
+      } catch (error) {
+        console.error('DocDO comment write could not confirm the doc is live', error);
+        return UNCONFIRMED;
+      }
+    }
+    const check = this.#accessCheck();
+    return this.#serial(async () => {
+      if (check) {
+        let refused: CommentResult | null;
+        try {
+          await this.#validate(check);
+          refused = await this.#authorizeActor(check, store, actor);
+        } catch (error) {
+          console.error('DocDO could not re-authorize a comment write; refusing it', error);
+          return UNCONFIRMED;
+        }
+        if (refused) return refused;
+      }
+      // A trash holds the doc closed to every write (A§8), and a settled one leaves it deleted.
+      if (holdsOf(store).size > 0 || store.meta('deleted') === '1') return { ok: false, status: 404, error: 'trashed' };
+      return write(store, comments);
+    });
+  }
+
+  /** The actor's verdict now: null while it may comment, else the refusal. Throws when D1 cannot answer. */
+  async #authorizeActor(check: AccessCheck, store: DocStore, actor: CommentActor | undefined): Promise<CommentResult | null> {
+    const unauthenticated: CommentResult = { ok: false, status: 401, error: 'unauthenticated' };
+    if (!actor || (actor.kind !== 'user' && actor.kind !== 'agent')) return unauthenticated;
+    const session = actor.kind === 'user' ? actor.sessionId : null;
+    if (actor.kind === 'user' && !session) return unauthenticated;
+    const resolvedAt = Date.now();
+    const { stamp, access } = await withDeadline(this.#limits.accessDeadlineMs, async (race) => {
+      const read = await race(check.stamp(this.name, session ? [session] : [], actor.kind === 'agent' ? [actor.principalId] : []));
+      return { stamp: read, access: await race(check.resolve(this.name, actor)) };
+    });
+    if (session ? !stamp.sessions.has(session) : !stamp.agents.has(actor.principalId)) return unauthenticated;
+    if (access === 'deleted') return { ok: false, status: 404, error: 'trashed' };
+    if (access === null) return { ok: false, status: 404, error: 'not-found' };
+    if (!roleAtLeast(access.role, 'commenter')) return { ok: false, status: 403, error: 'forbidden' };
+    // A kick persisted while D1 answered outdates what it said.
+    if (revocationCode({ ...actor, resolvedAt } as Attachment, store.revoked) !== null) return { ok: false, status: 403, error: 'forbidden' };
+    return null;
   }
 
   /**

@@ -810,13 +810,15 @@ describe('a comment RPC validates every socket before its write reaches them (AÂ
     epoch = 'e1';
     gone.clear();
   });
+  /** The REST actor the Worker passes, re-resolved in the write. */
+  const ADA: SocketIdentity = { kind: 'user', principalId: 'ada', sessionId: 'sess-ada', shareToken: null };
 
   const writes: [string, (opened: Opened) => Promise<unknown>][] = [
-    ['create', (opened) => opened.dobj.createComment({ author: 'ada', id: 'r9', text: 'secret reply', parentId: 'root' })],
-    ['resolve', (opened) => opened.dobj.resolveComment({ id: 'root', resolved: true, by: 'user' })],
-    ['edit', (opened) => opened.dobj.editComment({ id: 'root', author: 'ada', text: 'secret edit' })],
-    ['delete', (opened) => opened.dobj.deleteComment({ id: 'root', author: 'ada', scope: 'comment' })],
-    ['react', (opened) => opened.dobj.reactComment({ id: 'root', principal: 'ada', emoji: 'ðŸ‘', on: true })],
+    ['create', (opened) => opened.dobj.createComment({ actor: ADA, author: 'ada', id: 'r9', text: 'secret reply', parentId: 'root' })],
+    ['resolve', (opened) => opened.dobj.resolveComment({ actor: ADA, id: 'root', resolved: true, by: 'user' })],
+    ['edit', (opened) => opened.dobj.editComment({ actor: ADA, id: 'root', author: 'ada', text: 'secret edit' })],
+    ['delete', (opened) => opened.dobj.deleteComment({ actor: ADA, id: 'root', author: 'ada', scope: 'comment' })],
+    ['react', (opened) => opened.dobj.reactComment({ actor: ADA, id: 'root', principal: 'ada', emoji: 'ðŸ‘', on: true })],
   ];
 
   it.each(writes)('%s: a socket revoked but not yet kicked closes 4403 and receives nothing of the write', async (_name, write) => {
@@ -825,8 +827,8 @@ describe('a comment RPC validates every socket before its write reaches them (AÂ
     const { text, units } = liveUnits(opened.dobj.document);
     const at = text.indexOf('brown fox');
     const anchor = { kind: 'text' as const, start: encodePosition(units[at], 0), end: encodePosition(units[at + 'brown fox'.length - 1], -1) };
-    expect(await opened.dobj.createComment({ author: 'ada', id: 'root', text: 'root', anchor })).toMatchObject({ ok: true });
-    expect(await opened.dobj.createComment({ author: 'ada', id: 'r1', text: 'reply', parentId: 'root' })).toMatchObject({ ok: true });
+    expect(await opened.dobj.createComment({ actor: ADA, author: 'ada', id: 'root', text: 'root', anchor })).toMatchObject({ ok: true });
+    expect(await opened.dobj.createComment({ actor: ADA, author: 'ada', id: 'r1', text: 'reply', parentId: 'root' })).toMatchObject({ ok: true });
     const ada = await connect(opened, who('ada', 'owner'));
     const ben = await connect(opened, who('ben', 'viewer'));
     await ada.hello();

@@ -81,7 +81,7 @@ export type CommentResult =
       /** The reply a root delete promoted to root. */
       promoted?: string;
     }
-  | { ok: false; status: 400 | 403 | 404 | 409 | 413; error: string };
+  | { ok: false; status: 400 | 401 | 403 | 404 | 409 | 413 | 503; error: string };
 
 const refuse = (status: 400 | 403 | 404 | 409 | 413, error: string): CommentResult => ({ ok: false, status, error });
 const nowSeconds = () => Math.floor(Date.now() / 1000);
