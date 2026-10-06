@@ -217,9 +217,29 @@ export function subscribeAnyPaint(listener: () => void): () => void {
   };
 }
 
+/**
+ * Editors a pane binds to a shared doc, for the pane's whole life: the painter comes and goes with the collaboration
+ * plugin (a resync, another pane holding the doc), and the editor stays shared meanwhile.
+ */
+const shared = new Map<LexicalEditor, string>();
+
+/** The pane binds `editor` to `docId` until the returned release. */
+export function markShared(editor: LexicalEditor, docId: string): () => void {
+  shared.set(editor, docId);
+  notifyPaint(editor);
+  return () => {
+    if (shared.get(editor) !== docId) return;
+    shared.delete(editor);
+    notifyPaint(editor);
+  };
+}
+
+/** Whether a pane binds `editor` to a shared doc; false for the file-backed editor bundle. */
+export const isShared = (editor: LexicalEditor): boolean => shared.has(editor);
+
 /** Whether some editor in this tab is bound to the shared doc `docId`. */
 export function noteBound(docId: string): boolean {
-  for (const painter of painters.values()) if (painter.docId === docId) return true;
+  for (const id of shared.values()) if (id === docId) return true;
   return false;
 }
 

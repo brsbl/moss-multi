@@ -10,14 +10,17 @@ import { knownRole, useDocRole } from '../access.ts';
 import { terminalOf, useTerminal } from '../collab/terminal.ts';
 import { createComment, deleteComment, editComment, reactTo, replyTo, resolveThread } from './api.ts';
 import { $mintNode, mintCurrent, type Minted } from './mint.ts';
-import { commentsAtPoint, noteBound, painterOf, setActive, setHover, subscribeAnyPaint, subscribePaint } from './paint.ts';
+import { commentsAtPoint, isShared, noteBound, painterOf, setActive, setHover, subscribeAnyPaint, subscribePaint } from './paint.ts';
 import { myPrincipalId } from './people.ts';
 
 export { commentsAtPoint, setActive, setHover, subscribePaint };
 
-/** Whether `editor` is bound to a shared doc (its painter exists); an unbound editor runs moss's local comments. */
+/**
+ * Whether a pane binds `editor` to a shared doc, painter or not: with its plugin down a bound editor's writes are
+ * refused, never local. An unbound editor (the file-backed bundle) runs moss's local comments.
+ */
 export function bound(editor: LexicalEditor): boolean {
-  return painterOf(editor) !== undefined;
+  return isShared(editor);
 }
 
 /** Whether an editor in this tab is bound to `noteId`, as React state (a binding's start and end both repaint). */
@@ -42,8 +45,9 @@ export function stashCommentSelection(editor: LexicalEditor): void {
  * editor with no binding (moss's own path then runs).
  */
 export function createFromCommand(editor: LexicalEditor, payload: { text: string; nodeKey?: string }): boolean | null {
+  if (!bound(editor)) return null;
   const painter = painterOf(editor);
-  if (!painter) return null;
+  if (!painter) return false;
   if (!payload.text.trim() || !canComment(painter.docId)) return false;
   const minted = payload.nodeKey ? $mintNode(painter.binding, payload.nodeKey) : (stashed.get(editor) ?? mintCurrent(editor, painter.binding));
   stashed.delete(editor);
@@ -69,7 +73,8 @@ function $collapseToFocus(): void {
  * Null for an editor with no binding (moss's MarkNode walk then runs).
  */
 export function liveAnchorIds(editor: LexicalEditor): string[] | null {
-  return painterOf(editor)?.model.anchoredRoots() ?? null;
+  if (!bound(editor)) return null;
+  return painterOf(editor)?.model.anchoredRoots() ?? [];
 }
 
 /**
@@ -77,10 +82,10 @@ export function liveAnchorIds(editor: LexicalEditor): string[] | null {
  * an editor with no binding (moss's MarkNode walk then runs).
  */
 export function targets(editor: LexicalEditor): { commentId: string; top: number }[] | null {
+  if (!bound(editor)) return null;
   const painter = painterOf(editor);
-  if (!painter) return null;
   const root = editor.getRootElement();
-  if (!root) return [];
+  if (!painter || !root) return [];
   const origin = root.getBoundingClientRect().top;
   const out: { commentId: string; top: number }[] = [];
   for (const [commentId, entry] of painter.painted) {
