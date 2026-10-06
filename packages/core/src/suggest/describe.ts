@@ -349,9 +349,11 @@ class Rows {
     this.fields(kind, path, value);
   }
 
-  /** The nodes a node holds as field values, each in its own rows. */
+  /** The nodes a node holds as field values, each in its own rows; an empty one (its kind is in the parent's detail) has none. */
   fields(kind: 'insert' | 'delete', path: string, node: Node): void {
-    for (const [key, item] of fieldsOf(node)) if (isNode(item)) this.whole(kind, `${path} ${key}`, item);
+    for (const [key, item] of fieldsOf(node)) {
+      if (isNode(item) && (fieldsOf(item).length > 0 || (item.seq?.length ?? 0) > 0)) this.whole(kind, `${path} ${key}`, item);
+    }
   }
 
   /**
@@ -583,8 +585,8 @@ export interface RowSegment {
 }
 
 // Whitespace and invisible characters, and the glyph each is drawn as.
-const INVISIBLE = /[\s­᠎​-‏⁠﻿]+/gu;
-const GLYPHS: ReadonlyMap<string, string> = new Map([[' ', '·'], ['\t', '→'], ['\n', '↵'], [' ', '⍽']]);
+const INVISIBLE = /[\s\u00ad\u180e\u200b-\u200f\u2060\ufeff]+/gu;
+const GLYPHS: ReadonlyMap<string, string> = new Map([[' ', '·'], ['\t', '→'], ['\n', '↵'], ['\u00a0', '⍽']]);
 const glyph = (ch: string) => GLYPHS.get(ch) ?? `⟨U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, '0')}⟩`;
 
 /**

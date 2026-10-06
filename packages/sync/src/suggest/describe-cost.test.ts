@@ -136,7 +136,10 @@ function sizeAtCap(shape: Shape): number {
   };
   const [a, b] = [bytesAt(64), bytesAt(128)];
   const slope = (b - a) / 64;
-  return Math.floor((SUGGEST_CAPS.recordOpsBytes * 0.8 - (a - 64 * slope)) / slope / 2);
+  let n = Math.floor((SUGGEST_CAPS.recordOpsBytes * 0.8 - (a - 64 * slope)) / slope / 2);
+  // Ids grow in bytes with their clocks, so the fit can overshoot; shrink until the doubled record fits.
+  while (bytesAt(2 * n) > SUGGEST_CAPS.recordOpsBytes * 0.95) n = Math.floor(n * 0.9);
+  return n;
 }
 
 describe('T5.3s preview and card cost is linear in the record, at the record cap @p:mean-2 @p:R17', () => {
