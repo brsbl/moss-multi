@@ -163,6 +163,30 @@ describe('T5.3 accept, reject and withdraw through the DocDO @p:mean-2 @p:R16 @p
     expect(await opened.dobj.exportMarkdown()).toBe(clean);
   });
 
+  it('a record with nothing to show is rejected by the system on the alarm once idle, with nobody fetching its preview', async () => {
+    const opened = await seeded();
+    const sam = await on(opened, SAM);
+    const [grant] = await leases(sam);
+    const fork = new ForkShim(sam.doc, grant.client);
+    try {
+      // Typed and taken back: ops, and no change.
+      fork.act(() => select('Hello', 24).insertText('x'));
+      fork.act(() => select('Hello', 25).deleteCharacter(true));
+      for (const op of fork.sent) {
+        expect(await send(sam, { t: 'suggest-ops', record: grant.record, doc: op.doc, update: bytesToBase64(op.update) })).toMatchObject({ t: 'suggest-ack' });
+      }
+    } finally {
+      fork.dispose();
+    }
+    const meta = readMeta(opened.dobj.document, grant.record)!;
+    expect(meta.status).toBe('open');
+    expect(opened.backing.alarm, 'the idle check is scheduled').not.toBeNull();
+    expect(opened.backing.alarm!, 'within the idle window of the last change').toBeLessThanOrEqual(meta.updatedAt + 30_000 + 1_000);
+    vi.setSystemTime(meta.updatedAt + 30_001);
+    await opened.dobj.alarm();
+    expect(readMeta(opened.dobj.document, grant.record)).toMatchObject({ status: 'rejected', resolvedBy: 'system' });
+  });
+
   it('a new live suggestion notifies once, naming its author and record; a continuation does not', async () => {
     const notices: { docId: string; author: string; record: string }[] = [];
     DocDO.suggestionNotices = () => async (notice) => {

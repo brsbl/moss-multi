@@ -4,7 +4,7 @@
 // the bell's row for a new live suggestion, for the people who can review it.
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
-import { BASE, insertDoc, insertGrant, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
+import { BASE, insertDoc, insertFolder, insertGrant, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
 import { handleApi } from './router.ts';
 import { notifySuggestion } from './suggestions.ts';
 
@@ -168,5 +168,24 @@ describe('a live suggestion notifies the people who can review it @p:ppl-3 @p:me
     const bell = await send('GET', ada.cookie, '/api/notifications');
     const notices = ((await bell.json()) as { notifications: { type: string; by: string; target: { id: string }; suggestionId?: string }[] }).notifications;
     expect(notices.find((n) => n.type === 'suggestion')).toMatchObject({ by: 'Ben', target: { id: docId }, suggestionId: 'r1' });
+  });
+
+  it('reaches an editor whose access comes from a folder or the vault, and not a folder viewer', async () => {
+    const owner = await signedUpUser(env, 'suggest-owner', 'Olga');
+    const folderEditor = await signedUpUser(env, 'suggest-folder-ed', 'Fred');
+    const vaultEditor = await signedUpUser(env, 'suggest-vault-ed', 'Vera');
+    const folderViewer = await signedUpUser(env, 'suggest-folder-viewer', 'Vic');
+    const vault = await insertFolder(d1.db, owner, null);
+    const folder = await insertFolder(d1.db, owner, vault);
+    const doc = await insertDoc(d1.db, owner, { folderId: folder });
+    await insertGrant(d1.db, { folderId: folder }, { id: folderEditor.id }, 'editor');
+    await insertGrant(d1.db, { folderId: vault }, { id: vaultEditor.id }, 'editor');
+    await insertGrant(d1.db, { folderId: folder }, { id: folderViewer.id }, 'viewer');
+    await notifySuggestion(env, { docId: doc, author: ben.id, record: 'r2' });
+    const payload = JSON.stringify({ targetType: 'doc', targetId: doc, by: ben.id, suggestionId: 'r2' });
+    expect(await rows(owner.id)).toEqual([{ type: 'suggestion', payload }]);
+    expect(await rows(folderEditor.id), 'a folder editor').toEqual([{ type: 'suggestion', payload }]);
+    expect(await rows(vaultEditor.id), 'a vault editor').toEqual([{ type: 'suggestion', payload }]);
+    expect(await rows(folderViewer.id), 'a folder viewer').toEqual([]);
   });
 });
