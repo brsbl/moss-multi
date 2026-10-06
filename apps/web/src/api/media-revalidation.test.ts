@@ -98,7 +98,7 @@ function post(path: string, caller: Caller, init: { body?: BodyInit; headers?: R
   const url = `${BASE}${path}${caller.query ? `${path.includes('?') ? '&' : '?'}${caller.query}` : ''}`;
   return handleApi(new Request(url, {
     method: 'POST',
-    headers: { origin: BASE, ...caller.headers, ...init.headers },
+    headers: { origin: BASE, ...caller.headers, ...(init.body instanceof Uint8Array ? { 'content-length': String(init.body.byteLength) } : {}), ...init.headers },
     body: init.body,
     ...(init.body instanceof ReadableStream ? { duplex: 'half' } : {}),
   } as RequestInit), env);
