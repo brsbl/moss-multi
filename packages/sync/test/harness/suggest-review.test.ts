@@ -182,13 +182,12 @@ describe('T5.3 accept, reject and withdraw through the DocDO @p:mean-2 @p:R16 @p
     expect(meta.status).toBe('open');
     expect(opened.backing.alarm, 'the idle check is scheduled').not.toBeNull();
     expect(opened.backing.alarm!, 'within the idle window of the last change').toBeLessThanOrEqual(meta.updatedAt + 30_000 + 1_000);
-    vi.setSystemTime(meta.updatedAt + 30_001);
-    // An eviction drops what the instance held in memory; the alarm it set still fires on the fresh one.
+    // An eviction drops what the instance held in memory; the alarm it set still fires on the fresh one. (The wake
+    // clears fake timers, which resets the clock, so time moves on after it.)
     if (evicted) opened = await start(wake(opened));
+    vi.setSystemTime(meta.updatedAt + 30_001);
     await opened.dobj.alarm();
-    const after = readMeta(opened.dobj.document, grant.record);
-    const diagnosis = after?.status === 'open' ? JSON.stringify({ now: Date.now(), after, preview: await opened.dobj.previewSuggestion({ id: grant.record, reviewer: EDITOR }) }).slice(0, 1500) : '';
-    expect(after, diagnosis).toMatchObject({ status: 'rejected', resolvedBy: 'system' });
+    expect(readMeta(opened.dobj.document, grant.record)).toMatchObject({ status: 'rejected', resolvedBy: 'system' });
   });
 
   it('a new live suggestion notifies once, naming its author and record; a continuation does not', async () => {
