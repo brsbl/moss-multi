@@ -21,7 +21,8 @@ import { int, mutateOp, mutateRecord, pick, rng, targetsOf, type Targets } from 
 import { createRecord, newSuggestionsClient, opsOf, partsOf, readMeta, readRecord, recordIds, SuggestionsWriter, writeSuggestions } from './records.ts';
 import { acceptRecord, nodeRegistry, previewRecord } from './review.ts';
 import {
-  all, CENSUS, changedRoots, type CensusOp, deterministicIds, directEdit, EDITOR, exported, OTHER_SUGGESTER, payloadsInOrder, resetIds, seededBody, SUGGESTER, type Step,
+  all, CENSUS, changedRoots, type CensusOp, deterministicIds, directEdit, EDITOR, exported, OTHER_SUGGESTER, payloadsInOrder, resetIds, seededBody, spansOfText,
+  SUGGESTER, type Step,
 } from './test-support.ts';
 
 let restore: () => void = () => {};
@@ -423,6 +424,41 @@ describe('T5.4 fuzz findings, each replayed as a fixed case @p:mean-2 @p:R17', (
     held.destroy();
     writeSuggestions(live, () => opsOf(live, 'chart').push([{ doc: payload, update }]));
     excludedEverywhere(live, 'chart');
+  });
+});
+
+describe('T5.3s a strike, then a native delete of the struck text, is one honest record @p:mean-2 @p:R17', () => {
+  it("Backspace strikes a block's first character, then Backspace at the block's start joins it: previewed and accepted", () => {
+    const live = seededBody('Intro line stays.\n\nabc tail.\n\nClosing line stays too.\n');
+    let n = 0;
+    const link = wire(live, () => `r${(n += 1)}`);
+    const mounted = mount(live, link);
+    try {
+      // Backspace after "a": the routing strikes it with a delete part, and the "a" stays live in F.
+      const [run] = spansOfText(mounted.fork.doc, 'abc');
+      expect(mounted.fork.proposeDelete([{ client: run.client, clock: run.clock, len: 1 }]), 'the strike is proposed').not.toBeNull();
+      link.deliver(mounted.fork);
+      // Backspace again, at the block's start: the routing hands it to Lexical, which joins the paragraphs and so
+      // deletes the struck "a" with the rest of the block.
+      mounted.act(() => {
+        const node = texts().find((text) => text.getTextContent().startsWith('abc'))!;
+        caretIn(node, 0).deleteCharacter(true);
+      });
+      link.deliver(mounted.fork);
+    } finally {
+      mounted.dispose();
+    }
+    expect(link.replies.filter((reply) => reply.t === 'suggest-refused')).toEqual([]);
+    expect(recordIds(live)).toHaveLength(1);
+    const [id] = recordIds(live);
+    const record = readRecord(live, id)!;
+    expect(record.parts, 'the strike').toHaveLength(1);
+    expect(record.ops.length, 'the join').toBeGreaterThan(0);
+    const preview = previewRecord(live, id);
+    expect(preview, 'an honest record is not outdated').toMatchObject({ ok: true });
+    if (!preview.ok) return;
+    expect(acceptRecord(live, id, { previewHash: preview.hash, digest: preview.digest }, EDITOR)).toMatchObject({ ok: true });
+    expect(exported(live)).not.toContain('\n\nabc tail.');
   });
 });
 

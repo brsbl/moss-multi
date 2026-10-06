@@ -20,8 +20,6 @@ afterEach(() => restore());
 
 const NAMES = ['__proto__', 'constructor', 'toString', 'hasOwnProperty', 'valueOf', 'prototype'] as const;
 
-const GATES = ['not-open', 'unresolvable', 'foreign-client', 'outside-body', 'payload-alias', 'outdated', 'changed', 'broken', 'doc-cap'];
-
 const root = (doc: Y.Doc) => doc.get('root', Y.XmlText);
 const blocks = (doc: Y.Doc) => (root(doc).toDelta() as { insert: unknown }[]).map((op) => op.insert);
 const paragraph = (doc: Y.Doc) => blocks(doc).find((x) => x instanceof Y.XmlText) as Y.XmlText;
@@ -119,15 +117,15 @@ describe('T5.3s forged records named like Object.prototype members @p:mean-2 @p:
         preview = previewRecord(live, 'g');
       }).not.toThrow();
       const result = preview as unknown as ReturnType<typeof previewRecord>;
-      if (!result.ok) {
-        expect(GATES, `refused with a gate reason, not a crash: ${result.reason}`).toContain(result.reason);
-        continue;
-      }
+      // A field, a node type or a map key is a name like any other: the record previews.
+      expect(result, `previews like any other name${result.ok ? '' : `, not refused ${result.reason}`}`).toMatchObject({ ok: true });
+      if (!result.ok) continue;
       const rows = describeHunks(result.hunks);
       expect(names(rows, needle(name)), shown(rows)).toBe(true);
       hashes.push(result.hash);
     }
-    if (hashes.length === 2) expect(hashes[0]).not.toBe(hashes[1]);
+    expect(hashes).toHaveLength(2);
+    expect(hashes[0]).not.toBe(hashes[1]);
   });
 
   it('a field holding a BigInt: the preview never throws, travels as JSON, and the card names it', () => {
@@ -157,6 +155,7 @@ describe('T5.3s forged records named like Object.prototype members @p:mean-2 @p:
     ['{}', {}, { a: undefined }],
     ['null', null, Number.NaN],
     ['a list holding an object keyed by index', [{ 0: 1 }], [new Uint8Array([1])]],
+    ['0', 0, -0],
   ] as [string, unknown, unknown][])('a payload field holding %s, replaced by a different value, is a hunk the hash covers', (_name, was, now) => {
     const live = seededBody();
     payloadDocsFor(live).get(codeKey(live))!.getMap('payload-map').set('forged', was);
@@ -189,7 +188,25 @@ describe('T5.3s forged records named like Object.prototype members @p:mean-2 @p:
     const rows = describeHunks(a);
     expect(rows.some((row) => row.detail.startsWith(`payload ${name} `) && row.text.includes('forged-a')), shown(rows)).toBe(true);
     forgeRecord(live, 'g', [payloadOp('forged-a')]);
-    expect(() => previewRecord(live, 'g')).not.toThrow();
+    const previewed = previewRecord(live, 'g');
+    expect(previewed, 'a new payload doc named like any other previews').toMatchObject({ ok: true });
+    expect(previewed.ok && previewed.hash).toBe(previewHash(a));
+  });
+
+  // Two map-valued fields whose names share their first 80 characters: a change inside one never reads as the same
+  // change inside the other, and a row names the field in full.
+  it('a change inside one of two long-named fields reads differently from the same change inside the other', () => {
+    const keys = ['A', 'B'].map((end) => `__${'k'.repeat(90)}${end}`);
+    const seen = keys.map((key) => {
+      const live = seededBody();
+      for (const each of keys) paragraph(live).setAttribute(each, new Y.Map([['v', '1']]) as never);
+      const hunks = hunksOf(live, [opFor(live, (doc) => (paragraph(doc).getAttribute(key) as unknown as Y.Map<unknown>).set('v', '2'))]);
+      const rows = describeHunks(hunks);
+      expect(names(rows, key.slice(2)), shown(rows)).toBe(true);
+      return { rows: rows.map((row) => [row.kind, row.text, row.note ?? '']), paths: rows.map((row) => row.detail.replace(/ #[0-9a-f]{12}/, '')) };
+    });
+    expect(seen[0].rows).not.toEqual(seen[1].rows);
+    expect(seen[0].paths).not.toEqual(seen[1].paths);
   });
 
   it.each(NAMES)("ingest keeps a lease's clock in a payload doc named %s: a first write past clock 0 is a gap", (name) => {
