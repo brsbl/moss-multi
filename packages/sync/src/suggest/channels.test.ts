@@ -57,27 +57,61 @@ const LISTED: Record<DocKind, Record<string, { seq: string[]; key: string[] }>> 
 
 const ROOTS = ['root', 'payload', 'payload-map', 'elsewhere'];
 
-/** One V1 update holding exactly `write`'s one struct at clock 0 of `client`, and no deletes. */
-function rawUpdate(client: number, write: (encoder: Y.UpdateEncoderV1) => void): Uint8Array {
+/** One V1 update holding exactly `write`'s one struct at clock 0 of `client`; `deleted` also deletes that clock. */
+function rawUpdate(client: number, write: (encoder: Y.UpdateEncoderV1) => void, deleted = false): Uint8Array {
   const encoder = new Y.UpdateEncoderV1();
   encoding.writeVarUint(encoder.restEncoder, 1);
   encoding.writeVarUint(encoder.restEncoder, 1);
   encoder.writeClient(client);
   encoding.writeVarUint(encoder.restEncoder, 0);
   write(encoder);
-  encoding.writeVarUint(encoder.restEncoder, 0);
+  if (!deleted) encoding.writeVarUint(encoder.restEncoder, 0);
+  else for (const n of [1, client, 1, 0, 1]) encoding.writeVarUint(encoder.restEncoder, n);
   return encoder.toUint8Array();
 }
 
-const itemUpdate = (client: number, root: string, sub: string | null, content: Content) =>
-  rawUpdate(client, (encoder) => new Y.Item(Y.createID(client, 0), null, null, null, null, root as never, sub, content).write(encoder, 0));
+/** An item under `parent` (a root's name, or the id of the item holding the parent type), with no origins. */
+const itemUpdate = (client: number, parent: string | Y.ID, sub: string | null, content: Content, deleted = content instanceof Y.ContentDeleted) =>
+  rawUpdate(client, (encoder) => new Y.Item(Y.createID(client, 0), null, null, null, null, parent as never, sub, content).write(encoder, 0), deleted);
 
 interface Case {
   name: string;
   doc: DocKind;
-  update: (client: number) => Uint8Array;
+  /** An editor's write to the live doc before the suggestion, returning the parent the struct names. */
+  setup?: (live: Y.Doc) => Y.ID;
+  update: (client: number, parent: Y.ID | null) => Uint8Array;
   listed: boolean;
+  /** The struct deletes itself, so the preview shows nothing and accept lands nothing. */
+  silent?: boolean;
 }
+
+const BODY_KEYS = ['ContentAny', 'ContentType(Y.Map)', 'ContentDeleted'];
+
+interface Nest {
+  edge: string;
+  place: (live: Y.Doc, type: Y.AbstractType<unknown>) => void;
+  rows: Record<string, { seq: string[]; key: string[] }>;
+}
+
+/** The design's table one level down: a parent type an editor wrote, by the edge it sits on. */
+const NESTED: Record<DocKind, Nest> = {
+  // The parent sits in the root's sequence: a table edge for XmlText, XmlElement and Map only.
+  body: {
+    edge: "the root's sequence",
+    place: (live, type) => live.get('root', Y.XmlText).insertEmbed(live.get('root', Y.XmlText).length, type as never),
+    rows: {
+      'Y.XmlText': { seq: LISTED.body.root.seq, key: BODY_KEYS },
+      'Y.XmlElement': { seq: [], key: BODY_KEYS },
+      'Y.Map': { seq: [], key: BODY_KEYS },
+    },
+  },
+  // The parent sits at a key of 'payload-map', which holds only JSON values: no type there is a table edge.
+  payload: {
+    edge: "a key of 'payload-map'",
+    place: (live, type) => payloadDocsFor(live).get(codeKey(live))!.getMap('payload-map').set('nest', type),
+    rows: {},
+  },
+};
 
 const CASES: Case[] = [
   ...(['body', 'payload'] as const).flatMap((doc) =>
@@ -88,12 +122,44 @@ const CASES: Case[] = [
           doc,
           update: (client) => itemUpdate(client, root, sub, make()),
           listed: (LISTED[doc][root]?.[sub === null ? 'seq' : 'key'] ?? []).includes(name),
+          silent: name === 'ContentDeleted',
+        })),
+      ),
+    ),
+  ),
+  ...(['body', 'payload'] as const).flatMap((doc) =>
+    TYPES.flatMap(([parentName, makeParent]) =>
+      ([null, 'k'] as const).flatMap((sub) =>
+        CONTENTS.map(([name, make]): Case => ({
+          name: `${doc} doc, under a ${parentName} at ${NESTED[doc].edge}, parentSub ${sub === null ? 'null' : 'set'}: ${name}`,
+          doc,
+          setup: (live) => {
+            const parent = makeParent() as unknown as Y.AbstractType<unknown>;
+            NESTED[doc].place(live, parent);
+            return parent._item!.id;
+          },
+          update: (client, parent) => itemUpdate(client, parent!, sub, make()),
+          listed: (NESTED[doc].rows[parentName]?.[sub === null ? 'seq' : 'key'] ?? []).includes(name),
+          silent: name === 'ContentDeleted',
         })),
       ),
     ),
   ),
   ...(['body', 'payload'] as const).flatMap((doc): Case[] => [
     { name: `${doc} doc: a GC struct`, doc, update: (client) => rawUpdate(client, (encoder) => new Y.GC(Y.createID(client, 0), 1).write(encoder, 0)), listed: false },
+    {
+      name: `${doc} doc: a GC struct the op itself deletes`,
+      doc,
+      update: (client) => rawUpdate(client, (encoder) => new Y.GC(Y.createID(client, 0), 1).write(encoder, 0), true),
+      listed: true,
+      silent: true,
+    },
+    {
+      name: `${doc} doc: deleted content the op does not delete`,
+      doc,
+      update: (client) => itemUpdate(client, doc === 'body' ? 'root' : 'payload', null, new Y.ContentDeleted(1), false),
+      listed: false,
+    },
     { name: `${doc} doc: a Skip struct`, doc, update: (client) => rawUpdate(client, (encoder) => new Y.Skip(Y.createID(client, 0), 1).write(encoder, 0)), listed: false },
   ]),
 ];
@@ -171,16 +237,20 @@ function expectRefused(outcome: Outcome): void {
 }
 
 describe('T5.Ps census: every struct shows in the preview or is refused @p:mean-2', () => {
-  it.each(CASES)('$name', ({ doc, update, listed }) => {
-    const outcome = run((live, lease) => [{ doc: doc === 'body' ? 'body' : codeKey(live), update: update(lease) }]);
+  it.each(CASES)('$name', ({ doc, setup, update, listed, silent }) => {
+    const outcome = run((live, lease) => {
+      const parent = setup?.(live) ?? null;
+      return [{ doc: doc === 'body' ? 'body' : codeKey(live), update: update(lease, parent) }];
+    });
     if (!listed) {
       expectRefused(outcome);
       return;
     }
+    expect(outcome.ingest, 'ingest takes a struct in the table').toEqual({ ok: true });
     // A listed struct may still fail a later gate (a bare string under the root is not a Lexical tree). When it lands,
-    // the preview showed a change and accept changed exactly that.
+    // the preview showed the change and accept changed exactly that.
     if (outcome.accept.ok) {
-      expect(outcome.hunks, 'the preview shows the struct').toBeGreaterThan(0);
+      if (!silent) expect(outcome.hunks, 'the preview shows the struct').toBeGreaterThan(0);
       expect(outcome.landed, 'accept lands exactly what the preview showed').toBe(outcome.shown);
     } else {
       expect(outcome.bodyKept).toBe(true);
@@ -227,6 +297,23 @@ describe('T5.Ps the three channels the preview used to miss are refused @p:mean-
         return [{ doc: key, update: opOn(payloadDocsFor(live).get(key)!, lease, write) }];
       }));
     }
+  });
+
+  it('a key on a Map an editor nested in an Array: the leaf edge is in the table, an ancestor edge is not', () => {
+    // Payload: payload-map holds an Array, which holds a Map.
+    expectRefused(run((live, lease) => {
+      const key = codeKey(live);
+      const held = payloadDocsFor(live).get(key)!;
+      held.getMap('payload-map').set('arr', Y.Array.from([new Y.Map()]));
+      return [{ doc: key, update: opOn(held, lease, (doc) => (doc.getMap('payload-map').get('arr') as Y.Array<Y.Map<unknown>>).get(0).set('k', 'hidden')) }];
+    }));
+    // Body: a block's key holds an Array, which holds a Map.
+    const firstBlock = (doc: Y.Doc) => (doc.get('root', Y.XmlText).toDelta() as { insert: unknown }[]).find((op) => op.insert instanceof Y.XmlText)!.insert as Y.XmlText;
+    expectRefused(run((live, lease) => {
+      firstBlock(live).setAttribute('arr', Y.Array.from([new Y.Map()]) as never);
+      const update = opOn(live, lease, (doc) => (firstBlock(doc).getAttribute('arr') as unknown as Y.Array<Y.Map<unknown>>).get(0).set('k', 'hidden'));
+      return [{ doc: 'body', update }];
+    }));
   });
 
   it("a listed channel still lands: an attribute on the note root shows as a note hunk and lands as shown", () => {
