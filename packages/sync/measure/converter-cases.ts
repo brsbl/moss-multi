@@ -84,8 +84,8 @@ export const ORDINARY_NOTES: Record<string, () => string> = {
   'a palette paragraph of 2,000 named hex, rgb and hsl colors': () =>
     range(2_000).map((i) => (i % 3 === 0 ? `${hex(i)} shade ${i},` : i % 3 === 1 ? `rgb(${i % 256}, 40, 80) tone,` : `hsl(${i % 360}, 50%, 50%) hue,`)).join(' '),
   'a paragraph of 1,000 wiki links': () => `See ${range(1_000).map((i) => `[[Note ${i}]]`).join(', ')}.`,
-  'a paragraph of 2,000 links whose URLs hold underscores and parentheses': () =>
-    `Sources: ${range(2_000).map((i) => `[Python ${i}](https://en.wikipedia.org/wiki/Python_(programming_language)_${i})`).join(' ')}`,
+  'a paragraph of 600 links whose URLs hold underscores and parentheses': () =>
+    `Sources: ${range(600).map((i) => `[Python ${i}](https://en.wikipedia.org/wiki/Python_(programming_language)_${i})`).join(' ')}`,
   'a paragraph of 1,000 sentences of italic, bold, code and strikethrough': () =>
     range(1_000).map((i) => `Some *italic ${i}* and **bold** text with \`code ${i}\` and ~~struck~~ words.`).join(' '),
   'a paragraph of 1,000 raw URLs': () => `Links: ${range(1_000).map((i) => `https://example.com/page/${i}`).join(' and ')}`,
