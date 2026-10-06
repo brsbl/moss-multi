@@ -125,6 +125,10 @@ function dropUndo(editor: LexicalEditor | null, clients: number[]): void {
   }
 }
 
+/** Whether `role` may stay in `mode`: Review for any reader, Edit for any role but a suggester, Suggest from suggester. */
+const allows = (mode: EditMode, role: Role | null): boolean =>
+  role !== null && (mode === 'review' || (mode === 'edit' ? role !== 'suggester' : can(role, 'suggest')));
+
 class PaneBinding implements SuggestPane {
   #state: PaneState = { docState: 'binding', bodyState: 'unbound', bodyVisible: false, resetting: false, revision: 0, hasText: false, mode: 'edit', suggestSent: 0, suggestRefused: 0 };
   readonly #listeners = new Set<() => void>();
@@ -167,8 +171,9 @@ class PaneBinding implements SuggestPane {
   }
 
   setRole(role: Role | null): void {
+    const known = this.#role !== null;
     this.#role = role;
-    this.#retarget();
+    this.#retarget(known);
     if (this.#session) this.#apply(this.#session.state);
   }
 
@@ -211,8 +216,13 @@ class PaneBinding implements SuggestPane {
     for (const listener of [...this.#mountListeners]) listener();
   }
 
-  /** The mode the pane should show changed (a request, or the role): switch once every edit is acknowledged. */
-  #retarget(): void {
+  /**
+   * The mode the pane should show changed (a request, or the role): switch once every edit is acknowledged. A role
+   * changed in place (a demotion) keeps the mode while the new role allows it, so a demoted editor stays on the body,
+   * read-only, and is told why.
+   */
+  #retarget(roleChanged = false): void {
+    if (roleChanged && allows(this.#target, this.#role)) return;
     const target = modeFor(this.docId, this.#role);
     if (target === this.#target) return;
     this.#target = target;

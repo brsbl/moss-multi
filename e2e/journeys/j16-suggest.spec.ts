@@ -12,7 +12,7 @@ import {
   APP_STATE_ATTR, BODY_BINDING_ATTR, EDIT_MODE_ATTR, FLOATING_TOOLBAR_ATTR, NAMES, SUGGEST_CHIP_ATTR, SUGGEST_REFUSED_ATTR,
   SUGGEST_SENT_ATTR, SYNC_UNACKED_ATTR, TITLE_BINDING_ATTR,
 } from '../lib/contract.ts';
-import { grantDoc } from '../lib/grants.ts';
+import { acceptInvite, grantDoc } from '../lib/grants.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
 const BOOT_TIMEOUT = 30_000;
@@ -153,6 +153,8 @@ test('j16-suggest: a principal shared as suggester through the dialog opens lock
   const dialog = await ui.shareWith(ada, docId, benPrincipal, 'Can suggest');
   await ada.page.keyboard.press('Escape');
   await expect(dialog).toBeHidden();
+  // A share by email is an invite; Ben redeems it as following its link would.
+  await acceptInvite(ada, { docId }, benPrincipal);
 
   const ben = await actors.session(benPrincipal);
   const pane = await openIn(ben, docId);

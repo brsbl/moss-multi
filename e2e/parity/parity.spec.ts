@@ -333,8 +333,10 @@ async function captureCandidate(browser: Browser, target: Target, theme: Theme, 
     }
     await prepare(page, target, 'candidate');
     await audit(page, theme, 'candidate', bare(target) ? target.crop : CROP);
+    const png = await capture(page, target);
+    // Measured in the captured state: the docked toolbar's chrome shows only once the editor is focused.
     const masks = await maskRects(page, target.crop ?? CROP, [...target.masks, ...(theme === 'dark' ? (target.darkMasks ?? []) : [])]);
-    return { png: await capture(page, target), masks };
+    return { png, masks };
   } finally {
     await page.context().close();
   }

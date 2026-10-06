@@ -67,7 +67,7 @@ export const TARGETS: Target[] = [
   // Comments (T4.3): a note with one thread. The highlight (moss's mark, our CSS Custom Highlight) and its gutter icon.
   // In dark mode moss pads its mark by 2px a side and rounds it, which moves the rest of the line; a highlight is paint
   // only and cannot (deviation 23), so there the commented line is painted out and the gutter icon still compared.
-  { id: 'comment-gutter', story: 'comment-note--default', seed: 'story-listing', fixture: 'comment-note', focusEditor: true, masks: ['[data-collab-chrome]'], darkMasks: [COMMENTED_LINE], floor: 0.05, maxBlob: 16, prepare: 'comment-gutter' },
+  { id: 'comment-gutter', story: 'comment-note--default', seed: 'story-listing', fixture: 'comment-note', focusEditor: true, masks: ['[data-collab-chrome]', '[data-suggest-dock]'], darkMasks: [COMMENTED_LINE], floor: 0.05, maxBlob: 16, prepare: 'comment-gutter' },
   // The thread its gutter icon opens, compared as the popover.
   { id: 'comment-popover', story: 'comment-note--default', seed: 'story-listing', fixture: 'comment-note', focusEditor: false, masks: [], floor: 0.05, maxBlob: 16, prepare: 'open-comment-thread', crop: COMMENT_POPOVER },
   // A detached thread opened from the Comments list reads as moss's thread does.
