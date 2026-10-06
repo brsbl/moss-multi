@@ -459,11 +459,12 @@ test("j01 registers: when two references share a name, Ben's merged edit keeps t
   await openFormula(ada, id);
   await expect(formulaInput(ada)).toHaveValue('cost+cost+2+3', { timeout: PEER_TIMEOUT });
   await expect(formulaInput(ada)).toHaveJSProperty('readOnly', false, { timeout: PEER_TIMEOUT });
-  await formulaInput(ada).press('End');
-  await ada.page.keyboard.type('*');
+  // A draft with a reference token is always a valid expression; an unfinished name holds it unwritten.
+  await nameInput(ada).fill('1');
   await formulaInput(ada).press('Home');
   for (let i = 0; i < 5; i += 1) await formulaInput(ada).press('Delete');
-  await expect(formulaInput(ada), 'Ada deletes the first reference').toHaveValue('cost+2+3*');
+  await expect(formulaInput(ada), 'Ada deletes the first reference').toHaveValue('cost+2+3');
+  expect(await sources(ben), "Ada's unfinished draft is not written").toEqual([`${first}+${second}+2+3`]);
   await openFormula(ben, id);
   await expect(formulaInput(ben)).toHaveValue('cost+cost+2+3', { timeout: PEER_TIMEOUT });
   await expect(formulaInput(ben)).toHaveJSProperty('readOnly', false, { timeout: PEER_TIMEOUT });
@@ -472,12 +473,11 @@ test("j01 registers: when two references share a name, Ben's merged edit keeps t
   await ben.page.keyboard.type('4');
   await expect.poll(() => sources(ada), { message: "Ada receives Ben's edit", timeout: PEER_TIMEOUT }).toEqual([`${first}+${second}+2+4`]);
   await ben.page.keyboard.press('Escape');
-  await expect(formulaInput(ada), "Ada's field takes Ben's edit and keeps her own").toHaveValue('cost+2+4*', { timeout: PEER_TIMEOUT });
-  await formulaInput(ada).press('End');
-  await ada.page.keyboard.press('Backspace');
+  await expect(formulaInput(ada), "Ada's field takes Ben's edit and keeps her own").toHaveValue('cost+2+4', { timeout: PEER_TIMEOUT });
+  await nameInput(ada).fill('total');
   const want = [`${second}+2+4`];
   for (const actor of [ada, ben]) await expect.poll(() => sources(actor), { message: `${actor.label}: the reference Ada kept is the one written`, timeout: PEER_TIMEOUT }).toEqual(want);
-  await ada.page.keyboard.press('Enter');
+  await nameInput(ada).press('Enter');
   await expect(popover(ada)).toHaveCount(0);
   await settled([ada, ben], id);
   for (const actor of [ada, ben]) {
