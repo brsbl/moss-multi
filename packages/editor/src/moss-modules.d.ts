@@ -141,6 +141,7 @@ declare module '@moss-desktop/common/markdown-layers' {
 
 declare module '@moss-desktop/common/comment-markers' {
   export function migrateLegacyCommentMarkersToModern(markdown: string): { markdown: string; migrated: boolean };
+  export function stripCommentMarkerTokens(markdown: string): string;
 }
 
 declare module '@moss-desktop/common/markdown-utils' {
