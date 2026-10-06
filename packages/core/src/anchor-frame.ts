@@ -907,10 +907,25 @@ export class AnchorEngine {
         byList.set(list, fresh);
         segs.push(fresh);
       }
+      // `pre` reads each list from its first member to its last, every pre-frame item between them included, as the
+      // reattach walk reads the segment: a survivor between two members (the property map of a text node a bold
+      // split off inside the comment) is part of the place, so an undo that refills the members reads as before.
       const tokens: Tok[] = [];
       const spans: Spans = new Map();
       const walk = new Walk(RANGE_BUDGET, this.stats);
-      for (const top of all) emitSubtree(top, true, view.pre, tokens, walk, spans);
+      const lastIn = new Map<Y.AbstractType<unknown>, Y.Item>();
+      for (const top of all) lastIn.set(parentOf(top), top);
+      const read = new Set<Y.AbstractType<unknown>>();
+      for (const top of all) {
+        const list = parentOf(top);
+        if (read.has(list)) continue;
+        read.add(list);
+        const last = lastIn.get(list)!;
+        for (let at: Y.Item | null = top; at; at = at.right) {
+          emitSubtree(at, true, view.pre, tokens, walk, spans);
+          if (at === last) break;
+        }
+      }
       return {
         segs,
         members: all.map((top) => [top.id.client, top.id.clock, top.length]),
@@ -1145,8 +1160,20 @@ function mapIn(gap: Gap, s: Unit | null, e: Unit | null): [Unit | null, Unit | n
   return [first, last];
 }
 
-/** I3b: a deleted endpoint moves inward to the nearest surviving unit of the comment's own pre-frame range. */
+/** A surviving unit that is more than whitespace: a decorator, an embed, or a character that prints. */
+function printable(item: Y.Item, from: number, to: number): boolean {
+  const content = item.content;
+  return !(content instanceof Y.ContentString) || content.str.slice(from, to + 1).trim() !== '';
+}
+
+/**
+ * I3b: a deleted endpoint moves inward to the nearest surviving unit of the comment's own pre-frame range. Whitespace
+ * alone is not the comment's text: when only spaces it covered survive (a text diff keeps a separator's identity,
+ * such as the space between two words deleted together across a bold), the comment takes the lost path, so the
+ * deletion detaches it and its undo can bring it back.
+ */
 function shrink(view: View, entries: Entry[], s: Unit, e: Unit): [Unit, Unit] | null {
+  if (!entries.some(({ item, from, to }) => view.survivor(item) && isUnit(item) && printable(item, from, to))) return null;
   let first: Unit | null = s.item.deleted ? null : s;
   let last: Unit | null = e.item.deleted ? null : e;
   if (!first) {

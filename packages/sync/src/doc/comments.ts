@@ -50,7 +50,7 @@ export interface CommentRecord {
   source: CommentSource;
   parentId?: string;
   resolvedAt?: number;
-  resolvedBy?: string;
+  resolvedBy?: CommentSource;
   reactions: Record<string, string[]>;
 }
 
@@ -156,6 +156,24 @@ export class DocComments {
     });
     this.#engine.set(input.id, anchor);
     return { ok: true, id: input.id, quote: anchor.quote };
+  }
+
+  /**
+   * Resolves or reopens a thread (comments.md §12): the root carries the state, as moss reads it. Only the `c:` record
+   * is rewritten, so a resolve costs one record whatever the thread's length.
+   */
+  resolve(id: string, resolved: boolean, by: CommentSource): CommentResult {
+    if (!ID.test(id)) return refuse(400, 'bad-id');
+    const record = this.doc.getMap<unknown>('comments').get(`c:${id}`) as CommentRecord | undefined;
+    if (!record) return refuse(404, 'comment-missing');
+    if (record.parentId !== undefined) return refuse(409, 'not-a-thread');
+    if ((record.resolvedAt !== undefined) === resolved) return { ok: true, id, quote: null };
+    const next: CommentRecord = { ...record };
+    delete next.resolvedAt;
+    delete next.resolvedBy;
+    if (resolved) Object.assign(next, { resolvedAt: nowSeconds(), resolvedBy: by });
+    this.#writer.write((map) => map.set(`c:${id}`, next));
+    return { ok: true, id, quote: null };
   }
 
   /**
@@ -358,7 +376,7 @@ interface SidecarEntry {
   source: CommentSource;
   parentId?: string;
   resolvedAt?: number;
-  resolvedBy?: string;
+  resolvedBy?: CommentSource;
   quote?: string;
 }
 

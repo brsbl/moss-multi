@@ -1,0 +1,42 @@
+diff --git a/packages/desktop/src/renderer/editor/components/CommentGutter.tsx b/packages/desktop/src/renderer/editor/components/CommentGutter.tsx
+--- a/packages/desktop/src/renderer/editor/components/CommentGutter.tsx
++++ b/packages/desktop/src/renderer/editor/components/CommentGutter.tsx
+@@ -14,6 +14,8 @@ import { commentThreadFilterAtom, noteCommentsMapAtom } from '@moss/shared/state
+ import { COMMENT_COLORS } from './media-primitives';
+ import { isCommentResolved, isCommentVisibleForStatus } from '../utils/comment-thread-count';
+ import { applyCommentHoverState, clearCommentHoverState } from '../utils/comment-hover-state';
++// moss-multi seam: comments (comments.md §12)
++import { subscribePaint, targets } from '@moss-multi/host/comments/adapter';
+ 
+ const ICON_HEIGHT = 32;
+ 
+@@ -38,10 +40,19 @@ function shouldSkipElement(element: HTMLElement): boolean {
+ function getCommentPositions(
+   editor: ReturnType<typeof useLexicalComposerContext>[0]
+ ): CommentGutterEntry[] {
++  // moss-multi seam: comments (comments.md §12): rows come from the painted anchors, not MarkNodes
++  const entries: CommentGutterEntry[] = targets(editor);
++  if (entries) {
++    entries.sort((a, b) => a.top - b.top);
++    for (let i = 1; i < entries.length; i++) {
++      const minTop = entries[i - 1].top + ICON_HEIGHT;
++      if (entries[i].top < minTop) entries[i] = { ...entries[i], top: minTop };
++    }
++    return entries;
++  }
+   const rootElement = editor.getRootElement();
+   if (!rootElement) return [];
+   const containerRect = rootElement.getBoundingClientRect();
+-  const entries: CommentGutterEntry[] = [];
+   const seenIds = new Set<string>();
+ 
+   editor.getEditorState().read(() => {
+@@ -124,7 +135,7 @@ export function CommentGutter({ noteId, onIconClick, activeCommentId, className
+     }
+ 
+     const initialRaf = requestAnimationFrame(updatePositions);
+-    const unregMutation = editor.registerMutationListener(MarkNode, () => updatePositions());
++    const unregMutation = subscribePaint(editor, scheduleUpdate); // moss-multi seam: comments
+     // Dirty-gated: only reposition when content changes (e.g. lines added above
+     // a comment), not on selection-only changes (click-to-focus, arrow keys).
+     const unregUpdate = editor.registerUpdateListener(({ dirtyElements, dirtyLeaves }) => {

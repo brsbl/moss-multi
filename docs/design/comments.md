@@ -49,7 +49,7 @@ Nothing searches the document for a positioned anchor, scores similarity, or tru
 - the moss markdown inline shortcuts, including one that wraps the commented text, when that text occurs once in the span the shortcut rewrites. When it occurs more than once there (a repeat in the span, or a link label that also appears in its URL), the comment orphans by design: P2 #9 (coordinator amendment, 2026-10-04).
 
 It orphans on deletion of all its characters, including its block. It reattaches on undo or redo of:
-- a text deletion;
+- a text deletion, including one across a bold that split the comment over either edge;
 - a block deletion;
 - a cross-block deletion;
 - a text deletion followed by deletion of its paragraph, with both undone, including when the text was the paragraph's whole text;
@@ -166,7 +166,7 @@ Each delete range in `txn.deleteSet` is looked up in EP. Comments whose endpoint
    - Accept the mapping only if the whole new range, in text mode, equals the pre-frame range. Then re-mint.
    - This carries V1 format split and join, Enter (the end may move into the new block), soft break, a join, and the markdown inline shortcuts. A shortcut that wraps the commented text (`**`, `_`, `~~`, `` ` ``, `==`, a `[text](url)` link) makes Lexical delete the text with its delimiters and reinsert it as a new node, so D is I plus the delimiters, and neither the prefix nor the suffix holds the comment. The wrap rule maps it, even when the commented text recurs later in the same text node, which Lexical then deletes and reinserts in the same gap. It adds no new target: the run is frame-new, between the same survivors, the only run the comment's text can be, and the comment's text the only passage that run can be. The whole-range check still applies. A frame that leaves one of two identical passages, with either one a valid reading, maps neither copy.
    - The coordinator amendment (2026-10-04) ratifies this rule as the amendment to decision §4.2. When the comment's text is ambiguous in the rewritten span, no run is the only reading and the comment orphans (P2 #9). The commonest honest case is a link whose URL contains its label: D holds the label twice, once in the brackets and once in the URL, and I holds it once.
-2. **Survivor shrink (I3b).** Otherwise, re-mint each deleted endpoint onto the nearest surviving unit inside the pre-frame range, walking inward. Replacement text typed at a deleted edge is not adopted.
+2. **Survivor shrink (I3b).** Otherwise, re-mint each deleted endpoint onto the nearest surviving unit inside the pre-frame range, walking inward. Replacement text typed at a deleted edge is not adopted. Whitespace alone does not count: when only spaces the comment covered survive (a text diff keeps the separator between two words deleted together across a bold), the comment takes the lost path instead (T4.3 check).
 3. **Lose (§5.3).** If no survivor exists, the comment takes the lost path. A walk over budget orphans it with no `lost`.
 
 ### 5.3 Losing the text
@@ -175,7 +175,7 @@ Each delete range in `txn.deleteSet` is looked up in EP. Comments whose endpoint
 
 **Segments.** For each list that holds top-level members, the segment is `(left, last]`: `left` is the item immediately left of that list's first member (or the list start), and `last` is the list's last member. Segments are in flattened order.
 
-**Signature.** `pre` is the full-mode tokens of the preLive items in the members' full subtrees, in flattened order, with [a, b) the comment's span inside it, hashed to 128 bits of SHA-256.
+**Signature.** `pre` is the full-mode tokens of the preLive items, with their full subtrees, from each list's first member to its last, in flattened order (so a survivor between two members, such as the property map of a text node a bold split off inside the comment, reads as the reattach walk reads it; T4.3 check), with [a, b) the comment's span inside it, hashed to 128 bits of SHA-256.
 
 **Outcome.** If the segments' live tokens already equal `pre` (a same-frame undo), reattach. Otherwise write `status: 'orphaned'`, `quote` = the pre-frame text, positions unchanged, and `lost`. Over budget, or more than 512 member runs, orphans with no `lost`: permanently detached, the safe failure.
 
@@ -354,7 +354,7 @@ The workerd CPU budget, the DocDO wiring of the guard and engine, REST, paint an
 ## 11. Paint (SP10)
 
 - **Highlights.** One `Highlight` per moss color, `moss-comment-0`, `-3` and `-4` (user, agent, external), plus `moss-comment-hover` and `moss-comment-active` for the underline states, styled in host CSS from the tokens in `MarkdownEditor.css:831–904`. A thread filtered out by `commentThreadFilterAtom` is not added.
-- **Rebuilt, never kept.** A requestAnimationFrame pass after each editor update, comments-map change and filter change resolves every anchor to Lexical points (`$getAnchorAndFocusForUserState`), then to DOM positions, and replaces the ranges. SP10 shows a live Range collapses when a text node's data is replaced, which is how Lexical writes text.
+- **Rebuilt, never kept.** A pass in the same task as each editor update that moves text (T4.3: a deferred pass left one frame painted on collapsed ranges), and a requestAnimationFrame pass after each comments-map change and filter change, resolves every anchor to Lexical points (`$getAnchorAndFocusForUserState`), then to DOM positions, and replaces the ranges. SP10 shows a live Range collapses when a text node's data is replaced, which is how Lexical writes text.
 - **One registry per document.** `CSS.highlights` is global, so a module-level registry merges every pane's ranges into each named highlight.
 - **Decorators** get `comment-highlight-active` and `comment-decorator-hover` on their `[data-block-decorator-key]` wrapper, a DOM class, not a tree write.
 - **Hit-testing.** `commentsAtPoint(x, y)` takes the caret position under the pointer and asks each painted range `isPointInRange`.

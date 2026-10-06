@@ -44,3 +44,27 @@ export async function createComment(request: Request, env: DocsEnv, docId: strin
   if (!result.ok) return json({ error: result.error }, result.status, NO_STORE);
   return json({ comment: { id: result.id, quote: result.quote } }, 201, NO_STORE);
 }
+
+/**
+ * POST /api/docs/:id/comments/:commentId/resolve `{resolved}` (comments.md §12): a commenter or above resolves or
+ * reopens a thread; it counts against the same per-principal comment rate as a create.
+ */
+export async function resolveComment(request: Request, env: DocsEnv, docId: string, commentId: string): Promise<Response> {
+  const principal = await resolvePrincipal(request, env);
+  if (!principal || principal.type === 'anonymous') return json({ error: 'unauthenticated', message: 'Sign in to comment' }, 401, NO_STORE);
+  const body: Record<string, unknown> = (await readJsonObject(request)) ?? {};
+  const access = await resolveDocAccess(createDb(env.DB), principal, docId, shareTokenOf(request));
+  if (!access || access.deleted) return notFound();
+  if (!roleAtLeast(access.role, 'commenter')) return json({ error: 'forbidden', message: "You can't comment on this note." }, 403, NO_STORE);
+  const { resolved } = body;
+  if (!ID.test(commentId) || typeof resolved !== 'boolean') return json({ error: 'bad-request' }, 400, NO_STORE);
+  const principalDO = await getServerByName(env.PrincipalDO, principal.id);
+  if (!(await principalDO.takeCommentToken())) {
+    return json({ error: 'rate-limited' }, 429, { ...NO_STORE, 'retry-after': String(COMMENT_OP_RATE.windowMs / 1000) });
+  }
+  const stub = await getServerByName(env.DocDO, docId);
+  const by = principal.type === 'agent' ? 'external' : 'user';
+  const result = (await stub.resolveComment({ id: commentId, resolved, by })) as CommentResult;
+  if (!result.ok) return json({ error: result.error }, result.status, NO_STORE);
+  return json({ comment: { id: commentId, resolved } }, 200, NO_STORE);
+}

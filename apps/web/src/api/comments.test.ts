@@ -16,8 +16,13 @@ const DocDO = {
       calls.push({ docId: id.name, input });
       return verdict;
     },
+    resolveComment: async (input: Record<string, unknown>) => {
+      resolves.push({ docId: id.name, input });
+      return verdict;
+    },
   }),
 };
+const resolves: { docId: string; input: Record<string, unknown> }[] = [];
 
 const tokenAsks: string[] = [];
 let commentTokens = Infinity;
@@ -55,6 +60,7 @@ beforeAll(async () => {
 afterAll(() => d1?.dispose());
 beforeEach(() => {
   calls.length = 0;
+  resolves.length = 0;
   tokenAsks.length = 0;
   commentTokens = Infinity;
   verdict = { ok: true, id: 'c1', quote: 'brown fox' };
@@ -124,5 +130,34 @@ describe('POST /api/docs/:id/comments @p:tech-3 @p:mean-1', () => {
     const response = await post(ben.cookie, COMMENT);
     expect(response.status).toBe(status);
     expect(await response.json()).toMatchObject({ error: answer.error });
+  });
+});
+
+describe('POST /api/docs/:id/comments/:commentId/resolve @p:mean-1', () => {
+  const resolve = (cookie: string | null, body: unknown, commentId = 'c1') => post(cookie, body, `/api/docs/${docId}/comments/${commentId}/resolve`);
+
+  it('lets a commenter resolve and reopen a thread, as a user', async () => {
+    const response = await resolve(ben.cookie, { resolved: true });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ comment: { id: 'c1', resolved: true } });
+    expect(resolves).toEqual([{ docId, input: { id: 'c1', resolved: true, by: 'user' } }]);
+    expect((await resolve(ada.cookie, { resolved: false })).status).toBe(200);
+    expect(tokenAsks).toEqual([ben.id, ada.id]);
+  });
+
+  it('refuses a viewer 403, a stranger 404, an anonymous caller 401 and a bad body 400', async () => {
+    expect((await resolve(cara.cookie, { resolved: true })).status).toBe(403);
+    expect((await resolve(dan.cookie, { resolved: true })).status).toBe(404);
+    expect((await resolve(null, { resolved: true })).status).toBe(401);
+    expect((await resolve(ben.cookie, { resolved: 'yes' })).status).toBe(400);
+    expect((await resolve(ben.cookie, { resolved: true }, 'bad.id')).status).toBe(400);
+    expect(resolves).toEqual([]);
+  });
+
+  it('passes a missing thread through as the DocDO answers it', async () => {
+    verdict = { ok: false, status: 404, error: 'comment-missing' };
+    const response = await resolve(ben.cookie, { resolved: true }, 'nope');
+    expect(response.status).toBe(404);
+    expect(await response.json()).toMatchObject({ error: 'comment-missing' });
   });
 });
