@@ -269,13 +269,13 @@ Moss's locks (`mutationQueues`, `casLocks`, `runWithNoteLock`, note-store.ts:206
 Both are additive within API 1 and listed in `MOSS_EDITOR_INFO.features` and `editor.json` `features`. The viewer (1.1.0) has the same two, with the same shapes.
 
 - **`selection-1`: `handle.selection(): MossSelection | null`.** Null when the selection is collapsed, outside the note body (the title, a popover) or the note is not loaded. Otherwise:
-  - `text`: the selected plain text as rendered, never a `%%m:` marker.
-  - `lines: {start, end}`: 1-based, inclusive lines in the note's markdown exactly as a save would write the current buffer, unsaved edits included, frontmatter and the `# Title` line counted. They come from the save's own export, run once on the body and once per top-level block. Inside a list, table or code block they name the items, rows or code lines selected (a code block's source counts from its textarea while it is open); elsewhere every line of each block touched.
+  - `text`: the selected plain text as rendered, never a `%%m:` marker: one line per block, table cells tab-separated, a code block's source without its header or gutter.
+  - `lines: {start, end}`: 1-based, inclusive lines in the note's markdown exactly as a save would write the current buffer, unsaved edits included, frontmatter and the `# Title` line counted. They come from the save's own export, run once on the body and once per top-level block. Inside a list, table or code block they name the items, rows or code lines selected (a code block's source counts from its textarea while it is open, the unblurred edit included); a selection across table cells is Lexical's table selection, which outlives the mouseup; elsewhere every line of each block touched.
   - `markdown`: those lines, comment markers stripped.
   - `headings`: the heading path over the selection's start, outermost first (a selected heading included).
   - `blocks: {type, line, heading?}[]`: each top-level block touched, its Lexical node type (`paragraph`, `heading`, `list`, `table`, `code-block`, …), first line and innermost heading.
   - Moss markdown has no persisted block ids, so the line range plus the heading path is the stable reference.
-- **`share-with-agent-1`: optional `services.shareWithAgent(selection)`.** When the host supplies it, the editor shows Moss's Share with Agent button (the header button the web app hides under P:Agents) above the note; a press calls the service with `selection()` at that moment, or null. Without the service the button stays hidden, as in 0.1.0.
+- **`share-with-agent-1`: optional `services.shareWithAgent(selection)`.** When the host supplies it, the editor shows Moss's Share with Agent button (the header button the web app hides under P:Agents) above the note; a press calls the service with `selection()` at that moment, or null. A service that throws or rejects is logged, not raised. Without the service the button stays hidden, as in 0.1.0.
 
 ## 9. CSP
 

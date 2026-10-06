@@ -4,7 +4,7 @@ import { MARKDOWN_EDITOR_TRANSFORMERS, unescapeHtmlEntities } from '@moss-deskto
 import { stripTableColumnWidthComments } from '@moss-desktop/renderer/editor/utils/markdown-export';
 import { assembleNote, hasLegacyCommentFooter, parseCommentFooter } from '@moss-desktop/common/markdown-layers';
 import { stripCommentMarkerTokens } from '@moss-desktop/common/comment-markers';
-import { linesBeforeBody, type MossExport } from '@moss-multi/host/selection.ts';
+import { alignedLines, linesBeforeBody, offsetLines, type MossExport, type PlaceLine } from '@moss-multi/host/selection.ts';
 import type { MossNoteContent } from './moss-file.ts';
 import type { MossViewerOptions } from './types.ts';
 
@@ -18,13 +18,19 @@ export const MOSS_EXPORT: MossExport = {
   stripMarkers: stripCommentMarkerTokens,
 };
 
-/** Lines before the body in the note file: the loaded markdown's own, or the file moss would write for `state`. */
-export function linesBeforeLoadedBody(options: MossViewerOptions, note: MossNoteContent): number {
+/**
+ * Lines of the exported body in the note file: the loaded markdown's own (which may hold block comment markers the
+ * export drops), or the file moss would write for `state`.
+ */
+export function placeLoadedLines(options: MossViewerOptions, note: MossNoteContent): (body: string) => PlaceLine {
   if (typeof options.markdown === 'string') {
-    const exact = linesBeforeBody(options.markdown, note.body);
-    if (exact !== null) return exact;
-    const at = note.body ? options.markdown.indexOf(note.body) : -1;
-    return at < 0 ? 0 : options.markdown.slice(0, at).split('\n').length - 1;
+    const file = options.markdown;
+    const exact = linesBeforeBody(file, note.body);
+    const at = note.body ? file.indexOf(note.body) : -1;
+    const before = exact ?? (at < 0 ? 0 : file.slice(0, at).split('\n').length - 1);
+    const loaded = file.split('\n').slice(before).join('\n');
+    return (body) => (body === loaded ? offsetLines(before) : alignedLines(body, loaded, before, stripCommentMarkerTokens));
   }
-  return linesBeforeBody(assembleNote({ frontmatter: note.frontmatter, h1Title: note.title || null, body: '' }), '') ?? 0;
+  const before = linesBeforeBody(assembleNote({ frontmatter: note.frontmatter, h1Title: note.title || null, body: '' }), '') ?? 0;
+  return () => offsetLines(before);
 }

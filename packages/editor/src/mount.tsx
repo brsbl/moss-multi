@@ -39,8 +39,8 @@ import {
   hasTrackedEditorUpdateTag,
 } from '@moss-desktop/renderer/editor/utils/editorUpdateTags';
 import { setEmbedTheme } from '@moss-multi/host/embed-theme.ts';
-import { linesBeforeBody, readSelection } from '@moss-multi/host/selection.ts';
-import { ShareWithAgentBar } from '@moss-multi/host/share-with-agent.tsx';
+import { linesBeforeBody, offsetLines, readSelection } from '@moss-multi/host/selection.ts';
+import { ShareWithAgentBar, shareSelection } from '@moss-multi/host/share-with-agent.tsx';
 import type { MossEditorHandle, MossEditorNote, MossEditorOptions, MossEditorServices, MossEditorTheme, MossSelection } from './contract';
 import { assembleContent, type EditorContent, type RendererSnapshot } from './desktop/pipeline';
 import { noteIdKey } from './host/moss-editor-host.js';
@@ -270,7 +270,7 @@ class FrameSurface implements SessionSurface {
     const content = this.state.content;
     if (!this.editor || !content) return null;
     const title = this.title?.textContent ?? this.committedTitle;
-    return readSelection(this.editor, MOSS_EXPORT, (body) => linesBeforeBody(assembleContent(content, { title, body }), body) ?? 0);
+    return readSelection(this.editor, MOSS_EXPORT, (body) => offsetLines(linesBeforeBody(assembleContent(content, { title, body }), body) ?? 0));
   }
 
   private focused(editor: LexicalEditor): boolean {
@@ -644,7 +644,7 @@ export function mountMossEditor(element: HTMLElement, options: MossEditorOptions
   };
   const selection = (): MossSelection | null => (live ? surface.selection() : null);
   const share = services.shareWithAgent;
-  const onShare = share ? () => share.call(services, selection()) : null;
+  const onShare = share ? () => shareSelection(share, services, selection()) : null;
 
   const root = createRoot(host);
   root.render(

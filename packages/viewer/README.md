@@ -15,9 +15,10 @@ The contract is `src/types.ts` (API 1). Later 1.x releases only add, and each ad
 
 - **`selection-1`** (1.1.0): `viewer.selection()` returns the reader's selection, or null when it is collapsed or
   outside the note body:
-  - `text`: the selected plain text as rendered, never a `%%m:` comment marker;
+  - `text`: the selected plain text as rendered, never a `%%m:` comment marker: one line per block, table cells
+    tab-separated, a code block's source without its header or gutter;
   - `lines: {start, end}`: 1-based, inclusive lines of the note file (frontmatter and `# Title` counted), from moss's
-    own export of the note, which for a file moss wrote is the file as loaded. Inside a list, table or code block they
+    own export of the note, matched to the file as loaded (block comment marker lines count as part of the block they wrap). Inside a list, table or code block they
     name the items, rows or code lines selected; elsewhere every line of each block touched;
   - `markdown`: those lines, comment markers stripped;
   - `headings`: the heading path over the selection's start, outermost first;
@@ -25,6 +26,7 @@ The contract is `src/types.ts` (API 1). Later 1.x releases only add, and each ad
 
   Moss markdown has no persisted block ids, so the line range plus the heading path is the stable reference.
 - **`share-with-agent-1`** (1.1.0): pass `services.shareWithAgent(selection)` and moss's Share with Agent button shows
-  above the note; a press calls it with `selection()` at that moment (or null). Without the service it stays hidden.
+  above the note; a press calls it with `selection()` at that moment (or null). A service that throws or rejects is
+  logged, not raised. Without the service it stays hidden.
 
 See CHANGELOG.md for each release and the host requirements (`services.htmlFrameUrl`, X post frames).

@@ -4,6 +4,17 @@
 import type { ReactNode } from 'react';
 import { Upload } from 'lucide-react';
 
+/** Hands the host the selection; a host callback that throws or rejects is the host's, reported but not raised. */
+export function shareSelection<S, T>(share: (this: S, selection: T) => unknown, services: S, selection: T): void {
+  const report = (error: unknown) => console.warn('[moss] services.shareWithAgent failed:', error);
+  try {
+    const result = share.call(services, selection);
+    if (result && typeof (result as PromiseLike<unknown>).then === 'function') (result as PromiseLike<unknown>).then(undefined, report);
+  } catch (error) {
+    report(error);
+  }
+}
+
 export function ShareWithAgentBar({ onShare }: { onShare: () => void }): ReactNode {
   return (
     <div data-moss-share-with-agent="" className="flex h-10 shrink-0 items-center justify-end px-3">

@@ -35,8 +35,11 @@ interface BodyRange {
   range: Range | null;
 }
 
-/** The selection clamped to the editor root, null when it is collapsed or outside it, 'none' when the page has none. */
-function bodyRange(root: HTMLElement): BodyRange | null | 'none' {
+/**
+ * The selection clamped to the editor root; null when it is outside it or collapsed in a code block's textarea,
+ * 'caret' when it is collapsed in the body, 'none' when the page has none.
+ */
+function bodyRange(root: HTMLElement): BodyRange | null | 'none' | 'caret' {
   const doc = root.ownerDocument;
   const active = doc.activeElement;
   if (active instanceof HTMLTextAreaElement && root.contains(active)) {
@@ -46,7 +49,7 @@ function bodyRange(root: HTMLElement): BodyRange | null | 'none' {
   }
   const selection = doc.getSelection();
   if (!selection || selection.rangeCount === 0) return 'none';
-  if (selection.isCollapsed) return null;
+  if (selection.isCollapsed) return selection.anchorNode && root.contains(selection.anchorNode) ? 'caret' : null;
   const selected = selection.getRangeAt(0);
   const body = doc.createRange();
   body.selectNodeContents(root);
@@ -105,9 +108,59 @@ function $blockAt(point: Point, side: 'start' | 'end'): { block: LexicalNode; no
   return block ? { block, node } : null;
 }
 
-/** The body as a save writes it, and each root child's first and last line in it (0-based). */
-function $layout(children: LexicalNode[], exp: MossExport): { body: string; spans: [number, number][] } {
-  const body = exp.finish($convertToMarkdownString(exp.transformers));
+/** A code block being edited: its textarea holds code the node gets only on blur, which a save would then write. */
+interface Draft {
+  key: string;
+  code: string;
+}
+
+/** A code block's source, the draft's when it is the one being edited; moss's CodeBlockNode is a decorator with getCode(). */
+function codeOf(block: LexicalNode, draft: Draft | null = null): string | null {
+  const getCode = $isDecoratorNode(block) ? (block as { getCode?: () => string }).getCode : undefined;
+  if (typeof getCode !== 'function') return null;
+  return draft && draft.key === block.getKey() ? draft.code : getCode.call(block);
+}
+
+/**
+ * The index of a code block's opening fence among its exported lines, with `code` right after it and the closing
+ * fence after that (a block comment adds a marker line around them); null when the export is not that.
+ */
+function fenceIn(chunk: string, code: string): number | null {
+  const lines = chunk.split('\n');
+  const count = code.split('\n').length;
+  for (let fence = 0; fence + count + 1 < lines.length; fence += 1) {
+    if (!lines[fence]!.startsWith('```')) continue;
+    if (lines.slice(fence + 1, fence + 1 + count).join('\n') === code && lines[fence + 1 + count]!.startsWith('```')) return fence;
+  }
+  return null;
+}
+
+/** The body as a save writes it, each root child's export, and its first and last line in the body (0-based). */
+function $layout(children: LexicalNode[], exp: MossExport, draft: Draft | null): { body: string; chunks: string[]; spans: [number, number][] } {
+  let body = exp.finish($convertToMarkdownString(exp.transformers));
+  // The exporter reads only the parent's children, so one block exports exactly as it does inside the body.
+  const chunks = children.map((child) => exp.finish($convertToMarkdownString(exp.transformers, { getChildren: () => [child] } as unknown as ElementNode)));
+  if (draft) {
+    // Write the draft into the export, as the blur that commits it would.
+    let cursor = 0;
+    for (const [i, child] of children.entries()) {
+      const chunk = chunks[i]!;
+      const at = chunk ? body.indexOf(chunk, cursor) : -1;
+      if (at < 0) continue;
+      if (child.getKey() === draft.key) {
+        const code = codeOf(child);
+        const fence = code === null ? null : fenceIn(chunk, code);
+        if (code !== null && fence !== null) {
+          const lines = chunk.split('\n');
+          const next = [...lines.slice(0, fence + 1), draft.code, ...lines.slice(fence + 1 + code.split('\n').length)].join('\n');
+          body = body.slice(0, at) + next + body.slice(at + chunk.length);
+          chunks[i] = next;
+        }
+        break;
+      }
+      cursor = at + chunk.length;
+    }
+  }
   const breaks: number[] = [];
   for (let i = body.indexOf('\n'); i >= 0; i = body.indexOf('\n', i + 1)) breaks.push(i);
   const lineOf = (offset: number) => {
@@ -122,9 +175,7 @@ function $layout(children: LexicalNode[], exp: MossExport): { body: string; span
   };
   let cursor = 0;
   let last = -1;
-  const spans = children.map((child): [number, number] => {
-    // The exporter reads only the parent's children, so one block exports exactly as it does inside the body.
-    const chunk = exp.finish($convertToMarkdownString(exp.transformers, { getChildren: () => [child] } as unknown as ElementNode));
+  const spans = chunks.map((chunk): [number, number] => {
     const at = chunk ? body.indexOf(chunk, cursor) : -1;
     if (at < 0) {
       // An empty paragraph is the blank line after the block before it.
@@ -137,7 +188,7 @@ function $layout(children: LexicalNode[], exp: MossExport): { body: string; span
     last = span[1];
     return span;
   });
-  return { body, spans };
+  return { body, chunks, spans };
 }
 
 const isWrapperItem = (node: LexicalNode) =>
@@ -150,8 +201,17 @@ function $ancestorOfType(node: LexicalNode, block: LexicalNode, test: (node: Lex
   return null;
 }
 
-/** The line, within a block's span, that a point sits on; null when only the whole block can be named. */
-function $lineIn(editor: LexicalEditor, block: LexicalNode, node: LexicalNode, point: Point, side: 'start' | 'end', count: number): number | null {
+/** The line, within a block's exported lines (`chunk`), that a point sits on; null when only the whole block can be named. */
+function $lineIn(
+  editor: LexicalEditor,
+  block: LexicalNode,
+  node: LexicalNode,
+  point: Point,
+  side: 'start' | 'end',
+  chunk: string,
+  count: number,
+  draft: Draft | null,
+): number | null {
   if (count === 1) return 0;
   const type = block.getType();
   if (type === 'list' && $isElementNode(block)) {
@@ -176,27 +236,21 @@ function $lineIn(editor: LexicalEditor, block: LexicalNode, node: LexicalNode, p
     if (rows.length + 1 !== count || index < 0) return null;
     return index === 0 ? 0 : index + 1;
   }
-  const code = codeOf(block);
-  if (code !== null && code.split('\n').length + 2 === count) {
-    // The fence line, the code's lines, the closing fence.
+  const code = codeOf(block, draft);
+  const fence = code === null || chunk.split('\n').length !== count ? null : fenceIn(chunk, code);
+  if (code !== null && fence !== null) {
     const offset = codeOffset(editor, block, code, point);
     if (offset === null) return null;
     // A selection ending at a line's start ends on the line before it.
     const upTo = side === 'end' && offset > 0 && code[offset - 1] === '\n' ? offset - 1 : offset;
-    return code.slice(0, upTo).split('\n').length;
+    return fence + code.slice(0, upTo).split('\n').length;
   }
   return null;
 }
 
-/** A code block's source; moss's CodeBlockNode is a decorator with getCode(). */
-function codeOf(block: LexicalNode): string | null {
-  const getCode = $isDecoratorNode(block) ? (block as { getCode?: () => string }).getCode : undefined;
-  return typeof getCode === 'function' ? getCode.call(block) : null;
-}
-
 /**
  * A point's offset in a code block's source: in its open textarea, or in the highlighted lines moss renders
- * (one `.moss-codeblock-line` per source line, without the newlines). Null when the rendering is not the source.
+ * (one `.moss-codeblock-line` per source line, without the newlines). Null when the point is not in the source.
  */
 function codeOffset(editor: LexicalEditor, block: LexicalNode, code: string, point: Point): number | null {
   if (point.node instanceof HTMLTextAreaElement) return point.node.value === code ? point.offset : null;
@@ -218,10 +272,16 @@ function codeOffset(editor: LexicalEditor, block: LexicalNode, code: string, poi
 const cellOf = (node: LexicalNode): LexicalNode | null => $ancestorOfType(node, $getRoot(), (candidate) => candidate.getType() === 'tablecell');
 const rowOf = (node: LexicalNode): number => cellOf(node)?.getParent()?.getIndexWithinParent() ?? 0;
 
-/**
- * A selection between two cells of one table reads as the cells of the rectangle they span, tab-separated, one row
- * per line, as Lexical's table selection copies them; null for any other selection.
- */
+/** Rows of a table, cells tab-separated, one row per line, as Lexical's table selection copies them. */
+function rowsText(table: ElementNode, top: number, bottom: number, left = 0, right = Infinity): string {
+  return table
+    .getChildren()
+    .slice(top, bottom + 1)
+    .map((row) => ($isElementNode(row) ? row.getChildren().slice(left, right + 1).map((cell) => cell.getTextContent()).join('\t') : ''))
+    .join('\n');
+}
+
+/** A selection between two cells of one table reads as the rectangle of cells they span; null for any other selection. */
 function $cellsText(from: LexicalNode, to: LexicalNode): string | null {
   const a = cellOf(from);
   const b = cellOf(to);
@@ -229,11 +289,44 @@ function $cellsText(from: LexicalNode, to: LexicalNode): string | null {
   if (!a || !b || a === b || !$isElementNode(table) || b.getParent()?.getParent() !== table) return null;
   const [top, bottom] = [rowOf(a), rowOf(b)].sort((x, y) => x - y);
   const [left, right] = [a.getIndexWithinParent(), b.getIndexWithinParent()].sort((x, y) => x - y);
-  return table
-    .getChildren()
-    .slice(top, bottom! + 1)
-    .map((row) => ($isElementNode(row) ? row.getChildren().slice(left, right! + 1).map((cell) => cell.getTextContent()).join('\t') : ''))
-    .join('\n');
+  return rowsText(table, top!, bottom!, left, right);
+}
+
+interface End {
+  point: Point;
+  node: LexicalNode;
+}
+
+/**
+ * The plain text a selection covers in one top-level block, from `from` (else the block's start) to `to` (else its
+ * end): a code block's source, never its header or gutter; whole table rows; Lexical's own text for anything else.
+ */
+function $blockText(editor: LexicalEditor, block: LexicalNode, from: End | null, to: End | null, draft: Draft | null): string {
+  const code = codeOf(block, draft);
+  if (code !== null) {
+    const start = from ? (codeOffset(editor, block, code, from.point) ?? 0) : 0;
+    const end = to ? (codeOffset(editor, block, code, to.point) ?? code.length) : code.length;
+    return code.slice(start, Math.max(start, end));
+  }
+  if (block.getType() === 'table' && $isElementNode(block) && (!from || !to || cellOf(from.node) !== cellOf(to.node))) {
+    const cells = from && to ? $cellsText(from.node, to.node) : null;
+    if (cells !== null) return cells;
+    return rowsText(block, from ? rowOf(from.node) : 0, to ? rowOf(to.node) : block.getChildrenSize() - 1);
+  }
+  if (!$isElementNode(block)) return block.getTextContent();
+  const element = editor.getElementByKey(block.getKey());
+  if (!element) return '';
+  const start = from?.point ?? { node: element, offset: 0 };
+  const end = to?.point ?? { node: element, offset: element.childNodes.length };
+  const lexical = $createRangeSelectionFromDom(
+    { anchorNode: start.node, anchorOffset: start.offset, focusNode: end.node, focusOffset: end.offset } as unknown as Selection,
+    editor,
+  );
+  if (lexical) return lexical.isCollapsed() ? '' : lexical.getTextContent();
+  const range = element.ownerDocument.createRange();
+  range.setStart(start.node, start.offset);
+  range.setEnd(end.node, end.offset);
+  return range.toString();
 }
 
 const headingLevel = (node: LexicalNode): number => {
@@ -242,11 +335,24 @@ const headingLevel = (node: LexicalNode): number => {
   return Number(tag.slice(1)) || 0;
 };
 
+/** Maps a 0-based line of the exported body to its 1-based line in the note file, as a range's start or end. */
+export type PlaceLine = (line: number, side: 'start' | 'end') => number;
+
+/** The code block whose textarea has focus, when it holds code its node does not have yet. */
+function $draftOf(root: HTMLElement): Draft | null {
+  const active = root.ownerDocument.activeElement;
+  if (!(active instanceof HTMLTextAreaElement) || !root.contains(active)) return null;
+  const node = $getNearestNodeFromDOMNode(active);
+  const block = node ? $topLevel(node) : null;
+  const code = block ? codeOf(block) : null;
+  return block && code !== null && code !== active.value ? { key: block.getKey(), code: active.value } : null;
+}
+
 /**
- * The selection in `editor`'s body, or null when it is collapsed or outside the body. `linesBefore(body)` is the
- * number of lines the note file holds before the body (frontmatter, the title line and the blank after it).
+ * The selection in `editor`'s body, or null when it is collapsed or outside the body. `place(body)` maps the
+ * exported body's lines to the note file's, which holds frontmatter, the title line and a blank line before the body.
  */
-export function readSelection(editor: LexicalEditor, exp: MossExport, linesBefore: (body: string) => number): MossSelection | null {
+export function readSelection(editor: LexicalEditor, exp: MossExport, place: (body: string) => PlaceLine): MossSelection | null {
   const root = editor.getRootElement();
   if (!root) return null;
   const range = bodyRange(root);
@@ -255,17 +361,19 @@ export function readSelection(editor: LexicalEditor, exp: MossExport, linesBefor
     let selected: BodyRange;
     let start: { block: LexicalNode; node: LexicalNode } | null;
     let end: { block: LexicalNode; node: LexicalNode } | null;
-    if (range === 'none') {
-      // A selection across table cells is Lexical's own; the editable editor hides the page's.
+    let cells: string | null = null;
+    if (range === 'none' || range === 'caret') {
+      // A selection across table cells is Lexical's own; the editable editor leaves the page only a caret.
       const table = $getSelection();
       if (!$isTableSelection(table)) return null;
       const at = (node: LexicalNode) => {
         const block = $topLevel(node);
         return block ? { block, node } : null;
       };
-      const cells = [table.anchor.getNode(), table.focus.getNode()].sort((a, b) => rowOf(a) - rowOf(b));
-      start = at(cells[0]!);
-      end = at(cells[1]!);
+      const ends = [table.anchor.getNode(), table.focus.getNode()].sort((a, b) => rowOf(a) - rowOf(b));
+      start = at(ends[0]!);
+      end = at(ends[1]!);
+      cells = $cellsText(ends[0]!, ends[1]!);
       selected = { start: { node: root, offset: 0 }, end: { node: root, offset: 0 }, field: null, range: null };
     } else {
       selected = range;
@@ -278,12 +386,14 @@ export function readSelection(editor: LexicalEditor, exp: MossExport, linesBefor
     const lastIndex = children.indexOf(end.block);
     if (first < 0 || lastIndex < first) return null;
 
-    const { body, spans } = $layout(children, exp);
-    const offset = linesBefore(body) + 1;
+    const draft = $draftOf(root);
+    const { body, chunks, spans } = $layout(children, exp, draft);
+    const toFile = place(body);
     const startSpan = spans[first]!;
     const endSpan = spans[lastIndex]!;
-    const startLine = startSpan[0] + ($lineIn(editor, start.block, start.node, selected.start, 'start', startSpan[1] - startSpan[0] + 1) ?? 0);
-    const endWithin = $lineIn(editor, end.block, end.node, selected.end, 'end', endSpan[1] - endSpan[0] + 1);
+    const startWithin = $lineIn(editor, start.block, start.node, selected.start, 'start', chunks[first]!, startSpan[1] - startSpan[0] + 1, draft);
+    const endWithin = $lineIn(editor, end.block, end.node, selected.end, 'end', chunks[lastIndex]!, endSpan[1] - endSpan[0] + 1, draft);
+    const startLine = startSpan[0] + (startWithin ?? 0);
     const endLine = endWithin === null ? endSpan[1] : endSpan[0] + endWithin;
 
     // The heading path at each block: a heading closes every heading at its level or deeper.
@@ -300,35 +410,25 @@ export function readSelection(editor: LexicalEditor, exp: MossExport, linesBefor
       if (i === first) headings = path.map((entry) => entry.text);
       if (i < first) continue;
       const heading = path[path.length - 1]?.text;
-      blocks.push({ type: child.getType(), line: offset + spans[i]![0], ...(heading === undefined ? {} : { heading }) });
+      blocks.push({ type: child.getType(), line: toFile(spans[i]![0], 'start'), ...(heading === undefined ? {} : { heading }) });
     }
 
-    let text = selected.field ?? $cellsText(start.node, end.node);
+    let text = selected.field ?? cells;
     if (text === null) {
-      const inOneDecorator = start.block === end.block && $isDecoratorNode(start.block);
-      const code = inOneDecorator ? codeOf(start.block) : null;
-      const from = code === null ? null : codeOffset(editor, start.block, code, selected.start);
-      const to = code === null ? null : codeOffset(editor, start.block, code, selected.end);
-      const lexical = inOneDecorator
-        ? null
-        : $createRangeSelectionFromDom(
-            {
-              anchorNode: selected.start.node,
-              anchorOffset: selected.start.offset,
-              focusNode: selected.end.node,
-              focusOffset: selected.end.offset,
-            } as unknown as Selection,
-            editor,
-          );
-      if (code !== null && from !== null && to !== null) text = code.slice(from, to);
-      else text = lexical && !lexical.isCollapsed() ? lexical.getTextContent() : (selected.range?.toString() ?? '');
+      const parts: string[] = [];
+      for (let i = first; i <= lastIndex; i += 1) {
+        const from = i === first ? { point: selected.start, node: start.node } : null;
+        const to = i === lastIndex ? { point: selected.end, node: end.node } : null;
+        parts.push($blockText(editor, children[i]!, from, to, draft));
+      }
+      text = parts.join('\n');
     }
 
     const markdown = exp.stripMarkers(body.split('\n').slice(startLine, endLine + 1).join('\n'));
     return {
       text: exp.stripMarkers(text),
       markdown,
-      lines: { start: offset + startLine, end: offset + endLine },
+      lines: { start: toFile(startLine, 'start'), end: toFile(endLine, 'end') },
       headings,
       blocks,
     };
@@ -340,4 +440,40 @@ export function linesBeforeBody(file: string, body: string): number | null {
   if (!file.endsWith(body)) return null;
   const prefix = file.slice(0, file.length - body.length);
   return prefix.split('\n').length - 1;
+}
+
+/** Lines of a body the file holds as exported, after `before` lines. */
+export const offsetLines =
+  (before: number): PlaceLine =>
+  (line) =>
+    before + 1 + line;
+
+/**
+ * Lines of an exported body in a file body that may differ from it (a loaded note whose block comment markers the
+ * export drops): each exported line goes to the next file line with the same text, markers stripped. A range widens
+ * over the marker-only lines next to it, which belong to the block they wrap.
+ */
+export function alignedLines(exported: string, file: string, before: number, stripMarkers: (markdown: string) => string): PlaceLine {
+  const raw = file.split('\n');
+  const wanted = raw.map((line) => stripMarkers(line));
+  const marker = (index: number) => raw[index] !== undefined && raw[index] !== '' && wanted[index] === '';
+  const map: number[] = [];
+  let cursor = 0;
+  for (const line of exported.split('\n').map((entry) => stripMarkers(entry))) {
+    let at = cursor;
+    while (at < wanted.length && at < cursor + 8 && wanted[at] !== line) at += 1;
+    if (at < wanted.length && wanted[at] === line) {
+      map.push(at);
+      cursor = at + 1;
+    } else {
+      map.push(Math.min(cursor, Math.max(raw.length - 1, 0)));
+      cursor += 1;
+    }
+  }
+  return (line, side) => {
+    let at = map[line] ?? line;
+    if (side === 'start') while (at > 0 && marker(at - 1) && (line === 0 || at - 1 > map[line - 1]!)) at -= 1;
+    else while (marker(at + 1) && (line + 1 >= map.length || at + 1 < map[line + 1]!)) at += 1;
+    return before + 1 + at;
+  };
 }

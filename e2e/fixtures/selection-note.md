@@ -26,7 +26,7 @@ def sow(crop):
 Pick every morning.
 
 %%m:c2:start%%
-```js
+```javascript
 let x = 1;
 let y = 2;
 ```

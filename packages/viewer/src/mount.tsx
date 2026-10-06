@@ -11,12 +11,12 @@ import { noteEntityAtom, noteIdsAtom } from '@moss/shared/state/note-atoms';
 import { browserSplitTargetAtom, mapNoteMetadataToNoteEntity, splitTabNoteIdAtom, webEmbedLightboxTargetAtom } from '@moss/shared/state/atoms';
 import { setEmbedTheme } from '@moss-multi/host/embed-theme.ts';
 import { readSelection } from '@moss-multi/host/selection.ts';
-import { ShareWithAgentBar } from '@moss-multi/host/share-with-agent.tsx';
+import { ShareWithAgentBar, shareSelection } from '@moss-multi/host/share-with-agent.tsx';
 import { installViewerElectronApi } from './electron-api.ts';
 import { installViewerHooks } from './hooks.ts';
 import { readMossNote, type MossNoteContent } from './moss-file.ts';
 import { markActive, registerViewer, type ViewerRecord } from './registry.ts';
-import { MOSS_EXPORT, linesBeforeLoadedBody } from './selection.ts';
+import { MOSS_EXPORT, placeLoadedLines } from './selection.ts';
 import type { MossSelection, MossViewerHandle, MossViewerNote, MossViewerOptions, MossViewerServices, MossViewerTheme } from './types.ts';
 
 type Store = ReturnType<typeof createStore>;
@@ -164,10 +164,10 @@ export function mountMossViewer(el: HTMLElement, options: MossViewerOptions): Mo
     host.dataset.mossViewerState = 'ready';
     settle();
   };
-  const linesBefore = linesBeforeLoadedBody(options, note);
-  const selection = (): MossSelection | null => (mounted && editor ? readSelection(editor, MOSS_EXPORT, () => linesBefore) : null);
+  const place = placeLoadedLines(options, note);
+  const selection = (): MossSelection | null => (mounted && editor ? readSelection(editor, MOSS_EXPORT, place) : null);
   const share = services.shareWithAgent;
-  const onShare = share ? () => share.call(services, selection()) : null;
+  const onShare = share ? () => shareSelection(share, services, selection()) : null;
   const onNavigateToNote = (target: string, heading?: string | null) => {
     // A heading in this note: moss has already scrolled to it.
     if (target === noteId) return;
