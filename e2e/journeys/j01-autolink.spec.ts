@@ -47,6 +47,18 @@ async function importNote(actor: Actor, baseUrl: string, title: string, markdown
   return ((await response.json()) as { doc: { id: string } }).doc.id;
 }
 
+/** Clicks the body and puts the caret after its last character. */
+async function caretAtEnd(actor: Actor, docId: string): Promise<void> {
+  await ui.body(actor, docId).click();
+  await ui.bodyEditor(actor, docId).evaluate((root) => {
+    const range = document.createRange();
+    range.selectNodeContents(root);
+    range.collapse(false);
+    document.getSelection()?.removeAllRanges();
+    document.getSelection()?.addRange(range);
+  });
+}
+
 function expectLinear(what: string, sizes: number[], ms: number[]): void {
   const last = ms.length - 1;
   if (last < 1) return;
@@ -80,13 +92,17 @@ test('j01-autolink: a note holding one long word opens, and takes keystrokes at 
     measure.record({ name: `open a ${n}-char word: longest stall`, ms: loads[i], budgetMs: null });
     expectLinear('opening the note', SIZES, loads);
 
-    await ui.body(actor, docId).click();
-    await actor.page.keyboard.press(process.platform === 'darwin' ? 'Meta+ArrowDown' : 'Control+End');
+    await caretAtEnd(actor, docId);
     const stalls: number[] = [];
     for (let k = 1; k <= KEYS; k += 1) {
       await resetStall(actor);
       await actor.page.keyboard.press('b');
-      await expect.poll(() => bodyLength(actor, docId), { message: 'the keystroke lands at the word’s end', timeout: 60_000 }).toBe(n + k);
+      await expect
+        .poll(() => ui.body(actor, docId).evaluate((el) => { const text = el.textContent ?? ''; return [text.length, text.slice(-k)]; }), {
+          message: 'the keystroke lands at the word’s end',
+          timeout: 60_000,
+        })
+        .toEqual([n + k, 'b'.repeat(k)]);
       stalls.push(await readStall(actor));
     }
     actor.typed({ docId, field: 'body', text: 'b'.repeat(KEYS), ordered: true });
@@ -105,8 +121,7 @@ test('j01-autolink: ordinary URLs, schemeless URLs and emails still become the s
   await ui.waitLive(actor, docId);
   await actor.observeEditor(docId);
   // Typed directly: moss turns the public pages into pills, so the body's text is not the typed string.
-  await ui.body(actor, docId).click();
-  await actor.page.keyboard.press(process.platform === 'darwin' ? 'Meta+ArrowDown' : 'Control+End');
+  await caretAtEnd(actor, docId);
   await actor.page.keyboard.type(
     ' Admin at http://192.168.1.20/admin and the picture example.com/cat.png or the archive https://example.com/report.zip, mail ada@example.invalid or "Ada L"@example.invalid; www.example.com and example.org/docs too. ',
   );
