@@ -4,6 +4,7 @@ import { env, waitUntil } from 'cloudflare:workers';
 import { routePartykitRequest } from 'partyserver';
 import { DocDO } from '@moss-multi/sync';
 import { handleApi } from './api/router.ts';
+import { notifySuggestion } from './api/suggestions.ts';
 import { refusalFor } from './auth/config.ts';
 import { handleAuthRoute } from './auth/route.ts';
 import { asAppEnv } from './env.ts';
@@ -20,6 +21,8 @@ export { DocDO, PrincipalDO, SearchDO } from '@moss-multi/sync';
 
 // Every DocDO re-validates its sockets through the one resolver before applying a frame (A§8 pull validation).
 DocDO.access = (doEnv) => (doEnv?.DB ? docAccessCheck(doEnv) : null);
+// A new live suggestion reaches the bells of the people who can review it (T5.3).
+DocDO.suggestionNotices = (doEnv) => (doEnv?.DB ? (notice) => notifySuggestion({ DB: doEnv.DB, PrincipalDO: doEnv.PrincipalDO as never }, notice) : null);
 
 const startFetch = createStartHandler(defaultStreamHandler);
 

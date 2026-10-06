@@ -111,6 +111,17 @@ export const SUGGEST_MARK_ATTR = 'data-suggest-mark';
 export const SUGGEST_SENT_ATTR = 'data-suggest-sent';
 export const SUGGEST_REFUSED_ATTR = 'data-suggest-refused';
 
+/** Review UI (docs/design/suggestions.md §8): the top-bar button with its open count, its panel, and each card with
+ * its record id and status; the active card (opened from a painted suggestion) carries `data-suggestion-active`. */
+export const SUGGESTIONS_BUTTON_ATTR = 'data-suggestions-button';
+export const SUGGESTIONS_PANEL_ATTR = 'data-suggestions-panel';
+export const SUGGESTION_CARD_ATTR = 'data-suggestion-card';
+export const SUGGESTION_ID_ATTR = 'data-suggestion-id';
+export const SUGGESTION_STATUS_ATTR = 'data-suggestion-status';
+export const SUGGESTION_ACTIVE_ATTR = 'data-suggestion-active';
+/** Each row of a card: `insert`, `delete` or `change`. */
+export const SUGGESTION_ROW_ATTR = 'data-suggestion-row';
+
 /** The body editor root Lexical renders. */
 export const LEXICAL_EDITOR_SELECTOR = '[data-lexical-editor="true"]';
 

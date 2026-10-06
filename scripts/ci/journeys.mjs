@@ -40,6 +40,8 @@ export const GROUPS = {
   social: ['j15-social', 'j08-agents'],
   // Suggest mode and the suggestions server.
   suggest: ['j16'],
+  // Reviewing suggestions: the panel, accept, reject and withdraw.
+  review: ['j16-review'],
 };
 
 /**

@@ -2,7 +2,7 @@ import { getServerByName, Server, type Connection, type ConnectionContext, type 
 import { CLOSE, TRUSTED } from '@moss-multi/protocol/sync';
 import type { WorkspaceEvent } from '@moss-multi/protocol/workspace';
 import {
-  ACCESS_DEADLINE_MS, ACCESS_TICK_MS, COMMENT_OP_RATE, REMOTE_FETCH_RATE, REST_WRITE_RATE, SESSION_MAX_MS, UPLOAD_RATE,
+  ACCESS_DEADLINE_MS, ACCESS_TICK_MS, COMMENT_OP_RATE, REMOTE_FETCH_RATE, REST_WRITE_RATE, SESSION_MAX_MS, SUGGEST_PREVIEW_RATE, SUGGEST_REVIEW_RATE, UPLOAD_RATE,
 } from '@moss-multi/protocol/limits';
 import { liveCredentials, TRY_AGAIN, withDeadline } from './access-epoch.ts';
 import { windowed } from './doc/admission.ts';
@@ -86,6 +86,8 @@ export class PrincipalDO extends Server<SyncEnv> {
   #uploads: RateWindow | null = null;
   #fetches: RateWindow | null = null;
   #comments: RateWindow | null = null;
+  #reviews: RateWindow | null = null;
+  #previews: RateWindow | null = null;
   #registryReady = false;
   /** When the next access tick is due; null when nothing happened since the last one. */
   #tickAt: number | null = null;
@@ -288,5 +290,17 @@ export class PrincipalDO extends Server<SyncEnv> {
   takeCommentToken(): boolean {
     this.#comments ??= new RateWindow(COMMENT_OP_RATE.max, COMMENT_OP_RATE.windowMs, sqlAttempts(this.ctx.storage.sql, 'comment-ops'));
     return this.#comments.take();
+  }
+
+  /** One suggestion accept, reject or withdraw by this principal; false past SUGGEST_REVIEW_RATE. Persisted, as above. */
+  takeReviewToken(): boolean {
+    this.#reviews ??= new RateWindow(SUGGEST_REVIEW_RATE.max, SUGGEST_REVIEW_RATE.windowMs, sqlAttempts(this.ctx.storage.sql, 'suggest-reviews'));
+    return this.#reviews.take();
+  }
+
+  /** One suggestion preview by this principal; false past SUGGEST_PREVIEW_RATE. Persisted, as above. */
+  takePreviewToken(): boolean {
+    this.#previews ??= new RateWindow(SUGGEST_PREVIEW_RATE.max, SUGGEST_PREVIEW_RATE.windowMs, sqlAttempts(this.ctx.storage.sql, 'suggest-previews'));
+    return this.#previews.take();
   }
 }

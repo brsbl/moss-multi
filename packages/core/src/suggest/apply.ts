@@ -1,7 +1,6 @@
 // Suggestion records applied to a mirror (docs/design/suggestions.md §4): the accept gates that need only Yjs, the
-// projection a reviewer is shown, and its hash. Shared by the client preview and the DocDO accept. The Lexical parts
-// (the headless bind check, G7, and each block's exportJSON) are passed in by the caller, so this module stays
-// Lexical-free.
+// projection a reviewer is shown, and its hash. Shared by the client preview and the DocDO accept. The Lexical part
+// (the headless bind check, G7) is passed in by the caller, so this module stays Lexical-free.
 import * as encoding from 'lib0/encoding';
 import { digest } from 'lib0/hash/sha256';
 import { encodeUtf8 } from 'lib0/string';
@@ -339,8 +338,11 @@ export interface PayloadMirrors {
 }
 
 export interface ApplyOptions {
-  /** G7: binds a headless editor to the doc after the record; false when Lexical cannot take the tree. */
-  bindCheck?: (doc: Y.Doc, inserted: Inserted) => boolean;
+  /**
+   * G7: binds a headless editor to the doc after the record; false when Lexical cannot take the tree. `deleted` is
+   * every body item the record's transaction removed, so a block it only deleted from is checked too.
+   */
+  bindCheck?: (doc: Y.Doc, inserted: Inserted, deleted: readonly IdSpan[]) => boolean;
   /** Required when a record has payload ops. */
   payloads?: PayloadMirrors;
 }
@@ -351,9 +353,27 @@ export type ApplyResult =
 
 export const itemKey = (id: Y.ID): string => `${id.client}:${id.clock}`;
 
-/** A gc-free copy of `live`, so a record's own deletes stay readable while the gates run. */
+/** The constructor `live` typed a root with, so a copy types it the same before any struct integrates. */
+function rootType(type: Y.AbstractType<unknown>): (new () => Y.AbstractType<unknown>) | null {
+  if (type instanceof Y.XmlText) return Y.XmlText as never;
+  if (type instanceof Y.Text) return Y.Text as never;
+  if (type instanceof Y.XmlFragment) return Y.XmlFragment as never;
+  if (type instanceof Y.Map) return Y.Map as never;
+  if (type instanceof Y.Array) return Y.Array as never;
+  return null;
+}
+
+/**
+ * A gc-free copy of `live`, so a record's own deletes stay readable while the gates run. Its roots are typed as
+ * `live`'s before the state is applied: a root typed afterwards loses what integration set on it (a Y.Text's
+ * formatting flag), so the copy would skip a cleanup `live` runs.
+ */
 export function hydrate(live: Y.Doc): Y.Doc {
   const mirror = new Y.Doc({ gc: false });
+  for (const [name, type] of live.share) {
+    const ctor = rootType(type as Y.AbstractType<unknown>);
+    if (ctor) mirror.get(name, ctor as never);
+  }
   Y.applyUpdate(mirror, Y.encodeStateAsUpdate(live));
   return mirror;
 }
@@ -451,15 +471,24 @@ export function applyRecord(mirror: Y.Doc, record: SuggestionRecord, options: Ap
   // G5 (a) and (b) read each doc as it was before the record, so they run first and report after G1–G4.
   const outdated = [...targets.values()].some((t) => !t.groups.every((spans) => removesLiveRun(t.doc.store, spans, t.state)));
 
+  // Applied as a remote update, as accept lands it on the live doc, so Yjs's follow-on transactions (a Y.Text's
+  // formatting cleanup) run here too; every transaction's deletes are collected, the follow-ons' included.
   try {
     for (const t of targets.values()) {
-      let tr: Y.Transaction | null = null;
-      t.doc.transact((transaction) => {
-        tr = transaction;
-        for (const op of t.ops) Y.applyUpdate(t.doc, op);
-        if (t === body) for (const part of record.parts) Y.applyUpdate(t.doc, deleteUpdate(part.targets));
-      }, APPLY);
-      t.deleted = spansOf((tr as Y.Transaction | null)!.deleteSet as never);
+      const deleted: IdSpan[] = [];
+      const collect = (transaction: Y.Transaction) => {
+        deleted.push(...spansOf(transaction.deleteSet as never));
+      };
+      t.doc.on('afterTransaction', collect);
+      try {
+        Y.transact(t.doc, () => {
+          for (const op of t.ops) Y.applyUpdate(t.doc, op);
+          if (t === body) for (const part of record.parts) Y.applyUpdate(t.doc, deleteUpdate(part.targets));
+        }, APPLY, false);
+      } finally {
+        t.doc.off('afterTransaction', collect);
+      }
+      t.deleted = deleted;
     }
   } catch {
     return fail('unresolvable');
@@ -501,7 +530,7 @@ export function applyRecord(mirror: Y.Doc, record: SuggestionRecord, options: Ap
   if (outdated || [...targets.values()].some((t) => !insertedLive(t.doc.store, t.inserted, t.ownDeletes))) return fail('outdated');
 
   // G7: Lexical can bind the result.
-  if (options.bindCheck && !options.bindCheck(mirror, body.inserted)) return fail('broken');
+  if (options.bindCheck && !options.bindCheck(mirror, body.inserted, body.deleted)) return fail('broken');
 
   const payloads = new Map<string, Uint8Array>();
   for (const [id, t] of targets) if (t !== body) payloads.set(id, t.hydrated);
@@ -513,8 +542,60 @@ const APPLY = 'suggest-apply';
 const validSpan = (span: IdSpan): boolean =>
   !!span && [span.client, span.clock, span.len].every((n) => Number.isSafeInteger(n) && n >= 0) && span.len > 0;
 
-const covers = (spans: readonly IdSpan[], client: number, clock: number): boolean =>
-  spans.some((span) => span.client === client && span.clock <= clock && clock < span.clock + span.len);
+/** Spans per client, sorted and merged, so a range splits into covered and uncovered runs by binary search. */
+class SpanIndex {
+  readonly #by = new Map<number, { from: number; to: number }[]>();
+
+  constructor(spans: readonly IdSpan[]) {
+    const raw = new Map<number, { from: number; to: number }[]>();
+    for (const span of spans) {
+      const list = raw.get(span.client);
+      const range = { from: span.clock, to: span.clock + span.len };
+      if (list) list.push(range);
+      else raw.set(span.client, [range]);
+    }
+    for (const [client, list] of raw) {
+      list.sort((a, b) => a.from - b.from);
+      const merged: { from: number; to: number }[] = [];
+      for (const range of list) {
+        const last = merged[merged.length - 1];
+        if (last && range.from <= last.to) last.to = Math.max(last.to, range.to);
+        else merged.push({ ...range });
+      }
+      this.#by.set(client, merged);
+    }
+  }
+
+  /** [from, to) of `client` as runs in order: [start, end, covered]. */
+  *runs(client: number, from: number, to: number): Generator<[number, number, boolean]> {
+    const list = this.#by.get(client) ?? [];
+    let lo = 0;
+    let hi = list.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (list[mid].to <= from) lo = mid + 1;
+      else hi = mid;
+    }
+    let at = from;
+    for (let i = lo; i < list.length && at < to; i++) {
+      const range = list[i];
+      if (range.from >= to) break;
+      if (range.from > at) {
+        yield [at, range.from, false];
+        at = range.from;
+      }
+      const end = Math.min(range.to, to);
+      yield [at, end, true];
+      at = end;
+    }
+    if (at < to) yield [at, to, false];
+  }
+
+  covers(client: number, from: number, to: number): boolean {
+    for (const [, , covered] of this.runs(client, from, to)) if (!covered) return false;
+    return true;
+  }
+}
 
 /** The structs of `client` overlapping [clock, end), in order. */
 function* structsIn(store: Y.Doc['store'], client: number, clock: number, end: number): Generator<Y.Item | Y.GC> {
@@ -540,12 +621,13 @@ function removesLiveRun(store: Y.Doc['store'], spans: readonly IdSpan[], state: 
       if (struct.parentSub === null) parents.add(struct.parent as Y.AbstractType<unknown>);
     }
   }
+  const removed = new SpanIndex(body);
   for (const parent of parents) {
     let removedBefore = false;
     let foreign = false;
     for (let item = parent._start; item; item = item.right) {
-      for (let offset = 0; offset < item.length; offset++) {
-        if (covers(body, item.id.client, item.id.clock + offset)) {
+      for (const [, , covered] of removed.runs(item.id.client, item.id.clock, item.id.clock + item.length)) {
+        if (covered) {
           if (foreign) return false;
           removedBefore = true;
         } else if (!item.deleted && removedBefore) {
@@ -559,12 +641,11 @@ function removesLiveRun(store: Y.Doc['store'], spans: readonly IdSpan[], state: 
 
 /** G5 (c). */
 function insertedLive(store: Y.Doc['store'], inserted: Inserted, ownDeletes: readonly IdSpan[]): boolean {
+  const own = new SpanIndex(ownDeletes);
   for (const [client, [from, to]] of inserted) {
     for (const struct of structsIn(store, client, from, to)) {
       if (struct instanceof Y.Item && !struct.deleted) continue;
-      const start = Math.max(struct.id.clock, from);
-      const end = Math.min(struct.id.clock + struct.length, to);
-      for (let clock = start; clock < end; clock++) if (!covers(ownDeletes, client, clock)) return false;
+      if (!own.covers(client, Math.max(struct.id.clock, from), Math.min(struct.id.clock + struct.length, to))) return false;
     }
   }
   return true;
@@ -663,14 +744,25 @@ export interface Projection {
   payloads: Map<string, unknown>;
 }
 
-/** A type's live sequence as the preview shows it: runs of characters as strings, every other item by its content. */
-function seqValue(doc: DocKind, root: string, type: Y.AbstractType<unknown>): unknown[] {
-  const seq: unknown[] = [];
+/**
+ * A type's live sequence as the preview shows it, each entry with the Yjs id it starts at, so a reviewer's rows align
+ * text by item identity: runs of characters with consecutive ids as `{ id, s }`, every other item as `{ id, ...value }`.
+ */
+function seqValue(doc: DocKind, root: string, type: Y.AbstractType<unknown>): Record<string, unknown>[] {
+  const seq: Record<string, unknown>[] = [];
+  let next: { client: number; clock: number } | null = null;
   for (let item = type._start; item; item = item.right) {
     if (item.deleted) continue;
     const value = contentValue(doc, root, item.content);
-    if (typeof value === 'string' && typeof seq.at(-1) === 'string') seq[seq.length - 1] += value;
-    else seq.push(value);
+    const last = seq.at(-1);
+    if (typeof value === 'string') {
+      if (last && typeof last.s === 'string' && next && next.client === item.id.client && next.clock === item.id.clock) last.s += value;
+      else seq.push({ id: itemKey(item.id), s: value });
+      next = { client: item.id.client, clock: item.id.clock + item.length };
+    } else {
+      seq.push({ id: itemKey(item.id), ...(value as Record<string, unknown>) });
+      next = null;
+    }
   }
   return seq;
 }
@@ -710,32 +802,28 @@ function contentValue(doc: DocKind, root: string, content: Y.Item['content']): u
   return { [contentKind(content) ?? 'Unknown']: content.getContent() };
 }
 
-/** A payload doc as a reviewer is shown it: its text and its compound fields, by the table. */
+/** A payload doc as a reviewer is shown it: its text, the id each run of it starts at, and its compound fields. */
 export function payloadValueOf(doc: Y.Doc): unknown {
   const seq = seqValue('payload', 'payload', doc.getText('payload') as unknown as Y.AbstractType<unknown>);
-  const text = seq.length === 0 ? '' : seq.length === 1 && typeof seq[0] === 'string' ? seq[0] : seq;
-  return { text, map: keysValue('payload', 'payload-map', doc.getMap('payload-map') as unknown as Y.AbstractType<unknown>) };
+  const strings = seq.every((entry) => typeof entry.s === 'string');
+  const text = strings ? seq.map((entry) => entry.s).join('') : seq.map((entry) => (typeof entry.s === 'string' ? entry.s : entry));
+  const ids = seq.map((entry) => [entry.id, typeof entry.s === 'string' ? entry.s.length : 1]);
+  return { text, ids, map: keysValue('payload', 'payload-map', doc.getMap('payload-map') as unknown as Y.AbstractType<unknown>) };
 }
 
 /**
- * Projects `doc`. `lexical` gives each top-level block's recursive exportJSON by item id (the caller binds the
- * converter editor); the Yjs-level value, by the channel table, is always included, so the hash covers every channel.
- * `payload` resolves the payload docs live elements name, plus each id in `also` (the payloads a record writes, named
- * or not); each is projected in full.
+ * Projects `doc`: each top-level block by its Yjs item id, rendered by the channel table, which is the whole of what a
+ * record may write. `payload` resolves the payload docs live elements name, plus each id in `also` (the payloads a
+ * record writes, named or not); each is projected in full.
  */
-export function projectDoc(
-  doc: Y.Doc,
-  lexical?: ReadonlyMap<string, unknown>,
-  payload?: (id: string) => Y.Doc | undefined,
-  also: Iterable<string> = [],
-): Projection {
+export function projectDoc(doc: Y.Doc, payload?: (id: string) => Y.Doc | undefined, also: Iterable<string> = []): Projection {
   const blocks = new Map<string, unknown>();
   const order: string[] = [];
   const root = doc.get('root', Y.XmlText);
   for (let item = root._start; item; item = item.right) {
     if (item.deleted) continue;
     const key = itemKey(item.id);
-    blocks.set(key, { y: contentValue('body', 'root', item.content), lexical: lexical?.get(key) ?? null });
+    blocks.set(key, contentValue('body', 'root', item.content));
     order.push(key);
   }
   const payloads = new Map<string, unknown>();

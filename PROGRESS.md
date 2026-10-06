@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 85% done** (79 of 93 planned tasks verified)
+**Overall: 85% done** (80 of 94 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -8,7 +8,7 @@
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 15 / 15 | in progress |
-| M4 Comments | Moss's full comment experience as CRDT data | 8 / 8 | in progress |
+| M4 Comments | Moss's full comment experience as CRDT data | 9 / 9 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 4 / 5 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
@@ -98,6 +98,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-06 — T4.S1 verified: every comment write now re-checks its author's credential, the note's liveness and at least commenter access inside the note's serialized write, so a revocation or demotion that commits after the request was admitted stops the comment from landing.
 - 2026-10-06 — T5.R verified: m5 now sits on the current m4, and the server stores a suggester's edits to the note and to code, HTML, formula, chart and sketch blocks as per-document suggestion records checked through the shared channel table, never touching the note body.
 - 2026-10-06 — T4.S2 verified: comment create, reply, edit, reaction and sidecar import are now refused once the note plus every stored payload, served or withheld, would leave no room, so comments cannot push a note past its size cap.
+- 2026-10-06 — T4.S4 verified: a file-backed moss editor that no pane binds keeps moss's own comment path, so a person can reply to, edit, delete and resolve sidecar comment threads locally and see them after a reload, while a shared editor whose collaboration plugin is down refuses comment writes.
 - 2026-10-06 — T3.10 verified: a host such as the bb Moss viewer plugin can read the viewer's or editor's current selection as text, markdown, source file lines, heading path and blocks, and can show moss's Share with Agent button for it.
 - 2026-10-06 — T5.1 verified: a person with suggest access can switch a shared note into Suggest mode and type, delete and edit code and other blocks as suggestions shown inline beside the body, offline edits continue after a reconnect, and a demoted editor drops to a read-only body with a reason.
 

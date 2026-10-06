@@ -46,7 +46,8 @@ import { $isTabGroupNode } from '../nodes/TabGroupNode';
 import { $isTabPanelNode } from '../nodes/TabPanelNode';
 import { EDITOR_UPDATE_TAGS } from '../utils/editorUpdateTags';
 // moss-multi seam: comments (comments.md §12): anchors, hits and writes go through the adapter
-import { anchorTarget, commentsAtPoint, commentsOnDecorator, detachedRect, mutate, setActive, useCanComment } from '@moss-multi/host/comments/adapter';
+// on a bound note only; an unbound editor (file-backed) keeps moss's own path below each seam
+import { anchorTarget, bound, commentsAtPoint, commentsOnDecorator, detachedRect, mutate, setActive, useCanComment } from '@moss-multi/host/comments/adapter';
 import { hidden } from '@moss-multi/host/affordances';
 
 interface CommentUIWrapperProps {
@@ -245,7 +246,22 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
   }, [editor, getNewestRootComment, noteId, store]);
 
   const handleEditorCommentMouseOver = useCallback((event: MouseEvent) => {
-    // moss-multi seam: comments (comments.md §11): a highlight has no element, so the pointer is hit-tested
+    if (bound(editor)) return; // moss-multi seam: comments: a bound note hit-tests on mousemove
+    const anchor = findCommentHoverAnchor(event.target);
+    if (!anchor) return;
+
+    const comment = getHoveredRootComment(anchor);
+    if (!comment) return;
+    if (hoveredEditorCommentIdRef.current === comment.id) return;
+
+    clearCommentHoverState(editor);
+    applyCommentHoverState(editor, comment.id, comment.color ?? 0);
+    hoveredEditorCommentIdRef.current = comment.id;
+  }, [editor, getHoveredRootComment]);
+
+  // moss-multi seam: comments (comments.md §11): a bound note's highlight has no element, so the pointer is hit-tested
+  const handleBoundCommentMouseMove = useCallback((event: MouseEvent) => {
+    if (!bound(editor)) return;
     {
       const liveCommentsMap = store.get(noteCommentsMapAtom(noteId));
       const hit = getNewestRootComment(
@@ -262,23 +278,12 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
       clearCommentHoverState(editor);
       applyCommentHoverState(editor, hit.id, hit.color ?? 0);
       hoveredEditorCommentIdRef.current = hit.id;
-      return;
     }
-    const anchor = findCommentHoverAnchor(event.target);
-    if (!anchor) return;
-
-    const comment = getHoveredRootComment(anchor);
-    if (!comment) return;
-    if (hoveredEditorCommentIdRef.current === comment.id) return;
-
-    clearCommentHoverState(editor);
-    applyCommentHoverState(editor, comment.id, comment.color ?? 0);
-    hoveredEditorCommentIdRef.current = comment.id;
-  }, [editor, getHoveredRootComment, getNewestRootComment, noteId, store]);
+  }, [editor, getNewestRootComment, noteId, store]);
 
   const handleEditorCommentMouseOut = useCallback((event: MouseEvent) => {
-    // moss-multi seam: comments: leaving the body ends a hover
-    if (!(event.relatedTarget instanceof Node && editor.getRootElement()?.contains(event.relatedTarget))) {
+    // moss-multi seam: comments: on a bound note, leaving the body ends a hover
+    if (bound(editor) && !(event.relatedTarget instanceof Node && editor.getRootElement()?.contains(event.relatedTarget))) {
       if (hoveredEditorCommentIdRef.current) clearCommentHoverState(editor);
       hoveredEditorCommentIdRef.current = null;
       return;
@@ -293,7 +298,7 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
   }, [editor]);
 
   const findInlineCommentAnchor = useCallback((commentId: string) => {
-    return anchorTarget(editor, commentId); // moss-multi seam: comments
+    if (bound(editor)) return anchorTarget(editor, commentId); // moss-multi seam: comments
     let anchor: { element: HTMLElement; nodeKey: string } | null = null;
 
     editor.read(() => {
@@ -388,8 +393,8 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
 
       const inlineAnchor = findInlineCommentAnchor(comment.id);
       if (!inlineAnchor) {
-        // moss-multi seam: comments (comments.md §6): a detached thread opens beside the text column
-        const rect = detachedRect(editor);
+        // moss-multi seam: comments (comments.md §6): a bound note's detached thread opens beside the text column
+        const rect = bound(editor) ? detachedRect(editor) : null;
         if (rect) openCommentsAtRect([comment], rect);
         return;
       }
@@ -492,7 +497,7 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
       }
 
       const commentsMap = store.get(noteCommentsMapAtom(noteId));
-      validComments = commentsOnDecorator(editor, node.getKey()) // moss-multi seam: comments
+      validComments = (bound(editor) ? commentsOnDecorator(editor, node.getKey()) : node.getCommentIds()) // moss-multi seam: comments
         .map((id) => commentsMap[id])
         .filter((c): c is NoteComment => !!c)
         .filter((comment) => isCommentVisibleForStatus(commentsMap, comment.id, commentThreadFilter));
@@ -524,12 +529,14 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
 
   useEffect(() => {
     return editor.registerRootListener((rootElement, previousRootElement) => {
-      previousRootElement?.removeEventListener('mousemove', handleEditorCommentMouseOver); // moss-multi seam: comments
+      previousRootElement?.removeEventListener('mouseover', handleEditorCommentMouseOver);
+      previousRootElement?.removeEventListener('mousemove', handleBoundCommentMouseMove); // moss-multi seam: comments
       previousRootElement?.removeEventListener('mouseout', handleEditorCommentMouseOut);
-      rootElement?.addEventListener('mousemove', handleEditorCommentMouseOver);
+      rootElement?.addEventListener('mouseover', handleEditorCommentMouseOver);
+      rootElement?.addEventListener('mousemove', handleBoundCommentMouseMove); // moss-multi seam: comments
       rootElement?.addEventListener('mouseout', handleEditorCommentMouseOut);
     });
-  }, [editor, handleEditorCommentMouseOut, handleEditorCommentMouseOver]);
+  }, [editor, handleBoundCommentMouseMove, handleEditorCommentMouseOut, handleEditorCommentMouseOver]);
 
   useEffect(() => {
     const handleOpenThread = (event: Event) => {
@@ -578,19 +585,22 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
     const previous = previousCommentsMapRef.current;
     previousCommentsMapRef.current = commentsMap;
     const active = activeCommentState.comment;
-    if (!active || commentsMap[active.id] || !previous[active.id]) return;
+    if (!bound(editor) || !active || commentsMap[active.id] || !previous[active.id]) return;
     const next = Object.values(previous)
       .filter((c) => c.parentId === active.id && commentsMap[c.id])
       .sort((a, b) => a.createdAt - b.createdAt || writeOrder(a) - writeOrder(b))
       .map((c) => commentsMap[c.id])[0] ?? (active.parentId ? commentsMap[active.parentId] : undefined);
     if (next) setActiveComment((state) => ({ ...state, comment: next }));
     else handlePopoverOpenChange(false);
-  }, [activeCommentState.comment, commentsMap, handlePopoverOpenChange, setActiveComment]);
+  }, [activeCommentState.comment, commentsMap, editor, handlePopoverOpenChange, setActiveComment]);
 
   // Handle comment update - update atom (persists on next content save)
   const handleUpdate = useCallback((commentId: string, text: string, imageUrls?: string[]) => {
-    mutate(editor, { type: 'edit', id: commentId, text }); // moss-multi seam: comments: the record arrives from the server
-    return;
+    // moss-multi seam: comments: on a bound note the record arrives from the server
+    if (bound(editor)) {
+      mutate(editor, { type: 'edit', id: commentId, text });
+      return;
+    }
     const currentMap = store.get(noteCommentsMapAtom(noteId));
     const existingComment = currentMap[commentId];
     if (!existingComment) return;
@@ -628,7 +638,7 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
     const currentMap = store.get(noteCommentsMapAtom(noteId));
     // moss-multi seam: comments (comments.md §12): the server deletes, and a root delete promotes the oldest reply
     // under its own id, so an open thread follows that reply; the records arrive over the doc socket.
-    {
+    if (bound(editor)) {
       if (!mutate(editor, { type: 'delete', id: commentId, scope })) return;
       const activeId = store.get(activeCommentAtom(noteId)).comment?.id;
       if (activeId !== commentId) return;
@@ -664,7 +674,7 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
     const trimmed = text.trim();
     const normalizedImageUrls = imageUrls?.filter((url) => url.trim().length > 0) ?? [];
     if (!trimmed && normalizedImageUrls.length === 0) return false;
-    return mutate(editor, { type: 'reply', parentId, text: trimmed }); // moss-multi seam: comments
+    if (bound(editor)) return mutate(editor, { type: 'reply', parentId, text: trimmed }); // moss-multi seam: comments
     const currentMap = store.get(noteCommentsMapAtom(noteId));
     const parent = currentMap[parentId];
     if (!parent) return false;
@@ -690,8 +700,11 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
   }, [noteId, store]);
 
   const handleSetThreadResolved = useCallback((rootId: string, resolved: boolean) => {
-    mutate(editor, { type: 'resolve', rootId, resolved }); // moss-multi seam: comments
-    return;
+    // moss-multi seam: comments
+    if (bound(editor)) {
+      mutate(editor, { type: 'resolve', rootId, resolved });
+      return;
+    }
     const currentMap = store.get(noteCommentsMapAtom(noteId));
     const result = setCommentSubtreeResolvedState(currentMap, rootId, {
       resolved,

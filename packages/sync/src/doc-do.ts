@@ -21,8 +21,10 @@ import { AckCoalescer, DocStore, PERSISTENCE } from './doc/persistence.ts';
 import { coerceSidecar, COMMENT_STATE_SHARE, COMMENTS_PER_DOC, DocComments, type CommentCreate, type CommentDeleteScope, type CommentResult, type CommentSource } from './doc/comments.ts';
 import { d1Projections, Projections, type ProjectionTarget } from './doc/projections.ts';
 import { handleSuggest, SqlLeases, SuggestIngest, type Suggester } from './doc/suggest.ts';
-import { newSuggestionsClient, SUGGESTIONS, SuggestionsWriter } from './suggest/records.ts';
-import { nodeRegistry } from './suggest/review.ts';
+import { newSuggestionsClient, readMeta, recordIds, SUGGESTIONS, SuggestionsWriter } from './suggest/records.ts';
+import {
+  acceptRecord, EMPTY_IDLE_MS, exportWorkingMarkdown, nodeRegistry, rejectRecord, reviewPreview, withdrawRecord, type Preview, type Reviewer, type ReviewResult,
+} from './suggest/review.ts';
 import { TRY_AGAIN, withDeadline, type Stamp } from './access-epoch.ts';
 import { publishMeta } from './fanout.ts';
 import type { SyncEnv } from './env.ts';
@@ -131,6 +133,13 @@ const serializer = () => {
 /** Who a REST comment write stands for, as the Worker resolved it: its principal, session or key, and share token. */
 export type CommentActor = SocketIdentity;
 
+/** A refused review action: the gate's reason, or the actor's (as for comments). */
+export type ReviewRefusal = { ok: false; status: number; reason: string };
+export type SuggestionPreview = Preview & { closed?: boolean };
+
+/** A new live suggestion, for the bell. */
+export type SuggestionNotifier = (notice: { docId: string; author: string; record: string }) => Promise<void>;
+
 /** A comment write whose authorization D1 could not confirm: refused, and the client may retry. */
 const UNCONFIRMED: CommentResult = { ok: false, status: 503, error: 'unconfirmed' };
 
@@ -234,6 +243,8 @@ export class DocDO extends YServer<SyncEnv> {
    * (apps/web/src/server.ts); with none, frames apply as they arrive (the Node harness).
    */
   static access: (env: SyncEnv) => AccessCheck | null = () => null;
+  /** Who hears of a new live suggestion (the bell); installed by the Worker. */
+  static suggestionNotices: (env: SyncEnv) => SuggestionNotifier | null = () => null;
 
   /** Where search feeds land; null leaves the doc unindexed. */
   static searchFeed: (env: SyncEnv) => SearchFeed | null = (env) => (env?.SearchDO ? {
@@ -283,6 +294,12 @@ export class DocDO extends YServer<SyncEnv> {
   /** The one writer of `suggestions` (reserved client S) and the suggestion ingest (docs/design/suggestions.md). */
   #suggestions: SuggestionsWriter | null = null;
   #ingest: SuggestIngest | null = null;
+  /**
+   * When the next idle check of open records is due (§4.7: an idle record with nothing to show is rejected by the
+   * system), and the `updatedAt` each record was last checked at. In memory: a wake checks on the next record change.
+   */
+  #idleAt: number | null = null;
+  readonly #idleChecked = new Map<string, number>();
   /** Suggest refusals per principal in the last window, and principals cooling down (until when). In memory. */
   readonly #refusals = new Map<string, number[]>();
   readonly #cooldowns = new Map<string, number>();
@@ -344,7 +361,17 @@ export class DocDO extends YServer<SyncEnv> {
       stateBytes: () => store.stateBytes + payloads.totalBytes,
       // Only a served payload places a payload op; a withheld one is accept's G4 to refuse, and reads as unknown here.
       payloadDoc: (id) => (payloads.served(id) ? payloads.doc(id) : undefined),
+      onCreated: (record, author, continues) => {
+        if (!continues) this.#noticeSuggestion(record, author);
+      },
     });
+    this.document.getMap(SUGGESTIONS).observeDeep(() => {
+      if (this.#idleAt !== null) return;
+      this.#idleAt = Date.now() + EMPTY_IDLE_MS;
+      void this.#schedule(holdsOf(store)).catch((error: unknown) => console.error('DocDO could not schedule the idle check', error));
+    });
+    // A wake forgets when the idle check was due, so any open record gets one at the next alarm.
+    if (recordIds(this.document).some((id) => readMeta(this.document, id)?.status === 'open')) this.#idleAt = Date.now();
     const target = (this.constructor as typeof DocDO).projectionTarget(this.env);
     if (target) this.#project(new Projections(this.name, target));
     // A wake re-feeds only a doc the index may lack (L§4.14): an edit whose feed never landed, or an older entry
@@ -776,6 +803,13 @@ export class DocDO extends YServer<SyncEnv> {
 
   /** The actor's verdict now: null while it may comment, else the refusal. Throws when D1 cannot answer. */
   async #authorizeActor(check: AccessCheck, store: DocStore, actor: CommentActor | undefined): Promise<CommentResult | null> {
+    const resolved = await this.#resolveActor(check, store, actor);
+    if ('ok' in resolved) return resolved;
+    return roleAtLeast(resolved.role, 'commenter') ? null : { ok: false, status: 403, error: 'forbidden' };
+  }
+
+  /** The actor's live role now, or the refusal (no live credential, no access, a revocation). Throws when D1 cannot answer. */
+  async #resolveActor(check: AccessCheck, store: DocStore, actor: CommentActor | undefined): Promise<CommentResult | { role: Role }> {
     const unauthenticated: CommentResult = { ok: false, status: 401, error: 'unauthenticated' };
     if (!actor || (actor.kind !== 'user' && actor.kind !== 'agent')) return unauthenticated;
     const session = actor.kind === 'user' ? actor.sessionId : null;
@@ -788,10 +822,9 @@ export class DocDO extends YServer<SyncEnv> {
     if (session ? !stamp.sessions.has(session) : !stamp.agents.has(actor.principalId)) return unauthenticated;
     if (access === 'deleted') return { ok: false, status: 404, error: 'trashed' };
     if (access === null) return { ok: false, status: 404, error: 'not-found' };
-    if (!roleAtLeast(access.role, 'commenter')) return { ok: false, status: 403, error: 'forbidden' };
     // A kick persisted while D1 answered outdates what it said.
     if (revocationCode({ ...actor, resolvedAt } as Attachment, store.revoked) !== null) return { ok: false, status: 403, error: 'forbidden' };
-    return null;
+    return { role: access.role as Role };
   }
 
   /**
@@ -840,6 +873,14 @@ export class DocDO extends YServer<SyncEnv> {
     for (const connection of this.#all()) {
       const attachment = attachmentOf(connection);
       if (attachment && aged(attachment, now)) connection.close(TRY_AGAIN, 'aged');
+    }
+    if (this.#idleAt !== null && this.#idleAt <= now) {
+      this.#idleAt = null;
+      try {
+        await this.#serial(async () => this.#checkIdle(now));
+      } catch (error) {
+        console.error('DocDO idle check failed', error);
+      }
     }
     const expired = [...holdsOf(store)].filter(([, until]) => until <= now).map(([hold]) => hold);
     if (expired.length > 0) {
@@ -913,9 +954,99 @@ export class DocDO extends YServer<SyncEnv> {
     store.setMeta('created', '1');
   }
 
+  /**
+   * The hunks a reviewer is shown and the hash and digest an accept must name (docs/design/suggestions.md §4.4), for
+   * any reader. An idle record with nothing to show is rejected by the system; an outdated or broken one is badged.
+   */
+  previewSuggestion(input: { id: string; reviewer: Reviewer; actor?: CommentActor }): Promise<SuggestionPreview | ReviewRefusal> {
+    return this.#review(input, 'viewer', () => reviewPreview(this.document, input.id));
+  }
+
+  /**
+   * Accept (§4.1–4.3): editor and above, in one synchronous turn after the actor is re-authorized. The record lands
+   * exactly as previewed or nothing does; its leases are spent in the same turn.
+   */
+  acceptSuggestion(input: { id: string; reviewer: Reviewer; actor?: CommentActor; previewHash: string; digest: string }): Promise<ReviewResult | ReviewRefusal> {
+    return this.#review(input, 'editor', (reviewer) => {
+      const result = acceptRecord(this.document, input.id, { previewHash: input.previewHash, digest: input.digest }, reviewer, { stateCap: this.#limits.stateCapBytes });
+      if (result.ok) {
+        this.#comments?.flush();
+        this.#projections?.touch();
+      }
+      return result;
+    });
+  }
+
+  /** Reject (§4.5): editor and above; only the record changes. */
+  rejectSuggestion(input: { id: string; reviewer: Reviewer; actor?: CommentActor }): Promise<ReviewResult | ReviewRefusal> {
+    return this.#review(input, 'editor', (reviewer) => rejectRecord(this.document, input.id, reviewer));
+  }
+
+  /** Withdraw (§4.5): the author, at any role from suggester up; only the record changes. */
+  withdrawSuggestion(input: { id: string; reviewer: Reviewer; actor?: CommentActor }): Promise<ReviewResult | ReviewRefusal> {
+    return this.#review(input, 'suggester', (reviewer) => withdrawRecord(this.document, input.id, reviewer));
+  }
+
+  /**
+   * One review action in the doc's serialized write (A§8 pull validation): the actor is re-resolved and its live role,
+   * not the Worker's, is the reviewer's; the action runs right after with no await between. A trashed doc refuses.
+   */
+  async #review<T>(input: { reviewer: Reviewer; actor?: CommentActor }, floor: Role, run: (reviewer: Reviewer) => T): Promise<T | ReviewRefusal> {
+    const store = await this.#ready();
+    const check = this.#accessCheck();
+    return this.#serial(async (): Promise<T | ReviewRefusal> => {
+      let reviewer = input.reviewer;
+      if (check) {
+        let resolved: CommentResult | { role: Role };
+        try {
+          await this.#validate(check);
+          resolved = await this.#resolveActor(check, store, input.actor);
+        } catch (error) {
+          console.error('DocDO could not re-authorize a suggestion review; refusing it', error);
+          return { ok: false, status: 503, reason: 'unconfirmed' };
+        }
+        if ('ok' in resolved) return { ok: false, status: resolved.ok ? 500 : resolved.status, reason: resolved.ok ? 'unconfirmed' : resolved.error };
+        reviewer = { id: input.reviewer.id, role: resolved.role };
+      }
+      if (holdsOf(store).size > 0 || store.meta('deleted') === '1') return { ok: false, status: 404, reason: 'trashed' };
+      if (!roleAtLeast(reviewer.role, floor)) return { ok: false, status: 403, reason: 'role' };
+      return run(reviewer);
+    });
+  }
+
+  /** Each open record idle since its last check gets its preview, which rejects an empty one; the rest come due later. */
+  #checkIdle(now: number): void {
+    let next: number | null = null;
+    for (const id of recordIds(this.document)) {
+      const meta = readMeta(this.document, id);
+      if (!meta || meta.status !== 'open' || this.#idleChecked.get(id) === meta.updatedAt) continue;
+      const due = meta.updatedAt + EMPTY_IDLE_MS;
+      if (due > now) {
+        next = Math.min(next ?? due, due);
+        continue;
+      }
+      this.#idleChecked.set(id, meta.updatedAt);
+      reviewPreview(this.document, id, { now });
+    }
+    if (next !== null) this.#idleAt = Math.min(this.#idleAt ?? next, next);
+  }
+
+  #noticeSuggestion(record: string, author: string): void {
+    const notify = (this.constructor as typeof DocDO).suggestionNotices(this.env);
+    if (!notify) return;
+    const sent = notify({ docId: this.name, author, record }).catch((error: unknown) => console.error('suggestion notice failed', error));
+    try {
+      this.ctx.waitUntil(sent);
+    } catch {
+      // No request to extend (the Node harness): the notice still runs.
+    }
+  }
+
   /** The doc as a `.md` file, memoized until the next update. */
-  async exportMarkdown(): Promise<string> {
+  async exportMarkdown(options: { view?: 'working' } = {}): Promise<string> {
     await this.#ready();
+    // The working view (§4.7): the note with every valid open suggestion applied; never memoized.
+    if (options.view === 'working') return exportWorkingMarkdown(this.document, this.name);
     this.#exported ??= exportDocMarkdown(this.document, this.name);
     return this.#exported;
   }
@@ -1056,6 +1187,7 @@ export class DocDO extends YServer<SyncEnv> {
   async #schedule(holds: Map<string, number>): Promise<void> {
     const due = [...holds.values()];
     if (this.#tickAt !== null) due.push(this.#tickAt);
+    if (this.#idleAt !== null) due.push(this.#idleAt);
     for (const connection of this.#all()) {
       const attachment = attachmentOf(connection);
       if (attachment) due.push(agesAt(attachment));

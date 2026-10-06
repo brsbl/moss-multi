@@ -31,11 +31,13 @@ import { captureCaret, type CaretMark } from './suggest/caret.ts';
 import { modeFor, offerUnsaved, showMode, subscribeModes } from './suggest/mode.ts';
 import { ReviewMount, SuggestMount } from './suggest/mounts.ts';
 import { SuggestModeChip, SuggestUnsavedBand } from './suggest/SuggestChrome.tsx';
+import { SuggestionsButton } from './suggest/SuggestionsPanel.tsx';
 import { SuggestPlugin, type SuggestPane } from './suggest/SuggestPlugin.tsx';
 import { bindFrontmatter } from './frontmatter-binding.ts';
 import { bindCommentAtoms } from '../comments/atoms.ts';
 import { setAckWaiter } from '../comments/api.ts';
 import { setMyPrincipalId } from '../comments/people.ts';
+import { markShared } from '../comments/paint.ts';
 import { displayTitle, TitleField } from './title-binding.ts';
 import { localIdentity, startPresence } from './presence.ts';
 import { cursorController } from './cursors.ts';
@@ -479,6 +481,8 @@ function BindingGate({ binding }: { binding: PaneBinding }): null {
  */
 function DocBinding({ docId, binding }: { docId: string; binding: PaneBinding }): ReactNode {
   const [editor] = useLexicalComposerContext();
+  // Shared for the binding's whole life, plugin or not: comments never fall back to moss's local path meanwhile.
+  useLayoutEffect(() => markShared(editor, docId), [editor, docId]);
   useEffect(() => trackUndoFocus(editor), [editor]);
   const [excluded] = useState(() => excludedPropertiesFor(editor));
   const [identity] = useState(localIdentity);
@@ -652,7 +656,7 @@ export function useMossMultiPane(note: { id: string; trashedAt?: number | null }
           ...(terminal ? { [TERMINAL_REASON_ATTR]: terminal } : {}),
         }
       : {},
-    topBarCollab: docId ? <><SuggestModeChip docId={docId} /><TopBarCollab docId={docId} /></> : null,
+    topBarCollab: docId ? <><SuggestModeChip docId={docId} />{binding ? <SuggestionsButton docId={docId} source={binding} /> : null}<TopBarCollab docId={docId} /></> : null,
   };
 }
 

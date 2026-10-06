@@ -2,17 +2,21 @@
 // forged records meet each accept gate with nothing applied; a record whose context an editor changed is outdated; the
 // projection a reviewer sees covers text, attributes and payload docs, and binds the accept (T5.P).
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { ElementNode } from 'lexical';
 import * as Y from 'yjs';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
-import { canonical, projectDoc, recordDigest, type DeletePart, type RecordMeta, type RecordOp } from '@moss-multi/core/suggest/apply';
+import {
+  applyRecord, canonical, hydrate, previewHash, projectDoc, recordDigest, type DeletePart, type RecordMeta, type RecordOp,
+} from '@moss-multi/core/suggest/apply';
+import { describeHunks, type ReviewRow } from '@moss-multi/core/suggest/describe';
 import { SuggestIngest } from '../doc/suggest.ts';
 import { payloadDocsFor } from '../payload-docs.ts';
 import { ForkShim } from './fork-shim.ts';
 import { createRecord, opsOf, partsOf, readMeta, readRecord, writeSuggestions } from './records.ts';
-import { acceptRecord, nodeRegistry, previewRecord, rejectRecord, withdrawRecord } from './review.ts';
+import { acceptRecord, exportWorkingMarkdown, nodeRegistry, previewRecord, rejectRecord, reviewPreview, withdrawRecord } from './review.ts';
 import {
-  bodyOf, changedRoots, codeBlock, deterministicIds, editorEdits, EDITOR, insertBlock, listItem, OTHER_SUGGESTER, payloadsInOrder, select, seededBody,
-  spansOfText, SUGGESTER,
+  all, bodyOf, changedRoots, codeBlock, deterministicIds, editorEdits, EDITOR, exported, insertBlock, listItem, NOTE_ID, OTHER_SUGGESTER, payloadsInOrder,
+  select, seededBody, spansOfText, SUGGESTER, textNode,
 } from './test-support.ts';
 
 let restore: () => void = () => {};
@@ -517,6 +521,285 @@ describe('T5.0 the projection a reviewer sees @p:mean-2', () => {
       const body = bodyOf(live);
       expect(acceptRecord(live, 'r1', { previewHash: preview.hash, digest: preview.digest }, EDITOR)).toEqual({ ok: false, status: 409, reason: 'changed' });
       expect(bodyOf(live)).toBe(body);
+    } finally {
+      dispose();
+    }
+  });
+});
+
+describe('T5.3 accept lands exactly the previewed diff or nothing @p:mean-2 @p:R17', () => {
+  const EMPTY_HASH = previewHash([]);
+  const paragraphOf = (doc: Y.Doc) => (root(doc).toDelta() as { insert: unknown }[]).map((op) => op.insert).find((x) => x instanceof Y.XmlText) as Y.XmlText;
+
+  it('preview_hash_covers_root_attributes: a root-only and a mixed text-plus-root record each change the hash; a stale hash gets 409', () => {
+    for (const mixed of [false, true]) {
+      const live = seededBody();
+      forgeRecord(live, 'g', [LEASED], [forged(live, (doc) => {
+        root(doc).setAttribute('__format', 1 as unknown as string);
+        root(doc).setAttribute('__direction', 'rtl');
+        if (mixed) paragraphOf(doc).insert(1, 'Oh, ');
+      })]);
+      const record = readRecord(live, 'g')!;
+      const preview = previewRecord(live, 'g');
+      if (!preview.ok) throw new Error(preview.reason);
+      expect(preview.hunks.some((hunk) => hunk.kind === 'note'), `mixed=${mixed}: the root's keys are a hunk`).toBe(true);
+      expect(preview.hash, `mixed=${mixed}`).not.toBe(EMPTY_HASH);
+      const body = bodyOf(live);
+      expect(acceptRecord(live, 'g', { previewHash: EMPTY_HASH, digest: recordDigest(record) }, EDITOR)).toEqual({ ok: false, status: 409, reason: 'changed' });
+      expect(bodyOf(live)).toBe(body);
+      expect(acceptRecord(live, 'g', { previewHash: preview.hash, digest: recordDigest(record) }, EDITOR)).toEqual({ ok: true });
+      expect(root(live).getAttribute('__direction')).toBe('rtl');
+    }
+  });
+
+  it('g7_refuses_candidate_repaired_during_hydration: a fresh legacy-shape code block gets 409 broken, body unchanged', () => {
+    const live = seededBody();
+    forgeRecord(live, 'g', [LEASED], [forged(live, (doc) => {
+      const element = new Y.XmlElement();
+      root(doc).insertEmbed(root(doc).length, element);
+      element.setAttribute('__type', 'code-block');
+      element.setAttribute('__code', 'legacy();');
+      element.setAttribute('__language', 'js');
+    })]);
+    const record = readRecord(live, 'g')!;
+    const body = bodyOf(live);
+    expect(previewRecord(live, 'g')).toMatchObject({ ok: false, reason: 'broken' });
+    expect(acceptRecord(live, 'g', { previewHash: 'none', digest: recordDigest(record) }, EDITOR)).toEqual({ ok: false, status: 409, reason: 'broken' });
+    expect(bodyOf(live)).toBe(body);
+    expect(readMeta(live, 'g')).toMatchObject({ status: 'open', broken: 'broken' });
+  });
+
+  it("g7_refuses_deletion_only_candidate_repaired_during_hydration: deleting only a text node's properties gets 409 broken, body unchanged", () => {
+    const live = seededBody();
+    // The text node's map goes and its characters stay: the binding drops or merges the dangling string as it binds.
+    forgeRecord(live, 'g', [LEASED], [forged(live, (doc) => {
+      const paragraph = paragraphOf(doc);
+      let index = 0;
+      for (const op of paragraph.toDelta() as { insert: unknown }[]) {
+        if (op.insert instanceof Y.Map) break;
+        index += typeof op.insert === 'string' ? op.insert.length : 1;
+      }
+      paragraph.delete(index, 1);
+    })]);
+    const record = readRecord(live, 'g')!;
+    const body = bodyOf(live);
+    expect(previewRecord(live, 'g')).toMatchObject({ ok: false, reason: 'broken' });
+    expect(acceptRecord(live, 'g', { previewHash: 'none', digest: recordDigest(record) }, EDITOR)).toEqual({ ok: false, status: 409, reason: 'broken' });
+    expect(bodyOf(live)).toBe(body);
+  });
+
+  it('g5_split_parts_around_foreign_insert_keep_foreign_text_and_preview_shows_it', () => {
+    const { live, proposeDelete, dispose } = setup();
+    try {
+      const [run] = spansOfText(live, 'an');
+      expect(run.len).toBe(2);
+      expect(proposeDelete('r1', { id: 'd1', targets: [{ client: run.client, clock: run.clock, len: 1 }] })).toMatchObject({ ok: true });
+      expect(proposeDelete('r1', { id: 'd2', targets: [{ client: run.client, clock: run.clock + 1, len: 1 }] })).toMatchObject({ ok: true });
+      // An editor types X between the two struck characters.
+      editorEdits(live, () => select('Hello', 13).insertText('X'));
+      expect(exported(live)).toContain('Hello world aXnd the cat.');
+      const preview = previewRecord(live, 'r1');
+      if (!preview.ok) throw new Error(preview.reason);
+      const changed = preview.hunks.filter((hunk) => hunk.kind === 'block' && hunk.op === 'changed');
+      expect(changed).toHaveLength(1);
+      const shownText = (changed[0].after as { seq: { s?: string }[] }).seq.map((entry) => entry.s ?? '').join('');
+      expect(shownText).toContain('Hello world Xd the cat.');
+      const record = readRecord(live, 'r1')!;
+      expect(acceptRecord(live, 'r1', { previewHash: preview.hash, digest: recordDigest(record) }, EDITOR)).toEqual({ ok: true });
+      expect(exported(live)).toContain('Hello world Xd the cat.');
+    } finally {
+      dispose();
+    }
+  });
+
+  it("G3 covers Yjs's formatting cleanup in the body: deleting an editor's formatted run is refused outside-body, nothing applied", () => {
+    const live = seededBody();
+    live.transact(() => paragraphOf(live).insert(6, 'ZZ', { bold: true }));
+    const targets = spansOfText(live, 'ZZ');
+    expect(targets).toHaveLength(1);
+    forgeRecord(live, 'g', [LEASED], [], [{ id: 'd1', kind: 'delete', targets, quote: 'ZZ' }]);
+    const record = readRecord(live, 'g')!;
+    const before = Y.encodeStateAsUpdate(live);
+    expect(previewRecord(live, 'g')).toMatchObject({ ok: false, reason: 'outside-body' });
+    expect(acceptRecord(live, 'g', { previewHash: 'none', digest: recordDigest(record) }, EDITOR)).toEqual({ ok: false, status: 409, reason: 'outside-body' });
+    expect(Y.encodeStateAsUpdate(live)).toEqual(before);
+  });
+
+  it("G3 covers Yjs's formatting cleanup in a payload: a payload op over an editor's formatted run is refused, the payload untouched", () => {
+    const live = seededBody();
+    const { key } = codeDecorator(live);
+    const payload = payloadDocsFor(live).get(key)!;
+    payload.transact(() => payload.getText('payload').format(0, 2, { bold: true }));
+    const before = Y.encodeStateAsUpdate(payload);
+    forgeRecord(live, 'g', [LEASED], [payloadOp(live, key, (text) => text.delete(0, 2))]);
+    const record = readRecord(live, 'g')!;
+    expect(previewRecord(live, 'g')).toMatchObject({ ok: false, reason: 'outside-body' });
+    expect(acceptRecord(live, 'g', { previewHash: 'none', digest: recordDigest(record) }, EDITOR)).toEqual({ ok: false, status: 409, reason: 'outside-body' });
+    expect(Y.encodeStateAsUpdate(payload)).toEqual(before);
+    expect(payload.getText('payload').toString()).toBe('seed');
+  });
+
+  it('the deletion coverage check is interval-based: a 2,500-span part beside 400,000 characters is judged in well under a second', () => {
+    const live = new Y.Doc();
+    const paragraph = block('paragraph');
+    root(live).insertEmbed(0, paragraph);
+    paragraph.insert(0, 'x'.repeat(400_000));
+    const first = (paragraph._start as Y.Item).id;
+    const targets = Array.from({ length: 2_500 }, (_, i) => ({ client: first.client, clock: first.clock + i, len: 1 }));
+    const record = {
+      meta: { v: 2, id: 'g', author: SUGGESTER.id, authorName: SUGGESTER.name, source: 'live', createdAt: 1, updatedAt: 1, status: 'open', clients: [LEASED] } as RecordMeta,
+      ops: [] as RecordOp[],
+      parts: [{ id: 'd1', kind: 'delete' as const, targets, quote: '' }],
+    };
+    const mirror = hydrate(live);
+    const started = performance.now();
+    const result = applyRecord(mirror, record);
+    const elapsed = performance.now() - started;
+    expect(result).toMatchObject({ ok: true });
+    expect(elapsed).toBeLessThan(1_000);
+  });
+
+  it('a record whose preview is empty is auto-rejected by the system once idle', () => {
+    const live = seededBody();
+    forgeRecord(live, 'g', [LEASED], bodyOps(updatesOf(live, (doc) => {
+      paragraphOf(doc).insert(1, 'x');
+      paragraphOf(doc).delete(1, 1);
+    })));
+    const body = bodyOf(live);
+    expect(previewRecord(live, 'g')).toMatchObject({ ok: true, hunks: [] });
+    expect(reviewPreview(live, 'g', { now: 2 })).toMatchObject({ ok: true, hunks: [] });
+    expect(readMeta(live, 'g')!.status, 'not idle yet').toBe('open');
+    expect(reviewPreview(live, 'g', { now: 60_000 })).toMatchObject({ ok: true, hunks: [], closed: true });
+    expect(readMeta(live, 'g')).toMatchObject({ status: 'rejected', resolvedBy: 'system' });
+    expect(bodyOf(live)).toBe(body);
+  });
+
+  it('the default export is the clean body; the working view adds every valid open record', () => {
+    const { live, suggest, dispose } = setup();
+    try {
+      suggest('r1', [() => select('Hello', 24).insertText(' More words.')]);
+      suggest('r2', [() => select('join tail', 0).insertText('Also ')], OTHER_SUGGESTER);
+      forgeRecord(live, 'bad', [LEASED], [forged(live, (doc) => root(doc).insertEmbed(root(doc).length, block('no-such-node')))]);
+      const clean = exported(live);
+      expect(clean).not.toContain('More words.');
+      const working = exportWorkingMarkdown(live, NOTE_ID);
+      expect(working).toContain('Hello world and the cat. More words.');
+      expect(working).toContain('Also join tail.');
+      expect(exported(live)).toBe(clean);
+      for (const id of ['r1', 'r2', 'bad']) expect(readMeta(live, id)!.status).toBe('open');
+    } finally {
+      dispose();
+    }
+  });
+});
+
+describe('T5.3 the card shows every change accept commits to @p:mean-2 @p:R17', () => {
+  const rowsFor = (steps: (() => void)[]): ReviewRow[] => {
+    const { live, suggest, dispose } = setup();
+    try {
+      suggest('r1', steps);
+      const preview = previewRecord(live, 'r1');
+      if (!preview.ok) throw new Error(preview.reason);
+      return describeHunks(preview.hunks);
+    } finally {
+      dispose();
+    }
+  };
+  const shown = (rows: ReviewRow[]) => rows.map((row) => [row.text, row.note ?? ''].join(' ')).join('\n');
+
+  it('a link whose destination changed shows the old and the new destination', () => {
+    const rows = rowsFor([() => (all().find((node) => node.getType() === 'link') as unknown as { setURL(url: string): void }).setURL('https://other.invalid')]);
+    expect(shown(rows)).toContain('https://example.invalid');
+    expect(shown(rows)).toContain('https://other.invalid');
+  });
+
+  it('a formatting change names the format and the text it applies to', () => {
+    const rows = rowsFor([() => select('Hello', 6, 11).formatText('bold')]);
+    expect(shown(rows)).toMatch(/bold/);
+    expect(shown(rows)).toContain('world');
+  });
+
+  it('an indent change names the indent', () => {
+    const rows = rowsFor([() => { textNode('Indented').getParentOrThrow<ElementNode>().setIndent(2); }]);
+    expect(shown(rows)).toMatch(/indent: 1 → 2/);
+  });
+
+  it('a list item moved one level in is shown with its text', () => {
+    const rows = rowsFor([() => { const item = listItem('item b'); item.setIndent(item.getIndent() + 1); }]);
+    expect(shown(rows)).toContain('item b');
+  });
+
+  it('every change is listed; none is folded into a count', () => {
+    const words = ['One', 'Two', 'Three', 'Four', 'Five'];
+    const rows = rowsFor([
+      () => select('Hello', 24).insertText(' One.'),
+      () => select('Go to ', 0).insertText('Two '),
+      () => select('Quoted', 0).insertText('Three '),
+      () => select('Indented', 0).insertText('Four '),
+      () => select('Join head', 0).insertText('Five '),
+    ]);
+    for (const word of words) expect(shown(rows), word).toContain(word);
+    expect(shown(rows)).not.toMatch(/more changes/);
+  });
+
+  it('a text change and a stored property Lexical does not export, in one block, are both shown', () => {
+    const live = seededBody();
+    forgeRecord(live, 'h', [LEASED], [forged(live, (doc) => {
+      const paragraph = (root(doc).toDelta() as { insert: unknown }[]).map((op) => op.insert).find((x) => x instanceof Y.XmlText) as Y.XmlText;
+      paragraph.insert(1, 'Oh, ');
+      paragraph.setAttribute('__hidden', 'stored-secret');
+    })]);
+    const preview = previewRecord(live, 'h');
+    if (!preview.ok) throw new Error(preview.reason);
+    const rows = describeHunks(preview.hunks);
+    expect(shown(rows)).toContain('Oh,');
+    expect(shown(rows), 'the stored property has its own row').toContain('stored-secret');
+  });
+
+  it("an added checklist shows each item's checked state", () => {
+    const rows = rowsFor([insertBlock('- [x] done item\n- [ ] open item')]);
+    const done = rows.filter((row) => row.text.includes('done item')).map((row) => row.note ?? '').join(' ');
+    const open = rows.filter((row) => row.text.includes('open item')).map((row) => row.note ?? '').join(' ');
+    expect(done).toMatch(/checked: true/);
+    expect(open).not.toMatch(/checked: true/);
+    expect(done).not.toBe(open);
+  });
+
+  it('a checkbox toggled on kept text names the item and its checked state', () => {
+    const rows = rowsFor([() => { listItem('task one').setChecked(true); }]);
+    const row = rows.find((r) => r.text.includes('task one'));
+    expect(row, shown(rows)).toBeDefined();
+    expect(row!.note).toMatch(/checked: .*→ true/);
+  });
+
+  it('a deleted run inside a link names the link without empty fields', () => {
+    const { live, proposeDelete, dispose } = setup();
+    try {
+      expect(proposeDelete('r1', { id: 'd1', targets: spansOfText(live, 'site') })).toMatchObject({ ok: true });
+      const preview = previewRecord(live, 'r1');
+      if (!preview.ok) throw new Error(preview.reason);
+      const rows = describeHunks(preview.hunks);
+      const deleted = rows.find((row) => row.kind === 'delete' && row.text.includes('site'));
+      expect(deleted, shown(rows)).toBeDefined();
+      expect(deleted!.note).toContain('https://example.invalid');
+      expect(deleted!.note).not.toMatch(/none/);
+    } finally {
+      dispose();
+    }
+  });
+
+  it("an editor's text typed inside a suggested delete is not shown as inserted by the suggestion", () => {
+    const { live, proposeDelete, dispose } = setup();
+    try {
+      const [run] = spansOfText(live, 'an');
+      expect(proposeDelete('r1', { id: 'd1', targets: [{ client: run.client, clock: run.clock, len: 1 }] })).toMatchObject({ ok: true });
+      expect(proposeDelete('r1', { id: 'd2', targets: [{ client: run.client, clock: run.clock + 1, len: 1 }] })).toMatchObject({ ok: true });
+      editorEdits(live, () => select('Hello', 13).insertText('X'));
+      const preview = previewRecord(live, 'r1');
+      if (!preview.ok) throw new Error(preview.reason);
+      const rows = describeHunks(preview.hunks);
+      expect(rows.filter((row) => row.kind === 'insert'), shown(rows)).toEqual([]);
+      expect(rows.filter((row) => row.kind === 'delete').map((row) => row.text).join(''), shown(rows)).toBe('an');
     } finally {
       dispose();
     }
