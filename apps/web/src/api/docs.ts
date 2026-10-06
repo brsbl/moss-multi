@@ -13,7 +13,7 @@ import { createDb, type Db } from '../db/client.ts';
 import { docs } from '../db/schema.ts';
 import type { AppEnv } from '../env.ts';
 import { json } from '../worker/route.ts';
-import { liveLink, resolveDocAccess, resolveFolderAccess } from './access.ts';
+import { liveLink, resolveDocAccess, resolveFolderAccess, writeActor } from './access.ts';
 import { admitDuplicateMedia, copyMedia } from './assets.ts';
 import { folderNotFound, liveIn, moveDoc, upFrom, vaultOf } from './folders.ts';
 import { handleInviteLinks } from './invites.ts';
@@ -61,6 +61,7 @@ async function seeded(db: Db, doc: DocRecord, role: string, run: () => Promise<u
   } catch (error) {
     await db.delete(docs).where(eq(docs.id, doc.id));
     if (error instanceof Error && error.message === 'doc-cap') return json({ error: 'doc-cap' }, 413, NO_STORE);
+    if (error instanceof Error && error.message === 'media-refused') return notFound();
     throw error;
   }
   const [projected] = await db.select({ id: docs.id, folderId: docs.folderId, title: docs.title, filename: docs.filename, createdAt: docs.createdAt, updatedAt: docs.updatedAt }).from(docs).where(eq(docs.id, doc.id));
@@ -123,9 +124,11 @@ async function duplicateDoc(request: Request, env: DocsEnv, docId: string): Prom
   const doc = await insertDoc(env, db, { folderId, ownerUserId: folder.ownerUserId, createdBy: principal.id });
   if (!doc) return folderNotFound();
   const owner = folder.ownerUserId;
+  const actor = writeActor(principal, shareTokenOf(request));
   return seeded(db, doc, folder.role, async () => {
-    // The copy's media are the source's own record, so it shows the same files wherever it lands (A§16).
-    await copyMedia(env.DB, docId, doc.id);
+    // The copy's media are the source's own record, so it shows the same files wherever it lands (A§16), placed only
+    // while the caller can still edit the copy.
+    if (!actor || !(await copyMedia(env.DB, docId, doc.id, actor))) throw new Error('media-refused');
     const target = await getServerByName(env.DocDO, doc.id);
     await target.createFromSnapshot({ folderId, ownerId: owner, title }, snapshot.state, snapshot.payloads);
   });
