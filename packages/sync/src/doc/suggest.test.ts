@@ -11,6 +11,7 @@ import { payloadDocsFor } from '../payload-docs.ts';
 import { closeRecord, newSuggestionsClient, readMeta, readRecord, SuggestionsWriter } from '../suggest/records.ts';
 import { acceptRecord, nodeRegistry, previewRecord, rejectRecord } from '../suggest/review.ts';
 import { ForkShim } from '../suggest/fork-shim.ts';
+import { decodeFrame, encodeFrame, int, MUTATIONS, rng, targetsOf } from '../suggest/fuzz-support.ts';
 import { EDITOR, OTHER_SUGGESTER, seededBody, select, spansOfText, SUGGESTER } from '../suggest/test-support.ts';
 import { SUGGEST_CAPS, SuggestIngest, type IngestOptions, type Suggester } from './suggest.ts';
 
@@ -582,6 +583,61 @@ function deletedRun(client: number, n: number): Uint8Array {
   return encoder.toUint8Array();
 }
 
+/** Ingest of one fixed `suggest-ops` frame after `closed` closed records, aimed at a chain `depth` accepts deep. */
+function fixedFrameRun(closed: number, depth: number): { first: number; median: number } {
+  const live = seededBody();
+  // As in the DocDO: records are written under S, so a close drops S clocks.
+  new SuggestionsWriter(live, newSuggestionsClient(live));
+  let n = 0;
+  const ingest = ingestOn(live);
+  /** Each record gets its own connection's lease, expired once used, so the live-lease cap never bites. */
+  const withLease = <T>(use: (who: Suggester, grant: { client: number; record: string }) => T): T => {
+    const who = sam(`c-${(n += 1)}`);
+    const result = use(who, leaseOne(ingest, who));
+    ingest.expireConnection(who.connection);
+    return result;
+  };
+  const world = spansOfText(live, 'world');
+  const cat = spansOfText(live, 'cat');
+  for (let i = 0; i < closed; i += 1) {
+    withLease((who, grant) => {
+      expect(ingest.delete(who, grant.record, { id: 'd', targets: world })).toMatchObject({ ok: true });
+      expect(ingest.withdraw(who, grant.record)).toMatchObject({ ok: true });
+    });
+  }
+  // A chain of `depth` accepted records, each a continuation of the one before.
+  const first = withLease((who, grant) => {
+    let head = grant.record;
+    for (let i = 0; i < depth; i += 1) {
+      const result = ingest.delete(who, head, { id: `d${i}`, targets: cat });
+      if (!result.ok) throw new Error(result.reason);
+      head = result.record;
+      acceptAsIs(live, head);
+    }
+    return grant.record;
+  });
+  const times: number[] = [];
+  for (let i = 0; i < 9; i += 1) {
+    withLease((who, grant) => {
+      const update = frame(live, grant.client, (doc) => append(doc, paragraph('fixed frame of typing')));
+      const started = performance.now();
+      // Aimed at the chain's first record: it lands in a fresh continuation of the accepted head.
+      const result = ingest.ops(who, first, update);
+      times.push(performance.now() - started);
+      if (!result.ok) throw new Error(result.reason);
+      acceptAsIs(live, result.record);
+    });
+  }
+  // The first frame walks the whole chain (as after a wake); later ones ride the compressed path.
+  return { first: times[0], median: median(times) };
+}
+
+/** The first frame is a single sample, so a GC pause can swamp it: keep the best of `n` runs. */
+function fixedFrameBest(closed: number, depth: number, n = 3): { first: number; median: number } {
+  const runs = Array.from({ length: n }, () => fixedFrameRun(closed, depth));
+  return { first: Math.min(...runs.map((r) => r.first)), median: Math.min(...runs.map((r) => r.median)) };
+}
+
 describe('T5.2 cost: ingest and the lease check are O(frame) @p:mean-2', () => {
   it('a frame of many deleted structs and as many delete ranges costs linear in its size (I5)', () => {
     const time = (n: number) => {
@@ -625,61 +681,10 @@ describe('T5.2 cost: ingest and the lease check are O(frame) @p:mean-2', () => {
   });
 
   it('fixed_frame_ingest_cost_independent_of_closed_record_count_and_continuation_depth', () => {
-    /** Ingest of one fixed `suggest-ops` frame after `closed` closed records, aimed at a chain `depth` accepts deep. */
-    const run = (closed: number, depth: number): { first: number; median: number } => {
-      const live = seededBody();
-      // As in the DocDO: records are written under S, so a close drops S clocks.
-      new SuggestionsWriter(live, newSuggestionsClient(live));
-      let n = 0;
-      const ingest = ingestOn(live);
-      /** Each record gets its own connection's lease, expired once used, so the live-lease cap never bites. */
-      const withLease = <T>(use: (who: Suggester, grant: { client: number; record: string }) => T): T => {
-        const who = sam(`c-${(n += 1)}`);
-        const result = use(who, leaseOne(ingest, who));
-        ingest.expireConnection(who.connection);
-        return result;
-      };
-      for (let i = 0; i < closed; i += 1) {
-        withLease((who, grant) => {
-          expect(ingest.delete(who, grant.record, { id: 'd', targets: spansOfText(live, 'world') })).toMatchObject({ ok: true });
-          expect(ingest.withdraw(who, grant.record)).toMatchObject({ ok: true });
-        });
-      }
-      // A chain of `depth` accepted records, each a continuation of the one before.
-      const first = withLease((who, grant) => {
-        let head = grant.record;
-        for (let i = 0; i < depth; i += 1) {
-          const result = ingest.delete(who, head, { id: `d${i}`, targets: spansOfText(live, 'cat') });
-          if (!result.ok) throw new Error(result.reason);
-          head = result.record;
-          acceptAsIs(live, head);
-        }
-        return grant.record;
-      });
-      const times: number[] = [];
-      for (let i = 0; i < 9; i += 1) {
-        withLease((who, grant) => {
-          const update = frame(live, grant.client, (doc) => append(doc, paragraph('fixed frame of typing')));
-          const started = performance.now();
-          // Aimed at the chain's first record: it lands in a fresh continuation of the accepted head.
-          const result = ingest.ops(who, first, update);
-          times.push(performance.now() - started);
-          if (!result.ok) throw new Error(result.reason);
-          acceptAsIs(live, result.record);
-        });
-      }
-      // The first frame walks the whole chain (as after a wake); later ones ride the compressed path.
-      return { first: times[0], median: median(times) };
-    };
-    /** The first frame is a single sample, so a GC pause can swamp it: keep the best of three runs. */
-    const best = (closed: number, depth: number): { first: number; median: number } => {
-      const runs = [run(closed, depth), run(closed, depth), run(closed, depth)];
-      return { first: Math.min(...runs.map((r) => r.first)), median: Math.min(...runs.map((r) => r.median)) };
-    };
-    run(5, 1);
-    const few = best(5, 1);
-    const many = best(3_000, 1);
-    const deep = best(5, 2_000);
+    fixedFrameRun(5, 1);
+    const few = fixedFrameBest(5, 1);
+    const many = fixedFrameBest(3_000, 1);
+    const deep = fixedFrameBest(5, 2_000);
     console.log(
       `T5.2 fixed frame: ${few.median.toFixed(3)} ms (5 closed, depth 1); ${many.median.toFixed(3)} ms (3000 closed); ${deep.median.toFixed(3)} ms (depth 2000); ` +
         `first frame ${few.first.toFixed(3)} / ${many.first.toFixed(3)} / ${deep.first.toFixed(3)} ms`,
@@ -695,3 +700,93 @@ describe('T5.2 cost: ingest and the lease check are O(frame) @p:mean-2', () => {
 function acceptAsIs(live: Y.Doc, id: string): void {
   closeRecord(live, id, { status: 'accepted', resolvedBy: EDITOR.id, resolvedAt: 1 });
 }
+
+/** A frame of `n` characters whose every origin is the next one, so placing the first walks the whole chain. */
+function reverseChain(client: number, n: number): Uint8Array {
+  const structs = Array.from({ length: n }, (_, i) =>
+    new Y.Item(Y.createID(client, i), null, i < n - 1 ? Y.createID(client, i + 1) : null, null, null, (i === n - 1 ? 'root' : null) as never, null, new Y.ContentString('x')));
+  return encodeFrame({ structs, ds: new Map() });
+}
+
+/** A frame of `n` elements, each the child of the one before: far deeper than MAX_DEPTH. */
+function nestingChain(client: number, n: number): Uint8Array {
+  const structs = Array.from({ length: n }, (_, i) =>
+    new Y.Item(Y.createID(client, i), null, null, null, null, (i === 0 ? 'root' : Y.createID(client, i - 1)) as never, null, new Y.ContentType(new Y.XmlText())));
+  return encodeFrame({ structs, ds: new Map() });
+}
+
+/** Fuzz mutations of the honest cap frame, the same three for a seed on any doc. */
+function fuzzedCap(live: Y.Doc, client: number, seed: number): Uint8Array {
+  const random = rng(seed);
+  const fuzzed = decodeFrame(capFrame(live, client));
+  const targets = targetsOf(live, payloadDocsFor(live).docs, [0x6fff0001]);
+  for (let i = 0; i < 3; i += 1) MUTATIONS[int(random, MUTATIONS.length)].apply(fuzzed, random, { lease: client, targets, doc: 'body' });
+  return encodeFrame(fuzzed);
+}
+
+/** The honest frame at the cap, and crafted ones of its size: each placement worst case, and fuzzed cap frames. */
+const CAP_SHAPES: { name: string; build: (live: Y.Doc, client: number) => Uint8Array }[] = [
+  { name: 'honest', build: capFrame },
+  { name: 'reverse origin chain', build: (_live, client) => reverseChain(client, 20_000) },
+  { name: 'nesting chain', build: (_live, client) => nestingChain(client, 20_000) },
+  { name: 'fragmented delete set', build: (_live, client) => deletedRun(client, 16_000) },
+  ...[1, 2, 3, 4, 5, 6].map((seed) => ({ name: `fuzzed seed ${seed}`, build: (live: Y.Doc, client: number) => fuzzedCap(live, client, seed) })),
+];
+
+/** Median ingest and lease-check time of each cap shape on `live`; every frame is built for, and sent on, a fresh lease. */
+function measureShapes(live: Y.Doc): Map<string, { ingest: number; lease: number; bytes: number }> {
+  const ingest = ingestOn(live);
+  const runs = new Map<string, { ingest: number[]; lease: number[]; bytes: number }>();
+  let n = 0;
+  for (let run = 0; run < 3; run += 1) {
+    for (const { name, build } of CAP_SHAPES) {
+      const who = sam(`shape-${(n += 1)}`);
+      const grant = leaseOne(ingest, who);
+      const update = build(live, grant.client);
+      const entry = runs.get(name) ?? { ingest: [], lease: [], bytes: update.byteLength };
+      let started = performance.now();
+      ingest.ops(who, grant.record, update);
+      entry.ingest.push(performance.now() - started);
+      started = performance.now();
+      ingest.namesLease(update);
+      entry.lease.push(performance.now() - started);
+      runs.set(name, entry);
+      ingest.withdraw(who, grant.record);
+      ingest.expireConnection(who.connection);
+    }
+  }
+  return new Map([...runs].map(([name, { ingest: times, lease, bytes }]) => [name, { ingest: median(times), lease: median(lease), bytes }]));
+}
+
+describe('T5.4 cost at fuzz scale @p:mean-2', () => {
+  it('crafted and fuzzed frames at the cap cost what an honest cap frame costs, to ingest and to lease-check, on a small doc and the 1.69 MB doc', () => {
+    measureShapes(seededBody());
+    const small = measureShapes(seededBody());
+    const large = measureShapes(docOf(3_000));
+    const honest = small.get('honest')!;
+    for (const [name, cost] of small) {
+      const big = large.get(name)!;
+      console.log(`T5.4 cap shape ${name}: ${cost.bytes} B; ingest ${cost.ingest.toFixed(2)} ms small doc vs ${big.ingest.toFixed(2)} ms 1.69 MB doc; lease check ${cost.lease.toFixed(3)} vs ${big.lease.toFixed(3)} ms`);
+      expect(cost.bytes, name).toBeLessThanOrEqual(SUGGEST_CAPS.recordOpsBytes);
+      expect(cost.ingest, `${name}: no worse than the honest frame`).toBeLessThan(honest.ingest * 4 + 20);
+      expect(big.ingest, `${name}: independent of the doc`).toBeLessThan(cost.ingest * 3 + 5);
+      expect(cost.lease, `${name}: the lease check is the frame's own decode`).toBeLessThan(honest.lease * 4 + 2);
+      expect(big.lease, `${name}: lease check independent of the doc`).toBeLessThan(cost.lease * 3 + 1);
+    }
+  }, 180_000);
+
+  it('fixed_frame_ingest_cost_independent_of_closed_record_count_and_continuation_depth at fuzz scale', () => {
+    fixedFrameRun(5, 1);
+    const few = fixedFrameBest(5, 1, 2);
+    const many = fixedFrameBest(10_000, 1, 2);
+    const deep = fixedFrameBest(5, 5_000, 2);
+    console.log(
+      `T5.4 fixed frame: ${few.median.toFixed(3)} ms (5 closed, depth 1); ${many.median.toFixed(3)} ms (10 000 closed); ${deep.median.toFixed(3)} ms (depth 5 000); ` +
+        `first frame ${few.first.toFixed(3)} / ${many.first.toFixed(3)} / ${deep.first.toFixed(3)} ms`,
+    );
+    expect(many.median).toBeLessThan(few.median * 3 + 1);
+    expect(deep.median).toBeLessThan(few.median * 3 + 1);
+    expect(many.first).toBeLessThan(few.first * 3 + 5);
+    expect(deep.first).toBeLessThan(few.first * 3 + 5);
+  }, 300_000);
+});
