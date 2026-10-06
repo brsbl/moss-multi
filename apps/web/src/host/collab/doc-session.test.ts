@@ -72,6 +72,20 @@ it('three failed handshakes stop the ladder and ask REST before retrying', async
   expect(terminalOf('doc')).toBe('unavailable');
   expect(session.provider.shouldConnect).toBe(false);
 });
+it('a suggester whose handshakes keep failing keeps reconnecting with its suggestions unsent, never view-only', async () => {
+  const request = vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ role: 'suggester' }));
+  latest().open(); session.provider.synced = true;
+  latest().ended(1006);
+  session.sendSuggest({ t: 'suggest-ops', record: 'r1', update: 'AA==' });
+  for (let i = 0; i < 3; i++) { await vi.advanceTimersByTimeAsync(1000); latest().ended(1006); }
+  await vi.advanceTimersByTimeAsync(300);
+  expect(request).toHaveBeenCalledTimes(1);
+  const count = sockets.length;
+  await vi.advanceTimersByTimeAsync(2_000);
+  expect(sockets.length, 'it connects again after asking REST').toBeGreaterThan(count);
+  expect(session.state).toMatchObject({ resync: false, unacked: true });
+  expect(terminalOf('doc')).toBeNull();
+});
 it('a demotion requests a fresh read-only binding', async () => {
   vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ role: 'viewer' }));
   latest().open(); session.provider.synced = true;
