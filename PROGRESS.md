@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 72% done** (67 of 93 planned tasks verified)
+**Overall: 69% done** (68 of 99 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 15 / 15 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 16 / 16 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
@@ -86,6 +86,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-06 — T3.R2 verified: m3 now sits on main with the slimmed M1 and M2, keeping all of M3's media, search, vaults, viewer and editor work; the viewer and editor artifacts still build.
 - 2026-10-06 — T3.6 verified: a person can mint, see once and revoke agent keys in Settings, approve a device sign-in, and share a note or folder with an agent they own at a role; sharing with someone else's agent gets the same 404 as an unknown id, and Settings has a parity target.
 - 2026-10-06 — T3.10 verified: a host such as the bb Moss viewer plugin can read the viewer's or editor's current selection as text, markdown, source file lines, heading path and blocks, and can show moss's Share with Agent button for it.
+- 2026-10-06 — T3.S2 verified: an upload, from-url save, cross-note copy or duplicate that meets a revocation, demotion or trash after its access check now writes nothing; media rows commit only while the caller still edits the live note, and bytes land in storage only after that.
 
 ## T1.1s identity audit
 
@@ -119,6 +120,9 @@ A task counts only after an independent checker passes it on green CI. Each mile
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
 
+- T3.S2 (Media writes re-check access at commit) checker P2 (downgraded from Codex P1): copy and duplicate re-check only the destination at commit; `copyMedia` and `copyFromNote` in `api/assets.ts` and `duplicateDoc` in `api/docs.ts` (including its DocDO snapshot) check source read access once before `admitMedia`, so a source revoked or trashed in the few ms of server work still copies → assets follow-up: re-check source access in the guarded batch.
+- T3.S2 (Media writes re-check access at commit) checker P2 (downgraded from Codex P1): a same-name, same-content retry returns 201 without the guard; `bind` in `api/assets.ts` returns the existing record before the guarded batch, so a revoked caller gets 201 (nothing new is written or referenced) → assets follow-up: run the guard on the reuse path too.
+- T3.S2 (Media writes re-check access at commit) checker P2 (pre-existing, client-only): paste in the editor through an editor link sends no upload (paste handled, no POST /assets, no image; a direct POST with the same link returns 201) → media client follow-up, checked against j11.
 - T3.9 checker P2 (downgraded from Codex P1): paste over a selection during unmount saves the deletion without the image; `Session.unmountOnce` waits only for note writes, not for `putAsset` or `copyAsset`, so a host unmounting while an upload is pending saves the file with the selection removed and no image → editor follow-up.
 - T3.9 checker P2: the comment-color unit tests rely on a fake surface that keeps stored colors (`FakeSurface.load` copies stored `commentColors`), while the real path derives them in `hydrateComments` → editor test follow-up.
 - T3.9 checker P2: the key-order negative control in `pipeline.golden.test.ts` ('a wrong meta.json key order is caught') changes a value as well as key order → editor test follow-up.
