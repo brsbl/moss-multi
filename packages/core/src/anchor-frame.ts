@@ -85,6 +85,8 @@ export interface FrameStats {
   lookups: number;
   /** Index spans read or written by record updates (also counted in `structs`). */
   index: number;
+  /** Tokens emitted by every range, gap, place and signature walk, failed ones included. */
+  tokens: number;
 }
 
 class OverBudget extends Error {}
@@ -101,9 +103,14 @@ class Walk {
     this.#used += 1;
     if (this.#used > this.limit) throw new OverBudget();
   }
+
+  /** Counts `count` tokens about to be emitted. */
+  emit(count: number): void {
+    this.stats.tokens += count;
+  }
 }
 
-const scratch = (): FrameStats => ({ structs: 0, comments: 0, lookups: 0, index: 0 });
+const scratch = (): FrameStats => ({ structs: 0, comments: 0, lookups: 0, index: 0, tokens: 0 });
 
 /** Which items count as present when reading a stream: before the frame, after it, or simply live. */
 type Live = (item: Y.Item) => boolean;
@@ -196,28 +203,34 @@ interface Tok {
  */
 function own(item: Y.Item, from: number, to: number, full: boolean, live: Live, out: Tok[], walk: Walk): void {
   const content = item.content;
+  const one = (t: () => string) => {
+    walk.emit(1);
+    out.push({ t: t(), item, off: 0 });
+  };
   if (content instanceof Y.ContentString) {
+    walk.emit(to - from + 1);
     for (let i = from; i <= to; i += 1) out.push({ t: content.str[i], item, off: i });
     return;
   }
   if (content instanceof Y.ContentType) {
     const type = content.type;
     if (type instanceof Y.XmlText) {
-      if (full) out.push({ t: `B${attrs(type, live, walk)}`, item, off: 0 });
+      if (full) one(() => `B${attrs(type, live, walk)}`);
     } else if (type instanceof Y.XmlElement) {
-      out.push({ t: `D${type.nodeName}|${attrs(type, live, walk)}`, item, off: 0 });
+      one(() => `D${type.nodeName}|${attrs(type, live, walk)}`);
     } else if (type instanceof Y.Map) {
-      if (full) out.push({ t: `M${attrs(type, live, walk)}`, item, off: 0 });
+      if (full) one(() => `M${attrs(type, live, walk)}`);
     } else {
-      out.push({ t: 'T|', item, off: 0 });
+      one(() => 'T|');
     }
     return;
   }
   if (content instanceof Y.ContentFormat) {
-    if (full) out.push({ t: `F${content.key}=${JSON.stringify(content.value)}`, item, off: 0 });
+    if (full) one(() => `F${content.key}=${JSON.stringify(content.value)}`);
     return;
   }
   if (content instanceof Y.ContentDeleted) return;
+  walk.emit(to - from + 1);
   const values = content.getContent();
   for (let i = from; i <= to; i += 1) out.push({ t: `E${JSON.stringify(values[i] ?? null)}`, item, off: i });
 }

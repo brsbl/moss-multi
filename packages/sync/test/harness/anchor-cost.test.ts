@@ -4,7 +4,7 @@
 // is measured by scripts/measure-converter.mjs.
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
-import { COMMENT_BUDGET, liveUnits, mintAnchor, OVERLAP_CAP, type FrameStats } from '@moss-multi/core/anchor-frame';
+import { COMMENT_BUDGET, liveUnits, mintAnchor, OVERLAP_CAP, TOKEN_BUDGET, type FrameStats } from '@moss-multi/core/anchor-frame';
 import { CommentsHost } from '../../src/doc/comments-host.ts';
 import { forged, raw } from './raw-frames.ts';
 
@@ -298,5 +298,83 @@ describe('T4.2 anchor cost: index maintenance is bounded by the frame @p:tech-3'
     expect(few.index, 'the index updates after the flush are counted').toBeGreaterThan(0);
     expect(many.index, 'independent of the other spans of that client').toBe(few.index);
     expect(many.structs, 'counted with the tree visits').toBe(few.structs);
+  });
+});
+
+/**
+ * 'Head.', one paragraph of `chunks` text items of `length` characters each (alternating writers, so they never
+ * merge), and 'Tail.'; `comments` short comments on it, two overlapping and the rest disjoint; then one delete-only
+ * frame that deletes the paragraph's text. Returns the frame's work and the comments' statuses.
+ */
+function longRunDeleted(length: number, chunks: number, comments: number): { stats: FrameStats; statuses: (string | undefined)[] } {
+  const server = new Y.Doc();
+  const root = server.get('root', Y.XmlText);
+  server.transact(() => {
+    addParagraph(root, 0, 'Head.');
+    addParagraph(root, 1, '');
+    addParagraph(root, 2, 'Tail.');
+  });
+  const own = server.clientID;
+  for (let k = 0; k < chunks; k += 1) {
+    server.clientID = k % 2 ? 2_000_001 : 2_000_002;
+    server.transact(() => paragraph(server, 1).insert(paragraph(server, 1).length, 'x'.repeat(length)));
+  }
+  server.clientID = own;
+  const { host, client, send } = hosted(server);
+  const { text, units } = liveUnits(server);
+  const base = text.indexOf('x');
+  const total = length * chunks;
+  const half = Math.floor(total / 2);
+  const spans: [number, number][] = [[10, 20], [15, 25], [total - 20, total - 10], [half, half + 10]];
+  for (let n = 0; n < comments; n += 1) host.create(`c${n}`, mintAnchor(units[base + spans[n][0]], units[base + spans[n][1]]));
+  expect(send(() => paragraph(client, 1).delete(1, total)).refused).toBeNull();
+  return { stats: counted(host), statuses: Array.from({ length: comments }, (_, n) => host.anchor(`c${n}`)?.status) };
+}
+
+/** 5 word comments orphaned by one deleted run, then a forged frame putting a `length`-character item inside their place. */
+function longRestoreCandidate(length: number): { stats: FrameStats; orphaned: number } {
+  const server = new Y.Doc();
+  const root = server.get('root', Y.XmlText);
+  server.transact(() => {
+    addParagraph(root, 0, 'Head.');
+    addParagraph(root, 1, `${Array.from({ length: 5 }, (_, n) => word(n)).join(' ')}.`);
+    addParagraph(root, 2, 'Tail.');
+  });
+  const { host, client, send } = hosted(server);
+  const { text, units } = liveUnits(server);
+  for (let n = 0; n < 5; n += 1) host.create(`w${n}`, mintAnchor(units[text.indexOf(word(n))], units[text.indexOf(word(n)) + 4]));
+  expect(send(() => paragraph(client, 1).delete(1, paragraph(client, 1).length - 1)).refused).toBeNull();
+  const lost = host.anchor('w0')!.lost!;
+  const [mc, mk] = lost.members[0];
+  const left = lost.segs[0].left!;
+  const frame = raw([forged(Y.createID(4242, 0), { origin: Y.createID(left[0], left[1]), right: Y.createID(mc, mk) }, new Y.ContentString('q'.repeat(length)))]);
+  expect(host.receive(frame).refused).toBeNull();
+  return { stats: counted(host), orphaned: [...host.records()].filter(([, anchor]) => anchor.status === 'orphaned').length };
+}
+
+describe('T4.S3 anchor cost: tokens are budgeted before a text item is expanded @p:tech-3', () => {
+  it('a delete-only frame over one long text item emits tokens independent of its length, and its comments detach', () => {
+    const short = longRunDeleted(100_000, 1, 4);
+    const long = longRunDeleted(300_000, 1, 4);
+    expect(long.stats.tokens, 'stops at the fixed budget').toBeLessThanOrEqual(TOKEN_BUDGET);
+    expect(long.stats.tokens, 'independent of item length').toBe(short.stats.tokens);
+    expect(long.statuses).toEqual(['orphaned', 'orphaned', 'orphaned', 'orphaned']);
+  });
+
+  it('an over-budget gap is read once per frame and shared by sibling comments', () => {
+    const one = longRunDeleted(30_000, 4, 1);
+    const four = longRunDeleted(30_000, 4, 4);
+    expect(four.stats.tokens, 'stops at the fixed budget').toBeLessThanOrEqual(TOKEN_BUDGET + 4 * 64);
+    expect(four.stats.tokens - one.stats.tokens, 'siblings only read their own short range').toBeLessThanOrEqual(3 * 64);
+    expect(four.stats.structs - one.stats.structs, 'siblings do not walk the gap again').toBeLessThanOrEqual(3 * 8);
+    expect(four.statuses).toEqual(['orphaned', 'orphaned', 'orphaned', 'orphaned']);
+  });
+
+  it("a long restore candidate in a lost place is refused at the place's length", () => {
+    const short = longRestoreCandidate(100_000);
+    const long = longRestoreCandidate(300_000);
+    expect(long.stats.tokens, 'never past the lost passage').toBeLessThanOrEqual(256);
+    expect(long.stats.tokens, 'independent of item length').toBe(short.stats.tokens);
+    expect(long.orphaned).toBe(5);
   });
 });
