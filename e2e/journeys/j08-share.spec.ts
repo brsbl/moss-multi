@@ -6,10 +6,9 @@
 // inaccessible links all get the same 404 and the same denial page, an email shared with nobody's account answers
 // exactly as one shared with an account, and nobody but the owner sees an email.
 import { createHash, randomBytes } from 'node:crypto';
-import type { Locator } from '@playwright/test';
 import type { Actor, Actors } from '../lib/actors.ts';
-import { APP_STATE_ATTR, BODY_BINDING_ATTR, DOC_SOCKET_PATH, DOC_STATE_ATTR, EDITOR_PANE_ATTR, ROLE_ATTR, SYNC_UNACKED_ATTR, paneSelector } from '../lib/contract.ts';
-import { acceptInvite, grantDoc } from '../lib/grants.ts';
+import { APP_STATE_ATTR, DOC_SOCKET_PATH, DOC_STATE_ATTR, EDITOR_PANE_ATTR, ROLE_ATTR, SYNC_UNACKED_ATTR } from '../lib/contract.ts';
+import { acceptInvite, grant, grantDoc } from '../lib/grants.ts';
 import type { Principal } from '../lib/principals.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
@@ -24,46 +23,12 @@ async function openShell(actors: Actors, label: string, path = '/'): Promise<Act
   return actor;
 }
 
-/** "+ Note", then the new pane's doc id once its body is live. */
-async function newNote(actor: Actor): Promise<string> {
-  const ids = () => actor.page.locator(`[${EDITOR_PANE_ATTR}]`).evaluateAll((panes) => panes.map((p) => p.getAttribute('data-doc-id') ?? ''));
-  const before = await ids();
-  await actor.page.getByRole(ui.NEW_NOTE.role, { name: ui.NEW_NOTE.name }).click();
-  const fresh = async () => (await ids()).filter((id) => id !== '' && !before.includes(id));
-  await expect.poll(fresh, { message: 'the new note opens in an editor pane', timeout: BIND_TIMEOUT }).toHaveLength(1);
-  const [docId] = await fresh();
-  if (!docId) throw new Error(`${actor.label}: no new pane`);
-  await waitOpen(actor, docId, 'live');
-  return docId;
-}
-
-async function waitOpen(actor: Actor, docId: string, binding: 'live' | 'readonly'): Promise<void> {
-  await expect(actor.page.locator(paneSelector(docId)), `${actor.label}: the pane goes live`).toHaveAttribute(DOC_STATE_ATTR, 'live', { timeout: BIND_TIMEOUT });
-  await expect(ui.body(actor, docId), `${actor.label}: the body binds ${binding}`).toHaveAttribute(BODY_BINDING_ATTR, binding, { timeout: BIND_TIMEOUT });
-}
-
 async function noteWithText(ada: Actor): Promise<string> {
-  const docId = await newNote(ada);
+  const docId = await ui.createNote(ada);
   await ui.typeBody(ada, docId, TEXT);
   await expect(ui.pane(ada, docId), 'the DocDO acks the text').toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout: LIVE_TIMEOUT });
   return docId;
 }
-
-/** Creates a link at `access` in the open dialog and returns its URL, read from the dialog (WebKit cannot read the clipboard). */
-async function createLink(dialog: Locator, access: ui.LinkAccess): Promise<string> {
-  await dialog.getByRole('radiogroup', { name: 'Link access', exact: true }).getByRole('radio', { name: access, exact: true }).click();
-  await dialog.getByRole('button', { name: 'Create link', exact: true }).click();
-  const field = ui.linkField(dialog, access);
-  await expect(field, `a ${access} link is listed`).toHaveCount(1);
-  const url = await field.inputValue();
-  expect(url, 'the link carries its token').toMatch(/\?share=[0-9a-f]{48}$/);
-  return url;
-}
-
-const pathOf = (url: string): string => {
-  const parsed = new URL(url);
-  return `${parsed.pathname}${parsed.search}`;
-};
 
 async function fingerprint(actor: Actor, path: string) {
   const response = await actor.context.request.get(path);
@@ -112,7 +77,7 @@ test('j08 folder: Ada shares a folder from its context menu and it reaches Ben\'
   await expect(dialog).toBeHidden();
 
   // Ben follows the invite link Ada hands him, signed in as the email it was sent to, and lands on the folder.
-  await ben.goto(pathOf(invite));
+  await ben.goto(ui.pathOf(invite));
   await expect(ben.page, 'the invite leads to the folder').toHaveURL(new RegExp(`/f/${folderId}$`), { timeout: 30_000 });
   await ben.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
   await expect(benFolder, 'the folder is in Ben\'s sidebar').toBeVisible({ timeout: LIVE_TIMEOUT });
@@ -121,7 +86,7 @@ test('j08 folder: Ada shares a folder from its context menu and it reaches Ben\'
   if (!(await row.waitFor({ state: 'visible', timeout: 3_000 }).then(() => true, () => false))) await benFolder.click();
   await expect(row, 'its note is inside').toBeVisible();
   await row.click();
-  await waitOpen(ben, docId, 'readonly');
+  await ui.waitOpen(ben, docId, 'readonly');
   await expect(ui.pane(ben, docId), 'Ben reads it at the role Ada chose').toHaveAttribute(ROLE_ATTR, 'viewer');
   await benFolder.click({ button: 'right' });
   await expect(ben.page.getByRole('menuitem', { name: 'Share…', exact: true }), 'only the owner is offered Share…').toHaveCount(0);
@@ -131,17 +96,17 @@ test('j08 folder: Ada shares a folder from its context menu and it reaches Ben\'
   // A folder link lands a stranger on the folder (/f/$folderId): its notes and nothing else of Ada's.
   await ui.folderRow(ada, name).click({ button: 'right' });
   await ada.page.getByRole('menuitem', { name: 'Share…', exact: true }).click();
-  const url = await createLink(ada.page.getByRole('dialog', { name: 'Share folder' }), 'Can view');
+  const url = await ui.createLink(ada.page.getByRole('dialog', { name: 'Share folder' }), 'Can view');
   expect(new URL(url).pathname).toBe(`/f/${folderId}`);
   await ada.page.keyboard.press('Escape');
-  const stranger = await actors.anonymous(pathOf(url), { label: 'stranger' });
+  const stranger = await actors.anonymous(ui.pathOf(url), { label: 'stranger' });
   await stranger.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
   await expect(stranger.page.getByRole('button', { name: `Vault: ${name}`, exact: true }), 'the folder is the workspace').toBeVisible();
   const strangerRow = stranger.page.locator(`[data-sidebar-row][data-doc-id="${docId}"]`);
   await expect(strangerRow, 'its note is listed').toBeVisible();
   await expect(stranger.page.locator('[data-sidebar-row]'), 'and nothing else').toHaveCount(1);
   await strangerRow.click();
-  await waitOpen(stranger, docId, 'readonly');
+  await ui.waitOpen(stranger, docId, 'readonly');
   await expect(ui.pane(stranger, docId)).toHaveAttribute(ROLE_ATTR, 'viewer');
   await actors.checkpoint('folder-link-landing');
 });
@@ -162,7 +127,7 @@ test('j08 vault: Ada shares her vault from the switcher and Ben switches to it @
   await ada.page.keyboard.press('Escape');
   await expect(dialog).toBeHidden();
   const { vault } = (await (await ada.context.request.get('/api/workspace')).json()) as { vault: { id: string } };
-  await ben.goto(pathOf(invite));
+  await ben.goto(ui.pathOf(invite));
   await expect(ben.page, 'the invite leads to the vault').toHaveURL(new RegExp(`/f/${vault.id}$`), { timeout: 30_000 });
   await ben.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
 
@@ -179,7 +144,7 @@ test('j08 vault: Ada shares her vault from the switcher and Ben switches to it @
   await ben.page.keyboard.press('Escape');
   await expect(menu).toBeHidden();
   await row.click();
-  await waitOpen(ben, docId, 'live');
+  await ui.waitOpen(ben, docId, 'live');
   await expect(ui.pane(ben, docId)).toHaveAttribute(ROLE_ATTR, 'editor');
   expect(await ui.fieldText(ben, docId, 'body')).toBe(TEXT);
   await actors.checkpoint('vault-shared');
@@ -189,7 +154,7 @@ test('j08 link: a viewer link opened signed out reads at viewer and offers sign-
   const ada = await openShell(actors, 'ada');
   const docId = await noteWithText(ada);
   const dialog = await ui.openShare(ada, docId);
-  const url = await createLink(dialog, 'Can view');
+  const url = await ui.createLink(dialog, 'Can view');
   expect(new URL(url).pathname).toBe(`/d/${docId}`);
   if (browserName === 'chromium') {
     await ada.context.grantPermissions(['clipboard-read', 'clipboard-write']);
@@ -200,8 +165,8 @@ test('j08 link: a viewer link opened signed out reads at viewer and offers sign-
   await actors.checkpoint('link-created');
   await ada.page.keyboard.press('Escape');
 
-  const stranger = await actors.anonymous(pathOf(url), { label: 'stranger' });
-  await waitOpen(stranger, docId, 'readonly');
+  const stranger = await actors.anonymous(ui.pathOf(url), { label: 'stranger' });
+  await ui.waitOpen(stranger, docId, 'readonly');
   await expect(ui.pane(stranger, docId), 'the link opens at viewer').toHaveAttribute(ROLE_ATTR, 'viewer');
   expect(await ui.fieldText(stranger, docId, 'body'), 'the stranger reads the note').toBe(TEXT);
   await expect(ui.pane(stranger, docId).getByRole('button', { name: 'Share', exact: true }), 'no Share for a link visitor').toHaveCount(0);
@@ -212,11 +177,11 @@ test('j08 link: a viewer link opened signed out reads at viewer and offers sign-
 
   const benPrincipal = await actors.principal('ben');
   await signIn.click();
-  await stranger.page.waitForURL((at) => at.pathname === '/login' && at.searchParams.get('next') === pathOf(url));
+  await stranger.page.waitForURL((at) => at.pathname === '/login' && at.searchParams.get('next') === ui.pathOf(url));
   await ui.waitForLoginCard(stranger);
   await ui.signInThroughCard(stranger, benPrincipal);
-  await stranger.page.waitForURL((at) => `${at.pathname}${at.search}` === pathOf(url), { timeout: 30_000 });
-  await waitOpen(stranger, docId, 'readonly');
+  await stranger.page.waitForURL((at) => `${at.pathname}${at.search}` === ui.pathOf(url), { timeout: 30_000 });
+  await ui.waitOpen(stranger, docId, 'readonly');
   await expect(ui.pane(stranger, docId), 'signed in, a viewer link is still a viewer link').toHaveAttribute(ROLE_ATTR, 'viewer');
   await expect(signIn, 'and no longer offers sign-in').toHaveCount(0);
   expect(await ui.fieldText(stranger, docId, 'body')).toBe(TEXT);
@@ -227,25 +192,25 @@ test('j08 link: an editor link is viewer signed out, editor signed in without a 
   const docId = await noteWithText(ada);
   const cyPrincipal = await actors.principal('cy');
   const dialog = await ui.openShare(ada, docId);
-  const url = await createLink(dialog, 'Can edit');
+  const url = await ui.createLink(dialog, 'Can edit');
   await ui.shareInDialog(dialog, cyPrincipal.email, 'Owner');
   await expect(ui.inviteRow(dialog, cyPrincipal.email), 'Cy is invited as a co-owner').toContainText('Owner');
   await ada.page.keyboard.press('Escape');
   await acceptInvite(ada, { docId }, cyPrincipal);
 
-  const stranger = await actors.anonymous(pathOf(url), { label: 'stranger' });
-  await waitOpen(stranger, docId, 'readonly');
+  const stranger = await actors.anonymous(ui.pathOf(url), { label: 'stranger' });
+  await ui.waitOpen(stranger, docId, 'readonly');
   await expect(ui.pane(stranger, docId), 'signed out, an editor link reads at viewer').toHaveAttribute(ROLE_ATTR, 'viewer');
 
-  const ben = await actors.open(await actors.principal('ben'), { path: pathOf(url) });
-  await waitOpen(ben, docId, 'live');
+  const ben = await actors.open(await actors.principal('ben'), { path: ui.pathOf(url) });
+  await ui.waitOpen(ben, docId, 'live');
   await expect(ui.pane(ben, docId), 'signed in without a grant, the link role').toHaveAttribute(ROLE_ATTR, 'editor');
   const benText = ' and Ben edits through the link';
   await ui.typeBody(ben, docId, benText);
   await expect.poll(() => ui.fieldText(ada, docId, 'body'), { timeout: LIVE_TIMEOUT }).toBe(`${TEXT}${benText}`);
 
-  const cy = await actors.open(cyPrincipal, { path: pathOf(url) });
-  await waitOpen(cy, docId, 'live');
+  const cy = await actors.open(cyPrincipal, { path: ui.pathOf(url) });
+  await ui.waitOpen(cy, docId, 'live');
   await expect(ui.pane(cy, docId), 'with a grant above the link, the grant').toHaveAttribute(ROLE_ATTR, 'owner');
   await expect(ui.pane(cy, docId).getByRole('button', { name: 'Share', exact: true }), 'a co-owner may share').toBeVisible();
   await actors.requireDistinct(3);
@@ -265,15 +230,13 @@ test('j08 link: an editor folder link lifts a viewer grant to editor, and lands 
   expect(note.status(), 'declared setup: a note in the folder').toBe(201);
   const docId = ((await note.json()) as { doc: { id: string } }).doc.id;
   const benPrincipal = await actors.principal('ben');
-  const shared = await ada.context.request.post(`/api/folders/${folderId}/members`, { headers, data: { email: benPrincipal.email, role: 'viewer' } });
-  expect(shared.status(), 'declared setup: Ben at view').toBe(201);
-  await acceptInvite(ada, { folderId }, benPrincipal);
+  await grant(ada, { folderId }, benPrincipal, 'viewer');
   const linked = await ada.context.request.post(`/api/folders/${folderId}/links`, { headers, data: { role: 'editor' } });
   expect(linked.status(), 'declared setup: an editor link').toBe(201);
   const { token } = ((await linked.json()) as { link: { token: string } }).link;
 
   const ben = await actors.open(benPrincipal, { path: `/d/${docId}?share=${token}` });
-  await waitOpen(ben, docId, 'live');
+  await ui.waitOpen(ben, docId, 'live');
   await expect(ui.pane(ben, docId), 'a viewer grant below an editor link: the link').toHaveAttribute(ROLE_ATTR, 'editor');
 
   const dee = await actors.open(await actors.principal('dee'), { path: `/f/${folderId}?share=${token}` });
@@ -281,9 +244,9 @@ test('j08 link: an editor folder link lifts a viewer grant to editor, and lands 
   const row = dee.page.locator(`[data-sidebar-row][data-doc-id="${docId}"]`);
   await expect(row, 'its note is listed').toBeVisible();
   await row.click();
-  await waitOpen(dee, docId, 'live');
+  await ui.waitOpen(dee, docId, 'live');
   await expect(ui.pane(dee, docId), 'signed in without a grant, the link role').toHaveAttribute(ROLE_ATTR, 'editor');
-  const added = await newNote(dee);
+  const added = await ui.createNote(dee);
   await expect(ui.pane(dee, added), 'Dee adds a note to the linked folder').toHaveAttribute(ROLE_ATTR, 'editor');
   await actors.requireDistinct(3);
 });
@@ -291,15 +254,15 @@ test('j08 link: an editor folder link lifts a viewer grant to editor, and lands 
 test('j08 denial: revoked, forged and inaccessible links get byte-identical 404s and the denial page @p:ppl-2 @evidence', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
   const docId = await noteWithText(ada);
-  const otherId = await newNote(ada);
+  const otherId = await ui.createNote(ada);
   const otherDialog = await ui.openShare(ada, otherId);
-  const otherUrl = await createLink(otherDialog, 'Can view');
+  const otherUrl = await ui.createLink(otherDialog, 'Can view');
   await ada.page.keyboard.press('Escape');
   await expect(otherDialog).toBeHidden();
   ada.expectReconnects(1, docId); // Returning to the first note opens its session again.
   await ui.openNote(ada, docId);
   const dialog = await ui.openShare(ada, docId);
-  const url = await createLink(dialog, 'Can view');
+  const url = await ui.createLink(dialog, 'Can view');
   await ui.linkRow(dialog, 'Can view').getByRole('button', { name: 'Revoke', exact: true }).click();
   await expect(ui.linkField(dialog, 'Can view'), 'a revoked link leaves the list').toHaveCount(0);
   await ada.page.keyboard.press('Escape');
@@ -369,12 +332,12 @@ test('j08 privacy: an email with no account answers like one with an account, an
   const invite = await ui.inviteLink(dialog, benPrincipal.email);
   await ada.page.keyboard.press('Escape');
   const linkDialog = await ui.openShare(ada, docId);
-  const url = await createLink(linkDialog, 'Can view');
+  const url = await ui.createLink(linkDialog, 'Can view');
   await ada.page.keyboard.press('Escape');
 
-  const ben = await actors.open(benPrincipal, { path: pathOf(invite) });
+  const ben = await actors.open(benPrincipal, { path: ui.pathOf(invite) });
   await expect(ben.page, 'the invite leads to the note').toHaveURL(new RegExp(`/d/${docId}$`), { timeout: 30_000 });
-  await waitOpen(ben, docId, 'live');
+  await ui.waitOpen(ben, docId, 'live');
   const asMember = await ben.context.request.get(`/api/docs/${docId}/members`);
   expect(asMember.status()).toBe(200);
   const text = await asMember.text();
@@ -388,8 +351,8 @@ test('j08 privacy: an email with no account answers like one with an account, an
   await ada.page.keyboard.press('Escape');
 
   const token = new URL(url).searchParams.get('share') ?? '';
-  const stranger = await actors.anonymous(pathOf(url), { label: 'stranger' });
-  await waitOpen(stranger, docId, 'readonly');
+  const stranger = await actors.anonymous(ui.pathOf(url), { label: 'stranger' });
+  await ui.waitOpen(stranger, docId, 'readonly');
   const asLink = await stranger.context.request.get(`/api/docs/${docId}/members?share=${token}`);
   expect(asLink.status(), 'a link holder gets no member list').toBe(404);
   expect(await asLink.text()).not.toContain('@');
@@ -492,7 +455,7 @@ test('j08 read-only: a viewer\'s and a commenter\'s checkbox, slash and block co
   const dee = await actors.session(deePrincipal);
   const deeFrames = writeFrames(dee);
   await dee.goto(`/d/${docId}`);
-  await waitOpen(dee, docId, 'live');
+  await ui.waitOpen(dee, docId, 'live');
   const deeBefore = deeFrames.count();
   await clickBox(dee);
   await expect(box(dee), 'an editor toggles the checkbox').toHaveAttribute('aria-checked', 'true');
@@ -516,7 +479,7 @@ test('j08 read-only: a viewer\'s and a commenter\'s checkbox, slash and block co
     const reader = await actors.session(principal);
     const frames = writeFrames(reader);
     await reader.goto(`/d/${docId}`);
-    await waitOpen(reader, docId, 'readonly');
+    await ui.waitOpen(reader, docId, 'readonly');
     await expect(ui.pane(reader, docId)).toHaveAttribute(ROLE_ATTR, role);
     await expect.poll(() => ui.fieldText(reader, docId, 'body'), { timeout: LIVE_TIMEOUT }).toBe(settled);
     const before = frames.count();

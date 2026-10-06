@@ -45,11 +45,6 @@ async function openShell(actors: Actors, label: string): Promise<Actor> {
   return actor;
 }
 
-async function waitOpen(actor: Actor, docId: string, binding: 'live' | 'readonly'): Promise<void> {
-  await expect(actor.page.locator(paneSelector(docId)), `${actor.label}: the pane goes live`).toHaveAttribute(DOC_STATE_ATTR, 'live', { timeout: BIND_TIMEOUT });
-  await expect(ui.body(actor, docId), `${actor.label}: the body binds ${binding}`).toHaveAttribute(BODY_BINDING_ATTR, binding, { timeout: BIND_TIMEOUT });
-}
-
 /** "+ Note" with text the DocDO has acked. */
 async function noteWithText(ada: Actor): Promise<string> {
   const docId = await ui.createNote(ada);
@@ -88,7 +83,7 @@ test('j09 demotion: Ada lowers Ben from edit to view; his socket closes 4403 wit
   const benPrincipal = await actors.principal('ben');
   await grantDoc(ada, docId, benPrincipal, 'editor');
   const ben = await openRecorded(actors, benPrincipal, `/d/${docId}`);
-  await waitOpen(ben, docId, 'live');
+  await ui.waitOpen(ben, docId, 'live');
   await expect(ui.pane(ben, docId)).toHaveAttribute(ROLE_ATTR, 'editor');
   await actors.requireDistinct(2);
   // The read-only rebind opens one fresh socket after the 4403.
@@ -109,7 +104,7 @@ test('j09 demotion: Ada lowers Ben from edit to view; his socket closes 4403 wit
   expect(kick!.at - sentAt, 'within 1 s of the demotion').toBeLessThan(1_000);
 
   await expect(ui.pane(ben, docId).locator('[data-input-refusal]'), 'Ben is told why he can no longer type').toHaveText(VIEW_ONLY, { timeout: LIVE_TIMEOUT });
-  await waitOpen(ben, docId, 'readonly');
+  await ui.waitOpen(ben, docId, 'readonly');
   await expect(ui.pane(ben, docId), 'his pane reads at view').toHaveAttribute(ROLE_ATTR, 'viewer');
   expect(await ui.fieldText(ben, docId, 'body'), 'the content stays').toBe(TEXT);
   await actors.checkpoint('demoted');
@@ -125,7 +120,7 @@ test('j09 removal: removing a member ends the note for them in place (revoked) @
   const benPrincipal = await actors.principal('ben');
   await grantDoc(ada, docId, benPrincipal, 'editor');
   const ben = await openRecorded(actors, benPrincipal, `/d/${docId}`);
-  await waitOpen(ben, docId, 'live');
+  await ui.waitOpen(ben, docId, 'live');
   await actors.requireDistinct(2);
   ben.expectHttp(404, ACCESS_ASK);
 
@@ -147,19 +142,14 @@ test('j09 link: revoking a link closes everyone who opened the note through it, 
   const ada = await openShell(actors, 'ada');
   const docId = await noteWithText(ada);
   const dialog = await ui.openShare(ada, docId);
-  await dialog.getByRole('radiogroup', { name: 'Link access', exact: true }).getByRole('radio', { name: 'Can edit', exact: true }).click();
-  await dialog.getByRole('button', { name: 'Create link', exact: true }).click();
-  const field = ui.linkField(dialog, 'Can edit');
-  await expect(field).toHaveCount(1);
-  const url = new URL(await field.inputValue());
-  const path = `${url.pathname}${url.search}`;
+  const path = ui.pathOf(await ui.createLink(dialog, 'Can edit'));
   await ada.page.keyboard.press('Escape');
 
   const cy = await openRecorded(actors, await actors.principal('cy'), path);
-  await waitOpen(cy, docId, 'live');
+  await ui.waitOpen(cy, docId, 'live');
   await expect(ui.pane(cy, docId), 'signed in without a grant, Cy rides the link at edit').toHaveAttribute(ROLE_ATTR, 'editor');
   const stranger = await actors.anonymous(path, { label: 'stranger' });
-  await waitOpen(stranger, docId, 'readonly');
+  await ui.waitOpen(stranger, docId, 'readonly');
   await actors.requireDistinct(2);
   for (const holder of [cy, stranger]) holder.expectHttp(404, ACCESS_ASK);
 
@@ -232,7 +222,7 @@ test('j09 cold: after an idle wake, a revoked doc link and a revoked folder link
     { docId: deepId, actor: await openRecorded(actors, cy, `/d/${deepId}?share=${folderToken}`, 'cy-folder'), text: ' folder-holder before' },
   ];
   for (const holder of holders) {
-    await waitOpen(holder.actor, holder.docId, 'live');
+    await ui.waitOpen(holder.actor, holder.docId, 'live');
     await ui.typeBody(holder.actor, holder.docId, holder.text);
     await expect(ui.pane(holder.actor, holder.docId)).toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout: LIVE_TIMEOUT });
     holder.actor.expectHttp(404, ACCESS_ASK);
@@ -262,7 +252,7 @@ test('j09 cold: after an idle wake, a revoked doc link and a revoked folder link
   for (const holder of holders) {
     const reader = await actors.session(ada.principal as Principal, { label: `reader-${holder.docId.slice(0, 4)}` });
     await reader.goto(`/d/${holder.docId}`);
-    await waitOpen(reader, holder.docId, 'live');
+    await ui.waitOpen(reader, holder.docId, 'live');
     const text = await ui.fieldText(reader, holder.docId, 'body');
     expect(text, 'what the holder typed before the revocation is there').toContain(holder.text.trim());
     expect(text, 'nothing typed after it landed').not.toContain('after the wake');

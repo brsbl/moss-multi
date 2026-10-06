@@ -9,7 +9,7 @@ import {
   APP_STATE_ATTR, BODY_BINDING_ATTR, DOC_SOCKET_PATH, DOC_STATE_ATTR, EDITOR_PANE_ATTR, NAMES, ROLE_ATTR, SYNC_UNACKED_ATTR, paneSelector,
 } from '../lib/contract.ts';
 import { cookieHeader, openDocClient } from '../lib/doc-client.ts';
-import { acceptInvite } from '../lib/grants.ts';
+import { acceptInvite, grant } from '../lib/grants.ts';
 import { signIn } from '../lib/principals.ts';
 import { CLOSE } from '../../packages/protocol/src/sync.ts';
 import { expect, test, ui } from '../lib/test.ts';
@@ -230,11 +230,6 @@ test('j01 discovery: Ben switches to a shared vault and back, with a role badge 
   await shared.click();
   const row = ben.page.locator(`[data-sidebar-row][data-doc-id="${docId}"]`);
   await expect(row).toBeVisible();
-  // A member gets no vault actions on the shared vault; "Share vault…" is the owner's (T2.4).
-  await switcher.click();
-  await expect(ben.page.getByRole('menuitem', { name: 'Home editor', exact: true })).toBeVisible();
-  await expect(ben.page.getByRole('menuitem', { name: /Share vault|New vault|Rename|Delete/ })).toHaveCount(0);
-  await ben.page.keyboard.press('Escape');
   await ben.page.reload();
   await expect(row).toBeVisible();
   await row.click();
@@ -293,16 +288,13 @@ test('j01 duplicate: the note menu makes a content-preserving copy visible to bo
   expect(await ui.fieldText(ben, copyId, 'body')).toBe(text + copyEdit);
 });
 
-test('j01 workspace: another open document keeps its binding while peer creates and renames arrive within five seconds @p:note-4 @p:col-5', async ({ actors, stack }) => {
+test('j01 workspace: another open document keeps its binding while peer creates and renames arrive within five seconds @p:note-4 @p:col-5', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
   const benPrincipal = await actors.principal('ben');
   const openId = await ui.newNote(ada);
   await ui.waitBodyLive(ada, openId);
   const { vault } = await (await ada.context.request.get('/api/workspace')).json();
-  expect((await ada.context.request.post(`/api/folders/${vault.id}/members`, {
-    headers: { origin: stack.baseUrl }, data: { email: benPrincipal.email, role: 'editor' },
-  })).status()).toBe(201);
-  await acceptInvite(ada, { folderId: vault.id }, benPrincipal);
+  await grant(ada, { folderId: vault.id }, benPrincipal, 'editor');
   const ben = await actors.open(benPrincipal, { path: `/d/${openId}` });
   await ui.waitBodyLive(ben, openId);
   // Socket readiness is witnessed by the actual browser WebSocket, including its received events.

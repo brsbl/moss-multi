@@ -92,6 +92,12 @@ export async function waitBodyLive(actor: Actor, docId: string, timeout = BIND_T
   await expect(body(actor, docId), `${actor.label}: the body binds`).toHaveAttribute(BODY_BINDING_ATTR, 'live', { timeout });
 }
 
+/** The pane is live with its body bound `binding`: live, or read-only. */
+export async function waitOpen(actor: Actor, docId: string, binding: 'live' | 'readonly'): Promise<void> {
+  await expect(actor.page.locator(paneSelector(docId)), `${actor.label}: the pane goes live`).toHaveAttribute(DOC_STATE_ATTR, 'live', { timeout: BIND_TIMEOUT });
+  await expect(body(actor, docId), `${actor.label}: the body binds ${binding}`).toHaveAttribute(BODY_BINDING_ATTR, binding, { timeout: BIND_TIMEOUT });
+}
+
 /** The server acknowledged every local write. */
 export async function waitAcked(actor: Actor, docId: string, timeout = 10_000): Promise<void> {
   await expect(pane(actor, docId), `${actor.label}: the DocDO acks every edit`).toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout });
@@ -164,6 +170,23 @@ export const linkField = (dialog: Locator, access: LinkAccess): Locator => dialo
 export const linkRow = (dialog: Locator, access: LinkAccess): Locator =>
   dialog.getByRole('list', { name: 'Share links' }).getByRole('listitem')
     .filter({ has: dialog.page().getByRole('textbox', { name: `${access} link`, exact: true }) });
+
+/** Creates a link at `access` in the open dialog and returns its URL, read from the dialog (WebKit cannot read the clipboard). */
+export async function createLink(dialog: Locator, access: LinkAccess): Promise<string> {
+  await dialog.getByRole('radiogroup', { name: 'Link access', exact: true }).getByRole('radio', { name: access, exact: true }).click();
+  await dialog.getByRole('button', { name: 'Create link', exact: true }).click();
+  const field = linkField(dialog, access);
+  await expect(field, `a ${access} link is listed`).toHaveCount(1);
+  const url = await field.inputValue();
+  expect(url, 'the link carries its token').toMatch(/\?share=[0-9a-f]{48}$/);
+  return url;
+}
+
+/** A URL's path and query, to open in the app. */
+export const pathOf = (url: string): string => {
+  const parsed = new URL(url);
+  return `${parsed.pathname}${parsed.search}`;
+};
 
 /** Adds `email` at `access` in an open Share dialog (note, folder or vault); the dialog stays open. */
 export async function shareInDialog(dialog: Locator, email: string, access: Access): Promise<void> {
