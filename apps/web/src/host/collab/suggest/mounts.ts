@@ -82,6 +82,8 @@ export class SuggestMount {
       if (reply.t === 'suggest-refused') this.#hooks.change();
     }));
     this.#stops.push(this.fork.on((event) => {
+      // A fork that closes owes nothing more, however it closed (a reply, or a close seen in the body).
+      if (event.type === 'refused') session.oweSuggest(this.fork.owes);
       if (event.type === 'ready') {
         this.provider.synced();
         this.#hooks.ready();
@@ -97,7 +99,10 @@ export class SuggestMount {
       if (this.#dropped) {
         this.#dropped = false;
         // Requests the dropped socket never answered come back to the fork, which resumes its leases first.
-        session.resendSuggest(() => this.fork.reconnected());
+        session.resendSuggest(() => {
+          this.fork.reconnected();
+          session.oweSuggest(this.fork.owes);
+        });
       }
       this.#begin();
     };
