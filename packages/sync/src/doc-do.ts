@@ -1087,9 +1087,9 @@ export class DocDO extends YServer<SyncEnv> {
     return store.stateBytes + payloads + update.byteLength > cap && stateBytesAfter(this.document, update) + payloads > cap;
   }
 
-  /** The bytes comment writes may still add to a state of `stateBytes`. */
+  /** The bytes comment writes may still add to a state of `stateBytes`, counted with every stored payload as #overCap does. */
   #commentRoom(stateBytes: number): number {
-    return Math.floor(this.#limits.stateCapBytes * COMMENT_STATE_SHARE) - stateBytes;
+    return Math.floor(this.#limits.stateCapBytes * COMMENT_STATE_SHARE) - stateBytes - (this.#payloads?.totalBytes ?? 0);
   }
 
   #payloadOverCap(store: DocStore, payloads: PayloadStore, id: string, doc: Y.Doc, update: Uint8Array): boolean {
