@@ -1,7 +1,20 @@
 diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/packages/desktop/src/renderer/editor/markdown/transformers.ts
 --- a/packages/desktop/src/renderer/editor/markdown/transformers.ts
 +++ b/packages/desktop/src/renderer/editor/markdown/transformers.ts
-@@ -37,6 +37,10 @@ import { COLOR_TRANSFORMER_IMPORT_REGEXP, COLOR_TRANSFORMER_REGEXP, isAfterUnclo
+@@ -1,6 +1,6 @@
+ import { $createHorizontalRuleNode, $isHorizontalRuleNode, HorizontalRuleNode } from '@lexical/react/LexicalHorizontalRuleNode';
+ import { $createTableCellNode, $createTableNode, $createTableRowNode, $isTableCellNode, $isTableNode, $isTableRowNode, TableCellHeaderStates, TableCellNode, TableNode, TableRowNode } from '@lexical/table';
+-import { $convertFromMarkdownString, $convertToMarkdownString, CHECK_LIST, ELEMENT_TRANSFORMERS, type ElementTransformer, MULTILINE_ELEMENT_TRANSFORMERS, type MultilineElementTransformer, TEXT_FORMAT_TRANSFORMERS, TEXT_MATCH_TRANSFORMERS, type TextMatchTransformer, type Transformer } from '@lexical/markdown';
++import { $convertToMarkdownString, CHECK_LIST, ELEMENT_TRANSFORMERS, type ElementTransformer, MULTILINE_ELEMENT_TRANSFORMERS, type MultilineElementTransformer, TEXT_FORMAT_TRANSFORMERS, TEXT_MATCH_TRANSFORMERS, type TextMatchTransformer, type Transformer } from '@lexical/markdown';
+ import { CodeHighlightNode, CodeNode } from '@lexical/code-core';
+ import { $isMarkNode, MarkNode } from '@lexical/mark';
+ import { HeadingNode, QuoteNode } from '@lexical/rich-text';
+@@ -33,10 +33,16 @@ import { $createHtmlBlockquoteNode, HtmlBlockquoteNode } from '../nodes/HtmlBloc
+ import { $createTabGroupNode, $isTabGroupNode, TabGroupNode } from '../nodes/TabGroupNode';
+ import { $createTabPanelNode, TabPanelNode } from '../nodes/TabPanelNode';
+ import { $createColorCodeNode, $isColorCodeNode, ColorCodeNode } from '../nodes/ColorCodeNode';
+-import { COLOR_TRANSFORMER_IMPORT_REGEXP, COLOR_TRANSFORMER_REGEXP, isAfterUnclosedBacktick, isInsideInlineCodeSpan, isInsideUnclosedDelimiter } from '../utils/color-codes';
++import { COLOR_TRANSFORMER_IMPORT_REGEXP, COLOR_TRANSFORMER_REGEXP, isInsideUnclosedDelimiter } from '../utils/color-codes';
  import { $isInsideColorSuppressedRawContext } from '../utils/colorPickerTriggers';
  import { $postImportNormalize, unescapeHtmlEntities } from './normalize';
  import { HIGHLIGHT_COLOR_VARIABLES, HIGHLIGHT_YELLOW_VALUE, HIGHLIGHT_YELLOW_VAR, SERIF_FONT_FAMILY_MARKDOWN_STYLE_PATTERN, getSerifFontFamilyMarkdownStyleAttribute, highlightColorNameFromStyle, isSerifFontFamilyValue, markdownStyleAttributeHasSerifFontFamily, setTextNodeFontFamily, unescapeInlineMarkdownText, wrapSerifFontFamilyMarkdownSpan } from './text-style';
@@ -9,10 +22,12 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
 +import { $rejectLine, $selectEndOutsideDocumentImport, importFormulaId } from './fixes';
 +// moss-multi seam: linear-match (A§12; SP2)
 +import { linearRegExp, withLinearRegExps } from './linear-match';
++// moss-multi seam: linear-import (A§12; SP2)
++import { $convertFromMarkdownString, isAfterUnclosedBacktick, isInsideInlineCodeSpan } from './linear-import';
  
  // Custom transformer to preserve underlines in markdown
  const UNDERLINE_TRANSFORMER: TextMatchTransformer = {
-@@ -229,7 +233,8 @@ const FORMULA_TRANSFORMER: TextMatchTransformer = {
+@@ -229,7 +235,8 @@ const FORMULA_TRANSFORMER: TextMatchTransformer = {
        return;
      }
      const formulaNode = $createFormulaNode(parsed.expression, parsed.result, {
@@ -22,7 +37,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
        ...(parsed.name ? { name: parsed.name } : {}),
        ...(parsed.stale ? { stale: true } : {})
      });
-@@ -517,7 +522,7 @@ const RAW_WEB_EMBED_URL_TEXT_TRANSFORMER: TextMatchTransformer = {
+@@ -517,7 +524,7 @@ const RAW_WEB_EMBED_URL_TEXT_TRANSFORMER: TextMatchTransformer = {
      if (suffix) {
        const suffixNode = copyTextNodeFormat(textNode, $createTextNode(suffix));
        pill.insertAfter(suffixNode);
@@ -31,7 +46,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
      }
    },
    trigger: ' ',
-@@ -775,7 +780,8 @@ const LINK_TRANSFORMER: TextMatchTransformer = {
+@@ -775,7 +782,8 @@ const LINK_TRANSFORMER: TextMatchTransformer = {
  // and imports GFM tables back into Lexical TableNode structure.
  const TABLE_LEADING_PIPE_ROW_REG_EXP = /^\s*\|.*\|?\s*$/;
  
@@ -41,7 +56,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
  
  const TABLE_ROW_REG_EXP = new RegExp(
    `(?:${TABLE_LEADING_PIPE_ROW_REG_EXP.source}|${TABLE_DIVIDER_ROW_REG_EXP.source})`
-@@ -1770,7 +1776,7 @@ const TABLE_TRANSFORMER: ElementTransformer = {
+@@ -1770,7 +1778,7 @@ const TABLE_TRANSFORMER: ElementTransformer = {
      return output.join('\n');
    },
    regExp: TABLE_ROW_REG_EXP,
@@ -50,7 +65,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
      // Handle divider row - marks previous row as header
      if (isTableDividerRow(match[0])) {
        const nextSibling = parentNode.getNextSibling();
-@@ -1780,12 +1786,12 @@ const TABLE_TRANSFORMER: ElementTransformer = {
+@@ -1780,12 +1788,12 @@ const TABLE_TRANSFORMER: ElementTransformer = {
        if (!table) {
          const previousText = getSingleParagraphTextChild(previousSibling);
          if (!previousText || !isTableBodyRowCandidate(previousText.getTextContent())) {
@@ -65,7 +80,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
          }
  
          table = $createTableNode();
-@@ -1823,14 +1829,14 @@ const TABLE_TRANSFORMER: ElementTransformer = {
+@@ -1823,14 +1831,14 @@ const TABLE_TRANSFORMER: ElementTransformer = {
          isTableDividerRow(nextSiblingText.getTextContent());
  
        if (!$isTableNode(previousSibling) && !nextIsDivider) {
@@ -82,7 +97,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
      }
  
      const immediatePrevious = parentNode.getPreviousSibling();
-@@ -1914,7 +1920,7 @@ const TABLE_TRANSFORMER: ElementTransformer = {
+@@ -1914,7 +1922,7 @@ const TABLE_TRANSFORMER: ElementTransformer = {
        parentNode.replace(table);
      }
  
@@ -91,7 +106,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
    },
    type: 'element'
  };
-@@ -2207,10 +2213,10 @@ const IMAGE_TRANSFORMER: ElementTransformer = {
+@@ -2207,10 +2215,10 @@ const IMAGE_TRANSFORMER: ElementTransformer = {
    // Match whole candidate markdown image lines and parse with a balanced parser.
    // Matching only `![` can truncate content before replace() runs.
    regExp: /^!\[.*\]\(.*\)\s*$/,
@@ -104,7 +119,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
      }
      parentNode.replace(mediaNode);
    },
-@@ -2611,7 +2617,8 @@ const CHECK_LIST_WITH_OPTIONAL_TRAILING_SPACE: ElementTransformer = {
+@@ -2611,7 +2619,8 @@ const CHECK_LIST_WITH_OPTIONAL_TRAILING_SPACE: ElementTransformer = {
    regExp: /^(\s*)(?:[-*+]\s)?\s?(\[(\s|x)?\])(?:\s|$)/i
  };
  
@@ -114,7 +129,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
    // Custom element transformers for block-level content
    // Obsidian embed must come before standard image so ![[ref]] is matched first
    OBSIDIAN_EMBED_TRANSFORMER,
-@@ -2657,7 +2664,7 @@ export const MARKDOWN_EDITOR_TRANSFORMERS: Transformer[] = [
+@@ -2657,7 +2666,7 @@ export const MARKDOWN_EDITOR_TRANSFORMERS: Transformer[] = [
    HIGHLIGHT_TRANSFORMER,
    UNDERLINE_TRANSFORMER,
    FONT_FAMILY_TRANSFORMER

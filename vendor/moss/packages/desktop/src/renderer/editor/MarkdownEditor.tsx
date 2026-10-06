@@ -20,7 +20,7 @@ import { HorizontalRulePlugin } from '@lexical/react/LexicalHorizontalRulePlugin
 import { TablePlugin } from '@lexical/react/LexicalTablePlugin';
 import { AutoLinkPlugin, createLinkMatcherWithRegExp } from '@lexical/react/LexicalAutoLinkPlugin';
 import { $insertGeneratedNodes } from '@lexical/clipboard';
-import { $convertFromMarkdownString, $convertToMarkdownString } from '@lexical/markdown';
+import { $convertToMarkdownString } from '@lexical/markdown';
 import { $createParagraphNode, $createTextNode, $getRoot, $isElementNode, $isParagraphNode, $isTextNode, TextNode } from 'lexical';
 import { CodeNode } from '@lexical/code';
 import { $isHeadingNode, $isQuoteNode, $createHeadingNode, type HeadingTagType } from '@lexical/rich-text';
@@ -148,6 +148,8 @@ import { clearLinkSelection, markLinkSelection } from '@moss-multi/host/link-hig
 import { TRASH_COPY } from '@moss-multi/host/retention';
 // moss-multi seam: converter-split (A§12; S-conv §2.3)
 import { $convertMossCustomCodeNodes, $postImportNormalize, escapeHtmlEntities, normalizeMarkdownForImport, unescapeHtmlEntities } from './markdown/normalize';
+// moss-multi seam: linear-import (A§12; SP2)
+import { $convertFromMarkdownString } from './markdown/linear-import';
 import { EDITOR_FONT_FAMILY_LABELS, type EditorSelectionFontFamily, HIGHLIGHT_COLOR_VARIABLES, HIGHLIGHT_YELLOW_VALUE, HIGHLIGHT_YELLOW_VAR, MARKDOWN_EDITOR_HTML_IMPORT, SERIF_FONT_FAMILY_STYLE, SERIF_FONT_FAMILY_VALUE, SERIF_OPTICAL_FONT_SIZE_ADJUST, STYLE_FONT_FAMILY_PROPERTY, STYLE_FONT_SIZE_ADJUST_PROPERTY, selectionFontFamilyFromStyleValue } from './markdown/text-style';
 import { $normalizeSelectionTableCells, $tryCreateWebEmbedFromBangLinkSelection, MARKDOWN_EDITOR_NODES, MARKDOWN_EDITOR_TRANSFORMERS, extractTableRowContent, getTopLevelElementOrNull, isTableDividerRow, serializeNoteLayoutMetadataForComparison, splitTableRow } from './markdown/transformers';
 export { $convertMossCustomCodeNodes, $postImportNormalize, escapeHtmlEntities, mapOutsideFencedCodeBlocksOnly, normalizeFormattingAroundEmbedPillTargets, normalizeHighlightFormattingBoundaries, normalizeMarkdownForImport, normalizeRichTextInsideHighlightsForImport, recoverEscapedEmphasis, stripFormattingAroundIsolatedWikiLinks, unescapeHtmlEntities } from './markdown/normalize';

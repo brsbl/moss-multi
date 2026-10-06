@@ -1,8 +1,9 @@
 import { $assignRegisterIds } from '@moss-multi/host/collab/registers';
-import { $convertFromMarkdownString, $convertToMarkdownString } from '@lexical/markdown';
+import { $convertToMarkdownString } from '@lexical/markdown';
 import type { NoteLayoutMetadata } from '../../../common/noteTypes';
 import type { CommentMetadataMap } from '../utils/comment-markdown';
 import { $withDocumentImport, withImportFormulaIds } from './fixes';
+import { $convertFromMarkdownString } from './linear-import';
 import { $postImportNormalize, escapeHtmlEntities, normalizeMarkdownForImport, unescapeHtmlEntities } from './normalize';
 import { MARKDOWN_EDITOR_TRANSFORMERS } from './transformers';
 

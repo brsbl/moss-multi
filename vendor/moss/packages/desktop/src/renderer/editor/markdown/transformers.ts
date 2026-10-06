@@ -1,7 +1,7 @@
 // ported-from: packages/desktop/src/renderer/editor/MarkdownEditor.tsx @ 762abb777 (extracted)
 import { $createHorizontalRuleNode, $isHorizontalRuleNode, HorizontalRuleNode } from '@lexical/react/LexicalHorizontalRuleNode';
 import { $createTableCellNode, $createTableNode, $createTableRowNode, $isTableCellNode, $isTableNode, $isTableRowNode, TableCellHeaderStates, TableCellNode, TableNode, TableRowNode } from '@lexical/table';
-import { $convertFromMarkdownString, $convertToMarkdownString, CHECK_LIST, ELEMENT_TRANSFORMERS, type ElementTransformer, MULTILINE_ELEMENT_TRANSFORMERS, type MultilineElementTransformer, TEXT_FORMAT_TRANSFORMERS, TEXT_MATCH_TRANSFORMERS, type TextMatchTransformer, type Transformer } from '@lexical/markdown';
+import { $convertToMarkdownString, CHECK_LIST, ELEMENT_TRANSFORMERS, type ElementTransformer, MULTILINE_ELEMENT_TRANSFORMERS, type MultilineElementTransformer, TEXT_FORMAT_TRANSFORMERS, TEXT_MATCH_TRANSFORMERS, type TextMatchTransformer, type Transformer } from '@lexical/markdown';
 import { CodeHighlightNode, CodeNode } from '@lexical/code-core';
 import { $isMarkNode, MarkNode } from '@lexical/mark';
 import { HeadingNode, QuoteNode } from '@lexical/rich-text';
@@ -34,7 +34,7 @@ import { $createHtmlBlockquoteNode, HtmlBlockquoteNode } from '../nodes/HtmlBloc
 import { $createTabGroupNode, $isTabGroupNode, TabGroupNode } from '../nodes/TabGroupNode';
 import { $createTabPanelNode, TabPanelNode } from '../nodes/TabPanelNode';
 import { $createColorCodeNode, $isColorCodeNode, ColorCodeNode } from '../nodes/ColorCodeNode';
-import { COLOR_TRANSFORMER_IMPORT_REGEXP, COLOR_TRANSFORMER_REGEXP, isAfterUnclosedBacktick, isInsideInlineCodeSpan, isInsideUnclosedDelimiter } from '../utils/color-codes';
+import { COLOR_TRANSFORMER_IMPORT_REGEXP, COLOR_TRANSFORMER_REGEXP, isInsideUnclosedDelimiter } from '../utils/color-codes';
 import { $isInsideColorSuppressedRawContext } from '../utils/colorPickerTriggers';
 import { $postImportNormalize, unescapeHtmlEntities } from './normalize';
 import { HIGHLIGHT_COLOR_VARIABLES, HIGHLIGHT_YELLOW_VALUE, HIGHLIGHT_YELLOW_VAR, SERIF_FONT_FAMILY_MARKDOWN_STYLE_PATTERN, getSerifFontFamilyMarkdownStyleAttribute, highlightColorNameFromStyle, isSerifFontFamilyValue, markdownStyleAttributeHasSerifFontFamily, setTextNodeFontFamily, unescapeInlineMarkdownText, wrapSerifFontFamilyMarkdownSpan } from './text-style';
@@ -42,6 +42,8 @@ import { HIGHLIGHT_COLOR_VARIABLES, HIGHLIGHT_YELLOW_VALUE, HIGHLIGHT_YELLOW_VAR
 import { $rejectLine, $selectEndOutsideDocumentImport, importFormulaId } from './fixes';
 // moss-multi seam: linear-match (A§12; SP2)
 import { linearRegExp, withLinearRegExps } from './linear-match';
+// moss-multi seam: linear-import (A§12; SP2)
+import { $convertFromMarkdownString, isAfterUnclosedBacktick, isInsideInlineCodeSpan } from './linear-import';
 
 // Custom transformer to preserve underlines in markdown
 const UNDERLINE_TRANSFORMER: TextMatchTransformer = {

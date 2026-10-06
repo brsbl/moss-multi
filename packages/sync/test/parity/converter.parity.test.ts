@@ -76,9 +76,9 @@ describe('L3 parity with moss at the pin @p:tech-4', () => {
     expect(ours.markdown).toBe(pristine.markdown);
   });
 
-  // The linear matching (markdown/linear-match.ts) changes no output on notes of unclosed openers.
-  it.each(Object.entries(CONVERTER_CASES))('unclosed openers, %s', (_name, c) => {
-    for (const bytes of [40, 3_000]) {
+  // The linear matching (markdown/linear-match.ts, markdown/linear-import.ts) changes no output on these notes.
+  it.each(Object.entries(CONVERTER_CASES))('unclosed openers and many matches, %s', (_name, c) => {
+    for (const bytes of c.parityBytes ?? [40, 3_000]) {
       const markdown = converterBody(c, bytes);
       const ours = comparable(markdown, oursRoundTrip(markdown, {}));
       const pristine = comparable(markdown, pristineRoundTrip(markdown, {}));

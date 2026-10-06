@@ -1,5 +1,6 @@
-// Adversarial notes for the converter: runs of an opener with no closer. scripts/measure-converter.mjs holds their
-// import and export in workerd to the SP2 budget and to linear growth; L3 holds their output to pristine moss.
+// Adversarial notes for the converter: runs of an opener with no closer, and one paragraph of many matches.
+// scripts/measure-converter.mjs holds their import and export in workerd to the SP2 budget and to linear growth; L3
+// holds their output to pristine moss.
 
 export interface ConverterCase {
   /** Repeated to the note's size. */
@@ -10,6 +11,11 @@ export interface ConverterCase {
   after?: string;
   /** Repeated after `after`; the run and the tail then share the note's size. */
   tail?: string;
+  /**
+   * Sizes L3 compares with moss (default 40 and 3,000 bytes). Smaller for cases whose matching is inherently
+   * quadratic in moss (nesting, callbacks that read the paragraph), which the import cuts off at a work budget.
+   */
+  parityBytes?: number[];
 }
 
 export const CONVERTER_CASES: Record<string, ConverterCase> = {
@@ -35,9 +41,19 @@ export const CONVERTER_CASES: Record<string, ConverterCase> = {
   'indent before a word': { run: ' ', before: '', after: 'x' },
   'divider then whitespace': { run: ' ', before: '|-|-', after: 'x' },
   'pill openers ?[ before one destination': { run: '?[', after: '](', tail: 'a' },
-  // A space before each `*` keeps it from closing, so Lexical pairs no emphasis across the run.
-  'formatted pill openers *?[ before one destination': { run: ' *?[', after: '](', tail: 'a' },
+  'formatted pill openers *?[ before one destination': { run: '*?[', after: '](', tail: 'a' },
   'URL labels [http:// before one destination': { run: '[http://', after: '](', tail: 'a' },
+  'URL labels [http://a before one destination': { run: '[http://a', after: '](', tail: 'a' },
+  'raw URLs': { run: 'http://a ' },
+  'embeddable URLs': { run: 'https://example.com ' },
+  'escaped backticks before URLs': { run: '\\` https://example.com ' },
+  'URL with closing brackets': { run: ')', before: 'quokka http://a' },
+  'emphasis spans': { run: '*a* ' },
+  'code spans': { run: '`a` ' },
+  links: { run: '[a](b) ' },
+  'wiki links': { run: '[[a]] ' },
+  colors: { run: '#ff0000 ', parityBytes: [40, 1_500] },
+  'nested emphasis': { run: '*x _x ', after: 'y', tail: ' x_ x*', parityBytes: [40, 400] },
 };
 
 /** The case's markdown, `bytes` long or just over. */

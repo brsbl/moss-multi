@@ -4,6 +4,7 @@ import { $getRoot, type LexicalEditor } from 'lexical';
 import * as Y from 'yjs';
 import { $importNoteBody, createConverterEditor, exportMarkdown, importMarkdown } from '../src/converter/index.ts';
 import { writeTitle } from '../src/server-title.ts';
+import { linearImportStats } from '@moss-desktop/renderer/editor/markdown/linear-import';
 
 let imported: LexicalEditor | null = null;
 /** The doc /title renames, as the DocDO's renameTitle does; made in a handler, since a Y.Doc draws a random id. */
@@ -41,9 +42,11 @@ export default {
     if (pathname === '/ping') return new Response('ok');
     if (pathname === '/import') {
       const markdown = await request.text();
+      const cutBefore = linearImportStats.cut;
       imported = importMarkdown(markdown);
       const blocks = imported.getEditorState().read(() => $getRoot().getChildrenSize());
-      return Response.json({ bytes: utf8(markdown), blocks });
+      // Lines the inline import cut at its work budget (markdown/linear-import.ts).
+      return Response.json({ bytes: utf8(markdown), blocks, cut: linearImportStats.cut - cutBefore });
     }
     if (pathname === '/export') {
       if (!imported) return new Response('import first', { status: 409 });

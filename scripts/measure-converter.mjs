@@ -483,7 +483,8 @@ async function measureAdversarialCase(name, c, port, converterBody) {
     for (const bytes of ADVERSARIAL_SIZES) {
       const imported = await request('/import', converterBody(c, bytes));
       const exported = await request('/export');
-      sizes.push({ bytes, importCpuMs: imported.cpuMs, exportCpuMs: exported.cpuMs, importWallMs: round(imported.wallMs) });
+      const { cut } = JSON.parse(imported.body);
+      sizes.push({ bytes, importCpuMs: imported.cpuMs, exportCpuMs: exported.cpuMs, importWallMs: round(imported.wallMs), cut });
     }
     return { name, sizes };
   } catch (error) {
@@ -657,7 +658,7 @@ async function main() {
     ...adversarial.flatMap((r) => [
       ...r.sizes.map(
         (size) =>
-          `| Unclosed openers, ${r.name} × ${kb(size.bytes)}: workerd CPU (import / export), one run | ${size.importCpuMs} / ${size.exportCpuMs} ms (budget ${IMPORT_BUDGET_MS} ms; import wall ${size.importWallMs} ms) |`,
+          `| Unclosed openers, ${r.name} × ${kb(size.bytes)}: workerd CPU (import / export), one run | ${size.importCpuMs} / ${size.exportCpuMs} ms (budget ${IMPORT_BUDGET_MS} ms; import wall ${size.importWallMs} ms${size.cut ? '; line cut at the work budget' : ''}) |`,
       ),
       ...(r.failed ? [`| Unclosed openers, ${r.name} | FAILED: ${r.failed} |`] : []),
     ]),

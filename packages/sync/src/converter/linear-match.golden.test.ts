@@ -26,6 +26,8 @@ const shape = (match: RegExpMatchArray | null) => (match ? { captures: [...match
 const TOKENS = [
   '[', ']', '(', ')', '[[', ']]', '![', '?[', '](', '|', '-', ':', '*', '**', '~~', '"', '\\', ' ', '  ', '\t', '\n', '\r', '\u2028', '\u00a0',
   'a', 'b c', 'http://x', 'https://y', '/', '#', '<', '>', '.', '`', '!',
+  // Hosts, ports and paths for the raw-URL typing shortcut.
+  'a.co', 'b-c', 'x1', ':80', ':123456', '?q', '..', '-.', '.-', 'é',
 ];
 // Table rows and dividers.
 const ROW_TOKENS = ['|', '-', '--', ':', ' ', '\t', '\r', '\u2028', 'a'];
@@ -44,6 +46,7 @@ function* fuzz(count: number, seed: number, tokens: string[]): Generator<string>
     yield* [text, `![${text}`, `![${text})`, `[http://${text}`, `*?[${text}`, ` ${text} | `];
     // The typing shortcuts' forms, anchored at the end.
     yield* [`?[${text})`, `[[${text}]]`, `[[${text}]`, `[http://${text})`, `*?[${text})*`, `*http://${text}*`, `|-${text}`];
+    yield* [`${text} `, `${text}a.co `, `a.${text}\t`];
   }
 }
 
@@ -98,9 +101,6 @@ describe('linear transformer matching @p:tech-4', () => {
     const slow: string[] = [];
     for (const transformer of MARKDOWN_EDITOR_TRANSFORMERS) {
       if (transformer.type !== 'text-match' || !transformer.trigger || !transformer.regExp) continue;
-      // Not held here: the raw-URL shortcut on a space; its domain form backtracks across one long word without a
-      // dot (moss at the pin, the typing tab only).
-      if (transformer.trigger === ' ') continue;
       for (const [name, c] of Object.entries(CONVERTER_CASES)) {
         // Lexical matches the text up to the caret once the trigger character is typed.
         const text = `${converterBody(c, 50_000)}${transformer.trigger}`;
