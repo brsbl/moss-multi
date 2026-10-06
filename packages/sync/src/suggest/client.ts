@@ -10,6 +10,7 @@ import {
 import { SUGGEST_LIMITS, type IdSpan, type LeaseGrant, type SuggestReply, type SuggestRefusal, type SuggestRequest } from '@moss-multi/protocol/suggest';
 import { bytesToBase64 } from '@moss-multi/protocol/sync';
 import { attachPayloadDocs, PAYLOAD_LOADED, PayloadDocs, payloadDocsFor, payloadMap, payloadText } from '../payload-docs.ts';
+import { attachPayloadSource } from '../server-doc.ts';
 import { readMeta, readRecord, recordIds } from './records.ts';
 import { bindCheck } from './review.ts';
 
@@ -198,13 +199,19 @@ export class Composite {
   }
 }
 
-/** Read-only payload docs for a view of B (an export, a bind): the view's own payload when it wrote one, else B's. */
+/**
+ * Read-only payloads for a view of B, for a bind and for an export: the view's own payload when a record wrote one,
+ * else B's.
+ */
 function attachViewPayloads(body: Y.Doc, doc: Y.Doc, own: ReadonlyMap<string, Y.Doc> = new Map()): void {
   const source = payloadDocsFor(body);
-  attachPayloadDocs(doc, new PayloadDocs((id) => {
+  const read = (id: string) => {
     const from = own.get(id) ?? source.get(id);
     return from ? Y.encodeStateAsUpdate(from) : null;
-  }, (id) => own.has(id) || source.has(id)));
+  };
+  const has = (id: string) => own.has(id) || source.has(id);
+  attachPayloadDocs(doc, new PayloadDocs(read, has));
+  attachPayloadSource(doc, { read, has, write: () => {}, totalBytes: () => 0, bytesOf: () => 0 });
 }
 
 /**
@@ -477,10 +484,24 @@ export class SuggestFork {
     this.#send({ request: { t: 'suggest-lease', resume: this.#resumable(), fork: this.#id } });
   }
 
-  /** Only this fork's leases: another window of the author holds its own, and naming one would refuse the resume. */
+  /**
+   * Only this fork's leases: another window of the author holds its own, and naming one would refuse the resume. Read
+   * when the resume is sent, after the new socket's sync: the active and spare leases, every used lease whose record
+   * the body shows open, and every lease an owed op is written under, whatever its record's status now. An op owed
+   * to a record accepted meanwhile opens its continuation, and needs its lease to land.
+   */
   #resumable(): number[] {
     const open = this.#openMine();
-    return [...new Set([...this.#leases.map((lease) => lease.client), ...[...this.#used].filter((client) => open.has(client))])];
+    const owed = new Set<number>();
+    for (const { op } of [...this.#inflight, ...this.#waiting]) {
+      if (!op) continue;
+      try {
+        for (const client of Y.parseUpdateMeta(op.update).from.keys()) owed.add(client);
+      } catch {
+        // An op F made always parses.
+      }
+    }
+    return [...new Set([...this.#leases.map((lease) => lease.client), ...[...this.#used].filter((client) => open.has(client) || owed.has(client))])];
   }
 
   /** Requests are made that the server has not stored yet, sent or waiting to be: the session stays unacked. */
