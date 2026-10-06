@@ -43,7 +43,7 @@ function Pane({ docId }: { docId: string }): ReactNode {
 
 it('a bound pane whose plugin is down stays shared and refuses every comment write', async () => {
   const host = document.createElement('div');
-  document.body.append(host);
+  document.body.appendChild(host);
   const root = createRoot(host);
   await act(async () => root.render(createElement(Pane, { docId: DOC })));
   const editor = captured;
