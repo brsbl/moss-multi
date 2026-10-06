@@ -218,15 +218,6 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
        editor.update(() => {
          const node = $getNodeByKey(nodeKey);
          if (!node) return;
-@@ -439,7 +452,7 @@ function ChartWrapper({
-         selected={isSelected}
-         beforeLabel="Insert paragraph before chart"
-         afterLabel="Insert paragraph after chart"
--        onGapClick={handleGapClick}
-+        onGapClick={editable ? handleGapClick : undefined /* moss-multi seam: read-only-decorators (T2.3) */}
-         className="my-6"
-         data-block-decorator-key={nodeKey}
-       >
 @@ -454,6 +467,7 @@ function ChartWrapper({
                </pre>
              )}
@@ -235,7 +226,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
            <button
              type="button"
              onClick={handleDelete}
-@@ -462,19 +476,20 @@ function ChartWrapper({
+@@ -462,13 +476,14 @@ function ChartWrapper({
            >
              <X className="h-4 w-4" />
            </button>
@@ -251,19 +242,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
      return (
        <BlockNodeShell
          selected={isSelected}
-         beforeLabel="Insert paragraph before chart"
-         afterLabel="Insert paragraph after chart"
--        onGapClick={handleGapClick}
-+        onGapClick={editable ? handleGapClick : undefined /* moss-multi seam: read-only-decorators (T2.3) */}
-         className="my-6"
-         data-block-decorator-key={nodeKey}
-       >
-@@ -494,11 +509,11 @@ function ChartWrapper({
-       selected={isSelected}
-       beforeLabel="Insert paragraph before chart"
-       afterLabel="Insert paragraph after chart"
--      onGapClick={handleGapClick}
-+      onGapClick={editable ? handleGapClick : undefined /* moss-multi seam: read-only-decorators (T2.3) */}
+@@ -498,7 +513,7 @@ function ChartWrapper({
        className="my-6 outline-none transition-colors"
        data-block-decorator-key={nodeKey}
        onClick={handleContainerClick}

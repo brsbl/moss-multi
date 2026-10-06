@@ -453,7 +453,7 @@ function ChartWrapper({
         selected={isSelected}
         beforeLabel="Insert paragraph before chart"
         afterLabel="Insert paragraph after chart"
-        onGapClick={editable ? handleGapClick : undefined /* moss-multi seam: read-only-decorators (T2.3) */}
+        onGapClick={handleGapClick}
         className="my-6"
         data-block-decorator-key={nodeKey}
       >
@@ -490,7 +490,7 @@ function ChartWrapper({
         selected={isSelected}
         beforeLabel="Insert paragraph before chart"
         afterLabel="Insert paragraph after chart"
-        onGapClick={editable ? handleGapClick : undefined /* moss-multi seam: read-only-decorators (T2.3) */}
+        onGapClick={handleGapClick}
         className="my-6"
         data-block-decorator-key={nodeKey}
       >
@@ -510,7 +510,7 @@ function ChartWrapper({
       selected={isSelected}
       beforeLabel="Insert paragraph before chart"
       afterLabel="Insert paragraph after chart"
-      onGapClick={editable ? handleGapClick : undefined /* moss-multi seam: read-only-decorators (T2.3) */}
+      onGapClick={handleGapClick}
       className="my-6 outline-none transition-colors"
       data-block-decorator-key={nodeKey}
       onClick={handleContainerClick}
