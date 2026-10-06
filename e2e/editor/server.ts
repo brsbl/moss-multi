@@ -2,8 +2,9 @@
 // package sources (the fixture host, packages/editor/src/testing/memory-host.js, and the host helpers it imports),
 // /media/ e2e's media fixtures, and /fixture/ the host page. The page is served under the editor's own CSP
 // (EDITOR_CSP, what editor.json `csp` requires), so any violation shows up in the run. The moss-html frame
-// document is served with its `sandbox allow-scripts` policy, as a host must.
-import { createReadStream, existsSync, statSync } from 'node:fs';
+// document is served with editor.json's `htmlFrame.policy`, as a host must. A second server, the collector, records
+// every request and WebSocket upgrade that reaches it, for the frame's network-isolation probes.
+import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { extname, join, normalize, resolve, sep } from 'node:path';
@@ -49,13 +50,30 @@ export const EDITOR_CSP = [
   "form-action 'none'",
 ].join('; ');
 export const FRAME_FILE = 'moss-html-frame.html';
-export const FRAME_POLICY = 'sandbox allow-scripts';
+
+/** The policy the built editor.json tells a host to serve the moss-html frame document with. */
+export function framePolicy(): string {
+  return (JSON.parse(readFileSync(`${EDITOR_DIST}/editor.json`, 'utf8')) as { htmlFrame: { policy: string } }).htmlFrame.policy;
+}
 
 export interface EditorServer {
   url: string;
   requests: string[];
+  /** Another origin; every request or upgrade that reaches it is recorded as `<method> <path>`. */
+  collector: { url: string; hits: string[] };
   close: () => Promise<void>;
 }
+
+async function listen(server: Server): Promise<string> {
+  await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+  return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+}
+
+const closing = (server: Server) =>
+  new Promise<void>((done) => {
+    server.closeAllConnections();
+    server.close(() => done());
+  });
 
 export async function serveEditor(): Promise<EditorServer> {
   const requests: string[] = [];
@@ -80,19 +98,27 @@ export async function serveEditor(): Promise<EditorServer> {
       'x-content-type-options': 'nosniff',
     };
     if (prefix === '/fixture/' && extname(file) === '.html') headers['content-security-policy'] = EDITOR_CSP;
-    if (pathname === `/editor/${FRAME_FILE}`) headers['content-security-policy'] = FRAME_POLICY;
+    if (pathname === `/editor/${FRAME_FILE}`) headers['content-security-policy'] = framePolicy();
     response.writeHead(200, { ...headers, 'content-length': String(statSync(file).size) });
     createReadStream(file).pipe(response);
   });
-  await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
-  const { port } = server.address() as AddressInfo;
+  const hits: string[] = [];
+  const collector: Server = createServer((request, response) => {
+    hits.push(`${request.method} ${request.url}`);
+    response.writeHead(204, { 'access-control-allow-origin': '*' }).end();
+  });
+  collector.on('upgrade', (request, socket) => {
+    hits.push(`UPGRADE ${request.url}`);
+    socket.destroy();
+  });
+  const url = await listen(server);
+  const collectorUrl = await listen(collector);
   return {
-    url: `http://127.0.0.1:${port}`,
+    url,
     requests,
-    close: () =>
-      new Promise((done) => {
-        server.closeAllConnections();
-        server.close(() => done());
-      }),
+    collector: { url: collectorUrl, hits },
+    close: async () => {
+      await Promise.all([closing(server), closing(collector)]);
+    },
   };
 }

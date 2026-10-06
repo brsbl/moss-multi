@@ -5,11 +5,14 @@
 // "Changed in Moss"; pasted media goes only through the host; and the editor is shot in light and dark.
 // T3.10 (editor 0.2.0): `selection()` (feature `selection-1`) with lines golden-compared against the file a save
 // writes, exact after an unsaved edit, and moss's Share with Agent button only with services.shareWithAgent.
+// T3.11 (editor 0.3.0, API 2): the moss-html frame's policy keeps a block off the network while it still renders and
+// runs; copyFromNote copies only from a note the user opened; a case-only retitle keeps the markdown entry's spelling
+// as Moss desktop does; and an API 1 host (the 0.2.0 host fixture) gets a typed apiMismatch at mount.
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, test, type Page } from '@playwright/test';
-import { serveEditor, type EditorServer } from './server.ts';
+import { framePolicy, serveEditor, type EditorServer } from './server.ts';
 import {
   SELECTION_CASES,
   SELECTION_COMMENTS,
@@ -47,6 +50,7 @@ interface Fixture {
   shared(): (MossSelection | null)[];
   violations: string[];
   reset(options?: { caseInsensitive?: boolean }): void;
+  open(noteId: string): void;
   seed(segments: string[], note: { markdown: string; meta: object; comments?: string | null; layout?: string | null }): string;
   seedAsset(dir: string, name: string, base64: string): void;
   mount(noteId: string, options?: { theme?: 'light' | 'dark'; share?: boolean | 'fail' }): Promise<{ ok: boolean; code?: string; status: string }>;
@@ -56,17 +60,31 @@ interface Fixture {
   unmountDetail(options?: { discardUnsaved?: boolean }): Promise<{ kind: string; flush: string; markdown: string | null }>;
   delayWrites(ms: number): void;
   status(): string | null;
-  events(): { kind: string; cause?: string; status?: string }[];
+  events(): { kind: string; cause?: string; status?: string; op?: string; location?: object }[];
   files(under?: string): Record<string, string>;
   externalWrite(path: string, text: string): void;
   silentWrite(path: string, text: string): void;
-  calls(): { op: string; name?: string; ops?: string[]; sourceNoteId?: string; sourceRef?: string }[];
+  calls(): { op: string; name?: string; ops?: string[]; sourceNoteId?: string; sourceRef?: string; result?: string }[];
   assetUrl(noteId: string, ref: string): string | null;
+}
+
+interface Api1Result {
+  host: { api: number; version: string; features: string[] };
+  editor: { api: number; version: string; features: string[] };
+  ready: { ok: boolean; name?: string; code?: string; message?: string };
+  status: string;
+  placeholder: string | null;
+  events: { kind: string; op?: string; status?: string; willRetry?: boolean }[];
+  calls: string[];
+  unchanged: boolean;
+  flush: { kind: string };
+  unmount: { kind: string; flush: string };
 }
 
 declare global {
   interface Window {
     editorFixture: Fixture;
+    api1Fixture: { mount(noteId: string, note: { markdown: string; meta: object }): Promise<Api1Result> };
   }
 }
 
@@ -445,6 +463,8 @@ test.describe('embeddable editor', () => {
       { id: ID, plan: meta('Plan'), source: { ...meta('Source'), id: OTHER }, png },
     );
     expect(result).toEqual({ ok: true, status: 'clean' });
+    // The user has the source note open in the host, so the host may copy from it.
+    await page.evaluate((other) => window.editorFixture.open(other), OTHER);
     const urls = await page.evaluate(({ id, other }) => ({ own: window.editorFixture.assetUrl(id, 'assets/own.png'), other: window.editorFixture.assetUrl(other, 'assets/pattern.png') }), { id: ID, other: OTHER });
     expect(urls.own).toMatch(/^blob:/);
     expect(urls.other).toMatch(/^blob:/);
@@ -485,9 +505,148 @@ test.describe('embeddable editor', () => {
     expect(await page.evaluate(() => window.editorFixture.violations)).toEqual([]);
   });
 
-  test('advertises selection-1 and share-with-agent-1 in MOSS_EDITOR_INFO, as editor 0.2.0 of API 1', async ({ page }) => {
+  test('advertises selection-1 and share-with-agent-1 in MOSS_EDITOR_INFO, as editor 0.3.0 of API 2', async ({ page }) => {
     await open(page);
-    expect(await page.evaluate(() => window.editorFixture.info)).toEqual({ api: 1, version: '0.2.0', features: ['selection-1', 'share-with-agent-1'] });
+    expect(await page.evaluate(() => window.editorFixture.api)).toBe(2);
+    expect(await page.evaluate(() => window.editorFixture.info)).toEqual({ api: 2, version: '0.3.0', features: ['selection-1', 'share-with-agent-1'] });
+  });
+
+  test('API 2: a moss-html block renders and runs in its frame, and none of its network probes reaches another origin', async ({ page }) => {
+    const seen = await open(page);
+    const collector = server.collector.url;
+    const socket = collector.replace(/^http/, 'ws');
+    const note = [
+      '# Plan',
+      '',
+      '```moss-html',
+      '<style>#out { color: rgb(10, 120, 30); }</style>',
+      '<p id="out">waiting</p>',
+      `<img src="${collector}/img" alt="">`,
+      `<link rel="stylesheet" href="${collector}/link">`,
+      `<iframe src="${collector}/iframe"></iframe>`,
+      `<script src="${collector}/script"></script>`,
+      '<script>',
+      '  var sent = 0;',
+      `  try { fetch('${collector}/fetch').catch(function () {}); sent++; } catch (e) {}`,
+      `  try { var xhr = new XMLHttpRequest(); xhr.open('GET', '${collector}/xhr'); xhr.send(); sent++; } catch (e) {}`,
+      `  try { new WebSocket('${socket}/socket'); sent++; } catch (e) {}`,
+      `  try { navigator.sendBeacon('${collector}/beacon', 'x'); sent++; } catch (e) {}`,
+      `  try { new Image().src = '${collector}/image'; sent++; } catch (e) {}`,
+      "  document.getElementById('out').textContent = 'ran: ' + sent;",
+      '</script>',
+      '```',
+      '',
+    ].join('\n');
+    server.collector.hits.length = 0;
+    await mountNote(page, note);
+    const viewport = body(page).locator('[data-moss-html-preview-viewport]');
+    const frame = viewport.locator('iframe');
+    await expect(frame).toHaveCount(1, { timeout: 10_000 });
+    await expect(frame).toHaveAttribute('src', '/editor/moss-html-frame.html');
+    await expect(frame).toHaveAttribute('sandbox', 'allow-scripts');
+    // The block still renders and runs: its inline style applies and its inline script writes.
+    const out = viewport.frameLocator('iframe').locator('#out');
+    await expect(out).toHaveText(/^ran: \d$/, { timeout: 10_000 });
+    expect(await out.evaluate((el) => getComputedStyle(el).color)).toBe('rgb(10, 120, 30)');
+    // The host serves the frame document with editor.json's policy: inline scripts and styles, data: and blob:
+    // images, and no network at all.
+    const policy = framePolicy();
+    expect(policy).toBe(
+      "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'",
+    );
+    expect((await page.request.get(`${server.url}/editor/moss-html-frame.html`)).headers()['content-security-policy']).toBe(policy);
+    await page.waitForTimeout(2_000);
+    expect(server.collector.hits).toEqual([]);
+    expect(seen.errors).toEqual([]);
+    expect(await page.evaluate(() => window.editorFixture.violations)).toEqual([]);
+  });
+
+  test('API 2: copyFromNote refuses a source note the user has not opened, and the paste keeps no reference to it', async ({ page }) => {
+    const seen = await open(page);
+    const OTHER = '7a6b5c4d-3e2f-4a1b-8c9d-0e1f2a3b4c5d';
+    const png = readFileSync(join(MEDIA, 'pattern.png')).toString('base64');
+    const result = await page.evaluate(
+      ({ id, plan, source, png }) => {
+        window.editorFixture.reset();
+        const dir = window.editorFixture.seed(['Notes', 'Plan'], { markdown: '# Plan\n\nPaste here\n', meta: plan });
+        const sourceDir = window.editorFixture.seed(['Notes', 'Source'], { markdown: '# Source\n\n![pattern](assets/pattern.png)\n', meta: source });
+        window.editorFixture.seedAsset(dir, 'own.png', png);
+        window.editorFixture.seedAsset(sourceDir, 'pattern.png', png);
+        return window.editorFixture.mount(id);
+      },
+      { id: ID, plan: meta('Plan'), source: { ...meta('Source'), id: OTHER }, png },
+    );
+    expect(result).toEqual({ ok: true, status: 'clean' });
+    // A host-issued URL for a note the user never opened, as pasted content could carry one.
+    const urls = await page.evaluate(({ id, other }) => ({ own: window.editorFixture.assetUrl(id, 'assets/own.png'), other: window.editorFixture.assetUrl(other, 'assets/pattern.png') }), { id: ID, other: OTHER });
+    await body(page).getByText('Paste here', { exact: true }).click();
+    await page.keyboard.press('End');
+    await frames(page);
+    await body(page).evaluate((root, { own, other }) => {
+      const data = new DataTransfer();
+      data.setData('text/html', `<p><img src="${other}" alt="pattern"></p><p><img src="${own}" alt="own"></p>`);
+      data.setData('text/plain', '');
+      root.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+    }, urls);
+    await expect.poll(() => page.evaluate(() => window.editorFixture.events().filter((event) => event.kind === 'error').map((event) => event.op))).toEqual(['assetCopy']);
+    await expect(body(page).locator('img')).toHaveCount(1, { timeout: 10_000 });
+    expect(await page.evaluate(() => window.editorFixture.flush())).toMatchObject({ kind: 'saved' });
+    const copies = (await page.evaluate(() => window.editorFixture.calls())).filter((call) => call.op === 'assetCopy');
+    expect(copies).toHaveLength(1);
+    expect(copies[0]).toMatchObject({ sourceNoteId: OTHER, sourceRef: 'assets/pattern.png', result: 'refused:sourceNotOpen' });
+    const written = await files(page);
+    expect(Object.keys(written).filter((path) => path.startsWith('/Moss/Notes/Plan/assets/'))).toEqual(['/Moss/Notes/Plan/assets/own.png']);
+    const markdown = written['/Moss/Notes/Plan/Plan.md'];
+    expect(markdown).not.toContain('blob:');
+    expect(markdown).not.toContain('pattern');
+    expect(markdown).toContain('(assets/own.png)');
+    expect(seen.errors).toEqual([]);
+    expect(await page.evaluate(() => window.editorFixture.violations)).toEqual([]);
+  });
+
+  test("API 2: a case-only retitle keeps the markdown entry's spelling, as Moss desktop's save does on APFS", async ({ page }) => {
+    const seen = await open(page);
+    const result = await page.evaluate(
+      ({ id, meta }) => {
+        window.editorFixture.reset({ caseInsensitive: true });
+        window.editorFixture.seed(['Notes', 'Plan'], { markdown: '# Plan\n\nBody\n', meta });
+        return window.editorFixture.mount(id);
+      },
+      { id: ID, meta: meta('Plan') },
+    );
+    expect(result).toEqual({ ok: true, status: 'clean' });
+    await title(page).click();
+    await page.keyboard.press('ControlOrMeta+A');
+    await page.keyboard.type('plan');
+    expect(await page.evaluate(() => window.editorFixture.flush())).toMatchObject({ kind: 'saved' });
+    const written = await files(page);
+    // Desktop's golden (pipeline.golden.test.ts): the folder is renamed and the file replaced in place, so the entry
+    // keeps its spelling `Plan.md`.
+    expect(Object.keys(written)).toEqual(['/Moss/Notes/plan/Plan.md', '/Moss/Notes/plan/meta.json']);
+    expect(written['/Moss/Notes/plan/Plan.md']).toMatch(/^# plan\n\nBody\n?$/);
+    expect(JSON.parse(written['/Moss/Notes/plan/meta.json']).title).toBe('plan');
+    const saved = (await page.evaluate(() => window.editorFixture.events())).filter((event) => event.kind === 'saved');
+    expect(saved.at(-1)?.location).toEqual({ folderPath: 'Notes', folderName: 'plan', markdownName: 'plan.md' });
+    expect(seen.errors).toEqual([]);
+  });
+
+  test('API 2: an API 1 host (the 0.2.0 host fixture) mounting this bundle gets a typed apiMismatch at mount, and nothing is read or written', async ({ page }) => {
+    const errors: string[] = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    await page.goto(`${server.url}/fixture/api1/index.html`);
+    await expect(page.locator('html[data-fixture="ready"]')).toBeAttached();
+    const result = await page.evaluate(({ id, note }) => window.api1Fixture.mount(id, note), { id: ID, note: { markdown: '# Plan\n\nBody\n', meta: meta('Plan') } });
+    expect(result.host).toEqual({ api: 1, version: '0.2.0', features: ['selection-1', 'share-with-agent-1'] });
+    expect(result.editor.api).toBe(2);
+    expect(result.ready).toEqual({ ok: false, name: 'MossEditorError', code: 'apiMismatch', message: 'bridge.api is 1; this editor implements API 2' });
+    expect(result.status).toBe('notLoaded');
+    expect(result.placeholder).toContain('API 2');
+    expect(result.events).toEqual([{ kind: 'error', op: 'read', status: 'notLoaded', willRetry: false }]);
+    expect(result.calls).toEqual([]);
+    expect(result.unchanged).toBe(true);
+    expect(result.flush).toEqual({ kind: 'notLoaded' });
+    expect(result.unmount).toEqual({ kind: 'unmounted', flush: 'notLoaded' });
+    expect(errors).toEqual([]);
   });
 
   for (const { name, from, to, within, nth, expected } of SELECTION_CASES) {

@@ -156,9 +156,11 @@ describe('loading', () => {
     await expect(session.unmount()).resolves.toEqual({ kind: 'unmounted', flush: { kind: 'notLoaded' } });
   });
 
-  it('a bridge of another API version rejects ready with apiMismatch', async () => {
-    const session = mount({ bridge: Object.assign(Object.create(host), { api: 2 }) });
-    await expect(session.ready).rejects.toMatchObject({ code: 'apiMismatch' });
+  it('an API 1 bridge rejects ready with apiMismatch before any bridge call', async () => {
+    const session = mount({ bridge: Object.assign(Object.create(host), { api: 1 }) });
+    await expect(session.ready).rejects.toMatchObject({ name: 'MossEditorError', code: 'apiMismatch', message: 'bridge.api is 1; this editor implements API 2' });
+    expect(session.status).toBe('notLoaded');
+    expect(host.calls).toEqual([]);
   });
 
   it('a trashed note rejects ready with notEditable', async () => {
