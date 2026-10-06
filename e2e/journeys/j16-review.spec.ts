@@ -250,8 +250,13 @@ test('j16-review: struck text inside a link opens its card, not the link; a fail
   await ada.page.route(previews, (route) => route.fulfill({ status: 429, contentType: 'application/json', body: '{"error":"rate-limited"}' }));
   const startUrl = ada.page.url();
   const active = panel(ada).locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_ACTIVE_ATTR}]`);
-  // One click, once the strike is painted: an earlier click is an ordinary link click.
-  await expect.poll(() => ada.page.evaluate(() => (CSS as unknown as { highlights: Map<string, { size: number }> }).highlights.get('suggest-delete')?.size ?? 0), { timeout: BIND_TIMEOUT }).toBeGreaterThan(0);
+  // One click, once the whole strike is painted: Ben's six deletes reach Ada one by one, and a click on link text not
+  // yet struck is an ordinary link click.
+  const struck = () => ada.page.evaluate(() => {
+    const ranges = (CSS as unknown as { highlights: Map<string, Iterable<Range>> }).highlights.get('suggest-delete');
+    return ranges ? [...ranges].map((range) => range.toString()).join('') : '';
+  });
+  await expect.poll(struck, { timeout: BIND_TIMEOUT }).toBe('torial');
   const point = await pointAt(ada, docId, 'torial');
   await ada.page.mouse.click(point.x, point.y);
   await expect(active, 'the struck text opens its card').toHaveCount(1, { timeout: BIND_TIMEOUT });

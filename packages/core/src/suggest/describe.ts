@@ -244,7 +244,7 @@ class Rows {
     const own = carried(value);
     const inline = isInline(value);
     if (!quiet || (own.length > 0 && !inline)) {
-      this.push(kind, path, textOf(value).trim() || `[${typeName(value)}]`, [`${verb} ${typeName(value)}`, ...own].join('; '), value);
+      this.push(kind, path, textOf(value) || `[${typeName(value)}]`, [`${verb} ${typeName(value)}`, ...own].join('; '), value);
     }
     const inner = inline ? [...chain, [typeName(value), ...own].join('; ')] : [];
     this.sequence(kind, path, units(value.seq), inner, true, owners(units(value.seq)));
@@ -447,5 +447,42 @@ export function describeHunks(hunks: readonly Hunk[]): ReviewRow[] {
     if (rows.out.length === 0) rows.push('change', '', 'Change', `${show(before)} → ${show(after)}`, { before: before ?? null, after: after ?? null });
     out.push(...rows.out);
   }
+  return out;
+}
+
+/** A piece of a row's text as drawn: plain text, or a run of whitespace (`space`, its exact characters) drawn as glyphs. */
+export interface RowSegment {
+  text: string;
+  space?: string;
+}
+
+// Whitespace and invisible characters, and the glyph each is drawn as.
+const INVISIBLE = /[\s­᠎​-‏⁠﻿]+/gu;
+const GLYPHS: Record<string, string> = { ' ': '·', '\t': '→', '\n': '↵', ' ': '⍽' };
+const glyph = (ch: string) => GLYPHS[ch] ?? `⟨U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, '0')}⟩`;
+
+/**
+ * A row's text in segments, losslessly: whitespace a reader could not see in plain text (at either end, a run of
+ * more than one, anything but a space, or the whole text) is a marked segment of glyphs; one space between words
+ * stays plain. Joining each segment's `space ?? text` gives the text back.
+ */
+export function rowSegments(text: string): RowSegment[] {
+  const out: RowSegment[] = [];
+  const plain = (part: string) => {
+    if (!part) return;
+    const last = out.at(-1);
+    if (last && last.space === undefined) last.text += part;
+    else out.push({ text: part });
+  };
+  let at = 0;
+  for (const match of text.matchAll(INVISIBLE)) {
+    const run = match[0];
+    const start = match.index;
+    plain(text.slice(at, start));
+    at = start + run.length;
+    if (run === ' ' && start > 0 && at < text.length) plain(run);
+    else out.push({ text: [...run].map(glyph).join(''), space: run });
+  }
+  plain(text.slice(at));
   return out;
 }
