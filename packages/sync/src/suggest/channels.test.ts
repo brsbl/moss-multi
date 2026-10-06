@@ -22,7 +22,7 @@ afterEach(() => restore());
 type DocKind = 'body' | 'payload';
 type Content = Y.Item['content'];
 
-const TYPES: [string, () => Y.AbstractType<unknown>][] = [
+const TYPES: [string, () => ConstructorParameters<typeof Y.ContentType>[0]][] = [
   ['Y.Array', () => new Y.Array()],
   ['Y.Map', () => new Y.Map()],
   ['Y.Text', () => new Y.Text()],
