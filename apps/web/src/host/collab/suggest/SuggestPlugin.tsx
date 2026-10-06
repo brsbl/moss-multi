@@ -69,9 +69,9 @@ export function SuggestPlugin({ pane }: { pane: SuggestPane }): null {
         if (caret && !restoreCaret(editor, caret)) pane.keepCaret(caret);
       }
       if (mount instanceof SuggestMount) {
-        paintBound(owner, editor, binding, mount.fork.ownClients(), mount.fork.struck());
+        paintBound(owner, editor, binding, mount.fork.ownClients(), mount.fork.struck(), body);
       } else if (mount instanceof ReviewMount) {
-        paintBound(owner, editor, binding, new Set(mount.clients.keys()), body ? partTargets(body, new Set(mount.valid)) : []);
+        paintBound(owner, editor, binding, new Set(mount.clients.keys()), body ? partTargets(body, new Set(mount.valid)) : [], body);
       } else if (built && body) {
         // Strikes: delete-part targets, and body items a record's own ops remove (a join, a split, a restyle).
         const struck = [...partTargets(body, new Set(built.valid)), ...removed];

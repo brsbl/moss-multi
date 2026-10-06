@@ -176,7 +176,8 @@ it('a record accepted while offline, arriving in sync step 2 with an insert unde
     catchUp();
     expect(readMeta(session.doc, record)?.status).toBe('accepted');
     session.provider.synced = true;
-    answer(second, pending(second));
+    // The resume, then what waited behind it.
+    for (let next = pending(second); next.length; next = pending(second)) answer(second, next);
     expect(replies.filter((reply) => reply.startsWith('refused')), 'the resumed fork is never refused').toEqual([]);
     expect(unsaved, 'nothing is offered back').toEqual([]);
     expect(mount.fork.closed, 'input stays open').toBe(false);

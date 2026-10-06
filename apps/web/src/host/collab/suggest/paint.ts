@@ -42,9 +42,13 @@ export function clearPaint(owner: object): void {
 const covers = (spans: readonly { client: number; clock: number; len: number }[], id: Y.ID) =>
   spans.some((span) => span.client === id.client && span.clock <= id.clock && id.clock < span.clock + span.len);
 
-/** Paint for an editor bound to F or C: items of `own` clients as inserts, `struck` spans as deletes. */
-export function paintBound(owner: object, editor: LexicalEditor, binding: Binding, own: ReadonlySet<number>, struck: readonly { client: number; clock: number; len: number }[]): void {
-  const insert = own.size ? rangesWhere(editor, binding, (id) => own.has(id.client)) : [];
+/**
+ * Paint for an editor bound to F or C: items of `own` clients that B lacks as inserts (an accepted record's text is
+ * body text, though a continuation writes on under its lease), `struck` spans as deletes.
+ */
+export function paintBound(owner: object, editor: LexicalEditor, binding: Binding, own: ReadonlySet<number>, struck: readonly { client: number; clock: number; len: number }[], body?: Y.Doc | null): void {
+  const pending = (id: Y.ID) => own.has(id.client) && (!body || id.clock >= Y.getState(body.store, id.client));
+  const insert = own.size ? rangesWhere(editor, binding, pending) : [];
   const strike = struck.length ? rangesWhere(editor, binding, (id) => covers(struck, id)) : [];
   paintRanges(owner, insert, strike);
 }

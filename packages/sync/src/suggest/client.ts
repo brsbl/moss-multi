@@ -193,8 +193,18 @@ export class Composite {
       built.valid.push(id);
       for (const client of record.meta.clients) built.clients.set(client, id);
     }
+    attachViewPayloads(this.body, built.doc, built.payloads);
     return built;
   }
+}
+
+/** Read-only payload docs for a view of B (an export, a bind): the view's own payload when it wrote one, else B's. */
+function attachViewPayloads(body: Y.Doc, doc: Y.Doc, own: ReadonlyMap<string, Y.Doc> = new Map()): void {
+  const source = payloadDocsFor(body);
+  attachPayloadDocs(doc, new PayloadDocs((id) => {
+    const from = own.get(id) ?? source.get(id);
+    return from ? Y.encodeStateAsUpdate(from) : null;
+  }, (id) => own.has(id) || source.has(id)));
 }
 
 /**
@@ -237,6 +247,7 @@ export function reviewDoc(body: Y.Doc, composite: Composite, bind: (doc: Y.Doc) 
     return 'composite';
   } catch {
     const plain = hydrate(body);
+    attachViewPayloads(body, plain);
     bind(plain);
     return 'body';
   } finally {
