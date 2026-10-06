@@ -23,8 +23,8 @@ const SHOWN = 8;
 
 const MentionDoc = createContext<string | null>(null);
 
-/** Scopes the comment composers below it to `docId`'s people. */
-export function MentionScope({ docId, children }: { docId: string; children: ReactNode }): ReactNode {
+/** Scopes the comment composers below it to `docId`'s people; null offers none (a file-backed note). */
+export function MentionScope({ docId, children }: { docId: string | null; children: ReactNode }): ReactNode {
   return <MentionDoc.Provider value={docId}>{children}</MentionDoc.Provider>;
 }
 

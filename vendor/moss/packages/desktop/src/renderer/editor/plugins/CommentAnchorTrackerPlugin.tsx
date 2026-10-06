@@ -83,7 +83,8 @@ export function CommentAnchorTrackerPlugin({ noteId }: CommentAnchorTrackerPlugi
   const setLiveCommentAnchorIdsSynced = useSetAtom(noteCommentAnchorIdsSyncedAtom(noteId));
 
   const syncAnchorIds = useCallback(() => {
-    const nextIds = liveAnchorIds(editor); // moss-multi seam: comments (comments.md §12): anchors are records
+    // moss-multi seam: comments (comments.md §12): a bound note's anchors are records
+    const nextIds = liveAnchorIds(editor) ?? collectLiveCommentAnchorIds(editor);
     setLiveCommentAnchorIds((prevIds) =>
       areStringArraysEqual(prevIds, nextIds) ? prevIds : nextIds
     );
@@ -107,13 +108,15 @@ export function CommentAnchorTrackerPlugin({ noteId }: CommentAnchorTrackerPlugi
     };
 
     syncAnchorIds();
-    const unregMarkMutation = subscribePaint(editor, scheduleSync); // moss-multi seam: comments
+    const unregMarkMutation = editor.registerMutationListener(MarkNode, scheduleSync);
+    const unregPaint = subscribePaint(editor, scheduleSync); // moss-multi seam: comments
     const unregDecoratorMutations = COMMENTABLE_DECORATOR_NODES.map((nodeClass) =>
       editor.registerMutationListener(nodeClass, scheduleSync)
     );
 
     return () => {
       unregMarkMutation();
+      unregPaint(); // moss-multi seam: comments
       for (const unregister of unregDecoratorMutations) unregister();
       if (rafId !== null) cancelAnimationFrame(rafId);
       setLiveCommentAnchorIds([]);

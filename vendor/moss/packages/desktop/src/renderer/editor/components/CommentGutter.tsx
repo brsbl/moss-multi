@@ -41,19 +41,20 @@ function shouldSkipElement(element: HTMLElement): boolean {
 function getCommentPositions(
   editor: ReturnType<typeof useLexicalComposerContext>[0]
 ): CommentGutterEntry[] {
-  // moss-multi seam: comments (comments.md §12): rows come from the painted anchors, not MarkNodes
-  const entries: CommentGutterEntry[] = targets(editor);
-  if (entries) {
-    entries.sort((a, b) => a.top - b.top);
-    for (let i = 1; i < entries.length; i++) {
-      const minTop = entries[i - 1].top + ICON_HEIGHT;
-      if (entries[i].top < minTop) entries[i] = { ...entries[i], top: minTop };
+  // moss-multi seam: comments (comments.md §12): a bound note's rows come from the painted anchors, not MarkNodes
+  const painted = targets(editor);
+  if (painted) {
+    painted.sort((a, b) => a.top - b.top);
+    for (let i = 1; i < painted.length; i++) {
+      const minTop = painted[i - 1].top + ICON_HEIGHT;
+      if (painted[i].top < minTop) painted[i] = { ...painted[i], top: minTop };
     }
-    return entries;
+    return painted;
   }
   const rootElement = editor.getRootElement();
   if (!rootElement) return [];
   const containerRect = rootElement.getBoundingClientRect();
+  const entries: CommentGutterEntry[] = [];
   const seenIds = new Set<string>();
 
   editor.getEditorState().read(() => {
@@ -136,7 +137,8 @@ export function CommentGutter({ noteId, onIconClick, activeCommentId, className 
     }
 
     const initialRaf = requestAnimationFrame(updatePositions);
-    const unregMutation = subscribePaint(editor, scheduleUpdate); // moss-multi seam: comments
+    const unregMutation = editor.registerMutationListener(MarkNode, () => updatePositions());
+    const unregPaint = subscribePaint(editor, scheduleUpdate); // moss-multi seam: comments
     // Dirty-gated: only reposition when content changes (e.g. lines added above
     // a comment), not on selection-only changes (click-to-focus, arrow keys).
     const unregUpdate = editor.registerUpdateListener(({ dirtyElements, dirtyLeaves }) => {
@@ -154,6 +156,7 @@ export function CommentGutter({ noteId, onIconClick, activeCommentId, className 
     return () => {
       cancelAnimationFrame(initialRaf);
       unregMutation();
+      unregPaint(); // moss-multi seam: comments
       unregUpdate();
       ro?.disconnect();
       if (rafRef.current !== null) {
