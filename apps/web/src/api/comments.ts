@@ -1,11 +1,11 @@
 // The comment REST API (docs/design/comments.md §4, §12), for a commenter or above: create and reply, resolve, edit,
 // delete and react. The author is the server principal, never the body; the PrincipalDO counts 60 comment operations a
-// minute per principal; the DocDO validates, enforces authorship and writes the records through writeComments.
+// minute per principal; the DocDO re-authorizes the actor in the same serialized write (A§8), enforces authorship and writes the records through writeComments.
 // After a create or reply the Worker writes the bell's rows: mentioned people and the thread's author on a reply, each
 // a user re-checked against their live access, never the actor and never an agent.
 import { getServerByName } from 'partyserver';
 import { COMMENT_OP_RATE } from '@moss-multi/protocol/limits';
-import type { CommentDeleteScope, CommentResult } from '@moss-multi/sync';
+import type { CommentActor, CommentDeleteScope, CommentResult } from '@moss-multi/sync';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
 import { resolvePrincipal, shareTokenOf, type Principal } from '../auth/principal.ts';
 import { createDb, inJson, type Db } from '../db/client.ts';
@@ -30,8 +30,21 @@ export function mentionedIds(text: string): string[] {
   return [...new Set([...text.matchAll(PERSON_MENTION)].map((match) => match[1]!.trim()).filter(Boolean))];
 }
 
-/** Resolves the caller as a commenter or above on `docId`, reads the body, and takes a comment-rate token. */
-async function admit(request: Request, env: DocsEnv, docId: string): Promise<{ principal: Actor; body: Record<string, unknown> } | Response> {
+/**
+ * Who the DocDO re-resolves inside its serialized write (A§8 pull validation): the principal with its session or key
+ * and the request's share token, so a change committed after admission still refuses the write.
+ */
+function actorOf(principal: Actor, request: Request): CommentActor {
+  return {
+    kind: principal.type,
+    principalId: principal.id,
+    sessionId: principal.type === 'user' ? principal.sessionId : null,
+    shareToken: shareTokenOf(request),
+  };
+}
+
+/** Resolves the caller as a commenter or above on `docId` and reads the body; the DocDO re-checks it at the write. */
+async function admit(request: Request, env: DocsEnv, docId: string): Promise<{ principal: Actor; actor: CommentActor; body: Record<string, unknown> } | Response> {
   const principal = await resolvePrincipal(request, env);
   if (!principal || principal.type === 'anonymous') return json({ error: 'unauthenticated', message: 'Sign in to comment' }, 401, NO_STORE);
   // The body is read before access resolves, so a stalled body cannot outlive a revocation or a trash.
@@ -39,7 +52,7 @@ async function admit(request: Request, env: DocsEnv, docId: string): Promise<{ p
   const access = await resolveDocAccess(createDb(env.DB), principal, docId, shareTokenOf(request));
   if (!access || access.deleted) return notFound();
   if (!roleAtLeast(access.role, 'commenter')) return json({ error: 'forbidden', message: "You can't comment on this note." }, 403, NO_STORE);
-  return { principal, body };
+  return { principal, actor: actorOf(principal, request), body };
 }
 
 async function takeToken(env: DocsEnv, principal: Actor): Promise<Response | null> {
@@ -55,7 +68,7 @@ const sourceOf = (principal: Actor) => (principal.type === 'agent' ? 'external' 
 export async function createComment(request: Request, env: DocsEnv, docId: string): Promise<Response> {
   const admitted = await admit(request, env, docId);
   if (admitted instanceof Response) return admitted;
-  const { principal, body } = admitted;
+  const { principal, actor, body } = admitted;
   const { id, text, parentId, anchor } = body;
   if (typeof id !== 'string' || !ID.test(id) || typeof text !== 'string') return bad();
   if (parentId !== undefined && (typeof parentId !== 'string' || !ID.test(parentId))) return bad();
@@ -64,6 +77,7 @@ export async function createComment(request: Request, env: DocsEnv, docId: strin
   if (limited) return limited;
   const stub = await getServerByName(env.DocDO, docId);
   const result = (await stub.createComment({
+    actor,
     author: principal.id,
     source: sourceOf(principal),
     id,
@@ -83,13 +97,13 @@ export async function createComment(request: Request, env: DocsEnv, docId: strin
 export async function resolveComment(request: Request, env: DocsEnv, docId: string, commentId: string): Promise<Response> {
   const admitted = await admit(request, env, docId);
   if (admitted instanceof Response) return admitted;
-  const { principal, body } = admitted;
+  const { principal, actor, body } = admitted;
   const { resolved } = body;
   if (!ID.test(commentId) || typeof resolved !== 'boolean') return bad();
   const limited = await takeToken(env, principal);
   if (limited) return limited;
   const stub = await getServerByName(env.DocDO, docId);
-  const result = (await stub.resolveComment({ id: commentId, resolved, by: sourceOf(principal) })) as CommentResult;
+  const result = (await stub.resolveComment({ actor, id: commentId, resolved, by: sourceOf(principal) })) as CommentResult;
   if (!result.ok) return refused(result);
   return json({ comment: { id: commentId, resolved } }, 200, NO_STORE);
 }
@@ -98,13 +112,13 @@ export async function resolveComment(request: Request, env: DocsEnv, docId: stri
 export async function editComment(request: Request, env: DocsEnv, docId: string, commentId: string): Promise<Response> {
   const admitted = await admit(request, env, docId);
   if (admitted instanceof Response) return admitted;
-  const { principal, body } = admitted;
+  const { principal, actor, body } = admitted;
   const { text } = body;
   if (!ID.test(commentId) || typeof text !== 'string') return bad();
   const limited = await takeToken(env, principal);
   if (limited) return limited;
   const stub = await getServerByName(env.DocDO, docId);
-  const result = (await stub.editComment({ id: commentId, author: principal.id, text })) as CommentResult;
+  const result = (await stub.editComment({ actor, id: commentId, author: principal.id, text })) as CommentResult;
   if (!result.ok) return refused(result);
   return json({ comment: { id: commentId } }, 200, NO_STORE);
 }
@@ -116,13 +130,13 @@ export async function editComment(request: Request, env: DocsEnv, docId: string,
 export async function deleteComment(request: Request, env: DocsEnv, docId: string, commentId: string): Promise<Response> {
   const admitted = await admit(request, env, docId);
   if (admitted instanceof Response) return admitted;
-  const { principal } = admitted;
+  const { principal, actor } = admitted;
   const scope = new URL(request.url).searchParams.get('scope') ?? 'comment';
   if (!ID.test(commentId) || (scope !== 'comment' && scope !== 'thread')) return bad();
   const limited = await takeToken(env, principal);
   if (limited) return limited;
   const stub = await getServerByName(env.DocDO, docId);
-  const result = (await stub.deleteComment({ id: commentId, author: principal.id, scope: scope as CommentDeleteScope })) as CommentResult;
+  const result = (await stub.deleteComment({ actor, id: commentId, author: principal.id, scope: scope as CommentDeleteScope })) as CommentResult;
   if (!result.ok) return refused(result);
   return json({ deleted: { id: commentId, ...(result.promoted ? { promoted: result.promoted } : {}) } }, 200, NO_STORE);
 }
@@ -131,13 +145,13 @@ export async function deleteComment(request: Request, env: DocsEnv, docId: strin
 export async function reactComment(request: Request, env: DocsEnv, docId: string, commentId: string): Promise<Response> {
   const admitted = await admit(request, env, docId);
   if (admitted instanceof Response) return admitted;
-  const { principal, body } = admitted;
+  const { principal, actor, body } = admitted;
   const { emoji, on } = body;
   if (!ID.test(commentId) || typeof emoji !== 'string' || typeof on !== 'boolean') return bad();
   const limited = await takeToken(env, principal);
   if (limited) return limited;
   const stub = await getServerByName(env.DocDO, docId);
-  const result = (await stub.reactComment({ id: commentId, principal: principal.id, emoji, on })) as CommentResult;
+  const result = (await stub.reactComment({ actor, id: commentId, principal: principal.id, emoji, on })) as CommentResult;
   if (!result.ok) return refused(result);
   return json({ reaction: { id: commentId, emoji, on } }, 200, NO_STORE);
 }
