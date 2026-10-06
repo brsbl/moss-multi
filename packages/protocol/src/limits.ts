@@ -28,6 +28,13 @@ export const ACK_COALESCE_MS = 250;
 /** REST writes (a rename now, a push later) per principal per window, counted by its PrincipalDO (A§5.2); 429 past it. */
 export const REST_WRITE_RATE = { max: 60, windowMs: 60_000 } as const;
 
+/**
+ * Notes minted (created, imported or duplicated) per acting user per window, counted by their PrincipalDO before any
+ * row or DocDO (A§5.2, A§18); an agent key counts against its owner. 429 past it. The heaviest journey mints well under
+ * ten a minute per principal, and a person filing notes by hand far fewer.
+ */
+export const DOC_CREATE_RATE = { max: 60, windowMs: 60_000 } as const;
+
 /** Media uploads (and cross-note copies) per identity per window, counted by a PrincipalDO (A§16); 429 past it. A
  * signed-in holder of a link is also counted under the link and their IP, whichever account they use. */
 export const UPLOAD_RATE = { max: 60, windowMs: 60_000 } as const;
