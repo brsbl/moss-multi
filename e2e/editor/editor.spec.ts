@@ -5,9 +5,10 @@
 // "Changed in Moss"; pasted media goes only through the host; and the editor is shot in light and dark.
 // T3.10 (editor 0.2.0): `selection()` (feature `selection-1`) with lines golden-compared against the file a save
 // writes, exact after an unsaved edit, and moss's Share with Agent button only with services.shareWithAgent.
-// T3.11 (editor 0.3.0, API 2): the moss-html frame's policy keeps a block off the network while it still renders and
-// runs; copyFromNote copies only from a note the user opened; a case-only retitle keeps the markdown entry's spelling
-// as Moss desktop does; and an API 1 host (the 0.2.0 host fixture) gets a typed apiMismatch at mount.
+// T3.11 (editor 0.3.0, API 2): the moss-html frame keeps a block off the network (requests, WebRTC, child frames,
+// navigation) while it still renders and runs; copyFromNote copies only from a note the user opened; a case-only
+// retitle keeps the markdown entry's spelling as Moss desktop does; and an API 1 host (the 0.2.0 host fixture)
+// gets a typed apiMismatch at mount.
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -515,6 +516,11 @@ test.describe('embeddable editor', () => {
     const seen = await open(page);
     const collector = server.collector.url;
     const socket = collector.replace(/^http/, 'ws');
+    // A peer connection that gathers ICE candidates against the collector's STUN port: CSP governs none of it.
+    const rtc = `try { var pc = new RTCPeerConnection({ iceServers: [{ urls: '${server.collector.stun}' }] }); pc.createDataChannel('x'); pc.createOffer().then(function (o) { return pc.setLocalDescription(o); }).catch(function () {}); } catch (e) {}`;
+    const attr = (value: string) => value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+    const child = (script: string) => `<iframe srcdoc="${attr(script)}"></iframe>`;
+    const inChild = child(`<script>${rtc}</script>`);
     const note = [
       '# Plan',
       '',
@@ -525,6 +531,12 @@ test.describe('embeddable editor', () => {
       `<link rel="stylesheet" href="${collector}/link">`,
       `<iframe src="${collector}/iframe"></iframe>`,
       `<script src="${collector}/script"></script>`,
+      // WebRTC in a child frame's own realm: a srcdoc child, a javascript: child, and one inside a closed
+      // declarative shadow root.
+      inChild,
+      `<iframe src="${attr(`javascript:"<script>${rtc}</script>"`)}"></iframe>`,
+      `<div><template shadowrootmode="closed">${inChild}</template></div>`,
+      '<div id="host"></div>',
       '<script>',
       '  var sent = 0;',
       `  try { fetch('${collector}/fetch').catch(function () {}); sent++; } catch (e) {}`,
@@ -532,6 +544,12 @@ test.describe('embeddable editor', () => {
       `  try { new WebSocket('${socket}/socket'); sent++; } catch (e) {}`,
       `  try { navigator.sendBeacon('${collector}/beacon', 'x'); sent++; } catch (e) {}`,
       `  try { new Image().src = '${collector}/image'; sent++; } catch (e) {}`,
+      `  ${rtc}`,
+      // The same from script: a child frame appended late, one in a closed shadow root, one written with a
+      // declarative shadow root.
+      `  var late = document.createElement('div'); late.innerHTML = ${JSON.stringify(inChild)}; document.body.appendChild(late);`,
+      `  try { document.getElementById('host').attachShadow({ mode: 'closed' }).innerHTML = ${JSON.stringify(inChild)}; } catch (e) {}`,
+      `  document.write(${JSON.stringify(`<div><template shadowrootmode="closed">${inChild}</template></div>`)});`,
       "  document.getElementById('out').textContent = 'ran: ' + sent;",
       '</script>',
       '```',
@@ -544,12 +562,13 @@ test.describe('embeddable editor', () => {
     await expect(frame).toHaveCount(1, { timeout: 10_000 });
     await expect(frame).toHaveAttribute('src', '/editor/moss-html-frame.html');
     await expect(frame).toHaveAttribute('sandbox', 'allow-scripts');
-    // The block still renders and runs: its inline style applies and its inline script writes.
-    const out = viewport.frameLocator('iframe').locator('#out');
+    await page.waitForTimeout(4_000);
+    expect(server.collector.hits).toEqual([]);
+    // The block still renders and runs, in a sandboxed child of the frame document: its inline style applies and
+    // its inline script writes.
+    const out = viewport.frameLocator('iframe').frameLocator('iframe').locator('#out');
     await expect(out).toHaveText(/^ran: \d$/, { timeout: 10_000 });
     expect(await out.evaluate((el) => getComputedStyle(el).color)).toBe('rgb(10, 120, 30)');
-    await page.waitForTimeout(2_000);
-    expect(server.collector.hits).toEqual([]);
     // The host serves the frame document with editor.json's policy: inline scripts and styles, data: and blob:
     // images, and no network at all.
     const policy = framePolicy();
@@ -557,6 +576,31 @@ test.describe('embeddable editor', () => {
       "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'",
     );
     expect((await page.request.get(`${server.url}/editor/moss-html-frame.html`)).headers()['content-security-policy']).toBe(policy);
+    expect(seen.errors).toEqual([]);
+    expect(await page.evaluate(() => window.editorFixture.violations)).toEqual([]);
+  });
+
+  test('API 2: a moss-html block cannot navigate its frame, its parent, the page or a popup to another origin', async ({ page }) => {
+    const seen = await open(page);
+    const collector = server.collector.url;
+    // One block per probe, since a navigation that went through would end the block's document.
+    const probes = [
+      `<script>location.replace('${collector}/replace');</script>`,
+      `<script>location.href = '${collector}/assign';</script>`,
+      `<meta http-equiv="refresh" content="0;url=${collector}/refresh">`,
+      `<a id="a" href="${collector}/click">go</a><script>document.getElementById('a').click();</script>`,
+      `<form id="f" action="${collector}/form"><input name="q" value="1"></form><script>document.getElementById('f').submit();</script>`,
+      `<script>try { parent.location = '${collector}/parent'; } catch (e) {}</script>`,
+      `<script>try { top.location = '${collector}/top'; } catch (e) {}</script>`,
+      `<script>try { open('${collector}/popup'); } catch (e) {}</script>`,
+    ];
+    const note = ['# Plan', '', ...probes.flatMap((probe) => ['```moss-html', `<p>probe</p>${probe}`, '```', '']).slice(0, -1), ''].join('\n');
+    server.collector.hits.length = 0;
+    await mountNote(page, note);
+    await expect(body(page).locator('[data-moss-html-preview-viewport] iframe')).toHaveCount(probes.length, { timeout: 10_000 });
+    await page.waitForTimeout(4_000);
+    expect(server.collector.hits).toEqual([]);
+    await expect(page).toHaveURL(new RegExp(`^${server.url}/fixture/`));
     expect(seen.errors).toEqual([]);
     expect(await page.evaluate(() => window.editorFixture.violations)).toEqual([]);
   });
