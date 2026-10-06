@@ -671,10 +671,15 @@ describe('T5.2 cost: ingest and the lease check are O(frame) @p:mean-2', () => {
       // The first frame walks the whole chain (as after a wake); later ones ride the compressed path.
       return { first: times[0], median: median(times) };
     };
+    /** The first frame is a single sample, so a GC pause can swamp it: keep the best of three runs. */
+    const best = (closed: number, depth: number): { first: number; median: number } => {
+      const runs = [run(closed, depth), run(closed, depth), run(closed, depth)];
+      return { first: Math.min(...runs.map((r) => r.first)), median: Math.min(...runs.map((r) => r.median)) };
+    };
     run(5, 1);
-    const few = run(5, 1);
-    const many = run(3_000, 1);
-    const deep = run(5, 2_000);
+    const few = best(5, 1);
+    const many = best(3_000, 1);
+    const deep = best(5, 2_000);
     console.log(
       `T5.2 fixed frame: ${few.median.toFixed(3)} ms (5 closed, depth 1); ${many.median.toFixed(3)} ms (3000 closed); ${deep.median.toFixed(3)} ms (depth 2000); ` +
         `first frame ${few.first.toFixed(3)} / ${many.first.toFixed(3)} / ${deep.first.toFixed(3)} ms`,
@@ -683,7 +688,7 @@ describe('T5.2 cost: ingest and the lease check are O(frame) @p:mean-2', () => {
     expect(deep.median).toBeLessThan(few.median * 3 + 1);
     expect(many.first).toBeLessThan(few.first * 3 + 5);
     expect(deep.first).toBeLessThan(few.first * 3 + 5);
-  });
+  }, 30_000);
 });
 
 /** Closes `id` as accepted without landing it, as accept's last step does (the chain's cost is under test, not accept's). */
