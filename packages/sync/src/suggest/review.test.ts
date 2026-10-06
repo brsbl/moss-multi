@@ -7,13 +7,14 @@ import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import {
   applyRecord, canonical, hydrate, previewHash, projectDoc, recordDigest, type DeletePart, type RecordMeta, type RecordOp,
 } from '@moss-multi/core/suggest/apply';
+import { describeHunks, type ReviewRow } from '@moss-multi/core/suggest/describe';
 import { SuggestIngest } from '../doc/suggest.ts';
 import { payloadDocsFor } from '../payload-docs.ts';
 import { ForkShim } from './fork-shim.ts';
 import { createRecord, opsOf, partsOf, readMeta, readRecord, writeSuggestions } from './records.ts';
 import { acceptRecord, exportWorkingMarkdown, nodeRegistry, previewRecord, rejectRecord, reviewPreview, withdrawRecord } from './review.ts';
 import {
-  bodyOf, changedRoots, codeBlock, deterministicIds, editorEdits, EDITOR, exported, insertBlock, listItem, NOTE_ID, OTHER_SUGGESTER, payloadsInOrder,
+  all, bodyOf, changedRoots, codeBlock, deterministicIds, editorEdits, EDITOR, exported, insertBlock, listItem, NOTE_ID, OTHER_SUGGESTER, payloadsInOrder,
   select, seededBody, spansOfText, SUGGESTER,
 } from './test-support.ts';
 
@@ -567,6 +568,25 @@ describe('T5.3 accept lands exactly the previewed diff or nothing @p:mean-2 @p:R
     expect(readMeta(live, 'g')).toMatchObject({ status: 'open', broken: 'broken' });
   });
 
+  it("g7_refuses_deletion_only_candidate_repaired_during_hydration: deleting only a text node's properties gets 409 broken, body unchanged", () => {
+    const live = seededBody();
+    // The text node's map goes and its characters stay: the binding drops or merges the dangling string as it binds.
+    forgeRecord(live, 'g', [LEASED], [forged(live, (doc) => {
+      const paragraph = paragraphOf(doc);
+      let index = 0;
+      for (const op of paragraph.toDelta() as { insert: unknown }[]) {
+        if (op.insert instanceof Y.Map) break;
+        index += typeof op.insert === 'string' ? op.insert.length : 1;
+      }
+      paragraph.delete(index, 1);
+    })]);
+    const record = readRecord(live, 'g')!;
+    const body = bodyOf(live);
+    expect(previewRecord(live, 'g')).toMatchObject({ ok: false, reason: 'broken' });
+    expect(acceptRecord(live, 'g', { previewHash: 'none', digest: recordDigest(record) }, EDITOR)).toEqual({ ok: false, status: 409, reason: 'broken' });
+    expect(bodyOf(live)).toBe(body);
+  });
+
   it('g5_split_parts_around_foreign_insert_keep_foreign_text_and_preview_shows_it', () => {
     const { live, proposeDelete, dispose } = setup();
     try {
@@ -668,5 +688,50 @@ describe('T5.3 accept lands exactly the previewed diff or nothing @p:mean-2 @p:R
     } finally {
       dispose();
     }
+  });
+});
+
+describe('T5.3 the card shows every change accept commits to @p:mean-2 @p:R17', () => {
+  const rowsFor = (steps: (() => void)[]): ReviewRow[] => {
+    const { live, suggest, dispose } = setup();
+    try {
+      suggest('r1', steps);
+      const preview = previewRecord(live, 'r1');
+      if (!preview.ok) throw new Error(preview.reason);
+      return describeHunks(preview.hunks);
+    } finally {
+      dispose();
+    }
+  };
+  const shown = (rows: ReviewRow[]) => rows.map((row) => row.text).join('\n');
+
+  it('a link whose destination changed shows the old and the new destination', () => {
+    const rows = rowsFor([() => (all().find((node) => node.getType() === 'link') as unknown as { setURL(url: string): void }).setURL('https://other.invalid')]);
+    expect(shown(rows)).toContain('https://example.invalid');
+    expect(shown(rows)).toContain('https://other.invalid');
+  });
+
+  it('a formatting change names the format and the text it applies to', () => {
+    const rows = rowsFor([() => select('Hello', 6, 11).formatText('bold')]);
+    expect(shown(rows)).toMatch(/bold/);
+    expect(shown(rows)).toContain('world');
+  });
+
+  it('an indent change names the indent', () => {
+    const rows = rowsFor([() => { const item = listItem('item b'); item.setIndent(item.getIndent() + 1); }]);
+    expect(shown(rows)).toMatch(/indent/i);
+  });
+
+  it('every change is listed; none is folded into a count', () => {
+    const words = ['One', 'Two', 'Three', 'Four', 'Five'];
+    const rows = rowsFor([
+      () => select('Hello', 24).insertText(' One.'),
+      () => select('Go to ', 0).insertText('Two '),
+      () => select('Quoted', 0).insertText('Three '),
+      () => select('Indented', 0).insertText('Four '),
+      () => select('Join head', 0).insertText('Five '),
+    ]);
+    for (const word of words) expect(shown(rows), word).toContain(word);
+    expect(rows.some((row) => row.kind === 'more')).toBe(false);
   });
 });

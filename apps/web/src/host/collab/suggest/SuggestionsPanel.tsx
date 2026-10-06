@@ -5,6 +5,7 @@
 import { Button } from '@moss/shared/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@moss/shared/components/ui/dropdown-menu';
 import { BODY_DOC, recordDigest, type Hunk, type SuggestionRecord } from '@moss-multi/core/suggest/apply';
+import { describeHunks } from '@moss-multi/core/suggest/describe';
 import {
   SUGGESTION_ACTIVE_ATTR, SUGGESTION_CARD_ATTR, SUGGESTION_ID_ATTR, SUGGESTION_STATUS_ATTR, SUGGESTIONS_BUTTON_ATTR, SUGGESTIONS_PANEL_ATTR,
 } from '@moss-multi/protocol/dom-contract';
@@ -19,8 +20,6 @@ import { timeAgo } from '../../surfaces/NotificationsBell.tsx';
 
 /** Reviewed cards listed under the open ones (glyphdown's cap). */
 const REVIEWED_SHOWN = 20;
-/** Excerpts a card shows before "…and N more changes". */
-const EXCERPTS = 3;
 
 /** What the panel needs from the pane: the note's doc while one is attached. */
 export interface SuggestionsSource {
@@ -69,53 +68,6 @@ function useRecords(source: SuggestionsSource): SuggestionRecord[] {
     if (!body) return [];
     return recordIds(body).map((id) => readRecord(body, id)).filter((record): record is SuggestionRecord => !!record && !record.meta.mergedInto);
   }, [body, version]);
-}
-
-/** A block's or payload's visible text, from the projection a hunk carries. */
-function textOf(value: unknown): string {
-  if (typeof value === 'string') return value;
-  if (Array.isArray(value)) return value.map(textOf).join('');
-  if (!value || typeof value !== 'object') return '';
-  const record = value as Record<string, unknown>;
-  if ('lexical' in record && record.lexical) return textOf(record.lexical);
-  if (typeof record.text === 'string') return record.text;
-  if (Array.isArray(record.children)) return record.children.map(textOf).join(record.type === 'root' ? '\n' : '');
-  if (typeof record.code === 'string') return record.code;
-  if ('y' in record) return textOf(record.y);
-  if (Array.isArray(record.seq)) return record.seq.map(textOf).join('');
-  return '';
-}
-
-interface Excerpt {
-  kind: 'insert' | 'delete' | 'change';
-  text: string;
-}
-
-/** The changed middle of two texts: what was removed and what was added. */
-function middle(before: string, after: string): { removed: string; added: string } {
-  let start = 0;
-  while (start < before.length && start < after.length && before[start] === after[start]) start += 1;
-  let end = 0;
-  while (end < before.length - start && end < after.length - start && before[before.length - 1 - end] === after[after.length - 1 - end]) end += 1;
-  return { removed: before.slice(start, before.length - end), added: after.slice(start, after.length - end) };
-}
-
-/** Each hunk as glyphdown's `+` and `−` excerpts. */
-export function excerptsOf(hunks: readonly Hunk[]): Excerpt[] {
-  const out: Excerpt[] = [];
-  for (const hunk of hunks) {
-    if (hunk.kind === 'note') {
-      out.push({ kind: 'change', text: 'Note settings' });
-      continue;
-    }
-    const before = hunk.op === 'added' ? '' : textOf(hunk.before);
-    const after = hunk.op === 'removed' ? '' : textOf(hunk.after);
-    const { removed, added } = middle(before, after);
-    if (removed.trim()) out.push({ kind: 'delete', text: removed });
-    if (added.trim()) out.push({ kind: 'insert', text: added });
-    if (!removed.trim() && !added.trim()) out.push({ kind: 'change', text: hunk.kind === 'payload' ? 'Block content' : before.trim() ? `Formatting: ${before.trim()}` : 'A new block' });
-  }
-  return out;
 }
 
 /** The text a record would add, decoded from its own ops (§4.7 "Copy suggested text"). */
@@ -192,7 +144,7 @@ function SuggestionCard({ docId, record, me, role, active }: { docId: string; re
   const reviewer = roleAtLeast(role, 'editor');
   const outdated = (meta.outdated?.length ?? 0) > 0 || (preview.state === 'failed' && preview.reason === 'outdated');
   const broken = !!meta.broken || (preview.state === 'failed' && preview.reason === 'broken');
-  const excerpts = preview.state === 'ready' ? excerptsOf(preview.hunks) : [];
+  const excerpts = preview.state === 'ready' ? describeHunks(preview.hunks) : [];
 
   const act = async (action: 'accept' | 'reject' | 'withdraw') => {
     setBusy(true);
@@ -229,16 +181,19 @@ function SuggestionCard({ docId, record, me, role, active }: { docId: string; re
         <div className="flex flex-col gap-1 text-xs">
           {preview.state === 'loading' ? <p className="text-micro text-ink-faint">Loading changes…</p> : null}
           {preview.state === 'ready' && excerpts.length === 0 ? <p className="text-micro text-ink-faint">No visible change yet.</p> : null}
-          {excerpts.slice(0, EXCERPTS).map((excerpt, i) => (
-            <p
-              key={i}
-              className={`m-0 truncate rounded px-1.5 py-0.5 ${excerpt.kind === 'insert' ? 'bg-accent-brand/10 text-accent-brand-pressed' : excerpt.kind === 'delete' ? 'bg-accent-terracotta/10 text-accent-terracotta line-through' : 'bg-surface-badge text-ink-muted'}`}
-            >
-              {excerpt.kind === 'insert' ? '+ ' : excerpt.kind === 'delete' ? '− ' : '~ '}
-              {excerpt.text.trim()}
-            </p>
-          ))}
-          {excerpts.length > EXCERPTS ? <p className="m-0 text-micro text-ink-faint">…and {excerpts.length - EXCERPTS} more changes</p> : null}
+          {excerpts.map((excerpt, i) =>
+            excerpt.kind === 'more' ? (
+              <p key={i} className="m-0 text-micro text-ink-faint">{excerpt.text}</p>
+            ) : (
+              <p
+                key={i}
+                className={`m-0 truncate rounded px-1.5 py-0.5 ${excerpt.kind === 'insert' ? 'bg-accent-brand/10 text-accent-brand-pressed' : excerpt.kind === 'delete' ? 'bg-accent-terracotta/10 text-accent-terracotta line-through' : 'bg-surface-badge text-ink-muted'}`}
+              >
+                {excerpt.kind === 'insert' ? '+ ' : excerpt.kind === 'delete' ? '− ' : '~ '}
+                {excerpt.text}
+              </p>
+            ),
+          )}
           {(outdated || broken) ? (
             <div className="flex items-center gap-2">
               <span className="text-micro text-ink-muted">{reasonText(outdated ? 'outdated' : 'broken')}</span>
