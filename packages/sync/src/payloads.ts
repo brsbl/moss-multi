@@ -1,5 +1,5 @@
 // The DocDO's payload docs (A§10.10; docs/design/registers.md rules 5, 6, 8 and 10), Yjs-level with no Lexical. Each
-// code, HTML or formula payload is a Y.Doc keyed by its block's `__regId`, stored in its own SQLite rows. The naming
+// code, HTML, formula, chart or sketch payload is a Y.Doc keyed by its block's `__regId`, stored in its own SQLite rows. The naming
 // index (id → the live elements that name it) is kept from each note transaction's own structs, so its cost is the
 // transaction. A payload is served (fanned out, its step 1 answered, read by duplicates and exports) only while an
 // element names it and the element came from the server or from someone who could already read it; otherwise it is
@@ -7,7 +7,8 @@
 // an element naming a withheld id serves it only when its author was already one of the payload's readers, and the
 // server renames anyone else's element to a fresh, empty id, so nobody's later move or undo of it can reveal the text.
 import * as Y from 'yjs';
-import { newPayloadId, PAYLOAD_LOADED, REGISTER_FIELDS } from './payload-docs.ts';
+import { fieldsOf, MAP_REGISTERS } from './map-codecs.ts';
+import { isPayloadType, newPayloadId, PAYLOAD_LOADED, REGISTER_FIELDS } from './payload-docs.ts';
 
 /** The janitor's note writes (dedupe, migration): no client tracks them, and the index records no change for them. */
 export const JANITOR = 'payload-janitor';
@@ -104,7 +105,7 @@ export class NameIndex {
   /** Files a live element under its current id (moving it if its id changed). */
   #set(element: Y.XmlElement, record: boolean, origin: unknown): void {
     const attr: unknown = element.getAttribute('__regId');
-    const id = REGISTER_FIELDS[String(element.getAttribute('__type'))] && typeof attr === 'string' && attr ? attr : undefined;
+    const id = isPayloadType(String(element.getAttribute('__type'))) && typeof attr === 'string' && attr ? attr : undefined;
     const previous = this.#ids.get(element);
     if (previous === id) {
       if (id === undefined || this.live.get(id)?.has(element)) return;
@@ -510,26 +511,36 @@ function concat(chunks: Uint8Array[]): Uint8Array {
   return out;
 }
 
+/** A payload's first value: text, or a compound payload's encoded keys. */
+export type PayloadSeed = string | Map<string, unknown>;
+
 /**
- * M1 docs kept payloads in `Y.Map('registers')`, and pre-register docs in the element's own attribute. Each becomes a
- * payload doc written by the server alone, under a fresh random id (an M1 id may be a guessable import id), and the
- * map entries and legacy attributes are deleted (GC drops their bytes). Returns whether the note changed.
+ * M1 docs kept payloads in `Y.Map('registers')` (a chart's or sketch's as a nested Y.Map), and pre-register docs in the
+ * element's own attributes. Each becomes a payload doc written by the server alone, under a fresh random id (an M1 id
+ * may be a guessable import id), and the map entries and legacy attributes are deleted (GC drops their bytes).
+ * Returns whether the note changed.
  */
-export function migratePayloads(note: Y.Doc, write: (id: string, text: string) => void): boolean {
+export function migratePayloads(note: Y.Doc, write: (id: string, value: PayloadSeed) => void): boolean {
   const registers = note.getMap<unknown>('registers');
   const naming = new Map<string, Y.XmlElement[]>();
-  const legacy: [Y.XmlElement, string, string, string | null][] = [];
+  const legacy: [Y.XmlElement, string[], PayloadSeed, string | null][] = [];
   const visit = (type: Y.XmlText | Y.XmlElement) => {
     const attrs = type.getAttributes() as Record<string, unknown>;
-    const field = REGISTER_FIELDS[String(attrs.__type)];
-    if (field && type instanceof Y.XmlElement) {
+    const kind = String(attrs.__type);
+    if (isPayloadType(kind) && type instanceof Y.XmlElement) {
       const id = typeof attrs.__regId === 'string' && attrs.__regId ? attrs.__regId : null;
       if (id) {
         const list = naming.get(id);
         if (list) list.push(type); else naming.set(id, [type]);
       }
-      // M1 set an id and kept the attribute, so an element may carry both; its register is the newer text.
-      if (typeof attrs[field] === 'string') legacy.push([type, field, attrs[field] as string, id]);
+      // M1 set an id and kept the attribute, so an element may carry both; its register is the newer value.
+      const field = REGISTER_FIELDS[kind];
+      const codec = MAP_REGISTERS[kind];
+      if (field && typeof attrs[field] === 'string') legacy.push([type, [field], attrs[field] as string, id]);
+      else if (codec) {
+        const fields = codec.fields.filter(name => attrs[name] !== undefined);
+        if (fields.length) legacy.push([type, fields, codec.encode(fieldsOf(attrs, codec)), id]);
+      }
     }
     const children = type instanceof Y.XmlText ? type.toDelta().map((op: { insert?: unknown }) => op.insert) : type.toArray();
     for (const child of children) if (child instanceof Y.XmlText || child instanceof Y.XmlElement) visit(child);
@@ -537,28 +548,29 @@ export function migratePayloads(note: Y.Doc, write: (id: string, text: string) =
   visit(note.get('root', Y.XmlText));
   if (!registers.size && !legacy.length) return false;
   const renamed: [Y.XmlElement, string][] = [];
-  const texts: [string, string][] = [];
-  for (const [old, text] of registers) {
-    if (!(text instanceof Y.Text)) continue;
+  const values: [string, PayloadSeed][] = [];
+  const isRegister = (value: unknown) => value instanceof Y.Text || value instanceof Y.Map;
+  for (const [old, value] of registers) {
+    if (!isRegister(value)) continue;
     const id = newPayloadId();
-    texts.push([id, text.toString()]);
+    values.push([id, value instanceof Y.Text ? value.toString() : new Map((value as Y.Map<unknown>).entries())]);
     for (const element of naming.get(old) ?? []) renamed.push([element, id]);
   }
   const fields: [Y.XmlElement, string][] = [];
-  for (const [element, field, text, old] of legacy) {
-    fields.push([element, field]);
-    if (old !== null && registers.get(old) instanceof Y.Text) continue;
+  for (const [element, names, value, old] of legacy) {
+    for (const name of names) fields.push([element, name]);
+    if (old !== null && isRegister(registers.get(old))) continue;
     const id = newPayloadId();
-    texts.push([id, text]);
+    values.push([id, value]);
     renamed.push([element, id]);
   }
   // Renamed first, so a payload an element names is written as named; an orphan entry stays withheld.
   note.transact(() => {
     for (const key of [...registers.keys()]) registers.delete(key);
     for (const [element, id] of renamed) element.setAttribute('__regId', id);
-    // The note keeps no payload text: the legacy field goes too.
+    // The note keeps no payload value: the legacy fields go too.
     for (const [element, field] of fields) element.removeAttribute(field);
   }, JANITOR);
-  for (const [id, text] of texts) write(id, text);
+  for (const [id, value] of values) write(id, value);
   return true;
 }

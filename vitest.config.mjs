@@ -15,6 +15,8 @@ const alias = [
   { find: /^@moss-desktop\/(.*)$/, replacement: `${vendor}/desktop/src/$1` },
   // moss-multi seams in vendored files call host hooks and slots (A§2.2).
   { find: /^@moss-multi\/host\/(.*)$/, replacement: `${repo}apps/web/src/host/$1` },
+  // A substitute's import of the module it replaces (A§2.1); tests load the vendored bytes directly.
+  { find: /^@moss-pristine\/(.*)$/, replacement: `${vendor}/desktop/src/renderer/editor/utils/$1.ts` },
 ];
 
 // In Node, partyserver's `cloudflare:workers` is a stub; partyserver must be inlined for the alias to reach it.

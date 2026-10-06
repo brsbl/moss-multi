@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { knownRole } from '../access.ts';
-import { createBridge, docIdFromPath, WORKSPACE } from './index.ts';
+import { markUnacked } from '../collab/unacked.ts';
+import { runNativeMenuCommand } from '../media/image-menu.ts';
+import { refusalMessage } from '../refusal.ts';
+import { createBridge, docIdFromPath, EXPORT_ACK_WAIT_MS, inertBrowser, WORKSPACE, type BrowserHooks } from './index.ts';
 
 const LISTING = {
   vault: { id: 'v1', name: 'Home' },
@@ -240,6 +243,226 @@ it.each(['switch', 'navigation'] as const)('a workspace event never overrides an
     vi.clearAllTimers();
     vi.useRealTimers();
   }
+});
+
+describe('the T3.1 images bridge (A§9 images; A§16)', () => {
+  const uploadBridge = (answer: (url: string, init?: RequestInit) => Response) => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => answer(String(input), init));
+    return { fetch, api: createBridge({ pathname: () => '/d/d1', fetch }) };
+  };
+
+  it("uploads a saved file's raw bytes to its note's asset route and returns moss's relative path", async () => {
+    const { api, fetch } = uploadBridge(() => Response.json({ relativePath: 'assets/shot.png', filename: 'shot.png' }, { status: 201 }));
+    const result = await api.images.save({ data: btoa('png-bytes'), filename: 'shot.png', mimeType: 'image/png', noteId: 'd1' });
+    expect(result).toEqual({ relativePath: 'assets/shot.png', absolutePath: '/api/docs/d1/assets/shot.png', filename: 'shot.png' });
+    const [url, init] = fetch.mock.calls[0];
+    expect(url).toBe('/api/docs/d1/assets?filename=shot.png');
+    expect(init?.method).toBe('POST');
+    expect(new Headers(init?.headers).get('content-type')).toBe('image/png');
+    expect(new TextDecoder().decode(init?.body as Uint8Array)).toBe('png-bytes');
+  });
+
+  it("refuses a failed upload visibly with the server's sentence, never silently", async () => {
+    const message = 'That file is larger than this note accepts.';
+    const { api } = uploadBridge(() => Response.json({ error: 'too-large', message }, { status: 413 }));
+    await expect(api.images.save({ data: btoa('x'), filename: 'big.png', mimeType: 'image/png', noteId: 'd1' })).rejects.toThrow(message);
+    expect(refusalMessage()).toBe(message);
+  });
+
+  it('copies an asset from another note on the server', async () => {
+    const { api, fetch } = uploadBridge(() => Response.json({ relativePath: 'assets/a.png', filename: 'a.png' }, { status: 201 }));
+    const result = await api.images.copyFromNoteAsset({ sourceNoteId: 'd2', sourceRelativePath: 'assets/a.png', destinationNoteId: 'd1' });
+    expect(result.relativePath).toBe('assets/a.png');
+    const [url, init] = fetch.mock.calls[0];
+    expect(url).toBe('/api/docs/d1/assets/copy');
+    expect(JSON.parse(String(init?.body))).toEqual({ sourceNoteId: 'd2', sourceRelativePath: 'assets/a.png' });
+  });
+
+  it("carries the page's share link on an upload and a cross-note copy, as on every read", async () => {
+    vi.stubGlobal('location', { search: '?share=tok%2F1', origin: 'http://localhost', pathname: '/d/d1' });
+    try {
+      const { api, fetch } = uploadBridge(() => Response.json({ relativePath: 'assets/a.png', filename: 'a.png' }, { status: 201 }));
+      const saved = await api.images.save({ data: btoa('png'), filename: 'a.png', mimeType: 'image/png', noteId: 'd1' });
+      await api.images.copyFromNoteAsset({ sourceNoteId: 'd2', sourceRelativePath: 'assets/a.png', destinationNoteId: 'd1' });
+      const [upload, copy] = fetch.mock.calls.map(([url]) => new URL(String(url), 'http://localhost'));
+      expect(upload.pathname).toBe('/api/docs/d1/assets');
+      expect(upload.searchParams.get('share'), 'the upload carries the link').toBe('tok/1');
+      expect(copy.pathname).toBe('/api/docs/d1/assets/copy');
+      expect(copy.searchParams.get('share'), 'the copy carries the link').toBe('tok/1');
+      expect(new URL(saved.absolutePath, 'http://localhost').searchParams.get('share')).toBe('tok/1');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("carries the image context menu's Edit Alt Text… into moss's native command listener", async () => {
+    const { api } = uploadBridge(() => Response.json({}));
+    const commands: string[] = [];
+    const stop = api.system.onNativeMenuCommand((command: string) => commands.push(command));
+    runNativeMenuCommand('edit-image-alt-text');
+    expect(commands).toEqual(['edit-image-alt-text']);
+    stop();
+    runNativeMenuCommand('edit-image-alt-text');
+    expect(commands).toHaveLength(1);
+  });
+});
+
+describe('the T3.7 bridge: tab, print and download (R4; A§9 Export)', () => {
+  const memory = (seed: Map<string, string> = new Map()) => {
+    const values = new Map(seed);
+    return { values, getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value); }, removeItem: (key: string) => { values.delete(key); } };
+  };
+  const hooks = (overrides: Partial<BrowserHooks> = {}): BrowserHooks => ({ ...inertBrowser, origin: 'https://moss.example', ...overrides });
+  const quiet = () => vi.fn<typeof globalThis.fetch>(async () => Response.json(LISTING));
+
+  it('opens a note in a new browser tab at /d/<id>, keeping a share link', async () => {
+    const open = vi.fn();
+    const api = createBridge({ pathname: () => '/', fetch: quiet(), browser: hooks({ open }) });
+    expect(await api.system.createWindow({ noteId: 'd1' })).toEqual({ action: 'created', windowId: -1 });
+    expect(open).toHaveBeenLastCalledWith('https://moss.example/d/d1');
+    const shared = createBridge({ pathname: () => '/d/d1', fetch: quiet(), share: () => 'tok en', browser: hooks({ open }) });
+    await shared.system.createWindow({ noteId: 'd1' });
+    expect(open).toHaveBeenLastCalledWith('https://moss.example/d/d1?share=tok%20en');
+  });
+
+  it('hands a PDF session to the /pdf-export tab it opens, and only that session', async () => {
+    const session = memory();
+    const openWindow = vi.fn(() => true);
+    const api = createBridge({ pathname: () => '/d/d1', fetch: quiet(), browser: hooks({ openWindow, session }) });
+    const input = { title: 'Plans', markdown: 'Body', renderedHtml: '<p>Body</p>', serializedEditorState: { root: {} }, tabGroupActiveIndices: [1] };
+    const id = await api.notes.createPdfExportSession('d1', input);
+    expect(id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(await api.notes.openPdfExportPreview(id)).not.toBeNull();
+    expect(openWindow).toHaveBeenCalledWith(`/pdf-export?pdfExportSessionId=${id}`);
+
+    // The print tab reads the session from its own copy of the opener's session storage, or from the opener's.
+    // PdfExportApp never reads renderedHtml, so it is not stored.
+    const expected = { noteId: 'd1', title: 'Plans', markdown: 'Body', serializedEditorState: { root: {} }, tabGroupActiveIndices: [1] };
+    const child = createBridge({ pathname: () => '/pdf-export', fetch: quiet(), browser: hooks({ session: memory(session.values) }) });
+    expect(await child.notes.getPdfExportSession(id)).toEqual(expected);
+    const viaOpener = createBridge({ pathname: () => '/pdf-export', fetch: quiet(), browser: hooks({ session: memory(), openerSession: () => session }) });
+    expect(await viaOpener.notes.getPdfExportSession(id)).toEqual(expected);
+    expect(await child.notes.getPdfExportSession('another'), 'an unknown session is none').toBeNull();
+  });
+
+  it('reports a blocked print tab as a failed open', async () => {
+    const api = createBridge({ pathname: () => '/', fetch: quiet(), browser: hooks({ openWindow: () => false, session: memory() }) });
+    const id = await api.notes.createPdfExportSession('d1', { title: 'Plans', markdown: '' });
+    expect(await api.notes.openPdfExportPreview(id)).toBeNull();
+  });
+
+  it("downloads the server's export of the doc, named by its title, ignoring moss's client markdown", async () => {
+    const download = vi.fn();
+    const exported = 'Totals {{2+2|4}} and [[Launch Plan]].\n';
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input) => String(input) === '/api/docs/d1/content'
+      ? new Response(exported, { headers: { 'content-type': 'text/markdown; charset=utf-8' } })
+      : Response.json(LISTING));
+    const api = createBridge({ pathname: () => '/d/d1', fetch, share: () => 'tok', browser: hooks({ download }) });
+    expect(await api.notes.exportMarkdown('d1', { title: ' Q4 / plan: draft? ', markdown: 'Totals 4 and Launch Plan.' })).toEqual({ canceled: false });
+    expect(fetch).toHaveBeenCalledWith('/api/docs/d1/content', expect.objectContaining({ headers: expect.objectContaining({ 'x-moss-share': 'tok' }) }));
+    const [name, blob] = download.mock.calls[0] as [string, Blob];
+    expect(name).toBe('Q4 - plan- draft-.md');
+    expect(await blob.text()).toBe(exported);
+    await api.notes.exportMarkdown('d1', { title: '   ', markdown: '' });
+    expect(download.mock.calls[1][0]).toBe('Untitled.md');
+  });
+
+  it('fails Save as Markdown loudly when the export is refused, and downloads nothing', async () => {
+    const download = vi.fn();
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json({ error: 'not-found' }, { status: 404 }));
+    const api = createBridge({ pathname: () => '/d/d1', fetch, browser: hooks({ download }) });
+    await expect(api.notes.exportMarkdown('d1', { title: 'Plans', markdown: '' })).rejects.toThrow(/couldn’t export/i);
+    expect(download).not.toHaveBeenCalled();
+  });
+
+  it("waits for this tab's unacked edits before reading the export, so the file holds them", async () => {
+    const download = vi.fn();
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input) => String(input) === '/api/docs/d1/content'
+      ? new Response('typed', { headers: { 'content-type': 'text/markdown' } })
+      : Response.json(LISTING));
+    const api = createBridge({ pathname: () => '/d/d1', fetch, browser: hooks({ download }) });
+    const session = {};
+    markUnacked(session, true);
+    try {
+      const saved = api.notes.exportMarkdown('d1', { title: 'Plans', markdown: '' });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(fetch.mock.calls.map(([input]) => String(input)), 'no export read while an edit is unacked').not.toContain('/api/docs/d1/content');
+      markUnacked(session, false);
+      expect(await saved).toEqual({ canceled: false });
+      expect(fetch.mock.calls.map(([input]) => String(input))).toContain('/api/docs/d1/content');
+      expect(download).toHaveBeenCalledTimes(1);
+    } finally {
+      markUnacked(session, false);
+    }
+  });
+
+  it('refuses Save as Markdown loudly when the edits stay unacked, and downloads nothing', async () => {
+    vi.useFakeTimers();
+    const download = vi.fn();
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response('stale', { headers: { 'content-type': 'text/markdown' } }));
+    const api = createBridge({ pathname: () => '/d/d1', fetch, browser: hooks({ download }) });
+    const session = {};
+    markUnacked(session, true);
+    try {
+      const saved = expect(api.notes.exportMarkdown('d1', { title: 'Plans', markdown: '' })).rejects.toThrow(/haven’t synced/i);
+      await vi.advanceTimersByTimeAsync(EXPORT_ACK_WAIT_MS + 1);
+      await saved;
+      expect(fetch.mock.calls.map(([input]) => String(input))).not.toContain('/api/docs/d1/content');
+      expect(download).not.toHaveBeenCalled();
+    } finally {
+      markUnacked(session, false);
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('the T3.4 bridge', () => {
+  const listing = { vault: { id: 'v1', name: 'Home' }, docs: [
+    { id: 'd1', title: 'Quokka plans', filename: 'quokka-plans.md', createdAt: 1_700_000_000_000, updatedAt: 1_700_000_100_000 },
+    { id: 'd2', title: 'Diary', filename: 'diary.md', createdAt: 1_700_000_000_000, updatedAt: 1_700_000_200_000 },
+  ] };
+  const routes = (extra: Record<string, unknown>) => vi.fn<typeof globalThis.fetch>(async (input) => {
+    const path = String(input).split('?')[0];
+    return Response.json(path in extra ? extra[path] : listing);
+  });
+
+  it('searches titles over the listing first, then content hits from GET /api/search with their snippet @p:note-7', async () => {
+    const fetch = routes({ '/api/search': { results: [
+      { id: 'd1', title: 'Quokka plans', snippet: 'x', folderId: 'v1', updatedAt: 1 },
+      { id: 'd2', title: 'Diary', snippet: '...a quokka grazing...', folderId: 'v1', updatedAt: 1_700_000_200_000 },
+      { id: 's9', title: '', snippet: 'shared quokka', folderId: 'v9', updatedAt: 1_700_000_300_000 },
+    ] } });
+    const api = createBridge({ pathname: () => '/', fetch });
+    const results = await api.notes.search({ query: 'quokka', limit: 10 });
+    expect(results).toEqual([
+      { id: 'd1', title: 'Quokka plans', folderPath: 'Notes', updatedAt: 1_700_000_100, matchType: 'title' },
+      { id: 'd2', title: 'Diary', folderPath: 'Notes', updatedAt: 1_700_000_200, snippet: '...a quokka grazing...', matchType: 'content' },
+      { id: 's9', title: 'Untitled', folderPath: 'Notes', updatedAt: 1_700_000_300, snippet: 'shared quokka', matchType: 'content' },
+    ]);
+    expect(fetch).toHaveBeenCalledWith('/api/search?q=quokka&limit=10', expect.anything());
+    expect(await api.notes.search({ query: 'quokka', excludeNoteId: 'd2' })).not.toContainEqual(expect.objectContaining({ id: 'd2' }));
+    expect(await api.notes.search({ query: '  ' })).toEqual([]);
+  });
+
+  it('reads headings from GET /api/docs/:id/headings', async () => {
+    const api = createBridge({ pathname: () => '/', fetch: routes({ '/api/docs/d1/headings': { headings: [{ level: 2, text: 'Risks' }] } }) });
+    expect(await api.notes.getHeadings('d1')).toEqual([{ level: 2, text: 'Risks' }]);
+  });
+
+  it("carries an opened note's backlinks as moss's incomingLinks and announces them as a metadata change @p:note-7", async () => {
+    const fetch = routes({ '/api/docs/d1/backlinks': { backlinks: [{ id: 'd2', title: 'Diary', folderId: 'v1', updatedAt: 1_700_000_200_000 }] } });
+    const api = createBridge({ pathname: () => '/', fetch });
+    const changed = vi.fn();
+    const off = api.notes.onDiskChange(changed);
+    try {
+      await api.notes.getById('d1');
+      await vi.waitFor(() => expect(changed).toHaveBeenCalledWith(['d1'], []));
+      const [record] = await api.notes.getMetadataByIds(['d1']);
+      expect(record.incomingLinks).toEqual([{ noteId: 'd2', title: 'Diary', folderPath: 'Notes', updatedAt: 1_700_000_200 }]);
+      expect((await api.notes.getAll()).find((note) => note.id === 'd1')?.incomingLinks, 'a full hydrate keeps them').toHaveLength(1);
+    } finally { off(); }
+  });
 });
 
 // m1's unload fix (T1.S1) is met on m2 by the `leaving` signal above, which also re-sends a read if the page stays.

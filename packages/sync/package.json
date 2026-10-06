@@ -11,7 +11,8 @@
     "./projections": "./src/doc/projections.ts",
     "./fanout": "./src/fanout.ts",
     "./access-epoch": "./src/access-epoch.ts",
-    "./registers": "./src/registers.ts"
+    "./registers": "./src/registers.ts",
+    "./search": "./src/search-core.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.converter.json"

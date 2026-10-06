@@ -18,6 +18,8 @@ export const statements = (sql: string) =>
 
 export interface TestD1 {
   db: D1Database;
+  /** The ASSETS R2 bucket (A§16), local to this Miniflare. */
+  assets: R2Bucket;
   dispose: () => Promise<void>;
 }
 
@@ -27,12 +29,14 @@ export async function migratedD1(): Promise<TestD1> {
     script: 'export default { fetch: () => new Response(null) }',
     compatibilityDate: '2025-09-02',
     d1Databases: ['DB'],
+    r2Buckets: ['ASSETS'],
   });
   const db = (await mf.getD1Database('DB')) as unknown as D1Database;
+  const assets = (await mf.getR2Bucket('ASSETS')) as unknown as R2Bucket;
   for (const { sql } of migrations()) {
     for (const statement of statements(sql)) await db.prepare(statement).run();
   }
-  return { db, dispose: () => mf.dispose() };
+  return { db, assets, dispose: () => mf.dispose() };
 }
 
 /** D1 allows at most this many bound parameters per statement. */

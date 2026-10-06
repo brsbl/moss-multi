@@ -3,12 +3,28 @@
 // frontmatter, applies the layout sidecar, keeps tabs switchable, accepts no input, opens no socket, sends no
 // write, and reaches media and links only through the services the page injected. X's embed frame is moss's
 // provider frame; it is answered here by a stand-in at its origin so CI never depends on X.
+// T3.8 (viewer 1.0.0): no mutating control in any read-only block, X posts in the viewer's theme, HTML blocks live in
+// the bundle's sandboxed frame document when the host serves it, j14's demo note, and video through 206 in both engines.
+// T3.10 (viewer 1.1.0): `selection()` (feature `selection-1`) with lines golden-compared against the loaded file, and
+// moss's Share with Agent button only with services.shareWithAgent (feature `share-with-agent-1`).
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
-import { FIXTURE_DIR, serveViewer, type ViewerServer } from './server.ts';
+import { FIXTURE_DIR, FRAME_POLICY, serveViewer, type ViewerServer } from './server.ts';
+import {
+  SELECTION_CASES,
+  SELECTION_NOTE,
+  SELECTION_TITLE,
+  collapseIn,
+  expectLinesIn,
+  expectNoMarker,
+  selectText,
+  type MossSelection,
+} from '../lib/selection.ts';
 
 const MARKDOWN = readFileSync(join(FIXTURE_DIR, 'seed-library.md'), 'utf8');
+const DEMO = readFileSync(new URL('../fixtures/demo-note.md', import.meta.url), 'utf8');
+const FRAME_URL = '/viewer/moss-viewer-frame.html';
 const LAYOUT: unknown = JSON.parse(readFileSync(join(FIXTURE_DIR, 'layout.json'), 'utf8'));
 const TITLE = 'Seed Library Notes';
 const PROVIDER = 'https://platform.twitter.com';
@@ -22,15 +38,19 @@ interface Calls {
   notes: number;
   navigate: unknown[];
   unfurl: string[];
+  share: (MossSelection | null)[];
 }
 
 declare global {
   interface Window {
     viewerFixture: {
       api: number;
+      info: { api: number; version: string; features: string[] } | null;
       calls: Calls;
-      mount(options: { markdown: string; layout: unknown; theme: Theme; noteId: string }): Promise<{ title: string; frontmatter: unknown }>;
+      selection(): MossSelection | null | 'unsupported';
+      mount(options: MountOptions): Promise<{ title: string; frontmatter: unknown }>;
       setTheme(theme: Theme): void;
+      handle: { title: string; frontmatter: unknown; setTheme(theme: Theme): void };
     };
   }
 }
@@ -71,18 +91,31 @@ function watch(page: Page): Seen {
   return seen;
 }
 
-async function mount(page: Page, theme: Theme = 'light') {
+interface MountOptions {
+  markdown: string;
+  layout?: unknown;
+  theme: Theme;
+  noteId: string;
+  title?: string;
+  /** Pass the bundle's frame document as services.htmlFrameUrl. */
+  live?: boolean;
+  /** Pass services.shareWithAgent; 'fail' makes it throw on its first call and reject on later ones. */
+  share?: boolean | 'fail';
+}
+
+async function mount(page: Page, theme: Theme = 'light', options: Partial<MountOptions> = {}) {
   await page.route(`${PROVIDER}/**`, (route) =>
     route.fulfill({ contentType: 'text/html', body: postFrame(new URL(route.request().url()).searchParams.get('id') ?? '') }),
   );
   await page.goto(`${server.url}/fixture/`);
   await expect(page.locator('html[data-fixture="ready"]')).toHaveCount(1);
-  const mounted = await page.evaluate(
-    ([markdown, layout, theme]) => window.viewerFixture.mount({ markdown, layout, theme, noteId: 'note-seed-library' }),
-    [MARKDOWN, LAYOUT, theme] as const,
+  // Start the mount, then wait for the viewer to say it is ready; no evaluation is held open across its rendering.
+  await page.evaluate(
+    (options) => void window.viewerFixture.mount(options),
+    { markdown: MARKDOWN, layout: LAYOUT, theme, noteId: 'note-seed-library', ...options },
   );
   await expect(page.locator('[data-moss-viewer][data-moss-viewer-state="ready"]')).toHaveCount(1);
-  return mounted;
+  return page.evaluate(() => ({ title: window.viewerFixture.handle.title, frontmatter: window.viewerFixture.handle.frontmatter }));
 }
 
 const calls = (page: Page) => page.evaluate(() => structuredClone(window.viewerFixture.calls));
@@ -170,7 +203,7 @@ test('reaches the network only through the injected services: media, links and e
   const video = body.locator('[data-video-node-kind="local"]');
   await video.scrollIntoViewIfNeeded();
   await video.locator('[data-video-play-overlay]').locator('..').click();
-  await expect(body.locator('video')).toHaveAttribute('src', /^\/svc\/assets\/drawer\.webm/);
+  await expect(body.locator('video:not([data-video-thumbnail-state])')).toHaveAttribute('src', /^\/svc\/assets\/drawer\.webm/);
   const clip = () => server.media.filter((request) => request.path === '/svc/assets/drawer.webm' && (request.status === 200 || request.status === 206));
   await expect.poll(() => clip().length).toBeGreaterThan(0);
   // Chromium asks for byte ranges from the first load and the service answers 206; WebKit's GStreamer fetches a
@@ -232,13 +265,23 @@ const UNCAPTURED = ['assets/.moss-cache/html-preview/html-preview-7110f0621789a2
 
 const htmlBlocks = (page: Page) => page.locator('[data-moss-viewer] [data-block-decorator-key]:has([data-moss-html-preview-viewport])');
 
-/** Brings each HTML block into view (its screenshot loads lazily) and waits until it settles. */
-async function settleHtmlBlocks(page: Page) {
+/**
+ * Brings each HTML block into view (its preview loads lazily) and waits for its final state: a loaded screenshot,
+ * "Preview unavailable", or a live frame.
+ */
+async function settleHtmlBlocks(page: Page, count = 3) {
   const blocks = htmlBlocks(page);
-  await expect(blocks).toHaveCount(3);
+  await expect(blocks).toHaveCount(count);
   for (const block of await blocks.all()) {
     await block.scrollIntoViewIfNeeded();
     await expect(block.locator('[data-testid="html-preview-loading"]')).toHaveCount(0);
+    await expect.poll(() => block.evaluate((element) => {
+      const image = element.querySelector<HTMLImageElement>('img[alt="HTML preview"]');
+      if (image?.complete && image.naturalWidth > 0) return 'screenshot';
+      if (element.querySelector('[data-testid="html-preview-error"]')) return 'unavailable';
+      if (element.querySelector('iframe[title="HTML preview"]')) return 'live';
+      return 'pending';
+    }), { message: 'the HTML block settles' }).not.toBe('pending');
   }
   return blocks;
 }
@@ -273,6 +316,163 @@ test("HTML blocks show moss's cached screenshot through assetUrl, else Preview u
   expect(seen.pageErrors).toEqual([]);
 });
 
+/** Controls a reader could press, as `name`, with each block hovered once so hover headers render. */
+async function controls(page: Page): Promise<string[]> {
+  const viewer = page.locator('[data-moss-viewer]');
+  for (const block of await viewer.locator('[data-block-decorator-key]').all()) {
+    await block.scrollIntoViewIfNeeded();
+    await block.hover();
+  }
+  return viewer.evaluate((root) => {
+    const pressable = root.querySelectorAll<HTMLElement>('button, [role="button"], [role="menuitem"], input, textarea, select, [contenteditable="true"]');
+    return [...pressable]
+      .filter((element) => !(element as HTMLButtonElement).disabled && element.getAttribute('aria-disabled') !== 'true')
+      .filter((element) => !(element as HTMLInputElement).readOnly && element.checkVisibility())
+      // A link pill opens its page.
+      .filter((element) => !element.matches('[data-embed-pill-node-key]'))
+      .map((element) => element.getAttribute('aria-label') || element.getAttribute('title') || element.textContent?.trim() || element.tagName.toLowerCase());
+  });
+}
+
+// Reading controls: open a post or page, copy a link, retry a preview that failed to load, press a live HTML block.
+const READING_CONTROLS = new Set(['Open in browser', 'Open tweet', 'Copy link', 'Retry preview', 'Activate live HTML preview']);
+
+test('no block offers a mutating control: hovered, no Delete, Edit, Fullscreen, comment or insert control renders', async ({ page }) => {
+  const seen = watch(page);
+  const found: Record<string, string[]> = {};
+  for (const [name, options] of [
+    ['fixture', {}],
+    ['fixture, live HTML', { live: true }],
+    ['demo note, live HTML', { markdown: DEMO, title: 'Demo note', layout: undefined, live: true }],
+  ] as const) {
+    await mount(page, 'light', options);
+    await settleHtmlBlocks(page, name.startsWith('demo') ? 1 : 3);
+    found[name] = [...new Set(await controls(page))].filter((control) => !READING_CONTROLS.has(control)).sort();
+  }
+  expect(found).toEqual({ fixture: [], 'fixture, live HTML': [], 'demo note, live HTML': [] });
+  expect(seen.pageErrors).toEqual([]);
+});
+
+const postThemes = (page: Page) =>
+  page.locator(`[data-moss-viewer] iframe[src^="${PROVIDER}/embed/Tweet.html"]`).evaluateAll((frames) =>
+    frames.map((frame) => new URL((frame as HTMLIFrameElement).src).searchParams.get('theme')));
+
+test("X posts follow the viewer's theme and re-render when setTheme changes it", async ({ page }) => {
+  const seen = watch(page);
+  await mount(page, 'dark');
+  await expect.poll(() => postThemes(page)).toEqual(['dark', 'dark']);
+  // The viewer's own theme, not the page's: the host page stays dark.
+  await page.evaluate(() => window.viewerFixture.handle.setTheme('light'));
+  await expect.poll(() => postThemes(page)).toEqual(['light', 'light']);
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  await page.evaluate(() => window.viewerFixture.handle.setTheme('dark'));
+  await expect.poll(() => postThemes(page)).toEqual(['dark', 'dark']);
+  // Posts load only from X's frame, in one of the two themes.
+  const posts = seen.requests.filter(({ url }) => url.startsWith(`${PROVIDER}/embed/Tweet.html`));
+  expect(posts.length).toBeGreaterThan(0);
+  for (const { url } of posts) expect(['dark', 'light']).toContain(new URL(url).searchParams.get('theme'));
+  expect(seen.pageErrors).toEqual([]);
+});
+
+// A block whose script reports whether it ran and whether it can read the host page.
+const LIVE_NOTE = `# Live HTML
+
+\`\`\`moss-html
+<div id="out" style="font:600 24px system-ui;padding:24px">waiting</div>
+<script>
+  var reach = 'isolated';
+  try { reach = parent.document.cookie === undefined ? 'isolated' : 'reached'; } catch (error) {}
+  try { if (document.cookie !== undefined && document.cookie.includes('host=secret')) reach = 'reached'; } catch (error) {}
+  document.getElementById('out').textContent = 'script ran, ' + reach;
+</script>
+\`\`\`
+`;
+
+test('live HTML: with services.htmlFrameUrl each HTML block runs in a sandboxed frame from that URL and cannot reach the page', async ({ page }) => {
+  const seen = watch(page);
+  await page.context().addCookies([{ name: 'host', value: 'secret', url: server.url }]);
+  await mount(page, 'light', { markdown: LIVE_NOTE, live: true });
+  const [block] = await (await settleHtmlBlocks(page, 1)).all();
+  const frame = block.locator('iframe[title="HTML preview"]');
+  await expect(frame).toHaveAttribute('src', FRAME_URL);
+  await expect(frame).toHaveAttribute('sandbox', 'allow-scripts');
+  await expect(block.frameLocator('iframe[title="HTML preview"]').locator('#out')).toHaveText('script ran, isolated');
+  // The frame document came from the host with its own policy; no screenshot was looked up.
+  const frameResponse = await page.request.get(`${server.url}${FRAME_URL}`);
+  expect(frameResponse.headers()['content-security-policy']).toBe(FRAME_POLICY);
+  expect((await calls(page)).assetUrl.filter(({ ref }) => ref.includes('html-preview-'))).toEqual([]);
+
+  // A double-click opens no source editor.
+  await block.dblclick();
+  await expect(page.locator('[data-moss-viewer] textarea')).toHaveCount(0);
+
+  // The fixture's three blocks render live, not as screenshots.
+  const mediaBefore = server.media.length;
+  await mount(page, 'light', { live: true });
+  const blocks = await settleHtmlBlocks(page);
+  for (const [index, text] of ['Seed swap poster', 'Planting chart', 'Drawer label draft'].entries()) {
+    await expect(blocks.nth(index).frameLocator('iframe[title="HTML preview"]').getByText(text)).toBeVisible();
+  }
+  await expect(page.locator('[data-moss-viewer] img[alt="HTML preview"]')).toHaveCount(0);
+  expect(server.media.slice(mediaBefore).filter((request) => request.path.includes('html-preview-'))).toEqual([]);
+  expect(seen.requests.filter(({ method }) => method !== 'GET')).toEqual([]);
+  expect(seen.sockets).toEqual([]);
+  expect(seen.pageErrors).toEqual([]);
+});
+
+test('video plays through 206 Range responses: a seek ahead of the download asks the asset URL for a byte range', async ({ page }) => {
+  const clipPath = '/svc/assets/drawer.webm';
+  server.slow.add(clipPath);
+  try {
+    await mount(page);
+    const before = server.media.length;
+    const body = page.locator('[data-moss-viewer] [data-moss-note-editor-root]');
+    const video = body.locator('[data-video-node-kind="local"]');
+    await video.scrollIntoViewIfNeeded();
+    await video.locator('[data-video-play-overlay]').locator('..').click();
+    const player = body.locator('video:not([data-video-thumbnail-state])');
+    await expect(player).toHaveAttribute('src', /^\/svc\/assets\/drawer\.webm/);
+    await expect.poll(() => player.evaluate((element: HTMLVideoElement) => element.readyState), { timeout: 20_000 }).toBeGreaterThanOrEqual(1);
+    const target = await player.evaluate((element: HTMLVideoElement) => {
+      const target = element.duration * 0.8;
+      element.currentTime = target;
+      return target;
+    });
+    // The player's own reads of the clip: at least one asks for a byte range and is answered 206.
+    const reads = () => server.media.slice(before).filter((request) => request.path === clipPath);
+    await expect.poll(() => reads().filter((request) => request.range !== null && request.status === 206).length, {
+      message: 'a Range read answered 206',
+      timeout: 20_000,
+    }).toBeGreaterThan(0);
+    await expect.poll(() => player.evaluate((element: HTMLVideoElement) => !element.seeking && element.readyState >= 2 && element.currentTime >= 0.75 * element.duration), {
+      message: `the clip plays from ${target.toFixed(2)} s`,
+      timeout: 20_000,
+    }).toBe(true);
+    expect(reads().every((request) => request.status === 200 || request.status === 206)).toBe(true);
+  } finally {
+    server.slow.delete(clipPath);
+  }
+});
+
+for (const theme of ['light', 'dark'] as const) {
+  test(`demo note shot, ${theme}: every family renders, none falls back to its error placeholder`, async ({ page, browserName }, testInfo) => {
+    const seen = watch(page);
+    await mount(page, theme, { markdown: DEMO, title: 'Demo note', layout: undefined, live: true });
+    const body = page.locator('[data-moss-viewer] [data-moss-note-editor-root]');
+    for (const selector of ['h2', 'h3', 'h4', 'ul.list-disc', 'ol', 'li[role="checkbox"]', 'strong', 'em', 'code', 'a[href]', '[data-formula-node-key]', '[data-file-link-node-key]', '[data-embed-pill-node-key]', '[data-color-node-key]', 'blockquote', 'table.moss-table', '.moss-callout', '.moss-tab-group', '.moss-codeblock-pre', 'canvas', 'hr']) {
+      await expect(body.locator(selector).first(), selector).toBeAttached();
+    }
+    await settleHtmlBlocks(page, 1);
+    await expect(body.locator('[data-node-view-error]')).toHaveCount(0);
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.evaluate(() => document.fonts.ready.then(() => undefined));
+    const path = testInfo.outputPath(`viewer-demo-${browserName}-${theme}.png`);
+    await page.screenshot({ path, fullPage: true });
+    await testInfo.attach(`viewer-demo-${browserName}-${theme}`, { path, contentType: 'image/png' });
+    expect(seen.pageErrors).toEqual([]);
+  });
+}
+
 test('a hovered HTML or media block offers no Edit, Fullscreen or Delete in the read-only view (T2.6)', async ({ page }) => {
   await mount(page);
   const blocks = await settleHtmlBlocks(page);
@@ -304,3 +504,75 @@ for (const theme of ['light', 'dark'] as const) {
     await testInfo.attach(`viewer-${browserName}-${theme}`, { path, contentType: 'image/png' });
   });
 }
+
+const BODY = '[data-moss-viewer] [data-moss-note-editor-root]';
+const SHARE = 'button[aria-label="Share with Agent"]';
+const selectionOf = (page: Page) => page.evaluate(() => window.viewerFixture.selection());
+
+test('advertises selection-1 and share-with-agent-1 in MOSS_VIEWER_INFO, as viewer 1.1.0 of API 1', async ({ page }) => {
+  await page.goto(`${server.url}/fixture/`);
+  await expect(page.locator('html[data-fixture="ready"]')).toHaveCount(1);
+  expect(await page.evaluate(() => window.viewerFixture.info)).toEqual({ api: 1, version: '1.1.0', features: ['selection-1', 'share-with-agent-1'] });
+});
+
+for (const { name, from, to, within, nth, expected } of SELECTION_CASES) {
+  test(`selection ${name}: exact text, markdown, lines and headings, the lines golden in the loaded file`, async ({ page }) => {
+    const seen = watch(page);
+    await mount(page, 'light', { markdown: SELECTION_NOTE, layout: undefined, noteId: 'note-selection' });
+    await selectText(page, BODY, from, to, within, nth);
+    const selection = await selectionOf(page);
+    expect(selection).toEqual(expected);
+    expectNoMarker(selection as MossSelection);
+    expectLinesIn(SELECTION_NOTE, selection as MossSelection);
+    expect(seen.pageErrors).toEqual([]);
+  });
+}
+
+test('selection lines count the frontmatter and title lines of the loaded file', async ({ page }) => {
+  const file = `---\ntags:\n  - garden\n---\n${SELECTION_NOTE}`;
+  await mount(page, 'light', { markdown: file, layout: undefined, noteId: 'note-selection' });
+  const [first] = SELECTION_CASES;
+  await selectText(page, BODY, first!.from, first!.to);
+  const selection = (await selectionOf(page)) as MossSelection;
+  expect(selection.lines).toEqual({ start: first!.expected.lines.start + 4, end: first!.expected.lines.end + 4 });
+  expect(selection.blocks.map((block) => block.line)).toEqual(first!.expected.blocks.map((block) => block.line + 4));
+  expectLinesIn(file, selection);
+});
+
+test('selection is null when collapsed or outside the note body', async ({ page }) => {
+  await mount(page, 'light', { markdown: SELECTION_NOTE, layout: undefined, noteId: 'note-selection' });
+  await expect(page.locator('[data-moss-viewer-title]')).toHaveText(SELECTION_TITLE);
+  expect(await selectionOf(page), 'nothing selected').toBeNull();
+  await collapseIn(page, BODY, 'Sow the beans');
+  expect(await selectionOf(page), 'a caret').toBeNull();
+  await selectText(page, '[data-moss-viewer-title]', 'Field', 'Notes');
+  expect(await selectionOf(page), 'the title is not the body').toBeNull();
+});
+
+test('Share with Agent shows only with services.shareWithAgent, and a press hands it the selection', async ({ page }) => {
+  await mount(page, 'light', { markdown: SELECTION_NOTE, layout: undefined, noteId: 'note-selection' });
+  await expect(page.locator(SHARE), 'hidden without the service').toHaveCount(0);
+
+  await mount(page, 'light', { markdown: SELECTION_NOTE, layout: undefined, noteId: 'note-selection', share: true });
+  const button = page.locator(SHARE);
+  await expect(button).toBeVisible();
+  await expect(button).toHaveText('Share with Agent');
+  await button.click();
+  const [first] = SELECTION_CASES;
+  await selectText(page, BODY, first!.from, first!.to);
+  await button.click();
+  await expect.poll(async () => (await calls(page)).share).toEqual([null, first!.expected]);
+});
+
+test('a shareWithAgent that throws or rejects stays the host\'s: no page error, and the button keeps working', async ({ page }) => {
+  const seen = watch(page);
+  await mount(page, 'light', { markdown: SELECTION_NOTE, layout: undefined, noteId: 'note-selection', share: 'fail' });
+  const [first] = SELECTION_CASES;
+  await selectText(page, BODY, first!.from, first!.to);
+  const button = page.locator(SHARE);
+  await button.click();
+  await button.click();
+  await expect.poll(async () => (await calls(page)).share).toEqual([first!.expected, first!.expected]);
+  await page.evaluate(() => new Promise((done) => setTimeout(done, 100)));
+  expect(seen.pageErrors).toEqual([]);
+});

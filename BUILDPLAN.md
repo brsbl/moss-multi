@@ -289,10 +289,12 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
   - **Scope:** upload, serving, Range, the SVG sandbox and SWR caching (A§16); the asset-url substitution; the `images.*` bridge; copies carry media (SP9); "Edit Alt Text…" in a moss-DS image context menu (A§9).
   - **Tests first:** journey **j11-media**: drop, paste and "/media → From computer" for png, jpg, gif, webp, svg, mp4, webm and mov, then reload; a copied note keeps its media; an anonymous link reader sees the media; alt text edited from the image menu reaches the peer and the export; a viewer gets no upload control and a raw upload gets 403; a PDF upload gets 415; WebKit plays video through 206 responses.
   - **Done:** j11 is green, with shots of an image and a video poster.
+- **T3.1s Upload bounds** `[A·codex]`, security follow-up to T3.1: uploads need a Content-Length within the cap (411, 400, 413) and are read into one buffer of that length, stopping where the stream outruns it, a per-identity upload window (60/min, persisted in PrincipalDO, link holders also counted by link and IP) gives 429, and a per-vault media quota, held in the asset insert against concurrent uploads, gives 413 (bytes are stored only once their rows commit, and a folder move keeps trashed descendants within the depth bound the quota counts); a test confirms `?share=` rides only the same-origin asset route.
 - **T3.2 HTML, embeds, in-app browser** `[A·codex]`
   - **Scope:** the HtmlBlockquoteNode live-iframe seam (until then an HTML block reads "Preview unavailable", since a browser never loads its moss-asset:// screenshot); `/api/unfurl` with `ssrf.ts`; the RemoteWebSurface substitute; remote-image `persistUrl`.
   - **Tests first:** an SSRF unit matrix covering redirect chains, DoH answers with private addresses, obfuscated IPv4, 169.254, CGNAT and ULA. j11 legs: moss-html runs scripts in a sandbox without same-origin, under the page CSP, and cannot reach the parent's cookie; a web embed card renders; a YouTube embed plays; the in-app browser opens a sandboxed iframe with a working "open in new tab", and its back, forward and find controls are absent.
   - **Done:** green, plus a codex adversarial SSRF pass.
+- **T3.2s Media admission and the SSRF matrix** `[A·codex]`, security follow-up to T3.1s and T3.2: upload, from-url, cross-note copy and a duplicate carrying media pass one admission (the 60/min upload window, 429, and the vault quota, 413), and the SSRF validator refuses a non-443 port, single-label names, Teredo, `::ffff:0:a.b.c.d`, IDN or fullwidth forms of blocked hosts and DNS answers that are not addresses, on every redirect hop.
 - **T3.3 Every node family, live** `[B·codex]`
   - **Scope:** the formula overlay and draft-chip decoration; per-viewer file-link resolution; chart and sketch registers on the T1.9 mechanism; per-decorator error boundaries; computed-style parity against a pristine-moss Ladle oracle story (A§20).
   - **Tests first:** L4 replication and A8 concurrency for every decorator, with no loss; journey **j14-demo-note** builds every family through paste and slash commands in a test account (R8); computed-style parity per node selector.
@@ -307,16 +309,46 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
   - **Done:** j13 is green, with a triptych against the glyphdown switcher.
 - **T3.6 Settings → Agents, agent sharing, the device page** `[C·codex]`
   - **Scope:** an Agents section in SettingsModal (mint once, list with a copyable agent id, revoke through the kick path); the ShareDialog accepts an agent id and tags agent rows (A§8); `/device` styled with moss tokens.
-  - **Tests first:** a minted key is shown once; revoking it 401s a raw bearer request and closes the agent's live socket; an agent added by id appears as an "agent" row at its role; unit tests for device-flow claim, approve, deny and replay. **Done:** green, with a parity target for Settings.
+  - **Tests first:** a minted key is shown once; revoking it 401s a raw bearer request and closes the agent's live socket; an agent added by id appears as an "agent" row at its role; per PRODUCT ruling 20, sharing with an agent the caller does not own (another person's agent, or one owned by a co-owner) is refused with the same 404 as an unknown id, in the same guarded write, and a test proves it for a doc and a folder; unit tests for device-flow claim, approve, deny and replay. **Done:** green, with a parity target for Settings.
 - **T3.7 Tab and print** `[C·fresh]`
   - **Scope:** Open in New Window becomes a browser tab; Save as PDF prints through `/pdf-export`; Save as Markdown downloads the export.
   - **Tests first:** a new page opens at `/d/<id>`; the print route reaches `data-pdf-export-status=ready` and calls `window.print` (spied); the downloaded bytes equal the export and contain no markers. **Done:** green.
 
 - **T3.8 Read-only viewer, full capability** `[B·fresh]`, after T3.1–T3.4 and T0.13
-  - **Scope:** the T0.13 viewer gains everything M3 adds: every node family styled, media and Range video through injected asset services, sandboxed HTML and embeds through injected unfurl, wiki links and headings through injected note lookup, and per-viewer layout. A versioned release artifact for the bb Moss viewer plugin, with pinned provenance.
+  - **Scope:** the T0.13 viewer gains everything M3 adds: every node family styled, media and Range video through injected asset services, sandboxed HTML and embeds through injected unfurl, wiki links and headings through injected note lookup, and per-viewer layout. A versioned release artifact for the bb Moss viewer plugin, with pinned provenance: `packages/viewer` gets a real semver (1.0.0) and stops being private, and CI on the integrated head packs it (`pnpm pack`) into the `moss-viewer` artifact together with `viewer.json`, a SHA-256 of the tarball and the source commit. The task does not publish anything itself: after integration the coordinator publishes it as a GitHub Release `viewer-v<version>` on brsbl/moss-multi (installable by URL), because npm has no @moss-multi scope.
   - **Consumer-reported gaps (bb Moss viewer plugin, brsbl/bb-plugins#241):** media decorators must not show the hover Delete (or any mutating control) in read-only mode; X post embeds must follow the viewer theme (moss at the pin hardcodes `theme=light`) and re-render on `setTheme`.
   - **Tests first:** the T0.13 fixture plus j14's demo-note markdown render through the viewer with computed-style parity against the editor's read-only view; injected services are the only network path; video plays through 206 responses in WebKit.
-  - **Done:** green in both engines, with shots of the fixture and the demo note, and the consumer thread notified.
+  - **Red first (T3.1 checker P2):** in WebKit, assert that the video player's own reads of the clip are Range requests answered 206 (j11 checks this in Chromium only).
+  - **Done:** green in both engines, with shots of the fixture and the demo note, and a release note listing whether moss-html and both consumer-reported gaps are fixed. After publishing, the coordinator tells thr_6fabbskqcf (bb-plugins coordinator; PR #241 is blocked on this release) the version, the release URL and that list.
+- **T3.9 Embeddable editor, file-backed (`mountMossEditor`)** `[B·fresh]`, after T3.8. Requested by the owner for the bb Moss plugin, relayed by thr_6fabbskqcf on 2026-10-04. bb ships no Moss renderer or editor of its own, so this package is the only path.
+  - Contract (DRAFT, review findings still open): packages/editor/src/contract.ts and docs/design/editor-embed.md (reviewed by Codex, 2026-10-04); the bb host thread thr_w89wd6n29c codes against it.
+  - **Scope:**
+    - A sibling of `packages/viewer` that mounts moss's own editor, editable, with moss's keyboard shortcuts, slash menu, formatting, every M3 node family and moss's desktop comment UI. Comments are stored as moss desktop stores them, as `%%m:` markers plus the comments sidecar, so files stay byte-compatible with the Moss Mac app.
+    - The host implements a small file bridge, the subset of moss desktop's ElectronAPI that file editing needs (the T0.5b bridge already maps the full surface):
+      - `read(noteId) -> {markdown, layout, comments, version}`;
+      - `write(noteId, files, baseVersion) -> {version} | {conflict}`, whole-file writes debounced as moss saves them;
+      - `assets.put(blob, name) -> relativePath` and `assets.url(relativePath)`;
+      - `onExternalChange(noteId)`.
+    - Events: dirty, saved, conflict and error, for the host's UI.
+    - No socket and no server: it never touches moss-multi's sync.
+  - **Conflicts with the Mac app:**
+    - Every write carries the `baseVersion` it read, and the host refuses a stale write, so the embed never overwrites the Mac app's save.
+    - On an external change, a clean editor reloads in place, keeping selection and scroll.
+    - A dirty editor shows "Changed in Moss" and offers to reload or keep editing. A write that is still refused stays unsaved, loudly. Nothing is silently clobbered.
+    - Merging both sides automatically arrives with M7's three-way merge (T7.x). Live co-editing with the Mac app needs both on moss-multi sync, which is out of scope here.
+  - **Tests first:**
+    - a fixture host with an in-memory file system;
+    - each node family round-trips byte-identically against T0.6's goldens;
+    - Cmd+Shift+A adds a comment that lands as a marker plus a sidecar entry the Mac app's converter reads;
+    - a stale write is refused, and an external change reloads a clean editor;
+    - assets go only through the host;
+    - CI builds a versioned `moss-editor` artifact with provenance, as the viewer does.
+  - **Done:** green in both engines, with shots, and the coordinator publishes `editor-v<version>` and notifies thr_6fabbskqcf.
+- **T3.9a Editor host helpers (`moss-editor-host.js`)** `[B·fresh]`, ahead of T3.9, requested by thr_w89wd6n29c: the contract's pure host helpers as one self-contained ES2022 module with no imports in `packages/editor/src/host/`, held by golden parity tests to Moss desktop's own code at the pin over a table of tricky names, plus a `moss-editor-host` CI artifact (`moss-editor-host.js`, `contract.d.ts`, `editor-host.json` at 0.0.1, API 1, LICENSE); no frame editor.
+- **T3.R Restack m3 on m2** `[B·fresh]`, coordinator, 2026-10-05: merge `origin/m2` into m3 keeping both sides' intent: m3's `doc_media` migration becomes 0003, chart and sketch payloads move onto T1.F2's payload docs with T3.3's concurrent-edit guarantees and tests, vendor patches regenerated; done when the full lane is green in both engines.
+- **T3.R2 Restack m3 on main** `[B·fresh]`, coordinator, 2026-10-05: merge `origin/main` (M1 and M2, merged after slimming) into m3, keeping M3's behavior and the slim cuts; done when the full lane is green in both engines, the viewer and editor artifacts build, and the diff from main to m3 shows only M3's own work.
+- **T3.10 Selection and Share with Agent for the viewer and editor** `[B·fresh]`, requested by the bb-plugins Moss viewer plugin (thr_56zui6aqdc), coordinator-approved 2026-10-06: both handles gain `selection()` (`selection-1`: text, markdown, file lines from moss's save export, heading path, blocks) and an optional `services.shareWithAgent` shows moss's Share with Agent button (`share-with-agent-1`), additive within API 1 as viewer 1.1.0 and editor 0.2.0; tests first in both fixtures and engines, lines golden-compared against the exported file.
+
 **Journeys added:** j11-media, j12-search, j13-vaults, j14-demo-note.
 
 **Exit criteria** [L§7.3 M3]: images and video render after reload, inside a copied note and through an anonymous link; the HTML preview runs in a sandboxed iframe; snippets show text and backlinks survive a save; the demo note shows every family styled, in light and dark, and concurrent decorator edits lose nothing; revoking a key kills its socket.

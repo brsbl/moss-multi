@@ -22,10 +22,18 @@ import { TRY_AGAIN, withDeadline, type Stamp } from './access-epoch.ts';
 import { publishMeta } from './fanout.ts';
 import type { SyncEnv } from './env.ts';
 import { migrateFrontmatter } from '@moss-multi/core/frontmatter';
-import { payloadText } from './payload-docs.ts';
+import { seedPayload } from './payload-docs.ts';
 import { JANITOR, migratePayloads, PayloadStore, type PayloadWork } from './payloads.ts';
+import { SEARCH_DO_NAME, type IndexEntry } from './search-do.ts';
 import { attachPayloadSource, exportDocMarkdown, importBody, rootIsEmpty, SERVER_IMPORT, SERVER_SEED, seedEmptyParagraph } from './server-doc.ts';
 import { writeTitle } from './server-title.ts';
+
+/** How long after a wake the doc re-feeds search. */
+const WAKE_FEED_MS = 1_000;
+/** How long after a payload-only edit the doc feeds search (the note's own saves cover note edits). */
+const PAYLOAD_FEED_MS = 2_000;
+/** The `search-fed` meta while the index holds this doc's content; bump it when an index entry's shape changes. */
+const SEARCH_FEED_VERSION = '2';
 
 /** A title written by create() or a REST rename; both project. */
 export const SERVER_TITLE = 'server-title';
@@ -116,6 +124,11 @@ export class DocCapError extends Error {
   }
 }
 
+/** Where the DocDO feeds its title and body (A§5.3): the SearchDO in the Worker, a fake in the harness. */
+export interface SearchFeed {
+  index(entry: IndexEntry): Promise<{ linksChanged: boolean }>;
+}
+
 /** When a socket reaches DOC_SOCKET_MAX_MS from its admission here. */
 const agesAt = (attachment: Attachment) => (attachment.admittedAt ?? 0) + DOC_SOCKET_MAX_MS;
 const aged = (attachment: Attachment, now: number) => agesAt(attachment) <= now;
@@ -203,6 +216,11 @@ export class DocDO extends YServer<SyncEnv> {
    */
   static access: (env: SyncEnv) => AccessCheck | null = () => null;
 
+  /** Where search feeds land; null leaves the doc unindexed. */
+  static searchFeed: (env: SyncEnv) => SearchFeed | null = (env) => (env?.SearchDO ? {
+    index: async (entry) => (await getServerByName(env.SearchDO, SEARCH_DO_NAME)).index(entry),
+  } : null);
+
   readonly instanceId = crypto.randomUUID();
   /** Payload work since the last reset, which the harness reads to bound it (A§10.10). */
   get payloadWork(): PayloadWork {
@@ -214,6 +232,14 @@ export class DocDO extends YServer<SyncEnv> {
   #payloads: PayloadStore | null = null;
   #exported: string | null = null;
   #projections: Projections | null = null;
+  /** The title and body this instance last fed to search. */
+  #fed: string | null = null;
+  /** Doc edits since load; a feed marks the doc fed only if none landed while it ran. */
+  #edits = 0;
+  /** Whether the stored `search-fed` meta is cleared (an edit the index may lack). */
+  #searchStale = false;
+  /** A feed queued by a payload edit; payload docs do not trigger the note's debounced save. */
+  #payloadFeed: ReturnType<typeof setTimeout> | null = null;
   readonly #limits = (this.constructor as typeof DocDO).limits;
   readonly #rate = new WriteRate(this.#limits.writeRate.max, this.#limits.writeRate.windowMs);
   readonly #acks = new AckCoalescer<Connection>((connection, deletes, payloads) => this.#ack(connection, deletes, payloads), ACK_COALESCE_MS);
@@ -243,7 +269,14 @@ export class DocDO extends YServer<SyncEnv> {
       broadcast: (id, update, origin) => this.#broadcastPayload(id, update, origin),
       persisted: (_id, _update, origin) => {
         this.#exported = null;
-        if (isConnection(origin)) this.#projections?.touch();
+        this.#edited(store);
+        if (isConnection(origin)) {
+          this.#projections?.touch();
+          if (!this.#payloadFeed) this.#payloadFeed = setTimeout(() => {
+            this.#payloadFeed = null;
+            void this.#feedSearch();
+          }, PAYLOAD_FEED_MS);
+        }
       },
       principalOf: (origin) => (isConnection(origin) ? (attachmentOf(origin)?.principalId ?? '') : null),
     });
@@ -252,10 +285,8 @@ export class DocDO extends YServer<SyncEnv> {
     this.#payloads = payloads;
     this.document.on('update', (update: Uint8Array, origin: unknown) => this.#persist(store, update, origin));
     migrateFrontmatter(this.document, 'frontmatter-migration');
-    const migrated = migratePayloads(this.document, (id, text) => {
-      if (payloads.has(id)) return;
-      const doc = payloads.doc(id);
-      doc.transact(() => payloadText(doc).insert(0, text), JANITOR);
+    const migrated = migratePayloads(this.document, (id, value) => {
+      if (!payloads.has(id)) seedPayload(payloads.doc(id), value, JANITOR);
     });
     // The migrated text leaves the note's rows too.
     if (migrated) store.compact(this.document);
@@ -270,11 +301,16 @@ export class DocDO extends YServer<SyncEnv> {
     this.#seed(store);
     const target = (this.constructor as typeof DocDO).projectionTarget(this.env);
     if (target) this.#project(new Projections(this.name, target));
+    // A wake re-feeds only a doc the index may lack (L§4.14): an edit whose feed never landed, or an older entry
+    // shape; once onStart has served the waiting frames. A doc being created is fed by the save its content triggers.
+    this.#searchStale = store.meta('search-fed') !== SEARCH_FEED_VERSION;
+    if (this.#searchStale && store.meta('created') !== null) setTimeout(() => void this.#feedSearch(), WAKE_FEED_MS);
   }
 
   /** Debounced by y-partyserver (2 s, at most 10 s). */
   override async onSave(): Promise<void> {
     if (this.#store && this.#store.pendingRows > 0) this.#store.compact(this.document);
+    await this.#feedSearch();
   }
 
   override async onConnect(connection: Connection, ctx: ConnectionContext): Promise<void> {
@@ -659,6 +695,13 @@ export class DocDO extends YServer<SyncEnv> {
     return this.#exported;
   }
 
+  /** Feeds search now, even with nothing changed: the Worker's backfill for a doc the index lacks. */
+  async reindex(): Promise<void> {
+    await this.#ready();
+    this.#fed = null;
+    await this.#feedSearch();
+  }
+
   /** Called through a raw stub and never runs onStart, so it reads nothing from the doc (A§19). */
   probeInstance(): { instanceId: string; constructedAt: number } {
     return { instanceId: this.instanceId, constructedAt: this.constructedAt };
@@ -803,6 +846,34 @@ export class DocDO extends YServer<SyncEnv> {
     return this.#store;
   }
 
+  /**
+   * The title from Y.Text and the body as the converter exports it, never the tree's `toString()` (L§4.14). When the
+   * doc's wiki links change, its readers hear a meta event so open backlinks refresh (A§11).
+   */
+  async #feedSearch(): Promise<void> {
+    const feed = (this.constructor as typeof DocDO).searchFeed(this.env);
+    if (!feed) return;
+    try {
+      // Never through ready(): called from onLoad's timer and onSave, the doc is already loaded.
+      this.#exported ??= exportDocMarkdown(this.document, this.name);
+      const markdown = this.#exported;
+      const entry: IndexEntry = { docId: this.name, title: this.document.getText('title').toString(), body: splitFrontmatter(markdown).body };
+      const signature = `${entry.title}\u0000${entry.body}`;
+      const edits = this.#edits;
+      if (signature !== this.#fed) {
+        const { linksChanged } = await feed.index(entry);
+        this.#fed = signature;
+        if (linksChanged && this.env?.DB && this.env.PrincipalDO) await publishMeta(this.env, [this.name]);
+      }
+      if (this.#searchStale && edits === this.#edits) {
+        this.#store?.setMeta('search-fed', SEARCH_FEED_VERSION);
+        this.#searchStale = false;
+      }
+    } catch (error) {
+      console.error(`search feed for ${this.name} failed`, error);
+    }
+  }
+
   #seed(store: DocStore): void {
     if (store.meta('seeded') !== null) return;
     if (rootIsEmpty(this.document)) seedEmptyParagraph(this.document);
@@ -813,9 +884,19 @@ export class DocDO extends YServer<SyncEnv> {
     this.#exported = null;
     if (origin === PERSISTENCE) return;
     store.record(update, this.document);
+    this.#edited(store);
     if (isConnection(origin)) {
       this.#acks.schedule(origin, this.#frameDeletes);
       this.#projections?.touch();
+    }
+  }
+
+  /** An edit to the note or a payload: the search index may lack it until the next feed. */
+  #edited(store: DocStore): void {
+    this.#edits += 1;
+    if (!this.#searchStale) {
+      store.setMeta('search-fed', '');
+      this.#searchStale = true;
     }
   }
 

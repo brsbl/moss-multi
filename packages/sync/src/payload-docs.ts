@@ -1,17 +1,25 @@
 // Decorator payload docs (A§10.10; docs/design/registers.md), Yjs-level with no Lexical: each code, HTML or formula
-// block's text is a Y.Text in its own Y.Doc keyed by the block's `__regId`, held beside the note's doc. This module
-// holds them (PayloadDocs), carries them over a doc socket (PayloadSync) and gives the body one Cmd+Z stack across the
-// note's undo manager and each payload's (BodyUndo).
+// block's text is a Y.Text in its own Y.Doc keyed by the block's `__regId` (a chart's or sketch's fields a Y.Map),
+// held beside the note's doc. This module holds them (PayloadDocs), carries them over a doc socket (PayloadSync) and
+// gives the body one Cmd+Z stack across the note's undo manager and each payload's (BodyUndo).
 import { Observable } from 'lib0/observable';
 import * as Y from 'yjs';
 import {
   decodePayloadFrame, encodePayloadFrame, PAYLOAD_STEP1, PAYLOAD_STEP2, PAYLOAD_UPDATE,
 } from '@moss-multi/protocol/sync';
 
-/** The register fields, by node type (A§10.10). */
+/** The register fields, by node type (A§10.10): text payloads, one Y.Text each. */
 export const REGISTER_FIELDS: Readonly<Record<string, string>> = {
   'code-block': '__code', 'html-block': '__rawHtml', formula: '__formula',
 };
+
+/** Compound payloads (T3.3), by node type: their fields as one Y.Map of independent keys (map-codecs.ts). */
+export const MAP_REGISTER_FIELDS: Readonly<Record<string, readonly string[]>> = {
+  chart: ['__config'], sketch: ['__grid', '__labels'],
+};
+
+/** Whether nodes of `type` keep their payload in a payload doc. */
+export const isPayloadType = (type: string): boolean => Object.hasOwn(REGISTER_FIELDS, type) || Object.hasOwn(MAP_REGISTER_FIELDS, type);
 
 /** A payload id: 128 random bits, since knowing an id is what lets an element name its payload. */
 export function newPayloadId(): string {
@@ -26,6 +34,19 @@ export const PAYLOAD_TEXT = 'payload';
 export const PAYLOAD_LOADED = Symbol('moss-multi:payload-loaded');
 
 export const payloadText = (doc: Y.Doc): Y.Text => doc.getText(PAYLOAD_TEXT);
+
+/** A compound payload's one shared type. */
+export const PAYLOAD_MAP = 'payload-map';
+
+export const payloadMap = (doc: Y.Doc): Y.Map<unknown> => doc.getMap(PAYLOAD_MAP);
+
+/** Writes a payload's first value into an empty doc: text, or a compound payload's encoded keys. */
+export function seedPayload(doc: Y.Doc, value: string | ReadonlyMap<string, unknown>, origin: unknown): void {
+  doc.transact(() => {
+    if (typeof value === 'string') payloadText(doc).insert(0, value);
+    else for (const [key, entry] of value) payloadMap(doc).set(key, entry);
+  }, origin);
+}
 
 /** `fresh`: minted here this moment, so no one else has anything of it to ask for. */
 type HoldListener = (id: string, doc: Y.Doc, fresh: boolean) => void;
@@ -236,7 +257,7 @@ export class BodyUndo extends Observable<StackEvent> {
 
   /** Payload managers track this origin. */
   trackPayload(doc: Y.Doc, origin: unknown, captureTimeout: number): Y.UndoManager {
-    const manager = new Y.UndoManager(payloadText(doc), { trackedOrigins: new Set([origin]), captureTimeout });
+    const manager = new Y.UndoManager([payloadText(doc), payloadMap(doc)], { trackedOrigins: new Set([origin]), captureTimeout });
     this.track(manager);
     return manager;
   }

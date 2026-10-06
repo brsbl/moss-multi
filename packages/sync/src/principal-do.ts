@@ -1,7 +1,9 @@
 import { getServerByName, Server, type Connection, type ConnectionContext, type WSMessage } from 'partyserver';
 import { CLOSE, TRUSTED } from '@moss-multi/protocol/sync';
 import type { WorkspaceEvent } from '@moss-multi/protocol/workspace';
-import { ACCESS_DEADLINE_MS, ACCESS_TICK_MS, REST_WRITE_RATE, SESSION_MAX_MS } from '@moss-multi/protocol/limits';
+import {
+  ACCESS_DEADLINE_MS, ACCESS_TICK_MS, REMOTE_FETCH_RATE, REST_WRITE_RATE, SESSION_MAX_MS, UPLOAD_RATE,
+} from '@moss-multi/protocol/limits';
 import { liveCredentials, TRY_AGAIN, withDeadline } from './access-epoch.ts';
 import { windowed } from './doc/admission.ts';
 import type { DocDO, RecheckInput } from './doc-do.ts';
@@ -67,7 +69,8 @@ function sqlAttempts(sql: SqlStorage, name: string): AttemptStore {
 }
 
 // One per principal, named by its id: workspace channel (one authenticated socket per tab, hibernatable), sign-out
-// registry and the REST write limit (A§5.2).
+// registry, the REST write limit (A§5.2) and the upload limit (A§16). An upload window may also be named for a link
+// and an IP (`link:<hash>:<ip>`), which no principal is, so nothing connects to it.
 export class PrincipalDO extends Server<SyncEnv> {
   static options = { hibernate: true };
   /** Where endSession's rechecks go; the Node harness swaps it. */
@@ -80,6 +83,8 @@ export class PrincipalDO extends Server<SyncEnv> {
    */
   static credentials: (env: SyncEnv) => CredentialCheck | null = (env) => (env?.DB ? (sessions, agents) => liveCredentials(env.DB, sessions, agents) : null);
   #writes: RateWindow | null = null;
+  #uploads: RateWindow | null = null;
+  #fetches: RateWindow | null = null;
   #registryReady = false;
   /** When the next access tick is due; null when nothing happened since the last one. */
   #tickAt: number | null = null;
@@ -264,5 +269,17 @@ export class PrincipalDO extends Server<SyncEnv> {
     // Persisted: a PrincipalDO idle for ~10 s is evicted, and a wake must not hand out a fresh window.
     this.#writes ??= new RateWindow(REST_WRITE_RATE.max, REST_WRITE_RATE.windowMs, sqlAttempts(this.ctx.storage.sql, 'rest-writes'));
     return this.#writes.take();
+  }
+
+  /** One media upload or cross-note copy counted against this name; false past UPLOAD_RATE. Persisted, as above. */
+  takeUploadToken(): boolean {
+    this.#uploads ??= new RateWindow(UPLOAD_RATE.max, UPLOAD_RATE.windowMs, sqlAttempts(this.ctx.storage.sql, 'uploads'));
+    return this.#uploads.take();
+  }
+
+  /** One server fetch of a caller-supplied URL (an unfurl, a remote image); false past REMOTE_FETCH_RATE. */
+  takeFetchToken(): boolean {
+    this.#fetches ??= new RateWindow(REMOTE_FETCH_RATE.max, REMOTE_FETCH_RATE.windowMs, sqlAttempts(this.ctx.storage.sql, 'remote-fetches'));
+    return this.#fetches.take();
   }
 }
