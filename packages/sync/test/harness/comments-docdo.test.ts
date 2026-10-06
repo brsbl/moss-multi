@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 
 import * as Y from 'yjs';
 import { anchorText, encodePosition, liveUnits, type Anchor } from '@moss-multi/core/anchor-frame';
 import { BLOCK_CHAR } from '@moss-multi/core/tree-anchor';
-import { CLOSE } from '@moss-multi/protocol/sync';
+import { CLOSE, encodePartyPrincipal, TRUSTED } from '@moss-multi/protocol/sync';
 import { DocDO } from '../../src/doc-do.ts';
 import { COMMENT_STATE_SHARE, MAX_IMPORT_SEARCHES } from '../../src/doc/comments.ts';
 import { COMPACT_MAX_ROWS, STATE_CHUNK_BYTES } from '../../src/doc/persistence.ts';
@@ -771,5 +771,59 @@ describe('T4.4 edit, delete and reactions through the DocDO @p:mean-1', () => {
     for (const e of emoji) expect(await opened.dobj.reactComment({ id: 'r1', principal: 'ada', emoji: e, on: true })).toMatchObject({ ok: true });
     expect(await opened.dobj.reactComment({ id: 'r1', principal: 'ada', emoji: '🤩', on: true })).toEqual({ ok: false, status: 409, error: 'too-many-reactions' });
     expect(await opened.dobj.reactComment({ id: 'r1', principal: 'ben', emoji: '😀', on: true }), 'an existing emoji still takes more people').toMatchObject({ ok: true });
+  });
+});
+
+describe('a comment RPC validates every socket before its write reaches them (A§8) @p:ppl-2 @p:mean-1', () => {
+  /** D1 as the check reads it: the access epoch, and the principals whose grant is gone. */
+  let epoch = 'e1';
+  const gone = new Set<string>();
+  class CheckedDocDO extends DocDO {
+    static override access = () => ({
+      stamp: async (_docId: string, sessions: string[], agents: string[]) => ({ key: epoch, sessions: new Set(sessions), agents: new Set(agents) }),
+      resolve: async (_docId: string, socket: { principalId: string; role: string }) =>
+        (gone.has(socket.principalId) ? null : { role: socket.role as never, presence: true }),
+    });
+  }
+  const who = (id: string, role: string) => ({ headers: {
+    [TRUSTED.principal]: encodePartyPrincipal({ id, kind: 'user', name: id }),
+    [TRUSTED.role]: role, [TRUSTED.session]: `sess-${id}`, [TRUSTED.resolvedAt]: String(Date.now()), [TRUSTED.epoch]: 'e1',
+  } });
+  beforeEach(() => {
+    epoch = 'e1';
+    gone.clear();
+  });
+
+  const writes: [string, (opened: Opened) => Promise<unknown>][] = [
+    ['create', (opened) => opened.dobj.createComment({ author: 'ada', id: 'r9', text: 'secret reply', parentId: 'root' })],
+    ['resolve', (opened) => opened.dobj.resolveComment({ id: 'root', resolved: true, by: 'user' })],
+    ['edit', (opened) => opened.dobj.editComment({ id: 'root', author: 'ada', text: 'secret edit' })],
+    ['delete', (opened) => opened.dobj.deleteComment({ id: 'root', author: 'ada', scope: 'comment' })],
+    ['react', (opened) => opened.dobj.reactComment({ id: 'root', principal: 'ada', emoji: '👍', on: true })],
+  ];
+
+  it.each(writes)('%s: a socket revoked but not yet kicked closes 4403 and receives nothing of the write', async (_name, write) => {
+    const opened = await start(openDoc(undefined, CheckedDocDO as never));
+    await opened.dobj.create({ folderId: 'folder', ownerId: 'ada', markdown: 'The quick brown fox jumps over the lazy dog.' });
+    const { text, units } = liveUnits(opened.dobj.document);
+    const at = text.indexOf('brown fox');
+    const anchor = { kind: 'text' as const, start: encodePosition(units[at], 0), end: encodePosition(units[at + 'brown fox'.length - 1], -1) };
+    expect(await opened.dobj.createComment({ author: 'ada', id: 'root', text: 'root', anchor })).toMatchObject({ ok: true });
+    expect(await opened.dobj.createComment({ author: 'ada', id: 'r1', text: 'reply', parentId: 'root' })).toMatchObject({ ok: true });
+    const ada = await connect(opened, who('ada', 'owner'));
+    const ben = await connect(opened, who('ben', 'viewer'));
+    await ada.hello();
+    await ben.hello();
+    expect(ben.closed).toBeNull();
+    // Ben's grant ends in D1; no recheck has reached the DocDO and no tick has run.
+    epoch = 'e2';
+    gone.add('ben');
+    const adaBefore = ada.socket.sent.length;
+    const benBefore = ben.socket.sent.length;
+    expect(await write(opened)).toMatchObject({ ok: true });
+    expect(ben.closed?.code, 'validated before the write').toBe(CLOSE.revoked);
+    expect(ben.socket.sent.length, 'no frame of the write reached the revoked socket').toBe(benBefore);
+    expect(ada.closed).toBeNull();
+    expect(ada.socket.sent.length, 'the socket that kept access hears the write').toBeGreaterThan(adaBefore);
   });
 });
