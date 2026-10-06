@@ -69,11 +69,256 @@ export interface SuggestionRecord {
   parts: DeletePart[];
 }
 
-/** The roots a record may change in the body. The retired `registers` map is not one: payloads are their own docs. */
-export const BODY_ROOTS: ReadonlySet<string> = new Set(['root']);
+export type DocKind = 'body' | 'payload';
 
-/** The roots of a payload doc (packages/sync payload-docs.ts: `payload` and `payload-map`). */
-export const PAYLOAD_ROOTS: ReadonlySet<string> = new Set(['payload', 'payload-map']);
+export type TypeKind = 'XmlText' | 'XmlElement' | 'XmlFragment' | 'XmlHook' | 'Text' | 'Map' | 'Array';
+
+export type ContentKind = 'String' | 'Any' | 'JSON' | 'Binary' | 'Embed' | 'Format' | 'Doc' | 'Deleted' | `Type:${TypeKind}`;
+
+/** A place a struct can sit: under a parent type of some kind in a root, in its sequence or at a map key. */
+export interface Channel {
+  doc: DocKind;
+  root: string;
+  parent: TypeKind;
+  sub: 'seq' | 'key';
+  content: readonly ContentKind[];
+}
+
+/**
+ * The channel table (docs/design/suggestions.md §4.4), default-deny: a record may insert or remove a struct only in
+ * these channels, ingest and accept refuse every other struct, and the preview renders exactly these channels. A new
+ * channel is added here and rendered by `channelValue` together, or it is refused.
+ */
+export const CHANNELS: readonly Channel[] = [
+  // Lexical's V1 binding. An element is an XmlText: its sequence holds text, text-node and line-break maps, child
+  // elements and decorators; its keys are the node's properties (the root's are root properties such as `__dir`) and
+  // `__state`, a Map.
+  { doc: 'body', root: 'root', parent: 'XmlText', sub: 'seq', content: ['String', 'Type:XmlText', 'Type:XmlElement', 'Type:Map', 'Deleted'] },
+  { doc: 'body', root: 'root', parent: 'XmlText', sub: 'key', content: ['Any', 'Type:Map', 'Deleted'] },
+  // A decorator: an XmlElement with properties only.
+  { doc: 'body', root: 'root', parent: 'XmlElement', sub: 'key', content: ['Any', 'Type:Map', 'Deleted'] },
+  // A text node's or line break's properties, and a node's `__state`.
+  { doc: 'body', root: 'root', parent: 'Map', sub: 'key', content: ['Any', 'Type:Map', 'Deleted'] },
+  // Payload docs (packages/sync payload-docs.ts): a text payload's characters, and a compound payload's JSON fields.
+  { doc: 'payload', root: 'payload', parent: 'Text', sub: 'seq', content: ['String', 'Deleted'] },
+  { doc: 'payload', root: 'payload-map', parent: 'Map', sub: 'key', content: ['Any', 'Deleted'] },
+];
+
+/** The table's roots and the type each is read as. */
+export const ROOT_KINDS: Readonly<Record<DocKind, ReadonlyMap<string, TypeKind>>> = {
+  body: new Map([['root', 'XmlText']]),
+  payload: new Map([['payload', 'Text'], ['payload-map', 'Map']]),
+};
+
+/** The roots a record may change in the body. The retired `registers` map is not one: payloads are their own docs. */
+export const BODY_ROOTS: ReadonlySet<string> = new Set(ROOT_KINDS.body.keys());
+
+/** Types nest at most this deep under a root; deeper is refused, so rendering never recurses without bound. */
+export const MAX_DEPTH = 256;
+
+export function typeKind(type: unknown): TypeKind | null {
+  if (type instanceof Y.XmlText) return 'XmlText';
+  if (type instanceof Y.Text) return 'Text';
+  if (type instanceof Y.XmlHook) return 'XmlHook';
+  if (type instanceof Y.Map) return 'Map';
+  if (type instanceof Y.XmlElement) return 'XmlElement';
+  if (type instanceof Y.XmlFragment) return 'XmlFragment';
+  if (type instanceof Y.Array) return 'Array';
+  return null;
+}
+
+export function contentKind(content: Y.Item['content']): ContentKind | null {
+  if (content instanceof Y.ContentString) return 'String';
+  if (content instanceof Y.ContentAny) return 'Any';
+  if (content instanceof Y.ContentDeleted) return 'Deleted';
+  if (content instanceof Y.ContentType) {
+    const kind = typeKind(content.type);
+    return kind === null ? null : `Type:${kind}`;
+  }
+  if (content instanceof Y.ContentFormat) return 'Format';
+  if (content instanceof Y.ContentEmbed) return 'Embed';
+  if (content instanceof Y.ContentBinary) return 'Binary';
+  if (content instanceof Y.ContentJSON) return 'JSON';
+  if (content instanceof Y.ContentDoc) return 'Doc';
+  return null;
+}
+
+/**
+ * Where a struct sits, and for a type, the type's own kind. `parent` is null under a root outside the table. `path` is
+ * true when every item enclosing the struct sits in a table channel, so a struct is shown only if its whole ancestor
+ * path is. `gone` marks a deleted item whose content was collected (a tombstone: no type, no value).
+ */
+export interface Placement {
+  root: string;
+  parent: TypeKind | null;
+  sub: string | null;
+  type: TypeKind | null;
+  depth: number;
+  path: boolean;
+  gone: boolean;
+}
+
+export function channelAllows(doc: DocKind, at: Placement, content: ContentKind | null): boolean {
+  if (!at.path || at.parent === null || content === null || at.depth > MAX_DEPTH) return false;
+  const sub = at.sub === null ? 'seq' : 'key';
+  return CHANNELS.some((c) => c.doc === doc && c.root === at.root && c.parent === at.parent && c.sub === sub && c.content.includes(content));
+}
+
+/** The placement of a child of the type held by the item placed at `holder`. */
+function childOf(doc: DocKind, holder: Placement, sub: string | null, content: Y.Item['content']): Placement {
+  const path = channelAllows(doc, holder, holder.type === null ? null : `Type:${holder.type}`);
+  return { root: holder.root, parent: holder.type, sub, type: typeOf(content), depth: holder.depth + 1, path, gone: content instanceof Y.ContentDeleted };
+}
+
+const typeOf = (content: Y.Item['content']): TypeKind | null => (content instanceof Y.ContentType ? typeKind(content.type) : null);
+
+/** An integrated item's placement, every enclosing edge checked against the table (O(depth)), or null when its parent is gone. */
+export function placementOf(kind: DocKind, doc: Y.Doc, item: Y.Item): Placement | null {
+  if (!(item.parent instanceof Y.AbstractType)) return null;
+  const chain: Y.Item[] = [];
+  let top = item.parent as Y.AbstractType<unknown>;
+  while (top._item !== null) {
+    const up = top._item.parent;
+    if (!(up instanceof Y.AbstractType) || chain.length >= MAX_DEPTH) {
+      return { root: '', parent: null, sub: item.parentSub, type: typeOf(item.content), depth: MAX_DEPTH + 1, path: false, gone: false };
+    }
+    chain.push(top._item);
+    top = up as Y.AbstractType<unknown>;
+  }
+  let root = '';
+  for (const [name, shared] of doc.share) if (shared === top) root = name;
+  const rootKind = ROOT_KINDS[kind].get(root) ?? null;
+  // The type at the root, as the item holding it would be placed; then each enclosing item, top down.
+  let at: Placement = { root, parent: null, sub: null, type: rootKind, depth: -1, path: true, gone: false };
+  const holderAt = (sub: string | null, content: Y.Item['content']): Placement =>
+    at.depth < 0 ? { root, parent: rootKind, sub, type: typeOf(content), depth: 0, path: rootKind !== null, gone: content instanceof Y.ContentDeleted } : childOf(kind, at, sub, content);
+  for (let i = chain.length - 1; i >= 0; i--) at = holderAt(chain[i].parentSub, chain[i].content);
+  return holderAt(item.parentSub, item.content);
+}
+
+/** A delete set's ranges per client, sorted and merged, so coverage is a binary search. */
+function coverage(ds: { clients: Map<number, { clock: number; len: number }[]> }): (id: Y.ID, len: number) => boolean {
+  const merged = new Map<number, { clock: number; len: number }[]>();
+  for (const [client, ranges] of ds.clients) {
+    const out: { clock: number; len: number }[] = [];
+    for (const range of [...ranges].sort((a, b) => a.clock - b.clock)) {
+      const last = out[out.length - 1];
+      if (last && range.clock <= last.clock + last.len) last.len = Math.max(last.len, range.clock + range.len - last.clock);
+      else out.push({ clock: range.clock, len: range.len });
+    }
+    merged.set(client, out);
+  }
+  return (id, len) => {
+    const list = merged.get(id.client) ?? [];
+    let lo = 0;
+    let hi = list.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (id.clock < list[mid].clock) hi = mid - 1;
+      else if (id.clock >= list[mid].clock + list[mid].len) lo = mid + 1;
+      else return id.clock + len <= list[mid].clock + list[mid].len;
+    }
+    return false;
+  };
+}
+
+/**
+ * The struct-level check of one op's update (G3 at ingest; the shape half of G3 at accept). Every struct must be an
+ * Item in a table channel, or a GC struct or deleted content that the op's own delete set covers (an insert and
+ * delete in one transaction). A Skip is never sent by an honest client. `lookup` places an id outside this update
+ * (the live doc, or the record's earlier ops); null leaves the struct to accept, where an unplaceable item parks (G1)
+ * or integrates as GC (G5 c). Returns the placement of each struct it placed, or null when a struct is refused.
+ */
+export function checkStructs(
+  kind: DocKind,
+  decoded: { structs: (Y.Item | Y.GC | Y.Skip)[]; ds: { clients: Map<number, { clock: number; len: number }[]> } },
+  lookup: (id: Y.ID) => Placement | null,
+): { struct: Y.Item; at: Placement }[] | null {
+  const byClient = new Map<number, (Y.Item | Y.GC | Y.Skip)[]>();
+  for (const struct of decoded.structs) {
+    const list = byClient.get(struct.id.client);
+    if (list) list.push(struct);
+    else byClient.set(struct.id.client, [struct]);
+  }
+  const find = (id: Y.ID) => {
+    const list = byClient.get(id.client);
+    if (!list) return undefined;
+    let lo = 0;
+    let hi = list.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const struct = list[mid];
+      if (id.clock < struct.id.clock) hi = mid - 1;
+      else if (id.clock >= struct.id.clock + struct.length) lo = mid + 1;
+      else return struct;
+    }
+    return undefined;
+  };
+  // false: refused; null: not placeable here.
+  const memo = new Map<Y.Item, Placement | null | false>();
+  // Through an origin a struct sits beside the origin; through its parent, in the parent item's type. A tombstoned
+  // parent (an editor deleted it, and its type was collected) is left to accept, where the struct integrates as GC.
+  const derive = (item: Y.Item, base: Placement | null | false, viaParent: boolean): Placement | null | false => {
+    if (!base) return base;
+    if (!viaParent) return { ...base, type: typeOf(item.content), gone: item.content instanceof Y.ContentDeleted };
+    if (base.gone) return null;
+    if (base.type === null) return false;
+    return childOf(kind, base, item.parentSub, item.content);
+  };
+  const place = (start: Y.Item): Placement | null | false => {
+    const stack = [start];
+    const onStack = new Set<Y.Item>(stack);
+    while (stack.length > 0) {
+      const item = stack[stack.length - 1];
+      if (memo.has(item)) {
+        stack.pop();
+        continue;
+      }
+      // A decoded item's parent is a root's name, the id of the item holding its parent type, or null (from origins).
+      const parent = item.parent as unknown;
+      let result: Placement | null | false;
+      if (typeof parent === 'string') {
+        const rootKind = ROOT_KINDS[kind].get(parent) ?? null;
+        result = { root: parent, parent: rootKind, sub: item.parentSub, type: typeOf(item.content), depth: 0, path: rootKind !== null, gone: item.content instanceof Y.ContentDeleted };
+      } else {
+        const viaParent = parent instanceof Y.ID;
+        const ref = parent instanceof Y.ID ? parent : (item.origin ?? item.rightOrigin);
+        if (!ref) result = false;
+        else {
+          const dep = find(ref);
+          if (dep === undefined) result = derive(item, lookup(ref), viaParent);
+          else if (!(dep instanceof Y.Item)) result = null;
+          else if (memo.has(dep)) result = derive(item, memo.get(dep)!, viaParent);
+          else if (onStack.has(dep)) result = false;
+          else {
+            stack.push(dep);
+            onStack.add(dep);
+            continue;
+          }
+        }
+      }
+      memo.set(item, result);
+      stack.pop();
+    }
+    return memo.get(start)!;
+  };
+  const covered = coverage(decoded.ds);
+  const placed: { struct: Y.Item; at: Placement }[] = [];
+  for (const struct of decoded.structs) {
+    if (struct instanceof Y.Skip) return null;
+    if (struct instanceof Y.GC) {
+      if (!covered(struct.id, struct.length)) return null;
+      continue;
+    }
+    if (struct.content instanceof Y.ContentDeleted && !covered(struct.id, struct.length)) return null;
+    const at = place(struct);
+    if (at === false) return null;
+    if (at === null) continue;
+    if (!channelAllows(kind, at, contentKind(struct.content))) return null;
+    placed.push({ struct, at });
+  }
+  return placed;
+}
 
 /** A payload id an op may name. */
 export const PAYLOAD_ID = /^[A-Za-z0-9_-]{1,64}$/;
@@ -137,22 +382,24 @@ const spansOf = (ds: { clients: Map<number, { clock: number; len: number }[]> })
 /** One doc the record writes: the body, or a payload doc. */
 interface Target {
   doc: Y.Doc;
-  roots: ReadonlySet<string>;
+  kind: DocKind;
   ops: Uint8Array[];
   hydrated: Uint8Array;
   state: (client: number) => number;
   /** Each authoring step's removals (an op's delete set, or a delete part's targets). */
   groups: IdSpan[][];
   ownDeletes: IdSpan[];
-  changed: Set<Y.AbstractType<unknown>>;
   inserted: Map<number, readonly [number, number]>;
+  /** Every item the record's transaction deleted: the delete sets named, and what Yjs deletes with them (a type's
+   * contents, a map key's overwritten value). */
+  deleted: IdSpan[];
 }
 
-function target(doc: Y.Doc, roots: ReadonlySet<string>): Target {
+function target(doc: Y.Doc, kind: DocKind): Target {
   const hydrated = Y.encodeStateVector(doc);
   const before = Y.decodeStateVector(hydrated);
   return {
-    doc, roots, ops: [], hydrated, state: (client) => before.get(client) ?? 0, groups: [], ownDeletes: [], changed: new Set(), inserted: new Map(),
+    doc, kind, ops: [], hydrated, state: (client) => before.get(client) ?? 0, groups: [], ownDeletes: [], inserted: new Map(), deleted: [],
   };
 }
 
@@ -164,7 +411,7 @@ function target(doc: Y.Doc, roots: ReadonlySet<string>): Target {
 export function applyRecord(mirror: Y.Doc, record: SuggestionRecord, options: ApplyOptions = {}): ApplyResult {
   const fail = (reason: GateReason): ApplyResult => ({ ok: false, reason });
   const clients = new Set(record.meta.clients);
-  const body = target(mirror, BODY_ROOTS);
+  const body = target(mirror, 'body');
   const targets = new Map<string, Target>([[BODY_DOC, body]]);
   const refsBefore = regRefs(mirror);
 
@@ -178,15 +425,18 @@ export function applyRecord(mirror: Y.Doc, record: SuggestionRecord, options: Ap
       // G4, first since nothing of it may even be loaded: a payload op edits only a payload a live element names
       // before the record, or writes a new one; never a withheld payload, whose text the author cannot see.
       if (options.payloads.known(op.doc) && !refsBefore.has(op.doc)) return fail('payload-alias');
-      into = target(options.payloads.doc(op.doc), PAYLOAD_ROOTS);
+      into = target(options.payloads.doc(op.doc), 'payload');
       targets.set(op.doc, into);
     }
-    let spans: IdSpan[];
+    let decoded: ReturnType<typeof Y.decodeUpdate>;
     try {
-      spans = spansOf(Y.decodeUpdate(op.update).ds);
+      decoded = Y.decodeUpdate(op.update);
     } catch {
       return fail('unresolvable');
     }
+    // A Skip is a gap an honest fork never sends; alone it would integrate as nothing (G1's class).
+    if (decoded.structs.some((struct) => struct instanceof Y.Skip)) return fail('unresolvable');
+    const spans = spansOf(decoded.ds);
     into.ops.push(op.update);
     into.groups.push(spans);
     into.ownDeletes.push(...spans);
@@ -201,11 +451,13 @@ export function applyRecord(mirror: Y.Doc, record: SuggestionRecord, options: Ap
 
   try {
     for (const t of targets.values()) {
-      t.doc.transact((tr) => {
+      let tr: Y.Transaction | null = null;
+      t.doc.transact((transaction) => {
+        tr = transaction;
         for (const op of t.ops) Y.applyUpdate(t.doc, op);
         if (t === body) for (const part of record.parts) Y.applyUpdate(t.doc, deleteUpdate(part.targets));
-        for (const type of tr.changed.keys()) t.changed.add(type as unknown as Y.AbstractType<unknown>);
       }, APPLY);
+      t.deleted = spansOf((tr as Y.Transaction | null)!.deleteSet as never);
     }
   } catch {
     return fail('unresolvable');
@@ -223,11 +475,19 @@ export function applyRecord(mirror: Y.Doc, record: SuggestionRecord, options: Ap
     }
   }
 
-  // G3: every changed type, including each deleted item's parent, lives under its doc's own roots.
+  // G3, default-deny: every item the record inserted and every item its transaction deleted lies in a channel of the
+  // table, so the preview, which renders exactly those channels, shows each of them. The transaction's own delete set
+  // also holds the implicit deletions: a deleted type's contents and a map key's overwritten value. GC structs are
+  // left to G5 (c).
   for (const t of targets.values()) {
-    for (const type of t.changed) {
-      const name = rootName(t.doc, type);
-      if (name === null || !t.roots.has(name)) return fail('outside-body');
+    const spans = [...[...t.inserted].map(([client, [from, to]]) => ({ client, clock: from, len: to - from })), ...t.groups.flat(), ...t.deleted];
+    for (const span of spans) {
+      const end = Math.min(span.clock + span.len, Y.getState(t.doc.store, span.client));
+      for (const struct of structsIn(t.doc.store, span.client, span.clock, end)) {
+        if (!(struct instanceof Y.Item)) continue;
+        const at = placementOf(t.kind, t.doc, struct);
+        if (at === null || !channelAllows(t.kind, at, contentKind(struct.content))) return fail('outside-body');
+      }
     }
   }
 
@@ -308,17 +568,6 @@ function insertedLive(store: Y.Doc['store'], inserted: Inserted, ownDeletes: rea
   return true;
 }
 
-function rootName(doc: Y.Doc, type: Y.AbstractType<unknown>): string | null {
-  let top = type;
-  while (top._item !== null) {
-    const parent = top._item.parent;
-    if (!(parent instanceof Y.AbstractType)) return null;
-    top = parent;
-  }
-  for (const [name, shared] of doc.share) if (shared === top) return name;
-  return null;
-}
-
 const isInserted = (inserted: Inserted, id: Y.ID): boolean => {
   const range = inserted.get(id.client);
   return !!range && range[0] <= id.clock && id.clock < range[1];
@@ -366,7 +615,7 @@ export function canonical(value: unknown): string {
   });
 }
 
-/** A shared value as plain data, recursively: every attribute, character, format and nested type. */
+/** A shared value as plain data, recursively, for G7's before-and-after comparison (not the preview). */
 export function yValue(value: unknown): unknown {
   if (value instanceof Y.XmlText) {
     return { t: 'xmltext', attrs: attrsOf(value), delta: deltaOf(value) };
@@ -412,15 +661,63 @@ export interface Projection {
   payloads: Map<string, unknown>;
 }
 
-/** A payload doc as a reviewer is shown it: its text (with any formatting and attributes) and its compound fields. */
+/** A type's live sequence as the preview shows it: runs of characters as strings, every other item by its content. */
+function seqValue(doc: DocKind, root: string, type: Y.AbstractType<unknown>): unknown[] {
+  const seq: unknown[] = [];
+  for (let item = type._start; item; item = item.right) {
+    if (item.deleted) continue;
+    const value = contentValue(doc, root, item.content);
+    if (typeof value === 'string' && typeof seq.at(-1) === 'string') seq[seq.length - 1] += value;
+    else seq.push(value);
+  }
+  return seq;
+}
+
+/** A type's live keys as the preview shows them, sorted, as [key, value] pairs. */
+function keysValue(doc: DocKind, root: string, type: Y.AbstractType<unknown>): [string, unknown][] {
+  return [...type._map]
+    .filter(([, item]) => !item.deleted)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([key, item]) => [key, contentValue(doc, root, item.content)]);
+}
+
+/**
+ * A type as the preview shows it: exactly the channels the table lists for its kind (§4.4), recursively. Nothing else
+ * is rendered, because G3 refuses every struct a record would write or remove anywhere else.
+ */
+export function channelValue(doc: DocKind, root: string, type: Y.AbstractType<unknown>, kind: TypeKind): unknown {
+  const rows = CHANNELS.filter((c) => c.doc === doc && c.root === root && c.parent === kind);
+  return {
+    type: kind,
+    ...(type instanceof Y.XmlElement ? { name: type.nodeName } : {}),
+    ...(rows.some((c) => c.sub === 'seq') ? { seq: seqValue(doc, root, type) } : {}),
+    ...(rows.some((c) => c.sub === 'key') ? { keys: keysValue(doc, root, type) } : {}),
+  };
+}
+
+/** One item's content: characters as a string, a type by its channels, anything else tagged by its content kind. */
+function contentValue(doc: DocKind, root: string, content: Y.Item['content']): unknown {
+  if (content instanceof Y.ContentString) return content.str;
+  if (content instanceof Y.ContentType) {
+    const kind = typeKind(content.type);
+    return kind === null ? { type: null } : channelValue(doc, root, content.type as Y.AbstractType<unknown>, kind);
+  }
+  if (content instanceof Y.ContentFormat) return { Format: [content.key, content.value] };
+  if (content instanceof Y.ContentDoc) return { Doc: { guid: content.doc.guid, opts: content.opts } };
+  if (content instanceof Y.ContentBinary) return { Binary: Array.from(content.content) };
+  return { [contentKind(content) ?? 'Unknown']: content.getContent() };
+}
+
+/** A payload doc as a reviewer is shown it: its text and its compound fields, by the table. */
 export function payloadValueOf(doc: Y.Doc): unknown {
-  const text = doc.getText('payload');
-  return { text: text.toString(), attrs: attrsOf(text), delta: deltaOf(text), map: yValue(doc.getMap('payload-map')) };
+  const seq = seqValue('payload', 'payload', doc.getText('payload') as unknown as Y.AbstractType<unknown>);
+  const text = seq.length === 0 ? '' : seq.length === 1 && typeof seq[0] === 'string' ? seq[0] : seq;
+  return { text, map: keysValue('payload', 'payload-map', doc.getMap('payload-map') as unknown as Y.AbstractType<unknown>) };
 }
 
 /**
  * Projects `doc`. `lexical` gives each top-level block's recursive exportJSON by item id (the caller binds the
- * converter editor); the Yjs-level value is always included, so the hash covers every attribute either way.
+ * converter editor); the Yjs-level value, by the channel table, is always included, so the hash covers every channel.
  * `payload` resolves the payload docs live elements name, plus each id in `also` (the payloads a record writes, named
  * or not); each is projected in full.
  */
@@ -436,9 +733,7 @@ export function projectDoc(
   for (let item = root._start; item; item = item.right) {
     if (item.deleted) continue;
     const key = itemKey(item.id);
-    const content = item.content.getContent();
-    const y = content.length === 1 ? yValue(content[0]) : content.map(yValue);
-    blocks.set(key, { y, lexical: lexical?.get(key) ?? null });
+    blocks.set(key, { y: contentValue('body', 'root', item.content), lexical: lexical?.get(key) ?? null });
     order.push(key);
   }
   const payloads = new Map<string, unknown>();
@@ -446,7 +741,7 @@ export function projectDoc(
     const held = payload?.(id);
     payloads.set(id, held ? payloadValueOf(held) : null);
   }
-  return { note: attrsOf(root), blocks, order, payloads };
+  return { note: keysValue('body', 'root', root as unknown as Y.AbstractType<unknown>), blocks, order, payloads };
 }
 
 export interface Hunk {

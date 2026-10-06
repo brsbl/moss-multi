@@ -4,7 +4,10 @@
 // `suggest_leases` and wires the doc-socket frames.
 import * as Y from 'yjs';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
-import { BODY_DOC, BODY_ROOTS, type IdSpan, type RecordMeta, type RecordOp } from '@moss-multi/core/suggest/apply';
+import {
+  BODY_DOC, BODY_ROOTS, checkStructs, placementOf, type DocKind, type IdSpan, type Placement, type RecordMeta, type RecordOp,
+} from '@moss-multi/core/suggest/apply';
+import { payloadDocsFor } from '../payload-docs.ts';
 import { createRecord, opsOf, partsOf, patchMeta, readMeta, readRecord, recordIds, SUGGESTIONS_ORIGIN } from '../suggest/records.ts';
 
 export interface SuggestPrincipal {
@@ -43,6 +46,7 @@ export type IngestRefusal =
   | 'open-cap'
   | 'ops-cap'
   | 'node-type'
+  | 'channel'
   | 'target';
 
 export type IngestResult = { ok: true; record: string; doc: string; clocks: Record<number, number> } | { ok: false; reason: IngestRefusal };
@@ -52,7 +56,12 @@ export interface IngestOptions {
   /** Registered Lexical node types (`__type` values). */
   registry: ReadonlySet<string>;
   now?: () => number;
+  /** The note's payload doc `id` as the DO holds it, to place a payload op's structs; the in-memory payloads by default. */
+  payloadDoc?: (id: string) => Y.Doc | undefined;
 }
+
+/** Where each struct of a record's earlier ops sits, per doc and client, so a later op's structs can be placed. */
+type Placed = Map<string, Map<number, { clock: number; len: number; at: Placement }[]>>;
 
 const RECORD_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
@@ -60,6 +69,7 @@ export class SuggestIngest {
   readonly leases = new Map<number, Lease>();
   /** Bytes of ops per open record, so the caps never re-read the doc. */
   readonly #bytes = new Map<string, number>();
+  readonly #placed = new Map<string, Placed>();
 
   constructor(
     readonly doc: Y.Doc,
@@ -67,7 +77,15 @@ export class SuggestIngest {
   ) {
     for (const id of recordIds(doc)) {
       const record = readRecord(doc, id);
-      if (record?.meta.status === 'open') this.#bytes.set(id, record.ops.reduce((sum, op) => sum + op.update.byteLength, 0));
+      if (record?.meta.status !== 'open') continue;
+      this.#bytes.set(id, record.ops.reduce((sum, op) => sum + op.update.byteLength, 0));
+      for (const op of record.ops) {
+        try {
+          this.#place(id, op.doc, Y.decodeUpdate(op.update));
+        } catch {
+          // An undecodable stored op is accept's to refuse.
+        }
+      }
     }
   }
 
@@ -91,10 +109,10 @@ export class SuggestIngest {
     const target = this.#target(principal, record);
     if (!target.ok) return target;
     let meta: { from: Map<number, number>; to: Map<number, number> };
-    let structs: (Y.Item | Y.GC | Y.Skip)[];
+    let decoded: ReturnType<typeof Y.decodeUpdate>;
     try {
       meta = Y.parseUpdateMeta(update);
-      structs = Y.decodeUpdate(update).structs;
+      decoded = Y.decodeUpdate(update);
     } catch {
       return { ok: false, reason: 'malformed' };
     }
@@ -104,16 +122,20 @@ export class SuggestIngest {
       if (!lease || lease.principal !== principal.id || (lease.record !== null && !chain.has(lease.record))) return { ok: false, reason: 'lease' };
       if (from > (lease.nextClock.get(doc) ?? 0)) return { ok: false, reason: 'clock-gap' };
     }
-    // An early, O(frame) reject of node types Lexical would not bind; G7 is the full check at accept.
-    for (const struct of doc === BODY_DOC ? structs : []) {
-      if (!(struct instanceof Y.Item) || struct.parentSub !== '__type') continue;
-      const value = struct.content.getContent().at(-1);
-      if (typeof value !== 'string' || !this.options.registry.has(value)) return { ok: false, reason: 'node-type' };
-    }
+    // The caps first, so an oversized frame is never placed.
     const bytes = (this.#bytes.get(target.id) ?? 0) + update.byteLength;
     if (bytes > SUGGEST_CAPS.recordOpsBytes) return { ok: false, reason: 'record-cap' };
     if (this.#openBytes() + update.byteLength > this.options.stateCap * SUGGEST_CAPS.openOpsShare) return { ok: false, reason: 'ops-cap' };
     if (target.create && this.#openCount(principal.id) >= SUGGEST_CAPS.openPerPrincipal) return { ok: false, reason: 'open-cap' };
+    // G3 at ingest (suggestions.md §4.4): every struct this frame writes sits in a channel of the table.
+    const placed = this.#place(target.id, doc, decoded, true);
+    if (!placed) return { ok: false, reason: 'channel' };
+    // An early, O(frame) reject of node types Lexical would not bind; G7 is the full check at accept.
+    for (const struct of doc === BODY_DOC ? decoded.structs : []) {
+      if (!(struct instanceof Y.Item) || struct.parentSub !== '__type') continue;
+      const value = struct.content.getContent().at(-1);
+      if (typeof value !== 'string' || !this.options.registry.has(value)) return { ok: false, reason: 'node-type' };
+    }
 
     const now = this.options.now?.() ?? Date.now();
     this.doc.transact(() => {
@@ -123,6 +145,7 @@ export class SuggestIngest {
       patchMeta(this.doc, target.id, { updatedAt: now, clients: [...new Set([...current.clients, ...meta.from.keys()])] });
     }, SUGGESTIONS_ORIGIN);
     this.#bytes.set(target.id, bytes);
+    placed();
     const clocks: Record<number, number> = {};
     for (const [client, to] of meta.to) {
       const lease = this.leases.get(client)!;
@@ -152,6 +175,49 @@ export class SuggestIngest {
     }, SUGGESTIONS_ORIGIN);
     this.#bytes.set(target.id, this.#bytes.get(target.id) ?? 0);
     return { ok: true, record: target.id, doc: BODY_DOC, clocks: {} };
+  }
+
+  /**
+   * Places `decoded`'s structs against the record's earlier ops and the note's docs: O(structs × (log n + depth)),
+   * with depth capped at MAX_DEPTH. Returns null when a struct is outside the channel table, else a commit that
+   * indexes the placements for later ops; with `defer` unset it commits at once.
+   */
+  #place(record: string, doc: string, decoded: ReturnType<typeof Y.decodeUpdate>, defer = false): (() => void) | null {
+    const kind: DocKind = doc === BODY_DOC ? 'body' : 'payload';
+    const index = this.#placed.get(record)?.get(doc);
+    const held = doc === BODY_DOC ? this.doc : (this.options.payloadDoc ?? ((key: string) => payloadDocsFor(this.doc).get(key)))(doc);
+    const seen = new Map<Y.Item, Placement | null>();
+    const lookup = (id: Y.ID): Placement | null => {
+      const hit = spanAt(index?.get(id.client) ?? [], id.clock);
+      if (hit) return hit.at;
+      if (!held || id.clock >= Y.getState(held.store, id.client)) return null;
+      const struct = Y.getItem(held.store, id);
+      if (!(struct instanceof Y.Item)) return null;
+      if (!seen.has(struct)) seen.set(struct, placementOf(kind, held, struct));
+      return seen.get(struct)!;
+    };
+    const placed = checkStructs(kind, decoded, lookup);
+    if (!placed) return null;
+    const commit = () => {
+      let byDoc = this.#placed.get(record);
+      if (!byDoc) this.#placed.set(record, (byDoc = new Map()));
+      let byClient = byDoc.get(doc);
+      if (!byClient) byDoc.set(doc, (byClient = new Map()));
+      const sorted = new Set<number>();
+      for (const { struct, at } of placed) {
+        const list = byClient.get(struct.id.client);
+        const entry = { clock: struct.id.clock, len: struct.length, at };
+        if (!list) byClient.set(struct.id.client, [entry]);
+        else {
+          if (list[list.length - 1].clock > entry.clock) sorted.add(struct.id.client);
+          list.push(entry);
+        }
+      }
+      // A frame re-sending clocks below a client's last: one sort per client, not one splice per struct.
+      for (const client of sorted) byClient.get(client)!.sort((a, b) => a.clock - b.clock);
+    };
+    if (!defer) commit();
+    return commit;
   }
 
   /** An editor's body frame naming a leased client id is refused `protected-type` (T5.2). O(frame). */
@@ -237,6 +303,19 @@ export class SuggestIngest {
     }
     return quote.slice(0, 1024);
   }
+}
+
+/** The entry of a clock-sorted list holding `clock`, by binary search. */
+function spanAt<T extends { clock: number; len: number }>(list: readonly T[], clock: number): T | undefined {
+  let lo = 0;
+  let hi = list.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (clock < list[mid].clock) hi = mid - 1;
+    else if (clock >= list[mid].clock + list[mid].len) lo = mid + 1;
+    else return list[mid];
+  }
+  return undefined;
 }
 
 function inBody(doc: Y.Doc, item: Y.Item): boolean {

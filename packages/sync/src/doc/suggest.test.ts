@@ -1,6 +1,7 @@
 // T5.0 spike: suggest-mode ingest is bookkeeping in O(frame) (docs/design/suggestions.md §3, §6). Leases, the
 // `suggest-ops` checks, `suggest-delete` validation, and test 8: the cost of ingest at the frame cap and of the
 // body-frame lease check does not grow with the doc.
+import * as encoding from 'lib0/encoding';
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
@@ -107,6 +108,28 @@ describe('T5.0 ingest: leases and suggest-ops @p:mean-2', () => {
     expect(ingest.ops(OTHER_SUGGESTER, 'suggester', 'r1', frame(live, theirs, (doc) => append(doc, paragraph('b'))))).toEqual({ ok: false, reason: 'not-author' });
   });
 
+  it('typing into a paragraph an editor deleted before the frame arrived is not refused at ingest (I6)', () => {
+    const writes: [string, (block: Y.XmlText) => void][] = [
+      ['a first character', (block) => block.insert(0, 'hi')],
+      ['a first property', (block) => block.setAttribute('__indent', 1)],
+    ];
+    for (const [name, write] of writes) {
+      const live = seededBody();
+      const ingest = ingestOn(live);
+      const [lease] = ingest.lease(SUGGESTER.id);
+      // An empty paragraph: the suggester's first struct in it names the paragraph as its explicit parent.
+      append(live, paragraph(''));
+      const root = live.get('root', Y.XmlText);
+      const update = frame(live, lease, (doc) => {
+        const delta = doc.get('root', Y.XmlText).toDelta() as { insert: unknown }[];
+        write(delta.at(-1)!.insert as Y.XmlText);
+      });
+      // An editor deletes the paragraph first; the live doc collects it, leaving a ContentDeleted tombstone.
+      root.delete(root.length - 1, 1);
+      expect(ingest.ops(SUGGESTER, 'suggester', 'r1', update), name).toMatchObject({ ok: true });
+    }
+  });
+
   it('suggest-delete names only live body items no lease wrote, and derives the quote', () => {
     const live = seededBody();
     const ingest = ingestOn(live);
@@ -181,6 +204,31 @@ function measure(paragraphs: number) {
   return { bytes, ops: median(ops), lease: median(lease) };
 }
 
+/**
+ * A crafted frame of `n` one-character deleted structs under the root, its delete set as `n` separate one-clock
+ * ranges (an honest encoder merges them): each struct's delete-set lookup is the channel check's hot path.
+ */
+function deletedRun(client: number, n: number): Uint8Array {
+  const encoder = new Y.UpdateEncoderV1();
+  const rest = encoder.restEncoder;
+  encoding.writeVarUint(rest, 1);
+  encoding.writeVarUint(rest, n);
+  encoder.writeClient(client);
+  encoding.writeVarUint(rest, 0);
+  for (let i = 0; i < n; i++) {
+    const origin = i === 0 ? null : Y.createID(client, i - 1);
+    new Y.Item(Y.createID(client, i), null, origin, null, null, (i === 0 ? 'root' : null) as never, null, new Y.ContentDeleted(1)).write(encoder, 0);
+  }
+  encoding.writeVarUint(rest, 1);
+  encoding.writeVarUint(rest, client);
+  encoding.writeVarUint(rest, n);
+  for (let i = 0; i < n; i++) {
+    encoding.writeVarUint(rest, i);
+    encoding.writeVarUint(rest, 1);
+  }
+  return encoder.toUint8Array();
+}
+
 describe('T5.0 cost: ingest and the lease check are O(frame) @p:mean-2', () => {
   it('a frame at the cap, and the body-frame lease check, cost the same on a small doc and the 1.69 MB doc', () => {
     measure(5);
@@ -193,5 +241,29 @@ describe('T5.0 cost: ingest and the lease check are O(frame) @p:mean-2', () => {
     );
     expect(large.ops).toBeLessThan(small.ops * 3 + 5);
     expect(large.lease).toBeLessThan(small.lease * 3 + 1);
+  });
+
+  it('a frame of many deleted structs and as many delete ranges costs linear in its size (I5)', () => {
+    const time = (n: number) => {
+      const live = seededBody();
+      const ingest = ingestOn(live);
+      const runs: number[] = [];
+      for (let run = 0; run < 3; run++) {
+        const [lease] = ingest.lease(SUGGESTER.id);
+        const update = deletedRun(lease, n);
+        expect(update.byteLength).toBeLessThanOrEqual(SUGGEST_CAPS.recordOpsBytes);
+        const started = performance.now();
+        const result = ingest.ops(SUGGESTER, 'suggester', `deleted-${n}-${run}`, update);
+        runs.push(performance.now() - started);
+        expect(result).toMatchObject({ ok: true });
+      }
+      return median(runs);
+    };
+    time(2_000);
+    const small = time(2_000);
+    const large = time(16_000);
+    console.log(`T5.Ps cost: ${small.toFixed(2)} ms for 2 000 deleted structs vs ${large.toFixed(2)} ms for 16 000`);
+    // Linear is 8x; a per-struct scan of the delete set is 64x.
+    expect(large).toBeLessThan(small * 12 + 40);
   });
 });
