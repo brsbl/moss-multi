@@ -52,8 +52,12 @@ export const CONVERTER_CASES: Record<string, ConverterCase> = {
   'code spans': { run: '`a` ' },
   links: { run: '[a](b) ' },
   'wiki links': { run: '[[a]] ' },
-  colors: { run: '#ff0000 ', parityBytes: [40, 1_500] },
+  colors: { run: '#ff0000 ', parityBytes: [40, 600] },
   'nested emphasis': { run: '*x _x ', after: 'y', tail: ' x_ x*', parityBytes: [40, 400] },
+  // Openers moss's import normalization rescanned from (markdown/normalize.ts).
+  'escaped blockquote openers': { run: '&lt;blockquote ' },
+  'formatted wiki-link openers': { run: '*[[a' },
+  'isolated asterisks after a URL': { run: ' *a', before: 'quokka https://example.com' },
 };
 
 /** The case's markdown, `bytes` long or just over. */

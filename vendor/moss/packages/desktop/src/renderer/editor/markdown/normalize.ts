@@ -16,6 +16,8 @@ import { normalizeEmbeddableWebUrl } from '../utils/web-embed-classify';
 import { $createCodeBlockNode, markCodeBlockForAutoEdit } from '../nodes/CodeBlockNode';
 import { $createCalloutNode, CalloutNode, parseCalloutContent } from '../nodes/CalloutNode';
 import { $applyTabGroupLayoutMetadata, $applyTableLayoutMetadata, CALLOUT_NESTED_CONTENT_OPTIONS, getCalloutContentTransformers, trimRawWebEmbedUrl } from './transformers';
+// moss-multi seam: linear-match (A§12; SP2)
+import { escapedBlockquoteSearchEnd, replaceFormattedTargets, stripWikiLinkDelimiters } from './linear-match';
 
 type PostImportNormalizeOptions = Pick<NestedContentOptions, 'excludedDependencies'> & {
   layoutMetadata?: NoteLayoutMetadata;
@@ -253,8 +255,9 @@ const escapeHtmlEntitiesOutsideEscapedBlockquotes = (md: string): string => {
   let cursor = 0;
   let escaped = '';
   let match: RegExpExecArray | null;
+  const searchable = md.slice(0, escapedBlockquoteSearchEnd(md)); // moss-multi seam: linear-match (A§12; SP2)
 
-  while ((match = ESCAPED_BLOCKQUOTE_BLOCK_RE.exec(md)) !== null) {
+  while ((match = ESCAPED_BLOCKQUOTE_BLOCK_RE.exec(searchable)) !== null) { // moss-multi seam: linear-match (A§12; SP2)
     const matchStart = match.index;
     const matchEnd = matchStart + match[0].length;
 
@@ -575,10 +578,8 @@ const UNICODE_SPACE_SEPARATOR_RE = /[\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000
  *  literal text after import. E.g. **[[My Note]]** → [[My Note]]. */
 export const stripFormattingAroundIsolatedWikiLinks = (md: string): string => {
   return mapOutsideFencedCodeBlocks(md, (segment) => {
-    return segment.replace(
-      /(\*{1,2}|~~)\[\[((?:[^\]]|\](?!\]))+)\]\]\1/g,
-      '[[$2]]'
-    );
+    // moss-multi seam: linear-match (A§12; SP2): segment.replace(/(\*{1,2}|~~)\[\[((?:[^\]]|\](?!\]))+)\]\]\1/g, '[[$2]]')
+    return stripWikiLinkDelimiters(segment);
   });
 };
 
@@ -647,7 +648,8 @@ export const normalizeFormattingAroundEmbedPillTargets = (md: string): string =>
         `${escapedDelimiter}([^\\n]*?(?:https?:\\/\\/|\\?\\[)[^\\n]*?)${escapedDelimiter}`,
         'g'
       );
-      return value.replace(regExp, (fullMatch, content: string) => {
+      // moss-multi seam: linear-match (A§12; SP2): value.replace(regExp, ...), line by line up to the last match
+      return replaceFormattedTargets(value, delimiter, regExp, (fullMatch, content: string) => {
         const normalized = normalizeFormattedEmbedPillTargetsInContent(content, delimiter);
         return normalized ?? fullMatch;
       });

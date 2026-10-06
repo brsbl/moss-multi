@@ -26,9 +26,12 @@ import {
 // scan the whole paragraph per match) keeps the rest of its text as written, unconverted.
 // linear-import.golden.test.ts holds this to Lexical's own import over the corpus and fuzz.
 
-/** Work budget per line, in rough character operations: perChar × the line's length + base. */
-export const LINEAR_IMPORT_LIMITS = { perChar: 256, base: 1 << 20 };
-/** Lines whose budget ran out (left partly unconverted). */
+/**
+ * Work budgets, in rough character operations: per line, perChar × the line's length + base; per import (nested
+ * imports, such as table cells, share their outer import's), perChar × the markdown's length + importBase.
+ */
+export const LINEAR_IMPORT_LIMITS = { perChar: 256, base: 1 << 20, importBase: 1 << 22 };
+/** Lines whose budget ran out (left partly unconverted), over all imports. */
 export const linearImportStats = { cut: 0 };
 
 // Rough costs, in character operations, of Lexical node work.
@@ -47,8 +50,17 @@ export function $convertFromMarkdownString(
   shouldPreserveNewLines = false,
   shouldMergeAdjacentLines = false,
 ): void {
-  $lexicalConvertFromMarkdownString(markdown, importTransformers(transformers), node, shouldPreserveNewLines, shouldMergeAdjacentLines);
+  const outer = importBudget;
+  importBudget ??= new Budget(LINEAR_IMPORT_LIMITS.perChar * markdown.length + LINEAR_IMPORT_LIMITS.importBase);
+  try {
+    $lexicalConvertFromMarkdownString(markdown, importTransformers(transformers), node, shouldPreserveNewLines, shouldMergeAdjacentLines);
+  } finally {
+    importBudget = outer;
+  }
 }
+
+// The budget of the import running, if any.
+let importBudget: Budget | null = null;
 
 // moss's raw-URL and color callbacks call these once per match, on the text of the match's part. Neither can be
 // true without a backtick before the offset, so that is looked for first and the scan of the whole text skipped.
@@ -130,15 +142,19 @@ interface Split {
 // Lexical's outer call already unescapes the top node after the driver returns, so the top gets no unescape here.
 function $importInline(top: TextNode, index: FormatIndex, matchers: TextMatchTransformer[]): void {
   const lineLength = top.getTextContentSize();
-  const budget = new Budget(LINEAR_IMPORT_LIMITS.perChar * lineLength + LINEAR_IMPORT_LIMITS.base);
+  const lineLimit = LINEAR_IMPORT_LIMITS.perChar * lineLength + LINEAR_IMPORT_LIMITS.base;
+  const budget = new Budget(importBudget ? Math.min(lineLimit, importBudget.left) : lineLimit);
+  const total = budget.left;
   let applied = 0;
   const replaceCost = (transformer: TextMatchTransformer, match: RegExpMatchArray) => {
     const start = match.index ?? 0;
+    const input = match.input ?? '';
     const read = REPLACE_READS.get(transformer.importRegExp?.source ?? '');
     if (read === 'match') return (start + match[0].length) / NATIVE;
-    if (read === 'backticks') return (start + match[0].length) / NATIVE + (backtickBefore(match.input ?? '', start) ? (match.input ?? '').length : 0);
-    // Others may read the paragraph: its text, and its children, about one per match applied so far.
-    return lineLength + 2 * applied;
+    // Two scans of the whole text, character by character.
+    if (read === 'backticks') return (start + match[0].length) / NATIVE + (backtickBefore(input, start) ? 4 * input.length : 0);
+    // Others may read the whole paragraph several times over: its text, and its children (about one per match so far).
+    return 8 * (lineLength + applied);
   };
   const stack: Frame[] = [{ node: top, context: null, offset: 0, top: true }];
   try {
@@ -202,6 +218,8 @@ function $importInline(top: TextNode, index: FormatIndex, matchers: TextMatchTra
   } catch (error) {
     if (error !== OVER_BUDGET) throw error;
     linearImportStats.cut += 1;
+  } finally {
+    if (importBudget && Number.isFinite(total)) importBudget.left -= total - budget.left;
   }
 }
 

@@ -112,7 +112,25 @@ function* lexicalLinkStarts(text: string): Iterable<number> {
   const destination = /\((?:([^()\s]+)(?:\s"((?:[^"]*\\")*[^"]*)"\s*)?)\)/y;
   let good = -1;
   let scanned = 0;
-  let lineStop = -1;
+  // text[clearFrom, clearTo) holds no line terminator; `terminator`, once found, is the first one at or after clearFrom.
+  let clearFrom = 0;
+  let clearTo = 0;
+  let terminator = -1;
+  const terminatorWithin = (from: number, to: number): boolean => {
+    if (terminator >= from) return terminator <= to;
+    if (terminator >= 0 || from > clearTo) {
+      clearFrom = from;
+      clearTo = from;
+      terminator = -1;
+    }
+    for (; clearTo <= to && clearTo < text.length; clearTo += 1) {
+      if (isLineTerminator(text.charCodeAt(clearTo))) {
+        terminator = clearTo;
+        return true;
+      }
+    }
+    return false;
+  };
   for (let i = text.indexOf('['); i >= 0; i = text.indexOf('[', i + 1)) {
     if (good < i + 2) {
       good = -1;
@@ -125,8 +143,8 @@ function* lexicalLinkStarts(text: string): Iterable<number> {
       if (good < 0) return;
       scanned = good + 1;
     }
-    if (lineStop <= i) lineStop = lineEnd(text, i + 1);
-    if (good < lineStop) yield i;
+    // The label `.+?` cannot cross a line terminator, so one between the opener and the `]` rules the opener out.
+    if (!terminatorWithin(i + 1, good)) yield i;
   }
 }
 
@@ -447,4 +465,23 @@ export function withLinearRegExps(transformers: Transformer[]): Transformer[] {
     }
     return (copy ?? transformer) as Transformer;
   });
+}
+
+// ---- moss's import normalization (markdown/normalize.ts). Tests-first stubs: the regexes themselves.
+
+export function escapedBlockquoteSearchEnd(md: string): number {
+  return md.length;
+}
+
+export function stripWikiLinkDelimiters(segment: string): string {
+  return segment.replace(/(\*{1,2}|~~)\[\[((?:[^\]]|\](?!\]))+)\]\]\1/g, '[[$2]]');
+}
+
+export function replaceFormattedTargets(
+  value: string,
+  _delimiter: string,
+  regExp: RegExp,
+  replacer: (fullMatch: string, content: string) => string,
+): string {
+  return value.replace(regExp, replacer);
 }
