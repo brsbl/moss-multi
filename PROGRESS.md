@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 85% done** (80 of 94 planned tasks verified)
+**Overall: 79% done** (81 of 102 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -9,7 +9,7 @@
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 15 / 15 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 9 / 9 | in progress |
-| M5 Suggestions | Suggest mode, vetting, accept/reject | 4 / 5 | in progress |
+| M5 Suggestions | Suggest mode, vetting, accept/reject | 5 / 5 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
@@ -101,6 +101,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-06 — T4.S4 verified: a file-backed moss editor that no pane binds keeps moss's own comment path, so a person can reply to, edit, delete and resolve sidecar comment threads locally and see them after a reload, while a shared editor whose collaboration plugin is down refuses comment writes.
 - 2026-10-06 — T3.10 verified: a host such as the bb Moss viewer plugin can read the viewer's or editor's current selection as text, markdown, source file lines, heading path and blocks, and can show moss's Share with Agent button for it.
 - 2026-10-06 — T5.1 verified: a person with suggest access can switch a shared note into Suggest mode and type, delete and edit code and other blocks as suggestions shown inline beside the body, offline edits continue after a reconnect, and a demoted editor drops to a read-only body with a reason.
+- 2026-10-06 — T5.3 verified: an editor can review each suggestion on a card with a preview of exactly what it changes and accept or reject it, the suggester can withdraw it, accept re-checks access and the reviewed preview before touching the body, and reject or withdraw leave the body byte-identical.
 
 ## T1.1s identity audit
 
@@ -436,3 +437,8 @@ Local browser verification remains assigned to the independent checker under the
 - T5.1 checker P2 (the code-block wedge's hover preview cannot be reached with the mouse): in Edit mode the wedge for a suggested payload edit sits under moss's block gap-cursor overlay (z-20), so the proposed-code preview never shows on hover; the inline text preview box is also too narrow and wraps one word per line.
 - T5.1 checker P2 (Suggest mode turns off all of MathCalculationPlugin, so a typed formula cannot be committed): `backgroundWriters=false` gates the whole plugin, including the Space and Enter commit commands; the census only pastes formula markup.
 - T5.1 checker P2 (routing and caret capture treat a continuation lease's accepted prefix as pending): `ownClients` works per client, so after an accept during an outage Backspace on the accepted prefix takes the fork's native-delete path instead of a strike, and caret capture skips that prefix; paint already checks per item against B's state vector.
+- T5.3 checker P2 ('Copy suggested text' copies insertion history and trims whitespace): suggestedText joins every inserted ContentString from the recorded updates, ignoring later deletions and document order, then trims; a suggestion that inserts then replaces text copies both versions, and code indentation is lost.
+- T5.3 checker P2 (review hit-testing includes the accepted prefix of a continuation record): the click predicate matches every item from the record's clients, so clicking unpainted accepted text can open the continuation's card and stop a link there from navigating; painting already uses the body-clock boundary.
+- T5.3 checker P2 (anonymous share-link readers get 401 on preview): handleSuggestion refuses anonymous principals before resolving the share token, so a reader on a valid link cannot load a preview.
+- T5.3 checker P2 (no real-DocDO regression test for re-authorizing a review after access changes): REST tests use a stubbed DocDO and the harness DocDO has a null access checker, so review after revocation, demotion, session end or a revoked share token is uncovered; Codex found no bypass.
+- T5.3 checker P2 (red run shows some negative controls failing only because a symbol was missing): in red run 37517383678 five of ten failures came from rowSegments not existing yet and the trim negative control passed, so the red run does not show both semantic negative controls failing for the intended reason.
