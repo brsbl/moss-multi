@@ -747,6 +747,23 @@ describe('T4.4 edit, delete and reactions through the DocDO @p:mean-1', () => {
     expect(anchorText(woken.dobj.document, anchorOf(woken, 'r1')!), 'persisted, and indexed again at start').toBe('brown fox');
   });
 
+  it('promotes the reply the DocDO wrote first, even within one second and across a restart', async () => {
+    const opened = await start(openDoc());
+    await opened.dobj.create({ folderId: 'folder', ownerId: 'owner', markdown: 'The quick brown fox jumps over the lazy dog.' });
+    const { text, units } = liveUnits(opened.dobj.document);
+    const at = text.indexOf('lazy dog');
+    const anchor = { kind: 'text' as const, start: encodePosition(units[at], 0), end: encodePosition(units[at + 'lazy dog'.length - 1], -1) };
+    expect(await opened.dobj.createComment({ author: 'ada', id: 'root', text: 'root', anchor })).toMatchObject({ ok: true });
+    // The clock is frozen: every record below shares one createdAt second, and the ids sort against creation order.
+    expect(await opened.dobj.createComment({ author: 'ben', id: 'zz-first', text: 'first', parentId: 'root' })).toMatchObject({ ok: true });
+    const woken = await start(wake(opened));
+    expect(await woken.dobj.createComment({ author: 'cara', id: 'mm-second', text: 'second', parentId: 'root' })).toMatchObject({ ok: true });
+    expect(await woken.dobj.createComment({ author: 'dan', id: 'aa-third', text: 'third', parentId: 'root' })).toMatchObject({ ok: true });
+    expect(await woken.dobj.deleteComment({ id: 'root', author: 'ada', scope: 'comment' }), 'the first reply written leads').toMatchObject({ ok: true, promoted: 'zz-first' });
+    expect(await woken.dobj.deleteComment({ id: 'zz-first', author: 'ben', scope: 'comment' }), 'and then the second').toMatchObject({ ok: true, promoted: 'mm-second' });
+    expect(json(woken)['c:aa-third']).toMatchObject({ parentId: 'mm-second' });
+  });
+
   it('reactions toggle per principal: each person adds and removes only their own', async () => {
     const opened = await thread();
     const reactions = () => (json(opened)['c:root'] as { reactions: Record<string, string[]> }).reactions;

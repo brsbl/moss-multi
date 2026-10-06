@@ -279,6 +279,13 @@ describe('comment notifications: mentions and replies reach the bell @p:ppl-3 @p
     verdict = { ok: true, id: 'a2', quote: null, rootAuthor: agent.id };
     expect((await create(ada, { id: 'a2', text: 'Reply to the agent', parentId: 'a1' })).status).toBe(201);
     expect((await d1.db.prepare('SELECT COUNT(*) AS n FROM notifications').first<{ n: number }>())!.n, 'nor a reply to an agent').toBe(before);
+    // An agent row would fail notifications.user_id's key and take the whole batch with it: the person's row proves
+    // the agent was filtered out, not refused.
+    verdict = { ok: true, id: 'a3', quote: 'brown fox' };
+    const eves = (await rows(eve.id)).length;
+    expect((await create(ada, { id: 'a3', text: `${mention('Scribe', agent.id)} and ${mention('Eve', eve.id)}`, anchor: { start: 'AAA=', end: 'AAA=' } })).status).toBe(201);
+    expect(await rows(eve.id), 'the person mentioned beside the agent is notified').toHaveLength(eves + 1);
+    expect(await rows(agent.id)).toEqual([]);
   });
 
   it('a mention of someone who cannot open the note writes nothing, and a lost grant hides the notice', async () => {
