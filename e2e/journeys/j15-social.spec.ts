@@ -139,6 +139,11 @@ test("j15-social: an @mention reaches B's bell, and a reply reaches the root aut
   const { ada, id, adaPrincipal } = note;
   const { actor: ben, principal: benPrincipal } = await peer(actors, note, 'ben', 'commenter');
   await expect(bell(ben, id), 'Ben has nothing unread').toHaveAccessibleName('Notifications');
+  // Ben accepting Ada's invite told her so; she reads that first.
+  await expect(bell(ada, id)).toHaveAccessibleName('Notifications, 1 unread', { timeout: PEER_TIMEOUT });
+  await bell(ada, id).click();
+  await ada.page.getByRole('button', { name: 'Mark all read' }).click();
+  await ada.page.keyboard.press('Escape');
   await expect(bell(ada, id), 'Ada has nothing unread').toHaveAccessibleName('Notifications');
 
   await select(ada, id, 'quick brown');

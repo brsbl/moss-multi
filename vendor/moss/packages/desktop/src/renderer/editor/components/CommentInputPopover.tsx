@@ -27,6 +27,7 @@ import {
 import { imagesApi } from '../../api/electron';
 import { acquireCommentUiOpenFlag } from '../utils/comment-ui-open-flag';
 import { resolveCanvasCollisionBoundary } from '../utils/canvas-collision-boundary';
+import { MentionScope } from '@moss-multi/host/comments/mentions'; // moss-multi seam: comments (comments.md §12)
 
 export interface CommentInputPopoverProps {
   /** Whether the popover is open */
@@ -242,6 +243,7 @@ export function CommentInputPopover({
   );
 
   return (
+    <MentionScope docId={noteId}>{/* moss-multi seam: comments: the composer's @ offers this note's people */}
     <Popover.Root open={isVisible} onOpenChange={handleRootOpenChange}>
       <Popover.Anchor virtualRef={virtualRef} />
       <Popover.Portal>
@@ -307,6 +309,7 @@ export function CommentInputPopover({
         </Popover.Content>
       </Popover.Portal>
     </Popover.Root>
+    </MentionScope>
   );
 }
 

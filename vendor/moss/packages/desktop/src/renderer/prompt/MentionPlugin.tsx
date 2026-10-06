@@ -23,6 +23,8 @@ import {
   refreshConnectedFolderEntriesAtom
 } from '../state/granted-dirs-atoms';
 import { $createMentionNode, $isMentionNode } from './MentionNode';
+// moss-multi seam: comments (comments.md §12): a comment's @ menu offers its note's people first
+import { PERSON, peopleMatching, useMentionDoc, withPeople } from '@moss-multi/host/comments/mentions';
 
 const DEFAULT_MENTION_TRIGGER: TypeaheadTriggerConfig = {
   trigger: '@',
@@ -56,6 +58,7 @@ export function MentionPlugin({
   const connectedFolderEntries = useAtomValue(connectedFolderEntriesAtom);
 
   const cacheRefreshedRef = useRef(false);
+  const mentionDoc = useMentionDoc(); // moss-multi seam: comments
 
   // "Connect a folder..." footer — self-contained, available in all mention contexts
   const handleConnectFolder = useCallback(async () => {
@@ -88,18 +91,18 @@ export function MentionPlugin({
       // updates the menu if new entries arrive while open.
       if (!cacheRefreshedRef.current) {
         cacheRefreshedRef.current = true;
-        return (async () => {
+        return withPeople(peopleMatching(mentionDoc, query, true), (async () => { // moss-multi seam: comments
           const refreshedDirs = await store.set(refreshGrantedDirsAtom);
           void store.set(refreshConnectedFolderEntriesAtom);
           return mentionSearch(query, store, {
             grantedDirs: refreshedDirs ?? grantedDirs,
             connectedFolderEntries
           });
-        })();
+        })());
       }
-      return mentionSearch(query, store, { grantedDirs, connectedFolderEntries });
+      return withPeople(peopleMatching(mentionDoc, query), mentionSearch(query, store, { grantedDirs, connectedFolderEntries })); // moss-multi seam: comments
     },
-    [connectedFolderEntries, grantedDirs, store]
+    [connectedFolderEntries, grantedDirs, mentionDoc, store]
   );
 
   const onSelect = useCallback(
@@ -119,7 +122,7 @@ export function MentionPlugin({
         anchorNode.setTextContent(before);
 
         const dataStr = typeof item.data === 'string' ? item.data : '';
-        const mentionType = dataStr === 'directory' || dataStr === 'connected-file' || dataStr.startsWith('connected-subdir:')
+        const mentionType = dataStr === PERSON ? 'person' /* moss-multi seam: comments */ : dataStr === 'directory' || dataStr === 'connected-file' || dataStr.startsWith('connected-subdir:')
           ? 'directory'
           : dataStr === 'folder' ? 'folder'
           : 'note';

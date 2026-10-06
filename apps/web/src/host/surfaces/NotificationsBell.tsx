@@ -33,6 +33,8 @@ export function timeAgo(at: number, now = Date.now()): string {
 /** Glyphdown's notice copy. */
 export function noticeText(notice: Notice): string {
   const { title, kind } = notice.target;
+  if (notice.type === 'mention') return `${notice.by} mentioned you in “${title}”`;
+  if (notice.type === 'comment-reply') return `${notice.by} replied to your comment in “${title}”`;
   if (notice.type === 'invite-accepted') {
     const via = notice.invitedEmail ? ` (invite sent to ${notice.invitedEmail})` : '';
     return `${notice.by} accepted your invite to “${title}”${via}`;

@@ -13,7 +13,7 @@ type Store = ReturnType<typeof useStore>;
 const COLOR: Record<CommentRecord['source'], number> = { user: 0, agent: 3, external: 4 };
 export const colorOf = (record: Pick<CommentRecord, 'source'>): number => COLOR[record.source] ?? 0;
 
-/** moss's NoteComment plus what the web adds: `author`, `authorLabel`, and `detached` and `quote` on a root. */
+/** moss's NoteComment plus what the web adds: `author`, `authorLabel`, `reactions`, and `detached` and `quote` on a root. */
 export interface ProjectedComment {
   id: string;
   text: string;
@@ -26,6 +26,7 @@ export interface ProjectedComment {
   resolvedBy?: CommentRecord['source'];
   author: string;
   authorLabel: string;
+  reactions: Record<string, string[]>;
   detached?: boolean;
   quote?: string;
 }
@@ -46,6 +47,7 @@ export function project(docId: string, model: CommentsModel): Record<string, Pro
       ...(record.resolvedBy !== undefined ? { resolvedBy: record.resolvedBy } : {}),
       author: record.author,
       authorLabel: authorLabel(docId, record.author),
+      reactions: record.reactions ?? {},
       ...(anchor ? { detached: anchor.status !== 'anchored', quote: anchor.quote } : {}),
     };
   }

@@ -10,11 +10,11 @@ import type {
   Spread
 } from 'lexical';
 import { $applyNodeReplacement, DecoratorNode } from 'lexical';
-import { FileText, Folder } from 'lucide-react';
+import { FileText, Folder, User } from 'lucide-react';
 
 import { InlinePill } from '../editor/components';
 
-export type MentionType = 'note' | 'directory' | 'folder';
+export type MentionType = 'note' | 'directory' | 'folder' | 'person'; // moss-multi seam: comments (comments.md §12)
 
 export type SerializedMentionNode = Spread<
   {
@@ -148,7 +148,7 @@ export class MentionNode extends DecoratorNode<JSX.Element> {
 
   decorate(): JSX.Element {
     const isFolderMention = this.__mentionType === 'directory' || this.__mentionType === 'folder';
-    const Icon = isFolderMention ? Folder : FileText;
+    const Icon = this.__mentionType === 'person' ? User : isFolderMention ? Folder : FileText; // moss-multi seam: comments
 
     return (
       <InlinePill

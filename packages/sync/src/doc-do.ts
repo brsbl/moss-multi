@@ -17,7 +17,7 @@ import {
 } from './doc/admission.ts';
 import { attach, attachmentOf, awarenessTooLarge, awarenessFrame, receivePresence, leavePresence } from './doc/awareness.ts';
 import { AckCoalescer, DocStore, PERSISTENCE } from './doc/persistence.ts';
-import { coerceSidecar, COMMENT_STATE_SHARE, COMMENTS_PER_DOC, DocComments, type CommentCreate, type CommentResult, type CommentSource } from './doc/comments.ts';
+import { coerceSidecar, COMMENT_STATE_SHARE, COMMENTS_PER_DOC, DocComments, type CommentCreate, type CommentDeleteScope, type CommentResult, type CommentSource } from './doc/comments.ts';
 import { d1Projections, Projections, type ProjectionTarget } from './doc/projections.ts';
 import { withDeadline, type Stamp } from './access-epoch.ts';
 import { publishMeta } from './fanout.ts';
@@ -645,6 +645,33 @@ export class DocDO extends YServer<SyncEnv> {
     if (!comments) throw new Error('DocDO started without comments');
     if (holdsOf(store).size > 0) return { ok: false, status: 404, error: 'trashed' };
     return comments.resolve(input.id, input.resolved, input.by);
+  }
+
+  /** Edits a comment's text; `author` is the Worker's principal and must be the comment's author (comments.md §12). */
+  async editComment(input: { id: string; author: string; text: string }): Promise<CommentResult> {
+    const store = await this.#ready();
+    const comments = this.#comments;
+    if (!comments) throw new Error('DocDO started without comments');
+    if (holdsOf(store).size > 0) return { ok: false, status: 404, error: 'trashed' };
+    return comments.edit(input.id, input.author, input.text, this.#commentRoom(store.stateBytes));
+  }
+
+  /** Deletes a comment or a whole thread as its author; a root delete promotes the oldest reply (comments.md §12). */
+  async deleteComment(input: { id: string; author: string; scope: CommentDeleteScope }): Promise<CommentResult> {
+    const store = await this.#ready();
+    const comments = this.#comments;
+    if (!comments) throw new Error('DocDO started without comments');
+    if (holdsOf(store).size > 0) return { ok: false, status: 404, error: 'trashed' };
+    return comments.remove(input.id, input.author, input.scope);
+  }
+
+  /** Adds or removes the principal's reaction on a comment (comments.md §12). */
+  async reactComment(input: { id: string; principal: string; emoji: string; on: boolean }): Promise<CommentResult> {
+    const store = await this.#ready();
+    const comments = this.#comments;
+    if (!comments) throw new Error('DocDO started without comments');
+    if (holdsOf(store).size > 0) return { ok: false, status: 404, error: 'trashed' };
+    return comments.react(input.id, input.principal, input.emoji, input.on, this.#commentRoom(store.stateBytes));
   }
 
   /**

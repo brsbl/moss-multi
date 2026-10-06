@@ -390,7 +390,7 @@ test('j15-comments: the gutter opens the thread; a reply arrives live, attribute
   await gutter(ben).first().click();
   await expect(thread(ben).getByText('What about speed?'), 'the gutter opens the thread').toBeVisible();
   await expect(thread(ben).getByText(adaPrincipal.name), "Ada's comment carries her name").toBeVisible();
-  await expect(thread(ben).getByRole('button', { name: 'Delete thread' }), 'delete is not offered yet').toHaveCount(0);
+  await expect(thread(ben).getByRole('button', { name: 'Delete thread' }), 'nor to delete her thread').toHaveCount(0);
   const reply = thread(ben).locator('[data-comment-reply-composer] [contenteditable="true"]');
   await expect(reply, 'the reply composer autofocuses').toBeFocused();
   await ben.page.keyboard.type('Fast enough');

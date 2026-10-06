@@ -28,6 +28,8 @@ const REFUSED: Record<string, string> = {
   'quote-too-long': 'That selection is too long to comment on.',
   'parent-missing': 'That thread is gone, so the reply was not added.',
   'rate-limited': "You're commenting faster than this note allows. Try again in a minute.",
+  'not-author': 'Only its author can change this comment.',
+  'too-many-reactions': 'This comment has as many reactions as it can hold.',
   unauthenticated: 'Sign in to comment.',
   forbidden: "You can't comment on this note.",
 };
@@ -35,14 +37,14 @@ const FAILED = "Your comment couldn't be saved. Try again.";
 
 const shareParam = (): string | null => (typeof window === 'undefined' ? null : new URLSearchParams(window.location.search).get('share'));
 
-async function post(path: string, body: unknown): Promise<{ ok: boolean; error?: string }> {
+async function post(path: string, body: unknown, method = 'POST'): Promise<{ ok: boolean; error?: string }> {
   const share = shareParam();
   try {
     const response = await fetch(path, {
-      method: 'POST',
+      method,
       credentials: 'same-origin',
       headers: { 'content-type': 'application/json', accept: 'application/json', ...(share ? { 'x-moss-share': share } : {}) },
-      body: JSON.stringify(body),
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       signal: AbortSignal.timeout(15_000),
     });
     if (response.ok) return { ok: true };
@@ -97,4 +99,24 @@ export function replyTo(docId: string, doc: Doc, parentId: string, text: string)
 export async function resolveThread(docId: string, rootId: string, resolved: boolean): Promise<void> {
   const result = await post(`/api/docs/${encodeURIComponent(docId)}/comments/${encodeURIComponent(rootId)}/resolve`, { resolved });
   if (!result.ok) refuseInput(REFUSED[result.error ?? ''] ?? "That thread couldn't be updated. Try again.");
+}
+
+const commentPath = (docId: string, id: string) => `/api/docs/${encodeURIComponent(docId)}/comments/${encodeURIComponent(id)}`;
+
+/** Rewrites the caller's own comment; the new text arrives with the record. */
+export async function editComment(docId: string, id: string, text: string): Promise<void> {
+  const result = await post(commentPath(docId, id), { text }, 'PATCH');
+  if (!result.ok) refuseInput(REFUSED[result.error ?? ''] ?? "That comment couldn't be edited. Try again.");
+}
+
+/** Deletes the caller's own comment, or with `thread` their whole thread; the deletion arrives with the records. */
+export async function deleteComment(docId: string, id: string, scope: 'comment' | 'thread'): Promise<void> {
+  const result = await post(`${commentPath(docId, id)}${scope === 'thread' ? '?scope=thread' : ''}`, undefined, 'DELETE');
+  if (!result.ok) refuseInput(REFUSED[result.error ?? ''] ?? "That comment couldn't be deleted. Try again.");
+}
+
+/** Adds (`on`) or removes the caller's reaction `emoji`. */
+export async function reactTo(docId: string, id: string, emoji: string, on: boolean): Promise<void> {
+  const result = await post(`${commentPath(docId, id)}/reactions`, { emoji, on });
+  if (!result.ok) refuseInput(REFUSED[result.error ?? ''] ?? "That reaction couldn't be saved. Try again.");
 }

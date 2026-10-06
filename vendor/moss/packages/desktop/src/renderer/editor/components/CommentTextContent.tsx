@@ -1,5 +1,5 @@
 // ported-from: packages/desktop/src/renderer/editor/components/CommentTextContent.tsx @ 762abb777
-import { FileText, Folder } from 'lucide-react';
+import { FileText, Folder, User } from 'lucide-react';
 
 import { InlinePill } from './InlinePill';
 import { splitCommentMentionSegments, stripCommentMentionMarkers } from '../utils/comment-mentions';
@@ -22,7 +22,7 @@ export function CommentTextContent({
             <InlinePill
               variant="mention"
               size="mini"
-              icon={segment.mentionType === 'folder' ? Folder : FileText}
+              icon={segment.mentionType === 'person' ? User : segment.mentionType === 'folder' ? Folder : FileText /* moss-multi seam: comments */}
               iconClassName={segment.mentionType === 'folder' ? 'fill-file-link-primary/20' : undefined}
               maxLength={mentionMaxLength}
             >
@@ -43,7 +43,7 @@ export function CommentTextContent({
               </button>
             );
           }
-          return <span key={`mention-${index}`}>{pill}</span>;
+          return <span key={`mention-${index}`} data-mention-type={segment.mentionType /* moss-multi seam: comments */}>{pill}</span>;
         }
 
         return <span key={`text-${index}`}>{stripCommentMentionMarkers(segment.value)}</span>;

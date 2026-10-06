@@ -1,8 +1,8 @@
 // /api/docs. POST writes the D1 row in a folder the caller may edit, then DocDO.create seeds the doc (A§9 "+ Note").
 // GET /api/docs/:id is the doc and the caller's role on it; DELETE and POST /restore are trash.ts; /members is the
 // members API (members.ts) and /links the share links (links.ts); GET /api/docs/:id/instance is the owner-only DO probe
-// (A§19), which reads nothing from the doc; GET /api/docs/:id/content is the doc's markdown export; POST /comments and
-// /comments/:id/resolve are comments.ts. A missing doc and one the caller cannot open get the same 404 on every route (A§8).
+// (A§19), which reads nothing from the doc; GET /api/docs/:id/content is the doc's markdown export; /comments and its
+// edit, delete, resolve and reactions routes are comments.ts. A missing doc and one the caller cannot open get the same 404 on every route (A§8).
 import { eq } from 'drizzle-orm';
 import { getServerByName } from 'partyserver';
 import { MARKDOWN_CAP_BYTES, REST_WRITE_RATE } from '@moss-multi/protocol/limits';
@@ -15,7 +15,7 @@ import type { AppEnv } from '../env.ts';
 import { json } from '../worker/route.ts';
 import { liveLink, resolveDocAccess, resolveFolderAccess } from './access.ts';
 import { admitDuplicateMedia, copyMedia } from './assets.ts';
-import { createComment, resolveComment } from './comments.ts';
+import { createComment, deleteComment, editComment, reactComment, resolveComment } from './comments.ts';
 import { folderNotFound, liveIn, moveDoc, upFrom, vaultOf } from './folders.ts';
 import { handleInviteLinks } from './invites.ts';
 import { handleLinks } from './links.ts';
@@ -34,6 +34,8 @@ const INSTANCE = /^\/api\/docs\/([^/]+)\/instance$/;
 const CONTENT = /^\/api\/docs\/([^/]+)\/content$/;
 const COMMENTS = /^\/api\/docs\/([^/]+)\/comments$/;
 const RESOLVE = /^\/api\/docs\/([^/]+)\/comments\/([^/]+)\/resolve$/;
+const COMMENT = /^\/api\/docs\/([^/]+)\/comments\/([^/]+)$/;
+const REACTIONS = /^\/api\/docs\/([^/]+)\/comments\/([^/]+)\/reactions$/;
 
 export interface DocRecord {
   id: string;
@@ -239,6 +241,14 @@ export async function handleDocs(request: Request, env: DocsEnv): Promise<Respon
   if (comments) return only('POST', request, () => createComment(request, env, comments[1]));
   const resolve = RESOLVE.exec(pathname);
   if (resolve) return only('POST', request, () => resolveComment(request, env, resolve[1], resolve[2]));
+  const reactions = REACTIONS.exec(pathname);
+  if (reactions) return only('POST', request, () => reactComment(request, env, reactions[1], reactions[2]));
+  const one = COMMENT.exec(pathname);
+  if (one) {
+    if (request.method === 'PATCH') return editComment(request, env, one[1], one[2]);
+    if (request.method === 'DELETE') return deleteComment(request, env, one[1], one[2]);
+    return json({ error: 'method-not-allowed' }, 405, { allow: 'PATCH, DELETE' });
+  }
   const content = CONTENT.exec(pathname);
   if (content) return only('GET', request, () => readContent(request, env, content[1]));
   const instance = INSTANCE.exec(pathname);
