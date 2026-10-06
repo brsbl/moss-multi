@@ -92,6 +92,8 @@ test("j16-review: the peer's panel lists a suggestion; an editor's accept from t
   await openIn(ben, docId, 'suggest');
   await openIn(ada, docId, 'edit');
   await actors.requireDistinct(2);
+  // Each close of the author's own record (the accept, then the reject) rebuilds his fork on a fresh socket (§5).
+  ben.expectReconnects(2, docId);
 
   await suggestText(ben, docId, 'original word', 8, ' plus');
   await expect(ui.body(ben, docId)).toContainText('Keep every original plus word.');
@@ -156,6 +158,9 @@ test('j16-review: withdraw removes the inserted text from every view while the n
   await openIn(carl, docId, 'review');
   await openIn(ada, docId, 'edit');
   await actors.requireDistinct(3);
+  // The withdraw rebuilds the author's fork, and Review remounts on a closed record (§5).
+  ben.expectReconnects(1, docId);
+  carl.expectReconnects(1, docId);
   const before = await content(ada, docId);
 
   await suggestText(ben, docId, 'original word', 8, ' plus');

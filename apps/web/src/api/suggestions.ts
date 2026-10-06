@@ -21,7 +21,6 @@ const HASH = /^[A-Za-z0-9_-]{1,128}$/;
 export const SUGGESTION_ROUTE = /^\/api\/docs\/([^/]+)\/suggestions\/([^/]+)\/(preview|accept|reject|withdraw)$/;
 
 type Action = 'preview' | 'accept' | 'reject' | 'withdraw';
-type Actor = Exclude<Principal, { type: 'anonymous' }>;
 
 const FLOOR: Record<Action, Role> = { preview: 'viewer', accept: 'editor', reject: 'editor', withdraw: 'suggester' };
 
