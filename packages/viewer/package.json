@@ -1,6 +1,6 @@
 {
   "name": "@moss-multi/viewer",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "A moss note, read-only, in any page: moss's own editor in one self-contained browser bundle.",
   "license": "MIT",
   "repository": {

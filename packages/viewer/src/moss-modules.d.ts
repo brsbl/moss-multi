@@ -5,6 +5,9 @@ declare module '@moss-desktop/renderer/editor/plugins/code-block/prism-setup' {}
 declare module '@moss-desktop/renderer/editor/MarkdownEditor' {
   import type { ComponentType } from 'react';
   import type { LexicalEditor } from 'lexical';
+  import type { Transformer } from '@lexical/markdown';
+  export const MARKDOWN_EDITOR_TRANSFORMERS: Transformer[];
+  export function unescapeHtmlEntities(markdown: string): string;
   import type { NoteLayoutMetadata } from '@moss-desktop/common/noteTypes';
   export const MarkdownEditor: ComponentType<{
     noteId: string;
@@ -73,6 +76,17 @@ declare module '@moss-desktop/common/markdown-layers' {
     h1Title: string | null;
     body: string;
   };
+  export function assembleNote(layers: { frontmatter?: Record<string, unknown> | null; h1Title?: string | null; body: string }): string;
+  export function hasLegacyCommentFooter(markdown: string): boolean;
+  export function parseCommentFooter(markdown: string): { strippedContent: string };
+}
+
+declare module '@moss-desktop/common/comment-markers' {
+  export function stripCommentMarkerTokens(markdown: string): string;
+}
+
+declare module '@moss-desktop/renderer/editor/utils/markdown-export' {
+  export function stripTableColumnWidthComments(markdown: string): string;
 }
 
 declare module '@moss-desktop/common/utils' {

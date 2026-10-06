@@ -1,6 +1,38 @@
 // The viewer's public contract (API version 1). Everything here is plain data or a function the host supplies.
+// Later 1.x releases only add, each addition behind a feature string in MOSS_VIEWER_INFO.features and viewer.json.
 
 export type MossViewerTheme = 'light' | 'dark';
+
+/** A feature string a 1.x release adds: `selection-1` (`handle.selection()`), `share-with-agent-1` (`services.shareWithAgent`). */
+export type MossViewerFeature = string;
+
+/** The built viewer's identity; equal to viewer.json's `api`, `version` and `features`. */
+export interface MossViewerInfo {
+  readonly api: 1;
+  readonly version: string;
+  readonly features: readonly MossViewerFeature[];
+}
+
+/**
+ * The reader's selection in the note body (feature `selection-1`). Moss markdown has no persisted block ids, so the
+ * line range and the heading path are the stable reference.
+ */
+export interface MossSelection {
+  /** The selected plain text as rendered; never a `%%m:` comment marker. */
+  text: string;
+  /** The selected lines of the note's markdown, as moss's export writes them, comment markers stripped. */
+  markdown: string;
+  /**
+   * 1-based, inclusive lines in the note's markdown file, frontmatter and the `# Title` line counted. They come from
+   * moss's own export of the note, which for a file moss wrote is the file as loaded. Inside a list, table or code
+   * block they name the items, rows or code lines selected; elsewhere every line of each block the selection touches.
+   */
+  lines: { start: number; end: number };
+  /** The headings over the selection's start, outermost first (a selected heading included). */
+  headings: string[];
+  /** Each top-level block the selection touches: its node type, its first line, and the innermost heading over it. */
+  blocks: { type: string; line: number; heading?: string }[];
+}
 
 /** A note a wiki link may name. */
 export interface MossViewerNote {
@@ -57,6 +89,12 @@ export interface MossViewerServices {
    * unavailable".
    */
   htmlFrameUrl?: string;
+  /**
+   * Feature `share-with-agent-1`: with this service the viewer shows moss's Share with Agent button above the note,
+   * and a press calls it with the current selection (null when nothing in the body is selected). Without it the
+   * button stays hidden.
+   */
+  shareWithAgent?(selection: MossSelection | null): void;
 }
 
 export interface MossViewerOptions {
@@ -83,4 +121,6 @@ export interface MossViewerHandle {
   readonly ready: Promise<void>;
   setTheme(theme: MossViewerTheme): void;
   unmount(): void;
+  /** Feature `selection-1`: the reader's selection in the body, or null when it is collapsed or outside the body. */
+  selection(): MossSelection | null;
 }

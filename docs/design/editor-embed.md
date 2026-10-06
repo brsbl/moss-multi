@@ -253,7 +253,7 @@ Moss's locks (`mutationQueues`, `casLocks`, `runWithNoteLock`, note-store.ts:206
 - Additive changes keep API 1 and are negotiated by feature strings:
   - The editor publishes `MOSS_EDITOR_INFO {api, version, features}`, mirrored in `editor.json`. A host returns a new result kind or reason, or sends a new notification kind, only if the editor lists its feature.
   - The host publishes `bridge.features`. The editor sends a new op, calls a new optional method, or emits a new event, flush-result or reload-result kind only if the bridge lists the matching feature. Hosts may therefore switch exhaustively on every union.
-  - The baseline defines no feature strings. `'scope.external'` is the expected first.
+  - The baseline defines no feature strings. 0.2.0 adds two editor features (§8.1).
 - Hosts ignore unknown event fields and manifest fields. Removing, renaming, narrowing, or changing a default or a meaning requires API 2.
 - Package: `@moss-multi/editor` in `packages/editor`, a sibling of `packages/viewer`. Not on npm; installed by release URL.
 - Entries:
@@ -263,6 +263,19 @@ Moss's locks (`mutationQueues`, `casLocks`, `runWithNoteLock`, note-store.ts:206
 - Release: GitHub Release `editor-v0.1.0` on brsbl/moss-multi with `moss-editor-0.1.0.tgz` (unpacks to `moss-editor/`), `SHA256SUMS` and `editor.json`. CI on the integrated head runs `pnpm pack` (T3.8's packing), uploads the `moss-editor` artifact and records the run. The coordinator publishes the release and notifies thr_6fabbskqcf.
 - `editor.json` has `viewer.json`'s fields plus `features`, `hostEntry`, `htmlFrame {file, policy}`, `build.run`, `editableScopes: ['internal']` and `csp`.
 - Semver stays 0.x until bb has shipped against it. The API number is independent of semver.
+
+### 8.1 Editor features in 0.2.0 (T3.10)
+
+Both are additive within API 1 and listed in `MOSS_EDITOR_INFO.features` and `editor.json` `features`. The viewer (1.1.0) has the same two, with the same shapes.
+
+- **`selection-1`: `handle.selection(): MossSelection | null`.** Null when the selection is collapsed, outside the note body (the title, a popover) or the note is not loaded. Otherwise:
+  - `text`: the selected plain text as rendered, never a `%%m:` marker: one line per block, table cells tab-separated, a code block's source without its header or gutter.
+  - `lines: {start, end}`: 1-based, inclusive lines in the note's markdown exactly as a save would write the current buffer, unsaved edits included, frontmatter and the `# Title` line counted. They come from the save's own export, run once on the body and once per top-level block. Inside a list, table or code block they name the items, rows or code lines selected (a code block's source counts from its textarea while it is open, the unblurred edit included); a selection across table cells is Lexical's table selection, which outlives the mouseup; elsewhere every line of each block touched.
+  - `markdown`: those lines, comment markers stripped.
+  - `headings`: the heading path over the selection's start, outermost first (a selected heading included).
+  - `blocks: {type, line, heading?}[]`: each top-level block touched, its Lexical node type (`paragraph`, `heading`, `list`, `table`, `code-block`, …), first line and innermost heading.
+  - Moss markdown has no persisted block ids, so the line range plus the heading path is the stable reference.
+- **`share-with-agent-1`: optional `services.shareWithAgent(selection)`.** When the host supplies it, the editor shows Moss's Share with Agent button (the header button the web app hides under P:Agents) above the note; a press calls the service with `selection()` at that moment, or null. A service that throws or rejects is logged, not raised. Without the service the button stays hidden, as in 0.1.0.
 
 ## 9. CSP
 

@@ -17,8 +17,8 @@ const manifest = (over = {}) => ({
 });
 
 describe('packages/viewer/package.json', () => {
-  it('is the public 1.0.0 release', () => {
-    expect(pkg.version).toBe('1.0.0');
+  it('is the public 1.1.0 release', () => {
+    expect(pkg.version).toBe('1.1.0');
     expect(pkg.private).not.toBe(true);
     expect(pkg.license).toBe('MIT');
   });

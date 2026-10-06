@@ -3,11 +3,24 @@
 // byte-identically to T0.6's goldens; Cmd+Shift+A lands a comment as a `%%m:` marker plus a comments.json entry
 // that desktop's reader takes back; an external change reloads a clean editor and a stale write is refused with
 // "Changed in Moss"; pasted media goes only through the host; and the editor is shot in light and dark.
+// T3.10 (editor 0.2.0): `selection()` (feature `selection-1`) with lines golden-compared against the file a save
+// writes, exact after an unsaved edit, and moss's Share with Agent button only with services.shareWithAgent.
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, test, type Page } from '@playwright/test';
 import { serveEditor, type EditorServer } from './server.ts';
+import {
+  SELECTION_CASES,
+  SELECTION_COMMENTS,
+  SELECTION_NOTE,
+  SELECTION_TITLE,
+  collapseIn,
+  expectLinesIn,
+  expectNoMarker,
+  selectText,
+  type MossSelection,
+} from '../lib/selection.ts';
 
 const ID = '3f0c2a1b-4d5e-4f60-8a7b-9c0d1e2f3a4b';
 const FAMILIES = fileURLToPath(new URL('../../packages/sync/src/converter/fixtures', import.meta.url));
@@ -29,11 +42,14 @@ const meta = (title: string) => ({
 
 interface Fixture {
   api: number;
+  info: { api: number; version: string; features: string[] };
+  selection(): MossSelection | null | 'unsupported';
+  shared(): (MossSelection | null)[];
   violations: string[];
   reset(options?: { caseInsensitive?: boolean }): void;
   seed(segments: string[], note: { markdown: string; meta: object; comments?: string | null; layout?: string | null }): string;
   seedAsset(dir: string, name: string, base64: string): void;
-  mount(noteId: string, options?: { theme?: 'light' | 'dark' }): Promise<{ ok: boolean; code?: string; status: string }>;
+  mount(noteId: string, options?: { theme?: 'light' | 'dark'; share?: boolean | 'fail' }): Promise<{ ok: boolean; code?: string; status: string }>;
   setTheme(theme: 'light' | 'dark'): void;
   flush(): Promise<{ kind: string }>;
   unmount(options?: { discardUnsaved?: boolean }): Promise<{ kind: string; flush: string }>;
@@ -97,15 +113,15 @@ async function selectWord(page: Page, line: string, word: string): Promise<void>
   await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
 }
 
-async function mountNote(page: Page, markdown: string, options: { comments?: string | null; theme?: 'light' | 'dark'; title?: string } = {}) {
+async function mountNote(page: Page, markdown: string, options: { comments?: string | null; theme?: 'light' | 'dark'; title?: string; share?: boolean | 'fail' } = {}) {
   const noteTitle = options.title ?? 'Plan';
   const result = await page.evaluate(
-    ({ id, markdown, meta, comments, theme, noteTitle }) => {
+    ({ id, markdown, meta, comments, theme, noteTitle, share }) => {
       window.editorFixture.reset();
       window.editorFixture.seed(['Notes', noteTitle], { markdown, meta, comments });
-      return window.editorFixture.mount(id, { theme });
+      return window.editorFixture.mount(id, { theme, share });
     },
-    { id: ID, markdown, meta: meta(noteTitle), comments: options.comments ?? null, theme: options.theme ?? 'light', noteTitle },
+    { id: ID, markdown, meta: meta(noteTitle), comments: options.comments ?? null, theme: options.theme ?? 'light', noteTitle, share: options.share ?? false },
   );
   expect(result, 'the note mounts').toEqual({ ok: true, status: 'clean' });
   await expect(page.locator('[data-moss-editor][data-moss-editor-status="clean"]')).toBeVisible();
@@ -553,4 +569,172 @@ test.describe('embeddable editor', () => {
     expect(seen.errors).toEqual([]);
     expect(await page.evaluate(() => window.editorFixture.violations)).toEqual([]);
   });
+
+  test('advertises selection-1 and share-with-agent-1 in MOSS_EDITOR_INFO, as editor 0.2.0 of API 1', async ({ page }) => {
+    await open(page);
+    expect(await page.evaluate(() => window.editorFixture.info)).toEqual({ api: 1, version: '0.2.0', features: ['selection-1', 'share-with-agent-1'] });
+  });
+
+  for (const { name, from, to, within, nth, expected } of SELECTION_CASES) {
+    test(`selection ${name}: exact text, markdown, lines and headings, the lines golden in the saved file`, async ({ page, browserName }) => {
+      // WebKit's editable root pulls a DOM range ending inside the code block (contenteditable=false) back to the
+      // table before it, so the page's selection is not this case there; the viewer covers it in WebKit.
+      test.skip(browserName === 'webkit' && name === 'from a list into a code block', 'WebKit clamps the range out of the code block');
+      const seen = await open(page);
+      await mountSelectionNote(page);
+      if (within === 'code') {
+        // Pressing a code block opens its source; the selection is the textarea's.
+        await body(page).locator('.moss-codeblock-pre').nth(nth ?? 0).click();
+        const source = body(page).locator('textarea.moss-codeblock-textarea');
+        await expect(source).toBeFocused();
+        await source.evaluate((el: HTMLTextAreaElement, { from, to }) => {
+          const start = el.value.indexOf(from);
+          el.setSelectionRange(start, el.value.indexOf(to, start) + to.length);
+        }, { from, to });
+      } else {
+        await selectText(page, BODY, from, to, within);
+      }
+      const selection = await page.evaluate(() => window.editorFixture.selection());
+      expect(selection).toEqual(expected);
+      expectNoMarker(selection as MossSelection);
+      expectLinesIn(await savedSelectionNote(page), selection as MossSelection);
+      expect(seen.errors).toEqual([]);
+    });
+  }
+
+  test('selection lines stay exact after an unsaved edit above the selection', async ({ page }) => {
+    const seen = await open(page);
+    await mountSelectionNote(page);
+    await body(page).getByText('Intro with a').first().click();
+    // The caret goes to the intro's end through the DOM selection, which Lexical adopts.
+    await body(page).evaluate((root) => {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        if ((node as Text).data.endsWith(' inside.')) return document.getSelection()?.collapse(node, (node as Text).data.length);
+      }
+      throw new Error('no intro text');
+    });
+    await frames(page);
+    await page.keyboard.press('Enter');
+    await page.keyboard.type('A new line');
+    const [first] = SELECTION_CASES;
+    await selectText(page, BODY, first!.from, first!.to);
+    const selection = (await page.evaluate(() => window.editorFixture.selection())) as MossSelection;
+    expect(selection).toEqual({
+      ...first!.expected,
+      lines: { start: first!.expected.lines.start + 2, end: first!.expected.lines.end + 2 },
+      blocks: first!.expected.blocks.map((block) => ({ ...block, line: block.line + 2 })),
+    });
+    expect(await page.evaluate(() => window.editorFixture.flush())).toMatchObject({ kind: 'saved' });
+    const written = (await files(page))[`/Moss/Notes/${SELECTION_TITLE}/${SELECTION_TITLE}.md`]!;
+    expect(written.split('\n')[4]).toBe('A new line');
+    expectLinesIn(written, selection);
+    expect(seen.errors).toEqual([]);
+  });
+
+  test('selection is null when collapsed or outside the note body', async ({ page }) => {
+    await open(page);
+    await mountSelectionNote(page);
+    expect(await page.evaluate(() => window.editorFixture.selection()), 'nothing selected').toBeNull();
+    await collapseIn(page, BODY, 'Sow the beans');
+    expect(await page.evaluate(() => window.editorFixture.selection()), 'a caret').toBeNull();
+    await selectText(page, '[data-moss-editor-title]', 'Field', 'Notes');
+    expect(await page.evaluate(() => window.editorFixture.selection()), 'the title is not the body').toBeNull();
+  });
+
+  test('a mouse drag across table cells is the selection after mouseup, and Share with Agent hands it over', async ({ page }) => {
+    const seen = await open(page);
+    await mountSelectionNote(page, { share: true });
+    const table = SELECTION_CASES.find((entry) => entry.name === 'inside a table')!;
+    const cell = (text: string) => body(page).locator('td, th').filter({ hasText: new RegExp(`^${text}$`) }).first();
+    const from = (await cell(table.from).boundingBox())!;
+    const to = (await cell(table.to).boundingBox())!;
+    await page.mouse.move(from.x + 8, from.y + from.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, { steps: 8 });
+    await page.mouse.up();
+    await frames(page);
+    expect(await page.evaluate(() => window.editorFixture.selection()), 'after mouseup').toEqual(table.expected);
+    await page.locator(SHARE).click();
+    await expect.poll(() => page.evaluate(() => window.editorFixture.shared())).toEqual([table.expected]);
+    expect(seen.errors).toEqual([]);
+  });
+
+  test('a selection in a code block being edited names the edited code, the lines it will be saved on', async ({ page }) => {
+    const seen = await open(page);
+    await mountSelectionNote(page, { share: true });
+    await body(page).locator('.moss-codeblock-pre').first().click();
+    const source = body(page).locator('textarea.moss-codeblock-textarea');
+    await expect(source).toBeFocused();
+    await source.evaluate((el: HTMLTextAreaElement) => el.setSelectionRange(el.value.length, el.value.length));
+    await page.keyboard.type('\n    # sown');
+    await source.evaluate((el: HTMLTextAreaElement) => {
+      const start = el.value.indexOf('return');
+      el.setSelectionRange(start, el.value.length);
+    });
+    const expected: MossSelection = {
+      text: 'return crop\n    # sown',
+      markdown: '    return crop\n    # sown',
+      lines: { start: 21, end: 22 },
+      headings: ['Planting'],
+      blocks: [{ type: 'code-block', line: 19, heading: 'Planting' }],
+    };
+    expect(await page.evaluate(() => window.editorFixture.selection())).toEqual(expected);
+    await page.locator(SHARE).click();
+    await expect.poll(() => page.evaluate(() => window.editorFixture.shared())).toEqual([expected]);
+    // Once the edit is committed and saved, those lines are the selection's markdown.
+    await source.evaluate((el: HTMLTextAreaElement) => el.blur());
+    expect(await page.evaluate(() => window.editorFixture.flush())).toMatchObject({ kind: 'saved' });
+    expectLinesIn((await files(page))[`/Moss/Notes/${SELECTION_TITLE}/${SELECTION_TITLE}.md`]!, expected);
+    expect(seen.errors).toEqual([]);
+  });
+
+  test('a shareWithAgent that throws or rejects stays the host\'s: no page error, and the button keeps working', async ({ page }) => {
+    const seen = await open(page);
+    await mountSelectionNote(page, { share: 'fail' });
+    const [first] = SELECTION_CASES;
+    await selectText(page, BODY, first!.from, first!.to);
+    const button = page.locator(SHARE);
+    await button.click();
+    await button.click();
+    await expect.poll(() => page.evaluate(() => window.editorFixture.shared())).toEqual([first!.expected, first!.expected]);
+    await page.evaluate(() => new Promise((done) => setTimeout(done, 100)));
+    expect(seen.errors).toEqual([]);
+  });
+
+  test('Share with Agent shows only with services.shareWithAgent, and a press hands it the selection', async ({ page }) => {
+    await open(page);
+    await mountSelectionNote(page);
+    await expect(page.locator(SHARE), 'hidden without the service').toHaveCount(0);
+    await page.evaluate(() => window.editorFixture.unmount({ discardUnsaved: true }));
+
+    await mountSelectionNote(page, { share: true });
+    const button = page.locator(SHARE);
+    await expect(button).toBeVisible();
+    await expect(button).toHaveText('Share with Agent');
+    const [first] = SELECTION_CASES;
+    await selectText(page, BODY, first!.from, first!.to);
+    await button.click();
+    await expect.poll(() => page.evaluate(() => window.editorFixture.shared())).toEqual([first!.expected]);
+  });
 });
+
+const BODY = '[data-moss-editor] [data-moss-note-editor-root="true"]';
+const SHARE = 'button[aria-label="Share with Agent"]';
+
+function mountSelectionNote(page: Page, options: { share?: boolean | 'fail' } = {}) {
+  return mountNote(page, SELECTION_NOTE, { title: SELECTION_TITLE, comments: SELECTION_COMMENTS, ...options });
+}
+
+/** The note as a save writes it (a retitle makes the editor write the whole file), with the original title line. */
+async function savedSelectionNote(page: Page): Promise<string> {
+  await title(page).click();
+  await page.keyboard.press('End');
+  await page.keyboard.type('!');
+  expect(await page.evaluate(() => window.editorFixture.flush())).toMatchObject({ kind: 'saved' });
+  const written = (await files(page))[`/Moss/Notes/${SELECTION_TITLE}!/${SELECTION_TITLE}!.md`];
+  expect(written, 'the retitled note is written').toBeDefined();
+  // The export is the fixture itself: moss writes the note back byte for byte.
+  expect(written!.replace(/\n$/, '')).toBe(SELECTION_NOTE.replace(`# ${SELECTION_TITLE}`, `# ${SELECTION_TITLE}!`));
+  return written!;
+}

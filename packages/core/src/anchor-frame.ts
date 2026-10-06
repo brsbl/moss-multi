@@ -821,19 +821,22 @@ export class AnchorEngine {
     const cached = this.#gaps.get(unit.item);
     if (cached) return cached;
     if (cached === null) throw new OverBudget();
+    // A struct walk that runs out depends on where it starts, so only this comment fails; another comment in the same
+    // gap may start closer to its ends and still find it.
     const left: Y.Item[] = [];
     const right: Y.Item[] = [];
+    const leftWalk = new Walk(WALK_BUDGET, this.stats);
+    for (let at = prev(unit.item, leftWalk); at && !view.survivor(at); at = prev(at, leftWalk)) {
+      leftWalk.tick();
+      left.push(at);
+    }
+    const rightWalk = new Walk(WALK_BUDGET, this.stats);
+    for (let at = next(unit.item); at && !view.survivor(at); at = next(at)) {
+      rightWalk.tick();
+      right.push(at);
+    }
+    // The whole gap is found: running out of tokens is a property of the gap, so every item in it shares the failure.
     try {
-      const leftWalk = new Walk(WALK_BUDGET, this.stats);
-      for (let at = prev(unit.item, leftWalk); at && !view.survivor(at); at = prev(at, leftWalk)) {
-        leftWalk.tick();
-        left.push(at);
-      }
-      const rightWalk = new Walk(WALK_BUDGET, this.stats);
-      for (let at = next(unit.item); at && !view.survivor(at); at = next(at)) {
-        rightWalk.tick();
-        right.push(at);
-      }
       const gap: Gap = { deleted: [], inserted: [], starts: new Map() };
       // One allowance for both streams, each item admitted whole before it is read.
       const fingerprints = new Walk(WALK_BUDGET, this.stats);
