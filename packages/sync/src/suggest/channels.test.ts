@@ -6,7 +6,7 @@ import * as encoding from 'lib0/encoding';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
-import { previewHash, projectDoc, projectionDiff, recordDigest, type RecordMeta, type RecordOp } from '@moss-multi/core/suggest/apply';
+import { deleteUpdate, previewHash, projectDoc, projectionDiff, recordDigest, type RecordMeta, type RecordOp } from '@moss-multi/core/suggest/apply';
 import { SuggestIngest } from '../doc/suggest.ts';
 import { payloadDocsFor } from '../payload-docs.ts';
 import { createRecord, opsOf, partsOf, readMeta, SUGGESTIONS_ORIGIN } from './records.ts';
@@ -322,5 +322,35 @@ describe('T5.Ps the three channels the preview used to miss are refused @p:mean-
     expect(outcome.accept).toEqual({ ok: true });
     expect(outcome.hunks).toBeGreaterThan(0);
     expect(outcome.landed).toBe(outcome.shown);
+  });
+});
+
+describe('T5.Ps accept checks every item its transaction deletes, implicit deletions included @p:mean-2', () => {
+  const firstBlock = (doc: Y.Doc) => (doc.get('root', Y.XmlText).toDelta() as { insert: unknown }[]).find((op) => op.insert instanceof Y.XmlText)!.insert as Y.XmlText;
+
+  /** Refused at accept by G3, with nothing applied; ingest cannot see what the live doc will hold at accept. */
+  const expectAcceptRefused = (outcome: Outcome) => {
+    expect(outcome.accept, 'accept refuses the deletion').toEqual({ ok: false, reason: 'outside-body' });
+    expect(outcome.bodyKept, 'nothing is applied').toBe(true);
+  };
+
+  it('a delete set naming only an in-table Map holder: the off-table Array under it is deleted recursively', () => {
+    expectAcceptRefused(run((live) => {
+      const holder = new Y.Map<unknown>();
+      firstBlock(live).setAttribute('m', holder as never);
+      holder.set('a', Y.Array.from(['secret']));
+      const id = holder._item!.id;
+      return [{ doc: 'body', update: deleteUpdate([{ client: id.client, clock: id.clock, len: 1 }]) }];
+    }));
+  });
+
+  it("an in-table value written over a key whose current value is an editor's off-table type", () => {
+    expectAcceptRefused(run((live, lease) => {
+      firstBlock(live).setAttribute('a', Y.Array.from(['secret']) as never);
+      const old = (firstBlock(live).getAttribute('a') as unknown as Y.Array<string>)._item!.id;
+      // The overwrite as a forged op: origin is the old value, and the delete set does not name it.
+      const update = rawUpdate(lease, (encoder) => new Y.Item(Y.createID(lease, 0), null, old, null, null, null, 'a', new Y.ContentAny(['plain'])).write(encoder, 0));
+      return [{ doc: 'body', update }];
+    }));
   });
 });
