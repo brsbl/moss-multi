@@ -306,7 +306,7 @@ export function SuggestionsButton({ docId, source }: { docId: string; source: Su
           {...{ [SUGGESTIONS_BUTTON_ATTR]: String(open.length) }}
           aria-label={open.length ? `Suggestions, ${open.length} open` : 'Suggestions'}
           title="Suggestions"
-          className="relative flex h-7 shrink-0 cursor-pointer items-center gap-1 rounded px-1.5 text-ink-faint transition-colors hover:bg-surface-note-hover/40 hover:text-ink-muted focus-visible:outline-none"
+          className={`relative ${open.length ? 'flex' : 'hidden sm:flex'} h-7 shrink-0 cursor-pointer items-center gap-1 rounded px-1.5 text-ink-faint transition-colors hover:bg-surface-note-hover/40 hover:text-ink-muted focus-visible:outline-none`}
         >
           <GitPullRequestArrow aria-hidden className="h-3.5 w-3.5" />
           {open.length ? <span className="text-micro tabular-nums text-ink-muted">{open.length}</span> : null}
