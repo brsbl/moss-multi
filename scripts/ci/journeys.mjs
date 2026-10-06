@@ -24,8 +24,8 @@ export const GROUPS = {
   editing: ['j00-persist', 'j01'],
   // Sharing a note, presence and undo between peers.
   coedit: ['j01-coedit', 'j01-presence', 'j01-undo'],
-  // Code, HTML and formula fields across joins, moves and removals.
-  registers: ['j01-registers'],
+  // Code, HTML and formula fields across joins, moves and removals; auto-linking on long words.
+  registers: ['j01-registers', 'j01-autolink'],
   // Titles and properties.
   title: ['j02'],
   // A doc's connection: drops, stalls, limits, hibernation.
