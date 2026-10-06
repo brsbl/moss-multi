@@ -12,7 +12,7 @@ import * as Y from 'yjs';
 import { anchorText, encodePosition, liveUnits, type Anchor } from '@moss-multi/core/anchor-frame';
 import { BLOCK_CHAR } from '@moss-multi/core/tree-anchor';
 import { CLOSE, encodePartyPrincipal, TRUSTED } from '@moss-multi/protocol/sync';
-import { DocDO } from '../../src/doc-do.ts';
+import { DocDO, type Resolved, type SocketIdentity } from '../../src/doc-do.ts';
 import { COMMENT_STATE_SHARE, MAX_IMPORT_SEARCHES } from '../../src/doc/comments.ts';
 import { COMPACT_MAX_ROWS, STATE_CHUNK_BYTES } from '../../src/doc/persistence.ts';
 import { bindLexical, connect, counts, openDoc, start, syncFrame, wake, type Opened, type TestClient } from './do-harness.ts';
@@ -781,8 +781,8 @@ describe('a comment RPC validates every socket before its write reaches them (AÂ
   class CheckedDocDO extends DocDO {
     static override access = () => ({
       stamp: async (_docId: string, sessions: string[], agents: string[]) => ({ key: epoch, sessions: new Set(sessions), agents: new Set(agents) }),
-      resolve: async (_docId: string, socket: { principalId: string; role: string }) =>
-        (gone.has(socket.principalId) ? null : { role: socket.role as never, presence: true }),
+      resolve: async (_docId: string, socket: SocketIdentity): Promise<Resolved | null> =>
+        (gone.has(socket.principalId) ? null : { role: 'owner', presence: true }),
     });
   }
   const who = (id: string, role: string) => ({ headers: {
