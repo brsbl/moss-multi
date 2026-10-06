@@ -171,7 +171,7 @@ describe('T5.3 accept, reject and withdraw through the DocDO @p:mean-2 @p:R16 @p
     try {
       // Typed and taken back: ops, and no change.
       fork.act(() => select('Hello', 24).insertText('x'));
-      fork.act(() => select('Hello', 25).deleteCharacter(true));
+      fork.act(() => select('Hello', 24, 25).removeText());
       for (const op of fork.sent) {
         expect(await send(sam, { t: 'suggest-ops', record: grant.record, doc: op.doc, update: bytesToBase64(op.update) })).toMatchObject({ t: 'suggest-ack' });
       }
