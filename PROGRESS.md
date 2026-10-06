@@ -1,14 +1,14 @@
 # moss-multi progress
 
-**Overall: 82% done** (76 of 93 planned tasks verified)
+**Overall: 84% done** (78 of 93 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 14 / 15 | in progress |
-| M4 Comments | Moss's full comment experience as CRDT data | 7 / 7 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 15 / 15 | in progress |
+| M4 Comments | Moss's full comment experience as CRDT data | 8 / 8 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 3 / 5 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
@@ -94,8 +94,11 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-06 — T4.4 verified: in a shared note a person can react to comments, @mention collaborators, edit or delete their own comments (deleting a thread's root promotes the earliest reply), and gets a bell notification when mentioned or replied to.
 - 2026-10-06 — T3.6 verified: a person can mint, see once and revoke agent keys in Settings, approve a device sign-in, and share a note or folder with an agent they own at a role; sharing with someone else's agent gets the same 404 as an unknown id, and Settings has a parity target.
 - 2026-10-06 — T4.S3 verified: a frame that touches long commented runs or long restore candidates now does anchor work bounded by its walk budget before reading any item, so oversized gaps detach comments instead of costing unbounded time.
+- 2026-10-06 — T4.S3 re-verified: a struct walk that runs out in a long fragmented gap now detaches only its own comment, so sibling comments elsewhere in that gap keep their anchors.
 - 2026-10-06 — T4.S1 verified: every comment write now re-checks its author's credential, the note's liveness and at least commenter access inside the note's serialized write, so a revocation or demotion that commits after the request was admitted stops the comment from landing.
 - 2026-10-06 — T5.R verified: m5 now sits on the current m4, and the server stores a suggester's edits to the note and to code, HTML, formula, chart and sketch blocks as per-document suggestion records checked through the shared channel table, never touching the note body.
+- 2026-10-06 — T4.S2 verified: comment create, reply, edit, reaction and sidecar import are now refused once the note plus every stored payload, served or withheld, would leave no room, so comments cannot push a note past its size cap.
+- 2026-10-06 — T3.10 verified: a host such as the bb Moss viewer plugin can read the viewer's or editor's current selection as text, markdown, source file lines, heading path and blocks, and can show moss's Share with Agent button for it.
 
 ## T1.1s identity audit
 
@@ -129,7 +132,9 @@ A task counts only after an independent checker passes it on green CI. Each mile
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
 
-- T4.S3 (Anchor token budget before expansion) checker P2: `#gapOf` caches null for every visited item on any OverBudget, including running out of the start-dependent 4,096-struct left/right walks, so in a gap over 4,096 items a comment near the edge can force a comment near the middle to detach though its own walks would fit (safe: detached, never a jump or a rejected frame) → anchor follow-up: cache only start-independent failures.
+- ~~T4.S3 (Anchor token budget before expansion) checker P2: `#gapOf` caches null for every visited item on any OverBudget, including running out of the start-dependent 4,096-struct left/right walks, so in a gap over 4,096 items a comment near the edge can force a comment near the middle to detach though its own walks would fit (safe: detached, never a jump or a rejected frame) → anchor follow-up: cache only start-independent failures.~~ → closed in T4.S3's second round: only running out of tokens is cached for the gap.
+- T4.S3 (Failed fragmented-gap struct walks are no longer shared across sibling comments) checker P2: `#gapOf` (`packages/core/src/anchor-frame.ts`) runs the left and right WALK_BUDGET walks outside the cache, so each hit comment in a fragmented gap over 2×WALK_BUDGET repeats ~8,193 struct ticks (e.g. a delete-only frame over 9,000 alternating one-character items with 2,000 comments costs ~14.3M ticks vs ~6.1K before); still within the per-hit-comment bound → anchor follow-up.
+- T4.S3 (Long-item and fragmented-gap tests do not go through DocDO persistence and restart) checker P2: anchor-cost runs CommentsHost directly, with no DocStore and no restart → anchor follow-up.
 - T4.S1 (Comment writes re-authorize their actor) checker P2 (downgraded from Codex P1): in `#commentWrite` the actor's D1 re-authorization reads run after `#validate` checks the open sockets, so a reader revoked during those reads whose kick was missed can still receive that one comment broadcast; the next tick closes the socket (the window pre-existed, as on the A§8 frame path).
 - T4.S1 (Comment writes re-authorize their actor) checker P2: recovering a deleted-meta doc with no hold awaits `#queue(#settle([]))` before the deadline-guarded authorization, and `#settle`'s D1 liveness read has no deadline, so a stalled read leaves the request waiting instead of returning 503 (availability only; nothing unauthorized lands).
 - T4.S1 (Comment writes re-authorize their actor) checker P2 (t/T4.S1 did not include the current origin/m4): resolved at integration by merging t/T4.S1 onto origin/m4 at 8e31ad7, keeping both adjacent BUILDPLAN entries.
@@ -140,6 +145,9 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T3.R2 (Restack m3 on main) checker P2: `readBacklinks` in `apps/web/src/host/bridge/index.ts` checks the note is still listed, then sends the backlinks request; a trash committing in that gap returns a 404 that j05-trash's no-4xx assertion counts (inherited from M3 at bbeb50e) → search follow-up: skip or cancel watched reads once the note's session goes terminal.
 - T3.6 checker P2: the Settings parity target removes the web-only Account and Agents sections from layout (`display:none` in `e2e/parity/parity.spec.ts` withholdWeb) instead of masking their rects as A§20 asks, so the 960x360 crop compares only the header and Appearance and a slot that displaces moss's chrome may go unseen → parity follow-up: mask the web chrome's rects in place.
 - T3.6 checker P2: the red run (37434773878) shows the folder PATCH share-with-another's-agent case red only through a UNIQUE-constraint fixture leftover, not the 200-vs-404 assertion (the doc case shares its `change()` path in members.ts) → agents test follow-up: isolate the folder case's fixture so it fails on its own assertion.
+- T3.10 (Selection and Share with Agent) checker P2: live HTML and nested (tab-panel) code drafts are not projected into the selection export; `$draftOf` handles only a root-level decorator with `getCode()`, so for a focused HTML source textarea or a code block in a tab panel the text comes from the textarea while markdown and lines come from the uncommitted old node until blur → selection follow-up.
+- T3.10 (Selection and Share with Agent) checker P2: an end boundary at offset 0 of the next list item includes that item; the list branch of `$lineIn` ignores side and offset, so a range ending at the start of 'Second item' reports lines 9-10 and includes '- Second item' in markdown → selection follow-up.
+- T3.10 (Selection and Share with Agent) checker P2: the editor's list-into-code selection case is `test.skip` in WebKit because WebKit clamps the programmatic DOM range out of the contenteditable=false code block (viewer covers it in WebKit, editor in Chromium) → selection test follow-up: a real-mouse WebKit editor variant.
 - T2.3s checker P2 (downgraded from Codex P1): a restore can act on an older view of the note after another manager restores, moves and re-trashes it; RESTORE in `api/trash.ts` does not check the note's current folder or `trash_batch_id` still match what it read. No authority is gained (the UPDATE re-checks manage on the current chain and edit on the destination) → trash follow-up: compare-and-set on folder and batch.
 - T2.3s checker P2 (downgraded from Codex P1): a signed-out share-link holder gets 401, not 404, from trash, restore and the Trash read; nothing is disclosed (the 401 is identical for a missing note) and it predates T2.3s; A§8 confines the 401 exception to a credential-less CLI → align to 404 in an access follow-up.
 - T2.3s checker P2: the revocation tests in `trash-security.test.ts` use stub DocDO and PrincipalDO, so they do not prove open editors recover (or that a terminal editor on a live note is kicked) → T2.5 → closed by T2.5 (`mid-trash.harness.test.ts` over the real DocDO and PrincipalDO; a reverted trash pushes `meta` and a pane terminal on `deleted` re-asks and reopens).
