@@ -80,6 +80,27 @@ describe('sign-up limits', () => {
     }
   });
 
+  it('refuses another origin\'s sign-ups before counting them, so a foreign page cannot spend a visitor\'s day', { timeout: 120_000 }, async () => {
+    const ip = '203.0.113.70';
+    const counted = async () => (await d1.db.prepare('SELECT count FROM signup_limits WHERE key = ?1')
+      .bind(`address:${ip}`).first<{ count: number }>())?.count ?? 0;
+    const foreign = ['https://evil.example', 'http://127.0.0.1:9999', 'http://localhost:8852'];
+    for (let i = 0; i < SIGN_UP_ADDRESS_DAILY.max + 5; i += 1) {
+      const refused = await handleAuthRoute(new Request(`${BASE}/api/auth/sign-up/email`, {
+        method: 'POST',
+        headers: { 'content-type': 'text/plain;charset=UTF-8', origin: foreign[i % foreign.length], 'cf-connecting-ip': ip },
+        body: JSON.stringify({ email: `mm-s3b-csrf-${run}-${i}@csrf-${run}.example.invalid`, password: 'correct horse battery', name: 'Ada' }),
+      }), env);
+      expect(refused.status, await refused.clone().text()).toBe(403);
+    }
+    expect(await counted(), 'refused requests leave the address count alone').toBe(0);
+    expect(await accounts(`mm-s3b-csrf-${run}-%`)).toBe(0);
+    // The visitor's own sign-up still goes through, and is the first counted.
+    const own = await signUp(`mm-s3b-csrf-${run}-own@csrf-${run}.example.invalid`, ip);
+    expect(own.status, await own.clone().text()).toBe(200);
+    expect(await counted()).toBe(1);
+  });
+
   it('refuses a sign-up with no client address in production, creating no account', { timeout: 60_000 }, async () => {
     const prod = 'https://moss.example.invalid';
     const production = { ...env, BETTER_AUTH_URL: prod };
