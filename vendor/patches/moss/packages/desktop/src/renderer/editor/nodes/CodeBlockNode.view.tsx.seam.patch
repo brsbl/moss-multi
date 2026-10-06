@@ -150,15 +150,6 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b
        editor.update(() => {
          const node = $getNodeByKey(nodeKey);
          if (!node) return;
-@@ -323,7 +348,7 @@ function CodeBlockComponent({
-         selected={isSelected}
-         beforeLabel="Insert paragraph before code block"
-         afterLabel="Insert paragraph after code block"
--        onGapClick={handleGapClick}
-+        onGapClick={editable ? handleGapClick : undefined /* moss-multi seam: read-only-decorators (T2.3) */}
-         className="moss-codeblock transition-colors"
-         style={themeColors}
-       >
 @@ -345,7 +370,10 @@ function CodeBlockComponent({
                  onThemeChange={handleThemeChange}
                  getCodeContent={getCodeContent}

@@ -3,6 +3,10 @@
 // moved or trashed). A socket records the epoch its role was resolved under; a DocDO re-reads it before applying any
 // frame and re-resolves the sockets it outdated. Credentials (a session, an agent key) are read directly each time.
 
+/** Close code for an admission or validation that could not be confirmed: the client retries (RFC 6455 "try again
+ * later"). */
+export const TRY_AGAIN = 1013;
+
 export interface Stamp {
   /** `<owner>:<epoch>` of the doc's vault owner; '' for a doc D1 no longer has. */
   key: string;

@@ -186,10 +186,6 @@ declare module '@moss-desktop/renderer/components/ModalShell' {
   }>;
 }
 
-declare module '@moss-desktop/common/markdown-layers' {
-  export function splitFrontmatter(text: string): { data: Record<string, unknown> | null };
-}
-
 declare module '@moss/shared/components/ui/confirmation-dialog' {
   import type { ComponentType, ReactNode } from 'react';
   export const ConfirmationDialog: ComponentType<{

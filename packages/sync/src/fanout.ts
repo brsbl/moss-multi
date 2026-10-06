@@ -144,12 +144,6 @@ export async function endSession(env: FanoutEnv, principalId: string, sessionId:
   await principal.endSession(sessionId);
 }
 
-/** An agent key's revocation (A§8) reaches the agent's PrincipalDO registry. */
-export async function revokeAgentKey(env: FanoutEnv, agentId: string): Promise<void> {
-  const principal = await getServerByName(env.PrincipalDO, agentId);
-  await principal.revokePrincipal();
-}
-
 /** Who reaches a doc through grants and links, and at what role, for comparing before and after a move. */
 export interface DocReach {
   roles: Map<string, Role>;

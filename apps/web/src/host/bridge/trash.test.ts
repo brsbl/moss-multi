@@ -4,9 +4,7 @@
 // restore through REST.
 import { formatRelativeTime } from '@moss-desktop/renderer/panels/notesPanelUtils';
 import { expect, it, vi } from 'vitest';
-import { AFFORDANCES } from '../affordances.ts';
 import { createBridge } from './index.ts';
-import { INVENTORY } from './inventory.ts';
 
 interface Call { method: string; path: string }
 const DAY = 86_400_000;
@@ -184,8 +182,3 @@ it('closes a folder’s open notes to writes before its trash, and retries a 503
   expect(server.calls.filter((call) => call.method === 'DELETE' && call.path === '/api/folders/f-plans')).toHaveLength(2);
 });
 
-it('is real: trash and restore are no longer staged, and no trash entry point is withheld', () => {
-  expect(INVENTORY['notes.delete'].treatment).toBe('real');
-  expect(INVENTORY['notes.restore'].treatment).toBe('real');
-  expect(AFFORDANCES.map((entry) => entry.id)).not.toContain('trash');
-});

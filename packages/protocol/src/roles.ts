@@ -6,7 +6,6 @@ export type Role = (typeof ROLES)[number];
 
 /** Roles a share-link row stores: a link never confers ownership (A§6). */
 export const MEMBER_ROLES = ['viewer', 'commenter', 'suggester', 'editor'] as const;
-export type MemberRole = (typeof MEMBER_ROLES)[number];
 
 /** Roles a grant or invite row stores. The vault owner is never stored; an `owner` grant makes a co-owner (P:People). */
 export const GRANT_ROLES = ROLES;

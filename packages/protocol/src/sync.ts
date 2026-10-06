@@ -102,6 +102,16 @@ function writeVarUint(out: number[], value: number): void {
   out.push(rest);
 }
 
+/** A y-protocols sync frame: message 0, the step, then its length-prefixed payload. */
+export function encodeSyncFrame(step: number, data: Uint8Array): Uint8Array {
+  const head = [0, step];
+  writeVarUint(head, data.length);
+  const frame = new Uint8Array(head.length + data.length);
+  frame.set(head);
+  frame.set(data, head.length);
+  return frame;
+}
+
 export function encodePayloadFrame(id: string, step: number, data: Uint8Array): Uint8Array {
   const name = new TextEncoder().encode(id);
   const head: number[] = [PAYLOAD_MESSAGE];
