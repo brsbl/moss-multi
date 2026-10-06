@@ -569,6 +569,8 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
     }
   }, [activeCommentState.comment, commentThreadFilter, getNewestRootComment, handlePopoverOpenChange]);
 
+  // moss-multi seam: comments: the DocDO's write order (`seq` on the projected record) breaks a same-second tie
+  const writeOrder = (c: NoteComment) => (c as NoteComment & { seq?: number }).seq ?? 0;
   // moss-multi seam: comments (comments.md §12): a peer's delete arrives as records; an open thread whose comment is
   // gone follows its promoted reply (the oldest that is still here) or its root, and closes when the thread is gone.
   const previousCommentsMapRef = useRef(commentsMap);
@@ -579,7 +581,7 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
     if (!active || commentsMap[active.id] || !previous[active.id]) return;
     const next = Object.values(previous)
       .filter((c) => c.parentId === active.id && commentsMap[c.id])
-      .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
+      .sort((a, b) => a.createdAt - b.createdAt || writeOrder(a) - writeOrder(b))
       .map((c) => commentsMap[c.id])[0] ?? (active.parentId ? commentsMap[active.parentId] : undefined);
     if (next) setActiveComment((state) => ({ ...state, comment: next }));
     else handlePopoverOpenChange(false);
@@ -631,7 +633,7 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
       const activeId = store.get(activeCommentAtom(noteId)).comment?.id;
       if (activeId !== commentId) return;
       const promoted = scope === 'comment' && !currentMap[commentId]?.parentId
-        ? Object.values(currentMap).filter((c) => c.parentId === commentId).sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))[0]
+        ? Object.values(currentMap).filter((c) => c.parentId === commentId).sort((a, b) => a.createdAt - b.createdAt || writeOrder(a) - writeOrder(b))[0]
         : undefined;
       const parent = currentMap[commentId]?.parentId ? currentMap[currentMap[commentId].parentId!] : undefined;
       const next = promoted ?? parent;

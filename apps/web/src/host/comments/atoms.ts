@@ -13,12 +13,16 @@ type Store = ReturnType<typeof useStore>;
 const COLOR: Record<CommentRecord['source'], number> = { user: 0, agent: 3, external: 4 };
 export const colorOf = (record: Pick<CommentRecord, 'source'>): number => COLOR[record.source] ?? 0;
 
-/** moss's NoteComment plus what the web adds: `author`, `authorLabel`, `reactions`, and `detached` and `quote` on a root. */
+/**
+ * moss's NoteComment plus what the web adds: `author`, `authorLabel`, `reactions`, `seq`, and `detached` and `quote`
+ * on a root.
+ */
 export interface ProjectedComment {
   id: string;
   text: string;
   createdAt: number;
   updatedAt: number;
+  seq: number;
   color: number;
   source: CommentRecord['source'];
   parentId?: string;
@@ -31,15 +35,21 @@ export interface ProjectedComment {
   quote?: string;
 }
 
+/** A record's write order; a pending comment, not written yet, sorts after every written one. */
+const seqOf = (record: CommentRecord): number => (typeof record.seq === 'number' ? record.seq : Number.MAX_SAFE_INTEGER);
+
 export function project(docId: string, model: CommentsModel): Record<string, ProjectedComment> {
   const out: Record<string, ProjectedComment> = {};
-  for (const [id, record] of model.records()) {
+  // In write order, so moss's stable createdAt sorts keep the DocDO's order within one second.
+  const records = [...model.records()].sort(([, a], [, b]) => a.createdAt - b.createdAt || seqOf(a) - seqOf(b));
+  for (const [id, record] of records) {
     const anchor = record.parentId === undefined ? model.anchor(id) : undefined;
     out[id] = {
       id,
       text: record.text,
       createdAt: record.createdAt,
       updatedAt: record.updatedAt,
+      seq: seqOf(record),
       color: colorOf(record),
       source: record.source,
       ...(record.parentId !== undefined ? { parentId: record.parentId } : {}),

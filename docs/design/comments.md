@@ -74,7 +74,7 @@ Each has a CI test in `packages/sync/test/harness/yjs-facts.test.ts`, on yjs 13.
 
 `Y.Map('comments')` holds JSON values only, with no nested Y types:
 
-- `c:<id>` is the thread record (author principal id, text in moss's mention encoding, imageUrls, timestamps in seconds, `parentId` for replies, `resolvedAt`/`resolvedBy`, `reactions {emoji → principalIds}`, `source`). Root delete promotes the oldest reply (§12).
+- `c:<id>` is the thread record (author principal id, text in moss's mention encoding, imageUrls, timestamps in seconds, `parentId` for replies, `resolvedAt`/`resolvedBy`, `reactions {emoji → principalIds}`, `source`, `seq`: the DocDO's write order, which breaks a same-second `createdAt` tie). Root delete promotes the oldest reply by `createdAt` then `seq` (§12).
 - `a:<id>` is the anchor record of a root, kept separate so a re-mint rewrites about 200 bytes, not the thread:
 
 ```ts

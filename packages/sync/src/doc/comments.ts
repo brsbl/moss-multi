@@ -49,6 +49,8 @@ export interface CommentRecord {
   text: string;
   createdAt: number;
   updatedAt: number;
+  /** The DocDO's write order: above every record's when written, so it orders records within one second. */
+  seq?: number;
   source: CommentSource;
   parentId?: string;
   resolvedAt?: number;
@@ -89,6 +91,7 @@ export class DocComments {
   #writer: CommentsWriter;
   #engine: AnchorEngine;
   #pending = new Map<string, Anchor>();
+  #seq = 0;
 
   constructor(
     readonly doc: Y.Doc,
@@ -102,6 +105,7 @@ export class DocComments {
     }
     this.#writer = this.#writerFor(r);
     this.#engine = this.#load();
+    for (const [key, value] of doc.getMap<unknown>('comments')) if (key.startsWith('c:')) this.#seq = Math.max(this.#seq, seqOf(value));
     doc.on('afterTransaction', (txn: Y.Transaction) => {
       if (SKIPPED.has(txn.origin)) return;
       try {
@@ -152,6 +156,7 @@ export class DocComments {
       updatedAt: now,
       source: isSource(input.source) ? input.source : 'user',
       reactions: {},
+      seq: this.#seq + 1,
     };
     if (input.parentId !== undefined) {
       const parent = comments.get(`c:${input.parentId}`) as CommentRecord | undefined;
@@ -159,6 +164,7 @@ export class DocComments {
       const reply = { ...record, parentId: input.parentId };
       if (entryBytes(`c:${input.id}`, reply) > room) return refuse(413, 'doc-cap');
       this.#writer.write((map) => map.set(`c:${input.id}`, reply));
+      this.#seq += 1;
       return { ok: true, id: input.id, quote: null, rootAuthor: parent.author };
     }
     const placed = this.#place(input.anchor);
@@ -169,6 +175,7 @@ export class DocComments {
       map.set(`c:${input.id}`, record);
       map.set(`a:${input.id}`, anchor);
     });
+    this.#seq += 1;
     this.#engine.set(input.id, anchor);
     return { ok: true, id: input.id, quote: anchor.quote };
   }
@@ -226,7 +233,7 @@ export class DocComments {
     for (const [key, value] of comments) {
       if (key.startsWith('c:') && (value as CommentRecord | undefined)?.parentId === id) replies.push([key.slice(2), value as CommentRecord]);
     }
-    replies.sort(([a, x], [b, y]) => x.createdAt - y.createdAt || (a < b ? -1 : a > b ? 1 : 0));
+    replies.sort(([a, x], [b, y]) => x.createdAt - y.createdAt || seqOf(x) - seqOf(y) || (a < b ? -1 : a > b ? 1 : 0));
     const anchor = comments.get(`a:${id}`) as Anchor | undefined;
     const promoted = scope === 'comment' ? replies[0] : undefined;
     this.#writer.write((map) => {
@@ -326,6 +333,8 @@ export class DocComments {
     const roots = new Map<string, Anchor>();
     const records = new Map<string, CommentRecord>();
     let left = room;
+    // Each record's seq follows sidecar time, counted before its bytes are.
+    const seq = new Map(byTime.map(([id], i) => [id, this.#seq + i + 1]));
     for (const [id, entry] of byTime) {
       const span = spans.get(id);
       if (!span || records.size >= maxRecords) continue;
@@ -333,7 +342,7 @@ export class DocComments {
       const last = units.get(span.last);
       if (!first || !last || span.last - span.first >= MAX_QUOTE || maxCoverage(intervals, span.first, span.last) >= OVERLAP_CAP) continue;
       const anchor = mintAnchor(first, last, span.block ? 'block' : 'text');
-      const record = toRecord(entry, author);
+      const record = toRecord(entry, author, seq.get(id)!);
       const bytes = entryBytes(`c:${id}`, record) + entryBytes(`a:${id}`, anchor);
       if (bytes > left) continue;
       left -= bytes;
@@ -343,13 +352,14 @@ export class DocComments {
     }
     for (const [id, entry] of byTime) {
       if (entry.parentId === undefined || !roots.has(entry.parentId) || records.size >= maxRecords) continue;
-      const record = { ...toRecord(entry, author), parentId: entry.parentId };
+      const record = { ...toRecord(entry, author, seq.get(id)!), parentId: entry.parentId };
       const bytes = entryBytes(`c:${id}`, record);
       if (bytes > left) continue;
       left -= bytes;
       records.set(id, record);
     }
     if (!records.size) return;
+    this.#seq += byTime.length;
     this.#writer.write((map) => {
       for (const [id, record] of records) map.set(`c:${id}`, record);
       for (const [id, anchor] of roots) map.set(`a:${id}`, anchor);
@@ -467,6 +477,11 @@ export function isEmoji(value: unknown): value is string {
   return [...graphemes.segment(value)].length === 1 && /\p{Extended_Pictographic}|\p{Regional_Indicator}/u.test(value);
 }
 
+const seqOf = (record: unknown): number => {
+  const seq = (record as { seq?: unknown } | null)?.seq;
+  return typeof seq === 'number' && Number.isSafeInteger(seq) && seq > 0 ? seq : 0;
+};
+
 function coerceReactions(value: unknown): Record<string, string[]> {
   const out: Record<string, string[]> = {};
   if (!value || typeof value !== 'object' || Array.isArray(value)) return out;
@@ -525,7 +540,7 @@ export function coerceSidecar(value: unknown): [string, SidecarEntry][] {
   return out;
 }
 
-function toRecord(entry: SidecarEntry, author: string): CommentRecord {
+function toRecord(entry: SidecarEntry, author: string, seq: number): CommentRecord {
   return {
     author,
     text: entry.text,
@@ -535,5 +550,6 @@ function toRecord(entry: SidecarEntry, author: string): CommentRecord {
     ...(entry.resolvedAt !== undefined ? { resolvedAt: entry.resolvedAt } : {}),
     ...(entry.resolvedBy !== undefined ? { resolvedBy: entry.resolvedBy } : {}),
     reactions: {},
+    seq,
   };
 }

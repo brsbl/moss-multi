@@ -246,7 +246,7 @@ export function MentionPlugin({
       onSelect={typeahead.selectItem}
       onClose={typeahead.closeMenu}
       inline={inline}
-      footer={connectFolderFooter}
+      footer={undefined /* moss-multi seam: the web has no connected folders (PRODUCT: Connected Folders hidden) */}
     />
   );
 }
