@@ -9,7 +9,7 @@ import { roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import { resolvePrincipal, shareTokenOf, type Principal } from '../auth/principal.ts';
 import { createDb } from '../db/client.ts';
 import { json } from '../worker/route.ts';
-import { resolveDocAccess } from './access.ts';
+import { MAX_FOLDER_DEPTH, resolveDocAccess } from './access.ts';
 import type { DocsEnv } from './docs.ts';
 import { notify, type InvitesEnv } from './invites.ts';
 import { NO_STORE, notFound, readJsonObject } from './respond.ts';
@@ -17,6 +17,8 @@ import { NO_STORE, notFound, readJsonObject } from './respond.ts';
 /** Record ids, as the DocDO mints them. */
 const ID = /^[A-Za-z0-9_-]{1,64}$/;
 const HASH = /^[A-Za-z0-9_-]{1,128}$/;
+/** People one suggestion can notify, each re-checked against their live access. */
+const NOTICE_RECIPIENTS_MAX = 200;
 
 export const SUGGESTION_ROUTE = /^\/api\/docs\/([^/]+)\/suggestions\/([^/]+)\/(preview|accept|reject|withdraw)$/;
 
@@ -92,14 +94,22 @@ export async function handleSuggestion(request: Request, env: DocsEnv, docId: st
 
 /**
  * The bell's rows for a new live suggestion (PRODUCT: the inbox notifies on suggestion): one `suggestion` row for the
- * doc's owner and each person granted editor or owner on it, each re-checked against their live access, never the
- * author and never an agent. A failure here loses only the notices, never the suggestion.
+ * doc's owner and each person granted editor or owner on it, a folder above it or its vault, each re-checked against
+ * their live access, never the author and never an agent. A failure here loses only the notices, never the suggestion.
  */
 export async function notifySuggestion(env: Pick<InvitesEnv, 'DB' | 'PrincipalDO'>, notice: { docId: string; author: string; record: string }): Promise<void> {
   try {
-    const owners = await env.DB.prepare(`SELECT owner_user_id AS id FROM docs WHERE id = ?1 AND deleted_at IS NULL
-      UNION SELECT principal_id AS id FROM doc_members WHERE doc_id = ?1 AND principal_type = 'user' AND role IN ('editor', 'owner')`)
-      .bind(notice.docId).all<{ id: string }>();
+    // Grants on the doc, on each folder of its chain and on its vault (the chain's root).
+    const owners = await env.DB.prepare(`WITH RECURSIVE chain(id, parent_id, depth) AS (
+        SELECT folders.id, folders.parent_id, 1 FROM folders JOIN docs ON docs.folder_id = folders.id WHERE docs.id = ?1
+        UNION ALL
+        SELECT folders.id, folders.parent_id, chain.depth + 1 FROM folders JOIN chain ON folders.id = chain.parent_id WHERE chain.depth < ?2
+      )
+      SELECT owner_user_id AS id FROM docs WHERE id = ?1 AND deleted_at IS NULL
+      UNION SELECT principal_id AS id FROM doc_members WHERE doc_id = ?1 AND principal_type = 'user' AND role IN ('editor', 'owner')
+      UNION SELECT principal_id AS id FROM folder_members WHERE folder_id IN (SELECT id FROM chain) AND principal_type = 'user' AND role IN ('editor', 'owner')
+      LIMIT ?3`)
+      .bind(notice.docId, MAX_FOLDER_DEPTH, NOTICE_RECIPIENTS_MAX).all<{ id: string }>();
     const db = createDb(env.DB);
     const recipients: string[] = [];
     for (const { id } of owners.results) {

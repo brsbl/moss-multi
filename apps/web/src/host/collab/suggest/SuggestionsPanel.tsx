@@ -7,7 +7,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@moss/sh
 import { BODY_DOC, recordDigest, type Hunk, type SuggestionRecord } from '@moss-multi/core/suggest/apply';
 import { describeHunks } from '@moss-multi/core/suggest/describe';
 import {
-  SUGGESTION_ACTIVE_ATTR, SUGGESTION_CARD_ATTR, SUGGESTION_ID_ATTR, SUGGESTION_STATUS_ATTR, SUGGESTIONS_BUTTON_ATTR, SUGGESTIONS_PANEL_ATTR,
+  SUGGESTION_ACTIVE_ATTR, SUGGESTION_CARD_ATTR, SUGGESTION_ID_ATTR, SUGGESTION_ROW_ATTR, SUGGESTION_STATUS_ATTR, SUGGESTIONS_BUTTON_ATTR, SUGGESTIONS_PANEL_ATTR,
 } from '@moss-multi/protocol/dom-contract';
 import { can, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import { readRecord, recordIds, SUGGESTIONS } from '@moss-multi/sync/suggest/records';
@@ -101,13 +101,21 @@ const REASONS: Record<string, string> = {
 const reasonText = (reason: string) => REASONS[reason] ?? 'It could not be applied.';
 
 async function call(url: string, body?: unknown): Promise<{ ok: boolean; status: number; json: Record<string, unknown> }> {
-  const response = await fetch(url, body === undefined ? { method: 'GET' } : { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  // A role that comes from a share link travels with every call, as the comment API's does.
+  const share = typeof window === 'undefined' ? null : new URLSearchParams(window.location.search).get('share');
+  const headers: Record<string, string> = { accept: 'application/json', ...(share ? { 'x-moss-share': share } : {}) };
+  const response = await fetch(url, body === undefined
+    ? { method: 'GET', credentials: 'same-origin', headers }
+    : { method: 'POST', credentials: 'same-origin', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify(body) });
   const json = (await response.json().catch(() => ({}))) as Record<string, unknown>;
   return { ok: response.ok, status: response.status, json };
 }
 
-function usePreview(docId: string, record: SuggestionRecord, enabled: boolean): Preview {
-  const digest = useMemo(() => recordDigest(record), [record]);
+/** The record's preview, fetched again when its ops change or `refresh` is called (the body moved under it). */
+function usePreview(docId: string, record: SuggestionRecord, enabled: boolean): [Preview, () => void] {
+  const recordKey = useMemo(() => recordDigest(record), [record]);
+  const [round, setRound] = useState(0);
+  const digest = `${recordKey}:${round}`;
   const [preview, setPreview] = useState<{ digest: string; value: Preview }>({ digest: '', value: { state: 'loading' } });
   useEffect(() => {
     if (!enabled) return;
@@ -128,7 +136,7 @@ function usePreview(docId: string, record: SuggestionRecord, enabled: boolean): 
       clearTimeout(timer);
     };
   }, [docId, record.meta.id, digest, enabled]);
-  return preview.digest === digest ? preview.value : { state: 'loading' };
+  return [preview.digest === digest ? preview.value : { state: 'loading' }, () => setRound((r) => r + 1)];
 }
 
 const BADGE = 'inline-flex items-center rounded-md px-1.5 py-0.5 text-micro';
@@ -136,7 +144,7 @@ const BADGE = 'inline-flex items-center rounded-md px-1.5 py-0.5 text-micro';
 function SuggestionCard({ docId, record, me, role, active }: { docId: string; record: SuggestionRecord; me: string | null; role: Role | null; active: boolean }): ReactNode {
   const { meta } = record;
   const open = meta.status === 'open';
-  const preview = usePreview(docId, record, open);
+  const [preview, refresh] = usePreview(docId, record, open);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -144,7 +152,7 @@ function SuggestionCard({ docId, record, me, role, active }: { docId: string; re
   const reviewer = roleAtLeast(role, 'editor');
   const outdated = (meta.outdated?.length ?? 0) > 0 || (preview.state === 'failed' && preview.reason === 'outdated');
   const broken = !!meta.broken || (preview.state === 'failed' && preview.reason === 'broken');
-  const excerpts = preview.state === 'ready' ? describeHunks(preview.hunks) : [];
+  const rows = preview.state === 'ready' ? describeHunks(preview.hunks) : [];
 
   const act = async (action: 'accept' | 'reject' | 'withdraw') => {
     setBusy(true);
@@ -152,7 +160,12 @@ function SuggestionCard({ docId, record, me, role, active }: { docId: string; re
     const body = action === 'accept' && preview.state === 'ready' ? { previewHash: preview.hash, digest: preview.digest } : {};
     try {
       const result = await call(`/api/docs/${encodeURIComponent(docId)}/suggestions/${encodeURIComponent(meta.id)}/${action}`, body);
-      if (!result.ok) setError(reasonText(String(result.json.error ?? 'refused')));
+      if (!result.ok) {
+        const reason = String(result.json.error ?? 'refused');
+        setError(reasonText(reason));
+        // The note changed since this preview: fetch the one an accept must now name.
+        if (reason === 'changed') refresh();
+      }
     } catch {
       setError('The server could not be reached. Try again.');
     } finally {
@@ -180,20 +193,20 @@ function SuggestionCard({ docId, record, me, role, active }: { docId: string; re
       {open ? (
         <div className="flex flex-col gap-1 text-xs">
           {preview.state === 'loading' ? <p className="text-micro text-ink-faint">Loading changes…</p> : null}
-          {preview.state === 'ready' && excerpts.length === 0 ? <p className="text-micro text-ink-faint">No visible change yet.</p> : null}
-          {excerpts.map((excerpt, i) =>
-            excerpt.kind === 'more' ? (
-              <p key={i} className="m-0 text-micro text-ink-faint">{excerpt.text}</p>
-            ) : (
-              <p
-                key={i}
-                className={`m-0 truncate rounded px-1.5 py-0.5 ${excerpt.kind === 'insert' ? 'bg-accent-brand/10 text-accent-brand-pressed' : excerpt.kind === 'delete' ? 'bg-accent-terracotta/10 text-accent-terracotta line-through' : 'bg-surface-badge text-ink-muted'}`}
-              >
-                {excerpt.kind === 'insert' ? '+ ' : excerpt.kind === 'delete' ? '− ' : '~ '}
-                {excerpt.text}
-              </p>
-            ),
-          )}
+          {preview.state === 'ready' && rows.length === 0 ? <p className="text-micro text-ink-faint">No visible change yet.</p> : null}
+          {rows.map((row, i) => (
+            <div
+              key={i}
+              {...{ [SUGGESTION_ROW_ATTR]: row.kind }}
+              className={`flex gap-1 rounded px-1.5 py-0.5 ${row.kind === 'insert' ? 'bg-accent-brand/10 text-accent-brand-pressed' : row.kind === 'delete' ? 'bg-accent-terracotta/10 text-accent-terracotta' : 'bg-surface-badge text-ink-muted'}`}
+            >
+              <span aria-hidden className="shrink-0">{row.kind === 'insert' ? '+' : row.kind === 'delete' ? '−' : '~'}</span>
+              <span className="min-w-0 whitespace-pre-wrap break-words">
+                <span className={row.kind === 'delete' ? 'line-through' : ''}>{row.text.trim() || '¶'}</span>
+                {row.note ? <span className="ml-1 text-micro text-ink-faint">{row.note}</span> : null}
+              </span>
+            </div>
+          ))}
           {(outdated || broken) ? (
             <div className="flex items-center gap-2">
               <span className="text-micro text-ink-muted">{reasonText(outdated ? 'outdated' : 'broken')}</span>

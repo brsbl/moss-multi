@@ -8,7 +8,7 @@ import * as Y from 'yjs';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
 import {
-  applyRecord, canonical, hydrate, itemKey, previewHash, projectDoc, projectionDiff, recordDigest, ROOT_KINDS, yValue, type GateReason, type Hunk,
+  applyRecord, canonical, hydrate, itemKey, previewHash, projectDoc, projectionDiff, recordDigest, ROOT_KINDS, yValue, type GateReason, type Hunk, type IdSpan,
   type Inserted, type PayloadMirrors, type Projection, type SuggestionRecord,
 } from '@moss-multi/core/suggest/apply';
 import { createConverterEditor } from '../converter/index.ts';
@@ -43,22 +43,25 @@ const inRange = (inserted: Inserted, id: Y.ID) => {
 
 /**
  * G7: binds moss's converter editor to a copy of `doc`, then reruns the node transforms on every node the record
- * created and its parent. Lexical refusing the tree (a throw) or normalizing it into something else (the body's
- * shared content changes) means a reader would not see what the reviewer was shown. Same-value writes back are not
- * changes.
+ * created and its parent. Lexical refusing the tree (a throw), repairing it as it binds, or
+ * normalizing it into something else (the body's shared content changes) means a reader would not see what the
+ * reviewer was shown. Same-value writes back are not changes.
  */
-export function bindCheck(doc: Y.Doc, inserted: Inserted): boolean {
+export function bindCheck(doc: Y.Doc, inserted: Inserted, deleted: readonly IdSpan[] = []): boolean {
   let mirror: ReturnType<typeof mirrorOf> | null = null;
   try {
-    // The baseline of each block the record wrote into is read before hydration, so a block the binding repairs
-    // while it hydrates (a legacy decorator shape) reads as changed.
-    const blocks = touchedBlocks(doc, inserted);
+    // The baseline is read before hydration: each block the record wrote into or deleted from, and the root's own
+    // keys and sequence when the record touched them, so a block the binding repairs while it hydrates (a legacy
+    // decorator shape, a string whose text node's properties went) reads as changed.
+    const touched = touchedBlocks(doc, inserted, deleted);
+    const rootBefore = touched.root ? rootShape(doc) : null;
     mirror = mirrorOf(doc);
     const bound = mirror;
-    for (const [id, value] of blocks) {
+    for (const { id, value } of touched.blocks.values()) {
       const item = Y.getItem(bound.doc.store, id);
       if (!(item instanceof Y.Item) || item.deleted || !(item.content instanceof Y.ContentType) || canonical(yValue(item.content.type)) !== value) return false;
     }
+    if (rootBefore !== null && rootShape(bound.doc) !== rootBefore) return false;
     const body = () => canonical(yValue(bound.doc.get('root', Y.XmlText)));
     const before = body();
     bound.editor.update(
@@ -81,22 +84,47 @@ export function bindCheck(doc: Y.Doc, inserted: Inserted): boolean {
   }
 }
 
-/** Each live top-level block holding an item of `inserted`, by id, with its value. */
-function touchedBlocks(doc: Y.Doc, inserted: Inserted): Map<Y.ID, string> {
+/** The root's own keys and live sequence: each block by its item id, each other item by its content. */
+function rootShape(doc: Y.Doc): string {
+  const root = doc.get('root', Y.XmlText);
+  const seq: unknown[] = [];
+  for (let item = root._start; item; item = item.right) {
+    if (!item.deleted) seq.push(item.content instanceof Y.ContentType ? itemKey(item.id) : item.content.getContent());
+  }
+  const keys = [...root._map].filter(([, item]) => !item.deleted).map(([key, item]) => [key, item.content.getContent()]);
+  return canonical({ keys, seq });
+}
+
+/**
+ * Each live top-level block holding an item `inserted` or `deleted` names, with its value; `root` when one of those
+ * items sits in the root itself or inside a block that is gone.
+ */
+function touchedBlocks(doc: Y.Doc, inserted: Inserted, deleted: readonly IdSpan[]): { blocks: Map<string, { id: Y.ID; value: string }>; root: boolean } {
   const root = doc.get('root', Y.XmlText);
   const seen = new Map<string, Y.Item>();
-  for (const [client, [from, to]] of inserted) {
+  let atRoot = false;
+  const visit = (client: number, from: number, to: number) => {
     const structs = doc.store.clients.get(client) as (Y.Item | Y.GC)[] | undefined;
-    if (!structs || from >= to) continue;
-    for (let i = Y.findIndexSS(structs as never, from); i < structs.length && structs[i].id.clock < to; i++) {
-      let item: Y.Item | null = structs[i] instanceof Y.Item ? (structs[i] as Y.Item) : null;
+    if (!structs || from >= to || structs.length === 0) return;
+    const last = structs[structs.length - 1];
+    if (from >= last.id.clock + last.length) return;
+    for (let i = Y.findIndexSS(structs as never, Math.max(from, structs[0].id.clock)); i < structs.length && structs[i].id.clock < to; i++) {
+      if (!(structs[i] instanceof Y.Item)) continue;
+      let item: Y.Item | null = structs[i] as Y.Item;
+      if (item.parent === root) {
+        atRoot = true;
+        continue;
+      }
       while (item && item.parent !== root) item = (item.parent as Y.AbstractType<unknown>)?._item ?? null;
-      if (item && !item.deleted && item.content instanceof Y.ContentType) seen.set(itemKey(item.id), item);
+      if (!item || item.deleted) atRoot = true;
+      else if (item.content instanceof Y.ContentType) seen.set(itemKey(item.id), item);
     }
-  }
-  const blocks = new Map<Y.ID, string>();
-  for (const item of seen.values()) blocks.set(item.id, canonical(yValue((item.content as Y.ContentType).type)));
-  return blocks;
+  };
+  for (const [client, [from, to]] of inserted) visit(client, from, to);
+  for (const span of deleted) visit(span.client, span.clock, span.clock + span.len);
+  const blocks = new Map<string, { id: Y.ID; value: string }>();
+  for (const [key, item] of seen) blocks.set(key, { id: item.id, value: canonical(yValue((item.content as Y.ContentType).type)) });
+  return { blocks, root: atRoot };
 }
 
 function serialize(node: LexicalNode): unknown {

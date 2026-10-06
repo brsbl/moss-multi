@@ -26,7 +26,7 @@ export const GROUP_IDLE_MS = 30_000;
  */
 export const LEASE_RENEW_MS = SUGGEST_LIMITS.leaseIdleMs / 2;
 
-export type BindCheck = (doc: Y.Doc, inserted: Inserted) => boolean;
+export type BindCheck = (doc: Y.Doc, inserted: Inserted, deleted: readonly IdSpan[]) => boolean;
 
 /** Open records, oldest first; only `author`'s when given. */
 export function openRecords(body: Y.Doc, author?: string): SuggestionRecord[] {
@@ -98,6 +98,7 @@ export function applyForView(base: Y.Doc, record: SuggestionRecord, check: BindC
   }
   const clients = new Set(record.meta.clients);
   const inserted = new Map<number, readonly [number, number]>();
+  const deleted: IdSpan[] = [];
   for (const [doc, updates] of groups) {
     const before = Y.decodeStateVector(Y.encodeStateVector(doc));
     let transaction: Y.Transaction | null = null;
@@ -117,6 +118,11 @@ export function applyForView(base: Y.Doc, record: SuggestionRecord, check: BindC
       if (!clients.has(client)) return fail();
       if (doc === view.doc) inserted.set(client, [from, clock]);
     }
+    if (doc === view.doc) {
+      for (const [client, items] of (tr.deleteSet as unknown as { clients: Map<number, { clock: number; len: number }[]> }).clients) {
+        for (const { clock, len } of items) deleted.push({ client, clock, len });
+      }
+    }
     const roots = doc === view.doc ? BODY_ROOTS : ROOT_KINDS.payload;
     for (const type of tr.changed.keys()) {
       const name = rootName(doc, type as unknown as Y.AbstractType<unknown>);
@@ -124,7 +130,7 @@ export function applyForView(base: Y.Doc, record: SuggestionRecord, check: BindC
     }
   }
   try {
-    if (!check(view.doc, inserted)) return fail();
+    if (!check(view.doc, inserted, deleted)) return fail();
   } catch {
     return fail();
   }
@@ -173,10 +179,10 @@ export class Composite {
         built.waiting.push(id);
         continue;
       }
-      const check: BindCheck = (scratch, inserted) => {
+      const check: BindCheck = (scratch, inserted, deleted) => {
         const known = this.#verdicts.get(id);
         if (known && known.ops === record.ops.length) return known.ok;
-        const ok = (this.options.check ?? bindCheck)(scratch, inserted);
+        const ok = (this.options.check ?? bindCheck)(scratch, inserted, deleted);
         this.#verdicts.set(id, { ops: record.ops.length, ok });
         return ok;
       };

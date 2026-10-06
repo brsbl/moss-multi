@@ -339,8 +339,11 @@ export interface PayloadMirrors {
 }
 
 export interface ApplyOptions {
-  /** G7: binds a headless editor to the doc after the record; false when Lexical cannot take the tree. */
-  bindCheck?: (doc: Y.Doc, inserted: Inserted) => boolean;
+  /**
+   * G7: binds a headless editor to the doc after the record; false when Lexical cannot take the tree. `deleted` is
+   * every body item the record's transaction removed, so a block it only deleted from is checked too.
+   */
+  bindCheck?: (doc: Y.Doc, inserted: Inserted, deleted: readonly IdSpan[]) => boolean;
   /** Required when a record has payload ops. */
   payloads?: PayloadMirrors;
 }
@@ -528,7 +531,7 @@ export function applyRecord(mirror: Y.Doc, record: SuggestionRecord, options: Ap
   if (outdated || [...targets.values()].some((t) => !insertedLive(t.doc.store, t.inserted, t.ownDeletes))) return fail('outdated');
 
   // G7: Lexical can bind the result.
-  if (options.bindCheck && !options.bindCheck(mirror, body.inserted)) return fail('broken');
+  if (options.bindCheck && !options.bindCheck(mirror, body.inserted, body.deleted)) return fail('broken');
 
   const payloads = new Map<string, Uint8Array>();
   for (const [id, t] of targets) if (t !== body) payloads.set(id, t.hydrated);

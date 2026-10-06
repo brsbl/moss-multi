@@ -21,9 +21,9 @@ import { AckCoalescer, DocStore, PERSISTENCE } from './doc/persistence.ts';
 import { coerceSidecar, COMMENT_STATE_SHARE, COMMENTS_PER_DOC, DocComments, type CommentCreate, type CommentDeleteScope, type CommentResult, type CommentSource } from './doc/comments.ts';
 import { d1Projections, Projections, type ProjectionTarget } from './doc/projections.ts';
 import { handleSuggest, SqlLeases, SuggestIngest, type Suggester } from './doc/suggest.ts';
-import { newSuggestionsClient, SUGGESTIONS, SuggestionsWriter } from './suggest/records.ts';
+import { newSuggestionsClient, readMeta, recordIds, SUGGESTIONS, SuggestionsWriter } from './suggest/records.ts';
 import {
-  acceptRecord, exportWorkingMarkdown, nodeRegistry, rejectRecord, reviewPreview, withdrawRecord, type Preview, type Reviewer, type ReviewResult,
+  acceptRecord, EMPTY_IDLE_MS, exportWorkingMarkdown, nodeRegistry, rejectRecord, reviewPreview, withdrawRecord, type Preview, type Reviewer, type ReviewResult,
 } from './suggest/review.ts';
 import { TRY_AGAIN, withDeadline, type Stamp } from './access-epoch.ts';
 import { publishMeta } from './fanout.ts';
@@ -294,6 +294,12 @@ export class DocDO extends YServer<SyncEnv> {
   /** The one writer of `suggestions` (reserved client S) and the suggestion ingest (docs/design/suggestions.md). */
   #suggestions: SuggestionsWriter | null = null;
   #ingest: SuggestIngest | null = null;
+  /**
+   * When the next idle check of open records is due (§4.7: an idle record with nothing to show is rejected by the
+   * system), and the `updatedAt` each record was last checked at. In memory: a wake checks on the next record change.
+   */
+  #idleAt: number | null = null;
+  readonly #idleChecked = new Map<string, number>();
   /** Suggest refusals per principal in the last window, and principals cooling down (until when). In memory. */
   readonly #refusals = new Map<string, number[]>();
   readonly #cooldowns = new Map<string, number>();
@@ -358,6 +364,11 @@ export class DocDO extends YServer<SyncEnv> {
       onCreated: (record, author, continues) => {
         if (!continues) this.#noticeSuggestion(record, author);
       },
+    });
+    this.document.getMap(SUGGESTIONS).observeDeep(() => {
+      if (this.#idleAt !== null) return;
+      this.#idleAt = Date.now() + EMPTY_IDLE_MS;
+      void this.#schedule(holdsOf(store)).catch((error: unknown) => console.error('DocDO could not schedule the idle check', error));
     });
     const target = (this.constructor as typeof DocDO).projectionTarget(this.env);
     if (target) this.#project(new Projections(this.name, target));
@@ -861,6 +872,14 @@ export class DocDO extends YServer<SyncEnv> {
       const attachment = attachmentOf(connection);
       if (attachment && aged(attachment, now)) connection.close(TRY_AGAIN, 'aged');
     }
+    if (this.#idleAt !== null && this.#idleAt <= now) {
+      this.#idleAt = null;
+      try {
+        await this.#serial(async () => this.#checkIdle(now));
+      } catch (error) {
+        console.error('DocDO idle check failed', error);
+      }
+    }
     const expired = [...holdsOf(store)].filter(([, until]) => until <= now).map(([hold]) => hold);
     if (expired.length > 0) {
       try {
@@ -991,6 +1010,23 @@ export class DocDO extends YServer<SyncEnv> {
       if (!roleAtLeast(reviewer.role, floor)) return { ok: false, status: 403, reason: 'role' };
       return run(reviewer);
     });
+  }
+
+  /** Each open record idle since its last check gets its preview, which rejects an empty one; the rest come due later. */
+  #checkIdle(now: number): void {
+    let next: number | null = null;
+    for (const id of recordIds(this.document)) {
+      const meta = readMeta(this.document, id);
+      if (!meta || meta.status !== 'open' || this.#idleChecked.get(id) === meta.updatedAt) continue;
+      const due = meta.updatedAt + EMPTY_IDLE_MS;
+      if (due > now) {
+        next = Math.min(next ?? due, due);
+        continue;
+      }
+      this.#idleChecked.set(id, meta.updatedAt);
+      reviewPreview(this.document, id, { now });
+    }
+    if (next !== null) this.#idleAt = Math.min(this.#idleAt ?? next, next);
   }
 
   #noticeSuggestion(record: string, author: string): void {
@@ -1149,6 +1185,7 @@ export class DocDO extends YServer<SyncEnv> {
   async #schedule(holds: Map<string, number>): Promise<void> {
     const due = [...holds.values()];
     if (this.#tickAt !== null) due.push(this.#tickAt);
+    if (this.#idleAt !== null) due.push(this.#idleAt);
     for (const connection of this.#all()) {
       const attachment = attachmentOf(connection);
       if (attachment) due.push(agesAt(attachment));

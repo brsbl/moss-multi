@@ -703,7 +703,7 @@ describe('T5.3 the card shows every change accept commits to @p:mean-2 @p:R17', 
       dispose();
     }
   };
-  const shown = (rows: ReviewRow[]) => rows.map((row) => row.text).join('\n');
+  const shown = (rows: ReviewRow[]) => rows.map((row) => [row.text, row.note ?? ''].join(' ')).join('\n');
 
   it('a link whose destination changed shows the old and the new destination', () => {
     const rows = rowsFor([() => (all().find((node) => node.getType() === 'link') as unknown as { setURL(url: string): void }).setURL('https://other.invalid')]);
@@ -732,6 +732,6 @@ describe('T5.3 the card shows every change accept commits to @p:mean-2 @p:R17', 
       () => select('Join head', 0).insertText('Five '),
     ]);
     for (const word of words) expect(shown(rows), word).toContain(word);
-    expect(rows.some((row) => row.kind === 'more')).toBe(false);
+    expect(shown(rows)).not.toMatch(/more changes/);
   });
 });

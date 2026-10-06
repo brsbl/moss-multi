@@ -11,7 +11,7 @@ import { bindingOf } from '../binding-registry.ts';
 import { restoreCaret, type CaretMark } from './caret.ts';
 import { rangesWhere } from './chars.ts';
 import { ReviewMount, SuggestMount } from './mounts.ts';
-import { clearPaint, drawMarks, editMarks, paintBound, paintRanges, partTargets, removedBodyItems } from './paint.ts';
+import { clearPaint, drawMarks, editMarks, paintBound, paintRanges, partTargets, struckByRecord } from './paint.ts';
 import { registerSuggestRouting } from './routing.ts';
 import { openSuggestion } from './SuggestionsPanel.tsx';
 
@@ -57,7 +57,8 @@ export function SuggestPlugin({ pane }: { pane: SuggestPane }): null {
     const stops: (() => void)[] = [];
     let frame = 0;
     let built: Built | null = null;
-    let removed: { client: number; clock: number; len: number }[] = [];
+    // Edit mode: each valid record's struck body items, rebuilt with C.
+    let struckBy = new Map<string, { client: number; clock: number; len: number }[]>();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const overlay = mode === 'edit' ? overlayFor(editor.getRootElement()) : null;
 
@@ -76,7 +77,7 @@ export function SuggestPlugin({ pane }: { pane: SuggestPane }): null {
         paintBound(owner, editor, binding, new Set(mount.clients.keys()), body ? partTargets(body, new Set(mount.valid)) : [], body);
       } else if (built && body) {
         // Strikes: delete-part targets, and body items a record's own ops remove (a join, a split, a restyle).
-        const struck = [...partTargets(body, new Set(built.valid)), ...removed];
+        const struck = [...struckBy.values()].flat();
         paintRanges(owner, [], struck.length ? rangesWhere(editor, binding, (id) => covers(struck, id)) : []);
         if (overlay) drawMarks(editor, overlay, editMarks(body, built, binding), (record) => openSuggestion(pane.docId, record));
       } else {
@@ -97,17 +98,32 @@ export function SuggestPlugin({ pane }: { pane: SuggestPane }): null {
       mount.editor = editor;
       stops.push(registerSuggestRouting(editor, mount.fork));
     }
-    if (mount instanceof ReviewMount) {
-      // A click on a painted suggestion opens its card (§7 hit test): the record whose inserted text is under it.
+    // A click on a painted suggestion opens its card (§7 hit test): the record whose inserted or struck text is under
+    // it. Review paints both; Edit paints strikes over the body (its inserts are wedges and gutter bars).
+    const hitTargets = (): Map<string, (id: Y.ID) => boolean> => {
+      const out = new Map<string, (id: Y.ID) => boolean>();
+      if (mount instanceof ReviewMount) {
+        const struck = body ? struckByRecord(body, new Set(mount.valid)) : new Map<string, { client: number; clock: number; len: number }[]>();
+        const clientsOf = new Map<string, Set<number>>();
+        for (const [client, record] of mount.clients) clientsOf.set(record, (clientsOf.get(record) ?? new Set()).add(client));
+        for (const record of new Set([...clientsOf.keys(), ...struck.keys()])) {
+          const clients = clientsOf.get(record) ?? new Set<number>();
+          const spans = struck.get(record) ?? [];
+          out.set(record, (id) => clients.has(id.client) || covers(spans, id));
+        }
+      } else if (mode === 'edit' && !(mount instanceof SuggestMount)) {
+        for (const [record, spans] of struckBy) out.set(record, (id) => covers(spans, id));
+      }
+      return out;
+    };
+    if (mount instanceof ReviewMount || (mode === 'edit' && !(mount instanceof SuggestMount))) {
       const root = editor.getRootElement();
       const onClick = (event: MouseEvent) => {
         const binding = bindingOf(editor);
         if (!binding) return;
-        const byRecord = new Map<string, Set<number>>();
-        for (const [client, record] of mount.clients) byRecord.set(record, (byRecord.get(record) ?? new Set()).add(client));
         const under = (range: Range) => [...range.getClientRects()].some((rect) => event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom);
-        for (const [record, clients] of byRecord) {
-          if (rangesWhere(editor, binding, (id) => clients.has(id.client)).some(under)) {
+        for (const [record, hit] of hitTargets()) {
+          if (rangesWhere(editor, binding, hit).some(under)) {
             openSuggestion(pane.docId, record);
             return;
           }
@@ -122,7 +138,7 @@ export function SuggestPlugin({ pane }: { pane: SuggestPane }): null {
       const rebuild = () => {
         if (built) destroyView(built);
         built = openRecords(body).length ? composite.build() : null;
-        removed = built ? removedBodyItems(body, built) : [];
+        struckBy = built ? struckByRecord(body, new Set(built.valid), built) : new Map();
         repaint();
       };
       // Throttled, so marks follow a peer who types without pause.

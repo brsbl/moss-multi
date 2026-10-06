@@ -53,21 +53,23 @@ export function paintBound(owner: object, editor: LexicalEditor, binding: Bindin
   paintRanges(owner, insert, strike);
 }
 
+type Span = { client: number; clock: number; len: number };
+
 /** Every valid open record's delete targets. */
-export function partTargets(body: Y.Doc, valid: ReadonlySet<string>): { client: number; clock: number; len: number }[] {
-  return openRecords(body).filter((record) => valid.has(record.meta.id)).flatMap((record) => record.parts.flatMap((part) => part.targets));
+export function partTargets(body: Y.Doc, valid: ReadonlySet<string>): Span[] {
+  return [...struckByRecord(body, valid).values()].flat();
 }
 
 /**
- * Body items a valid record's own ops delete (a join, a split, a restyle rewrite their original text): each op's
- * delete set, less the items of any record's leased clients. Decoded once per rebuild of C.
+ * Each valid open record's struck body items: its delete parts' targets and, with `built`, the body items its own ops
+ * delete (a join, a split, a restyle rewrite their original text), less the items of any record's leased clients.
  */
-export function removedBodyItems(body: Y.Doc, built: Built): { client: number; clock: number; len: number }[] {
-  const valid = new Set(built.valid);
-  const spans: { client: number; clock: number; len: number }[] = [];
+export function struckByRecord(body: Y.Doc, valid: ReadonlySet<string>, built?: Built): Map<string, Span[]> {
+  const out = new Map<string, Span[]>();
   for (const record of openRecords(body)) {
     if (!valid.has(record.meta.id)) continue;
-    for (const op of record.ops) {
+    const spans: Span[] = record.parts.flatMap((part) => part.targets);
+    for (const op of built ? record.ops : []) {
       if (op.doc !== BODY_DOC) continue;
       let ds: ReturnType<typeof Y.decodeUpdate>['ds'];
       try {
@@ -76,12 +78,13 @@ export function removedBodyItems(body: Y.Doc, built: Built): { client: number; c
         continue;
       }
       for (const [client, ranges] of ds.clients) {
-        if (built.clients.has(client)) continue;
+        if (built!.clients.has(client)) continue;
         for (const { clock, len } of ranges) spans.push({ client, clock, len });
       }
     }
+    if (spans.length) out.set(record.meta.id, spans);
   }
-  return spans;
+  return out;
 }
 
 interface Mark {
@@ -152,7 +155,16 @@ export function editMarks(body: Y.Doc, built: Built, binding: Binding): Mark[] {
       const was = before instanceof Y.Item && before.content instanceof Y.ContentType ? (before.content.type as Y.XmlText) : null;
       if (!was || JSON.stringify(was.getAttributes()) === JSON.stringify(insert.getAttributes())) continue;
       const place = index.get(idKey(id));
-      if (place) marks.set(`attr:${place.key}`, { kind: 'attribute', place, after: false, text: '', record: '' });
+      // The record whose leased client wrote one of the changed attributes.
+      let record = '';
+      for (const item of insert._map.values()) {
+        const by = !item.deleted ? built.clients.get(item.id.client) : undefined;
+        if (by) {
+          record = by;
+          break;
+        }
+      }
+      if (place) marks.set(`attr:${place.key}`, { kind: 'attribute', place, after: false, text: '', record });
     }
   };
   visit(built.doc.get('root', Y.XmlText));
@@ -203,6 +215,11 @@ export function drawMarks(editor: LexicalEditor, overlay: HTMLElement, marks: Ma
       dot.className = 'moss-suggest-dot';
       dot.style.left = `${rect.left - host.left - 14}px`;
       dot.style.top = `${rect.top - host.top + 6}px`;
+      if (mark.record) {
+        dot.dataset.suggestionId = mark.record;
+        dot.setAttribute('aria-label', 'Suggested change to this block');
+        if (onOpen) dot.addEventListener('click', () => onOpen(mark.record));
+      }
       overlay.appendChild(dot);
       continue;
     }
