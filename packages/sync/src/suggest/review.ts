@@ -62,6 +62,16 @@ export function bindCheck(doc: Y.Doc, inserted: Inserted, deleted: readonly IdSp
       if (!(item instanceof Y.Item) || item.deleted || !(item.content instanceof Y.ContentType) || canonical(yValue(item.content.type)) !== value) return false;
     }
     if (rootBefore !== null && rootShape(bound.doc) !== rootBefore) return false;
+    // Hydration skips a node whose `__type` is gone, so it binds here; an editor already showing that node throws.
+    const registered = bound.editor._nodes;
+    const root = bound.doc.get('root', Y.XmlText);
+    for (const { id } of touched.blocks.values()) {
+      const item = Y.getItem(bound.doc.store, id) as Y.Item;
+      if (!typedTree((item.content as Y.ContentType).type as Y.AbstractType<unknown>, registered)) return false;
+    }
+    for (let item = root._start; item; item = item.right) {
+      if (!item.deleted && item.content instanceof Y.ContentType && inRange(inserted, item.id) && !typedTree(item.content.type as Y.AbstractType<unknown>, registered)) return false;
+    }
     const body = () => canonical(yValue(bound.doc.get('root', Y.XmlText)));
     const before = body();
     bound.editor.update(
@@ -82,6 +92,17 @@ export function bindCheck(doc: Y.Doc, inserted: Inserted, deleted: readonly IdSp
   } finally {
     mirror?.dispose();
   }
+}
+
+/** `type` and every live type in its sequence name a registered node in `__type`. */
+function typedTree(type: Y.AbstractType<unknown>, registered: ReadonlyMap<string, unknown>): boolean {
+  const named = type._map.get('__type');
+  const name = named && !named.deleted ? named.content.getContent().at(-1) : undefined;
+  if (typeof name !== 'string' || !registered.has(name)) return false;
+  for (let item = type._start; item; item = item.right) {
+    if (!item.deleted && item.content instanceof Y.ContentType && !typedTree(item.content.type as Y.AbstractType<unknown>, registered)) return false;
+  }
+  return true;
 }
 
 /** The root's own keys and live sequence: each block by its item id, each other item by its content. */
