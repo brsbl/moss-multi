@@ -522,6 +522,7 @@ function FormulaEditPopover({
   // draft started from: a peer's change to the payload field merges into the draft and advances its base; a peer's
   // change to the node field (the name, or a variable's value) is adopted while the draft still equals its base.
   const symbolic = editingFormula.sourceMode === 'symbolic';
+  const pending = editingFormula.pending;
   const payloadField: keyof FormulaDraft = symbolic ? 'name' : 'expression';
   const nodeField: keyof FormulaDraft = symbolic ? 'expression' : 'name';
   const payloadBaseRef = useRef('');
@@ -569,7 +570,8 @@ function FormulaEditPopover({
         const next = draft[payloadField];
         const base = payloadBaseRef.current;
         payloadBaseRef.current = next;
-        if (local) return;
+        // A popover opened before its payload arrived reads it again as a new session instead.
+        if (local || pending) return;
         // The merge writes nothing: the person's draft, with the peer's text and reference tokens, is written by their
         // next keystroke or on Enter or Apply.
         let merged: string;
@@ -589,7 +591,7 @@ function FormulaEditPopover({
     };
     text.observe(changed);
     return () => { stopped = true; text.unobserve(changed); };
-  }, [editor, editingFormula.nodeKey, mergePeerExpression, payloadField, readCurrentDraft, setDraftState, symbolic]);
+  }, [editor, editingFormula.nodeKey, mergePeerExpression, payloadField, pending, readCurrentDraft, setDraftState, symbolic]);
 
   useEffect(() => editor.registerUpdateListener(({ tags }) => {
     const draft = readCurrentDraft();

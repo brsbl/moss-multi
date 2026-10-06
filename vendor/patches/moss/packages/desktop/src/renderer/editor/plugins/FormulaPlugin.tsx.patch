@@ -133,7 +133,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FormulaPlugin.tsx b/pa
    const [name, setName] = useState(editingFormula.name);
    const [expression, setExpression] = useState(editingFormula.expression);
    const [suggestionState, setSuggestionState] = useState<PopoverSuggestionState | null>(null);
-@@ -428,17 +517,101 @@ function FormulaEditPopover({
+@@ -428,17 +517,103 @@ function FormulaEditPopover({
      setSuggestionState(null);
    }, []);
  
@@ -141,6 +141,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FormulaPlugin.tsx b/pa
 +  // draft started from: a peer's change to the payload field merges into the draft and advances its base; a peer's
 +  // change to the node field (the name, or a variable's value) is adopted while the draft still equals its base.
 +  const symbolic = editingFormula.sourceMode === 'symbolic';
++  const pending = editingFormula.pending;
 +  const payloadField: keyof FormulaDraft = symbolic ? 'name' : 'expression';
 +  const nodeField: keyof FormulaDraft = symbolic ? 'expression' : 'name';
 +  const payloadBaseRef = useRef('');
@@ -195,7 +196,8 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FormulaPlugin.tsx b/pa
 +        const next = draft[payloadField];
 +        const base = payloadBaseRef.current;
 +        payloadBaseRef.current = next;
-+        if (local) return;
++        // A popover opened before its payload arrived reads it again as a new session instead.
++        if (local || pending) return;
 +        // The merge writes nothing: the person's draft, with the peer's text and reference tokens, is written by their
 +        // next keystroke or on Enter or Apply.
 +        let merged: string;
@@ -215,7 +217,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FormulaPlugin.tsx b/pa
 +    };
 +    text.observe(changed);
 +    return () => { stopped = true; text.unobserve(changed); };
-+  }, [editor, editingFormula.nodeKey, mergePeerExpression, payloadField, readCurrentDraft, setDraftState, symbolic]);
++  }, [editor, editingFormula.nodeKey, mergePeerExpression, payloadField, pending, readCurrentDraft, setDraftState, symbolic]);
 +
 +  useEffect(() => editor.registerUpdateListener(({ tags }) => {
 +    const draft = readCurrentDraft();
@@ -242,7 +244,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FormulaPlugin.tsx b/pa
  
    useEffect(() => {
      const focusValueInput = () => {
-@@ -450,27 +623,31 @@ function FormulaEditPopover({
+@@ -450,27 +625,31 @@ function FormulaEditPopover({
        input.setSelectionRange(0, input.value.length);
      };
      focusValueInput();
@@ -281,7 +283,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FormulaPlugin.tsx b/pa
  
        if (editingFormula.sourceMode === 'symbolic') {
          return;
-@@ -497,7 +674,7 @@ function FormulaEditPopover({
+@@ -497,7 +676,7 @@ function FormulaEditPopover({
            : null
        );
      },
@@ -290,7 +292,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FormulaPlugin.tsx b/pa
    );
  
    const acceptSuggestion = useCallback(
-@@ -508,12 +685,12 @@ function FormulaEditPopover({
+@@ -508,12 +687,12 @@ function FormulaEditPopover({
        }
        const nextExpression =
          expression.slice(0, state.tokenStart) + suggestion.name + expression.slice(state.tokenEnd);
@@ -305,7 +307,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FormulaPlugin.tsx b/pa
          selectionStart: caretAfter,
          acceptedReference: {
            name: suggestion.name,
-@@ -531,15 +708,17 @@ function FormulaEditPopover({
+@@ -531,15 +710,17 @@ function FormulaEditPopover({
          }
        });
      },
@@ -326,7 +328,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FormulaPlugin.tsx b/pa
  
    const handleInputKeyDown = useCallback(
      (event: ReactKeyboardEvent<HTMLInputElement>) => {
-@@ -694,6 +873,7 @@ function FormulaEditPopover({
+@@ -694,6 +875,7 @@ function FormulaEditPopover({
                  ref={nameInputRef}
                  aria-label="Formula name"
                  value={name}
@@ -334,7 +336,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FormulaPlugin.tsx b/pa
                  onChange={(event) => handleNameChange(event.target.value)}
                  onKeyDown={handleInputKeyDown}
                  placeholder="Name"
-@@ -704,6 +884,7 @@ function FormulaEditPopover({
+@@ -704,6 +886,7 @@ function FormulaEditPopover({
                  ref={expressionInputRef}
                  aria-label={editingFormula.sourceMode === 'symbolic' ? 'Variable value' : 'Formula expression'}
                  value={expression}
@@ -342,7 +344,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FormulaPlugin.tsx b/pa
                  onChange={(event) =>
                    handleExpressionChange(event.target.value, event.target.selectionStart)
                  }
-@@ -751,8 +932,57 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
+@@ -751,8 +934,57 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
    const editRedoDraftRef = useRef<FormulaDraftSnapshot | null>(null);
    const editReferenceBindingsRef = useRef<PositionedFormulaReference[]>([]);
    const editExpressionRef = useRef('');
@@ -400,7 +402,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FormulaPlugin.tsx b/pa
    useLayoutEffect(() => {
      if (!editingFormulaNodeKey) {
        return;
-@@ -880,31 +1110,7 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
+@@ -880,31 +1112,7 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
          return;
        }
  
@@ -433,7 +435,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FormulaPlugin.tsx b/pa
        if (!nextDraft) {
          return;
        }
-@@ -913,16 +1119,7 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
+@@ -913,16 +1121,7 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
        event.stopPropagation();
        clearTimeouts();
        setPreviewState(initialPreviewState);
@@ -451,7 +453,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FormulaPlugin.tsx b/pa
      };
  
      rootElement.addEventListener('mouseover', handleMouseOver);
-@@ -937,7 +1134,17 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
+@@ -937,7 +1136,17 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
        rootElement.removeEventListener('click', handleClick);
        clearTimeouts();
      };
@@ -470,7 +472,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FormulaPlugin.tsx b/pa
  
    const readCurrentDraft = useCallback((): FormulaDraft | null => {
      const target = editingFormula;
-@@ -946,12 +1153,13 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
+@@ -946,12 +1155,13 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
      }
  
      let draft: FormulaDraft | null = null;
@@ -485,7 +487,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FormulaPlugin.tsx b/pa
        const result = node.getResult();
        const sourceMode = classifyFormulaSource(formula, { storedDisplay: result });
        draft = {
-@@ -1022,6 +1230,8 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
+@@ -1022,6 +1232,8 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
        }
        editExpressionRef.current = draft.expression;
        editReferenceBindingsRef.current = references;
@@ -494,7 +496,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FormulaPlugin.tsx b/pa
  
        const nextName = draft.name.trim();
        const nextExpression =
-@@ -1039,9 +1249,11 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
+@@ -1039,9 +1251,11 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
        if (!editHistoryPushedRef.current) {
          editor.update(() => {
            $getRoot().markDirty();
@@ -507,7 +509,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FormulaPlugin.tsx b/pa
        let changed = false;
        editor.update(() => {
          const targetNode = $getNodeByKey(target.nodeKey);
-@@ -1059,17 +1271,31 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
+@@ -1059,17 +1273,31 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
          const instances = $nodesOfType(FormulaNode).filter(
            (candidate) => candidate.getFormulaId() === instanceId
          );
@@ -542,7 +544,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FormulaPlugin.tsx b/pa
              if (node.getResult() !== nextExpression) {
                node.setResult(nextExpression);
                changed = true;
-@@ -1084,20 +1310,22 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
+@@ -1084,20 +1312,22 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
  
          const normalizedName = nextName.length > 0 ? nextName : null;
          for (const node of instances) {
@@ -569,7 +571,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FormulaPlugin.tsx b/pa
            resolveFormulaReferenceValue(editor, reference)
          );
          if (evaluation.hasMissingReferences) {
-@@ -1122,7 +1350,8 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
+@@ -1122,7 +1352,8 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
          // and steals focus from the popover inputs.
          tag: [
            editHistoryPushedRef.current ? HISTORY_MERGE_TAG : HISTORY_PUSH_TAG,
@@ -579,7 +581,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FormulaPlugin.tsx b/pa
          ]
        });
  
-@@ -1145,6 +1374,31 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
+@@ -1145,6 +1376,31 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
      [applyDraftToNode]
    );
  
@@ -611,7 +613,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FormulaPlugin.tsx b/pa
    const isEditingDraftValid = useCallback(
      (draft: FormulaDraft): boolean => {
        const target = editingFormula;
-@@ -1170,6 +1424,10 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
+@@ -1170,6 +1426,10 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
  
    const handleHistoryShortcut = useCallback(
      (direction: 'undo' | 'redo'): FormulaDraft | null => {
@@ -622,7 +624,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FormulaPlugin.tsx b/pa
        const originalDraft = editOriginalDraftRef.current;
        const currentDraft = readCurrentDraft();
        const currentFormulaId = readCurrentFormulaId();
-@@ -1228,7 +1486,7 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
+@@ -1228,7 +1488,7 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
      onConvert: (targetNode, textNode) => {
        const formulaId = targetNode.getFormulaId();
        registerEditedFormulaId(textNode.getKey(), formulaId);
@@ -631,7 +633,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FormulaPlugin.tsx b/pa
      }
    });
  
-@@ -1246,6 +1504,32 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
+@@ -1246,6 +1506,32 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
      [editingFormula, editor]
    );
  
@@ -664,7 +666,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FormulaPlugin.tsx b/pa
    return (
      <>
        <FormulaPreview state={previewState} />
-@@ -1254,12 +1538,7 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
+@@ -1254,12 +1540,7 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
            editingFormula={editingFormula}
            onClose={(options) => {
              const { nodeKey } = editingFormula;
@@ -678,7 +680,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/FormulaPlugin.tsx b/pa
              // Opening the popover suppresses the pill's click so the editor
              // never takes focus. Deliberate closes (submit, escape, dismiss)
              // hand it back, otherwise the note has no selection and undo
-@@ -1287,6 +1566,7 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
+@@ -1287,6 +1568,7 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
            onHistoryShortcut={handleHistoryShortcut}
            isDraftValid={isEditingDraftValid}
            readCurrentDraft={readCurrentDraft}
