@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 84% done** (78 of 93 planned tasks verified)
+**Overall: 85% done** (79 of 93 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -9,7 +9,7 @@
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 15 / 15 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 8 / 8 | in progress |
-| M5 Suggestions | Suggest mode, vetting, accept/reject | 3 / 5 | in progress |
+| M5 Suggestions | Suggest mode, vetting, accept/reject | 4 / 5 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
@@ -99,6 +99,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-06 — T5.R verified: m5 now sits on the current m4, and the server stores a suggester's edits to the note and to code, HTML, formula, chart and sketch blocks as per-document suggestion records checked through the shared channel table, never touching the note body.
 - 2026-10-06 — T4.S2 verified: comment create, reply, edit, reaction and sidecar import are now refused once the note plus every stored payload, served or withheld, would leave no room, so comments cannot push a note past its size cap.
 - 2026-10-06 — T3.10 verified: a host such as the bb Moss viewer plugin can read the viewer's or editor's current selection as text, markdown, source file lines, heading path and blocks, and can show moss's Share with Agent button for it.
+- 2026-10-06 — T5.1 verified: a person with suggest access can switch a shared note into Suggest mode and type, delete and edit code and other blocks as suggestions shown inline beside the body, offline edits continue after a reconnect, and a demoted editor drops to a read-only body with a reason.
 
 ## T1.1s identity audit
 
@@ -430,3 +431,7 @@ Local browser verification remains assigned to the independent checker under the
 - Layout persistence walks the whole tree and writes localStorage on every editor update (apps/web/src/host/collab/layout-local.ts:39-76). Skip updates that do not touch tables or tabs, write only values that changed, and batch writes into one, flushing on teardown.
 - The ack ledger keeps acknowledged writes during a continuous editing stream (apps/web/src/host/collab/acks.ts:48-57). On each ack, drop the writes it fully covers, and keep only those still outstanding.
 - Expanding YAML aliases in imported frontmatter is unbounded (packages/sync/src/doc-do.ts:257). Before normalizing, detect aliases and cycles or count expanded nodes against a budget, and refuse import when the budget is exceeded.
+- T5.1 checker P2 (`suggest_leases` gains `fork_id` with no ALTER migration; downgraded from Codex P1): a pre-existing table without `fork_id` would fail every lease insert; no such persisted state exists yet, but add an idempotent nullable ALTER before any deploy.
+- T5.1 checker P2 (the code-block wedge's hover preview cannot be reached with the mouse): in Edit mode the wedge for a suggested payload edit sits under moss's block gap-cursor overlay (z-20), so the proposed-code preview never shows on hover; the inline text preview box is also too narrow and wraps one word per line.
+- T5.1 checker P2 (Suggest mode turns off all of MathCalculationPlugin, so a typed formula cannot be committed): `backgroundWriters=false` gates the whole plugin, including the Space and Enter commit commands; the census only pastes formula markup.
+- T5.1 checker P2 (routing and caret capture treat a continuation lease's accepted prefix as pending): `ownClients` works per client, so after an accept during an outage Backspace on the accepted prefix takes the fork's native-delete path instead of a strike, and caret capture skips that prefix; paint already checks per item against B's state vector.
