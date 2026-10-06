@@ -189,16 +189,16 @@ describe('T5.Ps census: every struct shows in the preview or is refused @p:mean-
 });
 
 describe('T5.Ps the three channels the preview used to miss are refused @p:mean-2', () => {
-  /** The updates `write` emits on a copy of `doc` under `client`, merged. */
+  /** The updates `write`'s transactions emit on a copy of `source` under `client`, merged, as a fork sends them. */
   const opOn = (source: Y.Doc, client: number, write: (doc: Y.Doc) => void): Uint8Array => {
     const doc = new Y.Doc({ gc: false });
     Y.applyUpdate(doc, Y.encodeStateAsUpdate(source));
     doc.clientID = client;
-    const sv = Y.encodeStateVector(doc);
+    const updates: Uint8Array[] = [];
+    doc.on('update', (update: Uint8Array) => updates.push(update));
     write(doc);
-    const update = Y.encodeStateAsUpdate(doc, sv);
     doc.destroy();
-    return update;
+    return Y.mergeUpdates(updates);
   };
 
   it("sequence items on the 'payload-map' root (parentSub null)", () => {
