@@ -135,9 +135,18 @@ describe('T5.2 ingest: leases and suggest-ops @p:mean-2', () => {
     const ingest = ingestOn(live);
     const mine = leaseOne(ingest, sam());
     const [id, held] = [...payloadDocsFor(live).docs][0];
+    /** `write` on a copy of the payload under the lease's id, applied before the id is set so Yjs keeps it. */
+    const onCopy = (text: string) => {
+      const doc = new Y.Doc();
+      Y.applyUpdate(doc, Y.encodeStateAsUpdate(held));
+      doc.clientID = mine.client;
+      const sv = Y.encodeStateVector(doc);
+      doc.getText('payload').insert(0, text);
+      return Y.encodeStateAsUpdate(doc, sv);
+    };
     // The payload already holds structs under the lease's id (minting checks only the body).
-    Y.applyUpdate(held, frame(held, mine.client, (doc) => doc.getText('payload').insert(0, 'old')));
-    const update = frame(held, mine.client, (doc) => doc.getText('payload').insert(0, 'new'));
+    Y.applyUpdate(held, onCopy('old'));
+    const update = onCopy('new');
     expect(Y.parseUpdateMeta(update).from.get(mine.client)).toBeGreaterThan(0);
     const fromZero = frame(new Y.Doc(), mine.client, (doc) => doc.getText('payload').insert(0, 'z'));
     expect(ingest.ops(sam(), mine.record, { doc: id, update: fromZero })).toEqual({ ok: false, reason: 'lease' });
@@ -174,14 +183,15 @@ describe('T5.2 ingest: leases and suggest-ops @p:mean-2', () => {
     const b = leaseOne(ingest, sam());
     const fork = new Y.Doc();
     Y.applyUpdate(fork, Y.encodeStateAsUpdate(live));
-    fork.clientID = a.client;
-    let sv = Y.encodeStateVector(fork);
-    append(fork, paragraph('from a'));
-    expect(ingest.ops(sam(), a.record, Y.encodeStateAsUpdate(fork, sv))).toMatchObject({ ok: true });
+    // b's paragraph follows the note's last block, so ingest places it; a writes elsewhere.
     fork.clientID = b.client;
-    sv = Y.encodeStateVector(fork);
+    let sv = Y.encodeStateVector(fork);
     append(fork, paragraph('from b'));
     expect(ingest.ops(sam(), b.record, Y.encodeStateAsUpdate(fork, sv))).toMatchObject({ ok: true });
+    fork.clientID = a.client;
+    sv = Y.encodeStateVector(fork);
+    firstBlock(fork).insert(0, 'A ');
+    expect(ingest.ops(sam(), a.record, Y.encodeStateAsUpdate(fork, sv))).toMatchObject({ ok: true });
     expect(ingest.merge(sam(), a.record, b.record)).toMatchObject({ ok: true, record: a.record });
     // A formatting mark inside b's paragraph: off the table, placed only through the merged record's own structs.
     fork.clientID = a.client;
@@ -296,7 +306,7 @@ describe('T5.2 record ids, continuations and delete targets @p:mean-2', () => {
       for (const update of pendingUpdates) expect(ingest.ops(sam(), pending.record, update)).toMatchObject({ ok: true });
       expect(accept(live, alice.record)).toEqual({ ok: true });
       // Pending items reach the body only by accept; were they there under a live lease, they still are no target.
-      for (const update of pendingUpdates) Y.applyUpdate(live, update);
+      for (const op of pendingUpdates) if (op.doc === 'body') Y.applyUpdate(live, op.update);
       const bob = leaseOne(ingest, sky());
       expect(ingest.delete(sky(), bob.record, { id: 'd1', targets: spansOfText(live, 'Accepted') })).toMatchObject({ ok: true, parts: ['d1'] });
       expect(ingest.delete(sky(), bob.record, { id: 'd2', targets: spansOfText(live, 'Pending') })).toEqual({ ok: false, reason: 'target' });

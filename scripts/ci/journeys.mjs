@@ -34,10 +34,10 @@ export const GROUPS = {
   workspace: ['j05', 'j06', 'j12', 'j13', 'export'],
   // Media, embeds and the demo note.
   media: ['j11', 'j14'],
-  // Comments, suggestions, history, agents.
-  meaning: ['j15', 'j16', 'j17', 'j18'],
-  // Reactions, mentions, edit and delete, and the comment bell.
-  social: ['j15-social'],
+  // Comments, history, agents.
+  meaning: ['j15', 'j17', 'j18'],
+  // Reactions, mentions, edit and delete, and the comment bell; and the suggestions server.
+  social: ['j15-social', 'j16'],
 };
 
 /**

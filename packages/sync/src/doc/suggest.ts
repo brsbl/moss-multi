@@ -568,6 +568,7 @@ export class SuggestIngest {
       info.bytes = 0;
       this.#open.get(info.author)?.delete(id);
     }
+    this.#placed.delete(id);
     if (meta?.status === 'accepted') this.leases.spend(id);
   }
 

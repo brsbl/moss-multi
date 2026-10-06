@@ -172,7 +172,7 @@ describe('T5.2 suggest-ops through the doc socket @p:mean-2 @p:R17', () => {
     const writes: [string, (doc: Y.Doc, id: string) => void][] = [
       ['a new top-level record', (doc) => doc.getMap(SUGGESTIONS).set('forged', 'accepted')],
       ["a record's meta overwritten", (doc, id) => (doc.getMap(SUGGESTIONS).get(id) as Y.Map<unknown>).set('meta', '{"status":"accepted"}')],
-      ['an op pushed into a record', (doc, id) => opsOf(doc, id).push([new Uint8Array([0, 0])])],
+      ['an op pushed into a record', (doc, id) => opsOf(doc, id).push([{ doc: 'body', update: new Uint8Array([0, 0]) }])],
       ['a record deleted', (doc, id) => doc.getMap(SUGGESTIONS).delete(id)],
       ["a record's ops cleared", (doc, id) => opsOf(doc, id).delete(0, 1)],
     ];

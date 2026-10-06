@@ -211,10 +211,12 @@ export function acceptRecord(live: Y.Doc, id: string, input: AcceptInput, review
   const { mirror, payloads, hydrated, touched, hunks } = applied;
   try {
     if (previewHash(hunks) !== input.previewHash) return { ok: false, status: 409, reason: 'changed' };
-    let bytes = Y.encodeStateAsUpdate(mirror).byteLength;
-    for (const payload of touched.keys()) bytes += Y.encodeStateAsUpdate(payloads.doc(payload)).byteLength;
-    if (bytes > (options.stateCap ?? STATE_CAP_BYTES)) return { ok: false, status: 409, reason: 'doc-cap' };
+    // G8 as A§10 and the DocDO count: the note plus every stored payload, withheld ones included, each payload the
+    // record writes at its size after accept.
     const source = payloadSourceOf(live);
+    let bytes = Y.encodeStateAsUpdate(mirror).byteLength + source.totalBytes();
+    for (const payload of touched.keys()) bytes += Y.encodeStateAsUpdate(payloads.doc(payload)).byteLength - source.bytesOf(payload);
+    if (bytes > (options.stateCap ?? STATE_CAP_BYTES)) return { ok: false, status: 409, reason: 'doc-cap' };
     // Payloads first, as serverWrite does, so the body's elements name payloads the note already holds.
     for (const [payload, sv] of touched) source.write(payload, Y.encodeStateAsUpdate(payloads.doc(payload), sv));
     Y.applyUpdate(live, Y.encodeStateAsUpdate(mirror, hydrated), SUGGEST_ACCEPT);
