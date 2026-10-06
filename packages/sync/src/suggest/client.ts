@@ -129,6 +129,12 @@ export function applyForView(base: Y.Doc, record: SuggestionRecord, check: BindC
       if (name === null || !roots.has(name)) return fail();
     }
   }
+  // The bind check reads the payloads this record writes, as an editor bound to the view would.
+  const read = (id: string) => {
+    const payload = view.payloads.get(id);
+    return payload ? Y.encodeStateAsUpdate(payload) : null;
+  };
+  attachPayloadSource(view.doc, { read, has: (id) => view.payloads.has(id), write: () => {}, totalBytes: () => 0, bytesOf: () => 0 });
   try {
     if (!check(view.doc, inserted, deleted)) return fail();
   } catch {
