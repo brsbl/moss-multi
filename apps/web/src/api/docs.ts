@@ -5,10 +5,10 @@
 // one the caller cannot open get the same 404 on every route (A§8).
 import { eq } from 'drizzle-orm';
 import { getServerByName } from 'partyserver';
-import { MARKDOWN_CAP_BYTES, REST_WRITE_RATE } from '@moss-multi/protocol/limits';
+import { DOC_CREATE_RATE, MARKDOWN_CAP_BYTES, REST_WRITE_RATE } from '@moss-multi/protocol/limits';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
 import type { AuthEnv } from '../auth/auth.ts';
-import { resolvePrincipal, shareTokenOf } from '../auth/principal.ts';
+import { resolvePrincipal, shareTokenOf, type Principal } from '../auth/principal.ts';
 import { createDb, type Db } from '../db/client.ts';
 import { docs } from '../db/schema.ts';
 import type { AppEnv } from '../env.ts';
@@ -68,6 +68,17 @@ async function seeded(db: Db, doc: DocRecord, role: string, run: () => Promise<u
   return json({ doc: projected, role }, 201, NO_STORE);
 }
 
+/**
+ * One note minted by the acting user (an agent's owner, so their keys share it), taken before any row, DocDO or media
+ * work (A§5.2, A§18); the 429 to send past DOC_CREATE_RATE.
+ */
+async function takeCreateToken(env: DocsEnv, principal: Exclude<Principal, { type: 'anonymous' }>): Promise<Response | null> {
+  const userId = principal.type === 'agent' ? principal.ownerUserId : principal.id;
+  if (await (await getServerByName(env.PrincipalDO, userId)).takeCreateToken()) return null;
+  return json({ error: 'rate-limited', message: 'Too many new notes at once. Wait a minute and try again.' }, 429,
+    { ...NO_STORE, 'retry-after': String(DOC_CREATE_RATE.windowMs / 1000) });
+}
+
 async function createDoc(request: Request, env: DocsEnv): Promise<Response> {
   const principal = await resolvePrincipal(request, env);
   if (!principal || principal.type === 'anonymous') return unauthenticated();
@@ -78,6 +89,8 @@ async function createDoc(request: Request, env: DocsEnv): Promise<Response> {
   if (typeof body.markdown === 'string' && new TextEncoder().encode(body.markdown).byteLength > MARKDOWN_CAP_BYTES) {
     return json({ error: 'doc-cap' }, 413, NO_STORE);
   }
+  const throttled = await takeCreateToken(env, principal);
+  if (throttled) return throttled;
   const db = createDb(env.DB);
   const folderId = typeof body.folderId === 'string' ? body.folderId : await ensureDefaultVault(db, userId);
   // Editors create in a shared folder or vault; the vault's owner owns the doc and created_by records who made it.
@@ -100,6 +113,8 @@ async function createDoc(request: Request, env: DocsEnv): Promise<Response> {
 async function duplicateDoc(request: Request, env: DocsEnv, docId: string): Promise<Response> {
   const principal = await resolvePrincipal(request, env);
   if (!principal || principal.type === 'anonymous') return unauthenticated();
+  const throttled = await takeCreateToken(env, principal);
+  if (throttled) return throttled;
   const db = createDb(env.DB);
   const access = await resolveDocAccess(db, principal, docId, shareTokenOf(request));
   if (!access || access.deleted) return notFound();

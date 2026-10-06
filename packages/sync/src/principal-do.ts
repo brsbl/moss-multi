@@ -2,7 +2,7 @@ import { getServerByName, Server, type Connection, type ConnectionContext, type 
 import { CLOSE, TRUSTED } from '@moss-multi/protocol/sync';
 import type { WorkspaceEvent } from '@moss-multi/protocol/workspace';
 import {
-  ACCESS_DEADLINE_MS, ACCESS_TICK_MS, REMOTE_FETCH_RATE, REST_WRITE_RATE, SESSION_MAX_MS, UPLOAD_RATE,
+  ACCESS_DEADLINE_MS, ACCESS_TICK_MS, DOC_CREATE_RATE, REMOTE_FETCH_RATE, REST_WRITE_RATE, SESSION_MAX_MS, UPLOAD_RATE,
 } from '@moss-multi/protocol/limits';
 import { liveCredentials, TRY_AGAIN, withDeadline } from './access-epoch.ts';
 import { windowed } from './doc/admission.ts';
@@ -69,7 +69,7 @@ function sqlAttempts(sql: SqlStorage, name: string): AttemptStore {
 }
 
 // One per principal, named by its id: workspace channel (one authenticated socket per tab, hibernatable), sign-out
-// registry, the REST write limit (A§5.2) and the upload limit (A§16). An upload window may also be named for a link
+// registry, the REST write limit and the note creation budget (A§5.2), and the upload limit (A§16). An upload window may also be named for a link
 // and an IP (`link:<hash>:<ip>`), which no principal is, so nothing connects to it.
 export class PrincipalDO extends Server<SyncEnv> {
   static options = { hibernate: true };
@@ -85,6 +85,7 @@ export class PrincipalDO extends Server<SyncEnv> {
   #writes: RateWindow | null = null;
   #uploads: RateWindow | null = null;
   #fetches: RateWindow | null = null;
+  #creates: RateWindow | null = null;
   #registryReady = false;
   /** When the next access tick is due; null when nothing happened since the last one. */
   #tickAt: number | null = null;
@@ -275,6 +276,12 @@ export class PrincipalDO extends Server<SyncEnv> {
   takeUploadToken(): boolean {
     this.#uploads ??= new RateWindow(UPLOAD_RATE.max, UPLOAD_RATE.windowMs, sqlAttempts(this.ctx.storage.sql, 'uploads'));
     return this.#uploads.take();
+  }
+
+  /** One note minted (created, imported or duplicated) by this user or their agents; false past DOC_CREATE_RATE. */
+  takeCreateToken(): boolean {
+    this.#creates ??= new RateWindow(DOC_CREATE_RATE.max, DOC_CREATE_RATE.windowMs, sqlAttempts(this.ctx.storage.sql, 'doc-creates'));
+    return this.#creates.take();
   }
 
   /** One server fetch of a caller-supplied URL (an unfurl, a remote image); false past REMOTE_FETCH_RATE. */

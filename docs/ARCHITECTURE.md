@@ -223,6 +223,8 @@ This is a new DO and a deliberate divergence from glyphdown, forced by three req
 
 **Push limit.** A sliding window of 60 pushes per minute per identity. Denied attempts count. The DO is single-threaded, so the count is exact.
 
+**Creation budget.** Every route that mints a note (`POST /api/docs`, with or without imported markdown, and `POST /api/docs/:id/duplicate`) takes a token from the acting user's PrincipalDO before any D1 row, DocDO or media work: a sliding window of 60 per minute (`DOC_CREATE_RATE`), persisted like the push window, and 429 with `retry-after` past it. An agent key counts against its owner, so a person's keys share one budget. [T3.S3]
+
 **Why per principal and not per vault.** Shared docs live in other owners' vaults, and a vault channel would leak sibling doc ids to people with partial access. [L§1.6 non-disclosure]
 
 ### 5.3 SearchDO('global')
@@ -650,7 +652,7 @@ CRLF becomes LF at the boundary. [P:Tech; S-prior §8.2–8.3]
 - **Share tokens** are threaded through every doc, asset, list, metadata and socket path. The link role is a ceiling, and anonymous access is capped at viewer. [L§4.10]
 - **Revocation** goes through one kick path, persisted in the DocDO before the request returns. Sign-out severs every socket of the session. [§8; L§4.9]
 - **Refusals are loud:** a unicast reason, then a close code, and the client resyncs. The ingress gate is role-aware. [P:Tech]
-- **Limits:** 2 MB of markdown per doc through one state-size metric (§5.1), 50 connections per doc, 300 writes per 5 s per connection (overflow closes 4420 and discards nothing), 8 KB of awareness, 60 pushes per minute per identity, invites 20 per hour per inviter, and better-auth's sign-in and sign-up limits (§7). [P:Tech; S-gd §5.3]
+- **Limits:** 2 MB of markdown per doc through one state-size metric (§5.1), 50 connections per doc, 300 writes per 5 s per connection (overflow closes 4420 and discards nothing), 8 KB of awareness, 60 pushes per minute per identity, 60 new notes per minute per acting user (§5.2), invites 20 per hour per inviter, and better-auth's sign-in and sign-up limits (§7). [P:Tech; S-gd §5.3]
 - **Awareness identity** is stamped and validated by the server, so the Bot badge and chips cannot be spoofed. [S-gd §2.10.8]
 - **SSRF** (unfurl, remote images): manual redirects re-checked on every hop (at most 5), A/AAAA vetting through DoH, private, loopback, link-local, CGNAT, ULA and obfuscated IPv4 addresses rejected, HTTPS only, fail closed, 429 throttle. [L§4.17]
 - **User HTML** runs only in opaque-origin sandboxed iframes, never with `allow-same-origin` on `srcdoc` or `data:`. SVG is served with a sandbox CSP and HTML assets don't exist. [L§4.17; S-gd §6.6]
