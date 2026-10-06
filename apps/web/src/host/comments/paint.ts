@@ -202,9 +202,45 @@ export function bindCommentPaint(editor: LexicalEditor, binding: Binding): () =>
 export const painterOf = (editor: LexicalEditor): Painter | undefined => painters.get(editor);
 
 const paintListeners = new Map<LexicalEditor, Set<() => void>>();
+const anyPaintListeners = new Set<() => void>();
 
 function notifyPaint(editor: LexicalEditor): void {
   for (const listener of paintListeners.get(editor) ?? []) listener();
+  for (const listener of anyPaintListeners) listener();
+}
+
+/** Calls `listener` after each paint of any editor, including a binding's start and end. */
+export function subscribeAnyPaint(listener: () => void): () => void {
+  anyPaintListeners.add(listener);
+  return () => {
+    anyPaintListeners.delete(listener);
+  };
+}
+
+/**
+ * Editors a pane binds to a shared doc, for the pane's whole life: the painter comes and goes with the collaboration
+ * plugin (a resync, another pane holding the doc), and the editor stays shared meanwhile.
+ */
+const shared = new Map<LexicalEditor, string>();
+
+/** The pane binds `editor` to `docId` until the returned release. */
+export function markShared(editor: LexicalEditor, docId: string): () => void {
+  shared.set(editor, docId);
+  notifyPaint(editor);
+  return () => {
+    if (shared.get(editor) !== docId) return;
+    shared.delete(editor);
+    notifyPaint(editor);
+  };
+}
+
+/** Whether a pane binds `editor` to a shared doc; false for the file-backed editor bundle. */
+export const isShared = (editor: LexicalEditor): boolean => shared.has(editor);
+
+/** Whether some editor in this tab is bound to the shared doc `docId`. */
+export function noteBound(docId: string): boolean {
+  for (const id of shared.values()) if (id === docId) return true;
+  return false;
 }
 
 /** Calls `listener` after each paint of `editor`, including one whose binding comes later (the gutter re-measures). */

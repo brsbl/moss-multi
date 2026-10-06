@@ -36,6 +36,7 @@ import { bindFrontmatter } from './frontmatter-binding.ts';
 import { bindCommentAtoms } from '../comments/atoms.ts';
 import { setAckWaiter } from '../comments/api.ts';
 import { setMyPrincipalId } from '../comments/people.ts';
+import { markShared } from '../comments/paint.ts';
 import { displayTitle, TitleField } from './title-binding.ts';
 import { localIdentity, startPresence } from './presence.ts';
 import { cursorController } from './cursors.ts';
@@ -479,6 +480,8 @@ function BindingGate({ binding }: { binding: PaneBinding }): null {
  */
 function DocBinding({ docId, binding }: { docId: string; binding: PaneBinding }): ReactNode {
   const [editor] = useLexicalComposerContext();
+  // Shared for the binding's whole life, plugin or not: comments never fall back to moss's local path meanwhile.
+  useLayoutEffect(() => markShared(editor, docId), [editor, docId]);
   useEffect(() => trackUndoFocus(editor), [editor]);
   const [excluded] = useState(() => excludedPropertiesFor(editor));
   const [identity] = useState(localIdentity);
