@@ -452,6 +452,7 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
     - a non-author sees no Edit or Delete, and a raw delete gets 403.
   - **Done:** green, with a reactions triptych.
 - **T4.R m4 on the restacked m3** `[B·fresh]`, coordinator, 2026-10-05: merge `origin/m3` into m4; a frame with a missing dependency closes 4420 (transient), and 4409 stays for guard violations (comments.md §3); the doc-session ordering test delivers the server's step 1 first (§6); j11's /media leg fixed at its cause; done when the full lane is green in both engines.
+- **T4.S1 Comment writes re-authorize their actor** `[A·codex]`, from M4's Slop Cop review (PR #6, P1): every comment RPC carries the Worker's actor (principal, session or key, share token), and the DocDO re-resolves it in the same serialized write, with or without a socket: a live credential, a live doc and at least commenter, or nothing lands; done when `comment-revalidation.harness` is green.
 
 **Exit criteria:** typing anywhere after a comment replicates exactly; there are no markers in the DOM or any export; the author identity comes from the server principal; a comment never lands on text other than its own.
 
