@@ -25,6 +25,7 @@ import type {
   MossWriteResult,
 } from './contract';
 import { isMossAssetName, noteIdKey } from './host/moss-editor-host.js';
+import { MOSS_EDITOR_API } from './info';
 import {
   deriveRead,
   editorContentOfFiles,
@@ -56,6 +57,8 @@ export interface SessionView {
   overwritten: boolean;
   error: { message: string; preserved: readonly string[] } | null;
   removed: string | null;
+  /** Why the first read failed, while the status is `notLoaded`. */
+  unavailable: MossEditorError['code'] | null;
 }
 
 export interface SessionSurface {
@@ -136,6 +139,7 @@ export class EditorSession {
   private conflict: SessionView['conflict'] = null;
   private failure: { error: unknown; failure: MossWriteFailed | null } | null = null;
   private removedReason: 'notFound' | MossNotEditableReason | null = null;
+  private loadFailure: MossEditorError['code'] | null = null;
   /** After a failed or lost write the disk state is unknown: re-read and adopt the editor's own bytes. */
   private needsReread = false;
   /** The content files of the last write sent, for adopting the editor's own state. */
@@ -188,6 +192,7 @@ export class EditorSession {
       overwritten: this.overwrittenDraft !== null,
       error: this.status === 'error' && this.failure ? { message: messageOf(this.failure.error), preserved: this.failure.failure?.preserved ?? [] } : null,
       removed: this.status === 'removed' ? this.removedReason : null,
+      unavailable: this.status === 'notLoaded' ? this.loadFailure : null,
     });
   }
 
@@ -216,11 +221,13 @@ export class EditorSession {
   private async start(): Promise<void> {
     const fail = (error: MossEditorError): never => {
       this.status = 'notLoaded';
+      this.loadFailure = error.code;
       this.render();
       this.emit({ kind: 'error', noteId: this.noteId, status: 'notLoaded', op: 'read', message: error.message, error, failure: null, willRetry: false });
       throw error;
     };
-    if (this.bridge.api !== 1) fail(editorError('apiMismatch', `bridge.api is ${String(this.bridge.api)}; this editor implements API 1`));
+    // A host of another API (an API 1 host of editor 0.2.0 or earlier) gets a typed refusal before any bridge call.
+    if (this.bridge.api !== MOSS_EDITOR_API) fail(editorError('apiMismatch', `bridge.api is ${String(this.bridge.api)}; this editor implements API ${MOSS_EDITOR_API}`));
     let result;
     try {
       result = await this.readDisk();
@@ -519,7 +526,7 @@ export class EditorSession {
     } catch (error) {
       if (this.status === 'conflict') {
         // The conflict stays unresolved: only the user's next choice (Reload, Overwrite) may move it. The event's
-        // status is 'error' as API 1 types it (as for asset errors); the editor's own status stays 'conflict'.
+        // status is 'error' as the contract types it (as for asset errors); the editor's own status stays 'conflict'.
         this.emit({ kind: 'error', noteId: this.noteId, status: 'error', op: 'read', message: messageOf(error), error, failure: null, willRetry: false });
         return null;
       }
@@ -911,7 +918,9 @@ export class EditorSession {
             ? 'That file type cannot be added to a note.'
             : result.reason === 'noSpace'
               ? 'There is no space left to store that file.'
-              : 'That file name cannot be stored.'
+              : result.reason === 'sourceNotOpen'
+                ? 'That file comes from a note that is not open, so it was not copied.'
+                : 'That file name cannot be stored.'
         : result.kind === 'exists'
           ? 'A file with that name already exists.'
           : 'This note is no longer available, so the file was not added.';

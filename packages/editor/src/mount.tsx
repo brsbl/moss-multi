@@ -46,7 +46,7 @@ import { assembleContent, type EditorContent, type RendererSnapshot } from './de
 import { noteIdKey } from './host/moss-editor-host.js';
 import { installEditorElectronApi } from './electron-api';
 import { installEditorHooks } from './hooks';
-import { MOSS_EDITOR_INFO } from './info';
+import { MOSS_EDITOR_API, MOSS_EDITOR_INFO } from './info';
 import { markActive, registerEditor } from './registry';
 import { $holdSelection, $restoreSelection, type HeldSelection } from './selection-map';
 import { MOSS_EXPORT, finishBody } from './selection';
@@ -92,7 +92,7 @@ class FrameSurface implements SessionSurface {
   private held: { selection: HeldSelection | null; focused: boolean } | null = null;
   /** What to select once the editor is editable again after an in-place load. */
   private restore: { selection: HeldSelection; focused: boolean } | null = null;
-  private state: PaneState = { content: null, version: 0, view: { status: 'loading', conflict: null, overwritten: false, error: null, removed: null }, editable: false, frozen: false };
+  private state: PaneState = { content: null, version: 0, view: { status: 'loading', conflict: null, overwritten: false, error: null, removed: null, unavailable: null }, editable: false, frozen: false };
   private listeners = new Set<() => void>();
 
   constructor(
@@ -547,7 +547,9 @@ function EditorPane({ surface, session, noteId, onNavigateToNote, onShare }: {
         <Banner view={view} session={session} />
         {view.status === 'notLoaded' ? (
           <div data-moss-editor-unavailable="" className="mx-auto w-full max-w-canvas-prose rounded-md border border-status-error-border bg-status-error-surface p-4 text-small text-status-error-text">
-            This note can&apos;t be opened for editing.
+            {view.unavailable === 'apiMismatch'
+              ? `This note can't be opened for editing: this editor needs a host for editor API ${MOSS_EDITOR_API}.`
+              : "This note can't be opened for editing."}
           </div>
         ) : content ? (
           <div className="relative">
@@ -629,7 +631,7 @@ export function mountMossEditor(element: HTMLElement, options: MossEditorOptions
   const surface = new FrameSurface(store, noteId, host);
   const session = new EditorSession({ noteId: options.noteId, bridge: options.bridge, surface, onEvent: options.onEvent, restoreDraft: options.restoreDraft });
   surface.session = session;
-  const unregister = registerEditor({ noteId, bridge: options.bridge, services, htmlFrameUrl: options.htmlFrameUrl ?? null, session });
+  const unregister = registerEditor({ noteId, bridge: options.bridge, services, htmlFrameUrl: options.htmlFrameUrl ?? null, session, element: host, ran: new Set() });
   let live = true;
   const own: MossEditorNote = { id: noteId, title: '' };
   setNotes(store, [own]);

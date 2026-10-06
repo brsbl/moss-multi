@@ -8,8 +8,8 @@ import { fileURLToPath } from 'node:url';
 import viteReact from '@vitejs/plugin-react';
 import { defineConfig, type Plugin } from 'vite';
 import { readSource } from '../../apps/web/vite-provenance.ts';
-import { HTML_FRAME_DOCUMENT } from '../protocol/src/html-frame.ts';
-import { MOSS_EDITOR_INFO } from './src/host/moss-editor-host.js';
+import { HTML_FRAME_ISOLATED_DOCUMENT } from '../protocol/src/html-frame.ts';
+import { MOSS_EDITOR_API, MOSS_EDITOR_INFO } from './src/host/moss-editor-host.js';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
@@ -20,7 +20,16 @@ const pkg = JSON.parse(readFileSync(`${here}package.json`, 'utf8')) as { name: s
 const ENTRY = 'moss-editor';
 const HOST_ENTRY = 'moss-editor-host.js';
 const FRAME = 'moss-html-frame.html';
-const API = 1;
+const API = MOSS_EDITOR_API;
+if (MOSS_EDITOR_INFO.version !== pkg.version) throw new Error(`MOSS_EDITOR_INFO.version ${MOSS_EDITOR_INFO.version} != package ${pkg.version}`);
+/**
+ * What a host serves moss-html-frame.html with (API 2, contract.ts MossEditorManifest.htmlFrame): an opaque-origin
+ * sandbox that runs the block's inline scripts and styles and shows data: and blob: images, and refuses every request
+ * and frame load. The document itself (HTML_FRAME_ISOLATED_DOCUMENT) puts the block's navigations under that policy,
+ * and its in-realm guard removes WebRTC as defense in depth only.
+ */
+const FRAME_POLICY =
+  "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'";
 const SUBSTITUTES: Record<string, string> = {
   [`${editorUtils}/asset-url.ts`]: `${here}src/substitutes/asset-url.ts`,
   [`${editorUtils}/media-server-url.ts`]: `${here}src/substitutes/media-server-url.ts`,
@@ -63,7 +72,7 @@ function extraFiles(): Plugin {
     name: 'moss-editor-files',
     apply: 'build',
     generateBundle() {
-      this.emitFile({ type: 'asset', fileName: FRAME, source: HTML_FRAME_DOCUMENT });
+      this.emitFile({ type: 'asset', fileName: FRAME, source: HTML_FRAME_ISOLATED_DOCUMENT });
       this.emitFile({ type: 'asset', fileName: HOST_ENTRY, source: readFileSync(`${here}src/host/${HOST_ENTRY}`) });
     },
   };
@@ -93,7 +102,7 @@ function manifest(): Plugin {
         entry: `${ENTRY}.js`,
         css: `${ENTRY}.css`,
         hostEntry: HOST_ENTRY,
-        htmlFrame: { file: FRAME, policy: 'sandbox allow-scripts' },
+        htmlFrame: { file: FRAME, policy: FRAME_POLICY },
         moss: { upstream: ported.upstream, pin: ported.pin, commit: ported.commit },
         source: { repo: 'brsbl/moss-multi', commit: source.commit, headSha: source.headSha, dirty: source.dirty, diffHash: source.diffHash },
         build: { run: process.env.GITHUB_RUN_ID ? `https://github.com/brsbl/moss-multi/actions/runs/${process.env.GITHUB_RUN_ID}` : null },
