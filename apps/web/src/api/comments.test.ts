@@ -59,6 +59,8 @@ let ben: TestUser;
 let cara: TestUser;
 let dan: TestUser;
 let docId: string;
+/** The actor the DocDO re-resolves: Ben by his session, with no share token. */
+const actorBen = () => ({ kind: 'user', principalId: ben.id, sessionId: expect.any(String), shareToken: null });
 
 beforeAll(async () => {
   d1 = await migratedD1();
@@ -155,7 +157,7 @@ describe('POST /api/docs/:id/comments/:commentId/resolve @p:mean-1', () => {
     const response = await resolve(ben.cookie, { resolved: true });
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ comment: { id: 'c1', resolved: true } });
-    expect(resolves).toEqual([{ docId, input: { id: 'c1', resolved: true, by: 'user' } }]);
+    expect(resolves).toEqual([{ docId, input: { actor: actorBen(), id: 'c1', resolved: true, by: 'user' } }]);
     expect((await resolve(ada.cookie, { resolved: false })).status).toBe(200);
     expect(tokenAsks).toEqual([ben.id, ada.id]);
   });
@@ -196,10 +198,10 @@ describe('PATCH and DELETE /api/docs/:id/comments/:commentId, POST .../reactions
     expect((await send('DELETE', ben.cookie, path())).status).toBe(200);
     expect((await send('POST', ben.cookie, `${path()}/reactions`, { emoji: '👍', on: true, principal: ada.id })).status).toBe(200);
     expect(writes).toEqual([
-      { op: 'edit', docId, input: { id: 'c1', author: ben.id, text: 'Edited' } },
-      { op: 'delete', docId, input: { id: 'c1', author: ben.id, scope: 'thread' } },
-      { op: 'delete', docId, input: { id: 'c1', author: ben.id, scope: 'comment' } },
-      { op: 'react', docId, input: { id: 'c1', principal: ben.id, emoji: '👍', on: true } },
+      { op: 'edit', docId, input: { actor: actorBen(), id: 'c1', author: ben.id, text: 'Edited' } },
+      { op: 'delete', docId, input: { actor: actorBen(), id: 'c1', author: ben.id, scope: 'thread' } },
+      { op: 'delete', docId, input: { actor: actorBen(), id: 'c1', author: ben.id, scope: 'comment' } },
+      { op: 'react', docId, input: { actor: actorBen(), id: 'c1', principal: ben.id, emoji: '👍', on: true } },
     ]);
     expect(tokenAsks).toEqual([ben.id, ben.id, ben.id, ben.id]);
   });
