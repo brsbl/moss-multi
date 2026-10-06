@@ -250,11 +250,11 @@ test('j16-review: struck text inside a link opens its card, not the link; a fail
   await ada.page.route(previews, (route) => route.fulfill({ status: 429, contentType: 'application/json', body: '{"error":"rate-limited"}' }));
   const startUrl = ada.page.url();
   const active = panel(ada).locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_ACTIVE_ATTR}]`);
-  await expect(async () => {
-    const point = await pointAt(ada, docId, 'torial');
-    await ada.page.mouse.click(point.x, point.y);
-    await expect(active).toHaveCount(1, { timeout: 1_000 });
-  }).toPass({ timeout: BIND_TIMEOUT });
+  // One click, once the strike is painted: an earlier click is an ordinary link click.
+  await expect.poll(() => ada.page.evaluate(() => (CSS as unknown as { highlights: Map<string, { size: number }> }).highlights.get('suggest-delete')?.size ?? 0), { timeout: BIND_TIMEOUT }).toBeGreaterThan(0);
+  const point = await pointAt(ada, docId, 'torial');
+  await ada.page.mouse.click(point.x, point.y);
+  await expect(active, 'the struck text opens its card').toHaveCount(1, { timeout: BIND_TIMEOUT });
   expect(ada.page.url(), 'the link did not navigate').toBe(startUrl);
   await expect(ada.page.locator('iframe[src*="example.invalid"]'), 'the link did not open beside the note').toHaveCount(0);
 
