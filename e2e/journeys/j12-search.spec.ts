@@ -158,6 +158,7 @@ test('j12-search: wiki links resolve by title and stem, an unresolved one shows 
 });
 
 test('j12-search: an edit only inside a code block reaches the index without another note edit @p:note-7', async ({ actors, stack }) => {
+  actors.solo('the promise is the server feeding search after one author edits a code block');
   const ada = await actors.session(await actors.principal('ada'));
   const first = `ibis${token()}`;
   const created = await ada.context.request.post('/api/docs', { headers: { origin: stack.baseUrl }, data: { title: `Snippets ${token()}`, markdown: `Intro ${first}.\n\n\`\`\`js\nseed\n\`\`\`` } });
