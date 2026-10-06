@@ -321,12 +321,17 @@ function longRunDeleted(length: number, chunks: number, comments: number): { sta
   }
   server.clientID = own;
   const { host, client, send } = hosted(server);
-  const { text, units } = liveUnits(server);
-  const base = text.indexOf('x');
+  // The paragraph's characters as units, read from its items (liveUnits reads the whole doc under the token budget).
+  const units: { item: Y.Item; off: number }[] = [];
+  for (let item = paragraph(server, 1)._start; item; item = item.right) {
+    if (item.content instanceof Y.ContentString) for (let off = 0; off < item.length; off += 1) units.push({ item, off });
+  }
   const total = length * chunks;
+  expect(units).toHaveLength(total);
+  expect(new Set(units.map(({ item }) => item)).size, 'one text item per chunk').toBe(chunks);
   const half = Math.floor(total / 2);
   const spans: [number, number][] = [[10, 20], [15, 25], [total - 20, total - 10], [half, half + 10]];
-  for (let n = 0; n < comments; n += 1) host.create(`c${n}`, mintAnchor(units[base + spans[n][0]], units[base + spans[n][1]]));
+  for (let n = 0; n < comments; n += 1) host.create(`c${n}`, mintAnchor(units[spans[n][0]], units[spans[n][1]]));
   expect(send(() => paragraph(client, 1).delete(1, total)).refused).toBeNull();
   return { stats: counted(host), statuses: Array.from({ length: comments }, (_, n) => host.anchor(`c${n}`)?.status) };
 }
