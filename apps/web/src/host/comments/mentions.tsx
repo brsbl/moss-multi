@@ -1,9 +1,9 @@
 // @mentions of people in comments (docs/design/comments.md §12). Moss's comment composers mention notes and folders;
 // the web adds people in the same encoding, `@person:Name` U+2062 principal id. A comment popover scopes its composers
 // to its note, so moss's mention menu can offer that note's people first; the server notifies those it names.
-import { createContext, useContext, useEffect, type ComponentType, type ReactNode } from 'react';
+import { createContext, useContext, type ComponentType, type ReactNode } from 'react';
 import { Bot, User } from 'lucide-react';
-import { mentionable, mentionableSoon, type Person } from './people.ts';
+import { mentionable, rosterLookup, type Person } from './people.ts';
 
 /** The TypeaheadItem moss's mention menu takes (editor/typeahead/types.ts). */
 interface MentionItem {
@@ -23,11 +23,8 @@ const SHOWN = 8;
 
 const MentionDoc = createContext<string | null>(null);
 
-/** Scopes the comment composers below it to `docId`'s people, reading them as the popover opens. */
+/** Scopes the comment composers below it to `docId`'s people. */
 export function MentionScope({ docId, children }: { docId: string; children: ReactNode }): ReactNode {
-  useEffect(() => {
-    mentionable(docId, true);
-  }, [docId]);
   return <MentionDoc.Provider value={docId}>{children}</MentionDoc.Provider>;
 }
 
@@ -53,12 +50,13 @@ function items(people: Person[], query: string): MentionItem[] {
 
 /**
  * The people matching `query` on `docId`, for the top of moss's mention menu. A menu's first search (`fresh`) reads
- * the list again and waits for it, so the people show from the first keystroke.
+ * the list again; every search waits for a lookup under way, so people shared a moment ago show from the first key.
  */
 export function peopleMatching(docId: string | null, query: string, fresh = false): MentionItem[] | Promise<MentionItem[]> {
   if (!docId || query.includes('/')) return [];
-  if (fresh) return mentionableSoon(docId).then((people) => items(people, query));
-  return items(mentionable(docId), query);
+  const people = mentionable(docId, fresh);
+  const lookup = rosterLookup(docId);
+  return lookup ? lookup.then(() => items(mentionable(docId), query)) : items(people, query);
 }
 
 /** Puts `people` ahead of moss's own results; either may still be on its way. */

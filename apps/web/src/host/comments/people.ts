@@ -91,9 +91,7 @@ export function mentionable(docId: string, fresh = false): Person[] {
   return roster.people.filter((person) => person.id !== me);
 }
 
-/** mentionable, once a lookup it starts or finds under way has answered. */
-export async function mentionableSoon(docId: string): Promise<Person[]> {
-  mentionable(docId, true);
-  await rosterOf(docId).inFlight;
-  return mentionable(docId);
+/** The members lookup under way for `docId`, if any. */
+export function rosterLookup(docId: string): Promise<void> | null {
+  return rosterOf(docId).inFlight;
 }
