@@ -2,11 +2,11 @@
 // takes a token from the acting user's PrincipalDO before any D1 row, DocDO or media work, so one account, or its
 // agent keys between them, cannot mint docs without bound. Over the real PrincipalDO in the Node harness and D1.
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { DOC_CREATE_RATE } from '@moss-multi/protocol/limits';
+import { DOC_CREATE_DAILY, DOC_CREATE_RATE, MARKDOWN_CAP_BYTES, VAULT_NOTE_CAP } from '@moss-multi/protocol/limits';
 import { PrincipalDO } from '../../../../packages/sync/src/principal-do.ts';
 import { Backing, FakeState } from '../../../../packages/sync/test/harness/workerd.ts';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
-import { agentKey, BASE, insertDoc, SECRET, signedUpUser, type TestUser } from '../test/principals.ts';
+import { agentKey, BASE, insertDoc, insertFolder, SECRET, signedUpUser, type TestUser } from '../test/principals.ts';
 import { handleApi } from './router.ts';
 
 const PNG = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 31, 21, 196, 137]);
@@ -160,4 +160,96 @@ describe('note creation budget per acting user (T3.S3)', () => {
     evict(eve.id);
     expect((await create(eve, { title: 'After the window' })).status).toBe(201);
   }, 60_000);
+});
+
+/** A request body that fails the request if anything reads it. */
+const unreadable = () => new ReadableStream<Uint8Array>({ pull() { throw new Error('the body was read'); } });
+const streamedCreate = (who: Who, headers: Record<string, string> = {}) => {
+  const auth: Record<string, string> = 'cookie' in who ? { cookie: who.cookie } : { authorization: `Bearer ${who.bearer}` };
+  return handleApi(new Request(`${BASE}/api/docs`, {
+    method: 'POST', headers: { origin: BASE, 'content-type': 'application/json', ...auth, ...headers }, body: unreadable(), duplex: 'half',
+  } as RequestInit), env);
+};
+
+describe('creation admission order (T3.S3b)', () => {
+  it('refuses an over-budget create before reading its body', async () => {
+    const hal = await signedUpUser(env, 'budget-unread', 'Hal');
+    await spend(hal, DOC_CREATE_RATE.max);
+    const addressedBefore = addressed.length;
+    await expectRefused(await streamedCreate(hal));
+    expect(addressed.length, 'no DocDO addressed').toBe(addressedBefore);
+  }, 60_000);
+
+  it('refuses an oversized Content-Length with 413 before reading the body or taking a token', async () => {
+    const ivy = await signedUpUser(env, 'budget-oversize', 'Ivy');
+    const refused = await streamedCreate(ivy, { 'content-length': String(MARKDOWN_CAP_BYTES * 8) });
+    expect(refused.status, await refused.clone().text()).toBe(413);
+    await spend(ivy, DOC_CREATE_RATE.max);
+  }, 60_000);
+});
+
+describe('daily creation budget (T3.S3b)', () => {
+  it('refuses past DOC_CREATE_DAILY with 429 and writes nothing, until a day has passed', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const start = Date.now();
+    let now = start;
+    vi.setSystemTime(now);
+    const jo = await signedUpUser(env, 'budget-daily', 'Jo');
+    const dobj = principalOf(jo.id);
+    // Paced under the minute window, as a steady script would be.
+    for (let i = 0; i < DOC_CREATE_DAILY.max; i += 1) {
+      if (i > 0 && i % DOC_CREATE_RATE.max === 0) vi.setSystemTime((now += DOC_CREATE_RATE.windowMs + 1));
+      expect(await dobj.takeCreateToken(), `token ${i + 1}`).toBe(true);
+    }
+    vi.setSystemTime((now += DOC_CREATE_RATE.windowMs + 1));
+    const rows = await docsBy(jo);
+    const addressedBefore = addressed.length;
+    const refused = await create(jo, { title: 'Past the day' });
+    expect(refused.status, await refused.clone().text()).toBe(429);
+    expect(((await refused.json()) as { error: string }).error).toBe('rate-limited');
+    const wait = Number(refused.headers.get('retry-after'));
+    expect(wait).toBeGreaterThan(DOC_CREATE_RATE.windowMs / 1000);
+    expect(wait).toBeLessThanOrEqual(DOC_CREATE_DAILY.windowMs / 1000);
+    expect(await docsBy(jo), 'doc rows').toBe(rows);
+    expect(addressed.length, 'no DocDO addressed').toBe(addressedBefore);
+    // Once the first minute's grants are a day old, creating works again.
+    vi.setSystemTime(start + DOC_CREATE_DAILY.windowMs + 1_000);
+    evict(jo.id);
+    expect((await create(jo, { title: 'A day later' })).status).toBe(201);
+  }, 120_000);
+});
+
+describe('live notes per vault (T3.S3b)', () => {
+  it('refuses a create or duplicate into a full vault with 409 and writes nothing; other vaults and trash free room', async () => {
+    const kim = await signedUpUser(env, 'vault-cap', 'Kim');
+    const sub = await insertFolder(d1.db, kim, kim.homeId);
+    // VAULT_NOTE_CAP - 1 live notes over the vault's folders, and trashed ones, which don't count.
+    const fill = (folder: string, prefix: string, n: number, deleted: number | null) => d1.db.prepare(`WITH RECURSIVE n(i) AS (
+        SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?2)
+      INSERT INTO docs (id, owner_user_id, created_by, folder_id, title, filename, created_at, updated_at, deleted_at)
+      SELECT ?1 || i, ?3, ?3, ?4, '', ?1 || i || '.md', 0, 0, ?5 FROM n`).bind(prefix, n, kim.id, folder, deleted).run();
+    const half = Math.floor(VAULT_NOTE_CAP / 2);
+    await fill(kim.homeId, `cap-a-${kim.id}-`, half, null);
+    await fill(sub, `cap-b-${kim.id}-`, VAULT_NOTE_CAP - 1 - half, null);
+    await fill(sub, `cap-t-${kim.id}-`, 5, 1);
+    const last = await create(kim, { title: 'The last one' });
+    expect(last.status, await last.clone().text()).toBe(201);
+
+    const rows = await docsBy(kim);
+    const seeds = seededDocs.length;
+    const addressedBefore = addressed.length;
+    const full = await create(kim, { title: 'One too many', folderId: sub });
+    expect(full.status, await full.clone().text()).toBe(409);
+    expect(((await full.json()) as { error: string }).error).toBe('vault-full');
+    expect(addressed.length, 'no DocDO addressed').toBe(addressedBefore);
+    const copied = await duplicate(kim, `cap-a-${kim.id}-1`);
+    expect(copied.status, await copied.clone().text()).toBe(409);
+    expect(await docsBy(kim), 'doc rows').toBe(rows);
+    expect(seededDocs.length, 'no DocDO seeded').toBe(seeds);
+
+    const other = await insertFolder(d1.db, kim, null);
+    expect((await create(kim, { folderId: other })).status, 'another vault has its own room').toBe(201);
+    await d1.db.prepare('UPDATE docs SET deleted_at = 1 WHERE id = ?1').bind(`cap-a-${kim.id}-2`).run();
+    expect((await create(kim, { title: 'After a trash' })).status).toBe(201);
+  }, 120_000);
 });
