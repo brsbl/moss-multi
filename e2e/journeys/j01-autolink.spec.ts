@@ -77,6 +77,8 @@ test('j01-autolink: a note holding one long word opens, and takes keystrokes at 
   await actor.context.addInitScript(installStallMonitor);
   const ids: string[] = [];
   for (const n of SIZES) ids.push(await importNote(actor, stack.baseUrl, `Long word ${n}`, 'a'.repeat(n)));
+  // The shell lands on the newest note, the 100k one, and the loop below opens it again.
+  actor.expectReconnects(1, ids[ids.length - 1]);
   await actor.goto('/');
   await actor.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
   const loads: number[] = [];
