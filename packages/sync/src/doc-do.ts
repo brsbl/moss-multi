@@ -31,6 +31,8 @@ import { writeTitle } from './server-title.ts';
 
 /** How long after a wake the doc re-feeds search. */
 const WAKE_FEED_MS = 1_000;
+/** How long after a payload-only edit the doc feeds search (the note's own saves cover note edits). */
+const PAYLOAD_FEED_MS = 2_000;
 /** The `search-fed` meta while the index holds this doc's content; bump it when an index entry's shape changes. */
 const SEARCH_FEED_VERSION = '2';
 
@@ -236,6 +238,8 @@ export class DocDO extends YServer<SyncEnv> {
   #edits = 0;
   /** Whether the stored `search-fed` meta is cleared (an edit the index may lack). */
   #searchStale = false;
+  /** A feed queued by a payload edit; payload docs do not trigger the note's debounced save. */
+  #payloadFeed: ReturnType<typeof setTimeout> | null = null;
   readonly #limits = (this.constructor as typeof DocDO).limits;
   readonly #rate = new WriteRate(this.#limits.writeRate.max, this.#limits.writeRate.windowMs);
   readonly #acks = new AckCoalescer<Connection>((connection, deletes, payloads) => this.#ack(connection, deletes, payloads), ACK_COALESCE_MS);
@@ -266,7 +270,13 @@ export class DocDO extends YServer<SyncEnv> {
       persisted: (_id, _update, origin) => {
         this.#exported = null;
         this.#edited(store);
-        if (isConnection(origin)) this.#projections?.touch();
+        if (isConnection(origin)) {
+          this.#projections?.touch();
+          if (!this.#payloadFeed) this.#payloadFeed = setTimeout(() => {
+            this.#payloadFeed = null;
+            void this.#feedSearch();
+          }, PAYLOAD_FEED_MS);
+        }
       },
       principalOf: (origin) => (isConnection(origin) ? (attachmentOf(origin)?.principalId ?? '') : null),
     });

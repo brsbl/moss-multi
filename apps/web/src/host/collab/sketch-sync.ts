@@ -1,16 +1,20 @@
 // A canvas keeps its strokes in local state while it is open (moss's SketchWrapper). On a bound doc a peer's
 // strokes arrive as new props; this hook moves every local copy (the drawing, the edit baseline, the undo stack) by
 // exactly the peer's change to the register's keys, so a later local write never erases it (A§10.10). A change that
-// arrives mid-stroke waits for the stroke's own commit, because the stroke was drawn on the grid from before it.
+// arrives mid-stroke waits for the stroke's own commit, because the stroke was drawn on the grid from before it. The
+// payload map is watched directly: a peer's ink on cells this view already shows inked adds keys without changing props.
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
 import { $getNodeByKey } from 'lexical';
-import { moveEntries, readMapEntries, rebaseMapEntries, sameValue } from '@moss-multi/sync/registers';
+import type * as Y from 'yjs';
+import {
+  moveEntries, onRegisterChange, readMapEntries, rebaseMapEntries, registerPayloads, registerState, sameValue,
+} from '@moss-multi/sync/registers';
+import { payloadMap } from '@moss-multi/sync/payload-docs';
 
 export interface SketchValue<L = unknown> { grid: boolean[]; labels: L[] }
 export type Rebase = <L>(local: SketchValue<L>) => SketchValue<L>;
-/** `first`: the payload has just arrived (a view can mount before its payload doc's state does). */
-export type ApplyPeerChange = (rebase: Rebase, first: boolean) => void;
+export type ApplyPeerChange = (rebase: Rebase) => void;
 type Entries = Map<string, unknown>;
 
 const sameEntries = (a: Entries, b: Entries): boolean =>
@@ -46,10 +50,35 @@ export function useSketchPeerSync<L>(nodeKey: string, grid: boolean[], labels: L
     if (!to || (from && sameEntries(from, to))) return;
     // The first arrival moves the view from nothing to the whole payload.
     const start = from ?? new Map<string, unknown>();
-    applyRef.current((local) => rebaseSketch(local, start, to), !from);
+    applyRef.current((local) => rebaseSketch(local, start, to));
   }, [read]);
 
   useEffect(() => { flush(); }, [grid, labels, flush]);
+
+  useEffect(() => {
+    let watched: Y.Map<unknown> | undefined;
+    let stopped = false;
+    // After the transaction: the view's own write has moved `synced` by then, so only a peer's change is left.
+    const changed = () => queueMicrotask(() => { if (!stopped) flush(); });
+    const attach = () => {
+      const id = registerState(editor, nodeKey)?.id;
+      const doc = id ? registerPayloads(editor)?.get(id) : undefined;
+      const map = doc ? payloadMap(doc) : undefined;
+      if (map === watched) return;
+      watched?.unobserve(changed);
+      watched = map;
+      watched?.observe(changed);
+    };
+    attach();
+    const stopUpdates = editor.registerUpdateListener(attach);
+    const stopChanges = onRegisterChange(editor, attach);
+    return () => {
+      stopped = true;
+      stopUpdates();
+      stopChanges();
+      watched?.unobserve(changed);
+    };
+  }, [editor, nodeKey, flush]);
 
   useEffect(() => {
     const inBlock = (target: EventTarget | null) =>

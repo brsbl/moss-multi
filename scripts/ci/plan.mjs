@@ -190,6 +190,8 @@ export function ciOk(needs) {
     oracle: parity,
     parity,
     viewer: Boolean(plan.viewer),
+    // The embeddable editor bundle and its fixture (T3.9) ride the viewer lane.
+    editor: Boolean(plan.viewer),
     // The moss-editor-host artifact builds whenever the checks run.
     'editor-host': Boolean(plan.checks),
   };

@@ -394,6 +394,57 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+  # The embeddable editor (T3.9): build packages/editor, run its fixture host acceptance in both engines under the
+  # editor's own CSP (e2e/editor), then pack the release into the moss-editor artifact (tarball, SHA-256,
+  # editor.json and release.json with the source commit and this run).
+  editor:
+    needs: plan
+    if: needs.plan.outputs.viewer == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    container:
+      image: mcr.microsoft.com/playwright:v1.61.1-noble
+      options: --ipc=host --init
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build the editor bundle
+        run: pnpm --filter @moss-multi/editor build
+        env:
+          MOSS_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      - run: cat packages/editor/dist/editor.json
+      - name: Acceptance fixture and shots, Chromium and WebKit
+        working-directory: e2e
+        env:
+          REPEAT: ${{ needs.plan.outputs.repeat }}
+        run: pnpm exec playwright test --project=editor-chromium --project=editor-webkit --repeat-each="${REPEAT:-1}"
+      - name: Pack the release
+        run: node scripts/ci/editor-pack.mjs packages/editor/release
+      - uses: actions/upload-artifact@v7
+        with:
+          name: moss-editor
+          path: packages/editor/release
+          retention-days: 30
+      - name: Upload results and shots
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: editor-results-${{ github.run_attempt }}
+          path: |
+            e2e/test-results/
+            e2e/playwright-report/
+          retention-days: 7
+          if-no-files-found: ignore
+
   # The editor's host helpers (T3.9a): moss-editor-host.js, contract.d.ts emitted by tsc, LICENSE and
   # editor-host.json (version, API, source commit, per-file SHA-256) as the moss-editor-host artifact.
   editor-host:
@@ -519,7 +570,7 @@ jobs:
 
   ci-ok:
     if: always()
-    needs: [plan, checks, build, e2e, macos, oracle, parity, viewer, editor-host]
+    needs: [plan, checks, build, e2e, macos, oracle, parity, viewer, editor, editor-host]
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:

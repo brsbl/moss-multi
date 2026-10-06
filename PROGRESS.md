@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 74% done** (66 of 89 planned tasks verified)
+**Overall: 76% done** (68 of 90 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 19 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 10 / 13 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 12 / 13 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 4 / 5 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 1 / 5 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
@@ -84,6 +84,8 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-05 — T2.6 verified: a viewer or commenter is no longer offered controls they cannot use: menus grow with their role, "+ Note", Rename, slash commands and block edit, fullscreen and delete buttons are hidden, checkboxes and gap cursors in a read-only body are inert and send nothing, and an unknown role gets no actions.
 - 2026-10-05 — T2.S1 verified: a co-owner who is demoted or removed loses their open invites for good, so regaining manage later never revives an invite they sent before.
 - 2026-10-05 — T2.S2 verified: a folder link over a large subtree (150 subfolders, 600 notes) lists every note at the right role for anonymous and signed-in holders, in a fixed number of queries and D1 parameters.
+- 2026-10-05 — T3.R verified: m3 now sits on m2, with media in migration 0003 and chart and sketch data in their own payload documents; a chart or canvas stays read-only until its data arrives, two people can still edit one at once without losing each other's ink, and payload edits reach search.
+- 2026-10-05 — T3.9 verified: a host such as the bb Moss plugin can mount moss's own editor over its files with `mountMossEditor`, editing every node family and adding comments as markers plus the sidecar, with stale writes refused, a clean editor reloading on external change, assets going only through the host, and CI building the versioned `moss-editor` artifact.
 - 2026-10-05 — T4.3 verified: in a shared note a person can select text and comment on it, reply, resolve and reopen threads, see each comment highlighted for everyone through edits and formatting without a blink, and find detached comments listed with their quote, all in moss's own gutter, popover and Cmd+Shift+A.
 
 ## T1.1s identity audit
@@ -118,6 +120,9 @@ A task counts only after an independent checker passes it on green CI. Each mile
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
 
+- T3.9 checker P2 (downgraded from Codex P1): paste over a selection during unmount saves the deletion without the image; `Session.unmountOnce` waits only for note writes, not for `putAsset` or `copyAsset`, so a host unmounting while an upload is pending saves the file with the selection removed and no image → editor follow-up.
+- T3.9 checker P2: the comment-color unit tests rely on a fake surface that keeps stored colors (`FakeSurface.load` copies stored `commentColors`), while the real path derives them in `hydrateComments` → editor test follow-up.
+- T3.9 checker P2: the key-order negative control in `pipeline.golden.test.ts` ('a wrong meta.json key order is caught') changes a value as well as key order → editor test follow-up.
 - T3.9a checker P2: `allocateFolderName`'s volume-equivalence model (`volumeKey` in `packages/editor/src/host/moss-editor-host.js`) is approximate: it lacks full Unicode case folding ('σ' vs sibling 'ς') and treats case-sensitive APFS as normalization-sensitive (NFC vs NFD 'Café'), so it can return an occupied name; the host's exclusive rename then fails with EEXIST and that title edit stays unsaved, with nothing lost or overwritten → editor host follow-up: fold case fully and normalize on case-sensitive volumes.
 - T2.3s checker P2 (downgraded from Codex P1): a restore can act on an older view of the note after another manager restores, moves and re-trashes it; RESTORE in `api/trash.ts` does not check the note's current folder or `trash_batch_id` still match what it read. No authority is gained (the UPDATE re-checks manage on the current chain and edit on the destination) → trash follow-up: compare-and-set on folder and batch.
 - T2.3s checker P2 (downgraded from Codex P1): a signed-out share-link holder gets 401, not 404, from trash, restore and the Trash read; nothing is disclosed (the 401 is identical for a missing note) and it predates T2.3s; A§8 confines the 401 exception to a credential-less CLI → align to 404 in an access follow-up.
@@ -376,6 +381,7 @@ Local browser verification remains assigned to the independent checker under the
 - Refreshes filtered by ids still do full-workspace work (apps/web/src/api/workspace.ts:165-166, 225-235). Add an ids-aware path that narrows doc and Trash queries before building rows, and compute counts in one pass.
 - reapDeadInvites re-checks every open invite in the database (apps/web/src/api/access.ts:105-108). Scope the reaper to the affected targets and subtree, or to the affected inviter for grant changes, while keeping death synchronous and permanent.
 - T2.S2 (Folder-link listing at a fixed cost), checker: the folder-link listing authorizes docs against a folder tree read one query earlier (apps/web/src/api/workspace.ts:113-154), so a concurrent move of a subfolder out of the linked root could leak one listing's metadata for a note in it; read the subtree and docs in one statement or re-check the chain for docs whose folder changed.
+- T3.R (Restack m3 on m2), checker: a chart or canvas whose payload arrives empty stays read-only for good, because readiness still requires the payload map to have size > 0 after arrival (an empty legacy map, a fresh id from the gate's rename, or a payload dropped by retention), and the setter is a silent no-op on it; not a regression from T3.R.
 
 ### From M1's Slop Cop review (PR #2 @ ff9570f, 2026-10-05)
 - REST rename and create's initial title skip the document size cap (packages/sync/src/doc-do.ts:263-265 (create), 277-281 (renameTitle)). Build the title change on a mirror doc, admit the resulting state plus payload bytes, and only then apply it. Return the existing doc-cap refusal.
