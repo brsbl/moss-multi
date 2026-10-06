@@ -351,6 +351,77 @@ describe("T5.4 the same fuzz on the client's F and C builds @p:mean-2 @p:R17", (
   }, 120_000);
 });
 
+describe('T5.4 fuzz findings, each replayed as a fixed case @p:mean-2 @p:R17', () => {
+  /** A record of one op that `write` makes on a copy of `live` under the lease. */
+  function forgedOp(live: Y.Doc, write: (doc: Y.Doc) => void): RecordOp {
+    const copy = new Y.Doc({ gc: false });
+    Y.applyUpdate(copy, Y.encodeStateAsUpdate(live));
+    copy.clientID = LEASED;
+    const sv = Y.encodeStateVector(copy);
+    write(copy);
+    const update = Y.encodeStateAsUpdate(copy, sv);
+    copy.destroy();
+    return { doc: 'body', update };
+  }
+
+  function excludedEverywhere(live: Y.Doc, id: string): void {
+    const built = new Composite(live).build();
+    try {
+      expect(built.broken, 'C leaves the record out').toEqual([id]);
+    } finally {
+      built.doc.destroy();
+    }
+    let n = 0;
+    const mounted = mount(live, wire(live, () => `lease-${(n += 1)}`));
+    try {
+      expect(mounted.fork.ready, 'F fills without the record').toBe(true);
+      expect(svOf(mounted.fork.doc)).toBe(svOf(live));
+    } finally {
+      mounted.dispose();
+    }
+  }
+
+  it("seed 5023: a record that deletes a block's __type is broken; an editor showing the block would throw, and hydration only skips it", () => {
+    const live = seededBody();
+    const writer = newSuggestionsClient(live);
+    new SuggestionsWriter(live, writer);
+    const op = forgedOp(live, (doc) => {
+      const hello = (doc.get('root', Y.XmlText).toDelta() as { insert: unknown }[]).map((d) => d.insert).find((x) => x instanceof Y.XmlText) as Y.XmlText;
+      hello.removeAttribute('__type');
+    });
+    forge(live, FUZZ_ID, SUGGESTER, [LEASED], [op], [], 2);
+    excludedEverywhere(live, FUZZ_ID);
+    const before = snapshot(live, writer);
+    const record = readRecord(live, FUZZ_ID)!;
+    expect(previewRecord(live, FUZZ_ID)).toMatchObject({ ok: false, reason: 'broken' });
+    expect(acceptRecord(live, FUZZ_ID, { previewHash: 'none', digest: recordDigest(record) }, EDITOR)).toEqual({ ok: false, status: 409, reason: 'broken' });
+    expect(snapshot(live, writer)).toBe(before);
+  });
+
+  it("seed 5014: a record whose chart payload no editor can decode is broken for F and C, which bind the record's payloads", () => {
+    const live = seededBody();
+    let n = 0;
+    const link = wire(live, () => (n++ === 0 ? 'chart' : `spare-${n}`));
+    const mounted = mount(live, link);
+    mounted.act(CENSUS.find((op) => op.name === 'new chart block')!.steps[0] as () => void);
+    link.deliver(mounted.fork);
+    mounted.dispose();
+    const record = readRecord(live, 'chart')!;
+    const payload = record.ops.find((op) => op.doc !== 'body')!.doc;
+    // The record's own payload, then one more write under its lease: a key list the chart codec reads as an array,
+    // holding a number.
+    const held = new Y.Doc({ gc: false });
+    for (const op of record.ops) if (op.doc === payload) Y.applyUpdate(held, op.update);
+    held.clientID = record.meta.clients[0];
+    const sv = Y.encodeStateVector(held);
+    held.getMap('payload-map').set('#k', 5);
+    const update = Y.encodeStateAsUpdate(held, sv);
+    held.destroy();
+    writeSuggestions(live, () => opsOf(live, 'chart').push([{ doc: payload, update }]));
+    excludedEverywhere(live, 'chart');
+  });
+});
+
 // ---- The generative honest-edit fuzz -------------------------------------------------------------------------------
 
 interface HonestStep {
