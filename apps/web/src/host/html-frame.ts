@@ -2,7 +2,7 @@
 // page's nonce CSP and so never run their scripts. apps/web points them at its /frame/html document instead, which
 // is sandboxed to `allow-scripts` alone (an opaque origin), and posts the HTML in once the frame says it is ready.
 // Hosts that serve no frame document leave it unset and keep moss's behavior; the viewer resolves one per viewer.
-import { HTML_FRAME_CONTENT, HTML_FRAME_PATH, HTML_FRAME_READY, HTML_FRAME_SANDBOX } from '@moss-multi/protocol/html-frame';
+import { HTML_FRAME_CONTENT, HTML_FRAME_PATH, HTML_FRAME_READY, HTML_FRAME_RUN, HTML_FRAME_SANDBOX } from '@moss-multi/protocol/html-frame';
 
 let frameSrc: string | null = null;
 
@@ -41,13 +41,49 @@ export function supportedSandbox(sandbox: string): string {
   return sandbox.split(/\s+/).filter((token) => token && probe.supports(token)).join(' ');
 }
 
+/**
+ * Per-block consent to run scripts (the editor, PRODUCT ruling 21). With a gate, CONTENT carries `run` and a block
+ * runs only once the gate allows it; the frame document asks with RUN when the user presses its Run button. Without
+ * one (apps/web, the viewer), CONTENT has no `run` and the frame document runs the block at once.
+ */
+export interface FrameRunGate {
+  allowed(iframe: HTMLIFrameElement, html: string): boolean;
+  allow(iframe: HTMLIFrameElement, html: string): void;
+}
+
+let runGate: FrameRunGate | null = null;
+
+export function gateFrameScripts(gate: FrameRunGate | null): void {
+  runGate = gate;
+}
+
+const fed = new Set<() => void>();
+
 /** Sends `html` into `iframe` once its frame document announces itself; returns the listener's cleanup. */
 export function feedHtmlFrame(iframe: HTMLIFrameElement, html: string): () => void {
+  // The frame is an opaque origin, so no target origin can name it.
+  const send = () =>
+    iframe.contentWindow?.postMessage(
+      runGate ? { type: HTML_FRAME_CONTENT, html, run: runGate.allowed(iframe, html) } : { type: HTML_FRAME_CONTENT, html },
+      '*',
+    );
+  // Run in another frame of the same block allows this one too; a frame already running ignores a second CONTENT.
+  const refresh = () => {
+    if (runGate?.allowed(iframe, html)) send();
+  };
   const onMessage = (event: MessageEvent) => {
-    if (event.source !== iframe.contentWindow || (event.data as { type?: unknown } | null)?.type !== HTML_FRAME_READY) return;
-    // The frame is an opaque origin, so no target origin can name it.
-    iframe.contentWindow?.postMessage({ type: HTML_FRAME_CONTENT, html }, '*');
+    if (event.source !== iframe.contentWindow) return;
+    const type = (event.data as { type?: unknown } | null)?.type;
+    if (type === HTML_FRAME_READY) send();
+    else if (type === HTML_FRAME_RUN && runGate) {
+      runGate.allow(iframe, html);
+      for (const other of fed) other();
+    }
   };
   window.addEventListener('message', onMessage);
-  return () => window.removeEventListener('message', onMessage);
+  fed.add(refresh);
+  return () => {
+    window.removeEventListener('message', onMessage);
+    fed.delete(refresh);
+  };
 }

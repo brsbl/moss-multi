@@ -4,7 +4,8 @@
  * BREAKING: API 2 replaces API 1 (editor 0.1.0 and 0.2.0, which stay
  * published unchanged), as the owner approved on 2026-10-06. What changed,
  * item by item, and what a host must change: docs/design/editor-embed.md
- * section 13, "Migrating from API 1". In short: a moss-html block sends no
+ * section 13, "Migrating from API 1". In short: a moss-html block renders
+ * inert until the user presses its Run button, and a running block sends no
  * request, no WebRTC packet and no navigation (`MossEditorManifest.htmlFrame`);
  * `assets.copyFromNote` copies only out of notes the
  * user opened in the host; the host security obligations below are
@@ -432,9 +433,10 @@ export interface MossEditorOptions {
    * URL of the host-served moss-html frame: the tarball's
    * `editor.json` `htmlFrame.file`, served with the response header
    * `Content-Security-Policy: <htmlFrame.policy>` (`MossEditorManifest.htmlFrame`:
-   * an opaque-origin sandbox that runs the block's inline scripts and styles
-   * and shows `data:` and `blob:` images, and from which a block sends no
-   * request, no WebRTC packet and no navigation).
+   * an opaque-origin sandbox that shows a block inert until the user presses
+   * its Run button, then runs its inline scripts and styles and shows its
+   * `data:` and `blob:` images, and from which a block sends no request, no
+   * WebRTC packet and no navigation).
    * moss-html blocks load it and receive their HTML by `postMessage`, the same
    * protocol as moss-multi's web `/frame/html` (SP13). A `data:` frame
    * inherits the editor frame's CSP, so a block's own scripts cannot run
@@ -1459,9 +1461,16 @@ export interface MossEditorManifest {
   /**
    * The moss-html frame document. The host serves `file` and passes its URL
    * as `MossEditorOptions.htmlFrameUrl`, with the response header
-   * `Content-Security-Policy: <policy>` exactly (host obligation 4). A block
-   * runs as an opaque origin with its inline scripts and styles and its
-   * `data:` and `blob:` images, and sends nothing to any server:
+   * `Content-Security-Policy: <policy>` exactly (host obligation 4).
+   *
+   * A block renders inert, with no script running, until the user presses the
+   * Run button the document shows on it (PRODUCT ruling 21). Activating the
+   * block is not consent, and nothing runs a block automatically. Run lasts
+   * for that block while the editor stays mounted: moss's static and
+   * interactive frames of the block both run, and a new mount starts inert.
+   *
+   * A running block runs as an opaque origin with its inline scripts and
+   * styles and its `data:` and `blob:` images, and sends nothing to any server:
    * - The policy refuses fetch, XHR, WebSocket and beacons (`connect-src`),
    *   external scripts, stylesheets, images, fonts and media (`default-src`),
    *   frame loads, form posts and `<base>`.
@@ -1469,7 +1478,8 @@ export interface MossEditorManifest {
    *   policy's `frame-src 'none'` also refuses the block's own navigations
    *   (`location`, links, meta refresh), and the sandbox refuses navigating
    *   the frame, the page or a popup. Without that, the page's `frame-src`
-   *   (which allows `https:` for web embeds) would be the only gate.
+   *   (which allows `https:` for web embeds) would be the only gate. A block
+   *   that tries is torn down: its frame shows that it was stopped.
    * - Before the block's scripts run, the document deletes every WebRTC
    *   interface (CSP does not govern ICE, so a peer connection could reach
    *   any STUN or TURN server), and keeps every frame out of the block's
@@ -1479,7 +1489,10 @@ export interface MossEditorManifest {
    * - Static `preconnect`, `dns-prefetch` and `prerender` hints are dropped.
    * What browsers do on their own is outside this: a refused navigation or a
    * connection hint added by script can still make the browser resolve the
-   * host it names and open a connection to it, with no request sent on it.
+   * host it names and open a connection to it, with no request sent on it. So
+   * a deliberately malicious block, once the user runs it, can still leak its
+   * own content and what the user types into it, in the name of a host it
+   * tries to reach.
    * API 1's policy was `sandbox allow-scripts` alone, with the block written
    * into the frame document itself.
    */

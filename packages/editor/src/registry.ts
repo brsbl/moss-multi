@@ -10,6 +10,10 @@ export interface EditorRecord {
   services: MossEditorServices;
   htmlFrameUrl: string | null;
   session: EditorSession;
+  /** The mount's element, which holds its HTML block frames. */
+  element: HTMLElement;
+  /** HTML blocks the user pressed Run on in this mount, as `block:<node key>` and `html:<frame HTML>` (ruling 21). */
+  ran: Set<string>;
 }
 
 /** A URL that loads nothing and fails as media, for a reference the host did not resolve. */
@@ -28,6 +32,12 @@ export function registerEditor(record: EditorRecord): () => void {
 
 export function editorFor(noteId: string | null | undefined): EditorRecord | undefined {
   return noteId ? editors.get(noteId) : undefined;
+}
+
+/** The editor whose element holds `node`. */
+export function editorHolding(node: Node): EditorRecord | undefined {
+  for (const record of editors.values()) if (record.element.contains(node)) return record;
+  return undefined;
 }
 
 export function markActive(noteId: string): void {

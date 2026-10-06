@@ -8,6 +8,8 @@ export const HTML_FRAME_POLICY = 'sandbox allow-scripts';
 export const HTML_FRAME_SANDBOX = 'allow-scripts';
 export const HTML_FRAME_READY = 'moss-html-frame-ready';
 export const HTML_FRAME_CONTENT = 'moss-html-frame-content';
+/** The user pressed Run in a block's frame (the editor's frame document only). */
+export const HTML_FRAME_RUN = 'moss-html-frame-run';
 
 /**
  * Runs first in the editor's block document (HTML_FRAME_ISOLATED_DOCUMENT), called with the block's HTML. CSP leaves
@@ -101,23 +103,63 @@ const HTML_FRAME_GUARD = `function (html) {
 }`;
 
 /**
- * The editor's frame document (API 2), served with editor.json `htmlFrame.policy`. The block runs one level down,
- * in a sandboxed srcdoc child that HTML_FRAME_GUARD prepares, so this document's `frame-src 'none'` governs the
- * block's own navigations: it cannot load another URL into its frame, and the sandbox keeps it from navigating this
- * document or the page. Messages pass through in both directions, so moss's size reports still reach the editor.
+ * The editor's frame document (API 2), served with editor.json `htmlFrame.policy`. CONTENT carries `run`: a block
+ * runs only when the host says so (PRODUCT ruling 21), and until then it renders inert, in a child sandboxed without
+ * scripts, under a Run button. Pressing Run asks the host (RUN); the host records the choice and sends CONTENT again
+ * with `run: true`. A running block is one level down too, in a sandboxed srcdoc child that HTML_FRAME_GUARD
+ * prepares, so this document's `frame-src 'none'` governs the block's own navigations: it cannot load another URL
+ * into its frame, and the sandbox keeps it from navigating this document or the page. A block that tries is torn
+ * down. Only moss's size requests and reports pass between the block and the page.
  */
-export const HTML_FRAME_ISOLATED_DOCUMENT = `<!doctype html><meta charset="utf-8"><style>html,body{margin:0;width:100%;height:100%;overflow:hidden}iframe{display:block;border:0;width:100%;height:100%}</style><script>
-var block = null;
-addEventListener('message', function (event) {
-  if (block && event.source === block.contentWindow) return parent.postMessage(event.data, '*');
-  if (event.source !== parent) return;
-  if (block) return block.contentWindow && block.contentWindow.postMessage(event.data, '*');
-  if (!event.data || event.data.type !== '${HTML_FRAME_CONTENT}') return;
+export const HTML_FRAME_ISOLATED_DOCUMENT = `<!doctype html><meta charset="utf-8"><style>
+html,body{margin:0;width:100%;height:100%;overflow:hidden;font:16px/1.4 system-ui,-apple-system,sans-serif}
+iframe{display:block;border:0;width:100%;height:100%}
+button{position:fixed;right:12px;bottom:12px;padding:6px 16px;border:1px solid rgba(0,0,0,.25);border-radius:999px;background:#fff;color:#1f1f1f;font:600 20px/1.4 system-ui,-apple-system,sans-serif;cursor:pointer;box-shadow:0 1px 3px rgba(0,0,0,.2)}
+p{margin:0;padding:24px;color:#555;font-size:22px}
+[hidden]{display:none}
+</style><button type="button" title="Run this block's scripts" hidden>Run</button><p hidden>This block tried to open another page and was stopped.</p><script>
+var html = null, block = null, running = false, stopped = false;
+var button = document.querySelector('button'), notice = document.querySelector('p');
+function show(run) {
+  if (block) block.remove();
+  running = run;
   block = document.createElement('iframe');
-  block.setAttribute('sandbox', 'allow-scripts');
-  block.srcdoc = '<!doctype html><meta charset="utf-8"><meta http-equiv="x-dns-prefetch-control" content="off"><body><script>(' +
-    ${JSON.stringify(HTML_FRAME_GUARD)} + ')(' + JSON.stringify(String(event.data.html)).replace(/</g, '\\\\u003c') + ');<\\/script>';
-  document.body.appendChild(block);
+  block.setAttribute('sandbox', run ? 'allow-scripts' : '');
+  block.srcdoc = run
+    ? '<!doctype html><meta charset="utf-8"><meta http-equiv="x-dns-prefetch-control" content="off"><body><script>(' +
+      ${JSON.stringify(HTML_FRAME_GUARD)} + ')(' + JSON.stringify(html).replace(/</g, '\\\\u003c') + ');<\\/script>'
+    : html;
+  document.body.insertBefore(block, button);
+  button.hidden = run;
+}
+// The only navigation this document's policy refuses is its child's: the block tried to leave.
+document.addEventListener('securitypolicyviolation', function (event) {
+  if (event.effectiveDirective !== 'frame-src' || stopped) return;
+  stopped = true;
+  if (block) block.remove();
+  block = null;
+  button.hidden = true;
+  notice.hidden = false;
+});
+button.addEventListener('click', function (event) {
+  if (event.isTrusted && !running && !stopped) parent.postMessage({ type: '${HTML_FRAME_RUN}' }, '*');
+});
+addEventListener('message', function (event) {
+  var data = event.data;
+  if (!data || typeof data !== 'object') return;
+  if (block && event.source === block.contentWindow) {
+    if (running && data.type === 'moss-html-rendered-size') parent.postMessage(data, '*');
+    return;
+  }
+  if (event.source !== parent || stopped) return;
+  if (data.type === 'moss-html-measure-request') {
+    if (block && running) block.contentWindow.postMessage(data, '*');
+  } else if (data.type === '${HTML_FRAME_CONTENT}') {
+    if (html === null) {
+      html = String(data.html);
+      show(data.run === true);
+    } else if (data.run === true && !running) show(true);
+  }
 });
 parent.postMessage({ type: '${HTML_FRAME_READY}' }, '*');
 </script>`;

@@ -8,7 +8,10 @@ host that mounts it gets `ready` rejected with `apiMismatch` and nothing is read
 
 - **`MOSS_EDITOR_API` is 2**, as are `MOSS_EDITOR_INFO.api`, editor.json `api` and the host helpers'
   (`moss-editor-host.js`, `editor-host.json`). `bridge.api` must be 2.
-- **A moss-html block sends no request, no WebRTC packet and no navigation.** editor.json `htmlFrame.policy` is now
+- **A moss-html block renders inert until the user presses Run** on it (PRODUCT ruling 21); Run lasts for that
+  block while the editor is mounted.
+- **A running moss-html block sends no request, no WebRTC packet and no navigation**; one that tries to navigate is
+  torn down. editor.json `htmlFrame.policy` is now
   `sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:
   blob:; connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'`, and `moss-html-frame.html` runs
   the block in a sandboxed child with WebRTC deleted and no frames of its own. Blocks still run their inline scripts

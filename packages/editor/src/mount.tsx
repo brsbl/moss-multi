@@ -631,7 +631,7 @@ export function mountMossEditor(element: HTMLElement, options: MossEditorOptions
   const surface = new FrameSurface(store, noteId, host);
   const session = new EditorSession({ noteId: options.noteId, bridge: options.bridge, surface, onEvent: options.onEvent, restoreDraft: options.restoreDraft });
   surface.session = session;
-  const unregister = registerEditor({ noteId, bridge: options.bridge, services, htmlFrameUrl: options.htmlFrameUrl ?? null, session });
+  const unregister = registerEditor({ noteId, bridge: options.bridge, services, htmlFrameUrl: options.htmlFrameUrl ?? null, session, element: host, ran: new Set() });
   let live = true;
   const own: MossEditorNote = { id: noteId, title: '' };
   setNotes(store, [own]);
