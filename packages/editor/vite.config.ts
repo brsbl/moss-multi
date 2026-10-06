@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import viteReact from '@vitejs/plugin-react';
 import { defineConfig, type Plugin } from 'vite';
 import { readSource } from '../../apps/web/vite-provenance.ts';
-import { HTML_FRAME_DOCUMENT } from '../protocol/src/html-frame.ts';
+import { HTML_FRAME_ISOLATED_DOCUMENT } from '../protocol/src/html-frame.ts';
 import { MOSS_EDITOR_API, MOSS_EDITOR_INFO } from './src/host/moss-editor-host.js';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
@@ -24,7 +24,8 @@ const API = MOSS_EDITOR_API;
 if (MOSS_EDITOR_INFO.version !== pkg.version) throw new Error(`MOSS_EDITOR_INFO.version ${MOSS_EDITOR_INFO.version} != package ${pkg.version}`);
 /**
  * What a host serves moss-html-frame.html with (API 2, contract.ts MossEditorManifest.htmlFrame): an opaque-origin
- * sandbox that runs the block's inline scripts and styles and shows data: and blob: images, with no network at all.
+ * sandbox that runs the block's inline scripts and styles and shows data: and blob: images, and refuses every request
+ * and frame load. The document itself (HTML_FRAME_ISOLATED_DOCUMENT) closes WebRTC and navigation.
  */
 const FRAME_POLICY =
   "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'";
@@ -70,7 +71,7 @@ function extraFiles(): Plugin {
     name: 'moss-editor-files',
     apply: 'build',
     generateBundle() {
-      this.emitFile({ type: 'asset', fileName: FRAME, source: HTML_FRAME_DOCUMENT });
+      this.emitFile({ type: 'asset', fileName: FRAME, source: HTML_FRAME_ISOLATED_DOCUMENT });
       this.emitFile({ type: 'asset', fileName: HOST_ENTRY, source: readFileSync(`${here}src/host/${HOST_ENTRY}`) });
     },
   };

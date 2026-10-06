@@ -8,9 +8,11 @@ host that mounts it gets `ready` rejected with `apiMismatch` and nothing is read
 
 - **`MOSS_EDITOR_API` is 2**, as are `MOSS_EDITOR_INFO.api`, editor.json `api` and the host helpers'
   (`moss-editor-host.js`, `editor-host.json`). `bridge.api` must be 2.
-- **The moss-html frame has no network.** editor.json `htmlFrame.policy` is now `sandbox allow-scripts;
-  default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; connect-src 'none';
-  frame-src 'none'; form-action 'none'; base-uri 'none'`. Blocks still run their inline scripts and styles.
+- **A moss-html block sends no request, no WebRTC packet and no navigation.** editor.json `htmlFrame.policy` is now
+  `sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:
+  blob:; connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'`, and `moss-html-frame.html` runs
+  the block in a sandboxed child with WebRTC deleted and no frames of its own. Blocks still run their inline scripts
+  and styles.
 - **`assets.copyFromNote` copies only out of notes the user opened in the host**; any other source is
   `{kind:'refused', reason:'sourceNotOpen'}`, and the editor drops the pasted reference.
 - **Host security obligations are normative in contract.ts:** read confinement with realpath, re-validation of every

@@ -4,8 +4,9 @@
  * BREAKING: API 2 replaces API 1 (editor 0.1.0 and 0.2.0, which stay
  * published unchanged), as the owner approved on 2026-10-06. What changed,
  * item by item, and what a host must change: docs/design/editor-embed.md
- * section 13, "Migrating from API 1". In short: the moss-html frame's policy
- * cuts every network path; `assets.copyFromNote` copies only out of notes the
+ * section 13, "Migrating from API 1". In short: a moss-html block sends no
+ * request, no WebRTC packet and no navigation (`MossEditorManifest.htmlFrame`);
+ * `assets.copyFromNote` copies only out of notes the
  * user opened in the host; the host security obligations below are
  * normative; a case-only retitle keeps the markdown entry's spelling; and
  * `bridge.api` must be `2`, else the mount fails with `apiMismatch` before
@@ -76,7 +77,8 @@
  * 4. The moss-html frame. The host serves `editor.json` `htmlFrame.file`
  *    with exactly `Content-Security-Policy: <htmlFrame.policy>`
  *    (`MossEditorManifest.htmlFrame`), on an origin the editor frame's
- *    `frame-src` allows.
+ *    `frame-src` allows. The host serves the file's bytes unchanged: the
+ *    document, not only its policy, keeps a block off the network.
  *
  * Compatibility rules for API 2:
  * - `MOSS_EDITOR_API` stays `2` for every release that implements this file.
@@ -430,8 +432,9 @@ export interface MossEditorOptions {
    * URL of the host-served moss-html frame: the tarball's
    * `editor.json` `htmlFrame.file`, served with the response header
    * `Content-Security-Policy: <htmlFrame.policy>` (`MossEditorManifest.htmlFrame`:
-   * an opaque-origin sandbox that runs the block's inline scripts and styles,
-   * shows `data:` and `blob:` images, and has no network path).
+   * an opaque-origin sandbox that runs the block's inline scripts and styles
+   * and shows `data:` and `blob:` images, and from which a block sends no
+   * request, no WebRTC packet and no navigation).
    * moss-html blocks load it and receive their HTML by `postMessage`, the same
    * protocol as moss-multi's web `/frame/html` (SP13). A `data:` frame
    * inherits the editor frame's CSP, so a block's own scripts cannot run
@@ -1456,12 +1459,29 @@ export interface MossEditorManifest {
   /**
    * The moss-html frame document. The host serves `file` and passes its URL
    * as `MossEditorOptions.htmlFrameUrl`, with the response header
-   * `Content-Security-Policy: <policy>` exactly (host obligation 4). The
-   * policy runs a block as an opaque origin with its inline scripts and
-   * styles and its `data:` and `blob:` images, and gives it no network path:
-   * no fetch, XHR, WebSocket or beacon (`connect-src`), no external script,
-   * stylesheet, image, font or media (`default-src`), no frames, no form
-   * posts and no `<base>`. API 1's policy was `sandbox allow-scripts` alone.
+   * `Content-Security-Policy: <policy>` exactly (host obligation 4). A block
+   * runs as an opaque origin with its inline scripts and styles and its
+   * `data:` and `blob:` images, and sends nothing to any server:
+   * - The policy refuses fetch, XHR, WebSocket and beacons (`connect-src`),
+   *   external scripts, stylesheets, images, fonts and media (`default-src`),
+   *   frame loads, form posts and `<base>`.
+   * - The document runs the block in a sandboxed child of itself, so the
+   *   policy's `frame-src 'none'` also refuses the block's own navigations
+   *   (`location`, links, meta refresh), and the sandbox refuses navigating
+   *   the frame, the page or a popup. Without that, the page's `frame-src`
+   *   (which allows `https:` for web embeds) would be the only gate.
+   * - Before the block's scripts run, the document deletes every WebRTC
+   *   interface (CSP does not govern ICE, so a peer connection could reach
+   *   any STUN or TURN server), and keeps every frame out of the block's
+   *   document (each would be a fresh realm with WebRTC): frames in its HTML
+   *   are dropped, frames added later are removed before they load, and
+   *   declarative shadow roots, which could hide a frame, are never parsed.
+   * - Static `preconnect`, `dns-prefetch` and `prerender` hints are dropped.
+   * What browsers do on their own is outside this: a refused navigation or a
+   * connection hint added by script can still make the browser resolve the
+   * host it names and open a connection to it, with no request sent on it.
+   * API 1's policy was `sandbox allow-scripts` alone, with the block written
+   * into the frame document itself.
    */
   htmlFrame: {
     file: 'moss-html-frame.html';
