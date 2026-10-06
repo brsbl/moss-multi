@@ -42,6 +42,7 @@ function agentSocket(baseUrl: string, docId: string, key: string): Promise<{ clo
 }
 
 test('j08-agents keys: a minted key is shown once; revoking it 401s a raw bearer request and closes the agent\'s live socket @p:ppl-2 @evidence', async ({ actors, stack }) => {
+  actors.solo('one person and her own agent key; the agent is a raw socket, not a browser actor');
   const ada = await openShell(actors, 'ada');
   const docId = await ui.createNote(ada);
 
@@ -70,7 +71,7 @@ test('j08-agents keys: a minted key is shown once; revoking it 401s a raw bearer
   const live = await agentSocket(stack.baseUrl, docId, key);
 
   await agentRow(settings, 'Scribe').getByRole('button', { name: 'Revoke Scribe', exact: true }).click();
-  const confirm = ada.page.getByRole('dialog', { name: 'Revoke Scribe’s key?', exact: true });
+  const confirm = ada.page.getByRole('alertdialog', { name: 'Revoke Scribe’s key?', exact: true });
   await expect(confirm, 'revoking asks first').toBeVisible();
   await confirm.getByRole('button', { name: 'Revoke key', exact: true }).click();
   await expect(agentRow(settings, 'Scribe'), 'the agent leaves the list').toHaveCount(0, { timeout: LIVE_TIMEOUT });
@@ -108,6 +109,7 @@ test('j08-agents share: Ben adds Ada\'s agent by its id and it appears as an "ag
 });
 
 test('j08-agents device: opening /device with the terminal\'s code shows it, and approving signs the terminal in @p:ppl-1 @evidence', async ({ actors, stack }) => {
+  actors.solo('one person approves her own terminal; the terminal is a raw HTTP client');
   const adaPrincipal = await actors.principal('ada');
   const started = await fetch(`${stack.baseUrl}/api/auth/device/code`, {
     method: 'POST',
@@ -124,7 +126,7 @@ test('j08-agents device: opening /device with the terminal\'s code shows it, and
     signal: AbortSignal.timeout(10_000),
   });
 
-  const ada = await openShell(actors, 'ada', `/device?user_code=${code.user_code}`);
+  const ada = await actors.open(adaPrincipal, { path: `/device?user_code=${code.user_code}` });
   const page = ada.page.getByRole('main');
   await expect(page.getByRole('heading', { name: 'Sign in a device', exact: true })).toBeVisible();
   await expect(page.getByText(code.user_code.replace(/-/g, '').toUpperCase(), { exact: false }), 'the code is shown to compare').toBeVisible();

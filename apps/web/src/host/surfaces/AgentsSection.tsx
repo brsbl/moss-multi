@@ -134,7 +134,7 @@ export function AgentsSection(): ReactNode {
             value={name}
             readOnly={pending}
             onChange={(event) => setName(event.target.value)}
-            className="h-7 min-w-0 flex-1 border-border-default text-xs"
+            className="h-8 min-w-0 flex-1 border-border-default text-xs"
           />
           <Button type="submit" size="sm" variant="secondary" disabled={pending}>
             New key

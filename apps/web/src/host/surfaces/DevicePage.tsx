@@ -147,14 +147,14 @@ export function DevicePage({ initialCode }: { initialCode: string }): ReactNode 
 
           {phase === 'approved' ? (
             <p role="status" className="m-0 text-balance text-sm text-ink-muted">
-              <span className="block font-medium text-ink-default">Device approved</span>
+              <span className="mb-1 block font-medium text-ink-default">Device approved</span>
               That terminal is signed in. Return to it; you can close this tab.
             </p>
           ) : null}
 
           {phase === 'denied' ? (
             <p role="status" className="m-0 text-balance text-sm text-ink-muted">
-              <span className="block font-medium text-ink-default">Request denied</span>
+              <span className="mb-1 block font-medium text-ink-default">Request denied</span>
               The device was not signed in. If this wasn’t you, nothing else is needed.
             </p>
           ) : null}
