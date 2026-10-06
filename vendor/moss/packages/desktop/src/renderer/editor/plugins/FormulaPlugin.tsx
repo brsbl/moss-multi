@@ -165,18 +165,49 @@ const bindTrackedReferences = (
   return { raw: raw + expression.slice(at), spans };
 };
 
-/** moss-multi: the token spans of a stored expression. */
-const storedTokenSpans = (raw: string): TokenSpan[] => {
-  const spans: TokenSpan[] = [];
-  let shift = 0;
-  let match: RegExpExecArray | null;
-  FORMULA_REFERENCE_TOKEN_REGEX.lastIndex = 0;
-  while ((match = FORMULA_REFERENCE_TOKEN_REGEX.exec(raw)) !== null) {
-    const start = match.index - shift;
-    spans.push({ start, end: start + match[1].length, rawStart: match.index, rawEnd: match.index + match[0].length });
-    shift += match[0].length - match[1].length;
-  }
-  return spans;
+/**
+ * moss-multi: stored expressions with each distinct reference token as one private-use character, so a text merge
+ * keeps or drops a token whole and never splices one token's ids into another's. `encode` returns the text and, per
+ * token, its humanized range (`start`/`end`) and its one-character range (`rawStart`/`rawEnd`); `decode` restores it.
+ */
+const createTokenCodec = (sources: readonly string[]) => {
+  const toUnit = new Map<string, string>();
+  const toToken = new Map<string, string>();
+  const used = new Set(sources.join(''));
+  let next = 0xe000;
+  const unitFor = (token: string): string => {
+    let unit = toUnit.get(token);
+    if (unit === undefined) {
+      while (used.has(String.fromCharCode(next))) next += 1;
+      unit = String.fromCharCode(next++);
+      toUnit.set(token, unit);
+      toToken.set(unit, token);
+    }
+    return unit;
+  };
+  const spansOf = (text: string): TokenSpan[] => {
+    const spans: TokenSpan[] = [];
+    let humanized = 0;
+    for (let i = 0; i < text.length; i += 1) {
+      const token = toToken.get(text[i]);
+      if (token === undefined) { humanized += 1; continue; }
+      const name = token.slice(2, token.indexOf('#'));
+      spans.push({ start: humanized, end: humanized + name.length, rawStart: i, rawEnd: i + 1 });
+      humanized += name.length;
+    }
+    return spans;
+  };
+  return {
+    encode: (raw: string) => {
+      const text = raw.replace(FORMULA_REFERENCE_TOKEN_REGEX, unitFor);
+      return { text, spans: spansOf(text) };
+    },
+    decode: (text: string) => {
+      let raw = '';
+      for (const unit of text) raw += toToken.get(unit) ?? unit;
+      return { raw, spans: spansOf(text) };
+    }
+  };
 };
 
 /** moss-multi: a humanized offset in stored form, or back; an offset inside a reference goes to its end. */
@@ -1430,15 +1461,18 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
             ? stored.references
             : remapPositionedReferences(editExpressionRef.current, draft, editReferenceBindingsRef.current);
       const mine = bindTrackedReferences(draft, own);
-      const ops = rebaseOps(before, diffText(before, after), mine.raw);
-      const mergedRaw = applyOps(mine.raw, ops);
-      const merged = humanizeFormulaExpressionWithReferences(mergedRaw);
-      const spans = storedTokenSpans(mergedRaw);
+      // Each token is one unit in the merge: when both people retarget the same reference, both tokens are kept whole.
+      const codec = createTokenCodec([before, after, mine.raw]);
+      const base = codec.encode(before).text;
+      const ours = codec.encode(mine.raw);
+      const ops = rebaseOps(base, diffText(base, codec.encode(after).text), ours.text);
+      const result = codec.decode(applyOps(ours.text, ops));
+      const merged = humanizeFormulaExpressionWithReferences(result.raw);
       editExpressionRef.current = merged.expression;
       editReferenceBindingsRef.current = merged.references;
       return {
         expression: merged.expression,
-        selection: selection.map((at) => toHumanizedOffset(mapOffset(toStoredOffset(at, mine.spans), ops), spans))
+        selection: selection.map((at) => toHumanizedOffset(mapOffset(toStoredOffset(at, ours.spans), ops), result.spans))
       };
     },
     []
