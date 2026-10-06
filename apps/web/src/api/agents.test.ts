@@ -36,34 +36,39 @@ let cy: TestUser;
 /** While set, runs once just before the first statement (or batch holding one) matching `sql`: a write landing then. */
 let race: { sql: RegExp; run: () => Promise<unknown> } | null = null;
 
-/** D1 as the routes see it, with `race` run ahead of the batch holding the statement it matches. */
+const REAL = Symbol('real');
+const QUERY = Symbol('query');
+
+/** D1 as the routes see it, with `race` run ahead of the statement (or batch holding one) it matches. */
 function racingDb(db: D1Database): D1Database {
-  const queries = new WeakMap<D1PreparedStatement, string>();
   const claim = async (query: string) => {
     const hook = race;
     if (!hook?.sql.test(query)) return;
     race = null;
     await hook.run();
   };
+  const wrap = (statement: D1PreparedStatement, query: string): D1PreparedStatement => new Proxy(statement, {
+    get(target, prop) {
+      if (prop === REAL) return target;
+      if (prop === QUERY) return query;
+      if (prop === 'bind') return (...args: unknown[]) => wrap(target.bind(...args), query);
+      const value = Reflect.get(target, prop, target) as unknown;
+      if (typeof value !== 'function') return value;
+      if (prop !== 'all' && prop !== 'raw' && prop !== 'first' && prop !== 'run') return value.bind(target);
+      return async (...args: unknown[]) => {
+        await claim(query);
+        return value.apply(target, args);
+      };
+    },
+  });
+  type Wrapped = D1PreparedStatement & { [REAL]: D1PreparedStatement; [QUERY]: string };
   return new Proxy(db, {
     get(target, prop) {
-      if (prop === 'prepare') {
-        return (query: string) => {
-          const statement = target.prepare(query);
-          const bind = statement.bind.bind(statement);
-          statement.bind = (...args: unknown[]) => {
-            const bound = bind(...args);
-            queries.set(bound, query);
-            return bound;
-          };
-          queries.set(statement, query);
-          return statement;
-        };
-      }
+      if (prop === 'prepare') return (query: string) => wrap(target.prepare(query), query);
       if (prop === 'batch') {
-        return async (statements: D1PreparedStatement[]) => {
-          for (const statement of statements) await claim(queries.get(statement) ?? '');
-          return target.batch(statements);
+        return async (statements: Wrapped[]) => {
+          for (const statement of statements) await claim(statement[QUERY]);
+          return target.batch(statements.map((statement) => statement[REAL]));
         };
       }
       const value = Reflect.get(target, prop, target) as unknown;
