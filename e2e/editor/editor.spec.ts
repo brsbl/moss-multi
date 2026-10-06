@@ -548,6 +548,8 @@ test.describe('embeddable editor', () => {
     const out = viewport.frameLocator('iframe').locator('#out');
     await expect(out).toHaveText(/^ran: \d$/, { timeout: 10_000 });
     expect(await out.evaluate((el) => getComputedStyle(el).color)).toBe('rgb(10, 120, 30)');
+    await page.waitForTimeout(2_000);
+    expect(server.collector.hits).toEqual([]);
     // The host serves the frame document with editor.json's policy: inline scripts and styles, data: and blob:
     // images, and no network at all.
     const policy = framePolicy();
@@ -555,8 +557,6 @@ test.describe('embeddable editor', () => {
       "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'",
     );
     expect((await page.request.get(`${server.url}/editor/moss-html-frame.html`)).headers()['content-security-policy']).toBe(policy);
-    await page.waitForTimeout(2_000);
-    expect(server.collector.hits).toEqual([]);
     expect(seen.errors).toEqual([]);
     expect(await page.evaluate(() => window.editorFixture.violations)).toEqual([]);
   });
