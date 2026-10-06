@@ -6,7 +6,7 @@
 import { eq } from 'drizzle-orm';
 import { getServerByName } from 'partyserver';
 import {
-  CREATE_BODY_MAX_BYTES, DOC_CREATE_RATE, MARKDOWN_CAP_BYTES, REST_WRITE_RATE, VAULT_NOTE_CAP,
+  CREATE_BODY_MAX_BYTES, DOC_CREATE_RATE, MARKDOWN_CAP_BYTES, REST_WRITE_RATE, LIVE_NOTE_CAP,
 } from '@moss-multi/protocol/limits';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
 import type { AuthEnv } from '../auth/auth.ts';
@@ -52,7 +52,7 @@ const LIVE_NOTES = 'FROM docs WHERE folder_id IN (SELECT id FROM down) AND delet
 
 /**
  * Inserts the row only while its folder is still live in its vault (a trash may be under way) and the vault holds fewer
- * than VAULT_NOTE_CAP live notes, both in the one statement; null when the folder is gone, `full` at the cap.
+ * than LIVE_NOTE_CAP live notes, both in the one statement; null when the folder is gone, `full` at the cap.
  */
 async function insertDoc(env: DocsEnv, db: Db, row: { folderId: string; ownerUserId: string; createdBy: string }): Promise<DocRecord | 'full' | null> {
   const id = crypto.randomUUID();
@@ -61,16 +61,16 @@ async function insertDoc(env: DocsEnv, db: Db, row: { folderId: string; ownerUse
   const vault = await vaultOf(db, row.folderId);
   const inserted = await env.DB.prepare(`WITH RECURSIVE ${upFrom(1)}, ${downFrom(7)}
     INSERT INTO docs (id, owner_user_id, created_by, folder_id, title, filename, created_at, updated_at)
-    SELECT ?2, ?3, ?4, ?1, '', ?5, ?6, ?6 WHERE ${liveIn(7)} AND (SELECT count(*) ${LIVE_NOTES}) < ${VAULT_NOTE_CAP}`)
+    SELECT ?2, ?3, ?4, ?1, '', ?5, ?6, ?6 WHERE ${liveIn(7)} AND (SELECT count(*) ${LIVE_NOTES}) < ${LIVE_NOTE_CAP}`)
     .bind(row.folderId, id, row.ownerUserId, row.createdBy, doc.filename, now, vault).run();
   if ((inserted.meta?.changes ?? 0) > 0) return doc;
   const live = await env.DB.prepare(`WITH RECURSIVE ${downFrom(1)} SELECT count(*) AS n ${LIVE_NOTES}`)
     .bind(vault).first<{ n: number }>();
-  return (live?.n ?? 0) >= VAULT_NOTE_CAP ? 'full' : null;
+  return (live?.n ?? 0) >= LIVE_NOTE_CAP ? 'full' : null;
 }
 
 const vaultFull = () => refuse(409, 'vault-full',
-  `This vault holds ${VAULT_NOTE_CAP.toLocaleString('en-US')} notes, its limit. Move some to Trash or use another vault.`);
+  `This vault holds ${LIVE_NOTE_CAP.toLocaleString('en-US')} notes, its limit. Move some to Trash or use another vault.`);
 
 /** Seeds the DocDO through `run`; a failed seed deletes the row (doc-cap is 413), a seeded doc is 201 {doc, role}. */
 async function seeded(db: Db, doc: DocRecord, role: string, run: () => Promise<unknown>): Promise<Response> {

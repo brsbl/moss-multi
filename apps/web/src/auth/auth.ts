@@ -18,6 +18,8 @@ export const SIGN_UP_LIMIT = { window: 60, max: 10 };
 /** Sign-ups from one client address per day and to one email domain per hour, counted in D1 before better-auth. */
 export const SIGN_UP_ADDRESS_DAILY = { window: 24 * 60 * 60, max: 30 };
 export const SIGN_UP_DOMAIN_HOURLY = { window: 60 * 60, max: 50 };
+/** Closed sign-up windows each sign-up deletes, at most, so pruning stays a bounded indexed delete. */
+export const SIGN_UP_PRUNE_BATCH = 100;
 /** Device-code requests per address (each writes a row). The CLI asks once per login and then polls the token path. */
 export const DEVICE_CODE_LIMIT = { window: 60, max: 10 };
 const HOOK_STACK_LIMIT = { window: 60, max: 10_000 };

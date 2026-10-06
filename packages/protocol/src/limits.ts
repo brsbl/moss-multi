@@ -45,16 +45,19 @@ export const DOC_CREATE_DAILY = { max: 2_000, windowMs: DAY_MS } as const;
 /** The largest `POST /api/docs` body: 2 MB of markdown even if JSON escapes every byte (`\u00XX`), plus the fields. */
 export const CREATE_BODY_MAX_BYTES = MARKDOWN_CAP_BYTES * 6 + 64 * 1024;
 
-/** Live (untrashed) notes one vault holds, over all its folders; a create or duplicate past it is 409 (A§18). */
-export const VAULT_NOTE_CAP = 10_000;
+/**
+ * Live (untrashed) notes one acting user has created, wherever they are and their agents' included; a create or
+ * duplicate past it is 409 (A§18). Charged to the creator, never the vault, so a collaborator cannot fill an owner's.
+ */
+export const LIVE_NOTE_CAP = 10_000;
 
-/** Folders and vaults created in one owner's vaults per day, whoever creates them; 429 past it (A§18). */
+/** Folders and vaults one acting user (with their agents) creates per day, in any vault; 429 past it (A§18). */
 export const FOLDER_CREATE_DAILY = 1_000;
 
 /** Agent keys one person mints per day, revoked ones included; 429 past it (A§18). */
 export const AGENT_KEY_DAILY = 50;
 
-/** Share links made on one doc or folder per day, revoked ones included; 429 past it (A§18). */
+/** Share links one person makes per day, over every target, revoked ones included; 429 past it (A§18). */
 export const SHARE_LINK_DAILY = 50;
 
 /** Feedback messages one person sends per day; 429 past it (A§18). */

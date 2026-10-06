@@ -2,11 +2,11 @@
 // takes a token from the acting user's PrincipalDO before any D1 row, DocDO or media work, so one account, or its
 // agent keys between them, cannot mint docs without bound. Over the real PrincipalDO in the Node harness and D1.
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { DOC_CREATE_DAILY, DOC_CREATE_RATE, MARKDOWN_CAP_BYTES, VAULT_NOTE_CAP } from '@moss-multi/protocol/limits';
+import { DOC_CREATE_DAILY, DOC_CREATE_RATE, LIVE_NOTE_CAP, MARKDOWN_CAP_BYTES } from '@moss-multi/protocol/limits';
 import { PrincipalDO } from '../../../../packages/sync/src/principal-do.ts';
 import { Backing, FakeState } from '../../../../packages/sync/test/harness/workerd.ts';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
-import { agentKey, BASE, insertDoc, insertFolder, SECRET, signedUpUser, type TestUser } from '../test/principals.ts';
+import { agentKey, BASE, insertAgent, insertDoc, insertFolder, SECRET, signedUpUser, type TestUser } from '../test/principals.ts';
 import { handleApi } from './router.ts';
 
 const PNG = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 31, 21, 196, 137]);
@@ -219,37 +219,45 @@ describe('daily creation budget (T3.S3b)', () => {
   }, 120_000);
 });
 
-describe('live notes per vault (T3.S3b)', () => {
-  it('refuses a create or duplicate into a full vault with 409 and writes nothing; other vaults and trash free room', async () => {
-    const kim = await signedUpUser(env, 'vault-cap', 'Kim');
+describe('live notes per acting user (T3.S3b)', () => {
+  it('charges live notes to their creator: a collaborator at the cap is refused 409 and writes nothing, the vault owner is not', async () => {
+    const kim = await signedUpUser(env, 'live-owner', 'Kim');
+    const lee = await signedUpUser(env, 'live-editor', 'Lee');
+    // Lee edits Kim's Home vault and fills it with notes Lee created; trashed ones don't count.
+    await d1.db.prepare(`INSERT INTO folder_members (folder_id, principal_id, principal_type, role, added_by, created_at)
+      VALUES (?1, ?2, 'user', 'editor', ?3, ?4)`).bind(kim.homeId, lee.id, kim.id, Date.now()).run();
     const sub = await insertFolder(d1.db, kim, kim.homeId);
-    // VAULT_NOTE_CAP - 1 live notes over the vault's folders, and trashed ones, which don't count.
     const fill = (folder: string, prefix: string, n: number, deleted: number | null) => d1.db.prepare(`WITH RECURSIVE n(i) AS (
         SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?2)
       INSERT INTO docs (id, owner_user_id, created_by, folder_id, title, filename, created_at, updated_at, deleted_at)
-      SELECT ?1 || i, ?3, ?3, ?4, '', ?1 || i || '.md', 0, 0, ?5 FROM n`).bind(prefix, n, kim.id, folder, deleted).run();
-    const half = Math.floor(VAULT_NOTE_CAP / 2);
-    await fill(kim.homeId, `cap-a-${kim.id}-`, half, null);
-    await fill(sub, `cap-b-${kim.id}-`, VAULT_NOTE_CAP - 1 - half, null);
-    await fill(sub, `cap-t-${kim.id}-`, 5, 1);
-    const last = await create(kim, { title: 'The last one' });
+      SELECT ?1 || i, ?3, ?4, ?5, '', ?1 || i || '.md', 0, 0, ?6 FROM n`).bind(prefix, n, kim.id, lee.id, folder, deleted).run();
+    const half = Math.floor(LIVE_NOTE_CAP / 2);
+    await fill(kim.homeId, `cap-a-${lee.id}-`, half, null);
+    await fill(sub, `cap-b-${lee.id}-`, LIVE_NOTE_CAP - 1 - half, null);
+    await fill(sub, `cap-t-${lee.id}-`, 5, 1);
+    const last = await create(lee, { title: 'The last one', folderId: kim.homeId });
     expect(last.status, await last.clone().text()).toBe(201);
 
-    const rows = await docsBy(kim);
+    const leeAgent = await insertAgent(d1.db, lee);
+    const byLee = () => count('SELECT COUNT(*) AS n FROM docs WHERE created_by IN (?1, ?2)', lee.id, leeAgent.id);
+    const rows = await byLee();
     const seeds = seededDocs.length;
     const addressedBefore = addressed.length;
-    const full = await create(kim, { title: 'One too many', folderId: sub });
+    const full = await create(lee, { title: 'One too many', folderId: sub });
     expect(full.status, await full.clone().text()).toBe(409);
-    expect(((await full.json()) as { error: string }).error).toBe('vault-full');
+    expect(((await full.json()) as { error: string }).error).toBe('note-cap');
     expect(addressed.length, 'no DocDO addressed').toBe(addressedBefore);
-    const copied = await duplicate(kim, `cap-a-${kim.id}-1`);
-    expect(copied.status, await copied.clone().text()).toBe(409);
-    expect(await docsBy(kim), 'doc rows').toBe(rows);
+    expect((await duplicate(lee, `cap-a-${lee.id}-1`)).status, 'a duplicate').toBe(409);
+    expect((await create({ bearer: leeAgent.key }, { folderId: kim.homeId })).status, 'Lee’s agent counts against Lee').toBe(409);
+    expect((await create(lee)).status, 'in Lee’s own vault too').toBe(409);
+    expect(await byLee(), 'doc rows').toBe(rows);
     expect(seededDocs.length, 'no DocDO seeded').toBe(seeds);
 
-    const other = await insertFolder(d1.db, kim, null);
-    expect((await create(kim, { folderId: other })).status, 'another vault has its own room').toBe(201);
-    await d1.db.prepare('UPDATE docs SET deleted_at = 1 WHERE id = ?1').bind(`cap-a-${kim.id}-2`).run();
-    expect((await create(kim, { title: 'After a trash' })).status).toBe(201);
+    // The vault's owner still creates and duplicates in it.
+    expect((await create(kim, { title: 'Mine', folderId: sub })).status, 'the owner creates').toBe(201);
+    expect((await duplicate(kim, `cap-a-${lee.id}-1`)).status, 'the owner duplicates').toBe(201);
+    // A trash frees room for Lee.
+    await d1.db.prepare('UPDATE docs SET deleted_at = 1 WHERE id = ?1').bind(`cap-a-${lee.id}-2`).run();
+    expect((await create(lee, { title: 'After a trash' })).status).toBe(201);
   }, 120_000);
 });
