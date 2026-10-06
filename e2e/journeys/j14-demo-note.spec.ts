@@ -263,3 +263,48 @@ test('j14 demo note: concurrent chart and canvas edits keep both authors live an
     return { type: state.type, palette: state.palette, values: state.values, strokes: both(state.cells) };
   }, { message: 'both authors survive a reload', timeout: PEER_TIMEOUT }).toEqual({ type: 'line', palette: 'accessible', values: [30, 50], strokes: true });
 });
+
+test("j14 demo note: a chart and a canvas whose payloads have not arrived take no edits, then keep Ben's edits @p:col-1 @p:note-2", async ({ actors, stack }) => {
+  const ada = await actors.session(await actors.principal('ada'));
+  const created = await ada.context.request.post('/api/docs', { headers: { origin: stack.baseUrl }, data: { title: 'Late payloads', markdown: SETUP } });
+  expect(created.status()).toBe(201);
+  const { doc: { id } } = await created.json() as { doc: { id: string } };
+  await ada.goto(`/d/${id}`);
+  await ui.waitLive(ada, id);
+  const seeded = (await payloads(ada, id)).cells;
+  const benPrincipal = await actors.principal('ben');
+  await grantDoc(ada, id, benPrincipal, 'editor');
+  const ben = await actors.session(benPrincipal, { severable: true });
+  if (!ben.sever) throw new Error('Ben must be severable');
+  ben.sever.holdPayloads();
+  await ben.goto(`/d/${id}`);
+  await ui.waitLive(ben, id);
+  const body = ui.body(ben, id);
+  const canvas = body.locator('canvas');
+  const done = body.locator('button:has(svg.lucide-check)');
+  await expect(canvas).toBeVisible();
+  // Until the payloads arrive there is nothing to write against: no drawing mode, no Draw, no chart controls.
+  await expect(done, 'the canvas does not open for drawing').toHaveCount(0);
+  await expect(body.getByRole('button', { name: 'Draw', exact: true })).toHaveCount(0);
+  await expect(chartBlock(ben, id).getByRole('button', { name: 'Edit', exact: true })).toHaveCount(0);
+  await stroke(ben.page, canvas, 20, 10, 30);
+  ben.sever.releasePayloads();
+  await expect.poll(() => payloads(ben, id), { message: 'the payloads arrive', timeout: PEER_TIMEOUT }).toEqual({ type: 'bar', palette: null, values: [3, 5], cells: seeded });
+  await expect(done, 'the arrived canvas stays closed').toHaveCount(0);
+  await body.getByRole('button', { name: 'Draw', exact: true }).click();
+  await stroke(ben.page, canvas, 20, 10, 30);
+  await done.click();
+  const save = await openJson(ben, id);
+  await save(1, 50);
+  const state = async (actor: Actor) => {
+    const { cells, ...rest } = await payloads(actor, id);
+    return { ...rest, stroke: seeded.every(cell => cells.includes(cell)) && [10, 20, 30].every(col => cells.includes(20 * 120 + col)) };
+  };
+  const want = { type: 'bar', palette: null, values: [3, 50], stroke: true };
+  for (const actor of [ada, ben]) await expect.poll(() => state(actor), { message: `${actor.label}: Ben's stroke and value land`, timeout: PEER_TIMEOUT }).toEqual(want);
+  await expect(ui.pane(ben, id)).toHaveAttribute('data-sync-unacked', '0', { timeout: PEER_TIMEOUT });
+  await ben.page.reload();
+  await ui.waitLive(ben, id);
+  await ben.declareRemount(id);
+  await expect.poll(() => state(ben), { message: "Ben's edits survive a reload", timeout: PEER_TIMEOUT }).toEqual(want);
+});

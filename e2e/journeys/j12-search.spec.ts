@@ -156,3 +156,23 @@ test('j12-search: wiki links resolve by title and stem, an unresolved one shows 
   await backlinks(benActor);
   await expect(benActor.page.getByRole('button', { name: sourceTitle }), "Ben's panel shows no backlink").toHaveCount(0);
 });
+
+test('j12-search: an edit only inside a code block reaches the index without another note edit @p:note-7', async ({ actors, stack }) => {
+  const ada = await actors.session(await actors.principal('ada'));
+  const first = `ibis${token()}`;
+  const created = await ada.context.request.post('/api/docs', { headers: { origin: stack.baseUrl }, data: { title: `Snippets ${token()}`, markdown: `Intro ${first}.\n\n\`\`\`js\nseed\n\`\`\`` } });
+  expect(created.status()).toBe(201);
+  const { doc: { id } } = await created.json() as { doc: { id: string } };
+  await ada.goto(`/d/${id}`);
+  await ui.waitLive(ada, id);
+  await indexed(ada, first, id);
+  await ui.body(ada, id).locator('.moss-codeblock-pre').click();
+  const field = ui.body(ada, id).getByPlaceholder('Enter code...');
+  await expect(field).toHaveJSProperty('readOnly', false, { timeout: BIND_TIMEOUT });
+  await field.press('ControlOrMeta+End');
+  const word = `narwhal${token()}`;
+  await ada.page.keyboard.type(` ${word}`);
+  await expect(field).toHaveValue(`seed ${word}`);
+  await acked(ada, id);
+  await indexed(ada, word, id);
+});
