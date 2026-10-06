@@ -5,7 +5,8 @@
 // pane binds (the file-backed editor bundle) takes moss's own path.
 import { LexicalComposer } from '@lexical/react/LexicalComposer';
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
-import { createEditor, type LexicalEditor } from 'lexical';
+import { EXCLUDED_FIELDS } from '@moss-multi/sync/excluded-properties';
+import { createEditor, DecoratorNode, type Klass, type LexicalEditor, type LexicalNode, type NodeKey } from 'lexical';
 import { act, createElement, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { expect, it } from 'vitest';
@@ -29,12 +30,26 @@ function Watch({ docId }: { docId: string }): null {
   return null;
 }
 
+/** A stand-in for each moss node type the binding's exclusions name; the pane checks the editor registers them. */
+function stub(type: string): Klass<LexicalNode> {
+  return class extends DecoratorNode<null> {
+    static override getType(): string { return type; }
+    static override clone(node: LexicalNode): LexicalNode { return new this(node.getKey()); }
+    static override importJSON(): LexicalNode { return new this(); }
+    constructor(key?: NodeKey) { super(key); }
+    override createDOM(): HTMLElement { return document.createElement('div'); }
+    override updateDOM(): boolean { return false; }
+    override decorate(): null { return null; }
+  };
+}
+const NODES = Object.keys(EXCLUDED_FIELDS).map(stub);
+
 /** A pane with no content editable: the editor has no root, so the collaboration plugin never mounts. */
 function Pane({ docId }: { docId: string }): ReactNode {
   const pane = useMossMultiPane({ id: docId });
   return createElement(
     LexicalComposer,
-    { initialConfig: { namespace: 'shared-mode', onError: (error: Error) => { throw error; } } },
+    { initialConfig: { namespace: 'shared-mode', nodes: NODES, onError: (error: Error) => { throw error; } } },
     pane.collaboration?.plugin,
     createElement(Capture),
     createElement(Watch, { docId }),
