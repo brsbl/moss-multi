@@ -184,6 +184,7 @@ const FORGED: [string, (server: Y.Doc, payloads: Map<string, Uint8Array>) => Uin
   }))],
   ['a recursive delete of a block', (server) => forge(server, (doc) => root(doc).delete(0, 1))],
   ['an edit to an original payload', (server, payloads) => forgePayload(payloads.get(codeId(server))!, codeId(server), (text) => text.insert(0, 'forged '))],
+  ['a payload frame for a fresh payload no element names', () => forgePayload(Y.encodeStateAsUpdate(new Y.Doc()), 'unnamed-fresh', (text) => text.insert(0, 'hidden'))],
   ['a fresh decorator aliasing an existing payload', (server) => forge(server, (doc) => paragraphNaming(doc, codeId(server)))],
   ["a payload update outside the record's leases", (server, payloads) =>
     forgePayload(payloads.get(codeId(server))!, codeId(server), (text) => text.insert(0, 'x'), helloItem(server).id.client)],

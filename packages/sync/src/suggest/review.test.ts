@@ -426,6 +426,40 @@ describe('T5.0 the projection a reviewer sees @p:mean-2', () => {
     }
   });
 
+  it('a payload op no element names is shown in the preview and lands only as shown', () => {
+    const { live, suggest, accept, dispose } = setup();
+    try {
+      suggest('r1', [() => select('Hello', 24).insertText(' More.')]);
+      const [lease] = readMeta(live, 'r1')!.clients;
+      live.transact(() => opsOf(live, 'r1').push([payloadOp(live, 'unnamed-fresh', (text) => text.insert(0, 'hidden'), lease)]), SUGGESTIONS_ORIGIN);
+      const preview = previewRecord(live, 'r1');
+      if (!preview.ok) throw new Error(preview.reason);
+      expect(preview.hunks.find((hunk) => hunk.kind === 'payload' && hunk.id === 'unnamed-fresh')).toMatchObject({ op: 'added', after: { text: 'hidden' } });
+      expect(accept('r1')).toEqual({ ok: true });
+      expect(payloadDocsFor(live).get('unnamed-fresh')?.getText('payload').toString()).toBe('hidden');
+    } finally {
+      dispose();
+    }
+  });
+
+  it("a payload edit whose decorator the record removes shows the payload's new text", () => {
+    const { live, suggest, accept, dispose } = setup();
+    try {
+      const { key } = codeDecorator(live);
+      suggest('r1', [() => codeBlock().setCode('replaced'), () => codeBlock().remove()]);
+      expect(readRecord(live, 'r1')!.ops.some((op) => op.doc === key), 'the record edits the payload').toBe(true);
+      const preview = previewRecord(live, 'r1');
+      if (!preview.ok) throw new Error(preview.reason);
+      expect(preview.hunks.find((hunk) => hunk.kind === 'payload' && hunk.id === key)).toMatchObject({
+        op: 'changed', before: { text: 'seed' }, after: { text: 'replaced' },
+      });
+      expect(accept('r1')).toEqual({ ok: true });
+      expect(payloadDocsFor(live).get(key)!.getText('payload').toString()).toBe('replaced');
+    } finally {
+      dispose();
+    }
+  });
+
   it('a stale preview hash is refused 409 changed, with nothing applied', () => {
     const { live, suggest, dispose } = setup();
     try {
