@@ -214,7 +214,12 @@ describe('T5.2 ingest: leases and suggest-ops @p:mean-2', () => {
     expect(ingest.placedRecords).toBe(0);
     // Accept drops them too.
     const c = leaseOne(ingest, sam());
-    expect(ingest.ops(sam(), c.record, frame(live, c.client, (doc) => firstBlock(doc).insert(0, 'C ')))).toMatchObject({ ok: true });
+    const fork = new ForkShim(live, c.client);
+    try {
+      for (const op of fork.act(() => select('Hello', 24).insertText(' C'))) expect(ingest.ops(sam(), c.record, op)).toMatchObject({ ok: true });
+    } finally {
+      fork.dispose();
+    }
     expect(ingest.placedRecords).toBe(1);
     expect(accept(live, c.record)).toEqual({ ok: true });
     expect(ingest.placedRecords).toBe(0);
