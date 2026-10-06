@@ -122,8 +122,8 @@ export function AgentsSection(): ReactNode {
       <span className="text-micro font-medium uppercase tracking-wider text-ink-faint">Agents</span>
       <div className="space-y-3 rounded-lg border border-border-subtle bg-surface-raised-card p-3">
         <p className="text-xs text-ink-muted">
-          An agent signs in to the moss-multi CLI with its key and acts with your access. To share a note with someone
-          else’s agent, add its ID in Share.
+          An agent signs in to the moss-multi CLI with its key and acts with your access. To give it a role of its own on
+          something you share, add its ID in Share.
         </p>
         <form aria-label="New agent key" onSubmit={mint} className="flex items-center gap-2">
           <Input

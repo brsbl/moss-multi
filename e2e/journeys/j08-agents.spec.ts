@@ -1,8 +1,8 @@
 // j08-agents (T3.6): agents as collaborators. Ada mints an agent key in Settings → Agents; it is shown once, and the
 // agent's row offers its id to copy. The key works as a raw bearer; revoking it refuses the next request with 401 and
-// closes the agent's live doc socket. Ben shares a note with Ada's agent by its id, and it is listed as an "agent" row
-// at its role. The CLI's device flow: opening /device with the terminal's code shows it, and approving signs the
-// terminal in as Ada.
+// closes the agent's live doc socket. Ben shares a note with his own agent by its id, and it is listed as an "agent"
+// row at its role; Ada's agent id gets the unknown-id refusal (PRODUCT ruling 20). The CLI's device flow: opening
+// /device with the terminal's code shows it, and approving signs the terminal in as Ada.
 import type { Locator } from '@playwright/test';
 import WebSocket from 'ws';
 import type { Actor, Actors } from '../lib/actors.ts';
@@ -83,20 +83,31 @@ test('j08-agents keys: a minted key is shown once; revoking it 401s a raw bearer
   live.socket.terminate();
 });
 
-test('j08-agents share: Ben adds Ada\'s agent by its id and it appears as an "agent" row at its role @p:ppl-2 @evidence', async ({ actors, stack }) => {
+test('j08-agents share: Ben adds his own agent by its id and it appears as an "agent" row at its role; Ada\'s agent id is refused like an unknown one @p:ppl-2 @evidence', async ({ actors, stack }) => {
   const ada = await openShell(actors, 'ada');
-  // Declared setup: Ada's agent, minted through the API (the Settings flow is the leg above).
-  const minted = await ada.context.request.post('/api/agents', { headers: { origin: stack.baseUrl }, data: { name: 'Scribe' } });
-  expect(minted.status(), 'declared setup: an agent').toBe(201);
-  const { agent, key } = (await minted.json()) as { agent: { id: string }; key: string };
-
   const ben = await openShell(actors, 'ben');
   await actors.requireDistinct(2);
+  // Declared setup: one agent each, minted through the API (the Settings flow is the leg above).
+  const mintFor = async (actor: Actor, name: string) => {
+    const minted = await actor.context.request.post('/api/agents', { headers: { origin: stack.baseUrl }, data: { name } });
+    expect(minted.status(), `declared setup: ${actor.label}'s agent`).toBe(201);
+    return (await minted.json()) as { agent: { id: string }; key: string };
+  };
+  const adas = await mintFor(ada, 'Courier');
+  const { agent, key } = await mintFor(ben, 'Scribe');
+
   const docId = await ui.createNote(ben);
   const dialog = await ui.openShare(ben, docId);
+  // PRODUCT ruling 20: an agent id is a label, never consent; someone else's agent is refused as an unknown id is.
+  ben.expectHttp(404, `/api/docs/${docId}/members`);
+  await dialog.getByLabel('Email or agent ID', { exact: true }).fill(adas.agent.id);
+  await dialog.getByRole('button', { name: 'Share', exact: true }).click();
+  await expect(dialog.getByRole('alert'), 'Ada\'s agent is refused').toHaveText('You have no agent with that ID. Copy it from your agent’s row in Settings → Agents.');
+  await expect(dialog.getByRole('list', { name: 'People with access' }).getByRole('listitem').filter({ hasText: 'Courier' }), 'and not listed').toHaveCount(0);
+
   await ui.shareInDialog(dialog, agent.id, 'Can comment', 'Shared with Scribe.');
   const row = dialog.getByRole('list', { name: 'People with access' }).getByRole('listitem').filter({ hasText: 'Scribe' });
-  await expect(row, 'the agent is listed').toHaveCount(1);
+  await expect(row, 'his agent is listed').toHaveCount(1);
   await expect(row.getByText('agent', { exact: true }), 'tagged as an agent').toBeVisible();
   const select = row.getByRole('combobox', { name: 'Access for Scribe', exact: true });
   await expect(select, 'at the role Ben chose').toHaveValue('commenter');
@@ -104,8 +115,9 @@ test('j08-agents share: Ben adds Ada\'s agent by its id and it appears as an "ag
   await actors.checkpoint('agent-row');
 
   const access = await fetch(`${stack.baseUrl}/api/docs/${docId}/access`, { headers: { authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(10_000) });
-  expect(access.status, 'the agent can open the note').toBe(200);
-  expect(await access.json(), 'at that role').toMatchObject({ role: 'commenter' });
+  expect(access.status, 'his agent can open the note').toBe(200);
+  const refused = await fetch(`${stack.baseUrl}/api/docs/${docId}/access`, { headers: { authorization: `Bearer ${adas.key}` }, signal: AbortSignal.timeout(10_000) });
+  expect(refused.status, 'Ada\'s agent cannot').toBe(404);
 });
 
 test('j08-agents device: opening /device with the terminal\'s code shows it, and approving signs the terminal in @p:ppl-1 @evidence', async ({ actors, stack }) => {

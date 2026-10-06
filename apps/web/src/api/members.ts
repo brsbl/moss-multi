@@ -187,22 +187,24 @@ async function share(env: MembersEnv, target: MemberTarget, ownerUserId: string,
 }
 
 const AGENT_ROLE_CAP = 'An agent can have at most edit access.';
+const AGENT_NOT_FOUND = 'You have no agent with that ID. Copy it from your agent’s row in Settings → Agents.';
 
 /**
- * Shares the target with an agent by its id (A§8): a direct grant, since the id is copied from the agent's row in its
- * owner's Settings, never guessed from an address. An agent acts at most as an editor. A new grant answers 201, a
- * repeat or raise 200, a lowering 409 (as for an invite), and an unknown or revoked id one 404. The write re-checks that
- * the caller still manages the live target and that the agent is still live.
+ * Shares the target with one of the caller's own agents by its id (A§8; PRODUCT ruling 20: an id is a label, never
+ * consent, so another person's agent, a co-owner's included, gets the 404 an unknown or revoked id gets). An agent acts
+ * at most as an editor. A new grant answers 201, a repeat or raise 200, a lowering 409 (as for an invite). The write
+ * re-checks that the caller still manages the live target and still owns the live agent.
  */
 async function shareAgent(env: MembersEnv, target: MemberTarget, caller: Principal, agentId: string, body: Record<string, unknown>): Promise<Response> {
   if (!isShareRole(body.role)) return refuse(400, 'bad-request', 'Choose view, comment, edit or owner access.');
   const role = body.role;
   if (role === 'owner') return refuse(400, 'bad-request', AGENT_ROLE_CAP);
-  const agent = await env.DB.prepare('SELECT id, name FROM agents WHERE id = ?1 AND revoked_at IS NULL').bind(agentId).first<{ id: string; name: string }>();
-  if (!agent) return refuse(404, 'agent-not-found', 'No agent has that ID. Copy it from the agent’s row in Settings → Agents.');
-  const [table, column] = grantTable(target.type);
   const callerId = managerId(caller);
-  const liveAgent = 'EXISTS (SELECT 1 FROM agents WHERE id = ?2 AND revoked_at IS NULL)';
+  const agent = await env.DB.prepare('SELECT id, name FROM agents WHERE id = ?1 AND owner_user_id = ?2 AND revoked_at IS NULL')
+    .bind(agentId, callerId).first<{ id: string; name: string }>();
+  if (!agent) return refuse(404, 'agent-not-found', AGENT_NOT_FOUND);
+  const [table, column] = grantTable(target.type);
+  const liveAgent = 'EXISTS (SELECT 1 FROM agents WHERE id = ?2 AND owner_user_id = ?4 AND revoked_at IS NULL)';
   const [inserted, raised] = await env.DB.batch([
     env.DB.prepare(`INSERT INTO ${table} (${column}, principal_id, principal_type, role, added_by, created_at)
         SELECT ?1, ?2, 'agent', ?3, ?4, ?5 WHERE ${liveAndManaged(target.type, 1, 4)} AND ${liveAgent}
@@ -215,7 +217,7 @@ async function shareAgent(env: MembersEnv, target: MemberTarget, caller: Princip
   if (changed(raised)) return json({ shared }, 200, NO_STORE);
   if (!await managesLive(env.DB, target.type, target.id, callerId)) return notFound();
   const [grant] = await grantRows(createDb(env.DB), target, agent.id);
-  if (!grant) return refuse(404, 'agent-not-found', 'No agent has that ID. Copy it from the agent’s row in Settings → Agents.');
+  if (!grant) return refuse(404, 'agent-not-found', AGENT_NOT_FOUND);
   if (lower(role, grant.role)) {
     return refuse(409, 'demotion-unavailable', `${agent.name} already has more access. To lower it, change it under People with access.`);
   }

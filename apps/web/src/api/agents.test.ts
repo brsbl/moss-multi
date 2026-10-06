@@ -4,7 +4,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { AGENT_KEY_PREFIX, sha256Hex } from '../auth/principal.ts';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
-import { BASE, insertAgent, insertDoc, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
+import { BASE, insertDoc, insertFolder, insertGrant, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
 import { handleApi } from './router.ts';
 
 const revoked: string[] = [];
@@ -31,17 +31,59 @@ let d1: TestD1;
 let env: AuthTestEnv & Parameters<typeof handleApi>[1];
 let ada: TestUser;
 let ben: TestUser;
+let cy: TestUser;
+
+/** While set, runs once just before the first statement (or batch holding one) matching `sql`: a write landing then. */
+let race: { sql: RegExp; run: () => Promise<unknown> } | null = null;
+
+/** D1 as the routes see it, with `race` run ahead of the batch holding the statement it matches. */
+function racingDb(db: D1Database): D1Database {
+  const queries = new WeakMap<D1PreparedStatement, string>();
+  const claim = async (query: string) => {
+    const hook = race;
+    if (!hook?.sql.test(query)) return;
+    race = null;
+    await hook.run();
+  };
+  return new Proxy(db, {
+    get(target, prop) {
+      if (prop === 'prepare') {
+        return (query: string) => {
+          const statement = target.prepare(query);
+          const bind = statement.bind.bind(statement);
+          statement.bind = (...args: unknown[]) => {
+            const bound = bind(...args);
+            queries.set(bound, query);
+            return bound;
+          };
+          queries.set(statement, query);
+          return statement;
+        };
+      }
+      if (prop === 'batch') {
+        return async (statements: D1PreparedStatement[]) => {
+          for (const statement of statements) await claim(queries.get(statement) ?? '');
+          return target.batch(statements);
+        };
+      }
+      const value = Reflect.get(target, prop, target) as unknown;
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+}
 
 beforeAll(async () => {
   d1 = await migratedD1();
-  env = { DB: d1.db, BETTER_AUTH_SECRET: SECRET, BETTER_AUTH_URL: BASE, DocDO: DocDO as never, PrincipalDO: PrincipalDO as never };
+  env = { DB: racingDb(d1.db), BETTER_AUTH_SECRET: SECRET, BETTER_AUTH_URL: BASE, DocDO: DocDO as never, PrincipalDO: PrincipalDO as never };
   ada = await signedUpUser(env, 'agents-ada', 'Ada');
   ben = await signedUpUser(env, 'agents-ben', 'Ben');
+  cy = await signedUpUser(env, 'agents-cy', 'Cy');
 }, 60_000);
 afterAll(() => d1?.dispose());
 beforeEach(() => {
   revoked.length = 0;
   revokeFails = false;
+  race = null;
 });
 
 type Credential = { cookie: string } | { bearer: string } | null;
@@ -162,47 +204,69 @@ describe('revoking', () => {
 
 describe('sharing with an agent by id', () => {
   interface Listed { members: { principalId: string; principalType: string; name: string; role: string }[] }
+  const members = (target: string) => `/api/${target}/members`;
 
-  it('grants the agent directly, and lists it as an agent row at its role', async () => {
+  it('grants the caller’s own agent directly, and lists it as an agent row at its role', async () => {
     const docId = await insertDoc(d1.db, ben);
-    const { agent, key } = await mint(ada, 'Scribe');
-    expect((await call('GET', `/api/docs/${docId}/access`, { bearer: key })).status).toBe(404);
-    const shared = await call('POST', `/api/docs/${docId}/members`, { cookie: ben.cookie }, { agentId: agent.id, role: 'commenter' });
+    const { agent, key } = await mint(ben, 'Scribe');
+    const shared = await call('POST', members(`docs/${docId}`), { cookie: ben.cookie }, { agentId: agent.id, role: 'commenter' });
     expect(shared.status).toBe(201);
     expect(await shared.json()).toMatchObject({ shared: { agentId: agent.id, name: 'Scribe', role: 'commenter' } });
-    const listed = (await (await call('GET', `/api/docs/${docId}/members`, { cookie: ben.cookie })).json()) as Listed;
+    const listed = (await (await call('GET', members(`docs/${docId}`), { cookie: ben.cookie })).json()) as Listed;
     expect(listed.members).toContainEqual({ principalId: agent.id, principalType: 'agent', name: 'Scribe', role: 'commenter' });
-    const access = await call('GET', `/api/docs/${docId}/access`, { bearer: key });
-    expect(access.status).toBe(200);
-    expect(await access.json()).toMatchObject({ role: 'commenter' });
     // A repeat or a raise answers 200; a lowering is refused here, as for an invite.
-    expect((await call('POST', `/api/docs/${docId}/members`, { cookie: ben.cookie }, { agentId: agent.id, role: 'editor' })).status).toBe(200);
-    expect((await call('POST', `/api/docs/${docId}/members`, { cookie: ben.cookie }, { agentId: agent.id, role: 'viewer' })).status).toBe(409);
+    expect((await call('POST', members(`docs/${docId}`), { cookie: ben.cookie }, { agentId: agent.id, role: 'editor' })).status).toBe(200);
+    expect((await call('POST', members(`docs/${docId}`), { cookie: ben.cookie }, { agentId: agent.id, role: 'viewer' })).status).toBe(409);
+    expect((await call('GET', `/api/docs/${docId}/access`, { bearer: key })).status).toBe(200);
   });
 
   it('never makes an agent an owner', async () => {
     const docId = await insertDoc(d1.db, ben);
-    const { agent } = await mint(ada);
-    expect((await call('POST', `/api/docs/${docId}/members`, { cookie: ben.cookie }, { agentId: agent.id, role: 'owner' })).status).toBe(400);
-    expect((await call('POST', `/api/docs/${docId}/members`, { cookie: ben.cookie }, { agentId: agent.id, role: 'editor' })).status).toBe(201);
-    expect((await call('PATCH', `/api/docs/${docId}/members`, { cookie: ben.cookie }, { principalId: agent.id, role: 'owner' })).status).toBe(400);
+    const { agent } = await mint(ben);
+    expect((await call('POST', members(`docs/${docId}`), { cookie: ben.cookie }, { agentId: agent.id, role: 'owner' })).status).toBe(400);
+    expect((await call('POST', members(`docs/${docId}`), { cookie: ben.cookie }, { agentId: agent.id, role: 'editor' })).status).toBe(201);
+    expect((await call('PATCH', members(`docs/${docId}`), { cookie: ben.cookie }, { principalId: agent.id, role: 'owner' })).status).toBe(400);
   });
 
-  it('answers a revoked or unknown agent id alike, and grants nothing', async () => {
+  // PRODUCT ruling 20: an agent id is a label, never consent.
+  for (const kind of ['doc', 'folder'] as const) {
+    it(`answers another person’s agent, a co-owner’s, a revoked one and an unknown id alike on a ${kind}, granting nothing`, async () => {
+      const targetId = kind === 'doc' ? await insertDoc(d1.db, ben) : await insertFolder(d1.db, ben, ben.homeId);
+      const path = members(`${kind === 'doc' ? 'docs' : 'folders'}/${targetId}`);
+      const table = kind === 'doc' ? 'doc_members' : 'folder_members';
+      const column = kind === 'doc' ? 'doc_id' : 'folder_id';
+      // Cy co-owns the vault the target sits in.
+      await insertGrant(d1.db, { folderId: ben.homeId }, { id: cy.id }, 'owner');
+      const adas = await mint(ada, 'Adas');
+      const cys = await mint(cy, 'Cys');
+      const gone = await mint(ben, 'Gone');
+      await call('DELETE', `/api/agents/${gone.agent.id}`, { cookie: ben.cookie });
+      const answers = await Promise.all([adas.agent.id, cys.agent.id, gone.agent.id, crypto.randomUUID()].map(async (agentId) => {
+        const response = await call('POST', path, { cookie: ben.cookie }, { agentId, role: 'viewer' });
+        return { status: response.status, body: await response.text() };
+      }));
+      expect(answers.map((a) => a.status)).toEqual([404, 404, 404, 404]);
+      expect(new Set(answers.map((a) => a.body)).size).toBe(1);
+      const agentRows = await d1.db.prepare(`SELECT count(*) AS n FROM ${table} WHERE ${column} = ? AND principal_type = 'agent'`).bind(targetId).first<{ n: number }>();
+      expect(agentRows?.n).toBe(0);
+      if (kind === 'doc') expect((await call('GET', `/api/docs/${targetId}/access`, { bearer: adas.key })).status).toBe(404);
+      await d1.db.prepare('DELETE FROM folder_members WHERE folder_id = ? AND principal_id = ?').bind(ben.homeId, cy.id).run();
+    });
+  }
+
+  it('refuses in the guarded write when the agent changes hands between the read and the write', async () => {
     const docId = await insertDoc(d1.db, ben);
-    const gone = await insertAgent(d1.db, ada);
-    await d1.db.prepare('UPDATE agents SET revoked_at = ? WHERE id = ?').bind(Date.now(), gone.id).run();
-    const revokedAnswer = await call('POST', `/api/docs/${docId}/members`, { cookie: ben.cookie }, { agentId: gone.id, role: 'viewer' });
-    const unknownAnswer = await call('POST', `/api/docs/${docId}/members`, { cookie: ben.cookie }, { agentId: crypto.randomUUID(), role: 'viewer' });
-    expect(revokedAnswer.status).toBe(404);
-    expect(await revokedAnswer.text()).toBe(await unknownAnswer.text());
+    const { agent } = await mint(ben, 'Moved');
+    race = { sql: /^\s*INSERT INTO doc_members/, run: () => d1.db.prepare('UPDATE agents SET owner_user_id = ? WHERE id = ?').bind(ada.id, agent.id).run() };
+    const response = await call('POST', members(`docs/${docId}`), { cookie: ben.cookie }, { agentId: agent.id, role: 'viewer' });
+    expect(response.status).toBe(404);
     const rows = await d1.db.prepare('SELECT count(*) AS n FROM doc_members WHERE doc_id = ?').bind(docId).first<{ n: number }>();
     expect(rows?.n).toBe(0);
   });
 
-  it('lets only the owner add an agent', async () => {
+  it('lets only the target’s owner add an agent', async () => {
     const docId = await insertDoc(d1.db, ben);
     const { agent } = await mint(ada);
-    expect((await call('POST', `/api/docs/${docId}/members`, { cookie: ada.cookie }, { agentId: agent.id, role: 'viewer' })).status).toBe(404);
+    expect((await call('POST', members(`docs/${docId}`), { cookie: ada.cookie }, { agentId: agent.id, role: 'viewer' })).status).toBe(404);
   });
 });

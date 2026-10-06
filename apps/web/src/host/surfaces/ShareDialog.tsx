@@ -1,5 +1,6 @@
 // Share, v2 (T1.1, T2.4, T3.6): one dialog for a note, a folder or a vault. An owner adds a person by email at view,
-// comment, edit or owner access, or an agent by the id its owner copies from Settings → Agents (at most edit), sees who has access (and emails waiting on an invite), and creates, copies and
+// comment, edit or owner access, or one of their own agents by the id copied from Settings → Agents (at most edit;
+// PRODUCT ruling 20), sees who has access (and emails waiting on an invite), and creates, copies and
 // revokes links. Moss has no sharing, so the layout follows glyphdown's ShareDialog
 // (docs/design/glyphdown-reference.md), built from moss's own parts: Settings' ModalShell, section labels and cards,
 // its segmented choice for access levels, and the DS Input and Button. The note's top bar (ShareControl), a folder's
@@ -151,7 +152,7 @@ function copy(text: string): Promise<void> {
 }
 
 function titles(target: ShareTarget): { title: string; description: string } {
-  if (target.type === 'doc') return { title: 'Share', description: 'Share this note with people by email, with an agent by its ID, or with anyone who has a link.' };
+  if (target.type === 'doc') return { title: 'Share', description: 'Share this note with people by email, with one of your agents by its ID, or with anyone who has a link.' };
   if (target.vault) return { title: 'Share vault', description: `Share every note in “${target.name}” with people by email, or with anyone who has a link.` };
   return { title: 'Share folder', description: `Share every note in “${target.name}” with people by email, or with anyone who has a link.` };
 }
@@ -225,7 +226,7 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
       setStatus({ tone: 'error', text: 'Enter an email address or an agent ID.', where: 'people' });
       return;
     }
-    // An email has an @; anything else is an agent id, copied from its owner's Settings → Agents.
+    // An email has an @; anything else is the id of one of the caller's agents, copied from Settings → Agents.
     if (!address.includes('@')) {
       if (access === 'owner') {
         setStatus({ tone: 'error', text: 'An agent can have at most edit access.', where: 'people' });
@@ -308,7 +309,7 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
           <Input
             type="text"
             aria-label="Email or agent ID"
-            placeholder="name@example.com or an agent ID"
+            placeholder="name@example.com or your agent’s ID"
             autoComplete="off"
             value={email}
             readOnly={pending}
