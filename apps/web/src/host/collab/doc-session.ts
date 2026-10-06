@@ -153,7 +153,7 @@ function closeNormally(provider: YProvider, held: () => boolean): void {
 const shareToken = (): string | null => new URLSearchParams(window.location.search).get('share');
 
 type AccessAnswer =
-  | { kind: 'role'; canWrite: boolean }
+  | { kind: 'role'; canWrite: boolean; canSuggest: boolean }
   | { kind: 'deleted' }
   | { kind: 'gone' }
   | { kind: 'signed-out' }
@@ -175,7 +175,9 @@ async function askAccess(docId: string): Promise<AccessAnswer> {
     if (!response.ok) return { kind: 'unknown' };
     const body = (await response.json()) as { role?: unknown; deleted?: unknown };
     if (body.deleted === true) return { kind: 'deleted' };
-    return isRole(body.role) ? { kind: 'role', canWrite: roleAtLeast(body.role, 'editor') } : { kind: 'unknown' };
+    return isRole(body.role)
+      ? { kind: 'role', canWrite: roleAtLeast(body.role, 'editor'), canSuggest: roleAtLeast(body.role, 'suggester') }
+      : { kind: 'unknown' };
   } catch {
     return { kind: 'unknown' };
   }
@@ -619,7 +621,8 @@ export class DocSession {
         this.end('deleted');
         return;
       case 'role':
-        if (!answer.canWrite) {
+        // A suggester's failed handshakes are the network: its suggestions still need delivering, so it reconnects.
+        if (!answer.canWrite && !(cause === 'handshake' && answer.canSuggest)) {
           refuseInput(VIEW_ONLY);
           this.#ended = true;
           this.#set({ canWrite: false, resync: true });
