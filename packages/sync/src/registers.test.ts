@@ -312,7 +312,7 @@ describe('L4 decorator registers @p:col-1 @p:col-3 @p:tech-1', () => {
       const host = payloadDocsFor(restored);
       const write = (id: string, text: string) => { const doc = host.hold(id); payloadText(doc).insert(0, text); };
       expect(migratePayloads(restored, write)).toBe(true);
-      const nodes = restored.get('root', Y.XmlText).toDelta().map((op: { insert: Y.XmlElement }) => op.insert);
+      const nodes: Y.XmlElement[] = restored.get('root', Y.XmlText).toDelta().map((op: { insert: Y.XmlElement }) => op.insert);
       expect(nodes.map(node => node._item!.id), 'no node is replaced').toEqual(identities);
       for (const node of nodes) expect(node.getAttribute('__code'), 'no legacy attribute survives').toBeUndefined();
       const bytes = Y.encodeStateAsUpdate(restored);
