@@ -584,7 +584,7 @@ function deletedRun(client: number, n: number): Uint8Array {
 }
 
 /** Ingest of one fixed `suggest-ops` frame after `closed` closed records, aimed at a chain `depth` accepts deep. */
-function fixedFrameRun(closed: number, depth: number): { first: number; median: number } {
+function fixedFrameRun(closed: number, depth: number): { first: number; median: number; bytes: number } {
   const live = seededBody();
   // As in the DocDO: records are written under S, so a close drops S clocks.
   new SuggestionsWriter(live, newSuggestionsClient(live));
@@ -617,9 +617,13 @@ function fixedFrameRun(closed: number, depth: number): { first: number; median: 
     return grant.record;
   });
   const times: number[] = [];
+  let bytes = 0;
   for (let i = 0; i < 9; i += 1) {
     withLease((who, grant) => {
-      const update = frame(live, grant.client, (doc) => append(doc, paragraph('fixed frame of typing')));
+      // The paragraph's structs alone, as a fork's transaction sends them: encodeStateAsUpdate would add the whole
+      // delete set of the note, whose closed records' cleared ops grow it, so the frame would not be fixed.
+      const update = encodeFrame({ structs: decodeFrame(frame(live, grant.client, (doc) => append(doc, paragraph('fixed frame of typing')))).structs, ds: new Map() });
+      bytes = Math.max(bytes, update.byteLength);
       const started = performance.now();
       // Aimed at the chain's first record: it lands in a fresh continuation of the accepted head.
       const result = ingest.ops(who, first, update);
@@ -629,13 +633,13 @@ function fixedFrameRun(closed: number, depth: number): { first: number; median: 
     });
   }
   // The first frame walks the whole chain (as after a wake); later ones ride the compressed path.
-  return { first: times[0], median: median(times) };
+  return { first: times[0], median: median(times), bytes };
 }
 
 /** The first frame is a single sample, so a GC pause can swamp it: keep the best of `n` runs. */
-function fixedFrameBest(closed: number, depth: number, n = 3): { first: number; median: number } {
+function fixedFrameBest(closed: number, depth: number, n = 3): { first: number; median: number; bytes: number } {
   const runs = Array.from({ length: n }, () => fixedFrameRun(closed, depth));
-  return { first: Math.min(...runs.map((r) => r.first)), median: Math.min(...runs.map((r) => r.median)) };
+  return { first: Math.min(...runs.map((r) => r.first)), median: Math.min(...runs.map((r) => r.median)), bytes: Math.max(...runs.map((r) => r.bytes)) };
 }
 
 describe('T5.2 cost: ingest and the lease check are O(frame) @p:mean-2', () => {
@@ -780,6 +784,7 @@ describe('T5.4 cost at fuzz scale @p:mean-2', () => {
     const few = fixedFrameBest(5, 1, 2);
     const many = fixedFrameBest(10_000, 1, 2);
     const deep = fixedFrameBest(5, 5_000, 2);
+    expect(new Set([few.bytes, many.bytes, deep.bytes]).size, 'one fixed frame size in every scenario').toBe(1);
     console.log(
       `T5.4 fixed frame: ${few.median.toFixed(3)} ms (5 closed, depth 1); ${many.median.toFixed(3)} ms (10 000 closed); ${deep.median.toFixed(3)} ms (depth 5 000); ` +
         `first frame ${few.first.toFixed(3)} / ${many.first.toFixed(3)} / ${deep.first.toFixed(3)} ms`,

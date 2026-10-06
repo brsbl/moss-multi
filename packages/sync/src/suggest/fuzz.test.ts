@@ -21,7 +21,7 @@ import { int, mutateOp, mutateRecord, pick, rng, targetsOf, type Targets } from 
 import { createRecord, newSuggestionsClient, opsOf, partsOf, readMeta, readRecord, recordIds, SuggestionsWriter, writeSuggestions } from './records.ts';
 import { acceptRecord, nodeRegistry, previewRecord } from './review.ts';
 import {
-  all, CENSUS, changedRoots, deterministicIds, directEdit, EDITOR, exported, OTHER_SUGGESTER, payloadsInOrder, resetIds, seededBody, SUGGESTER, type Step,
+  all, CENSUS, changedRoots, type CensusOp, deterministicIds, directEdit, EDITOR, exported, OTHER_SUGGESTER, payloadsInOrder, resetIds, seededBody, SUGGESTER, type Step,
 } from './test-support.ts';
 
 let restore: () => void = () => {};
@@ -49,39 +49,18 @@ function forge(live: Y.Doc, id: string, author: { id: string; name: string }, cl
   });
 }
 
-/** A fork's real frames for one or two census operations under `lease`, copied out. */
-function honestOps(live: Y.Doc, lease: number, random: () => number): { ops: RecordOp[]; names: string[] } {
+/** A fork's real frames for one census operation under `lease`, copied out. */
+function honestOps(live: Y.Doc, lease: number, op: CensusOp): RecordOp[] {
   const fork = new ForkShim(live, lease);
-  const names: string[] = [];
   try {
-    for (let n = 1 + int(random, 2); n > 0; n -= 1) {
-      const op = pick(random, CENSUS);
-      names.push(op.name);
-      for (const step of op.steps) {
-        if (step === 'undo') fork.undo();
-        else fork.act(step);
-      }
+    for (const step of op.steps) {
+      if (step === 'undo') fork.undo();
+      else fork.act(step);
     }
-    return { ops: fork.sent.map((op) => ({ doc: op.doc, update: op.update.slice() })), names };
+    return fork.sent.map((sent) => ({ doc: sent.doc, update: sent.update.slice() }));
   } finally {
     fork.dispose();
   }
-}
-
-/** A peer's honest record: one new paragraph, under its own lease. */
-function peerOps(live: Y.Doc): RecordOp[] {
-  const doc = new Y.Doc({ gc: false });
-  Y.applyUpdate(doc, Y.encodeStateAsUpdate(live));
-  doc.clientID = PEER_LEASED;
-  const sv = Y.encodeStateVector(doc);
-  const block = new Y.XmlText();
-  block.setAttribute('__type', 'paragraph');
-  block.insert(0, 'Peer words.');
-  const root = doc.get('root', Y.XmlText);
-  root.insertEmbed(root.length, block);
-  const update = Y.encodeStateAsUpdate(doc, sv);
-  doc.destroy();
-  return [{ doc: 'body', update }];
 }
 
 interface Case {
@@ -100,16 +79,17 @@ function fuzzCase(seed: number): Case {
   const live = seededBody();
   const writer = newSuggestionsClient(live);
   new SuggestionsWriter(live, writer);
-  forge(live, PEER_ID, OTHER_SUGGESTER, [PEER_LEASED], peerOps(live), [], 1);
+  forge(live, PEER_ID, OTHER_SUGGESTER, [PEER_LEASED], honestOps(live, PEER_LEASED, CENSUS.find((op) => op.name === 'a duplicated word')!), [], 1);
   const peer = new Composite(live).build();
   const peerOnly = rootValue(peer.doc);
   peer.doc.destroy();
-  const { ops, names } = honestOps(live, LEASED, random);
+  const census = pick(random, CENSUS);
+  const ops = honestOps(live, LEASED, census);
   const payloads = payloadDocsFor(live).docs;
   const targets: Targets = targetsOf(live, payloads, FOREIGN);
   const clients = [LEASED];
   const parts: DeletePart[] = [];
-  const story = [`census: ${names.join(' + ')}`];
+  const story = [`census: ${census.name}`];
   for (let n = 1 + int(random, 3); n > 0; n -= 1) {
     story.push(random() < 0.75 ? mutateOp(random, ops, LEASED, targets) : mutateRecord(random, ops, clients, parts, targets));
   }
@@ -497,8 +477,14 @@ function honestSteps(random: () => number, count: number): HonestStep[] {
         steps.push({
           label: r3 < 0.5 ? 'Backspace' : 'Delete',
           step: () => {
+            // A one-character range removed as Backspace or Delete removes it; at a block's start, Backspace joins.
+            // Lexical's own character extension reads the DOM selection, which a headless editor lacks.
             const at = textAt(r1, r2);
-            if (at) caretIn(at.node, at.offset).deleteCharacter(r3 < 0.5);
+            if (!at) return;
+            const size = at.node.getTextContentSize();
+            if (r3 < 0.5 && at.offset > 0) caretIn(at.node, at.offset - 1, at.offset).removeText();
+            else if (r3 >= 0.5 && at.offset < size) caretIn(at.node, at.offset, at.offset + 1).removeText();
+            else if (r3 < 0.5 && at.node.getPreviousSibling() === null && at.node.getParent()?.getParent()?.getType() === 'root') caretIn(at.node, 0).deleteCharacter(true);
           },
         });
         break;
@@ -525,6 +511,14 @@ function honestSteps(random: () => number, count: number): HonestStep[] {
  * Zero refusals, zero broken records, and accepting every record equals an editor making the same steps directly.
  */
 function honestSession(seed: number): string[] {
+  try {
+    return honestRun(seed);
+  } catch (error) {
+    return [`seed ${seed}: threw ${(error as Error).stack?.split('\n').slice(0, 6).join(' | ') ?? String(error)}`];
+  }
+}
+
+function honestRun(seed: number): string[] {
   const random = rng(seed);
   const steps = honestSteps(random, 3 + int(random, 5));
   const live = seededBody();
