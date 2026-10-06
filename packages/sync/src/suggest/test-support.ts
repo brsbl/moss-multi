@@ -9,10 +9,12 @@ import {
 } from 'lexical';
 import { vi } from 'vitest';
 import * as Y from 'yjs';
+import { hydrate, projectDoc, projectionDiff, type Hunk, type RecordMeta, type RecordOp } from '@moss-multi/core/suggest/apply';
 import { importMarkdown } from '../converter/index.ts';
 import { attachPayloadDocs, PayloadDocs, payloadDocsFor, payloadMap, payloadText } from '../payload-docs.ts';
 import { exportDocMarkdown, importBody, serverWrite } from '../server-doc.ts';
 import { bindEditor } from './fork-shim.ts';
+import { createRecord, opsOf, partsOf, writeSuggestions } from './records.ts';
 
 export const SUGGESTER = { id: 'suggester-1@example.invalid', name: 'Sam Suggester' };
 export const OTHER_SUGGESTER = { id: 'suggester-2@example.invalid', name: 'Sky Suggester' };
@@ -286,4 +288,54 @@ export function spansOfText(doc: Y.Doc, text: string): { client: number; clock: 
   };
   walk(doc.get('root', Y.XmlText) as unknown as Y.AbstractType<unknown>);
   return spans;
+}
+
+/** The leased client id a forged record's ops are written under. */
+export const LEASED = 0x7fff1234;
+
+/** An open record holding `ops`, written straight into the records map, past ingest. */
+export function forgeRecord(live: Y.Doc, id: string, ops: RecordOp[]): void {
+  const meta: RecordMeta = {
+    v: 2, id, author: SUGGESTER.id, authorName: SUGGESTER.name, source: 'live', createdAt: 1, updatedAt: 1, status: 'open', clients: [LEASED],
+  };
+  writeSuggestions(live, () => {
+    createRecord(live, meta);
+    opsOf(live, id).push(ops);
+    partsOf(live, id).push([]);
+  });
+}
+
+/** One op holding what `write` does to a copy of `source` under the leased client. */
+export function opOn(source: Y.Doc, doc: string, write: (copy: Y.Doc) => void): RecordOp {
+  const copy = new Y.Doc({ gc: false });
+  Y.applyUpdate(copy, Y.encodeStateAsUpdate(source));
+  copy.clientID = LEASED;
+  const updates: Uint8Array[] = [];
+  copy.on('update', (update: Uint8Array) => updates.push(update));
+  write(copy);
+  copy.destroy();
+  return { doc, update: Y.mergeUpdates(updates) };
+}
+
+/** The hunks a record's ops make, projected before and after with no gate run: the most a card is ever given. */
+export function hunksOf(live: Y.Doc, ops: RecordOp[]): Hunk[] {
+  const body = hydrate(live);
+  const held = payloadDocsFor(live);
+  const copies = new Map<string, Y.Doc>();
+  const payload = (id: string) => {
+    let doc = copies.get(id);
+    if (!doc) {
+      doc = new Y.Doc({ gc: false });
+      doc.getText('payload');
+      doc.getMap('payload-map');
+      const source = held.get(id);
+      if (source) Y.applyUpdate(doc, Y.encodeStateAsUpdate(source));
+      copies.set(id, doc);
+    }
+    return doc;
+  };
+  const written = ops.filter((op) => op.doc !== 'body').map((op) => op.doc);
+  const before = projectDoc(body, payload, written);
+  for (const op of ops) Y.applyUpdate(op.doc === 'body' ? body : payload(op.doc), op.update);
+  return projectionDiff(before, projectDoc(body, payload, written));
 }
