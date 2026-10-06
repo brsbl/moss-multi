@@ -6,7 +6,6 @@ export type Role = (typeof ROLES)[number];
 
 /** Roles a grant or link row stores; the owner is never stored (A§6). */
 export const MEMBER_ROLES = ['viewer', 'commenter', 'suggester', 'editor'] as const;
-export type MemberRole = (typeof MEMBER_ROLES)[number];
 
 /** What the share UI offers until suggestions ship (P:People); suggester stays in the schema only. */
 export const SHARE_ROLES = ['viewer', 'commenter', 'editor'] as const;

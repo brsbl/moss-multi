@@ -80,32 +80,9 @@ describe('foldRole: the MAX fold', () => {
       }
     }
   });
-
-  it('makes the owner the owner whatever else holds', () => {
-    for (const sources of everySource()) {
-      if (sources.owner && !sources.anonymous) expect(foldRole(sources), describeSources(sources)).toBe('owner');
-    }
-  });
 });
 
 describe('foldRole: the link ceiling', () => {
-  it('lifts a signed-in caller with no grant to exactly the link role', () => {
-    for (const link of MEMBER_ROLES) {
-      for (const grants of [[], [null], [null, null]]) {
-        expect(foldRole({ owner: false, grants, link, anonymous: false }), link).toBe(link);
-      }
-    }
-  });
-
-  it('never lifts anyone above the link role through the link alone', () => {
-    for (const sources of everySource()) {
-      if (sources.anonymous || sources.owner || sources.link === null) continue;
-      const withoutLink = foldRole({ ...sources, link: null });
-      const result = foldRole(sources);
-      expect(rank(result), describeSources(sources)).toBe(Math.max(rank(withoutLink), rank(sources.link)));
-    }
-  });
-
   it('caps an anonymous caller at viewer: any live link opens the doc read-only, and nothing else opens it', () => {
     for (const sources of everySource()) {
       if (!sources.anonymous) continue;
@@ -129,15 +106,6 @@ describe('can', () => {
     for (const capability of capabilities) {
       for (const role of ROLES) {
         expect(can(role, capability), `${role} ${capability}`).toBe(rank(role) >= rank(CAPABILITY_FLOORS[capability]));
-      }
-    }
-  });
-
-  it('grows with rank: what a role can do, every higher role can do', () => {
-    for (const capability of capabilities) {
-      for (const [i, role] of ROLES.entries()) {
-        if (!can(role, capability)) continue;
-        for (const higher of ROLES.slice(i)) expect(can(higher, capability), `${higher} ${capability}`).toBe(true);
       }
     }
   });

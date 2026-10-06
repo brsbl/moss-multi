@@ -136,8 +136,7 @@ export async function accessibleFolders(db: Db, principal: Principal) {
 }
 
 /** The discovery closure for lists, search and backlinks (A§8). Link grants do not imply discovery. */
-export async function accessibleDocs(db: Db, principal: Principal, visibleFolders = accessibleFolders(db, principal)) {
-  const folders = await visibleFolders;
+export async function accessibleDocs(db: Db, principal: Principal, folders: Awaited<ReturnType<typeof accessibleFolders>>) {
   const ids = grantees(principal);
   const grants = ids.length ? await db.select().from(docMembers).where(inArray(docMembers.principalId, ids)) : [];
   const folderIds = folders.map((folder) => folder.id);

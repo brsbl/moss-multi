@@ -14,7 +14,7 @@ export async function workspace(request: Request, env: AuthEnv): Promise<Respons
   const db = createDb(env.DB);
   const home = await ensureDefaultVault(db, principal.id);
   const visible = await accessibleFolders(db, principal);
-  const docs = await accessibleDocs(db, principal, Promise.resolve(visible));
+  const docs = await accessibleDocs(db, principal, visible);
   const byId = new Map(visible.map((folder) => [folder.id, folder]));
   const vaults = visible.filter((folder) => folder.kind === 'vault').map((folder) => ({
     id: folder.id, name: folder.name, role: folder.role, owned: folder.ownerUserId === principal.id,
