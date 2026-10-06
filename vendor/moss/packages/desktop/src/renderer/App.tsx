@@ -4076,7 +4076,6 @@ export function App() {
         onSelectNote={handleSelectNote}
         onCreateNote={handleCreateNote}
         onDeleteNote={handleNoteDeleted}
-        // moss-multi seam: hide-registry (A§9)
         onDuplicateNote={handleDuplicateNote}
         onRenameNote={handleRenameNote}
         onCollapse={handleCollapseNotesPanel}

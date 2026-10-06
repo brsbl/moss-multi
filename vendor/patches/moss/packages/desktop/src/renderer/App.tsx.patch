@@ -197,11 +197,3 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
        onLeftTitleFocusComplete={handleTitleFocusComplete}
        leftAutoFocusBody={shouldFocusBody}
        onLeftBodyFocusComplete={handleBodyFocusComplete}
-@@ -4093,6 +4075,7 @@ export function App() {
-         onSelectNote={handleSelectNote}
-         onCreateNote={handleCreateNote}
-         onDeleteNote={handleNoteDeleted}
-+        // moss-multi seam: hide-registry (A§9)
-         onDuplicateNote={handleDuplicateNote}
-         onRenameNote={handleRenameNote}
-         onCollapse={handleCollapseNotesPanel}
