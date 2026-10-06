@@ -58,11 +58,28 @@ async function suggestText(actor: Actor, docId: string, at: string, offset: numb
   await expect(pane, 'never refused').toHaveAttribute(SUGGEST_REFUSED_ATTR, '0');
 }
 
+/** The centre of `text`'s first occurrence in `actor`'s body. */
+async function pointAt(actor: Actor, docId: string, text: string): Promise<{ x: number; y: number }> {
+  return ui.body(actor, docId).evaluate((root, text) => {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const at = (node.textContent ?? '').indexOf(text);
+      if (at < 0) continue;
+      const range = document.createRange();
+      range.setStart(node, at);
+      range.setEnd(node, at + text.length);
+      const rect = range.getBoundingClientRect();
+      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    }
+    throw new Error(`no body text "${text}"`);
+  }, text);
+}
+
 /** A note owned by ada that ben can suggest on. */
-async function sharedNote(actors: Actors) {
+async function sharedNote(actors: Actors, markdown = NOTE) {
   const adaPrincipal = await actors.principal('ada');
   const ada = await actors.open(adaPrincipal);
-  const response = await ada.context.request.post('/api/docs', { headers: { origin: new URL(ada.page.url()).origin }, data: { markdown: NOTE } });
+  const response = await ada.context.request.post('/api/docs', { headers: { origin: new URL(ada.page.url()).origin }, data: { markdown } });
   expect(response.status()).toBe(201);
   const docId = ((await response.json()) as { doc: { id: string } }).doc.id;
   const benPrincipal = await actors.principal('ben');
@@ -212,4 +229,38 @@ test("j16-review: a struck delete opens its card from the owner's body, and the 
     await expect(active).toHaveCount(1, { timeout: 1_000 });
   }).toPass({ timeout: BIND_TIMEOUT });
   await expect(active.locator(`[${SUGGESTION_ROW_ATTR}="delete"]`), 'the card lists the deleted word').toContainText('here', { timeout: BIND_TIMEOUT });
+});
+
+test('j16-review: struck text inside a link opens its card, not the link; a failed preview says so and can be retried @p:mean-2 @p:R17', async ({ actors }) => {
+  const { ada, ben, docId } = await sharedNote(actors, 'Read the [tutorial](https://example.invalid/a) first.');
+  await openIn(ben, docId, 'suggest');
+  await openIn(ada, docId, 'edit');
+  await actors.requireDistinct(2);
+
+  await caret(ben, docId, 'tutorial', 8);
+  for (let i = 0; i < 6; i++) await ben.page.keyboard.press('Backspace');
+  const pane = ui.pane(ben, docId);
+  await expect(pane, 'acknowledged').toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout: BIND_TIMEOUT });
+  await expect(pane, 'never refused').toHaveAttribute(SUGGEST_REFUSED_ATTR, '0');
+  await expect(button(ada)).toHaveAttribute('aria-label', /1 open/, { timeout: BIND_TIMEOUT });
+
+  // Every preview fails until the route is lifted.
+  const previews = '**/api/docs/*/suggestions/*/preview';
+  await ada.page.route(previews, (route) => route.fulfill({ status: 503, contentType: 'application/json', body: '{"error":"unavailable"}' }));
+  const startUrl = ada.page.url();
+  const active = panel(ada).locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_ACTIVE_ATTR}]`);
+  await expect(async () => {
+    const point = await pointAt(ada, docId, 'torial');
+    await ada.page.mouse.click(point.x, point.y);
+    await expect(active).toHaveCount(1, { timeout: 1_000 });
+  }).toPass({ timeout: BIND_TIMEOUT });
+  expect(ada.page.url(), 'the link did not navigate').toBe(startUrl);
+  await expect(ada.page.locator('iframe[src*="example.invalid"]'), 'the link did not open beside the note').toHaveCount(0);
+
+  await expect(active.getByRole('alert'), 'the failure is said').toBeVisible({ timeout: BIND_TIMEOUT });
+  await expect(active.getByRole('button', { name: 'Accept' })).toBeDisabled();
+  await ada.page.unroute(previews);
+  await active.getByRole('button', { name: 'Try again' }).click();
+  await expect(active.locator(`[${SUGGESTION_ROW_ATTR}="delete"]`), 'the retried preview lists the delete').toContainText('torial', { timeout: BIND_TIMEOUT });
+  await expect(active.getByRole('button', { name: 'Accept' })).toBeEnabled({ timeout: BIND_TIMEOUT });
 });

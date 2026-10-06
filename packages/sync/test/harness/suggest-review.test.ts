@@ -11,7 +11,7 @@ import { DocDO } from '../../src/doc-do.ts';
 import { ForkShim } from '../../src/suggest/fork-shim.ts';
 import { readMeta } from '../../src/suggest/records.ts';
 import { OTHER_SUGGESTER, select, SEED, SUGGESTER } from '../../src/suggest/test-support.ts';
-import { connect, openDoc, start, type Opened, type TestClient, type Who } from './do-harness.ts';
+import { connect, openDoc, start, wake, type Opened, type TestClient, type Who } from './do-harness.ts';
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -163,8 +163,8 @@ describe('T5.3 accept, reject and withdraw through the DocDO @p:mean-2 @p:R16 @p
     expect(await opened.dobj.exportMarkdown()).toBe(clean);
   });
 
-  it('a record with nothing to show is rejected by the system on the alarm once idle, with nobody fetching its preview', async () => {
-    const opened = await seeded();
+  it.each([false, true])('a record with nothing to show is rejected by the system on the alarm once idle, with nobody fetching its preview (evicted=%s)', async (evicted) => {
+    let opened = await seeded();
     const sam = await on(opened, SAM);
     const [grant] = await leases(sam);
     const fork = new ForkShim(sam.doc, grant.client);
@@ -183,6 +183,8 @@ describe('T5.3 accept, reject and withdraw through the DocDO @p:mean-2 @p:R16 @p
     expect(opened.backing.alarm, 'the idle check is scheduled').not.toBeNull();
     expect(opened.backing.alarm!, 'within the idle window of the last change').toBeLessThanOrEqual(meta.updatedAt + 30_000 + 1_000);
     vi.setSystemTime(meta.updatedAt + 30_001);
+    // An eviction drops what the instance held in memory; the alarm it set still fires on the fresh one.
+    if (evicted) opened = await start(wake(opened));
     await opened.dobj.alarm();
     expect(readMeta(opened.dobj.document, grant.record)).toMatchObject({ status: 'rejected', resolvedBy: 'system' });
   });

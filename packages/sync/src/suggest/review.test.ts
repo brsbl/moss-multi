@@ -734,4 +734,67 @@ describe('T5.3 the card shows every change accept commits to @p:mean-2 @p:R17', 
     for (const word of words) expect(shown(rows), word).toContain(word);
     expect(shown(rows)).not.toMatch(/more changes/);
   });
+
+  it('a text change and a stored property Lexical does not export, in one block, are both shown', () => {
+    const live = seededBody();
+    forgeRecord(live, 'h', [LEASED], [forged(live, (doc) => {
+      const paragraph = (root(doc).toDelta() as { insert: unknown }[]).map((op) => op.insert).find((x) => x instanceof Y.XmlText) as Y.XmlText;
+      paragraph.insert(1, 'Oh, ');
+      paragraph.setAttribute('__hidden', 'stored-secret');
+    })]);
+    const preview = previewRecord(live, 'h');
+    if (!preview.ok) throw new Error(preview.reason);
+    const rows = describeHunks(preview.hunks);
+    expect(shown(rows)).toContain('Oh,');
+    expect(shown(rows), 'the stored property has its own row').toContain('stored-secret');
+  });
+
+  it("an added checklist shows each item's checked state", () => {
+    const rows = rowsFor([insertBlock('- [x] done item\n- [ ] open item')]);
+    const done = rows.filter((row) => row.text.includes('done item')).map((row) => row.note ?? '').join(' ');
+    const open = rows.filter((row) => row.text.includes('open item')).map((row) => row.note ?? '').join(' ');
+    expect(done).toMatch(/checked: true/);
+    expect(open).not.toMatch(/checked: true/);
+    expect(done).not.toBe(open);
+  });
+
+  it('a checkbox toggled on kept text names the item and its checked state', () => {
+    const rows = rowsFor([() => { listItem('task one').setChecked(true); }]);
+    const row = rows.find((r) => r.text.includes('task one'));
+    expect(row, shown(rows)).toBeDefined();
+    expect(row!.note).toMatch(/checked: .*→ true/);
+  });
+
+  it('a deleted run inside a link names the link without empty fields', () => {
+    const { live, proposeDelete, dispose } = setup();
+    try {
+      expect(proposeDelete('r1', { id: 'd1', targets: spansOfText(live, 'site') })).toMatchObject({ ok: true });
+      const preview = previewRecord(live, 'r1');
+      if (!preview.ok) throw new Error(preview.reason);
+      const rows = describeHunks(preview.hunks);
+      const deleted = rows.find((row) => row.kind === 'delete' && row.text.includes('site'));
+      expect(deleted, shown(rows)).toBeDefined();
+      expect(deleted!.note).toContain('https://example.invalid');
+      expect(deleted!.note).not.toMatch(/none/);
+    } finally {
+      dispose();
+    }
+  });
+
+  it("an editor's text typed inside a suggested delete is not shown as inserted by the suggestion", () => {
+    const { live, proposeDelete, dispose } = setup();
+    try {
+      const [run] = spansOfText(live, 'an');
+      expect(proposeDelete('r1', { id: 'd1', targets: [{ client: run.client, clock: run.clock, len: 1 }] })).toMatchObject({ ok: true });
+      expect(proposeDelete('r1', { id: 'd2', targets: [{ client: run.client, clock: run.clock + 1, len: 1 }] })).toMatchObject({ ok: true });
+      editorEdits(live, () => select('Hello', 13).insertText('X'));
+      const preview = previewRecord(live, 'r1');
+      if (!preview.ok) throw new Error(preview.reason);
+      const rows = describeHunks(preview.hunks);
+      expect(rows.filter((row) => row.kind === 'insert'), shown(rows)).toEqual([]);
+      expect(rows.filter((row) => row.kind === 'delete').map((row) => row.text).join(''), shown(rows)).toBe('an');
+    } finally {
+      dispose();
+    }
+  });
 });
