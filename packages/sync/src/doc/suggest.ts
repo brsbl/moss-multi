@@ -4,7 +4,7 @@
 // `suggest_leases` and wires the doc-socket frames.
 import * as Y from 'yjs';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
-import { BODY_ROOTS, type IdSpan, type RecordMeta } from '@moss-multi/core/suggest/apply';
+import { BODY_DOC, BODY_ROOTS, type IdSpan, type RecordMeta, type RecordOp } from '@moss-multi/core/suggest/apply';
 import { createRecord, opsOf, partsOf, patchMeta, readMeta, readRecord, recordIds, SUGGESTIONS_ORIGIN } from '../suggest/records.ts';
 
 export interface SuggestPrincipal {
@@ -16,7 +16,8 @@ export interface Lease {
   client: number;
   principal: string;
   record: string | null;
-  nextClock: number;
+  /** The next clock per doc: a lease writes the body and each payload doc of the author's fork, each its own clocks. */
+  nextClock: Map<string, number>;
   spent: boolean;
 }
 
@@ -44,7 +45,7 @@ export type IngestRefusal =
   | 'node-type'
   | 'target';
 
-export type IngestResult = { ok: true; record: string; clocks: Record<number, number> } | { ok: false; reason: IngestRefusal };
+export type IngestResult = { ok: true; record: string; doc: string; clocks: Record<number, number> } | { ok: false; reason: IngestRefusal };
 
 export interface IngestOptions {
   stateCap: number;
@@ -66,7 +67,7 @@ export class SuggestIngest {
   ) {
     for (const id of recordIds(doc)) {
       const record = readRecord(doc, id);
-      if (record?.meta.status === 'open') this.#bytes.set(id, record.ops.reduce((sum, op) => sum + op.byteLength, 0));
+      if (record?.meta.status === 'open') this.#bytes.set(id, record.ops.reduce((sum, op) => sum + op.update.byteLength, 0));
     }
   }
 
@@ -76,14 +77,17 @@ export class SuggestIngest {
     while (out.length < count) {
       const client = crypto.getRandomValues(new Uint32Array(1))[0];
       if (client === 0 || this.leases.has(client) || this.doc.store.clients.has(client)) continue;
-      this.leases.set(client, { client, principal, record: null, nextClock: 0, spent: false });
+      this.leases.set(client, { client, principal, record: null, nextClock: new Map(), spent: false });
       out.push(client);
     }
     return out;
   }
 
-  ops(principal: SuggestPrincipal, role: string, record: string, update: Uint8Array): IngestResult {
+  /** One fork transaction: a body update, or `{doc, update}` for a payload doc of the fork. */
+  ops(principal: SuggestPrincipal, role: string, record: string, op: Uint8Array | RecordOp): IngestResult {
     if (!roleAtLeast(role, 'suggester')) return { ok: false, reason: 'role' };
+    const { doc, update } = op instanceof Uint8Array ? { doc: BODY_DOC, update: op } : op;
+    if (typeof doc !== 'string' || (doc !== BODY_DOC && !RECORD_ID.test(doc)) || !(update instanceof Uint8Array)) return { ok: false, reason: 'malformed' };
     const target = this.#target(principal, record);
     if (!target.ok) return target;
     let meta: { from: Map<number, number>; to: Map<number, number> };
@@ -98,10 +102,10 @@ export class SuggestIngest {
     for (const [client, from] of meta.from) {
       const lease = this.leases.get(client);
       if (!lease || lease.principal !== principal.id || (lease.record !== null && !chain.has(lease.record))) return { ok: false, reason: 'lease' };
-      if (from > lease.nextClock) return { ok: false, reason: 'clock-gap' };
+      if (from > (lease.nextClock.get(doc) ?? 0)) return { ok: false, reason: 'clock-gap' };
     }
     // An early, O(frame) reject of node types Lexical would not bind; G7 is the full check at accept.
-    for (const struct of structs) {
+    for (const struct of doc === BODY_DOC ? structs : []) {
       if (!(struct instanceof Y.Item) || struct.parentSub !== '__type') continue;
       const value = struct.content.getContent().at(-1);
       if (typeof value !== 'string' || !this.options.registry.has(value)) return { ok: false, reason: 'node-type' };
@@ -114,7 +118,7 @@ export class SuggestIngest {
     const now = this.options.now?.() ?? Date.now();
     this.doc.transact(() => {
       if (target.create) this.#create(principal, target.id, now, target.continues);
-      opsOf(this.doc, target.id).push([update]);
+      opsOf(this.doc, target.id).push([{ doc, update }]);
       const current = readMeta(this.doc, target.id)!;
       patchMeta(this.doc, target.id, { updatedAt: now, clients: [...new Set([...current.clients, ...meta.from.keys()])] });
     }, SUGGESTIONS_ORIGIN);
@@ -123,10 +127,11 @@ export class SuggestIngest {
     for (const [client, to] of meta.to) {
       const lease = this.leases.get(client)!;
       lease.record = target.id;
-      lease.nextClock = Math.max(lease.nextClock, to);
-      clocks[client] = lease.nextClock;
+      const next = Math.max(lease.nextClock.get(doc) ?? 0, to);
+      lease.nextClock.set(doc, next);
+      clocks[client] = next;
     }
-    return { ok: true, record: target.id, clocks };
+    return { ok: true, record: target.id, doc, clocks };
   }
 
   delete(principal: SuggestPrincipal, role: string, record: string, part: { id: string; targets: IdSpan[] }): IngestResult {
@@ -146,7 +151,7 @@ export class SuggestIngest {
       patchMeta(this.doc, target.id, { updatedAt: now });
     }, SUGGESTIONS_ORIGIN);
     this.#bytes.set(target.id, this.#bytes.get(target.id) ?? 0);
-    return { ok: true, record: target.id, clocks: {} };
+    return { ok: true, record: target.id, doc: BODY_DOC, clocks: {} };
   }
 
   /** An editor's body frame naming a leased client id is refused `protected-type` (T5.2). O(frame). */

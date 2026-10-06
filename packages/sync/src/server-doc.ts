@@ -40,7 +40,8 @@ export function attachPayloadSource(live: Y.Doc, source: PayloadSource): void {
   sources.set(live, source);
 }
 
-function sourceOf(live: Y.Doc): PayloadSource {
+/** `live`'s payloads: the attached source, or its in-memory payload docs. */
+export function payloadSourceOf(live: Y.Doc): PayloadSource {
   const attached = sources.get(live);
   if (attached) return attached;
   const host = payloadDocsFor(live);
@@ -79,7 +80,7 @@ export interface Mirror {
  */
 export function mirrorOf(live: Y.Doc): Mirror {
   const doc = new Y.Doc();
-  const source = sourceOf(live);
+  const source = payloadSourceOf(live);
   const payloads = new PayloadDocs((id) => source.read(id), (id) => source.has(id));
   const writes = new Map<string, Uint8Array[]>();
   payloads.onHold((id, held) => {
@@ -148,7 +149,7 @@ export type Admit = (diff: Uint8Array, payloads: [string, Uint8Array][]) => void
 export function serverWrite(live: Y.Doc, origin: unknown, mutate: (doc: Y.Doc) => void, admit: Admit = noop): boolean {
   const { diff, payloads } = mirrorDiff(live, mutate);
   admit(diff, payloads);
-  const source = sourceOf(live);
+  const source = payloadSourceOf(live);
   for (const [id, update] of payloads) source.write(id, update);
   let changed = false;
   const onUpdate = () => {

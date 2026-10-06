@@ -1,7 +1,7 @@
 // Suggestion records in `Y.Map('suggestions')` (docs/design/suggestions.md §1). Only the DocDO writes them, under
 // SUGGESTIONS_ORIGIN; a record's ops are stored and never applied to the body except by accept.
 import * as Y from 'yjs';
-import type { DeletePart, RecordMeta, SuggestionRecord } from '@moss-multi/core/suggest/apply';
+import type { DeletePart, RecordMeta, RecordOp, SuggestionRecord } from '@moss-multi/core/suggest/apply';
 
 export const SUGGESTIONS = 'suggestions';
 export const SUGGESTIONS_ORIGIN = 'server-suggestions';
@@ -25,7 +25,7 @@ export function readRecord(doc: Y.Doc, id: string): SuggestionRecord | null {
   const parts = map.get('parts');
   return {
     meta,
-    ops: ops instanceof Y.Array ? (ops.toArray() as Uint8Array[]) : [],
+    ops: ops instanceof Y.Array ? (ops.toArray() as RecordOp[]) : [],
     parts: parts instanceof Y.Array ? (parts.toArray() as DeletePart[]) : [],
   };
 }
@@ -39,7 +39,7 @@ export function createRecord(doc: Y.Doc, meta: RecordMeta): void {
   const map = new Y.Map<unknown>();
   doc.getMap(SUGGESTIONS).set(meta.id, map);
   map.set('meta', JSON.stringify(meta));
-  map.set('ops', new Y.Array<Uint8Array>());
+  map.set('ops', new Y.Array<RecordOp>());
   map.set('parts', new Y.Array<DeletePart>());
 }
 
@@ -53,8 +53,9 @@ export function patchMeta(doc: Y.Doc, id: string, patch: Partial<RecordMeta>): R
   return next;
 }
 
-export function opsOf(doc: Y.Doc, id: string): Y.Array<Uint8Array> {
-  return recordMap(doc, id)!.get('ops') as Y.Array<Uint8Array>;
+/** Each op: `{doc, update}`, the doc `'body'` or a payload id. */
+export function opsOf(doc: Y.Doc, id: string): Y.Array<RecordOp> {
+  return recordMap(doc, id)!.get('ops') as Y.Array<RecordOp>;
 }
 
 export function partsOf(doc: Y.Doc, id: string): Y.Array<DeletePart> {

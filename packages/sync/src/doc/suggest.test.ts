@@ -4,6 +4,7 @@
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
+import { payloadDocsFor } from '../payload-docs.ts';
 import { readRecord } from '../suggest/records.ts';
 import { nodeRegistry } from '../suggest/review.ts';
 import { seededBody, spansOfText, SUGGESTER, OTHER_SUGGESTER } from '../suggest/test-support.ts';
@@ -50,7 +51,7 @@ describe('T5.0 ingest: leases and suggest-ops @p:mean-2', () => {
     expect(ingest.ops(SUGGESTER, 'suggester', 'r1', update)).toMatchObject({ ok: true, record: 'r1' });
     expect(JSON.stringify(live.get('root', Y.XmlText).toJSON())).toBe(root);
     const record = readRecord(live, 'r1')!;
-    expect(record.ops).toEqual([update]);
+    expect(record.ops).toEqual([{ doc: 'body', update }]);
     expect(record.meta).toMatchObject({ author: SUGGESTER.id, status: 'open', clients: [lease] });
   });
 
@@ -70,6 +71,31 @@ describe('T5.0 ingest: leases and suggest-ops @p:mean-2', () => {
     expect(ingest.ops(SUGGESTER, 'suggester', 'r1', Y.encodeStateAsUpdate(gapped, after))).toEqual({ ok: false, reason: 'clock-gap' });
     expect(ingest.ops(SUGGESTER, 'suggester', 'r1', frame(live, mine, (doc) => append(doc, paragraph('x', 'no-such-node'))))).toEqual({ ok: false, reason: 'node-type' });
     expect(ingest.ops(SUGGESTER, 'commenter', 'r1', frame(live, mine, (doc) => append(doc, paragraph('x'))))).toEqual({ ok: false, reason: 'role' });
+  });
+
+  it("payload ops ride the same leases, each payload doc with its own clocks; one outside the record's leases is refused", () => {
+    const live = seededBody();
+    const ingest = ingestOn(live);
+    const [mine] = ingest.lease(SUGGESTER.id);
+    const [theirs] = ingest.lease(OTHER_SUGGESTER.id);
+    const [id, held] = [...payloadDocsFor(live).docs][0];
+    const edit = (client: number, text: string) => {
+      const doc = new Y.Doc();
+      Y.applyUpdate(doc, Y.encodeStateAsUpdate(held));
+      doc.clientID = client;
+      const sv = Y.encodeStateVector(doc);
+      doc.getText('payload').insert(0, text);
+      return Y.encodeStateAsUpdate(doc, sv);
+    };
+    const body = frame(live, mine, (doc) => append(doc, paragraph('mine')));
+    expect(ingest.ops(SUGGESTER, 'suggester', 'r1', body)).toMatchObject({ ok: true, doc: 'body' });
+    // The lease's clocks in the payload doc start at 0, whatever it wrote in the body.
+    expect(ingest.ops(SUGGESTER, 'suggester', 'r1', { doc: id, update: edit(mine, 'p') })).toMatchObject({ ok: true, doc: id, clocks: { [mine]: 1 } });
+    expect(ingest.ops(SUGGESTER, 'suggester', 'r1', { doc: id, update: edit(0x5eed0004, 'x') })).toEqual({ ok: false, reason: 'lease' });
+    expect(ingest.ops(SUGGESTER, 'suggester', 'r1', { doc: id, update: edit(theirs, 'x') })).toEqual({ ok: false, reason: 'lease' });
+    expect(ingest.ops(SUGGESTER, 'suggester', 'r1', { doc: 'not a payload id!', update: edit(mine, 'x') })).toEqual({ ok: false, reason: 'malformed' });
+    expect(readRecord(live, 'r1')!.ops.map((op) => op.doc)).toEqual(['body', id]);
+    expect(held.getText('payload').toString(), 'ingest never writes the payload').not.toContain('p');
   });
 
   it("another principal cannot write into someone's record", () => {

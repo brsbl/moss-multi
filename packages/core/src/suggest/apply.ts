@@ -29,6 +29,7 @@ export type GateReason =
   | 'foreign-client'
   | 'outside-body'
   | 'register-alias'
+  | 'payload-alias'
   | 'outdated'
   | 'changed'
   | 'broken'
@@ -54,10 +55,18 @@ export interface RecordMeta {
   broken?: GateReason;
 }
 
+/** The doc an op writes: the note's body, or a payload doc by its id (docs/design/registers.md). */
+export const BODY_DOC = 'body';
+
+/** One fork transaction's V1 update, exactly as the author's fork produced it, and the doc it was made in. */
+export interface RecordOp {
+  doc: string;
+  update: Uint8Array;
+}
+
 export interface SuggestionRecord {
   meta: RecordMeta;
-  /** V1 updates exactly as the author's fork produced them. */
-  ops: Uint8Array[];
+  ops: RecordOp[];
   parts: DeletePart[];
 }
 
@@ -122,7 +131,8 @@ export function applyRecord(mirror: Y.Doc, record: SuggestionRecord, options: Ap
   // union of its ops' delete sets.
   const groups: IdSpan[][] = [];
   const ownDeletes: IdSpan[] = [];
-  for (const op of record.ops) {
+  const bodyOps = record.ops.filter((op) => op.doc === BODY_DOC).map((op) => op.update);
+  for (const op of bodyOps) {
     let spans: IdSpan[];
     try {
       spans = spansOf(Y.decodeUpdate(op).ds);
@@ -146,7 +156,7 @@ export function applyRecord(mirror: Y.Doc, record: SuggestionRecord, options: Ap
   try {
     mirror.transact((tr) => {
       transaction = tr;
-      for (const op of record.ops) Y.applyUpdate(mirror, op);
+      for (const op of bodyOps) Y.applyUpdate(mirror, op);
       for (const part of record.parts) Y.applyUpdate(mirror, deleteUpdate(part.targets));
     }, APPLY);
   } catch {
@@ -428,14 +438,15 @@ export function previewHash(hunks: readonly Hunk[]): string {
 /** G0: binds an accept to the exact ops and parts the reviewer previewed. */
 export function recordDigest(record: SuggestionRecord): string {
   const parts = encodeUtf8(canonical({ id: record.meta.id, parts: record.parts, clients: record.meta.clients }));
+  const chunks = record.ops.flatMap((op) => [encodeUtf8(op.doc), op.update]);
   let size = parts.length;
-  for (const op of record.ops) size += op.length + 4;
+  for (const chunk of chunks) size += chunk.length + 4;
   const all = new Uint8Array(size);
   let at = 0;
-  for (const op of record.ops) {
-    new DataView(all.buffer).setUint32(at, op.length);
-    all.set(op, at + 4);
-    at += op.length + 4;
+  for (const chunk of chunks) {
+    new DataView(all.buffer).setUint32(at, chunk.length);
+    all.set(chunk, at + 4);
+    at += chunk.length + 4;
   }
   all.set(parts, at);
   return hex(digest(all));
