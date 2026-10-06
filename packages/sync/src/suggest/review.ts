@@ -12,7 +12,7 @@ import {
   type Inserted, type PayloadMirrors, type Projection,
 } from '@moss-multi/core/suggest/apply';
 import { createConverterEditor } from '../converter/index.ts';
-import { attachPayloadSource, mirrorOf, payloadSourceOf } from '../server-doc.ts';
+import { attachPayloadSource, exportDocMarkdown, mirrorOf, payloadSourceOf } from '../server-doc.ts';
 import { closeRecord, patchMeta, readRecord, SUGGEST_ACCEPT, writeSuggestions } from './records.ts';
 
 export interface Reviewer {
@@ -253,4 +253,15 @@ let registry: ReadonlySet<string> | null = null;
 export function nodeRegistry(): ReadonlySet<string> {
   registry ??= new Set(createConverterEditor()._nodes.keys());
   return registry;
+}
+
+/** The preview a reviewer is shown. */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function reviewPreview(live: Y.Doc, id: string, _options: { now?: number } = {}): Preview & { closed?: boolean } {
+  return previewRecord(live, id);
+}
+
+/** The note with every valid open record applied. */
+export function exportWorkingMarkdown(live: Y.Doc, noteId: string): string {
+  return exportDocMarkdown(live, noteId);
 }

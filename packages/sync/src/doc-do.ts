@@ -22,7 +22,7 @@ import { coerceSidecar, COMMENT_STATE_SHARE, COMMENTS_PER_DOC, DocComments, type
 import { d1Projections, Projections, type ProjectionTarget } from './doc/projections.ts';
 import { handleSuggest, SqlLeases, SuggestIngest, type Suggester } from './doc/suggest.ts';
 import { newSuggestionsClient, SUGGESTIONS, SuggestionsWriter } from './suggest/records.ts';
-import { nodeRegistry } from './suggest/review.ts';
+import { acceptRecord, nodeRegistry, previewRecord, rejectRecord, withdrawRecord, type Preview, type Reviewer, type ReviewResult } from './suggest/review.ts';
 import { TRY_AGAIN, withDeadline, type Stamp } from './access-epoch.ts';
 import { publishMeta } from './fanout.ts';
 import type { SyncEnv } from './env.ts';
@@ -131,6 +131,9 @@ const serializer = () => {
 /** Who a REST comment write stands for, as the Worker resolved it: its principal, session or key, and share token. */
 export type CommentActor = SocketIdentity;
 
+/** A new live suggestion, for the bell. */
+export type SuggestionNotifier = (notice: { docId: string; author: string; record: string }) => Promise<void>;
+
 /** A comment write whose authorization D1 could not confirm: refused, and the client may retry. */
 const UNCONFIRMED: CommentResult = { ok: false, status: 503, error: 'unconfirmed' };
 
@@ -234,6 +237,8 @@ export class DocDO extends YServer<SyncEnv> {
    * (apps/web/src/server.ts); with none, frames apply as they arrive (the Node harness).
    */
   static access: (env: SyncEnv) => AccessCheck | null = () => null;
+  /** Who hears of a new live suggestion (the bell); installed by the Worker. */
+  static suggestionNotices: (env: SyncEnv) => SuggestionNotifier | null = () => null;
 
   /** Where search feeds land; null leaves the doc unindexed. */
   static searchFeed: (env: SyncEnv) => SearchFeed | null = (env) => (env?.SearchDO ? {
@@ -913,8 +918,29 @@ export class DocDO extends YServer<SyncEnv> {
     store.setMeta('created', '1');
   }
 
+  async previewSuggestion(input: { id: string; reviewer: Reviewer; actor?: CommentActor }): Promise<Preview> {
+    await this.#ready();
+    return previewRecord(this.document, input.id);
+  }
+
+  async acceptSuggestion(input: { id: string; reviewer: Reviewer; actor?: CommentActor; previewHash: string; digest: string }): Promise<ReviewResult> {
+    await this.#ready();
+    return acceptRecord(this.document, input.id, input, input.reviewer);
+  }
+
+  async rejectSuggestion(input: { id: string; reviewer: Reviewer; actor?: CommentActor }): Promise<ReviewResult> {
+    await this.#ready();
+    return rejectRecord(this.document, input.id, input.reviewer);
+  }
+
+  async withdrawSuggestion(input: { id: string; reviewer: Reviewer; actor?: CommentActor }): Promise<ReviewResult> {
+    await this.#ready();
+    return withdrawRecord(this.document, input.id, input.reviewer);
+  }
+
   /** The doc as a `.md` file, memoized until the next update. */
-  async exportMarkdown(): Promise<string> {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  async exportMarkdown(_options: { view?: 'working' } = {}): Promise<string> {
     await this.#ready();
     this.#exported ??= exportDocMarkdown(this.document, this.name);
     return this.#exported;
