@@ -9,22 +9,29 @@ import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext
 import type { Provider } from '@lexical/yjs';
 import { CollaborationPlugin } from '@moss-multi/lexical-react/LexicalCollaborationPlugin';
 import {
-  BODY_BINDING_ATTR, DOC_ID_ATTR, DOC_STATE_ATTR, EDITOR_GENERATION_ATTR, EDITOR_PANE_ATTR, SYNC_UNACKED_ATTR,
-  TERMINAL_REASON_ATTR, ROLE_ATTR, type BindingState, type DocState,
+  BODY_BINDING_ATTR, DOC_ID_ATTR, DOC_STATE_ATTR, EDIT_MODE_ATTR, EDITOR_GENERATION_ATTR, EDITOR_PANE_ATTR, SUGGEST_REFUSED_ATTR,
+  SUGGEST_SENT_ATTR, SYNC_UNACKED_ATTR, TERMINAL_REASON_ATTR, ROLE_ATTR, type BindingState, type DocState, type EditMode,
 } from '@moss-multi/protocol/dom-contract';
 import { excludedPropertiesFor } from '@moss-multi/sync/excluded-properties';
+import type { BodyUndo } from '@moss-multi/sync/payload-docs';
 import { syncNoteEntityAtom } from '@moss/shared/state/atoms';
 import { useStore } from 'jotai';
 import { $createParagraphNode, $getRoot, $setSelection, type EditorState, type LexicalEditor } from 'lexical';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
-import type { Doc } from 'yjs';
+import type { Doc, UndoManager } from 'yjs';
 import { can, type Role } from '@moss-multi/protocol/roles';
 import { knownRole, useDocRole } from '../access.ts';
 import { TopBarCollab } from '../slots.tsx';
 import { getBridge, WORKSPACE } from '../bridge/index.ts';
 import {
-  docOwner, openDocSession, subscribeDocOwners, waitDocsAcked, type DocSession, type SessionState,
+  aliasProvider, docOwner, openDocSession, subscribeDocOwners, waitDocsAcked, type DocSession, type SessionState,
 } from './doc-session.ts';
+import { auth } from '../auth.ts';
+import { captureCaret, type CaretMark } from './suggest/caret.ts';
+import { modeFor, offerUnsaved, showMode, subscribeModes } from './suggest/mode.ts';
+import { ReviewMount, SuggestMount } from './suggest/mounts.ts';
+import { SuggestModeChip, SuggestUnsavedBand } from './suggest/SuggestChrome.tsx';
+import { SuggestPlugin, type SuggestPane } from './suggest/SuggestPlugin.tsx';
 import { bindFrontmatter } from './frontmatter-binding.ts';
 import { bindCommentAtoms } from '../comments/atoms.ts';
 import { setAckWaiter } from '../comments/api.ts';
@@ -44,6 +51,11 @@ interface PaneState {
   revision: number;
   /** The body holds any text; moss reads its markdown string for this, which a bound note never fills. */
   hasText: boolean;
+  /** Edit binds B, Suggest the fork F, Review the composite C (docs/design/suggestions.md §5). */
+  mode: EditMode;
+  /** Suggest mode's frames sent and refused, published on the pane. */
+  suggestSent: number;
+  suggestRefused: number;
 }
 
 /** +1 for every Lexical editor this tab creates (A§19 `data-editor-generation`, the remount detector). */
@@ -94,25 +106,213 @@ class DocFields {
  * One pane's binding of one doc: the session the plugin opened, the editor it binds, and the state the pane renders.
  * `data-sync-unacked` is written here, in the tick of the write it reports, not through a render.
  */
-class PaneBinding {
-  #state: PaneState = { docState: 'binding', bodyState: 'unbound', bodyVisible: false, resetting: false, revision: 0, hasText: false };
+/** Steps of a closed record leave the undo stacks (§5): undoing them would rewrite text no suggestion holds now. */
+function dropUndo(editor: LexicalEditor | null, clients: number[]): void {
+  const stack = editor && (editor as unknown as Record<symbol, BodyUndo | undefined>)[Symbol.for('@lexical/yjs/UndoManager')];
+  if (!stack) return;
+  const touches = (item: UndoManager['undoStack'][number]) =>
+    clients.some((client) => item.insertions.clients.has(client) || item.deletions.clients.has(client));
+  // The body's one stack spans the note's manager and each payload's (undo.ts): drop from both levels.
+  for (const manager of stack.managers) {
+    manager.undoStack = manager.undoStack.filter((item) => !touches(item));
+    manager.redoStack = manager.redoStack.filter((item) => !touches(item));
+  }
+  for (const steps of [stack.undone, stack.redone]) {
+    for (let i = steps.length - 1; i >= 0; i -= 1) {
+      steps[i].entries = steps[i].entries.filter((entry) => !touches(entry.item));
+      if (steps[i].entries.length === 0) steps.splice(i, 1);
+    }
+  }
+}
+
+/** Whether `role` may stay in `mode`: Review for any reader, Edit for any role but a suggester, Suggest from suggester. */
+const allows = (mode: EditMode, role: Role | null): boolean =>
+  role !== null && (mode === 'review' || (mode === 'edit' ? role !== 'suggester' : can(role, 'suggest')));
+
+class PaneBinding implements SuggestPane {
+  #state: PaneState = { docState: 'binding', bodyState: 'unbound', bodyVisible: false, resetting: false, revision: 0, hasText: false, mode: 'edit', suggestSent: 0, suggestRefused: 0 };
   readonly #listeners = new Set<() => void>();
   #session: DocSession | null = null;
   #editor: LexicalEditor | null = null;
   #fields: DocFields | null = null;
   #trashed = false;
   canWrite = true;
+  #mode: EditMode;
+  #mount: SuggestMount | ReviewMount | null = null;
+  /** The mounted doc (F or C) is filled; Edit mode's B is ready at first sync. */
+  #mountReady = true;
+  /** Suggest input closed by a refusal until F is rebuilt. */
+  #inputClosed = false;
+  #reviewFallback = false;
+  /** A remount is waiting for acks or underway: a mode switch, a rebuilt F or C. */
+  #switching = false;
+  #target: EditMode;
+  #caret: CaretMark | null = null;
+  readonly #mountListeners = new Set<() => void>();
 
   #role: Role | null;
   /** `fromTrash`: the editor holds the Trash view's REST content, which is cleared before the plugin binds. */
   constructor(readonly docId: string, fromTrash = false) {
     this.#role = knownRole(docId);
+    this.#mode = modeFor(docId, this.#role);
+    this.#target = this.#mode;
+    this.#state = { ...this.#state, mode: this.#mode };
     if (fromTrash) this.#state = { ...this.#state, resetting: true };
   }
 
+  /** Follows mode requests for this doc while the pane shows it; returns the release. */
+  watchModes(): () => void {
+    const stop = subscribeModes(() => this.#retarget());
+    this.#retarget();
+    return () => {
+      stop();
+      showMode(this.docId, null);
+    };
+  }
+
   setRole(role: Role | null): void {
+    const known = this.#role !== null;
     this.#role = role;
+    this.#retarget(known);
     if (this.#session) this.#apply(this.#session.state);
+  }
+
+  get mode(): EditMode {
+    return this.#mode;
+  }
+
+  get mount(): SuggestMount | ReviewMount | null {
+    return this.#mount;
+  }
+
+  get body(): Doc | null {
+    return this.#session?.doc ?? null;
+  }
+
+  get bodyOpen(): boolean {
+    return this.#state.bodyState === 'live' || this.#state.bodyState === 'readonly';
+  }
+
+  takeCaret(): CaretMark | null {
+    // The editor leaving is not the one the caret goes back into.
+    if (this.#switching) return null;
+    const caret = this.#caret;
+    this.#caret = null;
+    return caret;
+  }
+
+  keepCaret(mark: CaretMark): void {
+    this.#caret = mark;
+  }
+
+  readonly subscribeMount = (listener: () => void): (() => void) => {
+    this.#mountListeners.add(listener);
+    return () => this.#mountListeners.delete(listener);
+  };
+
+  #mountChanged(): void {
+    const suggesting = this.#mount instanceof SuggestMount ? this.#mount : null;
+    this.set({ suggestSent: suggesting?.fork.sent ?? 0, suggestRefused: suggesting?.refusals ?? 0 });
+    for (const listener of [...this.#mountListeners]) listener();
+  }
+
+  /**
+   * The mode the pane should show changed (a request, or the role): switch once every edit is acknowledged. A role
+   * changed in place (a demotion) keeps the mode while the new role allows it, so a demoted editor stays on the body,
+   * read-only, and is told why.
+   */
+  #retarget(roleChanged = false): void {
+    if (roleChanged && allows(this.#target, this.#role)) return;
+    const target = modeFor(this.docId, this.#role);
+    if (target === this.#target) return;
+    this.#target = target;
+    if (!this.#session && !this.#switching) {
+      this.#mode = target;
+      this.set({ mode: target });
+      return;
+    }
+    this.#remount();
+  }
+
+  /** Remounts the plugin on a fresh doc for the target mode once the DocDO acks every edit (§5 mode switches). */
+  #remount(): void {
+    if (this.#switching) return;
+    this.#switching = true;
+    const go = () => {
+      // Kept on body text, which every mode's doc holds: never on a pending insert.
+      const mount = this.#mount;
+      const pending = mount instanceof SuggestMount ? mount.fork.ownClients() : mount instanceof ReviewMount ? new Set(mount.clients.keys()) : new Set<number>();
+      if (this.#editor) this.#caret = captureCaret(this.#editor, pending) ?? this.#caret;
+      this.#mode = this.#target;
+      this.set({ resetting: true, mode: this.#mode });
+    };
+    const session = this.#session;
+    if (!session || !session.state.unacked) {
+      go();
+      return;
+    }
+    const stop = session.subscribe((state) => {
+      if (state.unacked) return;
+      stop();
+      go();
+    });
+  }
+
+  /**
+   * Called from the plugin's provider factory: the doc and provider this mount binds. Edit binds the session's B;
+   * Suggest a fork F written as suggestion records; Review the composite C, read-only.
+   */
+  mountFor(session: DocSession): { doc: Doc; provider: Provider } {
+    this.#mount = null;
+    this.#inputClosed = false;
+    this.#mountReady = this.#mode === 'edit';
+    if (this.#mode === 'edit') return { doc: session.doc, provider: session.provider as unknown as Provider };
+    if (this.#mode === 'suggest') {
+      const state = auth.get();
+      const me = state.status === 'signed-in' ? state.user.id : '';
+      const mount: SuggestMount = new SuggestMount(session, me, {
+        ready: () => {
+          this.#mountReady = true;
+          this.#apply(session.state);
+          this.#mountChanged();
+        },
+        refused: (unsaved) => {
+          // Input closes in this tick; F is rebuilt once the DocDO has answered everything in flight.
+          this.#inputClosed = true;
+          this.#editor?.setEditable(false);
+          if (unsaved.length) offerUnsaved(this.docId, unsaved);
+          this.#apply(session.state);
+          this.#mountChanged();
+          this.#remount();
+        },
+        rebuild: () => this.#remount(),
+        closed: (event) => dropUndo(this.#editor, event.clients),
+        change: () => this.#mountChanged(),
+      });
+      mount.editor = this.#editor;
+      // A pane letting go with suggestions unanswered leaves the mount delivering them (A§10.1).
+      aliasProvider(mount.provider, session, mount.doc, () => mount.retire((unsaved) => {
+        if (unsaved.length) offerUnsaved(this.docId, unsaved);
+      }));
+      this.#mount = mount;
+      return { doc: mount.doc, provider: mount.provider as unknown as Provider };
+    }
+    const mount: ReviewMount = new ReviewMount(session, this.#reviewFallback, {
+      remount: (fallback) => {
+        this.#reviewFallback = fallback;
+        this.#remount();
+      },
+      change: () => {
+        if (!this.#mountReady) {
+          this.#mountReady = true;
+          this.#apply(session.state);
+        }
+        this.#mountChanged();
+      },
+    });
+    aliasProvider(mount.provider, session, mount.doc, () => mount.dispose());
+    this.#mount = mount;
+    return { doc: mount.doc, provider: mount.provider as unknown as Provider };
   }
 
   trash(trashed: boolean): void {
@@ -138,8 +338,10 @@ class PaneBinding {
     this.#session = session;
     if (this.#trashed) session.end('deleted');
     this.set({ docState: 'binding' });
+    showMode(this.docId, this.#mode);
     session.subscribe((state) => this.#apply(state));
     this.#apply(session.state);
+    this.#mountChanged();
   }
 
   /** The gate's editor; the body opens once both it and the first sync are here. */
@@ -159,7 +361,7 @@ class PaneBinding {
   attachFields(fields: DocFields): () => void {
     this.#fields = fields;
     const session = this.#session;
-    if (session && this.#state.docState === 'live') fields.bind(session.docId, session.doc, () => this.#state.bodyState === 'live');
+    if (session && this.#state.docState === 'live') fields.bind(session.docId, session.doc, () => this.#state.bodyState === 'live' && this.#mode === 'edit');
     return () => {
       if (this.#fields === fields) this.#fields = null;
       fields.unbind(this.#session?.doc ?? null);
@@ -176,7 +378,14 @@ class PaneBinding {
       $setSelection(null);
     }, { discrete: true });
     this.#session = null;
-    this.set({ resetting: false, revision: this.#state.revision + 1 });
+    this.#mount = null;
+    this.#switching = false;
+    this.set({ resetting: false, revision: this.#state.revision + 1, mode: this.#mode });
+    this.#mountChanged();
+    // A request made while this switch waited is served next.
+    queueMicrotask(() => {
+      if (this.#target !== this.#mode) this.#remount();
+    });
   }
 
   #apply(state: SessionState): void {
@@ -184,16 +393,18 @@ class PaneBinding {
     if (!editor) return;
     const terminal = terminalOf(this.docId);
     this.canWrite = state.canWrite;
-    const bodyState: BindingState = terminal ? 'terminal' : !state.synced || state.resync || !this.#role ? 'unbound' : state.canWrite && can(this.#role, 'edit') && !state.writePaused ? 'live' : 'readonly';
+    // Suggest writes only records, so a suggester's session (which cannot write the body) still types into F.
+    const writes = this.#mode === 'edit' ? state.canWrite && can(this.#role, 'edit') : this.#mode === 'suggest' && can(this.#role, 'suggest') && !this.#inputClosed;
+    const bodyState: BindingState = terminal ? 'terminal' : !state.synced || state.resync || !this.#role || !this.#mountReady ? 'unbound' : writes && !state.writePaused ? 'live' : 'readonly';
     editor.setEditable(bodyState === 'live');
     closeRoot(editor.getRootElement(), bodyState);
     editor.getRootElement()?.closest(`[${EDITOR_PANE_ATTR}]`)?.setAttribute(SYNC_UNACKED_ATTR, state.unacked ? '1' : '0');
     const session = this.#session;
-    if (session && state.synced && !state.resync) this.#fields?.bind(session.docId, session.doc, () => this.#state.bodyState === 'live');
+    if (session && state.synced && !state.resync) this.#fields?.bind(session.docId, session.doc, () => this.#state.bodyState === 'live' && this.#mode === 'edit');
     this.set({
       bodyState,
-      bodyVisible: state.synced && !state.resync,
-      resetting: state.resync,
+      bodyVisible: state.synced && !state.resync && this.#mountReady,
+      resetting: state.resync || (this.#switching && this.#state.resetting),
       docState: terminal ? 'terminal' : state.retrying ? 'retrying' : !state.synced || state.resync ? 'binding' : state.connection === 'offline' ? 'offline' : 'live',
     });
   }
@@ -300,14 +511,15 @@ function DocBinding({ docId, binding }: { docId: string; binding: PaneBinding })
       // Refused when another pane took the doc in the same commit: the plugin renders nothing without a provider,
       // and the owner gate above unmounts it until the doc is free.
       if (!session) return undefined as unknown as Provider;
-      docMap.set(id, session.doc);
       binding.attach(session);
+      const mounted = binding.mountFor(session);
+      docMap.set(id, mounted.doc);
       if (!session.stopPresence) {
         const stopPresence = startPresence(id, session.provider);
         const stopCursors = cursors.start(session.provider);
         session.stopPresence = () => { stopPresence(); stopCursors(); };
       }
-      return session.provider as unknown as Provider;
+      return mounted.provider;
     },
     [binding, cursors],
   );
@@ -328,6 +540,7 @@ function DocBinding({ docId, binding }: { docId: string; binding: PaneBinding })
         />
       ) : null}
       <BindingGate binding={binding} />
+      <SuggestPlugin pane={binding} />
     </LexicalCollaboration>
   );
 }
@@ -336,8 +549,8 @@ export interface MossMultiPane {
   /** Every note the web opens is bound to its doc, so moss's REST content paths never run; a note opened from
    * Trash is the one exception, read-only. */
   bound: boolean;
-  /** MarkdownEditor's `collaboration` prop. */
-  collaboration: { plugin: ReactNode } | null;
+  /** MarkdownEditor's `collaboration` prop; `backgroundWriters` is false outside Edit mode. */
+  collaboration: { plugin: ReactNode; backgroundWriters: boolean } | null;
   /** The body is bound, synced and editable; moss's pending body focus waits for it. */
   bodyLive: boolean;
   /** Synced content stays visible when editing pauses or the session ends. */
@@ -383,18 +596,24 @@ export function useMossMultiPane(note: { id: string; trashedAt?: number | null }
   // A fresh binding for every doc the pane shows and every restore of it, none for the Trash view.
   const binding = useMemo(() => (docId && !trashView ? new PaneBinding(docId, restored) : null), [docId, trashView, restored, epoch]);
   useLayoutEffect(() => { binding?.trash(trashed); }, [binding, trashed]);
+  useEffect(() => binding?.watchModes(), [binding]);
   useLayoutEffect(() => binding?.setRole(role), [binding, role]);
   const state = usePaneState(binding);
   if (state.bodyVisible) synced.current.synced = true;
   const terminal = useTerminal(docId);
-  const collaboration = useMemo(
-    () => (docId && binding ? { plugin: <DocBinding key={`${docId}:${epoch}`} docId={docId} binding={binding} /> } : null),
+  const plugin = useMemo(
+    () => (docId && binding ? <DocBinding key={`${docId}:${epoch}`} docId={docId} binding={binding} /> : null),
     [binding, docId, epoch],
   );
+  // Moss's background writers (A§10.10) run only in Edit: in Suggest they would record their own rewrites (§5).
+  const backgroundWriters = state.mode === 'edit';
+  const collaboration = useMemo(() => (plugin ? { plugin, backgroundWriters } : null), [plugin, backgroundWriters]);
   const live = state.bodyState === 'live' && !terminal;
+  // The title and Properties are the body's own fields: read-only while suggesting or reviewing (§5).
+  const titleLive = live && state.mode === 'edit';
   useLayoutEffect(() => fields.title.show(docId), [fields, docId]);
   useLayoutEffect(() => binding?.attachFields(fields), [binding, fields]);
-  useLayoutEffect(() => fields.title.setOpen(live), [fields, live]);
+  useLayoutEffect(() => fields.title.setOpen(titleLive), [fields, titleLive]);
   if (docId && trashView) {
     return {
       bound: false,
@@ -414,12 +633,12 @@ export function useMossMultiPane(note: { id: string; trashedAt?: number | null }
   return {
     bound: true,
     readOnly: !live,
-    noticeBand: <ConnectionNotice docId={docId} />,
+    noticeBand: <><ConnectionNotice docId={docId} /><SuggestUnsavedBand docId={docId} /></>,
     collaboration,
     bodyLive: live,
     bodyVisible: state.bodyVisible,
-    titleLive: live,
-    titleBinding: terminal ? 'terminal' : live ? 'live' : state.bodyState,
+    titleLive,
+    titleBinding: terminal ? 'terminal' : titleLive ? 'live' : live ? 'readonly' : state.bodyState,
     title: fields.title,
     hasBodyText: state.hasText,
     paneProps: docId
@@ -427,15 +646,17 @@ export function useMossMultiPane(note: { id: string; trashedAt?: number | null }
           [EDITOR_PANE_ATTR]: '',
           [DOC_ID_ATTR]: docId,
           ...(role ? { [ROLE_ATTR]: role } : {}),
+          [EDIT_MODE_ATTR]: state.mode,
+          ...(state.mode === 'suggest' ? { [SUGGEST_SENT_ATTR]: String(state.suggestSent), [SUGGEST_REFUSED_ATTR]: String(state.suggestRefused) } : {}),
           [DOC_STATE_ATTR]: terminal ? 'terminal' : state.docState,
           ...(terminal ? { [TERMINAL_REASON_ATTR]: terminal } : {}),
         }
       : {},
-    topBarCollab: docId ? <TopBarCollab docId={docId} /> : null,
+    topBarCollab: docId ? <><SuggestModeChip docId={docId} /><TopBarCollab docId={docId} /></> : null,
   };
 }
 
-const CLOSED: PaneState = { docState: 'binding', bodyState: 'unbound', bodyVisible: false, resetting: false, revision: 0, hasText: false };
+const CLOSED: PaneState = { docState: 'binding', bodyState: 'unbound', bodyVisible: false, resetting: false, revision: 0, hasText: false, mode: 'edit', suggestSent: 0, suggestRefused: 0 };
 
 /**
  * The binding's state as React state rather than a store snapshot: going live must commit in the same render as the

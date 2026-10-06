@@ -96,6 +96,20 @@ it('three failed handshakes stop the ladder and ask REST before retrying', async
   expect(terminalOf('doc')).toBe('unavailable');
   expect(session.provider.shouldConnect).toBe(false);
 });
+it('a suggester whose handshakes keep failing keeps reconnecting with its suggestions unsent, never view-only', async () => {
+  const request = vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ role: 'suggester' }));
+  latest().open(); session.provider.synced = true;
+  latest().ended(1006);
+  session.sendSuggest({ t: 'suggest-ops', record: 'r1', update: 'AA==' });
+  for (let i = 0; i < 3; i++) { await vi.advanceTimersByTimeAsync(1000); latest().ended(1006); }
+  await vi.advanceTimersByTimeAsync(300);
+  expect(request).toHaveBeenCalledTimes(1);
+  const count = sockets.length;
+  await vi.advanceTimersByTimeAsync(2_000);
+  expect(sockets.length, 'it connects again after asking REST').toBeGreaterThan(count);
+  expect(session.state).toMatchObject({ resync: false, unacked: true });
+  expect(terminalOf('doc')).toBeNull();
+});
 it('a demotion requests a fresh read-only binding', async () => {
   vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ role: 'viewer' }));
   latest().open(); session.provider.synced = true;
@@ -291,6 +305,26 @@ it('after a reconnect, a write made before the server\'s step 1 waits behind the
   const sent = syncSent(third).length;
   title.insert(0, '#');
   expect(syncSent(third)).toHaveLength(sent + 1);
+});
+it('a suggest request made on a reconnected socket before its sync waits for the fork\'s resume, never naming the old lease', async () => {
+  const suggestSent = (socket: FakeSocket) => socket.sent.filter((frame): frame is string => typeof frame === 'string' && frame.includes('"suggest-'));
+  const first = latest();
+  first.open(); session.provider.synced = true;
+  session.sendSuggest({ t: 'suggest-lease', fork: 'fork-0001' });
+  expect(suggestSent(first)).toHaveLength(1);
+  first.ended(1006);
+  await vi.advanceTimersByTimeAsync(1_000);
+  const second = latest();
+  expect(second).not.toBe(first);
+  second.open();
+  // Typed between the new socket's open and its sync: the leases still belong to the dropped connection.
+  session.sendSuggest({ t: 'suggest-ops', record: 'r1', update: 'AA==' });
+  expect(suggestSent(second), 'nothing goes out ahead of the resume').toEqual([]);
+  expect(session.state.unacked).toBe(true);
+  session.provider.synced = true;
+  session.resendSuggest(() => session.sendSuggest({ t: 'suggest-lease', resume: [7], fork: 'fork-0001' }));
+  expect(suggestSent(second), 'the resume goes first').toHaveLength(1);
+  expect(suggestSent(second)[0]).toContain('"resume"');
 });
 
 it('a doc left terminal deleted by a trash that never committed reopens editable when its workspace says it changed', async () => {

@@ -37,9 +37,8 @@ export const SHARES_PER_HOUR = 20;
 const HOUR_MS = 3_600_000;
 
 const EMAIL = /^[^\s@]+@[^\s@]+$/;
-/** The dialog's roles, plus suggester: the DocDO takes suggestions from M5 (T5.2) before the dialog offers it (T5.1). */
-const MEMBER_API_ROLES: readonly Role[] = [...SHARE_ROLES, 'suggester'];
-const isShareRole = (value: unknown): value is ShareRole | 'suggester' => typeof value === 'string' && (MEMBER_API_ROLES as readonly string[]).includes(value);
+const MEMBER_API_ROLES: readonly Role[] = SHARE_ROLES;
+const isShareRole = (value: unknown): value is ShareRole => typeof value === 'string' && (MEMBER_API_ROLES as readonly string[]).includes(value);
 const lower = (a: Role, b: Role) => ROLES.indexOf(a) < ROLES.indexOf(b);
 
 const noun = (target: MemberTarget) => (target.type === 'doc' ? 'note' : 'folder');

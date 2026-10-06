@@ -7,9 +7,12 @@ export class SuggestLedger {
   #inFlight: SuggestRequest[] = [];
   #unsent: SuggestRequest[] = [];
 
-  /** Some suggest request has no reply yet, so `data-sync-unacked` stays 1. */
+  /** The fork still owes requests it holds back (behind a resume it will ask again). */
+  owed = false;
+
+  /** Some suggest request has no reply yet, or one is still owed, so `data-sync-unacked` stays 1. */
   get unacked(): boolean {
-    return this.#inFlight.length + this.#unsent.length > 0;
+    return this.owed || this.#inFlight.length + this.#unsent.length > 0;
   }
 
   sent(request: SuggestRequest): void {

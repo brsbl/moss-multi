@@ -2,6 +2,7 @@ import { $collectTableLayoutMetadata, $collectTabGroupLayoutMetadata, type Local
 import type { Binding } from '@lexical/yjs';
 import { $getRoot, $isElementNode, SKIP_DOM_SELECTION_TAG, type LexicalEditor, type LexicalNode } from 'lexical';
 import { $isTableNode } from '@lexical/table';
+import { publishBinding } from './binding-registry.ts';
 
 interface Tabs extends LexicalNode {
   getTabWidths(): (number | null)[];
@@ -17,6 +18,7 @@ const keyFor = (id: string) => `moss-multi:layout-identities:${id}`;
 
 /** Yjs item identities survive reloads and peer insertions; Lexical keys and ordinals do not. */
 export function bindLocalLayout(editor: LexicalEditor, binding: Binding): () => void {
+  const unpublish = publishBinding(editor, binding);
   let saved: Record<string, Layout> = {};
   try { saved = JSON.parse(localStorage.getItem(keyFor(binding.id)) ?? '{}') ?? {}; } catch { /* unavailable storage */ }
   let legacy: LocalLayoutMetadata | null = null;
@@ -92,5 +94,5 @@ export function bindLocalLayout(editor: LexicalEditor, binding: Binding): () => 
       }, { tag: [TAG, SKIP_DOM_SELECTION_TAG], discrete: true });
     });
   });
-  return () => { stopped = true; stop(); };
+  return () => { stopped = true; stop(); unpublish(); };
 }

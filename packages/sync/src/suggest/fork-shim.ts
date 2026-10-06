@@ -2,7 +2,7 @@
 // body and of each payload doc it touches (docs/design/registers.md), plus the author's own records, all written under
 // the active lease. Every F transaction, in the body or a payload doc, whose origin is not one of the shim's own is
 // forwarded as `suggest-ops` with the doc it was made in, so the binding, the payload writers (first texts and field
-// edits) and the UndoManager are all recorded without an allowlist. Test-only until T5.1 builds the client on it.
+// edits) and the UndoManager are all recorded without an allowlist. The spike's headless harness; the client's fork is client.ts.
 import { createBinding, syncLexicalUpdateToYjs, syncYjsChangesToLexical, type Binding, type Provider } from '@lexical/yjs';
 import { registerList } from '@lexical/list';
 import { $normalizeFormatWhitespace } from '@moss-desktop/renderer/editor/markdown/format-whitespace';
@@ -14,9 +14,9 @@ import { excludedPropertiesFor } from '../excluded-properties.ts';
 import { attachPayloadDocs, PAYLOAD_LOADED, PayloadDocs } from '../payload-docs.ts';
 import { bindRegisters } from '../registers.ts';
 import { payloadSourceOf } from '../server-doc.ts';
+import { SHIM_BODY_APPLY, SHIM_RECORD_APPLY } from './client.ts';
 
-export const SHIM_BODY_APPLY = 'shim-body-apply';
-export const SHIM_RECORD_APPLY = 'shim-record-apply';
+export { SHIM_BODY_APPLY, SHIM_RECORD_APPLY };
 
 const noop = () => {};
 const provider = {

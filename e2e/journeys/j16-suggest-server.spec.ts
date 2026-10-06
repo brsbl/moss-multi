@@ -3,7 +3,7 @@
 // refused by role before Yjs applies it: the server export keeps every word, the owner's window never loses them,
 // and the suggester's window says the change was refused in its notice band.
 import * as Y from 'yjs';
-import { APP_STATE_ATTR, BODY_BINDING_ATTR, INPUT_REFUSAL_ATTR, SYNC_UNACKED_ATTR } from '../lib/contract.ts';
+import { APP_STATE_ATTR, BODY_BINDING_ATTR, EDIT_MODE_ATTR, INPUT_REFUSAL_ATTR, SYNC_UNACKED_ATTR } from '../lib/contract.ts';
 import { cookieHeader, openDocClient } from '../lib/doc-client.ts';
 import { grantDoc } from '../lib/grants.ts';
 import { signIn } from '../lib/principals.ts';
@@ -51,7 +51,9 @@ test('j16-suggest-server: a forged raw frame from a suggester deleting original 
   await ben.goto(`/d/${docId}`);
   await ben.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: BOOT_TIMEOUT });
   await actors.requireDistinct(2);
-  await expect(ui.body(ben, docId), 'a suggester reads the note').toHaveAttribute(BODY_BINDING_ATTR, 'readonly', { timeout: BIND_TIMEOUT });
+  // A suggester's window opens in Suggest mode, bound to a private fork; the forged frame bypasses it.
+  await expect(ui.pane(ben, docId)).toHaveAttribute(EDIT_MODE_ATTR, 'suggest', { timeout: BIND_TIMEOUT });
+  await expect(ui.body(ben, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'live', { timeout: BIND_TIMEOUT });
   await expect(ui.body(ben, docId)).toContainText(ORIGINAL);
 
   // Ben's own synced state, read over a protocol-level socket of his, makes the forged delete.
