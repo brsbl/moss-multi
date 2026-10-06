@@ -51,8 +51,8 @@ export function CommentReactions({ noteId, comment }: { noteId: string; comment:
   );
 }
 
-/** The quick reactions at the top of a message's actions menu, for someone who can comment. */
-export function QuickReactions({ noteId, comment }: { noteId: string; comment: { id: string } }): ReactNode {
+/** The quick reactions at the top of a message's actions menu, for someone who can comment; `separated` when items follow. */
+export function QuickReactions({ noteId, comment, separated }: { noteId: string; comment: { id: string }; separated: boolean }): ReactNode {
   const commentable = useCanComment(noteId);
   if (!commentable) return null;
   const me = myPrincipalId();
@@ -74,7 +74,7 @@ export function QuickReactions({ noteId, comment }: { noteId: string; comment: {
           );
         })}
       </div>
-      <DropdownMenuSeparator />
+      {separated ? <DropdownMenuSeparator /> : null}
     </>
   );
 }

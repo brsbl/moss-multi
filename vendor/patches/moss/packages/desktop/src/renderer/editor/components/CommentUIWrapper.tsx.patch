@@ -121,8 +121,26 @@ diff --git a/packages/desktop/src/renderer/editor/components/CommentUIWrapper.ts
        rootElement?.addEventListener('mouseout', handleEditorCommentMouseOut);
      });
    }, [editor, handleEditorCommentMouseOut, handleEditorCommentMouseOver]);
-@@ -533,6 +570,8 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
+@@ -531,8 +568,26 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
+     }
+   }, [activeCommentState.comment, commentThreadFilter, getNewestRootComment, handlePopoverOpenChange]);
  
++  // moss-multi seam: comments (comments.md §12): a peer's delete arrives as records; an open thread whose comment is
++  // gone follows its promoted reply (the oldest that is still here) or its root, and closes when the thread is gone.
++  const previousCommentsMapRef = useRef(commentsMap);
++  useEffect(() => {
++    const previous = previousCommentsMapRef.current;
++    previousCommentsMapRef.current = commentsMap;
++    const active = activeCommentState.comment;
++    if (!active || commentsMap[active.id] || !previous[active.id]) return;
++    const next = Object.values(previous)
++      .filter((c) => c.parentId === active.id && commentsMap[c.id])
++      .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
++      .map((c) => commentsMap[c.id])[0] ?? (active.parentId ? commentsMap[active.parentId] : undefined);
++    if (next) setActiveComment((state) => ({ ...state, comment: next }));
++    else handlePopoverOpenChange(false);
++  }, [activeCommentState.comment, commentsMap, handlePopoverOpenChange, setActiveComment]);
++
    // Handle comment update - update atom (persists on next content save)
    const handleUpdate = useCallback((commentId: string, text: string, imageUrls?: string[]) => {
 +    mutate(editor, { type: 'edit', id: commentId, text }); // moss-multi seam: comments: the record arrives from the server
@@ -130,7 +148,7 @@ diff --git a/packages/desktop/src/renderer/editor/components/CommentUIWrapper.ts
      const currentMap = store.get(noteCommentsMapAtom(noteId));
      const existingComment = currentMap[commentId];
      if (!existingComment) return;
-@@ -562,12 +601,27 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
+@@ -562,12 +617,27 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
      if (store.get(activeCommentAtom(noteId)).comment?.id === commentId) {
        setActiveComment(prev => ({ ...prev, comment: updatedComment }));
      }
@@ -159,7 +177,7 @@ diff --git a/packages/desktop/src/renderer/editor/components/CommentUIWrapper.ts
      const deletion = applyCommentDeletion(currentMap, commentId, scope);
      if (!deletion.changed) return;
  
-@@ -591,6 +645,7 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
+@@ -591,6 +661,7 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
      const trimmed = text.trim();
      const normalizedImageUrls = imageUrls?.filter((url) => url.trim().length > 0) ?? [];
      if (!trimmed && normalizedImageUrls.length === 0) return false;
@@ -167,7 +185,7 @@ diff --git a/packages/desktop/src/renderer/editor/components/CommentUIWrapper.ts
      const currentMap = store.get(noteCommentsMapAtom(noteId));
      const parent = currentMap[parentId];
      if (!parent) return false;
-@@ -616,6 +671,8 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
+@@ -616,6 +687,8 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
    }, [noteId, store]);
  
    const handleSetThreadResolved = useCallback((rootId: string, resolved: boolean) => {
@@ -176,7 +194,7 @@ diff --git a/packages/desktop/src/renderer/editor/components/CommentUIWrapper.ts
      const currentMap = store.get(noteCommentsMapAtom(noteId));
      const result = setCommentSubtreeResolvedState(currentMap, rootId, {
        resolved,
-@@ -758,10 +815,10 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
+@@ -758,10 +831,10 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
              collisionBoundary={editor.getRootElement()?.closest('.canvas-scroll') ?? null}
              onUpdate={handleUpdate}
              onDelete={handleDelete}

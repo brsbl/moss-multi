@@ -569,6 +569,22 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
     }
   }, [activeCommentState.comment, commentThreadFilter, getNewestRootComment, handlePopoverOpenChange]);
 
+  // moss-multi seam: comments (comments.md §12): a peer's delete arrives as records; an open thread whose comment is
+  // gone follows its promoted reply (the oldest that is still here) or its root, and closes when the thread is gone.
+  const previousCommentsMapRef = useRef(commentsMap);
+  useEffect(() => {
+    const previous = previousCommentsMapRef.current;
+    previousCommentsMapRef.current = commentsMap;
+    const active = activeCommentState.comment;
+    if (!active || commentsMap[active.id] || !previous[active.id]) return;
+    const next = Object.values(previous)
+      .filter((c) => c.parentId === active.id && commentsMap[c.id])
+      .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
+      .map((c) => commentsMap[c.id])[0] ?? (active.parentId ? commentsMap[active.parentId] : undefined);
+    if (next) setActiveComment((state) => ({ ...state, comment: next }));
+    else handlePopoverOpenChange(false);
+  }, [activeCommentState.comment, commentsMap, handlePopoverOpenChange, setActiveComment]);
+
   // Handle comment update - update atom (persists on next content save)
   const handleUpdate = useCallback((commentId: string, text: string, imageUrls?: string[]) => {
     mutate(editor, { type: 'edit', id: commentId, text }); // moss-multi seam: comments: the record arrives from the server

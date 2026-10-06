@@ -383,7 +383,7 @@ function CommentMessage({
                     </button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end" sideOffset={4} className="min-w-32">
-                    <QuickReactions noteId={noteId} comment={comment} />{/* moss-multi seam: comments */}
+                    <QuickReactions noteId={noteId} comment={comment} separated={canEdit || Boolean(onSendToAgent)} />{/* moss-multi seam: comments */}
                     {canEdit && (
                       <DropdownMenuItem
                         className="gap-2 text-xs"

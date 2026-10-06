@@ -12,7 +12,7 @@ diff --git a/packages/desktop/src/renderer/editor/components/CommentTextContent.
                variant="mention"
                size="mini"
 -              icon={segment.mentionType === 'folder' ? Folder : FileText}
-+              icon={segment.mentionType === 'person' ? User : segment.mentionType === 'folder' ? Folder : FileText /* moss-multi seam: comments */}
++              icon={segment.mentionType === 'person' ? User : segment.mentionType === 'folder' ? Folder : FileText /* moss-multi seam: comments (comments.md §12): a person mention */}
                iconClassName={segment.mentionType === 'folder' ? 'fill-file-link-primary/20' : undefined}
                maxLength={mentionMaxLength}
              >

@@ -22,7 +22,7 @@ export function CommentTextContent({
             <InlinePill
               variant="mention"
               size="mini"
-              icon={segment.mentionType === 'person' ? User : segment.mentionType === 'folder' ? Folder : FileText /* moss-multi seam: comments */}
+              icon={segment.mentionType === 'person' ? User : segment.mentionType === 'folder' ? Folder : FileText /* moss-multi seam: comments (comments.md §12): a person mention */}
               iconClassName={segment.mentionType === 'folder' ? 'fill-file-link-primary/20' : undefined}
               maxLength={mentionMaxLength}
             >
