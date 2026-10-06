@@ -519,7 +519,7 @@ export class DocDO extends YServer<SyncEnv> {
         return;
       }
       const { changes, missing, deletes } = classifySync(this.document, frame.update, decoded);
-      const guarded = () => this.#comments?.check(decoded) ?? false;
+      const guarded = () => !!this.#comments?.check(decoded);
       if (changes && this.#refused(connection, attachment, () => this.#overCap(store, frame.update), missing, guarded)) return;
       // Gate 2b on every step 2 or update, inert or not, whatever the role: no client frame reaches `comments`
       // (comments.md §3, I1). O(frame · log); it follows no references.
