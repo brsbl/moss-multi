@@ -7,9 +7,13 @@ import '@moss-desktop/renderer/editor/plugins/code-block/prism-setup';
 import './viewer.css';
 
 export { mountMossViewer } from './mount.tsx';
+export { MOSS_VIEWER_API, MOSS_VIEWER_INFO } from './info.ts';
 export type {
+  MossSelection,
   MossViewerAssetKind,
+  MossViewerFeature,
   MossViewerHandle,
+  MossViewerInfo,
   MossViewerNote,
   MossViewerOptions,
   MossViewerServices,
@@ -17,6 +21,3 @@ export type {
   MossViewerTheme,
   MossViewerUnfurl,
 } from './types.ts';
-
-/** The entry contract's version; viewer.json carries it too. */
-export const MOSS_VIEWER_API = 1;

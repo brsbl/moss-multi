@@ -4,7 +4,7 @@
 // is measured by scripts/measure-converter.mjs.
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
-import { COMMENT_BUDGET, liveUnits, mintAnchor, OVERLAP_CAP, TOKEN_BUDGET, type FrameStats } from '@moss-multi/core/anchor-frame';
+import { COMMENT_BUDGET, liveUnits, mintAnchor, OVERLAP_CAP, TOKEN_BUDGET, WALK_BUDGET, type FrameStats } from '@moss-multi/core/anchor-frame';
 import { CommentsHost } from '../../src/doc/comments-host.ts';
 import { forged, raw } from './raw-frames.ts';
 
@@ -357,6 +357,46 @@ function longRestoreCandidate(length: number): { stats: FrameStats; orphaned: nu
   return { stats: counted(host), orphaned: [...host.records()].filter(([, anchor]) => anchor.status === 'orphaned').length };
 }
 
+/**
+ * One paragraph of `WALK_BUDGET + 904` one-character items (alternating writers, so they never merge), written in
+ * document order ('append') or reversed ('prepend', so the frame meets the middle comment first). Short comments near
+ * its start and at its middle; then one frame replaces the paragraph's text with the same text.
+ */
+function fragmentedReplaced(order: 'append' | 'prepend'): Record<'start' | 'middle', string | undefined> {
+  const total = WALK_BUDGET + 904;
+  const letter = (n: number) => String.fromCharCode(97 + (n % 26));
+  const server = new Y.Doc();
+  const root = server.get('root', Y.XmlText);
+  server.transact(() => {
+    addParagraph(root, 0, 'Head.');
+    addParagraph(root, 1, '');
+    addParagraph(root, 2, 'Tail.');
+  });
+  const own = server.clientID;
+  for (let k = 0; k < total; k += 1) {
+    server.clientID = k % 2 ? 2_000_001 : 2_000_002;
+    const at = order === 'append' ? k : total - 1 - k;
+    server.transact(() => paragraph(server, 1).insert(order === 'append' ? paragraph(server, 1).length : 1, letter(at)));
+  }
+  server.clientID = own;
+  const { host, client, send } = hosted(server);
+  const units: { item: Y.Item; off: number }[] = [];
+  for (let item = paragraph(server, 1)._start; item; item = item.right) {
+    if (item.content instanceof Y.ContentString) units.push({ item, off: 0 });
+  }
+  expect(units).toHaveLength(total);
+  const text = Array.from({ length: total }, (_, n) => letter(n)).join('');
+  const half = Math.floor(total / 2);
+  host.create('start', mintAnchor(units[10], units[20]));
+  host.create('middle', mintAnchor(units[half], units[half + 10]));
+  const frame = send(() => {
+    paragraph(client, 1).delete(1, total);
+    paragraph(client, 1).insert(1, text);
+  });
+  expect(frame.refused).toBeNull();
+  return { start: host.anchor('start')?.status, middle: host.anchor('middle')?.status };
+}
+
 describe('T4.S3 anchor cost: tokens are budgeted before a text item is expanded @p:tech-3', () => {
   it('a delete-only frame over one long text item emits tokens independent of its length, and its comments detach', () => {
     const short = longRunDeleted(100_000, 1, 4);
@@ -381,5 +421,9 @@ describe('T4.S3 anchor cost: tokens are budgeted before a text item is expanded 
     expect(long.stats.tokens, 'never past the lost passage').toBeLessThanOrEqual(256);
     expect(long.stats.tokens, 'independent of item length').toBe(short.stats.tokens);
     expect(long.orphaned).toBe(5);
+  });
+
+  it('a struct walk that runs out fails only its own comment: one nearer the middle of the same gap re-mints', () => {
+    for (const order of ['append', 'prepend'] as const) expect(fragmentedReplaced(order).middle, order).toBe('anchored');
   });
 });

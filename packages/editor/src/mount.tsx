@@ -24,14 +24,12 @@ import {
   MarkdownEditor,
   escapeHtmlEntities,
   normalizeMarkdownForImport,
-  unescapeHtmlEntities,
   type MarkdownEditorHandle,
 } from '@moss-desktop/renderer/editor/MarkdownEditor';
 import { CanvasArea } from '@moss/shared/components/layout/CanvasArea';
 import { commentDirtySignalAtom, noteCommentsMapAtom, noteEntityAtom, noteIdsAtom } from '@moss/shared/state/note-atoms';
 import { browserSplitTargetAtom, mapNoteMetadataToNoteEntity, splitTabNoteIdAtom, webEmbedLightboxTargetAtom } from '@moss/shared/state/atoms';
-import { collectReachableCommentThreadIds, extractCommentAnchorIds, hasLegacyCommentFooter, parseCommentFooter } from '@moss-desktop/common/markdown-layers';
-import { stripTableColumnWidthComments } from '@moss-desktop/renderer/editor/utils/markdown-export';
+import { collectReachableCommentThreadIds, extractCommentAnchorIds } from '@moss-desktop/common/markdown-layers';
 import { buildCommentMetadata } from '@moss-desktop/renderer/editor/utils/comment-export';
 import { hydrateComments } from '@moss-desktop/renderer/editor/utils/comment-import';
 import { flushDecoratorDrafts } from '@moss-desktop/renderer/editor/utils/decoratorDraftRegistry';
@@ -41,7 +39,9 @@ import {
   hasTrackedEditorUpdateTag,
 } from '@moss-desktop/renderer/editor/utils/editorUpdateTags';
 import { setEmbedTheme } from '@moss-multi/host/embed-theme.ts';
-import type { MossEditorHandle, MossEditorNote, MossEditorOptions, MossEditorServices, MossEditorTheme } from './contract';
+import { linesBeforeBody, offsetLines, readSelection } from '@moss-multi/host/selection.ts';
+import { ShareWithAgentBar, shareSelection } from '@moss-multi/host/share-with-agent.tsx';
+import type { MossEditorHandle, MossEditorNote, MossEditorOptions, MossEditorServices, MossEditorTheme, MossSelection } from './contract';
 import { assembleContent, type EditorContent, type RendererSnapshot } from './desktop/pipeline';
 import { noteIdKey } from './host/moss-editor-host.js';
 import { installEditorElectronApi } from './electron-api';
@@ -49,6 +49,7 @@ import { installEditorHooks } from './hooks';
 import { MOSS_EDITOR_INFO } from './info';
 import { markActive, registerEditor } from './registry';
 import { $holdSelection, $restoreSelection, type HeldSelection } from './selection-map';
+import { MOSS_EXPORT, finishBody } from './selection';
 import { EditorSession, type SessionSurface, type SessionView } from './session';
 
 type Store = ReturnType<typeof createStore>;
@@ -240,13 +241,12 @@ class FrameSurface implements SessionSurface {
     let layoutMetadata: RendererSnapshot['layoutMetadata'] = { version: 1, tableCount: 0, tables: [] };
     this.editor.getEditorState().read(
       () => {
-        markdownBody = unescapeHtmlEntities($convertToMarkdownString(MARKDOWN_EDITOR_TRANSFORMERS));
+        markdownBody = $convertToMarkdownString(MARKDOWN_EDITOR_TRANSFORMERS);
         layoutMetadata = { ...$collectTableLayoutMetadata(), ...$collectTabGroupLayoutMetadata() };
       },
       { editor: this.editor },
     );
-    if (hasLegacyCommentFooter(markdownBody)) markdownBody = parseCommentFooter(markdownBody).strippedContent;
-    markdownBody = stripTableColumnWidthComments(markdownBody);
+    markdownBody = finishBody(markdownBody);
     // pruneCommentsWithoutAnchors (2027-2067): replies survive with their root's anchor.
     const commentsMap = this.store.get(noteCommentsMapAtom(this.noteId));
     const anchorIds = extractCommentAnchorIds(markdownBody);
@@ -263,6 +263,14 @@ class FrameSurface implements SessionSurface {
       layoutMetadata,
       intents: { frontmatterMetaUpdates: {}, commentColors },
     };
+  }
+
+  /** The selection in the body, its lines counted in the file a save would write now (selection.ts). */
+  selection(): MossSelection | null {
+    const content = this.state.content;
+    if (!this.editor || !content) return null;
+    const title = this.title?.textContent ?? this.committedTitle;
+    return readSelection(this.editor, MOSS_EXPORT, (body) => offsetLines(linesBeforeBody(assembleContent(content, { title, body }), body) ?? 0));
   }
 
   private focused(editor: LexicalEditor): boolean {
@@ -461,11 +469,12 @@ function Banner({ view, session }: { view: SessionView; session: EditorSession }
   return null;
 }
 
-function EditorPane({ surface, session, noteId, onNavigateToNote }: {
+function EditorPane({ surface, session, noteId, onNavigateToNote, onShare }: {
   surface: FrameSurface;
   session: EditorSession;
   noteId: string;
   onNavigateToNote: (noteId: string, heading?: string | null) => void;
+  onShare: (() => void) | null;
 }): ReactNode {
   const state = useSyncExternalStore(surface.subscribe, surface.getState);
   const editorRef = useRef<MarkdownEditorHandle | null>(null);
@@ -533,6 +542,7 @@ function EditorPane({ surface, session, noteId, onNavigateToNote }: {
       onTouchStartCapture={swallow}
       onSubmitCapture={swallow}
     >
+      {onShare ? <ShareWithAgentBar onShare={onShare} /> : null}
       <CanvasArea className="relative min-w-0 flex-1" responsiveLayout innerClassName="flex w-full flex-col gap-1" contentClassName="mx-auto max-w-canvas-blocks" scrollContainerRef={scrollerRef}>
         <Banner view={view} session={session} />
         {view.status === 'notLoaded' ? (
@@ -632,12 +642,15 @@ export function mountMossEditor(element: HTMLElement, options: MossEditorOptions
   const onNavigateToNote = (target: string, heading?: string | null) => {
     if (target !== noteId) services.navigate?.({ kind: 'note', noteId: target, heading: heading ?? null });
   };
+  const selection = (): MossSelection | null => (live ? surface.selection() : null);
+  const share = services.shareWithAgent;
+  const onShare = share ? () => shareSelection(share, services, selection()) : null;
 
   const root = createRoot(host);
   root.render(
     <StrictMode>
       <Provider store={store}>
-        <EditorPane surface={surface} session={session} noteId={noteId} onNavigateToNote={onNavigateToNote} />
+        <EditorPane surface={surface} session={session} noteId={noteId} onNavigateToNote={onNavigateToNote} onShare={onShare} />
       </Provider>
     </StrictMode>,
   );
@@ -669,6 +682,7 @@ export function mountMossEditor(element: HTMLElement, options: MossEditorOptions
       setEmbedTheme(noteId, next);
     },
     flush: () => session.flush(),
+    selection,
     reload: (reloadOptions) => session.reload(reloadOptions),
     async unmount(unmountOptions) {
       const result = await session.unmount(unmountOptions);

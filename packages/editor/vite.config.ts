@@ -9,6 +9,7 @@ import viteReact from '@vitejs/plugin-react';
 import { defineConfig, type Plugin } from 'vite';
 import { readSource } from '../../apps/web/vite-provenance.ts';
 import { HTML_FRAME_DOCUMENT } from '../protocol/src/html-frame.ts';
+import { MOSS_EDITOR_INFO } from './src/host/moss-editor-host.js';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
@@ -89,7 +90,7 @@ function manifest(): Plugin {
         name: pkg.name,
         version: pkg.version,
         api: API,
-        features: [] as string[],
+        features: [...MOSS_EDITOR_INFO.features] as string[],
         entry: `${ENTRY}.js`,
         css: `${ENTRY}.css`,
         hostEntry: HOST_ENTRY,
