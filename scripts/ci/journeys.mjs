@@ -35,9 +35,9 @@ export const GROUPS = {
   // Media, embeds and the demo note.
   media: ['j11', 'j14'],
   // Comments, suggestions, history, agents.
-  meaning: ['j08-agents', 'j15', 'j16', 'j17', 'j18'],
-  // Reactions, mentions, edit and delete, and the comment bell.
-  social: ['j15-social'],
+  meaning: ['j15', 'j16', 'j17', 'j18'],
+  // Reactions, mentions, edit and delete, and the comment bell; sharing with an agent (meaning's WebKit shard is full).
+  social: ['j15-social', 'j08-agents'],
 };
 
 /**
