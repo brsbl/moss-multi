@@ -601,7 +601,9 @@ test.describe('embeddable editor', () => {
     await page.waitForTimeout(4_000);
     expect(server.collector.hits).toEqual([]);
     await expect(page).toHaveURL(new RegExp(`^${server.url}/fixture/`));
-    expect(seen.errors).toEqual([]);
+    // WebKit reports the sandbox's refusals of the parent and top probes as page errors; those are the refusals
+    // asserted here.
+    expect(seen.errors.filter((error) => !/The frame attempting navigation (of the top-level window )?is sandboxed/.test(error))).toEqual([]);
     expect(await page.evaluate(() => window.editorFixture.violations)).toEqual([]);
   });
 
