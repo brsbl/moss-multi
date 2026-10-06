@@ -5,7 +5,6 @@
 import type { Locator } from '@playwright/test';
 import type { LexicalEditor } from 'lexical';
 import type { Actor, Actors } from '../lib/actors.ts';
-import { SYNC_UNACKED_ATTR } from '../lib/contract.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
 const PEER_TIMEOUT = 10_000;
@@ -57,7 +56,7 @@ const restructure = (actor: Actor, id: string, change: 'move-block' | 'move-abov
 }, change);
 
 async function settled(actors: Actor[], id: string) {
-  for (const actor of actors) await expect(ui.pane(actor, id), `${actor.label}: the DocDO acks every edit`).toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout: PEER_TIMEOUT });
+  for (const actor of actors) await ui.waitAcked(actor, id, PEER_TIMEOUT);
 }
 
 for (const stackState of ['warm', 'cold'] as const) {
