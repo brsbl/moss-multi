@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 77% done** (71 of 92 planned tasks verified)
+**Overall: 78% done** (72 of 92 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -8,7 +8,7 @@
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 13 / 15 | in progress |
-| M4 Comments | Moss's full comment experience as CRDT data | 4 / 5 | in progress |
+| M4 Comments | Moss's full comment experience as CRDT data | 5 / 5 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 2 / 5 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
@@ -90,6 +90,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-05 — T4.3 verified: in a shared note a person can select text and comment on it, reply, resolve and reopen threads, see each comment highlighted for everyone through edits and formatting without a blink, and find detached comments listed with their quote, all in moss's own gutter, popover and Cmd+Shift+A.
 - 2026-10-06 — T3.R2 verified: m3 now sits on main with the slimmed M1 and M2, keeping all of M3's media, search, vaults, viewer and editor work; the viewer and editor artifacts still build.
 - 2026-10-06 — T5.Ps verified: a suggestion can only carry changes the server allows: one default-deny channel table classifies every Yjs struct at ingest, accept and the preview, and accept refuses if its transaction deletes anything the reviewed preview did not show, implicit deletions included.
+- 2026-10-06 — T4.4 verified: in a shared note a person can react to comments, @mention collaborators, edit or delete their own comments (deleting a thread's root promotes the earliest reply), and gets a bell notification when mentioned or replied to.
 
 ## T1.1s identity audit
 
@@ -224,6 +225,11 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T4.3 checker P2 (`__commentIds` is not in EXCLUDED_FIELDS as comments.md §11 says): `packages/sync/src/excluded-properties.ts` does not list it; defense in depth only (server import clears decorator ids, the bound adapter never writes them). Add the exclusion with a frame assertion.
 - T4.3 checker P2 (t/T4.3 did not include the current origin/m3): resolved at integration by merging origin/m3 into m4 first; separately, a WebKit j01 code-register leg flaked once (cancelled `/api/workspace` fetches) and passed on rerun.
 - T5.Ps checker P2 (Yjs formatting-cleanup deletions are not covered by G3 or the payload preview; downgraded from Codex P1): on a Y.Text or XmlText with `_hasFormatting`, Yjs's cleanupYTextAfterTransaction deletes redundant format markers in a separate transaction after accept's apply (`packages/core/src/suggest/apply.ts:454-460`), so G3 never sees them; and `Payloads.doc` hydrates before the root Text is typed (`packages/sync/src/suggest/review.ts:114-120`), so the preview mirror keeps a marker the typed doc drops.
+- T4.4 checker P2 (comment mutations do not re-check the REST actor's own access inside the DocDO; downgraded from Codex P1): `editComment`, `deleteComment` and `reactComment` validate only the open sockets, so a revocation or demotion committing between the Worker's commenter+ check and the DocDO write still lets one write land (same gap pre-existed for create and resolve) → comments follow-up: re-check the actor's role in the DocDO before the write.
+- T4.4 checker P2 (a failed edit loses the draft): the edit composer closes before the PATCH resolves, so a 413, 429 or network failure discards the text → comments UI follow-up.
+- T4.4 checker P2 (a notification insert is not conditioned on live access at write time): `canOpen()` reads run before an unconditional D1 batch; the bell re-checks on read (A§8), so nothing is disclosed → notifications follow-up.
+- T4.4 checker P2 (the @ menu omits collaborators who inherit access from a folder or vault): the roster comes from /members, which lists only the owner and direct doc grants → mentions follow-up.
+- T4.4 checker P2 (origin/m4 moved after the implementer finished): resolved at integration by merging t/T4.4 onto origin/m4 at 957202c; the merged head ran its own full lane.
 - The wrangler ProxyWorker patch replays non-idempotent requests after an ambiguous failure → T0.9b follow-up (stack infra)
 - `qa.mjs close` forgets the session even when closing it failed → tooling follow-up
 - T4.0 checker: typing `==marked==` then a space in the real app drops the word instead of highlighting it (moss's `==` inline shortcut over the bound editor; the comment engine is not involved) → T3.3 follow-up (inline markdown shortcuts), with a j-editing leg that types each moss inline shortcut and asserts the text survives
