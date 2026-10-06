@@ -121,7 +121,7 @@ function time(text: string): number {
   for (let run = 0; run < 3; run += 1) {
     const start = performance.now();
     findEmail(text);
-    for (const _ of schemelessUrlMatches(text));
+    Array.from(schemelessUrlMatches(text));
     best = Math.min(best, performance.now() - start);
     if (best > 500) break;
   }
