@@ -13,22 +13,15 @@ import { availableFilename } from '@moss-multi/core/filenames';
 import { can, GRANT_ROLES, roleAtLeast } from '@moss-multi/protocol/roles';
 import { TRASHED_ACTION } from '@moss-multi/protocol/retention';
 import { collectRecipients, publishRecipients, type FanoutEnv } from '@moss-multi/sync/fanout';
-import { resolvePrincipal, shareTokenOf, type Principal } from '../auth/principal.ts';
+import { shareTokenOf, type Principal } from '../auth/principal.ts';
 import { createDb, type Db } from '../db/client.ts';
 import { docs, folders } from '../db/schema.ts';
 import { json } from '../worker/route.ts';
 import { folderChain, managesDoc, reapDeadInvites, resolveDocAccess, resolveFolderAccess, type DocAccess } from './access.ts';
 import { liveIn, upFrom, type FoldersEnv } from './folders.ts';
-import { NO_STORE, notFound, unauthenticated } from './respond.ts';
+import { changed, NO_STORE, notFound, refuse, signedIn, unauthenticated } from './respond.ts';
 
-const refuse = (status: number, error: string, message: string) => json({ error, message }, status, NO_STORE);
 const ownerTrashes = () => refuse(403, 'forbidden', 'Only the note’s owner can move it to Trash.');
-const changed = (result: D1Result) => (result.meta?.changes ?? 0) > 0;
-
-async function signedIn(request: Request, env: FoldersEnv): Promise<Principal | null> {
-  const principal = await resolvePrincipal(request, env);
-  return principal && principal.type !== 'anonymous' ? principal : null;
-}
 
 /**
  * The one owner read path for a trashed note (A§8): the caller manages it by ownership alone. Every owner GET of a

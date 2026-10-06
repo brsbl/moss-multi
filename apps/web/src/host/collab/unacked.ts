@@ -32,12 +32,6 @@ export function markUnacked(session: object, unacked: boolean): void {
   waiters.clear();
 }
 
-/** Resolves once no session in the tab holds an unacked edit. */
-export function whenAllAcked(): Promise<void> {
-  if (holding.size === 0) return Promise.resolve();
-  return new Promise((done) => waiters.add(done));
-}
-
 export const hasUnacked = (): boolean => holding.size > 0;
 const openSessions = new Set<object>();
 export function markSession(session: object, open: boolean): void {

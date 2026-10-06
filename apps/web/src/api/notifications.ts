@@ -6,11 +6,11 @@
 import { inArray, sql } from 'drizzle-orm';
 import type { Principal } from '../auth/principal.ts';
 import { resolvePrincipal } from '../auth/principal.ts';
-import { createDb, type Db } from '../db/client.ts';
+import { createDb } from '../db/client.ts';
 import { docs, folders, user } from '../db/schema.ts';
 import { json } from '../worker/route.ts';
-import { resolveDocAccess, resolveFolderAccess } from './access.ts';
 import { notify, type InvitesEnv } from './invites.ts';
+import { accessTo } from './members.ts';
 import { NO_STORE, readJsonObject, unauthenticated } from './respond.ts';
 
 /** How many of the newest notices the bell shows. */
@@ -60,14 +60,6 @@ function parsePayload(text: string): Payload | null {
   }
 }
 
-/** Whether the reader can still open the item through ownership or a grant (a link alone is not membership). */
-async function reachable(db: Db, principal: Principal, payload: Payload): Promise<boolean> {
-  const access = payload.targetType === 'doc'
-    ? await resolveDocAccess(db, principal, payload.targetId)
-    : await resolveFolderAccess(db, principal, payload.targetId);
-  return access !== null && !access.deleted && !access.linkOnly;
-}
-
 async function listNotices(d1: D1Database, reader: Reader): Promise<Notice[]> {
   const db = createDb(d1);
   const rows = await db.all<Row>(sql`SELECT id, type, payload_json AS payload, created_at AS createdAt, read_at AS readAt
@@ -77,7 +69,8 @@ async function listNotices(d1: D1Database, reader: Reader): Promise<Notice[]> {
   for (const row of rows) {
     const payload = parsePayload(row.payload);
     if (!payload) continue;
-    if (await reachable(db, reader, payload)) live.push({ row, payload });
+    // The reader can still open the item through ownership or a grant (a link alone is not membership).
+    if ((await accessTo(db, reader, { type: payload.targetType, id: payload.targetId })) !== null) live.push({ row, payload });
   }
   const ids = (type: Payload['targetType']) => [...new Set(live.filter((n) => n.payload.targetType === type).map((n) => n.payload.targetId))];
   const people = [...new Set(live.map((n) => n.payload.by))];

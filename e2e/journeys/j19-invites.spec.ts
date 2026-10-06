@@ -29,11 +29,6 @@ async function sharedNote(actor: Actor, title: string, text: string): Promise<st
   return docId;
 }
 
-const pathOf = (url: string): string => {
-  const parsed = new URL(url);
-  return `${parsed.pathname}${parsed.search}`;
-};
-
 /** A key the page received while a note switched: where it went, and whether something refused it. */
 interface KeyFate {
   key: string;
@@ -94,7 +89,7 @@ test('j19 bell: an accepted invite reaches Ada\'s bell without a reload, and its
   await ada.page.evaluate(() => { (window as unknown as { j19Document: boolean }).j19Document = true; });
 
   // Ben follows the link Ada sent him and lands on the note.
-  await ben.goto(pathOf(invite));
+  await ben.goto(ui.pathOf(invite));
   await expect(ben.page, 'the invite leads to the note').toHaveURL(new RegExp(`/d/${target}$`), { timeout: 30_000 });
   await ui.waitLive(ben, target);
   await expect(ui.pane(ben, target), 'at the invite\'s role').toHaveAttribute(ROLE_ATTR, 'editor');
@@ -191,14 +186,14 @@ test('j19 invite: an invite to an unknown email gives a copyable link that redee
   await ada.page.keyboard.press('Escape');
 
   // Someone signed in with another email who follows the link is told so, and it stays open for the guest.
-  const cy = await actors.open(await actors.principal('cy'), { path: pathOf(url) });
+  const cy = await actors.open(await actors.principal('cy'), { path: ui.pathOf(url) });
   cy.expectHttp(403, /^\/api\/invites\/[0-9a-f]+\/accept$/);
   await expect(cy.page.getByRole('heading', { name: 'This invite is for another email' })).toBeVisible();
   await actors.checkpoint('invite-other-email');
   expect((await cy.context.request.get(`/api/docs/${target}`)).status(), 'and no access').toBe(404);
   cy.expectHttp(404, `/api/docs/${target}`);
 
-  const visitor = await actors.anonymous(pathOf(url), { label: 'guest' });
+  const visitor = await actors.anonymous(ui.pathOf(url), { label: 'guest' });
   await expect(visitor.page, 'signed out, the link asks for an account').toHaveURL(/\/login\?next=/);
   await ui.waitForLoginCard(visitor);
   await ui.signUpThroughCard(visitor, guest);
@@ -220,7 +215,7 @@ test('j19 invite: an invite to an unknown email gives a copyable link that redee
 
   // The link is spent: anyone else who follows it gets the one closed-invite page.
   cy.expectHttp(404, /^\/api\/invites\/[0-9a-f]+\/accept$/);
-  await cy.goto(pathOf(url));
+  await cy.goto(ui.pathOf(url));
   await expect(cy.page.getByRole('heading', { name: /already been used or is no longer open/i })).toBeVisible();
   expect((await cy.context.request.get(`/api/docs/${target}`)).status(), 'and still no access').toBe(404);
 });

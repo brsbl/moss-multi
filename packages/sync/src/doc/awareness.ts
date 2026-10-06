@@ -25,16 +25,6 @@ export function attachmentOf(connection: Connection): Attachment | null {
 /** Awareness frames above the cap are dropped, neither applied nor relayed. */
 export const awarenessTooLarge = (bytes: number, maxBytes: number): boolean => bytes > maxBytes;
 
-const identityVerdicts = new WeakMap<object, { fields: unknown[]; valid: boolean }>();
-function validIdentity(connection: Connection, identity: Attachment, user: Record<string, unknown>, name: unknown): boolean {
-  const fields = [identity.principalId, identity.name, identity.kind, user.principalId, user.name, user.isAgent, name];
-  const cached = identityVerdicts.get(connection);
-  if (cached && fields.every((field, index) => field === cached.fields[index])) return cached.valid;
-  const valid = user.principalId === identity.principalId && user.name === identity.name && user.isAgent === (identity.kind === 'agent') && name === identity.name;
-  identityVerdicts.set(connection, { fields, valid });
-  return valid;
-}
-
 function clientId(connection: Connection): number | undefined {
   return (connection.state as { presenceClientId?: number } | null)?.presenceClientId;
 }
@@ -76,7 +66,7 @@ export function receivePresence(awareness: Awareness, connection: Connection, me
     if (owned !== undefined && owned !== id) return;
     if (state !== null) {
       const user = state.user;
-      if (!user || !validIdentity(connection, identity, user, state.name) || state.color !== user.color || typeof user.color !== 'string' || user.color.length > 100 || typeof user.colorSettled !== 'boolean') return;
+      if (!user || !(user.principalId === identity.principalId && user.name === identity.name && user.isAgent === (identity.kind === 'agent') && state.name === identity.name) || state.color !== user.color || typeof user.color !== 'string' || user.color.length > 100 || typeof user.colorSettled !== 'boolean') return;
     } else if (owned !== id) return;
     const previousOwners = connections.filter(peer => peer !== connection && !superseded(peer) && clientId(peer) === id);
     if (previousOwners.some(peer => {

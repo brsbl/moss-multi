@@ -349,7 +349,7 @@ function CodeBlockComponent({
         selected={isSelected}
         beforeLabel="Insert paragraph before code block"
         afterLabel="Insert paragraph after code block"
-        onGapClick={editable ? handleGapClick : undefined /* moss-multi seam: read-only-decorators (T2.3) */}
+        onGapClick={handleGapClick}
         className="moss-codeblock transition-colors"
         style={themeColors}
       >

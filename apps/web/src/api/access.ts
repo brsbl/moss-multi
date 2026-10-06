@@ -26,7 +26,6 @@ export interface FolderAccess {
   ownerUserId: string;
   kind: 'folder' | 'vault';
   name: string;
-  parentId: string | null;
   deleted: boolean;
   /** Only a presented folder link opens it: no ownership and no grant. */
   linkOnly: boolean;
@@ -83,14 +82,18 @@ export const managesDoc = (doc: Arg, user: Arg) => `(EXISTS (SELECT 1 FROM docs 
         WHERE chain.depth < ${MAX_FOLDER_DEPTH}
     ) SELECT 1 FROM folder_members m JOIN chain ON m.folder_id = chain.id WHERE m.principal_id = ${arg(user)} AND m.role = 'owner'))`;
 
-/** SQL that holds while user `?{user}` manages folder `?{folder}`: it owns the vault, or holds an `owner` grant on the
- * folder or one above it (managesDoc's folder half). */
-export const managesFolder = (folder: Arg, user: Arg) => `(EXISTS (SELECT 1 FROM folders WHERE id = ${arg(folder)} AND owner_user_id = ${arg(user)})
+/** SQL that holds while user `?{user}` owns folder `?{folder}`'s vault, or holds a grant whose role matches `roles` (a
+ * fixed predicate, never request data) on the folder or one above it. */
+const chainHolds = (folder: Arg, user: Arg, roles: "= 'owner'" | "IN ('editor', 'owner')") => `(EXISTS (SELECT 1 FROM folders WHERE id = ${arg(folder)} AND owner_user_id = ${arg(user)})
   OR EXISTS (WITH RECURSIVE chain(id, parent_id, depth) AS (
       SELECT id, parent_id, 1 FROM folders WHERE id = ${arg(folder)}
       UNION ALL SELECT f.id, f.parent_id, chain.depth + 1 FROM folders f JOIN chain ON f.id = chain.parent_id
         WHERE chain.depth < ${MAX_FOLDER_DEPTH}
-    ) SELECT 1 FROM folder_members m JOIN chain ON m.folder_id = chain.id WHERE m.principal_id = ${arg(user)} AND m.role = 'owner'))`;
+    ) SELECT 1 FROM folder_members m JOIN chain ON m.folder_id = chain.id WHERE m.principal_id = ${arg(user)} AND m.role ${roles}))`;
+
+/** SQL that holds while user `?{user}` manages folder `?{folder}`: it owns the vault, or holds an `owner` grant on the
+ * folder or one above it (managesDoc's folder half). */
+export const managesFolder = (folder: Arg, user: Arg) => chainHolds(folder, user, "= 'owner'");
 
 /** SQL that holds while doc or folder `?{id}` is live and user `?{user}` manages it. */
 export const liveAndManaged = (type: 'doc' | 'folder', id: Arg, user: Arg) => type === 'doc'
@@ -115,12 +118,7 @@ export async function managesLive(db: D1Database, type: 'doc' | 'folder', id: st
 
 /** SQL that holds while user `?{user}` may edit in folder `?{folder}`: it owns the vault, or holds an `editor` or
  * `owner` grant on the folder or an ancestor. A move re-checks its destination with it in the same statement. */
-export const editsFolder = (folder: number, user: number) => `(EXISTS (SELECT 1 FROM folders WHERE id = ?${folder} AND owner_user_id = ?${user})
-  OR EXISTS (WITH RECURSIVE chain(id, parent_id, depth) AS (
-      SELECT id, parent_id, 1 FROM folders WHERE id = ?${folder}
-      UNION ALL SELECT f.id, f.parent_id, chain.depth + 1 FROM folders f JOIN chain ON f.id = chain.parent_id
-        WHERE chain.depth < ${MAX_FOLDER_DEPTH}
-    ) SELECT 1 FROM folder_members m JOIN chain ON m.folder_id = chain.id WHERE m.principal_id = ?${user} AND m.role IN ('editor', 'owner')))`;
+export const editsFolder = (folder: number, user: number) => chainHolds(folder, user, "IN ('editor', 'owner')");
 
 /** Grants on the folders of `chain`, and on the doc when there is one. */
 async function grantRoles(db: Db, ids: string[], chain: string[], docId: string | null): Promise<Role[]> {
@@ -178,7 +176,7 @@ export async function resolveDocAccess(db: Db, principal: Principal, docId: stri
  */
 export async function resolveFolderAccess(db: Db, principal: Principal, folderId: string, shareToken: string | null = null): Promise<FolderAccess | null> {
   const [folder] = await db
-    .select({ ownerUserId: folders.ownerUserId, kind: folders.kind, name: folders.name, parentId: folders.parentId, deletedAt: folders.deletedAt })
+    .select({ ownerUserId: folders.ownerUserId, kind: folders.kind, name: folders.name, deletedAt: folders.deletedAt })
     .from(folders)
     .where(eq(folders.id, folderId))
     .limit(1);
@@ -190,7 +188,7 @@ export async function resolveFolderAccess(db: Db, principal: Principal, folderId
   const role = foldRole({ ...sources, link });
   if (role === null) return null;
   const linkOnly = foldRole({ ...sources, link: null }) === null;
-  return { role, ownerUserId: folder.ownerUserId, kind: folder.kind, name: folder.name, parentId: folder.parentId, deleted: folder.deletedAt !== null, linkOnly };
+  return { role, ownerUserId: folder.ownerUserId, kind: folder.kind, name: folder.name, deleted: folder.deletedAt !== null, linkOnly };
 }
 
 /** Batched folder closure for discovery; the same MAX fold and depth bound as individual reads. */
@@ -219,8 +217,7 @@ export async function accessibleFolders(db: Db, principal: Principal) {
 }
 
 /** The discovery closure for lists, search and backlinks (A§8). Link grants do not imply discovery. */
-export async function accessibleDocs(db: Db, principal: Principal, visibleFolders = accessibleFolders(db, principal)) {
-  const folders = await visibleFolders;
+export async function accessibleDocs(db: Db, principal: Principal, folders: Awaited<ReturnType<typeof accessibleFolders>>) {
   const ids = grantees(principal);
   const grants = ids.length ? await db.select().from(docMembers).where(inArray(docMembers.principalId, ids)) : [];
   const folderIds = folders.map((folder) => folder.id);

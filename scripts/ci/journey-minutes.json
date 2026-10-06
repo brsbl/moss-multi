@@ -1,5 +1,6 @@
 {
   "runs": [
+    37403268763,
     37291316246,
     37290394565,
     37289189841,
@@ -65,9 +66,9 @@
       "webkit": 1.09
     },
     "j01-registers.spec.ts": {
-      "legs": 4,
-      "chromium": 0.68,
-      "webkit": 1.38
+      "legs": 17,
+      "chromium": 2.17,
+      "webkit": 2.71
     },
     "j01-undo.spec.ts": {
       "legs": 9,

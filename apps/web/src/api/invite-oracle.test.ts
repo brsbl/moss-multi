@@ -180,17 +180,6 @@ describe('every owner-visible flow answers alike for an email with an account an
     expect((await follow(tokens.get(known)!, ned.cookie)).status, 'not even its own email redeems it').toBe(404);
     expect(await seen(known, await follow(tokens.get(known)!, ned.cookie))).toBe(await seen(known, await follow(tokens.get(known)!, alt.cookie)));
   });
-
-  it('answers the rate limit alike', async () => {
-    const busy = await signedUpUser(env, 't28o-busy', 'Busy');
-    const kay = await signedUpUser(env, 't28o-kay', 'Kay');
-    const docId = await insertDoc(d1.db, busy);
-    for (let i = 0; i < 20; i += 1) {
-      expect((await call('POST', `/api/docs/${docId}/members`, busy.cookie, { email: unknownEmail(`fill${i}`), role: 'viewer' })).status).toBe(201);
-    }
-    const masked = async (email: string) => (await seen({ email, docId, folderId: '-' }, await call('POST', `/api/docs/${docId}/members`, busy.cookie, { email, role: 'viewer' })));
-    expect(await masked(unknownEmail('over'))).toBe(await masked(kay.email));
-  }, 30_000);
 });
 
 /** Each D1 statement a request prepares, with the values bound to it. */

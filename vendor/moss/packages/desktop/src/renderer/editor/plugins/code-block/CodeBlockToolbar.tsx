@@ -88,7 +88,7 @@ export function CodeBlockToolbar({
             {CORE_LANGUAGES.map((lang) => (
               <DropdownMenuItem
                 key={lang.id}
-                onSelect={() => { if (!readOnly) onLanguageChange(lang.id); }}
+                onSelect={() => onLanguageChange(lang.id)}
                 className={language === lang.id ? 'bg-surface-panel' : ''}
               >
                 <span className="flex-1">{lang.label}</span>
@@ -119,7 +119,7 @@ export function CodeBlockToolbar({
             {CODE_THEMES.map((t) => (
               <DropdownMenuItem
                 key={t.id}
-                onSelect={() => { if (!readOnly) onThemeChange(t.id); }}
+                onSelect={() => onThemeChange(t.id)}
                 className={theme === t.id ? 'bg-surface-panel' : ''}
               >
                 <span className="flex-1">{t.label}</span>

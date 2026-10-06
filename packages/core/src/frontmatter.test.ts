@@ -2,7 +2,7 @@ import jsYaml from 'js-yaml';
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { readField, writeField } from './doc-fields.ts';
-import { composeFrontmatter, frontmatterKeys, migrateFrontmatter, readFrontmatter, setFrontmatterKey, updateFrontmatter, writeFrontmatterKey } from './frontmatter.ts';
+import { composeFrontmatter, frontmatterKeys, migrateFrontmatter, readFrontmatter, updateFrontmatter, writeFrontmatterKey } from './frontmatter.ts';
 
 const LOCAL = 'frontmatter-local';
 const parse = (yaml: string) => jsYaml.load(yaml) as Record<string, unknown> | undefined;
@@ -21,10 +21,17 @@ function apart(initial: string): { a: Y.Doc; b: Y.Doc; sync: () => void } {
 describe('structured frontmatter', () => {
   it('edits canonical YAML without changing the other values, including nested lists and hyphen-leading keys', () => {
     const raw = 'title:   "Spaced" # comment\ntags:\n- garden\n-owner: ada\n';
-    const next = setFrontmatterKey(raw, 'tags', ['fixture']);
-    expect(parse(next)).toEqual({ title: 'Spaced', tags: ['fixture'], '-owner': 'ada' });
-    expect(parse(setFrontmatterKey(next, 'tags', undefined))).toEqual({ title: 'Spaced', '-owner': 'ada' });
-    expect(setFrontmatterKey('', 'due', '2026-11-01')).toBe('due: "2026-11-01"\n');
+    const doc = new Y.Doc();
+    writeField(doc, 'frontmatter', raw, 'seed');
+    writeFrontmatterKey(doc, 'tags', ['fixture'], LOCAL);
+    expect(parse(readField(doc, 'frontmatter'))).toEqual({ title: 'Spaced', tags: ['fixture'], '-owner': 'ada' });
+    writeFrontmatterKey(doc, 'tags', undefined, LOCAL);
+    expect(parse(readField(doc, 'frontmatter'))).toEqual({ title: 'Spaced', '-owner': 'ada' });
+    const dated = new Y.Doc();
+    writeFrontmatterKey(dated, 'due', '2026-11-01', LOCAL);
+    expect(readField(dated, 'frontmatter')).toBe('due: "2026-11-01"\n');
+    doc.destroy();
+    dated.destroy();
   });
 
   it.each(['', 'status: draft\n'])('concurrent additions keep different keys from %s', (initial) => {

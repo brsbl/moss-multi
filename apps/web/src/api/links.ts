@@ -11,8 +11,7 @@ import { resolvePrincipal } from '../auth/principal.ts';
 import { createDb, type Db } from '../db/client.ts';
 import { shareLinks } from '../db/schema.ts';
 import { json } from '../worker/route.ts';
-import { managesDoc, managesFolder } from './access.ts';
-import { accessTo, type MemberTarget } from './members.ts';
+import { accessTo, manages, randomToken, type MemberTarget } from './members.ts';
 import { NO_STORE, notFound, readJsonObject, unauthenticated } from './respond.ts';
 
 export interface ShareLink {
@@ -22,9 +21,6 @@ export interface ShareLink {
 }
 
 const isLinkRole = (value: unknown): value is LinkRole => typeof value === 'string' && (LINK_ROLES as readonly string[]).includes(value);
-
-/** 24 random bytes, hex (A§6). */
-const newToken = () => [...crypto.getRandomValues(new Uint8Array(24))].map((b) => b.toString(16).padStart(2, '0')).join('');
 
 const ofTarget = (target: MemberTarget) => and(eq(shareLinks.targetType, target.type), eq(shareLinks.targetId, target.id), isNull(shareLinks.revokedAt));
 
@@ -75,12 +71,11 @@ export async function handleLinks(request: Request, env: LinksEnv, target: Membe
   if (!body || !isLinkRole(body.role)) {
     return json({ error: 'bad-request', message: 'Choose view, comment or edit access for the link.' }, 400, NO_STORE);
   }
-  const link: ShareLink = { token: newToken(), role: body.role, createdAt: Date.now() };
+  const link: ShareLink = { token: randomToken(), role: body.role, createdAt: Date.now() };
   // The caller must still manage the target when the link is written, so an owner demoted or removed while this
   // request was under way cannot hand themselves access back through a link (A§8).
-  const manages = target.type === 'doc' ? managesDoc(3, 5) : managesFolder(3, 5);
   const inserted = await env.DB.prepare(`INSERT INTO share_links (token, target_type, target_id, role, created_by, created_at)
-    SELECT ?1, ?2, ?3, ?4, ?5, ?6 WHERE ${manages}`).bind(link.token, target.type, target.id, link.role, principal.id, link.createdAt).run();
+    SELECT ?1, ?2, ?3, ?4, ?5, ?6 WHERE ${manages(target, 3, 5)}`).bind(link.token, target.type, target.id, link.role, principal.id, link.createdAt).run();
   if ((inserted.meta?.changes ?? 0) === 0) {
     const now = await accessTo(db, principal, target);
     if (!now) return notFound();

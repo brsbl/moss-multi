@@ -13,7 +13,7 @@ import { createDb, type Db } from '../db/client.ts';
 import { docs } from '../db/schema.ts';
 import type { AppEnv } from '../env.ts';
 import { json } from '../worker/route.ts';
-import { accessibleDocs, MAX_FOLDER_DEPTH, resolveDocAccess, resolveFolderAccess } from './access.ts';
+import { accessibleDocs, accessibleFolders, MAX_FOLDER_DEPTH, resolveDocAccess, resolveFolderAccess } from './access.ts';
 import { vaultOf } from './folders.ts';
 import { NO_STORE, notFound, unauthenticated } from './respond.ts';
 
@@ -56,7 +56,7 @@ async function docIdsInVault(db: D1Database, vaultId: string): Promise<Set<strin
 /** The caller's discovery closure; a share link alone discovers nothing (A§8). */
 async function discoverable(db: Db, principal: Principal) {
   if (principal.type === 'anonymous') return new Map<string, Awaited<ReturnType<typeof accessibleDocs>>[number]>();
-  return new Map((await accessibleDocs(db, principal)).map((row) => [row.id, row]));
+  return new Map((await accessibleDocs(db, principal, await accessibleFolders(db, principal))).map((row) => [row.id, row]));
 }
 
 async function search(request: Request, env: SearchEnv): Promise<Response> {
