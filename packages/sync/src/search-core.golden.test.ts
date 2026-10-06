@@ -1,6 +1,7 @@
 // The linear scans in search-core give what moss's regexes give, byte for byte: over the real notes of the converter
 // corpus and over random strings of the delimiters they scan. scripts/measure-converter.mjs holds them to linear cost.
 import { readdirSync, readFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { stripWikiLinks } from '@moss-desktop/common/utils';
 import { describe, expect, it } from 'vitest';
@@ -67,7 +68,7 @@ function regexHeadings(markdown: string) {
   return [...outsideCode.matchAll(/^(#{1,4})\s+(.+)$/gm)].map((match) => ({ level: match[1].length, text: stripWikiLinks(match[2]).trim() }));
 }
 
-const fixtures = fileURLToPath(new URL('./converter/fixtures/', import.meta.url));
+const fixtures = `${dirname(fileURLToPath(import.meta.url))}/converter/fixtures/`;
 const NOTES = readdirSync(fixtures).filter((file) => file.endsWith('.md')).map((file) => [file, readFileSync(`${fixtures}${file}`, 'utf8')] as const);
 
 /** A few queries per note: words from its start, middle and end, a phrase, and one it lacks. */
