@@ -47,7 +47,7 @@ export const TARGETS: Target[] = [
   // Settings (T3.6). The oracle drops the sections the web withholds (Workspace Location, Default Markdown Editor, Note
   // Intelligence, Connected Folders); the candidate drops its Account and Agents sections, which moss has no story for,
   // so moss's dialog frame, header and Appearance section compare, and a slot that displaces them fails.
-  { id: 'settings', story: 'composite-settingsmodal--empty-new-user', seed: 'fresh', focusEditor: false, masks: [], floor: 0.05, maxBlob: 16, prepare: 'open-settings', crop: '[role="dialog"]', withhold: ['[role="dialog"] [data-collab-chrome]'] },
+  { id: 'settings', story: 'settings-modal--empty-new-user', seed: 'fresh', focusEditor: false, masks: [], floor: 0.05, maxBlob: 16, prepare: 'open-settings', crop: '[role="dialog"]', withhold: ['[role="dialog"] [data-collab-chrome]'] },
   { id: 'trash-view', story: 'app--default', seed: 'story-listing', focusEditor: false, masks: ['[data-collab-chrome]', `[${RETENTION_NOTICE_ATTR}]`], floor: 0.05, maxBlob: 16, prepare: 'trash-open-note' },
 ];
 
