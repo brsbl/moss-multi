@@ -1,14 +1,14 @@
 # moss-multi progress
 
-**Overall: 78% done** (72 of 92 planned tasks verified)
+**Overall: 76% done** (74 of 97 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 13 / 15 | in progress |
-| M4 Comments | Moss's full comment experience as CRDT data | 5 / 5 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 14 / 15 | in progress |
+| M4 Comments | Moss's full comment experience as CRDT data | 6 / 6 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 2 / 5 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
@@ -92,6 +92,8 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-06 — T3.R2 verified: m3 now sits on main with the slimmed M1 and M2, keeping all of M3's media, search, vaults, viewer and editor work; the viewer and editor artifacts still build.
 - 2026-10-06 — T5.Ps verified: a suggestion can only carry changes the server allows: one default-deny channel table classifies every Yjs struct at ingest, accept and the preview, and accept refuses if its transaction deletes anything the reviewed preview did not show, implicit deletions included.
 - 2026-10-06 — T4.4 verified: in a shared note a person can react to comments, @mention collaborators, edit or delete their own comments (deleting a thread's root promotes the earliest reply), and gets a bell notification when mentioned or replied to.
+- 2026-10-06 — T3.6 verified: a person can mint, see once and revoke agent keys in Settings, approve a device sign-in, and share a note or folder with an agent they own at a role; sharing with someone else's agent gets the same 404 as an unknown id, and Settings has a parity target.
+- 2026-10-06 — T4.S3 verified: a frame that touches long commented runs or long restore candidates now does anchor work bounded by its walk budget before reading any item, so oversized gaps detach comments instead of costing unbounded time.
 
 ## T1.1s identity audit
 
@@ -125,11 +127,14 @@ A task counts only after an independent checker passes it on green CI. Each mile
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
 
+- T4.S3 (Anchor token budget before expansion) checker P2: `#gapOf` caches null for every visited item on any OverBudget, including running out of the start-dependent 4,096-struct left/right walks, so in a gap over 4,096 items a comment near the edge can force a comment near the middle to detach though its own walks would fit (safe: detached, never a jump or a rejected frame) → anchor follow-up: cache only start-independent failures.
 - T3.9 checker P2 (downgraded from Codex P1): paste over a selection during unmount saves the deletion without the image; `Session.unmountOnce` waits only for note writes, not for `putAsset` or `copyAsset`, so a host unmounting while an upload is pending saves the file with the selection removed and no image → editor follow-up.
 - T3.9 checker P2: the comment-color unit tests rely on a fake surface that keeps stored colors (`FakeSurface.load` copies stored `commentColors`), while the real path derives them in `hydrateComments` → editor test follow-up.
 - T3.9 checker P2: the key-order negative control in `pipeline.golden.test.ts` ('a wrong meta.json key order is caught') changes a value as well as key order → editor test follow-up.
 - T3.9a checker P2: `allocateFolderName`'s volume-equivalence model (`volumeKey` in `packages/editor/src/host/moss-editor-host.js`) is approximate: it lacks full Unicode case folding ('σ' vs sibling 'ς') and treats case-sensitive APFS as normalization-sensitive (NFC vs NFD 'Café'), so it can return an occupied name; the host's exclusive rename then fails with EEXIST and that title edit stays unsaved, with nothing lost or overwritten → editor host follow-up: fold case fully and normalize on case-sensitive volumes.
 - T3.R2 (Restack m3 on main) checker P2: `readBacklinks` in `apps/web/src/host/bridge/index.ts` checks the note is still listed, then sends the backlinks request; a trash committing in that gap returns a 404 that j05-trash's no-4xx assertion counts (inherited from M3 at bbeb50e) → search follow-up: skip or cancel watched reads once the note's session goes terminal.
+- T3.6 checker P2: the Settings parity target removes the web-only Account and Agents sections from layout (`display:none` in `e2e/parity/parity.spec.ts` withholdWeb) instead of masking their rects as A§20 asks, so the 960x360 crop compares only the header and Appearance and a slot that displaces moss's chrome may go unseen → parity follow-up: mask the web chrome's rects in place.
+- T3.6 checker P2: the red run (37434773878) shows the folder PATCH share-with-another's-agent case red only through a UNIQUE-constraint fixture leftover, not the 200-vs-404 assertion (the doc case shares its `change()` path in members.ts) → agents test follow-up: isolate the folder case's fixture so it fails on its own assertion.
 - T2.3s checker P2 (downgraded from Codex P1): a restore can act on an older view of the note after another manager restores, moves and re-trashes it; RESTORE in `api/trash.ts` does not check the note's current folder or `trash_batch_id` still match what it read. No authority is gained (the UPDATE re-checks manage on the current chain and edit on the destination) → trash follow-up: compare-and-set on folder and batch.
 - T2.3s checker P2 (downgraded from Codex P1): a signed-out share-link holder gets 401, not 404, from trash, restore and the Trash read; nothing is disclosed (the 401 is identical for a missing note) and it predates T2.3s; A§8 confines the 401 exception to a credential-less CLI → align to 404 in an access follow-up.
 - T2.3s checker P2: the revocation tests in `trash-security.test.ts` use stub DocDO and PrincipalDO, so they do not prove open editors recover (or that a terminal editor on a live note is kicked) → T2.5 → closed by T2.5 (`mid-trash.harness.test.ts` over the real DocDO and PrincipalDO; a reverted trash pushes `meta` and a pane terminal on `deleted` re-asks and reopens).

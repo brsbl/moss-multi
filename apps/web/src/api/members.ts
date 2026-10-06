@@ -188,6 +188,52 @@ async function share(env: MembersEnv, target: MemberTarget, ownerUserId: string,
   return json({ shared: { email, role } }, 200, NO_STORE);
 }
 
+const AGENT_ROLE_CAP = 'An agent can have at most edit access.';
+const AGENT_NOT_FOUND = 'You have no agent with that ID. Copy it from your agent’s row in Settings → Agents.';
+/** Inside a guarded write: the agent `?2` is live and owned by the caller, bound at `?caller`. */
+const liveOwnAgent = (caller: number) => `EXISTS (SELECT 1 FROM agents WHERE id = ?2 AND owner_user_id = ?${caller} AND revoked_at IS NULL)`;
+
+async function ownsLiveAgent(db: D1Database, agentId: string, callerId: string): Promise<boolean> {
+  return (await db.prepare('SELECT 1 AS ok FROM agents WHERE id = ?1 AND owner_user_id = ?2 AND revoked_at IS NULL').bind(agentId, callerId).first()) !== null;
+}
+
+/**
+ * Shares the target with one of the caller's own agents by its id (A§8; PRODUCT ruling 20: an id is a label, never
+ * consent, so another person's agent, a co-owner's included, gets the 404 an unknown or revoked id gets). An agent acts
+ * at most as an editor. A new grant answers 201, a repeat or raise 200, a lowering 409 (as for an invite). The write
+ * re-checks that the caller still manages the live target and still owns the live agent.
+ */
+async function shareAgent(env: MembersEnv, target: MemberTarget, caller: Principal, agentId: string, body: Record<string, unknown>): Promise<Response> {
+  if (!isShareRole(body.role)) return refuse(400, 'bad-request', 'Choose view, comment, edit or owner access.');
+  const role = body.role;
+  if (role === 'owner') return refuse(400, 'bad-request', AGENT_ROLE_CAP);
+  const callerId = managerId(caller);
+  const agent = await env.DB.prepare('SELECT id, name FROM agents WHERE id = ?1 AND owner_user_id = ?2 AND revoked_at IS NULL')
+    .bind(agentId, callerId).first<{ id: string; name: string }>();
+  if (!agent) return refuse(404, 'agent-not-found', AGENT_NOT_FOUND);
+  const [table, column] = grantTable(target.type);
+  const liveAgent = liveOwnAgent(4);
+  const [inserted, raised] = await env.DB.batch([
+    env.DB.prepare(`INSERT INTO ${table} (${column}, principal_id, principal_type, role, added_by, created_at)
+        SELECT ?1, ?2, 'agent', ?3, ?4, ?5 WHERE ${liveAndManaged(target.type, 1, 4)} AND ${liveAgent}
+        ON CONFLICT DO NOTHING`).bind(target.id, agent.id, role, callerId, Date.now()),
+    env.DB.prepare(`UPDATE ${table} SET role = ?3 WHERE ${column} = ?1 AND principal_id = ?2 AND ${rank('role')} < ${rank('?3')}
+        AND ${liveAndManaged(target.type, 1, 4)} AND ${liveAgent}`).bind(target.id, agent.id, role, callerId),
+  ]);
+  const shared = { agentId: agent.id, name: agent.name, role };
+  if (changed(inserted)) return json({ shared }, 201, NO_STORE);
+  if (changed(raised)) return json({ shared }, 200, NO_STORE);
+  if (!await managesLive(env.DB, target.type, target.id, callerId)) return notFound();
+  // Revoked or handed over meanwhile: refused as at the read, whatever grant it already holds.
+  if (!await ownsLiveAgent(env.DB, agent.id, callerId)) return refuse(404, 'agent-not-found', AGENT_NOT_FOUND);
+  const [grant] = await grantRows(createDb(env.DB), target, agent.id);
+  if (!grant) return refuse(404, 'agent-not-found', AGENT_NOT_FOUND);
+  if (lower(role, grant.role)) {
+    return refuse(409, 'demotion-unavailable', `${agent.name} already has more access. To lower it, change it under People with access.`);
+  }
+  return json({ shared }, 200, NO_STORE);
+}
+
 const KICK_FAILED = 'The change is saved, but some open windows haven’t closed yet. Try again.';
 
 /**
@@ -255,6 +301,7 @@ async function change(
       if (!remove || !principalId || principalId === ownerUserId) return refuse(404, 'not-found', 'That person no longer has access here.');
       return (await kickFrom(env.DB, env, target, [principalId], Date.now())) ?? json({ removed: { principalId } }, 200, NO_STORE);
     }
+    if (!remove && grant.principalType === 'agent' && role === 'owner') return refuse(400, 'bad-request', AGENT_ROLE_CAP);
     let done: boolean;
     if (remove) {
       const [person] = grant.principalType === 'user'
@@ -270,12 +317,17 @@ async function change(
       ]);
       done = changed(deleted);
     } else {
+      // PRODUCT ruling 20: any manager may lower an agent's grant, but only its owner raises it, while the key is live.
+      const agentRaise = grant.principalType === 'agent' && lower(grant.role, role as Role);
       const [updated] = await env.DB.batch([
         env.DB.prepare(`UPDATE ${table} SET role = ?3 WHERE ${column} = ?1 AND principal_id = ?2 AND role = ?4
-          AND ${manages(target, 1, 5)}`).bind(target.id, principalId, role, grant.role, callerId),
+          AND ${manages(target, 1, 5)}${agentRaise ? ` AND ${liveOwnAgent(5)}` : ''}`).bind(target.id, principalId, role, grant.role, callerId),
         reapDeadInvites(env.DB, Date.now()),
       ]);
       done = changed(updated);
+      if (!done && agentRaise && !await ownsLiveAgent(env.DB, principalId, callerId)) {
+        return (await lostManage(db, caller, target)) ?? refuse(404, 'agent-not-found', AGENT_NOT_FOUND);
+      }
     }
     if (!done) {
       const lost = await lostManage(db, caller, target);
@@ -313,7 +365,11 @@ export async function handleMembers(request: Request, env: MembersEnv, target: M
   const body = await readJsonObject(request);
   if (!body) return refuse(400, 'bad-request', 'The request body must be a JSON object.');
   // Every write below re-checks manage in its own statement, so a demotion that lands while the body arrives wins.
-  if (request.method === 'POST') return share(env, target, access.ownerUserId, principal, body);
+  if (request.method === 'POST') {
+    return typeof body.agentId === 'string'
+      ? shareAgent(env, target, principal, body.agentId, body)
+      : share(env, target, access.ownerUserId, principal, body);
+  }
   return change(db, env, target, access.ownerUserId, principal, body, request.method === 'DELETE');
 }
 
