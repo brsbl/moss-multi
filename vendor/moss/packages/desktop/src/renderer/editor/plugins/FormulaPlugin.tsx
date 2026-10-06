@@ -719,14 +719,29 @@ function FormulaEditPopover({
     [expression, suggestionState, writeTouched]
   );
 
+  // moss-multi: set by a deliberate close, so the focus it hands back writes nothing.
+  const closedRef = useRef(false);
   const closeIfValid = useCallback(() => {
     const draft = latestDraftRef.current;
     if (!isDraftValid(draft)) {
       return;
     }
     writeTouched(draft);
+    closedRef.current = true;
     onClose({ restoreFocus: true });
   }, [isDraftValid, onClose, writeTouched]);
+
+  // moss-multi: moss writes a valid draft live, so an outside click closes on it; here the one valid draft not yet
+  // written is one a peer's edit made valid, and an outside click writes it too. Escape and Dismiss write nothing, and
+  // the focus they hand back to the note is no outside click.
+  const discard = useCallback(() => {
+    closedRef.current = true;
+    onClose({ restoreFocus: true });
+  }, [onClose]);
+  const writeIfValid = useCallback(() => {
+    const draft = latestDraftRef.current;
+    if (!closedRef.current && writable && !pending && isDraftValid(draft)) writeTouched(draft);
+  }, [isDraftValid, pending, writable, writeTouched]);
 
   const handleInputKeyDown = useCallback(
     (event: ReactKeyboardEvent<HTMLInputElement>) => {
@@ -781,13 +796,13 @@ function FormulaEditPopover({
 
       if (event.key === 'Escape') {
         event.preventDefault();
-        onClose({ restoreFocus: true });
+        discard();
       } else if (event.key === 'Enter') {
         event.preventDefault();
         closeIfValid();
       }
     },
-    [acceptSuggestion, closeIfValid, onClose, onHistoryShortcut, setDraftState, suggestionState, syncDraftFromNode]
+    [acceptSuggestion, closeIfValid, discard, onHistoryShortcut, setDraftState, suggestionState, syncDraftFromNode]
   );
 
   const inputClassName =
@@ -868,7 +883,9 @@ function FormulaEditPopover({
           // an action button has focus dismisses via Base UI and restores
           // nothing. The follow-on onOpenChange -> onClose() is a harmless
           // second call.
-          onEscapeKeyDown={() => onClose({ restoreFocus: true })}
+          onEscapeKeyDown={discard}
+          onPointerDownOutside={writeIfValid}
+          onFocusOutside={writeIfValid}
         >
           <Popover.Arrow
             className="formula-edit-popover-anchor-line"
@@ -906,7 +923,7 @@ function FormulaEditPopover({
               <button
                 type="button"
                 aria-label="Dismiss formula editor"
-                onClick={() => onClose({ restoreFocus: true })}
+                onClick={discard}
                 className={actionButtonClassName}
               >
                 <X aria-hidden className="h-3 w-3" strokeWidth={1.5} />
@@ -1212,6 +1229,17 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
     [editor]
   );
 
+  // moss-multi: the stored formula the open draft is based on, as the popover last read or wrote it.
+  const readStoredBase = useCallback((): string => {
+    if (editStoredRef.current !== null) return editStoredRef.current;
+    let formula = '';
+    editor.getEditorState().read(() => {
+      const node = editingFormula ? $getNodeByKey(editingFormula.nodeKey) : null;
+      if ($isFormulaNode(node)) formula = node.getFormula();
+    });
+    return formula;
+  }, [editingFormula, editor]);
+
   const applyDraftToNode = useCallback(
     (draft: FormulaDraft, change?: FormulaDraftChange): boolean => {
       const target = editingFormula;
@@ -1238,8 +1266,6 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
       }
       editExpressionRef.current = draft.expression;
       editReferenceBindingsRef.current = references;
-      // moss-multi: a draft back at its base writes nothing.
-      if (change?.fields && !change.fields.name && !change.fields.expression) return false;
 
       const nextName = draft.name.trim();
       const nextExpression =
@@ -1250,6 +1276,13 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
               references,
               createBareNameResolver(target)
             ).trim();
+      // moss-multi: an executable draft is compared with its base in stored form, reference tokens included, so picking
+      // another same-named reference is a change. Its base is the stored formula the draft was last merged with.
+      const fields = change?.fields && target.sourceMode !== 'symbolic'
+        ? { ...change.fields, expression: rebindHumanizedExpression(draft.expression, references).trim() !== readStoredBase().trim() }
+        : change?.fields;
+      // moss-multi: a draft back at its base writes nothing.
+      if (fields && !fields.name && !fields.expression) return false;
       if (!isFormulaDraftValidForMode({ name: draft.name, expression: nextExpression }, target.sourceMode, target.result)) {
         return false;
       }
@@ -1260,8 +1293,8 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
         }, { tag: [HISTORY_PUSH_TAG, EDITOR_UPDATE_TAGS.ignored.skipDirty, SKIP_DOM_SELECTION_TAG, POPOVER_WRITE_TAG] });
       }
 
-      const writeName = change?.fields?.name ?? true;
-      const writeExpression = change?.fields?.expression ?? true;
+      const writeName = fields?.name ?? true;
+      const writeExpression = fields?.expression ?? true;
       let changed = false;
       editor.update(() => {
         const targetNode = $getNodeByKey(target.nodeKey);
@@ -1368,7 +1401,7 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
       }
       return changed;
     },
-    [createBareNameResolver, editingFormula, editor]
+    [createBareNameResolver, editingFormula, editor, readStoredBase]
   );
 
   const handleDraftChange = useCallback(
@@ -1387,11 +1420,15 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
   // merged draft and where `selection` belongs in it; the draft's tracked references become the merged text's.
   const mergePeerExpression = useCallback(
     (before: string, after: string, draft: string, selection: readonly number[]) => {
+      // The draft's own tracked references, which may name another same-named token than the stored ones; the stored
+      // ones only when the tracking describes other text (the draft was re-read from the node).
       const stored = humanizeFormulaExpressionWithReferences(before);
       const own =
-        draft === stored.expression
-          ? stored.references
-          : remapPositionedReferences(editExpressionRef.current, draft, editReferenceBindingsRef.current);
+        draft === editExpressionRef.current
+          ? editReferenceBindingsRef.current
+          : draft === stored.expression
+            ? stored.references
+            : remapPositionedReferences(editExpressionRef.current, draft, editReferenceBindingsRef.current);
       const mine = bindTrackedReferences(draft, own);
       const ops = rebaseOps(before, diffText(before, after), mine.raw);
       const mergedRaw = applyOps(mine.raw, ops);
