@@ -1466,8 +1466,10 @@ export interface MossEditorManifest {
    * A block renders inert, with no script running, until the user presses the
    * Run button the document shows on it (PRODUCT ruling 21). Activating the
    * block is not consent, and nothing runs a block automatically. Run lasts
-   * for that block while the editor stays mounted: moss's static and
-   * interactive frames of the block both run, and a new mount starts inert.
+   * for that block alone while the editor stays mounted: moss's static,
+   * interactive and fullscreen frames of the block run, Run pressed in any
+   * of them counts for all three, another block with the same HTML stays
+   * inert, and a new mount starts inert.
    *
    * A running block runs as an opaque origin with its inline scripts and
    * styles and its `data:` and `blob:` images, and sends nothing to any server:
@@ -1484,8 +1486,9 @@ export interface MossEditorManifest {
    *   interface (CSP does not govern ICE, so a peer connection could reach
    *   any STUN or TURN server), and keeps every frame out of the block's
    *   document (each would be a fresh realm with WebRTC): frames in its HTML
-   *   are dropped, frames added later are removed before they load, and
-   *   declarative shadow roots, which could hide a frame, are never parsed.
+   *   are dropped, frames added later are removed before they load,
+   *   declarative shadow roots, which could hide a frame, are never parsed,
+   *   and no shadow root is clonable, so no clone carries a frame unseen.
    * - Static `preconnect`, `dns-prefetch` and `prerender` hints are dropped.
    * What browsers do on their own is outside this: a refused navigation or a
    * connection hint added by script can still make the browser resolve the

@@ -12,7 +12,7 @@ export interface EditorRecord {
   session: EditorSession;
   /** The mount's element, which holds its HTML block frames. */
   element: HTMLElement;
-  /** HTML blocks the user pressed Run on in this mount, as `block:<node key>` and `html:<frame HTML>` (ruling 21). */
+  /** The node keys of the HTML blocks the user pressed Run on in this mount (ruling 21). */
   ran: Set<string>;
 }
 

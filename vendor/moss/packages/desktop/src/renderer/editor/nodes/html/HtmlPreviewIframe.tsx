@@ -120,6 +120,8 @@ export function HtmlPreviewIframe({
           width={viewportWidth}
           height={viewportHeight}
           onLoad={handleLoad}
+          // moss-multi seam: html-frame: moss reports a block's size by its node key, so the key names the block for Run.
+          blockKey={dimensionReportId}
           style={{
             border: 0,
             display: 'block'
@@ -150,6 +152,8 @@ export function HtmlPreviewIframe({
             width={viewportWidth}
             height={viewportHeight}
             onLoad={handleLoad}
+            // moss-multi seam: html-frame: moss reports a block's size by its node key, so the key names the block for Run.
+            blockKey={dimensionReportId}
             style={{
               border: 0,
               display: 'block',
@@ -173,6 +177,8 @@ export function HtmlPreviewIframe({
         width={viewportWidth}
         height={viewportHeight}
         onLoad={handleLoad}
+        // moss-multi seam: html-frame: moss reports a block's size by its node key, so the key names the block for Run.
+        blockKey={dimensionReportId}
         style={{
           border: 0,
           display: 'block',

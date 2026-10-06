@@ -41,14 +41,20 @@ export function supportedSandbox(sandbox: string): string {
   return sandbox.split(/\s+/).filter((token) => token && probe.supports(token)).join(' ');
 }
 
+/** Where a frame belongs: its note, and the moss block it previews when moss names one (a portalled frame too). */
+export interface FrameScope {
+  noteId?: string | null;
+  block?: string | null;
+}
+
 /**
  * Per-block consent to run scripts (the editor, PRODUCT ruling 21). With a gate, CONTENT carries `run` and a block
  * runs only once the gate allows it; the frame document asks with RUN when the user presses its Run button. Without
  * one (apps/web, the viewer), CONTENT has no `run` and the frame document runs the block at once.
  */
 export interface FrameRunGate {
-  allowed(iframe: HTMLIFrameElement, html: string): boolean;
-  allow(iframe: HTMLIFrameElement, html: string): void;
+  allowed(iframe: HTMLIFrameElement, scope: FrameScope): boolean;
+  allow(iframe: HTMLIFrameElement, scope: FrameScope): void;
 }
 
 let runGate: FrameRunGate | null = null;
@@ -60,23 +66,23 @@ export function gateFrameScripts(gate: FrameRunGate | null): void {
 const fed = new Set<() => void>();
 
 /** Sends `html` into `iframe` once its frame document announces itself; returns the listener's cleanup. */
-export function feedHtmlFrame(iframe: HTMLIFrameElement, html: string): () => void {
+export function feedHtmlFrame(iframe: HTMLIFrameElement, html: string, scope: FrameScope = {}): () => void {
   // The frame is an opaque origin, so no target origin can name it.
   const send = () =>
     iframe.contentWindow?.postMessage(
-      runGate ? { type: HTML_FRAME_CONTENT, html, run: runGate.allowed(iframe, html) } : { type: HTML_FRAME_CONTENT, html },
+      runGate ? { type: HTML_FRAME_CONTENT, html, run: runGate.allowed(iframe, scope) } : { type: HTML_FRAME_CONTENT, html },
       '*',
     );
   // Run in another frame of the same block allows this one too; a frame already running ignores a second CONTENT.
   const refresh = () => {
-    if (runGate?.allowed(iframe, html)) send();
+    if (runGate?.allowed(iframe, scope)) send();
   };
   const onMessage = (event: MessageEvent) => {
     if (event.source !== iframe.contentWindow) return;
     const type = (event.data as { type?: unknown } | null)?.type;
     if (type === HTML_FRAME_READY) send();
     else if (type === HTML_FRAME_RUN && runGate) {
-      runGate.allow(iframe, html);
+      runGate.allow(iframe, scope);
       for (const other of fed) other();
     }
   };

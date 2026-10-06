@@ -18,8 +18,9 @@ export const HTML_FRAME_RUN = 'moss-html-frame-run';
  * - Child frames, each a fresh realm with WebRTC (srcdoc and javascript: frames load under `frame-src 'none'`): the
  *   block's HTML is parsed by DOMParser, which attaches no declarative shadow root, frames and connection hints
  *   are removed before it is moved in, and a MutationObserver over the document and every shadow root removes any
- *   frame added later, before it loads. document.write and setHTMLUnsafe, which would parse declarative shadow
- *   roots, are replaced or removed.
+ *   frame added later, before it loads. Every shadow root comes from attachShadow, which registers it and makes it
+ *   non-clonable, so no clone carries one past the observer. document.write, setHTMLUnsafe and DOMParser's
+ *   shadow-root option, which would parse declarative shadow roots, are replaced or removed.
  * Scripts are re-created so they run, in order, while the document is still loading.
  */
 const HTML_FRAME_GUARD = `function (html) {
@@ -51,8 +52,11 @@ const HTML_FRAME_GUARD = `function (html) {
   var observer = new MutationObserver(sweep);
   var subtree = { childList: true, subtree: true };
   apply(observe, observer, [document, subtree]);
-  Element.prototype.attachShadow = function () {
-    var shadow = apply(attachShadow, this, arguments);
+  Element.prototype.attachShadow = function (init) {
+    var options = {};
+    if (init) for (var key in init) options[key] = init[key];
+    options.clonable = false;
+    var shadow = apply(attachShadow, this, [options]);
     shadows[shadows.length] = shadow;
     apply(observe, observer, [shadow, subtree]);
     return shadow;
@@ -96,6 +100,7 @@ const HTML_FRAME_GUARD = `function (html) {
     documents[d].open = function () { return this; };
     documents[d].close = function () {};
   }
+  DOMParser.prototype.parseFromString = function (markup, type) { return apply(parse, this, [markup, type]); };
   var unsafe = [[Element.prototype, 'setHTMLUnsafe'], [ShadowRoot.prototype, 'setHTMLUnsafe'], [Document, 'parseHTMLUnsafe']];
   for (var u = 0; u < unsafe.length; u++) { try { delete unsafe[u][0][unsafe[u][1]]; } catch (e) {} }
   apply(remove, apply(current, document, []), []);
