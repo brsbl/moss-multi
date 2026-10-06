@@ -9,7 +9,6 @@ import {
 import { BodyUndo, lexicalAction, payloadDocsFor } from '@moss-multi/sync/payload-docs';
 
 import { REGISTER_LOCAL_ORIGIN } from '@moss-multi/sync/registers';
-export { REGISTER_LOCAL_ORIGIN };
 
 export const UNDO_CAPTURE_TIMEOUT_MS = 1_000;
 type StackItem = UndoManager['undoStack'][number];

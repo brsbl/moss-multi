@@ -2,7 +2,8 @@ import { expect, it } from 'vitest';
 import * as Y from 'yjs';
 import type { Binding } from '@lexical/yjs';
 import { payloadDocsFor, payloadText } from '@moss-multi/sync/payload-docs';
-import { createBindingUndoManager, REGISTER_LOCAL_ORIGIN } from './undo.ts';
+import { REGISTER_LOCAL_ORIGIN } from '@moss-multi/sync/registers';
+import { createBindingUndoManager } from './undo.ts';
 import { DERIVED_ORIGIN, isOwnOrigin, syncUnderOrigin } from './origins.ts';
 
 it('one stack over body and payload edits, in order, excluding peer, null, server and derived origins', () => {

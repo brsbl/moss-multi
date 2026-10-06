@@ -9,9 +9,7 @@ import { refuseInput } from '../refusal.ts';
 
 type Input = HTMLInputElement | HTMLTextAreaElement;
 /** The payload text behind a node: its own payload doc's (A§10.10), held now. */
-export function nodeRegister(editor: LexicalEditor, key: string): Y.Text | undefined {
-  return payloadTextOf(editor, key);
-}
+export { payloadTextOf as nodeRegister } from '@moss-multi/sync/registers';
 
 /** Shown when a peer removes the block whose field is open (or a server dedupe drops its copy). */
 export const FIELD_REMOVED = 'The block you were editing was removed.';
@@ -106,7 +104,7 @@ export function useRegisterDraft(
       display(initial);
       return;
     }
-    const text = nodeRegister(editor, key);
+    const text = payloadTextOf(editor, key);
     if (!text) return;
     const show = (delta: Y.YTextEvent['delta'] | null) => {
       const next = text.toString();
@@ -131,7 +129,7 @@ export function useRegisterDraft(
   }, [editor, key, element, bound, live, id, live ? '' : initial]);
   useLayoutEffect(() => {
     const input = element.current;
-    const text = live ? nodeRegister(editor, key) : undefined;
+    const text = live ? payloadTextOf(editor, key) : undefined;
     const doc = text?.doc;
     if (!editing || !input || !doc || !text) return;
     const keyboard = (event: KeyboardEvent) => {
