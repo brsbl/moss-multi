@@ -13,8 +13,10 @@ import { rangesWhere } from './chars.ts';
 import { ReviewMount, SuggestMount } from './mounts.ts';
 import { clearPaint, drawMarks, editMarks, paintBound, paintRanges, partTargets, removedBodyItems } from './paint.ts';
 import { registerSuggestRouting } from './routing.ts';
+import { openSuggestion } from './SuggestionsPanel.tsx';
 
 export interface SuggestPane {
+  readonly docId: string;
   readonly mode: EditMode;
   readonly mount: SuggestMount | ReviewMount | null;
   /** B, the session's doc, while one is attached. */
@@ -76,7 +78,7 @@ export function SuggestPlugin({ pane }: { pane: SuggestPane }): null {
         // Strikes: delete-part targets, and body items a record's own ops remove (a join, a split, a restyle).
         const struck = [...partTargets(body, new Set(built.valid)), ...removed];
         paintRanges(owner, [], struck.length ? rangesWhere(editor, binding, (id) => covers(struck, id)) : []);
-        if (overlay) drawMarks(editor, overlay, editMarks(body, built, binding));
+        if (overlay) drawMarks(editor, overlay, editMarks(body, built, binding), (record) => openSuggestion(pane.docId, record));
       } else {
         clearPaint(owner);
         overlay?.replaceChildren();
@@ -94,6 +96,25 @@ export function SuggestPlugin({ pane }: { pane: SuggestPane }): null {
     if (mount instanceof SuggestMount) {
       mount.editor = editor;
       stops.push(registerSuggestRouting(editor, mount.fork));
+    }
+    if (mount instanceof ReviewMount) {
+      // A click on a painted suggestion opens its card (§7 hit test): the record whose inserted text is under it.
+      const root = editor.getRootElement();
+      const onClick = (event: MouseEvent) => {
+        const binding = bindingOf(editor);
+        if (!binding) return;
+        const byRecord = new Map<string, Set<number>>();
+        for (const [client, record] of mount.clients) byRecord.set(record, (byRecord.get(record) ?? new Set()).add(client));
+        const under = (range: Range) => [...range.getClientRects()].some((rect) => event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom);
+        for (const [record, clients] of byRecord) {
+          if (rangesWhere(editor, binding, (id) => clients.has(id.client)).some(under)) {
+            openSuggestion(pane.docId, record);
+            return;
+          }
+        }
+      };
+      root?.addEventListener('click', onClick);
+      stops.push(() => root?.removeEventListener('click', onClick));
     }
     if (mode === 'edit' && body) {
       // Edit mode: C is rebuilt from B's records, throttled, only while any record is open.

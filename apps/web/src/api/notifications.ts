@@ -3,7 +3,7 @@
 // can no longer open is left out, title and all (L§1.6 D-G6). An email is never an authority (PRODUCT ruling 19), so
 // nothing tells an account about an invite before it holds the link: the invite events are an inviter hearing that
 // their invite was accepted, and share notices left from before the ruling. Comment notices (T4.4) are a mention and
-// a reply to the reader's thread, written by comments.ts.
+// a reply to the reader's thread, written by comments.ts; a suggestion notice (T5.3) is written by suggestions.ts.
 import { inArray, sql } from 'drizzle-orm';
 import type { Principal } from '../auth/principal.ts';
 import { resolvePrincipal } from '../auth/principal.ts';
@@ -14,7 +14,7 @@ import { notify, type InvitesEnv } from './invites.ts';
 import { accessTo } from './members.ts';
 import { NO_STORE, readJsonObject, unauthenticated } from './respond.ts';
 
-const TYPES = ['share-invite', 'invite-accepted', 'mention', 'comment-reply'] as const;
+const TYPES = ['share-invite', 'invite-accepted', 'mention', 'comment-reply', 'suggestion'] as const;
 type NoticeType = (typeof TYPES)[number];
 
 /** How many of the newest notices the bell shows. */
@@ -34,6 +34,8 @@ export interface Notice {
   invitedEmail?: string;
   /** The comment a mention or reply notice is about. */
   commentId?: string;
+  /** The suggestion a suggestion notice is about. */
+  suggestionId?: string;
 }
 
 interface Row {
@@ -50,6 +52,7 @@ interface Payload {
   by: string;
   invitedEmail?: string;
   commentId?: string;
+  suggestionId?: string;
 }
 
 function parsePayload(text: string): Payload | null {
@@ -62,6 +65,7 @@ function parsePayload(text: string): Payload | null {
       by: value.by,
       ...(typeof value.invitedEmail === 'string' ? { invitedEmail: value.invitedEmail } : {}),
       ...(typeof value.commentId === 'string' ? { commentId: value.commentId } : {}),
+      ...(typeof value.suggestionId === 'string' ? { suggestionId: value.suggestionId } : {}),
     };
   } catch {
     return null;
@@ -105,6 +109,7 @@ async function listNotices(d1: D1Database, reader: Reader): Promise<Notice[]> {
     };
     if (payload.invitedEmail && actor && payload.invitedEmail !== actor.email.toLowerCase()) notice.invitedEmail = payload.invitedEmail;
     if (payload.commentId) notice.commentId = payload.commentId;
+    if (payload.suggestionId) notice.suggestionId = payload.suggestionId;
     return notice;
   });
 }

@@ -188,8 +188,8 @@ function blockElement(editor: LexicalEditor, key: string): HTMLElement | null {
   return element && element.parentElement === root ? element : null;
 }
 
-/** Draws Edit-mode marks into `overlay` (pointer-transparent; wedges take hover for their preview). */
-export function drawMarks(editor: LexicalEditor, overlay: HTMLElement, marks: Mark[]): void {
+/** Draws Edit-mode marks into `overlay` (pointer-transparent; wedges and gutter bars take hover and a click). */
+export function drawMarks(editor: LexicalEditor, overlay: HTMLElement, marks: Mark[], onOpen?: (record: string) => void): void {
   overlay.replaceChildren();
   const host = overlay.getBoundingClientRect();
   const gutters = new Set<HTMLElement>();
@@ -213,6 +213,7 @@ export function drawMarks(editor: LexicalEditor, overlay: HTMLElement, marks: Ma
     wedge.setAttribute('aria-label', `Suggested insert: ${mark.text.trim()}`);
     wedge.style.left = `${(mark.after ? rect.right : rect.left) - host.left - 4}px`;
     wedge.style.top = `${rect.bottom - host.top - 2}px`;
+    if (onOpen && mark.record) wedge.addEventListener('click', () => onOpen(mark.record));
     const preview = document.createElement('span');
     preview.setAttribute(OVERLAY_SURFACE_ATTR, '');
     preview.dataset.suggestPreview = '';
@@ -229,6 +230,8 @@ export function drawMarks(editor: LexicalEditor, overlay: HTMLElement, marks: Ma
       bar.style.left = `${box.left - host.left - 10}px`;
       bar.style.top = `${box.top - host.top}px`;
       bar.style.height = `${box.height}px`;
+      if (mark.record) bar.dataset.suggestionId = mark.record;
+      if (onOpen && mark.record) bar.addEventListener('click', () => onOpen(mark.record));
       overlay.appendChild(bar);
     }
   }

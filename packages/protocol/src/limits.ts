@@ -41,6 +41,12 @@ export const REMOTE_FETCH_RATE = { max: 30, windowMs: 60_000 } as const;
 /** Comment operations (create, reply, later edit, resolve, react) per principal per window, counted by its PrincipalDO; 429 past it. */
 export const COMMENT_OP_RATE = { max: 60, windowMs: 60_000 } as const;
 
+/** Suggestion accepts, rejects and withdraws per principal per window (an accept costs O(doc)); 429 past it. */
+export const SUGGEST_REVIEW_RATE = { max: 30, windowMs: 60_000 } as const;
+
+/** Suggestion previews per principal per window (O(doc) each; a panel previews each open card); 429 past it. */
+export const SUGGEST_PREVIEW_RATE = { max: 120, windowMs: 60_000 } as const;
+
 /**
  * How long a PrincipalDO remembers an ended session and a session's doc sockets (A§5.2): better-auth's default session
  * lifetime, 7 days, which no in-flight upgrade outlives.

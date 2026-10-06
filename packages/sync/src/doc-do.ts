@@ -22,7 +22,9 @@ import { coerceSidecar, COMMENT_STATE_SHARE, COMMENTS_PER_DOC, DocComments, type
 import { d1Projections, Projections, type ProjectionTarget } from './doc/projections.ts';
 import { handleSuggest, SqlLeases, SuggestIngest, type Suggester } from './doc/suggest.ts';
 import { newSuggestionsClient, SUGGESTIONS, SuggestionsWriter } from './suggest/records.ts';
-import { acceptRecord, nodeRegistry, previewRecord, rejectRecord, withdrawRecord, type Preview, type Reviewer, type ReviewResult } from './suggest/review.ts';
+import {
+  acceptRecord, exportWorkingMarkdown, nodeRegistry, rejectRecord, reviewPreview, withdrawRecord, type Preview, type Reviewer, type ReviewResult,
+} from './suggest/review.ts';
 import { TRY_AGAIN, withDeadline, type Stamp } from './access-epoch.ts';
 import { publishMeta } from './fanout.ts';
 import type { SyncEnv } from './env.ts';
@@ -130,6 +132,10 @@ const serializer = () => {
 
 /** Who a REST comment write stands for, as the Worker resolved it: its principal, session or key, and share token. */
 export type CommentActor = SocketIdentity;
+
+/** A refused review action: the gate's reason, or the actor's (as for comments). */
+export type ReviewRefusal = { ok: false; status: number; reason: string };
+export type SuggestionPreview = Preview & { closed?: boolean };
 
 /** A new live suggestion, for the bell. */
 export type SuggestionNotifier = (notice: { docId: string; author: string; record: string }) => Promise<void>;
@@ -349,6 +355,9 @@ export class DocDO extends YServer<SyncEnv> {
       stateBytes: () => store.stateBytes + payloads.totalBytes,
       // Only a served payload places a payload op; a withheld one is accept's G4 to refuse, and reads as unknown here.
       payloadDoc: (id) => (payloads.served(id) ? payloads.doc(id) : undefined),
+      onCreated: (record, author, continues) => {
+        if (!continues) this.#noticeSuggestion(record, author);
+      },
     });
     const target = (this.constructor as typeof DocDO).projectionTarget(this.env);
     if (target) this.#project(new Projections(this.name, target));
@@ -781,6 +790,13 @@ export class DocDO extends YServer<SyncEnv> {
 
   /** The actor's verdict now: null while it may comment, else the refusal. Throws when D1 cannot answer. */
   async #authorizeActor(check: AccessCheck, store: DocStore, actor: CommentActor | undefined): Promise<CommentResult | null> {
+    const resolved = await this.#resolveActor(check, store, actor);
+    if ('ok' in resolved) return resolved;
+    return roleAtLeast(resolved.role, 'commenter') ? null : { ok: false, status: 403, error: 'forbidden' };
+  }
+
+  /** The actor's live role now, or the refusal (no live credential, no access, a revocation). Throws when D1 cannot answer. */
+  async #resolveActor(check: AccessCheck, store: DocStore, actor: CommentActor | undefined): Promise<CommentResult | { role: Role }> {
     const unauthenticated: CommentResult = { ok: false, status: 401, error: 'unauthenticated' };
     if (!actor || (actor.kind !== 'user' && actor.kind !== 'agent')) return unauthenticated;
     const session = actor.kind === 'user' ? actor.sessionId : null;
@@ -793,10 +809,9 @@ export class DocDO extends YServer<SyncEnv> {
     if (session ? !stamp.sessions.has(session) : !stamp.agents.has(actor.principalId)) return unauthenticated;
     if (access === 'deleted') return { ok: false, status: 404, error: 'trashed' };
     if (access === null) return { ok: false, status: 404, error: 'not-found' };
-    if (!roleAtLeast(access.role, 'commenter')) return { ok: false, status: 403, error: 'forbidden' };
     // A kick persisted while D1 answered outdates what it said.
     if (revocationCode({ ...actor, resolvedAt } as Attachment, store.revoked) !== null) return { ok: false, status: 403, error: 'forbidden' };
-    return null;
+    return { role: access.role as Role };
   }
 
   /**
@@ -918,30 +933,82 @@ export class DocDO extends YServer<SyncEnv> {
     store.setMeta('created', '1');
   }
 
-  async previewSuggestion(input: { id: string; reviewer: Reviewer; actor?: CommentActor }): Promise<Preview> {
-    await this.#ready();
-    return previewRecord(this.document, input.id);
+  /**
+   * The hunks a reviewer is shown and the hash and digest an accept must name (docs/design/suggestions.md §4.4), for
+   * any reader. An idle record with nothing to show is rejected by the system; an outdated or broken one is badged.
+   */
+  previewSuggestion(input: { id: string; reviewer: Reviewer; actor?: CommentActor }): Promise<SuggestionPreview | ReviewRefusal> {
+    return this.#review(input, 'viewer', () => reviewPreview(this.document, input.id));
   }
 
-  async acceptSuggestion(input: { id: string; reviewer: Reviewer; actor?: CommentActor; previewHash: string; digest: string }): Promise<ReviewResult> {
-    await this.#ready();
-    return acceptRecord(this.document, input.id, input, input.reviewer);
+  /**
+   * Accept (§4.1–4.3): editor and above, in one synchronous turn after the actor is re-authorized. The record lands
+   * exactly as previewed or nothing does; its leases are spent in the same turn.
+   */
+  acceptSuggestion(input: { id: string; reviewer: Reviewer; actor?: CommentActor; previewHash: string; digest: string }): Promise<ReviewResult | ReviewRefusal> {
+    return this.#review(input, 'editor', (reviewer) => {
+      const result = acceptRecord(this.document, input.id, { previewHash: input.previewHash, digest: input.digest }, reviewer, { stateCap: this.#limits.stateCapBytes });
+      if (result.ok) {
+        this.#comments?.flush();
+        this.#projections?.touch();
+      }
+      return result;
+    });
   }
 
-  async rejectSuggestion(input: { id: string; reviewer: Reviewer; actor?: CommentActor }): Promise<ReviewResult> {
-    await this.#ready();
-    return rejectRecord(this.document, input.id, input.reviewer);
+  /** Reject (§4.5): editor and above; only the record changes. */
+  rejectSuggestion(input: { id: string; reviewer: Reviewer; actor?: CommentActor }): Promise<ReviewResult | ReviewRefusal> {
+    return this.#review(input, 'editor', (reviewer) => rejectRecord(this.document, input.id, reviewer));
   }
 
-  async withdrawSuggestion(input: { id: string; reviewer: Reviewer; actor?: CommentActor }): Promise<ReviewResult> {
-    await this.#ready();
-    return withdrawRecord(this.document, input.id, input.reviewer);
+  /** Withdraw (§4.5): the author, at any role from suggester up; only the record changes. */
+  withdrawSuggestion(input: { id: string; reviewer: Reviewer; actor?: CommentActor }): Promise<ReviewResult | ReviewRefusal> {
+    return this.#review(input, 'suggester', (reviewer) => withdrawRecord(this.document, input.id, reviewer));
+  }
+
+  /**
+   * One review action in the doc's serialized write (A§8 pull validation): the actor is re-resolved and its live role,
+   * not the Worker's, is the reviewer's; the action runs right after with no await between. A trashed doc refuses.
+   */
+  async #review<T>(input: { reviewer: Reviewer; actor?: CommentActor }, floor: Role, run: (reviewer: Reviewer) => T): Promise<T | ReviewRefusal> {
+    const store = await this.#ready();
+    const check = this.#accessCheck();
+    return this.#serial(async (): Promise<T | ReviewRefusal> => {
+      let reviewer = input.reviewer;
+      if (check) {
+        let resolved: CommentResult | { role: Role };
+        try {
+          await this.#validate(check);
+          resolved = await this.#resolveActor(check, store, input.actor);
+        } catch (error) {
+          console.error('DocDO could not re-authorize a suggestion review; refusing it', error);
+          return { ok: false, status: 503, reason: 'unconfirmed' };
+        }
+        if ('ok' in resolved) return { ok: false, status: resolved.ok ? 500 : resolved.status, reason: resolved.ok ? 'unconfirmed' : resolved.error };
+        reviewer = { id: input.reviewer.id, role: resolved.role };
+      }
+      if (holdsOf(store).size > 0 || store.meta('deleted') === '1') return { ok: false, status: 404, reason: 'trashed' };
+      if (!roleAtLeast(reviewer.role, floor)) return { ok: false, status: 403, reason: 'role' };
+      return run(reviewer);
+    });
+  }
+
+  #noticeSuggestion(record: string, author: string): void {
+    const notify = (this.constructor as typeof DocDO).suggestionNotices(this.env);
+    if (!notify) return;
+    const sent = notify({ docId: this.name, author, record }).catch((error: unknown) => console.error('suggestion notice failed', error));
+    try {
+      this.ctx.waitUntil(sent);
+    } catch {
+      // No request to extend (the Node harness): the notice still runs.
+    }
   }
 
   /** The doc as a `.md` file, memoized until the next update. */
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  async exportMarkdown(_options: { view?: 'working' } = {}): Promise<string> {
+  async exportMarkdown(options: { view?: 'working' } = {}): Promise<string> {
     await this.#ready();
+    // The working view (§4.7): the note with every valid open suggestion applied; never memoized.
+    if (options.view === 'working') return exportWorkingMarkdown(this.document, this.name);
     this.#exported ??= exportDocMarkdown(this.document, this.name);
     return this.#exported;
   }

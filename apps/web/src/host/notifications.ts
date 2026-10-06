@@ -6,7 +6,7 @@ import type { WorkspaceEvent } from '@moss-multi/protocol/workspace';
 
 export interface Notice {
   id: string;
-  type: 'share-invite' | 'invite-accepted' | 'mention' | 'comment-reply';
+  type: 'share-invite' | 'invite-accepted' | 'mention' | 'comment-reply' | 'suggestion';
   read: boolean;
   createdAt: number;
   by: string;
@@ -14,6 +14,8 @@ export interface Notice {
   invitedEmail?: string;
   /** The comment a mention or reply notice is about. */
   commentId?: string;
+  /** The suggestion a suggestion notice is about. */
+  suggestionId?: string;
 }
 
 export interface NotificationsDeps {

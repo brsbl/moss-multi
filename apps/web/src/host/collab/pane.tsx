@@ -31,6 +31,7 @@ import { captureCaret, type CaretMark } from './suggest/caret.ts';
 import { modeFor, offerUnsaved, showMode, subscribeModes } from './suggest/mode.ts';
 import { ReviewMount, SuggestMount } from './suggest/mounts.ts';
 import { SuggestModeChip, SuggestUnsavedBand } from './suggest/SuggestChrome.tsx';
+import { SuggestionsButton } from './suggest/SuggestionsPanel.tsx';
 import { SuggestPlugin, type SuggestPane } from './suggest/SuggestPlugin.tsx';
 import { bindFrontmatter } from './frontmatter-binding.ts';
 import { bindCommentAtoms } from '../comments/atoms.ts';
@@ -655,7 +656,7 @@ export function useMossMultiPane(note: { id: string; trashedAt?: number | null }
           ...(terminal ? { [TERMINAL_REASON_ATTR]: terminal } : {}),
         }
       : {},
-    topBarCollab: docId ? <><SuggestModeChip docId={docId} /><TopBarCollab docId={docId} /></> : null,
+    topBarCollab: docId ? <><SuggestModeChip docId={docId} />{binding ? <SuggestionsButton docId={docId} source={binding} /> : null}<TopBarCollab docId={docId} /></> : null,
   };
 }
 

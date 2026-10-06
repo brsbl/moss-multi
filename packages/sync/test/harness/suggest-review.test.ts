@@ -62,8 +62,8 @@ async function suggest(client: TestClient, step: () => void): Promise<string> {
   const fork = new ForkShim(client.doc, grant.client);
   try {
     fork.act(step);
-    for (const update of fork.sent) {
-      expect(await send(client, { t: 'suggest-ops', record: grant.record, update: bytesToBase64(update) })).toMatchObject({ t: 'suggest-ack' });
+    for (const op of fork.sent) {
+      expect(await send(client, { t: 'suggest-ops', record: grant.record, doc: op.doc, update: bytesToBase64(op.update) })).toMatchObject({ t: 'suggest-ack' });
     }
   } finally {
     fork.dispose();

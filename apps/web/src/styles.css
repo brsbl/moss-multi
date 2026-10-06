@@ -94,6 +94,8 @@
   width: 3px;
   border-radius: 2px;
   background: var(--accent-brand);
+  pointer-events: auto;
+  cursor: pointer;
 }
 .moss-suggest-dot {
   position: absolute;
