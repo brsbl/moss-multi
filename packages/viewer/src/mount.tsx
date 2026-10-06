@@ -2,6 +2,7 @@
 // viewer has its own Jotai store (as moss's PdfExportApp does) and a unique note id that routes moss's media and
 // preview calls to its services; links leave through services.navigate.
 import { StrictMode, type ReactNode } from 'react';
+import type { LexicalEditor } from 'lexical';
 import { createRoot } from 'react-dom/client';
 import { Provider, createStore } from 'jotai';
 import { MarkdownEditor } from '@moss-desktop/renderer/editor/MarkdownEditor';
@@ -9,11 +10,14 @@ import { CanvasArea } from '@moss/shared/components/layout/CanvasArea';
 import { noteEntityAtom, noteIdsAtom } from '@moss/shared/state/note-atoms';
 import { browserSplitTargetAtom, mapNoteMetadataToNoteEntity, splitTabNoteIdAtom, webEmbedLightboxTargetAtom } from '@moss/shared/state/atoms';
 import { setEmbedTheme } from '@moss-multi/host/embed-theme.ts';
+import { readSelection } from '@moss-multi/host/selection.ts';
+import { ShareWithAgentBar } from '@moss-multi/host/share-with-agent.tsx';
 import { installViewerElectronApi } from './electron-api.ts';
 import { installViewerHooks } from './hooks.ts';
 import { readMossNote, type MossNoteContent } from './moss-file.ts';
 import { markActive, registerViewer, type ViewerRecord } from './registry.ts';
-import type { MossViewerHandle, MossViewerNote, MossViewerOptions, MossViewerServices, MossViewerTheme } from './types.ts';
+import { MOSS_EXPORT, linesBeforeLoadedBody } from './selection.ts';
+import type { MossSelection, MossViewerHandle, MossViewerNote, MossViewerOptions, MossViewerServices, MossViewerTheme } from './types.ts';
 
 type Store = ReturnType<typeof createStore>;
 
@@ -75,14 +79,16 @@ function holdHtmlBlocks(event: Event, live: boolean): void {
   event.stopImmediatePropagation();
 }
 
-function MossViewer({ noteId, note, onReady, onNavigateToNote }: {
+function MossViewer({ noteId, note, onReady, onNavigateToNote, onShare }: {
   noteId: string;
   note: MossNoteContent;
-  onReady: () => void;
+  onReady: (editor: LexicalEditor) => void;
   onNavigateToNote: (noteId: string, heading?: string | null) => void;
+  onShare: (() => void) | null;
 }): ReactNode {
   return (
     <div className="relative flex h-full min-w-0 flex-1 flex-col bg-surface-canvas" data-moss-viewer-root="">
+      {onShare ? <ShareWithAgentBar onShare={onShare} /> : null}
       <CanvasArea className="relative min-w-0 flex-1" responsiveLayout innerClassName="flex w-full flex-col gap-1" contentClassName="mx-auto max-w-canvas-blocks">
         <div className="relative">
           {note.title ? (
@@ -152,10 +158,16 @@ export function mountMossViewer(el: HTMLElement, options: MossViewerOptions): Mo
   const ready = new Promise<void>((resolve) => {
     settle = resolve;
   });
-  const onReady = () => {
+  let editor: LexicalEditor | null = null;
+  const onReady = (ready: LexicalEditor) => {
+    editor = ready;
     host.dataset.mossViewerState = 'ready';
     settle();
   };
+  const linesBefore = linesBeforeLoadedBody(options, note);
+  const selection = (): MossSelection | null => (mounted && editor ? readSelection(editor, MOSS_EXPORT, () => linesBefore) : null);
+  const share = services.shareWithAgent;
+  const onShare = share ? () => share.call(services, selection()) : null;
   const onNavigateToNote = (target: string, heading?: string | null) => {
     // A heading in this note: moss has already scrolled to it.
     if (target === noteId) return;
@@ -166,7 +178,7 @@ export function mountMossViewer(el: HTMLElement, options: MossViewerOptions): Mo
   root.render(
     <StrictMode>
       <Provider store={store}>
-        <MossViewer noteId={noteId} note={note} onReady={onReady} onNavigateToNote={onNavigateToNote} />
+        <MossViewer noteId={noteId} note={note} onReady={onReady} onNavigateToNote={onNavigateToNote} onShare={onShare} />
       </Provider>
     </StrictMode>,
   );
@@ -179,6 +191,7 @@ export function mountMossViewer(el: HTMLElement, options: MossViewerOptions): Mo
       host.dataset.theme = theme;
       setEmbedTheme(noteId, theme);
     },
+    selection,
     unmount() {
       if (!mounted) return;
       mounted = false;

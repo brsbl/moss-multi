@@ -72,7 +72,7 @@ export const SELECTION_CASES: SelectionCase[] = [
     from: 'Beans',
     to: '10',
     expected: {
-      text: 'Beans\n8\nPeas\n10',
+      text: 'Beans\t8\nPeas\t10',
       markdown: '| Beans | 8 |\n| Peas | 10 |',
       lines: { start: 16, end: 17 },
       headings: ['Planting'],

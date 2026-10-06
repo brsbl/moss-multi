@@ -8,6 +8,7 @@ import viteReact from '@vitejs/plugin-react';
 import { defineConfig, type Plugin } from 'vite';
 import { readSource } from '../../apps/web/vite-provenance.ts';
 import { HTML_FRAME_DOCUMENT } from '../protocol/src/html-frame.ts';
+import { MOSS_VIEWER_API, MOSS_VIEWER_INFO } from './src/info.ts';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
@@ -18,7 +19,8 @@ const pkg = JSON.parse(readFileSync(`${here}package.json`, 'utf8')) as { name: s
 const ENTRY = 'moss-viewer';
 /** HTML blocks' sandboxed frame document, which a host serves to run them live (services.htmlFrameUrl). */
 const FRAME = `${ENTRY}-frame.html`;
-const API = 1;
+const API = MOSS_VIEWER_API;
+if (MOSS_VIEWER_INFO.version !== pkg.version) throw new Error(`MOSS_VIEWER_INFO.version ${MOSS_VIEWER_INFO.version} != package ${pkg.version}`);
 const SUBSTITUTES: Record<string, string> = {
   [`${editorUtils}/asset-url.ts`]: `${here}src/substitutes/asset-url.ts`,
   [`${editorUtils}/media-server-url.ts`]: `${here}src/substitutes/media-server-url.ts`,
@@ -68,6 +70,7 @@ function manifest(): Plugin {
         name: pkg.name,
         version: pkg.version,
         api: API,
+        features: [...MOSS_VIEWER_INFO.features],
         entry: `${ENTRY}.js`,
         css: `${ENTRY}.css`,
         frame: FRAME,

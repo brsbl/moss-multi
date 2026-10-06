@@ -1,5 +1,16 @@
 # @moss-multi/viewer
 
+## 1.1.0
+
+API version 1; additions only, each behind a feature string in the new `MOSS_VIEWER_INFO` export and in viewer.json's
+new `features` field.
+
+- **`selection-1`: `handle.selection()`** returns the reader's selection as `MossSelection` (`text`, `markdown`,
+  `lines`, `headings`, `blocks`), or null when it is collapsed or outside the note body. `lines` are 1-based in the
+  note file, counted from moss's own export, which equals the loaded file for any file moss wrote.
+- **`share-with-agent-1`: optional `services.shareWithAgent(selection)`.** With it, moss's Share with Agent button
+  shows above the note and a press calls the service with the current selection (or null). Without it nothing changes.
+
 ## 1.0.0
 
 API version 1, unchanged except for one optional service.
