@@ -90,7 +90,8 @@ function fuzzCase(seed: number): Case {
   const clients = [LEASED];
   const parts: DeletePart[] = [];
   const story = [`census: ${census.name}`];
-  for (let n = 1 + int(random, 3); n > 0; n -= 1) {
+  // One case in five stays honest, so accept's landing leg runs too.
+  for (let n = random() < 0.2 ? 0 : 1 + int(random, 3); n > 0; n -= 1) {
     story.push(random() < 0.75 ? mutateOp(random, ops, LEASED, targets) : mutateRecord(random, ops, clients, parts, targets));
   }
   forge(live, FUZZ_ID, SUGGESTER, clients, ops, parts, 2);
@@ -357,11 +358,12 @@ describe('T5.4 fuzz findings, each replayed as a fixed case @p:mean-2 @p:R17', (
     const copy = new Y.Doc({ gc: false });
     Y.applyUpdate(copy, Y.encodeStateAsUpdate(live));
     copy.clientID = LEASED;
-    const sv = Y.encodeStateVector(copy);
+    // The transaction's own update, as a fork's provider sends it: its delete set is only what it deleted.
+    const updates: Uint8Array[] = [];
+    copy.on('update', (update: Uint8Array) => updates.push(update));
     write(copy);
-    const update = Y.encodeStateAsUpdate(copy, sv);
     copy.destroy();
-    return { doc: 'body', update };
+    return { doc: 'body', update: Y.mergeUpdates(updates) };
   }
 
   function excludedEverywhere(live: Y.Doc, id: string): void {
@@ -413,9 +415,11 @@ describe('T5.4 fuzz findings, each replayed as a fixed case @p:mean-2 @p:R17', (
     const held = new Y.Doc({ gc: false });
     for (const op of record.ops) if (op.doc === payload) Y.applyUpdate(held, op.update);
     held.clientID = record.meta.clients[0];
-    const sv = Y.encodeStateVector(held);
+    let update = new Uint8Array();
+    held.on('update', (made: Uint8Array) => {
+      update = made;
+    });
     held.getMap('payload-map').set('#k', 5);
-    const update = Y.encodeStateAsUpdate(held, sv);
     held.destroy();
     writeSuggestions(live, () => opsOf(live, 'chart').push([{ doc: payload, update }]));
     excludedEverywhere(live, 'chart');
