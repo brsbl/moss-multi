@@ -1,5 +1,6 @@
 import { Server } from 'partyserver';
 import { REST_WRITE_RATE } from '@moss-multi/protocol/limits';
+import { windowed } from './doc/admission.ts';
 import type { SyncEnv } from './env.ts';
 
 /** Where a window keeps its attempts between wakes. */
@@ -23,8 +24,7 @@ export class RateWindow {
 
   take(now = Date.now()): boolean {
     this.#attempts ??= this.store?.load() ?? [];
-    const recent = this.#attempts.filter((at) => now - at < this.windowMs);
-    recent.push(now);
+    const recent = windowed(this.#attempts, now, this.windowMs);
     // Only the newest `max` matter to the next decision, so a flood never grows the list.
     this.#attempts = recent.slice(-this.max);
     this.store?.save(this.#attempts);
