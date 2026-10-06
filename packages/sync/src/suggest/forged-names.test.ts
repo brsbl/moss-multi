@@ -156,7 +156,7 @@ describe('T5.3s forged records named like Object.prototype members @p:mean-2 @p:
     ['[null]', [null], [undefined]],
     ['{}', {}, { a: undefined }],
     ['null', null, Number.NaN],
-    ['an object keyed by index', { 0: 1 }, new Uint8Array([1])],
+    ['a list holding an object keyed by index', [{ 0: 1 }], [new Uint8Array([1])]],
   ] as [string, unknown, unknown][])('a payload field holding %s, replaced by a different value, is a hunk the hash covers', (_name, was, now) => {
     const live = seededBody();
     payloadDocsFor(live).get(codeKey(live))!.getMap('payload-map').set('forged', was);

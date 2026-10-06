@@ -86,6 +86,15 @@ const INLINE: ReadonlySet<string> = new Set(['link', 'autolink']);
 const CONTEXT = 80;
 const clip = (text: string) => (text.length > CONTEXT ? `${text.slice(0, CONTEXT - 1)}…` : text);
 
+/**
+ * A row's path one key deeper. Every row below a key repeats its path, so each key is clipped and the path keeps
+ * only its last `2 × CONTEXT` characters: a row costs a constant beyond what it covers.
+ */
+const sub = (path: string, key: string) => {
+  const next = `${path} ${clip(key)}`;
+  return next.length > 2 * CONTEXT ? `…${next.slice(-(2 * CONTEXT - 1))}` : next;
+};
+
 /** One unit of a sequence: a character with its own id, or any other item. */
 type Unit = { id: string; ch: string } | { id: string; node: unknown };
 
@@ -352,7 +361,7 @@ class Rows {
   /** The nodes a node holds as field values, each in its own rows; an empty one (its kind is in the parent's detail) has none. */
   fields(kind: 'insert' | 'delete', path: string, node: Node): void {
     for (const [key, item] of fieldsOf(node)) {
-      if (isNode(item) && (fieldsOf(item).length > 0 || (item.seq?.length ?? 0) > 0)) this.whole(kind, `${path} ${key}`, item);
+      if (isNode(item) && (fieldsOf(item).length > 0 || (item.seq?.length ?? 0) > 0)) this.whole(kind, sub(path, key), item);
     }
   }
 
@@ -365,7 +374,7 @@ class Rows {
       const unit = list[i];
       const map: Owner | null = !isChar(unit) && isNode(unit.node) && unit.node.type === 'Map' ? { id: unit.id, node: unit.node } : null;
       if (!isChar(unit) && !map) {
-        this.whole(kind, `${path} ${unit.id}`, unit.node, quiet);
+        this.whole(kind, sub(path, unit.id), unit.node, quiet);
         i += 1;
         continue;
       }
@@ -380,7 +389,7 @@ class Rows {
       }
       const text = run.map((u) => (isChar(u) ? u.ch : '')).join('');
       if (map && !text) {
-        this.whole(kind, `${path} ${map.id}`, map.node, quiet);
+        this.whole(kind, sub(path, map.id), map.node, quiet);
         continue;
       }
       // A text node of another Lexical type says so, then its fields: in full when its map is in this run (said once),
@@ -391,7 +400,7 @@ class Rows {
       if (!quiet || note.length > 0) {
         this.push(kind, path, text, note.join('; ') || undefined, { ids: idRuns(run.map((u) => u.id)), node: map ? shallow(map.node) : (owner?.id ?? null) });
       }
-      if (map) this.fields(kind, `${path} ${map.id}`, map.node);
+      if (map) this.fields(kind, sub(path, map.id), map.node);
     }
   }
 
@@ -405,10 +414,10 @@ class Rows {
       const now = after.get(key);
       if (this.read.same(was, now)) continue;
       if (isNode(was) && isNode(now) && was.type === now.type) {
-        this.node(`${path} ${key}`, was, now, label);
+        this.node(sub(path, key), was, now, label);
         continue;
       }
-      this.push('change', `${path} ${key}`, label, `${clip(type)} ${fieldName(key)}: ${show(was, key, b)} → ${show(now, key, a)}`, { before: was ?? null, after: now ?? null });
+      this.push('change', sub(path, key), label, `${clip(type)} ${fieldName(key)}: ${show(was, key, b)} → ${show(now, key, a)}`, { before: was ?? null, after: now ?? null });
     }
     if (this.read.same(b.seq, a.seq)) return;
     // Runs inside a link say so, with the link's fields clipped; the link's own changes have their own rows.
@@ -422,7 +431,7 @@ class Rows {
     for (let i = 0; i < steps.length; ) {
       const step = steps[i];
       if (step.op === 'keep') {
-        if (!isChar(step.b) && !isChar(step.a)) this.value(`${path} ${step.a.id}`, step.b.node, step.a.node, texts.get(step.a.id));
+        if (!isChar(step.b) && !isChar(step.a)) this.value(sub(path, step.a.id), step.b.node, step.a.node, texts.get(step.a.id));
         i += 1;
         continue;
       }
@@ -452,10 +461,10 @@ class Rows {
       const now = a.get(key);
       if (this.read.same(was, now)) continue;
       if (isNode(was) && isNode(now) && was.type === now.type) {
-        this.node(`${path} ${key}`, was, now, text);
+        this.node(sub(path, key), was, now, text);
         continue;
       }
-      this.push('change', `${path} ${key}`, text, `${fieldName(key)}: ${show(was, key)} → ${show(now, key)}`, { before: was ?? null, after: now ?? null });
+      this.push('change', sub(path, key), text, `${fieldName(key)}: ${show(was, key)} → ${show(now, key)}`, { before: was ?? null, after: now ?? null });
     }
     // A value that is not a list of pairs is compared whole.
     const loose = (value: unknown) => (value === undefined || Array.isArray(value) ? null : value);
