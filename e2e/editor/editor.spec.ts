@@ -569,6 +569,48 @@ test.describe('embeddable editor', () => {
     expect(await page.evaluate(() => window.editorFixture.violations)).toEqual([]);
   });
 
+  test("ruling 21: Run is the one block's, never a twin's with the same HTML, and its fullscreen view shares it", async ({ page }) => {
+    const seen = await open(page);
+    const twin = ['```moss-html', '<p id="out">twin: inert</p>', "<script>document.getElementById('out').textContent = 'twin: ran';</script>", '```'];
+    const note = ['# Plan', '', ...twin, '', ...twin, '', 'After the blocks.', ''].join('\n');
+    await mountNote(page, note);
+    const viewports = body(page).locator('[data-moss-html-preview-viewport]');
+    await expect(viewports).toHaveCount(2, { timeout: 10_000 });
+    await expect(blockIn(page, 1).locator('#out')).toHaveText('twin: inert', { timeout: 10_000 });
+    await runBlock(page, 0);
+    await expect(blockIn(page, 0, 'interactive').locator('#out')).toHaveText('twin: ran', { timeout: 10_000 });
+    // Deselected: block 0's static frame runs, and its twin's stays inert.
+    await body(page).getByText('After the blocks.', { exact: true }).click();
+    await expect(blockIn(page, 0).locator('#out')).toHaveText('twin: ran', { timeout: 10_000 });
+    await page.waitForTimeout(1_000);
+    await expect(blockIn(page, 1).locator('#out')).toHaveText('twin: inert');
+    // Activating the twin is not Run: its interactive frame stays inert.
+    await viewports.nth(1).getByRole('button', { name: 'Activate live HTML preview' }).click();
+    await expect(blockIn(page, 1, 'interactive').locator('#out')).toHaveText('twin: inert', { timeout: 10_000 });
+    await page.waitForTimeout(1_500);
+    await expect(blockIn(page, 1, 'interactive').locator('#out')).toHaveText('twin: inert');
+    // The fullscreen view, portalled outside its block, shares the block's choice: the twin's opens inert, and Run
+    // pressed there is the twin's Run, so its inline frame runs too.
+    const fullscreen = page.frameLocator('iframe[title="HTML preview (fullscreen)"]');
+    const toggleFullscreen = async (name: 'Fullscreen' | 'Close lightbox') =>
+      page.getByRole('button', { name }).evaluate((button: HTMLElement) => button.click());
+    await toggleFullscreen('Fullscreen');
+    await expect(fullscreen.frameLocator('iframe').locator('#out')).toHaveText('twin: inert', { timeout: 10_000 });
+    await fullscreen.getByRole('button', { name: 'Run' }).click();
+    await expect(fullscreen.frameLocator('iframe').locator('#out')).toHaveText('twin: ran', { timeout: 10_000 });
+    await expect(blockIn(page, 1, 'interactive').locator('#out')).toHaveText('twin: ran', { timeout: 10_000 });
+    await toggleFullscreen('Close lightbox');
+    await expect(page.locator('iframe[title="HTML preview (fullscreen)"]')).toHaveCount(0);
+    // Block 0's fullscreen view opens running, since block 0 ran.
+    await viewports.nth(0).getByRole('button', { name: 'Activate live HTML preview' }).click();
+    await expect(blockIn(page, 0, 'interactive').locator('#out')).toHaveText('twin: ran', { timeout: 10_000 });
+    await toggleFullscreen('Fullscreen');
+    await expect(fullscreen.frameLocator('iframe').locator('#out')).toHaveText('twin: ran', { timeout: 10_000 });
+    await toggleFullscreen('Close lightbox');
+    expect(seen.errors).toEqual([]);
+    expect(await page.evaluate(() => window.editorFixture.violations)).toEqual([]);
+  });
+
   test('API 2: a moss-html block renders and runs in its frame, and none of its network probes reaches another origin', async ({ page }) => {
     const seen = await open(page);
     const collector = server.collector.url;
@@ -607,6 +649,10 @@ test.describe('embeddable editor', () => {
       `  var late = document.createElement('div'); late.innerHTML = ${JSON.stringify(inChild)}; document.body.appendChild(late);`,
       `  try { document.getElementById('host').attachShadow({ mode: 'closed' }).innerHTML = ${JSON.stringify(inChild)}; } catch (e) {}`,
       `  document.write(${JSON.stringify(`<div><template shadowrootmode="closed">${inChild}</template></div>`)});`,
+      // A clonable shadow root copied by cloneNode or importNode, which never calls attachShadow.
+      `  try { var c = document.createElement('div'); var cs = c.attachShadow({ mode: 'closed', clonable: true }); cs.innerHTML = ${JSON.stringify(inChild)}; document.body.appendChild(c.cloneNode(true)); document.body.appendChild(document.importNode(c, true)); } catch (e) {}`,
+      // DOMParser asked for declarative shadow roots.
+      `  try { var d = new DOMParser().parseFromString(${JSON.stringify(`<div><template shadowrootmode="open">${inChild}</template></div>`)}, 'text/html', { includeShadowRoots: true }); document.body.appendChild(document.adoptNode(d.body.firstChild)); } catch (e) {}`,
       "  document.getElementById('out').textContent = 'ran: ' + sent;",
       '</script>',
       '```',
