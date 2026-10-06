@@ -1,17 +1,29 @@
 // moss's comment UI over CRDT comments (docs/design/comments.md §12). At the pin moss finds comments by walking the
 // tree for MarkNodes and decorator `__commentIds`; a bound note has neither, so each walk site reads one of these
 // through a `moss-multi seam: comments` instead. Positions come from the painter's ranges, identities from the doc's
-// model, and every write goes through the REST API.
+// model, and every write goes through the REST API. An editor with no binding (the file-backed editor bundle) keeps
+// moss's own path: each seam asks `bound` first, and the readers answer null for it.
 import { can } from '@moss-multi/protocol/roles';
 import { $getSelection, $isRangeSelection, type LexicalEditor } from 'lexical';
+import { useSyncExternalStore } from 'react';
 import { knownRole, useDocRole } from '../access.ts';
 import { terminalOf, useTerminal } from '../collab/terminal.ts';
 import { createComment, deleteComment, editComment, reactTo, replyTo, resolveThread } from './api.ts';
 import { $mintNode, mintCurrent, type Minted } from './mint.ts';
-import { commentsAtPoint, painterOf, setActive, setHover, subscribePaint } from './paint.ts';
+import { commentsAtPoint, noteBound, painterOf, setActive, setHover, subscribeAnyPaint, subscribePaint } from './paint.ts';
 import { myPrincipalId } from './people.ts';
 
 export { commentsAtPoint, setActive, setHover, subscribePaint };
+
+/** Whether `editor` is bound to a shared doc (its painter exists); an unbound editor runs moss's local comments. */
+export function bound(editor: LexicalEditor): boolean {
+  return painterOf(editor) !== undefined;
+}
+
+/** Whether an editor in this tab is bound to `noteId`, as React state (a binding's start and end both repaint). */
+export function useNoteBound(noteId: string): boolean {
+  return useSyncExternalStore(subscribeAnyPaint, () => noteBound(noteId));
+}
 
 /** The selection minted when the composer opened, per editor, so peers' edits meanwhile cannot move it. */
 const stashed = new WeakMap<LexicalEditor, Minted>();
@@ -52,16 +64,23 @@ function $collapseToFocus(): void {
   selection.anchor.set(key, offset, type);
 }
 
-/** Roots with an anchor record, attached or detached: what moss's comment list counts (CommentAnchorTrackerPlugin). */
-export function liveAnchorIds(editor: LexicalEditor): string[] {
-  return painterOf(editor)?.model.anchoredRoots() ?? [];
+/**
+ * Roots with an anchor record, attached or detached: what moss's comment list counts (CommentAnchorTrackerPlugin).
+ * Null for an editor with no binding (moss's MarkNode walk then runs).
+ */
+export function liveAnchorIds(editor: LexicalEditor): string[] | null {
+  return painterOf(editor)?.model.anchoredRoots() ?? null;
 }
 
-/** Gutter rows: each painted root at the top of its first line, relative to the editor root (CommentGutter). */
-export function targets(editor: LexicalEditor): { commentId: string; top: number }[] {
+/**
+ * Gutter rows: each painted root at the top of its first line, relative to the editor root (CommentGutter). Null for
+ * an editor with no binding (moss's MarkNode walk then runs).
+ */
+export function targets(editor: LexicalEditor): { commentId: string; top: number }[] | null {
   const painter = painterOf(editor);
+  if (!painter) return null;
   const root = editor.getRootElement();
-  if (!painter || !root) return [];
+  if (!root) return [];
   const origin = root.getBoundingClientRect().top;
   const out: { commentId: string; top: number }[] = [];
   for (const [commentId, entry] of painter.painted) {

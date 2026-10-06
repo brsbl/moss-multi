@@ -222,7 +222,7 @@ test.describe('embeddable editor', () => {
     expect(await page.evaluate(() => window.editorFixture.violations)).toEqual([]);
   });
 
-  test("an existing sidecar thread takes replies, edits, deletes, resolve and reopen through moss's local path", async ({ page }) => {
+  test("an existing sidecar thread takes replies, edits, deletes and resolve through moss's local path", async ({ page }) => {
     const seen = await open(page);
     const requests: string[] = [];
     const sockets: string[] = [];
@@ -266,26 +266,16 @@ test.describe('embeddable editor', () => {
     await expect(message('Edited reply'), 'the reply is deleted').toHaveCount(0);
     await expect(message('A new reply')).toBeVisible();
 
-    const resolve = thread.getByRole('button', { name: 'Resolve thread' });
-    await resolve.click();
-    await expect(resolve, 'the thread resolves').toHaveAttribute('aria-pressed', 'true');
-    expect(await page.evaluate(() => window.editorFixture.flush())).toMatchObject({ kind: 'saved' });
-    const resolved = JSON.parse((await files(page))['/Moss/Notes/Plan/comments.json']) as Record<string, { resolvedAt?: number }>;
-    expect(typeof resolved.c1?.resolvedAt, 'the sidecar records the resolve').toBe('number');
-    await resolve.click();
-    await expect(resolve, 'the thread reopens').toHaveAttribute('aria-pressed', 'false');
     await page.keyboard.press('Escape');
     expect(await page.evaluate(() => window.editorFixture.flush())).toMatchObject({ kind: 'saved' });
-
     const written = await files(page);
     expect(written['/Moss/Notes/Plan/Plan.md']).toMatch(/^# Plan\n\nThe quick %%m:c1:start%%brown fox%%m:c1:end%% jumps\.\n?$/);
     const saved = JSON.parse(written['/Moss/Notes/Plan/comments.json']) as Record<string, { text: string; parentId?: string; resolvedAt?: number; source?: string }>;
-    expect(Object.keys(saved).sort(), 'r1 is gone and the new reply is saved').toHaveLength(2);
+    expect(Object.keys(saved), 'r1 is gone and the new reply is saved').toHaveLength(2);
     expect(saved.c1).toMatchObject({ text: 'Is the fox really brown?' });
-    expect(saved.c1.resolvedAt, 'reopened').toBeUndefined();
     expect(saved.r1).toBeUndefined();
-    const added = Object.entries(saved).find(([id]) => id !== 'c1')?.[1];
-    expect(added).toMatchObject({ text: 'A new reply', parentId: 'c1', source: 'user' });
+    const addedId = Object.keys(saved).find((id) => id !== 'c1')!;
+    expect(saved[addedId]).toMatchObject({ text: 'A new reply', parentId: 'c1', source: 'user' });
 
     // A fresh mount reads the thread back from the files.
     await page.evaluate(() => window.editorFixture.unmount());
@@ -294,7 +284,20 @@ test.describe('embeddable editor', () => {
     await gutter.click();
     await expect(message('A new reply')).toBeVisible();
     await expect(message('Edited reply')).toHaveCount(0);
-    await expect(thread.getByRole('button', { name: 'Resolve thread' })).toHaveAttribute('aria-pressed', 'false');
+
+    // Resolve: moss's open view drops the thread, and the sidecar keeps it resolved across a reload. (The embedded
+    // editor has no resolved-thread view, moss's filter lives in the app's comments panel, so it offers no reopen.)
+    await thread.getByRole('button', { name: 'Resolve thread' }).click();
+    await expect(gutter, 'a resolved thread leaves the open view').toHaveCount(0);
+    expect(await page.evaluate(() => window.editorFixture.flush())).toMatchObject({ kind: 'saved' });
+    const resolved = JSON.parse((await files(page))['/Moss/Notes/Plan/comments.json']) as Record<string, { resolvedAt?: number }>;
+    expect(typeof resolved.c1?.resolvedAt, 'the sidecar records the resolve').toBe('number');
+    expect(typeof resolved[addedId]?.resolvedAt, 'on the whole thread').toBe('number');
+    await page.evaluate(() => window.editorFixture.unmount());
+    expect(await page.evaluate((id) => window.editorFixture.mount(id), ID)).toEqual({ ok: true, status: 'clean' });
+    await expect(body(page)).toContainText('brown fox');
+    await expect(gutter, 'still resolved after reload').toHaveCount(0);
+    expect((await files(page))['/Moss/Notes/Plan/Plan.md']).toContain('%%m:c1:start%%brown fox%%m:c1:end%%');
 
     // File-backed: no REST call and no socket, only the bundle, the fixture and blob: or data: URLs.
     const outside = requests.filter((url) => !url.startsWith('blob:') && !url.startsWith('data:') && !/^http:\/\/127\.0\.0\.1:\d+\/(editor|fixture|src)\//.test(url));
