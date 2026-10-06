@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 67% done** (71 of 106 planned tasks verified)
+**Overall: 70% done** (72 of 103 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 19 / 19 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 20 / 20 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
@@ -90,6 +90,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-06 — T3.S1 verified: searching a workspace that holds a note full of unclosed `[[`, `[`, `<` or `<!--` openers now answers quickly, because link extraction, snippet cleaning and heading link-stripping scan in linear time with the same output as before.
 - 2026-10-06 — T3.S3 verified: each person (with their agent keys) can create, import or duplicate up to 60 notes a minute; past that the server answers 429 with a retry-after before writing anything.
 - 2026-10-06 — T3.11 verified: a host on editor API 2 (moss-editor 0.3.0) shows each moss-html block inert until the user presses Run on it, a running block cannot make requests or navigate away, `copyFromNote` copies only from notes open in the host, and an API 1 host gets `apiMismatch` at mount.
+- 2026-10-06 — T3.S3b verified: note creation, sign-up, folders, vaults, agent keys, share links and feedback each have per-person daily bounds (2,000 new notes a day, 10,000 live notes, 30 sign-ups a day per client address), refused before anything is written.
 
 ## T1.1s identity audit
 
@@ -123,6 +124,10 @@ A task counts only after an independent checker passes it on green CI. Each mile
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
 
+- T3.S3b (Bounded creation and sign-up) checker P2: WebKit j05-trash:205 fails intermittently (2 of 16 runs on the T3.S3b head, 0 of 15 on m3; it also failed attempt 1 of the [integration full lane on `0ee22ad`](https://github.com/brsbl/moss-multi/actions/runs/37545854668), green on attempt 2) with an undeclared 404 on Ben's `/api/docs/:id/backlinks`; the bridge re-reads backlinks of a trashed note (`apps/web/src/host/bridge/index.ts:406-408`) and the route refuses deleted notes (`apps/web/src/api/search.ts:114`); no data or authorization effect → search follow-up (same as T3.R2's): skip watched reads once the note's session goes terminal.
+- T3.S3b (Bounded creation and sign-up) implementer P2 (unverified): in the Trash view the 409 note-cap toast covers the "This note is in Trash" banner → trash UI follow-up.
+- T3.S3b (Bounded creation and sign-up) implementer P2 (unverified, pre-existing): a collaborator can fill a vault's 2 GB media quota → assets follow-up.
+- T3.S3b (Bounded creation and sign-up) implementer P2 (unverified): the WebKit j01 socket-open invariant flaked once in full-lane attempt 1 → same WebKit editing-shard follow-up.
 - T3.S1 (Linear search scans) checker P2: the workerd budget is measured at 200k/400k chars, not at the 2 MB note cap (`SEARCH_SIZES` in `scripts/measure-converter.mjs`); a standalone 2 MB timing put every opener family at 3-37 ms → search measurement follow-up: add a 2 MB size.
 - T3.S1 (Linear search scans) checker P2: the per-request CPU budget is checked on the median of 3 samples, so one slow sample can pass the 100 ms gate (`scripts/measure-converter.mjs`) → search measurement follow-up: gate every sample.
 - T3.S1 (Linear search scans) checker P2: the workerd measurement runs no unrelated search after the adversarial requests (the checker's browser pass covered it: 5 ms with the adversarial note indexed) → search measurement follow-up.
