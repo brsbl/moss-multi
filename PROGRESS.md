@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 69% done** (70 of 102 planned tasks verified)
+**Overall: 67% done** (71 of 106 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 18 / 18 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 19 / 19 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
@@ -89,6 +89,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-06 — T3.S2 verified: an upload, from-url save, cross-note copy or duplicate that meets a revocation, demotion or trash after its access check now writes nothing; media rows commit only while the caller still edits the live note, and bytes land in storage only after that.
 - 2026-10-06 — T3.S1 verified: searching a workspace that holds a note full of unclosed `[[`, `[`, `<` or `<!--` openers now answers quickly, because link extraction, snippet cleaning and heading link-stripping scan in linear time with the same output as before.
 - 2026-10-06 — T3.S3 verified: each person (with their agent keys) can create, import or duplicate up to 60 notes a minute; past that the server answers 429 with a retry-after before writing anything.
+- 2026-10-06 — T3.11 verified: a host on editor API 2 (moss-editor 0.3.0) shows each moss-html block inert until the user presses Run on it, a running block cannot make requests or navigate away, `copyFromNote` copies only from notes open in the host, and an API 1 host gets `apiMismatch` at mount.
 
 ## T1.1s identity audit
 

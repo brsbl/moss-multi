@@ -21,12 +21,55 @@ export async function signedIn(request: Request, env: AuthEnv): Promise<Principa
   return principal && principal.type !== 'anonymous' ? principal : null;
 }
 
-export async function readJsonObject(request: Request): Promise<Record<string, unknown> | null> {
+/** 429 for a daily bound on rows a route adds (A§18). */
+export const overDailyBound = (message: string) => refuse(429, 'rate-limited', message, { 'retry-after': '3600' });
+
+export function parseJsonObject(text: string): Record<string, unknown> | null {
   try {
-    const text = await request.text();
     const body: unknown = text ? JSON.parse(text) : {};
     return typeof body === 'object' && body !== null && !Array.isArray(body) ? (body as Record<string, unknown>) : null;
   } catch {
     return null;
   }
+}
+
+export async function readJsonObject(request: Request): Promise<Record<string, unknown> | null> {
+  try {
+    return parseJsonObject(await request.text());
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The body as text, refused as `too-large` when it declares or runs past `max` bytes, so an oversized body is never
+ * buffered; null when it cannot be read.
+ */
+export async function readCapped(request: Request, max: number): Promise<string | 'too-large' | null> {
+  if (Number(request.headers.get('content-length') ?? 0) > max) return 'too-large';
+  const reader = request.body?.getReader();
+  if (!reader) return '';
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > max) {
+        await reader.cancel().catch(() => undefined);
+        return 'too-large';
+      }
+      chunks.push(value);
+    }
+  } catch {
+    return null;
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
 }

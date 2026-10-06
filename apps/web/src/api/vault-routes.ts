@@ -4,13 +4,14 @@
 // trashed. Every refusal carries a sentence, since the switcher shows the message it gets.
 import { eq } from 'drizzle-orm';
 import { principalsWithFolderAccess, publishTo, type FanoutEnv } from '@moss-multi/sync/fanout';
+import { FOLDER_CREATE_DAILY } from '@moss-multi/protocol/limits';
 import { resolvePrincipal } from '../auth/principal.ts';
 import { createDb } from '../db/client.ts';
 import { folders } from '../db/schema.ts';
 import { json } from '../worker/route.ts';
 import { actingUserId, resolveFolderAccess } from './access.ts';
-import { FOLDER_NAME_MAX, trashFolder, type FoldersEnv } from './folders.ts';
-import { NO_STORE, notFound, readJsonObject, unauthenticated } from './respond.ts';
+import { FOLDER_NAME_MAX, foldersToday, tooManyFolders, trashFolder, type FoldersEnv } from './folders.ts';
+import { changed, NO_STORE, notFound, readJsonObject, unauthenticated } from './respond.ts';
 
 const refuse = (status: number, error: string, message: string) => json({ error, message }, status, NO_STORE);
 
@@ -52,9 +53,11 @@ async function createVault(request: Request, env: FoldersEnv): Promise<Response>
   const named = vaultName(body.name);
   if ('problem' in named) return refuse(400, 'bad-name', named.problem);
   const id = crypto.randomUUID();
+  const now = Date.now();
   try {
-    await createDb(env.DB).insert(folders)
-      .values({ id, ownerUserId: userId, createdBy: userId, name: named.name, kind: 'vault', createdAt: Date.now() });
+    const inserted = await env.DB.prepare(`INSERT INTO folders (id, owner_user_id, created_by, name, kind, created_at)
+      SELECT ?1, ?2, ?2, ?3, 'vault', ?4 WHERE ${foldersToday(2, 4)} < ${FOLDER_CREATE_DAILY}`).bind(id, userId, named.name, now).run();
+    if (!changed(inserted)) return tooManyFolders();
   } catch (error) {
     if (isUnique(error)) return taken(named.name);
     throw error;
