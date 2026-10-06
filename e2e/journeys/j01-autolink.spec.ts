@@ -6,7 +6,7 @@
 //
 // The notes are imported through POST /api/docs as declared setup.
 import type { Actor } from '../lib/actors.ts';
-import { APP_STATE_ATTR, NAMES, SIDEBAR_ROW_ATTR } from '../lib/contract.ts';
+import { APP_STATE_ATTR, LEXICAL_EDITOR_SELECTOR, NAMES, SIDEBAR_ROW_ATTR } from '../lib/contract.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
 const SOLO = 'one person opens and types in their own notes; nothing here is shared';
@@ -50,13 +50,15 @@ async function importNote(actor: Actor, baseUrl: string, title: string, markdown
 /** Clicks the body and puts the caret after its last character. */
 async function caretAtEnd(actor: Actor, docId: string): Promise<void> {
   await ui.body(actor, docId).click();
-  await ui.bodyEditor(actor, docId).evaluate((root) => {
+  await ui.body(actor, docId).evaluate((body, selector) => {
+    const root = body.matches(selector) ? body : body.querySelector(selector);
+    if (!root) throw new Error('the body has no editor root');
     const range = document.createRange();
     range.selectNodeContents(root);
     range.collapse(false);
     document.getSelection()?.removeAllRanges();
     document.getSelection()?.addRange(range);
-  });
+  }, LEXICAL_EDITOR_SELECTOR);
 }
 
 function expectLinear(what: string, sizes: number[], ms: number[]): void {
