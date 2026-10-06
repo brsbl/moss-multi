@@ -1,7 +1,7 @@
 // The one Origin gate (A§18). The browser attaches the session cookie to every request for this host, whichever
 // page asked: a same-site page on another port or a sibling subdomain gets past SameSite=Lax. So a socket upgrade or
 // a state-changing request whose principal came from that cookie must carry the app's own Origin. A bearer token,
-// an agent key or a share token is never attached by the browser, so it passes. better-auth checks /api/auth/*.
+// an agent key or a share token is never attached by the browser, so it passes. auth/route.ts gates /api/auth/*.
 import type { Principal } from '../auth/principal.ts';
 import type { AppEnv } from '../env.ts';
 import { isUpgrade } from './route.ts';
