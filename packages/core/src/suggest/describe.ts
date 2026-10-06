@@ -457,8 +457,8 @@ export interface RowSegment {
 }
 
 // Whitespace and invisible characters, and the glyph each is drawn as.
-const INVISIBLE = /[\s­᠎​-‏⁠﻿]+/gu;
-const GLYPHS: Record<string, string> = { ' ': '·', '\t': '→', '\n': '↵', ' ': '⍽' };
+const INVISIBLE = /[\s\u00ad\u180e\u200b-\u200f\u2060\ufeff]+/gu;
+const GLYPHS: Record<string, string> = { ' ': '·', '\t': '→', '\n': '↵', '\u00a0': '⍽' };
 const glyph = (ch: string) => GLYPHS[ch] ?? `⟨U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, '0')}⟩`;
 
 /**

@@ -3,7 +3,7 @@
 import { rowSegments } from '@moss-multi/core/suggest/describe';
 import type { ReactNode } from 'react';
 
-const NAMES: Record<string, string> = { ' ': 'space', '\t': 'tab', '\n': 'line break', ' ': 'no-break space' };
+const NAMES: Record<string, string> = { ' ': 'space', '\t': 'tab', '\n': 'line break', '\u00a0': 'no-break space' };
 
 const described = (space: string) => {
   const names = [...space].map((ch) => NAMES[ch] ?? `U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, '0')}`);

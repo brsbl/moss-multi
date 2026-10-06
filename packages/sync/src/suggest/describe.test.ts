@@ -265,32 +265,36 @@ describe('T5.3 the rows are injective over hunk lists @p:mean-2 @p:R17', () => {
   function collisions(render: (hunks: Hunk[]) => unknown): string[] {
     const base = suggestedRowsHunks();
     const rand = prng(53);
-    const byRows = new Map<string, string>([[canonical(render(base)), previewHash(base)]]);
+    const byRows = new Map<string, { hash: string; what: string }>([[canonical(render(base)), { hash: previewHash(base), what: 'the original' }]]);
     const found: string[] = [];
     // Identity fields (item ids, anchors, id runs) are not shown as text; a mutation changes content only.
     const IDENTITY = new Set(['id', 'at', 'ids', 'kind', 'op']);
     for (let n = 0; n < 300; n++) {
       const hunks = JSON.parse(JSON.stringify(base)) as Hunk[];
-      const leaves: { holder: Record<string, unknown> | unknown[]; key: string | number }[] = [];
-      const walk = (value: unknown) => {
-        if (Array.isArray(value)) value.forEach((item, i) => (item && typeof item === 'object' ? walk(item) : leaves.push({ holder: value, key: i })));
+      const leaves: { holder: Record<string, unknown> | unknown[]; key: string | number; path: string }[] = [];
+      const walk = (value: unknown, path: string) => {
+        if (Array.isArray(value)) value.forEach((item, i) => (item && typeof item === 'object' ? walk(item, `${path}[${i}]`) : leaves.push({ holder: value, key: i, path: `${path}[${i}]` })));
         else if (value && typeof value === 'object') {
           for (const [key, item] of Object.entries(value)) {
             if (IDENTITY.has(key)) continue;
-            if (item && typeof item === 'object') walk(item);
-            else leaves.push({ holder: value as Record<string, unknown>, key });
+            if (item && typeof item === 'object') walk(item, `${path}.${key}`);
+            else leaves.push({ holder: value as Record<string, unknown>, key, path: `${path}.${key}` });
           }
         }
       };
-      walk(hunks);
+      walk(hunks, '');
       const leaf = leaves[Math.floor(rand() * leaves.length)];
       const was = (leaf.holder as Record<string | number, unknown>)[leaf.key];
       const choices: unknown[] = typeof was === 'string' ? [`${was}x`, was.slice(1), was.toUpperCase(), 'x', `${was} `, ` ${was}`] : typeof was === 'number' ? [was + 1, was - 1, 0] : [true, false, null, 'x'];
-      (leaf.holder as Record<string | number, unknown>)[leaf.key] = choices[Math.floor(rand() * choices.length)];
+      const now = choices[Math.floor(rand() * choices.length)];
+      (leaf.holder as Record<string | number, unknown>)[leaf.key] = now;
       const hash = previewHash(hunks);
       const rows = canonical(render(hunks));
-      if (byRows.has(rows) && byRows.get(rows) !== hash) found.push(`mutation ${n} at ${String(leaf.key)}: ${canonical(was)}`);
-      byRows.set(rows, hash);
+      const hunk = hunks[Number(/^\[(\d+)\]/.exec(leaf.path)?.[1] ?? 0)];
+      const what = `${leaf.path} (${hunk.kind} ${hunk.op}): ${canonical(was)} -> ${canonical(now)}`;
+      const seen = byRows.get(rows);
+      if (seen && seen.hash !== hash) found.push(`${what} reads as ${seen.what}`);
+      byRows.set(rows, { hash, what });
     }
     return found;
   }
