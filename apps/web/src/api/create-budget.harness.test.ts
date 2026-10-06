@@ -2,11 +2,11 @@
 // takes a token from the acting user's PrincipalDO before any D1 row, DocDO or media work, so one account, or its
 // agent keys between them, cannot mint docs without bound. Over the real PrincipalDO in the Node harness and D1.
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { DOC_CREATE_RATE } from '@moss-multi/protocol/limits';
+import { DOC_CREATE_DAILY, DOC_CREATE_RATE, LIVE_NOTE_CAP, MARKDOWN_CAP_BYTES } from '@moss-multi/protocol/limits';
 import { PrincipalDO } from '../../../../packages/sync/src/principal-do.ts';
 import { Backing, FakeState } from '../../../../packages/sync/test/harness/workerd.ts';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
-import { agentKey, BASE, insertDoc, SECRET, signedUpUser, type TestUser } from '../test/principals.ts';
+import { agentKey, BASE, insertAgent, insertDoc, insertFolder, SECRET, signedUpUser, type TestUser } from '../test/principals.ts';
 import { handleApi } from './router.ts';
 
 const PNG = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 31, 21, 196, 137]);
@@ -23,6 +23,7 @@ const DocDO = {
       create: async () => { seededDocs.push(id.name); },
       snapshotForDuplicate: async () => ({ title: 'Original', state: new Uint8Array([1]), payloads: [] }),
       createFromSnapshot: async () => { seededDocs.push(id.name); },
+      settle: async () => undefined,
     };
   },
 };
@@ -160,4 +161,165 @@ describe('note creation budget per acting user (T3.S3)', () => {
     evict(eve.id);
     expect((await create(eve, { title: 'After the window' })).status).toBe(201);
   }, 60_000);
+});
+
+/** A request body that fails the request if anything reads it. */
+const unreadable = () => new ReadableStream<Uint8Array>({ pull() { throw new Error('the body was read'); } });
+const streamedCreate = (who: Who, headers: Record<string, string> = {}) => {
+  const auth: Record<string, string> = 'cookie' in who ? { cookie: who.cookie } : { authorization: `Bearer ${who.bearer}` };
+  return handleApi(new Request(`${BASE}/api/docs`, {
+    method: 'POST', headers: { origin: BASE, 'content-type': 'application/json', ...auth, ...headers }, body: unreadable(), duplex: 'half',
+  } as RequestInit), env);
+};
+
+describe('creation admission order (T3.S3b)', () => {
+  it('refuses an over-budget create before reading its body', async () => {
+    const hal = await signedUpUser(env, 'budget-unread', 'Hal');
+    await spend(hal, DOC_CREATE_RATE.max);
+    const addressedBefore = addressed.length;
+    await expectRefused(await streamedCreate(hal));
+    expect(addressed.length, 'no DocDO addressed').toBe(addressedBefore);
+  }, 60_000);
+
+  it('refuses an oversized Content-Length with 413 before reading the body or taking a token', async () => {
+    const ivy = await signedUpUser(env, 'budget-oversize', 'Ivy');
+    const refused = await streamedCreate(ivy, { 'content-length': String(MARKDOWN_CAP_BYTES * 8) });
+    expect(refused.status, await refused.clone().text()).toBe(413);
+    await spend(ivy, DOC_CREATE_RATE.max);
+  }, 60_000);
+});
+
+describe('daily creation budget (T3.S3b)', () => {
+  it('refuses past DOC_CREATE_DAILY with 429 and writes nothing, until a day has passed', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const start = Date.now();
+    let now = start;
+    vi.setSystemTime(now);
+    const jo = await signedUpUser(env, 'budget-daily', 'Jo');
+    const dobj = principalOf(jo.id);
+    // Paced under the minute window, as a steady script would be.
+    for (let i = 0; i < DOC_CREATE_DAILY.max; i += 1) {
+      if (i > 0 && i % DOC_CREATE_RATE.max === 0) vi.setSystemTime((now += DOC_CREATE_RATE.windowMs + 1));
+      expect(await dobj.takeCreateToken(), `token ${i + 1}`).toBe(true);
+    }
+    vi.setSystemTime(now + DOC_CREATE_RATE.windowMs + 1);
+    const rows = await docsBy(jo);
+    const addressedBefore = addressed.length;
+    const refused = await create(jo, { title: 'Past the day' });
+    expect(refused.status, await refused.clone().text()).toBe(429);
+    expect(((await refused.json()) as { error: string }).error).toBe('rate-limited');
+    const wait = Number(refused.headers.get('retry-after'));
+    expect(wait).toBeGreaterThan(DOC_CREATE_RATE.windowMs / 1000);
+    expect(wait).toBeLessThanOrEqual(DOC_CREATE_DAILY.windowMs / 1000);
+    expect(await docsBy(jo), 'doc rows').toBe(rows);
+    expect(addressed.length, 'no DocDO addressed').toBe(addressedBefore);
+    // Once the first minute's grants are a day old, creating works again.
+    vi.setSystemTime(start + DOC_CREATE_DAILY.windowMs + 1_000);
+    evict(jo.id);
+    expect((await create(jo, { title: 'A day later' })).status).toBe(201);
+  }, 120_000);
+});
+
+describe('live notes per acting user (T3.S3b)', () => {
+  it('charges live notes to their creator: a collaborator at the cap is refused 409 and writes nothing, the vault owner is not', async () => {
+    const kim = await signedUpUser(env, 'live-owner', 'Kim');
+    const lee = await signedUpUser(env, 'live-editor', 'Lee');
+    // Lee edits Kim's Home vault and fills it with notes Lee created; trashed ones don't count.
+    await d1.db.prepare(`INSERT INTO folder_members (folder_id, principal_id, principal_type, role, added_by, created_at)
+      VALUES (?1, ?2, 'user', 'editor', ?3, ?4)`).bind(kim.homeId, lee.id, kim.id, Date.now()).run();
+    const sub = await insertFolder(d1.db, kim, kim.homeId);
+    const fill = (folder: string, prefix: string, n: number, deleted: number | null) => d1.db.prepare(`WITH RECURSIVE n(i) AS (
+        SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?2)
+      INSERT INTO docs (id, owner_user_id, created_by, folder_id, title, filename, created_at, updated_at, deleted_at)
+      SELECT ?1 || i, ?3, ?4, ?5, '', ?1 || i || '.md', 0, 0, ?6 FROM n`).bind(prefix, n, kim.id, lee.id, folder, deleted).run();
+    const half = Math.floor(LIVE_NOTE_CAP / 2);
+    await fill(kim.homeId, `cap-a-${lee.id}-`, half, null);
+    await fill(sub, `cap-b-${lee.id}-`, LIVE_NOTE_CAP - 1 - half, null);
+    await fill(sub, `cap-t-${lee.id}-`, 5, 1);
+    const last = await create(lee, { title: 'The last one', folderId: kim.homeId });
+    expect(last.status, await last.clone().text()).toBe(201);
+
+    const leeAgent = await insertAgent(d1.db, lee);
+    const byLee = () => count('SELECT COUNT(*) AS n FROM docs WHERE created_by IN (?1, ?2)', lee.id, leeAgent.id);
+    const rows = await byLee();
+    const seeds = seededDocs.length;
+    const addressedBefore = addressed.length;
+    const full = await create(lee, { title: 'One too many', folderId: sub });
+    expect(full.status, await full.clone().text()).toBe(409);
+    expect(((await full.json()) as { error: string }).error).toBe('note-cap');
+    expect(addressed.length, 'no DocDO addressed').toBe(addressedBefore);
+    expect((await duplicate(lee, `cap-a-${lee.id}-1`)).status, 'a duplicate').toBe(409);
+    expect((await create({ bearer: leeAgent.key }, { folderId: kim.homeId })).status, 'Lee’s agent counts against Lee').toBe(409);
+    expect((await create(lee)).status, 'in Lee’s own vault too').toBe(409);
+    expect(await byLee(), 'doc rows').toBe(rows);
+    expect(seededDocs.length, 'no DocDO seeded').toBe(seeds);
+
+    // The vault's owner still creates and duplicates in it.
+    expect((await create(kim, { title: 'Mine', folderId: sub })).status, 'the owner creates').toBe(201);
+    expect((await duplicate(kim, `cap-a-${lee.id}-1`)).status, 'the owner duplicates').toBe(201);
+    // A trash frees room for Lee.
+    await d1.db.prepare('UPDATE docs SET deleted_at = 1 WHERE id = ?1').bind(`cap-a-${lee.id}-2`).run();
+    expect((await create(lee, { title: 'After a trash' })).status).toBe(201);
+  }, 120_000);
+});
+
+describe('restoring from Trash under the live-note cap (T3.S3b)', () => {
+  /** `n` notes in `folder` owned by `owner` and made by `by`, live or trashed at `deleted`. */
+  const fill = (owner: TestUser, by: string, folder: string, prefix: string, n: number, deleted: number | null) => d1.db.prepare(`WITH RECURSIVE n(i) AS (
+      SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?2)
+    INSERT INTO docs (id, owner_user_id, created_by, folder_id, title, filename, created_at, updated_at, deleted_at)
+    SELECT ?1 || i, ?3, ?4, ?5, '', ?1 || i || '.md', 0, 0, ?6 FROM n`).bind(prefix, n, owner.id, by, folder, deleted).run();
+  const restore = (who: Who, docId: string) => call('POST', `/api/docs/${docId}/restore`, who);
+  const liveBy = (user: TestUser) => count(`SELECT COUNT(*) AS n FROM docs WHERE deleted_at IS NULL
+    AND created_by IN (SELECT ?1 UNION ALL SELECT id FROM agents WHERE owner_user_id = ?1)`, user.id);
+  const trashed = async (docId: string) =>
+    (await d1.db.prepare('SELECT deleted_at AS d FROM docs WHERE id = ?1').bind(docId).first<{ d: number | null }>())?.d !== null;
+
+  it('refuses a restore at the cap with 409 and leaves the note in Trash; a trash makes room for it', async () => {
+    const nia = await signedUpUser(env, 'restore-cap', 'Nia');
+    await fill(nia, nia.id, nia.homeId, `rc-l-${nia.id}-`, LIVE_NOTE_CAP, null);
+    await fill(nia, nia.id, nia.homeId, `rc-t-${nia.id}-`, 1, 1);
+    const target = `rc-t-${nia.id}-1`;
+    const refused = await restore(nia, target);
+    expect(refused.status, await refused.clone().text()).toBe(409);
+    expect(((await refused.json()) as { error: string }).error).toBe('note-cap');
+    expect(await trashed(target), 'still in Trash').toBe(true);
+    expect(await liveBy(nia)).toBe(LIVE_NOTE_CAP);
+
+    await d1.db.prepare('UPDATE docs SET deleted_at = 1 WHERE id = ?1').bind(`rc-l-${nia.id}-1`).run();
+    const restored = await restore(nia, target);
+    expect(restored.status, await restored.clone().text()).toBe(200);
+    expect(await liveBy(nia)).toBe(LIVE_NOTE_CAP);
+  }, 120_000);
+
+  it('a create racing a restore for the last slot: exactly one lands', async () => {
+    const oz = await signedUpUser(env, 'restore-race', 'Oz');
+    await fill(oz, oz.id, oz.homeId, `rr-l-${oz.id}-`, LIVE_NOTE_CAP - 1, null);
+    await fill(oz, oz.id, oz.homeId, `rr-t-${oz.id}-`, 1, 1);
+    const [made, restored] = await Promise.all([create(oz, { title: 'Racing' }), restore(oz, `rr-t-${oz.id}-1`)]);
+    const outcome = `${made.status}/${restored.status}`;
+    expect(['201/409', '409/200'], `${await made.clone().text()} ${await restored.clone().text()}`).toContain(outcome);
+    expect(await liveBy(oz), 'never past the cap').toBe(LIVE_NOTE_CAP);
+  }, 120_000);
+
+  it('charges a restore to the note’s creator: the owner cannot restore an editor’s note past the editor’s cap, and their own notes are unaffected', async () => {
+    const pat = await signedUpUser(env, 'restore-owner', 'Pat');
+    const quinn = await signedUpUser(env, 'restore-editor', 'Quinn');
+    await d1.db.prepare(`INSERT INTO folder_members (folder_id, principal_id, principal_type, role, added_by, created_at)
+      VALUES (?1, ?2, 'user', 'editor', ?3, ?4)`).bind(pat.homeId, quinn.id, pat.id, Date.now()).run();
+    const quinnAgent = await insertAgent(d1.db, quinn);
+    await fill(pat, quinn.id, pat.homeId, `ro-l-${quinn.id}-`, LIVE_NOTE_CAP, null);
+    await fill(pat, quinnAgent.id, pat.homeId, `ro-a-${quinn.id}-`, 1, 1);
+    await fill(pat, pat.id, pat.homeId, `ro-p-${pat.id}-`, 1, 1);
+
+    const theirs = await restore(pat, `ro-a-${quinn.id}-1`);
+    expect(theirs.status, await theirs.clone().text()).toBe(409);
+    expect(((await theirs.json()) as { error: string }).error).toBe('note-cap');
+    expect(await trashed(`ro-a-${quinn.id}-1`)).toBe(true);
+    expect(await liveBy(quinn), 'the editor stays at the cap').toBe(LIVE_NOTE_CAP);
+
+    const mine = await restore(pat, `ro-p-${pat.id}-1`);
+    expect(mine.status, await mine.clone().text()).toBe(200);
+    expect(await trashed(`ro-p-${pat.id}-1`)).toBe(false);
+  }, 120_000);
 });
