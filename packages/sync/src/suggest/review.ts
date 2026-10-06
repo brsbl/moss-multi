@@ -13,7 +13,7 @@ import {
 } from '@moss-multi/core/suggest/apply';
 import { createConverterEditor } from '../converter/index.ts';
 import { attachPayloadSource, mirrorOf, payloadSourceOf } from '../server-doc.ts';
-import { closeRecord, patchMeta, readRecord, SUGGEST_ACCEPT, SUGGESTIONS_ORIGIN } from './records.ts';
+import { closeRecord, patchMeta, readRecord, SUGGEST_ACCEPT, writeSuggestions } from './records.ts';
 
 export interface Reviewer {
   id: string;
@@ -111,6 +111,11 @@ class Payloads implements PayloadMirrors {
     return this.#source.has(id);
   }
 
+  /** The note's source, for what is stored beyond these mirrors. */
+  get source(): ReturnType<typeof payloadSourceOf> {
+    return this.#source;
+  }
+
   doc(id: string): Y.Doc {
     let doc = this.docs.get(id);
     if (!doc) {
@@ -137,6 +142,8 @@ function mirrorWith(live: Y.Doc, payloads: Payloads): Y.Doc {
     write: () => {
       throw new Error('a review mirror is read-only');
     },
+    totalBytes: () => payloads.source.totalBytes(),
+    bytesOf: (id) => payloads.source.bytesOf(id),
   });
   return mirror;
 }
@@ -180,9 +187,9 @@ export function previewRecord(live: Y.Doc, id: string): Preview {
 /** Outdated and broken records are badged on the record, so every reader sees why accept refused. */
 function badge(live: Y.Doc, id: string, reason: GateReason): void {
   if (reason !== 'outdated' && reason !== 'broken') return;
-  live.transact(() => {
+  writeSuggestions(live, () => {
     patchMeta(live, id, reason === 'outdated' ? { outdated: ['outdated'] } : { broken: 'broken' });
-  }, SUGGESTIONS_ORIGIN);
+  });
 }
 
 /**
@@ -204,11 +211,13 @@ export function acceptRecord(live: Y.Doc, id: string, input: AcceptInput, review
   const { mirror, payloads, hydrated, touched, hunks } = applied;
   try {
     if (previewHash(hunks) !== input.previewHash) return { ok: false, status: 409, reason: 'changed' };
-    let bytes = Y.encodeStateAsUpdate(mirror).byteLength;
-    for (const payload of touched.keys()) bytes += Y.encodeStateAsUpdate(payloads.doc(payload)).byteLength;
+    // G8 as A§10 and the DocDO count: the note plus every stored payload, withheld ones included, each payload the
+    // record writes at its size after accept.
+    const source = payloadSourceOf(live);
+    let bytes = Y.encodeStateAsUpdate(mirror).byteLength + source.totalBytes();
+    for (const payload of touched.keys()) bytes += Y.encodeStateAsUpdate(payloads.doc(payload)).byteLength - source.bytesOf(payload);
     if (bytes > (options.stateCap ?? STATE_CAP_BYTES)) return { ok: false, status: 409, reason: 'doc-cap' };
     // Payloads first, as serverWrite does, so the body's elements name payloads the note already holds.
-    const source = payloadSourceOf(live);
     for (const [payload, sv] of touched) source.write(payload, Y.encodeStateAsUpdate(payloads.doc(payload), sv));
     Y.applyUpdate(live, Y.encodeStateAsUpdate(mirror, hydrated), SUGGEST_ACCEPT);
     closeRecord(live, id, { status: 'accepted', resolvedBy: reviewer.id, resolvedAt: options.now ?? Date.now() });

@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 79% done** (77 of 97 planned tasks verified)
+**Overall: 85% done** (79 of 93 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -9,7 +9,7 @@
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 15 / 15 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 8 / 8 | in progress |
-| M5 Suggestions | Suggest mode, vetting, accept/reject | 2 / 5 | in progress |
+| M5 Suggestions | Suggest mode, vetting, accept/reject | 4 / 5 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
@@ -88,6 +88,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-05 — T3.R verified: m3 now sits on m2, with media in migration 0003 and chart and sketch data in their own payload documents; a chart or canvas stays read-only until its data arrives, two people can still edit one at once without losing each other's ink, and payload edits reach search.
 - 2026-10-05 — T3.9 verified: a host such as the bb Moss plugin can mount moss's own editor over its files with `mountMossEditor`, editing every node family and adding comments as markers plus the sidecar, with stale writes refused, a clean editor reloading on external change, assets going only through the host, and CI building the versioned `moss-editor` artifact.
 - 2026-10-05 — T4.3 verified: in a shared note a person can select text and comment on it, reply, resolve and reopen threads, see each comment highlighted for everyone through edits and formatting without a blink, and find detached comments listed with their quote, all in moss's own gutter, popover and Cmd+Shift+A.
+- 2026-10-05 — T5.2 verified: the server refuses any body write from a suggester loudly by role, and stores what they send as suggestion records under a per-connection lease that only that live connection can extend, so a suggester can never change the note body.
 - 2026-10-06 — T3.R2 verified: m3 now sits on main with the slimmed M1 and M2, keeping all of M3's media, search, vaults, viewer and editor work; the viewer and editor artifacts still build.
 - 2026-10-06 — T5.Ps verified: a suggestion can only carry changes the server allows: one default-deny channel table classifies every Yjs struct at ingest, accept and the preview, and accept refuses if its transaction deletes anything the reviewed preview did not show, implicit deletions included.
 - 2026-10-06 — T4.4 verified: in a shared note a person can react to comments, @mention collaborators, edit or delete their own comments (deleting a thread's root promotes the earliest reply), and gets a bell notification when mentioned or replied to.
@@ -95,8 +96,10 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-06 — T4.S3 verified: a frame that touches long commented runs or long restore candidates now does anchor work bounded by its walk budget before reading any item, so oversized gaps detach comments instead of costing unbounded time.
 - 2026-10-06 — T4.S3 re-verified: a struct walk that runs out in a long fragmented gap now detaches only its own comment, so sibling comments elsewhere in that gap keep their anchors.
 - 2026-10-06 — T4.S1 verified: every comment write now re-checks its author's credential, the note's liveness and at least commenter access inside the note's serialized write, so a revocation or demotion that commits after the request was admitted stops the comment from landing.
+- 2026-10-06 — T5.R verified: m5 now sits on the current m4, and the server stores a suggester's edits to the note and to code, HTML, formula, chart and sketch blocks as per-document suggestion records checked through the shared channel table, never touching the note body.
 - 2026-10-06 — T4.S2 verified: comment create, reply, edit, reaction and sidecar import are now refused once the note plus every stored payload, served or withheld, would leave no room, so comments cannot push a note past its size cap.
 - 2026-10-06 — T3.10 verified: a host such as the bb Moss viewer plugin can read the viewer's or editor's current selection as text, markdown, source file lines, heading path and blocks, and can show moss's Share with Agent button for it.
+- 2026-10-06 — T5.1 verified: a person with suggest access can switch a shared note into Suggest mode and type, delete and edit code and other blocks as suggestions shown inline beside the body, offline edits continue after a reconnect, and a demoted editor drops to a read-only body with a reason.
 
 ## T1.1s identity audit
 
@@ -247,6 +250,11 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T4.4 checker P2 (a notification insert is not conditioned on live access at write time): `canOpen()` reads run before an unconditional D1 batch; the bell re-checks on read (A§8), so nothing is disclosed → notifications follow-up.
 - T4.4 checker P2 (the @ menu omits collaborators who inherit access from a folder or vault): the roster comes from /members, which lists only the owner and direct doc grants → mentions follow-up.
 - T4.4 checker P2 (origin/m4 moved after the implementer finished): resolved at integration by merging t/T4.4 onto origin/m4 at 957202c; the merged head ran its own full lane.
+- T5.2 checker P2: a crafted below-editor frame that runs out of delete-scan budget is dropped silently (classifySync reports no changes) instead of refused with write-refused('role')/4403 and counted toward the cooldown; isReadOnly still blocks the apply, so the body is intact.
+- T5.2 checker P2: successful delete-only edits (suggest-delete, struct-free suggest-ops) do not refresh a bound lease's idle clock (usedAt), so over 30 min of delete-only activity on one connection gets the next insert refused with 'lease'; no client sends suggest-delete yet.
+- T5.2 checker P2: per-frame cost of suggest-ops and suggest-delete is not measured on the real DocDO path after a wake (benchmarks call SuggestIngest directly or use MemoryLeases without wake or socket); the first #head walk plus SuggestionsWriter's Array.splice add 0.27/0.38/0.61 ms at shallow, 3000 closed records and depth 2000.
+- T5.R checker P2 (pre-restack m5 suggestion records and leases have no upgrade path; downgraded from Codex P1): a DocDO saved by pre-restack m5 code holds raw Uint8Array ops that `readRecord` now casts to RecordOp[] (SuggestIngest reads `op.update.byteLength` and throws in onLoad), and its `suggest_leases` table still has `next_clock` and no `clocks`; never shipped, so only throwaway test state is affected.
+- T5.R checker P2 (loading a cold payload in suggestion ingest replays the whole payload): the payloadDoc callback calls `PayloadStore.doc` synchronously, so after a wake or a 256-entry cache eviction a tiny suggestion frame replays every stored update before the lease and size checks; cost tests only measure warm body frames.
 - The wrangler ProxyWorker patch replays non-idempotent requests after an ambiguous failure → T0.9b follow-up (stack infra)
 - `qa.mjs close` forgets the session even when closing it failed → tooling follow-up
 - T4.0 checker: typing `==marked==` then a space in the real app drops the word instead of highlighting it (moss's `==` inline shortcut over the bound editor; the comment engine is not involved) → T3.3 follow-up (inline markdown shortcuts), with a j-editing leg that types each moss inline shortcut and asserts the text survives
@@ -423,3 +431,7 @@ Local browser verification remains assigned to the independent checker under the
 - Layout persistence walks the whole tree and writes localStorage on every editor update (apps/web/src/host/collab/layout-local.ts:39-76). Skip updates that do not touch tables or tabs, write only values that changed, and batch writes into one, flushing on teardown.
 - The ack ledger keeps acknowledged writes during a continuous editing stream (apps/web/src/host/collab/acks.ts:48-57). On each ack, drop the writes it fully covers, and keep only those still outstanding.
 - Expanding YAML aliases in imported frontmatter is unbounded (packages/sync/src/doc-do.ts:257). Before normalizing, detect aliases and cycles or count expanded nodes against a budget, and refuse import when the budget is exceeded.
+- T5.1 checker P2 (`suggest_leases` gains `fork_id` with no ALTER migration; downgraded from Codex P1): a pre-existing table without `fork_id` would fail every lease insert; no such persisted state exists yet, but add an idempotent nullable ALTER before any deploy.
+- T5.1 checker P2 (the code-block wedge's hover preview cannot be reached with the mouse): in Edit mode the wedge for a suggested payload edit sits under moss's block gap-cursor overlay (z-20), so the proposed-code preview never shows on hover; the inline text preview box is also too narrow and wraps one word per line.
+- T5.1 checker P2 (Suggest mode turns off all of MathCalculationPlugin, so a typed formula cannot be committed): `backgroundWriters=false` gates the whole plugin, including the Space and Enter commit commands; the census only pastes formula markup.
+- T5.1 checker P2 (routing and caret capture treat a continuation lease's accepted prefix as pending): `ownClients` works per client, so after an accept during an outage Backspace on the accepted prefix takes the fork's native-delete path instead of a strike, and caret capture skips that prefix; paint already checks per item against B's state vector.

@@ -32,6 +32,10 @@ export interface PayloadSource {
   has(id: string): boolean;
   /** A server write to payload `id`. */
   write(id: string, update: Uint8Array): void;
+  /** Stored bytes of every payload the note holds, withheld ones included, for the state cap (A§10). */
+  totalBytes(): number;
+  /** Stored bytes of payload `id`; 0 when the note has none. */
+  bytesOf(id: string): number;
 }
 
 const sources = new WeakMap<Y.Doc, PayloadSource>();
@@ -52,6 +56,11 @@ export function payloadSourceOf(live: Y.Doc): PayloadSource {
     },
     has: (id) => host.has(id),
     write: (id, update) => Y.applyUpdate(host.hold(id), update, SERVER_IMPORT),
+    totalBytes: () => [...host.docs.values()].reduce((sum, doc) => sum + Y.encodeStateAsUpdate(doc).byteLength, 0),
+    bytesOf: (id) => {
+      const doc = host.get(id);
+      return doc ? Y.encodeStateAsUpdate(doc).byteLength : 0;
+    },
   };
 }
 

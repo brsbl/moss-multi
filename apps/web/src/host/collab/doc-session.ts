@@ -6,6 +6,7 @@
 // released with unacked edits stays connected without its pane until they are acked, or until the doc ends.
 import type { ConnectionState, TerminalReason } from '@moss-multi/protocol/dom-contract';
 import { isRole, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
+import type { SuggestReply, SuggestRequest } from '@moss-multi/protocol/suggest';
 import { CLOSE, closeAction, encodeSyncFrame, PAYLOAD_MESSAGE, type ServerEvent, type WriteRefusalReason } from '@moss-multi/protocol/sync';
 import { attachPayloadDocs, PayloadDocs, PayloadSync } from '@moss-multi/sync/payload-docs';
 import YProvider from 'y-partyserver/provider';
@@ -20,6 +21,7 @@ import {
   SILENCE_LIMIT_MS, startLink, type Link, type LinkEvent,
 } from './connection.ts';
 import { clearTerminal, setTerminal, terminalOf } from './terminal.ts';
+import { isSuggestReply, SuggestLedger } from './suggest-acks.ts';
 import { markSession, markUnacked } from './unacked.ts';
 
 const PARTY = 'doc-d-o';
@@ -132,7 +134,7 @@ function closeNormally(provider: YProvider, held: () => boolean): void {
 const shareToken = (): string | null => new URLSearchParams(window.location.search).get('share');
 
 type AccessAnswer =
-  | { kind: 'role'; role: Role; canWrite: boolean }
+  | { kind: 'role'; role: Role; canWrite: boolean; canSuggest: boolean }
   | { kind: 'deleted' }
   | { kind: 'gone' }
   | { kind: 'signed-out' }
@@ -154,7 +156,9 @@ async function askAccess(docId: string): Promise<AccessAnswer> {
     if (!response.ok) return { kind: 'unknown' };
     const body = (await response.json()) as { role?: unknown; deleted?: unknown };
     if (body.deleted === true) return { kind: 'deleted' };
-    return isRole(body.role) ? { kind: 'role', role: body.role, canWrite: roleAtLeast(body.role, 'editor') } : { kind: 'unknown' };
+    return isRole(body.role)
+      ? { kind: 'role', role: body.role, canWrite: roleAtLeast(body.role, 'editor'), canSuggest: roleAtLeast(body.role, 'suggester') }
+      : { kind: 'unknown' };
   } catch {
     return { kind: 'unknown' };
   }
@@ -163,6 +167,14 @@ async function askAccess(docId: string): Promise<AccessAnswer> {
 /** The tab's sessions by doc id with the pane holding each, and by provider for the plugin's teardown. */
 const held = new Map<string, { session: DocSession; owner: object }>();
 const byProvider = new WeakMap<object, DocSession>();
+/** Providers the plugin binds in place of a session's own (Suggest and Review), with the doc they bind. */
+const aliases = new WeakMap<object, { doc: Y.Doc; release: () => void }>();
+
+/** The plugin binds `provider` and `doc` for `session` (Suggest's fork, Review's composite); `release` runs at teardown. */
+export function aliasProvider(provider: object, session: DocSession, doc: Y.Doc, release: () => void): void {
+  byProvider.set(provider, session);
+  aliases.set(provider, { doc, release });
+}
 const ownerListeners = new Set<() => void>();
 /** Every live session of the tab, lingering ones included: the per-tab socket registry (A§10.1). */
 const sessions = new Set<DocSession>();
@@ -258,6 +270,11 @@ export class DocSession {
   #ended = false;
   #reopening = false;
   readonly #ledger = new AckLedger();
+  readonly #suggest = new SuggestLedger();
+  /** The socket suggest requests may use: one that has synced. On a new socket the fork resumes its leases first. */
+  #suggestWs: WebSocket | null = null;
+  readonly #suggestListeners = new Set<(reply: SuggestReply) => void>();
+  readonly #disposeListeners = new Set<() => void>();
   readonly #replay: Replay;
   /** Payload resends wait for the note's backlog replay (#opened). */
   #payloadsDue = false;
@@ -397,6 +414,53 @@ export class DocSession {
     if (!this.provider.shouldConnect && !this.#ended) void this.provider.connect();
   }
 
+  /** Sends a suggest-mode request (the fork, T5.1); `data-sync-unacked` holds until the DocDO replies. */
+  sendSuggest(request: SuggestRequest): void {
+    const ws = this.provider.ws;
+    if (ws && ws === this.#suggestWs && ws.readyState === WebSocket.OPEN && !this.#ended) {
+      this.provider.sendMessage(JSON.stringify(request));
+      this.#suggest.sent(request);
+    } else {
+      this.#suggest.held(request);
+    }
+    if (!this.#state.unacked) this.#set({ unacked: true });
+  }
+
+  /** Every suggest reply, in order; returns the unsubscriber. */
+  onSuggestReply(listener: (reply: SuggestReply) => void): () => void {
+    this.#suggestListeners.add(listener);
+    return () => this.#suggestListeners.delete(listener);
+  }
+
+  /** The fork holds requests back that it still owes the DocDO: the session stays unacked (and a released one lingers). */
+  oweSuggest(owed: boolean): void {
+    if (this.#disposed) return;
+    this.#suggest.owed = owed;
+    if (owed && !this.#state.unacked) this.#set({ unacked: true });
+    else this.#settleUnacked();
+  }
+
+  /** Calls `listener` once when the session is torn down (now, if it already was); returns the unsubscriber. */
+  onDisposed(listener: () => void): () => void {
+    if (this.#disposed) {
+      listener();
+      return () => {};
+    }
+    this.#disposeListeners.add(listener);
+    return () => this.#disposeListeners.delete(listener);
+  }
+
+  /**
+   * The fork resends what it still owes on a new socket: requests the old one never answered leave the ledger, then
+   * `resend` runs, and only then can `data-sync-unacked` settle. A lingering session never sees a false zero between.
+   */
+  resendSuggest(resend: () => void): void {
+    this.#suggest.takeUnsent();
+    this.#suggestWs = this.provider.ws;
+    resend();
+    this.#settleUnacked();
+  }
+
   /** The doc is over for this session (A§10.6): no reconnect, every surface goes inert, a lingering session lets go. */
   end(reason: TerminalReason): void {
     if (this.#disposed) return;
@@ -473,6 +537,10 @@ export class DocSession {
     // A connect still resolving its params can never reopen the socket.
     Object.defineProperty(this.provider, 'shouldConnect', { get: () => false, set: () => undefined });
     awareness.destroy();
+    // Before the doc goes: a suggest mount delivering for a released pane lets go of its fork first.
+    for (const listener of [...this.#disposeListeners]) listener();
+    this.#disposeListeners.clear();
+    this.#suggestListeners.clear();
     this.#payloadSync.destroy();
     this.doc.destroy();
     this.payloads.destroy();
@@ -531,6 +599,7 @@ export class DocSession {
   }
 
   #synced(): void {
+    this.#suggestWs = this.provider.ws;
     this.#accessRetries = 0;
     this.#update({ type: 'synced' });
     if (this.#state.synced) return;
@@ -542,6 +611,7 @@ export class DocSession {
     if (this.#disposed) return;
     const opened = this.#socketOpen;
     this.#socketOpen = false;
+    this.#suggest.dropped();
     // What it had not sent stays in the ledger; the next socket replays it.
     this.#replay.cancel();
     // Each socket gets its own partyserver connection id (`_pk`, read at every reconnect): the DocDO keys acks by
@@ -597,7 +667,8 @@ export class DocSession {
       case 'role':
         // The pane's role, its top bar and its menus follow the answer (a demotion lowers them in place).
         rememberRole(this.docId, answer.role);
-        if (!answer.canWrite) {
+        // A suggester's failed handshakes are the network: its suggestions still need delivering, so it reconnects.
+        if (!answer.canWrite && !(cause === 'handshake' && answer.canSuggest)) {
           refuseInput(VIEW_ONLY);
           this.#ended = true;
           this.#set({ canWrite: false, resync: true });
@@ -676,6 +747,11 @@ export class DocSession {
     this.#onVisibility();
   };
 
+  /** Unacked clears only once body writes and suggest requests are both settled. */
+  #settleUnacked(): void {
+    if (this.#state.unacked && !this.#ledger.unacked && !this.#suggest.unacked) this.#set({ unacked: false });
+  }
+
   #wrote(update: Uint8Array, payload?: string): void {
     this.#ledger.wrote(update, payload);
     if (!this.#state.unacked) this.#set({ unacked: true });
@@ -689,7 +765,11 @@ export class DocSession {
       return;
     }
     if (event.t === 'ack') {
-      if (this.#state.unacked && this.#ledger.acked(event)) this.#set({ unacked: false });
+      if (this.#state.unacked && this.#ledger.acked(event)) this.#settleUnacked();
+    } else if (isSuggestReply(event)) {
+      this.#suggest.replied();
+      for (const listener of [...this.#suggestListeners]) listener(event);
+      this.#settleUnacked();
     } else if (event.t === 'write-refused') {
       this.#refusedMessage = WRITE_REFUSED[event.reason] ?? WRITE_REFUSED.role;
       refuseInput(this.#refusedMessage);
@@ -721,6 +801,8 @@ export function openDocSession(docId: string, owner: object, canWrite = true): D
 export function releaseProvider(docId: string, provider: object | undefined, docMap: Map<string, Y.Doc>): void {
   const session = provider && byProvider.get(provider);
   if (!session) return;
-  if (docMap.get(docId) === session.doc) docMap.delete(docId);
+  const alias = aliases.get(provider);
+  if (docMap.get(docId) === session.doc || (alias && docMap.get(docId) === alias.doc)) docMap.delete(docId);
+  alias?.release();
   session.release();
 }

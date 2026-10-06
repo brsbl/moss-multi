@@ -42,3 +42,63 @@
 ::highlight(moss-comment-active-4) { text-decoration-color: var(--highlight-chalk-grey); }
 [data-theme="dark"] ::highlight(moss-comment-hover-0),
 [data-theme="dark"] ::highlight(moss-comment-active-0) { text-decoration-color: color-mix(in srgb, var(--highlight-chalk-yellow) 50%, var(--ink-default)); }
+
+/* Suggestion paint (docs/design/suggestions.md §7): derived highlights and an overlay, never the tree. */
+::highlight(suggest-insert) {
+  background-color: var(--highlight-green);
+  text-decoration: underline;
+  text-decoration-color: var(--accent-brand);
+}
+::highlight(suggest-delete) {
+  color: var(--accent-terracotta);
+  text-decoration: line-through;
+  text-decoration-color: var(--accent-terracotta);
+}
+.moss-suggest-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+}
+.moss-suggest-wedge {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  pointer-events: auto;
+  cursor: pointer;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-bottom: 6px solid var(--accent-brand);
+}
+.moss-suggest-preview {
+  display: none;
+  position: absolute;
+  top: 10px;
+  left: -8px;
+  max-width: 320px;
+  white-space: pre-wrap;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--accent-brand);
+  background: var(--surface-raised-card, var(--highlight-green));
+  color: var(--ink-default, inherit);
+  font-size: 12px;
+  line-height: 1.4;
+  box-shadow: 0 2px 8px var(--ink-shadow-soft, transparent);
+}
+.moss-suggest-wedge:hover .moss-suggest-preview {
+  display: block;
+}
+.moss-suggest-gutter {
+  position: absolute;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--accent-brand);
+}
+.moss-suggest-dot {
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-brand);
+}

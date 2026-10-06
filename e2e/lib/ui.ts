@@ -134,8 +134,8 @@ export async function createNote(actor: Actor): Promise<string> {
   return docId;
 }
 
-/** The Share dialog's access choices (T1.1); suggester joins in M5. */
-export type Access = 'Can view' | 'Can comment' | 'Can edit' | 'Owner';
+/** The Share dialog's access choices (T1.1, T5.1). */
+export type Access = 'Can view' | 'Can comment' | 'Can suggest' | 'Can edit' | 'Owner';
 /** A share link's access (T2.4): never more than edit, and signed-out visitors read at view. */
 export type LinkAccess = 'Can view' | 'Can comment' | 'Can edit';
 

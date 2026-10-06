@@ -55,7 +55,7 @@ const COMMENTED_LINE = '[data-moss-app-shell] [data-lexical-editor="true"] p:fir
 export const TARGETS: Target[] = [
   // Compare the default shell with editing controls visible; j01 separately gates deviation 10 on blur.
   // Mask only web controls: Share and connection in the top bar, and the vault selector in either shell.
-  { id: 'shell-default', story: 'app--default', seed: 'story-listing', focusEditor: true, masks: ['[data-collab-chrome]'], floor: 0.05, maxBlob: 16 },
+  { id: 'shell-default', story: 'app--default', seed: 'story-listing', focusEditor: true, masks: ['[data-collab-chrome]', '[data-suggest-dock]'], floor: 0.05, maxBlob: 16 },
   { id: 'shell-empty', story: 'app--empty-notes', seed: 'fresh', focusEditor: false, masks: ['[data-collab-chrome]'], floor: 0.05, maxBlob: 16 },
   // The owner's trash view (T2.3). The retention notice's words differ by design (one module writes trash copy and
   // never counts days down), so only that pill is masked; it is wider than moss's and centred on the same point.
@@ -67,7 +67,7 @@ export const TARGETS: Target[] = [
   // Comments (T4.3): a note with one thread. The highlight (moss's mark, our CSS Custom Highlight) and its gutter icon.
   // In dark mode moss pads its mark by 2px a side and rounds it, which moves the rest of the line; a highlight is paint
   // only and cannot (deviation 23), so there the commented line is painted out and the gutter icon still compared.
-  { id: 'comment-gutter', story: 'comment-note--default', seed: 'story-listing', fixture: 'comment-note', focusEditor: true, masks: ['[data-collab-chrome]'], darkMasks: [COMMENTED_LINE], floor: 0.05, maxBlob: 16, prepare: 'comment-gutter' },
+  { id: 'comment-gutter', story: 'comment-note--default', seed: 'story-listing', fixture: 'comment-note', focusEditor: true, masks: ['[data-collab-chrome]', '[data-suggest-dock]'], darkMasks: [COMMENTED_LINE], floor: 0.05, maxBlob: 16, prepare: 'comment-gutter' },
   // The thread its gutter icon opens, compared as the popover.
   { id: 'comment-popover', story: 'comment-note--default', seed: 'story-listing', fixture: 'comment-note', focusEditor: false, masks: [], floor: 0.05, maxBlob: 16, prepare: 'open-comment-thread', crop: COMMENT_POPOVER },
   // A detached thread opened from the Comments list reads as moss's thread does.

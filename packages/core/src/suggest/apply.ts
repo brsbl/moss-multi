@@ -50,6 +50,8 @@ export interface RecordMeta {
   clients: number[];
   continues?: string;
   continuedBy?: string;
+  /** Set on a record merged into another (`suggest-merge`); it is closed and its ops and parts moved there. */
+  mergedInto?: string;
   outdated?: GateReason[];
   broken?: GateReason;
 }

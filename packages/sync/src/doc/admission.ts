@@ -18,6 +18,8 @@ export interface Attachment {
   sessionId: string | null;
   shareToken: string | null;
   presenceAllowed?: boolean;
+  /** Minted at connect: suggestion leases bind to it, since a client may reuse its partyserver connection id. */
+  nonce?: string;
   /** When the Worker resolved `role` (epoch ms); 0 when unknown, which any principal revocation outdates. */
   resolvedAt?: number;
   /** When this DocDO admitted the socket (its own clock); DOC_SOCKET_MAX_MS later the socket closes 1013. */
@@ -115,15 +117,19 @@ export type DeleteSet = ReturnType<typeof Y.createDeleteSet>;
 
 /**
  * The classifier's verdict, the deletes the frame carries (its ack names them, A§5.1 Acks), and whether the frame
- * needs a clock the doc lacks (`missing`). `decoded` lets the caller share one decode with gate 2b.
+ * needs a clock the doc lacks (`missing`). `decoded` lets the caller share one decode with gate 2b. `budget` bounds
+ * the store items the delete scan visits; past it the frame reads as inert. Pass one only for a connection that may
+ * not write (below editor), whose frame is never applied either way (`isReadOnly`): its refusal then costs O(frame),
+ * never O(doc).
  */
 export function classifySync(
   doc: Y.Doc,
   update: Uint8Array,
   decoded = Y.decodeUpdate(update),
+  budget = Infinity,
 ): { changes: boolean; missing: boolean; deletes: DeleteSet } {
   const { structs, ds } = decoded;
-  return { changes: changes(doc, structs, ds), missing: missing(doc, structs, ds), deletes: ds };
+  return { changes: changes(doc, structs, ds, budget), missing: missing(doc, structs, ds), deletes: ds };
 }
 
 /**
@@ -155,11 +161,12 @@ function missing(doc: Y.Doc, structs: (Y.Item | Y.GC | Y.Skip)[], ds: DeleteSet)
  * The write classifier: a sync frame changes the doc only if it carries a struct the doc's state vector lacks or
  * deletes an item the doc has not deleted. Every step 2 that merely answers a step 1 is inert.
  */
-function changes(doc: Y.Doc, structs: (Y.Item | Y.GC | Y.Skip)[], ds: DeleteSet): boolean {
+function changes(doc: Y.Doc, structs: (Y.Item | Y.GC | Y.Skip)[], ds: DeleteSet, budget: number): boolean {
   for (const struct of structs) {
     if (struct instanceof Y.Skip) continue;
     if (Y.getState(doc.store, struct.id.client) < struct.id.clock + struct.length) return true;
   }
+  let scanned = 0;
   for (const [client, deletes] of ds.clients) {
     const known = doc.store.clients.get(client) ?? [];
     const state = Y.getState(doc.store, client);
@@ -168,6 +175,7 @@ function changes(doc: Y.Doc, structs: (Y.Item | Y.GC | Y.Skip)[], ds: DeleteSet)
       if (clock + len > state) return true;
       for (let i = Y.findIndexSS(known, clock); i < known.length && known[i].id.clock < clock + len; i += 1) {
         if (!known[i].deleted) return true;
+        if (++scanned > budget) return false;
       }
     }
   }

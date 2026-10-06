@@ -201,12 +201,15 @@ interface Outcome {
 /** Ingests `ops` from a fresh lease, then, separately, previews and accepts a forged record of the same ops. */
 function run(build: (live: Y.Doc, lease: number) => RecordOp[]): Outcome {
   const live = seededBody();
-  const ingest = new SuggestIngest(live, { stateCap: STATE_CAP_BYTES, registry: nodeRegistry() });
-  const [lease] = ingest.lease(SUGGESTER.id);
+  const ingest = new SuggestIngest(live, { stateCap: STATE_CAP_BYTES, registry: nodeRegistry(), mintId: () => 'r1' });
+  const who = { ...SUGGESTER, role: 'suggester', connection: 'census' };
+  const leased = ingest.lease(who, [], 1);
+  if (!leased.ok) throw new Error(leased.reason);
+  const [{ client: lease }] = leased.leases;
   const ops = build(live, lease);
   let ingested: Outcome['ingest'] = { ok: true };
   for (const op of ops) {
-    const result = ingest.ops(SUGGESTER, 'suggester', 'r1', op);
+    const result = ingest.ops(who, 'r1', op);
     if (!result.ok) {
       ingested = result;
       break;

@@ -81,7 +81,7 @@ export function useRegisterDraft(
   const live = bound && ready && !!id;
   // The text the field shows: the payload's as of its last change, or the cache while it is not live.
   const painted = useRef(initial);
-  const composing = useRef<{ doc: Y.Doc; base: Uint8Array } | null>(null);
+  const composing = useRef<{ doc: Y.Doc } | null>(null);
   const write = useCallback((next: string) => {
     if (!registerDoc(editor)) { display(next); return; }
     if (!editor.isEditable()) return;
@@ -151,13 +151,21 @@ export function useRegisterDraft(
     const start = () => {
       if (!editor.isEditable()) return;
       const draft = new Y.Doc(); Y.applyUpdate(draft, Y.encodeStateAsUpdate(doc));
-      composing.current = { doc: draft, base: Y.encodeStateVector(draft) };
+      composing.current = { doc: draft };
     };
     const end = () => {
       const draft = composing.current;
       if (!draft) return;
       write(input.value);
-      if (editor.isEditable()) Y.applyUpdate(doc, Y.encodeStateAsUpdate(draft.doc, draft.base), REGISTER_LOCAL_ORIGIN);
+      if (editor.isEditable()) {
+        // The composition merges with what arrived meanwhile, then lands as an edit under the bound doc's own client:
+        // the draft's client is unleased in Suggest mode, where the payload doc is the fork's.
+        Y.applyUpdate(draft.doc, Y.encodeStateAsUpdate(doc, Y.encodeStateVector(draft.doc)));
+        const merged = payloadText(draft.doc).toString();
+        if (merged !== text.toString()) {
+          doc.transact(() => text.applyDelta(diffText(text.toString(), merged)), REGISTER_LOCAL_ORIGIN);
+        }
+      }
       composing.current = null;
       draft.doc.destroy();
       const next = text.toString(); painted.current = next; repaint(input, next, diffText(input.value, next)); display(next);
