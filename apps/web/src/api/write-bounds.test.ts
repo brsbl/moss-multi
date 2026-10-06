@@ -89,7 +89,7 @@ describe('daily write bounds, charged to the acting person', () => {
     const dans = await insertDoc(d1.db, dan);
     // A day's links on Cy's note, made by someone who managed it before; they don't count against Cy.
     await rowsToday(`INSERT INTO share_links (token, target_type, target_id, role, created_by, created_at, revoked_at)
-      SELECT ?2 || i, 'doc', ?3, 'viewer', ?4, ?5, ?5 FROM n`, SHARE_LINK_DAILY, `prior-${first}-`, first, dan.id, Date.now());
+      SELECT ?2 || i, 'doc', ?3, 'viewer', ?4, ?5, ?5 FROM n`, SHARE_LINK_DAILY, `prior-${first}-`, first, `former-manager-${first}`, Date.now());
     await rowsToday(`INSERT INTO share_links (token, target_type, target_id, role, created_by, created_at, revoked_at)
       SELECT ?2 || i, 'doc', ?3, 'viewer', ?4, ?5, ?5 FROM n`, SHARE_LINK_DAILY - 2, `link-${first}-`, first, cy.id, Date.now());
     await expectMade(await call(cy, 'POST', `/api/docs/${first}/links`, { role: 'viewer' }));
