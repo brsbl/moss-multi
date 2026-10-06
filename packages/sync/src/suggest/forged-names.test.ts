@@ -147,6 +147,32 @@ describe('T5.3s forged records named like Object.prototype members @p:mean-2 @p:
     expect(hashes[0]).not.toBe(hashes[1]);
   });
 
+  // A stored value and the value that replaces it are told apart however JSON would carry them: a BigInt and an
+  // object shaped like its tag, undefined and null, NaN and null, bytes and an object keyed by index.
+  it.each([
+    ['an object shaped like a BigInt tag', { BigInt: '10' }, 10n],
+    ['an escaped-looking object', { $: 'bigint', v: '10' }, 10n],
+    ['null', null, undefined],
+    ['[null]', [null], [undefined]],
+    ['{}', {}, { a: undefined }],
+    ['null', null, Number.NaN],
+    ['an object keyed by index', { 0: 1 }, new Uint8Array([1])],
+  ] as [string, unknown, unknown][])('a payload field holding %s, replaced by a different value, is a hunk the hash covers', (_name, was, now) => {
+    const live = seededBody();
+    payloadDocsFor(live).get(codeKey(live))!.getMap('payload-map').set('forged', was);
+    const op = opFor(live, (doc) => doc.getMap('payload-map').set('forged', now), 'payload');
+    const hunks = hunksOf(live, [op]);
+    expect(hunks.length, JSON.stringify(hunks)).toBeGreaterThan(0);
+    expect(previewHash(hunks)).not.toBe(previewHash([]));
+    expect(() => describeHunks(JSON.parse(JSON.stringify(hunks)) as Hunk[])).not.toThrow();
+    forgeRecord(live, 'g', [op]);
+    const previewed = previewRecord(live, 'g');
+    expect(previewed).toMatchObject({ ok: true });
+    expect(previewed.ok && previewed.hunks.length > 0).toBe(true);
+    // The hunks travel as JSON and hash the same on the other side.
+    expect(previewed.ok && previewHash(JSON.parse(JSON.stringify(previewed.hunks)) as Hunk[])).toBe(previewed.ok && previewed.hash);
+  });
+
   it.each(NAMES)('a payload doc id %s: preview and card never throw, and the hash covers the payload', (name) => {
     const live = seededBody();
     const payloadOp = (text: string): RecordOp => {

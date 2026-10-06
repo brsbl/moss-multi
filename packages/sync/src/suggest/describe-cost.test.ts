@@ -4,11 +4,12 @@
 // fields or a text node's fields once per run.
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
-import { canonical, type Hunk, type RecordOp } from '@moss-multi/core/suggest/apply';
+import { canonical, type DeletePart, type Hunk, type RecordOp } from '@moss-multi/core/suggest/apply';
 import { describeHunks } from '@moss-multi/core/suggest/describe';
 import { SUGGEST_CAPS } from '../doc/suggest.ts';
+import { payloadDocsFor } from '../payload-docs.ts';
 import { previewRecord } from './review.ts';
-import { deterministicIds, forgeRecord, hunksOf, opOn, seededBody } from './test-support.ts';
+import { deterministicIds, forgeRecord, hunksOf, LEASED, opOn, seededBody, spansOfText } from './test-support.ts';
 
 let restore: () => void = () => {};
 beforeEach(() => {
@@ -25,6 +26,8 @@ const textNode = (format = 0) => new Y.Map<unknown>([['__type', 'text'], ['__for
 
 interface Shape {
   name: string;
+  /** A record the gates pass: its preview must succeed with hunks. */
+  valid?: boolean;
   /** An editor's change to the note before the record, sized with it. */
   prepare?: (live: Y.Doc, n: number) => void;
   write: (n: number) => (doc: Y.Doc) => void;
@@ -33,6 +36,7 @@ interface Shape {
 const SHAPES: Shape[] = [
   {
     name: 'many new blocks, each after the last',
+    valid: true,
     write: (n) => (doc) => {
       for (let i = 0; i < n; i++) {
         const block = new Y.XmlText();
@@ -45,6 +49,7 @@ const SHAPES: Shape[] = [
   },
   {
     name: 'blocks nested 200 deep, each with a field and text',
+    valid: true,
     write: (n) => (doc) => {
       const per = n;
       let parent = new Y.XmlText();
@@ -63,6 +68,7 @@ const SHAPES: Shape[] = [
   },
   {
     name: 'many formatted runs inside a link with a long url',
+    valid: true,
     write: (n) => (doc) => {
       const block = new Y.XmlText();
       root(doc).insertEmbed(1, block);
@@ -79,12 +85,24 @@ const SHAPES: Shape[] = [
   },
   {
     name: 'single characters typed between the characters of a long-styled text node',
+    valid: true,
     prepare: (live, n) => {
       textMap(live).set('__style', `color: ${'s'.repeat(Math.ceil(n / 16))}`);
       paragraph(live).insert(1, 'y'.repeat(n));
     },
     write: (n) => (doc) => {
       for (let i = 0; i < n; i++) paragraph(doc).insert(2 + 2 * i, 'z');
+    },
+  },
+  {
+    name: 'a long field key holding many small maps',
+    write: (n) => (doc) => {
+      const block = new Y.XmlText();
+      root(doc).insertEmbed(1, block);
+      block.setAttribute('__type', 'paragraph');
+      const holder = new Y.Map<unknown>();
+      block.setAttribute(`__${'k'.repeat(n)}`, holder as never);
+      for (let i = 0; i < n / 64; i++) holder.set(`m${i}`, new Y.Map([['a', 1]]));
     },
   },
 ];
@@ -115,7 +133,12 @@ function measure(shape: Shape, n: number): Measure {
   shape.prepare?.(live, n);
   const ops = [opOn(live, 'body', shape.write(n))];
   forgeRecord(live, 'g', ops);
-  const hunks: Hunk[] = hunksOf(live, ops);
+  const previewed = previewRecord(live, 'g');
+  if (shape.valid) {
+    expect(previewed, `${shape.name} at ${n}`).toMatchObject({ ok: true });
+    expect(previewed.ok && previewed.hunks.length > 0, `${shape.name} at ${n}: the preview has hunks`).toBe(true);
+  }
+  const hunks: Hunk[] = previewed.ok ? previewed.hunks : hunksOf(live, ops);
   let rowBytes = 0;
   const card = fastest(() => {
     rowBytes = 0;
@@ -156,4 +179,60 @@ describe('T5.3s preview and card cost is linear in the record, at the record cap
     expect(large.card, `card time grows faster than the record: ${report}`).toBeLessThanOrEqual(3 * small.card + 25);
     expect(large.preview, `preview time grows faster than the record: ${report}`).toBeLessThanOrEqual(3 * small.preview + 25);
   }, 240_000);
+});
+
+/** One op per transaction, as a fork forwards them: `steps` run in turn on a copy of `source` under the leased client. */
+function stepsOn(source: Y.Doc, doc: string, steps: number, step: (copy: Y.Doc) => void): RecordOp[] {
+  const copy = new Y.Doc({ gc: false });
+  Y.applyUpdate(copy, Y.encodeStateAsUpdate(source));
+  copy.clientID = LEASED;
+  const ops: RecordOp[] = [];
+  copy.on('update', (update: Uint8Array) => ops.push({ doc, update }));
+  for (let i = 0; i < steps; i++) copy.transact(() => step(copy));
+  copy.destroy();
+  return ops;
+}
+
+describe('T5.3s many honest delete steps over one long run are not outdated @p:mean-2 @p:R17', () => {
+  const LONG = 3000;
+  const STEPS = 2500;
+
+  it('backspace held across a long code block: one payload op per character', () => {
+    const live = seededBody(`Intro.\n\n\`\`\`js\n${'x'.repeat(LONG)}\n\`\`\`\n`);
+    const code = blocks(live).find((x) => x instanceof Y.XmlElement && x.getAttribute('__type') === 'code-block') as Y.XmlElement;
+    const key = String(code.getAttribute('__regId'));
+    const payload = payloadDocsFor(live).get(key)!;
+    expect(payload.getText('payload').toString()).toContain('x'.repeat(LONG));
+    const ops = stepsOn(payload, key, STEPS, (copy) => {
+      const text = copy.getText('payload');
+      text.delete(text.length - 1, 1);
+    });
+    expect(ops).toHaveLength(STEPS);
+    forgeRecord(live, 'g', ops);
+    const previewed = previewRecord(live, 'g');
+    expect(previewed).toMatchObject({ ok: true });
+    expect(previewed.ok && previewed.hunks.some((hunk) => hunk.kind === 'payload' && hunk.id === key)).toBe(true);
+  });
+
+  it('a long paragraph struck one character at a time: one delete part per character', () => {
+    const live = seededBody(`Intro.\n\n${'w'.repeat(LONG)}\n`);
+    const ids = spansOfText(live, 'w'.repeat(LONG)).flatMap((span) => Array.from({ length: span.len }, (_, i) => ({ client: span.client, clock: span.clock + i, len: 1 })));
+    expect(ids).toHaveLength(LONG);
+    const parts: DeletePart[] = ids.slice(LONG - STEPS).reverse().map((target, i) => ({ id: `part-${i}`, kind: 'delete', targets: [target], quote: 'w' }));
+    forgeRecord(live, 'g', [], parts);
+    const previewed = previewRecord(live, 'g');
+    expect(previewed).toMatchObject({ ok: true });
+    expect(previewed.ok && previewed.hunks.length > 0).toBe(true);
+  });
+
+  it('two steps removing overlapping runs are refused as outdated', () => {
+    const live = seededBody(`Intro.\n\n${'w'.repeat(LONG)}\n`);
+    const [span] = spansOfText(live, 'w'.repeat(LONG));
+    const parts: DeletePart[] = [
+      { id: 'part-a', kind: 'delete', targets: [{ client: span.client, clock: span.clock, len: 10 }], quote: 'w'.repeat(10) },
+      { id: 'part-b', kind: 'delete', targets: [{ client: span.client, clock: span.clock + 5, len: 10 }], quote: 'w'.repeat(10) },
+    ];
+    forgeRecord(live, 'g', [], parts);
+    expect(previewRecord(live, 'g')).toEqual({ ok: false, reason: 'outdated' });
+  });
 });

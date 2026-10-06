@@ -9,7 +9,7 @@ import {
 } from 'lexical';
 import { vi } from 'vitest';
 import * as Y from 'yjs';
-import { hydrate, projectDoc, projectionDiff, type Hunk, type RecordMeta, type RecordOp } from '@moss-multi/core/suggest/apply';
+import { hydrate, projectDoc, projectionDiff, type DeletePart, type Hunk, type RecordMeta, type RecordOp } from '@moss-multi/core/suggest/apply';
 import { importMarkdown } from '../converter/index.ts';
 import { attachPayloadDocs, PayloadDocs, payloadDocsFor, payloadMap, payloadText } from '../payload-docs.ts';
 import { exportDocMarkdown, importBody, serverWrite } from '../server-doc.ts';
@@ -293,15 +293,15 @@ export function spansOfText(doc: Y.Doc, text: string): { client: number; clock: 
 /** The leased client id a forged record's ops are written under. */
 export const LEASED = 0x7fff1234;
 
-/** An open record holding `ops`, written straight into the records map, past ingest. */
-export function forgeRecord(live: Y.Doc, id: string, ops: RecordOp[]): void {
+/** An open record holding `ops` and delete `parts`, written straight into the records map, past ingest. */
+export function forgeRecord(live: Y.Doc, id: string, ops: RecordOp[], parts: DeletePart[] = []): void {
   const meta: RecordMeta = {
     v: 2, id, author: SUGGESTER.id, authorName: SUGGESTER.name, source: 'live', createdAt: 1, updatedAt: 1, status: 'open', clients: [LEASED],
   };
   writeSuggestions(live, () => {
     createRecord(live, meta);
     opsOf(live, id).push(ops);
-    partsOf(live, id).push([]);
+    partsOf(live, id).push(parts);
   });
 }
 
