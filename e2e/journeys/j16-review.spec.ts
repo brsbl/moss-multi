@@ -244,9 +244,10 @@ test('j16-review: struck text inside a link opens its card, not the link; a fail
   await expect(pane, 'never refused').toHaveAttribute(SUGGEST_REFUSED_ATTR, '0');
   await expect(button(ada)).toHaveAttribute('aria-label', /1 open/, { timeout: BIND_TIMEOUT });
 
-  // Every preview fails until the route is lifted.
+  // Every preview is refused until the route is lifted.
   const previews = '**/api/docs/*/suggestions/*/preview';
-  await ada.page.route(previews, (route) => route.fulfill({ status: 503, contentType: 'application/json', body: '{"error":"unavailable"}' }));
+  ada.expectHttp(429, /\/suggestions\/[^/]+\/preview$/);
+  await ada.page.route(previews, (route) => route.fulfill({ status: 429, contentType: 'application/json', body: '{"error":"rate-limited"}' }));
   const startUrl = ada.page.url();
   const active = panel(ada).locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_ACTIVE_ATTR}]`);
   await expect(async () => {

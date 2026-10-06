@@ -370,6 +370,8 @@ export class DocDO extends YServer<SyncEnv> {
       this.#idleAt = Date.now() + EMPTY_IDLE_MS;
       void this.#schedule(holdsOf(store)).catch((error: unknown) => console.error('DocDO could not schedule the idle check', error));
     });
+    // A wake forgets when the idle check was due, so any open record gets one at the next alarm.
+    if (recordIds(this.document).some((id) => readMeta(this.document, id)?.status === 'open')) this.#idleAt = Date.now();
     const target = (this.constructor as typeof DocDO).projectionTarget(this.env);
     if (target) this.#project(new Projections(this.name, target));
     // A wake re-feeds only a doc the index may lack (L§4.14): an edit whose feed never landed, or an older entry

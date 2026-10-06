@@ -97,6 +97,7 @@ const REASONS: Record<string, string> = {
   'rate-limited': 'Too many reviews at once. Try again in a minute.',
   role: "You can't review this suggestion.",
   forbidden: "You can't review this suggestion.",
+  unavailable: 'Its changes could not be loaded.',
 };
 const reasonText = (reason: string) => REASONS[reason] ?? 'It could not be applied.';
 
@@ -153,6 +154,8 @@ function SuggestionCard({ docId, record, me, role, active }: { docId: string; re
   const outdated = (meta.outdated?.length ?? 0) > 0 || (preview.state === 'failed' && preview.reason === 'outdated');
   const broken = !!meta.broken || (preview.state === 'failed' && preview.reason === 'broken');
   const rows = preview.state === 'ready' ? describeHunks(preview.hunks) : [];
+  // A preview that failed for any other reason is said, with a retry: Accept needs a preview.
+  const failed = preview.state === 'failed' && !outdated && !broken ? reasonText(preview.reason) : null;
 
   const act = async (action: 'accept' | 'reject' | 'withdraw') => {
     setBusy(true);
@@ -194,6 +197,14 @@ function SuggestionCard({ docId, record, me, role, active }: { docId: string; re
         <div className="flex flex-col gap-1 text-xs">
           {preview.state === 'loading' ? <p className="text-micro text-ink-faint">Loading changes…</p> : null}
           {preview.state === 'ready' && rows.length === 0 ? <p className="text-micro text-ink-faint">No visible change yet.</p> : null}
+          {failed ? (
+            <div className="flex items-center gap-2">
+              <span role="alert" className="text-micro text-accent-terracotta">{failed}</span>
+              <button type="button" className="shrink-0 text-micro text-ink-default underline" onClick={refresh}>
+                Try again
+              </button>
+            </div>
+          ) : null}
           {rows.map((row, i) => (
             <div
               key={i}

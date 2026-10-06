@@ -124,13 +124,19 @@ export function SuggestPlugin({ pane }: { pane: SuggestPane }): null {
         const under = (range: Range) => [...range.getClientRects()].some((rect) => event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom);
         for (const [record, hit] of hitTargets()) {
           if (rangesWhere(editor, binding, hit).some(under)) {
+            // Inside a link the click opens the card instead of the link: this runs in the capture phase, before
+            // moss's link activation on the same root.
+            if (event.target instanceof Element && event.target.closest('a')) {
+              event.preventDefault();
+              event.stopPropagation();
+            }
             openSuggestion(pane.docId, record);
             return;
           }
         }
       };
-      root?.addEventListener('click', onClick);
-      stops.push(() => root?.removeEventListener('click', onClick));
+      root?.addEventListener('click', onClick, true);
+      stops.push(() => root?.removeEventListener('click', onClick, true));
     }
     if (mode === 'edit' && body) {
       // Edit mode: C is rebuilt from B's records, throttled, only while any record is open.

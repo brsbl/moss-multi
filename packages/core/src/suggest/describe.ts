@@ -61,6 +61,8 @@ interface Token {
   display: string;
   fields: Field[];
   sig: string;
+  /** An element's start: the element's own text, which names it in a row. */
+  label?: string;
 }
 
 const INLINE_ELEMENTS = new Set(['link', 'autolink']);
@@ -86,19 +88,23 @@ function tokenize(block: Json): Token[] {
       for (const child of children) walk(child, fields, depth + 1);
       return;
     }
+    const at = tokens.length;
     tokens.push({ align: `\u0000${type}`, display: tokens.length ? '\n' : '', fields: own, sig: canonical(own.map((f) => [f.field, f.value])) });
     for (const child of children) walk(child, [], depth + 1);
+    tokens[at].label = displayOf(tokens.slice(at + 1)).trim() || type;
   };
   for (const child of Array.isArray(block.children) ? (block.children as unknown[]).filter(isObject) : []) walk(child, [], 1);
   return tokens;
 }
 
 const displayOf = (tokens: readonly Token[]) => tokens.map((t) => t.display).join('');
+/** A run's text: an element's start reads as the element's text. */
+const textOf = (tokens: readonly Token[]) => (tokens.every((t) => t.label !== undefined) ? tokens.map((t) => t.label).join(', ') : displayOf(tokens));
 
 /** What a run carries beyond plain text: its formatting, its link, a decorator's fields. */
 function carried(fields: readonly Field[]): string | undefined {
   const parts = fields
-    .filter((f) => !isDefault(f.field.split(':')[2], f.value) && !(f.field.endsWith(':type') && f.value === 'text'))
+    .filter((f) => !isDefault(f.field.split(':')[2], f.value) && show(f.value) !== 'none' && !(f.field.endsWith(':type') && f.value === 'text'))
     .map((f) => (f.field.endsWith(':type') ? f.label : f.field.endsWith(':format') ? fieldText(f) : `${f.label}: ${fieldText(f)}`));
   return parts.length ? parts.join('; ') : undefined;
 }
@@ -130,6 +136,46 @@ function runs<T>(items: readonly T[], key: (item: T) => string): T[][] {
   return out;
 }
 
+/** One step of aligning two token lists: a kept pair, a removed token or an added one. */
+type Step = { op: 'keep'; b: Token; a: Token } | { op: 'delete'; b: Token } | { op: 'insert'; a: Token };
+
+/** Above this many cells the changed middle is shown as removed then added, unaligned. */
+const ALIGN_CELLS = 1_000_000;
+
+/** `b` aligned with `a` by a longest common subsequence of their tokens, so kept text inside a change stays kept. */
+function align(b: readonly Token[], a: readonly Token[]): Step[] {
+  let start = 0;
+  while (start < b.length && start < a.length && b[start].align === a[start].align) start += 1;
+  let end = 0;
+  while (end < b.length - start && end < a.length - start && b[b.length - 1 - end].align === a[a.length - 1 - end].align) end += 1;
+  const steps: Step[] = [];
+  for (let i = 0; i < start; i++) steps.push({ op: 'keep', b: b[i], a: a[i] });
+  const mb = b.slice(start, b.length - end);
+  const ma = a.slice(start, a.length - end);
+  if (mb.length * ma.length > ALIGN_CELLS) {
+    for (const t of mb) steps.push({ op: 'delete', b: t });
+    for (const t of ma) steps.push({ op: 'insert', a: t });
+  } else {
+    const n = mb.length;
+    const m = ma.length;
+    const lcs = new Uint32Array((n + 1) * (m + 1));
+    for (let i = n - 1; i >= 0; i--) {
+      for (let j = m - 1; j >= 0; j--) {
+        lcs[i * (m + 1) + j] = mb[i].align === ma[j].align ? lcs[(i + 1) * (m + 1) + j + 1] + 1 : Math.max(lcs[(i + 1) * (m + 1) + j], lcs[i * (m + 1) + j + 1]);
+      }
+    }
+    let i = 0;
+    let j = 0;
+    while (i < n || j < m) {
+      if (i < n && j < m && mb[i].align === ma[j].align) steps.push({ op: 'keep', b: mb[i++], a: ma[j++] });
+      else if (j >= m || (i < n && lcs[(i + 1) * (m + 1) + j] >= lcs[i * (m + 1) + j + 1])) steps.push({ op: 'delete', b: mb[i++] });
+      else steps.push({ op: 'insert', a: ma[j++] });
+    }
+  }
+  for (let k = end; k > 0; k--) steps.push({ op: 'keep', b: b[b.length - k], a: a[a.length - k] });
+  return steps;
+}
+
 function blockRows(before: Json | null, after: Json | null): ReviewRow[] {
   const rows: ReviewRow[] = [];
   const b = before ? tokenize(before) : [];
@@ -140,30 +186,44 @@ function blockRows(before: Json | null, after: Json | null): ReviewRow[] {
     const kind = before ? 'delete' : 'insert';
     const own = ownFields(node).map(([field, value]) => ({ label: field === 'type' ? blockType(node) : `${blockType(node)} ${field}`, field: `0:${blockType(node)}:${field}`, value }));
     rows.push({ kind, text: displayOf(before ? b : a), note: `${before ? 'removes' : 'new'} ${carried(own) ?? blockType(node)}` });
+    // Each run with what it carries, and each nested element (a list item, a cell) with its own fields.
     for (const run of runs(before ? b : a, (t) => t.sig)) {
-      const note = run[0].align.startsWith('\u0000') ? undefined : carried(run[0].fields);
-      if (note) rows.push({ kind, text: displayOf(run), note });
+      const note = carried(run[0].fields);
+      if (note) rows.push({ kind, text: textOf(run), note });
     }
     return rows;
   }
-  let start = 0;
-  while (start < b.length && start < a.length && b[start].align === a[start].align) start += 1;
-  let end = 0;
-  while (end < b.length - start && end < a.length - start && b[b.length - 1 - end].align === a[a.length - 1 - end].align) end += 1;
   // The block's own fields: its type, indent, alignment, a list's kind, a checkbox.
   const ownOf = (node: Json) => ownFields(node).map(([field, value]) => ({ label: field === 'type' ? 'block' : `${blockType(node)} ${field}`, field: `0:block:${field}`, value }));
   const own = fieldChanges(ownOf(before), ownOf(after));
   if (own) rows.push({ kind: 'change', text: displayOf(a).trim() || blockType(after), note: own });
-  // Removed and added, run by run, each with what it carries.
-  for (const run of runs(b.slice(start, b.length - end), (t) => t.sig)) rows.push({ kind: 'delete', text: displayOf(run), note: carried(run[0].fields) });
-  for (const run of runs(a.slice(start, a.length - end), (t) => t.sig)) rows.push({ kind: 'insert', text: displayOf(run), note: carried(run[0].fields) });
-  // Kept text whose formatting, link or node fields changed.
-  const pairs: [Token, Token][] = [];
-  for (let i = 0; i < start; i++) pairs.push([b[i], a[i]]);
-  for (let i = end; i > 0; i--) pairs.push([b[b.length - i], a[a.length - i]]);
-  const changed = pairs.filter(([x, y]) => x.sig !== y.sig);
-  for (const run of runs(changed, ([x, y]) => `${x.sig}\u0002${y.sig}`)) {
-    rows.push({ kind: 'change', text: displayOf(run.map(([, y]) => y)), note: fieldChanges(run[0][0].fields, run[0][1].fields) });
+  // In document order: removed and added runs with what they carry, and kept text or elements whose fields changed.
+  const keyOf = (step: Step) =>
+    step.op === 'keep' ? (step.b.sig === step.a.sig ? null : `k\u0002${step.b.sig}\u0002${step.a.sig}`) : step.op === 'delete' ? `d\u0002${step.b.sig}` : `i\u0002${step.a.sig}`;
+  const groups: Step[][] = [];
+  let last: string | null = null;
+  for (const step of align(b, a)) {
+    const key = keyOf(step);
+    if (key === null) {
+      last = null;
+      continue;
+    }
+    if (key === last) groups.at(-1)!.push(step);
+    else groups.push([step]);
+    last = key;
+  }
+  for (const group of groups) {
+    const first = group[0];
+    if (first.op === 'delete') {
+      const run = group.map((step) => (step as { b: Token }).b);
+      rows.push({ kind: 'delete', text: textOf(run), note: carried(run[0].fields) });
+    } else if (first.op === 'insert') {
+      const run = group.map((step) => (step as { a: Token }).a);
+      rows.push({ kind: 'insert', text: textOf(run), note: carried(run[0].fields) });
+    } else {
+      const pairs = group as Extract<Step, { op: 'keep' }>[];
+      rows.push({ kind: 'change', text: textOf(pairs.map((step) => step.a)), note: fieldChanges(first.b.fields, first.a.fields) });
+    }
   }
   return rows.map((row) => (row.note === undefined ? { kind: row.kind, text: row.text } : row));
 }
@@ -225,6 +285,63 @@ function payloadRows(before: unknown, after: unknown): ReviewRow[] {
   return rows;
 }
 
+/** Every field name in a Lexical JSON tree. */
+function fieldNames(value: unknown, out = new Set<string>()): Set<string> {
+  if (Array.isArray(value)) for (const item of value) fieldNames(item, out);
+  else if (isObject(value)) {
+    for (const [key, item] of Object.entries(value)) {
+      out.add(key);
+      fieldNames(item, out);
+    }
+  }
+  return out;
+}
+
+/** A stored key as Lexical's JSON names it: `__indent` is `indent`, `__dir` is `direction`. */
+const exportedName = (key: string) => (key === '__dir' ? 'direction' : key.startsWith('__') ? key.slice(2) : key);
+
+/** A stored value as a reader reads it: a Yjs `Any` wrapper unwrapped. */
+const storedValue = (value: unknown) => (isObject(value) && Array.isArray(value.Any) && value.Any.length === 1 ? value.Any[0] : value);
+
+/**
+ * The stored properties of a block's Yjs value that its Lexical JSON does not show, one list per stored node in order
+ * (the block, then each node inside it); anything in a sequence that is neither text nor a node is listed as content.
+ */
+function hiddenOf(y: unknown, shown: ReadonlySet<string>): [string, unknown][][] {
+  const out: [string, unknown][][] = [];
+  const visit = (value: unknown) => {
+    if (typeof value === 'string') return;
+    if (isObject(value) && typeof value.type === 'string' && (Array.isArray(value.seq) || Array.isArray(value.keys))) {
+      out.push(pairsOf(value.keys).filter(([key]) => !shown.has(exportedName(key))).map(([key, item]) => [exportedName(key), storedValue(item)]));
+      for (const item of Array.isArray(value.seq) ? value.seq : []) visit(item);
+      return;
+    }
+    out.push([['content', value]]);
+  };
+  visit(y);
+  return out;
+}
+
+/** Each stored property Lexical's JSON does not show that differs, node by node, as `name: old → new`. */
+function hiddenRows(text: string, before: unknown, after: unknown, lexical: unknown[]): ReviewRow[] {
+  const shown = new Set<string>();
+  for (const tree of lexical) fieldNames(tree, shown);
+  const b = hiddenOf(before, shown);
+  const a = hiddenOf(after, shown);
+  const same = (x: [string, unknown][], y: [string, unknown][]) => canonical(x) === canonical(y);
+  let start = 0;
+  while (start < b.length && start < a.length && same(b[start], a[start])) start += 1;
+  let end = 0;
+  while (end < b.length - start && end < a.length - start && same(b[b.length - 1 - end], a[a.length - 1 - end])) end += 1;
+  const rows: ReviewRow[] = [];
+  for (let i = start; i < Math.max(b.length, a.length) - end; i++) {
+    const was = i < b.length - end ? b[i] : [];
+    const now = i < a.length - end ? a[i] : [];
+    rows.push(...keyRows(text, was, now).map((row) => ({ ...row, note: `stored ${row.note}` })));
+  }
+  return rows;
+}
+
 const lexicalOf = (value: unknown): Json | null => (isObject(value) && isObject(value.lexical) ? value.lexical : null);
 const yOf = (value: unknown): unknown => (isObject(value) ? value.y : undefined);
 
@@ -243,8 +360,10 @@ export function describeHunks(hunks: readonly Hunk[]): ReviewRow[] {
       const lexicalSame = canonical(b) === canonical(a);
       rows = lexicalSame || (!b && before !== undefined) || (!a && after !== undefined) ? [] : blockRows(b, a);
       // What Lexical's own fields do not show (a stored property it does not export) is shown as stored.
-      if (canonical(yOf(before)) !== canonical(yOf(after)) && (lexicalSame || rows.length === 0)) {
-        rows.push(...leafRows(displayOf(tokenize(a ?? b ?? {})).trim() || 'Stored block', yOf(before), yOf(after)));
+      if (canonical(yOf(before)) !== canonical(yOf(after))) {
+        const text = displayOf(tokenize(a ?? b ?? {})).trim() || 'Stored block';
+        if (lexicalSame || rows.length === 0) rows.push(...leafRows(text, yOf(before), yOf(after)));
+        else rows.push(...hiddenRows(text, yOf(before), yOf(after), [b, a]));
       }
     }
     if (rows.length === 0) rows = leafRows(hunk.kind === 'note' ? 'Note settings' : 'Change', before, after);
