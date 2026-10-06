@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "ef271e64-46f8-422f-8876-fe6d6f39c845",
+  "id": "5327cbc7-93f7-4b8b-9f71-f89b46e49502",
   "prevId": "2708f294-a6f7-40f5-9e79-9de2a2c488dd",
   "tables": {
     "access_epochs": {
@@ -209,7 +209,8 @@
         "agents_owner_idx": {
           "name": "agents_owner_idx",
           "columns": [
-            "owner_user_id"
+            "owner_user_id",
+            "created_at"
           ],
           "isUnique": false
         }
@@ -863,6 +864,14 @@
           ],
           "isUnique": false
         },
+        "docs_created_by_idx": {
+          "name": "docs_created_by_idx",
+          "columns": [
+            "created_by",
+            "deleted_at"
+          ],
+          "isUnique": false
+        },
         "docs_folder_filename_unique": {
           "name": "docs_folder_filename_unique",
           "columns": [
@@ -948,6 +957,14 @@
         "feedback_created_idx": {
           "name": "feedback_created_idx",
           "columns": [
+            "created_at"
+          ],
+          "isUnique": false
+        },
+        "feedback_user_idx": {
+          "name": "feedback_user_idx",
+          "columns": [
+            "user_id",
             "created_at"
           ],
           "isUnique": false
@@ -1134,6 +1151,14 @@
           "name": "folders_parent_idx",
           "columns": [
             "parent_id"
+          ],
+          "isUnique": false
+        },
+        "folders_created_by_idx": {
+          "name": "folders_created_by_idx",
+          "columns": [
+            "created_by",
+            "created_at"
           ],
           "isUnique": false
         },
@@ -1584,6 +1609,14 @@
             "target_id"
           ],
           "isUnique": false
+        },
+        "share_links_created_by_idx": {
+          "name": "share_links_created_by_idx",
+          "columns": [
+            "created_by",
+            "created_at"
+          ],
+          "isUnique": false
         }
       },
       "foreignKeys": {},
@@ -1616,7 +1649,15 @@
           "autoincrement": false
         }
       },
-      "indexes": {},
+      "indexes": {
+        "signup_limits_window_idx": {
+          "name": "signup_limits_window_idx",
+          "columns": [
+            "window_start"
+          ],
+          "isUnique": false
+        }
+      },
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},

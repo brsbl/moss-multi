@@ -47,6 +47,12 @@ export function actingUserId(principal: Principal): string | null {
   return principal.type === 'user' ? principal.id : principal.type === 'agent' ? principal.ownerUserId : null;
 }
 
+/**
+ * SQL rows: user `?{user}` and every agent that acts or acted for them (through `agents_owner_idx`), the `created_by`
+ * values a per-person bound charges to that user (A§18).
+ */
+export const actingAs = (user: number) => `(SELECT ?${user} UNION ALL SELECT id FROM agents WHERE owner_user_id = ?${user})`;
+
 /** The ids a grant row may name for this principal: the user, or the agent and the user it acts for. */
 export function grantees(principal: Principal): string[] {
   return principal.type === 'user' ? [principal.id] : principal.type === 'agent' ? [principal.id, principal.ownerUserId] : [];

@@ -112,7 +112,8 @@ export const agents = sqliteTable(
     createdAt: integer('created_at').notNull(),
     revokedAt: integer('revoked_at'),
   },
-  (t) => [index('agents_owner_idx').on(t.ownerUserId)],
+  // Owner and creation time serve both an owner's agents and their daily mint bound (A§18).
+  (t) => [index('agents_owner_idx').on(t.ownerUserId, t.createdAt)],
 );
 
 /** Vaults are the root folders: parent_id IS NULL exactly when kind = 'vault'. */
@@ -132,6 +133,8 @@ export const folders = sqliteTable(
   (t) => [
     index('folders_owner_idx').on(t.ownerUserId),
     index('folders_parent_idx').on(t.parentId),
+    // The creator's daily folder bound (A§18).
+    index('folders_created_by_idx').on(t.createdBy, t.createdAt),
     uniqueIndex('folders_vault_name_unique')
       .on(t.ownerUserId, sql`lower(name)`)
       .where(sql`kind = 'vault' AND deleted_at IS NULL`),
@@ -162,6 +165,8 @@ export const docs = sqliteTable(
   (t) => [
     index('docs_owner_deleted_idx').on(t.ownerUserId, t.deletedAt),
     index('docs_folder_idx').on(t.folderId),
+    // The creator's live-note cap (A§18).
+    index('docs_created_by_idx').on(t.createdBy, t.deletedAt),
     uniqueIndex('docs_folder_filename_unique').on(t.folderId, t.filename).where(sql`deleted_at IS NULL`),
   ],
 );
@@ -205,7 +210,7 @@ export const shareLinks = sqliteTable(
     createdAt: integer('created_at').notNull(),
     revokedAt: integer('revoked_at'),
   },
-  (t) => [index('share_links_target_idx').on(t.targetType, t.targetId)],
+  (t) => [index('share_links_target_idx').on(t.targetType, t.targetId), index('share_links_created_by_idx').on(t.createdBy, t.createdAt)],
 );
 
 export const invites = sqliteTable(
@@ -334,7 +339,7 @@ export const feedback = sqliteTable(
     page: text('page'),
     createdAt: integer('created_at').notNull(),
   },
-  (t) => [index('feedback_created_idx').on(t.createdAt)],
+  (t) => [index('feedback_created_idx').on(t.createdAt), index('feedback_user_idx').on(t.userId, t.createdAt)],
 );
 
 /**
@@ -347,14 +352,19 @@ export const accessEpochs = sqliteTable('access_epochs', {
 });
 
 /**
- * Sign-up counts per client address and per email domain (A§7), one fixed window per key. Separate from better-auth's
- * `rate_limit`, which prunes every row older than its longest window, a minute.
+ * Sign-up counts per client address (an IPv6 /64 as one; A§7), one fixed window per key. Separate from better-auth's
+ * `rate_limit`, which prunes every row older than its longest window, a minute. Closed windows are pruned in bounded
+ * batches through the window index.
  */
-export const signupLimits = sqliteTable('signup_limits', {
-  key: text('key').primaryKey(),
-  windowStart: integer('window_start').notNull(),
-  count: integer('count').notNull(),
-});
+export const signupLimits = sqliteTable(
+  'signup_limits',
+  {
+    key: text('key').primaryKey(),
+    windowStart: integer('window_start').notNull(),
+    count: integer('count').notNull(),
+  },
+  (t) => [index('signup_limits_window_idx').on(t.windowStart)],
+);
 
 /** The models better-auth's drizzle adapter reads, keyed by its model names. */
 export const authSchema = { user, session, account, verification, deviceCode, rateLimit };

@@ -15,7 +15,7 @@ import { createDb, type Db } from '../db/client.ts';
 import { docs } from '../db/schema.ts';
 import type { AppEnv } from '../env.ts';
 import { json } from '../worker/route.ts';
-import { liveLink, MAX_FOLDER_DEPTH, resolveDocAccess, resolveFolderAccess, writeActor } from './access.ts';
+import { actingAs, liveLink, resolveDocAccess, resolveFolderAccess, writeActor } from './access.ts';
 import { admitDuplicateMedia, copyMedia } from './assets.ts';
 import { folderNotFound, liveIn, moveDoc, upFrom, vaultOf } from './folders.ts';
 import { handleInviteLinks } from './invites.ts';
@@ -43,34 +43,31 @@ export interface DocRecord {
   updatedAt: number;
 }
 
-/** `down` is vault `?{vault}` and every folder under it. */
-const downFrom = (vault: number) => `down(id, depth) AS (
-    SELECT ?${vault}, 1
-    UNION ALL SELECT f.id, down.depth + 1 FROM folders f JOIN down ON f.parent_id = down.id WHERE down.depth < ${MAX_FOLDER_DEPTH}
-  )`;
-const LIVE_NOTES = 'FROM docs WHERE folder_id IN (SELECT id FROM down) AND deleted_at IS NULL';
+/** Live notes made by acting user `?{user}` or their agents, anywhere, through `docs_created_by_idx`. */
+const liveNotesBy = (user: number) =>
+  `(SELECT count(*) FROM docs WHERE created_by IN ${actingAs(user)} AND deleted_at IS NULL)`;
 
 /**
- * Inserts the row only while its folder is still live in its vault (a trash may be under way) and the vault holds fewer
- * than LIVE_NOTE_CAP live notes, both in the one statement; null when the folder is gone, `full` at the cap.
+ * Inserts the row only while its folder is still live in its vault (a trash may be under way) and the acting user has
+ * fewer than LIVE_NOTE_CAP live notes, both in the one statement; null when the folder is gone, `full` at the cap. The
+ * cap is the creator's, never the vault's, so a collaborator cannot fill an owner's vault shut.
  */
-async function insertDoc(env: DocsEnv, db: Db, row: { folderId: string; ownerUserId: string; createdBy: string }): Promise<DocRecord | 'full' | null> {
+async function insertDoc(env: DocsEnv, db: Db, row: { folderId: string; ownerUserId: string; createdBy: string; actingUserId: string }): Promise<DocRecord | 'full' | null> {
   const id = crypto.randomUUID();
   const now = Date.now();
   const doc = { id, folderId: row.folderId, title: '', filename: `pending-${id}.md`, createdAt: now, updatedAt: now };
   const vault = await vaultOf(db, row.folderId);
-  const inserted = await env.DB.prepare(`WITH RECURSIVE ${upFrom(1)}, ${downFrom(7)}
+  const inserted = await env.DB.prepare(`WITH RECURSIVE ${upFrom(1)}
     INSERT INTO docs (id, owner_user_id, created_by, folder_id, title, filename, created_at, updated_at)
-    SELECT ?2, ?3, ?4, ?1, '', ?5, ?6, ?6 WHERE ${liveIn(7)} AND (SELECT count(*) ${LIVE_NOTES}) < ${LIVE_NOTE_CAP}`)
-    .bind(row.folderId, id, row.ownerUserId, row.createdBy, doc.filename, now, vault).run();
+    SELECT ?2, ?3, ?4, ?1, '', ?5, ?6, ?6 WHERE ${liveIn(7)} AND ${liveNotesBy(8)} < ${LIVE_NOTE_CAP}`)
+    .bind(row.folderId, id, row.ownerUserId, row.createdBy, doc.filename, now, vault, row.actingUserId).run();
   if ((inserted.meta?.changes ?? 0) > 0) return doc;
-  const live = await env.DB.prepare(`WITH RECURSIVE ${downFrom(1)} SELECT count(*) AS n ${LIVE_NOTES}`)
-    .bind(vault).first<{ n: number }>();
+  const live = await env.DB.prepare(`SELECT ${liveNotesBy(1)} AS n`).bind(row.actingUserId).first<{ n: number }>();
   return (live?.n ?? 0) >= LIVE_NOTE_CAP ? 'full' : null;
 }
 
-const vaultFull = () => refuse(409, 'vault-full',
-  `This vault holds ${LIVE_NOTE_CAP.toLocaleString('en-US')} notes, its limit. Move some to Trash or use another vault.`);
+const noteCap = () => refuse(409, 'note-cap',
+  `You have ${LIVE_NOTE_CAP.toLocaleString('en-US')} notes, the limit. Move some to Trash to make new ones.`);
 
 /** Seeds the DocDO through `run`; a failed seed deletes the row (doc-cap is 413), a seeded doc is 201 {doc, role}. */
 async function seeded(db: Db, doc: DocRecord, role: string, run: () => Promise<unknown>): Promise<Response> {
@@ -126,8 +123,8 @@ async function createDoc(request: Request, env: DocsEnv): Promise<Response> {
     return json({ error: 'forbidden', message: 'You can view this folder but not add notes to it.' }, 403, NO_STORE);
   }
   const title = typeof body.title === 'string' ? body.title.trim() : '';
-  const doc = await insertDoc(env, db, { folderId, ownerUserId: folder.ownerUserId, createdBy: principal.id });
-  if (doc === 'full') return vaultFull();
+  const doc = await insertDoc(env, db, { folderId, ownerUserId: folder.ownerUserId, createdBy: principal.id, actingUserId: userId });
+  if (doc === 'full') return noteCap();
   if (!doc) return folderNotFound();
   const stub = await getServerByName(env.DocDO, doc.id);
   return seeded(db, doc, folder.role, async () => {
@@ -163,8 +160,8 @@ async function duplicateDoc(request: Request, env: DocsEnv, docId: string): Prom
   const original = await getServerByName(env.DocDO, docId);
   const snapshot = await original.snapshotForDuplicate();
   const title = `${snapshot.title.trim() || 'Untitled'} copy`;
-  const doc = await insertDoc(env, db, { folderId, ownerUserId: folder.ownerUserId, createdBy: principal.id });
-  if (doc === 'full') return vaultFull();
+  const doc = await insertDoc(env, db, { folderId, ownerUserId: folder.ownerUserId, createdBy: principal.id, actingUserId: userId });
+  if (doc === 'full') return noteCap();
   if (!doc) return folderNotFound();
   const owner = folder.ownerUserId;
   const actor = writeActor(principal, shareTokenOf(request));

@@ -24,7 +24,7 @@ import { docs, folders } from '../db/schema.ts';
 import type { AppEnv } from '../env.ts';
 import { json } from '../worker/route.ts';
 import {
-  editsFolder, folderChain, managesDoc, managesFolder, MAX_FOLDER_DEPTH, reapDeadInvites, resolveDocAccess, resolveFolderAccess,
+  actingAs, actingUserId, editsFolder, folderChain, managesDoc, managesFolder, MAX_FOLDER_DEPTH, reapDeadInvites, resolveDocAccess, resolveFolderAccess,
   type FolderAccess,
 } from './access.ts';
 import { handleInviteLinks } from './invites.ts';
@@ -139,15 +139,18 @@ const folderRecord = async (db: Db, id: string) => {
   return row;
 };
 
-/** Folders and vaults made in the owner bound at ?{owner}'s vaults in the day before ?{now}, as a SQL value. */
-export const foldersToday = (owner: number, now: number) =>
-  `(SELECT count(*) FROM folders WHERE owner_user_id = ?${owner} AND created_at > ?${now} - ${DAY_MS})`;
+/**
+ * Folders and vaults acting user ?{user} or their agents made, in any vault, in the day before ?{now}, as a SQL value
+ * (through `folders_created_by_idx`). Charged to the creator, so a collaborator never spends a vault owner's day.
+ */
+export const foldersToday = (user: number, now: number) =>
+  `(SELECT count(*) FROM folders WHERE created_by IN ${actingAs(user)} AND created_at > ?${now} - ${DAY_MS})`;
 
-export const outOfFolders = async (d1: D1Database, owner: string, now: number) =>
-  ((await d1.prepare(`SELECT ${foldersToday(1, 2)} AS n`).bind(owner, now).first<{ n: number }>())?.n ?? 0) >= FOLDER_CREATE_DAILY;
+export const outOfFolders = async (d1: D1Database, user: string, now: number) =>
+  ((await d1.prepare(`SELECT ${foldersToday(1, 2)} AS n`).bind(user, now).first<{ n: number }>())?.n ?? 0) >= FOLDER_CREATE_DAILY;
 
 export const tooManyFolders = () =>
-  overDailyBound(`A vault owner can add ${FOLDER_CREATE_DAILY.toLocaleString('en-US')} folders and vaults a day. Try again later.`);
+  overDailyBound(`You can add ${FOLDER_CREATE_DAILY.toLocaleString('en-US')} folders and vaults a day. Try again later.`);
 
 async function createFolder(request: Request, env: FoldersEnv): Promise<Response> {
   const principal = await signedIn(request, env);
@@ -164,15 +167,16 @@ async function createFolder(request: Request, env: FoldersEnv): Promise<Response
   if (chain.length >= MAX_FOLDER_DEPTH) return tooDeep();
   const id = crypto.randomUUID();
   const now = Date.now();
+  const userId = actingUserId(principal) ?? principal.id;
   try {
     const inserted = await env.DB.prepare(`WITH RECURSIVE ${upFrom(1)}
       INSERT INTO folders (id, owner_user_id, created_by, name, kind, parent_id, created_at)
       SELECT ?2, ?3, ?4, ?5, 'folder', ?1, ?6
-      WHERE ${liveIn(7)} AND (SELECT count(*) FROM up) < ${MAX_FOLDER_DEPTH} AND ${foldersToday(3, 6)} < ${FOLDER_CREATE_DAILY}`)
-      .bind(body.parentId, id, parent.ownerUserId, principal.id, named.name, now, chain.at(-1)).run();
+      WHERE ${liveIn(7)} AND (SELECT count(*) FROM up) < ${MAX_FOLDER_DEPTH} AND ${foldersToday(8, 6)} < ${FOLDER_CREATE_DAILY}`)
+      .bind(body.parentId, id, parent.ownerUserId, principal.id, named.name, now, chain.at(-1), userId).run();
     // The day's folders ran out, or the parent was trashed or nested deeper in the meantime.
     if (!changed(inserted)) {
-      if (await outOfFolders(env.DB, parent.ownerUserId, now)) return tooManyFolders();
+      if (await outOfFolders(env.DB, userId, now)) return tooManyFolders();
       return (await liveFolder(db, principal, body.parentId, shareTokenOf(request))) ? tooDeep() : folderNotFound();
     }
   } catch (error) {
