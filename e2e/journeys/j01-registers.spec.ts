@@ -176,6 +176,7 @@ const nameInput = (actor: Actor) => popover(actor).getByLabel('Formula name');
 async function reloadHolds(actors: Actor[], id: string, want: string[][], name: string | null) {
   await settled(actors, id);
   for (const actor of actors) {
+    await actor.page.mouse.move(1, 1);
     await actor.page.reload();
     await ui.waitLive(actor, id); await actor.declareRemount(id);
     await expect.poll(() => formulas(actor, id), { message: `${actor.label}: the formula survives the reload`, timeout: PEER_TIMEOUT }).toEqual(want);
@@ -263,6 +264,7 @@ test("j01 registers: Ben's edit to the formula merges into Ada's unfinished draf
   await expect(popover(ada)).toHaveCount(0);
   await settled([ada, ben], id);
   for (const actor of [ada, ben]) {
+    await actor.page.mouse.move(1, 1);
     await actor.page.reload();
     await ui.waitLive(actor, id); await actor.declareRemount(id);
     await expect.poll(() => formulas(actor, id), { message: `${actor.label}: the merged formula survives the reload`, timeout: PEER_TIMEOUT }).toEqual(want);
@@ -294,6 +296,7 @@ for (const accept of ['Enter', 'Apply'] as const) {
     for (const actor of [ada, ben]) await expect.poll(() => formulas(actor, id), { message: `${actor.label}: Ada's '*' is written`, timeout: PEER_TIMEOUT }).toEqual(want);
     await settled([ada, ben], id);
     for (const actor of [ada, ben]) {
+      await actor.page.mouse.move(1, 1);
       await actor.page.reload();
       await ui.waitLive(actor, id); await actor.declareRemount(id);
       await expect.poll(() => formulas(actor, id), { message: `${actor.label}: the accepted formula survives the reload`, timeout: PEER_TIMEOUT }).toEqual(want);
@@ -324,6 +327,7 @@ test("j01 registers: Ben's rename survives Ada's merge of his formula edit into 
   await expect(popover(ada)).toHaveCount(0);
   await settled([ada, ben], id);
   for (const actor of [ada, ben]) {
+    await actor.page.mouse.move(1, 1);
     await actor.page.reload();
     await ui.waitLive(actor, id); await actor.declareRemount(id);
     await expect.poll(() => formulas(actor, id), { message: `${actor.label}: the merged formula survives the reload`, timeout: PEER_TIMEOUT }).toEqual([['1*2+3', '5']]);
