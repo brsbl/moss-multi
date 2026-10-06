@@ -102,7 +102,7 @@ test('j01-autolink: a note holding one long word opens, and takes keystrokes at 
       await resetStall(actor);
       await actor.page.keyboard.press('b');
       await expect
-        .poll(() => ui.body(actor, docId).evaluate((el) => { const text = el.textContent ?? ''; return [text.length, text.slice(-k)]; }), {
+        .poll(() => ui.body(actor, docId).evaluate((el, typed) => { const text = el.textContent ?? ''; return [text.length, text.slice(-typed)]; }, k), {
           message: 'the keystroke lands at the word’s end',
           timeout: 60_000,
         })
