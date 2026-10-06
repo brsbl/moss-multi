@@ -3,11 +3,11 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.ts b/
 +++ b/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.ts
 @@ -1,3 +1,5 @@
 +// moss-multi seam: register payloads (A§10.10).
-+import { readRegister, writeRegister, initRegisterNode, resetRegisterOnCopy } from '@moss-multi/host/collab/registers';
++import { readRegister, writeRegister, initRegisterNode } from '@moss-multi/host/collab/registers';
  import type { JSX } from 'react';
  import { $applyNodeReplacement, type DOMConversionMap, type DOMConversionOutput, type DOMExportOutput, DecoratorNode, type EditorConfig, type LexicalNode, type NodeKey, type SerializedLexicalNode, type Spread } from 'lexical';
  import { cloneCommentIds, exportCommentIds, importCommentIds, initCommentIds } from '../utils/commentable-node';
-@@ -88,10 +90,21 @@ function $convertHtmlBlockquoteElement(domNode: HTMLElement): DOMConversionOutpu
+@@ -88,10 +90,16 @@ function $convertHtmlBlockquoteElement(domNode: HTMLElement): DOMConversionOutpu
  }
  
  export class HtmlBlockquoteNode extends DecoratorNode<JSX.Element> {
@@ -21,15 +21,10 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.ts b/
 +    this.__regId = previous.__regId;
 +  }
 +
-+  resetOnCopyNodeFrom(original: this): void {
-+    super.resetOnCopyNodeFrom(original);
-+    resetRegisterOnCopy(this);
-+  }
-+
    static getType(): string {
      return 'html-block';
    }
-@@ -128,7 +141,7 @@ export class HtmlBlockquoteNode extends DecoratorNode<JSX.Element> {
+@@ -128,7 +136,7 @@ export class HtmlBlockquoteNode extends DecoratorNode<JSX.Element> {
      return {
        type: 'html-block',
        version: 1,
@@ -38,7 +33,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.ts b/
        source: this.__source,
        ...exportCommentIds(this.__commentIds)
      };
-@@ -150,7 +163,7 @@ export class HtmlBlockquoteNode extends DecoratorNode<JSX.Element> {
+@@ -150,7 +158,7 @@ export class HtmlBlockquoteNode extends DecoratorNode<JSX.Element> {
  
    exportDOM(): DOMExportOutput {
      const element = document.createElement('blockquote');
@@ -47,7 +42,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.ts b/
      return { element };
    }
  
-@@ -168,10 +181,11 @@ export class HtmlBlockquoteNode extends DecoratorNode<JSX.Element> {
+@@ -168,10 +176,11 @@ export class HtmlBlockquoteNode extends DecoratorNode<JSX.Element> {
    }
  
    getRawHtml(): string {
@@ -60,7 +55,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.ts b/
      const writable = this.getWritable();
      writable.__rawHtml = rawHtml;
    }
-@@ -182,16 +196,16 @@ export class HtmlBlockquoteNode extends DecoratorNode<JSX.Element> {
+@@ -182,16 +191,16 @@ export class HtmlBlockquoteNode extends DecoratorNode<JSX.Element> {
  
    /** Intrinsic preview width derived from the saved moss-html content. */
    getDeclaredPreviewWidth(): number {
@@ -80,7 +75,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.ts b/
    }
  
    setPreviewSize(_width: number | null | undefined, _height: number | null | undefined): void {}
-@@ -208,7 +222,7 @@ export class HtmlBlockquoteNode extends DecoratorNode<JSX.Element> {
+@@ -208,7 +217,7 @@ export class HtmlBlockquoteNode extends DecoratorNode<JSX.Element> {
    }
  
    getTextContent(): string {

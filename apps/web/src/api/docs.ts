@@ -1,8 +1,8 @@
 // /api/docs. POST writes the D1 row in a folder the caller may edit, then DocDO.create seeds the doc (A§9 "+ Note").
 // GET /api/docs/:id is the doc and the caller's role on it; DELETE and POST /restore are trash.ts; /members is the
 // members API (members.ts) and /links the share links (links.ts); GET /api/docs/:id/instance is the owner-only DO probe
-// (A§19), which reads nothing from the doc; GET /api/docs/:id/content is the doc's markdown export; POST /comments is
-// comments.ts. A missing doc and one the caller cannot open get the same 404 on every route (A§8).
+// (A§19), which reads nothing from the doc; GET /api/docs/:id/content is the doc's markdown export; /comments and its
+// edit, delete, resolve and reactions routes are comments.ts. A missing doc and one the caller cannot open get the same 404 on every route (A§8).
 import { eq } from 'drizzle-orm';
 import { getServerByName } from 'partyserver';
 import { MARKDOWN_CAP_BYTES, REST_WRITE_RATE } from '@moss-multi/protocol/limits';
@@ -13,12 +13,13 @@ import { createDb, type Db } from '../db/client.ts';
 import { docs } from '../db/schema.ts';
 import type { AppEnv } from '../env.ts';
 import { json } from '../worker/route.ts';
-import { resolveDocAccess, resolveFolderAccess } from './access.ts';
+import { liveLink, resolveDocAccess, resolveFolderAccess } from './access.ts';
 import { admitDuplicateMedia, copyMedia } from './assets.ts';
-import { createComment } from './comments.ts';
+import { createComment, deleteComment, editComment, reactComment, resolveComment } from './comments.ts';
 import { folderNotFound, liveIn, moveDoc, upFrom, vaultOf } from './folders.ts';
+import { handleInviteLinks } from './invites.ts';
 import { handleLinks } from './links.ts';
-import { acceptShares, handleMembers, type MembersEnv } from './members.ts';
+import { handleMembers, type MembersEnv } from './members.ts';
 import { restoreDoc, trashDoc } from './trash.ts';
 import { NO_STORE, notFound, readJsonObject, unauthenticated } from './respond.ts';
 import { ensureDefaultVault } from './vaults.ts';
@@ -27,10 +28,14 @@ export type DocsEnv = AuthEnv & Pick<AppEnv, 'DocDO' | 'PrincipalDO'> & MembersE
 
 const DOC = /^\/api\/docs\/([^/]+)$/;
 const MEMBERS = /^\/api\/docs\/([^/]+)\/members$/;
+const INVITES = /^\/api\/docs\/([^/]+)\/invites$/;
 const LINKS = /^\/api\/docs\/([^/]+)\/links(?:\/([^/]+))?$/;
 const INSTANCE = /^\/api\/docs\/([^/]+)\/instance$/;
 const CONTENT = /^\/api\/docs\/([^/]+)\/content$/;
 const COMMENTS = /^\/api\/docs\/([^/]+)\/comments$/;
+const RESOLVE = /^\/api\/docs\/([^/]+)\/comments\/([^/]+)\/resolve$/;
+const COMMENT = /^\/api\/docs\/([^/]+)\/comments\/([^/]+)$/;
+const REACTIONS = /^\/api\/docs\/([^/]+)\/comments\/([^/]+)\/reactions$/;
 
 export interface DocRecord {
   id: string;
@@ -52,6 +57,19 @@ async function insertDoc(env: DocsEnv, db: Db, row: { folderId: string; ownerUse
     SELECT ?2, ?3, ?4, ?1, '', ?5, ?6, ?6 WHERE ${liveIn(7)}`)
     .bind(row.folderId, id, row.ownerUserId, row.createdBy, doc.filename, now, vault).run();
   return (inserted.meta?.changes ?? 0) > 0 ? doc : null;
+}
+
+/** Seeds the DocDO through `run`; a failed seed deletes the row (doc-cap is 413), a seeded doc is 201 {doc, role}. */
+async function seeded(db: Db, doc: DocRecord, role: string, run: () => Promise<unknown>): Promise<Response> {
+  try {
+    await run();
+  } catch (error) {
+    await db.delete(docs).where(eq(docs.id, doc.id));
+    if (error instanceof Error && error.message === 'doc-cap') return json({ error: 'doc-cap' }, 413, NO_STORE);
+    throw error;
+  }
+  const [projected] = await db.select({ id: docs.id, folderId: docs.folderId, title: docs.title, filename: docs.filename, createdAt: docs.createdAt, updatedAt: docs.updatedAt }).from(docs).where(eq(docs.id, doc.id));
+  return json({ doc: projected, role }, 201, NO_STORE);
 }
 
 async function createDoc(request: Request, env: DocsEnv): Promise<Response> {
@@ -82,17 +100,11 @@ async function createDoc(request: Request, env: DocsEnv): Promise<Response> {
   const doc = await insertDoc(env, db, { folderId, ownerUserId: folder.ownerUserId, createdBy: principal.id });
   if (!doc) return folderNotFound();
   const stub = await getServerByName(env.DocDO, doc.id);
-  try {
+  return seeded(db, doc, folder.role, async () => {
     await stub.create({ folderId, ownerId: folder.ownerUserId, ...(title ? { title } : {}),
       ...(typeof body.markdown === 'string' ? { markdown: body.markdown } : {}),
       ...(sidecar !== undefined ? { comments: sidecar as Record<string, unknown>, author: principal.id } : {}) });
-  } catch (error) {
-    await db.delete(docs).where(eq(docs.id, doc.id));
-    if (error instanceof Error && error.message === 'doc-cap') return json({ error: 'doc-cap' }, 413, NO_STORE);
-    throw error;
-  }
-  const [projected] = await db.select({ id: docs.id, folderId: docs.folderId, title: docs.title, filename: docs.filename, createdAt: docs.createdAt, updatedAt: docs.updatedAt }).from(docs).where(eq(docs.id, doc.id));
-  return json({ doc: projected, role: folder.role }, 201, NO_STORE);
+  });
 }
 
 /** Duplicate content at one server snapshot; grants stay on the source and folder access is inherited. */
@@ -122,18 +134,13 @@ async function duplicateDoc(request: Request, env: DocsEnv, docId: string): Prom
   const title = `${snapshot.title.trim() || 'Untitled'} copy`;
   const doc = await insertDoc(env, db, { folderId, ownerUserId: folder.ownerUserId, createdBy: principal.id });
   if (!doc) return folderNotFound();
-  try {
+  const owner = folder.ownerUserId;
+  return seeded(db, doc, folder.role, async () => {
     // The copy's media are the source's own record, so it shows the same files wherever it lands (A§16).
     await copyMedia(env.DB, docId, doc.id);
     const target = await getServerByName(env.DocDO, doc.id);
-    await target.createFromSnapshot({ folderId, ownerId: folder.ownerUserId, title }, snapshot.state);
-  } catch (error) {
-    await db.delete(docs).where(eq(docs.id, doc.id));
-    if (error instanceof Error && error.message === 'doc-cap') return json({ error: 'doc-cap' }, 413, NO_STORE);
-    throw error;
-  }
-  const [projected] = await db.select({ id: docs.id, folderId: docs.folderId, title: docs.title, filename: docs.filename, createdAt: docs.createdAt, updatedAt: docs.updatedAt }).from(docs).where(eq(docs.id, doc.id));
-  return json({ doc: projected, role: folder.role }, 201, NO_STORE);
+    await target.createFromSnapshot({ folderId, ownerId: owner, title }, snapshot.state, snapshot.payloads);
+  });
 }
 
 /** The doc's listing fields and the caller's role, for a doc the workspace listing does not carry. */
@@ -149,7 +156,9 @@ async function readDoc(request: Request, env: DocsEnv, docId: string): Promise<R
     .where(eq(docs.id, docId))
     .limit(1);
   if (!doc) return notFound();
-  await acceptShares(env.DB, principal, docId, access);
+  // A doc link's holder sees the note as its own root, as /api/workspace lists it, never the owner's folder id.
+  const link = access.linkOnly ? await liveLink(db, shareTokenOf(request) ?? (principal.type === 'anonymous' ? principal.shareToken : null)) : null;
+  if (link?.targetType === 'doc') doc.folderId = doc.id;
   return json({ doc, role: access.role }, 200, NO_STORE);
 }
 
@@ -218,18 +227,29 @@ export async function handleDocs(request: Request, env: DocsEnv): Promise<Respon
   }
   const members = MEMBERS.exec(pathname);
   if (members) return handleMembers(request, env, { type: 'doc', id: members[1] });
+  const pending = INVITES.exec(pathname);
+  if (pending) return handleInviteLinks(request, env, { type: 'doc', id: pending[1] });
   const links = LINKS.exec(pathname);
   if (links) return handleLinks(request, env, { type: 'doc', id: links[1] }, links[2] ?? null);
   const accessMatch = /^\/api\/docs\/([^/]+)\/access$/.exec(pathname);
-  if (accessMatch) {
-    if (request.method !== 'GET') return json({ error: 'method-not-allowed' }, 405, { allow: 'GET' });
+  if (accessMatch) return only('GET', request, async () => {
     const principal = await resolvePrincipal(request, env);
-    if (!principal) return json({ error: 'unauthenticated' }, 401, NO_STORE);
+    if (!principal) return unauthenticated();
     const access = await resolveDocAccess(createDb(env.DB), principal, accessMatch[1], shareTokenOf(request));
     return access ? json({ role: access.role, deleted: access.deleted }, 200, NO_STORE) : notFound();
-  }
+  });
   const comments = COMMENTS.exec(pathname);
   if (comments) return only('POST', request, () => createComment(request, env, comments[1]));
+  const resolve = RESOLVE.exec(pathname);
+  if (resolve) return only('POST', request, () => resolveComment(request, env, resolve[1], resolve[2]));
+  const reactions = REACTIONS.exec(pathname);
+  if (reactions) return only('POST', request, () => reactComment(request, env, reactions[1], reactions[2]));
+  const one = COMMENT.exec(pathname);
+  if (one) {
+    if (request.method === 'PATCH') return editComment(request, env, one[1], one[2]);
+    if (request.method === 'DELETE') return deleteComment(request, env, one[1], one[2]);
+    return json({ error: 'method-not-allowed' }, 405, { allow: 'PATCH, DELETE' });
+  }
   const content = CONTENT.exec(pathname);
   if (content) return only('GET', request, () => readContent(request, env, content[1]));
   const instance = INSTANCE.exec(pathname);

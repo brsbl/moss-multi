@@ -4,10 +4,13 @@ import type { AuthEnv } from '../auth/auth.ts';
 import { resolvePrincipal } from '../auth/principal.ts';
 import { crossOriginCookie, needsAppOrigin } from '../worker/origin-gate.ts';
 import { json } from '../worker/route.ts';
+import { handleAgents } from './agents.ts';
 import { ASSET_ROUTE, handleAssets } from './assets.ts';
 import { handleDocs, type DocsEnv } from './docs.ts';
 import { feedback } from './feedback.ts';
 import { handleFolderRoutes } from './folders.ts';
+import { handleInvites } from './invites.ts';
+import { handleNotifications } from './notifications.ts';
 import { handleSearchRoutes } from './search.ts';
 import { handleVaults } from './vault-routes.ts';
 import { handleTrash } from './trash.ts';
@@ -38,6 +41,7 @@ export async function handleApi(request: Request, env: ApiEnv): Promise<Response
   if (pathname === '/api/workspace') return workspace(request, env);
   if (pathname === '/api/feedback') return feedback(request, env);
   if (pathname === '/api/unfurl') return handleUnfurl(request, env);
+  if (pathname === '/api/agents' || pathname.startsWith('/api/agents/')) return handleAgents(request, env);
   if (ASSET_ROUTE.test(pathname)) {
     return env.ASSETS && env.PrincipalDO
       ? handleAssets(request, { ...env, ASSETS: env.ASSETS, PrincipalDO: env.PrincipalDO })
@@ -46,6 +50,8 @@ export async function handleApi(request: Request, env: ApiEnv): Promise<Response
   const searched = handleSearchRoutes(request, env);
   if (searched) return searched;
   if (pathname === '/api/vaults' || pathname.startsWith('/api/vaults/')) return handleVaults(request, env);
+  if (pathname === '/api/notifications' || pathname === '/api/notifications/read') return handleNotifications(request, env);
+  if (pathname.startsWith('/api/invites/')) return handleInvites(request, env);
   if (pathname.startsWith('/api/trash/')) return handleTrash(request, env);
   if (pathname === '/api/docs' || pathname.startsWith('/api/docs/')) return handleDocs(request, env);
   if (pathname === '/api/folders' || pathname.startsWith('/api/folders/')) return handleFolderRoutes(request, env);

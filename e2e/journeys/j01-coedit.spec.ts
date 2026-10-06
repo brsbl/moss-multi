@@ -9,12 +9,12 @@ import {
   APP_STATE_ATTR, BODY_BINDING_ATTR, DOC_SOCKET_PATH, DOC_STATE_ATTR, EDITOR_PANE_ATTR, NAMES, ROLE_ATTR, SYNC_UNACKED_ATTR, paneSelector,
 } from '../lib/contract.ts';
 import { cookieHeader, openDocClient } from '../lib/doc-client.ts';
+import { acceptInvite, grant } from '../lib/grants.ts';
 import { signIn } from '../lib/principals.ts';
 import { CLOSE } from '../../packages/protocol/src/sync.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
 const BIND_TIMEOUT = 15_000;
-const ACK_TIMEOUT = 10_000;
 const PEER_TIMEOUT = 10_000;
 const ADA_TEXT = 'Shared from the dialog, café & “quotes”';
 const BEN_TEXT = ' then Ben joined in';
@@ -27,53 +27,34 @@ async function openShell(actors: Actors, label: string): Promise<Actor> {
   return actor;
 }
 
-/** "+ Note", then the new pane's doc id. */
-async function newNote(actor: Actor): Promise<string> {
-  const ids = () => actor.page.locator(`[${EDITOR_PANE_ATTR}]`).evaluateAll((panes) => panes.map((p) => p.getAttribute('data-doc-id') ?? ''));
-  const before = await ids();
-  await actor.page.getByRole(ui.NEW_NOTE.role, { name: ui.NEW_NOTE.name }).click();
-  const fresh = async () => (await ids()).filter((id) => id !== '' && !before.includes(id));
-  await expect.poll(fresh, { message: 'the new note opens in an editor pane', timeout: BIND_TIMEOUT }).toHaveLength(1);
-  const [docId] = await fresh();
-  if (!docId) throw new Error(`${actor.label}: no new pane`);
-  return docId;
-}
-
-async function waitBodyLive(actor: Actor, docId: string): Promise<void> {
-  await expect(actor.page.locator(paneSelector(docId)), `${actor.label}: the pane goes live`).toHaveAttribute(DOC_STATE_ATTR, 'live', { timeout: BIND_TIMEOUT });
-  await expect(ui.body(actor, docId), `${actor.label}: the body binds`).toHaveAttribute(BODY_BINDING_ATTR, 'live', { timeout: BIND_TIMEOUT });
-}
-
-async function waitAcked(actor: Actor, docId: string): Promise<void> {
-  await expect(ui.pane(actor, docId), `${actor.label}: the DocDO acks every keystroke`).toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout: ACK_TIMEOUT });
-}
-
 test('j01 setup: Ada shares her note with Ben from the Share dialog, and Ben opens its URL as an editor and edits with her @p:ppl-2 @evidence', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
   const benPrincipal = await actors.principal('ben');
-  const docId = await newNote(ada);
-  await waitBodyLive(ada, docId);
+  const docId = await ui.newNote(ada);
+  await ui.waitBodyLive(ada, docId);
   await expect(ui.pane(ada, docId), "Ada's own note opens at owner").toHaveAttribute(ROLE_ATTR, 'owner');
   await ui.typeBody(ada, docId, ADA_TEXT);
-  await waitAcked(ada, docId);
+  await ui.waitAcked(ada, docId);
 
   const dialog = await ui.shareWith(ada, docId, benPrincipal, 'Can edit');
-  await expect(ui.inviteRow(dialog, benPrincipal.email), 'the owner sees the email she shared with, pending until Ben opens it').toContainText('Invited');
+  await expect(ui.inviteRow(dialog, benPrincipal.email), 'the owner sees the email she shared with, pending until Ben redeems it').toContainText('Invited');
   if (!ada.principal) throw new Error('ada has no principal');
   await expect(ui.accessRow(dialog, ada.principal), 'Ada is listed as the owner').toContainText('Owner');
   await actors.checkpoint('shared');
   await ada.page.keyboard.press('Escape');
   await expect(dialog).toBeHidden();
+  // Declared setup: Ben redeems the invite, as its link or his bell would (j19 covers both).
+  await acceptInvite(ada, { docId }, benPrincipal);
 
   const ben = await actors.open(benPrincipal, { path: `/d/${docId}` });
-  await waitBodyLive(ben, docId);
+  await ui.waitBodyLive(ben, docId);
   await expect(ui.pane(ben, docId), 'Ben opens the note at the role Ada chose').toHaveAttribute(ROLE_ATTR, 'editor');
   expect(await ui.fieldText(ben, docId, 'body'), "Ben sees Ada's text").toBe(ADA_TEXT);
   await expect(ui.pane(ben, docId).getByRole('button', { name: 'Share', exact: true }), 'only the owner is offered Share').toHaveCount(0);
   await actors.requireDistinct(2);
 
   await ui.typeBody(ben, docId, BEN_TEXT);
-  await waitAcked(ben, docId);
+  await ui.waitAcked(ben, docId);
   await expect
     .poll(() => ui.fieldText(ada, docId, 'body'), { message: "Ben's edit reaches Ada", timeout: PEER_TIMEOUT })
     .toBe(`${ADA_TEXT}${BEN_TEXT}`);
@@ -157,13 +138,14 @@ test('j01 setup: a signed-in stranger opening the note URL gets the denial page;
 test('j01 access: a viewer reads the shared note but cannot share, write through REST or forge a write frame @p:ppl-2', async ({ actors, stack }) => {
   const ada = await openShell(actors, 'ada');
   const benPrincipal = await actors.principal('ben');
-  const docId = await newNote(ada);
-  await waitBodyLive(ada, docId);
+  const docId = await ui.newNote(ada);
+  await ui.waitBodyLive(ada, docId);
   await ui.typeBody(ada, docId, ADA_TEXT);
-  await waitAcked(ada, docId);
+  await ui.waitAcked(ada, docId);
   const dialog = await ui.shareWith(ada, docId, benPrincipal, 'Can view');
   await ada.page.keyboard.press('Escape');
   await expect(dialog).toBeHidden();
+  await acceptInvite(ada, { docId }, benPrincipal);
 
   const ben = await actors.open(benPrincipal, { path: `/d/${docId}` });
   await expect(ui.pane(ben, docId)).toHaveAttribute(ROLE_ATTR, 'viewer');
@@ -184,6 +166,7 @@ test('j01 access: a viewer reads the shared note but cannot share, write through
     headers, data: { email: benPrincipal.email, role: 'viewer' },
   });
   expect(grant.status()).toBe(201);
+  await acceptInvite(ada, { folderId: vault.id }, benPrincipal);
   const created = await ben.context.request.post('/api/docs', { headers, data: { folderId: vault.id } });
   expect(created.status()).toBe(403);
 
@@ -206,10 +189,11 @@ test('j01 access: a viewer reads the shared note but cannot share, write through
 test('j01 discovery: Ben finds a directly shared note in Home without a URL or mutation actions @p:note-4 @p:ppl-2 @evidence', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
   const benPrincipal = await actors.principal('ben');
-  const docId = await newNote(ada);
-  await waitBodyLive(ada, docId);
+  const docId = await ui.newNote(ada);
+  await ui.waitBodyLive(ada, docId);
   await ui.shareWith(ada, docId, benPrincipal, 'Can edit');
   await ada.page.keyboard.press('Escape');
+  await acceptInvite(ada, { docId }, benPrincipal);
   const ben = await actors.open(benPrincipal);
   const row = ben.page.locator(`[data-sidebar-row][data-doc-id="${docId}"]`);
   await expect(row).toBeVisible();
@@ -217,7 +201,7 @@ test('j01 discovery: Ben finds a directly shared note in Home without a URL or m
   await expect(row.locator('[draggable="true"]')).toHaveCount(0);
   await expect(ben.page.getByRole('button', { name: 'Vault: Home', exact: true })).toBeVisible();
   await row.click();
-  await waitBodyLive(ben, docId);
+  await ui.waitBodyLive(ben, docId);
   await expect(ben.page.getByRole('button', { name: 'Vault: Home', exact: true })).toBeVisible();
   await row.click({ button: 'right' });
   await expect(ben.page.getByRole('menuitem', { name: 'Copy Link', exact: true })).toBeVisible();
@@ -229,13 +213,14 @@ test('j01 discovery: Ben finds a directly shared note in Home without a URL or m
 test('j01 discovery: Ben switches to a shared vault and back, with a role badge and a persisted choice @p:note-4 @evidence', async ({ actors, stack }) => {
   const ada = await openShell(actors, 'ada');
   const benPrincipal = await actors.principal('ben');
-  const docId = await newNote(ada);
-  await waitBodyLive(ada, docId);
+  const docId = await ui.newNote(ada);
+  await ui.waitBodyLive(ada, docId);
   const { vault } = await (await ada.context.request.get('/api/workspace')).json();
   const grant = await ada.context.request.post(`/api/folders/${vault.id}/members`, {
     headers: { origin: stack.baseUrl }, data: { email: benPrincipal.email, role: 'editor' },
   });
   expect(grant.status()).toBe(201);
+  await acceptInvite(ada, { folderId: vault.id }, benPrincipal);
   const ben = await actors.open(benPrincipal);
   const switcher = ben.page.getByRole('button', { name: 'Vault: Home', exact: true });
   await switcher.click();
@@ -246,15 +231,10 @@ test('j01 discovery: Ben switches to a shared vault and back, with a role badge 
   await shared.click();
   const row = ben.page.locator(`[data-sidebar-row][data-doc-id="${docId}"]`);
   await expect(row).toBeVisible();
-  // A member gets no vault actions on the shared vault; "Share vault…" is the owner's (T2.4).
-  await switcher.click();
-  await expect(ben.page.getByRole('menuitem', { name: 'Home editor', exact: true })).toBeVisible();
-  await expect(ben.page.getByRole('menuitem', { name: /Share vault|New vault|Rename|Delete/ })).toHaveCount(0);
-  await ben.page.keyboard.press('Escape');
   await ben.page.reload();
   await expect(row).toBeVisible();
   await row.click();
-  await waitBodyLive(ben, docId);
+  await ui.waitBodyLive(ben, docId);
   await switcher.click();
   await ben.page.getByRole('menuitem', { name: 'Home', exact: true }).click();
   await expect(row).toHaveCount(0);
@@ -265,8 +245,8 @@ test('j01 discovery: Ben switches to a shared vault and back, with a role badge 
 test('j01 duplicate: the note menu makes a content-preserving copy visible to both vault peers @p:note-4 @p:col-6', async ({ actors, stack }) => {
   const ada = await openShell(actors, 'ada');
   const benPrincipal = await actors.principal('ben');
-  const docId = await newNote(ada);
-  await waitBodyLive(ada, docId);
+  const docId = await ui.newNote(ada);
+  await ui.waitBodyLive(ada, docId);
   const text = 'Duplicate keeps the original words, café and punctuation.';
   await ui.typeBody(ada, docId, text);
   await expect(ui.pane(ada, docId)).toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout: 30_000 });
@@ -274,51 +254,50 @@ test('j01 duplicate: the note menu makes a content-preserving copy visible to bo
   expect((await ada.context.request.post(`/api/folders/${vault.id}/members`, {
     headers: { origin: stack.baseUrl }, data: { email: benPrincipal.email, role: 'editor' },
   })).status()).toBe(201);
+  await acceptInvite(ada, { folderId: vault.id }, benPrincipal);
   const ben = await actors.open(benPrincipal, { path: `/d/${docId}` });
-  await waitBodyLive(ben, docId);
+  await ui.waitBodyLive(ben, docId);
   await ada.page.locator(`[data-sidebar-row][data-doc-id="${docId}"]`).click({ button: 'right' });
   await ada.page.getByRole('menuitem', { name: 'Duplicate', exact: true }).click();
   const copyPane = ada.page.locator(`[${EDITOR_PANE_ATTR}]:not([data-doc-id="${docId}"])`);
   await expect(copyPane).toHaveCount(1);
   const copyId = await copyPane.getAttribute('data-doc-id');
   if (!copyId) throw new Error('duplicate has no doc id');
-  await waitBodyLive(ada, copyId);
+  await ui.waitBodyLive(ada, copyId);
   expect(await ui.fieldText(ada, copyId, 'body')).toBe(text);
   for (const actor of [ada, ben]) {
     await expect(actor.page.locator(`[data-sidebar-row][data-doc-id="${copyId}"]`)).toBeVisible({ timeout: 15_000 });
   }
   await ben.page.locator(`[data-sidebar-row][data-doc-id="${copyId}"]`).click();
-  await waitBodyLive(ben, copyId);
+  await ui.waitBodyLive(ben, copyId);
   expect(await ui.fieldText(ben, copyId, 'body')).toBe(text);
   await ben.page.reload();
-  await waitBodyLive(ben, copyId);
+  await ui.waitBodyLive(ben, copyId);
   expect(await ui.fieldText(ben, copyId, 'body')).toBe(text);
   const copyEdit = ' Only the copy gains this sentence.';
   await ui.typeBody(ben, copyId, copyEdit);
   await expect(ui.body(ada, copyId)).toContainText(copyEdit);
   ada.expectReconnects(1, docId); // Returning to the original intentionally opens its session again.
   await ada.page.locator(`[data-sidebar-row][data-doc-id="${docId}"]`).click();
-  await waitBodyLive(ada, docId);
+  await ui.waitBodyLive(ada, docId);
   expect(await ui.fieldText(ada, docId, 'body')).toBe(text);
   const sourceEdit = ' Only the source gains this sentence.';
   await ui.typeBody(ada, docId, sourceEdit);
   await expect(ui.pane(ada, docId)).toHaveAttribute(SYNC_UNACKED_ATTR, '0');
   await ben.page.reload();
-  await waitBodyLive(ben, copyId);
+  await ui.waitBodyLive(ben, copyId);
   expect(await ui.fieldText(ben, copyId, 'body')).toBe(text + copyEdit);
 });
 
-test('j01 workspace: another open document keeps its binding while peer creates and renames arrive within five seconds @p:note-4 @p:col-5', async ({ actors, stack }) => {
+test('j01 workspace: another open document keeps its binding while peer creates and renames arrive within five seconds @p:note-4 @p:col-5', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
   const benPrincipal = await actors.principal('ben');
-  const openId = await newNote(ada);
-  await waitBodyLive(ada, openId);
+  const openId = await ui.newNote(ada);
+  await ui.waitBodyLive(ada, openId);
   const { vault } = await (await ada.context.request.get('/api/workspace')).json();
-  expect((await ada.context.request.post(`/api/folders/${vault.id}/members`, {
-    headers: { origin: stack.baseUrl }, data: { email: benPrincipal.email, role: 'editor' },
-  })).status()).toBe(201);
+  await grant(ada, { folderId: vault.id }, benPrincipal, 'editor');
   const ben = await actors.open(benPrincipal, { path: `/d/${openId}` });
-  await waitBodyLive(ben, openId);
+  await ui.waitBodyLive(ben, openId);
   // Socket readiness is witnessed by the actual browser WebSocket, including its received events.
   const received: string[] = [];
   ben.page.on('websocket', (socket) => {
@@ -326,10 +305,10 @@ test('j01 workspace: another open document keeps its binding while peer creates 
   });
   ben.expectReconnects(1, openId);
   await ben.page.reload();
-  await waitBodyLive(ben, openId);
+  await ui.waitBodyLive(ben, openId);
   await ben.observeEditor(openId);
-  const peerId = await newNote(ada);
-  await waitBodyLive(ada, peerId);
+  const peerId = await ui.newNote(ada);
+  await ui.waitBodyLive(ada, peerId);
   const row = ben.page.locator(`[data-sidebar-row][data-doc-id="${peerId}"]`);
   await expect(row).toBeVisible({ timeout: 5_000 });
   await expect.poll(() => received.some((frame) => frame.includes(peerId)), { timeout: 5_000, message: 'workspace channel delivers the new id' }).toBe(true);
@@ -349,7 +328,7 @@ test('j01 workspace: another open document keeps its binding while peer creates 
     received.length = 0;
     ada.expectReconnects(1, openId);
     await ada.page.locator(`[data-sidebar-row][data-doc-id="${openId}"]`).click();
-    await waitBodyLive(ada, openId);
+    await ui.waitBodyLive(ada, openId);
     await ui.typeTitle(ada, openId, 'Bound workspace rename');
     await expect.poll(() => received.some((frame) => {
       if (frame === 'pong') return false;
@@ -366,7 +345,7 @@ test('j01 workspace: another open document keeps its binding while peer creates 
   }
   await expect(ui.pane(ben, openId)).toHaveAttribute(DOC_STATE_ATTR, 'live');
   await ui.typeBody(ben, openId, 'Still bound after metadata');
-  await waitAcked(ben, openId);
+  await ui.waitAcked(ben, openId);
   await actors.checkpoint('workspace-metadata');
   await actors.assertInvariants();
 

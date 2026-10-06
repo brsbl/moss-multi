@@ -85,15 +85,19 @@ export interface FrameStats {
   lookups: number;
   /** Index spans read or written by record updates (also counted in `structs`). */
   index: number;
+  /** Tokens emitted by every range, gap, place and signature walk, failed ones included. */
+  tokens: number;
 }
 
 class OverBudget extends Error {}
 
 class Walk {
   #used = 0;
+  #tokens = 0;
   constructor(
     private readonly limit: number,
     private readonly stats: FrameStats,
+    private readonly tokenLimit = TOKEN_BUDGET,
   ) {}
 
   tick(): void {
@@ -101,9 +105,16 @@ class Walk {
     this.#used += 1;
     if (this.#used > this.limit) throw new OverBudget();
   }
+
+  /** Admits `count` tokens before they are materialized, or fails the walk when they would pass its allowance. */
+  emit(count: number): void {
+    if (this.#tokens + count > this.tokenLimit) throw new OverBudget();
+    this.#tokens += count;
+    this.stats.tokens += count;
+  }
 }
 
-const scratch = (): FrameStats => ({ structs: 0, comments: 0, lookups: 0, index: 0 });
+const scratch = (): FrameStats => ({ structs: 0, comments: 0, lookups: 0, index: 0, tokens: 0 });
 
 /** Which items count as present when reading a stream: before the frame, after it, or simply live. */
 type Live = (item: Y.Item) => boolean;
@@ -196,28 +207,34 @@ interface Tok {
  */
 function own(item: Y.Item, from: number, to: number, full: boolean, live: Live, out: Tok[], walk: Walk): void {
   const content = item.content;
+  const one = (t: () => string) => {
+    walk.emit(1);
+    out.push({ t: t(), item, off: 0 });
+  };
   if (content instanceof Y.ContentString) {
+    walk.emit(to - from + 1);
     for (let i = from; i <= to; i += 1) out.push({ t: content.str[i], item, off: i });
     return;
   }
   if (content instanceof Y.ContentType) {
     const type = content.type;
     if (type instanceof Y.XmlText) {
-      if (full) out.push({ t: `B${attrs(type, live, walk)}`, item, off: 0 });
+      if (full) one(() => `B${attrs(type, live, walk)}`);
     } else if (type instanceof Y.XmlElement) {
-      out.push({ t: `D${type.nodeName}|${attrs(type, live, walk)}`, item, off: 0 });
+      one(() => `D${type.nodeName}|${attrs(type, live, walk)}`);
     } else if (type instanceof Y.Map) {
-      if (full) out.push({ t: `M${attrs(type, live, walk)}`, item, off: 0 });
+      if (full) one(() => `M${attrs(type, live, walk)}`);
     } else {
-      out.push({ t: 'T|', item, off: 0 });
+      one(() => 'T|');
     }
     return;
   }
   if (content instanceof Y.ContentFormat) {
-    if (full) out.push({ t: `F${content.key}=${JSON.stringify(content.value)}`, item, off: 0 });
+    if (full) one(() => `F${content.key}=${JSON.stringify(content.value)}`);
     return;
   }
   if (content instanceof Y.ContentDeleted) return;
+  walk.emit(to - from + 1);
   const values = content.getContent();
   for (let i = from; i <= to; i += 1) out.push({ t: `E${JSON.stringify(values[i] ?? null)}`, item, off: i });
 }
@@ -230,7 +247,6 @@ function emitSubtree(item: Y.Item, full: boolean, live: Live, out: Tok[], walk: 
   const start = out.length;
   if (live(item)) {
     own(item, 0, item.length - 1, full, live, out, walk);
-    if (out.length > TOKEN_BUDGET) throw new OverBudget();
     const list = listOf(item);
     if (list) for (let child = list._start; child; child = child.right) emitSubtree(child, full, live, out, walk, spans);
   }
@@ -283,7 +299,6 @@ function entryTokens(entries: Entry[], full: boolean, live: Live, walk: Walk): T
   const out: Tok[] = [];
   for (const entry of entries) {
     if (live(entry.item)) own(entry.item, entry.from, entry.to, full, live, out, walk);
-    if (out.length > TOKEN_BUDGET) throw new OverBudget();
   }
   return out;
 }
@@ -551,7 +566,8 @@ export class AnchorEngine {
   readonly #groups = new Map<string, Group>();
   // Per-frame caches: the doc does not change while a frame is read.
   readonly #walks = new Map<string, Match | null>();
-  readonly #gaps = new Map<Y.Item, Gap>();
+  /** Null: the gap passed its budget, so every comment touching it fails safe without reading it again. */
+  readonly #gaps = new Map<Y.Item, Gap | null>();
   readonly #places = new Map<string, Place | null>();
 
   constructor(readonly doc: Y.Doc) {}
@@ -804,32 +820,37 @@ export class AnchorEngine {
   #gapOf(view: View, unit: Unit): Gap {
     const cached = this.#gaps.get(unit.item);
     if (cached) return cached;
+    if (cached === null) throw new OverBudget();
     const left: Y.Item[] = [];
-    const leftWalk = new Walk(WALK_BUDGET, this.stats);
-    for (let at = prev(unit.item, leftWalk); at && !view.survivor(at); at = prev(at, leftWalk)) {
-      leftWalk.tick();
-      left.push(at);
-    }
     const right: Y.Item[] = [];
-    const rightWalk = new Walk(WALK_BUDGET, this.stats);
-    for (let at = next(unit.item); at && !view.survivor(at); at = next(at)) {
-      rightWalk.tick();
-      right.push(at);
-    }
-    const items = [...left.reverse(), unit.item, ...right];
-    const gap: Gap = { deleted: [], inserted: [], starts: new Map() };
-    const fingerprints = new Walk(WALK_BUDGET, this.stats);
-    for (const item of items) {
-      if (view.pre(item) && item.deleted) {
-        gap.starts.set(item, gap.deleted.length);
-        own(item, 0, item.length - 1, false, view.pre, gap.deleted, fingerprints);
-      } else if (view.isNew(item) && !item.deleted) {
-        own(item, 0, item.length - 1, false, isLive, gap.inserted, fingerprints);
+    try {
+      const leftWalk = new Walk(WALK_BUDGET, this.stats);
+      for (let at = prev(unit.item, leftWalk); at && !view.survivor(at); at = prev(at, leftWalk)) {
+        leftWalk.tick();
+        left.push(at);
       }
-      if (gap.deleted.length + gap.inserted.length > TOKEN_BUDGET) throw new OverBudget();
+      const rightWalk = new Walk(WALK_BUDGET, this.stats);
+      for (let at = next(unit.item); at && !view.survivor(at); at = next(at)) {
+        rightWalk.tick();
+        right.push(at);
+      }
+      const gap: Gap = { deleted: [], inserted: [], starts: new Map() };
+      // One allowance for both streams, each item admitted whole before it is read.
+      const fingerprints = new Walk(WALK_BUDGET, this.stats);
+      for (const item of [...left.reverse(), unit.item, ...right]) {
+        if (view.pre(item) && item.deleted) {
+          gap.starts.set(item, gap.deleted.length);
+          own(item, 0, item.length - 1, false, view.pre, gap.deleted, fingerprints);
+        } else if (view.isNew(item) && !item.deleted) {
+          own(item, 0, item.length - 1, false, isLive, gap.inserted, fingerprints);
+        }
+      }
+      for (const item of [...left, unit.item, ...right]) this.#gaps.set(item, gap);
+      return gap;
+    } catch (error) {
+      if (error instanceof OverBudget) for (const item of [...left, unit.item, ...right]) this.#gaps.set(item, null);
+      throw error;
     }
-    for (const item of items) this.#gaps.set(item, gap);
-    return gap;
   }
 
   /** §5.3: orphan with the place the text was lost from, or reattach at once if the frame already restored it. */
@@ -907,10 +928,25 @@ export class AnchorEngine {
         byList.set(list, fresh);
         segs.push(fresh);
       }
+      // `pre` reads each list from its first member to its last, every pre-frame item between them included, as the
+      // reattach walk reads the segment: a survivor between two members (the property map of a text node a bold
+      // split off inside the comment) is part of the place, so an undo that refills the members reads as before.
       const tokens: Tok[] = [];
       const spans: Spans = new Map();
       const walk = new Walk(RANGE_BUDGET, this.stats);
-      for (const top of all) emitSubtree(top, true, view.pre, tokens, walk, spans);
+      const lastIn = new Map<Y.AbstractType<unknown>, Y.Item>();
+      for (const top of all) lastIn.set(parentOf(top), top);
+      const read = new Set<Y.AbstractType<unknown>>();
+      for (const top of all) {
+        const list = parentOf(top);
+        if (read.has(list)) continue;
+        read.add(list);
+        const last = lastIn.get(list)!;
+        for (let at: Y.Item | null = top; at; at = at.right) {
+          emitSubtree(at, true, view.pre, tokens, walk, spans);
+          if (at === last) break;
+        }
+      }
       return {
         segs,
         members: all.map((top) => [top.id.client, top.id.clock, top.length]),
@@ -955,7 +991,8 @@ export class AnchorEngine {
     const key = `${n}|${JSON.stringify(segs)}`;
     const cached = this.#walks.get(key);
     if (cached !== undefined) return cached;
-    const walk = new Walk(WALK_BUDGET + 4 * n, this.stats);
+    // A stream longer than the place cannot match it, so no item is read past `n` tokens.
+    const walk = new Walk(WALK_BUDGET + 4 * n, this.stats, Math.min(n, TOKEN_BUDGET));
     const tokens: Tok[] = [];
     const spans: Spans = new Map();
     let match: Match | null = { tokens, spans };
@@ -1145,8 +1182,20 @@ function mapIn(gap: Gap, s: Unit | null, e: Unit | null): [Unit | null, Unit | n
   return [first, last];
 }
 
-/** I3b: a deleted endpoint moves inward to the nearest surviving unit of the comment's own pre-frame range. */
+/** A surviving unit that is more than whitespace: a decorator, an embed, or a character that prints. */
+function printable(item: Y.Item, from: number, to: number): boolean {
+  const content = item.content;
+  return !(content instanceof Y.ContentString) || content.str.slice(from, to + 1).trim() !== '';
+}
+
+/**
+ * I3b: a deleted endpoint moves inward to the nearest surviving unit of the comment's own pre-frame range. Whitespace
+ * alone is not the comment's text: when only spaces it covered survive (a text diff keeps a separator's identity,
+ * such as the space between two words deleted together across a bold), the comment takes the lost path, so the
+ * deletion detaches it and its undo can bring it back.
+ */
 function shrink(view: View, entries: Entry[], s: Unit, e: Unit): [Unit, Unit] | null {
+  if (!entries.some(({ item, from, to }) => view.survivor(item) && isUnit(item) && printable(item, from, to))) return null;
   let first: Unit | null = s.item.deleted ? null : s;
   let last: Unit | null = e.item.deleted ? null : e;
   if (!first) {

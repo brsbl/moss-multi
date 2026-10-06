@@ -380,12 +380,66 @@ importers:
 
   packages/editor:
     devDependencies:
+      '@fontsource-variable/inter':
+        specifier: 5.3.0
+        version: 5.3.0
+      '@fontsource-variable/jetbrains-mono':
+        specifier: 5.3.0
+        version: 5.3.0
+      '@fontsource/jetbrains-mono':
+        specifier: 5.3.0
+        version: 5.3.0
+      '@lexical/markdown':
+        specifier: 0.48.0
+        version: 0.48.0(typescript@5.9.3)
       '@types/node':
         specifier: 24.13.3
         version: 24.13.3
+      '@types/prismjs':
+        specifier: 1.26.6
+        version: 1.26.6
+      '@types/react':
+        specifier: 19.3.0
+        version: 19.3.0
+      '@types/react-dom':
+        specifier: 19.3.0
+        version: 19.3.0(@types/react@19.3.0)
+      '@vitejs/plugin-react':
+        specifier: 6.0.2
+        version: 6.0.2(vite@8.1.5(@types/node@24.13.3)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.15))
+      autoprefixer:
+        specifier: 10.5.4
+        version: 10.5.4(postcss@8.5.25)
+      charter-webfont:
+        specifier: 4.1.0
+        version: 4.1.0
+      jotai:
+        specifier: 2.20.2
+        version: 2.20.2(@babel/core@7.29.7)(@babel/template@7.29.7)(@types/react@19.3.0)(react@19.3.0)
+      lexical:
+        specifier: 0.48.0
+        version: 0.48.0(typescript@5.9.3)
+      postcss:
+        specifier: 8.5.25
+        version: 8.5.25
+      prismjs:
+        specifier: 1.30.0
+        version: 1.30.0
+      react:
+        specifier: 19.3.0
+        version: 19.3.0
+      react-dom:
+        specifier: 19.3.0
+        version: 19.3.0(react@19.3.0)
+      tailwindcss:
+        specifier: 3.4.19
+        version: 3.4.19(tsx@4.23.15)
       typescript:
         specifier: 5.9.3
         version: 5.9.3
+      vite:
+        specifier: 8.1.5
+        version: 8.1.5(@types/node@24.13.3)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.15)
 
   packages/protocol: {}
 

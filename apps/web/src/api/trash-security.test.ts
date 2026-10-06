@@ -34,22 +34,40 @@ const PrincipalDO = {
   }),
 };
 
-/** D1 as the routes see it, with `before` run ahead of the statement it matches. */
+/** A hooked statement, as a batch meets it: the hook and the real statement it stands for. */
+const HOOKED = Symbol('hooked');
+type Hooked = { [HOOKED]: { hook: () => Promise<unknown>; real: () => D1PreparedStatement } };
+
+/** D1 as the routes see it, with `before` run ahead of the statement it matches, alone or in a batch. */
 function racingDb(db: D1Database): D1Database {
   return new Proxy(db, {
     get(target, key) {
+      if (key === 'batch') {
+        return async (statements: (D1PreparedStatement | Hooked)[]) => {
+          const real: D1PreparedStatement[] = [];
+          for (const statement of statements) {
+            const hooked = (statement as Partial<Hooked>)[HOOKED];
+            if (hooked) await hooked.hook();
+            real.push(hooked ? hooked.real() : (statement as D1PreparedStatement));
+          }
+          return target.batch(real);
+        };
+      }
       if (key !== 'prepare') return Reflect.get(target, key, target);
       return (query: string) => {
         const hook = before;
         if (!hook?.sql.test(query)) return target.prepare(query);
         before = null;
         const statement = (args: unknown[]) => {
+          const real = () => target.prepare(query).bind(...args);
           const run = (method: 'run' | 'all' | 'raw' | 'first') => async (...rest: unknown[]) => {
             await hook.run();
-            const bound = target.prepare(query).bind(...args) as unknown as Record<string, (...a: unknown[]) => unknown>;
-            return bound[method](...rest);
+            return (real() as unknown as Record<string, (...a: unknown[]) => unknown>)[method](...rest);
           };
-          return { bind: (...more: unknown[]) => statement([...args, ...more]), run: run('run'), all: run('all'), raw: run('raw'), first: run('first') };
+          return {
+            bind: (...more: unknown[]) => statement([...args, ...more]), run: run('run'), all: run('all'), raw: run('raw'), first: run('first'),
+            [HOOKED]: { hook: hook.run, real },
+          };
         };
         return statement([]);
       };

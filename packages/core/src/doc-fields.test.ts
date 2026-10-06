@@ -2,8 +2,8 @@
 // large edit, and a caret follows its character through a remote change by the change's own delta.
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
-import { observeField, readField, remapCaret, writeField } from './doc-fields.ts';
-import { applyOps, diffText, LCS_CELL_BUDGET, SERVER_CELL_BUDGET, type TextOp } from './text-diff.ts';
+import { observeField, readField, writeField } from './doc-fields.ts';
+import { applyOps, diffText, LCS_CELL_BUDGET, mapOffset, SERVER_CELL_BUDGET, type TextOp } from './text-diff.ts';
 
 const LOCAL = 'local';
 
@@ -162,7 +162,7 @@ describe('caret remap from the change delta', () => {
     const [a, b] = pair(initial);
     let next = caret;
     observeField(b, 'title', (_text, change) => {
-      next = remapCaret(next, change.delta);
+      next = mapOffset(next, change.delta);
     });
     write(a);
     return { caret: next, text: readField(b, 'title') };

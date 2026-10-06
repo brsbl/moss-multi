@@ -118,6 +118,10 @@ jobs:
         run: node scripts/ci/trace.mjs
         env:
           TRACE_MILESTONE: ${{ needs.plan.outputs.trace_milestone }}
+      # Every journey group's recorded p95 fits the 9-minute shard budget (scripts/ci/journey-minutes.json).
+      - name: Shard budget
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: node scripts/ci/plan.mjs budget
       - name: Vendor drift
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: node scripts/moss-vendor.mjs drift
@@ -148,7 +152,8 @@ jobs:
           GOLDEN_OUT: ${{ runner.temp }}/converter-goldens
           # The last closed milestone: bridge-inventory and hide-registry entries staged to it fail (A§9).
           TRACE_MILESTONE: ${{ needs.plan.outputs.trace_milestone }}
-      # SP2: the converter bundled as a Worker under wrangler dev; the table lands in the job summary.
+      # SP2: the converter bundled as a Worker under wrangler dev, and T1.F2: payload frames through the real DocDO;
+      # the table lands in the job summary.
       - name: Converter in workerd (SP2)
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: node scripts/measure-converter.mjs
@@ -250,7 +255,7 @@ jobs:
       - run: mkdir -p .local-stack/prebuilt && tar -xzf web-dist.tgz -C .local-stack/prebuilt
       - name: Boot the Worker stack on the built bytes
         run: >
-          node scripts/stack.mjs start --run-id "$RUN_ID" --prebuilt .local-stack/prebuilt/dist --hooks
+          node scripts/stack.mjs start --run-id "$RUN_ID" --prebuilt .local-stack/prebuilt/dist --hooks --state-dir /dev/shm/moss-stack
           --expect-commit "${{ needs.build.outputs.commit }}" --expect-bundle "${{ needs.build.outputs.bundleHash }}"
       - run: echo "STACK_STATE=$PWD/.local-stack/runs/$RUN_ID/state.json" >> "$GITHUB_ENV"
       - name: Selftests, then the group's journeys
@@ -268,7 +273,9 @@ jobs:
             exclude) args+=(--grep-invert @slow) ;;
             only) args+=(--grep @slow) ;;
           esac
-          pnpm exec playwright test "${args[@]}"
+          # The browsers yield the CPU to the stack: WebKit's web processes can hold every core, and a starved workerd
+          # answered requests 10+ s late (T0.9d).
+          nice -n 10 pnpm exec playwright test "${args[@]}"
       - name: Calibrate idle eviction (SP4)
         if: ${{ !cancelled() && matrix.browser == 'chromium' && (github.event_name == 'schedule' && matrix.group == 'editing' || contains(needs.plan.outputs.grep, 'calibration')) }}
         working-directory: e2e
@@ -387,6 +394,57 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+  # The embeddable editor (T3.9): build packages/editor, run its fixture host acceptance in both engines under the
+  # editor's own CSP (e2e/editor), then pack the release into the moss-editor artifact (tarball, SHA-256,
+  # editor.json and release.json with the source commit and this run).
+  editor:
+    needs: plan
+    if: needs.plan.outputs.viewer == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    container:
+      image: mcr.microsoft.com/playwright:v1.61.1-noble
+      options: --ipc=host --init
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build the editor bundle
+        run: pnpm --filter @moss-multi/editor build
+        env:
+          MOSS_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      - run: cat packages/editor/dist/editor.json
+      - name: Acceptance fixture and shots, Chromium and WebKit
+        working-directory: e2e
+        env:
+          REPEAT: ${{ needs.plan.outputs.repeat }}
+        run: pnpm exec playwright test --project=editor-chromium --project=editor-webkit --repeat-each="${REPEAT:-1}"
+      - name: Pack the release
+        run: node scripts/ci/editor-pack.mjs packages/editor/release
+      - uses: actions/upload-artifact@v7
+        with:
+          name: moss-editor
+          path: packages/editor/release
+          retention-days: 30
+      - name: Upload results and shots
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: editor-results-${{ github.run_attempt }}
+          path: |
+            e2e/test-results/
+            e2e/playwright-report/
+          retention-days: 7
+          if-no-files-found: ignore
+
   # The editor's host helpers (T3.9a): moss-editor-host.js, contract.d.ts emitted by tsc, LICENSE and
   # editor-host.json (version, API, source commit, per-file SHA-256) as the moss-editor-host artifact.
   editor-host:
@@ -430,7 +488,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: .oracle
-          key: ladle-oracle-762abb777-${{ hashFiles('vendor/moss/PORTED.json', 'scripts/moss-vendor.mjs', 'e2e/parity/oracle/*', 'e2e/parity/oracle/.npmrc', 'e2e/fixtures/demo-note.md') }}
+          key: ladle-oracle-762abb777-${{ hashFiles('vendor/moss/PORTED.json', 'scripts/moss-vendor.mjs', 'e2e/parity/oracle/*', 'e2e/parity/oracle/.npmrc', 'e2e/fixtures/demo-note.md', 'e2e/fixtures/comment-note.*') }}
       # moss-vendor.mjs pristine loads moss-extract.mjs, which needs the workspace's typescript.
       - name: Install the workspace
         if: steps.cache.outputs.cache-hit != 'true'
@@ -483,7 +541,7 @@ jobs:
           path: .oracle
       - name: Boot the Worker stack on the built bytes
         run: >
-          node scripts/stack.mjs start --run-id "$RUN_ID" --prebuilt .local-stack/prebuilt/dist
+          node scripts/stack.mjs start --run-id "$RUN_ID" --prebuilt .local-stack/prebuilt/dist --state-dir /dev/shm/moss-stack
           --expect-commit "${{ needs.build.outputs.commit }}" --expect-bundle "${{ needs.build.outputs.bundleHash }}"
       - run: echo "STACK_STATE=$PWD/.local-stack/runs/$RUN_ID/state.json" >> "$GITHUB_ENV"
       # The viewer's parity with the editor's read-only view (e2e/parity/viewer.spec.ts) mounts the built bundle.
@@ -512,7 +570,7 @@ jobs:
 
   ci-ok:
     if: always()
-    needs: [plan, checks, build, e2e, macos, oracle, parity, viewer, editor-host]
+    needs: [plan, checks, build, e2e, macos, oracle, parity, viewer, editor, editor-host]
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:

@@ -1,16 +1,19 @@
 // The suggest-mode fork (docs/design/suggestions.md §5), headless: a moss editor bound V1 to F, a private copy of the
-// body plus the author's own records, written under the active lease. Every F transaction whose origin is not one of
-// the shim's own is forwarded as `suggest-ops`, so the binding, register writers and the UndoManager are all
-// recorded without an allowlist. The spike's headless harness; the client's fork is client.ts.
+// body and of each payload doc it touches (docs/design/registers.md), plus the author's own records, all written under
+// the active lease. Every F transaction, in the body or a payload doc, whose origin is not one of the shim's own is
+// forwarded as `suggest-ops` with the doc it was made in, so the binding, the payload writers (first texts and field
+// edits) and the UndoManager are all recorded without an allowlist. The spike's headless harness; the client's fork is client.ts.
 import { createBinding, syncLexicalUpdateToYjs, syncYjsChangesToLexical, type Binding, type Provider } from '@lexical/yjs';
 import { registerList } from '@lexical/list';
 import { $normalizeFormatWhitespace } from '@moss-desktop/renderer/editor/markdown/format-whitespace';
 import { TextNode, type LexicalEditor } from 'lexical';
 import * as Y from 'yjs';
-import type { SuggestionRecord } from '@moss-multi/core/suggest/apply';
+import { BODY_DOC, type RecordOp, type SuggestionRecord } from '@moss-multi/core/suggest/apply';
 import { createConverterEditor } from '../converter/index.ts';
 import { excludedPropertiesFor } from '../excluded-properties.ts';
+import { attachPayloadDocs, PAYLOAD_LOADED, PayloadDocs } from '../payload-docs.ts';
 import { bindRegisters } from '../registers.ts';
+import { payloadSourceOf } from '../server-doc.ts';
 import { SHIM_BODY_APPLY, SHIM_RECORD_APPLY } from './client.ts';
 
 export { SHIM_BODY_APPLY, SHIM_RECORD_APPLY };
@@ -24,13 +27,17 @@ const provider = {
   off: noop,
 } as unknown as Provider;
 
-/** A moss editor bound V1 to `doc`, with the client's list and whitespace transforms and its registers. */
+/**
+ * A moss editor bound V1 to `doc`, with the client's list and whitespace transforms and its payload docs (the ones
+ * attached to `doc`). Payloads bind as the server mirror binds them, so a new block's first text is written in the
+ * update that creates it, synchronously, rather than in a microtask; the bytes are the client's.
+ */
 export function bindEditor(doc: Y.Doc): { editor: LexicalEditor; binding: Binding; undo: Y.UndoManager; dispose: () => void } {
   const editor = createConverterEditor();
   const stopLists = registerList(editor);
   const stopWhitespace = editor.registerNodeTransform(TextNode, $normalizeFormatWhitespace);
   const binding = createBinding(editor, provider, 'root', doc, new Map([['root', doc]]), excludedPropertiesFor(editor));
-  const stopRegisters = bindRegisters(editor, doc);
+  const stopRegisters = bindRegisters(editor, doc, { serializedImports: true });
   const stopUpdates = editor.registerUpdateListener(({ prevEditorState, editorState, dirtyElements, dirtyLeaves, normalizedNodes, tags }) => {
     syncLexicalUpdateToYjs(binding, provider, prevEditorState, editorState, dirtyElements, dirtyLeaves, normalizedNodes, tags);
   });
@@ -58,20 +65,32 @@ export function bindEditor(doc: Y.Doc): { editor: LexicalEditor; binding: Bindin
 export class ForkShim {
   readonly fork = new Y.Doc();
   readonly editor: LexicalEditor;
-  /** Every forwarded update, in order: what the client sends as `suggest-ops`. */
-  readonly sent: Uint8Array[] = [];
+  /** The fork's payload docs: each loads the body's payload on first use and writes under the same lease. */
+  readonly payloads: PayloadDocs;
+  /** Every forwarded update, in order, with its doc: what the client sends as `suggest-ops`. */
+  readonly sent: RecordOp[] = [];
   readonly #bound: ReturnType<typeof bindEditor>;
 
   /** F binds first and is filled after, so the binding reconciles it like a first sync. */
   constructor(body: Y.Doc, lease: number, records: readonly SuggestionRecord[] = []) {
     this.fork.clientID = lease;
+    const source = payloadSourceOf(body);
+    this.payloads = attachPayloadDocs(this.fork, new PayloadDocs((id) => source.read(id), (id) => source.has(id)));
+    this.payloads.onHold((id, doc) => {
+      doc.clientID = lease;
+      doc.on('update', (update: Uint8Array, origin: unknown) => {
+        if (origin !== PAYLOAD_LOADED && origin !== SHIM_BODY_APPLY && origin !== SHIM_RECORD_APPLY) this.sent.push({ doc: id, update });
+      });
+    });
     this.#bound = bindEditor(this.fork);
     this.editor = this.#bound.editor;
     this.fork.on('update', (update: Uint8Array, origin: unknown) => {
-      if (origin !== SHIM_BODY_APPLY && origin !== SHIM_RECORD_APPLY) this.sent.push(update);
+      if (origin !== SHIM_BODY_APPLY && origin !== SHIM_RECORD_APPLY) this.sent.push({ doc: BODY_DOC, update });
     });
     Y.applyUpdate(this.fork, Y.encodeStateAsUpdate(body), SHIM_BODY_APPLY);
-    for (const record of records) for (const op of record.ops) Y.applyUpdate(this.fork, op, SHIM_RECORD_APPLY);
+    for (const record of records) {
+      for (const op of record.ops) Y.applyUpdate(op.doc === BODY_DOC ? this.fork : this.payloads.hold(op.doc), op.update, SHIM_RECORD_APPLY);
+    }
     this.commit();
   }
 
@@ -82,7 +101,7 @@ export class ForkShim {
   }
 
   /** A user edit; returns what it forwarded. */
-  act(fn: () => void): Uint8Array[] {
+  act(fn: () => void): RecordOp[] {
     const from = this.sent.length;
     this.commit();
     this.editor.update(fn, { discrete: true });
@@ -91,7 +110,7 @@ export class ForkShim {
   }
 
   /** Cmd+Z through the binding's UndoManager. */
-  undo(): Uint8Array[] {
+  undo(): RecordOp[] {
     const from = this.sent.length;
     this.#bound.undo.undo();
     this.commit();
@@ -105,6 +124,7 @@ export class ForkShim {
 
   dispose(): void {
     this.#bound.dispose();
+    this.payloads.destroy();
     this.fork.destroy();
   }
 }

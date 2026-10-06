@@ -104,6 +104,36 @@ declare module '@moss/shared/state/note-atoms' {
   export function noteFrontmatterAtom(noteId: string): PrimitiveAtom<Record<string, unknown> | null>;
   export function frontmatterDirtySignalAtom(noteId: string): PrimitiveAtom<number>;
   export const noteIdsAtom: PrimitiveAtom<Set<string>>;
+  export function noteCommentsMapAtom(noteId: string): PrimitiveAtom<Record<string, object>>;
+  export function commentThreadFilterAtom(noteId: string): PrimitiveAtom<'open' | 'resolved' | 'all'>;
+}
+
+// moss's comment composer and selection-bar primitives, which the read-only comment tools reuse (T4.3).
+declare module '@moss-desktop/renderer/editor/components/CommentInputPopover' {
+  import type { JSX } from 'react';
+  export function CommentInputPopover(props: {
+    open: boolean;
+    onOpenChange: (open: boolean) => void;
+    anchorRect: { x: number; y: number; width: number; height: number } | null;
+    anchorSide?: 'bottom' | 'top';
+    anchorAlign?: 'start' | 'end';
+    onCreate: (text: string, imageUrls?: string[]) => boolean;
+    noteId: string;
+    collisionBoundary?: Element | null;
+  }): JSX.Element;
+}
+
+declare module '@moss-desktop/renderer/editor/plugins/CommentPlugin' {
+  import type { PrimitiveAtom } from 'jotai';
+  export function commentInputStateAtom(noteId: string): PrimitiveAtom<{ open: boolean; anchorRect: { x: number; y: number; width: number; height: number } | null }>;
+}
+
+declare module '@moss-desktop/renderer/editor/components/SelectionToolbarPrimitives' {
+  import type { CSSProperties, ForwardRefExoticComponent, HTMLAttributes, JSX, RefAttributes } from 'react';
+  export const SELECTION_TOOLBAR_BUTTON_BASE_CLASS: string;
+  export const SELECTION_TOOLBAR_BUTTON_IDLE_CLASS: string;
+  export const SelectionToolbarShell: ForwardRefExoticComponent<HTMLAttributes<HTMLDivElement> & { style?: CSSProperties } & RefAttributes<HTMLDivElement>>;
+  export function SelectionToolbarInner(props: HTMLAttributes<HTMLDivElement>): JSX.Element;
 }
 
 // @lexical/react 0.48.0's collaboration plugin, vendored with moss-multi seams (A§10.2), through vite's alias.
@@ -144,7 +174,7 @@ declare module '@moss/shared/components/ui/dropdown-menu' {
   import type { ComponentType, HTMLAttributes, ButtonHTMLAttributes, ReactNode } from 'react';
   export const DropdownMenu: ComponentType<{ children: ReactNode }>;
   export const DropdownMenuTrigger: ComponentType<ButtonHTMLAttributes<HTMLButtonElement> & { asChild?: boolean }>;
-  export const DropdownMenuContent: ComponentType<HTMLAttributes<HTMLDivElement> & { align?: 'start' | 'center' | 'end' }>;
+  export const DropdownMenuContent: ComponentType<HTMLAttributes<HTMLDivElement> & { align?: 'start' | 'center' | 'end'; onCloseAutoFocus?: (event: Event) => void }>;
   export const DropdownMenuItem: ComponentType<HTMLAttributes<HTMLDivElement> & { onSelect?: () => void }>;
   export const DropdownMenuSeparator: ComponentType<HTMLAttributes<HTMLDivElement>>;
 }
@@ -184,10 +214,6 @@ declare module '@moss-desktop/renderer/components/ModalShell' {
     footer?: ReactNode;
     children: ReactNode;
   }>;
-}
-
-declare module '@moss-desktop/common/markdown-layers' {
-  export function splitFrontmatter(text: string): { data: Record<string, unknown> | null };
 }
 
 declare module '@moss/shared/components/ui/confirmation-dialog' {

@@ -1,6 +1,7 @@
 // Preview, accept, reject and withdraw of a suggestion record (docs/design/suggestions.md §4), on the DocDO's live
-// doc. Accept applies the record to a hydrated mirror, runs the gates, and lands the mirror's diff only when every
-// gate passes; reject and withdraw write only the record.
+// doc and its payload docs. Accept applies the record to hydrated mirrors of the body and of each payload its ops
+// write, runs the gates, and lands the mirrors' diffs only when every gate passes; reject and withdraw write only the
+// record.
 import type { Binding } from '@lexical/yjs';
 import { $getNodeByKey, $getRoot, $isElementNode, type LexicalNode } from 'lexical';
 import * as Y from 'yjs';
@@ -8,10 +9,10 @@ import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
 import {
   applyRecord, canonical, hydrate, itemKey, previewHash, projectDoc, projectionDiff, recordDigest, yValue, type GateReason, type Hunk,
-  type Inserted, type Projection,
+  type Inserted, type PayloadMirrors, type Projection,
 } from '@moss-multi/core/suggest/apply';
 import { createConverterEditor } from '../converter/index.ts';
-import { mirrorOf } from '../server-doc.ts';
+import { attachPayloadSource, mirrorOf, payloadSourceOf } from '../server-doc.ts';
 import { closeRecord, patchMeta, readRecord, SUGGEST_ACCEPT, writeSuggestions } from './records.ts';
 
 export interface Reviewer {
@@ -51,7 +52,7 @@ export function bindCheck(doc: Y.Doc, inserted: Inserted): boolean {
   try {
     mirror = mirrorOf(doc);
     const bound = mirror;
-    const body = () => canonical([yValue(bound.doc.get('root', Y.XmlText)), yValue(bound.doc.getMap('registers'))]);
+    const body = () => canonical(yValue(bound.doc.get('root', Y.XmlText)));
     const before = body();
     bound.editor.update(
       () => {
@@ -97,23 +98,81 @@ export function lexicalBlocks(doc: Y.Doc): Map<string, unknown> {
   }
 }
 
-const project = (doc: Y.Doc): Projection => projectDoc(doc, lexicalBlocks(doc));
+/** Gc-free mirrors of `live`'s payloads, loaded on first use, which the body mirror's readers and the gates share. */
+class Payloads implements PayloadMirrors {
+  readonly docs = new Map<string, Y.Doc>();
+  readonly #source: ReturnType<typeof payloadSourceOf>;
 
-type Applied = { ok: true; mirror: Y.Doc; hydrated: Uint8Array; hunks: Hunk[] } | { ok: false; reason: GateReason | 'missing' };
+  constructor(live: Y.Doc) {
+    this.#source = payloadSourceOf(live);
+  }
 
-/** The record applied to a fresh mirror of `live`, with the hunks a reviewer is shown. */
+  known(id: string): boolean {
+    return this.#source.has(id);
+  }
+
+  /** The note's source, for what is stored beyond these mirrors. */
+  get source(): ReturnType<typeof payloadSourceOf> {
+    return this.#source;
+  }
+
+  doc(id: string): Y.Doc {
+    let doc = this.docs.get(id);
+    if (!doc) {
+      doc = new Y.Doc({ gc: false, guid: id });
+      const state = this.#source.read(id);
+      if (state) Y.applyUpdate(doc, state);
+      this.docs.set(id, doc);
+    }
+    return doc;
+  }
+
+  destroy(): void {
+    for (const doc of this.docs.values()) doc.destroy();
+    this.docs.clear();
+  }
+}
+
+/** A body mirror whose readers (the bind check, each block's exportJSON) resolve payloads from `payloads`. */
+function mirrorWith(live: Y.Doc, payloads: Payloads): Y.Doc {
+  const mirror = hydrate(live);
+  attachPayloadSource(mirror, {
+    read: (id) => (payloads.known(id) || payloads.docs.has(id) ? Y.encodeStateAsUpdate(payloads.doc(id)) : null),
+    has: (id) => payloads.known(id) || payloads.docs.has(id),
+    write: () => {
+      throw new Error('a review mirror is read-only');
+    },
+    totalBytes: () => payloads.source.totalBytes(),
+    bytesOf: (id) => payloads.source.bytesOf(id),
+  });
+  return mirror;
+}
+
+const project = (doc: Y.Doc, payloads: Payloads, also: Iterable<string>): Projection =>
+  projectDoc(doc, lexicalBlocks(doc), (id) => payloads.doc(id), also);
+
+type Applied =
+  | { ok: true; mirror: Y.Doc; payloads: Payloads; hydrated: Uint8Array; touched: Map<string, Uint8Array>; hunks: Hunk[] }
+  | { ok: false; reason: GateReason | 'missing' };
+
+/** The record applied to fresh mirrors of `live` and its payloads, with the hunks a reviewer is shown. */
 function apply(live: Y.Doc, id: string): Applied {
   const record = readRecord(live, id);
   if (!record) return { ok: false, reason: 'missing' };
   if (record.meta.status !== 'open') return { ok: false, reason: 'not-open' };
-  const mirror = hydrate(live);
-  const before = project(mirror);
-  const result = applyRecord(mirror, record, { bindCheck });
+  const payloads = new Payloads(live);
+  const mirror = mirrorWith(live, payloads);
+  const before = project(mirror, payloads, []);
+  const result = applyRecord(mirror, record, { bindCheck, payloads });
   if (!result.ok) {
     mirror.destroy();
+    payloads.destroy();
     return result;
   }
-  return { ok: true, mirror, hydrated: result.hydrated, hunks: projectionDiff(before, project(mirror)) };
+  // Every payload the record writes is projected after it, named or not, so accept never lands a payload change the
+  // preview did not show (I3). Before the record, G4 leaves only named payloads (already projected) and new ones.
+  const hunks = projectionDiff(before, project(mirror, payloads, result.payloads.keys()));
+  return { ok: true, mirror, payloads, hydrated: result.hydrated, touched: result.payloads, hunks };
 }
 
 export function previewRecord(live: Y.Doc, id: string): Preview {
@@ -121,6 +180,7 @@ export function previewRecord(live: Y.Doc, id: string): Preview {
   const applied = apply(live, id);
   if (!applied.ok) return applied;
   applied.mirror.destroy();
+  applied.payloads.destroy();
   return { ok: true, hunks: applied.hunks, hash: previewHash(applied.hunks), digest: recordDigest(record!) };
 }
 
@@ -148,15 +208,23 @@ export function acceptRecord(live: Y.Doc, id: string, input: AcceptInput, review
     if (applied.reason !== 'missing') badge(live, id, applied.reason);
     return applied.reason === 'missing' ? { ok: false, status: 404, reason: 'missing' } : { ok: false, status: 409, reason: applied.reason };
   }
-  const { mirror, hydrated, hunks } = applied;
+  const { mirror, payloads, hydrated, touched, hunks } = applied;
   try {
     if (previewHash(hunks) !== input.previewHash) return { ok: false, status: 409, reason: 'changed' };
-    if (Y.encodeStateAsUpdate(mirror).byteLength > (options.stateCap ?? STATE_CAP_BYTES)) return { ok: false, status: 409, reason: 'doc-cap' };
+    // G8 as A§10 and the DocDO count: the note plus every stored payload, withheld ones included, each payload the
+    // record writes at its size after accept.
+    const source = payloadSourceOf(live);
+    let bytes = Y.encodeStateAsUpdate(mirror).byteLength + source.totalBytes();
+    for (const payload of touched.keys()) bytes += Y.encodeStateAsUpdate(payloads.doc(payload)).byteLength - source.bytesOf(payload);
+    if (bytes > (options.stateCap ?? STATE_CAP_BYTES)) return { ok: false, status: 409, reason: 'doc-cap' };
+    // Payloads first, as serverWrite does, so the body's elements name payloads the note already holds.
+    for (const [payload, sv] of touched) source.write(payload, Y.encodeStateAsUpdate(payloads.doc(payload), sv));
     Y.applyUpdate(live, Y.encodeStateAsUpdate(mirror, hydrated), SUGGEST_ACCEPT);
     closeRecord(live, id, { status: 'accepted', resolvedBy: reviewer.id, resolvedAt: options.now ?? Date.now() });
     return { ok: true };
   } finally {
     mirror.destroy();
+    payloads.destroy();
   }
 }
 

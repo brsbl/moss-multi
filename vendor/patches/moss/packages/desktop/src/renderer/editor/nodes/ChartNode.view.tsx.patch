@@ -21,18 +21,17 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
  import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
  import { useLexicalNodeSelection } from '@lexical/react/useLexicalNodeSelection';
  import { Code2, Check, X, AlertCircle, ChevronDown, StickyNote } from 'lucide-react';
-@@ -23,6 +11,10 @@ import {
+@@ -23,6 +11,9 @@ import {
    DropdownMenuItem
  } from '@moss/shared/components/ui/dropdown-menu';
  import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@moss/shared/components/ui/tooltip';
-+// moss-multi seam: hide-registry (A§9)
-+import { hidden } from '@moss-multi/host/affordances';
 +// moss-multi seam: register payloads (A§10.10)
 +import { RegisterDraft } from '@moss-multi/host/collab/registers';
++import { useMapRegisterWritable } from '@moss-multi/host/collab/register-input';
  import type { ChartConfig, ChartPalette, ChartType } from '../utils/chartDefaults';
  import {
    BLOCK_HEADER_CLASSNAME,
-@@ -30,30 +22,20 @@ import {
+@@ -30,30 +21,20 @@ import {
    BlockNodeShell
  } from '../components/block-node-primitives';
  import { insertParagraphAdjacentToBlock } from '../utils/block-node-insertion';
@@ -73,7 +72,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
  
  // Lazy import the chart component to avoid loading recharts until needed
  const ChartRenderer = React.lazy(() => import('../components/ChartRenderer'));
-@@ -88,6 +70,8 @@ function ChartEditView({
+@@ -88,6 +69,8 @@ function ChartEditView({
  }): JSX.Element {
    const [editor] = useLexicalComposerContext();
    const [jsonText, setJsonText] = useState(() => serializeChartConfig(initialConfig));
@@ -82,7 +81,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
    const [validation, setValidation] = useState<{ isValid: boolean; error?: string }>({ isValid: true });
    const textareaRef = useRef<HTMLTextAreaElement>(null);
  
-@@ -106,9 +90,10 @@ function ChartEditView({
+@@ -106,9 +89,10 @@ function ChartEditView({
    const handleDone = useCallback(() => {
      const result = parseChartConfig(jsonText);
      if (result.valid && result.config) {
@@ -94,7 +93,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
  
    useEffect(() => {
      const flushDraft = () => {
-@@ -182,7 +167,10 @@ function ChartEditView({
+@@ -182,7 +166,10 @@ function ChartEditView({
        <textarea
          ref={textareaRef}
          value={jsonText}
@@ -106,7 +105,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
          onKeyDown={handleKeyDown}
          className="w-full resize-y rounded-md border border-surface-panel bg-surface-raised-control p-canvas-surface-pad font-mono text-sm text-ink-default focus:border-ink-default/20 focus:outline-none focus:ring-1 focus:ring-ink-default/20"
          rows={12}
-@@ -197,10 +185,13 @@ function ChartEditView({
+@@ -197,10 +184,13 @@ function ChartEditView({
   */
  function EditableTitle({
    title,
@@ -121,7 +120,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
  }): JSX.Element {
    const [isEditingTitle, setIsEditingTitle] = useState(false);
    const [editValue, setEditValue] = useState(title);
-@@ -216,9 +207,10 @@ function EditableTitle({
+@@ -216,9 +206,10 @@ function EditableTitle({
    const handleClick = useCallback((e: React.MouseEvent) => {
      e.preventDefault();
      e.stopPropagation();
@@ -133,7 +132,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
  
    const handleSave = useCallback(() => {
      const trimmed = editValue.trim();
-@@ -239,7 +231,7 @@ function EditableTitle({
+@@ -239,7 +230,7 @@ function EditableTitle({
      }
    }, [handleSave]);
  
@@ -142,7 +141,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
      return (
        <input
          ref={inputRef}
-@@ -258,7 +250,7 @@ function EditableTitle({
+@@ -258,7 +249,7 @@ function EditableTitle({
      <span
        onClick={handleClick}
        className="min-w-0 flex-1 cursor-text truncate font-mono text-xs text-ink-muted hover:text-ink-default"
@@ -151,7 +150,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
      >
        {title}
      </span>
-@@ -269,14 +261,18 @@ function EditableTitle({
+@@ -269,14 +260,18 @@ function EditableTitle({
   * Styled dropdown trigger button for chart controls
   */
  function ChartDropdownTrigger({
@@ -171,12 +170,14 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
          className="flex items-center gap-1 rounded-md border border-surface-panel bg-surface-raised-control px-2 py-1 text-xs text-ink-muted shadow-sm hover:bg-surface-canvas focus:border-accent-success focus:outline-none focus:ring-1 focus:ring-accent-success/30"
          onClick={(e) => e.stopPropagation()}
        >
-@@ -299,6 +295,24 @@ function ChartWrapper({
+@@ -299,6 +294,26 @@ function ChartWrapper({
    const [editor] = useLexicalComposerContext();
    const [isSelected, setSelected, clearSelection] = useLexicalNodeSelection(nodeKey);
    const [isEditing, setIsEditing] = useState(false);
 +  // moss-multi seam: read-only-decorators (T2.3): a closed body takes no chart edit; an edit left open closes without writing
-+  const editable = useIsEditorEditable();
++  // moss-multi seam: register payloads (A§10.10): a chart whose payload has not arrived is read-only, as a text field is.
++  const payloadWritable = useMapRegisterWritable(editor, nodeKey);
++  const editable = useIsEditorEditable() && payloadWritable;
 +  useEffect(() => {
 +    if (!editable) setIsEditing(false);
 +  }, [editable]);
@@ -196,7 +197,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
    const [isTypeDropdownOpen, setIsTypeDropdownOpen] = useState(false);
    const [isPaletteDropdownOpen, setIsPaletteDropdownOpen] = useState(false);
    const currentPalette = getSafePalette(config.options?.palette);
-@@ -306,6 +320,7 @@ function ChartWrapper({
+@@ -306,6 +321,7 @@ function ChartWrapper({
  
    // Handle deletion of error-state chart
    const handleDelete = useCallback(() => {
@@ -204,7 +205,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
      editor.update(() => {
        const node = $getNodeByKey(nodeKey);
        if (node) {
-@@ -333,17 +348,22 @@ function ChartWrapper({
+@@ -333,17 +349,22 @@ function ChartWrapper({
      [isSelected, setSelected, clearSelection]
    );
  
@@ -228,7 +229,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
        editor.update(() => {
          const node = $getNodeByKey(nodeKey);
          if (node && $isChartNode(node)) {
-@@ -359,7 +379,8 @@ function ChartWrapper({
+@@ -359,7 +380,8 @@ function ChartWrapper({
              type: newType,
              title: newTitle
            };
@@ -238,7 +239,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
          }
        });
      },
-@@ -368,6 +389,7 @@ function ChartWrapper({
+@@ -368,6 +390,7 @@ function ChartWrapper({
  
    const handlePaletteChange = useCallback(
      (newPalette: ChartPalette) => {
@@ -246,7 +247,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
        editor.update(() => {
          const node = $getNodeByKey(nodeKey);
          if (node && $isChartNode(node)) {
-@@ -378,7 +400,8 @@ function ChartWrapper({
+@@ -378,7 +401,8 @@ function ChartWrapper({
                palette: newPalette
              }
            };
@@ -256,7 +257,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
          }
        });
      },
-@@ -387,6 +410,7 @@ function ChartWrapper({
+@@ -387,6 +411,7 @@ function ChartWrapper({
  
    const handleTitleChange = useCallback(
      (newTitle: string) => {
@@ -264,7 +265,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
        editor.update(() => {
          const node = $getNodeByKey(nodeKey);
          if (node && $isChartNode(node)) {
-@@ -394,7 +418,8 @@ function ChartWrapper({
+@@ -394,7 +419,8 @@ function ChartWrapper({
              ...config,
              title: newTitle
            };
@@ -274,7 +275,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
          }
        });
      },
-@@ -403,10 +428,11 @@ function ChartWrapper({
+@@ -403,10 +429,11 @@ function ChartWrapper({
  
    const handleDone = useCallback(
      (newConfig: ChartConfig) => {
@@ -287,7 +288,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
          }
        });
        setIsEditing(false);
-@@ -422,6 +448,7 @@ function ChartWrapper({
+@@ -422,6 +449,7 @@ function ChartWrapper({
      (position: 'before' | 'after') => (e: React.MouseEvent) => {
        e.preventDefault();
        e.stopPropagation();
@@ -295,16 +296,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
        editor.update(() => {
          const node = $getNodeByKey(nodeKey);
          if (!node) return;
-@@ -439,7 +466,7 @@ function ChartWrapper({
-         selected={isSelected}
-         beforeLabel="Insert paragraph before chart"
-         afterLabel="Insert paragraph after chart"
--        onGapClick={handleGapClick}
-+        onGapClick={editable ? handleGapClick : undefined /* moss-multi seam: read-only-decorators (T2.3) */}
-         className="my-6"
-         data-block-decorator-key={nodeKey}
-       >
-@@ -454,6 +481,7 @@ function ChartWrapper({
+@@ -454,6 +482,7 @@ function ChartWrapper({
                </pre>
              )}
            </div>
@@ -312,7 +304,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
            <button
              type="button"
              onClick={handleDelete}
-@@ -462,19 +490,20 @@ function ChartWrapper({
+@@ -462,13 +491,14 @@ function ChartWrapper({
            >
              <X className="h-4 w-4" />
            </button>
@@ -328,19 +320,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
      return (
        <BlockNodeShell
          selected={isSelected}
-         beforeLabel="Insert paragraph before chart"
-         afterLabel="Insert paragraph after chart"
--        onGapClick={handleGapClick}
-+        onGapClick={editable ? handleGapClick : undefined /* moss-multi seam: read-only-decorators (T2.3) */}
-         className="my-6"
-         data-block-decorator-key={nodeKey}
-       >
-@@ -494,11 +523,11 @@ function ChartWrapper({
-       selected={isSelected}
-       beforeLabel="Insert paragraph before chart"
-       afterLabel="Insert paragraph after chart"
--      onGapClick={handleGapClick}
-+      onGapClick={editable ? handleGapClick : undefined /* moss-multi seam: read-only-decorators (T2.3) */}
+@@ -498,7 +528,7 @@ function ChartWrapper({
        className="my-6 outline-none transition-colors"
        data-block-decorator-key={nodeKey}
        onClick={handleContainerClick}
@@ -349,7 +329,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
      >
        <div className={BLOCK_SURFACE_CLASSNAME}>
          {/* Header */}
-@@ -507,7 +536,7 @@ function ChartWrapper({
+@@ -507,7 +537,7 @@ function ChartWrapper({
            onClick={(e) => e.stopPropagation()}
          >
            <div className="min-w-0">
@@ -358,7 +338,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
            </div>
  
            {/* Controls - show on hover or when dropdown is open */}
-@@ -516,7 +545,7 @@ function ChartWrapper({
+@@ -516,7 +546,7 @@ function ChartWrapper({
            }`}>
              {/* Chart type dropdown */}
              <DropdownMenu open={isTypeDropdownOpen} onOpenChange={setIsTypeDropdownOpen}>
@@ -367,7 +347,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
                  {CHART_TYPE_LABELS[config.type]}
                </ChartDropdownTrigger>
                <DropdownMenuContent align="end">
-@@ -534,7 +563,7 @@ function ChartWrapper({
+@@ -534,7 +564,7 @@ function ChartWrapper({
  
              {/* Palette dropdown */}
              <DropdownMenu open={isPaletteDropdownOpen} onOpenChange={setIsPaletteDropdownOpen}>
@@ -376,7 +356,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
                  {CHART_PALETTES[currentPalette].name}
                </ChartDropdownTrigger>
                <DropdownMenuContent align="end">
-@@ -551,6 +580,8 @@ function ChartWrapper({
+@@ -551,6 +581,8 @@ function ChartWrapper({
              </DropdownMenu>
  
              {/* Edit JSON button */}
@@ -385,17 +365,17 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
              <TooltipProvider delayDuration={200}>
                <Tooltip>
                  <TooltipTrigger asChild>
-@@ -566,6 +597,9 @@ function ChartWrapper({
+@@ -566,6 +598,9 @@ function ChartWrapper({
                  <TooltipContent side="bottom"><p>Edit chart data</p></TooltipContent>
                </Tooltip>
              </TooltipProvider>
 +            ) : null}
-+            {/* moss-multi seam: hide-registry (A§9) */}
-+            {hidden('comments') ? null : (
++            {/* moss-multi seam: read-only-decorators (T4.3): a read-only body offers no block comment */}
++            {!editable ? null : (
              <TooltipProvider delayDuration={200}>
                <Tooltip>
                  <TooltipTrigger asChild>
-@@ -583,11 +617,13 @@ function ChartWrapper({
+@@ -583,11 +618,13 @@ function ChartWrapper({
                  <TooltipContent side="bottom"><p>Add comment</p></TooltipContent>
                </Tooltip>
              </TooltipProvider>
@@ -410,7 +390,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
            <Suspense fallback={<ChartSkeleton />}>
              <ChartRenderer config={config} nodeKey={nodeKey} showTitle={false} />
            </Suspense>
-@@ -597,151 +633,7 @@ function ChartWrapper({
+@@ -597,151 +634,7 @@ function ChartWrapper({
    );
  }
  

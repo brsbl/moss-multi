@@ -9,6 +9,7 @@ import * as Y from 'yjs';
 import { $importNoteBody, createConverterEditor, exportMarkdown } from './index.ts';
 import { FIXTURES, stringify } from './fixtures.ts';
 import { EXCLUDED_FIELDS, excludedPropertiesFor } from '../excluded-properties.ts';
+import { payloadDocsFor } from '../payload-docs.ts';
 import { bindRegisters } from '../registers.ts';
 import { exportDocMarkdown, importBody } from '../server-doc.ts';
 
@@ -32,9 +33,13 @@ function client(seed?: Y.Doc) {
     if (transaction.origin !== binding) syncYjsChangesToLexical(binding, provider, events as never, false, noop);
   };
   root.observeDeep(observer);
-  if (seed) Y.applyUpdate(doc, Y.encodeStateAsUpdate(seed));
+  if (seed) {
+    // A peer receives the note and every payload doc its blocks name (A§10.10).
+    for (const [id, payload] of payloadDocsFor(seed).docs) Y.applyUpdate(payloadDocsFor(doc).hold(id), Y.encodeStateAsUpdate(payload));
+    Y.applyUpdate(doc, Y.encodeStateAsUpdate(seed));
+  }
   editor.update(noop, { discrete: true });
-  return { doc, editor, dispose: () => { stops.forEach(stop => stop()); root.unobserveDeep(observer); doc.destroy(); } };
+  return { doc, editor, dispose: () => { stops.forEach(stop => stop()); root.unobserveDeep(observer); payloadDocsFor(doc).destroy(); doc.destroy(); } };
 }
 type Peer = ReturnType<typeof client>;
 /**

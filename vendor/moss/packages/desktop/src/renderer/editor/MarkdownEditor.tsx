@@ -144,6 +144,9 @@ import './MarkdownEditor.css';
 // moss-multi seam: hide-registry (A§9)
 import { $importNoteBody } from './markdown/pipeline';
 import { hidden } from '@moss-multi/host/affordances';
+// moss-multi seam: comments (comments.md §4, §12)
+import { stashCommentSelection } from '@moss-multi/host/comments/adapter';
+import { CommentOnlyTools } from '@moss-multi/host/comments/CommentOnlyTools';
 // moss-multi seam: link-selection (A§10.10)
 import { clearLinkSelection, markLinkSelection } from '@moss-multi/host/link-highlight';
 // moss-multi seam: trash-copy (T2.3): one module says how long Trash keeps a note
@@ -2944,6 +2947,7 @@ function FloatingSelectionTools({
         };
       }
     });
+    stashCommentSelection(editor); // moss-multi seam: comments (comments.md §4): positions are minted at open
 
     // Get selection rect from DOM and show persistent highlight
     if (domSelection && domSelection.rangeCount > 0) {
@@ -3163,7 +3167,7 @@ function FloatingSelectionTools({
         }
 
         // Cmd+Shift+A for comment annotation
-        if (key === 'a' && !event.altKey && !hidden('comments') /* moss-multi seam: hide-registry (A§9) */) {
+        if (key === 'a' && !event.altKey) {
           event.preventDefault();
           openCommentInput();
           return true;
@@ -3551,8 +3555,7 @@ function FloatingSelectionTools({
     </ToolbarTooltip>
   );
 
-  // moss-multi seam: hide-registry (A§9)
-  const commentButton = hidden('comments') ? null : (
+  const commentButton = (
     <ToolbarTooltip label="Comment" keys={['⌘', '⇧', 'A']}>
       <button
         type="button"
@@ -4357,13 +4360,15 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
         <InAppHyperlinkPlugin noteId={noteId} />
         <CommentPlugin noteId={noteId} />
         <CommentAnchorTrackerPlugin noteId={noteId} />
-        {!readOnly && (
+        {(!readOnly || bound /* moss-multi seam: comments (comments.md §12): readers see threads */) && (
           <CommentUIWrapper
             noteId={noteId}
             paneId={paneId}
             onNavigateToNote={onNavigateToNote}
           />
         )}
+        {/* moss-multi seam: comments (comments.md §12): a read-only body still takes comments */}
+        {readOnly && bound && <CommentOnlyTools noteId={noteId} />}
         <CollapsibleHeadingPlugin noteId={noteId} />
         {enableSearchPlugin ? <SearchPlugin /> : null}
         {!readOnly && <CodeFormatBoundaryPlugin />}

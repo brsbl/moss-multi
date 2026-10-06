@@ -5,6 +5,8 @@ import { usePeers } from './collab/presence.ts';
 import type { ReactNode } from 'react';
 import { ConnectionIndicator } from './collab/ConnectionNotice.tsx';
 import { AccountSection } from './surfaces/AccountSection.tsx';
+import { AgentsSection } from './surfaces/AgentsSection.tsx';
+import { NotificationsBell } from './surfaces/NotificationsBell.tsx';
 import { ShareControl } from './surfaces/ShareDialog.tsx';
 import { FolderShareItem, SignInToDoMore } from './surfaces/ShareEntryPoints.tsx';
 import { getBridge, WORKSPACE } from './bridge/index.ts';
@@ -17,10 +19,10 @@ export const surfacedFolder = (path: string): boolean => getBridge()?.[WORKSPACE
 export const FolderMenuItems: (props: { folderPath: string }) => ReactNode = ({ folderPath }) => <FolderShareItem folderPath={folderPath} />;
 
 /** Sections added to moss's Settings dialog: Account with Sign out (T0.10), then Agents (T3.6). */
-export const SettingsSections: () => ReactNode = () => <AccountSection />;
+export const SettingsSections: () => ReactNode = () => <><AccountSection /><AgentsSection /></>;
 
 /** Web chrome at the start of an open note's top-bar right group: the face pile, Share (or, for a link visitor, Sign
  * in to do more), the connection indicator and the bell (T1.1, T1.3, T1.5, T2.4, T2.8). */
 export const TopBarCollab: (props: { docId: string }) => ReactNode = ({ docId }) => (
-  <><FacePile peers={usePeers(docId)} /><SignInToDoMore /><ShareControl docId={docId} /><ConnectionIndicator docId={docId} /></>
+  <><FacePile peers={usePeers(docId)} /><SignInToDoMore /><ShareControl docId={docId} /><ConnectionIndicator docId={docId} /><NotificationsBell /></>
 );

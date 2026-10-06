@@ -15,6 +15,7 @@ import { serveStatic, type StaticServer } from './serve-static.ts';
 import { CROP, FONT_FACES, STORY_NOW, TARGETS, THEMES, type Target, type Theme } from './targets.ts';
 
 const OUT = join(import.meta.dirname, '../test-results/parity');
+const FIXTURES = join(import.meta.dirname, '../fixtures');
 const VIEWPORT = { width: 1440, height: 1000 };
 
 interface NoteListing { id: string; title: string; createdAt: number; updatedAt: number }
@@ -23,6 +24,19 @@ let oracle: StaticServer;
 let stack: Stack;
 let stories: Set<string>;
 let principals = 0;
+let fixtureCookies: Awaited<ReturnType<typeof signIn>> | null = null;
+
+/** Retries an auth call the stack's rate limit answered 429, for up to a minute. */
+async function limited<T>(call: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await call();
+    } catch (error) {
+      if (attempt >= 6 || !/: 429 /.test((error as Error).message)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 10_000));
+    }
+  }
+}
 
 test.beforeAll(async () => {
   const dir = process.env.ORACLE_DIR;
@@ -45,8 +59,8 @@ async function newPage(browser: Browser, theme: Theme): Promise<Page> {
 }
 
 /** The audit both sides pass before capture; a failing oracle audit is BLOCKED, not a product verdict. */
-async function audit(page: Page, theme: Theme, side: string): Promise<void> {
-  const crop = page.locator(CROP);
+async function audit(page: Page, theme: Theme, side: string, cropAt = CROP): Promise<void> {
+  const crop = page.locator(cropAt);
   await crop.waitFor({ state: 'visible', timeout: 30_000 });
   const report = await page.evaluate(async (faces) => {
     const missing: string[] = [];
@@ -58,7 +72,7 @@ async function audit(page: Page, theme: Theme, side: string): Promise<void> {
   const problems = [
     ...report.missing.map((face) => `font ${face} did not load`),
     ...(report.theme === theme ? [] : [`html[data-theme] is ${report.theme}, expected ${theme}`]),
-    ...(box && box.width >= 1400 ? [] : [`${CROP} is ${box?.width ?? 0}px wide, expected at least 1400`]),
+    ...(cropAt !== CROP || (box && box.width >= 1400) ? [] : [`${CROP} is ${box?.width ?? 0}px wide, expected at least 1400`]),
   ];
   if (problems.length > 0) {
     const message = `${side} audit: ${problems.join('; ')}`;
@@ -67,25 +81,50 @@ async function audit(page: Page, theme: Theme, side: string): Promise<void> {
   }
 }
 
-async function capture(page: Page, target: Target): Promise<Buffer> {
-  await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
-  await page.keyboard.press('Escape');
-  await page.evaluate(() => {
-    (document.activeElement as HTMLElement | null)?.blur();
-    window.getSelection()?.removeAllRanges();
+/**
+ * Settings over an opaque backdrop at whole CSS pixels on both sides, so its translucent border and rounded corners
+ * blend with the same colour and its text rasterises alike wherever the note pane centres it.
+ */
+async function settleDialog(page: Page, crop: string): Promise<void> {
+  await page.locator(crop).evaluate(async (dialog) => {
+    const finite = document.getAnimations().filter((a) => a.effect?.getComputedTiming().endTime !== Infinity);
+    await Promise.all(finite.map((a) => a.finished.catch(() => undefined)));
+    for (const overlay of document.querySelectorAll<HTMLElement>('[data-moss-modal-overlay]')) {
+      overlay.style.setProperty('background', 'rgb(128, 128, 128)', 'important');
+      overlay.style.setProperty('backdrop-filter', 'none', 'important');
+    }
+    const box = dialog.getBoundingClientRect();
+    for (const property of ['translate', 'transform']) dialog.style.setProperty(property, 'none', 'important');
+    dialog.style.setProperty('left', `${Math.round(box.left)}px`, 'important');
+    dialog.style.setProperty('top', `${Math.round(box.top)}px`, 'important');
   });
+}
+
+async function capture(page: Page, target: Target): Promise<Buffer> {
+  const crop = target.crop ?? CROP;
+  await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+  // An overlay or dialog target keeps it open (Escape would close it); a comment thread also keeps its focus where moss
+  // puts it (the reply composer autofocuses).
+  if (!target.crop) await page.keyboard.press('Escape');
+  if (!target.crop || target.prepare === 'open-settings') {
+    await page.evaluate(() => {
+      (document.activeElement as HTMLElement | null)?.blur();
+      window.getSelection()?.removeAllRanges();
+    });
+  }
   if (target.focusEditor) {
     const body = page.locator(`${CROP} [data-lexical-editor="true"][contenteditable="true"]`);
     await body.focus();
     await expect(body).toBeFocused();
   }
+  if (target.prepare === 'open-settings') await settleDialog(page, crop);
   await page.mouse.move(VIEWPORT.width - 2, VIEWPORT.height - 2);
   await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
-  return page.locator(CROP).screenshot({ animations: 'disabled', caret: 'hide', scale: 'device' });
+  return page.locator(crop).screenshot({ animations: 'disabled', caret: 'hide', scale: 'device' });
 }
 
-async function maskRects(page: Page, selectors: string[]): Promise<Rect[]> {
-  const origin = await page.locator(CROP).boundingBox();
+async function maskRects(page: Page, crop: string, selectors: string[]): Promise<Rect[]> {
+  const origin = await page.locator(crop).boundingBox();
   if (!origin || selectors.length === 0) return [];
   const rects = await page.evaluate((list) => list.flatMap((s) => [...document.querySelectorAll(s)].map((el) => el.getBoundingClientRect().toJSON())), selectors);
   return rects.map((r: DOMRect) => ({ x: Math.floor((r.x - origin.x) * 2), y: Math.floor((r.y - origin.y) * 2), width: Math.ceil(r.width * 2), height: Math.ceil(r.height * 2) }));
@@ -93,17 +132,26 @@ async function maskRects(page: Page, selectors: string[]): Promise<Rect[]> {
 
 /**
  * The web withholds the hide registry's affordances (A§9; deviations 3, 4 and 7), so the oracle shows pristine moss
- * with the same ones out of layout: each probe that j00-shell finds absent in the product is hidden here.
+ * with the same ones out of layout: each probe that j00-shell finds absent in the product is hidden here. A Settings
+ * probe names a section's label, and the product drops the whole section, so its section goes.
  */
 async function withholdAffordances(page: Page): Promise<string[]> {
   const probes = AFFORDANCES.flatMap((entry) =>
-    (entry.probes as readonly { selector: string; text?: string }[]).map((probe) => ({ id: entry.id, selector: probe.selector, text: probe.text ?? null })),
+    (entry.probes as readonly { surface: string; selector: string; text?: string; inPlace?: boolean }[])
+      .map((probe) => ({ id: entry.id, section: probe.surface === 'settings', selector: probe.selector, text: probe.text ?? null, inPlace: probe.inPlace ?? false })),
   );
   return page.evaluate((list) => {
     const withheld: string[] = [];
-    for (const { id, selector, text } of list) {
-      for (const el of document.querySelectorAll<HTMLElement>(selector)) {
-        if (text !== null && (el.textContent ?? '').trim() !== text) continue;
+    for (const { id, section, selector, text, inPlace } of list) {
+      for (const found of document.querySelectorAll<HTMLElement>(selector)) {
+        if (text !== null && (found.textContent ?? '').trim() !== text) continue;
+        const el = section ? found.closest<HTMLElement>('.space-y-2') ?? found : found;
+        // The product leaves a same-size placeholder for some withheld controls; those keep their box here too.
+        if (inPlace) {
+          el.style.setProperty('visibility', 'hidden', 'important');
+          withheld.push(id);
+          continue;
+        }
         el.hidden = true;
         el.style.setProperty('display', 'none', 'important');
         withheld.push(id);
@@ -111,6 +159,16 @@ async function withholdAffordances(page: Page): Promise<string[]> {
     }
     return withheld;
   }, probes);
+}
+
+/** Takes the candidate's web-only sections (`Target.withhold`) out of layout, as the oracle's withheld ones are. */
+async function withholdWeb(page: Page, selectors: string[]): Promise<void> {
+  await page.evaluate((list) => {
+    for (const el of list.flatMap((s) => [...document.querySelectorAll<HTMLElement>(s)])) {
+      el.hidden = true;
+      el.style.setProperty('display', 'none', 'important');
+    }
+  }, selectors);
 }
 
 interface OracleCapture { png: Buffer; listing: NoteListing[]; openTitle: string | null; withheld: string[] }
@@ -130,19 +188,82 @@ async function trashOpenNote(page: Page): Promise<void> {
   await expect(crop.locator('[data-lexical-editor="true"][contenteditable="false"]')).toBeVisible({ timeout: 30_000 });
 }
 
+/** The sidebar's Settings, then the candidate's web-only sections out of layout once both have rendered. */
+async function openSettings(page: Page, target: Target): Promise<void> {
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const web = page.locator((target.withhold ?? []).join(', '));
+  await expect(web, 'Account and Agents render before they are withheld').toHaveCount(2, { timeout: 15_000 });
+  await withholdWeb(page, target.withhold ?? []);
+}
+
+const gutterIcon = (page: Page) => page.locator(`${CROP} [data-comment-gutter-id]`).first();
+const commentPopover = (page: Page) => page.locator('.moss-comment-popover');
+
+/** The note's one comment has painted with its gutter icon. */
+async function showCommentGutter(page: Page): Promise<void> {
+  await expect(gutterIcon(page), 'the comment shows its gutter icon').toBeVisible({ timeout: 30_000 });
+}
+
+/** The thread its gutter icon opens. */
+async function openCommentThread(page: Page): Promise<void> {
+  await showCommentGutter(page);
+  await gutterIcon(page).click();
+  await expect(commentPopover(page), 'the gutter opens the thread').toBeVisible();
+}
+
+/**
+ * The thread opened from the Comments list. `detach` first deletes the commented text through the editor, which
+ * detaches the thread (the candidate only: moss at the pin has no detached state).
+ */
+async function openThreadFromList(page: Page, detach: boolean): Promise<void> {
+  await showCommentGutter(page);
+  if (detach) {
+    const body = page.locator(`${CROP} [data-lexical-editor="true"][contenteditable="true"]`);
+    await body.focus();
+    await body.evaluate((element, needle) => {
+      const editor = (element as HTMLElement & { __lexicalEditor: { update(fn: () => void, options: object): void; getEditorState(): { _nodeMap: Map<string, { getType(): string; getTextContent(): string; select(a: number, b: number): void }> } } }).__lexicalEditor;
+      editor.update(() => {
+        const node = [...editor.getEditorState()._nodeMap.values()].find((n) => n.getType() === 'text' && n.getTextContent().includes(needle));
+        if (!node) throw new Error(`no text node holds "${needle}"`);
+        const at = node.getTextContent().indexOf(needle);
+        node.select(at, at + needle.length);
+      }, { discrete: true });
+    }, 'brown fox');
+    await page.keyboard.press('Backspace');
+    await expect(gutterIcon(page), 'deleting its text detaches the thread').toHaveCount(0, { timeout: 15_000 });
+  }
+  await page.locator(CROP).getByRole('button', { name: /^Comments/ }).click();
+  await page.getByRole('button', { name: /Is the fox really brown/ }).click();
+  await expect(commentPopover(page), 'the list opens the thread').toBeVisible();
+}
+
+async function prepare(page: Page, target: Target, side: 'oracle' | 'candidate'): Promise<void> {
+  if (target.prepare === 'trash-open-note') await trashOpenNote(page);
+  if (target.prepare === 'comment-gutter') await showCommentGutter(page);
+  if (target.prepare === 'open-comment-thread') await openCommentThread(page);
+  if (target.prepare === 'open-detached-thread') await openThreadFromList(page, side === 'candidate');
+  // The settings story opens its dialog itself.
+  if (target.prepare === 'open-settings' && side === 'candidate') await openSettings(page, target);
+}
+
+/** A story that renders a dialog without moss's App: no notes bridge, and no html[data-theme] of its own. */
+const bare = (target: Target) => target.prepare === 'open-settings';
+
 /** The open note's title field (moss's title is the first textbox in the shell). */
 const openTitle = (page: Page) => page.evaluate((crop) => document.querySelector(`${crop} [role="textbox"]`)?.textContent ?? null, CROP);
 
 async function captureOracle(browser: Browser, target: Target, theme: Theme): Promise<OracleCapture> {
   const page = await newPage(browser, theme);
   try {
-    await page.goto(`${oracle.url}/?story=${target.story}&mode=preview`);
-    await audit(page, theme, 'oracle');
-    const listing = await page.evaluate(() =>
+    // A story without moss's App sets no html[data-theme]; Ladle's own theme sets it to the one under test.
+    await page.goto(`${oracle.url}/?story=${target.story}&mode=preview${bare(target) ? `&theme=${theme}` : ''}`);
+    await audit(page, theme, 'oracle', bare(target) ? target.crop : CROP);
+    // Only the shell stories run the notes bridge.
+    const listing = bare(target) ? [] : await page.evaluate(() =>
       (window as unknown as { electronAPI: { notes: { getAll: () => Promise<NoteListing[]> } } }).electronAPI.notes.getAll(),
     );
     const open = await openTitle(page);
-    if (target.prepare === 'trash-open-note') await trashOpenNote(page);
+    await prepare(page, target, 'oracle');
     const withheld = await withholdAffordances(page);
     return { png: await capture(page, target), listing, openTitle: open, withheld };
   } finally {
@@ -154,19 +275,31 @@ async function captureCandidate(browser: Browser, target: Target, theme: Theme, 
   const { listing } = oracleState;
   const page = await newPage(browser, theme);
   try {
-    principals += 1;
-    const principal = await mintPrincipal(stack.baseUrl, `parity-${process.env.RUN_ID ?? 'local'}-${Date.now().toString(36)}`, target.id, principals);
-    await page.context().addCookies(await signIn(stack.baseUrl, principal));
+    // Sign-up and sign-in are rate limited per stack: the fixture targets, whose workspace listing is the story's,
+    // share one session, and a 429 waits out its window.
+    let cookies = target.fixture ? fixtureCookies : null;
+    if (!cookies) {
+      principals += 1;
+      const label = target.fixture ? 'fixtures' : target.id;
+      const principal = await limited(() => mintPrincipal(stack.baseUrl, `parity-${process.env.RUN_ID ?? 'local'}-${Date.now().toString(36)}`, label, principals));
+      cookies = await limited(() => signIn(stack.baseUrl, principal));
+      if (target.fixture) fixtureCookies = cookies;
+    }
+    await page.context().addCookies(cookies);
     let path = '/';
     if (target.seed === 'story-listing') {
       if (listing.length === 0) throw new InfraBlocked(`${target.story} listed no notes`);
       // Each story note becomes a real doc, so its pane binds (A§10.3); the story's empty body is the seed's empty
       // paragraph. The bridge converts epoch ms to moss's seconds, so the story's seconds go out as ms.
       const ids = new Map<string, string>();
+      // A target's fixture is the story note's body and threads, imported as moss interchange (comments.md §13).
+      const content = target.fixture
+        ? { markdown: readFileSync(join(FIXTURES, `${target.fixture}.md`), 'utf8'), comments: JSON.parse(readFileSync(join(FIXTURES, `${target.fixture}.comments.json`), 'utf8')) as object }
+        : {};
       for (const note of listing) {
         // A cookie principal's mutation carries the app's Origin (T0.12's gate), as the page's own fetch would.
         const response = await page.request.post(new URL('/api/docs', stack.baseUrl).href, {
-          data: { title: note.title },
+          data: { title: note.title, ...content },
           headers: { origin: new URL(stack.baseUrl).origin },
         });
         if (response.status() !== 201) throw new Error(`POST /api/docs for "${note.title}": ${response.status()}`);
@@ -198,11 +331,10 @@ async function captureCandidate(browser: Browser, target: Target, theme: Theme, 
     if (target.seed === 'story-listing') {
       await page.locator(`[${EDITOR_PANE_ATTR}][${DOC_STATE_ATTR}="live"]`).waitFor({ timeout: 30_000 });
     }
-    if (target.prepare === 'trash-open-note') await trashOpenNote(page);
-    await audit(page, theme, 'candidate');
-    const png = await capture(page, target);
-    // Measured in the captured state: the docked toolbar's chrome shows only once the editor is focused.
-    return { png, masks: await maskRects(page, target.masks) };
+    await prepare(page, target, 'candidate');
+    await audit(page, theme, 'candidate', bare(target) ? target.crop : CROP);
+    const masks = await maskRects(page, target.crop ?? CROP, [...target.masks, ...(theme === 'dark' ? (target.darkMasks ?? []) : [])]);
+    return { png: await capture(page, target), masks };
   } finally {
     await page.context().close();
   }

@@ -6,8 +6,8 @@
 // not adjudicated: it merges into Y.Text at once and repaints with the caret remapped through the change's delta,
 // except mid-composition, when the repaint waits for compositionend. Every change, local or a peer's, projects the
 // name moss shows everywhere else (sidebar, breadcrumb, tabs) as `title.trim() || 'Untitled'`.
-import { observeField, readField, remapCaret, writeField, type FieldChange } from '@moss-multi/core/doc-fields';
-import { diffText } from '@moss-multi/core/text-diff';
+import { observeField, readField, writeField, type FieldChange } from '@moss-multi/core/doc-fields';
+import { diffText, mapOffset } from '@moss-multi/core/text-diff';
 import { UndoManager, Doc, applyUpdate, encodeStateAsUpdate, encodeStateVector } from 'yjs';
 import { useSyncExternalStore } from 'react';
 import { OPENING_NOTE } from '../opening-guard.ts';
@@ -244,7 +244,7 @@ export class TitleField {
       const selection = focused ? selectionIn(el) : null;
       el.textContent = text;
       if (selection) {
-        const remap = (offset: number) => Math.min(delta ? remapCaret(offset, delta) : offset, text.length);
+        const remap = (offset: number) => Math.min(delta ? mapOffset(offset, delta) : offset, text.length);
         select(el, { start: remap(selection.start), end: remap(selection.end) });
       }
     }

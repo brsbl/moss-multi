@@ -14,6 +14,7 @@ import { chooseFilesInBrowser, createImagesApi } from '../media/uploads.ts';
 import { createWebEmbedPreviewApi } from '../embeds/web-embed-preview.ts';
 import { waitForAllAcked } from '../collab/unacked.ts';
 import { setWikiCandidates } from '../wiki-links.ts';
+import { registerDocOpener } from '../navigation.ts';
 import type { TrashGuard } from '../trash-guard.ts';
 
 /** moss's NoteMetadataRecord: timestamps in seconds, folders as `Notes/...` paths. */
@@ -109,6 +110,8 @@ export interface BridgeOptions {
   browser?: BrowserHooks;
   /** Closes docs to writes and waits for their acks before a trash (A§10.6); boot.tsx wires the doc sessions in. */
   trashGuard?: TrashGuard;
+  /** Docs a workspace push named, so a session left terminal on a note that is live after all re-asks (A§8). */
+  reopenDocs?: (docIds: string[]) => void;
   /** The page's current leave: `signal` aborts as the page starts to leave, and `stayed` resolves if it is still
    * running afterwards (a cancelled navigation), so workspace reads are held, never cancelled by a navigation. */
   leaving?: () => Leave;
@@ -246,7 +249,7 @@ export const inertBrowser: BrowserHooks = {
   chooseFiles: async () => [],
 };
 
-export function createBridge({ pathname, share = () => null, fetch: fetcher = fetch.bind(globalThis), storage = null, browser = inertBrowser, subscribeWorkspace: subscribe, leaving, trashGuard = openGuard }: BridgeOptions) {
+export function createBridge({ pathname, share = () => null, fetch: fetcher = fetch.bind(globalThis), storage = null, browser = inertBrowser, subscribeWorkspace: subscribe, leaving, trashGuard = openGuard, reopenDocs }: BridgeOptions) {
   /** Every API call carries the tab's share token, so a link holder reads and edits through the link (T2.4). */
   const request = (path: string, init: RequestInit = {}) => {
     const token = share();
@@ -299,6 +302,8 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
   };
   let refreshAll = false;
   const pendingIds = new Set<string>();
+  /** Docs a push named, offered to `reopenDocs` once a refresh has read them. */
+  const reopenIds = new Set<string>();
   const load = (vaultId: string | null, docId: string | null = null, folderId: string | null = null): Promise<NoteMetadata[]> => {
     const version = ++loadVersion;
     const query = new URLSearchParams();
@@ -336,6 +341,7 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
     try {
       while (generation === channelGeneration && (refreshAll || pendingIds.size)) {
         const ids = [...pendingIds];
+        const pushed = [...reopenIds];
         const full = refreshAll;
         pendingIds.clear();
         refreshAll = false;
@@ -356,12 +362,18 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
         const docs: ApiDoc[] = [...(full ? [] : workspaceSnapshot.docs.filter((doc) => !removed.has(doc.id))), ...data.docs]
           .sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
         workspaceSnapshot = { ...data, docs };
+        const wasTrashed = new Set(pushed.filter((id) => known.get(id)?.trashedAt != null));
         for (const id of removed) known.delete(id);
         for (const doc of data.docs) { known.set(doc.id, toNoteMetadata(doc)); rememberRole(doc.id, doc.role); }
         listing = Promise.resolve(docs.map(toNoteMetadata));
         if (changedVaults) workspaceListeners.forEach((listener) => listener());
         diskListeners.forEach((listener) => listener(full ? [] : ids, []));
         rereadBacklinks();
+        // A pane terminal on a note that is live after all re-asks (A§8). A note this tab saw in Trash is left to the
+        // restore, which remounts its pane with a fresh session.
+        for (const id of pushed) reopenIds.delete(id);
+        const reopen = pushed.filter((id) => !wasTrashed.has(id) && known.get(id)?.trashedAt == null);
+        if (reopen.length) reopenDocs?.(reopen);
       }
     } catch {
       if (generation === channelGeneration) {
@@ -436,7 +448,12 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
   const receiveWorkspace = (event: WorkspaceEvent) => {
     if (event.type !== 'meta' && event.type !== 'vaults') return;
     if (event.type === 'vaults' || event.folderIds.length) refreshAll = true;
-    if (event.type === 'meta') for (const id of event.docIds) pendingIds.add(id);
+    if (event.type === 'meta') {
+      for (const id of event.docIds) {
+        pendingIds.add(id);
+        reopenIds.add(id);
+      }
+    }
     requestWorkspaceRefresh();
   };
   const pins = () => readJson<Record<string, number>>(storage, PINS_KEY) ?? {};
@@ -525,17 +542,20 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
     if (!id) throw new Error(FOLDER_GONE);
     return id;
   };
+  /** A request whose network failure is the one unreachable sentence. */
+  const send = async (path: string, init: RequestInit): Promise<Response> => {
+    try {
+      return await request(path, init);
+    } catch {
+      throw new Error(UNREACHABLE);
+    }
+  };
   /** A folder change: the request, a sentence on refusal, then the fresh listing that moss reads back. */
   const changeFolders = async (path: string, init: { method: string; json?: unknown }): Promise<unknown> => {
-    let response: Response;
-    try {
-      response = await request(path, {
-        method: init.method,
-        ...(init.json === undefined ? {} : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(init.json) }),
-      });
-    } catch {
-      throw new Error('The server couldn’t be reached. Check your connection and try again.');
-    }
+    const response = await send(path, {
+      method: init.method,
+      ...(init.json === undefined ? {} : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(init.json) }),
+    });
     if (!response.ok) throw await refusalOf(response);
     const answer: unknown = await response.json().catch(() => ({}));
     await load(workspaceSnapshot?.vault.id ?? storedVault()).catch(() => undefined);
@@ -551,16 +571,24 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
   /** The trash DELETE, repeated while a DocDO has not closed (503); a refusal is the server's sentence. */
   const sendTrash = async (path: string, fallbacks: Record<number, string>, unavailable: string): Promise<void> => {
     for (let attempt = 1; ; attempt += 1) {
-      let response: Response;
-      try {
-        response = await request(path, { method: 'DELETE' });
-      } catch {
-        throw new Error(UNREACHABLE);
-      }
+      const response = await send(path, { method: 'DELETE' });
       if (response.ok) return;
       if (response.status !== 503 || attempt >= TRASH_ATTEMPTS) throw await refusalOf(response, fallbacks, unavailable);
       await new Promise((resolve) => setTimeout(resolve, TRASH_RETRY_MS));
     }
+  };
+  /** Closes `ids` to writes and waits for their acks, then sends the trash; false when they could not close (A§10.6). */
+  const trashGuarded = async (ids: string[], path: string, fallbacks: Record<number, string>, unavailable: string): Promise<boolean> => {
+    const ready = await trashGuard.prepare(ids);
+    let trashed = false;
+    try {
+      if (!ready) return false;
+      await sendTrash(path, fallbacks, unavailable);
+      trashed = true;
+    } finally {
+      trashGuard.release(ids, trashed);
+    }
+    return true;
   };
   /** Notes in a folder's subtree that this tab may hold open. */
   const notesUnder = (path: string) => (workspaceSnapshot?.docs ?? [])
@@ -688,27 +716,14 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
       },
       // Trash (A§10.6): closed to writes and acked first, then the owner's DELETE; moss marks the note trashed.
       delete: async (id: string) => {
-        const ready = await trashGuard.prepare([id]);
-        let trashed = false;
-        try {
-          if (!ready) return false;
-          await sendTrash(`/api/docs/${encodeURIComponent(id)}`, NOTE_REFUSALS, NOTE_UNAVAILABLE);
-          trashed = true;
-        } finally {
-          trashGuard.release([id], trashed);
-        }
+        if (!(await trashGuarded([id], `/api/docs/${encodeURIComponent(id)}`, NOTE_REFUSALS, NOTE_UNAVAILABLE))) return false;
         const note = known.get(id);
         if (note) known.set(id, { ...note, trashedAt: seconds(Date.now()) });
         await load(workspaceSnapshot?.vault.id ?? storedVault()).catch(() => undefined);
         return true;
       },
       restore: async (id: string) => {
-        let response: Response;
-        try {
-          response = await request(`/api/docs/${encodeURIComponent(id)}/restore`, { method: 'POST' });
-        } catch {
-          throw new Error(UNREACHABLE);
-        }
+        const response = await send(`/api/docs/${encodeURIComponent(id)}/restore`, { method: 'POST' });
         if (!response.ok) throw await refusalOf(response, NOTE_REFUSALS, NOTE_UNAVAILABLE);
         // Live at once: a listing that lands later, or a refresh that supersedes this one, must not reopen the Trash view.
         const restored = () => {
@@ -768,14 +783,19 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
         return { canceled: false };
       },
       onExternalFileOpen: silent,
-      onInternalFileOpen: (callback?: Listener<[string]>) =>
-        browser.onPopState(() => {
+      onInternalFileOpen: (callback?: Listener<[string]>) => {
+        const open = (id: string) => {
+          void refreshForNavigation(id);
+          callback?.(id);
+        };
+        const offPop = browser.onPopState(() => {
           const id = docIdFromPath(pathname());
-          if (id && callback) {
-            void refreshForNavigation(id);
-            callback(id);
-          }
-        }),
+          if (id && callback) open(id);
+        });
+        // The bell's notices open a note through moss's own switch (navigation.ts, A§9).
+        const offOpen = callback ? registerDocOpener(open) : noop;
+        return () => { offPop(); offOpen(); };
+      },
       onDiskChange: (callback?: Listener<[string[], string[]]>) => {
         if (callback) diskListeners.add(callback);
         if (!stopWorkspace && diskListeners.size && subscribe) stopWorkspace = subscribe(receiveWorkspace, pauseWorkspace);
@@ -817,16 +837,7 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
       // close to writes and ack first, as a note's trash does (A§10.6).
       delete: async ({ path }: { path: string; moveNotesTo?: 'root' | 'trash' }) => {
         const id = await folderId(path);
-        const open = notesUnder(path);
-        const ready = await trashGuard.prepare(open);
-        let trashed = false;
-        try {
-          if (!ready) return false;
-          await sendTrash(`/api/folders/${encodeURIComponent(id)}`, FOLDER_REFUSALS, FOLDER_UNAVAILABLE);
-          trashed = true;
-        } finally {
-          trashGuard.release(open, trashed);
-        }
+        if (!(await trashGuarded(notesUnder(path), `/api/folders/${encodeURIComponent(id)}`, FOLDER_REFUSALS, FOLDER_UNAVAILABLE))) return false;
         await load(workspaceSnapshot?.vault.id ?? storedVault()).catch(() => undefined);
         announceFolders();
         return true;
@@ -1025,8 +1036,13 @@ function leavingSignal(): () => Leave {
 }
 
 /** Installs the bridge on `window` before App's module evaluates (A§4.3). */
-export function installBridge(authStore: import('../auth-state.ts').AuthStore, trashGuard?: TrashGuard): Bridge {
-  const bridge = createBridge({ pathname: () => window.location.pathname, storage: localStorageOrNull(), browser: windowBrowser(), trashGuard,
+export function installBridge(
+  authStore: import('../auth-state.ts').AuthStore,
+  trashGuard?: TrashGuard,
+  onWorkspaceEvent?: (event: WorkspaceEvent) => void,
+  reopenDocs?: (docIds: string[]) => void,
+): Bridge {
+  const bridge = createBridge({ pathname: () => window.location.pathname, storage: localStorageOrNull(), browser: windowBrowser(), trashGuard, reopenDocs,
     share: () => new URLSearchParams(window.location.search).get('share'),
     leaving: leavingSignal(),
     subscribeWorkspace: (receive, pause) => subscribeWorkspace({
@@ -1040,7 +1056,10 @@ export function installBridge(authStore: import('../auth-state.ts').AuthStore, t
         window.addEventListener('online', visible);
         return () => { document.removeEventListener('visibilitychange', visible); window.removeEventListener('online', visible); };
       },
-    }, receive),
+    }, (event) => {
+      receive(event);
+      onWorkspaceEvent?.(event);
+    }),
   });
   installedBridge = bridge;
   // A trashed note is no wiki-link target (A§15).

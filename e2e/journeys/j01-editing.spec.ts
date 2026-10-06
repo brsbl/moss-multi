@@ -1,6 +1,7 @@
 import type { LexicalEditor } from 'lexical';
 import type { TableNode } from '@lexical/table';
 import { expect, test, ui } from '../lib/test.ts';
+import { grantDoc } from '../lib/grants.ts';
 import type { Actor, Actors } from '../lib/actors.ts';
 
 const fixture = 'Shared paragraph.\n\n| Original | Value |\n| --- | --- |\n| cell | 1 |\n\n:::tabs\n=== First\nFirst panel\n=== Second\nSecond panel\n:::\n\n## Fold me\n\nHidden paragraph.\n\n{{timeline|6 weeks}}';
@@ -10,7 +11,7 @@ async function setup(actors: Actors, baseUrl: string, markdown = fixture) {
   expect(result.status()).toBe(201);
   const { doc: { id } } = await result.json() as { doc: { id: string } };
   const principal = await actors.principal('ben');
-  expect((await ada.context.request.post(`/api/docs/${id}/members`, { headers: { origin: baseUrl }, data: { email: principal.email, role: 'editor' } })).status()).toBe(201);
+  await grantDoc(ada, id, principal);
   const wire: Buffer[] = [];
   ada.page.on('websocket', socket => {
     if (!socket.url().includes(id)) return;

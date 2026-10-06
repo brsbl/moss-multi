@@ -11,8 +11,8 @@ import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 
 import * as Y from 'yjs';
 import { anchorText, encodePosition, liveUnits, type Anchor } from '@moss-multi/core/anchor-frame';
 import { BLOCK_CHAR } from '@moss-multi/core/tree-anchor';
-import { CLOSE } from '@moss-multi/protocol/sync';
-import { DocDO } from '../../src/doc-do.ts';
+import { CLOSE, encodePartyPrincipal, TRUSTED } from '@moss-multi/protocol/sync';
+import { DocDO, type Resolved, type SocketIdentity } from '../../src/doc-do.ts';
 import { COMMENT_STATE_SHARE, MAX_IMPORT_SEARCHES } from '../../src/doc/comments.ts';
 import { COMPACT_MAX_ROWS, STATE_CHUNK_BYTES } from '../../src/doc/persistence.ts';
 import { bindLexical, connect, counts, openDoc, start, syncFrame, wake, type Opened, type TestClient } from './do-harness.ts';
@@ -87,6 +87,24 @@ async function expectRefused(opened: Opened, frame: Uint8Array, reason: string, 
   expect(client.closed?.code).toBe(CLOSE.writeRefused);
   expect(opened.dobj.document.store.pendingStructs).toBeNull();
   expect(opened.dobj.document.store.pendingDs).toBeNull();
+  expect(json(opened)).toEqual(before);
+}
+
+/**
+ * The frame needs a clock the DocDO lacks, so it is closed 4420 before apply (transient: an honest client resyncs);
+ * nothing parks, and neither comments nor the body change. 4409 is kept for guard violations (comments.md §3).
+ */
+async function expectTransient(opened: Opened, frame: Uint8Array): Promise<void> {
+  const before = json(opened);
+  const body = Y.encodeStateVector(opened.dobj.document);
+  const client = await editorOn(opened);
+  await client.deliver(syncFrame(2, frame));
+  await client.pump();
+  expect(client.events.filter((event) => event.t === 'write-refused')).toEqual([]);
+  expect(client.closed?.code).toBe(CLOSE.writeRate);
+  expect(opened.dobj.document.store.pendingStructs).toBeNull();
+  expect(opened.dobj.document.store.pendingDs).toBeNull();
+  expect(Y.encodeStateVector(opened.dobj.document)).toEqual(body);
   expect(json(opened)).toEqual(before);
 }
 
@@ -226,16 +244,16 @@ describe('T4.1 gate 2b in the DocDO: no client frame lands a write in comments @
     await expectServerWriteIsolated(opened, r);
   });
 
-  it('history fixtures: a fully held struct with a forged missing origin parks the tail and is purged', async () => {
+  it('history fixtures: a fully held struct with a forged missing origin is closed 4420 and nothing parks', async () => {
     const { opened, r } = await seeded();
     const doc = opened.dobj.document;
     const s = rootStart(doc).client;
     const sState = Y.getState(doc.store, s);
     expect(sState, 'the import wrote the body').toBeGreaterThan(0);
-    await expectRefused(opened, raw([
+    await expectTransient(opened, raw([
       forged(Y.createID(s, sState - 1), { origin: Y.createID(5150, 0) }, new Y.ContentString('e')),
       forged(Y.createID(s, sState), { origin: rootStart(doc) }, new Y.ContentAny(['tail'])),
-    ]), 'unresolved');
+    ]));
     await release(opened, raw([forged(Y.createID(5150, 0), { parent: 'frontmatter', sub: 'z' }, new Y.ContentAny(['z']))]));
     expect(doc.store.clients.get(s)?.some((struct) => struct.id.clock >= sState && struct instanceof Y.Item && struct.content instanceof Y.ContentAny), 'the parked tail never integrates').toBe(false);
     await expectServerWriteIsolated(opened, r);
@@ -245,7 +263,7 @@ describe('T4.1 gate 2b in the DocDO: no client frame lands a write in comments @
     const { opened, r } = await seeded();
     const doc = opened.dobj.document;
     await expectRefused(opened, raw([forged(Y.createID(777, 0), { origin: rootStart(doc), right: Y.createID(r, Y.getState(doc.store, r)) }, new Y.ContentString('x'))]), 'protected-type');
-    await expectRefused(opened, raw([forged(Y.createID(778, 0), { origin: rootStart(doc), right: Y.createID(6160, 0) }, new Y.ContentString('x'))]), 'unresolved');
+    await expectTransient(opened, raw([forged(Y.createID(778, 0), { origin: rootStart(doc), right: Y.createID(6160, 0) }, new Y.ContentString('x'))]));
     await release(opened, raw([forged(Y.createID(6160, 0), { parent: 'frontmatter', sub: 'y' }, new Y.ContentAny(['y']))]));
     expect(doc.store.clients.has(778), 'the parked struct never integrates').toBe(false);
     await expectServerWriteIsolated(opened, r);
@@ -356,10 +374,18 @@ describe('T4.1 pending purge before compaction in the DocDO @p:tech-3', () => {
     forged(Y.createID(999, 0), { parent: 'frontmatter', sub: 'deleted' }, new Y.ContentAny([1, 2, 3, 4])),
   ]);
 
-  async function afterRestart(opened: Opened, kept: unknown): Promise<void> {
+  /** The whole frame is closed 4420 before apply: its valid edit is refused with it, and nothing parks (comments.md §3). */
+  function expectClosedWhole(editor: TestClient): void {
+    expect(editor.closed?.code).toBe(CLOSE.writeRate);
+    expect(editor.events.filter((event) => event.t === 'write-refused')).toEqual([]);
+  }
+
+  async function afterRestart(opened: Opened): Promise<void> {
+    expect(opened.dobj.document.store.pendingStructs).toBeNull();
+    expect(opened.dobj.document.store.pendingDs).toBeNull();
     const woken = await start(wake(opened));
     const doc = woken.dobj.document;
-    expect(doc.getMap('frontmatter').get('kept'), 'the integrated edit survives').toEqual(kept);
+    expect(doc.getMap('frontmatter').has('kept'), 'nothing from the refused frame lands').toBe(false);
     expect(doc.store.pendingStructs).toBeNull();
     expect(doc.store.pendingDs).toBeNull();
     const late = await editorOn(woken);
@@ -377,9 +403,15 @@ describe('T4.1 pending purge before compaction in the DocDO @p:tech-3', () => {
     const editor = await editorOn(opened);
     await editor.deliver(syncFrame(2, mixed('v')));
     await editor.pump();
-    expect(editor.events).toContainEqual({ t: 'write-refused', reason: 'unresolved' });
-    expect(counts(opened.backing).updates, 'the frame compacted the log').toBe(0);
-    await afterRestart(opened, 'v');
+    expectClosedWhole(editor);
+    expect(counts(opened.backing).updates, 'the refused frame wrote no row').toBe(COMPACT_MAX_ROWS);
+    // The next frame crosses COMPACT_MAX_ROWS and compacts a doc with nothing parked.
+    const honest = await editorOn(opened);
+    honest.doc.getMap('frontmatter').set('next', 'v');
+    await honest.flush();
+    expect(honest.closed).toBeNull();
+    expect(counts(opened.backing).updates, 'the next frame compacted the log').toBe(0);
+    await afterRestart(opened);
   });
 
   it('mixed-pending-frame-compacts-only-after-purge: an integrated update larger than STATE_CHUNK_BYTES', async () => {
@@ -388,9 +420,15 @@ describe('T4.1 pending purge before compaction in the DocDO @p:tech-3', () => {
     const editor = await editorOn(opened);
     await editor.deliver(syncFrame(2, mixed(big)));
     await editor.pump();
-    expect(editor.events).toContainEqual({ t: 'write-refused', reason: 'unresolved' });
+    expectClosedWhole(editor);
+    expect(counts(opened.backing).state, 'the refused frame wrote no snapshot').toBe(0);
+    // The oversized path: an honest editor's update this large compacts, and the snapshot holds nothing parked.
+    const honest = await editorOn(opened);
+    honest.doc.getMap('frontmatter').set('big', big);
+    await honest.flush();
+    expect(honest.closed).toBeNull();
     expect(counts(opened.backing).state, 'the oversized update compacted').toBeGreaterThan(1);
-    await afterRestart(opened, big);
+    await afterRestart(opened);
   });
 });
 
@@ -647,5 +685,164 @@ describe('T4.1 createComment RPC @p:tech-3', () => {
     expect(target.dobj.document.clientID).not.toBe(metaR(target));
     const tomb = target.dobj.document.getMap('comments')._map.get('c:c1')!;
     await expectRefused(target, raw([forged(Y.createID(777, 0), { origin: tomb.id }, new Y.ContentAny([{ text: 'revived' }]))]), 'protected-type');
+  });
+});
+
+describe('T4.4 edit, delete and reactions through the DocDO @p:mean-1', () => {
+  async function thread() {
+    const opened = await start(openDoc());
+    await opened.dobj.create({ folderId: 'folder', ownerId: 'owner', markdown: 'The quick brown fox jumps over the lazy dog.' });
+    const { text, units } = liveUnits(opened.dobj.document);
+    const at = text.indexOf('brown fox');
+    const anchor = { kind: 'text' as const, start: encodePosition(units[at], 0), end: encodePosition(units[at + 'brown fox'.length - 1], -1) };
+    expect(await opened.dobj.createComment({ author: 'ada', id: 'root', text: 'root', anchor })).toMatchObject({ ok: true });
+    vi.setSystemTime(Date.now() + 2_000);
+    expect(await opened.dobj.createComment({ author: 'ben', id: 'r1', text: 'oldest reply', parentId: 'root' })).toEqual({ ok: true, id: 'r1', quote: null, rootAuthor: 'ada' });
+    vi.setSystemTime(Date.now() + 2_000);
+    expect(await opened.dobj.createComment({ author: 'cara', id: 'r2', text: 'newer reply', parentId: 'root' })).toMatchObject({ ok: true, rootAuthor: 'ada' });
+    return opened;
+  }
+
+  it("edit is the author's alone: another principal gets 403 not-author and the record is unchanged", async () => {
+    const opened = await thread();
+    const before = json(opened)['c:root'];
+    expect(await opened.dobj.editComment({ id: 'root', author: 'ben', text: 'hijacked' })).toEqual({ ok: false, status: 403, error: 'not-author' });
+    expect(json(opened)['c:root']).toEqual(before);
+    expect(await opened.dobj.editComment({ id: 'root', author: 'ada', text: 'edited' })).toMatchObject({ ok: true });
+    expect(json(opened)['c:root']).toMatchObject({ text: 'edited', author: 'ada' });
+    expect(await opened.dobj.editComment({ id: 'gone', author: 'ada', text: 'x' })).toMatchObject({ ok: false, status: 404 });
+    expect(await opened.dobj.editComment({ id: 'root', author: 'ada', text: '   ' })).toMatchObject({ ok: false, status: 400 });
+    const woken = await start(wake(opened));
+    expect(json(woken)['c:root'], 'persisted in the RPC turn').toMatchObject({ text: 'edited' });
+  });
+
+  it("delete is the author's alone, and a thread delete the root author's", async () => {
+    const opened = await thread();
+    const before = json(opened);
+    expect(await opened.dobj.deleteComment({ id: 'r1', author: 'ada', scope: 'comment' })).toEqual({ ok: false, status: 403, error: 'not-author' });
+    expect(await opened.dobj.deleteComment({ id: 'root', author: 'ben', scope: 'thread' })).toEqual({ ok: false, status: 403, error: 'not-author' });
+    expect(await opened.dobj.deleteComment({ id: 'root', author: 'ben', scope: 'comment' })).toEqual({ ok: false, status: 403, error: 'not-author' });
+    expect(json(opened)).toEqual(before);
+    expect(await opened.dobj.deleteComment({ id: 'r2', author: 'cara', scope: 'comment' })).toMatchObject({ ok: true });
+    expect(json(opened)['c:r2']).toBeUndefined();
+    expect(await opened.dobj.deleteComment({ id: 'root', author: 'ada', scope: 'thread' })).toMatchObject({ ok: true });
+    expect(json(opened), 'the thread, its replies and its anchor are gone').toEqual({});
+  });
+
+  it('deleting a root with replies keeps the thread anchored under the promoted oldest reply, with its resolution', async () => {
+    const opened = await thread();
+    expect(await opened.dobj.resolveComment({ id: 'root', resolved: true, by: 'user' })).toMatchObject({ ok: true });
+    const resolvedAt = (json(opened)['c:root'] as { resolvedAt: number }).resolvedAt;
+    const anchor = anchorOf(opened, 'root');
+    expect(await opened.dobj.deleteComment({ id: 'root', author: 'ada', scope: 'comment' })).toEqual({ ok: true, id: 'root', quote: null, promoted: 'r1' });
+    const after = json(opened);
+    expect(after['c:root']).toBeUndefined();
+    expect(after['a:root']).toBeUndefined();
+    expect(after['c:r1'], 'the oldest reply is the root now').toMatchObject({ author: 'ben', text: 'oldest reply', resolvedAt, resolvedBy: 'user' });
+    expect(after['c:r1']).not.toHaveProperty('parentId');
+    expect(after['a:r1'], 'with the root anchor re-keyed').toEqual(anchor);
+    expect(after['c:r2'], 'the other replies follow it').toMatchObject({ parentId: 'r1' });
+    expect(anchorText(opened.dobj.document, anchorOf(opened, 'r1')!)).toBe('brown fox');
+    const woken = await start(wake(opened));
+    expect(anchorText(woken.dobj.document, anchorOf(woken, 'r1')!), 'persisted, and indexed again at start').toBe('brown fox');
+  });
+
+  it('promotes the reply the DocDO wrote first, even within one second and across a restart', async () => {
+    const opened = await start(openDoc());
+    await opened.dobj.create({ folderId: 'folder', ownerId: 'owner', markdown: 'The quick brown fox jumps over the lazy dog.' });
+    const { text, units } = liveUnits(opened.dobj.document);
+    const at = text.indexOf('lazy dog');
+    const anchor = { kind: 'text' as const, start: encodePosition(units[at], 0), end: encodePosition(units[at + 'lazy dog'.length - 1], -1) };
+    expect(await opened.dobj.createComment({ author: 'ada', id: 'root', text: 'root', anchor })).toMatchObject({ ok: true });
+    // The clock is frozen: every record below shares one createdAt second, and the ids sort against creation order.
+    expect(await opened.dobj.createComment({ author: 'ben', id: 'zz-first', text: 'first', parentId: 'root' })).toMatchObject({ ok: true });
+    const woken = await start(wake(opened));
+    expect(await woken.dobj.createComment({ author: 'cara', id: 'mm-second', text: 'second', parentId: 'root' })).toMatchObject({ ok: true });
+    expect(await woken.dobj.createComment({ author: 'dan', id: 'aa-third', text: 'third', parentId: 'root' })).toMatchObject({ ok: true });
+    expect(await woken.dobj.deleteComment({ id: 'root', author: 'ada', scope: 'comment' }), 'the first reply written leads').toMatchObject({ ok: true, promoted: 'zz-first' });
+    expect(await woken.dobj.deleteComment({ id: 'zz-first', author: 'ben', scope: 'comment' }), 'and then the second').toMatchObject({ ok: true, promoted: 'mm-second' });
+    expect(json(woken)['c:aa-third']).toMatchObject({ parentId: 'mm-second' });
+  });
+
+  it('reactions toggle per principal: each person adds and removes only their own', async () => {
+    const opened = await thread();
+    const reactions = () => (json(opened)['c:root'] as { reactions: Record<string, string[]> }).reactions;
+    expect(await opened.dobj.reactComment({ id: 'root', principal: 'ben', emoji: '👍', on: true })).toMatchObject({ ok: true });
+    expect(await opened.dobj.reactComment({ id: 'root', principal: 'cara', emoji: '👍', on: true })).toMatchObject({ ok: true });
+    expect(await opened.dobj.reactComment({ id: 'root', principal: 'cara', emoji: '👍', on: true }), 'idempotent').toMatchObject({ ok: true });
+    expect(reactions()).toEqual({ '👍': ['ben', 'cara'] });
+    expect(await opened.dobj.reactComment({ id: 'root', principal: 'ben', emoji: '👍', on: false })).toMatchObject({ ok: true });
+    expect(reactions()).toEqual({ '👍': ['cara'] });
+    expect(await opened.dobj.reactComment({ id: 'root', principal: 'cara', emoji: '👍', on: false })).toMatchObject({ ok: true });
+    expect(reactions()).toEqual({});
+    for (const emoji of ['a', '👍👍', ' ', '', 'x'.repeat(40)]) {
+      expect(await opened.dobj.reactComment({ id: 'root', principal: 'ben', emoji, on: true }), JSON.stringify(emoji)).toMatchObject({ ok: false, status: 400, error: 'bad-emoji' });
+    }
+    expect(await opened.dobj.reactComment({ id: 'root', principal: 'ben', emoji: '👨‍👩‍👧', on: true }), 'one grapheme of many code points').toMatchObject({ ok: true });
+  });
+
+  it('caps a comment at 20 distinct reactions', async () => {
+    const opened = await thread();
+    const emoji = [...'😀😁😂🤣😃😄😅😆😉😊😋😎😍😘🥰😗😙😚🙂🤗'];
+    expect(emoji).toHaveLength(20);
+    for (const e of emoji) expect(await opened.dobj.reactComment({ id: 'r1', principal: 'ada', emoji: e, on: true })).toMatchObject({ ok: true });
+    expect(await opened.dobj.reactComment({ id: 'r1', principal: 'ada', emoji: '🤩', on: true })).toEqual({ ok: false, status: 409, error: 'too-many-reactions' });
+    expect(await opened.dobj.reactComment({ id: 'r1', principal: 'ben', emoji: '😀', on: true }), 'an existing emoji still takes more people').toMatchObject({ ok: true });
+  });
+});
+
+describe('a comment RPC validates every socket before its write reaches them (A§8) @p:ppl-2 @p:mean-1', () => {
+  /** D1 as the check reads it: the access epoch, and the principals whose grant is gone. */
+  let epoch = 'e1';
+  const gone = new Set<string>();
+  class CheckedDocDO extends DocDO {
+    static override access = () => ({
+      stamp: async (_docId: string, sessions: string[], agents: string[]) => ({ key: epoch, sessions: new Set(sessions), agents: new Set(agents) }),
+      resolve: async (_docId: string, socket: SocketIdentity): Promise<Resolved | null> =>
+        (gone.has(socket.principalId) ? null : { role: 'owner', presence: true }),
+    });
+  }
+  const who = (id: string, role: string) => ({ headers: {
+    [TRUSTED.principal]: encodePartyPrincipal({ id, kind: 'user', name: id }),
+    [TRUSTED.role]: role, [TRUSTED.session]: `sess-${id}`, [TRUSTED.resolvedAt]: String(Date.now()), [TRUSTED.epoch]: 'e1',
+  } });
+  beforeEach(() => {
+    epoch = 'e1';
+    gone.clear();
+  });
+  /** The REST actor the Worker passes, re-resolved in the write. */
+  const ADA: SocketIdentity = { kind: 'user', principalId: 'ada', sessionId: 'sess-ada', shareToken: null };
+
+  const writes: [string, (opened: Opened) => Promise<unknown>][] = [
+    ['create', (opened) => opened.dobj.createComment({ actor: ADA, author: 'ada', id: 'r9', text: 'secret reply', parentId: 'root' })],
+    ['resolve', (opened) => opened.dobj.resolveComment({ actor: ADA, id: 'root', resolved: true, by: 'user' })],
+    ['edit', (opened) => opened.dobj.editComment({ actor: ADA, id: 'root', author: 'ada', text: 'secret edit' })],
+    ['delete', (opened) => opened.dobj.deleteComment({ actor: ADA, id: 'root', author: 'ada', scope: 'comment' })],
+    ['react', (opened) => opened.dobj.reactComment({ actor: ADA, id: 'root', principal: 'ada', emoji: '👍', on: true })],
+  ];
+
+  it.each(writes)('%s: a socket revoked but not yet kicked closes 4403 and receives nothing of the write', async (_name, write) => {
+    const opened = await start(openDoc(undefined, CheckedDocDO as never));
+    await opened.dobj.create({ folderId: 'folder', ownerId: 'ada', markdown: 'The quick brown fox jumps over the lazy dog.' });
+    const { text, units } = liveUnits(opened.dobj.document);
+    const at = text.indexOf('brown fox');
+    const anchor = { kind: 'text' as const, start: encodePosition(units[at], 0), end: encodePosition(units[at + 'brown fox'.length - 1], -1) };
+    expect(await opened.dobj.createComment({ actor: ADA, author: 'ada', id: 'root', text: 'root', anchor })).toMatchObject({ ok: true });
+    expect(await opened.dobj.createComment({ actor: ADA, author: 'ada', id: 'r1', text: 'reply', parentId: 'root' })).toMatchObject({ ok: true });
+    const ada = await connect(opened, who('ada', 'owner'));
+    const ben = await connect(opened, who('ben', 'viewer'));
+    await ada.hello();
+    await ben.hello();
+    expect(ben.closed).toBeNull();
+    // Ben's grant ends in D1; no recheck has reached the DocDO and no tick has run.
+    epoch = 'e2';
+    gone.add('ben');
+    const adaBefore = ada.socket.sent.length;
+    const benBefore = ben.socket.sent.length;
+    expect(await write(opened)).toMatchObject({ ok: true });
+    expect(ben.closed?.code, 'validated before the write').toBe(CLOSE.revoked);
+    expect(ben.socket.sent.length, 'no frame of the write reached the revoked socket').toBe(benBefore);
+    expect(ada.closed).toBeNull();
+    expect(ada.socket.sent.length, 'the socket that kept access hears the write').toBeGreaterThan(adaBefore);
   });
 });
