@@ -35,6 +35,34 @@ export const REST_WRITE_RATE = { max: 60, windowMs: 60_000 } as const;
  */
 export const DOC_CREATE_RATE = { max: 60, windowMs: 60_000 } as const;
 
+/**
+ * Notes minted per acting user per day, on the same PrincipalDO, counting only the ones granted; 429 past it. A person
+ * importing a large vault at the minute rate takes about half an hour for 2,000, which no journey or seed comes near.
+ */
+export const DAY_MS = 24 * 60 * 60 * 1000;
+export const DOC_CREATE_DAILY = { max: 2_000, windowMs: DAY_MS } as const;
+
+/** The largest `POST /api/docs` body: 2 MB of markdown even if JSON escapes every byte (`\u00XX`), plus the fields. */
+export const CREATE_BODY_MAX_BYTES = MARKDOWN_CAP_BYTES * 6 + 64 * 1024;
+
+/**
+ * Live (untrashed) notes one acting user has created, wherever they are and their agents' included; a create or
+ * duplicate past it is 409 (A§18). Charged to the creator, never the vault, so a collaborator cannot fill an owner's.
+ */
+export const LIVE_NOTE_CAP = 10_000;
+
+/** Folders and vaults one acting user (with their agents) creates per day, in any vault; 429 past it (A§18). */
+export const FOLDER_CREATE_DAILY = 1_000;
+
+/** Agent keys one person mints per day, revoked ones included; 429 past it (A§18). */
+export const AGENT_KEY_DAILY = 50;
+
+/** Share links one person makes per day, over every target, revoked ones included; 429 past it (A§18). */
+export const SHARE_LINK_DAILY = 50;
+
+/** Feedback messages one person sends per day; 429 past it (A§18). */
+export const FEEDBACK_DAILY = 20;
+
 /** Media uploads (and cross-note copies) per identity per window, counted by a PrincipalDO (A§16); 429 past it. A
  * signed-in holder of a link is also counted under the link and their IP, whichever account they use. */
 export const UPLOAD_RATE = { max: 60, windowMs: 60_000 } as const;
