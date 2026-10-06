@@ -3,15 +3,12 @@ import { COLLABORATION_TAG, REDO_COMMAND, UNDO_COMMAND, type Klass, type Lexical
 import * as Y from 'yjs';
 import { onRegisterChange, payloadTextOf, registerDoc, registerState, REGISTER_LOCAL_ORIGIN, writeRegisterEdit } from '@moss-multi/sync/registers';
 import { payloadText } from '@moss-multi/sync/payload-docs';
-import { applyOps, diffText, rebaseOps } from '@moss-multi/core/text-diff';
-import { remapCaret } from '@moss-multi/core/doc-fields';
+import { applyOps, diffText, mapOffset, rebaseOps } from '@moss-multi/core/text-diff';
 import { refuseInput } from '../refusal.ts';
 
 type Input = HTMLInputElement | HTMLTextAreaElement;
 /** The payload text behind a node: its own payload doc's (A§10.10), held now. */
-export function nodeRegister(editor: LexicalEditor, key: string): Y.Text | undefined {
-  return payloadTextOf(editor, key);
-}
+export { payloadTextOf as nodeRegister } from '@moss-multi/sync/registers';
 
 /** Shown when a peer removes the block whose field is open (or a server dedupe drops its copy). */
 export const FIELD_REMOVED = 'The block you were editing was removed.';
@@ -106,7 +103,7 @@ export function useRegisterDraft(
       display(initial);
       return;
     }
-    const text = nodeRegister(editor, key);
+    const text = payloadTextOf(editor, key);
     if (!text) return;
     const show = (delta: Y.YTextEvent['delta'] | null) => {
       const next = text.toString();
@@ -131,7 +128,7 @@ export function useRegisterDraft(
   }, [editor, key, element, bound, live, id, live ? '' : initial]);
   useLayoutEffect(() => {
     const input = element.current;
-    const text = live ? nodeRegister(editor, key) : undefined;
+    const text = live ? payloadTextOf(editor, key) : undefined;
     const doc = text?.doc;
     if (!editing || !input || !doc || !text) return;
     const keyboard = (event: KeyboardEvent) => {
@@ -252,6 +249,6 @@ export function repaint(input: Input, next: string, delta: Y.YTextEvent['delta']
   const start = input.selectionStart ?? 0; const end = input.selectionEnd ?? start;
   input.value = next;
   if (input.ownerDocument.activeElement === input) {
-    input.setSelectionRange(delta ? remapCaret(start, delta) : start, delta ? remapCaret(end, delta) : end);
+    input.setSelectionRange(delta ? mapOffset(start, delta) : start, delta ? mapOffset(end, delta) : end);
   }
 }

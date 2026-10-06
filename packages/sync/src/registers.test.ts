@@ -278,62 +278,51 @@ describe('L4 decorator registers @p:col-1 @p:col-3 @p:tech-1', () => {
     } finally { a.dispose(); b.dispose(); seed.destroy(); }
   });
 
-  it('moves a pre-register attribute into a payload doc without replacing the node or changing export bytes', () => {
+  it.each([
+    {
+      layout: 'a pre-register note (no __regId, empty registers map)',
+      blocks: [{ __code: 'stored code' }] as Record<string, string>[], registers: {} as Record<string, string>,
+      kept: ['stored code'], dropped: [] as string[],
+    },
+    {
+      // M1's migrateRegisters set __regId and left the legacy attribute; the register later diverged from it.
+      layout: 'a pre-register note migrated by M1 (id set, legacy attribute kept)',
+      blocks: [{ __regId: 'code:1', __code: 'STALE-legacy' }, { __regId: 'code:2', __code: 'ATTR-only' }] as Record<string, string>[],
+      registers: { 'code:1': 'edited in the register' },
+      // An id with no register keeps its attribute text as its payload.
+      kept: ['edited in the register', 'ATTR-only'], dropped: ['STALE-legacy'],
+    },
+  ])('$layout moves its payload text out of the note in place, keeping no legacy text', ({ blocks, registers, kept, dropped }) => {
     const legacy = new Y.Doc();
     const root = legacy.get('root', Y.XmlText);
-    const block = new Y.XmlElement('code-block');
-    root.insertEmbed(0, block);
-    block.setAttribute('__type', 'code-block'); block.setAttribute('__code', 'stored code');
-    block.setAttribute('__language', 'plaintext');
-    block.setAttribute('__commentIds', [] as never);
-    const identity = block._item!.id;
+    const identities: Y.ID[] = [];
+    legacy.transact(() => {
+      blocks.forEach((attrs, index) => {
+        const block = new Y.XmlElement('code-block');
+        root.insertEmbed(index, block);
+        for (const [key, value] of Object.entries({ __type: 'code-block', __language: 'plaintext', __commentIds: [], ...attrs })) block.setAttribute(key, value as never);
+        identities.push(block._item!.id);
+      });
+      for (const [id, text] of Object.entries(registers)) legacy.getMap<Y.Text>('registers').set(id, new Y.Text(text));
+    });
+    const texts = [...blocks.map(block => block.__code), ...Object.values(registers)];
     const restored = new Y.Doc();
     try {
       Y.applyUpdate(restored, Y.encodeStateAsUpdate(legacy));
       const host = payloadDocsFor(restored);
       const write = (id: string, text: string) => { const doc = host.hold(id); payloadText(doc).insert(0, text); };
       expect(migratePayloads(restored, write)).toBe(true);
-      expect(exportDocMarkdown(restored)).toContain('stored code');
-      const node = restored.get('root', Y.XmlText).toDelta()[0].insert as Y.XmlElement;
-      expect(node._item!.id).toEqual(identity);
+      const nodes: Y.XmlElement[] = restored.get('root', Y.XmlText).toDelta().map((op: { insert: Y.XmlElement }) => op.insert);
+      expect(nodes.map(node => node._item!.id), 'no node is replaced').toEqual(identities);
+      for (const node of nodes) expect(node.getAttribute('__code'), 'no legacy attribute survives').toBeUndefined();
       const bytes = Y.encodeStateAsUpdate(restored);
+      for (const text of texts) expect(Buffer.from(bytes).includes(text), `the note keeps no payload text: ${text}`).toBe(false);
+      const markdown = exportDocMarkdown(restored);
+      for (const text of kept) expect(markdown).toContain(text);
+      for (const text of dropped) expect(markdown).not.toContain(text);
       expect(migratePayloads(restored, write)).toBe(false);
       expect(Y.encodeStateAsUpdate(restored)).toEqual(bytes);
-      expect(node.getAttribute('__code'), 'the note keeps no payload text').toBeUndefined();
-      expect(Buffer.from(bytes).includes('stored code')).toBe(false);
     } finally { legacy.destroy(); restored.destroy(); }
-  });
-
-  it('a pre-register note migrated by M1 (id set, legacy attribute kept) keeps no legacy text after this migration', () => {
-    // M1's migrateRegisters set __regId and left the legacy attribute; the register later diverged from it.
-    const m1 = new Y.Doc();
-    const root = m1.get('root', Y.XmlText);
-    const make = (index: number, attrs: Record<string, unknown>) => {
-      const block = new Y.XmlElement('code-block');
-      root.insertEmbed(index, block);
-      for (const [key, value] of Object.entries({ __type: 'code-block', __language: 'plaintext', __commentIds: [], ...attrs })) block.setAttribute(key, value as never);
-    };
-    m1.transact(() => {
-      make(0, { __regId: 'code:1', __code: 'STALE-legacy' });
-      make(1, { __regId: 'code:2', __code: 'ATTR-only' });
-      m1.getMap<Y.Text>('registers').set('code:1', new Y.Text('edited in the register'));
-    });
-    const restored = new Y.Doc();
-    try {
-      Y.applyUpdate(restored, Y.encodeStateAsUpdate(m1));
-      const host = payloadDocsFor(restored);
-      const write = (id: string, text: string) => { const doc = host.hold(id); payloadText(doc).insert(0, text); };
-      expect(migratePayloads(restored, write)).toBe(true);
-      const nodes = restored.get('root', Y.XmlText).toDelta().map((op: { insert: Y.XmlElement }) => op.insert);
-      for (const node of nodes) expect(node.getAttribute('__code'), 'no legacy attribute survives').toBeUndefined();
-      const bytes = Buffer.from(Y.encodeStateAsUpdate(restored));
-      expect(bytes.includes('STALE-legacy') || bytes.includes('ATTR-only') || bytes.includes('edited in the register')).toBe(false);
-      const markdown = exportDocMarkdown(restored);
-      expect(markdown).toContain('edited in the register');
-      expect(markdown, 'an id with no register keeps its attribute text as its payload').toContain('ATTR-only');
-      expect(markdown).not.toContain('STALE-legacy');
-      expect(migratePayloads(restored, write)).toBe(false);
-    } finally { m1.destroy(); restored.destroy(); }
   });
 });
 

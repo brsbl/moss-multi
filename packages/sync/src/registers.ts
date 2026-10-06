@@ -57,9 +57,6 @@ function payload(text: Y.Text): string {
 /** The note doc an editor's registers are bound to; views treat it as "this note is shared". */
 export const registerDoc = (editor: LexicalEditor): Y.Doc | undefined => registries.get(editor)?.root;
 
-/** The payload docs an editor's registers read and write. */
-export const registerPayloads = (editor: LexicalEditor): PayloadDocs | undefined => registries.get(editor)?.host;
-
 /** The payload text behind node `key`, held on demand; undefined for an unbound editor or a node with no id yet. */
 export function payloadTextOf(editor: LexicalEditor, key: NodeKey): Y.Text | undefined {
   const registry = registries.get(editor);

@@ -3,6 +3,7 @@ import { CLOSE, TRUSTED } from '@moss-multi/protocol/sync';
 import type { WorkspaceEvent } from '@moss-multi/protocol/workspace';
 import { ACCESS_DEADLINE_MS, ACCESS_TICK_MS, REST_WRITE_RATE, SESSION_MAX_MS } from '@moss-multi/protocol/limits';
 import { liveCredentials, withDeadline } from './access-epoch.ts';
+import { windowed } from './doc/admission.ts';
 import type { DocDO, RecheckInput } from './doc-do.ts';
 import type { SyncEnv } from './env.ts';
 
@@ -41,8 +42,7 @@ export class RateWindow {
 
   take(now = Date.now()): boolean {
     this.#attempts ??= this.store?.load() ?? [];
-    const recent = this.#attempts.filter((at) => now - at < this.windowMs);
-    recent.push(now);
+    const recent = windowed(this.#attempts, now, this.windowMs);
     // Only the newest `max` matter to the next decision, so a flood never grows the list.
     this.#attempts = recent.slice(-this.max);
     this.store?.save(this.#attempts);

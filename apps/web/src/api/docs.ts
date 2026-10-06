@@ -52,6 +52,19 @@ async function insertDoc(env: DocsEnv, db: Db, row: { folderId: string; ownerUse
   return (inserted.meta?.changes ?? 0) > 0 ? doc : null;
 }
 
+/** Seeds the DocDO through `run`; a failed seed deletes the row (doc-cap is 413), a seeded doc is 201 {doc, role}. */
+async function seeded(db: Db, doc: DocRecord, role: string, run: () => Promise<unknown>): Promise<Response> {
+  try {
+    await run();
+  } catch (error) {
+    await db.delete(docs).where(eq(docs.id, doc.id));
+    if (error instanceof Error && error.message === 'doc-cap') return json({ error: 'doc-cap' }, 413, NO_STORE);
+    throw error;
+  }
+  const [projected] = await db.select({ id: docs.id, folderId: docs.folderId, title: docs.title, filename: docs.filename, createdAt: docs.createdAt, updatedAt: docs.updatedAt }).from(docs).where(eq(docs.id, doc.id));
+  return json({ doc: projected, role }, 201, NO_STORE);
+}
+
 async function createDoc(request: Request, env: DocsEnv): Promise<Response> {
   const principal = await resolvePrincipal(request, env);
   if (!principal || principal.type === 'anonymous') return unauthenticated();
@@ -74,16 +87,10 @@ async function createDoc(request: Request, env: DocsEnv): Promise<Response> {
   const doc = await insertDoc(env, db, { folderId, ownerUserId: folder.ownerUserId, createdBy: principal.id });
   if (!doc) return folderNotFound();
   const stub = await getServerByName(env.DocDO, doc.id);
-  try {
+  return seeded(db, doc, folder.role, async () => {
     await stub.create({ folderId, ownerId: folder.ownerUserId, ...(title ? { title } : {}),
       ...(typeof body.markdown === 'string' ? { markdown: body.markdown } : {}) });
-  } catch (error) {
-    await db.delete(docs).where(eq(docs.id, doc.id));
-    if (error instanceof Error && error.message === 'doc-cap') return json({ error: 'doc-cap' }, 413, NO_STORE);
-    throw error;
-  }
-  const [projected] = await db.select({ id: docs.id, folderId: docs.folderId, title: docs.title, filename: docs.filename, createdAt: docs.createdAt, updatedAt: docs.updatedAt }).from(docs).where(eq(docs.id, doc.id));
-  return json({ doc: projected, role: folder.role }, 201, NO_STORE);
+  });
 }
 
 /** Duplicate content at one server snapshot; grants stay on the source and folder access is inherited. */
@@ -110,16 +117,11 @@ async function duplicateDoc(request: Request, env: DocsEnv, docId: string): Prom
   const title = `${snapshot.title.trim() || 'Untitled'} copy`;
   const doc = await insertDoc(env, db, { folderId, ownerUserId: folder.ownerUserId, createdBy: principal.id });
   if (!doc) return folderNotFound();
-  try {
+  const owner = folder.ownerUserId;
+  return seeded(db, doc, folder.role, async () => {
     const target = await getServerByName(env.DocDO, doc.id);
-    await target.createFromSnapshot({ folderId, ownerId: folder.ownerUserId, title }, snapshot.state, snapshot.payloads);
-  } catch (error) {
-    await db.delete(docs).where(eq(docs.id, doc.id));
-    if (error instanceof Error && error.message === 'doc-cap') return json({ error: 'doc-cap' }, 413, NO_STORE);
-    throw error;
-  }
-  const [projected] = await db.select({ id: docs.id, folderId: docs.folderId, title: docs.title, filename: docs.filename, createdAt: docs.createdAt, updatedAt: docs.updatedAt }).from(docs).where(eq(docs.id, doc.id));
-  return json({ doc: projected, role: folder.role }, 201, NO_STORE);
+    await target.createFromSnapshot({ folderId, ownerId: owner, title }, snapshot.state, snapshot.payloads);
+  });
 }
 
 /** The doc's listing fields and the caller's role, for a doc the workspace listing does not carry. */
@@ -201,13 +203,12 @@ export async function handleDocs(request: Request, env: DocsEnv): Promise<Respon
   const links = LINKS.exec(pathname);
   if (links) return handleLinks(request, env, { type: 'doc', id: links[1] }, links[2] ?? null);
   const accessMatch = /^\/api\/docs\/([^/]+)\/access$/.exec(pathname);
-  if (accessMatch) {
-    if (request.method !== 'GET') return json({ error: 'method-not-allowed' }, 405, { allow: 'GET' });
+  if (accessMatch) return only('GET', request, async () => {
     const principal = await resolvePrincipal(request, env);
-    if (!principal) return json({ error: 'unauthenticated' }, 401, NO_STORE);
+    if (!principal) return unauthenticated();
     const access = await resolveDocAccess(createDb(env.DB), principal, accessMatch[1], shareTokenOf(request));
     return access ? json({ role: access.role, deleted: access.deleted }, 200, NO_STORE) : notFound();
-  }
+  });
 
   const instance = INSTANCE.exec(pathname);
   if (instance) return only('GET', request, () => docInstance(request, env, instance[1]));

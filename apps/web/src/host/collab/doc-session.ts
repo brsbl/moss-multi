@@ -6,7 +6,7 @@
 // released with unacked edits stays connected without its pane until they are acked, or until the doc ends.
 import type { ConnectionState, TerminalReason } from '@moss-multi/protocol/dom-contract';
 import { isRole, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
-import { CLOSE, closeAction, PAYLOAD_MESSAGE, type ServerEvent, type WriteRefusalReason } from '@moss-multi/protocol/sync';
+import { CLOSE, closeAction, encodeSyncFrame, PAYLOAD_MESSAGE, type ServerEvent, type WriteRefusalReason } from '@moss-multi/protocol/sync';
 import { attachPayloadDocs, PayloadDocs, PayloadSync } from '@moss-multi/sync/payload-docs';
 import YProvider from 'y-partyserver/provider';
 import * as Y from 'yjs';
@@ -36,8 +36,6 @@ export interface SessionState {
   /** The role allows writing; a 4403 re-ask can lower it. */
   canWrite: boolean;
   writePaused: boolean;
-  /** Why the session stopped delivering edits (a refused write, or a lower role with edits pending). */
-  halted: string | null;
 }
 
 type Listener = (state: SessionState) => void;
@@ -102,25 +100,6 @@ DocSocket.prototype.addEventListener = function addEventListener(
     options,
   );
 } as WebSocket['addEventListener'];
-
-function varUint(out: number[], value: number): void {
-  let rest = value;
-  while (rest > 0x7f) {
-    out.push(0x80 | (rest & 0x7f));
-    rest = Math.floor(rest / 0x80);
-  }
-  out.push(rest);
-}
-
-/** A y-protocols sync frame: message 0, the step, then its length-prefixed payload. */
-function syncFrame(step: number, payload: Uint8Array): Uint8Array {
-  const head = [0, step];
-  varUint(head, payload.length);
-  const frame = new Uint8Array(head.length + payload.length);
-  frame.set(head);
-  frame.set(payload, head.length);
-  return frame;
-}
 
 /** Awareness renewals with an unchanged payload still go out, and a remote frame is never echoed (L§4.3). */
 function broadcastAwarenessOnUpdate(provider: YProvider): void {
@@ -266,13 +245,13 @@ export class DocSession {
   readonly #payloadSync: PayloadSync;
   stopPresence?: () => void;
   readonly provider: YProvider;
-  #state: SessionState = { synced: false, resync: false, unacked: false, retrying: false, connection: 'reconnecting', canWrite: true, writePaused: false, halted: null };
+  #state: SessionState = { synced: false, resync: false, unacked: false, retrying: false, connection: 'reconnecting', canWrite: true, writePaused: false };
   readonly #listeners = new Set<Listener>();
   #refusedMessage = HALTED_REFUSED;
   #disposed = false;
   /** Released by its pane while edits were unacked: connected, without a pane, until the DocDO acks them. */
   #lingering = false;
-  /** Terminal or halted: this session's edits can no longer land. */
+  /** Terminal: this session's edits can no longer land. */
   #ended = false;
   #reopening = false;
   readonly #ledger = new AckLedger();
@@ -424,7 +403,7 @@ export class DocSession {
 
   /** Tries again after `conn-limit`: the terminal state clears and the socket reopens. */
   retry(): void {
-    if (this.#disposed || this.#state.halted !== null) return;
+    if (this.#disposed) return;
     this.#ended = false;
     this.#failedHandshakes = 0;
     clearTerminal(this.docId);
@@ -476,8 +455,8 @@ export class DocSession {
 
   #publish(): void {
     if (this.#disposed) return;
-    const { connection, synced, retrying, halted } = this.#state;
-    publishConnection(this.docId, this, { connection, synced, retrying, halted });
+    const { connection, synced, retrying } = this.#state;
+    publishConnection(this.docId, this, { connection, synced, retrying });
   }
 
   /** Folds a link event into the connection state. */
@@ -495,7 +474,7 @@ export class DocSession {
     // The note's unacked writes go first (the provider's own step 1 and step 2 follow this event): they hold the
     // elements naming payloads made offline, so those payloads' resends never reach the DocDO as unnamed writes.
     const pending = this.#ledger.pendingUpdate();
-    if (pending && !this.#ended) this.provider.ws?.send(syncFrame(2, pending));
+    if (pending && !this.#ended) this.provider.ws?.send(encodeSyncFrame(2, pending));
     this.#payloadSync.connected((id) => this.#ledger.pendingUpdate(id));
   }
 
@@ -602,13 +581,13 @@ export class DocSession {
   #resync(ws: WebSocket): void {
     this.#lastResync = Date.now();
     try {
-      ws.send(syncFrame(0, Y.encodeStateVector(this.doc)));
+      ws.send(encodeSyncFrame(0, Y.encodeStateVector(this.doc)));
       // A woken DO has an empty awareness map even when this socket survived. Preserve the caret and focus.
       const awareness = this.provider.awareness;
       const state = awareness.getLocalState();
       if (state !== null && !this.#ended && !this.#lingering) awareness.setLocalState(state);
       const pending = this.#ledger.pendingUpdate();
-      if (pending && !this.#ended) ws.send(syncFrame(2, pending));
+      if (pending && !this.#ended) ws.send(encodeSyncFrame(2, pending));
       // Each held payload asks again too, so one whose frames were lost on this socket catches up (A§10.10).
       this.#payloadSync.connected((id) => (this.#ended ? null : this.#ledger.pendingUpdate(id)));
     } catch {
