@@ -9,8 +9,7 @@ import { moveEntries, readMapEntries, rebaseMapEntries, sameValue } from '@moss-
 
 export interface SketchValue<L = unknown> { grid: boolean[]; labels: L[] }
 export type Rebase = <L>(local: SketchValue<L>) => SketchValue<L>;
-/** `first`: the payload has just arrived (a view can mount before its payload doc's state does). */
-export type ApplyPeerChange = (rebase: Rebase, first: boolean) => void;
+export type ApplyPeerChange = (rebase: Rebase) => void;
 type Entries = Map<string, unknown>;
 
 const sameEntries = (a: Entries, b: Entries): boolean =>
@@ -46,7 +45,7 @@ export function useSketchPeerSync<L>(nodeKey: string, grid: boolean[], labels: L
     if (!to || (from && sameEntries(from, to))) return;
     // The first arrival moves the view from nothing to the whole payload.
     const start = from ?? new Map<string, unknown>();
-    applyRef.current((local) => rebaseSketch(local, start, to), !from);
+    applyRef.current((local) => rebaseSketch(local, start, to));
   }, [read]);
 
   useEffect(() => { flush(); }, [grid, labels, flush]);

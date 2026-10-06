@@ -16,6 +16,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@moss/
 import { hidden } from '@moss-multi/host/affordances';
 // moss-multi seam: register payloads (A§10.10)
 import { RegisterDraft } from '@moss-multi/host/collab/registers';
+import { useMapRegisterWritable } from '@moss-multi/host/collab/register-input';
 import type { ChartConfig, ChartPalette, ChartType } from '../utils/chartDefaults';
 import {
   BLOCK_HEADER_CLASSNAME,
@@ -297,7 +298,9 @@ function ChartWrapper({
   const [isSelected, setSelected, clearSelection] = useLexicalNodeSelection(nodeKey);
   const [isEditing, setIsEditing] = useState(false);
   // moss-multi seam: read-only-decorators (T2.3): a closed body takes no chart edit; an edit left open closes without writing
-  const editable = useIsEditorEditable();
+  // moss-multi seam: register payloads (A§10.10): a chart whose payload has not arrived is read-only, as a text field is.
+  const payloadWritable = useMapRegisterWritable(editor, nodeKey);
+  const editable = useIsEditorEditable() && payloadWritable;
   useEffect(() => {
     if (!editable) setIsEditing(false);
   }, [editable]);

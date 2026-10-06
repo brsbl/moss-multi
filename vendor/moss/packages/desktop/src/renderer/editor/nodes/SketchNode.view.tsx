@@ -10,6 +10,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@moss/
 import { hidden } from '@moss-multi/host/affordances';
 // moss-multi seam: register payloads (A§10.10): peer strokes reach an open canvas; local writes carry their base.
 import { useSketchPeerSync, type Rebase } from '@moss-multi/host/collab/sketch-sync';
+import { useMapRegisterWritable } from '@moss-multi/host/collab/register-input';
 // moss-multi seam: converter-split (A§12; S-conv §2.3)
 import { OPEN_BLOCK_COMMENT_COMMAND } from '../commands';
 import { EDITOR_CHROME_COLORS } from '../colors';
@@ -963,8 +964,11 @@ function SketchWrapper({
 
   // Check if grid is empty to auto-enter edit mode
   const isInitialEmpty = initialGrid.every((v) => !v);
+  // moss-multi seam: register payloads (A§10.10): a canvas whose payload has not arrived only looks empty; it is
+  // read-only until then, as a text field is, so no stroke is drawn against nothing.
+  const payloadWritable = useMapRegisterWritable(editor, nodeKey);
 
-  const [isEditing, setIsEditing] = useState(isInitialEmpty);
+  const [isEditing, setIsEditing] = useState(isInitialEmpty && payloadWritable);
   const [grid, setGrid] = useState<boolean[]>(initialGrid);
   const [labels, setLabels] = useState<TextLabel[]>(initialLabels);
   const [undoStack, setUndoStack] = useState<SketchSnapshot[]>([]);
@@ -985,7 +989,7 @@ function SketchWrapper({
 
   const isGridEmpty = grid.every((v) => !v);
   // moss-multi seam: read-only-decorators (T3.8): a read-only canvas offers no Draw, Duplicate, comment or gap.
-  const editable = useIsEditorEditable();
+  const editable = useIsEditorEditable() && payloadWritable;
 
   const handleEditClick = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -1015,11 +1019,8 @@ function SketchWrapper({
   );
 
   // moss-multi seam: register payloads (A§10.10)
-  const openedEmpty = useRef(isInitialEmpty);
-  const applyPeerChange = useCallback((rebase: Rebase, first: boolean) => {
+  const applyPeerChange = useCallback((rebase: Rebase) => {
     const local = rebase({ grid: gridRef.current, labels: labelsRef.current });
-    // A canvas that mounted before its payload arrived opened for drawing as if new; untouched, it closes again.
-    if (first && openedEmpty.current && undoRef.current.length === 0 && (local.grid.some(Boolean) || local.labels.length > 0)) setIsEditing(false);
     gridRef.current = local.grid;
     labelsRef.current = local.labels;
     setGrid(local.grid);

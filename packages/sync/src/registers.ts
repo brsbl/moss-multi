@@ -200,6 +200,18 @@ export function registerState(editor: LexicalEditor, key: NodeKey): { id: string
   return { id, ready: !registry.pending.has(id) && registry.host.get(id) !== undefined && !registry.host.awaiting(id) };
 }
 
+/**
+ * Whether node `key`'s compound payload (chart, sketch) may take an edit: unbound, new (its first value is still the
+ * node's), or arrived. Until then a write has nothing to land on, so the view offers no control that writes.
+ */
+export function mapRegisterWritable(editor: LexicalEditor, key: NodeKey): boolean {
+  const registry = registries.get(editor);
+  const id = (editor.getEditorState()._nodeMap.get(key) as RegisterNode | undefined)?.__regId;
+  if (!registry || !id || registry.pending.has(id)) return true;
+  const doc = registry.host.get(id);
+  return !!doc && !registry.host.awaiting(id) && payloadMap(doc).size > 0;
+}
+
 /** Calls `listener` when a payload is held, written first or arrives; editor updates are the caller's to watch. */
 export function onRegisterChange(editor: LexicalEditor, listener: () => void): () => void {
   const registry = registries.get(editor);
