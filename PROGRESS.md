@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 78% done** (76 of 97 planned tasks verified)
+**Overall: 79% done** (77 of 97 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -8,7 +8,7 @@
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 15 / 15 | in progress |
-| M4 Comments | Moss's full comment experience as CRDT data | 7 / 7 | in progress |
+| M4 Comments | Moss's full comment experience as CRDT data | 8 / 8 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 2 / 5 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
@@ -95,6 +95,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-06 — T4.S3 verified: a frame that touches long commented runs or long restore candidates now does anchor work bounded by its walk budget before reading any item, so oversized gaps detach comments instead of costing unbounded time.
 - 2026-10-06 — T4.S3 re-verified: a struct walk that runs out in a long fragmented gap now detaches only its own comment, so sibling comments elsewhere in that gap keep their anchors.
 - 2026-10-06 — T4.S1 verified: every comment write now re-checks its author's credential, the note's liveness and at least commenter access inside the note's serialized write, so a revocation or demotion that commits after the request was admitted stops the comment from landing.
+- 2026-10-06 — T4.S2 verified: comment create, reply, edit, reaction and sidecar import are now refused once the note plus every stored payload, served or withheld, would leave no room, so comments cannot push a note past its size cap.
 - 2026-10-06 — T3.10 verified: a host such as the bb Moss viewer plugin can read the viewer's or editor's current selection as text, markdown, source file lines, heading path and blocks, and can show moss's Share with Agent button for it.
 
 ## T1.1s identity audit
