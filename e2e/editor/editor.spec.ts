@@ -5,10 +5,10 @@
 // "Changed in Moss"; pasted media goes only through the host; and the editor is shot in light and dark.
 // T3.10 (editor 0.2.0): `selection()` (feature `selection-1`) with lines golden-compared against the file a save
 // writes, exact after an unsaved edit, and moss's Share with Agent button only with services.shareWithAgent.
-// T3.11 (editor 0.3.0, API 2): the moss-html frame keeps a block off the network (requests, WebRTC, child frames,
-// navigation) while it still renders and runs; copyFromNote copies only from a note the user opened; a case-only
-// retitle keeps the markdown entry's spelling as Moss desktop does; and an API 1 host (the 0.2.0 host fixture)
-// gets a typed apiMismatch at mount.
+// T3.11 (editor 0.3.0, API 2): a moss-html block renders inert until the user presses Run (PRODUCT ruling 21), and
+// the frame keeps a running block off the network (requests, WebRTC, child frames, navigation); copyFromNote
+// copies only from a note the user opened; a case-only retitle keeps the markdown entry's spelling as Moss desktop
+// does; and an API 1 host (the 0.2.0 host fixture) gets a typed apiMismatch at mount.
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -156,6 +156,21 @@ const scrollTop = (page: Page) =>
   });
 
 const frames = (page: Page) => page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+
+/** The block's own document inside a moss-html preview frame (`layer`: moss's static or interactive frame). */
+const blockIn = (page: Page, index = 0, layer: 'static' | 'interactive' = 'static') =>
+  body(page)
+    .locator('[data-moss-html-preview-viewport]')
+    .nth(index)
+    .frameLocator(`iframe[title="${layer === 'static' ? 'HTML preview' : 'HTML preview (interactive)'}"]`)
+    .frameLocator('iframe');
+
+/** PRODUCT ruling 21: the user activates the `index`th HTML block and presses its Run button. */
+async function runBlock(page: Page, index = 0) {
+  const viewport = body(page).locator('[data-moss-html-preview-viewport]').nth(index);
+  await viewport.getByRole('button', { name: 'Activate live HTML preview' }).click();
+  await viewport.frameLocator('iframe[title="HTML preview (interactive)"]').getByRole('button', { name: 'Run' }).click();
+}
 
 const files = (page: Page) => page.evaluate(() => window.editorFixture.files());
 
@@ -512,6 +527,48 @@ test.describe('embeddable editor', () => {
     expect(await page.evaluate(() => window.editorFixture.info)).toEqual({ api: 2, version: '0.3.0', features: ['selection-1', 'share-with-agent-1'] });
   });
 
+  test('ruling 21: a moss-html block renders inert until the user presses Run, which lasts while the editor is mounted', async ({ page }) => {
+    const seen = await open(page);
+    const note = [
+      '# Plan',
+      '',
+      '```moss-html',
+      '<style>#out { color: rgb(10, 120, 30); }</style>',
+      '<p id="out">inert</p>',
+      "<script>document.getElementById('out').textContent = 'ran';</script>",
+      '```',
+      '',
+      'After the block.',
+      '',
+    ].join('\n');
+    await mountNote(page, note);
+    // Inert: the HTML and its style render, and no script runs, however long the note stays open.
+    await expect(blockIn(page).locator('#out')).toHaveText('inert', { timeout: 10_000 });
+    expect(await blockIn(page).locator('#out').evaluate((el) => getComputedStyle(el).color)).toBe('rgb(10, 120, 30)');
+    await page.waitForTimeout(1_500);
+    await expect(blockIn(page).locator('#out')).toHaveText('inert');
+    // Activating the block is not consent either: its interactive frame is inert until Run.
+    const viewport = body(page).locator('[data-moss-html-preview-viewport]');
+    await viewport.getByRole('button', { name: 'Activate live HTML preview' }).click();
+    await expect(blockIn(page, 0, 'interactive').locator('#out')).toHaveText('inert', { timeout: 10_000 });
+    await page.waitForTimeout(1_000);
+    await expect(blockIn(page, 0, 'interactive').locator('#out')).toHaveText('inert');
+    await viewport.frameLocator('iframe[title="HTML preview (interactive)"]').getByRole('button', { name: 'Run' }).click();
+    await expect(blockIn(page, 0, 'interactive').locator('#out')).toHaveText('ran', { timeout: 10_000 });
+    // The choice lasts for the block while the editor is mounted: deselected, its static frame runs too.
+    await body(page).getByText('After the block.', { exact: true }).click();
+    await expect(viewport.locator('iframe[title="HTML preview (interactive)"]')).toHaveCount(0);
+    await expect(blockIn(page).locator('#out')).toHaveText('ran', { timeout: 10_000 });
+    // A new mount starts inert again.
+    await page.evaluate(() => window.editorFixture.unmount({ discardUnsaved: true }));
+    await mountNote(page, note);
+    await expect(blockIn(page).locator('#out')).toHaveText('inert', { timeout: 10_000 });
+    await page.waitForTimeout(1_000);
+    await expect(blockIn(page).locator('#out')).toHaveText('inert');
+    expect(seen.errors).toEqual([]);
+    expect(await page.evaluate(() => window.editorFixture.violations)).toEqual([]);
+  });
+
   test('API 2: a moss-html block renders and runs in its frame, and none of its network probes reaches another origin', async ({ page }) => {
     const seen = await open(page);
     const collector = server.collector.url;
@@ -558,15 +615,16 @@ test.describe('embeddable editor', () => {
     server.collector.hits.length = 0;
     await mountNote(page, note);
     const viewport = body(page).locator('[data-moss-html-preview-viewport]');
-    const frame = viewport.locator('iframe');
+    const frame = viewport.locator('iframe[title="HTML preview"]');
     await expect(frame).toHaveCount(1, { timeout: 10_000 });
     await expect(frame).toHaveAttribute('src', '/editor/moss-html-frame.html');
     await expect(frame).toHaveAttribute('sandbox', 'allow-scripts');
+    await runBlock(page);
     await page.waitForTimeout(4_000);
     expect(server.collector.hits).toEqual([]);
     // The block still renders and runs, in a sandboxed child of the frame document: its inline style applies and
     // its inline script writes.
-    const out = viewport.frameLocator('iframe').frameLocator('iframe').locator('#out');
+    const out = blockIn(page, 0, 'interactive').locator('#out');
     await expect(out).toHaveText(/^ran: \d$/, { timeout: 10_000 });
     expect(await out.evaluate((el) => getComputedStyle(el).color)).toBe('rgb(10, 120, 30)');
     // The host serves the frame document with editor.json's policy: inline scripts and styles, data: and blob:
@@ -598,8 +656,11 @@ test.describe('embeddable editor', () => {
     server.collector.hits.length = 0;
     await mountNote(page, note);
     await expect(body(page).locator('[data-moss-html-preview-viewport] iframe')).toHaveCount(probes.length, { timeout: 10_000 });
+    for (let index = 0; index < probes.length; index++) await runBlock(page, index);
     await page.waitForTimeout(4_000);
     expect(server.collector.hits).toEqual([]);
+    // A frame whose block tried to load another page is torn down, in both of moss's layers.
+    await expect(body(page).locator('[data-moss-html-preview-viewport]').first().frameLocator('iframe[title="HTML preview"]').getByText('This block tried to open another page')).toBeVisible();
     await expect(page).toHaveURL(new RegExp(`^${server.url}/fixture/`));
     // WebKit reports the sandbox's refusals of the parent and top probes as page errors; those are the refusals
     // asserted here.
