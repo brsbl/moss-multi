@@ -518,7 +518,15 @@ test.describe('embeddable editor', () => {
     const seen = await open(page);
     await mountSelectionNote(page);
     await body(page).getByText('Intro with a').first().click();
-    await page.keyboard.press('End');
+    // The caret goes to the intro's end through the DOM selection, which Lexical adopts.
+    await body(page).evaluate((root) => {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        if ((node as Text).data.endsWith(' inside.')) return document.getSelection()?.collapse(node, (node as Text).data.length);
+      }
+      throw new Error('no intro text');
+    });
+    await frames(page);
     await page.keyboard.press('Enter');
     await page.keyboard.type('A new line');
     const [first] = SELECTION_CASES;
