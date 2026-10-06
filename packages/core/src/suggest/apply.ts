@@ -390,13 +390,16 @@ interface Target {
   groups: IdSpan[][];
   ownDeletes: IdSpan[];
   inserted: Map<number, readonly [number, number]>;
+  /** Every item the record's transaction deleted: the delete sets named, and what Yjs deletes with them (a type's
+   * contents, a map key's overwritten value). */
+  deleted: IdSpan[];
 }
 
 function target(doc: Y.Doc, kind: DocKind): Target {
   const hydrated = Y.encodeStateVector(doc);
   const before = Y.decodeStateVector(hydrated);
   return {
-    doc, kind, ops: [], hydrated, state: (client) => before.get(client) ?? 0, groups: [], ownDeletes: [], inserted: new Map(),
+    doc, kind, ops: [], hydrated, state: (client) => before.get(client) ?? 0, groups: [], ownDeletes: [], inserted: new Map(), deleted: [],
   };
 }
 
@@ -448,10 +451,13 @@ export function applyRecord(mirror: Y.Doc, record: SuggestionRecord, options: Ap
 
   try {
     for (const t of targets.values()) {
-      t.doc.transact(() => {
+      let tr: Y.Transaction | null = null;
+      t.doc.transact((transaction) => {
+        tr = transaction;
         for (const op of t.ops) Y.applyUpdate(t.doc, op);
         if (t === body) for (const part of record.parts) Y.applyUpdate(t.doc, deleteUpdate(part.targets));
       }, APPLY);
+      t.deleted = spansOf((tr as Y.Transaction | null)!.deleteSet as never);
     }
   } catch {
     return fail('unresolvable');
@@ -469,10 +475,12 @@ export function applyRecord(mirror: Y.Doc, record: SuggestionRecord, options: Ap
     }
   }
 
-  // G3, default-deny: every item the record inserted and every item it removes lies in a channel of the table, so
-  // the preview, which renders exactly those channels, shows each of them. GC structs are left to G5 (c).
+  // G3, default-deny: every item the record inserted and every item its transaction deleted lies in a channel of the
+  // table, so the preview, which renders exactly those channels, shows each of them. The transaction's own delete set
+  // also holds the implicit deletions: a deleted type's contents and a map key's overwritten value. GC structs are
+  // left to G5 (c).
   for (const t of targets.values()) {
-    const spans = [...[...t.inserted].map(([client, [from, to]]) => ({ client, clock: from, len: to - from })), ...t.groups.flat()];
+    const spans = [...[...t.inserted].map(([client, [from, to]]) => ({ client, clock: from, len: to - from })), ...t.groups.flat(), ...t.deleted];
     for (const span of spans) {
       const end = Math.min(span.clock + span.len, Y.getState(t.doc.store, span.client));
       for (const struct of structsIn(t.doc.store, span.client, span.clock, end)) {
