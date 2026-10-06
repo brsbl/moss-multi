@@ -1,7 +1,9 @@
 // The linear matchers in markdown/linear-match.ts give what their regexes give, byte for byte: over every line and
 // paragraph of the converter corpus and over random strings of the tokens the regexes care about.
-// scripts/measure-converter.mjs holds the converter to linear cost on unclosed openers in workerd.
+// scripts/measure-converter.mjs holds the converter to linear cost on unclosed openers in workerd; the typing
+// shortcuts and the table divider check, which it does not reach, are held to it here.
 import { LINEAR_REGEXP_KEYS, linearRegExp } from '@moss-desktop/renderer/editor/markdown/linear-match';
+import { isTableDividerRow } from '@moss-desktop/renderer/editor/markdown/transformers';
 import { describe, expect, it } from 'vitest';
 import { CONVERTER_CASES, converterBody } from '../../measure/converter-cases.ts';
 import { FIXTURES } from './fixtures.ts';
@@ -9,6 +11,9 @@ import { MARKDOWN_EDITOR_TRANSFORMERS } from './index.ts';
 
 const FIELDS = ['importRegExp', 'regExp', 'regExpStart'] as const;
 const keyOf = (re: RegExp) => `/${re.source}/${re.flags}`;
+// Wrapped outside the list: moss's table divider check (isTableDividerRow).
+const DIVIDER = /^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)+\|?\s*$/;
+const STANDALONE = [DIVIDER];
 
 // The regex fields of the converter's list, as [key, the RegExp the list holds].
 const listed = MARKDOWN_EDITOR_TRANSFORMERS.flatMap((transformer) =>
@@ -37,6 +42,8 @@ function* fuzz(count: number, seed: number, tokens: string[]): Generator<string>
     let text = '';
     for (let j = 0; j < length; j += 1) text += tokens[next() % tokens.length];
     yield* [text, `![${text}`, `![${text})`, `[http://${text}`, `*?[${text}`, ` ${text} | `];
+    // The typing shortcuts' forms, anchored at the end.
+    yield* [`?[${text})`, `[[${text}]]`, `[[${text}]`, `[http://${text})`, `*?[${text})*`, `*http://${text}*`, `|-${text}`];
   }
 }
 
@@ -47,17 +54,18 @@ const corpusTexts = [
 
 describe('linear transformer matching @p:tech-4', () => {
   it('wraps every regex it knows in the converter list, and only those', () => {
-    const keys = new Set(listed.map(keyOf));
+    const keys = new Set([...listed, ...STANDALONE].map(keyOf));
     expect(LINEAR_REGEXP_KEYS.filter((key) => !keys.has(key))).toEqual([]);
     for (const re of listed) expect(Object.getPrototypeOf(re) !== RegExp.prototype, keyOf(re)).toBe(LINEAR_REGEXP_KEYS.includes(keyOf(re)));
   });
 
   describe.each(LINEAR_REGEXP_KEYS.map((key) => [key] as const))('%s', (key) => {
-    const original = listed.find((re) => keyOf(re) === key)!;
+    const original = [...listed, ...STANDALONE].find((re) => keyOf(re) === key)!;
     const plain = new RegExp(original.source, original.flags);
     const linear = linearRegExp(plain);
     // The first few texts the two match differently.
-    const differing = (texts: string[]) => texts.filter((text) => JSON.stringify(shape(text.match(linear))) !== JSON.stringify(shape(text.match(plain)))).slice(0, 5);
+    const differing = (texts: string[]) =>
+      texts.filter((text) => JSON.stringify(shape(text.match(linear))) !== JSON.stringify(shape(text.match(plain))) || linear.test(text) !== plain.test(text)).slice(0, 5);
 
     it('is a RegExp with the same source and flags', () => {
       expect(linear).toBeInstanceOf(RegExp);
@@ -73,4 +81,30 @@ describe('linear transformer matching @p:tech-4', () => {
       expect(differing([...fuzz(30_000, key.length, TOKENS), ...fuzz(10_000, key.length, ROW_TOKENS)])).toEqual([]);
     });
   });
+
+  // Text the original regexes take quadratic time on, 50 KB of it; the wrapped ones take a few ms.
+  const SLOW_MS = 500;
+  const timed = (run: () => unknown) => {
+    const started = performance.now();
+    run();
+    return performance.now() - started;
+  };
+
+  it('checks a table divider in linear time', () => {
+    expect(timed(() => isTableDividerRow(`|-|-${' '.repeat(100_000)}x`))).toBeLessThan(SLOW_MS);
+  });
+
+  it('runs every typing shortcut in linear time on unclosed openers', () => {
+    const slow: string[] = [];
+    for (const transformer of MARKDOWN_EDITOR_TRANSFORMERS) {
+      if (transformer.type !== 'text-match' || !transformer.trigger || !transformer.regExp) continue;
+      for (const [name, c] of Object.entries(CONVERTER_CASES)) {
+        // Lexical matches the text up to the caret once the trigger character is typed.
+        const text = `${converterBody(c, 50_000)}${transformer.trigger}`;
+        const ms = timed(() => text.match(transformer.regExp));
+        if (ms > SLOW_MS) slow.push(`${keyOf(transformer.regExp)} on ${name}: ${Math.round(ms)} ms`);
+      }
+    }
+    expect(slow).toEqual([]);
+  }, 300_000);
 });

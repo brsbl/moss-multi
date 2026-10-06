@@ -8,6 +8,8 @@ export interface ConverterCase {
   before?: string;
   /** After the run. */
   after?: string;
+  /** Repeated after `after`; the run and the tail then share the note's size. */
+  tail?: string;
 }
 
 export const CONVERTER_CASES: Record<string, ConverterCase> = {
@@ -31,11 +33,18 @@ export const CONVERTER_CASES: Record<string, ConverterCase> = {
   'URL labels [http://': { run: '[http://' },
   'image lines ![a](': { run: '![a](', before: '' },
   'indent before a word': { run: ' ', before: '', after: 'x' },
+  'divider then whitespace': { run: ' ', before: '|-|-', after: 'x' },
+  'pill openers ?[ before one destination': { run: '?[', after: '](', tail: 'a' },
+  'formatted pill openers *?[ before one destination': { run: '*?[', after: '](', tail: 'a' },
+  'URL labels [http:// before one destination': { run: '[http://', after: '](', tail: 'a' },
 };
 
 /** The case's markdown, `bytes` long or just over. */
 export function converterBody(c: ConverterCase, bytes: number): string {
   const before = c.before ?? 'quokka ';
   const after = c.after ?? '';
-  return `${before}${c.run.repeat(Math.max(1, Math.ceil((bytes - before.length - after.length) / c.run.length)))}${after}`;
+  const room = bytes - before.length - after.length;
+  const runBytes = c.tail ? room / 2 : room;
+  const tail = c.tail ? c.tail.repeat(Math.max(1, Math.ceil(runBytes / c.tail.length))) : '';
+  return `${before}${c.run.repeat(Math.max(1, Math.ceil(runBytes / c.run.length)))}${after}${tail}`;
 }
