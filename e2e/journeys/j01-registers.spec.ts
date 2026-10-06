@@ -440,6 +440,53 @@ test("j01 registers: Ben's reference to another note's formula keeps its identit
   }
 });
 
+// Two references share a name: the merge carries each token's identity through the edit itself, never by matching
+// display text, so the one Ada deleted stays deleted and the one she kept is the one written.
+test("j01 registers: when two references share a name, Ben's merged edit keeps the one Ada kept, not the one she deleted @p:col-1", async ({ actors, stack }) => {
+  const first = '@(cost#11111111-1111-4111-8111-111111111111#22222222-2222-4222-8222-222222222222)';
+  const second = '@(cost#44444444-4444-4444-8444-444444444444#55555555-5555-4555-8555-555555555555)';
+  const { ada, ben: principal, id } = await note(actors, stack.baseUrl, 'Total {{2+3|5}} here.');
+  const ben = await actors.session(principal);
+  await join(ben, id);
+  const sources = async (actor: Actor) => (await formulas(actor, id)).map(([formula]) => formula);
+  await openFormula(ben, id);
+  await expect(formulaInput(ben)).toHaveJSProperty('readOnly', false, { timeout: PEER_TIMEOUT });
+  await formulaInput(ben).press('Home');
+  await ben.page.keyboard.insertText(`${first}+${second}+`);
+  await expect.poll(() => sources(ada), { message: "Ada receives Ben's references", timeout: PEER_TIMEOUT }).toEqual([`${first}+${second}+2+3`]);
+  await ben.page.keyboard.press('Escape');
+  await expect(popover(ben)).toHaveCount(0);
+  await openFormula(ada, id);
+  await expect(formulaInput(ada)).toHaveValue('cost+cost+2+3', { timeout: PEER_TIMEOUT });
+  await expect(formulaInput(ada)).toHaveJSProperty('readOnly', false, { timeout: PEER_TIMEOUT });
+  await formulaInput(ada).press('End');
+  await ada.page.keyboard.type('*');
+  await formulaInput(ada).press('Home');
+  for (let i = 0; i < 5; i += 1) await formulaInput(ada).press('Delete');
+  await expect(formulaInput(ada), 'Ada deletes the first reference').toHaveValue('cost+2+3*');
+  await openFormula(ben, id);
+  await expect(formulaInput(ben)).toHaveValue('cost+cost+2+3', { timeout: PEER_TIMEOUT });
+  await expect(formulaInput(ben)).toHaveJSProperty('readOnly', false, { timeout: PEER_TIMEOUT });
+  await formulaInput(ben).press('End');
+  await ben.page.keyboard.press('Backspace');
+  await ben.page.keyboard.type('4');
+  await expect.poll(() => sources(ada), { message: "Ada receives Ben's edit", timeout: PEER_TIMEOUT }).toEqual([`${first}+${second}+2+4`]);
+  await ben.page.keyboard.press('Escape');
+  await expect(formulaInput(ada), "Ada's field takes Ben's edit and keeps her own").toHaveValue('cost+2+4*', { timeout: PEER_TIMEOUT });
+  await formulaInput(ada).press('End');
+  await ada.page.keyboard.press('Backspace');
+  const want = [`${second}+2+4`];
+  for (const actor of [ada, ben]) await expect.poll(() => sources(actor), { message: `${actor.label}: the reference Ada kept is the one written`, timeout: PEER_TIMEOUT }).toEqual(want);
+  await ada.page.keyboard.press('Enter');
+  await expect(popover(ada)).toHaveCount(0);
+  await settled([ada, ben], id);
+  for (const actor of [ada, ben]) {
+    await actor.page.reload();
+    await ui.waitLive(actor, id); await actor.declareRemount(id);
+    await expect.poll(() => sources(actor), { message: `${actor.label}: the kept reference survives the reload`, timeout: PEER_TIMEOUT }).toEqual(want);
+  }
+});
+
 // Executable results are per viewer (A§10.10): an open popover writes a result only with its person's own expression
 // write, never in answer to a peer's update, so two viewers whose results differ never rewrite each other's.
 test("j01 registers: a peer's result write draws no write back from Ada's open popover @p:col-1", async ({ actors, stack }) => {
