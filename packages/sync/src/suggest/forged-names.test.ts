@@ -5,7 +5,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
-import { previewHash, type RecordOp } from '@moss-multi/core/suggest/apply';
+import { previewHash, type Hunk, type RecordOp } from '@moss-multi/core/suggest/apply';
 import { describeHunks, type ReviewRow } from '@moss-multi/core/suggest/describe';
 import { SuggestIngest } from '../doc/suggest.ts';
 import { payloadDocsFor } from '../payload-docs.ts';
@@ -128,6 +128,23 @@ describe('T5.3s forged records named like Object.prototype members @p:mean-2 @p:
       hashes.push(result.hash);
     }
     if (hashes.length === 2) expect(hashes[0]).not.toBe(hashes[1]);
+  });
+
+  it('a field holding a BigInt: the preview never throws, travels as JSON, and the card names it', () => {
+    const hashes: string[] = [];
+    for (const forged of [10n, 11n]) {
+      const live = seededBody();
+      const op = opFor(live, (doc) => paragraph(doc).setAttribute('__forged', forged as never));
+      const hunks = hunksOf(live, [op]);
+      expect(() => JSON.stringify(hunks)).not.toThrow();
+      const rows = describeHunks(JSON.parse(JSON.stringify(hunks)) as Hunk[]);
+      expect(names(rows, 'forged'), shown(rows)).toBe(true);
+      expect(names(rows, String(forged)), shown(rows)).toBe(true);
+      hashes.push(previewHash(hunks));
+      forgeRecord(live, 'g', [op]);
+      expect(() => JSON.stringify(previewRecord(live, 'g'))).not.toThrow();
+    }
+    expect(hashes[0]).not.toBe(hashes[1]);
   });
 
   it.each(NAMES)('a payload doc id %s: preview and card never throw, and the hash covers the payload', (name) => {
