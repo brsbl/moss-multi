@@ -418,9 +418,15 @@ export function payloadValueOf(doc: Y.Doc): unknown {
 /**
  * Projects `doc`. `lexical` gives each top-level block's recursive exportJSON by item id (the caller binds the
  * converter editor); the Yjs-level value is always included, so the hash covers every attribute either way.
- * `payload` resolves the payload docs live elements name; each is projected in full.
+ * `payload` resolves the payload docs live elements name, plus each id in `also` (the payloads a record writes, named
+ * or not); each is projected in full.
  */
-export function projectDoc(doc: Y.Doc, lexical?: ReadonlyMap<string, unknown>, payload?: (id: string) => Y.Doc | undefined): Projection {
+export function projectDoc(
+  doc: Y.Doc,
+  lexical?: ReadonlyMap<string, unknown>,
+  payload?: (id: string) => Y.Doc | undefined,
+  also: Iterable<string> = [],
+): Projection {
   const blocks = new Map<string, unknown>();
   const order: string[] = [];
   for (let item = doc.get('root', Y.XmlText)._start; item; item = item.right) {
@@ -432,7 +438,7 @@ export function projectDoc(doc: Y.Doc, lexical?: ReadonlyMap<string, unknown>, p
     order.push(key);
   }
   const payloads = new Map<string, unknown>();
-  for (const id of regRefs(doc).keys()) {
+  for (const id of new Set([...regRefs(doc).keys(), ...also])) {
     const held = payload?.(id);
     payloads.set(id, held ? payloadValueOf(held) : null);
   }

@@ -141,7 +141,8 @@ function mirrorWith(live: Y.Doc, payloads: Payloads): Y.Doc {
   return mirror;
 }
 
-const project = (doc: Y.Doc, payloads: Payloads): Projection => projectDoc(doc, lexicalBlocks(doc), (id) => payloads.doc(id));
+const project = (doc: Y.Doc, payloads: Payloads, also: Iterable<string>): Projection =>
+  projectDoc(doc, lexicalBlocks(doc), (id) => payloads.doc(id), also);
 
 type Applied =
   | { ok: true; mirror: Y.Doc; payloads: Payloads; hydrated: Uint8Array; touched: Map<string, Uint8Array>; hunks: Hunk[] }
@@ -154,14 +155,16 @@ function apply(live: Y.Doc, id: string): Applied {
   if (record.meta.status !== 'open') return { ok: false, reason: 'not-open' };
   const payloads = new Payloads(live);
   const mirror = mirrorWith(live, payloads);
-  const before = project(mirror, payloads);
+  const before = project(mirror, payloads, []);
   const result = applyRecord(mirror, record, { bindCheck, payloads });
   if (!result.ok) {
     mirror.destroy();
     payloads.destroy();
     return result;
   }
-  const hunks = projectionDiff(before, project(mirror, payloads));
+  // Every payload the record writes is projected after it, named or not, so accept never lands a payload change the
+  // preview did not show (I3). Before the record, G4 leaves only named payloads (already projected) and new ones.
+  const hunks = projectionDiff(before, project(mirror, payloads, result.payloads.keys()));
   return { ok: true, mirror, payloads, hydrated: result.hydrated, touched: result.payloads, hunks };
 }
 
