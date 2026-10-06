@@ -4,6 +4,7 @@ import type { AuthEnv } from '../auth/auth.ts';
 import { resolvePrincipal } from '../auth/principal.ts';
 import { crossOriginCookie, needsAppOrigin } from '../worker/origin-gate.ts';
 import { json } from '../worker/route.ts';
+import { handleAgents } from './agents.ts';
 import { ASSET_ROUTE, handleAssets } from './assets.ts';
 import { handleDocs, type DocsEnv } from './docs.ts';
 import { feedback } from './feedback.ts';
@@ -40,6 +41,7 @@ export async function handleApi(request: Request, env: ApiEnv): Promise<Response
   if (pathname === '/api/workspace') return workspace(request, env);
   if (pathname === '/api/feedback') return feedback(request, env);
   if (pathname === '/api/unfurl') return handleUnfurl(request, env);
+  if (pathname === '/api/agents' || pathname.startsWith('/api/agents/')) return handleAgents(request, env);
   if (ASSET_ROUTE.test(pathname)) {
     return env.ASSETS && env.PrincipalDO
       ? handleAssets(request, { ...env, ASSETS: env.ASSETS, PrincipalDO: env.PrincipalDO })

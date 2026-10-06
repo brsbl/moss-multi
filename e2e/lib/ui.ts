@@ -188,12 +188,13 @@ export const pathOf = (url: string): string => {
   return `${parsed.pathname}${parsed.search}`;
 };
 
-/** Adds `email` at `access` in an open Share dialog (note, folder or vault); the dialog stays open. */
-export async function shareInDialog(dialog: Locator, email: string, access: Access): Promise<void> {
-  await dialog.getByLabel('Email', { exact: true }).fill(email);
+/** Adds `email` (or an agent id, T3.6) at `access` in an open Share dialog (note, folder or vault); the dialog stays
+ * open. */
+export async function shareInDialog(dialog: Locator, email: string, access: Access, confirmation = `Shared with ${email}.`): Promise<void> {
+  await dialog.getByLabel('Email or agent ID', { exact: true }).fill(email);
   await dialog.getByRole('radiogroup', { name: 'Access', exact: true }).getByRole('radio', { name: access, exact: true }).click();
   await dialog.getByRole('button', { name: 'Share', exact: true }).click();
-  await expect(dialog.getByRole('status'), `shared with ${email}`).toHaveText(`Shared with ${email}.`);
+  await expect(dialog.getByRole('status'), `shared with ${email}`).toHaveText(confirmation);
 }
 
 /** Shares the note with `person` at `access` through the dialog, then waits for their row (by email: it stays a

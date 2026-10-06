@@ -35,12 +35,16 @@ export interface Target {
    * - `open-comment-thread`: opens the thread from its gutter icon.
    * - `open-detached-thread`: the candidate deletes the commented text, which detaches the thread, then both open it
    *   from the Comments list. moss at the pin has no detached state, so its anchored thread is the oracle.
+   * - `open-settings`: Settings is open (the story opens it; the candidate presses the sidebar's Settings), over an
+   *   opaque backdrop on both sides.
    */
-  prepare?: 'trash-open-note' | 'comment-gutter' | 'open-comment-thread' | 'open-detached-thread';
+  prepare?: 'trash-open-note' | 'comment-gutter' | 'open-comment-thread' | 'open-detached-thread' | 'open-settings';
   /** `e2e/fixtures/<fixture>.md` and `.comments.json`: the story note's body and threads, imported as POST /api/docs. */
   fixture?: string;
-  /** Capture this element instead of the shell: an overlay whose place follows its anchor, compared as itself. */
+  /** Capture this element instead of the shell: an overlay or dialog, compared as itself. */
   crop?: string;
+  /** Web sections the candidate takes out of layout before capture: those moss has no counterpart for. */
+  withhold?: string[];
 }
 
 /** moss's thread popover. */
@@ -55,6 +59,10 @@ export const TARGETS: Target[] = [
   { id: 'shell-empty', story: 'app--empty-notes', seed: 'fresh', focusEditor: false, masks: ['[data-collab-chrome]'], floor: 0.05, maxBlob: 16 },
   // The owner's trash view (T2.3). The retention notice's words differ by design (one module writes trash copy and
   // never counts days down), so only that pill is masked; it is wider than moss's and centred on the same point.
+  // Settings (T3.6). The oracle drops the sections the web withholds (Workspace Location, Default Markdown Editor, Note
+  // Intelligence, Connected Folders); the candidate drops its Account and Agents sections, which moss has no story for,
+  // so moss's dialog frame, header and Appearance section compare, and a slot that displaces them fails.
+  { id: 'settings', story: 'settings-modal--empty-new-user', seed: 'fresh', focusEditor: false, masks: [], floor: 0.05, maxBlob: 16, prepare: 'open-settings', crop: '[role="dialog"]', withhold: ['[role="dialog"] [data-collab-chrome]'] },
   { id: 'trash-view', story: 'app--default', seed: 'story-listing', focusEditor: false, masks: ['[data-collab-chrome]', `[${RETENTION_NOTICE_ATTR}]`], floor: 0.05, maxBlob: 16, prepare: 'trash-open-note' },
   // Comments (T4.3): a note with one thread. The highlight (moss's mark, our CSS Custom Highlight) and its gutter icon.
   // In dark mode moss pads its mark by 2px a side and rounds it, which moves the rest of the line; a highlight is paint
