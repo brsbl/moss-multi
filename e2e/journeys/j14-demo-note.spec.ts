@@ -308,3 +308,55 @@ test("j14 demo note: a chart and a canvas whose payloads have not arrived take n
   await ben.declareRemount(id);
   await expect.poll(() => state(ben), { message: "Ben's edits survive a reload", timeout: PEER_TIMEOUT }).toEqual(want);
 });
+
+// Ben's ink lands only on cells Ada's view already shows inked, so her decoded canvas does not change; her canvas
+// Undo or Cancel must still keep it (A§10.10).
+for (const action of ['Undo', 'Cancel'] as const) {
+  test(`j14 demo note: Ada's canvas ${action} keeps Ben's ink on cells she inked too @p:col-1 @p:note-2`, async ({ actors, stack }) => {
+    const ada = await actors.session(await actors.principal('ada'));
+    const created = await ada.context.request.post('/api/docs', { headers: { origin: stack.baseUrl }, data: { title: `Overlapping ${action}`, markdown: SETUP } });
+    expect(created.status()).toBe(201);
+    const { doc: { id } } = await created.json() as { doc: { id: string } };
+    await ada.goto(`/d/${id}`);
+    await ui.waitLive(ada, id);
+    const benPrincipal = await actors.principal('ben');
+    await grantDoc(ada, id, benPrincipal, 'editor');
+    const ben = await actors.open(benPrincipal, { path: `/d/${id}`, severable: true });
+    await ui.waitLive(ben, id);
+    const canvas = (actor: Actor) => ui.body(actor, id).locator('canvas');
+    for (const actor of [ada, ben]) {
+      await ui.body(actor, id).getByRole('button', { name: 'Draw', exact: true }).click();
+      await expect(canvas(actor)).toBeVisible();
+    }
+    if (!ben.sever) throw new Error('Ben must be severable');
+    ben.sever.blackhole();
+    try {
+      await stroke(ada.page, canvas(ada), 10, 10, 30);
+      await stroke(ben.page, canvas(ben), 10, 10, 30);
+      expect(ben.sever.census().dropped.out, "the cut withheld Ben's stroke").toBeGreaterThan(0);
+    } finally {
+      ben.expectReconnects(1, id);
+      ben.sever.reset();
+      ben.sever.restore();
+    }
+    await expect(ui.pane(ben, id)).toHaveAttribute('data-sync-unacked', '0', { timeout: PEER_TIMEOUT });
+    // A later edit on Ben's socket: once Ada has it, she has his stroke too.
+    await pick(ben, id, 'Classic', 'Accessible');
+    await expect.poll(async () => (await payloads(ada, id)).palette, { message: "Ada has Ben's later edit", timeout: PEER_TIMEOUT }).toBe('accessible');
+    const block = ui.body(ada, id).locator('[data-block-decorator-key]').filter({ has: canvas(ada) });
+    if (action === 'Undo') {
+      await block.locator('button:has(svg.lucide-undo-2, svg.lucide-undo2)').click();
+      await block.locator('button:has(svg.lucide-check)').click();
+    } else await block.locator('button:has(svg.lucide-x)').click();
+    const kept = async (actor: Actor) => {
+      const { cells } = await payloads(actor, id);
+      return [10, 20, 30].every(col => cells.includes(10 * 120 + col));
+    };
+    await expect(ui.pane(ada, id)).toHaveAttribute('data-sync-unacked', '0', { timeout: PEER_TIMEOUT });
+    for (const actor of [ada, ben]) await expect.poll(() => kept(actor), { message: `${actor.label}: Ben's ink survives Ada's ${action}`, timeout: PEER_TIMEOUT }).toBe(true);
+    await ben.page.reload();
+    await ui.waitLive(ben, id);
+    await ben.declareRemount(id);
+    await expect.poll(() => kept(ben), { message: `Ben's ink survives Ada's ${action} and a reload`, timeout: PEER_TIMEOUT }).toBe(true);
+  });
+}
