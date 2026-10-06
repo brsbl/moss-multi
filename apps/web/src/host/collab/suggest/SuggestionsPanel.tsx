@@ -21,6 +21,9 @@ import { timeAgo } from '../../surfaces/NotificationsBell.tsx';
 /** Reviewed cards listed under the open ones (glyphdown's cap). */
 const REVIEWED_SHOWN = 20;
 
+/** A card lists this many rows, then the rest behind "Show all"; Accept waits until every row has been shown. */
+export const ROWS_SHOWN = 8;
+
 /** What the panel needs from the pane: the note's doc while one is attached. */
 export interface SuggestionsSource {
   readonly body: Y.Doc | null;
@@ -149,6 +152,7 @@ function SuggestionCard({ docId, record, me, role, active }: { docId: string; re
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [expanded, setExpanded] = useState(false);
   const own = me !== null && meta.author === me;
   const reviewer = roleAtLeast(role, 'editor');
   const outdated = (meta.outdated?.length ?? 0) > 0 || (preview.state === 'failed' && preview.reason === 'outdated');
@@ -156,6 +160,8 @@ function SuggestionCard({ docId, record, me, role, active }: { docId: string; re
   const rows = preview.state === 'ready' ? describeHunks(preview.hunks) : [];
   // A preview that failed for any other reason is said, with a retry: Accept needs a preview.
   const failed = preview.state === 'failed' && !outdated && !broken ? reasonText(preview.reason) : null;
+  const allShown = expanded || rows.length <= ROWS_SHOWN;
+  const shownRows = allShown ? rows : rows.slice(0, ROWS_SHOWN);
 
   const act = async (action: 'accept' | 'reject' | 'withdraw') => {
     setBusy(true);
@@ -205,9 +211,10 @@ function SuggestionCard({ docId, record, me, role, active }: { docId: string; re
               </button>
             </div>
           ) : null}
-          {rows.map((row, i) => (
+          {shownRows.map((row, i) => (
             <div
               key={i}
+              title={row.detail}
               {...{ [SUGGESTION_ROW_ATTR]: row.kind }}
               className={`flex gap-1 rounded px-1.5 py-0.5 ${row.kind === 'insert' ? 'bg-accent-brand/10 text-accent-brand-pressed' : row.kind === 'delete' ? 'bg-accent-terracotta/10 text-accent-terracotta' : 'bg-surface-badge text-ink-muted'}`}
             >
@@ -218,6 +225,11 @@ function SuggestionCard({ docId, record, me, role, active }: { docId: string; re
               </span>
             </div>
           ))}
+          {allShown ? null : (
+            <button type="button" className="self-start text-micro text-ink-default underline" onClick={() => setExpanded(true)}>
+              Show all {rows.length} changes
+            </button>
+          )}
           {(outdated || broken) ? (
             <div className="flex items-center gap-2">
               <span className="text-micro text-ink-muted">{reasonText(outdated ? 'outdated' : 'broken')}</span>
@@ -239,7 +251,9 @@ function SuggestionCard({ docId, record, me, role, active }: { docId: string; re
         <div className="mt-2 flex gap-2">
           {reviewer ? (
             <>
-              <Button size="sm" className="h-7 gap-1 px-2 text-xs" disabled={busy || preview.state !== 'ready' || outdated || broken} onClick={() => void act('accept')}>
+              <Button size="sm" className="h-7 gap-1 px-2 text-xs" disabled={busy || preview.state !== 'ready' || !allShown || outdated || broken}
+                title={allShown ? undefined : 'Show every change before accepting'}
+                onClick={() => void act('accept')}>
                 <Check aria-hidden className="h-3 w-3" />
                 Accept
               </Button>

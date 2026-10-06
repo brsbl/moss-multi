@@ -54,8 +54,9 @@ const indented = (doc: Y.Doc) => blocks(doc).find((x) => x instanceof Y.XmlText 
 const codeKey = (doc: Y.Doc) => String(decorator(doc).getAttribute('__regId'));
 
 /** Rows of a forged record's preview on a fresh seeded note: a body op, or a payload op on the code block's payload. */
-function forgedRows(write: (doc: Y.Doc) => void, on: 'body' | 'payload' = 'body'): { rows: ReviewRow[]; hash: string; hunks: Hunk[] } {
+function forgedRows(write: (doc: Y.Doc) => void, on: 'body' | 'payload' = 'body', prepare?: (live: Y.Doc) => void): { rows: ReviewRow[]; hash: string; hunks: Hunk[] } {
   const live = seededBody();
+  prepare?.(live);
   const op = on === 'body' ? opOn(live, 'body', write) : opOn(payloadDocsFor(live).get(codeKey(live))!, codeKey(live), write);
   forgeRecord(live, 'g', [op]);
   const preview = previewRecord(live, 'g');
@@ -106,8 +107,9 @@ interface CensusCase {
   kind?: ReviewRow['kind'];
 }
 
-const keyCase = (name: string, channel: Channel, content: string, write: (doc: Y.Doc) => void, needles: string[], on: 'body' | 'payload' = 'body'): CensusCase =>
-  ({ name, channel, content, rows: () => forgedRows(write, on).rows, needles, kind: 'change' });
+const keyCase = (
+  name: string, channel: Channel, content: string, write: (doc: Y.Doc) => void, needles: string[], on: 'body' | 'payload' = 'body', prepare?: (live: Y.Doc) => void,
+): CensusCase => ({ name, channel, content, rows: () => forgedRows(write, on, prepare).rows, needles, kind: 'change' });
 
 const CASES: CensusCase[] = [
   // An element's keys: Lexical's own fields, stored ones it does not export (one colliding with a child's field), a
@@ -128,6 +130,7 @@ const CASES: CensusCase[] = [
   // A decorator's keys.
   keyCase('a decorator field', 'body/root/XmlElement/key', 'Any', (doc) => decorator(doc).setAttribute('__hidden', 'deco-secret'), ['code-block', 'hidden', 'deco-secret']),
   keyCase('a decorator format', 'body/root/XmlElement/key', 'Any', (doc) => decorator(doc).setAttribute('__format', 3 as never), ['format', 'right']),
+  keyCase('a removed decorator field', 'body/root/XmlElement/key', 'Deleted', (doc) => decorator(doc).removeAttribute('__language'), ['code-block', 'language', 'js', 'none']),
   keyCase('a nested map on a decorator', 'body/root/XmlElement/key', 'Type:Map', (doc) => decorator(doc).setAttribute('__extra', new Y.Map([['k', 'deco-deep']]) as never), ['extra', 'deco-deep']),
   // A text node's keys.
   keyCase('text format', 'body/root/Map/key', 'Any', (doc) => textMap(doc).set('__format', 1), ['world', 'format', 'bold']),
@@ -140,6 +143,9 @@ const CASES: CensusCase[] = [
   keyCase('a removed text field', 'body/root/Map/key', 'Deleted', (doc) => textMap(doc).delete('__style'), ['style', 'none']),
   // A compound payload's fields.
   keyCase('a payload field', 'payload/payload-map/Map/key', 'Any', (doc) => doc.getMap('payload-map').set('lang', 'python'), ['lang', 'python'], 'payload'),
+  keyCase('a removed payload field', 'payload/payload-map/Map/key', 'Deleted', (doc) => doc.getMap('payload-map').delete('lang'), ['lang', 'ruby', 'none'], 'payload', (live) => {
+    payloadDocsFor(live).get(codeKey(live))!.getMap('payload-map').set('lang', 'ruby');
+  }),
   // Sequences: text, a new element, a new decorator, a new text-node map, a line break, and removals.
   { name: 'inserted text', channel: 'body/root/XmlText/seq', content: 'String', rows: () => suggestedRows([() => select('Hello', 6).insertText('brave ')]), needles: ['brave'], kind: 'insert' },
   { name: 'removed text', channel: 'body/root/XmlText/seq', content: 'Deleted', rows: () => suggestedRows([], ['cat']), needles: ['cat'], kind: 'delete' },

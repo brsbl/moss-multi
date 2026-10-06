@@ -10,7 +10,7 @@ import { deleteUpdate, previewHash, projectDoc, projectionDiff, recordDigest, ty
 import { SuggestIngest } from '../doc/suggest.ts';
 import { payloadDocsFor } from '../payload-docs.ts';
 import { createRecord, opsOf, partsOf, readMeta, SUGGESTIONS_ORIGIN } from './records.ts';
-import { acceptRecord, lexicalBlocks, nodeRegistry, previewRecord } from './review.ts';
+import { acceptRecord, nodeRegistry, previewRecord } from './review.ts';
 import { bodyOf, deterministicIds, EDITOR, seededBody, SUGGESTER } from './test-support.ts';
 
 let restore: () => void = () => {};
@@ -186,7 +186,7 @@ function codeKey(live: Y.Doc): string {
 
 /** The note as a reviewer would be shown it, every held payload included. */
 const projected = (live: Y.Doc) =>
-  projectDoc(live, lexicalBlocks(live), (id) => payloadDocsFor(live).get(id), [...payloadDocsFor(live).docs.keys()]);
+  projectDoc(live, (id) => payloadDocsFor(live).get(id), [...payloadDocsFor(live).docs.keys()]);
 
 interface Outcome {
   ingest: { ok: boolean; reason?: string };

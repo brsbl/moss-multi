@@ -1,7 +1,6 @@
 // Suggestion records applied to a mirror (docs/design/suggestions.md §4): the accept gates that need only Yjs, the
-// projection a reviewer is shown, and its hash. Shared by the client preview and the DocDO accept. The Lexical parts
-// (the headless bind check, G7, and each block's exportJSON) are passed in by the caller, so this module stays
-// Lexical-free.
+// projection a reviewer is shown, and its hash. Shared by the client preview and the DocDO accept. The Lexical part
+// (the headless bind check, G7) is passed in by the caller, so this module stays Lexical-free.
 import * as encoding from 'lib0/encoding';
 import { digest } from 'lib0/hash/sha256';
 import { encodeUtf8 } from 'lib0/string';
@@ -745,14 +744,25 @@ export interface Projection {
   payloads: Map<string, unknown>;
 }
 
-/** A type's live sequence as the preview shows it: runs of characters as strings, every other item by its content. */
-function seqValue(doc: DocKind, root: string, type: Y.AbstractType<unknown>): unknown[] {
-  const seq: unknown[] = [];
+/**
+ * A type's live sequence as the preview shows it, each entry with the Yjs id it starts at, so a reviewer's rows align
+ * text by item identity: runs of characters with consecutive ids as `{ id, s }`, every other item as `{ id, ...value }`.
+ */
+function seqValue(doc: DocKind, root: string, type: Y.AbstractType<unknown>): Record<string, unknown>[] {
+  const seq: Record<string, unknown>[] = [];
+  let next: { client: number; clock: number } | null = null;
   for (let item = type._start; item; item = item.right) {
     if (item.deleted) continue;
     const value = contentValue(doc, root, item.content);
-    if (typeof value === 'string' && typeof seq.at(-1) === 'string') seq[seq.length - 1] += value;
-    else seq.push(value);
+    const last = seq.at(-1);
+    if (typeof value === 'string') {
+      if (last && typeof last.s === 'string' && next && next.client === item.id.client && next.clock === item.id.clock) last.s += value;
+      else seq.push({ id: itemKey(item.id), s: value });
+      next = { client: item.id.client, clock: item.id.clock + item.length };
+    } else {
+      seq.push({ id: itemKey(item.id), ...(value as Record<string, unknown>) });
+      next = null;
+    }
   }
   return seq;
 }
@@ -792,32 +802,28 @@ function contentValue(doc: DocKind, root: string, content: Y.Item['content']): u
   return { [contentKind(content) ?? 'Unknown']: content.getContent() };
 }
 
-/** A payload doc as a reviewer is shown it: its text and its compound fields, by the table. */
+/** A payload doc as a reviewer is shown it: its text, the id each run of it starts at, and its compound fields. */
 export function payloadValueOf(doc: Y.Doc): unknown {
   const seq = seqValue('payload', 'payload', doc.getText('payload') as unknown as Y.AbstractType<unknown>);
-  const text = seq.length === 0 ? '' : seq.length === 1 && typeof seq[0] === 'string' ? seq[0] : seq;
-  return { text, map: keysValue('payload', 'payload-map', doc.getMap('payload-map') as unknown as Y.AbstractType<unknown>) };
+  const strings = seq.every((entry) => typeof entry.s === 'string');
+  const text = strings ? seq.map((entry) => entry.s).join('') : seq.map((entry) => (typeof entry.s === 'string' ? entry.s : entry));
+  const ids = seq.map((entry) => [entry.id, typeof entry.s === 'string' ? entry.s.length : 1]);
+  return { text, ids, map: keysValue('payload', 'payload-map', doc.getMap('payload-map') as unknown as Y.AbstractType<unknown>) };
 }
 
 /**
- * Projects `doc`. `lexical` gives each top-level block's recursive exportJSON by item id (the caller binds the
- * converter editor); the Yjs-level value, by the channel table, is always included, so the hash covers every channel.
- * `payload` resolves the payload docs live elements name, plus each id in `also` (the payloads a record writes, named
- * or not); each is projected in full.
+ * Projects `doc`: each top-level block by its Yjs item id, rendered by the channel table, which is the whole of what a
+ * record may write. `payload` resolves the payload docs live elements name, plus each id in `also` (the payloads a
+ * record writes, named or not); each is projected in full.
  */
-export function projectDoc(
-  doc: Y.Doc,
-  lexical?: ReadonlyMap<string, unknown>,
-  payload?: (id: string) => Y.Doc | undefined,
-  also: Iterable<string> = [],
-): Projection {
+export function projectDoc(doc: Y.Doc, payload?: (id: string) => Y.Doc | undefined, also: Iterable<string> = []): Projection {
   const blocks = new Map<string, unknown>();
   const order: string[] = [];
   const root = doc.get('root', Y.XmlText);
   for (let item = root._start; item; item = item.right) {
     if (item.deleted) continue;
     const key = itemKey(item.id);
-    blocks.set(key, { y: contentValue('body', 'root', item.content), lexical: lexical?.get(key) ?? null });
+    blocks.set(key, contentValue('body', 'root', item.content));
     order.push(key);
   }
   const payloads = new Map<string, unknown>();

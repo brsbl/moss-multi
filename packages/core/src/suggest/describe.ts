@@ -1,19 +1,31 @@
-// The rows a suggestion card shows for a preview's hunks (docs/design/suggestions.md §4.4): every hunk the hash
-// covers, in full. Text a record adds or removes is shown with its formatting; a change to formatting, a link, a
-// block's properties, a decorator, a payload's fields or the note's settings is shown with its old and new value.
-import { canonical, type Hunk } from './apply.ts';
+// The rows a suggestion card shows for a preview (docs/design/suggestions.md §4.4), generated from the hashed hunks
+// themselves: every difference between a hunk's before and after, by channel, yields a row, and nothing is filtered by
+// name or by count. Text aligns by Yjs item identity, so a row is exactly the run of items the record removes or adds.
+// Each row's `detail` holds where it sits and what it covers, as hashed, so the rows are a lossless reading of the hunks.
+import { canonical, previewHash, type Hunk } from './apply.ts';
 
 export interface ReviewRow {
   kind: 'insert' | 'delete' | 'change';
   /** The text the row is about, in full. */
   text: string;
-  /** What changed about it, or what it carries (formatting, a link), when that is not plain text. */
+  /** What changed about it, or what it carries (formatting, a link, a node's fields), when that is not plain text. */
   note?: string;
+  /** The hunk it belongs to, the path inside it, and the exact hashed values it covers. */
+  detail: string;
 }
 
 type Json = Record<string, unknown>;
 
+/** A type as the projection renders it (apply.ts `channelValue`). */
+interface Node {
+  type: string;
+  name?: string;
+  seq?: unknown[];
+  keys?: [string, unknown][];
+}
+
 const isObject = (value: unknown): value is Json => !!value && typeof value === 'object' && !Array.isArray(value);
+const isNode = (value: unknown): value is Node => isObject(value) && typeof value.type === 'string' && (Array.isArray(value.seq) || Array.isArray(value.keys));
 
 const FORMATS: [number, string][] = [
   [1, 'bold'], [2, 'italic'], [4, 'strikethrough'], [8, 'underline'], [16, 'code'], [32, 'subscript'], [64, 'superscript'], [128, 'highlight'],
@@ -26,348 +38,387 @@ function formatNames(format: number): string {
   return names.length ? names.join(', ') : 'plain';
 }
 
-function show(value: unknown): string {
-  if (value === undefined || value === null || value === '') return 'none';
-  if (typeof value === 'string') return value;
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-  return canonical(value);
+/** A stored value as a reader reads it: a Yjs `Any` wrapper unwrapped. */
+const unwrap = (value: unknown): unknown => (isObject(value) && Array.isArray(value.Any) && value.Any.length === 1 ? value.Any[0] : value);
+
+/** A stored key as a reader names it: `__indent` is `indent`, `__dir` is `direction`; any other key is quoted. */
+const fieldName = (key: string) => (key === '__dir' ? 'direction' : key.startsWith('__') ? key.slice(2) : JSON.stringify(key));
+
+const fieldsOf = (node: Node): [string, unknown][] =>
+  Array.isArray(node.keys) ? node.keys.filter((pair): pair is [string, unknown] => Array.isArray(pair) && typeof pair[0] === 'string') : [];
+const keyOf = (node: Node, key: string) => unwrap(fieldsOf(node).find(([k]) => k === key)?.[1]);
+
+const ALIGNMENTS = ['none', 'left', 'center', 'right', 'justify', 'start', 'end'];
+
+/** A value as a reader reads it; `key` and its `holder` name a format (a text node's bits, an element's alignment). */
+function show(value: unknown, key = '', holder?: Node): string {
+  const v = unwrap(value);
+  if (v === undefined) return 'none';
+  const textFormat = key === '__textFormat' || (key === '__format' && !!holder && holder.type === 'Map');
+  const alignment = key === '__format' && !textFormat;
+  // A string that would read as another value (a number, a format name, nothing) is quoted.
+  if (typeof v === 'string') return textFormat || alignment || /^(|none|null|true|false|plain)$|^[\s"{[\d.+-]/.test(v) || v.trim() !== v ? JSON.stringify(v) : v;
+  if (textFormat && typeof v === 'number') return formatNames(v);
+  if (alignment && typeof v === 'number' && Number.isInteger(v) && v >= 0 && v < ALIGNMENTS.length) return ALIGNMENTS[v];
+  if (typeof v === 'number' || typeof v === 'boolean' || v === null) return String(v);
+  if (isNode(v)) return `{${fieldsOf(v).map(([k, item]) => `${fieldName(k)}: ${show(item, k, v)}`).join(', ')}}`;
+  return canonical(v);
 }
 
-/** Field values a reader sees as "nothing set", left out of what a run carries. */
-const DEFAULTS: Record<string, unknown> = { format: 0, style: '', mode: 'normal', detail: 0, indent: 0, direction: null, textFormat: 0, textStyle: '' };
-const isDefault = (field: string, value: unknown) => field in DEFAULTS && (DEFAULTS[field] === value || (DEFAULTS[field] === null && (value === null || value === undefined)));
+/** Lexical's defaults: a new node holding one says nothing a reader needs, so its note leaves it out. */
+const DEFAULTS: Record<string, unknown> = {
+  __format: 0, __style: '', __mode: 'normal', __detail: 0, __indent: 0, __dir: null, __textFormat: 0, __textStyle: '',
+};
+const isEmpty = (value: unknown) => {
+  const v = unwrap(value);
+  return v === undefined || v === null || v === '';
+};
+const isDefault = (key: string, value: unknown) => key in DEFAULTS && unwrap(value) === DEFAULTS[key];
 
-/** A node's own fields, without its children, its text and its version. */
-function ownFields(node: Json): [string, unknown][] {
-  return Object.entries(node)
-    .filter(([key]) => key !== 'children' && key !== 'text' && key !== 'version')
-    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+/** What a node is called: its Lexical type, else its element name, else its Yjs kind. */
+function typeName(node: Node): string {
+  const type = keyOf(node, '__type');
+  if (typeof type === 'string') return type;
+  if (typeof node.name === 'string') return node.name;
+  return node.type === 'Map' ? 'map' : node.type === 'XmlElement' ? 'decorator' : 'element';
 }
 
-/** A field as a reader names it: `type field`, the node type alone for `type`. */
-interface Field {
-  label: string;
-  field: string;
-  value: unknown;
+const INLINE = new Set(['link', 'autolink']);
+const isInline = (node: Node) => INLINE.has(typeName(node));
+
+/**
+ * A node's own fields as `name: value`, for a node that is new or removed whole, or that encloses a run (its type
+ * names it; empty values and Lexical's defaults are left out). A changed field is never filtered: see `node`.
+ */
+function carried(node: Node): string[] {
+  return fieldsOf(node)
+    .filter(([key, value]) => key !== '__type' && !isDefault(key, value) && !isEmpty(value))
+    .map(([key, value]) => (key === '__format' && node.type === 'Map' ? show(value, key, node) : `${fieldName(key)}: ${show(value, key, node)}`));
 }
 
-const fieldText = (field: Field, value = field.value) => (field.field.endsWith(':format') && typeof value === 'number' ? formatNames(value) : show(value));
+/** One unit of a sequence: a character with its own id, or any other item. */
+type Unit = { id: string; ch: string } | { id: string; node: unknown };
 
-/** One unit of a block: a character (with the fields of every node above it), an element's start, or a leaf node. */
-interface Token {
-  /** What aligns with what: the character, or the node kind. */
-  align: string;
-  /** What a reader sees for it. */
-  display: string;
-  fields: Field[];
-  sig: string;
-  /** An element's start: the element's own text, which names it in a row. */
-  label?: string;
-}
+const isChar = (unit: Unit): unit is { id: string; ch: string } => 'ch' in unit;
 
-const INLINE_ELEMENTS = new Set(['link', 'autolink']);
-
-function tokenize(block: Json): Token[] {
-  const tokens: Token[] = [];
-  const walk = (node: Json, chain: Field[], depth: number) => {
-    const type = typeof node.type === 'string' ? node.type : 'node';
-    const own = ownFields(node).map(([field, value]) => ({ label: field === 'type' ? type : `${type} ${field}`, field: `${depth}:${type}:${field}`, value }));
-    const fields = [...chain, ...own];
-    if (typeof node.text === 'string') {
-      const sig = canonical(fields.map((f) => [f.field, f.value]));
-      for (const ch of node.text) tokens.push({ align: ch, display: ch, fields, sig });
-      return;
+function units(seq: unknown[] | undefined): Unit[] {
+  const out: Unit[] = [];
+  for (const entry of seq ?? []) {
+    if (!isObject(entry)) {
+      out.push({ id: '?', node: entry });
+      continue;
     }
-    const children = Array.isArray(node.children) ? (node.children as unknown[]).filter(isObject) : null;
-    if (!children) {
-      const display = type === 'linebreak' ? '\n' : type === 'tab' ? '\t' : `[${type}]`;
-      tokens.push({ align: `\u0001${type}`, display, fields: own, sig: canonical(own.map((f) => [f.field, f.value])) });
-      return;
+    const id = typeof entry.id === 'string' ? entry.id : '?';
+    if (typeof entry.s === 'string') {
+      const [client, clock] = id.split(':').map(Number);
+      for (let i = 0; i < entry.s.length; i++) out.push({ id: `${client}:${clock + i}`, ch: entry.s[i] });
+    } else {
+      out.push({ id, node: Object.fromEntries(Object.entries(entry).filter(([key]) => key !== 'id')) });
     }
-    if (INLINE_ELEMENTS.has(type)) {
-      for (const child of children) walk(child, fields, depth + 1);
-      return;
-    }
-    const at = tokens.length;
-    tokens.push({ align: `\u0000${type}`, display: tokens.length ? '\n' : '', fields: own, sig: canonical(own.map((f) => [f.field, f.value])) });
-    for (const child of children) walk(child, [], depth + 1);
-    tokens[at].label = displayOf(tokens.slice(at + 1)).trim() || type;
-  };
-  for (const child of Array.isArray(block.children) ? (block.children as unknown[]).filter(isObject) : []) walk(child, [], 1);
-  return tokens;
-}
-
-const displayOf = (tokens: readonly Token[]) => tokens.map((t) => t.display).join('');
-/** A run's text: an element's start reads as the element's text. */
-const textOf = (tokens: readonly Token[]) => (tokens.every((t) => t.label !== undefined) ? tokens.map((t) => t.label).join(', ') : displayOf(tokens));
-
-/** What a run carries beyond plain text: its formatting, its link, a decorator's fields. */
-function carried(fields: readonly Field[]): string | undefined {
-  const parts = fields
-    .filter((f) => !isDefault(f.field.split(':')[2], f.value) && show(f.value) !== 'none' && !(f.field.endsWith(':type') && f.value === 'text'))
-    .map((f) => (f.field.endsWith(':type') ? f.label : f.field.endsWith(':format') ? fieldText(f) : `${f.label}: ${fieldText(f)}`));
-  return parts.length ? parts.join('; ') : undefined;
-}
-
-/** Each field whose value differs, as `label: old → new`. */
-function fieldChanges(before: readonly Field[], after: readonly Field[]): string | undefined {
-  const b = new Map(before.map((f) => [f.field, f]));
-  const a = new Map(after.map((f) => [f.field, f]));
-  const out: string[] = [];
-  for (const key of new Set([...b.keys(), ...a.keys()])) {
-    const was = b.get(key);
-    const now = a.get(key);
-    if (was && now && canonical(was.value) === canonical(now.value)) continue;
-    const field = (now ?? was)!;
-    if (field.field.endsWith(':type')) out.push(`${was ? show(was.value) : 'none'} → ${now ? show(now.value) : 'none'}`);
-    else out.push(`${field.label}: ${was ? fieldText(field, was.value) : 'none'} → ${now ? fieldText(field, now.value) : 'none'}`);
-  }
-  return out.length ? out.join('; ') : undefined;
-}
-
-/** Consecutive tokens grouped by what they carry. */
-function runs<T>(items: readonly T[], key: (item: T) => string): T[][] {
-  const out: T[][] = [];
-  for (const item of items) {
-    const last = out.at(-1);
-    if (last && key(last[0]) === key(item)) last.push(item);
-    else out.push([item]);
   }
   return out;
 }
 
-/** One step of aligning two token lists: a kept pair, a removed token or an added one. */
-type Step = { op: 'keep'; b: Token; a: Token } | { op: 'delete'; b: Token } | { op: 'insert'; a: Token };
-
-/** Above this many cells the changed middle is shown as removed then added, unaligned. */
-const ALIGN_CELLS = 1_000_000;
-
-/** `b` aligned with `a` by a longest common subsequence of their tokens, so kept text inside a change stays kept. */
-function align(b: readonly Token[], a: readonly Token[]): Step[] {
-  let start = 0;
-  while (start < b.length && start < a.length && b[start].align === a[start].align) start += 1;
-  let end = 0;
-  while (end < b.length - start && end < a.length - start && b[b.length - 1 - end].align === a[a.length - 1 - end].align) end += 1;
-  const steps: Step[] = [];
-  for (let i = 0; i < start; i++) steps.push({ op: 'keep', b: b[i], a: a[i] });
-  const mb = b.slice(start, b.length - end);
-  const ma = a.slice(start, a.length - end);
-  if (mb.length * ma.length > ALIGN_CELLS) {
-    for (const t of mb) steps.push({ op: 'delete', b: t });
-    for (const t of ma) steps.push({ op: 'insert', a: t });
-  } else {
-    const n = mb.length;
-    const m = ma.length;
-    const lcs = new Uint32Array((n + 1) * (m + 1));
-    for (let i = n - 1; i >= 0; i--) {
-      for (let j = m - 1; j >= 0; j--) {
-        lcs[i * (m + 1) + j] = mb[i].align === ma[j].align ? lcs[(i + 1) * (m + 1) + j + 1] + 1 : Math.max(lcs[(i + 1) * (m + 1) + j], lcs[i * (m + 1) + j + 1]);
-      }
-    }
-    let i = 0;
-    let j = 0;
-    while (i < n || j < m) {
-      if (i < n && j < m && mb[i].align === ma[j].align) steps.push({ op: 'keep', b: mb[i++], a: ma[j++] });
-      else if (j >= m || (i < n && lcs[(i + 1) * (m + 1) + j] >= lcs[i * (m + 1) + j + 1])) steps.push({ op: 'delete', b: mb[i++] });
-      else steps.push({ op: 'insert', a: ma[j++] });
-    }
+/** A node's text as a reader sees it: characters, a line or tab, a decorator as `[type]`, nested blocks on new lines. */
+function textOf(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (!isNode(value)) return '';
+  if (!Array.isArray(value.seq)) {
+    const type = typeName(value);
+    return type === 'linebreak' ? '\n' : type === 'tab' ? '\t' : value.type === 'Map' ? '' : `[${type}]`;
   }
-  for (let k = end; k > 0; k--) steps.push({ op: 'keep', b: b[b.length - k], a: a[a.length - k] });
+  let text = '';
+  for (const unit of units(value.seq)) {
+    if (isChar(unit)) text += unit.ch;
+    else if (isNode(unit.node) && Array.isArray(unit.node.seq) && !isInline(unit.node)) text += `${text ? '\n' : ''}${textOf(unit.node)}`;
+    else text += textOf(unit.node);
+  }
+  return text;
+}
+
+const labelOf = (node: Node) => textOf(node).trim() || typeName(node);
+
+/** Ids as runs: `client:clock+length`. */
+function idRuns(ids: readonly string[]): string {
+  const runs: string[] = [];
+  let start = '';
+  let client = NaN;
+  let next = NaN;
+  let len = 0;
+  const flush = () => {
+    if (len) runs.push(len === 1 ? start : `${start}+${len}`);
+  };
+  for (const id of ids) {
+    const [c, k] = id.split(':').map(Number);
+    if (c === client && k === next) {
+      len += 1;
+      next += 1;
+      continue;
+    }
+    flush();
+    start = id;
+    client = c;
+    next = k + 1;
+    len = 1;
+  }
+  flush();
+  return runs.join(',');
+}
+
+type Step = { op: 'keep'; b: Unit; a: Unit } | { op: 'delete'; b: Unit } | { op: 'insert'; a: Unit };
+
+/** Two sequences aligned by item identity: an item in both is kept, one only before is removed, one only after added. */
+function align(b: readonly Unit[], a: readonly Unit[]): Step[] {
+  const inA = new Set(a.map((unit) => unit.id));
+  const inB = new Set(b.map((unit) => unit.id));
+  const steps: Step[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < b.length || j < a.length) {
+    if (i < b.length && (j >= a.length || !inA.has(b[i].id))) steps.push({ op: 'delete', b: b[i++] });
+    else if (j < a.length && (i >= b.length || !inB.has(a[j].id))) steps.push({ op: 'insert', a: a[j++] });
+    else if (b[i].id === a[j].id) steps.push({ op: 'keep', b: b[i++], a: a[j++] });
+    // Out of order (Yjs never moves an item): shown as removed here and added where it now sits.
+    else steps.push({ op: 'delete', b: b[i++] });
+  }
   return steps;
 }
 
-function blockRows(before: Json | null, after: Json | null): ReviewRow[] {
-  const rows: ReviewRow[] = [];
-  const b = before ? tokenize(before) : [];
-  const a = after ? tokenize(after) : [];
-  const blockType = (node: Json) => (typeof node.type === 'string' ? node.type : 'block');
-  if (!before || !after) {
-    const node = (before ?? after)!;
-    const kind = before ? 'delete' : 'insert';
-    const own = ownFields(node).map(([field, value]) => ({ label: field === 'type' ? blockType(node) : `${blockType(node)} ${field}`, field: `0:${blockType(node)}:${field}`, value }));
-    rows.push({ kind, text: displayOf(before ? b : a), note: `${before ? 'removes' : 'new'} ${carried(own) ?? blockType(node)}` });
-    // Each run with what it carries, and each nested element (a list item, a cell) with its own fields.
-    for (const run of runs(before ? b : a, (t) => t.sig)) {
-      const note = carried(run[0].fields);
-      if (note) rows.push({ kind, text: textOf(run), note });
-    }
-    return rows;
+/** Consecutive removed or added units of `steps` from `i`, and where the run ends. */
+function runAt(steps: readonly Step[], i: number): { op: 'delete' | 'insert'; run: Unit[]; end: number } {
+  const op = steps[i].op as 'delete' | 'insert';
+  const run: Unit[] = [];
+  let end = i;
+  for (; end < steps.length && steps[end].op === op; end++) {
+    const step = steps[end] as { op: 'delete'; b: Unit } | { op: 'insert'; a: Unit };
+    run.push('b' in step ? step.b : step.a);
   }
-  // The block's own fields: its type, indent, alignment, a list's kind, a checkbox.
-  const ownOf = (node: Json) => ownFields(node).map(([field, value]) => ({ label: field === 'type' ? 'block' : `${blockType(node)} ${field}`, field: `0:block:${field}`, value }));
-  const own = fieldChanges(ownOf(before), ownOf(after));
-  if (own) rows.push({ kind: 'change', text: displayOf(a).trim() || blockType(after), note: own });
-  // In document order: removed and added runs with what they carry, and kept text or elements whose fields changed.
-  const keyOf = (step: Step) =>
-    step.op === 'keep' ? (step.b.sig === step.a.sig ? null : `k\u0002${step.b.sig}\u0002${step.a.sig}`) : step.op === 'delete' ? `d\u0002${step.b.sig}` : `i\u0002${step.a.sig}`;
-  const groups: Step[][] = [];
-  let last: string | null = null;
-  for (const step of align(b, a)) {
-    const key = keyOf(step);
-    if (key === null) {
-      last = null;
-      continue;
-    }
-    if (key === last) groups.at(-1)!.push(step);
-    else groups.push([step]);
-    last = key;
-  }
-  for (const group of groups) {
-    const first = group[0];
-    if (first.op === 'delete') {
-      const run = group.map((step) => (step as { b: Token }).b);
-      rows.push({ kind: 'delete', text: textOf(run), note: carried(run[0].fields) });
-    } else if (first.op === 'insert') {
-      const run = group.map((step) => (step as { a: Token }).a);
-      rows.push({ kind: 'insert', text: textOf(run), note: carried(run[0].fields) });
-    } else {
-      const pairs = group as Extract<Step, { op: 'keep' }>[];
-      rows.push({ kind: 'change', text: textOf(pairs.map((step) => step.a)), note: fieldChanges(first.b.fields, first.a.fields) });
-    }
-  }
-  return rows.map((row) => (row.note === undefined ? { kind: row.kind, text: row.text } : row));
+  return { op, run, end };
 }
 
-/** Every leaf of `value` by its path. */
-function leaves(value: unknown, path = '', out = new Map<string, unknown>()): Map<string, unknown> {
-  if (Array.isArray(value)) value.forEach((item, i) => leaves(item, path ? `${path}.${i}` : String(i), out));
-  else if (isObject(value)) for (const [key, item] of Object.entries(value)) leaves(item, path ? `${path}.${key}` : key, out);
-  else out.set(path, value);
-  return out;
-}
+type Owner = { id: string; node: Node };
 
-/** Every leaf that differs, as `path: old → new`: the last word, so nothing the hash covers goes unshown. */
-function leafRows(text: string, before: unknown, after: unknown): ReviewRow[] {
-  const b = leaves(before);
-  const a = leaves(after);
-  const rows: ReviewRow[] = [];
-  for (const path of new Set([...b.keys(), ...a.keys()])) {
-    if (canonical(b.get(path)) === canonical(a.get(path))) continue;
-    rows.push({ kind: 'change', text, note: `${path || 'value'}: ${show(b.get(path))} → ${show(a.get(path))}` });
-  }
-  return rows;
-}
-
-/** The changed middle of two texts. */
-function middle(before: string, after: string): { removed: string; added: string } {
-  let start = 0;
-  while (start < before.length && start < after.length && before[start] === after[start]) start += 1;
-  let end = 0;
-  while (end < before.length - start && end < after.length - start && before[before.length - 1 - end] === after[after.length - 1 - end]) end += 1;
-  return { removed: before.slice(start, before.length - end), added: after.slice(start, after.length - end) };
-}
-
-const pairsOf = (value: unknown): [string, unknown][] => (Array.isArray(value) ? (value as unknown[]).filter((p): p is [string, unknown] => Array.isArray(p) && typeof p[0] === 'string') : []);
-
-function keyRows(text: string, before: unknown, after: unknown): ReviewRow[] {
-  const b = new Map(pairsOf(before));
-  const a = new Map(pairsOf(after));
-  const rows: ReviewRow[] = [];
-  for (const key of new Set([...b.keys(), ...a.keys()])) {
-    if (canonical(b.get(key)) === canonical(a.get(key))) continue;
-    rows.push({ kind: 'change', text, note: `${key}: ${show(b.get(key))} → ${show(a.get(key))}` });
-  }
-  return rows;
-}
-
-function payloadText(value: unknown): string {
-  const text = isObject(value) ? value.text : undefined;
-  if (typeof text === 'string') return text;
-  return Array.isArray(text) ? text.map((part) => (typeof part === 'string' ? part : `[${show(part)}]`)).join('') : '';
-}
-
-function payloadRows(before: unknown, after: unknown): ReviewRow[] {
-  const rows: ReviewRow[] = [];
-  const { removed, added } = middle(payloadText(before), payloadText(after));
-  if (removed) rows.push({ kind: 'delete', text: removed, note: 'block content' });
-  if (added) rows.push({ kind: 'insert', text: added, note: 'block content' });
-  rows.push(...keyRows('Block content', isObject(before) ? before.map : undefined, isObject(after) ? after.map : undefined));
-  return rows;
-}
-
-/** Every field name in a Lexical JSON tree. */
-function fieldNames(value: unknown, out = new Set<string>()): Set<string> {
-  if (Array.isArray(value)) for (const item of value) fieldNames(item, out);
-  else if (isObject(value)) {
-    for (const [key, item] of Object.entries(value)) {
-      out.add(key);
-      fieldNames(item, out);
-    }
+/** Each character's text node: the last map before it in its sequence (Lexical's V1 binding). */
+function owners(list: readonly Unit[]): Map<string, Owner> {
+  const out = new Map<string, Owner>();
+  let owner: Owner | null = null;
+  for (const unit of list) {
+    if (isChar(unit)) {
+      if (owner) out.set(unit.id, owner);
+    } else owner = isNode(unit.node) && unit.node.type === 'Map' ? { id: unit.id, node: unit.node } : null;
   }
   return out;
 }
 
-/** A stored key as Lexical's JSON names it: `__indent` is `indent`, `__dir` is `direction`. */
-const exportedName = (key: string) => (key === '__dir' ? 'direction' : key.startsWith('__') ? key.slice(2) : key);
+/** Each text node's characters, by the id of its map. */
+function ownedText(list: readonly Unit[], ownerOf: Map<string, Owner>): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const unit of list) {
+    const owner = isChar(unit) ? ownerOf.get(unit.id) : undefined;
+    if (owner && isChar(unit)) out.set(owner.id, (out.get(owner.id) ?? '') + unit.ch);
+  }
+  return out;
+}
 
-/** A stored value as a reader reads it: a Yjs `Any` wrapper unwrapped. */
-const storedValue = (value: unknown) => (isObject(value) && Array.isArray(value.Any) && value.Any.length === 1 ? value.Any[0] : value);
+class Rows {
+  readonly out: ReviewRow[] = [];
 
-/**
- * The stored properties of a block's Yjs value that its Lexical JSON does not show, one list per stored node in order
- * (the block, then each node inside it); anything in a sequence that is neither text nor a node is listed as content.
- */
-function hiddenOf(y: unknown, shown: ReadonlySet<string>): [string, unknown][][] {
-  const out: [string, unknown][][] = [];
-  const visit = (value: unknown) => {
-    if (typeof value === 'string') return;
-    if (isObject(value) && typeof value.type === 'string' && (Array.isArray(value.seq) || Array.isArray(value.keys))) {
-      out.push(pairsOf(value.keys).filter(([key]) => !shown.has(exportedName(key))).map(([key, item]) => [exportedName(key), storedValue(item)]));
-      for (const item of Array.isArray(value.seq) ? value.seq : []) visit(item);
+  constructor(readonly where: string) {}
+
+  push(kind: ReviewRow['kind'], path: string, text: string, note: string | undefined, covers: unknown): void {
+    const detail = `${this.where}${path ? ` ${path}` : ''}: ${canonical(covers ?? null)}`;
+    this.out.push(note ? { kind, text, note, detail } : { kind, text, detail });
+  }
+
+  /**
+   * A value the record adds or removes whole: one row with the value, then each part of it a reader would not see in
+   * that row's text (a formatted run, a link, a list item's fields). `quiet` leaves out a part with nothing to add, which
+   * an enclosing row covers.
+   */
+  whole(kind: 'insert' | 'delete', path: string, value: unknown, chain: readonly string[], quiet: boolean): void {
+    const verb = kind === 'insert' ? 'new' : 'removes';
+    if (!isNode(value)) {
+      this.push(kind, path, typeof value === 'string' ? value : show(value), typeof value === 'string' ? undefined : `${verb} content`, value);
       return;
     }
-    out.push([['content', value]]);
-  };
-  visit(y);
+    const own = carried(value);
+    const inline = isInline(value);
+    if (!quiet || (own.length > 0 && !inline)) {
+      this.push(kind, path, textOf(value).trim() || `[${typeName(value)}]`, [`${verb} ${typeName(value)}`, ...own].join('; '), value);
+    }
+    const inner = inline ? [...chain, [typeName(value), ...own].join('; ')] : [];
+    this.sequence(kind, path, units(value.seq), inner, true, owners(units(value.seq)));
+    for (const [key, item] of fieldsOf(value)) {
+      if (isNode(item)) this.whole(kind, `${path} ${key}`, item, [], true);
+    }
+  }
+
+  /**
+   * Units all added or all removed: runs of characters by text node, and every other item. A text node's map whose
+   * characters follow it is said by their row. `quiet` leaves out what has nothing to add to an enclosing row.
+   */
+  sequence(kind: 'insert' | 'delete', path: string, list: readonly Unit[], chain: readonly string[], quiet: boolean, ownerOf: Map<string, Owner>): void {
+    for (let i = 0; i < list.length; ) {
+      const unit = list[i];
+      const map: Owner | null = !isChar(unit) && isNode(unit.node) && unit.node.type === 'Map' ? { id: unit.id, node: unit.node } : null;
+      if (!isChar(unit) && !map) {
+        this.whole(kind, `${path} ${unit.id}`, unit.node, chain, quiet);
+        i += 1;
+        continue;
+      }
+      const owner = map ?? ownerOf.get(unit.id);
+      // The map, when it is in this run, and the characters of its text node that follow it.
+      const run: Unit[] = [];
+      if (map) run.push(list[i++]);
+      for (; i < list.length; i++) {
+        const next = list[i];
+        if (!isChar(next) || ownerOf.get(next.id)?.id !== owner?.id) break;
+        run.push(next);
+      }
+      const text = run.map((u) => (isChar(u) ? u.ch : '')).join('');
+      if (map && !text) {
+        this.whole(kind, `${path} ${map.id}`, map.node, chain, quiet);
+        continue;
+      }
+      const note = [...chain, ...(owner ? carried(owner.node) : [])];
+      if (quiet && note.length === 0) continue;
+      this.push(kind, path, text, note.join('; ') || undefined, { ids: idRuns(run.map((u) => u.id)), node: map ? map.node : owner?.id ?? null });
+    }
+  }
+
+  /** Two versions of one node: each field that differs, then its sequence aligned by identity. */
+  node(path: string, b: Node, a: Node, chain: readonly string[], label: string): void {
+    const type = typeName(a);
+    const before = new Map(fieldsOf(b));
+    const after = new Map(fieldsOf(a));
+    for (const key of [...new Set([...before.keys(), ...after.keys()])].sort()) {
+      const was = before.get(key);
+      const now = after.get(key);
+      if (canonical(was) === canonical(now)) continue;
+      if (isNode(was) && isNode(now) && was.type === now.type) {
+        this.node(`${path} ${key}`, was, now, chain, `${label}`);
+        continue;
+      }
+      this.push('change', `${path} ${key}`, label, `${type} ${fieldName(key)}: ${show(was, key, b)} → ${show(now, key, a)}`, { before: was ?? null, after: now ?? null });
+    }
+    if (canonical(b.seq) === canonical(a.seq)) return;
+    const inner = isInline(a) ? [...chain, [type, ...carried(a)].join('; ')] : [];
+    const bu = units(b.seq);
+    const au = units(a.seq);
+    const ownB = owners(bu);
+    const ownA = owners(au);
+    const texts = ownedText(au, ownA);
+    const steps = align(bu, au);
+    for (let i = 0; i < steps.length; ) {
+      const step = steps[i];
+      if (step.op === 'keep') {
+        if (!isChar(step.b) && !isChar(step.a)) this.value(`${path} ${step.a.id}`, step.b.node, step.a.node, inner, texts.get(step.a.id));
+        i += 1;
+        continue;
+      }
+      const { op, run, end } = runAt(steps, i);
+      this.sequence(op, path, run, inner, false, op === 'delete' ? ownB : ownA);
+      i = end;
+    }
+  }
+
+  /** Two versions of a value: a node of one kind is compared field by field, anything else is replaced. */
+  value(path: string, b: unknown, a: unknown, chain: readonly string[], label?: string): void {
+    if (canonical(b) === canonical(a)) return;
+    if (isNode(b) && isNode(a) && b.type === a.type && b.name === a.name) {
+      this.node(path, b, a, chain, label?.trim() || labelOf(a));
+      return;
+    }
+    if (b !== undefined) this.whole('delete', path, b, chain, false);
+    if (a !== undefined) this.whole('insert', path, a, chain, false);
+  }
+
+  /** Two lists of `[key, value]` pairs (the note's settings, a payload's fields): each key that differs. */
+  keys(path: string, text: string, before: unknown, after: unknown): void {
+    const b = new Map(pairsOf(before));
+    const a = new Map(pairsOf(after));
+    for (const key of [...new Set([...b.keys(), ...a.keys()])].sort()) {
+      const was = b.get(key);
+      const now = a.get(key);
+      if (canonical(was) === canonical(now)) continue;
+      if (isNode(was) && isNode(now) && was.type === now.type) {
+        this.node(`${path} ${key}`, was, now, [], text);
+        continue;
+      }
+      this.push('change', `${path} ${key}`, text, `${fieldName(key)}: ${show(was, key)} → ${show(now, key)}`, { before: was ?? null, after: now ?? null });
+    }
+    // A value that is not a list of pairs is compared whole.
+    const loose = (value: unknown) => (value === undefined || Array.isArray(value) ? null : value);
+    if (canonical(loose(before)) !== canonical(loose(after))) {
+      this.push('change', path, text, `${show(loose(before))} → ${show(loose(after))}`, { before: before ?? null, after: after ?? null });
+    }
+  }
+
+  /** A payload's two versions: its text aligned by identity, then its fields. */
+  payload(before: unknown, after: unknown): void {
+    const steps = align(payloadUnits(before), payloadUnits(after));
+    for (let i = 0; i < steps.length; ) {
+      if (steps[i].op === 'keep') {
+        i += 1;
+        continue;
+      }
+      const { op, run, end } = runAt(steps, i);
+      i = end;
+      for (const unit of run) if (!isChar(unit)) this.push(op, `text ${unit.id}`, show(unit.node), 'block content', unit.node);
+      const chars = run.filter(isChar);
+      if (chars.length) this.push(op, 'text', chars.map((u) => u.ch).join(''), 'block content', { ids: idRuns(chars.map((u) => u.id)) });
+    }
+    // Anything else the value holds is compared whole.
+    const rest = (value: unknown) =>
+      isObject(value) ? Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'text' && key !== 'ids' && key !== 'map')) : (value ?? {});
+    if (canonical(rest(before)) !== canonical(rest(after))) {
+      this.push('change', '', 'Block content', `${show(rest(before))} → ${show(rest(after))}`, { before: rest(before), after: rest(after) });
+    }
+    this.keys('map', 'Block content', isObject(before) ? before.map : undefined, isObject(after) ? after.map : undefined);
+  }
+}
+
+const pairsOf = (value: unknown): [string, unknown][] =>
+  Array.isArray(value) ? (value as unknown[]).filter((p): p is [string, unknown] => Array.isArray(p) && typeof p[0] === 'string') : [];
+
+/** A payload's text as units, from its `text` and the id each run of it starts at (apply.ts `payloadValueOf`). */
+function payloadUnits(value: unknown): Unit[] {
+  if (!isObject(value)) return [];
+  const text = value.text;
+  const ids = Array.isArray(value.ids) ? (value.ids as unknown[]) : [];
+  const out: Unit[] = [];
+  let at = 0;
+  ids.forEach((pair, n) => {
+    if (!Array.isArray(pair) || typeof pair[0] !== 'string' || typeof pair[1] !== 'number') return;
+    const [client, clock] = pair[0].split(':').map(Number);
+    const part = typeof text === 'string' ? text.slice(at, at + pair[1]) : Array.isArray(text) ? text[n] : undefined;
+    at += pair[1];
+    if (typeof part === 'string') for (let i = 0; i < part.length; i++) out.push({ id: `${client}:${clock + i}`, ch: part[i] });
+    else out.push({ id: pair[0], node: part });
+  });
   return out;
 }
 
-/** Each stored property Lexical's JSON does not show that differs, node by node, as `name: old → new`. */
-function hiddenRows(text: string, before: unknown, after: unknown, lexical: unknown[]): ReviewRow[] {
-  const shown = new Set<string>();
-  for (const tree of lexical) fieldNames(tree, shown);
-  const b = hiddenOf(before, shown);
-  const a = hiddenOf(after, shown);
-  const same = (x: [string, unknown][], y: [string, unknown][]) => canonical(x) === canonical(y);
-  let start = 0;
-  while (start < b.length && start < a.length && same(b[start], a[start])) start += 1;
-  let end = 0;
-  while (end < b.length - start && end < a.length - start && same(b[b.length - 1 - end], a[a.length - 1 - end])) end += 1;
-  const rows: ReviewRow[] = [];
-  for (let i = start; i < Math.max(b.length, a.length) - end; i++) {
-    const was = i < b.length - end ? b[i] : [];
-    const now = i < a.length - end ? a[i] : [];
-    rows.push(...keyRows(text, was, now).map((row) => ({ ...row, note: `stored ${row.note}` })));
-  }
-  return rows;
+/** Where a hunk sits, with a fingerprint of the whole hunk, so rows of two different hunks never read the same. */
+function whereOf(hunk: Hunk): string {
+  const at = hunk.op === 'added' && hunk.kind === 'block' ? ` after ${hunk.at ?? 'start'}` : '';
+  return `${hunk.kind} ${hunk.id} ${hunk.op}${at} #${previewHash([hunk]).slice(0, 12)}`;
 }
 
-const lexicalOf = (value: unknown): Json | null => (isObject(value) && isObject(value.lexical) ? value.lexical : null);
-const yOf = (value: unknown): unknown => (isObject(value) ? value.y : undefined);
-
-/** Every row a card shows for `hunks`: each hunk yields at least one, and nothing is folded away. */
+/** Every row a card shows for `hunks`, in hunk order: each hunk yields at least one, and nothing is folded away. */
 export function describeHunks(hunks: readonly Hunk[]): ReviewRow[] {
   const out: ReviewRow[] = [];
   for (const hunk of hunks) {
     const before = hunk.op === 'added' ? undefined : hunk.before;
     const after = hunk.op === 'removed' ? undefined : hunk.after;
-    let rows: ReviewRow[];
-    if (hunk.kind === 'note') rows = keyRows('Note settings', before, after);
-    else if (hunk.kind === 'payload') rows = payloadRows(before, after);
-    else {
-      const b = lexicalOf(before);
-      const a = lexicalOf(after);
-      const lexicalSame = canonical(b) === canonical(a);
-      rows = lexicalSame || (!b && before !== undefined) || (!a && after !== undefined) ? [] : blockRows(b, a);
-      // What Lexical's own fields do not show (a stored property it does not export) is shown as stored.
-      if (canonical(yOf(before)) !== canonical(yOf(after))) {
-        const text = displayOf(tokenize(a ?? b ?? {})).trim() || 'Stored block';
-        if (lexicalSame || rows.length === 0) rows.push(...leafRows(text, yOf(before), yOf(after)));
-        else rows.push(...hiddenRows(text, yOf(before), yOf(after), [b, a]));
-      }
-    }
-    if (rows.length === 0) rows = leafRows(hunk.kind === 'note' ? 'Note settings' : 'Change', before, after);
-    out.push(...rows);
+    const rows = new Rows(whereOf(hunk));
+    if (hunk.kind === 'note') rows.keys('', 'Note settings', before, after);
+    else if (hunk.kind === 'payload') rows.payload(before, after);
+    else if (hunk.op === 'changed') rows.value('', before, after, []);
+    else rows.whole(hunk.op === 'added' ? 'insert' : 'delete', '', hunk.op === 'added' ? after : before, [], false);
+    // A hunk always says something, even when its two values read the same.
+    if (rows.out.length === 0) rows.push('change', '', 'Change', `${show(before)} → ${show(after)}`, { before: before ?? null, after: after ?? null });
+    out.push(...rows.out);
   }
   return out;
 }

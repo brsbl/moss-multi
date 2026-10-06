@@ -3,7 +3,7 @@
 // write, runs the gates, and lands the mirrors' diffs only when every gate passes; reject and withdraw write only the
 // record.
 import type { Binding } from '@lexical/yjs';
-import { $getNodeByKey, $getRoot, $isElementNode, type LexicalNode } from 'lexical';
+import { $getNodeByKey } from 'lexical';
 import * as Y from 'yjs';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
@@ -127,30 +127,6 @@ function touchedBlocks(doc: Y.Doc, inserted: Inserted, deleted: readonly IdSpan[
   return { blocks, root: atRoot };
 }
 
-function serialize(node: LexicalNode): unknown {
-  const json = node.exportJSON() as unknown as Record<string, unknown>;
-  if ($isElementNode(node)) json.children = node.getChildren().map(serialize);
-  return json;
-}
-
-/** Each top-level block's recursive exportJSON, by its Yjs item id; register-backed fields read through getters. */
-export function lexicalBlocks(doc: Y.Doc): Map<string, unknown> {
-  const mirror = mirrorOf(doc);
-  try {
-    const blocks = new Map<string, unknown>();
-    mirror.editor.read(() => {
-      for (const node of $getRoot().getChildren()) {
-        const collab = mirror.binding.collabNodeMap.get(node.getKey());
-        const item = collab && sharedOf(collab)._item;
-        if (item) blocks.set(itemKey(item.id), serialize(node));
-      }
-    });
-    return blocks;
-  } finally {
-    mirror.dispose();
-  }
-}
-
 /** Gc-free mirrors of `live`'s payloads, loaded on first use, which the body mirror's readers and the gates share. */
 class Payloads implements PayloadMirrors {
   readonly docs = new Map<string, Y.Doc>();
@@ -207,7 +183,7 @@ function mirrorWith(live: Y.Doc, payloads: Payloads): Y.Doc {
 }
 
 const project = (doc: Y.Doc, payloads: Payloads, also: Iterable<string>): Projection =>
-  projectDoc(doc, lexicalBlocks(doc), (id) => payloads.doc(id), also);
+  projectDoc(doc, (id) => payloads.doc(id), also);
 
 type Applied =
   | { ok: true; mirror: Y.Doc; payloads: Payloads; hydrated: Uint8Array; touched: Map<string, Uint8Array>; hunks: Hunk[] }
