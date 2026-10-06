@@ -32,7 +32,7 @@ export interface IframeFrameProps {
   height?: number | string;
   scrolling?: 'yes' | 'no' | 'auto';
   onLoad?: () => void;
-  /** moss-multi seam: html-frame: the block this frame previews, which a portalled frame cannot find in the DOM. */
+  /** moss-multi seam: html-frame (ruling 21): the block this frame previews, which a portalled frame cannot find in the DOM. */
   blockKey?: string;
 }
 

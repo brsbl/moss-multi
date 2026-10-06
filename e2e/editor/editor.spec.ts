@@ -12,7 +12,7 @@
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 import { framePolicy, serveEditor, type EditorServer } from './server.ts';
 import {
   SELECTION_CASES,
@@ -592,21 +592,20 @@ test.describe('embeddable editor', () => {
     // The fullscreen view, portalled outside its block, shares the block's choice: the twin's opens inert, and Run
     // pressed there is the twin's Run, so its inline frame runs too.
     const fullscreen = page.frameLocator('iframe[title="HTML preview (fullscreen)"]');
-    const toggleFullscreen = async (name: 'Fullscreen' | 'Close lightbox') =>
-      page.getByRole('button', { name }).evaluate((button: HTMLElement) => button.click());
-    await toggleFullscreen('Fullscreen');
+    // Every block shows its own Fullscreen button.
+    const blocks = body(page).locator('[data-block-decorator-key]', { has: page.locator('[data-moss-html-preview-viewport]') });
+    const press = (button: Locator) => button.evaluate((element: HTMLElement) => element.click());
+    await press(blocks.nth(1).getByRole('button', { name: 'Fullscreen' }));
     await expect(fullscreen.frameLocator('iframe').locator('#out')).toHaveText('twin: inert', { timeout: 10_000 });
     await fullscreen.getByRole('button', { name: 'Run' }).click();
     await expect(fullscreen.frameLocator('iframe').locator('#out')).toHaveText('twin: ran', { timeout: 10_000 });
     await expect(blockIn(page, 1, 'interactive').locator('#out')).toHaveText('twin: ran', { timeout: 10_000 });
-    await toggleFullscreen('Close lightbox');
+    await press(page.getByRole('button', { name: 'Close lightbox' }));
     await expect(page.locator('iframe[title="HTML preview (fullscreen)"]')).toHaveCount(0);
     // Block 0's fullscreen view opens running, since block 0 ran.
-    await viewports.nth(0).getByRole('button', { name: 'Activate live HTML preview' }).click();
-    await expect(blockIn(page, 0, 'interactive').locator('#out')).toHaveText('twin: ran', { timeout: 10_000 });
-    await toggleFullscreen('Fullscreen');
+    await press(blocks.nth(0).getByRole('button', { name: 'Fullscreen' }));
     await expect(fullscreen.frameLocator('iframe').locator('#out')).toHaveText('twin: ran', { timeout: 10_000 });
-    await toggleFullscreen('Close lightbox');
+    await press(page.getByRole('button', { name: 'Close lightbox' }));
     expect(seen.errors).toEqual([]);
     expect(await page.evaluate(() => window.editorFixture.violations)).toEqual([]);
   });
