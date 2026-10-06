@@ -13,7 +13,7 @@ export interface ConverterCase {
   tail?: string;
   /**
    * Sizes L3 compares with moss (default 40 and 3,000 bytes). Smaller for cases whose matching is inherently
-   * quadratic in moss (nesting, callbacks that read the paragraph), which the import cuts off at a work budget.
+   * quadratic in moss (nesting), which the import cuts off at a work budget.
    */
   parityBytes?: number[];
 }
@@ -52,7 +52,7 @@ export const CONVERTER_CASES: Record<string, ConverterCase> = {
   'code spans': { run: '`a` ' },
   links: { run: '[a](b) ' },
   'wiki links': { run: '[[a]] ' },
-  colors: { run: '#ff0000 ', parityBytes: [40, 600] },
+  colors: { run: '#ff0000 ' },
   'nested emphasis': { run: '*x _x ', after: 'y', tail: ' x_ x*', parityBytes: [40, 400] },
   // Openers moss's import normalization rescanned from (markdown/normalize.ts).
   'escaped blockquote openers': { run: '&lt;blockquote ' },
@@ -69,3 +69,26 @@ export function converterBody(c: ConverterCase, bytes: number): string {
   const tail = c.tail ? c.tail.repeat(Math.max(1, Math.ceil(runBytes / c.tail.length))) : '';
   return `${before}${c.run.repeat(Math.max(1, Math.ceil(runBytes / c.run.length)))}${after}${tail}`;
 }
+
+// Ordinary notes that moss converts in full: the import's work budget must never cut them, and L3 holds each to
+// moss byte for byte. (The 2 MB note of mixed content is the scale note, fixtures.ts.)
+const range = (n: number) => Array.from({ length: n }, (_, i) => i);
+const hex = (i: number) => `#${((Math.imul(i + 1, 2654435761) >>> 8) & 0xffffff).toString(16).padStart(6, '0')}`;
+const palette = (n: number) => `Palette: ${range(n).map(hex).join(' ')}`;
+
+export const ORDINARY_NOTES: Record<string, () => string> = {
+  'a paragraph of 2,000 links, each followed by bold': () => `${range(2_000).map((i) => `[p${i}](https://e.com/${i}) **x${i}**`).join(' ')}\n\nAfter para.`,
+  'a palette paragraph of 250 colors': () => palette(250),
+  'a palette paragraph of 2,000 colors': () => palette(2_000),
+  'a palette paragraph of 2,000 named hex, rgb and hsl colors': () =>
+    range(2_000).map((i) => (i % 3 === 0 ? `${hex(i)} shade ${i},` : i % 3 === 1 ? `rgb(${i % 256}, 40, 80) tone,` : `hsl(${i % 360}, 50%, 50%) hue,`)).join(' '),
+  'a paragraph of 1,000 wiki links': () => `See ${range(1_000).map((i) => `[[Note ${i}]]`).join(', ')}.`,
+  'a paragraph of 2,000 links whose URLs hold underscores and parentheses': () =>
+    `Sources: ${range(2_000).map((i) => `[Python ${i}](https://en.wikipedia.org/wiki/Python_(programming_language)_${i})`).join(' ')}`,
+  'a paragraph of 1,000 sentences of italic, bold, code and strikethrough': () =>
+    range(1_000).map((i) => `Some *italic ${i}* and **bold** text with \`code ${i}\` and ~~struck~~ words.`).join(' '),
+  'a paragraph of 1,000 raw URLs': () => `Links: ${range(1_000).map((i) => `https://example.com/page/${i}`).join(' and ')}`,
+  'a paragraph of 500 serif spans': () => `x ${range(500).map((i) => `<span style="font-family: serif">a${i}</span>`).join(' ')}`,
+  'a table of 2,000 rows': () =>
+    ['| Item | Link | Color | Note |', '| --- | --- | --- | --- |', ...range(2_000).map((i) => `| **i${i}** | [l${i}](https://e.com/${i}) | ${hex(i)} | \`c${i}\` and *n${i}* |`)].join('\n'),
+};

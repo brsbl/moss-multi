@@ -247,8 +247,9 @@ async function measureSize(unit, units, port, bound) {
     const unitBlocks = JSON.parse((await timedRequest(server, '/import', { method: 'POST', body: unit })).body).blocks;
     for (let run = 0; run < CONVERSION_RUNS; run += 1) {
       const imported = await timedRequest(server, '/import', { method: 'POST', body: markdown });
-      const { blocks } = JSON.parse(imported.body);
+      const { blocks, cut } = JSON.parse(imported.body);
       if (blocks !== units * unitBlocks) throw new Error(`${blocks} top-level blocks, expected ${units} × ${unitBlocks}`);
+      if (cut > 0) throw new Error(`${cut} lines cut at the work budget, which must never cut ordinary content`);
       runs.import.push({ ...imported, blocks });
       runs.export.push(await timedRequest(server, '/export'));
     }
@@ -505,6 +506,37 @@ async function measureAdversarial(port) {
   return results;
 }
 
+// Ordinary notes (converter-cases.ts ORDINARY_NOTES), in one worker: each imports in full (no line cut at the work
+// budget) within IMPORT_BUDGET_MS.
+async function measureOrdinary(port) {
+  const { ORDINARY_NOTES } = await import('../packages/sync/measure/converter-cases.ts');
+  const server = await startWorker('converter', port);
+  const results = [];
+  try {
+    for (const [name, body] of Object.entries(ORDINARY_NOTES)) {
+      try {
+        const imported = await timedRequest(server, '/import', { method: 'POST', body: body(), signal: AbortSignal.timeout(ADVERSARIAL_TIMEOUT_MS) });
+        results.push({ name, importCpuMs: imported.cpuMs, cut: JSON.parse(imported.body).cut });
+      } catch (error) {
+        results.push({ name, failed: String(error.message).split('\n')[0] });
+      }
+    }
+  } finally {
+    await stop(server.child);
+  }
+  return results;
+}
+
+function ordinaryProblems(results) {
+  return results.flatMap((r) => {
+    if (r.failed) return [`${r.name}: ${r.failed}`];
+    return [
+      ...(r.cut > 0 ? [`${r.name}: ${r.cut} lines cut at the work budget`] : []),
+      ...(r.importCpuMs > IMPORT_BUDGET_MS ? [`${r.name}: import ${r.importCpuMs} ms`] : []),
+    ];
+  });
+}
+
 /** Every way the adversarial notes miss the stated budget (empty when they meet it). */
 function adversarialBudgetProblems(results) {
   const problems = [];
@@ -608,6 +640,7 @@ async function main() {
   const payloads = await measurePayloadFrames(port + 2);
   const searches = await measureSearch(port + 3);
   const adversarial = await measureAdversarial(port + 100);
+  const ordinary = await measureOrdinary(port + 99);
 
   const coldOf = (name, key) => round(median(cold[name].map((sample) => sample[key])));
   const families = ratios.filter((r) => !r.name.startsWith('scale note'));
@@ -662,6 +695,11 @@ async function main() {
       ),
       ...(r.failed ? [`| Unclosed openers, ${r.name} | FAILED: ${r.failed} |`] : []),
     ]),
+    ...ordinary.map((r) =>
+      r.failed
+        ? `| Ordinary note, ${r.name} | FAILED: ${r.failed} |`
+        : `| Ordinary note, ${r.name}: workerd CPU (import), one run | ${r.importCpuMs} ms (budget ${IMPORT_BUDGET_MS} ms)${r.cut ? `; ${r.cut} lines cut at the work budget` : ''} |`,
+    ),
     `| State-to-markdown ratio r, worst family | ${worst.ratio.toFixed(2)} (${worst.name}) |`,
     '',
     '| Fixture | Markdown B | Y.Doc state B | Ratio |',
@@ -693,6 +731,11 @@ async function main() {
   const searchProblems = searchBudgetProblems(searches);
   if (searchProblems.length > 0) {
     console.error(`measure-converter: search over budget in workerd: ${searchProblems.join('; ')}`);
+    process.exitCode = 1;
+  }
+  const ordinaryFailures = ordinaryProblems(ordinary);
+  if (ordinaryFailures.length > 0) {
+    console.error(`measure-converter: ordinary notes cut or over budget in workerd: ${ordinaryFailures.join('; ')}`);
     process.exitCode = 1;
   }
   const adversarialProblems = adversarialBudgetProblems(adversarial);

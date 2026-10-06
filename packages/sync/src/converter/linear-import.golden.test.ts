@@ -7,9 +7,10 @@ import { $withDocumentImport, withImportFormulaIds } from '@moss-desktop/rendere
 import { $convertFromMarkdownString, LINEAR_IMPORT_LIMITS, linearImportStats } from '@moss-desktop/renderer/editor/markdown/linear-import';
 import { escapeHtmlEntities, normalizeMarkdownForImport } from '@moss-desktop/renderer/editor/markdown/normalize';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { CONVERTER_CASES, converterBody } from '../../measure/converter-cases.ts';
-import { FIXTURES } from './fixtures.ts';
-import { createConverterEditor, importMarkdown, MARKDOWN_EDITOR_TRANSFORMERS } from './index.ts';
+import { $getRoot } from 'lexical';
+import { CONVERTER_CASES, converterBody, ORDINARY_NOTES } from '../../measure/converter-cases.ts';
+import { FIXTURES, SCALE_UNIT, scaleNote } from './fixtures.ts';
+import { createConverterEditor, exportMarkdown, importMarkdown, MARKDOWN_EDITOR_TRANSFORMERS } from './index.ts';
 
 type Convert = typeof $lexicalConvertFromMarkdownString;
 
@@ -79,6 +80,52 @@ describe('linear inline import @p:tech-4', () => {
     it('builds the tree Lexical builds for long lines of random tokens', () => {
       expect(differing(fuzz(60, 11, 1_200))).toEqual([]);
     }, 300_000);
+  });
+
+  // The budget is linear in each line's length and matches, so ordinary notes, however long, are never cut.
+  it.each(Object.entries(ORDINARY_NOTES))('cuts no line of an ordinary note and builds Lexical\'s tree: %s', (_name, body) => {
+    const markdown = body();
+    const before = linearImportStats.cut;
+    const ours = tree($convertFromMarkdownString, markdown);
+    expect(linearImportStats.cut - before).toBe(0);
+    expect(ours === tree($lexicalConvertFromMarkdownString, markdown)).toBe(true);
+  }, 120_000);
+
+  it('cuts no line of the 2 MB scale note of mixed content', () => {
+    const before = linearImportStats.cut;
+    importMarkdown(scaleNote(Math.ceil((2 * 1024 * 1024) / SCALE_UNIT.length)));
+    expect(linearImportStats.cut - before).toBe(0);
+  }, 120_000);
+
+  // A cut line keeps the rest of its text as literal text: every character survives, and the export writes it so
+  // that the next import reads the same text.
+  describe('when the budget is spent', () => {
+    const textOf = (editor: ReturnType<typeof importMarkdown>) => editor.getEditorState().read(() => $getRoot().getTextContent());
+    const withoutDelimiters = (text: string) => text.replace(/[*_~\s]/g, '');
+    const lossless = (markdown: string) => {
+      const before = linearImportStats.cut;
+      const editor = importMarkdown(markdown);
+      const cut = linearImportStats.cut - before;
+      const text = textOf(editor);
+      return { cut, kept: withoutDelimiters(text) === withoutDelimiters(markdown), literal: /[*_]/.test(text), reread: textOf(importMarkdown(exportMarkdown(editor))) === text };
+    };
+
+    it('keeps a pathological line\'s text', () => {
+      const n = 10_000;
+      expect(lossless(`${'*x _x '.repeat(n)}y${' x_ x*'.repeat(n)}`)).toEqual({ cut: 1, kept: true, literal: true, reread: true });
+    }, 120_000);
+
+    it('keeps the text of lines past the import\'s budget', () => {
+      const limits = { ...LINEAR_IMPORT_LIMITS };
+      try {
+        Object.assign(LINEAR_IMPORT_LIMITS, { importBase: 0, perChar: 1, perMatch: 0 });
+        const result = lossless(Array.from({ length: 200 }, (_, i) => `**a${i}** and *b${i}* then ~~c${i}~~ x`).join('\n\n'));
+        expect(result.cut).toBeGreaterThan(100);
+        expect(result).toMatchObject({ kept: true, literal: true });
+      } finally {
+        Object.assign(LINEAR_IMPORT_LIMITS, limits);
+      }
+    }, 120_000);
   });
 
   it('cuts no fixture line and no L3 case at the default budget', () => {

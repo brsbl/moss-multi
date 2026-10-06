@@ -6,8 +6,9 @@ import { $convertFromMarkdownString, $convertToMarkdownString, type Transformer 
 import type { Klass, LexicalNode } from 'lexical';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { exportMarkdown, importMarkdown, MARKDOWN_EDITOR_TRANSFORMERS, type NoteBodyImportOptions } from '../../src/converter/index.ts';
-import { DEVIATING, FIXTURES, fixture, stringify, transformerSignature } from '../../src/converter/fixtures.ts';
-import { CONVERTER_CASES, converterBody } from '../../measure/converter-cases.ts';
+import { linearImportStats } from '@moss-desktop/renderer/editor/markdown/linear-import';
+import { DEVIATING, FIXTURES, fixture, SCALE_UNIT, scaleNote, stringify, transformerSignature } from '../../src/converter/fixtures.ts';
+import { CONVERTER_CASES, converterBody, ORDINARY_NOTES } from '../../measure/converter-cases.ts';
 
 declare const __MOSS_PRISTINE__: string;
 
@@ -86,6 +87,29 @@ describe('L3 parity with moss at the pin @p:tech-4', () => {
       expect(ours.markdown).toBe(pristine.markdown);
     }
   });
+
+  // The first place two long outputs differ, or null.
+  const difference = (a: string, b: string) => {
+    if (a === b) return null;
+    let i = 0;
+    while (a[i] === b[i]) i += 1;
+    return { at: i, ours: a.slice(Math.max(0, i - 80), i + 80), pristine: b.slice(Math.max(0, i - 80), i + 80) };
+  };
+  const ordinary: [string, () => string][] = [
+    ...Object.entries(ORDINARY_NOTES),
+    ['the 2 MB scale note of mixed content', () => scaleNote(Math.ceil((2 * 1024 * 1024) / SCALE_UNIT.length))],
+  ];
+
+  // The work budget (markdown/linear-import.ts) cuts none of these, so each converts as moss converts it.
+  it.each(ordinary)('ordinary notes, %s', (_name, body) => {
+    const markdown = body();
+    const cut = linearImportStats.cut;
+    const ours = comparable(markdown, oursRoundTrip(markdown, {}));
+    expect(linearImportStats.cut - cut).toBe(0);
+    const pristine = comparable(markdown, pristineRoundTrip(markdown, {}));
+    expect(difference(ours.tree, pristine.tree)).toBeNull();
+    expect(difference(ours.markdown, pristine.markdown)).toBeNull();
+  }, 300_000);
 
   it('line-loss: moss drops the rejected lines, the converter keeps them (DEVIATIONS)', () => {
     const { markdown, options } = fixture('line-loss');
