@@ -30,8 +30,8 @@ export function ConnectionIndicator({ docId }: { docId: string }) {
 export function ConnectionNotice({ docId }: { docId: string | null }) {
   const view = useDocConnection(docId);
   const terminal = useTerminal(docId);
-  const kind = terminal ?? (view?.halted ? 'halted' : view?.retrying ? 'retrying' : view?.synced && view.connection === 'offline' ? 'offline' : null);
-  const message = terminal ? terminalCopy[terminal] : view?.halted ?? (kind === 'retrying'
+  const kind = terminal ?? (view?.retrying ? 'retrying' : view?.synced && view.connection === 'offline' ? 'offline' : null);
+  const message = terminal ? terminalCopy[terminal] : (kind === 'retrying'
     ? 'Still connecting… Your note will open when sync finishes.'
     : 'Connection lost. Your edits are kept in this window and will sync when the connection returns.');
   return <div {...{ [NOTICE_BAND_ATTR]: '' }} className="relative z-10 shrink-0">

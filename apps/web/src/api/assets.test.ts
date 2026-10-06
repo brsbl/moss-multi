@@ -2,6 +2,7 @@
 // sandboxed SVG; editors upload, readers (a share link included) read. A doc's media are its own record, mapping each
 // `assets/<file>` it uses to the exact version placed in it: never a filename looked up in its folder.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { UPLOAD_RATE, VAULT_MEDIA_QUOTA_BYTES } from '@moss-multi/protocol/limits';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
 import { BASE, insertDoc, insertFolder, insertGrant, insertLink, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
 import { handleApi } from './router.ts';
@@ -20,17 +21,28 @@ const DocDO = {
   get: (id: { name: string }) => ({
     setName: async () => undefined,
     exportMarkdown: async () => exported.get(id.name) ?? '',
-    snapshotForDuplicate: async () => ({ title: 'Original', state: new Uint8Array([1]) }),
+    snapshotForDuplicate: async () => ({ title: 'Original', state: new Uint8Array([1]), payloads: [] }),
     createFromSnapshot: async (...args: unknown[]) => {
       created.set(id.name, args);
     },
   }),
 };
 
-/** Workspace notifications and REST write tokens, which these tests never count. */
+/** Workspace notifications and REST write tokens, which these tests never count; upload tokens counted per window name
+ * (the PrincipalDO's persisted window is tested in packages/sync's harness). */
+const uploadsTaken = new Map<string, number>();
 const PrincipalDO = {
   idFromName: (name: string) => ({ name, toString: () => name }),
-  get: () => ({ setName: async () => undefined, publish: async () => undefined, takeWriteToken: async () => true }),
+  get: (id: { name: string }) => ({
+    setName: async () => undefined,
+    publish: async () => undefined,
+    takeWriteToken: async () => true,
+    takeUploadToken: async () => {
+      const taken = (uploadsTaken.get(id.name) ?? 0) + 1;
+      uploadsTaken.set(id.name, taken);
+      return taken <= UPLOAD_RATE.max;
+    },
+  }),
 };
 
 let d1: TestD1;
@@ -49,18 +61,20 @@ beforeAll(async () => {
 afterAll(() => d1?.dispose());
 
 function call(method: string, path: string, cookie: string | null, init: { body?: BodyInit; headers?: Record<string, string> } = {}) {
+  // A fixed-size body carries its Content-Length, as a browser's and the Workers runtime's do.
+  const length = init.body instanceof Uint8Array ? { 'content-length': String(init.body.byteLength) } : {};
   return handleApi(new Request(`${BASE}${path}`, {
     method,
-    headers: { origin: BASE, ...(cookie ? { cookie } : {}), ...init.headers },
+    headers: { origin: BASE, ...(cookie ? { cookie } : {}), ...length, ...init.headers },
     body: init.body,
     // A streamed body, which a test holds open.
     ...(init.body instanceof ReadableStream ? { duplex: 'half' } : {}),
   } as RequestInit), env);
 }
 
-const upload = (cookie: string | null, docId: string, filename: string, bytes: Uint8Array<ArrayBuffer>, contentType = '') =>
+const upload = (cookie: string | null, docId: string, filename: string, bytes: Uint8Array<ArrayBuffer>, contentType = '', headers: Record<string, string> = {}) =>
   call('POST', `/api/docs/${docId}/assets?filename=${encodeURIComponent(filename)}`, cookie, {
-    body: bytes, headers: contentType ? { 'content-type': contentType } : {},
+    body: bytes, headers: { ...(contentType ? { 'content-type': contentType } : {}), ...headers },
   });
 
 interface Uploaded { relativePath: string; filename: string; asset: { id: string; versionId: string; size: number } }
@@ -153,6 +167,230 @@ describe('upload (A§16)', () => {
     expect(second.filename).not.toBe(first.filename);
     expect(await bytesOf(await call('GET', `/api/docs/${docId}/assets/${second.filename}`, ada.cookie))).toEqual(OTHER_PNG);
     expect(await bytesOf(await call('GET', `/api/docs/${docId}/assets/${first.filename}`, ada.cookie))).toEqual(PNG);
+  });
+});
+
+describe('upload bounds (T3.1s)', () => {
+  it('refuses a body with no Content-Length with 411, never reading it', async () => {
+    const docId = await insertDoc(d1.db, ada);
+    const CHUNK = 1024 * 1024;
+    let pulled = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (pulled >= 40 * CHUNK) return controller.close();
+        pulled += CHUNK;
+        controller.enqueue(new Uint8Array(CHUNK));
+      },
+    }, { highWaterMark: 0 });
+    const sent = await call('POST', `/api/docs/${docId}/assets?filename=chunked.png`, ada.cookie, { body, headers: { 'content-type': 'image/png' } });
+    expect(sent.status, await sent.clone().text()).toBe(411);
+    expect(pulled, 'the body is never read').toBe(0);
+  });
+
+  it('refuses a stream that outruns its Content-Length with 413 as it passes it, never reading the rest', async () => {
+    const docId = await insertDoc(d1.db, ada);
+    const CHUNK = 1024 * 1024;
+    let pulled = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (pulled >= 40 * CHUNK) return controller.close();
+        pulled += CHUNK;
+        controller.enqueue(new Uint8Array(CHUNK));
+      },
+    }, { highWaterMark: 0 });
+    const sent = await call('POST', `/api/docs/${docId}/assets?filename=understated.png`, ada.cookie, {
+      body, headers: { 'content-type': 'image/png', 'content-length': String(CHUNK) },
+    });
+    expect(sent.status, await sent.clone().text()).toBe(413);
+    expect(pulled, 'the body is read no further than its declared length').toBeLessThanOrEqual(2 * CHUNK);
+  });
+
+  it('copies each chunk into one buffer of the declared length as it arrives, never holding the chunks', async () => {
+    const docId = await insertDoc(d1.db, ada);
+    const half = 2048;
+    const first = new Uint8Array(half).fill(1);
+    let pulls = 0;
+    // The stream reuses its first chunk's memory once it is read: an upload that kept chunks would store the reuse.
+    const body = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        pulls += 1;
+        if (pulls === 1) return controller.enqueue(first);
+        if (pulls === 2) {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          first.fill(2);
+          return controller.enqueue(new Uint8Array(half).fill(3));
+        }
+        controller.close();
+      },
+    }, { highWaterMark: 0 });
+    const result = await uploaded(await call('POST', `/api/docs/${docId}/assets?filename=streamed.png`, ada.cookie, {
+      body, headers: { 'content-type': 'image/png', 'content-length': String(2 * half) },
+    }));
+    const stored = await bytesOf(await call('GET', `/api/docs/${docId}/assets/${result.filename}`, ada.cookie));
+    expect(stored.byteLength).toBe(2 * half);
+    expect(stored.slice(0, half).every((b) => b === 1), 'the first chunk as it arrived').toBe(true);
+    expect(stored.slice(half).every((b) => b === 3)).toBe(true);
+  });
+
+  it('refuses an invalid Content-Length with 400', async () => {
+    const docId = await insertDoc(d1.db, ada);
+    const sent = await upload(ada.cookie, docId, 'bad-length.png', PNG, 'image/png', { 'content-length': 'abc' });
+    expect(sent.status, await sent.clone().text()).toBe(400);
+  });
+
+  it('refuses the upload past the per-identity window with 429 and a sentence', async () => {
+    const dee = await signedUpUser(env, 'assets-rate-dee', 'Dee');
+    const docId = await insertDoc(d1.db, dee);
+    for (let i = 0; i < UPLOAD_RATE.max; i += 1) {
+      expect((await upload(dee.cookie, docId, 'burst.png', PNG, 'image/png')).status, `upload ${i + 1}`).toBe(201);
+    }
+    const refused = await upload(dee.cookie, docId, 'burst.png', PNG, 'image/png');
+    expect(refused.status).toBe(429);
+    expect(refused.headers.get('retry-after')).toBe(String(UPLOAD_RATE.windowMs / 1000));
+    expect(((await refused.json()) as { message: string }).message).toMatch(/too many uploads/i);
+    const copy = JSON.stringify({ sourceNoteId: docId, sourceRelativePath: 'assets/burst.png' });
+    const copied = await call('POST', `/api/docs/${docId}/assets/copy`, dee.cookie, { body: copy, headers: { 'content-type': 'application/json' } });
+    expect(copied.status, 'a cross-note copy counts as an upload').toBe(429);
+  }, 60_000);
+
+  it('counts holders of a link under the link and their IP, whichever account they use', async () => {
+    const docId = await insertDoc(d1.db, ada);
+    const token = await insertLink(d1.db, { docId }, 'editor');
+    const [eve, fay] = [await signedUpUser(env, 'assets-rate-eve', 'Eve'), await signedUpUser(env, 'assets-rate-fay', 'Fay')];
+    const viaLink = (who: TestUser, ip: string) => call('POST', `/api/docs/${docId}/assets?filename=linked-burst.png&share=${token}`, who.cookie, {
+      body: PNG, headers: { 'content-type': 'image/png', 'cf-connecting-ip': ip },
+    });
+    for (let i = 0; i < UPLOAD_RATE.max; i += 1) expect((await viaLink(eve, '203.0.113.7')).status, `upload ${i + 1}`).toBe(201);
+    expect((await viaLink(fay, '203.0.113.7')).status, 'another account on the same link and IP').toBe(429);
+    expect((await viaLink(fay, '203.0.113.8')).status, 'the same link from another IP').toBe(201);
+  }, 60_000);
+
+  it('counts a holder whose own grant is weaker than the link under the link and their IP too', async () => {
+    const docId = await insertDoc(d1.db, ada);
+    const token = await insertLink(d1.db, { docId }, 'editor');
+    const [ivy, jon] = [await signedUpUser(env, 'assets-rate-ivy', 'Ivy'), await signedUpUser(env, 'assets-rate-jon', 'Jon')];
+    await insertGrant(d1.db, { docId }, ivy, 'viewer');
+    await insertGrant(d1.db, { docId }, jon, 'viewer');
+    const viaLink = (who: TestUser) => call('POST', `/api/docs/${docId}/assets?filename=weak-grant.png&share=${token}`, who.cookie, {
+      body: PNG, headers: { 'content-type': 'image/png', 'cf-connecting-ip': '203.0.113.9' },
+    });
+    for (let i = 0; i < UPLOAD_RATE.max; i += 1) expect((await viaLink(ivy)).status, `upload ${i + 1}`).toBe(201);
+    expect((await viaLink(jon)).status, 'another viewer on the same link and IP').toBe(429);
+  }, 60_000);
+
+  it('enforces a per-vault media quota with 413, over every folder in the vault', async () => {
+    const gil = await signedUpUser(env, 'assets-quota-gil', 'Gil');
+    const nested = await insertFolder(d1.db, gil, gil.homeId);
+    const docId = await insertDoc(d1.db, gil, { folderId: nested });
+    await uploaded(await upload(gil.cookie, docId, 'fits.png', PNG, 'image/png'));
+    // Fill the vault to within a few bytes of its quota with an asset in its root folder.
+    await d1.db.prepare("INSERT INTO assets (id, folder_id, filename, kind, content_type, size, current_version_id, created_by, created_at) VALUES (?1, ?2, 'filler.mp4', 'video', 'video/mp4', ?3, NULL, ?4, ?5)")
+      .bind(crypto.randomUUID(), gil.homeId, VAULT_MEDIA_QUOTA_BYTES - PNG.byteLength - 4, gil.id, Date.now()).run();
+    const refused = await upload(gil.cookie, docId, 'over.png', OTHER_PNG, 'image/png');
+    expect(refused.status).toBe(413);
+    expect(((await refused.json()) as { message: string }).message).toMatch(/storage/i);
+    // Another person's vault is untouched.
+    const own = await insertDoc(d1.db, ada);
+    expect((await upload(ada.cookie, own, 'over.png', OTHER_PNG, 'image/png')).status).toBe(201);
+  });
+
+  it('holds the quota against uploads running at the same time', async () => {
+    const kim = await signedUpUser(env, 'assets-quota-kim', 'Kim');
+    const docId = await insertDoc(d1.db, kim);
+    const size = 4096;
+    // Room for exactly one more upload.
+    await d1.db.prepare("INSERT INTO assets (id, folder_id, filename, kind, content_type, size, current_version_id, created_by, created_at) VALUES (?1, ?2, 'filler.mp4', 'video', 'video/mp4', ?3, NULL, ?4, ?5)")
+      .bind(crypto.randomUUID(), kim.homeId, VAULT_MEDIA_QUOTA_BYTES - size, kim.id, Date.now()).run();
+    const N = 4;
+    let reading = 0;
+    let open = () => {};
+    const gate = new Promise<void>((resolve) => {
+      open = resolve;
+      setTimeout(resolve, 3000);
+    });
+    // Each body is held until every upload is reading its body, past any check made before it.
+    const sends = Array.from({ length: N }, (_, i) => {
+      const body = new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          reading += 1;
+          if (reading === N) open();
+          await gate;
+          controller.enqueue(new Uint8Array(size).fill(i + 1));
+          controller.close();
+        },
+      }, { highWaterMark: 0 });
+      return call('POST', `/api/docs/${docId}/assets?filename=race-${i}.png`, kim.cookie, {
+        body, headers: { 'content-type': 'image/png', 'content-length': String(size) },
+      });
+    });
+    const statuses = (await Promise.all(sends)).map((response) => response.status).sort();
+    expect(statuses).toEqual([201, ...Array<number>(N - 1).fill(413)]);
+    const used = await d1.db.prepare('SELECT SUM(size) AS used FROM assets WHERE folder_id = ?1').bind(kim.homeId).first<{ used: number }>();
+    expect(used?.used).toBeLessThanOrEqual(VAULT_MEDIA_QUOTA_BYTES);
+  }, 60_000);
+});
+
+describe('upload storage bounds (T3.1s)', () => {
+  const hashOf = async (bytes: Uint8Array<ArrayBuffer>) =>
+    [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map((b) => b.toString(16).padStart(2, '0')).join('');
+  const traceOf = async (hash: string) => ({
+    blob: (await d1.assets.head(`asset-blobs/sha256/${hash}`)) !== null,
+    rows: await d1.db.prepare(`SELECT (SELECT count(*) FROM content_objects WHERE hash = ?1) + (SELECT count(*) FROM asset_versions WHERE content_hash = ?1)
+      + (SELECT count(*) FROM doc_media WHERE content_hash = ?1) AS n`).bind(hash).first<{ n: number }>().then((row) => row?.n),
+  });
+  const fill = (owner: TestUser, folderId: string, size: number) =>
+    d1.db.prepare("INSERT INTO assets (id, folder_id, filename, kind, content_type, size, current_version_id, created_by, created_at) VALUES (?1, ?2, ?3, 'video', 'video/mp4', ?4, NULL, ?5, ?6)")
+      .bind(crypto.randomUUID(), folderId, `filler-${crypto.randomUUID()}.mp4`, size, owner.id, Date.now());
+
+  it('stores no bytes for an upload that finds no free name', async () => {
+    const lea = await signedUpUser(env, 'assets-names-lea', 'Lea');
+    const docId = await insertDoc(d1.db, lea);
+    for (let i = 0; i < 50; i += 1) await uploaded(await upload(lea.cookie, docId, 'same.png', new Uint8Array([...PNG, i]), 'image/png'));
+    const big = new Uint8Array([...PNG, ...new Uint8Array(4096).fill(9)]);
+    const refused = await upload(lea.cookie, docId, 'same.png', big, 'image/png');
+    expect(refused.status, await refused.clone().text()).toBe(409);
+    expect(await traceOf(await hashOf(big)), 'an unbound upload leaves no blob and no rows').toEqual({ blob: false, rows: 0 });
+  }, 60_000);
+
+  it('refuses in the asset insert an upload whose room was taken after its checks, leaving no blob and no rows', async () => {
+    const max = await signedUpUser(env, 'assets-quota-max', 'Max');
+    const docId = await insertDoc(d1.db, max);
+    const body = new Uint8Array(4096).fill(5);
+    // Every check before the write sees room; another upload takes it just before the write commits.
+    const DB = new Proxy(d1.db, {
+      get(target, key) {
+        if (key === 'batch') {
+          return async (statements: D1PreparedStatement[]) => {
+            await fill(max, max.homeId, VAULT_MEDIA_QUOTA_BYTES - body.byteLength + 1).run();
+            return target.batch(statements);
+          };
+        }
+        const value = Reflect.get(target, key) as unknown;
+        return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+      },
+    });
+    const sent = await handleApi(new Request(`${BASE}/api/docs/${docId}/assets?filename=late.png`, {
+      method: 'POST', headers: { origin: BASE, cookie: max.cookie, 'content-type': 'image/png', 'content-length': String(body.byteLength) }, body,
+    }), { ...env, DB });
+    expect(sent.status, await sent.clone().text()).toBe(413);
+    expect(((await sent.json()) as { error: string }).error).toBe('over-quota');
+    expect(await traceOf(await hashOf(body))).toEqual({ blob: false, rows: 0 });
+  });
+
+  it('keeps counting media in a trashed folder after its parent moves: the move may not push it past the depth bound', async () => {
+    const ned = await signedUpUser(env, 'assets-depth-ned', 'Ned');
+    const a = await insertFolder(d1.db, ned, ned.homeId);
+    const b = await insertFolder(d1.db, ned, a);
+    await fill(ned, b, VAULT_MEDIA_QUOTA_BYTES - 8).run();
+    await d1.db.prepare('UPDATE folders SET deleted_at = ?1 WHERE id = ?2').bind(Date.now(), b).run();
+    // A live chain down to the deepest a folder may sit, the vault at depth 1.
+    let deep = ned.homeId;
+    for (let depth = 2; depth <= 10; depth += 1) deep = await insertFolder(d1.db, ned, deep);
+    const moved = await call('PATCH', `/api/folders/${a}`, ned.cookie, { body: JSON.stringify({ parentId: deep }), headers: { 'content-type': 'application/json' } });
+    expect(moved.status, await moved.clone().text()).toBe(409);
+    const docId = await insertDoc(d1.db, ned);
+    const refused = await upload(ned.cookie, docId, 'over.png', OTHER_PNG, 'image/png');
+    expect(refused.status, 'the trashed media still count').toBe(413);
   });
 });
 
@@ -348,7 +586,7 @@ describe('a moved note keeps its media (A§16)', () => {
         };
       },
     });
-    const sending = call('POST', `/api/docs/${docId}/assets?filename=race.png`, ada.cookie, { body, headers: { 'content-type': 'image/png' } });
+    const sending = call('POST', `/api/docs/${docId}/assets?filename=race.png`, ada.cookie, { body, headers: { 'content-type': 'image/png', 'content-length': String(PNG.byteLength) } });
     // The upload resolves its note's access and then waits on the body while the owner moves the note.
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect((await move(ada, docId, folder)).status).toBe(200);
@@ -411,7 +649,8 @@ describe('copies carry media (A§16)', () => {
     expect(response.status, await response.clone().text()).toBe(201);
     const { doc } = (await response.json()) as { doc: { id: string; folderId: string } };
     expect(doc.folderId).toBe(cy.homeId);
-    expect(created.get(doc.id), "the copy's references are the source's: nothing renames them").toHaveLength(2);
+    // The input, the source's state and its payloads, as the snapshot gave them: nothing renames a reference.
+    expect(created.get(doc.id)?.slice(1), "the copy's references are the source's: nothing renames them").toEqual([new Uint8Array([1]), []]);
     expect(await bytesOf(await call('GET', `/api/docs/${doc.id}/assets/image.png`, cy.cookie)), "the copy shows the source's bytes").toEqual(PNG);
     expect(await bytesOf(await call('GET', `/api/docs/${cyNote}/assets/image.png`, cy.cookie)), "Cy's own note keeps its file").toEqual(OTHER_PNG);
   });

@@ -43,7 +43,7 @@ export function floatingOverCanvas({ names }) {
     }
     for (const chrome of document.querySelectorAll(`[${names.collabChrome}]`)) {
       const c = chrome.getBoundingClientRect();
-      if (c.width === 0 || c.height === 0) continue;
+      if (c.width === 0 || c.height === 0 || chrome.closest(`[${names.overlay}]`)) continue; // e.g. the phone's notes panel
       if (c.left < r.right && c.right > r.left && c.top < r.bottom && c.bottom > r.top) {
         found.add(`collab chrome ${describe(chrome)} intersects the canvas`);
       }

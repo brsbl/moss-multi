@@ -132,13 +132,6 @@ export function migrateFrontmatter(doc: Y.Doc, origin: unknown): void {
   }, origin);
 }
 
-/** Standalone file editing uses canonical YAML, with no CRDT text mutation. */
-export function setFrontmatterKey(yaml: string, key: string, value: unknown): string {
-  const data = { ...parseFrontmatter(yaml), [key]: value };
-  if (value === undefined) delete data[key];
-  return Object.keys(data).length ? jsYaml.dump(data, DUMP) : '';
-}
-
 export function composeFrontmatter(yaml: string, body: string): string {
   if (!yaml.trim()) return body;
   return `---\n${yaml.endsWith('\n') ? yaml : `${yaml}\n`}---\n${body}`;

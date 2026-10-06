@@ -10,8 +10,8 @@ export interface IdSpan {
 export type SuggestRequest =
   /** Fresh leases for this connection, or `resume` of this principal's leases whose connection closed or idled. */
   | { t: 'suggest-lease'; resume?: number[] }
-  /** One fork transaction's V1 update, base64. */
-  | { t: 'suggest-ops'; record: string; update: string }
+  /** One fork transaction's V1 update, base64, in `doc`: the body (the default) or a payload doc by its id. */
+  | { t: 'suggest-ops'; record: string; doc?: string; update: string }
   | { t: 'suggest-delete'; record: string; part: { id: string; targets: IdSpan[] } }
   | { t: 'suggest-undelete'; record: string; partId: string }
   | { t: 'suggest-merge'; into: string; from: string }
@@ -32,24 +32,27 @@ export type SuggestRefusal =
   | 'ops-cap'
   | 'doc-cap'
   | 'node-type'
+  | 'channel'
   | 'target';
 
 export interface LeaseGrant {
   client: number;
   /** The record id minted with this lease; the first frame naming it creates the record. */
   record: string;
-  /** The acknowledged clock: the next struct this lease may send. */
+  /** The acknowledged clock in the body: the next struct this lease may send there. */
   clock: number;
+  /** The acknowledged clock in each doc the lease has written (`body`, or a payload id). */
+  clocks: Record<string, number>;
 }
 
 export type SuggestReply =
   | { t: 'suggest-leased'; leases: LeaseGrant[] }
   /**
    * The frame landed in `record`, which differs from `requested` when the request opened a continuation of an
-   * accepted record or followed a merge. `sv` is each of the record's leases' acknowledged clock; `parts` the delete
-   * parts the record now holds.
+   * accepted record or followed a merge. `sv` is each of the record's leases' acknowledged clock in `doc`, the doc the
+   * frame wrote (`body` for every frame but a payload op); `parts` the delete parts the record now holds.
    */
-  | { t: 'suggest-ack'; record: string; requested: string; sv: Record<string, number>; parts: string[] }
+  | { t: 'suggest-ack'; record: string; requested: string; doc: string; sv: Record<string, number>; parts: string[] }
   | { t: 'suggest-refused'; record: string | null; reason: SuggestRefusal };
 
 export const SUGGEST_LIMITS = {

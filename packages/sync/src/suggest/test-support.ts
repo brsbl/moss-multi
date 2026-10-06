@@ -10,6 +10,7 @@ import {
 import { vi } from 'vitest';
 import * as Y from 'yjs';
 import { importMarkdown } from '../converter/index.ts';
+import { attachPayloadDocs, PayloadDocs, payloadDocsFor, payloadMap, payloadText } from '../payload-docs.ts';
 import { exportDocMarkdown, importBody, serverWrite } from '../server-doc.ts';
 import { bindEditor } from './fork-shim.ts';
 
@@ -129,7 +130,7 @@ export const CENSUS: CensusOp[] = [
   { name: 'new formula', steps: [insertBlock('New {{3*3|9}} here.')] },
   { name: 'new chart block', steps: [insertBlock('```moss-chart\n{"type":"bar","data":[{"label":"Mon","value":1}]}\n```')] },
   { name: 'new sketch block', steps: [insertBlock('```moss-sketch\n.##.\n```')] },
-  { name: 'an edit of an original code register', steps: [() => codeBlock().setCode('seed!')] },
+  { name: 'an edit of an original code payload', steps: [() => codeBlock().setCode('seed!')] },
   { name: 'undo of a split', steps: [() => select('Hello', 5).insertParagraph(), 'undo'] },
   { name: 'join', steps: [() => select('join tail', 0).deleteCharacter(true)] },
 ];
@@ -154,9 +155,17 @@ export const resetIds = () => {
   uuid = 0;
 };
 
-/** The oracle: an editor bound to a copy of `body` makes the steps directly. */
-export function directEdit(body: Y.Doc, steps: readonly Step[]): Y.Doc {
+/** A new doc holding a copy of every payload `body` holds in memory; the caller fills the note after binding. */
+function withPayloadsOf(body: Y.Doc): Y.Doc {
   const doc = new Y.Doc();
+  const host = attachPayloadDocs(doc, new PayloadDocs());
+  for (const [id, payload] of payloadDocsFor(body).docs) Y.applyUpdate(host.hold(id, true), Y.encodeStateAsUpdate(payload));
+  return doc;
+}
+
+/** The oracle: an editor bound to a copy of `body` and its payloads makes the steps directly. */
+export function directEdit(body: Y.Doc, steps: readonly Step[]): Y.Doc {
+  const doc = withPayloadsOf(body);
   const bound = bindEditor(doc);
   try {
     Y.applyUpdate(doc, Y.encodeStateAsUpdate(body));
@@ -172,33 +181,40 @@ export function directEdit(body: Y.Doc, steps: readonly Step[]): Y.Doc {
   return doc;
 }
 
-/** An editor's direct edit on `live`, delivered as the provider would. */
+/** An editor's direct edit on `live`, its note and payload updates delivered as the provider would. */
 export function editorEdits(live: Y.Doc, step: () => void): void {
-  const doc = new Y.Doc();
+  const doc = withPayloadsOf(live);
+  const payloads = payloadDocsFor(doc);
   const bound = bindEditor(doc);
   try {
     Y.applyUpdate(doc, Y.encodeStateAsUpdate(live));
     bound.editor.update(() => {}, { discrete: true });
     const sv = Y.encodeStateVector(doc);
+    const payloadSvs = new Map([...payloads.docs].map(([id, payload]) => [id, Y.encodeStateVector(payload)]));
     bound.editor.update(step, { discrete: true });
     bound.editor.update(() => {}, { discrete: true });
+    for (const [id, payload] of payloads.docs) Y.applyUpdate(payloadDocsFor(live).hold(id, true), Y.encodeStateAsUpdate(payload, payloadSvs.get(id)));
     Y.applyUpdate(live, Y.encodeStateAsUpdate(doc, sv));
   } finally {
     bound.dispose();
+    payloads.destroy();
     doc.destroy();
   }
 }
 
 export const exported = (doc: Y.Doc): string => exportDocMarkdown(doc, NOTE_ID);
 
-/** Register contents in body order, by the decorators naming them. */
-export function registersInOrder(doc: Y.Doc): string[] {
+/** A payload doc's value as plain data: its text and its compound fields. */
+export const payloadValue = (payload: Y.Doc | undefined): unknown =>
+  payload ? { text: payloadText(payload).toString(), map: payloadMap(payload).toJSON() } : null;
+
+/** Payload contents in body order, by the decorators naming them. */
+export function payloadsInOrder(doc: Y.Doc): string[] {
   const out: string[] = [];
-  const registers = doc.getMap('registers');
+  const payloads = payloadDocsFor(doc);
   const visit = (type: Y.AbstractType<unknown>) => {
     const id = type instanceof Y.XmlText || type instanceof Y.XmlElement ? type.getAttribute('__regId') : undefined;
-    const value = typeof id === 'string' ? registers.get(id) : undefined;
-    if (typeof id === 'string') out.push(JSON.stringify(value instanceof Y.AbstractType ? value.toJSON() : (value ?? null)));
+    if (typeof id === 'string') out.push(JSON.stringify(payloadValue(payloads.get(id))));
     if (type instanceof Y.XmlText) {
       for (const op of type.toDelta() as { insert: unknown }[]) if (op.insert instanceof Y.AbstractType) visit(op.insert);
     } else if (type instanceof Y.XmlElement) for (const child of type.toArray()) visit(child as Y.AbstractType<unknown>);
@@ -207,12 +223,13 @@ export function registersInOrder(doc: Y.Doc): string[] {
   return out;
 }
 
-/** The body: root, registers, title and frontmatter as plain data. */
+/** The body: root, every payload doc the note holds, title and frontmatter as plain data. */
 export function bodyOf(doc: Y.Doc): string {
+  const payloads = [...payloadDocsFor(doc).docs].sort(([a], [b]) => (a < b ? -1 : 1));
   return JSON.stringify({
     root: doc.get('root', Y.XmlText).toJSON(),
     rootDelta: JSON.stringify(doc.get('root', Y.XmlText).toDelta(), (_k, v: unknown) => (v instanceof Y.AbstractType ? v.toJSON() : v)),
-    registers: doc.getMap('registers').toJSON(),
+    payloads: payloads.map(([id, payload]) => [id, Array.from(Y.encodeStateAsUpdate(payload)), payloadValue(payload)]),
     title: doc.getText('title').toJSON(),
     frontmatter: doc.getMap('frontmatter').toJSON(),
   });

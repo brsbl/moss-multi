@@ -174,6 +174,8 @@ import {
 import { hidden } from '@moss-multi/host/affordances';
 // moss-multi seam: new-note (A§9, R2)
 import { armOpeningGuard } from '@moss-multi/host/opening-guard';
+// moss-multi seam: phone-shell (T2.7, deviation 11): below 640 px the notes panel overlays the canvas
+import { useNarrow } from '@moss-multi/host/viewport';
 
 const nowInSeconds = (): number => Math.floor(Date.now() / 1000);
 const NOTE_LIST_SYNC_DEBOUNCE_MS = 150;
@@ -1164,6 +1166,9 @@ export function App() {
   const toggleZenMode = useSetAtom(toggleZenModeAtom);
   const notesPanelWrapperRef = useRef<HTMLDivElement | null>(null);
   const [showZenNotesPanel, setShowZenNotesPanel] = useState(false);
+  const narrow = useNarrow(); // moss-multi seam: phone-shell (T2.7): opened by its toggle; open while no note is
+  const [narrowNotesOpen, setNarrowNotesOpen] = useState(false);
+  const narrowNotesVisible = narrow && (narrowNotesOpen || !activeNoteId);
   const [showZenTopBar, setShowZenTopBar] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<UpdateReadyInfo | null>(null);
   const [selectedContext, setSelectedContext] = useState<string | null>(null);
@@ -3139,7 +3144,8 @@ export function App() {
             noteId,
             error
           });
-          showOperationFailure('Could not restore note. Try again.');
+          // moss-multi seam: a refused restore shows the server's sentence (T2.3s).
+          showOperationFailure(error instanceof Error && error.message ? error.message : 'Could not restore note. Try again.');
           await reconcileNotesFromDisk('restore-error', noteId);
           return;
         }
@@ -3895,8 +3901,21 @@ export function App() {
   }, [store, activeNoteId]);
 
   const handleCollapseNotesPanel = useCallback(() => {
+    if (narrow) { setNarrowNotesOpen(false); return; } // moss-multi seam: phone-shell (T2.7)
     setNotesPanelHidden(true);
-  }, [setNotesPanelHidden]);
+  }, [narrow, setNotesPanelHidden]);
+
+  // moss-multi seam: phone-shell (T2.7): a tap outside the overlaid notes panel closes it
+  useEffect(() => {
+    if (!narrowNotesVisible || !activeNoteId) return;
+    const close = (event: PointerEvent) => {
+      const target = event.target as Element | null;
+      if (!target || notesPanelWrapperRef.current?.contains(target) || target.closest('[data-overlay-surface]')) return;
+      setNarrowNotesOpen(false);
+    };
+    window.addEventListener('pointerdown', close, true);
+    return () => window.removeEventListener('pointerdown', close, true);
+  }, [narrowNotesVisible, activeNoteId]);
 
   const handleOpenActionImages = useCallback((sources: string[], startIndex: number) => {
     if (!sources.length) return;
@@ -3923,8 +3942,8 @@ export function App() {
     onRestoreNote: handleNoteRestored,
     onNavigateToNote: handleSelectNote,
     isActionsPanelHidden: actionsPanelHidden,
-    isNotesPanelHidden: notesPanelHidden,
-    onExpandNotesPanel: () => { zenModeActive ? toggleZenMode() : setNotesPanelHidden(false); },
+    isNotesPanelHidden: narrow ? !narrowNotesVisible : notesPanelHidden, // moss-multi seam: phone-shell (T2.7)
+    onExpandNotesPanel: () => { if (narrow) { setNarrowNotesOpen(true); return; } zenModeActive ? toggleZenMode() : setNotesPanelHidden(false); },
     onExpandActionsPanel: () => { zenModeActive ? toggleZenMode() : setActionsPanelHidden(false); },
     isAgentStreaming: hasActiveStreaming,
     onCanvasClick: handlePromptClose,
@@ -4055,8 +4074,8 @@ export function App() {
     />
   );
 
-  const notesPanelOverlay = zenModeActive && notesPanelHidden;
-  const notesPanelVisible = notesPanelOverlay ? showZenNotesPanel : !notesPanelHidden;
+  const notesPanelOverlay = narrow || (zenModeActive && notesPanelHidden); // moss-multi seam: phone-shell (T2.7)
+  const notesPanelVisible = narrow ? narrowNotesVisible : notesPanelOverlay ? showZenNotesPanel : !notesPanelHidden;
   const notesPanelWidthPx = notesListWidth + NOTES_PANEL_RESIZER_WIDTH_PX;
 
   const notePanelContent =
@@ -4076,7 +4095,6 @@ export function App() {
         onSelectNote={handleSelectNote}
         onCreateNote={handleCreateNote}
         onDeleteNote={handleNoteDeleted}
-        // moss-multi seam: hide-registry (A§9)
         onDuplicateNote={handleDuplicateNote}
         onRenameNote={handleRenameNote}
         onCollapse={handleCollapseNotesPanel}
@@ -4092,11 +4110,13 @@ export function App() {
         notesPanelOverlay ? 'absolute inset-y-0 left-0 z-40 border-r border-border-subtle/50 shadow-[0_8px_24px_var(--ink-shadow-soft)]' : '',
         notesPanelOverlay && notesPanelVisible ? 'translate-x-0 opacity-100' : '',
         notesPanelOverlay && !notesPanelVisible ? '-translate-x-full opacity-0 pointer-events-none' : '',
+        narrow && !notesPanelVisible ? 'invisible' : '', // moss-multi seam: phone-shell (T2.7): put away, not just transparent
         !notesPanelOverlay && !notesPanelVisible ? 'hidden' : ''
       ].join(' ')}
       style={{ width: notesPanelVisible || notesPanelOverlay ? `${notesPanelWidthPx}px` : undefined }}
       inert={!notesPanelVisible || undefined}
       aria-hidden={!notesPanelVisible}
+      data-overlay-surface={narrow && notesPanelVisible ? '' : undefined} // moss-multi seam: phone-shell (T2.7, A§19)
     >
       <div
         className="flex h-full min-w-0 shrink-0 overflow-hidden"

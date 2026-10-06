@@ -9,14 +9,38 @@ import { createBinding, syncLexicalUpdateToYjs, syncYjsChangesToLexical, type Pr
 import { createConverterEditor } from './converter/index.ts';
 import { excludedPropertiesFor } from './excluded-properties.ts';
 import {
-  $assignRegisterIds, bindRegisters, migrateRegisters, readMapEntries, rebaseMapEntries, REGISTER_LOCAL_ORIGIN, RegisterDraft,
+  $assignRegisterIds, bindRegisters, payloadTextOf, readMapEntries, rebaseMapEntries, REGISTER_LOCAL_ORIGIN, RegisterDraft,
 } from './registers.ts';
+import { BodyUndo, lexicalAction, payloadDocsFor, payloadMap, payloadText, seedPayload } from './payload-docs.ts';
+import { migratePayloads } from './payloads.ts';
 
 const noop = () => {};
 const provider = {
   awareness: { getLocalState: () => null, getStates: () => new Map(), on: noop, off: noop, setLocalState: noop, setLocalStateField: noop },
   connect: noop, disconnect: noop, on: noop, off: noop,
 } as unknown as Provider;
+/** One direction of a network: the note's update and every payload's, as a client would receive them. */
+function share(from: Y.Doc, to: Y.Doc) {
+  Y.applyUpdate(to, Y.encodeStateAsUpdate(from, Y.encodeStateVector(to)), 'remote');
+  const target = payloadDocsFor(to);
+  for (const [id, doc] of payloadDocsFor(from).docs) {
+    const held = target.hold(id);
+    Y.applyUpdate(held, Y.encodeStateAsUpdate(doc, Y.encodeStateVector(held)), 'remote');
+  }
+}
+/** Forwards every later local write of `from` (note and payloads) to `to`; returns the unlinker. */
+function link(from: Y.Doc, to: Y.Doc): () => void {
+  const stops: (() => void)[] = [];
+  const forward = (target: () => Y.Doc) => (update: Uint8Array, origin: unknown) => { if (origin !== 'remote') Y.applyUpdate(target(), update, 'remote'); };
+  const watch = (doc: Y.Doc, target: () => Y.Doc) => { const handler = forward(target); doc.on('update', handler); stops.push(() => doc.off('update', handler)); };
+  watch(from, () => to);
+  const host = payloadDocsFor(from);
+  for (const [id, doc] of host.docs) watch(doc, () => payloadDocsFor(to).hold(id));
+  stops.push(host.onHold((id, doc) => watch(doc, () => payloadDocsFor(to).hold(id))));
+  return () => stops.forEach(stop => stop());
+}
+const payloadsOf = (doc: Y.Doc) => [...payloadDocsFor(doc).docs.values()].map(payload => payloadText(payload).toString());
+
 function client(seed: Y.Doc) {
   const doc = new Y.Doc(); const editor = createConverterEditor();
   const binding = createBinding(editor, provider, 'root', doc, new Map([['root', doc]]), excludedPropertiesFor(editor));
@@ -29,10 +53,12 @@ function client(seed: Y.Doc) {
     if (transaction.origin !== binding) syncYjsChangesToLexical(binding, provider, events as never, false, noop);
   };
   root.observeDeep(observer);
-  Y.applyUpdate(doc, Y.encodeStateAsUpdate(seed));
+  const undo = new BodyUndo(new Y.UndoManager(root, { trackedOrigins: new Set([binding]) }), lexicalAction(editor));
+  const host = payloadDocsFor(doc);
+  const stopHold = host.onHold((_id, payload) => { undo.trackPayload(payload, REGISTER_LOCAL_ORIGIN, 500); });
+  share(seed, doc);
   editor.update(noop, { discrete: true });
-  const undo = new Y.UndoManager([root, doc.getMap('registers')], { trackedOrigins: new Set([binding, REGISTER_LOCAL_ORIGIN]) });
-  return { doc, editor, undo, dispose: () => { undo.destroy(); stop(); stopRegisters(); root.unobserveDeep(observer); doc.destroy(); } };
+  return { doc, editor, undo, dispose: () => { stopHold(); undo.destroy(); stop(); stopRegisters(); root.unobserveDeep(observer); host.destroy(); doc.destroy(); } };
 }
 
 const cases = [
@@ -68,7 +94,7 @@ describe('L4 decorator registers @p:col-1 @p:col-3 @p:tech-1', () => {
         (node.getWritable() as unknown as Record<string, unknown>)[fixture.attribute] = fixture.authored;
       });
       await settle();
-      Y.applyUpdate(b.doc, Y.encodeStateAsUpdate(a.doc));
+      share(a.doc, b.doc);
       await settle();
       expect(read(a)).toBe(fixture.authored);
       expect(read(b), 'the companion attribute must reach the peer with the register edit').toBe(fixture.authored);
@@ -77,7 +103,7 @@ describe('L4 decorator registers @p:col-1 @p:col-3 @p:tech-1', () => {
       finally { restored.dispose(); }
       a.undo.undo();
       await settle();
-      Y.applyUpdate(b.doc, Y.encodeStateAsUpdate(a.doc));
+      share(a.doc, b.doc);
       await settle();
       for (const peer of [a, b]) {
         expect(read(peer), 'one undo restores both authored fields').toBe(fixture.original);
@@ -94,8 +120,8 @@ describe('L4 decorator registers @p:col-1 @p:col-3 @p:tech-1', () => {
     const stop = a.editor.registerUpdateListener(({ tags }) => { commits.push(new Set(tags)); });
     try {
       await settle();
-      const text = [...a.doc.getMap<Y.Text>('registers').values()][0];
-      a.doc.transact(() => text.insert(0, 'peer '), 'remote');
+      const payload = [...payloadDocsFor(a.doc).docs.values()][0];
+      payload.transact(() => payloadText(payload).insert(0, 'peer '), 'remote');
       commits.length = 0;
       // Like a background writer's microtask, this starts before the queued refresh commits.
       queueMicrotask(() => a.editor.update(() => {
@@ -105,7 +131,7 @@ describe('L4 decorator registers @p:col-1 @p:col-3 @p:tech-1', () => {
       const authored = commits.find(tags => tags.has('authored-follow-up'));
       expect(authored).toBeDefined();
       expect(authored!.has(COLLABORATION_TAG), 'background writers must see the authored commit').toBe(false);
-      Y.applyUpdate(b.doc, Y.encodeStateAsUpdate(a.doc));
+      share(a.doc, b.doc);
       await settle();
       expect(exportMarkdown(b.editor)).toContain('```rust');
     } finally { stop(); a.dispose(); b.dispose(); seed.destroy(); }
@@ -119,14 +145,14 @@ describe('L4 decorator registers @p:col-1 @p:col-3 @p:tech-1', () => {
         const node = find(fixture.type) as unknown as Record<string, (text: string) => void>;
         node[fixture.setter](value);
       }, { discrete: true });
-      Y.applyUpdate(a.doc, Y.encodeStateAsUpdate(b.doc));
-      Y.applyUpdate(b.doc, Y.encodeStateAsUpdate(a.doc));
+      share(b.doc, a.doc);
+      share(a.doc, b.doc);
       for (const peer of [a, b]) {
         peer.editor.update(noop, { discrete: true });
         expect(exportMarkdown(peer.editor)).toContain(fixture.merged);
       }
       a.undo.undo();
-      Y.applyUpdate(b.doc, Y.encodeStateAsUpdate(a.doc));
+      share(a.doc, b.doc);
       for (const peer of [a, b]) {
         peer.editor.update(noop, { discrete: true });
         expect(exportMarkdown(peer.editor)).toContain(fixture.b);
@@ -140,7 +166,7 @@ describe('L4 decorator registers @p:col-1 @p:col-3 @p:tech-1', () => {
     const a = new Y.Doc(); const b = new Y.Doc(); const restored = new Y.Doc();
     try {
       importBody(a, fixture.markdown);
-      Y.applyUpdate(b, Y.encodeStateAsUpdate(a));
+      share(a, b);
       for (const [doc, value] of [[a, fixture.a], [b, fixture.b]] as const) {
         serverWrite(doc, 'local', () => {
           const node = find(fixture.type) as unknown as Record<string, (text: string) => void>;
@@ -148,13 +174,13 @@ describe('L4 decorator registers @p:col-1 @p:col-3 @p:tech-1', () => {
           node[fixture.setter](value);
         });
       }
-      Y.applyUpdate(a, Y.encodeStateAsUpdate(b));
-      Y.applyUpdate(b, Y.encodeStateAsUpdate(a));
+      share(b, a);
+      share(a, b);
       expect(exportDocMarkdown(a)).toContain(fixture.merged);
       expect(exportDocMarkdown(b)).toBe(exportDocMarkdown(a));
-      Y.applyUpdate(restored, Y.encodeStateAsUpdate(a));
+      share(a, restored);
       expect(exportDocMarkdown(restored)).toBe(exportDocMarkdown(a));
-      expect([...a.getMap('registers').values()].some((value) => value instanceof Y.Text && value.toString() === fixture.merged)).toBe(true);
+      expect(payloadsOf(a)).toContain(fixture.merged);
     } finally { a.destroy(); b.destroy(); restored.destroy(); }
   });
 
@@ -164,29 +190,65 @@ describe('L4 decorator registers @p:col-1 @p:col-3 @p:tech-1', () => {
       importBody(doc, fixture.markdown);
       expect(exportDocMarkdown(doc)).toBe(exportMarkdown(importMarkdown(fixture.markdown)));
       expect(EXCLUDED_FIELDS[fixture.type]).toContain(fixture.field);
-      const registers = [...doc.getMap('registers').values()];
-      expect(registers).toHaveLength(1);
-      expect(registers[0]).toBeInstanceOf(Y.Text);
-      expect((registers[0] as Y.Text).toString()).toBe(fixture.before);
+      expect(payloadsOf(doc)).toEqual([fixture.before]);
+      expect(Buffer.from(Y.encodeStateAsUpdate(doc)).includes(fixture.before), "the note's own state carries no payload text").toBe(false);
     } finally { doc.destroy(); }
   });
 
-  it('imports stable register identities and gives duplicate blocks independent payloads', () => {
+  it.each(cases)('$type copied with $copyNode gets its own payload, seeded with the source text', async (fixture) => {
+    const getter = { 'code-block': 'getCode', 'html-block': 'getRawHtml', formula: 'getFormula' }[fixture.type];
+    const seed = new Y.Doc(); importBody(seed, fixture.markdown);
+    const a = client(seed);
+    const blocks = () => findAll(fixture.type) as unknown as (LexicalNode & Record<string, (text?: string) => string> & { __regId: string })[];
+    try {
+      a.editor.update(() => { const node = blocks()[0]; node.insertAfter($copyNode(node)); }, { discrete: true });
+      const ids = a.editor.read(() => blocks().map(block => block.__regId));
+      expect(new Set(ids).size, 'the copy mints its own id').toBe(2);
+      expect(a.editor.read(() => blocks().map(block => block[getter]()))).toEqual([fixture.before, fixture.before]);
+      await new Promise(resolve => setTimeout(resolve, 0));
+      a.editor.update(() => { blocks()[1][fixture.setter](fixture.a); }, { discrete: true });
+      expect(a.editor.read(() => blocks().map(block => block[getter]())), 'editing the copy leaves the source').toEqual([fixture.before, fixture.a]);
+      expect(payloadsOf(a.doc).sort()).toEqual([fixture.a, fixture.before].sort());
+    } finally { a.dispose(); seed.destroy(); }
+  });
+
+  it('a view that subscribes before a new block\'s first text is written receives it', async () => {
+    const seed = new Y.Doc(); seedEmptyParagraph(seed);
+    const a = client(seed);
+    try {
+      let key = '';
+      a.editor.update(() => {
+        const klass = a.editor._nodes.get('code-block')!.klass as unknown as new (code: string) => LexicalNode;
+        const node = new klass('minted();');
+        $getRoot().append(node);
+        key = node.getKey();
+      }, { discrete: true });
+      const text = payloadTextOf(a.editor, key)!;
+      const seen: string[] = [];
+      text.observe(() => seen.push(text.toString()));
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(seen).toEqual(['minted();']);
+      expect(a.editor.read(() => (findAll('code-block')[0] as unknown as { getCode(): string }).getCode())).toBe('minted();');
+    } finally { a.dispose(); seed.destroy(); }
+  });
+
+  it('imports unguessable identities and gives duplicate blocks independent payloads', () => {
     const markdown = cases.map(item => `${item.markdown}\n\n${item.markdown}`).join('\n\n');
     const a = new Y.Doc(); const b = new Y.Doc();
     try {
       importBody(a, markdown); importBody(b, markdown);
-      expect([...a.getMap('registers').keys()]).toEqual([...b.getMap('registers').keys()]);
-      expect(a.getMap('registers').size).toBe(6);
+      const ids = [...payloadDocsFor(a).docs.keys(), ...payloadDocsFor(b).docs.keys()];
+      expect(new Set(ids).size, 'two imports of the same markdown share no id').toBe(12);
+      for (const id of ids) expect(id, 'an id is 128 random bits').toMatch(/^[0-9a-f]{32}$/);
       const before = exportDocMarkdown(b);
-      const text = [...a.getMap<Y.Text>('registers').values()].find(value => value.toString() === 'seed')!;
-      a.transact(() => text.insert(0, 'changed '), 'peer');
+      const payload = [...payloadDocsFor(a).docs.values()].find(value => payloadText(value).toString() === 'seed')!;
+      payload.transact(() => payloadText(payload).insert(0, 'changed '), 'peer');
       expect(exportDocMarkdown(a).match(/changed seed/g)).toHaveLength(1);
       expect(exportDocMarkdown(b)).toBe(before);
     } finally { a.destroy(); b.destroy(); }
   });
 
-  it.each(cases)('$type pasted concurrently into one empty note by two editors stays two independent registers', (fixture) => {
+  it.each(cases)('$type pasted concurrently into one empty note by two editors stays two independent registers', async (fixture) => {
     const getter = { 'code-block': 'getCode', 'html-block': 'getRawHtml', formula: 'getFormula' }[fixture.type];
     const seed = new Y.Doc(); seedEmptyParagraph(seed);
     const a = client(seed); const b = client(seed);
@@ -198,8 +260,10 @@ describe('L4 decorator registers @p:col-1 @p:col-3 @p:tech-1', () => {
       for (const [peer, value] of [[a, fixture.a], [b, fixture.b]] as const) peer.editor.update(() => {
         (find(fixture.type) as unknown as Record<string, (text: string) => void>)[fixture.setter](value);
       }, { discrete: true });
-      Y.applyUpdate(a.doc, Y.encodeStateAsUpdate(b.doc));
-      Y.applyUpdate(b.doc, Y.encodeStateAsUpdate(a.doc));
+      // A client writes its new blocks' first texts just after the commit.
+      await new Promise(resolve => setTimeout(resolve, 0));
+      share(b.doc, a.doc);
+      share(a.doc, b.doc);
       for (const peer of [a, b]) {
         peer.editor.update(noop, { discrete: true });
         const ids = peer.editor.read(() => blocks().map(block => block.__regId));
@@ -211,38 +275,62 @@ describe('L4 decorator registers @p:col-1 @p:col-3 @p:tech-1', () => {
         const node = blocks().find(block => block[getter]() === fixture.a) as unknown as Record<string, (text: string) => void>;
         node[fixture.setter](`${fixture.a}!`);
       }, { discrete: true });
-      Y.applyUpdate(b.doc, Y.encodeStateAsUpdate(a.doc));
+      share(a.doc, b.doc);
       b.editor.update(noop, { discrete: true });
       expect(texts(b), 'editing one block leaves the other').toEqual([`${fixture.a}!`, fixture.b].sort());
     } finally { a.dispose(); b.dispose(); seed.destroy(); }
   });
 
-  it('upgrades persisted attributes without replacing nodes or changing export bytes', () => {
+  it.each([
+    {
+      layout: 'a pre-register note (no __regId, empty registers map)',
+      blocks: [{ __code: 'stored code' }] as Record<string, string>[], registers: {} as Record<string, string>,
+      kept: ['stored code'], dropped: [] as string[],
+    },
+    {
+      // M1's migrateRegisters set __regId and left the legacy attribute; the register later diverged from it.
+      layout: 'a pre-register note migrated by M1 (id set, legacy attribute kept)',
+      blocks: [{ __regId: 'code:1', __code: 'STALE-legacy' }, { __regId: 'code:2', __code: 'ATTR-only' }] as Record<string, string>[],
+      registers: { 'code:1': 'edited in the register' },
+      // An id with no register keeps its attribute text as its payload.
+      kept: ['edited in the register', 'ATTR-only'], dropped: ['STALE-legacy'],
+    },
+  ])('$layout moves its payload text out of the note in place, keeping no legacy text', ({ blocks, registers, kept, dropped }) => {
     const legacy = new Y.Doc();
     const root = legacy.get('root', Y.XmlText);
-    const block = new Y.XmlElement('code-block');
-    root.insertEmbed(0, block);
-    block.setAttribute('__type', 'code-block'); block.setAttribute('__code', 'stored code');
-    block.setAttribute('__language', 'plaintext');
-    block.setAttribute('__commentIds', [] as never);
-    const identity = block._item!.id;
+    const identities: Y.ID[] = [];
+    legacy.transact(() => {
+      blocks.forEach((attrs, index) => {
+        const block = new Y.XmlElement('code-block');
+        root.insertEmbed(index, block);
+        for (const [key, value] of Object.entries({ __type: 'code-block', __language: 'plaintext', __commentIds: [], ...attrs })) block.setAttribute(key, value as never);
+        identities.push(block._item!.id);
+      });
+      for (const [id, text] of Object.entries(registers)) legacy.getMap<Y.Text>('registers').set(id, new Y.Text(text));
+    });
+    const texts = [...blocks.map(block => block.__code), ...Object.values(registers)];
     const restored = new Y.Doc();
     try {
       Y.applyUpdate(restored, Y.encodeStateAsUpdate(legacy));
-      migrateRegisters(restored);
-      expect(exportDocMarkdown(restored)).toContain('stored code');
-      const node = restored.get('root', Y.XmlText).toDelta()[0].insert as Y.XmlElement;
-      expect(node._item!.id).toEqual(identity);
+      const host = payloadDocsFor(restored);
+      const write = (id: string, value: string | Map<string, unknown>) => seedPayload(host.hold(id), value, 'migration');
+      expect(migratePayloads(restored, write)).toBe(true);
+      const nodes: Y.XmlElement[] = restored.get('root', Y.XmlText).toDelta().map((op: { insert: Y.XmlElement }) => op.insert);
+      expect(nodes.map(node => node._item!.id), 'no node is replaced').toEqual(identities);
+      for (const node of nodes) expect(node.getAttribute('__code'), 'no legacy attribute survives').toBeUndefined();
       const bytes = Y.encodeStateAsUpdate(restored);
-      migrateRegisters(restored);
+      for (const text of texts) expect(Buffer.from(bytes).includes(text), `the note keeps no payload text: ${text}`).toBe(false);
+      const markdown = exportDocMarkdown(restored);
+      for (const text of kept) expect(markdown).toContain(text);
+      for (const text of dropped) expect(markdown).not.toContain(text);
+      expect(migratePayloads(restored, write)).toBe(false);
       expect(Y.encodeStateAsUpdate(restored)).toEqual(bytes);
-      expect(node.getAttribute('__code')).toBe('stored code');
     } finally { legacy.destroy(); restored.destroy(); }
   });
 });
 
-// Chart and sketch payloads are per-key registers (A§10.10, SP8): concurrent edits to different keys both land,
-// and a write derived from a stale value changes only what it changed.
+// Chart and sketch payloads are per-key maps in their payload docs (A§10.10, SP8): concurrent edits to different keys
+// both land, and a write derived from a stale value changes only what it changed.
 type Fields = Record<string, unknown>;
 type Peer = ReturnType<typeof client>;
 const CHART = '```moss-chart\n{"type":"bar","title":"Seed","data":[{"label":"Mon","value":1}],"options":{"showLegend":true}}\n```';
@@ -255,10 +343,17 @@ const gridOf = (peer: Peer) => peer.editor.read(() => call(find('sketch')!, 'get
 const labelsOf = (peer: Peer) => peer.editor.read(() => call(find('sketch')!, 'getLabels')) as { id: string; text: string }[];
 const cells = (grid: boolean[]) => grid.flatMap((on, index) => (on ? [index] : []));
 const exchange = (a: Peer, b: Peer) => {
-  Y.applyUpdate(a.doc, Y.encodeStateAsUpdate(b.doc));
-  Y.applyUpdate(b.doc, Y.encodeStateAsUpdate(a.doc));
+  share(b.doc, a.doc);
+  share(a.doc, b.doc);
   for (const peer of [a, b]) peer.editor.update(noop, { discrete: true });
 };
+/** One direction only, then the receiver commits. */
+const send = (from: Peer, to: Peer) => {
+  share(from.doc, to.doc);
+  to.editor.update(noop, { discrete: true });
+};
+/** The note's one compound payload map, as `peer` holds it. */
+const mapOf = (doc: Y.Doc) => [...payloadDocsFor(doc).docs.values()].map(payloadMap).find((map) => map.size)!;
 type Point = { label: string; value: number };
 const seriesOf = (peer: Peer) => ((chartOf(peer) as { series?: { name: string }[] }).series ?? []).map((entry) => entry.name);
 const pointsOf = (peer: Peer) => (chartOf(peer) as { data: Point[] }).data.map((point) => [point.label, point.value]);
@@ -287,7 +382,7 @@ describe('L4/A8 chart and sketch registers @p:col-1 @p:col-3 @p:note-2', () => {
       const restored = client(a.doc);
       try { expect(chartOf(restored)).toEqual(chartOf(a)); } finally { restored.dispose(); }
       a.undo.undo();
-      Y.applyUpdate(b.doc, Y.encodeStateAsUpdate(a.doc)); b.editor.update(noop, { discrete: true });
+      send(a, b);
       for (const peer of [a, b]) {
         expect(chartOf(peer).title, "Ada's undo reverts only her title").toBe('Seed');
         expect(chartOf(peer).options?.palette, "Ada's undo keeps Ben's palette").toBe('cool');
@@ -330,7 +425,7 @@ describe('L4/A8 chart and sketch registers @p:col-1 @p:col-3 @p:note-2', () => {
       expect(exportDocMarkdown(a.doc)).toBe(exportMarkdown(a.editor));
       expect(exportMarkdown(b.editor)).toBe(exportMarkdown(a.editor));
       a.undo.undo();
-      Y.applyUpdate(b.doc, Y.encodeStateAsUpdate(a.doc)); b.editor.update(noop, { discrete: true });
+      send(a, b);
       for (const peer of [a, b]) {
         expect((chartOf(peer) as { data: { value: number }[] }).data.map((point) => point.value), "Ada's undo keeps Ben's point").toEqual([1, 20, 3]);
       }
@@ -518,8 +613,8 @@ describe('L4/A8 chart and sketch registers @p:col-1 @p:col-3 @p:note-2', () => {
       exchange(a, b);
       for (const peer of [a, b]) expect(seriesOf(peer).sort()).toEqual(['Ada', 'Ben']);
       // Yjs keeps one of the two concurrent `#a/series` writes; undo the winner's write, or the loser's.
-      const register = [...a.doc.getMap<Y.Map<unknown>>('registers').values()][0];
-      const adaWon = register._map.get('#a/series')!.id.client === a.doc.clientID;
+      const register = mapOf(a.doc);
+      const adaWon = register._map.get('#a/series')!.id.client === register.doc!.clientID;
       const undoer = adaWon === (outcome === 'won') ? 'Ada' : 'Ben';
       (undoer === 'Ada' ? a : b).undo.undo();
       exchange(a, b);
@@ -536,14 +631,15 @@ describe('L4/A8 chart and sketch registers @p:col-1 @p:col-3 @p:note-2', () => {
   it('a read-only editor writes nothing to a chart or sketch register', () => {
     const seed = new Y.Doc(); importBody(seed, `${CHART}\n\n${SKETCH}`);
     const a = client(seed);
+    const vectors = () => [a.doc, ...payloadDocsFor(a.doc).docs.values()].map((doc) => Y.encodeStateVector(doc));
     try {
-      const before = Y.encodeStateVector(a.doc);
+      const before = vectors();
       a.editor.setEditable(false);
       a.editor.update(() => {
         call(find('chart')!, 'setConfig', { ...chartOf(a), title: 'Viewer title' });
         call(find('sketch')!, 'setGrid', withCells(gridOf(a), [42]));
       }, { discrete: true });
-      expect(Y.encodeStateVector(a.doc), 'no Yjs update leaves a viewer').toEqual(before);
+      expect(vectors(), 'no Yjs update leaves a viewer').toEqual(before);
       expect(chartOf(a).title).toBe('Seed');
     } finally { a.dispose(); seed.destroy(); }
   });
@@ -570,7 +666,7 @@ describe('L4/A8 chart and sketch registers @p:col-1 @p:col-3 @p:note-2', () => {
       expect(exportMarkdown(b.editor)).toBe(exportMarkdown(a.editor));
       expect(exportDocMarkdown(a.doc)).toBe(exportMarkdown(a.editor));
       a.undo.undo();
-      Y.applyUpdate(b.doc, Y.encodeStateAsUpdate(a.doc)); b.editor.update(noop, { discrete: true });
+      send(a, b);
       for (const peer of [a, b]) {
         expect(cells(gridOf(peer)), "Ada's undo removes only her stroke").toEqual([...cells(before), last]);
         expect(labelsOf(peer).map((label) => label.id).sort()).toEqual(['ben', 'seed']);
@@ -642,8 +738,8 @@ describe('L4/A8 chart and sketch registers @p:col-1 @p:col-3 @p:note-2', () => {
     const a = client(seed);
     try {
       const expected = cells(gridOf(a));
-      const register = [...a.doc.getMap('registers').values()].find((value) => value instanceof Y.Map) as Y.Map<unknown>;
-      a.doc.transact(() => { register.set('#n', size); register.set('#l', 5); });
+      const register = [...payloadDocsFor(a.doc).docs.values()].map(payloadMap).find((map) => [...map.keys()].some((key) => key.startsWith('c')))!;
+      register.doc!.transact(() => { register.set('#n', size); register.set('#l', 5); });
       a.editor.update(noop, { discrete: true });
       expect(gridOf(a)).toHaveLength(120 * 60);
       expect(cells(gridOf(a))).toEqual(expected);
@@ -659,42 +755,59 @@ describe('L4/A8 chart and sketch registers @p:col-1 @p:col-3 @p:note-2', () => {
   it.each([
     { name: 'charts.md', type: 'chart', fields: ['__config'] },
     { name: 'canvas.md', type: 'sketch', fields: ['__grid', '__labels'] },
-  ])('$type keeps export bytes and moves its payload into per-key registers', ({ name, type, fields }) => {
+  ])('$type keeps export bytes and moves its payload into per-key payload maps', ({ name, type, fields }) => {
     const markdown = readFileSync(`${new URL('.', import.meta.url).pathname}converter/fixtures/${name}`, 'utf8');
     const doc = new Y.Doc();
     try {
       importBody(doc, markdown);
       expect(exportDocMarkdown(doc)).toBe(exportMarkdown(importMarkdown(markdown)));
       for (const field of fields) expect(EXCLUDED_FIELDS[type]).toContain(field);
-      expect([...doc.getMap('registers').values()].filter((value) => value instanceof Y.Map).length).toBeGreaterThan(0);
+      expect([...payloadDocsFor(doc).docs.values()].filter((payload) => payloadMap(payload).size).length).toBeGreaterThan(0);
+      expect(Buffer.from(Y.encodeStateAsUpdate(doc)).includes('"label"'), "the note's own state carries no chart value").toBe(false);
     } finally { doc.destroy(); }
   });
 
-  it('upgrades a persisted chart attribute without changing its export', () => {
+  it('moves a persisted chart or sketch attribute, and an m3 register map, into payload maps without changing export', () => {
     const legacy = new Y.Doc();
     const root = legacy.get('root', Y.XmlText);
     const chart = new Y.XmlElement('chart'); root.insertEmbed(0, chart);
-    chart.setAttribute('__type', 'chart'); chart.setAttribute('__config', { type: 'bar', title: 'Stored', data: [] } as never);
+    chart.setAttribute('__type', 'chart'); chart.setAttribute('__config', { type: 'bar', title: 'Stored', data: [{ label: 'Mon', value: 1 }] } as never);
     chart.setAttribute('__commentIds', [] as never);
+    // An m3 doc: the sketch's register is a Y.Map in `Y.Map('registers')`, named by its element.
+    const sketch = new Y.XmlElement('sketch'); root.insertEmbed(1, sketch);
+    legacy.transact(() => {
+      sketch.setAttribute('__type', 'sketch'); sketch.setAttribute('__regId', 'import:sketch:1'); sketch.setAttribute('__commentIds', [] as never);
+      legacy.getMap('registers').set('import:sketch:1', new Y.Map<unknown>([['c7.ab', true], ['#l', ['m3']], ['lm3', { id: 'm3', text: 'From m3', col: 2, row: 2 }]]));
+    });
     const restored = new Y.Doc();
     try {
       Y.applyUpdate(restored, Y.encodeStateAsUpdate(legacy));
-      migrateRegisters(restored);
-      expect(exportDocMarkdown(restored)).toContain('"title": "Stored"');
-      expect([...restored.getMap('registers').values()].some((value) => value instanceof Y.Map)).toBe(true);
+      const host = payloadDocsFor(restored);
+      expect(migratePayloads(restored, (id, value) => seedPayload(host.hold(id), value, 'migration'))).toBe(true);
+      const markdown = exportDocMarkdown(restored);
+      expect(markdown).toContain('"title": "Stored"');
+      expect(markdown).toContain('From m3');
+      expect([...host.docs.values()].filter((payload) => payloadMap(payload).size)).toHaveLength(2);
+      const migrated = restored.get('root', Y.XmlText).toDelta()[0].insert as Y.XmlElement;
+      expect(migrated.getAttribute('__config'), 'the note keeps no chart value').toBeUndefined();
+      expect(restored.getMap('registers').size).toBe(0);
+      const bytes = Buffer.from(Y.encodeStateAsUpdate(restored));
+      expect(bytes.includes('Stored') || bytes.includes('From m3')).toBe(false);
+      expect(migratePayloads(restored, () => undefined)).toBe(false);
     } finally { legacy.destroy(); restored.destroy(); }
   });
 
   it.each([
-    { type: 'code-block', markdown: '```js\nseed\n```', getter: 'getCode', setter: 'setCode', value: 'copy only' },
-    { type: 'html-block', markdown: '```moss-html\n<p>seed</p>\n```', getter: 'getRawHtml', setter: 'setRawHtml', value: '<p>copy only</p>' },
-    { type: 'formula', markdown: '{{2+3|5}}', getter: 'getFormula', setter: 'setFormula', value: '9+9' },
     { type: 'chart', markdown: CHART, getter: 'getConfig', setter: 'setConfig', value: { type: 'line', data: [] } },
-  ])('copying a $type node through copyNode mints its own register', ({ type, markdown, getter, setter, value }) => {
+    { type: 'sketch', markdown: SKETCH, getter: 'getLabels', setter: 'setLabels', value: [{ id: 'copy', text: 'Copy only', col: 4, row: 4 }] },
+  ])('copying a $type node through copyNode mints its own payload, seeded with the source value', async ({ type, markdown, getter, setter, value }) => {
     const seed = new Y.Doc(); importBody(seed, markdown);
     const a = client(seed);
     try {
       a.editor.update(() => { const original = find(type)!; original.insertAfter($copyNode(original)); }, { discrete: true });
+      expect(a.editor.read(() => findAll(type).map((node) => JSON.stringify(call(node, getter)))).every((json, _, all) => json === all[0]), 'the copy shows the source').toBe(true);
+      // A client writes its new blocks' first values just after the commit.
+      await new Promise(resolve => setTimeout(resolve, 0));
       a.editor.update(() => call(findAll(type)[1], setter, value), { discrete: true });
       a.editor.update(noop, { discrete: true });
       const [original, copy] = a.editor.read(() =>
@@ -731,8 +844,7 @@ describe('register refresh cost @p:col-1 @p:tech-8', () => {
     const seed = new Y.Doc(); importBody(seed, markdown);
     const a = client(seed); const b = client(seed);
     const settle = () => new Promise(resolve => setTimeout(resolve, 0));
-    const forward = (update: Uint8Array, origin: unknown) => { if (origin !== 'remote') Y.applyUpdate(b.doc, update, 'remote'); };
-    a.doc.on('update', forward);
+    const unlink = link(a.doc, b.doc);
     const edits = 40;
     try {
       await settle();
@@ -774,14 +886,43 @@ describe('register refresh cost @p:col-1 @p:tech-8', () => {
         expect(exportMarkdown(peer.editor), 'undo restores the register').toContain(`${body(blocks / 2)}\n\`\`\``);
         expect(exportMarkdown(peer.editor)).not.toContain('para!');
       }
-    } finally { a.doc.off('update', forward); a.dispose(); b.dispose(); seed.destroy(); }
+    } finally { unlink(); a.dispose(); b.dispose(); seed.destroy(); }
+  }, 120_000);
+
+  it('a burst of root-level commits and same-node state replacements re-indexes and refreshes no payload', async () => {
+    const seed = new Y.Doc(); importBody(seed, markdown);
+    const a = client(seed);
+    const settle = () => new Promise(resolve => setTimeout(resolve, 0));
+    // Every register refresh is an editor.update tagged as one, whether or not it changes a node.
+    let refreshes = 0;
+    const update = a.editor.update.bind(a.editor);
+    const spy = vi.spyOn(a.editor, 'update').mockImplementation((fn, options) => {
+      const tags = options?.tag === undefined ? [] : [options.tag].flat();
+      if (tags.includes('moss-multi:register-refresh')) refreshes++;
+      return update(fn, options);
+    });
+    try {
+      await settle();
+      refreshes = 0;
+      const bytes = await stringified(async () => {
+        for (let i = 0; i < 40; i++) {
+          // A root-only commit, then setEditorState with the same nodes: neither touches a payload node.
+          a.editor.update(() => { $getRoot().setFormat(i % 2 ? 'center' : 'left'); }, { discrete: true });
+          a.editor.setEditorState(a.editor.getEditorState().clone());
+          await settle();
+        }
+      });
+      expect(refreshes, 'no register refresh runs').toBe(0);
+      expect(bytes, 'no payload is read').toBe(0);
+      expect(exportMarkdown(a.editor)).toContain(body(blocks - 1));
+    } finally { spy.mockRestore(); a.dispose(); seed.destroy(); }
   }, 120_000);
 
   it('the DocDO mirror stringifies each register a bounded number of times per server write', async () => {
     const live = new Y.Doc();
     try {
       importBody(live, markdown);
-      const total = [...live.getMap<Y.Text>('registers').values()].reduce((sum, text) => sum + text.length, 0);
+      const total = payloadsOf(live).reduce((sum, text) => sum + text.length, 0);
       const writes = 10;
       const started = performance.now();
       const bytes = await stringified(async () => {
@@ -811,8 +952,7 @@ describe('register refresh cost @p:col-1 @p:tech-8', () => {
     const elapsed = performance.now() - started;
     const ids = editor.read(() => findAll('code-block').map(node => (node as unknown as { __regId: string }).__regId));
     expect(new Set(ids).size).toBe(count);
-    expect(ids[0]).toMatch(/:0$/);
-    expect(ids[count - 1]).toMatch(new RegExp(`:${count - 1}$`));
-    expect(elapsed, 'quadratic ordinal probing takes tens of seconds here').toBeLessThan(3_000);
+    for (const id of [ids[0], ids[count - 1]]) expect(id).toMatch(/^[0-9a-f]{32}$/);
+    expect(elapsed, 'linear in blocks').toBeLessThan(3_000);
   }, 180_000);
 });

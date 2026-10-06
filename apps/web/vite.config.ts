@@ -16,6 +16,8 @@ const editorUtils = `${vendor}/desktop/src/renderer/editor/utils`;
 const SUBSTITUTES: Record<string, string> = {
   [`${editorUtils}/asset-url.ts`]: `${repoRoot}apps/web/src/host/media/asset-url.ts`,
   [`${editorUtils}/media-server-url.ts`]: `${repoRoot}apps/web/src/host/media/media-server-url.ts`,
+  // The in-app browser and web-embed lightbox frame the page in a sandboxed iframe (R4).
+  [`${vendor}/desktop/src/renderer/editor/preview/RemoteWebSurface.tsx`]: `${repoRoot}apps/web/src/host/browser/RemoteWebSurface.tsx`,
 };
 
 function substitutes(): Plugin {
@@ -24,7 +26,7 @@ function substitutes(): Plugin {
     enforce: 'pre',
     load: {
       // Filtered in the bundler, so the hook never runs for the rest of the graph.
-      filter: { id: /\/editor\/utils\/(?:asset-url|media-server-url)\.ts$/ },
+      filter: { id: /\/editor\/(?:utils\/(?:asset-url|media-server-url)\.ts|preview\/RemoteWebSurface\.tsx)$/ },
       handler(id) {
         const file = SUBSTITUTES[id];
         return file ? readFileSync(file, 'utf8') : null;

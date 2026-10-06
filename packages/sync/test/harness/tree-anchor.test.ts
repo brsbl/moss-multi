@@ -8,14 +8,14 @@ import { decodeRelPos, findQuote, positionAt, project, similarity } from '@moss-
 import { scene } from './comments-scene.ts';
 
 describe('T4.0 projection, minting and the create-time quote search @p:tech-3', () => {
-  it('every replica and the server compute one projection', () => scene((s) => {
+  it('every replica and the server compute one projection', () => scene(async (s) => {
     const a = s.peer();
     expect(project(a.doc).text).toBe(project(s.server).text);
     expect(project(s.server).text).toBe('The quick brown fox jumps over the lazy dog.\nSecond paragraph here, a fox too.\nThird.');
     expect(liveUnits(s.server).text).toBe('The quick brown fox jumps over the lazy dog.Second paragraph here, a fox too.Third.');
   }));
 
-  it('a client mints the same positions from a Lexical point through its binding as from the projection', () => scene((s) => {
+  it('a client mints the same positions from a Lexical point through its binding as from the projection', () => scene(async (s) => {
     const a = s.peer();
     const projection = project(a.doc);
     const start = projection.text.indexOf('brown fox');
@@ -29,7 +29,7 @@ describe('T4.0 projection, minting and the create-time quote search @p:tech-3', 
       Y.encodeRelativePosition(Y.createRelativePositionFromTypeIndex(collab._parent._xmlText, collab.getOffset() + 1 + at, assoc));
     expect(fromPoint(offset, 0)).toEqual(fromProjection[0]);
     expect(fromPoint(offset + 9, -1)).toEqual(fromProjection[1]);
-    const comment = s.comment('c1', 'brown fox');
+    const comment = await s.comment('c1', 'brown fox');
     expect(decodeRelPos(comment.start).item).toEqual(Y.decodeRelativePosition(fromProjection[0]).item);
     expect(decodeRelPos(comment.end).item).toEqual(Y.decodeRelativePosition(fromProjection[1]).item);
   }));
@@ -45,5 +45,22 @@ describe('T4.0 projection, minting and the create-time quote search @p:tech-3', 
     expect(findQuote(text, { exact: 'TODO: fix this', prefix: '', suffix: '' }).ambiguous).toBe(true);
     expect(findQuote(text, { exact: 'TODO: fix this', prefix: 'TODO: fix this\n', suffix: '\nTail.' }).range).toEqual({ start: 15, end: 29 });
     expect(findQuote('a fox and a fox', { exact: 'fox', prefix: 'zzz ', suffix: '' }).range).toBeNull();
+  });
+
+  it('quote-context-is-bounded: only QUOTE_CONTEXT characters of a caller prefix or suffix are compared', () => {
+    const near = 'abcdefghijklmnopqrstuvwxyz012345';
+    const junk = 'junk'.repeat(492);
+    // The first X has the quote's last 32 prefix characters; the second has the 1,968 before them.
+    const text = `${near}X ${junk}${'9'.repeat(32)}X`;
+    expect(findQuote(text, { exact: 'X', prefix: `${junk}${near}`, suffix: '' }).range).toEqual({ start: 32, end: 33 });
+    const after = `X${near}${'#'.repeat(2_000)}X${'9'.repeat(32)}${junk}`;
+    expect(findQuote(after, { exact: 'X', prefix: '', suffix: `${near}${junk}` }).range).toEqual({ start: 0, end: 1 });
+  });
+
+  it('quote-matches-are-bounded: past 1,000 occurrences the search stops and answers ambiguous', () => {
+    const text = `${'.X'.repeat(1_100)} unique-left X unique-right`;
+    expect(findQuote(text, { exact: 'X', prefix: ' unique-left ', suffix: ' unique-right' })).toEqual({ range: null, ambiguous: true });
+    const few = `${'.X'.repeat(900)} unique-left X unique-right`;
+    expect(findQuote(few, { exact: 'X', prefix: ' unique-left ', suffix: ' unique-right' }).range).toEqual({ start: 1_813, end: 1_814 });
   });
 });

@@ -8,11 +8,13 @@ Inputs: PRODUCT "Collaboration on meaning" (mean-2, L34) and the `suggester` rol
 
 Evidence: the spike (§9) with red run [37220685257](https://github.com/brsbl/moss-multi/actions/runs/37220685257) and the green run linked there.
 
+**Amended for payload docs (T5.P, coordinator ruling 2026-10-05; §14).** T1.F2 moved code, HTML, formula, chart and sketch payloads out of the note's `registers` map into one Y.Doc per payload (docs/design/registers.md). A record's ops now carry per-doc updates, leases cover the author's payload forks, G4 is `payload-alias`, and the preview shows payload diffs. Where this document still says "register", read "payload doc".
+
 ## 0. Invariants
 
 These hold by construction; every later section serves them.
 
-- **I1. A suggester never writes the body.** The body is `root`, `registers`, `title` and `frontmatter`. A doc-changing sync frame (the A§5.1 write classifier) from a connection whose live role is below editor gets `write-refused('role')` and close 4403 before Yjs applies it; A§5.1 step 2's floor is editor. Authorization reads the role, never the frame, so no struct form (GC, tombstone, same-value write, embed map, recursive delete, `__regId`, parking) reaches the body from a suggester.
+- **I1. A suggester never writes the body.** The body is `root`, `title`, `frontmatter` and every payload doc (§14). A doc-changing sync frame (the A§5.1 write classifier) from a connection whose live role is below editor gets `write-refused('role')` and close 4403 before Yjs applies it; A§5.1 step 2's floor is editor. Authorization reads the role, never the frame, so no struct form (GC, tombstone, same-value write, embed map, recursive delete, `__regId`, parking) reaches the body from a suggester.
 - **I2. A suggestion is data.** Only the DocDO writes `Y.Map('suggestions')`, under origin `server-suggestions`; SP7 refuses every client frame that touches it, for every role (T4.1's classifier). A record's ops are stored and never applied to the body, except by accept.
 - **I3. Accept is an editor action that lands exactly the diff the editor was shown.** That diff is the record's own bytes and exact delete targets, applied only while their context is unchanged (gates G0–G8, §4).
 - **I4. Reject and withdraw write only record metadata and clear the record's ops and parts.** No code path writes the body on reject or withdraw. No other author's content can be inside a pending suggestion, because pending items exist only in the record (ruling 16, §4.6).
@@ -26,7 +28,7 @@ These hold by construction; every later section serves them.
 //  'meta'  : JSON {v:2, id, author, authorName, source:'live'|'cli', note?, createdAt, updatedAt,
 //            status:'open'|'accepted'|'rejected'|'withdrawn', resolvedBy?, resolvedAt?,
 //            clients:number[], continues?: id, continuedBy?: id, outdated?: Reason[], broken?: Reason}
-//  'ops'   : Y.Array<Uint8Array>   // V1 updates exactly as the author's fork produced them
+//  'ops'   : Y.Array<{doc: 'body' | payloadId, update: Uint8Array}>   // V1 updates exactly as the author's fork produced them, per doc
 //  'parts' : Y.Array<{id, kind:'delete', targets: IdSpan[], quote}>   // body items proposed for deletion
 type IdSpan = { client: number; clock: number; len: number };
 ```
@@ -55,13 +57,14 @@ Doc-socket string frames; replies use the `__YPS:` envelope.
 - every client in `m.from` is leased to this principal and bound to this record or a record it continues (an unbound lease binds now);
 - `m.from[c] ≤ next_clock[c]` (no clock gap);
 - the caps hold;
+- every struct in the update sits in a channel of the §4.4 table (refused `channel`; §14). Each struct is placed through its explicit parent, or its origin, against the same update, the record's earlier ops and the note's docs, and every item enclosing it must sit in a table channel too; O(structs × (log n + depth)), depth capped at 256, with the delete set's ranges sorted once so each coverage check is a binary search. The caps run first, so an oversized frame is never placed. A struct ingest cannot place (its origin is gone, or its parent is a tombstone an editor deleted before the frame arrived) is left to accept, where it parks (G1) or integrates as GC (G5 c), so an honest suggester racing a delete is not refused (I6);
 - every `__type` value written in the update names a registered node type. This is an O(frame) decode, a cheap early reject; the full check is G7.
 
-If all pass, one server transaction pushes the update and bumps `updatedAt`, `clients` and `next_clock`. The delete set is never inspected: a record may propose anything, and accept shows it.
+If all pass, one server transaction pushes the update and bumps `updatedAt`, `clients` and `next_clock`. The delete set is not inspected here; accept's G3 checks every item it removes.
 
 **Frames for a record that is no longer open.** Accepted: the frame opens a continuation record (same author, `continues`), whatever it holds, delete-only included, so `m.from` is not consulted. Rejected or withdrawn: `suggest-refused('record-closed')`.
 
-**`suggest-delete`.** Every target is a live item in `root` or `registers` whose client is not leased; the DO derives the quote. O(spans × log n) plus the items named, capped per part.
+**`suggest-delete`.** Every target is a live body item in a channel of the §4.4 table whose client is not under a pending lease; the DO derives the quote. O(spans × log n) plus the items named, capped per part.
 
 **Refusal rate.** Three refusals per principal per minute trigger a 60 s 4429 cooldown.
 
@@ -76,12 +79,12 @@ If all pass, one server transaction pushes the update and bumps `updatedAt`, `cl
 - **G0:** the record is open, and its digest (every op's bytes, every part, its clients) equals the one the reviewer previewed.
 - **G1 `unresolvable`:** `store.pendingStructs` or `store.pendingDs` is non-null after `T` (a clock gap, a missing origin, a delete of an unknown id).
 - **G2 `foreign-client`:** a client advanced in `T` that is not in `meta.clients`.
-- **G3 `outside-body`:** a type in `T.changed` whose root is not `root` or `registers`. This covers title, frontmatter, comments and suggestions; Yjs adds the parent of every deleted item to `changed`.
-- **G4 `register-alias`:**
-  - a `__regId` the record writes sits on a type the record created (never re-points an existing decorator);
-  - it names a registers entry the record created, or it moves an existing one: the record removed every type that named that key, and after `T` the new type is the only one naming it;
-  - a registers-root entry that existed before `T` is never replaced, and is deleted only if no live decorator names it after `T`;
-  - an entry the record created is named only by the record's own `__regId` writes.
+- **G3 `outside-body`** (default-deny, §4.4 and §14): an item the record inserted, or an item its accept transaction deletes, outside the channel table. The deleted items are read from the transaction's own delete set, so they include what Yjs deletes implicitly: a deleted type's contents, and the value a map-key write overwrites. This covers title, frontmatter, comments, suggestions and every Yjs channel the preview does not render. An op holding a Skip struct is refused `unresolvable`.
+- **G4 `payload-alias`** (§14):
+  - a `__regId` the record writes sits on an element the record created (never re-points an existing decorator), and that element is the only live one naming the id;
+  - a fresh decorator names only a payload id created in the same record (one the note did not know), never an existing payload, served or withheld;
+  - the one exception is a move: the record removed every element that named the id, so after `T` its one new element names it (an Enter before an inline formula re-creates the decorator);
+  - a payload op writes only a new payload or one a live element names before `T`, never a withheld one.
 - **G5 `outdated`** (the structural precondition). An *authoring step* is one op (its own delete set) or one delete part (its targets). For each step, let R be the ids it removes that existed before `T` (the record's own inserts do not exist yet, so R is other people's items):
   - **(a)** every item of R is a live Item before `T`;
   - **(b)** in each parent sequence holding an item of R, walking it in document order, no live item outside R lies between two items of R (deleted items are skipped; a map key's overwrite chain is not a sequence);
@@ -100,12 +103,25 @@ The spike runs G1–G5 and G7 in `applyRecord`, then G6 and G8, so a record that
 
 On pass, the DO applies the mirror's diff from the hydration state vector to the live doc under origin `suggest-accept`, then in the same turn sets `status:'accepted'`, `resolvedBy`, `resolvedAt`, clears `ops` and `parts`, and marks the leases spent. Comment anchors refresh through T4.1's per-root-frame path, exactly as for an editor's direct edit.
 
-### 4.4 projectionDiff
+### 4.4 projectionDiff (payload hunks per §14)
 
 `packages/core/src/suggest/apply.ts`, shared by the client preview and the DocDO accept:
 
-- Each top-level block is keyed by its Yjs item id. Its value holds the converter editor's recursive `exportJSON` (children included; register-backed fields read through their getters), passed in by the caller, and the Yjs-level value of the block (every attribute, character, format and nested type).
-- Each registers key is serialized with its full content, nested types included.
+- **The channel table** (`CHANNELS`) is the whole surface a record may write or remove, and the projection renders exactly these channels, recursively:
+
+  | Doc | Root | Parent type | Channel | Content |
+  |---|---|---|---|---|
+  | body | `root` | XmlText (an element; the root itself) | sequence | ContentString, ContentType(XmlText), ContentType(XmlElement), ContentType(Map), ContentDeleted |
+  | body | `root` | XmlText | keys (node properties; the root's are root properties such as `__dir`) | ContentAny, ContentType(Map) (`__state`), ContentDeleted |
+  | body | `root` | XmlElement (a decorator) | keys | ContentAny, ContentType(Map), ContentDeleted |
+  | body | `root` | Map (a text node, a line break, a `__state`) | keys | ContentAny, ContentType(Map), ContentDeleted |
+  | payload | `payload` | Text | sequence | ContentString, ContentDeleted |
+  | payload | `payload-map` | Map | keys | ContentAny, ContentDeleted |
+
+  These are the structs Lexical's V1 binding and the payload writers produce (@lexical/yjs 0.48: elements are XmlText, text and line breaks are Maps, decorators are XmlElements, properties go through `setAttribute` or `Map.set`; payload text goes through `applyDelta` without attributes, compound fields are JSON). Everything else is refused: any other root, sequence items on a Map, keys on a payload Text, Y.Text, Y.Array, XmlFragment and XmlHook types, ContentFormat, ContentEmbed, ContentBinary, ContentJSON and ContentDoc. A GC struct or ContentDeleted is accepted only inside the op's own delete set (an insert and a delete in one fork transaction), and types nest at most 256 deep. A struct is in the table only when its whole ancestor path is: every item enclosing it, from the root down, sits in a table channel with a listed content. So a key on a Map an editor nested in a Y.Array is refused even though Map keys are listed, because the Array edge is not and the projection renders an Array as its kind alone. Removals are checked against the same table at accept, over every item the accept transaction deletes, implicit deletions included (§4.2 G3).
+- Each top-level block is keyed by its Yjs item id. Its value holds the converter editor's recursive `exportJSON` (children included; register-backed fields read through their getters), passed in by the caller, and the block's table rendering: each listed sequence as runs of characters and child types, each listed key by its content.
+- Each payload a live element names is rendered by the table: its text and its compound fields. A payload hunk is `added`, `removed` or `changed`.
+- The note root's keys (Lexical's root properties) form one `note` hunk when they change.
 - Hunks are added, removed or changed; an added block carries the id of the block it follows, never an absolute position. The hash is SHA-256 over the hunks in id order.
 - The card renders the same hunk list, so every change is shown. Display may label derived keys (`listitem.__value`); the hash always covers them.
 
@@ -200,8 +216,8 @@ Paint is derived and never mutates the tree (L§4.12), on the T4.0 paint layer (
 | Bold of own and original text | recorded as two ops |
 | List Enter mid-list; Tab | recorded |
 | Table row insert; checkbox | recorded |
-| New code, HTML, formula, chart and sketch blocks | `REGISTER_INIT` forwarded with the block |
-| An edit of an original code register | recorded as a register-only op |
+| New code, HTML, formula, chart and sketch blocks | the payload's first text forwarded as an op on its new payload doc, after the block's body op |
+| An edit of an original code payload | recorded as a payload-only op on that payload's doc |
 | Undo of a split; join | recorded; a split and its undo shows no hunk |
 
 **Spike** (`packages/core/src/suggest/apply.ts`; `packages/sync/src/doc/suggest.ts`, ingest with in-memory leases; `packages/sync/src/suggest/{records,review,fork-shim}.ts`; the DocDO role floor):
@@ -304,6 +320,21 @@ Implementation-level items the spike leaves for the named tasks, each a red-firs
 - **T5.3:** `preview_hash_covers_root_attributes`; `g7_refuses_candidate_repaired_during_hydration`; `g5_split_parts_around_foreign_insert_keep_foreign_text_and_preview_shows_it`; leases marked spent on accept (findings 46–49).
 - **T5.4:** `fixed_frame_ingest_cost_independent_of_closed_record_count_and_continuation_depth` at fuzz scale (finding 50).
 - **T6.1/T7 (`--suggest`):** record ops built from the reconcile transaction's own updates (finding 42).
+- **T5.R (DocDO wiring), P2 from the T5.P checks:** G8 at accept counts the note plus every stored payload, withheld ones included (A§10), not the body plus the payloads the record writes; the census oracle's fork binds payloads synchronously, where the client writes a new block's first payload text in a microtask, so the client's frame timing is pinned by T5.1's own census.
+
+## 14. Payload docs (T5.P amendment)
+
+T1.F2 gave each code, HTML, formula, chart and sketch payload its own Y.Doc keyed by the block's `__regId`, which the DocDO withholds while no element names it (docs/design/registers.md). The design above read the `registers` map; the coordinator's ruling of 2026-10-05 moves it onto payload docs:
+
+- **Ops are per doc.** A record's op is `{doc: 'body' | <payloadId>, update}`, one fork transaction in that doc. The fork holds a private copy of each payload doc it touches, loaded from the note's served payloads, and forwards every non-shim transaction in any of them. A new block's body op precedes its payload's first text.
+- **Leases cover the payload forks.** The fork writes every payload doc under the same leased client id as its body. Ingest checks `m.from` against the lease for payload ops as for body ops, keeping `next_clock` per (lease, doc); the `__type` check reads body ops only. T5.2 also checks a lease against a payload's state vector the first time a record writes that payload.
+- **G4 is `payload-alias`** (§4.2): a fresh decorator may name only a payload id created in the same record, never an existing payload; a move keeps its one element. A payload op on a withheld payload is refused `payload-alias` before anything of it is loaded.
+- **Edits to an existing payload are proposals.** Ingest stores them; nothing reaches the payload until an editor accepts. Accept hydrates a gc-free mirror of each payload the record writes, applies its ops in one transaction per doc, and runs G1 (nothing parked in any doc), G2 (only leased clients advanced in any doc), G3 (payload roots only), G4, G5 (a)–(c) per doc, G6, and G8. The preview projects, in full, every payload a live element names before or after the record and every payload the record writes, named or not, so the hash binds each payload change accept would land: a payload op for an id no element names shows as added, and an edit to a payload whose decorator the record removes shows its new text. A payload op may write only the payload rows of the §4.4 table, so an attribute on the payload text, a nested type in its map, a subdoc or any other struct the projection would not show is refused. G8 follows A§10: the state cap counts the note plus every stored payload, withheld ones included. The payload source exposes every stored payload's bytes, and accept counts them all (T5.R).
+- **Landing** writes each touched payload's diff through the note's payload source, then the body's diff, as `serverWrite` does, so the body's new elements name payloads the note already holds.
+- **Default-deny (the I3 rule).** Accept lands only what the hash-bound preview showed because a record can write nothing the preview does not render. The channel table (§4.4) is the one list of what a record may insert or remove; the projection renders exactly its channels; ingest (`channel`) and accept (G3 `outside-body`) refuse every struct outside it. A new channel is added to the table and the projection together, or it is refused. Three review rounds each found a channel the projection missed (payloads no element names; Y.Text attributes; sequence items on a Map root, formats on the root, and a subdoc's meta and options) before the table replaced enumeration. The census (`channels.test.ts`) crosses every content constructor, GC and Skip with every root and both parent channels, and again one level down under a parent of every Y type an editor wrote (on a table edge in the body's sequence, off the table at a payload-map key): each either shows in the preview and lands only as shown, or is refused at ingest and at accept. A struct counts as shown only when every edge of its ancestor path is a channel, not only its own (leaf) edge. A removal counts the same way: accept checks every item its transaction deletes, so a delete set naming only an in-table holder, or a forged key write over an off-table value, is refused at accept although ingest, which cannot know what the live doc will hold then, takes the frame.
+- **Reject and withdraw still write nothing** but the record: no payload is touched (test 4 now carries payload ops and asserts every payload byte-identical).
+
+Spike tests (T5.P): the census adds "payload ops are recorded per payload doc" (new code, HTML and formula blocks and an edit of an original code payload each travel on their own payload doc under the lease, and the body's payload is untouched until accept); accept-equivalence compares payloads in body order; the gate table adds a payload clock gap (G1), a payload update outside the record's leases (G2), the retired registers map and a payload op outside the payload's roots (G3), and for G4 a fresh decorator naming an original, a peer's or a withheld payload, an edit to a withheld payload, a re-pointed decorator and two fresh decorators sharing one new payload; G5 adds an editor typing inside payload text a record removed; projection adds a payload-only hunk, a proposal leg (the payload changes only at accept, as the preview showed), a payload op no element names, and a payload edit whose decorator the record removes (each shown in the preview and landed only as shown). The forged-frame table (test 1) adds an edit to an original payload, a fresh decorator aliasing an existing payload, a payload update outside the record's leases, and a payload frame for a fresh payload no element names, each refused by role with the body and every payload byte-identical; ingest adds payload ops on the same leases with per-doc clocks.
 
 ## Appendix: the BUILDPLAN M5 text (the panel's, verbatim)
 

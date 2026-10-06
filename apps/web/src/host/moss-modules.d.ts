@@ -35,6 +35,50 @@ declare module '@moss-desktop/renderer/editor/utils/note-link-clipboard' {
   export function buildMossNoteLinkClipboardHtml(payload: MossNoteLinkClipboardPayload): string;
 }
 
+declare module '@moss-desktop/common/embed-iframe-policy' {
+  export type EmbedIframeRiskProfile = 'local-html-preview' | 'remote-oembed-preview' | 'remote-social-embed' | 'remote-video' | 'remote-webpage';
+  export function getEmbedIframePolicy(riskProfile: EmbedIframeRiskProfile): {
+    riskProfile: EmbedIframeRiskProfile;
+    sandbox: string;
+    referrerPolicy?: import('react').HTMLAttributeReferrerPolicy;
+    loading?: 'lazy' | 'eager';
+    allow?: string;
+    allowFullScreen?: boolean;
+  };
+}
+
+declare module '@moss-desktop/common/web-embed-url' {
+  export function resolveRemoteWebSurfaceUrl(text: string): string;
+}
+
+declare module '@moss-desktop/common/web-embed-preview' {
+  export type WebEmbedPreviewMetadata = Record<string, string | number | boolean | null>;
+  export interface WebEmbedPreviewDescriptor { normalizedUrl: string; urlHash: string; cacheKey: string }
+  export interface WebEmbedPreviewResult {
+    kind: 'web-embed-preview';
+    sourceKey: string;
+    sourceSignature: string;
+    cacheKey: string;
+    status: 'resolved' | 'fallback' | 'failed';
+    assetRelativePath?: string;
+    html?: string;
+    metadata?: WebEmbedPreviewMetadata;
+    generatedAt?: string;
+    expiresAt?: string;
+    errorCode?: string;
+  }
+  export function getWebEmbedPreviewDescriptor(url: string): WebEmbedPreviewDescriptor | null;
+  export function createWebEmbedFallbackMetadata(normalizedUrl: string, extras?: WebEmbedPreviewMetadata): WebEmbedPreviewMetadata;
+  export function createWebEmbedPreviewResult(input: {
+    descriptor: WebEmbedPreviewDescriptor;
+    status: WebEmbedPreviewResult['status'];
+    assetRelativePath?: string;
+    metadata?: WebEmbedPreviewMetadata;
+    generatedAt?: string;
+    expiresAt?: string;
+  }): WebEmbedPreviewResult;
+}
+
 declare module '@moss-desktop/renderer/editor/utils/editorUpdateTags' {
   export const DIRTY_TRACKER_DERIVED_TAGS: ReadonlySet<string>;
 }
@@ -60,6 +104,36 @@ declare module '@moss/shared/state/note-atoms' {
   export function noteFrontmatterAtom(noteId: string): PrimitiveAtom<Record<string, unknown> | null>;
   export function frontmatterDirtySignalAtom(noteId: string): PrimitiveAtom<number>;
   export const noteIdsAtom: PrimitiveAtom<Set<string>>;
+  export function noteCommentsMapAtom(noteId: string): PrimitiveAtom<Record<string, object>>;
+  export function commentThreadFilterAtom(noteId: string): PrimitiveAtom<'open' | 'resolved' | 'all'>;
+}
+
+// moss's comment composer and selection-bar primitives, which the read-only comment tools reuse (T4.3).
+declare module '@moss-desktop/renderer/editor/components/CommentInputPopover' {
+  import type { JSX } from 'react';
+  export function CommentInputPopover(props: {
+    open: boolean;
+    onOpenChange: (open: boolean) => void;
+    anchorRect: { x: number; y: number; width: number; height: number } | null;
+    anchorSide?: 'bottom' | 'top';
+    anchorAlign?: 'start' | 'end';
+    onCreate: (text: string, imageUrls?: string[]) => boolean;
+    noteId: string;
+    collisionBoundary?: Element | null;
+  }): JSX.Element;
+}
+
+declare module '@moss-desktop/renderer/editor/plugins/CommentPlugin' {
+  import type { PrimitiveAtom } from 'jotai';
+  export function commentInputStateAtom(noteId: string): PrimitiveAtom<{ open: boolean; anchorRect: { x: number; y: number; width: number; height: number } | null }>;
+}
+
+declare module '@moss-desktop/renderer/editor/components/SelectionToolbarPrimitives' {
+  import type { CSSProperties, ForwardRefExoticComponent, HTMLAttributes, JSX, RefAttributes } from 'react';
+  export const SELECTION_TOOLBAR_BUTTON_BASE_CLASS: string;
+  export const SELECTION_TOOLBAR_BUTTON_IDLE_CLASS: string;
+  export const SelectionToolbarShell: ForwardRefExoticComponent<HTMLAttributes<HTMLDivElement> & { style?: CSSProperties } & RefAttributes<HTMLDivElement>>;
+  export function SelectionToolbarInner(props: HTMLAttributes<HTMLDivElement>): JSX.Element;
 }
 
 // @lexical/react 0.48.0's collaboration plugin, vendored with moss-multi seams (A§10.2), through vite's alias.
@@ -100,7 +174,7 @@ declare module '@moss/shared/components/ui/dropdown-menu' {
   import type { ComponentType, HTMLAttributes, ButtonHTMLAttributes, ReactNode } from 'react';
   export const DropdownMenu: ComponentType<{ children: ReactNode }>;
   export const DropdownMenuTrigger: ComponentType<ButtonHTMLAttributes<HTMLButtonElement> & { asChild?: boolean }>;
-  export const DropdownMenuContent: ComponentType<HTMLAttributes<HTMLDivElement> & { align?: 'start' | 'center' | 'end' }>;
+  export const DropdownMenuContent: ComponentType<HTMLAttributes<HTMLDivElement> & { align?: 'start' | 'center' | 'end'; onCloseAutoFocus?: (event: Event) => void }>;
   export const DropdownMenuItem: ComponentType<HTMLAttributes<HTMLDivElement> & { onSelect?: () => void }>;
   export const DropdownMenuSeparator: ComponentType<HTMLAttributes<HTMLDivElement>>;
 }
@@ -140,10 +214,6 @@ declare module '@moss-desktop/renderer/components/ModalShell' {
     footer?: ReactNode;
     children: ReactNode;
   }>;
-}
-
-declare module '@moss-desktop/common/markdown-layers' {
-  export function splitFrontmatter(text: string): { data: Record<string, unknown> | null };
 }
 
 declare module '@moss/shared/components/ui/confirmation-dialog' {

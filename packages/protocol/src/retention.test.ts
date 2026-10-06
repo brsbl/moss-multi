@@ -89,7 +89,6 @@ describe('retention copy', () => {
 
   it('states the period once, as a minimum the copy promises', () => {
     expect(TRASHED_ACTION).toEqual({ action: 'trashed', restorable: true, retentionDays: 30 });
-    expect(TRASH_COPY.cliRemoved).toBe('moved to Trash — you can restore it for 30 days');
     for (const text of [TRASH_COPY.emptyTrash, TRASH_COPY.trashedNote, TRASH_COPY.trashFolder('Plans')]) {
       expect(text).toMatch(/restored? (it |them )?for 30 days/);
       expect(copyProblems('elsewhere.ts', `const copy = ${JSON.stringify(text)};`), 'outside the module the same words would fail').not.toEqual([]);

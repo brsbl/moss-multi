@@ -1,5 +1,4 @@
-import { roleAtLeast } from '@moss-multi/protocol/roles';
-import { knownRole } from './access.ts';
+import { noteCan } from './capabilities.ts';
 import { getBridge, WORKSPACE } from './bridge/index.ts';
 
 /** App's duplicate seam: the server owns content; the bridge only returns listing metadata. */
@@ -9,4 +8,4 @@ export async function duplicateNote(id: string) {
   return bridge[WORKSPACE].duplicate(id);
 }
 
-export const canDuplicateNote = (id: string) => roleAtLeast(knownRole(id), 'editor');
+export const canDuplicateNote = (id: string) => noteCan(id, 'edit');

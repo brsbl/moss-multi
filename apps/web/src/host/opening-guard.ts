@@ -29,8 +29,9 @@ export interface OpeningGuard {
   created(): void;
 }
 
-/** Arms the guard (replacing an earlier one); it holds for as long as the create is pending. */
-export function armOpeningGuard(): OpeningGuard {
+/** Arms the guard (replacing an earlier one); it holds for as long as the create is pending. Navigation (A§9) arms
+ * it too, while a notice opens a note or the page leaves for a folder, announcing `message`. */
+export function armOpeningGuard(message = OPENING_NOTE): OpeningGuard {
   current?.();
   const active = document.activeElement;
   if (active instanceof HTMLElement && active !== document.body) active.blur();
@@ -39,7 +40,7 @@ export function armOpeningGuard(): OpeningGuard {
     if (event.isComposing || !isTyping(event) || isEditable(event.target)) return;
     event.preventDefault();
     event.stopImmediatePropagation();
-    refuseInput(OPENING_NOTE);
+    refuseInput(message);
   };
   const onFocusIn = (event: FocusEvent): void => {
     if (isLiveField(event.target)) disarm();
@@ -51,7 +52,7 @@ export function armOpeningGuard(): OpeningGuard {
     if (timer) clearTimeout(timer);
     window.removeEventListener('keydown', onKeyDown, true);
     document.removeEventListener('focusin', onFocusIn, true);
-    settleRefusal(OPENING_NOTE);
+    settleRefusal(message);
   }
 
   window.addEventListener('keydown', onKeyDown, true);

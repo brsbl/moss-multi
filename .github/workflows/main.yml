@@ -1,0 +1,9 @@
+# main holds only docs until M0 merges; CI lives on the milestone branches (.github/workflows/ci.yml on m0).
+name: main
+on:
+  workflow_dispatch:
+jobs:
+  noop:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "CI runs on milestone branches until M0 merges."

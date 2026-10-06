@@ -1,6 +1,6 @@
 // ported-from: packages/desktop/src/renderer/editor/nodes/CodeBlockNode.tsx @ 762abb777
 // moss-multi seam: publish decorator drafts as register edits.
-import { useRegisterDraft } from '@moss-multi/host/collab/register-input';
+import { resumeField, useRegisterDraft } from '@moss-multi/host/collab/register-input';
 import { registerDoc } from '@moss-multi/host/collab/registers';
 import React, { useCallback, useState, useRef, useEffect, useMemo } from 'react';
 import type { JSX } from 'react';
@@ -11,8 +11,6 @@ import { KeyboardShortcut } from '@moss/shared/components/ui/keyboard-shortcut';
 import { CodeBlockToolbar } from '../plugins/code-block/CodeBlockToolbar';
 import { resolveLanguage } from '../plugins/code-block/languages';
 import { StickyNote } from 'lucide-react';
-// moss-multi seam: hide-registry (A§9)
-import { hidden } from '@moss-multi/host/affordances';
 // moss-multi seam: converter-split (A§12; S-conv §2.3)
 import { OPEN_BLOCK_COMMENT_COMMAND } from '../commands';
 import { getThemeById } from '../plugins/code-block/themes';
@@ -59,11 +57,11 @@ function CodeBlockComponent({
   const [editor] = useLexicalComposerContext();
   const editable = useIsEditorEditable(); // moss-multi seam: read-only-decorators (T2.3)
   const [isSelected, setSelected, clearSelection] = useLexicalNodeSelection(nodeKey);
-  const [isEditing, setIsEditing] = useState(() => consumeAutoEdit(nodeKey));
+  const [isEditing, setIsEditing] = useState(() => consumeAutoEdit(nodeKey) || resumeField(editor, nodeKey));
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [preHeight, setPreHeight] = useState<number>(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const [localCode, setLocalCode] = useRegisterDraft(editor, nodeKey, code, 'setCode', textareaRef, isEditing);
+  const [localCode, setLocalCode, writable] = useRegisterDraft(editor, nodeKey, code, textareaRef, isEditing);
   const preRef = useRef<HTMLPreElement>(null);
   const enterTrackerRef = useRef(createBlockEndEnterTracker());
   const resolvedLanguage = resolveLanguage(language);
@@ -230,7 +228,8 @@ function CodeBlockComponent({
           editor.update(() => {
             const node = $getNodeByKey(nodeKey);
             if (!node || !$isCodeBlockNode(node)) return;
-            node.setCode(nextCode);
+            // A bound note already holds the typed text; a whole-value write would drop a peer's edits.
+            if (!registerDoc(editor)) node.setCode(nextCode);
             insertParagraphAdjacentToBlock(node, 'after');
           });
           return;
@@ -250,8 +249,9 @@ function CodeBlockComponent({
         const start = textarea.selectionStart;
         const end = textarea.selectionEnd;
 
-        const newValue = localCode.substring(0, start) + '  ' + localCode.substring(end);
-        setLocalCode(newValue);
+        // The field's own text and caret, so the write is the indent alone.
+        textarea.setRangeText('  ', start, end, 'end');
+        setLocalCode(textarea.value);
 
         requestAnimationFrame(() => {
           textarea.selectionStart = textarea.selectionEnd = start + 2;
@@ -347,7 +347,7 @@ function CodeBlockComponent({
         selected={isSelected}
         beforeLabel="Insert paragraph before code block"
         afterLabel="Insert paragraph after code block"
-        onGapClick={editable ? handleGapClick : undefined /* moss-multi seam: read-only-decorators (T2.3) */}
+        onGapClick={handleGapClick}
         className="moss-codeblock transition-colors"
         style={themeColors}
       >
@@ -371,8 +371,8 @@ function CodeBlockComponent({
                 onDropdownOpenChange={setIsDropdownOpen}
                 readOnly={!editable /* moss-multi seam: read-only-decorators (T2.3) */}
               />
-              {/* moss-multi seam: hide-registry (A§9) */}
-              {hidden('comments') ? null : (
+              {/* moss-multi seam: read-only-decorators (T4.3): a read-only body offers no block comment */}
+              {!editable ? null : (
               <button
                 type="button"
                 onClick={(e) => {
@@ -401,7 +401,7 @@ function CodeBlockComponent({
             {isEditing ? (
               <textarea
                 ref={textareaRef}
-                readOnly={!editable /* moss-multi seam: read-only-decorators (T2.3) */}
+                readOnly={!editable || !writable /* moss-multi seam: read-only-decorators (T2.3) */}
                 value={localCode}
                 onChange={(e) => setLocalCode(e.target.value)}
                 onKeyDown={handleTextareaKeyDown}

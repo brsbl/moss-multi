@@ -1,10 +1,13 @@
-// Suggest-mode ingest is bookkeeping in O(frame) (docs/design/suggestions.md §3, §6): leases, server-minted record
-// ids, `suggest-ops` checks, `suggest-delete` validation, continuations, merge, undelete and withdraw, and the cost
-// of ingest and of the body-frame lease check, which grows with neither the doc nor its closed records.
+// Suggest-mode ingest is bookkeeping in O(frame) (docs/design/suggestions.md §3, §6, §14): leases with per-doc clocks,
+// server-minted record ids, `suggest-ops` checks on the body and payload docs against the channel table,
+// `suggest-delete` validation, continuations, merge, undelete and withdraw, and the cost of ingest and of the
+// body-frame lease check, which grows with neither the doc nor its closed records.
+import * as encoding from 'lib0/encoding';
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import { deleteUpdate, recordDigest } from '@moss-multi/core/suggest/apply';
+import { payloadDocsFor } from '../payload-docs.ts';
 import { closeRecord, newSuggestionsClient, readMeta, readRecord, SuggestionsWriter } from '../suggest/records.ts';
 import { acceptRecord, nodeRegistry, previewRecord, rejectRecord } from '../suggest/review.ts';
 import { ForkShim } from '../suggest/fork-shim.ts';
@@ -71,7 +74,7 @@ describe('T5.2 ingest: leases and suggest-ops @p:mean-2', () => {
     expect(ingest.ops(sam(), record, update)).toMatchObject({ ok: true, record, requested: record, sv: { [client]: Y.parseUpdateMeta(update).to.get(client) } });
     expect(JSON.stringify(live.get('root', Y.XmlText).toJSON())).toBe(root);
     const stored = readRecord(live, record)!;
-    expect(stored.ops).toEqual([update]);
+    expect(stored.ops).toEqual([{ doc: 'body', update }]);
     expect(stored.meta).toMatchObject({ author: SUGGESTER.id, status: 'open', clients: [client] });
   });
 
@@ -105,6 +108,108 @@ describe('T5.2 ingest: leases and suggest-ops @p:mean-2', () => {
     expect(ingest.ops(sky(), mine.record, frame(live, theirs.client, (doc) => append(doc, paragraph('b'))))).toEqual({ ok: false, reason: 'not-author' });
   });
 
+  it("payload ops ride the same leases, each payload doc with its own clocks; one outside the record's leases is refused", () => {
+    const live = seededBody();
+    const ingest = ingestOn(live);
+    const mine = leaseOne(ingest, sam());
+    const theirs = leaseOne(ingest, sky());
+    const [id, held] = [...payloadDocsFor(live).docs][0];
+    const edit = (client: number, text: string) => frame(held, client, (doc) => doc.getText('payload').insert(0, text));
+    const body = frame(live, mine.client, (doc) => append(doc, paragraph('mine')));
+    expect(ingest.ops(sam(), mine.record, body)).toMatchObject({ ok: true, doc: 'body' });
+    // The lease's clocks in the payload doc start at 0, whatever it wrote in the body.
+    expect(ingest.ops(sam(), mine.record, { doc: id, update: edit(mine.client, 'p') })).toMatchObject({ ok: true, doc: id, sv: { [mine.client]: 1 } });
+    expect(ingest.ops(sam(), mine.record, { doc: id, update: edit(0x5eed0004, 'x') })).toEqual({ ok: false, reason: 'lease' });
+    expect(ingest.ops(sam(), mine.record, { doc: id, update: edit(theirs.client, 'x') })).toEqual({ ok: false, reason: 'lease' });
+    expect(ingest.ops(sam(), mine.record, { doc: 'not a payload id!', update: edit(mine.client, 'x') })).toEqual({ ok: false, reason: 'malformed' });
+    expect(readRecord(live, mine.record)!.ops.map((op) => op.doc)).toEqual(['body', id]);
+    expect(held.getText('payload').toString(), 'ingest never writes the payload').not.toContain('p');
+    // A resume hands back every doc's acknowledged clock.
+    ingest.expireConnection('c-sam');
+    const resumed = ingest.lease(sam('c-again'), [mine.client], 0);
+    expect(resumed).toMatchObject({ ok: true, leases: [{ client: mine.client, clock: Y.parseUpdateMeta(body).to.get(mine.client), clocks: { body: Y.parseUpdateMeta(body).to.get(mine.client), [id]: 1 } }] });
+  });
+
+  it("a lease's first write to a payload doc that already holds its client id is refused", () => {
+    const live = seededBody();
+    const ingest = ingestOn(live);
+    const mine = leaseOne(ingest, sam());
+    const [id, held] = [...payloadDocsFor(live).docs][0];
+    // The payload already holds structs under the lease's id (minting checks only the body).
+    Y.applyUpdate(held, frame(held, mine.client, (doc) => doc.getText('payload').insert(0, 'old')));
+    const update = frame(held, mine.client, (doc) => doc.getText('payload').insert(0, 'new'));
+    expect(Y.parseUpdateMeta(update).from.get(mine.client)).toBeGreaterThan(0);
+    const fromZero = frame(new Y.Doc(), mine.client, (doc) => doc.getText('payload').insert(0, 'z'));
+    expect(ingest.ops(sam(), mine.record, { doc: id, update: fromZero })).toEqual({ ok: false, reason: 'lease' });
+    expect(ingest.ops(sam(), mine.record, { doc: id, update })).toEqual({ ok: false, reason: 'clock-gap' });
+    expect(readRecord(live, mine.record)).toBeNull();
+  });
+
+  it('typing into a paragraph an editor deleted before the frame arrived is not refused at ingest (I6)', () => {
+    const writes: [string, (block: Y.XmlText) => void][] = [
+      ['a first character', (block) => block.insert(0, 'hi')],
+      ['a first property', (block) => block.setAttribute('__indent', 1)],
+    ];
+    for (const [name, write] of writes) {
+      const live = seededBody();
+      const ingest = ingestOn(live);
+      const { client, record } = leaseOne(ingest, sam());
+      // An empty paragraph: the suggester's first struct in it names the paragraph as its explicit parent.
+      append(live, paragraph(''));
+      const root = live.get('root', Y.XmlText);
+      const update = frame(live, client, (doc) => {
+        const delta = doc.get('root', Y.XmlText).toDelta() as { insert: unknown }[];
+        write(delta.at(-1)!.insert as Y.XmlText);
+      });
+      // An editor deletes the paragraph first; the live doc collects it, leaving a ContentDeleted tombstone.
+      root.delete(root.length - 1, 1);
+      expect(ingest.ops(sam(), record, update), name).toMatchObject({ ok: true });
+    }
+  });
+
+  it("a merged record's structs still place later ops: an off-table struct under a paragraph the merged record created is refused", () => {
+    const live = seededBody();
+    const ingest = ingestOn(live);
+    const a = leaseOne(ingest, sam());
+    const b = leaseOne(ingest, sam());
+    const fork = new Y.Doc();
+    Y.applyUpdate(fork, Y.encodeStateAsUpdate(live));
+    fork.clientID = a.client;
+    let sv = Y.encodeStateVector(fork);
+    append(fork, paragraph('from a'));
+    expect(ingest.ops(sam(), a.record, Y.encodeStateAsUpdate(fork, sv))).toMatchObject({ ok: true });
+    fork.clientID = b.client;
+    sv = Y.encodeStateVector(fork);
+    append(fork, paragraph('from b'));
+    expect(ingest.ops(sam(), b.record, Y.encodeStateAsUpdate(fork, sv))).toMatchObject({ ok: true });
+    expect(ingest.merge(sam(), a.record, b.record)).toMatchObject({ ok: true, record: a.record });
+    // A formatting mark inside b's paragraph: off the table, placed only through the merged record's own structs.
+    fork.clientID = a.client;
+    sv = Y.encodeStateVector(fork);
+    const delta = fork.get('root', Y.XmlText).toDelta() as { insert: unknown }[];
+    (delta.at(-1)!.insert as Y.XmlText).format(0, 2, { bold: true });
+    expect(ingest.ops(sam(), a.record, Y.encodeStateAsUpdate(fork, sv))).toEqual({ ok: false, reason: 'channel' });
+  });
+
+  it("a closed record's placements are dropped, so open records alone hold them", () => {
+    const live = seededBody();
+    const ingest = ingestOn(live);
+    const grants = [leaseOne(ingest, sam()), leaseOne(ingest, sam())];
+    for (const [i, grant] of grants.entries()) {
+      expect(ingest.ops(sam(), grant.record, frame(live, grant.client, (doc) => append(doc, paragraph(`p${i}`))))).toMatchObject({ ok: true });
+    }
+    expect(ingest.placedRecords).toBe(2);
+    expect(ingest.withdraw(sam(), grants[0].record)).toMatchObject({ ok: true });
+    expect(rejectRecord(live, grants[1].record, EDITOR)).toEqual({ ok: true });
+    expect(ingest.placedRecords).toBe(0);
+    // Accept drops them too.
+    const c = leaseOne(ingest, sam());
+    expect(ingest.ops(sam(), c.record, frame(live, c.client, (doc) => firstBlock(doc).insert(0, 'C ')))).toMatchObject({ ok: true });
+    expect(ingest.placedRecords).toBe(1);
+    expect(accept(live, c.record)).toEqual({ ok: true });
+    expect(ingest.placedRecords).toBe(0);
+  });
+
   it('overlapping_clocks_refused: an update starting below the acknowledged clock is refused, so a record never holds two versions of one id', () => {
     const live = seededBody();
     const ingest = ingestOn(live);
@@ -127,7 +232,7 @@ describe('T5.2 ingest: leases and suggest-ops @p:mean-2', () => {
     const inside = Y.decodeStateVector(Y.encodeStateVector(live));
     inside.set(client, 2);
     expect(ingest.ops(sam(), record, Y.encodeStateAsUpdate(fork, Y.encodeStateVector(inside)))).toEqual({ ok: false, reason: 'clock-overlap' });
-    expect(readRecord(live, record)!.ops).toEqual([first]);
+    expect(readRecord(live, record)!.ops).toEqual([{ doc: 'body', update: first }]);
   });
 });
 
@@ -437,7 +542,59 @@ function measure(paragraphs: number) {
   return { bytes, ops: median(ops), deletes: median(deletes), lease: median(lease) };
 }
 
+/**
+ * A crafted frame of `n` one-character deleted structs under the root, its delete set as `n` separate one-clock
+ * ranges (an honest encoder merges them): each struct's delete-set lookup is the channel check's hot path.
+ */
+function deletedRun(client: number, n: number): Uint8Array {
+  const encoder = new Y.UpdateEncoderV1();
+  const rest = encoder.restEncoder;
+  encoding.writeVarUint(rest, 1);
+  encoding.writeVarUint(rest, n);
+  encoder.writeClient(client);
+  encoding.writeVarUint(rest, 0);
+  for (let i = 0; i < n; i++) {
+    const origin = i === 0 ? null : Y.createID(client, i - 1);
+    new Y.Item(Y.createID(client, i), null, origin, null, null, (i === 0 ? 'root' : null) as never, null, new Y.ContentDeleted(1)).write(encoder, 0);
+  }
+  encoding.writeVarUint(rest, 1);
+  encoding.writeVarUint(rest, client);
+  encoding.writeVarUint(rest, n);
+  for (let i = 0; i < n; i++) {
+    encoding.writeVarUint(rest, i);
+    encoding.writeVarUint(rest, 1);
+  }
+  return encoder.toUint8Array();
+}
+
 describe('T5.2 cost: ingest and the lease check are O(frame) @p:mean-2', () => {
+  it('a frame of many deleted structs and as many delete ranges costs linear in its size (I5)', () => {
+    const time = (n: number) => {
+      const live = seededBody();
+      const ingest = ingestOn(live);
+      const runs: number[] = [];
+      for (let run = 0; run < 3; run++) {
+        const who = sam(`deleted-${n}-${run}`);
+        const grant = leaseOne(ingest, who);
+        const update = deletedRun(grant.client, n);
+        expect(update.byteLength).toBeLessThanOrEqual(SUGGEST_CAPS.recordOpsBytes);
+        const started = performance.now();
+        const result = ingest.ops(who, grant.record, update);
+        runs.push(performance.now() - started);
+        expect(result).toMatchObject({ ok: true });
+        expect(ingest.withdraw(who, grant.record)).toMatchObject({ ok: true });
+        ingest.expireConnection(who.connection);
+      }
+      return median(runs);
+    };
+    time(2_000);
+    const small = time(2_000);
+    const large = time(16_000);
+    console.log(`T5.Ps cost: ${small.toFixed(2)} ms for 2 000 deleted structs vs ${large.toFixed(2)} ms for 16 000`);
+    // Linear is 8x; a per-struct scan of the delete set is 64x.
+    expect(large).toBeLessThan(small * 12 + 40);
+  });
+
   it('a frame at the cap, a delete part of the most spans, and the body-frame lease check cost the same on a small doc and the 1.69 MB doc', () => {
     measure(5);
     const small = measure(5);

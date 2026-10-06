@@ -64,6 +64,7 @@ import {createPortal} from 'react-dom';
 // moss-multi seam: plugin-a, plugin-b (A§10.2 a, b)
 import {isOwnOrigin, syncUnderOrigin} from '@moss-multi/host/collab/origins';
 import {bindLocalLayout} from '@moss-multi/host/collab/layout-local';
+import {bindCommentPaint} from '@moss-multi/host/comments/paint';
 import {bindRegisters} from '@moss-multi/host/collab/registers';
 import {createBindingUndoManager} from '@moss-multi/host/collab/undo';
 import {
@@ -168,9 +169,12 @@ export function useYjsCollaboration(
 
     // moss-multi seam: local layout is restored only after hydrated Yjs identities exist.
     const stopLayout = bindLocalLayout(editor, binding);
+    // moss-multi seam: comments (comments.md §11): comment paint is derived from this binding's doc
+    const stopComments = bindCommentPaint(editor, binding);
     return () => {
       stopRegisters();
       stopLayout();
+      stopComments();
       root.getSharedType().unobserveDeep(onYjsTreeChanges);
       removeListener();
     };

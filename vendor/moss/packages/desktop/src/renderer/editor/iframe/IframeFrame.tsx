@@ -10,8 +10,14 @@
  * a `data:` document keeps an opaque (cross-app) origin that still loads. This
  * preserves the existing `HtmlPreviewIframe` behavior exactly.
  */
-import { forwardRef, useMemo } from 'react';
+import { forwardRef, useCallback, useLayoutEffect, useMemo, useRef } from 'react';
 import type { CSSProperties, JSX } from 'react';
+// moss-multi seam: html-frame (A§16; SP13): a data: iframe inherits the page CSP, so srcDoc sources load the host's
+// sandboxed frame document, which takes the HTML by postMessage, and are never same-origin with it.
+// Every sandbox keeps only the flags the engine supports, so WebKit logs no invalid-flag error.
+import { feedHtmlFrame, HTML_FRAME_IFRAME_SANDBOX, htmlFrameSrc, supportedSandbox } from '@moss-multi/host/html-frame';
+// The note's own frame document where its host serves one per note (the viewer).
+import { useCurrentNoteId } from '../CurrentNoteIdContext';
 
 import type { IframeModel } from './iframe-model';
 
@@ -35,17 +41,31 @@ export const IframeFrame = forwardRef<HTMLIFrameElement, IframeFrameProps>(
   ): JSX.Element {
     const sourceValue =
       model.source.kind === 'remote' ? model.source.src : model.source.srcDoc;
+    const noteId = useCurrentNoteId();
+    const frameSrc = model.source.kind === 'srcDoc' ? htmlFrameSrc(noteId) : null;
     const src = useMemo(
-      () => (model.source.kind === 'remote' ? sourceValue : toIframeDataUrl(sourceValue)),
-      [model.source.kind, sourceValue]
+      () => (model.source.kind === 'remote' ? sourceValue : frameSrc ?? toIframeDataUrl(sourceValue)),
+      [frameSrc, model.source.kind, sourceValue]
     );
+    const frameRef = useRef<HTMLIFrameElement | null>(null);
+    const setRef = useCallback((element: HTMLIFrameElement | null) => {
+      frameRef.current = element;
+      if (typeof ref === 'function') ref(element);
+      else if (ref) ref.current = element;
+    }, [ref]);
+    useLayoutEffect(() => {
+      const iframe = frameRef.current;
+      return frameSrc && iframe ? feedHtmlFrame(iframe, sourceValue) : undefined;
+    }, [frameSrc, sourceValue]);
 
     return (
       <iframe
-        ref={ref}
+        // One document per HTML: the frame writes what it is sent once.
+        key={frameSrc ? sourceValue : undefined}
+        ref={setRef}
         src={src}
         title={model.title}
-        sandbox={model.sandbox}
+        sandbox={supportedSandbox(frameSrc ? HTML_FRAME_IFRAME_SANDBOX : model.sandbox)}
         referrerPolicy={model.referrerPolicy}
         loading={model.loading}
         allow={model.allow}

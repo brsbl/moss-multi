@@ -56,7 +56,7 @@ export function closeAction(code: number): CloseAction {
 /** Unicast events travel as `__YPS:<json>`, the envelope the provider delivers as `custom-message`. */
 export const CUSTOM_PREFIX = '__YPS:';
 
-/** `protected-type`: the frame writes `suggestions` or a leased suggestion client id (A§5.1 steps 2b and 4). */
+/** `protected-type`: the frame writes `comments`, `suggestions` or a leased suggestion client id (A§5.1 steps 2b and 4). */
 export type WriteRefusalReason = 'role' | 'doc-cap' | 'suggest' | 'unresolved' | 'protected-type';
 
 export type ServerEvent =
@@ -67,9 +67,99 @@ export type ServerEvent =
    * carried (base64 `Y.encodeSnapshot` of a snapshot with an empty state vector): a delete never moves a state
    * vector, so `sv` alone cannot say a delete has landed.
    */
-  | { t: 'ack'; sv: string; ds?: string }
+  | { t: 'ack'; sv: string; ds?: string; p?: Record<string, PayloadAck> }
   | { t: 'doc-deleted' }
   | SuggestReply;
+
+/** The same coverage for one payload doc (A§10.10), keyed by its block id in the ack's `p`. */
+export interface PayloadAck {
+  sv: string;
+  ds?: string;
+}
+
+/**
+ * A decorator payload's own sync on the doc socket (A§10.10): `[PAYLOAD_MESSAGE, regId, y-protocols sync message]`,
+ * the sync message being a step (0 step 1, 1 step 2, 2 update) and its length-prefixed bytes. y-protocols uses 0-3.
+ */
+export const PAYLOAD_MESSAGE = 7;
+export const PAYLOAD_STEP1 = 0;
+export const PAYLOAD_STEP2 = 1;
+export const PAYLOAD_UPDATE = 2;
+
+/** Longest block id a payload frame may carry; minted ids are UUIDs, import ids a type, a hash and an ordinal. */
+export const PAYLOAD_ID_MAX = 200;
+
+export interface PayloadFrame {
+  id: string;
+  step: number;
+  /** The state vector (step 1) or the update (step 2, update). */
+  data: Uint8Array;
+}
+
+function writeVarUint(out: number[], value: number): void {
+  let rest = value;
+  while (rest > 0x7f) {
+    out.push(0x80 | (rest & 0x7f));
+    rest = Math.floor(rest / 0x80);
+  }
+  out.push(rest);
+}
+
+/** A y-protocols sync frame: message 0, the step, then its length-prefixed payload. */
+export function encodeSyncFrame(step: number, data: Uint8Array): Uint8Array {
+  const head = [0, step];
+  writeVarUint(head, data.length);
+  const frame = new Uint8Array(head.length + data.length);
+  frame.set(head);
+  frame.set(data, head.length);
+  return frame;
+}
+
+export function encodePayloadFrame(id: string, step: number, data: Uint8Array): Uint8Array {
+  const name = new TextEncoder().encode(id);
+  const head: number[] = [PAYLOAD_MESSAGE];
+  writeVarUint(head, name.length);
+  const middle: number[] = [];
+  writeVarUint(middle, step);
+  writeVarUint(middle, data.length);
+  const frame = new Uint8Array(head.length + name.length + middle.length + data.length);
+  frame.set(head);
+  frame.set(name, head.length);
+  frame.set(middle, head.length + name.length);
+  frame.set(data, head.length + name.length + middle.length);
+  return frame;
+}
+
+/** The frame's parts, or null when it is not a well-formed payload frame. */
+export function decodePayloadFrame(bytes: Uint8Array): PayloadFrame | null {
+  let at = 0;
+  const varUint = (): number => {
+    let value = 0;
+    let scale = 1;
+    for (;;) {
+      if (at >= bytes.length || scale > 2 ** 35) throw new RangeError('truncated');
+      const byte = bytes[at++];
+      value += (byte & 0x7f) * scale;
+      if (byte < 0x80) return value;
+      scale *= 0x80;
+    }
+  };
+  try {
+    if (varUint() !== PAYLOAD_MESSAGE) return null;
+    const length = varUint();
+    if (length === 0 || at + length > bytes.length) return null;
+    const id = new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(bytes.subarray(at, at + length));
+    at += length;
+    if (id.length > PAYLOAD_ID_MAX) return null;
+    const step = varUint();
+    if (step !== PAYLOAD_STEP1 && step !== PAYLOAD_STEP2 && step !== PAYLOAD_UPDATE) return null;
+    const size = varUint();
+    if (at + size !== bytes.length) return null;
+    return { id, step, data: bytes.subarray(at, at + size) };
+  } catch {
+    return null;
+  }
+}
 
 /** Headers the Worker sets after stripping every client `x-moss-*` and `x-partykit-*` header. */
 export const TRUSTED = {
@@ -78,6 +168,10 @@ export const TRUSTED = {
   session: 'x-moss-session',
   share: 'x-moss-share',
   presence: 'x-moss-presence',
+  /** Epoch ms taken before the role was resolved: a DocDO refuses a socket resolved before a principal's revocation. */
+  resolvedAt: 'x-moss-resolved-at',
+  /** The doc's access epoch, read before the role was resolved: a DocDO re-resolves a socket admitted under an older one. */
+  epoch: 'x-moss-epoch',
 } as const;
 
 export const PRINCIPAL_KINDS = ['user', 'agent', 'anonymous'] as const;

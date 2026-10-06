@@ -226,7 +226,7 @@ describe('T4.0 pending purge: nothing parked integrates late or persists @p:tech
     vi.useRealTimers();
   });
 
-  it('a frame that parks is closed 4409; a forced compaction and a restart leave nothing parked', async () => {
+  it('a frame with a missing dependency is closed 4420 before apply; a forced compaction and a restart leave nothing parked', async () => {
     const opened = await start(openDoc());
     const editor = await connect(opened, { role: 'editor' });
     await editor.hello();
@@ -235,8 +235,9 @@ describe('T4.0 pending purge: nothing parked integrates late or persists @p:tech
     const parks = raw([forged(Y.createID(777, 0), { parent: Y.createID(888, 0) }, new Y.ContentAny(['parked']))], [[999, 3, 1]]);
     await editor.deliver(syncFrame(2, parks));
     await editor.pump();
-    expect(editor.closed?.code).toBe(CLOSE.writeRefused);
-    expect(editor.events).toContainEqual({ t: 'write-refused', reason: 'unresolved' });
+    // Transient (comments.md §3): an honest client resyncs; 4409 is kept for guard violations.
+    expect(editor.closed?.code).toBe(CLOSE.writeRate);
+    expect(editor.events.filter((event) => event.t === 'write-refused')).toEqual([]);
     expect(opened.dobj.document.store.pendingStructs).toBeNull();
     expect(opened.dobj.document.store.pendingDs).toBeNull();
 

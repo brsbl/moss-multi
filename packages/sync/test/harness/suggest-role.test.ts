@@ -1,10 +1,11 @@
 // T5.0 spike, test 1 (docs/design/suggestions.md I1): every forged frame from the six review rounds and the commit
-// security reviews, sent as a suggester's body frame, is refused by role before Yjs applies it. Authorization reads
-// the connection's role, never the frame, so the body's encoded state is byte-identical afterwards.
+// security reviews, sent as a suggester's body or payload frame, is refused by role before Yjs applies it.
+// Authorization reads the connection's role, never the frame, so the body's and every payload's encoded state are
+// byte-identical afterwards (T5.P adds the payload-doc cases).
 import * as encoding from 'lib0/encoding';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as Y from 'yjs';
-import { CLOSE } from '@moss-multi/protocol/sync';
+import { CLOSE, encodePayloadFrame, PAYLOAD_UPDATE } from '@moss-multi/protocol/sync';
 import { connect, openDoc, start, syncFrame } from './do-harness.ts';
 
 beforeEach(() => {
@@ -108,9 +109,35 @@ function forge(server: Y.Doc, write: (doc: Y.Doc) => void, client?: number): Uin
   return update;
 }
 
+/** A payload frame: what `write` does to a copy of payload `id` as the server holds it, under `client`. */
+type PayloadForgery = { payload: string; update: Uint8Array };
+function forgePayload(state: Uint8Array, id: string, write: (text: Y.Text) => void, client = 0x6fff7001): PayloadForgery {
+  const doc = new Y.Doc();
+  Y.applyUpdate(doc, state);
+  doc.clientID = client;
+  const sv = Y.encodeStateVector(doc);
+  write(doc.getText('payload'));
+  const update = Y.encodeStateAsUpdate(doc, sv);
+  doc.destroy();
+  return { payload: id, update };
+}
+
+const codeId = (server: Y.Doc) => String(decorator(server, 'code-block').getAttribute('__regId'));
+
+/** A new paragraph holding a formula decorator that names `id`. */
+function paragraphNaming(doc: Y.Doc, id: string): void {
+  const paragraph = new Y.XmlText();
+  paragraph.setAttribute('__type', 'paragraph');
+  root(doc).insertEmbed(root(doc).length, paragraph);
+  const formula = new Y.XmlElement();
+  paragraph.insertEmbed(0, formula);
+  formula.setAttribute('__type', 'formula');
+  formula.setAttribute('__regId', id);
+}
+
 const textMap = (format: number) => new Y.Map<unknown>(Object.entries({ __type: 'text', __format: format, __style: '', __mode: 0, __detail: 0 }));
 
-const FORGED: [string, (server: Y.Doc) => Uint8Array][] = [
+const FORGED: [string, (server: Y.Doc, payloads: Map<string, Uint8Array>) => Uint8Array | PayloadForgery][] = [
   ['a GC overlapping known clocks that hides a delete of original text', (server) => {
     const hello = helloItem(server);
     const S = hello.id.client;
@@ -156,11 +183,12 @@ const FORGED: [string, (server: Y.Doc) => Uint8Array][] = [
     firstBlock(doc).insertEmbed(8, textMap(1));
   }))],
   ['a recursive delete of a block', (server) => forge(server, (doc) => root(doc).delete(0, 1))],
-  ["a register's Y.Text edited", (server) => forge(server, (doc) => {
-    const key = String(decorator(doc, 'code-block').getAttribute('__regId'));
-    (doc.getMap('registers').get(key) as Y.Text).insert(0, 'forged ');
-  })],
-  ['a Y.Map register leg written', (server) => forge(server, (doc) => {
+  ['an edit to an original payload', (server, payloads) => forgePayload(payloads.get(codeId(server))!, codeId(server), (text) => text.insert(0, 'forged '))],
+  ['a payload frame for a fresh payload no element names', () => forgePayload(Y.encodeStateAsUpdate(new Y.Doc()), 'unnamed-fresh', (text) => text.insert(0, 'hidden'))],
+  ['a fresh decorator aliasing an existing payload', (server) => forge(server, (doc) => paragraphNaming(doc, codeId(server)))],
+  ["a payload update outside the record's leases", (server, payloads) =>
+    forgePayload(payloads.get(codeId(server))!, codeId(server), (text) => text.insert(0, 'x'), helloItem(server).id.client)],
+  ['a write to the retired registers map', (server) => forge(server, (doc) => {
     const map = new Y.Map<unknown>();
     doc.getMap('registers').set('forged', map);
     map.set('cell', 1);
@@ -183,14 +211,18 @@ describe('T5.0 a suggester body frame is refused by role @p:mean-2 @p:R17', () =
     const opened = await start(openDoc());
     await opened.dobj.create({ folderId: 'folder-1', ownerId: 'owner-1', markdown: SEED });
     const before = Y.encodeStateAsUpdate(opened.dobj.document);
+    const payloads = new Map((await opened.dobj.snapshotForDuplicate()).payloads);
+    expect(payloads.size, 'the seed has payloads').toBeGreaterThan(0);
     const suggester = await connect(opened, { role: 'suggester' });
     await suggester.hello();
-    const forged = make(opened.dobj.document);
-    expect(forged.byteLength).toBeGreaterThan(2);
-    await suggester.deliver(syncFrame(2, forged));
+    const forged = make(opened.dobj.document, payloads);
+    const update = forged instanceof Uint8Array ? forged : forged.update;
+    expect(update.byteLength).toBeGreaterThan(2);
+    await suggester.deliver(forged instanceof Uint8Array ? syncFrame(2, forged) : encodePayloadFrame(forged.payload, PAYLOAD_UPDATE, forged.update));
     await suggester.pump();
     expect(suggester.events).toContainEqual({ t: 'write-refused', reason: 'role' });
     expect(suggester.closed?.code).toBe(CLOSE.revoked);
     expect(Y.encodeStateAsUpdate(opened.dobj.document)).toEqual(before);
+    expect(new Map((await opened.dobj.snapshotForDuplicate()).payloads), 'every payload is byte-identical').toEqual(payloads);
   });
 });

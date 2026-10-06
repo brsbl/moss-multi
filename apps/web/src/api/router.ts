@@ -8,9 +8,12 @@ import { ASSET_ROUTE, handleAssets } from './assets.ts';
 import { handleDocs, type DocsEnv } from './docs.ts';
 import { feedback } from './feedback.ts';
 import { handleFolderRoutes } from './folders.ts';
+import { handleInvites } from './invites.ts';
+import { handleNotifications } from './notifications.ts';
 import { handleSearchRoutes } from './search.ts';
 import { handleVaults } from './vault-routes.ts';
 import { handleTrash } from './trash.ts';
+import { handleUnfurl } from './unfurl.ts';
 import { workspace } from './workspace.ts';
 
 const NO_STORE = { 'cache-control': 'no-store' };
@@ -36,12 +39,17 @@ export async function handleApi(request: Request, env: ApiEnv): Promise<Response
   if (pathname === '/api/me') return me(request, env);
   if (pathname === '/api/workspace') return workspace(request, env);
   if (pathname === '/api/feedback') return feedback(request, env);
+  if (pathname === '/api/unfurl') return handleUnfurl(request, env);
   if (ASSET_ROUTE.test(pathname)) {
-    return env.ASSETS ? handleAssets(request, { ...env, ASSETS: env.ASSETS }) : json({ error: 'unavailable' }, 503, NO_STORE);
+    return env.ASSETS && env.PrincipalDO
+      ? handleAssets(request, { ...env, ASSETS: env.ASSETS, PrincipalDO: env.PrincipalDO })
+      : json({ error: 'unavailable' }, 503, NO_STORE);
   }
   const searched = handleSearchRoutes(request, env);
   if (searched) return searched;
   if (pathname === '/api/vaults' || pathname.startsWith('/api/vaults/')) return handleVaults(request, env);
+  if (pathname === '/api/notifications' || pathname === '/api/notifications/read') return handleNotifications(request, env);
+  if (pathname.startsWith('/api/invites/')) return handleInvites(request, env);
   if (pathname.startsWith('/api/trash/')) return handleTrash(request, env);
   if (pathname === '/api/docs' || pathname.startsWith('/api/docs/')) return handleDocs(request, env);
   if (pathname === '/api/folders' || pathname.startsWith('/api/folders/')) return handleFolderRoutes(request, env);
