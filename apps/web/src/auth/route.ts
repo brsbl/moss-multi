@@ -3,7 +3,7 @@
 import { endSession } from '@moss-multi/sync/fanout';
 import { NO_STORE } from '../api/respond.ts';
 import type { AppEnv } from '../env.ts';
-import { crossOriginCookie } from '../worker/origin-gate.ts';
+import { appOrigin, crossOriginCookie } from '../worker/origin-gate.ts';
 import { json } from '../worker/route.ts';
 import { createAuth, SIGN_UP_ADDRESS_DAILY, SIGN_UP_PRUNE_BATCH, type AuthEnv } from './auth.ts';
 import { addressBucket } from './client-address.ts';
@@ -17,14 +17,13 @@ const NO_ORIGIN_PATHS = new Set(['/api/auth/device/code', '/api/auth/device/toke
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 /**
- * better-auth 1.6.23 checks Origin only on requests that carry a cookie or fetch metadata, so a bare POST (a
- * script or form tooling) would sign up or sign in unchecked. Every other unsafe auth request needs an Origin;
- * better-auth then rejects one that is not BETTER_AUTH_URL's.
+ * better-auth 1.6.23 checks Origin only on requests that carry a cookie or fetch metadata, and only after its rate
+ * limiter and the sign-up count here have run. So every unsafe auth request must carry BETTER_AUTH_URL's own Origin
+ * before anything is counted: a foreign page cannot spend its visitors' sign-up or sign-in allowance.
  */
-function missingOrigin(request: Request): boolean {
+function foreignOrigin(request: Request, env: AuthEnv): boolean {
   if (SAFE_METHODS.has(request.method) || NO_ORIGIN_PATHS.has(new URL(request.url).pathname)) return false;
-  const origin = request.headers.get('origin');
-  return !origin || origin === 'null';
+  return request.headers.get('origin') !== appOrigin(env);
 }
 
 /**
@@ -90,7 +89,7 @@ async function signUpRefused(request: Request, env: AuthEnv): Promise<Response |
 }
 
 export async function handleAuthRoute(request: Request, env: AuthEnv & Partial<Pick<AppEnv, 'PrincipalDO'>>): Promise<Response> {
-  if (missingOrigin(request)) return json({ code: 'MISSING_OR_NULL_ORIGIN', message: 'Missing or null Origin' }, 403);
+  if (foreignOrigin(request, env)) return json({ code: 'FOREIGN_ORIGIN', message: 'This request must come from the app itself.' }, 403, NO_STORE);
   const tooMany = await signUpRefused(request, env);
   if (tooMany) return tooMany;
   const refused = await endSignedOutSession(request, env);

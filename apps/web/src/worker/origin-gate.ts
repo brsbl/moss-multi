@@ -12,7 +12,7 @@ const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 export const needsAppOrigin = (request: Request): boolean => isUpgrade(request) || !SAFE_METHODS.has(request.method);
 
 /** BETTER_AUTH_URL's origin, the one better-auth trusts; config.ts refuses to serve without it. */
-const appOrigin = (env: Pick<AppEnv, 'BETTER_AUTH_URL'>): string => new URL(env.BETTER_AUTH_URL ?? '').origin;
+export const appOrigin = (env: Pick<AppEnv, 'BETTER_AUTH_URL'>): string => new URL(env.BETTER_AUTH_URL ?? '').origin;
 
 /** True when the request must be refused: a cookie principal on a socket or a state change, from another origin. */
 export function crossOriginCookie(request: Request, principal: Principal | null, env: Pick<AppEnv, 'BETTER_AUTH_URL'>): boolean {
