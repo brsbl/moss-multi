@@ -5,8 +5,9 @@
  * published unchanged), as the owner approved on 2026-10-06. What changed,
  * item by item, and what a host must change: docs/design/editor-embed.md
  * section 13, "Migrating from API 1". In short: a moss-html block renders
- * inert until the user presses its Run button, and a running block sends no
- * request, no WebRTC packet and no navigation (`MossEditorManifest.htmlFrame`);
+ * inert until the user presses its Run button, and the frame policy refuses a
+ * running block's requests and frame loads (`MossEditorManifest.htmlFrame`,
+ * which also lists what a running block can still reach);
  * `assets.copyFromNote` copies only out of notes the
  * user opened in the host; the host security obligations below are
  * normative; a case-only retitle keeps the markdown entry's spelling; and
@@ -435,8 +436,8 @@ export interface MossEditorOptions {
    * `Content-Security-Policy: <htmlFrame.policy>` (`MossEditorManifest.htmlFrame`:
    * an opaque-origin sandbox that shows a block inert until the user presses
    * its Run button, then runs its inline scripts and styles and shows its
-   * `data:` and `blob:` images, and from which a block sends no request, no
-   * WebRTC packet and no navigation).
+   * `data:` and `blob:` images, and refuses its requests and frame loads;
+   * the risks that remain once a block runs are listed there).
    * moss-html blocks load it and receive their HTML by `postMessage`, the same
    * protocol as moss-multi's web `/frame/html` (SP13). A `data:` frame
    * inherits the editor frame's CSP, so a block's own scripts cannot run
@@ -1471,8 +1472,10 @@ export interface MossEditorManifest {
    * of them counts for all three, another block with the same HTML stays
    * inert, and a new mount starts inert.
    *
-   * A running block runs as an opaque origin with its inline scripts and
-   * styles and its `data:` and `blob:` images, and sends nothing to any server:
+   * A running block runs as an opaque origin, with no access to the editor,
+   * the host page, the host's origin or the host's files, with its inline
+   * scripts and styles and its `data:` and `blob:` images. The browser
+   * enforces these:
    * - The policy refuses fetch, XHR, WebSocket and beacons (`connect-src`),
    *   external scripts, stylesheets, images, fonts and media (`default-src`),
    *   frame loads, form posts and `<base>`.
@@ -1482,20 +1485,27 @@ export interface MossEditorManifest {
    *   the frame, the page or a popup. Without that, the page's `frame-src`
    *   (which allows `https:` for web embeds) would be the only gate. A block
    *   that tries is torn down: its frame shows that it was stopped.
-   * - Before the block's scripts run, the document deletes every WebRTC
-   *   interface (CSP does not govern ICE, so a peer connection could reach
-   *   any STUN or TURN server), and keeps every frame out of the block's
-   *   document (each would be a fresh realm with WebRTC): frames in its HTML
-   *   are dropped, frames added later are removed before they load,
-   *   declarative shadow roots, which could hide a frame, are never parsed,
-   *   and no shadow root is clonable, so no clone carries a frame unseen.
-   * - Static `preconnect`, `dns-prefetch` and `prerender` hints are dropped.
-   * What browsers do on their own is outside this: a refused navigation or a
-   * connection hint added by script can still make the browser resolve the
-   * host it names and open a connection to it, with no request sent on it. So
-   * a deliberately malicious block, once the user runs it, can still leak its
-   * own content and what the user types into it, in the name of a host it
-   * tries to reach.
+   *
+   * Defense in depth only, not a boundary: before the block's scripts run, a
+   * guard script in the block's own realm deletes the WebRTC interfaces
+   * (CSP does not govern ICE) and keeps frames out of the block's document
+   * (each would be a fresh realm with WebRTC), and static `preconnect`,
+   * `dns-prefetch` and `prerender` hints are dropped. The block's script runs
+   * in that same realm, so it can undo the guard.
+   *
+   * Residual risks, accepted under PRODUCT ruling 21 because nothing runs
+   * until the user presses Run on that block: once it runs, a block's own
+   * script can still reach a server of its choosing by
+   * - WebRTC: a block that tampers with built-in prototypes can get a child
+   *   frame past the guard and send STUN or TURN packets from it;
+   * - self-navigation: a refused navigation, or a connection hint added by
+   *   script, can still make the browser resolve the host it names and open
+   *   a connection to it;
+   * - any other trick available inside its own realm.
+   * So a deliberately malicious block, once the user runs it, can leak its
+   * own content and what the user types into it. It still cannot read the
+   * editor, the host page, the host's origin or the host's files, and Run
+   * never carries over to another block, note or mount.
    * API 1's policy was `sandbox allow-scripts` alone, with the block written
    * into the frame document itself.
    */

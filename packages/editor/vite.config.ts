@@ -25,7 +25,8 @@ if (MOSS_EDITOR_INFO.version !== pkg.version) throw new Error(`MOSS_EDITOR_INFO.
 /**
  * What a host serves moss-html-frame.html with (API 2, contract.ts MossEditorManifest.htmlFrame): an opaque-origin
  * sandbox that runs the block's inline scripts and styles and shows data: and blob: images, and refuses every request
- * and frame load. The document itself (HTML_FRAME_ISOLATED_DOCUMENT) closes WebRTC and navigation.
+ * and frame load. The document itself (HTML_FRAME_ISOLATED_DOCUMENT) puts the block's navigations under that policy,
+ * and its in-realm guard removes WebRTC as defense in depth only.
  */
 const FRAME_POLICY =
   "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'";

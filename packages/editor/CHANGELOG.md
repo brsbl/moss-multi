@@ -11,12 +11,18 @@ host that mounts it gets `ready` rejected with `apiMismatch` and nothing is read
 - **A moss-html block renders inert until the user presses Run** on it (PRODUCT ruling 21); Run lasts for that
   block alone (its static, interactive and fullscreen frames, never another block with the same HTML) while the
   editor is mounted.
-- **A running moss-html block sends no request, no WebRTC packet and no navigation**; one that tries to navigate is
-  torn down. editor.json `htmlFrame.policy` is now
+- **The frame policy refuses a running moss-html block's requests, frame loads and navigations**; one that tries to
+  navigate is torn down. editor.json `htmlFrame.policy` is now
   `sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:
   blob:; connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'`, and `moss-html-frame.html` runs
-  the block in a sandboxed child with WebRTC deleted and no frames of its own. Blocks still run their inline scripts
-  and styles.
+  the block in a sandboxed child. Blocks still run their inline scripts and styles. As defense in depth only, a guard
+  in the block's own realm deletes WebRTC and keeps child frames out before the block's scripts run.
+- **Residual risks, accepted because a block runs only when the user presses Run on it:** once running, a block's
+  own script can undo that guard (for example by tampering with built-in prototypes to slip in a child frame) and
+  send WebRTC packets to any server; a navigation it tries, though refused, or a connection hint it adds can still
+  make the browser look up and connect to a host it names; and it may find other tricks inside its own realm. So a
+  deliberately malicious block the user runs can leak its own content and what the user types into it. It still
+  cannot reach the editor, the host page, the host's origin or the host's files.
 - **`assets.copyFromNote` copies only out of notes the user opened in the host**; any other source is
   `{kind:'refused', reason:'sourceNotOpen'}`, and the editor drops the pasted reference.
 - **Host security obligations are normative in contract.ts:** read confinement with realpath, re-validation of every

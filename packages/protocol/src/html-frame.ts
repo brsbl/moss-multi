@@ -12,8 +12,9 @@ export const HTML_FRAME_CONTENT = 'moss-html-frame-content';
 export const HTML_FRAME_RUN = 'moss-html-frame-run';
 
 /**
- * Runs first in the editor's block document (HTML_FRAME_ISOLATED_DOCUMENT), called with the block's HTML. CSP leaves
- * two paths open there, and this closes them before any block script runs:
+ * Runs first in the editor's block document (HTML_FRAME_ISOLATED_DOCUMENT), called with the block's HTML. Defense in
+ * depth only, not a boundary: it runs in the block's own realm, so a running block can undo it (an accepted residual
+ * risk under PRODUCT ruling 21, contract.ts htmlFrame). CSP leaves two paths open there, and this narrows them:
  * - WebRTC (ICE to a STUN or TURN server): every RTC interface is deleted from the realm.
  * - Child frames, each a fresh realm with WebRTC (srcdoc and javascript: frames load under `frame-src 'none'`): the
  *   block's HTML is parsed by DOMParser, which attaches no declarative shadow root, frames and connection hints

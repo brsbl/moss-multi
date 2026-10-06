@@ -6,7 +6,8 @@
 // T3.10 (editor 0.2.0): `selection()` (feature `selection-1`) with lines golden-compared against the file a save
 // writes, exact after an unsaved edit, and moss's Share with Agent button only with services.shareWithAgent.
 // T3.11 (editor 0.3.0, API 2): a moss-html block renders inert until the user presses Run (PRODUCT ruling 21), and
-// the frame keeps a running block off the network (requests, WebRTC, child frames, navigation); copyFromNote
+// the frame policy refuses a running block's requests and navigations (the WebRTC guard is checked as defense in
+// depth, not as a guarantee); copyFromNote
 // copies only from a note the user opened; a case-only retitle keeps the markdown entry's spelling as Moss desktop
 // does; and an API 1 host (the 0.2.0 host fixture) gets a typed apiMismatch at mount.
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
@@ -610,11 +611,13 @@ test.describe('embeddable editor', () => {
     expect(await page.evaluate(() => window.editorFixture.violations)).toEqual([]);
   });
 
-  test('API 2: a moss-html block renders and runs in its frame, and none of its network probes reaches another origin', async ({ page }) => {
+  test('API 2: a moss-html block renders and runs in its frame, the policy refuses its requests, and (defense in depth, not a guarantee) the guard holds these WebRTC probes', async ({ page }) => {
     const seen = await open(page);
     const collector = server.collector.url;
     const socket = collector.replace(/^http/, 'ws');
-    // A peer connection that gathers ICE candidates against the collector's STUN port: CSP governs none of it.
+    // A peer connection that gathers ICE candidates against the collector's STUN port: CSP governs none of it. Only
+    // the in-realm guard stops these probes, as defense in depth; a running block that tampers with prototypes can
+    // get past it, an accepted residual risk (PRODUCT ruling 21, contract.ts htmlFrame).
     const rtc = `try { var pc = new RTCPeerConnection({ iceServers: [{ urls: '${server.collector.stun}' }] }); pc.createDataChannel('x'); pc.createOffer().then(function (o) { return pc.setLocalDescription(o); }).catch(function () {}); } catch (e) {}`;
     const attr = (value: string) => value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
     const child = (script: string) => `<iframe srcdoc="${attr(script)}"></iframe>`;
