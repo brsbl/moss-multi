@@ -343,8 +343,12 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
   const receiveWorkspace = (event: WorkspaceEvent) => {
     if (event.type !== 'meta' && event.type !== 'vaults') return;
     if (event.type === 'vaults' || event.folderIds.length) refreshAll = true;
-    if (event.type === 'meta') for (const id of event.docIds) pendingIds.add(id);
-    if (event.type === 'meta') for (const id of event.docIds) reopenIds.add(id);
+    if (event.type === 'meta') {
+      for (const id of event.docIds) {
+        pendingIds.add(id);
+        reopenIds.add(id);
+      }
+    }
     requestWorkspaceRefresh();
   };
   const pins = () => readJson<Record<string, number>>(storage, PINS_KEY) ?? {};
@@ -399,17 +403,20 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
     if (!id) throw new Error(FOLDER_GONE);
     return id;
   };
+  /** A request whose network failure is the one unreachable sentence. */
+  const send = async (path: string, init: RequestInit): Promise<Response> => {
+    try {
+      return await request(path, init);
+    } catch {
+      throw new Error(UNREACHABLE);
+    }
+  };
   /** A folder change: the request, a sentence on refusal, then the fresh listing that moss reads back. */
   const changeFolders = async (path: string, init: { method: string; json?: unknown }): Promise<unknown> => {
-    let response: Response;
-    try {
-      response = await request(path, {
-        method: init.method,
-        ...(init.json === undefined ? {} : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(init.json) }),
-      });
-    } catch {
-      throw new Error('The server couldn’t be reached. Check your connection and try again.');
-    }
+    const response = await send(path, {
+      method: init.method,
+      ...(init.json === undefined ? {} : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(init.json) }),
+    });
     if (!response.ok) throw await refusalOf(response);
     const answer: unknown = await response.json().catch(() => ({}));
     await load(workspaceSnapshot?.vault.id ?? storedVault()).catch(() => undefined);
@@ -425,16 +432,24 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
   /** The trash DELETE, repeated while a DocDO has not closed (503); a refusal is the server's sentence. */
   const sendTrash = async (path: string, fallbacks: Record<number, string>, unavailable: string): Promise<void> => {
     for (let attempt = 1; ; attempt += 1) {
-      let response: Response;
-      try {
-        response = await request(path, { method: 'DELETE' });
-      } catch {
-        throw new Error(UNREACHABLE);
-      }
+      const response = await send(path, { method: 'DELETE' });
       if (response.ok) return;
       if (response.status !== 503 || attempt >= TRASH_ATTEMPTS) throw await refusalOf(response, fallbacks, unavailable);
       await new Promise((resolve) => setTimeout(resolve, TRASH_RETRY_MS));
     }
+  };
+  /** Closes `ids` to writes and waits for their acks, then sends the trash; false when they could not close (A§10.6). */
+  const trashGuarded = async (ids: string[], path: string, fallbacks: Record<number, string>, unavailable: string): Promise<boolean> => {
+    const ready = await trashGuard.prepare(ids);
+    let trashed = false;
+    try {
+      if (!ready) return false;
+      await sendTrash(path, fallbacks, unavailable);
+      trashed = true;
+    } finally {
+      trashGuard.release(ids, trashed);
+    }
+    return true;
   };
   /** Notes in a folder's subtree that this tab may hold open. */
   const notesUnder = (path: string) => (workspaceSnapshot?.docs ?? [])
@@ -556,27 +571,14 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
       },
       // Trash (A§10.6): closed to writes and acked first, then the owner's DELETE; moss marks the note trashed.
       delete: async (id: string) => {
-        const ready = await trashGuard.prepare([id]);
-        let trashed = false;
-        try {
-          if (!ready) return false;
-          await sendTrash(`/api/docs/${encodeURIComponent(id)}`, NOTE_REFUSALS, NOTE_UNAVAILABLE);
-          trashed = true;
-        } finally {
-          trashGuard.release([id], trashed);
-        }
+        if (!(await trashGuarded([id], `/api/docs/${encodeURIComponent(id)}`, NOTE_REFUSALS, NOTE_UNAVAILABLE))) return false;
         const note = known.get(id);
         if (note) known.set(id, { ...note, trashedAt: seconds(Date.now()) });
         await load(workspaceSnapshot?.vault.id ?? storedVault()).catch(() => undefined);
         return true;
       },
       restore: async (id: string) => {
-        let response: Response;
-        try {
-          response = await request(`/api/docs/${encodeURIComponent(id)}/restore`, { method: 'POST' });
-        } catch {
-          throw new Error(UNREACHABLE);
-        }
+        const response = await send(`/api/docs/${encodeURIComponent(id)}/restore`, { method: 'POST' });
         if (!response.ok) throw await refusalOf(response, NOTE_REFUSALS, NOTE_UNAVAILABLE);
         // Live at once: a listing that lands later, or a refresh that supersedes this one, must not reopen the Trash view.
         const restored = () => {
@@ -672,16 +674,7 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
       // close to writes and ack first, as a note's trash does (A§10.6).
       delete: async ({ path }: { path: string; moveNotesTo?: 'root' | 'trash' }) => {
         const id = await folderId(path);
-        const open = notesUnder(path);
-        const ready = await trashGuard.prepare(open);
-        let trashed = false;
-        try {
-          if (!ready) return false;
-          await sendTrash(`/api/folders/${encodeURIComponent(id)}`, FOLDER_REFUSALS, FOLDER_UNAVAILABLE);
-          trashed = true;
-        } finally {
-          trashGuard.release(open, trashed);
-        }
+        if (!(await trashGuarded(notesUnder(path), `/api/folders/${encodeURIComponent(id)}`, FOLDER_REFUSALS, FOLDER_UNAVAILABLE))) return false;
         await load(workspaceSnapshot?.vault.id ?? storedVault()).catch(() => undefined);
         announceFolders();
         return true;
