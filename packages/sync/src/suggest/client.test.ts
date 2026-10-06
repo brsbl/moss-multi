@@ -2,7 +2,7 @@
 // way the pane binds it and every request answered by the real ingest. F sends nothing when it binds; every census
 // operation is recorded with no refusal; a record that fails the bind check is broken and left out of C, and Review
 // falls back to the body when binding C throws; a record closed under the author offers back every unacked block,
-// and typing after the remount lands.
+// and typing after the remount lands. Payload edits travel per payload doc under the lease and stay proposals.
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { $getRoot } from 'lexical';
 import * as Y from 'yjs';
@@ -10,11 +10,12 @@ import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import { SUGGEST_LIMITS, type SuggestReply, type SuggestRequest } from '@moss-multi/protocol/suggest';
 import type { RecordMeta } from '@moss-multi/core/suggest/apply';
 import { handleSuggest, SuggestIngest } from '../doc/suggest.ts';
+import { payloadDocsFor, payloadText } from '../payload-docs.ts';
 import { Composite, reviewDoc, SuggestFork, type ForkEvent } from './client.ts';
 import { bindEditor } from './fork-shim.ts';
 import { createRecord, opsOf, readMeta, readRecord, recordIds, writeSuggestions } from './records.ts';
-import { nodeRegistry } from './review.ts';
-import { CENSUS, codeBlock, deterministicIds, exported, insertBlock, resetIds, seededBody, select, spansOfText, SUGGESTER, type Step } from './test-support.ts';
+import { acceptRecord, nodeRegistry, previewRecord } from './review.ts';
+import { CENSUS, codeBlock, deterministicIds, EDITOR, exported, insertBlock, resetIds, seededBody, select, spansOfText, SUGGESTER, type Step } from './test-support.ts';
 
 let restore: () => void = () => {};
 beforeEach(() => {
@@ -121,6 +122,34 @@ describe('T5.1 the fork F @p:mean-2 @p:R17', () => {
       dispose();
     }
   });
+
+  it.each([
+    ['new code block', 'new code'],
+    ['new HTML block', '<b>new</b>'],
+    ['new formula', '3*3'],
+    ['an edit of an original code payload', 'seed!'],
+  ])('%s: the payload travels as suggest-ops on its own payload doc under the lease, and the body keeps its payloads', (name, text) => {
+    const live = seededBody();
+    const payloadsBefore = new Map([...payloadDocsFor(live).docs].map(([id, doc]) => [id, payloadText(doc).toString()]));
+    const link = wire(live);
+    resetIds();
+    const { fork, act, dispose } = mount(live, link);
+    try {
+      for (const step of CENSUS.find((op) => op.name === name)!.steps) act(step);
+      link.deliver(fork);
+      for (const reply of ops(link)) expect(reply.t).toBe('suggest-ack');
+      const [record] = recordIds(live);
+      const stored = readRecord(live, record)!.ops.filter((op) => op.doc !== 'body');
+      expect(stored.length, 'the record holds a payload op').toBeGreaterThan(0);
+      expect(new Set(stored.map((op) => op.doc)).size, 'one payload doc').toBe(1);
+      for (const op of stored) expect([...Y.parseUpdateMeta(op.update).from.keys()], 'written under the lease').toEqual([fork.doc.clientID]);
+      expect(payloadText(fork.payloads.get(stored[0].doc)!).toString(), "F shows the author's payload").toContain(text);
+      for (const [id, before] of payloadsBefore) expect(payloadText(payloadDocsFor(live).get(id)!).toString(), 'a payload edit is a proposal until accept').toBe(before);
+      expect(payloadDocsFor(live).get(stored[0].doc)?.getText('payload').toString() ?? '').not.toContain(text);
+    } finally {
+      dispose();
+    }
+  });
 });
 
 const LEASED = 0x7fff1234;
@@ -143,7 +172,7 @@ function forgeBroken(live: Y.Doc, id: string): void {
   };
   writeSuggestions(live, () => {
     createRecord(live, meta);
-    opsOf(live, id).push([op]);
+    opsOf(live, id).push([{ doc: 'body', update: op }]);
   });
 }
 
@@ -171,6 +200,25 @@ describe('T5.1 the composite C and Review @p:mean-2 @p:R17', () => {
       const types = (root(built.doc).toDelta() as { insert: unknown }[]).map((op) => op.insert instanceof Y.XmlText ? op.insert.getAttribute('__type') : null);
       expect(types, 'the broken list item never enters C').not.toContain('listitem');
       expect(exported(live), 'C never writes the body').not.toContain('Valid insert.');
+    } finally {
+      built.doc.destroy();
+    }
+  });
+
+  it("C shows a record's edit of an original payload in its payload doc; the body's payload is unchanged", () => {
+    const live = seededBody();
+    const link = wire(live);
+    const mounted = mount(live, link);
+    mounted.act(() => codeBlock().setCode('seed!'));
+    link.deliver(mounted.fork);
+    mounted.dispose();
+    const [record] = recordIds(live);
+    const id = readRecord(live, record)!.ops.find((op) => op.doc !== 'body')!.doc;
+    const built = new Composite(live).build();
+    try {
+      expect(built.valid).toEqual([record]);
+      expect(payloadText(built.payloads.get(id)!).toString(), 'C holds the proposed payload').toBe('seed!');
+      expect(payloadText(payloadDocsFor(live).get(id)!).toString(), 'B keeps its payload').toBe('seed');
     } finally {
       built.doc.destroy();
     }
@@ -500,6 +548,41 @@ describe('T5.1 copy-back, reconnect and undelete @p:mean-2 @p:tech-7 @p:R17', ()
       expect(readRecord(live, record)?.parts, 'suggest-undelete took it back').toEqual([]);
       expect(m.fork.isStruck(targets[0])).toBe(false);
       expect(link.replies.filter((reply) => reply.t === 'suggest-refused')).toEqual([]);
+    } finally {
+      m.dispose();
+    }
+  });
+});
+
+describe('T5.1 an accept seen during a reconnect @p:mean-2 @p:tech-7 @p:R17', () => {
+  it('offline text in a record an editor accepted meanwhile resumes its lease and lands as a continuation, never copy-back', () => {
+    const live = seededBody();
+    const link = wire(live);
+    const m = mount(live, link);
+    try {
+      m.act(() => select('Hello', 24).insertText(' One.'));
+      link.deliver(m.fork);
+      const [record] = recordIds(live);
+      // Typed while the socket is down: the frame is lost with it.
+      m.act(() => select('Hello', 29).insertText(' Two.'));
+      link.outbox.length = 0;
+      link.ingest.expireConnection('c1');
+      // An editor accepts the record meanwhile; the author's B learns of it before the fork resumes.
+      const preview = previewRecord(live, record);
+      if (!preview.ok) throw new Error(`preview refused: ${preview.reason}`);
+      expect(acceptRecord(live, record, { previewHash: preview.hash, digest: preview.digest }, EDITOR)).toEqual({ ok: true });
+      link.outbox.length = 0;
+      link.who.connection = 'c2';
+      m.fork.reconnected();
+      link.deliver(m.fork);
+      expect(link.replies.filter((reply) => reply.t === 'suggest-refused'), 'nothing is refused').toEqual([]);
+      expect(m.events.filter((event) => event.type === 'refused'), 'nothing is offered back').toEqual([]);
+      expect(m.fork.closed, 'input stays open').toBe(false);
+      expect(m.fork.owes).toBe(false);
+      const continuation = recordIds(live).map((id) => readMeta(live, id)!).find((meta) => meta.continues === record);
+      expect(continuation?.status, 'the offline text opens a continuation of the accepted record').toBe('open');
+      expect(readRecord(live, continuation!.id)?.ops.length).toBe(1);
+      expect(exported(live), 'the accepted text is in the body').toContain('One.');
     } finally {
       m.dispose();
     }

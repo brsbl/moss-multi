@@ -3,9 +3,10 @@
 // Edit mode, on B, each run of record items in C gets a wedge at its left body neighbour, a gutter bar beside its
 // block and a hover preview of its text; delete targets paint struck; a block a record restyles gets a dot.
 import type { Binding } from '@lexical/yjs';
-import { regRefs } from '@moss-multi/core/suggest/apply';
+import { BODY_DOC, regRefs } from '@moss-multi/core/suggest/apply';
 import { SUGGEST_MARK_ATTR, OVERLAY_SURFACE_ATTR } from '@moss-multi/protocol/dom-contract';
-import { openRecords, type Built } from '@moss-multi/sync/suggest/client';
+import { payloadMap, payloadText } from '@moss-multi/sync/payload-docs';
+import { openRecords, payloadIdsOf, type Built } from '@moss-multi/sync/suggest/client';
 import type { LexicalEditor } from 'lexical';
 import * as Y from 'yjs';
 import { charIndex, idKey, rangesWhere, type CharPlace } from './chars.ts';
@@ -63,9 +64,10 @@ export function removedBodyItems(body: Y.Doc, built: Built): { client: number; c
   for (const record of openRecords(body)) {
     if (!valid.has(record.meta.id)) continue;
     for (const op of record.ops) {
+      if (op.doc !== BODY_DOC) continue;
       let ds: ReturnType<typeof Y.decodeUpdate>['ds'];
       try {
-        ds = Y.decodeUpdate(op).ds;
+        ds = Y.decodeUpdate(op.update).ds;
       } catch {
         continue;
       }
@@ -94,40 +96,28 @@ function plain(type: Y.AbstractType<unknown>): string {
   return '';
 }
 
-/** The `registers` key an item sits under (an entry, or anything inside one), or null outside `registers`. */
-function registerKey(doc: Y.Doc, item: Y.Item): string | null {
-  const registers = doc.getMap('registers') as unknown as Y.AbstractType<unknown>;
-  for (let current: Y.Item | null = item; current; ) {
-    const parent = current.parent as Y.AbstractType<unknown>;
-    if (parent === registers) return current.parentSub;
-    current = parent._item;
-  }
-  return null;
+/** A payload as C's records leave it: its text, or a compound payload's fields. */
+function payloadPreview(doc: Y.Doc | undefined): string {
+  if (!doc) return '';
+  const map = payloadMap(doc);
+  return map.size ? JSON.stringify(map.toJSON()) : payloadText(doc).toString();
 }
 
-function registerPreview(doc: Y.Doc, key: string): string {
-  const value = doc.getMap('registers').get(key);
-  if (value instanceof Y.Text) return value.toString();
-  if (value instanceof Y.AbstractType) return JSON.stringify(value.toJSON());
-  return typeof value === 'string' ? value : '';
-}
-
-/**
- * The marks Edit mode paints for C's records over B's binding. `removed`: body items the records' ops delete, so an
- * edit that only deletes inside an original register still marks its block.
- */
-export function editMarks(body: Y.Doc, built: Built, binding: Binding, removed: readonly { client: number; clock: number; len: number }[] = []): Mark[] {
+/** The marks Edit mode paints for C's records over B's binding. */
+export function editMarks(body: Y.Doc, built: Built, binding: Binding): Mark[] {
   const index = charIndex(binding);
   const marks = new Map<string, Mark>();
-  // Original registers a record edits, by key: their decorators in B get a mark previewing the register in C.
-  const registers = new Map<string, string>();
-  const noteRegister = (item: Y.Item, record: string) => {
-    const key = registerKey(built.doc, item);
-    if (key !== null && !registers.has(key) && body.getMap('registers').has(key)) registers.set(key, record);
-  };
+  // Original payloads a record edits (a proposal applied only at accept): their decorators in B get a mark previewing
+  // the payload in C.
+  const refs = regRefs(body);
+  const payloads = new Map<string, string>();
+  const valid = new Set(built.valid);
+  for (const record of openRecords(body)) {
+    if (!valid.has(record.meta.id)) continue;
+    for (const id of payloadIdsOf(record)) if (refs.has(id) && !payloads.has(id)) payloads.set(id, record.meta.id);
+  }
   for (const [client, record] of built.clients) {
     for (const struct of built.doc.store.clients.get(client) ?? []) {
-      if (struct instanceof Y.Item) noteRegister(struct, record);
       if (!(struct instanceof Y.Item) || struct.deleted || struct.parentSub !== null) continue;
       const content = struct.content;
       // A text node's property map marks no text of its own.
@@ -162,18 +152,10 @@ export function editMarks(body: Y.Doc, built: Built, binding: Binding, removed: 
     }
   };
   visit(built.doc.get('root', Y.XmlText));
-  for (const span of removed) {
-    if (span.clock >= Y.getState(built.doc.store, span.client)) continue;
-    const item = Y.getItem(built.doc.store, Y.createID(span.client, span.clock));
-    if (item instanceof Y.Item) noteRegister(item, '');
-  }
-  if (registers.size > 0) {
-    const refs = regRefs(body);
-    for (const [key, record] of registers) {
-      for (const type of refs.get(key) ?? []) {
-        const place = type._item && index.get(idKey(type._item.id));
-        if (place) marks.set(`reg:${place.key}`, { kind: 'insert', place, after: false, text: registerPreview(built.doc, key), record });
-      }
+  for (const [id, record] of payloads) {
+    for (const type of refs.get(id) ?? []) {
+      const place = type._item && index.get(idKey(type._item.id));
+      if (place) marks.set(`reg:${place.key}`, { kind: 'insert', place, after: false, text: payloadPreview(built.payloads.get(id)), record });
     }
   }
   return [...marks.values()];

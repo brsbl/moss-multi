@@ -3,7 +3,10 @@
 // written in either mode.
 import { $getNodeByKey, $isElementNode, type LexicalEditor, type LexicalNode, type SerializedEditorState, type SerializedLexicalNode } from 'lexical';
 import { stateToMarkdown } from '@moss-multi/sync/converter';
-import { blockText, Composite, openRecords, reviewDoc, SHIM_BODY_APPLY, SHIM_RECORD_APPLY, SuggestFork, type Block, type ForkEvent } from '@moss-multi/sync/suggest/client';
+import {
+  blockText, Composite, derivedPayloads, destroyView, openRecords, reviewDoc, SHIM_BODY_APPLY, SHIM_RECORD_APPLY, SuggestFork, type Block, type Built,
+  type ForkEvent,
+} from '@moss-multi/sync/suggest/client';
 import { readMeta } from '@moss-multi/sync/suggest/records';
 import * as Y from 'yjs';
 import { bindingOf } from '../binding-registry.ts';
@@ -164,8 +167,13 @@ export class ReviewMount {
   readonly #stops: (() => void)[] = [];
   #timer: ReturnType<typeof setTimeout> | undefined;
 
+  /** The payloads C's records write, as last built: C's payload docs start from these. */
+  #built = new Map<string, Y.Doc>();
+  readonly #payloads: ReturnType<typeof derivedPayloads>;
+
   constructor(readonly session: DocSession, readonly fallback: boolean, readonly hooks: { remount(fallback: boolean): void; change(): void }) {
     this.#composite = new Composite(session.doc);
+    this.#payloads = derivedPayloads(session.doc, this.doc, SHIM_BODY_APPLY, (id) => (this.fallback ? undefined : this.#built.get(id)));
     this.provider = new ShimProvider(session.provider, () => this.#fill());
     const onSync = (synced: boolean) => {
       if (synced) this.#fill();
@@ -180,11 +188,25 @@ export class ReviewMount {
     };
     session.provider.on('sync', onSync);
     session.doc.on('update', onUpdate);
+    // A record editing a payload waits for that payload to arrive before it shows.
+    const stopArrivals = session.payloads.onArrive(onUpdate);
     this.#stops.push(() => {
       session.provider.off('sync', onSync);
       session.doc.off('update', onUpdate);
+      stopArrivals();
       clearTimeout(this.#timer);
     });
+  }
+
+  /** C's records' payloads: kept for payload docs C holds later, and merged into the ones it holds now. */
+  #takePayloads(built: Built): void {
+    for (const doc of this.#built.values()) doc.destroy();
+    this.#built = built.payloads;
+    built.payloads = new Map();
+    for (const [id, doc] of this.#built) {
+      const held = this.#payloads.host.get(id);
+      if (held) Y.applyUpdate(held, Y.encodeStateAsUpdate(doc, Y.encodeStateVector(held)), SHIM_RECORD_APPLY);
+    }
   }
 
   #fill(): void {
@@ -198,6 +220,7 @@ export class ReviewMount {
       }, (built) => {
         this.#valid = built.valid;
         this.clients = built.clients;
+        this.#takePayloads(built);
       });
       // A partly filled C cannot be emptied in place: remount on a fresh doc filled from the body.
       if (used === 'body') {
@@ -232,14 +255,17 @@ export class ReviewMount {
       }
       this.#valid = built.valid;
       this.clients = built.clients;
+      this.#takePayloads(built);
       this.hooks.change();
     } finally {
-      built.doc.destroy();
+      destroyView(built);
     }
   }
 
   dispose(): void {
     for (const stop of this.#stops.splice(0)) stop();
+    this.#payloads.stop();
+    for (const doc of this.#built.values()) doc.destroy();
     this.doc.destroy();
   }
 }

@@ -1,11 +1,15 @@
-// The suggest-mode client (docs/design/suggestions.md §5), Lexical-free so it runs headless in tests: the fork F (the
-// body B plus the author's own valid open records, written under the active lease) and the composite C (B plus every
-// valid open record). F forwards every transaction whose origin is not one of its own as `suggest-ops`; it never
-// writes B. A record enters F or C only after G1–G3 and the headless bind check pass on a scratch copy.
+// The suggest-mode client (docs/design/suggestions.md §5, §14), headless so it runs in tests: the fork F (the body B
+// and a copy of each payload doc it touches, plus the author's own valid open records, written under the active
+// lease) and the composite C (B plus every valid open record). F forwards every transaction, in the body or a payload
+// doc, whose origin is not one of its own as `suggest-ops` with that doc; it never writes B or B's payloads. A record
+// enters F or C only after G1–G3 and the headless bind check pass on scratch copies.
 import * as Y from 'yjs';
-import { BODY_ROOTS, hydrate, regRefs, type Inserted, type SuggestionRecord } from '@moss-multi/core/suggest/apply';
+import {
+  BODY_DOC, BODY_ROOTS, hydrate, PAYLOAD_ID, regRefs, ROOT_KINDS, type Inserted, type RecordOp, type SuggestionRecord,
+} from '@moss-multi/core/suggest/apply';
 import { SUGGEST_LIMITS, type IdSpan, type LeaseGrant, type SuggestReply, type SuggestRefusal, type SuggestRequest } from '@moss-multi/protocol/suggest';
 import { bytesToBase64 } from '@moss-multi/protocol/sync';
+import { attachPayloadDocs, PAYLOAD_LOADED, PayloadDocs, payloadDocsFor, payloadMap, payloadText } from '../payload-docs.ts';
 import { readMeta, readRecord, recordIds } from './records.ts';
 import { bindCheck } from './review.ts';
 
@@ -33,6 +37,9 @@ export function openRecords(body: Y.Doc, author?: string): SuggestionRecord[] {
   return records.sort((a, b) => a.meta.createdAt - b.meta.createdAt || (a.meta.id < b.meta.id ? -1 : 1));
 }
 
+/** The payload ids a record's ops write. */
+export const payloadIdsOf = (record: SuggestionRecord): string[] => [...new Set(record.ops.filter((op) => op.doc !== BODY_DOC).map((op) => op.doc))];
+
 function rootName(doc: Y.Doc, type: Y.AbstractType<unknown>): string | null {
   let top = type;
   while (top._item !== null) {
@@ -44,56 +51,105 @@ function rootName(doc: Y.Doc, type: Y.AbstractType<unknown>): string | null {
   return null;
 }
 
-/**
- * `base` plus the record's ops on a gc-free scratch copy, or null when the record fails G1 (nothing parked), G2 (only
- * its leased clients advance), G3 (only `root` and `registers` change) or the bind check. Delete parts are not
- * applied: they paint as strikes. Never touches `base`.
- */
-export function applyForView(base: Y.Doc, record: SuggestionRecord, check: BindCheck = bindCheck): Y.Doc | null {
-  const scratch = hydrate(base);
-  const fail = () => {
-    scratch.destroy();
-    return null;
-  };
-  const before = Y.decodeStateVector(Y.encodeStateVector(scratch));
-  let transaction: Y.Transaction | null = null;
-  try {
-    scratch.transact((tr) => {
-      transaction = tr;
-      for (const op of record.ops) Y.applyUpdate(scratch, op);
-    }, VIEW_APPLY);
-  } catch {
-    return fail();
-  }
-  const tr = transaction as Y.Transaction | null;
-  if (!tr || scratch.store.pendingStructs !== null || scratch.store.pendingDs !== null) return fail();
-  const clients = new Set(record.meta.clients);
-  const inserted = new Map<number, readonly [number, number]>();
-  for (const [client, clock] of Y.decodeStateVector(Y.encodeStateVector(scratch))) {
-    const from = before.get(client) ?? 0;
-    if (clock <= from) continue;
-    if (!clients.has(client)) return fail();
-    inserted.set(client, [from, clock]);
-  }
-  for (const type of tr.changed.keys()) {
-    const name = rootName(scratch, type as unknown as Y.AbstractType<unknown>);
-    if (name === null || !BODY_ROOTS.has(name)) return fail();
-  }
-  try {
-    if (!check(scratch, inserted)) return fail();
-  } catch {
-    return fail();
-  }
-  return scratch;
+/** A doc and the payload docs a record wrote beside it, all gc-free scratch copies. */
+export interface View {
+  doc: Y.Doc;
+  payloads: Map<string, Y.Doc>;
 }
 
-export interface Built {
-  /** C: B plus every valid open record's ops, gc-free. The caller destroys it. */
+export function destroyView(view: View): void {
+  view.doc.destroy();
+  for (const payload of view.payloads.values()) payload.destroy();
+}
+
+/** Where a view reads a payload's state before the record: B's payload doc, or an earlier record's in C. */
+export type PayloadBase = (id: string) => Y.Doc | undefined;
+
+/**
+ * `base` plus the record's ops on gc-free scratch copies of the body and of each payload they write, or null when the
+ * record fails G1 (nothing parked in any doc), G2 (only its leased clients advance), G3 (only the body's and payloads'
+ * roots change) or the bind check. Delete parts are not applied: they paint as strikes. Never touches `base` or a
+ * payload `payloadOf` returns.
+ */
+export function applyForView(base: Y.Doc, record: SuggestionRecord, check: BindCheck = bindCheck, payloadOf: PayloadBase = (id) => payloadDocsFor(base).get(id)): View | null {
+  const view: View = { doc: hydrate(base), payloads: new Map() };
+  const fail = () => {
+    destroyView(view);
+    return null;
+  };
+  const groups = new Map<Y.Doc, Uint8Array[]>([[view.doc, []]]);
+  for (const op of record.ops as unknown[]) {
+    const { doc, update } = (op ?? {}) as Partial<RecordOp>;
+    if (typeof doc !== 'string' || !(update instanceof Uint8Array)) return fail();
+    let into = view.doc;
+    if (doc !== BODY_DOC) {
+      if (!PAYLOAD_ID.test(doc)) return fail();
+      let payload = view.payloads.get(doc);
+      if (!payload) {
+        const from = payloadOf(doc);
+        payload = from ? hydrate(from) : new Y.Doc({ gc: false });
+        view.payloads.set(doc, payload);
+        groups.set(payload, []);
+      }
+      into = payload;
+    }
+    groups.get(into)!.push(update);
+  }
+  const clients = new Set(record.meta.clients);
+  const inserted = new Map<number, readonly [number, number]>();
+  for (const [doc, updates] of groups) {
+    const before = Y.decodeStateVector(Y.encodeStateVector(doc));
+    let transaction: Y.Transaction | null = null;
+    try {
+      doc.transact((tr) => {
+        transaction = tr;
+        for (const update of updates) Y.applyUpdate(doc, update);
+      }, VIEW_APPLY);
+    } catch {
+      return fail();
+    }
+    const tr = transaction as Y.Transaction | null;
+    if (!tr || doc.store.pendingStructs !== null || doc.store.pendingDs !== null) return fail();
+    for (const [client, clock] of Y.decodeStateVector(Y.encodeStateVector(doc))) {
+      const from = before.get(client) ?? 0;
+      if (clock <= from) continue;
+      if (!clients.has(client)) return fail();
+      if (doc === view.doc) inserted.set(client, [from, clock]);
+    }
+    const roots = doc === view.doc ? BODY_ROOTS : ROOT_KINDS.payload;
+    for (const type of tr.changed.keys()) {
+      const name = rootName(doc, type as unknown as Y.AbstractType<unknown>);
+      if (name === null || !roots.has(name)) return fail();
+    }
+  }
+  try {
+    if (!check(view.doc, inserted)) return fail();
+  } catch {
+    return fail();
+  }
+  return view;
+}
+
+export interface Built extends View {
+  /** C: B plus every valid open record's ops, gc-free, with the payloads they write. The caller destroys it. */
   doc: Y.Doc;
   valid: string[];
   broken: string[];
+  /** Records left out until a payload they edit has arrived from the server. */
+  waiting: string[];
   /** Each valid record's leased clients. */
   clients: Map<number, string>;
+}
+
+/**
+ * The payloads B's body names or holds, for records that edit them: held now (so the session syncs them), and
+ * `undefined` while still arriving. A payload B neither names nor holds is new in a record: it starts empty.
+ */
+function bodyPayload(body: Y.Doc, id: string, named: () => ReadonlyMap<string, unknown>): Y.Doc | null | undefined {
+  const host = payloadDocsFor(body);
+  if (!host.get(id) && !named().has(id)) return null;
+  const doc = host.hold(id);
+  return host.awaiting(id) ? undefined : doc;
 }
 
 /** The composite C, built on demand from B's records. Bind-check verdicts are kept per record and op count. */
@@ -106,12 +162,16 @@ export class Composite {
   ) {}
 
   build(): Built {
-    let doc = hydrate(this.body);
-    const valid: string[] = [];
-    const broken: string[] = [];
-    const clients = new Map<number, string>();
+    const built: Built = { doc: hydrate(this.body), payloads: new Map(), valid: [], broken: [], waiting: [], clients: new Map() };
+    let named: Map<string, unknown> | null = null;
+    const names = () => (named ??= regRefs(this.body));
     for (const record of openRecords(this.body, this.options.author)) {
       const id = record.meta.id;
+      // A record editing a payload whose state has not arrived would park; it waits for the payload instead.
+      if (payloadIdsOf(record).some((payload) => !built.payloads.has(payload) && bodyPayload(this.body, payload, names) === undefined)) {
+        built.waiting.push(id);
+        continue;
+      }
       const check: BindCheck = (scratch, inserted) => {
         const known = this.#verdicts.get(id);
         if (known && known.ops === record.ops.length) return known.ok;
@@ -119,18 +179,53 @@ export class Composite {
         this.#verdicts.set(id, { ops: record.ops.length, ok });
         return ok;
       };
-      const next = applyForView(doc, record, check);
+      const next = applyForView(built.doc, record, check, (payload) => built.payloads.get(payload) ?? bodyPayload(this.body, payload, names) ?? undefined);
       if (!next) {
-        broken.push(id);
+        built.broken.push(id);
         continue;
       }
-      doc.destroy();
-      doc = next;
-      valid.push(id);
-      for (const client of record.meta.clients) clients.set(client, id);
+      built.doc.destroy();
+      built.doc = next.doc;
+      for (const [payload, doc] of next.payloads) {
+        built.payloads.get(payload)?.destroy();
+        built.payloads.set(payload, doc);
+      }
+      built.valid.push(id);
+      for (const client of record.meta.clients) built.clients.set(client, id);
     }
-    return { doc, valid, broken, clients };
+    return built;
   }
+}
+
+/**
+ * Payload docs for a doc derived from B (F, or Review's C), attached to it so its editor's registers read them. Each
+ * starts as a copy of B's payload when B's body names it or B holds it (and is held in B, so the session syncs it),
+ * follows B's later updates under `origin`, and waits while B's is still arriving; `seed` adds a view's own state (C's
+ * record ops). Any other id starts empty: a payload new in a record, or minted here.
+ */
+export function derivedPayloads(body: Y.Doc, derived: Y.Doc, origin: unknown, seed?: (id: string) => Y.Doc | undefined): { host: PayloadDocs; stop: () => void } {
+  const source = payloadDocsFor(body);
+  const host = attachPayloadDocs(derived, new PayloadDocs(undefined, (id) => source.has(id)));
+  const stops: (() => void)[] = [];
+  stops.push(host.onHold((id, doc, fresh) => {
+    const seeded = fresh ? undefined : seed?.(id);
+    if (seeded) Y.applyUpdate(doc, Y.encodeStateAsUpdate(seeded), PAYLOAD_LOADED);
+    if (fresh || (!source.get(id) && !regRefs(body).has(id))) return;
+    const from = source.hold(id);
+    Y.applyUpdate(doc, Y.encodeStateAsUpdate(from), PAYLOAD_LOADED);
+    const follow = (update: Uint8Array) => Y.applyUpdate(doc, update, origin);
+    from.on('update', follow);
+    stops.push(() => from.off('update', follow));
+    if (source.awaiting(id)) host.await(id);
+  }));
+  stops.push(source.onArrive((id) => host.arrived(id)));
+  return {
+    host,
+    stop: () => {
+      for (const stop of stops.splice(0)) stop();
+      host.destroy();
+    },
+  };
 }
 
 /** Review binds C; if binding C throws, it binds a copy of the body instead (§5). `built` sees C's records. */
@@ -145,7 +240,7 @@ export function reviewDoc(body: Y.Doc, composite: Composite, bind: (doc: Y.Doc) 
     bind(plain);
     return 'body';
   } finally {
-    built.doc.destroy();
+    destroyView(built);
   }
 }
 
@@ -175,10 +270,11 @@ export interface ForkOptions {
 
 interface Pending {
   request: SuggestRequest;
-  update?: Uint8Array;
+  /** A `suggest-ops` request's update, and the doc it was made in. */
+  op?: RecordOp;
 }
 
-const isShim = (origin: unknown) => origin === SHIM_BODY_APPLY || origin === SHIM_RECORD_APPLY;
+const isShim = (origin: unknown) => origin === SHIM_BODY_APPLY || origin === SHIM_RECORD_APPLY || origin === PAYLOAD_LOADED;
 
 const covers = (spans: readonly IdSpan[], client: number, clock: number) =>
   spans.some((span) => span.client === client && span.clock <= clock && clock < span.clock + span.len);
@@ -195,44 +291,34 @@ function blockOf(doc: Y.Doc, type: Y.AbstractType<unknown> | null): Block | null
   return null;
 }
 
-/** The registers key an item sits under (an entry, or anything inside one), or null outside `registers`. */
-function registerKey(doc: Y.Doc, item: Y.Item): string | null {
-  const registers = doc.getMap('registers') as unknown as Y.AbstractType<unknown>;
-  for (let current: Y.Item | null = item; current; ) {
-    const parent = current.parent as Y.AbstractType<unknown>;
-    if (parent === registers) return current.parentSub;
-    current = parent._item;
-  }
-  return null;
-}
-
-/** A decorator's payload, read from the register its `__regId` names. */
-function registerText(doc: Y.Doc, type: Block): string {
+/** A decorator's payload, read from the payload doc its `__regId` names. */
+function payloadOfBlock(doc: Y.Doc, type: Block): string {
   const id = type.getAttribute('__regId');
-  const value = typeof id === 'string' ? doc.getMap('registers').get(id) : undefined;
-  if (value instanceof Y.Text) return value.toString();
-  if (value instanceof Y.AbstractType) return JSON.stringify(value.toJSON());
-  return typeof value === 'string' ? value : '';
+  const payload = typeof id === 'string' ? payloadDocsFor(doc).get(id) : undefined;
+  if (!payload) return '';
+  const text = payloadText(payload).toString();
+  const map = payloadMap(payload);
+  return map.size ? JSON.stringify(map.toJSON()) : text;
 }
 
 /** Plain text of a block: its characters, nested blocks and decorator payloads. */
 export function blockText(doc: Y.Doc, block: Block): string {
-  if (block instanceof Y.XmlElement) return registerText(doc, block);
+  if (block instanceof Y.XmlElement) return payloadOfBlock(doc, block);
   return (block.toDelta() as { insert: unknown }[])
     .map(({ insert }) => {
       if (typeof insert === 'string') return insert;
-      if (insert instanceof Y.XmlElement) return registerText(doc, insert);
-      if (insert instanceof Y.XmlText) return insert.getAttribute('__regId') ? registerText(doc, insert) : blockText(doc, insert);
+      if (insert instanceof Y.XmlElement) return payloadOfBlock(doc, insert);
+      if (insert instanceof Y.XmlText) return insert.getAttribute('__regId') ? payloadOfBlock(doc, insert) : blockText(doc, insert);
       return '';
     })
     .join('');
 }
 
 /**
- * The top-level blocks of `doc` that `updates` insert into or delete from, or that hold a span of `spans`, in
- * document order. An edit inside a register counts for every decorator naming it.
+ * The top-level blocks of `doc` that `ops` insert into or delete from, or that hold a span of `spans`, in document
+ * order. An op in a payload doc counts for every decorator naming that payload.
  */
-export function touchedBlocks(doc: Y.Doc, updates: readonly Uint8Array[], spans: readonly IdSpan[] = []): Block[] {
+export function touchedBlocks(doc: Y.Doc, ops: readonly RecordOp[], spans: readonly IdSpan[] = []): Block[] {
   const found = new Set<Block>();
   let refs: Map<string, Y.AbstractType<unknown>[]> | null = null;
   const add = (type: Y.AbstractType<unknown> | null) => {
@@ -243,18 +329,17 @@ export function touchedBlocks(doc: Y.Doc, updates: readonly Uint8Array[], spans:
     if (id.clock >= Y.getState(doc.store, id.client)) return;
     const struct = Y.getItem(doc.store, id);
     if (!(struct instanceof Y.Item)) return;
-    const key = registerKey(doc, struct);
-    if (key !== null) {
-      refs ??= regRefs(doc);
-      for (const type of refs.get(key) ?? []) add(type);
-      return;
-    }
     add(struct.content instanceof Y.ContentType ? (struct.content.type as Y.AbstractType<unknown>) : (struct.parent as Y.AbstractType<unknown>));
   };
-  for (const update of updates) {
+  for (const op of ops) {
+    if (op.doc !== BODY_DOC) {
+      refs ??= regRefs(doc);
+      for (const type of refs.get(op.doc) ?? []) add(type);
+      continue;
+    }
     let decoded: ReturnType<typeof Y.decodeUpdate>;
     try {
-      decoded = Y.decodeUpdate(update);
+      decoded = Y.decodeUpdate(op.update);
     } catch {
       continue;
     }
@@ -268,7 +353,6 @@ export function touchedBlocks(doc: Y.Doc, updates: readonly Uint8Array[], spans:
 
 let partSeq = 0;
 const partId = () => `p${Date.now().toString(36)}${(partSeq += 1).toString(36)}${Math.random().toString(36).slice(2, 8)}`;
-
 /**
  * The fork F. `begin()` asks for leases; their reply fills F (bind the editor first, so it reconciles F like a first
  * sync) and starts forwarding. Replies arrive in request order through `receive`.
@@ -308,13 +392,27 @@ export class SuggestFork {
   /** Names this fork to the DocDO, so it can resume its leases from a new socket while the old one looks open there. */
   readonly #id = `f${[...crypto.getRandomValues(new Uint32Array(3))].map((n) => n.toString(36)).join('')}`;
 
+  /** F's payload docs: copies of B's it touches and its own new ones, written under the same lease as F's body. */
+  readonly #payloads: ReturnType<typeof derivedPayloads>;
+
   constructor(
     readonly body: Y.Doc,
     readonly options: ForkOptions,
   ) {
+    this.#payloads = derivedPayloads(body, this.doc, SHIM_BODY_APPLY);
+    this.#payloads.host.onHold((id, doc) => {
+      doc.clientID = this.doc.clientID;
+      doc.on('beforeTransaction', this.#before);
+      doc.on('update', (update: Uint8Array, origin: unknown) => this.#forward(update, origin, id));
+    });
     this.doc.on('beforeTransaction', this.#before);
-    this.doc.on('update', this.#forward);
+    this.doc.on('update', this.#forwardBody);
     body.on('update', this.#fromBody);
+  }
+
+  /** F's payload docs. */
+  get payloads(): PayloadDocs {
+    return this.#payloads.host;
   }
 
   get ready(): boolean {
@@ -395,7 +493,7 @@ export class SuggestFork {
         }
         this.#touch(reply.leases);
         this.#resuming = false;
-        this.#dropStored(new Map(reply.leases.map((lease) => [lease.client, lease.clock])));
+        this.#dropStored(new Map(reply.leases.map((lease) => [lease.client, lease.clocks ?? { [BODY_DOC]: lease.clock }])));
         this.#flush();
         return;
       }
@@ -497,8 +595,10 @@ export class SuggestFork {
     this.#closed = true;
     this.body.off('update', this.#fromBody);
     this.doc.off('beforeTransaction', this.#before);
-    this.doc.off('update', this.#forward);
+    this.doc.off('update', this.#forwardBody);
+    this.#stopArrivals?.();
     this.#listeners.clear();
+    this.#payloads.stop();
     this.doc.destroy();
   }
 
@@ -515,14 +615,14 @@ export class SuggestFork {
     this.options.send(entry.request);
   }
 
-  #request(request: SuggestRequest, update?: Uint8Array): void {
+  #request(request: SuggestRequest, op?: RecordOp): void {
     const active = this.#leases[0];
     if (request.t !== 'suggest-lease' && this.#ready && !this.#resuming && active && this.#now() - (this.#touched.get(active.client) ?? 0) >= LEASE_RENEW_MS) {
       // The active lease may have idled out on the DocDO: resume the leases on this connection first.
       this.#resuming = true;
       this.#send({ request: { t: 'suggest-lease', resume: this.#resumable(), fork: this.#id } });
     }
-    const entry = { request, update };
+    const entry = { request, op };
     if (this.#resuming) this.#waiting.push(entry);
     else this.#send(entry);
   }
@@ -539,19 +639,19 @@ export class SuggestFork {
 
   /**
    * After a resume, drops replays the DocDO already stored (their ack was lost with the socket): an op whose every
-   * clock is below its lease's acknowledged clock, and a part the author's records already hold.
+   * clock is below its lease's acknowledged clock in the op's doc, and a part the author's records already hold.
    */
-  #dropStored(acked: ReadonlyMap<number, number>): void {
+  #dropStored(acked: ReadonlyMap<number, Readonly<Record<string, number>>>): void {
     let parts: Set<string> | null = null;
-    this.#waiting = this.#waiting.filter(({ request, update }) => {
-      if (request.t === 'suggest-ops' && update) {
+    this.#waiting = this.#waiting.filter(({ request, op }) => {
+      if (request.t === 'suggest-ops' && op) {
         let to: Map<number, number>;
         try {
-          to = Y.parseUpdateMeta(update).to;
+          to = Y.parseUpdateMeta(op.update).to;
         } catch {
           return true;
         }
-        return to.size === 0 || [...to].some(([client, clock]) => clock > (acked.get(client) ?? 0));
+        return to.size === 0 || [...to].some(([client, clock]) => clock > (acked.get(client)?.[op.doc] ?? 0));
       }
       if (request.t === 'suggest-delete') {
         parts ??= new Set(openRecords(this.body, this.options.me).flatMap((record) => record.parts.map((part) => part.id)));
@@ -561,24 +661,56 @@ export class SuggestFork {
     });
   }
 
-  /** F: B, then the author's valid open records, then forwarding starts. */
+  #setClient(client: number): void {
+    this.doc.clientID = client;
+    for (const payload of this.#payloads.host.docs.values()) payload.clientID = client;
+  }
+
+  /** F's copy of payload `id`, held now; undefined while B's is still arriving from the server. */
+  #payload(id: string): Y.Doc | undefined {
+    const doc = this.#payloads.host.hold(id);
+    return this.#payloads.host.awaiting(id) ? undefined : doc;
+  }
+
+  #stopArrivals: (() => void) | null = null;
+
+  /**
+   * F: B, then the author's valid open records, then forwarding starts. Payloads those records edit are copied from B
+   * first; while one is still arriving, F waits for it.
+   */
   #start(): void {
     const active = this.#leases[0];
-    if (!active) return;
-    this.doc.clientID = active.client;
+    if (!active || this.#ready || this.#disposed) return;
+    const own = openRecords(this.body, this.options.me);
+    let named: Map<string, unknown> | null = null;
+    const missing = own.flatMap(payloadIdsOf).filter((id) => {
+      if (!payloadDocsFor(this.body).get(id) && !(named ??= regRefs(this.body)).has(id)) return false;
+      return this.#payload(id) === undefined;
+    });
+    if (missing.length) {
+      this.#stopArrivals ??= this.#payloads.host.onArrive(() => this.#start());
+      return;
+    }
+    this.#stopArrivals?.();
+    this.#stopArrivals = null;
+    this.#setClient(active.client);
     Y.applyUpdate(this.doc, Y.encodeStateAsUpdate(this.body), SHIM_BODY_APPLY);
-    const own = new Composite(this.body, { author: this.options.me, check: this.options.check }).build();
-    own.doc.destroy();
-    const valid = new Set(own.valid);
-    for (const record of openRecords(this.body, this.options.me)) {
+    const built = new Composite(this.body, { author: this.options.me, check: this.options.check }).build();
+    destroyView(built);
+    const valid = new Set(built.valid);
+    for (const record of own) {
       if (!valid.has(record.meta.id)) continue;
-      for (const op of record.ops) Y.applyUpdate(this.doc, op, SHIM_RECORD_APPLY);
+      for (const op of record.ops) this.#applyOp(op, SHIM_RECORD_APPLY);
       this.#applied.set(record.meta.id, record.ops.length);
       for (const client of record.meta.clients) this.#mine.set(client, record.meta.id);
       for (const part of record.parts) this.#parts.set(part.id, { record: record.meta.id, targets: part.targets });
     }
     this.#ready = true;
     this.#emit({ type: 'ready' });
+  }
+
+  #applyOp(op: RecordOp, origin: unknown): void {
+    Y.applyUpdate(op.doc === BODY_DOC ? this.doc : this.#payloads.host.hold(op.doc), op.update, origin);
   }
 
   /** The author's records this fork knows that are still open, by client. */
@@ -611,7 +743,7 @@ export class SuggestFork {
   #rotate(): void {
     if (this.#leases.length < 2) return;
     this.#leases.shift();
-    this.doc.clientID = this.#leases[0].client;
+    this.#setClient(this.#leases[0].client);
     if (this.#leases.length < 2 && !this.#leasing) {
       this.#leasing = true;
       this.#request({ t: 'suggest-lease', fork: this.#id });
@@ -623,7 +755,10 @@ export class SuggestFork {
     this.#maybeRotate();
   };
 
-  readonly #forward = (update: Uint8Array, origin: unknown): void => {
+  /** One F transaction, in the body or in payload `doc`: a `suggest-ops` under the active lease. */
+  readonly #forwardBody = (update: Uint8Array, origin: unknown): void => this.#forward(update, origin, BODY_DOC);
+
+  readonly #forward = (update: Uint8Array, origin: unknown, doc: string): void => {
     if (isShim(origin) || !this.#ready || this.#closed) return;
     const active = this.#leases[0];
     if (!active) return;
@@ -632,7 +767,10 @@ export class SuggestFork {
     this.#lastEdit = this.#now();
     this.#lastBlock = this.#caretBlock;
     this.#sent += 1;
-    this.#request({ t: 'suggest-ops', record: active.record, update: bytesToBase64(update) }, update);
+    const request: SuggestRequest = doc === BODY_DOC
+      ? { t: 'suggest-ops', record: active.record, update: bytesToBase64(update) }
+      : { t: 'suggest-ops', record: active.record, doc, update: bytesToBase64(update) };
+    this.#request(request, { doc, update });
     this.#touch([active]);
     // An edit that builds on another of the author's open records joins it, or accept would fail G1 (§5).
     for (const other of this.#named(update)) {
@@ -704,8 +842,8 @@ export class SuggestFork {
 
   /**
    * Every open record of the author, from any of the author's windows, as it grows: ops F lacks enter F once they pass
-   * G1–G3 and the bind check on a scratch copy, and the record's parts paint. A record that does not pass yet is
-   * retried on the next update.
+   * G1–G3 and the bind check on scratch copies, and the record's parts paint. A record that does not pass yet, or
+   * edits a payload still arriving, is retried on the next update.
    */
   #absorb(): boolean {
     let changed = false;
@@ -715,10 +853,12 @@ export class SuggestFork {
       if (known === undefined || record.ops.length > known) {
         const fresh = record.ops.slice(known ?? 0).filter((op) => this.#adds(op));
         if (fresh.length > 0) {
-          const scratch = applyForView(this.doc, { ...record, ops: fresh }, this.options.check);
+          const ids = payloadIdsOf({ ...record, ops: fresh });
+          if (ids.some((payload) => this.#payload(payload) === undefined)) continue;
+          const scratch = applyForView(this.doc, { ...record, ops: fresh }, this.options.check, (payload) => this.#payloads.host.get(payload));
           if (!scratch) continue;
-          scratch.destroy();
-          for (const op of fresh) Y.applyUpdate(this.doc, op, SHIM_RECORD_APPLY);
+          destroyView(scratch);
+          for (const op of fresh) this.#applyOp(op, SHIM_RECORD_APPLY);
           changed = true;
         }
         this.#applied.set(id, record.ops.length);
@@ -741,15 +881,17 @@ export class SuggestFork {
     return changed;
   }
 
-  /** Whether `op` inserts an item F lacks or deletes one F still shows. */
-  #adds(op: Uint8Array): boolean {
+  /** Whether `op` inserts an item F lacks or deletes one F still shows, in the doc it was made in. */
+  #adds(op: RecordOp): boolean {
     let decoded: ReturnType<typeof Y.decodeUpdate>;
     try {
-      decoded = Y.decodeUpdate(op);
+      decoded = Y.decodeUpdate(op.update);
     } catch {
       return true;
     }
-    const store = this.doc.store;
+    const doc = op.doc === BODY_DOC ? this.doc : this.#payloads.host.get(op.doc);
+    if (!doc) return true;
+    const store = doc.store;
     for (const struct of decoded.structs) {
       if (!(struct instanceof Y.Skip) && struct.id.clock + struct.length > Y.getState(store, struct.id.client)) return true;
     }
@@ -774,9 +916,9 @@ export class SuggestFork {
     if (this.#closed) return;
     this.#closed = true;
     const entries = [...(refused ? [refused] : []), ...this.#inflight, ...this.#waiting];
-    const updates = entries.flatMap((entry) => (entry.update ? [entry.update] : []));
+    const ops = entries.flatMap((entry) => (entry.op ? [entry.op] : []));
     const spans = entries.flatMap(({ request }) => (request.t === 'suggest-delete' ? request.part.targets : []));
-    const blocks = touchedBlocks(this.doc, updates, spans);
+    const blocks = touchedBlocks(this.doc, ops, spans);
     const unsaved = this.options.exportBlocks?.(blocks) ?? blocks.map((block) => blockText(this.doc, block));
     this.#emit({ type: 'refused', reason, unsaved: unsaved.filter((text) => text.trim().length > 0) });
   }

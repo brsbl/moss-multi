@@ -3,7 +3,8 @@
 // (docs/design/suggestions.md §5, §7).
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
 import type { EditMode } from '@moss-multi/protocol/dom-contract';
-import { Composite, openRecords, type Built } from '@moss-multi/sync/suggest/client';
+import { payloadDocsFor } from '@moss-multi/sync/payload-docs';
+import { Composite, destroyView, openRecords, type Built } from '@moss-multi/sync/suggest/client';
 import { useEffect, useSyncExternalStore } from 'react';
 import type * as Y from 'yjs';
 import { bindingOf } from '../binding-registry.ts';
@@ -75,7 +76,7 @@ export function SuggestPlugin({ pane }: { pane: SuggestPane }): null {
         // Strikes: delete-part targets, and body items a record's own ops remove (a join, a split, a restyle).
         const struck = [...partTargets(body, new Set(built.valid)), ...removed];
         paintRanges(owner, [], struck.length ? rangesWhere(editor, binding, (id) => covers(struck, id)) : []);
-        if (overlay) drawMarks(editor, overlay, editMarks(body, built, binding, removed));
+        if (overlay) drawMarks(editor, overlay, editMarks(body, built, binding));
       } else {
         clearPaint(owner);
         overlay?.replaceChildren();
@@ -98,7 +99,7 @@ export function SuggestPlugin({ pane }: { pane: SuggestPane }): null {
       // Edit mode: C is rebuilt from B's records, throttled, only while any record is open.
       const composite = new Composite(body);
       const rebuild = () => {
-        built?.doc.destroy();
+        if (built) destroyView(built);
         built = openRecords(body).length ? composite.build() : null;
         removed = built ? removedBodyItems(body, built) : [];
         repaint();
@@ -112,7 +113,12 @@ export function SuggestPlugin({ pane }: { pane: SuggestPane }): null {
         }, 200);
       };
       body.on('update', onUpdate);
-      stops.push(() => body.off('update', onUpdate));
+      // A record editing a payload shows once that payload has arrived.
+      const stopArrivals = payloadDocsFor(body).onArrive(onUpdate);
+      stops.push(() => {
+        body.off('update', onUpdate);
+        stopArrivals();
+      });
       rebuild();
     }
     repaint();
@@ -120,7 +126,7 @@ export function SuggestPlugin({ pane }: { pane: SuggestPane }): null {
       for (const stop of stops) stop();
       clearTimeout(timer);
       if (frame) cancelAnimationFrame(frame);
-      built?.doc.destroy();
+      if (built) destroyView(built);
       clearPaint(owner);
       overlay?.remove();
     };

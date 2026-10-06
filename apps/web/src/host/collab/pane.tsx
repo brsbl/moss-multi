@@ -13,6 +13,7 @@ import {
   SUGGEST_SENT_ATTR, SYNC_UNACKED_ATTR, TERMINAL_REASON_ATTR, ROLE_ATTR, type BindingState, type DocState, type EditMode,
 } from '@moss-multi/protocol/dom-contract';
 import { excludedPropertiesFor } from '@moss-multi/sync/excluded-properties';
+import type { BodyUndo } from '@moss-multi/sync/payload-docs';
 import { syncNoteEntityAtom } from '@moss/shared/state/atoms';
 import { useStore } from 'jotai';
 import { $createParagraphNode, $getRoot, $setSelection, type EditorState, type LexicalEditor } from 'lexical';
@@ -107,12 +108,21 @@ class DocFields {
  */
 /** Steps of a closed record leave the undo stacks (§5): undoing them would rewrite text no suggestion holds now. */
 function dropUndo(editor: LexicalEditor | null, clients: number[]): void {
-  const manager = editor && (editor as unknown as Record<symbol, UndoManager | undefined>)[Symbol.for('@lexical/yjs/UndoManager')];
-  if (!manager) return;
+  const stack = editor && (editor as unknown as Record<symbol, BodyUndo | undefined>)[Symbol.for('@lexical/yjs/UndoManager')];
+  if (!stack) return;
   const touches = (item: UndoManager['undoStack'][number]) =>
     clients.some((client) => item.insertions.clients.has(client) || item.deletions.clients.has(client));
-  manager.undoStack = manager.undoStack.filter((item) => !touches(item));
-  manager.redoStack = manager.redoStack.filter((item) => !touches(item));
+  // The body's one stack spans the note's manager and each payload's (undo.ts): drop from both levels.
+  for (const manager of stack.managers) {
+    manager.undoStack = manager.undoStack.filter((item) => !touches(item));
+    manager.redoStack = manager.redoStack.filter((item) => !touches(item));
+  }
+  for (const steps of [stack.undone, stack.redone]) {
+    for (let i = steps.length - 1; i >= 0; i -= 1) {
+      steps[i].entries = steps[i].entries.filter((entry) => !touches(entry.item));
+      if (steps[i].entries.length === 0) steps.splice(i, 1);
+    }
+  }
 }
 
 class PaneBinding implements SuggestPane {
