@@ -321,6 +321,9 @@ export function checkStructs(
   return placed;
 }
 
+/** `record[key]` only when the record holds `key` itself: a name from a record never reads Object.prototype. */
+export const ownValue = <T>(record: Readonly<Record<string, T>>, key: string): T | undefined => (Object.hasOwn(record, key) ? record[key] : undefined);
+
 /** A payload id an op may name. */
 export const PAYLOAD_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
@@ -385,7 +388,11 @@ export function deleteUpdate(spans: readonly IdSpan[]): Uint8Array {
   const writeVarUint = encoding.writeVarUint;
   writeVarUint(rest, 0);
   const byClient = new Map<number, IdSpan[]>();
-  for (const span of spans) byClient.set(span.client, [...(byClient.get(span.client) ?? []), span]);
+  for (const span of spans) {
+    const list = byClient.get(span.client);
+    if (list) list.push(span);
+    else byClient.set(span.client, [span]);
+  }
   writeVarUint(rest, byClient.size);
   for (const [client, list] of byClient) {
     writeVarUint(rest, client);
@@ -461,7 +468,7 @@ export function applyRecord(mirror: Y.Doc, record: SuggestionRecord, options: Ap
     const spans = spansOf(decoded.ds);
     into.ops.push(op.update);
     into.groups.push(spans);
-    into.ownDeletes.push(...spans);
+    for (const span of spans) into.ownDeletes.push(span);
   }
   for (const part of record.parts) {
     if (!Array.isArray(part.targets) || !part.targets.every(validSpan)) return fail('unresolvable');
@@ -469,7 +476,7 @@ export function applyRecord(mirror: Y.Doc, record: SuggestionRecord, options: Ap
   }
 
   // G5 (a) and (b) read each doc as it was before the record, so they run first and report after G1–G4.
-  const outdated = [...targets.values()].some((t) => !t.groups.every((spans) => removesLiveRun(t.doc.store, spans, t.state)));
+  const outdated = [...targets.values()].some((t) => !removesLiveRuns(t.doc.store, t.groups, t.state));
 
   // Applied as a remote update, as accept lands it on the live doc, so Yjs's follow-on transactions (a Y.Text's
   // formatting cleanup) run here too; every transaction's deletes are collected, the follow-ons' included.
@@ -477,7 +484,7 @@ export function applyRecord(mirror: Y.Doc, record: SuggestionRecord, options: Ap
     for (const t of targets.values()) {
       const deleted: IdSpan[] = [];
       const collect = (transaction: Y.Transaction) => {
-        deleted.push(...spansOf(transaction.deleteSet as never));
+        for (const span of spansOf(transaction.deleteSet as never)) deleted.push(span);
       };
       t.doc.on('afterTransaction', collect);
       try {
@@ -509,12 +516,12 @@ export function applyRecord(mirror: Y.Doc, record: SuggestionRecord, options: Ap
   // G3, default-deny: every item the record inserted and every item its transaction deleted lies in a channel of the
   // table, so the preview, which renders exactly those channels, shows each of them. The transaction's own delete set
   // also holds the implicit deletions: a deleted type's contents and a map key's overwritten value. GC structs are
-  // left to G5 (c).
+  // left to G5 (c). The spans are merged first, so each struct is placed once however often the record names it.
   for (const t of targets.values()) {
-    const spans = [...[...t.inserted].map(([client, [from, to]]) => ({ client, clock: from, len: to - from })), ...t.groups.flat(), ...t.deleted];
-    for (const span of spans) {
-      const end = Math.min(span.clock + span.len, Y.getState(t.doc.store, span.client));
-      for (const struct of structsIn(t.doc.store, span.client, span.clock, end)) {
+    const spans = new SpanIndex([...[...t.inserted].map(([client, [from, to]]) => ({ client, clock: from, len: to - from })), ...t.groups.flat(), ...t.deleted]);
+    for (const [client, from, to] of spans.ranges()) {
+      const end = Math.min(to, Y.getState(t.doc.store, client));
+      for (const struct of structsIn(t.doc.store, client, from, end)) {
         if (!(struct instanceof Y.Item)) continue;
         const at = placementOf(t.kind, t.doc, struct);
         if (at === null || !channelAllows(t.kind, at, contentKind(struct.content))) return fail('outside-body');
@@ -591,6 +598,11 @@ class SpanIndex {
     if (at < to) yield [at, to, false];
   }
 
+  /** Every merged range, as [client, from, to). */
+  *ranges(): Generator<[number, number, number]> {
+    for (const [client, list] of this.#by) for (const range of list) yield [client, range.from, range.to];
+  }
+
   covers(client: number, from: number, to: number): boolean {
     for (const [, , covered] of this.runs(client, from, to)) if (!covered) return false;
     return true;
@@ -605,36 +617,66 @@ function* structsIn(store: Y.Doc['store'], client: number, clock: number, end: n
 }
 
 /**
- * G5 (a) and (b) for one authoring step: every body item it removes is live, and within each parent sequence no live
+ * G5 (a) and (b) for each authoring step: every body item it removes is live, and within each parent sequence no live
  * item it does not remove sits between two it does. The record's own items do not exist yet, so every item seen here
- * is someone else's.
+ * is someone else's. Each parent is indexed once (each item's character offset and the live characters before it), so
+ * a step costs its own items, not its parents' length; a step naming the same items as another is checked once, and
+ * steps that together name the doc's items more than twice over (never so from a fork) are refused.
  */
-function removesLiveRun(store: Y.Doc['store'], spans: readonly IdSpan[], state: (client: number) => number): boolean {
-  const parents = new Set<Y.AbstractType<unknown>>();
-  const body: IdSpan[] = [];
-  for (const span of spans) {
-    const end = Math.min(span.clock + span.len, state(span.client));
-    if (span.clock >= end) continue;
-    body.push({ client: span.client, clock: span.clock, len: end - span.clock });
-    for (const struct of structsIn(store, span.client, span.clock, end)) {
-      if (!(struct instanceof Y.Item) || struct.deleted) return false;
-      if (struct.parentSub === null) parents.add(struct.parent as Y.AbstractType<unknown>);
+function removesLiveRuns(store: Y.Doc['store'], groups: readonly IdSpan[][], state: (client: number) => number): boolean {
+  const indexes = new Map<Y.AbstractType<unknown>, Map<Y.Item, { start: number; live: number }>>();
+  const indexOf = (parent: Y.AbstractType<unknown>) => {
+    let index = indexes.get(parent);
+    if (!index) {
+      index = new Map();
+      let start = 0;
+      let live = 0;
+      for (let item = parent._start; item; item = item.right) {
+        index.set(item, { start, live });
+        start += item.length;
+        if (!item.deleted) live += item.length;
+      }
+      indexes.set(parent, index);
     }
-  }
-  const removed = new SpanIndex(body);
-  for (const parent of parents) {
-    let removedBefore = false;
-    let foreign = false;
-    for (let item = parent._start; item; item = item.right) {
-      for (const [, , covered] of removed.runs(item.id.client, item.id.clock, item.id.clock + item.length)) {
-        if (covered) {
-          if (foreign) return false;
-          removedBefore = true;
-        } else if (!item.deleted && removedBefore) {
-          foreign = true;
+    return index;
+  };
+  let budget = 1024;
+  for (const structs of store.clients.values()) budget += 2 * structs.length;
+  const seen = new Set<string>();
+  for (const spans of groups) {
+    const clipped: IdSpan[] = [];
+    for (const span of spans) {
+      const end = Math.min(span.clock + span.len, state(span.client));
+      if (span.clock < end) clipped.push({ client: span.client, clock: span.clock, len: end - span.clock });
+    }
+    const ranges = [...new SpanIndex(clipped).ranges()];
+    const key = ranges.map(([client, from, to]) => `${client}:${from}:${to}`).join(',');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    // Per parent: the first and last removed character's offsets, the live characters before each, and how many it removes.
+    const extents = new Map<Y.AbstractType<unknown>, { lo: number; hi: number; liveLo: number; liveHi: number; count: number }>();
+    for (const [client, from, to] of ranges) {
+      for (const struct of structsIn(store, client, from, to)) {
+        budget -= 1;
+        if (budget < 0 || !(struct instanceof Y.Item) || struct.deleted) return false;
+        if (struct.parentSub !== null) continue;
+        const parent = struct.parent as Y.AbstractType<unknown>;
+        const at = indexOf(parent).get(struct);
+        if (!at) return false;
+        const skip = Math.max(from, struct.id.clock) - struct.id.clock;
+        const take = Math.min(to, struct.id.clock + struct.length) - struct.id.clock;
+        const lo = at.start + skip;
+        const hi = at.start + take;
+        const extent = extents.get(parent);
+        if (!extent) extents.set(parent, { lo, hi, liveLo: at.live + skip, liveHi: at.live + take, count: take - skip });
+        else {
+          if (lo < extent.lo) [extent.lo, extent.liveLo] = [lo, at.live + skip];
+          if (hi > extent.hi) [extent.hi, extent.liveHi] = [hi, at.live + take];
+          extent.count += take - skip;
         }
       }
     }
+    for (const extent of extents.values()) if (extent.liveHi - extent.liveLo !== extent.count) return false;
   }
   return true;
 }
@@ -688,9 +730,10 @@ function payloadsUnaliased(
   return true;
 }
 
-/** Stable JSON: object keys sorted. */
+/** Stable JSON: object keys sorted; a BigInt (a Yjs `Any` can hold one) as `{BigInt: digits}`. */
 export function canonical(value: unknown): string {
   return JSON.stringify(value, (_key, v: unknown) => {
+    if (typeof v === 'bigint') return { BigInt: v.toString() };
     if (v && typeof v === 'object' && !Array.isArray(v)) {
       return Object.fromEntries(Object.entries(v as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
     }
@@ -721,10 +764,12 @@ export function yValue(value: unknown): unknown {
   return value ?? null;
 }
 
-function attrsOf(type: { getAttributes(): unknown }): [string, unknown][] {
-  return Object.entries(type.getAttributes() as Record<string, unknown>)
+/** A type's live attributes, read from its map: `getAttributes` builds a plain object, which drops a `__proto__` key. */
+function attrsOf(type: { _map: Map<string, Y.Item> }): [string, unknown][] {
+  return [...type._map]
+    .filter(([, item]) => !item.deleted)
     .sort(([a], [b]) => (a < b ? -1 : 1))
-    .map(([k, v]) => [k, yValue(v)]);
+    .map(([k, item]) => [k, yValue(item.content.getContent()[item.length - 1])]);
 }
 
 function deltaOf(type: Y.Text): unknown[] {
@@ -799,7 +844,17 @@ function contentValue(doc: DocKind, root: string, content: Y.Item['content']): u
   if (content instanceof Y.ContentFormat) return { Format: [content.key, content.value] };
   if (content instanceof Y.ContentDoc) return { Doc: { guid: content.doc.guid, opts: content.opts } };
   if (content instanceof Y.ContentBinary) return { Binary: Array.from(content.content) };
-  return { [contentKind(content) ?? 'Unknown']: content.getContent() };
+  return { [contentKind(content) ?? 'Unknown']: content.getContent().map(jsonSafe) };
+}
+
+/** A stored value as JSON carries it, so the preview can be sent: a BigInt (an `Any` can hold one) as `{BigInt: digits}`. */
+function jsonSafe(value: unknown): unknown {
+  if (typeof value === 'bigint') return { BigInt: value.toString() };
+  if (Array.isArray(value)) return value.map(jsonSafe);
+  if (value && typeof value === 'object' && !(value instanceof Uint8Array)) {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, jsonSafe(v)]));
+  }
+  return value;
 }
 
 /** A payload doc as a reviewer is shown it: its text, the id each run of it starts at, and its compound fields. */
@@ -848,12 +903,12 @@ export function projectionDiff(before: Projection, after: Projection): Hunk[] {
   const hunks: Hunk[] = [];
   if (canonical(before.note) !== canonical(after.note)) hunks.push({ kind: 'note', id: 'root', op: 'changed', before: before.note, after: after.note });
   const blockIds = [...new Set([...before.blocks.keys(), ...after.blocks.keys()])];
+  const previous = new Map(after.order.map((id, index) => [id, index > 0 ? after.order[index - 1] : null]));
   for (const id of blockIds) {
     const b = before.blocks.get(id);
     const a = after.blocks.get(id);
     if (b === undefined) {
-      const index = after.order.indexOf(id);
-      hunks.push({ kind: 'block', id, op: 'added', after: a, at: index > 0 ? after.order[index - 1] : null });
+      hunks.push({ kind: 'block', id, op: 'added', after: a, at: previous.get(id) ?? null });
     } else if (a === undefined) hunks.push({ kind: 'block', id, op: 'removed', before: b });
     else if (canonical(a) !== canonical(b)) hunks.push({ kind: 'block', id, op: 'changed', before: b, after: a });
   }
@@ -898,7 +953,9 @@ export function regRefs(doc: Y.Doc): Map<string, Y.AbstractType<unknown>[]> {
     const named = type._map.get('__regId');
     if (named && !named.deleted) {
       const key = named.content.getContent().at(-1);
-      if (typeof key === 'string') refs.set(key, [...(refs.get(key) ?? []), type]);
+      const list = typeof key === 'string' ? refs.get(key) : undefined;
+      if (list) list.push(type);
+      else if (typeof key === 'string') refs.set(key, [type]);
     }
     for (const item of type._map.values()) {
       if (!item.deleted && item.content instanceof Y.ContentType) visit(item.content.type);

@@ -8,7 +8,7 @@ import { roleAtLeast } from '@moss-multi/protocol/roles';
 import { SUGGEST_LIMITS, type IdSpan, type LeaseGrant, type SuggestReply, type SuggestRefusal, type SuggestRequest } from '@moss-multi/protocol/suggest';
 import { base64ToBytes } from '@moss-multi/protocol/sync';
 import {
-  BODY_DOC, channelAllows, checkStructs, contentKind, PAYLOAD_ID, placementOf, type DeletePart, type DocKind, type Placement, type RecordMeta,
+  BODY_DOC, channelAllows, checkStructs, contentKind, ownValue, PAYLOAD_ID, placementOf, type DeletePart, type DocKind, type Placement, type RecordMeta,
   type RecordOp,
 } from '@moss-multi/core/suggest/apply';
 import { payloadDocsFor } from '../payload-docs.ts';
@@ -276,7 +276,7 @@ export class SuggestIngest {
       if (held && lease.connection !== who.connection && !(fork !== null && lease.fork === fork)) return refused('lease');
       if (!held && lease.record === null && this.leases.live(who.id, since) >= SUGGEST_LIMITS.liveLeases) return refused('lease-cap');
       this.leases.put({ ...lease, connection: who.connection, expired: false, usedAt: now, fork: fork ?? lease.fork ?? null });
-      grants.push({ client, record: lease.record === null ? lease.reserved : this.#head(lease.record), clock: lease.clocks[BODY_DOC] ?? 0, clocks: lease.clocks });
+      grants.push({ client, record: lease.record === null ? lease.reserved : this.#head(lease.record), clock: ownValue(lease.clocks, BODY_DOC) ?? 0, clocks: lease.clocks });
     }
     const fresh = Math.min(Math.max(0, Math.floor(count)), SUGGEST_LIMITS.leaseBatch, SUGGEST_LIMITS.liveLeases - this.leases.live(who.id, since));
     const writer = suggestionsWriter(this.doc)?.client;
@@ -312,7 +312,7 @@ export class SuggestIngest {
       const lease = this.leases.get(client);
       if (!lease || !this.#holds(who, lease)) return refused('lease');
       if (lease.record !== null && this.#head(lease.record) !== target.base) return refused('lease');
-      const next = lease.clocks[doc] ?? 0;
+      const next = ownValue(lease.clocks, doc) ?? 0;
       if (from > next) return refused('clock-gap');
       // A record never holds two versions of one id.
       if (from < next) return refused('clock-overlap');
@@ -344,7 +344,7 @@ export class SuggestIngest {
     this.#grow(target.id, update.byteLength);
     this.#bind(target, now);
     for (const lease of leases) {
-      this.leases.put({ ...lease, record: target.id, clocks: { ...lease.clocks, [doc]: meta.to.get(lease.client) ?? lease.clocks[doc] ?? 0 }, usedAt: now });
+      this.leases.put({ ...lease, record: target.id, clocks: { ...lease.clocks, [doc]: meta.to.get(lease.client) ?? ownValue(lease.clocks, doc) ?? 0 }, usedAt: now });
     }
     return { ok: true, record: target.id, requested: record, doc, sv: this.#sv(target.id, doc), parts: [] };
   }
@@ -644,7 +644,7 @@ export class SuggestIngest {
     const sv: Record<string, number> = {};
     for (const client of readMeta(this.doc, id)?.clients ?? []) {
       const lease = this.leases.get(client);
-      if (lease) sv[client] = lease.clocks[doc] ?? 0;
+      if (lease) sv[client] = ownValue(lease.clocks, doc) ?? 0;
     }
     return sv;
   }
