@@ -122,6 +122,11 @@ export class SuggestIngest {
       if (!lease || lease.principal !== principal.id || (lease.record !== null && !chain.has(lease.record))) return { ok: false, reason: 'lease' };
       if (from > (lease.nextClock.get(doc) ?? 0)) return { ok: false, reason: 'clock-gap' };
     }
+    // The caps first, so an oversized frame is never placed.
+    const bytes = (this.#bytes.get(target.id) ?? 0) + update.byteLength;
+    if (bytes > SUGGEST_CAPS.recordOpsBytes) return { ok: false, reason: 'record-cap' };
+    if (this.#openBytes() + update.byteLength > this.options.stateCap * SUGGEST_CAPS.openOpsShare) return { ok: false, reason: 'ops-cap' };
+    if (target.create && this.#openCount(principal.id) >= SUGGEST_CAPS.openPerPrincipal) return { ok: false, reason: 'open-cap' };
     // G3 at ingest (suggestions.md §4.4): every struct this frame writes sits in a channel of the table.
     const placed = this.#place(target.id, doc, decoded, true);
     if (!placed) return { ok: false, reason: 'channel' };
@@ -131,10 +136,6 @@ export class SuggestIngest {
       const value = struct.content.getContent().at(-1);
       if (typeof value !== 'string' || !this.options.registry.has(value)) return { ok: false, reason: 'node-type' };
     }
-    const bytes = (this.#bytes.get(target.id) ?? 0) + update.byteLength;
-    if (bytes > SUGGEST_CAPS.recordOpsBytes) return { ok: false, reason: 'record-cap' };
-    if (this.#openBytes() + update.byteLength > this.options.stateCap * SUGGEST_CAPS.openOpsShare) return { ok: false, reason: 'ops-cap' };
-    if (target.create && this.#openCount(principal.id) >= SUGGEST_CAPS.openPerPrincipal) return { ok: false, reason: 'open-cap' };
 
     const now = this.options.now?.() ?? Date.now();
     this.doc.transact(() => {
@@ -177,20 +178,23 @@ export class SuggestIngest {
   }
 
   /**
-   * Places `decoded`'s structs against the record's earlier ops and the note's docs (O(structs × log n)). Returns
-   * null when a struct is outside the channel table, else a commit that indexes the placements for later ops; with
-   * `defer` unset it commits at once.
+   * Places `decoded`'s structs against the record's earlier ops and the note's docs: O(structs × (log n + depth)),
+   * with depth capped at MAX_DEPTH. Returns null when a struct is outside the channel table, else a commit that
+   * indexes the placements for later ops; with `defer` unset it commits at once.
    */
   #place(record: string, doc: string, decoded: ReturnType<typeof Y.decodeUpdate>, defer = false): (() => void) | null {
     const kind: DocKind = doc === BODY_DOC ? 'body' : 'payload';
     const index = this.#placed.get(record)?.get(doc);
+    const held = doc === BODY_DOC ? this.doc : (this.options.payloadDoc ?? ((key: string) => payloadDocsFor(this.doc).get(key)))(doc);
+    const seen = new Map<Y.Item, Placement | null>();
     const lookup = (id: Y.ID): Placement | null => {
       const hit = spanAt(index?.get(id.client) ?? [], id.clock);
       if (hit) return hit.at;
-      const held = doc === BODY_DOC ? this.doc : (this.options.payloadDoc ?? ((key: string) => payloadDocsFor(this.doc).get(key)))(doc);
       if (!held || id.clock >= Y.getState(held.store, id.client)) return null;
       const struct = Y.getItem(held.store, id);
-      return struct instanceof Y.Item ? placementOf(kind, held, struct) : null;
+      if (!(struct instanceof Y.Item)) return null;
+      if (!seen.has(struct)) seen.set(struct, placementOf(kind, held, struct));
+      return seen.get(struct)!;
     };
     const placed = checkStructs(kind, decoded, lookup);
     if (!placed) return null;
@@ -199,13 +203,18 @@ export class SuggestIngest {
       if (!byDoc) this.#placed.set(record, (byDoc = new Map()));
       let byClient = byDoc.get(doc);
       if (!byClient) byDoc.set(doc, (byClient = new Map()));
+      const sorted = new Set<number>();
       for (const { struct, at } of placed) {
         const list = byClient.get(struct.id.client);
         const entry = { clock: struct.id.clock, len: struct.length, at };
         if (!list) byClient.set(struct.id.client, [entry]);
-        else if (list[list.length - 1].clock <= entry.clock) list.push(entry);
-        else list.splice(list.findIndex((other) => other.clock > entry.clock), 0, entry);
+        else {
+          if (list[list.length - 1].clock > entry.clock) sorted.add(struct.id.client);
+          list.push(entry);
+        }
       }
+      // A frame re-sending clocks below a client's last: one sort per client, not one splice per struct.
+      for (const client of sorted) byClient.get(client)!.sort((a, b) => a.clock - b.clock);
     };
     if (!defer) commit();
     return commit;

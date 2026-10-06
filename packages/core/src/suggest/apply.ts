@@ -143,41 +143,84 @@ export function contentKind(content: Y.Item['content']): ContentKind | null {
   return null;
 }
 
-/** Where a struct sits, and for a type, the type's own kind. `parent` is null under a root outside the table. */
+/**
+ * Where a struct sits, and for a type, the type's own kind. `parent` is null under a root outside the table. `path` is
+ * true when every item enclosing the struct sits in a table channel, so a struct is shown only if its whole ancestor
+ * path is. `gone` marks a deleted item whose content was collected (a tombstone: no type, no value).
+ */
 export interface Placement {
   root: string;
   parent: TypeKind | null;
   sub: string | null;
   type: TypeKind | null;
   depth: number;
+  path: boolean;
+  gone: boolean;
 }
 
 export function channelAllows(doc: DocKind, at: Placement, content: ContentKind | null): boolean {
-  if (at.parent === null || content === null || at.depth > MAX_DEPTH) return false;
+  if (!at.path || at.parent === null || content === null || at.depth > MAX_DEPTH) return false;
   const sub = at.sub === null ? 'seq' : 'key';
   return CHANNELS.some((c) => c.doc === doc && c.root === at.root && c.parent === at.parent && c.sub === sub && c.content.includes(content));
 }
 
-/** An integrated item's placement, or null when its parent is gone. */
+/** The placement of a child of the type held by the item placed at `holder`. */
+function childOf(doc: DocKind, holder: Placement, sub: string | null, content: Y.Item['content']): Placement {
+  const path = channelAllows(doc, holder, holder.type === null ? null : `Type:${holder.type}`);
+  return { root: holder.root, parent: holder.type, sub, type: typeOf(content), depth: holder.depth + 1, path, gone: content instanceof Y.ContentDeleted };
+}
+
+const typeOf = (content: Y.Item['content']): TypeKind | null => (content instanceof Y.ContentType ? typeKind(content.type) : null);
+
+/** An integrated item's placement, every enclosing edge checked against the table (O(depth)), or null when its parent is gone. */
 export function placementOf(kind: DocKind, doc: Y.Doc, item: Y.Item): Placement | null {
-  const parent = item.parent;
-  if (!(parent instanceof Y.AbstractType)) return null;
-  const type = item.content instanceof Y.ContentType ? typeKind(item.content.type) : null;
-  let top: Y.AbstractType<unknown> = parent as Y.AbstractType<unknown>;
-  let depth = 0;
+  if (!(item.parent instanceof Y.AbstractType)) return null;
+  const chain: Y.Item[] = [];
+  let top = item.parent as Y.AbstractType<unknown>;
   while (top._item !== null) {
     const up = top._item.parent;
-    if (!(up instanceof Y.AbstractType) || ++depth > MAX_DEPTH) return { root: '', parent: null, sub: item.parentSub, type, depth };
+    if (!(up instanceof Y.AbstractType) || chain.length >= MAX_DEPTH) {
+      return { root: '', parent: null, sub: item.parentSub, type: typeOf(item.content), depth: MAX_DEPTH + 1, path: false, gone: false };
+    }
+    chain.push(top._item);
     top = up as Y.AbstractType<unknown>;
   }
   let root = '';
   for (const [name, shared] of doc.share) if (shared === top) root = name;
-  const parentKind = depth === 0 ? (ROOT_KINDS[kind].get(root) ?? null) : typeKind(parent);
-  return { root, parent: ROOT_KINDS[kind].has(root) ? parentKind : null, sub: item.parentSub, type, depth };
+  const rootKind = ROOT_KINDS[kind].get(root) ?? null;
+  // The type at the root, as the item holding it would be placed; then each enclosing item, top down.
+  let at: Placement = { root, parent: null, sub: null, type: rootKind, depth: -1, path: true, gone: false };
+  const holderAt = (sub: string | null, content: Y.Item['content']): Placement =>
+    at.depth < 0 ? { root, parent: rootKind, sub, type: typeOf(content), depth: 0, path: rootKind !== null, gone: content instanceof Y.ContentDeleted } : childOf(kind, at, sub, content);
+  for (let i = chain.length - 1; i >= 0; i--) at = holderAt(chain[i].parentSub, chain[i].content);
+  return holderAt(item.parentSub, item.content);
 }
 
-const covered = (ds: { clients: Map<number, { clock: number; len: number }[]> }, id: Y.ID, len: number): boolean =>
-  (ds.clients.get(id.client) ?? []).some((range) => range.clock <= id.clock && id.clock + len <= range.clock + range.len);
+/** A delete set's ranges per client, sorted and merged, so coverage is a binary search. */
+function coverage(ds: { clients: Map<number, { clock: number; len: number }[]> }): (id: Y.ID, len: number) => boolean {
+  const merged = new Map<number, { clock: number; len: number }[]>();
+  for (const [client, ranges] of ds.clients) {
+    const out: { clock: number; len: number }[] = [];
+    for (const range of [...ranges].sort((a, b) => a.clock - b.clock)) {
+      const last = out[out.length - 1];
+      if (last && range.clock <= last.clock + last.len) last.len = Math.max(last.len, range.clock + range.len - last.clock);
+      else out.push({ clock: range.clock, len: range.len });
+    }
+    merged.set(client, out);
+  }
+  return (id, len) => {
+    const list = merged.get(id.client) ?? [];
+    let lo = 0;
+    let hi = list.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (id.clock < list[mid].clock) hi = mid - 1;
+      else if (id.clock >= list[mid].clock + list[mid].len) lo = mid + 1;
+      else return id.clock + len <= list[mid].clock + list[mid].len;
+    }
+    return false;
+  };
+}
 
 /**
  * The struct-level check of one op's update (G3 at ingest; the shape half of G3 at accept). Every struct must be an
@@ -213,12 +256,14 @@ export function checkStructs(
   };
   // false: refused; null: not placeable here.
   const memo = new Map<Y.Item, Placement | null | false>();
+  // Through an origin a struct sits beside the origin; through its parent, in the parent item's type. A tombstoned
+  // parent (an editor deleted it, and its type was collected) is left to accept, where the struct integrates as GC.
   const derive = (item: Y.Item, base: Placement | null | false, viaParent: boolean): Placement | null | false => {
     if (!base) return base;
-    const type = item.content instanceof Y.ContentType ? typeKind(item.content.type) : null;
-    if (!viaParent) return { root: base.root, parent: base.parent, sub: base.sub, type, depth: base.depth };
+    if (!viaParent) return { ...base, type: typeOf(item.content), gone: item.content instanceof Y.ContentDeleted };
+    if (base.gone) return null;
     if (base.type === null) return false;
-    return { root: base.root, parent: base.type, sub: item.parentSub, type, depth: base.depth + 1 };
+    return childOf(kind, base, item.parentSub, item.content);
   };
   const place = (start: Y.Item): Placement | null | false => {
     const stack = [start];
@@ -233,8 +278,8 @@ export function checkStructs(
       const parent = item.parent as unknown;
       let result: Placement | null | false;
       if (typeof parent === 'string') {
-        const type = item.content instanceof Y.ContentType ? typeKind(item.content.type) : null;
-        result = { root: parent, parent: ROOT_KINDS[kind].get(parent) ?? null, sub: item.parentSub, type, depth: 0 };
+        const rootKind = ROOT_KINDS[kind].get(parent) ?? null;
+        result = { root: parent, parent: rootKind, sub: item.parentSub, type: typeOf(item.content), depth: 0, path: rootKind !== null, gone: item.content instanceof Y.ContentDeleted };
       } else {
         const viaParent = parent instanceof Y.ID;
         const ref = parent instanceof Y.ID ? parent : (item.origin ?? item.rightOrigin);
@@ -257,14 +302,15 @@ export function checkStructs(
     }
     return memo.get(start)!;
   };
+  const covered = coverage(decoded.ds);
   const placed: { struct: Y.Item; at: Placement }[] = [];
   for (const struct of decoded.structs) {
     if (struct instanceof Y.Skip) return null;
     if (struct instanceof Y.GC) {
-      if (!covered(decoded.ds, struct.id, struct.length)) return null;
+      if (!covered(struct.id, struct.length)) return null;
       continue;
     }
-    if (struct.content instanceof Y.ContentDeleted && !covered(decoded.ds, struct.id, struct.length)) return null;
+    if (struct.content instanceof Y.ContentDeleted && !covered(struct.id, struct.length)) return null;
     const at = place(struct);
     if (at === false) return null;
     if (at === null) continue;
