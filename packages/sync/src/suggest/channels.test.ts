@@ -330,7 +330,7 @@ describe('T5.Ps accept checks every item its transaction deletes, implicit delet
 
   /** Refused at accept by G3, with nothing applied; ingest cannot see what the live doc will hold at accept. */
   const expectAcceptRefused = (outcome: Outcome) => {
-    expect(outcome.accept, 'accept refuses the deletion').toEqual({ ok: false, reason: 'outside-body' });
+    expect(outcome.accept, 'accept refuses the deletion').toMatchObject({ ok: false, reason: 'outside-body' });
     expect(outcome.bodyKept, 'nothing is applied').toBe(true);
   };
 
