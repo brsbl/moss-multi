@@ -163,6 +163,27 @@ const formulas = (actor: Actor, id: string) => ui.body(actor, id).evaluate(eleme
     .map(n => { const f = n as unknown as { getFormula(): string; getResult(): string }; return [f.getFormula(), f.getResult()]; }));
 });
 
+/** Every formula's name, as the editor holds it. */
+const names = (actor: Actor, id: string) => ui.body(actor, id).evaluate(element => {
+  const editor = (element as HTMLElement & { __lexicalEditor: LexicalEditor }).__lexicalEditor;
+  return editor.read(() => [...editor.getEditorState()._nodeMap.values()]
+    .filter(n => n.getType() === 'formula' && n.isAttached())
+    .map(n => (n as unknown as { getName(): string | null }).getName()));
+});
+const nameInput = (actor: Actor) => popover(actor).getByLabel('Formula name');
+
+/** After both reload, the formula holds `want` and the name `name`. */
+async function reloadHolds(actors: Actor[], id: string, want: string[][], name: string | null) {
+  await settled(actors, id);
+  for (const actor of actors) {
+    await actor.page.mouse.move(1, 1);
+    await actor.page.reload();
+    await ui.waitLive(actor, id); await actor.declareRemount(id);
+    await expect.poll(() => formulas(actor, id), { message: `${actor.label}: the formula survives the reload`, timeout: PEER_TIMEOUT }).toEqual(want);
+    await expect.poll(() => names(actor, id), { message: `${actor.label}: the name survives the reload`, timeout: PEER_TIMEOUT }).toEqual([name]);
+  }
+}
+
 /** The index of the top-level block holding the formula. */
 const formulaBlock = (actor: Actor, id: string) => ui.body(actor, id).evaluate(element => {
   const editor = (element as HTMLElement & { __lexicalEditor: LexicalEditor }).__lexicalEditor;
@@ -213,6 +234,439 @@ test('j01 registers: when Ada removes the paragraph holding the formula Ben is e
   await restructureFormula(ada, id, 'remove');
   await expect(popover(ben), 'the popover closes').toHaveCount(0, { timeout: PEER_TIMEOUT });
   await expect(ben.page.locator('[data-input-refusal]'), 'a visible notice says why').toContainText('removed');
+});
+
+test("j01 registers: Ben's edit to the formula merges into Ada's unfinished draft, keeping her characters and caret, and both converge after reload @p:col-1", async ({ actors, stack }) => {
+  const { ada, ben: principal, id } = await note(actors, stack.baseUrl, 'Total {{2+3|5}} here.');
+  const ben = await actors.session(principal);
+  await join(ben, id);
+  const caret = (actor: Actor) => formulaInput(actor).evaluate(input => [(input as HTMLInputElement).selectionStart, (input as HTMLInputElement).selectionEnd]);
+  await openFormula(ada, id);
+  await expect(formulaInput(ada)).toHaveJSProperty('readOnly', false, { timeout: PEER_TIMEOUT });
+  await formulaInput(ada).press('End');
+  await ada.page.keyboard.type('*(1+');
+  await expect(formulaInput(ada)).toHaveValue('2+3*(1+');
+  await openFormula(ben, id);
+  await expect(formulaInput(ben), "Ada's unfinished formula is not written").toHaveValue('2+3', { timeout: PEER_TIMEOUT });
+  await expect(formulaInput(ben)).toHaveJSProperty('readOnly', false, { timeout: PEER_TIMEOUT });
+  await formulaInput(ben).press('Home');
+  await ben.page.keyboard.type('1');
+  await expect.poll(() => formulas(ada, id), { message: "Ada receives Ben's edit", timeout: PEER_TIMEOUT }).toEqual([['12+3', '15']]);
+  await expect(formulaInput(ada), "Ada's field keeps her characters and takes Ben's").toHaveValue('12+3*(1+');
+  await expect(formulaInput(ada)).toBeFocused();
+  await expect.poll(() => caret(ada), { message: "Ada's caret stays after her text" }).toEqual([8, 8]);
+  await ada.page.keyboard.type('1)');
+  const want = [['12+3*(1+1)', '18']];
+  for (const actor of [ada, ben]) await expect.poll(() => formulas(actor, id), { message: `${actor.label}: neither person's text is lost`, timeout: PEER_TIMEOUT }).toEqual(want);
+  await expect(formulaInput(ben)).toHaveValue('12+3*(1+1)');
+  await ada.page.keyboard.press('Enter');
+  await ben.page.keyboard.press('Escape');
+  await expect(popover(ada)).toHaveCount(0);
+  await settled([ada, ben], id);
+  for (const actor of [ada, ben]) {
+    await actor.page.mouse.move(1, 1);
+    await actor.page.reload();
+    await ui.waitLive(actor, id); await actor.declareRemount(id);
+    await expect.poll(() => formulas(actor, id), { message: `${actor.label}: the merged formula survives the reload`, timeout: PEER_TIMEOUT }).toEqual(want);
+  }
+});
+
+/** Ada's unfinished '*2+3', made valid as '1*2+3' by Ben's '1', with the note still holding Ben's '12+3'. */
+async function mergedValidDraft(actors: Actors, baseUrl: string) {
+  const { ada, ben: principal, id } = await note(actors, baseUrl, 'Total {{2+3|5}} here.');
+  const ben = await actors.session(principal);
+  await join(ben, id);
+  await openFormula(ada, id);
+  await expect(formulaInput(ada)).toHaveJSProperty('readOnly', false, { timeout: PEER_TIMEOUT });
+  await formulaInput(ada).press('Home');
+  await ada.page.keyboard.type('*');
+  await expect(formulaInput(ada)).toHaveValue('*2+3');
+  await openFormula(ben, id);
+  await expect(formulaInput(ben)).toHaveJSProperty('readOnly', false, { timeout: PEER_TIMEOUT });
+  await formulaInput(ben).press('Home');
+  await ben.page.keyboard.type('1');
+  await expect(formulaInput(ada), "Ben's edit makes Ada's draft valid").toHaveValue('1*2+3', { timeout: PEER_TIMEOUT });
+  await ben.page.keyboard.press('Escape');
+  for (const actor of [ada, ben]) await expect.poll(() => formulas(actor, id), { message: `${actor.label}: the merge writes nothing before Ada acts`, timeout: PEER_TIMEOUT }).toEqual([['12+3', '15']]);
+  return { ada, ben, id };
+}
+
+async function reloadFormulas(actors: Actor[], id: string, want: string[][]) {
+  await settled(actors, id);
+  for (const actor of actors) {
+    await actor.page.mouse.move(1, 1);
+    await actor.page.reload();
+    await ui.waitLive(actor, id); await actor.declareRemount(id);
+    await expect.poll(() => formulas(actor, id), { message: `${actor.label}: the formula survives the reload`, timeout: PEER_TIMEOUT }).toEqual(want);
+  }
+}
+
+// As moss's popover at the pin: an outside click keeps a valid draft (moss has written it live already), while Escape
+// and Dismiss close on what is stored. Here the one valid draft not yet written is one a peer's edit made valid.
+for (const close of ['an outside click', 'Escape', 'Dismiss'] as const) {
+  const writes = close === 'an outside click';
+  test(`j01 registers: when Ben's edit makes Ada's unfinished formula valid, ${close} ${writes ? 'writes' : 'discards'} her draft @p:col-1`, async ({ actors, stack }) => {
+    const { ada, ben, id } = await mergedValidDraft(actors, stack.baseUrl);
+    if (close === 'Escape') await ada.page.keyboard.press('Escape');
+    else if (close === 'Dismiss') await popover(ada).getByRole('button', { name: 'Dismiss formula editor' }).click();
+    else await ui.body(ada, id).locator('[data-lexical-text]').filter({ hasText: 'here.' }).click();
+    await expect(popover(ada)).toHaveCount(0);
+    const want = writes ? [['1*2+3', '5']] : [['12+3', '15']];
+    for (const actor of [ada, ben]) await expect.poll(() => formulas(actor, id), { message: `${actor.label}: ${close} ${writes ? 'writes' : 'discards'} Ada's draft`, timeout: PEER_TIMEOUT }).toEqual(want);
+    await reloadFormulas([ada, ben], id, want);
+  });
+}
+
+// The draft is compared with the stored formula, reference tokens included: picking the other `cost` from the typeahead
+// leaves the display text as it was, but it is a change, and it is written.
+test('j01 registers: picking the other same-named reference from the typeahead is written and survives a reload @p:col-1', async ({ actors, stack }) => {
+  const a = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const b = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const { ada, ben: principal, id } = await note(actors, stack.baseUrl, `Total {{2|2}} here.\n\nA {{4|4|id=${a};name=cost}} here.\n\nB {{9|9|id=${b};name=cost}} here.`);
+  const ben = await actors.session(principal);
+  await join(ben, id);
+  const openTotal = (actor: Actor) => ui.body(actor, id).locator('[data-formula-node-key]').first().click();
+  const total = async (actor: Actor) => (await formulas(actor, id)).filter(([formula]) => formula !== '4' && formula !== '9');
+  const refersTo = (formulaId: string) => new RegExp(`^@\\(cost#[^#)]+#${formulaId}\\)\\+2$`);
+  await openTotal(ada);
+  await expect(formulaInput(ada)).toHaveValue('2', { timeout: PEER_TIMEOUT });
+  await expect(formulaInput(ada)).toHaveJSProperty('readOnly', false, { timeout: PEER_TIMEOUT });
+  await formulaInput(ada).press('ControlOrMeta+a');
+  await ada.page.keyboard.type('cos');
+  await expect(popover(ada).getByRole('option'), 'both formulas named cost are offered').toHaveCount(2);
+  await popover(ada).getByRole('option').filter({ hasText: '4' }).click();
+  await expect(formulaInput(ada)).toHaveValue('cost');
+  await ada.page.keyboard.type('+2');
+  await expect.poll(async () => (await total(ada))[0]?.[0] ?? '', { message: 'Ada refers to A', timeout: PEER_TIMEOUT }).toMatch(refersTo(a));
+  await ada.page.keyboard.press('Enter');
+  await expect(popover(ada)).toHaveCount(0);
+  await openTotal(ada);
+  await expect(formulaInput(ada)).toHaveValue('cost+2', { timeout: PEER_TIMEOUT });
+  await formulaInput(ada).press('Home');
+  for (let i = 0; i < 4; i += 1) await formulaInput(ada).press('ArrowRight');
+  await formulaInput(ada).press('Backspace');
+  await expect(formulaInput(ada)).toHaveValue('cos+2');
+  await popover(ada).getByRole('option').filter({ hasText: '9' }).click();
+  await expect(formulaInput(ada), 'the display text is back where it started').toHaveValue('cost+2');
+  for (const actor of [ada, ben]) {
+    await expect.poll(async () => (await total(actor))[0]?.[0] ?? '', { message: `${actor.label}: the pick of B is written`, timeout: PEER_TIMEOUT }).toMatch(refersTo(b));
+    await expect.poll(async () => (await total(actor))[0]?.[1] ?? '', { message: `${actor.label}: the result follows B`, timeout: PEER_TIMEOUT }).toBe('11');
+  }
+  await formulaInput(ada).press('Enter');
+  await expect(popover(ada)).toHaveCount(0);
+  await settled([ada, ben], id);
+  for (const actor of [ada, ben]) {
+    await actor.page.mouse.move(1, 1);
+    await actor.page.reload();
+    await ui.waitLive(actor, id); await actor.declareRemount(id);
+    await expect.poll(async () => (await total(actor))[0]?.[0] ?? '', { message: `${actor.label}: B survives the reload`, timeout: PEER_TIMEOUT }).toMatch(refersTo(b));
+  }
+});
+
+// Each reference token merges whole: when Ada's unwritten draft retargets A to B and Ben retargets A to C, Ada's field
+// keeps both references (Ben's first), never one token spliced from the two.
+test('j01 registers: when both people retarget the same reference and one draft is unwritten, each token is kept whole @p:col-1', async ({ actors, stack }) => {
+  const [a, b, c] = ['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'];
+  const { ada, ben: principal, id } = await note(actors, stack.baseUrl, `Total {{2|2}} here.\n\nA {{4|4|id=${a};name=cost}} here.\n\nB {{9|9|id=${b};name=cost}} here.\n\nC {{7|7|id=${c};name=cost}} here.`);
+  const ben = await actors.session(principal);
+  await join(ben, id);
+  const openTotal = (actor: Actor) => ui.body(actor, id).locator('[data-formula-node-key]').first().click();
+  const total = async (actor: Actor) => (await formulas(actor, id)).filter(([formula]) => !['4', '9', '7'].includes(formula))[0] ?? ['', ''];
+  const refersTo = (formulaId: string) => new RegExp(`^@\\(cost#[^#)]+#${formulaId}\\)\\+2$`);
+  /** Replaces the `t` of the leading `cost` and picks the formula whose result is `result` from the typeahead. */
+  const retarget = async (actor: Actor, result: string) => {
+    await formulaInput(actor).press('Home');
+    for (let i = 0; i < 4; i += 1) await formulaInput(actor).press('ArrowRight');
+    await formulaInput(actor).press('Backspace');
+    await expect(formulaInput(actor)).toHaveValue('cos+2');
+    await popover(actor).getByRole('option').filter({ hasText: result }).click();
+    await expect(formulaInput(actor)).toHaveValue('cost+2');
+  };
+  await openTotal(ada);
+  await expect(formulaInput(ada)).toHaveJSProperty('readOnly', false, { timeout: PEER_TIMEOUT });
+  await formulaInput(ada).press('ControlOrMeta+a');
+  await ada.page.keyboard.type('cos');
+  await popover(ada).getByRole('option').filter({ hasText: '4' }).click();
+  await ada.page.keyboard.type('+2');
+  await ada.page.keyboard.press('Enter');
+  await expect(popover(ada)).toHaveCount(0);
+  for (const actor of [ada, ben]) await expect.poll(async () => (await total(actor))[0], { message: `${actor.label}: the total refers to A`, timeout: PEER_TIMEOUT }).toMatch(refersTo(a));
+  await openTotal(ada);
+  await expect(formulaInput(ada)).toHaveValue('cost+2', { timeout: PEER_TIMEOUT });
+  // An unfinished name holds Ada's draft unwritten.
+  await nameInput(ada).fill('1');
+  await retarget(ada, '9');
+  await openTotal(ben);
+  await expect(formulaInput(ben)).toHaveValue('cost+2', { timeout: PEER_TIMEOUT });
+  await expect(formulaInput(ben)).toHaveJSProperty('readOnly', false, { timeout: PEER_TIMEOUT });
+  await retarget(ben, '7');
+  for (const actor of [ada, ben]) await expect.poll(() => total(actor), { message: `${actor.label}: Ben's pick of C is written`, timeout: PEER_TIMEOUT }).toEqual([expect.stringMatching(refersTo(c)), '9']);
+  await ben.page.keyboard.press('Escape');
+  await expect(formulaInput(ada), "Ada's field keeps Ben's reference and her own, each whole").toHaveValue('costcost+2', { timeout: PEER_TIMEOUT });
+  await formulaInput(ada).press('Home');
+  for (let i = 0; i < 4; i += 1) await formulaInput(ada).press('Delete');
+  await expect(formulaInput(ada)).toHaveValue('cost+2');
+  await nameInput(ada).fill('total');
+  for (const actor of [ada, ben]) await expect.poll(() => total(actor), { message: `${actor.label}: the reference Ada kept is her pick of B`, timeout: PEER_TIMEOUT }).toEqual([expect.stringMatching(refersTo(b)), '11']);
+  await nameInput(ada).press('Enter');
+  await expect(popover(ada)).toHaveCount(0);
+  await settled([ada, ben], id);
+  for (const actor of [ada, ben]) {
+    await actor.page.mouse.move(1, 1);
+    await actor.page.reload();
+    await ui.waitLive(actor, id); await actor.declareRemount(id);
+    await expect.poll(async () => (await total(actor))[0], { message: `${actor.label}: B survives the reload`, timeout: PEER_TIMEOUT }).toMatch(refersTo(b));
+  }
+});
+
+for (const accept of ['Enter', 'Apply'] as const) {
+  test(`j01 registers: when Ben's edit makes Ada's unfinished formula valid, accepting it with ${accept} writes her characters @p:col-1`, async ({ actors, stack }) => {
+    const { ada, ben: principal, id } = await note(actors, stack.baseUrl, 'Total {{2+3|5}} here.');
+    const ben = await actors.session(principal);
+    await join(ben, id);
+    await openFormula(ada, id);
+    await expect(formulaInput(ada)).toHaveJSProperty('readOnly', false, { timeout: PEER_TIMEOUT });
+    await formulaInput(ada).press('Home');
+    await ada.page.keyboard.type('*');
+    await expect(formulaInput(ada)).toHaveValue('*2+3');
+    await openFormula(ben, id);
+    await expect(formulaInput(ben)).toHaveJSProperty('readOnly', false, { timeout: PEER_TIMEOUT });
+    await formulaInput(ben).press('Home');
+    await ben.page.keyboard.type('1');
+    await expect(formulaInput(ada), "Ben's edit makes Ada's draft valid").toHaveValue('1*2+3', { timeout: PEER_TIMEOUT });
+    await ben.page.keyboard.press('Escape');
+    // The merge itself writes nothing: Ada has not acted, so the note holds Ben's formula and his result until she does.
+    for (const actor of [ada, ben]) await expect.poll(() => formulas(actor, id), { message: `${actor.label}: the merge writes nothing before Ada accepts`, timeout: PEER_TIMEOUT }).toEqual([['12+3', '15']]);
+    if (accept === 'Enter') await ada.page.keyboard.press('Enter');
+    else await popover(ada).getByRole('button', { name: 'Apply formula changes' }).click();
+    await expect(popover(ada)).toHaveCount(0);
+    const want = [['1*2+3', '5']];
+    for (const actor of [ada, ben]) await expect.poll(() => formulas(actor, id), { message: `${actor.label}: Ada's '*' is written`, timeout: PEER_TIMEOUT }).toEqual(want);
+    await settled([ada, ben], id);
+    for (const actor of [ada, ben]) {
+      await actor.page.mouse.move(1, 1);
+      await actor.page.reload();
+      await ui.waitLive(actor, id); await actor.declareRemount(id);
+      await expect.poll(() => formulas(actor, id), { message: `${actor.label}: the accepted formula survives the reload`, timeout: PEER_TIMEOUT }).toEqual(want);
+    }
+  });
+}
+
+test("j01 registers: Ben's rename survives Ada's merge of his formula edit into her unfinished draft @p:col-1", async ({ actors, stack }) => {
+  const { ada, ben: principal, id } = await note(actors, stack.baseUrl, 'Total {{2+3|5}} here.');
+  const ben = await actors.session(principal);
+  await join(ben, id);
+  await openFormula(ada, id);
+  await expect(formulaInput(ada)).toHaveJSProperty('readOnly', false, { timeout: PEER_TIMEOUT });
+  await formulaInput(ada).press('Home');
+  await ada.page.keyboard.type('*');
+  await expect(formulaInput(ada)).toHaveValue('*2+3');
+  await openFormula(ben, id);
+  await expect(formulaInput(ben)).toHaveJSProperty('readOnly', false, { timeout: PEER_TIMEOUT });
+  await popover(ben).getByLabel('Formula name').fill('total');
+  await expect.poll(() => names(ada, id), { message: "Ada receives Ben's rename", timeout: PEER_TIMEOUT }).toEqual(['total']);
+  await formulaInput(ben).press('Home');
+  await ben.page.keyboard.type('1');
+  await expect(formulaInput(ada), "Ben's edit makes Ada's draft valid").toHaveValue('1*2+3', { timeout: PEER_TIMEOUT });
+  await expect(popover(ada).getByLabel('Formula name'), "Ada's popover shows Ben's rename").toHaveValue('total');
+  for (const actor of [ada, ben]) await expect.poll(() => formulas(actor, id), { message: `${actor.label}: the merge writes nothing before Ada accepts`, timeout: PEER_TIMEOUT }).toEqual([['12+3', '15']]);
+  await ben.page.keyboard.press('Escape');
+  await ada.page.keyboard.press('Enter');
+  await expect(popover(ada)).toHaveCount(0);
+  await settled([ada, ben], id);
+  for (const actor of [ada, ben]) {
+    await actor.page.mouse.move(1, 1);
+    await actor.page.reload();
+    await ui.waitLive(actor, id); await actor.declareRemount(id);
+    await expect.poll(() => formulas(actor, id), { message: `${actor.label}: the merged formula survives the reload`, timeout: PEER_TIMEOUT }).toEqual([['1*2+3', '5']]);
+    await expect.poll(() => names(actor, id), { message: `${actor.label}: Ben's rename is kept`, timeout: PEER_TIMEOUT }).toEqual(['total']);
+  }
+});
+
+// The popover writes only the fields the person changed: a field they left alone takes a peer's change and is never
+// written back from what the popover showed.
+for (const accept of ['Enter', 'Apply'] as const) {
+  test(`j01 registers: Ben's rename after his edit merged into Ada's draft survives Ada accepting it with ${accept} @p:col-1`, async ({ actors, stack }) => {
+    const { ada, ben: principal, id } = await note(actors, stack.baseUrl, 'Total {{2+3|5}} here.');
+    const ben = await actors.session(principal);
+    await join(ben, id);
+    await openFormula(ada, id);
+    await expect(formulaInput(ada)).toHaveJSProperty('readOnly', false, { timeout: PEER_TIMEOUT });
+    await formulaInput(ada).press('Home');
+    await ada.page.keyboard.type('*');
+    await expect(formulaInput(ada)).toHaveValue('*2+3');
+    await openFormula(ben, id);
+    await expect(formulaInput(ben)).toHaveJSProperty('readOnly', false, { timeout: PEER_TIMEOUT });
+    await formulaInput(ben).press('Home');
+    await ben.page.keyboard.type('1');
+    await expect(formulaInput(ada), "Ben's edit makes Ada's draft valid").toHaveValue('1*2+3', { timeout: PEER_TIMEOUT });
+    await nameInput(ben).fill('total');
+    await ben.page.keyboard.press('Escape');
+    await expect.poll(() => names(ada, id), { message: "Ada receives Ben's rename", timeout: PEER_TIMEOUT }).toEqual(['total']);
+    await expect(nameInput(ada), "Ada's untouched name takes Ben's rename").toHaveValue('total');
+    if (accept === 'Enter') await ada.page.keyboard.press('Enter');
+    else await popover(ada).getByRole('button', { name: 'Apply formula changes' }).click();
+    await expect(popover(ada)).toHaveCount(0);
+    for (const actor of [ada, ben]) await expect.poll(() => formulas(actor, id), { message: `${actor.label}: Ada's '*' is written`, timeout: PEER_TIMEOUT }).toEqual([['1*2+3', '5']]);
+    for (const actor of [ada, ben]) await expect.poll(() => names(actor, id), { message: `${actor.label}: Ben's rename is kept`, timeout: PEER_TIMEOUT }).toEqual(['total']);
+    await reloadHolds([ada, ben], id, [['1*2+3', '5']], 'total');
+  });
+}
+
+test("j01 registers: Ada edits only the expression while Ben renames the formula; her next keystroke and Enter keep his name @p:col-1", async ({ actors, stack }) => {
+  const { ada, ben: principal, id } = await note(actors, stack.baseUrl, 'Total {{2+3|5}} here.');
+  const ben = await actors.session(principal);
+  await join(ben, id);
+  await openFormula(ada, id);
+  await expect(formulaInput(ada)).toHaveJSProperty('readOnly', false, { timeout: PEER_TIMEOUT });
+  await formulaInput(ada).press('End');
+  await ada.page.keyboard.type('+1');
+  await expect.poll(() => formulas(ben, id), { message: "Ben receives Ada's edit", timeout: PEER_TIMEOUT }).toEqual([['2+3+1', '6']]);
+  await openFormula(ben, id);
+  await expect(formulaInput(ben)).toHaveJSProperty('readOnly', false, { timeout: PEER_TIMEOUT });
+  await nameInput(ben).fill('total');
+  await ben.page.keyboard.press('Escape');
+  await expect.poll(() => names(ada, id), { message: "Ada receives Ben's rename", timeout: PEER_TIMEOUT }).toEqual(['total']);
+  await expect(nameInput(ada), "Ada's untouched name takes Ben's rename").toHaveValue('total');
+  await expect(formulaInput(ada)).toBeFocused();
+  await ada.page.keyboard.type('+2');
+  for (const actor of [ada, ben]) await expect.poll(() => formulas(actor, id), { message: `${actor.label}: Ada's keystroke is written`, timeout: PEER_TIMEOUT }).toEqual([['2+3+1+2', '8']]);
+  for (const actor of [ada, ben]) await expect.poll(() => names(actor, id), { message: `${actor.label}: Ada's keystroke keeps Ben's rename`, timeout: PEER_TIMEOUT }).toEqual(['total']);
+  await ada.page.keyboard.press('Enter');
+  await expect(popover(ada)).toHaveCount(0);
+  await reloadHolds([ada, ben], id, [['2+3+1+2', '8']], 'total');
+});
+
+test("j01 registers: Ada renames the formula while Ben edits its expression; both survive her Enter @p:col-1", async ({ actors, stack }) => {
+  const { ada, ben: principal, id } = await note(actors, stack.baseUrl, 'Total {{2+3|5}} here.');
+  const ben = await actors.session(principal);
+  await join(ben, id);
+  await openFormula(ada, id);
+  await expect(formulaInput(ada)).toHaveJSProperty('readOnly', false, { timeout: PEER_TIMEOUT });
+  await openFormula(ben, id);
+  await expect(formulaInput(ben)).toHaveJSProperty('readOnly', false, { timeout: PEER_TIMEOUT });
+  await nameInput(ada).fill('sum');
+  await expect.poll(() => names(ben, id), { message: "Ben receives Ada's rename", timeout: PEER_TIMEOUT }).toEqual(['sum']);
+  await formulaInput(ben).press('End');
+  await ben.page.keyboard.type('*2');
+  await expect(formulaInput(ada), "Ada's untouched expression takes Ben's edit").toHaveValue('2+3*2', { timeout: PEER_TIMEOUT });
+  await ben.page.keyboard.press('Escape');
+  await expect(nameInput(ada)).toHaveValue('sum');
+  await nameInput(ada).press('Enter');
+  await expect(popover(ada)).toHaveCount(0);
+  for (const actor of [ada, ben]) await expect.poll(() => formulas(actor, id), { message: `${actor.label}: Ben's edit is kept`, timeout: PEER_TIMEOUT }).toEqual([['2+3*2', '8']]);
+  await reloadHolds([ada, ben], id, [['2+3*2', '8']], 'sum');
+});
+
+// A reference Ben wrote keeps its identity through Ada's merge: her write never re-resolves his token by name, which
+// would bind it to this note's own `cost` instead of the other note's.
+test("j01 registers: Ben's reference to another note's formula keeps its identity when Ada writes the merged draft @p:col-1", async ({ actors, stack }) => {
+  const token = '@(cost#11111111-1111-4111-8111-111111111111#22222222-2222-4222-8222-222222222222)';
+  const { ada, ben: principal, id } = await note(actors, stack.baseUrl, 'Total {{2+3|5}} here.\n\nCost {{4|4|id=33333333-3333-4333-8333-333333333333;name=cost}} here.');
+  const ben = await actors.session(principal);
+  await join(ben, id);
+  const openTotal = (actor: Actor) => ui.body(actor, id).locator('[data-formula-node-key]').first().click();
+  const sources = async (actor: Actor) => (await formulas(actor, id)).map(([formula]) => formula).sort();
+  await openTotal(ada);
+  await expect(formulaInput(ada)).toHaveValue('2+3', { timeout: PEER_TIMEOUT });
+  await expect(formulaInput(ada)).toHaveJSProperty('readOnly', false, { timeout: PEER_TIMEOUT });
+  await formulaInput(ada).press('End');
+  await ada.page.keyboard.type('*');
+  await openTotal(ben);
+  await expect(formulaInput(ben)).toHaveJSProperty('readOnly', false, { timeout: PEER_TIMEOUT });
+  await formulaInput(ben).press('Home');
+  await ben.page.keyboard.insertText(`${token}+`);
+  await expect.poll(() => sources(ada), { message: "Ada receives Ben's reference", timeout: PEER_TIMEOUT }).toEqual(['4', `${token}+2+3`]);
+  await ben.page.keyboard.press('Escape');
+  await expect(formulaInput(ada), "Ada's field keeps her '*' and shows Ben's reference by name").toHaveValue('cost+2+3*');
+  await ada.page.keyboard.type('2');
+  const want = ['4', `${token}+2+3*2`];
+  for (const actor of [ada, ben]) await expect.poll(() => sources(actor), { message: `${actor.label}: Ben's reference keeps its note and formula`, timeout: PEER_TIMEOUT }).toEqual(want);
+  await ada.page.keyboard.press('Enter');
+  await expect(popover(ada)).toHaveCount(0);
+  await settled([ada, ben], id);
+  for (const actor of [ada, ben]) {
+    // Off the pill, so its hover card does not open over the reloaded canvas.
+    await actor.page.mouse.move(1, 1);
+    await actor.page.reload();
+    await ui.waitLive(actor, id); await actor.declareRemount(id);
+    await expect.poll(() => sources(actor), { message: `${actor.label}: the reference survives the reload`, timeout: PEER_TIMEOUT }).toEqual(want);
+  }
+});
+
+// Two references share a name: the merge carries each token's identity through the edit itself, never by matching
+// display text, so the one Ada deleted stays deleted and the one she kept is the one written.
+test("j01 registers: when two references share a name, Ben's merged edit keeps the one Ada kept, not the one she deleted @p:col-1", async ({ actors, stack }) => {
+  const first = '@(cost#11111111-1111-4111-8111-111111111111#22222222-2222-4222-8222-222222222222)';
+  const second = '@(cost#44444444-4444-4444-8444-444444444444#55555555-5555-4555-8555-555555555555)';
+  const { ada, ben: principal, id } = await note(actors, stack.baseUrl, 'Total {{2+3|5}} here.');
+  const ben = await actors.session(principal);
+  await join(ben, id);
+  const sources = async (actor: Actor) => (await formulas(actor, id)).map(([formula]) => formula);
+  await openFormula(ben, id);
+  await expect(formulaInput(ben)).toHaveJSProperty('readOnly', false, { timeout: PEER_TIMEOUT });
+  await formulaInput(ben).press('Home');
+  await ben.page.keyboard.insertText(`${first}+${second}+`);
+  await expect.poll(() => sources(ada), { message: "Ada receives Ben's references", timeout: PEER_TIMEOUT }).toEqual([`${first}+${second}+2+3`]);
+  await ben.page.keyboard.press('Escape');
+  await expect(popover(ben)).toHaveCount(0);
+  await openFormula(ada, id);
+  await expect(formulaInput(ada)).toHaveValue('cost+cost+2+3', { timeout: PEER_TIMEOUT });
+  await expect(formulaInput(ada)).toHaveJSProperty('readOnly', false, { timeout: PEER_TIMEOUT });
+  // A draft with a reference token is always a valid expression; an unfinished name holds it unwritten.
+  await nameInput(ada).fill('1');
+  await formulaInput(ada).press('Home');
+  for (let i = 0; i < 5; i += 1) await formulaInput(ada).press('Delete');
+  await expect(formulaInput(ada), 'Ada deletes the first reference').toHaveValue('cost+2+3');
+  expect(await sources(ben), "Ada's unfinished draft is not written").toEqual([`${first}+${second}+2+3`]);
+  await openFormula(ben, id);
+  await expect(formulaInput(ben)).toHaveValue('cost+cost+2+3', { timeout: PEER_TIMEOUT });
+  await expect(formulaInput(ben)).toHaveJSProperty('readOnly', false, { timeout: PEER_TIMEOUT });
+  await formulaInput(ben).press('End');
+  await ben.page.keyboard.press('Backspace');
+  await ben.page.keyboard.type('4');
+  await expect.poll(() => sources(ada), { message: "Ada receives Ben's edit", timeout: PEER_TIMEOUT }).toEqual([`${first}+${second}+2+4`]);
+  await ben.page.keyboard.press('Escape');
+  await expect(formulaInput(ada), "Ada's field takes Ben's edit and keeps her own").toHaveValue('cost+2+4', { timeout: PEER_TIMEOUT });
+  await nameInput(ada).fill('total');
+  const want = [`${second}+2+4`];
+  for (const actor of [ada, ben]) await expect.poll(() => sources(actor), { message: `${actor.label}: the reference Ada kept is the one written`, timeout: PEER_TIMEOUT }).toEqual(want);
+  await nameInput(ada).press('Enter');
+  await expect(popover(ada)).toHaveCount(0);
+  await settled([ada, ben], id);
+  for (const actor of [ada, ben]) {
+    // Off the pill, so its hover card does not open over the reloaded canvas.
+    await actor.page.mouse.move(1, 1);
+    await actor.page.reload();
+    await ui.waitLive(actor, id); await actor.declareRemount(id);
+    await expect.poll(() => sources(actor), { message: `${actor.label}: the kept reference survives the reload`, timeout: PEER_TIMEOUT }).toEqual(want);
+  }
+});
+
+// Executable results are per viewer (A§10.10): an open popover writes a result only with its person's own expression
+// write, never in answer to a peer's update, so two viewers whose results differ never rewrite each other's.
+test("j01 registers: a peer's result write draws no write back from Ada's open popover @p:col-1", async ({ actors, stack }) => {
+  const { ada, ben: principal, id } = await note(actors, stack.baseUrl, 'Total {{2+3|5}} here.');
+  const ben = await actors.session(principal);
+  await join(ben, id);
+  await openFormula(ada, id);
+  await expect(formulaInput(ada)).toHaveJSProperty('readOnly', false, { timeout: PEER_TIMEOUT });
+  await formulaInput(ada).press('End');
+  await ada.page.keyboard.type('+1');
+  for (const actor of [ada, ben]) await expect.poll(() => formulas(actor, id), { message: `${actor.label}: Ada's edit is written`, timeout: PEER_TIMEOUT }).toEqual([['2+3+1', '6']]);
+  // Ben's viewer computed another result (its references resolve differently) and wrote it.
+  await ui.body(ben, id).evaluate(element => {
+    const editor = (element as HTMLElement & { __lexicalEditor: LexicalEditor }).__lexicalEditor;
+    editor.update(() => {
+      const node = [...editor.getEditorState()._nodeMap.values()].find(n => n.getType() === 'formula') as unknown as { getWritable(): { setResult(result: string): void } };
+      node.getWritable().setResult('99');
+    }, { discrete: true });
+  });
+  await settled([ada, ben], id);
+  await ada.page.waitForTimeout(1_000);
+  await settled([ada, ben], id);
+  for (const actor of [ada, ben]) expect(await formulas(actor, id), `${actor.label}: Ada's popover wrote nothing back`).toEqual([['2+3+1', '99']]);
+  await expect(formulaInput(ada)).toHaveValue('2+3+1');
 });
 
 for (const kind of ['variable', 'formula'] as const) {
