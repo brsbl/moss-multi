@@ -53,6 +53,10 @@ export function actingUserId(principal: Principal): string | null {
  */
 export const actingAs = (user: number) => `(SELECT ?${user} UNION ALL SELECT id FROM agents WHERE owner_user_id = ?${user})`;
 
+/** Live notes made by acting user `?{user}` or their agents, anywhere, through `docs_created_by_idx`. */
+export const liveNotesBy = (user: number) =>
+  `(SELECT count(*) FROM docs WHERE created_by IN ${actingAs(user)} AND deleted_at IS NULL)`;
+
 /** The ids a grant row may name for this principal: the user, or the agent and the user it acts for. */
 export function grantees(principal: Principal): string[] {
   return principal.type === 'user' ? [principal.id] : principal.type === 'agent' ? [principal.id, principal.ownerUserId] : [];

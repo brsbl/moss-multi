@@ -61,11 +61,11 @@ const PRUNE = `DELETE FROM signup_limits WHERE key IN (
  * Open sign-up's bound beyond better-auth's minute limit (A§7, A§18): sign-ups per client address (an IPv6 /64 as one)
  * per day, counted in D1 before better-auth runs; 429 past it, and 503 when the count cannot be kept. The count is per
  * address only, so no one fills a bucket another person needs, and a request without a usable address is refused
- * rather than pooled. Only the loopback test-hook stack, which mints principals per run, skips this.
+ * rather than pooled. Only a loopback request to the loopback test-hook stack, which mints principals per run, skips this.
  */
 async function signUpRefused(request: Request, env: AuthEnv): Promise<Response | null> {
   if (request.method !== 'POST' || !new URL(request.url).pathname.startsWith('/api/auth/sign-up/')) return null;
-  if (isLoopbackUrl(env.BETTER_AUTH_URL) && env.MOSS_TEST_HOOKS === '1') return null;
+  if (env.MOSS_TEST_HOOKS === '1' && isLoopbackUrl(env.BETTER_AUTH_URL) && isLoopbackUrl(request.url)) return null;
   const address = addressBucket(request.headers.get('cf-connecting-ip'));
   if (!address) {
     return json({ code: 'CLIENT_ADDRESS_REQUIRED', message: 'Sign-up needs to know where the request came from.' }, 403, NO_STORE);

@@ -15,7 +15,7 @@ import { createDb, type Db } from '../db/client.ts';
 import { docs } from '../db/schema.ts';
 import type { AppEnv } from '../env.ts';
 import { json } from '../worker/route.ts';
-import { actingAs, liveLink, resolveDocAccess, resolveFolderAccess, writeActor } from './access.ts';
+import { liveLink, liveNotesBy, resolveDocAccess, resolveFolderAccess, writeActor } from './access.ts';
 import { admitDuplicateMedia, copyMedia } from './assets.ts';
 import { folderNotFound, liveIn, moveDoc, upFrom, vaultOf } from './folders.ts';
 import { handleInviteLinks } from './invites.ts';
@@ -42,10 +42,6 @@ export interface DocRecord {
   createdAt: number;
   updatedAt: number;
 }
-
-/** Live notes made by acting user `?{user}` or their agents, anywhere, through `docs_created_by_idx`. */
-const liveNotesBy = (user: number) =>
-  `(SELECT count(*) FROM docs WHERE created_by IN ${actingAs(user)} AND deleted_at IS NULL)`;
 
 /**
  * Inserts the row only while its folder is still live in its vault (a trash may be under way) and the acting user has
