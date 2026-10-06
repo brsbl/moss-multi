@@ -351,7 +351,7 @@ test('j08 privacy: an email with no account answers like one with an account, an
     const response = await posted;
     answers.push({ status: response.status(), body: await response.json() });
     await expect(dialog.getByRole('status'), 'the same confirmation either way').toHaveText(`Shared with ${email}.`);
-    await expect(dialog.getByLabel('Email', { exact: true }), 'the next email can be typed at once').toBeEditable({ timeout: 1_000 });
+    await expect(dialog.getByLabel('Email or agent ID', { exact: true }), 'the next email can be typed at once').toBeEditable({ timeout: 1_000 });
   }
   await ada.page.unroute(members);
   expect(answers[0].status).toBe(201);

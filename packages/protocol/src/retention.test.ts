@@ -40,10 +40,10 @@ const codeLines = (text: string) => text.split('\n').filter((line) => !/^\s*(\/\
 const writesDeletedAt = (text: string) => codeLines(text).some((line) => /deleted_at\s*=\s*\?/.test(line) || /\.set\(\{[^}]*\bdeletedAt:\s*(?!null\b)/.test(line));
 /**
  * A call of a delete route: the REST DELETE, or moss's own note and folder delete invokers. Revoking a share link or
- * a member (T2.4) is a DELETE that trashes nothing.
+ * a member (T2.4), or an agent key (T3.6), is a DELETE that trashes nothing.
  */
 const callsDeleteRoute = (text: string) => codeLines(text).some((line) =>
-  (/method:\s*'DELETE'/.test(line) && !/\/(links|members)\//.test(line)) || /(notesApi|foldersApi)\.delete\.invoke\(/.test(line));
+  (/method:\s*'DELETE'/.test(line) && !/\/(links|members|agents)\//.test(line)) || /(notesApi|foldersApi)\.delete\.invoke\(/.test(line));
 const readsModule = (text: string) => /from '@moss-multi\/(protocol|host)\/retention(\.ts)?'/.test(text);
 
 const FORBIDDEN: [RegExp, string][] = [
