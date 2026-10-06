@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 69% done** (62 of 90 planned tasks verified)
+**Overall: 70% done** (63 of 90 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 19 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 11 / 13 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 12 / 13 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
@@ -81,6 +81,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-05 — T2.S1 verified: a co-owner who is demoted or removed loses their open invites for good, so regaining manage later never revives an invite they sent before.
 - 2026-10-05 — T2.S2 verified: a folder link over a large subtree (150 subfolders, 600 notes) lists every note at the right role for anonymous and signed-in holders, in a fixed number of queries and D1 parameters.
 - 2026-10-05 — T3.R verified: m3 now sits on m2, with media in migration 0003 and chart and sketch data in their own payload documents; a chart or canvas stays read-only until its data arrives, two people can still edit one at once without losing each other's ink, and payload edits reach search.
+- 2026-10-05 — T3.9 verified: a host such as the bb Moss plugin can mount moss's own editor over its files with `mountMossEditor`, editing every node family and adding comments as markers plus the sidecar, with stale writes refused, a clean editor reloading on external change, assets going only through the host, and CI building the versioned `moss-editor` artifact.
 
 ## T1.1s identity audit
 
@@ -114,6 +115,9 @@ A task counts only after an independent checker passes it on green CI. Each mile
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
 
+- T3.9 checker P2 (downgraded from Codex P1): paste over a selection during unmount saves the deletion without the image; `Session.unmountOnce` waits only for note writes, not for `putAsset` or `copyAsset`, so a host unmounting while an upload is pending saves the file with the selection removed and no image → editor follow-up.
+- T3.9 checker P2: the comment-color unit tests rely on a fake surface that keeps stored colors (`FakeSurface.load` copies stored `commentColors`), while the real path derives them in `hydrateComments` → editor test follow-up.
+- T3.9 checker P2: the key-order negative control in `pipeline.golden.test.ts` ('a wrong meta.json key order is caught') changes a value as well as key order → editor test follow-up.
 - T3.9a checker P2: `allocateFolderName`'s volume-equivalence model (`volumeKey` in `packages/editor/src/host/moss-editor-host.js`) is approximate: it lacks full Unicode case folding ('σ' vs sibling 'ς') and treats case-sensitive APFS as normalization-sensitive (NFC vs NFD 'Café'), so it can return an occupied name; the host's exclusive rename then fails with EEXIST and that title edit stays unsaved, with nothing lost or overwritten → editor host follow-up: fold case fully and normalize on case-sensitive volumes.
 - T2.3s checker P2 (downgraded from Codex P1): a restore can act on an older view of the note after another manager restores, moves and re-trashes it; RESTORE in `api/trash.ts` does not check the note's current folder or `trash_batch_id` still match what it read. No authority is gained (the UPDATE re-checks manage on the current chain and edit on the destination) → trash follow-up: compare-and-set on folder and batch.
 - T2.3s checker P2 (downgraded from Codex P1): a signed-out share-link holder gets 401, not 404, from trash, restore and the Trash read; nothing is disclosed (the 401 is identical for a missing note) and it predates T2.3s; A§8 confines the 401 exception to a credential-less CLI → align to 404 in an access follow-up.
