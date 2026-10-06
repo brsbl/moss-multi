@@ -12,18 +12,23 @@ const described = (space: string) => {
 
 export function RowText({ text, struck }: { text: string; struck: boolean }): ReactNode {
   const segments = rowSegments(text);
+  const only = segments.length === 1 && segments[0].space !== undefined ? segments[0].space : null;
   return (
-    <span className={struck ? 'line-through' : ''}>
-      {segments.length === 0 ? <span className="italic text-ink-faint">empty</span> : null}
-      {segments.map((segment, i) =>
-        segment.space === undefined ? (
-          segment.text
-        ) : (
-          <span key={i} data-row-space="" title={described(segment.space)} aria-label={described(segment.space)} className="rounded-sm bg-current/10 px-px opacity-70">
-            {segment.text}
-          </span>
-        ),
-      )}
-    </span>
+    <>
+      <span className={struck ? 'line-through' : ''}>
+        {segments.length === 0 ? <span className="italic text-ink-faint">empty</span> : null}
+        {segments.map((segment, i) =>
+          segment.space === undefined ? (
+            segment.text
+          ) : (
+            <span key={i} data-row-space="" title={described(segment.space)} aria-label={described(segment.space)} className="mx-px rounded-sm border border-current/40 px-0.5 font-semibold">
+              {segment.text}
+            </span>
+          ),
+        )}
+      </span>
+      {/* A change that is only whitespace also says so in words. */}
+      {only === null ? null : <span className="ml-1 text-micro text-ink-faint">{described(only)}</span>}
+    </>
   );
 }
