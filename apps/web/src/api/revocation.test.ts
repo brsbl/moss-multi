@@ -202,32 +202,6 @@ describe('members: lowering and removing access kicks @p:ppl-2', () => {
     expect(retried.status).toBe(200);
     expect(kicked(docId).map((r) => r.input.principalIds)).toEqual([[ben.id]]);
   });
-
-  it('changes and removes a pending invite by email, answering alike for a known and an unknown address', async () => {
-    const docId = await insertDoc(d1.db, ada);
-    const unknown = `nobody-${Date.now()}@example.invalid`;
-    for (const email of [cy.email, unknown]) {
-      expect((await call('POST', `/api/docs/${docId}/members`, ada.cookie, { email, role: 'editor' })).status).toBe(201);
-    }
-    const answers: [number, string][] = [];
-    for (const email of [cy.email, unknown]) {
-      const lowered = await call('PATCH', `/api/docs/${docId}/members`, ada.cookie, { email, role: 'viewer' });
-      answers.push([lowered.status, await lowered.text()]);
-    }
-    expect(answers[0][0]).toBe(200);
-    expect(answers[1]).toEqual([answers[0][0], answers[0][1].replace(cy.email, unknown)]);
-    // An open invite grants nothing (PRODUCT ruling 19), so neither change reaches Cy's account.
-    expect(await roleOf('doc_members', 'doc_id', docId, cy.id)).toBeNull();
-    const listed = (await (await call('GET', `/api/docs/${docId}/members`, ada.cookie)).json()) as { invites: { email: string; role: string }[] };
-    expect(listed.invites).toEqual([{ email: cy.email, role: 'viewer' }, { email: unknown, role: 'viewer' }]);
-
-    for (const email of [cy.email, unknown]) {
-      expect((await call('DELETE', `/api/docs/${docId}/members`, ada.cookie, { email })).status).toBe(200);
-    }
-    expect(await roleOf('doc_members', 'doc_id', docId, cy.id)).toBeNull();
-    const after = (await (await call('GET', `/api/docs/${docId}/members`, ada.cookie)).json()) as { invites: unknown[] };
-    expect(after.invites).toEqual([]);
-  });
 });
 
 describe('a change of access rests on the caller still managing the target, in the same statement @p:ppl-2', () => {
@@ -273,21 +247,38 @@ describe('pending invites: an open invite has granted nothing, so changing or re
     const ida = await signedUpUser(env, 'kick-ida', 'Ida');
     const unknown = `nobody-retry-${Date.now()}@example.invalid`;
     const docId = await insertDoc(d1.db, ada);
-    const answers: [number, string][] = [];
     for (const email of [ida.email, unknown]) {
       expect((await call('POST', `/api/docs/${docId}/members`, ada.cookie, { email, role: 'editor' })).status).toBe(201);
-      failing.add(docId);
+    }
+    const answers: [number, string][] = [];
+    failing.add(docId);
+    for (const email of [ida.email, unknown]) {
       const lowered = await call('PATCH', `/api/docs/${docId}/members`, ada.cookie, { email, role: 'viewer' });
+      answers.push([lowered.status, (await lowered.text()).replace(email, '<email>')]);
+    }
+    failing.clear();
+    expect(answers[0][0]).toBe(200);
+    expect(answers[1]).toEqual(answers[0]);
+    expect(kicked(docId), 'a changed invite kicks nobody').toEqual([]);
+    // An open invite grants nothing (PRODUCT ruling 19), so neither change reaches Ida's account.
+    expect(await roleOf('doc_members', 'doc_id', docId, ida.id)).toBeNull();
+    const listed = (await (await call('GET', `/api/docs/${docId}/members`, ada.cookie)).json()) as { invites: { email: string; role: string }[] };
+    expect(listed.invites).toEqual([{ email: ida.email, role: 'viewer' }, { email: unknown, role: 'viewer' }]);
+
+    const removals: [number, string][] = [];
+    for (const email of [ida.email, unknown]) {
+      failing.add(docId);
       const removed = await call('DELETE', `/api/docs/${docId}/members`, ada.cookie, { email });
       const repeated = await call('DELETE', `/api/docs/${docId}/members`, ada.cookie, { email });
       failing.clear();
-      answers.push([lowered.status, (await lowered.text()).replace(email, '<email>')]);
-      answers.push([removed.status, (await removed.text()).replace(email, '<email>')]);
-      answers.push([repeated.status, await repeated.text()]);
+      removals.push([removed.status, (await removed.text()).replace(email, '<email>')]);
+      removals.push([repeated.status, await repeated.text()]);
       expect(kicked(docId), `${email === unknown ? 'the unknown' : 'the known'} email kicks nobody`).toEqual([]);
     }
-    expect(answers.slice(0, 3).map(([status]) => status)).toEqual([200, 200, 404]);
-    expect(answers.slice(3)).toEqual(answers.slice(0, 3));
+    expect(removals.slice(0, 2).map(([status]) => status)).toEqual([200, 404]);
+    expect(removals.slice(2)).toEqual(removals.slice(0, 2));
+    const after = (await (await call('GET', `/api/docs/${docId}/members`, ada.cookie)).json()) as { invites: unknown[] };
+    expect(after.invites).toEqual([]);
     expect(await roleOf('doc_members', 'doc_id', docId, ida.id)).toBeNull();
   });
 });

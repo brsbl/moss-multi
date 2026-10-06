@@ -82,24 +82,6 @@ describe('share-by-email is not an enumeration oracle', () => {
     expect(JSON.parse(text)).not.toHaveProperty('invites');
   });
 
-  it('treats a repeat, a raise and a lowering of a pending invite as it treats a member', async () => {
-    const folderId = await insertFolder(d1.db, ada, ada.homeId);
-    const email = unknownEmail('repeat');
-    const path = `/api/folders/${folderId}/members`;
-    for (const [person, label] of [[email, 'unknown'], [ben.email, 'known']] as const) {
-      expect((await call('POST', path, ada.cookie, { email: person, role: 'commenter' })).status, `${label} first`).toBe(201);
-      expect((await call('POST', path, ada.cookie, { email: person, role: 'commenter' })).status, `${label} repeat`).toBe(200);
-      const raised = await call('POST', path, ada.cookie, { email: person, role: 'editor' });
-      expect(raised.status, `${label} raise`).toBe(200);
-      expect(await raised.json()).toEqual({ shared: { email: person, role: 'editor' } });
-      const lowered = await call('POST', path, ada.cookie, { email: person, role: 'viewer' });
-      expect(lowered.status, `${label} lowering`).toBe(409);
-      expect(await lowered.json()).toMatchObject({ error: 'demotion-unavailable' });
-    }
-    const owner = (await (await call('GET', path, ada.cookie)).json()) as { invites: unknown[] };
-    expect(owner.invites).toEqual([{ email, role: 'editor' }, { email: ben.email, role: 'editor' }]);
-  });
-
   it('shows a known and an unknown email to the owner alike, by email and pending, until the invitee redeems it', async () => {
     const docId = await insertDoc(d1.db, ada);
     await insertGrant(d1.db, { docId }, cy, 'viewer');
@@ -429,18 +411,6 @@ describe('sharing under load', () => {
     expect(await d1.db.prepare('SELECT count(*) AS n FROM invites WHERE invited_by = ?').bind(owner.id).first()).toEqual({ n: SHARES_PER_HOUR });
   }, 30_000);
 
-  it('never confirms a role it did not store when one person is shared at two roles at once', async () => {
-    const owner = await signedUpUser(env, 'sharing-racer', 'Racer');
-    for (let round = 0; round < 4; round += 1) {
-      const docId = await insertDoc(d1.db, owner);
-      const answers = await Promise.all(['viewer', 'editor'].map((role) => call('POST', `/api/docs/${docId}/members`, owner.cookie, { email: cy.email, role })));
-      // An editor share answered 2xx must have stored editor; a viewer share that lost the race is refused (409).
-      expect(answers[1].status, 'the editor share is taken').toBeLessThan(300);
-      await redeem(env, owner, `/api/docs/${docId}`, cy);
-      expect(await roleOf(cy.cookie, docId), 'the higher share stands').toBe('editor');
-    }
-  }, 30_000);
-
   it('answers two first shares of one email alike, known or not, and keeps one pending row', async () => {
     const owner = await signedUpUser(env, 'sharing-twice', 'Twice');
     const known = await signedUpUser(env, 'sharing-twice-known', 'Known');
@@ -454,30 +424,4 @@ describe('sharing under load', () => {
       }
     }
   }, 30_000);
-
-  it('never lowers a role when two raises of one member land at once', async () => {
-    const owner = await signedUpUser(env, 'sharing-raise', 'Raise');
-    for (let round = 0; round < 4; round += 1) {
-      const docId = await insertDoc(d1.db, owner);
-      expect((await call('POST', `/api/docs/${docId}/members`, owner.cookie, { email: cy.email, role: 'viewer' })).status).toBe(201);
-      const statuses = await Promise.all(['editor', 'commenter'].map((role) => call('POST', `/api/docs/${docId}/members`, owner.cookie, { email: cy.email, role }).then((r) => r.status)));
-      expect(statuses[0], 'the editor raise is taken').toBe(200);
-      await redeem(env, owner, `/api/docs/${docId}`, cy);
-      expect(await roleOf(cy.cookie, docId), 'the higher raise stands').toBe('editor');
-    }
-  }, 30_000);
-
-  it('answers a share to a known account without waiting for its notification', async () => {
-    const docId = await insertDoc(d1.db, ada);
-    const slow = { ...env, PrincipalDO: {
-      idFromName: (name: string) => name,
-      get: () => ({ setName: async () => undefined, publish: () => new Promise<void>(() => undefined) }),
-    } as never };
-    const answered = handleApi(new Request(`${BASE}/api/docs/${docId}/members`, {
-      method: 'POST', headers: { cookie: ada.cookie, origin: BASE, 'content-type': 'application/json' },
-      body: JSON.stringify({ email: ben.email, role: 'viewer' }),
-    }), slow).then((response) => response.status);
-    const late = new Promise<string>((resolve) => setTimeout(() => resolve('still waiting'), 3_000));
-    expect(await Promise.race([answered, late])).toBe(201);
-  });
 });

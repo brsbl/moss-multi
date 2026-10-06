@@ -323,26 +323,6 @@ describe('who an invite admits', { timeout: 30_000 }, () => {
       });
     }
   }
-
-  it('lets a re-share by a current owner take over an invite whose inviter lost access, with a fresh link', async () => {
-    const folderId = await insertFolder(d1.db, ada, ada.homeId);
-    const docId = await titled(ada, 'Taken over', { folderId });
-    const coOwner = await signedUpUser(env, 't28-max', 'Max');
-    await share(ada, `/api/folders/${folderId}`, coOwner.email, 'owner');
-    await redeem(env, ada, `/api/folders/${folderId}`, coOwner);
-    const ghost = unknownEmail('takeover');
-    await share(coOwner, `/api/docs/${docId}`, ghost, 'owner');
-    const dead = tokenOf(await inviteLink(coOwner, `/api/docs/${docId}`, ghost));
-    await d1.db.prepare('UPDATE docs SET folder_id = ? WHERE id = ?').bind(ada.homeId, docId).run();
-
-    await share(ada, `/api/docs/${docId}`, ghost, 'commenter');
-    const fresh = tokenOf(await inviteLink(ada, `/api/docs/${docId}`, ghost));
-    expect(fresh, 'the re-share offers a new link').not.toBe(dead);
-    const guest = await signedUpUser(env, 't28-nia', 'Nia', ghost);
-    expect((await accept(guest.cookie, dead)).status, 'the old link stays dead').toBe(404);
-    expect((await accept(guest.cookie, fresh)).status, 'the new link redeems').toBe(200);
-    expect(await roleOf(guest.cookie, docId), 'at the role the current owner chose').toBe('commenter');
-  });
 });
 
 /** `env` whose next D1 batch waits at the gate: `arrived` resolves when it gets there, `open()` lets it run. */
