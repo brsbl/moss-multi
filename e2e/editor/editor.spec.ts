@@ -491,7 +491,10 @@ test.describe('embeddable editor', () => {
   });
 
   for (const { name, from, to, within, nth, expected } of SELECTION_CASES) {
-    test(`selection ${name}: exact text, markdown, lines and headings, the lines golden in the saved file`, async ({ page }) => {
+    test(`selection ${name}: exact text, markdown, lines and headings, the lines golden in the saved file`, async ({ page, browserName }) => {
+      // WebKit's editable root pulls a DOM range ending inside the code block (contenteditable=false) back to the
+      // table before it, so the page's selection is not this case there; the viewer covers it in WebKit.
+      test.skip(browserName === 'webkit' && name === 'from a list into a code block', 'WebKit clamps the range out of the code block');
       const seen = await open(page);
       await mountSelectionNote(page);
       if (within === 'code') {
