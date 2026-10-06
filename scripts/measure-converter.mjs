@@ -10,7 +10,8 @@
 // single rename exceeds it by more than one /proc tick. Last, it runs the real DocDO (packages/sync/measure/doc-worker.ts)
 // and sends many tiny payload frames over thousands of ids (T1.F2), exiting non-zero past the stated per-frame CPU,
 // memory, held-doc and scaling budgets, and feeds the real SearchDO bodies of unclosed openers, exiting non-zero past
-// the per-request CPU and linear-scaling budgets.
+// the per-request CPU and linear-scaling budgets. The converter also imports and exports notes of unclosed openers
+// (packages/sync/measure/converter-cases.ts) up to 2 MB, exiting non-zero past IMPORT_BUDGET_MS or linear growth.
 import { spawn, spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -464,6 +465,64 @@ async function measureSearch(port) {
   return results;
 }
 
+// Notes of unclosed openers (converter-cases.ts) at PRODUCT's 2 MB cap and half that, each case in a fresh worker:
+// import and export each stay within IMPORT_BUDGET_MS, and the 2 MB note costs at most ADVERSARIAL_SCALING times the
+// 1 MB one. A request past ADVERSARIAL_TIMEOUT_MS fails the case.
+const ADVERSARIAL_SIZES = [1024 * 1024, 2 * 1024 * 1024];
+const ADVERSARIAL_SCALING = 3;
+const ADVERSARIAL_TIMEOUT_MS = 20_000;
+// 10 ms CPU ticks and noise: scaling compares against no less than this.
+const ADVERSARIAL_FLOOR_MS = 100;
+const ADVERSARIAL_OPS = ['importCpuMs', 'exportCpuMs'];
+
+async function measureAdversarialCase(name, c, port, converterBody) {
+  const server = await startWorker('converter', port);
+  const request = (path, body) => timedRequest(server, path, { method: body === undefined ? 'GET' : 'POST', body, signal: AbortSignal.timeout(ADVERSARIAL_TIMEOUT_MS) });
+  const sizes = [];
+  try {
+    for (const bytes of ADVERSARIAL_SIZES) {
+      const imported = await request('/import', converterBody(c, bytes));
+      const exported = await request('/export');
+      sizes.push({ bytes, importCpuMs: imported.cpuMs, exportCpuMs: exported.cpuMs, importWallMs: round(imported.wallMs) });
+    }
+    return { name, sizes };
+  } catch (error) {
+    const reason = error.name === 'TimeoutError' || error.cause?.name === 'TimeoutError' ? `a request ran past ${ADVERSARIAL_TIMEOUT_MS / 1000} s` : String(error.message).split('\n')[0];
+    return { name, sizes, failed: reason };
+  } finally {
+    await stop(server.child);
+  }
+}
+
+async function measureAdversarial(port) {
+  const { CONVERTER_CASES, converterBody } = await import('../packages/sync/measure/converter-cases.ts');
+  const results = [];
+  for (const [name, c] of Object.entries(CONVERTER_CASES)) {
+    results.push(await measureAdversarialCase(name, c, port, converterBody));
+    port += 1;
+  }
+  return results;
+}
+
+/** Every way the adversarial notes miss the stated budget (empty when they meet it). */
+function adversarialBudgetProblems(results) {
+  const problems = [];
+  for (const r of results) {
+    if (r.failed) {
+      problems.push(`${r.name}: ${r.failed}`);
+      continue;
+    }
+    for (const size of r.sizes) {
+      for (const op of ADVERSARIAL_OPS) if (size[op] > IMPORT_BUDGET_MS) problems.push(`${r.name}, ${size.bytes} B: ${op} ${size[op]} ms`);
+    }
+    const [small, large] = r.sizes;
+    for (const op of ADVERSARIAL_OPS) {
+      if (large[op] > ADVERSARIAL_SCALING * Math.max(small[op], ADVERSARIAL_FLOOR_MS)) problems.push(`${r.name}: ${op} grew from ${small[op]} ms to ${large[op]} ms`);
+    }
+  }
+  return problems;
+}
+
 const SEARCH_OPS = ['indexCpuMs', 'searchCpuMs', 'headingsCpuMs'];
 
 /** Every way the search runs miss the stated budget (empty when they meet it). */
@@ -547,6 +606,7 @@ async function main() {
   const titles = await measureTitleWrites(port + 1);
   const payloads = await measurePayloadFrames(port + 2);
   const searches = await measureSearch(port + 3);
+  const adversarial = await measureAdversarial(port + 100);
 
   const coldOf = (name, key) => round(median(cold[name].map((sample) => sample[key])));
   const families = ratios.filter((r) => !r.name.startsWith('scale note'));
@@ -594,6 +654,13 @@ async function main() {
       ),
       ...(r.failed ? [`| Search, ${r.name} | FAILED: ${r.failed} |`] : []),
     ]),
+    ...adversarial.flatMap((r) => [
+      ...r.sizes.map(
+        (size) =>
+          `| Unclosed openers, ${r.name} × ${kb(size.bytes)}: workerd CPU (import / export), one run | ${size.importCpuMs} / ${size.exportCpuMs} ms (budget ${IMPORT_BUDGET_MS} ms; import wall ${size.importWallMs} ms) |`,
+      ),
+      ...(r.failed ? [`| Unclosed openers, ${r.name} | FAILED: ${r.failed} |`] : []),
+    ]),
     `| State-to-markdown ratio r, worst family | ${worst.ratio.toFixed(2)} (${worst.name}) |`,
     '',
     '| Fixture | Markdown B | Y.Doc state B | Ratio |',
@@ -625,6 +692,11 @@ async function main() {
   const searchProblems = searchBudgetProblems(searches);
   if (searchProblems.length > 0) {
     console.error(`measure-converter: search over budget in workerd: ${searchProblems.join('; ')}`);
+    process.exitCode = 1;
+  }
+  const adversarialProblems = adversarialBudgetProblems(adversarial);
+  if (adversarialProblems.length > 0) {
+    console.error(`measure-converter: unclosed openers over budget in workerd: ${adversarialProblems.join('; ')}`);
     process.exitCode = 1;
   }
   const payloadProblems = payloads.failed ? [payloads.failed] : payloadBudgetProblems(payloads.notes);

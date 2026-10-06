@@ -7,6 +7,7 @@ import type { Klass, LexicalNode } from 'lexical';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { exportMarkdown, importMarkdown, MARKDOWN_EDITOR_TRANSFORMERS, type NoteBodyImportOptions } from '../../src/converter/index.ts';
 import { DEVIATING, FIXTURES, fixture, stringify, transformerSignature } from '../../src/converter/fixtures.ts';
+import { CONVERTER_CASES, converterBody } from '../../measure/converter-cases.ts';
 
 declare const __MOSS_PRISTINE__: string;
 
@@ -73,6 +74,17 @@ describe('L3 parity with moss at the pin @p:tech-4', () => {
     const pristine = comparable(markdown, pristineRoundTrip(markdown, options));
     expect(ours.tree).toBe(pristine.tree);
     expect(ours.markdown).toBe(pristine.markdown);
+  });
+
+  // The linear matching (markdown/linear-match.ts) changes no output on notes of unclosed openers.
+  it.each(Object.entries(CONVERTER_CASES))('unclosed openers, %s', (_name, c) => {
+    for (const bytes of [40, 3_000]) {
+      const markdown = converterBody(c, bytes);
+      const ours = comparable(markdown, oursRoundTrip(markdown, {}));
+      const pristine = comparable(markdown, pristineRoundTrip(markdown, {}));
+      expect(ours.tree).toBe(pristine.tree);
+      expect(ours.markdown).toBe(pristine.markdown);
+    }
   });
 
   it('line-loss: moss drops the rejected lines, the converter keeps them (DEVIATIONS)', () => {
