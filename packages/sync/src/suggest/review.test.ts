@@ -602,7 +602,8 @@ describe('T5.3 accept lands exactly the previewed diff or nothing @p:mean-2 @p:R
       if (!preview.ok) throw new Error(preview.reason);
       const changed = preview.hunks.filter((hunk) => hunk.kind === 'block' && hunk.op === 'changed');
       expect(changed).toHaveLength(1);
-      expect(JSON.stringify(changed[0].after)).toContain('Hello world Xd the cat.');
+      const shownText = (changed[0].after as { seq: { s?: string }[] }).seq.map((entry) => entry.s ?? '').join('');
+      expect(shownText).toContain('Hello world Xd the cat.');
       const record = readRecord(live, 'r1')!;
       expect(acceptRecord(live, 'r1', { previewHash: preview.hash, digest: recordDigest(record) }, EDITOR)).toEqual({ ok: true });
       expect(exported(live)).toContain('Hello world Xd the cat.');

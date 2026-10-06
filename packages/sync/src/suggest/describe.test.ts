@@ -130,7 +130,7 @@ const CASES: CensusCase[] = [
   // A decorator's keys.
   keyCase('a decorator field', 'body/root/XmlElement/key', 'Any', (doc) => decorator(doc).setAttribute('__hidden', 'deco-secret'), ['code-block', 'hidden', 'deco-secret']),
   keyCase('a decorator format', 'body/root/XmlElement/key', 'Any', (doc) => decorator(doc).setAttribute('__format', 3 as never), ['format', 'right']),
-  keyCase('a removed decorator field', 'body/root/XmlElement/key', 'Deleted', (doc) => decorator(doc).removeAttribute('__language'), ['code-block', 'language', 'js', 'none']),
+  keyCase('a removed decorator field', 'body/root/XmlElement/key', 'Deleted', (doc) => decorator(doc).removeAttribute('__language'), ['code-block', 'language', 'javascript', 'none']),
   keyCase('a nested map on a decorator', 'body/root/XmlElement/key', 'Type:Map', (doc) => decorator(doc).setAttribute('__extra', new Y.Map([['k', 'deco-deep']]) as never), ['extra', 'deco-deep']),
   // A text node's keys.
   keyCase('text format', 'body/root/Map/key', 'Any', (doc) => textMap(doc).set('__format', 1), ['world', 'format', 'bold']),

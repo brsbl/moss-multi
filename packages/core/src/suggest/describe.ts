@@ -66,14 +66,14 @@ function show(value: unknown, key = '', holder?: Node): string {
 }
 
 /** Lexical's defaults: a new node holding one says nothing a reader needs, so its note leaves it out. */
-const DEFAULTS: Record<string, unknown> = {
-  __format: 0, __style: '', __mode: 'normal', __detail: 0, __indent: 0, __dir: null, __textFormat: 0, __textStyle: '',
+const DEFAULTS: Record<string, unknown[]> = {
+  __format: [0], __style: [''], __mode: ['normal', 0], __detail: [0], __indent: [0], __dir: [null], __textFormat: [0], __textStyle: [''],
 };
 const isEmpty = (value: unknown) => {
   const v = unwrap(value);
   return v === undefined || v === null || v === '';
 };
-const isDefault = (key: string, value: unknown) => key in DEFAULTS && unwrap(value) === DEFAULTS[key];
+const isDefault = (key: string, value: unknown) => key in DEFAULTS && DEFAULTS[key].includes(unwrap(value));
 
 /** What a node is called: its Lexical type, else its element name, else its Yjs kind. */
 function typeName(node: Node): string {
