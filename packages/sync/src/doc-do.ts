@@ -519,10 +519,11 @@ export class DocDO extends YServer<SyncEnv> {
         return;
       }
       const { changes, missing, deletes } = classifySync(this.document, frame.update, decoded);
-      if (changes && this.#refused(connection, attachment, () => this.#overCap(store, frame.update), missing)) return;
+      const guarded = () => this.#comments?.check(decoded) ?? false;
+      if (changes && this.#refused(connection, attachment, () => this.#overCap(store, frame.update), missing, guarded)) return;
       // Gate 2b on every step 2 or update, inert or not, whatever the role: no client frame reaches `comments`
       // (comments.md §3, I1). O(frame · log); it follows no references.
-      if (this.#comments?.check(decoded)) {
+      if (!changes && guarded()) {
         this.#refuse(connection, 'protected-type', CLOSE.writeRefused);
         return;
       }
@@ -1106,7 +1107,7 @@ export class DocDO extends YServer<SyncEnv> {
    * True when the write was refused and the socket closed; a refusal is never silent. `missing`: the frame needs a
    * clock the doc lacks, which Yjs would hold pending, uncounted, and integrate under a later sender's transaction.
    */
-  #refused(connection: Connection, attachment: Attachment, overCap: () => boolean, missing = false): boolean {
+  #refused(connection: Connection, attachment: Attachment, overCap: () => boolean, missing = false, guarded?: () => boolean): boolean {
     // Suggesters never write the body: their changes travel as suggestion records (docs/design/suggestions.md I1).
     // The role decides, never the frame's contents.
     if (!roleAtLeast(attachment.role, 'editor')) return this.#refuse(connection, 'role', CLOSE.revoked);
@@ -1115,6 +1116,8 @@ export class DocDO extends YServer<SyncEnv> {
       connection.close(CLOSE.writeRate, 'write rate');
       return true;
     }
+    // A guard violation is refused 4409 even when it also needs a clock the doc lacks (comments.md §3).
+    if (guarded?.()) return this.#refuse(connection, 'protected-type', CLOSE.writeRefused);
     if (missing) {
       // Transient too: a reconnect's step 2 carries whatever the frame depended on.
       connection.close(CLOSE.writeRate, 'missing dependency');

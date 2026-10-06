@@ -28,7 +28,6 @@ export type GateReason =
   | 'unresolvable'
   | 'foreign-client'
   | 'outside-body'
-  | 'register-alias'
   | 'payload-alias'
   | 'outdated'
   | 'changed'
@@ -70,18 +69,38 @@ export interface SuggestionRecord {
   parts: DeletePart[];
 }
 
-/** The roots a record may change. */
-export const BODY_ROOTS: ReadonlySet<string> = new Set(['root', 'registers']);
+/** The roots a record may change in the body. The retired `registers` map is not one: payloads are their own docs. */
+export const BODY_ROOTS: ReadonlySet<string> = new Set(['root']);
+
+/** The roots of a payload doc (packages/sync payload-docs.ts: `payload` and `payload-map`). */
+export const PAYLOAD_ROOTS: ReadonlySet<string> = new Set(['payload', 'payload-map']);
+
+/** A payload id an op may name. */
+export const PAYLOAD_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
 /** What the record inserted, per client: [from, to) clocks. */
 export type Inserted = ReadonlyMap<number, readonly [number, number]>;
 
+/**
+ * The payload docs the record's ops write, as the caller holds them for this accept. `doc` returns one gc-free mirror
+ * per id, the same one on every call: the payload's state before the record for an id the note knows, and an empty
+ * doc for a new one. `known` is true for every id the note knows, served or withheld.
+ */
+export interface PayloadMirrors {
+  known(id: string): boolean;
+  doc(id: string): Y.Doc;
+}
+
 export interface ApplyOptions {
   /** G7: binds a headless editor to the doc after the record; false when Lexical cannot take the tree. */
   bindCheck?: (doc: Y.Doc, inserted: Inserted) => boolean;
+  /** Required when a record has payload ops. */
+  payloads?: PayloadMirrors;
 }
 
-export type ApplyResult = { ok: true; hydrated: Uint8Array; inserted: Inserted } | { ok: false; reason: GateReason };
+export type ApplyResult =
+  | { ok: true; hydrated: Uint8Array; inserted: Inserted; payloads: Map<string, Uint8Array> }
+  | { ok: false; reason: GateReason };
 
 export const itemKey = (id: Y.ID): string => `${id.client}:${id.clock}`;
 
@@ -115,84 +134,116 @@ export function deleteUpdate(spans: readonly IdSpan[]): Uint8Array {
 const spansOf = (ds: { clients: Map<number, { clock: number; len: number }[]> }): IdSpan[] =>
   [...ds.clients].flatMap(([client, list]) => list.map(({ clock, len }) => ({ client, clock, len })));
 
+/** One doc the record writes: the body, or a payload doc. */
+interface Target {
+  doc: Y.Doc;
+  roots: ReadonlySet<string>;
+  ops: Uint8Array[];
+  hydrated: Uint8Array;
+  state: (client: number) => number;
+  /** Each authoring step's removals (an op's delete set, or a delete part's targets). */
+  groups: IdSpan[][];
+  ownDeletes: IdSpan[];
+  changed: Set<Y.AbstractType<unknown>>;
+  inserted: Map<number, readonly [number, number]>;
+}
+
+function target(doc: Y.Doc, roots: ReadonlySet<string>): Target {
+  const hydrated = Y.encodeStateVector(doc);
+  const before = Y.decodeStateVector(hydrated);
+  return {
+    doc, roots, ops: [], hydrated, state: (client) => before.get(client) ?? 0, groups: [], ownDeletes: [], changed: new Set(), inserted: new Map(),
+  };
+}
+
 /**
- * Applies every op and delete part of `record` to `mirror` in one transaction and runs G1–G5 and G7. On failure the
- * mirror is spoiled; callers hydrate a fresh one. Nothing here touches the live doc.
+ * Applies every op and delete part of `record` to `mirror` (the body) and to the payload mirrors its ops name, one
+ * transaction per doc, and runs G1–G5 and G7 over all of them. On failure the mirrors are spoiled; callers hydrate
+ * fresh ones. Nothing here touches the live doc or a live payload.
  */
 export function applyRecord(mirror: Y.Doc, record: SuggestionRecord, options: ApplyOptions = {}): ApplyResult {
   const fail = (reason: GateReason): ApplyResult => ({ ok: false, reason });
   const clients = new Set(record.meta.clients);
-  const store = mirror.store;
-  const hydrated = Y.encodeStateVector(mirror);
-  const before = Y.decodeStateVector(hydrated);
-  const state = (client: number) => before.get(client) ?? 0;
+  const body = target(mirror, BODY_ROOTS);
+  const targets = new Map<string, Target>([[BODY_DOC, body]]);
+  const refsBefore = regRefs(mirror);
 
   // Each authoring step (an op, or a delete part) removes its own run of items; the record's own deletes are the
   // union of its ops' delete sets.
-  const groups: IdSpan[][] = [];
-  const ownDeletes: IdSpan[] = [];
-  const bodyOps = record.ops.filter((op) => op.doc === BODY_DOC).map((op) => op.update);
-  for (const op of bodyOps) {
+  for (const op of record.ops) {
+    if (!op || typeof op.doc !== 'string' || !(op.update instanceof Uint8Array)) return fail('unresolvable');
+    let into = targets.get(op.doc);
+    if (!into) {
+      if (!PAYLOAD_ID.test(op.doc) || !options.payloads) return fail('unresolvable');
+      // G4, first since nothing of it may even be loaded: a payload op edits only a payload a live element names
+      // before the record, or writes a new one; never a withheld payload, whose text the author cannot see.
+      if (options.payloads.known(op.doc) && !refsBefore.has(op.doc)) return fail('payload-alias');
+      into = target(options.payloads.doc(op.doc), PAYLOAD_ROOTS);
+      targets.set(op.doc, into);
+    }
     let spans: IdSpan[];
     try {
-      spans = spansOf(Y.decodeUpdate(op).ds);
+      spans = spansOf(Y.decodeUpdate(op.update).ds);
     } catch {
       return fail('unresolvable');
     }
-    groups.push(spans);
-    ownDeletes.push(...spans);
+    into.ops.push(op.update);
+    into.groups.push(spans);
+    into.ownDeletes.push(...spans);
   }
   for (const part of record.parts) {
     if (!Array.isArray(part.targets) || !part.targets.every(validSpan)) return fail('unresolvable');
-    groups.push(part.targets);
+    body.groups.push(part.targets);
   }
 
-  // G5 (a) and (b) read the doc as it was before the record, so they run first and report after G1–G4.
-  const outdated = !groups.every((spans) => removesLiveRun(store, spans, state));
-  const registersBefore = liveEntries(mirror.getMap('registers'));
-  const refsBefore = regRefs(mirror);
+  // G5 (a) and (b) read each doc as it was before the record, so they run first and report after G1–G4.
+  const outdated = [...targets.values()].some((t) => !t.groups.every((spans) => removesLiveRun(t.doc.store, spans, t.state)));
 
-  let transaction: Y.Transaction | null = null;
   try {
-    mirror.transact((tr) => {
-      transaction = tr;
-      for (const op of bodyOps) Y.applyUpdate(mirror, op);
-      for (const part of record.parts) Y.applyUpdate(mirror, deleteUpdate(part.targets));
-    }, APPLY);
+    for (const t of targets.values()) {
+      t.doc.transact((tr) => {
+        for (const op of t.ops) Y.applyUpdate(t.doc, op);
+        if (t === body) for (const part of record.parts) Y.applyUpdate(t.doc, deleteUpdate(part.targets));
+        for (const type of tr.changed.keys()) t.changed.add(type as unknown as Y.AbstractType<unknown>);
+      }, APPLY);
+    }
   } catch {
     return fail('unresolvable');
   }
-  const tr = transaction as Y.Transaction | null;
-  if (!tr) return fail('unresolvable');
 
-  // G1: nothing parked.
-  if (store.pendingStructs !== null || store.pendingDs !== null) return fail('unresolvable');
+  // G1: nothing parked, in any doc.
+  for (const t of targets.values()) if (t.doc.store.pendingStructs !== null || t.doc.store.pendingDs !== null) return fail('unresolvable');
 
-  // G2: only the record's leased clients advanced.
-  const after = Y.decodeStateVector(Y.encodeStateVector(mirror));
-  const inserted = new Map<number, readonly [number, number]>();
-  for (const [client, clock] of after) {
-    if (clock <= state(client)) continue;
-    if (!clients.has(client)) return fail('foreign-client');
-    inserted.set(client, [state(client), clock]);
+  // G2: only the record's leased clients advanced, in the body and in every payload doc.
+  for (const t of targets.values()) {
+    for (const [client, clock] of Y.decodeStateVector(Y.encodeStateVector(t.doc))) {
+      if (clock <= t.state(client)) continue;
+      if (!clients.has(client)) return fail('foreign-client');
+      t.inserted.set(client, [t.state(client), clock]);
+    }
   }
 
-  // G3: every changed type, including each deleted item's parent, lives under root or registers.
-  for (const type of tr.changed.keys()) {
-    const name = rootName(mirror, type as unknown as Y.AbstractType<unknown>);
-    if (name === null || !BODY_ROOTS.has(name)) return fail('outside-body');
+  // G3: every changed type, including each deleted item's parent, lives under its doc's own roots.
+  for (const t of targets.values()) {
+    for (const type of t.changed) {
+      const name = rootName(t.doc, type);
+      if (name === null || !t.roots.has(name)) return fail('outside-body');
+    }
   }
 
-  // G4: registers are never aliased.
-  if (!registersUnaliased(mirror, registersBefore, refsBefore, inserted)) return fail('register-alias');
+  // G4: no payload is aliased.
+  const known = (id: string) => options.payloads?.known(id) ?? false;
+  if (!payloadsUnaliased(mirror, refsBefore, body.inserted, known)) return fail('payload-alias');
 
   // G5 (c): every struct the record inserted and did not itself delete integrated as a live item.
-  if (outdated || !insertedLive(store, inserted, ownDeletes)) return fail('outdated');
+  if (outdated || [...targets.values()].some((t) => !insertedLive(t.doc.store, t.inserted, t.ownDeletes))) return fail('outdated');
 
   // G7: Lexical can bind the result.
-  if (options.bindCheck && !options.bindCheck(mirror, inserted)) return fail('broken');
+  if (options.bindCheck && !options.bindCheck(mirror, body.inserted)) return fail('broken');
 
-  return { ok: true, hydrated, inserted };
+  const payloads = new Map<string, Uint8Array>();
+  for (const [id, t] of targets) if (t !== body) payloads.set(id, t.hydrated);
+  return { ok: true, hydrated: body.hydrated, inserted: body.inserted, payloads };
 }
 
 const APPLY = 'suggest-apply';
@@ -268,57 +319,38 @@ function rootName(doc: Y.Doc, type: Y.AbstractType<unknown>): string | null {
   return null;
 }
 
-function liveEntries(map: Y.Map<unknown>): Map<string, Y.Item> {
-  const entries = new Map<string, Y.Item>();
-  for (const [key, item] of map._map) if (!item.deleted) entries.set(key, item);
-  return entries;
-}
-
 const isInserted = (inserted: Inserted, id: Y.ID): boolean => {
   const range = inserted.get(id.client);
   return !!range && range[0] <= id.clock && id.clock < range[1];
 };
 
 /**
- * G4. A `__regId` written by the record sits on a type the record created. It names a registers entry the record
- * created, or moves an existing one: the record removed every type that named it, and the new type is the only one
- * naming it after (an Enter before an inline formula re-creates the decorator, since @lexical/yjs moves a node by
- * deleting it and inserting a copy). An entry that existed before is never replaced, and is deleted only once nothing
- * live names it. An entry the record created is named only by the record's own `__regId` writes. So no register is
- * ever shared, borrowed or re-pointed.
+ * G4 `payload-alias`. A `__regId` the record writes sits on an element the record created, and that element is the
+ * only live one naming the id. The id is one the note did not know (a payload created in this record), or the element
+ * is a move of an existing one: the record removed every element that named the id (an Enter before an inline formula
+ * re-creates the decorator, since @lexical/yjs moves a node by deleting it and inserting a copy). So a fresh decorator
+ * never names an existing payload, served or withheld, and no element is re-pointed.
  */
-function registersUnaliased(
+function payloadsUnaliased(
   doc: Y.Doc,
-  before: ReadonlyMap<string, Y.Item>,
   refsBefore: ReadonlyMap<string, Y.AbstractType<unknown>[]>,
   inserted: Inserted,
+  known: (id: string) => boolean,
 ): boolean {
-  const registers = doc.getMap('registers');
   const refs = regRefs(doc);
-  for (const [key, item] of before) {
-    const now = registers._map.get(key);
-    if (now !== item) return false;
-    if (item.deleted && refs.has(key)) return false;
-  }
   for (const [client, [from, to]] of inserted) {
     for (const struct of structsIn(doc.store, client, from, to)) {
       if (!(struct instanceof Y.Item) || struct.deleted || struct.parentSub !== '__regId') continue;
       const holder = struct.parent as Y.AbstractType<unknown>;
       if (!holder._item || !isInserted(inserted, holder._item.id)) return false;
       const key = struct.content.getContent().at(-1);
-      const entry = typeof key === 'string' ? registers._map.get(key) : undefined;
-      if (!entry || entry.deleted || typeof key !== 'string') return false;
-      if (isInserted(inserted, entry.id)) continue;
+      if (typeof key !== 'string') return false;
+      // A deleted holder names nothing after the record; only a live one is checked for sharing.
+      if (holder._item.deleted) continue;
+      if (refs.get(key)?.length !== 1) return false;
       const namedBefore = refsBefore.get(key) ?? [];
-      const moved = namedBefore.length > 0 && namedBefore.every((type) => type._item?.deleted) && refs.get(key)?.length === 1;
-      if (!moved) return false;
-    }
-  }
-  for (const [key, item] of registers._map) {
-    if (item.deleted || !isInserted(inserted, item.id)) continue;
-    for (const type of refs.get(key) ?? []) {
-      const named = type._map.get('__regId');
-      if (!named || !isInserted(inserted, named.id)) return false;
+      if (namedBefore.length === 0 && !known(key)) continue;
+      if (namedBefore.length === 0 || !namedBefore.every((type) => type._item?.deleted)) return false;
     }
   }
   return true;
@@ -373,14 +405,22 @@ function deltaOf(type: Y.Text): unknown[] {
 export interface Projection {
   blocks: Map<string, unknown>;
   order: string[];
-  registers: Map<string, unknown>;
+  /** Each payload a live element names, by id. */
+  payloads: Map<string, unknown>;
+}
+
+/** A payload doc as a reviewer is shown it: its text (with any formatting) and its compound fields. */
+export function payloadValueOf(doc: Y.Doc): unknown {
+  const text = doc.getText('payload');
+  return { text: text.toString(), delta: deltaOf(text), map: yValue(doc.getMap('payload-map')) };
 }
 
 /**
  * Projects `doc`. `lexical` gives each top-level block's recursive exportJSON by item id (the caller binds the
  * converter editor); the Yjs-level value is always included, so the hash covers every attribute either way.
+ * `payload` resolves the payload docs live elements name; each is projected in full.
  */
-export function projectDoc(doc: Y.Doc, lexical?: ReadonlyMap<string, unknown>): Projection {
+export function projectDoc(doc: Y.Doc, lexical?: ReadonlyMap<string, unknown>, payload?: (id: string) => Y.Doc | undefined): Projection {
   const blocks = new Map<string, unknown>();
   const order: string[] = [];
   for (let item = doc.get('root', Y.XmlText)._start; item; item = item.right) {
@@ -391,13 +431,16 @@ export function projectDoc(doc: Y.Doc, lexical?: ReadonlyMap<string, unknown>): 
     blocks.set(key, { y, lexical: lexical?.get(key) ?? null });
     order.push(key);
   }
-  const registers = new Map<string, unknown>();
-  for (const [key, value] of doc.getMap('registers').entries()) registers.set(key, yValue(value));
-  return { blocks, order, registers };
+  const payloads = new Map<string, unknown>();
+  for (const id of regRefs(doc).keys()) {
+    const held = payload?.(id);
+    payloads.set(id, held ? payloadValueOf(held) : null);
+  }
+  return { blocks, order, payloads };
 }
 
 export interface Hunk {
-  kind: 'block' | 'register';
+  kind: 'block' | 'payload';
   id: string;
   op: 'added' | 'removed' | 'changed';
   before?: unknown;
@@ -418,13 +461,13 @@ export function projectionDiff(before: Projection, after: Projection): Hunk[] {
     } else if (a === undefined) hunks.push({ kind: 'block', id, op: 'removed', before: b });
     else if (canonical(a) !== canonical(b)) hunks.push({ kind: 'block', id, op: 'changed', before: b, after: a });
   }
-  const registerIds = [...new Set([...before.registers.keys(), ...after.registers.keys()])];
-  for (const id of registerIds) {
-    const b = before.registers.get(id);
-    const a = after.registers.get(id);
-    if (b === undefined) hunks.push({ kind: 'register', id, op: 'added', after: a });
-    else if (a === undefined) hunks.push({ kind: 'register', id, op: 'removed', before: b });
-    else if (canonical(a) !== canonical(b)) hunks.push({ kind: 'register', id, op: 'changed', before: b, after: a });
+  const payloadIds = [...new Set([...before.payloads.keys(), ...after.payloads.keys()])];
+  for (const id of payloadIds) {
+    const b = before.payloads.get(id);
+    const a = after.payloads.get(id);
+    if (b === undefined) hunks.push({ kind: 'payload', id, op: 'added', after: a });
+    else if (a === undefined) hunks.push({ kind: 'payload', id, op: 'removed', before: b });
+    else if (canonical(a) !== canonical(b)) hunks.push({ kind: 'payload', id, op: 'changed', before: b, after: a });
   }
   return hunks.sort((x, y) => (x.kind !== y.kind ? (x.kind < y.kind ? -1 : 1) : x.id < y.id ? -1 : x.id > y.id ? 1 : 0));
 }

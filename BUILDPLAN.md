@@ -449,6 +449,7 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
     - deleting a root with replies keeps the thread anchored under the promoted reply;
     - a non-author sees no Edit or Delete, and a raw delete gets 403.
   - **Done:** green, with a reactions triptych.
+- **T4.R m4 on the restacked m3** `[B·fresh]`, coordinator, 2026-10-05: merge `origin/m3` into m4; a frame with a missing dependency closes 4420 (transient), and 4409 stays for guard violations (comments.md §3); the doc-session ordering test delivers the server's step 1 first (§6); j11's /media leg fixed at its cause; done when the full lane is green in both engines.
 
 **Exit criteria:** typing anywhere after a comment replicates exactly; there are no markers in the DOM or any export; the author identity comes from the server principal; a comment never lands on text other than its own.
 
@@ -464,6 +465,7 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
     - reject and withdraw change only the record.
     - A spike proves the role gate, accept equivalence, reject leaving the body byte-identical, the gates, the outdated rule, projectionDiff and O(frame) ingest cost.
   - **Done:** merged, with every review-history and panel finding dispositioned, and the ARCHITECTURE A§5.1/A§13, DEVIATIONS and PRODUCT ruling 17 diffs included.
+- **T5.P Suggestions on payload docs** `[B·fresh]`, coordinator ruling, 2026-10-05, a design amendment (docs/design/suggestions.md §14): record ops carry `{doc: 'body' | payloadId, update}`, leases cover the author's payload forks, G4 becomes `payload-alias`, edits to an existing payload are proposals applied only at accept with payload diffs in the hash-bound preview, and reject and withdraw still write nothing; every spike test ported, with payload cases in the forged-frame census.
 - **T5.1 Suggest-mode client: fork, modes, routing, paint** `[A·codex]`
   - **Scope:**
     - the toolbar toggle and the role-locked "Suggesting" chip;

@@ -85,7 +85,7 @@ describe('T5.0 accept equals the direct edit @p:mean-2 @p:R17', () => {
       resetIds();
       const oracle = directEdit(seededBody(), steps);
       // A record that changes nothing visible (a split and its undo) shows no hunk; everything else shows one.
-      if (exported(oracle) !== exported(seededBody())) expect(preview.hunks.length, 'the reviewer is shown the change').toBeGreaterThan(0);
+      if (exported(oracle) !== exported(seededBody())) expect(preview.hunks.length, `the reviewer is shown the change; ops on ${fork.sent.map((op) => op.doc).join(', ')}`).toBeGreaterThan(0);
       expect(exported(live)).toBe(exported(oracle));
       expect(payloadsInOrder(live)).toEqual(payloadsInOrder(oracle));
     } finally {
