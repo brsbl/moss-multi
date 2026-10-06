@@ -298,7 +298,7 @@ test('j16-review: a word replacement reads as the word removed and the word adde
   const inserted = await texts('insert');
   expect(inserted, 'the added word is one row').toContain('legacy');
   expect(inserted.filter((text) => /^[legacy]+$/.test(text) && text !== 'legacy'), 'no letter of it is split off').toEqual([]);
-  for (let i = 1; i <= 9; i++) expect(inserted.join('\n')).toContain(`Line ${i}`);
+  expect(inserted.filter((text) => text.startsWith('Line')), 'the new lines read top to bottom').toEqual(Array.from({ length: 9 }, (_, i) => `Line ${i + 1}`));
 
   await card.getByRole('button', { name: 'Accept' }).click();
   await expect(cards(ada, 'accepted')).toHaveCount(1, { timeout: BIND_TIMEOUT });

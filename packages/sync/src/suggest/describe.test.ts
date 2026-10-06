@@ -214,6 +214,21 @@ describe('T5.3 text rows follow Yjs item identity @p:mean-2 @p:R17', () => {
   });
 });
 
+describe('T5.3 rows read in document order @p:mean-2 @p:R17', () => {
+  it('new blocks read top to bottom after the block they follow, whatever their ids sort as', () => {
+    const block = (text: string) => ({ type: 'XmlText', seq: [{ id: '9:0', s: text }], keys: [['__type', { Any: ['paragraph'] }]] });
+    // Hash order (by id) is 5, 1, 3; the document reads changed 7, then 3, 1, 5 by their anchors.
+    const listed: Hunk[] = [
+      { kind: 'block', id: '1:5', op: 'added', after: block('Line 2'), at: '1:3' },
+      { kind: 'block', id: '2:1', op: 'added', after: block('Line 3'), at: '1:5' },
+      { kind: 'block', id: '1:3', op: 'added', after: block('Line 1'), at: '1:7' },
+      { kind: 'block', id: '1:7', op: 'changed', before: block('old'), after: { ...block('new'), seq: [{ id: '9:9', s: 'new' }] } },
+    ];
+    const rows = describeHunks([...listed].sort((a, b) => (a.id < b.id ? -1 : 1)));
+    expect(rows.map((row) => row.text), shown(rows)).toEqual(['old', 'new', 'Line 1', 'Line 2', 'Line 3']);
+  });
+});
+
 /** A small seeded generator, so a failure replays. */
 function prng(seed: number): () => number {
   let s = seed >>> 0;

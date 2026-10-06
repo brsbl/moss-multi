@@ -405,10 +405,37 @@ function whereOf(hunk: Hunk): string {
   return `${hunk.kind} ${hunk.id} ${hunk.op}${at} #${previewHash([hunk]).slice(0, 12)}`;
 }
 
-/** Every row a card shows for `hunks`, in hunk order: each hunk yields at least one, and nothing is folded away. */
+/**
+ * The hunks in reading order: an added block right after the block it follows when that block is also in the list
+ * (so new lines read top to bottom), every other hunk in hash order. A reordering only: every hunk stays.
+ */
+function readingOrder(hunks: readonly Hunk[]): Hunk[] {
+  const blocks = new Set(hunks.filter((h) => h.kind === 'block').map((h) => h.id));
+  const followers = new Map<string, Hunk[]>();
+  const top: Hunk[] = [];
+  for (const hunk of hunks) {
+    const anchor = hunk.kind === 'block' && hunk.op === 'added' ? hunk.at : null;
+    if (anchor && anchor !== hunk.id && blocks.has(anchor)) followers.set(anchor, [...(followers.get(anchor) ?? []), hunk]);
+    else top.push(hunk);
+  }
+  const out: Hunk[] = [];
+  const placed = new Set<Hunk>();
+  const place = (hunk: Hunk) => {
+    if (placed.has(hunk)) return;
+    placed.add(hunk);
+    out.push(hunk);
+    if (hunk.kind === 'block') for (const next of followers.get(hunk.id) ?? []) place(next);
+  };
+  top.forEach(place);
+  // A cycle of anchors (never from a real doc) still shows every hunk.
+  for (const hunk of hunks) place(hunk);
+  return out;
+}
+
+/** Every row a card shows for `hunks`, in reading order: each hunk yields at least one, and nothing is folded away. */
 export function describeHunks(hunks: readonly Hunk[]): ReviewRow[] {
   const out: ReviewRow[] = [];
-  for (const hunk of hunks) {
+  for (const hunk of readingOrder(hunks)) {
     const before = hunk.op === 'added' ? undefined : hunk.before;
     const after = hunk.op === 'removed' ? undefined : hunk.after;
     const rows = new Rows(whereOf(hunk));
