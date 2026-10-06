@@ -27,9 +27,14 @@ export interface Target {
   maxBlob: number;
   /**
    * A gesture both sides make before capture. `trash-open-note`: the open note's sidebar row → Trash, then the
-   * footer's Trash view, which shows that note read-only.
+   * footer's Trash view, which shows that note read-only. `open-settings`: Settings is open (the story opens it; the
+   * candidate presses the sidebar's Settings), over an opaque backdrop on both sides.
    */
-  prepare?: 'trash-open-note';
+  prepare?: 'trash-open-note' | 'open-settings';
+  /** The captured element, when not the shell. */
+  crop?: string;
+  /** Web sections the candidate takes out of layout before capture: those moss has no counterpart for. */
+  withhold?: string[];
 }
 
 export const TARGETS: Target[] = [
@@ -39,6 +44,10 @@ export const TARGETS: Target[] = [
   { id: 'shell-empty', story: 'app--empty-notes', seed: 'fresh', focusEditor: false, masks: ['[data-collab-chrome]'], floor: 0.05, maxBlob: 16 },
   // The owner's trash view (T2.3). The retention notice's words differ by design (one module writes trash copy and
   // never counts days down), so only that pill is masked; it is wider than moss's and centred on the same point.
+  // Settings (T3.6). The oracle drops the sections the web withholds (Workspace Location, Default Markdown Editor, Note
+  // Intelligence, Connected Folders); the candidate drops its Account and Agents sections, which moss has no story for,
+  // so moss's dialog frame, header and Appearance section compare, and a slot that displaces them fails.
+  { id: 'settings', story: 'composite-settingsmodal--empty-new-user', seed: 'fresh', focusEditor: false, masks: [], floor: 0.05, maxBlob: 16, prepare: 'open-settings', crop: '[role="dialog"]', withhold: ['[role="dialog"] [data-collab-chrome]'] },
   { id: 'trash-view', story: 'app--default', seed: 'story-listing', focusEditor: false, masks: ['[data-collab-chrome]', `[${RETENTION_NOTICE_ATTR}]`], floor: 0.05, maxBlob: 16, prepare: 'trash-open-note' },
 ];
 

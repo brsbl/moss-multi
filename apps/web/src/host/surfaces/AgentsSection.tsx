@@ -118,7 +118,7 @@ export function AgentsSection(): ReactNode {
   }
 
   return (
-    <div className="space-y-2">
+    <div data-collab-chrome="" className="space-y-2">
       <span className="text-micro font-medium uppercase tracking-wider text-ink-faint">Agents</span>
       <div className="space-y-3 rounded-lg border border-border-subtle bg-surface-raised-card p-3">
         <p className="text-xs text-ink-muted">
