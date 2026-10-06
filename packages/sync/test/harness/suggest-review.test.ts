@@ -186,7 +186,9 @@ describe('T5.3 accept, reject and withdraw through the DocDO @p:mean-2 @p:R16 @p
     // An eviction drops what the instance held in memory; the alarm it set still fires on the fresh one.
     if (evicted) opened = await start(wake(opened));
     await opened.dobj.alarm();
-    expect(readMeta(opened.dobj.document, grant.record)).toMatchObject({ status: 'rejected', resolvedBy: 'system' });
+    const after = readMeta(opened.dobj.document, grant.record);
+    const diagnosis = after?.status === 'open' ? JSON.stringify({ now: Date.now(), after, preview: await opened.dobj.previewSuggestion({ id: grant.record, reviewer: EDITOR }) }).slice(0, 1500) : '';
+    expect(after, diagnosis).toMatchObject({ status: 'rejected', resolvedBy: 'system' });
   });
 
   it('a new live suggestion notifies once, naming its author and record; a continuation does not', async () => {
