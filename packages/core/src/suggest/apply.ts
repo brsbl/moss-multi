@@ -375,11 +375,12 @@ export function yValue(value: unknown): unknown {
     return { t: 'xmlelement', name: value.nodeName, attrs: attrsOf(value), children: value.toArray().map(yValue) };
   }
   if (value instanceof Y.XmlFragment) return { t: 'xmlfragment', children: value.toArray().map(yValue) };
-  if (value instanceof Y.Text) return { t: 'text', delta: deltaOf(value) };
+  if (value instanceof Y.Text) return { t: 'text', attrs: attrsOf(value), delta: deltaOf(value) };
   if (value instanceof Y.Map) {
     return { t: 'map', entries: [...value.entries()].sort(([a], [b]) => (a < b ? -1 : 1)).map(([k, v]) => [k, yValue(v)]) };
   }
   if (value instanceof Y.Array) return { t: 'array', items: value.toArray().map(yValue) };
+  if (value instanceof Y.Doc) return { t: 'doc', guid: value.guid };
   if (value instanceof Uint8Array) return { t: 'binary', bytes: Array.from(value) };
   if (Array.isArray(value)) return value.map(yValue);
   if (value && typeof value === 'object') {
@@ -388,7 +389,7 @@ export function yValue(value: unknown): unknown {
   return value ?? null;
 }
 
-function attrsOf(type: Y.XmlText | Y.XmlElement): [string, unknown][] {
+function attrsOf(type: { getAttributes(): unknown }): [string, unknown][] {
   return Object.entries(type.getAttributes() as Record<string, unknown>)
     .sort(([a], [b]) => (a < b ? -1 : 1))
     .map(([k, v]) => [k, yValue(v)]);
@@ -403,16 +404,18 @@ function deltaOf(type: Y.Text): unknown[] {
 
 /** What a reviewer is shown of a doc: each top-level block by its Yjs item id, and each register by key. */
 export interface Projection {
+  /** The root's own attributes (Lexical's root properties). */
+  note: unknown;
   blocks: Map<string, unknown>;
   order: string[];
   /** Each payload a live element names, by id. */
   payloads: Map<string, unknown>;
 }
 
-/** A payload doc as a reviewer is shown it: its text (with any formatting) and its compound fields. */
+/** A payload doc as a reviewer is shown it: its text (with any formatting and attributes) and its compound fields. */
 export function payloadValueOf(doc: Y.Doc): unknown {
   const text = doc.getText('payload');
-  return { text: text.toString(), delta: deltaOf(text), map: yValue(doc.getMap('payload-map')) };
+  return { text: text.toString(), attrs: attrsOf(text), delta: deltaOf(text), map: yValue(doc.getMap('payload-map')) };
 }
 
 /**
@@ -429,7 +432,8 @@ export function projectDoc(
 ): Projection {
   const blocks = new Map<string, unknown>();
   const order: string[] = [];
-  for (let item = doc.get('root', Y.XmlText)._start; item; item = item.right) {
+  const root = doc.get('root', Y.XmlText);
+  for (let item = root._start; item; item = item.right) {
     if (item.deleted) continue;
     const key = itemKey(item.id);
     const content = item.content.getContent();
@@ -442,11 +446,11 @@ export function projectDoc(
     const held = payload?.(id);
     payloads.set(id, held ? payloadValueOf(held) : null);
   }
-  return { blocks, order, payloads };
+  return { note: attrsOf(root), blocks, order, payloads };
 }
 
 export interface Hunk {
-  kind: 'block' | 'payload';
+  kind: 'block' | 'note' | 'payload';
   id: string;
   op: 'added' | 'removed' | 'changed';
   before?: unknown;
@@ -457,6 +461,7 @@ export interface Hunk {
 
 export function projectionDiff(before: Projection, after: Projection): Hunk[] {
   const hunks: Hunk[] = [];
+  if (canonical(before.note) !== canonical(after.note)) hunks.push({ kind: 'note', id: 'root', op: 'changed', before: before.note, after: after.note });
   const blockIds = [...new Set([...before.blocks.keys(), ...after.blocks.keys()])];
   for (const id of blockIds) {
     const b = before.blocks.get(id);
