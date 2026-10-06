@@ -309,7 +309,7 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
   - **Done:** j13 is green, with a triptych against the glyphdown switcher.
 - **T3.6 Settings → Agents, agent sharing, the device page** `[C·codex]`
   - **Scope:** an Agents section in SettingsModal (mint once, list with a copyable agent id, revoke through the kick path); the ShareDialog accepts an agent id and tags agent rows (A§8); `/device` styled with moss tokens.
-  - **Tests first:** a minted key is shown once; revoking it 401s a raw bearer request and closes the agent's live socket; an agent added by id appears as an "agent" row at its role; unit tests for device-flow claim, approve, deny and replay. **Done:** green, with a parity target for Settings.
+  - **Tests first:** a minted key is shown once; revoking it 401s a raw bearer request and closes the agent's live socket; an agent added by id appears as an "agent" row at its role; per PRODUCT ruling 20, sharing with an agent the caller does not own (another person's agent, or one owned by a co-owner) is refused with the same 404 as an unknown id, in the same guarded write, and a test proves it for a doc and a folder; unit tests for device-flow claim, approve, deny and replay. **Done:** green, with a parity target for Settings.
 - **T3.7 Tab and print** `[C·fresh]`
   - **Scope:** Open in New Window becomes a browser tab; Save as PDF prints through `/pdf-export`; Save as Markdown downloads the export.
   - **Tests first:** a new page opens at `/d/<id>`; the print route reaches `data-pdf-export-status=ready` and calls `window.print` (spied); the downloaded bytes equal the export and contain no markers. **Done:** green.
