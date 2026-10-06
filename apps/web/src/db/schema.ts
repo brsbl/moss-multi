@@ -346,5 +346,15 @@ export const accessEpochs = sqliteTable('access_epochs', {
   epoch: integer('epoch').notNull().default(0),
 });
 
+/**
+ * Sign-up counts per client address and per email domain (A§7), one fixed window per key. Separate from better-auth's
+ * `rate_limit`, which prunes every row older than its longest window, a minute.
+ */
+export const signupLimits = sqliteTable('signup_limits', {
+  key: text('key').primaryKey(),
+  windowStart: integer('window_start').notNull(),
+  count: integer('count').notNull(),
+});
+
 /** The models better-auth's drizzle adapter reads, keyed by its model names. */
 export const authSchema = { user, session, account, verification, deviceCode, rateLimit };

@@ -10,6 +10,7 @@
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { getServerByName } from 'partyserver';
 import { filenameFor } from '@moss-multi/core/filenames';
+import { DAY_MS, FOLDER_CREATE_DAILY } from '@moss-multi/protocol/limits';
 import { TRASHED_ACTION } from '@moss-multi/protocol/retention';
 import { can, roleAtLeast } from '@moss-multi/protocol/roles';
 import type { DocDO } from '@moss-multi/sync';
@@ -29,7 +30,7 @@ import {
 import { handleInviteLinks } from './invites.ts';
 import { handleLinks } from './links.ts';
 import { handleMembers } from './members.ts';
-import { changed, NO_STORE, notFound, readJsonObject, refuse, signedIn, unauthenticated } from './respond.ts';
+import { changed, NO_STORE, notFound, overDailyBound, readJsonObject, refuse, signedIn, unauthenticated } from './respond.ts';
 
 export type FoldersEnv = AuthEnv & Pick<AppEnv, 'DocDO'> & Partial<Pick<AppEnv, 'PrincipalDO'>>;
 
@@ -138,6 +139,16 @@ const folderRecord = async (db: Db, id: string) => {
   return row;
 };
 
+/** Folders and vaults made in the owner bound at ?{owner}'s vaults in the day before ?{now}, as a SQL value. */
+export const foldersToday = (owner: number, now: number) =>
+  `(SELECT count(*) FROM folders WHERE owner_user_id = ?${owner} AND created_at > ?${now} - ${DAY_MS})`;
+
+export const outOfFolders = async (d1: D1Database, owner: string, now: number) =>
+  ((await d1.prepare(`SELECT ${foldersToday(1, 2)} AS n`).bind(owner, now).first<{ n: number }>())?.n ?? 0) >= FOLDER_CREATE_DAILY;
+
+export const tooManyFolders = () =>
+  overDailyBound(`A vault owner can add ${FOLDER_CREATE_DAILY.toLocaleString('en-US')} folders and vaults a day. Try again later.`);
+
 async function createFolder(request: Request, env: FoldersEnv): Promise<Response> {
   const principal = await signedIn(request, env);
   if (!principal) return unauthenticated();
@@ -152,14 +163,18 @@ async function createFolder(request: Request, env: FoldersEnv): Promise<Response
   const chain = await folderChain(db, body.parentId as string);
   if (chain.length >= MAX_FOLDER_DEPTH) return tooDeep();
   const id = crypto.randomUUID();
+  const now = Date.now();
   try {
     const inserted = await env.DB.prepare(`WITH RECURSIVE ${upFrom(1)}
       INSERT INTO folders (id, owner_user_id, created_by, name, kind, parent_id, created_at)
       SELECT ?2, ?3, ?4, ?5, 'folder', ?1, ?6
-      WHERE ${liveIn(7)} AND (SELECT count(*) FROM up) < ${MAX_FOLDER_DEPTH}`)
-      .bind(body.parentId, id, parent.ownerUserId, principal.id, named.name, Date.now(), chain.at(-1)).run();
-    // The parent was trashed or nested deeper in the meantime.
-    if (!changed(inserted)) return (await liveFolder(db, principal, body.parentId, shareTokenOf(request))) ? tooDeep() : folderNotFound();
+      WHERE ${liveIn(7)} AND (SELECT count(*) FROM up) < ${MAX_FOLDER_DEPTH} AND ${foldersToday(3, 6)} < ${FOLDER_CREATE_DAILY}`)
+      .bind(body.parentId, id, parent.ownerUserId, principal.id, named.name, now, chain.at(-1)).run();
+    // The day's folders ran out, or the parent was trashed or nested deeper in the meantime.
+    if (!changed(inserted)) {
+      if (await outOfFolders(env.DB, parent.ownerUserId, now)) return tooManyFolders();
+      return (await liveFolder(db, principal, body.parentId, shareTokenOf(request))) ? tooDeep() : folderNotFound();
+    }
   } catch (error) {
     if (isUnique(error)) return exists(named.name);
     throw error;

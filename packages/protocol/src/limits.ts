@@ -39,7 +39,11 @@ export const DOC_CREATE_RATE = { max: 60, windowMs: 60_000 } as const;
  * Notes minted per acting user per day, on the same PrincipalDO, counting only the ones granted; 429 past it. A person
  * importing a large vault at the minute rate takes about half an hour for 2,000, which no journey or seed comes near.
  */
-export const DOC_CREATE_DAILY = { max: 2_000, windowMs: 24 * 60 * 60 * 1000 } as const;
+export const DAY_MS = 24 * 60 * 60 * 1000;
+export const DOC_CREATE_DAILY = { max: 2_000, windowMs: DAY_MS } as const;
+
+/** The largest `POST /api/docs` body: 2 MB of markdown even if JSON escapes every byte (`\u00XX`), plus the fields. */
+export const CREATE_BODY_MAX_BYTES = MARKDOWN_CAP_BYTES * 6 + 64 * 1024;
 
 /** Live (untrashed) notes one vault holds, over all its folders; a create or duplicate past it is 409 (A§18). */
 export const VAULT_NOTE_CAP = 10_000;

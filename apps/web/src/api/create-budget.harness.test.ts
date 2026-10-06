@@ -201,7 +201,7 @@ describe('daily creation budget (T3.S3b)', () => {
       if (i > 0 && i % DOC_CREATE_RATE.max === 0) vi.setSystemTime((now += DOC_CREATE_RATE.windowMs + 1));
       expect(await dobj.takeCreateToken(), `token ${i + 1}`).toBe(true);
     }
-    vi.setSystemTime((now += DOC_CREATE_RATE.windowMs + 1));
+    vi.setSystemTime(now + DOC_CREATE_RATE.windowMs + 1);
     const rows = await docsBy(jo);
     const addressedBefore = addressed.length;
     const refused = await create(jo, { title: 'Past the day' });

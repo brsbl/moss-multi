@@ -52,6 +52,7 @@ export function createAuth(env: AuthEnv) {
       customRules: {
         '/sign-in/*': hookStack ? HOOK_STACK_LIMIT : SIGN_IN_LIMIT,
         '/sign-up/*': hookStack ? HOOK_STACK_LIMIT : SIGN_UP_LIMIT,
+        '/device/code': hookStack ? HOOK_STACK_LIMIT : DEVICE_CODE_LIMIT,
       },
     },
     advanced: {
