@@ -271,18 +271,19 @@ describe('T5.3 the rows are injective over hunk lists @p:mean-2 @p:R17', () => {
     const IDENTITY = new Set(['id', 'at', 'ids', 'kind', 'op']);
     for (let n = 0; n < 300; n++) {
       const hunks = JSON.parse(JSON.stringify(base)) as Hunk[];
-      const leaves: { holder: Record<string, unknown> | unknown[]; key: string | number; path: string }[] = [];
-      const walk = (value: unknown, path: string) => {
-        if (Array.isArray(value)) value.forEach((item, i) => (item && typeof item === 'object' ? walk(item, `${path}[${i}]`) : leaves.push({ holder: value, key: i, path: `${path}[${i}]` })));
+      const leaves: { holder: Record<string, unknown> | unknown[]; key: string | number; path: string; owner: unknown }[] = [];
+      const walk = (value: unknown, path: string, owner: unknown) => {
+        if (Array.isArray(value)) value.forEach((item, i) => (item && typeof item === 'object' ? walk(item, `${path}[${i}]`, owner) : leaves.push({ holder: value, key: i, path: `${path}[${i}]`, owner })));
         else if (value && typeof value === 'object') {
+          const own = typeof (value as { type?: unknown }).type === 'string' ? value : owner;
           for (const [key, item] of Object.entries(value)) {
             if (IDENTITY.has(key)) continue;
-            if (item && typeof item === 'object') walk(item, `${path}.${key}`);
-            else leaves.push({ holder: value as Record<string, unknown>, key, path: `${path}.${key}` });
+            if (item && typeof item === 'object') walk(item, `${path}.${key}`, own);
+            else leaves.push({ holder: value as Record<string, unknown>, key, path: `${path}.${key}`, owner: own });
           }
         }
       };
-      walk(hunks, '');
+      walk(hunks, '', null);
       const leaf = leaves[Math.floor(rand() * leaves.length)];
       const was = (leaf.holder as Record<string | number, unknown>)[leaf.key];
       const choices: unknown[] = typeof was === 'string' ? [`${was}x`, was.slice(1), was.toUpperCase(), 'x', `${was} `, ` ${was}`] : typeof was === 'number' ? [was + 1, was - 1, 0] : [true, false, null, 'x'];
@@ -291,7 +292,7 @@ describe('T5.3 the rows are injective over hunk lists @p:mean-2 @p:R17', () => {
       const hash = previewHash(hunks);
       const rows = canonical(render(hunks));
       const hunk = hunks[Number(/^\[(\d+)\]/.exec(leaf.path)?.[1] ?? 0)];
-      const what = `${leaf.path} (${hunk.kind} ${hunk.op}): ${canonical(was)} -> ${canonical(now)}`;
+      const what = `${leaf.path} (${hunk.kind} ${hunk.op}): ${canonical(was)} -> ${canonical(now)} in ${canonical(leaf.owner).slice(0, 300)}`;
       const seen = byRows.get(rows);
       if (seen && seen.hash !== hash) found.push(`${what} reads as ${seen.what}`);
       byRows.set(rows, { hash, what });
