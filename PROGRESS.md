@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 77% done** (75 of 97 planned tasks verified)
+**Overall: 82% done** (76 of 93 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -9,7 +9,7 @@
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 14 / 15 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 7 / 7 | in progress |
-| M5 Suggestions | Suggest mode, vetting, accept/reject | 2 / 5 | in progress |
+| M5 Suggestions | Suggest mode, vetting, accept/reject | 3 / 5 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
@@ -95,6 +95,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-06 — T3.6 verified: a person can mint, see once and revoke agent keys in Settings, approve a device sign-in, and share a note or folder with an agent they own at a role; sharing with someone else's agent gets the same 404 as an unknown id, and Settings has a parity target.
 - 2026-10-06 — T4.S3 verified: a frame that touches long commented runs or long restore candidates now does anchor work bounded by its walk budget before reading any item, so oversized gaps detach comments instead of costing unbounded time.
 - 2026-10-06 — T4.S1 verified: every comment write now re-checks its author's credential, the note's liveness and at least commenter access inside the note's serialized write, so a revocation or demotion that commits after the request was admitted stops the comment from landing.
+- 2026-10-06 — T5.R verified: m5 now sits on the current m4, and the server stores a suggester's edits to the note and to code, HTML, formula, chart and sketch blocks as per-document suggestion records checked through the shared channel table, never touching the note body.
 
 ## T1.1s identity audit
 
@@ -243,6 +244,8 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T5.2 checker P2: a crafted below-editor frame that runs out of delete-scan budget is dropped silently (classifySync reports no changes) instead of refused with write-refused('role')/4403 and counted toward the cooldown; isReadOnly still blocks the apply, so the body is intact.
 - T5.2 checker P2: successful delete-only edits (suggest-delete, struct-free suggest-ops) do not refresh a bound lease's idle clock (usedAt), so over 30 min of delete-only activity on one connection gets the next insert refused with 'lease'; no client sends suggest-delete yet.
 - T5.2 checker P2: per-frame cost of suggest-ops and suggest-delete is not measured on the real DocDO path after a wake (benchmarks call SuggestIngest directly or use MemoryLeases without wake or socket); the first #head walk plus SuggestionsWriter's Array.splice add 0.27/0.38/0.61 ms at shallow, 3000 closed records and depth 2000.
+- T5.R checker P2 (pre-restack m5 suggestion records and leases have no upgrade path; downgraded from Codex P1): a DocDO saved by pre-restack m5 code holds raw Uint8Array ops that `readRecord` now casts to RecordOp[] (SuggestIngest reads `op.update.byteLength` and throws in onLoad), and its `suggest_leases` table still has `next_clock` and no `clocks`; never shipped, so only throwaway test state is affected.
+- T5.R checker P2 (loading a cold payload in suggestion ingest replays the whole payload): the payloadDoc callback calls `PayloadStore.doc` synchronously, so after a wake or a 256-entry cache eviction a tiny suggestion frame replays every stored update before the lease and size checks; cost tests only measure warm body frames.
 - The wrangler ProxyWorker patch replays non-idempotent requests after an ambiguous failure → T0.9b follow-up (stack infra)
 - `qa.mjs close` forgets the session even when closing it failed → tooling follow-up
 - T4.0 checker: typing `==marked==` then a space in the real app drops the word instead of highlighting it (moss's `==` inline shortcut over the bound editor; the comment engine is not involved) → T3.3 follow-up (inline markdown shortcuts), with a j-editing leg that types each moss inline shortcut and asserts the text survives
