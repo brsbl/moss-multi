@@ -264,7 +264,7 @@ export class DocDO extends YServer<SyncEnv> {
         this.#edited(store);
         if (isConnection(origin)) {
           this.#projections?.touch();
-          this.#payloadFeed ??= setTimeout(() => {
+          if (!this.#payloadFeed) this.#payloadFeed = setTimeout(() => {
             this.#payloadFeed = null;
             void this.#feedSearch();
           }, PAYLOAD_FEED_MS);
