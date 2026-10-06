@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 69% done** (68 of 99 planned tasks verified)
+**Overall: 70% done** (69 of 99 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 16 / 16 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 17 / 17 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
@@ -87,6 +87,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-06 — T3.6 verified: a person can mint, see once and revoke agent keys in Settings, approve a device sign-in, and share a note or folder with an agent they own at a role; sharing with someone else's agent gets the same 404 as an unknown id, and Settings has a parity target.
 - 2026-10-06 — T3.10 verified: a host such as the bb Moss viewer plugin can read the viewer's or editor's current selection as text, markdown, source file lines, heading path and blocks, and can show moss's Share with Agent button for it.
 - 2026-10-06 — T3.S2 verified: an upload, from-url save, cross-note copy or duplicate that meets a revocation, demotion or trash after its access check now writes nothing; media rows commit only while the caller still edits the live note, and bytes land in storage only after that.
+- 2026-10-06 — T3.S1 verified: searching a workspace that holds a note full of unclosed `[[`, `[`, `<` or `<!--` openers now answers quickly, because link extraction, snippet cleaning and heading link-stripping scan in linear time with the same output as before.
 
 ## T1.1s identity audit
 
@@ -120,6 +121,10 @@ A task counts only after an independent checker passes it on green CI. Each mile
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
 
+- T3.S1 (Linear search scans) checker P2: the workerd budget is measured at 200k/400k chars, not at the 2 MB note cap (`SEARCH_SIZES` in `scripts/measure-converter.mjs`); a standalone 2 MB timing put every opener family at 3-37 ms → search measurement follow-up: add a 2 MB size.
+- T3.S1 (Linear search scans) checker P2: the per-request CPU budget is checked on the median of 3 samples, so one slow sample can pass the 100 ms gate (`scripts/measure-converter.mjs`) → search measurement follow-up: gate every sample.
+- T3.S1 (Linear search scans) checker P2: the workerd measurement runs no unrelated search after the adversarial requests (the checker's browser pass covered it: 5 ms with the adversarial note indexed) → search measurement follow-up.
+- T3.S1 (Linear search scans) checker P2: integration note, BUILDPLAN.md conflicted with T3.S2's M3 entry line; resolved at integration by keeping both lines.
 - T3.S2 (Media writes re-check access at commit) checker P2 (downgraded from Codex P1): copy and duplicate re-check only the destination at commit; `copyMedia` and `copyFromNote` in `api/assets.ts` and `duplicateDoc` in `api/docs.ts` (including its DocDO snapshot) check source read access once before `admitMedia`, so a source revoked or trashed in the few ms of server work still copies → assets follow-up: re-check source access in the guarded batch.
 - T3.S2 (Media writes re-check access at commit) checker P2 (downgraded from Codex P1): a same-name, same-content retry returns 201 without the guard; `bind` in `api/assets.ts` returns the existing record before the guarded batch, so a revoked caller gets 201 (nothing new is written or referenced) → assets follow-up: run the guard on the reuse path too.
 - T3.S2 (Media writes re-check access at commit) checker P2 (pre-existing, client-only): paste in the editor through an editor link sends no upload (paste handled, no POST /assets, no image; a direct POST with the same link returns 201) → media client follow-up, checked against j11.
