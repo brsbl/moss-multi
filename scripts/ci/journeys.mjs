@@ -36,6 +36,8 @@ export const GROUPS = {
   media: ['j11', 'j14'],
   // Comments, suggestions, history, agents.
   meaning: ['j15', 'j16', 'j17', 'j18'],
+  // Reactions, mentions, edit and delete, and the comment bell.
+  social: ['j15-social'],
 };
 
 /**

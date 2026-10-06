@@ -687,3 +687,89 @@ describe('T4.1 createComment RPC @p:tech-3', () => {
     await expectRefused(target, raw([forged(Y.createID(777, 0), { origin: tomb.id }, new Y.ContentAny([{ text: 'revived' }]))]), 'protected-type');
   });
 });
+
+describe('T4.4 edit, delete and reactions through the DocDO @p:mean-1', () => {
+  async function thread() {
+    const opened = await start(openDoc());
+    await opened.dobj.create({ folderId: 'folder', ownerId: 'owner', markdown: 'The quick brown fox jumps over the lazy dog.' });
+    const { text, units } = liveUnits(opened.dobj.document);
+    const at = text.indexOf('brown fox');
+    const anchor = { kind: 'text' as const, start: encodePosition(units[at], 0), end: encodePosition(units[at + 'brown fox'.length - 1], -1) };
+    expect(await opened.dobj.createComment({ author: 'ada', id: 'root', text: 'root', anchor })).toMatchObject({ ok: true });
+    vi.setSystemTime(Date.now() + 2_000);
+    expect(await opened.dobj.createComment({ author: 'ben', id: 'r1', text: 'oldest reply', parentId: 'root' })).toEqual({ ok: true, id: 'r1', quote: null, rootAuthor: 'ada' });
+    vi.setSystemTime(Date.now() + 2_000);
+    expect(await opened.dobj.createComment({ author: 'cara', id: 'r2', text: 'newer reply', parentId: 'root' })).toMatchObject({ ok: true, rootAuthor: 'ada' });
+    return opened;
+  }
+
+  it("edit is the author's alone: another principal gets 403 not-author and the record is unchanged", async () => {
+    const opened = await thread();
+    const before = json(opened)['c:root'];
+    expect(await opened.dobj.editComment({ id: 'root', author: 'ben', text: 'hijacked' })).toEqual({ ok: false, status: 403, error: 'not-author' });
+    expect(json(opened)['c:root']).toEqual(before);
+    expect(await opened.dobj.editComment({ id: 'root', author: 'ada', text: 'edited' })).toMatchObject({ ok: true });
+    expect(json(opened)['c:root']).toMatchObject({ text: 'edited', author: 'ada' });
+    expect(await opened.dobj.editComment({ id: 'gone', author: 'ada', text: 'x' })).toMatchObject({ ok: false, status: 404 });
+    expect(await opened.dobj.editComment({ id: 'root', author: 'ada', text: '   ' })).toMatchObject({ ok: false, status: 400 });
+    const woken = await start(wake(opened));
+    expect(json(woken)['c:root'], 'persisted in the RPC turn').toMatchObject({ text: 'edited' });
+  });
+
+  it("delete is the author's alone, and a thread delete the root author's", async () => {
+    const opened = await thread();
+    const before = json(opened);
+    expect(await opened.dobj.deleteComment({ id: 'r1', author: 'ada', scope: 'comment' })).toEqual({ ok: false, status: 403, error: 'not-author' });
+    expect(await opened.dobj.deleteComment({ id: 'root', author: 'ben', scope: 'thread' })).toEqual({ ok: false, status: 403, error: 'not-author' });
+    expect(await opened.dobj.deleteComment({ id: 'root', author: 'ben', scope: 'comment' })).toEqual({ ok: false, status: 403, error: 'not-author' });
+    expect(json(opened)).toEqual(before);
+    expect(await opened.dobj.deleteComment({ id: 'r2', author: 'cara', scope: 'comment' })).toMatchObject({ ok: true });
+    expect(json(opened)['c:r2']).toBeUndefined();
+    expect(await opened.dobj.deleteComment({ id: 'root', author: 'ada', scope: 'thread' })).toMatchObject({ ok: true });
+    expect(json(opened), 'the thread, its replies and its anchor are gone').toEqual({});
+  });
+
+  it('deleting a root with replies keeps the thread anchored under the promoted oldest reply, with its resolution', async () => {
+    const opened = await thread();
+    expect(await opened.dobj.resolveComment({ id: 'root', resolved: true, by: 'user' })).toMatchObject({ ok: true });
+    const resolvedAt = (json(opened)['c:root'] as { resolvedAt: number }).resolvedAt;
+    const anchor = anchorOf(opened, 'root');
+    expect(await opened.dobj.deleteComment({ id: 'root', author: 'ada', scope: 'comment' })).toEqual({ ok: true, id: 'root', quote: null, promoted: 'r1' });
+    const after = json(opened);
+    expect(after['c:root']).toBeUndefined();
+    expect(after['a:root']).toBeUndefined();
+    expect(after['c:r1'], 'the oldest reply is the root now').toMatchObject({ author: 'ben', text: 'oldest reply', resolvedAt, resolvedBy: 'user' });
+    expect(after['c:r1']).not.toHaveProperty('parentId');
+    expect(after['a:r1'], 'with the root anchor re-keyed').toEqual(anchor);
+    expect(after['c:r2'], 'the other replies follow it').toMatchObject({ parentId: 'r1' });
+    expect(anchorText(opened.dobj.document, anchorOf(opened, 'r1')!)).toBe('brown fox');
+    const woken = await start(wake(opened));
+    expect(anchorText(woken.dobj.document, anchorOf(woken, 'r1')!), 'persisted, and indexed again at start').toBe('brown fox');
+  });
+
+  it('reactions toggle per principal: each person adds and removes only their own', async () => {
+    const opened = await thread();
+    const reactions = () => (json(opened)['c:root'] as { reactions: Record<string, string[]> }).reactions;
+    expect(await opened.dobj.reactComment({ id: 'root', principal: 'ben', emoji: '👍', on: true })).toMatchObject({ ok: true });
+    expect(await opened.dobj.reactComment({ id: 'root', principal: 'cara', emoji: '👍', on: true })).toMatchObject({ ok: true });
+    expect(await opened.dobj.reactComment({ id: 'root', principal: 'cara', emoji: '👍', on: true }), 'idempotent').toMatchObject({ ok: true });
+    expect(reactions()).toEqual({ '👍': ['ben', 'cara'] });
+    expect(await opened.dobj.reactComment({ id: 'root', principal: 'ben', emoji: '👍', on: false })).toMatchObject({ ok: true });
+    expect(reactions()).toEqual({ '👍': ['cara'] });
+    expect(await opened.dobj.reactComment({ id: 'root', principal: 'cara', emoji: '👍', on: false })).toMatchObject({ ok: true });
+    expect(reactions()).toEqual({});
+    for (const emoji of ['a', '👍👍', ' ', '', 'x'.repeat(40)]) {
+      expect(await opened.dobj.reactComment({ id: 'root', principal: 'ben', emoji, on: true }), JSON.stringify(emoji)).toMatchObject({ ok: false, status: 400, error: 'bad-emoji' });
+    }
+    expect(await opened.dobj.reactComment({ id: 'root', principal: 'ben', emoji: '👨‍👩‍👧', on: true }), 'one grapheme of many code points').toMatchObject({ ok: true });
+  });
+
+  it('caps a comment at 20 distinct reactions', async () => {
+    const opened = await thread();
+    const emoji = [...'😀😁😂🤣😃😄😅😆😉😊😋😎😍😘🥰😗😙😚🙂🤗'];
+    expect(emoji).toHaveLength(20);
+    for (const e of emoji) expect(await opened.dobj.reactComment({ id: 'r1', principal: 'ada', emoji: e, on: true })).toMatchObject({ ok: true });
+    expect(await opened.dobj.reactComment({ id: 'r1', principal: 'ada', emoji: '🤩', on: true })).toEqual({ ok: false, status: 409, error: 'too-many-reactions' });
+    expect(await opened.dobj.reactComment({ id: 'r1', principal: 'ben', emoji: '😀', on: true }), 'an existing emoji still takes more people').toMatchObject({ ok: true });
+  });
+});
