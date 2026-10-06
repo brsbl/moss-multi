@@ -4,7 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
-import { recordDigest, type DeletePart, type RecordMeta, type RecordOp } from '@moss-multi/core/suggest/apply';
+import { payloadValueOf, recordDigest, yValue, type DeletePart, type RecordMeta, type RecordOp } from '@moss-multi/core/suggest/apply';
 import { SuggestIngest } from '../doc/suggest.ts';
 import { payloadDocsFor } from '../payload-docs.ts';
 import { ForkShim } from './fork-shim.ts';
@@ -458,6 +458,45 @@ describe('T5.0 the projection a reviewer sees @p:mean-2', () => {
     } finally {
       dispose();
     }
+  });
+
+  it.each([
+    ["an attribute on an original payload's text", (text: Y.Text) => text.setAttribute('hidden', 'x')],
+    ['an attribute on a nested text in the payload map', (_text: Y.Text, doc: Y.Doc) => {
+      const nested = new Y.Text('n');
+      doc.getMap('payload-map').set('nested', nested);
+      nested.setAttribute('hidden', 'x');
+    }],
+  ] as const)('%s is shown in the preview, and accept lands exactly the previewed payload', (_name, write) => {
+    const { live, suggest, accept, dispose } = setup();
+    try {
+      const { key } = codeDecorator(live);
+      suggest('r1', [() => select('Hello', 24).insertText(' More.')]);
+      const [lease] = readMeta(live, 'r1')!.clients;
+      live.transact(() => opsOf(live, 'r1').push([payloadOp(live, key, write, lease)]), SUGGESTIONS_ORIGIN);
+      const preview = previewRecord(live, 'r1');
+      if (!preview.ok) throw new Error(preview.reason);
+      const hunk = preview.hunks.find((h) => h.kind === 'payload' && h.id === key);
+      expect(hunk, 'the attribute write is a payload hunk').toMatchObject({ op: 'changed' });
+      expect(JSON.stringify(hunk!.after), 'the preview shows the attribute').toContain('"hidden"');
+      expect(accept('r1')).toEqual({ ok: true });
+      expect(JSON.stringify(payloadValueOf(payloadDocsFor(live).get(key)!))).toBe(JSON.stringify(hunk!.after));
+    } finally {
+      dispose();
+    }
+  });
+
+  it("an attribute on the note's root is shown in the preview and lands only as shown", () => {
+    const live = seededBody();
+    forgeRecord(live, 'g', [LEASED], [forged(live, (doc) => root(doc).setAttribute('__dir', 'rtl'))]);
+    const record = readRecord(live, 'g')!;
+    const preview = previewRecord(live, 'g');
+    if (!preview.ok) throw new Error(preview.reason);
+    const hunk = preview.hunks.find((h) => (h.kind as string) === 'note');
+    expect(hunk, 'the root attribute is a hunk').toMatchObject({ op: 'changed' });
+    expect(acceptRecord(live, 'g', { previewHash: preview.hash, digest: recordDigest(record) }, EDITOR)).toEqual({ ok: true });
+    expect(root(live).getAttribute('__dir')).toBe('rtl');
+    expect(JSON.stringify((yValue(root(live)) as { attrs: unknown }).attrs)).toBe(JSON.stringify(hunk!.after));
   });
 
   it('a stale preview hash is refused 409 changed, with nothing applied', () => {
