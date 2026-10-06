@@ -148,14 +148,14 @@ describe('server writes', () => {
     writeFrontmatterKey(source.dobj.document, 'tag', 'keep', 'test');
     const root = source.dobj.document.get('root', Y.XmlText);
     const anchor = Y.createRelativePositionFromTypeIndex(root, 1);
-    source.dobj.document.getMap('comments').set('anchor', Y.encodeRelativePosition(anchor));
     const snapshot = await source.dobj.snapshotForDuplicate();
     const target = await start(openDoc());
     await target.dobj.createFromSnapshot({ folderId: 'target', ownerId: 'other', title: 'Original copy' }, snapshot.state);
     expect(await target.dobj.exportMarkdown()).toBe(await source.dobj.exportMarkdown());
     expect(blockTypes(target.dobj.document)).toEqual(blockTypes(source.dobj.document));
     expect(Y.createAbsolutePositionFromRelativePosition(anchor, target.dobj.document)?.index).toBe(1);
-    expect(target.dobj.document.getMap('comments').get('anchor')).toEqual(Y.encodeRelativePosition(anchor));
+    // Comments stay with the source, as moss's duplicate drops them (comments-docdo.test.ts covers the records).
+    expect(target.dobj.document.getMap('comments').size).toBe(0);
     expect(source.dobj.document.getText('title').toString()).toBe('Original');
     expect(target.dobj.document.getText('title').toString()).toBe('Original copy');
     await target.dobj.createFromSnapshot({ folderId: 'target', ownerId: 'other' }, snapshot.state);

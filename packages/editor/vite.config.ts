@@ -25,6 +25,7 @@ const SUBSTITUTES: Record<string, string> = {
   [`${editorUtils}/asset-url.ts`]: `${here}src/substitutes/asset-url.ts`,
   [`${editorUtils}/media-server-url.ts`]: `${here}src/substitutes/media-server-url.ts`,
   [`${repoRoot}apps/web/src/host/affordances.ts`]: `${here}src/substitutes/affordances.ts`,
+  [`${repoRoot}apps/web/src/host/access.ts`]: `${here}src/substitutes/access.ts`,
   [`${repoRoot}apps/web/src/host/media/web-asset-url.ts`]: `${here}src/substitutes/web-asset-url.ts`,
 };
 

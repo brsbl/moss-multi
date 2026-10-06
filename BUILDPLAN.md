@@ -78,6 +78,9 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
 | R10 | Transient failures degrade in place | j07 degraded leg; j03 retrying leg | 0, 1 |
 | R11 | Per-viewer layout stays local | T1.6 layout legs | 1 |
 | R15 | Staging only, personal account, permanent names | T1.10; T8.2 | 1, 8 |
+| R16 | Rejecting or withdrawing a suggestion keeps other people's words | T5.0 reject and withdraw legs; T5.3 | 5 |
+| R17 | A pending suggestion lives beside the body until an editor accepts it | T5.0 spike legs; j16 | 5 |
+| R18 | A comment never jumps to other text; retyping the same text does not reattach it | T4.0 never-jump and undo scenes; T4.2 | 4 |
 
 ---
 
@@ -358,38 +361,218 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
 **A person can newly** comment on text and blocks with moss's gutter, highlights and popovers; reply, react, @mention, resolve, and edit or delete their own comments; get mention and reply notifications; and keep typing right after commenting without losing anything.
 
 - **T4.0 Design review** `[—·codex]`
-  - **Scope:** `docs/design/comments.md` resolves A§13 for this milestone: anchor minting, the SP7 classifier, SP10 paint, an adapter for moss's 8 call sites, the API, and import/export. A fresh architect and a codex critic review it; the owner gets a one-page summary.
-  - **Done:** merged, with every finding dispositioned.
-- **T4.1 The comment data plane** `[A·codex]`
-  - **Scope:** DocDO writes to the comments map; anchors with a quote fallback; client writes to the maps refused; marker import in the converter; clean export.
-  - **Tests first:** fast-check: anchors survive random concurrent edits. A client frame touching `comments` gets 4409. Importing the onboarding note and its sidecar yields 4 anchored threads. Export contains zero `%%m:` or `{%c:`. **Done:** green.
-- **T4.2 Paint and moss's comment UI** `[B·codex]`
-  - **Scope:** highlight paint; the adapter; the `CREATE_COMMENT_COMMAND` seam, unstaging `comments`; gutter, popover, threads, replies and resolve; Cmd+Shift+A; the reply composer autofocuses.
-  - **Tests first:** journey **j15-comments**: A comments, then both type anywhere in both directions; two comments in one paragraph; the peer sees the highlight; a commenter can comment but not edit; no `%m:` in the DOM.
-  - **Done:** j15 is green, with shots and parity targets for the gutter and popover.
-- **T4.3 Reactions, mentions, edit and delete, notifications** `[B·fresh]`
-  - **Tests first:** j15 legs: reactions toggle per principal; an @mention reaches B's bell; a reply reaches the root author's bell; a non-author sees no Edit or Delete, and a raw delete gets 403. **Done:** green, with a reactions triptych.
+  - **Scope:** `docs/design/comments.md` per the 2026-10-04 design panel: invariants I1-I8, the supported-liveness list, pinned Yjs facts F1-F5, the reserved-writer guard, the frame-scoped anchor engine (gap re-mint, survivor shrink, lost place, exact reattach, lift), the client frame discipline, and the P2 limitation register. The spike proves only the load-bearing properties: guard, pending, F1-F4, bound-editor scenes, never-jump scenes, counted cost. A fresh architect and a codex critic review under the panel's checker rule. The owner gets a one-page summary.
+  - **Done:** merged, with red and green CI run ids, and every finding from the six-round history and the panel review dispositioned to an invariant, the P2 register, or a named T4.1-T4.4 test.
+- **T4.1 Comment data plane and write isolation** `[A·codex]`
+  - **Scope:**
+    - `Y.Map('comments')` with `c:<id>` and `a:<id>` records (JSON only);
+    - `writeComments` under the persisted reserved client id R (regenerated on collision; the DO's clientID is never R);
+    - gate 2b checks (a)-(d) on every sync frame, inert or not, before apply, with no attacker-driven walk;
+    - post-apply pending purge plus 4409;
+    - compaction moved out of the `update` handler and run only after the purge;
+    - the REST comment RPC (create with server-computed quote and 409 anchor-pending / anchor-gone / too-many-overlapping; quote-only create runs one search with the A§13 thresholds and the round-1 similarity fix, needs a unique best match, never runs per frame);
+    - marker import writing records through writeComments in the import's turn;
+    - clean export;
+    - caps: 2,000 records per doc, 60 comment ops per principal per minute, quote at most 10,000 characters, 32 comments covering any one character.
+  - **Security requirements carried from the review history:**
+    - no client frame lands a write in `comments`: the tail splice, fully held structs, a missing rightOrigin, cycles and unknown roots are each a raw-frame regression;
+    - no struct or delete integrates after its frame, and nothing parked is persisted; a frame Yjs throws on mid-apply is purged and refused like a parked one (the spike host does this; the DocDO must too);
+    - the guard costs O(frame·log) with no reference walks;
+    - anchor and record changes persist in the frame's turn, and indexes are rebuilt at onStart (A§5.1).
+    - From m4's T4.1 security reviews (2026-10-04): "cap comments per doc and comment creation per identity" and "run the quote search for a position-less anchor once, at creation or import" are kept above; "reuse `touchedTypes`" is moot by construction (I1 needs no classifier: the guard checks each struct against R).
+  - **Tests first:**
+    - the T4.0 guard suite against the real DocDO in workerd, plus an inert step 2 carrying an R struct, refused 4409;
+    - fast-check: every item in the comments subtree has client R;
+    - park, then compact, then restart: no pending state survives;
+    - mixed-pending-frame-compacts-only-after-purge: one frame that integrates a valid edit, parks a struct and a delete, and crosses COMPACT_MAX_ROWS, followed at once by a restart; and the same with an integrated update larger than STATE_CHUNK_BYTES (the oversized path). The integrated edit survives; nothing parked persists or is released by a later frame (T4.0 check, 2026-10-04);
+    - restart between a deletion and its undo: the comment still reattaches;
+    - the onboarding note plus sidecar imports as 4 anchored threads;
+    - export contains zero `%%m:` or `{%c:`.
+  - **Done:** green.
+- **T4.2 Anchor engine and client frame discipline** `[A·codex]`
+  - **Scope:**
+    - `anchor-frame.ts` wired into the DocDO's pre-GC afterTransaction hook for client and serverWrite origins, flushed through writeComments in the same turn;
+    - EP, MI and AI indexes rebuilt at onStart;
+    - gap map (including the wrap rule of comments.md §5.2), survivor shrink, lost place with per-list segments over full member subtrees (inside a block, members extend over the frame's adjacent deletions, comments.md §5.3), exact full-mode reattach triggered by an origin or rightOrigin in MI (or, for a re-homed place in an empty restored block, a frame-new list item with neither under that block; or a frame-new item whose enclosing block's rightOrigin is in MI, an undo copy of a member block, comments.md §5.4), lift at depth ≤ 3;
+    - orphans with an identical segment set share one walk (decision §4.4): MI is keyed by segment-set group, so a recheck costs one walk and one signature compare per group, and I7's fan-out bound is restated per group;
+    - decorator fingerprints, with attribute history reads inside the walk budget;
+    - `groupPending` in acks.ts plus the patched provider: replay before step 2, paced at most 40 frames/s; a deleting update is never merged with another update's inserts.
+  - **Integrity requirements carried from the review history:**
+    - no positioned anchor is ever searched or similarity-scored;
+    - no reattach based on undo-copy identity or rightOrigin chains (the fe3c2f8 bypass must stay impossible);
+    - a late concurrent insert, a forged far-placed copy, forged edge copies around new text, and a decorator swap each leave the comment orphaned;
+    - delete and undo in one frame, DURDU, a batched in-range edit plus deletion then undo, and block and cross-block undo all reattach.
+    - m4's T4.1 restore-integrity requirement (security review of t/T4.0 fe3c2f8) is kept as I5 and the forged-edge-copy test; its "check each copy's right origin against the original span" rule is moot by construction, because reattach never reads right origins, only what reads in the lost place.
+  - **Per-frame cost (security review, 2026-10-04):**
+    - no whole-doc projection, LCS, store scan, container scan or findQuote per frame;
+    - work only for comments whose endpoint the frame deletes, whose lost member or re-homed bound a new item's origin or rightOrigin names, or whose empty re-homed block gets a new item with neither;
+    - walks within the 4,096-struct budget, failing safe to orphaned;
+    - writes only on a re-mint or a status change.
+    - m4's T4.1 per-frame cost bound is kept here and in the workerd test below; its "restore index from the frame's own new structs" and "bounded quote compare" bullets are moot by construction (I7: no restore index over the store, no quote compare on positioned anchors).
+  - **Tests first:**
+    - every supported-liveness scene and every never-jump scene from T4.0, against the real DocDO;
+    - an offline journey: type inside a comment, delete it, reconnect, undo → reattached; delete then retype offline → stays detached;
+    - fast-check: random concurrent edits never leave an anchored comment on text outside its lineage;
+    - workerd budget: a large note with 2,000 comments (hundreds long and orphaned) plus a burst of single-key frames, a frame deleting a char shared by 32 comments, and forged 1-item frames naming lost members, each within a stated per-frame CPU budget recorded in METHOD.md; it also measures the lift and loss writes of a frame that orphans many comments under one deleted block (output-proportional, bounded by the 2,000-record cap);
+    - anchor-cost: 500 disjoint comments orphaned by one deleted run, and 500 by one deleted paragraph; a forged one-item frame naming the shared member does one segment walk and work independent of orphan count (T4.0 check, 2026-10-04);
+    - anchor-attribute-history-obeys-walk-budget: grow a decorator's historical deleted attributes while keeping the deleting frame fixed; fingerprint work stays bounded and counted (T4.0 check);
+    - anchor-index-maintenance-is-frame-bounded: hold the edit and the affected anchor constant while adding unrelated later spans of the same client; index-maintenance work (SpanIndex updates after the flush) is counted with the tree visits and stays constant (T4.0 check).
+  - **Done:** green, with the cost section of comments.md updated to the measurements.
+- **T4.3 Paint and moss's comment UI** `[B·codex]`
+  - **Scope:**
+    - highlight paint (SP10) from server `a:` records, plus the read-only overlay of the engine's gap map (comments.md §5.2) on every applied transaction so a bold never blinks;
+    - the adapter for moss's 8 call sites;
+    - the `CREATE_COMMENT_COMMAND` seam, unstaging `comments`;
+    - gutter, popover, threads, replies, resolve;
+    - detached threads listed with their quote;
+    - Cmd+Shift+A;
+    - the reply composer autofocuses;
+    - composer minting with anchor-pending retry.
+  - **Tests first:** journey **j15-comments**:
+    - A comments, then both type anywhere in both directions;
+    - two comments in one paragraph;
+    - the peer sees the highlight;
+    - bold across the commented text keeps the highlight with no blink frame;
+    - delete then Cmd+Z restores the highlight;
+    - a commenter can comment but not edit;
+    - no `%m:` in the DOM.
+  - **Done:** j15 green, with shots and parity targets for the gutter, the popover and the detached thread.
+- **T4.4 Reactions, mentions, edit and delete, notifications** `[B·fresh]`
+  - **Scope:**
+    - reactions per principal;
+    - @mentions;
+    - edit and delete restricted to the author;
+    - root delete promotes the oldest reply in one writeComments call, taking the anchor and resolution;
+    - notification rows only for user principals re-checked against the live grant (a mentioned agent gets no row).
+  - **Tests first:** j15 legs:
+    - reactions toggle per principal;
+    - an @mention reaches B's bell;
+    - a reply reaches the root author's bell;
+    - mentioning an agent writes no notification row;
+    - deleting a root with replies keeps the thread anchored under the promoted reply;
+    - a non-author sees no Edit or Delete, and a raw delete gets 403.
+  - **Done:** green, with a reactions triptych.
+- **T4.R m4 on the restacked m3** `[B·fresh]`, coordinator, 2026-10-05: merge `origin/m3` into m4; a frame with a missing dependency closes 4420 (transient), and 4409 stays for guard violations (comments.md §3); the doc-session ordering test delivers the server's step 1 first (§6); j11's /media leg fixed at its cause; done when the full lane is green in both engines.
+- **T4.S3 Anchor token budget before expansion** `[A·codex]`, Slop Cop P1 on PR #6, 2026-10-06: every token emission is admitted against its walk's allowance before an item is read, a gap that runs out of tokens is cached for the frame (a start-dependent struct walk that runs out fails only its own comment), and a restore walk stops at the place's length (I7); done when anchor-cost's long-item tests (single long run, sibling comments, long restore candidate, fragmented gap past WALK_BUDGET in both orders) are green.
+- **T4.S1 Comment writes re-authorize their actor** `[A·codex]`, from M4's Slop Cop review (PR #6, P1): every comment RPC carries the Worker's actor (principal, session or key, share token), and the DocDO re-resolves it in the same serialized write, with or without a socket: a live credential, a live doc and at least commenter, or nothing lands; done when `comment-revalidation.harness` is green.
+- **T4.S2 Comment room counts stored payloads** `[A·codex]`, Slop Cop P1 on PR #6, 2026-10-06: comment create, reply, edit, reaction and sidecar import are admitted against the note plus every stored payload (served or withheld), as #overCap counts, keeping the typing reserve; done when `comment-room` is green.
+- **T4.S4 The file-backed editor keeps moss's comment path** `[A·codex]`, Slop Cop P1 on PR #6, 2026-10-06: each comment seam branches on whether a pane binds the editor (for the pane's life, not its painter's: a bound editor with its plugin down refuses writes), so an unbound editor runs moss's own MarkNode discovery, local writes, authorship and gutter, with comments.json and the editor API unchanged; done when the editor fixture replies to, edits, deletes and resolves a sidecar thread and reads it back after a reload in both engines with no REST or socket traffic, `shared-mode.test.ts` is green, and j15 stays green.
 
-**Exit criteria:** typing anywhere after a comment replicates exactly; there are no markers in the DOM or any export; the author identity comes from the server principal.
+**Exit criteria:** typing anywhere after a comment replicates exactly; there are no markers in the DOM or any export; the author identity comes from the server principal; a comment never lands on text other than its own.
 
 ## M5 Suggestions
 
 **A person can newly** switch to Suggest in the floating toolbar, or be shared as a suggester and locked to it; propose inserts and deletes that others see painted; and have an editor accept or reject them. A violating edit is refused visibly and never lands.
 
 - **T5.0 Design review** `[—·codex]`
-  - **Scope:** `docs/design/suggestions.md`: inserts anywhere accepted and registered (A§13); structural ops (checkbox, table row, list indent) as suggestion parts (SP11); mirror vetting rules, records, paint, accept and reject; the review UI's placement from the glyphdown SuggestionsPanel reference.
-  - **Done:** merged, with every finding dispositioned.
-- **T5.1 Suggest-mode UI** `[A·codex]`
-  - **Scope:** the toolbar toggle and the role-locked chip; suggester in the share role menu; the baseline taken after first sync; deletes recorded as delete parts.
-  - **Tests first:** journey **j16-suggest**: a solo owner with nothing selected toggles Suggest in the docked toolbar; a principal shared as suggester through the dialog opens locked to the "Suggesting" chip; on a cold load, a suggester's first delete leaves the text in the server export and paints a strike. **Done:** green.
-- **T5.2 Server vetting and loud refusal** `[B·codex]`
-  - **Scope:** vetting on a mirror; write-refused followed by 4409; the client hard-resyncs.
-  - **Tests first:** colliding-prefix typing ("the " before "the …", a duplicated word, a sentence pasted before itself) and an insert outside any existing suggestion are never refused; a forged raw frame deleting original text never lands, and the refusal is visible in the band. **Done:** green.
+  - **Scope:** `docs/design/suggestions.md`, built on the records model:
+    - suggesters never write the body;
+    - a suggestion is a record of the exact Yjs ops from the author's fork, plus id-precise delete parts;
+    - accept is an editor action gated by G0–G8 and bound to a projection-diff hash;
+    - reject and withdraw change only the record.
+    - A spike proves the role gate, accept equivalence, reject leaving the body byte-identical, the gates, the outdated rule, projectionDiff and O(frame) ingest cost.
+  - **Done:** merged, with every review-history and panel finding dispositioned, and the ARCHITECTURE A§5.1/A§13, DEVIATIONS and PRODUCT ruling 17 diffs included.
+- **T5.P Suggestions on payload docs** `[B·fresh]`, coordinator ruling, 2026-10-05, a design amendment (docs/design/suggestions.md §14): record ops carry `{doc: 'body' | payloadId, update}`, leases cover the author's payload forks, G4 becomes `payload-alias`, edits to an existing payload are proposals applied only at accept with payload diffs in the hash-bound preview, and reject and withdraw still write nothing; every spike test ported, with payload cases in the forged-frame census.
+- **T5.1 Suggest-mode client: fork, modes, routing, paint** `[A·codex]`
+  - **Scope:**
+    - the toolbar toggle and the role-locked "Suggesting" chip;
+    - suggester in the share role menu;
+    - the fork shim: F = B plus the author's valid open records, with clientID set to the active lease. It forwards every transaction whose origin is not `shim-body-apply` or `shim-record-apply`, so REGISTER_INIT, REGISTER_LOCAL_ORIGIN and the UndoManager are included;
+    - the baseline taken after first sync;
+    - the composite C and Review mode;
+    - Edit-mode wedge, gutter, strike, attribute-dot and hover-preview paint;
+    - explicit deletes over body items (Backspace, Delete, word or line delete, Cut, typing over a selection) recorded as id-precise delete parts, with the caret moving past struck text;
+    - grouping (30 s idle or one paragraph away), `suggest-merge`, and offline continuation of the active record;
+    - dropping UndoManager items when a record closes;
+    - mode switches waiting for `data-sync-unacked=0`, with caret restore;
+    - the refusal copy-back: close input in the same tick, export the unacked blocks, rebuild F, show "Copy what wasn't saved" until dismissed;
+    - title and Properties read-only;
+    - background writers off.
+  - **Tests first:**
+    - journey **j16-suggest**:
+      - a solo owner with nothing selected toggles Suggest in the docked toolbar;
+      - a principal shared as suggester through the dialog opens locked to the chip;
+      - on a cold load, a suggester's first delete leaves the text in the server export and paints a strike;
+    - zero ops emitted when F binds, before the first input;
+    - every census operation through the real UI with zero refusals: colliding prefixes, Enter before a link, line break or inline formula, Enter in an indented paragraph or quote, lists, tables, checkbox, new code, HTML, formula, chart and sketch blocks, an edit of an original register, undo of a split, join;
+    - a record that fails the bind check is marked broken and excluded from C, and Review falls back to B if binding C throws;
+    - a record-closed race offers back every unacked block, and typing after the remount lands.
+  - **Done:** green.
+- **T5.2 Server: role floor, record ingest, leases, loud refusal** `[B·codex]`
+  - **Scope:**
+    - A§5.1 step 2 floor raised to editor, so a doc-changing frame from role suggester gets write-refused('role') and 4403 before apply;
+    - editor and owner body frames naming a leased client id refused `protected-type`;
+    - the `suggest_leases` table, and the `suggest-lease`, `suggest-ops`, `suggest-delete`, `suggest-merge` and `suggest-withdraw` handlers;
+    - continuation records for frames aimed at an accepted record, and `record-closed` for rejected or withdrawn ones;
+    - caps: ops ≤ 256 KB per record, at most 20 open records per principal, all open ops ≤ 25% of STATE_CAP, the projected stateBytes cap, and 300 writes per 5 s;
+    - a registry-name check on `__type` values at ingest;
+    - a refusal rate limit of 3 per principal per minute, then a 60 s 4429 cooldown;
+    - acks driving `data-sync-unacked`.
+  - **Security brief** (commit reviews of the old T5.0 spike `vet.ts`, 2026-10-04, carried in full). Seven reviews found authorization bypasses: forged tombstones and GC, same-value writes, embed maps restyling neighbours, recursive container deletes, and decorator `__regId` and register ownership. They also found a per-frame vetting DoS and a parser differential. Required:
+    - **Authorization never decodes a frame.** Suggester body writes are refused by role, and `parseUpdateMeta` is bookkeeping only.
+    - **Every forged-frame case from the T5.0 review tables is refused.** Each is sent as a suggester body frame, refused by role, and the body bytes are asserted unchanged.
+    - **Per-frame DO cost is O(frame bytes) for body frames, `suggest-ops` and `suggest-delete`.** Test a maximum-size forged frame, and show the cost is independent of doc size (small doc against 1.69 MB).
+    - **Nothing a suggester sends can be applied to the body except through T5.3's accept.**
+    - **Carried from the previous brief (2026-10-04), each now closed by construction or owned here:** "judge exactly what Yjs applies, never a separate decode" is moot for frames by I1 (a suggester's body frame is refused by role before apply; authorization never decodes) and holds at accept, where G1–G5 judge the applied mirror transaction (T5.3); "one invariant: the original projection is unchanged" is moot by I1 and I3 (nothing a suggester sends reaches the body except through the hash-bound accept); "a new decorator names only its own register; an original register entry is never replaced, deleted or re-pointed" is G4 (T5.3); "bound vetting cost per frame" is I5 (no per-frame vetting; O(frame) ingest, tested here); "every forged-frame case, plus a randomized struct-level fuzz" is the role-refusal table here and the T5.4 fuzz.
+  - **Tests first:**
+    - colliding-prefix typing ("the " before "the …", a duplicated word, a sentence pasted before itself) and an insert outside any existing suggestion are never refused;
+    - a forged raw frame from a suggester deleting original text never lands, and the refusal is visible in the band;
+    - leases are exclusive and never in the body state vector;
+    - a delete-only frame after accept opens a continuation record;
+    - `first_insert_after_accept_opens_continuation`: the suggester's first `suggest-ops` insert after an editor accepts their record opens a continuation record and lands. It is never refused, and nothing typed is lost (T5.0 final check, P1 routed here).
+    - `all_roles_cannot_write_suggestions_via_sync`: step 2, update, and nested writes and deletes under `suggestions` from suggester, editor and owner are all refused with the map unchanged; editor and owner body writes land as positive controls (I2; T4.1 SP7 is not yet on m4);
+    - `accepted_record_continuation_preserves_occupied_id`: with two principals, another principal's open record holds the continuation id; a delete-only frame and an ops frame aimed at the accepted record both leave that record's author, status, ops and parts unchanged, and long ids that share a 48-character prefix never collide;
+    - `accepted_suggestion_text_is_valid_body_delete_target`: after an editor accepts Alice's insert, another principal's suggest-delete over those characters is accepted as a part, while targets still under a pending lease stay refused `target`;
+    - `fixed_frame_ingest_cost_independent_of_closed_record_count_and_continuation_depth`: one fixed `suggest-ops` frame costs the same with 5 and with thousands of closed records, and at continuation depth 1 and at the maximum.
+    - **Lease and record authorization** (push security review of `packages/sync/src/doc/suggest.ts` on t/T5.0, 2026-10-04):
+      - `leases_are_bounded_and_bound`: a principal holds at most a small fixed number of live leases (the request cannot raise it), each lease is bound to the connection that asked for it and expires when that connection closes or idles, and another connection of the same principal cannot write with it;
+      - `record_ids_are_server_minted`: the server mints record ids, and a client-chosen id can neither create a record nor squat a peer's future id;
+      - `live_role_on_every_suggest_frame`: demoting a suggester to viewer refuses their next `suggest-ops`, `suggest-delete`, `suggest-merge` and `suggest-lease` at once, with no stale role taken from connection state;
+      - `overlapping_clocks_refused`: a `suggest-ops` update whose structs start below the lease's acknowledged clock is refused, so a record can never hold two versions of one id.
+  - **Done:** green.
 - **T5.3 Review, accept, reject, withdraw, notify** `[B·codex]`
-  - **Scope:** glyphdown's SuggestionsPanel rebuilt in the moss DS inside moss chrome, with accept and reject reachable from the painted suggestion (moss's ActionsPanel stays the inert agent panel); range transactions in the DO; the 0.8 drift guard; notifications for live suggestions.
-  - **Tests first:** an editor's accept and reject converge on both sides; withdraw removes the inserted text; the peer's review UI lists the suggestion. **Done:** green, with a triptych against the glyphdown panel.
+  - **Scope:**
+    - glyphdown's SuggestionsPanel rebuilt in the moss DS inside moss chrome, with accept and reject reachable from painted suggestions (moss's ActionsPanel stays the inert agent panel);
+    - `packages/core/suggest/apply.ts`, shared by client and server: projectionDiff serializes each top-level block recursively, keyed by Y item id, plus full register contents; the hunk list and previewHash;
+    - accept through `serverWrite` in one synchronous DO turn, with these gates (any failure answers 409 and applies nothing):
+      - G0: the record is open and its ops are the ones previewed;
+      - G1: no pending structs or deletes;
+      - G2: advanced clients ⊆ the record's leases;
+      - G3: changed types only under `root` and `registers`;
+      - G4: register aliasing (a fresh decorator names only a key this record created; an existing registers entry is never replaced or re-pointed, and deleted only with every decorator naming it);
+      - G5: outdated (removed body items live, no foreign item inside a removed run, every inserted struct integrates live);
+      - G6: the previewHash matches;
+      - G7: the headless bind succeeds;
+      - G8: the state cap holds;
+    - accept marks the record's leases spent in the same turn, so accepted text is ordinary body text (design §4.3);
+    - reject and withdraw as status-only transactions that never write the body (PRODUCT ruling 16);
+    - outdated and broken badges with "Copy suggested text", and auto-reject when the preview is empty;
+    - accept rate-limited per principal;
+    - the default export is the clean body, with `?view=working` for the composite;
+    - notifications for live suggestions.
+  - **Tests first:**
+    - an editor's accept and reject converge on both sides;
+    - withdraw removes the inserted text from every view while the body stays byte-identical;
+    - the peer's review UI lists the suggestion;
+    - accept-equivalence: for every census operation, accept equals an editor's direct edit (markdown and registers);
+    - each gate refused with nothing applied;
+    - outdated cases: an editor types inside a bolded run, deletes a delete target, or deletes the parent paragraph and it is GC'd; and two conflicting records;
+    - a text-only, an attribute-only and a register-only record each produce a hunk;
+    - a stale hash gets 409;
+    - `preview_hash_covers_root_attributes`: a root-only record (`__format`, `__direction` on `root`) and a mixed text-plus-root record each change the previewHash from the empty-diff value, and a stale hash over them gets 409;
+    - `g7_refuses_candidate_repaired_during_hydration`: a fresh decorator in legacy shape (a code block with `__code` and no `__regId`) gets 409 `broken` with the body unchanged, because G7's baseline is taken before hydration repairs anything;
+    - `g5_split_parts_around_foreign_insert_keep_foreign_text_and_preview_shows_it`: two single-character delete parts on adjacent a and b, then an editor inserts X between them; accept removes only a and b, X stays, and the preview shows exactly that (G5(b) is per step, design §4.2).
+  - **Done:** green, with a triptych against the glyphdown panel.
+- **T5.4 Adversarial suite and composite robustness** `[B·codex]`
+  - **Scope:**
+    - a randomized struct-level fuzz over records built from real peer frames: retarget origins, swap content kinds, add deletes, re-point `__regId`, write non-body roots, use non-leased clients, open gaps, GC parents. It asserts that accept either refuses with nothing applied, or lands exactly the hashed preview, touching only `root` and `registers` and only leased clients;
+    - the same fuzz applied to clients' F and C builds, asserting no throw escapes and broken records are excluded;
+    - a generative honest-edit fuzz through real moss editors in suggest mode (random typing, Enter, soft breaks, formatting, undo, lists, tables, decorators next to links, line breaks and inline formulas), asserting zero ingest refusals, zero broken records and accept-equivalence;
+    - re-prove spike tests 2-8 red on behavior assertions, not on not-implemented stubs (T5.0 final check, P2);
+    - cost regression tests for ingest and the body-frame lease check at the frame cap, including `fixed_frame_ingest_cost_independent_of_closed_record_count_and_continuation_depth` at fuzz scale.
+  - **Done:** green in CI.
 
-**Exit criteria:** colliding-prefix typing is never refused; a suggester's first delete never removes text on the server; violating edits never land and the client shows the refusal; the demo note shows live pending suggestions.
+**Exit criteria:** colliding-prefix typing is never refused; a suggester's first delete never removes text on the server; a suggester's body frame never lands and the client shows the refusal; reject and withdraw never change the body; accept lands exactly the previewed diff or nothing; the demo note shows live pending suggestions (Review mode inline, Edit mode markers).
 
 ## M6 History
 

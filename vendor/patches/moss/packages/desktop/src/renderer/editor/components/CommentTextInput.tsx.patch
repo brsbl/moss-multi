@@ -1,0 +1,20 @@
+diff --git a/packages/desktop/src/renderer/editor/components/CommentTextInput.tsx b/packages/desktop/src/renderer/editor/components/CommentTextInput.tsx
+--- a/packages/desktop/src/renderer/editor/components/CommentTextInput.tsx
++++ b/packages/desktop/src/renderer/editor/components/CommentTextInput.tsx
+@@ -12,6 +12,7 @@ import type { LexicalEditor } from 'lexical';
+ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@moss/shared/components/ui/tooltip';
+ 
+ import { MentionInput } from './MentionInput';
++import { hidden } from '@moss-multi/host/affordances';
+ import {
+   $deserializeCommentEditor,
+   serializeCommentEditor,
+@@ -120,7 +121,7 @@ export function CommentTextInput({
+       editorRef={editorRef}
+       mentionRequireWordBoundary={false}
+       imageAttachments={
+-        imageAttachments
++        imageAttachments && !hidden('comment-images') /* moss-multi seam: hide-registry (A§9) */
+           ? {
+               ...imageAttachments,
+               previewClassName: 'h-8 w-8'

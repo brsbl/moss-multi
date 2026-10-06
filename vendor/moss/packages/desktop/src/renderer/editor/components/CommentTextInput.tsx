@@ -13,6 +13,7 @@ import type { LexicalEditor } from 'lexical';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@moss/shared/components/ui/tooltip';
 
 import { MentionInput } from './MentionInput';
+import { hidden } from '@moss-multi/host/affordances';
 import {
   $deserializeCommentEditor,
   serializeCommentEditor,
@@ -121,7 +122,7 @@ export function CommentTextInput({
       editorRef={editorRef}
       mentionRequireWordBoundary={false}
       imageAttachments={
-        imageAttachments
+        imageAttachments && !hidden('comment-images') /* moss-multi seam: hide-registry (A§9) */
           ? {
               ...imageAttachments,
               previewClassName: 'h-8 w-8'

@@ -361,6 +361,9 @@ importers:
       js-yaml:
         specifier: 4.3.0
         version: 4.3.0
+      lib0:
+        specifier: 0.2.119
+        version: 0.2.119
       yjs:
         specifier: 13.6.31
         version: 13.6.31

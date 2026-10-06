@@ -7,9 +7,10 @@
 // when an import up to 2 MB takes more than IMPORT_BUDGET_MS of workerd CPU. It also renames a doc's title back and
 // forth between worst-case caller texts (packages/sync/measure/title-cases.ts), the DocDO's REST rename path, and
 // exits non-zero when a rename lands inexactly or averages more than TITLE_WRITE_BUDGET_MS of workerd CPU, or any
-// single rename exceeds it by more than one /proc tick. Last, it runs the real DocDO (packages/sync/measure/doc-worker.ts)
-// and sends many tiny payload frames over thousands of ids (T1.F2), exiting non-zero past the stated per-frame CPU,
-// memory, held-doc and scaling budgets.
+// single rename exceeds it by more than one /proc tick. It also applies comment-anchor frames to the DocDO's comments
+// module on a 2,000-comment note (T4.2) and exits non-zero when any kind of frame is over its per-frame budget. Last,
+// it runs the real DocDO (packages/sync/measure/doc-worker.ts) and sends many tiny payload frames over thousands of ids
+// (T1.F2), exiting non-zero past the stated per-frame CPU, memory, held-doc and scaling budgets.
 import { spawn, spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -416,6 +417,42 @@ async function measurePayloadFrames(port) {
 
 const overTitleBudget = (t) => t.cpuMs > TITLE_WRITE_BUDGET_MS || t.maxCpuMs > TITLE_WRITE_BUDGET_MS + TICK_MS;
 
+// T4.2 (docs/design/comments.md I7, §5.6): workerd CPU per client frame of the DocDO's comment-anchor work on a note
+// with 2,000 comments, 240 of them long and orphaned (packages/sync/measure/anchors.ts). Each request applies a batch of
+// pre-encoded frames; its CPU over its frame count is held to the step's budget, one /proc tick spread over the batch
+// allowed. The budgets are recorded in docs/METHOD.md.
+const ANCHOR_STEPS = [
+  { name: 'keys', label: 'single-key frames, none touching an endpoint', budgetMs: 0.5 },
+  { name: 'shared', label: 'a frame deleting and retyping a character 32 comments share (31 re-minted)', budgetMs: 10 },
+  { name: 'forged', label: 'a forged one-item frame inside a long orphan\'s lost place', budgetMs: 1 },
+  { name: 'lift', label: 'a frame deleting a paragraph that holds 500 comments (500 orphan records written)', budgetMs: 100 },
+  { name: 'lifted', label: 'a frame deleting a paragraph that holds 500 orphans\' lost place (500 lifted records written)', budgetMs: 100 },
+];
+const ANCHOR_EXPECT = { setup: { records: 2_000, orphaned: 240 }, shared: { anchored: 31 }, forged: { orphaned: 240 }, lift: { orphaned: 2_500 }, lifted: { lifted: 2_500 } };
+
+async function measureAnchors(port) {
+  await bundle('anchors', join(REPO, 'packages/sync/measure/anchors-worker.ts'));
+  const server = await startWorker('anchors', port);
+  try {
+    const setup = await timedRequest(server, '/anchors/setup', { method: 'POST' });
+    const built = JSON.parse(setup.body);
+    const problems = Object.entries(ANCHOR_EXPECT.setup).filter(([key, value]) => built[key] !== value).map(([key, value]) => `setup ${key} ${built[key]}, expected ${value}`);
+    const steps = [];
+    for (const step of ANCHOR_STEPS) {
+      const run = await timedRequest(server, `/anchors/${step.name}`, { method: 'POST' });
+      const body = JSON.parse(run.body);
+      for (const [key, value] of Object.entries(ANCHOR_EXPECT[step.name] ?? {})) if (body[key] !== value) problems.push(`${step.name} ${key} ${body[key]}, expected ${value}`);
+      const perFrameMs = run.cpuMs / body.frames;
+      steps.push({ ...step, frames: body.frames, cpuMs: run.cpuMs, perFrameMs, over: perFrameMs > step.budgetMs + TICK_MS / body.frames });
+    }
+    return { setupCpuMs: setup.cpuMs, steps, problems };
+  } catch (error) {
+    return { failed: String(error.message).split('\n')[0] };
+  } finally {
+    await stop(server.child);
+  }
+}
+
 async function main() {
   rmSync(OUT, { recursive: true, force: true });
   mkdirSync(join(OUT, 'baseline'), { recursive: true });
@@ -470,7 +507,8 @@ async function main() {
   }
 
   const titles = await measureTitleWrites(port + 1);
-  const payloads = await measurePayloadFrames(port + 2);
+  const anchors = await measureAnchors(port + 2);
+  const payloads = await measurePayloadFrames(port + 3);
 
   const coldOf = (name, key) => round(median(cold[name].map((sample) => sample[key])));
   const families = ratios.filter((r) => !r.name.startsWith('scale note'));
@@ -505,6 +543,13 @@ async function main() {
         ? `| Title rename, ${t.name} | FAILED: ${t.failed} |`
         : `| Title rename, ${t.name} (${t.chars.join(' ↔ ')} chars): workerd CPU per request, mean (max) of ${TITLE_WRITES} | ${t.cpuMs} (${t.maxCpuMs}) ms${overTitleBudget(t) ? `, over the ${TITLE_WRITE_BUDGET_MS} ms budget` : ''} (wall ${t.wallMs} ms) |`,
     ),
+    ...(anchors.failed
+      ? [`| Comment anchors | FAILED: ${anchors.failed} |`]
+      : [
+        `| Comment anchors: building the 2,000-comment note, workerd CPU, one run (no budget) | ${round(anchors.setupCpuMs)} ms |`,
+        ...anchors.steps.map((s) => `| Comment anchors, ${s.label}: workerd CPU per frame over ${s.frames} | ${round(s.perFrameMs * 100) / 100} ms${s.over ? `, over the ${s.budgetMs} ms budget` : ''} (budget ${s.budgetMs} ms; ${round(s.cpuMs)} ms in all) |`),
+        ...anchors.problems.map((p) => `| Comment anchors | WRONG: ${p} |`),
+      ]),
     ...(payloads.failed
       ? [`| Payload frames (T1.F2) | FAILED: ${payloads.failed} |`]
       : payloads.notes.map(
@@ -531,6 +576,11 @@ async function main() {
   if (slow.length > 0) {
     const sizes = slow.map((c) => `${kb(c.bytes)} in ${seconds(c.importCpuMs)}`).join(', ');
     console.error(`measure-converter: import over the ${seconds(IMPORT_BUDGET_MS)} workerd CPU budget: ${sizes}`);
+    process.exitCode = 1;
+  }
+  const badAnchors = anchors.failed ? [anchors.failed] : [...anchors.problems, ...anchors.steps.filter((s) => s.over).map((s) => `${s.name} at ${round(s.perFrameMs * 100) / 100} ms per frame, budget ${s.budgetMs} ms`)];
+  if (badAnchors.length > 0) {
+    console.error(`measure-converter: comment anchors failed or over the workerd CPU budget: ${badAnchors.join(', ')}`);
     process.exitCode = 1;
   }
   const badTitles = titles.filter((t) => t.failed || overTitleBudget(t));
