@@ -415,7 +415,7 @@ describe('T5.4 fuzz findings, each replayed as a fixed case @p:mean-2 @p:R17', (
     const held = new Y.Doc({ gc: false });
     for (const op of record.ops) if (op.doc === payload) Y.applyUpdate(held, op.update);
     held.clientID = record.meta.clients[0];
-    let update = new Uint8Array();
+    let update: Uint8Array = new Uint8Array();
     held.on('update', (made: Uint8Array) => {
       update = made;
     });
