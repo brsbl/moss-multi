@@ -150,6 +150,20 @@ describe('linear inline import @p:tech-4', () => {
     expect(ours === tree($lexicalConvertFromMarkdownString, markdown)).toBe(true);
   }, 120_000);
 
+  // The checker's dense paragraphs of short formatted words: converted in full, and written back as they were.
+  it.each([
+    'a paragraph of 400 italic tags',
+    'a paragraph of 300 bold labels with code and italic values',
+    'a paragraph of 500 code spans',
+    'a paragraph of 400 one-letter links, each followed by bold',
+  ])('converts %s and exports it unchanged', (name) => {
+    const markdown = ORDINARY_NOTES[name]();
+    const before = linearImportStats.cut;
+    const exported = exportMarkdown(importMarkdown(markdown));
+    expect(linearImportStats.cut - before).toBe(0);
+    expect(exported === markdown).toBe(true);
+  }, 120_000);
+
   it.each<[string, () => string]>([
     ['the 2 MB scale note of mixed content', () => scaleNote(Math.ceil((2 * 1024 * 1024) / SCALE_UNIT.length))],
     ...Object.entries(LARGE_ORDINARY_NOTES),
