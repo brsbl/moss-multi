@@ -436,6 +436,8 @@ const TARGET_MS = 700;
 const FIRST_BATCH = 128;
 /** Laying out n new list items with values at once takes time quadratic in n (Chromium): batches stay this small. */
 const MAX_BATCH = 2_500;
+/** A paste of top-level blocks only (no list items or table rows) has no such layout cost. */
+const MAX_TOP_BATCH = 20_000;
 
 /**
  * Units per batch, sized from how long the last batch's work and its layout took. Each batch is a User Timing measure
@@ -445,8 +447,9 @@ const MAX_BATCH = 2_500;
 class Pacer {
   budget = FIRST_BATCH;
   #ended: number | null = null;
+  #last: { units: number; work: number } | null = null;
 
-  constructor(readonly label: string) {}
+  constructor(readonly label: string, readonly max = MAX_BATCH) {}
 
   /** Runs a batch of `used` units (`run`), then lays the note out (`layout`), and sizes the next batch. */
   time(used: number, run: () => void, layout?: () => void): void {
@@ -456,11 +459,26 @@ class Pacer {
     const ran = performance.now();
     layout?.();
     this.#ended = performance.now();
-    const perUnit = Math.max(0.001, ran - started) / used;
+    const work = Math.max(0.001, ran - started);
     const laid = this.#ended - ran;
-    performance.measure(this.label, { start: started, detail: { units: used, workMs: Math.round(ran - started), layoutMs: Math.round(laid), beforeMs: Math.round(before) } });
-    const room = Math.max(TARGET_MS / 3, TARGET_MS - laid);
-    this.budget = Math.round(Math.max(FIRST_BATCH, Math.min(MAX_BATCH, used * 4, room / perUnit)));
+    performance.measure(this.label, { start: started, detail: { units: used, workMs: Math.round(work), layoutMs: Math.round(laid), beforeMs: Math.round(before) } });
+    // A batch's work is a cost that grows with the note (the update copying and diffing what the batch lands in) plus
+    // a cost per unit. Two batches of different sizes tell them apart; sized by the whole time alone, batches in a
+    // large note shrank to FIRST_BATCH and each still paid the note's cost. With no such estimate, the whole time
+    // sizes the next batch, and a batch that cannot learn (the same size twice) tries twice the units.
+    const last = this.#last;
+    this.#last = { units: used, work };
+    let budget = Math.max(TARGET_MS / 3, TARGET_MS - laid) / (work / used);
+    if (last && last.units !== used) {
+      const marginal = (work - last.work) / (used - last.units);
+      if (marginal > 0) {
+        const fixed = Math.min(work, Math.max(0, work - marginal * used));
+        budget = Math.max(TARGET_MS / 3, TARGET_MS - laid - fixed) / marginal;
+      }
+    } else if (last && budget <= used) {
+      budget = work + laid < TARGET_MS * 2 ? used * 2 : budget;
+    }
+    this.budget = Math.round(Math.max(FIRST_BATCH, Math.min(this.max, used * 2, budget)));
   }
 }
 
@@ -574,7 +592,8 @@ class PasteJob {
   *#run(): Generator<void, void> {
     const { editor, request } = this;
     const { plan } = request;
-    const pacer = new Pacer('moss-paste-rehearsal');
+    const max = plan.units.every((unit) => unit.parent === null) ? MAX_TOP_BATCH : MAX_BATCH;
+    const pacer = new Pacer('moss-paste-rehearsal', max);
 
     // 1. The scratch replay: what the paste adds to the note, and its largest piece.
     const scratch = scratchEditor(request.nodes);
@@ -601,7 +620,7 @@ class PasteJob {
     // Laid out after each batch, in it: laid out later, several batches' list items would go at once (MAX_BATCH).
     const layout = () => void editor.getRootElement()?.offsetHeight;
     // Paced afresh: the live editor also renders and lays out each batch.
-    const pacing = new Pacer('moss-paste-batch');
+    const pacing = new Pacer('moss-paste-batch', max);
     const first = pacing.budget;
     // A pending update (a peer's or a derived write, tagged as collaboration) would take a batch into it, and an update
     // so tagged never reaches the doc: each batch commits it first, on its own.
