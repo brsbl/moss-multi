@@ -8,7 +8,7 @@
 //
 // The notes and the reference imports are created through POST /api/docs as declared setup.
 import { INPUT_REFUSAL_ATTR } from '../lib/contract.ts';
-import { expectWire, exported, fingerprint, normalized, pastePlain, setup } from '../lib/paste.ts';
+import { expectWire, exported, fingerprint, longestStall, MAX_STALL_MS, normalized, pastePlain, setup, watchStalls } from '../lib/paste.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
 function shortParagraphs(count: number): string[] {
@@ -49,8 +49,11 @@ for (const [label, make] of PASTES) {
     const print = await fingerprint(ada, docId);
     await ui.body(ada, docId).locator('p').filter({ hasText: /^Kept\.$/ }).click();
     await ada.page.keyboard.press('End');
+    await watchStalls(ada);
     await pastePlain(ada, docId, make());
     await expect(ada.page.locator(`[${INPUT_REFUSAL_ATTR}]`), 'the refusal is announced').toContainText('size limit', { timeout: 120_000 });
+    const stall = await longestStall(ada);
+    expect(stall.ms, `the refused paste never holds the tab longer than ${MAX_STALL_MS} ms at a time (during: ${stall.during})`).toBeLessThanOrEqual(MAX_STALL_MS);
     await ui.waitAcked(ada, docId, 30_000);
     expect(await fingerprint(ada, docId), 'nothing of the paste is in the editor').toEqual(print);
     await ada.page.waitForTimeout(3_000);
