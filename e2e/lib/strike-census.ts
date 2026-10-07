@@ -1,0 +1,283 @@
+// The strike census in the real app (M5 Slop Cop P1, T5.S1): every block kind on each side of a boundary, every edge
+// key and every strike position, then the undo and redo of the key. Struck text is upper case and nothing else is, so
+// a note's capitals are what the suggester struck and its lower case letters (with the digits of code) are what must
+// stay. Each leg writes its combinations into one note, a section apart, and the owner reviews and accepts them all.
+import type { Locator } from '@playwright/test';
+import type { Actor } from './actors.ts';
+import {
+  APP_STATE_ATTR, BODY_BINDING_ATTR, EDIT_MODE_ATTR, SUGGEST_REFUSED_ATTR, SUGGESTION_CARD_ATTR, SUGGESTION_ROW_ATTR, SUGGESTION_STATUS_ATTR,
+  SUGGESTIONS_BUTTON_ATTR, SUGGESTIONS_PANEL_ATTR, SYNC_UNACKED_ATTR,
+} from './contract.ts';
+import { grantDoc } from './grants.ts';
+import { expect, test, ui } from './test.ts';
+
+type Actors = Parameters<Parameters<typeof test>[2]>[0]['actors'];
+
+export type Kind =
+  | 'paragraph' | 'heading' | 'leading heading' | 'list item' | 'nested list item' | 'quote' | 'code block' | 'table'
+  | 'decorator' | 'empty paragraph' | 'line break';
+/** The kind is the block before the boundary, or the block after it. */
+export type Side = 'before' | 'after';
+type Key = 'Backspace at the start' | 'Delete at the end' | 'Delete after a line break';
+const KEYS: Key[] = ['Backspace at the start', 'Delete at the end', 'Delete after a line break'];
+/** start: the next block's first character; end: each block's last; span: across the boundary; whole: the next block. */
+type Where = 'start' | 'end' | 'span' | 'whole';
+const WHERES: Where[] = ['start', 'end', 'span', 'whole'];
+const TEXTLESS = new Set<Kind>(['code block', 'decorator', 'empty paragraph']);
+
+const BOOT_TIMEOUT = 30_000;
+const BIND_TIMEOUT = 15_000;
+const mod = process.platform === 'darwin' ? 'Meta' : 'Control';
+
+interface Combo {
+  key: Key;
+  where: Where;
+  /** The section's own lower case tag, so its texts are unique in the note. */
+  tag: string;
+  /** The paragraph before the section. */
+  gap: string;
+  a: string | null;
+  b: string | null;
+  aKind: Kind | null;
+  bKind: Kind;
+}
+
+function blockOf(kind: Kind, text: string | null, role: 'a' | 'b', tag: string): string {
+  switch (kind) {
+    case 'paragraph': return text!;
+    case 'heading':
+    case 'leading heading': return `## ${text}`;
+    case 'list item': return `- ${text}`;
+    case 'nested list item': return `- outer ${tag}\n    - ${text}`;
+    case 'quote': return `> ${text}`;
+    case 'table': return role === 'a' ? `| cell ${tag} | row ${tag} |\n| --- | --- |\n| more ${tag} | ${text} |` : `| ${text} | cell ${tag} |\n| --- | --- |\n| more ${tag} | row ${tag} |`;
+    case 'code block': return '```\n123\n```';
+    case 'decorator': return '---';
+    case 'line break': return role === 'a' ? `first ${tag}\n${text}` : `${text}\nsecond ${tag}`;
+    case 'empty paragraph': return '';
+  }
+}
+
+const caretless = (kind: Kind | null) => kind === 'code block' || kind === 'decorator';
+
+/** The combinations of a leg that apply, each with its texts. */
+function combosOf(kind: Kind, side: Side, keys: readonly Key[] = KEYS): Combo[] {
+  const combos: Combo[] = [];
+  let n = 0;
+  for (const key of keys) {
+    for (const where of WHERES) {
+      const tag = `q${String.fromCharCode(97 + Math.floor(n / 26))}${String.fromCharCode(97 + (n % 26))}`;
+      const leading = kind === 'leading heading' && side === 'after';
+      const aKind: Kind | null = side === 'before' ? kind : leading ? null : 'paragraph';
+      const bKind: Kind = side === 'after' ? kind : 'paragraph';
+      const a = aKind && !TEXTLESS.has(aKind) ? `alpha ${tag}${where === 'end' || where === 'span' ? 'Z' : ''}` : null;
+      const b = TEXTLESS.has(bKind) ? null : { start: `Zbeta ${tag}`, span: `Zbeta ${tag}`, end: `beta ${tag}Z`, whole: `ZQ${tag.toUpperCase()}` }[where];
+      if (key === 'Backspace at the start' && caretless(bKind)) continue;
+      if (key !== 'Backspace at the start' && (aKind === null || caretless(aKind))) continue;
+      if ((where === 'start' || where === 'whole') && !b) continue;
+      if (where === 'span' && (!a || !b)) continue;
+      if (where === 'end' && !a && !b) continue;
+      combos.push({ key, where, tag, gap: `gap ${tag} keep.`, a, b, aKind, bKind });
+      n += 1;
+    }
+  }
+  return combos;
+}
+
+/** The section of a combination: its gap paragraph (none when its block leads the note), then its blocks. */
+function sectionOf(combo: Combo, leading: boolean): string[] {
+  const blocks = leading ? [] : [combo.gap];
+  if (combo.bKind === 'nested list item') {
+    blocks.push(`- ${combo.a}\n    - ${combo.b}`);
+    return blocks;
+  }
+  if (combo.aKind && combo.aKind !== 'empty paragraph') blocks.push(blockOf(combo.aKind, combo.a, 'a', combo.tag));
+  if (combo.bKind !== 'empty paragraph') blocks.push(blockOf(combo.bKind, combo.b, 'b', combo.tag));
+  return blocks;
+}
+
+const frames = (actor: Actor) => actor.page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+
+/** A DOM selection from `offset` in the body text holding `text` to `focus` in the one holding `to`. */
+async function select(actor: Actor, docId: string, text: string, offset: number, to = text, focus = offset): Promise<void> {
+  await ui.body(actor, docId).evaluate((root, { text, offset, to, focus }) => {
+    (root as HTMLElement).focus();
+    const find = (wanted: string): [Text, number] => {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode() as Text | null; node; node = walker.nextNode() as Text | null) {
+        const at = node.data.indexOf(wanted);
+        if (at >= 0) return [node, at];
+      }
+      throw new Error(`no body text "${wanted}"`);
+    };
+    const [from, fromAt] = find(text);
+    const [end, endAt] = find(to);
+    const range = document.createRange();
+    range.setStart(from, fromAt + offset);
+    range.setEnd(end, endAt + focus);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }, { text, offset, to, focus });
+  await frames(actor);
+}
+
+async function press(actor: Actor, key: string): Promise<void> {
+  await actor.page.keyboard.press(key);
+  await frames(actor);
+}
+
+/**
+ * The body's editable text (decorators' own chrome left out): its capitals that `::highlight(suggest-delete)` does
+ * not cover, and its lower case letters and digits.
+ */
+async function readBody(actor: Actor, docId: string): Promise<{ unpainted: string[]; kept: string }> {
+  return ui.body(actor, docId).evaluate((root) => {
+    const ranges = [...((CSS as unknown as { highlights?: Map<string, Set<Range>> }).highlights?.get('suggest-delete') ?? [])];
+    const unpainted: string[] = [];
+    let kept = '';
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode: (node) => (node.parentElement?.closest('[contenteditable="false"]') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
+    });
+    for (let node = walker.nextNode() as Text | null; node; node = walker.nextNode() as Text | null) {
+      const { data } = node;
+      for (let i = 0; i < data.length; i += 1) {
+        if (/[a-z0-9]/.test(data[i])) kept += data[i];
+        if (!/[A-Z]/.test(data[i])) continue;
+        const text = node;
+        if (!ranges.some((range) => range.comparePoint(text, i) === 0 && range.comparePoint(text, i + 1) === 0)) unpainted.push(`${data[i]} in "${data}"`);
+      }
+    }
+    return { unpainted, kept };
+  });
+}
+
+const content = async (actor: Actor, docId: string, view = ''): Promise<string> =>
+  (await actor.context.request.get(`/api/docs/${docId}/content${view ? `?view=${view}` : ''}`)).text();
+const kept = (text: string) => text.replace(/[^a-z0-9]/g, '');
+const capitals = (text: string) => text.replace(/[^A-Z]/g, '');
+
+async function openIn(actor: Actor, docId: string, mode: 'suggest' | 'edit'): Promise<void> {
+  await actor.goto(`/d/${docId}`);
+  await actor.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: BOOT_TIMEOUT });
+  await expect(ui.pane(actor, docId)).toHaveAttribute(EDIT_MODE_ATTR, mode, { timeout: BIND_TIMEOUT });
+  await expect(ui.body(actor, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'live', { timeout: BIND_TIMEOUT });
+}
+
+async function noteFor(ada: Actor, ben: { principal: Parameters<typeof grantDoc>[2] }, markdown: string): Promise<string> {
+  const response = await ada.context.request.post('/api/docs', { headers: { origin: new URL(ada.page.url()).origin }, data: { markdown } });
+  expect(response.status()).toBe(201);
+  const docId = ((await response.json()) as { doc: { id: string } }).doc.id;
+  await grantDoc(ada, docId, ben.principal, 'suggester');
+  return docId;
+}
+
+/** One combination in Ben's Suggest pane: the strikes, the key, its undo and its redo, F checked after each. */
+async function play(ben: Actor, docId: string, combo: Combo, baseline: string): Promise<void> {
+  const label = `${combo.bKind === combo.aKind ? combo.aKind : `${combo.aKind ?? 'nothing'} | ${combo.bKind}`}, ${combo.key}, strike ${combo.where}`;
+  const look = async (when: string) => {
+    await expect.poll(async () => (await readBody(ben, docId)).unpainted, { message: `${label}, ${when}: every capital F shows paints struck`, timeout: 5_000 }).toEqual([]);
+    expect((await readBody(ben, docId)).kept, `${label}, ${when}: F keeps every unstruck character`).toBe(baseline);
+  };
+  const { a, b } = combo;
+  if (combo.where === 'start') {
+    await select(ben, docId, b!, 1);
+    await press(ben, 'Backspace');
+  } else if (combo.where === 'whole') {
+    await select(ben, docId, b!, 0, b!, b!.length);
+    await press(ben, 'Backspace');
+  } else if (combo.where === 'span') {
+    await select(ben, docId, a!, a!.length - 1, b!, 1);
+    await press(ben, 'Backspace');
+  } else {
+    for (const text of [a, b]) {
+      if (!text) continue;
+      await select(ben, docId, text, text.length);
+      await press(ben, 'Backspace');
+    }
+  }
+  await look('after the strikes');
+  // An empty block is made just before the key: after the gap (the block before) or after `a` (the block after).
+  if (combo.aKind === 'empty paragraph') {
+    await select(ben, docId, combo.gap, combo.gap.length);
+    await press(ben, 'Enter');
+  } else if (combo.bKind === 'empty paragraph') {
+    await select(ben, docId, a!, a!.length);
+    await press(ben, 'Enter');
+  }
+  if (combo.key === 'Backspace at the start') {
+    if (b) await select(ben, docId, b, 0);
+    await press(ben, 'Backspace');
+  } else {
+    if (a) await select(ben, docId, a, a.length);
+    if (combo.key === 'Delete after a line break') await press(ben, 'Shift+Enter');
+    await press(ben, 'Delete');
+  }
+  await look(`after ${combo.key}`);
+  await press(ben, `${mod}+z`);
+  await look(`after undo of ${combo.key}`);
+  await press(ben, `${mod}+Shift+z`);
+  await look(`after redo of ${combo.key}`);
+}
+
+/** The owner's review: Edit-mode paint, the working export, every card, then accept of each. */
+async function review(ada: Actor, ben: Actor, docId: string, original: string, label: string): Promise<void> {
+  await expect(ui.pane(ben, docId), `${label}: acknowledged`).toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout: BIND_TIMEOUT });
+  await expect(ui.pane(ben, docId), `${label}: never refused`).toHaveAttribute(SUGGEST_REFUSED_ATTR, '0');
+  // The author leaves, so accepting his records never touches his socket.
+  await ben.goto('/');
+  await expect(ada.page.locator(`[${SUGGESTIONS_BUTTON_ATTR}]`)).toHaveAttribute('aria-label', /[1-9]\d* open/, { timeout: BIND_TIMEOUT });
+  await expect.poll(async () => (await readBody(ada, docId)).unpainted, { message: `${label}: Edit mode paints every struck capital`, timeout: BIND_TIMEOUT }).toEqual([]);
+  const previews = await ui.pane(ada, docId).locator('[data-suggest-preview]').allTextContents();
+  expect(capitals(previews.join(' ')), `${label}: no Edit-mode insert mark previews a struck capital (${previews.join(' | ')})`).toBe('');
+  const working = await content(ada, docId, 'working');
+  expect(capitals(working), `${label}: the working export leaves every struck capital out`).toBe('');
+  expect(kept(working), `${label}: the working export keeps every unstruck character`).toBe(kept(original));
+
+  const panel = ada.page.locator(`[${SUGGESTIONS_PANEL_ATTR}]`);
+  if (!(await panel.isVisible())) await ada.page.locator(`[${SUGGESTIONS_BUTTON_ATTR}]`).click();
+  await expect(panel).toBeVisible();
+  const open: Locator = panel.locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_STATUS_ATTR}="open"]`);
+  await expect.poll(() => open.count(), { message: `${label}: open cards`, timeout: BIND_TIMEOUT }).toBeGreaterThan(0);
+  for (let guard = 0; guard < 40 && (await open.count()) > 0; guard += 1) {
+    const card = open.first();
+    const accept = card.getByRole('button', { name: 'Accept' });
+    const more = card.getByRole('button', { name: /^Show all/ });
+    await expect.poll(async () => (await more.count()) > 0 || (await accept.isEnabled()), { message: `${label}: a card loads`, timeout: BIND_TIMEOUT }).toBe(true);
+    if ((await more.count()) > 0) await more.click();
+    await expect(accept, `${label}: the card can be accepted (${await card.innerText()})`).toBeEnabled({ timeout: BIND_TIMEOUT });
+    const inserted = await card.locator(`[${SUGGESTION_ROW_ATTR}="insert"] > span.min-w-0 > span:first-child`).allInnerTexts();
+    expect(capitals(inserted.join(' ')), `${label}: the card adds no struck capital (${inserted.join(' | ')})`).toBe('');
+    const before = await open.count();
+    await accept.click();
+    await expect.poll(() => open.count(), { message: `${label}: accepted`, timeout: BIND_TIMEOUT }).toBeLessThan(before);
+  }
+  await expect.poll(async () => capitals(await content(ada, docId)), { message: `${label}: accept leaves every struck capital out`, timeout: BIND_TIMEOUT }).toBe('');
+  expect(kept(await content(ada, docId)), `${label}: accept keeps every unstruck character`).toBe(kept(original));
+}
+
+/** One leg: every combination of `kind` on `side` of the boundary, in one note (one note each when its block leads). */
+export async function censusLeg(actors: Actors, kind: Kind, side: Side): Promise<void> {
+  const leading = kind === 'leading heading';
+  const combos = combosOf(kind, side, leading && side === 'after' ? ['Backspace at the start'] : KEYS);
+  expect(combos.length, 'combinations').toBeGreaterThan(0);
+  const adaPrincipal = await actors.principal('ada');
+  const ada = await actors.open(adaPrincipal);
+  const benPrincipal = await actors.principal('ben');
+  const ben = await actors.session(benPrincipal);
+  // A block that leads its note gets a note of its own per combination; every other leg shares one.
+  const notes = leading ? combos.map((combo) => [combo]) : [combos];
+  for (const group of notes) {
+    const blocks = group.flatMap((combo) => sectionOf(combo, leading));
+    const markdown = `${[...blocks, 'closing keep.'].join('\n\n')}\n`;
+    const docId = await noteFor(ada, { principal: benPrincipal }, markdown);
+    const original = await content(ada, docId);
+    await openIn(ben, docId, 'suggest');
+    await openIn(ada, docId, 'edit');
+    if (group === notes[0]) await actors.requireDistinct(2);
+    const baseline = (await readBody(ben, docId)).kept;
+    expect(baseline, 'the note shows its text').not.toBe('');
+    for (const combo of group) await play(ben, docId, combo, baseline);
+    await review(ada, ben, docId, original, `${kind} ${side} the boundary`);
+  }
+}

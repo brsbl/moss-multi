@@ -6,15 +6,15 @@
 import { canonical, yValue } from '@moss-multi/core/suggest/apply';
 import { describeHunks } from '@moss-multi/core/suggest/describe';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
-import type { SuggestReply, SuggestRequest } from '@moss-multi/protocol/suggest';
+import type { IdSpan, SuggestReply, SuggestRequest } from '@moss-multi/protocol/suggest';
 import {
   $createRangeSelection, $getRoot, $setSelection, type RangeSelection, COMMAND_PRIORITY_EDITOR, DELETE_CHARACTER_COMMAND, REDO_COMMAND, UNDO_COMMAND, $getSelection, $isRangeSelection,
-  type LexicalEditor,
+  $isElementNode, $isParagraphNode, $isTextNode, type LexicalEditor, type LexicalNode,
 } from 'lexical';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { handleSuggest, SuggestIngest } from '../../../../../../packages/sync/src/doc/suggest.ts';
-import { SuggestFork } from '../../../../../../packages/sync/src/suggest/client.ts';
+import { Composite, destroyView, SuggestFork } from '../../../../../../packages/sync/src/suggest/client.ts';
 import { bindEditor } from '../../../../../../packages/sync/src/suggest/fork-shim.ts';
 import { readRecord, recordIds } from '../../../../../../packages/sync/src/suggest/records.ts';
 import {
@@ -23,6 +23,8 @@ import {
 import { deterministicIds, EDITOR, exported, NOTE_ID, seededBody, select, SUGGESTER, textNode } from '../../../../../../packages/sync/src/suggest/test-support.ts';
 import { publishBinding } from '../binding-registry.ts';
 import { createBindingUndoManager } from '../undo.ts';
+import { textIds } from './chars.ts';
+import { struckByRecord } from './paint.ts';
 import { registerSuggestRouting } from './routing.ts';
 
 let restore: () => void = () => {};
@@ -117,6 +119,8 @@ function suggesting(markdown: string) {
     edit: run,
     /** What the suggester sees in F. */
     text: () => editor.getEditorState().read(() => $getRoot().getTextContent()),
+    editor,
+    binding: bound.binding,
     dispose: () => {
       for (const stop of stops) stop();
       undo.destroy();
@@ -496,4 +500,246 @@ describe('a strike, then a native join or unwrap at the block edge, keeps the st
       expect(root(pane.live), `${close}: the body is unchanged`).toBe(before);
     }
   });
+});
+
+// The census: every block kind on each side of a boundary, every edge key and every strike position. Struck text is
+// upper case and nothing else is, so the struck characters are the note's capitals and the rest is its lower case.
+type Kind =
+  | 'paragraph' | 'heading' | 'leading heading' | 'list item' | 'nested list item' | 'quote' | 'code block' | 'table'
+  | 'decorator' | 'empty paragraph' | 'line break';
+const KINDS: Kind[] = [
+  'paragraph', 'heading', 'leading heading', 'list item', 'nested list item', 'quote', 'code block', 'table', 'decorator', 'empty paragraph', 'line break',
+];
+/** The kind is the block before the boundary, or the block after it. */
+type Side = 'before' | 'after';
+type Key = 'Backspace at the start' | 'Delete at the end' | 'Delete after a line break';
+const KEYS: Key[] = ['Backspace at the start', 'Delete at the end', 'Delete after a line break'];
+/** start: the next block's first character; end: each block's last; span: across the boundary; whole: the next block. */
+type Where = 'start' | 'end' | 'span' | 'whole';
+const WHERES: Where[] = ['start', 'end', 'span', 'whole'];
+const TEXTLESS = new Set<Kind>(['code block', 'decorator', 'empty paragraph']);
+const B_TEXT: Record<Where, string> = { start: 'Zbeta tail', span: 'Zbeta tail', end: 'beta tailZ', whole: 'ZQZQZQ' };
+
+interface Shape {
+  markdown: string;
+  /** The text of the block before the boundary and of the block after it, when they hold text. */
+  a: string | null;
+  b: string | null;
+  /** An empty paragraph made before the strikes: after the intro (the block before) or after `a` (the block after). */
+  empty: 'a' | 'b' | null;
+  hasA: boolean;
+  aKind: Kind | null;
+  bKind: Kind;
+}
+
+function blockOf(kind: Kind, text: string | null, role: 'a' | 'b'): string {
+  switch (kind) {
+    case 'paragraph': return text!;
+    case 'heading':
+    case 'leading heading': return `## ${text}`;
+    case 'list item': return `- ${text}`;
+    case 'nested list item': return `- outer keep\n    - ${text}`;
+    case 'quote': return `> ${text}`;
+    case 'table': return role === 'a' ? `| cell keep | row keep |\n| --- | --- |\n| more keep | ${text} |` : `| ${text} | cell keep |\n| --- | --- |\n| more keep | row keep |`;
+    case 'code block': return '```\n123\n```';
+    case 'decorator': return '---';
+    case 'line break': return role === 'a' ? `first keep\n${text}` : `${text}\nsecond keep`;
+    case 'empty paragraph': return '';
+  }
+}
+
+function shapeOf(kind: Kind, side: Side, where: Where): Shape {
+  const leading = kind === 'leading heading';
+  const aKind: Kind | null = side === 'before' ? kind : leading ? null : 'paragraph';
+  const bKind: Kind = side === 'after' ? kind : 'paragraph';
+  const a = aKind && !TEXTLESS.has(aKind) ? (where === 'end' || where === 'span' ? 'alpha headZ' : 'alpha head') : null;
+  const b = TEXTLESS.has(bKind) ? null : B_TEXT[where];
+  const blocks: string[] = [];
+  if (!leading) blocks.push('intro keep.');
+  if (bKind === 'nested list item') {
+    // Its parent item is the block before it.
+    blocks.push(`- ${a}\n    - ${b}`);
+  } else {
+    if (aKind && aKind !== 'empty paragraph') blocks.push(blockOf(aKind, a, 'a'));
+    if (bKind !== 'empty paragraph') blocks.push(blockOf(bKind, b, 'b'));
+  }
+  blocks.push('closing keep.');
+  const empty = aKind === 'empty paragraph' ? 'a' : bKind === 'empty paragraph' ? 'b' : null;
+  return { markdown: `${blocks.join('\n\n')}\n`, a, b, empty, hasA: aKind !== null, aKind, bKind };
+}
+
+/** Why a combination does not apply, or null. */
+function skipOf(shape: Shape, key: Key, where: Where): string | null {
+  const caretless = (kind: Kind | null) => kind === 'code block' || kind === 'decorator';
+  if (key === 'Backspace at the start' && caretless(shape.bKind)) return 'no caret in the block after';
+  if (key !== 'Backspace at the start' && (!shape.hasA || caretless(shape.aKind))) return 'no caret in the block before';
+  if ((where === 'start' || where === 'whole') && !shape.b) return 'nothing to strike';
+  if (where === 'span' && (!shape.a || !shape.b)) return 'nothing to strike across';
+  if (where === 'end' && !shape.a && !shape.b) return 'nothing to strike';
+  return null;
+}
+
+/** The unstruck text: lower case letters, and the digits of code. */
+const letters = (text: string) => text.replace(/[^a-z0-9]/g, '');
+const capitals = (text: string) => text.replace(/[^A-Z]/g, '');
+
+/** F's capitals that are not struck: each one F shows must be painted struck. */
+function unstruckCapitals(pane: Pane): string[] {
+  return pane.editor.getEditorState().read(() => {
+    const out: string[] = [];
+    const visit = (node: LexicalNode) => {
+      if ($isTextNode(node)) {
+        const text = node.getTextContent();
+        const ids = textIds(pane.binding, node.getKey());
+        for (let i = 0; i < text.length; i += 1) {
+          if (!/[A-Z]/.test(text[i])) continue;
+          if (!ids || !pane.fork.isStruck(ids[i])) out.push(`${text[i]} in "${text}"`);
+        }
+      }
+      if ($isElementNode(node)) for (const child of node.getChildren()) visit(child);
+    };
+    visit($getRoot());
+    return out;
+  });
+}
+
+/** Every live character of a Yjs tree, with its id. */
+function liveChars(type: Y.AbstractType<unknown>, out: { id: Y.ID; char: string }[] = []) {
+  for (let item = type._start; item; item = item.right) {
+    if (item.deleted) continue;
+    if (item.content instanceof Y.ContentString) {
+      const { str } = item.content;
+      for (let i = 0; i < str.length; i += 1) out.push({ id: Y.createID(item.id.client, item.id.clock + i), char: str[i] });
+    } else if (item.content instanceof Y.ContentType && item.parentSub === null) liveChars(item.content.type as Y.AbstractType<unknown>, out);
+  }
+  return out;
+}
+
+const within = (spans: readonly IdSpan[], id: Y.ID) => spans.some((span) => span.client === id.client && span.clock <= id.clock && id.clock < span.clock + span.len);
+
+/** One combination, from the strikes to accept: the problems found, or null when it does not apply. */
+function census(kind: Kind, side: Side, key: Key, where: Where): string[] | null {
+  const shape = shapeOf(kind, side, where);
+  if (skipOf(shape, key, where)) return null;
+  const problems: string[] = [];
+  const original = letters(exported(seededBody(shape.markdown)));
+  const pane = suggesting(shape.markdown);
+  let shown = letters(pane.text());
+  const look = (when: string) => {
+    for (const capital of unstruckCapitals(pane)) problems.push(`${when}: F shows ${capital} unstruck`);
+    if (letters(pane.text()) !== shown) problems.push(`${when}: F lost unstruck text: ${JSON.stringify(pane.text())}`);
+  };
+  const emptyParagraph = () => $getRoot().getChildren().find((node) => $isParagraphNode(node) && node.getTextContentSize() === 0);
+  try {
+    if (shape.empty === 'a') {
+      pane.caret('intro keep.', 'intro keep.'.length);
+      pane.edit(() => ($getSelection() as RangeSelection).insertParagraph());
+    } else if (shape.empty === 'b') {
+      pane.caret(shape.a!, shape.a!.length);
+      pane.edit(() => ($getSelection() as RangeSelection).insertParagraph());
+    }
+    shown = letters(pane.text());
+    if (where === 'start') {
+      pane.caret(shape.b!, 1);
+      pane.press('Backspace');
+    } else if (where === 'whole') {
+      pane.caret(shape.b!, 0, shape.b!.length);
+      pane.press('Backspace');
+    } else if (where === 'span') {
+      pane.across(shape.a!, shape.a!.length - 1, shape.b!, 1);
+      pane.press('Backspace');
+    } else {
+      for (const text of [shape.a, shape.b]) {
+        if (!text) continue;
+        pane.caret(text, text.length);
+        pane.press('Backspace');
+      }
+    }
+    const struck = pane.fork.struck().reduce((sum, span) => sum + span.len, 0);
+    const expected = capitals([shape.a, shape.b].join(' ')).length;
+    if (struck !== expected) problems.push(`struck ${struck} characters, not ${expected}`);
+    look('after the strikes');
+    if (key === 'Backspace at the start') {
+      if (shape.b) pane.caret(shape.b, 0);
+      else pane.edit(() => emptyParagraph()!.selectStart());
+      pane.press('Backspace');
+    } else {
+      if (shape.a) pane.caret(shape.a, shape.a.length);
+      else pane.edit(() => emptyParagraph()!.selectStart());
+      if (key === 'Delete after a line break') pane.edit(() => ($getSelection() as RangeSelection).insertLineBreak());
+      pane.press('Delete');
+    }
+    look(`after ${key}`);
+    pane.undo();
+    look(`after undo of ${key}`);
+    pane.redo();
+    look(`after redo of ${key}`);
+  } finally {
+    pane.dispose();
+  }
+  const refused = pane.replies.filter((reply) => reply.t === 'suggest-refused');
+  if (refused.length) problems.push(`refused: ${JSON.stringify(refused)}`);
+  const open = recordIds(pane.live)
+    .map((id) => readRecord(pane.live, id)!)
+    .filter((record) => record.meta.status === 'open')
+    .sort((x, y) => x.meta.createdAt - y.meta.createdAt || (x.meta.id < y.meta.id ? -1 : 1));
+  // Edit mode: every capital in the body paints struck, and nothing a record inserts holds one.
+  const built = new Composite(pane.live).build();
+  try {
+    if (built.valid.length !== open.length) problems.push(`records invalid in C: ${built.broken.join(', ')}`);
+    const spans = [...struckByRecord(pane.live, new Set(built.valid), built).values()].flat();
+    for (const { id, char } of liveChars(pane.live.get('root', Y.XmlText))) {
+      if (/[A-Z]/.test(char) && !within(spans, id)) problems.push(`Edit mode leaves ${char} unpainted`);
+    }
+    for (const { id, char } of liveChars(built.doc.get('root', Y.XmlText))) {
+      if (/[A-Z]/.test(char) && built.clients.has(id.client)) problems.push(`C inserts ${char}`);
+    }
+  } finally {
+    destroyView(built);
+  }
+  const working = exportWorkingMarkdown(pane.live, NOTE_ID);
+  if (capitals(working)) problems.push(`the working export holds ${capitals(working)}`);
+  if (letters(working) !== original) problems.push(`the working export lost unstruck text: ${JSON.stringify(working)}`);
+  for (const record of open) {
+    const preview = previewRecord(pane.live, record.meta.id);
+    if (!preview.ok) {
+      problems.push(`preview: ${JSON.stringify(preview)}`);
+      continue;
+    }
+    for (const row of describeHunks(preview.hunks)) {
+      if (row.kind === 'insert' && capitals(row.text)) problems.push(`the card adds ${JSON.stringify(row.text)}`);
+    }
+    const accepted = acceptRecord(pane.live, record.meta.id, { previewHash: preview.hash, digest: preview.digest }, EDITOR);
+    if (!accepted.ok) problems.push(`accept: ${JSON.stringify(accepted)}`);
+  }
+  const body = exported(pane.live);
+  if (capitals(body)) problems.push(`accept keeps ${capitals(body)}: ${JSON.stringify(body)}`);
+  if (letters(body) !== original) problems.push(`accept lost unstruck text: ${JSON.stringify(body)}`);
+  return problems;
+}
+
+describe('the strike census: every block kind on each side of a boundary, every edge key, every strike position @p:mean-2 @p:R17', () => {
+  for (const kind of KINDS) {
+    for (const side of ['before', 'after'] as const) {
+      it(`${kind} ${side} the boundary: F, the card, the Edit-mode paint, the working export and accept leave every struck character out and keep the rest`, () => {
+        const failures: string[] = [];
+        let ran = 0;
+        for (const key of KEYS) {
+          for (const where of WHERES) {
+            let problems: string[] | null;
+            try {
+              problems = census(kind, side, key, where);
+            } catch (error) {
+              problems = [`threw ${(error as Error).stack ?? String(error)}`];
+            }
+            if (problems === null) continue;
+            ran += 1;
+            for (const problem of problems) failures.push(`${key}, strike ${where}: ${problem}`);
+          }
+        }
+        expect(ran, 'combinations run').toBeGreaterThan(0);
+        expect(failures).toEqual([]);
+      });
+    }
+  }
 });
