@@ -2,7 +2,8 @@
 // (or 800 lines) into chunks and dropped every chunk after the first, because the selection it inserted at was gone by
 // the second. Pasting 40k, 200k and 2 MB of mixed markdown, into an empty note and between two paragraphs, must land
 // every character (the doc's export equals the server's import of the same text, moss's normalization), leave the
-// caret after the paste, make one undo step, and reach a collaborator in full.
+// caret after the paste, make one undo step that redoes whole, and reach a collaborator in full. A second paste or a
+// note switch while one lands, typing or an undo right after it, and a paste ending in a list lose nothing either.
 //
 // The notes and the reference imports are created through POST /api/docs as declared setup.
 import type { LexicalEditor } from 'lexical';
@@ -14,6 +15,7 @@ import { expect, test, ui } from '../lib/test.ts';
 /** Past the undo capture window (1 s), so the next edit is its own step. */
 const NEW_STEP_MS = 1_500;
 const UNDO = 'ControlOrMeta+z';
+const REDO = 'ControlOrMeta+Shift+z';
 const LAST = 'Last line of the paste.';
 
 const WORDS = ['moss', 'grows', 'on', 'the', 'north', 'side', 'of', 'old', 'stones', 'and', 'keeps', 'water', 'through', 'dry',
@@ -50,6 +52,19 @@ function mixedMarkdown(size: number): string {
     length += section.length + 2;
   }
   parts.push(LAST);
+  return parts.join('\n\n');
+}
+
+/** Bullet and numbered lists, alternating, of at least `size` characters, ending with a list of kind `last`. */
+function listMarkdown(size: number, last: 'bullet' | 'numbered'): string {
+  const parts: string[] = [];
+  let length = 0;
+  for (let i = 0; length < size || (parts.length % 2 === 0) !== (last === 'numbered'); i += 1) {
+    const marker = (n: number) => (parts.length % 2 === 0 ? '-' : `${n}.`);
+    const list = [0, 1, 2].map((n) => `${marker(n + 1)} ${prose(i + n, 50)} ${i}`).join('\n');
+    parts.push(list);
+    length += list.length + 2;
+  }
   return parts.join('\n\n');
 }
 
@@ -93,9 +108,10 @@ async function pastePlain(actor: Actor, docId: string, text: string): Promise<vo
   }, text);
 }
 
-async function setup(actors: Actors, stack: Stack, markdown?: string) {
+async function setup(actors: Actors, stack: Stack, markdown?: string, { elsewhere = false } = {}) {
   const ada = await actors.session(await actors.principal('ada'));
   const docId = await importNote(ada, stack, 'Paste target', markdown);
+  const otherId = elsewhere ? await importNote(ada, stack, 'Elsewhere', 'Another note.') : '';
   const principal = await actors.principal('ben');
   await grantDoc(ada, docId, principal);
   await ada.goto(`/d/${docId}`);
@@ -104,7 +120,7 @@ async function setup(actors: Actors, stack: Stack, markdown?: string) {
     await ui.waitLive(actor, docId);
     await actor.observeEditor(docId);
   }
-  return { ada, ben, docId };
+  return { ada, ben, docId, otherId };
 }
 
 /**
@@ -141,6 +157,11 @@ async function pasteAndCheck(
   await ui.waitAcked(ada, docId, timeout);
   await expect.poll(() => exported(ada, docId), { message: 'one more undo removes the whole paste', timeout }).toBe(before);
   await expect.poll(() => fingerprint(ben, docId), { message: 'the collaborator sees the paste undone', timeout }).toEqual(empty);
+
+  await ada.page.keyboard.press(REDO);
+  await ui.waitAcked(ada, docId, timeout);
+  await expect.poll(() => exported(ada, docId), { message: 'one redo brings the whole paste back to the server', timeout }).toBe(want.whole);
+  await expect.poll(() => fingerprint(ben, docId), { message: 'the collaborator sees the paste redone', timeout }).toEqual(pastedPrint);
 }
 
 const SIZES: [string, number, number][] = [
@@ -173,4 +194,78 @@ test('j01-paste: 200k of mixed markdown pasted between two paragraphs lands whol
   await ada.page.keyboard.press('End');
   await ada.page.keyboard.press('Enter');
   await pasteAndCheck({ ada, ben, docId }, markdown, want, 90_000);
+});
+
+test('j01-paste: a second large paste and a note switch while a 200k paste lands keep every character of both @p:col-1 @p:col-3', async ({ actors, stack }) => {
+  test.setTimeout(300_000);
+  const first = mixedMarkdown(200_000);
+  const second = mixedMarkdown(45_000).replace('Pasted start.', 'Second paste.');
+  const { ada, ben, docId, otherId } = await setup(actors, stack, undefined, { elsewhere: true });
+  const whole = await normalized(ada, stack, `${first}${second}`);
+  await ui.body(ada, docId).click();
+  await pastePlain(ada, docId, first);
+  await pastePlain(ada, docId, second);
+  await ui.openNote(ada, otherId);
+  await expect.poll(() => exported(ada, docId), { message: 'both pastes land whole after the pane closed', timeout: 90_000 }).toBe(whole);
+  await ui.openNote(ada, docId);
+  await expect.poll(() => fingerprint(ben, docId), { message: 'the collaborator sees both pastes', timeout: 60_000 }).toEqual(await fingerprint(ada, docId));
+});
+
+test('j01-paste: a 200k paste ending in a list keeps its lists apart and in order @p:col-1', async ({ actors, stack }) => {
+  test.setTimeout(300_000);
+  for (const last of ['bullet', 'numbered'] as const) {
+    const markdown = listMarkdown(200_000, last);
+    const { ada, docId } = await setup(actors, stack);
+    const whole = await normalized(ada, stack, markdown);
+    await ui.body(ada, docId).click();
+    await pastePlain(ada, docId, markdown);
+    await ui.waitAcked(ada, docId, 90_000);
+    await expect.poll(() => exported(ada, docId), { message: `a paste ending in a ${last} list lands as pasted`, timeout: 90_000 }).toBe(whole);
+  }
+});
+
+test('j01-paste: typing right after a 200k paste is its own undo step @p:col-1 @p:col-3', async ({ actors, stack }) => {
+  test.setTimeout(300_000);
+  const markdown = mixedMarkdown(200_000);
+  const { ada, ben, docId } = await setup(actors, stack);
+  const want = { whole: await normalized(ada, stack, markdown), typed: await normalized(ada, stack, `${markdown}Q`) };
+  const before = await exported(ada, docId);
+  await ui.body(ada, docId).click();
+  await pastePlain(ada, docId, markdown);
+  await ada.page.keyboard.type('Q');
+  await ui.waitAcked(ada, docId, 90_000);
+  await expect.poll(() => exported(ada, docId), { message: 'the typing lands after the paste', timeout: 90_000 }).toBe(want.typed);
+  await ada.page.waitForTimeout(NEW_STEP_MS);
+  await ada.page.keyboard.press(UNDO);
+  await ui.waitAcked(ada, docId, 90_000);
+  await expect.poll(() => exported(ada, docId), { message: 'the first undo removes only the typing', timeout: 90_000 }).toBe(want.whole);
+  await ada.page.keyboard.press(UNDO);
+  await ui.waitAcked(ada, docId, 90_000);
+  await expect.poll(() => exported(ada, docId), { message: 'the next undo removes the paste', timeout: 90_000 }).toBe(before);
+  await ada.page.keyboard.type('R');
+  await ui.waitAcked(ada, docId, 90_000);
+  await ada.page.waitForTimeout(NEW_STEP_MS);
+  await ada.page.keyboard.type('S');
+  await ada.page.waitForTimeout(NEW_STEP_MS);
+  await ada.page.keyboard.press(UNDO);
+  await ui.waitAcked(ada, docId, 90_000);
+  await expect.poll(() => exported(ada, docId), { message: 'later edits are separate undo steps again', timeout: 30_000 }).toBe(await normalized(ada, stack, 'R'));
+  await expect.poll(() => fingerprint(ben, docId), { message: 'the collaborator agrees', timeout: 30_000 }).toEqual(await fingerprint(ada, docId));
+});
+
+test('j01-paste: an undo right after a 200k paste removes all of it, for good @p:col-1 @p:col-3', async ({ actors, stack }) => {
+  test.setTimeout(300_000);
+  const markdown = mixedMarkdown(200_000);
+  const { ada, ben, docId } = await setup(actors, stack);
+  const before = await exported(ada, docId);
+  const empty = await fingerprint(ada, docId);
+  await ui.body(ada, docId).click();
+  await pastePlain(ada, docId, markdown);
+  await ada.page.keyboard.press(UNDO);
+  await ui.waitAcked(ada, docId, 90_000);
+  await ada.page.waitForTimeout(5_000);
+  await ui.waitAcked(ada, docId, 90_000);
+  expect(await exported(ada, docId), 'nothing of the undone paste comes back').toBe(before);
+  expect(await fingerprint(ada, docId), 'the editor holds nothing of it either').toEqual(empty);
+  await expect.poll(() => fingerprint(ben, docId), { message: 'nor does the collaborator', timeout: 30_000 }).toEqual(empty);
 });
