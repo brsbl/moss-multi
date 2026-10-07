@@ -36,6 +36,9 @@ overrides:
   '@lexical/yjs>yjs': 13.6.31
 
 patchedDependencies:
+  '@lexical/yjs@0.48.0':
+    hash: 1d3c76823c963760058ef282392b7f51bf29440490675e2ea4257168d50cd295
+    path: patches/@lexical__yjs@0.48.0.patch
   wrangler@4.113.0:
     hash: 8a37e7d39b3e06c049196ef483747f3b2a01005c035f879c6cac460fd6d85597
     path: patches/wrangler@4.113.0.patch
@@ -100,7 +103,7 @@ importers:
         version: 0.48.0(typescript@5.9.3)
       '@lexical/yjs':
         specifier: 0.48.0
-        version: 0.48.0(typescript@5.9.3)(yjs@13.6.31)
+        version: 0.48.0(patch_hash=1d3c76823c963760058ef282392b7f51bf29440490675e2ea4257168d50cd295)(typescript@5.9.3)(yjs@13.6.31)
       '@mdx-js/mdx':
         specifier: 3.1.1
         version: 3.1.1
@@ -218,7 +221,7 @@ importers:
         version: 0.48.0(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@5.9.3)(yjs@13.6.31)
       '@lexical/yjs':
         specifier: 0.48.0
-        version: 0.48.0(typescript@5.9.3)(yjs@13.6.31)
+        version: 0.48.0(patch_hash=1d3c76823c963760058ef282392b7f51bf29440490675e2ea4257168d50cd295)(typescript@5.9.3)(yjs@13.6.31)
       '@moss-multi/core':
         specifier: workspace:*
         version: link:../../packages/core
@@ -321,7 +324,7 @@ importers:
         version: 0.48.0(typescript@5.9.3)
       '@lexical/yjs':
         specifier: 0.48.0
-        version: 0.48.0(typescript@5.9.3)(yjs@13.6.31)
+        version: 0.48.0(patch_hash=1d3c76823c963760058ef282392b7f51bf29440490675e2ea4257168d50cd295)(typescript@5.9.3)(yjs@13.6.31)
       '@playwright/test':
         specifier: 1.61.1
         version: 1.61.1
@@ -450,7 +453,7 @@ importers:
         version: 0.48.0(typescript@5.9.3)
       '@lexical/yjs':
         specifier: 0.48.0
-        version: 0.48.0(typescript@5.9.3)(yjs@13.6.31)
+        version: 0.48.0(patch_hash=1d3c76823c963760058ef282392b7f51bf29440490675e2ea4257168d50cd295)(typescript@5.9.3)(yjs@13.6.31)
       '@moss-multi/core':
         specifier: workspace:*
         version: link:../core
@@ -5412,7 +5415,7 @@ snapshots:
       '@lexical/table': 0.48.0(typescript@5.9.3)
       '@lexical/text': 0.48.0(typescript@5.9.3)
       '@lexical/utils': 0.48.0(typescript@5.9.3)
-      '@lexical/yjs': 0.48.0(typescript@5.9.3)(yjs@13.6.31)
+      '@lexical/yjs': 0.48.0(patch_hash=1d3c76823c963760058ef282392b7f51bf29440490675e2ea4257168d50cd295)(typescript@5.9.3)(yjs@13.6.31)
       lexical: 0.48.0(typescript@5.9.3)
       react: 19.3.0
       react-dom: 19.3.0(react@19.3.0)
@@ -5465,7 +5468,7 @@ snapshots:
     optionalDependencies:
       typescript: 5.9.3
 
-  '@lexical/yjs@0.48.0(typescript@5.9.3)(yjs@13.6.31)':
+  '@lexical/yjs@0.48.0(patch_hash=1d3c76823c963760058ef282392b7f51bf29440490675e2ea4257168d50cd295)(typescript@5.9.3)(yjs@13.6.31)':
     dependencies:
       '@lexical/internal': 0.48.0(typescript@5.9.3)
       '@lexical/selection': 0.48.0(typescript@5.9.3)
