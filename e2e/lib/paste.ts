@@ -127,6 +127,15 @@ export async function watchStalls(actor: Actor): Promise<void> {
     } catch {
       // WebKit has no long task timing
     }
+    const frames = window as unknown as { __frames?: PerformanceEntry[]; __frameObserver?: PerformanceObserver };
+    frames.__frames = [];
+    frames.__frameObserver?.disconnect();
+    try {
+      frames.__frameObserver = new PerformanceObserver((list) => frames.__frames!.push(...list.getEntries()));
+      frames.__frameObserver.observe({ type: 'long-animation-frame' });
+    } catch {
+      // only Chromium has long animation frame timing
+    }
     let last = start;
     probe.__stallTimer = setInterval(() => {
       const now = performance.now();
@@ -159,7 +168,24 @@ export const longestStall = (actor: Actor): Promise<{ ms: number; at: number; du
       .filter((entry) => entry.startTime < to && entry.startTime + entry.duration > from)
       .map((entry) => `a ${Math.round(entry.duration)} ms long task`)
       .join(', ');
-    return { ms: Math.round(probe.__stall), at: Math.round(probe.__stallAt), during: [during || 'no paste batch', long || 'no long task'].join('; ') };
+    // Each long animation frame in the stall: its script time, forced layout, then style and layout and the rest of
+    // rendering, and its longest scripts.
+    type Frame = PerformanceEntry & { renderStart: number; styleAndLayoutStart: number; scripts: (PerformanceEntry & { invoker: string; forcedStyleAndLayoutDuration: number })[] };
+    const frames = window as unknown as { __frames?: Frame[]; __frameObserver?: PerformanceObserver };
+    frames.__frameObserver?.disconnect();
+    const ms = (value: number) => Math.round(value);
+    const animation = (frames.__frames ?? [])
+      .filter((entry) => entry.startTime < to && entry.startTime + entry.duration > from)
+      .map((entry) => {
+        const end = entry.startTime + entry.duration;
+        const render = entry.renderStart || end;
+        const style = entry.styleAndLayoutStart || end;
+        const scripts = [...entry.scripts].sort((a, b) => b.duration - a.duration).slice(0, 3)
+          .map((script) => `${script.invoker} ${ms(script.duration)} ms, forced layout ${ms(script.forcedStyleAndLayoutDuration)}`);
+        return `a ${ms(entry.duration)} ms frame (script ${ms(render - entry.startTime)}, rendering before layout ${ms(style - render)}, style and layout on ${ms(end - style)}; ${scripts.join('; ')})`;
+      })
+      .join(', ');
+    return { ms: Math.round(probe.__stall), at: Math.round(probe.__stallAt), during: [during || 'no paste batch', long || 'no long task', animation || 'no long frame'].join('; ') };
   });
 
 /** The paste's batches so far (User Timing `moss-paste-batch`): units/work/layout/time before, in ms, in order. */
