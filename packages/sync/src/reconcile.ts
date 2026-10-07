@@ -33,6 +33,16 @@ const PAYLOADS: Readonly<Record<string, PayloadReconciler>> = Object.fromEntries
       if (field) writeRegister(node, String(fresh[field] ?? ''));
       else writeMapRegister(node, fieldsOf(fresh, MAP_REGISTERS[type]!));
     },
+    $writeProps(node: LexicalNode, json: SerializedNode) {
+      // Each other exported prop `name` is the node's `__name`, read from a detached node so defaults resolve alike.
+      const fresh = $parseSerializedNode(json as never) as unknown as Record<string, unknown>;
+      const writable = node.getWritable() as unknown as Record<string, unknown>;
+      const names = new Set([...Object.keys(node.exportJSON()), ...Object.keys(json)]);
+      for (const name of names) {
+        if (name === 'type' || name === 'version' || name === key) continue;
+        if (`__${name}` in fresh) writable[`__${name}`] = fresh[`__${name}`];
+      }
+    },
   }]),
 );
 

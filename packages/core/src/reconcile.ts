@@ -12,11 +12,17 @@ export type SerializedNode = Record<string, unknown>;
 /** A decorator whose payload lives outside the tree (A§10.10): its JSON keys, and how to write them in place. */
 export interface PayloadReconciler {
   keys: readonly string[];
+  /** Writes the target's payload to the node's own payload. */
   $write(node: LexicalNode, target: SerializedNode): void;
+  /** Re-applies the target's other props (a code block's language, a formula's result) to the node in place. */
+  $writeProps(node: LexicalNode, target: SerializedNode): void;
 }
 
 export interface ReconcileOptions {
-  /** By node type. Payload keys are not identity: a changed payload is written to the same node's payload. */
+  /**
+   * By node type. A payload decorator's identity is its type alone: a changed payload is written to the same node's
+   * payload and its other props are updated in place, so it keeps its node and payload id.
+   */
   payloads?: Readonly<Record<string, PayloadReconciler>>;
 }
 
@@ -82,11 +88,12 @@ const pick = (own: SerializedNode, keys: readonly string[]) => keys.map((key) =>
 
 /** Type plus every own prop that cannot be re-applied in place: equal identities reconcile without replacement. */
 function identityOf(own: SerializedNode, kind: Kind, options: ReconcileOptions): string {
-  const copy = { ...own };
   const type = String(own.type);
+  if (kind === 'other' && options.payloads?.[type]) return stableStringify({ type });
+  const copy = { ...own };
   const excluded = [
     ...(kind === 'text' ? TEXT_UPDATABLE : kind === 'element' ? ELEMENT_UPDATABLE : []),
-    ...(kind === 'other' ? (options.payloads?.[type]?.keys ?? []) : (TYPE_UPDATABLE[type] ?? [])),
+    ...(kind === 'other' ? [] : (TYPE_UPDATABLE[type] ?? [])),
   ];
   for (const key of excluded) delete copy[key];
   return stableStringify(copy);
@@ -199,12 +206,12 @@ function align(a: readonly string[], b: readonly string[], weigh?: (i: number, j
   return pairs;
 }
 
-/** The changed runs of `current` to `target`, by a character diff. */
+/** The changed runs of `current` to `target`, by a character diff that stays sparse past its table. */
 function splicesOf(current: string, target: string): Splice[] {
   const splices: Splice[] = [];
   let at = 0;
   let open: Splice | null = null;
-  for (const op of diffText(current, target, SERVER_CELL_BUDGET)) {
+  for (const op of diffText(current, target, SERVER_CELL_BUDGET, true)) {
     if ('retain' in op) {
       open = null;
       at += op.retain;
@@ -306,6 +313,8 @@ function $reconcileNode(node: LexicalNode, json: SerializedNode, own: Serialized
   const payload = $kindOfNode(node) === 'other' ? options.payloads?.[node.getType()] : undefined;
   if (payload) {
     if (stableStringify(pick(own, payload.keys)) !== stableStringify(pick(target, payload.keys))) payload.$write(node, json);
+    const rest = (props: SerializedNode) => stableStringify(Object.fromEntries(Object.entries(props).filter(([key]) => !payload.keys.includes(key))));
+    if (rest(own) !== rest(target)) payload.$writeProps(node, json);
   } else if (stableStringify(own) !== stableStringify(target)) {
     if ($isTextNode(node) && typeof own.text === 'string' && typeof json.text === 'string' && own.text !== json.text) {
       // The last changed run lands now with the other props; the runs before it land in later updates.
