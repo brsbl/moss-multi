@@ -35,10 +35,11 @@ import { SERIF_FONT_FAMILY_MARKDOWN_STYLE_PATTERN } from './text-style';
  * with its nodes, is APPLY_COST). Per line, perChar × the line's length + perMatch × the matches applied + base:
  * linear in the line, so only work of ours that grows faster than the line runs out of it (deep nesting), and an
  * ordinary line uses about a tenth of it. Per import (nested imports, such as table cells, share their outer
- * import's), perImport: a whole note's inline work, moss's callbacks included, stays within SP2's import time (about
- * a second here, two to three in CI's workerd); the 2 MB scale note uses a fifth of it. Work that pristine moss also
- * does and that grows faster than the line (callbacks that read the whole paragraph per match) counts against the
- * import's budget only.
+ * import's), perImport holds only the work that grows faster than its line in pristine moss: the walk from the
+ * paragraph's first child that each of Lexical's splits pays (CHILD_WALK per child), and moss's callbacks that read
+ * the whole paragraph per match. A paragraph runs out of it at about 16k matches, past the 10k at which Lexical's
+ * recursion overflows the stack, and takes a fraction of SP2's import time to get there; linear work never counts
+ * against it, so a note of ordinary lines is never cut however large.
  */
 export const LINEAR_IMPORT_LIMITS = { perChar: 256, perMatch: 1 << 17, base: 1 << 20, perImport: 1 << 30 };
 /**
@@ -53,6 +54,8 @@ const VISIT_COST = 32;
 const APPLY_COST = 12_288;
 // A read of the paragraph's text and children, per character.
 const PARAGRAPH_READ = 20;
+// Pristine Lexical's splitText walk, per child of the paragraph.
+const CHILD_WALK = 8;
 // Native regex and string scans run several characters per unit; the format search's scans take several units per
 // character.
 const NATIVE = 4;
@@ -164,32 +167,32 @@ class Budget {
   left: number;
   allowance: number;
   importLeft: number;
-  spent = 0;
+  /** Charged to the import's budget (work that grows faster than the line in pristine moss). */
+  importSpent = 0;
   constructor(total: number, importLeft: number) {
     this.left = total;
     this.allowance = total;
     this.importLeft = importLeft;
   }
-  /** Adds to the line's budget (each applied match brings its share; the import's budget gets none). */
+  /** Adds to the line's budget (each applied match brings its share). */
   grant(amount: number): void {
     this.left += amount;
     this.allowance += amount;
   }
   /** Spends from the import's budget only. */
   chargeImport(cost: number): void {
-    this.spent += cost;
+    this.importSpent += cost;
     linearImportStats.spent += cost;
   }
-  /** Spends without stopping; the next check stops. */
+  /** Spends from the line's budget without stopping; the next check stops. */
   charge(cost: number): void {
     this.left -= cost;
-    this.spent += cost;
     linearImportStats.spent += cost;
   }
   /** Spends, and stops the line once its budget or its import's is gone. */
   spend(cost: number): void {
     this.charge(cost);
-    if (this.left < 0 || this.spent > this.importLeft) throw OVER_BUDGET;
+    if (this.left < 0 || this.importSpent > this.importLeft) throw OVER_BUDGET;
   }
 }
 
@@ -276,15 +279,16 @@ function $importInline(top: TextNode, index: FormatIndex, matchers: TextMatchTra
 
       let result: Split;
       let endIndex: number;
-      if (foundFormat) {
+      if (foundFormat || foundMatch) {
         line.applied += 1;
         budget.grant(LINEAR_IMPORT_LIMITS.perMatch);
+        budget.chargeImport(CHILD_WALK * line.applied);
+      }
+      if (foundFormat) {
         budget.charge(APPLY_COST);
         result = $importFormat(textNode, foundFormat);
         endIndex = foundFormat.endIndex;
       } else if (foundMatch) {
-        line.applied += 1;
-        budget.grant(LINEAR_IMPORT_LIMITS.perMatch);
         chargeReplace(foundMatch.transformer, foundMatch.match);
         result = $importMatch(textNode, foundMatch);
         endIndex = foundMatch.endIndex;
@@ -303,7 +307,7 @@ function $importInline(top: TextNode, index: FormatIndex, matchers: TextMatchTra
     linearImportStats.cut += 1;
   } finally {
     activeLine = outerLine;
-    if (importBudget) importBudget.left -= budget.spent;
+    if (importBudget) importBudget.left -= budget.importSpent;
     const share = 1 - budget.left / budget.allowance;
     if (share > linearImportStats.peakLineShare) linearImportStats.peakLineShare = share;
   }
