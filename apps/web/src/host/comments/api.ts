@@ -4,6 +4,7 @@
 // for this tab's acks and retries, at most 3 times. Any other refusal drops the pending comment and says why.
 import type { Anchor } from '@moss-multi/core/anchor-frame';
 import type { Doc } from 'yjs';
+import { shareToken } from '../media/web-asset-url.ts';
 import { refuseInput } from '../refusal.ts';
 import type { Minted } from './mint.ts';
 import { modelFor, type CommentRecord } from './model.ts';
@@ -35,10 +36,8 @@ const REFUSED: Record<string, string> = {
 };
 const FAILED = "Your comment couldn't be saved. Try again.";
 
-const shareParam = (): string | null => (typeof window === 'undefined' ? null : new URLSearchParams(window.location.search).get('share'));
-
 async function post(path: string, body: unknown, method = 'POST'): Promise<{ ok: boolean; error?: string }> {
-  const share = shareParam();
+  const share = shareToken();
   try {
     const response = await fetch(path, {
       method,

@@ -2,11 +2,11 @@
 // security reviews, sent as a suggester's body or payload frame, is refused by role before Yjs applies it.
 // Authorization reads the connection's role, never the frame, so the body's and every payload's encoded state are
 // byte-identical afterwards (T5.P adds the payload-doc cases).
-import * as encoding from 'lib0/encoding';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as Y from 'yjs';
 import { CLOSE, encodePayloadFrame, PAYLOAD_UPDATE } from '@moss-multi/protocol/sync';
 import { connect, openDoc, start, syncFrame } from './do-harness.ts';
+import { forged, gcStruct, raw } from './raw-frames.ts';
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -17,12 +17,6 @@ afterEach(() => {
 });
 
 const SEED = ['Hello world and the cat.', '', 'abc', '', 'XYZ', '', '```js', 'seed', '```', '', 'Total {{1+1|2}} items.'].join('\n');
-
-interface Span {
-  client: number;
-  clock: number;
-  len: number;
-}
 
 const root = (doc: Y.Doc) => doc.get('root', Y.XmlText);
 /** The first live top-level block item. */
@@ -52,49 +46,6 @@ function decorator(doc: Y.Doc, type: string): Y.XmlElement {
   const found = find(root(doc));
   if (!found) throw new Error(`no ${type}`);
   return found;
-}
-
-/** A raw V1 update: one GC struct per entry, then a delete set of one range per entry. */
-function rawUpdate(gcs: Span[], deletes: Span[]): Uint8Array {
-  const encoder = encoding.createEncoder();
-  encoding.writeVarUint(encoder, gcs.length);
-  for (const gc of gcs) {
-    encoding.writeVarUint(encoder, 1);
-    encoding.writeVarUint(encoder, gc.client);
-    encoding.writeVarUint(encoder, gc.clock);
-    encoding.writeUint8(encoder, 0);
-    encoding.writeVarUint(encoder, gc.len);
-  }
-  encoding.writeVarUint(encoder, deletes.length);
-  for (const range of deletes) {
-    encoding.writeVarUint(encoder, range.client);
-    encoding.writeVarUint(encoder, 1);
-    encoding.writeVarUint(encoder, range.clock);
-    encoding.writeVarUint(encoder, range.len);
-  }
-  return encoding.toUint8Array(encoder);
-}
-
-/** Re-encodes structs and a delete set as a V1 update, each client's structs from its first clock. */
-function encodeFrame(structs: readonly Y.Item[], deletes: readonly Span[]): Uint8Array {
-  const encoder = new Y.UpdateEncoderV1();
-  const byClient = new Map<number, Y.Item[]>();
-  for (const struct of structs) byClient.set(struct.id.client, [...(byClient.get(struct.id.client) ?? []), struct]);
-  encoding.writeVarUint(encoder.restEncoder, byClient.size);
-  for (const [client, list] of byClient) {
-    encoding.writeVarUint(encoder.restEncoder, list.length);
-    encoder.writeClient(client);
-    encoding.writeVarUint(encoder.restEncoder, list[0].id.clock);
-    for (const struct of list) struct.write(encoder, 0);
-  }
-  encoding.writeVarUint(encoder.restEncoder, deletes.length);
-  for (const span of deletes) {
-    encoding.writeVarUint(encoder.restEncoder, span.client);
-    encoding.writeVarUint(encoder.restEncoder, 1);
-    encoding.writeVarUint(encoder.restEncoder, span.clock);
-    encoding.writeVarUint(encoder.restEncoder, span.len);
-  }
-  return encoder.toUint8Array();
 }
 
 /** What `write` does to a copy of the server's doc, as one update. */
@@ -141,7 +92,7 @@ const FORGED: [string, (server: Y.Doc, payloads: Map<string, Uint8Array>) => Uin
   ['a GC overlapping known clocks that hides a delete of original text', (server) => {
     const hello = helloItem(server);
     const S = hello.id.client;
-    return rawUpdate([{ client: S, clock: 0, len: Y.getState(server.store, S) + 1 }], [{ client: S, clock: hello.id.clock, len: 5 }]);
+    return raw([gcStruct(Y.createID(S, 0), Y.getState(server.store, S) + 1)], [[S, hello.id.clock, 5]]);
   }],
   ['a clock gap that would park', (server) => {
     const doc = new Y.Doc();
@@ -155,15 +106,8 @@ const FORGED: [string, (server: Y.Doc, payloads: Map<string, Uint8Array>) => Uin
   ['a tombstone placed after an original map value', (server) => {
     let map = firstBlock(server)._start!;
     while (map.deleted) map = map.right!;
-    const encoder = new Y.UpdateEncoderV1();
-    encoding.writeVarUint(encoder.restEncoder, 1);
-    encoding.writeVarUint(encoder.restEncoder, 1);
-    encoder.writeClient(424243);
-    encoding.writeVarUint(encoder.restEncoder, 0);
     const origin = (map.content as Y.ContentType).type._map.get('__format')!.id;
-    new Y.Item(Y.createID(424243, 0), null, origin, null, null, null, null, new Y.ContentDeleted(1)).write(encoder, 0);
-    encoding.writeVarUint(encoder.restEncoder, 0);
-    return encoder.toUint8Array();
+    return raw([forged(Y.createID(424243, 0), { origin }, new Y.ContentDeleted(1))]);
   }],
   ['a formatting mark in the body', (server) => forge(server, (doc) => firstBlock(doc).format(1, 5, { bold: true }))],
   ['a same-value attribute write', (server) => forge(server, (doc) => firstBlock(doc).setAttribute('__type', 'paragraph'))],
@@ -175,7 +119,7 @@ const FORGED: [string, (server: Y.Doc, payloads: Map<string, Uint8Array>) => Uin
     const block = blockItem(server);
     const live = (block.content as Y.ContentType).type._map.get('__type')!;
     const item = new Y.Item(Y.createID(1, 0), null, live.origin, null, null, live.origin ? null : block.id, live.origin ? null : '__type', new Y.ContentAny(['paragraph']));
-    return encodeFrame([item], [{ client: live.id.client, clock: live.id.clock, len: 1 }]);
+    return raw([item], [[live.id.client, live.id.clock, 1]]);
   }],
   ['a text map placed before original text', (server) => forge(server, (doc) => firstBlock(doc).insertEmbed(1, textMap(1)))],
   ['a new text map behind new characters', (server) => forge(server, (doc) => doc.transact(() => {

@@ -729,7 +729,9 @@ export class DocDO extends YServer<SyncEnv> {
    */
   async renameTitle(text: string): Promise<void> {
     await this.#ready();
-    await this.#validateAll();
+    // Every open socket hears the rename, so each must still have access (A§8 pull validation).
+    const check = this.#accessCheck();
+    if (check) await this.#serial(() => this.#validate(check));
     writeTitle(this.document, text, SERVER_TITLE);
     this.#comments?.flush();
     this.#projections?.touch();
@@ -1105,15 +1107,6 @@ export class DocDO extends YServer<SyncEnv> {
       connection.close(TRY_AGAIN, 'unregistered');
     });
     this.ctx.waitUntil(registered);
-  }
-
-  /**
-   * A server write reaches every open socket, so each must still have access first (A§8 pull validation). Callers
-   * check the trash hold after it, since a trash may begin while it awaits D1.
-   */
-  async #validateAll(): Promise<void> {
-    const check = this.#accessCheck();
-    if (check) await this.#serial(() => this.#validate(check));
   }
 
   #accessCheck(): AccessCheck | null {

@@ -3,10 +3,8 @@
 // T4.1 and T4.2 move these steps into the DocDO; the spike tests drive this class directly.
 import * as Y from 'yjs';
 import { AnchorEngine, type Anchor } from '@moss-multi/core/anchor-frame';
-import { COMMENT_ORIGIN, CommentsWriter, newCommentsClient, type GuardRefusal } from './comments-guard.ts';
+import { CommentsWriter, ENGINE_SKIPPED_ORIGINS, newCommentsClient, type GuardRefusal } from './comments-guard.ts';
 
-/** Origins the engine never reads: replay from storage, the seed, and comments writes themselves. */
-const SKIPPED: ReadonlySet<unknown> = new Set(['persistence', 'server-seed', COMMENT_ORIGIN]);
 export const CLIENT_FRAME = 'client-frame';
 
 export type FrameVerdict = { refused: GuardRefusal | 'unresolved' } | { refused: null; changed: string[] };
@@ -24,7 +22,7 @@ export class CommentsHost {
     this.engine = new AnchorEngine(doc);
     this.engine.load(this.records());
     doc.on('afterTransaction', (txn: Y.Transaction) => {
-      if (SKIPPED.has(txn.origin)) return;
+      if (ENGINE_SKIPPED_ORIGINS.has(txn.origin)) return;
       for (const [id, anchor] of this.engine.frame(txn)) this.#pending.set(id, anchor);
     });
   }

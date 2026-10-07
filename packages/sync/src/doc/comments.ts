@@ -6,7 +6,7 @@ import * as Y from 'yjs';
 import { AnchorEngine, mintAnchor, MAX_QUOTE, OVERLAP_CAP, type Anchor, type Unit } from '@moss-multi/core/anchor-frame';
 import { idKey, maxCoverage, ordinalsOf, unitsAt, unitText } from '@moss-multi/core/comment-units';
 import { decodeRelPos, encodeRelPos, findQuote, positionAt, project, type TextQuote } from '@moss-multi/core/tree-anchor';
-import { COMMENT_ORIGIN, CommentsWriter, newCommentsClient, type GuardRefusal } from './comments-guard.ts';
+import { CommentsWriter, ENGINE_SKIPPED_ORIGINS, newCommentsClient, type GuardRefusal } from './comments-guard.ts';
 import type { DocStore } from './persistence.ts';
 import type { ImportedMarks } from '../server-doc.ts';
 
@@ -37,9 +37,6 @@ export function entryBytes(key: string, value: unknown): number {
   encoding.writeAny(encoder, value as Parameters<typeof encoding.writeAny>[1]);
   return encoding.length(encoder) + ITEM_OVERHEAD;
 }
-
-/** Origins the engine never reads: replay from storage, the seed, and comments writes themselves. */
-const SKIPPED: ReadonlySet<unknown> = new Set(['persistence', 'server-seed', COMMENT_ORIGIN]);
 
 export type CommentSource = 'user' | 'agent' | 'external';
 
@@ -107,7 +104,7 @@ export class DocComments {
     this.#engine = this.#load();
     for (const [key, value] of doc.getMap<unknown>('comments')) if (key.startsWith('c:')) this.#seq = Math.max(this.#seq, seqOf(value));
     doc.on('afterTransaction', (txn: Y.Transaction) => {
-      if (SKIPPED.has(txn.origin)) return;
+      if (ENGINE_SKIPPED_ORIGINS.has(txn.origin)) return;
       try {
         for (const [id, anchor] of this.#engine.frame(txn)) this.#pending.set(id, anchor);
       } catch (error) {

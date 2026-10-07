@@ -3,7 +3,7 @@
 // the active lease. Every F transaction, in the body or a payload doc, whose origin is not one of the shim's own is
 // forwarded as `suggest-ops` with the doc it was made in, so the binding, the payload writers (first texts and field
 // edits) and the UndoManager are all recorded without an allowlist. The spike's headless harness; the client's fork is client.ts.
-import { createBinding, syncLexicalUpdateToYjs, syncYjsChangesToLexical, type Binding, type Provider } from '@lexical/yjs';
+import { createBinding, syncLexicalUpdateToYjs, syncYjsChangesToLexical, type Binding } from '@lexical/yjs';
 import { registerList } from '@lexical/list';
 import { $normalizeFormatWhitespace } from '@moss-desktop/renderer/editor/markdown/format-whitespace';
 import { TextNode, type LexicalEditor } from 'lexical';
@@ -13,20 +13,12 @@ import { createConverterEditor } from '../converter/index.ts';
 import { excludedPropertiesFor } from '../excluded-properties.ts';
 import { attachPayloadDocs, PAYLOAD_LOADED, PayloadDocs } from '../payload-docs.ts';
 import { bindRegisters } from '../registers.ts';
-import { payloadSourceOf } from '../server-doc.ts';
+import { payloadSourceOf, provider } from '../server-doc.ts';
 import { SHIM_BODY_APPLY, SHIM_RECORD_APPLY } from './client.ts';
 
 export { SHIM_BODY_APPLY, SHIM_RECORD_APPLY };
 
 const noop = () => {};
-const provider = {
-  awareness: { getLocalState: () => null, getStates: () => new Map(), on: noop, off: noop, setLocalState: noop, setLocalStateField: noop },
-  connect: noop,
-  disconnect: noop,
-  on: noop,
-  off: noop,
-} as unknown as Provider;
-
 /**
  * A moss editor bound V1 to `doc`, with the client's list and whitespace transforms and its payload docs (the ones
  * attached to `doc`). Payloads bind as the server mirror binds them, so a new block's first text is written in the

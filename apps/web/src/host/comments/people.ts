@@ -1,6 +1,8 @@
 // Who wrote a comment, and whom an @ can name (docs/design/comments.md §12, §14 decision 3): records carry principal
 // ids only. The members list names the owner and grant holders to anyone with a grant; a link-only reader gets none,
 // so every author but the reader is "Collaborator" there, and an author no longer on the note reads the same.
+import { shareToken } from '../media/web-asset-url.ts';
+
 export const ME = 'Me';
 export const COLLABORATOR = 'Collaborator';
 /** A failed or partial lookup is not repeated sooner than this. */
@@ -27,12 +29,10 @@ export function subscribePeople(listener: () => void): () => void {
   return () => listeners.delete(listener);
 }
 
-const shareParam = (): string | null => (typeof window === 'undefined' ? null : new URLSearchParams(window.location.search).get('share'));
-
 async function ask(docId: string, roster: Roster): Promise<void> {
   roster.asked = Date.now();
   try {
-    const share = shareParam();
+    const share = shareToken();
     const response = await fetch(`/api/docs/${encodeURIComponent(docId)}/members`, {
       credentials: 'same-origin',
       headers: { accept: 'application/json', ...(share ? { 'x-moss-share': share } : {}) },
