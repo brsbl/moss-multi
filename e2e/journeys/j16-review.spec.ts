@@ -479,3 +479,43 @@ test('j16-review: Backspace beside an empty paragraph removes only that paragrap
   await expect(cards(ada, 'accepted')).toHaveCount(1, { timeout: BIND_TIMEOUT });
   await expect.poll(() => content(ada, docId), { message: 'accept removes only the struck characters', timeout: BIND_TIMEOUT }).toContain('Intro line here.\n\n**b** tail.\n\nClosing line too.');
 });
+
+/** A real text/html paste at the caret. */
+const pasteHtml = (actor: Actor, docId: string, html: string, plain: string): Promise<void> =>
+  ui.body(actor, docId).evaluate((element, [h, p]) => {
+    const data = new DataTransfer();
+    data.setData('text/html', h);
+    data.setData('text/plain', p);
+    element.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: data }));
+  }, [html, plain] as const);
+
+const PASTES = [
+  ["at the block's start, pasting the struck character itself", 1, '<p>a</p><p>x</p>', 'a\n\nx', ['Intro line stays.', 'a', 'xbc tail.', 'Closing line stays too.']],
+  ['just before the struck character, pasting the same character', 2, '<p>b</p><p>x</p>', 'b\n\nx', ['Intro line stays.', 'ab', 'xc tail.', 'Closing line stays too.']],
+] as const;
+
+for (const [label, offset, html, plain, expected] of PASTES) {
+  test(`j16-review: a paste ${label} keeps the pasted text and leaves the struck one out, through the card and accept @p:mean-2 @p:R17`, async ({ actors }) => {
+    const { ada, ben, docId } = await sharedNote(actors, 'Intro line stays.\n\nabc tail.\n\nClosing line stays too.');
+    await openIn(ben, docId, 'suggest');
+    await openIn(ada, docId, 'edit');
+    await actors.requireDistinct(2);
+    const body = ui.body(ben, docId);
+    const blocks = () => body.evaluate((root) => [...root.children].map((block) => block.textContent ?? ''));
+
+    // Backspace strikes the character before the caret and leaves the caret before it; the paste lands there.
+    await caret(ben, docId, 'abc tail.', offset);
+    await ben.page.keyboard.press('Backspace');
+    await acked(ben, docId, 'the strike');
+    await pasteHtml(ben, docId, html, plain);
+    await acked(ben, docId, 'the paste');
+    await expect.poll(blocks, { message: 'the pasted text stays; the struck character stays out of the moved block', timeout: BIND_TIMEOUT }).toEqual([...expected]);
+
+    await expect(button(ada)).toHaveAttribute('aria-label', /1 open/, { timeout: BIND_TIMEOUT });
+    const { card } = await cardRows(ada);
+    await card.getByRole('button', { name: 'Accept' }).click();
+    await expect(cards(ada, 'accepted')).toHaveCount(1, { timeout: BIND_TIMEOUT });
+    await expect.poll(() => content(ada, docId), { message: 'accept lands the pasted text without the struck character', timeout: BIND_TIMEOUT })
+      .toContain(expected.join('\n\n'));
+  });
+}

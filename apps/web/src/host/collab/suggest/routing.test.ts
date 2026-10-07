@@ -3,6 +3,8 @@
 // on a moss editor bound to F. The join re-creates the moved block's text under new ids; the struck characters must
 // stay out of the copy, so F, the card, the working export and the accepted text all leave them out, and every
 // unstruck character is kept.
+import { $insertGeneratedNodes } from '@lexical/clipboard';
+import { $generateNodesFromDOM } from '@lexical/html';
 import { canonical, yValue } from '@moss-multi/core/suggest/apply';
 import { describeHunks } from '@moss-multi/core/suggest/describe';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
@@ -17,6 +19,8 @@ import { handleSuggest, SuggestIngest } from '../../../../../../packages/sync/sr
 import { Composite, destroyView, SuggestFork } from '../../../../../../packages/sync/src/suggest/client.ts';
 import { bindEditor } from '../../../../../../packages/sync/src/suggest/fork-shim.ts';
 import { readRecord, recordIds } from '../../../../../../packages/sync/src/suggest/records.ts';
+import { payloadDocsFor, payloadText } from '../../../../../../packages/sync/src/payload-docs.ts';
+import { REGISTER_LOCAL_ORIGIN } from '../../../../../../packages/sync/src/registers.ts';
 import {
   acceptRecord, exportWorkingMarkdown, nodeRegistry, previewRecord, rejectRecord, withdrawRecord,
 } from '../../../../../../packages/sync/src/suggest/review.ts';
@@ -114,6 +118,11 @@ function suggesting(markdown: string) {
     }),
     redo: () => run(() => {
       editor.dispatchCommand(REDO_COMMAND, undefined);
+    }),
+    /** Rich-text paste of `html` at the selection, as moss's paste of text/html runs it. */
+    paste: (html: string) => run(() => {
+      const dom = new DOMParser().parseFromString(html, 'text/html');
+      $insertGeneratedNodes(editor, $generateNodesFromDOM(editor, dom), $getSelection()!);
     }),
     /** Any native edit, as one keystroke. */
     edit: run,
@@ -498,6 +507,84 @@ describe('a strike, then a native join or unwrap at the block edge, keeps the st
       expect(result, close).toEqual({ ok: true });
       expect(exported(pane.live), `${close}: the note is unchanged`).toBe(body);
       expect(root(pane.live), `${close}: the body is unchanged`).toBe(before);
+    }
+  });
+});
+
+describe('a rewrite that also inserts text equal to the struck text keeps the strike on the moved copy, never on the new text @p:mean-2 @p:R17', () => {
+  it("paste of '<p>a</p><p>x</p>' at the start of a block whose struck 'a' moves: the pasted 'a' stays, the struck one stays out", () => {
+    const pane = suggesting(NOTE);
+    try {
+      pane.caret('abc', 1);
+      pane.press('Backspace');
+      pane.caret('abc', 0);
+      pane.paste('<p>a</p><p>x</p>');
+      expect(pane.text(), 'F: the pasted "a" in its own block, the moved block without the struck "a"').toBe('Intro line stays.\n\na\n\nxbc tail.\n\nClosing line stays too.');
+    } finally {
+      pane.dispose();
+    }
+    const { inserted, working, body } = reviewed(pane);
+    expect(inserted.join('|'), 'the card adds the pasted "a" and the moved text without the struck one').not.toContain('xabc');
+    expect(working).toContain('Intro line stays.\n\na\n\nxbc tail.');
+    expect(body, 'accept keeps the pasted "a" and leaves the struck one out').toContain('Intro line stays.\n\na\n\nxbc tail.\n\nClosing line stays too.');
+  });
+
+  it("paste of '<p>b</p><p>x</p>' just before a struck 'b': the pasted 'b' stays where it went, the struck one stays out of the moved block", () => {
+    const pane = suggesting(NOTE);
+    try {
+      pane.caret('abc', 2);
+      pane.press('Backspace');
+      pane.caret('abc', 1);
+      pane.paste('<p>b</p><p>x</p>');
+      expect(pane.text()).toBe('Intro line stays.\n\nab\n\nxc tail.\n\nClosing line stays too.');
+    } finally {
+      pane.dispose();
+    }
+    const { working, body } = reviewed(pane);
+    expect(working).toContain('Intro line stays.\n\nab\n\nxc tail.');
+    expect(body).toContain('Intro line stays.\n\nab\n\nxc tail.\n\nClosing line stays too.');
+  });
+
+  it('undo of that paste takes the pasted text back and the strike stands', () => {
+    const pane = suggesting(NOTE);
+    try {
+      pane.caret('abc', 2);
+      pane.press('Backspace');
+      pane.caret('abc', 1);
+      pane.paste('<p>b</p><p>x</p>');
+      pane.undo();
+      expect(pane.text(), 'the paste taken back').not.toContain('x');
+      expect(pane.text()).not.toContain('abc');
+    } finally {
+      pane.dispose();
+    }
+    const { body } = reviewed(pane);
+    expect(body, 'accept: only the struck "b" goes').toContain('Intro line stays.\n\nac tail.\n\nClosing line stays too.');
+  });
+});
+
+describe("the strike's undo bookkeeping stays in the body: a payload field's undo is untouched @p:mean-2", () => {
+  it('a payload character whose id equals a struck body original still comes back on undo', () => {
+    const pane = suggesting(NOTE);
+    try {
+      pane.caret('abc', 1);
+      pane.press('Backspace');
+      pane.press('Backspace');
+      expect(pane.text()).toBe('Intro line stays.bc tail.\n\nClosing line stays too.');
+      const [original] = pane.fork.struck();
+      // A payload doc whose item ids collide with the struck body original: same client, same clock.
+      const payload = payloadDocsFor(pane.fork.doc).hold('p-collide', true);
+      payload.clientID = original.client;
+      payload.transact(() => payloadText(payload).insert(0, 'q'.repeat(original.clock + 1)), 'seed');
+      expect(Y.getState(payload.store, original.client)).toBe(original.clock + 1);
+      payload.transact(() => payloadText(payload).delete(original.clock, 1), REGISTER_LOCAL_ORIGIN);
+      expect(payloadText(payload).length).toBe(original.clock);
+      pane.editor.update(() => {
+        pane.editor.dispatchCommand(UNDO_COMMAND, undefined);
+      }, { discrete: true });
+      expect(payloadText(payload).length, 'undo restores the payload character').toBe(original.clock + 1);
+    } finally {
+      pane.dispose();
     }
   });
 });
