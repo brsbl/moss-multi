@@ -631,8 +631,9 @@ function census(kind: Kind, side: Side, key: Key, where: Where): string[] | 'bro
   const original = letters(exported(seededBody(shape.markdown)));
   const pane = suggesting(shape.markdown);
   let shown = letters(pane.text());
-  const look = (when: string) => {
-    for (const capital of unstruckCapitals(pane)) problems.push(`${when}: F shows ${capital} unstruck`);
+  // After an undo the struck capitals may be live again: undo takes back the strike when the key changed nothing.
+  const look = (when: string, struck = true) => {
+    if (struck) for (const capital of unstruckCapitals(pane)) problems.push(`${when}: F shows ${capital} unstruck`);
     if (letters(pane.text()) !== shown) problems.push(`${when}: F lost unstruck text: ${JSON.stringify(pane.text())}`);
   };
   const emptyParagraph = () => $getRoot().getChildren().find((node) => $isParagraphNode(node) && node.getTextContentSize() === 0);
@@ -693,7 +694,7 @@ function census(kind: Kind, side: Side, key: Key, where: Where): string[] | 'bro
     }
     look(`after ${key}`);
     pane.undo();
-    look(`after undo of ${key}`);
+    look(`after undo of ${key}`, pane.fork.struck().reduce((sum, span) => sum + span.len, 0) === expected);
     pane.redo();
     look(`after redo of ${key}`);
   } finally {

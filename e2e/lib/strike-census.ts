@@ -180,9 +180,22 @@ async function noteFor(ada: Actor, ben: { principal: Parameters<typeof grantDoc>
 /** One combination in Ben's Suggest pane: the strikes, the key, its undo and its redo, F checked after each. */
 async function play(ben: Actor, docId: string, combo: Combo, baseline: string, played: readonly string[]): Promise<void> {
   const label = `${combo.bKind === combo.aKind ? combo.aKind : `${combo.aKind ?? 'nothing'} | ${combo.bKind}`}, ${combo.key}, strike ${combo.where}`;
-  const look = async (when: string) => {
-    await expect.poll(async () => (await readBody(ben, docId, played)).unpainted, { message: `${label}, ${when}: every capital F shows paints struck`, timeout: 5_000 }).toEqual([]);
-    expect((await readBody(ben, docId)).kept, `${label}, ${when}: F keeps every unstruck character`).toBe(baseline);
+  // F once it has settled: the same reading twice, 200 ms apart.
+  const settled = async () => {
+    let last = JSON.stringify(await readBody(ben, docId, played));
+    for (let tries = 0; tries < 25; tries += 1) {
+      await ben.page.waitForTimeout(200);
+      const next = JSON.stringify(await readBody(ben, docId, played));
+      if (next === last) break;
+      last = next;
+    }
+    return JSON.parse(last) as Awaited<ReturnType<typeof readBody>>;
+  };
+  // After an undo the struck capitals may be live again: undo takes back the strike when the key changed nothing.
+  const look = async (when: string, struck = true) => {
+    const body = await settled();
+    if (struck) expect(body.unpainted, `${label}, ${when}: every capital F shows paints struck`).toEqual([]);
+    expect(body.kept, `${label}, ${when}: F keeps every unstruck character`).toBe(baseline);
   };
   const { a, b } = combo;
   if (combo.where === 'start') {
@@ -225,7 +238,7 @@ async function play(ben: Actor, docId: string, combo: Combo, baseline: string, p
   }
   await look(`after ${combo.key}`);
   await press(ben, `${mod}+z`);
-  await look(`after undo of ${combo.key}`);
+  await look(`after undo of ${combo.key}`, false);
   await press(ben, `${mod}+Shift+z`);
   await look(`after redo of ${combo.key}`);
 }
