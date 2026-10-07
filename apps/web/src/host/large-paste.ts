@@ -392,24 +392,21 @@ export function $insertBlocks(nodes: LexicalNode[], selection: BaseSelection, in
 
 // ---------- the paste job ----------
 
-/** A batch's own work, at least: long enough that the per-batch costs stay a small part of the paste. */
-const BATCH_MS = 100;
-/** A batch whose work and layout took longer than this is cut down: the tab is never held long. */
-const STALL_MS = 200;
+/**
+ * What one batch's work and layout may take, on the machine it runs on. Each batch also pays a cost that grows with
+ * the note, not the batch (laying the note out, diffing the list it lands in, copying the editor state): small
+ * batches in a large note spend most of their time on it, so the paste slows and the tab still stalls. A batch fills
+ * what the target leaves after that cost, and never less than a third of it.
+ */
+const TARGET_MS = 700;
 /** The first batch, before any is timed: inserting at the caret costs Lexical more per block than the batches after. */
 const FIRST_BATCH = 128;
 /** Laying out n new list items with values at once takes time quadratic in n (Chromium): batches stay this small. */
 const MAX_BATCH = 2_500;
 
-/**
- * Units per batch, sized from how long the last batch and its layout took. Each batch also costs time in proportion
- * to all that is placed (diffing the list it lands in, laying the note out again: about 10 µs an item in moss's
- * styles), so a batch is never under an eighth of what is placed, keeping the batches O(log n) in number until they
- * reach MAX_BATCH.
- */
+/** Units per batch, sized from how long the last batch's work and its layout took. */
 class Pacer {
   budget = FIRST_BATCH;
-  #placed = 0;
 
   /** Runs a batch of `used` units (`run`), then lays the note out (`layout`), and sizes the next batch. */
   time(used: number, run: () => void, layout?: () => void): void {
@@ -417,12 +414,10 @@ class Pacer {
     run();
     const ran = performance.now();
     layout?.();
-    const ms = Math.max(1, ran - started);
-    const total = Math.max(1, performance.now() - started);
-    this.#placed += used;
-    let next = Math.max((used * BATCH_MS) / ms, this.#placed / 8);
-    if (total > STALL_MS) next = Math.min(next, (used * STALL_MS) / total);
-    this.budget = Math.round(Math.max(FIRST_BATCH, Math.min(MAX_BATCH, used * 4, next)));
+    const perUnit = Math.max(0.001, ran - started) / used;
+    const fixed = performance.now() - ran;
+    const room = Math.max(TARGET_MS / 3, TARGET_MS - fixed);
+    this.budget = Math.round(Math.max(FIRST_BATCH, Math.min(MAX_BATCH, used * 4, room / perUnit)));
   }
 }
 
@@ -434,6 +429,8 @@ export interface PasteRequest {
   $restore: () => boolean;
   /** Inserts the first batch's top-level nodes at the caret. */
   $insert: (nodes: LexicalNode[]) => void;
+  /** Runs once the last batch is in. */
+  $landed?: () => void;
 }
 
 /** What interrupts a paste in progress: it lands the rest at once, first. */
@@ -571,6 +568,7 @@ class PasteJob {
       if (!nested) release?.();
     }
     undo?.stopCapturing();
+    if (request.$landed) editor.update(request.$landed, { discrete: true });
     // Its redo lands in batches too: the step is stamped with the paste, which a redo then pastes again.
     const step = batches > 1 && made.spot ? undo?.undoStack?.at(-1) : undefined;
     if (step && made.spot) {
@@ -640,7 +638,19 @@ function $redoInBatches(editor: LexicalEditor): boolean {
   if (!undo?.redone || !top || !spot) return false;
   const request = top.stamp as PasteRequest;
   undo.redone.pop();
-  pasteLarge(editor, { ...request, $restore: () => $toSpot(spot) });
+  // As a Yjs redo would, the caret stays where it is rather than following the paste.
+  const before = $getSelection()?.clone() ?? null;
+  const $landed = () => {
+    if (!$isRangeSelection(before)) return;
+    const held = (point: RangeSelection['anchor']) => {
+      const node = $getNodeByKey(point.key);
+      if (!node?.isAttached()) return false;
+      if (point.type === 'text') return $isTextNode(node) && point.offset <= node.getTextContentSize();
+      return $isElementNode(node) && point.offset <= node.getChildrenSize();
+    };
+    if (held(before.anchor) && held(before.focus)) $setSelection(before);
+  };
+  pasteLarge(editor, { ...request, $restore: () => $toSpot(spot), $landed });
   return true;
 }
 
