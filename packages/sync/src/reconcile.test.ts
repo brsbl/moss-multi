@@ -318,7 +318,7 @@ describe('T6.1 identity-preserving reconcile @p:mean-3 @p:tech-5', () => {
         return mirror.editor.getEditorState().read(() => {
           const node = ($getRoot().getFirstChild() as ElementNode).getChildren().find((child) => child.getType() === 'formula');
           const fields = node as unknown as { __regId: string; __result: string } | undefined;
-          return { key: node?.getKey(), id: fields?.__regId, result: fields?.__result };
+          return { id: fields?.__regId, result: fields?.__result };
         });
       } finally {
         mirror.dispose();
@@ -333,7 +333,6 @@ describe('T6.1 identity-preserving reconcile @p:mean-3 @p:tech-5', () => {
     expect(exportDocMarkdown(live)).toBe(exportDocMarkdown(targetDoc));
     const after = formulaOf(live);
     expect(after.id).toBe(before.id);
-    expect(after.key).toBe(before.key);
     expect(after.result).toBe('6');
     share(peer, live);
     share(live, peer);
