@@ -582,7 +582,8 @@ interface CachedMatch {
 
 interface Context {
   base: string;
-  matches: Map<TextMatchTransformer, CachedMatch>;
+  /** Per text-match transformer, by its index in the list, its cached match. */
+  matches: (CachedMatch | undefined)[];
   scan?: ContextScan;
   /**
    * The last format search computed, by the offset it was computed at, and `stable`: no emphasis and no code span
@@ -600,7 +601,7 @@ interface ContextScan {
   lastRunOfLength: Map<number, number>;
 }
 
-const newContext = (base: string): Context => ({ base, matches: new Map() });
+const newContext = (base: string): Context => ({ base, matches: [] });
 
 // ---- Text matches (Lexical's findOutermostTextMatchTransformer) ----
 
@@ -612,75 +613,96 @@ interface FoundMatch {
 }
 
 function findMatch(node: TextNode, text: string, context: Context, offset: number, matchers: TextMatchTransformer[], budget: Budget): FoundMatch | null {
-  let found: { startIndex: number; endIndex: number; transformer: TextMatchTransformer; hit: Hit } | null = null;
-  for (const transformer of matchers) {
-    if (!transformer.replace || !transformer.importRegExp) continue;
-    const hit = matchAt(text, context, offset, transformer, budget);
-    if (!hit) continue;
-    const startIndex = hit.start;
+  const kinds = kindsOf(matchers);
+  const entries = context.matches;
+  // The outermost match so far: its transformer's index, where it starts and ends, and its match when it was run
+  // here (else it is the cached entry's, moved to this text).
+  let best = -1;
+  let bestStart = 0;
+  let bestEnd = 0;
+  let bestMatch: RegExpMatchArray | null = null;
+  let bestEntry: CachedMatch | undefined;
+  for (let i = 0; i < matchers.length; i += 1) {
+    const transformer = matchers[i];
+    const kind = kinds[i];
+    if (kind === null) continue;
+    let start: number;
+    let length: number;
+    let match: RegExpMatchArray | null = null;
+    let entry: CachedMatch | undefined;
+    if (kind.suffixSafe) {
+      entry = entries[i];
+      if (!entry || entry.from > offset || (entry.at >= 0 && entry.at < offset)) {
+        budget.spend(0);
+        match = matchText(text, transformer.importRegExp!);
+        budget.charge((match ? (match.index ?? 0) + match[0].length : text.length) / NATIVE + 1);
+        entry = { from: offset, at: match ? offset + (match.index ?? 0) : -1, match };
+        entries[i] = entry;
+      }
+      if (entry.at < 0 || !entry.match) continue;
+      start = entry.at - offset;
+      length = entry.match[0].length;
+    } else {
+      budget.spend(0);
+      match = matchText(text, transformer.importRegExp!);
+      const scanned = kind.firstLiteral !== null && text[0] !== kind.firstLiteral ? 1 : text.length / NATIVE;
+      budget.charge((match ? match[0].length / NATIVE : scanned) + 1);
+      if (!match) continue;
+      start = match.index || 0;
+      length = match[0].length;
+    }
     // Only a match starting before the one found can replace it, and moss's getEndIndex reads only its match.
-    if (found !== null && startIndex >= found.startIndex) continue;
-    let endIndex: number | false;
+    if (best >= 0 && start >= bestStart) continue;
+    let end: number | false;
     if (transformer.getEndIndex) {
       // moss's getEndIndex reads only the match, so its answer moves with the match.
-      const { entry } = hit;
       if (entry) {
         if (entry.endDelta === undefined) {
-          const end = transformer.getEndIndex(node, matchOf(hit, text));
-          budget.charge(hit.length / NATIVE);
-          entry.endDelta = end === false ? false : end - startIndex;
+          const found = transformer.getEndIndex(node, match ?? rebase(entry.match!, start, text));
+          budget.charge(length / NATIVE);
+          entry.endDelta = found === false ? false : found - start;
         }
-        endIndex = entry.endDelta === false ? false : startIndex + entry.endDelta;
+        end = entry.endDelta === false ? false : start + entry.endDelta;
       } else {
-        endIndex = transformer.getEndIndex(node, matchOf(hit, text));
+        end = transformer.getEndIndex(node, match!);
       }
     } else {
-      endIndex = startIndex + hit.length;
+      end = start + length;
     }
-    if (endIndex === false) continue;
-    if (found === null || endIndex > found.endIndex || endIndex <= found.startIndex) {
-      found = { startIndex, endIndex, transformer, hit };
+    if (end === false) continue;
+    if (best < 0 || end > bestEnd || end <= bestStart) {
+      best = i;
+      bestStart = start;
+      bestEnd = end;
+      bestMatch = match ?? null;
+      if (!bestMatch) bestEntry = entry!;
     }
   }
-  return found && { startIndex: found.startIndex, endIndex: found.endIndex, transformer: found.transformer, match: matchOf(found.hit, text) };
+  if (best < 0) return null;
+  return { startIndex: bestStart, endIndex: bestEnd, transformer: matchers[best], match: bestMatch ?? rebase(bestEntry!.match!, bestStart, text) };
 }
 
-// A transformer's match on the text, by where it starts; its match array is made only when asked for.
-interface Hit {
-  entry: CachedMatch | null;
-  start: number;
-  length: number;
-  match?: RegExpMatchArray;
-}
+// The parts around each match are often a few characters, and the same few (a space, a comma): their matches are
+// remembered, per regex, for texts up to SHORT_TEXT long. A regex here is neither global nor sticky, so its match
+// depends on the text alone (a global or sticky one is not remembered); the work charged is the same either way.
+const SHORT_TEXT = 16;
+const SHORT_TEXTS = 4096;
+const SHORT_MATCHES = new WeakMap<RegExp, Map<string, RegExpMatchArray | null>>();
 
-function matchOf(hit: Hit, text: string): RegExpMatchArray {
-  hit.match ??= rebase(hit.entry!.match!, hit.start, text);
-  return hit.match;
-}
-
-// The transformer's match in `text` (the base from `offset`): the cached one while it is still ahead, else a fresh
-// `text.match` as Lexical runs it. Its match array has the index and input a match on `text` would have.
-function matchAt(text: string, context: Context, offset: number, transformer: TextMatchTransformer, budget: Budget): Hit | null {
-  const re = transformer.importRegExp!;
-  const kind = regExpKind(re);
-  if (kind.suffixSafe) {
-    let entry = context.matches.get(transformer);
-    if (!entry || entry.from > offset || (entry.at >= 0 && entry.at < offset)) {
-      budget.spend(0);
-      const match = text.match(re);
-      budget.charge((match ? (match.index ?? 0) + match[0].length : text.length) / NATIVE + 1);
-      entry = { from: offset, at: match ? offset + (match.index ?? 0) : -1, match };
-      context.matches.set(transformer, entry);
-      if (match) return { entry, start: match.index ?? 0, length: match[0].length, match };
-    }
-    if (entry.at < 0 || !entry.match) return null;
-    return { entry, start: entry.at - offset, length: entry.match[0].length };
+function matchText(text: string, re: RegExp): RegExpMatchArray | null {
+  if (text.length > SHORT_TEXT || re.global || re.sticky) return text.match(re);
+  let known = SHORT_MATCHES.get(re);
+  if (!known) {
+    known = new Map();
+    SHORT_MATCHES.set(re, known);
   }
-  budget.spend(0);
-  const match = text.match(re);
-  const scanned = kind.firstLiteral !== null && text[0] !== kind.firstLiteral ? 1 : text.length / NATIVE;
-  budget.charge((match ? match[0].length / NATIVE : scanned) + 1);
-  return match ? { entry: null, start: match.index || 0, length: match[0].length, match } : null;
+  let match = known.get(text);
+  if (match === undefined) {
+    match = text.match(re);
+    if (known.size >= SHORT_TEXTS) known.clear();
+    known.set(text, match);
+  }
+  return match && rebase(match, match.index ?? 0, text);
 }
 
 function rebase(match: RegExpMatchArray, index: number, input: string): RegExpMatchArray {
@@ -689,6 +711,18 @@ function rebase(match: RegExpMatchArray, index: number, input: string): RegExpMa
   copy.input = input;
   copy.groups = match.groups;
   return copy;
+}
+
+const MATCHER_KINDS = new WeakMap<TextMatchTransformer[], (RegExpKind | null)[]>();
+
+// Each transformer's regex kind, or null for one Lexical skips (no replace or no importRegExp).
+function kindsOf(matchers: TextMatchTransformer[]): (RegExpKind | null)[] {
+  let kinds = MATCHER_KINDS.get(matchers);
+  if (!kinds) {
+    kinds = matchers.map((t) => (t.replace && t.importRegExp ? regExpKind(t.importRegExp) : null));
+    MATCHER_KINDS.set(matchers, kinds);
+  }
+  return kinds;
 }
 
 interface RegExpKind {
