@@ -394,11 +394,9 @@ export function $insertBlocks(nodes: LexicalNode[], selection: BaseSelection, in
 
 /**
  * What one batch's work and layout may take, on the machine it runs on. Each batch also pays a cost that grows with
- * the note, not the batch (laying the note out, diffing the list it lands in, copying the editor state). Sized from
- * the whole batch's time, batches shrank as that cost grew, until a large note took hundreds of small batches, each
- * still paying it in full (WebKit: 128 units a second). So a batch's time is split into that fixed cost and a cost per
- * unit (the least any timed batch paid per unit), and a batch is never smaller than the units that cost as much as the fixed
- * part: at worst it takes twice the fixed cost.
+ * the note, not the batch (laying the note out, diffing the list it lands in, copying the editor state): small
+ * batches in a large note spend most of their time on it, so the paste slows and the tab still stalls. A batch fills
+ * what the target leaves after that cost, and never less than a third of it.
  */
 const TARGET_MS = 700;
 /** The first batch, before any is timed: inserting at the caret costs Lexical more per block than the batches after. */
@@ -414,7 +412,6 @@ const MAX_BATCH = 2_500;
 class Pacer {
   budget = FIRST_BATCH;
   #ended: number | null = null;
-  #perUnit = Infinity;
 
   constructor(readonly label: string) {}
 
@@ -426,15 +423,11 @@ class Pacer {
     const ran = performance.now();
     layout?.();
     this.#ended = performance.now();
-    const work = Math.max(0.001, ran - started);
+    const perUnit = Math.max(0.001, ran - started) / used;
     const laid = this.#ended - ran;
-    performance.measure(this.label, { start: started, detail: { units: used, workMs: Math.round(work), layoutMs: Math.round(laid), beforeMs: Math.round(before) } });
-    // A batch too quick to time well says little about its units.
-    if (work >= 20) this.#perUnit = Math.min(this.#perUnit, work / used);
-    const perUnit = Number.isFinite(this.#perUnit) ? this.#perUnit : work / used;
-    const fixed = Math.max(0, work - perUnit * used) + laid;
-    const spend = Math.max(TARGET_MS - fixed, fixed, TARGET_MS / 3);
-    this.budget = Math.round(Math.max(FIRST_BATCH, Math.min(MAX_BATCH, used * 4, spend / perUnit)));
+    performance.measure(this.label, { start: started, detail: { units: used, workMs: Math.round(ran - started), layoutMs: Math.round(laid), beforeMs: Math.round(before) } });
+    const room = Math.max(TARGET_MS / 3, TARGET_MS - laid);
+    this.budget = Math.round(Math.max(FIRST_BATCH, Math.min(MAX_BATCH, used * 4, room / perUnit)));
   }
 }
 
