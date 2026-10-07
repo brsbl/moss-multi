@@ -28,6 +28,8 @@ export const GROUPS = {
   registers: ['j01-registers', 'j01-autolink'],
   // Large markdown pastes, up to 2 MB, each landing whole for a peer.
   paste: ['j01-paste'],
+  // Pastes of very many short blocks, into an empty note and between two paragraphs.
+  pasteblocks: ['j01-paste-blocks'],
   // Titles and properties.
   title: ['j02'],
   // A doc's connection: drops, stalls, limits, hibernation.
