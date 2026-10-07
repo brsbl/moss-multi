@@ -4,7 +4,7 @@
 // the bell's row for a new live suggestion, for the people who can review it.
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
-import { BASE, insertDoc, insertFolder, insertGrant, insertLink, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
+import { BASE, insertAgent, insertDoc, insertFolder, insertGrant, insertLink, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
 import { handleApi } from './router.ts';
 import { notifySuggestion } from './suggestions.ts';
 
@@ -172,7 +172,7 @@ describe('suggestion review routes @p:mean-2 @p:R17', () => {
 });
 
 describe('the working export is metered before the DocDO (docs/design/suggestions.md I5) @p:mean-2', () => {
-  const content = (who: { cookie: string | null; share?: string; ip?: string }, view = 'working') =>
+  const content = (who: { cookie: string | null; share?: string; ip?: string; bearer?: string }, view = 'working') =>
     handleApi(
       new Request(`${BASE}/api/docs/${docId}/content${view ? `?view=${view}` : ''}`, {
         headers: {
@@ -180,6 +180,7 @@ describe('the working export is metered before the DocDO (docs/design/suggestion
           ...(who.cookie ? { cookie: who.cookie } : {}),
           ...(who.share ? { 'x-moss-share': who.share } : {}),
           ...(who.ip ? { 'cf-connecting-ip': who.ip } : {}),
+          ...(who.bearer ? { authorization: `Bearer ${who.bearer}` } : {}),
         },
       }),
       env,
@@ -219,6 +220,20 @@ describe('the working export is metered before the DocDO (docs/design/suggestion
     expect((await content({ cookie: cara.cookie })).status).toBe(429);
     expect((await content({ ...anonymous, ip: '203.0.113.20' })).status).toBe(200);
     expect((await content({ cookie: eve.cookie })).status).toBe(200);
+  });
+
+  it('an agent is charged as itself: past its budget it gets 429 before the DocDO, and its owner and others still read', async () => {
+    previewBudget = 2;
+    const agent = await insertAgent(d1.db, ada);
+    await insertGrant(d1.db, { docId }, { id: agent.id, type: 'agent' }, 'viewer');
+    const statuses: number[] = [];
+    for (let i = 0; i < 4; i += 1) statuses.push((await content({ cookie: null, bearer: agent.key })).status);
+    expect(statuses).toEqual([200, 200, 429, 429]);
+    expect(working(), 'the refused reads never reached the DocDO').toBe(2);
+    expect(tokens.filter((token) => token === `preview:${agent.id}`)).toHaveLength(4);
+    expect((await content({ cookie: ada.cookie })).status, 'its owner has her own budget').toBe(200);
+    expect((await content({ cookie: cara.cookie })).status).toBe(200);
+    expect(working()).toBe(4);
   });
 
   it("past the DocDO's per-document bound the export is 429, not an empty note", async () => {
