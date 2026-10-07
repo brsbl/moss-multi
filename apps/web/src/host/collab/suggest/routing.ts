@@ -69,8 +69,14 @@ function $nextBlock(block: ElementNode): ElementNode | null {
   }
 }
 
-/** Whether anything precedes `block` in the document, or it is a list item, quote or heading that unwraps at its start. */
+/**
+ * Whether Backspace at the start of `block` re-creates it: anything precedes it, or it is a list item, quote or
+ * heading that unwraps at its start. Lexical removes an empty block or a decorator just before it instead, and never
+ * merges into a shadow root (LexicalSelection deleteCharacter); moss splits a list item at its start either way.
+ */
 function $joinsBackward(block: ElementNode): boolean {
+  const previous = block.getPreviousSibling();
+  if (previous && block.getType() !== 'listitem' && (!$isElementNode(previous) || previous.isEmpty() || previous.isShadowRoot())) return false;
   if (block.getType() !== 'paragraph') return true;
   for (let current: LexicalNode | null = block; current && !$isRootOrShadowRoot(current); current = current.getParent()) {
     if (current.getPreviousSibling()) return true;
@@ -229,14 +235,23 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
     return null;
   };
 
-  /** Where a stripped run goes back: after the nearest item before it that still stands, or at its block's start. */
+  /**
+   * Where a stripped run goes back: after the nearest character before it that still stands (earlier characters of
+   * its own item first: adjacent strikes can share one), or at its block's start.
+   */
   const placeOf = (run: Stripped): { type: Y.XmlText; index: number } | null => {
     const original = itemAt(doc, run.id);
     if (!original) return null;
-    for (let left = original.left; left; left = left.left) {
-      const live = liveAt(Y.createID(left.id.client, left.id.clock + left.length - 1));
-      if (!live || live.item.parentSub !== null || !(live.item.parent instanceof Y.XmlText)) continue;
-      return { type: live.item.parent, index: indexOf(live.item) + (live.item.countable ? live.offset + 1 : 0) };
+    let item: Y.Item | null = original;
+    let clock = run.id.clock - 1;
+    while (item) {
+      for (; clock >= item.id.clock; clock -= 1) {
+        const live = liveAt(Y.createID(item.id.client, clock));
+        if (!live || live.item.parentSub !== null || !(live.item.parent instanceof Y.XmlText)) continue;
+        return { type: live.item.parent, index: indexOf(live.item) + (live.item.countable ? live.offset + 1 : 0) };
+      }
+      item = item.left;
+      if (item) clock = item.id.clock + item.length - 1;
     }
     const block = (original.parent as Y.AbstractType<unknown>)._item;
     const live = block ? liveAt(block.id) : null;
@@ -480,12 +495,7 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
   const $routeChar = (backward: boolean): boolean => {
     const selection = $getSelection();
     const binding = bindingOf(editor);
-    if (!$isRangeSelection(selection) || !selection.isCollapsed() || !binding) return false;
-    if (selection.anchor.type !== 'text') {
-      // An empty block: a Delete pulls the next block into it.
-      const anchor = selection.anchor.getNode();
-      return $isElementNode(anchor) && !anchor.isInline() && anchor.isEmpty() ? $stripBeforeJoin(backward) : false;
-    }
+    if (!$isRangeSelection(selection) || !selection.isCollapsed() || selection.anchor.type !== 'text' || !binding) return false;
     const own = fork.ownClients();
     let node: LexicalNode = selection.anchor.getNode();
     let offset = selection.anchor.offset;
