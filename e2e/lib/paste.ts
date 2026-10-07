@@ -114,6 +114,15 @@ export async function watchStalls(actor: Actor): Promise<void> {
     probe.__stallAt = 0;
     const start = performance.now();
     probe.__stallStart = start;
+    const tasks = window as unknown as { __longTasks?: PerformanceEntry[]; __longTaskObserver?: PerformanceObserver };
+    tasks.__longTasks = [];
+    tasks.__longTaskObserver?.disconnect();
+    try {
+      tasks.__longTaskObserver = new PerformanceObserver((list) => tasks.__longTasks!.push(...list.getEntries()));
+      tasks.__longTaskObserver.observe({ type: 'longtask' });
+    } catch {
+      // WebKit has no long task timing
+    }
     let last = start;
     probe.__stallTimer = setInterval(() => {
       const now = performance.now();
@@ -140,7 +149,13 @@ export const longestStall = (actor: Actor): Promise<{ ms: number; at: number; du
       .filter((entry) => entry.name.startsWith('moss-paste-') && entry.startTime < to && entry.startTime + entry.duration > from)
       .map((entry) => `${entry.name} ${Math.round(entry.duration)} ms ${JSON.stringify((entry as PerformanceMeasure).detail)}`)
       .join(', ');
-    return { ms: Math.round(probe.__stall), at: Math.round(probe.__stallAt), during: during || 'no paste batch' };
+    const tasks = window as unknown as { __longTasks?: PerformanceEntry[]; __longTaskObserver?: PerformanceObserver };
+    tasks.__longTaskObserver?.disconnect();
+    const long = (tasks.__longTasks ?? [])
+      .filter((entry) => entry.startTime < to && entry.startTime + entry.duration > from)
+      .map((entry) => `a ${Math.round(entry.duration)} ms long task`)
+      .join(', ');
+    return { ms: Math.round(probe.__stall), at: Math.round(probe.__stallAt), during: [during || 'no paste batch', long || 'no long task'].join('; ') };
   });
 
 export async function setup(actors: Actors, stack: Stack, markdown?: string, { elsewhere = false } = {}) {
@@ -183,7 +198,7 @@ export async function pasteAndCheck(
   await ui.waitAcked(ada, docId, timeout);
   await expect.poll(() => exported(ada, docId), { message: 'every pasted character lands in the doc', timeout }).toBe(want.whole);
   const stall = await longestStall(ada);
-  expect(stall.ms, `the tab is never held longer than ${maxStallMs} ms at a time while the paste lands (the longest began ${stall.at} ms after the paste, during: ${stall.during})`).toBeLessThanOrEqual(maxStallMs);
+  expect(stall.ms, `the tab is never held longer than ${maxStallMs} ms at a time while the paste lands (the longest began ${stall.at} ms after the paste, during: ${stall.during}; socket closes: ${wire?.closes.join(', ') || 'none seen'})`).toBeLessThanOrEqual(maxStallMs);
   const pastedPrint = await fingerprint(ada, docId);
   await expect.poll(() => fingerprint(ben, docId), { message: 'the collaborator sees the whole paste', timeout }).toEqual(pastedPrint);
 
