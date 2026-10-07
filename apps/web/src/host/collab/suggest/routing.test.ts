@@ -449,6 +449,31 @@ describe('a strike, then a native join or unwrap at the block edge, keeps the st
     expect(body, 'accept removes only the struck characters').toContain('Intro line stays.\n\n**b** tail.\n\nClosing line stays too.');
   });
 
+  it('Delete in an empty paragraph removes that paragraph only: strikes in the block after it stay valid', () => {
+    const BOLD = 'Intro line stays.\n\na**b**c tail.\n\nClosing line stays too.\n';
+    const pane = suggesting(BOLD);
+    try {
+      pane.caret('c tail', 1);
+      pane.press('Backspace');
+      pane.caret('a', 1);
+      pane.press('Backspace');
+      expect(pane.fork.struck(), "'c' and 'a'").toHaveLength(2);
+      pane.caret('Intro', 'Intro line stays.'.length);
+      pane.edit(() => {
+        ($getSelection() as RangeSelection).insertParagraph();
+      });
+      expect(pane.text(), 'an empty paragraph, the caret in it').toBe('Intro line stays.\n\n\n\nabc tail.\n\nClosing line stays too.');
+      pane.press('Delete');
+      expect(pane.text(), 'the empty paragraph went; the block after it and its struck text stay').toBe('Intro line stays.\n\nabc tail.\n\nClosing line stays too.');
+      expect(pane.fork.struck(), 'both strikes stand').toHaveLength(2);
+    } finally {
+      pane.dispose();
+    }
+    const { record, body } = reviewed(pane);
+    expect(record.parts, 'both strikes are parts').toHaveLength(2);
+    expect(body, 'accept removes only the struck characters').toContain('Intro line stays.\n\n**b** tail.\n\nClosing line stays too.');
+  });
+
   it('reject and withdraw of a strike-then-join leave the body byte-identical', () => {
     for (const close of ['reject', 'withdraw'] as const) {
       const pane = suggesting(NOTE);
