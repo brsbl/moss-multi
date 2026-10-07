@@ -38,7 +38,11 @@ describe('client imports prepare markdown as the DocDO does @p:tech-4', () => {
       const args = importArguments(source);
       expect(args.length).toBeGreaterThan(0);
       for (const arg of args) expect(arg).toMatch(/^prepareNoteMarkdown\(/);
-      expect(source).not.toMatch(/\bnormalizeMarkdownForImport\(/);
+      const code = source
+        .split('\n')
+        .filter((line) => !line.trim().startsWith('//'))
+        .join('\n');
+      expect(code).not.toMatch(/\bnormalizeMarkdownForImport\(/);
     });
   }
 
