@@ -4,7 +4,7 @@
 // Following each struck character through those operations says which new item stands for which struck original,
 // from the editor's own data: no prediction of Lexical's behaviour, and no match on character values.
 import {
-  $getEditor, $hasUpdateTag, $isTextNode, COLLABORATION_TAG, TextNode,
+  $getEditor, $getSelection, $hasUpdateTag, $isRangeSelection, $isTextNode, COLLABORATION_TAG, TextNode,
   type EditorState, type LexicalEditor, type LexicalNode, type NodeKey,
 } from 'lexical';
 import type * as Y from 'yjs';
@@ -64,14 +64,23 @@ function move(tracer: Tracer, key: NodeKey, to: (offset: number) => { key: NodeK
   });
 }
 
-/** Offsets of `before` in `after` when one run of characters changed: the common head and tail keep theirs. */
-function remap(before: string, after: string): (offset: number) => number | null {
-  const max = Math.min(before.length, after.length);
+/**
+ * Offsets of `before` in `after` when one run of characters changed, split as the binding splits it
+ * (@lexical/yjs simpleDiffWithCursor): the common head up to the caret, then the common tail, then the rest of the head.
+ */
+function remap(before: string, after: string, cursor: number): (offset: number) => number | null {
   let head = 0;
-  while (head < max && before[head] === after[head]) head += 1;
   let tail = 0;
-  while (tail < max - head && before[before.length - 1 - tail] === after[after.length - 1 - tail]) tail += 1;
+  while (head < before.length && head < after.length && before[head] === after[head] && head < cursor) head += 1;
+  while (tail + head < before.length && tail + head < after.length && before[before.length - 1 - tail] === after[after.length - 1 - tail]) tail += 1;
+  while (tail + head < before.length && tail + head < after.length && before[head] === after[head]) head += 1;
   return (offset) => (offset < head ? offset : offset >= before.length - tail ? offset + after.length - before.length : null);
+}
+
+/** The caret the binding diffs `node`'s text around: a collapsed selection in it, else its end. */
+function $cursorIn(node: LexicalNode, length: number): number {
+  const selection = $getSelection();
+  return $isRangeSelection(selection) && selection.isCollapsed() && selection.anchor.key === node.getKey() ? selection.anchor.offset : length;
 }
 
 function traced<T>(run: () => T): T {
@@ -153,7 +162,7 @@ function install(): void {
     const before = this.getTextContent();
     const result = traced(() => setTextContent.call(this, next));
     if (tracer && before !== next) {
-      const map = remap(before, next);
+      const map = remap(before, next, $cursorIn(this, next.length));
       move(tracer, key, (offset) => {
         const at = map(offset);
         return at === null ? null : { key, offset: at };
@@ -173,7 +182,7 @@ function install(): void {
       if (before === null) {
         tracer.spots = tracer.spots.map((spot) => (spot.key === key && spot.offset < 0 ? { ...spot, key: into } : spot));
       } else {
-        const map = $isTextNode(result) ? remap(before, result.getTextContent()) : () => null;
+        const map = $isTextNode(result) ? remap(before, result.getTextContent(), $cursorIn(result, result.getTextContentSize())) : () => null;
         move(tracer, key, (offset) => {
           const at = map(offset);
           return at === null ? null : { key: into, offset: at };
