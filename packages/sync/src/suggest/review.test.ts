@@ -1,7 +1,7 @@
 // T5.0 spike, tests 4–7 (docs/design/suggestions.md §9): reject and withdraw never write the body or a payload;
 // forged records meet each accept gate with nothing applied; a record whose context an editor changed is outdated; the
 // projection a reviewer sees covers text, attributes and payload docs, and binds the accept (T5.P).
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ElementNode } from 'lexical';
 import * as Y from 'yjs';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
@@ -18,6 +18,12 @@ import {
   all, bodyOf, changedRoots, codeBlock, deterministicIds, editorEdits, EDITOR, exported, insertBlock, listItem, NOTE_ID, OTHER_SUGGESTER, payloadsInOrder,
   select, seededBody, spansOfText, SUGGESTER, textNode,
 } from './test-support.ts';
+
+// applyRecord as itself, counted, so the working view's cost is measured in gate runs.
+vi.mock('@moss-multi/core/suggest/apply', async (original) => {
+  const actual = await original<typeof import('@moss-multi/core/suggest/apply')>();
+  return { ...actual, applyRecord: vi.fn(actual.applyRecord) };
+});
 
 let restore: () => void = () => {};
 beforeEach(() => {
@@ -690,6 +696,35 @@ describe('T5.3 accept lands exactly the previewed diff or nothing @p:mean-2 @p:R
     } finally {
       dispose();
     }
+  });
+
+  it('the working view runs the gates once per open record, failing ones included, never replaying earlier records (I5)', () => {
+    const live = seededBody();
+    const paragraphOf = (doc: Y.Doc) => (root(doc).toDelta() as { insert: unknown }[]).map((op) => op.insert).find((x) => x instanceof Y.XmlText) as Y.XmlText;
+    // Interleaved: a valid record, then broken ones (G7 refuses them after their ops applied), each on its own client.
+    const valid = ['Alpha ', 'Beta ', 'Gamma ', 'Delta '];
+    let client = LEASED;
+    const ids: string[] = [];
+    valid.forEach((text, i) => {
+      const id = `w${i}a`;
+      forgeRecord(live, id, [client], [forged(live, (doc) => paragraphOf(doc).insert(0, text), client)]);
+      client += 1;
+      ids.push(id);
+      for (const n of [0, 1, 2]) {
+        const bad = `w${i}b${n}`;
+        forgeRecord(live, bad, [client], [forged(live, (doc) => root(doc).insertEmbed(root(doc).length, block('no-such-node')), client)]);
+        client += 1;
+        ids.push(bad);
+      }
+    });
+    const gates = vi.mocked(applyRecord);
+    gates.mockClear();
+    const working = exportWorkingMarkdown(live, NOTE_ID);
+    expect(gates.mock.calls.length, 'one gate run per open record').toBe(ids.length);
+    expect(gates.mock.calls.map(([, record]) => record.meta.id)).toEqual(ids);
+    for (const text of valid) expect(working).toContain(text);
+    expect(working).not.toContain('no-such-node');
+    for (const id of ids) expect(readMeta(live, id)!.status).toBe('open');
   });
 });
 

@@ -4,7 +4,7 @@
 // the bell's row for a new live suggestion, for the people who can review it.
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
-import { BASE, insertDoc, insertFolder, insertGrant, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
+import { BASE, insertDoc, insertFolder, insertGrant, insertLink, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
 import { handleApi } from './router.ts';
 import { notifySuggestion } from './suggestions.ts';
 
@@ -26,7 +26,11 @@ const DocDO = {
       withdrawSuggestion: record('withdraw'),
       exportMarkdown: async (options?: unknown) => {
         calls.push({ op: 'export', docId: id.name, input: options ?? null });
-        return '# working';
+        return '# clean';
+      },
+      exportWorking: async () => {
+        calls.push({ op: 'working', docId: id.name, input: null });
+        return docBound ? '# working' : null;
       },
     };
   },
@@ -34,6 +38,10 @@ const DocDO = {
 
 const tokens: string[] = [];
 let reviewTokens = Infinity;
+let previewBudget = Infinity;
+const previewsTaken = new Map<string, number>();
+/** Whether the DocDO's per-document bound still admits a computed working export. */
+let docBound = true;
 const PrincipalDO = {
   idFromName: (name: string) => ({ name, toString: () => name }),
   get: (id: { name: string }) => ({
@@ -45,7 +53,10 @@ const PrincipalDO = {
     },
     takePreviewToken: async () => {
       tokens.push(`preview:${id.name}`);
-      return true;
+      // One window per name, as each PrincipalDO keeps its own.
+      const spent = (previewsTaken.get(id.name) ?? 0) + 1;
+      previewsTaken.set(id.name, spent);
+      return spent <= previewBudget;
     },
   }),
 };
@@ -77,6 +88,9 @@ beforeEach(() => {
   calls.length = 0;
   tokens.length = 0;
   reviewTokens = Infinity;
+  previewBudget = Infinity;
+  previewsTaken.clear();
+  docBound = true;
   verdict = { ok: true };
 });
 
@@ -148,9 +162,70 @@ describe('suggestion review routes @p:mean-2 @p:R17', () => {
   it('GET content?view=working exports the composite; the default export stays the clean body', async () => {
     const working = await send('GET', cara.cookie, `/api/docs/${docId}/content?view=working`);
     expect(working.status).toBe(200);
+    expect(working.headers.get('content-type')).toBe('text/markdown; charset=utf-8');
     expect(await working.text()).toBe('# working');
-    await send('GET', cara.cookie, `/api/docs/${docId}/content`);
-    expect(calls.map((call) => call.input)).toEqual([{ view: 'working' }, null]);
+    const clean = await send('GET', cara.cookie, `/api/docs/${docId}/content`);
+    expect(await clean.text()).toBe('# clean');
+    expect(calls.map((call) => call.op)).toEqual(['working', 'export']);
+    expect(tokens, 'the clean export is not metered').toEqual([`preview:${cara.id}`]);
+  });
+});
+
+describe('the working export is metered before the DocDO (docs/design/suggestions.md I5) @p:mean-2', () => {
+  const content = (who: { cookie: string | null; share?: string; ip?: string }, view = 'working') =>
+    handleApi(
+      new Request(`${BASE}/api/docs/${docId}/content${view ? `?view=${view}` : ''}`, {
+        headers: {
+          origin: BASE,
+          ...(who.cookie ? { cookie: who.cookie } : {}),
+          ...(who.share ? { 'x-moss-share': who.share } : {}),
+          ...(who.ip ? { 'cf-connecting-ip': who.ip } : {}),
+        },
+      }),
+      env,
+    );
+  const working = () => calls.filter((call) => call.op === 'working').length;
+
+  it('a burst past the budget gets 429 with retry-after before any DocDO call', async () => {
+    previewBudget = 3;
+    const statuses: number[] = [];
+    for (let i = 0; i < 6; i += 1) statuses.push((await content({ cookie: cara.cookie })).status);
+    expect(statuses).toEqual([200, 200, 200, 429, 429, 429]);
+    expect(working(), 'the refused reads never reached the DocDO').toBe(3);
+    const refused = await content({ cookie: cara.cookie });
+    expect(refused.headers.get('retry-after')).toBeTruthy();
+    expect(working()).toBe(3);
+    expect((await content({ cookie: cara.cookie }, '')).status, 'the clean export is unmetered').toBe(200);
+  });
+
+  it('signed-in and anonymous buckets are independent: a share-link reader past the budget blocks no account and no other address', async () => {
+    previewBudget = 2;
+    const link = await insertLink(d1.db, { docId }, 'viewer');
+    const anonymous = { cookie: null, share: link, ip: '2001:db8:1:2::7' };
+    for (let i = 0; i < 2; i += 1) expect((await content(anonymous)).status).toBe(200);
+    expect((await content(anonymous)).status).toBe(429);
+    // One /64 is one client, however it rotates its host bits.
+    expect((await content({ ...anonymous, ip: '2001:db8:1:2:aaaa:bbbb:cccc:dddd' })).status).toBe(429);
+    const before = working();
+    // Signed-in readers, the link's own holder among them, each have their own budget.
+    expect((await content({ cookie: cara.cookie })).status).toBe(200);
+    expect((await content({ cookie: eve.cookie, share: link, ip: '2001:db8:1:2::7' })).status).toBe(200);
+    // Another anonymous holder of the same link, at another address.
+    expect((await content({ ...anonymous, ip: '2001:db8:1:3::7' })).status).toBe(200);
+    expect((await content({ ...anonymous, ip: '198.51.100.20' })).status).toBe(200);
+    expect(working()).toBe(before + 4);
+    // An account past its budget blocks nobody else.
+    for (let i = 0; i < 2; i += 1) await content({ cookie: cara.cookie });
+    expect((await content({ cookie: cara.cookie })).status).toBe(429);
+    expect((await content({ ...anonymous, ip: '203.0.113.20' })).status).toBe(200);
+    expect((await content({ cookie: eve.cookie })).status).toBe(200);
+  });
+
+  it("past the DocDO's per-document bound the export is 429, not an empty note", async () => {
+    docBound = false;
+    const response = await content({ cookie: cara.cookie });
+    expect(response.status).toBe(429);
+    expect(response.headers.get('retry-after')).toBeTruthy();
   });
 });
 
