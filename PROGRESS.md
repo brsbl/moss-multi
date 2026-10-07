@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 78% done** (84 of 108 planned tasks verified)
+**Overall: 79% done** (85 of 108 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -9,7 +9,7 @@
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 15 / 15 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 9 / 9 | in progress |
-| M5 Suggestions | Suggest mode, vetting, accept/reject | 8 / 8 | in progress |
+| M5 Suggestions | Suggest mode, vetting, accept/reject | 9 / 9 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
@@ -105,6 +105,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-06 — T5.4 verified: a randomized fuzz now attacks suggestion records and accept with forged and malformed ops, and drives honest suggest-mode editing through real editors, proving accept either refuses with nothing applied or lands exactly the previewed change, with ingest cost bounded at the frame cap.
 - 2026-10-06 — T5.3s verified: a suggestion whose fields, node types, map keys or payload ids use names like `__proto__` or `constructor` still previews and accepts correctly, and previewing a large structured suggestion stays fast.
 - 2026-10-06 — T5.S2 verified: reading a note's working view with open suggestions now spends the reader's preview budget before reaching the note, each note bounds and caches how often it computes that view, and each open suggestion's checks run once per computation.
+- 2026-10-07 — T5.S1 verified: a character a suggester strikes stays struck when an edit such as a join, unwrap, split, retyped block or its undo re-creates the text around it, so the reviewer's card, paint and accept show and land exactly the strike.
 
 ## T1.1s identity audit
 
@@ -262,6 +263,10 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T5.R checker P2 (loading a cold payload in suggestion ingest replays the whole payload): the payloadDoc callback calls `PayloadStore.doc` synchronously, so after a wake or a 256-entry cache eviction a tiny suggestion frame replays every stored update before the lease and size checks; cost tests only measure warm body frames.
 - T5.S2 (The per-document computation window resets when the DocDO is evicted) checker P2: `#workingRate` is an in-memory WriteRate, so an evicted and woken DocDO gets a fresh budget of 120 computations inside the same minute; each caller's persisted PrincipalDO preview budget still applies.
 - T5.S2 (Tests for the replay and the cache miss payload, delete and record-closure cases) checker P2: no test covers delete-only or payload changes before a failing record, the withdraw and alarm closure tests never fill the working cache first, and the 'gates run once per record' assertion was never shown failing against the old replay (no defect found).
+- T5.S1 (A struck one-character word is lost when a rebuild rewrite re-creates it; coordinator-downgraded from the checker's P1) checker P2: strike 'x' in 'x tail.', then type '==' around it; the strike paint disappears and the card proposes '+ x', so Accept gives '==x== tail.'; the card matches what lands (I3), but the neighbour-anchored alignment has no neighbour for a lone character.
+- T5.S1 (The rebuild fallback's ALIGN_CAP skips alignment silently on long paragraphs; LCS pairing could pick the wrong character) checker P2: raised from source, not reproduced; any mis-pairing shows on the card. Follow-up: carry strikes through rebuilds by data (a per-character marker the binding round-trips) when Lexical/@lexical/yjs allow it.
+- T5.S1 (After a rebuild rewrite the suggester's own view no longer shows the struck character) checker P2: the fork removes the struck copy; reviewer paint, card, working export and accept are correct.
+- T5.S1 (Total transaction cost of the trace and fallback on large rewrites) checker P2.
 - The wrangler ProxyWorker patch replays non-idempotent requests after an ambiguous failure → T0.9b follow-up (stack infra)
 - `qa.mjs close` forgets the session even when closing it failed → tooling follow-up
 - T4.0 checker: typing `==marked==` then a space in the real app drops the word instead of highlighting it (moss's `==` inline shortcut over the bound editor; the comment engine is not involved) → T3.3 follow-up (inline markdown shortcuts), with a j-editing leg that types each moss inline shortcut and asserts the text survives
