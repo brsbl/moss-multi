@@ -4,11 +4,11 @@
 // pending text in the same selection deletes natively. Undo and redo take a strike back and put it again, in order
 // with the binding's own undo steps. Everything else is native and recorded verbatim (a join at a block edge too).
 // A native rewrite that re-creates struck text has the copy removed by the fork (client.ts, keepStrikes), so the
-// struck characters leave F and their delete parts stay; undo of their strike re-creates them, as the author's own,
-// where they stood.
+// struck characters leave F and their delete parts stay; where each struck character went is traced through Lexical's
+// own text operations (trace.ts). Undo of their strike re-creates them, as the author's own, where they stood.
 import { $getClipboardDataFromSelection, setLexicalClipboardDataTransfer } from '@lexical/clipboard';
 import type { IdSpan } from '@moss-multi/protocol/suggest';
-import type { SuggestFork } from '@moss-multi/sync/suggest/client';
+import type { Rewrites, SuggestFork } from '@moss-multi/sync/suggest/client';
 import {
   $getNodeByKey, $getSelection, $isElementNode, $isRangeSelection, $isTextNode, COMMAND_PRIORITY_CRITICAL,
   CONTROLLED_TEXT_INSERTION_COMMAND, CUT_COMMAND, DELETE_CHARACTER_COMMAND, DELETE_LINE_COMMAND, DELETE_WORD_COMMAND,
@@ -18,6 +18,7 @@ import {
 import * as Y from 'yjs';
 import { bindingOf } from '../binding-registry.ts';
 import { charAround, idKey, sharedItem, textIds, toSpans } from './chars.ts';
+import { traceStrikes, type Spot } from './trace.ts';
 
 type Routed = 'none' | 'struck' | 'own' | 'skip';
 
@@ -140,20 +141,44 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
   /** Each struck item undo re-created, by the original's id. */
   const restoredAs = new Map<string, Y.ID>();
   let watched: Y.UndoManager | null = null;
-  /** Struck originals a rewrite re-created and the fork removed again: no undo step restores them. */
+  /** The body's own undo manager under the binding's stack (BodyUndo also relays its payload docs' managers). */
+  let watchedRoot: Y.UndoManager | null = null;
+  /** Struck originals a rewrite re-created and the fork removed again: no undo step of the body restores them. */
   const keptOut: IdSpan[] = [];
+  /** Characters the fork stood in for displaced originals: the body step being recorded removes them on undo. */
+  let addedTo: IdSpan[] = [];
   // Any new edit of his own ends the redo history, strikes included.
-  const onStack = (event: { type: 'undo' | 'redo'; stackItem?: { deletions: DeleteSet } }) => {
-    if (keptOut.length && event.stackItem) event.stackItem.deletions = without(event.stackItem.deletions, keptOut);
+  const onStack = (event: { type: 'undo' | 'redo' }) => {
     if (event.type === 'undo' && watched && !watched.undoing && !watched.redoing) redone.length = 0;
+  };
+  // Body ids only: a payload doc's items can carry the same client and clock.
+  const onRootStack = (event: { stackItem?: { deletions: DeleteSet; insertions: DeleteSet } }) => {
+    const item = event.stackItem;
+    if (!item) return;
+    if (keptOut.length) item.deletions = without(item.deletions, keptOut);
+    if (addedTo.length) {
+      const added = Y.createDeleteSet();
+      for (const span of addedTo) {
+        const ranges = added.clients.get(span.client) ?? [];
+        ranges.push({ clock: span.clock, len: span.len } as (typeof ranges)[number]);
+        added.clients.set(span.client, ranges);
+      }
+      item.insertions = Y.mergeDeleteSets([item.insertions, added]);
+      addedTo = [];
+    }
   };
   const watch = (undo: Y.UndoManager | null) => {
     if (undo === watched) return;
     watched?.off('stack-item-added', onStack);
     watched?.off('stack-item-updated', onStack);
+    watchedRoot?.off('stack-item-added', onRootStack);
+    watchedRoot?.off('stack-item-updated', onRootStack);
     watched = undo;
+    watchedRoot = undo ? ((undo as unknown as { root?: Y.UndoManager }).root ?? undo) : null;
     undo?.on('stack-item-added', onStack);
     undo?.on('stack-item-updated', onStack);
+    watchedRoot?.on('stack-item-added', onRootStack);
+    watchedRoot?.on('stack-item-updated', onRootStack);
   };
   /** A strike's targets in runs within one item, with their content, read while they stand. */
   const runsOf = (ids: readonly Y.ID[]): Run[] => {
@@ -180,12 +205,81 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
     redone.length = 0;
     if (native) setTimeout(() => manager()?.stopCapturing(), 0);
   };
+  /** Where struck items stand by the binding (all of them by default): a text node and offset, or a leaf's key. */
+  const spotsOf = (ids?: readonly Y.ID[]): Spot[] => {
+    const binding = bindingOf(editor);
+    const struck = ids ?? fork.struck().flatMap((span) => Array.from({ length: span.len }, (_, i) => Y.createID(span.client, span.clock + i)));
+    if (!binding || struck.length === 0) return [];
+    const owners = new Map<Y.Item, string>();
+    for (const [key, collab] of binding.collabNodeMap as unknown as Map<string, { _map?: Y.Map<unknown>; _xmlElem?: Y.XmlElement; _xmlText?: Y.XmlText }>) {
+      const item = (collab._map ?? collab._xmlElem ?? collab._xmlText)?._item;
+      if (item) owners.set(item, key);
+    }
+    const spots: Spot[] = [];
+    for (const id of struck) {
+      const item = itemAt(doc, id);
+      if (!item || item.deleted) continue;
+      if (!(item.content instanceof Y.ContentString)) {
+        const key = owners.get(item);
+        if (key) spots.push({ id, key, offset: -1 });
+        continue;
+      }
+      // A character: counted from its text node's property map, the embed before it.
+      let offset = id.clock - item.id.clock;
+      let map: Y.Item | null = null;
+      for (let left = item.left; left; left = left.left) {
+        if (left.deleted || left.content instanceof Y.ContentFormat) continue;
+        if (left.content instanceof Y.ContentString) offset += left.length;
+        else {
+          map = left;
+          break;
+        }
+      }
+      const key = map ? owners.get(map) : undefined;
+      if (key) spots.push({ id, key, offset });
+    }
+    return spots;
+  };
+  const trace = traceStrikes(editor, () => spotsOf());
+
   const strike = (ids: readonly Y.ID[], native = false): string | null => {
     const targets = toSpans(ids);
     const part = fork.proposeDelete(targets);
-    if (part) remember(part, targets, native, ids);
+    if (part) {
+      remember(part, targets, native, ids);
+      trace.add(spotsOf(ids));
+    }
     return part;
   };
+
+  /** A binding transaction's copies of struck items: what stands where the trace carried each one. */
+  const rewrites = (tr: Y.Transaction): Rewrites | null => {
+    const binding = bindingOf(editor);
+    if (!binding || tr.origin !== binding) return null;
+    const fresh = (id: Y.ID) => id.clock >= (tr.beforeState.get(id.client) ?? 0);
+    const copies: [Y.ID, Y.ID][] = [];
+    const displaced: Y.ID[] = [];
+    const texts = new Map<string, Y.ID[] | null>();
+    for (const spot of trace.take()) {
+      let actual: Y.ID | undefined;
+      if (spot.offset < 0) actual = sharedItem(binding, spot.key)?.id;
+      else {
+        if (!texts.has(spot.key)) texts.set(spot.key, textIds(binding, spot.key));
+        actual = texts.get(spot.key)?.[spot.offset];
+      }
+      if (!actual || Y.compareIDs(actual, spot.id)) continue;
+      if (fresh(actual)) copies.push([actual, spot.id]);
+      // The original still stands, elsewhere: the binding kept it for other text.
+      if (spot.offset >= 0 && itemAt(doc, spot.id)?.deleted === false) displaced.push(spot.id);
+    }
+    return { copies, displaced };
+  };
+  const settle = (tr: Y.Transaction) => {
+    if (tr.origin !== bindingOf(editor)) return;
+    addedTo = [];
+    trace.settle();
+  };
+  doc.on('beforeTransaction', settle);
 
   /** The live item standing for `id` now, following re-created copies and the binding's undo restores (`redone`). */
   const liveAt = (id: Y.ID): { item: Y.Item; offset: number } | null => {
@@ -474,6 +568,9 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
   const P = COMMAND_PRIORITY_CRITICAL;
   return mergeRegister(
     () => watch(null),
+    () => doc.off('beforeTransaction', settle),
+    () => trace.stop(),
+    fork.traceRewrites(rewrites),
     editor.registerCommand(DELETE_CHARACTER_COMMAND, (backward) => {
       const routed = $routeRange();
       return routed === 'none' ? $routeChar(backward) : routed !== 'own';
@@ -552,6 +649,7 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
       if (event.type === 'kept') {
         watch(manager());
         keptOut.push(...event.originals);
+        addedTo = [...event.added];
       }
       // A closed record's steps leave the binding's stacks (pane.tsx dropUndo); its strikes go with them.
       if (event.type === 'closed') {
