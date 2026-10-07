@@ -146,6 +146,8 @@ import { hidden } from '@moss-multi/host/affordances';
 import { clearLinkSelection, markLinkSelection } from '@moss-multi/host/link-highlight';
 // moss-multi seam: trash-copy (T2.3): one module says how long Trash keeps a note
 import { TRASH_COPY } from '@moss-multi/host/retention';
+// moss-multi seam: linear-autolink: EMAIL_REGEX's and SCHEMELESS_URL_REGEX's matches in linear time
+import { findEmail, schemelessUrlMatches } from '@moss-multi/host/autolink';
 // moss-multi seam: converter-split (A§12; S-conv §2.3)
 import { $convertMossCustomCodeNodes, $postImportNormalize, escapeHtmlEntities, normalizeMarkdownForImport, unescapeHtmlEntities } from './markdown/normalize';
 // moss-multi seam: linear-import (A§12; SP2)
@@ -403,13 +405,14 @@ const SCHEMELESS_URL_REGEX =
   /(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z][a-zA-Z0-9-]{1,23}(?::\d{1,5})?(?:[/?#][^\s<>{}|\\^[\]`]*)?/g;
 
 const matchSchemelessUrl = (text: string) => {
-  for (const match of text.matchAll(SCHEMELESS_URL_REGEX)) {
-    const url = normalizeWebBrowserUrl(match[0]);
-    if (url && !normalizeEmbeddableWebUrl(match[0])) {
+  // moss-multi seam: linear-autolink
+  for (const match of schemelessUrlMatches(text)) {
+    const url = normalizeWebBrowserUrl(match.text);
+    if (url && !normalizeEmbeddableWebUrl(match.text)) {
       return {
         index: match.index,
-        length: match[0].length,
-        text: match[0],
+        length: match.text.length,
+        text: match.text,
         url
       };
     }
@@ -426,7 +429,11 @@ export const AUTOLINK_MATCHERS = [
     const match = AUTOLINK_URL_MATCHER(text);
     return match && normalizeEmbeddableWebUrl(match.text) ? null : match;
   },
-  createLinkMatcherWithRegExp(EMAIL_REGEX, (text) => `mailto:${text}`),
+  // moss-multi seam: linear-autolink
+  (text: string) => {
+    const match = findEmail(text);
+    return match && { index: match.index, length: match.text.length, text: match.text, url: `mailto:${match.text}` };
+  },
   matchSchemelessUrl
 ];
 
