@@ -7,7 +7,7 @@ import { $withDocumentImport, withImportFormulaIds } from '@moss-desktop/rendere
 import { $convertFromMarkdownString, LINEAR_IMPORT_LIMITS, linearImportStats } from '@moss-desktop/renderer/editor/markdown/linear-import';
 import { escapeHtmlEntities, normalizeMarkdownForImport } from '@moss-desktop/renderer/editor/markdown/normalize';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { $getRoot } from 'lexical';
+import { $getRoot, $isElementNode } from 'lexical';
 import { CONVERTER_CASES, converterBody, LARGE_ORDINARY_NOTES, ORDINARY_NOTES } from '../../measure/converter-cases.ts';
 import { FIXTURES, SCALE_UNIT, scaleNote } from './fixtures.ts';
 import { createConverterEditor, exportMarkdown, importMarkdown, MARKDOWN_EDITOR_TRANSFORMERS } from './index.ts';
@@ -130,7 +130,7 @@ describe('linear inline import @p:tech-4', () => {
     expect(ours === tree($lexicalConvertFromMarkdownString, markdown)).toBe(true);
   }, 120_000);
 
-  // A cut line keeps the rest of its text as literal text: every character survives, and the export writes it so
+  // A cut line keeps its whole text as literal text: every character survives, and the export writes it so
   // that the next import reads the same text.
   describe('when the budget is spent', () => {
     const textOf = (editor: ReturnType<typeof importMarkdown>) => editor.getEditorState().read(() => $getRoot().getTextContent());
@@ -157,15 +157,10 @@ describe('linear inline import @p:tech-4', () => {
       expect(result).toMatchObject({ kept: true, literal: true, reread: true });
     }, 120_000);
 
-    // A line cut partway keeps its unconverted rest as the text it reads as (escapes decoded), so each export and
-    // import gives back the same markdown and text: no backslashes pile up.
-    it('keeps a cut line\'s rest exactly through repeated export and import', () => {
-      const before = linearImportStats.cut;
-      let editor = importMarkdown(`quokka ${'[a](b) '.repeat(150_000)}tail a\\\\b \\_ _ *c* \`d\` \\\\\\\\ \\*`);
-      expect(linearImportStats.cut - before).toBeGreaterThan(0);
-      const text = textOf(editor);
-      // The code span is the first format Lexical applies, before the cut; the text around it stays text.
-      expect(text.slice(-30)).toBe('[a](b) [a](b) tail a\\b _ _ *c* d \\\\ *'.slice(-30));
+    // A cut line goes back to its whole text, decoded as moss decodes any line's text, so what it reads as never
+    // depends on where the cut fell, and each export and import gives back the same markdown and text.
+    const roundTrips = (markdown: string, text: string) => {
+      let editor = importMarkdown(markdown);
       const exports: string[] = [];
       for (let round = 0; round < 3; round += 1) {
         exports.push(exportMarkdown(editor));
@@ -173,30 +168,36 @@ describe('linear inline import @p:tech-4', () => {
         expect(textOf(editor) === text).toBe(true);
       }
       expect(exports[1] === exports[0] && exports[2] === exports[0]).toBe(true);
+    };
+
+    it('keeps a cut line\'s whole text exactly through repeated export and import', () => {
+      const before = linearImportStats.cut;
+      const links = '[a](b) '.repeat(150_000);
+      const markdown = `quokka ${links}tail a\\\\b \\_ _ *c* \`d\` \\\\\\\\ \\*`;
+      const text = textOf(importMarkdown(markdown));
+      expect(linearImportStats.cut - before).toBeGreaterThan(0);
+      expect(text.slice(-30)).toBe(`${links}tail a\\b _ _ *c* \`d\` \\\\ *`.slice(-30));
+      expect(text === `quokka ${links}tail a\\b _ _ *c* \`d\` \\\\ *`).toBe(true);
+      roundTrips(markdown, text);
     }, 120_000);
 
-    // A code span that starts a formatted part is decoded before the cut, as when the line is not cut.
-    it('decodes a code span that starts a formatted part the same whether or not the line is cut', () => {
+    // The checker's case: a code span that starts a formatted part was decoded when the line was whole and left
+    // escaped when the line was cut further on. A cut line now converts none of its parts; the line before it does.
+    it('converts no part of a cut line, whatever comes first in it', () => {
       const line = (n: number) => `quokka ~~\`\\*\` ${'[a](b) '.repeat(n)}z~~`;
       const before = linearImportStats.cut;
-      // Up to the code span's closing backtick.
-      const head = (markdown: string) => markdown.slice(0, markdown.indexOf('`', markdown.indexOf('`') + 1) + 1);
-      const uncut = importMarkdown(line(1_000));
+      const whole = textOf(importMarkdown(line(1_000)));
       expect(linearImportStats.cut - before).toBe(0);
-      const uncutHead = head(exportMarkdown(uncut));
-      const uncutText = textOf(uncut).slice(0, 9);
-      let editor = importMarkdown(line(150_000));
+      expect(whole.slice(0, 13)).toBe('quokka * a a ');
+      const markdown = `**Before** it.\n\n${line(150_000)}`;
+      const editor = importMarkdown(markdown);
       expect(linearImportStats.cut - before).toBeGreaterThan(0);
+      const shape = editor.getEditorState().read(() => $getRoot().getChildren().map((block) => ($isElementNode(block) ? block.getChildrenSize() : -1)));
+      expect(shape).toEqual([2, 1]);
       const text = textOf(editor);
-      expect(text.slice(0, 9)).toBe(uncutText);
-      const exports: string[] = [];
-      for (let round = 0; round < 3; round += 1) {
-        exports.push(exportMarkdown(editor));
-        expect(head(exports[round])).toBe(uncutHead);
-        editor = importMarkdown(exports[round]);
-        expect(textOf(editor) === text).toBe(true);
-      }
-      expect(exports[1] === exports[0] && exports[2] === exports[0]).toBe(true);
+      expect(text.slice(0, 32)).toBe('Before it.\n\nquokka ~~`*` [a](b) ');
+      expect(text === `Before it.\n\nquokka ~~\`*\` ${'[a](b) '.repeat(150_000)}z~~`).toBe(true);
+      roundTrips(markdown, text);
     }, 120_000);
   });
 
