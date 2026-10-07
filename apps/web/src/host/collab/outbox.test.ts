@@ -91,3 +91,25 @@ it('keeps going when no ack comes, and drops pieces an ack already covers', () =
   expect(sent).toHaveLength(2);
   outbox.close();
 });
+
+it('never has more than the window sent and unapplied when each ack covers only part of it (a slow DocDO)', () => {
+  const { update } = bigDoc();
+  const sent: Uint8Array[] = [];
+  const windowBytes = 16 * 1024;
+  const outbox = new Outbox((frame) => { if (isUpdate(frame)) sent.push(frame); }, { pieceBytes: 8 * 1024, windowBytes, stallMs: 60_000 });
+  outbox.send(encodeSyncFrame(2, update));
+  const peer = new Y.Doc();
+  let applied = 0;
+  let largest = 0;
+  for (let rounds = 0; applied < sent.length && rounds < 500; rounds += 1) {
+    const outstanding = sent.slice(applied).reduce((sum, frame) => sum + frame.byteLength, 0);
+    largest = Math.max(largest, outstanding);
+    // The server applies one frame, then acks what it holds.
+    Y.applyUpdate(peer, payloadOf(sent[applied]));
+    applied += 1;
+    outbox.acked(Y.decodeStateVector(Y.encodeStateVector(peer)));
+  }
+  expect(outbox.busy).toBe(false);
+  expect(largest, 'bytes sent and not yet applied stay within the window').toBeLessThanOrEqual(windowBytes);
+  outbox.close();
+});
