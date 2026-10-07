@@ -287,7 +287,8 @@ export type ForkEvent =
   /**
    * A rewrite re-created these struck originals and their copies were removed: the step that moved them must never
    * restore them (an undo restore is a new block the editor has not bound yet), so undo of that step leaves them out.
-   * `added`: characters that stood in for displaced originals, which undo of that step removes with the rest of it.
+   * `added`: characters that stood in for displaced originals, made just after that step was recorded (a second event):
+   * undo of that step removes them with the rest of it.
    */
   | { type: 'kept'; originals: IdSpan[]; added: IdSpan[] };
 
@@ -940,13 +941,20 @@ export class SuggestFork {
       if (last && last.client === client && last.clock + last.len === clock) last.len += 1;
       else if (!last || last.client !== client || last.clock + last.len < clock) spans.push({ client, clock, len: 1 });
     }
-    let added: IdSpan[] = [];
-    this.doc.transact(() => {
-      removeItems(this.doc, [...copies.values()].map(({ copy }) => copy));
-      added = replaceItems(this.doc, displaced);
-    }, KEEP_STRIKES);
+    if (copies.size) this.doc.transact(() => removeItems(this.doc, [...copies.values()].map(({ copy }) => copy)), KEEP_STRIKES);
     // Still inside the rewrite's transaction: the undo manager records its step after this.
-    this.#emit({ type: 'kept', originals: spans, added });
+    this.#emit({ type: 'kept', originals: spans, added: [] });
+    if (displaced.length === 0) return;
+    // After the rewrite's update is sent: an insert made now would also be encoded into it (Yjs writes every struct
+    // past the transaction's before-state), and the record would receive the same ids twice.
+    this.doc.once('afterAllTransactions', () => {
+      if (this.#closed) return;
+      let added: IdSpan[] = [];
+      this.doc.transact(() => {
+        added = replaceItems(this.doc, displaced);
+      }, KEEP_STRIKES);
+      if (added.length) this.#emit({ type: 'kept', originals: [], added });
+    });
   };
 
   /** One F transaction, in the body or in payload `doc`: a `suggest-ops` under the active lease. */

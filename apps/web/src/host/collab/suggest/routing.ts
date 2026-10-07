@@ -145,27 +145,16 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
   let watchedRoot: Y.UndoManager | null = null;
   /** Struck originals a rewrite re-created and the fork removed again: no undo step of the body restores them. */
   const keptOut: IdSpan[] = [];
-  /** Characters the fork stood in for displaced originals: the body step being recorded removes them on undo. */
-  let addedTo: IdSpan[] = [];
+  /** The body stack the last rewrite's step went to: characters the fork stands in afterwards join that step. */
+  let keptIn: Y.UndoManager['undoStack'] | null = null;
   // Any new edit of his own ends the redo history, strikes included.
   const onStack = (event: { type: 'undo' | 'redo' }) => {
     if (event.type === 'undo' && watched && !watched.undoing && !watched.redoing) redone.length = 0;
   };
   // Body ids only: a payload doc's items can carry the same client and clock.
-  const onRootStack = (event: { stackItem?: { deletions: DeleteSet; insertions: DeleteSet } }) => {
+  const onRootStack = (event: { stackItem?: { deletions: DeleteSet } }) => {
     const item = event.stackItem;
-    if (!item) return;
-    if (keptOut.length) item.deletions = without(item.deletions, keptOut);
-    if (addedTo.length) {
-      const added = Y.createDeleteSet();
-      for (const span of addedTo) {
-        const ranges = added.clients.get(span.client) ?? [];
-        ranges.push({ clock: span.clock, len: span.len } as (typeof ranges)[number]);
-        added.clients.set(span.client, ranges);
-      }
-      item.insertions = Y.mergeDeleteSets([item.insertions, added]);
-      addedTo = [];
-    }
+    if (item && keptOut.length) item.deletions = without(item.deletions, keptOut);
   };
   const watch = (undo: Y.UndoManager | null) => {
     if (undo === watched) return;
@@ -276,7 +265,6 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
   };
   const settle = (tr: Y.Transaction) => {
     if (tr.origin !== bindingOf(editor)) return;
-    addedTo = [];
     trace.settle();
   };
   doc.on('beforeTransaction', settle);
@@ -649,7 +637,20 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
       if (event.type === 'kept') {
         watch(manager());
         keptOut.push(...event.originals);
-        addedTo = [...event.added];
+        if (event.added.length) {
+          // Made after the rewrite's step was recorded: undo of that step removes them too.
+          const step = keptIn?.at(-1);
+          if (step) {
+            const added = Y.createDeleteSet();
+            for (const span of event.added) {
+              const ranges = added.clients.get(span.client) ?? [];
+              ranges.push({ clock: span.clock, len: span.len } as (typeof ranges)[number]);
+              added.clients.set(span.client, ranges);
+            }
+            step.insertions = Y.mergeDeleteSets([step.insertions, added]);
+          }
+          keptIn = null;
+        } else keptIn = watchedRoot ? (watchedRoot.undoing ? watchedRoot.redoStack : watchedRoot.undoStack) : null;
       }
       // A closed record's steps leave the binding's stacks (pane.tsx dropUndo); its strikes go with them.
       if (event.type === 'closed') {
