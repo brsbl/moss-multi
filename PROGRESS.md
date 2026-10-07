@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 80% done** (82 of 102 planned tasks verified)
+**Overall: 80% done** (83 of 104 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -9,7 +9,7 @@
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 15 / 15 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 9 / 9 | in progress |
-| M5 Suggestions | Suggest mode, vetting, accept/reject | 6 / 6 | in progress |
+| M5 Suggestions | Suggest mode, vetting, accept/reject | 7 / 7 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
@@ -103,6 +103,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-06 — T5.1 verified: a person with suggest access can switch a shared note into Suggest mode and type, delete and edit code and other blocks as suggestions shown inline beside the body, offline edits continue after a reconnect, and a demoted editor drops to a read-only body with a reason.
 - 2026-10-06 — T5.3 verified: an editor can review each suggestion on a card with a preview of exactly what it changes and accept or reject it, the suggester can withdraw it, accept re-checks access and the reviewed preview before touching the body, and reject or withdraw leave the body byte-identical.
 - 2026-10-06 — T5.4 verified: a randomized fuzz now attacks suggestion records and accept with forged and malformed ops, and drives honest suggest-mode editing through real editors, proving accept either refuses with nothing applied or lands exactly the previewed change, with ingest cost bounded at the frame cap.
+- 2026-10-06 — T5.3s verified: a suggestion whose fields, node types, map keys or payload ids use names like `__proto__` or `constructor` still previews and accepts correctly, and previewing a large structured suggestion stays fast.
 
 ## T1.1s identity audit
 
@@ -445,3 +446,8 @@ Local browser verification remains assigned to the independent checker under the
 - T5.3 checker P2 (red run shows some negative controls failing only because a symbol was missing): in red run 37517383678 five of ten failures came from rowSegments not existing yet and the trim negative control passed, so the red run does not show both semantic negative controls failing for the intended reason.
 - T5.4 checker P2 (the fuzz ingest leg mostly stops at the lease refusal): ingestLeg (packages/sync/src/suggest/fuzz.test.ts) builds frames under the fixture's leased client but sends them with a fresh lease, so most struct-bearing frames are refused as 'lease' before placement and record append, and only throws are checked; build frames under the granted lease and assert on the results.
 - T5.4 checker P2 (the broken-record exclusion check reads only the body state vector): the F check compares only Y.encodeStateVector and the C check only the root value, so a broken record leaking deletes or payload-only changes into F or C would go unnoticed; also compare delete sets and payload states, with negative controls that leak only deletes or only payloads.
+- T5.3s checker P2 (preview cost is quadratic when repeated delete-only ops cover the record's own inserted structs; coordinator-downgraded from the checker's P1): with the pinned yjs a record under the 256 KiB cap takes 391 ms to preview and doubling the record takes about 4x as long; bounded by the record cap, so a linear-cost goal miss, not an outage. Carried to the M5 Slop Cop for a severity decision and a fix there.
+- T5.3s checker P2 (doc-do.ts #ack builds its acked map keyed by payload id on a plain object, outside the suggest/ scope): carried to the M5 Slop Cop.
+- T5.3s checker P2 (lib0 readAny decodes a `__proto__` key in a forged Any object by changing that object's prototype; dependency): carried to the M5 Slop Cop; every consumer of decoded ContentAny must read own keys only.
+- T5.3s checker P2 (strike-then-join keeps the struck character after accept; pre-existing on m5): Lexical re-creates the joined text as new items, so the strike is lost from what the reviewer accepts.
+- T5.3s checker P2 (whole added or removed nodes drop enclosing map-field names from the visible card row).
