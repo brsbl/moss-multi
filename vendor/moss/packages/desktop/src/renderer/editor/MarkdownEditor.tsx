@@ -148,9 +148,9 @@ import { clearLinkSelection, markLinkSelection } from '@moss-multi/host/link-hig
 import { TRASH_COPY } from '@moss-multi/host/retention';
 // moss-multi seam: linear-autolink: EMAIL_REGEX's and SCHEMELESS_URL_REGEX's matches in linear time
 import { findEmail, schemelessUrlMatches } from '@moss-multi/host/autolink';
-// moss-multi seam: whole-paste (T3.S6): a large paste is parsed whole and lands in one update
-import { createEditor, type SerializedLexicalNode } from 'lexical';
-import { $insertBlocks, $replaceEmptyNote, measureEncoded, pasteBlocks, plainTextBytes, refusedOverCap } from '@moss-multi/host/large-paste';
+// moss-multi seam: whole-paste (T3.S6): a large paste is parsed whole and lands whole in batches, or is refused whole
+import { createEditor } from 'lexical';
+import { $insertBlocks, $planPaste, $replaceEmptyNote, pasteLarge, refusedPlainText, type PastePlan } from '@moss-multi/host/large-paste';
 import { $withDocumentImport } from './markdown/fixes';
 // moss-multi seam: converter-split (A§12; S-conv §2.3)
 import { $convertMossCustomCodeNodes, $postImportNormalize, escapeHtmlEntities, normalizeMarkdownForImport, unescapeHtmlEntities } from './markdown/normalize';
@@ -1031,9 +1031,8 @@ const insertMarkdownFromPaste = (editor: LexicalEditor, markdown: string): boole
   return true;
 };
 
-// moss-multi seam: whole-paste (T3.S6): the paste's top-level blocks, parsed off the live editor as one update would,
-// and the bytes they encode to in a note.
-const parseMarkdownPasteBlocks = (markdown: string, wholeNote: boolean): { blocks: SerializedLexicalNode[]; bytes: number } => {
+// moss-multi seam: whole-paste (T3.S6): the paste parsed off the live editor, as the units it lands in.
+const parseMarkdownPastePlan = (markdown: string, wholeNote: boolean): PastePlan => {
   const parser = createEditor({
     namespace: 'moss-multi-paste',
     nodes: MARKDOWN_EDITOR_NODES,
@@ -1041,7 +1040,6 @@ const parseMarkdownPasteBlocks = (markdown: string, wholeNote: boolean): { block
       throw error;
     }
   });
-  const encoded = measureEncoded(parser);
   parser.update(
     () => {
       if (wholeNote) {
@@ -1056,36 +1054,38 @@ const parseMarkdownPasteBlocks = (markdown: string, wholeNote: boolean): { block
     },
     { discrete: true }
   );
-  return { blocks: parser.getEditorState().toJSON().root.children, bytes: encoded() };
+  const state = parser.getEditorState();
+  const json = state.toJSON().root.children;
+  return state.read(() => $planPaste($getRoot().getChildren(), json));
 };
 
-// moss-multi seam: whole-paste (T3.S6): the whole paste in one update, never text chunks.
+const isEmptyNote = (): boolean => {
+  const root = $getRoot();
+  const only = root.getFirstChild();
+  return root.getChildrenSize() === 1 && $isParagraphNode(only) && only.isEmpty();
+};
+
+// moss-multi seam: whole-paste (T3.S6): the whole paste lands, in batches, or none of it does; never text chunks.
 const insertLargeMarkdownPaste = (editor: LexicalEditor, rawMarkdown: string): boolean => {
   const savedSelection = captureSelectionForPaste(editor);
   if (!savedSelection) {
     return false;
   }
   const markdown = normalizeClipboardLineEndings(rawMarkdown);
-  const wholeNote = editor.getEditorState().read(() => {
-    const root = $getRoot();
-    const only = root.getFirstChild();
-    return root.getChildrenSize() === 1 && $isParagraphNode(only) && only.isEmpty();
-  });
-  const { blocks, bytes } = parseMarkdownPasteBlocks(markdown, wholeNote);
-  if (refusedOverCap(editor, bytes)) {
-    return true;
-  }
-  pasteBlocks(editor, blocks, (nodes) => {
-    if (nodes.length === 0 || !restoreSelectionForPaste(savedSelection)) {
-      return;
-    }
-    if (wholeNote) {
-      $replaceEmptyNote(nodes);
-      return;
-    }
-    const selection = $getSelection();
-    if (selection) {
-      $insertBlocks(nodes, selection, (some, at) => $insertGeneratedNodes(editor, some, at));
+  const wholeNote = editor.getEditorState().read(isEmptyNote);
+  pasteLarge(editor, {
+    plan: parseMarkdownPastePlan(markdown, wholeNote),
+    nodes: MARKDOWN_EDITOR_NODES,
+    $restore: () => restoreSelectionForPaste(savedSelection),
+    $insert: (nodes) => {
+      if (wholeNote && isEmptyNote()) {
+        $replaceEmptyNote(nodes);
+        return;
+      }
+      const selection = $getSelection();
+      if (selection) {
+        $insertBlocks(nodes, selection, (some, at) => $insertGeneratedNodes(editor, some, at));
+      }
     }
   });
   return true;
@@ -1231,13 +1231,14 @@ export const registerPasteFormattingHandlers = (editor: LexicalEditor): (() => v
         return true;
       }
 
-      // moss-multi seam: whole-paste (T3.S6): a large plain-text paste past the note's size cap is refused whole.
+      // moss-multi seam: whole-paste (T3.S6): a large plain-text paste past the note's size cap, or with a line too
+      // long for one frame, is refused whole.
       const forcedPlainText = shouldForcePlainTextMarkdownPaste(pastedMarkdownCandidate);
       const plainText = forcedPlainText ? pastedMarkdownCandidate : plainTextPayload;
       if (
         (forcedPlainText || !(hasExplicitMarkdownPayload || shouldImportMarkdownFromPaste(pastedMarkdownCandidate))) &&
         shouldChunkMarkdownPaste(plainText) &&
-        refusedOverCap(editor, plainTextBytes(editor, normalizeClipboardLineEndings(plainText)))
+        refusedPlainText(editor, normalizeClipboardLineEndings(plainText))
       ) {
         event.preventDefault();
         event.stopPropagation();
@@ -1258,7 +1259,7 @@ export const registerPasteFormattingHandlers = (editor: LexicalEditor): (() => v
       if (hasExplicitMarkdownPayload || shouldImportMarkdownFromPaste(pastedMarkdownCandidate)) {
         event.preventDefault();
         event.stopPropagation();
-        // moss-multi seam: whole-paste (T3.S6): a large paste is parsed whole and lands in one update, never in
+        // moss-multi seam: whole-paste (T3.S6): a large paste is parsed whole and lands whole, in batches, never in
         // text chunks, so nothing is dropped and one undo removes it.
         if (shouldChunkMarkdownPaste(pastedMarkdownCandidate)) {
           return insertLargeMarkdownPaste(editor, pastedMarkdownCandidate);

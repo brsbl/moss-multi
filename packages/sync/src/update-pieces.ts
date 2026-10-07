@@ -1,7 +1,9 @@
 // T3.S6: a client frame over 1 MiB never reaches the DocDO (workerd closes the socket and the reconnect resends it
 // whole), so a large update leaves the client as pieces. Each piece is a valid update: its structs in clock order, cut
-// only before a top-level block, so a peer never renders a block that arrived without its attributes; the deletes ride
-// in the last. A piece then needs only what the server holds and the pieces before it carry (A§10.10's "missing").
+// only before an embedded type (a block, a list item, a table row or cell, a text run), so a peer never renders an
+// element that arrived without its attributes: @lexical/yjs writes a new element's attributes before its children, and
+// a type's own items follow it in clock order. The deletes ride in the last piece. A piece then needs only what the
+// server holds and the pieces before it carry (A§10.10's "missing").
 import * as encoding from 'lib0/encoding';
 import * as Y from 'yjs';
 
@@ -19,17 +21,8 @@ export interface UpdatePiece {
 /** Room for each piece's client headers. */
 const HEADER_BYTES = 256;
 
-/** True when `struct` starts a block at the top of the doc's `root`, the only place a piece may start. */
-function startsBlock(doc: Y.Doc, root: unknown, struct: Struct): boolean {
-  if (!(struct instanceof Y.Item) || !(struct.content instanceof Y.ContentType)) return false;
-  if ((struct.parent as unknown) === 'root') return true;
-  try {
-    const live = Y.getItem(doc.store, struct.id);
-    return live instanceof Y.Item && live.parent === root;
-  } catch {
-    return false;
-  }
-}
+/** True when `struct` starts an embedded type, the only place a piece may start within one client's run. */
+const startsType = (struct: Struct): boolean => struct instanceof Y.Item && struct.content instanceof Y.ContentType;
 
 function writeDeletes(encoder: Y.UpdateEncoderV1, ds: DeleteSet | null): void {
   const clients = ds ? [...ds.clients].filter(([, items]) => items.length > 0) : [];
@@ -68,16 +61,15 @@ function encodePiece(structs: Struct[], ds: DeleteSet | null): UpdatePiece {
 }
 
 /**
- * `update` (Yjs v1, made from `doc`, which holds every struct in it) as pieces of at most about `limit` bytes. A
- * single block larger than `limit` stays one piece. Pieces follow the update's client order, so the update must not
- * have one client's structs depend on another client's in the same update: one session's writes (and their merged
- * backlog) never do, since what they build on from peers the server already holds. Otherwise a piece can need a
- * later one, which the DocDO refuses as a missing dependency.
+ * `update` (Yjs v1) as pieces of at most about `limit` bytes. One text run larger than `limit` stays one piece.
+ * Pieces follow the update's client order, so the update must not have one client's structs depend on another
+ * client's in the same update: one session's writes (and their merged backlog) never do, since what they build on
+ * from peers the server already holds. Otherwise a piece can need a later one, which the DocDO refuses as a missing
+ * dependency.
  */
-export function splitUpdate(doc: Y.Doc, update: Uint8Array, limit: number): UpdatePiece[] {
+export function splitUpdate(update: Uint8Array, limit: number): UpdatePiece[] {
   if (update.byteLength <= limit) return [{ update, ends: Y.parseUpdateMeta(update).to, deletes: true }];
   const { structs, ds } = Y.decodeUpdate(update);
-  const root = doc.share.get('root');
   const budget = Math.max(1, limit - HEADER_BYTES);
   const scratch = new Y.UpdateEncoderV1();
   const sized = (write: (encoder: Y.UpdateEncoderV1) => void): number => {
@@ -91,7 +83,7 @@ export function splitUpdate(doc: Y.Doc, update: Uint8Array, limit: number): Upda
   let client: number | null = null;
   for (const struct of structs) {
     const bytes = sized((encoder) => struct.write(encoder, 0));
-    const cut = struct.id.client !== client || startsBlock(doc, root, struct);
+    const cut = struct.id.client !== client || startsType(struct);
     if (run.length > 0 && size + bytes > budget && cut) {
       runs.push(run);
       run = [];

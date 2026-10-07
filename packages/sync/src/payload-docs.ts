@@ -245,6 +245,8 @@ export class BodyUndo extends Observable<StackEvent> {
   #replayed: Step['entries'] = [];
   /** When the last tracked edit landed, in any doc. */
   #lastChange = 0;
+  /** Open holds: while any is, every tracked edit joins the last step. */
+  #holds = 0;
 
   constructor(
     readonly root: Y.UndoManager,
@@ -281,7 +283,7 @@ export class BodyUndo extends Observable<StackEvent> {
     const stamp = this.stamp();
     const last = this.undone.at(-1);
     this.redone.length = 0;
-    if (last && ((stamp !== null && last.stamp === stamp) || now - this.#lastChange < this.root.captureTimeout)) {
+    if (last && (this.#holds > 0 || (stamp !== null && last.stamp === stamp) || now - this.#lastChange < this.root.captureTimeout)) {
       last.entries.push({ manager, item });
       last.stamp = stamp;
     } else {
@@ -290,6 +292,20 @@ export class BodyUndo extends Observable<StackEvent> {
     }
     this.#lastChange = now;
     for (const other of this.managers) if (other !== manager && other.redoStack.length) other.clear(false, true);
+  }
+
+  /**
+   * Until the returned release runs, every tracked edit joins the last step, however long after it lands: a large
+   * paste lands in batches, one undo step (T3.S6).
+   */
+  hold(): () => void {
+    this.#holds += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.#holds -= 1;
+    };
   }
 
   get undoStack(): readonly Step[] {

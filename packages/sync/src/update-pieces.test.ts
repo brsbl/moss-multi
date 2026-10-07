@@ -42,7 +42,7 @@ it('splits a large update into pieces of whole top-level blocks that apply in or
   const update = capture(doc, () => addBlocks(doc, 400, 1));
   const limit = 16 * 1024;
   expect(update.byteLength).toBeGreaterThan(limit * 4);
-  const pieces = splitUpdate(doc, update, limit);
+  const pieces = splitUpdate(update, limit);
   expect(pieces.length).toBeGreaterThan(3);
   for (const piece of pieces) {
     expect(piece.update.byteLength, 'each piece fits').toBeLessThanOrEqual(limit);
@@ -67,7 +67,7 @@ it('carries the deletes in the last piece, so no piece deletes what the receiver
       addBlocks(doc, 300, 5);
     });
   });
-  const pieces = splitUpdate(doc, update, 16 * 1024);
+  const pieces = splitUpdate(update, 16 * 1024);
   expect(pieces.length).toBeGreaterThan(1);
   expect(pieces.map((piece) => piece.deletes)).toEqual([...pieces.slice(1).map(() => false), true]);
   for (const piece of pieces) {
@@ -134,7 +134,7 @@ it('cuts one large list or table between its items or rows, every piece within t
     const update = capture(doc, () => addOneLargeBlock(doc, shape, 3_000));
     const limit = 16 * 1024;
     expect(update.byteLength).toBeGreaterThan(limit * 8);
-    const pieces = splitUpdate(doc, update, limit);
+    const pieces = splitUpdate(update, limit);
     expect(pieces.length, `${shape}: in pieces`).toBeGreaterThan(8);
     for (const piece of pieces) {
       expect(piece.update.byteLength, `${shape}: each piece fits`).toBeLessThanOrEqual(limit);
@@ -149,7 +149,7 @@ it('cuts one large list or table between its items or rows, every piece within t
 it('leaves an update within the limit whole, and never cuts inside a block', () => {
   const doc = new Y.Doc();
   const small = capture(doc, () => addBlocks(doc, 2));
-  expect(splitUpdate(doc, small, 64 * 1024).map((piece) => piece.update)).toEqual([small]);
+  expect(splitUpdate(small, 64 * 1024).map((piece) => piece.update)).toEqual([small]);
   const big = capture(doc, () => {
     doc.transact(() => {
       const block = new Y.XmlText();
@@ -158,5 +158,5 @@ it('leaves an update within the limit whole, and never cuts inside a block', () 
       doc.get('root', Y.XmlText).insertEmbed(0, block);
     });
   });
-  expect(splitUpdate(doc, big, 8 * 1024)).toHaveLength(1);
+  expect(splitUpdate(big, 8 * 1024)).toHaveLength(1);
 });

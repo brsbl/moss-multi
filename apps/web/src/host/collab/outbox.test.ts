@@ -42,7 +42,7 @@ afterEach(() => { vi.useRealTimers(); });
 it('sends small frames at once, and a large update in pieces paced by acks, in order', () => {
   const { doc, update } = bigDoc();
   const sent: (Uint8Array | string)[] = [];
-  const outbox = new Outbox(doc, (frame) => sent.push(frame), { pieceBytes: 8 * 1024, windowBytes: 16 * 1024, stallMs: 5_000 });
+  const outbox = new Outbox((frame) => sent.push(frame), { pieceBytes: 8 * 1024, windowBytes: 16 * 1024, stallMs: 5_000 });
   outbox.send(encodeSyncFrame(0, Y.encodeStateVector(doc)));
   expect(sent, 'a small frame goes at once').toHaveLength(1);
   sent.length = 0;
@@ -81,7 +81,7 @@ it('sends small frames at once, and a large update in pieces paced by acks, in o
 it('keeps going when no ack comes, and drops pieces an ack already covers', () => {
   const { doc, update } = bigDoc();
   const sent: (Uint8Array | string)[] = [];
-  const outbox = new Outbox(doc, (frame) => sent.push(frame), { pieceBytes: 8 * 1024, windowBytes: 8 * 1024, stallMs: 2_000 });
+  const outbox = new Outbox((frame) => sent.push(frame), { pieceBytes: 8 * 1024, windowBytes: 8 * 1024, stallMs: 2_000 });
   outbox.send(encodeSyncFrame(2, update));
   expect(sent).toHaveLength(1);
   vi.advanceTimersByTime(2_000);
@@ -98,7 +98,7 @@ it('keeps at most a window of writes in flight, and merges the small updates wai
   const updates: Uint8Array[] = [];
   doc.on('update', (update: Uint8Array) => updates.push(update));
   const sent: (Uint8Array | string)[] = [];
-  const outbox = new Outbox(doc, (frame) => sent.push(frame), { pieceBytes: 64 * 1024, windowBytes: 512 * 1024, windowFrames: 4, stallMs: 5_000 });
+  const outbox = new Outbox((frame) => sent.push(frame), { pieceBytes: 64 * 1024, windowBytes: 512 * 1024, windowFrames: 4, stallMs: 5_000 });
   const text = doc.get('root', Y.XmlText);
   for (let i = 0; i < 100; i += 1) {
     text.insert(text.length, `batch ${i} `);
@@ -110,6 +110,8 @@ it('keeps at most a window of writes in flight, and merges the small updates wai
   outbox.acked(Y.decodeStateVector(Y.encodeStateVector(peer)));
   expect(sent.length, 'the 96 waiting go as one frame').toBe(1);
   for (const frame of sent.splice(0)) if (isUpdate(frame)) Y.applyUpdate(peer, payloadOf(frame));
+  expect(outbox.busy, 'a write out and unacked keeps the outbox busy').toBe(true);
+  outbox.acked(Y.decodeStateVector(Y.encodeStateVector(peer)));
   expect(outbox.busy).toBe(false);
   expect(peer.get('root', Y.XmlText).toString()).toBe(text.toString());
   outbox.close();

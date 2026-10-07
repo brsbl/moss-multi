@@ -86,18 +86,16 @@ class DocSocket extends WebSocket {
 const nativeAddEventListener = WebSocket.prototype.addEventListener;
 const nativeSend = WebSocket.prototype.send;
 
-/** The provider's socket class for `doc`: each socket sends through its own outbox, emptied when it closes. */
-function socketFor(doc: Y.Doc): typeof WebSocket {
-  return class extends DocSocket {
-    constructor(url: string | URL, protocols?: string | string[]) {
-      super(url, protocols);
-      const outbox = new Outbox(doc, (frame) => {
-        if (this.readyState === WebSocket.OPEN) nativeSend.call(this, frame);
-      });
-      this.outbox = outbox;
-      nativeAddEventListener.call(this, 'close', () => outbox.close());
-    }
-  };
+/** The provider's socket class: each socket sends through its own outbox, emptied when it closes. */
+class OutboxSocket extends DocSocket {
+  constructor(url: string | URL, protocols?: string | string[]) {
+    super(url, protocols);
+    const outbox = new Outbox((frame) => {
+      if (this.readyState === WebSocket.OPEN) nativeSend.call(this, frame);
+    });
+    this.outbox = outbox;
+    nativeAddEventListener.call(this, 'close', () => outbox.close());
+  }
 }
 // Assigned rather than overridden in the class body: one signature cannot override WebSocket's overloads.
 DocSocket.prototype.addEventListener = function addEventListener(
@@ -299,7 +297,7 @@ export class DocSession {
       disableBc: true,
       // The heartbeat sends the 4 s resync itself, so it can pause while the tab is hidden.
       resyncInterval: 0,
-      WebSocketPolyfill: socketFor(this.doc),
+      WebSocketPolyfill: OutboxSocket as unknown as typeof WebSocket,
       params: () => {
         const share = shareToken();
         return share ? { share } : {};

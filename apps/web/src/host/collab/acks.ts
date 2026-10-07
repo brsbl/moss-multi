@@ -16,8 +16,8 @@ interface Pending {
   updates: Uint8Array[];
   acked: DeleteSet[];
   sv: Map<number, number>;
-  /** The clocks the writes reach, read once per write rather than per ack (a large paste is megabytes). */
-  ends?: Map<number, number>;
+  /** The clocks the writes reach, kept as each is written: merging megabytes of writes per ack held the tab. */
+  ends: Map<number, number>;
 }
 
 export class AckLedger {
@@ -31,9 +31,11 @@ export class AckLedger {
   /** A local write, as the doc emitted it: the note's, or payload `id`'s. */
   wrote(update: Uint8Array, id: string = NOTE): void {
     let pending = this.#pending.get(id);
-    if (!pending) this.#pending.set(id, (pending = { updates: [], acked: [], sv: new Map() }));
+    if (!pending) this.#pending.set(id, (pending = { updates: [], acked: [], sv: new Map(), ends: new Map() }));
     pending.updates.push(update);
-    pending.ends = undefined;
+    for (const [client, clock] of Y.parseUpdateMeta(update).to) {
+      if ((pending.ends.get(client) ?? 0) < clock) pending.ends.set(client, clock);
+    }
   }
 
   /** Replay only unacknowledged writes if a channel recovers without reconnecting. */
@@ -56,11 +58,10 @@ export class AckLedger {
       for (const [client, clock] of Y.decodeStateVector(base64ToBytes(coverage.sv))) {
         if ((pending.sv.get(client) ?? 0) < clock) pending.sv.set(client, clock);
       }
-      // Structs past the acked vector settle nothing yet; only a covering vector needs the full check.
-      pending.ends ??= Y.parseUpdateMeta(Y.mergeUpdates(pending.updates)).to;
+      // Structs past the acked vector settle nothing yet; only a covering vector needs the full check, write by write.
       if ([...pending.ends].some(([client, clock]) => (pending.sv.get(client) ?? 0) < clock)) continue;
       const covered = Y.createSnapshot(Y.mergeDeleteSets(pending.acked), pending.sv);
-      if (Y.snapshotContainsUpdate(covered, Y.mergeUpdates(pending.updates))) this.#pending.delete(id);
+      if (pending.updates.every((update) => Y.snapshotContainsUpdate(covered, update))) this.#pending.delete(id);
     }
     return this.#pending.size === 0;
   }
