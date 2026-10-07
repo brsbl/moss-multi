@@ -240,6 +240,8 @@ function $placeBefore(target: LexicalNode, node: LexicalNode): void {
  */
 export class Placer {
   readonly #keys = new Map<Part, NodeKey>();
+  /** The paste's top-level lists and tables placed so far: later batches fill them. */
+  readonly spines: NodeKey[] = [];
   #next = 0;
   #gap: NodeKey | undefined;
   #done = false;
@@ -267,6 +269,7 @@ export class Placer {
     const build = (part: Part): LexicalNode => {
       const node = $parseSerializedNode(part.json);
       this.#keys.set(part, node.getKey());
+      if (part.parent === null && part.children.length > 0) this.spines.push(node.getKey());
       if ($isElementNode(node)) for (const child of part.children) if (wanted(child)) node.append(build(child));
       return node;
     };
@@ -302,6 +305,7 @@ export class Placer {
     const build = (part: Part): LexicalNode => {
       const node = $parseSerializedNode(part.json);
       this.#keys.set(part, node.getKey());
+      if (part.parent === null && part.children.length > 0) this.spines.push(node.getKey());
       const child = part.children.find((each) => each.lo <= unit.lo && unit.lo <= each.hi);
       if (child && $isElementNode(node)) node.append(build(child));
       return node;
@@ -454,6 +458,8 @@ class PasteJob {
   #timer: ReturnType<typeof setTimeout> | undefined;
   #flushing = false;
   #ended = false;
+  /** Top-level elements whose `dir` is lifted while batches fill them, and its value. */
+  readonly #lifted = new Map<HTMLElement, string>();
 
   constructor(readonly editor: LexicalEditor, readonly request: PasteRequest) {
     this.#steps = this.#run();
@@ -514,12 +520,38 @@ class PasteJob {
     if (this.#ended) return;
     this.#ended = true;
     clearTimeout(this.#timer);
+    this.#restoreDir();
     for (const stop of this.#stops.splice(0)) stop();
     if (jobs.get(this.editor) === this) {
       jobs.delete(this.editor);
       markLanding(this.editor, false);
     }
     markUnacked(this, false);
+  }
+
+  /**
+   * Lexical gives each top-level block `dir="auto"`, and WebKit recomputes an auto direction over the whole element for
+   * every child added to it: each list item or row a batch adds cost time linear in its list or table, and a
+   * 30,000-item list held the tab for seconds per batch. The paste's lists and tables go without it until the last batch.
+   */
+  #liftDir(placer: Placer): void {
+    // Inside an update (a flush from a command), the rest lands at once anyway.
+    if (placer.spines.length === 0 || this.editor._updating) return;
+    this.editor.read(() => {
+      for (const key of placer.spines) {
+        const top = attached(key)?.getTopLevelElement();
+        const dom = top ? this.editor.getElementByKey(top.getKey()) : null;
+        const dir = dom?.getAttribute('dir');
+        if (!dom || dir == null || this.#lifted.has(dom)) continue;
+        this.#lifted.set(dom, dir);
+        dom.removeAttribute('dir');
+      }
+    });
+  }
+
+  #restoreDir(): void {
+    for (const [dom, dir] of this.#lifted) if (!dom.hasAttribute('dir')) dom.setAttribute('dir', dir);
+    this.#lifted.clear();
   }
 
   *#run(): Generator<void, void> {
@@ -566,6 +598,7 @@ class PasteJob {
     }, { discrete: true }), layout);
     let batches = 1;
     while (!placer.done) {
+      this.#liftDir(placer);
       batches += 1;
       // Without a step to hold open (no collaborative undo), the rest goes in now.
       if (undo?.hold && !this.#flushing) yield;
@@ -577,6 +610,7 @@ class PasteJob {
       pacing.time(budget, () => editor.update(() => $keepElementPoints(() => placer.$next(budget)), { discrete: true, onUpdate: release }), layout);
       if (!nested) release?.();
     }
+    this.#restoreDir();
     undo?.stopCapturing();
     if (request.$landed) editor.update(request.$landed, { discrete: true });
     // Its redo lands in batches too: the step is stamped with the paste, which a redo then pastes again.
