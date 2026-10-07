@@ -78,17 +78,19 @@ it('sends small frames at once, and a large update in pieces paced by acks, in o
   outbox.close();
 });
 
-it('keeps going when no ack comes, and drops pieces an ack already covers', () => {
+it('keeps going when no ack comes, within the inbox budget, and drops pieces an ack already covers', () => {
   const { doc, update } = bigDoc();
   const sent: (Uint8Array | string)[] = [];
-  const outbox = new Outbox((frame) => sent.push(frame), { pieceBytes: 8 * 1024, windowBytes: 8 * 1024, stallMs: 2_000 });
+  const outbox = new Outbox((frame) => sent.push(frame), { pieceBytes: 8 * 1024, windowBytes: 8 * 1024, budgetBytes: 20 * 1024, stallMs: 2_000 });
   outbox.send(encodeSyncFrame(2, update));
   expect(sent).toHaveLength(1);
   vi.advanceTimersByTime(2_000);
-  expect(sent, 'a stalled window reopens').toHaveLength(2);
+  expect(sent.length, 'a stalled window widens').toBeGreaterThan(1);
+  vi.advanceTimersByTime(10_000);
+  const unacked = sent.reduce((sum, frame) => sum + (typeof frame === 'string' ? frame.length : frame.byteLength), 0);
+  expect(unacked, 'however long no ack comes, what is unacked stays within the budget').toBeLessThanOrEqual(20 * 1024);
   outbox.acked(Y.decodeStateVector(Y.encodeStateVector(doc)));
   expect(outbox.busy, 'everything left is already on the server').toBe(false);
-  expect(sent).toHaveLength(2);
   outbox.close();
 });
 

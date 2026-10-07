@@ -3,7 +3,7 @@
 import type { LexicalEditor } from 'lexical';
 import { CLIENT_FRAME_MAX_BYTES } from '../../packages/protocol/src/limits.ts';
 import type { Actor, Actors } from './actors.ts';
-import { DOC_SOCKET_PATH } from './contract.ts';
+import { APP_STATE_ATTR, DOC_SOCKET_PATH } from './contract.ts';
 import { grantDoc } from './grants.ts';
 import type { Stack } from './stack.ts';
 import { expect, ui } from './test.ts';
@@ -69,6 +69,8 @@ export interface Wire {
   largestFrame: number;
   opened: number;
   closes: string[];
+  /** The collaborator's doc socket closes, so a reopen of theirs names its cause too. */
+  peer?: Wire;
 }
 
 const CLOSE_LOG = 'qa-doc-socket-close';
@@ -107,6 +109,7 @@ async function watchWire(actor: Actor): Promise<Wire> {
 export function expectWire(wire: Wire): void {
   expect(wire.largestFrame, 'no frame the client sends exceeds the frame cap').toBeLessThanOrEqual(CLIENT_FRAME_MAX_BYTES);
   expect(wire.opened, `the doc socket never closed and reopened (closes: ${wire.closes.join('; ') || 'none seen'})`).toBe(1);
+  if (wire.peer) expect(wire.peer.closes, "the collaborator's doc socket never closed").toEqual([]);
 }
 
 /** Starts measuring the longest the page's main thread is held: the gap between 25 ms ticks, less the 25 ms. */
@@ -204,7 +207,10 @@ export async function setup(actors: Actors, stack: Stack, markdown?: string, { e
   await grantDoc(ada, docId, principal);
   const wire = await watchWire(ada);
   await ada.goto(`/d/${docId}`);
-  const ben = await actors.open(principal, { path: `/d/${docId}` });
+  const ben = await actors.session(principal);
+  wire.peer = await watchWire(ben);
+  await ben.goto(`/d/${docId}`);
+  await ben.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached' });
   for (const actor of [ada, ben]) {
     await ui.waitLive(actor, docId);
     await actor.observeEditor(docId);
