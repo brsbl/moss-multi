@@ -1,13 +1,17 @@
 // j01-paste helpers: pasting into a shared note through a real clipboard event and reading what the server and each
 // screen then hold. The notes and the reference imports are created through POST /api/docs as declared setup.
 import type { LexicalEditor } from 'lexical';
+import { CLIENT_FRAME_MAX_BYTES } from '../../packages/protocol/src/limits.ts';
 import type { Actor, Actors } from './actors.ts';
+import { DOC_SOCKET_PATH } from './contract.ts';
 import { grantDoc } from './grants.ts';
 import type { Stack } from './stack.ts';
 import { expect, ui } from './test.ts';
 
 /** Past the undo capture window (1 s), so the next edit is its own step. */
 export const NEW_STEP_MS = 1_500;
+/** The longest a large paste may hold the tab at a time (T3.S6): about 2 s. */
+export const MAX_STALL_MS = 2_000;
 export const UNDO = 'ControlOrMeta+z';
 export const REDO = 'ControlOrMeta+Shift+z';
 
@@ -56,41 +60,95 @@ export async function pastePlain(actor: Actor, docId: string, text: string): Pro
   }, text);
 }
 
+/** What Ada's doc sockets do on the wire: the largest frame sent, and how many sockets opened. */
+export interface Wire {
+  largestFrame: number;
+  opened: number;
+}
+
+/** Watches the doc sockets `actor`'s page opens from now on. */
+function watchWire(actor: Actor): Wire {
+  const wire: Wire = { largestFrame: 0, opened: 0 };
+  actor.page.on('websocket', (socket) => {
+    if (!new URL(socket.url()).pathname.startsWith(DOC_SOCKET_PATH)) return;
+    wire.opened += 1;
+    socket.on('framesent', ({ payload }) => {
+      wire.largestFrame = Math.max(wire.largestFrame, typeof payload === 'string' ? Buffer.byteLength(payload) : payload.byteLength);
+    });
+  });
+  return wire;
+}
+
+/** Every frame Ada sent fit the client frame cap, and her doc socket never closed (a 1013 reconnects). */
+export function expectWire(wire: Wire): void {
+  expect(wire.largestFrame, 'no frame the client sends exceeds the frame cap').toBeLessThanOrEqual(CLIENT_FRAME_MAX_BYTES);
+  expect(wire.opened, 'the doc socket never closed and reopened').toBe(1);
+}
+
+/** Starts measuring the longest the page's main thread is held: the gap between 25 ms ticks, less the 25 ms. */
+export async function watchStalls(actor: Actor): Promise<void> {
+  await actor.page.evaluate(() => {
+    const probe = window as unknown as { __stall: number; __stallTimer?: ReturnType<typeof setInterval> };
+    clearInterval(probe.__stallTimer);
+    probe.__stall = 0;
+    let last = performance.now();
+    probe.__stallTimer = setInterval(() => {
+      const now = performance.now();
+      probe.__stall = Math.max(probe.__stall, now - last - 25);
+      last = now;
+    }, 25);
+  });
+}
+
+/** The longest stall since watchStalls, in ms; measuring stops. */
+export const longestStall = (actor: Actor): Promise<number> =>
+  actor.page.evaluate(() => {
+    const probe = window as unknown as { __stall: number; __stallTimer?: ReturnType<typeof setInterval> };
+    clearInterval(probe.__stallTimer);
+    return Math.round(probe.__stall);
+  });
+
 export async function setup(actors: Actors, stack: Stack, markdown?: string, { elsewhere = false } = {}) {
   const ada = await actors.session(await actors.principal('ada'));
   const docId = await importNote(ada, stack, 'Paste target', markdown);
   const otherId = elsewhere ? await importNote(ada, stack, 'Elsewhere', 'Another note.') : '';
   const principal = await actors.principal('ben');
   await grantDoc(ada, docId, principal);
+  const wire = watchWire(ada);
   await ada.goto(`/d/${docId}`);
   const ben = await actors.open(principal, { path: `/d/${docId}` });
   for (const actor of [ada, ben]) {
     await ui.waitLive(actor, docId);
     await actor.observeEditor(docId);
   }
-  return { ada, ben, docId, otherId };
+  return { ada, ben, docId, otherId, wire };
 }
 
 /**
  * Pastes `pasted` at the caret, then checks: the export is `whole`; Ben's body equals Ada's; typing lands after the
- * paste (`typed`); one undo removes the typing and the next the whole paste (`before`), for both.
+ * paste (`typed`); one undo removes the typing and the next the whole paste (`before`), for both. With `maxStallMs`,
+ * the main thread is never held longer than that while the paste lands; with `wire`, no frame passes the frame cap
+ * and the doc socket never closes, through the paste, its undo and its redo.
  */
 export async function pasteAndCheck(
-  { ada, ben, docId }: { ada: Actor; ben: Actor; docId: string },
+  { ada, ben, docId, wire }: { ada: Actor; ben: Actor; docId: string; wire?: Wire },
   pasted: string,
   want: { whole: string; typed: string },
   timeout: number,
-  maxBusyMs = Infinity,
+  { maxBusyMs = Infinity, maxStallMs = Infinity }: { maxBusyMs?: number; maxStallMs?: number } = {},
 ): Promise<number> {
   await ui.waitAcked(ada, docId, timeout);
   const before = await exported(ada, docId);
   const empty = await fingerprint(ada, docId);
   await ada.page.waitForTimeout(NEW_STEP_MS);
 
+  await watchStalls(ada);
   const busyMs = await pastePlain(ada, docId, pasted);
   expect(busyMs, 'the paste keeps the tab responsive').toBeLessThan(maxBusyMs);
   await ui.waitAcked(ada, docId, timeout);
   await expect.poll(() => exported(ada, docId), { message: 'every pasted character lands in the doc', timeout }).toBe(want.whole);
+  const stallMs = await longestStall(ada);
+  expect(stallMs, `the tab is never held longer than ${maxStallMs} ms at a time while the paste lands`).toBeLessThanOrEqual(maxStallMs);
   const pastedPrint = await fingerprint(ada, docId);
   await expect.poll(() => fingerprint(ben, docId), { message: 'the collaborator sees the whole paste', timeout }).toEqual(pastedPrint);
 
@@ -112,5 +170,6 @@ export async function pasteAndCheck(
   await ui.waitAcked(ada, docId, timeout);
   await expect.poll(() => exported(ada, docId), { message: 'one redo brings the whole paste back to the server', timeout }).toBe(want.whole);
   await expect.poll(() => fingerprint(ben, docId), { message: 'the collaborator sees the paste redone', timeout }).toEqual(pastedPrint);
+  if (wire) expectWire(wire);
   return busyMs;
 }

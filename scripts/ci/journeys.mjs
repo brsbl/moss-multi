@@ -30,6 +30,12 @@ export const GROUPS = {
   paste: ['j01-paste'],
   // Pastes of very many short blocks, into an empty note and between two paragraphs.
   pasteblocks: ['j01-paste-blocks'],
+  // One large list or nested list pasted: about 10 MB of state in one block, in batches and frames under the cap.
+  pastelist: ['j01-paste-list'],
+  // One 5,000-row table pasted.
+  pastetable: ['j01-paste-table'],
+  // Pastes just past the size cap, with and without payloads, refused whole.
+  pastecap: ['j01-paste-cap'],
   // Titles and properties.
   title: ['j02'],
   // A doc's connection: drops, stalls, limits, hibernation.

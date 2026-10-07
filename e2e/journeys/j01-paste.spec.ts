@@ -6,7 +6,7 @@
 // note switch while one lands, typing or an undo right after it, and a paste ending in a list lose nothing either.
 //
 // The notes and the reference imports are created through POST /api/docs as declared setup.
-import { exported, fingerprint, NEW_STEP_MS, normalized, pasteAndCheck, pastePlain, setup, UNDO } from '../lib/paste.ts';
+import { exported, fingerprint, MAX_STALL_MS, NEW_STEP_MS, normalized, pasteAndCheck, pastePlain, setup, UNDO } from '../lib/paste.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
 const LAST = 'Last line of the paste.';
@@ -72,18 +72,18 @@ for (const [label, size, timeout] of SIZES) {
   test(`j01-paste: ${label} of mixed markdown pasted into an empty note lands whole, caret after it, one undo step, on both screens @p:col-1 @p:col-3`, async ({ actors, stack }) => {
     test.setTimeout(timeout * 3);
     const markdown = mixedMarkdown(size);
-    const { ada, ben, docId } = await setup(actors, stack);
+    const { ada, ben, docId, wire } = await setup(actors, stack);
     const want = { whole: await normalized(ada, stack, markdown), typed: await normalized(ada, stack, `${markdown}Z`) };
     expect(want.whole.length, 'the reference export holds the paste').toBeGreaterThan(size * 0.8);
     await ui.body(ada, docId).click();
-    await pasteAndCheck({ ada, ben, docId }, markdown, want, timeout);
+    await pasteAndCheck({ ada, ben, docId, wire }, markdown, want, timeout, { maxStallMs: MAX_STALL_MS });
   });
 }
 
 test('j01-paste: 200k of mixed markdown pasted between two paragraphs lands whole, caret after it, one undo step @p:col-1 @p:col-3', async ({ actors, stack }) => {
   test.setTimeout(300_000);
   const markdown = mixedMarkdown(200_000);
-  const { ada, ben, docId } = await setup(actors, stack, 'Before.\n\nAfter.');
+  const { ada, ben, docId, wire } = await setup(actors, stack, 'Before.\n\nAfter.');
   const want = {
     whole: await normalized(ada, stack, `Before.\n\n${markdown}\n\nAfter.`),
     typed: await normalized(ada, stack, `Before.\n\n${markdown}Z\n\nAfter.`),
@@ -91,7 +91,7 @@ test('j01-paste: 200k of mixed markdown pasted between two paragraphs lands whol
   await ui.body(ada, docId).locator('p').filter({ hasText: /^Before\.$/ }).click();
   await ada.page.keyboard.press('End');
   await ada.page.keyboard.press('Enter');
-  await pasteAndCheck({ ada, ben, docId }, markdown, want, 90_000);
+  await pasteAndCheck({ ada, ben, docId, wire }, markdown, want, 90_000, { maxStallMs: MAX_STALL_MS });
 });
 
 test('j01-paste: a second large paste and a note switch while a 200k paste lands keep every character of both @p:col-1 @p:col-3', async ({ actors, stack }) => {

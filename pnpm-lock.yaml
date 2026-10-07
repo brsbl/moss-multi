@@ -280,6 +280,12 @@ importers:
       '@cloudflare/workers-types':
         specifier: 4.20260702.1
         version: 4.20260702.1
+      '@lexical/list':
+        specifier: 0.48.0
+        version: 0.48.0(typescript@5.9.3)
+      '@lexical/table':
+        specifier: 0.48.0
+        version: 0.48.0(typescript@5.9.3)
       '@types/node':
         specifier: 24.13.3
         version: 24.13.3

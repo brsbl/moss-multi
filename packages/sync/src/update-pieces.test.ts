@@ -79,6 +79,73 @@ it('carries the deletes in the last piece, so no piece deletes what the receiver
   expect(Y.snapshotContainsUpdate(Y.snapshot(peer), update)).toBe(true);
 });
 
+/** XmlTexts at any depth under `type` without their `__type`: a peer would render an untyped element. */
+function untyped(type: Y.XmlText): number {
+  let count = 0;
+  for (const { insert } of type.toDelta() as { insert: unknown }[]) {
+    if (!(insert instanceof Y.XmlText)) continue;
+    if (insert.getAttribute('__type') === undefined) count += 1;
+    count += untyped(insert);
+  }
+  return count;
+}
+
+/** One top-level list of `count` items, or a table of `count` rows of two cells, as @lexical/yjs writes them. */
+function addOneLargeBlock(doc: Y.Doc, shape: 'list' | 'table', count: number): void {
+  const element = (type: string) => {
+    const node = new Y.XmlText();
+    node.setAttribute('__type', type);
+    return node;
+  };
+  const run = (holder: Y.XmlText, value: string) => {
+    const props = new Y.Map();
+    props.set('__type', 'text');
+    holder.insertEmbed(0, props);
+    holder.insert(1, value);
+  };
+  doc.transact(() => {
+    const block = element(shape);
+    for (let i = 0; i < count; i += 1) {
+      if (shape === 'list') {
+        const item = element('listitem');
+        run(item, `Item ${i} of the list. `.repeat(3));
+        block.insertEmbed(i, item);
+      } else {
+        const row = element('tablerow');
+        for (let c = 0; c < 2; c += 1) {
+          const cell = element('tablecell');
+          const paragraph = element('paragraph');
+          run(paragraph, `Row ${i} cell ${c}. `.repeat(2));
+          cell.insertEmbed(0, paragraph);
+          row.insertEmbed(c, cell);
+        }
+        block.insertEmbed(i, row);
+      }
+    }
+    doc.get('root', Y.XmlText).insertEmbed(1, block);
+  });
+}
+
+it('cuts one large list or table between its items or rows, every piece within the limit, no element ever untyped', () => {
+  for (const shape of ['list', 'table'] as const) {
+    const doc = new Y.Doc();
+    addBlocks(doc, 2);
+    const peer = replica(doc);
+    const update = capture(doc, () => addOneLargeBlock(doc, shape, 3_000));
+    const limit = 16 * 1024;
+    expect(update.byteLength).toBeGreaterThan(limit * 8);
+    const pieces = splitUpdate(doc, update, limit);
+    expect(pieces.length, `${shape}: in pieces`).toBeGreaterThan(8);
+    for (const piece of pieces) {
+      expect(piece.update.byteLength, `${shape}: each piece fits`).toBeLessThanOrEqual(limit);
+      Y.applyUpdate(peer, piece.update);
+      expect(peer.store.pendingStructs, `${shape}: nothing waits on a later piece`).toBeNull();
+      expect(untyped(peer.get('root', Y.XmlText)), `${shape}: no element arrives without its type`).toBe(0);
+    }
+    expect(peer.get('root', Y.XmlText).toJSON()).toEqual(doc.get('root', Y.XmlText).toJSON());
+  }
+});
+
 it('leaves an update within the limit whole, and never cuts inside a block', () => {
   const doc = new Y.Doc();
   const small = capture(doc, () => addBlocks(doc, 2));

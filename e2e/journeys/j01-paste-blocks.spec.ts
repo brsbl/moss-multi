@@ -21,7 +21,7 @@ function shortParagraphs(count: number): string {
 test('j01-paste-blocks: 40,000 short paragraphs pasted between two paragraphs land whole without holding the tab, caret after them, one undo step @p:col-1 @p:col-3', async ({ actors, stack }) => {
   test.setTimeout(600_000);
   const markdown = shortParagraphs(40_000);
-  const { ada, ben, docId } = await setup(actors, stack, 'Before.\n\nAfter.');
+  const { ada, ben, docId, wire } = await setup(actors, stack, 'Before.\n\nAfter.');
   const want = {
     whole: await normalized(ada, stack, `Before.\n\n${markdown}\n\nAfter.`),
     typed: await normalized(ada, stack, `Before.\n\n${markdown}Z\n\nAfter.`),
@@ -31,7 +31,7 @@ test('j01-paste-blocks: 40,000 short paragraphs pasted between two paragraphs la
   await ada.page.keyboard.press('End');
   await ada.page.keyboard.press('Enter');
   // About 20 MB of Yjs state: the doc socket sends it in acked 256 KiB pieces, about two minutes on a CI runner.
-  await pasteAndCheck({ ada, ben, docId }, markdown, want, 240_000, 20_000);
+  await pasteAndCheck({ ada, ben, docId, wire }, markdown, want, 240_000, { maxBusyMs: 20_000 });
 });
 
 test('j01-paste-blocks: 100,000 short paragraphs, past the note’s size cap, are refused as a whole and visibly @p:col-1', async ({ actors, stack }) => {
