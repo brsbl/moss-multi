@@ -16,19 +16,34 @@ const NEW_STEP_MS = 1_500;
 const UNDO = 'ControlOrMeta+z';
 const LAST = 'Last line of the paste.';
 
-/** Mixed markdown of at least `size` characters: headings, inline formatting, lists, checklists, quotes, tables, code. */
+const WORDS = ['moss', 'grows', 'on', 'the', 'north', 'side', 'of', 'old', 'stones', 'and', 'keeps', 'water', 'through', 'dry',
+  'weeks', 'while', 'notes', 'collect', 'ideas', 'from', 'many', 'people', 'working', 'together', 'in', 'one', 'shared', 'document'];
+
+/** A sentence of about `length` characters. */
+function prose(seed: number, length: number): string {
+  let out = '';
+  for (let k = 0; out.length < length; k += 1) out += `${out ? ' ' : ''}${WORDS[(seed * 7 + k * 3) % WORDS.length]}`;
+  return `${out[0].toUpperCase()}${out.slice(1)}.`;
+}
+
+/**
+ * Mixed markdown of at least `size` characters, mostly prose as notes are: headings, inline formatting and links,
+ * nested lists, checklists, ordered lists, quotes, tables and code. (Formatting every few words would encode past the
+ * doc's state cap at 2 MB, A§5.1.)
+ */
 function mixedMarkdown(size: number): string {
   const parts = ['Pasted start.'];
   let length = parts[0].length;
   for (let i = 0; length < size; i += 1) {
     const section = [
       `## Section ${i}`,
-      `Paragraph ${i} has **bold ${i}**, *italic ${i}*, \`code ${i}\`, ~~struck ${i}~~ and a [link ${i}](https://example.invalid/page/${i}).`,
-      `- item ${i} one\n- item ${i} two with **weight**\n  - nested item ${i}`,
-      `1. first ${i}\n2. second ${i}`,
-      `- [ ] open task ${i}\n- [x] done task ${i}`,
-      `> quoted ${i} with *emphasis*`,
-      `| Name ${i} | Value ${i} |\n| --- | --- |\n| row ${i} | ${i * 7} |`,
+      `${prose(i, 220)} It has **bold ${i}**, *italic ${i}* and \`code ${i}\`, then a [link ${i}](https://example.invalid/page/${i}). ${prose(i + 1, 220)}`,
+      prose(i + 2, 420),
+      `- ${prose(i + 3, 60)}\n- ${prose(i + 4, 60)}\n  - ${prose(i + 5, 40)}`,
+      ...(i % 3 === 0 ? [`- [ ] open task ${i}\n- [x] done task ${i}`] : []),
+      ...(i % 5 === 0 ? [`1. first ${i}\n2. second ${i}`] : []),
+      `> ${prose(i + 6, 100)}`,
+      ...(i % 4 === 0 ? [`| Name ${i} | Value ${i} |\n| --- | --- |\n| row ${i} | ${i * 7} |`] : []),
       ...(i % 10 === 0 ? [`\`\`\`js\nconst value${i} = ${i};\nconsole.log(value${i});\n\`\`\``] : []),
     ].join('\n\n');
     parts.push(section);
@@ -129,9 +144,9 @@ async function pasteAndCheck(
 }
 
 const SIZES: [string, number, number][] = [
-  ['40k', 40_000, 120_000],
-  ['200k', 200_000, 180_000],
-  ['2 MB', 2_000_000, 480_000],
+  ['40k', 40_000, 60_000],
+  ['200k', 200_000, 90_000],
+  ['2 MB', 2_000_000, 240_000],
 ];
 
 for (const [label, size, timeout] of SIZES) {
@@ -147,7 +162,7 @@ for (const [label, size, timeout] of SIZES) {
 }
 
 test('j01-paste: 200k of mixed markdown pasted between two paragraphs lands whole, caret after it, one undo step @p:col-1 @p:col-3', async ({ actors, stack }) => {
-  test.setTimeout(540_000);
+  test.setTimeout(300_000);
   const markdown = mixedMarkdown(200_000);
   const { ada, ben, docId } = await setup(actors, stack, 'Before.\n\nAfter.');
   const want = {
@@ -157,5 +172,5 @@ test('j01-paste: 200k of mixed markdown pasted between two paragraphs lands whol
   await ui.body(ada, docId).locator('p').filter({ hasText: /^Before\.$/ }).click();
   await ada.page.keyboard.press('End');
   await ada.page.keyboard.press('Enter');
-  await pasteAndCheck({ ada, ben, docId }, markdown, want, 180_000);
+  await pasteAndCheck({ ada, ben, docId }, markdown, want, 90_000);
 });

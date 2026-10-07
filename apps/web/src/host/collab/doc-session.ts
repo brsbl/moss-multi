@@ -4,7 +4,7 @@
 // detaches it at once, every close code is dispatched once (closeAction), handshakes that keep failing ask REST, and
 // a first sync later than 8 s reads `retrying`. Edits the DocDO has not acked live only in this Y.Doc, so a session
 // released with unacked edits stays connected without its pane until they are acked, or until the doc ends.
-import type { ConnectionState, TerminalReason } from '@moss-multi/protocol/dom-contract';
+import { DOC_ID_ATTR, EDITOR_PANE_ATTR, type ConnectionState, type TerminalReason } from '@moss-multi/protocol/dom-contract';
 import { isRole, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import { CLOSE, closeAction, encodeSyncFrame, PAYLOAD_MESSAGE, type ServerEvent, type WriteRefusalReason } from '@moss-multi/protocol/sync';
 import { attachPayloadDocs, PayloadDocs, PayloadSync } from '@moss-multi/sync/payload-docs';
@@ -12,6 +12,7 @@ import YProvider from 'y-partyserver/provider';
 import * as Y from 'yjs';
 import { rememberRole } from '../access.ts';
 import { leaveTo } from '../navigation.ts';
+import { setPasteGate } from '../paste-gate.ts';
 import { refuseInput } from '../refusal.ts';
 import { AckLedger } from './acks.ts';
 import {
@@ -227,6 +228,13 @@ export function waitDocsAcked(docIds: string[], timeoutMs: number): Promise<bool
     ackWaiters.add(check);
   });
 }
+
+/** A batched paste's next batch waits for the ack of the last (T3.S6), so unacked writes stay one batch. */
+const PASTE_ACK_WAIT_MS = 10 * 60_000;
+setPasteGate((editor) => {
+  const docId = editor.getRootElement()?.closest(`[${EDITOR_PANE_ATTR}]`)?.getAttribute(DOC_ID_ATTR);
+  return docId ? waitDocsAcked([docId], PASTE_ACK_WAIT_MS) : Promise.resolve(true);
+});
 
 /** Confirmed sign-out severs every socket of this window; nothing reconnects. */
 export function severDocSessions(): void {

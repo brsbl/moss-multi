@@ -148,6 +148,9 @@ import { clearLinkSelection, markLinkSelection } from '@moss-multi/host/link-hig
 import { TRASH_COPY } from '@moss-multi/host/retention';
 // moss-multi seam: linear-autolink: EMAIL_REGEX's and SCHEMELESS_URL_REGEX's matches in linear time
 import { findEmail, schemelessUrlMatches } from '@moss-multi/host/autolink';
+// moss-multi seam: whole-paste (T3.S6): a large paste lands in batches of whole blocks
+import { createEditor, type SerializedLexicalNode } from 'lexical';
+import { $caretAfterBlock, batchPasteBlocks, pasteInBatches } from '@moss-multi/host/large-paste';
 // moss-multi seam: converter-split (A§12; S-conv §2.3)
 import { $convertMossCustomCodeNodes, $postImportNormalize, escapeHtmlEntities, normalizeMarkdownForImport, unescapeHtmlEntities } from './markdown/normalize';
 import { EDITOR_FONT_FAMILY_LABELS, type EditorSelectionFontFamily, HIGHLIGHT_COLOR_VARIABLES, HIGHLIGHT_YELLOW_VALUE, HIGHLIGHT_YELLOW_VAR, MARKDOWN_EDITOR_HTML_IMPORT, SERIF_FONT_FAMILY_STYLE, SERIF_FONT_FAMILY_VALUE, SERIF_OPTICAL_FONT_SIZE_ADJUST, STYLE_FONT_FAMILY_PROPERTY, STYLE_FONT_SIZE_ADJUST_PROPERTY, selectionFontFamilyFromStyleValue } from './markdown/text-style';
@@ -1027,6 +1030,71 @@ const insertMarkdownFromPaste = (editor: LexicalEditor, markdown: string): boole
   return true;
 };
 
+// moss-multi seam: whole-paste (T3.S6): the paste's top-level blocks, parsed off the live editor as one update would.
+const parseMarkdownPasteBlocks = (markdown: string, wholeNote: boolean): SerializedLexicalNode[] => {
+  const parser = createEditor({
+    namespace: 'moss-multi-paste',
+    nodes: MARKDOWN_EDITOR_NODES,
+    onError: (error) => {
+      throw error;
+    }
+  });
+  parser.update(
+    () => {
+      if (wholeNote) {
+        $importNoteBody(markdown, { comments: {} });
+        return;
+      }
+      $convertFromMarkdownString(escapeHtmlEntities(normalizeMarkdownForImport(markdown)), MARKDOWN_EDITOR_TRANSFORMERS);
+      $postImportNormalize();
+    },
+    { discrete: true }
+  );
+  return parser.getEditorState().toJSON().root.children;
+};
+
+// moss-multi seam: whole-paste (T3.S6): false when the paste fits one update, which the caller makes as before.
+const insertLargeMarkdownPaste = (editor: LexicalEditor, rawMarkdown: string, current: () => boolean): boolean => {
+  const savedSelection = captureSelectionForPaste(editor);
+  if (!savedSelection) {
+    return false;
+  }
+  const markdown = normalizeClipboardLineEndings(rawMarkdown);
+  const wholeNote = editor.getEditorState().read(() => {
+    const root = $getRoot();
+    const only = root.getFirstChild();
+    return root.getChildrenSize() === 1 && $isParagraphNode(only) && only.isEmpty();
+  });
+  const batches = batchPasteBlocks(parseMarkdownPasteBlocks(markdown, wholeNote));
+  if (batches.length < 2) {
+    return false;
+  }
+  pasteInBatches(editor, batches, {
+    current,
+    $insertEnds: (nodes) => {
+      if (!restoreSelectionForPaste(savedSelection)) {
+        return false;
+      }
+      if (wholeNote) {
+        $setSelection(null);
+        const root = $getRoot();
+        root.clear();
+        root.append(...nodes);
+        root.selectEnd();
+        return true;
+      }
+      const selection = $getSelection();
+      if (!selection) {
+        return false;
+      }
+      $insertGeneratedNodes(editor, nodes, selection);
+      return true;
+    },
+    $caretAfter: (last) => (wholeNote ? void $getRoot().selectEnd() : $caretAfterBlock(last))
+  });
+  return true;
+};
+
 const insertPlainTextFromPaste = (editor: LexicalEditor, text: string): boolean => {
   let canInsert = false;
 
@@ -1181,40 +1249,13 @@ export const registerPasteFormattingHandlers = (editor: LexicalEditor): (() => v
       if (hasExplicitMarkdownPayload || shouldImportMarkdownFromPaste(pastedMarkdownCandidate)) {
         event.preventDefault();
         event.stopPropagation();
-        if (!hasExplicitMarkdownPayload && shouldChunkMarkdownPaste(pastedMarkdownCandidate)) {
-          const savedSelection = captureSelectionForPaste(editor);
-          if (!savedSelection) {
-            return false;
-          }
-
+        // moss-multi seam: whole-paste (T3.S6): a large paste is parsed whole and lands in batches of blocks, never
+        // in text chunks, so nothing is dropped and one undo removes it.
+        if (shouldChunkMarkdownPaste(pastedMarkdownCandidate)) {
           const jobId = ++activeChunkedPasteJobId;
-          const chunks = splitLargeMarkdownPaste(pastedMarkdownCandidate);
-          let chunkIndex = 0;
-
-          const runNextChunk = () => {
-            if (jobId !== activeChunkedPasteJobId) {
-              return;
-            }
-
-            const chunk = chunks[chunkIndex];
-            if (typeof chunk !== 'string') {
-              return;
-            }
-
-            insertMarkdownChunk(
-              editor,
-              chunk,
-              chunkIndex === 0 ? savedSelection : undefined
-            );
-
-            chunkIndex += 1;
-            if (chunkIndex < chunks.length) {
-              window.setTimeout(runNextChunk, 0);
-            }
-          };
-
-          window.setTimeout(runNextChunk, 0);
-          return true;
+          if (insertLargeMarkdownPaste(editor, pastedMarkdownCandidate, () => jobId === activeChunkedPasteJobId)) {
+            return true;
+          }
         }
         return insertMarkdownFromPaste(editor, pastedMarkdownCandidate);
       }
