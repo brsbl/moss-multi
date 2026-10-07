@@ -34,9 +34,10 @@ import { JANITOR, migratePayloads, PayloadStore, type PayloadWork } from './payl
 import { SEARCH_DO_NAME, type IndexEntry } from './search-do.ts';
 import { attachPayloadSource, exportDocMarkdown, importBody, rootIsEmpty, SERVER_IMPORT, SERVER_SEED, seedEmptyParagraph } from './server-doc.ts';
 import { writeTitle } from './server-title.ts';
-import { captureContent, restoreContent, type VersionContent } from './doc/version-content.ts';
+import { captureContent, restoreContent, type AnchorSpans, type VersionContent } from './doc/version-content.ts';
 import {
-  ACTIVITY_MS, ACTIVITY_UPDATES, NAMED_VERSIONS_PER_PERSON, VERSION_NAME_MAX, VersionStore, type VersionBlobs, type VersionMeta,
+  ACTIVITY_MS, ACTIVITY_UPDATES, NAMED_VERSIONS_PER_PERSON, VERSION_NAME_MAX, VERSION_SPILL_BYTES, VersionStore, type Prepared, type VersionBlobs,
+  type VersionMeta,
 } from './doc/versions.ts';
 
 /** A restore's server write (A§14). */
@@ -44,6 +45,8 @@ export const VERSION_RESTORE = 'version-restore';
 
 /** How long after a wake the doc re-feeds search. */
 const WAKE_FEED_MS = 1_000;
+/** Times a restore re-captures a restore point too large for its row when the doc changed while it was spilled. */
+const RESTORE_ATTEMPTS = 3;
 /** How long after a payload-only edit the doc feeds search (the note's own saves cover note edits). */
 const PAYLOAD_FEED_MS = 2_000;
 /** The `search-fed` meta while the index holds this doc's content; bump it when an index entry's shape changes. */
@@ -265,6 +268,24 @@ export class DocDO extends YServer<SyncEnv> {
     delete: async (keys) => env.ASSETS.delete(keys),
   } : null);
 
+  /** Version content above this many bytes spills (A§14); tests lower it. */
+  static versionSpillBytes = VERSION_SPILL_BYTES;
+
+  /**
+   * Charges named version bytes to the acting person's own bound (a negative amount refunds); false refuses. The
+   * PrincipalDO's, so the bound is the actor's over every doc and nobody else can fill it.
+   */
+  static versionCharge: (env: SyncEnv) => ((principalId: string, bytes: number) => Promise<boolean>) | null = (env) => (env?.PrincipalDO
+    ? async (principalId, bytes) => (await getServerByName(env.PrincipalDO, principalId)).chargeVersionBytes(bytes)
+    : null);
+
+  /** Records the doc's version bytes in D1, where its vault's storage counts them. */
+  static versionUsage: (env: SyncEnv) => ((docId: string, bytes: number) => Promise<void>) | null = (env) => (env?.DB
+    ? async (docId, bytes) => {
+      await env.DB.prepare('UPDATE docs SET version_bytes = ? WHERE id = ?').bind(bytes, docId).run();
+    }
+    : null);
+
   /** Where search feeds land; null leaves the doc unindexed. */
   static searchFeed: (env: SyncEnv) => SearchFeed | null = (env) => (env?.SearchDO ? {
     index: async (entry) => (await getServerByName(env.SearchDO, SEARCH_DO_NAME)).index(entry),
@@ -328,6 +349,8 @@ export class DocDO extends YServer<SyncEnv> {
   #versions: VersionStore | null = null;
   /** Updates since the last auto version, and who made them; persisted in meta so a wake keeps them (A§14). */
   #versionUpdates = 0;
+  /** +1 on every change to the doc or a payload: whether a restore point captured before an await is still the doc. */
+  #generation = 0;
   #versionAuthors = new Set<string>();
 
   /** Runs inside partyserver's blockConcurrencyWhile, so a woken DO replays before it sees any frame. */
@@ -354,7 +377,9 @@ export class DocDO extends YServer<SyncEnv> {
     // Before the replay, which counts nothing: it runs under `persistence`.
     this.#versionUpdates = Number(store.meta('version-updates') ?? 0);
     this.#versionAuthors = new Set(JSON.parse(store.meta('version-authors') ?? '[]') as string[]);
-    this.#versions = new VersionStore(this.ctx.storage.sql, this.name, () => (this.constructor as typeof DocDO).versionBlobs(this.env));
+    const Doc = this.constructor as typeof DocDO;
+    this.#versions = new VersionStore(this.ctx.storage.sql, this.name, () => Doc.versionBlobs(this.env), Doc.versionSpillBytes,
+      (run) => this.ctx.storage.transactionSync(run));
     store.load(this.document);
     this.#store = store;
     this.#payloads = payloads;
@@ -1118,8 +1143,10 @@ export class DocDO extends YServer<SyncEnv> {
   }
 
   /**
-   * A named version (A§14), for an editor or above, captured in the serialized write after the actor is re-authorized
-   * (T2.5). Each person keeps at most NAMED_VERSIONS_PER_PERSON per doc; the Worker rate-limits them per person.
+   * A named version (A§14), for an editor or above. It is captured (and spilled) first and charged to the actor's own
+   * byte bound; the per-person cap is checked and the row inserted in the serialized write after the actor is
+   * re-authorized (T2.5), so two saves cannot both take the last place. A refused save is refunded and its spill
+   * swept. The Worker rate-limits named versions per person and checks the vault's storage.
    */
   async saveVersion(input: { name: string; reviewer: Reviewer; actor?: CommentActor }): Promise<{ ok: true; version: VersionMeta } | ReviewRefusal> {
     const name = typeof input.name === 'string' ? input.name.trim() : '';
@@ -1127,19 +1154,49 @@ export class DocDO extends YServer<SyncEnv> {
     await this.#ready();
     const versions = this.#versions;
     if (!versions) throw new Error('DocDO started without versions');
-    const taken = await this.#review(input, 'editor', (reviewer): { go: Promise<VersionMeta | null> } | ReviewRefusal => {
-      if (versions.namedBy(reviewer.id) >= NAMED_VERSIONS_PER_PERSON) return { ok: false, status: 409, reason: 'version-limit' };
-      return { go: versions.add('named', this.#capture(), { name, createdBy: reviewer.id }) };
-    });
-    if ('ok' in taken) return taken;
-    const version = await this.#stored(taken.go);
-    return version ? { ok: true, version } : { ok: false, status: 503, reason: 'unstored' };
+    const unstored: ReviewRefusal = { ok: false, status: 503, reason: 'unstored' };
+    const prepared = versions.prepare(this.#capture());
+    const charge = (this.constructor as typeof DocDO).versionCharge(this.env);
+    try {
+      await versions.spill(prepared);
+      if (charge && !(await charge(input.reviewer.id, prepared.bytes))) {
+        versions.discard(prepared);
+        await this.#versionsChanged();
+        return { ok: false, status: 413, reason: 'version-quota' };
+      }
+    } catch (error) {
+      console.error('DocDO could not prepare a named version', error);
+      versions.discard(prepared);
+      await this.#versionsChanged();
+      return unstored;
+    }
+    let result: { version: VersionMeta | null } | ReviewRefusal;
+    try {
+      result = await this.#review(input, 'editor', (reviewer): { version: VersionMeta | null } | ReviewRefusal => {
+        if (versions.namedBy(reviewer.id) >= NAMED_VERSIONS_PER_PERSON) return { ok: false, status: 409, reason: 'version-limit' };
+        return { version: versions.insert('named', prepared, { name, createdBy: reviewer.id }) };
+      });
+    } catch (error) {
+      console.error('DocDO could not store a named version', error);
+      result = unstored;
+    }
+    if ('ok' in result || !result.version) {
+      versions.discard(prepared);
+      if (charge) await charge(input.reviewer.id, -prepared.bytes).catch((error: unknown) => console.error('named version refund failed', error));
+      await this.#versionsChanged();
+      return 'ok' in result ? result : unstored;
+    }
+    await this.#versionsChanged();
+    return { ok: true, version: result.version };
   }
 
   /**
    * Restore (A§14), for an editor or above, in the serialized write after the actor is re-authorized: the version is
    * reconciled into the live doc as a server write and verified against the version's export, or refused 409 with
-   * nothing written. A restore point of the doc before it and an auto version after bracket it.
+   * nothing written. The doc as the restore finds it is stored as a restore point in the same turn, before anything is
+   * applied, and a restore point that cannot be stored refuses the restore. One too large for its row is written to R2
+   * first and used only if the doc has not changed since; past RESTORE_ATTEMPTS changes it answers 503. Detached
+   * comments the version held anchored are re-anchored on the restored text, and an auto version follows.
    */
   async restoreVersion(input: { id: string; reviewer: Reviewer; actor?: CommentActor }): Promise<{ ok: true; restorePoint: string | null; version: string | null } | ReviewRefusal> {
     const store = await this.#ready();
@@ -1147,43 +1204,71 @@ export class DocDO extends YServer<SyncEnv> {
     if (!versions) throw new Error('DocDO started without versions');
     // Read first (a spill is a fetch); a version never changes, and nothing is returned before the actor is checked.
     const target = await versions.content(input.id);
-    const taken = await this.#review(input, 'editor', (reviewer): { go: Promise<{ point: VersionMeta | null; after: VersionMeta | null }> } | ReviewRefusal => {
-      if (!target) return { ok: false, status: 404, reason: 'not-found' };
-      const before = this.#capture();
-      let verified: boolean;
-      try {
-        verified = restoreContent(this.document, VERSION_RESTORE, target, this.name, (diff, payloads) => this.#admitServerWrite(store, diff, payloads));
-      } catch (error) {
-        if (error instanceof DocCapError) return { ok: false, status: 413, reason: 'doc-cap' };
-        throw error;
+    let early: { prepared: Prepared; seen: number } | null = null;
+    let outcome: { point: VersionMeta | null } | ReviewRefusal = { ok: false, status: 503, reason: 'busy' };
+    try {
+      for (let attempt = 0; attempt < RESTORE_ATTEMPTS; attempt += 1) {
+        const step = await this.#review(input, 'editor', (reviewer): { point: VersionMeta | null } | { spill: Prepared; seen: number } | ReviewRefusal => {
+          if (!target) return { ok: false, status: 404, reason: 'not-found' };
+          const reuse = early !== null && early.seen === this.#generation;
+          const prepared = reuse ? early!.prepared : versions.prepare(this.#capture());
+          if (!reuse && prepared.r2Key !== null) return { spill: prepared, seen: this.#generation };
+          const authorIds = [...this.#versionAuthors];
+          const stored: { point: VersionMeta | null } = { point: null };
+          let verified: boolean;
+          try {
+            verified = restoreContent(this.document, VERSION_RESTORE, target, this.name, (diff, payloads) => {
+              this.#admitServerWrite(store, diff, payloads);
+              stored.point = versions.insert('restore-point', prepared, { createdBy: reviewer.id, authorIds });
+              this.#versionTaken(store, Date.now());
+            });
+          } catch (error) {
+            if (error instanceof DocCapError) return { ok: false, status: 413, reason: 'doc-cap' };
+            console.error('DocDO could not store a restore point; the restore is refused', error);
+            return { ok: false, status: 503, reason: 'unstored' };
+          }
+          if (!verified) return { ok: false, status: 409, reason: 'restore-unverified' };
+          this.#comments?.flush();
+          this.#comments?.reanchor(JSON.parse(target.anchors) as AnchorSpans);
+          this.#projections?.touch();
+          return stored;
+        });
+        if (!('spill' in step)) {
+          outcome = step;
+          break;
+        }
+        if (early) versions.discard(early.prepared);
+        early = { prepared: step.spill, seen: step.seen };
+        await versions.spill(step.spill);
       }
-      if (!verified) return { ok: false, status: 409, reason: 'restore-unverified' };
-      this.#comments?.flush();
-      this.#projections?.touch();
-      const authorIds = [...this.#versionAuthors];
-      const after = this.#capture();
-      const at = Date.now();
-      this.#versionTaken(store, at);
-      return {
-        go: (async () => {
-          const point = await versions.add('restore-point', before, { createdBy: reviewer.id, authorIds, at });
-          return { point, after: await versions.add('auto', after, { createdBy: reviewer.id, at }) };
-        })(),
-      };
-    });
-    if ('ok' in taken) return taken;
-    // The restore has landed; a version that could not be stored is logged, never reported as a failed restore.
-    const stored = await this.#stored(taken.go);
-    return { ok: true, restorePoint: stored?.point?.id ?? null, version: stored?.after?.id ?? null };
+    } catch (error) {
+      console.error('DocDO could not restore a version', error);
+      outcome = { ok: false, status: 503, reason: 'unstored' };
+    }
+    const pointId = 'ok' in outcome ? null : (outcome.point?.id ?? null);
+    if (early && early.prepared.id !== pointId) versions.discard(early.prepared);
+    if ('ok' in outcome) {
+      await this.#versionsChanged();
+      return outcome;
+    }
+    const after = await this.#autoVersion(store, input.reviewer.id);
+    if (!after) await this.#versionsChanged();
+    return { ok: true, restorePoint: pointId, version: after?.id ?? null };
   }
 
-  /** A version write's result, or null when storing it failed (logged). */
-  async #stored<T>(go: Promise<T>): Promise<T | null> {
+  /** After a version write: the doc's version bytes go to its vault's count, and orphaned spills are deleted. */
+  async #versionsChanged(): Promise<void> {
+    const versions = this.#versions;
+    if (!versions) return;
     try {
-      return await go;
+      await (this.constructor as typeof DocDO).versionUsage(this.env)?.(this.name, versions.totalBytes());
     } catch (error) {
-      console.error('DocDO could not store a version', error);
-      return null;
+      console.error('DocDO could not record its version bytes', error);
+    }
+    try {
+      await versions.sweep();
+    } catch (error) {
+      console.error('DocDO could not sweep version spills', error);
     }
   }
 
@@ -1400,6 +1485,7 @@ export class DocDO extends YServer<SyncEnv> {
 
   /** A change since the last auto version (A§14): counted, its author remembered, both persisted for a wake. */
   #versionTouched(store: DocStore, origin: unknown): void {
+    this.#generation += 1;
     if (origin === SERVER_SEED) return;
     this.#versionUpdates += 1;
     if (this.#versionUpdates === 1) store.setMeta('version-since', String(Date.now()));
@@ -1425,19 +1511,32 @@ export class DocDO extends YServer<SyncEnv> {
     return captureContent(this.document, this.name);
   }
 
-  /** An auto version of the doc as it is now, unless nothing changed or it equals the latest version. */
-  async #autoVersion(store: DocStore): Promise<void> {
+  /**
+   * An auto version of the doc as it is now, unless nothing changed or it equals the latest version. Counting restarts
+   * as it is captured, so a concurrent trigger does not store the same state again; a failure puts the count and the
+   * authors back, so the next trigger retries it.
+   */
+  async #autoVersion(store: DocStore, createdBy: string | null = null): Promise<VersionMeta | null> {
     const versions = this.#versions;
-    if (!versions || this.#versionUpdates === 0) return;
+    if (!versions || this.#versionUpdates === 0) return null;
+    const updates = this.#versionUpdates;
     const authorIds = [...this.#versionAuthors];
     const at = Date.now();
     const content = this.#capture();
     this.#versionTaken(store, at);
+    let meta: VersionMeta | null;
     try {
-      await versions.add('auto', content, { authorIds, at, dedupe: true });
+      meta = await versions.add('auto', content, { authorIds, at, createdBy, dedupe: true });
     } catch (error) {
-      console.error('DocDO could not store an auto version', error);
+      console.error('DocDO could not store an auto version; the next trigger retries it', error);
+      this.#versionUpdates += updates;
+      for (const id of authorIds) this.#versionAuthors.add(id);
+      store.setMeta('version-updates', String(this.#versionUpdates));
+      store.setMeta('version-authors', JSON.stringify([...this.#versionAuthors]));
+      return null;
     }
+    await this.#versionsChanged();
+    return meta;
   }
 
   /** The activity trigger, checked on save (A§14). */

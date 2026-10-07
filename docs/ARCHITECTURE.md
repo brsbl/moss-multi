@@ -550,7 +550,8 @@ Designed in [docs/design/suggestions.md](design/suggestions.md) (T5.0, after a d
 
 [P:Meaning; L§4.13; S-gd §6.3]
 
-- **Storage.** A DocDO table `versions(id, kind auto|named|restore-point, name, created_at, author_ids, title, frontmatter, markdown, lexical_json | r2_key)`. Payloads over 1.5 MB spill to R2.
+- **Storage.** A DocDO table `versions(id, kind auto|named|restore-point, name, created_at, author_ids, title, frontmatter, markdown, lexical_json, payloads, comments, anchors | r2_key)`. Payloads over 1.5 MB spill to R2; a spill whose row was never written or was pruned is swept until R2 confirms its delete.
+- **Bounds.** Auto versions and restore points are pruned past 50 and 20 per doc. Named versions are capped at 50 per person per doc and at `NAMED_VERSION_BYTES_PER_PERSON` over every doc, charged to the actor's PrincipalDO. Every version's bytes count in the doc's vault storage (`docs.version_bytes`, with media), and a full vault refuses named versions 413.
 - **Triggers:**
   - the last disconnect, when the doc changed;
   - every push;
@@ -560,7 +561,7 @@ Designed in [docs/design/suggestions.md](design/suggestions.md) (T5.0, after a d
 - **Restore is an edit.** It runs `serverWrite` with an identity-preserving two-tier reconcile from the version's Lexical JSON. That is moss-collab's `tree-markdown` reconcile, re-derived on 0.48 (SP12).
   - Title and frontmatter restore by minimal diffs.
   - The result's export is verified against the target; on a mismatch the restore is refused with 409.
-  - Anchors and concurrent peer inserts survive. Clients cannot undo a restore. [S-prior §8.3; L§4.13]
+  - Anchors and concurrent peer inserts survive; a detached comment the version held anchored is re-anchored on its restored units when they read the same. The restore point is stored in the same turn, before the restore applies, or the restore is refused. Clients cannot undo a restore. [S-prior §8.3; L§4.13]
 - **UI.** Moss has no history surface at the pin: `TimelinePopoutModal` is the agent action-timeline modal (`tab: ActionTabEntry`), and only `VersionHistoryEmptyState` exists. The History view is glyphdown's history page (`d.$docId.history.tsx`) rebuilt in the moss DS, opened from a History control inline in the top bar and occupying the editor pane, never floating. This corrects L§4.13's "port TimelinePopoutModal".
   - A version list with auto, named and restore-point badges.
   - View renders the version in an unbound read-only MarkdownEditor; Diff vs current uses glyphdown's diff library.

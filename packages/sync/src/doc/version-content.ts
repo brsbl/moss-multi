@@ -3,9 +3,12 @@
 // unchanged block's Yjs identity and is refused unless its export equals the version's.
 import { $getRoot, $isElementNode, $parseSerializedNode, type LexicalNode, type SerializedLexicalNode } from 'lexical';
 import * as Y from 'yjs';
+import type { Anchor } from '@moss-multi/core/anchor-frame';
+import { idKey, ordinalsOf, unitText } from '@moss-multi/core/comment-units';
 import { readField } from '@moss-multi/core/doc-fields';
 import { importFrontmatter } from '@moss-multi/core/frontmatter';
 import { diffText, SERVER_CELL_BUDGET } from '@moss-multi/core/text-diff';
+import { decodeRelPos } from '@moss-multi/core/tree-anchor';
 import { sameValue } from '../map-codecs.ts';
 import { isPayloadType, payloadMap, payloadText } from '../payload-docs.ts';
 import { registerPayloads } from '../registers.ts';
@@ -25,6 +28,36 @@ export interface VersionContent {
   payloads: string;
   /** Y.Map('comments') as JSON. */
   comments: string;
+  /** Each anchored comment's units in the body, as JSON AnchorSpans: what restore re-anchors a detached comment on. */
+  anchors: string;
+}
+
+/** A comment's span in the body's text-mode units: first and last ordinal, its kind, and the units' text. */
+export type AnchorSpans = Record<string, [first: number, last: number, kind: Anchor['kind'], text: string]>;
+
+/** Where each anchored comment sits in `live`'s units, read in one walk. */
+function anchorSpans(live: Y.Doc): AnchorSpans {
+  const ends: [string, Anchor['kind'], Y.ID, Y.ID][] = [];
+  for (const [key, value] of live.getMap<Anchor>('comments')) {
+    if (!key.startsWith('a:') || value?.status !== 'anchored') continue;
+    try {
+      const start = decodeRelPos(value.start).item;
+      const end = decodeRelPos(value.end).item;
+      if (start && end) ends.push([key.slice(2), value.kind, start, end]);
+    } catch {
+      // A record whose positions do not decode is not restored.
+    }
+  }
+  if (ends.length === 0) return {};
+  const ordinals = ordinalsOf(live, ends.flatMap(([, , start, end]) => [start, end]));
+  const text = unitText(live);
+  const spans: AnchorSpans = {};
+  for (const [id, kind, start, end] of ends) {
+    const first = ordinals.get(idKey(start));
+    const last = ordinals.get(idKey(end));
+    if (first !== undefined && last !== undefined && first <= last) spans[id] = [first, last, kind, text.slice(first, last + 1)];
+  }
+  return spans;
 }
 
 /** Top-level blocks the reconcile aligns pairwise; past it, only the common prefix and suffix are kept. */
@@ -76,6 +109,7 @@ export function captureContent(live: Y.Doc, noteId: string): VersionContent {
       lexical: JSON.stringify({ root }),
       payloads: JSON.stringify(payloads),
       comments: JSON.stringify(live.getMap('comments').toJSON()),
+      anchors: JSON.stringify(anchorSpans(live)),
       markdown: exportMirror(mirror, noteId),
     };
   } finally {
@@ -163,7 +197,8 @@ function writePayload(doc: Y.Doc, value: PayloadValue): void {
  * Restores `target` as a server write under `origin`, on a hydrated mirror: the body keeps every block equal to the
  * version's and recreates the rest, each kept payload takes the version's value by minimal diff, and the title and
  * frontmatter take minimal diffs. The mirror's export must equal the version's markdown, else nothing is written and
- * this returns false. `admit` throws to refuse the write (the state cap).
+ * this returns false. `admit` runs once the export is verified and throws to refuse the write: the state cap, or a
+ * restore point that could not be stored.
  */
 export function restoreContent(live: Y.Doc, origin: unknown, target: VersionContent, noteId: string, admit: Admit): boolean {
   const state = JSON.parse(target.lexical) as { root: Serialized };

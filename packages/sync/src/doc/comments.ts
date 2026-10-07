@@ -391,6 +391,50 @@ export class DocComments {
     this.#engine = new AnchorEngine(this.doc);
   }
 
+  /**
+   * After a version restore (A§14; comments.md limitation 6): each detached comment the version held anchored is
+   * minted again on the restored units at its recorded span, only when they read exactly as they did in the version
+   * and stay under OVERLAP_CAP. A server-trusted re-mint from the snapshot, never a search.
+   */
+  reanchor(spans: Record<string, [first: number, last: number, kind: Anchor['kind'], text: string]>): void {
+    const comments = this.doc.getMap<unknown>('comments');
+    const wanted = Object.entries(spans).filter(([id, span]) => Array.isArray(span) && comments.has(`c:${id}`)
+      && (comments.get(`a:${id}`) as Anchor | undefined)?.status === 'orphaned');
+    if (!wanted.length) return;
+    const text = unitText(this.doc);
+    const anchoredEnds: Y.ID[] = [];
+    for (const [key, value] of this.doc.getMap<Anchor>('comments')) {
+      if (!key.startsWith('a:') || value?.status !== 'anchored') continue;
+      const s = safeItem(value.start);
+      const e = safeItem(value.end);
+      if (s && e) anchoredEnds.push(s, e);
+    }
+    const ordinals = ordinalsOf(this.doc, anchoredEnds);
+    const intervals: [number, number][] = [];
+    for (let i = 0; i < anchoredEnds.length; i += 2) {
+      const a = ordinals.get(idKey(anchoredEnds[i]));
+      const b = ordinals.get(idKey(anchoredEnds[i + 1]));
+      if (a !== undefined && b !== undefined && a <= b) intervals.push([a, b]);
+    }
+    const fits = wanted.filter(([, [first, last, , quote]]) => Number.isInteger(first) && Number.isInteger(last) && first <= last
+      && last - first < MAX_QUOTE && text.slice(first, last + 1) === quote);
+    const units = unitsAt(this.doc, fits.flatMap(([, [first, last]]) => [first, last]));
+    const minted = new Map<string, Anchor>();
+    for (const [id, [first, last, kind]] of fits) {
+      const s = units.get(first);
+      const e = units.get(last);
+      if (!s || !e || maxCoverage(intervals, first, last) >= OVERLAP_CAP) continue;
+      if (kind === 'block' && (first !== last || !(s.item.content instanceof Y.ContentType))) continue;
+      minted.set(id, mintAnchor(s, e, kind === 'block' ? 'block' : 'text'));
+      intervals.push([first, last]);
+    }
+    if (!minted.size) return;
+    this.#writer.write((map) => {
+      for (const [id, anchor] of minted) map.set(`a:${id}`, anchor);
+    });
+    for (const [id, anchor] of minted) this.#engine.set(id, anchor);
+  }
+
   #writerFor(r: number): CommentsWriter {
     // The DocDO never writes as R.
     while (this.doc.clientID === r) this.doc.clientID = newCommentsClient(this.doc);

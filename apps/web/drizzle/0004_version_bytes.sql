@@ -1,0 +1,1 @@
+ALTER TABLE `docs` ADD `version_bytes` integer DEFAULT 0 NOT NULL;

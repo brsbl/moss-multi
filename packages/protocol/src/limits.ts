@@ -32,7 +32,7 @@ export const REST_WRITE_RATE = { max: 60, windowMs: 60_000 } as const;
  * signed-in holder of a link is also counted under the link and their IP, whichever account they use. */
 export const UPLOAD_RATE = { max: 60, windowMs: 60_000 } as const;
 
-/** Uploaded media bytes a vault can hold, summed over the assets uploaded into its folders; 413 past it. */
+/** Bytes a vault can hold: the media uploaded into its folders and its docs' versions (A§14); 413 past it. */
 export const VAULT_MEDIA_QUOTA_BYTES = 2 * 1024 * 1024 * 1024;
 
 /** Server fetches of caller-supplied URLs (unfurls, remote images) per identity per window; 429 past it (A§18). */
@@ -49,6 +49,12 @@ export const SUGGEST_PREVIEW_RATE = { max: 120, windowMs: 60_000 } as const;
 
 /** Named versions per principal per window (each stores a copy of the doc); 429 past it. */
 export const NAMED_VERSION_RATE = { max: 10, windowMs: 60_000 } as const;
+
+/**
+ * Named version bytes one person may store over every doc, charged by their PrincipalDO; 413 past it. Each person's
+ * own bound, so nobody fills it for anyone else; the doc's vault also counts every version's bytes in its storage.
+ */
+export const NAMED_VERSION_BYTES_PER_PERSON = 256 * 1024 * 1024;
 
 /**
  * Working-view exports (the note with every open suggestion applied, O(doc) per record) one DocDO computes per window,

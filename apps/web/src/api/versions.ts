@@ -9,6 +9,7 @@ import { resolvePrincipal, shareTokenOf } from '../auth/principal.ts';
 import { createDb } from '../db/client.ts';
 import { json } from '../worker/route.ts';
 import { resolveDocAccess } from './access.ts';
+import { vaultFull } from './assets.ts';
 import type { DocsEnv } from './docs.ts';
 import { NO_STORE, notFound, readJsonObject } from './respond.ts';
 
@@ -61,6 +62,11 @@ export async function handleVersions(request: Request, env: DocsEnv, match: RegE
       const window = action === 'save' ? NAMED_VERSION_RATE.windowMs : REST_WRITE_RATE.windowMs;
       return json({ error: 'rate-limited' }, 429, { ...NO_STORE, 'retry-after': String(window / 1000) });
     }
+  }
+  // A vault whose storage (media and version history) is full takes no more named versions; each person's own named
+  // bytes are bounded too, by the DocDO's charge to their PrincipalDO.
+  if (action === 'save' && (await vaultFull(env, access.folderId))) {
+    return json({ error: 'over-quota', message: "This note's vault is out of storage. Delete media from its notes and try again." }, 413, NO_STORE);
   }
   const input = {
     reviewer: { id: principal.id, role: access.role },

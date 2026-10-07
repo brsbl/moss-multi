@@ -77,7 +77,10 @@ async function readDeclared(request: Request, length: number): Promise<Uint8Arra
   return offset === length ? bytes : 'too-short';
 }
 
-/** Media bytes uploaded into the vault holding the folder bound at `folder`, over all its folders (the quota). */
+/**
+ * Bytes stored in the vault holding the folder bound at `folder`, over all its folders (the quota): the media uploaded
+ * into them and their docs' version history (A§14).
+ */
 const vaultUsage = (folder: string, depth: string) => `(
     WITH RECURSIVE up(id, parent_id, depth) AS (
       SELECT id, parent_id, 1 FROM folders WHERE id = ${folder}
@@ -86,7 +89,13 @@ const vaultUsage = (folder: string, depth: string) => `(
       SELECT id, 1 FROM up WHERE parent_id IS NULL
       UNION ALL SELECT folders.id, down.depth + 1 FROM folders JOIN down ON folders.parent_id = down.id WHERE down.depth < ${depth}
     )
-    SELECT COALESCE(SUM(size), 0) FROM assets WHERE folder_id IN (SELECT id FROM down))`;
+    SELECT (SELECT COALESCE(SUM(size), 0) FROM assets WHERE folder_id IN (SELECT id FROM down))
+      + (SELECT COALESCE(SUM(version_bytes), 0) FROM docs WHERE folder_id IN (SELECT id FROM down)))`;
+
+/** True when the vault holding `folderId` has no storage left: a named version is refused 413 (A§14). */
+export async function vaultFull(env: AuthEnv, folderId: string): Promise<boolean> {
+  return (await vaultMediaBytes(env, folderId)) >= VAULT_MEDIA_QUOTA_BYTES;
+}
 
 async function vaultMediaBytes(env: AuthEnv, folderId: string): Promise<number> {
   const row = await env.DB.prepare(`SELECT ${vaultUsage('?1', '?2')} AS used`).bind(folderId, MAX_FOLDER_DEPTH).first<{ used: number }>();

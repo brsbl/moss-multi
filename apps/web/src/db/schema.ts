@@ -158,6 +158,8 @@ export const docs = sqliteTable(
     updatedAt: integer('updated_at').notNull(),
     deletedAt: integer('deleted_at'),
     trashBatchId: text('trash_batch_id'),
+    /** The doc's version history bytes, written by its DocDO (A§14); its vault's storage counts them. */
+    versionBytes: integer('version_bytes').notNull().default(0),
   },
   (t) => [
     index('docs_owner_deleted_idx').on(t.ownerUserId, t.deletedAt),

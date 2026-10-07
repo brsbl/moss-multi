@@ -1,6 +1,7 @@
 // Version history storage (A§14): one row per version in the DocDO's SQLite, its content spilled to R2 above 1.5 MB.
 // Auto versions and restore points are pruned oldest first; named versions are bounded per person, so nobody can fill
-// a bound that refuses someone else's.
+// a bound that refuses someone else's. A spill is written before its row and recorded as an orphan until the row
+// lands; a pruned or unwritten spill stays recorded until R2 confirms its delete, so no blob outlives every record.
 import type { VersionContent } from './version-content.ts';
 
 export type VersionKind = 'auto' | 'named' | 'restore-point';
@@ -25,6 +26,23 @@ export interface VersionBlobs {
   delete(keys: string[]): Promise<void>;
 }
 
+/** A captured version ready to insert: its id, hash, size and, above the spill size, its R2 key. */
+export interface Prepared {
+  id: string;
+  content: VersionContent;
+  hash: string;
+  bytes: number;
+  r2Key: string | null;
+}
+
+export interface InsertOptions {
+  name?: string | null;
+  createdBy?: string | null;
+  authorIds?: string[];
+  at?: number;
+  dedupe?: boolean;
+}
+
 /** Content above this many bytes spills to R2 (a DO SQLite row holds at most 2 MB). */
 export const VERSION_SPILL_BYTES = 1.5 * 1024 * 1024;
 /** Named versions one person may keep on one doc. */
@@ -36,6 +54,9 @@ export const RESTORE_POINTS_KEPT = 20;
 export const ACTIVITY_UPDATES = 500;
 export const ACTIVITY_MS = 10 * 60_000;
 export const VERSION_NAME_MAX = 80;
+/** How long a spill may wait for its row before it counts as an orphan to delete. */
+const SPILL_GRACE_MS = 60 * 60_000;
+const SWEEP_BATCH = 100;
 
 /** A version that would spill with no bucket to spill to. */
 export class VersionSpillError extends Error {
@@ -59,8 +80,10 @@ type Row = {
   r2_key: string | null;
 };
 
+type ContentRow = Row & Record<'frontmatter' | 'markdown' | 'lexical_json' | 'payloads' | 'comments' | 'anchors', string | null>;
+
 const META_COLUMNS = 'id, kind, name, created_at, created_by, author_ids, title, bytes, hash, r2_key';
-const CONTENT_KEYS = ['frontmatter', 'markdown', 'lexical', 'payloads', 'comments'] as const;
+const CONTENT_KEYS = ['frontmatter', 'markdown', 'lexical', 'payloads', 'comments', 'anchors'] as const;
 
 const metaOf = (row: Row): VersionMeta => ({
   id: row.id,
@@ -74,10 +97,21 @@ const metaOf = (row: Row): VersionMeta => ({
   spilled: row.r2_key !== null,
 });
 
-async function hashOf(content: VersionContent): Promise<string> {
-  const text = JSON.stringify([content.title, ...CONTENT_KEYS.map((key) => content[key])]);
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+/** Two independent 53-bit string hashes (cyrb53), synchronous so a version is prepared in the caller's turn. */
+function hashText(text: string): string {
+  const half = (seed: number) => {
+    let h1 = 0xdeadbeef ^ seed;
+    let h2 = 0x41c6ce57 ^ seed;
+    for (let i = 0; i < text.length; i += 1) {
+      const ch = text.charCodeAt(i);
+      h1 = Math.imul(h1 ^ ch, 2654435761);
+      h2 = Math.imul(h2 ^ ch, 1597334677);
+    }
+    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+    return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16).padStart(14, '0');
+  };
+  return `${half(1)}${half(2)}`;
 }
 
 export class VersionStore {
@@ -85,11 +119,14 @@ export class VersionStore {
     private readonly sql: SqlStorage,
     private readonly docId: string,
     private readonly blobs: () => VersionBlobs | null,
+    private readonly spillBytes = VERSION_SPILL_BYTES,
+    private readonly transact: <T>(run: () => T) => T = (run) => run(),
   ) {
     sql.exec(`CREATE TABLE IF NOT EXISTS versions (
       id TEXT PRIMARY KEY, seq INTEGER NOT NULL, kind TEXT NOT NULL, name TEXT, created_at INTEGER NOT NULL, created_by TEXT,
       author_ids TEXT NOT NULL, title TEXT NOT NULL, frontmatter TEXT, markdown TEXT, lexical_json TEXT, payloads TEXT,
-      comments TEXT, r2_key TEXT, bytes INTEGER NOT NULL, hash TEXT NOT NULL)`);
+      comments TEXT, anchors TEXT, r2_key TEXT, bytes INTEGER NOT NULL, hash TEXT NOT NULL)`);
+    sql.exec('CREATE TABLE IF NOT EXISTS version_orphans (r2_key TEXT PRIMARY KEY, due INTEGER NOT NULL)');
   }
 
   /** Newest first. */
@@ -106,10 +143,15 @@ export class VersionStore {
     return Number(this.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM versions WHERE kind = 'named' AND created_by = ?", principal).one().n);
   }
 
+  /** Every version's bytes: what the doc's vault is charged. */
+  totalBytes(): number {
+    return Number(this.sql.exec<{ n: number }>('SELECT COALESCE(SUM(bytes), 0) AS n FROM versions').one().n);
+  }
+
   /** The version's content, from its row or its spill; null when there is none. */
   async content(id: string): Promise<VersionContent | null> {
-    const [row] = this.sql.exec<Row & { frontmatter: string | null; markdown: string | null; lexical_json: string | null; payloads: string | null; comments: string | null }>(
-      'SELECT title, frontmatter, markdown, lexical_json, payloads, comments, r2_key FROM versions WHERE id = ?',
+    const [row] = this.sql.exec<ContentRow>(
+      'SELECT title, frontmatter, markdown, lexical_json, payloads, comments, anchors, r2_key FROM versions WHERE id = ?',
       id,
     ).toArray();
     if (!row) return null;
@@ -121,66 +163,109 @@ export class VersionStore {
         lexical: row.lexical_json ?? '{"root":{"type":"root","children":[]}}',
         payloads: row.payloads ?? '{}',
         comments: row.comments ?? '{}',
+        anchors: row.anchors ?? '{}',
       };
     }
     const blobs = this.blobs();
     const body = blobs ? await blobs.get(row.r2_key) : null;
     if (body === null) return null;
-    return { title: row.title, ...(JSON.parse(body) as Omit<VersionContent, 'title'>) };
+    return { anchors: '{}', ...(JSON.parse(body) as Omit<VersionContent, 'title'>), title: row.title };
   }
 
-  /**
-   * Stores a version. With `dedupe`, a content equal to the latest version's stores nothing and returns null. Content
-   * above VERSION_SPILL_BYTES goes to R2 first, so a row never names a spill that is not there.
-   */
-  async add(
-    kind: VersionKind,
-    content: VersionContent,
-    options: { name?: string | null; createdBy?: string | null; authorIds?: string[]; at?: number; dedupe?: boolean },
-  ): Promise<VersionMeta | null> {
-    const hash = await hashOf(content);
-    if (options.dedupe) {
-      const [latest] = this.sql.exec<{ hash: string }>('SELECT hash FROM versions ORDER BY seq DESC LIMIT 1').toArray();
-      if (latest?.hash === hash) return null;
-    }
+  /** A captured content's id, hash and size, in the caller's turn; `spill` must run first when it has an R2 key. */
+  prepare(content: VersionContent): Prepared {
     const id = crypto.randomUUID();
     const encoder = new TextEncoder();
     const bytes = CONTENT_KEYS.reduce((sum, key) => sum + encoder.encode(content[key]).byteLength, 0);
-    let r2Key: string | null = null;
-    if (bytes > VERSION_SPILL_BYTES) {
-      const blobs = this.blobs();
-      if (!blobs) throw new VersionSpillError();
-      r2Key = `versions/${this.docId}/${id}.json`;
-      await blobs.put(r2Key, JSON.stringify(Object.fromEntries(CONTENT_KEYS.map((key) => [key, content[key]]))));
-    }
-    const inline = r2Key === null;
-    this.sql.exec(
-      `INSERT INTO versions (id, seq, kind, name, created_at, created_by, author_ids, title, frontmatter, markdown, lexical_json, payloads, comments, r2_key, bytes, hash)
-       VALUES (?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM versions), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      id, kind, options.name ?? null, options.at ?? Date.now(), options.createdBy ?? null, JSON.stringify(options.authorIds ?? []), content.title,
-      inline ? content.frontmatter : null, inline ? content.markdown : null, inline ? content.lexical : null,
-      inline ? content.payloads : null, inline ? content.comments : null, r2Key, bytes, hash,
-    );
-    if (kind === 'auto') await this.#prune('auto', AUTO_VERSIONS_KEPT);
-    if (kind === 'restore-point') await this.#prune('restore-point', RESTORE_POINTS_KEPT);
-    return this.meta(id);
+    const hash = hashText(JSON.stringify([content.title, ...CONTENT_KEYS.map((key) => content[key])]));
+    return { id, content, hash, bytes, r2Key: bytes > this.spillBytes ? `versions/${this.docId}/${id}.json` : null };
   }
 
-  /** Drops the oldest versions of `kind` past `keep`, and their spills. */
-  async #prune(kind: VersionKind, keep: number): Promise<void> {
+  /** Writes a prepared version's spill, recorded as an orphan until its row is inserted. */
+  async spill(prepared: Prepared): Promise<void> {
+    if (prepared.r2Key === null) return;
+    const blobs = this.blobs();
+    if (!blobs) throw new VersionSpillError();
+    this.sql.exec('INSERT OR REPLACE INTO version_orphans (r2_key, due) VALUES (?, ?)', prepared.r2Key, Date.now() + SPILL_GRACE_MS);
+    const { content } = prepared;
+    await blobs.put(prepared.r2Key, JSON.stringify(Object.fromEntries(CONTENT_KEYS.map((key) => [key, content[key]]))));
+  }
+
+  /**
+   * Stores a prepared (and spilled) version in the caller's turn, or throws with nothing stored. With `dedupe`, a
+   * content equal to the latest version's stores nothing and returns null.
+   */
+  insert(kind: VersionKind, prepared: Prepared, options: InsertOptions): VersionMeta | null {
+    const { id, hash, r2Key } = prepared;
+    if (options.dedupe) {
+      const [latest] = this.sql.exec<{ hash: string }>('SELECT hash FROM versions ORDER BY seq DESC LIMIT 1').toArray();
+      if (latest?.hash === hash) {
+        this.discard(prepared);
+        return null;
+      }
+    }
+    return this.transact(() => {
+      this.#insertRow(kind, prepared, options);
+      if (r2Key !== null) this.sql.exec('DELETE FROM version_orphans WHERE r2_key = ?', r2Key);
+      if (kind === 'auto') this.#prune('auto', AUTO_VERSIONS_KEPT);
+      if (kind === 'restore-point') this.#prune('restore-point', RESTORE_POINTS_KEPT);
+      return this.meta(id);
+    });
+  }
+
+  #insertRow(kind: VersionKind, { id, content, hash, bytes, r2Key }: Prepared, options: InsertOptions): void {
+    const inline = r2Key === null;
+    this.sql.exec(
+      `INSERT INTO versions (id, seq, kind, name, created_at, created_by, author_ids, title, frontmatter, markdown, lexical_json, payloads, comments, anchors, r2_key, bytes, hash)
+       VALUES (?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM versions), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      id, kind, options.name ?? null, options.at ?? Date.now(), options.createdBy ?? null, JSON.stringify(options.authorIds ?? []), content.title,
+      inline ? content.frontmatter : null, inline ? content.markdown : null, inline ? content.lexical : null,
+      inline ? content.payloads : null, inline ? content.comments : null, inline ? content.anchors : null, r2Key, bytes, hash,
+    );
+  }
+
+  /** A prepared version that will not be inserted: its spill, if any, is deleted at the next sweep. */
+  discard(prepared: Prepared): void {
+    if (prepared.r2Key !== null) this.sql.exec('INSERT OR REPLACE INTO version_orphans (r2_key, due) VALUES (?, 0)', prepared.r2Key);
+  }
+
+  /** Prepares, spills and inserts; a failure discards the spill and throws. */
+  async add(kind: VersionKind, content: VersionContent, options: InsertOptions): Promise<VersionMeta | null> {
+    const prepared = this.prepare(content);
+    try {
+      await this.spill(prepared);
+      return this.insert(kind, prepared, options);
+    } catch (error) {
+      this.discard(prepared);
+      throw error;
+    }
+  }
+
+  /** Deletes the spills of pruned or never-inserted versions; a key stays recorded until R2 confirms its delete. */
+  async sweep(): Promise<void> {
+    const keys = this.sql.exec<{ r2_key: string }>('SELECT r2_key FROM version_orphans WHERE due <= ? LIMIT ?', Date.now(), SWEEP_BATCH)
+      .toArray().map((row) => row.r2_key);
+    const blobs = this.blobs();
+    if (keys.length === 0 || !blobs) return;
+    try {
+      await blobs.delete(keys);
+    } catch (error) {
+      console.error('version spill cleanup failed; it is retried at the next version write', error);
+      return;
+    }
+    for (const key of keys) this.sql.exec('DELETE FROM version_orphans WHERE r2_key = ?', key);
+  }
+
+  /** Drops the oldest versions of `kind` past `keep`; their spills are recorded for the sweep. */
+  #prune(kind: VersionKind, keep: number): void {
     const stale = this.sql.exec<{ id: string; r2_key: string | null }>(
       'SELECT id, r2_key FROM versions WHERE kind = ? ORDER BY seq DESC LIMIT -1 OFFSET ?',
       kind,
       keep,
     ).toArray();
-    if (stale.length === 0) return;
-    for (const { id } of stale) this.sql.exec('DELETE FROM versions WHERE id = ?', id);
-    const keys = stale.flatMap((row) => (row.r2_key ? [row.r2_key] : []));
-    if (keys.length === 0) return;
-    try {
-      await this.blobs()?.delete(keys);
-    } catch (error) {
-      console.error('version spill cleanup failed', error);
+    for (const { id, r2_key: key } of stale) {
+      if (key) this.sql.exec('INSERT OR REPLACE INTO version_orphans (r2_key, due) VALUES (?, 0)', key);
+      this.sql.exec('DELETE FROM versions WHERE id = ?', id);
     }
   }
 }
