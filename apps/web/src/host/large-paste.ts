@@ -20,6 +20,7 @@ import * as Y from 'yjs';
 import { PIECE_BYTES } from './collab/outbox.ts';
 import { WRITE_REFUSED } from './collab/doc-session.ts';
 import { markLanding } from './collab/landing.ts';
+import { DirLift } from './dir-lift.ts';
 import { markUnacked } from './collab/unacked.ts';
 import { refuseInput } from './refusal.ts';
 
@@ -458,8 +459,8 @@ class PasteJob {
   #timer: ReturnType<typeof setTimeout> | undefined;
   #flushing = false;
   #ended = false;
-  /** Top-level elements whose `dir` is lifted while batches fill them, and its value. */
-  readonly #lifted = new Map<HTMLElement, string>();
+  /** The paste's lists and tables go without `dir` while batches fill them (dir-lift.ts). */
+  readonly #dir = new DirLift();
 
   constructor(readonly editor: LexicalEditor, readonly request: PasteRequest) {
     this.#steps = this.#run();
@@ -520,7 +521,7 @@ class PasteJob {
     if (this.#ended) return;
     this.#ended = true;
     clearTimeout(this.#timer);
-    this.#restoreDir();
+    this.#dir.restore();
     for (const stop of this.#stops.splice(0)) stop();
     if (jobs.get(this.editor) === this) {
       jobs.delete(this.editor);
@@ -529,11 +530,7 @@ class PasteJob {
     markUnacked(this, false);
   }
 
-  /**
-   * Lexical gives each top-level block `dir="auto"`, and WebKit recomputes an auto direction over the whole element for
-   * every child added to it: each list item or row a batch adds cost time linear in its list or table, and a
-   * 30,000-item list held the tab for seconds per batch. The paste's lists and tables go without it until the last batch.
-   */
+  /** Lifts `dir` from the top-level elements holding the paste's lists and tables (dir-lift.ts). */
   #liftDir(placer: Placer): void {
     // Inside an update (a flush from a command), the rest lands at once anyway.
     if (placer.spines.length === 0 || this.editor._updating) return;
@@ -541,17 +538,9 @@ class PasteJob {
       for (const key of placer.spines) {
         const top = attached(key)?.getTopLevelElement();
         const dom = top ? this.editor.getElementByKey(top.getKey()) : null;
-        const dir = dom?.getAttribute('dir');
-        if (!dom || dir == null || this.#lifted.has(dom)) continue;
-        this.#lifted.set(dom, dir);
-        dom.removeAttribute('dir');
+        if (dom) this.#dir.lift(dom);
       }
     });
-  }
-
-  #restoreDir(): void {
-    for (const [dom, dir] of this.#lifted) if (!dom.hasAttribute('dir')) dom.setAttribute('dir', dir);
-    this.#lifted.clear();
   }
 
   *#run(): Generator<void, void> {
@@ -610,7 +599,7 @@ class PasteJob {
       pacing.time(budget, () => editor.update(() => $keepElementPoints(() => placer.$next(budget)), { discrete: true, onUpdate: release }), layout);
       if (!nested) release?.();
     }
-    this.#restoreDir();
+    this.#dir.restore();
     undo?.stopCapturing();
     if (request.$landed) editor.update(request.$landed, { discrete: true });
     // Its redo lands in batches too: the step is stamped with the paste, which a redo then pastes again.

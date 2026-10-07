@@ -22,6 +22,7 @@ import { can, type Role } from '@moss-multi/protocol/roles';
 import { knownRole, useDocRole } from '../access.ts';
 import { TopBarCollab } from '../slots.tsx';
 import { getBridge, WORKSPACE } from '../bridge/index.ts';
+import { liftDirOnLargeRemote } from '../dir-lift.ts';
 import {
   docOwner, openDocSession, subscribeDocOwners, type DocSession, type SessionState,
 } from './doc-session.ts';
@@ -304,11 +305,12 @@ function DocBinding({ docId, binding }: { docId: string; binding: PaneBinding })
       if (!session.stopPresence) {
         const stopPresence = startPresence(id, session.provider);
         const stopCursors = cursors.start(session.provider);
-        session.stopPresence = () => { stopPresence(); stopCursors(); };
+        const stopDirLift = liftDirOnLargeRemote(editor, session.doc);
+        session.stopPresence = () => { stopPresence(); stopCursors(); stopDirLift(); };
       }
       return session.provider as unknown as Provider;
     },
-    [binding, cursors],
+    [binding, cursors, editor],
   );
   return (
     <LexicalCollaboration>
