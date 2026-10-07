@@ -115,7 +115,8 @@ async function pointOf(actor: Actor, docId: string, text: string, offset: number
       range.setStart(node, i > 0 ? i - 1 : i);
       range.setEnd(node, i > 0 ? i : i + 1);
       const rect = range.getBoundingClientRect();
-      return { x: i > 0 ? rect.right : rect.left, y: rect.top + rect.height / 2 };
+      // Just inside that character, so the click lands on this side of a block edge.
+      return { x: i > 0 ? rect.right - 1 : rect.left + 1, y: rect.top + rect.height / 2 };
     }
     throw new Error(`no body text "${text}"`);
   }, { text, offset });
@@ -287,11 +288,19 @@ async function review(ada: Actor, ben: Actor, docId: string, original: string, l
   expect(kept(working), `${label}: the working export keeps every unstruck character`).toBe(kept(original));
 
   const panel = ada.page.locator(`[${SUGGESTIONS_PANEL_ATTR}]`);
-  if (!(await panel.isVisible())) await ada.page.locator(`[${SUGGESTIONS_BUTTON_ATTR}]`).click();
-  await expect(panel).toBeVisible();
   const open: Locator = panel.locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_STATUS_ATTR}="open"]`);
+  // A card fetches its preview when it opens: each accept reads the panel afresh, since one accept moves the body
+  // under the others.
+  const reopen = async () => {
+    if (await panel.isVisible()) await ada.page.keyboard.press('Escape');
+    await expect(panel).toBeHidden();
+    await ada.page.locator(`[${SUGGESTIONS_BUTTON_ATTR}]`).click();
+    await expect(panel).toBeVisible();
+  };
+  await reopen();
   await expect.poll(() => open.count(), { message: `${label}: open cards`, timeout: BIND_TIMEOUT }).toBeGreaterThan(0);
   for (let guard = 0; guard < 40 && (await open.count()) > 0; guard += 1) {
+    if (guard > 0) await reopen();
     const card = open.first();
     const accept = card.getByRole('button', { name: 'Accept' });
     const more = card.getByRole('button', { name: /^Show all/ });
@@ -302,7 +311,11 @@ async function review(ada: Actor, ben: Actor, docId: string, original: string, l
     expect(capitals(inserted.join(' ')), `${label}: the card adds no struck capital (${inserted.join(' | ')})`).toBe('');
     const before = await open.count();
     await accept.click();
-    await expect.poll(() => open.count(), { message: `${label}: accepted`, timeout: BIND_TIMEOUT }).toBeLessThan(before);
+    const deadline = Date.now() + BIND_TIMEOUT;
+    while ((await open.count()) >= before) {
+      if (Date.now() > deadline) throw new Error(`${label}: the accept did not land: ${await card.innerText().catch(() => '(gone)')}`);
+      await ada.page.waitForTimeout(200);
+    }
   }
   await expect.poll(async () => capitals(await content(ada, docId)), { message: `${label}: accept leaves every struck capital out`, timeout: BIND_TIMEOUT }).toBe('');
   expect(kept(await content(ada, docId)), `${label}: accept keeps every unstruck character`).toBe(kept(original));
