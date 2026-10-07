@@ -78,7 +78,8 @@ function combosOf(kind: Kind, side: Side, keys: readonly Key[] = KEYS): Combo[] 
       if (key === 'Backspace at the start' && caretless(bKind)) continue;
       if (key !== 'Backspace at the start' && (aKind === null || caretless(aKind))) continue;
       if ((where === 'start' || where === 'whole' || where === 'apart') && !b) continue;
-      if (where === 'span' && (!a || !b)) continue;
+      // A text selection cannot cross into or out of a table cell (Lexical makes it a table selection).
+      if (where === 'span' && (!a || !b || aKind === 'table' || bKind === 'table')) continue;
       if (where === 'end' && !a && !b) continue;
       combos.push({ key, where, tag, gap: `gap ${tag} keep.`, a, b, aKind, bKind });
       n += 1;
@@ -101,10 +102,40 @@ function sectionOf(combo: Combo, leading: boolean): string[] {
 
 const frames = (actor: Actor) => actor.page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 
-/** A DOM selection from `offset` in the body text holding `text` to `focus` in the one holding `to`. */
+/** The viewport point of the boundary at `offset` in the body text holding `text`. */
+async function pointOf(actor: Actor, docId: string, text: string, offset: number): Promise<{ x: number; y: number }> {
+  return ui.body(actor, docId).evaluate((root, { text, offset }) => {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode() as Text | null; node; node = walker.nextNode() as Text | null) {
+      const at = node.data.indexOf(text);
+      if (at < 0) continue;
+      const range = document.createRange();
+      const i = at + offset;
+      // The character before the boundary, or after it at the text's start: its edge is the boundary.
+      range.setStart(node, i > 0 ? i - 1 : i);
+      range.setEnd(node, i > 0 ? i : i + 1);
+      const rect = range.getBoundingClientRect();
+      return { x: i > 0 ? rect.right : rect.left, y: rect.top + rect.height / 2 };
+    }
+    throw new Error(`no body text "${text}"`);
+  }, { text, offset });
+}
+
+/**
+ * The caret at `offset` in the body text holding `text`, or a selection from there to `focus` in the one holding
+ * `to`: clicked (and shift-clicked) as a user would, then set exactly in the DOM.
+ */
 async function select(actor: Actor, docId: string, text: string, offset: number, to = text, focus = offset): Promise<void> {
+  const { page } = actor;
+  const from = await pointOf(actor, docId, text, offset);
+  await page.mouse.click(from.x, from.y);
+  if (to !== text || focus !== offset) {
+    const end = await pointOf(actor, docId, to, focus);
+    await page.keyboard.down('Shift');
+    await page.mouse.click(end.x, end.y);
+    await page.keyboard.up('Shift');
+  }
   await ui.body(actor, docId).evaluate((root, { text, offset, to, focus }) => {
-    (root as HTMLElement).focus();
     const find = (wanted: string): [Text, number] => {
       const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
       for (let node = walker.nextNode() as Text | null; node; node = walker.nextNode() as Text | null) {
@@ -113,16 +144,14 @@ async function select(actor: Actor, docId: string, text: string, offset: number,
       }
       throw new Error(`no body text "${wanted}"`);
     };
-    const [from, fromAt] = find(text);
+    const [start, startAt] = find(text);
     const [end, endAt] = find(to);
-    const range = document.createRange();
-    range.setStart(from, fromAt + offset);
-    range.setEnd(end, endAt + focus);
     const selection = window.getSelection()!;
-    selection.removeAllRanges();
-    selection.addRange(range);
+    if (selection.anchorNode === start && selection.anchorOffset === startAt + offset && selection.focusNode === end && selection.focusOffset === endAt + focus) return;
+    selection.setBaseAndExtent(start, startAt + offset, end, endAt + focus);
   }, { text, offset, to, focus });
   await frames(actor);
+  await page.waitForTimeout(50);
 }
 
 async function press(actor: Actor, key: string): Promise<void> {
