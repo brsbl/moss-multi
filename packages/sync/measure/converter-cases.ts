@@ -94,20 +94,21 @@ export const ORDINARY_NOTES: Record<string, () => string> = {
     ['| Item | Link | Color | Note |', '| --- | --- | --- | --- |', ...range(2_000).map((i) => `| **i${i}** | [l${i}](https://e.com/${i}) | ${hex(i)} | \`c${i}\` and *n${i}* |`)].join('\n'),
 };
 
-// Ordinary notes of 2 MB in short paragraphs, which moss converts in linear time: no budget may cut them, however
-// many matches they hold in all. L3 leaves them out (moss takes minutes on 2 MB in jsdom); the golden test holds
-// them to Lexical's own import, and measure-converter.mjs times them in workerd.
-const paragraphs = (paragraph: (i: number) => string) => {
+// Ordinary notes of 2 MB (or `size`) in short paragraphs, which moss converts in linear time: no budget may cut
+// them, however many matches they hold in all. L3 leaves them out (moss takes minutes on 2 MB in jsdom); the golden
+// test holds them to Lexical's own import, and measure-converter.mjs holds them to linear growth in workerd.
+const paragraphs = (paragraph: (i: number) => string, size: number) => {
   const out: string[] = [];
-  for (let i = 0, bytes = 0; bytes < 2 * 1024 * 1024; i += 1) {
+  for (let i = 0, bytes = 0; bytes < size; i += 1) {
     out.push(paragraph(i));
     bytes += out[i].length + 2;
   }
   return out.join('\n\n');
 };
 
-export const LARGE_ORDINARY_NOTES: Record<string, () => string> = {
-  '2 MB of paragraphs of ten links, each followed by bold': () =>
-    paragraphs((p) => range(10).map((i) => `[p${p}.${i}](https://e.com/${p}/${i}) **x${i}**`).join(' ')),
-  '2 MB of paragraphs of ten wiki links and colors': () => paragraphs((p) => range(10).map((i) => `[[Note ${p}.${i}]] ${hex(p * 10 + i)}`).join(', ')),
+export const LARGE_ORDINARY_NOTES: Record<string, (size?: number) => string> = {
+  '2 MB of paragraphs of ten links, each followed by bold': (size = 2 * 1024 * 1024) =>
+    paragraphs((p) => range(10).map((i) => `[p${p}.${i}](https://e.com/${p}/${i}) **x${i}**`).join(' '), size),
+  '2 MB of paragraphs of ten wiki links and colors': (size = 2 * 1024 * 1024) =>
+    paragraphs((p) => range(10).map((i) => `[[Note ${p}.${i}]] ${hex(p * 10 + i)}`).join(', '), size),
 };
