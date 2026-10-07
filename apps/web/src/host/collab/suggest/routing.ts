@@ -106,7 +106,7 @@ function without(set: DeleteSet, spans: readonly IdSpan[]): DeleteSet {
 interface Stripped {
   id: Y.ID;
   len: number;
-  make: () => string | Y.AbstractType<unknown>;
+  make: () => string | Y.XmlElement | Y.Map<unknown>;
 }
 
 /**
