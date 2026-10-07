@@ -473,7 +473,11 @@ class Pacer {
       const marginal = (work - last.work) / (used - last.units);
       if (marginal > 0) {
         const fixed = Math.min(work, Math.max(0, work - marginal * used));
-        budget = Math.max(TARGET_MS / 3, TARGET_MS - laid - fixed) / marginal;
+        // Units fill what the target leaves after the note's cost, and at least as long as that cost (to twice the
+        // target), so a large note's paste takes few batches rather than many that each pay for the note.
+        budget = Math.max(TARGET_MS / 3, TARGET_MS - laid - fixed, Math.min(fixed, TARGET_MS * 2)) / marginal;
+      } else if (work + laid < TARGET_MS * 2) {
+        budget = used * 2; // more units took no longer: the note's cost is all of it
       }
     } else if (last && budget <= used) {
       budget = work + laid < TARGET_MS * 2 ? used * 2 : budget;
