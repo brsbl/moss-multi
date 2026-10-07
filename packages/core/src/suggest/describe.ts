@@ -2,6 +2,12 @@
 // themselves: every difference between a hunk's before and after, by channel, yields a row, and nothing is filtered by
 // name or by count. Text aligns by Yjs item identity, so a row is exactly the run of items the record removes or adds.
 // Each row's `detail` holds where it sits and what it covers, as hashed, so the rows are a lossless reading of the hunks.
+//
+// Every name here (a field, a node type, a map key) is the record's, so lookups by name use Maps, never an object
+// literal. The rows are linear in the hunks: each node is read once and covered by its own row, a nested node's
+// text and fields are never repeated in its parent's row, and context repeated on many rows is clipped.
+import { digest } from 'lib0/hash/sha256';
+import { encodeUtf8 } from 'lib0/string';
 import { canonical, previewHash, type Hunk } from './apply.ts';
 
 export interface ReviewRow {
@@ -46,7 +52,6 @@ const fieldName = (key: string) => (key === '__dir' ? 'direction' : key.startsWi
 
 const fieldsOf = (node: Node): [string, unknown][] =>
   Array.isArray(node.keys) ? node.keys.filter((pair): pair is [string, unknown] => Array.isArray(pair) && typeof pair[0] === 'string') : [];
-const keyOf = (node: Node, key: string) => unwrap(fieldsOf(node).find(([k]) => k === key)?.[1]);
 
 const ALIGNMENTS = ['none', 'left', 'center', 'right', 'justify', 'start', 'end'];
 
@@ -66,35 +71,41 @@ function show(value: unknown, key = '', holder?: Node): string {
 }
 
 /** Lexical's defaults: a new node holding one says nothing a reader needs, so its note leaves it out. */
-const DEFAULTS: Record<string, unknown[]> = {
-  __format: [0], __style: [''], __mode: ['normal', 0], __detail: [0], __indent: [0], __dir: [null], __textFormat: [0], __textStyle: [''],
-};
+const DEFAULTS: ReadonlyMap<string, readonly unknown[]> = new Map<string, readonly unknown[]>([
+  ['__format', [0]], ['__style', ['']], ['__mode', ['normal', 0]], ['__detail', [0]], ['__indent', [0]], ['__dir', [null]], ['__textFormat', [0]], ['__textStyle', ['']],
+]);
 const isEmpty = (value: unknown) => {
   const v = unwrap(value);
   return v === undefined || v === null || v === '';
 };
-const isDefault = (key: string, value: unknown) => key in DEFAULTS && DEFAULTS[key].includes(unwrap(value));
+const isDefault = (key: string, value: unknown) => DEFAULTS.get(key)?.includes(unwrap(value)) ?? false;
 
-/** What a node is called: its Lexical type, else its element name, else its Yjs kind. */
-function typeName(node: Node): string {
-  const type = keyOf(node, '__type');
-  if (typeof type === 'string') return type;
-  if (typeof node.name === 'string') return node.name;
-  return node.type === 'Map' ? 'map' : node.type === 'XmlElement' ? 'decorator' : 'element';
-}
+const INLINE: ReadonlySet<string> = new Set(['link', 'autolink']);
 
-const INLINE = new Set(['link', 'autolink']);
-const isInline = (node: Node) => INLINE.has(typeName(node));
+/** Context a row repeats from another node (an enclosing link, the text node a run sits in) is clipped to this. */
+const CONTEXT = 80;
+const clip = (text: string) => (text.length > CONTEXT ? `${text.slice(0, CONTEXT - 1)}…` : text);
+
+const hex = (bytes: Uint8Array): string => Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+const fingerprint = (text: string) => hex(digest(encodeUtf8(text))).slice(0, 12);
 
 /**
- * A node's own fields as `name: value`, for a node that is new or removed whole, or that encloses a run (its type
- * names it; empty values and Lexical's defaults are left out). A changed field is never filtered: see `node`.
+ * A key as a path names it. A long one is clipped and ends in a fingerprint of the whole; at `CONTEXT + 1`
+ * characters it is longer than any key shown whole, so two keys never read the same.
  */
-function carried(node: Node): string[] {
-  return fieldsOf(node)
-    .filter(([key, value]) => key !== '__type' && !isDefault(key, value) && !isEmpty(value))
-    .map(([key, value]) => (key === '__format' && node.type === 'Map' ? show(value, key, node) : `${fieldName(key)}: ${show(value, key, node)}`));
-}
+const keyLabel = (key: string) => (key.length > CONTEXT ? `${key.slice(0, CONTEXT - 13)}…#${fingerprint(key)}` : key);
+
+/** A path kept to its last characters, led by a fingerprint of the whole (which holds the earlier fingerprints). */
+const bounded = (path: string) => (path.length > 2 * CONTEXT ? `#${fingerprint(path)}…${path.slice(-(2 * CONTEXT - 13))}` : path);
+
+/**
+ * A row's path one key deeper. Every row below a key repeats its path, so it is bounded: a row costs a constant
+ * beyond what it covers, and two paths never read the same.
+ */
+const sub = (path: string, key: string) => bounded(`${path} ${keyLabel(key)}`);
+
+/** The fields a nested row sits in, as a reader names them, bounded as a path is. */
+const within = (fields: string, key: string) => bounded(fields ? `${fields} › ${keyLabel(fieldName(key))}` : keyLabel(fieldName(key)));
 
 /** One unit of a sequence: a character with its own id, or any other item. */
 type Unit = { id: string; ch: string } | { id: string; node: unknown };
@@ -118,25 +129,6 @@ function units(seq: unknown[] | undefined): Unit[] {
   }
   return out;
 }
-
-/** A node's text as a reader sees it: characters, a line or tab, a decorator as `[type]`, nested blocks on new lines. */
-function textOf(value: unknown): string {
-  if (typeof value === 'string') return value;
-  if (!isNode(value)) return '';
-  if (!Array.isArray(value.seq)) {
-    const type = typeName(value);
-    return type === 'linebreak' ? '\n' : type === 'tab' ? '\t' : value.type === 'Map' ? '' : `[${type}]`;
-  }
-  let text = '';
-  for (const unit of units(value.seq)) {
-    if (isChar(unit)) text += unit.ch;
-    else if (isNode(unit.node) && Array.isArray(unit.node.seq) && !isInline(unit.node)) text += `${text ? '\n' : ''}${textOf(unit.node)}`;
-    else text += textOf(unit.node);
-  }
-  return text;
-}
-
-const labelOf = (node: Node) => textOf(node).trim() || typeName(node);
 
 /** Ids as runs: `client:clock+length`. */
 function idRuns(ids: readonly string[]): string {
@@ -226,10 +218,127 @@ function ownedText(list: readonly Unit[], ownerOf: Map<string, Owner>): Map<stri
   return out;
 }
 
+/**
+ * A node as one row covers it: its own fields and sequence, each nested element named by its kind (its own row covers
+ * it), and each text node's map kept, its nested nodes named likewise. So no subtree is covered twice.
+ */
+function shallow(node: Node): Json {
+  const out: Json = { type: node.type };
+  if (node.name !== undefined) out.name = node.name;
+  if (Array.isArray(node.keys)) out.keys = node.keys.map((pair) => (Array.isArray(pair) && isNode(pair[1]) ? [pair[0], { node: pair[1].type }] : pair));
+  if (Array.isArray(node.seq)) {
+    out.seq = node.seq.map((entry) => {
+      if (!isObject(entry) || !isNode(entry)) return entry;
+      const id = entry.id ?? null;
+      return entry.type === 'Map' && !Array.isArray(entry.seq) ? { id, ...shallow(entry) } : { id, node: entry.type };
+    });
+  }
+  return out;
+}
+
+/** What every row of one call reads, computed once per node. */
+class Reader {
+  readonly #types = new WeakMap<object, string>();
+  readonly #carried = new WeakMap<object, string[]>();
+  readonly #context = new WeakMap<object, string[]>();
+  readonly #keys = new WeakMap<object, string>();
+
+  /** What a node is called: its Lexical type, else its element name, else its Yjs kind. */
+  typeName(node: Node): string {
+    let type = this.#types.get(node);
+    if (type === undefined) {
+      const named = unwrap(fieldsOf(node).find(([k]) => k === '__type')?.[1]);
+      type = typeof named === 'string' ? named : typeof node.name === 'string' ? node.name : node.type === 'Map' ? 'map' : node.type === 'XmlElement' ? 'decorator' : 'element';
+      this.#types.set(node, type);
+    }
+    return type;
+  }
+
+  isInline(node: Node): boolean {
+    return INLINE.has(this.typeName(node));
+  }
+
+  /**
+   * A node's own fields as `name: value`, for a node that is new or removed whole, or a text node a run sits in (its
+   * type names it; empty values, Lexical's defaults and nested nodes, which have their own rows, are left out). A
+   * changed field is never filtered: see `Rows.node`.
+   */
+  carried(node: Node): string[] {
+    let out = this.#carried.get(node);
+    if (out === undefined) {
+      out = fieldsOf(node)
+        .filter(([key, value]) => key !== '__type' && !isNode(value) && !isDefault(key, value) && !isEmpty(value))
+        .map(([key, value]) => (key === '__format' && node.type === 'Map' ? show(value, key, node) : `${fieldName(key)}: ${show(value, key, node)}`));
+      this.#carried.set(node, out);
+    }
+    return out;
+  }
+
+  /** A text node's fields as context for a run inside it: one clipped entry. */
+  context(node: Node): string[] {
+    let out = this.#context.get(node);
+    if (out === undefined) {
+      const full = this.carried(node).join('; ');
+      out = full ? [clip(full)] : [];
+      this.#context.set(node, out);
+    }
+    return out;
+  }
+
+  /**
+   * A node's own text as a reader sees it: its characters, a line break or tab, a decorator as `[type]`, and an inline
+   * child's (a link's) own text. A nested block reads in its own row.
+   */
+  textOf(value: unknown, inner = false): string {
+    if (typeof value === 'string') return value;
+    if (!isNode(value)) return '';
+    if (!Array.isArray(value.seq)) {
+      const type = this.typeName(value);
+      return type === 'linebreak' ? '\n' : type === 'tab' ? '\t' : value.type === 'Map' ? '' : `[${clip(type)}]`;
+    }
+    let text = '';
+    for (const entry of value.seq) {
+      if (isObject(entry) && typeof entry.s === 'string') text += entry.s;
+      else if (!isNode(entry)) continue;
+      else if (!Array.isArray(entry.seq)) text += this.textOf(entry, true);
+      else if (!inner && this.isInline(entry)) text += this.textOf(entry, true);
+    }
+    return text;
+  }
+
+  labelOf(node: Node): string {
+    return this.textOf(node).trim() || this.typeName(node);
+  }
+
+  /** A value's fingerprint: equal exactly when the values' canonical JSON is, computed once per object. */
+  key(value: unknown): string {
+    if (typeof value === 'bigint') return canonical(value);
+    if (value === null || typeof value !== 'object') return value === undefined ? 'u' : (JSON.stringify(value) ?? 'u');
+    let out = this.#keys.get(value);
+    if (out !== undefined) return out;
+    if (Array.isArray(value)) out = `[${value.map((item) => (item === undefined ? 'null' : this.key(item))).join(',')}]`;
+    else {
+      const record = value as Json;
+      const keys = Object.keys(record).filter((k) => record[k] !== undefined).sort();
+      out = `{${keys.map((k) => `${JSON.stringify(k)}:${this.key(record[k])}`).join(',')}}`;
+    }
+    if (out.length > 64) out = `#${hex(digest(encodeUtf8(out)))}`;
+    this.#keys.set(value, out);
+    return out;
+  }
+
+  same(a: unknown, b: unknown): boolean {
+    return this.key(a) === this.key(b);
+  }
+}
+
 class Rows {
   readonly out: ReviewRow[] = [];
 
-  constructor(readonly where: string) {}
+  constructor(
+    readonly where: string,
+    readonly read: Reader,
+  ) {}
 
   push(kind: ReviewRow['kind'], path: string, text: string, note: string | undefined, covers: unknown): void {
     const detail = `${this.where}${path ? ` ${path}` : ''}: ${canonical(covers ?? null)}`;
@@ -237,25 +346,32 @@ class Rows {
   }
 
   /**
-   * A value the record adds or removes whole: one row with the value, then each part of it a reader would not see in
-   * that row's text (a formatted run, a link, a list item's fields). `quiet` leaves out a part with nothing to add, which
-   * an enclosing row covers.
+   * A value the record adds or removes whole: one row with the value and its own fields, then a row for each node it
+   * holds and each run of its text a reader would not see in that row's text (a formatted run). `quiet` leaves out a
+   * text node's map with nothing to add, which the enclosing row covers.
    */
-  whole(kind: 'insert' | 'delete', path: string, value: unknown, chain: readonly string[], quiet: boolean): void {
+  whole(kind: 'insert' | 'delete', path: string, value: unknown, quiet = false): void {
     const verb = kind === 'insert' ? 'new' : 'removes';
     if (!isNode(value)) {
       this.push(kind, path, typeof value === 'string' ? value : show(value), typeof value === 'string' ? undefined : `${verb} content`, value);
       return;
     }
-    const own = carried(value);
-    const inline = isInline(value);
-    if (!quiet || (own.length > 0 && !inline)) {
-      this.push(kind, path, textOf(value) || `[${typeName(value)}]`, [`${verb} ${typeName(value)}`, ...own].join('; '), value);
+    const own = this.read.carried(value);
+    if (!(quiet && value.type === 'Map' && own.length === 0)) {
+      const type = this.read.typeName(value);
+      this.push(kind, path, this.read.textOf(value) || `[${clip(type)}]`, [`${verb} ${type}`, ...own].join('; '), shallow(value));
     }
-    const inner = inline ? [...chain, [typeName(value), ...own].join('; ')] : [];
-    this.sequence(kind, path, units(value.seq), inner, true, owners(units(value.seq)));
-    for (const [key, item] of fieldsOf(value)) {
-      if (isNode(item)) this.whole(kind, `${path} ${key}`, item, [], true);
+    if (Array.isArray(value.seq)) {
+      const list = units(value.seq);
+      this.sequence(kind, path, list, [], true, owners(list));
+    }
+    this.fields(kind, path, value);
+  }
+
+  /** The nodes a node holds as field values, each in its own rows; an empty one (its kind is in the parent's detail) has none. */
+  fields(kind: 'insert' | 'delete', path: string, node: Node): void {
+    for (const [key, item] of fieldsOf(node)) {
+      if (isNode(item) && (fieldsOf(item).length > 0 || (item.seq?.length ?? 0) > 0)) this.whole(kind, sub(path, key), item);
     }
   }
 
@@ -268,11 +384,11 @@ class Rows {
       const unit = list[i];
       const map: Owner | null = !isChar(unit) && isNode(unit.node) && unit.node.type === 'Map' ? { id: unit.id, node: unit.node } : null;
       if (!isChar(unit) && !map) {
-        this.whole(kind, `${path} ${unit.id}`, unit.node, chain, quiet);
+        this.whole(kind, sub(path, unit.id), unit.node, quiet);
         i += 1;
         continue;
       }
-      const owner = map ?? ownerOf.get(unit.id);
+      const owner = map ?? ownerOf.get(unit.id) ?? null;
       // The map, when it is in this run, and the characters of its text node that follow it.
       const run: Unit[] = [];
       if (map) run.push(list[i++]);
@@ -283,34 +399,43 @@ class Rows {
       }
       const text = run.map((u) => (isChar(u) ? u.ch : '')).join('');
       if (map && !text) {
-        this.whole(kind, `${path} ${map.id}`, map.node, chain, quiet);
+        this.whole(kind, sub(path, map.id), map.node, quiet);
         continue;
       }
-      // A text node of another Lexical type says so; its fields follow.
-      const lexical = owner ? typeName(owner.node) : 'text';
-      const note = [...chain, ...(lexical === 'text' ? [] : [lexical]), ...(owner ? carried(owner.node) : [])];
-      if (quiet && note.length === 0) continue;
-      this.push(kind, path, text, note.join('; ') || undefined, { ids: idRuns(run.map((u) => u.id)), node: map ? map.node : owner?.id ?? null });
+      // A text node of another Lexical type says so, then its fields: in full when its map is in this run (said once),
+      // clipped when the run only sits in it.
+      const lexical = owner ? this.read.typeName(owner.node) : 'text';
+      const fields = !owner ? [] : map ? this.read.carried(owner.node) : this.read.context(owner.node);
+      const note = [...chain, ...(lexical === 'text' ? [] : [map ? lexical : clip(lexical)]), ...fields];
+      if (!quiet || note.length > 0) {
+        this.push(kind, path, text, note.join('; ') || undefined, { ids: idRuns(run.map((u) => u.id)), node: map ? shallow(map.node) : (owner?.id ?? null) });
+      }
+      if (map) this.fields(kind, sub(path, map.id), map.node);
     }
   }
 
-  /** Two versions of one node: each field that differs, then its sequence aligned by identity. */
-  node(path: string, b: Node, a: Node, chain: readonly string[], label: string): void {
-    const type = typeName(a);
+  /**
+   * Two versions of one node: each field that differs, then its sequence aligned by identity. `fields` names the
+   * fields of enclosing nodes it sits in, so a change inside one field never reads as the same change inside another.
+   */
+  node(path: string, b: Node, a: Node, label: string, fields = ''): void {
+    const type = this.read.typeName(a);
     const before = new Map(fieldsOf(b));
     const after = new Map(fieldsOf(a));
     for (const key of [...new Set([...before.keys(), ...after.keys()])].sort()) {
       const was = before.get(key);
       const now = after.get(key);
-      if (canonical(was) === canonical(now)) continue;
+      if (this.read.same(was, now)) continue;
       if (isNode(was) && isNode(now) && was.type === now.type) {
-        this.node(`${path} ${key}`, was, now, chain, `${label}`);
+        this.node(sub(path, key), was, now, label, within(fields, key));
         continue;
       }
-      this.push('change', `${path} ${key}`, label, `${type} ${fieldName(key)}: ${show(was, key, b)} → ${show(now, key, a)}`, { before: was ?? null, after: now ?? null });
+      const at = fields ? `${fields} › ` : '';
+      this.push('change', sub(path, key), label, `${clip(type)} ${at}${fieldName(key)}: ${show(was, key, b)} → ${show(now, key, a)}`, { before: was ?? null, after: now ?? null });
     }
-    if (canonical(b.seq) === canonical(a.seq)) return;
-    const inner = isInline(a) ? [...chain, [type, ...carried(a)].join('; ')] : [];
+    if (this.read.same(b.seq, a.seq)) return;
+    // Runs inside a link say so, with the link's fields clipped; the link's own changes have their own rows.
+    const inner = this.read.isInline(a) ? [clip([type, ...this.read.carried(a)].join('; '))] : [];
     const bu = units(b.seq);
     const au = units(a.seq);
     const ownB = owners(bu);
@@ -320,7 +445,7 @@ class Rows {
     for (let i = 0; i < steps.length; ) {
       const step = steps[i];
       if (step.op === 'keep') {
-        if (!isChar(step.b) && !isChar(step.a)) this.value(`${path} ${step.a.id}`, step.b.node, step.a.node, inner, texts.get(step.a.id));
+        if (!isChar(step.b) && !isChar(step.a)) this.value(sub(path, step.a.id), step.b.node, step.a.node, texts.get(step.a.id));
         i += 1;
         continue;
       }
@@ -331,14 +456,14 @@ class Rows {
   }
 
   /** Two versions of a value: a node of one kind is compared field by field, anything else is replaced. */
-  value(path: string, b: unknown, a: unknown, chain: readonly string[], label?: string): void {
-    if (canonical(b) === canonical(a)) return;
+  value(path: string, b: unknown, a: unknown, label?: string): void {
+    if (this.read.same(b, a)) return;
     if (isNode(b) && isNode(a) && b.type === a.type && b.name === a.name) {
-      this.node(path, b, a, chain, label?.trim() || labelOf(a));
+      this.node(path, b, a, clip(label?.trim() || this.read.labelOf(a)));
       return;
     }
-    if (b !== undefined) this.whole('delete', path, b, chain, false);
-    if (a !== undefined) this.whole('insert', path, a, chain, false);
+    if (b !== undefined) this.whole('delete', path, b);
+    if (a !== undefined) this.whole('insert', path, a);
   }
 
   /** Two lists of `[key, value]` pairs (the note's settings, a payload's fields): each key that differs. */
@@ -348,16 +473,16 @@ class Rows {
     for (const key of [...new Set([...b.keys(), ...a.keys()])].sort()) {
       const was = b.get(key);
       const now = a.get(key);
-      if (canonical(was) === canonical(now)) continue;
+      if (this.read.same(was, now)) continue;
       if (isNode(was) && isNode(now) && was.type === now.type) {
-        this.node(`${path} ${key}`, was, now, [], text);
+        this.node(sub(path, key), was, now, text, within('', key));
         continue;
       }
-      this.push('change', `${path} ${key}`, text, `${fieldName(key)}: ${show(was, key)} → ${show(now, key)}`, { before: was ?? null, after: now ?? null });
+      this.push('change', sub(path, key), text, `${fieldName(key)}: ${show(was, key)} → ${show(now, key)}`, { before: was ?? null, after: now ?? null });
     }
     // A value that is not a list of pairs is compared whole.
     const loose = (value: unknown) => (value === undefined || Array.isArray(value) ? null : value);
-    if (canonical(loose(before)) !== canonical(loose(after))) {
+    if (!this.read.same(loose(before), loose(after))) {
       this.push('change', path, text, `${show(loose(before))} → ${show(loose(after))}`, { before: before ?? null, after: after ?? null });
     }
   }
@@ -379,7 +504,7 @@ class Rows {
     // Anything else the value holds is compared whole.
     const rest = (value: unknown) =>
       isObject(value) ? Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'text' && key !== 'ids' && key !== 'map')) : (value ?? {});
-    if (canonical(rest(before)) !== canonical(rest(after))) {
+    if (!this.read.same(rest(before), rest(after))) {
       this.push('change', '', 'Block content', `${show(rest(before))} → ${show(rest(after))}`, { before: rest(before), after: rest(after) });
     }
     this.keys('map', 'Block content', isObject(before) ? before.map : undefined, isObject(after) ? after.map : undefined);
@@ -397,10 +522,16 @@ function payloadUnits(value: unknown): Unit[] {
   const out: Unit[] = [];
   let at = 0;
   ids.forEach((pair, n) => {
-    if (!Array.isArray(pair) || typeof pair[0] !== 'string' || typeof pair[1] !== 'number') return;
+    if (!Array.isArray(pair) || typeof pair[0] !== 'string') return;
+    const len: unknown = pair[1];
+    // A run length that is not a count (never so from a projection, but hashed as such) is read as it stands.
+    if (typeof len !== 'number' || !Number.isSafeInteger(len) || len < 0) {
+      out.push({ id: pair[0], node: pair });
+      return;
+    }
     const [client, clock] = pair[0].split(':').map(Number);
-    const part = typeof text === 'string' ? text.slice(at, at + pair[1]) : Array.isArray(text) ? text[n] : undefined;
-    at += pair[1];
+    const part = typeof text === 'string' ? text.slice(at, at + len) : Array.isArray(text) ? text[n] : undefined;
+    at += len;
     if (typeof part === 'string') for (let i = 0; i < part.length; i++) out.push({ id: `${client}:${clock + i}`, ch: part[i] });
     else out.push({ id: pair[0], node: part });
   });
@@ -425,16 +556,25 @@ function readingOrder(hunks: readonly Hunk[]): Hunk[] {
   const top: Hunk[] = [];
   for (const hunk of hunks) {
     const anchor = hunk.kind === 'block' && hunk.op === 'added' ? hunk.at : null;
-    if (anchor && anchor !== hunk.id && blocks.has(anchor)) followers.set(anchor, [...(followers.get(anchor) ?? []), hunk]);
-    else top.push(hunk);
+    if (anchor && anchor !== hunk.id && blocks.has(anchor)) {
+      const list = followers.get(anchor);
+      if (list) list.push(hunk);
+      else followers.set(anchor, [hunk]);
+    } else top.push(hunk);
   }
   const out: Hunk[] = [];
   const placed = new Set<Hunk>();
-  const place = (hunk: Hunk) => {
-    if (placed.has(hunk)) return;
-    placed.add(hunk);
-    out.push(hunk);
-    if (hunk.kind === 'block') for (const next of followers.get(hunk.id) ?? []) place(next);
+  // Depth first, without recursion: a chain of thousands of new blocks is one long path.
+  const place = (start: Hunk) => {
+    const stack = [start];
+    while (stack.length > 0) {
+      const hunk = stack.pop()!;
+      if (placed.has(hunk)) continue;
+      placed.add(hunk);
+      out.push(hunk);
+      const next = hunk.kind === 'block' ? followers.get(hunk.id) : undefined;
+      if (next) for (let i = next.length - 1; i >= 0; i--) stack.push(next[i]);
+    }
   };
   top.forEach(place);
   // A cycle of anchors (never from a real doc) still shows every hunk.
@@ -445,17 +585,18 @@ function readingOrder(hunks: readonly Hunk[]): Hunk[] {
 /** Every row a card shows for `hunks`, in reading order: each hunk yields at least one, and nothing is folded away. */
 export function describeHunks(hunks: readonly Hunk[]): ReviewRow[] {
   const out: ReviewRow[] = [];
+  const read = new Reader();
   for (const hunk of readingOrder(hunks)) {
     const before = hunk.op === 'added' ? undefined : hunk.before;
     const after = hunk.op === 'removed' ? undefined : hunk.after;
-    const rows = new Rows(whereOf(hunk));
+    const rows = new Rows(whereOf(hunk), read);
     if (hunk.kind === 'note') rows.keys('', 'Note settings', before, after);
     else if (hunk.kind === 'payload') rows.payload(before, after);
-    else if (hunk.op === 'changed') rows.value('', before, after, []);
-    else rows.whole(hunk.op === 'added' ? 'insert' : 'delete', '', hunk.op === 'added' ? after : before, [], false);
+    else if (hunk.op === 'changed') rows.value('', before, after);
+    else rows.whole(hunk.op === 'added' ? 'insert' : 'delete', '', hunk.op === 'added' ? after : before);
     // A hunk always says something, even when its two values read the same.
     if (rows.out.length === 0) rows.push('change', '', 'Change', `${show(before)} → ${show(after)}`, { before: before ?? null, after: after ?? null });
-    out.push(...rows.out);
+    for (const row of rows.out) out.push(row);
   }
   return out;
 }
@@ -468,8 +609,8 @@ export interface RowSegment {
 
 // Whitespace and invisible characters, and the glyph each is drawn as.
 const INVISIBLE = /[\s\u00ad\u180e\u200b-\u200f\u2060\ufeff]+/gu;
-const GLYPHS: Record<string, string> = { ' ': '·', '\t': '→', '\n': '↵', '\u00a0': '⍽' };
-const glyph = (ch: string) => GLYPHS[ch] ?? `⟨U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, '0')}⟩`;
+const GLYPHS: ReadonlyMap<string, string> = new Map([[' ', '·'], ['\t', '→'], ['\n', '↵'], ['\u00a0', '⍽']]);
+const glyph = (ch: string) => GLYPHS.get(ch) ?? `⟨U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, '0')}⟩`;
 
 /**
  * A row's text in segments, losslessly: whitespace a reader could not see in plain text (at either end, a run of

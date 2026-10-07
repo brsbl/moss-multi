@@ -5,45 +5,21 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
-import { CHANNELS, canonical, previewHash, type Hunk, type RecordMeta, type RecordOp } from '@moss-multi/core/suggest/apply';
+import { CHANNELS, canonical, previewHash, type Hunk } from '@moss-multi/core/suggest/apply';
 import { describeHunks, rowSegments, type ReviewRow } from '@moss-multi/core/suggest/describe';
 import { SuggestIngest } from '../doc/suggest.ts';
 import { payloadDocsFor } from '../payload-docs.ts';
 import { ForkShim } from './fork-shim.ts';
-import { createRecord, opsOf, partsOf, writeSuggestions } from './records.ts';
 import { nodeRegistry, previewRecord } from './review.ts';
-import { CENSUS, codeBlock, deterministicIds, insertBlock, seededBody, select, spansOfText, SUGGESTER } from './test-support.ts';
+import {
+  CENSUS, codeBlock, deterministicIds, forgeRecord, insertBlock, opOn, seededBody, select, spansOfText, SUGGESTER,
+} from './test-support.ts';
 
 let restore: () => void = () => {};
 beforeEach(() => {
   restore = deterministicIds();
 });
 afterEach(() => restore());
-
-const LEASED = 0x7fff1234;
-
-function forgeRecord(live: Y.Doc, id: string, ops: RecordOp[]): void {
-  const meta: RecordMeta = {
-    v: 2, id, author: SUGGESTER.id, authorName: SUGGESTER.name, source: 'live', createdAt: 1, updatedAt: 1, status: 'open', clients: [LEASED],
-  };
-  writeSuggestions(live, () => {
-    createRecord(live, meta);
-    opsOf(live, id).push(ops);
-    partsOf(live, id).push([]);
-  });
-}
-
-/** One op holding what `write` does to a copy of `source` under the leased client. */
-function opOn(source: Y.Doc, doc: string, write: (copy: Y.Doc) => void): RecordOp {
-  const copy = new Y.Doc({ gc: false });
-  Y.applyUpdate(copy, Y.encodeStateAsUpdate(source));
-  copy.clientID = LEASED;
-  const updates: Uint8Array[] = [];
-  copy.on('update', (update: Uint8Array) => updates.push(update));
-  write(copy);
-  copy.destroy();
-  return { doc, update: Y.mergeUpdates(updates) };
-}
 
 const root = (doc: Y.Doc) => doc.get('root', Y.XmlText);
 const blocks = (doc: Y.Doc) => (root(doc).toDelta() as { insert: unknown }[]).map((op) => op.insert);

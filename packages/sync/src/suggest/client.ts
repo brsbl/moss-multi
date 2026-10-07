@@ -5,7 +5,7 @@
 // enters F or C only after G1–G3 and the headless bind check pass on scratch copies.
 import * as Y from 'yjs';
 import {
-  BODY_DOC, BODY_ROOTS, hydrate, PAYLOAD_ID, regRefs, ROOT_KINDS, type Inserted, type RecordOp, type SuggestionRecord,
+  BODY_DOC, BODY_ROOTS, hydrate, ownValue, PAYLOAD_ID, regRefs, ROOT_KINDS, type Inserted, type RecordOp, type SuggestionRecord,
 } from '@moss-multi/core/suggest/apply';
 import { SUGGEST_LIMITS, type IdSpan, type LeaseGrant, type SuggestReply, type SuggestRefusal, type SuggestRequest } from '@moss-multi/protocol/suggest';
 import { bytesToBase64 } from '@moss-multi/protocol/sync';
@@ -695,7 +695,7 @@ export class SuggestFork {
         } catch {
           return true;
         }
-        return to.size === 0 || [...to].some(([client, clock]) => clock > (acked.get(client)?.[op.doc] ?? 0));
+        return to.size === 0 || [...to].some(([client, clock]) => clock > (ownValue(acked.get(client) ?? {}, op.doc) ?? 0));
       }
       if (request.t === 'suggest-delete') {
         parts ??= new Set(openRecords(this.body, this.options.me).flatMap((record) => record.parts.map((part) => part.id)));
