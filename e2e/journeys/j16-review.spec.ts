@@ -352,12 +352,11 @@ test("j16-review: a strike, then Backspace at the block's start, keeps the strik
   // Undo takes the join back and the strike stands; redo joins again.
   await keyboard.press(`${mod}+z`);
   await acked(ben, docId, 'the undo');
-  await expect(body, 'split again').not.toContainText('Intro line stays.bc');
-  await expect(body).toContainText('bc tail.');
-  await expect(body).not.toContainText('abc');
+  const blocks = () => body.evaluate((root) => [...root.children].map((block) => block.textContent ?? ''));
+  await expect.poll(blocks, { message: 'split again, without the struck "a"', timeout: BIND_TIMEOUT }).toEqual(['Intro line stays.', 'bc tail.', 'Closing line stays too.']);
   await keyboard.press(`${mod}+Shift+z`);
   await acked(ben, docId, 'the redo');
-  await expect(body, 'joined again').toContainText('Intro line stays.bc tail.');
+  await expect.poll(blocks, { message: 'joined again', timeout: BIND_TIMEOUT }).toEqual(['Intro line stays.bc tail.', 'Closing line stays too.']);
   await expect(body).not.toContainText('abc');
 
   // The owner's Edit-mode body paints the old block struck, and the card adds the moved text without the "a".
