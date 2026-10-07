@@ -69,6 +69,9 @@ export const linearImportStats = { cut: 0, spent: 0, peakLineShare: 0, peakImpor
 // callback), besides the nodes it makes; each node made (a split part, the transformer's nodes); a tab node.
 const VISIT_COST = 32;
 const APPLY_COST = 1_024;
+// A text-match callback besides moss's color one (which reads only its match and sets one style): unescapes, styles and
+// replaces.
+const CALLBACK_COST = 2_048;
 const NODE_COST = 4_096;
 const TAB_COST = 6_144;
 // A read of the paragraph's text and children, per character.
@@ -81,7 +84,7 @@ const NATIVE = 1;
 const LINEAR_RESCAN = 64;
 const FORMAT_SCAN = 16;
 // Each format search over a prefix, besides its characters: its slices, scans and arrays.
-const FORMAT_CALL = 2_048;
+const FORMAT_CALL = 4_096;
 // Each delimiter run past one per DELIMITER_SPACING characters of the text the format search reads: its flanking
 // checks and its turn in Lexical's emphasis pass, which FORMAT_SCAN covers at ordinary densities.
 const DELIMITER = 1_024;
@@ -531,7 +534,7 @@ function $importInline(top: TextNode, index: FormatIndex, matchers: TextMatchTra
         chargeReplace(foundMatch.transformer, foundMatch.match);
         // A callback whose nodes grow with its match is paid for before it runs.
         prepaid = nodesAtMost(foundMatch.transformer, foundMatch.match);
-        budget.spend(NODE_COST * prepaid);
+        budget.spend(NODE_COST * prepaid + (foundMatch.transformer.importRegExp?.source === COLOR_TRANSFORMER_IMPORT_REGEXP.source ? 0 : CALLBACK_COST));
         result = $importMatch(textNode, foundMatch);
         endIndex = foundMatch.endIndex;
       } else {
