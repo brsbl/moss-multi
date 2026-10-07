@@ -131,6 +131,21 @@ A task counts only after an independent checker passes it on green CI. Each mile
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
 
+### From M4's Slop Cop review (PR #6 @ 80d6932, 2026-10-06)
+
+- Notification inserts are not conditioned on live recipient access, and access is checked serially per recipient (apps/web/src/api/comments.ts:145-173 (canOpen, notifyComment)). Use one set-based INSERT .
+- Suggestion G3 and the preview miss deletions from Yjs formatting cleanup transactions (spike, unwired) (packages/core/src/suggest/apply.ts:452-460). Type the mirror roots before hydration, collect every deleteSet produced by apply through cleanup, and run G3 over that complete set before landing.
+- Suggestion accept G8 ignores untouched and withheld payload bytes (spike, unwired) (packages/sync/src/suggest/review.ts:205-209). Have the payload store supply the authoritative total.
+- Comment composers discard drafts before the async request succeeds (apps/web/src/host/comments/adapter.ts:132-150). Await a structured result before clearing the composer, or keep failed submissions as retryable drafts with their anchor.
+- Block comment entry points are gated on body editability, so commenters cannot comment on blocks (vendor/moss/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx:374-375 (also ChartNode, SketchNode, MediaNodeHeader)). Gate the block comment affordance on comment permission and give the read-only tools a nodeKey composer.
+- Mention roster omits inherited folder and vault collaborators (apps/web/src/host/comments/people.ts:35-47). Add a scoped roster of effective collaborators that dedupes inherited and direct grants and respects link-only access.
+- Decorator active and hover classes are toggled per comment and never cleared for removed blocks (apps/web/src/host/comments/paint.ts:155-162). Combine the active and hover state per element, toggle each element once, and clear elements that left the paint set.
+- Reserved-writer flush filters every live R clock for each anchor overwrite (packages/sync/src/doc/comments-guard.ts:61-65). Keep live clocks in an ordered range structure and include writer work in cost accounting.
+- Unthrottled mousemove measures every comment range on each pointer event (vendor/moss/packages/desktop/src/renderer/editor/components/CommentUIWrapper.tsx:525-530). Coalesce events per animation frame and narrow candidates by caret or DOM position, or cache geometry with invalidation.
+- paint() extracts all highlighted text on every edit for an event nothing consumes (apps/web/src/host/comments/paint.ts:80-82). Remove the event or put it behind an explicit opt-in debug hook.
+- The suggestion-spike deletion coverage check scans per character times spans (packages/core/src/suggest/apply.ts:514-515, 541-553). Merge the spans into sorted intervals, intersect them per item, and limit the scan to the target range.
+- The suggestion-spike items (G3 cleanup, G8, coverage scan) were closed or re-checked in M5 (T5.R, T5.3; the M5 Slop Cop found them clean).
+
 - ~~T4.S3 (Anchor token budget before expansion) checker P2: `#gapOf` caches null for every visited item on any OverBudget, including running out of the start-dependent 4,096-struct left/right walks, so in a gap over 4,096 items a comment near the edge can force a comment near the middle to detach though its own walks would fit (safe: detached, never a jump or a rejected frame) → anchor follow-up: cache only start-independent failures.~~ → closed in T4.S3's second round: only running out of tokens is cached for the gap.
 - T4.S3 (Failed fragmented-gap struct walks are no longer shared across sibling comments) checker P2: `#gapOf` (`packages/core/src/anchor-frame.ts`) runs the left and right WALK_BUDGET walks outside the cache, so each hit comment in a fragmented gap over 2×WALK_BUDGET repeats ~8,193 struct ticks (e.g. a delete-only frame over 9,000 alternating one-character items with 2,000 comments costs ~14.3M ticks vs ~6.1K before); still within the per-hit-comment bound → anchor follow-up.
 - T4.S3 (Long-item and fragmented-gap tests do not go through DocDO persistence and restart) checker P2: anchor-cost runs CommentsHost directly, with no DocStore and no restart → anchor follow-up.
