@@ -283,7 +283,12 @@ export type ForkEvent =
   /** F holds text of a closed record with nothing unacked: rebuild F. */
   | { type: 'rebuild' }
   /** Input closed: `unsaved` is each block holding a change the server never acknowledged. */
-  | { type: 'refused'; reason: SuggestRefusal; unsaved: string[] };
+  | { type: 'refused'; reason: SuggestRefusal; unsaved: string[] }
+  /**
+   * A rewrite re-created these struck originals and their copies were removed: the step that moved them must never
+   * restore them (an undo restore is a new block the editor has not bound yet), so undo of that step leaves them out.
+   */
+  | { type: 'kept'; originals: IdSpan[] };
 
 /** A top-level block of the body: a paragraph-like element (XmlText) or a block decorator (XmlElement). */
 export type Block = Y.XmlText | Y.XmlElement;
@@ -417,7 +422,7 @@ function rewrittenIn(doc: Y.Doc, tr: Y.Transaction): [Y.ID, Y.ID][] {
       if (content instanceof Y.ContentType && (content.type instanceof Y.XmlText || content.type instanceof Y.XmlElement)) visit(content.type as Y.AbstractType<unknown>);
     }
   };
-  visit(doc.get('root', Y.XmlText));
+  visit(doc.get('root', Y.XmlText) as unknown as Y.AbstractType<unknown>);
   if (gone.length === 0 || made.length === 0) return [];
   return commonPairs(gone.map((token) => token.key), made.map((token) => token.key)).map(([i, j]) => [gone[i].id, made[j].id]);
 }
@@ -971,6 +976,14 @@ export class SuggestFork {
     }
     if (copies.size === 0) return;
     for (const entry of copies.values()) this.#copyOf.set(idKey(entry.copy), entry);
+    const originals = [...copies.values()].map(({ original }) => original).sort((x, y) => x.client - y.client || x.clock - y.clock);
+    const spans: IdSpan[] = [];
+    for (const { client, clock } of originals) {
+      const last = spans.at(-1);
+      if (last && last.client === client && last.clock + last.len === clock) last.len += 1;
+      else if (!last || last.client !== client || last.clock + last.len < clock) spans.push({ client, clock, len: 1 });
+    }
+    this.#emit({ type: 'kept', originals: spans });
     this.doc.transact(() => removeItems(this.doc, [...copies.values()].map(({ copy }) => copy)), KEEP_STRIKES);
   };
 

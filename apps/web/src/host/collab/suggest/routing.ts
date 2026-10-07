@@ -63,6 +63,27 @@ interface Strike {
   copies: IdSpan[];
 }
 
+type DeleteSet = Y.UndoManager['undoStack'][number]['deletions'];
+
+/** `set` less the ids in `spans`, as a new delete set. */
+function without(set: DeleteSet, spans: readonly IdSpan[]): DeleteSet {
+  const out = Y.mergeDeleteSets([set]);
+  for (const [client, ranges] of out.clients) {
+    let kept = ranges;
+    for (const span of spans) {
+      if (span.client !== client) continue;
+      const end = span.clock + span.len;
+      kept = kept.flatMap((range) => {
+        const to = range.clock + range.len;
+        if (to <= span.clock || range.clock >= end) return [range];
+        return [{ clock: range.clock, len: span.clock - range.clock }, { clock: end, len: to - end }].filter((part) => part.len > 0) as typeof ranges;
+      });
+    }
+    out.clients.set(client, kept);
+  }
+  return out;
+}
+
 /** Re-creating or removing struck items: not an undo step of the binding's, but forwarded like any edit of F. */
 const RESTORE = Symbol('suggest-restore');
 
@@ -119,8 +140,11 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
   /** Each struck item undo re-created, by the original's id. */
   const restoredAs = new Map<string, Y.ID>();
   let watched: Y.UndoManager | null = null;
+  /** Struck originals a rewrite re-created and the fork removed again: no undo step restores them. */
+  const keptOut: IdSpan[] = [];
   // Any new edit of his own ends the redo history, strikes included.
-  const onStack = (event: { type: 'undo' | 'redo' }) => {
+  const onStack = (event: { type: 'undo' | 'redo'; stackItem?: { deletions: DeleteSet } }) => {
+    if (keptOut.length && event.stackItem) event.stackItem.deletions = without(event.stackItem.deletions, keptOut);
     if (event.type === 'undo' && watched && !watched.undoing && !watched.redoing) redone.length = 0;
   };
   const watch = (undo: Y.UndoManager | null) => {
@@ -524,6 +548,11 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
       return !native;
     }, P),
     fork.on((event) => {
+      // Before the undo manager records the step that re-created them.
+      if (event.type === 'kept') {
+        watch(manager());
+        keptOut.push(...event.originals);
+      }
       // A closed record's steps leave the binding's stacks (pane.tsx dropUndo); its strikes go with them.
       if (event.type === 'closed') {
         undone.length = 0;
