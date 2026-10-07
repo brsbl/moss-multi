@@ -59,12 +59,16 @@ export function reconcileBody(live: Y.Doc, target: SerializedEditorState, origin
   } catch (error) {
     throw new ReconcileRefused('unparseable', `target does not parse: ${(error as Error).message}`);
   }
-  return serverWrite(live, origin, () => {
+  const refusing = <T>(run: () => T): T => {
     try {
-      $reconcileRoot(target.root as unknown as SerializedNode, { payloads: PAYLOADS });
+      return run();
     } catch (error) {
       throw new ReconcileRefused('unparseable', `target does not reconcile: ${(error as Error).message}`);
     }
+  };
+  return serverWrite(live, origin, () => {
+    const rest = refusing(() => $reconcileRoot(target.root as unknown as SerializedNode, { payloads: PAYLOADS }));
+    return rest && (() => refusing(rest));
   }, admit, (mirror) => {
     if (exportMarkdown(mirror.editor) !== expected) throw new ReconcileRefused('mismatch', 'the reconciled body does not export the target');
   });

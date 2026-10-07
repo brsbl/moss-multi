@@ -1,10 +1,11 @@
 // The identity-preserving two-tier reconcile (A§14, A§17 step 4; SP12), re-derived on Lexical 0.48 from moss-collab's
 // tree-markdown reconcile. Run inside an update of an editor bound to the live doc's mirror, it edits the existing
 // tree into the target tree in place: a child whose whole subtree matches is untouched, a child whose identity
-// matches is updated in place (text by a prefix/suffix splice in the same Yjs items), and only children the target
+// matches is updated in place (text by a character diff in the same Yjs items), and only children the target
 // lacks or adds are removed or created. The V1 binding then emits ops for what changed alone, so untouched items,
 // the comment anchors on them and a peer's concurrent insert into them survive. The caller verifies the result.
-import { $getRoot, $isElementNode, $isTextNode, $parseSerializedNode, type ElementNode, type LexicalNode } from 'lexical';
+import { $getNodeByKey, $getRoot, $isElementNode, $isTextNode, $parseSerializedNode, type ElementNode, type LexicalNode, type NodeKey } from 'lexical';
+import { diffText, SERVER_CELL_BUDGET } from './text-diff.ts';
 
 export type SerializedNode = Record<string, unknown>;
 
@@ -18,6 +19,23 @@ export interface ReconcileOptions {
   /** By node type. Payload keys are not identity: a changed payload is written to the same node's payload. */
   payloads?: Readonly<Record<string, PayloadReconciler>>;
 }
+
+/** One replaced run of a text node, in the node's original offsets. */
+interface Splice {
+  at: number;
+  remove: number;
+  insert: string;
+}
+
+/** Text edits still to apply, each node's remaining runs right to left. */
+type PendingText = Array<{ key: NodeKey; splices: Splice[] }>;
+
+/**
+ * The remaining text edits of a reconcile, to run in later editor updates until it returns false. The V1 binding
+ * turns a text change within one update into a single prefix/suffix splice, so a node changed in several places
+ * takes one update per changed run, or the unchanged text between the runs would get new items.
+ */
+export type $ReconcileRest = () => boolean;
 
 /** Own props `updateFromJSON` re-applies in place, by kind and by type. */
 const ELEMENT_UPDATABLE = ['format', 'indent', 'direction', 'textFormat', 'textStyle'];
@@ -181,7 +199,41 @@ function align(a: readonly string[], b: readonly string[], weigh?: (i: number, j
   return pairs;
 }
 
-function $reconcileChildren(parent: ElementNode, targets: SerializedNode[], options: ReconcileOptions): void {
+/** The changed runs of `current` to `target`, by a character diff. */
+function splicesOf(current: string, target: string): Splice[] {
+  const splices: Splice[] = [];
+  let at = 0;
+  let open: Splice | null = null;
+  for (const op of diffText(current, target, SERVER_CELL_BUDGET)) {
+    if ('retain' in op) {
+      open = null;
+      at += op.retain;
+      continue;
+    }
+    if (!open) {
+      open = { at, remove: 0, insert: '' };
+      splices.push(open);
+    }
+    if ('delete' in op) {
+      open.remove += op.delete;
+      at += op.delete;
+    } else {
+      open.insert += op.insert;
+    }
+  }
+  return splices;
+}
+
+const applySplice = (text: string, { at, remove, insert }: Splice) => text.slice(0, at) + insert + text.slice(at + remove);
+
+/** What a payload node's content reads as, for likeness; other nodes read as their text. */
+function payloadTextOf(own: SerializedNode, options: ReconcileOptions): string | null {
+  const payload = options.payloads?.[String(own.type)];
+  if (!payload) return null;
+  return payload.keys.map((key) => (typeof own[key] === 'string' ? own[key] : stableStringify(own[key]))).join('\n');
+}
+
+function $reconcileChildren(parent: ElementNode, targets: SerializedNode[], options: ReconcileOptions, pending: PendingText): void {
   const live = parent.getChildren();
 
   // Tier 1: children whose whole subtree already matches stay untouched.
@@ -192,9 +244,9 @@ function $reconcileChildren(parent: ElementNode, targets: SerializedNode[], opti
   const liveOwn = live.map($ownOfNode);
   const liveId = live.map((node, i) => identityOf(liveOwn[i]!, $kindOfNode(node), options));
   const targetId = targets.map((json) => identityOf(ownOf(json), kindOf(json), options));
-  const liveText = live.map((node) => node.getTextContent());
+  const liveText = live.map((node, i) => payloadTextOf(liveOwn[i]!, options) ?? node.getTextContent());
   const textOfTarget = (json: SerializedNode): string =>
-    typeof json.text === 'string' ? json.text : childrenOf(json).map(textOfTarget).join('');
+    payloadTextOf(json, options) ?? (typeof json.text === 'string' ? json.text : childrenOf(json).map(textOfTarget).join(''));
 
   const match = new Map<number, { li: number; exact: boolean }>();
   const paired = new Set<number>();
@@ -228,7 +280,7 @@ function $reconcileChildren(parent: ElementNode, targets: SerializedNode[], opti
     const hit = match.get(ti);
     if (hit) {
       const node = live[hit.li]!;
-      if (!hit.exact) $reconcileNode(node, json, liveOwn[hit.li]!, options);
+      if (!hit.exact) $reconcileNode(node, json, liveOwn[hit.li]!, options, pending);
       prev = node;
       continue;
     }
@@ -249,21 +301,45 @@ function $reconcileChildren(parent: ElementNode, targets: SerializedNode[], opti
 }
 
 /** One identity-matched node: in-place props, its payload, then its children. */
-function $reconcileNode(node: LexicalNode, json: SerializedNode, own: SerializedNode, options: ReconcileOptions): void {
+function $reconcileNode(node: LexicalNode, json: SerializedNode, own: SerializedNode, options: ReconcileOptions, pending: PendingText): void {
   const target = ownOf(json);
   const payload = $kindOfNode(node) === 'other' ? options.payloads?.[node.getType()] : undefined;
   if (payload) {
     if (stableStringify(pick(own, payload.keys)) !== stableStringify(pick(target, payload.keys))) payload.$write(node, json);
   } else if (stableStringify(own) !== stableStringify(target)) {
-    node.updateFromJSON(json as never);
+    if ($isTextNode(node) && typeof own.text === 'string' && typeof json.text === 'string' && own.text !== json.text) {
+      // The last changed run lands now with the other props; the runs before it land in later updates.
+      const splices = splicesOf(own.text, json.text);
+      const last = splices.pop()!;
+      node.updateFromJSON({ ...json, text: applySplice(own.text, last) } as never);
+      if (splices.length) pending.push({ key: node.getKey(), splices });
+    } else {
+      node.updateFromJSON(json as never);
+    }
   }
-  if ($isElementNode(node)) $reconcileChildren(node, childrenOf(json), options);
+  if ($isElementNode(node)) $reconcileChildren(node, childrenOf(json), options, pending);
 }
 
-/** Reconciles the current tree onto `rootJson` (a serialized editor state's `root`), inside an editor update. */
-export function $reconcileRoot(rootJson: SerializedNode, options: ReconcileOptions = {}): void {
+/**
+ * Reconciles the current tree onto `rootJson` (a serialized editor state's `root`), inside an editor update. Returns
+ * the rest to run in later updates (see $ReconcileRest), or null when the tree is already the target's.
+ */
+export function $reconcileRoot(rootJson: SerializedNode, options: ReconcileOptions = {}): $ReconcileRest | null {
   const root = $getRoot();
   const own = $ownOfNode(root);
   if (stableStringify(own) !== stableStringify(ownOf(rootJson))) root.updateFromJSON(rootJson as never);
-  $reconcileChildren(root, childrenOf(rootJson), options);
+  const pending: PendingText = [];
+  $reconcileChildren(root, childrenOf(rootJson), options, pending);
+  if (!pending.length) return null;
+  return () => {
+    for (let k = pending.length - 1; k >= 0; k--) {
+      const entry = pending[k]!;
+      const node = $getNodeByKey(entry.key);
+      const splice = entry.splices.pop()!;
+      // A node gone since is left to the caller's verification.
+      if ($isTextNode(node)) node.setTextContent(applySplice(node.getTextContent(), splice));
+      if (!entry.splices.length || !$isTextNode(node)) pending.splice(k, 1);
+    }
+    return pending.length > 0;
+  };
 }
