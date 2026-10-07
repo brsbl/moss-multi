@@ -154,7 +154,24 @@ describe('linear inline import @p:tech-4', () => {
       const colors = Array.from({ length: 2_000 }, (_, i) => `#${((Math.imul(i + 1, 2654435761) >>> 8) & 0xffffff).toString(16).padStart(6, '0')}`).join(' ');
       const result = lossless(Array.from({ length: 12 }, (_, i) => `**b${i}** [x] ${colors}`).join('\n\n'));
       expect(result.cut).toBeGreaterThanOrEqual(6);
-      expect(result).toMatchObject({ kept: true, literal: true });
+      expect(result).toMatchObject({ kept: true, literal: true, reread: true });
+    }, 120_000);
+
+    // A line cut partway keeps its unconverted rest as the text it reads as (escapes decoded), so each export and
+    // import gives back the same markdown and text: no backslashes pile up.
+    it('keeps a cut line\'s rest exactly through repeated export and import', () => {
+      const before = linearImportStats.cut;
+      let editor = importMarkdown(`quokka ${'[a](b) '.repeat(150_000)}tail a\\\\b \\_ _ *c* \`d\` \\\\\\\\ \\*`);
+      expect(linearImportStats.cut - before).toBeGreaterThan(0);
+      const text = textOf(editor);
+      expect(text.slice(-30)).toBe('[a](b) tail a\\b _ _ *c* `d` \\\\ *'.slice(-30));
+      const exports: string[] = [];
+      for (let round = 0; round < 3; round += 1) {
+        exports.push(exportMarkdown(editor));
+        editor = importMarkdown(exports[round]);
+        expect(textOf(editor) === text).toBe(true);
+      }
+      expect(exports[1] === exports[0] && exports[2] === exports[0]).toBe(true);
     }, 120_000);
   });
 
