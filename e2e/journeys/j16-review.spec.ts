@@ -412,3 +412,70 @@ test('j16-review: a whole list item struck, then Backspace once more, leaves the
   expect(accepted).toContain('alpha item');
   expect(accepted).toContain('gamma item');
 });
+
+test('j16-review: adjacent strikes made right to left, a join, then full undo and redo, keep the characters in order through accept @p:mean-2 @p:R17', async ({ actors }) => {
+  const { ada, ben, docId } = await sharedNote(actors, 'Intro line stays.\n\nabc tail.\n\nClosing line stays too.');
+  await openIn(ben, docId, 'suggest');
+  await openIn(ada, docId, 'edit');
+  await actors.requireDistinct(2);
+  const { keyboard } = ben.page;
+  const body = ui.body(ben, docId);
+  const blocks = () => body.evaluate((root) => [...root.children].map((block) => block.textContent ?? ''));
+
+  // After "b": Backspace strikes "b", then "a", then joins.
+  await caret(ben, docId, 'abc tail.', 2);
+  for (let i = 0; i < 3; i++) {
+    await keyboard.press('Backspace');
+    await acked(ben, docId, `Backspace ${i + 1}`);
+  }
+  await expect.poll(blocks, { message: 'joined without "a" and "b"', timeout: BIND_TIMEOUT }).toEqual(['Intro line stays.c tail.', 'Closing line stays too.']);
+  const rounds: [string, string[]][] = [
+    [`${mod}+z`, ['Intro line stays.', 'abc tail.', 'Closing line stays too.']],
+    [`${mod}+Shift+z`, ['Intro line stays.c tail.', 'Closing line stays too.']],
+    [`${mod}+z`, ['Intro line stays.', 'abc tail.', 'Closing line stays too.']],
+  ];
+  for (const [key, expected] of rounds) {
+    for (let i = 0; i < 3; i++) {
+      await keyboard.press(key);
+      await acked(ben, docId, `${key} ${i + 1}`);
+    }
+    await expect.poll(blocks, { message: `${key} three times, in order`, timeout: BIND_TIMEOUT }).toEqual(expected);
+  }
+
+  await expect(button(ada)).toHaveAttribute('aria-label', /1 open/, { timeout: BIND_TIMEOUT });
+  const { card } = await cardRows(ada);
+  await card.getByRole('button', { name: 'Accept' }).click();
+  await expect(cards(ada, 'accepted')).toHaveCount(1, { timeout: BIND_TIMEOUT });
+  await expect.poll(() => content(ada, docId), { message: 'accept lands the original text', timeout: BIND_TIMEOUT }).toContain('Intro line stays.\n\nabc tail.\n\nClosing line stays too.');
+});
+
+test('j16-review: Backspace beside an empty paragraph removes only that paragraph, and strikes either side of live text stay acceptable @p:mean-2 @p:R17', async ({ actors }) => {
+  const { ada, ben, docId } = await sharedNote(actors, 'Intro line here.\n\na**b**c tail.\n\nClosing line too.');
+  await openIn(ben, docId, 'suggest');
+  await openIn(ada, docId, 'edit');
+  await actors.requireDistinct(2);
+  const { keyboard } = ben.page;
+  const body = ui.body(ben, docId);
+  const blocks = () => body.evaluate((root) => [...root.children].map((block) => block.textContent ?? ''));
+
+  await caret(ben, docId, 'Intro line here.', 'Intro line here.'.length);
+  await keyboard.press('Enter');
+  await acked(ben, docId, 'the empty paragraph');
+  await expect.poll(blocks, { timeout: BIND_TIMEOUT }).toEqual(['Intro line here.', '', 'abc tail.', 'Closing line too.']);
+  await caret(ben, docId, 'c tail.', 1);
+  await keyboard.press('Backspace');
+  await acked(ben, docId, 'the strike of "c"');
+  await caret(ben, docId, 'a', 1);
+  await keyboard.press('Backspace');
+  await acked(ben, docId, 'the strike of "a"');
+  await keyboard.press('Backspace');
+  await acked(ben, docId, 'the Backspace at the block start');
+  await expect.poll(blocks, { message: 'only the empty paragraph went', timeout: BIND_TIMEOUT }).toEqual(['Intro line here.', 'abc tail.', 'Closing line too.']);
+  await expect.poll(async () => (await painted(ben, 'suggest-delete')).sort(), { message: 'both strikes still paint', timeout: BIND_TIMEOUT }).toEqual(['a', 'c']);
+
+  await expect(button(ada)).toHaveAttribute('aria-label', /1 open/, { timeout: BIND_TIMEOUT });
+  const { card } = await cardRows(ada);
+  await card.getByRole('button', { name: 'Accept' }).click();
+  await expect(cards(ada, 'accepted')).toHaveCount(1, { timeout: BIND_TIMEOUT });
+  await expect.poll(() => content(ada, docId), { message: 'accept removes only the struck characters', timeout: BIND_TIMEOUT }).toContain('Intro line here.\n\n**b** tail.\n\nClosing line too.');
+});

@@ -8,7 +8,7 @@ import { describeHunks } from '@moss-multi/core/suggest/describe';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import type { SuggestReply, SuggestRequest } from '@moss-multi/protocol/suggest';
 import {
-  $createRangeSelection, $getRoot, $setSelection, COMMAND_PRIORITY_EDITOR, DELETE_CHARACTER_COMMAND, REDO_COMMAND, UNDO_COMMAND, $getSelection, $isRangeSelection,
+  $createRangeSelection, $getRoot, $setSelection, type RangeSelection, COMMAND_PRIORITY_EDITOR, DELETE_CHARACTER_COMMAND, REDO_COMMAND, UNDO_COMMAND, $getSelection, $isRangeSelection,
   type LexicalEditor,
 } from 'lexical';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -113,6 +113,8 @@ function suggesting(markdown: string) {
     redo: () => run(() => {
       editor.dispatchCommand(REDO_COMMAND, undefined);
     }),
+    /** Any native edit, as one keystroke. */
+    edit: run,
     /** What the suggester sees in F. */
     text: () => editor.getEditorState().read(() => $getRoot().getTextContent()),
     dispose: () => {
@@ -360,6 +362,91 @@ describe('a strike, then a native join or unwrap at the block edge, keeps the st
     }
     const { body } = reviewed(pane);
     expect(body).toBe(exported(seededBody(NOTE)));
+  });
+
+  it('adjacent strikes made right to left, a join, then full undo: the block comes back in order; redo and undo again, then accept', () => {
+    const pane = suggesting(NOTE);
+    try {
+      pane.caret('abc', 2);
+      pane.press('Backspace');
+      pane.press('Backspace');
+      expect(pane.fork.struck().reduce((sum, span) => sum + span.len, 0), "'b', then 'a'").toBe(2);
+      pane.press('Backspace');
+      expect(pane.text()).toBe('Intro line stays.c tail.\n\nClosing line stays too.');
+      pane.undo();
+      pane.undo();
+      pane.undo();
+      expect(pane.text(), 'every character back, in order').toBe('Intro line stays.\n\nabc tail.\n\nClosing line stays too.');
+      expect(pane.fork.struck(), 'nothing struck').toEqual([]);
+      pane.redo();
+      pane.redo();
+      pane.redo();
+      expect(pane.text(), 'redo of all three').toBe('Intro line stays.c tail.\n\nClosing line stays too.');
+      pane.undo();
+      pane.undo();
+      pane.undo();
+      expect(pane.text(), 'and back once more, in order').toBe('Intro line stays.\n\nabc tail.\n\nClosing line stays too.');
+    } finally {
+      pane.dispose();
+    }
+    const { working, body } = reviewed(pane);
+    expect(working).toContain('Intro line stays.\n\nabc tail.');
+    expect(body, 'accept lands the original text').toBe(exported(seededBody(NOTE)));
+  });
+
+  it('adjacent strikes made right to left in a list item, an unwrap or join, then full undo: the item comes back in order', () => {
+    const LIST = '- alpha item\n- beta item\n- gamma item\n';
+    const pane = suggesting(LIST);
+    try {
+      pane.caret('beta', 2);
+      pane.press('Backspace');
+      pane.press('Backspace');
+      pane.press('Backspace');
+      expect(pane.text()).not.toContain('be');
+      expect(pane.text()).toContain('ta item');
+      pane.undo();
+      pane.undo();
+      pane.undo();
+      expect(pane.text(), 'the item back, in order').toContain('beta item');
+      pane.redo();
+      pane.redo();
+      pane.redo();
+      expect(pane.text()).not.toContain('be');
+      pane.undo();
+      pane.undo();
+      pane.undo();
+      expect(pane.text()).toContain('beta item');
+    } finally {
+      pane.dispose();
+    }
+    const { body } = reviewed(pane);
+    expect(body, 'accept lands the original list').toBe(exported(seededBody(LIST)));
+  });
+
+  it('Backspace beside an empty paragraph removes that paragraph only: strikes either side of live text stay valid', () => {
+    const BOLD = 'Intro line stays.\n\na**b**c tail.\n\nClosing line stays too.\n';
+    const pane = suggesting(BOLD);
+    try {
+      pane.caret('Intro', 'Intro line stays.'.length);
+      pane.edit(() => {
+        ($getSelection() as RangeSelection).insertParagraph();
+      });
+      expect(pane.text(), 'an empty paragraph').toBe('Intro line stays.\n\n\n\nabc tail.\n\nClosing line stays too.');
+      pane.caret('c tail', 1);
+      pane.press('Backspace');
+      pane.caret('a', 1);
+      pane.press('Backspace');
+      expect(pane.fork.struck(), "'c' and 'a'").toHaveLength(2);
+      pane.press('Backspace');
+      expect(pane.text(), 'the empty paragraph went; the block and its struck text stay').toBe('Intro line stays.\n\nabc tail.\n\nClosing line stays too.');
+      expect(pane.fork.struck(), 'both strikes stand').toHaveLength(2);
+    } finally {
+      pane.dispose();
+    }
+    const { record, working, body } = reviewed(pane);
+    expect(record.parts, 'both strikes are parts').toHaveLength(2);
+    expect(working).toContain('Intro line stays.\n\n**b** tail.');
+    expect(body, 'accept removes only the struck characters').toContain('Intro line stays.\n\n**b** tail.\n\nClosing line stays too.');
   });
 
   it('reject and withdraw of a strike-then-join leave the body byte-identical', () => {
