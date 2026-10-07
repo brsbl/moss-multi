@@ -6,48 +6,16 @@
 import type { Locator } from '@playwright/test';
 import type { Actor } from '../lib/actors.ts';
 import {
-  APP_STATE_ATTR, BODY_BINDING_ATTR, EDIT_MODE_ATTR, SUGGEST_MARK_ATTR, SUGGEST_REFUSED_ATTR, SUGGESTION_ACTIVE_ATTR, SUGGESTION_CARD_ATTR,
-  SUGGESTION_ID_ATTR, SUGGESTION_ROW_ATTR, SUGGESTION_STATUS_ATTR, SUGGESTIONS_BUTTON_ATTR, SUGGESTIONS_PANEL_ATTR, SYNC_UNACKED_ATTR,
+  SUGGEST_MARK_ATTR, SUGGEST_REFUSED_ATTR, SUGGESTION_ACTIVE_ATTR, SUGGESTION_CARD_ATTR, SUGGESTION_ID_ATTR, SUGGESTION_ROW_ATTR,
+  SUGGESTION_STATUS_ATTR, SUGGESTIONS_BUTTON_ATTR, SUGGESTIONS_PANEL_ATTR, SYNC_UNACKED_ATTR,
 } from '../lib/contract.ts';
 import { grantDoc } from '../lib/grants.ts';
+import { BIND_TIMEOUT, caret, content, mod, openIn, painted, settled as acked } from '../lib/suggest.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
-const BOOT_TIMEOUT = 30_000;
-const BIND_TIMEOUT = 15_000;
 const NOTE = 'Keep every original word.\n\nSecond paragraph here.';
 
 type Actors = Parameters<Parameters<typeof test>[2]>[0]['actors'];
-
-const content = async (actor: Actor, docId: string): Promise<string> => (await actor.context.request.get(`/api/docs/${docId}/content`)).text();
-
-const frames = (actor: Actor) => actor.page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-
-async function caret(actor: Actor, docId: string, text: string, offset: number): Promise<void> {
-  await ui.body(actor, docId).evaluate((root, { text, offset }) => {
-    (root as HTMLElement).focus();
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-      const at = (node.textContent ?? '').indexOf(text);
-      if (at < 0) continue;
-      const range = document.createRange();
-      range.setStart(node, at + offset);
-      range.collapse(true);
-      const selection = window.getSelection()!;
-      selection.removeAllRanges();
-      selection.addRange(range);
-      return;
-    }
-    throw new Error(`no body text "${text}"`);
-  }, { text, offset });
-  await frames(actor);
-}
-
-async function openIn(actor: Actor, docId: string, mode: 'suggest' | 'review' | 'edit'): Promise<void> {
-  await actor.goto(`/d/${docId}`);
-  await actor.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: BOOT_TIMEOUT });
-  await expect(ui.pane(actor, docId)).toHaveAttribute(EDIT_MODE_ATTR, mode, { timeout: BIND_TIMEOUT });
-  await expect(ui.body(actor, docId)).toHaveAttribute(BODY_BINDING_ATTR, mode === 'review' ? 'readonly' : 'live', { timeout: BIND_TIMEOUT });
-}
 
 /** The suggester types `text` at `offset` into the body text holding `at`; it is sent, acknowledged and never refused. */
 async function suggestText(actor: Actor, docId: string, at: string, offset: number, text: string): Promise<void> {
@@ -310,18 +278,6 @@ test('j16-review: a word replacement reads as the word removed and the word adde
   await expect.poll(() => content(ada, docId), { timeout: BIND_TIMEOUT }).toContain('We keep the legacy importer.');
   expect(await content(ada, docId)).toContain('Line 9');
 });
-
-const mod = process.platform === 'darwin' ? 'Meta' : 'Control';
-
-/** The ranges painted `::highlight(name)` in this page, as their text. */
-const painted = (actor: Actor, name: string): Promise<string[]> =>
-  actor.page.evaluate((highlight) => [...((CSS as unknown as { highlights?: Map<string, Set<Range>> }).highlights?.get(highlight) ?? [])].map((range) => range.toString()), name);
-
-async function acked(actor: Actor, docId: string, what: string): Promise<void> {
-  const pane = ui.pane(actor, docId);
-  await expect(pane, `${what}: acknowledged`).toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout: BIND_TIMEOUT });
-  await expect(pane, `${what}: never refused`).toHaveAttribute(SUGGEST_REFUSED_ATTR, '0');
-}
 
 /** The open card's inserted and deleted row texts, once its preview has loaded. */
 async function cardRows(actor: Actor): Promise<{ card: Locator; inserted: string[]; deleted: string[] }> {

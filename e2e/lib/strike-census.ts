@@ -5,10 +5,11 @@
 import type { Locator } from '@playwright/test';
 import type { Actor } from './actors.ts';
 import {
-  APP_STATE_ATTR, BODY_BINDING_ATTR, EDIT_MODE_ATTR, SUGGEST_REFUSED_ATTR, SUGGESTION_CARD_ATTR, SUGGESTION_ROW_ATTR, SUGGESTION_STATUS_ATTR,
-  SUGGESTIONS_BUTTON_ATTR, SUGGESTIONS_PANEL_ATTR, SYNC_UNACKED_ATTR,
+  SUGGEST_REFUSED_ATTR, SUGGESTION_CARD_ATTR, SUGGESTION_ROW_ATTR, SUGGESTION_STATUS_ATTR, SUGGESTIONS_BUTTON_ATTR, SUGGESTIONS_PANEL_ATTR,
+  SYNC_UNACKED_ATTR,
 } from './contract.ts';
 import { grantDoc } from './grants.ts';
+import { BIND_TIMEOUT, content, frames, mod, openIn } from './suggest.ts';
 import { expect, test, ui } from './test.ts';
 
 type Actors = Parameters<Parameters<typeof test>[2]>[0]['actors'];
@@ -27,10 +28,6 @@ const KEYS: Key[] = ['Backspace at the start', 'Delete at the end', 'Delete afte
 type Where = 'start' | 'end' | 'span' | 'whole' | 'apart';
 const WHERES: Where[] = ['start', 'end', 'span', 'whole', 'apart'];
 const TEXTLESS = new Set<Kind>(['code block', 'decorator', 'empty paragraph']);
-
-const BOOT_TIMEOUT = 30_000;
-const BIND_TIMEOUT = 15_000;
-const mod = process.platform === 'darwin' ? 'Meta' : 'Control';
 
 interface Combo {
   key: Key;
@@ -99,8 +96,6 @@ function sectionOf(combo: Combo, leading: boolean): string[] {
   if (combo.bKind !== 'empty paragraph') blocks.push(blockOf(combo.bKind, combo.b, 'b', combo.tag));
   return blocks;
 }
-
-const frames = (actor: Actor) => actor.page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 
 /** The viewport point of the boundary at `offset` in the body text holding `text`. */
 async function pointOf(actor: Actor, docId: string, text: string, offset: number): Promise<{ x: number; y: number }> {
@@ -187,8 +182,6 @@ async function readBody(actor: Actor, docId: string, tags: readonly string[] | n
   }, tags);
 }
 
-const content = async (actor: Actor, docId: string, view = ''): Promise<string> =>
-  (await actor.context.request.get(`/api/docs/${docId}/content${view ? `?view=${view}` : ''}`)).text();
 const kept = (text: string) => text.replace(/[^a-z0-9]/g, '');
 /** Whether every character of `want` stays in `text`, in order: an export may add markup for the author's own breaks. */
 const keeps = (text: string, want: string): boolean => {
@@ -197,13 +190,6 @@ const keeps = (text: string, want: string): boolean => {
   return at === want.length;
 };
 const capitals = (text: string) => text.replace(/[^A-Z]/g, '');
-
-async function openIn(actor: Actor, docId: string, mode: 'suggest' | 'edit'): Promise<void> {
-  await actor.goto(`/d/${docId}`);
-  await actor.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: BOOT_TIMEOUT });
-  await expect(ui.pane(actor, docId)).toHaveAttribute(EDIT_MODE_ATTR, mode, { timeout: BIND_TIMEOUT });
-  await expect(ui.body(actor, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'live', { timeout: BIND_TIMEOUT });
-}
 
 async function noteFor(ada: Actor, ben: { principal: Parameters<typeof grantDoc>[2] }, markdown: string): Promise<string> {
   const response = await ada.context.request.post('/api/docs', { headers: { origin: new URL(ada.page.url()).origin }, data: { markdown } });
