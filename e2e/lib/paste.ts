@@ -10,8 +10,12 @@ import { expect, ui } from './test.ts';
 
 /** Past the undo capture window (1 s), so the next edit is its own step. */
 export const NEW_STEP_MS = 1_500;
-/** The longest a large paste may hold the tab at a time (T3.S6): about 2 s. */
-export const MAX_STALL_MS = 2_000;
+/**
+ * The longest a large paste may hold the tab at a time (T3.S6). 2 s is the local target. On CI runners the bound is
+ * 5 s per the M3 coordinator ruling: run 37642539162 measured one 2.5-3.0 s stall per paste leg there (one of our
+ * batches, 620-1900 ms, plus a separate ~2 s long task between batches that is not ours; profiling it is a follow-up).
+ */
+export const MAX_STALL_MS = process.env.CI ? 5_000 : 2_000;
 export const UNDO = 'ControlOrMeta+z';
 export const REDO = 'ControlOrMeta+Shift+z';
 
