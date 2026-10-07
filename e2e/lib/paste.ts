@@ -173,7 +173,7 @@ export const longestStall = (actor: Actor): Promise<{ ms: number; at: number; du
       .join(', ');
     // Each long animation frame in the stall: its script time, forced layout, then style and layout and the rest of
     // rendering, and its longest scripts.
-    type Frame = PerformanceEntry & { renderStart: number; styleAndLayoutStart: number; scripts: (PerformanceEntry & { invoker: string; forcedStyleAndLayoutDuration: number })[] };
+    type Frame = PerformanceEntry & { renderStart: number; styleAndLayoutStart: number; scripts: (PerformanceEntry & { invoker: string; forcedStyleAndLayoutDuration: number; sourceFunctionName: string; sourceURL: string; sourceCharPosition: number })[] };
     const frames = window as unknown as { __frames?: Frame[]; __frameObserver?: PerformanceObserver };
     frames.__frameObserver?.disconnect();
     const ms = (value: number) => Math.round(value);
@@ -184,7 +184,7 @@ export const longestStall = (actor: Actor): Promise<{ ms: number; at: number; du
         const render = entry.renderStart || end;
         const style = entry.styleAndLayoutStart || end;
         const scripts = [...entry.scripts].sort((a, b) => b.duration - a.duration).slice(0, 3)
-          .map((script) => `${script.invoker} ${ms(script.duration)} ms, forced layout ${ms(script.forcedStyleAndLayoutDuration)}`);
+          .map((script) => `${script.invoker} ${ms(script.duration)} ms (${script.sourceFunctionName || '?'} ${script.sourceURL.split('/').pop()}:${script.sourceCharPosition}), forced layout ${ms(script.forcedStyleAndLayoutDuration)}`);
         return `a ${ms(entry.duration)} ms frame (script ${ms(render - entry.startTime)}, rendering before layout ${ms(style - render)}, style and layout on ${ms(end - style)}; ${scripts.join('; ')})`;
       })
       .join(', ');
@@ -246,6 +246,7 @@ export async function pasteAndCheck(
   }
   await expect.poll(() => exported(ada, docId), { message: 'every pasted character lands in the doc', timeout }).toBe(want.whole);
   const stall = await longestStall(ada);
+  console.log(`longest stall: ${stall.ms} ms, ${stall.at} ms after the paste, during: ${stall.during}`);
   expect(stall.ms, `the tab is never held longer than ${maxStallMs} ms at a time while the paste lands (the longest began ${stall.at} ms after the paste, during: ${stall.during}; socket closes: ${wire?.closes.join(', ') || 'none seen'})`).toBeLessThanOrEqual(maxStallMs);
   const pastedPrint = await fingerprint(ada, docId);
   await expect.poll(() => fingerprint(ben, docId), { message: 'the collaborator sees the whole paste', timeout }).toEqual(pastedPrint);
