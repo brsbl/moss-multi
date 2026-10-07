@@ -323,4 +323,31 @@ describe('linear inline import @p:tech-4', () => {
     expect(small).toBeLessThan(3_000);
     expect(large).toBeLessThan(Math.max(8 * small, 400));
   }, 120_000);
+
+  // T3.S4's third check: table rows and notes of repeated short lines that took quadratic time or worse (moss's table
+  // parsing, its block scans and cell merges, Lexical's joining of a paragraph's lines and its tab split): each imports
+  // and exports at four times the size in about four times the time.
+  it.each([
+    ['a table cell of escaped backticks', (n: number) => `| \`${'\\`'.repeat(n)}x |`, 500],
+    ['a table row of escaped wiki openers', (n: number) => `| a | ${'\\[[a | '.repeat(n)} |`, 300],
+    ['a table row of backslashes', (n: number) => `| a | ${'\\'.repeat(n)} |`, 8_000],
+    ['a table row of empty cells', (n: number) => `| a ${'|'.repeat(n)}`, 20_000],
+    ['lines of one quote', (n: number) => '> a\n'.repeat(n), 4_000],
+    ['tab-indented lines', (n: number) => '\ta\n'.repeat(n), 1_000],
+    ['tab group openers', (n: number) => ':::tabs\n'.repeat(n), 2_000],
+    ['table rows of open wiki links', (n: number) => '| [[a\n'.repeat(n), 1_000],
+    ['table rows of open wiki links after a table', (n: number) => `| a | b |\n| --- | --- |\n${'| [[c | d |\n'.repeat(n)}`, 500],
+    ['pill openers between bold delimiters', (n: number) => `x **${'?['.repeat(n)}**`, 5_000],
+  ] as const)('imports and exports in linear time: %s', (_name, body, n) => {
+    const timed = (markdown: string) => {
+      const started = performance.now();
+      exportMarkdown(importMarkdown(markdown));
+      return performance.now() - started;
+    };
+    timed(body(n / 10));
+    const small = timed(body(n));
+    const large = timed(body(4 * n));
+    expect(small).toBeLessThan(3_000);
+    expect(large).toBeLessThan(Math.max(8 * small, 400));
+  }, 120_000);
 });

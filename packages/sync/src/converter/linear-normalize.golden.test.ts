@@ -66,6 +66,10 @@ describe('linear import normalization @p:tech-4', () => {
     ['isolated asterisks', `x ${'*x '.repeat(70_000)}`],
     ['isolated asterisks after a URL', `x https://example.com ${'*x '.repeat(70_000)}*`],
     ['isolated strikethrough after a pill', `x ?[a](b) ${'~~x '.repeat(50_000)}~~`],
+    ['pill openers between bold delimiters', `x **${'?['.repeat(100_000)}**`],
+    ['pill openers between strikethrough delimiters', `x ~~${'?['.repeat(100_000)}~~`],
+    ['pill openers between italic delimiters', `x *${'?['.repeat(100_000)}*`],
+    ['formatted pill openers inside bold highlight', `x **==${'*?['.repeat(70_000)}==**`],
     ['escaped blockquote openers', `x ${'&lt;blockquote '.repeat(15_000)}`],
     ['escaped blockquote openers after a closer', `x &lt;/blockquote&gt; ${'&lt;blockquote '.repeat(15_000)}`],
   ])('normalizes in linear time: %s', (_name, markdown) => {

@@ -17,6 +17,11 @@ export interface ConverterCase {
    * (dense short matches, tabs): the import keeps longer lines of them literally.
    */
   parityBytes?: number[];
+  /**
+   * False for lines that are mostly table cells: moss makes each cell's nodes at a fixed cost of microseconds, which
+   * no limit on a line's work can bound over a note of such lines, so they are held to the line budget only.
+   */
+  note?: false;
 }
 
 export const CONVERTER_CASES: Record<string, ConverterCase> = {
@@ -62,6 +67,23 @@ export const CONVERTER_CASES: Record<string, ConverterCase> = {
   'escaped blockquote openers': { run: '&lt;blockquote ' },
   'formatted wiki-link openers': { run: '*[[a', parityBytes: [40, 300] },
   'isolated asterisks after a URL': { run: ' *a', before: 'quokka https://example.com', parityBytes: [40, 300] },
+};
+
+// T3.S4's third check: moss's pill normalization rescanned a run of `?[` between two delimiters from every opener;
+// a run of wiki links inside one link label rescanned the label per match; moss's table rows counted the backslashes
+// before every character, matched escaped backticks with a cubic regex, merged cells after an escaped `[[` once per
+// cell, and made a cell for every pipe, nested tables included.
+export const NEW_CONVERTER_CASES: Record<string, ConverterCase> = {
+  'pill openers ?[ between bold delimiters': { run: '?[', before: 'quokka **', after: '**' },
+  'pill openers ?[ between strikethrough delimiters': { run: '?[', before: 'quokka ~~', after: '~~' },
+  'pill openers ?[ between italic delimiters': { run: '?[', before: 'quokka *', after: '*' },
+  'formatted pill openers *?[ inside bold highlight': { run: '*?[', before: 'quokka **==', after: '==**' },
+  'wiki links inside one link label': { run: '[[a]]', before: 'quokka [', after: '](x)', parityBytes: [40, 300] },
+  'table row of backslashes': { run: '\\', before: '| a | ', after: ' |' },
+  'table cell of escaped backticks': { run: '\\`', before: '| `', after: 'x |', parityBytes: [40, 2_000] },
+  'table row of escaped wiki openers': { run: '\\[[a | ', before: '| a | ', after: ' |', note: false },
+  'table row of empty cells': { run: '|', before: '| a ', after: '', note: false },
+  'table cell of escaped pipes': { run: '\\|', before: '| a | ', after: ' |', note: false },
 };
 
 /** The case's markdown, `bytes` long or just over. */
@@ -116,6 +138,36 @@ const paragraphs = (paragraph: (i: number) => string, size: number) => {
 export const NEAR_BUDGET_NOTES: Record<string, (size?: number) => string> = {
   '2 MB of palette paragraphs of 2,000 colors': (size = 2 * 1024 * 1024) => paragraphs(() => palette(2_000), size),
 };
+
+// Notes of one short line repeated with no blank line between, held to linear growth: Lexical rescanned a paragraph
+// or quote to join each line to it and split each line's tab from the paragraph's first child, moss scanned to the
+// end from every tab-group and blockquote opener, and a table re-imported a cell to absorb each broken row.
+export interface MultilineCase {
+  /** Before the repeated lines. */
+  head?: string;
+  line: string;
+}
+
+export const MULTILINE_CASES: Record<string, MultilineCase> = {
+  'lines of one paragraph': { line: 'a\n' },
+  'lines of one quote': { line: '> a\n' },
+  'lines of one callout': { head: '> [!note]\n', line: '> a\n' },
+  'tab-indented lines': { line: '\ta\n' },
+  'tab group openers': { line: ':::tabs\n' },
+  'tab group openers between blank lines': { line: ':::tabs\n\n' },
+  'blockquote openers': { line: '<blockquote>\n' },
+  'moss-html fence openers': { line: '```moss-html\n' },
+  'table rows of open wiki links': { line: '| [[a\n' },
+  'table rows of open formulas': { line: '| {{a\n' },
+  'table rows of open wiki links after a table': { head: '| a | b |\n| --- | --- |\n', line: '| [[c | d |\n' },
+  'blank lines': { line: '\n' },
+};
+
+/** The case's markdown, `bytes` long or just over. */
+export function multilineBody(c: MultilineCase, bytes: number): string {
+  const head = c.head ?? '';
+  return `${head}${c.line.repeat(Math.max(1, Math.ceil((bytes - head.length) / c.line.length)))}`;
+}
 
 export const LARGE_ORDINARY_NOTES: Record<string, (size?: number) => string> = {
   '2 MB of paragraphs of ten links, each followed by bold': (size = 2 * 1024 * 1024) =>
