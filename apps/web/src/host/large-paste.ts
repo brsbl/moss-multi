@@ -19,13 +19,22 @@ import {
 import * as Y from 'yjs';
 import { PIECE_BYTES } from './collab/outbox.ts';
 import { WRITE_REFUSED } from './collab/doc-session.ts';
+import { markLanding } from './collab/landing.ts';
 import { markUnacked } from './collab/unacked.ts';
 import { refuseInput } from './refusal.ts';
 
 const COLLAB_UNDO_MANAGER = Symbol.for('@lexical/yjs/UndoManager');
 
 /** Y.UndoManager, or the host's BodyUndo around one (`root`), which can hold a step open. */
-type CollabUndo = { stopCapturing(): void; doc?: Y.Doc; root?: { doc: Y.Doc }; hold?: () => () => void };
+type CollabUndo = {
+  stopCapturing(): void;
+  doc?: Y.Doc;
+  root?: { doc: Y.Doc };
+  hold?: () => () => void;
+  /** BodyUndo's steps; a step's `stamp` names the action that made it. */
+  undoStack?: readonly { stamp: unknown }[];
+  redone?: { stamp: unknown }[];
+};
 
 const collabUndo = (editor: LexicalEditor): CollabUndo | undefined =>
   (editor as LexicalEditor & Record<symbol, CollabUndo | undefined>)[COLLAB_UNDO_MANAGER];
@@ -445,6 +454,7 @@ class PasteJob {
 
   start(): void {
     markUnacked(this, true);
+    markLanding(this.editor, true);
     for (const type of INPUT_EVENTS) {
       window.addEventListener(type, this.flush, true);
       this.#stops.push(() => window.removeEventListener(type, this.flush, true));
@@ -498,7 +508,10 @@ class PasteJob {
     this.#ended = true;
     clearTimeout(this.#timer);
     for (const stop of this.#stops.splice(0)) stop();
-    if (jobs.get(this.editor) === this) jobs.delete(this.editor);
+    if (jobs.get(this.editor) === this) {
+      jobs.delete(this.editor);
+      markLanding(this.editor, false);
+    }
     markUnacked(this, false);
   }
 
@@ -538,11 +551,15 @@ class PasteJob {
     // so tagged never reaches the doc: each batch commits it first, on its own.
     const settle = () => editor.read(noop);
     settle();
+    const made: { spot: Spot | null } = { spot: null };
     pacing.time(first, () => editor.update(() => {
       if (!request.$restore()) $getRoot().selectEnd();
+      made.spot = $spot();
       placer.$first(first, request.$insert);
     }, { discrete: true }), layout);
+    let batches = 1;
     while (!placer.done) {
+      batches += 1;
       // Without a step to hold open (no collaborative undo), the rest goes in now.
       if (undo?.hold && !this.#flushing) yield;
       // Every later batch joins the paste's undo step (BodyUndo.hold), released once its update has committed.
@@ -554,12 +571,86 @@ class PasteJob {
       if (!nested) release?.();
     }
     undo?.stopCapturing();
+    // Its redo lands in batches too: the step is stamped with the paste, which a redo then pastes again.
+    const step = batches > 1 && made.spot ? undo?.undoStack?.at(-1) : undefined;
+    if (step && made.spot) {
+      step.stamp = request;
+      pasted.set(request, made.spot);
+    }
   }
+}
+
+/** Where a paste was made, as undo leaves it: the top-level block holding the caret, and the caret's text offset in it. */
+interface Spot {
+  index: number;
+  chars: number;
+}
+
+/** The collapsed caret as a Spot; null for a selection a Spot cannot hold. */
+function $spot(): Spot | null {
+  const selection = $getSelection();
+  if (!$isRangeSelection(selection) || !selection.isCollapsed()) return null;
+  const point = selection.anchor;
+  const node = point.getNode();
+  const top = node.getTopLevelElement() ?? (node.getParent() === null ? null : node);
+  if (top === null || !$isElementNode(top)) return null;
+  let chars = 0;
+  if (point.type === 'text') {
+    for (const text of top.getAllTextNodes()) {
+      if (text.is(node)) return { index: top.getIndexWithinParent(), chars: chars + point.offset };
+      chars += text.getTextContentSize();
+    }
+    return null;
+  }
+  if (!node.is(top) || point.offset !== 0) return null;
+  return { index: top.getIndexWithinParent(), chars: 0 };
+}
+
+/** Puts the caret at `spot`; false when the note no longer has its block. */
+function $toSpot(spot: Spot): boolean {
+  const top = $getRoot().getChildAtIndex(spot.index);
+  if (!$isElementNode(top)) return false;
+  let chars = spot.chars;
+  for (const text of top.getAllTextNodes()) {
+    const size = text.getTextContentSize();
+    if (chars <= size) {
+      text.select(chars, chars);
+      return true;
+    }
+    chars -= size;
+  }
+  if (chars > 0) return false;
+  top.selectStart();
+  return true;
+}
+
+/** The pastes that landed in batches, by the request their undo steps are stamped with, and where each was made. */
+const pasted = new WeakMap<object, Spot>();
+const redoing = new WeakSet<LexicalEditor>();
+
+/**
+ * Redo of a paste that landed in batches pastes it again, in batches, where it was made:
+ * Yjs would redo it in one transaction, and Lexical would place and lay it all out at once, holding the tab for as
+ * long as one unbatched paste did. The new paste, like any new edit, ends the redo chain.
+ */
+function $redoInBatches(editor: LexicalEditor): boolean {
+  const undo = collabUndo(editor);
+  const top = undo?.redone?.at(-1);
+  const spot = top && typeof top.stamp === 'object' && top.stamp !== null ? pasted.get(top.stamp) : undefined;
+  if (!undo?.redone || !top || !spot) return false;
+  const request = top.stamp as PasteRequest;
+  undo.redone.pop();
+  pasteLarge(editor, { ...request, $restore: () => $toSpot(spot) });
+  return true;
 }
 
 /** Lands `request` in batches, after its scratch replay fits; a paste still landing in `editor` lands first. */
 export function pasteLarge(editor: LexicalEditor, request: PasteRequest): void {
   jobs.get(editor)?.flush();
+  if (!redoing.has(editor)) {
+    redoing.add(editor);
+    editor.registerCommand(REDO_COMMAND, () => $redoInBatches(editor), COMMAND_PRIORITY_CRITICAL);
+  }
   if (request.plan.units.length === 0) return;
   const job = new PasteJob(editor, request);
   jobs.set(editor, job);

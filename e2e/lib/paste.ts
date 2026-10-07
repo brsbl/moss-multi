@@ -88,24 +88,29 @@ export function expectWire(wire: Wire): void {
 /** Starts measuring the longest the page's main thread is held: the gap between 25 ms ticks, less the 25 ms. */
 export async function watchStalls(actor: Actor): Promise<void> {
   await actor.page.evaluate(() => {
-    const probe = window as unknown as { __stall: number; __stallTimer?: ReturnType<typeof setInterval> };
+    const probe = window as unknown as { __stall: number; __stallAt: number; __stallTimer?: ReturnType<typeof setInterval> };
     clearInterval(probe.__stallTimer);
     probe.__stall = 0;
-    let last = performance.now();
+    probe.__stallAt = 0;
+    const start = performance.now();
+    let last = start;
     probe.__stallTimer = setInterval(() => {
       const now = performance.now();
-      probe.__stall = Math.max(probe.__stall, now - last - 25);
+      if (now - last - 25 > probe.__stall) {
+        probe.__stall = now - last - 25;
+        probe.__stallAt = last - start;
+      }
       last = now;
     }, 25);
   });
 }
 
-/** The longest stall since watchStalls, in ms; measuring stops. */
-export const longestStall = (actor: Actor): Promise<number> =>
+/** The longest stall since watchStalls, in ms, and when it began, in ms from the start; measuring stops. */
+export const longestStall = (actor: Actor): Promise<{ ms: number; at: number }> =>
   actor.page.evaluate(() => {
-    const probe = window as unknown as { __stall: number; __stallTimer?: ReturnType<typeof setInterval> };
+    const probe = window as unknown as { __stall: number; __stallAt: number; __stallTimer?: ReturnType<typeof setInterval> };
     clearInterval(probe.__stallTimer);
-    return Math.round(probe.__stall);
+    return { ms: Math.round(probe.__stall), at: Math.round(probe.__stallAt) };
   });
 
 export async function setup(actors: Actors, stack: Stack, markdown?: string, { elsewhere = false } = {}) {
@@ -147,8 +152,8 @@ export async function pasteAndCheck(
   expect(busyMs, 'the paste keeps the tab responsive').toBeLessThan(maxBusyMs);
   await ui.waitAcked(ada, docId, timeout);
   await expect.poll(() => exported(ada, docId), { message: 'every pasted character lands in the doc', timeout }).toBe(want.whole);
-  const stallMs = await longestStall(ada);
-  expect(stallMs, `the tab is never held longer than ${maxStallMs} ms at a time while the paste lands`).toBeLessThanOrEqual(maxStallMs);
+  const stall = await longestStall(ada);
+  expect(stall.ms, `the tab is never held longer than ${maxStallMs} ms at a time while the paste lands (the longest began ${stall.at} ms after the paste)`).toBeLessThanOrEqual(maxStallMs);
   const pastedPrint = await fingerprint(ada, docId);
   await expect.poll(() => fingerprint(ben, docId), { message: 'the collaborator sees the whole paste', timeout }).toEqual(pastedPrint);
 

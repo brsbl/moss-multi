@@ -12,12 +12,16 @@ export type Ack = Extract<ServerEvent, { t: 'ack' }>;
 /** The note's own writes. */
 const NOTE = '';
 
+interface Write {
+  update: Uint8Array;
+  /** The clocks it reaches. */
+  ends: Map<number, number>;
+}
+
 interface Pending {
-  updates: Uint8Array[];
+  writes: Write[];
   acked: DeleteSet[];
   sv: Map<number, number>;
-  /** The clocks the writes reach, kept as each is written: merging megabytes of writes per ack held the tab. */
-  ends: Map<number, number>;
 }
 
 export class AckLedger {
@@ -31,17 +35,14 @@ export class AckLedger {
   /** A local write, as the doc emitted it: the note's, or payload `id`'s. */
   wrote(update: Uint8Array, id: string = NOTE): void {
     let pending = this.#pending.get(id);
-    if (!pending) this.#pending.set(id, (pending = { updates: [], acked: [], sv: new Map(), ends: new Map() }));
-    pending.updates.push(update);
-    for (const [client, clock] of Y.parseUpdateMeta(update).to) {
-      if ((pending.ends.get(client) ?? 0) < clock) pending.ends.set(client, clock);
-    }
+    if (!pending) this.#pending.set(id, (pending = { writes: [], acked: [], sv: new Map() }));
+    pending.writes.push({ update, ends: Y.parseUpdateMeta(update).to });
   }
 
   /** Replay only unacknowledged writes if a channel recovers without reconnecting. */
   pendingUpdate(id: string = NOTE): Uint8Array | null {
-    const updates = this.#pending.get(id)?.updates;
-    return updates?.length ? Y.mergeUpdates(updates) : null;
+    const writes = this.#pending.get(id)?.writes;
+    return writes?.length ? Y.mergeUpdates(writes.map((write) => write.update)) : null;
   }
 
   /** The payloads with unacked writes. */
@@ -58,10 +59,14 @@ export class AckLedger {
       for (const [client, clock] of Y.decodeStateVector(base64ToBytes(coverage.sv))) {
         if ((pending.sv.get(client) ?? 0) < clock) pending.sv.set(client, clock);
       }
-      // Structs past the acked vector settle nothing yet; only a covering vector needs the full check, write by write.
-      if ([...pending.ends].some(([client, clock]) => (pending.sv.get(client) ?? 0) < clock)) continue;
+      // Each write the acks cover settles on its own, so a large paste's batches leave the ledger as they are acked and
+      // a resync resends only what is still in flight. Structs past the acked vector settle nothing yet.
+      const reached = pending.writes.filter((write) => [...write.ends].every(([client, clock]) => (pending.sv.get(client) ?? 0) >= clock));
+      if (reached.length === 0) continue;
       const covered = Y.createSnapshot(Y.mergeDeleteSets(pending.acked), pending.sv);
-      if (pending.updates.every((update) => Y.snapshotContainsUpdate(covered, update))) this.#pending.delete(id);
+      const settled = new Set(reached.filter((write) => Y.snapshotContainsUpdate(covered, write.update)));
+      if (settled.size > 0) pending.writes = pending.writes.filter((write) => !settled.has(write));
+      if (pending.writes.length === 0) this.#pending.delete(id);
     }
     return this.#pending.size === 0;
   }
