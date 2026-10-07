@@ -4,8 +4,8 @@
 // Following each struck character through those operations says which new item stands for which struck original,
 // from the editor's own data: no prediction of Lexical's behaviour, and no match on character values.
 import {
-  $getEditor, $hasUpdateTag, $isTextNode, COLLABORATION_TAG, HISTORIC_TAG, LexicalNode, TextNode,
-  type EditorState, type LexicalEditor, type NodeKey,
+  $getEditor, $hasUpdateTag, $isTextNode, COLLABORATION_TAG, TextNode,
+  type EditorState, type LexicalEditor, type LexicalNode, type NodeKey,
 } from 'lexical';
 import type * as Y from 'yjs';
 
@@ -42,7 +42,9 @@ function active(): Tracer | null {
   const pending = pendingOf(editor);
   if (!tracer || !pending) return null;
   // The binding applying Yjs changes (a peer's, an undo's): it writes no copies, and its reads are already current.
-  if ($hasUpdateTag(COLLABORATION_TAG) || $hasUpdateTag(HISTORIC_TAG)) {
+  // Read only, never set: the binding tags an undo manager's changes this way.
+  // eslint-disable-next-line moss/no-historic-tag
+  if ($hasUpdateTag(COLLABORATION_TAG) || $hasUpdateTag('historic')) {
     tracer.state = null;
     return null;
   }
@@ -88,7 +90,9 @@ function install(): void {
   installed = true;
   const text = TextNode.prototype;
   const { splitText, mergeWithSibling, spliceText, setTextContent } = text;
-  const { replace } = LexicalNode.prototype;
+  // LexicalNode is exported as a type only; TextNode extends it directly.
+  const base = Object.getPrototypeOf(text) as LexicalNode;
+  const { replace } = base;
 
   text.splitText = function (this: TextNode, ...offsets: number[]): TextNode[] {
     const tracer = active();
@@ -159,7 +163,7 @@ function install(): void {
   } as TextNode['setTextContent'];
 
   const replaceNode = replace as (this: LexicalNode, replaceWith: LexicalNode, includeChildren?: boolean) => LexicalNode;
-  LexicalNode.prototype.replace = function (this: LexicalNode, replaceWith: LexicalNode, includeChildren?: boolean): LexicalNode {
+  base.replace = function (this: LexicalNode, replaceWith: LexicalNode, includeChildren?: boolean): LexicalNode {
     const tracer = active();
     const key = this.getKey();
     const before = $isTextNode(this) ? this.getTextContent() : null;
