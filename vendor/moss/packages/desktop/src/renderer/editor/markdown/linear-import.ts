@@ -79,6 +79,8 @@ const TAB_COST = 6_144;
 const PARAGRAPH_READ = 20;
 // Native regex and string scans take about a unit per character; the format search's scans take several.
 const NATIVE = 1;
+// Each character moss's normalization added to a line (its passes ran over the longer text).
+const NORMALIZED = 256;
 // A scan of linear-match.ts run again on the rest of a text once its match is passed: its pre-scan tests each
 // candidate opener and closer (a regex call apiece), several units per character, and a run of matches that starts
 // where its match does (wiki links inside one link label) passes and re-runs it once per match.
@@ -460,6 +462,8 @@ function $importInline(top: TextNode, index: FormatIndex, matchers: TextMatchTra
   const bounds = { before: top.getPreviousSibling(), after: top.getNextSibling() };
   const budget = new Budget(allowance, importBudget?.left ?? Infinity);
   budget.charge(tabCount * TAB_COST);
+  // The normalization that lengthened the line was work too.
+  if (own !== null && lineLength > own) budget.charge(NORMALIZED * (lineLength - own));
   const parent = top.getParent();
   const line: ActiveLine = {
     parentKey: parent?.getKey(),
