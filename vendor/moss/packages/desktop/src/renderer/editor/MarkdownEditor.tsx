@@ -150,7 +150,8 @@ import { TRASH_COPY } from '@moss-multi/host/retention';
 import { findEmail, schemelessUrlMatches } from '@moss-multi/host/autolink';
 // moss-multi seam: whole-paste (T3.S6): a large paste is parsed whole and lands in one update
 import { createEditor, type SerializedLexicalNode } from 'lexical';
-import { pasteBlocks } from '@moss-multi/host/large-paste';
+import { $insertBlocks, $replaceEmptyNote, measureEncoded, pasteBlocks, plainTextBytes, refusedOverCap } from '@moss-multi/host/large-paste';
+import { $withDocumentImport } from './markdown/fixes';
 // moss-multi seam: converter-split (A§12; S-conv §2.3)
 import { $convertMossCustomCodeNodes, $postImportNormalize, escapeHtmlEntities, normalizeMarkdownForImport, unescapeHtmlEntities } from './markdown/normalize';
 import { EDITOR_FONT_FAMILY_LABELS, type EditorSelectionFontFamily, HIGHLIGHT_COLOR_VARIABLES, HIGHLIGHT_YELLOW_VALUE, HIGHLIGHT_YELLOW_VAR, MARKDOWN_EDITOR_HTML_IMPORT, SERIF_FONT_FAMILY_STYLE, SERIF_FONT_FAMILY_VALUE, SERIF_OPTICAL_FONT_SIZE_ADJUST, STYLE_FONT_FAMILY_PROPERTY, STYLE_FONT_SIZE_ADJUST_PROPERTY, selectionFontFamilyFromStyleValue } from './markdown/text-style';
@@ -1030,8 +1031,9 @@ const insertMarkdownFromPaste = (editor: LexicalEditor, markdown: string): boole
   return true;
 };
 
-// moss-multi seam: whole-paste (T3.S6): the paste's top-level blocks, parsed off the live editor as one update would.
-const parseMarkdownPasteBlocks = (markdown: string, wholeNote: boolean): SerializedLexicalNode[] => {
+// moss-multi seam: whole-paste (T3.S6): the paste's top-level blocks, parsed off the live editor as one update would,
+// and the bytes they encode to in a note.
+const parseMarkdownPasteBlocks = (markdown: string, wholeNote: boolean): { blocks: SerializedLexicalNode[]; bytes: number } => {
   const parser = createEditor({
     namespace: 'moss-multi-paste',
     nodes: MARKDOWN_EDITOR_NODES,
@@ -1039,18 +1041,22 @@ const parseMarkdownPasteBlocks = (markdown: string, wholeNote: boolean): Seriali
       throw error;
     }
   });
+  const encoded = measureEncoded(parser);
   parser.update(
     () => {
       if (wholeNote) {
         $importNoteBody(markdown, { comments: {} });
         return;
       }
-      $convertFromMarkdownString(escapeHtmlEntities(normalizeMarkdownForImport(markdown)), MARKDOWN_EDITOR_TRANSFORMERS);
-      $postImportNormalize();
+      // No caret moves while parsing: with a selection, every block placed pays getIndexWithinParent().
+      $withDocumentImport(() => {
+        $convertFromMarkdownString(escapeHtmlEntities(normalizeMarkdownForImport(markdown)), MARKDOWN_EDITOR_TRANSFORMERS);
+        $postImportNormalize();
+      });
     },
     { discrete: true }
   );
-  return parser.getEditorState().toJSON().root.children;
+  return { blocks: parser.getEditorState().toJSON().root.children, bytes: encoded() };
 };
 
 // moss-multi seam: whole-paste (T3.S6): the whole paste in one update, never text chunks.
@@ -1065,21 +1071,21 @@ const insertLargeMarkdownPaste = (editor: LexicalEditor, rawMarkdown: string): b
     const only = root.getFirstChild();
     return root.getChildrenSize() === 1 && $isParagraphNode(only) && only.isEmpty();
   });
-  pasteBlocks(editor, parseMarkdownPasteBlocks(markdown, wholeNote), (nodes) => {
+  const { blocks, bytes } = parseMarkdownPasteBlocks(markdown, wholeNote);
+  if (refusedOverCap(editor, bytes)) {
+    return true;
+  }
+  pasteBlocks(editor, blocks, (nodes) => {
     if (nodes.length === 0 || !restoreSelectionForPaste(savedSelection)) {
       return;
     }
     if (wholeNote) {
-      $setSelection(null);
-      const root = $getRoot();
-      root.clear();
-      root.append(...nodes);
-      root.selectEnd();
+      $replaceEmptyNote(nodes);
       return;
     }
     const selection = $getSelection();
     if (selection) {
-      $insertGeneratedNodes(editor, nodes, selection);
+      $insertBlocks(nodes, selection, (some, at) => $insertGeneratedNodes(editor, some, at));
     }
   });
   return true;
@@ -1225,7 +1231,20 @@ export const registerPasteFormattingHandlers = (editor: LexicalEditor): (() => v
         return true;
       }
 
-      if (shouldForcePlainTextMarkdownPaste(pastedMarkdownCandidate)) {
+      // moss-multi seam: whole-paste (T3.S6): a large plain-text paste past the note's size cap is refused whole.
+      const forcedPlainText = shouldForcePlainTextMarkdownPaste(pastedMarkdownCandidate);
+      const plainText = forcedPlainText ? pastedMarkdownCandidate : plainTextPayload;
+      if (
+        (forcedPlainText || !(hasExplicitMarkdownPayload || shouldImportMarkdownFromPaste(pastedMarkdownCandidate))) &&
+        shouldChunkMarkdownPaste(plainText) &&
+        refusedOverCap(editor, plainTextBytes(editor, normalizeClipboardLineEndings(plainText)))
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        return true;
+      }
+
+      if (forcedPlainText) {
         const handled = insertPlainTextFromPaste(editor, pastedMarkdownCandidate);
         if (!handled) {
           return false;

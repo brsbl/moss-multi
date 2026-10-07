@@ -16,6 +16,8 @@ interface Pending {
   updates: Uint8Array[];
   acked: DeleteSet[];
   sv: Map<number, number>;
+  /** The clocks the writes reach, read once per write rather than per ack (a large paste is megabytes). */
+  ends?: Map<number, number>;
 }
 
 export class AckLedger {
@@ -31,6 +33,7 @@ export class AckLedger {
     let pending = this.#pending.get(id);
     if (!pending) this.#pending.set(id, (pending = { updates: [], acked: [], sv: new Map() }));
     pending.updates.push(update);
+    pending.ends = undefined;
   }
 
   /** Replay only unacknowledged writes if a channel recovers without reconnecting. */
@@ -53,6 +56,9 @@ export class AckLedger {
       for (const [client, clock] of Y.decodeStateVector(base64ToBytes(coverage.sv))) {
         if ((pending.sv.get(client) ?? 0) < clock) pending.sv.set(client, clock);
       }
+      // Structs past the acked vector settle nothing yet; only a covering vector needs the full check.
+      pending.ends ??= Y.parseUpdateMeta(Y.mergeUpdates(pending.updates)).to;
+      if ([...pending.ends].some(([client, clock]) => (pending.sv.get(client) ?? 0) < clock)) continue;
       const covered = Y.createSnapshot(Y.mergeDeleteSets(pending.acked), pending.sv);
       if (Y.snapshotContainsUpdate(covered, Y.mergeUpdates(pending.updates))) this.#pending.delete(id);
     }

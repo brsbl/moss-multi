@@ -1,0 +1,26 @@
+diff --git a/packages/desktop/src/renderer/editor/plugins/TableColumnLayoutPlugin.tsx b/packages/desktop/src/renderer/editor/plugins/TableColumnLayoutPlugin.tsx
+--- a/packages/desktop/src/renderer/editor/plugins/TableColumnLayoutPlugin.tsx
++++ b/packages/desktop/src/renderer/editor/plugins/TableColumnLayoutPlugin.tsx
+@@ -625,6 +625,9 @@ export function TableColumnLayoutPlugin(): null {
+       mutationObserver = new MutationObserver((mutations) => {
+         let shouldScheduleAll = false;
+         let removedNodes = false;
++        // moss-multi seam: whole-paste (T3.S6): one lookup per mutated element per batch. A paste of n blocks is n
++        // records on the editor root, and each lookup searched the whole note: 40,000 lines held the tab for 15 s.
++        const tableOfTarget = new Map<Node, HTMLTableElement | null>();
+ 
+         for (const mutation of mutations) {
+           if (mutation.type === 'childList' && mutation.removedNodes.length > 0) {
+@@ -654,7 +657,11 @@ export function TableColumnLayoutPlugin(): null {
+             continue;
+           }
+ 
+-          const targetTable = closestTableFromNode(mutation.target);
++          let targetTable = tableOfTarget.get(mutation.target);
++          if (targetTable === undefined) {
++            targetTable = closestTableFromNode(mutation.target);
++            tableOfTarget.set(mutation.target, targetTable);
++          }
+           if (targetTable) {
+             scheduleTableLayout(targetTable);
+             continue;

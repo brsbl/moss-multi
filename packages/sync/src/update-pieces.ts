@@ -69,7 +69,10 @@ function encodePiece(structs: Struct[], ds: DeleteSet | null): UpdatePiece {
 
 /**
  * `update` (Yjs v1, made from `doc`, which holds every struct in it) as pieces of at most about `limit` bytes. A
- * single block larger than `limit` stays one piece.
+ * single block larger than `limit` stays one piece. Pieces follow the update's client order, so the update must not
+ * have one client's structs depend on another client's in the same update: one session's writes (and their merged
+ * backlog) never do, since what they build on from peers the server already holds. Otherwise a piece can need a
+ * later one, which the DocDO refuses as a missing dependency.
  */
 export function splitUpdate(doc: Y.Doc, update: Uint8Array, limit: number): UpdatePiece[] {
   if (update.byteLength <= limit) return [{ update, ends: Y.parseUpdateMeta(update).to, deletes: true }];
