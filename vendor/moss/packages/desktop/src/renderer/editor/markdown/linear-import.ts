@@ -313,11 +313,12 @@ function $importInline(top: TextNode, index: FormatIndex, matchers: TextMatchTra
     if (error !== OVER_BUDGET) throw error;
     linearImportStats.cut += 1;
     // The rest of the line stays text, decoded as Lexical decodes each part it reaches: the part being run, the parts
-    // not reached yet and the parts whose unescape is pending (the top is the outer import's to unescape).
+    // not reached yet (unless code) and the parts whose unescape is pending, code or not (the top is the outer
+    // import's to unescape).
     if (frame) stack.push(frame);
     for (const rest of stack) {
-      const node = 'unescape' in rest ? rest.unescape : rest.top ? undefined : rest.node;
-      if (canContainTransformableMarkdown(node)) $unescape(node);
+      if ('unescape' in rest) $unescape(rest.unescape);
+      else if (!rest.top && canContainTransformableMarkdown(rest.node)) $unescape(rest.node);
     }
   } finally {
     activeLine = outerLine;
