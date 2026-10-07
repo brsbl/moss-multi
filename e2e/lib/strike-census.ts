@@ -232,7 +232,9 @@ async function play(ben: Actor, docId: string, combo: Combo, baseline: string, p
     await select(ben, docId, b!, 1);
     await press(ben, 'Backspace');
   } else if (combo.where === 'whole') {
-    await select(ben, docId, b!, 0, b!, b!.length);
+    // From its end to the line's start, as a keyboard user selects a block's text.
+    await select(ben, docId, b!, b!.length);
+    await press(ben, 'Shift+Home');
     await press(ben, 'Backspace');
   } else if (combo.where === 'apart') {
     await select(ben, docId, b!, 1);
@@ -271,6 +273,12 @@ async function play(ben: Actor, docId: string, combo: Combo, baseline: string, p
   await look(`after undo of ${combo.key}`, false);
   await press(ben, `${mod}+Shift+z`);
   await look(`after redo of ${combo.key}`);
+  // Backspace after a table or a block decorator selects that block, and a later key would act on it: the next
+  // combination starts from a fresh page.
+  if (combo.key === 'Backspace at the start' && (combo.aKind === 'table' || caretless(combo.aKind))) {
+    await expect(ui.pane(ben, docId), `${label}: acknowledged`).toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout: BIND_TIMEOUT });
+    await openIn(ben, docId, 'suggest');
+  }
 }
 
 /** The owner's review: Edit-mode paint, the working export, every card, then accept of each. */
@@ -289,18 +297,10 @@ async function review(ada: Actor, ben: Actor, docId: string, original: string, l
 
   const panel = ada.page.locator(`[${SUGGESTIONS_PANEL_ATTR}]`);
   const open: Locator = panel.locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_STATUS_ATTR}="open"]`);
-  // A card fetches its preview when it opens: each accept reads the panel afresh, since one accept moves the body
-  // under the others.
-  const reopen = async () => {
-    if (await panel.isVisible()) await ada.page.keyboard.press('Escape');
-    await expect(panel).toBeHidden();
-    await ada.page.locator(`[${SUGGESTIONS_BUTTON_ATTR}]`).click();
-    await expect(panel).toBeVisible();
-  };
-  await reopen();
+  if (!(await panel.isVisible())) await ada.page.locator(`[${SUGGESTIONS_BUTTON_ATTR}]`).click();
+  await expect(panel).toBeVisible();
   await expect.poll(() => open.count(), { message: `${label}: open cards`, timeout: BIND_TIMEOUT }).toBeGreaterThan(0);
   for (let guard = 0; guard < 40 && (await open.count()) > 0; guard += 1) {
-    if (guard > 0) await reopen();
     const card = open.first();
     const accept = card.getByRole('button', { name: 'Accept' });
     const more = card.getByRole('button', { name: /^Show all/ });
@@ -311,10 +311,19 @@ async function review(ada: Actor, ben: Actor, docId: string, original: string, l
     expect(capitals(inserted.join(' ')), `${label}: the card adds no struck capital (${inserted.join(' | ')})`).toBe('');
     const before = await open.count();
     await accept.click();
+    // A card's preview is fetched when its record changes, so accepting another record can leave it stale: the
+    // accept answers `changed` (409), the card fetches again and Accept is pressed again.
     const deadline = Date.now() + BIND_TIMEOUT;
+    let again = 0;
     while ((await open.count()) >= before) {
-      if (Date.now() > deadline) throw new Error(`${label}: the accept did not land: ${await card.innerText().catch(() => '(gone)')}`);
-      await ada.page.waitForTimeout(200);
+      const text = await card.innerText().catch(() => '');
+      if (text.includes('It changed while you reviewed it') && again < 3 && (await accept.isEnabled().catch(() => false))) {
+        again += 1;
+        ada.expectHttp(409, /\/suggestions\/[^/]+\/accept$/);
+        await accept.click();
+      }
+      if (Date.now() > deadline) throw new Error(`${label}: the accept did not land: ${text}`);
+      await ada.page.waitForTimeout(250);
     }
   }
   await expect.poll(async () => capitals(await content(ada, docId)), { message: `${label}: accept leaves every struck capital out`, timeout: BIND_TIMEOUT }).toBe('');
