@@ -43,10 +43,11 @@ export default {
     if (pathname === '/import') {
       const markdown = await request.text();
       const cutBefore = linearImportStats.cut;
+      const workBefore = linearImportStats.spent;
       imported = importMarkdown(markdown);
       const blocks = imported.getEditorState().read(() => $getRoot().getChildrenSize());
-      // Lines the inline import cut at its work budget (markdown/linear-import.ts).
-      return Response.json({ bytes: utf8(markdown), blocks, cut: linearImportStats.cut - cutBefore });
+      // Lines the inline import cut at its work budget (markdown/linear-import.ts), and the work it charged.
+      return Response.json({ bytes: utf8(markdown), blocks, cut: linearImportStats.cut - cutBefore, work: linearImportStats.spent - workBefore });
     }
     if (pathname === '/export') {
       if (!imported) return new Response('import first', { status: 409 });

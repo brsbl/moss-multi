@@ -99,7 +99,7 @@ jobs:
     needs: plan
     if: needs.plan.outputs.checks == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v6
@@ -157,7 +157,7 @@ jobs:
       - name: Converter in workerd (SP2)
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: node scripts/measure-converter.mjs
-        timeout-minutes: 15
+        timeout-minutes: 30
       # A missing converter golden is written here for review; it fails the run until committed.
       - name: Upload missing converter goldens
         if: ${{ failure() }}
