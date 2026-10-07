@@ -332,7 +332,7 @@ async function cardRows(actor: Actor): Promise<{ card: Locator; inserted: string
   return { card, inserted: await texts('insert'), deleted: await texts('delete') };
 }
 
-test("j16-review: a strike, then Backspace at the block's start, keeps the strike through the join, its undo and redo, the card and accept @p:mean-2 @p:R17", async ({ actors }) => {
+test("j16-review: a strike, then Backspace at the block's start, keeps the strike through the join, its undo and redo and the strike's, the card and accept @p:mean-2 @p:R17", async ({ actors }) => {
   const { ada, ben, docId } = await sharedNote(actors, 'Intro line stays.\n\nabc tail.\n\nClosing line stays too.');
   await openIn(ben, docId, 'suggest');
   await openIn(ada, docId, 'edit');
@@ -354,6 +354,13 @@ test("j16-review: a strike, then Backspace at the block's start, keeps the strik
   await acked(ben, docId, 'the undo');
   const blocks = () => body.evaluate((root) => [...root.children].map((block) => block.textContent ?? ''));
   await expect.poll(blocks, { message: 'split again, without the struck "a"', timeout: BIND_TIMEOUT }).toEqual(['Intro line stays.', 'bc tail.', 'Closing line stays too.']);
+  // Undo of the strike brings the "a" back; redo strikes it again, then joins again.
+  await keyboard.press(`${mod}+z`);
+  await acked(ben, docId, 'the undo of the strike');
+  await expect.poll(blocks, { message: 'the "a" is back', timeout: BIND_TIMEOUT }).toEqual(['Intro line stays.', 'abc tail.', 'Closing line stays too.']);
+  await keyboard.press(`${mod}+Shift+z`);
+  await acked(ben, docId, 'the redo of the strike');
+  await expect.poll(blocks, { message: 'the strike again', timeout: BIND_TIMEOUT }).toEqual(['Intro line stays.', 'bc tail.', 'Closing line stays too.']);
   await keyboard.press(`${mod}+Shift+z`);
   await acked(ben, docId, 'the redo');
   await expect.poll(blocks, { message: 'joined again', timeout: BIND_TIMEOUT }).toEqual(['Intro line stays.bc tail.', 'Closing line stays too.']);

@@ -286,6 +286,82 @@ describe('a strike, then a native join or unwrap at the block edge, keeps the st
     expect(body).not.toContain('abc');
   });
 
+  it('undo of the join and then of the strike brings the struck character back: F, the working view and accept match the note', () => {
+    const pane = suggesting(NOTE);
+    try {
+      pane.caret('abc', 1);
+      pane.press('Backspace');
+      pane.caret('abc', 0);
+      pane.press('Backspace');
+      pane.undo();
+      expect(pane.text(), 'the join taken back, the strike stands').toBe('Intro line stays.\n\nbc tail.\n\nClosing line stays too.');
+      pane.undo();
+      expect(pane.text(), 'the strike taken back: "a" is live again').toBe('Intro line stays.\n\nabc tail.\n\nClosing line stays too.');
+      expect(pane.fork.struck(), 'nothing struck').toEqual([]);
+    } finally {
+      pane.dispose();
+    }
+    const { record, working, body } = reviewed(pane);
+    expect(record.parts, 'no part left').toEqual([]);
+    expect(working).toContain('Intro line stays.\n\nabc tail.');
+    expect(body, 'accept lands the original text').toBe(exported(seededBody(NOTE)));
+  });
+
+  it('undo of the join and the strike, then redo of both: the struck character stays out again', () => {
+    const pane = suggesting(NOTE);
+    try {
+      pane.caret('abc', 1);
+      pane.press('Backspace');
+      pane.caret('abc', 0);
+      pane.press('Backspace');
+      pane.undo();
+      pane.undo();
+      expect(pane.text()).toBe('Intro line stays.\n\nabc tail.\n\nClosing line stays too.');
+      pane.redo();
+      expect(pane.text(), 'the strike again').toBe('Intro line stays.\n\nbc tail.\n\nClosing line stays too.');
+      pane.redo();
+      expect(pane.text(), 'the join again').toBe('Intro line stays.bc tail.\n\nClosing line stays too.');
+      pane.undo();
+      pane.undo();
+      expect(pane.text(), 'and back once more').toBe('Intro line stays.\n\nabc tail.\n\nClosing line stays too.');
+      pane.redo();
+      pane.redo();
+    } finally {
+      pane.dispose();
+    }
+    const { inserted, working, body } = reviewed(pane);
+    expect(inserted.join('')).toBe('bc tail.');
+    expect(working).toContain('Intro line stays.bc tail.');
+    expect(body).toContain('Intro line stays.bc tail.');
+    expect(body).not.toContain('abc');
+    expect(body).toContain('Closing line stays too.');
+  });
+
+  it('several strikes, a join, then undo of everything: every struck character comes back in place', () => {
+    const pane = suggesting(NOTE);
+    try {
+      pane.caret('abc', 1);
+      pane.press('Backspace');
+      pane.caret('abc', 3);
+      pane.press('Backspace');
+      pane.caret('abc', 7);
+      pane.press('Backspace');
+      pane.caret('abc', 0);
+      pane.press('Backspace');
+      expect(pane.text()).toBe('Intro line stays.b tal.\n\nClosing line stays too.');
+      pane.undo();
+      pane.undo();
+      expect(pane.text(), 'the last strike back').toBe('Intro line stays.\n\nb tail.\n\nClosing line stays too.');
+      pane.undo();
+      pane.undo();
+      expect(pane.text(), 'all back').toBe('Intro line stays.\n\nabc tail.\n\nClosing line stays too.');
+    } finally {
+      pane.dispose();
+    }
+    const { body } = reviewed(pane);
+    expect(body).toBe(exported(seededBody(NOTE)));
+  });
+
   it('reject and withdraw of a strike-then-join leave the body byte-identical', () => {
     for (const close of ['reject', 'withdraw'] as const) {
       const pane = suggesting(NOTE);
