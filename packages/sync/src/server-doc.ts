@@ -57,7 +57,7 @@ export function payloadSourceOf(live: Y.Doc): PayloadSource {
 
 const noop = () => {};
 /** Server bindings need the provider's shape, not a network: no cursor sync, no mutation listeners (A§12). */
-const provider = {
+export const provider = {
   awareness: { getLocalState: () => null, getStates: () => new Map(), on: noop, off: noop, setLocalState: noop, setLocalStateField: noop },
   connect: noop,
   disconnect: noop,

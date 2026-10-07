@@ -820,5 +820,3 @@ export function regRefs(doc: Y.Doc): Map<string, Y.AbstractType<unknown>[]> {
   visit(doc.get('root', Y.XmlText) as unknown as Y.AbstractType<unknown>);
   return refs;
 }
-
-export { spansOf };

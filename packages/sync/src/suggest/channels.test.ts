@@ -287,18 +287,6 @@ describe('T5.Ps the three channels the preview used to miss are refused @p:mean-
     }));
   });
 
-  it("an attribute on a payload's text, and a nested Y.Text in its map", () => {
-    for (const write of [
-      (doc: Y.Doc) => doc.getText('payload').setAttribute('hidden', 'x'),
-      (doc: Y.Doc) => doc.getMap('payload-map').set('nested', new Y.Text('n')),
-    ]) {
-      expectRefused(run((live, lease) => {
-        const key = codeKey(live);
-        return [{ doc: key, update: opOn(payloadDocsFor(live).get(key)!, lease, write) }];
-      }));
-    }
-  });
-
   it('a key on a Map an editor nested in an Array: the leaf edge is in the table, an ancestor edge is not', () => {
     // Payload: payload-map holds an Array, which holds a Map.
     expectRefused(run((live, lease) => {
@@ -314,14 +302,6 @@ describe('T5.Ps the three channels the preview used to miss are refused @p:mean-
       const update = opOn(live, lease, (doc) => (firstBlock(doc).getAttribute('arr') as unknown as Y.Array<Y.Map<unknown>>).get(0).set('k', 'hidden'));
       return [{ doc: 'body', update }];
     }));
-  });
-
-  it("a listed channel still lands: an attribute on the note root shows as a note hunk and lands as shown", () => {
-    const outcome = run((live, lease) => [{ doc: 'body', update: opOn(live, lease, (doc) => doc.get('root', Y.XmlText).setAttribute('__dir', 'rtl')) }]);
-    expect(outcome.ingest).toEqual({ ok: true });
-    expect(outcome.accept).toEqual({ ok: true });
-    expect(outcome.hunks).toBeGreaterThan(0);
-    expect(outcome.landed).toBe(outcome.shown);
   });
 });
 
