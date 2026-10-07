@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 79% done** (85 of 108 planned tasks verified)
+**Overall: 80% done** (86 of 108 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -10,7 +10,7 @@
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 15 / 15 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 9 / 9 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 9 / 9 | in progress |
-| M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
+| M6 History | Versions, view, diff, identity-preserving restore | 1 / 4 | |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
 
@@ -106,6 +106,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-06 — T5.3s verified: a suggestion whose fields, node types, map keys or payload ids use names like `__proto__` or `constructor` still previews and accepts correctly, and previewing a large structured suggestion stays fast.
 - 2026-10-06 — T5.S2 verified: reading a note's working view with open suggestions now spends the reader's preview budget before reaching the note, each note bounds and caches how often it computes that view, and each open suggestion's checks run once per computation.
 - 2026-10-07 — T5.S1 verified: a character a suggester strikes stays struck when an edit such as a join, unwrap, split, retyped block or its undo re-creates the text around it, so the reviewer's card, paint and accept show and land exactly the strike.
+- 2026-10-07 — T6.1 verified: a note body and its payload docs can be reconciled to a target version in place, keeping the Yjs identity of untouched blocks so a peer's concurrent insert and comment anchors survive, and a result that would not export the target is refused.
 
 ## T1.1s identity audit
 
@@ -138,6 +139,12 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T6.1's checker (dfed590, 2026-10-07)
+
+- T6.1 checker P2 (reordering blocks recreates one moved block, so a concurrent peer edit and anchors on it are lost; Codex P1, downgraded): Yjs XmlText has no move primitive, so a reorder must delete and re-create one side; the lost peer insert and orphaned comment follow PRODUCT item 18.
+- T6.1 checker P2 ($writeProps copies any __<name> field named by the target JSON): input hardening for packages/sync/src/reconcile.ts; use a per-type allowlist of content props. Targets are server-produced today.
+- T6.1 checker P2 (no deterministic test that the export-mismatch verify branch refuses): routed to T6.2 as a required red-first test.
 
 ### From M5's Slop Cop review (PR #7 @ f2d5520, 2026-10-06)
 
