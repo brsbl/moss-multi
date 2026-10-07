@@ -125,6 +125,24 @@ A task counts only after an independent checker passes it on green CI. Each mile
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
 
+### From M3's Slop Cop review (PR #5 @ 31f3f26, 2026-10-06)
+
+- An agent key can rename its owner's vault (apps/web/src/api/vault-routes.ts:67-96). In ownedVault, also require a user principal (or effective role 'owner').
+- Search ranking uses whole-table bm25 statistics, including inaccessible notes (packages/sync/src/search-do.ts:127-138). Rank the authorized candidates with the corpus-independent scoreEntry (or statistics computed over the allowed set only) before applying the limit.
+- Media uploads commit with authorization checked only before the body is read (apps/web/src/api/assets.ts:209-228 (store), 231-270 (storeBytes), 272-279 (upload)). Gate the commit batch on current access: a live doc plus a current grant or link.
+- Uploaded media bytes are never checked against the declared type (apps/web/src/api/assets.ts:209-240 (store and storeBytes) and the from-url path). Add bounded signature checks in storeBytes before any D1 or R2 write, including an explicit SVG policy, and refuse mismatches with the existing 415 response.
+- Two concurrent deletes can trash all of an owner's vaults (apps/web/src/api/vault-routes.ts:98-108). Put the remaining-live-vault condition inside the trash UPDATE batch.
+- A comment reply submitted during an in-place reload can be marked saved without being saved (packages/editor/src/session.ts:658-687). Use the existing freeze barrier for the whole of loadInPlace, coordinated with unmount's freeze ownership, and do not clear the dirty state set by real user mutations.
+- The editor's live HTML frame policy does not restrict network access (owner decision needed) (packages/editor/vite.config.ts:96). STOP-AND-ASK: this literal is in published API 1 (editor-v0.0.1, 0.1.0 and 0.2.0 releases).
+- Refused media paste deletes the selected text (apps/web/src/host/media/held-insertion.ts:28-32). Defer the deletion until the upload succeeds (track the range), or roll back only this one deletion on failure.
+- PDF export tab drops the share token, so link-only readers lose images (apps/web/src/host/bridge/index.ts:524-525). Wrap the pdf-export URL in withShare.
+- A failed index feed is not retried until the note is edited or reloaded (packages/sync/src/doc-do.ts:853-875). Schedule a bounded-backoff alarm retry driven by the existing durable stale marker.
+- Backlinks never backfill notes that have no index entry (apps/web/src/api/search.ts:110-131). Reuse the bounded backfill of missing entries for the allowed source documents before answering.
+- Search index updates scale with corpus size and link count (packages/sync/src/search-do.ts:59,71-84,92). Key FTS rows by entries.rowid, and compare link sets with a Set before the transaction, skipping the rewrite when nothing changed.
+- editor-embed.md contradicts itself (DRAFT and 'contract settled') (docs/design/editor-embed.md:1-30). Settle the status line.
+- The coordinator raised the media-commit authorization finding to P1 (fixed in T3.S2). The editor htmlFrame network policy was decided by the owner (API 2, run on click: T3.11).
+- Also from M3 close work: a collaborator can fill a vault's 2 GB media quota and block the owner (charge media to the uploader instead; T3.S3b follow-up).
+
 - T3.S3b (Bounded creation and sign-up) checker P2: WebKit j05-trash:205 fails intermittently (2 of 16 runs on the T3.S3b head, 0 of 15 on m3; it also failed attempt 1 of the [integration full lane on `0ee22ad`](https://github.com/brsbl/moss-multi/actions/runs/37545854668), green on attempt 2) with an undeclared 404 on Ben's `/api/docs/:id/backlinks`; the bridge re-reads backlinks of a trashed note (`apps/web/src/host/bridge/index.ts:406-408`) and the route refuses deleted notes (`apps/web/src/api/search.ts:114`); no data or authorization effect → search follow-up (same as T3.R2's): skip watched reads once the note's session goes terminal.
 - T3.S3b (Bounded creation and sign-up) implementer P2 (unverified): in the Trash view the 409 note-cap toast covers the "This note is in Trash" banner → trash UI follow-up.
 - T3.S3b (Bounded creation and sign-up) implementer P2 (unverified, pre-existing): a collaborator can fill a vault's 2 GB media quota → assets follow-up.
