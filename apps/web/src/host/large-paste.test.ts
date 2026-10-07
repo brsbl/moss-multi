@@ -4,10 +4,10 @@
 // overflowed the stack past about 125,000 arguments.
 import {
   $createParagraphNode, $createRangeSelection, $createTextNode, $getRoot, $getSelection, $isRangeSelection, $setSelection,
-  createEditor, type BaseSelection, type LexicalEditor, type LexicalNode,
+  createEditor, type BaseSelection, type ElementNode, type LexicalEditor, type LexicalNode, type TextNode,
 } from 'lexical';
 import { expect, it } from 'vitest';
-import { $insertBlocks, $replaceEmptyNote } from './large-paste';
+import { $insertBlocks, $replaceEmptyNote } from './large-paste.ts';
 
 const lexicalInsert = (nodes: LexicalNode[], selection: BaseSelection) => selection.insertNodes(nodes);
 
@@ -44,15 +44,15 @@ function paste(paragraphs: string[], select: () => void, count: number, insert: 
 }
 
 const CARETS: [string, string[], () => void][] = [
-  ['mid-paragraph', ['Before.', 'After.'], () => $getRoot().getFirstChildOrThrow().getFirstDescendant()!.select(3, 3)],
+  ['mid-paragraph', ['Before.', 'After.'], () => $getRoot().getFirstChildOrThrow<ElementNode>().getFirstDescendant<TextNode>()!.select(3, 3)],
   ['end of a paragraph', ['Before.', 'After.'], () => $getRoot().getFirstChildOrThrow().selectEnd()],
   ['start of a paragraph', ['Before.', 'After.'], () => $getRoot().getLastChildOrThrow().selectStart()],
   ['an empty paragraph', ['Before.', '', 'After.'], () => $getRoot().getChildAtIndex(1)!.selectStart()],
   ['the only, empty paragraph', [''], () => $getRoot().selectEnd()],
   ['a selected range', ['Before.', 'Middle.', 'After.'], () => {
     const selection = $createRangeSelection();
-    selection.anchor.set($getRoot().getFirstChildOrThrow().getFirstDescendant()!.getKey(), 2, 'text');
-    selection.focus.set($getRoot().getChildAtIndex(1)!.getFirstDescendant()!.getKey(), 3, 'text');
+    selection.anchor.set($getRoot().getFirstChildOrThrow<ElementNode>().getFirstDescendant()!.getKey(), 2, 'text');
+    selection.focus.set($getRoot().getChildAtIndex<ElementNode>(1)!.getFirstDescendant()!.getKey(), 3, 'text');
     $setSelection(selection);
   }],
 ];

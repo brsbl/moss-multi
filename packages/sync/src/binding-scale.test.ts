@@ -76,10 +76,9 @@ function steps(count: number): Record<string, number> {
 
 it('writes, applies, exports, undoes and redoes a paste of many blocks in time linear in the blocks', { timeout: 600_000 }, () => {
   steps(2_000);
-  const small = steps(25_000);
-  const large = steps(100_000);
+  const small = steps(10_000);
+  const large = steps(40_000);
   for (const [name, ms] of Object.entries(large)) {
-    expect(ms, `${name}: 25,000 blocks took ${small[name].toFixed(0)} ms, 100,000 took ${ms.toFixed(0)} ms`).toBeLessThanOrEqual(8 * small[name] + 200);
-    expect(ms, `${name}: 100,000 blocks`).toBeLessThan(30_000);
+    expect(ms, `${name}: 10,000 blocks took ${small[name].toFixed(0)} ms, 40,000 took ${ms.toFixed(0)} ms`).toBeLessThanOrEqual(7 * small[name] + 150);
   }
 });

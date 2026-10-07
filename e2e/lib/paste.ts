@@ -42,12 +42,17 @@ export const fingerprint = (actor: Actor, docId: string) =>
     return { length: text.length, sum };
   });
 
-/** A real clipboard paste of plain text, as from a text editor (no text/markdown or HTML flavor). */
-export async function pastePlain(actor: Actor, docId: string, text: string): Promise<void> {
-  await ui.body(actor, docId).evaluate((element, value) => {
+/**
+ * A real clipboard paste of plain text, as from a text editor (no text/markdown or HTML flavor). Resolves with the
+ * milliseconds from the paste to the next painted frame: how long the tab was busy with it.
+ */
+export async function pastePlain(actor: Actor, docId: string, text: string): Promise<number> {
+  return ui.body(actor, docId).evaluate((element, value) => {
     const data = new DataTransfer();
     data.setData('text/plain', value);
+    const started = performance.now();
     element.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: data }));
+    return new Promise<number>((done) => requestAnimationFrame(() => setTimeout(() => done(performance.now() - started), 0)));
   }, text);
 }
 
@@ -75,13 +80,15 @@ export async function pasteAndCheck(
   pasted: string,
   want: { whole: string; typed: string },
   timeout: number,
-): Promise<void> {
+  maxBusyMs = Infinity,
+): Promise<number> {
   await ui.waitAcked(ada, docId, timeout);
   const before = await exported(ada, docId);
   const empty = await fingerprint(ada, docId);
   await ada.page.waitForTimeout(NEW_STEP_MS);
 
-  await pastePlain(ada, docId, pasted);
+  const busyMs = await pastePlain(ada, docId, pasted);
+  expect(busyMs, 'the paste keeps the tab responsive').toBeLessThan(maxBusyMs);
   await ui.waitAcked(ada, docId, timeout);
   await expect.poll(() => exported(ada, docId), { message: 'every pasted character lands in the doc', timeout }).toBe(want.whole);
   const pastedPrint = await fingerprint(ada, docId);
@@ -105,4 +112,5 @@ export async function pasteAndCheck(
   await ui.waitAcked(ada, docId, timeout);
   await expect.poll(() => exported(ada, docId), { message: 'one redo brings the whole paste back to the server', timeout }).toBe(want.whole);
   await expect.poll(() => fingerprint(ben, docId), { message: 'the collaborator sees the paste redone', timeout }).toEqual(pastedPrint);
+  return busyMs;
 }
