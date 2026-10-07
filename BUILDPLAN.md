@@ -574,6 +574,7 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
     - re-prove spike tests 2-8 red on behavior assertions, not on not-implemented stubs (T5.0 final check, P2);
     - cost regression tests for ingest and the body-frame lease check at the frame cap, including `fixed_frame_ingest_cost_independent_of_closed_record_count_and_continuation_depth` at fuzz scale.
   - **Done:** green in CI.
+- **T5.S1 Strike then join keeps the strike** `[B·fresh]`, coordinator, 2026-10-06 (M5 Slop Cop P1): before a native join or list-item unwrap re-creates a block, the routing removes that block's struck characters natively as their own undo step (delete parts stay), so F, the card, Edit-mode paint, the working export and accept all leave them out; red-first routing tests (one, several, a run across the join, Delete forward, list unwrap, undo and redo, reject and withdraw) and j16-review legs in both engines.
 
 **Exit criteria:** colliding-prefix typing is never refused; a suggester's first delete never removes text on the server; a suggester's body frame never lands and the client shows the refusal; reject and withdraw never change the body; accept lands exactly the previewed diff or nothing; the demo note shows live pending suggestions (Review mode inline, Edit mode markers).
 

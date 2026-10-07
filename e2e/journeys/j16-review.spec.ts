@@ -310,3 +310,99 @@ test('j16-review: a word replacement reads as the word removed and the word adde
   await expect.poll(() => content(ada, docId), { timeout: BIND_TIMEOUT }).toContain('We keep the legacy importer.');
   expect(await content(ada, docId)).toContain('Line 9');
 });
+
+const mod = process.platform === 'darwin' ? 'Meta' : 'Control';
+
+/** The ranges painted `::highlight(name)` in this page, as their text. */
+const painted = (actor: Actor, name: string): Promise<string[]> =>
+  actor.page.evaluate((highlight) => [...((CSS as unknown as { highlights?: Map<string, Set<Range>> }).highlights?.get(highlight) ?? [])].map((range) => range.toString()), name);
+
+async function acked(actor: Actor, docId: string, what: string): Promise<void> {
+  const pane = ui.pane(actor, docId);
+  await expect(pane, `${what}: acknowledged`).toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout: BIND_TIMEOUT });
+  await expect(pane, `${what}: never refused`).toHaveAttribute(SUGGEST_REFUSED_ATTR, '0');
+}
+
+/** The open card's inserted and deleted row texts, once its preview has loaded. */
+async function cardRows(actor: Actor): Promise<{ card: Locator; inserted: string[]; deleted: string[] }> {
+  const card = (await openPanel(actor)).locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_STATUS_ATTR}="open"]`);
+  await expect(card).toHaveCount(1, { timeout: BIND_TIMEOUT });
+  await expect(card.getByRole('button', { name: 'Accept' })).toBeEnabled({ timeout: BIND_TIMEOUT });
+  const texts = (kind: string) => card.locator(`[${SUGGESTION_ROW_ATTR}="${kind}"] > span.min-w-0 > span:first-child`).allInnerTexts();
+  return { card, inserted: await texts('insert'), deleted: await texts('delete') };
+}
+
+test("j16-review: a strike, then Backspace at the block's start, keeps the strike through the join, its undo and redo, the card and accept @p:mean-2 @p:R17", async ({ actors }) => {
+  const { ada, ben, docId } = await sharedNote(actors, 'Intro line stays.\n\nabc tail.\n\nClosing line stays too.');
+  await openIn(ben, docId, 'suggest');
+  await openIn(ada, docId, 'edit');
+  await actors.requireDistinct(2);
+  const { keyboard } = ben.page;
+  const body = ui.body(ben, docId);
+
+  // Backspace after "a" strikes it; Backspace at the block's start joins the paragraphs without it.
+  await caret(ben, docId, 'abc tail.', 1);
+  await keyboard.press('Backspace');
+  await acked(ben, docId, 'the strike');
+  await keyboard.press('Backspace');
+  await acked(ben, docId, 'the join');
+  await expect(body, 'joined, without the struck "a"').toContainText('Intro line stays.bc tail.');
+  await expect(body).not.toContainText('abc');
+
+  // Undo takes the join back and the strike stands; redo joins again.
+  await keyboard.press(`${mod}+z`);
+  await acked(ben, docId, 'the undo');
+  await expect(body, 'split again').not.toContainText('Intro line stays.bc');
+  await expect(body).toContainText('bc tail.');
+  await expect(body).not.toContainText('abc');
+  await keyboard.press(`${mod}+Shift+z`);
+  await acked(ben, docId, 'the redo');
+  await expect(body, 'joined again').toContainText('Intro line stays.bc tail.');
+  await expect(body).not.toContainText('abc');
+
+  // The owner's Edit-mode body paints the old block struck, and the card adds the moved text without the "a".
+  await expect(button(ada)).toHaveAttribute('aria-label', /1 open/, { timeout: BIND_TIMEOUT });
+  await expect.poll(async () => (await painted(ada, 'suggest-delete')).join(''), { message: 'the old block paints struck', timeout: BIND_TIMEOUT }).toContain('bc tail.');
+  const { card, inserted, deleted } = await cardRows(ada);
+  expect(inserted.join(''), 'the card adds the moved text without the struck "a"').toBe('bc tail.');
+  expect(deleted.join(' '), 'the card removes the old block').toContain('abc tail.');
+
+  await card.getByRole('button', { name: 'Accept' }).click();
+  await expect(cards(ada, 'accepted')).toHaveCount(1, { timeout: BIND_TIMEOUT });
+  await expect.poll(() => content(ada, docId), { message: 'the accepted note', timeout: BIND_TIMEOUT }).toContain('Intro line stays.bc tail.');
+  const accepted = await content(ada, docId);
+  expect(accepted, 'the struck "a" is gone').not.toContain('abc');
+  expect(accepted, 'unstruck text stays').toContain('Closing line stays too.');
+  await expect(ui.body(ada, docId)).toContainText('Intro line stays.bc tail.', { timeout: BIND_TIMEOUT });
+});
+
+test('j16-review: a whole list item struck, then Backspace once more, leaves the item text out of the card and of the accepted note @p:mean-2 @p:R17', async ({ actors }) => {
+  const { ada, ben, docId } = await sharedNote(actors, '- alpha item\n- beta item\n- gamma item');
+  await openIn(ben, docId, 'suggest');
+  await openIn(ada, docId, 'edit');
+  await actors.requireDistinct(2);
+  const { keyboard } = ben.page;
+  const body = ui.body(ben, docId);
+
+  await caret(ben, docId, 'beta item', 'beta item'.length);
+  for (let i = 0; i < 'beta item'.length; i++) await keyboard.press('Backspace');
+  await acked(ben, docId, 'the strikes');
+  await expect.poll(async () => (await painted(ben, 'suggest-delete')).join(''), { message: 'the item paints struck', timeout: BIND_TIMEOUT }).toBe('beta item');
+  await keyboard.press('Backspace');
+  await acked(ben, docId, 'the unwrap');
+  await expect(body, 'the struck item text stays out').not.toContainText('beta');
+  await expect(body).toContainText('alpha item');
+  await expect(body).toContainText('gamma item');
+
+  await expect(button(ada)).toHaveAttribute('aria-label', /1 open/, { timeout: BIND_TIMEOUT });
+  await expect.poll(async () => (await painted(ada, 'suggest-delete')).join(''), { message: 'the owner sees it struck', timeout: BIND_TIMEOUT }).toContain('beta item');
+  const { card, inserted } = await cardRows(ada);
+  expect(inserted.join(' '), 'the card adds no struck text').not.toContain('beta');
+
+  await card.getByRole('button', { name: 'Accept' }).click();
+  await expect(cards(ada, 'accepted')).toHaveCount(1, { timeout: BIND_TIMEOUT });
+  await expect.poll(() => content(ada, docId), { message: 'accept removes the item text', timeout: BIND_TIMEOUT }).not.toContain('beta');
+  const accepted = await content(ada, docId);
+  expect(accepted).toContain('alpha item');
+  expect(accepted).toContain('gamma item');
+});
