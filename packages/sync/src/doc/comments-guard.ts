@@ -11,6 +11,9 @@ export const CLIENT_ROOTS: ReadonlySet<string> = new Set(['root', 'title', 'fron
 /** The origin of every comments write; the anchor engine and the client UndoManagers skip it. */
 export const COMMENT_ORIGIN = 'server-comments';
 
+/** Origins the anchor engine never reads: replay from storage, the seed, and comments writes themselves. */
+export const ENGINE_SKIPPED_ORIGINS: ReadonlySet<unknown> = new Set(['persistence', 'server-seed', COMMENT_ORIGIN]);
+
 export type GuardRefusal = 'r-struct' | 'r-reference' | 'protected-root' | 'r-delete';
 
 /** A fresh client id for R: not the doc's own, and not one any struct already uses. */

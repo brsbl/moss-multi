@@ -130,14 +130,6 @@ export function positionAt(projection: Projection, flat: number, assoc: 0 | -1):
   return best ? Y.createRelativePositionFromTypeIndex(best.type, best.index + (flat - best.flat), assoc) : null;
 }
 
-export function captureQuote(text: string, start: number, end: number): TextQuote {
-  return {
-    exact: text.slice(start, end),
-    prefix: text.slice(Math.max(0, start - QUOTE_CONTEXT), start),
-    suffix: text.slice(end, end + QUOTE_CONTEXT),
-  };
-}
-
 /** Shared characters over total length, 0..1, from the same edit script the title binding uses. */
 export function similarity(a: string, b: string, budget?: number): number {
   if (a === b) return 1;
