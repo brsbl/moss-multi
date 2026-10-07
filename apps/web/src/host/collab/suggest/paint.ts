@@ -5,6 +5,7 @@
 import type { Binding } from '@lexical/yjs';
 import { BODY_DOC, regRefs } from '@moss-multi/core/suggest/apply';
 import { SUGGEST_MARK_ATTR, OVERLAY_SURFACE_ATTR } from '@moss-multi/protocol/dom-contract';
+import type { IdSpan } from '@moss-multi/protocol/suggest';
 import { payloadMap, payloadText } from '@moss-multi/sync/payload-docs';
 import { openRecords, payloadIdsOf, type Built } from '@moss-multi/sync/suggest/client';
 import type { LexicalEditor } from 'lexical';
@@ -39,24 +40,22 @@ export function clearPaint(owner: object): void {
   if (layers.delete(owner)) publish();
 }
 
-const covers = (spans: readonly { client: number; clock: number; len: number }[], id: Y.ID) =>
+export const covers = (spans: readonly IdSpan[], id: Y.ID) =>
   spans.some((span) => span.client === id.client && span.clock <= id.clock && id.clock < span.clock + span.len);
 
 /**
  * Paint for an editor bound to F or C: items of `own` clients that B lacks as inserts (an accepted record's text is
  * body text, though a continuation writes on under its lease), `struck` spans as deletes.
  */
-export function paintBound(owner: object, editor: LexicalEditor, binding: Binding, own: ReadonlySet<number>, struck: readonly { client: number; clock: number; len: number }[], body?: Y.Doc | null): void {
+export function paintBound(owner: object, editor: LexicalEditor, binding: Binding, own: ReadonlySet<number>, struck: readonly IdSpan[], body?: Y.Doc | null): void {
   const pending = (id: Y.ID) => own.has(id.client) && (!body || id.clock >= Y.getState(body.store, id.client));
   const insert = own.size ? rangesWhere(editor, binding, pending) : [];
   const strike = struck.length ? rangesWhere(editor, binding, (id) => covers(struck, id)) : [];
   paintRanges(owner, insert, strike);
 }
 
-type Span = { client: number; clock: number; len: number };
-
 /** Every valid open record's delete targets. */
-export function partTargets(body: Y.Doc, valid: ReadonlySet<string>): Span[] {
+export function partTargets(body: Y.Doc, valid: ReadonlySet<string>): IdSpan[] {
   return [...struckByRecord(body, valid).values()].flat();
 }
 
@@ -64,11 +63,11 @@ export function partTargets(body: Y.Doc, valid: ReadonlySet<string>): Span[] {
  * Each valid open record's struck body items: its delete parts' targets and, with `built`, the body items its own ops
  * delete (a join, a split, a restyle rewrite their original text), less the items of any record's leased clients.
  */
-export function struckByRecord(body: Y.Doc, valid: ReadonlySet<string>, built?: Built): Map<string, Span[]> {
-  const out = new Map<string, Span[]>();
+export function struckByRecord(body: Y.Doc, valid: ReadonlySet<string>, built?: Built): Map<string, IdSpan[]> {
+  const out = new Map<string, IdSpan[]>();
   for (const record of openRecords(body)) {
     if (!valid.has(record.meta.id)) continue;
-    const spans: Span[] = record.parts.flatMap((part) => part.targets);
+    const spans: IdSpan[] = record.parts.flatMap((part) => part.targets);
     for (const op of built ? record.ops : []) {
       if (op.doc !== BODY_DOC) continue;
       let ds: ReturnType<typeof Y.decodeUpdate>['ds'];

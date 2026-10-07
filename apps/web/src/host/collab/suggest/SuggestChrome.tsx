@@ -12,40 +12,30 @@ const TOOL = 'flex h-8 cursor-pointer items-center justify-center gap-1 rounded-
 const IDLE = 'hover:border-border-subtle hover:bg-surface-sidebar';
 const ACCENT = 'border-accent-brand bg-surface-note-selected/70 text-accent-brand-pressed shadow-[inset_0_1px_2px_var(--ink-shadow-soft)]';
 
-/** In moss's docked toolbar: an editor or owner switches between Edit and Suggest. */
-export function SuggestToggle({ docId }: { docId: string }): ReactNode {
-  const role = useDocRole(docId);
-  const mode = useShownMode(docId);
-  if (!can(role, 'edit') || mode === null || mode === 'review') return null;
-  const on = mode === 'suggest';
-  return (
-    <button
-      type="button"
-      {...{ [SUGGEST_TOGGLE_ATTR]: '' }}
-      aria-label="Suggest changes"
-      aria-pressed={on}
-      title={on ? 'Suggesting: your changes are proposed, not applied' : 'Suggest changes instead of editing'}
-      onMouseDown={(event) => event.preventDefault()}
-      onClick={() => requestMode(docId, on ? 'edit' : 'suggest')}
-      className={`${TOOL} ${on ? ACCENT : IDLE}`}
-    >
-      <PencilLine aria-hidden className="h-4 w-4" />
-      <span>Suggest</span>
-    </button>
-  );
-}
-
 /**
  * MarkdownEditor's suggest-toggle seam: a small shell docked at the right of moss's bottom toolbar, positioned out
- * of its flow so moss's own bar keeps its layout.
+ * of its flow so moss's own bar keeps its layout. In it, an editor or owner switches between Edit and Suggest.
  */
 export function ToolbarCollab({ noteId }: { noteId: string }): ReactNode {
   const role = useDocRole(noteId);
   const mode = useShownMode(noteId);
   if (!can(role, 'edit') || mode === null || mode === 'review') return null;
+  const on = mode === 'suggest';
   return (
     <div data-suggest-dock="" className="pointer-events-auto absolute bottom-0 left-full -ml-2 inline-flex rounded-lg border border-border-subtle bg-surface-panel px-1.5 py-1 shadow-sm">
-      <SuggestToggle docId={noteId} />
+      <button
+        type="button"
+        {...{ [SUGGEST_TOGGLE_ATTR]: '' }}
+        aria-label="Suggest changes"
+        aria-pressed={on}
+        title={on ? 'Suggesting: your changes are proposed, not applied' : 'Suggest changes instead of editing'}
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={() => requestMode(noteId, on ? 'edit' : 'suggest')}
+        className={`${TOOL} ${on ? ACCENT : IDLE}`}
+      >
+        <PencilLine aria-hidden className="h-4 w-4" />
+        <span>Suggest</span>
+      </button>
     </div>
   );
 }

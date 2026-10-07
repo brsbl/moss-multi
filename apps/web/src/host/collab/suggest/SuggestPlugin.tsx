@@ -3,6 +3,7 @@
 // (docs/design/suggestions.md §5, §7).
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
 import type { EditMode } from '@moss-multi/protocol/dom-contract';
+import type { IdSpan } from '@moss-multi/protocol/suggest';
 import { payloadDocsFor } from '@moss-multi/sync/payload-docs';
 import { Composite, destroyView, openRecords, type Built } from '@moss-multi/sync/suggest/client';
 import { useEffect, useSyncExternalStore } from 'react';
@@ -11,7 +12,7 @@ import { bindingOf } from '../binding-registry.ts';
 import { restoreCaret, type CaretMark } from './caret.ts';
 import { rangesWhere } from './chars.ts';
 import { ReviewMount, SuggestMount } from './mounts.ts';
-import { clearPaint, drawMarks, editMarks, paintBound, paintRanges, partTargets, struckByRecord } from './paint.ts';
+import { clearPaint, covers, drawMarks, editMarks, paintBound, paintRanges, partTargets, struckByRecord } from './paint.ts';
 import { registerSuggestRouting } from './routing.ts';
 import { openSuggestion } from './SuggestionsPanel.tsx';
 
@@ -27,9 +28,6 @@ export interface SuggestPane {
   keepCaret(mark: CaretMark): void;
   subscribeMount(listener: () => void): () => void;
 }
-
-const covers = (spans: readonly { client: number; clock: number; len: number }[], id: Y.ID) =>
-  spans.some((span) => span.client === id.client && span.clock <= id.clock && id.clock < span.clock + span.len);
 
 /** A pointer-transparent layer over the editor for Edit-mode marks. */
 function overlayFor(root: HTMLElement | null): HTMLElement | null {
@@ -58,7 +56,7 @@ export function SuggestPlugin({ pane }: { pane: SuggestPane }): null {
     let frame = 0;
     let built: Built | null = null;
     // Edit mode: each valid record's struck body items, rebuilt with C.
-    let struckBy = new Map<string, { client: number; clock: number; len: number }[]>();
+    let struckBy = new Map<string, IdSpan[]>();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const overlay = mode === 'edit' ? overlayFor(editor.getRootElement()) : null;
 
@@ -103,7 +101,7 @@ export function SuggestPlugin({ pane }: { pane: SuggestPane }): null {
     const hitTargets = (): Map<string, (id: Y.ID) => boolean> => {
       const out = new Map<string, (id: Y.ID) => boolean>();
       if (mount instanceof ReviewMount) {
-        const struck = body ? struckByRecord(body, new Set(mount.valid)) : new Map<string, { client: number; clock: number; len: number }[]>();
+        const struck = body ? struckByRecord(body, new Set(mount.valid)) : new Map<string, IdSpan[]>();
         const clientsOf = new Map<string, Set<number>>();
         for (const [client, record] of mount.clients) clientsOf.set(record, (clientsOf.get(record) ?? new Set()).add(client));
         for (const record of new Set([...clientsOf.keys(), ...struck.keys()])) {
