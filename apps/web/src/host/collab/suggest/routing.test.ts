@@ -131,8 +131,9 @@ type Pane = ReturnType<typeof suggesting>;
 /** The one record, its card's inserted and deleted texts, the working export, and the text accept lands. */
 function reviewed(pane: Pane) {
   expect(pane.replies.filter((reply) => reply.t === 'suggest-refused'), 'never refused').toEqual([]);
-  const ids = recordIds(pane.live);
-  expect(ids, 'one suggestion').toHaveLength(1);
+  // A record merged into another closes as withdrawn: the open one carries everything.
+  const ids = recordIds(pane.live).filter((id) => readRecord(pane.live, id)?.meta.status === 'open');
+  expect(ids, 'one open suggestion').toHaveLength(1);
   const [id] = ids;
   const record = readRecord(pane.live, id)!;
   const preview = previewRecord(pane.live, id);
