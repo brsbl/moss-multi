@@ -393,36 +393,41 @@ export function $insertBlocks(nodes: LexicalNode[], selection: BaseSelection, in
 // ---------- the paste job ----------
 
 /**
- * What one batch's work and layout may take, on the machine it runs on. Each batch also pays a cost that grows with
- * the note, not the batch (laying the note out, diffing the list it lands in, copying the editor state): small
- * batches in a large note spend most of their time on it, so the paste slows and the tab still stalls. A batch fills
- * what the target leaves after that cost, and never less than a third of it.
+ * What one batch's work may take with the cost around it, on the machine it runs on. Each batch also pays costs that
+ * grow with the note, not the batch: laying the note out, then the browser's own rendering and whatever else ran
+ * before the next batch (the time between batches). Small batches in a large note spend most of their time on them
+ * and the tab still stalls, since the rendering follows the batch at once. A batch fills what the target leaves after
+ * those costs, and never less than a quarter of it.
  */
-const TARGET_MS = 700;
+const TARGET_MS = 1_000;
 /** The first batch, before any is timed: inserting at the caret costs Lexical more per block than the batches after. */
 const FIRST_BATCH = 128;
 /** Laying out n new list items with values at once takes time quadratic in n (Chromium): batches stay this small. */
 const MAX_BATCH = 2_500;
 
 /**
- * Units per batch, sized from how long the last batch's work and its layout took. Each batch is a User Timing measure
- * named `label` (its units, work and layout in `detail`), so a profile or a test can tell a batch from other work.
+ * Units per batch, sized from how long the last batch's work, its layout and the time until this one took. Each
+ * batch is a User Timing measure named `label` (its units, work, layout and the time before it in `detail`), so a
+ * profile or a test can tell a batch from other work.
  */
 class Pacer {
   budget = FIRST_BATCH;
+  #ended: number | null = null;
 
   constructor(readonly label: string) {}
 
   /** Runs a batch of `used` units (`run`), then lays the note out (`layout`), and sizes the next batch. */
   time(used: number, run: () => void, layout?: () => void): void {
     const started = performance.now();
+    const before = this.#ended === null ? 0 : Math.min(5_000, started - this.#ended);
     run();
     const ran = performance.now();
     layout?.();
+    this.#ended = performance.now();
     const perUnit = Math.max(0.001, ran - started) / used;
-    const fixed = performance.now() - ran;
-    performance.measure(this.label, { start: started, detail: { units: used, workMs: Math.round(ran - started), layoutMs: Math.round(fixed) } });
-    const room = Math.max(TARGET_MS / 3, TARGET_MS - fixed);
+    const laid = this.#ended - ran;
+    performance.measure(this.label, { start: started, detail: { units: used, workMs: Math.round(ran - started), layoutMs: Math.round(laid), beforeMs: Math.round(before) } });
+    const room = Math.max(TARGET_MS / 4, TARGET_MS - laid - before);
     this.budget = Math.round(Math.max(FIRST_BATCH, Math.min(MAX_BATCH, used * 4, room / perUnit)));
   }
 }
