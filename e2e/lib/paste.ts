@@ -158,6 +158,14 @@ export const longestStall = (actor: Actor): Promise<{ ms: number; at: number; du
     return { ms: Math.round(probe.__stall), at: Math.round(probe.__stallAt), during: [during || 'no paste batch', long || 'no long task'].join('; ') };
   });
 
+/** The paste's batches so far (User Timing `moss-paste-batch`): units/work/layout/time before, in ms, in order. */
+export const batchReport = (actor: Actor): Promise<string> =>
+  actor.page.evaluate(() => {
+    const batches = performance.getEntriesByType('measure').filter((entry) => entry.name === 'moss-paste-batch');
+    const first = batches[0]?.startTime ?? 0;
+    return `${batches.length}: ${batches.map((entry) => `${Math.round(entry.startTime - first)}:${Object.values((entry as PerformanceMeasure).detail as Record<string, number>).join('/')}`).join(' ')}`;
+  });
+
 export async function setup(actors: Actors, stack: Stack, markdown?: string, { elsewhere = false } = {}) {
   const ada = await actors.session(await actors.principal('ada'));
   const docId = await importNote(ada, stack, 'Paste target', markdown);
@@ -195,7 +203,11 @@ export async function pasteAndCheck(
   await watchStalls(ada);
   const busyMs = await pastePlain(ada, docId, pasted);
   expect(busyMs, 'the paste keeps the tab responsive').toBeLessThan(maxBusyMs);
-  await ui.waitAcked(ada, docId, timeout);
+  try {
+    await ui.waitAcked(ada, docId, timeout);
+  } finally {
+    console.log(`paste batches: ${await batchReport(ada)}`);
+  }
   await expect.poll(() => exported(ada, docId), { message: 'every pasted character lands in the doc', timeout }).toBe(want.whole);
   const stall = await longestStall(ada);
   expect(stall.ms, `the tab is never held longer than ${maxStallMs} ms at a time while the paste lands (the longest began ${stall.at} ms after the paste, during: ${stall.during}; socket closes: ${wire?.closes.join(', ') || 'none seen'})`).toBeLessThanOrEqual(maxStallMs);
