@@ -164,7 +164,8 @@ describe('linear inline import @p:tech-4', () => {
       let editor = importMarkdown(`quokka ${'[a](b) '.repeat(150_000)}tail a\\\\b \\_ _ *c* \`d\` \\\\\\\\ \\*`);
       expect(linearImportStats.cut - before).toBeGreaterThan(0);
       const text = textOf(editor);
-      expect(text.slice(-30)).toBe('[a](b) tail a\\b _ _ *c* `d` \\\\ *'.slice(-30));
+      // The code span is the first format Lexical applies, before the cut; the text around it stays text.
+      expect(text.slice(-30)).toBe('[a](b) [a](b) tail a\\b _ _ *c* d \\\\ *'.slice(-30));
       const exports: string[] = [];
       for (let round = 0; round < 3; round += 1) {
         exports.push(exportMarkdown(editor));

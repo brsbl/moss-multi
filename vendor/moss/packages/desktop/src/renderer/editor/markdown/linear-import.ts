@@ -246,9 +246,11 @@ function $importInline(top: TextNode, index: FormatIndex, matchers: TextMatchTra
     if (read === undefined) budget.chargeImport(PARAGRAPH_READ * (lineLength + line.applied));
   };
   const stack: Frame[] = [{ node: top, context: null, offset: 0, top: true }];
+  // The frame being run, which a cut leaves undone.
+  let frame: Frame | undefined;
   try {
     while (stack.length > 0) {
-      const frame = stack.pop()!;
+      frame = stack.pop()!;
       if ('unescape' in frame) {
         budget.charge(frame.unescape.getTextContentSize() / NATIVE);
         $unescape(frame.unescape);
@@ -310,6 +312,13 @@ function $importInline(top: TextNode, index: FormatIndex, matchers: TextMatchTra
   } catch (error) {
     if (error !== OVER_BUDGET) throw error;
     linearImportStats.cut += 1;
+    // The rest of the line stays text, decoded as Lexical decodes each part it reaches: the part being run, the parts
+    // not reached yet and the parts whose unescape is pending (the top is the outer import's to unescape).
+    if (frame) stack.push(frame);
+    for (const rest of stack) {
+      const node = 'unescape' in rest ? rest.unescape : rest.top ? undefined : rest.node;
+      if (canContainTransformableMarkdown(node)) $unescape(node);
+    }
   } finally {
     activeLine = outerLine;
     if (importBudget) importBudget.left -= budget.importExcess();
