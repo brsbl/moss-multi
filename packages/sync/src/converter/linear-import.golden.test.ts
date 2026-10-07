@@ -100,8 +100,8 @@ describe('linear inline import @p:tech-4', () => {
     }, 300_000);
   });
 
-  // A line's budget is linear in its length and matches, so ordinary notes use a small share of it (and of the
-  // import's), however long their lines; none is cut.
+  // A line's budget is linear in its length, a little more per byte than the densest ordinary text (a palette of
+  // colors) takes, and ordinary notes use a small share of the import's; none is cut.
   const shares = (run: () => void) => {
     Object.assign(linearImportStats, { peakLineShare: 0, peakImportShare: 0 });
     const before = linearImportStats.cut;
@@ -116,7 +116,7 @@ describe('linear inline import @p:tech-4', () => {
       ours = tree($convertFromMarkdownString, markdown);
     });
     expect(used.cut).toBe(0);
-    expect(used.line).toBeLessThan(0.25);
+    expect(used.line).toBeLessThan(0.95);
     expect(used.import).toBeLessThan(0.25);
     expect(ours === tree($lexicalConvertFromMarkdownString, markdown)).toBe(true);
   }, 120_000);
@@ -131,7 +131,7 @@ describe('linear inline import @p:tech-4', () => {
       ours = tree($convertFromMarkdownString, markdown);
     });
     expect(used.cut).toBe(0);
-    expect(used.line).toBeLessThan(0.25);
+    expect(used.line).toBeLessThan(0.95);
     expect(used.import).toBeLessThan(0.25);
     expect(ours === tree($lexicalConvertFromMarkdownString, markdown)).toBe(true);
   }, 120_000);
@@ -190,11 +190,11 @@ describe('linear inline import @p:tech-4', () => {
     // The checker's case: a code span that starts a formatted part was decoded when the line was whole and left
     // escaped when the line was cut further on. A cut line now converts none of its parts; the line before it does.
     it('converts no part of a cut line, whatever comes first in it', () => {
-      const line = (n: number) => `quokka ~~\`\\*\` ${'[a](b) '.repeat(n)}z~~`;
+      const line = (n: number) => `quokka ~~\`\\*\` ${'[a](b) word '.repeat(n)}z~~`;
       const before = linearImportStats.cut;
       const whole = textOf(importMarkdown(line(1_000)));
       expect(linearImportStats.cut - before).toBe(0);
-      expect(whole.slice(0, 13)).toBe('quokka * a a ');
+      expect(whole.slice(0, 18)).toBe('quokka * a word a ');
       const markdown = `**Before** it.\n\n${line(150_000)}`;
       const editor = importMarkdown(markdown);
       expect(linearImportStats.cut - before).toBeGreaterThan(0);
@@ -202,7 +202,7 @@ describe('linear inline import @p:tech-4', () => {
       expect(shape).toEqual([2, 1]);
       const text = textOf(editor);
       expect(text.slice(0, 32)).toBe('Before it.\n\nquokka ~~`*` [a](b) ');
-      expect(text === `Before it.\n\nquokka ~~\`*\` ${'[a](b) '.repeat(150_000)}z~~`).toBe(true);
+      expect(text === `Before it.\n\nquokka ~~\`*\` ${'[a](b) word '.repeat(150_000)}z~~`).toBe(true);
       roundTrips(markdown, text);
     }, 120_000);
   });
@@ -241,17 +241,34 @@ describe('linear inline import @p:tech-4', () => {
     }, 120_000);
 
     it('keeps a line of more than `matches` matches literally, and converts one of that many', () => {
-      const line = (n: number) => `x ${'[a](b) '.repeat(n)}`;
+      const line = (n: number) => `x ${'*a* word '.repeat(n)}`;
       const at = LINEAR_IMPORT_LIMITS.matches;
       let editor = importMarkdown('');
       expect(cuts(() => {
         editor = importMarkdown(line(at));
       })).toBe(0);
-      expect(editor.getEditorState().read(() => $getRoot().getTextContent())).toBe(`x ${'a '.repeat(at)}`);
+      expect(editor.getEditorState().read(() => $getRoot().getTextContent())).toBe(`x ${'a word '.repeat(at)}`);
       expect(cuts(() => {
         editor = importMarkdown(line(at + 1));
       })).toBe(1);
       expect(blocks(editor)).toEqual([['paragraph', line(at + 1)]]);
+    }, 120_000);
+
+    // A line whose work passes perChar per byte, however short: dense short links, wiki links or tabs. A palette, the
+    // densest ordinary text, and a short line of a few links convert.
+    it('keeps a line that takes more work than its length allows literally', () => {
+      const childTypes = (markdown: string) =>
+        importMarkdown(markdown).getEditorState().read(() => $getRoot().getFirstChildOrThrow<ElementNode>().getChildren().map((node) => node.getType()));
+      for (const dense of [`x ${'[a](b) '.repeat(2_000)}`, `x ${'[[a]] '.repeat(2_000)}`, `a${'\t'.repeat(1_000)}b`]) {
+        let editor = importMarkdown('');
+        expect(cuts(() => {
+          editor = importMarkdown(dense);
+        })).toBe(1);
+        expect(blocks(editor)).toEqual([['paragraph', dense]]);
+      }
+      expect(cuts(() => importMarkdown('[a](b) [c](d) [[e]] *f*\tg'))).toBe(0);
+      expect(childTypes('[a](b) [c](d) [[e]] *f*\tg')).toContain('tab');
+      expect(cuts(() => importMarkdown(ORDINARY_NOTES['a palette paragraph of 2,000 colors']()))).toBe(0);
     }, 120_000);
 
     it('keeps the tabs of a line of more than `tabs` tabs as text, and makes tab nodes of fewer', () => {

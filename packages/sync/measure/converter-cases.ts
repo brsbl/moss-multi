@@ -13,7 +13,8 @@ export interface ConverterCase {
   tail?: string;
   /**
    * Sizes L3 compares with moss (default 40 and 3,000 bytes). Smaller for cases whose matching is inherently
-   * quadratic in moss (nesting), which the import cuts off at a work budget.
+   * quadratic in moss (nesting), or that take more work per byte than markdown/linear-import.ts allows a line
+   * (dense short matches, tabs): the import keeps longer lines of them literally.
    */
   parityBytes?: number[];
 }
@@ -41,26 +42,26 @@ export const CONVERTER_CASES: Record<string, ConverterCase> = {
   'indent before a word': { run: ' ', before: '', after: 'x' },
   // Lexical's export split each text node with /^(\s*)(.*?)(\s*)$/s, quadratic on a whitespace run inside it.
   'whitespace between words': { run: ' ', after: 'x' },
-  tabs: { run: '\t', after: 'x' },
+  tabs: { run: '\t', after: 'x', parityBytes: [40, 50] },
   'divider then whitespace': { run: ' ', before: '|-|-', after: 'x' },
   'pill openers ?[ before one destination': { run: '?[', after: '](', tail: 'a' },
   'formatted pill openers *?[ before one destination': { run: '*?[', after: '](', tail: 'a' },
   'URL labels [http:// before one destination': { run: '[http://', after: '](', tail: 'a' },
   'URL labels [http://a before one destination': { run: '[http://a', after: '](', tail: 'a' },
-  'raw URLs': { run: 'http://a ' },
+  'raw URLs': { run: 'http://a ', parityBytes: [40, 1_500] },
   'embeddable URLs': { run: 'https://example.com ' },
   'escaped backticks before URLs': { run: '\\` https://example.com ' },
   'URL with closing brackets': { run: ')', before: 'quokka http://a' },
-  'emphasis spans': { run: '*a* ' },
-  'code spans': { run: '`a` ' },
-  links: { run: '[a](b) ' },
-  'wiki links': { run: '[[a]] ' },
+  'emphasis spans': { run: '*a* ', parityBytes: [40, 300] },
+  'code spans': { run: '`a` ', parityBytes: [40, 300] },
+  links: { run: '[a](b) ', parityBytes: [40, 300] },
+  'wiki links': { run: '[[a]] ', parityBytes: [40, 300] },
   colors: { run: '#ff0000 ' },
-  'nested emphasis': { run: '*x _x ', after: 'y', tail: ' x_ x*', parityBytes: [40, 400] },
+  'nested emphasis': { run: '*x _x ', after: 'y', tail: ' x_ x*', parityBytes: [40, 120] },
   // Openers moss's import normalization rescanned from (markdown/normalize.ts).
   'escaped blockquote openers': { run: '&lt;blockquote ' },
-  'formatted wiki-link openers': { run: '*[[a' },
-  'isolated asterisks after a URL': { run: ' *a', before: 'quokka https://example.com' },
+  'formatted wiki-link openers': { run: '*[[a', parityBytes: [40, 300] },
+  'isolated asterisks after a URL': { run: ' *a', before: 'quokka https://example.com', parityBytes: [40, 300] },
 };
 
 /** The case's markdown, `bytes` long or just over. */
@@ -109,10 +110,11 @@ const paragraphs = (paragraph: (i: number) => string, size: number) => {
   return out.join('\n\n');
 };
 
-// 2 MB (or `size`) of lines each just under markdown/linear-import.ts's per-line caps (its matches and its work),
-// which all convert: held, as LARGE_ORDINARY_NOTES are, to linear growth in workerd.
+// 2 MB (or `size`) of the densest ordinary text, a palette paragraph of 2,000 colors (8 bytes and three nodes a
+// color), each line close to markdown/linear-import.ts's work per byte: every line converts, and the note is held to
+// SP2's budget as LARGE_ORDINARY_NOTES are.
 export const NEAR_BUDGET_NOTES: Record<string, (size?: number) => string> = {
-  '2 MB of lines of 5,900 links each': (size = 2 * 1024 * 1024) => paragraphs(() => `x ${'[a](b) '.repeat(5_900)}`, size),
+  '2 MB of palette paragraphs of 2,000 colors': (size = 2 * 1024 * 1024) => paragraphs(() => palette(2_000), size),
 };
 
 export const LARGE_ORDINARY_NOTES: Record<string, (size?: number) => string> = {
