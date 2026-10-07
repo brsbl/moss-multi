@@ -75,16 +75,28 @@ function anchorOn(live: Y.Doc, quote: string): Anchor {
   return mintAnchor(units[at]!, units[at + quote.length - 1]!);
 }
 
+/** Anchors a comment on the first occurrence of `quote` after `token`. */
+function anchorAfter(live: Y.Doc, token: string, quote: string): Anchor {
+  const { text, units } = liveUnits(live);
+  const at = text.indexOf(quote, text.indexOf(token));
+  expect(at, `"${quote}" follows ${token}`).toBeGreaterThan(text.indexOf(token));
+  return mintAnchor(units[at]!, units[at + quote.length - 1]!);
+}
+
 // Generated bodies: every block carries a unique token, so an untouched block is recognisable on both sides.
 type Kind = 'p' | 'h' | 'ul' | 'code' | 'q';
 const WORDS = ['alpha', 'beta', 'gamma', 'delta', 'echo'];
+/** Inserted blocks use other words, so an edited block is plainly more like its old self than like an insert. */
+const NEW_WORDS = ['golf', 'hotel', 'kilo'];
 
-function render(kind: Kind, token: string, words: string[], extra: string): string {
-  const body = [token, ...words].join(' ') + extra;
+/** An edit changes a block at both ends (`mid` after its token, `extra` at its end) and keeps its words between. */
+function render(kind: Kind, token: string, words: string[], extra: string, mid = ''): string {
+  const lead = mid ? [mid, ...words] : words;
+  const body = [token, ...lead].join(' ') + extra;
   switch (kind) {
     case 'p': return body;
     case 'h': return `## ${body}`;
-    case 'ul': return `- ${token}a ${words.join(' ')}\n- ${token}b${extra}`;
+    case 'ul': return `- ${token}a ${lead.join(' ')}\n- ${token}b${extra}`;
     case 'code': return `\`\`\`js\n${body}\n\`\`\``;
     case 'q': return `> ${body}`;
   }
@@ -94,10 +106,14 @@ const block = fc.record({
   kind: fc.constantFrom<Kind>('p', 'p', 'h', 'ul', 'code', 'q'),
   words: fc.array(fc.constantFrom(...WORDS), { minLength: 1, maxLength: 4 }),
 });
+const inserted = fc.record({
+  kind: fc.constantFrom<Kind>('p', 'p', 'h', 'ul', 'code', 'q'),
+  words: fc.array(fc.constantFrom(...NEW_WORDS), { minLength: 1, maxLength: 3 }),
+});
 const scenario = fc.record({
   base: fc.array(block, { minLength: 1, maxLength: 7 }),
   fates: fc.array(fc.constantFrom('keep', 'keep', 'edit', 'drop'), { minLength: 7, maxLength: 7 }),
-  inserts: fc.array(fc.record({ at: fc.nat(8), block }), { maxLength: 3 }),
+  inserts: fc.array(fc.record({ at: fc.nat(8), block: inserted }), { maxLength: 3 }),
 });
 type Scenario = typeof scenario extends fc.Arbitrary<infer T> ? T : never;
 
@@ -109,7 +125,7 @@ function build({ base, fates, inserts }: Scenario): { before: string; after: str
   base.forEach((b, i) => {
     const fate = fates[i];
     if (fate === 'keep') after.push(before[i]!);
-    else if (fate === 'edit') after.push(render(b.kind, `k${i}x`, b.words, ` zz${i}`));
+    else if (fate === 'edit') after.push(render(b.kind, `k${i}x`, b.words, ` zz${i}`, 'QQ'));
   });
   inserts.forEach(({ at, block: b }, j) => after.splice(Math.min(at, after.length), 0, render(b.kind, `n${j}x`, b.words, '')));
   return { before: [...before, SENTINEL].join('\n\n'), after: [...after, SENTINEL].join('\n\n') };
@@ -139,6 +155,16 @@ describe('T6.1 identity-preserving reconcile @p:mean-3 @p:tech-5', () => {
         const text = firstTextOf(live, index);
         return text ? { quote: text, anchor: anchorOn(live, text) } : null;
       }).filter((entry) => entry !== null);
+
+      // An edited text block keeps the words between its two edits, when its kind pairs it unambiguously: the only
+      // live block of that kind, with no insert of that kind.
+      s.base.forEach((b, i) => {
+        if (s.fates[i] !== 'edit' || b.kind === 'code') return;
+        if (s.base.filter((other) => other.kind === b.kind).length > 1) return;
+        if (s.inserts.some(({ block: other }) => other.kind === b.kind)) return;
+        const quote = b.words.join(' ');
+        anchors.push({ quote, anchor: anchorAfter(live, `k${i}x`, quote) });
+      });
 
       // A peer inserts into one untouched block's text while the reconcile runs.
       const withText = untouched.filter((index) => firstTextOf(live, index) !== null);
@@ -206,6 +232,82 @@ describe('T6.1 identity-preserving reconcile @p:mean-3 @p:tech-5', () => {
     share(live, peer);
     expect(payloadText(payloadDocsFor(live).hold(id)).toString()).toBe('// hi\nconst a = 2;\nconst b = 3;');
     expect(exportDocMarkdown(live)).toBe(exportDocMarkdown(docOf('Para one.\n\n```js\n// hi\nconst a = 2;\nconst b = 3;\n```')));
+  });
+
+  it('a text node changed at both ends keeps the items between: an anchor and a peer insert there survive', () => {
+    const live = docOf('Intro.\n\nAlpha middle words stay Zulu');
+    const targetDoc = docOf('Intro.\n\nBravo middle words stay Yankee');
+    const anchor = anchorOn(live, 'middle words');
+    const peer = fork(live);
+    serverWrite(peer, 'peer', () => {
+      $firstText($getRoot().getChildAtIndex(1))!.setTextContent('Alpha middle PEERwords stay Zulu');
+    });
+    expect(reconcileBody(live, bodyState(targetDoc), RESTORE)).toBe(true);
+    expect(exportDocMarkdown(live)).toBe(exportDocMarkdown(targetDoc));
+    expect(anchorText(live, anchor)).toBe('middle words');
+    share(peer, live);
+    share(live, peer);
+    expect(exportDocMarkdown(live)).toBe('Intro.\n\nBravo middle PEERwords stay Yankee');
+    expect(exportDocMarkdown(peer)).toBe(exportDocMarkdown(live));
+  });
+
+  it('a code block pairs with the target block whose payload it most resembles, not the first of its kind', () => {
+    const live = docOf('Para one.\n\n```js\nconst a = 1;\n```');
+    const targetDoc = docOf('Para one.\n\n```js\nunrelated\n```\n\n```js\nconst a = 2;\n```');
+    const regIdAt = (doc: Y.Doc, index: number) => {
+      const mirror = mirrorOf(doc);
+      try {
+        return mirror.editor.getEditorState().read(() => ($getRoot().getChildAtIndex(index) as unknown as { __regId: string }).__regId);
+      } finally {
+        mirror.dispose();
+      }
+    };
+    const id = regIdAt(live, 1);
+    const peer = fork(live);
+    payloadText(payloadDocsFor(peer).hold(id)).insert(0, '// hi\n');
+
+    reconcileBody(live, bodyState(targetDoc), RESTORE);
+    expect(exportDocMarkdown(live)).toBe(exportDocMarkdown(targetDoc));
+    expect(regIdAt(live, 2)).toBe(id);
+    expect(regIdAt(live, 1)).not.toBe(id);
+    share(peer, live);
+    share(live, peer);
+    expect(exportDocMarkdown(live)).toBe(exportDocMarkdown(docOf('Para one.\n\n```js\nunrelated\n```\n\n```js\n// hi\nconst a = 2;\n```')));
+    expect(exportDocMarkdown(peer)).toBe(exportDocMarkdown(live));
+  });
+
+  it('a refused write after the mutation leaves the note and its payloads unchanged', () => {
+    const live = docOf('Para one.\n\n```js\nconst a = 1;\n```');
+    const id = (() => {
+      const mirror = mirrorOf(live);
+      try {
+        return mirror.editor.getEditorState().read(() => ($getRoot().getChildAtIndex(1) as unknown as { __regId: string }).__regId);
+      } finally {
+        mirror.dispose();
+      }
+    })();
+    const vector = Y.encodeStateVector(live);
+    const payloadVector = Y.encodeStateVector(payloadDocsFor(live).hold(id));
+    let seen: [string, Uint8Array][] = [];
+    const refuse = (diff: Uint8Array, payloads: [string, Uint8Array][]) => {
+      seen = payloads;
+      expect(diff.byteLength).toBeGreaterThan(0);
+      throw new ReconcileRefused('mismatch', 'refused by admission');
+    };
+    expect(() => reconcileBody(live, bodyState(docOf('Para two.\n\n```js\nconst a = 2;\n```')), RESTORE, refuse)).toThrow(ReconcileRefused);
+    expect(seen.map(([payloadId]) => payloadId)).toContain(id);
+    expect(Y.encodeStateVector(live)).toEqual(vector);
+    expect(Y.encodeStateVector(payloadDocsFor(live).hold(id))).toEqual(payloadVector);
+    expect(payloadText(payloadDocsFor(live).hold(id)).toString()).toBe('const a = 1;');
+    expect(exportDocMarkdown(live)).toBe(exportDocMarkdown(docOf('Para one.\n\n```js\nconst a = 1;\n```')));
+
+    // A verify that fails after the mirror changed refuses the same way.
+    expect(() => serverWrite(live, RESTORE, () => {
+      $firstText($getRoot().getFirstChild())!.setTextContent('Changed.');
+    }, undefined, () => {
+      throw new ReconcileRefused('mismatch', 'refused by verify');
+    })).toThrow(ReconcileRefused);
+    expect(Y.encodeStateVector(live)).toEqual(vector);
   });
 
   it('a no-op target writes nothing', () => {
