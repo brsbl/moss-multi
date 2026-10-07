@@ -34,6 +34,7 @@ import { JANITOR, migratePayloads, PayloadStore, type PayloadWork } from './payl
 import { SEARCH_DO_NAME, type IndexEntry } from './search-do.ts';
 import { attachPayloadSource, exportDocMarkdown, importBody, rootIsEmpty, SERVER_IMPORT, SERVER_SEED, seedEmptyParagraph } from './server-doc.ts';
 import { writeTitle } from './server-title.ts';
+import type { VersionBlobs, VersionMeta } from './doc/versions.ts';
 
 /** How long after a wake the doc re-feeds search. */
 const WAKE_FEED_MS = 1_000;
@@ -248,6 +249,9 @@ export class DocDO extends YServer<SyncEnv> {
   static access: (env: SyncEnv) => AccessCheck | null = () => null;
   /** Who hears of a new live suggestion (the bell); installed by the Worker. */
   static suggestionNotices: (env: SyncEnv) => SuggestionNotifier | null = () => null;
+
+  /** Where versions above VERSION_SPILL_BYTES go (A§14). */
+  static versionBlobs: (env: SyncEnv) => VersionBlobs | null = () => null;
 
   /** Where search feeds land; null leaves the doc unindexed. */
   static searchFeed: (env: SyncEnv) => SearchFeed | null = (env) => (env?.SearchDO ? {
@@ -1068,6 +1072,22 @@ export class DocDO extends YServer<SyncEnv> {
     if (!this.#workingRate.allow(this)) return null;
     this.#working = exportWorkingMarkdown(this.document, this.name);
     return this.#working;
+  }
+
+  listVersions(_input: { reviewer: Reviewer; actor?: CommentActor }): Promise<{ ok: true; versions: VersionMeta[] } | ReviewRefusal> {
+    return Promise.resolve({ ok: true, versions: [] });
+  }
+
+  getVersion(_input: { id: string; reviewer: Reviewer; actor?: CommentActor }): Promise<{ ok: true; version: VersionMeta & { markdown: string } } | ReviewRefusal> {
+    return Promise.resolve({ ok: false, status: 501, reason: 'not-implemented' });
+  }
+
+  saveVersion(_input: { name: string; reviewer: Reviewer; actor?: CommentActor }): Promise<{ ok: true; version: VersionMeta } | ReviewRefusal> {
+    return Promise.resolve({ ok: false, status: 501, reason: 'not-implemented' });
+  }
+
+  restoreVersion(_input: { id: string; reviewer: Reviewer; actor?: CommentActor }): Promise<{ ok: true; restorePoint: string; version: string } | ReviewRefusal> {
+    return Promise.resolve({ ok: false, status: 501, reason: 'not-implemented' });
   }
 
   /** Feeds search now, even with nothing changed: the Worker's backfill for a doc the index lacks. */
