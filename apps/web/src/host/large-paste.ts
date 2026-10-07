@@ -11,10 +11,10 @@ import { excludedPropertiesFor } from '@moss-multi/sync/excluded-properties';
 import { isPayloadType, payloadDocsFor } from '@moss-multi/sync/payload-docs';
 import { splitUpdate } from '@moss-multi/sync/update-pieces';
 import {
-  $createParagraphNode, $createTabNode, $getNodeByKey, $getRoot, $getSelection, $isDecoratorNode, $isElementNode,
-  $isRangeSelection, $isTextNode, $parseSerializedNode, $setSelection, COMMAND_PRIORITY_CRITICAL, createEditor,
-  REDO_COMMAND, tokenizeRawText, UNDO_COMMAND, type BaseSelection, type ElementNode, type Klass, type LexicalEditor,
-  type LexicalNode, type NodeKey, type RangeSelection, type SerializedElementNode, type SerializedLexicalNode,
+  $createLineBreakNode, $createParagraphNode, $createTabNode, $createTextNode, $getNodeByKey, $getRoot, $getSelection,
+  $isDecoratorNode, $isElementNode, $isRangeSelection, $isTextNode, $parseSerializedNode, $setSelection,
+  COMMAND_PRIORITY_CRITICAL, createEditor, REDO_COMMAND, UNDO_COMMAND, type BaseSelection, type ElementNode,
+  type Klass, type LexicalEditor, type LexicalNode, type NodeKey, type RangeSelection, type SerializedElementNode, type SerializedLexicalNode,
 } from 'lexical';
 import * as Y from 'yjs';
 import { PIECE_BYTES } from './collab/outbox.ts';
@@ -108,31 +108,41 @@ function fits(editor: LexicalEditor, bytes: number, largestPiece: number): boole
 }
 
 /**
- * A plain-text paste as Lexical's own paste inserts it, a paragraph per line, refused whole when it would take the
- * note past its cap or hold a line too long for one frame. Large plain text that is not markdown takes this path.
+ * A large plain-text paste as the paste plan Lexical's own paste would make of it: a paragraph per line, tabs as tab
+ * nodes (@lexical/clipboard's plain-text importer), or with `lineBreaks`, one paragraph whose lines are line breaks
+ * (RangeSelection.insertRawText). It then lands, or is refused, like a markdown paste: rehearsed and placed in paced
+ * batches, never in one task.
  */
-export function refusedPlainText(editor: LexicalEditor, text: string): boolean {
-  const scratch = scratchEditor([...editor._nodes.values()].map((entry) => entry.klass));
-  const measure = new Measure(scratch);
-  scratch.update(() => {
-    const paragraph = $createParagraphNode();
-    $getRoot().append(paragraph);
-    paragraph.select();
-    // Lexical's plain-text importer (@lexical/clipboard): a paragraph per line break.
-    const at = (run: (selection: RangeSelection) => void) => {
-      const selection = $getSelection();
-      if ($isRangeSelection(selection)) run(selection);
-    };
-    tokenizeRawText(text, {
-      linebreak: () => at((selection) => selection.insertParagraph()),
-      tab: () => at((selection) => selection.insertNodes([$createTabNode()])),
-      text: (part) => at((selection) => selection.insertText(part)),
+export function planPlainText(nodes: readonly Klass<LexicalNode>[], text: string, lineBreaks = false): PastePlan {
+  const parser = scratchEditor(nodes);
+  const $line = (into: ElementNode, line: string) => {
+    line.split('\t').forEach((part, i) => {
+      if (i > 0) into.append($createTabNode());
+      if (part) into.append($createTextNode(part));
     });
+  };
+  parser.update(() => {
+    const root = $getRoot();
+    root.clear();
+    const lines = text.split('\n');
+    if (lineBreaks) {
+      const paragraph = $createParagraphNode();
+      lines.forEach((line, i) => {
+        if (i > 0) paragraph.append($createLineBreakNode());
+        $line(paragraph, line);
+      });
+      root.append(paragraph);
+      return;
+    }
+    for (const line of lines) {
+      const paragraph = $createParagraphNode();
+      $line(paragraph, line);
+      root.append(paragraph);
+    }
   }, { discrete: true });
-  const largest = measure.largestPiece;
-  if (fits(editor, measure.end(), largest)) return false;
-  refuseInput(WRITE_REFUSED['doc-cap']);
-  return true;
+  const state = parser.getEditorState();
+  const json = state.toJSON().root.children;
+  return state.read(() => $planPaste($getRoot().getChildren(), json));
 }
 
 // ---------- the plan: units ----------

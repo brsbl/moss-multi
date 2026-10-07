@@ -150,7 +150,7 @@ import { TRASH_COPY } from '@moss-multi/host/retention';
 import { findEmail, schemelessUrlMatches } from '@moss-multi/host/autolink';
 // moss-multi seam: whole-paste (T3.S6): a large paste is parsed whole and lands whole in batches, or is refused whole
 import { createEditor } from 'lexical';
-import { $insertBlocks, $planPaste, $replaceEmptyNote, pasteLarge, refusedPlainText, type PastePlan } from '@moss-multi/host/large-paste';
+import { $insertBlocks, $planPaste, $replaceEmptyNote, pasteLarge, planPlainText, type PastePlan } from '@moss-multi/host/large-paste';
 import { $withDocumentImport } from './markdown/fixes';
 // moss-multi seam: converter-split (A§12; S-conv §2.3)
 import { $convertMossCustomCodeNodes, $postImportNormalize, escapeHtmlEntities, normalizeMarkdownForImport, unescapeHtmlEntities } from './markdown/normalize';
@@ -1066,15 +1066,14 @@ const isEmptyNote = (): boolean => {
 };
 
 // moss-multi seam: whole-paste (T3.S6): the whole paste lands, in batches, or none of it does; never text chunks.
-const insertLargeMarkdownPaste = (editor: LexicalEditor, rawMarkdown: string): boolean => {
+const insertLargePaste = (editor: LexicalEditor, plan: (wholeNote: boolean) => PastePlan): boolean => {
   const savedSelection = captureSelectionForPaste(editor);
   if (!savedSelection) {
     return false;
   }
-  const markdown = normalizeClipboardLineEndings(rawMarkdown);
   const wholeNote = editor.getEditorState().read(isEmptyNote);
   pasteLarge(editor, {
-    plan: parseMarkdownPastePlan(markdown, wholeNote),
+    plan: plan(wholeNote),
     nodes: MARKDOWN_EDITOR_NODES,
     $restore: () => restoreSelectionForPaste(savedSelection),
     $insert: (nodes) => {
@@ -1090,6 +1089,9 @@ const insertLargeMarkdownPaste = (editor: LexicalEditor, rawMarkdown: string): b
   });
   return true;
 };
+
+const insertLargeMarkdownPaste = (editor: LexicalEditor, rawMarkdown: string): boolean =>
+  insertLargePaste(editor, (wholeNote) => parseMarkdownPastePlan(normalizeClipboardLineEndings(rawMarkdown), wholeNote));
 
 const insertPlainTextFromPaste = (editor: LexicalEditor, text: string): boolean => {
   let canInsert = false;
@@ -1231,14 +1233,14 @@ export const registerPasteFormattingHandlers = (editor: LexicalEditor): (() => v
         return true;
       }
 
-      // moss-multi seam: whole-paste (T3.S6): a large plain-text paste past the note's size cap, or with a line too
-      // long for one frame, is refused whole.
+      // moss-multi seam: whole-paste (T3.S6): a large plain-text paste lands whole in batches, as Lexical's own paste
+      // would place it (forced: as insertRawText would), or is refused whole.
       const forcedPlainText = shouldForcePlainTextMarkdownPaste(pastedMarkdownCandidate);
       const plainText = forcedPlainText ? pastedMarkdownCandidate : plainTextPayload;
       if (
         (forcedPlainText || !(hasExplicitMarkdownPayload || shouldImportMarkdownFromPaste(pastedMarkdownCandidate))) &&
         shouldChunkMarkdownPaste(plainText) &&
-        refusedPlainText(editor, normalizeClipboardLineEndings(plainText))
+        insertLargePaste(editor, () => planPlainText(MARKDOWN_EDITOR_NODES, normalizeClipboardLineEndings(plainText), forcedPlainText))
       ) {
         event.preventDefault();
         event.stopPropagation();
