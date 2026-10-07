@@ -3,14 +3,17 @@
 // ids instead of removing them; the text stays in F painted struck and the caret moves past it. The author's own
 // pending text in the same selection deletes natively. Undo and redo take a strike back and put it again, in order
 // with the binding's own undo steps. Everything else is native and recorded verbatim (a join at a block edge too).
+// A join or unwrap re-creates the moved block's text under new ids, struck characters included, so before it the
+// struck characters of that block are removed natively, as their own undo step: the copy leaves them out, and their
+// delete parts stay.
 import { $getClipboardDataFromSelection, setLexicalClipboardDataTransfer } from '@lexical/clipboard';
 import type { IdSpan } from '@moss-multi/protocol/suggest';
 import type { SuggestFork } from '@moss-multi/sync/suggest/client';
 import {
-  $getNodeByKey, $getSelection, $isElementNode, $isRangeSelection, $isTextNode, COMMAND_PRIORITY_CRITICAL,
+  $getNodeByKey, $getSelection, $isElementNode, $isRangeSelection, $isRootOrShadowRoot, $isTextNode, $onUpdate, COMMAND_PRIORITY_CRITICAL,
   CONTROLLED_TEXT_INSERTION_COMMAND, CUT_COMMAND, DELETE_CHARACTER_COMMAND, DELETE_LINE_COMMAND, DELETE_WORD_COMMAND,
-  INSERT_LINE_BREAK_COMMAND, INSERT_PARAGRAPH_COMMAND, mergeRegister, PASTE_COMMAND, REDO_COMMAND, UNDO_COMMAND,
-  type LexicalEditor, type LexicalNode, type TextNode,
+  INSERT_LINE_BREAK_COMMAND, INSERT_PARAGRAPH_COMMAND, KEY_BACKSPACE_COMMAND, mergeRegister, PASTE_COMMAND, REDO_COMMAND, UNDO_COMMAND,
+  type ElementNode, type LexicalEditor, type LexicalNode, type TextNode,
 } from 'lexical';
 import type * as Y from 'yjs';
 import { bindingOf } from '../binding-registry.ts';
@@ -39,6 +42,44 @@ function $besideLeaf(node: LexicalNode, backward: boolean): LexicalNode | null {
     current = parent;
   }
 }
+
+/** The block element holding `node` (itself when it is one). */
+function $blockOf(node: LexicalNode): ElementNode | null {
+  for (let current: LexicalNode | null = node; current; current = current.getParent()) {
+    if ($isElementNode(current) && !current.isInline() && !$isRootOrShadowRoot(current)) return current;
+  }
+  return null;
+}
+
+/** The block a Delete at the end of `block` pulls into it: the next block in document order. */
+function $nextBlock(block: ElementNode): ElementNode | null {
+  let current: LexicalNode = block;
+  let next = current.getNextSibling();
+  while (!next) {
+    const parent = current.getParent();
+    if (!parent || $isRootOrShadowRoot(parent)) return null;
+    current = parent;
+    next = current.getNextSibling();
+  }
+  for (;;) {
+    if (!$isElementNode(next) || next.isInline()) return null;
+    const first = next.getFirstChild();
+    if (!$isElementNode(first) || first.isInline()) return next;
+    next = first;
+  }
+}
+
+/** Whether anything precedes `block` in the document, or it is a list item, quote or heading that unwraps at its start. */
+function $joinsBackward(block: ElementNode): boolean {
+  if (block.getType() !== 'paragraph') return true;
+  for (let current: LexicalNode | null = block; current && !$isRootOrShadowRoot(current); current = current.getParent()) {
+    if (current.getPreviousSibling()) return true;
+  }
+  return false;
+}
+
+const leavesOf = (node: ElementNode): LexicalNode[] =>
+  node.getChildren().flatMap((child) => ($isElementNode(child) ? leavesOf(child) : [child]));
 
 /** A strike as an undo step: `depth` is the binding's undo stack before it; `native` when own text went with it. */
 interface Strike {
@@ -166,6 +207,88 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
     return body.length > 0 ? 'struck' : 'skip';
   };
 
+  /** Set while the join that follows a strip runs: the edge is native. */
+  let joining = false;
+  /**
+   * At a block edge, before a native join or unwrap: the block it would move re-creates every character under new
+   * ids, struck ones too. So the struck characters, line breaks and inline decorators of that block are removed
+   * natively first, as their own undo step (their delete parts stay), and `again` replays the key in the next update.
+   * True when it did that; false when nothing there is struck, and the edge is native now.
+   */
+  const $stripBeforeJoin = (backward: boolean, again: () => void = () => editor.dispatchCommand(DELETE_CHARACTER_COMMAND, backward)): boolean => {
+    if (joining) return false;
+    const selection = $getSelection();
+    const binding = bindingOf(editor);
+    if (!$isRangeSelection(selection) || !binding) return false;
+    const here = $blockOf(selection.anchor.getNode());
+    if (!here) return false;
+    const moved = backward ? ($joinsBackward(here) ? here : null) : $nextBlock(here);
+    if (!moved) return false;
+    const own = fork.ownClients();
+    const struck = (id: Y.ID) => !own.has(id.client) && fork.isStruck(id);
+    const cuts: { node: TextNode; from: number; to: number }[] = [];
+    const leaves: LexicalNode[] = [];
+    for (const leaf of leavesOf(moved)) {
+      if ($isTextNode(leaf)) {
+        const ids = textIds(binding, leaf.getKey());
+        if (!ids) continue;
+        for (let i = 0; i < ids.length; i += 1) {
+          if (!struck(ids[i])) continue;
+          const last = cuts.at(-1);
+          if (last && last.node === leaf && last.to === i) last.to = i + 1;
+          else cuts.push({ node: leaf, from: i, to: i + 1 });
+        }
+        continue;
+      }
+      const item = sharedItem(binding, leaf.getKey());
+      if (item && struck(item.id)) leaves.push(leaf);
+    }
+    if (cuts.length === 0 && leaves.length === 0) return false;
+    manager()?.stopCapturing();
+    // Last first, so earlier offsets in the same text node hold.
+    for (const { node, from, to } of cuts.reverse()) node.spliceText(from, to - from, '', false);
+    for (const leaf of leaves) leaf.remove();
+    if (backward) here.selectStart();
+    // The join is its own step, after the strip has reached F.
+    $onUpdate(() => {
+      manager()?.stopCapturing();
+      editor.update(() => {
+        joining = true;
+        try {
+          again();
+        } finally {
+          joining = false;
+        }
+      }, { discrete: true });
+    });
+    return true;
+  };
+
+  /** Whether only struck items lie between a collapsed caret and the start of its block. */
+  const $struckToStart = (): boolean => {
+    const selection = $getSelection();
+    const binding = bindingOf(editor);
+    if (!$isRangeSelection(selection) || !selection.isCollapsed() || !binding) return false;
+    let node: LexicalNode = selection.anchor.getNode();
+    if (selection.anchor.type !== 'text') return selection.anchor.offset === 0 && $isElementNode(node) && !node.isInline();
+    let offset = selection.anchor.offset;
+    for (let guard = 0; guard < 100_000; guard += 1) {
+      if ($isTextNode(node)) {
+        const ids = textIds(binding, node.getKey());
+        if (!ids) return false;
+        for (let i = Math.min(offset, ids.length) - 1; i >= 0; i -= 1) if (!fork.isStruck(ids[i])) return false;
+      } else {
+        const item = sharedItem(binding, node.getKey());
+        if (!item || !fork.isStruck(item.id)) return false;
+      }
+      const previous = $besideLeaf(node, true);
+      if (!previous) return true;
+      node = previous;
+      offset = $isTextNode(previous) ? previous.getTextContentSize() : 0;
+    }
+    return false;
+  };
+
   /**
    * Backspace or Delete at a collapsed caret: past struck items to the next character or inline leaf (a link's
    * text, a line break, an inline formula), struck or, if his own, deleted natively. A block edge is native (a join).
@@ -173,7 +296,12 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
   const $routeChar = (backward: boolean): boolean => {
     const selection = $getSelection();
     const binding = bindingOf(editor);
-    if (!$isRangeSelection(selection) || !selection.isCollapsed() || selection.anchor.type !== 'text' || !binding) return false;
+    if (!$isRangeSelection(selection) || !selection.isCollapsed() || !binding) return false;
+    if (selection.anchor.type !== 'text') {
+      // An empty block: a Delete pulls the next block into it.
+      const anchor = selection.anchor.getNode();
+      return $isElementNode(anchor) && !anchor.isInline() && anchor.isEmpty() ? $stripBeforeJoin(backward) : false;
+    }
     const own = fork.ownClients();
     let node: LexicalNode = selection.anchor.getNode();
     let offset = selection.anchor.offset;
@@ -213,7 +341,7 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
         if (!step(text)) {
           // A block edge: native, from past the struck text.
           text.select(offset, offset);
-          return false;
+          return $stripBeforeJoin(backward);
         }
         continue;
       }
@@ -235,7 +363,7 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
       if (!step(leaf)) {
         if (backward) leaf.selectPrevious();
         else leaf.selectNext(0, 0);
-        return false;
+        return $stripBeforeJoin(backward);
       }
     }
     return false;
@@ -268,6 +396,13 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
     editor.registerCommand(DELETE_CHARACTER_COMMAND, (backward) => {
       const routed = $routeRange();
       return routed === 'none' ? $routeChar(backward) : routed !== 'own';
+    }, P),
+    // Backspace at a block's start (past struck text) can be taken before DELETE_CHARACTER_COMMAND, by moss's list
+    // item split: the strip runs first, then the key again.
+    editor.registerCommand(KEY_BACKSPACE_COMMAND, (event) => {
+      if (joining || !$struckToStart() || !$stripBeforeJoin(true, () => editor.dispatchCommand(KEY_BACKSPACE_COMMAND, event))) return false;
+      event?.preventDefault();
+      return true;
     }, P),
     editor.registerCommand(DELETE_WORD_COMMAND, (backward) => $extended(backward, 'word'), P),
     editor.registerCommand(DELETE_LINE_COMMAND, (backward) => $extended(backward, 'lineboundary'), P),

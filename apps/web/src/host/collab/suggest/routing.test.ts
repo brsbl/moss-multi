@@ -252,15 +252,13 @@ describe('a strike, then a native join or unwrap at the block edge, keeps the st
 
   it('undo of the join splits the block again without the struck character, and redo joins it again', () => {
     const pane = suggesting(NOTE);
-    let undone = '';
     try {
       pane.caret('abc', 1);
       pane.press('Backspace');
       pane.caret('abc', 0);
       pane.press('Backspace');
       pane.undo();
-      undone = pane.text();
-      expect(undone, 'undo takes the join back; the strike stands').toBe('Intro line stays.\n\nbc tail.\n\nClosing line stays too.');
+      expect(pane.text(), 'undo takes the join back; the strike stands').toBe('Intro line stays.\n\nbc tail.\n\nClosing line stays too.');
       pane.redo();
       expect(pane.text(), 'redo joins again').toBe('Intro line stays.bc tail.\n\nClosing line stays too.');
     } finally {
