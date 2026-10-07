@@ -1,7 +1,7 @@
 // moss's import normalization (markdown/normalize.ts) runs its global regexes through the helpers in
 // markdown/linear-match.ts: each gives its regex's result over the corpus and random token strings, and normalizing
 // a note of openers that rescanned to the end of the line or the text takes linear time.
-import { escapedBlockquoteSearchEnd, replaceFormattedTargets, stripWikiLinkDelimiters } from '@moss-desktop/renderer/editor/markdown/linear-match';
+import { escapedBlockquoteSearchEnd, formattedPillTargets, replaceFormattedTargets, stripWikiLinkDelimiters } from '@moss-desktop/renderer/editor/markdown/linear-match';
 import { escapeHtmlEntities, normalizeMarkdownForImport } from '@moss-desktop/renderer/editor/markdown/normalize';
 import { describe, expect, it } from 'vitest';
 import { CONVERTER_CASES, converterBody } from '../../measure/converter-cases.ts';
@@ -10,6 +10,7 @@ import { FIXTURES } from './fixtures.ts';
 // The regexes at the pin.
 const ESCAPED_BLOCKQUOTE = /&lt;blockquote\b[\s\S]*?&lt;\/blockquote&gt;/gi;
 const WIKI_LINK_DELIMITERS = /(\*{1,2}|~~)\[\[((?:[^\]]|\](?!\]))+)\]\]\1/g;
+const FORMATTED_PILL_TARGETS = /\?\[((?:\\.|[^\]\\])*)\]\(([^()\s]*(?:\([^()]*\)[^()\s]*)*)\)|https?:\/\/[^\s<>{}|\\^[\]`*~]+/g;
 const targetRegExp = (delimiter: string) => {
   const escaped = delimiter === '*' ? '(?<!\\*)\\*(?!\\*)' : delimiter === '**' ? '(?<!\\*)\\*\\*(?!\\*)' : '(?<!~)~~(?!~)';
   return new RegExp(`${escaped}([^\\n]*?(?:https?:\\/\\/|\\?\\[)[^\\n]*?)${escaped}`, 'g');
@@ -18,6 +19,7 @@ const targetRegExp = (delimiter: string) => {
 const TOKENS = [
   '*', '**', '***', '~', '~~', '[', ']', '[[', ']]', '?[', '(', ')', 'http://x', 'https://y', 'http:/', ' ', '\n', 'a', 'b c',
   '&lt;blockquote', '&LT;BlockQuote', '&lt;blockquotes', '&lt;/blockquote&gt;', '&lt;/BLOCKQUOTE&gt;', '&lt;', '&gt;', '`', '\\',
+  '](', '\\]', '\\\n', 'https://', 'http:/', 'httpx', '<', '{', '~',
 ];
 
 function* fuzz(count: number, seed: number): Generator<string> {
@@ -51,6 +53,12 @@ describe('linear import normalization @p:tech-4', () => {
 
   it('strips formatting around wiki links as the regex does', () => {
     expect(differing((text) => stripWikiLinkDelimiters(text) === text.replace(WIKI_LINK_DELIMITERS, '[[$2]]'))).toEqual([]);
+  });
+
+  it('finds the pill and URL targets inside a formatted span that the regex finds', () => {
+    const plain = (text: string) => [...text.matchAll(FORMATTED_PILL_TARGETS)].map((m) => [m.index, ...m]);
+    const ours = (text: string) => [...formattedPillTargets(text, FORMATTED_PILL_TARGETS)].map((m) => [m.index, ...m]);
+    expect(differing((text) => JSON.stringify(ours(text)) === JSON.stringify(plain(text)))).toEqual([]);
   });
 
   it.each(['**', '~~', '*'])('replaces %s-formatted URL and pill targets as the regex does', (delimiter) => {

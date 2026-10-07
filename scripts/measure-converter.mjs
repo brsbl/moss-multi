@@ -506,16 +506,15 @@ const failure = (error) =>
 const noteOf = (line, bytes) => Array.from({ length: Math.max(1, Math.floor(bytes / (line.length + 2))) }, () => line).join('\n\n');
 
 async function measureAdversarial(port) {
-  const { CONVERTER_CASES, NEW_CONVERTER_CASES, ORDINARY_NOTES, converterBody } = await import('../packages/sync/measure/converter-cases.ts');
-  const cases = { ...CONVERTER_CASES, ...NEW_CONVERTER_CASES };
+  const { CONVERTER_CASES, ORDINARY_NOTES, converterBody } = await import('../packages/sync/measure/converter-cases.ts');
   const warmBodies = [
     ORDINARY_NOTES['a paragraph of 1,000 sentences of italic, bold, code and strikethrough'](),
-    ...Object.values(cases).map((c) => converterBody(c, 8 * 1024)),
+    ...Object.values(CONVERTER_CASES).map((c) => converterBody(c, 8 * 1024)),
   ];
   const results = [];
   let server = null;
   try {
-    for (const [name, c] of Object.entries(cases)) {
+    for (const [name, c] of Object.entries(CONVERTER_CASES)) {
       if (!server) {
         server = await startWorker('converter', port);
         port += 1;

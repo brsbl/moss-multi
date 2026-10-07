@@ -17,7 +17,7 @@ import { $createCodeBlockNode, markCodeBlockForAutoEdit } from '../nodes/CodeBlo
 import { $createCalloutNode, CalloutNode, parseCalloutContent } from '../nodes/CalloutNode';
 import { $applyTabGroupLayoutMetadata, $applyTableLayoutMetadata, CALLOUT_NESTED_CONTENT_OPTIONS, getCalloutContentTransformers, trimRawWebEmbedUrl } from './transformers';
 // moss-multi seam: linear-match (A§12; SP2)
-import { escapedBlockquoteSearchEnd, replaceFormattedTargets, stripWikiLinkDelimiters } from './linear-match';
+import { escapedBlockquoteSearchEnd, formattedPillTargets, replaceFormattedTargets, stripWikiLinkDelimiters } from './linear-match';
 
 type PostImportNormalizeOptions = Pick<NestedContentOptions, 'excludedDependencies'> & {
   layoutMetadata?: NoteLayoutMetadata;
@@ -600,13 +600,12 @@ const normalizeFormattedEmbedPillTargetsInContent = (
   content: string,
   delimiter: string
 ): string | null => {
-  FORMATTED_EMBED_PILL_TARGET_RE.lastIndex = 0;
   let cursor = 0;
   let normalized = '';
   let converted = false;
-  let match: RegExpExecArray | null;
 
-  while ((match = FORMATTED_EMBED_PILL_TARGET_RE.exec(content)) !== null) {
+  // moss-multi seam: linear-match (A§12; SP2): while ((match = FORMATTED_EMBED_PILL_TARGET_RE.exec(content)) !== null), from lastIndex 0
+  for (const match of formattedPillTargets(content, FORMATTED_EMBED_PILL_TARGET_RE)) {
     const [rawMatch, _legacyText, legacyUrl] = match;
     const start = match.index;
     const isLegacyPill = rawMatch.startsWith('?[');

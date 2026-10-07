@@ -67,18 +67,17 @@ export const CONVERTER_CASES: Record<string, ConverterCase> = {
   'escaped blockquote openers': { run: '&lt;blockquote ' },
   'formatted wiki-link openers': { run: '*[[a', parityBytes: [40, 300] },
   'isolated asterisks after a URL': { run: ' *a', before: 'quokka https://example.com', parityBytes: [40, 300] },
-};
-
-// T3.S4's third check: moss's pill normalization rescanned a run of `?[` between two delimiters from every opener;
-// a run of wiki links inside one link label rescanned the label per match; moss's table rows counted the backslashes
-// before every character, matched escaped backticks with a cubic regex, merged cells after an escaped `[[` once per
-// cell, and made a cell for every pipe, nested tables included.
-export const NEW_CONVERTER_CASES: Record<string, ConverterCase> = {
+  // T3.S4's third check: moss's pill normalization rescanned a run of `?[` between two delimiters from every opener;
+  // wiki links inside one link label rescanned the label per match, and moss's link callback made a node per code
+  // span of its label in one call; moss's table rows counted the backslashes before every character, matched escaped
+  // backticks with a cubic regex, merged cells after an escaped `[[` once per cell, and made a cell for every pipe,
+  // nested tables included.
   'pill openers ?[ between bold delimiters': { run: '?[', before: 'quokka **', after: '**' },
   'pill openers ?[ between strikethrough delimiters': { run: '?[', before: 'quokka ~~', after: '~~' },
   'pill openers ?[ between italic delimiters': { run: '?[', before: 'quokka *', after: '*' },
   'formatted pill openers *?[ inside bold highlight': { run: '*?[', before: 'quokka **==', after: '==**' },
-  'wiki links inside one link label': { run: '[[a]]', before: 'quokka [', after: '](x)', parityBytes: [40, 300] },
+  'wiki links inside one link label': { run: '[[a]]', before: 'quokka [', after: '](x)', parityBytes: [40, 100] },
+  'code spans inside one link label': { run: '``', before: 'quokka [', after: '](x)', parityBytes: [40, 80] },
   'table row of backslashes': { run: '\\', before: '| a | ', after: ' |' },
   'table cell of escaped backticks': { run: '\\`', before: '| `', after: 'x |', parityBytes: [40, 2_000] },
   'table row of escaped wiki openers': { run: '\\[[a | ', before: '| a | ', after: ' |', note: false },
@@ -146,6 +145,11 @@ export interface MultilineCase {
   /** Before the repeated lines. */
   head?: string;
   line: string;
+  /**
+   * Sizes L3 compares with moss (default 40 and 2,000 bytes); smaller where the import stops a cell's absorbing of
+   * broken rows past TABLE_ABSORB_CHARS (markdown/linear-match.ts).
+   */
+  parityBytes?: number[];
 }
 
 export const MULTILINE_CASES: Record<string, MultilineCase> = {
@@ -157,9 +161,9 @@ export const MULTILINE_CASES: Record<string, MultilineCase> = {
   'tab group openers between blank lines': { line: ':::tabs\n\n' },
   'blockquote openers': { line: '<blockquote>\n' },
   'moss-html fence openers': { line: '```moss-html\n' },
-  'table rows of open wiki links': { line: '| [[a\n' },
-  'table rows of open formulas': { line: '| {{a\n' },
-  'table rows of open wiki links after a table': { head: '| a | b |\n| --- | --- |\n', line: '| [[c | d |\n' },
+  'table rows of open wiki links': { line: '| [[a\n', parityBytes: [40, 200] },
+  'table rows of open formulas': { line: '| {{a\n', parityBytes: [40, 200] },
+  'table rows of open wiki links after a table': { head: '| a | b |\n| --- | --- |\n', line: '| [[c | d |\n', parityBytes: [60, 200] },
   'blank lines': { line: '\n' },
 };
 

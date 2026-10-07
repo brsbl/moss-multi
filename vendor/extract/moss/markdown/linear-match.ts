@@ -559,3 +559,183 @@ export function replaceFormattedTargets(
   }
   return lines.join('\n');
 }
+
+// normalizeFormattedEmbedPillTargetsInContent's FORMATTED_EMBED_PILL_TARGET_RE (g),
+// `\?\[((?:\\.|[^\]\\])*)\]\(<destination>\)|https?:\/\/[^\s<>{}|\\^[\]`*~]+`: the matches its exec loop finds, in
+// order. A pill's body ends in one place (escapedBodies), so a run of `?[` openers whose bodies reach the end of the
+// content is scanned once instead of from every opener; a URL runs to its first excluded character. Another regex
+// runs as given.
+const FORMATTED_PILL_TARGET_SOURCE =
+  String.raw`\?\[((?:\\.|[^\]\\])*)\]\(([^()\s]*(?:\([^()]*\)[^()\s]*)*)\)|https?:\/\/[^\s<>{}|\\^[\]` + '`' + String.raw`*~]+`;
+export function* formattedPillTargets(content: string, re: RegExp): Generator<RegExpExecArray> {
+  if (re.source !== FORMATTED_PILL_TARGET_SOURCE || re.flags !== 'g') {
+    re.lastIndex = 0;
+    for (let match = re.exec(content); match; match = re.exec(content)) yield match;
+    return;
+  }
+  const bodyEnd = escapedBodies(content);
+  const destinationEnd = destinationEnds(content);
+  let pill = content.indexOf('?[');
+  let url = content.indexOf('http');
+  while (pill >= 0 || url >= 0) {
+    const isPill = url < 0 || (pill >= 0 && pill < url);
+    const start = isPill ? pill : url;
+    let end = -1;
+    let groups: (string | undefined)[] = [undefined, undefined];
+    if (isPill) {
+      const close = bodyEnd(start + 2);
+      const after = content.charCodeAt(close) === 93 ? destinationEnd(close + 1) : -1;
+      if (after >= 0) {
+        end = after;
+        groups = [content.slice(start + 2, close), content.slice(close + 2, after - 1)];
+      }
+    } else {
+      const scheme = content.startsWith('https://', start) ? 8 : content.startsWith('http://', start) ? 7 : 0;
+      let runEnd = start + scheme;
+      while (scheme > 0 && runEnd < content.length && !URL_EXCLUDED.test(content[runEnd])) runEnd += 1;
+      if (runEnd > start + scheme) end = runEnd;
+    }
+    if (end < 0) {
+      if (isPill) pill = content.indexOf('?[', pill + 1);
+      else url = content.indexOf('http', url + 1);
+      continue;
+    }
+    yield Object.assign([content.slice(start, end), ...groups], { index: start, input: content, groups: undefined }) as RegExpExecArray;
+    if (pill >= 0 && pill < end) pill = content.indexOf('?[', end);
+    if (url >= 0 && url < end) url = content.indexOf('http', end);
+  }
+}
+
+// ---- moss's table parsing (markdown/transformers.ts); linear-match.golden.test.ts holds each helper to moss's code.
+
+// isEscapedTableChar: an odd run of backslashes before `index`. The table scans ask at every index of a row in turn,
+// and moss counted the run back from each one, a run's length squared; a scan keeps the run of its last answer in
+// `run` (one per scan, as the text is the scan's own).
+export function oddBackslashesBefore(text: string, index: number, run: { start: number; end: number } = { start: 0, end: 0 }): boolean {
+  const last = index - 1;
+  if (last < 0 || text.charCodeAt(last) !== 92) return false;
+  if (last < run.start || last >= run.end) {
+    let start = last;
+    while (start > 0 && text.charCodeAt(start - 1) === 92) start -= 1;
+    let end = last + 1;
+    while (end < text.length && text.charCodeAt(end) === 92) end += 1;
+    run.start = start;
+    run.end = end;
+  }
+  return (index - run.start) % 2 === 1;
+}
+
+// repairMalformedSingleBacktickWrappedTableCells: `row.replace(/(^|\|\s*)`([^|\n]*\\`[^|\n]*\\`[^|\n]*)`(?=\s*\||$)/g,
+// (_, prefix, inner) => prefix + inner.replace(/\\`/g, '`'))`, whose three runs backtrack cubically over a cell of
+// escaped backticks. A match opens at the start or after a pipe and its whitespace, and its closing backtick can only
+// be the last non-whitespace character before the cell's next pipe or newline, so each cell is read once.
+export function repairBacktickWrappedCells(row: string): string {
+  let out = '';
+  let copied = 0;
+  for (let p = row.startsWith('`') ? 0 : row.indexOf('|'); p >= 0; p = row.indexOf('|', Math.max(p + 1, copied))) {
+    let open = p;
+    if (row[p] === '|') {
+      open = p + 1;
+      while (isSpace(row, open)) open += 1;
+    }
+    if (row[open] !== '`') continue;
+    let cellEnd = open + 1;
+    while (cellEnd < row.length && row[cellEnd] !== '|' && row[cellEnd] !== '\n') cellEnd += 1;
+    let close = cellEnd - 1;
+    while (close > open && isSpace(row, close)) close -= 1;
+    if (close <= open || row[close] !== '`') continue;
+    let next = cellEnd;
+    while (isSpace(row, next)) next += 1;
+    if (row[next] !== '|' && close + 1 !== row.length) continue;
+    let pairs = 0;
+    for (let i = open + 1; i + 1 < close && pairs < 2; i += 1) {
+      if (row[i] === '\\' && row[i + 1] === '`') {
+        pairs += 1;
+        i += 1;
+      }
+    }
+    if (pairs < 2) continue;
+    out += `${row.slice(copied, open)}${row.slice(open + 1, close).replace(/\\`/g, '`')}`;
+    copied = close + 1;
+  }
+  return copied === 0 ? row : out + row.slice(copied);
+}
+
+// mergeBrokenWikiLinkCells: from a cell with more `[[` than `]]` (as /\[\[/g and /\]\]/g count them), the cells after
+// it are joined with `|` until the join has no more, or it is kept alone when the join never gets there; moss
+// re-counted the whole join per cell. No `[[` or `]]` spans a `|`, so a join's balance is the sum of its cells', and
+// each join closes at the next prefix sum at or below its start's.
+export function mergeWikiLinkCells(cells: string[]): string[] {
+  const count = (text: string, token: string) => {
+    let n = 0;
+    for (let i = text.indexOf(token); i >= 0; i = text.indexOf(token, i + 2)) n += 1;
+    return n;
+  };
+  const prefix = [0];
+  for (const cell of cells) prefix.push(prefix[prefix.length - 1] + count(cell, '[[') - count(cell, ']]'));
+  // closes[i]: the least m > i with prefix[m] <= prefix[i], or -1.
+  const closes = new Array<number>(prefix.length).fill(-1);
+  const stack: number[] = [];
+  for (let m = 0; m < prefix.length; m += 1) {
+    while (stack.length > 0 && prefix[m] <= prefix[stack[stack.length - 1]]) closes[stack.pop()!] = m;
+    stack.push(m);
+  }
+  const healed: string[] = [];
+  for (let i = 0; i < cells.length; i += 1) {
+    if (prefix[i + 1] <= prefix[i] || closes[i] < 0) {
+      healed.push(cells[i]);
+      continue;
+    }
+    healed.push(cells.slice(i, closes[i]).join('|'));
+    i = closes[i] - 1;
+  }
+  return healed;
+}
+
+// The most cells one table row makes, those of tables nested in its cells included (moss imports each cell as
+// markdown, and a cell that starts with an escaped pipe holds a table); a row with more is not a table row. Each cell
+// costs microseconds of node work, and about 60k overflow Lexical's text-node walk.
+export const TABLE_ROW_CELLS = 4_096;
+let rowCellsLeft: number | null = null;
+
+/** `cells.map(make)`, or null when the row, with the rows nested in its cells, would make more than TABLE_ROW_CELLS. */
+export function mapTableRowCells<T>(cells: string[], make: (text: string) => T): T[] | null {
+  const outer = rowCellsLeft;
+  const left = (outer ?? TABLE_ROW_CELLS) - cells.length;
+  if (left < 0) return null;
+  rowCellsLeft = left;
+  try {
+    return cells.map(make);
+  } finally {
+    // A nested row's cells stay spent from its outer row's allowance.
+    if (outer === null) rowCellsLeft = null;
+  }
+}
+
+// The most empty cells a row may add to its table's earlier rows by widening the table; a row that would add more
+// does not join that table.
+export const TABLE_PADDING_CELLS = 16_384;
+
+/** Whether a row of `cells` cells may join a table of `rows` rows of `columns` columns. */
+export function tableMayWiden(rows: number, columns: number, cells: number): boolean {
+  return cells <= columns || rows * (cells - columns) <= TABLE_PADDING_CELLS;
+}
+
+// tryAbsorbTableContinuationRow re-imports a table's last cell with each broken row it absorbs, so a cell that absorbs
+// row after row costs the rows' length squared. A cell whose markdown has reached TABLE_ABSORB_CHARS through
+// absorbing absorbs no more; the length after each absorption is kept per editor, by the cell's key.
+export const TABLE_ABSORB_CHARS = 256;
+const absorbed = new WeakMap<object, Map<string, number>>();
+
+export function absorbedLength(editor: object, cellKey: string): number {
+  return absorbed.get(editor)?.get(cellKey) ?? 0;
+}
+
+export function recordAbsorbed(editor: object, cellKey: string, length: number): void {
+  let lengths = absorbed.get(editor);
+  if (!lengths) {
+    lengths = new Map();
+    absorbed.set(editor, lengths);
+  }
+  lengths.set(cellKey, length);
+}

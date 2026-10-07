@@ -1,5 +1,6 @@
 import {
   $convertFromMarkdownString as $lexicalConvertFromMarkdownString,
+  type MultilineElementTransformer,
   TRANSFORMERS,
   type TextFormatTransformer,
   type TextMatchTransformer,
@@ -12,6 +13,7 @@ import {
   isInsideInlineCodeSpan as isInsideInlineCodeSpanIn,
 } from '../utils/color-codes';
 import { $isInsideColorSuppressedRawContext as $isInsideColorSuppressedRawContextIn } from '../utils/colorPickerTriggers';
+import { LINEAR_REGEXP_KEYS } from './linear-match';
 import { SERIF_FONT_FAMILY_MARKDOWN_STYLE_PATTERN } from './text-style';
 
 // Lexical's markdown import with a linear inline pass (A§12; SP2). @lexical/markdown 0.48 imports each line's text
@@ -72,7 +74,13 @@ const TAB_COST = 6_144;
 const PARAGRAPH_READ = 20;
 // Native regex and string scans take about a unit per character; the format search's scans take several.
 const NATIVE = 1;
+// A scan of linear-match.ts run again on the rest of a text once its match is passed: its pre-scan tests each
+// candidate opener and closer (a regex call apiece), several units per character, and a run of matches that starts
+// where its match does (wiki links inside one link label) passes and re-runs it once per match.
+const LINEAR_RESCAN = 64;
 const FORMAT_SCAN = 16;
+// Each delimiter run the format search finds: its flanking checks and its turn in Lexical's emphasis pass.
+const DELIMITER = 512;
 // The first prefix the format search tries, grown fourfold.
 const FIRST_WINDOW = 64;
 
@@ -265,10 +273,54 @@ function importTransformers(transformers: Transformer[]): Transformer[] {
       },
       type: 'text-match',
     };
-    list = [...transformers.filter((t) => t.type !== 'text-format' && t.type !== 'text-match'), driver];
+    list = [...transformers.filter((t) => t.type !== 'text-format' && t.type !== 'text-match').map(budgetedScan), driver];
     IMPORT_LISTS.set(transformers, list);
   }
   return list;
+}
+
+// moss's multiline transformers scan on from their opener for its closer (a tab group's `:::`, a blockquote's closing
+// tag, a moss-html fence), and a scan that finds none reads to the end of the markdown, so a note of unclosed openers
+// cost its lines squared. The lines that scans read and then give up on are counted per markdown (per split into
+// lines); once they pass SCAN_PER_LINE per line of it plus SCAN_BASE, a scan sees only the lines left of that
+// allowance. A scan that finds its closer is not counted: its lines become its block.
+const SCAN_PER_LINE = 8;
+const SCAN_BASE = 1 << 16;
+const SCANS_LEFT = new WeakMap<string[], { left: number }>();
+
+function budgetedScan(transformer: Transformer): Transformer {
+  if (transformer.type !== 'multiline-element' || !transformer.handleImportAfterStartMatch) return transformer;
+  const handle = transformer.handleImportAfterStartMatch;
+  const budgeted: MultilineElementTransformer = {
+    ...transformer,
+    handleImportAfterStartMatch: (args) => {
+      const { lines, startLineIndex } = args;
+      let scans = SCANS_LEFT.get(lines);
+      if (!scans) {
+        scans = { left: SCAN_PER_LINE * lines.length + SCAN_BASE };
+        SCANS_LEFT.set(lines, scans);
+      }
+      const visible = Math.min(lines.length, startLineIndex + 1 + Math.max(0, scans.left));
+      let read = startLineIndex;
+      const view = new Proxy(lines, {
+        get(target, key, receiver) {
+          if (key === 'length') return visible;
+          if (typeof key === 'string') {
+            const index = Number(key);
+            if (Number.isInteger(index) && index >= 0) {
+              if (index >= visible) return undefined;
+              if (index > read) read = index;
+            }
+          }
+          return Reflect.get(target, key, receiver);
+        },
+      });
+      const result = handle({ ...args, lines: view });
+      if (!result) scans.left -= read - startLineIndex;
+      return result;
+    },
+  };
+  return budgeted;
 }
 
 // ---- Budget ----
@@ -423,18 +475,22 @@ function $importInline(top: TextNode, index: FormatIndex, matchers: TextMatchTra
         if (line.applied > LINEAR_IMPORT_LIMITS.matches) throw OVER_BUDGET;
       }
       const made = nodesMade();
+      let prepaid = 0;
       if (foundFormat) {
         result = $importFormat(textNode, foundFormat);
         endIndex = foundFormat.endIndex;
       } else if (foundMatch) {
         chargeReplace(foundMatch.transformer, foundMatch.match);
+        // A callback whose nodes grow with its match is paid for before it runs.
+        prepaid = nodesAtMost(foundMatch.transformer, foundMatch.match);
+        budget.spend(NODE_COST * prepaid);
         result = $importMatch(textNode, foundMatch);
         endIndex = foundMatch.endIndex;
       } else {
         if (!frame.top) stack.push({ unescape: textNode });
         continue;
       }
-      budget.charge(APPLY_COST + NODE_COST * (nodesMade() - made));
+      budget.charge(APPLY_COST + NODE_COST * Math.max(0, nodesMade() - made - prepaid));
       // Lexical recurses into the part after, the part before and the transformed node, then unescapes this node.
       if (!frame.top) stack.push({ unescape: textNode });
       stack.push({ node: result.transformedNode, context: null, offset: 0 });
@@ -560,6 +616,21 @@ function $importFormat(textNode: TextNode, found: FoundFormat): Split {
   return { nodeAfter, nodeBefore, transformedNode };
 }
 
+// moss's link callback (appendFormattedLinkText) makes a text node for each formatted run of its label, so a label of
+// many delimiters makes that many nodes in one callback: at most one per delimiter character, the link and the rest.
+const MOSS_LINK_SOURCE = String.raw`(?:\[([^[\]]+)\])(?:\(([^()\s]*(?:\([^()]*\)[^()\s]*)*)(?:\s"((?:[^"]*\\")*[^"]*)")?\))`;
+
+function nodesAtMost(transformer: TextMatchTransformer, match: RegExpMatchArray): number {
+  if (transformer.importRegExp?.source !== MOSS_LINK_SOURCE) return 0;
+  const label = match[1] ?? '';
+  let delimiters = 0;
+  for (let i = 0; i < label.length; i += 1) {
+    const code = label.charCodeAt(i);
+    if (code === 42 || code === 96 || code === 126) delimiters += 1;
+  }
+  return delimiters + 2;
+}
+
 // Lexical's importFoundTextMatchTransformer (every listed transformer has a replace).
 function $importMatch(textNode: TextNode, found: FoundMatch): Split {
   const { startIndex, endIndex, transformer, match } = found;
@@ -642,7 +713,8 @@ function findMatch(node: TextNode, text: string, context: Context, offset: numbe
       if (!entry || entry.from > offset || (entry.at >= 0 && entry.at < offset)) {
         budget.spend(0);
         match = matchText(text, transformer.importRegExp!);
-        budget.charge((match ? (match.index ?? 0) + match[0].length : text.length) / NATIVE + 1);
+        const perChar = entry && kind.linear ? LINEAR_RESCAN : 1 / NATIVE;
+        budget.charge((match ? (match.index ?? 0) + match[0].length : text.length) * perChar + 1);
         entry = { from: offset, at: match ? offset + (match.index ?? 0) : -1, match };
         entries[i] = entry;
       }
@@ -735,6 +807,8 @@ function kindsOf(matchers: TextMatchTransformer[]): (RegExpKind | null)[] {
 interface RegExpKind {
   /** Matching at a position reads nothing before it, so a suffix matches where the whole text does. */
   suffixSafe: boolean;
+  /** Matched by linear-match.ts's pre-scan. */
+  linear: boolean;
   /** For a `^`-anchored regex, the literal character it starts with, if any. */
   firstLiteral: string | null;
 }
@@ -782,6 +856,7 @@ function regExpKind(re: RegExp): RegExpKind {
   kind = {
     suffixSafe: (!unsafe && carets === 0) || (SUFFIX_SAFE.has(source) && !re.global && !re.sticky),
     firstLiteral: anchored && first !== undefined && !SPECIAL.has(first) ? first : null,
+    linear: LINEAR_REGEXP_KEYS.includes(`/${source}/${re.flags}`),
   };
   KINDS.set(re, kind);
   return kind;
@@ -948,6 +1023,7 @@ function fromPrefix(
   budget.spend(FORMAT_SCAN * cut);
   const { spans, unclosed } = index.code ? scanCodeSpans(prefix, budget) : { spans: [], unclosed: [] };
   const delimiters = scanDelimiters(prefix, index, spans);
+  budget.spend(DELIMITER * delimiters.length);
   const emphasis = delimiters.length > 0 ? processEmphasis(prefix, delimiters, index, budget) : null;
   const code = spans[0];
   if (!whole) {

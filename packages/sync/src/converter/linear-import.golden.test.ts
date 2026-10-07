@@ -8,7 +8,7 @@ import { $convertFromMarkdownString, LINEAR_IMPORT_LIMITS, linearImportStats } f
 import { escapeHtmlEntities, normalizeMarkdownForImport } from '@moss-desktop/renderer/editor/markdown/normalize';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { $getRoot, $isElementNode, type ElementNode } from 'lexical';
-import { CONVERTER_CASES, converterBody, LARGE_ORDINARY_NOTES, ORDINARY_NOTES } from '../../measure/converter-cases.ts';
+import { CONVERTER_CASES, converterBody, LARGE_ORDINARY_NOTES, MULTILINE_CASES, multilineBody, ORDINARY_NOTES } from '../../measure/converter-cases.ts';
 import { FIXTURES, SCALE_UNIT, scaleNote } from './fixtures.ts';
 import { createConverterEditor, exportMarkdown, importMarkdown, MARKDOWN_EDITOR_TRANSFORMERS } from './index.ts';
 
@@ -83,6 +83,35 @@ describe('linear inline import @p:tech-4', () => {
 
     it('builds the tree Lexical builds for every fixture and converter case', () => {
       expect(differing([...FIXTURES.map((f) => f.markdown), ...caseBodies([40, 700, 2_000])])).toEqual([]);
+    }, 300_000);
+
+    it('builds the tree Lexical builds for notes of one short line repeated', () => {
+      const bodies = Object.values(MULTILINE_CASES).flatMap((c) => (c.parityBytes ?? [40, 2_000]).map((bytes) => multilineBody(c, bytes)));
+      expect(differing(bodies)).toEqual([]);
+    }, 300_000);
+
+    // @lexical/markdown's tab split, patched (patches/@lexical__markdown@0.48.0.patch) to link a text node's parts in
+    // after it, still calls TextNode.splitText while a range selection exists: the two give the same tree.
+    it('splits tabs into the nodes TextNode.splitText makes', () => {
+      const withSelection = (markdown: string, selected: boolean) => {
+        const editor = createConverterEditor();
+        editor.update(
+          () => {
+            if (selected) $getRoot().selectEnd();
+            $lexicalConvertFromMarkdownString(markdown, MARKDOWN_EDITOR_TRANSFORMERS);
+          },
+          { discrete: true },
+        );
+        return JSON.stringify(editor.getEditorState().toJSON());
+      };
+      const texts = [
+        'a\tb\n\tc\td\n**x**\ty\t\n\t',
+        '- a\tb\n- \tc\n\n> q\tr\n> \ts',
+        '| a\tb | c |\n| --- | --- |\n| \td | e\t |',
+        ...fuzz(2_000, 13, 30, ['\t', '\t\t', 'a', ' ', '\n', '**', '*', '`', '[a](b)', '> ', '- ', '#ff0000', '\\']),
+      ];
+      const found = texts.filter((text) => withSelection(text, false) !== withSelection(text, true)).slice(0, 5);
+      expect(found).toEqual([]);
     }, 300_000);
 
     it('builds the tree Lexical builds for random token strings', () => {

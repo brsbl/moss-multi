@@ -8,7 +8,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { exportMarkdown, importMarkdown, MARKDOWN_EDITOR_TRANSFORMERS, type NoteBodyImportOptions } from '../../src/converter/index.ts';
 import { linearImportStats } from '@moss-desktop/renderer/editor/markdown/linear-import';
 import { DEVIATING, FIXTURES, fixture, SCALE_FIXTURES, stringify, transformerSignature } from '../../src/converter/fixtures.ts';
-import { CONVERTER_CASES, converterBody, LARGE_ORDINARY_NOTES, ORDINARY_NOTES } from '../../measure/converter-cases.ts';
+import { CONVERTER_CASES, converterBody, LARGE_ORDINARY_NOTES, MULTILINE_CASES, multilineBody, ORDINARY_NOTES } from '../../measure/converter-cases.ts';
 
 declare const __MOSS_PRISTINE__: string;
 
@@ -81,6 +81,18 @@ describe('L3 parity with moss at the pin @p:tech-4', () => {
   it.each(Object.entries(CONVERTER_CASES))('unclosed openers and many matches, %s', (_name, c) => {
     for (const bytes of c.parityBytes ?? [40, 3_000]) {
       const markdown = converterBody(c, bytes);
+      const ours = comparable(markdown, oursRoundTrip(markdown, {}));
+      const pristine = comparable(markdown, pristineRoundTrip(markdown, {}));
+      expect(ours.tree).toBe(pristine.tree);
+      expect(ours.markdown).toBe(pristine.markdown);
+    }
+  });
+
+  // Notes of one short line repeated: the patched paragraph joins and tab split, and the bounded block scans and cell
+  // absorbs, change no output on them.
+  it.each(Object.entries(MULTILINE_CASES))('lines repeated, %s', (_name, c) => {
+    for (const bytes of c.parityBytes ?? [40, 2_000]) {
+      const markdown = multilineBody(c, bytes);
       const ours = comparable(markdown, oursRoundTrip(markdown, {}));
       const pristine = comparable(markdown, pristineRoundTrip(markdown, {}));
       expect(ours.tree).toBe(pristine.tree);
