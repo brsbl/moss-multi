@@ -21,8 +21,8 @@ import { int, mutateOp, mutateRecord, pick, rng, targetsOf, type Targets } from 
 import { createRecord, newSuggestionsClient, opsOf, partsOf, readMeta, readRecord, recordIds, SuggestionsWriter, writeSuggestions } from './records.ts';
 import { acceptRecord, nodeRegistry, previewRecord } from './review.ts';
 import {
-  all, CENSUS, changedRoots, type CensusOp, deterministicIds, directEdit, EDITOR, exported, OTHER_SUGGESTER, payloadsInOrder, resetIds, seededBody, spansOfText,
-  SUGGESTER, type Step,
+  all, CENSUS, changedRoots, type CensusOp, deterministicIds, directEdit, EDITOR, exported, LEASED, opOn, OTHER_SUGGESTER, payloadsInOrder, resetIds, seededBody,
+  spansOfText, SUGGESTER, type Step,
 } from './test-support.ts';
 
 let restore: () => void = () => {};
@@ -31,7 +31,6 @@ beforeEach(() => {
 });
 afterEach(() => restore());
 
-const LEASED = 0x7fff1234;
 const PEER_LEASED = 0x7fff4321;
 const FOREIGN = [0x6fff0001, 0x6fff0002];
 const FUZZ_ID = 'fuzzed';
@@ -354,19 +353,6 @@ describe("T5.4 the same fuzz on the client's F and C builds @p:mean-2 @p:R17", (
 });
 
 describe('T5.4 fuzz findings, each replayed as a fixed case @p:mean-2 @p:R17', () => {
-  /** A record of one op that `write` makes on a copy of `live` under the lease. */
-  function forgedOp(live: Y.Doc, write: (doc: Y.Doc) => void): RecordOp {
-    const copy = new Y.Doc({ gc: false });
-    Y.applyUpdate(copy, Y.encodeStateAsUpdate(live));
-    copy.clientID = LEASED;
-    // The transaction's own update, as a fork's provider sends it: its delete set is only what it deleted.
-    const updates: Uint8Array[] = [];
-    copy.on('update', (update: Uint8Array) => updates.push(update));
-    write(copy);
-    copy.destroy();
-    return { doc: 'body', update: Y.mergeUpdates(updates) };
-  }
-
   function excludedEverywhere(live: Y.Doc, id: string): void {
     const built = new Composite(live).build();
     try {
@@ -388,7 +374,7 @@ describe('T5.4 fuzz findings, each replayed as a fixed case @p:mean-2 @p:R17', (
     const live = seededBody();
     const writer = newSuggestionsClient(live);
     new SuggestionsWriter(live, writer);
-    const op = forgedOp(live, (doc) => {
+    const op = opOn(live, 'body', (doc) => {
       const hello = (doc.get('root', Y.XmlText).toDelta() as { insert: unknown }[]).map((d) => d.insert).find((x) => x instanceof Y.XmlText) as Y.XmlText;
       hello.removeAttribute('__type');
     });

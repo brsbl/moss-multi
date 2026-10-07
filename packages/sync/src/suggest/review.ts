@@ -9,11 +9,11 @@ import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
 import {
   applyRecord, canonical, hydrate, itemKey, previewHash, projectDoc, projectionDiff, recordDigest, ROOT_KINDS, yValue, type GateReason, type Hunk, type IdSpan,
-  type Inserted, type PayloadMirrors, type Projection, type SuggestionRecord,
+  type Inserted, type PayloadMirrors, type Projection,
 } from '@moss-multi/core/suggest/apply';
 import { createConverterEditor } from '../converter/index.ts';
 import { attachPayloadSource, exportDocMarkdown, mirrorOf, payloadSourceOf } from '../server-doc.ts';
-import { closeRecord, patchMeta, readMeta, readRecord, recordIds, SUGGEST_ACCEPT, writeSuggestions } from './records.ts';
+import { closeRecord, openRecords, patchMeta, readMeta, readRecord, SUGGEST_ACCEPT, writeSuggestions } from './records.ts';
 
 export interface Reviewer {
   id: string;
@@ -339,10 +339,7 @@ export function reviewPreview(live: Y.Doc, id: string, options: { now?: number }
  * fresh ones take what the records before it changed as one update per doc, never a rerun of their gates.
  */
 export function exportWorkingMarkdown(live: Y.Doc, noteId: string): string {
-  const records = recordIds(live)
-    .map((id) => readRecord(live, id))
-    .filter((record): record is SuggestionRecord => record?.meta.status === 'open')
-    .sort((a, b) => a.meta.createdAt - b.meta.createdAt || (a.meta.id < b.meta.id ? -1 : 1));
+  const records = openRecords(live);
   let payloads = new Payloads(live);
   let mirror = mirrorWith(live, payloads);
   // Per doc (null is the body): its state vector before any record, and what the applied records changed since.

@@ -168,6 +168,16 @@ export function recordIds(doc: Y.Doc): string[] {
   return [...doc.getMap(SUGGESTIONS).keys()];
 }
 
+/** Open records, oldest first; only `author`'s when given. */
+export function openRecords(body: Y.Doc, author?: string): SuggestionRecord[] {
+  const records: SuggestionRecord[] = [];
+  for (const id of recordIds(body)) {
+    const record = readRecord(body, id);
+    if (record && record.meta.status === 'open' && (author === undefined || record.meta.author === author)) records.push(record);
+  }
+  return records.sort((a, b) => a.meta.createdAt - b.meta.createdAt || (a.meta.id < b.meta.id ? -1 : 1));
+}
+
 /** Call inside writeSuggestions. */
 export function createRecord(doc: Y.Doc, meta: RecordMeta): void {
   const map = new Y.Map<unknown>();

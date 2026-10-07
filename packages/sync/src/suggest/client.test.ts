@@ -15,7 +15,7 @@ import { Composite, reviewDoc, SuggestFork, type ForkEvent } from './client.ts';
 import { bindEditor } from './fork-shim.ts';
 import { createRecord, opsOf, readMeta, readRecord, recordIds, writeSuggestions } from './records.ts';
 import { acceptRecord, nodeRegistry, previewRecord } from './review.ts';
-import { CENSUS, codeBlock, deterministicIds, EDITOR, exported, insertBlock, resetIds, seededBody, select, spansOfText, SUGGESTER, type Step } from './test-support.ts';
+import { CENSUS, codeBlock, deterministicIds, EDITOR, exported, insertBlock, LEASED, resetIds, seededBody, select, spansOfText, SUGGESTER, type Step } from './test-support.ts';
 
 let restore: () => void = () => {};
 beforeEach(() => {
@@ -152,7 +152,6 @@ describe('T5.1 the fork F @p:mean-2 @p:R17', () => {
   });
 });
 
-const LEASED = 0x7fff1234;
 const root = (doc: Y.Doc) => doc.get('root', Y.XmlText);
 
 /** A record written straight into the map: a list item under the root, which the bind check refuses. */

@@ -16,8 +16,6 @@ import { bindRegisters } from '../registers.ts';
 import { payloadSourceOf, provider } from '../server-doc.ts';
 import { SHIM_BODY_APPLY, SHIM_RECORD_APPLY } from './client.ts';
 
-export { SHIM_BODY_APPLY, SHIM_RECORD_APPLY };
-
 const noop = () => {};
 /**
  * A moss editor bound V1 to `doc`, with the client's list and whitespace transforms and its payload docs (the ones

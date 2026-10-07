@@ -11,8 +11,10 @@ import { SUGGEST_LIMITS, type IdSpan, type LeaseGrant, type SuggestReply, type S
 import { bytesToBase64 } from '@moss-multi/protocol/sync';
 import { attachPayloadDocs, PAYLOAD_LOADED, PayloadDocs, payloadDocsFor, payloadMap, payloadText } from '../payload-docs.ts';
 import { attachPayloadSource } from '../server-doc.ts';
-import { readMeta, readRecord, recordIds } from './records.ts';
+import { openRecords, readMeta } from './records.ts';
 import { bindCheck } from './review.ts';
+
+export { openRecords };
 
 export const SHIM_BODY_APPLY = 'shim-body-apply';
 export const SHIM_RECORD_APPLY = 'shim-record-apply';
@@ -27,16 +29,6 @@ export const GROUP_IDLE_MS = 30_000;
 export const LEASE_RENEW_MS = SUGGEST_LIMITS.leaseIdleMs / 2;
 
 export type BindCheck = (doc: Y.Doc, inserted: Inserted, deleted: readonly IdSpan[]) => boolean;
-
-/** Open records, oldest first; only `author`'s when given. */
-export function openRecords(body: Y.Doc, author?: string): SuggestionRecord[] {
-  const records: SuggestionRecord[] = [];
-  for (const id of recordIds(body)) {
-    const record = readRecord(body, id);
-    if (record && record.meta.status === 'open' && (author === undefined || record.meta.author === author)) records.push(record);
-  }
-  return records.sort((a, b) => a.meta.createdAt - b.meta.createdAt || (a.meta.id < b.meta.id ? -1 : 1));
-}
 
 /** The payload ids a record's ops write. */
 export const payloadIdsOf = (record: SuggestionRecord): string[] => [...new Set(record.ops.filter((op) => op.doc !== BODY_DOC).map((op) => op.doc))];

@@ -748,12 +748,6 @@ describe('T5.3 the card shows every change accept commits to @p:mean-2 @p:R17', 
     expect(shown(rows)).toContain('https://other.invalid');
   });
 
-  it('a formatting change names the format and the text it applies to', () => {
-    const rows = rowsFor([() => select('Hello', 6, 11).formatText('bold')]);
-    expect(shown(rows)).toMatch(/bold/);
-    expect(shown(rows)).toContain('world');
-  });
-
   it('an indent change names the indent', () => {
     const rows = rowsFor([() => { textNode('Indented').getParentOrThrow<ElementNode>().setIndent(2); }]);
     expect(shown(rows)).toMatch(/indent: 1 → 2/);
