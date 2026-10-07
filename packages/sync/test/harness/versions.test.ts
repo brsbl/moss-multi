@@ -296,7 +296,7 @@ describe('restore point and comment anchors @p:mean-3', () => {
     const lexical = bindLexical(ada.doc);
     await ada.hello();
     lexical.editor.update(() => {
-      (($getRoot().getChildAtIndex(1) as ElementNode).getFirstChild() as TextNode).setTextContent('beta delta');
+      (($getRoot().getChildAtIndex(1) as ElementNode).getFirstChild() as TextNode).setTextContent('beta world');
     }, { discrete: true });
     await ada.flush();
     expect(anchorOf(opened, 'c1')?.status, 'deleting its text detaches the comment').toBe('orphaned');
