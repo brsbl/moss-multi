@@ -937,7 +937,7 @@ export function projectionDiff(before: Projection, after: Projection): Hunk[] {
   return hunks.sort((x, y) => (x.kind !== y.kind ? (x.kind < y.kind ? -1 : 1) : x.id < y.id ? -1 : x.id > y.id ? 1 : 0));
 }
 
-const hex = (bytes: Uint8Array): string => Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+export const hex = (bytes: Uint8Array): string => Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
 
 export function previewHash(hunks: readonly Hunk[]): string {
   return hex(digest(encodeUtf8(canonical(hunks))));

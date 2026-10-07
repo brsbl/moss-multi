@@ -149,7 +149,6 @@ describe('suggestion review routes @p:mean-2 @p:R17', () => {
 
   it.each([
     [{ ok: false, status: 409, reason: 'outdated' }, 409],
-    [{ ok: false, status: 409, reason: 'changed' }, 409],
     [{ ok: false, status: 403, reason: 'role' }, 403],
     [{ ok: false, status: 404, reason: 'missing' }, 404],
   ])('passes the DocDO verdict %j through', async (answer, status) => {

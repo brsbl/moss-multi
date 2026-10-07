@@ -8,7 +8,7 @@
 // text and fields are never repeated in its parent's row, and context repeated on many rows is clipped.
 import { digest } from 'lib0/hash/sha256';
 import { encodeUtf8 } from 'lib0/string';
-import { canonical, previewHash, type Hunk } from './apply.ts';
+import { canonical, hex, previewHash, type Hunk } from './apply.ts';
 
 export interface ReviewRow {
   kind: 'insert' | 'delete' | 'change';
@@ -86,7 +86,6 @@ const INLINE: ReadonlySet<string> = new Set(['link', 'autolink']);
 const CONTEXT = 80;
 const clip = (text: string) => (text.length > CONTEXT ? `${text.slice(0, CONTEXT - 1)}…` : text);
 
-const hex = (bytes: Uint8Array): string => Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
 const fingerprint = (text: string) => hex(digest(encodeUtf8(text))).slice(0, 12);
 
 /**

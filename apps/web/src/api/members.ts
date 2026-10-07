@@ -37,8 +37,7 @@ export const SHARES_PER_HOUR = 20;
 const HOUR_MS = 3_600_000;
 
 const EMAIL = /^[^\s@]+@[^\s@]+$/;
-const MEMBER_API_ROLES: readonly Role[] = SHARE_ROLES;
-const isShareRole = (value: unknown): value is ShareRole => typeof value === 'string' && (MEMBER_API_ROLES as readonly string[]).includes(value);
+const isShareRole = (value: unknown): value is ShareRole => typeof value === 'string' && (SHARE_ROLES as readonly string[]).includes(value);
 const lower = (a: Role, b: Role) => ROLES.indexOf(a) < ROLES.indexOf(b);
 
 const noun = (target: MemberTarget) => (target.type === 'doc' ? 'note' : 'folder');
