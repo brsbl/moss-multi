@@ -484,7 +484,9 @@ function canContainTransformableMarkdown(node: LexicalNode | undefined): node is
 }
 
 function $unescape(node: TextNode): void {
-  node.setTextContent(unescapeText(node.getTextContent()));
+  const text = node.getTextContent();
+  // Only a backslash or a numeric entity unescapes to something else.
+  if (text.includes('\\') || text.includes('&#')) node.setTextContent(unescapeText(text));
 }
 
 // Lexical's unescapeText.
@@ -517,9 +519,10 @@ function $split(node: TextNode, offsets: number[]): TextNode[] {
   let previous = first;
   for (let i = 1; i < parts.length; i += 1) {
     const sibling = $createTextNode(parts[i]);
-    sibling.setFormat(format);
-    sibling.setStyle(style);
-    sibling.setDetail(detail);
+    // A new text node has no format, style or detail; each setter costs a writable lookup.
+    if (format !== 0) sibling.setFormat(format);
+    if (style !== '') sibling.setStyle(style);
+    if (detail !== 0) sibling.setDetail(detail);
     previous.insertAfter(sibling, false);
     nodes.push(sibling);
     previous = sibling;
@@ -609,46 +612,55 @@ interface FoundMatch {
 }
 
 function findMatch(node: TextNode, text: string, context: Context, offset: number, matchers: TextMatchTransformer[], budget: Budget): FoundMatch | null {
-  let found: FoundMatch | null = null;
+  let found: { startIndex: number; endIndex: number; transformer: TextMatchTransformer; hit: Hit } | null = null;
   for (const transformer of matchers) {
     if (!transformer.replace || !transformer.importRegExp) continue;
-    const cached = matchAt(text, context, offset, transformer, budget);
-    if (!cached) continue;
-    const { entry, match } = cached;
-    const startIndex = match.index || 0;
+    const hit = matchAt(text, context, offset, transformer, budget);
+    if (!hit) continue;
+    const startIndex = hit.start;
+    // Only a match starting before the one found can replace it, and moss's getEndIndex reads only its match.
+    if (found !== null && startIndex >= found.startIndex) continue;
     let endIndex: number | false;
     if (transformer.getEndIndex) {
       // moss's getEndIndex reads only the match, so its answer moves with the match.
+      const { entry } = hit;
       if (entry) {
         if (entry.endDelta === undefined) {
-          const end = transformer.getEndIndex(node, match);
-          budget.charge(match[0].length / NATIVE);
+          const end = transformer.getEndIndex(node, matchOf(hit, text));
+          budget.charge(hit.length / NATIVE);
           entry.endDelta = end === false ? false : end - startIndex;
         }
         endIndex = entry.endDelta === false ? false : startIndex + entry.endDelta;
       } else {
-        endIndex = transformer.getEndIndex(node, match);
+        endIndex = transformer.getEndIndex(node, matchOf(hit, text));
       }
     } else {
-      endIndex = startIndex + match[0].length;
+      endIndex = startIndex + hit.length;
     }
     if (endIndex === false) continue;
-    if (found === null || (startIndex < found.startIndex && (endIndex > found.endIndex || endIndex <= found.startIndex))) {
-      found = { startIndex, endIndex, transformer, match };
+    if (found === null || endIndex > found.endIndex || endIndex <= found.startIndex) {
+      found = { startIndex, endIndex, transformer, hit };
     }
   }
-  return found;
+  return found && { startIndex: found.startIndex, endIndex: found.endIndex, transformer: found.transformer, match: matchOf(found.hit, text) };
+}
+
+// A transformer's match on the text, by where it starts; its match array is made only when asked for.
+interface Hit {
+  entry: CachedMatch | null;
+  start: number;
+  length: number;
+  match?: RegExpMatchArray;
+}
+
+function matchOf(hit: Hit, text: string): RegExpMatchArray {
+  hit.match ??= rebase(hit.entry!.match!, hit.start, text);
+  return hit.match;
 }
 
 // The transformer's match in `text` (the base from `offset`): the cached one while it is still ahead, else a fresh
-// `text.match` as Lexical runs it. Returned with its index and input as a match on `text` would have them.
-function matchAt(
-  text: string,
-  context: Context,
-  offset: number,
-  transformer: TextMatchTransformer,
-  budget: Budget,
-): { entry: CachedMatch | null; match: RegExpMatchArray } | null {
+// `text.match` as Lexical runs it. Its match array has the index and input a match on `text` would have.
+function matchAt(text: string, context: Context, offset: number, transformer: TextMatchTransformer, budget: Budget): Hit | null {
   const re = transformer.importRegExp!;
   const kind = regExpKind(re);
   if (kind.suffixSafe) {
@@ -659,16 +671,16 @@ function matchAt(
       budget.charge((match ? (match.index ?? 0) + match[0].length : text.length) / NATIVE + 1);
       entry = { from: offset, at: match ? offset + (match.index ?? 0) : -1, match };
       context.matches.set(transformer, entry);
-      if (match) return { entry, match };
+      if (match) return { entry, start: match.index ?? 0, length: match[0].length, match };
     }
     if (entry.at < 0 || !entry.match) return null;
-    return { entry, match: rebase(entry.match, entry.at - offset, text) };
+    return { entry, start: entry.at - offset, length: entry.match[0].length };
   }
   budget.spend(0);
   const match = text.match(re);
   const scanned = kind.firstLiteral !== null && text[0] !== kind.firstLiteral ? 1 : text.length / NATIVE;
   budget.charge((match ? match[0].length / NATIVE : scanned) + 1);
-  return match ? { entry: null, match } : null;
+  return match ? { entry: null, start: match.index || 0, length: match[0].length, match } : null;
 }
 
 function rebase(match: RegExpMatchArray, index: number, input: string): RegExpMatchArray {
