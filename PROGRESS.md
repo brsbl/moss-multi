@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 70% done** (72 of 103 planned tasks verified)
+**Overall: 69% done** (73 of 106 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 20 / 20 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 21 / 21 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
@@ -91,6 +91,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-06 — T3.S3 verified: each person (with their agent keys) can create, import or duplicate up to 60 notes a minute; past that the server answers 429 with a retry-after before writing anything.
 - 2026-10-06 — T3.11 verified: a host on editor API 2 (moss-editor 0.3.0) shows each moss-html block inert until the user presses Run on it, a running block cannot make requests or navigate away, `copyFromNote` copies only from notes open in the host, and an API 1 host gets `apiMismatch` at mount.
 - 2026-10-06 — T3.S3b verified: note creation, sign-up, folders, vaults, agent keys, share links and feedback each have per-person daily bounds (2,000 new notes a day, 10,000 live notes, 30 sign-ups a day per client address), refused before anything is written.
+- 2026-10-06 — T3.S5 verified: typing at the end of a very long word (50k+ characters) no longer freezes the tab, because auto-link matching scans in linear time with the same links as moss's.
 
 ## T1.1s identity audit
 
