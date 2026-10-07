@@ -427,16 +427,17 @@ describe('a strike, then a native join or unwrap at the block edge, keeps the st
     const BOLD = 'Intro line stays.\n\na**b**c tail.\n\nClosing line stays too.\n';
     const pane = suggesting(BOLD);
     try {
-      pane.caret('Intro', 'Intro line stays.'.length);
-      pane.edit(() => {
-        ($getSelection() as RangeSelection).insertParagraph();
-      });
-      expect(pane.text(), 'an empty paragraph').toBe('Intro line stays.\n\n\n\nabc tail.\n\nClosing line stays too.');
       pane.caret('c tail', 1);
       pane.press('Backspace');
       pane.caret('a', 1);
       pane.press('Backspace');
       expect(pane.fork.struck(), "'c' and 'a'").toHaveLength(2);
+      pane.caret('Intro', 'Intro line stays.'.length);
+      pane.edit(() => {
+        ($getSelection() as RangeSelection).insertParagraph();
+      });
+      expect(pane.text(), 'an empty paragraph').toBe('Intro line stays.\n\n\n\nabc tail.\n\nClosing line stays too.');
+      pane.caret('a', 0);
       pane.press('Backspace');
       expect(pane.text(), 'the empty paragraph went; the block and its struck text stay').toBe('Intro line stays.\n\nabc tail.\n\nClosing line stays too.');
       expect(pane.fork.struck(), 'both strikes stand').toHaveLength(2);
