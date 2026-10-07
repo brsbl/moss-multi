@@ -4,21 +4,21 @@
 // detaches it at once, every close code is dispatched once (closeAction), handshakes that keep failing ask REST, and
 // a first sync later than 8 s reads `retrying`. Edits the DocDO has not acked live only in this Y.Doc, so a session
 // released with unacked edits stays connected without its pane until they are acked, or until the doc ends.
-import { DOC_ID_ATTR, EDITOR_PANE_ATTR, type ConnectionState, type TerminalReason } from '@moss-multi/protocol/dom-contract';
+import type { ConnectionState, TerminalReason } from '@moss-multi/protocol/dom-contract';
 import { isRole, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
-import { CLOSE, closeAction, encodeSyncFrame, PAYLOAD_MESSAGE, type ServerEvent, type WriteRefusalReason } from '@moss-multi/protocol/sync';
+import { base64ToBytes, CLOSE, closeAction, encodeSyncFrame, PAYLOAD_MESSAGE, type ServerEvent, type WriteRefusalReason } from '@moss-multi/protocol/sync';
 import { attachPayloadDocs, PayloadDocs, PayloadSync } from '@moss-multi/sync/payload-docs';
 import YProvider from 'y-partyserver/provider';
 import * as Y from 'yjs';
 import { rememberRole } from '../access.ts';
 import { leaveTo } from '../navigation.ts';
-import { setPasteGate } from '../paste-gate.ts';
 import { refuseInput } from '../refusal.ts';
 import { AckLedger } from './acks.ts';
 import {
   connectionOf, FIRST_SYNC_DEADLINE_MS, HANDSHAKE_FAILURES, HEARTBEAT_CHECK_MS, publishConnection, reduceLink, RESYNC_MS,
   SILENCE_LIMIT_MS, startLink, type Link, type LinkEvent,
 } from './connection.ts';
+import { Outbox, type Frame } from './outbox.ts';
 import { clearTerminal, setTerminal, terminalOf } from './terminal.ts';
 import { markSession, markUnacked } from './unacked.ts';
 
@@ -59,14 +59,19 @@ const VIEW_ONLY = 'You can view this note but can no longer edit it.';
 class DocSocket extends WebSocket {
   declare detached?: boolean;
   declare closeListeners?: ((event: CloseEvent) => void)[];
+  /** Sends large updates in acked pieces (T3.S6); a session's sockets each have their own. */
+  declare outbox?: Outbox;
 
   /** Nothing goes out on a socket that is closing: a reply to a late server frame would be lost and logs an error. */
   override send(...args: Parameters<WebSocket['send']>): void {
-    if (this.readyState === WebSocket.OPEN) super.send(...args);
+    if (this.readyState !== WebSocket.OPEN) return;
+    if (this.outbox) this.outbox.send(args[0] as Frame);
+    else super.send(...args);
   }
 
   detach(code: number, reason: string): void {
     if (this.detached) return;
+    this.outbox?.close();
     try {
       this.close(code, reason);
     } catch {
@@ -79,6 +84,21 @@ class DocSocket extends WebSocket {
 }
 
 const nativeAddEventListener = WebSocket.prototype.addEventListener;
+const nativeSend = WebSocket.prototype.send;
+
+/** The provider's socket class for `doc`: each socket sends through its own outbox, emptied when it closes. */
+function socketFor(doc: Y.Doc): typeof WebSocket {
+  return class extends DocSocket {
+    constructor(url: string | URL, protocols?: string | string[]) {
+      super(url, protocols);
+      const outbox = new Outbox(doc, (frame) => {
+        if (this.readyState === WebSocket.OPEN) nativeSend.call(this, frame);
+      });
+      this.outbox = outbox;
+      nativeAddEventListener.call(this, 'close', () => outbox.close());
+    }
+  };
+}
 // Assigned rather than overridden in the class body: one signature cannot override WebSocket's overloads.
 DocSocket.prototype.addEventListener = function addEventListener(
   this: DocSocket,
@@ -229,13 +249,6 @@ export function waitDocsAcked(docIds: string[], timeoutMs: number): Promise<bool
   });
 }
 
-/** A batched paste's next batch waits for the ack of the last (T3.S6), so unacked writes stay one batch. */
-const PASTE_ACK_WAIT_MS = 10 * 60_000;
-setPasteGate((editor) => {
-  const docId = editor.getRootElement()?.closest(`[${EDITOR_PANE_ATTR}]`)?.getAttribute(DOC_ID_ATTR);
-  return docId ? waitDocsAcked([docId], PASTE_ACK_WAIT_MS) : Promise.resolve(true);
-});
-
 /** Confirmed sign-out severs every socket of this window; nothing reconnects. */
 export function severDocSessions(): void {
   for (const session of [...sessions]) session.end('session-ended');
@@ -285,7 +298,7 @@ export class DocSession {
       disableBc: true,
       // The heartbeat sends the 4 s resync itself, so it can pause while the tab is hidden.
       resyncInterval: 0,
-      WebSocketPolyfill: DocSocket as unknown as typeof WebSocket,
+      WebSocketPolyfill: socketFor(this.doc),
       params: () => {
         const share = shareToken();
         return share ? { share } : {};
@@ -594,6 +607,8 @@ export class DocSession {
       const awareness = this.provider.awareness;
       const state = awareness.getLocalState();
       if (state !== null && !this.#ended && !this.#lingering) awareness.setLocalState(state);
+      // Writes still queued in the outbox are on their way; resending them would only queue them twice.
+      if ((ws as DocSocket).outbox?.busy) return;
       const pending = this.#ledger.pendingUpdate();
       if (pending && !this.#ended) ws.send(encodeSyncFrame(2, pending));
       // Each held payload asks again too, so one whose frames were lost on this socket catches up (A§10.10).
@@ -641,6 +656,11 @@ export class DocSession {
       return;
     }
     if (event.t === 'ack') {
+      try {
+        (this.provider.ws as DocSocket | null)?.outbox?.acked(Y.decodeStateVector(base64ToBytes(event.sv)));
+      } catch {
+        // a malformed vector reopens nothing
+      }
       if (this.#state.unacked && this.#ledger.acked(event)) this.#set({ unacked: false });
     } else if (event.t === 'write-refused') {
       this.#refusedMessage = WRITE_REFUSED[event.reason] ?? WRITE_REFUSED.role;

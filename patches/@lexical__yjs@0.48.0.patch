@@ -36,19 +36,19 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..dca6fa09d4292a0bc2ba8bbfea194a19
 +  for (let key = anchorNodeKey;;) {
 +    const anchorNode = currentEditorState._nodeMap.get(key);
 +    if (!anchorNode) {
-+      $getRoot().selectStart();
++      lexical.$getRoot().selectStart();
 +      return;
 +    }
 +    const prevNodeKey = anchorNode.__prev;
 +    let prevNode = null;
 +    if (prevNodeKey) {
-+      prevNode = $getNodeByKey(prevNodeKey);
++      prevNode = lexical.$getNodeByKey(prevNodeKey);
 +    }
 +    if (prevNode === null && anchorNode.__parent !== null) {
-+      prevNode = $getNodeByKey(anchorNode.__parent);
++      prevNode = lexical.$getNodeByKey(anchorNode.__parent);
 +    }
 +    if (prevNode === null) {
-+      $getRoot().selectStart();
++      lexical.$getRoot().selectStart();
 +      return;
 +    }
 +    if (prevNode.isAttached()) {
