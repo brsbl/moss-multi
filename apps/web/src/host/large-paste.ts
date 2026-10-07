@@ -212,6 +212,16 @@ const attached = (key: NodeKey | undefined): LexicalNode | null => {
 };
 
 /**
+ * `node` placed before `target` without moving the selection. Lexical's insertBefore pays getIndexWithinParent() on
+ * every call, so placing n blocks before one took O(n²); inserting after the previous sibling does not.
+ */
+function $placeBefore(target: LexicalNode, node: LexicalNode): void {
+  const previous = target.getPreviousSibling();
+  if (previous) previous.insertAfter(node, false);
+  else target.insertBefore(node, false);
+}
+
+/**
  * Places a plan's units in batches, each in an update of its own. The first batch is the first units and the last
  * one, with their lists and tables around them, inserted by the caller (at the caret, as Lexical's paste would, so
  * the paste merges with the text around it the same way). Between them, when they part at the top level, an empty
@@ -291,7 +301,7 @@ export class Placer {
     const gap = attached(this.#gap);
     const siblings = top.parent ? top.parent.children : this.plan.top;
     if (top.parent === null && gap) {
-      gap.insertBefore(node, false);
+      $placeBefore(gap, node);
       return;
     }
     const before = top.index > 0 ? attached(this.#keys.get(siblings[top.index - 1])) : null;
@@ -302,8 +312,8 @@ export class Placer {
     // The first of its list or table to land after the first batch: before the part the last unit is in.
     const holdsLast = siblings.find((part) => part.hi === this.plan.units.length - 1);
     const after = top.index === 0 && holdsLast ? attached(this.#keys.get(holdsLast)) : null;
-    if (after) after.insertBefore(node, false);
-    else if (gap) gap.insertBefore(node, false);
+    if (after) $placeBefore(after, node);
+    else if (gap) $placeBefore(gap, node);
     else $getRoot().append(node);
   }
 }
@@ -354,7 +364,7 @@ export function $insertBlocks(nodes: LexicalNode[], selection: BaseSelection, in
   const parent = second.isAttached() ? second.getParent() : null;
   if (parent === null) {
     // Nothing placed the second block (a command took the insert): the rest goes before the last, or at the end.
-    if (last.isAttached()) for (const node of middle) last.insertBefore(node, false);
+    if (last.isAttached()) for (const node of middle) $placeBefore(last, node);
     else for (const node of middle) $getRoot().append(node);
     return;
   }
@@ -376,7 +386,9 @@ export function $insertBlocks(nodes: LexicalNode[], selection: BaseSelection, in
 /** A batch's own work, at least: long enough that the per-batch costs stay a small part of the paste. */
 const BATCH_MS = 100;
 /** A batch whose work and layout took longer than this is cut down: the tab is never held long. */
-const STALL_MS = 500;
+const STALL_MS = 200;
+/** The first batch, before any is timed: inserting at the caret costs Lexical more per block than the batches after. */
+const FIRST_BATCH = 128;
 /** Laying out n new list items with values at once takes time quadratic in n (Chromium): batches stay this small. */
 const MAX_BATCH = 2_500;
 
@@ -387,7 +399,7 @@ const MAX_BATCH = 2_500;
  * reach MAX_BATCH.
  */
 class Pacer {
-  budget = 1_000;
+  budget = FIRST_BATCH;
   #placed = 0;
 
   /** Runs a batch of `used` units (`run`), then lays the note out (`layout`), and sizes the next batch. */
@@ -401,7 +413,7 @@ class Pacer {
     this.#placed += used;
     let next = Math.max((used * BATCH_MS) / ms, this.#placed / 8);
     if (total > STALL_MS) next = Math.min(next, (used * STALL_MS) / total);
-    this.budget = Math.round(Math.max(256, Math.min(MAX_BATCH, used * 4, next)));
+    this.budget = Math.round(Math.max(FIRST_BATCH, Math.min(MAX_BATCH, used * 4, next)));
   }
 }
 
@@ -437,9 +449,13 @@ class PasteJob {
       window.addEventListener(type, this.flush, true);
       this.#stops.push(() => window.removeEventListener(type, this.flush, true));
     }
+    // An undo or redo while the paste lands: keys and clicks land the rest first, outside any update. A command
+    // dispatched otherwise runs inside an update, which the rest would join, and the undo's own (historic) changes
+    // would then keep that update from reaching the doc: the rest lands and this undo or redo does nothing.
     const landFirst = () => {
+      const landing = !this.#ended;
       this.flush();
-      return false;
+      return landing;
     };
     this.#stops.push(
       // The pane closing (or the note switching) unmounts the editor: the rest lands while its binding still syncs.
@@ -518,6 +534,10 @@ class PasteJob {
     // Paced afresh: the live editor also renders and lays out each batch.
     const pacing = new Pacer();
     const first = pacing.budget;
+    // A pending update (a peer's or a derived write, tagged as collaboration) would take a batch into it, and an update
+    // so tagged never reaches the doc: each batch commits it first, on its own.
+    const settle = () => editor.read(noop);
+    settle();
     pacing.time(first, () => editor.update(() => {
       if (!request.$restore()) $getRoot().selectEnd();
       placer.$first(first, request.$insert);
@@ -526,6 +546,7 @@ class PasteJob {
       // Without a step to hold open (no collaborative undo), the rest goes in now.
       if (undo?.hold && !this.#flushing) yield;
       // Every later batch joins the paste's undo step (BodyUndo.hold), released once its update has committed.
+      if (!editor._updating) settle();
       const release = undo?.hold?.();
       const nested = editor._updating;
       const budget = pacing.budget;

@@ -86,7 +86,6 @@ it('keeps going when no ack comes, and drops pieces an ack already covers', () =
   expect(sent).toHaveLength(1);
   vi.advanceTimersByTime(2_000);
   expect(sent, 'a stalled window reopens').toHaveLength(2);
-  expect(outbox.busy).toBe(true);
   outbox.acked(Y.decodeStateVector(Y.encodeStateVector(doc)));
   expect(outbox.busy, 'everything left is already on the server').toBe(false);
   expect(sent).toHaveLength(2);

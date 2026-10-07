@@ -60,6 +60,8 @@ export class Outbox {
   readonly #acked = new Map<number, number>();
   #inFlight = 0;
   #inFlightFrames = 0;
+  /** When the server last acked this socket's writes. */
+  #lastAck = -Infinity;
   #stall: ReturnType<typeof setTimeout> | undefined;
   readonly #pieceBytes: number;
   readonly #windowBytes: number;
@@ -73,9 +75,13 @@ export class Outbox {
     this.#stallMs = options.stallMs ?? STALL_MS;
   }
 
-  /** Writes are waiting to go out, or are out and not yet acked. */
+  /**
+   * Writes are waiting to go out, or are out on a socket the server is acking: the heartbeat then need not resend
+   * them. Writes out on a socket that has earned no ack for STALL_MS (one that reconnected into a dead network) are
+   * not, so the resync sends them again.
+   */
   get busy(): boolean {
-    return this.#queue.length > 0 || this.#inFlight > 0;
+    return this.#queue.length > 0 || (this.#inFlight > 0 && Date.now() - this.#lastAck < this.#stallMs);
   }
 
   send(frame: Frame): void {
@@ -104,6 +110,7 @@ export class Outbox {
 
   /** The server acked this socket's writes up to `sv`: the window reopens. */
   acked(sv: Map<number, number>): void {
+    this.#lastAck = Date.now();
     for (const [client, clock] of sv) if ((this.#acked.get(client) ?? 0) < clock) this.#acked.set(client, clock);
     this.#reopen();
   }

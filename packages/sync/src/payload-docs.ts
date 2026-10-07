@@ -296,7 +296,7 @@ export class BodyUndo extends Observable<StackEvent> {
 
   /**
    * Until the returned release runs, every tracked edit joins the last step, however long after it lands: a large
-   * paste lands in batches, one undo step (T3.S6).
+   * paste lands in batches, one undo step (T3.S6). Once the last hold is released, the next edit is a step of its own.
    */
   hold(): () => void {
     this.#holds += 1;
@@ -305,6 +305,7 @@ export class BodyUndo extends Observable<StackEvent> {
       if (released) return;
       released = true;
       this.#holds -= 1;
+      if (this.#holds === 0) this.stopCapturing();
     };
   }
 

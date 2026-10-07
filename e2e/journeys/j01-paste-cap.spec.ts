@@ -1,9 +1,10 @@
 // j01-paste-cap (T3.S6): a paste just past the note's size cap (A§5.1) is refused whole, before any of it is applied.
 // The DocDO counts a note's state and its payload docs (code, HTML, formula, chart and sketch fields) against the cap
-// and refuses the write that crosses it; a paste sent in pieces would land up to there and lose the rest. Short
-// paragraphs encode to about 480 bytes each, so 59,000 of them are just over the cap; 44,000 are under it, but with
-// code and HTML blocks whose payloads add about 8 MB the paste is over too. Both are refused visibly: nothing in the
-// editor, the server or the collaborator's screen, the socket never closed, and the note stays editable.
+// and refuses the write that crosses it; a paste sent in pieces would land up to there and lose the rest. As plain
+// text, 59,000 short paragraphs and the empty lines between them are just over the cap. As markdown, 44,000 short
+// paragraphs encode to about 13 MB, under it, but with 76 code and HTML blocks whose payloads add about 15 MB the paste
+// is over too. Both are refused visibly: nothing in the editor, the server or the collaborator's screen, the socket
+// never closed, and the note stays editable.
 //
 // The notes and the reference imports are created through POST /api/docs as declared setup.
 import { INPUT_REFUSAL_ATTR } from '../lib/contract.ts';
@@ -29,9 +30,9 @@ function fence(language: string, bytes: number, line: (i: number) => string): st
 
 const PASTES: [string, () => string][] = [
   ['59,000 short paragraphs', () => [...shortParagraphs(59_000), 'Last line of the paste.'].join('\n\n')],
-  ['44,000 short paragraphs with 40 code and HTML blocks of 200 KB each', () => {
+  ['44,000 short paragraphs with 76 code and HTML blocks of 200 KB each', () => {
     const blocks: string[] = [];
-    for (let b = 0; b < 20; b += 1) {
+    for (let b = 0; b < 38; b += 1) {
       blocks.push(fence('js', 200_000, (i) => `const value${b}_${i} = ${i};`));
       blocks.push(fence('moss-html', 200_000, (i) => `<p>block ${b} line ${i}</p>`));
     }
