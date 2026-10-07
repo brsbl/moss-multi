@@ -707,7 +707,7 @@ describe('T5.3 accept lands exactly the previewed diff or nothing @p:mean-2 @p:R
     const ids: string[] = [];
     valid.forEach((text, i) => {
       const id = `w${i}a`;
-      forgeRecord(live, id, [client], [forged(live, (doc) => paragraphOf(doc).insert(0, text), client)]);
+      forgeRecord(live, id, [client], [forged(live, (doc) => paragraphOf(doc).insert(1, text), client)]);
       client += 1;
       ids.push(id);
       for (const n of [0, 1, 2]) {
