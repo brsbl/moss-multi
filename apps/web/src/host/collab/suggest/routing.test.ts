@@ -514,11 +514,14 @@ const KINDS: Kind[] = [
 type Side = 'before' | 'after';
 type Key = 'Backspace at the start' | 'Delete at the end' | 'Delete after a line break';
 const KEYS: Key[] = ['Backspace at the start', 'Delete at the end', 'Delete after a line break'];
-/** start: the next block's first character; end: each block's last; span: across the boundary; whole: the next block. */
-type Where = 'start' | 'end' | 'span' | 'whole';
-const WHERES: Where[] = ['start', 'end', 'span', 'whole'];
+/**
+ * start: the next block's first character; end: each block's last; span: across the boundary; whole: the next block;
+ * apart: the next block's first and last, live text between them.
+ */
+type Where = 'start' | 'end' | 'span' | 'whole' | 'apart';
+const WHERES: Where[] = ['start', 'end', 'span', 'whole', 'apart'];
 const TEXTLESS = new Set<Kind>(['code block', 'decorator', 'empty paragraph']);
-const B_TEXT: Record<Where, string> = { start: 'Zbeta tail', span: 'Zbeta tail', end: 'beta tailZ', whole: 'ZQZQZQ' };
+const B_TEXT: Record<Where, string> = { start: 'Zbeta tail', span: 'Zbeta tail', end: 'beta tailZ', whole: 'ZQZQZQ', apart: 'Zbeta tailZ' };
 
 interface Shape {
   markdown: string;
@@ -573,7 +576,7 @@ function skipOf(shape: Shape, key: Key, where: Where): string | null {
   const caretless = (kind: Kind | null) => kind === 'code block' || kind === 'decorator';
   if (key === 'Backspace at the start' && caretless(shape.bKind)) return 'no caret in the block after';
   if (key !== 'Backspace at the start' && (!shape.hasA || caretless(shape.aKind))) return 'no caret in the block before';
-  if ((where === 'start' || where === 'whole') && !shape.b) return 'nothing to strike';
+  if ((where === 'start' || where === 'whole' || where === 'apart') && !shape.b) return 'nothing to strike';
   if (where === 'span' && (!shape.a || !shape.b)) return 'nothing to strike across';
   if (where === 'end' && !shape.a && !shape.b) return 'nothing to strike';
   return null;
@@ -617,8 +620,11 @@ function liveChars(type: Y.AbstractType<unknown>, out: { id: Y.ID; char: string 
 
 const within = (spans: readonly IdSpan[], id: Y.ID) => spans.some((span) => span.client === id.client && span.clock <= id.clock && id.clock < span.clock + span.len);
 
-/** One combination, from the strikes to accept: the problems found, or null when it does not apply. */
-function census(kind: Kind, side: Side, key: Key, where: Where): string[] | null {
+/**
+ * One combination, from the strikes to accept: the problems found, `browser` when its key runs only in a browser, or
+ * null when it does not apply.
+ */
+function census(kind: Kind, side: Side, key: Key, where: Where): string[] | 'browser' | null {
   const shape = shapeOf(kind, side, where);
   if (skipOf(shape, key, where)) return null;
   const problems: string[] = [];
@@ -645,6 +651,11 @@ function census(kind: Kind, side: Side, key: Key, where: Where): string[] | null
     } else if (where === 'whole') {
       pane.caret(shape.b!, 0, shape.b!.length);
       pane.press('Backspace');
+    } else if (where === 'apart') {
+      pane.caret(shape.b!, 1);
+      pane.press('Backspace');
+      pane.caret(shape.b!, shape.b!.length);
+      pane.press('Backspace');
     } else if (where === 'span') {
       pane.across(shape.a!, shape.a!.length - 1, shape.b!, 1);
       pane.press('Backspace');
@@ -659,15 +670,26 @@ function census(kind: Kind, side: Side, key: Key, where: Where): string[] | null
     const expected = capitals([shape.a, shape.b].join(' ')).length;
     if (struck !== expected) problems.push(`struck ${struck} characters, not ${expected}`);
     look('after the strikes');
+    // A key whose native path reads the DOM selection (a table cell's edge, nothing before) runs only in a browser:
+    // the real-app census (e2e/lib/strike-census.ts) covers it.
+    const native = (step: () => void): boolean => {
+      try {
+        step();
+        return true;
+      } catch (error) {
+        if (String(error).includes('window object not found')) return false;
+        throw error;
+      }
+    };
     if (key === 'Backspace at the start') {
       if (shape.b) pane.caret(shape.b, 0);
       else pane.edit(() => emptyParagraph()!.selectStart());
-      pane.press('Backspace');
+      if (!native(() => pane.press('Backspace'))) return 'browser';
     } else {
       if (shape.a) pane.caret(shape.a, shape.a.length);
       else pane.edit(() => emptyParagraph()!.selectStart());
       if (key === 'Delete after a line break') pane.edit(() => ($getSelection() as RangeSelection).insertLineBreak());
-      pane.press('Delete');
+      if (!native(() => pane.press('Delete'))) return 'browser';
     }
     look(`after ${key}`);
     pane.undo();
@@ -688,10 +710,10 @@ function census(kind: Kind, side: Side, key: Key, where: Where): string[] | null
   try {
     if (built.valid.length !== open.length) problems.push(`records invalid in C: ${built.broken.join(', ')}`);
     const spans = [...struckByRecord(pane.live, new Set(built.valid), built).values()].flat();
-    for (const { id, char } of liveChars(pane.live.get('root', Y.XmlText))) {
+    for (const { id, char } of liveChars(pane.live.get('root', Y.XmlText) as unknown as Y.AbstractType<unknown>)) {
       if (/[A-Z]/.test(char) && !within(spans, id)) problems.push(`Edit mode leaves ${char} unpainted`);
     }
-    for (const { id, char } of liveChars(built.doc.get('root', Y.XmlText))) {
+    for (const { id, char } of liveChars(built.doc.get('root', Y.XmlText) as unknown as Y.AbstractType<unknown>)) {
       if (/[A-Z]/.test(char) && built.clients.has(id.client)) problems.push(`C inserts ${char}`);
     }
   } finally {
@@ -726,7 +748,7 @@ describe('the strike census: every block kind on each side of a boundary, every 
         let ran = 0;
         for (const key of KEYS) {
           for (const where of WHERES) {
-            let problems: string[] | null;
+            let problems: string[] | 'browser' | null;
             try {
               problems = census(kind, side, key, where);
             } catch (error) {
@@ -734,6 +756,7 @@ describe('the strike census: every block kind on each side of a boundary, every 
             }
             if (problems === null) continue;
             ran += 1;
+            if (problems === 'browser') continue;
             for (const problem of problems) failures.push(`${key}, strike ${where}: ${problem}`);
           }
         }

@@ -20,9 +20,12 @@ export type Kind =
 export type Side = 'before' | 'after';
 type Key = 'Backspace at the start' | 'Delete at the end' | 'Delete after a line break';
 const KEYS: Key[] = ['Backspace at the start', 'Delete at the end', 'Delete after a line break'];
-/** start: the next block's first character; end: each block's last; span: across the boundary; whole: the next block. */
-type Where = 'start' | 'end' | 'span' | 'whole';
-const WHERES: Where[] = ['start', 'end', 'span', 'whole'];
+/**
+ * start: the next block's first character; end: each block's last; span: across the boundary; whole: the next block;
+ * apart: the next block's first and last, live text between them.
+ */
+type Where = 'start' | 'end' | 'span' | 'whole' | 'apart';
+const WHERES: Where[] = ['start', 'end', 'span', 'whole', 'apart'];
 const TEXTLESS = new Set<Kind>(['code block', 'decorator', 'empty paragraph']);
 
 const BOOT_TIMEOUT = 30_000;
@@ -71,10 +74,10 @@ function combosOf(kind: Kind, side: Side, keys: readonly Key[] = KEYS): Combo[] 
       const aKind: Kind | null = side === 'before' ? kind : leading ? null : 'paragraph';
       const bKind: Kind = side === 'after' ? kind : 'paragraph';
       const a = aKind && !TEXTLESS.has(aKind) ? `alpha ${tag}${where === 'end' || where === 'span' ? 'Z' : ''}` : null;
-      const b = TEXTLESS.has(bKind) ? null : { start: `Zbeta ${tag}`, span: `Zbeta ${tag}`, end: `beta ${tag}Z`, whole: `ZQ${tag.toUpperCase()}` }[where];
+      const b = TEXTLESS.has(bKind) ? null : { start: `Zbeta ${tag}`, span: `Zbeta ${tag}`, end: `beta ${tag}Z`, whole: `ZQ${tag.toUpperCase()}`, apart: `Zbeta ${tag}Z` }[where];
       if (key === 'Backspace at the start' && caretless(bKind)) continue;
       if (key !== 'Backspace at the start' && (aKind === null || caretless(aKind))) continue;
-      if ((where === 'start' || where === 'whole') && !b) continue;
+      if ((where === 'start' || where === 'whole' || where === 'apart') && !b) continue;
       if (where === 'span' && (!a || !b)) continue;
       if (where === 'end' && !a && !b) continue;
       combos.push({ key, where, tag, gap: `gap ${tag} keep.`, a, b, aKind, bKind });
@@ -131,8 +134,8 @@ async function press(actor: Actor, key: string): Promise<void> {
  * The body's editable text (decorators' own chrome left out): its capitals that `::highlight(suggest-delete)` does
  * not cover, and its lower case letters and digits.
  */
-async function readBody(actor: Actor, docId: string): Promise<{ unpainted: string[]; kept: string }> {
-  return ui.body(actor, docId).evaluate((root) => {
+async function readBody(actor: Actor, docId: string, tags: readonly string[] | null = null): Promise<{ unpainted: string[]; kept: string }> {
+  return ui.body(actor, docId).evaluate((root, tags) => {
     const ranges = [...((CSS as unknown as { highlights?: Map<string, Set<Range>> }).highlights?.get('suggest-delete') ?? [])];
     const unpainted: string[] = [];
     let kept = '';
@@ -144,12 +147,14 @@ async function readBody(actor: Actor, docId: string): Promise<{ unpainted: strin
       for (let i = 0; i < data.length; i += 1) {
         if (/[a-z0-9]/.test(data[i])) kept += data[i];
         if (!/[A-Z]/.test(data[i])) continue;
+        // Only the sections played so far: the rest of the note is not struck yet.
+        if (tags && !tags.some((tag) => data.includes(tag) || data.includes(tag.toUpperCase()))) continue;
         const text = node;
         if (!ranges.some((range) => range.comparePoint(text, i) === 0 && range.comparePoint(text, i + 1) === 0)) unpainted.push(`${data[i]} in "${data}"`);
       }
     }
     return { unpainted, kept };
-  });
+  }, tags);
 }
 
 const content = async (actor: Actor, docId: string, view = ''): Promise<string> =>
@@ -173,10 +178,10 @@ async function noteFor(ada: Actor, ben: { principal: Parameters<typeof grantDoc>
 }
 
 /** One combination in Ben's Suggest pane: the strikes, the key, its undo and its redo, F checked after each. */
-async function play(ben: Actor, docId: string, combo: Combo, baseline: string): Promise<void> {
+async function play(ben: Actor, docId: string, combo: Combo, baseline: string, played: readonly string[]): Promise<void> {
   const label = `${combo.bKind === combo.aKind ? combo.aKind : `${combo.aKind ?? 'nothing'} | ${combo.bKind}`}, ${combo.key}, strike ${combo.where}`;
   const look = async (when: string) => {
-    await expect.poll(async () => (await readBody(ben, docId)).unpainted, { message: `${label}, ${when}: every capital F shows paints struck`, timeout: 5_000 }).toEqual([]);
+    await expect.poll(async () => (await readBody(ben, docId, played)).unpainted, { message: `${label}, ${when}: every capital F shows paints struck`, timeout: 5_000 }).toEqual([]);
     expect((await readBody(ben, docId)).kept, `${label}, ${when}: F keeps every unstruck character`).toBe(baseline);
   };
   const { a, b } = combo;
@@ -185,6 +190,11 @@ async function play(ben: Actor, docId: string, combo: Combo, baseline: string): 
     await press(ben, 'Backspace');
   } else if (combo.where === 'whole') {
     await select(ben, docId, b!, 0, b!, b!.length);
+    await press(ben, 'Backspace');
+  } else if (combo.where === 'apart') {
+    await select(ben, docId, b!, 1);
+    await press(ben, 'Backspace');
+    await select(ben, docId, b!, b!.length);
     await press(ben, 'Backspace');
   } else if (combo.where === 'span') {
     await select(ben, docId, a!, a!.length - 1, b!, 1);
@@ -277,7 +287,11 @@ export async function censusLeg(actors: Actors, kind: Kind, side: Side): Promise
     if (group === notes[0]) await actors.requireDistinct(2);
     const baseline = (await readBody(ben, docId)).kept;
     expect(baseline, 'the note shows its text').not.toBe('');
-    for (const combo of group) await play(ben, docId, combo, baseline);
+    const played: string[] = [];
+    for (const combo of group) {
+      played.push(combo.tag);
+      await play(ben, docId, combo, baseline, played);
+    }
     await review(ada, ben, docId, original, `${kind} ${side} the boundary`);
   }
 }
