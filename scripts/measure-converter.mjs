@@ -11,7 +11,7 @@
 // and sends many tiny payload frames over thousands of ids (T1.F2), exiting non-zero past the stated per-frame CPU,
 // memory, held-doc and scaling budgets, and feeds the real SearchDO bodies of unclosed openers, exiting non-zero past
 // the per-request CPU and linear-scaling budgets. The converter also imports and exports notes of unclosed openers
-// (packages/sync/measure/converter-cases.ts) up to 2 MB, exiting non-zero past IMPORT_BUDGET_MS or linear growth.
+// (packages/sync/measure/converter-cases.ts) as single lines from 1 KB to 2 MB, exiting non-zero past LINE_BUDGET_MS.
 import { spawn, spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -466,65 +466,103 @@ async function measureSearch(port) {
   return results;
 }
 
-// Notes of unclosed openers (converter-cases.ts) at PRODUCT's 2 MB cap and half that, each case in a fresh worker:
-// import and export each stay within IMPORT_BUDGET_MS, and the 2 MB note costs at most ADVERSARIAL_SCALING times the
-// 1 MB one. A request past ADVERSARIAL_TIMEOUT_MS fails the case.
-const ADVERSARIAL_SIZES = [1024 * 1024, 2 * 1024 * 1024];
-const ADVERSARIAL_SCALING = 3;
+// Every converter case (converter-cases.ts) as one line at each size from 1 KB to PRODUCT's 2 MB cap, doubling, in a
+// warmed worker: no single line, of any size, may cost more than LINE_BUDGET_MS of workerd CPU to import or to
+// export, and since each note is that one line, no note of them more than IMPORT_BUDGET_MS. A size over the budget
+// is measured ADVERSARIAL_RUNS times and judged by the median; a request past ADVERSARIAL_TIMEOUT_MS fails the case.
+const ADVERSARIAL_SIZES = Array.from({ length: 12 }, (_, i) => 1024 << i);
+const LINE_BUDGET_MS = 250;
+const ADVERSARIAL_RUNS = 3;
 const ADVERSARIAL_TIMEOUT_MS = 20_000;
 // 10 ms CPU ticks and noise: scaling compares against no less than this.
 const ADVERSARIAL_FLOOR_MS = 100;
+const ADVERSARIAL_SCALING = 3;
 const ADVERSARIAL_OPS = ['importCpuMs', 'exportCpuMs'];
+const WARM_ROUNDS = 3;
 
-async function measureAdversarialCase(name, c, port, converterBody) {
-  const server = await startWorker('converter', port);
-  const request = (path, body) => timedRequest(server, path, { method: body === undefined ? 'GET' : 'POST', body, signal: AbortSignal.timeout(ADVERSARIAL_TIMEOUT_MS) });
-  const sizes = [];
-  try {
-    for (const bytes of ADVERSARIAL_SIZES) {
-      const imported = await request('/import', converterBody(c, bytes));
-      const exported = await request('/export');
-      const { cut } = JSON.parse(imported.body);
-      sizes.push({ bytes, importCpuMs: imported.cpuMs, exportCpuMs: exported.cpuMs, importWallMs: round(imported.wallMs), cut });
+// Runs every code path a few times first, so no case is charged the JIT's first compilations.
+async function warm(server, bodies) {
+  for (let round = 0; round < WARM_ROUNDS; round += 1) {
+    for (const body of bodies) {
+      await timedRequest(server, '/import', { method: 'POST', body });
+      await timedRequest(server, '/export');
     }
-    return { name, sizes };
-  } catch (error) {
-    const reason = error.name === 'TimeoutError' || error.cause?.name === 'TimeoutError' ? `a request ran past ${ADVERSARIAL_TIMEOUT_MS / 1000} s` : String(error.message).split('\n')[0];
-    return { name, sizes, failed: reason };
-  } finally {
-    await stop(server.child);
   }
 }
 
+const failure = (error) =>
+  error.name === 'TimeoutError' || error.cause?.name === 'TimeoutError' ? `a request ran past ${ADVERSARIAL_TIMEOUT_MS / 1000} s` : String(error.message).split('\n')[0];
+
 async function measureAdversarial(port) {
-  const { CONVERTER_CASES, converterBody } = await import('../packages/sync/measure/converter-cases.ts');
+  const { CONVERTER_CASES, ORDINARY_NOTES, converterBody } = await import('../packages/sync/measure/converter-cases.ts');
+  const warmBodies = [
+    ORDINARY_NOTES['a paragraph of 1,000 sentences of italic, bold, code and strikethrough'](),
+    ...Object.values(CONVERTER_CASES).map((c) => converterBody(c, 8 * 1024)),
+  ];
   const results = [];
-  for (const [name, c] of Object.entries(CONVERTER_CASES)) {
-    results.push(await measureAdversarialCase(name, c, port, converterBody));
-    port += 1;
+  let server = null;
+  try {
+    for (const [name, c] of Object.entries(CONVERTER_CASES)) {
+      if (!server) {
+        server = await startWorker('converter', port);
+        port += 1;
+        await warm(server, warmBodies);
+      }
+      const live = server;
+      const request = (path, body) => timedRequest(live, path, { method: body === undefined ? 'GET' : 'POST', body, signal: AbortSignal.timeout(ADVERSARIAL_TIMEOUT_MS) });
+      const sizes = [];
+      try {
+        for (const bytes of ADVERSARIAL_SIZES) {
+          const body = converterBody(c, bytes);
+          const runs = [];
+          // A first run clearly within the budget, or clearly over it, needs no second look.
+          do {
+            const imported = await request('/import', body);
+            const exported = await request('/export');
+            runs.push({ importCpuMs: imported.cpuMs, exportCpuMs: exported.cpuMs, cut: JSON.parse(imported.body).cut });
+          } while (runs.length < ADVERSARIAL_RUNS && ADVERSARIAL_OPS.some((op) => runs[0][op] > LINE_BUDGET_MS && runs[0][op] < 4 * LINE_BUDGET_MS));
+          sizes.push({
+            bytes,
+            runs: runs.length,
+            importCpuMs: median(runs.map((r) => r.importCpuMs)),
+            exportCpuMs: median(runs.map((r) => r.exportCpuMs)),
+            cut: runs[0].cut,
+          });
+        }
+        results.push({ name, sizes });
+      } catch (error) {
+        results.push({ name, sizes, failed: failure(error) });
+        await stop(live.child);
+        server = null;
+      }
+    }
+  } finally {
+    if (server) await stop(server.child);
   }
   return results;
 }
 
-// Ordinary notes (converter-cases.ts), in one worker, each imported in full (no line cut at the work budget). The
-// single-paragraph ORDINARY_NOTES stay within IMPORT_BUDGET_MS. LARGE_ORDINARY_NOTES hold several times the scale
+// Ordinary notes (converter-cases.ts), in one warmed worker, each imported in full (no line cut at the work budget).
+// The single-paragraph ORDINARY_NOTES stay within IMPORT_BUDGET_MS. LARGE_ORDINARY_NOTES hold several times the scale
 // note's matches per byte, and Lexical's own inline import of them costs more than ours (in Node, about 3.1 s against
 // 2.4 s at 2 MB), so SP2's budget for the scale note is not theirs: they are held to linear growth from 1 MB to
-// 2 MB, as the adversarial notes are, and to LARGE_ORDINARY_CEILING_MS.
+// 2 MB and to LARGE_ORDINARY_CEILING_MS. So is NEAR_BUDGET_NOTES, a note of many lines each just under the per-line
+// caps, whose lines all convert: the per-line budget bounds a line, and a note of such lines grows linearly.
 const LARGE_ORDINARY_SIZES = [1024 * 1024, 2 * 1024 * 1024];
 const LARGE_ORDINARY_CEILING_MS = 2 * IMPORT_BUDGET_MS;
 
 async function measureOrdinary(port) {
-  const { LARGE_ORDINARY_NOTES, ORDINARY_NOTES } = await import('../packages/sync/measure/converter-cases.ts');
+  const { LARGE_ORDINARY_NOTES, NEAR_BUDGET_NOTES, ORDINARY_NOTES } = await import('../packages/sync/measure/converter-cases.ts');
   const server = await startWorker('converter', port);
   const runs = [
     ...Object.entries(ORDINARY_NOTES).map(([name, body]) => ({ name, body, ceiling: IMPORT_BUDGET_MS })),
-    ...Object.entries(LARGE_ORDINARY_NOTES).flatMap(([name, body]) =>
+    ...Object.entries({ ...LARGE_ORDINARY_NOTES, ...NEAR_BUDGET_NOTES }).flatMap(([name, body]) =>
       LARGE_ORDINARY_SIZES.map((bytes) => ({ name: `${name} (at ${bytes / 1024} KB)`, body: () => body(bytes), ceiling: LARGE_ORDINARY_CEILING_MS, family: name })),
     ),
   ];
   const results = [];
   try {
+    await warm(server, Object.values(ORDINARY_NOTES).map((body) => body()));
     for (const { name, body, ceiling, family } of runs) {
       try {
         const imported = await timedRequest(server, '/import', { method: 'POST', body: body(), signal: AbortSignal.timeout(ADVERSARIAL_TIMEOUT_MS) });
@@ -558,20 +596,15 @@ function ordinaryProblems(results) {
   return problems;
 }
 
-/** Every way the adversarial notes miss the stated budget (empty when they meet it). */
+/** Every way the adversarial lines miss the stated budget (empty when they meet it). */
 function adversarialBudgetProblems(results) {
   const problems = [];
   for (const r of results) {
-    if (r.failed) {
-      problems.push(`${r.name}: ${r.failed}`);
-      continue;
-    }
+    if (r.failed) problems.push(`${r.name}: ${r.failed}`);
     for (const size of r.sizes) {
-      for (const op of ADVERSARIAL_OPS) if (size[op] > IMPORT_BUDGET_MS) problems.push(`${r.name}, ${size.bytes} B: ${op} ${size[op]} ms`);
-    }
-    const [small, large] = r.sizes;
-    for (const op of ADVERSARIAL_OPS) {
-      if (large[op] > ADVERSARIAL_SCALING * Math.max(small[op], ADVERSARIAL_FLOOR_MS)) problems.push(`${r.name}: ${op} grew from ${small[op]} ms to ${large[op]} ms`);
+      for (const op of ADVERSARIAL_OPS) {
+        if (size[op] > LINE_BUDGET_MS) problems.push(`${r.name}, ${size.bytes} B: ${op} ${size[op]} ms over the ${LINE_BUDGET_MS} ms line budget`);
+      }
     }
   }
   return problems;
@@ -709,13 +742,14 @@ async function main() {
       ),
       ...(r.failed ? [`| Search, ${r.name} | FAILED: ${r.failed} |`] : []),
     ]),
-    ...adversarial.flatMap((r) => [
-      ...r.sizes.map(
-        (size) =>
-          `| Unclosed openers, ${r.name} × ${kb(size.bytes)}: workerd CPU (import / export), one run | ${size.importCpuMs} / ${size.exportCpuMs} ms (budget ${IMPORT_BUDGET_MS} ms; import wall ${size.importWallMs} ms${size.cut ? '; line cut at the work budget' : ''}) |`,
-      ),
-      ...(r.failed ? [`| Unclosed openers, ${r.name} | FAILED: ${r.failed} |`] : []),
-    ]),
+    ...adversarial.map((r) => {
+      const worst = (op) => r.sizes.reduce((a, b) => (b[op] > a[op] ? b : a), r.sizes[0] ?? { [op]: 0, bytes: 0 });
+      const [importWorst, exportWorst] = ADVERSARIAL_OPS.map(worst);
+      const literalFrom = r.sizes.find((size) => size.cut > 0);
+      const measured = r.sizes.length > 0 ? `${kb(r.sizes[0].bytes)} to ${kb(r.sizes.at(-1).bytes)}` : 'no size';
+      const notes = [`line budget ${LINE_BUDGET_MS} ms`, ...(literalFrom ? [`kept literal from ${kb(literalFrom.bytes)}`] : []), ...(r.failed ? [`FAILED: ${r.failed}`] : [])];
+      return `| Adversarial line, ${r.name}, ${measured}: worst workerd CPU (import / export) | ${importWorst.importCpuMs} ms at ${kb(importWorst.bytes)} / ${exportWorst.exportCpuMs} ms at ${kb(exportWorst.bytes)} (${notes.join('; ')}) |`;
+    }),
     ...ordinary.map((r) =>
       r.failed
         ? `| Ordinary note, ${r.name} | FAILED: ${r.failed} |`
@@ -761,7 +795,7 @@ async function main() {
   }
   const adversarialProblems = adversarialBudgetProblems(adversarial);
   if (adversarialProblems.length > 0) {
-    console.error(`measure-converter: unclosed openers over budget in workerd: ${adversarialProblems.join('; ')}`);
+    console.error(`measure-converter: adversarial lines over budget in workerd: ${adversarialProblems.join('; ')}`);
     process.exitCode = 1;
   }
   const payloadProblems = payloads.failed ? [payloads.failed] : payloadBudgetProblems(payloads.notes);

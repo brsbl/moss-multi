@@ -7,7 +7,7 @@ import { $withDocumentImport, withImportFormulaIds } from '@moss-desktop/rendere
 import { $convertFromMarkdownString, LINEAR_IMPORT_LIMITS, linearImportStats } from '@moss-desktop/renderer/editor/markdown/linear-import';
 import { escapeHtmlEntities, normalizeMarkdownForImport } from '@moss-desktop/renderer/editor/markdown/normalize';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { $getRoot, $isElementNode } from 'lexical';
+import { $getRoot, $isElementNode, type ElementNode } from 'lexical';
 import { CONVERTER_CASES, converterBody, LARGE_ORDINARY_NOTES, ORDINARY_NOTES } from '../../measure/converter-cases.ts';
 import { FIXTURES, SCALE_UNIT, scaleNote } from './fixtures.ts';
 import { createConverterEditor, exportMarkdown, importMarkdown, MARKDOWN_EDITOR_TRANSFORMERS } from './index.ts';
@@ -58,8 +58,14 @@ describe('linear inline import @p:tech-4', () => {
   describe('with the budget lifted', () => {
     const limits = { ...LINEAR_IMPORT_LIMITS };
     beforeAll(() => {
-      LINEAR_IMPORT_LIMITS.perChar = Number.POSITIVE_INFINITY;
-      LINEAR_IMPORT_LIMITS.perImport = Number.POSITIVE_INFINITY;
+      Object.assign(LINEAR_IMPORT_LIMITS, {
+        lineChars: Number.POSITIVE_INFINITY,
+        perLine: Number.POSITIVE_INFINITY,
+        matches: Number.POSITIVE_INFINITY,
+        tabs: Number.POSITIVE_INFINITY,
+        perChar: Number.POSITIVE_INFINITY,
+        perImport: Number.POSITIVE_INFINITY,
+      });
     });
     afterAll(() => {
       Object.assign(LINEAR_IMPORT_LIMITS, limits);
@@ -199,6 +205,76 @@ describe('linear inline import @p:tech-4', () => {
       expect(text === `Before it.\n\nquokka ~~\`*\` ${'[a](b) '.repeat(150_000)}z~~`).toBe(true);
       roundTrips(markdown, text);
     }, 120_000);
+  });
+
+  // Caps that bound what any one line costs, each fixed by the line's own text (scripts/measure-converter.mjs holds a
+  // line of every converter case, from 1 KB to 2 MB, to the per-line workerd budget).
+  describe('per-line caps', () => {
+    const textOf = (editor: ReturnType<typeof importMarkdown>) => editor.getEditorState().read(() => $getRoot().getTextContent());
+    const cuts = (run: () => void) => {
+      const before = linearImportStats.cut;
+      run();
+      return linearImportStats.cut - before;
+    };
+    const blocks = (editor: ReturnType<typeof importMarkdown>) =>
+      editor.getEditorState().read(() => $getRoot().getChildren().map((block) => [block.getType(), block.getTextContent()]));
+
+    it('keeps a line longer than lineChars literally, out of moss\'s normalization and the block transformers', () => {
+      const line = `# **b** [a](b) ${'x'.repeat(LINEAR_IMPORT_LIMITS.lineChars)}`;
+      let editor = importMarkdown('');
+      expect(cuts(() => {
+        editor = importMarkdown(`Before **it**.\n\n${line}\n\nAfter **it**.`);
+      })).toBe(1);
+      expect(blocks(editor)).toEqual([['paragraph', 'Before it.'], ['paragraph', line], ['paragraph', 'After it.']]);
+      const again = importMarkdown(exportMarkdown(editor));
+      expect(textOf(again) === textOf(editor)).toBe(true);
+    }, 120_000);
+
+    it('gives a long line inside a fenced block back to that block', () => {
+      const long = 'y'.repeat(LINEAR_IMPORT_LIMITS.lineChars + 1);
+      for (const markdown of [`\`\`\`moss-html\n<p>${long}</p>\n\`\`\``, `\`\`\`js\nconst a = '${long}';\n\`\`\``]) {
+        const state = JSON.stringify(importMarkdown(markdown).getEditorState().toJSON());
+        expect(state.includes(long)).toBe(true);
+        expect(/[\u0001-\u0008]/.test(state)).toBe(false);
+      }
+    }, 120_000);
+
+    it('keeps a line of more than `matches` matches literally, and converts one of that many', () => {
+      const line = (n: number) => `x ${'[a](b) '.repeat(n)}`;
+      const at = LINEAR_IMPORT_LIMITS.matches;
+      let editor = importMarkdown('');
+      expect(cuts(() => {
+        editor = importMarkdown(line(at));
+      })).toBe(0);
+      expect(editor.getEditorState().read(() => $getRoot().getTextContent())).toBe(`x ${'a '.repeat(at)}`);
+      expect(cuts(() => {
+        editor = importMarkdown(line(at + 1));
+      })).toBe(1);
+      expect(blocks(editor)).toEqual([['paragraph', line(at + 1)]]);
+    }, 120_000);
+
+    it('keeps the tabs of a line of more than `tabs` tabs as text, and makes tab nodes of fewer', () => {
+      const childTypes = (markdown: string) =>
+        importMarkdown(markdown).getEditorState().read(() => $getRoot().getFirstChildOrThrow<ElementNode>().getChildren().map((node) => node.getType()));
+      expect(childTypes('**a**\tb')).toEqual(['text', 'tab', 'text']);
+      const many = `**a**${'\t'.repeat(LINEAR_IMPORT_LIMITS.tabs + 1)}b`;
+      expect(cuts(() => importMarkdown(many))).toBe(1);
+      expect(childTypes(many)).toEqual(['text']);
+      expect(textOf(importMarkdown(many))).toBe(many);
+    }, 120_000);
+
+    // Nothing about a cut depends on timing or on anything but the bytes imported.
+    it('imports the same bytes the same way every time', () => {
+      const stateOf = (markdown: string) => JSON.stringify(importMarkdown(markdown).getEditorState().toJSON());
+      const differing: string[] = [];
+      for (const [name, c] of Object.entries(CONVERTER_CASES)) {
+        for (const bytes of [1024, 64 * 1024, 256 * 1024]) {
+          const markdown = converterBody(c, bytes);
+          if (stateOf(markdown) !== stateOf(markdown)) differing.push(`${name} at ${bytes} B`);
+        }
+      }
+      expect(differing).toEqual([]);
+    }, 300_000);
   });
 
   it('cuts no fixture line and no L3 case at the default budget', () => {

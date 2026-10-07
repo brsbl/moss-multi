@@ -39,6 +39,9 @@ export const CONVERTER_CASES: Record<string, ConverterCase> = {
   'URL labels [http://': { run: '[http://' },
   'image lines ![a](': { run: '![a](', before: '' },
   'indent before a word': { run: ' ', before: '', after: 'x' },
+  // Lexical's export split each text node with /^(\s*)(.*?)(\s*)$/s, quadratic on a whitespace run inside it.
+  'whitespace between words': { run: ' ', after: 'x' },
+  tabs: { run: '\t', after: 'x' },
   'divider then whitespace': { run: ' ', before: '|-|-', after: 'x' },
   'pill openers ?[ before one destination': { run: '?[', after: '](', tail: 'a' },
   'formatted pill openers *?[ before one destination': { run: '*?[', after: '](', tail: 'a' },
@@ -104,6 +107,12 @@ const paragraphs = (paragraph: (i: number) => string, size: number) => {
     bytes += out[i].length + 2;
   }
   return out.join('\n\n');
+};
+
+// 2 MB (or `size`) of lines each just under markdown/linear-import.ts's per-line caps (its matches and its work),
+// which all convert: held, as LARGE_ORDINARY_NOTES are, to linear growth in workerd.
+export const NEAR_BUDGET_NOTES: Record<string, (size?: number) => string> = {
+  '2 MB of lines of 5,900 links each': (size = 2 * 1024 * 1024) => paragraphs(() => `x ${'[a](b) '.repeat(5_900)}`, size),
 };
 
 export const LARGE_ORDINARY_NOTES: Record<string, (size?: number) => string> = {
