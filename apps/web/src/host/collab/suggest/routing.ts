@@ -3,17 +3,17 @@
 // ids instead of removing them; the text stays in F painted struck and the caret moves past it. The author's own
 // pending text in the same selection deletes natively. Undo and redo take a strike back and put it again, in order
 // with the binding's own undo steps. Everything else is native and recorded verbatim (a join at a block edge too).
-// A join or unwrap re-creates the moved block's text under new ids, struck characters included, so in the same update
-// the struck characters of that block are removed natively: the copy leaves them out and their delete parts stay. Undo
-// of that step does not bring them back; undo of their strike re-creates them, as the author's own, where they stood.
+// A native rewrite that re-creates struck text has the copy removed by the fork (client.ts, keepStrikes), so the
+// struck characters leave F and their delete parts stay; undo of their strike re-creates them, as the author's own,
+// where they stood.
 import { $getClipboardDataFromSelection, setLexicalClipboardDataTransfer } from '@lexical/clipboard';
 import type { IdSpan } from '@moss-multi/protocol/suggest';
 import type { SuggestFork } from '@moss-multi/sync/suggest/client';
 import {
-  $getNodeByKey, $getSelection, $isElementNode, $isRangeSelection, $isRootOrShadowRoot, $isTextNode, $onUpdate, COMMAND_PRIORITY_CRITICAL,
+  $getNodeByKey, $getSelection, $isElementNode, $isRangeSelection, $isTextNode, COMMAND_PRIORITY_CRITICAL,
   CONTROLLED_TEXT_INSERTION_COMMAND, CUT_COMMAND, DELETE_CHARACTER_COMMAND, DELETE_LINE_COMMAND, DELETE_WORD_COMMAND,
-  INSERT_LINE_BREAK_COMMAND, INSERT_PARAGRAPH_COMMAND, KEY_BACKSPACE_COMMAND, mergeRegister, PASTE_COMMAND, REDO_COMMAND, UNDO_COMMAND,
-  type ElementNode, type LexicalEditor, type LexicalNode, type TextNode,
+  INSERT_LINE_BREAK_COMMAND, INSERT_PARAGRAPH_COMMAND, mergeRegister, PASTE_COMMAND, REDO_COMMAND, UNDO_COMMAND,
+  type LexicalEditor, type LexicalNode, type TextNode,
 } from 'lexical';
 import * as Y from 'yjs';
 import { bindingOf } from '../binding-registry.ts';
@@ -43,96 +43,28 @@ function $besideLeaf(node: LexicalNode, backward: boolean): LexicalNode | null {
   }
 }
 
-/** The block element holding `node` (itself when it is one). */
-function $blockOf(node: LexicalNode): ElementNode | null {
-  for (let current: LexicalNode | null = node; current; current = current.getParent()) {
-    if ($isElementNode(current) && !current.isInline() && !$isRootOrShadowRoot(current)) return current;
-  }
-  return null;
-}
-
-/** The block a Delete at the end of `block` pulls into it: the next block in document order. */
-function $nextBlock(block: ElementNode): ElementNode | null {
-  let current: LexicalNode = block;
-  let next: LexicalNode | null = current.getNextSibling();
-  while (!next) {
-    const parent = current.getParent();
-    if (!parent || $isRootOrShadowRoot(parent)) return null;
-    current = parent;
-    next = current.getNextSibling();
-  }
-  for (;;) {
-    if (!$isElementNode(next) || next.isInline()) return null;
-    const first: LexicalNode | null = next.getFirstChild();
-    if (!$isElementNode(first) || first.isInline()) return next;
-    next = first;
-  }
-}
-
-/**
- * Whether Backspace at the start of `block` re-creates it: anything precedes it, or it is a list item, quote or
- * heading that unwraps at its start. Lexical removes an empty block or a decorator just before it instead, and never
- * merges into a shadow root (LexicalSelection deleteCharacter); moss splits a list item at its start either way.
- */
-function $joinsBackward(block: ElementNode): boolean {
-  const previous = block.getPreviousSibling();
-  if (previous && block.getType() !== 'listitem' && (!$isElementNode(previous) || previous.isEmpty() || previous.isShadowRoot())) return false;
-  if (block.getType() !== 'paragraph') return true;
-  for (let current: LexicalNode | null = block; current && !$isRootOrShadowRoot(current); current = current.getParent()) {
-    if (current.getPreviousSibling()) return true;
-  }
-  return false;
-}
-
-const leavesOf = (node: ElementNode): LexicalNode[] =>
-  node.getChildren().flatMap((child) => ($isElementNode(child) ? leavesOf(child) : [child]));
-
-type DeleteSet = Y.UndoManager['undoStack'][number]['deletions'];
-
-/** `set` less the ids in `spans`, as a new delete set (the transaction's own stays whole for the forwarded update). */
-function without(set: DeleteSet, spans: readonly IdSpan[]): DeleteSet {
-  const out = Y.mergeDeleteSets([set]);
-  for (const [client, ranges] of out.clients) {
-    let kept = ranges;
-    for (const span of spans) {
-      if (span.client !== client) continue;
-      const end = span.clock + span.len;
-      kept = kept.flatMap((range) => {
-        const to = range.clock + range.len;
-        if (to <= span.clock || range.clock >= end) return [range];
-        return [{ clock: range.clock, len: span.clock - range.clock }, { clock: end, len: to - end }].filter((part) => part.len > 0) as typeof ranges;
-      });
-    }
-    out.clients.set(client, kept);
-  }
-  return out;
-}
-
-/** Struck items a join removed: the first one's id, how many, and how to re-create them. */
-interface Stripped {
+/** A strike's run of targets within one item, and how to re-create any part of it. */
+interface Run {
   id: Y.ID;
   len: number;
-  make: () => string | Y.XmlElement | Y.Map<unknown>;
+  make: (from: number, len: number) => string | Y.XmlElement | Y.Map<unknown>;
 }
 
 /**
  * A strike as an undo step: `depth` is the binding's undo stack before it; `native` when own text went with it.
- * `stripped`: its items a join removed; `copies`: what undoing it re-created for them, as runs of ids.
+ * `runs`: its targets as they were struck; `copies`: what undoing it re-created for targets a rewrite removed.
  */
 interface Strike {
   part: string | null;
   targets: IdSpan[];
   depth: number;
   native: boolean;
-  stripped: Stripped[];
+  runs: Run[];
   copies: IdSpan[];
 }
 
-/** Re-creating or removing stripped items: not an undo step of the binding's, but forwarded like any edit of F. */
+/** Re-creating or removing struck items: not an undo step of the binding's, but forwarded like any edit of F. */
 const RESTORE = Symbol('suggest-restore');
-
-const covers = (spans: readonly IdSpan[], id: Y.ID) =>
-  spans.some((span) => span.client === id.client && id.clock >= span.clock && id.clock < span.clock + span.len);
 
 function itemAt(doc: Y.Doc, id: Y.ID): Y.Item | null {
   try {
@@ -150,12 +82,12 @@ function indexOf(item: Y.Item): number {
   return index;
 }
 
-/** How to re-create stripped items: their characters, or a fresh copy of a line break's map or a decorator's element. */
-function maker(item: Y.Item, from: number, len: number): Stripped['make'] | null {
+/** How to re-create part of a struck item: its characters, or a fresh copy of a line break's map or a decorator's element. */
+function maker(item: Y.Item): Run['make'] | null {
   const { content } = item;
   if (content instanceof Y.ContentString) {
-    const text = content.str.slice(from, from + len);
-    return () => text;
+    const text = content.str;
+    return (from, len) => text.slice(from, from + len);
   }
   if (!(content instanceof Y.ContentType)) return null;
   const { type } = content;
@@ -184,15 +116,11 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
   const undone: Strike[] = [];
   const redone: Strike[] = [];
   const { doc } = fork;
-  /** Each re-created stripped item's copy, by the original's id. */
+  /** Each struck item undo re-created, by the original's id. */
   const restoredAs = new Map<string, Y.ID>();
   let watched: Y.UndoManager | null = null;
-  /** Struck items a strip removes in the update being committed: its undo step never restores them. */
-  let keepOut: IdSpan[] | null = null;
   // Any new edit of his own ends the redo history, strikes included.
-  const onStack = (event: { type: 'undo' | 'redo'; stackItem?: { deletions: DeleteSet } }) => {
-    // The step a strip lands in: undoing it restores the moved block without the struck items.
-    if (keepOut && event.type === 'undo' && event.stackItem) event.stackItem.deletions = without(event.stackItem.deletions, keepOut);
+  const onStack = (event: { type: 'undo' | 'redo' }) => {
     if (event.type === 'undo' && watched && !watched.undoing && !watched.redoing) redone.length = 0;
   };
   const watch = (undo: Y.UndoManager | null) => {
@@ -203,19 +131,35 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
     undo?.on('stack-item-added', onStack);
     undo?.on('stack-item-updated', onStack);
   };
+  /** A strike's targets in runs within one item, with their content, read while they stand. */
+  const runsOf = (ids: readonly Y.ID[]): Run[] => {
+    const runs: (Run & { item: Y.Item })[] = [];
+    for (const id of ids) {
+      const item = itemAt(doc, id);
+      if (!item) continue;
+      const last = runs.at(-1);
+      if (last && last.item === item && last.id.clock + last.len === id.clock) {
+        last.len += 1;
+        continue;
+      }
+      const make = maker(item);
+      if (make) runs.push({ item, id, len: 1, make: (from, len) => make(id.clock - item.id.clock + from, len) });
+    }
+    return runs.map(({ id, len, make }) => ({ id, len, make }));
+  };
   /** A strike joins the undo history as its own step; `native` when the next binding step belongs to it. */
-  const remember = (part: string, targets: IdSpan[], native: boolean) => {
+  const remember = (part: string, targets: IdSpan[], native: boolean, ids: readonly Y.ID[]) => {
     const undo = manager();
     watch(undo);
     undo?.stopCapturing();
-    undone.push({ part, targets, depth: undo?.undoStack.length ?? 0, native, stripped: [], copies: [] });
+    undone.push({ part, targets, depth: undo?.undoStack.length ?? 0, native, runs: runsOf(ids), copies: [] });
     redone.length = 0;
     if (native) setTimeout(() => manager()?.stopCapturing(), 0);
   };
   const strike = (ids: readonly Y.ID[], native = false): string | null => {
     const targets = toSpans(ids);
     const part = fork.proposeDelete(targets);
-    if (part) remember(part, targets, native);
+    if (part) remember(part, targets, native, ids);
     return part;
   };
 
@@ -236,14 +180,14 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
   };
 
   /**
-   * Where a stripped run goes back: after the nearest character before it that still stands (earlier characters of
-   * its own item first: adjacent strikes can share one), or at its block's start.
+   * Where a removed struck run goes back: after the nearest character before it that still stands (earlier characters
+   * of its own item first: adjacent strikes can share one), or at its block's start.
    */
-  const placeOf = (run: Stripped): { type: Y.XmlText; index: number } | null => {
-    const original = itemAt(doc, run.id);
+  const placeOf = (start: Y.ID): { type: Y.XmlText; index: number } | null => {
+    const original = itemAt(doc, start);
     if (!original) return null;
     let item: Y.Item | null = original;
-    let clock = run.id.clock - 1;
+    let clock = start.clock - 1;
     while (item) {
       for (; clock >= item.id.clock; clock -= 1) {
         const live = liveAt(Y.createID(item.id.client, clock));
@@ -259,21 +203,34 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
     return type instanceof Y.XmlText ? { type, index: 0 } : null;
   };
 
-  /** Undo of a strike whose items a join removed: they come back where they stood, as the author's own. */
+  /** A target the record removes: gone from F (a rewrite's copy of it went too) while it stands in the body. */
+  const removed = (id: Y.ID): boolean => itemAt(doc, id)?.deleted !== false && itemAt(fork.body, id)?.deleted === false;
+
+  /** Undo of a strike whose targets a rewrite removed: they come back where they stood, as the author's own. */
   const restore = (strike: Strike): IdSpan[] => {
     const copies: IdSpan[] = [];
-    if (strike.stripped.length === 0) return copies;
+    const gone = strike.runs.flatMap((run) => {
+      const parts: { id: Y.ID; from: number; len: number; run: Run }[] = [];
+      for (let i = 0; i < run.len; i += 1) {
+        if (!removed(Y.createID(run.id.client, run.id.clock + i))) continue;
+        const last = parts.at(-1);
+        if (last && last.from + last.len === i) last.len += 1;
+        else parts.push({ id: Y.createID(run.id.client, run.id.clock + i), from: i, len: 1, run });
+      }
+      return parts;
+    });
+    if (gone.length === 0) return copies;
     doc.transact(() => {
-      for (const run of strike.stripped) {
-        const place = placeOf(run);
+      for (const { id, from, len, run } of gone) {
+        const place = placeOf(id);
         if (!place) continue;
         const client = doc.clientID;
         const clock = Y.getState(doc.store, client);
-        const made = run.make();
+        const made = run.make(from, len);
         if (typeof made === 'string') place.type.insert(place.index, made);
         else place.type.insertEmbed(place.index, made);
-        for (let i = 0; i < run.len; i += 1) restoredAs.set(idKey({ client: run.id.client, clock: run.id.clock + i }), Y.createID(client, clock + i));
-        copies.push({ client, clock, len: run.len });
+        for (let i = 0; i < len; i += 1) restoredAs.set(idKey({ client: id.client, clock: id.clock + i }), Y.createID(client, clock + i));
+        copies.push({ client, clock, len });
       }
     }, RESTORE);
     return copies;
@@ -297,13 +254,13 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
     }, RESTORE);
   };
 
-  /** The targets still standing in F: a join may have removed some. */
+  /** The targets still standing in the body: redo proposes them again, removed from F or not. */
   const standing = (targets: readonly IdSpan[]): IdSpan[] => {
     const ids: Y.ID[] = [];
     for (const span of targets) {
       for (let i = 0; i < span.len; i += 1) {
         const id = Y.createID(span.client, span.clock + i);
-        if (itemAt(doc, id)?.deleted === false) ids.push(id);
+        if (itemAt(fork.body, id)?.deleted === false) ids.push(id);
       }
     }
     return toSpans(ids);
@@ -395,100 +352,6 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
   };
 
   /**
-   * At a block edge, before a native join or unwrap in the same update: the block it moves is re-created under new
-   * ids, struck characters too. So the struck characters, line breaks and inline decorators of that block are removed
-   * natively first, in the same Yjs transaction, so its removal is one contiguous run (G5); their delete parts stay.
-   * Always false: the key goes on natively.
-   */
-  const $stripBeforeJoin = (backward: boolean): false => {
-    // The binding's identities are read as of the last commit, so one strip per update.
-    if (keepOut) return false;
-    const selection = $getSelection();
-    const binding = bindingOf(editor);
-    if (!$isRangeSelection(selection) || !binding) return false;
-    const here = $blockOf(selection.anchor.getNode());
-    if (!here) return false;
-    const moved = backward ? ($joinsBackward(here) ? here : null) : $nextBlock(here);
-    if (!moved) return false;
-    const own = fork.ownClients();
-    const struck = (id: Y.ID) => !own.has(id.client) && fork.isStruck(id);
-    const cuts: { node: TextNode; from: number; to: number }[] = [];
-    const leaves: LexicalNode[] = [];
-    const removed: Y.ID[] = [];
-    for (const leaf of leavesOf(moved)) {
-      if ($isTextNode(leaf)) {
-        const ids = textIds(binding, leaf.getKey());
-        if (!ids) continue;
-        for (let i = 0; i < ids.length; i += 1) {
-          if (!struck(ids[i])) continue;
-          removed.push(ids[i]);
-          const last = cuts.at(-1);
-          if (last && last.node === leaf && last.to === i) last.to = i + 1;
-          else cuts.push({ node: leaf, from: i, to: i + 1 });
-        }
-        continue;
-      }
-      const item = sharedItem(binding, leaf.getKey());
-      if (item && struck(item.id)) {
-        leaves.push(leaf);
-        removed.push(item.id);
-      }
-    }
-    if (removed.length === 0) return false;
-    // Each strike keeps what it loses here, run by run within one item, so undoing it can re-create them.
-    const runs: { owner: Strike; item: Y.Item; id: Y.ID; len: number }[] = [];
-    for (const id of removed) {
-      const item = itemAt(doc, id);
-      const owner = undone.find((entry) => covers(entry.targets, id));
-      if (!item || !owner) continue;
-      const last = runs.at(-1);
-      if (last && last.owner === owner && last.item === item && last.id.clock + last.len === id.clock) last.len += 1;
-      else runs.push({ owner, item, id, len: 1 });
-    }
-    for (const { owner, item, id, len } of runs) {
-      const make = maker(item, id.clock - item.id.clock, len);
-      if (make) owner.stripped.push({ id, len, make });
-    }
-    const undo = manager();
-    watch(undo);
-    undo?.stopCapturing();
-    keepOut = toSpans(removed);
-    $onUpdate(() => {
-      keepOut = null;
-    });
-    // Last first, so earlier offsets in the same text node hold.
-    for (const { node, from, to } of cuts.reverse()) node.spliceText(from, to - from, '', false);
-    for (const leaf of leaves) leaf.remove();
-    if (backward) here.selectStart();
-    return false;
-  };
-
-  /** Whether only struck items lie between a collapsed caret and the start of its block. */
-  const $struckToStart = (): boolean => {
-    const selection = $getSelection();
-    const binding = bindingOf(editor);
-    if (!$isRangeSelection(selection) || !selection.isCollapsed() || !binding) return false;
-    let node: LexicalNode = selection.anchor.getNode();
-    if (selection.anchor.type !== 'text') return selection.anchor.offset === 0 && $isElementNode(node) && !node.isInline();
-    let offset = selection.anchor.offset;
-    for (let guard = 0; guard < 100_000; guard += 1) {
-      if ($isTextNode(node)) {
-        const ids = textIds(binding, node.getKey());
-        if (!ids) return false;
-        for (let i = Math.min(offset, ids.length) - 1; i >= 0; i -= 1) if (!fork.isStruck(ids[i])) return false;
-      } else {
-        const item = sharedItem(binding, node.getKey());
-        if (!item || !fork.isStruck(item.id)) return false;
-      }
-      const previous = $besideLeaf(node, true);
-      if (!previous) return true;
-      node = previous;
-      offset = $isTextNode(previous) ? previous.getTextContentSize() : 0;
-    }
-    return false;
-  };
-
-  /**
    * Backspace or Delete at a collapsed caret: past struck items to the next character or inline leaf (a link's
    * text, a line break, an inline formula), struck or, if his own, deleted natively. A block edge is native (a join).
    */
@@ -535,7 +398,7 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
         if (!step(text)) {
           // A block edge: native, from past the struck text.
           text.select(offset, offset);
-          return $stripBeforeJoin(backward);
+          return false;
         }
         continue;
       }
@@ -557,7 +420,7 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
       if (!step(leaf)) {
         if (backward) leaf.selectPrevious();
         else leaf.selectNext(0, 0);
-        return $stripBeforeJoin(backward);
+        return false;
       }
     }
     return false;
@@ -590,12 +453,6 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
     editor.registerCommand(DELETE_CHARACTER_COMMAND, (backward) => {
       const routed = $routeRange();
       return routed === 'none' ? $routeChar(backward) : routed !== 'own';
-    }, P),
-    // Backspace at a block's start (past struck text) can be taken before DELETE_CHARACTER_COMMAND, by moss's list
-    // item split: the strip runs first, in the same update.
-    editor.registerCommand(KEY_BACKSPACE_COMMAND, () => {
-      if ($struckToStart()) $stripBeforeJoin(true);
-      return false;
     }, P),
     editor.registerCommand(DELETE_WORD_COMMAND, (backward) => $extended(backward, 'word'), P),
     editor.registerCommand(DELETE_LINE_COMMAND, (backward) => $extended(backward, 'lineboundary'), P),
@@ -658,9 +515,9 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
       redone.pop();
       const native = last.native && length === expected;
       unrestore(last.copies);
-      const targets = last.stripped.length ? standing(last.targets) : last.targets;
+      const targets = standing(last.targets);
       const part = targets.length ? fork.proposeDelete(targets) : null;
-      if (part || last.stripped.length) {
+      if (part || last.copies.length) {
         undo.stopCapturing();
         undone.push({ ...last, part, depth: undo.undoStack.length, native, copies: [] });
       }
