@@ -22,8 +22,6 @@ import {
   $postImportNormalize,
   MARKDOWN_EDITOR_TRANSFORMERS,
   MarkdownEditor,
-  escapeHtmlEntities,
-  normalizeMarkdownForImport,
   type MarkdownEditorHandle,
 } from '@moss-desktop/renderer/editor/MarkdownEditor';
 import { CanvasArea } from '@moss/shared/components/layout/CanvasArea';
@@ -39,6 +37,7 @@ import {
   hasTrackedEditorUpdateTag,
 } from '@moss-desktop/renderer/editor/utils/editorUpdateTags';
 import { $convertFromMarkdownString } from '@moss-desktop/renderer/editor/markdown/linear-import';
+import { prepareNoteMarkdown } from '@moss-desktop/renderer/editor/markdown/pipeline';
 import { setEmbedTheme } from '@moss-multi/host/embed-theme.ts';
 import { linesBeforeBody, offsetLines, readSelection } from '@moss-multi/host/selection.ts';
 import { ShareWithAgentBar, shareSelection } from '@moss-multi/host/share-with-agent.tsx';
@@ -175,7 +174,7 @@ class FrameSurface implements SessionSurface {
           $addUpdateTag(SKIP_SCROLL_INTO_VIEW_TAG);
           if ($getSelection() !== null) $setSelection(null);
           $getRoot().clear();
-          $convertFromMarkdownString(escapeHtmlEntities(normalizeMarkdownForImport(content.body)), MARKDOWN_EDITOR_TRANSFORMERS);
+          $convertFromMarkdownString(prepareNoteMarkdown(content.body), MARKDOWN_EDITOR_TRANSFORMERS);
           $postImportNormalize(content.commentMetadata, undefined, { layoutMetadata: content.layoutMetadata });
         },
         { tag: 'agent-content-update' },

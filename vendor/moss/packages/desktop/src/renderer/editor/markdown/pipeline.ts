@@ -20,7 +20,7 @@ export interface NoteBodyImportOptions {
 // Call inside editor.update(); replaces the root's children and leaves no selection, so import stays linear in
 // blocks (fixes.ts).
 export function $importNoteBody(markdown: string, options: NoteBodyImportOptions = {}): void {
-  const prepared = prepareMarkdown(markdown, (md) => escapeHtmlEntities(normalizeMarkdownForImport(md)), escapeHtmlEntities);
+  const prepared = prepareNoteMarkdown(markdown);
   $withDocumentImport(() =>
     withImportFormulaIds(prepared, () => {
       $convertFromMarkdownString(prepared, MARKDOWN_EDITOR_TRANSFORMERS);
@@ -28,6 +28,13 @@ export function $importNoteBody(markdown: string, options: NoteBodyImportOptions
       $assignRegisterIds();
     }),
   );
+}
+
+// moss's import normalization and entity escaping, as every whole-note import runs them (the DocDO, the CLI, and the
+// client's load, paste and replacement): lines longer than the inline pass converts skip the normalization, and the
+// line lengths the import budgets by are recorded (linear-import.ts). Pass the result straight to the import.
+export function prepareNoteMarkdown(markdown: string): string {
+  return prepareMarkdown(markdown, (md) => escapeHtmlEntities(normalizeMarkdownForImport(md)), escapeHtmlEntities);
 }
 
 // Call inside editor.read() or editor.update().

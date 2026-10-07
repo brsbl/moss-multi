@@ -315,7 +315,7 @@ function importTransformers(transformers: Transformer[]): Transformer[] {
   if (!list) {
     const formats = transformers.filter((t): t is TextFormatTransformer => t.type === 'text-format');
     const matchers = transformers.filter((t): t is TextMatchTransformer => t.type === 'text-match');
-    const index = formatIndex(formats);
+    const index = formatIndex(formats, matchers);
     const driver: TextMatchTransformer = {
       dependencies: [],
       importRegExp: /[\s\S]+/,
@@ -503,11 +503,17 @@ function $importInline(top: TextNode, index: FormatIndex, matchers: TextMatchTra
       let context = frame.context;
       let offset = frame.offset;
       if (context === null || context.base.length - offset !== text.length) {
-        context = newContext(text);
+        context = newContext(text, index.triggers);
+        budget.charge(text.length / NATIVE);
         offset = 0;
       }
-      let foundFormat = findFormat(text, context, offset, index, budget);
-      let foundMatch = findMatch(textNode, text, context, offset, matchers, budget);
+      // No character any format or match needs: Lexical's search finds nothing here.
+      if (context.mask === 0) {
+        if (!frame.top) stack.push({ unescape: textNode });
+        continue;
+      }
+      let foundFormat = context.mask & index.triggers.formats ? findFormat(text, context, offset, index, budget) : null;
+      let foundMatch = findMatch(textNode, text, context, offset, matchers, budget, index.triggers);
 
       if (foundFormat && foundMatch) {
         if (foundFormat.isCodeSpan) {
@@ -715,6 +721,8 @@ interface CachedMatch {
 
 interface Context {
   base: string;
+  /** The trigger characters (Triggers) the base holds, a bit apiece; each suffix of it holds a subset. */
+  mask: number;
   /** Per text-match transformer, by its index in the list, its cached match. */
   matches: (CachedMatch | undefined)[];
   scan?: ContextScan;
@@ -734,7 +742,55 @@ interface ContextScan {
   lastRunOfLength: Map<number, number>;
 }
 
-const newContext = (base: string): Context => ({ base, matches: [] });
+const newContext = (base: string, triggers: Triggers): Context => ({ base, mask: maskOf(base, triggers), matches: [] });
+
+// Characters a format or a text match cannot do without: a text holding none of a matcher's has no match of it, and
+// one holding no backtick and no first character of a format tag has no format.
+interface Triggers {
+  /** Per ASCII code, its bit or 0; null when some matcher's regex is not known here (then every text is searched). */
+  bits: Int32Array | null;
+  /** The bits of the backtick and the format tags' first characters. */
+  formats: number;
+  /** Per text-match transformer, the bits of the characters of which each match holds at least one. */
+  matchers: number[];
+}
+
+function triggersOf(formats: TextFormatTransformer[], matchers: TextMatchTransformer[]): Triggers {
+  const bits = new Int32Array(128);
+  let next = 0;
+  const bitsOf = (chars: string) => {
+    let mask = 0;
+    for (const char of chars) {
+      const code = char.charCodeAt(0);
+      if (code >= 128 || next > 30) return -1;
+      if (bits[code] === 0) bits[code] = 1 << next++;
+      mask |= bits[code];
+    }
+    return mask;
+  };
+  const all = { bits: null, formats: -1, matchers: matchers.map(() => -1) };
+  const formatMask = bitsOf(`\`${formats.map((t) => t.tag[0]).join('')}`);
+  const masks: number[] = [];
+  for (const t of matchers) {
+    const required = t.importRegExp ? REQUIRED_CHARS.get(t.importRegExp.source) : '';
+    if (required === undefined) return all;
+    const mask = bitsOf(required);
+    if (mask === -1) return all;
+    masks.push(mask);
+  }
+  return formatMask === -1 ? all : { bits, formats: formatMask, matchers: masks };
+}
+
+function maskOf(text: string, triggers: Triggers): number {
+  const bits = triggers.bits;
+  if (bits === null) return -1;
+  let mask = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    const code = text.charCodeAt(i);
+    if (code < 128) mask |= bits[code];
+  }
+  return mask;
+}
 
 // ---- Text matches (Lexical's findOutermostTextMatchTransformer) ----
 
@@ -745,7 +801,15 @@ interface FoundMatch {
   match: RegExpMatchArray;
 }
 
-function findMatch(node: TextNode, text: string, context: Context, offset: number, matchers: TextMatchTransformer[], budget: Budget): FoundMatch | null {
+function findMatch(
+  node: TextNode,
+  text: string,
+  context: Context,
+  offset: number,
+  matchers: TextMatchTransformer[],
+  budget: Budget,
+  triggers: Triggers,
+): FoundMatch | null {
   const kinds = kindsOf(matchers);
   const entries = context.matches;
   // The outermost match so far: its transformer's index, where it starts and ends, and its match when it was run
@@ -758,7 +822,7 @@ function findMatch(node: TextNode, text: string, context: Context, offset: numbe
   for (let i = 0; i < matchers.length; i += 1) {
     const transformer = matchers[i];
     const kind = kinds[i];
-    if (kind === null) continue;
+    if (kind === null || (context.mask & triggers.matchers[i]) === 0) continue;
     let start: number;
     let length: number;
     let match: RegExpMatchArray | null = null;
@@ -941,17 +1005,37 @@ const REPLACE_READS = new Map<string, 'match' | 'backticks' | 'color'>([
   [COLOR_TRANSFORMER_IMPORT_REGEXP.source, 'color'],
 ]);
 
+// Per known import regex, characters of which every match holds at least one (Triggers).
+const REQUIRED_CHARS = new Map<string, string>([
+  ['(?!)', ''],
+  [READS_MATCH[0], '<'],
+  [READS_MATCH[1], '<'],
+  [READS_MATCH[2], '='],
+  [READS_MATCH[3], '{'],
+  [READS_MATCH[4], '?'],
+  [READS_MATCH[5], '*~'],
+  [READS_MATCH[6], '['],
+  [READS_MATCH[7], '['],
+  [READS_MATCH[8], '['],
+  [READS_MATCH[9], '['],
+  [SERIF_SPAN_SOURCE, '<'],
+  [String.raw`^!\[.*\]\(.*\)$`, '!'],
+  [String.raw`https?:\/\/[^\s<>{}|\\^[\]` + '`' + ']+', ':'],
+  [COLOR_TRANSFORMER_IMPORT_REGEXP.source, '#('],
+]);
+
 // ---- Formats (Lexical's findOutermostTextFormatTransformer) ----
 
 interface FormatIndex {
   byTag: Record<string, TextFormatTransformer>;
+  triggers: Triggers;
   code: TextFormatTransformer | undefined;
   delimiterChars: Set<string>;
   /** Per delimiter character, its tags longest first (ties in index order). */
   tagsByChar: Map<string, string[]>;
 }
 
-function formatIndex(formats: TextFormatTransformer[]): FormatIndex {
+function formatIndex(formats: TextFormatTransformer[], matchers: TextMatchTransformer[]): FormatIndex {
   const byTag: Record<string, TextFormatTransformer> = {};
   for (const transformer of formats) byTag[transformer.tag] = transformer;
   const tags = Object.keys(byTag);
@@ -963,7 +1047,7 @@ function formatIndex(formats: TextFormatTransformer[]): FormatIndex {
       tags.filter((tag) => tag[0] === char).sort((a, b) => b.length - a.length),
     );
   }
-  return { byTag, code: byTag['`'], delimiterChars, tagsByChar };
+  return { byTag, code: byTag['`'], delimiterChars, tagsByChar, triggers: triggersOf(formats, matchers) };
 }
 
 interface FoundFormat {

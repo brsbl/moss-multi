@@ -140,7 +140,7 @@ import {
 } from './components/SelectionToolbarPrimitives';
 import './MarkdownEditor.css';
 // moss-multi seam: hide-registry (A§9)
-import { $importNoteBody } from './markdown/pipeline';
+import { $importNoteBody, prepareNoteMarkdown } from './markdown/pipeline';
 import { hidden } from '@moss-multi/host/affordances';
 // moss-multi seam: link-selection (A§10.10)
 import { clearLinkSelection, markLinkSelection } from '@moss-multi/host/link-highlight';
@@ -149,7 +149,7 @@ import { TRASH_COPY } from '@moss-multi/host/retention';
 // moss-multi seam: linear-autolink: EMAIL_REGEX's and SCHEMELESS_URL_REGEX's matches in linear time
 import { findEmail, schemelessUrlMatches } from '@moss-multi/host/autolink';
 // moss-multi seam: converter-split (A§12; S-conv §2.3)
-import { $convertMossCustomCodeNodes, $postImportNormalize, escapeHtmlEntities, normalizeMarkdownForImport, unescapeHtmlEntities } from './markdown/normalize';
+import { $convertMossCustomCodeNodes, $postImportNormalize, unescapeHtmlEntities } from './markdown/normalize';
 // moss-multi seam: linear-import (A§12; SP2)
 import { $convertFromMarkdownString } from './markdown/linear-import';
 import { EDITOR_FONT_FAMILY_LABELS, type EditorSelectionFontFamily, HIGHLIGHT_COLOR_VARIABLES, HIGHLIGHT_YELLOW_VALUE, HIGHLIGHT_YELLOW_VAR, MARKDOWN_EDITOR_HTML_IMPORT, SERIF_FONT_FAMILY_STYLE, SERIF_FONT_FAMILY_VALUE, SERIF_OPTICAL_FONT_SIZE_ADJUST, STYLE_FONT_FAMILY_PROPERTY, STYLE_FONT_SIZE_ADJUST_PROPERTY, selectionFontFamilyFromStyleValue } from './markdown/text-style';
@@ -874,8 +874,9 @@ const convertMarkdownPasteToNodes = (markdown: string): LexicalNode[] => {
   const root = $getRoot();
   const savedChildren = root.getChildren();
 
+  // moss-multi seam: linear-import (A§12; SP2): escapeHtmlEntities(normalizeMarkdownForImport(markdown)), as the DocDO prepares it
   $convertFromMarkdownString(
-    escapeHtmlEntities(normalizeMarkdownForImport(markdown)),
+    prepareNoteMarkdown(markdown),
     MARKDOWN_EDITOR_TRANSFORMERS
   );
   $postImportNormalize();
@@ -3930,9 +3931,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
           bodyForEditor = bodyForEditor.slice(h1Match[0].length).replace(/^\n+/, '');
         }
 
-        const normalizedBody = normalizeMarkdownForImport(bodyForEditor);
-
-        $convertFromMarkdownString(escapeHtmlEntities(normalizedBody), MARKDOWN_EDITOR_TRANSFORMERS);
+        // moss-multi seam: linear-import (A§12; SP2): escapeHtmlEntities(normalizeMarkdownForImport(bodyForEditor)), as the DocDO prepares it
+        $convertFromMarkdownString(prepareNoteMarkdown(bodyForEditor), MARKDOWN_EDITOR_TRANSFORMERS);
         $postImportNormalize(commentMetadata, undefined, { layoutMetadata });
         editor.getRootElement()?.scrollTo({ top: 0 });
       };
@@ -4214,8 +4214,6 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
     // Strip leading H1 from body — it lives in the dedicated title field
     const h1Result = extractLeadingH1(strippedContent);
 
-    const normalizedBody = normalizeMarkdownForImport(h1Result.body);
-
     const scrollContainer = options?.scrollContainer;
     const savedScrollTop = scrollContainer?.scrollTop ?? 0;
 
@@ -4241,7 +4239,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
         }
         const root = $getRoot();
         root.clear();
-        $convertFromMarkdownString(escapeHtmlEntities(normalizedBody), MARKDOWN_EDITOR_TRANSFORMERS);
+        // moss-multi seam: linear-import (A§12; SP2): escapeHtmlEntities(normalizeMarkdownForImport(h1Result.body)), as the DocDO prepares it
+        $convertFromMarkdownString(prepareNoteMarkdown(h1Result.body), MARKDOWN_EDITOR_TRANSFORMERS);
         $postImportNormalize(commentMetadata, undefined, {
           layoutMetadata: options?.layoutMetadata
         });
