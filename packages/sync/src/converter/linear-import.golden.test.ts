@@ -174,6 +174,27 @@ describe('linear inline import @p:tech-4', () => {
       }
       expect(exports[1] === exports[0] && exports[2] === exports[0]).toBe(true);
     }, 120_000);
+
+    // A code span that starts a formatted part is decoded before the cut, as when the line is not cut.
+    it('decodes a code span that starts a formatted part the same whether or not the line is cut', () => {
+      const line = (n: number) => `quokka ~~\`\\*\` ${'[a](b) '.repeat(n)}z~~`;
+      const before = linearImportStats.cut;
+      const uncut = importMarkdown(line(1_000));
+      expect(linearImportStats.cut - before).toBe(0);
+      expect(exportMarkdown(uncut).startsWith('quokka ~~`*`~~ ')).toBe(true);
+      let editor = importMarkdown(line(150_000));
+      expect(linearImportStats.cut - before).toBeGreaterThan(0);
+      const text = textOf(editor);
+      expect(text.startsWith('quokka * ')).toBe(true);
+      const exports: string[] = [];
+      for (let round = 0; round < 3; round += 1) {
+        exports.push(exportMarkdown(editor));
+        expect(exports[round].startsWith('quokka ~~`*`~~ ')).toBe(true);
+        editor = importMarkdown(exports[round]);
+        expect(textOf(editor) === text).toBe(true);
+      }
+      expect(exports[1] === exports[0] && exports[2] === exports[0]).toBe(true);
+    }, 120_000);
   });
 
   it('cuts no fixture line and no L3 case at the default budget', () => {
