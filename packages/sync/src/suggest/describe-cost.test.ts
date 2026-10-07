@@ -225,7 +225,7 @@ describe('T5.3s many honest delete steps over one long run are not outdated @p:m
     expect(previewed.ok && previewed.hunks.length > 0).toBe(true);
   });
 
-  it('two steps removing overlapping runs are refused as outdated', () => {
+  it('two delete parts striking overlapping runs are refused as outdated', () => {
     const live = seededBody(`Intro.\n\n${'w'.repeat(LONG)}\n`);
     const [span] = spansOfText(live, 'w'.repeat(LONG));
     const parts: DeletePart[] = [

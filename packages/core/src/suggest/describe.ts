@@ -86,14 +86,26 @@ const INLINE: ReadonlySet<string> = new Set(['link', 'autolink']);
 const CONTEXT = 80;
 const clip = (text: string) => (text.length > CONTEXT ? `${text.slice(0, CONTEXT - 1)}…` : text);
 
+const hex = (bytes: Uint8Array): string => Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+const fingerprint = (text: string) => hex(digest(encodeUtf8(text))).slice(0, 12);
+
 /**
- * A row's path one key deeper. Every row below a key repeats its path, so each key is clipped and the path keeps
- * only its last `2 × CONTEXT` characters: a row costs a constant beyond what it covers.
+ * A key as a path names it. A long one is clipped and ends in a fingerprint of the whole; at `CONTEXT + 1`
+ * characters it is longer than any key shown whole, so two keys never read the same.
  */
-const sub = (path: string, key: string) => {
-  const next = `${path} ${clip(key)}`;
-  return next.length > 2 * CONTEXT ? `…${next.slice(-(2 * CONTEXT - 1))}` : next;
-};
+const keyLabel = (key: string) => (key.length > CONTEXT ? `${key.slice(0, CONTEXT - 13)}…#${fingerprint(key)}` : key);
+
+/** A path kept to its last characters, led by a fingerprint of the whole (which holds the earlier fingerprints). */
+const bounded = (path: string) => (path.length > 2 * CONTEXT ? `#${fingerprint(path)}…${path.slice(-(2 * CONTEXT - 13))}` : path);
+
+/**
+ * A row's path one key deeper. Every row below a key repeats its path, so it is bounded: a row costs a constant
+ * beyond what it covers, and two paths never read the same.
+ */
+const sub = (path: string, key: string) => bounded(`${path} ${keyLabel(key)}`);
+
+/** The fields a nested row sits in, as a reader names them, bounded as a path is. */
+const within = (fields: string, key: string) => bounded(fields ? `${fields} › ${keyLabel(fieldName(key))}` : keyLabel(fieldName(key)));
 
 /** One unit of a sequence: a character with its own id, or any other item. */
 type Unit = { id: string; ch: string } | { id: string; node: unknown };
@@ -223,8 +235,6 @@ function shallow(node: Node): Json {
   }
   return out;
 }
-
-const hex = (bytes: Uint8Array): string => Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
 
 /** What every row of one call reads, computed once per node. */
 class Reader {
@@ -404,8 +414,11 @@ class Rows {
     }
   }
 
-  /** Two versions of one node: each field that differs, then its sequence aligned by identity. */
-  node(path: string, b: Node, a: Node, label: string): void {
+  /**
+   * Two versions of one node: each field that differs, then its sequence aligned by identity. `fields` names the
+   * fields of enclosing nodes it sits in, so a change inside one field never reads as the same change inside another.
+   */
+  node(path: string, b: Node, a: Node, label: string, fields = ''): void {
     const type = this.read.typeName(a);
     const before = new Map(fieldsOf(b));
     const after = new Map(fieldsOf(a));
@@ -414,10 +427,11 @@ class Rows {
       const now = after.get(key);
       if (this.read.same(was, now)) continue;
       if (isNode(was) && isNode(now) && was.type === now.type) {
-        this.node(sub(path, key), was, now, label);
+        this.node(sub(path, key), was, now, label, within(fields, key));
         continue;
       }
-      this.push('change', sub(path, key), label, `${clip(type)} ${fieldName(key)}: ${show(was, key, b)} → ${show(now, key, a)}`, { before: was ?? null, after: now ?? null });
+      const at = fields ? `${fields} › ` : '';
+      this.push('change', sub(path, key), label, `${clip(type)} ${at}${fieldName(key)}: ${show(was, key, b)} → ${show(now, key, a)}`, { before: was ?? null, after: now ?? null });
     }
     if (this.read.same(b.seq, a.seq)) return;
     // Runs inside a link say so, with the link's fields clipped; the link's own changes have their own rows.
@@ -461,7 +475,7 @@ class Rows {
       const now = a.get(key);
       if (this.read.same(was, now)) continue;
       if (isNode(was) && isNode(now) && was.type === now.type) {
-        this.node(sub(path, key), was, now, text);
+        this.node(sub(path, key), was, now, text, within('', key));
         continue;
       }
       this.push('change', sub(path, key), text, `${fieldName(key)}: ${show(was, key)} → ${show(now, key)}`, { before: was ?? null, after: now ?? null });

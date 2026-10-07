@@ -5,7 +5,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
-import { previewHash, type Hunk, type RecordOp } from '@moss-multi/core/suggest/apply';
+import { canonical, previewHash, type Hunk, type RecordOp } from '@moss-multi/core/suggest/apply';
 import { describeHunks, type ReviewRow } from '@moss-multi/core/suggest/describe';
 import { SuggestIngest } from '../doc/suggest.ts';
 import { payloadDocsFor } from '../payload-docs.ts';
@@ -107,25 +107,37 @@ describe('T5.3s forged records named like Object.prototype members @p:mean-2 @p:
     expect(previewHash(hunks[0]), 'the forged value is in the hash').not.toBe(previewHash(hunks[1]));
   });
 
-  it.each(table)('$position named $name: the DocDO preview never throws, and a preview it gives reads the same', ({ write, on, needle, name }) => {
+  /** The DocDO preview of the forged record, which must not throw. */
+  const previewOf = (write: Case['write'], on: Case['on'], name: string, v: 0 | 1) => {
+    const live = seededBody();
+    forgeRecord(live, 'g', [opFor(live, write(name, v), on)]);
+    let preview: ReturnType<typeof previewRecord> | null = null;
+    expect(() => {
+      preview = previewRecord(live, 'g');
+    }).not.toThrow();
+    return preview as unknown as ReturnType<typeof previewRecord>;
+  };
+
+  it.each(table)('$position named $name: the DocDO preview reads it as it reads any other name', ({ write, on, needle, name }) => {
+    // The same record under an ordinary name: a field previews, an unregistered node type is broken. A prototype
+    // name gets exactly that outcome.
+    const control = previewOf(write, on, '__forgedName', 0);
     const hashes: string[] = [];
     for (const v of [0, 1] as const) {
-      const live = seededBody();
-      forgeRecord(live, 'g', [opFor(live, write(name, v), on)]);
-      let preview: ReturnType<typeof previewRecord> | null = null;
-      expect(() => {
-        preview = previewRecord(live, 'g');
-      }).not.toThrow();
-      const result = preview as unknown as ReturnType<typeof previewRecord>;
-      // A field, a node type or a map key is a name like any other: the record previews.
-      expect(result, `previews like any other name${result.ok ? '' : `, not refused ${result.reason}`}`).toMatchObject({ ok: true });
+      const result = previewOf(write, on, name, v);
+      expect(result.ok ? { ok: true } : result, `previews as '__forgedName' does`).toEqual(control.ok ? { ok: true } : control);
       if (!result.ok) continue;
       const rows = describeHunks(result.hunks);
       expect(names(rows, needle(name)), shown(rows)).toBe(true);
       hashes.push(result.hash);
     }
-    expect(hashes).toHaveLength(2);
-    expect(hashes[0]).not.toBe(hashes[1]);
+    if (control.ok) expect(hashes[0]).not.toBe(hashes[1]);
+  });
+
+  it('the fields previewed: a field named like a prototype member is no gate failure', () => {
+    for (const c of CASES.filter((each) => !each.position.endsWith('node type'))) {
+      for (const name of NAMES) expect(previewOf(c.write, c.on, name, 0), `${c.position} named ${name}`).toMatchObject({ ok: true });
+    }
   });
 
   it('a field holding a BigInt: the preview never throws, travels as JSON, and the card names it', () => {
@@ -187,10 +199,17 @@ describe('T5.3s forged records named like Object.prototype members @p:mean-2 @p:
     expect(previewHash(a)).not.toBe(previewHash(b));
     const rows = describeHunks(a);
     expect(rows.some((row) => row.detail.startsWith(`payload ${name} `) && row.text.includes('forged-a')), shown(rows)).toBe(true);
-    forgeRecord(live, 'g', [payloadOp('forged-a')]);
-    const previewed = previewRecord(live, 'g');
-    expect(previewed, 'a new payload doc named like any other previews').toMatchObject({ ok: true });
-    expect(previewed.ok && previewed.hash).toBe(previewHash(a));
+    const previewed = ['forged-a', 'forged-b'].map((text) => {
+      const each = seededBody();
+      forgeRecord(each, 'g', [payloadOp(text)]);
+      return previewRecord(each, 'g');
+    });
+    for (const [n, result] of previewed.entries()) {
+      expect(result, 'a new payload doc named like any other previews').toMatchObject({ ok: true });
+      if (!result.ok) continue;
+      expect(result.hunks.some((hunk) => hunk.kind === 'payload' && hunk.id === name && canonical(hunk.after).includes(n ? 'forged-b' : 'forged-a')), JSON.stringify(result.hunks)).toBe(true);
+    }
+    expect(previewed[0].ok && previewed[0].hash).not.toBe(previewed[1].ok && previewed[1].hash);
   });
 
   // Two map-valued fields whose names share their first 80 characters: a change inside one never reads as the same
@@ -202,7 +221,8 @@ describe('T5.3s forged records named like Object.prototype members @p:mean-2 @p:
       for (const each of keys) paragraph(live).setAttribute(each, new Y.Map([['v', '1']]) as never);
       const hunks = hunksOf(live, [opFor(live, (doc) => (paragraph(doc).getAttribute(key) as unknown as Y.Map<unknown>).set('v', '2'))]);
       const rows = describeHunks(hunks);
-      expect(names(rows, key.slice(2)), shown(rows)).toBe(true);
+      // The field is named, clipped past its first 67 characters, with a fingerprint of the rest.
+      expect(names(rows, key.slice(2, 62)), shown(rows)).toBe(true);
       return { rows: rows.map((row) => [row.kind, row.text, row.note ?? '']), paths: rows.map((row) => row.detail.replace(/ #[0-9a-f]{12}/, '')) };
     });
     expect(seen[0].rows).not.toEqual(seen[1].rows);

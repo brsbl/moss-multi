@@ -415,8 +415,8 @@ interface Target {
   ops: Uint8Array[];
   hydrated: Uint8Array;
   state: (client: number) => number;
-  /** Each authoring step's removals (an op's delete set, or a delete part's targets). */
-  groups: IdSpan[][];
+  /** Each authoring step's removals: an op's delete set, or a delete part's targets (`part`). */
+  groups: { spans: IdSpan[]; part: boolean }[];
   ownDeletes: IdSpan[];
   inserted: Map<number, readonly [number, number]>;
   /** Every item the record's transaction deleted: the delete sets named, and what Yjs deletes with them (a type's
@@ -467,12 +467,12 @@ export function applyRecord(mirror: Y.Doc, record: SuggestionRecord, options: Ap
     if (decoded.structs.some((struct) => struct instanceof Y.Skip)) return fail('unresolvable');
     const spans = spansOf(decoded.ds);
     into.ops.push(op.update);
-    into.groups.push(spans);
+    into.groups.push({ spans, part: false });
     for (const span of spans) into.ownDeletes.push(span);
   }
   for (const part of record.parts) {
     if (!Array.isArray(part.targets) || !part.targets.every(validSpan)) return fail('unresolvable');
-    body.groups.push(part.targets);
+    body.groups.push({ spans: part.targets, part: true });
   }
 
   // G5 (a) and (b) read each doc as it was before the record, so they run first and report after G1–G4.
@@ -518,7 +518,7 @@ export function applyRecord(mirror: Y.Doc, record: SuggestionRecord, options: Ap
   // also holds the implicit deletions: a deleted type's contents and a map key's overwritten value. GC structs are
   // left to G5 (c). The spans are merged first, so each struct is placed once however often the record names it.
   for (const t of targets.values()) {
-    const spans = new SpanIndex([...[...t.inserted].map(([client, [from, to]]) => ({ client, clock: from, len: to - from })), ...t.groups.flat(), ...t.deleted]);
+    const spans = new SpanIndex([...[...t.inserted].map(([client, [from, to]]) => ({ client, clock: from, len: to - from })), ...t.groups.flatMap((group) => group.spans), ...t.deleted]);
     for (const [client, from, to] of spans.ranges()) {
       const end = Math.min(to, Y.getState(t.doc.store, client));
       for (const struct of structsIn(t.doc.store, client, from, end)) {
@@ -622,7 +622,7 @@ function* structsIn(store: Y.Doc['store'], client: number, clock: number, end: n
  * is someone else's. Each parent is indexed once (each item's character offset and the live characters before it), so
  * a step costs its own items, not its parents' length; a step naming the same items as another is checked once.
  */
-function removesLiveRuns(store: Y.Doc['store'], groups: readonly IdSpan[][], state: (client: number) => number): boolean {
+function removesLiveRuns(store: Y.Doc['store'], groups: readonly { spans: IdSpan[]; part: boolean }[], state: (client: number) => number): boolean {
   const indexes = new Map<Y.AbstractType<unknown>, Map<Y.Item, { start: number; live: number }>>();
   const indexOf = (parent: Y.AbstractType<unknown>) => {
     let index = indexes.get(parent);
@@ -639,9 +639,9 @@ function removesLiveRuns(store: Y.Doc['store'], groups: readonly IdSpan[][], sta
     }
     return index;
   };
-  const steps: [number, number, number][][] = [];
+  const steps: { ranges: [number, number, number][]; part: boolean }[] = [];
   const seen = new Set<string>();
-  for (const spans of groups) {
+  for (const { spans, part } of groups) {
     const clipped: IdSpan[] = [];
     for (const span of spans) {
       const end = Math.min(span.clock + span.len, state(span.client));
@@ -651,13 +651,16 @@ function removesLiveRuns(store: Y.Doc['store'], groups: readonly IdSpan[][], sta
     const key = ranges.map(([client, from, to]) => `${client}:${from}:${to}`).join(',');
     if (seen.has(key)) continue;
     seen.add(key);
-    steps.push(ranges);
+    steps.push({ ranges, part });
   }
-  // A fork removes an item once: steps whose runs overlap are refused, so the runs are disjoint and visit each struct
-  // at most once more than there are runs.
-  const all = steps.flat().sort((x, y) => x[0] - y[0] || x[1] - y[1]);
-  for (let i = 1; i < all.length; i++) if (all[i][0] === all[i - 1][0] && all[i][1] < all[i - 1][2]) return false;
-  for (const ranges of steps) {
+  // A fork deletes an item in one transaction only, and strikes it with one part only, so ops' runs are disjoint, as
+  // are parts'. An op may still delete what a part struck (the struck item stays live in the fork, and a native join
+  // removes it with its block). So the steps visit each struct at most twice, plus once per run.
+  for (const part of [false, true]) {
+    const all = steps.filter((step) => step.part === part).flatMap((step) => step.ranges).sort((x, y) => x[0] - y[0] || x[1] - y[1]);
+    for (let i = 1; i < all.length; i++) if (all[i][0] === all[i - 1][0] && all[i][1] < all[i - 1][2]) return false;
+  }
+  for (const { ranges } of steps) {
     // Per parent: the first and last removed character's offsets, the live characters before each, and how many it removes.
     const extents = new Map<Y.AbstractType<unknown>, { lo: number; hi: number; liveLo: number; liveHi: number; count: number }>();
     for (const [client, from, to] of ranges) {
@@ -734,10 +737,10 @@ function payloadsUnaliased(
   return true;
 }
 
-/** Stable JSON: object keys sorted. Values come through `jsonSafe`; a stray BigInt still reads as its tag. */
+/** Stable JSON: object keys sorted. Values come through `jsonSafe`; a stray BigInt or -0 still reads as its tag. */
 export function canonical(value: unknown): string {
   return JSON.stringify(value, (_key, v: unknown) => {
-    if (typeof v === 'bigint') return jsonSafe(v);
+    if (typeof v === 'bigint' || Object.is(v, -0)) return jsonSafe(v);
     if (v && typeof v === 'object' && !Array.isArray(v)) {
       return Object.fromEntries(Object.entries(v as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
     }
@@ -853,13 +856,13 @@ function contentValue(doc: DocKind, root: string, content: Y.Item['content']): u
 
 /**
  * A stored value as JSON carries it, so the preview can be sent, one to one: what JSON cannot hold (a BigInt,
- * undefined, NaN or an infinity, bytes: an `Any` can hold each) is a tagged object `{$: kind, v}`, and an object's
+ * undefined, NaN, an infinity or -0, bytes: an `Any` can hold each) is a tagged object `{$: kind, v}`, and an object's
  * own key starting with `$` gains another, so no stored object reads as a tag or as another object.
  */
 function jsonSafe(value: unknown): unknown {
   if (typeof value === 'bigint') return { $: 'bigint', v: value.toString() };
   if (value === undefined) return { $: 'undefined' };
-  if (typeof value === 'number' && !Number.isFinite(value)) return { $: 'number', v: String(value) };
+  if (typeof value === 'number' && (!Number.isFinite(value) || Object.is(value, -0))) return { $: 'number', v: Object.is(value, -0) ? '-0' : String(value) };
   if (value instanceof Uint8Array) return { $: 'bytes', v: Array.from(value) };
   if (Array.isArray(value)) return value.map(jsonSafe);
   if (value && typeof value === 'object') {
