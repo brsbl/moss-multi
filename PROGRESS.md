@@ -139,6 +139,20 @@ A task counts only after an independent checker passes it on green CI. Each mile
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
 
+### From M5's Slop Cop review (PR #7 @ f2d5520, 2026-10-06)
+
+- Preview replay is quadratic when repeated delete-only ops cover the record's own inserts (focus input 3) (packages/core/src/suggest/apply.ts:491-494). Keep each original authoring step for the G5 check and the original record bytes for the digest.
+- Anonymous share-link viewers cannot fetch a suggestion preview (apps/web/src/api/suggestions.ts:50). Allow anonymous principals for preview only.
+- A BigInt attribute or payload value in a valid record crashes Edit-mode marker painting (apps/web/src/host/collab/suggest/paint.ts:107-110,156). Use the existing JSON-safe value projection (jsonSafe or stable JSON in apply.ts) for marker comparison and preview text, and enumerate attributes in an own-key-safe way.
+- Strike redo history is wiped on redo, because BodyUndo has no undoing or redoing flags (apps/web/src/host/collab/suggest/routing.ts:52-59). Expose the replay state from BodyUndo (it already tracks #replaying), and type the routing dependency as BodyUndo.
+- Routed deletes and caret capture treat a continuation lease's accepted prefix as still pending (packages/sync/src/suggest/client.ts:623-628). Add a per-item pending check (lease client and clock past the shared note's state) and use it in routing and caret capture.
+- Lease resume can exceed the server's 64-lease limit and stop input (packages/sync/src/suggest/client.ts:505-516). Resume only the leases that are needed, or send them in batches within the limit.
+- Strike painting checks every character against every strike span (apps/web/src/host/collab/suggest/paint.ts:42-53). Build a merged interval index per client when the strike set changes, and reuse it for paint and hit testing.
+- Rebuilding the client composite copies the whole note once per open record (packages/sync/src/suggest/client.ts:78-79,178-201). Build the composite incrementally and reapply only the records that changed, with invalidation on body and payload changes.
+- A suggester demoted to viewer gets a read-only pane with no reason, and their keystrokes are silently dropped (apps/web/src/host/collab/doc-session.ts:491,672). When the previous role could suggest, announce the demotion with refuseInput and an appropriate message.
+- Rejected as pre-existing (base 933e192): a payload named __proto__ cannot receive a usable acknowledgement (doc-do.ts #ack plain object; AckLedger reads ack.p?.[id] without an own-key check). Fix with own-property maps; keep prototype-named payload ids valid.
+- The strike-then-join P1 was fixed in T5.S1 for every ordinary rewrite; its residuals are recorded under T5.S1.
+
 - ~~T4.S3 (Anchor token budget before expansion) checker P2: `#gapOf` caches null for every visited item on any OverBudget, including running out of the start-dependent 4,096-struct left/right walks, so in a gap over 4,096 items a comment near the edge can force a comment near the middle to detach though its own walks would fit (safe: detached, never a jump or a rejected frame) → anchor follow-up: cache only start-independent failures.~~ → closed in T4.S3's second round: only running out of tokens is cached for the gap.
 - T4.S3 (Failed fragmented-gap struct walks are no longer shared across sibling comments) checker P2: `#gapOf` (`packages/core/src/anchor-frame.ts`) runs the left and right WALK_BUDGET walks outside the cache, so each hit comment in a fragmented gap over 2×WALK_BUDGET repeats ~8,193 struct ticks (e.g. a delete-only frame over 9,000 alternating one-character items with 2,000 comments costs ~14.3M ticks vs ~6.1K before); still within the per-hit-comment bound → anchor follow-up.
 - T4.S3 (Long-item and fragmented-gap tests do not go through DocDO persistence and restart) checker P2: anchor-cost runs CommentsHost directly, with no DocStore and no restart → anchor follow-up.
