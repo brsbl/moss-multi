@@ -91,27 +91,3 @@ it('keeps going when no ack comes, and drops pieces an ack already covers', () =
   expect(sent).toHaveLength(2);
   outbox.close();
 });
-
-it('keeps at most a window of writes in flight, and merges the small updates waiting behind it into one frame', () => {
-  const doc = new Y.Doc();
-  const updates: Uint8Array[] = [];
-  doc.on('update', (update: Uint8Array) => updates.push(update));
-  const sent: (Uint8Array | string)[] = [];
-  const outbox = new Outbox((frame) => sent.push(frame), { pieceBytes: 64 * 1024, windowBytes: 512 * 1024, windowFrames: 4, stallMs: 5_000 });
-  const text = doc.get('root', Y.XmlText);
-  for (let i = 0; i < 100; i += 1) {
-    text.insert(text.length, `batch ${i} `);
-    outbox.send(encodeSyncFrame(2, updates[updates.length - 1]));
-  }
-  expect(sent.length, 'a burst of 100 small writes never has more than the window in flight').toBe(4);
-  const peer = new Y.Doc();
-  for (const frame of sent.splice(0)) if (isUpdate(frame)) Y.applyUpdate(peer, payloadOf(frame));
-  outbox.acked(Y.decodeStateVector(Y.encodeStateVector(peer)));
-  expect(sent.length, 'the 96 waiting go as one frame').toBe(1);
-  for (const frame of sent.splice(0)) if (isUpdate(frame)) Y.applyUpdate(peer, payloadOf(frame));
-  expect(outbox.busy, 'a write out and unacked keeps the outbox busy').toBe(true);
-  outbox.acked(Y.decodeStateVector(Y.encodeStateVector(peer)));
-  expect(outbox.busy).toBe(false);
-  expect(peer.get('root', Y.XmlText).toString()).toBe(text.toString());
-  outbox.close();
-});

@@ -10,7 +10,8 @@ it('joins every edit made while held to the last step, however late, and lets go
     const doc = new Y.Doc();
     const text = doc.getText('t');
     const origin = { name: 'local' };
-    const undo = new BodyUndo(new Y.UndoManager(text, { trackedOrigins: new Set([origin]), captureTimeout: 1_000 }));
+    // No capture window: Yjs times it with the real clock (lib0 reads Date.now at import), which fake timers leave be.
+    const undo = new BodyUndo(new Y.UndoManager(text, { trackedOrigins: new Set([origin]), captureTimeout: 0 }));
     const edit = (at: number, value: string) => doc.transact(() => text.insert(at, value), origin);
 
     edit(0, 'typed ');

@@ -296,16 +296,17 @@ export class BodyUndo extends Observable<StackEvent> {
 
   /**
    * Until the returned release runs, every tracked edit joins the last step, however long after it lands: a large
-   * paste lands in batches, one undo step (T3.S6). Once the last hold is released, the next edit is a step of its own.
+   * paste lands in batches, one undo step (T3.S6). The note's manager also joins the edit to its last stack item, as
+   * if within its capture window, unless capturing stopped: redoing a step of hundreds of items held the tab.
    */
   hold(): () => void {
     this.#holds += 1;
+    if (this.root.lastChange > 0) this.root.lastChange = Date.now();
     let released = false;
     return () => {
       if (released) return;
       released = true;
       this.#holds -= 1;
-      if (this.#holds === 0) this.stopCapturing();
     };
   }
 
