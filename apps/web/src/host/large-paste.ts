@@ -17,6 +17,9 @@ const collabUndo = (editor: LexicalEditor): { stopCapturing(): void } | undefine
 export function pasteBlocks(editor: LexicalEditor, blocks: SerializedLexicalNode[], $insert: (nodes: LexicalNode[]) => void): void {
   const undo = collabUndo(editor);
   undo?.stopCapturing();
-  editor.update(() => $insert(blocks.map((block) => $parseSerializedNode(block))), { discrete: true });
-  undo?.stopCapturing();
+  // From a paste command the update commits when the command's own does, so capturing stops once it has.
+  editor.update(() => $insert(blocks.map((block) => $parseSerializedNode(block))), {
+    discrete: true,
+    onUpdate: () => undo?.stopCapturing(),
+  });
 }
