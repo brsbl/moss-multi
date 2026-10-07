@@ -148,16 +148,13 @@ describe('linear inline import @p:tech-4', () => {
       expect(lossless(`${'*x _x '.repeat(n)}y${' x_ x*'.repeat(n)}`)).toEqual({ cut: 1, kept: true, literal: true, reread: true });
     }, 120_000);
 
+    // moss's color callback reads the whole paragraph per color once the line holds a bracket: quadratic in moss's
+    // own import, so a few such paragraphs spend the import's budget and the rest keep their text.
     it('keeps the text of lines past the import\'s budget', () => {
-      const limits = { ...LINEAR_IMPORT_LIMITS };
-      try {
-        Object.assign(LINEAR_IMPORT_LIMITS, { perImport: 1_000 });
-        const result = lossless(Array.from({ length: 200 }, (_, i) => `**a${i}** and *b${i}* then ~~c${i}~~ x`).join('\n\n'));
-        expect(result.cut).toBeGreaterThan(100);
-        expect(result).toMatchObject({ kept: true, literal: true });
-      } finally {
-        Object.assign(LINEAR_IMPORT_LIMITS, limits);
-      }
+      const colors = Array.from({ length: 2_000 }, (_, i) => `#${((Math.imul(i + 1, 2654435761) >>> 8) & 0xffffff).toString(16).padStart(6, '0')}`).join(' ');
+      const result = lossless(Array.from({ length: 12 }, (_, i) => `**b${i}** [x] ${colors}`).join('\n\n'));
+      expect(result.cut).toBeGreaterThanOrEqual(6);
+      expect(result).toMatchObject({ kept: true, literal: true });
     }, 120_000);
   });
 

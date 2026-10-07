@@ -36,9 +36,10 @@ import { SERIF_FONT_FAMILY_MARKDOWN_STYLE_PATTERN } from './text-style';
  * ordinary line uses about a tenth of it. Per import (nested imports, such as table cells, share their outer
  * import's), perImport holds only the work that grows faster than its line in pristine moss: the walk from the
  * paragraph's first child that each of Lexical's splits pays (CHILD_WALK per child), and moss's callbacks that read
- * the whole paragraph per match. A paragraph runs out of it at about 16k matches, past the 10k at which Lexical's
- * recursion overflows the stack, and takes a fraction of SP2's import time to get there; linear work never counts
- * against it, so a note of ordinary lines is never cut however large.
+ * the whole paragraph per match, each line paying only what passes its own allowance. A paragraph runs out of it at
+ * about 40k matches, well past the 10k at which Lexical's recursion overflows the stack, and takes a fraction of
+ * SP2's import time to get there; linear work never counts against it, so a note of ordinary lines is never cut
+ * however large.
  */
 export const LINEAR_IMPORT_LIMITS = { perChar: 256, perMatch: 1 << 17, base: 1 << 20, perImport: 1 << 30 };
 /**
@@ -166,7 +167,7 @@ class Budget {
   left: number;
   allowance: number;
   importLeft: number;
-  /** Charged to the import's budget (work that grows faster than the line in pristine moss). */
+  /** Work that grows faster than the line in pristine moss; the import's budget pays what passes the allowance. */
   importSpent = 0;
   constructor(total: number, importLeft: number) {
     this.left = total;
@@ -178,7 +179,7 @@ class Budget {
     this.left += amount;
     this.allowance += amount;
   }
-  /** Spends from the import's budget only. */
+  /** Spends work the import's budget pays past the line's allowance (linear work of a line costs it nothing). */
   chargeImport(cost: number): void {
     this.importSpent += cost;
     linearImportStats.spent += cost;
@@ -191,7 +192,11 @@ class Budget {
   /** Spends, and stops the line once its budget or its import's is gone. */
   spend(cost: number): void {
     this.charge(cost);
-    if (this.left < 0 || this.importSpent > this.importLeft) throw OVER_BUDGET;
+    if (this.left < 0 || this.importExcess() > this.importLeft) throw OVER_BUDGET;
+  }
+  /** What the line takes from its import's budget. */
+  importExcess(): number {
+    return Math.max(0, this.importSpent - this.allowance);
   }
 }
 
@@ -306,7 +311,7 @@ function $importInline(top: TextNode, index: FormatIndex, matchers: TextMatchTra
     linearImportStats.cut += 1;
   } finally {
     activeLine = outerLine;
-    if (importBudget) importBudget.left -= budget.importSpent;
+    if (importBudget) importBudget.left -= budget.importExcess();
     const share = 1 - budget.left / budget.allowance;
     if (share > linearImportStats.peakLineShare) linearImportStats.peakLineShare = share;
   }
