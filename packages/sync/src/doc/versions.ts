@@ -45,7 +45,8 @@ export class VersionSpillError extends Error {
   }
 }
 
-interface Row {
+// A type, not an interface, so it satisfies SqlStorage's row constraint.
+type Row = {
   id: string;
   kind: VersionKind;
   name: string | null;
@@ -56,7 +57,7 @@ interface Row {
   bytes: number;
   hash: string;
   r2_key: string | null;
-}
+};
 
 const META_COLUMNS = 'id, kind, name, created_at, created_by, author_ids, title, bytes, hash, r2_key';
 const CONTENT_KEYS = ['frontmatter', 'markdown', 'lexical', 'payloads', 'comments'] as const;

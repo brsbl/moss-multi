@@ -97,7 +97,12 @@ describe('version triggers @p:mean-3', () => {
   it('writes an auto version on save after 500 updates, or 10 minutes after the last auto version', async () => {
     const opened = await created();
     const ada = await editorOn(opened, 'ada');
-    for (let i = 0; i < 499; i += 1) await typeTitle(ada, 'x');
+    for (let i = 0; i < 499; i += 1) {
+      // Under the per-socket write rate (300 per 5 s).
+      if (i % 250 === 249) vi.setSystemTime(Date.now() + 5_001);
+      await typeTitle(ada, 'x');
+    }
+    expect(ada.closed).toBeNull();
     await opened.dobj.onSave();
     expect(await list(opened), '499 updates are below the activity threshold').toEqual([]);
     await typeTitle(ada, 'y');
