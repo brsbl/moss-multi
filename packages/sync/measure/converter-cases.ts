@@ -117,6 +117,13 @@ export const ORDINARY_NOTES: Record<string, () => string> = {
   'a paragraph of 500 serif spans': () => `x ${range(500).map((i) => `<span style="font-family: serif">a${i}</span>`).join(' ')}`,
   'a table of 2,000 rows': () =>
     ['| Item | Link | Color | Note |', '| --- | --- | --- | --- |', ...range(2_000).map((i) => `| **i${i}** | [l${i}](https://e.com/${i}) | ${hex(i)} | \`c${i}\` and *n${i}* |`)].join('\n'),
+  // Short formatted words packed densely: a list of tags, key-value runs, short wiki links and links.
+  'a paragraph of 400 italic tags': () => `Tags: ${range(400).map((i) => `*t${i}*`).join(', ')}.`,
+  'a paragraph of 300 bold labels with code and italic values': () => range(300).map((i) => `**K${i}:** \`v${i}\` *ok*`).join(' '),
+  'a paragraph of 500 short wiki links': () => `See ${range(500).map((i) => `[[N${i}]]`).join(' ')}.`,
+  'a paragraph of 500 code spans': () => `Keys: ${range(500).map((i) => `\`k${i}\``).join(', ')}.`,
+  'a paragraph of 400 struck and highlighted words': () => range(400).map((i) => `~~s${i}~~ ==h${i}==`).join(' '),
+  'a paragraph of 400 one-letter links, each followed by bold': () => range(400).map(() => 'x [a](b) **c**').join(' '),
 };
 
 // Ordinary notes of 2 MB (or `size`) in short paragraphs, which moss converts in linear time: no budget may cut
@@ -178,4 +185,8 @@ export const LARGE_ORDINARY_NOTES: Record<string, (size?: number) => string> = {
     paragraphs((p) => range(10).map((i) => `[p${p}.${i}](https://e.com/${p}/${i}) **x${i}**`).join(' '), size),
   '2 MB of paragraphs of ten wiki links and colors': (size = 2 * 1024 * 1024) =>
     paragraphs((p) => range(10).map((i) => `[[Note ${p}.${i}]] ${hex(p * 10 + i)}`).join(', '), size),
+  '2 MB of paragraphs of thirty italic tags, code spans and short wiki links': (size = 2 * 1024 * 1024) =>
+    paragraphs(() => range(30).map((i) => (i % 3 === 0 ? `*t${i}*` : i % 3 === 1 ? `\`k${i}\`` : `[[N${i}]]`)).join(', '), size),
+  '2 MB of paragraphs of twenty one-letter links, each followed by bold': (size = 2 * 1024 * 1024) =>
+    paragraphs(() => range(20).map(() => 'x [a](b) **c**').join(' '), size),
 };
