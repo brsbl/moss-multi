@@ -10,7 +10,7 @@ import type * as Y from 'yjs';
 export const PIECE_BYTES = 256 * 1024;
 const WINDOW_BYTES = 512 * 1024;
 /** Without an ack for this long, the window reopens (an inert frame earns none). */
-const STALL_MS = 3_000;
+const STALL_MS = 10_000;
 
 export type Frame = Uint8Array | string;
 

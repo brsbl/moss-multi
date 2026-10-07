@@ -280,6 +280,7 @@ export class DocSession {
   #socketOpen = false;
   #lastResync = 0;
   #visibleSince = 0;
+  #lastTick = 0;
   #failedHandshakes = 0;
   #accessRetries = 0;
   #accessRetry: ReturnType<typeof setTimeout> | undefined;
@@ -585,8 +586,11 @@ export class DocSession {
   #heartbeat(): void {
     if (this.#disposed || this.#paused) return;
     const ws = this.provider.ws as DocSocket | null;
+    const now = Date.now();
+    // A main thread busy for seconds (a 2 MB paste, its undo) read no frames meanwhile: that is not a silent socket.
+    if (this.#lastTick > 0 && now - this.#lastTick > SILENCE_LIMIT_MS / 2) this.#visibleSince = now;
+    this.#lastTick = now;
     if (ws && ws.readyState === WebSocket.OPEN && !document.hidden) {
-      const now = Date.now();
       const heard = this.provider.wsLastMessageReceived;
       if (now - Math.max(heard, this.#visibleSince) > SILENCE_LIMIT_MS) {
         // Half-open: close 4408 and reconnect now; the old socket's close event may never come (A§10.5).

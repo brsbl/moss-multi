@@ -210,7 +210,11 @@ test('j01-paste: a second large paste and a note switch while a 200k paste lands
   // Reopening the note is a second socket for it in this document.
   ada.expectReconnects(1, docId);
   await ui.openNote(ada, docId);
-  await expect.poll(() => fingerprint(ben, docId), { message: 'the collaborator sees both pastes', timeout: 60_000 }).toEqual(await fingerprint(ada, docId));
+  // Both read again each time: the reopened pane loads its code blocks' payloads after it binds.
+  await expect.poll(async () => {
+    const [mine, theirs] = await Promise.all([fingerprint(ada, docId), fingerprint(ben, docId)]);
+    return mine.length === theirs.length && mine.sum === theirs.sum;
+  }, { message: 'the collaborator sees both pastes', timeout: 60_000 }).toBe(true);
 });
 
 test('j01-paste: a 200k paste ending in a list keeps its lists apart and in order @p:col-1', async ({ actors, stack }) => {
