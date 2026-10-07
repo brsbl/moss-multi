@@ -506,14 +506,14 @@ async function measureAdversarial(port) {
   return results;
 }
 
-// Ordinary notes (converter-cases.ts ORDINARY_NOTES), in one worker: each imports in full (no line cut at the work
+// Ordinary notes (converter-cases.ts ORDINARY_NOTES and LARGE_ORDINARY_NOTES), in one worker: each imports in full (no line cut at the work
 // budget) within IMPORT_BUDGET_MS.
 async function measureOrdinary(port) {
-  const { ORDINARY_NOTES } = await import('../packages/sync/measure/converter-cases.ts');
+  const { LARGE_ORDINARY_NOTES, ORDINARY_NOTES } = await import('../packages/sync/measure/converter-cases.ts');
   const server = await startWorker('converter', port);
   const results = [];
   try {
-    for (const [name, body] of Object.entries(ORDINARY_NOTES)) {
+    for (const [name, body] of Object.entries({ ...ORDINARY_NOTES, ...LARGE_ORDINARY_NOTES })) {
       try {
         const imported = await timedRequest(server, '/import', { method: 'POST', body: body(), signal: AbortSignal.timeout(ADVERSARIAL_TIMEOUT_MS) });
         results.push({ name, importCpuMs: imported.cpuMs, cut: JSON.parse(imported.body).cut });

@@ -8,7 +8,7 @@ import { $convertFromMarkdownString, LINEAR_IMPORT_LIMITS, linearImportStats } f
 import { escapeHtmlEntities, normalizeMarkdownForImport } from '@moss-desktop/renderer/editor/markdown/normalize';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { $getRoot } from 'lexical';
-import { CONVERTER_CASES, converterBody, ORDINARY_NOTES } from '../../measure/converter-cases.ts';
+import { CONVERTER_CASES, converterBody, LARGE_ORDINARY_NOTES, ORDINARY_NOTES } from '../../measure/converter-cases.ts';
 import { FIXTURES, SCALE_UNIT, scaleNote } from './fixtures.ts';
 import { createConverterEditor, exportMarkdown, importMarkdown, MARKDOWN_EDITOR_TRANSFORMERS } from './index.ts';
 
@@ -115,8 +115,11 @@ describe('linear inline import @p:tech-4', () => {
     expect(ours === tree($lexicalConvertFromMarkdownString, markdown)).toBe(true);
   }, 120_000);
 
-  it('cuts no line of the 2 MB scale note of mixed content, and builds Lexical\'s tree', () => {
-    const markdown = scaleNote(Math.ceil((2 * 1024 * 1024) / SCALE_UNIT.length));
+  it.each<[string, () => string]>([
+    ['the 2 MB scale note of mixed content', () => scaleNote(Math.ceil((2 * 1024 * 1024) / SCALE_UNIT.length))],
+    ...Object.entries(LARGE_ORDINARY_NOTES),
+  ])('cuts no line of %s, and builds Lexical\'s tree', (_name, body) => {
+    const markdown = body();
     let ours = '';
     const used = shares(() => {
       ours = tree($convertFromMarkdownString, markdown);
@@ -148,7 +151,7 @@ describe('linear inline import @p:tech-4', () => {
     it('keeps the text of lines past the import\'s budget', () => {
       const limits = { ...LINEAR_IMPORT_LIMITS };
       try {
-        Object.assign(LINEAR_IMPORT_LIMITS, { perImport: 50_000 });
+        Object.assign(LINEAR_IMPORT_LIMITS, { perImport: 1_000 });
         const result = lossless(Array.from({ length: 200 }, (_, i) => `**a${i}** and *b${i}* then ~~c${i}~~ x`).join('\n\n'));
         expect(result.cut).toBeGreaterThan(100);
         expect(result).toMatchObject({ kept: true, literal: true });
