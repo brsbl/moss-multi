@@ -404,9 +404,14 @@ const FIRST_BATCH = 128;
 /** Laying out n new list items with values at once takes time quadratic in n (Chromium): batches stay this small. */
 const MAX_BATCH = 2_500;
 
-/** Units per batch, sized from how long the last batch's work and its layout took. */
+/**
+ * Units per batch, sized from how long the last batch's work and its layout took. Each batch is a User Timing measure
+ * named `label` (its units, work and layout in `detail`), so a profile or a test can tell a batch from other work.
+ */
 class Pacer {
   budget = FIRST_BATCH;
+
+  constructor(readonly label: string) {}
 
   /** Runs a batch of `used` units (`run`), then lays the note out (`layout`), and sizes the next batch. */
   time(used: number, run: () => void, layout?: () => void): void {
@@ -416,6 +421,7 @@ class Pacer {
     layout?.();
     const perUnit = Math.max(0.001, ran - started) / used;
     const fixed = performance.now() - ran;
+    performance.measure(this.label, { start: started, detail: { units: used, workMs: Math.round(ran - started), layoutMs: Math.round(fixed) } });
     const room = Math.max(TARGET_MS / 3, TARGET_MS - fixed);
     this.budget = Math.round(Math.max(FIRST_BATCH, Math.min(MAX_BATCH, used * 4, room / perUnit)));
   }
@@ -515,7 +521,7 @@ class PasteJob {
   *#run(): Generator<void, void> {
     const { editor, request } = this;
     const { plan } = request;
-    const pacer = new Pacer();
+    const pacer = new Pacer('moss-paste-rehearsal');
 
     // 1. The scratch replay: what the paste adds to the note, and its largest piece.
     const scratch = scratchEditor(request.nodes);
@@ -542,7 +548,7 @@ class PasteJob {
     // Laid out after each batch, in it: laid out later, several batches' list items would go at once (MAX_BATCH).
     const layout = () => void editor.getRootElement()?.offsetHeight;
     // Paced afresh: the live editor also renders and lays out each batch.
-    const pacing = new Pacer();
+    const pacing = new Pacer('moss-paste-batch');
     const first = pacing.budget;
     // A pending update (a peer's or a derived write, tagged as collaboration) would take a batch into it, and an update
     // so tagged never reaches the doc: each batch commits it first, on its own.

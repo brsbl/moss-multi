@@ -60,15 +60,18 @@ export async function pastePlain(actor: Actor, docId: string, text: string): Pro
   }, text);
 }
 
-/** What Ada's doc sockets do on the wire: the largest frame sent, and how many sockets opened. */
+/** What Ada's doc sockets do on the wire: the largest frame sent, how many sockets opened, and how each closed. */
 export interface Wire {
   largestFrame: number;
   opened: number;
+  closes: string[];
 }
 
-/** Watches the doc sockets `actor`'s page opens from now on. */
-function watchWire(actor: Actor): Wire {
-  const wire: Wire = { largestFrame: 0, opened: 0 };
+const CLOSE_LOG = 'qa-doc-socket-close';
+
+/** Watches the doc sockets `actor`'s page opens from now on; call before the page loads the app. */
+async function watchWire(actor: Actor): Promise<Wire> {
+  const wire: Wire = { largestFrame: 0, opened: 0, closes: [] };
   actor.page.on('websocket', (socket) => {
     if (!new URL(socket.url()).pathname.startsWith(DOC_SOCKET_PATH)) return;
     wire.opened += 1;
@@ -76,23 +79,41 @@ function watchWire(actor: Actor): Wire {
       wire.largestFrame = Math.max(wire.largestFrame, typeof payload === 'string' ? Buffer.byteLength(payload) : payload.byteLength);
     });
   });
+  actor.page.on('console', (message) => {
+    if (message.text().startsWith(CLOSE_LOG)) wire.closes.push(message.text().slice(CLOSE_LOG.length + 1));
+  });
+  // Each doc socket's close code and reason, so a reopen names its cause.
+  await actor.page.addInitScript(({ path, log }) => {
+    const Native = window.WebSocket;
+    window.WebSocket = class extends Native {
+      constructor(url: string | URL, protocols?: string | string[]) {
+        super(url, protocols);
+        if (!String(url).includes(path)) return;
+        Native.prototype.addEventListener.call(this, 'close', (event: Event) => {
+          const { code, reason } = event as CloseEvent;
+          console.log(`${log} ${code} ${reason} at ${Math.round(performance.now())} ms`);
+        });
+      }
+    };
+  }, { path: DOC_SOCKET_PATH, log: CLOSE_LOG });
   return wire;
 }
 
 /** Every frame Ada sent fit the client frame cap, and her doc socket never closed (a 1013 reconnects). */
 export function expectWire(wire: Wire): void {
   expect(wire.largestFrame, 'no frame the client sends exceeds the frame cap').toBeLessThanOrEqual(CLIENT_FRAME_MAX_BYTES);
-  expect(wire.opened, 'the doc socket never closed and reopened').toBe(1);
+  expect(wire.opened, `the doc socket never closed and reopened (closes: ${wire.closes.join('; ') || 'none seen'})`).toBe(1);
 }
 
 /** Starts measuring the longest the page's main thread is held: the gap between 25 ms ticks, less the 25 ms. */
 export async function watchStalls(actor: Actor): Promise<void> {
   await actor.page.evaluate(() => {
-    const probe = window as unknown as { __stall: number; __stallAt: number; __stallTimer?: ReturnType<typeof setInterval> };
+    const probe = window as unknown as { __stall: number; __stallAt: number; __stallStart: number; __stallTimer?: ReturnType<typeof setInterval> };
     clearInterval(probe.__stallTimer);
     probe.__stall = 0;
     probe.__stallAt = 0;
     const start = performance.now();
+    probe.__stallStart = start;
     let last = start;
     probe.__stallTimer = setInterval(() => {
       const now = performance.now();
@@ -105,12 +126,21 @@ export async function watchStalls(actor: Actor): Promise<void> {
   });
 }
 
-/** The longest stall since watchStalls, in ms, and when it began, in ms from the start; measuring stops. */
-export const longestStall = (actor: Actor): Promise<{ ms: number; at: number }> =>
+/**
+ * The longest stall since watchStalls, in ms, when it began (ms from the start), and the paste's batches (User Timing
+ * measures `moss-paste-*`) that overlap it; measuring stops.
+ */
+export const longestStall = (actor: Actor): Promise<{ ms: number; at: number; during: string }> =>
   actor.page.evaluate(() => {
-    const probe = window as unknown as { __stall: number; __stallAt: number; __stallTimer?: ReturnType<typeof setInterval> };
+    const probe = window as unknown as { __stall: number; __stallAt: number; __stallStart: number; __stallTimer?: ReturnType<typeof setInterval> };
     clearInterval(probe.__stallTimer);
-    return { ms: Math.round(probe.__stall), at: Math.round(probe.__stallAt) };
+    const from = probe.__stallStart + probe.__stallAt;
+    const to = from + probe.__stall + 25;
+    const during = performance.getEntriesByType('measure')
+      .filter((entry) => entry.name.startsWith('moss-paste-') && entry.startTime < to && entry.startTime + entry.duration > from)
+      .map((entry) => `${entry.name} ${Math.round(entry.duration)} ms ${JSON.stringify((entry as PerformanceMeasure).detail)}`)
+      .join(', ');
+    return { ms: Math.round(probe.__stall), at: Math.round(probe.__stallAt), during: during || 'no paste batch' };
   });
 
 export async function setup(actors: Actors, stack: Stack, markdown?: string, { elsewhere = false } = {}) {
@@ -119,7 +149,7 @@ export async function setup(actors: Actors, stack: Stack, markdown?: string, { e
   const otherId = elsewhere ? await importNote(ada, stack, 'Elsewhere', 'Another note.') : '';
   const principal = await actors.principal('ben');
   await grantDoc(ada, docId, principal);
-  const wire = watchWire(ada);
+  const wire = await watchWire(ada);
   await ada.goto(`/d/${docId}`);
   const ben = await actors.open(principal, { path: `/d/${docId}` });
   for (const actor of [ada, ben]) {
@@ -153,7 +183,7 @@ export async function pasteAndCheck(
   await ui.waitAcked(ada, docId, timeout);
   await expect.poll(() => exported(ada, docId), { message: 'every pasted character lands in the doc', timeout }).toBe(want.whole);
   const stall = await longestStall(ada);
-  expect(stall.ms, `the tab is never held longer than ${maxStallMs} ms at a time while the paste lands (the longest began ${stall.at} ms after the paste)`).toBeLessThanOrEqual(maxStallMs);
+  expect(stall.ms, `the tab is never held longer than ${maxStallMs} ms at a time while the paste lands (the longest began ${stall.at} ms after the paste, during: ${stall.during})`).toBeLessThanOrEqual(maxStallMs);
   const pastedPrint = await fingerprint(ada, docId);
   await expect.poll(() => fingerprint(ben, docId), { message: 'the collaborator sees the whole paste', timeout }).toEqual(pastedPrint);
 
