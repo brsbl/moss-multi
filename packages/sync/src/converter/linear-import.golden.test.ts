@@ -220,7 +220,7 @@ describe('linear inline import @p:tech-4', () => {
       editor.getEditorState().read(() => $getRoot().getChildren().map((block) => [block.getType(), block.getTextContent()]));
 
     it('keeps a line longer than lineChars literally, out of moss\'s normalization and the block transformers', () => {
-      const line = `# **b** [a](b) ${'x'.repeat(LINEAR_IMPORT_LIMITS.lineChars)}`;
+      const line = `# **b** [a](b)\u00a0${'x'.repeat(LINEAR_IMPORT_LIMITS.lineChars)}`;
       let editor = importMarkdown('');
       expect(cuts(() => {
         editor = importMarkdown(`Before **it**.\n\n${line}\n\nAfter **it**.`);
@@ -235,7 +235,8 @@ describe('linear inline import @p:tech-4', () => {
       for (const markdown of [`\`\`\`moss-html\n<p>${long}</p>\n\`\`\``, `\`\`\`js\nconst a = '${long}';\n\`\`\``]) {
         const state = JSON.stringify(importMarkdown(markdown).getEditorState().toJSON());
         expect(state.includes(long)).toBe(true);
-        expect(/[\u0001-\u0008]/.test(state)).toBe(false);
+        // No marker of a long line (a control character, which JSON escapes) is left behind.
+        expect(/\\u000[1-8]/.test(state)).toBe(false);
       }
     }, 120_000);
 

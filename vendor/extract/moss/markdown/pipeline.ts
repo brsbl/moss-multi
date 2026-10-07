@@ -3,7 +3,7 @@ import { $convertToMarkdownString } from '@lexical/markdown';
 import type { NoteLayoutMetadata } from '../../../common/noteTypes';
 import type { CommentMetadataMap } from '../utils/comment-markdown';
 import { $withDocumentImport, withImportFormulaIds } from './fixes';
-import { $convertFromMarkdownString } from './linear-import';
+import { $convertFromMarkdownString, prepareMarkdown } from './linear-import';
 import { $postImportNormalize, escapeHtmlEntities, normalizeMarkdownForImport, unescapeHtmlEntities } from './normalize';
 import { MARKDOWN_EDITOR_TRANSFORMERS } from './transformers';
 
@@ -19,7 +19,7 @@ export interface NoteBodyImportOptions {
 // Call inside editor.update(); replaces the root's children and leaves no selection, so import stays linear in
 // blocks (fixes.ts).
 export function $importNoteBody(markdown: string, options: NoteBodyImportOptions = {}): void {
-  const prepared = escapeHtmlEntities(normalizeMarkdownForImport(markdown));
+  const prepared = prepareMarkdown(markdown, (md) => escapeHtmlEntities(normalizeMarkdownForImport(md)), escapeHtmlEntities);
   $withDocumentImport(() =>
     withImportFormulaIds(prepared, () => {
       $convertFromMarkdownString(prepared, MARKDOWN_EDITOR_TRANSFORMERS);

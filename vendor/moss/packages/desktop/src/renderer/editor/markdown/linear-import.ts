@@ -31,20 +31,33 @@ import { SERIF_FONT_FAMILY_MARKDOWN_STYLE_PATTERN } from './text-style';
 // linear-import.golden.test.ts holds this to Lexical's own import over the corpus and fuzz.
 
 /**
- * Work budgets, in units of about a nanosecond of work on a fast machine (a character scanned; an applied match,
- * with its nodes, is APPLY_COST). Per line, perChar × the line's length + perMatch × the matches applied + base:
- * linear in the line, so only work of ours that grows faster than the line runs out of it (deep nesting), and an
- * ordinary line uses about a tenth of it. Per import (nested imports, such as table cells, share their outer
- * import's), perImport holds only the work that grows faster than its line in pristine moss: the walk from the
- * paragraph's first child that each of Lexical's splits pays (CHILD_WALK per child), and moss's callbacks that read
- * the whole paragraph per match, each line paying only what passes its own allowance. A paragraph runs out of it at
- * about 40k matches, well past the 10k at which Lexical's recursion overflows the stack, and takes a fraction of
- * SP2's import time to get there; linear work never counts against it, so a note of ordinary lines is never cut
- * however large.
+ * Budgets, all fixed by a line's own text, never by timing. Work is in units of about a nanosecond of work on a fast
+ * machine (a character scanned; an applied match, with its nodes, is APPLY_COST).
+ * - lineChars: a line longer than this skips moss's import normalization and the inline pass, and keeps its text as
+ *   literal text (ordinary lines are a small fraction of it).
+ * - perLine: the most work one line may take, whatever its length; with lineChars, a line costs at most about
+ *   SP2's per-line share of workerd CPU (scripts/measure-converter.mjs) to import.
+ * - matches: the most matches one line may convert. Every node of a paragraph costs Lexical's collab binding a walk
+ *   of its siblings, so this bounds what a paragraph costs the DocDO beyond the converter.
+ * - tabs: the most tabs of one line Lexical makes tab nodes of; a line with more keeps them, and its text, literally.
+ * - perChar × the line's length + perMatch × the matches applied + base: linear in the line, so only work of ours
+ *   that grows faster than the line runs out of it (deep nesting).
+ * - perImport: over one import (nested imports, such as table cells, share their outer import's), the work that grows
+ *   faster than its line in moss's own import (moss's callbacks that read the whole paragraph or text per match),
+ *   each line paying only what passes its own linear allowance, so a note of many such lines stays within SP2.
  */
-export const LINEAR_IMPORT_LIMITS = { perChar: 256, perMatch: 1 << 17, base: 1 << 20, perImport: 1 << 30 };
+export const LINEAR_IMPORT_LIMITS = {
+  lineChars: 1 << 17,
+  perLine: 80_000_000,
+  matches: 6_000,
+  tabs: 4_096,
+  perChar: 256,
+  perMatch: 1 << 17,
+  base: 1 << 20,
+  perImport: 1 << 30,
+};
 /**
- * Over all imports: lines whose budget ran out (left partly unconverted), the work charged, and the largest share
+ * Over all imports: lines whose budget ran out (kept as literal text), the work charged, and the largest share
  * of its budget a line, and an import, has used.
  */
 export const linearImportStats = { cut: 0, spent: 0, peakLineShare: 0, peakImportShare: 0 };
@@ -55,8 +68,6 @@ const VISIT_COST = 32;
 const APPLY_COST = 12_288;
 // A read of the paragraph's text and children, per character.
 const PARAGRAPH_READ = 20;
-// Pristine Lexical's splitText walk, per child of the paragraph.
-const CHILD_WALK = 8;
 // Native regex and string scans run several characters per unit; the format search's scans take several units per
 // character.
 const NATIVE = 4;
@@ -73,16 +84,116 @@ export function $convertFromMarkdownString(
   shouldMergeAdjacentLines = false,
 ): void {
   const outer = importBudget;
+  const outerLong = longLines;
   importBudget ??= { left: LINEAR_IMPORT_LIMITS.perImport };
+  // A line longer than lineChars goes through Lexical's line loop as a short marker line, which no block transformer
+  // takes, so it imports as a paragraph line whose text the inline pass puts back literally.
+  const long = markLongLines(markdown);
+  longLines = long;
+  const outerTabs = heldTabs;
+  heldTabs = [];
   try {
-    $lexicalConvertFromMarkdownString(markdown, importTransformers(transformers), node, shouldPreserveNewLines, shouldMergeAdjacentLines);
+    const list = long ? guardedTransformers(transformers) : importTransformers(transformers);
+    $lexicalConvertFromMarkdownString(long ? long.marked : markdown, list, node, shouldPreserveNewLines, shouldMergeAdjacentLines);
+    // Lexical has made a tab node of every tab it saw; the lines with too many get theirs back as text.
+    for (const [held, text] of heldTabs) if (held.isAttached()) held.setTextContent(text);
   } finally {
     if (!outer) {
       const share = 1 - importBudget.left / LINEAR_IMPORT_LIMITS.perImport;
       if (share > linearImportStats.peakImportShare) linearImportStats.peakImportShare = share;
     }
     importBudget = outer;
+    longLines = outerLong;
+    heldTabs = outerTabs;
   }
+}
+
+/**
+ * `prepare` (moss's import normalization) over the markdown, except on lines longer than lineChars, which get
+ * `prepareLong` alone and stand in as short marker lines while `prepare` runs.
+ */
+export function prepareMarkdown(markdown: string, prepare: (md: string) => string, prepareLong: (line: string) => string): string {
+  const long = markLongLines(markdown);
+  if (!long) return prepare(markdown);
+  return prepare(long.marked).replace(long.pattern, (_, i: string) => prepareLong(long.lines[Number(i)]));
+}
+
+interface LongLines {
+  /** The markdown with each long line replaced by `${marker}${index}${marker}`. */
+  marked: string;
+  marker: string;
+  pattern: RegExp;
+  lines: string[];
+  /** Lexical's split of `marked`, and that split with the long lines back. */
+  split?: string[];
+  restored?: string[];
+}
+
+// The long lines of the import running, if it has any.
+let longLines: LongLines | null = null;
+// Lines of the import running with more than LINEAR_IMPORT_LIMITS.tabs tabs, and the literal text each gets back.
+let heldTabs: [TextNode, string][] = [];
+
+// Control characters moss's normalization and Lexical's block transformers leave alone; the first one the markdown
+// lacks marks its long lines (none: they import as they are).
+const MARKERS = ['\u0001', '\u0002', '\u0003', '\u0004', '\u0005', '\u0006', '\u0007', '\u000e', '\u000f'];
+
+function markLongLines(markdown: string): LongLines | null {
+  const limit = LINEAR_IMPORT_LIMITS.lineChars;
+  if (markdown.length <= limit) return null;
+  const ranges: [number, number][] = [];
+  for (let start = 0; start <= markdown.length; ) {
+    const newline = markdown.indexOf('\n', start);
+    const end = newline < 0 ? markdown.length : newline;
+    if (end - start > limit) ranges.push([start, end]);
+    start = end + 1;
+  }
+  const marker = ranges.length > 0 ? MARKERS.find((char) => !markdown.includes(char)) : undefined;
+  if (marker === undefined) return null;
+  let marked = '';
+  let cursor = 0;
+  ranges.forEach(([start, end], i) => {
+    marked += `${markdown.slice(cursor, start)}${marker}${i}${marker}`;
+    cursor = end;
+  });
+  marked += markdown.slice(cursor);
+  return { marked, marker, pattern: new RegExp(`${marker}(\\d+)${marker}`, 'g'), lines: ranges.map((range) => markdown.slice(...range)) };
+}
+
+function restoreLongLines(long: LongLines, text: string): string {
+  return text.includes(long.marker) ? text.replace(long.pattern, (_, i: string) => long.lines[Number(i)]) : text;
+}
+
+const GUARDED_LISTS = new WeakMap<Transformer[], Transformer[]>();
+
+// importTransformers' list, with each multiline transformer (a code fence, moss's HTML, tab and table blocks) given
+// the long lines back: the lines it reads and the lines between its fences.
+function guardedTransformers(transformers: Transformer[]): Transformer[] {
+  let list = GUARDED_LISTS.get(transformers);
+  if (!list) {
+    list = importTransformers(transformers).map((t): Transformer => {
+      if (t.type !== 'multiline-element') return t;
+      const { handleImportAfterStartMatch, replace } = t;
+      return {
+        ...t,
+        replace: (rootNode, children, startMatch, endMatch, linesInBetween, isImport) =>
+          replace(rootNode, children, startMatch, endMatch, longLines && linesInBetween ? linesInBetween.map((line) => restoreLongLines(longLines!, line)) : linesInBetween, isImport),
+        handleImportAfterStartMatch: handleImportAfterStartMatch && ((args) => handleImportAfterStartMatch({ ...args, lines: restoredSplit(args.lines) })),
+      };
+    });
+    GUARDED_LISTS.set(transformers, list);
+  }
+  return list;
+}
+
+function restoredSplit(lines: string[]): string[] {
+  const long = longLines;
+  if (!long) return lines;
+  if (long.split !== lines) {
+    long.split = lines;
+    long.restored = lines.map((line) => restoreLongLines(long, line));
+  }
+  return long.restored!;
 }
 
 // What the import running, if any, has left of its budget.
@@ -170,6 +281,8 @@ class Budget {
   importLeft: number;
   /** Work that grows faster than the line in pristine moss; the import's budget pays what passes the allowance. */
   importSpent = 0;
+  /** All the line's work, held to perLine. */
+  work = 0;
   constructor(total: number, importLeft: number) {
     this.left = total;
     this.allowance = total;
@@ -183,17 +296,19 @@ class Budget {
   /** Spends work the import's budget pays past the line's allowance (linear work of a line costs it nothing). */
   chargeImport(cost: number): void {
     this.importSpent += cost;
+    this.work += cost;
     linearImportStats.spent += cost;
   }
   /** Spends from the line's budget without stopping; the next check stops. */
   charge(cost: number): void {
     this.left -= cost;
+    this.work += cost;
     linearImportStats.spent += cost;
   }
-  /** Spends, and stops the line once its budget or its import's is gone. */
+  /** Spends, and stops the line once its budget, perLine or its import's budget is gone. */
   spend(cost: number): void {
     this.charge(cost);
-    if (this.left < 0 || this.importExcess() > this.importLeft) throw OVER_BUDGET;
+    if (this.left < 0 || this.work > LINEAR_IMPORT_LIMITS.perLine || this.importExcess() > this.importLeft) throw OVER_BUDGET;
   }
   /** What the line takes from its import's budget. */
   importExcess(): number {
@@ -221,6 +336,23 @@ interface Split {
 // Lexical's outer call already unescapes the top node after the driver returns, so the top gets no unescape here.
 function $importInline(top: TextNode, index: FormatIndex, matchers: TextMatchTransformer[]): void {
   const lineLength = top.getTextContentSize();
+  // A long line (a marker line, or text that long from elsewhere), or a line of more tabs than Lexical should make
+  // tab nodes of (each costs microseconds of node work, and about 60k overflow its split), keeps its text literally.
+  const long = longLines;
+  const marked = long !== null && top.getTextContent().includes(long.marker);
+  const literal = marked ? restoreLongLines(long, top.getTextContent()) : top.getTextContent();
+  const tabs = moreTabsThan(literal, LINEAR_IMPORT_LIMITS.tabs);
+  if (marked || tabs || lineLength > LINEAR_IMPORT_LIMITS.lineChars) {
+    linearImportStats.cut += 1;
+    if (tabs) {
+      // Tab-free until Lexical's tab pass is over, then the text Lexical's unescape would give it.
+      top.setTextContent(literal.split('\t').join(' '));
+      heldTabs.push([top, unescapeText(literal)]);
+    } else if (marked) {
+      top.setTextContent(literal);
+    }
+    return;
+  }
   const original = { text: top.getTextContent(), format: top.getFormat(), style: top.getStyle(), detail: top.getDetail(), mode: top.getMode() };
   const bounds = { before: top.getPreviousSibling(), after: top.getNextSibling() };
   const budget = new Budget(LINEAR_IMPORT_LIMITS.perChar * lineLength + LINEAR_IMPORT_LIMITS.base, importBudget?.left ?? Infinity);
@@ -288,8 +420,8 @@ function $importInline(top: TextNode, index: FormatIndex, matchers: TextMatchTra
       let endIndex: number;
       if (foundFormat || foundMatch) {
         line.applied += 1;
+        if (line.applied > LINEAR_IMPORT_LIMITS.matches) throw OVER_BUDGET;
         budget.grant(LINEAR_IMPORT_LIMITS.perMatch);
-        budget.chargeImport(CHILD_WALK * line.applied);
       }
       if (foundFormat) {
         budget.charge(APPLY_COST);
@@ -339,6 +471,12 @@ function $restoreLine(
   if (bounds.before) bounds.before.insertAfter(top, false);
   else if (bounds.after) bounds.after.insertBefore(top, false);
   else parent.append(top);
+}
+
+function moreTabsThan(text: string, limit: number): boolean {
+  let count = 0;
+  for (let i = text.indexOf('\t'); i >= 0; i = text.indexOf('\t', i + 1)) if (++count > limit) return true;
+  return false;
 }
 
 function canContainTransformableMarkdown(node: LexicalNode | undefined): node is TextNode {
