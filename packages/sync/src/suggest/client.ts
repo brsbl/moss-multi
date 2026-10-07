@@ -283,7 +283,14 @@ export type ForkEvent =
   /** F holds text of a closed record with nothing unacked: rebuild F. */
   | { type: 'rebuild' }
   /** Input closed: `unsaved` is each block holding a change the server never acknowledged. */
-  | { type: 'refused'; reason: SuggestRefusal; unsaved: string[] };
+  | { type: 'refused'; reason: SuggestRefusal; unsaved: string[] }
+  /**
+   * A rewrite re-created these struck originals and their copies were removed: the step that moved them must never
+   * restore them (an undo restore is a new block the editor has not bound yet), so undo of that step leaves them out.
+   * `added`: characters that stood in for displaced originals, made just after that step was recorded (a second event):
+   * undo of that step removes them with the rest of it.
+   */
+  | { type: 'kept'; originals: IdSpan[]; added: IdSpan[] };
 
 /** A top-level block of the body: a paragraph-like element (XmlText) or a block decorator (XmlElement). */
 export type Block = Y.XmlText | Y.XmlElement;
@@ -306,8 +313,77 @@ interface Pending {
 
 const isShim = (origin: unknown) => origin === SHIM_BODY_APPLY || origin === SHIM_RECORD_APPLY || origin === PAYLOAD_LOADED;
 
+/** The fork's removal of re-created struck items: forwarded like any edit, never an undo step of the binding's. */
+export const KEEP_STRIKES = 'suggest-keep-strikes';
+
 const covers = (spans: readonly IdSpan[], client: number, clock: number) =>
   spans.some((span) => span.client === client && span.clock <= clock && clock < span.clock + span.len);
+
+const idKey = (id: { client: number; clock: number }) => `${id.client}:${id.clock}`;
+
+function itemAt(doc: Y.Doc, id: Y.ID): Y.Item | null {
+  if (id.clock >= Y.getState(doc.store, id.client)) return null;
+  const struct = Y.getItem(doc.store, id);
+  return struct instanceof Y.Item ? struct : null;
+}
+
+/** An item's index in its parent's sequence. */
+function indexOf(item: Y.Item): number {
+  let index = 0;
+  for (let n = (item.parent as Y.AbstractType<unknown>)._start; n && n !== item; n = n.right) if (!n.deleted && n.countable) index += n.length;
+  return index;
+}
+
+/** Deletes the live items at `ids` from their sequences. */
+function removeItems(doc: Y.Doc, ids: readonly Y.ID[]): void {
+  for (const id of ids) {
+    const item = itemAt(doc, id);
+    if (!item || item.deleted || item.parentSub !== null) continue;
+    const parent = item.parent as Y.AbstractType<unknown>;
+    const at = indexOf(item) + (item.countable ? id.clock - item.id.clock : 0);
+    if (parent instanceof Y.XmlText || parent instanceof Y.XmlFragment) parent.delete(at, 1);
+  }
+}
+
+/**
+ * Stands fresh characters in for the live struck characters at `ids` (each the same text, at the same place), and
+ * deletes the originals; returns the new items' ids.
+ */
+function replaceItems(doc: Y.Doc, ids: readonly Y.ID[]): IdSpan[] {
+  const added: IdSpan[] = [];
+  const sorted = [...ids].sort((x, y) => x.client - y.client || x.clock - y.clock);
+  for (let i = 0; i < sorted.length;) {
+    const item = itemAt(doc, sorted[i]);
+    if (!item || item.deleted || !(item.content instanceof Y.ContentString) || !(item.parent instanceof Y.XmlText)) {
+      i += 1;
+      continue;
+    }
+    // A run within one item goes in one insert, so a surrogate pair stays whole.
+    const from = sorted[i].clock - item.id.clock;
+    let len = 1;
+    for (; i + len < sorted.length && from + len < item.length; len += 1) {
+      const id = sorted[i + len];
+      if (id.client !== item.id.client || id.clock !== sorted[i].clock + len) break;
+    }
+    const at = indexOf(item) + from;
+    const clock = Y.getState(doc.store, doc.clientID);
+    item.parent.insert(at, item.content.str.slice(from, from + len));
+    item.parent.delete(at + len, len);
+    added.push({ client: doc.clientID, clock, len });
+    i += len;
+  }
+  return added;
+}
+
+/**
+ * What one transaction of F did to struck items, as the editor traced them (apps/web suggest/trace.ts): `copies` pairs
+ * each new item standing where a struck character went with the original it copies; `displaced` names struck originals
+ * the binding kept standing for other text (an equal character the same edit put where the original was).
+ */
+export interface Rewrites {
+  copies: [copy: Y.ID, original: Y.ID][];
+  displaced: Y.ID[];
+}
 
 /** The top-level block (a child of `root`) holding `type`, or null. */
 function blockOf(doc: Y.Doc, type: Y.AbstractType<unknown> | null): Block | null {
@@ -436,6 +512,7 @@ export class SuggestFork {
       doc.on('update', (update: Uint8Array, origin: unknown) => this.#forward(update, origin, id));
     });
     this.doc.on('beforeTransaction', this.#before);
+    this.doc.on('afterTransaction', this.#keepStrikes);
     this.doc.on('update', this.#forwardBody);
     body.on('update', this.#fromBody);
   }
@@ -639,6 +716,7 @@ export class SuggestFork {
     this.#closed = true;
     this.body.off('update', this.#fromBody);
     this.doc.off('beforeTransaction', this.#before);
+    this.doc.off('afterTransaction', this.#keepStrikes);
     this.doc.off('update', this.#forwardBody);
     this.#stopArrivals?.();
     this.#listeners.clear();
@@ -797,6 +875,86 @@ export class SuggestFork {
   readonly #before = (tr: Y.Transaction): void => {
     if (isShim(tr.origin) || !this.#ready || this.#closed) return;
     this.#maybeRotate();
+  };
+
+  /** Re-created struck items, by id: the struck original each one copies. */
+  readonly #copyOf = new Map<string, { copy: Y.ID; original: Y.ID }>();
+  /** The editor's trace of what a transaction did to struck items. */
+  #rewrites: ((tr: Y.Transaction) => Rewrites | null) | null = null;
+
+  /** The bound editor reports, per transaction, the copies of struck items it wrote (trace.ts); returns the stopper. */
+  traceRewrites(find: (tr: Y.Transaction) => Rewrites | null): () => void {
+    this.#rewrites = find;
+    return () => {
+      if (this.#rewrites === find) this.#rewrites = null;
+    };
+  }
+
+  /**
+   * A native rewrite (a join, an unwrap, a paste, a retyped block, a split, the undo or redo of one) re-creates the text
+   * it moves under new ids, struck characters too. The strike is F's data, not a guess at the rewrite: each item a
+   * transaction inserts as the copy of a struck original is removed again at once, in a transaction of its own that is
+   * forwarded like any edit, so the record inserts and deletes the copy, and the delete part keeps naming the original.
+   * A copy is found from the data: an undo's restore points at it (`redone`), and the editor traces where each struck
+   * character went through its own text operations (`traceRewrites`). A struck original the binding kept standing for
+   * other text is replaced there by a fresh character, so that text stays and the original goes.
+   */
+  readonly #keepStrikes = (tr: Y.Transaction): void => {
+    if (isShim(tr.origin) || tr.origin === KEEP_STRIKES || !this.#ready || this.#closed || this.#parts.size === 0) return;
+    const traced = this.#rewrites?.(tr) ?? null;
+    const inserted = [...tr.afterState].some(([client, clock]) => clock > (tr.beforeState.get(client) ?? 0));
+    if (!inserted) return;
+    const own = this.ownClients();
+    const struckOriginal = (id: Y.ID): Y.ID | null => {
+      const original = this.#copyOf.get(idKey(id))?.original ?? id;
+      return !own.has(original.client) && this.isStruck(original) ? original : null;
+    };
+    const fresh = (id: Y.ID) => id.clock >= (tr.beforeState.get(id.client) ?? 0) && id.clock < (tr.afterState.get(id.client) ?? 0);
+    const copies = new Map<string, { copy: Y.ID; original: Y.ID }>();
+    const keep = (copy: Y.ID, original: Y.ID) => {
+      if (itemAt(this.doc, copy)?.deleted === false) copies.set(idKey(copy), { copy, original });
+    };
+    // Restores: a struck original, or an earlier copy of one, whose `redone` names an item this transaction made.
+    const struckIds: Y.ID[] = [];
+    for (const { targets } of this.#parts.values()) {
+      for (const span of targets) for (let i = 0; i < span.len; i += 1) struckIds.push(Y.createID(span.client, span.clock + i));
+    }
+    for (const id of [...struckIds, ...[...this.#copyOf.values()].map(({ copy }) => copy)]) {
+      const item = itemAt(this.doc, id);
+      if (!item?.redone) continue;
+      const copy = Y.createID(item.redone.client, item.redone.clock + id.clock - item.id.clock);
+      const original = struckOriginal(id);
+      if (original && fresh(copy)) keep(copy, original);
+    }
+    // Rewrites: where the editor carried each struck character.
+    for (const [copy, original] of traced?.copies ?? []) {
+      const struck = struckOriginal(original);
+      if (struck && fresh(copy)) keep(copy, struck);
+    }
+    const displaced = (traced?.displaced ?? []).filter((id) => !own.has(id.client) && this.isStruck(id) && itemAt(this.doc, id)?.deleted === false);
+    if (copies.size === 0 && displaced.length === 0) return;
+    for (const entry of copies.values()) this.#copyOf.set(idKey(entry.copy), entry);
+    const originals = [...copies.values()].map(({ original }) => original).sort((x, y) => x.client - y.client || x.clock - y.clock);
+    const spans: IdSpan[] = [];
+    for (const { client, clock } of originals) {
+      const last = spans.at(-1);
+      if (last && last.client === client && last.clock + last.len === clock) last.len += 1;
+      else if (!last || last.client !== client || last.clock + last.len < clock) spans.push({ client, clock, len: 1 });
+    }
+    if (copies.size) this.doc.transact(() => removeItems(this.doc, [...copies.values()].map(({ copy }) => copy)), KEEP_STRIKES);
+    // Still inside the rewrite's transaction: the undo manager records its step after this.
+    this.#emit({ type: 'kept', originals: spans, added: [] });
+    if (displaced.length === 0) return;
+    // After the rewrite's update is sent: an insert made now would also be encoded into it (Yjs writes every struct
+    // past the transaction's before-state), and the record would receive the same ids twice.
+    this.doc.once('afterAllTransactions', () => {
+      if (this.#closed) return;
+      let added: IdSpan[] = [];
+      this.doc.transact(() => {
+        added = replaceItems(this.doc, displaced);
+      }, KEEP_STRIKES);
+      if (added.length) this.#emit({ type: 'kept', originals: [], added });
+    });
   };
 
   /** One F transaction, in the body or in payload `doc`: a `suggest-ops` under the active lease. */

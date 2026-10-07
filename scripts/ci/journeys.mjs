@@ -42,6 +42,10 @@ export const GROUPS = {
   suggest: ['j16'],
   // Reviewing suggestions: the panel, accept, reject and withdraw.
   review: ['j16-review'],
+  // The strike census: every block kind on each side of a boundary, every edge key and strike position.
+  censusBlocks: ['j16-census-blocks'],
+  censusNested: ['j16-census-nested'],
+  censusEdges: ['j16-census-edges'],
 };
 
 /**

@@ -93,7 +93,8 @@ export class SuggestMount {
       } else if (event.type === 'refused') this.#hooks.refused(event.unsaved);
       else if (event.type === 'rebuild') this.#hooks.rebuild();
       else if (event.type === 'closed') this.#hooks.closed(event);
-      else this.#hooks.change();
+      // Mid-transaction, for the routing's undo steps; the removal that follows repaints as any edit does.
+      else if (event.type !== 'kept') this.#hooks.change();
     }));
     // After a drop, the fork resumes once the new socket has synced: the DocDO answers a suggest frame only on a
     // connection it has finished admitting, and one sent at open could be dropped unanswered.
