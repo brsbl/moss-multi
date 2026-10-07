@@ -169,7 +169,8 @@ export class VersionStore {
     const blobs = this.blobs();
     const body = blobs ? await blobs.get(row.r2_key) : null;
     if (body === null) return null;
-    return { anchors: '{}', ...(JSON.parse(body) as Omit<VersionContent, 'title'>), title: row.title };
+    const spilled = JSON.parse(body) as Omit<VersionContent, 'title' | 'anchors'> & { anchors?: string };
+    return { ...spilled, anchors: spilled.anchors ?? '{}', title: row.title };
   }
 
   /** A captured content's id, hash and size, in the caller's turn; `spill` must run first when it has an R2 key. */
