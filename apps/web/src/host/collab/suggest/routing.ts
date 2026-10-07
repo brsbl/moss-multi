@@ -3,9 +3,9 @@
 // ids instead of removing them; the text stays in F painted struck and the caret moves past it. The author's own
 // pending text in the same selection deletes natively. Undo and redo take a strike back and put it again, in order
 // with the binding's own undo steps. Everything else is native and recorded verbatim (a join at a block edge too).
-// A join or unwrap re-creates the moved block's text under new ids, struck characters included, so before it the
-// struck characters of that block are removed natively, as their own undo step: the copy leaves them out, and their
-// delete parts stay.
+// A join or unwrap re-creates the moved block's text under new ids, struck characters included, so in the same update
+// the struck characters of that block are removed natively: the copy leaves them out, their delete parts stay, and
+// undo of that step does not bring them back.
 import { $getClipboardDataFromSelection, setLexicalClipboardDataTransfer } from '@lexical/clipboard';
 import type { IdSpan } from '@moss-multi/protocol/suggest';
 import type { SuggestFork } from '@moss-multi/sync/suggest/client';
@@ -15,7 +15,7 @@ import {
   INSERT_LINE_BREAK_COMMAND, INSERT_PARAGRAPH_COMMAND, KEY_BACKSPACE_COMMAND, mergeRegister, PASTE_COMMAND, REDO_COMMAND, UNDO_COMMAND,
   type ElementNode, type LexicalEditor, type LexicalNode, type TextNode,
 } from 'lexical';
-import type * as Y from 'yjs';
+import * as Y from 'yjs';
 import { bindingOf } from '../binding-registry.ts';
 import { charAround, sharedItem, textIds, toSpans } from './chars.ts';
 
@@ -54,7 +54,7 @@ function $blockOf(node: LexicalNode): ElementNode | null {
 /** The block a Delete at the end of `block` pulls into it: the next block in document order. */
 function $nextBlock(block: ElementNode): ElementNode | null {
   let current: LexicalNode = block;
-  let next = current.getNextSibling();
+  let next: LexicalNode | null = current.getNextSibling();
   while (!next) {
     const parent = current.getParent();
     if (!parent || $isRootOrShadowRoot(parent)) return null;
@@ -63,7 +63,7 @@ function $nextBlock(block: ElementNode): ElementNode | null {
   }
   for (;;) {
     if (!$isElementNode(next) || next.isInline()) return null;
-    const first = next.getFirstChild();
+    const first: LexicalNode | null = next.getFirstChild();
     if (!$isElementNode(first) || first.isInline()) return next;
     next = first;
   }
@@ -81,6 +81,27 @@ function $joinsBackward(block: ElementNode): boolean {
 const leavesOf = (node: ElementNode): LexicalNode[] =>
   node.getChildren().flatMap((child) => ($isElementNode(child) ? leavesOf(child) : [child]));
 
+type DeleteSet = Y.UndoManager['undoStack'][number]['deletions'];
+
+/** `set` less the ids in `spans`, as a new delete set (the transaction's own stays whole for the forwarded update). */
+function without(set: DeleteSet, spans: readonly IdSpan[]): DeleteSet {
+  const out = Y.mergeDeleteSets([set]);
+  for (const [client, ranges] of out.clients) {
+    let kept = ranges;
+    for (const span of spans) {
+      if (span.client !== client) continue;
+      const end = span.clock + span.len;
+      kept = kept.flatMap((range) => {
+        const to = range.clock + range.len;
+        if (to <= span.clock || range.clock >= end) return [range];
+        return [{ clock: range.clock, len: span.clock - range.clock }, { clock: end, len: to - end }].filter((part) => part.len > 0) as typeof ranges;
+      });
+    }
+    out.clients.set(client, kept);
+  }
+  return out;
+}
+
 /** A strike as an undo step: `depth` is the binding's undo stack before it; `native` when own text went with it. */
 interface Strike {
   part: string;
@@ -94,8 +115,12 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
   const undone: Strike[] = [];
   const redone: Strike[] = [];
   let watched: Y.UndoManager | null = null;
+  /** Struck items a strip removes in the update being committed: its undo step never restores them. */
+  let keepOut: IdSpan[] | null = null;
   // Any new edit of his own ends the redo history, strikes included.
-  const onStack = (event: { type: 'undo' | 'redo' }) => {
+  const onStack = (event: { type: 'undo' | 'redo'; stackItem?: { deletions: DeleteSet } }) => {
+    // The step a strip lands in: undoing it restores the moved block without the struck items.
+    if (keepOut && event.type === 'undo' && event.stackItem) event.stackItem.deletions = without(event.stackItem.deletions, keepOut);
     if (event.type === 'undo' && watched && !watched.undoing && !watched.redoing) redone.length = 0;
   };
   const watch = (undo: Y.UndoManager | null) => {
@@ -207,16 +232,15 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
     return body.length > 0 ? 'struck' : 'skip';
   };
 
-  /** Set while the join that follows a strip runs: the edge is native. */
-  let joining = false;
   /**
-   * At a block edge, before a native join or unwrap: the block it would move re-creates every character under new
-   * ids, struck ones too. So the struck characters, line breaks and inline decorators of that block are removed
-   * natively first, as their own undo step (their delete parts stay), and `again` replays the key in the next update.
-   * True when it did that; false when nothing there is struck, and the edge is native now.
+   * At a block edge, before a native join or unwrap in the same update: the block it moves is re-created under new
+   * ids, struck characters too. So the struck characters, line breaks and inline decorators of that block are removed
+   * natively first, in the same Yjs transaction, so its removal is one contiguous run (G5); their delete parts stay.
+   * Always false: the key goes on natively.
    */
-  const $stripBeforeJoin = (backward: boolean, again: () => void = () => editor.dispatchCommand(DELETE_CHARACTER_COMMAND, backward)): boolean => {
-    if (joining) return false;
+  const $stripBeforeJoin = (backward: boolean): false => {
+    // The binding's identities are read as of the last commit, so one strip per update.
+    if (keepOut) return false;
     const selection = $getSelection();
     const binding = bindingOf(editor);
     if (!$isRangeSelection(selection) || !binding) return false;
@@ -228,12 +252,14 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
     const struck = (id: Y.ID) => !own.has(id.client) && fork.isStruck(id);
     const cuts: { node: TextNode; from: number; to: number }[] = [];
     const leaves: LexicalNode[] = [];
+    const removed: Y.ID[] = [];
     for (const leaf of leavesOf(moved)) {
       if ($isTextNode(leaf)) {
         const ids = textIds(binding, leaf.getKey());
         if (!ids) continue;
         for (let i = 0; i < ids.length; i += 1) {
           if (!struck(ids[i])) continue;
+          removed.push(ids[i]);
           const last = cuts.at(-1);
           if (last && last.node === leaf && last.to === i) last.to = i + 1;
           else cuts.push({ node: leaf, from: i, to: i + 1 });
@@ -241,27 +267,24 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
         continue;
       }
       const item = sharedItem(binding, leaf.getKey());
-      if (item && struck(item.id)) leaves.push(leaf);
+      if (item && struck(item.id)) {
+        leaves.push(leaf);
+        removed.push(item.id);
+      }
     }
-    if (cuts.length === 0 && leaves.length === 0) return false;
-    manager()?.stopCapturing();
+    if (removed.length === 0) return false;
+    const undo = manager();
+    watch(undo);
+    undo?.stopCapturing();
+    keepOut = toSpans(removed);
+    $onUpdate(() => {
+      keepOut = null;
+    });
     // Last first, so earlier offsets in the same text node hold.
     for (const { node, from, to } of cuts.reverse()) node.spliceText(from, to - from, '', false);
     for (const leaf of leaves) leaf.remove();
     if (backward) here.selectStart();
-    // The join is its own step, after the strip has reached F.
-    $onUpdate(() => {
-      manager()?.stopCapturing();
-      editor.update(() => {
-        joining = true;
-        try {
-          again();
-        } finally {
-          joining = false;
-        }
-      }, { discrete: true });
-    });
-    return true;
+    return false;
   };
 
   /** Whether only struck items lie between a collapsed caret and the start of its block. */
@@ -398,11 +421,10 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
       return routed === 'none' ? $routeChar(backward) : routed !== 'own';
     }, P),
     // Backspace at a block's start (past struck text) can be taken before DELETE_CHARACTER_COMMAND, by moss's list
-    // item split: the strip runs first, then the key again.
-    editor.registerCommand(KEY_BACKSPACE_COMMAND, (event) => {
-      if (joining || !$struckToStart() || !$stripBeforeJoin(true, () => editor.dispatchCommand(KEY_BACKSPACE_COMMAND, event))) return false;
-      event?.preventDefault();
-      return true;
+    // item split: the strip runs first, in the same update.
+    editor.registerCommand(KEY_BACKSPACE_COMMAND, () => {
+      if ($struckToStart()) $stripBeforeJoin(true);
+      return false;
     }, P),
     editor.registerCommand(DELETE_WORD_COMMAND, (backward) => $extended(backward, 'word'), P),
     editor.registerCommand(DELETE_LINE_COMMAND, (backward) => $extended(backward, 'lineboundary'), P),
