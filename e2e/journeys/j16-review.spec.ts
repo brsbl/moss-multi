@@ -519,3 +519,33 @@ for (const [label, offset, html, plain, expected] of PASTES) {
       .toContain(expected.join('\n\n'));
   });
 }
+
+test("j16-review: a strike, then the '==' highlight shortcut around it, keeps the struck character out of the highlight, the card and accept @p:mean-2 @p:R17", async ({ actors }) => {
+  const { ada, ben, docId } = await sharedNote(actors, 'Intro line stays.\n\nabc tail.\n\nClosing line stays too.');
+  await openIn(ben, docId, 'suggest');
+  await openIn(ada, docId, 'edit');
+  await actors.requireDistinct(2);
+  const { keyboard } = ben.page;
+  const body = ui.body(ben, docId);
+  const blocks = () => body.evaluate((root) => [...root.children].map((block) => block.textContent ?? ''));
+
+  await caret(ben, docId, 'abc tail.', 2);
+  await keyboard.press('Backspace');
+  await acked(ben, docId, 'the strike of "b"');
+  await caret(ben, docId, 'abc tail.', 0);
+  await keyboard.type('==');
+  await acked(ben, docId, 'the opening "=="');
+  await caret(ben, docId, '==abc tail.', 5);
+  // The closing "=" triggers moss's highlight transformer, which replaces "==abc==" with a new highlighted node.
+  await keyboard.type('==');
+  await acked(ben, docId, 'the highlight');
+  await expect.poll(blocks, { message: 'highlighted, without the struck "b"', timeout: BIND_TIMEOUT }).toEqual(['Intro line stays.', 'ac tail.', 'Closing line stays too.']);
+
+  await expect(button(ada)).toHaveAttribute('aria-label', /1 open/, { timeout: BIND_TIMEOUT });
+  const { card, inserted } = await cardRows(ada);
+  expect(inserted.join('|'), 'the card adds no struck text').not.toContain('b');
+  await card.getByRole('button', { name: 'Accept' }).click();
+  await expect(cards(ada, 'accepted')).toHaveCount(1, { timeout: BIND_TIMEOUT });
+  await expect.poll(() => content(ada, docId), { message: 'accept lands the highlight without the struck "b"', timeout: BIND_TIMEOUT })
+    .toContain('Intro line stays.\n\n==ac== tail.\n\nClosing line stays too.');
+});

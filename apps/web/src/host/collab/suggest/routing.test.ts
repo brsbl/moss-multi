@@ -5,13 +5,14 @@
 // unstruck character is kept.
 import { $insertGeneratedNodes } from '@lexical/clipboard';
 import { $generateNodesFromDOM } from '@lexical/html';
+import { $createFileLinkNode } from '@moss-desktop/renderer/editor/nodes/FileLinkNode';
 import { canonical, yValue } from '@moss-multi/core/suggest/apply';
 import { describeHunks } from '@moss-multi/core/suggest/describe';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import type { IdSpan, SuggestReply, SuggestRequest } from '@moss-multi/protocol/suggest';
 import {
   $createRangeSelection, $getRoot, $setSelection, type RangeSelection, COMMAND_PRIORITY_EDITOR, DELETE_CHARACTER_COMMAND, REDO_COMMAND, UNDO_COMMAND, $getSelection, $isRangeSelection,
-  $isElementNode, $isParagraphNode, $isTextNode, type LexicalEditor, type LexicalNode,
+  $createTextNode, $isElementNode, $isParagraphNode, $isTextNode, TextNode, type LexicalEditor, type LexicalNode,
 } from 'lexical';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
@@ -560,6 +561,97 @@ describe('a rewrite that also inserts text equal to the struck text keeps the st
     }
     const { body } = reviewed(pane);
     expect(body, 'accept: only the struck "b" goes').toContain('Intro line stays.\n\nac tail.\n\nClosing line stays too.');
+  });
+});
+
+/** As @lexical/markdown runs a text-match transformer on its trigger, with moss's highlight transformer's replace. */
+const $highlight = (match: string) => {
+  const node = textNode(match);
+  const [matched] = node.splitText(match.length);
+  const highlighted = $createTextNode(match.slice(2, -2));
+  highlighted.setFormat(matched.getFormat());
+  highlighted.setStyle('background-color: var(--highlight-yellow); --obsidian-highlight: true');
+  matched.replace(highlighted);
+};
+
+/** Strike "b" of "abc tail.", then type "==" either side of "abc" and run the highlight shortcut. */
+function highlighted(pane: Pane): void {
+  pane.caret('abc', 2);
+  pane.press('Backspace');
+  pane.caret('abc', 0);
+  pane.edit(() => ($getSelection() as RangeSelection).insertText('=='));
+  pane.caret('==abc', 5);
+  pane.edit(() => ($getSelection() as RangeSelection).insertText('=='));
+  pane.edit(() => $highlight('==abc=='));
+}
+
+describe('a rewrite that rebuilds a text node from its text keeps the struck character out of the new node @p:mean-2 @p:R17', () => {
+  it("the '==' highlight shortcut replaces '==abc==' with a new 'abc' node: the struck 'b' stays out of it, of the card and of accept", () => {
+    const pane = suggesting(NOTE);
+    try {
+      highlighted(pane);
+      expect(pane.text(), 'F: highlighted, without the struck "b"').not.toContain('abc');
+      expect(pane.text()).toContain('ac tail.');
+    } finally {
+      pane.dispose();
+    }
+    const { record, inserted, working, body } = reviewed(pane);
+    expect(record.parts, 'the strike stays a part').toHaveLength(1);
+    expect(inserted.join('|'), 'the card adds the highlighted text without the struck "b"').not.toContain('b');
+    expect(working).not.toContain('abc');
+    expect(body, 'accept leaves the struck "b" out').not.toContain('abc');
+    expect(body, 'and keeps the rest').toContain('ac== tail.');
+    expect(body).toContain('Closing line stays too.');
+  });
+
+  it('undo and redo of the highlight shortcut, then accept: the struck "b" stays out', () => {
+    for (const steps of [['undo'], ['undo', 'redo']] as const) {
+      const pane = suggesting(NOTE);
+      try {
+        highlighted(pane);
+        for (const step of steps) pane[step]();
+        expect(pane.text(), `${steps.join(', ')}: the struck "b" is not re-created live`).not.toMatch(/a=*b/);
+      } finally {
+        pane.dispose();
+      }
+      const { working, body } = reviewed(pane);
+      expect(working, steps.join(', ')).not.toMatch(/a[\\=]*b/);
+      expect(body, `${steps.join(', ')}: accept leaves the struck "b" out`).not.toMatch(/a[\\=]*b/);
+      expect(body, steps.join(', ')).toMatch(/a[\\=]*c/);
+      expect(body).toContain('tail.');
+    }
+  });
+
+  it("a wiki-link pick cuts the text after the caret into a new node: the struck 'b' stays out of it, of the card and of accept", () => {
+    const pane = suggesting(NOTE);
+    try {
+      pane.caret('abc', 2);
+      pane.press('Backspace');
+      pane.caret('abc', 1);
+      pane.edit(() => ($getSelection() as RangeSelection).insertText('[[In'));
+      // As moss's FileLinkTypeaheadPlugin inserts the picked link (FileLinkTypeaheadPlugin.tsx 225-239).
+      pane.edit(() => {
+        const anchor = textNode('a[[In');
+        const afterCursor = anchor.getTextContent().slice('a[[In'.length);
+        anchor.setTextContent('a');
+        const link = $createFileLinkNode(null, '', true, 'Intro line stays.', 'fully_resolved');
+        anchor.insertAfter(link);
+        link.insertAfter(new TextNode(afterCursor));
+        const space = new TextNode(' ');
+        link.insertAfter(space);
+        space.select();
+      });
+      expect(pane.text(), 'F: the link, without the struck "b" after it').not.toMatch(/b ?c tail/);
+      expect(pane.text()).toContain('c tail.');
+    } finally {
+      pane.dispose();
+    }
+    const { inserted, working, body } = reviewed(pane);
+    expect(inserted.join('|'), 'the card adds the cut text without the struck "b"').not.toMatch(/bc tail/);
+    expect(working).not.toMatch(/bc tail/);
+    expect(body, 'accept leaves the struck "b" out').not.toMatch(/bc tail/);
+    expect(body, 'and keeps the rest').toContain('c tail.');
+    expect(body).toContain('Closing line stays too.');
   });
 });
 
