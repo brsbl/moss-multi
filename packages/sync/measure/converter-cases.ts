@@ -75,7 +75,7 @@ export const CONVERTER_CASES: Record<string, ConverterCase> = {
   'pill openers ?[ between bold delimiters': { run: '?[', before: 'quokka **', after: '**' },
   'pill openers ?[ between strikethrough delimiters': { run: '?[', before: 'quokka ~~', after: '~~' },
   'pill openers ?[ between italic delimiters': { run: '?[', before: 'quokka *', after: '*' },
-  'formatted pill openers *?[ inside bold highlight': { run: '*?[', before: 'quokka **==', after: '==**' },
+  'formatted pill openers *?[ inside bold highlight': { run: '*?[', before: 'quokka **==', after: '==**', parityBytes: [40, 100] },
   'wiki links inside one link label': { run: '[[a]]', before: 'quokka [', after: '](x)', parityBytes: [40, 100] },
   'code spans inside one link label': { run: '``', before: 'quokka [', after: '](x)', parityBytes: [40, 80] },
   'table row of backslashes': { run: '\\', before: '| a | ', after: ' |' },

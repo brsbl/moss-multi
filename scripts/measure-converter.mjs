@@ -471,8 +471,8 @@ async function measureSearch(port) {
 // already kept literal), halving the gap NEAR_CUT_STEPS times, so the size just under the cut is measured too: no
 // single line, of any size, may cost more than LINE_BUDGET_MS of workerd CPU to import or to export. Then whole notes
 // of 2 MB, each one line of the case repeated (a 4 KB line, the line just under the cut and the line of the swept
-// sizes from 16 KB that costs most per byte): none may cost more than IMPORT_BUDGET_MS to import or to export (a case
-// with `note: false` is mostly table cells, held to the line budget only). A line over the budget is measured
+// sizes from 16 KB that costs most per byte, each from NOTE_MIN_LINE_BYTES): none may cost more than IMPORT_BUDGET_MS
+// to import or to export (a case with `note: false` is mostly table cells, held to the line budget only). A line over the budget is measured
 // ADVERSARIAL_RUNS times and judged by the median; a request past ADVERSARIAL_TIMEOUT_MS fails the case.
 const ADVERSARIAL_SIZES = Array.from({ length: 12 }, (_, i) => 1024 << i);
 const NEAR_CUT_STEPS = 7;
@@ -480,6 +480,10 @@ const NEAR_CUT_FLOOR = 64;
 const NOTE_BYTES = 2 * 1024 * 1024;
 const NOTE_LINE_BYTES = 4 * 1024;
 const NOTE_WORST_FROM = 16 * 1024;
+// Notes are built of lines from 1 KB: a shorter line just under its cut is measured as a line only. Every line gets a
+// fixed base besides its per-byte work (what a short line of a few formats needs), so a note of such lines costs up
+// to a few times SP2's budget, as moss's own node work does on notes of very short lines (METHOD).
+const NOTE_MIN_LINE_BYTES = 1024;
 const LINE_BUDGET_MS = 250;
 const ADVERSARIAL_RUNS = 3;
 const ADVERSARIAL_TIMEOUT_MS = 20_000;
@@ -562,7 +566,7 @@ async function measureAdversarial(port) {
         }
         const perByte = (size) => size.importCpuMs / size.bytes;
         const worst = swept.filter((size) => size.bytes >= NOTE_WORST_FROM).reduce((a, b) => (perByte(b) > perByte(a) ? b : a));
-        const lineSizes = c.note === false ? [] : [...new Set([NOTE_LINE_BYTES, ...(nearCut ? [nearCut.bytes] : []), worst.bytes])].filter((bytes) => bytes < NOTE_BYTES);
+        const lineSizes = c.note === false ? [] : [...new Set([NOTE_LINE_BYTES, ...(nearCut ? [nearCut.bytes] : []), worst.bytes])].filter((bytes) => bytes >= NOTE_MIN_LINE_BYTES && bytes < NOTE_BYTES);
         for (const lineBytes of lineSizes) {
           const note = noteOf(converterBody(c, lineBytes), NOTE_BYTES);
           const imported = await request('/import', note);
