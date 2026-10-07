@@ -595,6 +595,12 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
   - **Done:** j17 is green, with a triptych against the glyphdown history page.
 
 **Exit criteria:** a restore during peer typing keeps the peer's insert and the anchors; view is read-only and diff shows the peer's change; a failed fetch shows an error.
+- **M6 coordinator notes** (2026-10-07, since T1.F2, M4 and M5 landed after this plan was written):
+  - A version captures the note body, every payload doc (code, HTML, formula, chart and sketch text) and the comments map.
+  - Restore reconciles the body and each payload doc with the identity-preserving reconcile. Comment anchors stay attached through the anchor engine (I7).
+  - Open suggestion records whose base changes go stale and must re-preview before accept (I3).
+  - Restore and named versions re-validate the actor inside the serialized write (the T2.5 rule).
+  - Version storage counts against the actor's and the vault's bounds without a bucket an attacker can fill for someone else (the T3.S3b rule).
 
 ## M7 Agents and local sync
 
