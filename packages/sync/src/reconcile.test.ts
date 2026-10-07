@@ -2,7 +2,7 @@
 // target; untouched blocks keep their Yjs items; a peer's concurrent insert into an untouched block survives; comment
 // anchors on untouched text survive. Plus the edited-block, payload and verify-or-refuse cases.
 import fc from 'fast-check';
-import { $getRoot, $isElementNode, $isTextNode, type LexicalNode, type SerializedEditorState, type TextNode } from 'lexical';
+import { $getRoot, $isElementNode, $isTextNode, type ElementNode, type LexicalNode, type SerializedEditorState, type TextNode } from 'lexical';
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { anchorText, liveUnits, mintAnchor, type Anchor } from '@moss-multi/core/anchor-frame';
@@ -62,6 +62,16 @@ function firstTextOf(live: Y.Doc, index: number): string | null {
   const mirror = mirrorOf(live);
   try {
     return mirror.editor.getEditorState().read(() => $firstText($getRoot().getChildAtIndex(index))?.getTextContent() ?? null);
+  } finally {
+    mirror.dispose();
+  }
+}
+
+/** The payload id of the block at `index`. */
+function regIdAt(doc: Y.Doc, index: number): string {
+  const mirror = mirrorOf(doc);
+  try {
+    return mirror.editor.getEditorState().read(() => ($getRoot().getChildAtIndex(index) as unknown as { __regId: string }).__regId);
   } finally {
     mirror.dispose();
   }
@@ -251,17 +261,89 @@ describe('T6.1 identity-preserving reconcile @p:mean-3 @p:tech-5', () => {
     expect(exportDocMarkdown(peer)).toBe(exportDocMarkdown(live));
   });
 
-  it('a code block pairs with the target block whose payload it most resembles, not the first of its kind', () => {
+  it('a long text node changed at both ends keeps the items between, past the character table, by code point and by word', () => {
+    // 302 code points a side is past the server's 256 × 256 table; 90,000 characters is past a code-point search too.
+    const cases = [
+      { before: `A${'x'.repeat(300)}Z`, after: `B${'x'.repeat(300)}Y`, quote: 'x'.repeat(40), cut: 150 },
+      {
+        before: `Alpha ${Array.from({ length: 8000 }, (_, i) => `w${i}`).join(' ')} Zulu`,
+        after: `Bravo ${Array.from({ length: 8000 }, (_, i) => `w${i}`).join(' ')} Yankee`,
+        quote: 'w4000 w4001',
+        cut: 30_000,
+      },
+    ];
+    for (const { before, after, quote, cut } of cases) {
+      const live = docOf(`Intro.\n\n${before}`);
+      const targetDoc = docOf(`Intro.\n\n${after}`);
+      const anchor = anchorOn(live, quote);
+      const peer = fork(live);
+      serverWrite(peer, 'peer', () => {
+        $firstText($getRoot().getChildAtIndex(1))!.setTextContent(`${before.slice(0, cut)}PEER${before.slice(cut)}`);
+      });
+      expect(reconcileBody(live, bodyState(targetDoc), RESTORE)).toBe(true);
+      expect(exportDocMarkdown(live)).toBe(exportDocMarkdown(targetDoc));
+      expect(anchorText(live, anchor)).toBe(quote);
+      share(peer, live);
+      share(live, peer);
+      expect(firstTextOf(live, 1)).toBe(`${after.slice(0, cut)}PEER${after.slice(cut)}`);
+      expect(exportDocMarkdown(peer)).toBe(exportDocMarkdown(live));
+    }
+  });
+
+  it('a code block whose language changed keeps its node and payload id, and a peer edit to its payload survives', () => {
     const live = docOf('Para one.\n\n```js\nconst a = 1;\n```');
-    const targetDoc = docOf('Para one.\n\n```js\nunrelated\n```\n\n```js\nconst a = 2;\n```');
-    const regIdAt = (doc: Y.Doc, index: number) => {
+    const targetDoc = docOf('Para one.\n\n```python\nconst a = 2;\n```');
+    const id = regIdAt(live, 1);
+    const codeItem = blockItems(live)[1]!;
+    const peer = fork(live);
+    payloadText(payloadDocsFor(peer).hold(id)).insert(0, '// hi\n');
+
+    reconcileBody(live, bodyState(targetDoc), RESTORE);
+    expect(exportDocMarkdown(live)).toBe(exportDocMarkdown(targetDoc));
+    expect(regIdAt(live, 1)).toBe(id);
+    expect(codeItem.deleted).toBe(false);
+    share(peer, live);
+    share(live, peer);
+    expect(payloadText(payloadDocsFor(live).hold(id)).toString()).toBe('// hi\nconst a = 2;');
+    expect(exportDocMarkdown(live)).toBe(exportDocMarkdown(docOf('Para one.\n\n```python\n// hi\nconst a = 2;\n```')));
+    expect(exportDocMarkdown(peer)).toBe(exportDocMarkdown(live));
+  });
+
+  it('a formula whose text and result changed keeps its node and payload id, and a peer edit to its payload survives', () => {
+    const live = docOf('Total {{2+3|5}} here.');
+    const targetDoc = docOf('Total {{2+4|6}} here.');
+    const formulaOf = (doc: Y.Doc) => {
       const mirror = mirrorOf(doc);
       try {
-        return mirror.editor.getEditorState().read(() => ($getRoot().getChildAtIndex(index) as unknown as { __regId: string }).__regId);
+        return mirror.editor.getEditorState().read(() => {
+          const node = ($getRoot().getFirstChild() as ElementNode).getChildren().find((child) => child.getType() === 'formula');
+          const fields = node as unknown as { __regId: string; __result: string } | undefined;
+          return { key: node?.getKey(), id: fields?.__regId, result: fields?.__result };
+        });
       } finally {
         mirror.dispose();
       }
     };
+    const before = formulaOf(live);
+    expect(before.id).toBeTruthy();
+    const peer = fork(live);
+    payloadText(payloadDocsFor(peer).hold(before.id!)).insert(0, '1+');
+
+    reconcileBody(live, bodyState(targetDoc), RESTORE);
+    expect(exportDocMarkdown(live)).toBe(exportDocMarkdown(targetDoc));
+    const after = formulaOf(live);
+    expect(after.id).toBe(before.id);
+    expect(after.key).toBe(before.key);
+    expect(after.result).toBe('6');
+    share(peer, live);
+    share(live, peer);
+    expect(payloadText(payloadDocsFor(live).hold(before.id!)).toString()).toBe('1+2+4');
+    expect(exportDocMarkdown(peer)).toBe(exportDocMarkdown(live));
+  });
+
+  it('a code block pairs with the target block whose payload it most resembles, not the first of its kind', () => {
+    const live = docOf('Para one.\n\n```js\nconst a = 1;\n```');
+    const targetDoc = docOf('Para one.\n\n```js\nunrelated\n```\n\n```js\nconst a = 2;\n```');
     const id = regIdAt(live, 1);
     const peer = fork(live);
     payloadText(payloadDocsFor(peer).hold(id)).insert(0, '// hi\n');
