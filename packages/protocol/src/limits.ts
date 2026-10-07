@@ -48,6 +48,12 @@ export const SUGGEST_REVIEW_RATE = { max: 30, windowMs: 60_000 } as const;
 export const SUGGEST_PREVIEW_RATE = { max: 120, windowMs: 60_000 } as const;
 
 /**
+ * Working-view exports (the note with every open suggestion applied, O(doc) per record) one DocDO computes per window,
+ * whoever asks; a read the DocDO serves from its cache is not counted. Each caller is also charged SUGGEST_PREVIEW_RATE.
+ */
+export const WORKING_EXPORT_DOC_RATE = { max: 120, windowMs: 60_000 } as const;
+
+/**
  * How long a PrincipalDO remembers an ended session and a session's doc sockets (A§5.2): better-auth's default session
  * lifetime, 7 days, which no in-flight upgrade outlives.
  */

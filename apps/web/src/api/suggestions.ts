@@ -6,7 +6,7 @@
 import { getServerByName } from 'partyserver';
 import { SUGGEST_PREVIEW_RATE, SUGGEST_REVIEW_RATE } from '@moss-multi/protocol/limits';
 import { roleAtLeast, type Role } from '@moss-multi/protocol/roles';
-import { resolvePrincipal, shareTokenOf, type Principal } from '../auth/principal.ts';
+import { resolvePrincipal, sha256Hex, shareTokenOf, type Principal } from '../auth/principal.ts';
 import { createDb } from '../db/client.ts';
 import { json } from '../worker/route.ts';
 import { MAX_FOLDER_DEPTH, resolveDocAccess } from './access.ts';
@@ -90,6 +90,35 @@ export async function handleSuggestion(request: Request, env: DocsEnv, docId: st
   }
   const status = action === 'accept' ? 'accepted' : action === 'reject' ? 'rejected' : 'withdrawn';
   return json({ suggestion: { id: sid, status } }, 200, NO_STORE);
+}
+
+/**
+ * The working export's admission (docs/design/suggestions.md I5): computing it runs the accept gates per open record,
+ * so it spends the preview budget before the DocDO is reached. A signed-in user or an agent is charged as itself; an
+ * anonymous share-link reader per link and client address (an IPv6 /64), so a reader past the budget blocks no account
+ * and no other address. The DocDO bounds what one doc computes, and serves repeats from its cache.
+ */
+export async function admitWorkingExport(request: Request, env: DocsEnv, principal: Principal): Promise<Response | null> {
+  const name = principal.type === 'anonymous' ? `link:${await sha256Hex(principal.shareToken)}:${clientAddress(request)}` : principal.id;
+  return (await (await getServerByName(env.PrincipalDO, name)).takePreviewToken()) ? null : workingRateLimited();
+}
+
+export const workingRateLimited = (): Response =>
+  json({ error: 'rate-limited' }, 429, { ...NO_STORE, 'retry-after': String(SUGGEST_PREVIEW_RATE.windowMs / 1000) });
+
+/** The caller's address as one client: an IPv4 address, or the /64 of an IPv6 one, whose host bits a client picks. */
+export function clientAddress(request: Request): string {
+  const ip = (request.headers.get('cf-connecting-ip') ?? '').trim().toLowerCase();
+  if (!ip.includes(':')) return ip || 'unknown';
+  const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(ip);
+  if (mapped) return mapped[1];
+  const [head, tail, extra] = ip.split('::');
+  if (extra !== undefined) return ip;
+  const left = head ? head.split(':') : [];
+  const right = tail ? tail.split(':') : [];
+  const groups = tail === undefined ? left : [...left, ...Array<string>(Math.max(0, 8 - left.length - right.length)).fill('0'), ...right];
+  if (groups.length !== 8 || !groups.every((group) => /^[0-9a-f]{1,4}$/.test(group))) return ip;
+  return `${groups.slice(0, 4).map((group) => parseInt(group, 16).toString(16)).join(':')}::/64`;
 }
 
 /**
