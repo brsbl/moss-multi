@@ -53,8 +53,12 @@ export function bodyState(live: Y.Doc): SerializedEditorState {
  * too. Returns whether the live doc changed.
  */
 export function reconcileBody(live: Y.Doc, target: SerializedEditorState, origin: unknown, admit?: Admit): boolean {
-  const expected = '';
-  void stateToMarkdown;
+  let expected: string;
+  try {
+    expected = stateToMarkdown(target);
+  } catch (error) {
+    throw new ReconcileRefused('unparseable', `target does not parse: ${(error as Error).message}`);
+  }
   return serverWrite(live, origin, () => {
     try {
       $reconcileRoot(target.root as unknown as SerializedNode, { payloads: PAYLOADS });
@@ -62,6 +66,6 @@ export function reconcileBody(live: Y.Doc, target: SerializedEditorState, origin
       throw new ReconcileRefused('unparseable', `target does not reconcile: ${(error as Error).message}`);
     }
   }, admit, (mirror) => {
-    if (expected && exportMarkdown(mirror.editor) !== expected) throw new ReconcileRefused('mismatch', 'the reconciled body does not export the target');
+    if (exportMarkdown(mirror.editor) !== expected) throw new ReconcileRefused('mismatch', 'the reconciled body does not export the target');
   });
 }

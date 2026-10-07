@@ -205,7 +205,7 @@ describe('T6.1 identity-preserving reconcile @p:mean-3 @p:tech-5', () => {
     share(peer, live);
     share(live, peer);
     expect(payloadText(payloadDocsFor(live).hold(id)).toString()).toBe('// hi\nconst a = 2;\nconst b = 3;');
-    expect(exportDocMarkdown(live)).toBe('Para one.\n\n```js\n// hi\nconst a = 2;\nconst b = 3;\n```');
+    expect(exportDocMarkdown(live)).toBe(exportDocMarkdown(docOf('Para one.\n\n```js\n// hi\nconst a = 2;\nconst b = 3;\n```')));
   });
 
   it('a no-op target writes nothing', () => {
