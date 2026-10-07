@@ -13,15 +13,7 @@ import { $mintNode, mintCurrent, type Minted } from './mint.ts';
 import { commentsAtPoint, isShared, noteBound, painterOf, setActive, setHover, subscribeAnyPaint, subscribePaint } from './paint.ts';
 import { myPrincipalId } from './people.ts';
 
-export { commentsAtPoint, setActive, setHover, subscribePaint };
-
-/**
- * Whether a pane binds `editor` to a shared doc, painter or not: with its plugin down a bound editor's writes are
- * refused, never local. An unbound editor (the file-backed bundle) runs moss's local comments.
- */
-export function bound(editor: LexicalEditor): boolean {
-  return isShared(editor);
-}
+export { commentsAtPoint, isShared as bound, setActive, setHover, subscribePaint };
 
 /** Whether an editor in this tab is bound to `noteId`, as React state (a binding's start and end both repaint). */
 export function useNoteBound(noteId: string): boolean {
@@ -45,7 +37,7 @@ export function stashCommentSelection(editor: LexicalEditor): void {
  * editor with no binding (moss's own path then runs).
  */
 export function createFromCommand(editor: LexicalEditor, payload: { text: string; nodeKey?: string }): boolean | null {
-  if (!bound(editor)) return null;
+  if (!isShared(editor)) return null;
   const painter = painterOf(editor);
   if (!painter) return false;
   if (!payload.text.trim() || !canComment(painter.docId)) return false;
@@ -73,7 +65,7 @@ function $collapseToFocus(): void {
  * Null for an editor with no binding (moss's MarkNode walk then runs).
  */
 export function liveAnchorIds(editor: LexicalEditor): string[] | null {
-  if (!bound(editor)) return null;
+  if (!isShared(editor)) return null;
   return painterOf(editor)?.model.anchoredRoots() ?? [];
 }
 
@@ -82,7 +74,7 @@ export function liveAnchorIds(editor: LexicalEditor): string[] | null {
  * an editor with no binding (moss's MarkNode walk then runs).
  */
 export function targets(editor: LexicalEditor): { commentId: string; top: number }[] | null {
-  if (!bound(editor)) return null;
+  if (!isShared(editor)) return null;
   const painter = painterOf(editor);
   const root = editor.getRootElement();
   if (!painter || !root) return [];

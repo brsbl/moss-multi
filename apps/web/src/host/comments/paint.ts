@@ -14,7 +14,6 @@ import * as Y from 'yjs';
 import { colorOf } from './atoms.ts';
 import { liveItem, modelFor, type CommentsModel } from './model.ts';
 
-export const PAINT_EVENT = 'moss-comment-paint';
 const COLORS = [0, 3, 4] as const;
 
 export interface Painted {
@@ -77,10 +76,6 @@ class Painter {
     this.painted = next;
     refreshHighlights();
     notifyPaint(this.editor);
-    if (typeof window !== 'undefined') {
-      const texts = [...next.values()].flatMap((entry) => entry.ranges.map((range) => range.toString()));
-      window.dispatchEvent(new CustomEvent(PAINT_EVENT, { detail: { docId: this.docId, texts } }));
-    }
   }
 
   /** The DOM range (or decorator wrapper) of an anchored record, or null while it does not resolve in this editor. */

@@ -49,7 +49,6 @@ export class CommentsModel {
   readonly #listeners = new Set<() => void>();
   readonly #engine: AnchorEngine;
   readonly #map: Y.Map<unknown>;
-  #version = 0;
 
   constructor(readonly doc: Y.Doc) {
     this.#map = doc.getMap('comments');
@@ -63,11 +62,6 @@ export class CommentsModel {
   dispose(): void {
     this.#map.unobserve(this.#onMap);
     this.doc.off('afterTransaction', this.#onTransaction);
-  }
-
-  /** Bumped on every change, so a reader can tell a stale snapshot. */
-  get version(): number {
-    return this.#version;
   }
 
   subscribe(listener: () => void): () => void {
@@ -157,7 +151,6 @@ export class CommentsModel {
   };
 
   #changed(): void {
-    this.#version += 1;
     for (const listener of this.#listeners) listener();
   }
 }
