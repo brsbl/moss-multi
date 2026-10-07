@@ -4,8 +4,8 @@
 // pending text in the same selection deletes natively. Undo and redo take a strike back and put it again, in order
 // with the binding's own undo steps. Everything else is native and recorded verbatim (a join at a block edge too).
 // A join or unwrap re-creates the moved block's text under new ids, struck characters included, so in the same update
-// the struck characters of that block are removed natively: the copy leaves them out, their delete parts stay, and
-// undo of that step does not bring them back.
+// the struck characters of that block are removed natively: the copy leaves them out and their delete parts stay. Undo
+// of that step does not bring them back; undo of their strike re-creates them, as the author's own, where they stood.
 import { $getClipboardDataFromSelection, setLexicalClipboardDataTransfer } from '@lexical/clipboard';
 import type { IdSpan } from '@moss-multi/protocol/suggest';
 import type { SuggestFork } from '@moss-multi/sync/suggest/client';
@@ -17,7 +17,7 @@ import {
 } from 'lexical';
 import * as Y from 'yjs';
 import { bindingOf } from '../binding-registry.ts';
-import { charAround, sharedItem, textIds, toSpans } from './chars.ts';
+import { charAround, idKey, sharedItem, textIds, toSpans } from './chars.ts';
 
 type Routed = 'none' | 'struck' | 'own' | 'skip';
 
@@ -102,18 +102,84 @@ function without(set: DeleteSet, spans: readonly IdSpan[]): DeleteSet {
   return out;
 }
 
-/** A strike as an undo step: `depth` is the binding's undo stack before it; `native` when own text went with it. */
+/** Struck items a join removed: the first one's id, how many, and how to re-create them. */
+interface Stripped {
+  id: Y.ID;
+  len: number;
+  make: () => string | Y.AbstractType<unknown>;
+}
+
+/**
+ * A strike as an undo step: `depth` is the binding's undo stack before it; `native` when own text went with it.
+ * `stripped`: its items a join removed; `copies`: what undoing it re-created for them, as runs of ids.
+ */
 interface Strike {
-  part: string;
+  part: string | null;
   targets: IdSpan[];
   depth: number;
   native: boolean;
+  stripped: Stripped[];
+  copies: IdSpan[];
+}
+
+/** Re-creating or removing stripped items: not an undo step of the binding's, but forwarded like any edit of F. */
+const RESTORE = Symbol('suggest-restore');
+
+const covers = (spans: readonly IdSpan[], id: Y.ID) =>
+  spans.some((span) => span.client === id.client && id.clock >= span.clock && id.clock < span.clock + span.len);
+
+function itemAt(doc: Y.Doc, id: Y.ID): Y.Item | null {
+  try {
+    const struct = Y.getItem(doc.store, id);
+    return struct instanceof Y.Item ? struct : null;
+  } catch {
+    return null;
+  }
+}
+
+/** An item's index in its parent's sequence. */
+function indexOf(item: Y.Item): number {
+  let index = 0;
+  for (let n = (item.parent as Y.AbstractType<unknown>)._start; n && n !== item; n = n.right) if (!n.deleted && n.countable) index += n.length;
+  return index;
+}
+
+/** How to re-create stripped items: their characters, or a fresh copy of a line break's map or a decorator's element. */
+function maker(item: Y.Item, from: number, len: number): Stripped['make'] | null {
+  const { content } = item;
+  if (content instanceof Y.ContentString) {
+    const text = content.str.slice(from, from + len);
+    return () => text;
+  }
+  if (!(content instanceof Y.ContentType)) return null;
+  const { type } = content;
+  if (type instanceof Y.XmlElement) {
+    const name = type.nodeName;
+    const attributes = type.getAttributes();
+    return () => {
+      const element = new Y.XmlElement(name);
+      for (const [key, value] of Object.entries(attributes)) element.setAttribute(key, value as string);
+      return element;
+    };
+  }
+  if (type instanceof Y.Map) {
+    const entries = Object.entries(type.toJSON());
+    return () => {
+      const map = new Y.Map<unknown>();
+      for (const [key, value] of entries) map.set(key, value);
+      return map;
+    };
+  }
+  return null;
 }
 
 export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork): () => void {
   const manager = (): Y.UndoManager | null => (editor as unknown as Record<symbol, Y.UndoManager | undefined>)[UNDO_MANAGER] ?? null;
   const undone: Strike[] = [];
   const redone: Strike[] = [];
+  const { doc } = fork;
+  /** Each re-created stripped item's copy, by the original's id. */
+  const restoredAs = new Map<string, Y.ID>();
   let watched: Y.UndoManager | null = null;
   /** Struck items a strip removes in the update being committed: its undo step never restores them. */
   let keepOut: IdSpan[] | null = null;
@@ -136,7 +202,7 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
     const undo = manager();
     watch(undo);
     undo?.stopCapturing();
-    undone.push({ part, targets, depth: undo?.undoStack.length ?? 0, native });
+    undone.push({ part, targets, depth: undo?.undoStack.length ?? 0, native, stripped: [], copies: [] });
     redone.length = 0;
     if (native) setTimeout(() => manager()?.stopCapturing(), 0);
   };
@@ -145,6 +211,87 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
     const part = fork.proposeDelete(targets);
     if (part) remember(part, targets, native);
     return part;
+  };
+
+  /** The live item standing for `id` now, following re-created copies and the binding's undo restores (`redone`). */
+  const liveAt = (id: Y.ID): { item: Y.Item; offset: number } | null => {
+    let at = id;
+    for (let guard = 0; guard < 10_000; guard += 1) {
+      const item = itemAt(doc, at);
+      if (!item) return null;
+      const offset = at.clock - item.id.clock;
+      if (!item.deleted) return { item, offset };
+      const copy = restoredAs.get(idKey(at));
+      if (copy) at = copy;
+      else if (item.redone) at = Y.createID(item.redone.client, item.redone.clock + offset);
+      else return null;
+    }
+    return null;
+  };
+
+  /** Where a stripped run goes back: after the nearest item before it that still stands, or at its block's start. */
+  const placeOf = (run: Stripped): { type: Y.XmlText; index: number } | null => {
+    const original = itemAt(doc, run.id);
+    if (!original) return null;
+    for (let left = original.left; left; left = left.left) {
+      const live = liveAt(Y.createID(left.id.client, left.id.clock + left.length - 1));
+      if (!live || live.item.parentSub !== null || !(live.item.parent instanceof Y.XmlText)) continue;
+      return { type: live.item.parent, index: indexOf(live.item) + (live.item.countable ? live.offset + 1 : 0) };
+    }
+    const block = (original.parent as Y.AbstractType<unknown>)._item;
+    const live = block ? liveAt(block.id) : null;
+    const type = live && live.item.content instanceof Y.ContentType ? live.item.content.type : null;
+    return type instanceof Y.XmlText ? { type, index: 0 } : null;
+  };
+
+  /** Undo of a strike whose items a join removed: they come back where they stood, as the author's own. */
+  const restore = (strike: Strike): IdSpan[] => {
+    const copies: IdSpan[] = [];
+    if (strike.stripped.length === 0) return copies;
+    doc.transact(() => {
+      for (const run of strike.stripped) {
+        const place = placeOf(run);
+        if (!place) continue;
+        const client = doc.clientID;
+        const clock = Y.getState(doc.store, client);
+        const made = run.make();
+        if (typeof made === 'string') place.type.insert(place.index, made);
+        else place.type.insertEmbed(place.index, made);
+        for (let i = 0; i < run.len; i += 1) restoredAs.set(idKey({ client: run.id.client, clock: run.id.clock + i }), Y.createID(client, clock + i));
+        copies.push({ client, clock, len: run.len });
+      }
+    }, RESTORE);
+    return copies;
+  };
+
+  /** Redo of that strike: the re-created copies go again. */
+  const unrestore = (copies: readonly IdSpan[]): void => {
+    if (copies.length === 0) return;
+    doc.transact(() => {
+      for (const span of copies) {
+        const end = span.clock + span.len;
+        for (let clock = span.clock; clock < end;) {
+          const item = itemAt(doc, Y.createID(span.client, clock));
+          if (!item) break;
+          const offset = clock - item.id.clock;
+          const len = Math.min(item.length - offset, end - clock);
+          if (!item.deleted && item.parentSub === null && item.parent instanceof Y.XmlText) item.parent.delete(indexOf(item) + offset, len);
+          clock += len;
+        }
+      }
+    }, RESTORE);
+  };
+
+  /** The targets still standing in F: a join may have removed some. */
+  const standing = (targets: readonly IdSpan[]): IdSpan[] => {
+    const ids: Y.ID[] = [];
+    for (const span of targets) {
+      for (let i = 0; i < span.len; i += 1) {
+        const id = Y.createID(span.client, span.clock + i);
+        if (itemAt(doc, id)?.deleted === false) ids.push(id);
+      }
+    }
+    return toSpans(ids);
   };
 
   /** Whether the selection holds anything a delete would change: an unstruck body item or the author's own. */
@@ -273,6 +420,20 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
       }
     }
     if (removed.length === 0) return false;
+    // Each strike keeps what it loses here, run by run within one item, so undoing it can re-create them.
+    const runs: { owner: Strike; item: Y.Item; id: Y.ID; len: number }[] = [];
+    for (const id of removed) {
+      const item = itemAt(doc, id);
+      const owner = undone.find((entry) => covers(entry.targets, id));
+      if (!item || !owner) continue;
+      const last = runs.at(-1);
+      if (last && last.owner === owner && last.item === item && last.id.clock + last.len === id.clock) last.len += 1;
+      else runs.push({ owner, item, id, len: 1 });
+    }
+    for (const { owner, item, id, len } of runs) {
+      const make = maker(item, id.clock - item.id.clock, len);
+      if (make) owner.stripped.push({ id, len, make });
+    }
     const undo = manager();
     watch(undo);
     undo?.stopCapturing();
@@ -471,9 +632,10 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
       const length = undo.undoStack.length;
       if (length > expected) return false;
       undone.pop();
-      fork.withdrawPart(last.part);
+      if (last.part) fork.withdrawPart(last.part);
+      const copies = restore(last);
       const native = last.native && length === expected;
-      redone.push({ ...last, depth: undo.redoStack.length, native });
+      redone.push({ ...last, depth: undo.redoStack.length, native, copies });
       return !native;
     }, P),
     editor.registerCommand(REDO_COMMAND, () => {
@@ -485,10 +647,12 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
       if (length > expected) return false;
       redone.pop();
       const native = last.native && length === expected;
-      const part = fork.proposeDelete(last.targets);
-      if (part) {
+      unrestore(last.copies);
+      const targets = last.stripped.length ? standing(last.targets) : last.targets;
+      const part = targets.length ? fork.proposeDelete(targets) : null;
+      if (part || last.stripped.length) {
         undo.stopCapturing();
-        undone.push({ part, targets: last.targets, depth: undo.undoStack.length, native });
+        undone.push({ ...last, part, depth: undo.undoStack.length, native, copies: [] });
       }
       return !native;
     }, P),
