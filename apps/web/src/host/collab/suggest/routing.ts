@@ -5,7 +5,8 @@
 // with the binding's own undo steps. Everything else is native and recorded verbatim (a join at a block edge too).
 // A native rewrite that re-creates struck text has the copy removed by the fork (client.ts, keepStrikes), so the
 // struck characters leave F and their delete parts stay; where each struck character went is traced through Lexical's
-// own text operations (trace.ts). Undo of their strike re-creates them, as the author's own, where they stood.
+// own text operations (trace.ts), or, where an operation rebuilds a node from its text, by aligning what the
+// transaction deleted around a struck character with what it wrote. Undo of their strike re-creates them, as the author's own, where they stood.
 import { $getClipboardDataFromSelection, setLexicalClipboardDataTransfer } from '@lexical/clipboard';
 import type { IdSpan } from '@moss-multi/protocol/suggest';
 import type { Rewrites, SuggestFork } from '@moss-multi/sync/suggest/client';
@@ -131,6 +132,71 @@ function maker(item: Y.Item): Run['make'] | null {
     };
   }
   return null;
+}
+
+/** One unit of a sequence: a UTF-16 code unit, or an embed (a text node's map, a line break, a decorator, a block). */
+interface Unit {
+  sym: string;
+  id: Y.ID;
+}
+
+function unitsOf(item: Y.Item): Unit[] {
+  const { content } = item;
+  if (content instanceof Y.ContentFormat || !item.countable) return [];
+  if (content instanceof Y.ContentString) {
+    const { str } = content;
+    return Array.from({ length: str.length }, (_, i) => ({ sym: str[i], id: Y.createID(item.id.client, item.id.clock + i) }));
+  }
+  let sym = '\0';
+  if (content instanceof Y.ContentType) {
+    const { type } = content;
+    sym = type instanceof Y.XmlElement ? `\0${type.nodeName}` : type instanceof Y.Map ? `\0${String(type.get('__type'))}` : '\0block';
+  }
+  return Array.from({ length: item.length }, (_, i) => ({ sym, id: Y.createID(item.id.client, item.id.clock + i) }));
+}
+
+/** Longest sequences compared at most: a node a rewrite rebuilds is a block's worth of text. */
+const ALIGN_CAP = 4_000_000;
+
+/**
+ * Pairs units of `from` with units of `to` along a longest common subsequence; null past the cap. Each pair is
+ * [index in from, index in to].
+ */
+function align(from: readonly Unit[], to: readonly Unit[]): Map<number, number> | null {
+  const n = from.length;
+  const m = to.length;
+  if (n === 0 || m === 0 || (n + 1) * (m + 1) > ALIGN_CAP) return null;
+  const width = m + 1;
+  const table = new Uint32Array((n + 1) * width);
+  for (let i = 1; i <= n; i += 1) {
+    for (let j = 1; j <= m; j += 1) {
+      table[i * width + j] = from[i - 1].sym === to[j - 1].sym
+        ? table[(i - 1) * width + j - 1] + 1
+        : Math.max(table[(i - 1) * width + j], table[i * width + j - 1]);
+    }
+  }
+  const pairs = new Map<number, number>();
+  for (let i = n, j = m; i > 0 && j > 0;) {
+    if (from[i - 1].sym === to[j - 1].sym && table[i * width + j] === table[(i - 1) * width + j - 1] + 1) {
+      pairs.set(i - 1, j - 1);
+      i -= 1;
+      j -= 1;
+    } else if (table[(i - 1) * width + j] >= table[i * width + j - 1]) i -= 1;
+    else j -= 1;
+  }
+  return pairs;
+}
+
+/**
+ * The run of units `tr` deleted around `item` in its parent (tombstones from earlier transactions skipped); a live item
+ * ends it. `start`: the run's first item, the same for every item in it.
+ */
+function deletedRun(tr: Y.Transaction, item: Y.Item): { units: Unit[]; start: Y.Item } {
+  let start = item;
+  while (start.left && start.left.deleted) start = start.left;
+  const units: Unit[] = [];
+  for (let n: Y.Item | null = start; n && n.deleted; n = n.right) if (Y.isDeleted(tr.deleteSet, n.id)) units.push(...unitsOf(n));
+  return { units, start };
 }
 
 export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork): () => void {
@@ -261,7 +327,73 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
       // The original still stands, elsewhere: the binding kept it for other text.
       if (spot.offset >= 0 && itemAt(doc, spot.id)?.deleted === false) displaced.push(spot.id);
     }
+    copies.push(...rebuilt(tr, copies));
     return { copies, displaced };
+  };
+
+  /**
+   * Struck originals `tr` deleted with no copy traced: an operation rebuilt their node from its text (a Markdown
+   * shortcut's replace, a typeahead's cut into a new node), so the text the transaction wrote holds the copy. The
+   * units it deleted around each one are aligned with the runs of units it wrote, and the unit the struck one aligns
+   * with, beside an aligned neighbour, is its copy.
+   */
+  const rebuilt = (tr: Y.Transaction, traced: readonly [Y.ID, Y.ID][]): [Y.ID, Y.ID][] => {
+    const paired = new Set(traced.map(([, original]) => idKey(original)));
+    const used = new Set(traced.map(([copy]) => idKey(copy)));
+    const lost: { id: Y.ID; item: Y.Item }[] = [];
+    for (const span of fork.struck()) {
+      for (let i = 0; i < span.len; i += 1) {
+        const id = Y.createID(span.client, span.clock + i);
+        if (paired.has(idKey(id)) || !Y.isDeleted(tr.deleteSet, id)) continue;
+        const item = itemAt(doc, id);
+        if (item?.deleted && item.parentSub === null) lost.push({ id, item });
+      }
+    }
+    if (lost.length === 0) return [];
+    const before = tr.beforeState.get(doc.clientID) ?? 0;
+    const isFresh = (n: Y.Item) => n.id.client === doc.clientID && n.id.clock >= before;
+    // The runs of units the transaction wrote: live fresh items side by side (tombstones between them skipped).
+    const runs: Unit[][] = [];
+    const seen = new Set<Y.Item>();
+    for (const struct of doc.store.clients.get(doc.clientID) ?? []) {
+      if (!(struct instanceof Y.Item) || struct.id.clock + struct.length <= before || struct.deleted || struct.parentSub !== null || seen.has(struct)) continue;
+      let start = struct;
+      while (start.left && (start.left.deleted || isFresh(start.left))) start = start.left;
+      const units: Unit[] = [];
+      for (let n: Y.Item | null = start; n && (n.deleted || isFresh(n)); n = n.right) {
+        if (n.deleted) continue;
+        seen.add(n);
+        units.push(...unitsOf(n));
+      }
+      if (units.length) runs.push(units);
+    }
+    if (runs.length === 0) return [];
+    const found: [Y.ID, Y.ID][] = [];
+    const alignments = new Map<Y.Item, { units: Unit[]; pairs: (Map<number, number> | null)[] }>();
+    for (const { id, item } of lost) {
+      const run = deletedRun(tr, item);
+      let aligned = alignments.get(run.start);
+      if (!aligned) {
+        aligned = { units: run.units, pairs: runs.map((units) => align(run.units, units)) };
+        alignments.set(run.start, aligned);
+      }
+      const at = aligned.units.findIndex((unit) => Y.compareIDs(unit.id, id));
+      if (at < 0) continue;
+      let best: { copy: Y.ID; score: number } | null = null;
+      for (let r = 0; r < runs.length; r += 1) {
+        const pairs = aligned.pairs[r];
+        const to = pairs?.get(at);
+        if (!pairs || to === undefined) continue;
+        // A neighbour aligned beside it: the struck unit sits in the same text, not on a lone equal character.
+        const beside = pairs.get(at - 1) === to - 1 || pairs.get(at + 1) === to + 1 || aligned.units.length === 1;
+        const copy = runs[r][to].id;
+        if (beside && !used.has(idKey(copy)) && (!best || pairs.size > best.score)) best = { copy, score: pairs.size };
+      }
+      if (!best) continue;
+      used.add(idKey(best.copy));
+      found.push([best.copy, id]);
+    }
+    return found;
   };
   const settle = (tr: Y.Transaction) => {
     if (tr.origin !== bindingOf(editor)) return;

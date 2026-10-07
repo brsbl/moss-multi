@@ -5,14 +5,14 @@
 // unstruck character is kept.
 import { $insertGeneratedNodes } from '@lexical/clipboard';
 import { $generateNodesFromDOM } from '@lexical/html';
-import { $createFileLinkNode } from '@moss-desktop/renderer/editor/nodes/FileLinkNode';
 import { canonical, yValue } from '@moss-multi/core/suggest/apply';
 import { describeHunks } from '@moss-multi/core/suggest/describe';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import type { IdSpan, SuggestReply, SuggestRequest } from '@moss-multi/protocol/suggest';
 import {
   $createRangeSelection, $getRoot, $setSelection, type RangeSelection, COMMAND_PRIORITY_EDITOR, DELETE_CHARACTER_COMMAND, REDO_COMMAND, UNDO_COMMAND, $getSelection, $isRangeSelection,
-  $createTextNode, $isElementNode, $isParagraphNode, $isTextNode, TextNode, type LexicalEditor, type LexicalNode,
+  $createTextNode, $isElementNode, $isParagraphNode, $isTextNode, $parseSerializedNode, TextNode, type LexicalEditor, type LexicalNode,
+  type SerializedLexicalNode,
 } from 'lexical';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
@@ -634,7 +634,10 @@ describe('a rewrite that rebuilds a text node from its text keeps the struck cha
         const anchor = textNode('a[[In');
         const afterCursor = anchor.getTextContent().slice('a[[In'.length);
         anchor.setTextContent('a');
-        const link = $createFileLinkNode(null, '', true, 'Intro line stays.', 'fully_resolved');
+        // moss's FileLinkNode, as $createFileLinkNode(null, '', true, heading, 'fully_resolved') makes it.
+        const link = $parseSerializedNode({
+          type: 'file-link', version: 1, noteId: null, noteTitle: '', isResolved: true, headingText: 'Intro line stays.', resolutionState: 'fully_resolved', displayText: null,
+        } as SerializedLexicalNode);
         anchor.insertAfter(link);
         link.insertAfter(new TextNode(afterCursor));
         const space = new TextNode(' ');
