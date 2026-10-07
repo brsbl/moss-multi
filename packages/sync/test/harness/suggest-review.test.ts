@@ -5,13 +5,20 @@
 // record while the default export stays clean; and a new live suggestion notifies.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as Y from 'yjs';
+import { applyRecord } from '@moss-multi/core/suggest/apply';
 import type { LeaseGrant, SuggestReply, SuggestRequest } from '@moss-multi/protocol/suggest';
-import { bytesToBase64, CUSTOM_PREFIX, type ServerEvent } from '@moss-multi/protocol/sync';
+import { base64ToBytes, bytesToBase64, CUSTOM_PREFIX, type ServerEvent } from '@moss-multi/protocol/sync';
 import { DocDO } from '../../src/doc-do.ts';
 import { ForkShim } from '../../src/suggest/fork-shim.ts';
 import { readMeta } from '../../src/suggest/records.ts';
-import { OTHER_SUGGESTER, select, SEED, SUGGESTER } from '../../src/suggest/test-support.ts';
-import { connect, openDoc, start, wake, type Opened, type TestClient, type Who } from './do-harness.ts';
+import { forgeRecord, opOn, OTHER_SUGGESTER, select, SEED, SUGGESTER } from '../../src/suggest/test-support.ts';
+import { bindLexical, connect, openDoc, start, wake, type Opened, type TestClient, type Who } from './do-harness.ts';
+
+// applyRecord as itself, counted, so a cached working export is seen doing no gate work.
+vi.mock('@moss-multi/core/suggest/apply', async (original) => {
+  const actual = await original<typeof import('@moss-multi/core/suggest/apply')>();
+  return { ...actual, applyRecord: vi.fn(actual.applyRecord) };
+});
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -123,7 +130,7 @@ describe('T5.3 accept, reject and withdraw through the DocDO @p:mean-2 @p:R16 @p
     expect(root()).toBe(before);
     expect(await opened.dobj.exportMarkdown()).toBe(exported);
     expect(readMeta(opened.dobj.document, id)).toMatchObject({ status: 'withdrawn' });
-    expect(await opened.dobj.exportMarkdown({ view: 'working' }), 'a withdrawn record is in no view').not.toContain('More words.');
+    expect(await opened.dobj.exportWorking(), 'a withdrawn record is in no view').not.toContain('More words.');
   });
 
   it('a stale hash, a changed record, a closed record and a reviewer below editor are refused with nothing applied', async () => {
@@ -157,10 +164,111 @@ describe('T5.3 accept, reject and withdraw through the DocDO @p:mean-2 @p:R16 @p
     const clean = await opened.dobj.exportMarkdown();
     expect(clean).not.toContain('More words.');
     expect(clean).not.toContain('Sky says.');
-    const working = await opened.dobj.exportMarkdown({ view: 'working' });
+    const working = await opened.dobj.exportWorking();
     expect(working).toContain('Hello world and the cat. More words.');
     expect(working).toContain('Sky says. Indented words here.');
     expect(await opened.dobj.exportMarkdown()).toBe(clean);
+  });
+
+  it('a repeated working export is served from the cache with no gate work until the note or a record changes (I5)', async () => {
+    const opened = await seeded();
+    const sam = await on(opened, SAM);
+    const sky = await on(opened, SKY);
+    await suggest(sam, () => select('Hello', 24).insertText(' More words.'));
+    const gates = vi.mocked(applyRecord);
+    gates.mockClear();
+    const first = await opened.dobj.exportWorking();
+    expect(gates).toHaveBeenCalledTimes(1);
+    gates.mockClear();
+    expect(await opened.dobj.exportWorking()).toBe(first);
+    expect(await opened.dobj.exportWorking()).toBe(first);
+    expect(gates, 'a cached read runs no gate').not.toHaveBeenCalled();
+    // A new record changes the composite: the next read recomputes and shows it.
+    await suggest(sky, () => select('Indented', 0).insertText('Sky says. '));
+    gates.mockClear();
+    const second = await opened.dobj.exportWorking();
+    expect(second).toContain('Sky says. Indented words here.');
+    expect(gates).toHaveBeenCalledTimes(2);
+    // A body edit does too.
+    await opened.dobj.renameTitle('Renamed');
+    gates.mockClear();
+    await opened.dobj.exportWorking();
+    expect(gates).toHaveBeenCalledTimes(2);
+  });
+
+  it('past the per-document bound a working export that would compute is refused before any gate work; a cached one is still served', async () => {
+    const limits = DocDO.limits;
+    DocDO.limits = { ...limits, workingRate: { max: 2, windowMs: 60_000 } };
+    try {
+      const opened = await seeded();
+      const sam = await on(opened, SAM);
+      await suggest(sam, () => select('Hello', 24).insertText(' More words.'));
+      const gates = vi.mocked(applyRecord);
+      gates.mockClear();
+      expect(await opened.dobj.exportWorking()).toContain('More words.');
+      await opened.dobj.renameTitle('One');
+      expect(await opened.dobj.exportWorking()).toContain('More words.');
+      expect(await opened.dobj.exportWorking(), 'cached, so not counted').toContain('More words.');
+      await opened.dobj.renameTitle('Two');
+      gates.mockClear();
+      expect(await opened.dobj.exportWorking()).toBeNull();
+      expect(gates).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(60_000);
+      expect(await opened.dobj.exportWorking()).toContain('More words.');
+    } finally {
+      DocDO.limits = limits;
+    }
+  });
+
+  it("a collaborator's body frames are applied and acked while a burst of working exports is refused or served from the cache", async () => {
+    const limits = DocDO.limits;
+    DocDO.limits = { ...limits, workingRate: { max: 2, windowMs: 60_000 } };
+    try {
+      const opened = await seeded();
+      const sam = await on(opened, SAM);
+      const ed = await connect(opened, ED);
+      const lexical = bindLexical(ed.doc);
+      await ed.hello();
+      await suggest(sam, () => select('Hello', 24).insertText(' More words.'));
+      // Open records that fail the gates: a block of a type nobody registered.
+      const root = (doc: Y.Doc) => doc.get('root', Y.XmlText);
+      for (const n of [0, 1, 2]) {
+        forgeRecord(opened.dobj.document, `bad${n}`, [opOn(opened.dobj.document, 'body', (copy) => {
+          const block = new Y.XmlText();
+          block.setAttribute('__type', 'no-such-node');
+          root(copy).insertEmbed(root(copy).length, block);
+        })]);
+      }
+      const gates = vi.mocked(applyRecord);
+      const served: (string | null)[] = [];
+      for (let round = 0; round < 6; round += 1) {
+        // Each edit drops the cache, so every read after the second computes and meets the bound.
+        lexical.editor.update(() => select('Indented', 9).insertText(`Ed${round} `), { discrete: true });
+        await ed.flush();
+        gates.mockClear();
+        for (let i = 0; i < 5; i += 1) served.push(await opened.dobj.exportWorking());
+        if (round >= 2) expect(gates, 'past the bound no gate runs').not.toHaveBeenCalled();
+        vi.advanceTimersByTime(250);
+        await ed.pump();
+        expect(body(opened.dobj.document)).toContain(`Ed${round} `);
+      }
+      expect(ed.closed).toBeNull();
+      expect(ed.events.filter((event) => event.t === 'write-refused')).toEqual([]);
+      const acks = ed.events.filter((event): event is Extract<ServerEvent, { t: 'ack' }> => event.t === 'ack');
+      expect(acks).toHaveLength(6);
+      const acked = Y.decodeStateVector(base64ToBytes(acks.at(-1)!.sv));
+      for (const [client, clock] of Y.decodeStateVector(Y.encodeStateVector(ed.doc))) expect(acked.get(client) ?? 0).toBeGreaterThanOrEqual(clock);
+      // Rounds 0 and 1 compute once each and serve the rest from the cache; later rounds are refused.
+      expect(served.slice(0, 10).every((markdown) => markdown?.includes('More words.'))).toBe(true);
+      expect(served.slice(10)).toEqual(Array(20).fill(null));
+      vi.advanceTimersByTime(60_000);
+      const after = await opened.dobj.exportWorking();
+      expect(after).toContain('Ed5 ');
+      expect(after).toContain('More words.');
+      expect(after).not.toContain('no-such-node');
+    } finally {
+      DocDO.limits = limits;
+    }
   });
 
   it.each([false, true])('a record with nothing to show is rejected by the system on the alarm once idle, with nobody fetching its preview (evicted=%s)', async (evicted) => {

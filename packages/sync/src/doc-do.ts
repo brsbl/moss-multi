@@ -5,7 +5,7 @@ import * as encoding from 'lib0/encoding';
 import { writeSyncStep1 } from 'y-protocols/sync';
 import { splitFrontmatter } from '@moss-desktop/common/markdown-layers';
 import {
-  ACCESS_DEADLINE_MS, ACCESS_TICK_MS, ACK_COALESCE_MS, AWARENESS_MAX_BYTES, DOC_SOCKET_MAX_MS, MAX_CONNECTIONS, STATE_CAP_BYTES, WRITE_RATE,
+  ACCESS_DEADLINE_MS, ACCESS_TICK_MS, ACK_COALESCE_MS, AWARENESS_MAX_BYTES, DOC_SOCKET_MAX_MS, MAX_CONNECTIONS, STATE_CAP_BYTES, WORKING_EXPORT_DOC_RATE, WRITE_RATE,
 } from '@moss-multi/protocol/limits';
 import { ROLES, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import { SUGGEST_LIMITS, type SuggestReply, type SuggestRequest } from '@moss-multi/protocol/suggest';
@@ -56,6 +56,8 @@ export interface DocLimits {
   withheldIdsPerConnection: number;
   /** Bytes one principal may write into withheld payloads, so nobody crowds out another's (A§10.10). */
   withheldBytesPerIdentity: number;
+  /** Working-view exports this doc computes per window (I5); cached reads are free. */
+  workingRate: { max: number; windowMs: number };
   /** Frames and bytes one socket may have waiting for a validation, and all sockets together; past it the socket closes 1013. */
   inboxFramesPerConnection: number;
   inboxBytesPerConnection: number;
@@ -224,6 +226,7 @@ export class DocDO extends YServer<SyncEnv> {
     inboxBytesPerConnection: 2 * 1024 * 1024,
     inboxBytes: 8 * 1024 * 1024,
     accessDeadlineMs: ACCESS_DEADLINE_MS,
+    workingRate: WORKING_EXPORT_DOC_RATE,
   };
   /** Where the title, filename and updated_at projections land (A§5.1). */
   static projectionTarget: (env: SyncEnv) => ProjectionTarget | null = (env) => (env?.DB ? d1Projections(env.DB, (id) => publishMeta(env, [id])) : null);
@@ -262,6 +265,8 @@ export class DocDO extends YServer<SyncEnv> {
   #comments: DocComments | null = null;
   #payloads: PayloadStore | null = null;
   #exported: string | null = null;
+  /** The working view (§4.7), dropped with #exported by every note, record and payload update. */
+  #working: string | null = null;
   #projections: Projections | null = null;
   /** The title and body this instance last fed to search. */
   #fed: string | null = null;
@@ -273,6 +278,7 @@ export class DocDO extends YServer<SyncEnv> {
   #payloadFeed: ReturnType<typeof setTimeout> | null = null;
   readonly #limits = (this.constructor as typeof DocDO).limits;
   readonly #rate = new WriteRate(this.#limits.writeRate.max, this.#limits.writeRate.windowMs);
+  readonly #workingRate = new WriteRate(this.#limits.workingRate.max, this.#limits.workingRate.windowMs);
   readonly #acks = new AckCoalescer<Connection>((connection, deletes, payloads) => this.#ack(connection, deletes, payloads), ACK_COALESCE_MS);
   /** The deletes of the sync frame being applied, which its ack names. */
   #frameDeletes: DeleteSet | undefined;
@@ -312,6 +318,7 @@ export class DocDO extends YServer<SyncEnv> {
       broadcast: (id, update, origin) => this.#broadcastPayload(id, update, origin),
       persisted: (_id, _update, origin) => {
         this.#exported = null;
+        this.#working = null;
         this.#edited(store);
         if (isConnection(origin)) {
           this.#projections?.touch();
@@ -1043,12 +1050,22 @@ export class DocDO extends YServer<SyncEnv> {
   }
 
   /** The doc as a `.md` file, memoized until the next update. */
-  async exportMarkdown(options: { view?: 'working' } = {}): Promise<string> {
+  async exportMarkdown(): Promise<string> {
     await this.#ready();
-    // The working view (§4.7): the note with every valid open suggestion applied; never memoized.
-    if (options.view === 'working') return exportWorkingMarkdown(this.document, this.name);
     this.#exported ??= exportDocMarkdown(this.document, this.name);
     return this.#exported;
+  }
+
+  /**
+   * The working view (§4.7): the note with every valid open suggestion applied, memoized until the next note, record
+   * or payload update. Computing it runs the accept gates per open record, so it is bounded per doc (I5); null past it.
+   */
+  async exportWorking(): Promise<string | null> {
+    await this.#ready();
+    if (this.#working !== null) return this.#working;
+    if (!this.#workingRate.allow(this)) return null;
+    this.#working = exportWorkingMarkdown(this.document, this.name);
+    return this.#working;
   }
 
   /** Feeds search now, even with nothing changed: the Worker's backfill for a doc the index lacks. */
@@ -1248,6 +1265,7 @@ export class DocDO extends YServer<SyncEnv> {
 
   #persist(store: DocStore, update: Uint8Array, origin: unknown): void {
     this.#exported = null;
+    this.#working = null;
     if (origin === PERSISTENCE) return;
     store.record(update);
     this.#edited(store);

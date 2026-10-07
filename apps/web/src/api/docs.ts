@@ -17,7 +17,7 @@ import { json } from '../worker/route.ts';
 import { liveLink, resolveDocAccess, resolveFolderAccess } from './access.ts';
 import { admitDuplicateMedia, copyMedia } from './assets.ts';
 import { createComment, deleteComment, editComment, reactComment, resolveComment } from './comments.ts';
-import { handleSuggestion, SUGGESTION_ROUTE } from './suggestions.ts';
+import { admitWorkingExport, handleSuggestion, SUGGESTION_ROUTE, workingRateLimited } from './suggestions.ts';
 import { folderNotFound, liveIn, moveDoc, upFrom, vaultOf } from './folders.ts';
 import { handleInviteLinks } from './invites.ts';
 import { handleLinks } from './links.ts';
@@ -200,8 +200,14 @@ async function readContent(request: Request, env: DocsEnv, docId: string): Promi
   if (!access || access.deleted) return notFound();
   // `?view=working` adds every valid open suggestion; the default is the clean body (docs/design/suggestions.md §4.7).
   const working = new URL(request.url).searchParams.get('view') === 'working';
+  if (working) {
+    // Metered before the DocDO is reached (I5); past its per-doc bound the DocDO answers null.
+    const refused = await admitWorkingExport(request, env, principal);
+    if (refused) return refused;
+  }
   const stub = await getServerByName(env.DocDO, docId);
-  const markdown = working ? await stub.exportMarkdown({ view: 'working' }) : await stub.exportMarkdown();
+  const markdown = working ? await stub.exportWorking() : await stub.exportMarkdown();
+  if (markdown === null) return workingRateLimited();
   return new Response(markdown, { status: 200, headers: { 'content-type': 'text/markdown; charset=utf-8', ...NO_STORE } });
 }
 
