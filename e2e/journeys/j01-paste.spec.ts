@@ -207,6 +207,8 @@ test('j01-paste: a second large paste and a note switch while a 200k paste lands
   await pastePlain(ada, docId, second);
   await ui.openNote(ada, otherId);
   await expect.poll(() => exported(ada, docId), { message: 'both pastes land whole after the pane closed', timeout: 90_000 }).toBe(whole);
+  // Reopening the note is a second socket for it in this document.
+  ada.expectReconnects(1, docId);
   await ui.openNote(ada, docId);
   await expect.poll(() => fingerprint(ben, docId), { message: 'the collaborator sees both pastes', timeout: 60_000 }).toEqual(await fingerprint(ada, docId));
 });

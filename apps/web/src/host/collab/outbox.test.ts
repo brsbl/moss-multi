@@ -58,17 +58,20 @@ it('sends small frames at once, and a large update in pieces paced by acks, in o
 
   const peer = new Y.Doc();
   const order: Uint8Array[] = [];
-  let rounds = 0;
-  while (outbox.busy && rounds < 200) {
-    rounds += 1;
+  const deliver = () => {
     for (const frame of sent.splice(0)) {
       if (!isUpdate(frame)) continue;
       order.push(frame);
       if (frame !== typed) Y.applyUpdate(peer, payloadOf(frame));
     }
+  };
+  let rounds = 0;
+  while (outbox.busy && rounds < 200) {
+    rounds += 1;
+    deliver();
     outbox.acked(Y.decodeStateVector(Y.encodeStateVector(peer)));
   }
-  order.push(...sent.filter(isUpdate));
+  deliver();
   expect(rounds).toBeGreaterThan(2);
   expect(order[order.length - 1], 'the later write goes last').toBe(typed);
   expect(peer.get('root', Y.XmlText).toJSON()).toEqual(doc.get('root', Y.XmlText).toJSON());
