@@ -110,39 +110,57 @@ function fits(editor: LexicalEditor, bytes: number, largestPiece: number): boole
 /**
  * A large plain-text paste as the paste plan Lexical's own paste would make of it: a paragraph per line, tabs as tab
  * nodes (@lexical/clipboard's plain-text importer), or with `lineBreaks`, one paragraph whose lines are line breaks
- * (RangeSelection.insertRawText). It then lands, or is refused, like a markdown paste: rehearsed and placed in paced
- * batches, never in one task.
+ * (RangeSelection.insertRawText). Its units are built as JSON from Lexical's own serialization of each node kind, so
+ * planning makes no Lexical node per line; it then lands, or is refused, like a markdown paste: rehearsed and placed
+ * in paced batches, never in one task.
  */
 export function planPlainText(nodes: readonly Klass<LexicalNode>[], text: string, lineBreaks = false): PastePlan {
   const parser = scratchEditor(nodes);
-  const $line = (into: ElementNode, line: string) => {
-    line.split('\t').forEach((part, i) => {
-      if (i > 0) into.append($createTabNode());
-      if (part) into.append($createTextNode(part));
+  parser.update(() => {
+    const filled = $createParagraphNode().append($createTextNode('x'), $createTabNode(), $createLineBreakNode());
+    $getRoot().clear().append($createParagraphNode(), filled);
+  }, { discrete: true });
+  const [empty, filled] = parser.getEditorState().toJSON().root.children as SerializedElementNode[];
+  const [textJson, tabJson, breakJson] = filled.children;
+  // $cost's measure: one per node, text by its length.
+  let cost = 1;
+  const line = (into: SerializedLexicalNode[], value: string) => {
+    value.split('\t').forEach((part, i) => {
+      if (i > 0) {
+        into.push({ ...tabJson });
+        cost += 1 + 1 / 64;
+      }
+      if (part) {
+        into.push({ ...textJson, text: part } as SerializedLexicalNode);
+        cost += 1 + part.length / 64;
+      }
     });
   };
-  parser.update(() => {
-    const root = $getRoot();
-    root.clear();
-    const lines = text.split('\n');
-    if (lineBreaks) {
-      const paragraph = $createParagraphNode();
-      lines.forEach((line, i) => {
-        if (i > 0) paragraph.append($createLineBreakNode());
-        $line(paragraph, line);
-      });
-      root.append(paragraph);
-      return;
+  const units: Part[] = [];
+  const unit = (children: SerializedLexicalNode[]) => {
+    const index = units.length;
+    units.push({ json: { ...empty, children } as SerializedElementNode, parent: null, index, children: [], cost, lo: index, hi: index });
+    cost = 1;
+  };
+  const lines = text.split('\n');
+  if (lineBreaks) {
+    const children: SerializedLexicalNode[] = [];
+    lines.forEach((value, i) => {
+      if (i > 0) {
+        children.push({ ...breakJson });
+        cost += 1;
+      }
+      line(children, value);
+    });
+    unit(children);
+  } else {
+    for (const value of lines) {
+      const children: SerializedLexicalNode[] = [];
+      line(children, value);
+      unit(children);
     }
-    for (const line of lines) {
-      const paragraph = $createParagraphNode();
-      $line(paragraph, line);
-      root.append(paragraph);
-    }
-  }, { discrete: true });
-  const state = parser.getEditorState();
-  const json = state.toJSON().root.children;
-  return state.read(() => $planPaste($getRoot().getChildren(), json));
+  }
+  return { top: units, units, payloadBytes: 0, largestPayload: 0 };
 }
 
 // ---------- the plan: units ----------
