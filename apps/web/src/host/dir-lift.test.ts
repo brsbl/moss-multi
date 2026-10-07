@@ -16,7 +16,8 @@ function page(items: number) {
   for (let i = 0; i < items; i += 1) list.appendChild(document.createElement('li'));
   const paragraph = document.createElement('p');
   paragraph.dir = 'auto';
-  root.append(paragraph, list);
+  root.appendChild(paragraph);
+  root.appendChild(list);
   return { editor: { getRootElement: () => root } as unknown as LexicalEditor, list, paragraph };
 }
 
