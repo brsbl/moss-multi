@@ -335,7 +335,8 @@ export function reviewPreview(live: Y.Doc, id: string, options: { now?: number }
 
 /**
  * The working view (§4.7): the note with every valid open record applied, oldest first, through the same gates as
- * accept. A record that fails them is left out, and the records before it are reapplied to fresh mirrors.
+ * accept. Each record's gates run once (I5). A record that fails them is left out; it may have spoiled the mirrors, so
+ * fresh ones take what the records before it changed as one update per doc, never a rerun of their gates.
  */
 export function exportWorkingMarkdown(live: Y.Doc, noteId: string): string {
   const records = recordIds(live)
@@ -344,18 +345,23 @@ export function exportWorkingMarkdown(live: Y.Doc, noteId: string): string {
     .sort((a, b) => a.meta.createdAt - b.meta.createdAt || (a.meta.id < b.meta.id ? -1 : 1));
   let payloads = new Payloads(live);
   let mirror = mirrorWith(live, payloads);
-  const applied: SuggestionRecord[] = [];
+  // Per doc (null is the body): its state vector before any record, and what the applied records changed since.
+  const bases = new Map<string | null, Uint8Array>([[null, Y.encodeStateVector(mirror)]]);
+  const changes = new Map<string | null, Uint8Array>();
+  const docOf = (id: string | null) => (id === null ? mirror : payloads.doc(id));
   try {
     for (const record of records) {
-      if (applyRecord(mirror, record, { bindCheck, payloads }).ok) {
-        applied.push(record);
+      const result = applyRecord(mirror, record, { bindCheck, payloads });
+      if (result.ok) {
+        for (const [id, before] of result.payloads) if (!bases.has(id)) bases.set(id, before);
+        for (const id of [null, ...result.payloads.keys()]) changes.set(id, Y.encodeStateAsUpdate(docOf(id), bases.get(id)));
         continue;
       }
       mirror.destroy();
       payloads.destroy();
       payloads = new Payloads(live);
       mirror = mirrorWith(live, payloads);
-      for (const earlier of applied) applyRecord(mirror, earlier, { bindCheck, payloads });
+      for (const [id, update] of changes) Y.applyUpdate(docOf(id), update);
     }
     return exportDocMarkdown(mirror, noteId);
   } finally {
