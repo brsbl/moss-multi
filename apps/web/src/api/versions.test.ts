@@ -2,6 +2,7 @@
 // .../versions {name} (a named version) and .../versions/:vid/restore for an editor or above. Named versions are rate
 // limited per person by its PrincipalDO; the DocDO re-authorizes the actor in the write, and its verdict passes through.
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { VAULT_MEDIA_QUOTA_BYTES } from '@moss-multi/protocol/limits';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
 import { BASE, insertDoc, insertGrant, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
 import { handleApi } from './router.ts';
@@ -140,6 +141,15 @@ describe('version routes @p:mean-3', () => {
     writeTokens = 0;
     const response = await send('POST', eve.cookie, `${versions()}/v1/restore`);
     expect(response.status).toBe(429);
+    expect(calls).toEqual([]);
+  });
+
+  it("refuses a named version 413 when the doc's vault is out of storage, versions counted, before the DocDO", async () => {
+    const full = await insertDoc(d1.db, dan);
+    await d1.db.prepare('UPDATE docs SET version_bytes = ? WHERE id = ?').bind(VAULT_MEDIA_QUOTA_BYTES, full).run();
+    const response = await send('POST', dan.cookie, `/api/docs/${full}/versions`, { name: 'Draft' });
+    expect(response.status).toBe(413);
+    expect(await response.json()).toMatchObject({ error: 'over-quota' });
     expect(calls).toEqual([]);
   });
 

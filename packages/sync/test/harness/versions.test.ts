@@ -1,8 +1,9 @@
 // Version storage and triggers (BUILDPLAN T6.2; A§14): an auto version on the last disconnect of a changed doc, the
 // activity trigger checked on save, dedupe against the latest version, the R2 spill above 1.5 MB, named versions
 // bounded per person, and a restore that is verified against the version or refused 409 with nothing changed.
-import { $createTextNode, $getRoot, type ElementNode } from 'lexical';
+import { $createTextNode, $getRoot, type ElementNode, type TextNode } from 'lexical';
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { anchorText, type Anchor } from '@moss-multi/core/anchor-frame';
 import { DocDO } from '../../src/doc-do.ts';
 import { NAMED_VERSIONS_PER_PERSON, VERSION_SPILL_BYTES, type VersionBlobs, type VersionMeta } from '../../src/doc/versions.ts';
 import { bindLexical, connect, openDoc, start, wake, type Opened, type TestClient } from './do-harness.ts';
@@ -252,5 +253,149 @@ describe('restore @p:mean-3', () => {
     if (!saved.ok) throw new Error(saved.reason);
     expect(await opened.dobj.restoreVersion({ id: saved.version.id, reviewer: { id: 'cara', role: 'commenter' } })).toMatchObject({ ok: false, status: 403 });
     expect(await opened.dobj.restoreVersion({ id: 'missing', reviewer: ADA })).toMatchObject({ ok: false, status: 404 });
+  });
+});
+
+/** Makes every INSERT of a `kind` version fail in SQLite, as a full disk would, until the returned heal runs. */
+function failInserts(opened: Opened, kind: string): () => void {
+  const name = `fail_${kind.replace('-', '_')}`;
+  opened.backing.db.exec(`CREATE TRIGGER ${name} BEFORE INSERT ON versions WHEN NEW.kind = '${kind}' BEGIN SELECT RAISE(ABORT, 'disk full'); END;`);
+  return () => opened.backing.db.exec(`DROP TRIGGER IF EXISTS ${name}`);
+}
+
+const anchorOf = (opened: Opened, id: string) => opened.dobj.document.getMap<Anchor>('comments').get(`a:${id}`);
+
+describe('restore point and comment anchors @p:mean-3', () => {
+  it('refuses a restore whose restore point cannot be stored, changing nothing', async () => {
+    const opened = await created('alpha\n\nbeta\n');
+    const saved = await named(opened, 'Two paragraphs');
+    if (!saved.ok) throw new Error(saved.reason);
+    const ada = await connect(opened, { id: 'ada', role: 'editor' });
+    const lexical = bindLexical(ada.doc);
+    await ada.hello();
+    lexical.type(' more');
+    await ada.flush();
+    const before = await opened.dobj.exportMarkdown();
+    failInserts(opened, 'restore-point');
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const restored = await opened.dobj.restoreVersion({ id: saved.version.id, reviewer: ADA });
+    expect(restored).toMatchObject({ ok: false, status: 503 });
+    expect(await opened.dobj.exportMarkdown(), 'the doc keeps the state no version holds').toBe(before);
+    expect((await list(opened)).map((version) => version.kind)).toEqual(['named']);
+  });
+
+  it('re-anchors a comment the version held on text the restore brings back', async () => {
+    const opened = await created('alpha\n\nbeta gamma\n');
+    const made = await opened.dobj.createComment({ author: 'ada', id: 'c1', text: 'about gamma', anchor: { quote: 'gamma' } });
+    expect(made).toMatchObject({ ok: true, quote: 'gamma' });
+    const saved = await named(opened, 'With gamma');
+    if (!saved.ok) throw new Error(saved.reason);
+
+    const ada = await connect(opened, { id: 'ada', role: 'editor' });
+    const lexical = bindLexical(ada.doc);
+    await ada.hello();
+    lexical.editor.update(() => {
+      (($getRoot().getChildAtIndex(1) as ElementNode).getFirstChild() as TextNode).setTextContent('beta delta');
+    }, { discrete: true });
+    await ada.flush();
+    expect(anchorOf(opened, 'c1')?.status, 'deleting its text detaches the comment').toBe('orphaned');
+
+    const restored = await opened.dobj.restoreVersion({ id: saved.version.id, reviewer: ADA });
+    expect(restored).toMatchObject({ ok: true });
+    const anchor = anchorOf(opened, 'c1');
+    expect(anchor?.status).toBe('anchored');
+    expect(anchorText(opened.dobj.document, anchor!)).toBe('gamma');
+    const woken = await start(wake(opened));
+    expect(anchorText(woken.dobj.document, anchorOf(woken, 'c1')!), 'persisted with the restore').toBe('gamma');
+  });
+});
+
+describe('version retries and bounds @p:mean-3', () => {
+  it('retries an auto version that failed to store at the next trigger', async () => {
+    const opened = await created();
+    const ada = await editorOn(opened, 'ada');
+    await typeTitle(ada, 'Plan');
+    const heal = failInserts(opened, 'auto');
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await ada.drop();
+    expect(await list(opened)).toEqual([]);
+    heal();
+    const idle = await editorOn(opened, 'ben');
+    await idle.drop();
+    expect((await list(opened)).map((version) => [version.kind, version.title, version.authorIds])).toEqual([['auto', 'Plan', ['ada']]]);
+  });
+
+  it('keeps the per-person named cap under concurrent saves', async () => {
+    const opened = await created();
+    for (let i = 0; i < NAMED_VERSIONS_PER_PERSON - 1; i += 1) expect((await named(opened, `v${i}`)).ok).toBe(true);
+    const both = await Promise.all([named(opened, 'last a'), named(opened, 'last b')]);
+    expect(both.filter((result) => result.ok)).toHaveLength(1);
+    expect((await list(opened)).filter((version) => version.createdBy === 'ada')).toHaveLength(NAMED_VERSIONS_PER_PERSON);
+  });
+
+  it('charges a named version to the actor, refusing it past their bound and refunding a refused one', async () => {
+    const charges: [string, number][] = [];
+    let room = Number.POSITIVE_INFINITY;
+    const original = DocDO.versionCharge;
+    DocDO.versionCharge = () => async (principal, bytes) => {
+      if (bytes > 0 && bytes > room) return false;
+      charges.push([principal, bytes]);
+      return true;
+    };
+    onTestFinished(() => {
+      DocDO.versionCharge = original;
+    });
+    const opened = await created('alpha\n');
+    const saved = await named(opened, 'Charged');
+    if (!saved.ok) throw new Error(saved.reason);
+    expect(charges).toEqual([['ada', saved.version.bytes]]);
+
+    room = 0;
+    expect(await named(opened, 'Over')).toMatchObject({ ok: false, status: 413, reason: 'version-quota' });
+    expect((await list(opened)).map((version) => version.name)).toEqual(['Charged']);
+
+    room = Number.POSITIVE_INFINITY;
+    charges.length = 0;
+    expect(await named(opened, 'Viewer', { id: 'cara', role: 'viewer' })).toMatchObject({ ok: false, status: 403 });
+    expect(charges.reduce((sum, [, bytes]) => sum + bytes, 0), 'a refused save costs nothing').toBe(0);
+  });
+
+  it("reports the doc's version bytes for its vault after every write", async () => {
+    const reported: number[] = [];
+    const original = DocDO.versionUsage;
+    DocDO.versionUsage = () => async (_docId, bytes) => {
+      reported.push(bytes);
+    };
+    onTestFinished(() => {
+      DocDO.versionUsage = original;
+    });
+    const opened = await created('alpha\n');
+    await named(opened, 'One');
+    const ada = await editorOn(opened, 'ada');
+    await typeTitle(ada, 'Plan');
+    await ada.drop();
+    const total = (await list(opened)).reduce((sum, version) => sum + version.bytes, 0);
+    expect(total).toBeGreaterThan(0);
+    expect(reported.at(-1)).toBe(total);
+  });
+
+  it('deletes a spill whose row was never written', async () => {
+    const bucket = blobs();
+    const original = DocDO.versionSpillBytes;
+    DocDO.versionSpillBytes = 64;
+    onTestFinished(() => {
+      DocDO.versionSpillBytes = original;
+    });
+    const opened = await created('alpha beta gamma delta epsilon zeta eta theta iota kappa lambda\n');
+    const heal = failInserts(opened, 'named');
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    expect((await named(opened, 'Lost')).ok).toBe(false);
+    heal();
+    const kept = await named(opened, 'Kept');
+    if (!kept.ok) throw new Error(kept.reason);
+    expect(kept.version.spilled).toBe(true);
+    const [row] = opened.backing.query<{ r2_key: string }>('SELECT r2_key FROM versions WHERE id = ?', kept.version.id);
+    expect([...bucket.keys()], 'only the stored version keeps a spill').toEqual([row.r2_key]);
   });
 });
