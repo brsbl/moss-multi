@@ -47,6 +47,9 @@ export const SUGGEST_REVIEW_RATE = { max: 30, windowMs: 60_000 } as const;
 /** Suggestion previews per principal per window (O(doc) each; a panel previews each open card); 429 past it. */
 export const SUGGEST_PREVIEW_RATE = { max: 120, windowMs: 60_000 } as const;
 
+/** Named versions per principal per window (each stores a copy of the doc); 429 past it. */
+export const NAMED_VERSION_RATE = { max: 10, windowMs: 60_000 } as const;
+
 /**
  * Working-view exports (the note with every open suggestion applied, O(doc) per record) one DocDO computes per window,
  * whoever asks; a read the DocDO serves from its cache is not counted. Each caller is also charged SUGGEST_PREVIEW_RATE.

@@ -276,13 +276,18 @@ export function importBody(live: Y.Doc, markdown: string, admit?: Admit, frontma
 export function exportDocMarkdown(live: Y.Doc, noteId = live.guid): string {
   const mirror = mirrorOf(live);
   try {
-    mirror.editor.update(() => {
-      // Defense in depth: comments are never in the tree, but a mark a client wrote must not reach a file.
-      $stripCommentMarks();
-      $recomputeExportFormulas(noteId);
-    }, { discrete: true });
-    return composeFrontmatter(readField(live, 'frontmatter'), exportMarkdown(mirror.editor));
+    return exportMirror(mirror, noteId);
   } finally {
     mirror.dispose();
   }
+}
+
+/** A mirror's `.md` file, its frontmatter included. It edits the mirror's tree, so take any diff first. */
+export function exportMirror(mirror: Mirror, noteId: string): string {
+  mirror.editor.update(() => {
+    // Defense in depth: comments are never in the tree, but a mark a client wrote must not reach a file.
+    $stripCommentMarks();
+    $recomputeExportFormulas(noteId);
+  }, { discrete: true });
+  return composeFrontmatter(readField(mirror.doc, 'frontmatter'), exportMarkdown(mirror.editor));
 }

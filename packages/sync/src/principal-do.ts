@@ -2,7 +2,7 @@ import { getServerByName, Server, type Connection, type ConnectionContext, type 
 import { CLOSE, TRUSTED } from '@moss-multi/protocol/sync';
 import type { WorkspaceEvent } from '@moss-multi/protocol/workspace';
 import {
-  ACCESS_DEADLINE_MS, ACCESS_TICK_MS, COMMENT_OP_RATE, REMOTE_FETCH_RATE, REST_WRITE_RATE, SESSION_MAX_MS, SUGGEST_PREVIEW_RATE, SUGGEST_REVIEW_RATE, UPLOAD_RATE,
+  ACCESS_DEADLINE_MS, ACCESS_TICK_MS, COMMENT_OP_RATE, NAMED_VERSION_RATE, REMOTE_FETCH_RATE, REST_WRITE_RATE, SESSION_MAX_MS, SUGGEST_PREVIEW_RATE, SUGGEST_REVIEW_RATE, UPLOAD_RATE,
 } from '@moss-multi/protocol/limits';
 import { liveCredentials, TRY_AGAIN, withDeadline } from './access-epoch.ts';
 import { windowed } from './doc/admission.ts';
@@ -88,6 +88,7 @@ export class PrincipalDO extends Server<SyncEnv> {
   #comments: RateWindow | null = null;
   #reviews: RateWindow | null = null;
   #previews: RateWindow | null = null;
+  #versions: RateWindow | null = null;
   #registryReady = false;
   /** When the next access tick is due; null when nothing happened since the last one. */
   #tickAt: number | null = null;
@@ -302,5 +303,11 @@ export class PrincipalDO extends Server<SyncEnv> {
   takePreviewToken(): boolean {
     this.#previews ??= new RateWindow(SUGGEST_PREVIEW_RATE.max, SUGGEST_PREVIEW_RATE.windowMs, sqlAttempts(this.ctx.storage.sql, 'suggest-previews'));
     return this.#previews.take();
+  }
+
+  /** One named version saved by this principal on any doc; false past NAMED_VERSION_RATE. Persisted, as above. */
+  takeVersionToken(): boolean {
+    this.#versions ??= new RateWindow(NAMED_VERSION_RATE.max, NAMED_VERSION_RATE.windowMs, sqlAttempts(this.ctx.storage.sql, 'named-versions'));
+    return this.#versions.take();
   }
 }
