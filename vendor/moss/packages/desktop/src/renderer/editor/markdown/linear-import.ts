@@ -26,8 +26,8 @@ import { SERIF_FONT_FAMILY_MARKDOWN_STYLE_PATTERN } from './text-style';
 // rerun only once that match is passed; the format search decides from a short prefix when the rest cannot change
 // the answer, and reuses its answer until the parts pass the emphasis or code span it found; the split links the new
 // nodes in place. The work is charged with what it costs, never with where in the line it happens, against budgets
-// (LINEAR_IMPORT_LIMITS) that ordinary notes use a small part of; a line past one keeps the rest of its text as
-// literal text.
+// (LINEAR_IMPORT_LIMITS) that ordinary notes use a small part of; a line past one keeps its whole text as literal
+// text.
 // linear-import.golden.test.ts holds this to Lexical's own import over the corpus and fuzz.
 
 /**
@@ -221,6 +221,8 @@ interface Split {
 // Lexical's outer call already unescapes the top node after the driver returns, so the top gets no unescape here.
 function $importInline(top: TextNode, index: FormatIndex, matchers: TextMatchTransformer[]): void {
   const lineLength = top.getTextContentSize();
+  const original = { text: top.getTextContent(), format: top.getFormat(), style: top.getStyle(), detail: top.getDetail(), mode: top.getMode() };
+  const bounds = { before: top.getPreviousSibling(), after: top.getNextSibling() };
   const budget = new Budget(LINEAR_IMPORT_LIMITS.perChar * lineLength + LINEAR_IMPORT_LIMITS.base, importBudget?.left ?? Infinity);
   const parent = top.getParent();
   const line: ActiveLine = {
@@ -246,11 +248,9 @@ function $importInline(top: TextNode, index: FormatIndex, matchers: TextMatchTra
     if (read === undefined) budget.chargeImport(PARAGRAPH_READ * (lineLength + line.applied));
   };
   const stack: Frame[] = [{ node: top, context: null, offset: 0, top: true }];
-  // The frame being run, which a cut leaves undone.
-  let frame: Frame | undefined;
   try {
     while (stack.length > 0) {
-      frame = stack.pop()!;
+      const frame = stack.pop()!;
       if ('unescape' in frame) {
         budget.charge(frame.unescape.getTextContentSize() / NATIVE);
         $unescape(frame.unescape);
@@ -312,20 +312,33 @@ function $importInline(top: TextNode, index: FormatIndex, matchers: TextMatchTra
   } catch (error) {
     if (error !== OVER_BUDGET) throw error;
     linearImportStats.cut += 1;
-    // The rest of the line stays text, decoded as Lexical decodes each part it reaches: the part being run, the parts
-    // not reached yet (unless code) and the parts whose unescape is pending, code or not (the top is the outer
-    // import's to unescape).
-    if (frame) stack.push(frame);
-    for (const rest of stack) {
-      if ('unescape' in rest) $unescape(rest.unescape);
-      else if (!rest.top && canContainTransformableMarkdown(rest.node)) $unescape(rest.node);
-    }
+    $restoreLine(top, original, bounds, parent);
   } finally {
     activeLine = outerLine;
     if (importBudget) importBudget.left -= budget.importExcess();
     const share = 1 - budget.left / budget.allowance;
     if (share > linearImportStats.peakLineShare) linearImportStats.peakLineShare = share;
   }
+}
+
+// A cut line goes back to the one text node it came in as: its whole text literal, which the outer import then
+// decodes as it decodes any line, so no part of it depends on where the cut fell.
+function $restoreLine(
+  top: TextNode,
+  original: { text: string; format: number; style: string; detail: number; mode: ReturnType<TextNode['getMode']> },
+  bounds: { before: LexicalNode | null; after: LexicalNode | null },
+  parent: ElementNode | null,
+): void {
+  if (parent === null) return;
+  const made: LexicalNode[] = [];
+  for (let node = bounds.before ? bounds.before.getNextSibling() : parent.getFirstChild(); node !== null && !node.is(bounds.after); node = node.getNextSibling()) {
+    made.push(node);
+  }
+  for (const node of made) node.remove(true);
+  top.setTextContent(original.text).setFormat(original.format).setStyle(original.style).setDetail(original.detail).setMode(original.mode);
+  if (bounds.before) bounds.before.insertAfter(top, false);
+  else if (bounds.after) bounds.after.insertBefore(top, false);
+  else parent.append(top);
 }
 
 function canContainTransformableMarkdown(node: LexicalNode | undefined): node is TextNode {
