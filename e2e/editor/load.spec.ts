@@ -246,7 +246,8 @@ test('a newer external reload wins over an older one still waiting on its family
   const result = await page.evaluate((value) => {
     const fixture = (window as unknown as FixtureWindow).editorFixture;
     fixture.reset();
-    return fixture.mount(fixture.seed(['Notes', 'Plan'], { markdown: '# Plan\n\nFirst line\n', meta: value }));
+    fixture.seed(['Notes', 'Plan'], { markdown: '# Plan\n\nFirst line\n', meta: value });
+    return fixture.mount(value.id);
   }, meta('Plan'));
   expect(result).toEqual({ ok: true, status: 'clean' });
   const body = page.locator('[data-moss-editor] [data-moss-note-editor-root="true"]');
