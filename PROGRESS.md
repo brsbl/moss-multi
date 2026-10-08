@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 80% done** (95 of 119 planned tasks verified)
+**Overall: 81% done** (96 of 119 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -11,7 +11,7 @@
 | M4 Comments | Moss's full comment experience as CRDT data | 9 / 9 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 9 / 9 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 7 / 7 | in progress |
-| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 3 / 5 | in progress |
+| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 4 / 5 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
@@ -116,6 +116,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-08 — T6.S4 verified: restoring a version on a large note now succeeds while a peer types, because its restore point is staged in DocDO SQLite in the restore's turn and moved to R2 afterwards, and a crash before the move recovers on wake.
 - 2026-10-08 — T7.1s verified: the CLI now keeps every local read and write inside the workspace (real paths, no links out), opens device sign-in only on the server's own origin, follows no redirects, never prints the key, and escapes server text before it reaches the terminal.
 - 2026-10-08 — T7.2 verified: an agent can `push` an edited local note and it lands through a three-way structural merge against the base it pulled, so concurrent human edits survive and a push that would delete most of the note is refused unless forced.
+- 2026-10-08 — T7.3 verified: an agent's push shows a Bot-badged presence chip, `push --suggest` lands as a pending suggestion, an agent granted commenter by its owner can pull and comment but is refused on push and disconnected on revoke, a revoked key closes the agent's socket and 401s the CLI, and `comments` and `suggestions` list a note's threads and open suggestions.
 
 ## T1.1s identity audit
 
@@ -148,6 +149,12 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T7.3's checker (436984d, 2026-10-08)
+
+- T7.3 checker P2 (agent presence timer broadcasts are not re-validated per recipient): the 8 s refresh and 15 s removal call sendPresence from a timer, skipping the serialized access re-validation and trusting the cached presenceAllowed flag, so a recipient whose revocation kick was missed can keep getting the bot's awareness frames for up to 15 s; no body data or writes.
+- T7.3 checker P2 (a refused multi-op --suggest push can still notify reviewers): the ingest's onCreated sends the new-suggestion notice when the first op is admitted, so if a later op is refused (e.g. over the record cap) the record is withdrawn and the push 409s but the bell notice was already sent; the body is unaffected.
+- T7.3 checker P2 (a --suggest push that yields no ops is answered as an edit push): #suggestPush returns ok with no suggestionId and the route answers mode 'edit', so when every hunk failed the CLI prints 'push partly applied: N hunk(s) failed' though nothing was applied or suggested; no data is lost.
 
 ### From T7.2's checker (5e89406, 2026-10-08)
 
