@@ -47,9 +47,10 @@ export default defineConfig([
     rules: { 'moss/no-historic-tag': 'error' },
   },
   // ReDoS guard: our regexes run over user content, so none may backtrack super-linearly (docs/METHOD.md).
+  // A `.ref.ts` is a test-only verbatim copy of moss's code, held to moss's bytes like vendor/.
   {
     files: [`apps/**/*.${CODE}`, `packages/**/*.${CODE}`, `scripts/**/*.${CODE}`, `e2e/lib/**/*.${CODE}`],
-    ignores: ['vendor/**', '**/*.gen.ts'],
+    ignores: ['vendor/**', '**/*.gen.ts', '**/*.ref.ts'],
     plugins: { regexp },
     rules: {
       'regexp/no-super-linear-backtracking': 'error',

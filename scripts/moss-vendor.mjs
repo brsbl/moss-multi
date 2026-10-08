@@ -160,7 +160,7 @@ export function makePatch(path, before, after) {
     if (result.status !== 0 && result.status !== 1) throw new Error(`git diff ${path}: ${result.stderr}`);
     const text = result.stdout.toString('utf8');
     if (/^Binary files /m.test(text)) throw new Error(`${path}: binary files cannot be patched`);
-    return text.replace(/^index [0-9a-f]+\.\.[0-9a-f]+.*\n/m, '');
+    return text.replace(/^index [0-9a-f]+\.\.[0-9a-f].*\n/m, '');
   });
 }
 

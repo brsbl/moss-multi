@@ -8,7 +8,9 @@
 // main-process modules that cannot be imported into a browser bundle, so the function bodies are copied verbatim.
 // The only changes: types are loosened to plain records; a rest destructuring that drops keys becomes `delete`; `currentUnixSeconds()` reads `clock` (so tests can pin
 // it); `agentSessionRegistry` is empty (a bb frame runs no Moss agent); file reads become text parameters; and
-// `Buffer` byte work goes through TextEncoder/TextDecoder, which decode a cut sequence to U+FFFD as Buffer does.
+// `Buffer` byte work goes through TextEncoder/TextDecoder, which decode a cut sequence to U+FFFD as Buffer does; and
+// regexes that backtrack super-linearly on note text are replaced by linear equivalents (docs/METHOD.md), golden-tested
+// against moss's in note-store.linear.test.ts.
 /* eslint-disable @typescript-eslint/no-explicit-any -- verbatim ports over moss's own loose JSON shapes */
 import { MOSS_CANVAS_FENCE_PATTERN_SOURCE } from '@moss-desktop/common/markdown-fences';
 import { countMarkdownTables, extractLeadingH1, getMarkdownTabGroupShapes } from '@moss-desktop/common/markdown-utils';
@@ -131,7 +133,7 @@ const truncateToByteLimit = (value: string, maxBytes: number): string => {
   // Slice bytes and decode back — may produce a partial multi-byte char at the end
   const sliced = decoder.decode(encoded.subarray(0, maxBytes));
   // Drop any replacement character from a truncated multi-byte sequence
-  return sliced.replace(/�+$/, '').trimEnd();
+  return sliced.replace(/(?<!�)�+$/, '').trimEnd();
 };
 
 export const toFolderBaseName = (value: string): string => {
@@ -155,7 +157,10 @@ const CODE_BLOCK_REGEX = new RegExp(
   'g'
 );
 const INDENTED_CODE_LINE_REGEX = /^(?: {4}|\t).+/gm;
-const MARKDOWN_TABLE_SEPARATOR_REGEX = /^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*$/gm;
+// moss: /^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*$/gm. A match that began on a blank line ends where one from the
+// next non-blank line does, so the count is the same with the leading space kept to one line.
+export const MARKDOWN_TABLE_SEPARATOR_REGEX =
+  /^[^\S\n\r\u2028\u2029]*(?:\|\s*)?:?-{3,}:?\s*\|(?:\s*:?-{3,}:?\s*\|)*\s*:?-{3,}:?\s*$/gm;
 const IMAGE_MARKDOWN_REGEX = /!\[[^\]]*\]\((?:[^()\n]|\\\(|\\\))*\)/g;
 const EMPTY_NOTE_MAX_NON_EMPTY_LINES = 2;
 const EMPTY_NOTE_MAX_TEXT_CHARS = 120;
@@ -175,6 +180,67 @@ export const extractFirstH1TitleFromMarkdown = (markdown: string): string | unde
 const countMatches = (value: string, pattern: RegExp): number => {
   const matches = value.match(pattern);
   return matches ? matches.length : 0;
+};
+
+/**
+ * moss: `.replace(/\[\[[^\]]+\]\]/g, ' ')`, in one pass. Every `[[` before a start's first `]` shares that `]`, so a
+ * start that fails there resumes after it.
+ */
+export const blankWikiLinks = (text: string): string => {
+  let out = '';
+  let last = 0;
+  let at = text.indexOf('[[');
+  while (at !== -1) {
+    const close = text.indexOf(']', at + 2);
+    if (close === -1) break;
+    if (close > at + 2 && text[close + 1] === ']') {
+      out += `${text.slice(last, at)} `;
+      last = close + 2;
+      at = text.indexOf('[[', last);
+    } else {
+      at = text.indexOf('[[', close + 1);
+    }
+  }
+  return out + text.slice(last);
+};
+
+/**
+ * moss: `.replace(/\[[^\]]*\]\((?:[^()\n]|\\\(|\\\))*\)/g, ' ')`, in one pass. The target ends at its first `)` and
+ * fails at a line break or at a `(` not escaped by a `\` inside it; a later start whose target begins before a known
+ * failure fails there too, so no stretch of text is scanned twice.
+ */
+export const blankMarkdownLinks = (text: string): string => {
+  let out = '';
+  let last = 0;
+  let failedAt = -1;
+  let at = text.indexOf('[');
+  while (at !== -1) {
+    const close = text.indexOf(']', at + 1);
+    if (close === -1) break;
+    const target = close + 2;
+    let end = -1;
+    if (text[close + 1] === '(' && target > failedAt) {
+      for (let k = target; ; k += 1) {
+        const char = text[k];
+        if (char === ')') {
+          end = k;
+          break;
+        }
+        if (char === undefined || char === '\n' || (char === '(' && (k === target || text[k - 1] !== '\\'))) {
+          failedAt = k;
+          break;
+        }
+      }
+    }
+    if (end === -1) {
+      at = text.indexOf('[', close + 1);
+      continue;
+    }
+    out += `${text.slice(last, at)} `;
+    last = end + 1;
+    at = text.indexOf('[', last);
+  }
+  return out + text.slice(last);
 };
 
 const stripFrontmatterAndFooter = (content: string): string => {
@@ -236,14 +302,15 @@ export const classifyNoteContentType = (content: string): string => {
     }
   }
 
-  const textOnly = body
-    .replace(CHART_BLOCK_REGEX, ' ')
-    .replace(CANVAS_BLOCK_REGEX, ' ')
-    .replace(CODE_BLOCK_REGEX, ' ')
-    .replace(IMAGE_MARKDOWN_REGEX, ' ')
-    .replace(/\[\[[^\]]+\]\]/g, ' ')
-    .replace(/`[^`]+`/g, ' ')
-    .replace(/\[[^\]]*\]\((?:[^()\n]|\\\(|\\\))*\)/g, ' ')
+  const textOnly = blankMarkdownLinks(
+    blankWikiLinks(
+      body
+        .replace(CHART_BLOCK_REGEX, ' ')
+        .replace(CANVAS_BLOCK_REGEX, ' ')
+        .replace(CODE_BLOCK_REGEX, ' ')
+        .replace(IMAGE_MARKDOWN_REGEX, ' ')
+    ).replace(/`[^`]+`/g, ' ')
+  )
     .replace(/[>#*_-]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();

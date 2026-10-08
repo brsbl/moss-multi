@@ -199,6 +199,6 @@ export function recordBase(root: string, docId: string, rel: string, bytes: Uint
 export function localName(filename: string, title: string): string {
   const last = filename.split(/[\\/]/).pop() ?? '';
   if (isAllowedName(last) && !last.startsWith('pending-') && last !== '.md' && !last.startsWith('.')) return last;
-  const slug = title.trim().toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-+|-+$/g, '').slice(0, 80);
+  const slug = title.trim().toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-+|(?<!-)-+$/g, '').slice(0, 80);
   return `${slug || 'untitled'}.md`;
 }
