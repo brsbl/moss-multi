@@ -543,6 +543,18 @@ describe('the workspace confines every local file', () => {
     expect(readFileSync(join(outside, 'secret.md'), 'utf8')).toBe('private key material');
   });
 
+  it('the state directory is refused in any letter case, as a case-insensitive volume would resolve it', async () => {
+    expect((await cli(['pull', ID_A, 'plan.md'])).code).toBe(0);
+    const meta = readFileSync(join(dir, '.moss-multi', ID_A, 'meta.json'), 'utf8');
+    mkdirSync(join(dir, '.MOSS-MULTI', ID_A), { recursive: true });
+    writeFileSync(join(dir, '.MOSS-MULTI', ID_A, 'meta.json'), meta);
+    expect((await cli(['pull', ID_B, `.MOSS-MULTI/${ID_A}/meta.json`, '--force'])).code).toBe(1);
+    expect((await cli(['pull', ID_B, `.Moss-Multi/${ID_A}/meta.json`, '--force'])).code).toBe(1);
+    expect(readFileSync(join(dir, '.MOSS-MULTI', ID_A, 'meta.json'), 'utf8')).toBe(meta);
+    expect((await cli(['add', `.MOSS-MULTI/${ID_A}/meta.json`])).code).toBe(1);
+    expect(server.seen.filter((call) => call.method === 'POST')).toEqual([]);
+  });
+
   it('add refuses a link out of the workspace, sending nothing', async () => {
     mkdirSync(join(dir, '.moss-multi'));
     symlinkSync(join(outside, 'secret.md'), join(dir, 'secret.md'));
