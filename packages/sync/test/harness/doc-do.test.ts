@@ -605,7 +605,8 @@ describe('answers', () => {
     await reader.hello();
     const answer = reader.socket.sent.slice(from).filter((frame): frame is Uint8Array => typeof frame !== 'string' && frame[0] === 0 && frame[1] !== 0);
     expect(answer.length, 'the answer is several frames').toBeGreaterThan(4);
-    expect(Math.max(...answer.map((frame) => frame.byteLength)), 'none is past the piece size').toBeLessThanOrEqual(256 * 1024 + 64);
+    // A piece ends at the first block boundary past its budget, so it may run a block over.
+    expect(Math.max(...answer.map((frame) => frame.byteLength)), 'none is past the piece size by more than a block').toBeLessThanOrEqual(260 * 1024);
     expect(answer.map((frame) => frame[1]), 'updates, then the one step 2').toEqual([...answer.slice(1).map(() => 2), 1]);
     expect(Y.encodeStateVector(reader.doc)).toEqual(Y.encodeStateVector(opened.dobj.document));
     expect(blockTypes(reader.doc)).toEqual(blockTypes(opened.dobj.document));

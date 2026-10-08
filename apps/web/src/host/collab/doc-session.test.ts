@@ -68,6 +68,8 @@ it('sends no step 1 while the last is unanswered and frames still arrive, and ke
     const peer = new Y.Doc();
     peer.getText('peer').insert(0, `${n++}`);
     socket.dispatchEvent(new MessageEvent('message', { data: encodeSyncFrame(step, Y.encodeStateAsUpdate(peer)).slice().buffer }));
+    // lib0 read Date.now before the fake clock replaced it: stamp the frame on the fake clock, as the provider would.
+    session.provider.wsLastMessageReceived = Date.now();
   };
   expect(step1s(), 'the step 1 on open').toBe(1);
   // A peer behind a large paste: its pieces arrive about once a second, and the answer is queued behind them.

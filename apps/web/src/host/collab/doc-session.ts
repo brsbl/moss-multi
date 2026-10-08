@@ -291,8 +291,9 @@ export class DocSession {
   #link: Link;
   #socketOpen = false;
   #lastResync = 0;
-  /** A step 1 this session sent has had no step 2 back yet (T3.S6b). */
+  /** A step 1 this session sent has had no step 2 back yet, and when a sync frame last arrived (T3.S6b). */
   #resyncOwed = false;
+  #syncHeard = 0;
   #visibleSince = 0;
   #lastTick = 0;
   #failedHandshakes = 0;
@@ -349,6 +350,7 @@ export class DocSession {
     // A step 2 from the server answers the last step 1.
     const sync = this.provider.messageHandlers[0];
     this.provider.messageHandlers[0] = (encoder, decoder, provider, emitSynced, type) => {
+      this.#syncHeard = Date.now();
       if (decoder.arr[decoder.pos] === 1) this.#resyncOwed = false;
       sync(encoder, decoder, provider, emitSynced, type);
     };
@@ -622,9 +624,9 @@ export class DocSession {
         ws.detach(CLOSE.heartbeat, 'heartbeat');
         return;
       }
-      // While frames still arrive, the answer to the last step 1 is queued behind them: another would only queue
-      // the whole backlog again. A peer behind a large paste was sent it once per 4 s, megabytes each time.
-      if (now - this.#lastResync >= RESYNC_MS && !(this.#resyncOwed && now - heard < RESYNC_MS)) this.#resync(ws);
+      // While sync frames still arrive, the answer to the last step 1 is queued behind them: another would only
+      // queue the whole backlog again. A peer behind a large paste was sent it once per 4 s, megabytes each time.
+      if (now - this.#lastResync >= RESYNC_MS && !(this.#resyncOwed && now - this.#syncHeard < RESYNC_MS)) this.#resync(ws);
     }
     this.#update(null);
   }
