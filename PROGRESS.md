@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 82% done** (98 of 120 planned tasks verified)
+**Overall: 80% done** (99 of 124 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -11,7 +11,7 @@
 | M4 Comments | Moss's full comment experience as CRDT data | 9 / 9 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 9 / 9 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 7 / 7 | in progress |
-| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 6 / 6 | in progress |
+| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 7 / 7 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
@@ -119,6 +119,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-08 — T7.3 verified: an agent's push shows a Bot-badged presence chip, `push --suggest` lands as a pending suggestion, an agent granted commenter by its owner can pull and comment but is refused on push and disconnected on revoke, a revoked key closes the agent's socket and 401s the CLI, and `comments` and `suggestions` list a note's threads and open suggestions.
 - 2026-10-08 — T7.4 verified: `moss-multi sync` keeps a local folder in step with the web: local edits appear on the web, web edits update the file, untracked files become docs titled from their stem, local deletes stay local, and moss vault notes keep their `# Title` line and comment markers.
 - 2026-10-08 — T7.L verified: CI's lint now fails any regex that can backtrack super-linearly, and every flagged one, including the CLI title-line parse and moss's note-type classifier, is a linear scan with the same results, so a hostile note or title can no longer stall the editor or server on a regex.
+- 2026-10-08 — T7.S1 verified: pushing a note with `%%m:` comment markers, images or trailing whitespace now converts in linear-time scans with the same output as moss, so a hostile 2 MB push can no longer stall the server.
 
 ## T1.1s identity audit
 
@@ -151,6 +152,13 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T7.S1's checker (7470712, 2026-10-08)
+
+- T7.S1 checker P2 (not every case named in the review's done criterion is tested through landPush; Codex FAIL, downgraded): push-markers.linear.test.ts drives only the modern `%%m:` opener plus blank lines through landPush, with no fork/suggest leg; the legacy opener, single-line space, image and format-whitespace shapes are tested only at function level.
+- T7.S1 checker P2 (the push timing test swallows every exception): push() ignores landPush's outcome and catches everything, so a regression that throws or returns before markdownToState would pass faster; assert the expected outcome or the specific refusal.
+- T7.S1 checker P2 (the image candidate scan is O(n log n), not strictly linear): nextOf binary-searches the positions array per candidate (12-16 comparisons per candidate at 4k-64k); passes the doubling bound but is not O(n).
+- T7.S1 checker P2 (characters typed during a concurrent push can land in the wrong paragraph; pre-existing M7 merge behavior): while an agent pushed a plain paragraph into a fresh doc, two of Ada's typed characters (' b') ended up after the agent's paragraph; belongs to the three-way merge (keepUntouched/spliceByBlock), not T7.S1.
 
 ### From T7.L's checker (adf7ead, 2026-10-08)
 
