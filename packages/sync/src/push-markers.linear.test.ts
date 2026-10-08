@@ -15,8 +15,8 @@ const NOTE = 'note-1';
 /** Pushed text that the old patterns rescanned from every position. */
 const ATTACKS: Record<string, (n: number) => string> = {
   // COMMENT_WRAPPED_ATX_HEADING_LINE and COMMENT_WRAPPED_IMAGE: an opener, then blanks.
+  // (A legacy `{%c:` opener takes the same scan; converter/comment-markers.linear.test.ts runs it.)
   'a marker opener and blank lines': (n) => `%%m:${'\n'.repeat(n - 5)}!`,
-  'a legacy opener and blank lines': (n) => `{%c:${'\n'.repeat(n - 5)}!`,
 };
 
 function expectLinear(run: (text: string) => void, attack: (n: number) => string): void {
