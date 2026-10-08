@@ -1,0 +1,22 @@
+{
+  "name": "@moss-multi/cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "moss-multi": "dist/moss-multi.mjs"
+  },
+  "scripts": {
+    "build": "esbuild src/bin.ts --bundle --platform=node --format=esm --target=node24 --outfile=dist/moss-multi.mjs",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@moss-multi/protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3",
+    "esbuild": "0.28.1",
+    "typescript": "5.9.3",
+    "vitest": "4.1.10"
+  }
+}

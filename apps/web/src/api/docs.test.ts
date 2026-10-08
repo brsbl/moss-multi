@@ -2,7 +2,7 @@
 // owner-only probe (A§19).
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
-import { BASE, insertDoc, insertLink, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
+import { BASE, insertAgent, insertDoc, insertGrant, insertLink, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
 import { d1Projections } from '@moss-multi/sync/projections';
 import { handleApi } from './router.ts';
 
@@ -344,5 +344,55 @@ describe('GET /api/docs/:id/content (T3.7 Save as Markdown)', () => {
     expect((await content(docId, null)).status).toBe(401);
     expect((await content(docId, ada.cookie, { method: 'POST', headers: { origin: BASE } })).status).toBe(405);
     expect(exported).toEqual([]);
+  });
+});
+
+describe('GET /api/docs and GET /api/vaults (the CLI\'s list and vaults, T7.1)', () => {
+  const get = (path: string, auth: { cookie: string } | { bearer: string } | null) =>
+    handleApi(new Request(`${BASE}${path}`, {
+      headers: auth && 'cookie' in auth ? { cookie: auth.cookie } : auth ? { authorization: `Bearer ${auth.bearer}` } : {},
+    }), env);
+  interface Listed { docs: { id: string; title: string; filename: string; role: string; vaultId: string }[] }
+
+  it('lists the live docs an agent can open, with its owner\'s access, and no trashed or foreign doc @p:agt-1', async () => {
+    const owner = await signedUpUser(env, 'docs-list-owner');
+    const stranger = await signedUpUser(env, 'docs-list-stranger');
+    const mine = await insertDoc(d1.db, owner);
+    const trashed = await insertDoc(d1.db, owner, { deleted: true });
+    const theirs = await insertDoc(d1.db, stranger);
+    const shared = await insertDoc(d1.db, stranger);
+    const agent = await insertAgent(d1.db, owner);
+    await insertGrant(d1.db, { docId: shared }, { id: agent.id, type: 'agent' }, 'commenter');
+    const response = await get('/api/docs', { bearer: agent.key });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    const { docs } = (await response.json()) as Listed;
+    const ids = docs.map((doc) => doc.id);
+    expect(ids).toContain(mine);
+    expect(ids).toContain(shared);
+    expect(ids).not.toContain(trashed);
+    expect(ids).not.toContain(theirs);
+    expect(docs.find((doc) => doc.id === mine)).toMatchObject({ title: '', filename: `${mine}.md`, role: 'editor', vaultId: owner.homeId });
+    expect(docs.find((doc) => doc.id === shared)).toMatchObject({ role: 'commenter' });
+    const asOwner = (await (await get('/api/docs', { cookie: owner.cookie })).json()) as Listed;
+    expect(asOwner.docs.find((doc) => doc.id === mine)).toMatchObject({ role: 'owner' });
+  });
+
+  it('lists the caller\'s vaults for a person and an agent', async () => {
+    const owner = await signedUpUser(env, 'docs-vaults-owner');
+    const agent = await insertAgent(d1.db, owner);
+    for (const auth of [{ cookie: owner.cookie }, { bearer: agent.key }]) {
+      const response = await get('/api/vaults', auth);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ vaults: [{ id: owner.homeId, name: 'Home', owned: true }] });
+    }
+  });
+
+  it('answers 401 with no credentials, a share token alone included', async () => {
+    const docId = await insertDoc(d1.db, ada);
+    const share = await insertLink(d1.db, { docId }, 'viewer');
+    expect((await get('/api/docs', null)).status).toBe(401);
+    expect((await get(`/api/docs?share=${share}`, null)).status).toBe(401);
+    expect((await get('/api/vaults', null)).status).toBe(401);
   });
 });

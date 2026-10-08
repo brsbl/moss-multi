@@ -356,6 +356,25 @@ importers:
         specifier: 13.6.31
         version: 13.6.31
 
+  packages/cli:
+    dependencies:
+      '@moss-multi/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+    devDependencies:
+      '@types/node':
+        specifier: 24.13.3
+        version: 24.13.3
+      esbuild:
+        specifier: 0.28.1
+        version: 0.28.1
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: 4.1.10
+        version: 4.1.10(@types/node@24.13.3)(happy-dom@20.14.5)(jsdom@26.1.0)(vite@8.3.2(@types/node@24.13.3)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.15))
+
   packages/core:
     dependencies:
       js-yaml:
