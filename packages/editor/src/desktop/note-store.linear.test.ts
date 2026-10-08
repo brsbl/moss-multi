@@ -15,7 +15,7 @@ import {
 } from './note-store.port';
 
 const count = (text: string, pattern: RegExp): number => (text.match(pattern) ?? []).length;
-const spans = (text: string, pattern: RegExp): [number, number][] => [...text.matchAll(pattern)].map((match) => [match.index, match.index + match[0].length]);
+const spans = (text: string, pattern: RegExp): [number, number][] => [...text.matchAll(pattern)].map((match) => [match.index!, match.index! + match[0].length]);
 const MOSS_CODE_BLOCK_REGEX = new RegExp('```(?!(?:moss-chart|' + MOSS_CANVAS_FENCE_PATTERN_SOURCE + ')\\b)[^\\n]*\\n[\\s\\S]*?```', 'g');
 
 const REWRITES: [string, (text: string) => unknown, (text: string) => unknown, string[], ((n: number) => string)[]][] = [
