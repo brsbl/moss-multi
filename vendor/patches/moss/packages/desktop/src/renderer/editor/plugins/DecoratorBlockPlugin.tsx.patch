@@ -1,7 +1,7 @@
 diff --git a/packages/desktop/src/renderer/editor/plugins/DecoratorBlockPlugin.tsx b/packages/desktop/src/renderer/editor/plugins/DecoratorBlockPlugin.tsx
 --- a/packages/desktop/src/renderer/editor/plugins/DecoratorBlockPlugin.tsx
 +++ b/packages/desktop/src/renderer/editor/plugins/DecoratorBlockPlugin.tsx
-@@ -29,6 +29,7 @@ import {
+@@ -30,13 +30,16 @@ import {
    $isRangeSelection,
    $isTextNode,
    $setSelection,
@@ -9,7 +9,8 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/DecoratorBlockPlugin.t
    CLICK_COMMAND,
    COMMAND_PRIORITY_HIGH,
    COMMAND_PRIORITY_LOW,
-@@ -36,6 +37,7 @@ import {
++  COMPOSITION_START_COMMAND, // moss-multi seam: type-after-block (T3.13)
+   KEY_ARROW_DOWN_COMMAND,
    KEY_ARROW_UP_COMMAND,
    KEY_BACKSPACE_COMMAND,
    KEY_DELETE_COMMAND,
@@ -17,7 +18,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/DecoratorBlockPlugin.t
    KEY_ENTER_COMMAND,
    type LexicalEditor,
    type LexicalNode
-@@ -375,6 +377,10 @@ export function DecoratorBlockPlugin(): null {
+@@ -376,6 +379,10 @@ export function DecoratorBlockPlugin(): null {
        if (isCommentUiOpen()) {
          return null;
        }
@@ -28,7 +29,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/DecoratorBlockPlugin.t
  
        if (!(target instanceof HTMLElement)) {
          return null;
-@@ -635,6 +641,46 @@ export function DecoratorBlockPlugin(): null {
+@@ -636,6 +643,58 @@ export function DecoratorBlockPlugin(): null {
      };
    }, [editor]);
  
@@ -36,7 +37,8 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/DecoratorBlockPlugin.t
 +  // leaves a chart) starts a paragraph below it, as Enter does. Lexical's beforeinput leaves a NodeSelection to the
 +  // browser, which typed at the root's first caret position, each character before the last (Chromium), or nowhere
 +  // (WebKit, which has no DOM selection to type into). A printable key on the root itself is taken at keydown; any
-+  // other text input (a virtual keyboard) at beforeinput.
++  // other text input (a virtual keyboard) at beforeinput. A composition (IME, a dead key) raises neither: when it starts
++  // on the root, the paragraph below is made and selected before Lexical's own handler, which then composes there.
 +  useEffect(() => {
 +    const $typeAfter = (text: string): boolean => {
 +      if (!editor.isEditable()) return false;
@@ -66,9 +68,20 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/DecoratorBlockPlugin.t
 +      },
 +      COMMAND_PRIORITY_LOW
 +    );
++    const unregisterComposition = editor.registerCommand(
++      COMPOSITION_START_COMMAND,
++      (event) => {
++        if (event.target !== editor.getRootElement() || !editor.isEditable()) return false;
++        const node = $getSelectedAnyBlockDecorator();
++        if (node) $insertParagraphAt(node, 'after');
++        return false;
++      },
++      COMMAND_PRIORITY_LOW
++    );
 +    return () => {
 +      unregisterKey();
 +      unregisterInput();
++      unregisterComposition();
 +    };
 +  }, [editor]);
 +

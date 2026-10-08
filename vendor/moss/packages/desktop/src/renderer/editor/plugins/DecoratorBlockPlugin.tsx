@@ -34,6 +34,7 @@ import {
   CLICK_COMMAND,
   COMMAND_PRIORITY_HIGH,
   COMMAND_PRIORITY_LOW,
+  COMPOSITION_START_COMMAND, // moss-multi seam: type-after-block (T3.13)
   KEY_ARROW_DOWN_COMMAND,
   KEY_ARROW_UP_COMMAND,
   KEY_BACKSPACE_COMMAND,
@@ -646,7 +647,8 @@ export function DecoratorBlockPlugin(): null {
   // leaves a chart) starts a paragraph below it, as Enter does. Lexical's beforeinput leaves a NodeSelection to the
   // browser, which typed at the root's first caret position, each character before the last (Chromium), or nowhere
   // (WebKit, which has no DOM selection to type into). A printable key on the root itself is taken at keydown; any
-  // other text input (a virtual keyboard) at beforeinput.
+  // other text input (a virtual keyboard) at beforeinput. A composition (IME, a dead key) raises neither: when it starts
+  // on the root, the paragraph below is made and selected before Lexical's own handler, which then composes there.
   useEffect(() => {
     const $typeAfter = (text: string): boolean => {
       if (!editor.isEditable()) return false;
@@ -676,9 +678,20 @@ export function DecoratorBlockPlugin(): null {
       },
       COMMAND_PRIORITY_LOW
     );
+    const unregisterComposition = editor.registerCommand(
+      COMPOSITION_START_COMMAND,
+      (event) => {
+        if (event.target !== editor.getRootElement() || !editor.isEditable()) return false;
+        const node = $getSelectedAnyBlockDecorator();
+        if (node) $insertParagraphAt(node, 'after');
+        return false;
+      },
+      COMMAND_PRIORITY_LOW
+    );
     return () => {
       unregisterKey();
       unregisterInput();
+      unregisterComposition();
     };
   }, [editor]);
 
