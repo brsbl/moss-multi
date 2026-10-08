@@ -17,11 +17,6 @@ export interface ConverterCase {
    * (dense short matches, tabs): the import keeps longer lines of them literally.
    */
   parityBytes?: number[];
-  /**
-   * False for lines that are mostly table cells: moss makes each cell's nodes at a fixed cost of microseconds, which
-   * no limit on a line's work can bound over a note of such lines, so they are held to the line budget only.
-   */
-  note?: false;
 }
 
 export const CONVERTER_CASES: Record<string, ConverterCase> = {
@@ -48,6 +43,9 @@ export const CONVERTER_CASES: Record<string, ConverterCase> = {
   // Lexical's export split each text node with /^(\s*)(.*?)(\s*)$/s, quadratic on a whitespace run inside it.
   'whitespace between words': { run: ' ', after: 'x' },
   tabs: { run: '\t', after: 'x', parityBytes: [20, 36] },
+  // Numeric entities Lexical's unescape decodes to tabs after the inline pass, the backslash-escaped form included.
+  'entity tabs': { run: '&#9;', before: 'x ', parityBytes: [20, 36] },
+  'escaped entity tabs': { run: '&\\#9;', before: 'x ', parityBytes: [20, 36] },
   'divider then whitespace': { run: ' ', before: '|-|-', after: 'x' },
   'pill openers ?[ before one destination': { run: '?[', after: '](', tail: 'a' },
   'formatted pill openers *?[ before one destination': { run: '*?[', after: '](', tail: 'a' },
@@ -80,9 +78,9 @@ export const CONVERTER_CASES: Record<string, ConverterCase> = {
   'code spans inside one link label': { run: '``', before: 'quokka [', after: '](x)', parityBytes: [40, 80] },
   'table row of backslashes': { run: '\\', before: '| a | ', after: ' |' },
   'table cell of escaped backticks': { run: '\\`', before: '| `', after: 'x |', parityBytes: [40, 2_000] },
-  'table row of escaped wiki openers': { run: '\\[[a | ', before: '| a | ', after: ' |', note: false },
-  'table row of empty cells': { run: '|', before: '| a ', after: '', note: false },
-  'table cell of escaped pipes': { run: '\\|', before: '| a | ', after: ' |', note: false },
+  'table row of escaped wiki openers': { run: '\\[[a | ', before: '| a | ', after: ' |' },
+  'table row of empty cells': { run: '|', before: '| a ', after: '' },
+  'table cell of escaped pipes': { run: '\\|', before: '| a | ', after: ' |' },
 };
 
 /** The case's markdown, `bytes` long or just over. */
@@ -166,6 +164,7 @@ export const MULTILINE_CASES: Record<string, MultilineCase> = {
   'lines of one quote': { line: '> a\n' },
   'lines of one callout': { head: '> [!note]\n', line: '> a\n' },
   'tab-indented lines': { line: '\ta\n' },
+  'entity-tab-indented lines': { line: '&#9;a\n' },
   'tab group openers': { line: ':::tabs\n' },
   'tab group openers between blank lines': { line: ':::tabs\n\n' },
   'blockquote openers': { line: '<blockquote>\n' },

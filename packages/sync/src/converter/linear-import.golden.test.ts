@@ -325,6 +325,25 @@ describe('linear inline import @p:tech-4', () => {
       expect(textOf(importMarkdown(many))).toBe(many);
     }, 120_000);
 
+    // Numeric entities (`&#9;`, with leading zeros, or with an escaped `#`) decode to tabs after the inline pass, so they
+    // count toward `tabs` as literal tabs do: a line of more keeps them as text, tab for tab.
+    it('counts the tabs numeric entities decode to', () => {
+      const childTypes = (markdown: string) =>
+        importMarkdown(markdown).getEditorState().read(() => $getRoot().getFirstChildOrThrow<ElementNode>().getChildren().map((node) => node.getType()));
+      expect(childTypes('**a**&#9;b')).toContain('tab');
+      const over = LINEAR_IMPORT_LIMITS.tabs + 1;
+      for (const entity of ['&#9;', '&#0009;', '&\\#9;']) {
+        const many = `**a**${entity.repeat(over)}b`;
+        expect(cuts(() => importMarkdown(many))).toBe(1);
+        expect(childTypes(many)).toEqual(['text']);
+        // moss's normalization wraps an entity in zero-width spaces, which stay beside the tab it decodes to.
+        expect(textOf(importMarkdown(many)).replace(/\u200b/g, '')).toBe(`**a**${'\t'.repeat(over)}b`);
+      }
+      const mixed = `x ${'\t&#9;'.repeat(Math.ceil(over / 2))}`;
+      expect(cuts(() => importMarkdown(mixed))).toBe(1);
+      expect(childTypes(mixed)).toEqual(['text']);
+    }, 120_000);
+
     // Nothing about a cut depends on timing or on anything but the bytes imported.
     it('imports the same bytes the same way every time', () => {
       const stateOf = (markdown: string) => JSON.stringify(importMarkdown(markdown).getEditorState().toJSON());
@@ -378,6 +397,8 @@ describe('linear inline import @p:tech-4', () => {
     ['a table row of empty cells', (n: number) => `| a ${'|'.repeat(n)}`, 20_000],
     ['lines of one quote', (n: number) => '> a\n'.repeat(n), 4_000],
     ['tab-indented lines', (n: number) => '\ta\n'.repeat(n), 1_000],
+    ['entity-tab-indented lines', (n: number) => '&#9;a\n'.repeat(n), 1_000],
+    ['a line of entity tabs', (n: number) => `x ${'&#9;'.repeat(n)}`, 5_000],
     ['tab group openers', (n: number) => ':::tabs\n'.repeat(n), 2_000],
     ['table rows of open wiki links', (n: number) => '| [[a\n'.repeat(n), 1_000],
     ['table rows of open wiki links after a table', (n: number) => `| a | b |\n| --- | --- |\n${'| [[c | d |\n'.repeat(n)}`, 500],
