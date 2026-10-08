@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { liveUnits } from '@moss-multi/core/anchor-frame';
 import { readFrontmatter } from '@moss-multi/core/frontmatter';
-import { computeMergedTarget } from '@moss-multi/core/merge';
+import { computeMergedTarget, mergeBudget } from '@moss-multi/core/merge';
 import { landPush } from './push.ts';
 import { bodyState, ReconcileRefused } from './reconcile.ts';
 import { exportDocMarkdown, importBody, serverWrite } from './server-doc.ts';
@@ -185,6 +185,54 @@ describe('T7.2 structural push merge @p:agt-1 @p:tech-5', () => {
     expect(exported(live)).toBe(kept);
     expect(landPush(live, NOTE, { base, newText: most, force: true }, PUSH)).toMatchObject({ ok: true });
     expect(exported(live)).toBe(most);
+  });
+
+  it('refuses a drifted push whose merge runs out of budget midway: 409, nothing lands, forced or suggested (T7.S2)', () => {
+    // Twelve paragraphs each changed in many places: diffing them costs more than the small budget below.
+    let seed = 11;
+    const next = (): number => {
+      seed ^= seed << 13;
+      seed ^= seed >>> 17;
+      seed ^= seed << 5;
+      return (seed >>> 0) / 4294967296;
+    };
+    const letters = (n: number): string => Array.from({ length: n }, () => 'abcd'[Math.floor(next() * 4)]).join('');
+    const live = docOf(['Intro stays.', ...Array.from({ length: 12 }, (_, i) => `Paragraph ${i} ${letters(1_000)}`)].join('\n\n'));
+    const base = exported(live);
+    const pushed = base.split('\n\n').map((text, p) => (p === 0 ? text : [...text].map((c, i) => (i > 12 && i % 5 === 0 ? 'abcd'[Math.floor(next() * 4)] : c)).join(''))).join('\n\n');
+    typeAfter(live, 'Intro', ' (typed)');
+    const kept = exported(live);
+    const refusal = (input: Partial<Parameters<typeof landPush>[2]>): ReconcileRefused => {
+      const budget = mergeBudget(500_000);
+      let error: unknown;
+      try {
+        landPush(live, NOTE, { base, newText: pushed, force: false, budget, ...input }, PUSH);
+      } catch (thrown) {
+        error = thrown;
+      }
+      expect(budget.work, 'refused midway, once diffs had drawn on the budget').toBeLessThan(500_000);
+      expect(error).toBeInstanceOf(ReconcileRefused);
+      expect(exported(live), 'a refused push changes nothing').toBe(kept);
+      return error as ReconcileRefused;
+    };
+    const refused = refusal({});
+    expect(refused.status).toBe(409);
+    expect(refused.reason).toBe('unverified');
+    expect(refused.message).toMatch(/too many places.*nothing changed/);
+    expect(refusal({ force: true }).status, '--force does not skip the budget').toBe(409);
+    const fork = { client: 424242, ops: [] as { doc: string; update: Uint8Array }[] };
+    expect(refusal({ fork }).status, '--suggest is refused the same way').toBe(409);
+    expect(fork.ops, 'no suggestion op was collected').toEqual([]);
+    expect(landPush(live, NOTE, { base, newText: pushed, force: false }, PUSH), 'the default budget lands it').toMatchObject({ ok: true, failedHunks: [] });
+    expect(exported(live)).toBe(pushed.replace('Intro stays.', 'Intro (typed) stays.'));
+  });
+
+  it('lands an undrifted push even with its budget spent: its edits need not be exact (T7.S2)', () => {
+    const live = docOf(BODY);
+    const base = exported(live);
+    const next = base.replace('Charlie three changes.', 'Charlie three has changed.');
+    expect(landPush(live, NOTE, { base, newText: next, force: false, budget: mergeBudget(0) }, PUSH)).toMatchObject({ ok: true, failedHunks: [] });
+    expect(exported(live)).toBe(next);
   });
 
   it('returns a hunk it cannot place and lands the rest', () => {

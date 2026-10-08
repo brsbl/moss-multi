@@ -21,7 +21,6 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@sanity/diff-match-patch": "3.2.0",
     "js-yaml": "4.3.0",
     "lexical": "0.48.0",
     "lib0": "0.2.119",
