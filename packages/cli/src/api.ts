@@ -141,9 +141,14 @@ export function createApi(options: ApiOptions) {
       if (!response.ok) throw await refusal(response);
       return new Uint8Array(await response.arrayBuffer());
     },
-    /** `titleLine`: a leading `# Title` line is the title (moss interchange); `comments`: moss's comments.json. */
-    create: async (input: { title?: string; markdown?: string; folderId?: string; titleLine?: boolean; comments?: Record<string, unknown> }) =>
-      (await json<{ doc: { id: string; title: string; filename: string; folderId: string } }>('/api/docs', { method: 'POST', body: body(input) }, 'that folder')).doc,
+    /**
+     * `titleLine`: a leading `# Title` line is the title (moss interchange); `comments`: moss's comments.json. The
+     * answer's `content` is the created revision's export (absent from a server that predates it).
+     */
+    create: async (input: { title?: string; markdown?: string; folderId?: string; titleLine?: boolean; comments?: Record<string, unknown> }) => {
+      const created = await json<{ doc: { id: string; title: string; filename: string; folderId: string }; content?: unknown }>('/api/docs', { method: 'POST', body: body(input) }, 'that folder');
+      return { doc: created.doc, content: typeof created.content === 'string' ? created.content : undefined };
+    },
     rename: async (id: string, title: string) =>
       (await json<{ doc: { id: string; title: string } }>(doc(id), { method: 'PATCH', body: body({ title }) })).doc,
     trash: async (id: string) => {

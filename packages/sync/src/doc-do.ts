@@ -802,12 +802,13 @@ export class DocDO extends YServer<SyncEnv> {
 
   /**
    * Records the doc's folder and owner and writes its starting content: the seed, or an imported body. Idempotent:
-   * a repeated create changes nothing. Throws DocCapError for a body past the state cap.
+   * a repeated create changes nothing. Throws DocCapError for a body past the state cap. Returns the created
+   * revision's export, kept as a push base: the base the CLI adopts a file against (A§17).
    */
-  async create(input: CreateDocInput): Promise<void> {
+  async create(input: CreateDocInput): Promise<string> {
     const store = await this.#ready();
     this.#seed(store);
-    if (store.meta('created') !== null) return;
+    if (store.meta('created') !== null) return this.pullMarkdown();
     if (input.markdown) {
       const parts = splitFrontmatter(input.markdown);
       const hasFrontmatter = parts.hasFrontmatter && !parts.error;
@@ -824,12 +825,17 @@ export class DocDO extends YServer<SyncEnv> {
     const title = input.title?.trim();
     // POST /api/docs wrote a provisional row; the title and its filename arrive through the projection.
     if (title) writeTitle(this.document, title, SERVER_TITLE);
+    // Taken before the first await, so no later write can reach it.
+    const markdown = exportDocMarkdown(this.document, this.name);
+    this.#exported = markdown;
     this.#comments?.flush();
     store.setMeta('folder', input.folderId);
     store.setMeta('owner', input.ownerId);
     if (!title) await this.#projections?.initializeEmpty();
     await this.#projections?.flush();
     store.setMeta('created', '1');
+    this.#bases?.put(await sha256Hex(markdown), markdown);
+    return markdown;
   }
 
   /**
