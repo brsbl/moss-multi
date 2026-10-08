@@ -6,7 +6,6 @@ import { basename, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { TRASH_COPY } from '@moss-multi/protocol/retention';
 import { parseDocRef } from './docref.ts';
-import { isUnsafeChar } from './output.ts';
 import { runCli } from './program.ts';
 import { sha256Hex } from './workspace.ts';
 
@@ -428,7 +427,12 @@ describe('server text never drives the terminal', () => {
   const ID_D = '44444444-4444-4444-8444-444444444444';
   const ID_E = '66666666-6666-4666-8666-666666666666';
   const EVIL = 'Plan\u001b[2J\u001b]8;;https://evil.example.invalid\u0007click\u001b]8;;\u0007\u009b31m\u202egnp.exe\r';
-  const hasControl = (text: string) => [...text].some((char) => isUnsafeChar(char.charCodeAt(0)));
+  // Its own oracle, independent of output.ts: C0 but tab and LF, DEL and C1, bidi marks, embeddings and isolates.
+  const hasControl = (text: string) => [...text].some((char) => {
+    const code = char.codePointAt(0) ?? 0;
+    return (code < 0x20 && code !== 0x09 && code !== 0x0a) || (code >= 0x7f && code < 0xa0) ||
+      [0x061c, 0x200e, 0x200f, 0x2028, 0x2029].includes(code) || (code >= 0x202a && code <= 0x202e) || (code >= 0x2066 && code <= 0x2069);
+  });
   const row = (id: string, title: string) => ({ id, title, filename: 'plan.md', folderId: 'f', vaultId: 'v', role: 'owner', updatedAt: 0 });
 
   it('a title with escape sequences prints escaped in list, mv, a doc-reference error and a refusal', async () => {
@@ -527,6 +531,25 @@ describe('the workspace confines every local file', () => {
     symlinkSync(join(outside, 'secret.md'), join(dir, 'secret.md'));
     expect((await cli(['add', 'secret.md'])).code).toBe(1);
     expect(server.seen.filter((call) => call.method === 'POST')).toEqual([]);
+  });
+
+  it('add refuses a linked directory whose target holds its own .moss-multi, sending nothing', async () => {
+    mkdirSync(join(dir, '.moss-multi'));
+    mkdirSync(join(outside, '.moss-multi'));
+    symlinkSync(outside, join(dir, 'out'));
+    expect((await cli(['add', 'out/secret.md', '--json'])).code).toBe(1);
+    expect(server.seen.filter((call) => call.method === 'POST')).toEqual([]);
+  });
+
+  it('a name with a tab or a line break is refused, and a server filename holding one falls back to the slug', async () => {
+    expect((await cli(['pull', ID_A, 'a\tb.md'])).code).toBe(1);
+    expect((await cli(['pull', ID_A, 'a\nb.md'])).code).toBe(1);
+    expect(existsSync(join(dir, 'a\tb.md'))).toBe(false);
+    expect(existsSync(join(dir, 'a\nb.md'))).toBe(false);
+    server.docs[0].filename = 'two\nlines.md';
+    expect((await cli(['pull', ID_A])).code).toBe(0);
+    expect(existsSync(join(dir, 'two\nlines.md'))).toBe(false);
+    expect(existsSync(join(dir, 'garden-plan.md'))).toBe(true);
   });
 
   it('pull refuses a file name moss does not allow, and never writes a server filename that breaks the rules', async () => {
