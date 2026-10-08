@@ -42,7 +42,7 @@ Nothing else is configured by hand. The first run creates the D1 database and R2
 
 1. **preflight:** checks every secret is set, and that `STAGING_URL` is https and not loopback.
 2. **deploy:**
-   - **Checks the run.** The CI run must be green, with `build`, `ci-ok` and an e2e shard for every journey group in both engines. A grep run is refused.
+   - **Checks the run.** The CI run must be a green full lane: `checks`, `build`, `editor-host`, `oracle`, `parity`, `viewer`, `editor`, `canary` and `ci-ok` all succeeded, and an e2e shard for every journey group in both engines. A grep run is refused.
    - **Gets the bytes.** It downloads that run's `web-dist` artifact, the bytes e2e ran on. Nothing is rebuilt. It checks the provenance commit equals the run's head.
    - **Guards the upload.** No `.dev.vars*`, `.env*`, key or secrets file may be in the dist, and `dist/client/.assetsignore` must exclude `.dev.vars*` and `.env*` (from `apps/web/public/.assetsignore`). Every CI build checks the same.
    - **Confirms the account.** It runs `wrangler whoami`.

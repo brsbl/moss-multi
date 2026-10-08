@@ -2,7 +2,8 @@
 // Asserts a deployed Worker serves the tested bytes and no test hook (A§4.1, A§19, A§21): /api/version equals the
 // tested commit, bundleHash and clientHash with no-store, / carries the same build and its assets serve, and each hook
 // path, with and without a hook header, answers exactly as an unknown route: a 404. deploy-staging.yml runs it against
-// staging; ci.yml's build job runs it against the production-mode smoke stack.
+// staging; ci.yml's build job runs it against the production-mode smoke stack. ASSERT_HOOK_SECRET adds a probe with
+// that header: an e2e shard passes its hooks stack's secret and expects a failure, the check's negative control.
 //   node scripts/deploy/assert-deployed.mjs --base-url URL --expect-commit SHA --expect-bundle HASH --expect-client HASH [--wait SECONDS]
 import { randomBytes } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
@@ -35,16 +36,17 @@ async function answer(url, method, headers = {}) {
 }
 
 /** Every hook path that answers other than the unknown-route 404, or [] when none does. */
-export async function hookProblems(baseUrl) {
+export async function hookProblems(baseUrl, { secret = '' } = {}) {
   const problems = [];
   const token = () => randomBytes(6).toString('hex');
   for (const [method, hook] of HOOKS) {
     const unknown = await answer(`${baseUrl}/__no-such-route-${token()}`, method);
     if (unknown.status !== 404) problems.push(`${method} unknown route: ${unknown.status}, expected 404`);
-    for (const headers of [{}, { 'x-moss-test-hook': token() }]) {
+    const variants = [['', {}], [' with a hook header', { 'x-moss-test-hook': token() }]];
+    if (secret) variants.push([' with the hook secret', { 'x-moss-test-hook': secret }]);
+    for (const [header, headers] of variants) {
       const path = `/__test/docs/doc-${token()}/${hook}`;
       const hooked = await answer(`${baseUrl}${path}`, method, headers);
-      const header = headers['x-moss-test-hook'] ? ' with a hook header' : '';
       if (hooked.status !== 404) problems.push(`${method} ${path}${header}: ${hooked.status}, expected 404`);
       else if (hooked.type !== unknown.type || hooked.body !== unknown.body) {
         problems.push(`${method} ${path}${header}: a 404 that differs from the unknown route's`);
@@ -55,8 +57,8 @@ export async function hookProblems(baseUrl) {
 }
 
 /** Problems with what `baseUrl` serves against the tested build; [] when it is exactly that build, hook-free. */
-export async function deployedProblems(baseUrl, expected) {
-  return [...(await servingProblems(baseUrl, expected)), ...(await hookProblems(baseUrl))];
+export async function deployedProblems(baseUrl, expected, hookOptions = {}) {
+  return [...(await servingProblems(baseUrl, expected)), ...(await hookProblems(baseUrl, hookOptions))];
 }
 
 function parse(argv) {
@@ -78,7 +80,7 @@ async function main(argv) {
   for (;;) {
     let problems;
     try {
-      problems = await deployedProblems(baseUrl, expected);
+      problems = await deployedProblems(baseUrl, expected, { secret: process.env.ASSERT_HOOK_SECRET ?? '' });
     } catch (error) {
       problems = [`${baseUrl}: ${error.cause?.code ?? error.message}`];
     }
