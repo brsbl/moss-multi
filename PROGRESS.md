@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 81% done** (105 of 130 planned tasks verified)
+**Overall: 82% done** (106 of 130 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -12,7 +12,7 @@
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 9 / 9 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 7 / 7 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 10 / 10 | in progress |
-| M8 Ship | Everything on a permanent staging URL with demo content | 3 / 5 | |
+| M8 Ship | Everything on a permanent staging URL with demo content | 4 / 5 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -126,6 +126,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-08 — T8.4 verified: MIGRATION.md maps each part of moss-multi back onto moss desktop at the pin (vendor seams, bridge namespaces, converter extraction, collab layer, registers, comments, suggestions, history, server model, CLI), and CI fails if any of its file or symbol citations goes stale.
 - 2026-10-08 — T7.S4 verified: `moss-multi sync` adopting a moss note now records the created revision as its base right after create, so a peer edit made before the first read survives a later local edit, and a retry after a failed create resumes the tracked doc instead of making a second one.
 - 2026-10-08 — T8.D verified: the staging deploy pipeline exists and is validated by dry run: `env.staging`, a `deploy-staging.yml` that ships the exact tested `dist`, an `/api/version` check, test hooks answering 404 on staging, `.dev.vars` never uploaded, and a canary that uses a fixed pool of test principals under a request budget.
+- 2026-10-08 — T8.5p verified: `scripts/demo.mjs` builds the demo workspace through the real UI on any stack (a launch-plan note and an every-node note, two test people with live comments, replies, reactions and pending suggestions) and captures the signature shot of a peer's cursor and a suggestion beside rich nodes.
 
 ## T1.1s identity audit
 
@@ -158,6 +159,14 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T8.5p's checker (5a1e2ca, 2026-10-08)
+
+- T8.5p checker P2 (Ben's reaction is missing after a first run): comments runs Ada, Ben, Ada, so Ada's reply on Ben's thread lands only in the last pass and Ben's 🎉 reaction on it is skipped until a second run; add all replies before reactions, or a final Ben pass.
+- T8.5p checker P2 (a run interrupted after the title is saved never finishes the note): the note step treats any note with that title as complete, so an interrupted paste or media upload is skipped on re-run and a later step (comment selection or the video shot) fails.
+- T8.5p checker P2 (no CI test runs the generator end to end): demo.test.mjs covers only the planners, config and step-script compilation; no journey runs buildDemo or a browser step, so a broken selector would pass CI.
+- T8.5p checker P2 (the every-node fixture omits some families): it has no embed pill, no web embed and no heading four, all of which are in j14's family census.
+- T8.5p checker P2 (concurrent runs on one host share a run directory): two invocations against the same stack, even with different --prefix values, overwrite each other's state.json and principals.json and can close each other's browser session; a lock or the prefix in the run id would prevent it.
 
 ### From T8.D's checker (aff3e75, 2026-10-08)
 
