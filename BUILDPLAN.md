@@ -594,6 +594,8 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
 - **T6.3 History view** `[B·fresh]`
   - **Scope:** glyphdown's history page rebuilt in the moss DS inside the editor pane (A§14): the version list with badges, View and Diff vs current, Restore with ConfirmationDialog, `VersionHistoryEmptyState`, a first named checkpoint from the empty state, honest errors.
   - **Tests first:** journey **j17-history**: an auto version appears after the last disconnect; a selected version is read-only; Diff vs current shows the peer's change; a named version is saved from the empty state and from a non-empty list; restore while the peer types keeps the peer's insert and a comment anchor; a versions fetch failed with `page.route` renders an error, never "No checkpoints".
+  - **Required red-first test (T6.2 checker P2):** a version whose title exceeds 200 characters shows its full title in View and Diff (read content.title, not the list's truncated VersionMeta title).
+  - **Required red-first test (T6.2 checker P2):** j17's last-disconnect leg closes every actor page (page.close()) or moves it off the doc before expecting the auto version, and asserts the version appears within a few seconds of the last socket closing.
   - **Done:** j17 is green, with a triptych against the glyphdown history page.
 
 **Exit criteria:** a restore during peer typing keeps the peer's insert and the anchors; view is read-only and diff shows the peer's change; a failed fetch shows an error.
