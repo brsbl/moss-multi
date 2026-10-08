@@ -960,7 +960,8 @@ test.describe('editor fixes before 0.3.0', () => {
     // The chart's JSON editor and the HTML block's source, changed without pressing Apply or Done.
     await body(page).getByRole('button', { name: 'Edit', exact: true }).click();
     await body(page).locator('textarea').first().fill('{"type":"bar","title":"Edited","data":[{"label":"A","value":9}]}');
-    await body(page).getByRole('button', { name: 'Edit HTML' }).click();
+    // moss's preview layer covers the block's header buttons until hover, so the press goes to the button itself.
+    await body(page).getByRole('button', { name: 'Edit HTML' }).dispatchEvent('click');
     await expect(body(page).locator('textarea')).toHaveCount(2);
     await body(page).locator('textarea').last().fill('<p>HTML draft.</p>');
     await page.evaluate(() => window.editorFixture.delayWrites(1_500));
@@ -980,7 +981,15 @@ test.describe('editor fixes before 0.3.0', () => {
     const seen = await open(page);
     await mountNote(page, '# Plan\n\nFirst line\n');
     await body(page).getByText('First line').click();
-    await page.keyboard.press('End');
+    // The caret at the end of the line (End is not a line end in every engine).
+    await body(page).evaluate((root) => {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        if ((node as Text).data === 'First line') return document.getSelection()?.collapse(node, (node as Text).data.length);
+      }
+      throw new Error('no First line');
+    });
+    await frames(page);
     await page.keyboard.press('Enter');
     await page.keyboard.type('/bar');
     await expect(page.getByText('Bar Chart', { exact: true })).toBeVisible();
