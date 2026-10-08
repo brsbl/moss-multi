@@ -7,7 +7,6 @@ import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { liveUnits } from '@moss-multi/core/anchor-frame';
 import { readFrontmatter } from '@moss-multi/core/frontmatter';
-import { fixture } from './converter/fixtures.ts';
 import { landPush } from './push.ts';
 import { bodyState } from './reconcile.ts';
 import { exportDocMarkdown, importBody, serverWrite } from './server-doc.ts';
@@ -241,9 +240,14 @@ describe('T7.2 structural push merge @p:agt-1 @p:tech-5', () => {
     expect(exported(live).endsWith('\n\nEcho five still stays and more.')).toBe(true);
   });
 
-  for (const name of ['code-blocks', 'entities']) {
+  // The converter's NOT_IDEMPOTENT fixtures: a re-import of their export differs from the first import.
+  const LOSSY: Record<string, string> = {
+    'code-blocks': 'Intro.\n\n````markdown\n```js\ninner fence\n```\n````\n\nOutro.',
+    entities: 'Entities stay literal: &#160; and &amp; and &lt;tag&gt;.\n\nA non-breaking space between words.',
+  };
+  for (const [name, markdown] of Object.entries(LOSSY)) {
     it(`leaves untouched blocks the converter would not re-import exactly alone (${name})`, () => {
-      const live = docOf(fixture(name).markdown);
+      const live = docOf(markdown);
       const base = exported(live);
       const before = bodyState(live).root.children;
       const ids = blockIds(live);
