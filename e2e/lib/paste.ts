@@ -100,6 +100,12 @@ async function watchWire(actor: Actor): Promise<Wire> {
           console.log(`${log} ${code} ${reason} at ${Math.round(performance.now())} ms`);
         });
       }
+
+      // A close the page asks for, logged with the code it asks for: a 1006 the browser reports may follow it.
+      override close(code?: number, reason?: string): void {
+        if (this.url.includes(path)) console.log(`${log} asked ${code ?? '-'} ${reason ?? ''} at ${Math.round(performance.now())} ms`);
+        super.close(code, reason);
+      }
     };
   }, { path: DOC_SOCKET_PATH, log: CLOSE_LOG });
   return wire;
