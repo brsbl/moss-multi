@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 78% done** (102 of 130 planned tasks verified)
+**Overall: 79% done** (103 of 130 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -12,7 +12,7 @@
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 9 / 9 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 7 / 7 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 9 / 9 | in progress |
-| M8 Ship | Everything on a permanent staging URL with demo content | 1 / 5 | |
+| M8 Ship | Everything on a permanent staging URL with demo content | 2 / 5 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -123,6 +123,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-08 — T7.S2 verified: a push merge now runs on one counted step budget instead of a clock, so a costly or hostile push can no longer stall the server; a drifted push past the budget is refused 409 `push-unverified` with nothing landed, and a degenerate push is refused before the doc's own edits are diffed.
 - 2026-10-08 — T7.S3 verified: search snippets and heading text now strip comment markers, code fences and wiki-links in linear-time scans, so a hostile note can no longer stall search indexing.
 - 2026-10-08 — T8.0 verified: every web bundle now names its client protocol on the doc socket and REST, and the server refuses an older bundle (socket closed 4426, REST 426) so it never writes, showing a prompt to reload instead.
+- 2026-10-08 — T8.4 verified: MIGRATION.md maps each part of moss-multi back onto moss desktop at the pin (vendor seams, bridge namespaces, converter extraction, collab layer, registers, comments, suggestions, history, server model, CLI), and CI fails if any of its file or symbol citations goes stale.
 
 ## T1.1s identity audit
 
@@ -155,6 +156,13 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T8.4's checker (a30e669, 2026-10-08)
+
+- T8.4 checker P2 (MIGRATION.md says notes.getContent is the server export, but the bridge stubs it): `createBridge` returns empty content for every known note; the doc should separate the intended route from what exists today.
+- T8.4 checker P2 (the list of notes.update({content}) callers at the pin leaves out the normal save path): CanvasAreaContent's normal save and its conflict-recovery save also call it; the audit should include them or say it applies only after the bound-pane change.
+- T8.4 checker P2 (declares() counts a call at the start of a line as a declaration): the member regex matches any line starting with the identifier and '(', so a bare call such as mkdirSync(...) satisfies a path#Symbol citation and a citation can go stale unnoticed.
+- T8.4 checker P2 (citations under a missing top-level entry are skipped instead of reported): spans are recognized only when their first path component exists at the repo root, so a removed or renamed root-level file or directory silently drops its citations.
 
 ### From T8.0's checker (02d9cbc, 2026-10-08)
 
