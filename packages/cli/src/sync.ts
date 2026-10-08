@@ -160,7 +160,7 @@ function setAside(root: string, file: string, hunks: string[]): string {
     // None yet.
   }
   const stamp = `--- not applied to the doc, ${new Date().toISOString()}\n`;
-  writeConfined(root, rej, Buffer.from(`${before}${stamp}${hunks.map((hunk) => `${hunk.replace(/\n*$/, '')}\n`).join('')}`));
+  writeConfined(root, rej, Buffer.from(`${before}${stamp}${hunks.map((hunk) => `${hunk.replace(/(?<!\n)\n*$/, '')}\n`).join('')}`));
   return rej;
 }
 

@@ -289,7 +289,7 @@ describe('the editor writes what Moss desktop writes', () => {
 // desktop's rename of a temp over the path keeps the entry's old spelling on APFS. The bytes and every other name
 // are the same; on a case-insensitive volume only the letter case of that one entry may differ.
 const markdownEntryCase = (snapshot: Record<string, string>) =>
-  Object.fromEntries(Object.entries(snapshot).map(([path, text]) => [path.endsWith('.md') ? path.replace(/[^/]+$/, (name) => name.toLowerCase()) : path, text]));
+  Object.fromEntries(Object.entries(snapshot).map(([path, text]) => [path.endsWith('.md') ? path.replace(/(?<![^/])[^/]+$/, (name) => name.toLowerCase()) : path, text]));
 
 describe('the fixture host follows API 1 on a case-insensitive volume', () => {
   it('a case-only retitle respells the markdown entry to <folderName>.md', async () => {

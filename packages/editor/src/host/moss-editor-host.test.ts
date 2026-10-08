@@ -154,7 +154,7 @@ describe('moss-editor-host.js is one self-contained module', () => {
   const source = readFileSync(new URL('./moss-editor-host.js', import.meta.url), 'utf8');
 
   it('has no imports, no require and no globals beyond crypto.subtle and TextEncoder/TextDecoder', () => {
-    expect(source).not.toMatch(/^\s*import[\s{*]/m);
+    expect(source).not.toMatch(/^[^\S\n\r\u2028\u2029]*import[\s{*]/m);
     expect(source).not.toMatch(/\bimport\s*\(/);
     expect(source).not.toMatch(/\brequire\s*\(/);
     expect(source).not.toMatch(/\b(?:process|Buffer|window|document|navigator)\b/);

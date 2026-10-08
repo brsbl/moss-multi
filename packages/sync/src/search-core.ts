@@ -6,8 +6,28 @@ import { slug } from '@moss-multi/core/filenames';
 /** The one index's name (A§5.3): SearchDO('global'). */
 export const SEARCH_DO_NAME = 'global';
 
-/** `[[Target]]`, `[[Target|noteId]]`, `[[Target#Heading]]`; never an embed (`![[img.png]]`) or a same-note `[[#H]]`. */
-export const WIKI_LINK_RE = /(?<!!)\[\[([^\]]+)\]\]/g;
+/**
+ * The contents of `[[Target]]`, `[[Target|noteId]]`, `[[Target#Heading]]`; never an embed (`![[img.png]]`). What
+ * `/(?<!!)\[\[([^\]]+)\]\]/g` matched, in one pass: a start whose first `]` doesn't close the link can't be followed by
+ * one that does before that `]`, so the scan resumes after it (docs/METHOD.md).
+ */
+export function* wikiLinkContents(body: string): Generator<string> {
+  let at = body.indexOf('[[');
+  while (at !== -1) {
+    if (at > 0 && body[at - 1] === '!') {
+      at = body.indexOf('[[', at + 1);
+      continue;
+    }
+    const close = body.indexOf(']', at + 2);
+    if (close === -1) return;
+    if (close > at + 2 && body[close + 1] === ']') {
+      yield body.slice(at + 2, close);
+      at = body.indexOf('[[', close + 2);
+    } else {
+      at = body.indexOf('[[', close + 1);
+    }
+  }
+}
 
 /** moss's resolved-link suffix (markdown/transformers.ts at the pin): a UUID after the last pipe names the note. */
 const NOTE_ID_RE = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
@@ -27,8 +47,8 @@ export const wikiKey = (raw: string): string => slug(raw);
  */
 export function extractWikiLinks(body: string): string[] {
   const out = new Set<string>();
-  for (const match of body.matchAll(WIKI_LINK_RE)) {
-    const content = match[1].trim();
+  for (const link of wikiLinkContents(body)) {
+    const content = link.trim();
     const pipe = content.lastIndexOf('|');
     const primary = pipe >= 0 ? content.slice(0, pipe) : content;
     const suffix = pipe >= 0 ? content.slice(pipe + 1).trim() : '';
@@ -53,16 +73,50 @@ export function buildFtsMatch(query: string): string | null {
 
 /** moss's snippet cleaning (ipc-handlers notes:search at the pin): structure out, inline markdown kept for NoteCard. */
 export function cleanForSnippet(body: string): string {
-  return body
-    .replace(/<!--[\s\S]*?-->/g, '')
-    .replace(/<[^>]*>/g, '')
-    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+  return linkTexts(withoutTags(body.replace(/<!--[\s\S]*?-->/g, '')))
     .replace(/^#{1,6}\s+/gm, '')
     .replace(/^>\s?/gm, '')
-    .replace(/---+/g, '')
+    .replace(/-{3,}/g, '')
     .replace(/~~([^~]+)~~/g, '$1')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+/** `text.replace(/<[^>]*>/g, '')` in one pass: once a `<` has no `>` after it, no later one does. */
+export function withoutTags(text: string): string {
+  let out = '';
+  let last = 0;
+  for (let at = text.indexOf('<'); at !== -1; at = text.indexOf('<', last)) {
+    const close = text.indexOf('>', at + 1);
+    if (close === -1) break;
+    out += text.slice(last, at);
+    last = close + 1;
+  }
+  return out + text.slice(last);
+}
+
+/**
+ * `text.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')` in one pass: every `[` before a start's first `]` shares that `]`,
+ * so a start that fails there resumes after it, and once a `](` has no `)` after it, no later one does.
+ */
+export function linkTexts(text: string): string {
+  let out = '';
+  let last = 0;
+  let at = text.indexOf('[');
+  while (at !== -1) {
+    const close = text.indexOf(']', at + 1);
+    if (close === -1) break;
+    if (text[close + 1] !== '(') {
+      at = text.indexOf('[', close + 1);
+      continue;
+    }
+    const end = text.indexOf(')', close + 2);
+    if (end === -1) break;
+    out += text.slice(last, at) + text.slice(at + 1, close);
+    last = end + 1;
+    at = text.indexOf('[', last);
+  }
+  return out + text.slice(last);
 }
 
 /**
@@ -125,8 +179,48 @@ export interface HeadingInfo {
 export function parseHeadings(markdown: string): HeadingInfo[] {
   const outsideCode = markdown.replace(/```[\s\S]*?```/g, '');
   const headings: HeadingInfo[] = [];
-  for (const match of outsideCode.matchAll(/^(#{1,4})\s+(.+)$/gm)) {
-    headings.push({ level: match[1].length as HeadingInfo['level'], text: stripWikiLinks(match[2]).trim() });
+  for (const [hashes, text] of headingMatches(outsideCode)) {
+    headings.push({ level: hashes.length as HeadingInfo['level'], text: stripWikiLinks(text).trim() });
   }
   return headings;
+}
+
+const isLineBreak = (char: string): boolean => char === '\n' || char === '\r' || char === '\u2028' || char === '\u2029';
+const SPACE = /\s/;
+
+/**
+ * The groups of `/^(#{1,4})\s+(.+)$/gm`, scanned line by line in linear time. As in the regex, the spaces may run
+ * over line breaks, and spaces that run to the end leave their last non-break character as the text.
+ */
+export function headingMatches(text: string): [string, string][] {
+  const out: [string, string][] = [];
+  let line = 0;
+  while (line <= text.length) {
+    let next = -1;
+    let hashes = line;
+    while (text[hashes] === '#') hashes += 1;
+    let space = hashes;
+    if (hashes > line && hashes - line <= 4) while (space < text.length && SPACE.test(text[space]!)) space += 1;
+    if (space > hashes) {
+      if (space < text.length) {
+        let end = space;
+        while (end < text.length && !isLineBreak(text[end]!)) end += 1;
+        out.push([text.slice(line, hashes), text.slice(space, end)]);
+        next = end;
+      } else {
+        let last = text.length - 1;
+        while (last > hashes && isLineBreak(text[last]!)) last -= 1;
+        if (last > hashes) {
+          out.push([text.slice(line, hashes), text[last]!]);
+          next = last + 1;
+        }
+      }
+    }
+    // The next line starts after the next break at or after the match's end (or this line's start).
+    let at = next === -1 ? line : next;
+    while (at < text.length && !isLineBreak(text[at]!)) at += 1;
+    if (at >= text.length) break;
+    line = at + 1;
+  }
+  return out;
 }

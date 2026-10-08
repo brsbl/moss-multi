@@ -34,7 +34,7 @@ const BLANK_VARS = ['GITHUB_CLIENT_ID', 'GITHUB_CLIENT_SECRET', 'GOOGLE_CLIENT_I
   'EMAIL_FROM', 'POSTHOG_KEY', 'POSTHOG_HOST'];
 const LABELS = ['ada', 'ben', 'cy', 'dee', 'eve', 'fay', 'gus', 'hal'];
 const ENDED = new Set(['stopped', 'failed', 'reaped']);
-const RUN_PATH = /(\S*\/\.local-stack\/runs\/([A-Za-z0-9._-]+))\/state(?:\s|$)/;
+const RUN_PATH = /(?<!\S)(\S*\/\.local-stack\/runs\/([A-Za-z0-9._-]+))\/state(?:\s|$)/;
 
 const bin = (path) => join(WEB, 'node_modules', path); // apps/web's own vite and wrangler
 
@@ -75,7 +75,7 @@ export function persistDirFor(runDir, runId, stateDir) {
 
 export function parsePs(text) {
   return text.split('\n').flatMap((line) => {
-    const match = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/.exec(line);
+    const match = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+((?:\S.*)?)$/.exec(line);
     return match ? [{ pid: Number(match[1]), pgid: Number(match[2]), age: parseEtime(match[3]), command: match[4] }] : [];
   });
 }
@@ -236,7 +236,7 @@ async function fetchText(url, init) {
   return { status: response.status, type: response.headers.get('content-type') ?? '', headers: response.headers, text: await response.text() };
 }
 
-const attrs = (tag) => Object.fromEntries([...tag.matchAll(/([\w-]+)\s*=\s*"([^"]*)"/g)].map((m) => [m[1].toLowerCase(), m[2]]));
+const attrs = (tag) => Object.fromEntries([...tag.matchAll(/(?<![\w-])([\w-]+)\s*=\s*"([^"]*)"/g)].map((m) => [m[1].toLowerCase(), m[2]]));
 
 /** Problems with what the stack serves; empty when it serves exactly `expected`. */
 export async function servingProblems(baseUrl, expected) {

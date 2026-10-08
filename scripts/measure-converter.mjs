@@ -163,7 +163,7 @@ function processes() {
   const result = spawnSync('ps', ['-ax', '-o', 'pid=,ppid=,rss=,time=,command='], { encoding: 'utf8' });
   return result.stdout
     .split('\n')
-    .map((line) => line.match(/^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(.+)$/))
+    .map((line) => line.match(/^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S.*|[^\S\n\r\u2028\u2029])$/))
     .filter(Boolean)
     .map((m) => ({ pid: Number(m[1]), ppid: Number(m[2]), rssKb: Number(m[3]), cpuMs: parsePsTime(m[4]), command: m[5] }));
 }

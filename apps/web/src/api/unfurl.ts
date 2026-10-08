@@ -54,7 +54,7 @@ const clean = (text: string | undefined, max = 300): string | undefined => {
 
 function attributes(tag: string): Record<string, string> {
   const found: Record<string, string> = {};
-  for (const [, name, , double, single, bare] of tag.matchAll(/([a-zA-Z_:-]+)\s*=\s*("([^"]*)"|'([^']*)'|([^\s"'>]+))/g)) {
+  for (const [, name, , double, single, bare] of tag.matchAll(/(?<![a-zA-Z_:-])([a-zA-Z_:-]+)\s*=\s*("([^"]*)"|'([^']*)'|([^\s"'>]+))/g)) {
     found[name.toLowerCase()] = double ?? single ?? bare ?? '';
   }
   return found;

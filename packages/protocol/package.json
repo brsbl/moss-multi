@@ -13,6 +13,7 @@
     "./retention": "./src/retention.ts",
     "./roles": "./src/roles.ts",
     "./suggest": "./src/suggest.ts",
+    "./title-line": "./src/title-line.ts",
     "./sync": "./src/sync.ts",
     "./workspace": "./src/workspace.ts"
   }

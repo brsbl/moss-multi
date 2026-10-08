@@ -60,7 +60,7 @@ function writeConfigFile(env: Env, next: ConfigFile): string {
   return path;
 }
 
-export const normalizeServer = (url: string): string => url.trim().replace(/\/+$/, '');
+export const normalizeServer = (url: string): string => url.trim().replace(/(?<!\/)\/+$/, '');
 
 export function resolveConfig(env: Env): CliConfig {
   const file = readConfigFile(env);

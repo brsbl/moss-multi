@@ -92,7 +92,7 @@ export function groupOf(file, groups = GROUPS) {
  * @param {string} text
  * @returns {number}
  */
-export const countLegs = (text) => (text.match(/^\s*test(?:\.(?:only|fixme|fail|slow))?\(\s*[`'"]/gm) ?? []).length;
+export const countLegs = (text) => (text.match(/^[^\S\n\r\u2028\u2029]*test(?:\.(?:only|fixme|fail|slow))?\(\s*[`'"]/gm) ?? []).length;
 
 /**
  * The journey spec files in `dir`, each with its group, whether any leg is tagged @slow, and its leg declarations.
