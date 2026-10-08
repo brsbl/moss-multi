@@ -286,7 +286,7 @@ export class EditorSession {
         this.revision += 1;
       }
     }
-    if (!(await this.prepare(content))) throw editorError('unmounted', 'unmounted before the note was shown');
+    if ((await this.prepare(content)) === null) throw editorError('unmounted', 'unmounted before the note was shown');
     await this.surface.load(content, { keepView: false });
     if (this.abandoned) throw editorError('unmounted', 'unmounted before the note was shown');
     this.stopWatch = this.bridge.watch(this.noteId, (change) => this.onExternal(change));
@@ -680,34 +680,60 @@ export class EditorSession {
 
   /**
    * Fetches what `content` needs to show (its lazy views' chunks) and touches nothing meanwhile: edits keep going to
-   * the document on screen. True when this is still the newest preparation and the editor is still mounted, so the
-   * caller may apply it; the caller then decides and applies with no further await, so nothing can race the apply.
+   * the document on screen. Returns the preparation's number while it is still the newest and the editor is still
+   * mounted, so the caller may go on to apply it; null otherwise.
    */
-  private async prepare(content: EditorContent): Promise<boolean> {
+  private async prepare(content: EditorContent): Promise<number | null> {
     const preparation = ++this.preparations;
     const views = this.surface.prepare?.(content);
     if (views) await Promise.race([views.catch(() => undefined), this.gone]);
-    return preparation === this.preparations && !this.abandoned && this.unmounting === null && this.status !== 'unmounted';
+    return this.current(preparation) ? preparation : null;
+  }
+
+  private current(preparation: number): boolean {
+    return preparation === this.preparations && !this.abandoned && this.unmounting === null && this.status !== 'unmounted' && this.status !== 'removed';
+  }
+
+  /**
+   * Starts applying a preparation: takes the editor read-only, commits drafts not yet reported (a focused title,
+   * decorator drafts) so they count, and checks that nothing moved since `revision` and `base`. Returns the in-place
+   * load's number to apply under, with no further await before the apply; or 'stale' (a newer preparation or an
+   * unmount overtook it) or 'edited' (an edit or a save landed, unless `discard`), with editing given back.
+   */
+  private async beginApply(preparation: number, revision: number, base: NoteRead | null, discard: boolean): Promise<number | 'stale' | 'edited'> {
+    const load = ++this.loads;
+    this.surface.setEditable(false);
+    await this.surface.commit?.();
+    const outcome = !this.current(preparation) ? 'stale' : !discard && (this.revision !== revision || this.read !== base) ? 'edited' : load;
+    if (typeof outcome !== 'number') this.giveBack(load);
+    return outcome;
+  }
+
+  /** Makes the editor editable again after load `load`, unless a later load, removal or unmount owns it now. */
+  private giveBack(load: number): void {
+    if (load === this.loads && this.unmounting === null && this.status !== 'removed' && this.status !== 'unmounted') this.surface.setEditable(true);
   }
 
   /**
    * Shows `fresh` as the clean baseline. 'stale' when a newer load or an unmount overtook it while its views loaded;
-   * 'edited' when, with `keepEdits`, the user edited (or a save landed) meanwhile: nothing was applied, and the caller
+   * 'edited' when, unless `discard`, the user edited (or a save landed) meanwhile: nothing was applied, and the caller
    * handles the change again under its usual rules.
    */
   private async applyRead(
     fresh: NoteRead,
     cause: 'external' | 'host' | 'conflict',
     overwrittenSave: MossDraft | null,
-    keepEdits = cause !== 'conflict',
+    discard = false,
   ): Promise<'applied' | 'stale' | 'edited'> {
     // A read that finishes after teardown changes nothing.
     if (this.status === 'unmounted') return 'stale';
     const content = editorContentOfRead(fresh);
     const revision = this.revision;
     const base = this.read;
-    if (!(await this.prepare(content)) || this.status === 'removed') return 'stale';
-    if (keepEdits && (this.revision !== revision || this.read !== base)) return 'edited';
+    const preparation = await this.prepare(content);
+    if (preparation === null) return 'stale';
+    const load = await this.beginApply(preparation, revision, base, discard);
+    if (typeof load !== 'number') return load;
     this.read = fresh;
     this.draftBase = null;
     this.location = fresh.disk.location;
@@ -719,7 +745,7 @@ export class EditorSession {
     this.unsavedStartedAt = null;
     this.clearIdle();
     this.overwrittenDraft = overwrittenSave;
-    if (!(await this.loadInPlace(content))) return 'stale';
+    if (!(await this.loadInPlace(content, load))) return 'stale';
     if ((this.status as MossEditorStatus) === 'unmounted') return 'stale';
     // The editor's own change listener may have counted the load as an edit; nothing else could, as it was read-only.
     this.savedRevision = this.revision;
@@ -729,16 +755,14 @@ export class EditorSession {
   }
 
   /**
-   * Loads in place with the editor read-only, so nothing the user types can land while the load settles. False when
-   * a later load began while this one settled: that load owns the editor and reports.
+   * Loads in place with the editor read-only (beginApply made it so), so nothing the user types can land while the
+   * load settles. False when a later load began while this one settled: that load owns the editor and reports.
    */
-  private async loadInPlace(content: EditorContent): Promise<boolean> {
-    const load = ++this.loads;
-    this.surface.setEditable(false);
+  private async loadInPlace(content: EditorContent, load: number): Promise<boolean> {
     try {
       await this.surface.load(content, { keepView: true });
     } finally {
-      if (load === this.loads && this.status !== 'removed' && this.status !== 'unmounted') this.surface.setEditable(true);
+      this.giveBack(load);
     }
     return load === this.loads;
   }
@@ -754,7 +778,8 @@ export class EditorSession {
     const fresh = await this.tryRead();
     if (!fresh || (this.status as MossEditorStatus) !== 'conflict') return;
     if (choice === 'reload') {
-      if ((await this.applyRead(fresh, 'conflict', null)) !== 'applied') return;
+      // Text typed after Reload was pressed, while the new version's views loaded, keeps the conflict instead.
+      if ((await this.applyRead(fresh, 'conflict', null)) !== 'applied') return this.render();
       this.emit({ kind: 'conflictResolved', noteId: this.noteId, status: 'clean', resolution: 'reloaded' });
       return;
     }
@@ -776,13 +801,15 @@ export class EditorSession {
     const content = editorContentOfFiles(draft.files, draft.intents.commentColors, this.read.metaTitle);
     const revision = this.revision;
     const base = this.read;
-    if (!(await this.prepare(content)) || this.status === 'removed') return;
+    const preparation = await this.prepare(content);
+    if (preparation === null) return;
+    const load = await this.beginApply(preparation, revision, base, false);
     // The user edited meanwhile, or a save landed: restoring now would drop that, so the notice stays instead.
-    if (this.revision !== revision || this.read !== base) {
+    if (load === 'edited') {
       this.overwrittenDraft = draft;
       return this.render();
     }
-    if (!(await this.loadInPlace(content))) return;
+    if (load === 'stale' || !(await this.loadInPlace(content, load))) return;
     this.intentsOverride = draft.intents;
     this.revision += 1;
     this.setStatus('dirty');
@@ -849,7 +876,12 @@ export class EditorSession {
     return this.failureResult();
   }
 
-  async reload(options: MossReloadOptions = {}): Promise<MossReloadResult> {
+  reload(options: MossReloadOptions = {}): Promise<MossReloadResult> {
+    return this.reloadOnce(options, 0);
+  }
+
+  /** `overtaken` counts the loads of this call that a newer load overtook before they showed. */
+  private async reloadOnce(options: MossReloadOptions, overtaken: number): Promise<MossReloadResult> {
     try {
       await this.ready;
     } catch {
@@ -879,11 +911,16 @@ export class EditorSession {
       }
       if (this.status === 'unmounted') return { kind: 'error', error: editorError('unmounted', 'the editor was unmounted while the note was read') };
       const wasConflict = this.status === 'conflict';
-      const outcome = await this.applyRead(read, 'host', null, !options.discardUnsaved);
+      const outcome = await this.applyRead(read, 'host', null, options.discardUnsaved === true);
       // An edit made while the views loaded refuses the reload, as one made while the disk was read does.
-      if (outcome === 'edited') return this.reload(options);
+      if (outcome === 'edited') return this.reloadOnce(options, overtaken);
       if ((this.status as MossEditorStatus) === 'removed') return { kind: 'removed', reason: this.removedReason ?? 'notFound' };
       if ((this.status as MossEditorStatus) === 'unmounted') return { kind: 'error', error: editorError('unmounted', 'the editor was unmounted while the note loaded') };
+      // A newer load overtook this one, so its version never showed: reload again and report the one that does.
+      if (outcome === 'stale') {
+        if (overtaken >= 3) return { kind: 'error', error: new Error('the note kept changing while it loaded') };
+        return this.reloadOnce(options, overtaken + 1);
+      }
       if (wasConflict && outcome === 'applied') this.emit({ kind: 'conflictResolved', noteId: this.noteId, status: 'clean', resolution: 'reloaded' });
       return { kind: 'reloaded', version: read.disk.version };
     } catch (error) {
