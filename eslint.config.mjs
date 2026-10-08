@@ -1,5 +1,6 @@
 import js from '@eslint/js';
 import { defineConfig, globalIgnores } from 'eslint/config';
+import regexp from 'eslint-plugin-regexp';
 import globals from 'globals';
 import tseslint from 'typescript-eslint';
 import moss from './scripts/lint/moss-plugin.mjs';
@@ -44,6 +45,18 @@ export default defineConfig([
     files: [`apps/**/*.${CODE}`, `packages/**/*.${CODE}`, `vendor/**/*.${CODE}`],
     plugins: { moss },
     rules: { 'moss/no-historic-tag': 'error' },
+  },
+  // ReDoS guard: our regexes run over user content, so none may backtrack super-linearly (docs/METHOD.md).
+  {
+    files: [`apps/**/*.${CODE}`, `packages/**/*.${CODE}`, `scripts/**/*.${CODE}`, `e2e/lib/**/*.${CODE}`],
+    ignores: ['vendor/**', '**/*.gen.ts'],
+    plugins: { regexp },
+    rules: {
+      'regexp/no-super-linear-backtracking': 'error',
+      'regexp/no-super-linear-move': 'error',
+      'regexp/no-misleading-capturing-group': 'error',
+      'regexp/optimal-quantifier-concatenation': 'error',
+    },
   },
   // Inline directives in vendor/ are ignored, so a vendored file can neither disable the ban
   // nor fail on disable comments naming moss's own lint plugins.
