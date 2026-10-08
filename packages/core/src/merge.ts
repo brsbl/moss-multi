@@ -34,14 +34,15 @@ interface Edit {
 const deleted = (diffs: Diff[]): number => diffs.reduce((sum, [op, text]) => sum + (op === DIFF_DELETE ? text.length : 0), 0);
 const changes = (diffs: Diff[]): number => diffs.reduce((sum, [op]) => sum + (op === DIFF_EQUAL ? 0 : 1), 0);
 
-/**
- * The edits turning `base` into `side`, those on one line separated only by unchanged text joined into one. The raw
- * diff is used: a semantic cleanup can fold the blank line between two edited paragraphs into one edit.
- */
-function editsOf(base: string, side: string): Edit[] {
-  const runs: { start: number; end: number; from: number; to: number }[] = [];
-  let at = 0;
-  let from = 0;
+interface Run {
+  start: number;
+  end: number;
+  from: number;
+  to: number;
+}
+
+/** Changed runs of a character diff, positions offset into the whole texts. */
+function charRuns(base: string, side: string, at: number, from: number, runs: Run[]): void {
   for (const [op, text] of makeDiff(base, side)) {
     if (op !== DIFF_EQUAL) {
       const last = runs.at(-1);
@@ -54,13 +55,59 @@ function editsOf(base: string, side: string): Edit[] {
       from += text.length;
     }
   }
-  const joined: typeof runs = [];
+}
+
+const splitLines = (text: string): string[] => text.match(/[^\n]*\n|[^\n]+$/g) ?? [];
+const MAX_LINES = 0xd000; // one BMP code unit per distinct line, below the surrogates
+
+/**
+ * The edits turning `base` into `side`. Lines are diffed first, so an unchanged line always separates two edits and a
+ * character diff never aligns one paragraph with another; changed lines are then diffed by character, and changes on
+ * one line separated only by unchanged text are one edit.
+ */
+function editsOf(base: string, side: string): Edit[] {
+  const runs: Run[] = [];
+  const codes = new Map<string, string>();
+  const encode = (text: string): string => splitLines(text).map((line) => {
+    let code = codes.get(line);
+    if (code === undefined) codes.set(line, (code = String.fromCharCode(codes.size + 1)));
+    return code;
+  }).join('');
+  const baseCodes = encode(base);
+  const sideCodes = encode(side);
+  if (codes.size >= MAX_LINES) {
+    charRuns(base, side, 0, 0, runs);
+  } else {
+    const lines = [...codes.keys()];
+    const length = (codesOf: string): number => [...codesOf].reduce((sum, code) => sum + lines[code.charCodeAt(0) - 1]!.length, 0);
+    let at = 0;
+    let from = 0;
+    let region: Run | null = null;
+    const flush = (): void => {
+      if (region) charRuns(base.slice(region.start, region.end), side.slice(region.from, region.to), region.start, region.from, runs);
+      region = null;
+    };
+    for (const [op, text] of makeDiff(baseCodes, sideCodes, { checkLines: false })) {
+      const size = length(text);
+      if (op === DIFF_EQUAL) {
+        flush();
+        at += size;
+        from += size;
+        continue;
+      }
+      region ??= { start: at, end: at, from, to: from };
+      if (op === DIFF_DELETE) region.end = at += size;
+      if (op === DIFF_INSERT) region.to = from += size;
+    }
+    flush();
+  }
+  const joined: Run[] = [];
   for (const run of runs) {
     const last = joined.at(-1);
     if (last && !base.slice(last.end, run.start).includes('\n')) Object.assign(last, { end: run.end, to: run.to });
     else joined.push({ ...run });
   }
-  return joined.map(({ start, end, from: a, to: b }) => ({ start, end, text: side.slice(a, b) }));
+  return joined.map(({ start, end, from, to }) => ({ start, end, text: side.slice(from, to) }));
 }
 
 /** Whether two edits touch the same base region; an insertion at the edge of another edit does not. */
