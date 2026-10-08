@@ -3,8 +3,8 @@
 // (no test hooks) in ci.yml's build job, staging for T8.3. It signs up its own @example.invalid principals, then checks
 // headers, existence leaks, test hooks, client header stripping, the origin gate, token threading and revocation
 // (share links, agent keys, sessions, sockets included), SSRF refusals, body caps and rate limits. Each check prints
-// one line; the exit code is 1 when any failed. The limit checks spend most of the request budget (about 300 requests)
-// and run last, because they exhaust the stack's sign-in window for this address.
+// one line; the exit code is 1 when any failed. A run sends about 1,000
+// requests; the limit checks (about 250) run last, because they exhaust the sign-in window for this address.
 //   node scripts/security/sweep.mjs --base-url URL [--json] [--skip-limits]
 import { randomBytes } from 'node:crypto';
 import http from 'node:http';
@@ -157,6 +157,35 @@ export function createSweep(baseUrl) {
 
   const docSocket = (docId, query = '') => `/parties/doc-d-o/${docId}?protocol=999${query}`;
 
+  /**
+   * The status an oversized request gets, on a connection of its own (a server that answers before reading the body
+   * closes it): with `body`, sent whole; without, it declares `length` bytes and sends none, so the refusal must
+   * come from the header.
+   */
+  function oversized(method, path, headers, length, body) {
+    const url = new URL(path, base);
+    const client = url.protocol === 'https:' ? https : http;
+    return new Promise((done) => {
+      const request = client.request(url, { method, agent: false, headers: { ...headers, 'content-length': String(length) } });
+      const timer = setTimeout(() => {
+        request.destroy();
+        done('no answer');
+      }, 15_000);
+      request.on('response', (response) => {
+        clearTimeout(timer);
+        response.resume();
+        request.destroy();
+        done(response.statusCode);
+      });
+      request.on('error', (error) => {
+        clearTimeout(timer);
+        done(`error ${error.code ?? error.message}`);
+      });
+      if (body) request.end(body);
+      else request.flushHeaders();
+    });
+  }
+
   /** Status and body equal: the answer says nothing about whether the thing exists. */
   const same = (a, b) => a.status === b.status && a.text === b.text;
 
@@ -199,7 +228,7 @@ export function createSweep(baseUrl) {
     const svg = '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>';
     const uploaded = await call('POST', `/api/docs/${doc.id}/assets?filename=sweep.svg`, { headers: { ...write(ada), 'content-type': 'image/svg+xml' }, raw: svg });
     check('setup', 'the owner uploads an SVG', uploaded.status === 201 || uploaded.status === 200, `${uploaded.status} ${uploaded.text.slice(0, 120)}`);
-    const comment = await call('POST', `/api/docs/${doc.id}/comments`, { headers: write(ada), body: { id: 'sweep-c0', text: 'sweep comment' } });
+    const comment = await call('POST', `/api/docs/${doc.id}/comments`, { headers: write(ada), body: { id: 'sweep-c0', text: 'sweep comment', anchor: { quote: 'Sweep note' } } });
     check('setup', 'the owner comments', comment.status === 201, `${comment.status} ${comment.text.slice(0, 120)}`);
     const link = (await call('POST', `/api/docs/${doc.id}/links`, { headers: write(ada), body: { role: 'viewer' } })).json?.link?.token;
     check('setup', 'the owner makes a viewer link', Boolean(link));
@@ -355,15 +384,17 @@ export function createSweep(baseUrl) {
     if (!limits) return results;
 
     // ---- body caps: an oversized JSON body is refused 413 before it is read, signed in or not
-    const big = JSON.stringify({ noteId: doc.id, url: 'https://example.com/', pad: 'x'.repeat(JSON_BODY_CAP) });
-    const capped = [];
+        const capped = [];
     for (const [path, headers] of [['/api/unfurl', {}], ['/api/unfurl', write(ada)], ['/api/feedback', write(ada)], [`/api/docs/${doc.id}/comments`, write(ada)], ['/api/auth/sign-in/email', { origin: base }]]) {
-      const response = await call('POST', path, { headers: { ...headers, 'content-type': 'application/json' }, raw: big });
-      if (response.status !== 413) capped.push(`${path}: ${response.status}`);
+      const status = await oversized('POST', path, { ...headers, 'content-type': 'application/json' }, 64 * 1024 * 1024);
+      if (status !== 413) capped.push(`${path}: ${status}`);
     }
-    check('limits', `a JSON body over ${JSON_BODY_CAP} bytes is a 413 on /api and /api/auth`, capped.length === 0, capped.join('; '));
-    const huge = await call('POST', `/api/docs/${doc.id}/assets?filename=big.png`, { headers: { ...write(ada), 'content-type': 'image/png' }, raw: new Uint8Array(10 * 1024 * 1024 + 1) });
-    check('limits', 'an image over 10 MB is a 413', huge.status === 413, `${huge.status}`);
+    check('limits', 'a 64 MiB JSON body is refused 413 from its Content-Length on /api and /api/auth', capped.length === 0, capped.join('; '));
+    const over = Buffer.from(JSON.stringify({ pad: 'x'.repeat(JSON_BODY_CAP) }));
+    const streamed = await oversized('POST', '/api/unfurl', { 'content-type': 'application/json' }, over.byteLength, over);
+    check('limits', `a JSON body just over ${JSON_BODY_CAP} bytes is a 413`, streamed === 413, `${streamed}`);
+    const huge = await oversized('POST', `/api/docs/${doc.id}/assets?filename=big.png`, { ...write(ada), 'content-type': 'image/png' }, 10 * 1024 * 1024 + 1);
+    check('limits', 'an image over 10 MB is refused 413 from its Content-Length', huge === 413, `${huge}`);
 
     // ---- rate limits: each answers 429 past its window
     const until429 = async (max, send) => {
@@ -375,7 +406,7 @@ export function createSweep(baseUrl) {
     };
     const fetches = await until429(40, () => call('POST', '/api/unfurl', { headers: write(ada), body: { noteId: doc.id, url: `https://sweep-${randomBytes(4).toString('hex')}.example.invalid/` } }));
     check('limits', 'remote fetches (unfurl) are throttled 429 within 31', fetches !== null && fetches <= 31, `429 at ${fetches}`);
-    const comments = await until429(70, (i) => call('POST', `/api/docs/${doc.id}/comments`, { headers: write(ada), body: { id: `sweep-c${i}`, text: `c${i}` } }));
+    const comments = await until429(70, (i) => call('POST', `/api/docs/${doc.id}/comments`, { headers: write(ada), body: { id: `sweep-c${i}`, text: `c${i}`, parentId: 'sweep-c0' } }));
     check('limits', 'comment operations are throttled 429 within 61 (the setup comment counts)', comments !== null && comments <= 61, `429 at ${comments}`);
     const renames = await until429(70, (i) => call('PATCH', `/api/docs/${doc.id}`, { headers: write(ada), body: { title: `Sweep ${i}` } }));
     check('limits', 'REST writes (renames) are throttled 429 within 61', renames !== null && renames <= 61, `429 at ${renames}`);

@@ -19,6 +19,8 @@ export function contentSecurityPolicy(nonce: string, requestUrl: string): string
     "frame-src 'self' data: https:",
     "img-src 'self' data: https: blob:",
     "media-src 'self' blob:",
+    // A same-site page gets the session cookie in a frame (A§18), so only the app frames its pages.
+    "frame-ancestors 'self'",
   ].join('; ');
 }
 

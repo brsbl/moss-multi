@@ -154,12 +154,12 @@ const SELF_ROUTES: Row[] = [
   ['POST', '/api/unfurl', { noteId: MISSING, url: 'https://example.com/' }],
 ];
 
-const request = (method: string, path: string, headers: Record<string, string>, body?: unknown) =>
-  new Request(`${BASE}${path}`, {
-    method,
-    headers: { ...(body instanceof Uint8Array ? { 'content-type': 'image/png' } : { 'content-type': 'application/json' }), ...headers },
-    ...(body === undefined ? {} : { body: body instanceof Uint8Array ? body : JSON.stringify(body) }),
-  });
+function request(method: string, path: string, headers: Record<string, string>, body?: unknown): Request {
+  const bytes = body instanceof Uint8Array;
+  const init: RequestInit = { method, headers: { 'content-type': bytes ? 'image/png' : 'application/json', ...headers } };
+  if (body !== undefined) init.body = bytes ? (body as Uint8Array<ArrayBuffer>) : JSON.stringify(body);
+  return new Request(`${BASE}${path}`, init);
+}
 
 async function answer(row: Row, target: Record<string, string>, headers: Record<string, string>) {
   const [method, template, body] = row;
@@ -168,7 +168,7 @@ async function answer(row: Row, target: Record<string, string>, headers: Record<
   return { status: response.status, text: await response.text() };
 }
 
-/** Principal kinds that hold nothing of Ada's. */
+/** Principal kinds that hold nothing of Ada's; built once the principals exist. */
 const outsiders = (): [string, Record<string, string>][] => [
   ['no credential', {}],
   ['a forged session cookie', { cookie: 'better-auth.session_token=forged.forged', origin: BASE }],
@@ -208,10 +208,15 @@ describe('the authorization matrix over every /api route', () => {
     expect(missing).toEqual([]);
   });
 
-  it.each(outsiders().map(([name], index) => [name, index] as const))(
-    '%s: every doc, trash, folder and vault route refuses as for an id that does not exist',
-    async (_name, index) => {
-      const [, headers] = outsiders()[index];
+  const KINDS = 13;
+  const CREDENTIAL_LESS = 9;
+
+  it('names every outsider kind', () => expect(outsiders().length).toBe(KINDS));
+
+  it.each(Array.from({ length: KINDS }, (_, index) => index))(
+    'outsider %i: every doc, trash, folder and vault route refuses as for an id that does not exist',
+    async (index) => {
+      const [name, headers] = outsiders()[index];
       const leaks: string[] = [];
       reached.length = 0;
       for (const row of [...DOC_ROUTES, ...FOLDER_ROUTES]) {
@@ -223,22 +228,22 @@ describe('the authorization matrix over every /api route', () => {
           }
         }
       }
-      expect(leaks).toEqual([]);
+      expect(leaks, name).toEqual([]);
       expect(reached.filter((call) => call.startsWith('DocDO:'))).toEqual([]);
     },
     120_000,
   );
 
-  it.each(outsiders().slice(0, 9).map(([name], index) => [name, index] as const))(
-    '%s: every route about the caller refuses',
-    async (_name, index) => {
-      const [, headers] = outsiders()[index];
+  it.each(Array.from({ length: CREDENTIAL_LESS }, (_, index) => index))(
+    'outsider %i (no live credential): every route about the caller refuses',
+    async (index) => {
+      const [name, headers] = outsiders()[index];
       const served: string[] = [];
       for (const row of SELF_ROUTES) {
         const { status, text } = await answer(row, {}, headers);
         if (status < 400) served.push(`${row[0]} ${row[1]}: ${status} ${text.slice(0, 80)}`);
       }
-      expect(served).toEqual([]);
+      expect(served, name).toEqual([]);
     },
     60_000,
   );
@@ -246,7 +251,8 @@ describe('the authorization matrix over every /api route', () => {
   it('a viewer link, signed out or signed in as a stranger, is refused every write', async () => {
     const reads = new Set(['GET']);
     const served: string[] = [];
-    for (const headers of [{ 'x-moss-share': viewerLink }, { 'x-moss-share': viewerLink, cookie: ben.cookie, origin: BASE }]) {
+    const holders: Record<string, string>[] = [{ 'x-moss-share': viewerLink }, { 'x-moss-share': viewerLink, cookie: ben.cookie, origin: BASE }];
+    for (const headers of holders) {
       for (const row of DOC_ROUTES.filter(([method]) => !reads.has(method))) {
         reached.length = 0;
         const { status, text } = await answer(row, { doc: ids.doc }, headers);
