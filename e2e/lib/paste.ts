@@ -199,7 +199,8 @@ export const batchReport = (actor: Actor): Promise<string> =>
     return `${batches.length}: ${batches.map((entry) => `${Math.round(entry.startTime - first)}:${Object.values((entry as PerformanceMeasure).detail as Record<string, number>).join('/')}`).join(' ')}`;
   });
 
-export async function setup(actors: Actors, stack: Stack, markdown?: string, { elsewhere = false } = {}) {
+/** With `severablePeer`, Ben's doc sockets run through a sever proxy, so a test can hold his edits in flight. */
+export async function setup(actors: Actors, stack: Stack, markdown?: string, { elsewhere = false, severablePeer = false } = {}) {
   const ada = await actors.session(await actors.principal('ada'));
   const docId = await importNote(ada, stack, 'Paste target', markdown);
   const otherId = elsewhere ? await importNote(ada, stack, 'Elsewhere', 'Another note.') : '';
@@ -207,7 +208,7 @@ export async function setup(actors: Actors, stack: Stack, markdown?: string, { e
   await grantDoc(ada, docId, principal);
   const wire = await watchWire(ada);
   await ada.goto(`/d/${docId}`);
-  const ben = await actors.session(principal);
+  const ben = await actors.session(principal, { severable: severablePeer });
   wire.peer = await watchWire(ben);
   await ben.goto(`/d/${docId}`);
   await ben.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached' });
@@ -220,7 +221,8 @@ export async function setup(actors: Actors, stack: Stack, markdown?: string, { e
 
 /**
  * Pastes `pasted` at the caret, then checks: the export is `whole`; Ben's body equals Ada's; typing lands after the
- * paste (`typed`); one undo removes the typing and the next the whole paste (`before`), for both. With `maxStallMs`,
+ * paste (`typed`); one undo removes the typing and the next the whole paste (`before`), for both; one redo brings the
+ * paste back and the next the typing. With `maxStallMs`,
  * the main thread is never held longer than that while the paste lands; with `wire`, no frame passes the frame cap
  * and the doc socket never closes, through the paste, its undo and its redo.
  */
@@ -276,6 +278,12 @@ export async function pasteAndCheck(
   await expect.poll(() => exported(ada, docId), { message: 'one redo brings the whole paste back to the server', timeout }).toBe(want.whole);
   await expect.poll(() => fingerprint(ben, docId), { message: 'the collaborator sees the paste redone', timeout }).toEqual(pastedPrint);
   phase('redone');
+
+  // Redoing the paste keeps the redo chain: the typing undone after it comes back too.
+  await ada.page.keyboard.press(REDO);
+  await ui.waitAcked(ada, docId, timeout);
+  await expect.poll(() => exported(ada, docId), { message: 'the next redo brings the typing back after the paste', timeout }).toBe(want.typed);
+  phase('typing redone');
   if (wire) expectWire(wire);
   return busyMs;
 }
