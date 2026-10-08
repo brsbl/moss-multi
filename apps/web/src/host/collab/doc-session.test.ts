@@ -48,6 +48,17 @@ it('detaches a half-open socket without its close event and ignores its late clo
   expect(session.doc.getText('title').toString()).toBe('kept');
   expect(hasUnacked()).toBe(true);
 });
+it('keeps the socket while a busy main thread holds the heartbeat back, then detaches once it is idle and still silent', async () => {
+  const socket = latest(); socket.open(); session.provider.synced = true;
+  // A collaborator's large paste applied here: every 1 s tick runs about 2.5 s late, and no frame is read for 30 s.
+  for (let i = 0; i < 12; i += 1) {
+    vi.setSystemTime(Date.now() + 1_500);
+    await vi.advanceTimersByTimeAsync(1_000);
+  }
+  expect(socket.closes, 'a busy tab is not a silent socket').not.toContain(4408);
+  await vi.advanceTimersByTimeAsync(13_500);
+  expect(socket.closes, 'idle and still silent: half-open').toContain(4408);
+});
 it.each([[4402, 'session-ended'], [4404, 'unavailable'], [4410, 'deleted'], [4429, 'conn-limit']] as const)(
   'stops reconnecting synchronously on %s', async (code, reason) => {
     latest().open(); latest().ended(code);

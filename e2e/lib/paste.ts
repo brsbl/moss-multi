@@ -261,6 +261,8 @@ export async function pasteAndCheck(
   await ada.page.waitForTimeout(NEW_STEP_MS);
 
   await watchStalls(ada);
+  // The collaborator's stalls too, for the record: a busy collaborator's page can share a process with Ada's.
+  await watchStalls(ben);
   const t0 = Date.now();
   const phase = (label: string) => console.log(`paste phase: ${label} at ${Math.round((Date.now() - t0) / 1000)} s`);
   const busyMs = await pastePlain(ada, docId, pasted);
@@ -273,6 +275,8 @@ export async function pasteAndCheck(
   phase('acked');
   await expect.poll(() => exported(ada, docId), { message: 'every pasted character lands in the doc', timeout }).toBe(want.whole);
   const stall = await longestStall(ada);
+  const peer = await longestStall(ben).catch(() => null);
+  if (peer) console.log(`collaborator's longest stall: ${peer.ms} ms, ${peer.at} ms after the paste`);
   console.log(`longest stall: ${stall.ms} ms, ${stall.at} ms after the paste, during: ${stall.during}`);
   expect(stall.ms, `the tab is never held longer than ${maxStallMs} ms at a time while the paste lands (the longest began ${stall.at} ms after the paste, during: ${stall.during}; socket closes: ${wire?.closes.join(', ') || 'none seen'})`).toBeLessThanOrEqual(maxStallMs);
   const pastedPrint = await fingerprint(ada, docId);

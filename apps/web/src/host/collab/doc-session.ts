@@ -260,6 +260,9 @@ export function retryDoc(docId: string): void {
 
 const byDoc = new WeakMap<Y.Doc, DocSession>();
 
+/** A heartbeat tick this late means the main thread was busy (T3.S6). */
+const BUSY_TICK_MS = 2 * HEARTBEAT_CHECK_MS;
+
 /**
  * The bytes of the payload docs the DocDO counts against `doc`'s cap, withheld ones too, as it last said (T3.S6): a
  * tab holds only the payloads its tree names. 0 for a doc no session holds, or before the DocDO has said.
@@ -597,8 +600,10 @@ export class DocSession {
     if (this.#disposed || this.#paused) return;
     const ws = this.provider.ws as DocSocket | null;
     const now = Date.now();
-    // A main thread busy for seconds (a 2 MB paste, its undo) read no frames meanwhile: that is not a silent socket.
-    if (this.#lastTick > 0 && now - this.#lastTick > SILENCE_LIMIT_MS / 2) this.#visibleSince = now;
+    // A main thread busy enough to hold this 1 s tick back (a 2 MB paste, its undo, a peer's large paste applied
+    // here) reads its frames late: that is not a silent socket. Held 6 s was the bar, and a collaborator's tab
+    // applying a 40,000-block paste, its ticks late by 1-5 s, read the server as silent and reconnected.
+    if (this.#lastTick > 0 && now - this.#lastTick > BUSY_TICK_MS) this.#visibleSince = now;
     this.#lastTick = now;
     if (ws && ws.readyState === WebSocket.OPEN && !document.hidden) {
       const heard = this.provider.wsLastMessageReceived;
