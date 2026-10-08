@@ -184,6 +184,8 @@ function send(connection: Connection, message: Uint8Array): void {
 
 /** A sync frame that holds the DO this long is logged (T3.S6: large pastes, their undo and redo). */
 const SLOW_FRAME_MS = 1_000;
+/** A slow save waits for this long without a client write. */
+const WRITE_PAUSE_MS = 2_000;
 export class DocDO extends YServer<SyncEnv> {
   static options = { hibernate: true };
   /** Static so the Node harness can shrink them. */
@@ -239,6 +241,10 @@ export class DocDO extends YServer<SyncEnv> {
   #fed: string | null = null;
   /** Doc edits since load; a feed marks the doc fed only if none landed while it ran. */
   #edits = 0;
+  /** When the last client write landed, how long the last save took, and a save waiting for the writes to pause. */
+  #lastWriteAt = 0;
+  #saveMs = 0;
+  #quietSave: ReturnType<typeof setTimeout> | undefined;
   /** Whether the stored `search-fed` meta is cleared (an edit the index may lack). */
   #searchStale = false;
   /** A feed queued by a payload edit; payload docs do not trigger the note's debounced save. */
@@ -310,10 +316,21 @@ export class DocDO extends YServer<SyncEnv> {
     if (this.#searchStale && store.meta('created') !== null) setTimeout(() => void this.#feedSearch(), WAKE_FEED_MS);
   }
 
-  /** Debounced by y-partyserver (2 s, at most 10 s). */
+  /**
+   * Debounced by y-partyserver (2 s, at most 10 s). On a large note its compaction and search export take seconds, and
+   * at most every 10 s while a large paste streams in they held the DO, with the writes it was applying, past a peer's
+   * 12 s silence limit (T3.S6): a save that took over a second waits until the writes pause.
+   */
   override async onSave(): Promise<void> {
+    clearTimeout(this.#quietSave);
+    if (this.#saveMs > SLOW_FRAME_MS && Date.now() - this.#lastWriteAt < WRITE_PAUSE_MS) {
+      this.#quietSave = setTimeout(() => void this.onSave(), WRITE_PAUSE_MS);
+      return;
+    }
+    const started = Date.now();
     if (this.#store && this.#store.pendingRows > 0) this.#store.compact(this.document);
     await this.#feedSearch();
+    this.#saveMs = Date.now() - started;
   }
 
   override async onConnect(connection: Connection, ctx: ConnectionContext): Promise<void> {
@@ -899,6 +916,7 @@ export class DocDO extends YServer<SyncEnv> {
     store.record(update, this.document);
     this.#edited(store);
     if (isConnection(origin)) {
+      this.#lastWriteAt = Date.now();
       this.#acks.schedule(origin, this.#frameDeletes);
       this.#projections?.touch();
     }
