@@ -1,19 +1,16 @@
 diff --git a/packages/desktop/src/renderer/editor/utils/comment-import.ts b/packages/desktop/src/renderer/editor/utils/comment-import.ts
 --- a/packages/desktop/src/renderer/editor/utils/comment-import.ts
 +++ b/packages/desktop/src/renderer/editor/utils/comment-import.ts
-@@ -21,7 +21,10 @@ import { $isCommentableDecorator, type CommentableNode } from './commentable-nod
- // Single shared fence-walking implementation (skips fenced-code-block interiors).
- // Imported lazily-used at call time, so the existing MarkdownEditor → comment-import
+@@ -23,6 +23,8 @@ import { $isCommentableDecorator, type CommentableNode } from './commentable-nod
  // import cycle is harmless (the binding is resolved before normalize* runs).
--import { mapOutsideFencedCodeBlocksOnly } from '../MarkdownEditor';
-+// moss-multi seam: converter-split (A§12; S-conv §2.3)
-+import { mapOutsideFencedCodeBlocksOnly } from '../markdown/normalize';
+ // moss-multi seam: converter-split (A§12; S-conv §2.3)
+ import { mapOutsideFencedCodeBlocksOnly } from '../markdown/normalize';
 +// moss-multi seam: linear-markers (A§12): the marker regexes below are scans, as pushed and imported text reaches them
 +import { commentMarkerIdList, replaceCommentWrappedImages, scanCommentMarkers, scanCommentWrappedAtxHeadings } from './comment-marker-scan';
  
  // ---------------------------------------------------------------------------
  // Hydration utility
-@@ -90,20 +93,16 @@ export function hydrateComments(
+@@ -91,20 +93,16 @@ export function hydrateComments(
  // Marker regex
  // ---------------------------------------------------------------------------
  
@@ -40,7 +37,7 @@ diff --git a/packages/desktop/src/renderer/editor/utils/comment-import.ts b/pack
  
  /**
   * Rewrites comment-wrapped ATX headings into `### ...` form so
-@@ -111,21 +110,13 @@ const COMMENT_WRAPPED_ATX_HEADING_LINE =
+@@ -112,21 +110,13 @@ const COMMENT_WRAPPED_ATX_HEADING_LINE =
   * original comment coverage over the heading content.
   */
  export function normalizeCommentWrappedAtxHeadings(markdown: string): string {
@@ -67,7 +64,7 @@ diff --git a/packages/desktop/src/renderer/editor/utils/comment-import.ts b/pack
  /**
   * A run of same-line characters that does NOT contain any comment marker. The
   * tempered token `(?!marker)[^\\n]` refuses to start a marker, so the lazy
-@@ -133,7 +124,7 @@ const COMMENT_ANY_MARKER_SRC = `(?:${COMMENT_OPEN_MARKER_SRC}|${COMMENT_CLOSE_MA
+@@ -134,7 +124,7 @@ const COMMENT_ANY_MARKER_SRC = `(?:${COMMENT_OPEN_MARKER_SRC}|${COMMENT_CLOSE_MA
   * marker that should end the pair, an adjacent open marker for a different
   * comment, or the markers of a second commented image on the same line).
   */
@@ -76,7 +73,7 @@ diff --git a/packages/desktop/src/renderer/editor/utils/comment-import.ts b/pack
  /**
   * Markdown image — either standard `![alt](src)` or an Obsidian embed
   * `![[ref]]`. The standard `src` balances exactly one level of inner parens so
-@@ -146,8 +137,8 @@ const NON_MARKER_RUN = `(?:(?!${COMMENT_ANY_MARKER_SRC})[^\\n])*?`;
+@@ -147,8 +137,8 @@ const NON_MARKER_RUN = `(?:(?!${COMMENT_ANY_MARKER_SRC})[^\\n])*?`;
   * the non-paren runs exclude BOTH parens, so the optional inner `(...)` is the
   * only nesting allowed and the quantifiers don't nest unboundedly (no ReDoS).
   */
@@ -87,7 +84,7 @@ diff --git a/packages/desktop/src/renderer/editor/utils/comment-import.ts b/pack
  /**
   * Matches an inline comment marker that wraps a markdown image. The image may
   * be the entire content (`%%m:c1:start%%![alt](src)%%m:c1:end%%`) or embedded
-@@ -167,11 +158,9 @@ const IMAGE_SRC =
+@@ -168,11 +158,9 @@ const IMAGE_SRC =
   * Captured groups: open marker, pre prose, image, post prose, close marker (may
   * be empty).
   */
@@ -102,7 +99,7 @@ diff --git a/packages/desktop/src/renderer/editor/utils/comment-import.ts b/pack
  
  /**
   * Extracts the comment id(s) from an open or close marker so prose split out of
-@@ -179,11 +168,9 @@ const COMMENT_WRAPPED_IMAGE = new RegExp(
+@@ -180,11 +168,9 @@ const COMMENT_WRAPPED_IMAGE = new RegExp(
   * raw marker if no id is found (legacy `{%/c%}` close markers carry no id).
   */
  function markerIdList(open: string): string | null {
@@ -117,7 +114,7 @@ diff --git a/packages/desktop/src/renderer/editor/utils/comment-import.ts b/pack
  }
  
  /**
-@@ -208,8 +195,8 @@ function markerIdList(open: string): string | null {
+@@ -209,8 +195,8 @@ function markerIdList(open: string): string | null {
   * comment.
   */
  function rewriteCommentWrappedImages(segment: string): string {
@@ -128,7 +125,7 @@ diff --git a/packages/desktop/src/renderer/editor/utils/comment-import.ts b/pack
      (
        match,
        open: string,
-@@ -335,49 +322,9 @@ interface MarkerMatch {
+@@ -336,49 +322,9 @@ interface MarkerMatch {
   * Returns them sorted by index (ascending).
   */
  function findMarkers(text: string): MarkerMatch[] {
