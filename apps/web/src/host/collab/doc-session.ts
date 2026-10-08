@@ -19,7 +19,6 @@ import {
   SILENCE_LIMIT_MS, startLink, type Link, type LinkEvent,
 } from './connection.ts';
 import { Outbox, type Frame } from './outbox.ts';
-import { timedSync } from './slow.ts';
 import { clearTerminal, setTerminal, terminalOf } from './terminal.ts';
 import { markSession, markUnacked } from './unacked.ts';
 
@@ -66,7 +65,7 @@ class DocSocket extends WebSocket {
   /** Nothing goes out on a socket that is closing: a reply to a late server frame would be lost and logs an error. */
   override send(...args: Parameters<WebSocket['send']>): void {
     if (this.readyState !== WebSocket.OPEN) return;
-    if (this.outbox) timedSync('send', () => this.outbox!.send(args[0] as Frame));
+    if (this.outbox) this.outbox.send(args[0] as Frame);
     else super.send(...args);
   }
 
@@ -115,7 +114,7 @@ DocSocket.prototype.addEventListener = function addEventListener(
     this,
     type,
     (event: Event) => {
-      if (!this.detached) timedSync(type, () => listener.call(this, event));
+      if (!this.detached) listener.call(this, event);
     },
     options,
   );
@@ -338,7 +337,7 @@ export class DocSession {
     });
     this.provider.on('custom-message', (message: string) => this.#onServerEvent(message));
     this.doc.on('update', (update: Uint8Array, origin: unknown) => {
-      if (origin !== this.provider) timedSync('wrote', () => this.#wrote(update));
+      if (origin !== this.provider) this.#wrote(update);
     });
     // Payload frames ride the doc socket under their own message type; the provider hands them over whole.
     this.#payloadSync = new PayloadSync(this.payloads, {
@@ -642,7 +641,7 @@ export class DocSession {
       if (state !== null && !this.#ended && !this.#lingering) awareness.setLocalState(state);
       // Writes still queued in the outbox are on their way; resending them would only queue them twice.
       if ((ws as DocSocket).outbox?.busy) return;
-      const pending = timedSync('resend', () => this.#ledger.pendingUpdate());
+      const pending = this.#ledger.pendingUpdate();
       if (pending && !this.#ended) ws.send(encodeSyncFrame(2, pending));
       // Each held payload asks again too, so one whose frames were lost on this socket catches up (A§10.10).
       this.#payloadSync.connected((id) => (this.#ended ? null : this.#ledger.pendingUpdate(id)));
