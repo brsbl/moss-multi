@@ -104,6 +104,8 @@ function sessionCookies(response: Response, baseUrl: string, email: string): Ses
 
 /** The one session per run of each pool principal, keyed by origin and email. */
 const pooledSessions = new Map<string, SessionCookie[]>();
+/** Pool principals already resolved this run, so a later test signs in to none of them again. */
+const pooledPrincipals = new Map<string, Principal>();
 
 /**
  * One fresh session per browser context: session tokens are single-issue (L§4.20). A pool principal reuses its run's
@@ -129,10 +131,18 @@ export async function poolPrincipal(baseUrl: string, secret: string, label: stri
   const email = `canary-${label}${EXAMPLE_DOMAIN}`.toLowerCase();
   assertTestEmail(email);
   const first = DISPLAY.find((name) => name.toLowerCase() === label.toLowerCase()) ?? `${label[0].toUpperCase()}${label.slice(1)}`;
+  const known = pooledPrincipals.get(`${baseUrl} ${email}`);
+  if (known) return { ...known };
   const principal: Principal = {
     label, name: `${first} Canary`, email, password: createHmac('sha256', secret).update(email).digest('base64url'), id: null, pooled: true,
   };
   let response = await postSignIn(baseUrl, principal);
+  if (response.status === 429) {
+    // A Playwright worker restarted after a failure signs in again; wait out the window once.
+    const wait = Math.min(Number(response.headers.get('x-retry-after')) || 60, 60);
+    await new Promise((done) => setTimeout(done, wait * 1000));
+    response = await postSignIn(baseUrl, principal);
+  }
   if (response.status === 401) {
     // The pool's first run on this database.
     response = await fetch(`${baseUrl}/api/auth/sign-up/email`, {
@@ -147,5 +157,6 @@ export async function poolPrincipal(baseUrl: string, secret: string, label: stri
   principal.id = (JSON.parse(text) as { user?: { id?: string } }).user?.id ?? null;
   if (!principal.id) throw new Error(`canary principal ${email}: no user id in ${text.slice(0, 200)}`);
   pooledSessions.set(`${baseUrl} ${email}`, sessionCookies(response, baseUrl, email));
-  return principal;
+  pooledPrincipals.set(`${baseUrl} ${email}`, principal);
+  return { ...principal };
 }
