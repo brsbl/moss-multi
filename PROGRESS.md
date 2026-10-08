@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 78% done** (90 of 116 planned tasks verified)
+**Overall: 78% done** (91 of 116 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -10,7 +10,7 @@
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 15 / 15 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 9 / 9 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 9 / 9 | in progress |
-| M6 History | Versions, view, diff, identity-preserving restore | 5 / 5 | in progress |
+| M6 History | Versions, view, diff, identity-preserving restore | 6 / 6 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
 
@@ -111,6 +111,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-07 — T6.3 verified: a person can open a note's History, browse automatic and named versions, save a named checkpoint, view any version or diff it against the current note, and restore it in place with a confirmation.
 - 2026-10-07 — T6.S2 verified: named versions saved through an agent key now count against the agent's owner for the per-person cap and the save rate, so an editor can no longer bypass their own limits with an agent key.
 - 2026-10-07 — T6.S3 verified: restoring a version whose code, HTML or formula payload changed at both ends now keeps the unchanged middle's identity, so a peer's concurrent insert there survives the restore.
+- 2026-10-07 — T6.S1 verified: restoring a version now reconciles three-way from the base the restorer opened Restore on, so words a peer or agent typed after that base survive the restore, and a stale base or a dropped block someone typed into is refused with 409.
 
 ## T1.1s identity audit
 
@@ -143,6 +144,10 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T6.S1's checker (254a93a, 2026-10-07)
+
+- T6.S1 checker P2 (typing still in flight into a block the restore removes is lost after the restore; Codex P1, downgraded, not reproduced): the admit check sees only what the server already holds, so an update that arrives after the confirm integrates under a deleted parent; this is the normal Yjs result of an insert racing a parent deletion (PRODUCT item 18).
 
 ### From T6.S3's checker (abdccd9, 2026-10-07)
 
