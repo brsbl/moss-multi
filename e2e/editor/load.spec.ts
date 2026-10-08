@@ -40,6 +40,9 @@ interface Fixture {
   seed(segments: string[], note: { markdown: string; meta: object }): string;
   mount(noteId: string): Promise<{ ok: boolean; status: string }>;
   flush(): Promise<{ kind: string }>;
+  unmount(options?: object): Promise<{ kind: string; flush: string }>;
+  status(): string | null;
+  events(): { kind: string }[];
   files(): Record<string, string>;
   externalWrite(path: string, text: string): void;
 }
@@ -271,6 +274,114 @@ test('a newer external reload wins over an older one still waiting on its family
   await page.keyboard.type(' typed');
   expect(await page.evaluate(() => (window as unknown as FixtureWindow).editorFixture.flush())).toMatchObject({ kind: 'saved' });
   expect((await page.evaluate(() => (window as unknown as FixtureWindow).editorFixture.files()))[path]).toMatch(/^# Plan\n\nVersion B final typed\n?$/);
+  expect(errors).toEqual([]);
+});
+
+const CHART_CHUNK = /\/assets\/[^/]*chart[^/]*\.js$/i;
+
+test('a comment reply made while a reload waits for its chart chunk is not taken, and the external version stays on disk', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await page.goto(`${server.url}/fixture/index.html`);
+  await expect(page.locator('html[data-fixture="ready"]')).toBeAttached();
+  const path = '/Moss/Notes/Plan/Plan.md';
+  const result = await page.evaluate((value) => {
+    const fixture = (window as unknown as FixtureWindow).editorFixture;
+    fixture.reset();
+    fixture.seed(['Notes', 'Plan'], { markdown: '# Plan\n\nAlpha beta gamma\n', meta: value });
+    return fixture.mount(value.id);
+  }, meta('Plan'));
+  expect(result).toEqual({ ok: true, status: 'clean' });
+  const body = page.locator('[data-moss-editor] [data-moss-note-editor-root="true"]');
+  // A root comment on "beta", saved.
+  await body.getByText('Alpha beta gamma').click();
+  await body.evaluate((root) => {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const at = node.textContent?.indexOf('beta') ?? -1;
+      if (at < 0) continue;
+      const range = document.createRange();
+      range.setStart(node, at);
+      range.setEnd(node, at + 4);
+      document.getSelection()?.removeAllRanges();
+      document.getSelection()?.addRange(range);
+      return;
+    }
+  });
+  await expect.poll(() => page.evaluate(() => document.getSelection()?.toString())).toBe('beta');
+  await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+  await page.keyboard.press('ControlOrMeta+Shift+A');
+  const composer = page.getByRole('textbox', { name: 'comment editor' });
+  await composer.click();
+  await page.keyboard.type('Root');
+  await page.getByRole('button', { name: 'Submit comment' }).click();
+  await expect(body.locator('mark')).toHaveText('beta');
+  expect(await page.evaluate(() => (window as unknown as FixtureWindow).editorFixture.flush())).toMatchObject({ kind: 'saved' });
+  const saved = (await page.evaluate(() => (window as unknown as FixtureWindow).editorFixture.files()))[path];
+  // The thread is open, its reply composer ready.
+  await page.getByRole('button', { name: 'View comment' }).first().click();
+  const reply = page.getByRole('textbox', { name: 'comment editor' });
+  await expect(reply).toBeVisible();
+  const eventsBefore = (await page.evaluate(() => (window as unknown as FixtureWindow).editorFixture.events())).length;
+  const external = `${saved.replace('Alpha', 'External edit: Alpha').replace(/\n?$/, '')}\n\n${LAZY_FAMILIES[0].markdown}\n`;
+  server.delay = { pattern: CHART_CHUNK, ms: 2_500 };
+  try {
+    await page.evaluate(([file, markdown]) => (window as unknown as FixtureWindow).editorFixture.externalWrite(file, markdown), [path, external]);
+    // The reload is waiting for the chart's chunk; the user replies in the thread still on screen.
+    await page.waitForTimeout(500);
+    await reply.click({ force: true, timeout: 1_000 }).catch(() => undefined);
+    await page.keyboard.type('Late reply');
+    await page.getByRole('button', { name: 'Submit comment' }).click({ force: true, timeout: 1_000 }).catch(() => undefined);
+    await page.keyboard.press('Enter');
+    // Past the idle save (1.5 s) and the chunk's arrival.
+    await page.waitForTimeout(4_000);
+  } finally {
+    server.delay = { pattern: null, ms: 0 };
+  }
+  await expect(body.locator('.recharts-surface')).toBeVisible({ timeout: 10_000 });
+  await expect(body).toContainText('External edit: Alpha beta gamma');
+  const files = await page.evaluate(() => (window as unknown as FixtureWindow).editorFixture.files());
+  expect(files[path], 'the external version, its chart included, is still on disk').toBe(external);
+  expect(files['/Moss/Notes/Plan/comments.json'] ?? '', 'the reply was not taken').not.toContain('Late reply');
+  const after = (await page.evaluate(() => (window as unknown as FixtureWindow).editorFixture.events())).slice(eventsBefore).map((event) => event.kind);
+  expect(after, 'nothing was saved against the version being loaded').toEqual(['reloaded']);
+  expect(await page.evaluate(() => (window as unknown as FixtureWindow).editorFixture.status())).toBe('clean');
+  expect(await page.evaluate(() => (window as unknown as FixtureWindow).editorFixture.flush())).toMatchObject({ kind: 'clean' });
+  expect(errors).toEqual([]);
+});
+
+test('unmounting while the first mount waits for its chart chunk rejects ready with unmounted', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await page.goto(`${server.url}/fixture/index.html`);
+  await expect(page.locator('html[data-fixture="ready"]')).toBeAttached();
+  server.delay = { pattern: CHART_CHUNK, ms: 2_500 };
+  try {
+    await page.evaluate(
+      ({ value, chart }) => {
+        const fixture = (window as unknown as FixtureWindow).editorFixture;
+        const w = window as unknown as { __ready: unknown };
+        fixture.reset();
+        fixture.seed(['Notes', 'Plan'], { markdown: `# Plan\n\nHas a chart\n\n${chart}\n`, meta: value });
+        w.__ready = 'pending';
+        void fixture.mount(value.id).then((outcome) => {
+          w.__ready = outcome;
+        });
+      },
+      { value: meta('Plan'), chart: LAZY_FAMILIES[0].markdown },
+    );
+    await page.waitForTimeout(400);
+    expect(await page.evaluate(() => (window as unknown as FixtureWindow).editorFixture.status())).toBe('loading');
+    expect(await page.evaluate(() => (window as unknown as FixtureWindow).editorFixture.unmount())).toEqual({ kind: 'unmounted', flush: 'notLoaded' });
+    // ready rejects at once, before the chunk would arrive.
+    await expect
+      .poll(() => page.evaluate(() => (window as unknown as { __ready: unknown }).__ready), { timeout: 1_500 })
+      .toEqual({ ok: false, code: 'unmounted', status: 'unmounted' });
+    await page.waitForTimeout(2_500);
+  } finally {
+    server.delay = { pattern: null, ms: 0 };
+  }
+  expect(await page.evaluate(() => (window as unknown as { __ready: unknown }).__ready)).toEqual({ ok: false, code: 'unmounted', status: 'unmounted' });
   expect(errors).toEqual([]);
 });
 
