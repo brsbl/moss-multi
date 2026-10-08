@@ -2,7 +2,7 @@ import { CONNECTION_ATTR, CONNECTION_BANNER_ATTR, NOTICE_BAND_ATTR, type Termina
 import { TRASH_COPY } from '@moss-multi/protocol/retention';
 import { Banner } from '../../../../../packages/ui/src/Banner.tsx';
 import { RefusalAnnouncer } from '../surfaces/RefusalAnnouncer.tsx';
-import { leaveTo } from '../navigation.ts';
+import { leaveTo, reloadDocument } from '../navigation.ts';
 import { useDocConnection } from './connection.ts';
 import { retryDoc } from './doc-session.ts';
 import { useTerminal } from './terminal.ts';
@@ -13,7 +13,22 @@ const terminalCopy: Record<TerminalReason, string> = {
   'session-ended': 'Your session has ended. Sign in again to continue.',
   unavailable: 'This note is unavailable.',
   'conn-limit': 'This note has reached its connection limit. Close another window, then retry.',
+  outdated: 'Moss has been updated. Reload to keep editing.',
 };
+
+function terminalAction(terminal: TerminalReason | null, docId: string | null) {
+  switch (terminal) {
+    case 'conn-limit':
+      return <button type="button" className="underline" onClick={() => { if (docId) retryDoc(docId); }}>Retry</button>;
+    case 'session-ended':
+      return <button type="button" className="underline" onClick={() => leaveTo(`/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`)}>Sign in</button>;
+    // This bundle can no longer write; the reload loads the deployed one.
+    case 'outdated':
+      return <button type="button" className="underline" onClick={reloadDocument}>Reload</button>;
+    default:
+      return undefined;
+  }
+}
 
 export function ConnectionIndicator({ docId }: { docId: string }) {
   const view = useDocConnection(docId);
@@ -35,9 +50,7 @@ export function ConnectionNotice({ docId }: { docId: string | null }) {
     ? 'Still connecting… Your note will open when sync finishes.'
     : 'Connection lost. Your edits are kept in this window and will sync when the connection returns.');
   return <div {...{ [NOTICE_BAND_ATTR]: '' }} className="relative z-10 shrink-0">
-    {kind ? <Banner {...{ [CONNECTION_BANNER_ATTR]: kind }} action={terminal === 'conn-limit'
-      ? <button type="button" className="underline" onClick={() => { if (docId) retryDoc(docId); }}>Retry</button>
-      : terminal === 'session-ended' ? <button type="button" className="underline" onClick={() => leaveTo(`/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`)}>Sign in</button> : undefined}>{message}</Banner> : null}
+    {kind ? <Banner {...{ [CONNECTION_BANNER_ATTR]: kind }} action={terminalAction(terminal, docId)}>{message}</Banner> : null}
     <RefusalAnnouncer />
   </div>;
 }

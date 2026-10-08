@@ -6,7 +6,7 @@ import { onOutdated, withClientProtocol } from './client-protocol.ts';
 const seen: Request[] = [];
 function backend(status = 200, body: unknown = {}) {
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-    seen.push(new Request(input instanceof URL ? input.href : input, init));
+    seen.push(new Request(typeof input === 'string' ? new URL(input, location.href).href : input instanceof URL ? input.href : input, init));
     return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
   });
 }

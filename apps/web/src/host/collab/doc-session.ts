@@ -4,6 +4,7 @@
 // detaches it at once, every close code is dispatched once (closeAction), handshakes that keep failing ask REST, and
 // a first sync later than 8 s reads `retrying`. Edits the DocDO has not acked live only in this Y.Doc, so a session
 // released with unacked edits stays connected without its pane until they are acked, or until the doc ends.
+import { CLIENT_PROTOCOL, PROTOCOL_PARAM } from '@moss-multi/protocol/client-protocol';
 import type { ConnectionState, TerminalReason } from '@moss-multi/protocol/dom-contract';
 import { isRole, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import type { SuggestReply, SuggestRequest } from '@moss-multi/protocol/suggest';
@@ -12,6 +13,7 @@ import { attachPayloadDocs, PayloadDocs, PayloadSync } from '@moss-multi/sync/pa
 import YProvider from 'y-partyserver/provider';
 import * as Y from 'yjs';
 import { rememberRole } from '../access.ts';
+import { onOutdated } from '../client-protocol.ts';
 import { leaveTo } from '../navigation.ts';
 import { refuseInput } from '../refusal.ts';
 import { AckLedger } from './acks.ts';
@@ -220,6 +222,11 @@ export function closeDocsToWrites(docIds: string[], closed: boolean): void {
   for (const session of sessions) if (docIds.includes(session.docId)) session.pauseWrites();
 }
 
+// REST refused this bundle as outdated: every doc stops where it is and offers the reload.
+onOutdated(() => {
+  for (const session of [...sessions]) session.end('outdated');
+});
+
 /** The server trashed these docs: this tab's sessions of them end now, without waiting for the 4410. */
 export function endTrashedDocs(docIds: string[]): void {
   for (const session of [...sessions]) if (docIds.includes(session.docId)) session.end('deleted');
@@ -307,9 +314,10 @@ export class DocSession {
       // The heartbeat sends the 4 s resync itself, so it can pause while the tab is hidden.
       resyncInterval: 0,
       WebSocketPolyfill: DocSocket as unknown as typeof WebSocket,
+      // The protocol lets a server that has moved on refuse this bundle before it writes (4426, rule 10).
       params: () => {
         const share = shareToken();
-        return share ? { share } : {};
+        return { [PROTOCOL_PARAM]: String(CLIENT_PROTOCOL), ...(share ? { share } : {}) };
       },
     });
     // An async params lookup cannot reopen a session that ended while it was in flight.
