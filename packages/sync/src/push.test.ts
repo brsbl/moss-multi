@@ -172,18 +172,18 @@ describe('T7.2 structural push merge @p:agt-1 @p:tech-5', () => {
   });
 
   it('returns a hunk it cannot place and lands the rest', () => {
-    const live = docOf(BODY);
+    const body = BODY.replace('Charlie three changes.', 'Charlie wrote a long and quite distinctive sentence about winter squash.');
+    const live = docOf(body);
     const base = exported(live);
-    // A person rewrote the paragraph the push edits, so the push's hunk has nowhere to go.
-    const rewritten = docOf(BODY.replace('Charlie three changes.', 'Something else entirely, rewritten by a person.'));
-    expect(landPush(live, NOTE, { base, newText: exported(rewritten), force: true }, 'setup')).toMatchObject({ ok: true });
-    const next = base.replace('Charlie three changes.', 'Charlie three changes now.').replace('Echo five stays.', 'Echo five was pushed.');
+    // A person deleted the paragraph the push edits, so the push's hunk has nowhere to go.
+    const deleted = docOf(body.replace('Charlie wrote a long and quite distinctive sentence about winter squash.\n\n', ''));
+    expect(landPush(live, NOTE, { base, newText: exported(deleted), force: true }, 'setup')).toMatchObject({ ok: true });
+    const next = base.replace('quite distinctive sentence', 'rather peculiar sentence').replace('Echo five stays.', 'Echo five was pushed.');
     const result = landPush(live, NOTE, { base, newText: next, force: false }, PUSH);
     expect(result.ok).toBe(true);
-    const ok = result as { failedHunks: string[] };
-    expect(ok.failedHunks.length).toBeGreaterThan(0);
+    expect((result as { failedHunks: string[] }).failedHunks.length).toBeGreaterThan(0);
     expect(exported(live)).toContain('Echo five was pushed.');
-    expect(exported(live)).toContain('Something else entirely, rewritten by a person.');
+    expect(exported(live)).not.toContain('peculiar');
   });
 
   it('normalizes CRLF and lands frontmatter changes with the body', () => {

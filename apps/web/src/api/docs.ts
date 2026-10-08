@@ -2,7 +2,7 @@
 // GET /api/docs/:id is the doc and the caller's role on it; DELETE and POST /restore are trash.ts; /members is the
 // members API (members.ts) and /links the share links (links.ts); GET /api/docs/:id/instance is the owner-only DO probe
 // (A§19), which reads nothing from the doc; GET /api/docs/:id/content is the doc's markdown export (?view=working adds
-// open suggestions); /suggestions/:sid/* is suggestions.ts; /versions is versions.ts; /comments and its
+// open suggestions) and POST /push a CLI push (push.ts); /suggestions/:sid/* is suggestions.ts; /versions is versions.ts; /comments and its
 // edit, delete, resolve and reactions routes are comments.ts. A missing doc and one the caller cannot open get the same 404 on every route (A§8).
 import { eq } from 'drizzle-orm';
 import { getServerByName } from 'partyserver';
@@ -23,6 +23,7 @@ import { handleInviteLinks } from './invites.ts';
 import { handleLinks } from './links.ts';
 import { handleMembers, type MembersEnv } from './members.ts';
 import { restoreDoc, trashDoc } from './trash.ts';
+import { handlePush, PUSH_ROUTE } from './push.ts';
 import { handleVersions, VERSIONS_ROUTE } from './versions.ts';
 import { NO_STORE, notFound, readJsonObject, unauthenticated } from './respond.ts';
 import { ensureDefaultVault } from './vaults.ts';
@@ -224,7 +225,8 @@ async function readContent(request: Request, env: DocsEnv, docId: string): Promi
     if (refused) return refused;
   }
   const stub = await getServerByName(env.DocDO, docId);
-  const markdown = working ? await stub.exportWorking() : await stub.exportMarkdown();
+  // A clean export is what a pull holds, so the DocDO keeps it as a push base (A§17).
+  const markdown = working ? await stub.exportWorking() : await stub.pullMarkdown();
   if (markdown === null) return workingRateLimited();
   return new Response(markdown, { status: 200, headers: { 'content-type': 'text/markdown; charset=utf-8', ...NO_STORE } });
 }
@@ -286,6 +288,8 @@ export async function handleDocs(request: Request, env: DocsEnv): Promise<Respon
   if (versions) return handleVersions(request, env, versions);
   const suggestion = SUGGESTION_ROUTE.exec(pathname);
   if (suggestion) return handleSuggestion(request, env, suggestion[1], suggestion[2], suggestion[3] as 'preview' | 'accept' | 'reject' | 'withdraw');
+  const pushed = PUSH_ROUTE.exec(pathname);
+  if (pushed) return handlePush(request, env, pushed[1]);
   const content = CONTENT.exec(pathname);
   if (content) return only('GET', request, () => readContent(request, env, content[1]));
   const instance = INSTANCE.exec(pathname);

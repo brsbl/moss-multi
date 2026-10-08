@@ -36,6 +36,8 @@ import { attachPayloadSource, exportDocMarkdown, importBody, rootIsEmpty, SERVER
 import { writeTitle } from './server-title.ts';
 import { captureContent, restoreContent, type AnchorSpans, type VersionContent } from './doc/version-content.ts';
 import { ReconcileRefused } from './reconcile.ts';
+import { BaseCache, sha256Hex } from './doc/bases.ts';
+import { landPush } from './push.ts';
 import {
   ACTIVITY_MS, ACTIVITY_UPDATES, VERSION_BOUNDS, VERSION_NAME_MAX, VERSION_SPILL_BYTES, VersionStore, type Prepared, type VersionBlobs,
   type VersionBounds, type VersionMeta,
@@ -43,6 +45,14 @@ import {
 
 /** A restore's server write (A§14). */
 export const VERSION_RESTORE = 'version-restore';
+
+/** A CLI push's server write (A§17). */
+export const CLI_PUSH = 'cli-push';
+
+/** What a push answers: the merge landed (possibly with hunks it could not place), or why it was refused. */
+export type PushVerdict =
+  | { ok: true; applied: number; failedHunks: string[] }
+  | { ok: false; status: number; reason: string; deletedRatio?: number };
 
 /** How long after a wake the doc re-feeds search. */
 const WAKE_FEED_MS = 1_000;
@@ -338,6 +348,7 @@ export class DocDO extends YServer<SyncEnv> {
   readonly #refusals = new Map<string, number[]>();
   readonly #cooldowns = new Map<string, number>();
   #versions: VersionStore | null = null;
+  #bases: BaseCache | null = null;
   /** Updates since the last auto version, and who made them; persisted in meta so a wake keeps them (A§14). */
   #versionUpdates = 0;
   /** +1 on every change to the doc or a payload: whether a restore point captured before an await is still the doc. */
@@ -373,6 +384,7 @@ export class DocDO extends YServer<SyncEnv> {
     const Doc = this.constructor as typeof DocDO;
     this.#versions = new VersionStore(this.ctx.storage.sql, this.name, () => Doc.versionBlobs(this.env), Doc.versionSpillBytes,
       (run) => this.ctx.storage.transactionSync(run), () => Doc.versionBounds);
+    this.#bases = new BaseCache(this.ctx.storage.sql);
     store.load(this.document);
     this.#store = store;
     this.#payloads = payloads;
@@ -1107,6 +1119,56 @@ export class DocDO extends YServer<SyncEnv> {
     await this.#ready();
     this.#exported ??= exportDocMarkdown(this.document, this.name);
     return this.#exported;
+  }
+
+  /** The doc as a `.md` file for a pull (A§17): the export, remembered as a push base under its hash. */
+  async pullMarkdown(): Promise<string> {
+    const markdown = await this.exportMarkdown();
+    this.#bases?.put(await sha256Hex(markdown), markdown);
+    return markdown;
+  }
+
+  /**
+   * A CLI push (A§17), for an editor or above, in the serialized write after the actor is re-authorized (A§8): the
+   * base is the cached one its hash names, or `baseText` when it hashes to it; the file is merged three ways and
+   * landed through the identity-preserving reconcile as one server write, the state cap checked on the simulated
+   * result. A degenerate push is refused unless forced. An auto version follows a push that changed the doc (A§14).
+   */
+  async push(input: { newText: string; baseHash: string; baseText?: string; force?: boolean; reviewer: Reviewer; actor?: CommentActor }): Promise<PushVerdict> {
+    const store = await this.#ready();
+    const bases = this.#bases;
+    if (!bases) throw new Error('DocDO started without a base cache');
+    const supplied = typeof input.baseText === 'string' ? input.baseText : null;
+    if (supplied !== null) {
+      if ((await sha256Hex(supplied)) !== input.baseHash) return { ok: false, status: 400, reason: 'base-mismatch' };
+      bases.put(input.baseHash, supplied);
+    }
+    const landed = { changed: false };
+    const verdict = await this.#review(input, 'editor', (reviewer): PushVerdict => {
+      const base = supplied ?? bases.get(input.baseHash);
+      if (base === null) return { ok: false, status: 409, reason: 'base-missing' };
+      try {
+        const outcome = landPush(this.document, this.name, { base, newText: input.newText, force: input.force === true }, CLI_PUSH,
+          (diff, payloads) => this.#admitServerWrite(store, diff, payloads));
+        if (!outcome.ok) return { ok: false, status: 409, reason: outcome.reason, deletedRatio: outcome.deletedRatio };
+        landed.changed = outcome.changed;
+        if (outcome.changed) {
+          this.#comments?.flush();
+          this.#projections?.touch();
+          if (!this.#versionAuthors.has(reviewer.id)) {
+            this.#versionAuthors.add(reviewer.id);
+            store.setMeta('version-authors', JSON.stringify([...this.#versionAuthors]));
+          }
+        }
+        return { ok: true, applied: outcome.applied, failedHunks: outcome.failedHunks };
+      } catch (error) {
+        if (error instanceof DocCapError) return { ok: false, status: 413, reason: 'too-large' };
+        if (error instanceof ReconcileRefused) return { ok: false, status: 409, reason: 'unverified' };
+        throw error;
+      }
+    });
+    if (landed.changed) await this.#autoVersion(store, input.reviewer.id);
+    return verdict;
   }
 
   /**

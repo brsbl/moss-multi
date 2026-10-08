@@ -24,8 +24,8 @@ const DocDO = {
       acceptSuggestion: record('accept'),
       rejectSuggestion: record('reject'),
       withdrawSuggestion: record('withdraw'),
-      exportMarkdown: async (options?: unknown) => {
-        calls.push({ op: 'export', docId: id.name, input: options ?? null });
+      pullMarkdown: async () => {
+        calls.push({ op: 'export', docId: id.name, input: null });
         return '# clean';
       },
       exportWorking: async () => {

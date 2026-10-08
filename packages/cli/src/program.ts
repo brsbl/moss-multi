@@ -9,7 +9,7 @@ import { createApi, type Api } from './api.ts';
 import { clearCredentials, configPath, deviceLogin, normalizeServer, resolveConfig, writeConfig } from './config.ts';
 import { resolveDocId } from './docref.ts';
 import { CliError, EXIT } from './errors.ts';
-import { confined, findRoot, localName, metaForFile, readBase, readMeta, recordPull, sha256Hex } from './workspace.ts';
+import { confined, findRoot, localName, metaForFile, probeFoldsCase, readBase, readMeta, recordPull, sha256Hex } from './workspace.ts';
 
 export interface ProgramDeps {
   env?: Record<string, string | undefined>;
@@ -109,6 +109,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
   const env = deps.env ?? process.env;
   const cwd = deps.cwd ?? (() => process.cwd());
   const fetchImpl = deps.fetchImpl ?? fetch;
+  const foldsCase = deps.foldsCase ?? probeFoldsCase;
   const stdout = deps.stdout ?? ((chunk) => process.stdout.write(chunk));
   const stderr = deps.stderr ?? ((line) => process.stderr.write(`${line}\n`));
   const line = (text: string) => stdout(`${text}\n`);
@@ -259,14 +260,14 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       let expectHash: string | null | undefined;
       if (parsed.flags.has('force')) expectHash = undefined;
       else if (existsSync(target)) {
-        const owner = metaForFile(root, target);
+        const owner = metaForFile(root, target, foldsCase(root));
         if (owner && owner.docId !== id) throw new CliError(1, `${rel} tracks another doc (${owner.docId}); pull into another file or use --force`);
         if (!owner) throw new CliError(1, `${rel} exists and is not tracked; pull into another file or use --force`);
         if (sha256Hex(readFileSync(target)) !== owner.baseHash) throw new CliError(1, `${rel} has local edits; push them first or use --force`);
         expectHash = owner.baseHash;
       } else expectHash = null;
       const bytes = await client.content(id);
-      recordPull(root, id, rel, bytes, expectHash);
+      recordPull(root, id, rel, bytes, expectHash, foldsCase(root));
       line(`pulled ${rel} (${bytes.byteLength} bytes)`);
     },
 
@@ -276,7 +277,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       const path = resolve(cwd(), fileArg);
       if (!existsSync(path)) throw new CliError(1, `no such file: ${fileArg}`);
       const root = findRoot(dirname(path));
-      const meta = root ? metaForFile(root, path) : null;
+      const meta = root ? metaForFile(root, path, foldsCase(root)) : null;
       if (!root || !meta) throw new CliError(1, `${fileArg} is not tracked here: \`moss-multi pull <doc> ${fileArg}\` first`);
       const local = readFileSync(path);
       if (sha256Hex(local) === meta.baseHash) {
@@ -299,6 +300,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
           throw new CliError(EXIT.degenerate, `push refused: it deletes ${Math.round(response.deletedRatio * 100)}% of the doc; pull again, or push with --force`);
         }
         if (response.reason === 'rate-limited') throw new CliError(1, `push refused: rate limited${response.retryAfterSec ? `; try again in ${response.retryAfterSec} s` : ''}`);
+        if (response.reason === 'too-large') throw new CliError(1, 'push refused: too large; a note holds at most 2 MB of markdown');
         throw new CliError(1, `push refused: ${response.reason}`);
       }
       if (response.mode === 'suggest') {
@@ -312,7 +314,8 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       // The merged doc becomes the file and the new base.
       const merged = await client.content(meta.docId);
       try {
-        recordPull(root, meta.docId, meta.file, merged, sha256Hex(local));
+        // The file named, which on a volume that folds case may spell the tracked path differently.
+        recordPull(root, meta.docId, confined(root, path), merged, sha256Hex(local), foldsCase(root));
       } catch (error) {
         if (!(error instanceof CliError)) throw error;
         throw new CliError(1, `pushed ${meta.file} (${response.applied} change(s) applied), but it was edited during the push, so it was left as it is; push again to send the newer edits`);
