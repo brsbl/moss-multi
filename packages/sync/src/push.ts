@@ -8,7 +8,7 @@ import type { SerializedEditorState } from 'lexical';
 import type * as Y from 'yjs';
 import { splitFrontmatter } from '@moss-desktop/common/markdown-layers';
 import { importFrontmatter } from '@moss-multi/core/frontmatter';
-import { computeMergedTarget, editsOf, isDegenerate, normalizeEol, withoutFinalEol } from '@moss-multi/core/merge';
+import { computeMergedTarget, editsOf, type MergeBudget, mergeBudget, MergeBudgetExceeded, normalizeEol, withoutFinalEol } from '@moss-multi/core/merge';
 import { align, fullOf, type SerializedNode } from '@moss-multi/core/reconcile';
 import { createConverterEditor, exportMarkdown, markdownToState, stateToMarkdown } from './converter/index.ts';
 import { bodyState, reconcileBody, ReconcileRefused, type ForkTarget } from './reconcile.ts';
@@ -20,6 +20,8 @@ export interface PushInput {
   force: boolean;
   /** `--suggest`: the merge is written as a fork under a leased client and collected as record ops; the doc is untouched. */
   fork?: ForkTarget;
+  /** The merge's time and work; one per push by default. */
+  budget?: MergeBudget;
 }
 
 export type PushOutcome =
@@ -118,7 +120,7 @@ const blocksOf = (state: SerializedEditorState): SerializedNode[] => state.root.
  * blocks is re-imported from its own new text alone (a single touched block keeps its untouched children). Throws
  * ReconcileRefused when the blocks cannot be found.
  */
-function spliceByBlock(liveState: SerializedEditorState, current: string, target: string): SerializedNode[] {
+function spliceByBlock(liveState: SerializedEditorState, current: string, target: string, budget: MergeBudget): SerializedNode[] {
   const live = blocksOf(liveState);
   if (live.length === 0) return blocksOf(markdownToState(target));
   const editor = createConverterEditor();
@@ -135,7 +137,7 @@ function spliceByBlock(liveState: SerializedEditorState, current: string, target
   if (current.slice(cursor).trim() !== '') throw new ReconcileRefused('unverified', 'a block of this note cannot be placed in its export, so the push cannot be applied block by block');
   bounds.push(current.length);
   // Block i owns [bounds[i], bounds[i + 1]): its text and the separator after it.
-  const edits = editsOf(current, target);
+  const edits = editsOf(current, target, budget);
   const touched = live.map((_, i) => edits.some(({ start, end }) =>
     start === end ? bounds[i]! <= start && start <= bounds[i + 1]! : start < bounds[i + 1]! && end > bounds[i]!));
   /** Where `at` in `current` lands in `target`; an insertion at `at` itself counts only for the end of a run. */
@@ -192,12 +194,24 @@ function mismatch(expected: string, actual: string, current: string): string {
   return `${name} would be stored differently${stored ? ` (as "${stored}")` : ''}, so nothing changed; write it the way moss writes Markdown (for example *emphasis*, **strong**, \`\`\`javascript) and push again`;
 }
 
+const OVER_BUDGET = 'the push changes too many places in a note that changed since it was pulled to merge in time, so nothing changed; pull and push again';
+
+/** A merge past its budget lands nothing: it is refused (409) before anything is written. */
 export function landPush(live: Y.Doc, noteId: string, input: PushInput, origin: unknown, admit?: Admit): PushOutcome {
+  try {
+    return landMerged(live, noteId, input, origin, input.budget ?? mergeBudget(), admit);
+  } catch (error) {
+    if (error instanceof MergeBudgetExceeded) throw new ReconcileRefused('unverified', OVER_BUDGET);
+    throw error;
+  }
+}
+
+function landMerged(live: Y.Doc, noteId: string, input: PushInput, origin: unknown, budget: MergeBudget, admit?: Admit): PushOutcome {
   const base = normalizeEol(input.base);
   const next = normalizeEol(input.newText);
   const current = exportDocMarkdown(live, noteId);
-  const merge = computeMergedTarget(current, base, next);
-  if (!input.force && isDegenerate(base, next, merge.deletedRatio)) return { ok: false, reason: 'degenerate', deletedRatio: merge.deletedRatio };
+  const merge = computeMergedTarget(current, base, next, { force: input.force, budget });
+  if (merge.degenerate) return { ok: false, reason: 'degenerate', deletedRatio: merge.deletedRatio };
   if (merge.target === current) return { ok: true, applied: 0, failedHunks: merge.failedHunks, changed: false };
   const target = partsOf(merge.target);
   const expected = withoutFinalEol(target.body);
@@ -207,7 +221,7 @@ export function landPush(live: Y.Doc, noteId: string, input: PushInput, origin: 
   const state = markdownToState(target.body);
   const liveState = bodyState(live);
   const blocks = keepUntouched(blocksOf(liveState), blocksOf(markdownToState(currentParts.body)), blocksOf(state))
-    ?? spliceByBlock(liveState, currentParts.body, target.body);
+    ?? spliceByBlock(liveState, currentParts.body, target.body, budget);
   const root = { ...state.root, children: blocks } as unknown as SerializedEditorState['root'];
   try {
     // A push may change only payload text (a code block's code), which the note's own update does not show.

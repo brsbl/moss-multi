@@ -10,6 +10,38 @@ export const DEGENERATE_DELETE_RATIO = 0.6;
 
 // Pushed text is up to 2 MB: every scan over it below is linear, with no backtracking regex.
 
+/** The time one push's merge may take, across every diff it makes. */
+export const MERGE_TIME_MS = 3_000;
+/** The work one push's merge may do: each diff costs DIFF_CALL_WORK plus the characters it compares. */
+export const MERGE_WORK = 64 * 1024 * 1024;
+export const DIFF_CALL_WORK = 1024;
+/** No single diff runs longer than diff-match-patch's own default. */
+const DIFF_TIMEOUT_MS = 1_000;
+
+/** What a push's merge has left; every diff draws on it, so changed regions cannot each restart a time limit. */
+export interface MergeBudget {
+  work: number;
+  deadline: number;
+}
+
+export const mergeBudget = (work = MERGE_WORK, ms = MERGE_TIME_MS): MergeBudget => ({ work, deadline: Date.now() + ms });
+
+/** The merge ran out of budget before it finished; nothing of it may land. */
+export class MergeBudgetExceeded extends Error {
+  constructor() {
+    super('the merge ran out of budget');
+  }
+}
+
+/** One diff charged to `budget`, limited to the time the budget has left. */
+function budgetedDiff(budget: MergeBudget, a: string, b: string, checkLines = true): Diff[] {
+  const cost = DIFF_CALL_WORK + a.length + b.length;
+  const left = budget.deadline - Date.now();
+  if (cost > budget.work || left <= 0) throw new MergeBudgetExceeded();
+  budget.work -= cost;
+  return makeDiff(a, b, { checkLines, timeout: Math.min(left, DIFF_TIMEOUT_MS) / 1000 });
+}
+
 /** LF line endings; every text entering the merge passes through this. */
 export const normalizeEol = (text: string): string => text.split('\r\n').join('\n').split('\r').join('\n');
 
@@ -24,6 +56,14 @@ export interface MergeComputation {
   drifted: boolean;
   /** Changed runs between the current text and the target. */
   applied: number;
+  /** Refused as degenerate (never when forced): the regions were not merged and `target` is the current text. */
+  degenerate: boolean;
+}
+
+export interface MergeOptions {
+  /** Merge even a degenerate push. */
+  force?: boolean;
+  budget?: MergeBudget;
 }
 
 /** One side's edit: base[start, end) becomes `text`. */
@@ -44,8 +84,8 @@ interface Run {
 }
 
 /** Changed runs of a character diff, positions offset into the whole texts. */
-function charRuns(base: string, side: string, at: number, from: number, runs: Run[]): void {
-  for (const [op, text] of makeDiff(base, side)) {
+function charRuns(base: string, side: string, at: number, from: number, runs: Run[], budget: MergeBudget): void {
+  for (const [op, text] of budgetedDiff(budget, base, side)) {
     if (op !== DIFF_EQUAL) {
       const last = runs.at(-1);
       const run = last && last.end === at && last.to === from ? last : { start: at, end: at, from, to: from };
@@ -75,9 +115,9 @@ const MAX_LINES = 0xd000; // one BMP code unit per distinct line, below the surr
 /**
  * The edits turning `base` into `side`. Lines are diffed first, so an unchanged line always separates two edits and a
  * character diff never aligns one paragraph with another; changed lines are then diffed by character, and changes on
- * one line separated only by unchanged text are one edit.
+ * one line separated only by unchanged text are one edit. Every diff draws on `budget`; MergeBudgetExceeded when it runs out.
  */
-export function editsOf(base: string, side: string): Edit[] {
+export function editsOf(base: string, side: string, budget: MergeBudget = mergeBudget()): Edit[] {
   const runs: Run[] = [];
   const codes = new Map<string, string>();
   const encode = (text: string): string => splitLines(text).map((line) => {
@@ -88,7 +128,7 @@ export function editsOf(base: string, side: string): Edit[] {
   const baseCodes = encode(base);
   const sideCodes = encode(side);
   if (codes.size >= MAX_LINES) {
-    charRuns(base, side, 0, 0, runs);
+    charRuns(base, side, 0, 0, runs, budget);
   } else {
     const lines = [...codes.keys()];
     const length = (codesOf: string): number => [...codesOf].reduce((sum, code) => sum + lines[code.charCodeAt(0) - 1]!.length, 0);
@@ -96,10 +136,10 @@ export function editsOf(base: string, side: string): Edit[] {
     let from = 0;
     let region: Run | null = null;
     const flush = (): void => {
-      if (region) charRuns(base.slice(region.start, region.end), side.slice(region.from, region.to), region.start, region.from, runs);
+      if (region) charRuns(base.slice(region.start, region.end), side.slice(region.from, region.to), region.start, region.from, runs, budget);
       region = null;
     };
-    for (const [op, text] of makeDiff(baseCodes, sideCodes, { checkLines: false })) {
+    for (const [op, text] of budgetedDiff(budget, baseCodes, sideCodes, false)) {
       const size = length(text);
       if (op === DIFF_EQUAL) {
         flush();
@@ -155,22 +195,25 @@ export const withoutFinalEol = (text: string): string => text.slice(0, bodyEnd(t
 
 /**
  * Final newlines are not content (an editor adds one on save; the export has none), so the three texts merge without
- * them and the target keeps `current`'s.
+ * them and the target keeps `current`'s. A degenerate push is refused before the regions are merged, unless forced.
+ * Every diff draws on one budget; MergeBudgetExceeded when it runs out.
  */
-export function computeMergedTarget(current: string, base: string, next: string): MergeComputation {
-  const merge = mergeBodies(withoutFinalEol(current), withoutFinalEol(base), withoutFinalEol(next));
+export function computeMergedTarget(current: string, base: string, next: string, options: MergeOptions = {}): MergeComputation {
+  const merge = mergeBodies(withoutFinalEol(current), withoutFinalEol(base), withoutFinalEol(next), options.force === true, options.budget ?? mergeBudget());
   return { ...merge, target: merge.target + finalEol(current) };
 }
 
-function mergeBodies(current: string, base: string, next: string): MergeComputation {
+function mergeBodies(current: string, base: string, next: string, force: boolean, budget: MergeBudget): MergeComputation {
   const drifted = current !== base;
-  if (base === next) return { target: current, failedHunks: [], deletedRatio: 0, drifted, applied: 0 };
-  const deletedRatio = deleted(cleanupSemantic(makeDiff(base, next))) / Math.max(base.length, 1);
-  if (!drifted) return { target: next, failedHunks: [], deletedRatio, drifted, applied: changes(cleanupSemantic(makeDiff(current, next))) };
-  const theirs = editsOf(base, current);
+  const unchanged = { failedHunks: [], drifted, applied: 0, degenerate: false };
+  if (base === next) return { ...unchanged, target: current, deletedRatio: 0 };
+  const deletedRatio = deleted(cleanupSemantic(budgetedDiff(budget, base, next))) / Math.max(base.length, 1);
+  if (!force && isDegenerate(base, next, deletedRatio)) return { ...unchanged, target: current, deletedRatio, degenerate: true };
+  if (!drifted) return { ...unchanged, target: next, deletedRatio, applied: changes(cleanupSemantic(budgetedDiff(budget, current, next))) };
+  const theirs = editsOf(base, current, budget);
   const accepted: Edit[] = [];
   const failed: Edit[] = [];
-  for (const edit of editsOf(base, next)) {
+  for (const edit of editsOf(base, next, budget)) {
     // Made identically on both sides: already in the doc.
     if (theirs.some((other) => other.start === edit.start && other.end === edit.end && other.text === edit.text)) continue;
     (theirs.some((other) => overlaps(edit, other)) ? failed : accepted).push(edit);
@@ -183,8 +226,8 @@ function mergeBodies(current: string, base: string, next: string): MergeComputat
     at = edit.end;
   }
   target += base.slice(at);
-  const applied = target === current ? 0 : changes(cleanupSemantic(makeDiff(current, target)));
-  return { target, failedHunks: describeHunks(base, failed), deletedRatio, drifted, applied };
+  const applied = target === current ? 0 : changes(cleanupSemantic(budgetedDiff(budget, current, target)));
+  return { target, failedHunks: describeHunks(base, failed), deletedRatio, drifted, applied, degenerate: false };
 }
 
 /** A push that empties the doc, or deletes more than DEGENERATE_DELETE_RATIO of its base, drifted or not. */
