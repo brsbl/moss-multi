@@ -301,6 +301,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
         }
         if (response.reason === 'rate-limited') throw new CliError(1, `push refused: rate limited${response.retryAfterSec ? `; try again in ${response.retryAfterSec} s` : ''}`);
         if (response.reason === 'too-large') throw new CliError(1, 'push refused: too large; a note holds at most 2 MB of markdown');
+        if (response.reason === 'push-unverified') throw new CliError(1, `push refused: ${response.message}`);
         throw new CliError(1, `push refused: ${response.reason}`);
       }
       if (response.mode === 'suggest') {

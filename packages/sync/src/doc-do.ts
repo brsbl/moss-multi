@@ -52,7 +52,7 @@ export const CLI_PUSH = 'cli-push';
 /** What a push answers: the merge landed (possibly with hunks it could not place), or why it was refused. */
 export type PushVerdict =
   | { ok: true; applied: number; failedHunks: string[] }
-  | { ok: false; status: number; reason: string; deletedRatio?: number };
+  | { ok: false; status: number; reason: string; deletedRatio?: number; message?: string };
 
 /** How long after a wake the doc re-feeds search. */
 const WAKE_FEED_MS = 1_000;
@@ -1163,7 +1163,7 @@ export class DocDO extends YServer<SyncEnv> {
         return { ok: true, applied: outcome.applied, failedHunks: outcome.failedHunks };
       } catch (error) {
         if (error instanceof DocCapError) return { ok: false, status: 413, reason: 'too-large' };
-        if (error instanceof ReconcileRefused) return { ok: false, status: 409, reason: 'unverified' };
+        if (error instanceof ReconcileRefused) return { ok: false, status: 409, reason: 'push-unverified', message: error.message };
         throw error;
       }
     });

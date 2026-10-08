@@ -98,9 +98,9 @@ describe('computeMergedTarget runs in linear time on pushed text up to the 2 MB 
     it(`doubling the input at most roughly doubles the time (${name})`, () => {
       const time = (n: number): number => {
         const { current, base, next } = shape(n);
-        const start = performance.now();
+        const start = Date.now();
         computeMergedTarget(current, base, next);
-        return performance.now() - start;
+        return Date.now() - start;
       };
       time(16 * 1024); // warm up
       let previous = time(32 * 1024);

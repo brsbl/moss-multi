@@ -12,7 +12,7 @@ import { mirrorOf, serverWrite, type Admit, type Mirror } from './server-doc.ts'
 
 export class ReconcileRefused extends Error {
   readonly status = 409;
-  constructor(readonly reason: 'unparseable' | 'mismatch', message: string) {
+  constructor(readonly reason: 'unparseable' | 'mismatch' | 'unverified', message: string) {
     super(message);
     this.name = 'ReconcileRefused';
   }

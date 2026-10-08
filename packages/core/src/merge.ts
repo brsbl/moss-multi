@@ -8,8 +8,10 @@ import { cleanupSemantic, DIFF_DELETE, DIFF_EQUAL, DIFF_INSERT, type Diff, makeD
 /** The share of the base a push may delete before it is refused as degenerate without --force. */
 export const DEGENERATE_DELETE_RATIO = 0.6;
 
+// Pushed text is up to 2 MB: every scan over it below is linear, with no backtracking regex.
+
 /** LF line endings; every text entering the merge passes through this. */
-export const normalizeEol = (text: string): string => text.replace(/\r\n?/g, '\n');
+export const normalizeEol = (text: string): string => text.split('\r\n').join('\n').split('\r').join('\n');
 
 export interface MergeComputation {
   /** What the doc's file should become. */
@@ -57,7 +59,17 @@ function charRuns(base: string, side: string, at: number, from: number, runs: Ru
   }
 }
 
-const splitLines = (text: string): string[] => text.match(/[^\n]*\n|[^\n]+$/g) ?? [];
+/** Each line with its newline; a last line without one stays as it is. */
+function splitLines(text: string): string[] {
+  const out: string[] = [];
+  let from = 0;
+  for (let at = text.indexOf('\n'); at >= 0; at = text.indexOf('\n', from)) {
+    out.push(text.slice(from, at + 1));
+    from = at + 1;
+  }
+  if (from < text.length) out.push(text.slice(from));
+  return out;
+}
 const MAX_LINES = 0xd000; // one BMP code unit per distinct line, below the surrogates
 
 /**
@@ -120,13 +132,26 @@ function overlaps(a: Edit, b: Edit): boolean {
 
 const lines = (prefix: string, text: string): string[] => (text === '' ? [] : text.split('\n').map((line) => `${prefix}${line}`));
 
-function describeHunk(base: string, edit: Edit): string {
-  const line = base.slice(0, edit.start).split('\n').length;
-  return [`@@ line ${line} @@`, ...lines('-', base.slice(edit.start, edit.end)), ...lines('+', edit.text)].join('\n');
+/** Each failed edit (in base order) as a hunk naming its 1-based base line, counted in one pass. */
+function describeHunks(base: string, edits: Edit[]): string[] {
+  let line = 1;
+  let at = 0;
+  return edits.map((edit) => {
+    for (let next = base.indexOf('\n', at); next >= 0 && next < edit.start; next = base.indexOf('\n', at)) {
+      line++;
+      at = next + 1;
+    }
+    return [`@@ line ${line} @@`, ...lines('-', base.slice(edit.start, edit.end)), ...lines('+', edit.text)].join('\n');
+  });
 }
 
-const finalEol = (text: string): string => text.slice(text.replace(/\n+$/, '').length);
-const withoutFinalEol = (text: string): string => text.slice(0, text.length - finalEol(text).length);
+function bodyEnd(text: string): number {
+  let end = text.length;
+  while (end > 0 && text.charCodeAt(end - 1) === 10) end--;
+  return end;
+}
+const finalEol = (text: string): string => text.slice(bodyEnd(text));
+export const withoutFinalEol = (text: string): string => text.slice(0, bodyEnd(text));
 
 /**
  * Final newlines are not content (an editor adds one on save; the export has none), so the three texts merge without
@@ -159,7 +184,7 @@ function mergeBodies(current: string, base: string, next: string): MergeComputat
   }
   target += base.slice(at);
   const applied = target === current ? 0 : changes(cleanupSemantic(makeDiff(current, target)));
-  return { target, failedHunks: failed.map((edit) => describeHunk(base, edit)), deletedRatio, drifted, applied };
+  return { target, failedHunks: describeHunks(base, failed), deletedRatio, drifted, applied };
 }
 
 /** A push that empties the doc, or deletes more than DEGENERATE_DELETE_RATIO of its base, drifted or not. */

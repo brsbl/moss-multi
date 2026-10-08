@@ -27,6 +27,7 @@ interface Verdict {
   applied?: number;
   failedHunks?: string[];
   deletedRatio?: number;
+  message?: string;
 }
 
 export async function handlePush(request: Request, env: DocsEnv, docId: string): Promise<Response> {
@@ -70,6 +71,7 @@ export async function handlePush(request: Request, env: DocsEnv, docId: string):
     case 'base-missing': return answer({ ok: false, reason: 'base-missing' }, 409);
     case 'degenerate': return answer({ ok: false, reason: 'degenerate', deletedRatio: verdict.deletedRatio ?? 1 }, 409);
     case 'too-large': return answer({ ok: false, reason: 'too-large' }, 413);
+    case 'push-unverified': return answer({ ok: false, reason: 'push-unverified', message: verdict.message ?? 'the push would not land exactly as pushed' }, 409);
     case 'role': return answer({ ok: false, reason: 'forbidden' }, 403);
     case 'base-mismatch': return json({ error: 'bad-request', message: 'baseText does not hash to baseHash' }, 400, NO_STORE);
     case 'trashed':
