@@ -1,6 +1,6 @@
 // Per-run principals (S-test §3.3). Sign-up and sign-in go through the real auth API as declared setup (the auth
 // journey uses the login UI instead); the guard makes the owner's accounts unreachable by construction.
-import { randomBytes } from 'node:crypto';
+import { createHmac, randomBytes } from 'node:crypto';
 
 export const EXAMPLE_DOMAIN = '@example.invalid';
 
@@ -10,6 +10,8 @@ export interface Principal {
   email: string;
   password: string;
   id: string | null;
+  /** A canary pool principal (A§21): signs in once per run, and its contexts share that session. */
+  pooled?: boolean;
 }
 
 export interface SessionCookie {
@@ -85,17 +87,76 @@ export function parseSetCookie(header: string, url: string): SessionCookie {
   };
 }
 
-/** One fresh session per browser context: session tokens are single-issue (L§4.20). */
-export async function signIn(baseUrl: string, principal: Principal): Promise<SessionCookie[]> {
-  assertTestEmail(principal.email);
-  const response = await fetch(`${baseUrl}/api/auth/sign-in/email`, {
+async function postSignIn(baseUrl: string, principal: Principal): Promise<Response> {
+  return fetch(`${baseUrl}/api/auth/sign-in/email`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', origin: baseUrl },
     body: JSON.stringify({ email: principal.email, password: principal.password }),
     signal: AbortSignal.timeout(15_000),
   });
-  if (!response.ok) throw new Error(`sign-in for ${principal.email}: ${response.status} ${(await response.text()).slice(0, 200)}`);
+}
+
+function sessionCookies(response: Response, baseUrl: string, email: string): SessionCookie[] {
   const cookies = response.headers.getSetCookie().map((header) => parseSetCookie(header, baseUrl));
-  if (cookies.length === 0) throw new Error(`sign-in for ${principal.email} set no cookie`);
+  if (cookies.length === 0) throw new Error(`sign-in for ${email} set no cookie`);
   return cookies;
+}
+
+/** The one session per run of each pool principal, keyed by origin and email. */
+const pooledSessions = new Map<string, SessionCookie[]>();
+/** Pool principals already resolved this run, so a later test signs in to none of them again. */
+const pooledPrincipals = new Map<string, Principal>();
+
+/**
+ * One fresh session per browser context: session tokens are single-issue (L§4.20). A pool principal reuses its run's
+ * one session instead, because staging limits sign-ins to 10 a minute per address (auth.ts) and no canary leg signs out.
+ */
+export async function signIn(baseUrl: string, principal: Principal): Promise<SessionCookie[]> {
+  assertTestEmail(principal.email);
+  const pooled = principal.pooled ? pooledSessions.get(`${baseUrl} ${principal.email}`) : undefined;
+  if (pooled) return pooled.map((cookie) => ({ ...cookie }));
+  const response = await postSignIn(baseUrl, principal);
+  if (!response.ok) throw new Error(`sign-in for ${principal.email}: ${response.status} ${(await response.text()).slice(0, 200)}`);
+  const cookies = sessionCookies(response, baseUrl, principal.email);
+  if (principal.pooled) pooledSessions.set(`${baseUrl} ${principal.email}`, cookies);
+  return cookies.map((cookie) => ({ ...cookie }));
+}
+
+/**
+ * A fixed canary principal, `canary-<label>@example.invalid`, reused across runs (A§21): its password derives from
+ * the pool secret, it signs up only on the pool's first run, and it signs in once per run. Returns it with its id.
+ */
+export async function poolPrincipal(baseUrl: string, secret: string, label: string): Promise<Principal> {
+  if (secret.length < 32) throw new Error('the canary pool secret must be at least 32 characters');
+  const email = `canary-${label}${EXAMPLE_DOMAIN}`.toLowerCase();
+  assertTestEmail(email);
+  const first = DISPLAY.find((name) => name.toLowerCase() === label.toLowerCase()) ?? `${label[0].toUpperCase()}${label.slice(1)}`;
+  const known = pooledPrincipals.get(`${baseUrl} ${email}`);
+  if (known) return { ...known };
+  const principal: Principal = {
+    label, name: `${first} Canary`, email, password: createHmac('sha256', secret).update(email).digest('base64url'), id: null, pooled: true,
+  };
+  let response = await postSignIn(baseUrl, principal);
+  if (response.status === 429) {
+    // A Playwright worker restarted after a failure signs in again; wait out the window once.
+    const wait = Math.min(Number(response.headers.get('x-retry-after')) || 60, 60);
+    await new Promise((done) => setTimeout(done, wait * 1000));
+    response = await postSignIn(baseUrl, principal);
+  }
+  if (response.status === 401) {
+    // The pool's first run on this database.
+    response = await fetch(`${baseUrl}/api/auth/sign-up/email`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: baseUrl },
+      body: JSON.stringify({ email, password: principal.password, name: principal.name }),
+      signal: AbortSignal.timeout(15_000),
+    });
+  }
+  const text = await response.clone().text();
+  if (!response.ok) throw new Error(`canary principal ${email}: ${response.status} ${text.slice(0, 200)} (a changed pool secret needs fresh pool labels)`);
+  principal.id = (JSON.parse(text) as { user?: { id?: string } }).user?.id ?? null;
+  if (!principal.id) throw new Error(`canary principal ${email}: no user id in ${text.slice(0, 200)}`);
+  pooledSessions.set(`${baseUrl} ${email}`, sessionCookies(response, baseUrl, email));
+  pooledPrincipals.set(`${baseUrl} ${email}`, principal);
+  return { ...principal };
 }

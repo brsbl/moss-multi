@@ -68,6 +68,7 @@ jobs:
       macos: ${{ steps.plan.outputs.macos }}
       parity: ${{ steps.plan.outputs.parity }}
       viewer: ${{ steps.plan.outputs.viewer }}
+      canary: ${{ steps.plan.outputs.canary }}
       grep: ${{ steps.plan.outputs.grep }}
       repeat: ${{ steps.plan.outputs.repeat }}
       slow: ${{ steps.plan.outputs.slow }}
@@ -144,6 +145,20 @@ jobs:
       - name: Lint
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: pnpm lint
+      # Every workflow, and deploy-staging.yml's shell through shellcheck too (T8.D).
+      - name: Workflow lint
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        timeout-minutes: 3
+        run: |
+          bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7 "$RUNNER_TEMP"
+          "$RUNNER_TEMP/actionlint" -shellcheck= -pyflakes= .github/workflows/*.yml
+          "$RUNNER_TEMP/actionlint" -pyflakes= .github/workflows/deploy-staging.yml
+      # A local secret file is never committed, so no checkout or artifact can carry one (T8.D).
+      - name: No local secret file is tracked
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          tracked=$(git ls-files | grep -E '(^|/)(\.dev\.vars(\..*)?|\.env(\..*)?|cloudflare\.env)$' || true)
+          if [ -n "$tracked" ]; then echo "::error::local secret files are tracked: $tracked"; exit 1; fi
       # Unit tests, converter L1 (Node), L2 (workerd) and L3 (parity with moss at the pin).
       - name: Unit tests
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
@@ -193,15 +208,47 @@ jobs:
           MOSS_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       - id: provenance
         run: node scripts/provenance.mjs read apps/web/dist >> "$GITHUB_OUTPUT"
+      # The bytes e2e tests are the bytes deploy-staging ships: no local secret file, and an .assetsignore that keeps
+      # one out of the static assets (T8.D).
+      - name: Upload guard
+        run: node scripts/deploy/staging-config.mjs guard apps/web/dist
       # The built Worker boots under wrangler dev, /api/version is this commit, and / links CSS served 200 text/css.
       - name: Smoke
         run: node scripts/stack.mjs start --run-id "$SMOKE_RUN" --prebuilt apps/web/dist --expect-commit "$(git rev-parse HEAD)" --json
       # Two principals sign up on the built Worker and /api/me resolves each one's session.
       - name: Principals
         run: node scripts/stack.mjs principals --run-id "$SMOKE_RUN" --count 2
+      # What deploy-staging asserts on staging, against this production-mode stack (no hooks): /api/version and / are
+      # these bytes and every test hook is the unknown-route 404. A bundle the stack does not serve must fail it (T8.D).
+      - name: Deployed-build assertion
+        env:
+          COMMIT: ${{ steps.provenance.outputs.commit }}
+          BUNDLE: ${{ steps.provenance.outputs.bundleHash }}
+          CLIENT: ${{ steps.provenance.outputs.clientHash }}
+        run: |
+          base=$(node -p "require('./.local-stack/runs/$SMOKE_RUN/state.json').baseUrl")
+          node scripts/deploy/assert-deployed.mjs --base-url "$base" --expect-commit "$COMMIT" --expect-bundle "$BUNDLE" --expect-client "$CLIENT"
+          wrong=$(printf '%064d' 0)
+          if node scripts/deploy/assert-deployed.mjs --base-url "$base" --expect-commit "$COMMIT" --expect-bundle "$wrong" --expect-client "$CLIENT"; then
+            echo "::error::the assertion accepted a bundle the stack does not serve"
+            exit 1
+          fi
       - name: Stop the smoke stack
         if: always()
         run: node scripts/stack.mjs stop --run-id "$SMOKE_RUN" || true
+      # env.staging laid over a copy of these bytes, then checked by wrangler without credentials (T8.D). The tested
+      # dist carries a redirected config, which takes no --env, so this is the staging dry run: the config holds the
+      # same keys a CLOUDFLARE_ENV=staging build writes.
+      - name: Staging deploy dry run
+        env:
+          WRANGLER_SEND_METRICS: 'false'
+        run: |
+          stage="$RUNNER_TEMP/staging/apps/web"
+          mkdir -p "$stage"
+          cp -R apps/web/dist "$stage/dist"
+          node scripts/deploy/staging-config.mjs write "$stage/dist" --d1-id 00000000-0000-0000-0000-000000000000 --url https://moss-multi-staging.example.workers.dev --dry-run
+          wrangler="$PWD/apps/web/node_modules/wrangler/bin/wrangler.js"
+          (cd "$RUNNER_TEMP/staging" && node "$wrangler" deploy --dry-run --config "$stage/dist/server/wrangler.json" --outdir "$RUNNER_TEMP/staging/out")
       - name: Pack the built bytes for e2e
         if: needs.plan.outputs.e2e == 'true' || needs.plan.outputs.macos == 'true' || needs.plan.outputs.parity == 'true'
         run: tar -czf web-dist.tgz -C apps/web dist
@@ -261,6 +308,21 @@ jobs:
           node scripts/stack.mjs start --run-id "$RUN_ID" --prebuilt .local-stack/prebuilt/dist --hooks --state-dir /dev/shm/moss-stack
           --expect-commit "${{ needs.build.outputs.commit }}" --expect-bundle "${{ needs.build.outputs.bundleHash }}"
       - run: echo "STACK_STATE=$PWD/.local-stack/runs/$RUN_ID/state.json" >> "$GITHUB_ENV"
+      # The negative control for deploy-staging's hook-404 assertion (T8.D): given this run's hook secret, it must
+      # fail on this hooks-enabled stack, so a pass on staging means the hooks are off.
+      - name: The hook assertion fails on a hooks stack
+        if: matrix.browser == 'chromium' && matrix.group == 'shell'
+        run: |
+          eval "$(node scripts/provenance.mjs read .local-stack/prebuilt/dist | grep -E '^(commit|bundleHash|clientHash)=')"
+          base=$(node -p "require(process.env.STACK_STATE).baseUrl")
+          ASSERT_HOOK_SECRET=$(node -p "require(require(process.env.STACK_STATE).secretsPath).testHooksSecret")
+          export ASSERT_HOOK_SECRET
+          if out=$(node scripts/deploy/assert-deployed.mjs --base-url "$base" --expect-commit "$commit" --expect-bundle "$bundleHash" --expect-client "$clientHash" 2>&1); then
+            echo "::error::the hook assertion accepted a hooks-enabled stack"
+            exit 1
+          fi
+          echo "$out"
+          grep -q 'with the hook secret: 200' <<<"$out" || { echo "::error::the hook assertion failed, but not on an answering hook"; exit 1; }
       - name: Selftests, then the group's journeys
         working-directory: e2e
         env:
@@ -571,9 +633,71 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+  # The staging canary rehearsed on the build job's bytes (T8.D): deploy-staging.yml's canary project on a stack with no
+  # test hooks, the fixed principal pool and the request budget, waking the DO by natural idle (the calibrated workerd
+  # window; staging's is 15 s or more).
+  canary:
+    needs: [plan, build]
+    if: needs.plan.outputs.canary == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container:
+      image: mcr.microsoft.com/playwright:v1.61.1-noble
+      options: --ipc=host --init
+    env:
+      RUN_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}-canary
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+      - run: command -v ps > /dev/null || (apt-get update -qq && apt-get install -y -qq --no-install-recommends procps > /dev/null)
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v8
+        with:
+          name: web-dist
+      - run: mkdir -p .local-stack/prebuilt && tar -xzf web-dist.tgz -C .local-stack/prebuilt
+      - name: Boot a production-mode stack (no test hooks) on the built bytes
+        run: >
+          node scripts/stack.mjs start --run-id "$RUN_ID" --prebuilt .local-stack/prebuilt/dist --state-dir /dev/shm/moss-stack
+          --expect-commit "${{ needs.build.outputs.commit }}" --expect-bundle "${{ needs.build.outputs.bundleHash }}"
+      - name: Canary state
+        run: |
+          idle=$(node -p "require('./e2e/lib/calibrated.json').idleMs")
+          node scripts/deploy/canary-state.mjs --from-stack ".local-stack/runs/$RUN_ID/state.json" --out "$RUNNER_TEMP/canary/state.json" --budget 2000 --idle-ms "$idle"
+          echo "STACK_STATE=$RUNNER_TEMP/canary/state.json" >> "$GITHUB_ENV"
+      - name: The canary legs
+        working-directory: e2e
+        run: |
+          CANARY_POOL_SECRET=$(openssl rand -hex 32)
+          export CANARY_POOL_SECRET
+          pnpm exec playwright test --project=canary
+      - name: Requests this run made
+        if: always()
+        run: cat "$RUNNER_TEMP/canary/requests.json" || true
+      - name: Stop the stack
+        if: always()
+        run: node scripts/stack.mjs stop --run-id "$RUN_ID" || true
+      - name: Upload results, traces and screenshots
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: canary-${{ github.run_attempt }}
+          path: |
+            e2e/test-results/
+            e2e/playwright-report/
+            .local-stack/runs/*/wrangler.log
+          retention-days: 7
+          if-no-files-found: ignore
+
   ci-ok:
     if: always()
-    needs: [plan, checks, build, e2e, macos, oracle, parity, viewer, editor, editor-host]
+    needs: [plan, checks, build, e2e, macos, oracle, parity, viewer, editor, editor-host, canary]
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:

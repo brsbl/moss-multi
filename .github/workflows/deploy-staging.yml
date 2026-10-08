@@ -1,0 +1,215 @@
+# Deploys the exact bytes a green CI full lane tested to staging, then runs the staging canary (A§21, T8.D). Manual
+# dispatch only. Setup and use: docs/DEPLOY.md. Without the repository secrets it lists, the first job fails at once.
+name: Deploy staging
+
+on:
+  workflow_dispatch:
+    inputs:
+      ci_run_id:
+        description: 'The ci.yml run whose web-dist to deploy: a green full lane on a branch head (dispatch lane=full), within its 3-day artifact retention'
+        required: true
+        type: string
+      request_budget:
+        description: 'Worker requests the canary may make in this run'
+        type: number
+        default: 2000
+      idle_seconds:
+        description: 'Idle before the canary proves a wake (15 or more; SP14)'
+        type: number
+        default: 20
+
+permissions:
+  contents: read
+  actions: read
+
+# One deploy at a time, never cancelled half way.
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+
+env:
+  CI: 'true'
+  NO_COLOR: '1'
+  WRANGLER_SEND_METRICS: 'false'
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          sparse-checkout: scripts/deploy
+      - name: Every secret is configured
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          STAGING_URL: ${{ secrets.STAGING_URL }}
+          STAGING_BETTER_AUTH_SECRET: ${{ secrets.STAGING_BETTER_AUTH_SECRET }}
+          CANARY_POOL_SECRET: ${{ secrets.CANARY_POOL_SECRET }}
+        run: node scripts/deploy/preflight.mjs
+
+  deploy:
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      sha: ${{ steps.run.outputs.sha }}
+      commit: ${{ steps.provenance.outputs.commit }}
+      bundleHash: ${{ steps.provenance.outputs.bundleHash }}
+      clientHash: ${{ steps.provenance.outputs.clientHash }}
+    # Secrets reach only the steps that use them, never the dependency install.
+    env:
+      RUN_ID: ${{ inputs.ci_run_id }}
+      WRANGLER: apps/web/node_modules/wrangler/bin/wrangler.js
+    steps:
+      - name: Read the CI run
+        id: run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ ! "$RUN_ID" =~ ^[0-9]+$ ]]; then echo "::error::ci_run_id must be a run id (digits only)"; exit 1; fi
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" > "$RUNNER_TEMP/run.json"
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs?per_page=100" --jq '.jobs[]' > "$RUNNER_TEMP/jobs.ndjson"
+          echo "sha=$(jq -r .head_sha "$RUNNER_TEMP/run.json")" >> "$GITHUB_OUTPUT"
+      # The tested commit: its migrations match the bytes, and its scripts judge them.
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.run.outputs.sha }}
+      - name: The run passed the full lane in both engines
+        run: node scripts/deploy/tested-run.mjs "$RUNNER_TEMP/run.json" "$RUNNER_TEMP/jobs.ndjson"
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # The bytes e2e ran on, by artifact: never a rebuild.
+      - uses: actions/download-artifact@v8
+        with:
+          name: web-dist
+          run-id: ${{ inputs.ci_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/artifact
+      - name: Unpack the tested bytes
+        id: provenance
+        run: |
+          tar -xzf "$RUNNER_TEMP/artifact/web-dist.tgz" -C apps/web
+          node scripts/provenance.mjs read apps/web/dist >> "$GITHUB_OUTPUT"
+      - name: The bytes are the run's head commit
+        env:
+          COMMIT: ${{ steps.provenance.outputs.commit }}
+          SHA: ${{ steps.run.outputs.sha }}
+        run: |
+          if [ "$COMMIT" != "$SHA" ]; then echo "::error::web-dist was built from $COMMIT, the run's head is $SHA"; exit 1; fi
+      - name: Upload guard
+        run: node scripts/deploy/staging-config.mjs guard apps/web/dist
+      # A§21: who the token deploys as, before anything is created.
+      - name: wrangler whoami
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: node "$WRANGLER" whoami
+      - name: The staging D1 and R2 exist
+        id: d1
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          lookup() { node "$WRANGLER" d1 list --json | jq -r '.[] | select(.name == "moss-multi-staging") | .uuid'; }
+          id=$(lookup)
+          if [ -z "$id" ]; then
+            node "$WRANGLER" d1 create moss-multi-staging
+            id=$(lookup)
+          fi
+          if [ -z "$id" ]; then echo "::error::no D1 database moss-multi-staging"; exit 1; fi
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+          if ! node "$WRANGLER" r2 bucket info moss-multi-staging-assets > /dev/null 2>&1; then
+            node "$WRANGLER" r2 bucket create moss-multi-staging-assets
+          fi
+      - name: The staging config over the tested bytes
+        env:
+          D1_ID: ${{ steps.d1.outputs.id }}
+          STAGING_URL: ${{ secrets.STAGING_URL }}
+        run: node scripts/deploy/staging-config.mjs write apps/web/dist --d1-id "$D1_ID" --url "$STAGING_URL"
+      # Before the deploy, so the new bytes never meet an old schema. wrangler applies them in file-name order and the
+      # upload guard checked that order against the drizzle journal.
+      - name: D1 migrations
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: node "$WRANGLER" d1 migrations apply moss-multi-staging --remote --config apps/web/dist/server/wrangler.json
+      - name: Deploy the tested bytes
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          STAGING_BETTER_AUTH_SECRET: ${{ secrets.STAGING_BETTER_AUTH_SECRET }}
+          COMMIT: ${{ steps.provenance.outputs.commit }}
+        run: |
+          umask 077
+          secrets="$RUNNER_TEMP/staging-secrets.json"
+          trap 'rm -f "$secrets"' EXIT
+          node -e 'process.stdout.write(JSON.stringify({ BETTER_AUTH_SECRET: process.env.STAGING_BETTER_AUTH_SECRET }))' > "$secrets"
+          node "$WRANGLER" deploy --config apps/web/dist/server/wrangler.json --secrets-file "$secrets" --message "ci run $RUN_ID, commit $COMMIT"
+      - name: Staging serves the tested bytes and no test hook
+        env:
+          STAGING_URL: ${{ secrets.STAGING_URL }}
+          COMMIT: ${{ steps.provenance.outputs.commit }}
+          BUNDLE: ${{ steps.provenance.outputs.bundleHash }}
+          CLIENT: ${{ steps.provenance.outputs.clientHash }}
+        run: node scripts/deploy/assert-deployed.mjs --base-url "$STAGING_URL" --expect-commit "$COMMIT" --expect-bundle "$BUNDLE" --expect-client "$CLIENT" --wait 600
+
+  # j00-shell, the j01 setup legs and j04's @staging leg on staging (A§21, SP14): the fixed principal pool, this
+  # run's request budget, and a wake after natural idle proven through the owner-only instance route.
+  canary:
+    needs: deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    container:
+      image: mcr.microsoft.com/playwright:v1.61.1-noble
+      options: --ipc=host --init
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.deploy.outputs.sha }}
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Canary state
+        env:
+          STAGING_URL: ${{ secrets.STAGING_URL }}
+          COMMIT: ${{ needs.deploy.outputs.commit }}
+          BUNDLE: ${{ needs.deploy.outputs.bundleHash }}
+          CLIENT: ${{ needs.deploy.outputs.clientHash }}
+          BUDGET: ${{ inputs.request_budget }}
+          IDLE: ${{ inputs.idle_seconds }}
+        run: |
+          node scripts/deploy/canary-state.mjs --out "$RUNNER_TEMP/canary/state.json" --base-url "$STAGING_URL" \
+            --commit "$COMMIT" --bundle "$BUNDLE" --client "$CLIENT" --budget "$BUDGET" --idle-ms "$((IDLE * 1000))" \
+            --run-id "staging-${GITHUB_RUN_ID}"
+          echo "STACK_STATE=$RUNNER_TEMP/canary/state.json" >> "$GITHUB_ENV"
+      - name: The canary legs
+        working-directory: e2e
+        env:
+          CANARY_POOL_SECRET: ${{ secrets.CANARY_POOL_SECRET }}
+          RUN_ID: staging-${{ github.run_id }}
+        run: pnpm exec playwright test --project=canary
+      - name: Requests this run made
+        if: always()
+        run: cat "$RUNNER_TEMP/canary/requests.json" || true
+      - name: Upload results, traces and screenshots
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: staging-canary-${{ github.run_attempt }}
+          path: |
+            e2e/test-results/
+            e2e/playwright-report/
+          retention-days: 7
+          if-no-files-found: ignore

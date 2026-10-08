@@ -47,6 +47,16 @@ export default defineConfig({
     { name: 'selftest-webkit', testDir: './selftest', use: { browserName: 'webkit' } },
     { name: 'chromium', testDir: './journeys', ...journeys, dependencies: ['selftest-chromium'], use: { browserName: 'chromium' } },
     { name: 'webkit', testDir: './journeys', ...journeys, dependencies: ['selftest-webkit'], use: { browserName: 'webkit' } },
+    // The staging canary (A§21, T8.D): j00-shell, the j01 setup legs and j04's @staging leg on a Worker with no hooks,
+    // a fixed principal pool and a request budget (STACK_STATE from scripts/deploy/canary-state.mjs). deploy-staging.yml
+    // runs it on staging; ci.yml's canary job rehearses it on a production-mode local stack.
+    {
+      name: 'canary',
+      testDir: './journeys',
+      testMatch: /j0(?:0-shell|1-coedit|4-hibernation)\.spec\.ts$/,
+      grep: /j00-shell\.spec|j01 setup|@staging/,
+      use: { browserName: 'chromium' },
+    },
     // Shell parity against the Ladle oracle (A§20): the parity job only, in the e2e image's Chromium.
     { name: 'parity', testDir: './parity', use: { browserName: 'chromium' } },
     // The read-only viewer bundle's acceptance fixture (T0.13): the viewer job only, against packages/viewer/dist.

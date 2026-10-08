@@ -1,10 +1,13 @@
 // The running stack as journeys see it (S-test §3.3): provenance, the SIGSTOP and restart levers through
-// scripts/stack.mjs, and the two loopback test hooks (A§19). Failures here are infrastructure.
+// scripts/stack.mjs, and the two loopback test hooks (A§19). Failures here are infrastructure. A canary state
+// (scripts/deploy/canary-state.mjs) names a Worker with no hooks, a fixed principal pool and a request budget: staging,
+// or the production-mode rehearsal in CI (A§21, T8.D).
 import { execFile } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import type { Instance } from './hibernate.ts';
+import { RequestBudget } from './budget.ts';
 import { assertNotInfra, InfraBlocked } from './infra.ts';
 
 const REPO = join(import.meta.dirname, '../..');
@@ -20,10 +23,25 @@ export interface StackState {
   logPath: string;
   statePath: string;
   hooks: boolean;
+  canary?: CanaryState;
+}
+
+export interface CanaryState {
+  /** Worker requests this run may make (static assets excluded). */
+  budget: number;
+  /** The natural idle before a wake is proven (≥ 15 s; SP14). */
+  idleMs: number;
+  /** The environment variable holding the pool's password secret. */
+  poolSecretEnv: string;
+  budgetPath: string;
 }
 
 export class Stack {
-  private constructor(readonly state: StackState) {}
+  readonly budget: RequestBudget | null;
+
+  private constructor(readonly state: StackState) {
+    this.budget = state.canary ? new RequestBudget(state.canary.budgetPath, state.canary.budget, state.baseUrl) : null;
+  }
 
   static fromState(path = process.env.STACK_STATE): Stack {
     if (!path || !existsSync(path)) throw new InfraBlocked(`no stack state at ${path ?? '$STACK_STATE (unset)'}; start one with scripts/stack.mjs`);
@@ -34,9 +52,15 @@ export class Stack {
     return this.state.baseUrl;
   }
 
+  /** The canary settings, or null on a local hook stack. */
+  get canary(): CanaryState | null {
+    return this.state.canary ?? null;
+  }
+
   /** `/api/version` must report the bytes the stack was started on. */
   async assertProvenance(): Promise<Provenance> {
     let version: Provenance;
+    this.budget?.charge(`${this.baseUrl}/api/version`);
     try {
       const response = await fetch(`${this.baseUrl}/api/version`, { signal: AbortSignal.timeout(10_000) });
       const text = await response.text();
