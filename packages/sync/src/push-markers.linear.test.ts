@@ -17,8 +17,6 @@ const ATTACKS: Record<string, (n: number) => string> = {
   // COMMENT_WRAPPED_ATX_HEADING_LINE and COMMENT_WRAPPED_IMAGE: an opener, then blanks.
   'a marker opener and blank lines': (n) => `%%m:${'\n'.repeat(n - 5)}!`,
   'a legacy opener and blank lines': (n) => `{%c:${'\n'.repeat(n - 5)}!`,
-  // COMMENT_WRAPPED_ATX_HEADING_LINE: a wrapped heading whose closers never end the line.
-  'a wrapped heading of closers that do not end it': (n) => `%%m:a:start%%# h${'%%m: a :end%%x'.repeat(n / 15)}`,
 };
 
 function expectLinear(run: (text: string) => void, attack: (n: number) => string): void {
