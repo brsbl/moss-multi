@@ -264,7 +264,7 @@ export function HistoryView({ docId }: { docId: string }): ReactNode {
         if (!live) return;
         const versions = json.versions;
         if (ok && Array.isArray(versions)) setList({ state: 'ready', value: versions as VersionMeta[] });
-        else setList({ state: 'error', message: refusal(json, 'Version history could not be loaded.') });
+        else setList({ state: 'error', message: `Version history could not be loaded. ${refusal(json, 'Try again.')}` });
       },
       () => live && setList({ state: 'error', message: 'Version history could not be loaded. The server could not be reached.' }),
     );

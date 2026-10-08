@@ -193,7 +193,8 @@ test('j17-history: a first named checkpoint from the empty state and one from th
   const shown = content(ada, id);
   await expect(shown).toHaveAttribute(VERSION_CONTENT_ATTR, 'view');
   await expect(shown.locator(`[${VERSION_TITLE_ATTR}]`), 'View shows the whole title').toHaveText(longTitle);
-  const editor = shown.locator(LEXICAL_EDITOR_SELECTOR);
+  // moss's editor wrapper carries the Lexical attribute too; the root is the one with contenteditable.
+  const editor = shown.locator(`${LEXICAL_EDITOR_SELECTOR}[contenteditable]`);
   await expect(editor, 'View renders the version in a read-only editor').toHaveAttribute('contenteditable', 'false');
   await expect(editor).toContainText('The quick brown fox jumps over the lazy dog.');
   await expect(editor, 'as it was: without Ben\'s later change').not.toContainText('Ben was here.');
