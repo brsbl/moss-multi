@@ -3,7 +3,7 @@
 // limited per person by its PrincipalDO; the DocDO re-authorizes the actor in the write, and its verdict passes through.
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
-import { BASE, insertDoc, insertGrant, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
+import { BASE, insertAgent, insertDoc, insertGrant, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
 import { handleApi } from './router.ts';
 
 const calls: { op: string; docId: string; input: unknown }[] = [];
@@ -88,6 +88,16 @@ const send = (method: string, cookie: string | null, path: string, body?: unknow
 
 const versions = () => `/api/docs/${docId}/versions`;
 
+const sendAsKey = (key: string, path: string, body: unknown) =>
+  handleApi(
+    new Request(`${BASE}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
+      body: JSON.stringify(body),
+    }),
+    env,
+  );
+
 describe('version routes @p:mean-3', () => {
   it('lists and reads for any reader, saves and restores for an editor, as the caller', async () => {
     const listed = await send('GET', cara.cookie, versions());
@@ -134,6 +144,21 @@ describe('version routes @p:mean-3', () => {
     expect(response.headers.get('retry-after')).toBeTruthy();
     expect(calls).toEqual([]);
     expect(tokens).toEqual([`version:${eve.id}`]);
+  });
+
+  it("counts an agent's named saves against its owner: one rate across the owner's keys, attributed to the key", async () => {
+    const keys = await Promise.all([insertAgent(d1.db, eve), insertAgent(d1.db, eve), insertAgent(d1.db, eve)]);
+    for (const agent of keys) expect((await sendAsKey(agent.key, versions(), { name: 'Draft' })).status).toBe(201);
+    expect(tokens, "every key of Eve's spends Eve's named version rate").toEqual(keys.map(() => `version:${eve.id}`));
+    expect(calls.map(({ input }) => input)).toEqual(
+      keys.map((agent) => expect.objectContaining({ reviewer: { id: agent.id, role: 'editor' }, actingUserId: eve.id })),
+    );
+    versionTokens = 0;
+    const fourth = await insertAgent(d1.db, eve);
+    expect((await sendAsKey(fourth.key, versions(), { name: 'Draft' })).status, 'a new key does not refill the rate').toBe(429);
+    versionTokens = Infinity;
+    expect((await send('POST', ada.cookie, versions(), { name: 'Mine' })).status, "Eve's rate is not Ada's").toBe(201);
+    expect(calls.at(-1)?.input).toMatchObject({ reviewer: { id: ada.id }, actingUserId: ada.id });
   });
 
   it('answers 429 past the per-person write rate for a restore', async () => {
