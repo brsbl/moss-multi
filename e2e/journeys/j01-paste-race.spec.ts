@@ -54,7 +54,9 @@ test('j01-paste-race: a peer’s edit during a large paste’s check moves the p
   await ui.waitAcked(ada, docId, 120_000);
   await expect.poll(() => exported(ada, docId), { message: 'one undo removes the paste and keeps Ben’s edit', timeout: 120_000 }).toBe(want.undone);
 
-  // Ben adds a block above the paste's paragraph; Ada's redo still lands in that paragraph.
+  // Ben adds a block above the paste's paragraph; Ada's redo still lands in that paragraph. Ben's screen has the undo
+  // first: a click while his editor still applies it is put back where his caret was.
+  await expect.poll(() => ui.body(ben, docId).locator('p').count(), { message: 'Ben has the undo', timeout: 120_000 }).toBe(3);
   await ui.body(ben, docId).locator('p').filter({ hasText: /^Top\.$/ }).click();
   await ben.page.keyboard.press('End');
   await ben.page.keyboard.press('Enter');

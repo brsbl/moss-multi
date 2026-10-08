@@ -389,6 +389,7 @@ export class DocDO extends YServer<SyncEnv> {
     const waiting = this.#waiting.get(connection) ?? { frames: 0, bytes: 0 };
     if (waiting.frames + 1 > this.#limits.inboxFramesPerConnection || waiting.bytes + bytes > this.#limits.inboxBytesPerConnection
       || this.#waitingBytes + bytes > this.#limits.inboxBytes) {
+      console.warn(`DocDO: a socket's inbox is full (${waiting.frames} frames, ${waiting.bytes} bytes waiting; ${this.#waitingBytes} in all): closing it`);
       this.#dropWaiting(connection);
       connection.close(TRY_AGAIN, 'inbox full');
       return;
