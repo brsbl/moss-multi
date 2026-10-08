@@ -150,18 +150,9 @@ const CANVAS_BLOCK_REGEX = new RegExp(
   '```(?:' + MOSS_CANVAS_FENCE_PATTERN_SOURCE + ')\\b[\\s\\S]*?```',
   'g'
 );
-const CODE_BLOCK_REGEX = new RegExp(
-  '```(?!(?:moss-chart|' +
-    MOSS_CANVAS_FENCE_PATTERN_SOURCE +
-    ')\\b)[^\\n]*\\n[\\s\\S]*?```',
-  'g'
-);
+// moss: CODE_BLOCK_REGEX, '```(?!(?:moss-chart|<canvas fences>)\\b)[^\\n]*\\n[\\s\\S]*?```' with g; codeBlockSpans scans it.
+const NOT_CODE_FENCE = new RegExp('(?:moss-chart|' + MOSS_CANVAS_FENCE_PATTERN_SOURCE + ')\\b', 'y');
 const INDENTED_CODE_LINE_REGEX = /^(?: {4}|\t).+/gm;
-// moss: /^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*$/gm. A match that began on a blank line ends where one from the
-// next non-blank line does, so the count is the same with the leading space kept to one line.
-export const MARKDOWN_TABLE_SEPARATOR_REGEX =
-  /^[^\S\n\r\u2028\u2029]*(?:\|\s*)?:?-{3,}:?\s*\|(?:\s*:?-{3,}:?\s*\|)*\s*:?-{3,}:?\s*$/gm;
-const IMAGE_MARKDOWN_REGEX = /!\[[^\]]*\]\((?:[^()\n]|\\\(|\\\))*\)/g;
 const EMPTY_NOTE_MAX_NON_EMPTY_LINES = 2;
 const EMPTY_NOTE_MAX_TEXT_CHARS = 120;
 const LARGE_NOTE_MIN_TEXT_CHARS = 2000;
@@ -204,16 +195,32 @@ export const blankWikiLinks = (text: string): string => {
   return out + text.slice(last);
 };
 
-/**
- * moss: `.replace(/\[[^\]]*\]\((?:[^()\n]|\\\(|\\\))*\)/g, ' ')`, in one pass. The target ends at its first `)` and
- * fails at a line break or at a `(` not escaped by a `\` inside it; a later start whose target begins before a known
- * failure fails there too, so no stretch of text is scanned twice.
- */
-export const blankMarkdownLinks = (text: string): string => {
+type Span = [start: number, end: number];
+
+const blankSpans = (text: string, spans: Span[]): string => {
   let out = '';
   let last = 0;
+  for (const [start, end] of spans) {
+    out += `${text.slice(last, start)} `;
+    last = end;
+  }
+  return out + text.slice(last);
+};
+
+/**
+ * moss's `/\[[^\]]*\]\((?:[^()\n]|\\\(|\\\))*\)/g` (or, with `bang`, the same after a `!`: IMAGE_MARKDOWN_REGEX), in
+ * one pass. The target ends at its first `)` and fails at a line break or at a `(` not escaped by a `\` inside it; a
+ * later start whose target begins before a known failure fails there too, so no stretch of text is scanned twice.
+ */
+const markdownLinkSpans = (text: string, bang: boolean): Span[] => {
+  const spans: Span[] = [];
+  const find = (from: number): number => {
+    if (!bang) return text.indexOf('[', from);
+    const at = text.indexOf('![', from);
+    return at === -1 ? -1 : at + 1;
+  };
   let failedAt = -1;
-  let at = text.indexOf('[');
+  let at = find(0);
   while (at !== -1) {
     const close = text.indexOf(']', at + 1);
     if (close === -1) break;
@@ -233,14 +240,143 @@ export const blankMarkdownLinks = (text: string): string => {
       }
     }
     if (end === -1) {
-      at = text.indexOf('[', close + 1);
+      at = find(close + 1);
       continue;
     }
-    out += `${text.slice(last, at)} `;
-    last = end + 1;
-    at = text.indexOf('[', last);
+    spans.push([bang ? at - 1 : at, end + 1]);
+    at = find(end + 1);
   }
-  return out + text.slice(last);
+  return spans;
+};
+
+/** moss: `.replace(/\[[^\]]*\]\((?:[^()\n]|\\\(|\\\))*\)/g, ' ')`. */
+export const blankMarkdownLinks = (text: string): string => blankSpans(text, markdownLinkSpans(text, false));
+
+/** The matches of moss's IMAGE_MARKDOWN_REGEX, `/!\[[^\]]*\]\((?:[^()\n]|\\\(|\\\))*\)/g`. */
+export const imageMarkdownSpans = (text: string): Span[] => markdownLinkSpans(text, true);
+
+const blankImages = (text: string): string => blankSpans(text, imageMarkdownSpans(text));
+
+/**
+ * The matches of moss's CODE_BLOCK_REGEX. `[^\n]*\n` ends at the first line break after the fence and the lazy body at
+ * the next fence, so a start that finds neither leaves every later start without one too.
+ */
+export const codeBlockSpans = (text: string): Span[] => {
+  const spans: Span[] = [];
+  let at = text.indexOf('```');
+  while (at !== -1) {
+    NOT_CODE_FENCE.lastIndex = at + 3;
+    if (NOT_CODE_FENCE.test(text)) {
+      at = text.indexOf('```', at + 1);
+      continue;
+    }
+    const lineEnd = text.indexOf('\n', at + 3);
+    if (lineEnd === -1) break;
+    const close = text.indexOf('```', lineEnd + 1);
+    if (close === -1) break;
+    spans.push([at, close + 3]);
+    at = text.indexOf('```', close + 3);
+  }
+  return spans;
+};
+
+const blankCodeBlocks = (text: string): string => blankSpans(text, codeBlockSpans(text));
+
+// The characters `\s` matches, and those `^` and `$` treat as line ends under the m flag.
+const isRegexSpace = (code: number): boolean =>
+  (code >= 9 && code <= 13) ||
+  code === 32 ||
+  code === 0xa0 ||
+  code === 0x1680 ||
+  (code >= 0x2000 && code <= 0x200a) ||
+  code === 0x2028 ||
+  code === 0x2029 ||
+  code === 0x202f ||
+  code === 0x205f ||
+  code === 0x3000 ||
+  code === 0xfeff;
+const isLineTerminator = (code: number): boolean => code === 10 || code === 13 || code === 0x2028 || code === 0x2029;
+
+/**
+ * How many times moss's `/^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*$/gm` matches, in linear time. Its `\s` crosses
+ * line breaks, so a match is a chain of cells (`:?-{3,}:?`, which only match whole) joined by pipes across any space,
+ * from a line start's first cell to the furthest later cell whose following space holds a line end; the match ends at
+ * the last line end in that space. Each cell's furthest such cell is computed once.
+ */
+export const countMarkdownTableSeparators = (text: string): number => {
+  const n = text.length;
+  const skipSpace = (from: number): number => {
+    let k = from;
+    while (k < n && isRegexSpace(text.charCodeAt(k))) k += 1;
+    return k;
+  };
+  const cellEnd = (start: number): number => {
+    let k = start;
+    if (text[k] === ':') k += 1;
+    const dashes = k;
+    while (text[k] === '-') k += 1;
+    if (k - dashes < 3) return -1;
+    return text[k] === ':' ? k + 1 : k;
+  };
+  const nextCell = (end: number): number => {
+    const pipe = skipSpace(end);
+    if (text[pipe] !== '|') return -1;
+    const next = skipSpace(pipe + 1);
+    return cellEnd(next) === -1 ? -1 : next;
+  };
+  const lineEndAfter = (end: number): number => {
+    const stop = skipSpace(end);
+    if (stop === n) return n;
+    for (let k = stop - 1; k >= end; k -= 1) if (isLineTerminator(text.charCodeAt(k))) return k;
+    return -1;
+  };
+  const furthest = new Map<number, number>();
+  const matchEndFrom = (cell: number): number => {
+    const chain: [number, number][] = [];
+    let at = cell;
+    while (at !== -1 && !furthest.has(at)) {
+      const end = cellEnd(at);
+      chain.push([at, end]);
+      at = nextCell(end);
+    }
+    let best = at === -1 ? -1 : furthest.get(at)!;
+    for (let i = chain.length - 1; i >= 0; i -= 1) {
+      const [start, end] = chain[i]!;
+      if (best === -1) best = lineEndAfter(end);
+      furthest.set(start, best);
+    }
+    return best;
+  };
+  const lineStartFrom = (from: number): number => {
+    if (from === 0 || isLineTerminator(text.charCodeAt(from - 1))) return from;
+    for (let k = from; k < n; k += 1) if (isLineTerminator(text.charCodeAt(k))) return k + 1;
+    return -1;
+  };
+
+  let count = 0;
+  let lastFirst = -1;
+  let lastEnd = -1;
+  let spaceFrom = -1;
+  let spaceTo = -1;
+  for (let line = 0; line !== -1 && line <= n; ) {
+    const first = line >= spaceFrom && line <= spaceTo ? spaceTo : skipSpace(line);
+    spaceFrom = line;
+    spaceTo = first;
+    if (first !== lastFirst) {
+      lastFirst = first;
+      const cell = text[first] === '|' ? skipSpace(first + 1) : first;
+      const end = cellEnd(cell);
+      const next = end === -1 ? -1 : nextCell(end);
+      lastEnd = next === -1 ? -1 : matchEndFrom(next);
+    }
+    if (lastEnd === -1) {
+      line = line === n ? -1 : lineStartFrom(line + 1);
+    } else {
+      count += 1;
+      line = lineStartFrom(lastEnd);
+    }
+  }
+  return count;
 };
 
 const stripFrontmatterAndFooter = (content: string): string => {
@@ -281,12 +417,12 @@ export const classifyNoteContentType = (content: string): string => {
 
   const chartBlocks = countMatches(body, CHART_BLOCK_REGEX);
   const canvasBlocks = countMatches(body, CANVAS_BLOCK_REGEX);
-  const fencedCodeBlocks = countMatches(body, CODE_BLOCK_REGEX);
+  const fencedCodeBlocks = codeBlockSpans(body).length;
   const indentedCodeLines = countMatches(body, INDENTED_CODE_LINE_REGEX);
   const indentedCodeBlocks = indentedCodeLines > 0 ? Math.max(1, Math.floor(indentedCodeLines / 8)) : 0;
   const codeBlocks = fencedCodeBlocks + indentedCodeBlocks;
-  const tableBlocks = countMatches(body, MARKDOWN_TABLE_SEPARATOR_REGEX);
-  const imageBlocks = countMatches(body, IMAGE_MARKDOWN_REGEX);
+  const tableBlocks = countMarkdownTableSeparators(body);
+  const imageBlocks = imageMarkdownSpans(body).length;
 
   const blockTotal = chartBlocks + tableBlocks + canvasBlocks + codeBlocks + imageBlocks;
   if (blockTotal > 0) {
@@ -304,11 +440,7 @@ export const classifyNoteContentType = (content: string): string => {
 
   const textOnly = blankMarkdownLinks(
     blankWikiLinks(
-      body
-        .replace(CHART_BLOCK_REGEX, ' ')
-        .replace(CANVAS_BLOCK_REGEX, ' ')
-        .replace(CODE_BLOCK_REGEX, ' ')
-        .replace(IMAGE_MARKDOWN_REGEX, ' ')
+      blankImages(blankCodeBlocks(body.replace(CHART_BLOCK_REGEX, ' ').replace(CANVAS_BLOCK_REGEX, ' ')))
     ).replace(/`[^`]+`/g, ' ')
   )
     .replace(/[>#*_-]+/g, ' ')

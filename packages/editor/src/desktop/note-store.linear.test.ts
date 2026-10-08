@@ -4,17 +4,52 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { URL_IN_HTML } from '../substitutes/url-in-html';
-import { blankMarkdownLinks, blankWikiLinks, classifyNoteContentType, MARKDOWN_TABLE_SEPARATOR_REGEX } from './note-store.port';
+import { MOSS_CANVAS_FENCE_PATTERN_SOURCE } from '@moss-desktop/common/markdown-fences';
+import {
+  blankMarkdownLinks,
+  blankWikiLinks,
+  classifyNoteContentType,
+  codeBlockSpans,
+  countMarkdownTableSeparators,
+  imageMarkdownSpans,
+} from './note-store.port';
 
 const count = (text: string, pattern: RegExp): number => (text.match(pattern) ?? []).length;
+const spans = (text: string, pattern: RegExp): [number, number][] => [...text.matchAll(pattern)].map((match) => [match.index, match.index + match[0].length]);
+const MOSS_CODE_BLOCK_REGEX = new RegExp('```(?!(?:moss-chart|' + MOSS_CANVAS_FENCE_PATTERN_SOURCE + ')\\b)[^\\n]*\\n[\\s\\S]*?```', 'g');
 
 const REWRITES: [string, (text: string) => unknown, (text: string) => unknown, string[], ((n: number) => string)[]][] = [
   [
     'the table separator count',
-    (text) => count(text, MARKDOWN_TABLE_SEPARATOR_REGEX),
+    countMarkdownTableSeparators,
     (text) => count(text, /^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*$/gm),
-    ['|', '-', '---', ':', ' ', '\t', '\n', '\r', 'a', '|---|---', '| --- |'],
-    [(n) => '\n'.repeat(n), (n) => ' '.repeat(n), (n) => `|${'\n'.repeat(n)}`, (n) => '|---\n'.repeat(n / 5), (n) => '-'.repeat(n), (n) => '---|\n'.repeat(n / 5)],
+    ['|', '-', '---', ':', ' ', '\t', '\n', '\r', '\r\n', '\u2028', '\u00a0', 'a', '|---|---', '| --- |', '---|', ':---:'],
+    [
+      (n) => '\n'.repeat(n),
+      (n) => ' '.repeat(n),
+      (n) => `|${'\n'.repeat(n)}`,
+      (n) => '|---\n'.repeat(n / 5),
+      (n) => '-'.repeat(n),
+      (n) => '---|\n'.repeat(n / 5),
+      (n) => ':---|\r\n'.repeat(n / 7),
+      (n) => `${'\n'.repeat(n / 2)}|${' '.repeat(n / 2)}`,
+      (n) => `${'\n'.repeat(n / 2)}---|${' '.repeat(n / 2)}`,
+      (n) => '---|---a\n'.repeat(n / 9),
+    ],
+  ],
+  [
+    'the fenced code block scan',
+    codeBlockSpans,
+    (text) => spans(text, MOSS_CODE_BLOCK_REGEX),
+    ['`', '```', '\n', ' ', 'a', 'moss-chart', 'moss-canvas', '-', '```moss-chart', '```js\n'],
+    [(n) => '`'.repeat(n), (n) => '```a'.repeat(n / 4), (n) => '```moss-chart'.repeat(n / 13), (n) => `\`\`\`\n${'`'.repeat(n)}`],
+  ],
+  [
+    'the image scan',
+    imageMarkdownSpans,
+    (text) => spans(text, /!\[[^\]]*\]\((?:[^()\n]|\\\(|\\\))*\)/g),
+    ['!', '[', ']', '(', ')', '\\', '\n', 'a', '![', '](', '\\(', '![a](b)'],
+    [(n) => '!['.repeat(n / 2), (n) => '![a]('.repeat(n / 5), (n) => `![a](${'a'.repeat(n)}`, (n) => '[!['.repeat(n / 3)],
   ],
   [
     'blankWikiLinks',
@@ -43,6 +78,11 @@ const FIXTURES = [
   '',
   '| a | b |\n| --- | :---: |\n| 1 | 2 |\n\n|---|---\n\n   \n\n  |---|---|\n',
   '|\n---|---\n---|\n\n\n',
+  '---|\n---|\n---|\n',
+  '---|\n---\n\n---|---  \n  |\n:---:\r\n',
+  'x ---|---\n\u2028 | ---|---|\u2029',
+  '```js\nconst a = 1;\n```\n```moss-chart\n{}\n```\n``` \nb```',
+  'An ![image](a.png) and ![x](a\\(b\\)) ![[a]](b) !![y](z) ![no](\n)',
   'See [[Plan]] and [x](y) and [z](a\\(b\\)c) and [w](a(b) and [v](\n) and [[]] [[a]b]]',
   '<p>moss-asset://n/a.png <img src="https://bb.example/media/x?a=1&amp;b=2">9a:b 1+x.y:z</p>',
 ];
@@ -72,7 +112,7 @@ describe("linear rewrites of moss's note-store regexes", () => {
           const text = parts.join('');
           expect(scan(text)).toEqual(regex(text));
         }),
-        { numRuns: 5000 },
+        { numRuns: 20000 },
       );
     });
     it(`${name} is linear on attacker-written text`, () => {
