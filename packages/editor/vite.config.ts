@@ -30,7 +30,10 @@ if (MOSS_EDITOR_INFO.version !== pkg.version) throw new Error(`MOSS_EDITOR_INFO.
  */
 const FRAME_POLICY =
   "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'";
+const editorNodes = `${vendor}/desktop/src/renderer/editor/nodes`;
 const SUBSTITUTES: Record<string, string> = {
+  [`${editorNodes}/node-views.ts`]: `${here}src/substitutes/node-views.ts`,
+  [`${editorNodes}/register-views.tsx`]: `${here}src/substitutes/register-views.tsx`,
   [`${editorUtils}/asset-url.ts`]: `${here}src/substitutes/asset-url.ts`,
   [`${editorUtils}/media-server-url.ts`]: `${here}src/substitutes/media-server-url.ts`,
   [`${repoRoot}apps/web/src/host/affordances.ts`]: `${here}src/substitutes/affordances.ts`,
@@ -78,6 +81,17 @@ function extraFiles(): Plugin {
   };
 }
 
+/**
+ * The entry's split (T3.12): libraries every note needs go into their own content-hashed chunks, which a host caches
+ * immutably across editor releases that leave them unchanged, so the unhashed entry a host revalidates stays small.
+ * A library only a lazy family uses (recharts, parse5) stays in that family's chunk.
+ */
+const VENDOR_CHUNKS: { name: string; test: RegExp }[] = [
+  { name: 'react', test: /[\\/]node_modules[\\/](?:react|react-dom|scheduler)[\\/]/ },
+  { name: 'lexical', test: /[\\/]node_modules[\\/](?:lexical|@lexical[\\/][^\\/]+)[\\/]/ },
+  { name: 'base-ui', test: /[\\/]node_modules[\\/]@(?:base-ui|floating-ui)[\\/]/ },
+];
+
 /** editor.json (contract.ts MossEditorManifest): what was built, from which sources, and every emitted file's hash. */
 function manifest(): Plugin {
   return {
@@ -94,6 +108,18 @@ function manifest(): Plugin {
       for (const { fileName, bytes } of outputs) digest.update(`${fileName}\0${bytes.length}\0`).update(bytes);
       const ported = JSON.parse(readFileSync(`${repoRoot}vendor/moss/PORTED.json`, 'utf8')) as { upstream: string; pin: string; commit: string };
       const source = readSource(repoRoot);
+      // Every script chunk besides the entry, and the ones the entry imports statically (a host may preload them).
+      const chunks = Object.values(bundle).filter((output) => output.type === 'chunk');
+      const byName = new Map(chunks.map((chunk) => [chunk.fileName, chunk]));
+      const preload = new Set<string>();
+      const visit = (fileName: string) => {
+        for (const next of byName.get(fileName)?.imports ?? []) {
+          if (preload.has(next)) continue;
+          preload.add(next);
+          visit(next);
+        }
+      };
+      visit(`${ENTRY}.js`);
       const record = {
         name: pkg.name,
         version: pkg.version,
@@ -102,6 +128,8 @@ function manifest(): Plugin {
         entry: `${ENTRY}.js`,
         css: `${ENTRY}.css`,
         hostEntry: HOST_ENTRY,
+        chunks: chunks.map((chunk) => chunk.fileName).filter((fileName) => fileName !== `${ENTRY}.js`).sort(),
+        preload: [...preload].sort(),
         htmlFrame: { file: FRAME, policy: FRAME_POLICY },
         moss: { upstream: ported.upstream, pin: ported.pin, commit: ported.commit },
         source: { repo: 'brsbl/moss-multi', commit: source.commit, headSha: source.headSha, dirty: source.dirty, diffHash: source.diffHash },
@@ -143,8 +171,9 @@ export default defineConfig({
       preserveEntrySignatures: 'strict',
       output: {
         format: 'es',
-        codeSplitting: false,
+        codeSplitting: { groups: VENDOR_CHUNKS },
         entryFileNames: `${ENTRY}.js`,
+        chunkFileNames: 'assets/[name]-[hash].js',
         assetFileNames: (asset) => (asset.names.some((name) => name.endsWith('.css')) ? `${ENTRY}.css` : 'assets/[name]-[hash][extname]'),
       },
     },

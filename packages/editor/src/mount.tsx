@@ -46,6 +46,7 @@ import { assembleContent, type EditorContent, type RendererSnapshot } from './de
 import { noteIdKey } from './host/moss-editor-host.js';
 import { installEditorElectronApi } from './electron-api';
 import { installEditorHooks } from './hooks';
+import { preloadNodeViews } from './lazy-views';
 import { MOSS_EDITOR_API, MOSS_EDITOR_INFO } from './info';
 import { markActive, registerEditor } from './registry';
 import { $holdSelection, $restoreSelection, type HeldSelection } from './selection-map';
@@ -121,6 +122,11 @@ class FrameSurface implements SessionSurface {
 
   private hydrateComments(content: EditorContent) {
     this.store.set(noteCommentsMapAtom(this.noteId), hydrateComments(content.commentMetadata, content.commentColors));
+  }
+
+  /** The views of the lazy families `content` holds, loaded before it shows so it opens with no placeholder. */
+  prepare(content: EditorContent): Promise<void> | null {
+    return preloadNodeViews(content.body);
   }
 
   async load(content: EditorContent, options: { keepView: boolean }): Promise<void> {
