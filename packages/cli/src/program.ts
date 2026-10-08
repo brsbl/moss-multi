@@ -2,7 +2,7 @@
 // 3 degenerate. Output that is content (`cat`) is written as raw bytes; everything else is one line per record.
 import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { basename, dirname, extname, join, resolve } from 'node:path';
+import { basename, extname, join, resolve } from 'node:path';
 import type { PushRequest, PushResponse } from '@moss-multi/protocol/push';
 import { TRASH_COPY, TRASHED_ACTION } from '@moss-multi/protocol/retention';
 import { createApi, type Api } from './api.ts';
@@ -213,7 +213,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       const parsed = parseArgs(rest, ['json'], ['title', 'folder']);
       const [file] = arity(parsed, 1, 1, 'add <file.md> [--title <t>] [--folder <id>] [--json]');
       const path = resolve(cwd(), file);
-      const markdown = toLf(decoder.decode(readConfined(findRoot(dirname(path)) ?? cwd(), path)));
+      const markdown = toLf(decoder.decode(readConfined(findRoot(cwd()) ?? cwd(), path)));
       const title = value(parsed, 'title') ?? basename(path, extname(path));
       const client = api();
       const folderId = value(parsed, 'folder');
@@ -280,7 +280,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       const [fileArg] = arity(parsed, 1, 1, 'push <file> [--suggest] [--force]');
       const path = resolve(cwd(), fileArg);
       if (!existsSync(path)) throw new CliError(1, `no such file: ${fileArg}`);
-      const root = findRoot(dirname(path));
+      const root = findRoot(cwd());
       const meta = root ? metaForFile(root, path) : null;
       if (!root || !meta) throw new CliError(1, `${fileArg} is not tracked here: \`moss-multi pull <doc> ${fileArg}\` first`);
       const local = readConfined(root, path);

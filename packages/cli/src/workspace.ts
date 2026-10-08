@@ -34,11 +34,14 @@ const lstat = (path: string): Stats | null => {
 /** A real directory: a link to one does not count. */
 const isDir = (path: string) => lstat(path)?.isDirectory() === true;
 
-/** moss's filename rules: no `< > : " / \ | ? *` or control characters, not `.` or `..`, at most 255 UTF-8 bytes. */
+/**
+ * moss's filename rules: no `< > : " / \ | ? *` or U+0000-U+001F, not `.` or `..`, at most 255 UTF-8 bytes. Also no
+ * character the terminal treats as a control (DEL, C1, bidi marks).
+ */
 const BAD_NAME = /[<>:"/\\|?*]/;
 export const isAllowedName = (name: string): boolean =>
   name !== '' && name !== '.' && name !== '..' && !BAD_NAME.test(name) && Buffer.byteLength(name, 'utf8') <= 255 &&
-  ![...name].some((char) => isUnsafeChar(char.charCodeAt(0)));
+  ![...name].some((char) => char.charCodeAt(0) <= 0x1f || isUnsafeChar(char.charCodeAt(0)));
 
 /** The nearest existing directory holding `root/rel` must resolve inside the root's real path. */
 function realInside(root: string, rel: string): void {
@@ -84,7 +87,10 @@ function writeInside(root: string, rel: string, bytes: Uint8Array, expectHash?: 
   }
 }
 
-/** The nearest directory at or above `start` holding a real `.moss-multi` directory, or null. */
+/**
+ * The nearest directory at or above `start` holding a real `.moss-multi` directory, or null. Callers pass the working
+ * directory, never a file's directory: a marker found below a link would make the link's target the root.
+ */
 export function findRoot(start: string): string | null {
   let dir = resolve(start);
   for (;;) {
