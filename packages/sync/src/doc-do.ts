@@ -1254,10 +1254,12 @@ export class DocDO extends YServer<SyncEnv> {
       await versions.migrate();
     } catch (error) {
       console.error('DocDO could not move a staged version to R2; it is retried', error);
-      this.#stagedRetry ??= setTimeout(() => {
-        this.#stagedRetry = null;
-        void this.#versionsChanged();
-      }, STAGED_RETRY_MS);
+      if (this.#stagedRetry === null) {
+        this.#stagedRetry = setTimeout(() => {
+          this.#stagedRetry = null;
+          void this.#versionsChanged();
+        }, STAGED_RETRY_MS);
+      }
     }
     try {
       await versions.sweep();
