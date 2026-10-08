@@ -368,4 +368,27 @@ describe('a push never silently changes content it did not edit @p:agt-1 @p:tech
       .toThrow(/block 2/);
     expect(exported(live)).toBe(before);
   });
+
+  it('a refused block the push wrote itself is named as stored differently, never as one the pull wrote', () => {
+    const live = docOf('Lead paragraph.\n\nTail paragraph.');
+    const base = exported(live);
+    const before = exported(live);
+    let message = '';
+    try {
+      landPush(live, NOTE, { base, newText: `${base.trimEnd()}\n\nSome _emphasis_ text.\n`, force: false }, PUSH);
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toMatch(/block 3 \("Some _emphasis_ text\."\) would be stored differently \(as "Some \*emphasis\* text\."\)/);
+    expect(message).not.toMatch(/as the pull wrote it/);
+    expect(exported(live)).toBe(before);
+  });
+
+  it('a push that edits only a code block\'s code reports a change, so it is versioned and attributed', () => {
+    const live = docOf('Lead paragraph.\n\n```javascript\nconst a = 1;\n```\n\nTail paragraph.');
+    const base = exported(live);
+    const next = base.replace('const a = 1;', 'const a = 2;');
+    expect(landPush(live, NOTE, { base, newText: next, force: false }, PUSH)).toMatchObject({ ok: true, changed: true });
+    expect(exported(live)).toBe(next);
+  });
 });

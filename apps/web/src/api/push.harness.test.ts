@@ -146,6 +146,10 @@ describe('POST /api/docs/:id/push @p:agt-1 @p:tech-5 @p:tech-7', () => {
     expect(await content(docId, cookieOf(ada)), 'nothing landed').toBe(after);
     const forged = await push(docId, cookieOf(ada), { newText: edited, baseHash: sha(elsewhere), baseText: `${elsewhere} (not the base)` });
     expect(forged.status, 'a base text that does not hash to baseHash is not trusted').toBe(400);
+    const refused = await push(docId, cookieOf(ada), { newText: 'x', baseHash: sha(elsewhere), baseText: elsewhere });
+    expect(refused.body).toMatchObject({ ok: false, reason: 'degenerate' });
+    const uncached = await push(docId, cookieOf(ada), { newText: edited, baseHash: sha(elsewhere) });
+    expect(uncached.body, 'a refused push caches no base').toEqual({ ok: false, reason: 'base-missing' });
     const resent = await push(docId, cookieOf(ada), { newText: edited, baseHash: sha(elsewhere), baseText: elsewhere });
     expect(resent.status).toBe(200);
     const merged = await content(docId, cookieOf(ada));
