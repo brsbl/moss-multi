@@ -36,8 +36,8 @@ export const GROUPS = {
   pastetable: ['j01-paste-table'],
   // Pastes just past the size cap, with and without payloads, refused whole.
   pastecap: ['j01-paste-cap'],
-  // A peer's edits while a large paste is checked, and its redo after a peer's new block.
-  pasterace: ['j01-paste-race'],
+  // A peer's edits while a large paste is checked, its redo after a peer's new block, and a check list's order.
+  pasterace: ['j01-paste-race', 'j01-paste-check'],
   // Titles and properties.
   title: ['j02'],
   // A doc's connection: drops, stalls, limits, hibernation.
