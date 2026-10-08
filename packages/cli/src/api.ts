@@ -8,7 +8,7 @@ export interface DocRow {
   title: string;
   filename: string;
   folderId: string;
-  vaultId: string;
+  vaultId: string | null;
   role: string;
   updatedAt: number;
 }

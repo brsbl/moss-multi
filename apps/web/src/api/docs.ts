@@ -1,4 +1,4 @@
-// /api/docs. POST writes the D1 row in a folder the caller may edit, then DocDO.create seeds the doc (A§9 "+ Note").
+// /api/docs. GET lists the docs the caller can open (the CLI; T7.1). POST writes the D1 row in a folder the caller may edit, then DocDO.create seeds the doc (A§9 "+ Note").
 // GET /api/docs/:id is the doc and the caller's role on it; DELETE and POST /restore are trash.ts; /members is the
 // members API (members.ts) and /links the share links (links.ts); GET /api/docs/:id/instance is the owner-only DO probe
 // (A§19), which reads nothing from the doc; GET /api/docs/:id/content is the doc's markdown export (?view=working adds
@@ -14,7 +14,7 @@ import { createDb, type Db } from '../db/client.ts';
 import { docs } from '../db/schema.ts';
 import type { AppEnv } from '../env.ts';
 import { json } from '../worker/route.ts';
-import { liveLink, resolveDocAccess, resolveFolderAccess } from './access.ts';
+import { accessibleDocs, accessibleFolders, liveLink, resolveDocAccess, resolveFolderAccess } from './access.ts';
 import { admitDuplicateMedia, copyMedia } from './assets.ts';
 import { createComment, deleteComment, editComment, reactComment, resolveComment } from './comments.ts';
 import { admitWorkingExport, handleSuggestion, SUGGESTION_ROUTE, workingRateLimited } from './suggestions.ts';
@@ -108,6 +108,23 @@ async function createDoc(request: Request, env: DocsEnv): Promise<Response> {
       ...(typeof body.markdown === 'string' ? { markdown: body.markdown } : {}),
       ...(sidecar !== undefined ? { comments: sidecar as Record<string, unknown>, author: principal.id } : {}) });
   });
+}
+
+/**
+ * GET /api/docs: every live doc a signed-in person or an agent can open, through the discovery closure lists use
+ * (A§8), newest first. The CLI's `list` and its title-prefix references read it (T7.1). A share token alone lists nothing.
+ */
+async function listDocs(request: Request, env: DocsEnv): Promise<Response> {
+  const principal = await resolvePrincipal(request, env);
+  if (!principal || principal.type === 'anonymous') return unauthenticated();
+  const db = createDb(env.DB);
+  const folders = await accessibleFolders(db, principal);
+  const vaultOfFolder = new Map(folders.map((folder) => [folder.id, folder.vaultId]));
+  const rows = (await accessibleDocs(db, principal, folders)).map((doc) => ({
+    id: doc.id, title: doc.title, filename: doc.filename, folderId: doc.folderId, vaultId: vaultOfFolder.get(doc.folderId) ?? null,
+    role: doc.role, createdAt: doc.createdAt, updatedAt: doc.updatedAt,
+  })).sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
+  return json({ docs: rows }, 200, NO_STORE);
 }
 
 /** Duplicate content at one server snapshot; grants stay on the source and folder access is inherited. */
@@ -226,7 +243,10 @@ const only = (method: string, request: Request, run: () => Promise<Response>): P
 
 export async function handleDocs(request: Request, env: DocsEnv): Promise<Response> {
   const { pathname } = new URL(request.url);
-  if (pathname === '/api/docs') return only('POST', request, () => createDoc(request, env));
+  if (pathname === '/api/docs') {
+    if (request.method === 'GET') return listDocs(request, env);
+    return request.method === 'POST' ? createDoc(request, env) : json({ error: 'method-not-allowed' }, 405, { allow: 'GET, POST' });
+  }
   const duplicate = /^\/api\/docs\/([^/]+)\/duplicate$/.exec(pathname);
   if (duplicate) return only('POST', request, () => duplicateDoc(request, env, duplicate[1]));
   const restore = /^\/api\/docs\/([^/]+)\/restore$/.exec(pathname);
