@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 81% done** (88 of 108 planned tasks verified)
+**Overall: 77% done** (89 of 116 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -10,7 +10,7 @@
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 15 / 15 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 9 / 9 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 9 / 9 | in progress |
-| M6 History | Versions, view, diff, identity-preserving restore | 3 / 4 | |
+| M6 History | Versions, view, diff, identity-preserving restore | 4 / 4 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
 
@@ -109,6 +109,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-07 — T6.1 verified: a note body and its payload docs can be reconciled to a target version in place, keeping the Yjs identity of untouched blocks so a peer's concurrent insert and comment anchors survive, and a result that would not export the target is refused.
 - 2026-10-07 — T6.2 verified: each note now keeps automatic versions (on last disconnect and on activity, deduplicated, large ones spilled to R2) and rate-limited named versions over REST, its history bounded by pruning rather than charging anyone, and a restore whose result fails verification is refused with 409.
 - 2026-10-07 — T6.3 verified: a person can open a note's History, browse automatic and named versions, save a named checkpoint, view any version or diff it against the current note, and restore it in place with a confirmation.
+- 2026-10-07 — T6.S2 verified: named versions saved through an agent key now count against the agent's owner for the per-person cap and the save rate, so an editor can no longer bypass their own limits with an agent key.
 
 ## T1.1s identity audit
 
@@ -141,6 +142,11 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T6.S2's checker (7c68dfa, 2026-10-07)
+
+- T6.S2 checker P2 (rows saved before the fix are not backfilled, so old agent saves still count against the agent instead of its owner; Codex P1, downgraded): the guarded ALTER adds counted_by as NULL and COALESCE(counted_by, created_by) counts old agent-key rows against the agent; no shipped deployment holds such rows since the versions table is new in unmerged m6.
+- T6.S2 checker P2 (CI evidence covers less than the review's done-evidence): the harness drives DocDO.saveVersion directly on the owner's own note with no access checker, and the route test stubs DocDO and PrincipalDO; add real-DO coverage on another user's note and revocation at insert on this path.
 
 ### From T6.3's checker (aa8ec26, 2026-10-07)
 

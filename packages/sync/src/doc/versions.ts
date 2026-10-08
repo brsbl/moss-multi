@@ -43,6 +43,8 @@ export interface Prepared {
 export interface InsertOptions {
   name?: string | null;
   createdBy?: string | null;
+  /** The person a named version counts against: the acting user, so an agent counts as its owner. */
+  countedBy?: string | null;
   authorIds?: string[];
   at?: number;
   dedupe?: boolean;
@@ -160,7 +162,9 @@ export class VersionStore {
     sql.exec(`CREATE TABLE IF NOT EXISTS versions (
       id TEXT PRIMARY KEY, seq INTEGER NOT NULL, kind TEXT NOT NULL, name TEXT, created_at INTEGER NOT NULL, created_by TEXT,
       author_ids TEXT NOT NULL, title TEXT NOT NULL, full_title TEXT, frontmatter TEXT, markdown TEXT, lexical_json TEXT,
-      payloads TEXT, comments TEXT, anchors TEXT, r2_key TEXT, bytes INTEGER NOT NULL, hash TEXT NOT NULL)`);
+      payloads TEXT, comments TEXT, anchors TEXT, r2_key TEXT, bytes INTEGER NOT NULL, hash TEXT NOT NULL, counted_by TEXT)`);
+    const columns = sql.exec<{ name: string }>('PRAGMA table_info(versions)').toArray();
+    if (!columns.some((column) => column.name === 'counted_by')) sql.exec('ALTER TABLE versions ADD COLUMN counted_by TEXT');
     sql.exec('CREATE TABLE IF NOT EXISTS version_orphans (r2_key TEXT PRIMARY KEY, due INTEGER NOT NULL)');
   }
 
@@ -174,12 +178,15 @@ export class VersionStore {
     return row ? metaOf(row) : null;
   }
 
-  /** Why `principal` may not add a named version now, or null; check and insert in one turn so no save races past it. */
-  namedRefusal(principal: string): 'version-limit' | 'note-version-limit' | null {
+  /**
+   * Why `person` (the acting user: an agent counts as its owner) may not add a named version now, or null; check and
+   * insert in one turn so no save races past it. A row from before counted_by counts against its creator.
+   */
+  namedRefusal(person: string): 'version-limit' | 'note-version-limit' | null {
     const { namedPerPerson, namedPerNote } = this.bounds();
     const count = (where: string, ...args: string[]) =>
       Number(this.sql.exec<{ n: number }>(`SELECT COUNT(*) AS n FROM versions WHERE kind = 'named'${where}`, ...args).one().n);
-    if (count(' AND created_by = ?', principal) >= namedPerPerson) return 'version-limit';
+    if (count(' AND COALESCE(counted_by, created_by) = ?', person) >= namedPerPerson) return 'version-limit';
     if (count('') >= namedPerNote) return 'note-version-limit';
     return null;
   }
@@ -253,12 +260,13 @@ export class VersionStore {
     const inline = r2Key === null;
     const listed = listTitle(content.title);
     this.sql.exec(
-      `INSERT INTO versions (id, seq, kind, name, created_at, created_by, author_ids, title, full_title, frontmatter, markdown, lexical_json, payloads, comments, anchors, r2_key, bytes, hash)
-       VALUES (?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM versions), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO versions (id, seq, kind, name, created_at, created_by, author_ids, title, full_title, frontmatter, markdown, lexical_json, payloads, comments, anchors, r2_key, bytes, hash, counted_by)
+       VALUES (?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM versions), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id, kind, options.name ?? null, options.at ?? Date.now(), options.createdBy ?? null, JSON.stringify(options.authorIds ?? []), listed,
       inline && listed !== content.title ? content.title : null,
       inline ? content.frontmatter : null, inline ? content.markdown : null, inline ? content.lexical : null,
       inline ? content.payloads : null, inline ? content.comments : null, inline ? content.anchors : null, r2Key, bytes, hash,
+      options.countedBy ?? null,
     );
   }
 

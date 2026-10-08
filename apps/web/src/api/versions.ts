@@ -1,14 +1,14 @@
 // The version history REST API (A§14): GET /api/docs/:id/versions and /versions/:vid for any signed-in reader, POST
 // /versions {name} saves a named version and POST /versions/:vid/restore restores one, for an editor or above. Named
-// versions are counted per person by its PrincipalDO and restores as REST writes; the DocDO re-authorizes the actor in
-// the same serialized write (A§8), so the Worker's role is never the last word.
+// versions are counted per person (an agent as its owner) by that person's PrincipalDO and restores as REST writes;
+// the DocDO re-authorizes the actor in the same serialized write (A§8), so the Worker's role is never the last word.
 import { getServerByName } from 'partyserver';
 import { NAMED_VERSION_RATE, NAMED_VERSIONS_PER_NOTE, NAMED_VERSIONS_PER_PERSON, REST_WRITE_RATE } from '@moss-multi/protocol/limits';
 import { roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import { resolvePrincipal, shareTokenOf } from '../auth/principal.ts';
 import { createDb } from '../db/client.ts';
 import { json } from '../worker/route.ts';
-import { resolveDocAccess } from './access.ts';
+import { actingUserId, resolveDocAccess } from './access.ts';
 import type { DocsEnv } from './docs.ts';
 import { NO_STORE, notFound, readJsonObject } from './respond.ts';
 
@@ -61,8 +61,10 @@ export async function handleVersions(request: Request, env: DocsEnv, match: RegE
   const rawName = (body as { name?: unknown }).name;
   const name = typeof rawName === 'string' ? rawName.trim() : '';
   if (action === 'save' && (!name || name.length > NAME_MAX)) return json({ error: 'bad-request', message: 'A version needs a name of 1 to 80 characters' }, 400, NO_STORE);
+  const person = actingUserId(principal) ?? principal.id;
   if (action === 'save' || action === 'restore') {
-    const principalDO = await getServerByName(env.PrincipalDO, principal.id);
+    // Named saves are rated per person: an agent spends its owner's tokens, so more keys add no rate.
+    const principalDO = await getServerByName(env.PrincipalDO, action === 'save' ? person : principal.id);
     const allowed = action === 'save' ? await principalDO.takeVersionToken() : await principalDO.takeWriteToken();
     if (!allowed) {
       const window = action === 'save' ? NAMED_VERSION_RATE.windowMs : REST_WRITE_RATE.windowMs;
@@ -82,7 +84,7 @@ export async function handleVersions(request: Request, env: DocsEnv, match: RegE
   let verdict: Verdict;
   if (action === 'list') verdict = (await stub.listVersions(input)) as Verdict;
   else if (action === 'get') verdict = (await stub.getVersion({ ...input, id: vid })) as Verdict;
-  else if (action === 'save') verdict = (await stub.saveVersion({ ...input, name })) as Verdict;
+  else if (action === 'save') verdict = (await stub.saveVersion({ ...input, name, actingUserId: person })) as Verdict;
   else verdict = (await stub.restoreVersion({ ...input, id: vid })) as Verdict;
   if (!verdict.ok) {
     const reason = verdict.reason ?? 'refused';

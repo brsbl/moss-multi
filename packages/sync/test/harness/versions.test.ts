@@ -550,3 +550,25 @@ describe("a note's version bounds, kept by pruning (A§14) @p:mean-3", () => {
     expect(ofKind(versions, 'named')).toHaveLength(2);
   });
 });
+
+describe("named versions count against the acting person, an agent's against its owner (M6 Slop Cop P1) @p:mean-3", () => {
+  it("keeps one person's agents within that person's named allowance, under concurrency, and attributes each to its key", async () => {
+    const opened = await created();
+    const keys = ['ada-k1', 'ada-k2', 'ada-k3', 'ada-k4', 'ada-k5'];
+    const saves = await Promise.all(
+      keys.flatMap((id) =>
+        Array.from({ length: NAMED_VERSIONS_PER_PERSON }, (_, i) =>
+          opened.dobj.saveVersion({ name: `${id}-${i}`, reviewer: { id, role: 'editor' }, actingUserId: 'ada' }),
+        ),
+      ),
+    );
+    expect(saves.filter((result) => result.ok), "five keys share their owner's allowance").toHaveLength(NAMED_VERSIONS_PER_PERSON);
+    expect(saves.filter((result) => !result.ok).every((result) => !result.ok && result.reason === 'version-limit')).toBe(true);
+    expect(await named(opened, 'ada herself')).toMatchObject({ ok: false, status: 409, reason: 'version-limit' });
+    const stored = ofKind(await list(opened), 'named');
+    expect(stored).toHaveLength(NAMED_VERSIONS_PER_PERSON);
+    expect(stored.every((version) => keys.includes(version.createdBy ?? '')), 'each version names the key that saved it').toBe(true);
+    expect((await named(opened, 'ben', BEN)).ok, "another person's allowance is untouched").toBe(true);
+    expect((await opened.dobj.saveVersion({ name: 'ben key', reviewer: { id: 'ben-k1', role: 'editor' }, actingUserId: 'ben' })).ok).toBe(true);
+  });
+});
