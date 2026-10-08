@@ -3,6 +3,8 @@
 // points are pruned oldest first past their counts and the note's history bytes, in the write that adds a version.
 // Named versions are never pruned; they are capped per person and per note. A spill is written before its row and
 // recorded as an orphan until the row lands; a pruned or unwritten spill stays recorded until R2 confirms its delete.
+// A version that must be stored in the caller's turn without waiting on R2 (a restore point) is staged instead: its
+// spill body goes into local chunks with its row, and `migrate` moves it to R2 later, recorded as an orphan meanwhile.
 import {
   NAMED_VERSIONS_PER_NOTE, NAMED_VERSIONS_PER_PERSON, VERSION_AUTO_KEPT, VERSION_HISTORY_BYTES_PER_NOTE, VERSION_RESTORE_POINTS_KEPT,
   VERSION_RESTORE_POINTS_PROTECTED,
@@ -38,6 +40,8 @@ export interface Prepared {
   hash: string;
   bytes: number;
   r2Key: string | null;
+  /** Stored in local chunks with its row, moved to R2 by `migrate`. */
+  staged?: boolean;
 }
 
 export interface InsertOptions {
@@ -85,6 +89,8 @@ export const VERSION_TITLE_LIST_MAX = 200;
 /** How long a spill may wait for its row before it counts as an orphan to delete. */
 const SPILL_GRACE_MS = 60 * 60_000;
 const SWEEP_BATCH = 100;
+/** Bytes per staged chunk, under the 2 MB row cap. */
+const STAGE_CHUNK_BYTES = 1024 * 1024;
 
 /** A version that would spill with no bucket to spill to. */
 export class VersionSpillError extends Error {
@@ -133,6 +139,9 @@ const metaOf = (row: Row): VersionMeta => ({
   spilled: row.r2_key !== null,
 });
 
+/** What a spill holds, in R2 or staged. */
+const spillBody = (content: VersionContent) => JSON.stringify(Object.fromEntries(CONTENT_KEYS.map((key) => [key, content[key]])));
+
 /** Two independent 53-bit string hashes (cyrb53), synchronous so a version is prepared in the caller's turn. */
 function hashText(text: string): string {
   const half = (seed: number) => {
@@ -166,6 +175,7 @@ export class VersionStore {
     const columns = sql.exec<{ name: string }>('PRAGMA table_info(versions)').toArray();
     if (!columns.some((column) => column.name === 'counted_by')) sql.exec('ALTER TABLE versions ADD COLUMN counted_by TEXT');
     sql.exec('CREATE TABLE IF NOT EXISTS version_orphans (r2_key TEXT PRIMARY KEY, due INTEGER NOT NULL)');
+    sql.exec('CREATE TABLE IF NOT EXISTS version_staged (id TEXT NOT NULL, idx INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (id, idx))');
   }
 
   /** Newest first. */
@@ -199,6 +209,8 @@ export class VersionStore {
     ).toArray();
     if (!row) return null;
     if (row.r2_key === null) {
+      const staged = this.#stagedBody(id);
+      if (staged !== null) return this.#parseSpill(staged, row.title);
       return {
         title: row.full_title ?? row.title,
         frontmatter: row.frontmatter ?? '',
@@ -212,8 +224,25 @@ export class VersionStore {
     const blobs = this.blobs();
     const body = blobs ? await blobs.get(row.r2_key) : null;
     if (body === null) return null;
+    return this.#parseSpill(body, row.title);
+  }
+
+  #parseSpill(body: string, title: string): VersionContent {
     const spilled = JSON.parse(body) as Omit<VersionContent, 'title' | 'anchors'> & { title?: string; anchors?: string };
-    return { ...spilled, anchors: spilled.anchors ?? '{}', title: spilled.title ?? row.title };
+    return { ...spilled, anchors: spilled.anchors ?? '{}', title: spilled.title ?? title };
+  }
+
+  /** A staged version's spill body, or null when it has none. */
+  #stagedBody(id: string): string | null {
+    const chunks = this.sql.exec<{ data: ArrayBuffer }>('SELECT data FROM version_staged WHERE id = ? ORDER BY idx', id).toArray();
+    if (chunks.length === 0) return null;
+    const bytes = new Uint8Array(chunks.reduce((sum, chunk) => sum + chunk.data.byteLength, 0));
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(new Uint8Array(chunk.data), offset);
+      offset += chunk.data.byteLength;
+    }
+    return new TextDecoder().decode(bytes);
   }
 
   /** A captured content's id, hash and size, in the caller's turn; `spill` must run first when it has an R2 key. */
@@ -222,7 +251,21 @@ export class VersionStore {
     const encoder = new TextEncoder();
     const bytes = CONTENT_KEYS.reduce((sum, key) => sum + encoder.encode(content[key]).byteLength, 0);
     const hash = hashText(JSON.stringify(CONTENT_KEYS.map((key) => content[key])));
-    return { id, content, hash, bytes, r2Key: bytes > this.spillBytes ? `versions/${this.docId}/${id}.json` : null };
+    return { id, content, hash, bytes, r2Key: bytes > this.spillBytes ? this.#keyOf(id) : null };
+  }
+
+  #keyOf(id: string): string {
+    return `versions/${this.docId}/${id}.json`;
+  }
+
+  /** A prepared version to store in the caller's turn with no R2 write: one that would spill is staged locally. */
+  stage(prepared: Prepared): Prepared {
+    return prepared.r2Key === null ? prepared : { ...prepared, r2Key: null, staged: true };
+  }
+
+  /** Whether a staged version still has to move to R2. */
+  staged(): boolean {
+    return this.sql.exec('SELECT 1 FROM version_staged LIMIT 1').toArray().length > 0;
   }
 
   /** Writes a prepared version's spill, recorded as an orphan until its row is inserted. */
@@ -232,7 +275,35 @@ export class VersionStore {
     if (!blobs) throw new VersionSpillError();
     this.sql.exec('INSERT OR REPLACE INTO version_orphans (r2_key, due) VALUES (?, ?)', prepared.r2Key, Date.now() + SPILL_GRACE_MS);
     const { content } = prepared;
-    await blobs.put(prepared.r2Key, JSON.stringify(Object.fromEntries(CONTENT_KEYS.map((key) => [key, content[key]]))));
+    await blobs.put(prepared.r2Key, spillBody(content));
+  }
+
+  /**
+   * Moves staged versions to R2, one at a time. Each is recorded as an orphan before its put, so a crash leaves
+   * nothing unswept; a version pruned while it moved leaves its object for the sweep. Throws when R2 does.
+   */
+  async migrate(): Promise<void> {
+    const blobs = this.blobs();
+    if (!blobs) return;
+    for (;;) {
+      const [next] = this.sql.exec<{ id: string }>('SELECT id FROM version_staged LIMIT 1').toArray();
+      if (!next) return;
+      const body = this.#stagedBody(next.id);
+      if (body === null) return;
+      const key = this.#keyOf(next.id);
+      this.sql.exec('INSERT OR REPLACE INTO version_orphans (r2_key, due) VALUES (?, ?)', key, Date.now() + SPILL_GRACE_MS);
+      await blobs.put(key, body);
+      this.transact(() => {
+        const [row] = this.sql.exec<{ r2_key: string | null }>('SELECT r2_key FROM versions WHERE id = ?', next.id).toArray();
+        this.sql.exec('DELETE FROM version_staged WHERE id = ?', next.id);
+        if (!row) {
+          this.sql.exec('UPDATE version_orphans SET due = 0 WHERE r2_key = ?', key);
+          return;
+        }
+        if (row.r2_key === null) this.sql.exec('UPDATE versions SET r2_key = ? WHERE id = ?', key, next.id);
+        this.sql.exec('DELETE FROM version_orphans WHERE r2_key = ?', key);
+      });
+    }
   }
 
   /**
@@ -256,8 +327,8 @@ export class VersionStore {
     });
   }
 
-  #insertRow(kind: VersionKind, { id, content, hash, bytes, r2Key }: Prepared, options: InsertOptions): void {
-    const inline = r2Key === null;
+  #insertRow(kind: VersionKind, { id, content, hash, bytes, r2Key, staged }: Prepared, options: InsertOptions): void {
+    const inline = r2Key === null && !staged;
     const listed = listTitle(content.title);
     this.sql.exec(
       `INSERT INTO versions (id, seq, kind, name, created_at, created_by, author_ids, title, full_title, frontmatter, markdown, lexical_json, payloads, comments, anchors, r2_key, bytes, hash, counted_by)
@@ -268,11 +339,17 @@ export class VersionStore {
       inline ? content.payloads : null, inline ? content.comments : null, inline ? content.anchors : null, r2Key, bytes, hash,
       options.countedBy ?? null,
     );
+    if (!staged) return;
+    const encoded = new TextEncoder().encode(spillBody(content));
+    for (let idx = 0; idx * STAGE_CHUNK_BYTES < encoded.byteLength; idx += 1) {
+      const chunk = encoded.slice(idx * STAGE_CHUNK_BYTES, (idx + 1) * STAGE_CHUNK_BYTES);
+      this.sql.exec('INSERT INTO version_staged (id, idx, data) VALUES (?, ?, ?)', id, idx, chunk.buffer);
+    }
   }
 
-  /** Whether a spill is still left for a later sweep. */
+  /** Whether a spill is still left for a later sweep, or a staged version for a later move. */
   pending(): boolean {
-    return Number(this.sql.exec<{ n: number }>('SELECT COUNT(*) AS n FROM version_orphans').one().n) > 0;
+    return Number(this.sql.exec<{ n: number }>('SELECT COUNT(*) AS n FROM version_orphans').one().n) > 0 || this.staged();
   }
 
   /** A prepared version that will not be inserted: its spill, if any, is deleted at the next sweep. */
@@ -321,6 +398,7 @@ export class VersionStore {
     const drop = ({ id, r2_key: key }: Stale) => {
       if (key) this.sql.exec('INSERT OR REPLACE INTO version_orphans (r2_key, due) VALUES (?, 0)', key);
       this.sql.exec('DELETE FROM versions WHERE id = ?', id);
+      this.sql.exec('DELETE FROM version_staged WHERE id = ?', id);
     };
     const kindOf = this.meta(added)?.kind;
     // The added version holds one of its kind's places.

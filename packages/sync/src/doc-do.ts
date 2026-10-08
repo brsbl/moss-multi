@@ -39,7 +39,7 @@ import { captureContent, restoreContent, type AnchorSpans, type VersionContent }
 import { ReconcileRefused } from './reconcile.ts';
 import { decodeRestoreBase, StaleBase, type DecodedBase } from './restore-base.ts';
 import {
-  ACTIVITY_MS, ACTIVITY_UPDATES, VERSION_BOUNDS, VERSION_NAME_MAX, VERSION_SPILL_BYTES, VersionStore, type Prepared, type VersionBlobs,
+  ACTIVITY_MS, ACTIVITY_UPDATES, VERSION_BOUNDS, VERSION_NAME_MAX, VERSION_SPILL_BYTES, VersionStore, type VersionBlobs,
   type VersionBounds, type VersionMeta,
 } from './doc/versions.ts';
 
@@ -48,8 +48,8 @@ export const VERSION_RESTORE = 'version-restore';
 
 /** How long after a wake the doc re-feeds search. */
 const WAKE_FEED_MS = 1_000;
-/** Times a restore re-captures a restore point too large for its row when the doc changed while it was spilled. */
-const RESTORE_ATTEMPTS = 3;
+/** How long after a failed move of a staged version to R2 it is retried, while the instance lives. */
+const STAGED_RETRY_MS = 30_000;
 /** The meta key set while a pruned or unwritten version spill still has to be deleted from R2. */
 const VERSIONS_DIRTY = 'versions-dirty';
 /** How long after a payload-only edit the doc feeds search (the note's own saves cover note edits). */
@@ -342,8 +342,7 @@ export class DocDO extends YServer<SyncEnv> {
   #versions: VersionStore | null = null;
   /** Updates since the last auto version, and who made them; persisted in meta so a wake keeps them (A§14). */
   #versionUpdates = 0;
-  /** +1 on every change to the doc or a payload: whether a restore point captured before an await is still the doc. */
-  #generation = 0;
+  #stagedRetry: ReturnType<typeof setTimeout> | null = null;
   #versionAuthors = new Set<string>();
 
   /** Runs inside partyserver's blockConcurrencyWhile, so a woken DO replays before it sees any frame. */
@@ -1179,8 +1178,8 @@ export class DocDO extends YServer<SyncEnv> {
    * reconciled into the live doc as a server write (T6.1) and verified against the version's export, or refused 409
    * with nothing written. The doc as the restore finds it is stored as a restore point in the same turn, before
    * anything is applied, and a restore point that cannot be stored refuses the restore; pruning never takes the newest
-   * restore points. One too large for its row is written to R2 first and used only if the doc has not changed since;
-   * past RESTORE_ATTEMPTS changes it answers 503. Detached comments the version held anchored are re-anchored on the
+   * restore points. One too large for its row is staged in local chunks in that turn and moved to R2 afterwards, so a
+   * restore never waits on R2 while peers type. Detached comments the version held anchored are re-anchored on the
    * restored text. An auto version follows.
    *
    * The reconcile runs from `base`, the note and payloads as the restorer saw them when it opened Restore, so what
@@ -1200,51 +1199,39 @@ export class DocDO extends YServer<SyncEnv> {
     if (!versions) throw new Error('DocDO started without versions');
     // Read first (a spill is a fetch); a version never changes, and nothing is returned before the actor is checked.
     const target = await versions.content(input.id);
-    let early: { prepared: Prepared; seen: number } | null = null;
-    let outcome: { point: VersionMeta | null } | ReviewRefusal = { ok: false, status: 503, reason: 'busy' };
+    let outcome: { point: VersionMeta | null } | ReviewRefusal;
     try {
-      for (let attempt = 0; attempt < RESTORE_ATTEMPTS; attempt += 1) {
-        const step = await this.#review(input, 'editor', (reviewer): { point: VersionMeta | null } | { capture: Prepared; seen: number } | ReviewRefusal => {
-          if (!target) return { ok: false, status: 404, reason: 'not-found' };
-          if (!base) return stale;
-          const reuse = early !== null && early.seen === this.#generation;
-          const prepared = reuse ? early!.prepared : versions.prepare(this.#capture());
-          // A capture that must spill leaves the write to spill it.
-          if (!reuse && prepared.r2Key !== null) return { capture: prepared, seen: this.#generation };
-          const authorIds = [...this.#versionAuthors];
-          const stored: { point: VersionMeta | null } = { point: null };
-          try {
-            restoreContent(this.document, VERSION_RESTORE, target, (diff, payloads) => {
-              this.#admitServerWrite(store, diff, payloads);
-              stored.point = versions.insert('restore-point', prepared, { createdBy: reviewer.id, authorIds });
-              this.#versionTaken(store, Date.now());
-            }, base);
-          } catch (error) {
-            if (error instanceof StaleBase) return stale;
-            if (error instanceof ReconcileRefused) return { ok: false, status: 409, reason: 'restore-unverified' };
-            if (error instanceof DocCapError) return { ok: false, status: 413, reason: 'doc-cap' };
-            console.error('DocDO could not store a restore point; the restore is refused', error);
-            return { ok: false, status: 503, reason: 'unstored' };
-          }
-          this.#comments?.flush();
-          this.#comments?.reanchor(JSON.parse(target.anchors) as AnchorSpans);
-          this.#projections?.touch();
-          return stored;
-        });
-        if (!('capture' in step)) {
-          outcome = step;
-          break;
+      outcome = await this.#review(input, 'editor', (reviewer): { point: VersionMeta | null } | ReviewRefusal => {
+        if (!target) return { ok: false, status: 404, reason: 'not-found' };
+        if (!base) return stale;
+        const prepared = versions.stage(versions.prepare(this.#capture()));
+        const authorIds = [...this.#versionAuthors];
+        const stored: { point: VersionMeta | null } = { point: null };
+        try {
+          restoreContent(this.document, VERSION_RESTORE, target, (diff, payloads) => {
+            this.#admitServerWrite(store, diff, payloads);
+            stored.point = versions.insert('restore-point', prepared, { createdBy: reviewer.id, authorIds });
+            // A wake moves a staged point the instance did not.
+            if (prepared.staged) store.setMeta(VERSIONS_DIRTY, '1');
+            this.#versionTaken(store, Date.now());
+          }, base);
+        } catch (error) {
+          if (error instanceof StaleBase) return stale;
+          if (error instanceof ReconcileRefused) return { ok: false, status: 409, reason: 'restore-unverified' };
+          if (error instanceof DocCapError) return { ok: false, status: 413, reason: 'doc-cap' };
+          console.error('DocDO could not store a restore point; the restore is refused', error);
+          return { ok: false, status: 503, reason: 'unstored' };
         }
-        if (early) versions.discard(early.prepared);
-        early = { prepared: step.capture, seen: step.seen };
-        await versions.spill(step.capture);
-      }
+        this.#comments?.flush();
+        this.#comments?.reanchor(JSON.parse(target.anchors) as AnchorSpans);
+        this.#projections?.touch();
+        return stored;
+      });
     } catch (error) {
       console.error('DocDO could not restore a version', error);
       outcome = { ok: false, status: 503, reason: 'unstored' };
     }
     const pointId = 'ok' in outcome ? null : (outcome.point?.id ?? null);
-    if (early && early.prepared.id !== pointId) versions.discard(early.prepared);
     if ('ok' in outcome) {
       await this.#versionsChanged();
       return outcome;
@@ -1254,12 +1241,26 @@ export class DocDO extends YServer<SyncEnv> {
     return { ok: true, restorePoint: pointId, version: after?.id ?? null };
   }
 
-  /** After a version write: pruned or unwritten spills are deleted; a failed delete stays marked for the next write or wake. */
+  /**
+   * After a version write: staged versions move to R2 and pruned or unwritten spills are deleted; what fails stays
+   * marked for the next write or wake, and a failed move is also retried after STAGED_RETRY_MS.
+   */
   async #versionsChanged(): Promise<void> {
     const versions = this.#versions;
     const store = this.#store;
     if (!versions || !store) return;
     store.setMeta(VERSIONS_DIRTY, '1');
+    try {
+      await versions.migrate();
+    } catch (error) {
+      console.error('DocDO could not move a staged version to R2; it is retried', error);
+      if (this.#stagedRetry === null) {
+        this.#stagedRetry = setTimeout(() => {
+          this.#stagedRetry = null;
+          void this.#versionsChanged();
+        }, STAGED_RETRY_MS);
+      }
+    }
     try {
       await versions.sweep();
     } catch (error) {
@@ -1481,7 +1482,6 @@ export class DocDO extends YServer<SyncEnv> {
 
   /** A change since the last auto version (A§14): counted, its author remembered, both persisted for a wake. */
   #versionTouched(store: DocStore, origin: unknown): void {
-    this.#generation += 1;
     if (origin === SERVER_SEED) return;
     this.#versionUpdates += 1;
     if (this.#versionUpdates === 1) store.setMeta('version-since', String(Date.now()));
