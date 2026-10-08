@@ -91,9 +91,8 @@ const closing = (server: Server) =>
 export async function serveEditor(): Promise<EditorServer> {
   const requests: string[] = [];
   const served: Served[] = [];
-  const delay: EditorServer['delay'] = { pattern: null, ms: 0 };
   let pageCsp = EDITOR_CSP;
-  const settings: { cache: CacheMode } = { cache: 'no-store' };
+  const settings: { cache: CacheMode; delay: EditorServer['delay'] } = { cache: 'no-store', delay: { pattern: null, ms: 0 } };
   const server: Server = createServer((request, response) => {
     const pathname = decodeURIComponent(new URL(request.url ?? '/', 'http://editor').pathname);
     requests.push(pathname);
@@ -127,7 +126,7 @@ export async function serveEditor(): Promise<EditorServer> {
       response.writeHead(200, { ...headers, 'content-length': String(size) });
       createReadStream(file).pipe(response);
     };
-    if (prefix === '/editor/' && delay.pattern?.test(pathname)) setTimeout(send, delay.ms);
+    if (prefix === '/editor/' && settings.delay.pattern?.test(pathname)) setTimeout(send, settings.delay.ms);
     else send();
   });
   const hits: string[] = [];
@@ -155,7 +154,12 @@ export async function serveEditor(): Promise<EditorServer> {
     set cache(mode: CacheMode) {
       settings.cache = mode;
     },
-    delay,
+    get delay() {
+      return settings.delay;
+    },
+    set delay(delay: EditorServer['delay']) {
+      settings.delay = delay;
+    },
     collector: { url: collectorUrl, stun: `stun:127.0.0.1:${udp.address().port}`, hits },
     close: async () => {
       await Promise.all([closing(server), closing(collector), new Promise<void>((done) => udp.close(() => done()))]);

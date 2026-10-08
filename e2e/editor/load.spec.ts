@@ -21,7 +21,7 @@ const CONTEXT = { viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 2,
 /** The node families that load on first use, by the chunk each one's view lives in. */
 const LAZY_FAMILIES = [
   { family: 'chart', chunk: /chart/i, markdown: '```moss-chart\n{"type":"bar","title":"Lazy","data":[{"label":"A","value":3},{"label":"B","value":5}]}\n```', rendered: '.recharts-surface' },
-  { family: 'canvas', chunk: /canvas|sketch/i, markdown: '```moss-canvas\n[moss:grid:v2]\n..##..\n```', rendered: '[aria-label="Insert paragraph before canvas"]' },
+  { family: 'canvas', chunk: /canvas|sketch/i, markdown: '```moss-canvas\n[moss:grid:v2]\n..##..\n```', rendered: 'canvas' },
   { family: 'HTML block', chunk: /html/i, markdown: '```moss-html\n<p>Lazy HTML.</p>\n```', rendered: '[data-moss-html-preview-viewport]' },
 ];
 
@@ -134,7 +134,12 @@ test('load timing: plain and typical notes are editable within 1 s warm; cold, w
       expect(run.editable && run.typed, `${key}: the caret is placeable and typing lands`).toBe(true);
     }
   }
+  for (const run of [results.all.cold, ...results.all.warm]) {
+    expect(run.paintBlocks?.map((block) => block.height), 'every-family note: no block changes height after the first paint').toEqual(run.settledBlocks?.map((block) => block.height));
+  }
   for (const key of ['plain', 'typical']) {
+    const fonts = [results[key].cold, ...results[key].warm].flatMap((run) => run.resources.filter((resource) => /\.woff2?$/.test(resource.name)).map((resource) => resource.name));
+    expect(fonts.filter((font) => /cyrillic|greek|vietnamese|latin-ext/.test(font)), `${key}: only latin font subsets load for latin text`).toEqual([]);
     expect(results[key].warmMarks.editable, `${key}: editable ${results[key].warmMarks.editable} ms after navigation, warm`).toBeLessThanOrEqual(EDITABLE_BUDGET_MS);
   }
 });
@@ -174,7 +179,7 @@ test('heavy families load on first use: none for a plain note, then each renders
   for (const { family, chunk } of LAZY_FAMILIES) {
     expect(built.chunks?.some((file) => chunk.test(file) && !(built.preload ?? []).includes(file)), `${family} has its own lazy chunk`).toBe(true);
   }
-  const lazy = (path: string) => LAZY_FAMILIES.some(({ chunk }) => chunk.test(path)) && !(built.preload ?? []).some((file) => path.endsWith(file));
+  const lazy = (path: string) => path.startsWith('/editor/assets/') && LAZY_FAMILIES.some(({ chunk }) => chunk.test(path)) && !(built.preload ?? []).some((file) => path.endsWith(file));
   const before = server.requests.length;
   await page.goto(`${server.url}/fixture/index.html`);
   await expect(page.locator('html[data-fixture="ready"]')).toBeAttached();
@@ -193,19 +198,32 @@ test('heavy families load on first use: none for a plain note, then each renders
   await expect(body).toContainText(note.probe);
   await page.waitForTimeout(500);
   expect(server.requests.slice(before).filter(lazy), 'a plain note loads no family chunk').toEqual([]);
-  server.delay = { pattern: /\/assets\/.*\.js$/, ms: 400 };
+  // Each family's chunk is held back, so its placeholder shows first; the block keeps its height when the view arrives.
+  server.delay = { pattern: /\/assets\/.*\.js$/, ms: 1_500 };
+  const heights = () =>
+    body.evaluate((root) =>
+      [...root.querySelectorAll('[data-lexical-decorator="true"]')]
+        .filter((element) => element.getBoundingClientRect().height > 100)
+        .map((element) => ({ placeholder: element.querySelector('[data-moss-lazy-view]') !== null, height: Math.round(element.getBoundingClientRect().height) })),
+    );
   try {
-    for (const { family, markdown, rendered } of LAZY_FAMILIES) {
-      await body.getByText('The last line of the note.').click();
-      await page.keyboard.press('End');
-      await page.keyboard.press('Enter');
-      await body.evaluate((element, text) => {
-        const clipboardData = new DataTransfer();
-        clipboardData.setData('text/plain', text);
-        element.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData }));
-      }, markdown);
+    await body.getByText('The last line of the note.').click();
+    await page.keyboard.press('End');
+    await body.evaluate((element, text) => {
+      const clipboardData = new DataTransfer();
+      clipboardData.setData('text/plain', text);
+      element.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData }));
+    }, LAZY_FAMILIES.map(({ markdown }) => markdown).join('\n\n'));
+    await expect(body.locator('[data-moss-lazy-view]'), 'each pasted family shows its placeholder while its chunk loads').toHaveCount(LAZY_FAMILIES.length);
+    const placeholders = await heights();
+    for (const { family, rendered } of LAZY_FAMILIES) {
       await expect(body.locator(rendered).first(), `${family} renders after first use`).toBeVisible({ timeout: 15_000 });
     }
+    await expect(body.locator('[data-moss-lazy-view]')).toHaveCount(0);
+    await page.waitForTimeout(500);
+    const views = await heights();
+    expect(placeholders.every((block) => block.placeholder)).toBe(true);
+    expect(views.map((block) => block.height), 'no layout jump: each view takes its placeholder\'s height').toEqual(placeholders.map((block) => block.height));
   } finally {
     server.delay = { pattern: null, ms: 0 };
   }

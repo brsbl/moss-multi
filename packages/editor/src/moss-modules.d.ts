@@ -231,3 +231,6 @@ declare module '@moss-desktop/renderer/editor/nodes/node-views' {
 // The decorator views, which register themselves with node-views as they evaluate.
 declare module '@moss-desktop/renderer/editor/nodes/*';
 declare module '@moss-desktop/renderer/editor/components/ChartRenderer';
+declare module '@moss-desktop/common/moss-html-dimensions' {
+  export function resolveMossHtmlIntrinsicSize(rawHtml: string): { width: number; height: number };
+}

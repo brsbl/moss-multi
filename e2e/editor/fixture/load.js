@@ -47,7 +47,7 @@ function instrument(host, latency) {
 
 /** Each block decorator's type and height, so a test can see whether a block changed size once its view loaded. */
 const blocks = (root) =>
-  [...root.querySelectorAll('[data-moss-note-editor-root="true"] [data-lexical-decorator="true"]')].map((element) => ({
+  [...root.querySelectorAll('[data-moss-note-editor-root="true"] div[data-lexical-decorator="true"]')].map((element) => ({
     text: element.textContent.slice(0, 24),
     height: Math.round(element.getBoundingClientRect().height),
   }));
