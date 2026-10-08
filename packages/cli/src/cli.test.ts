@@ -541,6 +541,16 @@ describe('the workspace confines every local file', () => {
     expect(server.seen.filter((call) => call.method === 'POST')).toEqual([]);
   });
 
+  it('push refuses a linked directory whose target tracks its own files, sending nothing', async () => {
+    mkdirSync(join(dir, '.moss-multi'));
+    mkdirSync(join(outside, '.moss-multi', ID_A), { recursive: true });
+    writeFileSync(join(outside, '.moss-multi', ID_A, 'base.md'), 'old');
+    writeFileSync(join(outside, '.moss-multi', ID_A, 'meta.json'), JSON.stringify({ docId: ID_A, file: 'secret.md', baseHash: sha256Hex('old'), pulledAt: 0 }));
+    symlinkSync(outside, join(dir, 'out'));
+    expect((await cli(['push', 'out/secret.md'])).code).toBe(1);
+    expect(server.state.pushes).toEqual([]);
+  });
+
   it('a name with a tab or a line break is refused, and a server filename holding one falls back to the slug', async () => {
     expect((await cli(['pull', ID_A, 'a\tb.md'])).code).toBe(1);
     expect((await cli(['pull', ID_A, 'a\nb.md'])).code).toBe(1);
