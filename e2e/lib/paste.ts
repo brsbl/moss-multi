@@ -80,6 +80,7 @@ export interface Wire {
 }
 
 const CLOSE_LOG = 'qa-doc-socket-close';
+const DIAG_LOG = 'qa-doc-socket-diag';
 
 /** Watches the doc sockets `actor`'s page opens from now on; call before the page loads the app. */
 async function watchWire(actor: Actor): Promise<Wire> {
@@ -90,12 +91,57 @@ async function watchWire(actor: Actor): Promise<Wire> {
     socket.on('framesent', ({ payload }) => {
       wire.largestFrame = Math.max(wire.largestFrame, typeof payload === 'string' ? Buffer.byteLength(payload) : payload.byteLength);
     });
+    socket.on('framereceived', ({ payload }) => {
+      if (typeof payload === 'string' || payload.byteLength < 512 * 1024) return;
+      console.log(`${actor.label}: received a ${payload.byteLength}-byte frame of type ${payload[0]}/${payload[1]}`);
+    });
   });
   actor.page.on('console', (message) => {
     if (message.text().startsWith(CLOSE_LOG)) wire.closes.push(message.text().slice(CLOSE_LOG.length + 1));
+    if (message.text().startsWith(DIAG_LOG)) console.log(`${actor.label}: ${message.text()}`);
   });
   // Each doc socket's close code and reason, so a reopen names its cause.
-  await actor.page.addInitScript(({ path, log }) => {
+  await actor.page.addInitScript(({ path, log, diagLog }) => {
+    // What the page did in the 20 s before a close it asks for: frames heard and sent, its main thread's gaps and
+    // long frames, and the app's slow doc socket work (moss-sync-*, moss-paste-*), so a heartbeat close names its cause.
+    const heard: number[][] = [];
+    const sent: number[][] = [];
+    const gaps: number[][] = [];
+    const longFrames: string[] = [];
+    let lastTick = performance.now();
+    setInterval(() => {
+      const now = performance.now();
+      if (now - lastTick > 300) gaps.push([Math.round(lastTick), Math.round(now - lastTick)]);
+      lastTick = now;
+    }, 100);
+    try {
+      new PerformanceObserver((list) => {
+        for (const entry of list.getEntries() as unknown as (PerformanceEntry & { scripts: (PerformanceEntry & { invoker: string; sourceFunctionName: string })[] })[]) {
+          if (entry.duration < 300) continue;
+          const top = [...entry.scripts].sort((a, b) => b.duration - a.duration)[0];
+          longFrames.push(`${Math.round(entry.startTime)}+${Math.round(entry.duration)}${top ? ` ${top.invoker} ${Math.round(top.duration)}` : ''}`);
+        }
+      }).observe({ type: 'long-animation-frame' });
+    } catch {
+      // only Chromium has long animation frame timing
+    }
+    const trim = (list: unknown[]) => {
+      if (list.length > 400) list.splice(0, list.length - 400);
+    };
+    const kind = (data: unknown): number[] => {
+      if (typeof data === 'string') return [-1, data.length];
+      const bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : ArrayBuffer.isView(data) ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength) : null;
+      return bytes ? [bytes[0] * 10 + (bytes[0] === 0 ? bytes[1] : 0), bytes.byteLength] : [-2, 0];
+    };
+    const report = (now: number): string => {
+      const since = now - 20_000;
+      const recent = (list: number[][]) => list.filter((row) => row[0] >= since).map((row) => row.join('/')).join(' ');
+      const measures = performance.getEntriesByType('measure')
+        .filter((entry) => /^moss-/.test(entry.name) && entry.startTime + entry.duration >= since)
+        .map((entry) => `${entry.name.slice(5)}@${Math.round(entry.startTime)}+${Math.round(entry.duration)}`).join(' ');
+      const frames = longFrames.filter((row) => Number(row.split('+')[0]) >= since).join(' ');
+      return `${diagLog} at ${Math.round(now)}; heard (t/type/bytes): ${recent(heard)}; sent: ${recent(sent)}; gaps (t/ms): ${recent(gaps)}; long frames: ${frames}; measures: ${measures}`;
+    };
     const Native = window.WebSocket;
     window.WebSocket = class extends Native {
       constructor(url: string | URL, protocols?: string | string[]) {
@@ -105,15 +151,31 @@ async function watchWire(actor: Actor): Promise<Wire> {
           const { code, reason } = event as CloseEvent;
           console.log(`${log} ${code} ${reason} at ${Math.round(performance.now())} ms`);
         });
+        Native.prototype.addEventListener.call(this, 'message', (event: Event) => {
+          heard.push([Math.round(performance.now()), ...kind((event as MessageEvent).data)]);
+          trim(heard);
+        });
+      }
+
+      override send(data: string | ArrayBufferLike | Blob | ArrayBufferView): void {
+        if (this.url.includes(path)) {
+          sent.push([Math.round(performance.now()), ...kind(data)]);
+          trim(sent);
+        }
+        super.send(data);
       }
 
       // A close the page asks for, logged with the code it asks for: a 1006 the browser reports may follow it.
       override close(code?: number, reason?: string): void {
-        if (this.url.includes(path)) console.log(`${log} asked ${code ?? '-'} ${reason ?? ''} at ${Math.round(performance.now())} ms`);
+        if (this.url.includes(path)) {
+          const now = performance.now();
+          console.log(`${log} asked ${code ?? '-'} ${reason ?? ''} at ${Math.round(now)} ms`);
+          if (code !== 1000) console.log(report(now));
+        }
         super.close(code, reason);
       }
     };
-  }, { path: DOC_SOCKET_PATH, log: CLOSE_LOG });
+  }, { path: DOC_SOCKET_PATH, log: CLOSE_LOG, diagLog: DIAG_LOG });
   return wire;
 }
 

@@ -291,6 +291,9 @@ export class DocSession {
   #link: Link;
   #socketOpen = false;
   #lastResync = 0;
+  /** A step 1 this session sent has had no step 2 back yet, and when a sync frame last arrived (T3.S6b). */
+  #resyncOwed = false;
+  #syncHeard = 0;
   #visibleSince = 0;
   #lastTick = 0;
   #failedHandshakes = 0;
@@ -344,6 +347,13 @@ export class DocSession {
       wrote: (id, update) => this.#wrote(update, id),
       remote: this.provider,
     });
+    // A step 2 from the server answers the last step 1.
+    const sync = this.provider.messageHandlers[0];
+    this.provider.messageHandlers[0] = (encoder, decoder, provider, emitSynced, type) => {
+      this.#syncHeard = Date.now();
+      if (decoder.arr[decoder.pos] === 1) this.#resyncOwed = false;
+      sync(encoder, decoder, provider, emitSynced, type);
+    };
     this.provider.messageHandlers[PAYLOAD_MESSAGE] = (_encoder, decoder) => {
       this.#payloadSync.receive(decoder.arr);
     };
@@ -505,6 +515,7 @@ export class DocSession {
     this.#socketOpen = true;
     // The provider sends a step 1 on open; each held payload sends its own, and its unacked writes.
     this.#lastResync = Date.now();
+    this.#resyncOwed = true;
     this.#failedHandshakes = 0;
     // The note's unacked writes go first (the provider's own step 1 and step 2 follow this event): they hold the
     // elements naming payloads made offline, so those payloads' resends never reach the DocDO as unnamed writes.
@@ -613,7 +624,9 @@ export class DocSession {
         ws.detach(CLOSE.heartbeat, 'heartbeat');
         return;
       }
-      if (now - this.#lastResync >= RESYNC_MS) this.#resync(ws);
+      // While sync frames still arrive, the answer to the last step 1 is queued behind them: another would only
+      // queue the whole backlog again. A peer behind a large paste was sent it once per 4 s, megabytes each time.
+      if (now - this.#lastResync >= RESYNC_MS && !(this.#resyncOwed && now - this.#syncHeard < RESYNC_MS)) this.#resync(ws);
     }
     this.#update(null);
   }
@@ -622,6 +635,7 @@ export class DocSession {
     this.#lastResync = Date.now();
     try {
       ws.send(encodeSyncFrame(0, Y.encodeStateVector(this.doc)));
+      this.#resyncOwed = true;
       // A woken DO has an empty awareness map even when this socket survived. Preserve the caret and focus.
       const awareness = this.provider.awareness;
       const state = awareness.getLocalState();
