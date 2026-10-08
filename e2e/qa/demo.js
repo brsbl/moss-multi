@@ -46,12 +46,11 @@ const pause = (ms) => new Promise((done) => setTimeout(done, ms));
 
 async function until(what, check, timeout = 15_000) {
   const deadline = Date.now() + timeout;
-  let failure = null;
   for (;;) {
+    let failure = null;
     try {
       const value = await check();
       if (value) return value;
-      failure = null;
     } catch (error) {
       failure = error;
     }
@@ -469,7 +468,7 @@ export const STEPS = {
   },
 
   /** Ada's view of the every-node note: its top, its HTML block after a click on its button, and its media. */
-  async everyNode({ docId, htmlButton, htmlResult }) {
+  async everyNode({ docId, htmlResult }) {
     const page = await person('ada');
     await openNote(page, docId);
     await calm(page);

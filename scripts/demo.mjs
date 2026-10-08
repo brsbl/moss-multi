@@ -259,7 +259,7 @@ export async function buildDemo(opts) {
     await step('version', { docId: ids.launch, name: 'Ready for review' });
 
     shots.push((await step('signature', { docId: ids.launch, sentence: SENTENCE.text, replace: SENTENCE.replace })).shot);
-    shots.push(...(await step('everyNode', { docId: ids.every, htmlButton: 'Run the numbers', htmlResult: 'Ran on click' })).shots);
+    shots.push(...(await step('everyNode', { docId: ids.every, htmlResult: 'Ran on click' })).shots);
     shots.push(...(await step('review', { docId: ids.launch, rootText: THREADS[0].text })).shots);
     shots.push((await step('history', { docId: ids.launch })).shot);
     shots.push((await step('visitor', { link: shared.link })).shot);
