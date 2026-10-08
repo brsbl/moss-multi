@@ -329,8 +329,8 @@ test('j18-agents grant: an agent Ben granted commenter pulls and comments, its p
   const benDialog = await ui.openShare(ben, docId);
   await ui.shareInDialog(benDialog, scribe.id, 'Can comment', 'Shared with Scribe.');
   await ben.page.keyboard.press('Escape');
-  // Ben leaves the note before he is removed from it (j09 covers a removed person's open pane).
-  await ben.goto('/');
+  // Removing Ben ends his open pane, which asks the server what he can still open (j09 covers that pane).
+  ben.expectHttp(404, /\/api\/docs\/[^/]+\/access$/);
 
   const ada = await actors.open(adaPrincipal, { path: `/d/${docId}` });
   await ui.waitLive(ada, docId);

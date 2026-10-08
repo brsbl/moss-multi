@@ -16,8 +16,8 @@ import type { AppEnv } from '../env.ts';
 import { json } from '../worker/route.ts';
 import { accessibleDocs, accessibleFolders, liveLink, resolveDocAccess, resolveFolderAccess } from './access.ts';
 import { admitDuplicateMedia, copyMedia } from './assets.ts';
-import { createComment, deleteComment, editComment, reactComment, resolveComment } from './comments.ts';
-import { admitWorkingExport, handleSuggestion, SUGGESTION_ROUTE, workingRateLimited } from './suggestions.ts';
+import { createComment, deleteComment, editComment, listDocComments, reactComment, resolveComment } from './comments.ts';
+import { admitWorkingExport, handleSuggestion, listSuggestions, SUGGESTION_ROUTE, SUGGESTIONS_ROUTE, workingRateLimited } from './suggestions.ts';
 import { folderNotFound, liveIn, moveDoc, upFrom, vaultOf } from './folders.ts';
 import { handleInviteLinks } from './invites.ts';
 import { handleLinks } from './links.ts';
@@ -273,7 +273,10 @@ export async function handleDocs(request: Request, env: DocsEnv): Promise<Respon
     return access ? json({ role: access.role, deleted: access.deleted }, 200, NO_STORE) : notFound();
   });
   const comments = COMMENTS.exec(pathname);
-  if (comments) return only('POST', request, () => createComment(request, env, comments[1]));
+  if (comments) {
+    if (request.method === 'GET') return listDocComments(request, env, comments[1]);
+    return only('POST', request, () => createComment(request, env, comments[1]));
+  }
   const resolve = RESOLVE.exec(pathname);
   if (resolve) return only('POST', request, () => resolveComment(request, env, resolve[1], resolve[2]));
   const reactions = REACTIONS.exec(pathname);
@@ -286,6 +289,8 @@ export async function handleDocs(request: Request, env: DocsEnv): Promise<Respon
   }
   const versions = VERSIONS_ROUTE.exec(pathname);
   if (versions) return handleVersions(request, env, versions);
+  const listed = SUGGESTIONS_ROUTE.exec(pathname);
+  if (listed) return listSuggestions(request, env, listed[1]);
   const suggestion = SUGGESTION_ROUTE.exec(pathname);
   if (suggestion) return handleSuggestion(request, env, suggestion[1], suggestion[2], suggestion[3] as 'preview' | 'accept' | 'reject' | 'withdraw');
   const pushed = PUSH_ROUTE.exec(pathname);

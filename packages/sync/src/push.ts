@@ -11,18 +11,22 @@ import { importFrontmatter } from '@moss-multi/core/frontmatter';
 import { computeMergedTarget, editsOf, isDegenerate, normalizeEol, withoutFinalEol } from '@moss-multi/core/merge';
 import { align, fullOf, type SerializedNode } from '@moss-multi/core/reconcile';
 import { createConverterEditor, exportMarkdown, markdownToState, stateToMarkdown } from './converter/index.ts';
-import { bodyState, reconcileBody, ReconcileRefused } from './reconcile.ts';
+import { bodyState, reconcileBody, ReconcileRefused, type ForkTarget } from './reconcile.ts';
 import { exportDocMarkdown, exportMirror, type Admit } from './server-doc.ts';
 
 export interface PushInput {
   base: string;
   newText: string;
   force: boolean;
+  /** `--suggest`: the merge is written as a fork under a leased client and collected as record ops; the doc is untouched. */
+  fork?: ForkTarget;
 }
 
 export type PushOutcome =
   | { ok: true; applied: number; failedHunks: string[]; changed: boolean }
-  | { ok: false; reason: 'degenerate'; deletedRatio: number };
+  | { ok: false; reason: 'degenerate'; deletedRatio: number }
+  /** A suggestion holds body text only; a push that changes the note's properties cannot be suggested. */
+  | { ok: false; reason: 'properties' };
 
 /** A file's frontmatter block, when it parses, and its body; a block that does not parse stays body text. */
 function partsOf(file: string): { body: string; frontmatter: string; fenced: boolean; hasFrontmatter: boolean } {
@@ -198,6 +202,8 @@ export function landPush(live: Y.Doc, noteId: string, input: PushInput, origin: 
   const target = partsOf(merge.target);
   const expected = withoutFinalEol(target.body);
   const currentParts = partsOf(current);
+  const writesProperties = target.frontmatter !== currentParts.frontmatter && (target.fenced || !target.hasFrontmatter);
+  if (input.fork && writesProperties) return { ok: false, reason: 'properties' };
   const state = markdownToState(target.body);
   const liveState = bodyState(live);
   const blocks = keepUntouched(blocksOf(liveState), blocksOf(markdownToState(currentParts.body)), blocksOf(state))
@@ -214,15 +220,13 @@ export function landPush(live: Y.Doc, noteId: string, input: PushInput, origin: 
       mutate(doc) {
         // Properties are structured, not converted text: they are written only when the push changed the block, and
         // stay as they are when the file's frontmatter block does not parse.
-        if (target.frontmatter !== currentParts.frontmatter && (target.fenced || !target.hasFrontmatter)) {
-          importFrontmatter(doc, target.frontmatter, origin);
-        }
+        if (writesProperties) importFrontmatter(doc, target.frontmatter, origin);
       },
       verify(mirror) {
         const body = withoutFinalEol(partsOf(exportMirror(mirror, noteId)).body);
         if (body !== expected) throw new ReconcileRefused('unverified', mismatch(expected, body, currentParts.body));
       },
-    });
+    }, undefined, input.fork);
     return { ok: true, applied: merge.applied, failedHunks: merge.failedHunks, changed: changedNote || wrotePayloads };
   } catch (error) {
     if (error instanceof ReconcileRefused && error.reason !== 'unverified') {

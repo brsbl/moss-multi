@@ -8,7 +8,7 @@ import { exportMarkdown, stateToMarkdown } from './converter/index.ts';
 import { fieldsOf, MAP_REGISTERS } from './map-codecs.ts';
 import { REGISTER_FIELDS } from './payload-docs.ts';
 import { writeMapRegister, writeRegister } from './registers.ts';
-import { mirrorOf, serverWrite, type Admit, type Mirror, type MirrorBase } from './server-doc.ts';
+import { forkWrite, mirrorOf, serverWrite, type Admit, type Mirror, type MirrorBase } from './server-doc.ts';
 
 export class ReconcileRefused extends Error {
   readonly status = 409;
@@ -67,9 +67,10 @@ export interface BesideBody {
  * Reconciles `live`'s body onto `target` in one server write under `origin`. Throws ReconcileRefused (409) when the
  * target cannot be parsed or the reconciled body would not export exactly as the target does; `admit` may refuse
  * too, and `beside` lands the title and frontmatter in the same write. With `base`, the reconcile runs from that state
- * instead of `live`'s, and its diff merges into `live`. Returns whether the live doc changed.
+ * instead of `live`'s, and its diff merges into `live`. With `fork`, the result is collected as record ops instead.
+ * Returns whether the live doc changed (or the fork wrote anything).
  */
-export function reconcileBody(live: Y.Doc, target: SerializedEditorState, origin: unknown, admit?: Admit, beside?: BesideBody, base?: MirrorBase): boolean {
+export function reconcileBody(live: Y.Doc, target: SerializedEditorState, origin: unknown, admit?: Admit, beside?: BesideBody, base?: MirrorBase, fork?: ForkTarget): boolean {
   let expected: string;
   try {
     expected = stateToMarkdown(target);
@@ -83,12 +84,25 @@ export function reconcileBody(live: Y.Doc, target: SerializedEditorState, origin
       throw new ReconcileRefused('unparseable', `target does not reconcile: ${(error as Error).message}`);
     }
   };
-  return serverWrite(live, origin, (doc) => {
+  const mutate = (doc: Y.Doc) => {
     beside?.mutate(doc);
     const rest = refusing(() => $reconcileRoot(target.root as unknown as SerializedNode, { payloads: PAYLOADS }));
     return rest && (() => refusing(rest));
-  }, admit, (mirror) => {
+  };
+  const verify = (mirror: Mirror) => {
     if (exportMarkdown(mirror.editor) !== expected) throw new ReconcileRefused('mismatch', 'the reconciled body does not export the target');
     beside?.verify(mirror);
-  }, base);
+  };
+  if (fork) {
+    const ops = forkWrite(live, fork.client, mutate, verify);
+    fork.ops.push(...ops);
+    return ops.length > 0;
+  }
+  return serverWrite(live, origin, mutate, admit, verify, base);
+}
+
+/** A reconcile written as a fork under a leased client: its record ops are collected and `live` is not written. */
+export interface ForkTarget {
+  client: number;
+  ops: { doc: string; update: Uint8Array }[];
 }

@@ -49,6 +49,8 @@ export const USAGE = `moss-multi: pull, push and manage moss-multi notes from a 
   pull <doc> [file] [--force]                  write the doc to a file and track it here
   push <file> [--suggest] [--force]            merge your edits to a pulled file into the doc
   history <doc> [--json]                       the doc's versions
+  comments <doc> [--json]                      the doc's comment threads
+  suggestions <doc> [--json]                   the doc's open suggestions
   snapshot <doc> <name>                        save a named version
   comment <doc> <text> (--quote <text> | --reply <comment id>)
   share <doc> <email | agent id> [--role view|comment|suggest|edit]
@@ -101,6 +103,9 @@ function arity(parsed: Parsed, min: number, max: number, usage: string): string[
   if (parsed.positionals.length < min || parsed.positionals.length > max) throw new CliError(1, `usage: moss-multi ${usage}`);
   return parsed.positionals;
 }
+
+/** Moss's mention encoding (U+2063 `@person:Name` U+2062 id U+2064) as the `@Name` a person reads. */
+const readable = (text: string) => text.replace(/\u2063@person:([^\u2062\u2063\u2064]*)\u2062[^\u2062\u2063\u2064]*\u2064/g, '@$1');
 
 /** CRLF becomes LF at the boundary (A§17). */
 const toLf = (text: string) => text.replace(/\r\n?/g, '\n');
@@ -308,11 +313,20 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
         }
         if (response.reason === 'rate-limited') throw new CliError(1, `push refused: rate limited${response.retryAfterSec ? `; try again in ${response.retryAfterSec} s` : ''}`);
         if (response.reason === 'too-large') throw new CliError(1, 'push refused: too large; a note holds at most 2 MB of markdown');
-        if (response.reason === 'push-unverified') throw new CliError(1, `push refused: ${response.message}`);
+        if (response.reason === 'push-unverified' || response.reason === 'suggest-refused') throw new CliError(1, `push refused: ${response.message}`);
+        if (response.reason === 'forbidden') {
+          throw new CliError(1, parsed.flags.has('suggest')
+            ? 'push refused: you can\'t suggest changes to this doc (it needs suggest access or more)'
+            : 'push refused: you can\'t edit this doc (it needs edit access); with suggest access, push with --suggest');
+        }
         throw new CliError(1, `push refused: ${response.reason}`);
       }
       if (response.mode === 'suggest') {
+        // The doc is unchanged until someone accepts, so the file and its base stay as they are.
         line(`suggested ${meta.file} (suggestion ${response.suggestionId})`);
+        const left = response.failedHunks ?? [];
+        for (const hunk of left) stderr(`failed hunk:\n${hunk}`);
+        if (left.length > 0) throw new CliError(EXIT.failedHunks, `${left.length} hunk(s) could not be placed and are not in the suggestion`);
         return;
       }
       if (response.failedHunks.length > 0) {
@@ -345,6 +359,33 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       const client = api();
       const version = await client.snapshot(await resolveDocId(client, ref), name);
       line(version.id);
+    },
+
+    async comments(rest) {
+      const parsed = parseArgs(rest, ['json'], []);
+      const [ref] = arity(parsed, 1, 1, 'comments <doc> [--json]');
+      const client = api();
+      const comments = await client.comments(await resolveDocId(client, ref));
+      if (parsed.flags.has('json')) return json(comments);
+      if (comments.length === 0) return line('no comments');
+      for (const comment of comments) {
+        const state = [comment.resolved ? 'resolved' : '', comment.status === 'orphaned' ? 'detached' : ''].filter(Boolean).join(', ');
+        const head = `${comment.parentId ? '  ↳ ' : ''}${comment.id}  ${comment.author.name}${comment.author.type === 'agent' ? ' (agent)' : ''}`;
+        line(`${head}: ${readable(comment.text)}${state ? `  (${state})` : ''}`);
+        if (!comment.parentId && comment.quote) line(`    on "${comment.quote}"`);
+      }
+    },
+
+    async suggestions(rest) {
+      const parsed = parseArgs(rest, ['json'], []);
+      const [ref] = arity(parsed, 1, 1, 'suggestions <doc> [--json]');
+      const client = api();
+      const suggestions = await client.suggestions(await resolveDocId(client, ref));
+      if (parsed.flags.has('json')) return json(suggestions);
+      if (suggestions.length === 0) return line('no open suggestions');
+      for (const suggestion of suggestions) {
+        line(`${suggestion.id}  ${suggestion.author.name}  ${suggestion.status}  ${new Date(suggestion.createdAt).toISOString()}${suggestion.outdated ? '  (outdated)' : ''}`);
+      }
     },
 
     async comment(rest) {
