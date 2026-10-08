@@ -86,6 +86,8 @@ class FrameSurface implements SessionSurface {
   private committedTitle = '';
   /** Changes from a load, moss's own post-mount transforms included, are not the user's edits. */
   private settling = true;
+  /** Counts loads; one a later load overtook while it awaited its views is dropped. */
+  private loads = 0;
   private pendingReady: (() => void) | null = null;
   private stopUpdates: (() => void) | null = null;
   private stopComments: (() => void) | null = null;
@@ -126,8 +128,11 @@ class FrameSurface implements SessionSurface {
 
   async load(content: EditorContent, options: { keepView: boolean }): Promise<void> {
     // The views of the lazy families this body holds load first, so it shows with no placeholder (lazy-views.ts).
+    const generation = ++this.loads;
     const views = preloadNodeViews(content.body);
     if (views) await views;
+    // A later load began while this one waited for its views: the later content wins, so this one is dropped.
+    if (generation !== this.loads) return;
     this.settling = true;
     this.committedTitle = content.title;
     this.hydrateComments(content);
@@ -139,14 +144,16 @@ class FrameSurface implements SessionSurface {
       if (replaced) {
         this.hydrateComments(content);
         await nextFrame();
-        this.settling = false;
+        if (generation === this.loads) this.settling = false;
         return;
       }
     }
     // A first load, or an in-place update moss refused: mount moss's editor on the note.
+    const superseded = this.pendingReady;
     const ready = new Promise<void>((resolve) => {
       this.pendingReady = resolve;
     });
+    superseded?.();
     this.set({ content, version: this.state.version + 1 });
     await ready;
   }

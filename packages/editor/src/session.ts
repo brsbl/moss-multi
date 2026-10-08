@@ -128,6 +128,8 @@ export class EditorSession {
   private read: NoteRead | null = null;
   /** Bumped by every edit; `savedRevision` is the last one known to be on disk. */
   private revision = 0;
+  /** Counts in-place loads, so one a later load overtook neither re-enables editing nor reports. */
+  private loads = 0;
   private savedRevision = 0;
   private unsavedStartedAt: number | null = null;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -676,7 +678,7 @@ export class EditorSession {
     this.unsavedStartedAt = null;
     this.clearIdle();
     this.overwrittenDraft = overwrittenSave;
-    await this.loadInPlace(editorContentOfRead(fresh));
+    if (!(await this.loadInPlace(editorContentOfRead(fresh)))) return;
     if ((this.status as MossEditorStatus) === 'unmounted') return;
     // The editor's own change listener may have counted the load as an edit; nothing else could, as it was read-only.
     this.savedRevision = this.revision;
@@ -684,14 +686,19 @@ export class EditorSession {
     this.emit({ kind: 'reloaded', noteId: this.noteId, status: 'clean', version: fresh.disk.version, cause, overwrittenSave });
   }
 
-  /** Loads in place with the editor read-only, so nothing the user types can land while the load settles. */
-  private async loadInPlace(content: EditorContent): Promise<void> {
+  /**
+   * Loads in place with the editor read-only, so nothing the user types can land while the load settles. False when
+   * a later load began while this one waited (on a node view's chunk): that load owns the editor and reports.
+   */
+  private async loadInPlace(content: EditorContent): Promise<boolean> {
+    const generation = ++this.loads;
     this.surface.setEditable(false);
     try {
       await this.surface.load(content, { keepView: true });
     } finally {
-      if (this.status !== 'removed' && this.status !== 'unmounted') this.surface.setEditable(true);
+      if (generation === this.loads && this.status !== 'removed' && this.status !== 'unmounted') this.surface.setEditable(true);
     }
+    return generation === this.loads;
   }
 
   // ---- the user's choices -------------------------------------------------------------------------------------
@@ -726,7 +733,7 @@ export class EditorSession {
     this.overwrittenDraft = null;
     if (!draft || !this.read) return this.render();
     const content = editorContentOfFiles(draft.files, draft.intents.commentColors, this.read.metaTitle);
-    await this.loadInPlace(content);
+    if (!(await this.loadInPlace(content))) return;
     this.intentsOverride = draft.intents;
     this.revision += 1;
     this.setStatus('dirty');
