@@ -4,7 +4,7 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { MARKDOWN_CAP_BYTES } from '@moss-multi/protocol/limits';
-import { cleanForSnippet, headingMatches, linkTexts, makeSnippet, parseHeadings, wikiLinkContents, withoutComments, withoutFences, withoutTags } from './search-core.ts';
+import { cleanForSnippet, headingMatches, linkTexts, makeSnippet, parseHeadings, wikiLinkContents, wikiLinkTexts, withoutComments, withoutFences, withoutTags } from './search-core.ts';
 
 const SCANS: [string, (text: string) => unknown, (text: string) => unknown, string[], ((n: number) => string)[]][] = [
   [
@@ -41,6 +41,13 @@ const SCANS: [string, (text: string) => unknown, (text: string) => unknown, stri
     (text) => text.replace(/```[\s\S]*?```/g, ''),
     ['`', '``', '```', '````', 'a', '\n', '#'],
     [(n) => '`'.repeat(n), (n) => '````a'.repeat(n / 5), (n) => `\`\`\`${'`a'.repeat(n / 2)}`],
+  ],
+  [
+    'wikiLinkTexts',
+    wikiLinkTexts,
+    (text) => text.replace(/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g, '$1'),
+    ['[', ']', '|', 'a', '[[', ']]', '|]', '\n'],
+    [(n) => '[[a'.repeat(n / 3), (n) => '[[a|'.repeat(n / 4), (n) => '[[a]'.repeat(n / 4), (n) => '[[a|a]'.repeat(n / 6), (n) => `[[a${'|'.repeat(n)}`],
   ],
   [
     'headingMatches',
@@ -99,7 +106,7 @@ describe('search-core scans replace super-linear regexes', () => {
   }, 120_000);
 
   it('makeSnippet and parseHeadings are linear up to the 2 MB note cap on repeated openers', () => {
-    const attacks = [(n: number) => `quokka ${'<!--'.repeat(n / 4)}`, (n: number) => `${'<!--'.repeat(n / 4)} quokka`, (n: number) => '````a'.repeat(n / 5)];
+    const attacks = [(n: number) => `quokka ${'<!--'.repeat(n / 4)}`, (n: number) => `${'<!--'.repeat(n / 4)} quokka`, (n: number) => '````a'.repeat(n / 5), (n: number) => `# ${'[[a'.repeat(n / 3)}`];
     for (const attack of attacks) expectLinear((text) => makeSnippet(text, 'quokka'), attack, MARKDOWN_CAP_BYTES);
     for (const attack of attacks) expectLinear(parseHeadings, attack, MARKDOWN_CAP_BYTES);
   }, 120_000);
