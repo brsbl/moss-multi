@@ -28,6 +28,7 @@ const DocDO = {
     create: async (input: unknown) => {
       created.push({ docId: id.name, input });
       await d1Projections(d1.db, publish).title(id.name, (input as { title?: string }).title ?? '');
+      return `Created ${id.name}\n`;
     },
     renameTitle: async (title: string) => {
       if (renameFails) throw new Error('projection unavailable');
@@ -120,6 +121,13 @@ describe('POST /api/docs', () => {
       expect(doc.title).toBe('File stem');
       expect(created.at(-1)).toEqual({ docId: doc.id, input: { folderId: ada.homeId, ownerId: ada.id, title: 'File stem', markdown } });
     }
+  });
+
+  it('answers the created revision\'s export as content, the base the CLI adopts a file against (T7.S4)', async () => {
+    const response = await create(ada.cookie, { title: 'Stem', markdown: 'Body.\n' });
+    expect(response.status).toBe(201);
+    const body = await response.json() as DocBody & { content?: string };
+    expect(body.content).toBe(`Created ${body.doc.id}\n`);
   });
 
   it('refuses invalid and oversized markdown before creating a doc', async () => {
