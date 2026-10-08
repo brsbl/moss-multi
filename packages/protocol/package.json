@@ -8,6 +8,7 @@
     "./html-frame": "./src/html-frame.ts",
     "./limits": "./src/limits.ts",
     "./media": "./src/media.ts",
+    "./push": "./src/push.ts",
     "./retention": "./src/retention.ts",
     "./roles": "./src/roles.ts",
     "./suggest": "./src/suggest.ts",

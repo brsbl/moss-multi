@@ -8,7 +8,7 @@ import { resolvePrincipal } from '../auth/principal.ts';
 import { createDb } from '../db/client.ts';
 import { folders } from '../db/schema.ts';
 import { json } from '../worker/route.ts';
-import { actingUserId, resolveFolderAccess } from './access.ts';
+import { accessibleFolders, actingUserId, resolveFolderAccess } from './access.ts';
 import { FOLDER_NAME_MAX, trashFolder, type FoldersEnv } from './folders.ts';
 import { NO_STORE, notFound, readJsonObject, unauthenticated } from './respond.ts';
 
@@ -108,13 +108,25 @@ async function trashVault(request: Request, env: FoldersEnv, id: string): Promis
   return trashFolder(request, env, id, 'vault');
 }
 
+/** GET /api/vaults: the vaults a signed-in person or an agent can open (the CLI's `vaults`; T7.1). */
+async function listVaults(request: Request, env: FoldersEnv): Promise<Response> {
+  const principal = await resolvePrincipal(request, env);
+  if (!principal || principal.type === 'anonymous') return unauthenticated();
+  const userId = actingUserId(principal);
+  const vaults = (await accessibleFolders(createDb(env.DB), principal)).filter((folder) => folder.kind === 'vault')
+    .map((folder) => ({ id: folder.id, name: folder.name, role: folder.role, owned: folder.ownerUserId === userId }))
+    .sort((a, b) => Number(b.owned) - Number(a.owned) || a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+  return json({ vaults }, 200, NO_STORE);
+}
+
 const VAULT = /^\/api\/vaults\/([^/]+)$/;
 
 /** `/api/vaults` and `/api/vaults/:id`. */
 export function handleVaults(request: Request, env: FoldersEnv): Promise<Response> {
   const { pathname } = new URL(request.url);
   if (pathname === '/api/vaults') {
-    return request.method === 'POST' ? createVault(request, env) : Promise.resolve(json({ error: 'method-not-allowed' }, 405, { allow: 'POST' }));
+    if (request.method === 'GET') return listVaults(request, env);
+    return request.method === 'POST' ? createVault(request, env) : Promise.resolve(json({ error: 'method-not-allowed' }, 405, { allow: 'GET, POST' }));
   }
   const vault = VAULT.exec(pathname);
   if (vault) {
