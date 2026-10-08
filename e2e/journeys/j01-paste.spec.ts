@@ -111,7 +111,7 @@ test('j01-paste: a second large paste and a note switch while a 200k paste lands
   // Both read again each time: the reopened pane loads its code blocks' payloads after it binds.
   await expect.poll(async () => {
     const [mine, theirs] = await Promise.all([fingerprint(ada, docId), fingerprint(ben, docId)]);
-    return mine.length === theirs.length && mine.sum === theirs.sum;
+    return mine !== null && theirs !== null && mine.length === theirs.length && mine.sum === theirs.sum;
   }, { message: 'the collaborator sees both pastes', timeout: 60_000 }).toBe(true);
 });
 
