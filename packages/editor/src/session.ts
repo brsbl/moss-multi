@@ -621,6 +621,8 @@ export class EditorSession {
 
   private remove(reason: 'notFound' | MossNotEditableReason): void {
     if (this.status === 'removed' || this.status === 'unmounted') return;
+    // Drafts commit while still editable, so the removed note's draft keeps them (as beginApply).
+    void Promise.resolve(this.surface.commit?.()).catch(() => undefined);
     this.clearIdle();
     this.removedReason = reason;
     const hadUnsavedEdits = this.dirty;
@@ -945,8 +947,12 @@ export class EditorSession {
       this.abandoned = true;
       return this.teardown({ kind: 'notLoaded' });
     }
+    // As beginApply: commit drafts while still editable (moss's decorators write nothing into a read-only editor),
+    // then go read-only and frozen in the same synchronous step.
+    const committing = this.surface.commit?.();
     this.surface.setEditable(false);
     this.surface.freeze?.(true);
+    await committing;
     let flush = await this.flush();
     // An edit that landed while the final write was pending is flushed too; teardown leaves nothing unsaved.
     for (let round = 0; (flush.kind === 'clean' || flush.kind === 'saved') && this.dirty && round < 3; round += 1) {

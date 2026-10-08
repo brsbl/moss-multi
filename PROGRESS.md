@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 64% done** (75 of 117 planned tasks verified)
+**Overall: 64% done** (76 of 118 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 23 / 23 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 24 / 24 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
@@ -94,6 +94,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-06 — T3.S5 verified: typing at the end of a very long word (50k+ characters) no longer freezes the tab, because auto-link matching scans in linear time with the same links as moss's.
 - 2026-10-08 — T3.12 verified: the moss editor loads faster: its entry script is under 350 KB gzip with charts, the canvas and HTML blocks loaded on first use, load timings are measured in CI per engine, and every chunk is named in editor.json for hosts that serve the package directory.
 - 2026-10-08 — T3.S7 verified: an oversized JSON body sent to any API or sign-in route now gets 413 before the server buffers it (64 KiB cap; feedback and note creation have their own caps), so a huge request can no longer exhaust a Worker's memory.
+- 2026-10-08 — T3.13 verified: closing or removing an editor with an open chart or HTML draft now saves that draft before going read-only, typing right after inserting a chart from the slash menu (or composing with an IME after a selected block) lands after it in order, and CI holds the editor's static critical path to 650 KB gzip.
 
 ## T1.1s identity audit
 
@@ -170,6 +171,8 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T3.12 (Editor load performance) checker P2: the 350 KB gzip budget covers only the entry script (155-161 KB, enforced in load.spec.ts; bundle-size.mjs only reports); the static critical path is 593 KB gzip → coordinator to decide whether the budget should cover the whole critical path.
 - T3.S7 (Capped JSON bodies) checker P2: `body-cap.test` omits folder-member PATCH and DELETE (only POST `/api/folders/:id/members`) and streamed sign-up (only the declared-oversize case); both folder methods share the capped handleMembers → readJsonObject path the doc-member cases cover, so a coverage gap, not a bypass → body-cap test follow-up.
 - T3.S7 (Capped JSON bodies) checker P2: the ordinary-body control maps a rejected handler to 500 and asserts only status ≠ 413, so a broken fixture (e.g. the DocDO stub lacking create() for POST /api/docs) still passes; the real stack showed ordinary bodies succeed → body-cap test follow-up: assert the expected success status.
+- T3.13 (Editor fixes before 0.3.0) checker P2: `remove()` in `packages/editor/src/session.ts` starts `surface.commit()` without awaiting it, then reads `this.dirty` and emits 'removed', so a clean note whose only change is an open chart or HTML draft reports hadUnsavedEdits:false (the draft itself is preserved) → editor session follow-up.
+- T3.13 (Editor fixes before 0.3.0) checker P2: a cancelled IME composition after a node-selected block leaves an empty paragraph, because the COMPOSITION_START handler (DecoratorBlockPlugin) always inserts one below and nothing removes it, adding a blank line and a content edit that syncs to collaborators → editor IME follow-up.
 - T2.3s checker P2 (downgraded from Codex P1): a restore can act on an older view of the note after another manager restores, moves and re-trashes it; RESTORE in `api/trash.ts` does not check the note's current folder or `trash_batch_id` still match what it read. No authority is gained (the UPDATE re-checks manage on the current chain and edit on the destination) → trash follow-up: compare-and-set on folder and batch.
 - T2.3s checker P2 (downgraded from Codex P1): a signed-out share-link holder gets 401, not 404, from trash, restore and the Trash read; nothing is disclosed (the 401 is identical for a missing note) and it predates T2.3s; A§8 confines the 401 exception to a credential-less CLI → align to 404 in an access follow-up.
 - T2.3s checker P2: the revocation tests in `trash-security.test.ts` use stub DocDO and PrincipalDO, so they do not prove open editors recover (or that a terminal editor on a live note is kicked) → T2.5 → closed by T2.5 (`mid-trash.harness.test.ts` over the real DocDO and PrincipalDO; a reverted trash pushes `meta` and a pane terminal on `deleted` re-asks and reopens).

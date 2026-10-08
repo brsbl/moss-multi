@@ -342,6 +342,22 @@ describe('conflicts with the Mac app', () => {
     const flushed = await session.flush();
     expect(flushed).toMatchObject({ kind: 'removed' });
   });
+
+  it("a removed note's draft keeps a chart draft that was open, committed before the editor went read-only", async () => {
+    const session = mount();
+    await session.ready;
+    surface.commit = () => {
+      if (!surface.editable || surface.live.body === 'Chart value 9\n') return;
+      surface.live.body = 'Chart value 9\n';
+      session.markEdited();
+    };
+    volume.unlink(`${DIR}/meta.json`);
+    await settle(250);
+    expect(session.status).toBe('removed');
+    const flushed = await session.flush();
+    if (flushed.kind !== 'removed') throw new Error(`expected removed, got ${flushed.kind}`);
+    expect(flushed.draft.files.markdown).toBe('# Plan\n\nChart value 9\n');
+  });
 });
 
 describe('flush and unmount', () => {
@@ -391,6 +407,28 @@ describe('flush and unmount', () => {
     if (result.kind === 'unmounted' && result.flush.kind === 'saved') expect(result.flush.receipt.files.markdown).toBe('# Plan\n\nTyped\n\nReply\n');
     else throw new Error(`expected a saved flush, got ${result.flush.kind}`);
     expect(frozenDuringWrite[0]).toBe(true);
+  });
+
+  it('decorator drafts open at unmount are committed while the editor is still editable, and are in the final write', async () => {
+    const session = mount();
+    await session.ready;
+    // As moss's chart and HTML flushers: each writes its draft into the document only while the editor is editable.
+    surface.commit = () => {
+      if (!surface.editable || surface.frozen || surface.live.body.includes('Chart value 9')) return;
+      surface.live.body = 'Chart value 9\n\nHTML draft\n';
+      session.markEdited();
+    };
+    const write = host.write.bind(host);
+    const during: { editable: boolean; frozen: boolean }[] = [];
+    host.write = async (noteId, request) => {
+      during.push({ editable: surface.editable, frozen: surface.frozen });
+      return write(noteId, request);
+    };
+    const result = await session.unmount();
+    expect(markdownOnDisk()).toBe('# Plan\n\nChart value 9\n\nHTML draft\n');
+    if (result.kind === 'unmounted' && result.flush.kind === 'saved') expect(result.flush.receipt.files.markdown).toBe('# Plan\n\nChart value 9\n\nHTML draft\n');
+    else throw new Error(`expected a saved flush, got ${result.kind === 'unmounted' ? result.flush.kind : result.kind}`);
+    expect(during).toEqual([{ editable: false, frozen: true }]);
   });
 
   it('a host reload whose read finishes after unmount leaves the torn-down session alone', async () => {
