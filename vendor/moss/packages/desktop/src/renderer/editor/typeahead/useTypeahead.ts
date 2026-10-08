@@ -98,8 +98,11 @@ export function useTypeahead<T extends TypeaheadItem>({
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchRequestIdRef = useRef(0);
   const isMenuInteractingRef = useRef(false);
+  // moss-multi seam: live-query-select (T3.F2): the query `results` were searched for.
+  const resultsQueryRef = useRef<string | null>(null);
 
   const closeMenu = useCallback(() => {
+    resultsQueryRef.current = null;
     setState(getInitialState());
     setResults([]);
   }, []);
@@ -114,13 +117,40 @@ export function useTypeahead<T extends TypeaheadItem>({
     [state.triggerOffset, onSelect, closeMenu]
   );
 
+  // moss-multi seam: live-query-select (T3.F2): a synchronous search (debounce 0) that has not caught up with the
+  // text typed after the trigger (its timer waits behind a busy main thread) is run now, so Enter or Tab picks
+  // the first match for everything typed, never a row of the previous query's list.
+  const liveResults = useCallback((): T[] | null => {
+    const start = state.triggerOffset;
+    if (debounceMs !== 0 || start === null) return null;
+    const live = editor.getEditorState().read((): string | null => {
+      const selection = $getSelection();
+      if (!$isRangeSelection(selection) || !selection.isCollapsed()) return null;
+      const node = selection.anchor.getNode();
+      if (!$isTextNode(node)) return null;
+      const text = node.getTextContent().slice(0, selection.anchor.offset);
+      if (text.lastIndexOf(trigger.trigger) !== start) return null;
+      return text.slice(start + trigger.trigger.length);
+    });
+    if (live === null || live === resultsQueryRef.current) return null;
+    if (trigger.closingChars?.some((char) => live.includes(char))) return null;
+    const fresh = onSearch(live);
+    return Array.isArray(fresh) ? fresh : null;
+  }, [debounceMs, editor, onSearch, state.triggerOffset, trigger]);
+
   const handleSelect = useCallback(() => {
+    const fresh = liveResults();
+    if (fresh) {
+      if (fresh.length === 0) return false;
+      selectItem(fresh[0]);
+      return true;
+    }
     if (results.length > 0 && state.selectedIndex < results.length) {
       selectItem(results[state.selectedIndex]);
       return true;
     }
     return false;
-  }, [results, state.selectedIndex, selectItem]);
+  }, [liveResults, results, state.selectedIndex, selectItem]);
 
   // Keyboard navigation
   useEffect(() => {
@@ -378,6 +408,7 @@ export function useTypeahead<T extends TypeaheadItem>({
       try {
         const searchResults = await onSearch(state.query);
         if (requestId !== searchRequestIdRef.current) return;
+        resultsQueryRef.current = state.query;
         setResults(searchResults);
         setState((prev) => ({ ...prev, selectedIndex: 0 }));
       } catch {

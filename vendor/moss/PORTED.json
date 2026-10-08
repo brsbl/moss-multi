@@ -201,7 +201,7 @@
     {"path":"packages/desktop/src/renderer/editor/typeahead/mentionSearch.ts","pin":"762abb777","upstreamSha256":"087bf985fce7b3a5f813e59ec9b4f88b1ed9535819e29cdaf1396459714def1b","mode":"verbatim"},
     {"path":"packages/desktop/src/renderer/editor/typeahead/types.ts","pin":"762abb777","upstreamSha256":"116ff4638dc80445e7d6bf8b061e2330ac2a1f340bdfccbf539d03357ae97dd0","mode":"verbatim"},
     {"path":"packages/desktop/src/renderer/editor/typeahead/useFloatingPosition.ts","pin":"762abb777","upstreamSha256":"acc08b46a8b78cb2250d6737f8c54498cf475a65d72abbdcc34eaf289ffc0ff3","mode":"verbatim"},
-    {"path":"packages/desktop/src/renderer/editor/typeahead/useTypeahead.ts","pin":"762abb777","upstreamSha256":"7e49377a04264a462349ef6aba676e49f9db476c038b2d0c7f2984cb5c868871","mode":"verbatim"},
+    {"path":"packages/desktop/src/renderer/editor/typeahead/useTypeahead.ts","pin":"762abb777","upstreamSha256":"7e49377a04264a462349ef6aba676e49f9db476c038b2d0c7f2984cb5c868871","mode":"patched","patch":"patches/moss/packages/desktop/src/renderer/editor/typeahead/useTypeahead.ts.patch"},
     {"path":"packages/desktop/src/renderer/editor/utils/asset-url.ts","pin":"762abb777","upstreamSha256":"1fd2eae4d6cafe4f1bf959ccf3d037d83b7e16c29ba84c5059e619422ce4cf86","mode":"verbatim"},
     {"path":"packages/desktop/src/renderer/editor/utils/block-gap-cursor-dom.ts","pin":"762abb777","upstreamSha256":"64bab76fad042dca70e93c5e9d00cb6517b6a963c109a415ede4aec731af12b5","mode":"verbatim"},
     {"path":"packages/desktop/src/renderer/editor/utils/block-node-double-enter.ts","pin":"762abb777","upstreamSha256":"84a61b01ff604d59aaadb0e80be712a41ac339523e95cdd26d89dd463396dfd1","mode":"verbatim"},
