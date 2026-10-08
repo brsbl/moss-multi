@@ -9,8 +9,8 @@ import { resolveMossHtmlIntrinsicSize } from '@moss-desktop/common/moss-html-dim
 import { loadNodeView, registerLazyNodeView } from '@moss-desktop/renderer/editor/nodes/node-views';
 
 // Each placeholder takes the box its view first paints in the frame (measured at 672 and 960 px wide): a chart is
-// 370 px tall; a canvas is its 2:1 drawing area plus its header; an HTML block is its frame, at the HTML's intrinsic
-// aspect ratio, plus the block's margins.
+// 370 px tall; a canvas is its 2:1 drawing area plus its header, each with the view's my-6 margins; an HTML block is
+// its frame, at the HTML's intrinsic aspect ratio, plus the block's margins.
 const box = (type: string, style: CSSProperties, inner?: CSSProperties) =>
   createElement(
     'div',
@@ -18,8 +18,8 @@ const box = (type: string, style: CSSProperties, inner?: CSSProperties) =>
     inner ? createElement('div', { style: inner }) : null,
   );
 
-const chartPlaceholder = () => box('chart', { height: 370 });
-const sketchPlaceholder = () => box('sketch', { padding: '43px 3px 3px' }, { aspectRatio: '2 / 1' });
+const chartPlaceholder = () => box('chart', { height: 370, marginBlock: 24 });
+const sketchPlaceholder = () => box('sketch', { padding: '43px 3px 3px', marginBlock: 24 }, { aspectRatio: '2 / 1' });
 const htmlPlaceholder = (node: LexicalNode) => {
   const { width, height } = resolveMossHtmlIntrinsicSize((node as LexicalNode & { getRawHtml(): string }).getRawHtml());
   return box('html-block', { padding: '19px 58px 22px' }, { aspectRatio: `${width} / ${height}`, maxWidth: 1200, maxHeight: 720 });
