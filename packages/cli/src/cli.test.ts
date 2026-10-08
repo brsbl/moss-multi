@@ -43,6 +43,8 @@ function fakeServer() {
     redirect: null as null | { path: string; to: string },
     /** Answers every authenticated route with this refusal. */
     refuse: null as null | { status: number; body: unknown },
+    /** POST /api/docs creates this doc from the body's markdown, as the server would. */
+    createNew: null as null | { id: string; filename: string },
   };
   const reply = (status: number, body: unknown, headers: Record<string, string> = {}) =>
     new Response(typeof body === 'string' || body instanceof Uint8Array ? body : JSON.stringify(body), { status, headers });
@@ -80,6 +82,13 @@ function fakeServer() {
     }
     if (path === '/api/docs' && method === 'GET') return reply(200, { docs });
     if (path === '/api/vaults') return reply(200, { vaults: [{ id: 'v', name: 'Home', role: 'owner', owned: true }] });
+    if (path === '/api/docs' && method === 'POST' && state.createNew) {
+      const { id, filename } = state.createNew;
+      const input = body as { title?: string; markdown?: string };
+      content.set(id, new TextEncoder().encode(input.markdown ?? ''));
+      docs.push({ id, title: input.title ?? '', filename, folderId: 'f', vaultId: 'v', role: 'owner', updatedAt: 4 });
+      return reply(201, { doc: { id, title: input.title ?? '', filename, folderId: 'f' }, role: 'owner' });
+    }
     if (path === '/api/docs' && method === 'POST') return reply(201, { doc: { id: ID_C, title: (body as { title?: string }).title ?? '', filename: 'x.md', folderId: 'f' }, role: 'owner' });
     const match = /^\/api\/docs\/([^/]+)(?:\/(.+))?$/.exec(path);
     if (!match || !content.has(match[1])) return reply(404, { error: 'not-found' });
@@ -633,5 +642,97 @@ describe('mayOpenBrowser', () => {
     expect(mayOpenBrowser({})).toBe(true);
     expect(mayOpenBrowser({ MOSS_MULTI_NO_OPEN: '1' })).toBe(false);
     expect(mayOpenBrowser({ CI: 'true' })).toBe(false);
+  });
+});
+
+describe('add: the title line and moss interchange (T7.4)', () => {
+  it('add --title asks the server to treat a leading line that is the title as the title line', async () => {
+    writeFileSync(join(dir, 'tomato.md'), '# Tomato log\n\nPlant out in May.\n');
+    const result = await cli(['add', 'tomato.md', '--title', 'Tomato log']);
+    expect(result.code, result.err).toBe(0);
+    const create = server.seen.find((call) => call.method === 'POST' && call.path === '/api/docs');
+    expect(create?.body).toEqual({ title: 'Tomato log', markdown: '# Tomato log\n\nPlant out in May.\n', titleLine: true });
+  });
+
+  it('add --moss sends no title of its own and the comments.json beside the file', async () => {
+    mkdirSync(join(dir, 'Tomato log'));
+    writeFileSync(join(dir, 'Tomato log', 'Tomato log.md'), '# Tomato log\n\nThe %%m:c1:start%%cherry%%m:c1:end%% ones.\n');
+    const sidecar = { c1: { text: 'Save seeds', createdAt: 1, updatedAt: 1, source: 'user' } };
+    writeFileSync(join(dir, 'Tomato log', 'comments.json'), JSON.stringify(sidecar));
+    server.state.createNew = { id: ID_C, filename: 'tomato-log.md' };
+    const result = await cli(['add', 'Tomato log/Tomato log.md', '--moss']);
+    expect(result.code, result.err).toBe(0);
+    const create = server.seen.find((call) => call.method === 'POST' && call.path === '/api/docs');
+    expect(create?.body).toEqual({ markdown: '# Tomato log\n\nThe %%m:c1:start%%cherry%%m:c1:end%% ones.\n', titleLine: true, comments: sidecar });
+  });
+});
+
+describe('sync (T7.4)', () => {
+  const enc = (text: string) => new TextEncoder().encode(text);
+
+  it('pulls a doc changed on the server and pushes a local edit', async () => {
+    expect((await cli(['pull', ID_A, 'plan.md'])).code).toBe(0);
+    expect((await cli(['pull', ID_B, 'notes.md'])).code).toBe(0);
+    server.content.set(ID_A, enc('# Garden plan\n\nBeans, then peas — é ✓\n\nAnd squash.'));
+    writeFileSync(join(dir, 'notes.md'), '# Garden notes\n\nWater daily, twice in July.\n');
+    const result = await cli(['sync']);
+    expect(result.code, result.err).toBe(0);
+    expect(readFileSync(join(dir, 'plan.md'), 'utf8'), 'the server change reaches the file').toContain('And squash.');
+    expect(server.pushes.map((push) => push.newText), 'the local edit is pushed').toEqual(['# Garden notes\n\nWater daily, twice in July.\n']);
+    expect(server.seen.filter((call) => call.path === `/api/docs/${ID_A}/push`), 'an unchanged file is not pushed').toEqual([]);
+  });
+
+  it('re-pulls a deleted tracked file and never trashes the doc', async () => {
+    expect((await cli(['pull', ID_A, 'plan.md'])).code).toBe(0);
+    rmSync(join(dir, 'plan.md'));
+    const result = await cli(['sync', '--json']);
+    expect(result.code, result.err).toBe(0);
+    expect(JSON.parse(result.out)).toContainEqual(expect.objectContaining({ docId: ID_A, action: 'repulled' }));
+    expect(Buffer.from(readFileSync(join(dir, 'plan.md'))).equals(Buffer.from(server.content.get(ID_A)!))).toBe(true);
+    expect(server.seen.filter((call) => call.method === 'DELETE'), 'a local delete never propagates').toEqual([]);
+  });
+
+  it('turns an untracked file into a doc titled from its stem and renames the file to its filename', async () => {
+    mkdirSync(join(dir, '.moss-multi'));
+    writeFileSync(join(dir, 'Seed Packets.md'), 'Order the beans in March.\n');
+    server.state.createNew = { id: '44444444-4444-4444-8444-444444444444', filename: 'seed-packets.md' };
+    const result = await cli(['sync', '--json']);
+    expect(result.code, result.err).toBe(0);
+    const create = server.seen.find((call) => call.method === 'POST' && call.path === '/api/docs');
+    expect(create?.body).toEqual({ title: 'Seed Packets', markdown: 'Order the beans in March.\n', titleLine: true });
+    expect(JSON.parse(result.out)).toContainEqual(expect.objectContaining({ action: 'created', docId: '44444444-4444-4444-8444-444444444444', file: 'seed-packets.md' }));
+    expect(existsSync(join(dir, 'Seed Packets.md'))).toBe(false);
+    expect(readFileSync(join(dir, 'seed-packets.md'), 'utf8')).toBe('Order the beans in March.\n');
+    const again = await cli(['sync']);
+    expect(again.code, again.err).toBe(0);
+    expect(server.seen.filter((call) => call.method === 'POST' && call.path === '/api/docs'), 'tracked now: no second doc').toHaveLength(1);
+  });
+
+  it('renames the local file when the server filename changes', async () => {
+    expect((await cli(['pull', ID_A, 'garden-plan.md'])).code).toBe(0);
+    expect((await cli(['sync'])).code).toBe(0);
+    server.docs[0]!.filename = 'vegetable-plan.md';
+    const result = await cli(['sync']);
+    expect(result.code, result.err).toBe(0);
+    expect(existsSync(join(dir, 'garden-plan.md'))).toBe(false);
+    expect(readFileSync(join(dir, 'vegetable-plan.md'), 'utf8')).toContain('Beans, then peas');
+    writeFileSync(join(dir, 'vegetable-plan.md'), '# Garden plan\n\nBeans.');
+    expect((await cli(['push', 'vegetable-plan.md'])).code, 'the renamed file is still tracked').toBe(0);
+  });
+
+  it('watch syncs, runs again on a local change, and stops with exit 0', async () => {
+    expect((await cli(['pull', ID_A, 'plan.md'])).code).toBe(0);
+    const controller = new AbortController();
+    const before = server.seen.length;
+    const running = cli(['watch', '--interval', '0.2'], undefined, { signal: controller.signal });
+    const deadline = Date.now() + 5_000;
+    while (!server.seen.slice(before).some((call) => call.path === `/api/docs/${ID_A}/content`) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
+    writeFileSync(join(dir, 'plan.md'), '# Garden plan\n\nBeans only.');
+    while (server.pushes.length === 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
+    controller.abort();
+    const result = await running;
+    expect(result.code, result.err).toBe(0);
+    expect(result.out).toContain('watching');
+    expect(server.pushes.map((push) => push.newText)).toEqual(['# Garden plan\n\nBeans only.']);
   });
 });
