@@ -1127,14 +1127,15 @@ export class DocDO extends YServer<SyncEnv> {
     return Array.isArray(result) ? { ok: true, versions: result } : result;
   }
 
-  /** One version with its markdown, for any reader: what View and Diff vs current render. */
+  /** One version with its markdown and its whole title (the list shows 200 characters), for any reader: what View and
+   * Diff vs current render. */
   async getVersion(input: { id: string; reviewer: Reviewer; actor?: CommentActor }): Promise<{ ok: true; version: VersionMeta & { markdown: string } } | ReviewRefusal> {
     const meta = await this.#review(input, 'viewer', () => this.#versions?.meta(input.id) ?? null);
     if (meta === null) return { ok: false, status: 404, reason: 'not-found' };
     if ('ok' in meta) return meta;
     const content = await this.#versions?.content(input.id);
     if (!content) return { ok: false, status: 404, reason: 'not-found' };
-    return { ok: true, version: { ...meta, markdown: content.markdown } };
+    return { ok: true, version: { ...meta, title: content.title, markdown: content.markdown } };
   }
 
   /**

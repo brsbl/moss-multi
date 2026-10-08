@@ -248,3 +248,20 @@ declare module '@moss-desktop/renderer/panels/notesPanelUtils' {
   /** moss's sidebar time: `timestamp` in seconds. */
   export function formatRelativeTime(timestamp: number): string;
 }
+
+// moss's editor, unbound and read-only, and its empty history state: the History view (T6.3).
+declare module '@moss-desktop/renderer/editor/MarkdownEditor' {
+  import type { ComponentType } from 'react';
+  export const MarkdownEditor: ComponentType<{
+    noteId: string;
+    value: string;
+    onChange: (...args: never[]) => void;
+    placeholder?: string;
+    readOnly?: boolean;
+  }>;
+}
+
+declare module '@moss/shared/components/notes/VersionHistoryEmptyState' {
+  import type { ReactNode } from 'react';
+  export function VersionHistoryEmptyState(props: { className?: string; heading?: string; description?: string }): ReactNode;
+}

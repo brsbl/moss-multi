@@ -34,8 +34,10 @@ export const GROUPS = {
   workspace: ['j05', 'j06', 'j12', 'j13', 'export'],
   // Media, embeds and the demo note.
   media: ['j11', 'j14'],
-  // Comments, history, agents.
-  meaning: ['j15', 'j17', 'j18'],
+  // Comments and agents.
+  meaning: ['j15', 'j18'],
+  // Version history: the History view, restore under a peer.
+  history: ['j17'],
   // Reactions, mentions, edit and delete, and the comment bell; sharing with an agent.
   social: ['j15-social', 'j08-agents'],
   // Suggest mode and the suggestions server.

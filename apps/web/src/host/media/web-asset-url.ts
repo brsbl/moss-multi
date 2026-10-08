@@ -29,10 +29,21 @@ export function uploadedFilename(src: string): string | null {
   return name && !isDesktopDerived(name) ? name : null;
 }
 
+const VERSION_PREVIEW = '#version-';
+
+/** The editor id a version shown read-only in History renders under: distinct from the live note's, its media the note's. */
+export const versionPreviewNoteId = (docId: string, versionId: string): string => `${docId}${VERSION_PREVIEW}${versionId}`;
+
+/** The note whose files an editor id shows: a version preview's are its note's. */
+const assetOwner = (noteId: string): string => {
+  const at = noteId.indexOf(VERSION_PREVIEW);
+  return at > 0 ? noteId.slice(0, at) : noteId;
+};
+
 /** The asset route for a note's uploaded file. */
 export function webAssetUrl(noteId: string, filename: string): string {
   const share = shareToken();
-  return `/api/docs/${encodeURIComponent(noteId)}/assets/${encodeURIComponent(filename)}${share ? `?share=${encodeURIComponent(share)}` : ''}`;
+  return `/api/docs/${encodeURIComponent(assetOwner(noteId))}/assets/${encodeURIComponent(filename)}${share ? `?share=${encodeURIComponent(share)}` : ''}`;
 }
 
 /** A same-origin asset route URL, absolute or root-relative, read back to its note and file. */

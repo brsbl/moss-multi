@@ -127,3 +127,15 @@ export const LEXICAL_EDITOR_SELECTOR = '[data-lexical-editor="true"]';
 
 /** The doc socket path; invariant 3 counts only these. */
 export const DOC_SOCKET_PATH = '/parties/doc-d-o/';
+
+/** History (A§14, T6.3): the top-bar button, the view occupying the pane (`loading`, `error`, `empty` or `ready`),
+ * each version row (its kind, with `data-version-id`), the selected version's content (`view` or `diff`) and the
+ * version's whole title inside it. */
+export const HISTORY_BUTTON_ATTR = 'data-history-button';
+export const HISTORY_VIEW_ATTR = 'data-history-view';
+export const HISTORY_VIEW_STATES = ['loading', 'error', 'empty', 'ready'] as const;
+export type HistoryViewState = (typeof HISTORY_VIEW_STATES)[number];
+export const VERSION_ROW_ATTR = 'data-version-row';
+export const VERSION_ID_ATTR = 'data-version-id';
+export const VERSION_CONTENT_ATTR = 'data-version-content';
+export const VERSION_TITLE_ATTR = 'data-version-title';
