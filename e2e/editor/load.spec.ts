@@ -288,7 +288,9 @@ test('a newer external reload wins over an older one still waiting on its family
   const kinds = (await page.evaluate(() => (window as unknown as FixtureWindow).editorFixture.events())).map((event) => event.kind);
   expect(kinds.filter((kind) => kind === 'reloaded')).toHaveLength(1);
   expect(kinds).not.toContain('conflict');
-  expect(await page.evaluate(() => (window as unknown as FixtureWindow).editorFixture.flush())).toMatchObject({ kind: 'saved' });
+  // The idle save (1.5 s) may already have written the typing during the wait.
+  expect((await page.evaluate(() => (window as unknown as FixtureWindow).editorFixture.flush())).kind).toMatch(/^(saved|clean)$/);
+  expect(await page.evaluate(() => (window as unknown as FixtureWindow).editorFixture.status())).toBe('clean');
   expect((await page.evaluate(() => (window as unknown as FixtureWindow).editorFixture.files()))[path]).toMatch(/^# Plan\n\nVersion B final typed\n?$/);
   expect(errors).toEqual([]);
 });
