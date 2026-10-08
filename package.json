@@ -105,7 +105,8 @@
     "patchedDependencies": {
       "wrangler@4.113.0": "patches/wrangler@4.113.0.patch",
       "y-partyserver@2.2.0": "patches/y-partyserver@2.2.0.patch",
-      "@lexical/markdown@0.48.0": "patches/@lexical__markdown@0.48.0.patch"
+      "@lexical/markdown@0.48.0": "patches/@lexical__markdown@0.48.0.patch",
+      "lexical@0.48.0": "patches/lexical@0.48.0.patch"
     }
   }
 }

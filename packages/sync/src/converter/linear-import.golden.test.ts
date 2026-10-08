@@ -129,8 +129,8 @@ describe('linear inline import @p:tech-4', () => {
     }, 300_000);
   });
 
-  // A line's budget is linear in its length, a little more per byte than the densest ordinary text (a palette of
-  // colors) takes, and ordinary notes use a small share of the import's; none is cut.
+  // A line's budget is linear in its length, a little more per byte than the densest ordinary paragraph (one-letter
+  // links each followed by bold) takes, and ordinary notes use a small share of the import's; none is cut.
   const shares = (run: () => void) => {
     Object.assign(linearImportStats, { peakLineShare: 0, peakImportShare: 0 });
     const before = linearImportStats.cut;
@@ -297,8 +297,8 @@ describe('linear inline import @p:tech-4', () => {
       expect(blocks(editor)).toEqual([['paragraph', line(at + 1)]]);
     }, 120_000);
 
-    // A line whose work passes perChar per byte, however short: dense short links, wiki links or tabs. A palette, the
-    // densest ordinary text, and a short line of a few links convert.
+    // A line whose work passes perChar per byte: dense short links, wiki links or tabs. A palette, the densest ordinary
+    // paragraph and a short line of a few links convert.
     it('keeps a line that takes more work than its length allows literally', () => {
       const childTypes = (markdown: string) =>
         importMarkdown(markdown).getEditorState().read(() => $getRoot().getFirstChildOrThrow<ElementNode>().getChildren().map((node) => node.getType()));
@@ -312,6 +312,7 @@ describe('linear inline import @p:tech-4', () => {
       expect(cuts(() => importMarkdown('[a](b) [c](d) [[e]] *f*\tg'))).toBe(0);
       expect(childTypes('[a](b) [c](d) [[e]] *f*\tg')).toContain('tab');
       expect(cuts(() => importMarkdown(ORDINARY_NOTES['a palette paragraph of 2,000 colors']()))).toBe(0);
+      expect(cuts(() => importMarkdown(ORDINARY_NOTES['a paragraph of 400 one-letter links, each followed by bold']()))).toBe(0);
     }, 120_000);
 
     it('keeps the tabs of a line of more than `tabs` tabs as text, and makes tab nodes of fewer', () => {

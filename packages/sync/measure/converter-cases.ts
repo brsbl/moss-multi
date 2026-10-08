@@ -62,7 +62,7 @@ export const CONVERTER_CASES: Record<string, ConverterCase> = {
   links: { run: '[a](b) ', parityBytes: [40, 200] },
   'wiki links': { run: '[[a]] ', parityBytes: [40, 300] },
   colors: { run: '#ff0000 ' },
-  'nested emphasis': { run: '*x _x ', after: 'y', tail: ' x_ x*', parityBytes: [40, 100] },
+  'nested emphasis': { run: '*x _x ', after: 'y', tail: ' x_ x*', parityBytes: [40, 80] },
   // Openers moss's import normalization rescanned from (markdown/normalize.ts).
   'escaped blockquote openers': { run: '&lt;blockquote ' },
   'formatted wiki-link openers': { run: '*[[a', parityBytes: [40, 300] },
@@ -138,10 +138,12 @@ const paragraphs = (paragraph: (i: number) => string, size: number) => {
   return out.join('\n\n');
 };
 
-// 2 MB (or `size`) of the densest ordinary text, a palette paragraph of 2,000 colors (8 bytes and three nodes a
-// color), each line close to markdown/linear-import.ts's work per byte: every line converts, and the note is held to
-// SP2's budget as LARGE_ORDINARY_NOTES are.
+// 2 MB (or `size`) of the ordinary paragraphs that take the most work per byte, the one of 400 one-letter links each
+// followed by bold (its lines close to markdown/linear-import.ts's work per byte), and of palettes of 2,000 colors (8
+// bytes and three nodes a color): every line converts, and the note is held to SP2's budget as LARGE_ORDINARY_NOTES are.
 export const NEAR_BUDGET_NOTES: Record<string, (size?: number) => string> = {
+  '2 MB of paragraphs of 400 one-letter links, each followed by bold': (size = 2 * 1024 * 1024) =>
+    paragraphs(() => ORDINARY_NOTES['a paragraph of 400 one-letter links, each followed by bold'](), size),
   '2 MB of palette paragraphs of 2,000 colors': (size = 2 * 1024 * 1024) => paragraphs(() => palette(2_000), size),
 };
 

@@ -44,6 +44,8 @@ export default {
       const markdown = await request.text();
       const cutBefore = linearImportStats.cut;
       const workBefore = linearImportStats.spent;
+      // The last request's note is released first: the DocDO imports with no other note's editor held.
+      imported = null;
       imported = importMarkdown(markdown);
       const blocks = imported.getEditorState().read(() => $getRoot().getChildrenSize());
       // Lines the inline import cut at its work budget (markdown/linear-import.ts), and the work it charged.

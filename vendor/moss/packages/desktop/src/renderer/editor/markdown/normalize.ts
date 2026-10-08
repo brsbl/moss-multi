@@ -369,7 +369,9 @@ export const mapOutsideFencedCodeBlocksOnly = (
  * valid markdown shape after export.
  */
 export const normalizeHighlightFormattingBoundaries = (md: string): string => {
+  if (!HIGHLIGHT_BOUNDARY_NEEDS.test(md)) return md; // moss-multi seam: linear-import (SP2): no regex below can match
   return mapOutsideFencedCodeBlocks(md, (segment) => {
+    if (!HIGHLIGHT_BOUNDARY_NEEDS.test(segment)) return segment; // moss-multi seam: linear-import (SP2)
     const decodeGeneratedSpaces = (value: string): string => value.replace(/&#32;/g, ' ');
     let normalized = segment;
 
@@ -480,7 +482,9 @@ const splitFormattingFromHighlightContent = (
 };
 
 export const normalizeRichTextInsideHighlightsForImport = (md: string): string => {
+  if (!md.includes('<mark') && !md.includes('==')) return md; // moss-multi seam: linear-import (SP2): no regex below can match
   return mapOutsideFencedCodeBlocks(md, (segment) => {
+    if (!segment.includes('<mark') && !segment.includes('==')) return segment; // moss-multi seam: linear-import (SP2)
     let normalized = segment;
 
     // Import-only canonicalization: move rich-text delimiters outside highlight
@@ -551,7 +555,9 @@ export const normalizeRichTextInsideHighlightsForImport = (md: string): string =
  * Runs inside mapOutsideFencedCodeBlocks (which also excludes inline code spans).
  */
 export const recoverEscapedEmphasis = (md: string): string => {
+  if (!md.includes('\\*')) return md; // moss-multi seam: linear-import (SP2): every regex below needs an escaped asterisk
   return mapOutsideFencedCodeBlocks(md, (segment) => {
+    if (!segment.includes('\\*')) return segment; // moss-multi seam: linear-import (SP2)
     let result = segment;
     // Link labels can pick up an extra real bold pair around escaped bold
     // delimiters after repeated comment/edit round-trips:
@@ -572,6 +578,12 @@ export const recoverEscapedEmphasis = (md: string): string => {
 // (/[ \t\n\r\f]/) does not recognize. These break emphasis flanking-delimiter
 // checks when adjacent to punctuation. CommonMark treats all Zs as whitespace.
 const UNICODE_SPACE_SEPARATOR_RE = /[\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000]/g;
+// moss-multi seam: linear-import (SP2): the same class, to test for (no lastIndex)
+const UNICODE_SPACE_SEPARATOR_PRESENT_RE = /[\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000]/;
+// moss-multi seam: linear-import (SP2): what one of normalizeHighlightFormattingBoundaries's regexes needs (a highlight, or a delimiter run and a space)
+const HIGHLIGHT_BOUNDARY_NEEDS = /<mark|<\/mark>|==|\*[ \t]|~~[ \t]/;
+// moss-multi seam: linear-import (SP2): every normalizeDelimiter match holds one of these
+const hasEmbedPillTarget = (value: string): boolean => value.includes('http://') || value.includes('https://') || value.includes('?[');
 
 /** Strip bold/italic/strikethrough delimiters that solely wrap a wiki-link.
  *  DecoratorNodes can't carry text format, so these delimiters would become
@@ -635,7 +647,9 @@ const normalizeFormattedEmbedPillTargetsInContent = (
 };
 
 export const normalizeFormattingAroundEmbedPillTargets = (md: string): string => {
+  if (!hasEmbedPillTarget(md)) return md; // moss-multi seam: linear-import (SP2): every match holds a URL scheme or a pill opener
   return mapOutsideFencedCodeBlocks(md, (segment) => {
+    if (!hasEmbedPillTarget(segment)) return segment; // moss-multi seam: linear-import (SP2)
     const normalizeDelimiter = (value: string, delimiter: string): string => {
       const escapedDelimiter =
         delimiter === '*'
@@ -669,7 +683,8 @@ export const normalizeMarkdownForImport = (md: string): string => {
   // spaces outside code blocks and inline code spans. Without this, Lexical's
   // emphasis parser rejects closing delimiters preceded by punctuation (e.g.
   // `)**`) when followed by NBSP, because NBSP fails the flanking check.
-  const normalized = mapOutsideFencedCodeBlocks(md, (s) =>
+  // moss-multi seam: linear-import (SP2): with none, nothing to replace
+  const normalized = !UNICODE_SPACE_SEPARATOR_PRESENT_RE.test(md) ? md : mapOutsideFencedCodeBlocks(md, (s) =>
     s.replace(UNICODE_SPACE_SEPARATOR_RE, ' ')
   );
   // Merge adjacent inline code spans before the main pipeline

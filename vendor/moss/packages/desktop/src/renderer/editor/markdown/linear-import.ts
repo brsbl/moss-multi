@@ -8,7 +8,18 @@ import {
   type TextMatchTransformer,
   type Transformer,
 } from '@lexical/markdown';
-import { $createTextNode, $getEditor, $getSelection, $isRangeSelection, $isTextNode, type ElementNode, type LexicalNode, type TextNode } from 'lexical';
+import {
+  $createTextNode,
+  $getEditor,
+  $getSelection,
+  $isRangeSelection,
+  $isTextNode,
+  type ElementNode,
+  type LexicalNode,
+  TEXT_TYPE_TO_FORMAT,
+  type TextFormatType,
+  TextNode,
+} from 'lexical';
 import {
   COLOR_TRANSFORMER_IMPORT_REGEXP,
   isAfterUnclosedBacktick as isAfterUnclosedBacktickIn,
@@ -28,19 +39,21 @@ import { SERIF_FONT_FAMILY_MARKDOWN_STYLE_PATTERN } from './text-style';
 // a part after a match is a suffix of the text already scanned, so each text-match regex keeps its next match and is
 // rerun only once that match is passed; the format search decides from a short prefix when the rest cannot change
 // the answer, and reuses its answer until the parts pass the emphasis or code span it found; the split links the new
-// nodes in place. The work is charged with what it costs, never with where in the line it happens, against budgets
-// (LINEAR_IMPORT_LIMITS) that ordinary notes use a small part of; a line past one keeps its whole text as literal
-// text.
+// nodes in place, and the nodes made in this update are read and written through their fields ($fresh). The work is
+// charged with what it costs, never with where in the line it happens, against budgets (LINEAR_IMPORT_LIMITS) that
+// ordinary notes stay under; a line past one keeps its whole text as literal text.
 // linear-import.golden.test.ts holds this to Lexical's own import over the corpus and fuzz.
 
 /**
- * Budgets, all fixed by a line's own text, never by timing. Work is in units of about two nanoseconds of workerd CPU
- * (a character scanned is about one; Lexical's node work, the bulk of a converted line, is NODE_COST per node made).
+ * Budgets, all fixed by a line's own text, never by timing. Work is in units of about a nanosecond of workerd CPU
+ * (the costs below are fitted to it; Lexical's node work, the bulk of a converted line, is NODE_COST per node made).
  * - lineChars: a line longer than this skips moss's import normalization and the inline pass, and keeps its text as
  *   literal text (ordinary lines are a small fraction of it).
  * - perChar × the line's length + base: the work a line may take. Linear in the line, so a note of any lines costs
- *   at most about perChar units per byte: a little more than a palette paragraph of colors (8 bytes and 3 nodes a
- *   color), the densest ordinary text, needs, and less than one dense in short links, wiki links or tabs.
+ *   at most about perChar units per byte besides the import's work per byte that no line is charged (moss's
+ *   normalization and Lexical's blocks, a few hundred): 8% more than the ordinary paragraph that takes the most, one
+ *   of short links each followed by bold (`x [a](b) **c**`), needs, and less than one dense in shorter links or in
+ *   short wiki links.
  * - perLine: the most work one line may take, whatever its length (about SP2's per-line share of workerd CPU,
  *   scripts/measure-converter.mjs).
  * - matches: the most matches one line may convert. Every node of a paragraph costs Lexical's collab binding a walk
@@ -56,7 +69,7 @@ export const LINEAR_IMPORT_LIMITS = {
   perLine: 100_000_000,
   matches: 6_000,
   tabs: 4_096,
-  perChar: 1_800,
+  perChar: 1_950,
   base: 1 << 18,
   perImport: 1 << 28,
 };
@@ -66,14 +79,17 @@ export const LINEAR_IMPORT_LIMITS = {
  */
 export const linearImportStats = { cut: 0, spent: 0, peakLineShare: 0, peakImportShare: 0 };
 
-// Rough costs of Lexical node work: visiting a node; applying a match (splitting the node and the transformer's
-// callback), besides the nodes it makes; each node made (a split part, the transformer's nodes); a tab node.
-const VISIT_COST = 32;
-const APPLY_COST = 1_024;
+// Costs, fitted to workerd CPU over the converter cases and the ordinary notes (scripts/measure-converter.mjs): visiting
+// a node; applying a match (splitting the node and the transformer's callback), besides the nodes it makes; each node
+// made (a split part, the transformer's nodes; with what Lexical's commit then does with it); a tab node.
+const VISIT_COST = 320;
+const APPLY_COST = 2_700;
 // A text-match callback besides moss's color one (which reads only its match and sets one style): unescapes, styles and
 // replaces.
-const CALLBACK_COST = 2_048;
-const NODE_COST = 4_096;
+const CALLBACK_COST = 3_000;
+// moss's link callback besides: it appends the label's text to the link and replaces the matched text with it.
+const LINK_CALLBACK_COST = 3_000;
+const NODE_COST = 2_200;
 const TAB_COST = 6_144;
 // A read of the paragraph's text and children, per character.
 const PARAGRAPH_READ = 20;
@@ -84,16 +100,18 @@ const NORMALIZED = 256;
 // A scan of linear-match.ts run again on the rest of a text once its match is passed: its pre-scan tests each
 // candidate opener and closer (a regex call apiece), several units per character, and a run of matches that starts
 // where its match does (wiki links inside one link label) passes and re-runs it once per match.
-const LINEAR_RESCAN = 64;
-const FORMAT_SCAN = 16;
+const LINEAR_RESCAN = 9;
+const FORMAT_SCAN = 5;
 // Each format search over a prefix, besides its characters: its slices, scans and arrays.
-const FORMAT_CALL = 4_096;
+const FORMAT_CALL = 400;
 // Each delimiter run past one per DELIMITER_SPACING characters of the text the format search reads: its flanking
 // checks and its turn in Lexical's emphasis pass, which FORMAT_SCAN covers at ordinary densities.
-const DELIMITER = 1_024;
+const DELIMITER = 130;
+// Each opener Lexical's emphasis pass looks back at for a closer.
+const OPENER_LOOK = 200;
 const DELIMITER_SPACING = 4;
 // The first prefix the format search tries, grown fourfold.
-const FIRST_WINDOW = 64;
+const FIRST_WINDOW = 16;
 
 /** Lexical's $convertFromMarkdownString, with the inline pass made linear. */
 export function $convertFromMarkdownString(
@@ -425,13 +443,17 @@ interface Visit {
   context: Context | null;
   offset: number;
   top?: boolean;
+  /** The node is a plain TextNode made in this update, as the node map holds it ($fresh). */
+  fresh?: boolean;
 }
-type Frame = Visit | { unescape: TextNode };
+type Frame = Visit | { unescape: TextNode; fresh: boolean };
 
 interface Split {
   transformedNode?: TextNode;
   nodeBefore: TextNode | undefined;
   nodeAfter: TextNode | undefined;
+  /** nodeBefore and nodeAfter, and a format's transformedNode, are fresh. */
+  fresh: boolean;
 }
 
 // Lexical's outer call already unescapes the top node after the driver returns, so the top gets no unescape here.
@@ -492,15 +514,22 @@ function $importInline(top: TextNode, index: FormatIndex, matchers: TextMatchTra
     while (stack.length > 0) {
       const frame = stack.pop()!;
       if ('unescape' in frame) {
-        budget.charge(frame.unescape.getTextContentSize() / NATIVE);
-        $unescape(frame.unescape);
+        const fresh = frame.fresh ? frame.unescape : $fresh(frame.unescape);
+        const text = fresh ? fresh.__text : frame.unescape.getTextContent();
+        budget.charge(text.length / NATIVE);
+        // Only a backslash or a numeric entity unescapes to something else.
+        if (text.includes('\\') || text.includes('&#')) {
+          if (fresh) fresh.__text = unescapeText(text);
+          else frame.unescape.setTextContent(unescapeText(text));
+        }
         continue;
       }
       const node = frame.node;
-      if (!frame.top && !canContainTransformableMarkdown(node)) continue;
+      const fresh = frame.fresh ? (node as TextNode) : $isTextNode(node) ? $fresh(node) : null;
+      if (!frame.top && !(fresh ? (fresh.__format & CODE) === 0 : canContainTransformableMarkdown(node))) continue;
       const textNode = node as TextNode;
       budget.spend(VISIT_COST);
-      const text = textNode.getTextContent();
+      const text = fresh ? fresh.__text : textNode.getTextContent();
       let context = frame.context;
       let offset = frame.offset;
       if (context === null || context.base.length - offset !== text.length) {
@@ -510,7 +539,7 @@ function $importInline(top: TextNode, index: FormatIndex, matchers: TextMatchTra
       }
       // No character any format or match needs: Lexical's search finds nothing here.
       if (context.mask === 0) {
-        if (!frame.top) stack.push({ unescape: textNode });
+        if (!frame.top) stack.push({ unescape: textNode, fresh: fresh !== null });
         continue;
       }
       let foundFormat = context.mask & index.triggers.formats ? findFormat(text, context, offset, index, budget) : null;
@@ -539,25 +568,25 @@ function $importInline(top: TextNode, index: FormatIndex, matchers: TextMatchTra
       const made = nodesMade();
       let prepaid = 0;
       if (foundFormat) {
-        result = $importFormat(textNode, foundFormat);
+        result = $importFormat(textNode, text, foundFormat, fresh !== null);
         endIndex = foundFormat.endIndex;
       } else if (foundMatch) {
         chargeReplace(foundMatch.transformer, foundMatch.match);
         // A callback whose nodes grow with its match is paid for before it runs.
         prepaid = nodesAtMost(foundMatch.transformer, foundMatch.match);
-        budget.spend(NODE_COST * prepaid + (foundMatch.transformer.importRegExp?.source === COLOR_TRANSFORMER_IMPORT_REGEXP.source ? 0 : CALLBACK_COST));
-        result = $importMatch(textNode, foundMatch);
+        budget.spend(NODE_COST * prepaid + callbackCost(foundMatch.transformer));
+        result = $importMatch(textNode, text, foundMatch, fresh !== null);
         endIndex = foundMatch.endIndex;
       } else {
-        if (!frame.top) stack.push({ unescape: textNode });
+        if (!frame.top) stack.push({ unescape: textNode, fresh: fresh !== null });
         continue;
       }
       budget.charge(APPLY_COST + NODE_COST * Math.max(0, nodesMade() - made - prepaid));
       // Lexical recurses into the part after, the part before and the transformed node, then unescapes this node.
-      if (!frame.top) stack.push({ unescape: textNode });
-      stack.push({ node: result.transformedNode, context: null, offset: 0 });
-      stack.push({ node: result.nodeBefore, context: null, offset: 0 });
-      stack.push({ node: result.nodeAfter, context, offset: offset + endIndex });
+      if (!frame.top) stack.push({ unescape: textNode, fresh: fresh !== null });
+      stack.push({ node: result.transformedNode, context: null, offset: 0, fresh: result.fresh && foundFormat !== null });
+      stack.push({ node: result.nodeBefore, context: null, offset: 0, fresh: result.fresh });
+      stack.push({ node: result.nodeAfter, context, offset: offset + endIndex, fresh: result.fresh });
     }
   } catch (error) {
     if (error !== OVER_BUDGET) throw error;
@@ -580,6 +609,7 @@ function $restoreLine(
   parent: ElementNode | null,
 ): void {
   if (parent === null) return;
+  if ($restoreLineDirectly(top, original, bounds, parent)) return;
   const made: LexicalNode[] = [];
   for (let node = bounds.before ? bounds.before.getNextSibling() : parent.getFirstChild(); node !== null && !node.is(bounds.after); node = node.getNextSibling()) {
     made.push(node);
@@ -589,6 +619,49 @@ function $restoreLine(
   if (bounds.before) bounds.before.insertAfter(top, false);
   else if (bounds.after) bounds.after.insertBefore(top, false);
   else parent.append(top);
+}
+
+// $restoreLine through the nodes' fields when the parent, the nodes around the line and every node made from it were
+// made in this update (as $split links them): each made node is unlinked, and Lexical's commit collects it as it
+// collects a removed node. False, having changed nothing, otherwise.
+function $restoreLineDirectly(
+  top: TextNode,
+  original: { text: string; format: number; style: string; detail: number; mode: ReturnType<TextNode['getMode']> },
+  bounds: { before: LexicalNode | null; after: LexicalNode | null },
+  parent: ElementNode,
+): boolean {
+  const editor = $getEditor();
+  const nodes = editor._pendingEditorState?._nodeMap;
+  const made = editor._cloneNotNeeded;
+  const fresh = (node: LexicalNode | null) => node === null || (made.has(node.__key) && nodes?.get(node.__key) === node);
+  if (!nodes || $isRangeSelection($getSelection()) || !fresh(parent) || !fresh(bounds.before) || !fresh(bounds.after) || !fresh(top)) return false;
+  const afterKey = bounds.after?.__key ?? null;
+  const line: LexicalNode[] = [];
+  for (let key = bounds.before ? bounds.before.__next : parent.__first; key !== null && key !== afterKey; ) {
+    const node = nodes.get(key);
+    if (!node || !fresh(node)) return false;
+    line.push(node);
+    key = node.__next;
+  }
+  for (const node of line) {
+    node.__parent = null;
+    node.__prev = null;
+    node.__next = null;
+  }
+  top.__text = original.text;
+  top.__format = original.format;
+  top.__style = original.style;
+  top.__detail = original.detail;
+  top.setMode(original.mode);
+  top.__parent = parent.__key;
+  top.__prev = bounds.before?.__key ?? null;
+  top.__next = afterKey;
+  if (bounds.before) bounds.before.__next = top.__key;
+  else parent.__first = top.__key;
+  if (bounds.after) bounds.after.__prev = top.__key;
+  else parent.__last = top.__key;
+  parent.__size += 1 - line.length;
+  return true;
 }
 
 // Nodes made or marked changed so far in the update running: a count of Lexical's node work.
@@ -608,10 +681,16 @@ function canContainTransformableMarkdown(node: LexicalNode | undefined): node is
   return $isTextNode(node) && !node.hasFormat('code');
 }
 
-function $unescape(node: TextNode): void {
-  const text = node.getTextContent();
-  // Only a backslash or a numeric entity unescapes to something else.
-  if (text.includes('\\') || text.includes('&#')) node.setTextContent(unescapeText(text));
+const CODE = TEXT_TYPE_TO_FORMAT.code;
+
+// A plain TextNode made in the update running, as the node map holds it, else null. Lexical's getWritable hands such
+// a node back as it is, so the pass reads and writes its fields directly, as splitText sets a new part's, instead of
+// through getters and setters that each look it up in the node map (the bulk of a dense line's work).
+function $fresh(node: TextNode): TextNode | null {
+  if (node.constructor !== TextNode) return null;
+  const editor = $getEditor();
+  const key = node.__key;
+  return editor._cloneNotNeeded.has(key) && editor._pendingEditorState?._nodeMap.get(key) === node ? node : null;
 }
 
 // Lexical's unescapeText.
@@ -619,13 +698,28 @@ function unescapeText(value: string): string {
   return value.replace(/\\([!-/:-@[-`{-~])/g, '$1').replace(/&#(\d+);/g, (_, codePoint) => String.fromCodePoint(Number(codePoint)));
 }
 
-// TextNode.splitText(...offsets) for a node in a parent with no range selection: the same nodes, linked in after
-// the first part instead of spliced at the node's index (splitText walks to it from the first child).
-function $split(node: TextNode, offsets: number[]): TextNode[] {
-  const plain = node.getParent() !== null && !$isRangeSelection($getSelection()) && !node.isSegmented();
-  if (!plain || (node as unknown as { __state?: unknown }).__state !== undefined) return node.splitText(...offsets);
-  const text = node.getTextContent();
-  if (text === '') return [];
+// TextNode.splitText(...offsets) on `text`, the node's text, for a node in a parent with no range selection: the same
+// nodes, linked in after the first part instead of spliced at the node's index (splitText walks to it from the first
+// child). When the node, its parent and its next sibling were all made in this update, the parts are linked through
+// their fields; otherwise through insertAfter.
+function $split(node: TextNode, text: string, offsets: number[], fresh: boolean): { parts: TextNode[]; fresh: boolean } {
+  const selection = $getSelection();
+  if ($isRangeSelection(selection) || (node as unknown as { __state?: unknown }).__state !== undefined) return { parts: node.splitText(...offsets), fresh: false };
+  const editor = $getEditor();
+  const nodes = editor._pendingEditorState?._nodeMap;
+  const made = editor._cloneNotNeeded;
+  const parentKey = node.__parent;
+  const nextKey = node.__next;
+  // Mode 0 is normal: neither token nor segmented.
+  const direct =
+    nodes !== undefined &&
+    node.__mode === 0 &&
+    parentKey !== null &&
+    (fresh || $fresh(node) !== null) &&
+    made.has(parentKey) &&
+    (nextKey === null || made.has(nextKey));
+  if (!direct && (node.getParent() === null || node.isSegmented())) return { parts: node.splitText(...offsets), fresh: false };
+  if (text === '') return { parts: [], fresh: direct };
   const ends = [...offsets].sort((a, b) => a - b);
   ends.push(text.length);
   const parts: string[] = [];
@@ -635,12 +729,41 @@ function $split(node: TextNode, offsets: number[]): TextNode[] {
       start = ends[i];
     }
   }
-  if (parts.length === 1) return [node];
+  if (parts.length === 1) return { parts: [node], fresh: direct };
+  if (direct) {
+    const parent = nodes.get(parentKey) as ElementNode;
+    const next = nextKey === null ? null : nodes.get(nextKey)!;
+    const format = node.__format;
+    const style = node.__style;
+    const detail = node.__detail;
+    node.__text = parts[0];
+    const split = [node];
+    let previous: TextNode = node;
+    for (let i = 1; i < parts.length; i += 1) {
+      const sibling = $createTextNode(parts[i]);
+      sibling.__format = format;
+      sibling.__style = style;
+      sibling.__detail = detail;
+      sibling.__parent = parentKey;
+      sibling.__prev = previous.__key;
+      previous.__next = sibling.__key;
+      split.push(sibling);
+      previous = sibling;
+    }
+    previous.__next = nextKey;
+    if (next) next.__prev = previous.__key;
+    else parent.__last = previous.__key;
+    parent.__size += parts.length - 1;
+    // As getWritable does.
+    if (selection !== null) selection.setCachedNodes(null);
+    // A text node replacement registered on the editor would make the new parts some other class.
+    return { parts: split, fresh: previous.constructor === TextNode };
+  }
   const format = node.getFormat();
   const style = node.getStyle();
   const detail = node.getDetail();
   const first = node.setTextContent(parts[0]);
-  const nodes = [first];
+  const split = [first];
   let previous = first;
   for (let i = 1; i < parts.length; i += 1) {
     const sibling = $createTextNode(parts[i]);
@@ -649,33 +772,46 @@ function $split(node: TextNode, offsets: number[]): TextNode[] {
     if (style !== '') sibling.setStyle(style);
     if (detail !== 0) sibling.setDetail(detail);
     previous.insertAfter(sibling, false);
-    nodes.push(sibling);
+    split.push(sibling);
     previous = sibling;
   }
-  return nodes;
+  return { parts: split, fresh: false };
 }
 
-// Lexical's importTextFormatTransformer.
-function $importFormat(textNode: TextNode, found: FoundFormat): Split {
+// The formats a toggle turns off besides its own (TextNode.toggleFormat): the pass sets the others' bits directly.
+const EXCLUSIVE_FORMATS = new Set<TextFormatType>(['subscript', 'superscript', 'lowercase', 'uppercase', 'capitalize']);
+
+// Lexical's importTextFormatTransformer, on `textContent`, the node's text.
+function $importFormat(textNode: TextNode, textContent: string, found: FoundFormat, isFresh: boolean): Split {
   const { startIndex, endIndex, transformer, match } = found;
-  const textContent = textNode.getTextContent();
   let transformedNode: TextNode;
   let nodeAfter: TextNode | undefined;
   let nodeBefore: TextNode | undefined;
+  let split = { parts: [textNode], fresh: isFresh };
   if (match[0] === textContent) {
     transformedNode = textNode;
   } else if (startIndex === 0) {
-    [transformedNode, nodeAfter] = $split(textNode, [endIndex]);
+    split = $split(textNode, textContent, [endIndex], isFresh);
+    [transformedNode, nodeAfter] = split.parts;
   } else {
-    [nodeBefore, transformedNode, nodeAfter] = $split(textNode, [startIndex, endIndex]);
+    split = $split(textNode, textContent, [startIndex, endIndex], isFresh);
+    [nodeBefore, transformedNode, nodeAfter] = split.parts;
   }
-  transformedNode.setTextContent(match[2]);
+  const fresh = split.fresh ? transformedNode : $fresh(transformedNode);
+  if (fresh) fresh.__text = match[2];
+  else transformedNode.setTextContent(match[2]);
   if (transformer) {
     for (const format of transformer.format) {
-      if (!transformedNode.hasFormat(format)) transformedNode.toggleFormat(format);
+      if (fresh && !EXCLUSIVE_FORMATS.has(format)) fresh.__format |= TEXT_TYPE_TO_FORMAT[format];
+      else if (!transformedNode.hasFormat(format)) transformedNode.toggleFormat(format);
     }
   }
-  return { nodeAfter, nodeBefore, transformedNode };
+  return { nodeAfter, nodeBefore, transformedNode, fresh: fresh !== null && split.fresh };
+}
+
+function callbackCost(transformer: TextMatchTransformer): number {
+  const source = transformer.importRegExp?.source;
+  return source === COLOR_TRANSFORMER_IMPORT_REGEXP.source ? 0 : source === MOSS_LINK_SOURCE ? CALLBACK_COST + LINK_CALLBACK_COST : CALLBACK_COST;
 }
 
 // moss's link callback (appendFormattedLinkText) makes a text node for each formatted run of its label, so a label of
@@ -693,19 +829,17 @@ function nodesAtMost(transformer: TextMatchTransformer, match: RegExpMatchArray)
   return delimiters + 2;
 }
 
-// Lexical's importFoundTextMatchTransformer (every listed transformer has a replace).
-function $importMatch(textNode: TextNode, found: FoundMatch): Split {
+// Lexical's importFoundTextMatchTransformer (every listed transformer has a replace), on `text`, the node's text.
+function $importMatch(textNode: TextNode, text: string, found: FoundMatch, isFresh: boolean): Split {
   const { startIndex, endIndex, transformer, match } = found;
   let transformedNode: TextNode;
   let nodeAfter: TextNode | undefined;
   let nodeBefore: TextNode | undefined;
-  if (startIndex === 0) {
-    [transformedNode, nodeAfter] = $split(textNode, [endIndex]);
-  } else {
-    [nodeBefore, transformedNode, nodeAfter] = $split(textNode, [startIndex, endIndex]);
-  }
+  const split = $split(textNode, text, startIndex === 0 ? [endIndex] : [startIndex, endIndex], isFresh);
+  if (startIndex === 0) [transformedNode, nodeAfter] = split.parts;
+  else [nodeBefore, transformedNode, nodeAfter] = split.parts;
   const replaced = transformer.replace!(transformedNode, match);
-  return { nodeAfter, nodeBefore, transformedNode: replaced || undefined };
+  return { nodeAfter, nodeBefore, transformedNode: replaced || undefined, fresh: split.fresh };
 }
 
 // ---- Contexts: what is known about a text whose suffixes are imported in turn ----
@@ -1032,6 +1166,8 @@ interface FormatIndex {
   triggers: Triggers;
   code: TextFormatTransformer | undefined;
   delimiterChars: Set<string>;
+  /** Per ASCII code, 1 for a delimiter character (others are looked up in delimiterChars). */
+  delimiterCodes: Uint8Array;
   /** Per delimiter character, its tags longest first (ties in index order). */
   tagsByChar: Map<string, string[]>;
 }
@@ -1048,7 +1184,9 @@ function formatIndex(formats: TextFormatTransformer[], matchers: TextMatchTransf
       tags.filter((tag) => tag[0] === char).sort((a, b) => b.length - a.length),
     );
   }
-  return { byTag, code: byTag['`'], delimiterChars, tagsByChar, triggers: triggersOf(formats, matchers) };
+  const delimiterCodes = new Uint8Array(128);
+  for (const char of delimiterChars) if (char.charCodeAt(0) < 128) delimiterCodes[char.charCodeAt(0)] = 1;
+  return { byTag, code: byTag['`'], delimiterChars, delimiterCodes, tagsByChar, triggers: triggersOf(formats, matchers) };
 }
 
 interface FoundFormat {
@@ -1081,7 +1219,12 @@ interface Emphasis {
   content: string;
 }
 
-const isRelevant = (index: FormatIndex, char: string) => char === '`' || index.delimiterChars.has(char);
+const isDelimiter = (index: FormatIndex, char: string) => {
+  if (char === undefined) return false;
+  const code = char.charCodeAt(0);
+  return code < 128 ? index.delimiterCodes[code] === 1 : index.delimiterChars.has(char);
+};
+const isRelevant = (index: FormatIndex, char: string) => char === '`' || isDelimiter(index, char);
 
 // The search on `text`, the base from `offset`, answered (in order) by: no delimiter or backtick left; the last
 // answer, while no emphasis or code span it saw starts before `offset` and the cut at `offset` changes no delimiter
@@ -1110,9 +1253,9 @@ function cleanCut(base: string, offset: number, index: FormatIndex): boolean {
   const char = base[offset];
   const before = base[offset - 1];
   // A run's flanking reads the character before it; at a part's start that is none, which reads like whitespace.
-  if (WHITESPACE.test(before)) return true;
+  if (isWhitespace(before)) return true;
   if (char === '`') return before !== '`' && before !== '\\';
-  return !index.delimiterChars.has(char) && char !== '\\';
+  return !isDelimiter(index, char) && char !== '\\';
 }
 
 // `found` with its indices shifted by `shift`, as a match on `input`.
@@ -1293,6 +1436,24 @@ function scanCodeSpans(text: string, budget: Budget): { spans: Span[]; unclosed:
 
 const PUNCTUATION = /[!"#$%&'()*+,\-./:;<=>?@[\]^_`{|}~]/;
 const WHITESPACE = /\s/;
+// The two regexes' answers per ASCII code: 1 punctuation, 2 whitespace. PUNCTUATION holds only ASCII; past it,
+// WHITESPACE itself answers.
+const ASCII_CLASS = new Uint8Array(128);
+for (let code = 0; code < 128; code += 1) {
+  const char = String.fromCharCode(code);
+  ASCII_CLASS[code] = PUNCTUATION.test(char) ? 1 : WHITESPACE.test(char) ? 2 : 0;
+}
+// WHITESPACE.test and PUNCTUATION.test on one character, or on undefined (which they read as 'undefined').
+function isWhitespace(char: string | undefined): boolean {
+  if (char === undefined) return false;
+  const code = char.charCodeAt(0);
+  return code < 128 ? ASCII_CLASS[code] === 2 : WHITESPACE.test(char);
+}
+function isPunctuation(char: string | undefined): boolean {
+  if (char === undefined) return false;
+  const code = char.charCodeAt(0);
+  return code < 128 && ASCII_CLASS[code] === 1;
+}
 
 // Lexical's scanDelimiters; the excluded ranges (code spans, in order) are walked with the scan.
 function scanDelimiters(text: string, index: FormatIndex, spans: Span[]): Delimiter[] {
@@ -1301,7 +1462,7 @@ function scanDelimiters(text: string, index: FormatIndex, spans: Span[]): Delimi
   let i = 0;
   while (i < text.length) {
     const char = text[i];
-    if (!index.delimiterChars.has(char) || isEscaped(text, i)) {
+    if (!isDelimiter(index, char) || isEscaped(text, i)) {
       i += 1;
       continue;
     }
@@ -1338,7 +1499,7 @@ function processEmphasis(text: string, delimiters: Delimiter[], index: FormatInd
     let foundOpener = false;
     for (let openIdx = currentPos - 1; openIdx > bottom; openIdx -= 1) {
       if (++looked === 1024) {
-        budget.spend(FORMAT_SCAN * looked);
+        budget.spend(OPENER_LOOK * looked);
         looked = 0;
       }
       const opener = delimiters[openIdx];
@@ -1380,7 +1541,7 @@ function processEmphasis(text: string, delimiters: Delimiter[], index: FormatInd
       currentPos += 1;
     }
   }
-  budget.charge(FORMAT_SCAN * looked);
+  budget.charge(OPENER_LOOK * looked);
   return result;
 }
 
@@ -1390,7 +1551,7 @@ function canEmphasis(char: string, text: string, index: number, length: number, 
   if (char === '_') {
     if (!isFlanking(text, index, length, !isOpen)) return true;
     const adjacentChar = isOpen ? text[index - 1] : text[index + length];
-    return adjacentChar !== undefined && PUNCTUATION.test(adjacentChar);
+    return adjacentChar !== undefined && isPunctuation(adjacentChar);
   }
   return true;
 }
@@ -1399,7 +1560,7 @@ function isFlanking(text: string, index: number, length: number, isLeft: boolean
   const charBefore = text[index - 1];
   const charAfter = text[index + length];
   const [primary, secondary] = isLeft ? [charAfter, charBefore] : [charBefore, charAfter];
-  if (primary === undefined || WHITESPACE.test(primary)) return false;
-  if (!PUNCTUATION.test(primary)) return true;
-  return secondary === undefined || WHITESPACE.test(secondary) || PUNCTUATION.test(secondary);
+  if (primary === undefined || isWhitespace(primary)) return false;
+  if (!isPunctuation(primary)) return true;
+  return secondary === undefined || isWhitespace(secondary) || isPunctuation(secondary);
 }

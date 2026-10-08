@@ -589,9 +589,10 @@ async function measureAdversarial(port) {
 }
 
 // Ordinary notes (converter-cases.ts), in one warmed worker, each imported in full (no line cut at the work budget)
-// and within IMPORT_BUDGET_MS: the single-paragraph ORDINARY_NOTES, and at 1 MB and 2 MB the LARGE_ORDINARY_NOTES
-// (several times the scale note's matches per byte) and NEAR_BUDGET_NOTES (many lines each just under the per-line
-// caps, all of which convert), which are also held to linear growth from 1 MB to 2 MB.
+// and within IMPORT_BUDGET_MS (a run over it is measured ADVERSARIAL_RUNS times and judged by the median): the
+// single-paragraph ORDINARY_NOTES, and at 1 MB and 2 MB the LARGE_ORDINARY_NOTES (several times the scale note's
+// matches per byte) and NEAR_BUDGET_NOTES (many lines each just under the per-line caps, all of which convert), which
+// are also held to linear growth from 1 MB to 2 MB.
 const LARGE_ORDINARY_SIZES = [1024 * 1024, 2 * 1024 * 1024];
 const LARGE_ORDINARY_CEILING_MS = IMPORT_BUDGET_MS;
 
@@ -609,8 +610,16 @@ async function measureOrdinary(port) {
     await warm(server, Object.values(ORDINARY_NOTES).map((body) => body()));
     for (const { name, body, ceiling, family } of runs) {
       try {
-        const imported = await timedRequest(server, '/import', { method: 'POST', body: body(), signal: AbortSignal.timeout(ADVERSARIAL_TIMEOUT_MS) });
-        results.push({ name, ceiling, family, importCpuMs: imported.cpuMs, cut: JSON.parse(imported.body).cut });
+        const markdown = body();
+        // A run over the ceiling is measured ADVERSARIAL_RUNS times and judged by the median, as the adversarial lines are.
+        const samples = [];
+        let cut = 0;
+        do {
+          const imported = await timedRequest(server, '/import', { method: 'POST', body: markdown, signal: AbortSignal.timeout(ADVERSARIAL_TIMEOUT_MS) });
+          samples.push(imported.cpuMs);
+          cut = JSON.parse(imported.body).cut;
+        } while (samples.length < ADVERSARIAL_RUNS && samples[0] > ceiling);
+        results.push({ name, ceiling, family, importCpuMs: median(samples), runs: samples.length, cut });
       } catch (error) {
         results.push({ name, ceiling, family, failed: String(error.message).split('\n')[0] });
       }
@@ -864,7 +873,7 @@ async function main() {
     ...ordinary.map((r) =>
       r.failed
         ? `| Ordinary note, ${r.name} | FAILED: ${r.failed} |`
-        : `| Ordinary note, ${r.name}: workerd CPU (import), one run | ${r.importCpuMs} ms (${r.family ? 'ceiling' : 'budget'} ${r.ceiling} ms)${r.cut ? `; ${r.cut} lines cut at the work budget` : ''} |`,
+        : `| Ordinary note, ${r.name}: workerd CPU (import), ${r.runs > 1 ? `median of ${r.runs}` : 'one run'} | ${r.importCpuMs} ms (${r.family ? 'ceiling' : 'budget'} ${r.ceiling} ms)${r.cut ? `; ${r.cut} lines cut at the work budget` : ''} |`,
     ),
     ...multiline.map((r) =>
       r.failed

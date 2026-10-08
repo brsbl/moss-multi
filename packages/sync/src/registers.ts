@@ -179,12 +179,25 @@ function $mint(registry: Registry, node: RegisterNode, id: string = newPayloadId
  */
 export function $assignRegisterIds(): void {
   const registry = currentRegistry();
+  // Children in order through their keys: a node read from the update's node map is its latest version, so its links
+  // are current (getChildren looks each child up twice and builds an array per element; an import walks every node).
+  const nodes = $getEditor()._pendingEditorState?._nodeMap;
   const walk = (node: LexicalNode) => {
     if (isPayloadType(node.getType())) {
       if (registry) $mint(registry, node as RegisterNode);
       else ((node as RegisterNode).getWritable() as RegisterNode).__regId = newPayloadId();
     }
-    if ($isElementNode(node)) for (const child of node.getChildren()) walk(child);
+    if (!$isElementNode(node)) return;
+    if (!nodes) {
+      for (const child of node.getChildren()) walk(child);
+      return;
+    }
+    for (let key = node.getLatest().__first; key !== null; ) {
+      const child = nodes.get(key);
+      if (!child) break;
+      walk(child);
+      key = child.__next;
+    }
   };
   walk($getRoot());
 }
