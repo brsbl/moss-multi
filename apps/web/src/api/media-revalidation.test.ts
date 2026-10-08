@@ -23,18 +23,43 @@ const DocDO = {
   }),
 };
 
-/** Upload windows that a test may hold: admission waits on the gate named for the window. */
-const gates = new Map<string, Promise<void>>();
+/**
+ * Named hold points a test may set: a request reaching one waits there until the test opens it. `reach(response)`
+ * settles once the request is held, and fails if it was answered without getting there.
+ */
+const holds = new Map<string, { arrive: () => void; opened: Promise<void> }>();
+function hold(point: string) {
+  let arrive = () => {};
+  let open = () => {};
+  const reached = new Promise<void>((resolve) => (arrive = resolve));
+  holds.set(point, { arrive, opened: new Promise<void>((resolve) => (open = resolve)) });
+  const reach = async (response: Promise<Response>) => {
+    const early = await Promise.race([reached.then(() => null), response]);
+    if (early) throw new Error(`answered ${early.status} before ${point}: ${await early.clone().text()}`);
+  };
+  return { reach, open };
+}
+async function pass(point: string) {
+  const held = holds.get(point);
+  if (!held) return;
+  held.arrive();
+  await held.opened;
+}
+
+/** `create:<user>` holds a note's creation token, before any access check; `upload:<window>` holds media admission. */
 const PrincipalDO = {
   idFromName: (name: string) => ({ name, toString: () => name }),
   get: (id: { name: string }) => ({
     setName: async () => undefined,
-    takeCreateToken: async () => true,
+    takeCreateToken: async () => {
+      await pass(`create:${id.name}`);
+      return true;
+    },
     publish: async () => undefined,
     takeWriteToken: async () => true,
     takeFetchToken: async () => true,
     takeUploadToken: async () => {
-      await gates.get(id.name);
+      await pass(`upload:${id.name}`);
       return true;
     },
   }),
@@ -69,7 +94,7 @@ afterAll(() => {
   return d1?.dispose();
 });
 afterEach(() => {
-  gates.clear();
+  holds.clear();
   remote.clear();
 });
 
@@ -228,16 +253,18 @@ describe('a media write in flight meets a change committed after its access chec
     const bytes = uniquePng();
     const seeded = await post(`/api/docs/${source}/assets?filename=seed.png`, asUser(ada), { body: bytes, headers: { 'content-type': 'image/png' } });
     expect(seeded.status, await seeded.clone().text()).toBe(201);
+    // The folder may already hold a seed.png, so the upload can take a suffixed name.
+    const { relativePath } = await seeded.json() as { relativePath: string };
     await insertGrant(d1.db, { docId: source }, ben, 'viewer');
     await insertGrant(d1.db, { docId: target }, ben, 'editor');
-    let open = () => {};
-    gates.set(ben.id, new Promise<void>((resolve) => (open = resolve)));
+    // Admission runs after the target's access check and before the guarded commit.
+    const admission = hold(`upload:${ben.id}`);
     const copying = post(`/api/docs/${target}/assets/copy`, asUser(ben), {
-      body: JSON.stringify({ sourceNoteId: source, sourceRelativePath: 'assets/seed.png' }), headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sourceNoteId: source, sourceRelativePath: relativePath }), headers: { 'content-type': 'application/json' },
     });
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    await admission.reach(copying);
     await run('DELETE FROM doc_members WHERE doc_id = ?1 AND principal_id = ?2', target, ben.id);
-    open();
+    admission.open();
     const refused = await copying;
     expect([403, 404], await refused.clone().text()).toContain(refused.status);
     expect((await footprint(target, await hashOf(bytes))).docMedia, 'the target binds nothing').toBe(0);
@@ -252,16 +279,43 @@ describe('a media write in flight meets a change committed after its access chec
     await insertGrant(d1.db, { folderId: folder }, ben, 'editor');
     const docsIn = async () => (await d1.db.prepare('SELECT COUNT(*) AS n FROM docs WHERE folder_id = ?1').bind(folder).first<{ n: number }>())?.n;
     const docsBefore = await docsIn();
-    let open = () => {};
-    gates.set(ben.id, new Promise<void>((resolve) => (open = resolve)));
+    // Media admission runs after the doc and folder access checks and before the guarded media commit.
+    const admission = hold(`upload:${ben.id}`);
     const duplicating = post(`/api/docs/${source}/duplicate`, asUser(ben));
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    await admission.reach(duplicating);
     await run('DELETE FROM folder_members WHERE folder_id = ?1 AND principal_id = ?2', folder, ben.id);
-    open();
+    admission.open();
     const refused = await duplicating;
     expect([403, 404], await refused.clone().text()).toContain(refused.status);
     expect(await docsIn(), 'no copy is left in the folder').toBe(docsBefore);
     const media = await d1.db.prepare('SELECT COUNT(*) AS n FROM doc_media WHERE content_hash = ?1').bind(await hashOf(bytes)).first<{ n: number }>();
     expect(media?.n, "only the source binds the file").toBe(1);
+  });
+
+  it("a duplicate whose folder grant is removed before its checks lands, with its media, in the caller's Home vault", async () => {
+    const folder = await insertFolder(d1.db, ada, ada.homeId);
+    const source = await insertDoc(d1.db, ada, { folderId: folder });
+    const bytes = uniquePng();
+    const seeded = await post(`/api/docs/${source}/assets?filename=seed.png`, asUser(ada), { body: bytes, headers: { 'content-type': 'image/png' } });
+    expect(seeded.status, await seeded.clone().text()).toBe(201);
+    // Ben still edits the note itself, so only the folder fallback is in play.
+    await insertGrant(d1.db, { docId: source }, ben, 'editor');
+    await insertGrant(d1.db, { folderId: folder }, ben, 'editor');
+    const docsIn = async () => (await d1.db.prepare('SELECT COUNT(*) AS n FROM docs WHERE folder_id = ?1').bind(folder).first<{ n: number }>())?.n;
+    const docsBefore = await docsIn();
+    // The creation token is taken before any access check.
+    const token = hold(`create:${ben.id}`);
+    const duplicating = post(`/api/docs/${source}/duplicate`, asUser(ben));
+    await token.reach(duplicating);
+    await run('DELETE FROM folder_members WHERE folder_id = ?1 AND principal_id = ?2', folder, ben.id);
+    token.open();
+    const landed = await duplicating;
+    expect(landed.status, await landed.clone().text()).toBe(201);
+    const { doc, role } = await landed.json() as { doc: { id: string; folderId: string }; role: string };
+    expect(role).toBe('owner');
+    expect(doc.folderId, "the copy is in Ben's Home vault").toBe(ben.homeId);
+    expect(await docsIn(), 'no copy is left in the folder').toBe(docsBefore);
+    const media = await d1.db.prepare('SELECT doc_id FROM doc_media WHERE content_hash = ?1').bind(await hashOf(bytes)).all<{ doc_id: string }>();
+    expect(media.results.map((row) => row.doc_id).sort(), 'the source and the copy bind the file').toEqual([source, doc.id].sort());
   });
 });
