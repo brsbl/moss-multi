@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 81% done** (101 of 124 planned tasks verified)
+**Overall: 82% done** (102 of 124 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -11,7 +11,7 @@
 | M4 Comments | Moss's full comment experience as CRDT data | 9 / 9 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 9 / 9 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 7 / 7 | in progress |
-| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 9 / 9 | in progress |
+| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 10 / 10 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
@@ -122,6 +122,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-08 — T7.S1 verified: pushing a note with `%%m:` comment markers, images or trailing whitespace now converts in linear-time scans with the same output as moss, so a hostile 2 MB push can no longer stall the server.
 - 2026-10-08 — T7.S2 verified: a push merge now runs on one counted step budget instead of a clock, so a costly or hostile push can no longer stall the server; a drifted push past the budget is refused 409 `push-unverified` with nothing landed, and a degenerate push is refused before the doc's own edits are diffed.
 - 2026-10-08 — T7.S3 verified: search snippets and heading text now strip comment markers, code fences and wiki-links in linear-time scans, so a hostile note can no longer stall search indexing.
+- 2026-10-08 — T7.S4 verified: `moss-multi sync` adopting a moss note now records the created revision as its base right after create, so a peer edit made before the first read survives a later local edit, and a retry after a failed create resumes the tracked doc instead of making a second one.
 
 ## T1.1s identity audit
 
@@ -154,6 +155,12 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T7.S4's checker (5e4f773, 2026-10-08)
+
+- T7.S4 checker P2 (the fallback for an older server keeps the original race; Codex P1, downgraded): if POST /api/docs omits `content`, adopt in packages/cli/src/sync.ts still records a later GET /content as base before checkpointing, so the lost-edit race and duplicate-on-failure remain on that path; dead code against the server shipped with this CLI (never published, never deployed).
+- T7.S4 checker P2 (the two adoption fault scenarios are not covered by a real-stack journey): the new CLI tests use fakeServer and the DocDO test the Node harness; add the peer-edit-after-create and rename-failure cases to j18-sync.
+- T7.S4 integration P2 (SP2 payload-frame RSS budget is flaky): run 37834993962 first failed 'Converter in workerd (SP2)' with RSS growth 69.1 MB over the 64 MB budget on the T7.S4 merge, then passed on rerun with no code change; the measurement is noisy near its budget.
 
 ### From T7.S2's checker (7b539b3, 2026-10-08)
 
