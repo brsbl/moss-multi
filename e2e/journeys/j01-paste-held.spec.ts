@@ -69,6 +69,9 @@ test('j01-paste-held: a paste that fits beside the payloads a tab holds, but not
   await ada.page.keyboard.press('End');
   await watchStalls(ada);
   await pastePlain(ada, docId, lines.join('\n\n'));
+  // The paste's own figures (adds, held, largest frame): held counts the 1.9 MB the server keeps.
+  const admission = await ada.page.waitForFunction(() => performance.getEntriesByName('moss-paste-admission').at(-1)?.toJSON().detail, undefined, { timeout: 120_000 });
+  console.log(`admission: ${JSON.stringify(await admission.jsonValue())}`);
   await expect(ada.page.locator(`[${INPUT_REFUSAL_ATTR}]`), 'the refusal is announced').toContainText('size limit', { timeout: 120_000 });
   const stall = await longestStall(ada);
   expect(stall.ms, `the refused paste never holds the tab longer than ${MAX_STALL_MS} ms at a time (during: ${stall.during})`).toBeLessThanOrEqual(MAX_STALL_MS);
