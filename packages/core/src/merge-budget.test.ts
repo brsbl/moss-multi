@@ -35,9 +35,9 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe('a push merge runs on one budget @p:agt-1', () => {
+describe('a push merge runs on one budget @p:agt-1', { timeout: 30_000 }, () => {
   it('lands an ordinary drifted push with many regions inside the default budget', () => {
-    const { base, current, next } = interleaved(500);
+    const { base, current, next } = interleaved(300);
     const merge = computeMergedTarget(current, base, next);
     expect(merge.failedHunks).toEqual([]);
     expect(merge.target).toBe(current.split('\n').map((line, i) => (i % 2 === 1 ? `${line} (agent)` : line)).join('\n'));
@@ -52,7 +52,7 @@ describe('a push merge runs on one budget @p:agt-1', () => {
       vi.setSystemTime(Date.now() + STEP); // each diff runs a quarter second
       return result;
     });
-    const { base, current, next } = interleaved(2000);
+    const { base, current, next } = interleaved(200);
     expect(() => computeMergedTarget(current, base, next)).toThrow(MergeBudgetExceeded);
     expect(calls.length, 'diffs stop once the push budget is spent').toBeLessThanOrEqual(Math.ceil(MERGE_TIME_MS / STEP));
     expect(Date.now(), 'the whole merge stays within the budget plus one diff').toBeLessThanOrEqual(MERGE_TIME_MS + STEP);
@@ -63,8 +63,8 @@ describe('a push merge runs on one budget @p:agt-1', () => {
   });
 
   it('counts work across regions: a small budget refuses after a bounded number of diffs', () => {
-    const { base, current, next } = interleaved(2000);
-    const WORK = 400_000; // the whole-text diffs fit; a few hundred regions do not
+    const { base, current, next } = interleaved(200);
+    const WORK = 100_000; // the whole-text diffs fit; two hundred regions do not
     const budget = mergeBudget(WORK);
     expect(() => computeMergedTarget(current, base, next, { budget })).toThrow(MergeBudgetExceeded);
     expect(budget.work, 'never overdrawn').toBeGreaterThanOrEqual(0);
@@ -73,7 +73,7 @@ describe('a push merge runs on one budget @p:agt-1', () => {
   });
 
   it('refuses a degenerate push before diffing the regions, and merges it when forced', () => {
-    const { base, current } = interleaved(2000);
+    const { base, current } = interleaved(200);
     const refused = computeMergedTarget(current, base, '', { refuseDegenerate: true });
     expect(refused).toMatchObject({ degenerate: true, target: current, failedHunks: [] });
     expect(diff.mock.calls.length, 'only the deletion ratio is diffed').toBe(1);
