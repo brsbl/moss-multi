@@ -188,6 +188,38 @@ describe('POST /api/docs/:id/push @p:agt-1 @p:tech-5 @p:tech-7', () => {
     expect(await content(docId, cookieOf(ada))).toBe(base.replace('Tail paragraph.', 'Tail paragraph, pushed.'));
   });
 
+  it('refuses with 409 push-unverified a drifted push whose merge runs out of budget, and lands it once pulled again (T7.S2)', async () => {
+    let seed = 5;
+    const next = (): number => {
+      seed ^= seed << 13;
+      seed ^= seed >>> 17;
+      seed ^= seed << 5;
+      return (seed >>> 0) / 4294967296;
+    };
+    const letters = (n: number): string => Array.from({ length: n }, () => 'abcd'[Math.floor(next() * 4)]).join('');
+    /** Each paragraph after the first with every fifth letter redrawn: 200 of them cost more than a merge's budget. */
+    const rewrite = (text: string): string => text.split('\n\n').map((paragraph, p) => (p === 0 ? paragraph
+      : [...paragraph].map((c, i) => (i > 14 && i % 5 === 0 ? 'abcd'[Math.floor(next() * 4)] : c)).join(''))).join('\n\n');
+    const ada = await signedUpUser(env, 'push-ada', 'Ada');
+    const docId = await seeded(ada, ['Intro stays.', ...Array.from({ length: 200 }, (_, i) => `Paragraph ${i} ${letters(1_000)}`)].join('\n\n'));
+    const base = await content(docId, cookieOf(ada));
+    const typed = await push(docId, cookieOf(ada), { newText: base.replace('Intro stays.', 'Intro, typed, stays.'), baseHash: sha(base) });
+    expect(typed.status).toBe(200);
+    const drifted = await content(docId, cookieOf(ada));
+    const pushed = rewrite(base);
+    for (const force of [false, true]) {
+      const refused = await push(docId, cookieOf(ada), { newText: pushed, baseHash: sha(base), force });
+      expect(refused.status).toBe(409);
+      expect(refused.body).toMatchObject({ ok: false, reason: 'push-unverified' });
+      expect(String(refused.body.message)).toMatch(/too many places.*nothing changed/);
+      expect(await content(docId, cookieOf(ada)), 'nothing landed').toBe(drifted);
+    }
+    const again = pushed.replace('Intro stays.', 'Intro, typed, stays.');
+    const landed = await push(docId, cookieOf(ada), { newText: again, baseHash: sha(drifted) });
+    expect(landed.status, 'pulled again, the push is not drifted and lands').toBe(200);
+    expect(await content(docId, cookieOf(ada))).toBe(again);
+  }, 60_000);
+
   it('refuses a file past 2 MB and a merged result past the state cap with 413, leaving the doc as it was', async () => {
     const ada = await signedUpUser(env, 'push-ada', 'Ada');
     const docId = await seeded(ada, BODY, { small: true });
