@@ -598,6 +598,7 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
   - **Required red-first test (T6.2 checker P2):** j17's last-disconnect leg closes every actor page (page.close()) or moves it off the doc before expecting the auto version, and asserts the version appears within a few seconds of the last socket closing.
   - **Done:** j17 is green, with a triptych against the glyphdown history page.
 - **T6.S2 Named versions count per person, not per key** (Slop Cop P1): the per-person named cap and the save rate count the acting user (an agent as its owner) in the serialized insert; `createdBy` stays the key. **Done:** green harness and route tests.
+- **T6.S3 A restored payload keeps its unchanged middle** (Slop Cop P1): the mirror's payload writes (restore, push) use the bounded sparse diff, so a code, HTML or formula payload changed at both ends past the table keeps its middle's items and a peer's insert there. **Done:** green reconcile test.
 
 **Exit criteria:** a restore during peer typing keeps the peer's insert and the anchors; view is read-only and diff shows the peer's change; a failed fetch shows an error.
 - **M6 coordinator notes** (2026-10-07, since T1.F2, M4 and M5 landed after this plan was written):
