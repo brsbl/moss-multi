@@ -622,6 +622,16 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
   - **Tests first:** in the CI e2e job: a local edit appears on the web; a web edit updates the local file; an untracked file becomes a doc titled from its stem and the file is renamed; a local delete doesn't propagate; a CLI-created doc renders in the web editor; a moss-format note with its `# Title` line and comments sidecar imports through the moss interchange path with one title and anchored comments. **Done:** green.
 
 **Exit criteria** [L§7.3 M7]: a CLI push during typing preserves both sides; `cat` is byte-exact; a 2 MB push and pull work; a CLI-created doc renders; an agent grant is enforced; revoking a key closes its socket; the daemon round-trips a local edit.
+- **M7 coordinator notes** (2026-10-07, since M1-M6 and later rulings landed after this plan was written):
+  - **PRODUCT ruling 20 supersedes "give another person's agent a role":** a person grants access only to agents they own, and any other agent id answers like an unknown one. To involve someone else's agent, share with that person, who then adds their own agent (when they manage the note). T7.3's test grants an agent by its owner, then checks pull, a refused push, a comment that lands, and a disconnect on revoke.
+  - **Payload docs:** pull and push cover code, HTML, formula, chart and sketch text through the one converter and reconcile (T6.1), so payload ids are preserved.
+  - **Comments:** pull and push round-trip moss's comments.json sidecar and `%%m:` markers through the M4 engine, so anchors survive.
+  - **`--suggest`:** the server turns the agent's change into a suggestion record under a lease, through the same channel table and gates as the web client (M5, I3).
+  - **History:** pushes count as activity for M6 versions.
+  - **Rate limits:** charged to the acting user (an agent counts against its owner). No bucket may be one that someone else can fill (T3.S3b).
+  - **Authorization:** every write re-validates the actor inside the serialized write (T2.5), and a revoked key closes live sockets and 401s REST.
+  - **Daemon:** follows PRODUCT ruling 9 (server-side three-way merge, untracked files become docs, deletes do not propagate).
+  - **No shell or filesystem trust:** paths come from the user's folder, are confined to it, and pass moss's filename rules; the daemon never follows symlinks out of the folder.
 
 ## M8 Ship
 
