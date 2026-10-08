@@ -102,7 +102,9 @@ function fakeServer() {
     if (sub === 'push') {
       state.pushes.push(body as Record<string, unknown>);
       const next = state.pushAnswers.shift() ?? { status: 200, body: { ok: true, mode: 'edit', applied: 1, failedHunks: [] } };
-      if (next.status === 200 && (next.body as { ok?: boolean }).ok) content.set(id, new TextEncoder().encode((body as { newText: string }).newText));
+      // A failed hunk leaves the doc as it was; the fake applies nothing then.
+      const answer = next.body as { ok?: boolean; failedHunks?: string[] };
+      if (next.status === 200 && answer.ok && !answer.failedHunks?.length) content.set(id, new TextEncoder().encode((body as { newText: string }).newText));
       return reply(next.status, next.body, next.headers);
     }
     if (sub === 'versions') return reply(200, { versions: [{ id: 'v1', kind: 'named', name: 'First', createdAt: 0, title: 'Garden plan' }] });
@@ -734,5 +736,95 @@ describe('sync (T7.4)', () => {
     expect(result.code, result.err).toBe(0);
     expect(result.out).toContain('watching');
     expect(server.state.pushes.map((push) => push.newText)).toEqual(['# Garden plan\n\nBeans only.']);
+  });
+
+  it('refuses to sync or watch a directory that is not a workspace, and creates nothing there', async () => {
+    writeFileSync(join(dir, 'README.md'), '# Project\n\n| a | b |\n|---|---|\n| 1 | 2 |\n');
+    for (const args of [['sync'], ['watch', '--interval', '0.1']]) {
+      const result = await cli(args);
+      expect(result.code, args.join(' ')).toBe(1);
+      expect(result.err).toContain('moss-multi init');
+    }
+    expect(server.seen.filter((call) => call.method === 'POST'), 'no doc is created').toEqual([]);
+    expect(existsSync(join(dir, '.moss-multi')), 'the directory does not become a workspace').toBe(false);
+    expect(readFileSync(join(dir, 'README.md'), 'utf8')).toBe('# Project\n\n| a | b |\n|---|---|\n| 1 | 2 |\n');
+  });
+
+  it('init makes a workspace; sync then skips node_modules and nested repositories', async () => {
+    const init = await cli(['init']);
+    expect(init.code, init.err).toBe(0);
+    expect(statSync(join(dir, '.moss-multi')).isDirectory()).toBe(true);
+    mkdirSync(join(dir, 'node_modules', 'foo'), { recursive: true });
+    writeFileSync(join(dir, 'node_modules', 'foo', 'README.md'), 'a package readme');
+    mkdirSync(join(dir, 'vendor', '.git'), { recursive: true });
+    writeFileSync(join(dir, 'vendor', 'NOTES.md'), 'another repository');
+    mkdirSync(join(dir, 'other', '.moss-multi'), { recursive: true });
+    writeFileSync(join(dir, 'other', 'mine.md'), 'another workspace');
+    const result = await cli(['sync', '--json']);
+    expect(result.code, result.err).toBe(0);
+    expect(server.seen.filter((call) => call.method === 'POST'), 'none of them becomes a doc').toEqual([]);
+  });
+
+  it('keeps the old base when the file is edited during a push, so the next push merges against it', async () => {
+    expect((await cli(['pull', ID_A, 'plan.md'])).code).toBe(0);
+    const base = sha256Hex(readFileSync(join(dir, 'plan.md')));
+    writeFileSync(join(dir, 'plan.md'), '# Garden plan\n\nBeans, then peas, then squash.');
+    server.state.onContent = () => {
+      if (server.state.pushes.length === 1) writeFileSync(join(dir, 'plan.md'), '# Garden plan\n\nBeans, then peas, then squash and leeks.');
+    };
+    const first = await cli(['sync']);
+    expect(first.code, first.err).toBe(0);
+    server.state.onContent = null;
+    expect(readFileSync(join(dir, 'plan.md'), 'utf8'), 'the newer edit is kept').toContain('leeks');
+    const second = await cli(['sync']);
+    expect(second.code, second.err).toBe(0);
+    expect(server.state.pushes.map((push) => push.baseHash), 'both pushes merge against the text the file last held from the server').toEqual([base, base]);
+  });
+
+  it('keeps the file and base on failed hunks and prints the rejected text', async () => {
+    expect((await cli(['pull', ID_B, 'notes.md'])).code).toBe(0);
+    const base = sha256Hex(readFileSync(join(dir, 'notes.md')));
+    writeFileSync(join(dir, 'notes.md'), '# Garden notes\n\nWater twice, Charlie.\n');
+    const hunk = '-Water daily.\n+Water twice, Charlie.';
+    server.state.pushAnswers.push({ status: 200, body: { ok: true, mode: 'edit', applied: 0, failedHunks: [hunk] } });
+    const result = await cli(['sync']);
+    expect(result.code).toBe(2);
+    expect(result.err, 'the rejected text is printed').toContain('+Water twice, Charlie.');
+    expect(readFileSync(join(dir, 'notes.md'), 'utf8'), 'the file keeps the local text').toBe('# Garden notes\n\nWater twice, Charlie.\n');
+    server.state.pushAnswers.push({ status: 200, body: { ok: true, mode: 'edit', applied: 0, failedHunks: [hunk] } });
+    const json = await cli(['sync', '--json']);
+    expect(json.code).toBe(2);
+    expect(JSON.parse(json.out)).toContainEqual(expect.objectContaining({ docId: ID_B, failedHunks: 1, hunks: [hunk] }));
+    expect(server.state.pushes.map((push) => push.baseHash), 'the base is kept').toEqual([base, base]);
+  });
+
+  it('does not follow a server rename onto a path another tracked doc owns', async () => {
+    expect((await cli(['pull', ID_A, 'plan.md'])).code).toBe(0);
+    expect((await cli(['pull', ID_B, 'vegetable-plan.md'])).code).toBe(0);
+    expect((await cli(['sync'])).code).toBe(0);
+    rmSync(join(dir, 'vegetable-plan.md'));
+    server.docs[0]!.filename = 'vegetable-plan.md';
+    const result = await cli(['sync', '--json']);
+    expect(server.state.pushes, 'no doc receives another doc\'s text').toEqual([]);
+    expect(readFileSync(join(dir, 'plan.md'), 'utf8')).toContain('Beans, then peas');
+    expect(readFileSync(join(dir, 'vegetable-plan.md'), 'utf8')).toContain('Water daily.');
+    expect(JSON.parse(result.out)).toContainEqual(expect.objectContaining({ docId: ID_A, action: 'failed' }));
+  });
+
+  it('watch waits out a retry-after even when files change', async () => {
+    expect((await cli(['pull', ID_A, 'plan.md'])).code).toBe(0);
+    writeFileSync(join(dir, 'plan.md'), '# Garden plan\n\nBeans only.');
+    server.state.pushAnswers.push({ status: 429, body: { ok: false, reason: 'rate-limited', retryAfterSec: 3 } });
+    const controller = new AbortController();
+    const running = cli(['watch', '--interval', '0.1'], undefined, { signal: controller.signal });
+    const deadline = Date.now() + 5_000;
+    while (server.state.pushes.length === 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
+    await new Promise((r) => setTimeout(r, 100));
+    writeFileSync(join(dir, 'plan.md'), '# Garden plan\n\nBeans and leeks.');
+    await new Promise((r) => setTimeout(r, 1_200));
+    controller.abort();
+    const result = await running;
+    expect(result.code, result.err).toBe(0);
+    expect(server.state.pushes, 'no push before the retry-after ends').toHaveLength(1);
   });
 });

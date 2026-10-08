@@ -1,6 +1,6 @@
 // j18-sync (T7.4): the built moss-multi CLI keeps a local folder in sync with the stack (PRODUCT ruling 9). `watch`
 // pushes a local edit to the web and writes a web edit into the local file; a local delete never trashes the doc;
-// `sync` turns an untracked file into a doc titled from its stem and renames the file to the doc's filename; a
+// `init` makes a folder a workspace, and `sync` then turns an untracked file into a doc titled from its stem and renames the file to the doc's filename; a
 // moss-format note imports through the moss interchange path with one title and its comments anchored; and `add
 // --title` on a file whose first line is that title shows the title once.
 //
@@ -120,6 +120,8 @@ test('j18-sync sync: an untracked file becomes a doc titled from its stem, the f
   const env = await agentEnv(ada, stack, dir);
   try {
     writeFileSync(join(dir, 'Seed Packets.md'), 'Order the beans in March.\n\n- Runner beans\n- Sugar snap peas\n');
+    const init = await moss(['init'], env, dir);
+    expect(init.code, `the folder becomes a workspace only when asked: ${init.stderr}`).toBe(0);
     const synced = await moss(['sync', '--json'], env, dir);
     expect(synced.code, synced.stderr).toBe(0);
     const results = JSON.parse(synced.stdout) as { action: string; docId?: string; file: string }[];
