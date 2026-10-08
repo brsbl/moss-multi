@@ -2,6 +2,7 @@
 // history page built from moss's DS: the version list with its badges, View (a read-only editor) and Diff vs
 // current, Restore through moss's ConfirmationDialog, and VersionHistoryEmptyState with a first named checkpoint.
 // A restore while a peer types keeps the peer's insert and a comment's anchor; a failed fetch says so.
+import { readFileSync } from 'node:fs';
 import type { Locator } from '@playwright/test';
 import type { LexicalEditor } from 'lexical';
 import type { Actor, Actors } from '../lib/actors.ts';
@@ -17,20 +18,31 @@ const BIND_TIMEOUT = 15_000;
 const PEER_TIMEOUT = 10_000;
 const COMMENT_KEY = 'ControlOrMeta+Shift+A';
 const SUBMIT = 'ControlOrMeta+Enter';
+const IMAGE = 'pattern.png';
+const IMAGE_MD = `![A test card](assets/${IMAGE})`;
 
 interface Version { id: string; kind: string; name: string | null; createdAt: number; title: string }
 
-async function createNote(actor: Actor, baseUrl: string, title = 'History note'): Promise<string> {
-  const created = await actor.context.request.post('/api/docs', { headers: { origin: baseUrl }, data: { markdown: SEED, title } });
+async function createNote(actor: Actor, baseUrl: string, title = 'History note', image = false): Promise<string> {
+  const markdown = image ? `${SEED}\n\n${IMAGE_MD}` : SEED;
+  const created = await actor.context.request.post('/api/docs', { headers: { origin: baseUrl }, data: { markdown, title } });
   expect(created.status()).toBe(201);
-  return ((await created.json()) as { doc: { id: string } }).doc.id;
+  const id = ((await created.json()) as { doc: { id: string } }).doc.id;
+  if (image) {
+    // Declared setup: the note's uploaded image, through the asset API, before anyone opens the note.
+    const uploaded = await actor.context.request.post(`/api/docs/${id}/assets?filename=${IMAGE}`, {
+      headers: { origin: baseUrl, 'content-type': 'image/png' }, data: readFileSync(new URL(`../fixtures/media/${IMAGE}`, import.meta.url)),
+    });
+    expect(uploaded.status(), 'the image is uploaded').toBe(201);
+  }
+  return id;
 }
 
 /** Ada's note, open and live, with Ben on it at editor (granted as declared setup). */
-async function sharedNote(actors: Actors, baseUrl: string, { title, severable = false }: { title?: string; severable?: boolean } = {}) {
+async function sharedNote(actors: Actors, baseUrl: string, { title, severable = false, image = false }: { title?: string; severable?: boolean; image?: boolean } = {}) {
   const adaPrincipal = await actors.principal('ada');
   const ada = await actors.session(adaPrincipal);
-  const id = await createNote(ada, baseUrl, title);
+  const id = await createNote(ada, baseUrl, title, image);
   await ada.goto(`/d/${id}`);
   await ui.waitLive(ada, id);
   await ada.observeEditor(id);
@@ -166,7 +178,7 @@ test('j17-history: an auto version is written within seconds of the last socket 
 test('j17-history: a first named checkpoint from the empty state and one from the list; View is read-only, Diff shows the peer\'s change, both with the full title @p:mean-3 @evidence', async ({ actors, stack }) => {
   const longTitle = `${'A long title that keeps going '.repeat(8)}to its very last words`;
   expect(longTitle.length, 'the title is past the 200 characters a version lists with').toBeGreaterThan(220);
-  const { id, ada, ben } = await sharedNote(actors, stack.baseUrl, { title: longTitle });
+  const { id, ada, ben } = await sharedNote(actors, stack.baseUrl, { title: longTitle, image: true });
 
   const view = await openHistory(ada, id);
   await expect(view, 'no version yet: the empty state').toHaveAttribute(HISTORY_VIEW_ATTR, 'empty');
@@ -198,6 +210,14 @@ test('j17-history: a first named checkpoint from the empty state and one from th
   await expect(editor, 'View renders the version in a read-only editor').toHaveAttribute('contenteditable', 'false');
   await expect(editor).toContainText('The quick brown fox jumps over the lazy dog.');
   await expect(editor, 'as it was: without Ben\'s later change').not.toContainText('Ben was here.');
+  // The version's uploaded image loads from the note's own asset route.
+  const image = shown.locator(`img[src*="/assets/${IMAGE}"]`);
+  await expect(image, 'View renders the version\'s uploaded image').toHaveCount(1);
+  await expect(image, 'from the note\'s asset route').toHaveAttribute('src', new RegExp(`/api/docs/${id}/assets/${IMAGE}`));
+  await image.scrollIntoViewIfNeeded();
+  await expect.poll(() => image.evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth > 0), {
+    message: 'the image decodes', timeout: PEER_TIMEOUT,
+  }).toBe(true);
   await editor.click();
   await ada.page.keyboard.type('nope');
   await expect(editor, 'typing changes nothing').not.toContainText('nope');
@@ -265,7 +285,7 @@ test('j17-history: a restore while the peer types keeps the peer\'s insert and t
   await closeHistory(ada, id);
 });
 
-test('j17-history: a versions fetch that fails shows an error, never "No checkpoints" @p:mean-3', async ({ actors, stack }) => {
+test('j17-history: a versions fetch that fails shows an error, never "No checkpoints"; a version left mid-load still loads @p:mean-3', async ({ actors, stack }) => {
   const { id, ada } = await sharedNote(actors, stack.baseUrl);
   const versionsPath = `/api/docs/${id}/versions`;
   ada.expectHttp(429, versionsPath);
@@ -283,5 +303,27 @@ test('j17-history: a versions fetch that fails shows an error, never "No checkpo
   await view.getByRole('button', { name: 'Try again', exact: true }).click();
   await expect(view, 'a retry loads the real list').toHaveAttribute(HISTORY_VIEW_ATTR, 'empty', { timeout: BIND_TIMEOUT });
   await expect(view.getByText('No checkpoints', { exact: true })).toBeVisible();
+
+  // Moving between versions while one is still loading never leaves it stuck loading.
+  await saveNamed(ada, id, 'Version one');
+  await saveNamed(ada, id, 'Version two');
+  // Opened afresh, only the newest version is loaded.
+  await closeHistory(ada, id);
+  const fresh = await openHistory(ada, id);
+  await expect(row(ada, id, 'Version two')).toHaveAttribute('aria-pressed', 'true');
+  await expect(content(ada, id)).toBeVisible({ timeout: BIND_TIMEOUT });
+  const oneVersion = new RegExp(`^${versionsPath}/[^/]+$`);
+  const isOneVersion = (url: URL) => oneVersion.test(url.pathname);
+  await ada.page.route(isOneVersion, async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    await route.continue().catch(() => undefined);
+  });
+  await row(ada, id, 'Version one').click();
+  await row(ada, id, 'Version two').click();
+  await row(ada, id, 'Version one').click();
+  await expect(row(ada, id, 'Version one')).toHaveAttribute('aria-pressed', 'true');
+  await expect(content(ada, id), 'the version comes back loaded, never stuck loading').toContainText('The quick brown fox', { timeout: BIND_TIMEOUT });
+  await expect(fresh.getByText('Loading version…')).toHaveCount(0);
+  await ada.page.unroute(isOneVersion);
   await closeHistory(ada, id);
 });
