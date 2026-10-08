@@ -40,7 +40,7 @@ export const FOLDER_NAME_MAX = 100;
 export const folderNotFound = () =>
   refuse(404, 'not-found', 'That folder is no longer available, or you don’t have access to it.');
 
-const isUnique = (error: unknown) => /UNIQUE/i.test(`${error} ${(error as { cause?: unknown })?.cause ?? ''}`);
+export const isUnique = (error: unknown) => /UNIQUE/i.test(`${error} ${(error as { cause?: unknown })?.cause ?? ''}`);
 
 /** The trimmed name, or the sentence that says what is wrong with it. */
 function folderName(value: unknown): { name: string } | { problem: string } {

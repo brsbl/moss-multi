@@ -4,6 +4,7 @@
 // gives the body one Cmd+Z stack across the note's undo manager and each payload's (BodyUndo).
 import { Observable } from 'lib0/observable';
 import * as Y from 'yjs';
+import { MAP_REGISTERS } from './map-codecs.ts';
 import { RedoSlices } from './redo-slices.ts';
 import {
   decodePayloadFrame, encodePayloadFrame, PAYLOAD_STEP1, PAYLOAD_STEP2, PAYLOAD_UPDATE,
@@ -14,13 +15,8 @@ export const REGISTER_FIELDS: Readonly<Record<string, string>> = {
   'code-block': '__code', 'html-block': '__rawHtml', formula: '__formula',
 };
 
-/** Compound payloads (T3.3), by node type: their fields as one Y.Map of independent keys (map-codecs.ts). */
-export const MAP_REGISTER_FIELDS: Readonly<Record<string, readonly string[]>> = {
-  chart: ['__config'], sketch: ['__grid', '__labels'],
-};
-
-/** Whether nodes of `type` keep their payload in a payload doc. */
-export const isPayloadType = (type: string): boolean => Object.hasOwn(REGISTER_FIELDS, type) || Object.hasOwn(MAP_REGISTER_FIELDS, type);
+/** Whether nodes of `type` keep their payload in a payload doc: a text payload, or a compound one (T3.3, map-codecs.ts). */
+export const isPayloadType = (type: string): boolean => Object.hasOwn(REGISTER_FIELDS, type) || Object.hasOwn(MAP_REGISTERS, type);
 
 /** A payload id: 128 random bits, since knowing an id is what lets an element name its payload. */
 export function newPayloadId(): string {

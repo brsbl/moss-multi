@@ -91,7 +91,6 @@ export class Outbox {
     this.#stallMs = options.stallMs ?? STALL_MS;
   }
 
-  /** Writes are waiting to go out. */
   /**
    * Writes are queued, or sent and still drawing acks: a resync then resends nothing, since merging and resending a
    * large paste's unacked batches (megabytes) held the tab for seconds and queued them twice. With no ack for STALL_MS

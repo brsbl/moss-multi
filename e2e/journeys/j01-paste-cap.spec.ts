@@ -7,25 +7,13 @@
 // nothing in the editor, the server or the collaborator's screen, the socket never closed, and the note stays editable.
 //
 // The notes and the reference imports are created through POST /api/docs as declared setup.
-import { INPUT_REFUSAL_ATTR } from '../lib/contract.ts';
-import { expectWire, exported, fingerprint, longestStall, MAX_STALL_MS, normalized, pastePlain, setup, watchStalls } from '../lib/paste.ts';
-import { expect, test, ui } from '../lib/test.ts';
+import { expectRefusedPaste, fence, setup } from '../lib/paste.ts';
+import { test } from '../lib/test.ts';
 
 function shortParagraphs(count: number): string[] {
   const lines: string[] = [];
   for (let i = 0; i < count; i += 1) lines.push(`p${i}`);
   return lines;
-}
-
-/** A fenced block of `language` holding about `bytes` of `line(i)` lines. */
-function fence(language: string, bytes: number, line: (i: number) => string): string {
-  const lines: string[] = [];
-  for (let size = 0, i = 0; size < bytes; i += 1) {
-    const next = line(i);
-    lines.push(next);
-    size += next.length + 1;
-  }
-  return `\`\`\`${language}\n${lines.join('\n')}\n\`\`\``;
 }
 
 const PASTES: [string, () => string][] = [
@@ -40,41 +28,17 @@ const PASTES: [string, () => string][] = [
   }],
 ];
 
-/** Refused whole and visibly with nothing applied anywhere, the note still editable, and no frame past the cap. */
-async function expectRefused(actors: Parameters<typeof setup>[0], stack: Parameters<typeof setup>[1], pasted: string) {
-  const { ada, ben, docId, wire } = await setup(actors, stack, 'Kept.');
-  await ui.waitAcked(ada, docId, 30_000);
-  const before = await exported(ada, docId);
-  const print = await fingerprint(ada, docId);
-  await ui.body(ada, docId).locator('p').filter({ hasText: /^Kept\.$/ }).click();
-  await ada.page.keyboard.press('End');
-  await watchStalls(ada);
-  await pastePlain(ada, docId, pasted);
-  await expect(ada.page.locator(`[${INPUT_REFUSAL_ATTR}]`), 'the refusal is announced').toContainText('size limit', { timeout: 120_000 });
-  const stall = await longestStall(ada);
-  expect(stall.ms, `the refused paste never holds the tab longer than ${MAX_STALL_MS} ms at a time (during: ${stall.during})`).toBeLessThanOrEqual(MAX_STALL_MS);
-  await ui.waitAcked(ada, docId, 30_000);
-  expect(await fingerprint(ada, docId), 'nothing of the paste is in the editor').toEqual(print);
-  await ada.page.waitForTimeout(3_000);
-  expect(await exported(ada, docId), 'nothing of the paste reached the server').toBe(before);
-  expect(await fingerprint(ben, docId), 'nor the collaborator').toEqual(print);
-  await ui.typeBody(ada, docId, ' Still typing.');
-  await ui.waitAcked(ada, docId, 30_000);
-  await expect.poll(() => exported(ada, docId), { message: 'the note stays editable', timeout: 30_000 }).toBe(await normalized(ada, stack, 'Kept. Still typing.'));
-  expectWire(wire);
-}
-
 // A chart's payload is a Y.Map of one key per position, key list and leaf, several times its JSON, and it goes out as
 // one frame: a bar chart of 30,000 points is about 720 KB of JSON and over 4 MB of keys, past the frame cap.
 test('j01-paste-cap: a chart whose payload cannot go in one frame is refused whole and visibly, nothing applied @p:col-1', async ({ actors, stack }) => {
   test.setTimeout(300_000);
   const data = Array.from({ length: 30_000 }, () => ({ label: 'x', value: 1 }));
-  await expectRefused(actors, stack, `Before the chart.\n\n\`\`\`moss-chart\n${JSON.stringify({ type: 'bar', data })}\n\`\`\`\n\nAfter the chart.`);
+  await expectRefusedPaste(await setup(actors, stack, 'Kept.'), stack, `Before the chart.\n\n\`\`\`moss-chart\n${JSON.stringify({ type: 'bar', data })}\n\`\`\`\n\nAfter the chart.`);
 });
 
 for (const [label, make] of PASTES) {
   test(`j01-paste-cap: ${label}, just past the note’s size cap, are refused whole and visibly, nothing applied @p:col-1`, async ({ actors, stack }) => {
     test.setTimeout(300_000);
-    await expectRefused(actors, stack, make());
+    await expectRefusedPaste(await setup(actors, stack, 'Kept.'), stack, make());
   });
 }

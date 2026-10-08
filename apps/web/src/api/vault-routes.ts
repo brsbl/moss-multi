@@ -10,12 +10,8 @@ import { createDb } from '../db/client.ts';
 import { folders } from '../db/schema.ts';
 import { json } from '../worker/route.ts';
 import { actingUserId, resolveFolderAccess } from './access.ts';
-import { FOLDER_NAME_MAX, foldersToday, tooManyFolders, trashFolder, type FoldersEnv } from './folders.ts';
-import { changed, NO_STORE, notFound, readJsonObject, unauthenticated } from './respond.ts';
-
-const refuse = (status: number, error: string, message: string) => json({ error, message }, status, NO_STORE);
-
-const isUnique = (error: unknown) => /UNIQUE/i.test(`${error} ${(error as { cause?: unknown })?.cause ?? ''}`);
+import { FOLDER_NAME_MAX, foldersToday, isUnique, tooManyFolders, trashFolder, type FoldersEnv } from './folders.ts';
+import { changed, NO_STORE, notFound, readJsonObject, refuse, unauthenticated } from './respond.ts';
 
 /** The trimmed name, or the sentence that says what is wrong with it. Same rules as a folder's. */
 function vaultName(value: unknown): { name: string } | { problem: string } {
