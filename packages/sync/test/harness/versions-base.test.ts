@@ -4,6 +4,8 @@
 // A base that is missing or too old is refused 409; with nothing typed since, the result is the version exactly.
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { RESTORE_BASE_MAX_AGE_MS } from '@moss-multi/protocol/limits';
+import * as Y from 'yjs';
+import { PayloadDocs, payloadText } from '../../src/payload-docs.ts';
 import { captureRestoreBase, type RestoreBase } from '../../src/restore-base.ts';
 import { openDoc, start, type Opened } from './do-harness.ts';
 import { LiveClient, syncAll, type Kind } from './live-client.ts';
@@ -122,6 +124,62 @@ describe('a restore is three-way against the base its dialog opened on @p:mean-3
     expect(markdown, "the agent's write stands").toContain('The agent wrote this.');
     expect(markdown).not.toContain('changed by Ada');
     expect(ada.paragraphs()).toEqual(['Plan.', 'The agent wrote this.', 'Old line.']);
+  });
+
+  it('keeps the first text a peer types into an empty block after the base', async () => {
+    const { opened, ada, ben } = await note('Intro.\n');
+    ada.insert('code-block', '');
+    await settle(ada, ben);
+    const id = await save(opened, 'Empty block');
+
+    const base = opensRestore(ada);
+    ben.type(0, 0, 'Ben types');
+    await syncAll(ben);
+    expect(await restore(opened, id, base)).toMatchObject({ ok: true });
+    await settle(ben, ada);
+
+    expect(ben.texts(), "the peer's first text stands").toEqual(['Ben types']);
+    expect(ada.texts()).toEqual(['Ben types']);
+  });
+
+  it('refuses 409, changing nothing, when the version drops a block a peer typed into after the base', async () => {
+    const { opened, ada, ben } = await note('Intro.\n');
+    const id = await save(opened, 'Before the block');
+    ada.insert('code-block', 'let a = 1;');
+    await settle(ada, ben);
+
+    const base = opensRestore(ada);
+    ben.type(0, 0, 'Ben ');
+    await syncAll(ben);
+    const markdown = await opened.dobj.exportMarkdown();
+    expect(markdown).toContain('Ben let a = 1;');
+
+    expect(await restore(opened, id, base)).toMatchObject({ ok: false, status: 409, reason: 'restore-unverified' });
+    expect(await opened.dobj.exportMarkdown()).toBe(markdown);
+  });
+
+  it('refuses 409 a base that leaves out a payload the note named at it', async () => {
+    const { opened, ada } = await note('Intro.\n');
+    ada.insert('code-block', 'let a = 1;');
+    await settle(ada);
+    const id = await save(opened, 'Block');
+    ada.type(0, 0, '// x\n');
+    await settle(ada);
+    const markdown = await opened.dobj.exportMarkdown();
+
+    const base = { ...opensRestore(ada), payloads: {} };
+    expect(await restore(opened, id, base)).toMatchObject({ ok: false, status: 409, reason: 'restore-base-stale' });
+    expect(await opened.dobj.exportMarkdown()).toBe(markdown);
+  });
+
+  it('bases every held payload, an empty one too, but not one still loading', () => {
+    const payloads = new PayloadDocs();
+    payloads.hold('empty', true);
+    payloads.hold('loading').getText('x');
+    payloads.await('loading');
+    payloadText(payloads.hold('full', true)).insert(0, 'text');
+    const base = captureRestoreBase(new Y.Doc(), payloads);
+    expect(Object.keys(base.payloads).sort()).toEqual(['empty', 'full']);
   });
 
   it('refuses a stale base and a missing one 409, changing nothing', async () => {
