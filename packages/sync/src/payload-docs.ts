@@ -4,6 +4,7 @@
 // gives the body one Cmd+Z stack across the note's undo manager and each payload's (BodyUndo).
 import { Observable } from 'lib0/observable';
 import * as Y from 'yjs';
+import { RedoSlices } from './redo-slices.ts';
 import {
   decodePayloadFrame, encodePayloadFrame, PAYLOAD_STEP1, PAYLOAD_STEP2, PAYLOAD_UPDATE,
 } from '@moss-multi/protocol/sync';
@@ -334,6 +335,72 @@ export class BodyUndo extends Observable<StackEvent> {
     return this.#step(this.redone, this.undone, 'redo');
   }
 
+  /**
+   * Redoes the top step in slices when it is `stamp`'s (T3.S6): `next` redoes the next slice of its note's stack item
+   * (its payload items whole, in order), and `finish`, once `done`, makes the slices one step again. Each slice is a
+   * Yjs redo, so the steps after it in the redo chain still follow what it restores. Null when the top step is not.
+   */
+  redoInSlices(stamp: unknown): SlicedRedo | null {
+    const step = this.redone.at(-1);
+    if (!step || step.stamp !== stamp) return null;
+    this.redone.pop();
+    this.stopCapturing();
+    const queue = step.entries.map(({ manager, item }) => {
+      if (manager !== this.root) return { manager, item, slices: null };
+      const at = manager.redoStack.lastIndexOf(item);
+      if (at >= 0) manager.redoStack.splice(at, 1);
+      return { manager, item, slices: at >= 0 ? new RedoSlices(manager, item) : null };
+    });
+    const replayed: Step['entries'] = [];
+    const replay = (manager: Y.UndoManager, item: StackItem) => {
+      this.#replaying = true;
+      this.#replayed = [];
+      try {
+        replayOnly(manager, 'redo', item);
+      } finally {
+        replayed.push(...this.#replayed);
+        this.#replaying = false;
+        this.#replayed = [];
+      }
+    };
+    const advance = (blocks: number, bytes: number): number | null => {
+      while (queue.length) {
+        const head = queue[0];
+        if (!head.slices) {
+          queue.shift();
+          // A note item no longer on its stack (a peer emptied it) replays nothing, as #step would.
+          if (head.manager !== this.root) replay(head.manager, head.item);
+          continue;
+        }
+        const slice = head.slices.next(blocks, bytes);
+        if (head.slices.done) queue.shift();
+        if (!slice) continue;
+        head.manager.redoStack.push(slice.item);
+        replay(head.manager, slice.item);
+        return slice.blocks;
+      }
+      return null;
+    };
+    let finished = false;
+    return {
+      get done() {
+        return queue.length === 0;
+      },
+      next: (blocks, bytes) => advance(blocks, bytes) ?? 0,
+      finish: () => {
+        if (finished) return;
+        finished = true;
+        while (advance(Infinity, Infinity) !== null) {
+          // the rest at once
+        }
+        if (replayed.length === 0) return;
+        const entries = mergeReplayed(replayed);
+        this.undone.push({ entries, stamp: step.stamp });
+        this.emit('stack-item-added', [{ type: 'undo', stackItem: entries.at(-1)!.item }, this]);
+      },
+    };
+  }
+
   stopCapturing(): void {
     for (const manager of this.managers) manager.stopCapturing();
     this.#lastChange = 0;
@@ -377,6 +444,43 @@ export class BodyUndo extends Observable<StackEvent> {
       this.#replayed = [];
     }
   }
+}
+
+/** A step redone a slice at a time (BodyUndo.redoInSlices). */
+export interface SlicedRedo {
+  readonly done: boolean;
+  /** Redoes the next slice, up to `blocks` blocks and about `bytes` bytes; returns the blocks it redid. */
+  next(blocks: number, bytes: number): number;
+  /** Redoes whatever is left at once, and makes the slices one undo step. */
+  finish(): void;
+}
+
+/**
+ * The stack items a sliced redo added, one per slice, merged into one per manager, as one Yjs transaction would have
+ * made them: undo then deletes the whole paste in one transaction. Items not on top of their stack stay apart.
+ */
+function mergeReplayed(entries: Step['entries']): Step['entries'] {
+  const byManager = new Map<Y.UndoManager, StackItem[]>();
+  for (const { manager, item } of entries) {
+    const items = byManager.get(manager);
+    if (items) items.push(item);
+    else byManager.set(manager, [item]);
+  }
+  const merged: Step['entries'] = [];
+  for (const [manager, items] of byManager) {
+    const stack = manager.undoStack;
+    const top = stack.slice(-items.length);
+    if (items.length < 2 || top.length !== items.length || top.some((item, i) => item !== items[i])) {
+      merged.push(...items.map((item) => ({ manager, item })));
+      continue;
+    }
+    const Item = items[0].constructor as new (deletions: StackItem['deletions'], insertions: StackItem['insertions']) => StackItem;
+    const one = new Item(Y.mergeDeleteSets(items.map((item) => item.deletions)), Y.mergeDeleteSets(items.map((item) => item.insertions)));
+    items[0].meta.forEach((value, key) => one.meta.set(key, value));
+    stack.splice(stack.length - items.length, items.length, one);
+    merged.push({ manager, item: one });
+  }
+  return merged;
 }
 
 /**

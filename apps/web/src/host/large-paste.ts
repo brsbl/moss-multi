@@ -8,19 +8,19 @@
 import { createBinding, syncLexicalUpdateToYjs, type Provider } from '@lexical/yjs';
 import { CLIENT_FRAME_MAX_BYTES, STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import { excludedPropertiesFor } from '@moss-multi/sync/excluded-properties';
-import { isPayloadType, payloadDocsFor } from '@moss-multi/sync/payload-docs';
+import { isPayloadType, payloadDocsFor, type SlicedRedo } from '@moss-multi/sync/payload-docs';
 import { splitUpdate } from '@moss-multi/sync/update-pieces';
 import {
   $createLineBreakNode, $createParagraphNode, $createTabNode, $createTextNode, $getNodeByKey, $getRoot, $getSelection,
-  $isDecoratorNode, $isElementNode, $isRangeSelection, $isTextNode, $parseSerializedNode, $setSelection,
+  $isDecoratorNode, $isElementNode, $isNodeSelection, $isRangeSelection, $isTextNode, $parseSerializedNode, $setSelection,
   COMMAND_PRIORITY_CRITICAL, createEditor, REDO_COMMAND, UNDO_COMMAND, type BaseSelection, type ElementNode,
-  type Klass, type LexicalEditor, type LexicalNode, type NodeKey, type RangeSelection, type SerializedElementNode, type SerializedLexicalNode,
+  type Klass, type LexicalEditor, type LexicalNode, type NodeKey, type PointType, type SerializedElementNode, type SerializedLexicalNode,
 } from 'lexical';
 import * as Y from 'yjs';
 import { PIECE_BYTES } from './collab/outbox.ts';
 import { WRITE_REFUSED } from './collab/doc-session.ts';
 import { markLanding } from './collab/landing.ts';
-import { DirLift } from './dir-lift.ts';
+import { DirLift, LARGE_CHILDREN } from './dir-lift.ts';
 import { markUnacked } from './collab/unacked.ts';
 import { refuseInput } from './refusal.ts';
 
@@ -35,6 +35,7 @@ type CollabUndo = {
   /** BodyUndo's steps; a step's `stamp` names the action that made it. */
   undoStack?: readonly { stamp: unknown }[];
   redone?: { stamp: unknown }[];
+  redoInSlices?: (stamp: unknown) => SlicedRedo | null;
 };
 
 const collabUndo = (editor: LexicalEditor): CollabUndo | undefined =>
@@ -464,11 +465,15 @@ class Pacer {
 
   constructor(readonly label: string, readonly max = MAX_BATCH) {}
 
-  /** Runs a batch of `used` units (`run`), then lays the note out (`layout`), and sizes the next batch. */
-  time(used: number, run: () => void, layout?: () => void): void {
+  /**
+   * Runs a batch of `used` units (`run`, which may return the units it used instead), then lays the note out
+   * (`layout`), and sizes the next batch.
+   */
+  time(used: number, run: () => number | void, layout?: () => void): void {
     const started = performance.now();
     const before = this.#ended === null ? 0 : started - this.#ended;
-    run();
+    const ran = run();
+    if (typeof ran === 'number' && ran > 0) used = ran;
     const ran = performance.now();
     layout?.();
     this.#ended = performance.now();
@@ -513,8 +518,6 @@ export interface PasteRequest {
   $restore: () => boolean;
   /** Inserts the first batch's top-level nodes at the caret. */
   $insert: (nodes: LexicalNode[]) => void;
-  /** Runs once the last batch is in. */
-  $landed?: () => void;
 }
 
 /** What interrupts a paste in progress: it lands the rest at once, first. */
@@ -522,6 +525,7 @@ const INPUT_EVENTS = ['keydown', 'pointerdown', 'mousedown', 'paste', 'drop', 'c
 
 const jobs = new WeakMap<LexicalEditor, PasteJob>();
 
+/** A paste, or a paste's redo, landing in batches; any input lands the rest first. */
 class PasteJob {
   readonly #steps: Generator<void, void>;
   readonly #stops: (() => void)[] = [];
@@ -531,8 +535,13 @@ class PasteJob {
   /** The paste's lists and tables go without `dir` while batches fill them (dir-lift.ts). */
   readonly #dir = new DirLift();
 
-  constructor(readonly editor: LexicalEditor, readonly request: PasteRequest) {
-    this.#steps = this.#run();
+  constructor(readonly editor: LexicalEditor, steps: (job: PasteJob) => Generator<void, void>) {
+    this.#steps = steps(this);
+  }
+
+  /** Landing the rest at once: no more yielding. */
+  get flushing(): boolean {
+    return this.#flushing;
   }
 
   start(): void {
@@ -600,7 +609,7 @@ class PasteJob {
   }
 
   /** Lifts `dir` from the top-level elements holding the paste's lists and tables (dir-lift.ts). */
-  #liftDir(placer: Placer): void {
+  liftDir(placer: Placer): void {
     // Inside an update (a flush from a command), the rest lands at once anyway.
     if (placer.spines.length === 0 || this.editor._updating) return;
     this.editor.read(() => {
@@ -612,148 +621,162 @@ class PasteJob {
     });
   }
 
-  *#run(): Generator<void, void> {
-    const { editor, request } = this;
-    const { plan } = request;
-    const max = plan.units.every((unit) => unit.parent === null) ? MAX_TOP_BATCH : MAX_BATCH;
-    const pacer = new Pacer('moss-paste-rehearsal', max);
+  /** Lifts `dir` from every top-level element with many children: a redo's slices fill them (dir-lift.ts). */
+  liftLargeDir(): void {
+    for (const child of this.editor.getRootElement()?.children ?? []) {
+      if (child.childElementCount >= LARGE_CHILDREN) this.#dir.lift(child as HTMLElement);
+    }
+  }
 
-    // 1. The scratch replay: what the paste adds to the note, and its largest piece.
-    const scratch = scratchEditor(request.nodes);
-    const measure = new Measure(scratch);
-    const rehearsal = new Placer(plan);
-    const rehearse = (budget: number, place: (budget: number) => void) =>
-      pacer.time(budget, () => scratch.update(() => place(budget), { discrete: true }));
-    rehearse(pacer.budget, (budget) => rehearsal.$first(budget, $replaceEmptyNote));
-    while (!rehearsal.done) {
-      yield;
-      rehearse(pacer.budget, (budget) => rehearsal.$next(budget));
-    }
-    const largest = Math.max(measure.largestPiece, plan.largestPayload);
-    if (!fits(editor, measure.end() + plan.payloadBytes, largest)) {
-      refuseInput(WRITE_REFUSED['doc-cap']);
-      return;
-    }
-    yield;
-
-    // 2. The paste itself: the first batch at the caret, then the rest, all one undo step.
-    const undo = collabUndo(editor);
-    undo?.stopCapturing();
-    const placer = new Placer(plan);
-    // Laid out after each batch, in it: laid out later, several batches' list items would go at once (MAX_BATCH).
-    const layout = () => void editor.getRootElement()?.offsetHeight;
-    // Paced afresh: the live editor also renders and lays out each batch.
-    const pacing = new Pacer('moss-paste-batch', max);
-    const first = pacing.budget;
-    // A pending update (a peer's or a derived write, tagged as collaboration) would take a batch into it, and an update
-    // so tagged never reaches the doc: each batch commits it first, on its own.
-    const settle = () => editor.read(noop);
-    settle();
-    const made: { spot: Spot | null } = { spot: null };
-    pacing.time(first, () => editor.update(() => {
-      if (!request.$restore()) $getRoot().selectEnd();
-      made.spot = $spot();
-      placer.$first(first, request.$insert);
-    }, { discrete: true }), layout);
-    let batches = 1;
-    while (!placer.done) {
-      this.#liftDir(placer);
-      batches += 1;
-      // Without a step to hold open (no collaborative undo), the rest goes in now.
-      if (undo?.hold && !this.#flushing) yield;
-      // Every later batch joins the paste's undo step (BodyUndo.hold), released once its update has committed.
-      if (!editor._updating) settle();
-      const release = undo?.hold?.();
-      const nested = editor._updating;
-      const budget = pacing.budget;
-      pacing.time(budget, () => editor.update(() => $keepElementPoints(() => placer.$next(budget)), { discrete: true, onUpdate: release }), layout);
-      if (!nested) release?.();
-    }
+  restoreDir(): void {
     this.#dir.restore();
-    undo?.stopCapturing();
-    if (request.$landed) editor.update(request.$landed, { discrete: true });
-    // Its redo lands in batches too: the step is stamped with the paste, which a redo then pastes again.
-    const step = batches > 1 && made.spot ? undo?.undoStack?.at(-1) : undefined;
-    if (step && made.spot) {
-      step.stamp = request;
-      pasted.set(request, made.spot);
-    }
   }
 }
 
-/** Where a paste was made, as undo leaves it: the top-level block holding the caret, and the caret's text offset in it. */
-interface Spot {
-  index: number;
-  chars: number;
+/** Whether `point` names a node still in the note, at an offset it has. */
+function $holds(point: PointType): boolean {
+  const node = $getNodeByKey(point.key);
+  if (!node?.isAttached()) return false;
+  if (point.type === 'text') return $isTextNode(node) && point.offset <= node.getTextContentSize();
+  return $isElementNode(node) && point.offset <= node.getChildrenSize();
 }
 
-/** The collapsed caret as a Spot; null for a selection a Spot cannot hold. */
-function $spot(): Spot | null {
-  const selection = $getSelection();
-  if (!$isRangeSelection(selection) || !selection.isCollapsed()) return null;
-  const point = selection.anchor;
-  const node = point.getNode();
-  const top = node.getTopLevelElement() ?? (node.getParent() === null ? null : node);
-  if (top === null || !$isElementNode(top)) return null;
-  let chars = 0;
-  if (point.type === 'text') {
-    for (const text of top.getAllTextNodes()) {
-      if (text.is(node)) return { index: top.getIndexWithinParent(), chars: chars + point.offset };
-      chars += text.getTextContentSize();
-    }
-    return null;
+/**
+ * Pastes at `selection`, the editor's committed selection, when it still names nodes in the note. The binding moves it
+ * with every peer's edit while the paste is checked (it keeps this client's cursor as relative positions), and any
+ * input of this client's lands the paste first, so it is where the paste was made. The keys and offsets saved at the
+ * paste know nothing of the peers' edits: they would split a peer's text, or delete it with a selected range.
+ */
+function $selectLive(selection: BaseSelection | null): boolean {
+  if ($isRangeSelection(selection)) {
+    if (!$holds(selection.anchor) || !$holds(selection.focus)) return false;
+  } else if ($isNodeSelection(selection)) {
+    const keys = [...selection._nodes];
+    if (keys.length === 0 || !keys.every((key) => $getNodeByKey(key)?.isAttached())) return false;
+  } else {
+    return false;
   }
-  if (!node.is(top) || point.offset !== 0) return null;
-  return { index: top.getIndexWithinParent(), chars: 0 };
-}
-
-/** Puts the caret at `spot`; false when the note no longer has its block. */
-function $toSpot(spot: Spot): boolean {
-  const top = $getRoot().getChildAtIndex(spot.index);
-  if (!$isElementNode(top)) return false;
-  let chars = spot.chars;
-  for (const text of top.getAllTextNodes()) {
-    const size = text.getTextContentSize();
-    if (chars <= size) {
-      text.select(chars, chars);
-      return true;
-    }
-    chars -= size;
-  }
-  if (chars > 0) return false;
-  top.selectStart();
+  $setSelection(selection.clone());
   return true;
 }
 
-/** The pastes that landed in batches, by the request their undo steps are stamped with, and where each was made. */
-const pasted = new WeakMap<object, Spot>();
+/** Lands `request`: its scratch replay, then its batches or its refusal. */
+function* landPaste(job: PasteJob, request: PasteRequest): Generator<void, void> {
+  const { editor } = job;
+  const { plan } = request;
+  const max = plan.units.every((unit) => unit.parent === null) ? MAX_TOP_BATCH : MAX_BATCH;
+  const pacer = new Pacer('moss-paste-rehearsal', max);
+
+  // 1. The scratch replay: what the paste adds to the note, and its largest piece.
+  const scratch = scratchEditor(request.nodes);
+  const measure = new Measure(scratch);
+  const rehearsal = new Placer(plan);
+  const rehearse = (budget: number, place: (budget: number) => void) =>
+    pacer.time(budget, () => scratch.update(() => place(budget), { discrete: true }));
+  rehearse(pacer.budget, (budget) => rehearsal.$first(budget, $replaceEmptyNote));
+  while (!rehearsal.done) {
+    yield;
+    rehearse(pacer.budget, (budget) => rehearsal.$next(budget));
+  }
+  const largest = Math.max(measure.largestPiece, plan.largestPayload);
+  if (!fits(editor, measure.end() + plan.payloadBytes, largest)) {
+    refuseInput(WRITE_REFUSED['doc-cap']);
+    return;
+  }
+  yield;
+
+  // 2. The paste itself: the first batch at the caret, then the rest, all one undo step.
+  const undo = collabUndo(editor);
+  undo?.stopCapturing();
+  const placer = new Placer(plan);
+  // Laid out after each batch, in it: laid out later, several batches' list items would go at once (MAX_BATCH).
+  const layout = () => void editor.getRootElement()?.offsetHeight;
+  // Paced afresh: the live editor also renders and lays out each batch.
+  const pacing = new Pacer('moss-paste-batch', max);
+  const first = pacing.budget;
+  // A pending update (a peer's or a derived write, tagged as collaboration) would take a batch into it, and an update
+  // so tagged never reaches the doc: each batch commits it first, on its own.
+  const settle = () => editor.read(noop);
+  settle();
+  const live = editor.getEditorState()._selection;
+  pacing.time(first, () => editor.update(() => {
+    if (!$selectLive(live) && !request.$restore()) $getRoot().selectEnd();
+    placer.$first(first, request.$insert);
+  }, { discrete: true }), layout);
+  let batches = 1;
+  while (!placer.done) {
+    job.liftDir(placer);
+    batches += 1;
+    // Without a step to hold open (no collaborative undo), the rest goes in now.
+    if (undo?.hold && !job.flushing) yield;
+    // Every later batch joins the paste's undo step (BodyUndo.hold), released once its update has committed.
+    if (!editor._updating) settle();
+    const release = undo?.hold?.();
+    const nested = editor._updating;
+    const budget = pacing.budget;
+    pacing.time(budget, () => editor.update(() => $keepElementPoints(() => placer.$next(budget)), { discrete: true, onUpdate: release }), layout);
+    if (!nested) release?.();
+  }
+  job.restoreDir();
+  undo?.stopCapturing();
+  // Its redo lands in slices too: the step is stamped with the paste (redoInSlices).
+  const step = batches > 1 ? undo?.undoStack?.at(-1) : undefined;
+  if (step) {
+    step.stamp = request;
+    pasted.set(request, max);
+  }
+}
+
+/** The steps of pastes that landed in batches, by the request each is stamped with, and the batch cap they paced with. */
+const pasted = new WeakMap<object, number>();
 const redoing = new WeakSet<LexicalEditor>();
+/** A redo slice's bytes, about: its update goes as a piece or two, well within the frame cap. */
+const REDO_SLICE_BYTES = PIECE_BYTES;
+
+/** The redo of a paste that landed in batches, a slice at a time, the main thread free between slices. */
+function* redoSlices(job: PasteJob, slices: SlicedRedo, max: number): Generator<void, void> {
+  const { editor } = job;
+  const pacing = new Pacer('moss-paste-redo', max);
+  const layout = () => void editor.getRootElement()?.offsetHeight;
+  // Commits the binding's update for a slice in this task, so its time and layout count in the slice's.
+  const settle = () => {
+    if (!editor._updating) editor.read(noop);
+  };
+  try {
+    while (!slices.done) {
+      if (!editor._updating) job.liftLargeDir();
+      const budget = pacing.budget;
+      pacing.time(budget, () => {
+        const blocks = slices.next(budget, REDO_SLICE_BYTES);
+        settle();
+        return blocks;
+      }, layout);
+      if (!slices.done && !job.flushing) yield;
+    }
+  } finally {
+    slices.finish();
+    job.restoreDir();
+  }
+}
 
 /**
- * Redo of a paste that landed in batches pastes it again, in batches, where it was made:
- * Yjs would redo it in one transaction, and Lexical would place and lay it all out at once, holding the tab for as
- * long as one unbatched paste did. The new paste, like any new edit, ends the redo chain.
+ * Redo of a paste that landed in batches redoes its undo step in slices (BodyUndo.redoInSlices): Yjs would restore it
+ * in one transaction, and Lexical would place and lay it all out at once, holding the tab as long as one unbatched
+ * paste did. Each slice is a Yjs redo, so the steps after it in the redo chain still redo, and it lands where the
+ * paste was, wherever peers' edits have moved that.
  */
-function $redoInBatches(editor: LexicalEditor): boolean {
+function $redoInSlices(editor: LexicalEditor): boolean {
+  // A paste or a redo still landing lands first.
+  jobs.get(editor)?.flush();
   const undo = collabUndo(editor);
-  const top = undo?.redone?.at(-1);
-  const spot = top && typeof top.stamp === 'object' && top.stamp !== null ? pasted.get(top.stamp) : undefined;
-  if (!undo?.redone || !top || !spot) return false;
-  const request = top.stamp as PasteRequest;
-  undo.redone.pop();
-  // As a Yjs redo would, the caret stays where it is rather than following the paste.
-  const before = $getSelection()?.clone() ?? null;
-  const $landed = () => {
-    if (!$isRangeSelection(before)) return;
-    const held = (point: RangeSelection['anchor']) => {
-      const node = $getNodeByKey(point.key);
-      if (!node?.isAttached()) return false;
-      if (point.type === 'text') return $isTextNode(node) && point.offset <= node.getTextContentSize();
-      return $isElementNode(node) && point.offset <= node.getChildrenSize();
-    };
-    if (held(before.anchor) && held(before.focus)) $setSelection(before);
-  };
-  pasteLarge(editor, { ...request, $restore: () => $toSpot(spot), $landed });
+  const stamp = undo?.redone?.at(-1)?.stamp;
+  const max = typeof stamp === 'object' && stamp !== null ? pasted.get(stamp) : undefined;
+  if (max === undefined || !undo?.redoInSlices) return false;
+  const slices = undo.redoInSlices(stamp);
+  if (!slices) return false;
+  const job = new PasteJob(editor, (each) => redoSlices(each, slices, max));
+  jobs.set(editor, job);
+  job.start();
   return true;
 }
 
@@ -762,10 +785,10 @@ export function pasteLarge(editor: LexicalEditor, request: PasteRequest): void {
   jobs.get(editor)?.flush();
   if (!redoing.has(editor)) {
     redoing.add(editor);
-    editor.registerCommand(REDO_COMMAND, () => $redoInBatches(editor), COMMAND_PRIORITY_CRITICAL);
+    editor.registerCommand(REDO_COMMAND, () => $redoInSlices(editor), COMMAND_PRIORITY_CRITICAL);
   }
   if (request.plan.units.length === 0) return;
-  const job = new PasteJob(editor, request);
+  const job = new PasteJob(editor, (each) => landPaste(each, request));
   jobs.set(editor, job);
   job.start();
 }

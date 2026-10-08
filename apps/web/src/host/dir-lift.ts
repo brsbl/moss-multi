@@ -25,7 +25,7 @@ export class DirLift {
 /** A remote transaction adding at least this many items (characters, blocks, list items) lifts. */
 const LARGE_ITEMS = 500;
 /** Only elements holding at least this many children pay noticeably per child added. */
-const LARGE_CHILDREN = 128;
+export const LARGE_CHILDREN = 128;
 
 /**
  * A peer's large paste reaches `editor` as remote transactions on `doc` of thousands of list items or rows. Lexical
