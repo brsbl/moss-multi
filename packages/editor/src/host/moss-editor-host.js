@@ -1,13 +1,13 @@
-// moss-editor-host.js: the pure host helpers of the @moss-multi/editor contract, API 1 (contract.ts,
+// moss-editor-host.js: the pure host helpers of the @moss-multi/editor contract, API 2 (contract.ts,
 // MossEditorHostModule). One self-contained ES2022 module with no imports; it uses only the globals
 // TextEncoder and crypto.subtle. Each helper reproduces Moss desktop's own rule at
 // brsbl/moss@762abb777 (packages/desktop/src/main/storage/note-store.ts and main/ipc-handlers.ts; line
 // numbers below are to those files), and moss-editor-host.test.ts holds it to desktop's code byte for byte.
 
-export const MOSS_EDITOR_API = 1;
+export const MOSS_EDITOR_API = 2;
 
 export const MOSS_EDITOR_INFO = Object.freeze(
-  /** @type {const} */ ({ api: 1, version: '0.2.0', features: Object.freeze(['selection-1', 'share-with-agent-1']) }),
+  /** @type {const} */ ({ api: 2, version: '0.3.0', features: Object.freeze(['selection-1', 'share-with-agent-1']) }),
 );
 
 export const MOSS_NOTE_FILES = Object.freeze(
@@ -280,7 +280,7 @@ export async function versionToken(parts) {
 }
 
 /**
- * The API 1 scope rule (docs/design/editor-embed.md section 3). A note is editable only when it is an adopted internal
+ * The v0 editable scope rule (docs/design/editor-embed.md section 3). A note is editable only when it is an adopted internal
  * note: under `Notes` but not `Notes/External`, with a meta.json desktop's `readMetadata` accepts (a JSON object
  * with a truthy `id` and `title`, note-store.ts:997-1006) whose `id` is a valid, untrimmed-equal note id.
  * @param {{ workspaceSegments: readonly string[] | null; metaText: string | null; hasMarkdown: boolean }} input

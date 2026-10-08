@@ -191,8 +191,10 @@ const AGENT_NOT_FOUND = 'You have no agent with that ID. Copy it from your agent
 /** Inside a guarded write: the agent `?2` is live and owned by the caller, bound at `?caller`. */
 const liveOwnAgent = (caller: number) => `EXISTS (SELECT 1 FROM agents WHERE id = ?2 AND owner_user_id = ?${caller} AND revoked_at IS NULL)`;
 
-async function ownsLiveAgent(db: D1Database, agentId: string, callerId: string): Promise<boolean> {
-  return (await db.prepare('SELECT 1 AS ok FROM agents WHERE id = ?1 AND owner_user_id = ?2 AND revoked_at IS NULL').bind(agentId, callerId).first()) !== null;
+/** The caller's live agent `agentId`, or null when it is not theirs or not live. */
+function ownLiveAgent(db: D1Database, agentId: string, callerId: string): Promise<{ id: string; name: string } | null> {
+  return db.prepare('SELECT id, name FROM agents WHERE id = ?1 AND owner_user_id = ?2 AND revoked_at IS NULL')
+    .bind(agentId, callerId).first<{ id: string; name: string }>();
 }
 
 /**
@@ -206,8 +208,7 @@ async function shareAgent(env: MembersEnv, target: MemberTarget, caller: Princip
   const role = body.role;
   if (role === 'owner') return refuse(400, 'bad-request', AGENT_ROLE_CAP);
   const callerId = managerId(caller);
-  const agent = await env.DB.prepare('SELECT id, name FROM agents WHERE id = ?1 AND owner_user_id = ?2 AND revoked_at IS NULL')
-    .bind(agentId, callerId).first<{ id: string; name: string }>();
+  const agent = await ownLiveAgent(env.DB, agentId, callerId);
   if (!agent) return refuse(404, 'agent-not-found', AGENT_NOT_FOUND);
   const [table, column] = grantTable(target.type);
   const liveAgent = liveOwnAgent(4);
@@ -223,7 +224,7 @@ async function shareAgent(env: MembersEnv, target: MemberTarget, caller: Princip
   if (changed(raised)) return json({ shared }, 200, NO_STORE);
   if (!await managesLive(env.DB, target.type, target.id, callerId)) return notFound();
   // Revoked or handed over meanwhile: refused as at the read, whatever grant it already holds.
-  if (!await ownsLiveAgent(env.DB, agent.id, callerId)) return refuse(404, 'agent-not-found', AGENT_NOT_FOUND);
+  if (!await ownLiveAgent(env.DB, agent.id, callerId)) return refuse(404, 'agent-not-found', AGENT_NOT_FOUND);
   const [grant] = await grantRows(createDb(env.DB), target, agent.id);
   if (!grant) return refuse(404, 'agent-not-found', AGENT_NOT_FOUND);
   if (lower(role, grant.role)) {
@@ -323,7 +324,7 @@ async function change(
         reapDeadInvites(env.DB, Date.now()),
       ]);
       done = changed(updated);
-      if (!done && agentRaise && !await ownsLiveAgent(env.DB, principalId, callerId)) {
+      if (!done && agentRaise && !await ownLiveAgent(env.DB, principalId, callerId)) {
         return (await lostManage(db, caller, target)) ?? refuse(404, 'agent-not-found', AGENT_NOT_FOUND);
       }
     }

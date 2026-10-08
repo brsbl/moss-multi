@@ -19,9 +19,9 @@ import { createDb, type Db } from '../db/client.ts';
 import { assets, assetVersions, docMedia } from '../db/schema.ts';
 import type { AppEnv } from '../env.ts';
 import { json } from '../worker/route.ts';
-import { MAX_FOLDER_DEPTH, resolveDocAccess } from './access.ts';
+import { editsLiveDoc, MAX_FOLDER_DEPTH, resolveDocAccess, writeActor, writeActorArgs, type WriteActor } from './access.ts';
 import { readCapped, remoteFetch, REMOTE_TIMEOUT_MS, takeFetchToken } from './remote.ts';
-import { NO_STORE, notFound, readJsonObject } from './respond.ts';
+import { NO_STORE, notFound, readJsonObject, refuse } from './respond.ts';
 import { assertPublicUrl, safeFetch, SsrfBlockedError } from './ssrf.ts';
 import { ownerOfTrashed } from './trash.ts';
 
@@ -41,7 +41,6 @@ const NAME_ATTEMPTS = 50;
 
 const blobKey = (hash: string) => `asset-blobs/sha256/${hash}`;
 const etagOf = (hash: string) => `"${hash}"`;
-const refuse = (status: number, error: string, message: string) => json({ error, message }, status, NO_STORE);
 const tooLarge = (kind: 'image' | 'video') =>
   refuse(413, 'too-large', `${kind === 'image' ? 'Images' : 'Videos'} can be at most ${MEDIA_CAP_BYTES[kind] / (1024 * 1024)} MB.`);
 const unsupported = () =>
@@ -159,17 +158,31 @@ async function folderAsset(db: Db, folderId: string, filename: string): Promise<
 
 const isUnique = (error: unknown) => /UNIQUE|PRIMARY KEY/i.test(`${error} ${(error as { cause?: unknown })?.cause ?? ''}`);
 
-const bindStatement = (env: AuthEnv, docId: string, filename: string, bytes: Bytes, createdBy: string) =>
-  env.DB.prepare('INSERT INTO doc_media (doc_id, filename, version_id, content_hash, content_type, size, created_by, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)')
-    .bind(docId, filename, bytes.versionId, bytes.contentHash, bytes.contentType, bytes.size, createdBy, Date.now());
+/** A record row names its doc only while the actor can still edit the live doc, so a late write fails its batch. */
+const REFUSED = /NOT NULL constraint failed: doc_media\.doc_id/;
+const isRefused = (error: unknown) => REFUSED.test(`${error} ${(error as { cause?: unknown })?.cause ?? ''}`);
+
+/** The record row, last in its batch: the guard (A§8) is checked as the batch commits, so a refusal writes nothing. */
+const bindStatement = (env: AuthEnv, docId: string, filename: string, bytes: Bytes, actor: WriteActor) => {
+  const now = Date.now();
+  return env.DB.prepare(`INSERT INTO doc_media (doc_id, filename, version_id, content_hash, content_type, size, created_by, created_at)
+    VALUES (CASE WHEN ${editsLiveDoc(1, 9)} THEN ?1 END, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`)
+    .bind(docId, filename, bytes.versionId, bytes.contentHash, bytes.contentType, bytes.size, actor.id, now, ...writeActorArgs(actor, now));
+};
+
+/** A write the guard refused: 403 for a caller who still reads the note, the one 404 otherwise. */
+async function refusedLate(env: AuthEnv, principal: Principal, docId: string, token: string | null): Promise<Response> {
+  const access = await resolveDocAccess(createDb(env.DB), principal, docId, token);
+  return access && !access.deleted ? refuse(403, 'forbidden', 'You can view this note but not add media to it.') : notFound();
+}
 
 /**
  * Binds `bytes` in `docId`'s record under `filename`, or the first `-n` name free there: a name already bound to the
  * same bytes is reused, never rebound. `plan(name)` may refuse a name or add statements to the binding's batch, which
  * fails as a whole when a concurrent writer took the name; the name is then checked again.
  */
-async function bind(env: AuthEnv, docId: string, filename: string, bytes: Bytes, createdBy: string,
-  plan: (name: string) => Promise<{ bytes: Bytes; statements: D1PreparedStatement[] } | 'taken'>): Promise<Placed | null> {
+async function bind(env: AuthEnv, docId: string, filename: string, bytes: Bytes, actor: WriteActor,
+  plan: (name: string) => Promise<{ bytes: Bytes; statements: D1PreparedStatement[] } | 'taken'>): Promise<Placed | null | 'refused'> {
   const db = createDb(env.DB);
   let attempt = 1;
   for (let tries = 0; attempt <= NAME_ATTEMPTS && tries < NAME_ATTEMPTS * 2; tries += 1) {
@@ -182,9 +195,10 @@ async function bind(env: AuthEnv, docId: string, filename: string, bytes: Bytes,
       continue;
     }
     try {
-      await env.DB.batch([...planned.statements, bindStatement(env, docId, name, planned.bytes, createdBy)]);
+      await env.DB.batch([...planned.statements, bindStatement(env, docId, name, planned.bytes, actor)]);
       return (await mediaOf(db, docId, name)) ?? { ...planned.bytes, filename: name, assetId: null };
     } catch (error) {
+      if (isRefused(error)) return 'refused';
       if (!isUnique(error)) throw error;
     }
   }
@@ -225,12 +239,19 @@ async function store(request: Request, env: AssetsEnv, principal: Principal, doc
   const bytes = await readDeclared(request, size);
   if (bytes === 'too-long') return refuse(413, 'too-large', 'The upload is longer than its Content-Length.');
   if (bytes === 'too-short') return refuse(400, 'bad-length', 'The upload ended before its Content-Length.');
-  return storeBytes(env, docId, folderId, principal.id, filename, type, bytes);
+  return storeBytes(request, env, principal, docId, folderId, filename, type, bytes);
 }
 
-/** `bytes` into `docId` under `filename`, or the first `-n` name free there, within the vault's media quota. */
-async function storeBytes(env: AssetsEnv, docId: string, folderId: string, createdBy: string, filename: string, type: MediaType,
-  bytes: Uint8Array<ArrayBuffer>): Promise<Response> {
+/**
+ * `bytes` into `docId` under `filename`, or the first `-n` name free there, within the vault's media quota, while the
+ * caller can still edit the live doc (checked in the batch that commits the rows).
+ */
+async function storeBytes(request: Request, env: AssetsEnv, principal: Principal, docId: string, folderId: string, filename: string,
+  type: MediaType, bytes: Uint8Array<ArrayBuffer>): Promise<Response> {
+  const token = shareTokenOf(request);
+  const actor = writeActor(principal, token);
+  if (!actor) return notFound();
+  const createdBy = actor.id;
   if (bytes.byteLength === 0) return refuse(400, 'empty', 'The file is empty.');
   if (bytes.byteLength > MEDIA_CAP_BYTES[type.kind]) return tooLarge(type.kind);
   // Checked again before the bytes are stored; the asset insert below holds it against concurrent uploads.
@@ -239,7 +260,7 @@ async function storeBytes(env: AssetsEnv, docId: string, folderId: string, creat
   const db = createDb(env.DB);
   const blob: Bytes = { contentHash: hash, contentType: type.contentType, size: bytes.byteLength, versionId: null };
   // The name is free in the doc's record and in its folder's namespace, or holds these same bytes there.
-  const media = await bind(env, docId, filename, blob, createdBy, async (name) => {
+  const media = await bind(env, docId, filename, blob, actor, async (name) => {
     const existing = await folderAsset(db, folderId, name);
     if (existing) return existing.contentHash === hash ? { bytes: { ...blob, versionId: existing.versionId }, statements: [] } : 'taken';
     const id = crypto.randomUUID();
@@ -263,8 +284,9 @@ async function storeBytes(env: AssetsEnv, docId: string, folderId: string, creat
     throw error;
   });
   if (media === 'over-quota') return overQuota();
+  if (media === 'refused') return refusedLate(env, principal, docId, token);
   if (!media) return nameTaken();
-  // Rows before bytes, so an upload that binds nothing (no free name, no room) stores nothing the quota misses. The
+  // Rows before bytes, so an upload that binds nothing (no free name, no room, no edit right left) stores nothing. The
   // caller references the file only after this 201; a failed put leaves a record that a retry of the upload fills.
   if (!(await env.ASSETS.head(blobKey(hash)))) {
     await env.ASSETS.put(blobKey(hash), bytes, { httpMetadata: { contentType: type.contentType } });
@@ -298,7 +320,10 @@ async function copyFromNote(request: Request, env: AssetsEnv, docId: string): Pr
   if (!found) return notFound();
   const refused = await admitMedia(request, env, principal, docId, target.folderId, found.size);
   if (refused) return refused;
-  const media = await bind(env, docId, filename, found, principal.id, async () => ({ bytes: found, statements: [] }));
+  const actor = writeActor(principal, token);
+  if (!actor) return notFound();
+  const media = await bind(env, docId, filename, found, actor, async () => ({ bytes: found, statements: [] }));
+  if (media === 'refused') return refusedLate(env, principal, docId, token);
   return media ? placed(media) : nameTaken();
 }
 
@@ -361,14 +386,24 @@ async function fromUrl(request: Request, env: AssetsEnv, docId: string): Promise
   const stem = hint.replace(/\.[^./\\]*$/, '') || 'image';
   const target = uploadTarget(`${stem}.${extension}`);
   if (!target) return unsupported();
-  return storeBytes(env, docId, access.folderId, principal.id, target.filename, target.type, bytes);
+  return storeBytes(request, env, principal, docId, access.folderId, target.filename, target.type, bytes);
 }
 
-/** A duplicate's media (A§16): the source's whole record, bound to the same bytes under the same names. */
-export async function copyMedia(d1: D1Database, fromDocId: string, toDocId: string): Promise<void> {
-  await d1.prepare(`INSERT INTO doc_media (doc_id, filename, version_id, content_hash, content_type, size, created_by, created_at)
-    SELECT ?1, filename, version_id, content_hash, content_type, size, created_by, created_at FROM doc_media WHERE doc_id = ?2`)
-    .bind(toDocId, fromDocId).run();
+/**
+ * A duplicate's media (A§16): the source's whole record, bound to the same bytes under the same names, while `actor`
+ * can still edit the live copy; false, writing nothing, once it cannot.
+ */
+export async function copyMedia(d1: D1Database, fromDocId: string, toDocId: string, actor: WriteActor): Promise<boolean> {
+  try {
+    await d1.prepare(`INSERT INTO doc_media (doc_id, filename, version_id, content_hash, content_type, size, created_by, created_at)
+      SELECT CASE WHEN ${editsLiveDoc(1, 3)} THEN ?1 END, filename, version_id, content_hash, content_type, size, created_by, created_at
+      FROM doc_media WHERE doc_id = ?2`)
+      .bind(toDocId, fromDocId, ...writeActorArgs(actor, Date.now())).run();
+    return true;
+  } catch (error) {
+    if (isRefused(error)) return false;
+    throw error;
+  }
 }
 
 /** `bytes=a-b`, `bytes=a-` or `bytes=-n` against `size`; null when absent or not one range, 'unsatisfiable' past the end. */

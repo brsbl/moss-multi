@@ -12,6 +12,22 @@ declare module '@moss-desktop/common/noteTypes' {
   }
 }
 
+declare module '@moss-desktop/renderer/editor/markdown/linear-import' {
+  import type { Transformer } from '@lexical/markdown';
+  import type { ElementNode } from 'lexical';
+  export function $convertFromMarkdownString(
+    markdown: string,
+    transformers?: Transformer[],
+    node?: ElementNode,
+    shouldPreserveNewLines?: boolean,
+    shouldMergeAdjacentLines?: boolean,
+  ): void;
+}
+
+declare module '@moss-desktop/renderer/editor/markdown/pipeline' {
+  export function prepareNoteMarkdown(markdown: string): string;
+}
+
 declare module '@moss-desktop/renderer/editor/MarkdownEditor' {
   import type { ForwardRefExoticComponent, RefAttributes } from 'react';
   import type { LexicalEditor } from 'lexical';
@@ -42,8 +58,6 @@ declare module '@moss-desktop/renderer/editor/MarkdownEditor' {
   >;
   export const MARKDOWN_EDITOR_TRANSFORMERS: Transformer[];
   export function unescapeHtmlEntities(markdown: string): string;
-  export function escapeHtmlEntities(markdown: string): string;
-  export function normalizeMarkdownForImport(markdown: string): string;
   export function $postImportNormalize(commentMetadata?: CommentMetadataMap, root?: undefined, options?: { layoutMetadata?: NoteLayoutMetadata }): void;
   export function $collectTableLayoutMetadata(): NoteLayoutMetadata;
   export function $collectTabGroupLayoutMetadata(): Pick<NoteLayoutMetadata, 'tabGroupCount' | 'tabGroups'>;
@@ -218,4 +232,19 @@ declare module '@moss-pristine/asset-url' {
   export function normalizeLocalAssetPathForDisplay(src: string): string;
   export function toDisplaySrc(src: string, noteId?: string | null): string;
   export function fromDisplaySrc(src: string, currentNoteId?: string | null): string;
+}
+
+declare module '@moss-desktop/renderer/editor/nodes/node-views' {
+  import type { ReactNode } from 'react';
+  import type { LexicalNode } from 'lexical';
+  export function setNodeViewWrapper(wrapper: (type: string, element: unknown) => unknown): void;
+  export function registerLazyNodeView(type: string, load: () => Promise<unknown>, placeholder: (node: LexicalNode) => ReactNode): void;
+  export function loadNodeView(type: string): Promise<void>;
+}
+
+// The decorator views, which register themselves with node-views as they evaluate.
+declare module '@moss-desktop/renderer/editor/nodes/*';
+declare module '@moss-desktop/renderer/editor/components/ChartRenderer';
+declare module '@moss-desktop/common/moss-html-dimensions' {
+  export function resolveMossHtmlIntrinsicSize(rawHtml: string): { width: number; height: number };
 }

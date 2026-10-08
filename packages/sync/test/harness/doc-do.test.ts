@@ -165,7 +165,6 @@ describe('server writes', () => {
     expect(readFrontmatter(source.dobj.document)).toEqual({ tag: 'keep' });
   });
 
-
   it('replays legacy YAML into the map, persists its upgrade, and exports after a second wake', async () => {
     const legacy = await start(openDoc());
     await legacy.dobj.create({ folderId: 'folder', ownerId: 'owner', title: 'Old note', markdown: MARKDOWN });
@@ -582,5 +581,34 @@ describe('RPC', () => {
     const live = await connect(woken, { role: 'editor' });
     await live.hello();
     expect(live.closed, 'the trash never committed, so the doc reopens').toBeNull();
+  });
+});
+
+describe('answers', () => {
+  it('answers a step 1 far behind in frames under 256 KiB of whole blocks, updates first and the step 2 last', async () => {
+    const opened = await start(openDoc());
+    const writer = await connect(opened, { role: 'editor' });
+    const lexical = bindLexical(writer.doc);
+    await writer.hello();
+    for (let batch = 0; batch < 4; batch += 1) {
+      lexical.editor.update(() => {
+        for (let i = 0; i < 600; i += 1) $getRoot().append($createParagraphNode().append($createTextNode(`${batch}.${i} ${'x'.repeat(440)}`)));
+      }, { discrete: true });
+      await writer.flush();
+    }
+    expect(Y.encodeStateAsUpdate(opened.dobj.document).byteLength, 'the doc is several answer pieces').toBeGreaterThan(1024 * 1024);
+    expect(blockTypes(opened.dobj.document).length).toBeGreaterThan(2_400);
+
+    const reader = await connect(opened, { role: 'viewer' });
+    const from = reader.socket.sent.length;
+    await reader.hello();
+    const answer = reader.socket.sent.slice(from).filter((frame): frame is Uint8Array => typeof frame !== 'string' && frame[0] === 0 && frame[1] !== 0);
+    expect(answer.length, 'the answer is several frames').toBeGreaterThan(4);
+    // A piece ends at the first block boundary past its budget, so it may run a block over.
+    expect(Math.max(...answer.map((frame) => frame.byteLength)), 'none is past the piece size by more than a block').toBeLessThanOrEqual(260 * 1024);
+    expect(answer.map((frame) => frame[1]), 'updates, then the one step 2').toEqual([...answer.slice(1).map(() => 2), 1]);
+    expect(Y.encodeStateVector(reader.doc)).toEqual(Y.encodeStateVector(opened.dobj.document));
+    expect(blockTypes(reader.doc)).toEqual(blockTypes(opened.dobj.document));
+    expect(reader.closed).toBeNull();
   });
 });

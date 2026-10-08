@@ -1,9 +1,10 @@
-// A fixture host for @moss-multi/editor: a MossEditorBridge (contract.ts, API 1) over an in-memory Moss workspace.
+// A fixture host for @moss-multi/editor: a MossEditorBridge (contract.ts, API 2) over an in-memory Moss workspace.
 // It follows the host's side of the contract with the pure helpers from moss-editor-host.js: notes are found by
 // meta.json id, the markdown is resolved by probing then listing, writes are checked against the content, companion
 // and meta versions and applied in order with a rollback when a target no longer holds its expected bytes, folders
-// are renamed with allocateFolderName, assets are created exclusively, and external changes are reported through
-// watch. A volume can be case-insensitive, as default APFS is. The unit tests and the e2e fixture page share it.
+// are renamed with allocateFolderName, assets are created exclusively, media is copied only out of notes the user
+// opened, and external changes are reported through watch. A volume can be case-insensitive, as default APFS is.
+// The unit tests and the e2e fixture page share it.
 import {
   MOSS_NOTE_FILES,
   allocateFolderName,
@@ -71,19 +72,6 @@ export class MemoryVolume {
     for (const key of this.files.keys()) if (key.startsWith(prefix)) return true;
     for (const key of this.dirs.keys()) if (key.startsWith(prefix)) return true;
     return false;
-  }
-
-  /** The spelling of an existing entry, or null. */
-  spelling(path) {
-    const file = this.files.get(this.key(path));
-    if (file) return file.path;
-    if (!this.isDir(path)) return null;
-    const own = this.dirs.get(this.key(path));
-    if (own) return own;
-    const prefix = `${this.key(path)}/`;
-    for (const [key, entry] of this.files) if (key.startsWith(prefix)) return entry.path.slice(0, path.length);
-    for (const [key, dir] of this.dirs) if (key.startsWith(prefix)) return dir.slice(0, path.length);
-    return path;
   }
 
   mkdir(path) {
@@ -187,7 +175,7 @@ const tagged = (code, message) => Object.assign(new Error(message), { code });
  * The bridge. `onApply(file)` runs before each op lands, so a test can race a writer.
  */
 export class MemoryHost {
-  constructor({ volume = new MemoryVolume(), api = 1, features = [], unsupported = false } = {}) {
+  constructor({ volume = new MemoryVolume(), api = 2, features = [], unsupported = false } = {}) {
     this.volume = volume;
     this.api = api;
     this.features = features;
@@ -200,6 +188,8 @@ export class MemoryHost {
     this.onApply = null;
     this.urls = new Map();
     this.pendingNotify = null;
+    /** Note id keys the user has open in the host: editor mounts (their read) and `open` (a viewer tab). */
+    this.opened = new Set();
     volume.listeners.add(() => this.scheduleNotify());
     this.assets = {
       put: (noteId, asset) => this.assetPut(noteId, asset),
@@ -319,8 +309,18 @@ export class MemoryHost {
 
   // ---- the bridge -----------------------------------------------------------------------------------------------
 
+  /** The user opened `noteId` in the host outside an editor, for example in a viewer. */
+  open(noteId) {
+    this.opened.add(noteIdKey(noteId));
+  }
+
+  close(noteId) {
+    this.opened.delete(noteIdKey(noteId));
+  }
+
   async read(noteId) {
     this.calls.push({ op: 'read', noteId });
+    this.opened.add(noteIdKey(noteId));
     const resolved = this.resolve(noteId);
     if (resolved.kind !== 'note') return resolved;
     const state = await this.state(resolved.dir);
@@ -421,11 +421,7 @@ export class MemoryHost {
         else this.volume.writeFile(path, before);
       });
       applied.push(op.file);
-      if (op.file === 'markdown' && sameEntry) {
-        // Step 4, markdown identity: the same entry is respelled to exactly `<folderName>.md`.
-        const spelled = this.volume.spelling(path);
-        if (spelled !== null && spelled !== path) this.volume.rename(spelled, path);
-      }
+      // Step 4, markdown identity: the same entry keeps its spelling (API 2), as desktop's rename over it does on APFS.
       if (op.file === 'markdown' && !sameEntry && this.volume.isFile(oldMarkdown)) {
         const old = this.volume.readFile(oldMarkdown);
         if (old === current.files.markdown) {
@@ -507,8 +503,17 @@ export class MemoryHost {
   }
 
   async assetCopy(noteId, copy) {
-    this.calls.push({ op: 'assetCopy', noteId, sourceNoteId: copy.sourceNoteId, sourceRef: copy.sourceRef, name: copy.name });
+    const call = { op: 'assetCopy', noteId, sourceNoteId: copy.sourceNoteId, sourceRef: copy.sourceRef, name: copy.name, result: '' };
+    this.calls.push(call);
+    const result = await this.copyAsset(noteId, copy);
+    call.result = result.kind === 'refused' ? `refused:${result.reason}` : result.kind;
+    return result;
+  }
+
+  async copyAsset(noteId, copy) {
     if (!isMossAssetName(copy.name)) return { kind: 'refused', reason: 'name' };
+    // Only a note the user has open; checked before any lookup, so a refusal says nothing about other notes.
+    if (!this.opened.has(noteIdKey(copy.sourceNoteId))) return { kind: 'refused', reason: 'sourceNotOpen' };
     const source = this.index().get(noteIdKey(copy.sourceNoteId)) ?? [];
     if (source.length !== 1) return { kind: 'notFound' };
     const sourcePath = this.companionPath(source[0], copy.sourceRef);

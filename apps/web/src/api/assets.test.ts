@@ -35,6 +35,7 @@ const PrincipalDO = {
   idFromName: (name: string) => ({ name, toString: () => name }),
   get: (id: { name: string }) => ({
     setName: async () => undefined,
+    takeCreateToken: async () => true,
     publish: async () => undefined,
     takeWriteToken: async () => true,
     takeUploadToken: async () => {

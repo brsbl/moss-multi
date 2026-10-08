@@ -1,12 +1,13 @@
 // Settings → Agents (T3.6; A§7, A§8): a signed-in person's agent keys. POST mints one and returns its `mm_sk_` key once
 // (only the sha256 is stored); GET lists the caller's live agents with the id a share names; DELETE revokes one, then
 // closes its sockets through the one kick path before answering. An agent key administers nothing.
+import { AGENT_KEY_DAILY, DAY_MS } from '@moss-multi/protocol/limits';
 import { revokeAgent } from '@moss-multi/sync/fanout';
 import type { AppEnv } from '../env.ts';
 import type { AuthEnv } from '../auth/auth.ts';
 import { AGENT_KEY_PREFIX, resolvePrincipal, sha256Hex } from '../auth/principal.ts';
 import { json } from '../worker/route.ts';
-import { changed, NO_STORE, notFound, readJsonObject, refuse, unauthenticated } from './respond.ts';
+import { changed, NO_STORE, notFound, overDailyBound, readJsonObject, refuse, unauthenticated } from './respond.ts';
 
 export type AgentsEnv = AuthEnv & Partial<Pick<AppEnv, 'PrincipalDO'>>;
 
@@ -34,8 +35,12 @@ async function mint(request: Request, env: AgentsEnv, ownerId: string): Promise<
   if (!name || name.length > AGENT_NAME_MAX) return refuse(400, 'bad-request', `Name the agent (up to ${AGENT_NAME_MAX} characters).`);
   const key = newKey();
   const agent: AgentSummary = { id: crypto.randomUUID(), name, createdAt: Date.now() };
-  await env.DB.prepare('INSERT INTO agents (id, owner_user_id, name, key_hash, created_at, revoked_at) VALUES (?1, ?2, ?3, ?4, ?5, NULL)')
+  // At most AGENT_KEY_DAILY a day, revoked ones included, so minting and revoking cannot add rows without bound.
+  const inserted = await env.DB.prepare(`INSERT INTO agents (id, owner_user_id, name, key_hash, created_at, revoked_at)
+    SELECT ?1, ?2, ?3, ?4, ?5, NULL
+    WHERE (SELECT count(*) FROM agents WHERE owner_user_id = ?2 AND created_at > ?5 - ${DAY_MS}) < ${AGENT_KEY_DAILY}`)
     .bind(agent.id, ownerId, agent.name, await sha256Hex(key), agent.createdAt).run();
+  if (!changed(inserted)) return overDailyBound(`You can make ${AGENT_KEY_DAILY} agent keys a day. Try again later.`);
   return json({ agent, key }, 201, NO_STORE);
 }
 

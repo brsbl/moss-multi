@@ -138,7 +138,7 @@ const apiBase = (target: ShareTarget) => `/api/${target.type === 'doc' ? 'docs' 
 const linkUrl = (target: ShareTarget, token: string) =>
   new URL(`/${target.type === 'doc' ? 'd' : 'f'}/${encodeURIComponent(target.id)}?share=${token}`, window.location.origin).href;
 
-async function call<T>(path: string, init: RequestInit = {}): Promise<{ ok: boolean; status: number; body: (T & { message?: string }) | null }> {
+export async function call<T>(path: string, init: RequestInit = {}): Promise<{ ok: boolean; status: number; body: (T & { message?: string }) | null }> {
   const response = await fetch(path, {
     credentials: 'same-origin',
     ...init,
