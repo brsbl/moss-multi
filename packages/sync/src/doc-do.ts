@@ -1142,7 +1142,6 @@ export class DocDO extends YServer<SyncEnv> {
     const supplied = typeof input.baseText === 'string' ? input.baseText : null;
     if (supplied !== null) {
       if ((await sha256Hex(supplied)) !== input.baseHash) return { ok: false, status: 400, reason: 'base-mismatch' };
-      bases.put(input.baseHash, supplied);
     }
     const landed = { changed: false };
     const verdict = await this.#review(input, 'editor', (reviewer): PushVerdict => {
@@ -1152,6 +1151,7 @@ export class DocDO extends YServer<SyncEnv> {
         const outcome = landPush(this.document, this.name, { base, newText: input.newText, force: input.force === true }, CLI_PUSH,
           (diff, payloads) => this.#admitServerWrite(store, diff, payloads));
         if (!outcome.ok) return { ok: false, status: 409, reason: outcome.reason, deletedRatio: outcome.deletedRatio };
+        if (supplied !== null) bases.put(input.baseHash, supplied);
         landed.changed = outcome.changed;
         if (outcome.changed) {
           this.#comments?.flush();

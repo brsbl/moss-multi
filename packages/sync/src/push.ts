@@ -163,15 +163,29 @@ function blockAt(text: string, at: number): number {
   return block;
 }
 
-/** Why `actual` is refused: the first block where it differs from `expected`, named by its number and first line. */
-function mismatch(expected: string, actual: string): string {
+function firstLine(text: string, start: number): string {
+  const end = text.indexOf('\n', start + 1);
+  const line = text.slice(start, end < 0 ? text.length : end).trim();
+  return line.length > 60 ? `${line.slice(0, 57)}...` : line;
+}
+
+/**
+ * Why `actual` is refused: the first block where it differs from `expected`, named by its number and first line. A
+ * block the live doc already held is one the pull wrote; any other is the push's own, which moss would store differently.
+ */
+function mismatch(expected: string, actual: string, current: string): string {
   let at = 0;
   while (at < expected.length && at < actual.length && expected.charCodeAt(at) === actual.charCodeAt(at)) at++;
   const start = expected.lastIndexOf('\n\n', at - 1) + 1;
-  const lineEnd = expected.indexOf('\n', start + 1);
-  const line = expected.slice(start, lineEnd < 0 ? expected.length : lineEnd).trim();
-  const quoted = line.length > 60 ? `${line.slice(0, 57)}...` : line;
-  return `block ${blockAt(expected, at)}${quoted ? ` ("${quoted}")` : ''} would not land exactly as pushed, so nothing changed; pull and push again, leaving that block as the pull wrote it`;
+  const end = expected.indexOf('\n\n', at);
+  const block = expected.slice(start, end < 0 ? expected.length : end);
+  const quoted = firstLine(expected, start);
+  const name = `block ${blockAt(expected, at)}${quoted ? ` ("${quoted}")` : ''}`;
+  if (block && current.includes(block)) {
+    return `${name} would not land exactly as pushed, so nothing changed; pull and push again, leaving that block as the pull wrote it`;
+  }
+  const stored = firstLine(actual, actual.lastIndexOf('\n\n', at - 1) + 1);
+  return `${name} would be stored differently${stored ? ` (as "${stored}")` : ''}, so nothing changed; write it the way moss writes Markdown (for example *emphasis*, **strong**, \`\`\`javascript) and push again`;
 }
 
 export function landPush(live: Y.Doc, noteId: string, input: PushInput, origin: unknown, admit?: Admit): PushOutcome {
@@ -190,7 +204,13 @@ export function landPush(live: Y.Doc, noteId: string, input: PushInput, origin: 
     ?? spliceByBlock(liveState, currentParts.body, target.body);
   const root = { ...state.root, children: blocks } as unknown as SerializedEditorState['root'];
   try {
-    const changed = reconcileBody(live, { ...state, root }, origin, admit, {
+    // A push may change only payload text (a code block's code), which the note's own update does not show.
+    let wrotePayloads = false;
+    const admitting: Admit = (diff, payloads) => {
+      admit?.(diff, payloads);
+      wrotePayloads = payloads.length > 0;
+    };
+    const changedNote = reconcileBody(live, { ...state, root }, origin, admitting, {
       mutate(doc) {
         // Properties are structured, not converted text: they are written only when the push changed the block, and
         // stay as they are when the file's frontmatter block does not parse.
@@ -200,10 +220,10 @@ export function landPush(live: Y.Doc, noteId: string, input: PushInput, origin: 
       },
       verify(mirror) {
         const body = withoutFinalEol(partsOf(exportMirror(mirror, noteId)).body);
-        if (body !== expected) throw new ReconcileRefused('unverified', mismatch(expected, body));
+        if (body !== expected) throw new ReconcileRefused('unverified', mismatch(expected, body, currentParts.body));
       },
     });
-    return { ok: true, applied: merge.applied, failedHunks: merge.failedHunks, changed };
+    return { ok: true, applied: merge.applied, failedHunks: merge.failedHunks, changed: changedNote || wrotePayloads };
   } catch (error) {
     if (error instanceof ReconcileRefused && error.reason !== 'unverified') {
       // The reconcile's own check (its result against the composed tree) names no block: name the one that differs.
@@ -213,7 +233,7 @@ export function landPush(live: Y.Doc, noteId: string, input: PushInput, origin: 
       } catch {
         // Unparseable: the message names the first block.
       }
-      throw new ReconcileRefused('unverified', mismatch(expected, composed));
+      throw new ReconcileRefused('unverified', mismatch(expected, composed, currentParts.body));
     }
     throw error;
   }

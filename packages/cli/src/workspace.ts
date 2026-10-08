@@ -109,7 +109,8 @@ export function confined(root: string, file: string): string {
   const rel = relative(root, resolve(root, file));
   if (!rel || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new CliError(1, `${file} is outside the workspace at ${root}`);
   const parts = rel.split(sep);
-  if (parts[0] === STATE_DIR) throw new CliError(1, `${rel} is inside ${STATE_DIR}, where moss-multi keeps its own state`);
+  // In any letter case: on a case-insensitive volume `.MOSS-MULTI` is the state directory.
+  if (parts[0]!.toLowerCase() === STATE_DIR) throw new CliError(1, `${rel} is inside ${STATE_DIR}, where moss-multi keeps its own state`);
   const bad = parts.find((part) => !isAllowedName(part));
   if (bad !== undefined) throw new CliError(1, `"${bad}" is not a file name moss allows (no < > : " / \\ | ? * or control characters)`);
   noLinks(root, rel);
