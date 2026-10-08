@@ -109,7 +109,8 @@ export function confined(root: string, file: string): string {
   const rel = relative(root, resolve(root, file));
   if (!rel || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new CliError(1, `${file} is outside the workspace at ${root}`);
   const parts = rel.split(sep);
-  if (parts[0] === STATE_DIR) throw new CliError(1, `${rel} is inside ${STATE_DIR}, where moss-multi keeps its own state`);
+  // In any letter case: on a case-insensitive volume `.MOSS-MULTI` is the state directory.
+  if (parts[0]!.toLowerCase() === STATE_DIR) throw new CliError(1, `${rel} is inside ${STATE_DIR}, where moss-multi keeps its own state`);
   const bad = parts.find((part) => !isAllowedName(part));
   if (bad !== undefined) throw new CliError(1, `"${bad}" is not a file name moss allows (no < > : " / \\ | ? * or control characters)`);
   noLinks(root, rel);
@@ -144,15 +145,29 @@ export function readBase(root: string, docId: string): Uint8Array {
   return readFileSync(noLinks(root, stateRel(docId, 'base.md')));
 }
 
+/**
+ * Whether the volume under `root` folds case, as APFS and NTFS do by default: there, `NOTE.md` is `note.md`, so
+ * tracked paths compare case-insensitively. Probed on the real state directory.
+ */
+export function probeFoldsCase(root: string): boolean {
+  const lower = lstat(join(root, STATE_DIR));
+  const upper = lstat(join(root, STATE_DIR.toUpperCase()));
+  return lower !== null && upper !== null && lower.ino === upper.ino && lower.dev === upper.dev;
+}
+
+const foldPath = (path: string) => path.normalize('NFC').toLowerCase();
+/** Whether two tracked paths name one file. */
+const samePath = (a: string, b: string, folds: boolean) => (folds ? foldPath(a) === foldPath(b) : a === b);
+
 /** The tracked doc whose file is `file`, or null. */
-export function metaForFile(root: string, file: string): DocMeta | null {
+export function metaForFile(root: string, file: string, folds = false): DocMeta | null {
   const rel = confined(root, file);
   const dir = join(root, STATE_DIR);
   if (!isDir(dir)) return null;
   for (const name of readdirSync(dir)) {
     if (!DOC_ID.test(name)) continue;
     const meta = readMeta(root, name);
-    if (meta && meta.file === rel) return meta;
+    if (meta && samePath(meta.file, rel, folds)) return meta;
   }
   return null;
 }
@@ -161,20 +176,21 @@ export function metaForFile(root: string, file: string): DocMeta | null {
  * Writes the pulled bytes to `file` and records them as the base. `expectHash` is what the file must still hold
  * when it is replaced (null: still absent; undefined: --force replaces whatever is there).
  */
-export function recordPull(root: string, docId: string, file: string, bytes: Uint8Array, expectHash?: string | null): DocMeta {
+export function recordPull(root: string, docId: string, file: string, bytes: Uint8Array, expectHash: string | null | undefined, folds = false): DocMeta {
   const rel = confined(root, file);
   writeInside(root, rel, bytes, expectHash);
-  return recordBase(root, docId, rel, bytes);
+  return recordBase(root, docId, rel, bytes, folds);
 }
 
 /** Records `bytes` as the doc's base for `rel`. Any other doc that tracked `rel` lets go of it: a file has one owner. */
-export function recordBase(root: string, docId: string, rel: string, bytes: Uint8Array): DocMeta {
+export function recordBase(root: string, docId: string, rel: string, bytes: Uint8Array, folds = false): DocMeta {
   writeInside(root, stateRel(docId, 'base.md'), bytes);
   const meta: DocMeta = { docId, file: rel, baseHash: sha256Hex(bytes), pulledAt: Date.now() };
   writeInside(root, stateRel(docId, 'meta.json'), Buffer.from(`${JSON.stringify(meta, null, 2)}\n`));
   for (const name of readdirSync(join(root, STATE_DIR))) {
     if (name === docId || !DOC_ID.test(name)) continue;
-    if (readMeta(root, name)?.file === rel) rmSync(join(root, STATE_DIR, name), { recursive: true, force: true });
+    const other = readMeta(root, name);
+    if (other && samePath(other.file, rel, folds)) rmSync(join(root, STATE_DIR, name), { recursive: true, force: true });
   }
   return meta;
 }

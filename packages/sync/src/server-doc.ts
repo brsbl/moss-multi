@@ -159,8 +159,11 @@ function mirrorDiff(live: Y.Doc, mutate: Mutate, verify?: Verify, base?: MirrorB
         }, { discrete: true, skipTransforms: true });
       }
     }
+    // Taken before `verify`, which may edit the mirror to read it (an export recomputes formulas); those edits are dropped.
+    const diff = Y.encodeStateAsUpdate(mirror.doc, hydrated);
+    const payloads = mirror.written();
     verify?.(mirror);
-    return { diff: Y.encodeStateAsUpdate(mirror.doc, hydrated), payloads: mirror.written() };
+    return { diff, payloads };
   } finally {
     mirror.dispose();
   }
@@ -175,7 +178,7 @@ export type Mutate = (doc: Y.Doc) => void | null | (() => boolean);
 /** Admission for a server write: the note's diff and each payload's; throws to refuse. */
 export type Admit = (diff: Uint8Array, payloads: [string, Uint8Array][]) => void;
 
-/** A check of the mutated mirror before anything is diffed; throws to refuse the write. */
+/** A check of the mutated mirror before anything is written; throws to refuse the write. Its own edits are not written. */
 export type Verify = (mirror: Mirror) => void;
 
 /**

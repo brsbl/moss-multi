@@ -39,7 +39,7 @@ const DocDO = {
       created.push({ docId: id.name, input });
       await d1Projections(d1.db, publish).title(id.name, (input as { title?: string }).title ?? '');
     },
-    exportMarkdown: async () => {
+    pullMarkdown: async () => {
       exported.push(id.name);
       return `Exported ${id.name} {{2+2|4}}\n`;
     },

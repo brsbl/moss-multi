@@ -8,6 +8,7 @@
     "./filenames": "./src/filenames.ts",
     "./frontmatter": "./src/frontmatter.ts",
     "./text-diff": "./src/text-diff.ts",
+    "./merge": "./src/merge.ts",
     "./anchor-frame": "./src/anchor-frame.ts",
     "./comment-units": "./src/comment-units.ts",
     "./group-pending": "./src/group-pending.ts",
@@ -20,6 +21,7 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@sanity/diff-match-patch": "3.2.0",
     "js-yaml": "4.3.0",
     "lexical": "0.48.0",
     "lib0": "0.2.119",

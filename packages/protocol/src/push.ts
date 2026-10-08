@@ -17,6 +17,8 @@ export type PushResponse =
   | { ok: true; mode: 'suggest'; suggestionId: string }
   | { ok: false; reason: 'degenerate'; deletedRatio: number }
   | { ok: false; reason: 'base-missing' }
+  /** The result would differ from the merged file somewhere (the converter cannot store a block exactly): nothing landed. */
+  | { ok: false; reason: 'push-unverified'; message: string }
   | { ok: false; reason: 'forbidden' | 'too-large' | 'rate-limited'; retryAfterSec?: number };
 
 /** CLI exit codes (A§17). */
