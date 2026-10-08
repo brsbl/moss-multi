@@ -7,6 +7,7 @@ import { createElement, type CSSProperties } from 'react';
 import type { LexicalNode } from 'lexical';
 import { resolveMossHtmlIntrinsicSize } from '@moss-desktop/common/moss-html-dimensions';
 import { loadNodeView, registerLazyNodeView } from '@moss-desktop/renderer/editor/nodes/node-views';
+import { lazyFamilies } from './lazy-families';
 
 // Each placeholder takes the box its view first paints in the frame (measured at 672 and 960 px wide): a chart is
 // 370 px tall; a canvas is its 2:1 drawing area plus its header, each with the view's my-6 margins; an HTML block is
@@ -34,19 +35,8 @@ registerLazyNodeView(
 registerLazyNodeView('sketch', () => import('@moss-desktop/renderer/editor/nodes/SketchNode.view'), sketchPlaceholder);
 registerLazyNodeView('html-block', () => import('@moss-desktop/renderer/editor/nodes/HtmlBlockquoteNode.view'), htmlPlaceholder);
 
-/**
- * Which lazy families `body` may hold, by the markdown that imports them: a ```moss-chart fence, a ```moss-canvas
- * (or legacy ```moss-sketch) fence, and a ```moss-html fence or an HTML blockquote. A superset is harmless; it only
- * loads a chunk early.
- */
-const FAMILIES: [type: string, pattern: RegExp][] = [
-  ['chart', /`{3,}\s*moss-chart/],
-  ['sketch', /`{3,}\s*moss-(?:canvas|sketch)/],
-  ['html-block', /`{3,}\s*moss-html|<blockquote|&lt;blockquote/i],
-];
-
 /** Loads the views `body` needs before it is shown; null when it needs none. A failed load leaves the placeholder. */
 export function preloadNodeViews(body: string): Promise<void> | null {
-  const loads = FAMILIES.filter(([, pattern]) => pattern.test(body)).map(([type]) => loadNodeView(type).catch(() => undefined));
+  const loads = lazyFamilies(body).map((type) => loadNodeView(type).catch(() => undefined));
   return loads.length > 0 ? Promise.all(loads).then(() => undefined) : null;
 }

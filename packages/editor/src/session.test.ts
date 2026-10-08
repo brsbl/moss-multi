@@ -35,6 +35,12 @@ class FakeSurface implements SessionSurface {
   colors: Record<string, number> = {};
   commit?: () => void;
   frozen = false;
+  /** The chunk a body holding CHART needs before it shows, as the real surface's lazy views: held while set. */
+  chunk: Promise<void> | null = null;
+
+  prepare(content: EditorContent) {
+    return content.body.includes('CHART') ? this.chunk : null;
+  }
 
   freeze(frozen: boolean) {
     this.frozen = frozen;
@@ -516,6 +522,120 @@ describe('reloads never take an edit typed meanwhile', () => {
     expect(kinds()).not.toContain('reloaded');
     expect(session.status).toBe('conflict');
     expect(markdownOnDisk()).toBe('# Q3\n\nBody\n');
+  });
+});
+
+/** Holds the CHART chunk until the returned release is called. */
+function holdChunk(): () => void {
+  let release: () => void = () => undefined;
+  surface.chunk = new Promise<void>((resolve) => (release = resolve));
+  return () => {
+    surface.chunk = null;
+    release();
+  };
+}
+
+describe('a load waiting for its views changes nothing until it applies, and only the newest applies', () => {
+  it('an older reload whose chunk arrives after a newer reload never wins, and edits to the newer one are saved', async () => {
+    const session = mount();
+    await session.ready;
+    const release = holdChunk();
+    volume.writeFile(`${DIR}/Plan.md`, '# Plan\n\nVersion A CHART\n');
+    await settle(250);
+    expect(surface.live.body, 'nothing is shown before its views are in').toBe('Body\n');
+    volume.writeFile(`${DIR}/Plan.md`, '# Plan\n\nVersion B\n');
+    await settle(250);
+    expect(surface.live.body).toBe('Version B\n');
+    expect(surface.editable).toBe(true);
+    type(session, 'Version B typed\n');
+    expect(session.status).toBe('dirty');
+    release();
+    await settle(0);
+    expect(surface.live.body, 'the older version never replaces the newer one').toBe('Version B typed\n');
+    expect(kinds().filter((kind) => kind === 'reloaded')).toHaveLength(1);
+    await settle(1_500);
+    expect(markdownOnDisk()).toBe('# Plan\n\nVersion B typed\n');
+    expect(session.status).toBe('clean');
+    expect(kinds()).not.toContain('conflict');
+  });
+
+  it('an edit made while a reload waits for its chunk stays in the document, and the reload becomes a conflict', async () => {
+    const session = mount();
+    await session.ready;
+    const release = holdChunk();
+    volume.writeFile(`${DIR}/Plan.md`, '# Plan\n\nRemote CHART\n');
+    await settle(250);
+    // A comment reply in moss's portalled popover, say: an edit to the document still on screen.
+    type(session, 'Reply meanwhile\n');
+    expect(session.status).toBe('dirty');
+    release();
+    await settle(0);
+    expect(surface.live.body).toBe('Reply meanwhile\n');
+    expect(session.status).toBe('conflict');
+    expect(kinds()).not.toContain('reloaded');
+    await settle(5_000);
+    expect(markdownOnDisk()).toBe('# Plan\n\nRemote CHART\n');
+    const flushed = await session.flush();
+    expect(flushed).toMatchObject({ kind: 'conflict' });
+    if (flushed.kind === 'conflict') expect(flushed.draft.files.markdown).toBe('# Plan\n\nReply meanwhile\n');
+  });
+
+  it('a save during a slow chunk is refused rather than writing the old body over the newer version', async () => {
+    const session = mount();
+    await session.ready;
+    const release = holdChunk();
+    volume.writeFile(`${DIR}/Plan.md`, '# Plan\n\nRemote CHART\n');
+    await settle(250);
+    type(session, 'Reply meanwhile\n');
+    await settle(3_000);
+    expect(markdownOnDisk()).toBe('# Plan\n\nRemote CHART\n');
+    expect(session.status).toBe('conflict');
+    release();
+    await settle(0);
+    expect(surface.live.body).toBe('Reply meanwhile\n');
+    expect(session.status).toBe('conflict');
+    expect(kinds()).not.toContain('reloaded');
+    expect(markdownOnDisk()).toBe('# Plan\n\nRemote CHART\n');
+  });
+
+  it('a first mount shows the note only once its views are in', async () => {
+    volume.writeFile(`${DIR}/Plan.md`, '# Plan\n\nHas a CHART\n');
+    const release = holdChunk();
+    const session = mount();
+    await settle(0);
+    expect(session.status).toBe('loading');
+    expect(surface.loads).toHaveLength(0);
+    release();
+    await session.ready;
+    expect(surface.loaded?.body).toBe('Has a CHART\n');
+    expect(session.status).toBe('clean');
+  });
+
+  it('unmounting while the first mount waits for its chunk rejects ready with unmounted at once', async () => {
+    volume.writeFile(`${DIR}/Plan.md`, '# Plan\n\nHas a CHART\n');
+    const release = holdChunk();
+    const session = mount();
+    await settle(0);
+    expect(session.status).toBe('loading');
+    await expect(session.unmount()).resolves.toMatchObject({ kind: 'unmounted' });
+    await expect(session.ready).rejects.toMatchObject({ code: 'unmounted' });
+    release();
+    await settle(0);
+    expect(surface.loads).toHaveLength(0);
+    expect(session.status).toBe('unmounted');
+  });
+
+  it('unmounting while a reload waits for its chunk applies nothing', async () => {
+    const session = mount();
+    await session.ready;
+    const release = holdChunk();
+    volume.writeFile(`${DIR}/Plan.md`, '# Plan\n\nRemote CHART\n');
+    await settle(250);
+    await expect(session.unmount()).resolves.toMatchObject({ kind: 'unmounted', flush: { kind: 'clean' } });
+    release();
+    await settle(0);
+    expect(surface.loads).toHaveLength(1);
+    expect(kinds()).not.toContain('reloaded');
   });
 });
 

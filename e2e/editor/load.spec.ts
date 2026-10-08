@@ -246,7 +246,10 @@ test('heavy families load on first use: none for a plain note, then each renders
   expect(await page.evaluate(() => (window as unknown as { editorFixture: Fixture }).editorFixture.violations)).toEqual([]);
 });
 
-test('a newer external reload wins over an older one still waiting on its family chunk, and the next save keeps it', async ({ page }) => {
+/** The chart family's chunk, which the race tests hold back. */
+const CHART_CHUNK = /\/assets\/[^/]*chart[^/]*\.js$/i;
+
+test('a newer external reload wins over an older one still waiting on its family chunk, and edits to the newer one are saved', async ({ page }) => {
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await page.goto(`${server.url}/fixture/index.html`);
@@ -262,30 +265,35 @@ test('a newer external reload wins over an older one still waiting on its family
   const body = page.locator('[data-moss-editor] [data-moss-note-editor-root="true"]');
   await expect(body).toContainText('First line');
   const write = (text: string) => page.evaluate(([file, markdown]) => (window as unknown as FixtureWindow).editorFixture.externalWrite(file, markdown), [path, text]);
-  // Version A brings the note's first chart, whose chunk is slow; version B, with no lazy family, lands meanwhile.
-  server.delay = { pattern: /\/assets\/[^/]*chart[^/]*\.js$/i, ms: 2_500 };
+  // Version A brings the note's first chart, whose chunk is slow; version B, with no lazy family, lands meanwhile,
+  // and the user types into it while A's chunk is still on its way.
+  server.delay = { pattern: CHART_CHUNK, ms: 2_500 };
   try {
     await write(`# Plan\n\nVersion A\n\n${LAZY_FAMILIES[0].markdown}\n`);
     await page.waitForTimeout(700);
+    await expect(body, 'nothing shows before its views are in').toContainText('First line');
     await write('# Plan\n\nVersion B final\n');
     await expect(body).toContainText('Version B final');
-    await page.waitForTimeout(4_000);
+    await body.getByText('Version B final').click();
+    await page.keyboard.press('End');
+    await page.keyboard.type(' typed');
+    await expect.poll(() => page.evaluate(() => (window as unknown as FixtureWindow).editorFixture.status()), { timeout: 1_000 }).toBe('dirty');
+    // Past the chunk's arrival.
+    await page.waitForTimeout(3_000);
   } finally {
     server.delay = { pattern: null, ms: 0 };
   }
-  await expect(body, 'the older version does not replace the newer one once its chunk arrives').toContainText('Version B final');
+  await expect(body, 'the older version does not replace the newer one once its chunk arrives').toContainText('Version B final typed');
   await expect(body).not.toContainText('Version A');
-  await body.getByText('Version B final').click();
-  await page.keyboard.press('End');
-  await page.keyboard.type(' typed');
+  const kinds = (await page.evaluate(() => (window as unknown as FixtureWindow).editorFixture.events())).map((event) => event.kind);
+  expect(kinds.filter((kind) => kind === 'reloaded')).toHaveLength(1);
+  expect(kinds).not.toContain('conflict');
   expect(await page.evaluate(() => (window as unknown as FixtureWindow).editorFixture.flush())).toMatchObject({ kind: 'saved' });
   expect((await page.evaluate(() => (window as unknown as FixtureWindow).editorFixture.files()))[path]).toMatch(/^# Plan\n\nVersion B final typed\n?$/);
   expect(errors).toEqual([]);
 });
 
-const CHART_CHUNK = /\/assets\/[^/]*chart[^/]*\.js$/i;
-
-test('a comment reply made while a reload waits for its chart chunk is not taken, and the external version stays on disk', async ({ page }) => {
+test('a comment reply made while a reload waits for its chart chunk lands in the document on screen, and the reload becomes a conflict', async ({ page }) => {
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await page.goto(`${server.url}/fixture/index.html`);
@@ -335,24 +343,26 @@ test('a comment reply made while a reload waits for its chart chunk is not taken
     await page.evaluate(([file, markdown]) => (window as unknown as FixtureWindow).editorFixture.externalWrite(file, markdown), [path, external]);
     // The reload is waiting for the chart's chunk; the user replies in the thread still on screen.
     await page.waitForTimeout(500);
-    await reply.click({ force: true, timeout: 1_000 }).catch(() => undefined);
+    await reply.click({ timeout: 1_000 });
     await page.keyboard.type('Late reply');
-    await page.getByRole('button', { name: 'Submit comment' }).click({ force: true, timeout: 1_000 }).catch(() => undefined);
-    await page.keyboard.press('Enter');
+    await page.getByRole('button', { name: 'Submit comment' }).click({ timeout: 1_000 });
     // Past the idle save (1.5 s) and the chunk's arrival.
     await page.waitForTimeout(4_000);
   } finally {
     server.delay = { pattern: null, ms: 0 };
   }
-  await expect(body.locator('.recharts-surface')).toBeVisible({ timeout: 10_000 });
-  await expect(body).toContainText('External edit: Alpha beta gamma');
+  await expect(page.getByText('Late reply'), 'the reply stays in the thread on screen').toBeVisible();
+  await expect(body).not.toContainText('External edit');
+  await expect(body.locator('.recharts-surface')).toHaveCount(0);
   const files = await page.evaluate(() => (window as unknown as FixtureWindow).editorFixture.files());
   expect(files[path], 'the external version, its chart included, is still on disk').toBe(external);
-  expect(files['/Moss/Notes/Plan/comments.json'] ?? '', 'the reply was not taken').not.toContain('Late reply');
   const after = (await page.evaluate(() => (window as unknown as FixtureWindow).editorFixture.events())).slice(eventsBefore).map((event) => event.kind);
-  expect(after, 'nothing was saved against the version being loaded').toEqual(['reloaded']);
-  expect(await page.evaluate(() => (window as unknown as FixtureWindow).editorFixture.status())).toBe('clean');
-  expect(await page.evaluate(() => (window as unknown as FixtureWindow).editorFixture.flush())).toMatchObject({ kind: 'clean' });
+  expect(after, 'the reply made the editor dirty, so the reload became a conflict').toContain('conflict');
+  expect(after).not.toContain('reloaded');
+  expect(await page.evaluate(() => (window as unknown as FixtureWindow).editorFixture.status())).toBe('conflict');
+  const flushed = (await page.evaluate(() => (window as unknown as FixtureWindow).editorFixture.flush())) as { kind: string; draft?: { files: { comments: string } } };
+  expect(flushed.kind).toBe('conflict');
+  expect(flushed.draft?.files.comments, 'the draft keeps the reply').toContain('Late reply');
   expect(errors).toEqual([]);
 });
 
