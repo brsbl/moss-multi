@@ -462,25 +462,31 @@ class Pacer {
     const work = Math.max(0.001, ran - started);
     const laid = this.#ended - ran;
     performance.measure(this.label, { start: started, detail: { units: used, workMs: Math.round(work), layoutMs: Math.round(laid), beforeMs: Math.round(before) } });
-    // A batch's work is a cost that grows with the note (the update copying and diffing what the batch lands in) plus
-    // a cost per unit. Two batches of different sizes tell them apart; sized by the whole time alone, batches in a
-    // large note shrank to FIRST_BATCH and each still paid the note's cost. With no such estimate, the whole time
-    // sizes the next batch, and a batch that cannot learn (the same size twice) tries twice the units.
+    const room = Math.max(TARGET_MS / 3, TARGET_MS - laid);
+    if (this.max !== MAX_TOP_BATCH) {
+      // List items and table rows: sized by the whole time (each item can cost time linear in its list).
+      this.budget = Math.round(Math.max(FIRST_BATCH, Math.min(this.max, used * 4, room / (work / used))));
+      return;
+    }
+    // Top-level blocks: a batch's work is a cost that grows with the note (the update copying and diffing the root)
+    // plus a cost per block. Two batches of different sizes tell them apart; sized by the whole time alone, batches
+    // in a large note shrank to FIRST_BATCH and each still paid the note's cost. A batch that cannot learn (the same
+    // size twice, or more blocks in no more time) tries twice the blocks.
     const last = this.#last;
     this.#last = { units: used, work };
-    let budget = Math.max(TARGET_MS / 3, TARGET_MS - laid) / (work / used);
+    let budget = room / (work / used);
     if (last && last.units !== used) {
       const marginal = (work - last.work) / (used - last.units);
       if (marginal > 0) {
         const fixed = Math.min(work, Math.max(0, work - marginal * used));
-        // Units fill what the target leaves after the note's cost, and at least as long as that cost (to twice the
+        // Blocks fill what the target leaves after the note's cost, and at least as long as that cost (to twice the
         // target), so a large note's paste takes few batches rather than many that each pay for the note.
         budget = Math.max(TARGET_MS / 3, TARGET_MS - laid - fixed, Math.min(fixed, TARGET_MS * 2)) / marginal;
       } else if (work + laid < TARGET_MS * 2) {
-        budget = used * 2; // more units took no longer: the note's cost is all of it
+        budget = used * 2;
       }
-    } else if (last && budget <= used) {
-      budget = work + laid < TARGET_MS * 2 ? used * 2 : budget;
+    } else if (last && budget <= used && work + laid < TARGET_MS * 2) {
+      budget = used * 2;
     }
     this.budget = Math.round(Math.max(FIRST_BATCH, Math.min(this.max, used * 2, budget)));
   }

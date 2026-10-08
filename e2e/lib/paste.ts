@@ -237,6 +237,8 @@ export async function pasteAndCheck(
   await ada.page.waitForTimeout(NEW_STEP_MS);
 
   await watchStalls(ada);
+  const t0 = Date.now();
+  const phase = (label: string) => console.log(`paste phase: ${label} at ${Math.round((Date.now() - t0) / 1000)} s`);
   const busyMs = await pastePlain(ada, docId, pasted);
   expect(busyMs, 'the paste keeps the tab responsive').toBeLessThan(maxBusyMs);
   try {
@@ -244,17 +246,20 @@ export async function pasteAndCheck(
   } finally {
     console.log(`paste batches: ${await batchReport(ada)}`);
   }
+  phase('acked');
   await expect.poll(() => exported(ada, docId), { message: 'every pasted character lands in the doc', timeout }).toBe(want.whole);
   const stall = await longestStall(ada);
   console.log(`longest stall: ${stall.ms} ms, ${stall.at} ms after the paste, during: ${stall.during}`);
   expect(stall.ms, `the tab is never held longer than ${maxStallMs} ms at a time while the paste lands (the longest began ${stall.at} ms after the paste, during: ${stall.during}; socket closes: ${wire?.closes.join(', ') || 'none seen'})`).toBeLessThanOrEqual(maxStallMs);
   const pastedPrint = await fingerprint(ada, docId);
   await expect.poll(() => fingerprint(ben, docId), { message: 'the collaborator sees the whole paste', timeout }).toEqual(pastedPrint);
+  phase('peer has it');
 
   await ada.page.waitForTimeout(NEW_STEP_MS);
   await ada.page.keyboard.type('Z');
   await ui.waitAcked(ada, docId, timeout);
   await expect.poll(() => exported(ada, docId), { message: 'the caret ends after the paste', timeout }).toBe(want.typed);
+  phase('typed');
 
   await ada.page.waitForTimeout(NEW_STEP_MS);
   await ada.page.keyboard.press(UNDO);
@@ -264,11 +269,13 @@ export async function pasteAndCheck(
   await ui.waitAcked(ada, docId, timeout);
   await expect.poll(() => exported(ada, docId), { message: 'one more undo removes the whole paste', timeout }).toBe(before);
   await expect.poll(() => fingerprint(ben, docId), { message: 'the collaborator sees the paste undone', timeout }).toEqual(empty);
+  phase('undone');
 
   await ada.page.keyboard.press(REDO);
   await ui.waitAcked(ada, docId, timeout);
   await expect.poll(() => exported(ada, docId), { message: 'one redo brings the whole paste back to the server', timeout }).toBe(want.whole);
   await expect.poll(() => fingerprint(ben, docId), { message: 'the collaborator sees the paste redone', timeout }).toEqual(pastedPrint);
+  phase('redone');
   if (wire) expectWire(wire);
   return busyMs;
 }
