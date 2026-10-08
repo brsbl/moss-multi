@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { TRASH_COPY } from '@moss-multi/protocol/retention';
 import { parseDocRef } from './docref.ts';
-import { runCli } from './program.ts';
+import { runCli, type ProgramDeps } from './program.ts';
 import { sha256Hex } from './workspace.ts';
 
 const SERVER = 'http://127.0.0.1:9999';
@@ -97,10 +97,11 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-async function cli(args: string[], env: Record<string, string> = { MOSS_MULTI_SERVER: SERVER, MOSS_MULTI_API_KEY: KEY }) {
+async function cli(args: string[], env: Record<string, string> = { MOSS_MULTI_SERVER: SERVER, MOSS_MULTI_API_KEY: KEY }, extra: Partial<ProgramDeps> = {}) {
   const chunks: Buffer[] = [];
   const errors: string[] = [];
   const code = await runCli(args, {
+    ...extra,
     env: { MOSS_MULTI_CONFIG_DIR: configDir, ...env },
     cwd: () => dir,
     fetchImpl: server.fetchImpl,
@@ -307,6 +308,22 @@ describe('one owner per tracked file', () => {
     expect(pushed.code, pushed.err).toBe(0);
     expect(server.seen.find((call) => call.path.endsWith('/push'))?.path).toBe(`/api/docs/${ID_B}/push`);
     expect(server.state.pushes[0]).toMatchObject({ baseHash: sha256Hex(new TextEncoder().encode('# Garden notes\n\nWater daily.\n')) });
+  });
+});
+
+describe('one owner per tracked file on a case-insensitive volume', () => {
+  // CI's volumes are case-sensitive, so the run says the workspace folds case, as APFS and NTFS do by default.
+  const folding = { foldsCase: () => true };
+
+  it('a forced pull into a case variant of a tracked file leaves one owner, and push goes to it', async () => {
+    expect((await cli(['pull', ID_A, 'note.md'], undefined, folding)).code).toBe(0);
+    expect((await cli(['pull', ID_B, 'NOTE.md', '--force'], undefined, folding)).code).toBe(0);
+    expect(existsSync(join(dir, '.moss-multi', ID_A, 'meta.json')), 'doc A no longer claims note.md').toBe(false);
+    writeFileSync(join(dir, 'note.md'), '# Garden notes\n\nWater daily, twice in July.\n');
+    const pushed = await cli(['push', 'note.md'], undefined, folding);
+    expect(pushed.code, pushed.err).toBe(0);
+    const paths = server.seen.filter((call) => call.path.endsWith('/push')).map((call) => call.path);
+    expect(paths, 'push targets B, never A').toEqual([`/api/docs/${ID_B}/push`]);
   });
 });
 

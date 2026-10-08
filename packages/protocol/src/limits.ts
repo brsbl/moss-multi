@@ -28,6 +28,12 @@ export const ACK_COALESCE_MS = 250;
 /** REST writes (a rename now, a push later) per principal per window, counted by its PrincipalDO (A§5.2); 429 past it. */
 export const REST_WRITE_RATE = { max: 60, windowMs: 60_000 } as const;
 
+/**
+ * CLI pushes per acting user per window (A§5.2, A§17): an agent's pushes count against its owner, so more keys add no
+ * rate, and no one else's pushes reach the bucket. Denied attempts count; 429 with retry-after past it.
+ */
+export const PUSH_RATE = { max: 60, windowMs: 60_000 } as const;
+
 /** Media uploads (and cross-note copies) per identity per window, counted by a PrincipalDO (A§16); 429 past it. A
  * signed-in holder of a link is also counted under the link and their IP, whichever account they use. */
 export const UPLOAD_RATE = { max: 60, windowMs: 60_000 } as const;

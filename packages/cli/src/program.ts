@@ -20,6 +20,8 @@ export interface ProgramDeps {
   stderr?: (line: string) => void;
   sleep?: (ms: number) => Promise<void>;
   openUrl?: (url: string) => void;
+  /** Whether the volume under a workspace root folds case (APFS and NTFS do by default); probed when absent. */
+  foldsCase?: (root: string) => boolean;
 }
 
 export const AGENT_KEY_PREFIX = 'mm_sk_';

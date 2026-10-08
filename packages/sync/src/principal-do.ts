@@ -2,7 +2,7 @@ import { getServerByName, Server, type Connection, type ConnectionContext, type 
 import { CLOSE, TRUSTED } from '@moss-multi/protocol/sync';
 import type { WorkspaceEvent } from '@moss-multi/protocol/workspace';
 import {
-  ACCESS_DEADLINE_MS, ACCESS_TICK_MS, COMMENT_OP_RATE, NAMED_VERSION_RATE, REMOTE_FETCH_RATE, REST_WRITE_RATE, SESSION_MAX_MS, SUGGEST_PREVIEW_RATE, SUGGEST_REVIEW_RATE, UPLOAD_RATE,
+  ACCESS_DEADLINE_MS, ACCESS_TICK_MS, COMMENT_OP_RATE, NAMED_VERSION_RATE, PUSH_RATE, REMOTE_FETCH_RATE, REST_WRITE_RATE, SESSION_MAX_MS, SUGGEST_PREVIEW_RATE, SUGGEST_REVIEW_RATE, UPLOAD_RATE,
 } from '@moss-multi/protocol/limits';
 import { liveCredentials, TRY_AGAIN, withDeadline } from './access-epoch.ts';
 import { windowed } from './doc/admission.ts';
@@ -83,6 +83,7 @@ export class PrincipalDO extends Server<SyncEnv> {
    */
   static credentials: (env: SyncEnv) => CredentialCheck | null = (env) => (env?.DB ? (sessions, agents) => liveCredentials(env.DB, sessions, agents) : null);
   #writes: RateWindow | null = null;
+  #pushes: RateWindow | null = null;
   #uploads: RateWindow | null = null;
   #fetches: RateWindow | null = null;
   #comments: RateWindow | null = null;
@@ -273,6 +274,12 @@ export class PrincipalDO extends Server<SyncEnv> {
     // Persisted: a PrincipalDO idle for ~10 s is evicted, and a wake must not hand out a fresh window.
     this.#writes ??= new RateWindow(REST_WRITE_RATE.max, REST_WRITE_RATE.windowMs, sqlAttempts(this.ctx.storage.sql, 'rest-writes'));
     return this.#writes.take();
+  }
+
+  /** One CLI push charged to this acting user (an agent's owner); false past PUSH_RATE. Persisted, as above. */
+  takePushToken(): boolean {
+    this.#pushes ??= new RateWindow(PUSH_RATE.max, PUSH_RATE.windowMs, sqlAttempts(this.ctx.storage.sql, 'pushes'));
+    return this.#pushes.take();
   }
 
   /** One media upload or cross-note copy counted against this name; false past UPLOAD_RATE. Persisted, as above. */
