@@ -10,7 +10,8 @@ import { clearCredentials, configPath, deviceLogin, normalizeServer, resolveConf
 import { resolveDocId } from './docref.ts';
 import { CliError, EXIT } from './errors.ts';
 import { jsonSafe, redact, ttySafe } from './output.ts';
-import { confined, findRoot, localName, metaForFile, probeFoldsCase, readBase, readConfined, readMeta, recordPull, sha256Hex } from './workspace.ts';
+import { adopt, describe, readSidecar, syncExitCode, syncOnce, watchLoop } from './sync.ts';
+import { confined, ensureStateDir, findRoot, localName, metaForFile, probeFoldsCase, readBase, readConfined, readMeta, recordPull, sha256Hex } from './workspace.ts';
 
 export interface ProgramDeps {
   env?: Record<string, string | undefined>;
@@ -23,6 +24,8 @@ export interface ProgramDeps {
   openUrl?: (url: string) => void;
   /** Whether the volume under a workspace root folds case (APFS and NTFS do by default); probed when absent. */
   foldsCase?: (root: string) => boolean;
+  /** Stops `watch`; SIGINT and SIGTERM when absent. */
+  signal?: AbortSignal;
 }
 
 export const AGENT_KEY_PREFIX = 'mm_sk_';
@@ -41,13 +44,20 @@ export const USAGE = `moss-multi: pull, push and manage moss-multi notes from a 
   vaults [--json]                              your vaults
   cat <doc>                                    the doc's markdown, byte for byte
   new <title> [--folder <id>] [--json]         create an empty doc; prints its id
-  add <file.md> [--title <t>] [--folder <id>] [--json]
-                                               create a doc from a local file; prints its id
+  add <file.md> [--title <t>] [--folder <id>] [--moss] [--json]
+                                               create a doc from a local file; prints its id. With --title, a
+                                               first line "# <title>" is the title, not a heading. --moss imports
+                                               a moss note: its "# Title" line names it, its comments.json comes
+                                               too. In a workspace the file is tracked, as sync would
   url <doc>                                    the doc's web address
   mv <doc> <new title>                         rename a doc
   rm <doc> [--json]                            move a doc to Trash
   pull <doc> [file] [--force]                  write the doc to a file and track it here
   push <file> [--suggest] [--force]            merge your edits to a pulled file into the doc
+  init [dir]                                   make a folder a workspace, so sync and watch may use it
+  sync [dir] [--force] [--json]                pull and push every tracked file; an untracked .md becomes a
+                                               doc; deleting a file here never deletes the doc
+  watch [dir] [--interval <s>]                 sync on every change and every 60 s, until Ctrl+C
   history <doc> [--json]                       the doc's versions
   comments <doc> [--json]                      the doc's comment threads
   suggestions <doc> [--json]                   the doc's open suggestions
@@ -143,7 +153,20 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
     const config = resolveConfig(env);
     return createApi({ serverUrl: server(), token: config.apiKey ?? config.sessionToken, fetchImpl });
   };
+  /** A command that finishes with a code other than 0 sets it here (`sync`); a CliError carries its own. */
+  let exitCode: number = EXIT.ok;
   const docUrl = (client: Api, id: string) => `${client.serverUrl}/d/${encodeURIComponent(id)}`;
+  /**
+   * The workspace for `sync` and `watch`: the one holding `dir` (default the working directory). They never make
+   * one: a folder becomes a workspace through `init` or `pull`, so a stray `sync` cannot upload a code repository.
+   */
+  const workspaceAt = (dir?: string): string => {
+    const start = resolve(cwd(), dir ?? '.');
+    if (!existsSync(start)) throw new CliError(1, `no such directory: ${dir ?? start}`);
+    const root = findRoot(start);
+    if (!root) throw new CliError(1, `${dir ?? start} is not in a moss-multi workspace; run \`moss-multi init\` in the folder to sync, or \`moss-multi pull <doc>\` there`);
+    return root;
+  };
 
   const commands: Record<string, (rest: string[]) => Promise<number | void>> = {
     async login(rest) {
@@ -218,14 +241,36 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
     },
 
     async add(rest) {
-      const parsed = parseArgs(rest, ['json'], ['title', 'folder']);
-      const [file] = arity(parsed, 1, 1, 'add <file.md> [--title <t>] [--folder <id>] [--json]');
+      const parsed = parseArgs(rest, ['json', 'moss'], ['title', 'folder']);
+      const [file] = arity(parsed, 1, 1, 'add <file.md> [--title <t>] [--folder <id>] [--moss] [--json]');
       const path = resolve(cwd(), file);
-      const markdown = toLf(decoder.decode(readConfined(findRoot(cwd()) ?? cwd(), path)));
-      const title = value(parsed, 'title') ?? basename(path, extname(path));
-      const client = api();
+      const workspace = findRoot(cwd());
+      const root = workspace ?? cwd();
+      const moss = parsed.flags.has('moss');
+      const title = value(parsed, 'title');
       const folderId = value(parsed, 'folder');
-      const doc = await client.create({ title, markdown, ...(folderId ? { folderId } : {}) });
+      const client = api();
+      let doc: { id: string; title: string };
+      if (workspace) {
+        // In a workspace the file is tracked at once, as sync would, so a later sync makes no second doc.
+        const rel = confined(workspace, path);
+        if (metaForFile(workspace, rel, foldsCase(workspace))) throw new CliError(1, `${rel} is already tracked here; \`moss-multi sync\` sends its edits`);
+        ({ doc } = await adopt({ root: workspace, client, folds: foldsCase(workspace) }, rel, {
+          moss, keepName: true, ...(title !== undefined ? { title, titleLine: true } : {}), ...(folderId ? { folderId } : {}),
+        }));
+      } else {
+        const markdown = toLf(decoder.decode(readConfined(root, path)));
+        const stem = basename(path, extname(path));
+        const comments = moss ? readSidecar(root, path) : undefined;
+        // A moss note is named by its "# Title" line; any other file by --title or its stem, and only --title lifts a
+        // first line that repeats it.
+        doc = await client.create({
+          ...(title !== undefined ? { title } : moss ? {} : { title: stem }), markdown, ...(moss || title !== undefined ? { titleLine: true } : {}),
+          ...(comments ? { comments } : {}), ...(folderId ? { folderId } : {}),
+        });
+        // A moss note with no title line takes its file's stem.
+        if (!doc.title.trim()) doc = { ...doc, ...(await client.rename(doc.id, stem)) };
+      }
       if (parsed.flags.has('json')) return json({ ...doc, url: docUrl(client, doc.id) });
       line(doc.id);
     },
@@ -260,6 +305,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       const id = await resolveDocId(client, ref);
       const root = findRoot(cwd()) ?? cwd();
       const tracked = readMeta(root, id);
+      if (tracked?.mode === 'moss') throw new CliError(1, `${tracked.file} is a moss note kept in moss format; \`moss-multi sync\` pulls and pushes it`);
       let rel: string;
       if (fileArg !== undefined) rel = confined(root, resolve(cwd(), fileArg));
       else if (tracked) rel = confined(root, tracked.file);
@@ -291,6 +337,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       const root = findRoot(cwd());
       const meta = root ? metaForFile(root, path, foldsCase(root)) : null;
       if (!root || !meta) throw new CliError(1, `${fileArg} is not tracked here: \`moss-multi pull <doc> ${fileArg}\` first`);
+      if (meta.mode === 'moss') throw new CliError(1, `${meta.file} is a moss note kept in moss format; \`moss-multi sync\` pulls and pushes it`);
       const local = readConfined(root, path);
       if (sha256Hex(local) === meta.baseHash) {
         line(`${meta.file}: nothing to push`);
@@ -343,6 +390,49 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
         throw new CliError(1, `pushed ${meta.file} (${response.applied} change(s) applied), but it was edited during the push, so it was left as it is; push again to send the newer edits`);
       }
       line(`pushed ${meta.file}: ${response.applied} change(s) applied`);
+    },
+
+    async init(rest) {
+      const parsed = parseArgs(rest, [], []);
+      const [dir] = arity(parsed, 0, 1, 'init [dir]');
+      const root = resolve(cwd(), dir ?? '.');
+      if (!existsSync(root)) throw new CliError(1, `no such directory: ${dir ?? root}`);
+      ensureStateDir(root);
+      line(`${root} is a moss-multi workspace: \`moss-multi sync\` turns every .md file in it into a doc`);
+    },
+
+    async sync(rest) {
+      const parsed = parseArgs(rest, ['force', 'json'], []);
+      const [dir] = arity(parsed, 0, 1, 'sync [dir] [--force] [--json]');
+      const root = workspaceAt(dir);
+      const results = await syncOnce({ root, client: api(), folds: foldsCase(root), force: parsed.flags.has('force') });
+      if (parsed.flags.has('json')) json(results);
+      else {
+        for (const result of results) {
+          if (result.action === 'failed' || result.action === 'skipped-degenerate' || result.failedHunks) stderr(describe(result));
+          else if (result.action !== 'up-to-date') line(describe(result));
+        }
+        if (results.every((result) => result.action === 'up-to-date')) line('everything is up to date');
+      }
+      exitCode = syncExitCode(results);
+    },
+
+    async watch(rest) {
+      const parsed = parseArgs(rest, [], ['interval']);
+      const [dir] = arity(parsed, 0, 1, 'watch [dir] [--interval <seconds>]');
+      const seconds = Number(value(parsed, 'interval') ?? 60);
+      if (!Number.isFinite(seconds) || seconds <= 0) throw new CliError(1, '--interval is a number of seconds above 0');
+      const root = workspaceAt(dir);
+      const client = api();
+      let signal = deps.signal;
+      if (!signal) {
+        const controller = new AbortController();
+        const stop = () => controller.abort();
+        process.once('SIGINT', stop);
+        process.once('SIGTERM', stop);
+        signal = controller.signal;
+      }
+      await watchLoop({ root, client, folds: foldsCase(root), force: false }, { intervalMs: seconds * 1000, signal, out: line, err: stderr });
     },
 
     async history(rest) {
@@ -424,7 +514,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
     const run = Object.hasOwn(commands, command) ? commands[command] : undefined;
     if (!run) throw new CliError(1, `unknown command "${command}"; run \`moss-multi help\``);
     await run(rest);
-    return EXIT.ok;
+    return exitCode;
   } catch (error) {
     if (error instanceof CliError) {
       stderr(`moss-multi: ${error.message}`);

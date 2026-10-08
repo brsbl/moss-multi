@@ -38,6 +38,8 @@ export const GROUPS = {
   meaning: ['j15', 'j18'],
   // The built CLI against the stack, and its pushes into notes being typed in.
   cli: ['j18-cli', 'j18-agents'],
+  // The folder-watch daemon and sync against the stack.
+  sync: ['j18-sync'],
   // Version history: the History view, restore under a peer.
   history: ['j17'],
   // Reactions, mentions, edit and delete, and the comment bell; sharing with an agent.
