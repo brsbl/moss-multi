@@ -599,6 +599,7 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
   - **Done:** j17 is green, with a triptych against the glyphdown history page.
 - **T6.S1 Three-way restore** (Slop Cop P1, PR #8): restore reconciles from the base the restorer opened Restore on and keeps every insert made after it (A§14); a stale or missing base is refused 409. **Tests:** a peer's word typed across the restore in the body, a code block and a formula; an agent write after the base; a stale base; no concurrent edit equals the version; a peer's first text in an empty block; a block the version drops after a peer typed in it (409); a base missing a named payload (409); j17 with Ben typing across the confirm click. **Done:** green.
 - **T6.S2 Named versions count per person, not per key** (Slop Cop P1): the per-person named cap and the save rate count the acting user (an agent as its owner) in the serialized insert; `createdBy` stays the key. **Done:** green harness and route tests.
+- **T6.S3 A restored payload keeps its unchanged middle** (Slop Cop P1): the mirror's payload writes (restore, push) use the bounded sparse diff, so a code, HTML or formula payload changed at both ends past the table keeps its middle's items and a peer's insert there. **Done:** green reconcile test.
 
 **Exit criteria:** a restore during peer typing keeps the peer's insert and the anchors; view is read-only and diff shows the peer's change; a failed fetch shows an error.
 - **M6 coordinator notes** (2026-10-07, since T1.F2, M4 and M5 landed after this plan was written):
