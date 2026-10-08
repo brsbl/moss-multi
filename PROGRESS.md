@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 82% done** (106 of 130 planned tasks verified)
+**Overall: 82% done** (107 of 130 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -12,7 +12,7 @@
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 9 / 9 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 7 / 7 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 10 / 10 | in progress |
-| M8 Ship | Everything on a permanent staging URL with demo content | 4 / 5 | |
+| M8 Ship | Everything on a permanent staging URL with demo content | 5 / 5 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -127,6 +127,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-08 — T7.S4 verified: `moss-multi sync` adopting a moss note now records the created revision as its base right after create, so a peer edit made before the first read survives a later local edit, and a retry after a failed create resumes the tracked doc instead of making a second one.
 - 2026-10-08 — T8.D verified: the staging deploy pipeline exists and is validated by dry run: `env.staging`, a `deploy-staging.yml` that ships the exact tested `dist`, an `/api/version` check, test hooks answering 404 on staging, `.dev.vars` never uploaded, and a canary that uses a fixed pool of test principals under a request budget.
 - 2026-10-08 — T8.5p verified: `scripts/demo.mjs` builds a demo folder through the real UI on any stack (a launch plan and an every-node note with media, two test people's comment threads with replies and reactions, a peer's and an agent's pending suggestions, named versions and a view link), re-runs without duplicating, and captures the signature shot of a peer's caret and a suggestion beside rich blocks plus a short tour.
+- 2026-10-08 — T8.3a verified: `scripts/security/sweep.mjs` runs the adversarial security checklist (headers, header stripping, existence leaks, revocation, limits) against a production build in CI, an authorization matrix covers every `/api` route, request bodies are capped and app pages refuse foreign framing; docs/SECURITY.md records the results.
 
 ## T1.1s identity audit
 
@@ -159,6 +160,13 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T8.3a's checker (d72058b, 2026-10-08)
+
+- T8.3a checker P2 (the authz matrix's completeness check ignores HTTP methods): it matches rows by path only, so PATCH and DELETE /api/folders/:folder/members and HEAD on asset reads have no rows and a regression in only those methods would pass.
+- T8.3a checker P2 (the sweep's revocation socket checks do not wait for the socket to be admitted): the link socket opens alongside the revocation and the agent and sign-out cases sleep 500 ms, and any 44xx close or drop passes, so a handshake refused after revocation also passes; the j09 journeys prove the real behavior.
+- T8.3a checker P2 (several matrix cases count any status of 400 or above as a refusal): the caller-only, viewer-write and agent-admin cases would also pass on 405, 429 or 500; require the exact refusal status and JSON shape.
+- T8.3a checker P2 (the implementer's framing screenshot did not show frame-ancestors working): Chrome's Private Network Access blocked the data: page before frame-ancestors applied; the checker's rerun from a real second origin (localhost framing 127.0.0.1) confirmed the header refuses foreign frames.
 
 ### From T8.5p's checker (5a1e2ca, 2026-10-08)
 
