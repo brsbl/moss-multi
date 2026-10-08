@@ -18,6 +18,12 @@ export const STATE_CAP_BYTES = Math.round(MARKDOWN_CAP_BYTES * STATE_RATIO * 1.2
  */
 export const CLIENT_FRAME_MAX_BYTES = 1024 * 1024;
 
+/**
+ * The DocDO answers a step 1 in frames of about this many bytes (T3.S6b): a frame of megabytes reads as silence on the
+ * client for as long as it takes to arrive, and its heartbeat closes a silent socket after 12 s.
+ */
+export const ANSWER_PIECE_BYTES = 256 * 1024;
+
 export const MAX_CONNECTIONS = 50;
 
 /** Writes per connection per window; the overflow frame is not applied and the socket closes 4420. */

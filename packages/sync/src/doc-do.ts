@@ -1,15 +1,16 @@
 import { getServerByName, type Connection, type ConnectionContext, type WSMessage } from 'partyserver';
 import { YServer } from 'y-partyserver';
 import * as Y from 'yjs';
+import * as decoding from 'lib0/decoding';
 import * as encoding from 'lib0/encoding';
 import { writeSyncStep1 } from 'y-protocols/sync';
 import { splitFrontmatter } from '@moss-desktop/common/markdown-layers';
 import {
-  ACCESS_DEADLINE_MS, ACCESS_TICK_MS, ACK_COALESCE_MS, AWARENESS_MAX_BYTES, DOC_SOCKET_MAX_MS, MAX_CONNECTIONS, STATE_CAP_BYTES, WRITE_RATE,
+  ACCESS_DEADLINE_MS, ACCESS_TICK_MS, ACK_COALESCE_MS, ANSWER_PIECE_BYTES, AWARENESS_MAX_BYTES, DOC_SOCKET_MAX_MS, MAX_CONNECTIONS, STATE_CAP_BYTES, WRITE_RATE,
 } from '@moss-multi/protocol/limits';
 import { ROLES, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import {
-  bytesToBase64, CLOSE, encodePayloadFrame, PAYLOAD_STEP1, PAYLOAD_STEP2, PAYLOAD_UPDATE, type PayloadAck, type PayloadFrame,
+  bytesToBase64, CLOSE, encodePayloadFrame, encodeSyncFrame, PAYLOAD_STEP1, PAYLOAD_STEP2, PAYLOAD_UPDATE, type PayloadAck, type PayloadFrame,
   type ServerEvent, type WriteRefusalReason,
 } from '@moss-multi/protocol/sync';
 import {
@@ -27,6 +28,7 @@ import { JANITOR, migratePayloads, PayloadStore, type PayloadWork } from './payl
 import { SEARCH_DO_NAME, type IndexEntry } from './search-do.ts';
 import { attachPayloadSource, exportDocMarkdown, importBody, rootIsEmpty, SERVER_IMPORT, SERVER_SEED, seedEmptyParagraph } from './server-doc.ts';
 import { writeTitle } from './server-title.ts';
+import { splitUpdate } from './update-pieces.ts';
 
 /** How long after a wake the doc re-feeds search. */
 const WAKE_FEED_MS = 1_000;
@@ -528,6 +530,10 @@ export class DocDO extends YServer<SyncEnv> {
       if (!awarenessTooLarge(frame.bytes, this.#limits.awarenessMaxBytes)) receivePresence(this.document.awareness, connection, message, [...this.getConnections()]);
       return;
     }
+    if (frame.kind === 'step1') {
+      this.#answer(connection, message);
+      return;
+    }
     const started = Date.now();
     // Inert frames (every step 2 answering a step 1) pass whatever the role; writes meet the gates.
     if (frame.kind === 'sync') {
@@ -548,6 +554,21 @@ export class DocDO extends YServer<SyncEnv> {
       const ms = Date.now() - started;
       if (ms > SLOW_FRAME_MS && frame.kind === 'sync') console.warn(`DocDO: a ${frame.update.byteLength}-byte sync frame took ${ms} ms`);
     }
+  }
+
+  /**
+   * A step 1's answer in frames of at most about ANSWER_PIECE_BYTES, whole blocks each: updates, then the step 2, so
+   * the provider reads as synced only once all of it has landed. y-partyserver sent it as one frame, and a peer behind
+   * a large paste was sent megabytes it read as silence until they arrived (T3.S6b).
+   */
+  #answer(connection: Connection, message: ArrayBuffer | ArrayBufferView): void {
+    const bytes = message instanceof ArrayBuffer ? new Uint8Array(message) : new Uint8Array(message.buffer, message.byteOffset, message.byteLength);
+    const decoder = decoding.createDecoder(bytes);
+    decoding.readVarUint(decoder);
+    decoding.readVarUint(decoder);
+    const update = Y.encodeStateAsUpdate(this.document, decoding.readVarUint8Array(decoder));
+    const pieces = update.byteLength > ANSWER_PIECE_BYTES ? splitUpdate(update, ANSWER_PIECE_BYTES).map((piece) => piece.update) : [update];
+    for (const [index, piece] of pieces.entries()) send(connection, encodeSyncFrame(index === pieces.length - 1 ? 1 : 2, piece));
   }
 
   /** Defense in depth: below editor, y-partyserver never applies a step 2 or update, inert or not. */
