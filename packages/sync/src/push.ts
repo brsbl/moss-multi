@@ -210,7 +210,7 @@ function landMerged(live: Y.Doc, noteId: string, input: PushInput, origin: unkno
   const base = normalizeEol(input.base);
   const next = normalizeEol(input.newText);
   const current = exportDocMarkdown(live, noteId);
-  const merge = computeMergedTarget(current, base, next, { force: input.force, budget });
+  const merge = computeMergedTarget(current, base, next, { refuseDegenerate: !input.force, budget });
   if (merge.degenerate) return { ok: false, reason: 'degenerate', deletedRatio: merge.deletedRatio };
   if (merge.target === current) return { ok: true, applied: 0, failedHunks: merge.failedHunks, changed: false };
   const target = partsOf(merge.target);

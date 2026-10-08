@@ -56,13 +56,13 @@ export interface MergeComputation {
   drifted: boolean;
   /** Changed runs between the current text and the target. */
   applied: number;
-  /** Refused as degenerate (never when forced): the regions were not merged and `target` is the current text. */
+  /** Refused as degenerate (only with refuseDegenerate): the regions were not merged and `target` is the current text. */
   degenerate: boolean;
 }
 
 export interface MergeOptions {
-  /** Merge even a degenerate push. */
-  force?: boolean;
+  /** Refuse a degenerate push before merging its regions (a push without --force). */
+  refuseDegenerate?: boolean;
   budget?: MergeBudget;
 }
 
@@ -195,20 +195,20 @@ export const withoutFinalEol = (text: string): string => text.slice(0, bodyEnd(t
 
 /**
  * Final newlines are not content (an editor adds one on save; the export has none), so the three texts merge without
- * them and the target keeps `current`'s. A degenerate push is refused before the regions are merged, unless forced.
+ * them and the target keeps `current`'s. With refuseDegenerate, a degenerate push is refused before the regions are merged.
  * Every diff draws on one budget; MergeBudgetExceeded when it runs out.
  */
 export function computeMergedTarget(current: string, base: string, next: string, options: MergeOptions = {}): MergeComputation {
-  const merge = mergeBodies(withoutFinalEol(current), withoutFinalEol(base), withoutFinalEol(next), options.force === true, options.budget ?? mergeBudget());
+  const merge = mergeBodies(withoutFinalEol(current), withoutFinalEol(base), withoutFinalEol(next), options.refuseDegenerate === true, options.budget ?? mergeBudget());
   return { ...merge, target: merge.target + finalEol(current) };
 }
 
-function mergeBodies(current: string, base: string, next: string, force: boolean, budget: MergeBudget): MergeComputation {
+function mergeBodies(current: string, base: string, next: string, refuseDegenerate: boolean, budget: MergeBudget): MergeComputation {
   const drifted = current !== base;
   const unchanged = { failedHunks: [], drifted, applied: 0, degenerate: false };
   if (base === next) return { ...unchanged, target: current, deletedRatio: 0 };
   const deletedRatio = deleted(cleanupSemantic(budgetedDiff(budget, base, next))) / Math.max(base.length, 1);
-  if (!force && isDegenerate(base, next, deletedRatio)) return { ...unchanged, target: current, deletedRatio, degenerate: true };
+  if (refuseDegenerate && isDegenerate(base, next, deletedRatio)) return { ...unchanged, target: current, deletedRatio, degenerate: true };
   if (!drifted) return { ...unchanged, target: next, deletedRatio, applied: changes(cleanupSemantic(budgetedDiff(budget, current, next))) };
   const theirs = editsOf(base, current, budget);
   const accepted: Edit[] = [];

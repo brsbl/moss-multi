@@ -74,11 +74,11 @@ describe('a push merge runs on one budget @p:agt-1', () => {
 
   it('refuses a degenerate push before diffing the regions, and merges it when forced', () => {
     const { base, current } = interleaved(2000);
-    const refused = computeMergedTarget(current, base, '');
+    const refused = computeMergedTarget(current, base, '', { refuseDegenerate: true });
     expect(refused).toMatchObject({ degenerate: true, target: current, failedHunks: [] });
     expect(diff.mock.calls.length, 'only the deletion ratio is diffed').toBe(1);
     diff.mockClear();
-    const forced = computeMergedTarget(current, base, '', { force: true });
+    const forced = computeMergedTarget(current, base, '');
     expect(forced.degenerate).toBe(false);
     expect(diff.mock.calls.length).toBeGreaterThan(1);
   });
