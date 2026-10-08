@@ -68,6 +68,10 @@ describe('push', () => {
     expect(push('m0', ['BUILDPLAN.md'])).toMatchObject({ checks: true });
   });
 
+  it('still checks a MIGRATION.md change, because doc-links.test.mjs checks its citations', () => {
+    expect(push('m8', ['MIGRATION.md'])).toMatchObject({ checks: true });
+  });
+
   it('treats unknown changed files (a new branch) as code', () => {
     expect(push('t/T0.2', null)).toMatchObject({ checks: true, build: true });
   });
@@ -284,6 +288,7 @@ describe('isDocsOnlyPath', () => {
     expect(isDocsOnlyPath('docs/design/x.md')).toBe(true);
     expect(isDocsOnlyPath('README.md')).toBe(true);
     expect(isDocsOnlyPath('BUILDPLAN.md')).toBe(false);
+    expect(isDocsOnlyPath('MIGRATION.md')).toBe(false);
     expect(isDocsOnlyPath('e2e/README.md')).toBe(false);
     expect(isDocsOnlyPath('vendor/moss/packages/shared/src/mocks/notes/files/checklist.md')).toBe(false);
     expect(isDocsOnlyPath('package.json')).toBe(false);
