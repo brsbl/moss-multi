@@ -359,6 +359,9 @@ export class DocDO extends YServer<SyncEnv> {
     encoding.writeVarUint(encoder, 0);
     writeSyncStep1(encoder, this.document);
     connection.send(encoding.toUint8Array(encoder));
+    // The payload bytes the cap counts, withheld ones too (a client holds only the payloads its tree names); none: 0.
+    const payloadBytes = this.#payloads?.totalBytes ?? 0;
+    if (payloadBytes > 0) this.sendCustomMessage(connection, JSON.stringify({ t: 'usage', pb: payloadBytes } satisfies ServerEvent));
     if (attachment.presenceAllowed && this.document.awareness.getStates().size) {
       connection.send(awarenessFrame(this.document.awareness, [...this.document.awareness.getStates().keys()]));
     }
@@ -1042,6 +1045,8 @@ export class DocDO extends YServer<SyncEnv> {
       sv: bytesToBase64(Y.encodeStateVector(this.document)),
       ds: bytesToBase64(Y.encodeSnapshot(Y.createSnapshot(deletes, new Map()))),
     };
+    const payloadBytes = this.#payloads?.totalBytes ?? 0;
+    if (payloadBytes > 0) event.pb = payloadBytes;
     if (payloads.size) {
       const acked: Record<string, PayloadAck> = {};
       for (const [id, covered] of payloads) {

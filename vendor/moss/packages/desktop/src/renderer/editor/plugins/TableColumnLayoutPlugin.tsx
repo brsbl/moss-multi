@@ -365,19 +365,39 @@ const getTableScrollElements = (table: HTMLTableElement): TableScrollElements | 
   return { shell, viewport: shell };
 };
 
-export const updateTableOverflowState = (table: HTMLTableElement): void => {
+// moss-multi seam: whole-paste (T3.S6): measuring and writing a table's overflow state are apart, so a flush reads
+// every table before it writes any. Read, write, read for each table laid the note out once per table: a paste of
+// 600 tables into a long note spent seconds in forced layout every frame.
+type TableOverflowState = {
+  elements: TableScrollElements;
+  hasOverflow: boolean;
+  isAtStart: boolean;
+  isAtEnd: boolean;
+};
+
+const measureTableOverflowState = (table: HTMLTableElement): TableOverflowState | null => {
   const elements = getTableScrollElements(table);
   if (!elements) {
-    return;
+    return null;
   }
 
-  const { shell, viewport } = elements;
+  const { viewport } = elements;
   const maxScrollLeft = Math.max(0, viewport.scrollWidth - viewport.clientWidth);
   const hasOverflow = maxScrollLeft > TABLE_SCROLL_EPSILON_PX;
   const isAtStart = !hasOverflow || viewport.scrollLeft <= TABLE_SCROLL_EPSILON_PX;
   const isAtEnd = !hasOverflow ||
     viewport.scrollLeft >= maxScrollLeft - TABLE_SCROLL_EPSILON_PX;
+  return { elements, hasOverflow, isAtStart, isAtEnd };
+};
 
+const applyTableOverflowState = ({ elements, hasOverflow, isAtStart, isAtEnd }: TableOverflowState): void => {
+  const { shell, viewport } = elements;
+  // An unchanged value is not written again: each write invalidates the table's style for the next layout.
+  if (shell.dataset.tableOverflow === String(hasOverflow) &&
+      shell.dataset.tableScrollStart === String(isAtStart) &&
+      shell.dataset.tableScrollEnd === String(isAtEnd)) {
+    return;
+  }
   shell.dataset.tableOverflow = String(hasOverflow);
   shell.dataset.tableScrollStart = String(isAtStart);
   shell.dataset.tableScrollEnd = String(isAtEnd);
@@ -390,6 +410,13 @@ export const updateTableOverflowState = (table: HTMLTableElement): void => {
     viewport.removeAttribute('tabindex');
     viewport.removeAttribute('role');
     viewport.removeAttribute('aria-label');
+  }
+};
+
+export const updateTableOverflowState = (table: HTMLTableElement): void => {
+  const state = measureTableOverflowState(table);
+  if (state) {
+    applyTableOverflowState(state);
   }
 };
 
@@ -541,9 +568,17 @@ export function TableColumnLayoutPlugin(): null {
       { editor }
     );
 
+    // moss-multi seam: whole-paste (T3.S6): every write, then every read, then every write.
     for (const table of tables) {
       balanceTableElement(table, intendedWidthsByTable.get(table) ?? null);
-      updateTableOverflowState(table);
+    }
+    const overflowStates = tables.map(measureTableOverflowState);
+    for (const state of overflowStates) {
+      if (state) {
+        applyTableOverflowState(state);
+      }
+    }
+    for (const table of tables) {
       const scrollElements = getTableScrollElements(table);
       observeResizeTarget(table);
       if (scrollElements) {
@@ -702,8 +737,13 @@ export function TableColumnLayoutPlugin(): null {
         attributeFilter: ['data-active']
       });
 
+      // moss-multi seam: whole-paste (T3.S6): the root's height changes with every block added; only its width
+      // changes the room tables have, so only a width change re-fits every table.
+      let rootWidth: number | null = null;
       resizeObserver = new ResizeObserver((entries) => {
-        if (entries.some((entry) => entry.target === rootElement)) {
+        const rootEntry = entries.find((entry) => entry.target === rootElement);
+        if (rootEntry && rootEntry.contentRect.width !== rootWidth) {
+          rootWidth = rootEntry.contentRect.width;
           scheduleAllTableLayouts();
           return;
         }

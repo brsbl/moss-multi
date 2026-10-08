@@ -161,9 +161,10 @@ export function readMapEntries(node: LexicalNode): Map<string, unknown> | undefi
 }
 
 /** A node's payload value as its first write carries it: its text, or its compound fields' encoded keys. */
-function seedOf(node: RegisterNode): string | Map<string, unknown> {
+export function seedOf(node: LexicalNode): string | Map<string, unknown> {
+  const fields = node as RegisterNode;
   const codec = MAP_REGISTERS[node.getType()];
-  return codec ? codec.encode(fieldsOf(node, codec)) : String(node[REGISTER_FIELDS[node.getType()]] ?? '');
+  return codec ? codec.encode(fieldsOf(fields, codec)) : String(fields[REGISTER_FIELDS[node.getType()]] ?? '');
 }
 
 /** Gives a node a new id whose first text this editor writes when the update commits (rule 2). */

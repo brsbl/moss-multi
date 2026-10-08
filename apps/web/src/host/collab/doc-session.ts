@@ -258,8 +258,18 @@ export function retryDoc(docId: string): void {
   held.get(docId)?.session.retry();
 }
 
+const byDoc = new WeakMap<Y.Doc, DocSession>();
+
+/**
+ * The bytes of the payload docs the DocDO counts against `doc`'s cap, withheld ones too, as it last said (T3.S6): a
+ * tab holds only the payloads its tree names. 0 for a doc no session holds, or before the DocDO has said.
+ */
+export const countedPayloadBytes = (doc: Y.Doc): number => byDoc.get(doc)?.payloadBytes ?? 0;
+
 export class DocSession {
   readonly doc = new Y.Doc();
+  /** The DocDO's last word on the payload bytes it counts against the cap (countedPayloadBytes). */
+  payloadBytes = 0;
   /** The payload docs this tab holds beside the note (A§10.10), destroyed with it. */
   readonly payloads = attachPayloadDocs(this.doc, new PayloadDocs());
   readonly #payloadSync: PayloadSync;
@@ -343,6 +353,7 @@ export class DocSession {
     window.addEventListener('pagehide', this.#onPageHide, true);
     window.addEventListener('pageshow', this.#onPageShow);
     sessions.add(this);
+    byDoc.set(this.doc, this);
     markSession(this, true);
     this.#state.writePaused = signingOut || closedForTrash.has(docId);
     this.#publish();
@@ -658,7 +669,10 @@ export class DocSession {
     } catch {
       return;
     }
-    if (event.t === 'ack') {
+    if (event.t === 'usage') {
+      this.payloadBytes = event.pb;
+    } else if (event.t === 'ack') {
+      this.payloadBytes = event.pb ?? 0;
       try {
         (this.provider.ws as DocSocket | null)?.outbox?.acked(Y.decodeStateVector(base64ToBytes(event.sv)));
       } catch {

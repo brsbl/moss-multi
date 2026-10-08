@@ -7,8 +7,10 @@
 // key, a click, another paste, an undo, the pane closing) first lands the rest at once, so nothing is left pending.
 import { createBinding, syncLexicalUpdateToYjs, type Provider } from '@lexical/yjs';
 import { CLIENT_FRAME_MAX_BYTES, STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
+import { encodePayloadFrame, PAYLOAD_UPDATE } from '@moss-multi/protocol/sync';
 import { excludedPropertiesFor } from '@moss-multi/sync/excluded-properties';
-import { isPayloadType, payloadDocsFor, type SlicedRedo } from '@moss-multi/sync/payload-docs';
+import { isPayloadType, payloadDocsFor, payloadMap, seedPayload, type SlicedRedo } from '@moss-multi/sync/payload-docs';
+import { seedOf } from '@moss-multi/sync/registers';
 import { splitUpdate } from '@moss-multi/sync/update-pieces';
 import {
   $createLineBreakNode, $createParagraphNode, $createTabNode, $createTextNode, $getNodeByKey, $getRoot, $getSelection,
@@ -18,7 +20,7 @@ import {
 } from 'lexical';
 import * as Y from 'yjs';
 import { PIECE_BYTES } from './collab/outbox.ts';
-import { WRITE_REFUSED } from './collab/doc-session.ts';
+import { countedPayloadBytes, WRITE_REFUSED } from './collab/doc-session.ts';
 import { markLanding } from './collab/landing.ts';
 import { DirLift, LARGE_CHILDREN } from './dir-lift.ts';
 import { markUnacked } from './collab/unacked.ts';
@@ -90,8 +92,6 @@ const scratchEditor = (nodes: readonly Klass<LexicalNode>[]) => createEditor({
   },
 });
 
-const utf8 = (text: string): number => new TextEncoder().encode(text).byteLength;
-
 /**
  * A doc's bytes as the DocDO holds them: the undo stack keeps deleted content for a redo (an undone 20 MB paste still
  * encodes at 20 MB here), and the DocDO's doc has collected it. Measured on a collected copy when it could matter.
@@ -105,20 +105,90 @@ function gcBytes(update: Uint8Array): number {
   return bytes;
 }
 
-/** The note's doc and every payload doc it holds, as the DocDO counts them against the cap (A§5.1). */
+/**
+ * The note's doc and its payload docs, as the DocDO counts them against the cap (A§5.1). The DocDO counts every payload
+ * it stores, withheld ones too (a deleted code block's text, kept for an undo), and this tab holds only the ones its
+ * tree names, so the payloads count as the larger of the DocDO's last word and what this tab holds.
+ */
 function heldBytes(editor: LexicalEditor): number | null {
   const doc = noteDoc(editor);
   if (!doc) return null;
-  let bytes = gcBytes(Y.encodeStateAsUpdate(doc));
-  for (const payload of payloadDocsFor(doc).docs.values()) bytes += Y.encodeStateAsUpdate(payload).byteLength;
-  return bytes;
+  let payloads = 0;
+  for (const payload of payloadDocsFor(doc).docs.values()) payloads += Y.encodeStateAsUpdate(payload).byteLength;
+  return gcBytes(Y.encodeStateAsUpdate(doc)) + Math.max(payloads, countedPayloadBytes(doc));
 }
 
-/** Below the cap with a little headroom for what the estimate leaves out; a single piece within the frame cap. */
-function fits(editor: LexicalEditor, bytes: number, largestPiece: number): boolean {
+/** Room under the frame cap for a frame's own header beyond what a piece or payload frame measures. */
+const FRAME_SLACK = 64;
+
+/** Below the cap with a little headroom for what the estimate leaves out; every frame within the frame cap. */
+function fits(editor: LexicalEditor, bytes: number, largestFrame: number): boolean {
+  if (largestFrame > CLIENT_FRAME_MAX_BYTES - FRAME_SLACK) return false;
   const held = heldBytes(editor);
-  if (largestPiece > CLIENT_FRAME_MAX_BYTES) return false;
   return held === null || held + bytes <= STATE_CAP_BYTES * 0.97;
+}
+
+/** A payload's value as its first frame carries it (registers.ts seedOf): text, or a chart's or sketch's keys. */
+export type PayloadSeed = string | ReadonlyMap<string, unknown>;
+
+/** A minted payload id's length (newPayloadId: 128 bits in hex), for the frame header. */
+const PROBE_ID = '0'.repeat(32);
+/** A compound payload's keys written per step while it is measured: a 30,000-point chart is 90,000 keys. */
+const KEYS_PER_STEP = 10_000;
+
+const payloadFrameBytes = (update: Uint8Array): number => encodePayloadFrame(PROBE_ID, PAYLOAD_UPDATE, update).byteLength;
+
+/**
+ * Each payload's first frame, as PayloadSync sends it: the seed's one update, whole (only note frames go as pieces).
+ * Encoded for real, since a chart's keys encode several times larger than its JSON. Returns their bytes summed and the
+ * largest, a step at a time; stops at the first one past `frameCap`, which refuses the paste anyway.
+ */
+export function* measurePayloads(seeds: readonly PayloadSeed[], frameCap = CLIENT_FRAME_MAX_BYTES): Generator<void, { bytes: number; largest: number }> {
+  let bytes = 0;
+  let largest = 0;
+  for (const seed of seeds) {
+    const doc = new Y.Doc();
+    let size = 0;
+    doc.on('update', (update: Uint8Array) => {
+      size += payloadFrameBytes(update);
+    });
+    if (typeof seed === 'string') {
+      if (seed) seedPayload(doc, seed, null);
+    } else {
+      // In steps of keys: each step's update is a little larger than its share of one update, never smaller.
+      const map = payloadMap(doc);
+      let step: [string, unknown][] = [];
+      const write = () => doc.transact(() => {
+        for (const [key, value] of step) map.set(key, value);
+      });
+      for (const entry of seed) {
+        step.push(entry);
+        if (step.length < KEYS_PER_STEP) continue;
+        write();
+        step = [];
+        if (size > frameCap) break;
+        yield;
+      }
+      if (step.length > 0 && size <= frameCap) write();
+    }
+    doc.destroy();
+    bytes += size;
+    largest = Math.max(largest, size);
+    if (largest > frameCap) break;
+    yield;
+  }
+  return { bytes, largest };
+}
+
+/** The payload seeds of `nodes` and everything in them, in document order. */
+function $payloadSeeds(nodes: readonly LexicalNode[]): PayloadSeed[] {
+  const seeds: PayloadSeed[] = [];
+  const visit = (node: LexicalNode) => {
+    if (isPayloadType(node.getType())) seeds.push(seedOf(node));
+    if ($isElementNode(node)) for (let child = node.getFirstChild(); child; child = child.getNextSibling()) visit(child);
+  };
+  nodes.forEach(visit);
+  return seeds;
 }
 
 /**
@@ -174,7 +244,7 @@ export function planPlainText(nodes: readonly Klass<LexicalNode>[], text: string
       unit(children);
     }
   }
-  return { top: units, units, payloadBytes: 0, largestPayload: 0 };
+  return { top: units, units, payloads: [] };
 }
 
 // ---------- the plan: units ----------
@@ -196,9 +266,8 @@ export interface Part {
 export interface PastePlan {
   top: Part[];
   units: Part[];
-  /** Bytes of payload docs (code, HTML, formula, chart and sketch fields) the paste makes, and the largest one. */
-  payloadBytes: number;
-  largestPayload: number;
+  /** The payload docs (code, HTML, formula, chart and sketch fields) the paste makes, as their first frames carry them. */
+  payloads: PayloadSeed[];
 }
 
 /** Splittable when too large: the items of a list, a nested list's item, the rows of a table. Rows stay whole. */
@@ -215,11 +284,6 @@ function $cost(node: LexicalNode): number {
     return cost;
   }
   return 1 + ($isTextNode(node) || $isDecoratorNode(node) ? node.getTextContentSize() / 64 : 0);
-}
-
-function payloadsOf(json: SerializedLexicalNode, found: (bytes: number) => void): void {
-  if (isPayloadType(json.type)) found(utf8(JSON.stringify(json)) + 64);
-  for (const child of (json as Partial<SerializedElementNode>).children ?? []) payloadsOf(child, found);
 }
 
 /**
@@ -245,15 +309,7 @@ export function $planPaste(nodes: LexicalNode[], json: SerializedLexicalNode[], 
     return part;
   };
   const top = nodes.map((node, i) => visit(node, json[i], null, i));
-  let payloadBytes = 0;
-  let largestPayload = 0;
-  for (const unit of units) {
-    payloadsOf(unit.json, (bytes) => {
-      payloadBytes += bytes;
-      largestPayload = Math.max(largestPayload, bytes);
-    });
-  }
-  return { top, units, payloadBytes, largestPayload };
+  return { top, units, payloads: $payloadSeeds(nodes) };
 }
 
 // ---------- placing the units ----------
@@ -672,26 +728,37 @@ function $selectLive(selection: BaseSelection | null): boolean {
   return true;
 }
 
+/**
+ * The scratch replay: the bytes the paste adds to the note and its payload docs, and its largest frame. Its own
+ * function, so the scratch editor and doc are garbage once it returns, not held while the paste lands.
+ */
+function* rehearse(request: PasteRequest, max: number): Generator<void, { bytes: number; largestFrame: number }> {
+  const { plan } = request;
+  const pacer = new Pacer('moss-paste-rehearsal', max);
+  const scratch = scratchEditor(request.nodes);
+  const measure = new Measure(scratch);
+  const rehearsal = new Placer(plan);
+  const step = (budget: number, place: (budget: number) => void) =>
+    pacer.time(budget, () => scratch.update(() => place(budget), { discrete: true }));
+  step(pacer.budget, (budget) => rehearsal.$first(budget, $replaceEmptyNote));
+  while (!rehearsal.done) {
+    yield;
+    step(pacer.budget, (budget) => rehearsal.$next(budget));
+  }
+  const noteBytes = measure.end();
+  const payloads = yield* measurePayloads(plan.payloads);
+  return { bytes: noteBytes + payloads.bytes, largestFrame: Math.max(measure.largestPiece, payloads.largest) };
+}
+
 /** Lands `request`: its scratch replay, then its batches or its refusal. */
 function* landPaste(job: PasteJob, request: PasteRequest): Generator<void, void> {
   const { editor } = job;
   const { plan } = request;
   const max = plan.units.every((unit) => unit.parent === null) ? MAX_TOP_BATCH : MAX_BATCH;
-  const pacer = new Pacer('moss-paste-rehearsal', max);
 
-  // 1. The scratch replay: what the paste adds to the note, and its largest piece.
-  const scratch = scratchEditor(request.nodes);
-  const measure = new Measure(scratch);
-  const rehearsal = new Placer(plan);
-  const rehearse = (budget: number, place: (budget: number) => void) =>
-    pacer.time(budget, () => scratch.update(() => place(budget), { discrete: true }));
-  rehearse(pacer.budget, (budget) => rehearsal.$first(budget, $replaceEmptyNote));
-  while (!rehearsal.done) {
-    yield;
-    rehearse(pacer.budget, (budget) => rehearsal.$next(budget));
-  }
-  const largest = Math.max(measure.largestPiece, plan.largestPayload);
-  if (!fits(editor, measure.end() + plan.payloadBytes, largest)) {
+  // 1. The scratch replay: what the paste adds, refused whole when past the cap or a frame past the frame cap.
+  const { bytes, largestFrame } = yield* rehearse(request, max);
+  if (!fits(editor, bytes, largestFrame)) {
     refuseInput(WRITE_REFUSED['doc-cap']);
     return;
   }
@@ -731,15 +798,17 @@ function* landPaste(job: PasteJob, request: PasteRequest): Generator<void, void>
   }
   job.restoreDir();
   undo?.stopCapturing();
-  // Its redo lands in slices too: the step is stamped with the paste (redoInSlices).
+  // Its redo lands in slices too: the step is stamped as a paste's (redoInSlices). The stamp is a token, not the
+  // request: the step lives as long as the undo stack, and the plan (every unit's JSON) need not.
   const step = batches > 1 ? undo?.undoStack?.at(-1) : undefined;
   if (step) {
-    step.stamp = request;
-    pasted.set(request, max);
+    const stamp = {};
+    step.stamp = stamp;
+    pasted.set(stamp, max);
   }
 }
 
-/** The steps of pastes that landed in batches, by the request each is stamped with, and the batch cap they paced with. */
+/** The steps of pastes that landed in batches, by the token each is stamped with, and the batch cap they paced with. */
 const pasted = new WeakMap<object, number>();
 const redoing = new WeakSet<LexicalEditor>();
 /**
