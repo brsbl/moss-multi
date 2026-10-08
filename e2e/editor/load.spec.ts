@@ -39,7 +39,12 @@ interface Fixture {
   reset(): void;
   seed(segments: string[], note: { markdown: string; meta: object }): string;
   mount(noteId: string): Promise<{ ok: boolean; status: string }>;
+  flush(): Promise<{ kind: string }>;
+  files(): Record<string, string>;
+  externalWrite(path: string, text: string): void;
 }
+
+type FixtureWindow = Window & { editorFixture: Fixture };
 
 const manifest = (): Manifest => JSON.parse(readFileSync(join(EDITOR_DIST, 'editor.json'), 'utf8')) as Manifest;
 const gzip = (file: string) => gzipSync(readFileSync(join(EDITOR_DIST, file)), { level: 9 }).length;
@@ -230,5 +235,41 @@ test('heavy families load on first use: none for a plain note, then each renders
   expect(server.requests.slice(before).filter(lazy).length, 'the families loaded their chunks on first use').toBeGreaterThan(0);
   expect(errors).toEqual([]);
   expect(await page.evaluate(() => (window as unknown as { editorFixture: Fixture }).editorFixture.violations)).toEqual([]);
+});
+
+test('a newer external reload wins over an older one still waiting on its family chunk, and the next save keeps it', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await page.goto(`${server.url}/fixture/index.html`);
+  await expect(page.locator('html[data-fixture="ready"]')).toBeAttached();
+  const path = '/Moss/Notes/Plan/Plan.md';
+  const result = await page.evaluate((value) => {
+    const fixture = (window as unknown as FixtureWindow).editorFixture;
+    fixture.reset();
+    return fixture.mount(fixture.seed(['Notes', 'Plan'], { markdown: '# Plan\n\nFirst line\n', meta: value }));
+  }, meta('Plan'));
+  expect(result).toEqual({ ok: true, status: 'clean' });
+  const body = page.locator('[data-moss-editor] [data-moss-note-editor-root="true"]');
+  await expect(body).toContainText('First line');
+  const write = (text: string) => page.evaluate(([file, markdown]) => (window as unknown as FixtureWindow).editorFixture.externalWrite(file, markdown), [path, text]);
+  // Version A brings the note's first chart, whose chunk is slow; version B, with no lazy family, lands meanwhile.
+  server.delay = { pattern: /\/assets\/[^/]*chart[^/]*\.js$/i, ms: 2_500 };
+  try {
+    await write(`# Plan\n\nVersion A\n\n${LAZY_FAMILIES[0].markdown}\n`);
+    await page.waitForTimeout(700);
+    await write('# Plan\n\nVersion B final\n');
+    await expect(body).toContainText('Version B final');
+    await page.waitForTimeout(4_000);
+  } finally {
+    server.delay = { pattern: null, ms: 0 };
+  }
+  await expect(body, 'the older version does not replace the newer one once its chunk arrives').toContainText('Version B final');
+  await expect(body).not.toContainText('Version A');
+  await body.getByText('Version B final').click();
+  await page.keyboard.press('End');
+  await page.keyboard.type(' typed');
+  expect(await page.evaluate(() => (window as unknown as FixtureWindow).editorFixture.flush())).toMatchObject({ kind: 'saved' });
+  expect((await page.evaluate(() => (window as unknown as FixtureWindow).editorFixture.files()))[path]).toBe('# Plan\n\nVersion B final typed\n');
+  expect(errors).toEqual([]);
 });
 
