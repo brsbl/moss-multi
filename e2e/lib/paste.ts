@@ -1,6 +1,5 @@
 // j01-paste helpers: pasting into a shared note through a real clipboard event and reading what the server and each
 // screen then hold. The notes and the reference imports are created through POST /api/docs as declared setup.
-import type { CDPSession } from '@playwright/test';
 import type { LexicalEditor } from 'lexical';
 import { CLIENT_FRAME_MAX_BYTES } from '../../packages/protocol/src/limits.ts';
 import type { Actor, Actors } from './actors.ts';
@@ -113,71 +112,8 @@ export function expectWire(wire: Wire): void {
   if (wire.peer) expect(wire.peer.closes, "the collaborator's doc socket never closed").toEqual([]);
 }
 
-// Diagnostic (T3.S6): in Chromium, a CPU profile from watchStalls to longestStall names what ran in each busy stretch
-// over 2 s. Script frames are minified bundle positions (file:line:column), which a local build of the same commit
-// reproduces byte for byte.
-const profilers = new WeakMap<Actor, CDPSession>();
-
-async function startProfile(actor: Actor): Promise<void> {
-  if (actor.page.context().browser()?.browserType().name() !== 'chromium') return;
-  const cdp = await actor.page.context().newCDPSession(actor.page);
-  await cdp.send('Profiler.enable');
-  await cdp.send('Profiler.setSamplingInterval', { interval: 2_000 });
-  await cdp.send('Profiler.start');
-  profilers.set(actor, cdp);
-}
-
-interface ProfileNode { id: number; callFrame: { functionName: string; url: string; lineNumber: number; columnNumber: number }; children?: number[] }
-
-async function busyStretches(actor: Actor): Promise<string> {
-  const cdp = profilers.get(actor);
-  if (!cdp) return '';
-  profilers.delete(actor);
-  const { profile } = await cdp.send('Profiler.stop') as unknown as { profile: { nodes: ProfileNode[]; samples: number[]; timeDeltas: number[] } };
-  await cdp.detach();
-  const byId = new Map(profile.nodes.map((node) => [node.id, node]));
-  const parent = new Map<number, number>();
-  for (const node of profile.nodes) for (const child of node.children ?? []) parent.set(child, node.id);
-  const label = (node: ProfileNode) => `${node.callFrame.functionName || '(anon)'} ${node.callFrame.url.split('/').pop()}:${node.callFrame.lineNumber + 1}:${node.callFrame.columnNumber + 1}`;
-  const stretches: { from: number; to: number; samples: number[] }[] = [];
-  let at = 0;
-  let current: { from: number; to: number; samples: number[] } | null = null;
-  profile.samples.forEach((id, i) => {
-    at += (profile.timeDeltas[i] ?? 0) / 1000;
-    const name = byId.get(id)!.callFrame.functionName;
-    if (name !== '(idle)') {
-      current ??= { from: at, to: at, samples: [] };
-      current.to = at;
-      current.samples.push(i);
-    } else if (current && at - current.to > 30) {
-      if (current.to - current.from > 2_000) stretches.push(current);
-      current = null;
-    }
-  });
-  if (current && current.to - current.from > 2_000) stretches.push(current);
-  return stretches.map(({ from, to, samples }) => {
-    const self = new Map<string, number>();
-    const total = new Map<string, number>();
-    for (const i of samples) {
-      const ms = (profile.timeDeltas[i] ?? 0) / 1000;
-      const leaf = byId.get(profile.samples[i])!;
-      self.set(label(leaf), (self.get(label(leaf)) ?? 0) + ms);
-      const seen = new Set<string>();
-      for (let id: number | undefined = leaf.id; id !== undefined; id = parent.get(id)) {
-        const key = label(byId.get(id)!);
-        if (seen.has(key)) continue;
-        seen.add(key);
-        total.set(key, (total.get(key) ?? 0) + ms);
-      }
-    }
-    const top = (map: Map<string, number>, n: number) => [...map].sort((a, b) => b[1] - a[1]).slice(0, n).map(([key, ms]) => `${Math.round(ms)} ${key}`).join(' | ');
-    return `\n  busy ${Math.round(to - from)} ms from ${Math.round(from)} ms; self: ${top(self, 12)}\n  total: ${top(total, 40)}`;
-  }).join('');
-}
-
 /** Starts measuring the longest the page's main thread is held: the gap between 25 ms ticks, less the 25 ms. */
 export async function watchStalls(actor: Actor): Promise<void> {
-  await startProfile(actor);
   await actor.page.evaluate(() => {
     const probe = window as unknown as { __stall: number; __stallAt: number; __stallStart: number; __stallTimer?: ReturnType<typeof setInterval> };
     clearInterval(probe.__stallTimer);
@@ -219,14 +155,7 @@ export async function watchStalls(actor: Actor): Promise<void> {
  * The longest stall since watchStalls, in ms, when it began (ms from the start), and the paste's batches and slow doc
  * socket work (User Timing measures `moss-paste-*`, `moss-sync-*`) that overlap it; measuring stops.
  */
-export async function longestStall(actor: Actor): Promise<{ ms: number; at: number; during: string }> {
-  const stall = await stallOf(actor);
-  const busy = await busyStretches(actor);
-  if (busy) console.log(`busy stretches over 2 s:${busy}`);
-  return stall;
-}
-
-const stallOf = (actor: Actor): Promise<{ ms: number; at: number; during: string }> =>
+export const longestStall = (actor: Actor): Promise<{ ms: number; at: number; during: string }> =>
   actor.page.evaluate(() => {
     const probe = window as unknown as { __stall: number; __stallAt: number; __stallStart: number; __stallTimer?: ReturnType<typeof setInterval> };
     clearInterval(probe.__stallTimer);
