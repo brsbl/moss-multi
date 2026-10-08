@@ -602,7 +602,7 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
   - Restore reconciles the body and each payload doc with the identity-preserving reconcile. Comment anchors stay attached through the anchor engine (I7).
   - Open suggestion records whose base changes go stale and must re-preview before accept (I3).
   - Restore and named versions re-validate the actor inside the serialized write (the T2.5 rule).
-  - Version storage counts against the actor's and the vault's bounds without a bucket an attacker can fill for someone else (the T3.S3b rule).
+  - Version storage is bounded per note by pruning, never by charging a person or a vault (A§14 Bounds): auto versions and old restore points are pruned past fixed counts and bytes in the same write; named versions are capped per note and per person, refused 409, never pruned. Nothing about versions refuses an edit or lets one person block another's history.
 
 ## M7 Agents and local sync
 

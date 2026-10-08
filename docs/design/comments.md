@@ -253,7 +253,7 @@ The discipline matters only for honest users and ruling 18. Safety (I1–I8) nev
 3. A forged frame that deletes and retypes identical text in one frame keeps the comment on identical text in the identical place.
 4. An undo of a partial trim does not regrow the highlight. The comment stays on its surviving text.
 5. Undoing an adjacent older deletion inside a segment, or anything over budget, leaves the comment detached.
-6. Version restore does not reattach orphans; M6 owns server-trusted re-minting from snapshots.
+6. Version restore re-mints a detached comment from the version (T6.2): on the restored units at the span the version recorded, only when they read exactly as they did then. A version captured while the comment was detached does not reattach it.
 7. Dragging a block or cut-and-paste orphans the comment.
 8. Orphans whose lost place spans blocks, or is nested deeper than 3 lifts, do not lift; deleting their block detaches them.
 9. **Ambiguous text inside a rewritten span** (coordinator amendment, 2026-10-04; the decision's register). When one frame rewrites a span in which the comment's text occurs more than once, so that the rewritten text could be either occurrence, the comment orphans rather than guess. Examples, each a test asserting the orphan:

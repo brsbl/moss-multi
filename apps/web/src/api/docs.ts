@@ -2,7 +2,7 @@
 // GET /api/docs/:id is the doc and the caller's role on it; DELETE and POST /restore are trash.ts; /members is the
 // members API (members.ts) and /links the share links (links.ts); GET /api/docs/:id/instance is the owner-only DO probe
 // (A§19), which reads nothing from the doc; GET /api/docs/:id/content is the doc's markdown export (?view=working adds
-// open suggestions); /suggestions/:sid/* is suggestions.ts; /comments and its
+// open suggestions); /suggestions/:sid/* is suggestions.ts; /versions is versions.ts; /comments and its
 // edit, delete, resolve and reactions routes are comments.ts. A missing doc and one the caller cannot open get the same 404 on every route (A§8).
 import { eq } from 'drizzle-orm';
 import { getServerByName } from 'partyserver';
@@ -23,6 +23,7 @@ import { handleInviteLinks } from './invites.ts';
 import { handleLinks } from './links.ts';
 import { handleMembers, type MembersEnv } from './members.ts';
 import { restoreDoc, trashDoc } from './trash.ts';
+import { handleVersions, VERSIONS_ROUTE } from './versions.ts';
 import { NO_STORE, notFound, readJsonObject, unauthenticated } from './respond.ts';
 import { ensureDefaultVault } from './vaults.ts';
 
@@ -261,6 +262,8 @@ export async function handleDocs(request: Request, env: DocsEnv): Promise<Respon
     if (request.method === 'DELETE') return deleteComment(request, env, one[1], one[2]);
     return json({ error: 'method-not-allowed' }, 405, { allow: 'PATCH, DELETE' });
   }
+  const versions = VERSIONS_ROUTE.exec(pathname);
+  if (versions) return handleVersions(request, env, versions);
   const suggestion = SUGGESTION_ROUTE.exec(pathname);
   if (suggestion) return handleSuggestion(request, env, suggestion[1], suggestion[2], suggestion[3] as 'preview' | 'accept' | 'reject' | 'withdraw');
   const content = CONTENT.exec(pathname);

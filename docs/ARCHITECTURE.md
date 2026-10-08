@@ -550,17 +550,18 @@ Designed in [docs/design/suggestions.md](design/suggestions.md) (T5.0, after a d
 
 [P:Meaning; L§4.13; S-gd §6.3]
 
-- **Storage.** A DocDO table `versions(id, kind auto|named|restore-point, name, created_at, author_ids, title, frontmatter, markdown, lexical_json | r2_key)`. Payloads over 1.5 MB spill to R2.
+- **Storage.** A DocDO table `versions(id, kind auto|named|restore-point, name, created_at, author_ids, title, full_title, frontmatter, markdown, lexical_json, payloads, comments, anchors | r2_key)`. A version's bytes count every field, the title included; content over 1.5 MB spills to R2, and a version lists with at most 200 characters of its title. A spill whose row was never written or was pruned is swept until R2 confirms its delete.
+- **Bounds.** Version storage is bounded per note by pruning, never by charging a person or a vault, and nothing about versions refuses an edit. In the write that adds an auto version or restore point, a note keeps at most `VERSION_AUTO_KEPT` (50) auto versions and `VERSION_RESTORE_POINTS_KEPT` (20) restore points, and at most `VERSION_HISTORY_BYTES_PER_NOTE` (4 × the state cap) of their bytes: past it the oldest auto versions go first, then restore points beyond the newest `VERSION_RESTORE_POINTS_PROTECTED` (3), so a restore always keeps its restore point. Named versions are never pruned; a note keeps at most `NAMED_VERSIONS_PER_NOTE` (50) and each person at most `NAMED_VERSIONS_PER_PERSON` (10) on it, refused 409 `note-version-limit` or `version-limit` (checked and inserted in one turn), and saves are rate-limited per person. Notes are bounded per acting user (T3.S3b), so total version storage is bounded too. A pruned spill is deleted from R2 by a sweep retried at the next version write or wake.
 - **Triggers:**
   - the last disconnect, when the doc changed;
   - every push;
-  - activity: 500 updates or 10 minutes since the last auto version, checked in `onSave`;
+  - activity: 500 updates or 10 minutes since the last auto version, checked in `onSave` and after payload edits;
   - a named version on request, rate-limited;
   - a restore point before each restore and an auto version after.
 - **Restore is an edit.** It runs `serverWrite` with an identity-preserving two-tier reconcile from the version's Lexical JSON. That is moss-collab's `tree-markdown` reconcile, re-derived on 0.48 (SP12).
   - Title and frontmatter restore by minimal diffs.
   - The result's export is verified against the target; on a mismatch the restore is refused with 409.
-  - Anchors and concurrent peer inserts survive. Clients cannot undo a restore. [S-prior §8.3; L§4.13]
+  - Anchors and concurrent peer inserts survive; a detached comment the version held anchored is re-anchored on its restored units when they read the same. The restore point is stored in the same turn, before the restore applies, or the restore is refused. Clients cannot undo a restore. [S-prior §8.3; L§4.13]
 - **UI.** Moss has no history surface at the pin: `TimelinePopoutModal` is the agent action-timeline modal (`tab: ActionTabEntry`), and only `VersionHistoryEmptyState` exists. The History view is glyphdown's history page (`d.$docId.history.tsx`) rebuilt in the moss DS, opened from a History control inline in the top bar and occupying the editor pane, never floating. This corrects L§4.13's "port TimelinePopoutModal".
   - A version list with auto, named and restore-point badges.
   - View renders the version in an unbound read-only MarkdownEditor; Diff vs current uses glyphdown's diff library.

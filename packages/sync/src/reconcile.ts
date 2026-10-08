@@ -8,7 +8,7 @@ import { exportMarkdown, stateToMarkdown } from './converter/index.ts';
 import { fieldsOf, MAP_REGISTERS } from './map-codecs.ts';
 import { REGISTER_FIELDS } from './payload-docs.ts';
 import { writeMapRegister, writeRegister } from './registers.ts';
-import { mirrorOf, serverWrite, type Admit } from './server-doc.ts';
+import { mirrorOf, serverWrite, type Admit, type Mirror } from './server-doc.ts';
 
 export class ReconcileRefused extends Error {
   readonly status = 409;
@@ -57,12 +57,18 @@ export function bodyState(live: Y.Doc): SerializedEditorState {
   }
 }
 
+/** What a write lands with the body: `mutate` edits the mirror's other roots, `verify` checks them and throws to refuse. */
+export interface BesideBody {
+  mutate(doc: Y.Doc): void;
+  verify(mirror: Mirror): void;
+}
+
 /**
  * Reconciles `live`'s body onto `target` in one server write under `origin`. Throws ReconcileRefused (409) when the
  * target cannot be parsed or the reconciled body would not export exactly as the target does; `admit` may refuse
- * too. Returns whether the live doc changed.
+ * too, and `beside` lands the title and frontmatter in the same write. Returns whether the live doc changed.
  */
-export function reconcileBody(live: Y.Doc, target: SerializedEditorState, origin: unknown, admit?: Admit): boolean {
+export function reconcileBody(live: Y.Doc, target: SerializedEditorState, origin: unknown, admit?: Admit, beside?: BesideBody): boolean {
   let expected: string;
   try {
     expected = stateToMarkdown(target);
@@ -76,10 +82,12 @@ export function reconcileBody(live: Y.Doc, target: SerializedEditorState, origin
       throw new ReconcileRefused('unparseable', `target does not reconcile: ${(error as Error).message}`);
     }
   };
-  return serverWrite(live, origin, () => {
+  return serverWrite(live, origin, (doc) => {
+    beside?.mutate(doc);
     const rest = refusing(() => $reconcileRoot(target.root as unknown as SerializedNode, { payloads: PAYLOADS }));
     return rest && (() => refusing(rest));
   }, admit, (mirror) => {
     if (exportMarkdown(mirror.editor) !== expected) throw new ReconcileRefused('mismatch', 'the reconciled body does not export the target');
+    beside?.verify(mirror);
   });
 }

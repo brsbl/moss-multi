@@ -34,9 +34,22 @@ import { JANITOR, migratePayloads, PayloadStore, type PayloadWork } from './payl
 import { SEARCH_DO_NAME, type IndexEntry } from './search-do.ts';
 import { attachPayloadSource, exportDocMarkdown, importBody, rootIsEmpty, SERVER_IMPORT, SERVER_SEED, seedEmptyParagraph } from './server-doc.ts';
 import { writeTitle } from './server-title.ts';
+import { captureContent, restoreContent, type AnchorSpans, type VersionContent } from './doc/version-content.ts';
+import { ReconcileRefused } from './reconcile.ts';
+import {
+  ACTIVITY_MS, ACTIVITY_UPDATES, VERSION_BOUNDS, VERSION_NAME_MAX, VERSION_SPILL_BYTES, VersionStore, type Prepared, type VersionBlobs,
+  type VersionBounds, type VersionMeta,
+} from './doc/versions.ts';
+
+/** A restore's server write (A§14). */
+export const VERSION_RESTORE = 'version-restore';
 
 /** How long after a wake the doc re-feeds search. */
 const WAKE_FEED_MS = 1_000;
+/** Times a restore re-captures a restore point too large for its row when the doc changed while it was spilled. */
+const RESTORE_ATTEMPTS = 3;
+/** The meta key set while a pruned or unwritten version spill still has to be deleted from R2. */
+const VERSIONS_DIRTY = 'versions-dirty';
 /** How long after a payload-only edit the doc feeds search (the note's own saves cover note edits). */
 const PAYLOAD_FEED_MS = 2_000;
 /** The `search-fed` meta while the index holds this doc's content; bump it when an index entry's shape changes. */
@@ -249,6 +262,21 @@ export class DocDO extends YServer<SyncEnv> {
   /** Who hears of a new live suggestion (the bell); installed by the Worker. */
   static suggestionNotices: (env: SyncEnv) => SuggestionNotifier | null = () => null;
 
+  /** Where versions above VERSION_SPILL_BYTES go (A§14): the ASSETS bucket. */
+  static versionBlobs: (env: SyncEnv) => VersionBlobs | null = (env) => (env?.ASSETS ? {
+    put: async (key, body) => {
+      await env.ASSETS.put(key, body, { httpMetadata: { contentType: 'application/json' } });
+    },
+    get: async (key) => (await env.ASSETS.get(key))?.text() ?? null,
+    delete: async (keys) => env.ASSETS.delete(keys),
+  } : null);
+
+  /** Version content above this many bytes spills (A§14); tests lower it. */
+  static versionSpillBytes = VERSION_SPILL_BYTES;
+
+  /** A note's version bounds (A§14), kept by pruning; tests lower them. */
+  static versionBounds: VersionBounds = VERSION_BOUNDS;
+
   /** Where search feeds land; null leaves the doc unindexed. */
   static searchFeed: (env: SyncEnv) => SearchFeed | null = (env) => (env?.SearchDO ? {
     index: async (entry) => (await getServerByName(env.SearchDO, SEARCH_DO_NAME)).index(entry),
@@ -309,6 +337,12 @@ export class DocDO extends YServer<SyncEnv> {
   /** Suggest refusals per principal in the last window, and principals cooling down (until when). In memory. */
   readonly #refusals = new Map<string, number[]>();
   readonly #cooldowns = new Map<string, number>();
+  #versions: VersionStore | null = null;
+  /** Updates since the last auto version, and who made them; persisted in meta so a wake keeps them (A§14). */
+  #versionUpdates = 0;
+  /** +1 on every change to the doc or a payload: whether a restore point captured before an await is still the doc. */
+  #generation = 0;
+  #versionAuthors = new Set<string>();
 
   /** Runs inside partyserver's blockConcurrencyWhile, so a woken DO replays before it sees any frame. */
   override async onLoad(): Promise<void> {
@@ -320,16 +354,25 @@ export class DocDO extends YServer<SyncEnv> {
         this.#exported = null;
         this.#working = null;
         this.#edited(store);
+        this.#versionTouched(store, origin);
         if (isConnection(origin)) {
           this.#projections?.touch();
           if (!this.#payloadFeed) this.#payloadFeed = setTimeout(() => {
             this.#payloadFeed = null;
             void this.#feedSearch();
+            // A payload edit reaches no onSave, so the activity trigger is checked here too (A§14).
+            void this.#activityVersion(store).catch((error: unknown) => console.error('DocDO activity version failed', error));
           }, PAYLOAD_FEED_MS);
         }
       },
       principalOf: (origin) => (isConnection(origin) ? (attachmentOf(origin)?.principalId ?? '') : null),
     });
+    // Before the replay, which counts nothing: it runs under `persistence`.
+    this.#versionUpdates = Number(store.meta('version-updates') ?? 0);
+    this.#versionAuthors = new Set(JSON.parse(store.meta('version-authors') ?? '[]') as string[]);
+    const Doc = this.constructor as typeof DocDO;
+    this.#versions = new VersionStore(this.ctx.storage.sql, this.name, () => Doc.versionBlobs(this.env), Doc.versionSpillBytes,
+      (run) => this.ctx.storage.transactionSync(run), () => Doc.versionBounds);
     store.load(this.document);
     this.#store = store;
     this.#payloads = payloads;
@@ -385,12 +428,15 @@ export class DocDO extends YServer<SyncEnv> {
     // shape; once onStart has served the waiting frames. A doc being created is fed by the save its content triggers.
     this.#searchStale = store.meta('search-fed') !== SEARCH_FEED_VERSION;
     if (this.#searchStale && store.meta('created') !== null) setTimeout(() => void this.#feedSearch(), WAKE_FEED_MS);
+    // Spills a previous instance could not delete are retried after a wake.
+    if (store.meta(VERSIONS_DIRTY) === '1') setTimeout(() => void this.#versionsChanged(), WAKE_FEED_MS);
   }
 
   /** Debounced by y-partyserver (2 s, at most 10 s). */
   override async onSave(): Promise<void> {
     if (this.#store && this.#store.pendingRows > 0) this.#store.compact(this.document);
     await this.#feedSearch();
+    if (this.#store) await this.#activityVersion(this.#store);
   }
 
   override async onConnect(connection: Connection, ctx: ConnectionContext): Promise<void> {
@@ -682,13 +728,18 @@ export class DocDO extends YServer<SyncEnv> {
     if (reply.t === 'suggest-refused') this.#countRefusal(attachment.principalId);
   }
 
-  override onClose(connection: Connection): void {
+  override async onClose(connection: Connection): Promise<void> {
     const nonce = attachmentOf(connection)?.nonce;
     if (nonce) this.#ingest?.expireConnection(nonce);
     leavePresence(this.document.awareness, connection, this.getConnections());
     this.#dropWaiting(connection);
     this.#rate.forget(connection);
     this.#acks.cancel(connection);
+    // The last socket leaving a changed doc writes an auto version (A§14).
+    const store = this.#store;
+    if (!store || this.#versionUpdates === 0) return;
+    for (const other of this.#all()) if (other.id !== connection.id && isOpen(other)) return;
+    await this.#autoVersion(store);
   }
 
   /**
@@ -1070,6 +1121,134 @@ export class DocDO extends YServer<SyncEnv> {
     return this.#working;
   }
 
+  /** The doc's versions, newest first, for any reader (A§14). */
+  async listVersions(input: { reviewer: Reviewer; actor?: CommentActor }): Promise<{ ok: true; versions: VersionMeta[] } | ReviewRefusal> {
+    const result = await this.#review(input, 'viewer', () => this.#versions?.list() ?? []);
+    return Array.isArray(result) ? { ok: true, versions: result } : result;
+  }
+
+  /** One version with its markdown, for any reader: what View and Diff vs current render. */
+  async getVersion(input: { id: string; reviewer: Reviewer; actor?: CommentActor }): Promise<{ ok: true; version: VersionMeta & { markdown: string } } | ReviewRefusal> {
+    const meta = await this.#review(input, 'viewer', () => this.#versions?.meta(input.id) ?? null);
+    if (meta === null) return { ok: false, status: 404, reason: 'not-found' };
+    if ('ok' in meta) return meta;
+    const content = await this.#versions?.content(input.id);
+    if (!content) return { ok: false, status: 404, reason: 'not-found' };
+    return { ok: true, version: { ...meta, markdown: content.markdown } };
+  }
+
+  /**
+   * A named version (A§14), for an editor or above. It is captured (and spilled) first; the per-person and per-note
+   * caps are checked and the row inserted in one turn of the serialized write after the actor is re-authorized (T2.5),
+   * so two saves cannot both take the last place. A refused save's spill is swept. The Worker rate-limits named saves.
+   */
+  async saveVersion(input: { name: string; reviewer: Reviewer; actor?: CommentActor }): Promise<{ ok: true; version: VersionMeta } | ReviewRefusal> {
+    const name = typeof input.name === 'string' ? input.name.trim() : '';
+    if (!name || name.length > VERSION_NAME_MAX) return { ok: false, status: 400, reason: 'bad-name' };
+    await this.#ready();
+    const versions = this.#versions;
+    if (!versions) throw new Error('DocDO started without versions');
+    const unstored: ReviewRefusal = { ok: false, status: 503, reason: 'unstored' };
+    const prepared = versions.prepare(this.#capture());
+    let result: { version: VersionMeta | null } | ReviewRefusal;
+    try {
+      await versions.spill(prepared);
+      result = await this.#review(input, 'editor', (reviewer): { version: VersionMeta | null } | ReviewRefusal => {
+        const refusal = versions.namedRefusal(reviewer.id);
+        if (refusal) return { ok: false, status: 409, reason: refusal };
+        return { version: versions.insert('named', prepared, { name, createdBy: reviewer.id }) };
+      });
+    } catch (error) {
+      console.error('DocDO could not store a named version', error);
+      result = unstored;
+    }
+    if ('ok' in result || !result.version) versions.discard(prepared);
+    await this.#versionsChanged();
+    if ('ok' in result) return result;
+    return result.version ? { ok: true, version: result.version } : unstored;
+  }
+
+  /**
+   * Restore (A§14), for an editor or above, in the serialized write after the actor is re-authorized: the version is
+   * reconciled into the live doc as a server write (T6.1) and verified against the version's export, or refused 409
+   * with nothing written. The doc as the restore finds it is stored as a restore point in the same turn, before
+   * anything is applied, and a restore point that cannot be stored refuses the restore; pruning never takes the newest
+   * restore points. One too large for its row is written to R2 first and used only if the doc has not changed since;
+   * past RESTORE_ATTEMPTS changes it answers 503. Detached comments the version held anchored are re-anchored on the
+   * restored text. An auto version follows.
+   */
+  async restoreVersion(input: { id: string; reviewer: Reviewer; actor?: CommentActor }): Promise<{ ok: true; restorePoint: string | null; version: string | null } | ReviewRefusal> {
+    const store = await this.#ready();
+    const versions = this.#versions;
+    if (!versions) throw new Error('DocDO started without versions');
+    // Read first (a spill is a fetch); a version never changes, and nothing is returned before the actor is checked.
+    const target = await versions.content(input.id);
+    let early: { prepared: Prepared; seen: number } | null = null;
+    let outcome: { point: VersionMeta | null } | ReviewRefusal = { ok: false, status: 503, reason: 'busy' };
+    try {
+      for (let attempt = 0; attempt < RESTORE_ATTEMPTS; attempt += 1) {
+        const step = await this.#review(input, 'editor', (reviewer): { point: VersionMeta | null } | { capture: Prepared; seen: number } | ReviewRefusal => {
+          if (!target) return { ok: false, status: 404, reason: 'not-found' };
+          const reuse = early !== null && early.seen === this.#generation;
+          const prepared = reuse ? early!.prepared : versions.prepare(this.#capture());
+          // A capture that must spill leaves the write to spill it.
+          if (!reuse && prepared.r2Key !== null) return { capture: prepared, seen: this.#generation };
+          const authorIds = [...this.#versionAuthors];
+          const stored: { point: VersionMeta | null } = { point: null };
+          try {
+            restoreContent(this.document, VERSION_RESTORE, target, (diff, payloads) => {
+              this.#admitServerWrite(store, diff, payloads);
+              stored.point = versions.insert('restore-point', prepared, { createdBy: reviewer.id, authorIds });
+              this.#versionTaken(store, Date.now());
+            });
+          } catch (error) {
+            if (error instanceof ReconcileRefused) return { ok: false, status: 409, reason: 'restore-unverified' };
+            if (error instanceof DocCapError) return { ok: false, status: 413, reason: 'doc-cap' };
+            console.error('DocDO could not store a restore point; the restore is refused', error);
+            return { ok: false, status: 503, reason: 'unstored' };
+          }
+          this.#comments?.flush();
+          this.#comments?.reanchor(JSON.parse(target.anchors) as AnchorSpans);
+          this.#projections?.touch();
+          return stored;
+        });
+        if (!('capture' in step)) {
+          outcome = step;
+          break;
+        }
+        if (early) versions.discard(early.prepared);
+        early = { prepared: step.capture, seen: step.seen };
+        await versions.spill(step.capture);
+      }
+    } catch (error) {
+      console.error('DocDO could not restore a version', error);
+      outcome = { ok: false, status: 503, reason: 'unstored' };
+    }
+    const pointId = 'ok' in outcome ? null : (outcome.point?.id ?? null);
+    if (early && early.prepared.id !== pointId) versions.discard(early.prepared);
+    if ('ok' in outcome) {
+      await this.#versionsChanged();
+      return outcome;
+    }
+    const after = await this.#autoVersion(store, input.reviewer.id);
+    if (!after) await this.#versionsChanged();
+    return { ok: true, restorePoint: pointId, version: after?.id ?? null };
+  }
+
+  /** After a version write: pruned or unwritten spills are deleted; a failed delete stays marked for the next write or wake. */
+  async #versionsChanged(): Promise<void> {
+    const versions = this.#versions;
+    const store = this.#store;
+    if (!versions || !store) return;
+    store.setMeta(VERSIONS_DIRTY, '1');
+    try {
+      await versions.sweep();
+    } catch (error) {
+      console.error('DocDO could not sweep version spills', error);
+    }
+    if (!versions.pending()) store.setMeta(VERSIONS_DIRTY, '0');
+  }
+
   /** Feeds search now, even with nothing changed: the Worker's backfill for a doc the index lacks. */
   async reindex(): Promise<void> {
     await this.#ready();
@@ -1262,6 +1441,7 @@ export class DocDO extends YServer<SyncEnv> {
     if (origin === PERSISTENCE) return;
     store.record(update);
     this.#edited(store);
+    this.#versionTouched(store, origin);
     if (isConnection(origin)) {
       this.#acks.schedule(origin, this.#frameDeletes);
       this.#projections?.touch();
@@ -1278,6 +1458,70 @@ export class DocDO extends YServer<SyncEnv> {
       store.setMeta('search-fed', '');
       this.#searchStale = true;
     }
+  }
+
+  /** A change since the last auto version (A§14): counted, its author remembered, both persisted for a wake. */
+  #versionTouched(store: DocStore, origin: unknown): void {
+    this.#generation += 1;
+    if (origin === SERVER_SEED) return;
+    this.#versionUpdates += 1;
+    if (this.#versionUpdates === 1) store.setMeta('version-since', String(Date.now()));
+    // The count only decides the activity trigger, so a wake may lose a few; the first change is always kept.
+    if (this.#versionUpdates === 1 || this.#versionUpdates % 50 === 0) store.setMeta('version-updates', String(this.#versionUpdates));
+    const author = isConnection(origin) ? attachmentOf(origin)?.principalId : undefined;
+    if (author && !this.#versionAuthors.has(author)) {
+      this.#versionAuthors.add(author);
+      store.setMeta('version-authors', JSON.stringify([...this.#versionAuthors]));
+    }
+  }
+
+  /** Starts counting afresh after an auto version. */
+  #versionTaken(store: DocStore, at: number): void {
+    this.#versionUpdates = 0;
+    this.#versionAuthors.clear();
+    store.setMeta('version-updates', '0');
+    store.setMeta('version-authors', '[]');
+    store.setMeta('version-auto-at', String(at));
+  }
+
+  #capture(): VersionContent {
+    return captureContent(this.document, this.name);
+  }
+
+  /**
+   * An auto version of the doc as it is now, unless nothing changed or it equals the latest version. Counting restarts
+   * as it is captured, so a concurrent trigger does not store the same state again; a failure puts the count and the
+   * authors back, so the next trigger retries it.
+   */
+  async #autoVersion(store: DocStore, createdBy: string | null = null): Promise<VersionMeta | null> {
+    const versions = this.#versions;
+    if (!versions || this.#versionUpdates === 0) return null;
+    const updates = this.#versionUpdates;
+    const authorIds = [...this.#versionAuthors];
+    const at = Date.now();
+    const content = this.#capture();
+    this.#versionTaken(store, at);
+    let meta: VersionMeta | null;
+    try {
+      meta = await versions.add('auto', content, { authorIds, at, createdBy, dedupe: true });
+    } catch (error) {
+      console.error('DocDO could not store an auto version; the next trigger retries it', error);
+      this.#versionUpdates += updates;
+      for (const id of authorIds) this.#versionAuthors.add(id);
+      store.setMeta('version-updates', String(this.#versionUpdates));
+      store.setMeta('version-authors', JSON.stringify([...this.#versionAuthors]));
+      return null;
+    }
+    await this.#versionsChanged();
+    return meta;
+  }
+
+  /** The activity trigger, checked on save (A§14). */
+  async #activityVersion(store: DocStore): Promise<void> {
+    if (this.#versionUpdates === 0) return;
+    // Ten minutes into the changes, and since the last auto version.
+    const since = Math.max(Number(store.meta('version-auto-at') ?? 0), Number(store.meta('version-since') ?? Date.now()));
+    if (this.#versionUpdates >= ACTIVITY_UPDATES || Date.now() - since >= ACTIVITY_MS) await this.#autoVersion(store);
   }
 
   /** Title changes project, except the replay and the seed (A§5.1). */

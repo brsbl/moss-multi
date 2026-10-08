@@ -47,6 +47,27 @@ export const SUGGEST_REVIEW_RATE = { max: 30, windowMs: 60_000 } as const;
 /** Suggestion previews per principal per window (O(doc) each; a panel previews each open card); 429 past it. */
 export const SUGGEST_PREVIEW_RATE = { max: 120, windowMs: 60_000 } as const;
 
+/** Named versions per principal per window (each stores a copy of the doc); 429 past it. */
+export const NAMED_VERSION_RATE = { max: 10, windowMs: 60_000 } as const;
+
+// A note's version history (A§14) is bounded per note by pruning, never by charging a person or a vault: nothing about
+// versions refuses an edit. Notes are bounded per acting user (T3.S3b), so all version storage is bounded too.
+
+/** Auto versions and restore points a note keeps; the oldest are pruned in the write that adds one. */
+export const VERSION_AUTO_KEPT = 50;
+export const VERSION_RESTORE_POINTS_KEPT = 20;
+
+/** Bytes of auto versions and restore points a note keeps; past it the oldest auto versions, then restore points, go. */
+export const VERSION_HISTORY_BYTES_PER_NOTE = 4 * STATE_CAP_BYTES;
+
+/** The newest restore points, never pruned for bytes, so a restore always keeps its restore point. */
+export const VERSION_RESTORE_POINTS_PROTECTED = 3;
+
+/** Live named versions one person may keep on a note, and a note may keep; past either a save is refused 409, and a
+ * named version is never pruned. */
+export const NAMED_VERSIONS_PER_PERSON = 10;
+export const NAMED_VERSIONS_PER_NOTE = 50;
+
 /**
  * Working-view exports (the note with every open suggestion applied, O(doc) per record) one DocDO computes per window,
  * whoever asks; a read the DocDO serves from its cache is not counted. Each caller is also charged SUGGEST_PREVIEW_RATE.
