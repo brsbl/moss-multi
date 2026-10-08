@@ -159,6 +159,7 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T7.S1 checker P2 (the push timing test swallows every exception): push() ignores landPush's outcome and catches everything, so a regression that throws or returns before markdownToState would pass faster; assert the expected outcome or the specific refusal.
 - T7.S1 checker P2 (the image candidate scan is O(n log n), not strictly linear): nextOf binary-searches the positions array per candidate (12-16 comparisons per candidate at 4k-64k); passes the doubling bound but is not O(n).
 - T7.S1 checker P2 (characters typed during a concurrent push can land in the wrong paragraph; pre-existing M7 merge behavior): while an agent pushed a plain paragraph into a fresh doc, two of Ada's typed characters (' b') ended up after the agent's paragraph; belongs to the three-way merge (keepUntouched/spliceByBlock), not T7.S1.
+- T7.S1 checker P2 (long single-line pushes are still superlinear in landPush outside the marker scans; owned by T3.S4): `%%m:` + 4,000 spaces + `!` landed in 61 ms and 16,000 spaces in 506 ms, in the non-marker converter paths T3.S4 makes linear (Lexical export split, tabs, inline import); T3.S4 is on m3, not yet in m7.
 
 ### From T7.L's checker (adf7ead, 2026-10-08)
 
