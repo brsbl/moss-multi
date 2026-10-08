@@ -212,7 +212,12 @@ test('heavy families load on first use: none for a plain note, then each renders
     body.evaluate((root) =>
       [...root.querySelectorAll('[data-lexical-decorator="true"]')]
         .filter((element) => element.getBoundingClientRect().height > 100)
-        .map((element) => ({ placeholder: element.querySelector('[data-moss-lazy-view]') !== null, height: Math.round(element.getBoundingClientRect().height) })),
+        .map((element) => ({
+          placeholder: element.querySelector('[data-moss-lazy-view]') !== null,
+          height: Math.round(element.getBoundingClientRect().height),
+          top: Math.round(element.getBoundingClientRect().top - root.getBoundingClientRect().top),
+          below: Math.round((element.nextElementSibling?.getBoundingClientRect().top ?? 0) - root.getBoundingClientRect().top),
+        })),
     );
   try {
     await body.getByText('The last line of the note.').click();
@@ -232,6 +237,7 @@ test('heavy families load on first use: none for a plain note, then each renders
     const views = await heights();
     expect(placeholders.every((block) => block.placeholder)).toBe(true);
     expect(views.map((block) => block.height), 'no layout jump: each view takes its placeholder\'s height').toEqual(placeholders.map((block) => block.height));
+    expect(views.map(({ top, below }) => ({ top, below })), 'no layout jump: each view and the block after it stay where they were').toEqual(placeholders.map(({ top, below }) => ({ top, below })));
   } finally {
     server.delay = { pattern: null, ms: 0 };
   }

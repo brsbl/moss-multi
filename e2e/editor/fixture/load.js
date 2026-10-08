@@ -30,10 +30,12 @@ function instrument(host, latency) {
         entry.end = performance.now();
         return value;
       }
+      // The latency comes after the call's own time, as a round trip over a slower transport adds it.
       return (async () => {
-        if (latency) await sleep(latency);
         try {
-          return await value;
+          const answer = await value;
+          if (latency) await sleep(latency);
+          return answer;
         } finally {
           entry.end = performance.now();
         }

@@ -130,6 +130,8 @@ export class EditorSession {
   private revision = 0;
   /** Counts in-place loads, so one a later load overtook neither re-enables editing nor reports. */
   private loads = 0;
+  /** In-place loads under way. */
+  private loadingInPlace = 0;
   private savedRevision = 0;
   private unsavedStartedAt: number | null = null;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -328,6 +330,9 @@ export class EditorSession {
   /** Called by the surface on every edit: body, title, comments, properties. */
   markEdited(): void {
     if (this.status === 'loading' || this.status === 'notLoaded' || this.status === 'unmounted') return;
+    // The baseline already is the version an in-place load is showing; an edit to the content it replaces is not
+    // saved against it.
+    if (this.loadingInPlace > 0) return;
     const wasDirty = this.dirty;
     this.revision += 1;
     if (this.status === 'removed') return;
@@ -693,9 +698,11 @@ export class EditorSession {
   private async loadInPlace(content: EditorContent): Promise<boolean> {
     const generation = ++this.loads;
     this.surface.setEditable(false);
+    this.loadingInPlace += 1;
     try {
       await this.surface.load(content, { keepView: true });
     } finally {
+      this.loadingInPlace -= 1;
       if (generation === this.loads && this.status !== 'removed' && this.status !== 'unmounted') this.surface.setEditable(true);
     }
     return generation === this.loads;
