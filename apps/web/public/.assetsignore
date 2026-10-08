@@ -1,0 +1,3 @@
+# Never served as static assets (T8.D): local secret files, should one land in the client output.
+.dev.vars*
+.env*

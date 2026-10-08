@@ -9,7 +9,7 @@ import { assertNotInfra, InfraBlocked } from './infra.ts';
 import {
   actorFindings, domFindings, principalFindings, typedFindings, type ActorView, type DeclaredHttp, type Finding,
 } from './invariants.ts';
-import { mintPrincipal, newPrincipal, signIn, type Principal } from './principals.ts';
+import { mintPrincipal, newPrincipal, poolPrincipal, signIn, type Principal } from './principals.ts';
 import { makeSeverable, type Sever } from './sever.ts';
 import type { Provenance, Stack } from './stack.ts';
 import { Telemetry } from './telemetry.ts';
@@ -101,8 +101,20 @@ export class Actors {
     return this.options.stack;
   }
 
-  /** A per-run @example.invalid principal, signed up through the auth API as declared setup. */
+  /**
+   * A per-run @example.invalid principal, signed up through the auth API as declared setup. On a canary stack it is
+   * the fixed pool principal for `label` instead (A§21).
+   */
   async principal(label: string): Promise<Principal> {
+    const canary = this.options.stack?.canary;
+    if (canary) {
+      const secret = process.env[canary.poolSecretEnv];
+      if (!secret) throw new InfraBlocked(`the canary pool secret ${canary.poolSecretEnv} is not set`);
+      this.stack.budget?.charge(`${this.stack.baseUrl}/api/auth/sign-in/email`);
+      const principal = await poolPrincipal(this.stack.baseUrl, secret, label);
+      this.principals.push(principal);
+      return principal;
+    }
     minted += 1;
     const principal = await mintPrincipal(this.stack.baseUrl, this.options.runToken, label, minted);
     this.principals.push(principal);
@@ -133,6 +145,7 @@ export class Actors {
           return telemetry.routedSocket(url);
         })
       : null;
+    this.options.stack?.budget?.watch(context);
     const page = await context.newPage();
     telemetry = Telemetry.install(page, { routed: !!sever });
     await telemetry.ready;
@@ -228,6 +241,7 @@ export class Actors {
     const findings = await this.findings();
     this.testInfo.annotations.push({ type: 'invariants', description: JSON.stringify({ findings: findings.length }) });
     if (findings.length > 0) await this.fail(findings, 'invariants');
+    this.options.stack?.budget?.assert(this.journey);
   }
 
   /** Attaches the census and a 2x PNG of each offending actor, then fails the test. */

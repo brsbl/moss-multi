@@ -281,6 +281,18 @@ Read this with PRODUCT.md, your BUILDPLAN entry and the A§ it cites, before wri
 - Journeys import `test`, `expect` and `ui` from `e2e/lib/test.ts` only; its auto fixture checks the 9 invariants on every actor after every test. Declare intended exceptions on the actor (`expectHttp`, `expectReconnects`, `declareRemount`, `actors.solo(reason)`), never by loosening a detector. Typed strings must be distinctive (never a substring of other text in the field), since invariant 7 counts exact occurrences.
 - A new detector or invariant ships with a fault fixture in `e2e/selftest/fixtures/faults/` that only it flags.
 
+## Staging deploy (T8.D)
+
+- `deploy-staging.yml` ships the tested `web-dist` artifact, never a rebuild ([docs/DEPLOY.md](DEPLOY.md)). The tested dist's `server/wrangler.json` is a redirected config, which takes no `--env`, so `scripts/deploy/staging-config.mjs` lays `env.staging` over it. Its keys are every key a `CLOUDFLARE_ENV=staging` build changes (vite-plugin 1.46.0). A new key in `env.staging` goes into `OVERLAY_KEYS` in the same commit. The baked provenance `env` stays `ci` on staging; `bundleHash` is the proof.
+- The SSR 404 differs per response in its CSP nonce and the router's dehydrated timestamp, so "the same 404 as an unknown route" compares status, type and the document with those removed (`comparable` in `scripts/deploy/assert-deployed.mjs`).
+- A canary state (`scripts/deploy/canary-state.mjs`) turns the journeys' stack into a Worker with no hooks. `actors.principal(label)` returns the fixed pool principal `canary-<label>@example.invalid`, which signs in once per run, so the canary stays under the 10 sign-ins a minute that staging allows. Every Worker request counts against the run's budget (`e2e/lib/budget.ts`); `/assets/` does not invoke the Worker.
+- Pool principals keep state across runs. A canary leg must not depend on a fresh account: it creates what it reads, and it restores what it changes (the j00 theme leg ends on Light).
+- **DO storage growth review.** Soft delete never calls `deleteAll()`, so no DocDO, its update log or its versions is ever reclaimed. A Worker rename would orphan all of it (A§21). [L§4.7]
+  - Staging's growth is the canary's. A run creates about 12 notes, so about 12 DocDOs, each a few short paragraphs. The pool's three PrincipalDOs and SearchDO('global') are reused.
+  - Per note, versions are capped (A§14) and the state is capped, so each canary DocDO stays small.
+  - Each run adds about 12 rows to the pool owners' sidebars, and adds D1 sessions that expire.
+  - Review the growth when the Cloudflare dashboard shows Durable Object storage past 1 GB, or `canary-ada` past 1,000 notes. Either is a decision for the owner: purge with an explicit `deleteAll()` sweep, or move to fresh pool labels.
+
 ## Environment
 
 - The primary machine (host_37m3sgpq59) is shared and often loaded: one graded browser run at a time. Never build on a host running a bb dev stack or Nightly. [L§5.1]

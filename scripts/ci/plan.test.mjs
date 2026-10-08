@@ -335,6 +335,7 @@ describe('ciOk', () => {
       viewer: { result: results.viewer ?? 'skipped' },
       editor: { result: results.editor ?? results.viewer ?? 'skipped' },
       'editor-host': { result: results['editor-host'] ?? results.checks ?? 'skipped' },
+      canary: { result: results.canary ?? 'skipped' },
     };
   }
 
@@ -406,4 +407,29 @@ it('parallel milestone branches gate the actual closed milestone, while ready mi
   expect(computePlan({ event: 'push', payload: { ref: 'refs/heads/t/T2.1' }, closedMilestone: 1 }).traceMilestone).toBe(1);
   expect(computePlan({ event: 'pull_request', payload: { pull_request: { head: { ref: 'm2' }, base: { ref: 'main' }, draft: false } }, closedMilestone: 0 }).traceMilestone).toBe(2);
   expect(() => computePlan({ event: 'push', closedMilestone: Number.NaN })).toThrow(/closed milestone/);
+});
+
+describe('the canary rehearsal (T8.D)', () => {
+  it('rides every full Chromium lane and a grep naming the canary, never a checks-only run or the nightly', () => {
+    expect(dispatch({}).canary).toBe(true);
+    expect(pr().canary).toBe(true);
+    expect(dispatch({ grep: '@staging', browsers: 'chromium' }).canary).toBe(true);
+    expect(dispatch({ grep: 'j01', browsers: 'chromium' }).canary).toBe(false);
+    expect(dispatch({ browsers: 'webkit' }).canary).toBe(false);
+    expect(push('t/T8.D').canary).toBe(false);
+    expect(nightly().canary).toBe(false);
+    expect(toOutputs(dispatch({}))).toMatch(/^canary=true$/m);
+  });
+
+  it('is required by ci-ok when planned', () => {
+    const plan = dispatch({});
+    const needs = (canary) => ({
+      plan: { result: 'success', outputs: { plan: JSON.stringify(plan) } },
+      checks: { result: 'success' }, build: { result: 'success' }, e2e: { result: 'success' }, macos: { result: 'skipped' },
+      oracle: { result: 'success' }, parity: { result: 'success' }, viewer: { result: 'success' }, editor: { result: 'success' },
+      'editor-host': { result: 'success' }, canary: { result: canary },
+    });
+    expect(ciOk(needs('success')).ok).toBe(true);
+    expect(ciOk(needs('skipped')).problems).toEqual(['canary: skipped (planned to run)']);
+  });
 });

@@ -133,6 +133,11 @@ function schedulePlan(journeys, headSha, lastNightlySha) {
   return lanes({ build: true, browsers: BROWSERS }, 'nightly @slow legs', { slow: 'only' });
 }
 
+// The staging canary's rehearsal (T8.D) rides a Chromium journey run: every full lane, and a grep naming the canary.
+function canaryPlanned(plan) {
+  return plan.browsers.includes('chromium') && plan.slow !== 'only' && (!plan.grep || /canary|@staging/.test(plan.grep));
+}
+
 // Pure: the event name, its payload, the changed paths (null when unknown), CI_DEGRADED, the journey files and,
 // nightly, main's head and the last green nightly's head decide the lanes and shards.
 export function computePlan({ event, payload = {}, changedFiles = null, degraded = false, journeys = [], headSha = '', lastNightlySha = '', closedMilestone = null }) {
@@ -148,7 +153,7 @@ export function computePlan({ event, payload = {}, changedFiles = null, degraded
     const milestoneExit = event === 'pull_request' && !pr?.draft && pr?.base?.ref === 'main' && /^m\d+$/.test(pr?.head?.ref ?? '');
     if (!milestoneExit && plan.traceMilestone !== null) plan.traceMilestone = Math.min(plan.traceMilestone, closedMilestone);
   }
-  return { ...plan, shards: shardsFor(plan, journeys) };
+  return { ...plan, canary: canaryPlanned(plan), shards: shardsFor(plan, journeys) };
 }
 
 export function toOutputs(plan) {
@@ -161,6 +166,7 @@ export function toOutputs(plan) {
       `macos=${plan.macos}`,
       `parity=${plan.parity}`,
       `viewer=${plan.viewer}`,
+      `canary=${Boolean(plan.canary)}`,
       `grep=${plan.grep}`,
       `repeat=${plan.repeat}`,
       `slow=${plan.slow}`,
@@ -194,6 +200,7 @@ export function ciOk(needs) {
     editor: Boolean(plan.viewer),
     // The moss-editor-host artifact builds whenever the checks run.
     'editor-host': Boolean(plan.checks),
+    canary: Boolean(plan.canary),
   };
   const problems = [];
   for (const [job, planned] of Object.entries(expected)) {
