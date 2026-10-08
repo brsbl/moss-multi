@@ -92,8 +92,13 @@ export class Outbox {
   }
 
   /** Writes are waiting to go out. */
+  /**
+   * Writes are queued, or sent and still drawing acks: a resync then resends nothing, since merging and resending a
+   * large paste's unacked batches (megabytes) held the tab for seconds and queued them twice. With no ack for STALL_MS
+   * (acks lost), a resync resends them.
+   */
   get busy(): boolean {
-    return this.#queue.length > 0;
+    return this.#queue.length > 0 || (this.#sent.length > 0 && !this.#stalled);
   }
 
   send(frame: Frame): void {

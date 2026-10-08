@@ -91,11 +91,24 @@ const scratchEditor = (nodes: readonly Klass<LexicalNode>[]) => createEditor({
 
 const utf8 = (text: string): number => new TextEncoder().encode(text).byteLength;
 
+/**
+ * A doc's bytes as the DocDO holds them: the undo stack keeps deleted content for a redo (an undone 20 MB paste still
+ * encodes at 20 MB here), and the DocDO's doc has collected it. Measured on a collected copy when it could matter.
+ */
+function gcBytes(update: Uint8Array): number {
+  if (update.byteLength < STATE_CAP_BYTES / 4) return update.byteLength;
+  const copy = new Y.Doc();
+  Y.applyUpdate(copy, update);
+  const bytes = Y.encodeStateAsUpdate(copy).byteLength;
+  copy.destroy();
+  return bytes;
+}
+
 /** The note's doc and every payload doc it holds, as the DocDO counts them against the cap (A§5.1). */
 function heldBytes(editor: LexicalEditor): number | null {
   const doc = noteDoc(editor);
   if (!doc) return null;
-  let bytes = Y.encodeStateAsUpdate(doc).byteLength;
+  let bytes = gcBytes(Y.encodeStateAsUpdate(doc));
   for (const payload of payloadDocsFor(doc).docs.values()) bytes += Y.encodeStateAsUpdate(payload).byteLength;
   return bytes;
 }

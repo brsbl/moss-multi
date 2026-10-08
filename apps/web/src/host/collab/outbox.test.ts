@@ -115,3 +115,15 @@ it('never has more than the window sent and unapplied when each ack covers only 
   expect(largest, 'bytes sent and not yet applied stay within the window').toBeLessThanOrEqual(windowBytes);
   outbox.close();
 });
+
+it('reads busy while sent writes still draw acks, and not once none has come for the stall time', () => {
+  const { doc, update } = bigDoc();
+  const outbox = new Outbox(() => {}, { pieceBytes: 8 * 1024, windowBytes: 1024 * 1024, stallMs: 2_000 });
+  outbox.send(encodeSyncFrame(2, update));
+  expect(outbox.busy, 'everything is sent, nothing acked yet').toBe(true);
+  vi.advanceTimersByTime(2_000);
+  expect(outbox.busy, 'no ack for the stall time: a resync may resend').toBe(false);
+  outbox.acked(Y.decodeStateVector(Y.encodeStateVector(doc)));
+  expect(outbox.busy).toBe(false);
+  outbox.close();
+});
