@@ -91,6 +91,9 @@ export const REMOTE_FETCH_RATE = { max: 30, windowMs: 60_000 } as const;
 /** Comment operations (create, reply, later edit, resolve, react) per principal per window, counted by its PrincipalDO; 429 past it. */
 export const COMMENT_OP_RATE = { max: 60, windowMs: 60_000 } as const;
 
+/** The longest comment text, in UTF-16 units; longer is 413 `text-too-long` (comments.md §4). */
+export const COMMENT_TEXT_MAX = 10_000;
+
 /**
  * How long a PrincipalDO remembers an ended session and a session's doc sockets (A§5.2): better-auth's default session
  * lifetime, 7 days, which no in-flight upgrade outlives.

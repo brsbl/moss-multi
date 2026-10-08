@@ -2,7 +2,7 @@
 // takes a token from the acting user's PrincipalDO before any D1 row, DocDO or media work, so one account, or its
 // agent keys between them, cannot mint docs without bound. Over the real PrincipalDO in the Node harness and D1.
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { DOC_CREATE_DAILY, DOC_CREATE_RATE, LIVE_NOTE_CAP, MARKDOWN_CAP_BYTES } from '@moss-multi/protocol/limits';
+import { CREATE_BODY_MAX_BYTES, DOC_CREATE_DAILY, DOC_CREATE_RATE, LIVE_NOTE_CAP } from '@moss-multi/protocol/limits';
 import { PrincipalDO } from '../../../../packages/sync/src/principal-do.ts';
 import { Backing, FakeState } from '../../../../packages/sync/test/harness/workerd.ts';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
@@ -183,7 +183,7 @@ describe('creation admission order (T3.S3b)', () => {
 
   it('refuses an oversized Content-Length with 413 before reading the body or taking a token', async () => {
     const ivy = await signedUpUser(env, 'budget-oversize', 'Ivy');
-    const refused = await streamedCreate(ivy, { 'content-length': String(MARKDOWN_CAP_BYTES * 8) });
+    const refused = await streamedCreate(ivy, { 'content-length': String(CREATE_BODY_MAX_BYTES + 1) });
     expect(refused.status, await refused.clone().text()).toBe(413);
     await spend(ivy, DOC_CREATE_RATE.max);
   }, 60_000);

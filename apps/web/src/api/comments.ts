@@ -5,8 +5,8 @@
 // a user re-checked against their live access, never the actor and never an agent.
 import { getServerByName } from 'partyserver';
 import { MAX_QUOTE } from '@moss-multi/core/anchor-frame';
-import { COMMENT_OP_RATE } from '@moss-multi/protocol/limits';
-import { COMMENT_TEXT_MAX, type CommentActor, type CommentDeleteScope, type CommentResult } from '@moss-multi/sync';
+import { COMMENT_OP_RATE, COMMENT_TEXT_MAX } from '@moss-multi/protocol/limits';
+import type { CommentActor, CommentDeleteScope, CommentResult } from '@moss-multi/sync';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
 import { resolvePrincipal, shareTokenOf, type Principal } from '../auth/principal.ts';
 import { createDb, inJson, type Db } from '../db/client.ts';
