@@ -269,7 +269,8 @@ test('j17-history: a versions fetch that fails shows an error, never "No checkpo
   const { id, ada } = await sharedNote(actors, stack.baseUrl);
   const versionsPath = `/api/docs/${id}/versions`;
   ada.expectHttp(429, versionsPath);
-  await ada.page.route((url) => url.pathname === versionsPath, (route) =>
+  const isVersions = (url: URL) => url.pathname === versionsPath;
+  await ada.page.route(isVersions, (route) =>
     route.fulfill({ status: 429, contentType: 'application/json', body: JSON.stringify({ error: 'rate-limited' }) }));
   await historyButton(ada, id).click();
   const view = historyView(ada, id);
@@ -278,7 +279,7 @@ test('j17-history: a versions fetch that fails shows an error, never "No checkpo
   await expect(view.getByText('No checkpoints'), 'never the empty state').toHaveCount(0);
   await expect(view.getByRole('button', { name: 'Save version', exact: true }), 'nothing offers a first checkpoint over an unknown list').toHaveCount(0);
 
-  await ada.page.unroute((url) => url.pathname === versionsPath);
+  await ada.page.unroute(isVersions);
   await view.getByRole('button', { name: 'Try again', exact: true }).click();
   await expect(view, 'a retry loads the real list').toHaveAttribute(HISTORY_VIEW_ATTR, 'empty', { timeout: BIND_TIMEOUT });
   await expect(view.getByText('No checkpoints', { exact: true })).toBeVisible();
