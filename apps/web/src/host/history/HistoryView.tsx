@@ -15,10 +15,11 @@ import {
 import { roleAtLeast } from '@moss-multi/protocol/roles';
 import { useAtomValue } from 'jotai';
 import { ArrowLeft, Clock, History, RotateCcw, Tag } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react';
 import { useDocRole } from '../access.ts';
 import { useAuthState } from '../auth.ts';
 import { displayTitle } from '../collab/title-binding.ts';
+import { versionPreviewNoteId } from '../media/web-asset-url.ts';
 import { timeAgo } from '../surfaces/NotificationsBell.tsx';
 import { diffStats, diffText } from './diff.ts';
 
@@ -226,13 +227,13 @@ function DiffView({ title, currentTitle, oldText, newText }: { title: string; cu
   );
 }
 
-/** The version in an unbound, read-only editor: it never touches the live note. */
+/** The version in an unbound, read-only editor under its own id, so it never touches the live note; its media are the note's. */
 function VersionReader({ docId, id, text }: { docId: string; id: string; text: VersionText }): ReactNode {
   const body = useMemo(() => bodyOf(text.markdown), [text.markdown]);
   return (
     <div className="mx-auto w-full max-w-canvas-prose">
       <p {...{ [VERSION_TITLE_ATTR]: '' }} className="mb-1 break-words text-h1 font-semibold tracking-title text-ink-default">{displayTitle(text.title)}</p>
-      <MarkdownEditor key={id} noteId={`${docId}#version-${id}`} value={body} readOnly onChange={() => undefined} placeholder="" />
+      <MarkdownEditor key={id} noteId={versionPreviewNoteId(docId, id)} value={body} readOnly onChange={() => undefined} placeholder="" />
     </div>
   );
 }
@@ -277,16 +278,24 @@ export function HistoryView({ docId }: { docId: string }): ReactNode {
   const selected = versions.find((v) => v.id === selectedId) ?? versions[0] ?? null;
   const selectedText = selected ? texts[selected.id] : undefined;
 
+  // A version's answer is kept even after the selection moves on, so going back to it never finds it stuck loading.
+  const shownDoc = useRef('');
+  useEffect(() => {
+    shownDoc.current = docId;
+    return () => {
+      shownDoc.current = '';
+    };
+  }, [docId]);
   useEffect(() => {
     if (!selected) return;
     const id = selected.id;
     const had = texts[id];
     if (had && had.state !== 'error') return;
-    let live = true;
+    const live = () => shownDoc.current === docId;
     setTexts((all) => ({ ...all, [id]: { state: 'loading' } }));
     call(`${docUrl(docId)}/versions/${encodeURIComponent(id)}`).then(
       ({ ok, json }) => {
-        if (!live) return;
+        if (!live()) return;
         const shown = json.version as { title?: unknown; markdown?: unknown } | undefined;
         setTexts((all) => ({
           ...all,
@@ -295,11 +304,8 @@ export function HistoryView({ docId }: { docId: string }): ReactNode {
             : { state: 'error', message: refusal(json, 'This version could not be loaded.') },
         }));
       },
-      () => live && setTexts((all) => ({ ...all, [id]: { state: 'error', message: 'This version could not be loaded. The server could not be reached.' } })),
+      () => live() && setTexts((all) => ({ ...all, [id]: { state: 'error', message: 'This version could not be loaded. The server could not be reached.' } })),
     );
-    return () => {
-      live = false;
-    };
     // `texts` is read only to skip a version already loaded, so it is not a dependency.
   }, [docId, selected?.id, textRound]);
 
@@ -307,6 +313,7 @@ export function HistoryView({ docId }: { docId: string }): ReactNode {
   useEffect(() => {
     if (mode !== 'diff' || !selected) return;
     let live = true;
+    setCurrent({ state: 'loading' });
     call(`${docUrl(docId)}/content`).then(
       ({ ok, text, json }) => live && setCurrent(ok ? { state: 'ready', value: text } : { state: 'error', message: refusal(json, 'The current note could not be loaded.') }),
       () => live && setCurrent({ state: 'error', message: 'The current note could not be loaded. The server could not be reached.' }),

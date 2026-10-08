@@ -256,6 +256,10 @@ test('j17-history: a restore while the peer types keeps the peer\'s insert and t
   await caretAfter(ben, id, 'lazy dog.');
   await ben.page.keyboard.type(' Ben keeps this.');
   ben.typed({ docId: id, field: 'body', text: ' Ben keeps this.', ordered: false });
+  await expect(ui.body(ben, id), 'Ben sees his own words').toContainText('Ben keeps this.');
+  const serverHas = await ada.context.request.get(`/api/docs/${id}/content`);
+  expect(serverHas.status()).toBe(200);
+  expect(await serverHas.text(), "Ben's words are still in flight: the server does not have them before the restore").not.toContain('Ben keeps this.');
 
   const view = await openHistory(ada, id);
   await row(ada, id, 'Before the change').click();
