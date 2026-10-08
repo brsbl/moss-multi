@@ -70,7 +70,7 @@ export const LINEAR_IMPORT_LIMITS = {
   matches: 6_000,
   tabs: 4_096,
   perChar: 1_950,
-  base: 1 << 18,
+  base: 1 << 17,
   perImport: 1 << 28,
 };
 /**
@@ -100,7 +100,7 @@ const NORMALIZED = 256;
 // A scan of linear-match.ts run again on the rest of a text once its match is passed: its pre-scan tests each
 // candidate opener and closer (a regex call apiece), several units per character, and a run of matches that starts
 // where its match does (wiki links inside one link label) passes and re-runs it once per match.
-const LINEAR_RESCAN = 9;
+const LINEAR_RESCAN = 16;
 const FORMAT_SCAN = 5;
 // Each format search over a prefix, besides its characters: its slices, scans and arrays.
 const FORMAT_CALL = 400;
