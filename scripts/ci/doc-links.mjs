@@ -19,7 +19,36 @@ function topLevel(repo) {
   return new Set(readdirSync(repo).filter((name) => !SKIP_DIRS.has(name)));
 }
 
-// Code spans (single or double backtick) outside fenced blocks, and inline links, with their line numbers.
+// Splits one line into its code spans (a run of n backticks closed by the next run of exactly n) and the rest.
+function splitSpans(line) {
+  const spans = [];
+  let plain = '';
+  let at = 0;
+  while (at < line.length) {
+    const open = line.indexOf('`', at);
+    if (open < 0) break;
+    let ticks = open;
+    while (line[ticks] === '`') ticks++;
+    const fence = line.slice(open, ticks);
+    let close = line.indexOf(fence, ticks);
+    while (close >= 0 && line[close + fence.length] === '`') {
+      let end = close;
+      while (line[end] === '`') end++;
+      close = line.indexOf(fence, end);
+    }
+    if (close < 0) {
+      plain += line.slice(at, ticks);
+      at = ticks;
+      continue;
+    }
+    plain += line.slice(at, open);
+    spans.push(line.slice(ticks, close).trim());
+    at = close + fence.length;
+  }
+  return { spans, plain: plain + line.slice(at) };
+}
+
+// Code spans outside fenced blocks, and inline links, with their line numbers.
 export function citations(text) {
   const spans = [];
   const links = [];
@@ -30,9 +59,9 @@ export function citations(text) {
       return;
     }
     if (fenced) return;
-    for (const match of line.matchAll(/(`+)([^`]+)\1/g)) spans.push({ line: index + 1, text: match[2].trim() });
-    const plain = line.replace(/(`+)[^`]+\1/g, '');
-    for (const match of plain.matchAll(/\]\(([^)\s]+)\)/g)) links.push({ line: index + 1, target: match[1] });
+    const parts = splitSpans(line);
+    for (const span of parts.spans) spans.push({ line: index + 1, text: span });
+    for (const match of parts.plain.matchAll(/\]\(([^)\s]+)\)/g)) links.push({ line: index + 1, target: match[1] });
   });
   return { spans, links };
 }
