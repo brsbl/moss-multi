@@ -110,6 +110,20 @@ describe('T7.2 structural push merge @p:agt-1 @p:tech-5', () => {
     expect(charIds(live, 'three'), 'the untouched characters keep their items').toEqual(kept);
   });
 
+  it('keeps a peer\'s typing inside a span the push deletes, and returns that hunk as failed', () => {
+    const live = docOf(BODY);
+    const base = exported(live);
+    const peer = fork(live);
+    typeAfter(peer, 'Charlie three', ' (peer)');
+    share(peer, live);
+    const next = base.replace('Charlie three changes.', 'Charlie.').replace('Echo five stays.', 'Echo five was pushed.');
+    const result = landPush(live, NOTE, { base, newText: next, force: false }, PUSH);
+    expect(result.ok).toBe(true);
+    expect((result as { failedHunks: string[] }).failedHunks).toHaveLength(1);
+    expect(exported(live)).toContain('Charlie three (peer) changes.');
+    expect(exported(live)).toContain('Echo five was pushed.');
+  });
+
   it('keeps duplicate blocks in their positions: an edit to the second of three equal paragraphs lands on the second', () => {
     const live = docOf(['Same line.', 'Same line.', 'Same line.', 'Tail.'].join('\n\n'));
     const base = exported(live);
