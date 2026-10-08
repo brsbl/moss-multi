@@ -865,7 +865,10 @@ export class DocDO extends YServer<SyncEnv> {
     if (!feed) return;
     try {
       // Never through ready(): called from onLoad's timer and onSave, the doc is already loaded.
+      const started = Date.now();
       this.#exported ??= exportDocMarkdown(this.document, this.name);
+      const ms = Date.now() - started;
+      if (ms > SLOW_FRAME_MS) console.warn(`DocDO: exporting ${this.#exported.length} characters for search took ${ms} ms`);
       const markdown = this.#exported;
       const entry: IndexEntry = { docId: this.name, title: this.document.getText('title').toString(), body: splitFrontmatter(markdown).body };
       const signature = `${entry.title}\u0000${entry.body}`;
