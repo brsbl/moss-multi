@@ -33,15 +33,22 @@ export function parseJsonObject(text: string): Record<string, unknown> | null {
   }
 }
 
-/** The cap on a JSON request body. */
+/** The cap on a JSON request body, far above the largest any route but note creation and feedback takes. */
 export const JSON_BODY_MAX_BYTES = 64 * 1024;
 
-export async function readJsonObject(request: Request): Promise<Record<string, unknown> | null> {
-  try {
-    return parseJsonObject(await request.text());
-  } catch {
-    return null;
-  }
+/** Thrown by readJsonObject for a body over its cap; handleApi answers it with 413 `too-large`. */
+export class BodyTooLarge extends Error {}
+
+export const tooLarge = () => refuse(413, 'too-large', 'That request is too large.');
+
+/**
+ * The body as a JSON object, or null when it is not one. A body that declares or runs past `max` bytes throws
+ * BodyTooLarge without being buffered beyond the cap.
+ */
+export async function readJsonObject(request: Request, max = JSON_BODY_MAX_BYTES): Promise<Record<string, unknown> | null> {
+  const text = await readCapped(request, max);
+  if (text === 'too-large') throw new BodyTooLarge();
+  return text === null ? null : parseJsonObject(text);
 }
 
 /**
