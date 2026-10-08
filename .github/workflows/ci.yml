@@ -372,10 +372,6 @@ jobs:
         env:
           MOSS_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       - run: cat packages/viewer/dist/viewer.json
-      - name: Bundle sizes
-        run: |
-          node scripts/ci/bundle-size.mjs packages/viewer/dist moss-viewer.js | tee "$RUNNER_TEMP/sizes.txt"
-          { echo '```'; cat "$RUNNER_TEMP/sizes.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Acceptance fixture and shots, Chromium and WebKit
         working-directory: e2e
         run: pnpm exec playwright test --project=viewer-chromium --project=viewer-webkit
@@ -426,10 +422,6 @@ jobs:
         env:
           MOSS_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       - run: cat packages/editor/dist/editor.json
-      - name: Bundle sizes
-        run: |
-          node scripts/ci/bundle-size.mjs packages/editor/dist moss-editor.js | tee "$RUNNER_TEMP/sizes.txt"
-          { echo '```'; cat "$RUNNER_TEMP/sizes.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Acceptance fixture and shots, Chromium and WebKit
         working-directory: e2e
         env:
