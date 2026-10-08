@@ -97,8 +97,12 @@ export interface DeviceLoginIO {
   sleep?: (ms: number) => Promise<void>;
 }
 
-/** `open` on macOS, `xdg-open` elsewhere; a headless machine just uses the printed URL. */
+/** Whether the CLI may open a browser: not when MOSS_MULTI_NO_OPEN=1 (QA and scripts) or on CI. */
+export const mayOpenBrowser = (env: NodeJS.ProcessEnv = process.env): boolean => env.MOSS_MULTI_NO_OPEN !== '1' && !env.CI;
+
+/** `open` on macOS, `xdg-open` elsewhere; a headless machine, CI or MOSS_MULTI_NO_OPEN=1 just uses the printed URL. */
 function defaultOpenUrl(url: string): void {
+  if (!mayOpenBrowser()) return;
   try {
     const child = spawn(platform() === 'darwin' ? 'open' : 'xdg-open', [url], { stdio: 'ignore', detached: true });
     child.on('error', () => undefined);

@@ -597,3 +597,12 @@ describe('the key never appears in output', () => {
     expect(outputs[4].err).toContain('forbidden');
   });
 });
+
+describe('mayOpenBrowser', () => {
+  it('opens a browser only when neither MOSS_MULTI_NO_OPEN=1 nor CI is set', async () => {
+    const { mayOpenBrowser } = await import('./config.ts');
+    expect(mayOpenBrowser({})).toBe(true);
+    expect(mayOpenBrowser({ MOSS_MULTI_NO_OPEN: '1' })).toBe(false);
+    expect(mayOpenBrowser({ CI: 'true' })).toBe(false);
+  });
+});

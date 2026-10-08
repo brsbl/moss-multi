@@ -283,3 +283,4 @@ Read this with PRODUCT.md, your BUILDPLAN entry and the A§ it cites, before wri
 
 - The primary machine (host_37m3sgpq59) is shared and often loaded: one graded browser run at a time. Never build on a host running a bb dev stack or Nightly. [L§5.1]
 - Never record credential values. Probe Codex quota with `codex exec "reply OK"`. Commit a brief before passing its path; inline prompts near 5 KB get cancelled. [L§5.5; L§5.6]
+- **CLI QA never opens a person's browser.** Run the built CLI with `MOSS_MULTI_NO_OPEN=1` and open the printed device URL in the QA browser-automation session instead (2026-10-08: a self-check's device login opened a tab in the owner's default browser).
